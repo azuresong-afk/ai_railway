@@ -35,23 +35,31 @@ func main() {
 }
 
 // checkTree проверяет README.md, CLAUDE.md и все markdown-файлы в docs/.
-func checkTree(root string) ([]string, error) {
+// Чтение ограничено каталогом root: ссылка за его пределы считается битой.
+func checkTree(root string) (broken []string, err error) {
+	r, err := os.OpenRoot(root)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if cerr := r.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
+	}()
+	fsys := r.FS()
+
 	files := []string{}
 	for _, f := range []string{"README.md", "CLAUDE.md"} {
-		if _, err := os.Stat(filepath.Join(root, f)); err == nil {
+		if _, err := r.Stat(f); err == nil {
 			files = append(files, f)
 		}
 	}
-	err := filepath.WalkDir(filepath.Join(root, "docs"), func(path string, d fs.DirEntry, err error) error {
+	err = fs.WalkDir(fsys, "docs", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if !d.IsDir() && strings.HasSuffix(path, ".md") {
-			rel, err := filepath.Rel(root, path)
-			if err != nil {
-				return err
-			}
-			files = append(files, rel)
+			files = append(files, path)
 		}
 		return nil
 	})
@@ -59,18 +67,21 @@ func checkTree(root string) ([]string, error) {
 		return nil, err
 	}
 
-	var broken []string
 	for _, f := range files {
-		data, err := os.ReadFile(filepath.Join(root, f))
+		info, err := r.Stat(f)
 		if err != nil {
 			return nil, err
 		}
-		if len(data) > maxDocSize {
+		if info.Size() > maxDocSize {
 			return nil, fmt.Errorf("%s: документ больше %d байт", f, maxDocSize)
 		}
+		data, err := r.ReadFile(f)
+		if err != nil {
+			return nil, err
+		}
 		for _, l := range localLinks(string(data)) {
-			target := filepath.Join(root, filepath.Dir(f), l)
-			if _, err := os.Stat(target); err != nil {
+			target := filepath.Join(filepath.Dir(f), l)
+			if _, err := r.Stat(target); err != nil {
 				broken = append(broken, fmt.Sprintf("%s: ссылка на несуществующий файл %q", f, l))
 			}
 		}

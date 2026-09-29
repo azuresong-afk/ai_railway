@@ -38,7 +38,7 @@ help: ## Список целей
 		awk 'BEGIN {FS = ":.*## "}; {printf "  %-16s %s\n", $$1, $$2}'
 
 .PHONY: check
-check: fmt-check vet docs-check test build ## Все проверки перед pull request
+check: fmt-check vet docs-check lint lint-selftest test build ## Все проверки перед pull request
 
 .PHONY: fmt-check
 fmt-check: ## Форматирование Go-кода (gofmt)
@@ -62,6 +62,17 @@ build: ## Сборка бинарников в build/bin
 	@mkdir -p $(BUILD)/bin
 	go build -trimpath -ldflags '$(LDFLAGS)' -o $(BUILD)/bin/ $(addprefix ./cmd/,$(PRODUCT_CMDS) $(DEV_CMDS))
 
+.PHONY: lint
+lint: $(BIN)/golangci-lint ## Линтеры, в том числе depguard (.golangci.yml)
+	$(BIN)/golangci-lint run ./...
+
+.PHONY: lint-selftest
+lint-selftest: $(BIN)/golangci-lint ## Проверка, что запреты линтеров действительно срабатывают
+	go run ./tools/lintcheck -golangci-lint $(BIN)/golangci-lint -config .golangci.yml
+
+$(BIN)/golangci-lint:
+	@echo "Нет $@: выполните make tools (или используйте сборочный образ)"; exit 1
+
 .PHONY: tools
 tools: ## Установить инструменты разработки в bin/ по зафиксированным версиям
 	@mkdir -p $(BIN)
@@ -73,9 +84,7 @@ tools: ## Установить инструменты разработки в bi
 # они падают, а не проходят молча.
 NOT_YET = @echo "$@: не реализовано — задача $(1) плана этапа 0 (docs/plans/stage-0.md)"; exit 1
 
-.PHONY: lint sast fuzz-smoke fuzz-long vuln licenses sbom dm-coverage e2e dev manifest
-lint: ## Линтеры, в том числе depguard
-	$(call NOT_YET,0.4)
+.PHONY: sast fuzz-smoke fuzz-long vuln licenses sbom dm-coverage e2e dev manifest
 sast: ## Статический анализ в SARIF и сверка разметки
 	$(call NOT_YET,0.5)
 fuzz-smoke: ## Короткий прогон всех fuzz-целей

@@ -1,0 +1,110 @@
+# Конфигурация golangci-lint (формат v2). Правила продиктованы CLAUDE.md и ТЗ, 8.3–8.4.
+# Ослаблять правила ради «зелёной» сборки нельзя: ложное срабатывание
+# подавляется точечно — //nolint:<линтер> // <обоснование> — или размечается
+# в docs/cert/sast-triage/. Работу запретов проверяет make lint-selftest.
+version: "2"
+
+run:
+  timeout: 10m
+  tests: true
+  modules-download-mode: vendor
+
+linters:
+  default: none
+  enable:
+    - bodyclose       # незакрытые тела HTTP-ответов
+    - depguard        # запрещённые импорты (криптография, unsafe, math/rand, os/exec, reflect, pprof)
+    - durationcheck   # ошибки умножения time.Duration
+    - errcheck        # непроверенные ошибки
+    - errorlint       # сравнение ошибок без errors.Is/As
+    - forbidigo       # запрещённые вызовы
+    - gosec           # проверки безопасности
+    - govet
+    - ineffassign
+    - nilerr          # возврат nil вместо ошибки
+    - noctx           # исходящие HTTP-запросы без контекста
+    - nolintlint      # каждое //nolint — с линтером и обоснованием
+    - rowserrcheck    # непроверенная ошибка итерации строк SQL
+    - sqlclosecheck   # незакрытые rows и statements
+    - staticcheck
+    - unused
+
+  settings:
+    depguard:
+      rules:
+        crypto:
+          # Криптография — только в internal/crypto (ТЗ, 10.2).
+          list-mode: lax
+          files:
+            - "$all"
+            - "!**/internal/crypto/**"
+          deny:
+            - pkg: "crypto"
+              desc: "криптография только в internal/crypto (ТЗ, 10.2); получите готовый объект из internal/crypto"
+            - pkg: "golang.org/x/crypto"
+              desc: "криптография только в internal/crypto (ТЗ, 10.2)"
+        unsafe-and-rand:
+          # Без unsafe, без math/rand — во всём коде, включая тесты и утилиты.
+          list-mode: lax
+          files:
+            - "$all"
+          deny:
+            - pkg: "unsafe"
+              desc: "unsafe запрещён (CLAUDE.md)"
+            - pkg: "math/rand"
+              desc: "math/rand запрещён; случайность — Random из internal/crypto"
+            - pkg: "net/http/pprof"
+              desc: "pprof открывает лишнюю поверхность атаки"
+        server-exec:
+          # Без os/exec в серверных компонентах и пакетах продукта.
+          list-mode: lax
+          files:
+            - "**/cmd/aisec-gateway/**"
+            - "**/cmd/aisec-server/**"
+            - "**/cmd/aisec-media/**"
+            - "**/internal/**"
+          deny:
+            - pkg: "os/exec"
+              desc: "os/exec запрещён в серверных компонентах (CLAUDE.md)"
+        product-reflect:
+          # Без reflect в коде продукта; исключение — //nolint:depguard с обоснованием.
+          list-mode: lax
+          files:
+            - "**/internal/**"
+            - "!$test"
+          deny:
+            - pkg: "reflect"
+              desc: "reflect в обход типов запрещён (CLAUDE.md)"
+
+    forbidigo:
+      forbid:
+        - pattern: ^print(ln)?$
+          msg: "встроенные print/println запрещены"
+        - pattern: ^fmt\.Print(f|ln)?$
+          msg: "вывод в stdout без явного потока; для логов — log/slog, для вывода утилит — fmt.Fprint(os.Stdout, ...)"
+        - pattern: ^log\.(Print|Fatal|Panic)(f|ln)?$
+          msg: "технические логи — только log/slog в формате JSON (ТЗ, 15)"
+
+    gosec:
+      config:
+        global:
+          audit: true
+
+    nolintlint:
+      allow-unused: false
+      require-explanation: true
+      require-specific: true
+
+  exclusions:
+    generated: strict
+    warn-unused: true
+
+issues:
+  # Показываются все замечания, в том числе несколько на одной строке.
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  uniq-by-line: false
+
+formatters:
+  enable:
+    - gofmt

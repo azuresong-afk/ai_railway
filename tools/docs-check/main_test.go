@@ -42,7 +42,7 @@ func TestCheckTree(t *testing.T) {
 	write := func(p, s string) {
 		t.Helper()
 		full := filepath.Join(root, p)
-		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(full), 0o750); err != nil {
 			t.Fatal(err)
 		}
 		if err := os.WriteFile(full, []byte(s), 0o600); err != nil {
@@ -52,13 +52,15 @@ func TestCheckTree(t *testing.T) {
 	write("README.md", "[ТЗ](docs/SPEC.md), [план](docs/plans/nope.md)")
 	write("docs/SPEC.md", "[адр](adr/0001.md) [назад](../README.md)")
 	write("docs/adr/0001.md", "ok")
+	write("docs/escape.md", "[наружу](../../etc/passwd)")
 
 	broken, err := checkTree(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(broken) != 1 || !strings.Contains(broken[0], "docs/plans/nope.md") {
-		t.Fatalf("ожидалась одна битая ссылка на docs/plans/nope.md, получено %q", broken)
+	joined := strings.Join(broken, "\n")
+	if len(broken) != 2 || !strings.Contains(joined, "docs/plans/nope.md") || !strings.Contains(joined, "../../etc/passwd") {
+		t.Fatalf("ожидались битые ссылки на docs/plans/nope.md и за пределы корня, получено %q", broken)
 	}
 }
 
