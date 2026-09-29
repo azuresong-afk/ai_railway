@@ -9,18 +9,33 @@ SHELL := /bin/bash
 # обязаны быть покрыты тестами.
 STAGE := 0
 
-# Скрытые загрузки запрещены по умолчанию: toolchain должен быть установлен,
-# зависимости берутся только из vendor/ (ТЗ, 8.7). Для разработки на машине
-# без Go 1.27 можно переопределить: GOTOOLCHAIN=go1.27.1 make ...
+# Скрытые загрузки запрещены (ТЗ, 8.7): зависимости — только из vendor/,
+# прокси модулей выключен, toolchain должен быть уже установлен. Переменные
+# окружения эти запреты не снимают (override). Единственная цель, которая
+# ходит в сеть явно, — make tools.
+GO_VERSION := go1.27.1
+override GOFLAGS := -mod=vendor
+override GOPROXY := off
+export GOFLAGS GOPROXY
+# GOTOOLCHAIN: local (Go из сборочного образа) или точная версия уже
+# скачанного toolchain — на машине разработчика без Go 1.27.
 export GOTOOLCHAIN ?= local
-export GOFLAGS ?= -mod=vendor
+ifeq ($(filter local $(GO_VERSION),$(GOTOOLCHAIN)),)
+$(error GOTOOLCHAIN=$(GOTOOLCHAIN) не разрешён: только local или $(GO_VERSION))
+endif
 export CGO_ENABLED ?= 0
+
+# Пути, где cgo разрешён по ADR (через запятую). Пока таких нет.
+CGO_ALLOWED :=
 
 # Версии инструментов разработки (ТЗ, 8.2). Меняются только вместе с
 # docs/cert/components.yaml (scope: build) и сборочным образом.
 GOLANGCI_LINT_VERSION := v2.14.0
 GOVULNCHECK_VERSION   := v1.8.0
 SBOM_UTILITY_VERSION  := v1.0.1
+
+# Прокси модулей только для make tools; контрольные суммы сверяются с sum.golang.org.
+TOOLS_GOPROXY ?= https://proxy.golang.org
 
 BIN   := $(CURDIR)/bin
 BUILD := $(CURDIR)/build
@@ -38,7 +53,13 @@ help: ## Список целей
 		awk 'BEGIN {FS = ":.*## "}; {printf "  %-16s %s\n", $$1, $$2}'
 
 .PHONY: check
-check: fmt-check vet docs-check lint lint-selftest test build ## Все проверки перед pull request
+# Проверки из CLAUDE.md, которые ещё не реализованы. Пока список не пуст,
+# зелёный make check неполный — об этом печатается предупреждение.
+PENDING_CHECKS := sast vuln licenses sbom fuzz-smoke dm-coverage e2e
+
+check: fmt-check vet docs-check repocheck lint lint-selftest test build ## Все проверки перед pull request
+	@if [ -n "$(strip $(PENDING_CHECKS))" ]; then \
+		echo "ВНИМАНИЕ: make check неполный, ещё не реализованы: $(PENDING_CHECKS) (docs/plans/stage-0.md)"; fi
 
 .PHONY: fmt-check
 fmt-check: ## Форматирование Go-кода (gofmt)
@@ -46,8 +67,12 @@ fmt-check: ## Форматирование Go-кода (gofmt)
 	if [ -n "$$out" ]; then echo "Не отформатированы (gofmt -w):"; echo "$$out"; exit 1; fi
 
 .PHONY: vet
-vet: ## go vet
-	go vet ./...
+vet: ## go vet (с cgo, чтобы проверялись и файлы с import "C")
+	CGO_ENABLED=1 go vet ./...
+
+.PHONY: repocheck
+repocheck: ## Структурные правила: один internal/crypto, cgo только по ADR
+	go run ./tools/repocheck -root . -cgo-allowed '$(CGO_ALLOWED)'
 
 .PHONY: docs-check
 docs-check: ## Относительные ссылки в документах ведут на существующие файлы
@@ -63,11 +88,17 @@ build: ## Сборка бинарников в build/bin
 	go build -trimpath -ldflags '$(LDFLAGS)' -o $(BUILD)/bin/ $(addprefix ./cmd/,$(PRODUCT_CMDS) $(DEV_CMDS))
 
 .PHONY: lint
-lint: $(BIN)/golangci-lint ## Линтеры, в том числе depguard (.golangci.yml)
-	$(BIN)/golangci-lint run ./...
+lint: lint-version ## Линтеры, в том числе depguard (.golangci.yml); с cgo, чтобы проверялись все файлы
+	CGO_ENABLED=1 $(BIN)/golangci-lint run ./...
+
+.PHONY: lint-version
+lint-version: $(BIN)/golangci-lint
+	@v="$$($(BIN)/golangci-lint version 2>&1)"; \
+	case "$$v" in *"version $(GOLANGCI_LINT_VERSION:v%=%) "*) ;; \
+	*) echo "bin/golangci-lint не той версии (нужна $(GOLANGCI_LINT_VERSION)): $$v; выполните make tools"; exit 1;; esac
 
 .PHONY: lint-selftest
-lint-selftest: $(BIN)/golangci-lint ## Проверка, что запреты линтеров действительно срабатывают
+lint-selftest: lint-version ## Проверка, что запреты линтеров действительно срабатывают
 	go run ./tools/lintcheck -golangci-lint $(BIN)/golangci-lint -config .golangci.yml
 
 $(BIN)/golangci-lint:
@@ -76,9 +107,9 @@ $(BIN)/golangci-lint:
 .PHONY: tools
 tools: ## Установить инструменты разработки в bin/ по зафиксированным версиям
 	@mkdir -p $(BIN)
-	GOFLAGS=-mod=mod GOBIN=$(BIN) go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
-	GOFLAGS=-mod=mod GOBIN=$(BIN) go install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
-	GOFLAGS=-mod=mod GOBIN=$(BIN) go install github.com/CycloneDX/sbom-utility@$(SBOM_UTILITY_VERSION)
+	GOFLAGS=-mod=mod GOPROXY=$(TOOLS_GOPROXY) GOBIN=$(BIN) go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
+	GOFLAGS=-mod=mod GOPROXY=$(TOOLS_GOPROXY) GOBIN=$(BIN) go install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
+	GOFLAGS=-mod=mod GOPROXY=$(TOOLS_GOPROXY) GOBIN=$(BIN) go install github.com/CycloneDX/sbom-utility@$(SBOM_UTILITY_VERSION)
 
 # Цели, которые появляются в следующих задачах плана этапа 0. До реализации
 # они падают, а не проходят молча.

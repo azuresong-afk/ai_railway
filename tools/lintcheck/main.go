@@ -92,11 +92,12 @@ func run(lint, config, sample string) ([]string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 	//nolint:gosec // G204: путь к линтеру и конфигурации задаёт разработчик флагами утилиты, это не внешний ввод
-	cmd := exec.CommandContext(ctx, lint, "run", "--config", config, "--path-mode", "abs",
+	cmd := exec.CommandContext(ctx, lint, "run", "--config", config, "--path-mode", "abs", "--modules-download-mode", "readonly",
 		"--output.json.path", "stdout", "--output.text.path", "stderr", "--show-stats=false", "./...")
 	cmd.Dir = sample
-	// Образец не имеет зависимостей и каталога vendor.
-	cmd.Env = append(os.Environ(), "GOFLAGS=-mod=mod")
+	// Образец собирается только из своих файлов: без сети и без правки go.mod.
+	// CGO_ENABLED=1 — чтобы линтеры видели и файлы с cgo.
+	cmd.Env = append(os.Environ(), "GOFLAGS=-mod=readonly", "GOPROXY=off", "CGO_ENABLED=1")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

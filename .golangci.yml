@@ -55,6 +55,8 @@ linters:
               desc: "math/rand запрещён; случайность — Random из internal/crypto"
             - pkg: "net/http/pprof"
               desc: "pprof открывает лишнюю поверхность атаки"
+            - pkg: "plugin"
+              desc: "загрузка кода во время работы запрещена: обходит контроль целостности"
         server-exec:
           # Без os/exec в серверных компонентах и пакетах продукта.
           list-mode: lax
@@ -66,10 +68,15 @@ linters:
           deny:
             - pkg: "os/exec"
               desc: "os/exec запрещён в серверных компонентах (CLAUDE.md)"
+            - pkg: "syscall"
+              desc: "прямые системные вызовы — только по ADR (например, изоляция aisec-media) с //nolint:depguard и обоснованием"
         product-reflect:
           # Без reflect в коде продукта; исключение — //nolint:depguard с обоснованием.
           list-mode: lax
           files:
+            - "**/cmd/aisec-gateway/**"
+            - "**/cmd/aisec-server/**"
+            - "**/cmd/aisec-media/**"
             - "**/internal/**"
             - "!$test"
           deny:
@@ -77,13 +84,23 @@ linters:
               desc: "reflect в обход типов запрещён (CLAUDE.md)"
 
     forbidigo:
+      # Сравнение по типам: псевдоним импорта (import f "fmt") не обходит запрет.
+      analyze-types: true
       forbid:
         - pattern: ^print(ln)?$
           msg: "встроенные print/println запрещены"
         - pattern: ^fmt\.Print(f|ln)?$
+          pkg: "^fmt$"
           msg: "вывод в stdout без явного потока; для логов — log/slog, для вывода утилит — fmt.Fprint(os.Stdout, ...)"
         - pattern: ^log\.(Print|Fatal|Panic)(f|ln)?$
+          pkg: "^log$"
           msg: "технические логи — только log/slog в формате JSON (ТЗ, 15)"
+        - pattern: ^os\.StartProcess$
+          pkg: "^os$"
+          msg: "запуск процессов в обход запрета os/exec"
+        - pattern: ^syscall\.(Exec|ForkExec|StartProcess)$
+          pkg: "^syscall$"
+          msg: "запуск процессов в обход запрета os/exec"
 
     gosec:
       config:

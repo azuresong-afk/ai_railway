@@ -19,17 +19,20 @@
 
 | Правило | Как проверяется |
 |---|---|
-| Криптография только в `internal/crypto` (`crypto/*`, `golang.org/x/crypto/*`) | depguard, правило `crypto`; действует и в тестах, и в `tools/` |
-| Без `unsafe`, `math/rand` (в том числе `math/rand/v2`), `net/http/pprof` | depguard, правило `unsafe-and-rand`; во всём коде |
-| Без `os/exec` в серверных компонентах | depguard, правило `server-exec`: `cmd/aisec-gateway`, `cmd/aisec-server`, `cmd/aisec-media`, `internal/` |
-| Без `reflect` в обход типов | depguard, правило `product-reflect`: `internal/` кроме тестов; исключение — `//nolint:depguard` с обоснованием |
-| Технические логи только через `log/slog`; без `print`, `fmt.Print*`, `log.Print*` | forbidigo |
+| Криптография только в `internal/crypto` (`crypto/*`, `golang.org/x/crypto/*`) | depguard, правило `crypto`; действует и в тестах, и в `tools/`. Каталог `internal/crypto` в модуле ровно один — `./internal/crypto` (`make repocheck`), иначе вложенный `…/internal/crypto` снял бы запрет |
+| Без `unsafe`, `math/rand` (в том числе `math/rand/v2`), `net/http/pprof`, `plugin` | depguard, правило `unsafe-and-rand`; во всём коде |
+| Без `os/exec` в серверных компонентах | depguard, правило `server-exec`: `cmd/aisec-gateway`, `cmd/aisec-server`, `cmd/aisec-media`, `internal/`; там же запрещён `syscall` (исключение — по ADR с `//nolint:depguard`). Обходы через `os.StartProcess` и `syscall.Exec`/`ForkExec`/`StartProcess` ловит forbidigo во всём коде |
+| Без `reflect` в обход типов | depguard, правило `product-reflect`: `cmd/aisec-gateway`, `cmd/aisec-server`, `cmd/aisec-media`, `internal/` кроме тестов; исключение — `//nolint:depguard` с обоснованием |
+| cgo — только по ADR | `make repocheck`: файлы с `import "C"` разрешены только в путях из `CGO_ALLOWED` в `Makefile` (сейчас пусто). `make lint` и `make vet` идут с `CGO_ENABLED=1`, чтобы линтеры видели и файлы с cgo |
+| Технические логи только через `log/slog`; без `print`, `fmt.Print*`, `log.Print*` | forbidigo с анализом типов: псевдоним импорта (`import f "fmt"`) запрет не обходит |
 | Исходящие HTTP-запросы с контекстом | noctx |
 | Ошибки проверяются | errcheck, errorlint, nilerr, gosec G104 |
 | Закрытие тел ответов, строк и выражений SQL | bodyclose, rowserrcheck, sqlclosecheck |
 | Проверки безопасности | gosec в режиме аудита |
 | Каждое подавление — с линтером и обоснованием | nolintlint (`require-specific`, `require-explanation`) |
 | Форматирование | gofmt (`make fmt-check` и форматтер в golangci-lint) |
+
+Самопроверка сверяет только размеченные строки: неразмеченные замечания в образце не считаются ошибкой. Образец собирается без сети (`GOPROXY=off`, `-mod=readonly`), а `golang.org/x/crypto` в нём подменён локальной заглушкой.
 
 Замечания не схлопываются по строке (`uniq-by-line: false`): иначе одно замечание скрывает другое на той же строке — это было обнаружено самопроверкой.
 
