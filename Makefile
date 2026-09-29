@@ -55,9 +55,9 @@ help: ## Список целей
 .PHONY: check
 # Проверки из CLAUDE.md, которые ещё не реализованы. Пока список не пуст,
 # зелёный make check неполный — об этом печатается предупреждение.
-PENDING_CHECKS := sast vuln licenses sbom fuzz-smoke dm-coverage e2e
+PENDING_CHECKS := sast licenses sbom dm-coverage e2e
 
-check: fmt-check vet docs-check repocheck lint lint-selftest test build ## Все проверки перед pull request
+check: fmt-check vet docs-check repocheck lint lint-selftest test build fuzz-smoke vuln ## Все проверки перед pull request
 	@if [ -n "$(strip $(PENDING_CHECKS))" ]; then \
 		echo "ВНИМАНИЕ: make check неполный, ещё не реализованы: $(PENDING_CHECKS) (docs/plans/stage-0.md)"; fi
 
@@ -104,6 +104,30 @@ lint-selftest: lint-version ## Проверка, что запреты линт�
 $(BIN)/golangci-lint:
 	@echo "Нет $@: выполните make tools (или используйте сборочный образ)"; exit 1
 
+# Время на одну fuzz-цель: короткий прогон — на каждый pull request,
+# длительный — ночью (ТЗ, 8.5).
+FUZZTIME      ?= 10s
+FUZZTIME_LONG ?= 10m
+
+.PHONY: fuzz-smoke
+fuzz-smoke: ## Короткий прогон всех fuzz-целей (FUZZTIME на цель)
+	tools/scripts/fuzz.sh $(FUZZTIME)
+
+.PHONY: fuzz-long
+fuzz-long: ## Длительный прогон всех fuzz-целей (ночной, FUZZTIME_LONG на цель)
+	tools/scripts/fuzz.sh $(FUZZTIME_LONG)
+
+# База уязвимостей Go. В закрытом контуре — локальный снимок:
+# make vuln GOVULNDB=file:///opt/govulndb (ADR-0003).
+GOVULNDB ?= https://vuln.go.dev
+
+.PHONY: vuln
+vuln: $(BIN)/govulncheck ## Уязвимости зависимостей (govulncheck, база GOVULNDB)
+	$(BIN)/govulncheck -db '$(GOVULNDB)' ./...
+
+$(BIN)/govulncheck:
+	@echo "Нет $@: выполните make tools (или используйте сборочный образ)"; exit 1
+
 .PHONY: tools
 tools: ## Установить инструменты разработки в bin/ по зафиксированным версиям
 	@mkdir -p $(BIN)
@@ -115,15 +139,9 @@ tools: ## Установить инструменты разработки в bi
 # они падают, а не проходят молча.
 NOT_YET = @echo "$@: не реализовано — задача $(1) плана этапа 0 (docs/plans/stage-0.md)"; exit 1
 
-.PHONY: sast fuzz-smoke fuzz-long vuln licenses sbom dm-coverage e2e dev manifest
+.PHONY: sast licenses sbom dm-coverage e2e dev manifest
 sast: ## Статический анализ в SARIF и сверка разметки
 	$(call NOT_YET,0.5)
-fuzz-smoke: ## Короткий прогон всех fuzz-целей
-	$(call NOT_YET,0.6)
-fuzz-long: ## Длительный прогон fuzz-целей (ночной)
-	$(call NOT_YET,0.6)
-vuln: ## Уязвимости зависимостей (govulncheck)
-	$(call NOT_YET,0.6)
 licenses: ## Лицензии и реестр компонентов
 	$(call NOT_YET,0.7)
 sbom: ## SBOM CycloneDX с проверкой формата
