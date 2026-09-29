@@ -163,6 +163,10 @@ dev: ## Стенд разработки в docker compose
 manifest: ## Манифест целостности (ОЦЛ.1)
 	@echo "manifest: манифест целостности появляется на этапе 2 (ТЗ, ОЦЛ.1)"; exit 1
 
+.PHONY: devcerts
+devcerts: ## Сертификаты стенда разработки в .dev-keys/ (УЦ и сервер; ключ УЦ не сохраняется)
+	go run ./tools/devcerts -out .dev-keys -force
+
 .PHONY: clean
 clean: ## Удалить результаты сборки
 	rm -rf $(BUILD)
