@@ -37,7 +37,7 @@
 |---|---|---|---|---|
 | 0.1 | Каркас репозитория и Go-модуля | 0,5 | — | готова |
 | 0.2 | Скелеты документов раздела 9, ADR-0001 и ADR-0002 | 1 | 0.1 | готова |
-| 0.3 | Makefile и каркас `make check` | 0,5 | 0.1 | не начата |
+| 0.3 | Makefile и каркас `make check` | 0,5 | 0.1 | готова |
 | 0.4 | Линтеры и depguard с самопроверкой правил | 1 | 0.3, Д1 | не начата |
 | 0.5 | SAST: SARIF и сверка разметки | 0,5 | 0.4, 0.7 (YAML) | не начата |
 | 0.6 | govulncheck, fuzz-smoke, ADR-0003 | 1 | 0.3 | не начата |
@@ -86,7 +86,7 @@
 **Файлы.** `Makefile`, `tools/scripts/*.sh` (при необходимости).
 **Проверки.** `make test`, `make build`; `make check` проходит в объёме уже сделанного.
 **Документы (раздел 9).** `build-env.md` — раздел «Цели Makefile».
-**Статус.** не начата.
+**Статус.** готова. Цели из ТЗ 11.4 заведены; `make check` = `fmt-check`, `vet`, `docs-check`, `test`, `build` — зелёный (с `GOTOOLCHAIN=go1.27.1` в окружении без Go 1.27). Нереализованные цели падают со ссылкой на задачу. Добавлена утилита `tools/docs-check` с fuzz-тестом.
 
 ## 0.4 Линтеры и depguard с самопроверкой правил — 1 день
 **Результат.** `.golangci.yml` (формат v2): `gosec`, `depguard`, `errcheck`, `staticcheck`, `govet`, `ineffassign`, `unused`, `bodyclose`, `noctx`, `sqlclosecheck`, `rowserrcheck`, `errorlint`, `forbidigo`, `nolintlint` (каждое `//nolint` — с указанием линтера и обоснованием).
