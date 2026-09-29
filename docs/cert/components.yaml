@@ -1,3 +1,98 @@
-# Реестр заимствованных компонентов (ТЗ, 8.6, раздел 9).
-# Схема и проверка — задача 0.7 плана этапа 0 (tools/license-check).
-components: []
+# Реестр заимствованных компонентов (ТЗ, 8.6, раздел 9; CLAUDE.md, «Зависимости»).
+#
+# Каждый компонент, который попадает в продукт или используется в сборочной
+# среде, записан здесь. Проверка — make licenses (tools/license-check):
+# состав сверяется с vendor/modules.txt, go.mod и Makefile, лицензии —
+# с политикой CLAUDE.md. Данные идут в SBOM (make sbom): туда попадают только
+# компоненты с scope: product.
+#
+# Поля:
+#   name, version        — имя и точная версия.
+#   type                 — go-module | toolchain | tool | image | github-action.
+#   scope                — product (в поставке, в SBOM) | build (только сборочная среда, ADR-0003).
+#   purpose              — зачем нужен.
+#   license              — выражение SPDX (AND, OR, скобки).
+#   license_decision     — ссылка на решение, если лицензия допускается только отдельным решением
+#                          (MPL-2.0, LGPL; GPL — только для scope: build).
+#   repository           — ссылка https на исходный код.
+#   attack_surface       — обрабатывает ли компонент недоверенные данные (GOST:attack_surface).
+#   security_function    — реализует ли функцию безопасности (GOST:security_function).
+#   provided_by          — кто поставляет компонент (GOST:provided_by).
+#   justification        — почему не хватает стандартной библиотеки или собственного кода.
+#   decision, decided    — где принято решение и когда (ГГГГ-ММ-ДД).
+#   makefile_var         — переменная Makefile с версией (для инструментов); сверяется.
+schema_version: 1
+components:
+  - name: Go toolchain и стандартная библиотека
+    version: go1.27.1
+    type: toolchain
+    scope: product
+    purpose: Компилятор и стандартная библиотека; стандартная библиотека входит во все бинарники продукта (HTTP, TLS, JSON, криптография в internal/crypto).
+    license: BSD-3-Clause
+    repository: https://go.googlesource.com/go
+    attack_surface: true
+    security_function: true
+    provided_by: The Go Authors (Google LLC)
+    justification: Язык реализации продукта (ТЗ, 11.1).
+    decision: ТЗ 11.1; ADR-0001
+    decided: 2026-09-29
+
+  - name: go.yaml.in/yaml/v3
+    version: v3.0.5
+    type: go-module
+    scope: product
+    purpose: Разбор YAML — реестр компонентов и разметка SAST в утилитах; с этапа 1 — политики и конфигурация.
+    license: MIT AND Apache-2.0
+    repository: https://github.com/yaml/go-yaml
+    attack_surface: true
+    security_function: false
+    provided_by: YAML Organization (github.com/yaml)
+    justification: В стандартной библиотеке нет YAML, а формат задан ТЗ (components.yaml, импорт и экспорт политик, 5.3). Продолжение gopkg.in/yaml.v3, который с апреля 2025 г. не сопровождается. Собственных зависимостей нет.
+    decision: ТЗ 11.2; ADR-0001; план этапа 0, Д2
+    decided: 2026-09-29
+
+  - name: golangci-lint
+    version: v2.14.0
+    type: tool
+    scope: build
+    purpose: Линтеры Go, в том числе depguard, gosec, staticcheck, errcheck; SARIF для статического анализа.
+    license: GPL-3.0-only
+    license_decision: ADR-0003 — инструмент сборочной среды, не линкуется в продукт и не поставляется (план этапа 0, Д1)
+    repository: https://github.com/golangci/golangci-lint
+    attack_surface: false
+    security_function: false
+    provided_by: golangci (сообщество)
+    justification: В go vet нет запрета импортов, проверок безопасности и большинства проверок качества (ТЗ, 8.4).
+    decision: план этапа 0, Д1; ADR-0003
+    decided: 2026-09-29
+    makefile_var: GOLANGCI_LINT_VERSION
+
+  - name: govulncheck (golang.org/x/vuln)
+    version: v1.8.0
+    type: tool
+    scope: build
+    purpose: Поиск известных уязвимостей в зависимостях и стандартной библиотеке (ТЗ, 8.6).
+    license: BSD-3-Clause
+    repository: https://go.googlesource.com/vuln
+    attack_surface: false
+    security_function: false
+    provided_by: The Go Authors (Google LLC)
+    justification: Официальный инструмент Go; иначе понадобилась бы собственная сверка с базой уязвимостей.
+    decision: ТЗ 8.4; план этапа 0
+    decided: 2026-09-29
+    makefile_var: GOVULNCHECK_VERSION
+
+  - name: sbom-utility
+    version: v1.0.1
+    type: tool
+    scope: build
+    purpose: Проверка SBOM по схеме CycloneDX 1.6 (критерий приёмки этапа 0).
+    license: Apache-2.0
+    repository: https://github.com/CycloneDX/sbom-utility
+    attack_surface: false
+    security_function: false
+    provided_by: CycloneDX (OWASP Foundation)
+    justification: В стандартной библиотеке нет проверки по JSON Schema.
+    decision: план этапа 0, Д3
+    decided: 2026-09-29
+    makefile_var: SBOM_UTILITY_VERSION

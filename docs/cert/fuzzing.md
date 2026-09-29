@@ -14,6 +14,9 @@
 | `FuzzLocalLinks` | `tools/docs-check` | Разбор ссылок в markdown | 0.3 |
 | `FuzzParseReport` | `tools/lintcheck` | Разбор JSON-отчёта линтера | 0.4 |
 | `FuzzParseMarkers` | `tools/lintcheck` | Разбор маркеров самопроверки | 0.4 |
+| `FuzzParse` | `tools/internal/components` | Разбор реестра `components.yaml` со строгой схемой | 0.7 |
+| `FuzzParseModulesTxt` | `tools/internal/components` | Разбор `vendor/modules.txt` | 0.7 |
+| `FuzzEvalExpression` | `tools/internal/components` | Разбор выражений лицензий SPDX; выражение из разрешённых лицензий всегда разрешено | 0.7 |
 
 ## Кампании и результаты
 Заполняется в задаче 0.16 плана этапа 0.

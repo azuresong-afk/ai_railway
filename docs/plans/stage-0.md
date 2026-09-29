@@ -41,7 +41,7 @@
 | 0.4 | Линтеры и depguard с самопроверкой правил | 1 | 0.3, Д1 | готова |
 | 0.5 | SAST: SARIF и сверка разметки | 0,5 | 0.4, 0.7 (YAML) | не начата |
 | 0.6 | govulncheck, fuzz-smoke, ADR-0003 | 1 | 0.3 | готова |
-| 0.7 | `components.yaml` и проверка лицензий | 1 | 0.3, Д2 | не начата |
+| 0.7 | `components.yaml` и проверка лицензий | 1 | 0.3, Д2 | готова |
 | 0.8 | SBOM CycloneDX с обогащением и проверкой формата | 1 | 0.7, 0.10, Д3 | не начата |
 | 0.9 | Утилита отчёта о покрытии матрицы 5.16 | 1 | 0.3 | не начата |
 | 0.10 | `internal/crypto`: каркас профилей, TLS, PKI для разработки | 1 | 0.4 | не начата |
@@ -134,7 +134,7 @@
 **Проверки.** Модульные тесты на каждое правило (позитивные и негативные). Fuzz-тесты разборщиков `modules.txt` и `components.yaml`.
 **Документы (раздел 9).** `components.yaml`, `build-env.md`.
 **Зависит от.** Д2 (YAML-библиотека).
-**Статус.** не начата.
+**Статус.** готова. `docs/cert/components.yaml` (схема v1: Go toolchain, `go.yaml.in/yaml/v3`, три инструмента с `scope: build`), `tools/license-check`, общий пакет `tools/internal/components` (реестр, `modules.txt`, выражения SPDX). `go.yaml.in/yaml/v3 v3.0.5` добавлен и завендорен. Три новые fuzz-цели. `make licenses` входит в `make check`.
 
 ## 0.8 SBOM CycloneDX с обогащением и проверкой формата — 1 день
 **Результат.** SHA-256 считается через `Hasher` из `internal/crypto` (Р9). `tools/sbom` строит `build/sbom/aisec.cdx.json` (CycloneDX 1.6) из собранных бинарников (`debug/buildinfo`, Р6) и `components.yaml`: `purl`, версия, лицензия, хеш модуля (`h1:` из `go.sum` — SHA-256 по дереву файлов модуля) и SHA-256 бинарника, ссылка на репозиторий, граф зависимостей, свойства `GOST:attack_surface`, `GOST:security_function`, `GOST:provided_by`. Проверка формата: `sbom-utility validate` по схеме CycloneDX 1.6 (Д3) и собственная проверка — у каждого компонента есть свойства GOST и лицензия. Образы контейнеров в SBOM — на этапе 3, когда появится поставка в docker compose.

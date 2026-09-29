@@ -55,9 +55,9 @@ help: ## Список целей
 .PHONY: check
 # Проверки из CLAUDE.md, которые ещё не реализованы. Пока список не пуст,
 # зелёный make check неполный — об этом печатается предупреждение.
-PENDING_CHECKS := sast licenses sbom dm-coverage e2e
+PENDING_CHECKS := sast sbom dm-coverage e2e
 
-check: fmt-check vet docs-check repocheck lint lint-selftest test build fuzz-smoke vuln ## Все проверки перед pull request
+check: fmt-check vet docs-check repocheck licenses lint lint-selftest test build fuzz-smoke vuln ## Все проверки перед pull request
 	@if [ -n "$(strip $(PENDING_CHECKS))" ]; then \
 		echo "ВНИМАНИЕ: make check неполный, ещё не реализованы: $(PENDING_CHECKS) (docs/plans/stage-0.md)"; fi
 
@@ -69,6 +69,10 @@ fmt-check: ## Форматирование Go-кода (gofmt)
 .PHONY: vet
 vet: ## go vet (с cgo, чтобы проверялись и файлы с import "C")
 	CGO_ENABLED=1 go vet ./...
+
+.PHONY: licenses
+licenses: ## Реестр компонентов и лицензии: docs/cert/components.yaml против vendor/, go.mod, Makefile
+	go run ./tools/license-check -root .
 
 .PHONY: repocheck
 repocheck: ## Структурные правила: один internal/crypto, cgo только по ADR
@@ -139,11 +143,9 @@ tools: ## Установить инструменты разработки в bi
 # они падают, а не проходят молча.
 NOT_YET = @echo "$@: не реализовано — задача $(1) плана этапа 0 (docs/plans/stage-0.md)"; exit 1
 
-.PHONY: sast licenses sbom dm-coverage e2e dev manifest
+.PHONY: sast sbom dm-coverage e2e dev manifest
 sast: ## Статический анализ в SARIF и сверка разметки
 	$(call NOT_YET,0.5)
-licenses: ## Лицензии и реестр компонентов
-	$(call NOT_YET,0.7)
 sbom: ## SBOM CycloneDX с проверкой формата
 	$(call NOT_YET,0.8)
 dm-coverage: ## Отчёт о покрытии матрицы обнаружения 5.16
