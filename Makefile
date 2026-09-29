@@ -55,9 +55,9 @@ help: ## Список целей
 .PHONY: check
 # Проверки из CLAUDE.md, которые ещё не реализованы. Пока список не пуст,
 # зелёный make check неполный — об этом печатается предупреждение.
-PENDING_CHECKS := sast sbom dm-coverage e2e
+PENDING_CHECKS := sbom dm-coverage e2e
 
-check: fmt-check vet docs-check repocheck licenses lint lint-selftest test build fuzz-smoke vuln ## Все проверки перед pull request
+check: fmt-check vet docs-check repocheck licenses lint lint-selftest sast test build fuzz-smoke vuln ## Все проверки перед pull request
 	@if [ -n "$(strip $(PENDING_CHECKS))" ]; then \
 		echo "ВНИМАНИЕ: make check неполный, ещё не реализованы: $(PENDING_CHECKS) (docs/plans/stage-0.md)"; fi
 
@@ -94,6 +94,14 @@ build: ## Сборка бинарников в build/bin
 .PHONY: lint
 lint: lint-version ## Линтеры, в том числе depguard (.golangci.yml); с cgo, чтобы проверялись все файлы
 	CGO_ENABLED=1 $(BIN)/golangci-lint run ./...
+
+.PHONY: sast
+sast: lint-version ## Статический анализ (gosec) в SARIF и сверка с разметкой docs/cert/sast-triage/
+	@mkdir -p $(BUILD)/sast
+	CGO_ENABLED=1 $(BIN)/golangci-lint run --enable-only gosec --issues-exit-code 0 \
+		--output.sarif.path $(BUILD)/sast/gosec.sarif --output.text.path stderr --show-stats=false ./...
+	go run ./tools/sast-triage -root . -sarif build/sast/gosec.sarif \
+		-triage docs/cert/sast-triage/triage.yaml -suppressed build/sast/suppressed.md
 
 .PHONY: lint-version
 lint-version: $(BIN)/golangci-lint
@@ -143,9 +151,7 @@ tools: ## Установить инструменты разработки в bi
 # они падают, а не проходят молча.
 NOT_YET = @echo "$@: не реализовано — задача $(1) плана этапа 0 (docs/plans/stage-0.md)"; exit 1
 
-.PHONY: sast sbom dm-coverage e2e dev manifest
-sast: ## Статический анализ в SARIF и сверка разметки
-	$(call NOT_YET,0.5)
+.PHONY: sbom dm-coverage e2e dev manifest
 sbom: ## SBOM CycloneDX с проверкой формата
 	$(call NOT_YET,0.8)
 dm-coverage: ## Отчёт о покрытии матрицы обнаружения 5.16

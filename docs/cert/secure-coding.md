@@ -30,6 +30,7 @@
 | Закрытие тел ответов, строк и выражений SQL | bodyclose, rowserrcheck, sqlclosecheck |
 | Проверки безопасности | gosec в режиме аудита |
 | Каждое подавление — с линтером и обоснованием | nolintlint (`require-specific`, `require-explanation`) |
+| Срабатывания SAST размечены | `make sast`: gosec в SARIF, сверка с `docs/cert/sast-triage/triage.yaml`, перечень подавлений `//nolint:gosec` (формат — `docs/cert/sast-triage/README.md`) |
 | Форматирование | gofmt (`make fmt-check` и форматтер в golangci-lint) |
 
 Самопроверка сверяет только размеченные строки: неразмеченные замечания в образце не считаются ошибкой. Образец собирается без сети (`GOPROXY=off`, `-mod=readonly`), а `golang.org/x/crypto` в нём подменён локальной заглушкой.

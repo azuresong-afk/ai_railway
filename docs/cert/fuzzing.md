@@ -16,6 +16,8 @@
 | `FuzzParseMarkers` | `tools/lintcheck` | Разбор маркеров самопроверки | 0.4 |
 | `FuzzParse` | `tools/internal/components` | Разбор реестра `components.yaml` со строгой схемой | 0.7 |
 | `FuzzParseModulesTxt` | `tools/internal/components` | Разбор `vendor/modules.txt` | 0.7 |
+| `FuzzParseSARIF` | `tools/sast-triage` | Разбор отчёта SARIF 2.1.0 | 0.5 |
+| `FuzzParseTriage` | `tools/sast-triage` | Разбор файла разметки SAST | 0.5 |
 | `FuzzEvalExpression` | `tools/internal/components` | Разбор выражений лицензий SPDX; выражение из разрешённых лицензий всегда разрешено | 0.7 |
 
 ## Кампании и результаты
