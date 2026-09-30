@@ -23,6 +23,8 @@
 | `FuzzParseGoTestJSON` | `tools/dm-coverage` | Разбор отчёта `go test -json` | 0.9 |
 | `FuzzParseJUnit` | `tools/dm-coverage` | Разбор отчёта JUnit XML | 0.9 |
 | `FuzzParseCovers` | `tools/dm-coverage` | Разбор маркеров «Покрывает:» | 0.9 |
+| `FuzzParseChatRequest` | `internal/mockllm` | Разбор запроса chat/completions (строка или массив частей в `content`) | 0.11 |
+| `FuzzChatCompletionsHandler` | `internal/mockllm` | Обработчик входящих HTTP-запросов mock-llm: любой ответ-ошибка — JSON в формате OpenAI | 0.11 |
 | `FuzzEvalExpression` | `tools/internal/components` | Разбор выражений лицензий SPDX; выражение из разрешённых лицензий всегда разрешено | 0.7 |
 
 ## Кампании и результаты
