@@ -45,6 +45,8 @@ PRODUCT_CMDS := aisec-gateway aisec-server aisec-cli aisec-media
 DEV_CMDS     := mock-llm
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+# Время последнего коммита — для воспроизводимых артефактов (SBOM, фронтенд).
+SOURCE_DATE ?= $(shell git log -1 --format=%cI 2>/dev/null || echo 1970-01-01T00:00:00Z)
 LDFLAGS := -s -w -buildid= -X main.version=$(VERSION)
 
 .PHONY: help
@@ -55,9 +57,9 @@ help: ## Список целей
 .PHONY: check
 # Проверки из CLAUDE.md, которые ещё не реализованы. Пока список не пуст,
 # зелёный make check неполный — об этом печатается предупреждение.
-PENDING_CHECKS := sbom dm-coverage e2e
+PENDING_CHECKS := dm-coverage e2e
 
-check: fmt-check vet docs-check repocheck licenses lint lint-selftest sast test build fuzz-smoke vuln ## Все проверки перед pull request
+check: fmt-check vet docs-check repocheck licenses lint lint-selftest sast test build sbom fuzz-smoke vuln ## Все проверки перед pull request
 	@if [ -n "$(strip $(PENDING_CHECKS))" ]; then \
 		echo "ВНИМАНИЕ: make check неполный, ещё не реализованы: $(PENDING_CHECKS) (docs/plans/stage-0.md)"; fi
 
@@ -69,6 +71,16 @@ fmt-check: ## Форматирование Go-кода (gofmt)
 .PHONY: vet
 vet: ## go vet (с cgo, чтобы проверялись и файлы с import "C")
 	CGO_ENABLED=1 go vet ./...
+
+.PHONY: sbom
+sbom: build $(BIN)/sbom-utility ## SBOM продукта (CycloneDX 1.6) из собранных бинарников и проверка формата
+	go run ./tools/sbom -registry docs/cert/components.yaml -out $(BUILD)/sbom/aisec.cdx.json \
+		-version '$(VERSION)' -timestamp '$(SOURCE_DATE)' $(addprefix $(BUILD)/bin/,$(PRODUCT_CMDS))
+	$(BIN)/sbom-utility validate --quiet --input-file $(BUILD)/sbom/aisec.cdx.json
+	go run ./tools/sbom -check $(BUILD)/sbom/aisec.cdx.json
+
+$(BIN)/sbom-utility:
+	@echo "Нет $@: выполните make tools (или используйте сборочный образ)"; exit 1
 
 .PHONY: licenses
 licenses: ## Реестр компонентов и лицензии: docs/cert/components.yaml против vendor/, go.mod, Makefile
@@ -151,9 +163,7 @@ tools: ## Установить инструменты разработки в bi
 # они падают, а не проходят молча.
 NOT_YET = @echo "$@: не реализовано — задача $(1) плана этапа 0 (docs/plans/stage-0.md)"; exit 1
 
-.PHONY: sbom dm-coverage e2e dev manifest
-sbom: ## SBOM CycloneDX с проверкой формата
-	$(call NOT_YET,0.8)
+.PHONY: dm-coverage e2e dev manifest
 dm-coverage: ## Отчёт о покрытии матрицы обнаружения 5.16
 	$(call NOT_YET,0.9)
 e2e: ## Сквозные тесты: шлюз и mock-llm

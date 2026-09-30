@@ -18,6 +18,7 @@
 | `FuzzParseModulesTxt` | `tools/internal/components` | Разбор `vendor/modules.txt` | 0.7 |
 | `FuzzParseSARIF` | `tools/sast-triage` | Разбор отчёта SARIF 2.1.0 | 0.5 |
 | `FuzzParseTriage` | `tools/sast-triage` | Разбор файла разметки SAST | 0.5 |
+| `FuzzParseBOM` | `tools/sbom` | Разбор SBOM CycloneDX и проверка обязательных полей | 0.8 |
 | `FuzzEvalExpression` | `tools/internal/components` | Разбор выражений лицензий SPDX; выражение из разрешённых лицензий всегда разрешено | 0.7 |
 
 ## Кампании и результаты
