@@ -19,6 +19,10 @@
 | `FuzzParseSARIF` | `tools/sast-triage` | Разбор отчёта SARIF 2.1.0 | 0.5 |
 | `FuzzParseTriage` | `tools/sast-triage` | Разбор файла разметки SAST | 0.5 |
 | `FuzzParseBOM` | `tools/sbom` | Разбор SBOM CycloneDX и проверка обязательных полей | 0.8 |
+| `FuzzParseMatrix` | `tools/dm-coverage` | Разбор матрицы 5.16 из ТЗ | 0.9 |
+| `FuzzParseGoTestJSON` | `tools/dm-coverage` | Разбор отчёта `go test -json` | 0.9 |
+| `FuzzParseJUnit` | `tools/dm-coverage` | Разбор отчёта JUnit XML | 0.9 |
+| `FuzzParseCovers` | `tools/dm-coverage` | Разбор маркеров «Покрывает:» | 0.9 |
 | `FuzzEvalExpression` | `tools/internal/components` | Разбор выражений лицензий SPDX; выражение из разрешённых лицензий всегда разрешено | 0.7 |
 
 ## Кампании и результаты

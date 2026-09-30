@@ -57,9 +57,9 @@ help: ## Список целей
 .PHONY: check
 # Проверки из CLAUDE.md, которые ещё не реализованы. Пока список не пуст,
 # зелёный make check неполный — об этом печатается предупреждение.
-PENDING_CHECKS := dm-coverage e2e
+PENDING_CHECKS := e2e
 
-check: fmt-check vet docs-check repocheck licenses lint lint-selftest sast test build sbom fuzz-smoke vuln ## Все проверки перед pull request
+check: fmt-check vet docs-check repocheck licenses lint lint-selftest sast test dm-coverage build sbom fuzz-smoke vuln ## Все проверки перед pull request
 	@if [ -n "$(strip $(PENDING_CHECKS))" ]; then \
 		echo "ВНИМАНИЕ: make check неполный, ещё не реализованы: $(PENDING_CHECKS) (docs/plans/stage-0.md)"; fi
 
@@ -71,6 +71,14 @@ fmt-check: ## Форматирование Go-кода (gofmt)
 .PHONY: vet
 vet: ## go vet (с cgo, чтобы проверялись и файлы с import "C")
 	CGO_ENABLED=1 go vet ./...
+
+.PHONY: dm-coverage
+dm-coverage: ## Покрытие матрицы обнаружения 5.16 тестами (строки с этапом не выше STAGE)
+	@mkdir -p $(BUILD)
+	@# Падения тестов ловит make test; здесь нужен полный отчёт, поэтому код возврата не важен.
+	go test -count=1 -json ./... > $(BUILD)/dm-tests.json || true
+	go run ./tools/dm-coverage -spec docs/SPEC.md -stage $(STAGE) \
+		-gotest $(BUILD)/dm-tests.json -out $(BUILD)/dm-coverage
 
 .PHONY: sbom
 sbom: build $(BIN)/sbom-utility ## SBOM продукта (CycloneDX 1.6) из собранных бинарников и проверка формата
@@ -163,9 +171,7 @@ tools: ## Установить инструменты разработки в bi
 # они падают, а не проходят молча.
 NOT_YET = @echo "$@: не реализовано — задача $(1) плана этапа 0 (docs/plans/stage-0.md)"; exit 1
 
-.PHONY: dm-coverage e2e dev manifest
-dm-coverage: ## Отчёт о покрытии матрицы обнаружения 5.16
-	$(call NOT_YET,0.9)
+.PHONY: e2e dev manifest
 e2e: ## Сквозные тесты: шлюз и mock-llm
 	$(call NOT_YET,0.14)
 dev: ## Стенд разработки в docker compose
