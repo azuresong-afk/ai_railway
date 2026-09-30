@@ -3,12 +3,16 @@
 //   - каждый модуль из vendor/modules.txt есть в реестре с той же версией;
 //   - в реестре нет модулей, которых уже нет в vendor/;
 //   - лицензия каждого компонента допустима по политике CLAUDE.md;
-//   - у каждого вендоренного модуля есть файл лицензии;
+//   - у каждого вендоренного модуля есть файл лицензии, а SHA-256 файлов
+//     лицензий совпадает с license_files в реестре (смена текста при
+//     обновлении версии требует пересмотра);
+//   - license_decision ссылается на существующий ADR;
 //   - версия Go toolchain совпадает с go.mod, версии инструментов — с Makefile.
 package main
 
 import (
 	"bytes"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -18,6 +22,7 @@ import (
 	"sort"
 	"strings"
 
+	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/tools/internal/components"
 )
 
@@ -93,10 +98,28 @@ func run(fsys fs.FS) ([]string, error) {
 	var problems []string
 	add := func(format string, a ...any) { problems = append(problems, fmt.Sprintf(format, a...)) }
 
+	p, err := aisecCrypto.New(aisecCrypto.ProfileStandard)
+	if err != nil {
+		return nil, err
+	}
+	hasher, err := p.Hasher()
+	if err != nil {
+		return nil, err
+	}
+
 	byModule := map[string]components.Component{}
 	for _, c := range reg.Components {
 		if err := components.CheckLicense(c); err != nil {
 			add("%s %s: %v", c.Name, c.Version, err)
+		}
+		if n := components.DecisionADR(c.LicenseDecision); n != "" {
+			matches, err := fs.Glob(fsys, "docs/adr/"+n+"-*.md")
+			if err != nil {
+				return nil, err
+			}
+			if len(matches) == 0 {
+				add("%s: license_decision ссылается на ADR-%s, которого нет в docs/adr/", c.Name, n)
+			}
 		}
 		if c.Type == components.TypeGoModule {
 			if c.Scope != components.ScopeProduct {
@@ -120,8 +143,25 @@ func run(fsys fs.FS) ([]string, error) {
 		if c.Version != m.Version {
 			add("%s: в реестре версия %s, в vendor/ — %s", m.Path, c.Version, m.Version)
 		}
-		if !hasLicenseFile(fsys, "vendor/"+m.Path) {
+		got, err := licenseFiles(fsys, "vendor/"+m.Path, hasher)
+		if err != nil {
+			return nil, err
+		}
+		if len(got) == 0 {
 			add("%s: в vendor/%s нет файла лицензии", m.Path, m.Path)
+			continue
+		}
+		for name, sum := range got {
+			if want, ok := c.LicenseFiles[name]; !ok {
+				add("%s: файла лицензии %s нет в license_files реестра (SHA-256 %s)", m.Path, name, sum)
+			} else if want != sum {
+				add("%s: текст %s изменился (SHA-256 %s, в реестре %s) — пересмотрите лицензию", m.Path, name, sum, want)
+			}
+		}
+		for name := range c.LicenseFiles {
+			if _, ok := got[name]; !ok {
+				add("%s: в vendor/ нет файла %s из license_files", m.Path, name)
+			}
 		}
 	}
 	for name := range byModule {
@@ -155,19 +195,31 @@ func run(fsys fs.FS) ([]string, error) {
 	return problems, nil
 }
 
-// hasLicenseFile ищет файл лицензии в каталоге модуля.
-func hasLicenseFile(fsys fs.FS, dir string) bool {
+// licenseFiles считает SHA-256 файлов лицензий в корне каталога модуля:
+// LICENSE*, LICENCE*, COPYING*, NOTICE*.
+func licenseFiles(fsys fs.FS, dir string, hasher aisecCrypto.Hasher) (map[string]string, error) {
 	entries, err := fs.ReadDir(fsys, dir)
-	if err != nil {
-		return false
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
 	}
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]string{}
 	for _, e := range entries {
 		n := strings.ToUpper(e.Name())
-		if !e.IsDir() && (strings.HasPrefix(n, "LICENSE") || strings.HasPrefix(n, "LICENCE") || strings.HasPrefix(n, "COPYING")) {
-			return true
+		isLicense := strings.HasPrefix(n, "LICENSE") || strings.HasPrefix(n, "LICENCE") ||
+			strings.HasPrefix(n, "COPYING") || strings.HasPrefix(n, "NOTICE")
+		if e.IsDir() || !isLicense {
+			continue
 		}
+		data, err := readLimited(fsys, dir+"/"+e.Name())
+		if err != nil {
+			return nil, err
+		}
+		out[e.Name()] = hex.EncodeToString(hasher.Sum(data))
 	}
-	return false
+	return out, nil
 }
 
 // goDirective возвращает значение директивы go.mod («go», «toolchain»).

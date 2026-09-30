@@ -5,6 +5,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 )
@@ -74,19 +75,47 @@ func (standardTLS) ClientConfig(rootsPEM []byte) (*tls.Config, error) {
 	return cfg, nil
 }
 
-// ReadPEMFile читает файл сертификата или ключа с ограничением размера.
+// ReadPEMFile читает файл сертификата с ограничением размера. Проверки
+// выполняются на уже открытом файле, поэтому подмена файла между проверкой и
+// чтением не обходит ограничения.
 func ReadPEMFile(path string) ([]byte, error) {
-	info, err := os.Stat(path)
+	return readLimitedFile(path, false)
+}
+
+// ReadKeyFile читает файл закрытого ключа: как ReadPEMFile, но дополнительно
+// требует, чтобы файл был недоступен группе и остальным (например, 0600 или 0400).
+func ReadKeyFile(path string) ([]byte, error) {
+	return readLimitedFile(path, true)
+}
+
+func readLimitedFile(path string, secret bool) (data []byte, err error) {
+	f, err := os.Open(path) //nolint:gosec // G304: путь к сертификату или ключу задаёт администратор в конфигурации
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if cerr := f.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
+	}()
+	info, err := f.Stat()
 	if err != nil {
 		return nil, err
 	}
 	if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("%s: не обычный файл", path)
 	}
-	if info.Size() > maxPEMFile {
+	if secret && !KeyFilePermsOK(info) {
+		return nil, fmt.Errorf("%s: файл ключа доступен группе или остальным (права %o); нужно 0600 или 0400", path, info.Mode().Perm())
+	}
+	data, err = io.ReadAll(io.LimitReader(f, maxPEMFile+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxPEMFile {
 		return nil, fmt.Errorf("%s: файл больше %d байт", path, maxPEMFile)
 	}
-	return os.ReadFile(path) //nolint:gosec // G304: путь к сертификату задаёт администратор в конфигурации
+	return data, nil
 }
 
 // KeyFilePermsOK сообщает, что файл ключа недоступен группе и остальным.

@@ -34,6 +34,8 @@ components:
     justification: j
     decision: d
     decided: 2026-09-29
+    license_files:
+      LICENSE: e5dcffe836b6ec8a58e492419b550e65fb8cbdc308503979e5dacb33ac7ea3b7
   - name: lint
     version: v2.0.0
     type: tool
@@ -57,6 +59,7 @@ func repo(registry, modules string) fstest.MapFS {
 		"go.mod":                       {Data: []byte("module x\n\ngo 1.27.0\n\ntoolchain go1.27.1\n")},
 		"Makefile":                     {Data: []byte("LINT_VERSION := v2.0.0\nOTHER ?= 1\n")},
 		"vendor/example.com/m/LICENSE": {Data: []byte("MIT")},
+		"docs/adr/0003-instrumenty.md": {Data: []byte("# ADR-0003")},
 	}
 	if modules != "" {
 		fsys["vendor/modules.txt"] = &fstest.MapFile{Data: []byte(modules)}
@@ -99,6 +102,15 @@ func TestRunProblems(t *testing.T) {
 		{"нет переменной", goodRegistry, "# example.com/m v1.0.0\n", func(f fstest.MapFS) {
 			f["Makefile"] = &fstest.MapFile{Data: []byte("\n")}
 		}, "переменной LINT_VERSION нет"},
+		{"текст лицензии изменился", goodRegistry, "# example.com/m v1.0.0\n", func(f fstest.MapFS) {
+			f["vendor/example.com/m/LICENSE"] = &fstest.MapFile{Data: []byte("GPL")}
+		}, "текст LICENSE изменился"},
+		{"новый файл лицензии", goodRegistry, "# example.com/m v1.0.0\n", func(f fstest.MapFS) {
+			f["vendor/example.com/m/COPYING"] = &fstest.MapFile{Data: []byte("GPL")}
+		}, "файла лицензии COPYING нет в license_files"},
+		{"нет ADR решения", goodRegistry, "# example.com/m v1.0.0\n", func(f fstest.MapFS) {
+			delete(f, "docs/adr/0003-instrumenty.md")
+		}, "ADR-0003, которого нет"},
 		{"нет toolchain", strings.Replace(goodRegistry, "type: toolchain", "type: tool", 1), "# example.com/m v1.0.0\n", nil, "нет записи о Go toolchain"},
 	}
 	for _, c := range cases {

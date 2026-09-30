@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"math/big"
 	"net"
+	"strings"
 	"time"
 )
 
@@ -20,6 +21,13 @@ import (
 
 // MaxCertValidity ограничивает срок действия выпускаемых сертификатов.
 const MaxCertValidity = 825 * 24 * time.Hour
+
+// Ограничения на имена в сертификатах.
+const (
+	maxHosts    = 32
+	maxHostLen  = 253 // длина DNS-имени (RFC 1035)
+	maxCNLength = 64  // ub-common-name (RFC 5280)
+)
 
 // CA — удостоверяющий центр в памяти.
 type CA struct {
@@ -70,11 +78,20 @@ func (ca *CA) CertPEM() []byte {
 // IssueServer выпускает серверный сертификат для указанных имён и адресов.
 // Возвращает сертификат и закрытый ключ в PEM.
 func (ca *CA) IssueServer(hosts []string, validity time.Duration, now time.Time) (certPEM, keyPEM []byte, err error) {
-	if len(hosts) == 0 {
-		return nil, nil, errors.New("не указано ни одного имени или адреса")
+	if err := checkHosts(hosts); err != nil {
+		return nil, nil, err
 	}
 	if err := checkValidity(validity); err != nil {
 		return nil, nil, err
+	}
+	notAfter := now.Add(validity)
+	if notAfter.After(ca.cert.NotAfter) {
+		// Сертификат не может жить дольше УЦ, который его выпустил.
+		notAfter = ca.cert.NotAfter
+	}
+	cn := hosts[0]
+	if len(cn) > maxCNLength {
+		cn = cn[:maxCNLength]
 	}
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -86,9 +103,9 @@ func (ca *CA) IssueServer(hosts []string, validity time.Duration, now time.Time)
 	}
 	tmpl := &x509.Certificate{
 		SerialNumber: serial,
-		Subject:      pkix.Name{CommonName: hosts[0]},
+		Subject:      pkix.Name{CommonName: cn},
 		NotBefore:    now.Add(-5 * time.Minute),
-		NotAfter:     now.Add(validity),
+		NotAfter:     notAfter,
 		KeyUsage:     x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	}
@@ -110,6 +127,27 @@ func (ca *CA) IssueServer(hosts []string, validity time.Duration, now time.Time)
 	certPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 	keyPEM = pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
 	return certPEM, keyPEM, nil
+}
+
+// checkHosts проверяет имена и адреса для серверного сертификата.
+func checkHosts(hosts []string) error {
+	if len(hosts) == 0 {
+		return errors.New("не указано ни одного имени или адреса")
+	}
+	if len(hosts) > maxHosts {
+		return fmt.Errorf("больше %d имён и адресов", maxHosts)
+	}
+	for _, h := range hosts {
+		switch {
+		case h == "" || strings.TrimSpace(h) != h:
+			return fmt.Errorf("пустое имя или имя с пробелами: %q", h)
+		case len(h) > maxHostLen:
+			return fmt.Errorf("имя длиннее %d символов", maxHostLen)
+		case strings.Contains(h, "*"):
+			return fmt.Errorf("шаблонные имена запрещены: %q", h)
+		}
+	}
+	return nil
 }
 
 func checkValidity(d time.Duration) error {

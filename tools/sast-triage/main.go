@@ -29,6 +29,8 @@ import (
 	"time"
 
 	"go.yaml.in/yaml/v3"
+
+	"github.com/azuresong-afk/ai_railway/tools/internal/repofs"
 )
 
 // Ограничения размеров входных файлов.
@@ -193,7 +195,8 @@ func ParseSARIF(data []byte) ([]Finding, error) {
 				return nil, errors.New("разбор SARIF: срабатывание без правила или места")
 			}
 			loc := res.Locations[0].PhysicalLocation
-			if loc.ArtifactLocation.URI == "" || loc.Region.StartLine < 1 {
+			file := strings.TrimPrefix(loc.ArtifactLocation.URI, "file://")
+			if file == "" || loc.Region.StartLine < 1 {
 				return nil, errors.New("разбор SARIF: срабатывание без файла или строки")
 			}
 			rule := res.RuleID
@@ -202,7 +205,7 @@ func ParseSARIF(data []byte) ([]Finding, error) {
 			}
 			out = append(out, Finding{
 				Rule:    rule,
-				File:    strings.TrimPrefix(loc.ArtifactLocation.URI, "file://"),
+				File:    file,
 				Line:    loc.Region.StartLine,
 				Message: res.Message.Text,
 			})
@@ -245,6 +248,14 @@ func ParseTriage(data []byte) (*Triage, error) {
 				errs = append(errs, fmt.Errorf("%s: date — ГГГГ-ММ-ДД", id))
 			}
 		}
+	}
+	seen := map[string]int{}
+	for i, e := range t.Entries {
+		k := key(e.Rule, e.File, e.Snippet)
+		if j, ok := seen[k]; ok {
+			errs = append(errs, fmt.Errorf("entries[%d]: повторяет entries[%d] (то же правило, файл и строка кода)", i, j))
+		}
+		seen[k] = i
 	}
 	sort.Slice(errs, func(i, j int) bool { return errs[i].Error() < errs[j].Error() })
 	return &t, errors.Join(errs...)
@@ -306,9 +317,6 @@ type Suppression struct {
 	Text string
 }
 
-// skipDirs — каталоги вне кода продукта и утилит.
-var skipDirs = map[string]bool{".git": true, "vendor": true, "testdata": true, "bin": true, "build": true, "node_modules": true}
-
 // CollectSuppressions находит директивы //nolint, подавляющие gosec, во всех
 // .go-файлах. Учитываются только настоящие комментарии-директивы, а не
 // упоминания в строках и тексте комментариев.
@@ -320,7 +328,7 @@ func CollectSuppressions(fsys fs.FS) ([]Suppression, error) {
 			return err
 		}
 		if d.IsDir() {
-			if p != "." && skipDirs[d.Name()] {
+			if repofs.Skip(p, d.Name()) {
 				return fs.SkipDir
 			}
 			return nil

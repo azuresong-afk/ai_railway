@@ -51,6 +51,10 @@ type Component struct {
 	Decision         string `yaml:"decision"`
 	Decided          string `yaml:"decided"`
 	MakefileVar      string `yaml:"makefile_var"`
+	// LicenseFiles — SHA-256 файлов лицензий модуля (имя файла → хеш в hex).
+	// Обязательно для go-module: смена текста лицензии при обновлении версии
+	// требует пересмотра записи.
+	LicenseFiles map[string]string `yaml:"license_files"`
 }
 
 // Registry — весь реестр.
@@ -63,7 +67,17 @@ var (
 	validTypes  = map[string]bool{TypeGoModule: true, TypeToolchain: true, TypeTool: true, TypeImage: true, TypeGitHubAction: true}
 	validScopes = map[string]bool{ScopeProduct: true, ScopeBuild: true}
 	makeVarRe   = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
+	sha256HexRe = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	decisionRe  = regexp.MustCompile(`^ADR-(\d{4})\b`)
 )
+
+// DecisionADR возвращает номер ADR из license_decision («0003») или "".
+func DecisionADR(decision string) string {
+	if m := decisionRe.FindStringSubmatch(decision); m != nil {
+		return m[1]
+	}
+	return ""
+}
 
 // Parse разбирает реестр. Неизвестные поля, лишние документы и пропуски
 // обязательных полей — ошибка.
@@ -132,6 +146,17 @@ func (r *Registry) validate() error {
 		}
 		if c.MakefileVar != "" && !makeVarRe.MatchString(c.MakefileVar) {
 			errs = append(errs, fmt.Errorf("%s: makefile_var — имя переменной Makefile", id))
+		}
+		if c.Type == TypeGoModule && len(c.LicenseFiles) == 0 {
+			errs = append(errs, fmt.Errorf("%s: для модуля Go нужно поле license_files", id))
+		}
+		for name, sum := range c.LicenseFiles {
+			if !sha256HexRe.MatchString(sum) || strings.ContainsAny(name, "/\\") || name == "" {
+				errs = append(errs, fmt.Errorf("%s: license_files: %q — имя файла без каталога и SHA-256 в hex", id, name))
+			}
+		}
+		if c.LicenseDecision != "" && !decisionRe.MatchString(c.LicenseDecision) {
+			errs = append(errs, fmt.Errorf("%s: license_decision должен начинаться со ссылки ADR-NNNN", id))
 		}
 		key := c.Type + " " + c.Name
 		if seen[key] {

@@ -70,6 +70,7 @@ func TestParseTriage(t *testing.T) {
 		"дата":          strings.Replace(triageSample, "2026-09-29", "вчера", 1),
 		"лишнее поле":   triageSample + "extra: 1\n",
 		"два документа": triageSample + "---\nschema_version: 1\n",
+		"дубликат":      triageSample + triageSample[strings.Index(triageSample, "  - rule"):],
 		"испорченный":   "schema_version: [",
 	} {
 		if _, err := ParseTriage([]byte(doc)); err == nil {

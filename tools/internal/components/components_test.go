@@ -19,6 +19,8 @@ const validEntry = `
     justification: j
     decision: d
     decided: 2026-09-29
+    license_files:
+      LICENSE: e5dcffe836b6ec8a58e492419b550e65fb8cbdc308503979e5dacb33ac7ea3b7
 `
 
 func TestParseValid(t *testing.T) {
@@ -46,6 +48,9 @@ func TestParseErrors(t *testing.T) {
 		{"дубликат", "schema_version: 1\ncomponents:" + validEntry + validEntry, "дважды"},
 		{"два документа", "schema_version: 1\ncomponents: []\n---\nschema_version: 1\n", "один"},
 		{"не yaml", "schema_version: [", "разбор"},
+		{"нет license_files", "schema_version: 1\ncomponents:" + validEntry[:strings.Index(validEntry, "    license_files:")], "license_files"},
+		{"плохой хеш лицензии", "schema_version: 1\ncomponents:" + strings.Replace(validEntry, "LICENSE: ", "LICENSE: zz", 1), "license_files"},
+		{"решение без ADR", "schema_version: 1\ncomponents:" + strings.Replace(validEntry, "    decided: 2026-09-29\n", "    decided: 2026-09-29\n    license_decision: так решили\n", 1), "ADR-NNNN"},
 		{"переменная", "schema_version: 1\ncomponents:" + strings.Replace(validEntry, "    decided: 2026-09-29\n", "    decided: 2026-09-29\n    makefile_var: bad-name\n", 1), "makefile_var"},
 	}
 	for _, c := range cases {
@@ -62,6 +67,14 @@ func TestParseTooLarge(t *testing.T) {
 	big := "schema_version: 1\n# " + strings.Repeat("x", MaxFileSize) + "\ncomponents: []\n"
 	if _, err := Parse(strings.NewReader(big)); err == nil {
 		t.Fatal("ожидалась ошибка размера")
+	}
+}
+
+func TestDecisionADR(t *testing.T) {
+	for in, want := range map[string]string{"ADR-0003 — инструмент": "0003", "ADR-12": "", "см. ADR-0003": "", "": ""} {
+		if got := DecisionADR(in); got != want {
+			t.Errorf("DecisionADR(%q) = %q, ожидалось %q", in, got, want)
+		}
 	}
 }
 

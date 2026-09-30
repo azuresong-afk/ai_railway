@@ -118,10 +118,10 @@
 - ADR-0003 «Сборка без интернета»: база уязвимостей, npm (публичный реестр по lock-файлу до этапа 6, затем зеркало), сторонние инструменты в сборочном образе (Р5).
 - Makefile по умолчанию запрещает скрытые загрузки: `GOTOOLCHAIN=local`, `GOFLAGS=-mod=vendor`; `GOPROXY=off` — в цели `check-offline` (задача 0.15).
 
-**Файлы.** `Makefile`, `tools/scripts/fuzz-smoke.sh`, `docs/adr/0003-*.md`.
+**Файлы.** `Makefile`, `tools/scripts/fuzz.sh`, `docs/adr/0003-*.md`.
 **Проверки.** `make vuln` проходит; `make fuzz-smoke` находит и прогоняет fuzz-цели из 0.5 и проходит.
 **Документы (раздел 9).** `adr/`, `build-env.md`, `fuzzing.md` (как запускать, где корпуса — ТЗ 8.5).
-**Статус.** готова. `make vuln` (`GOVULNDB`), `make fuzz-smoke`/`fuzz-long` (`tools/scripts/fuzz.sh`), ADR-0003 (в том числе исключение для GPL-инструментов сборочной среды — замечание cert-reviewer). fuzz-smoke прогоняет 3 цели. **`make vuln` в облачной среде не проходит: сетевая политика запрещает vuln.go.dev (403)** — проверяется в CI или по локальному снимку базы.
+**Статус.** готова. `make vuln` (`GOVULNDB`), `make fuzz-smoke`/`fuzz-long` (`tools/scripts/fuzz.sh`), ADR-0003 (в том числе исключение для GPL-инструментов сборочной среды — замечание cert-reviewer). fuzz-smoke прогоняет все цели модуля (на момент задачи — 3). **`make vuln` в облачной среде не проходит: сетевая политика запрещает vuln.go.dev (403)** — проверяется в CI или по локальному снимку базы.
 
 ## 0.7 `components.yaml` и проверка лицензий — 1 день
 **Результат.** Схема `docs/cert/components.yaml`: имя, версия (точная), назначение, лицензия (SPDX), репозиторий, `attack_surface`, `security_function`, `provided_by`, обоснование, дата решения. Первые записи: Go toolchain и стандартная библиотека (BSD-3-Clause — это тоже заимствованный компонент) и одобренные зависимости из списка ниже. Утилита `tools/license-check`:

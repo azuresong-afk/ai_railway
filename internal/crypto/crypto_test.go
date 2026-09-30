@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/hex"
 	"errors"
+	"fmt"
+	"log/slog"
 	"strings"
 	"testing"
 )
@@ -169,6 +171,30 @@ func TestEqual(t *testing.T) {
 	for _, c := range cases {
 		if got := Equal([]byte(c.a), []byte(c.b)); got != c.want {
 			t.Errorf("Equal(%q, %q) = %v", c.a, c.b, got)
+		}
+	}
+}
+
+func TestMACDoesNotLeakKey(t *testing.T) {
+	key := bytes.Repeat([]byte("K"), MinMACKeySize)
+	m, err := mustStandard(t).NewMAC(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logBuf bytes.Buffer
+	slog.New(slog.NewTextHandler(&logBuf, nil)).Info("проверка", "mac", m)
+	slog.New(slog.NewJSONHandler(&logBuf, nil)).Info("проверка", "mac", m)
+	outputs := []string{
+		fmt.Sprintf("%v %+v %#v %s %x %X %q %d", m, m, m, m, m, m, m, m),
+		fmt.Sprint(m), fmt.Sprintf("%v", []MAC{m}), logBuf.String(),
+	}
+	hexKey := hex.EncodeToString(key)
+	for _, out := range outputs {
+		if strings.Contains(out, "KKKK") || strings.Contains(strings.ToLower(out), hexKey[:16]) || strings.Contains(out, "75 75") {
+			t.Fatalf("ключ попал в вывод: %s", out)
+		}
+		if !strings.Contains(out, "HMAC-SHA-256") {
+			t.Fatalf("в выводе нет имени алгоритма: %s", out)
 		}
 	}
 }

@@ -3,6 +3,9 @@ package crypto
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
+	"encoding/pem"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -211,6 +214,9 @@ func TestReadPEMFile(t *testing.T) {
 	if _, err := ReadPEMFile(filepath.Join(dir, "нет.pem")); err == nil {
 		t.Error("принят несуществующий файл")
 	}
+	if b, err := ReadKeyFile(p); err != nil || string(b) != "pem" {
+		t.Fatalf("ReadKeyFile с правами 0600: %q %v", b, err)
+	}
 	info, err := os.Stat(p)
 	if err != nil {
 		t.Fatal(err)
@@ -226,6 +232,75 @@ func TestReadPEMFile(t *testing.T) {
 	}
 	if KeyFilePermsOK(info) {
 		t.Error("0640 не должны считаться допустимыми правами ключа")
+	}
+	if _, err := ReadKeyFile(p); err == nil {
+		t.Error("ReadKeyFile принял ключ с правами 0640")
+	}
+	// Сертификат с правами 0640 читается: права проверяются только у ключа.
+	if _, err := ReadPEMFile(p); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestIssuedCertificateProperties(t *testing.T) {
+	now := time.Now()
+	ca, err := NewCA("test CA", time.Hour, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	long := strings.Repeat("a", 70) + ".example"
+	certPEM, _, err := ca.IssueServer([]string{long, "127.0.0.1"}, 30*24*time.Hour, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	block, _ := pem.Decode(certPEM)
+	if block == nil {
+		t.Fatal("нет PEM-блока")
+	}
+	c, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.IsCA || c.BasicConstraintsValid && c.IsCA {
+		t.Error("серверный сертификат помечен как УЦ")
+	}
+	if c.SerialNumber.Sign() <= 0 || len(c.SerialNumber.Bytes()) > 20 {
+		t.Errorf("серийный номер вне RFC 5280: %v", c.SerialNumber)
+	}
+	if c.KeyUsage != x509.KeyUsageDigitalSignature || len(c.ExtKeyUsage) != 1 || c.ExtKeyUsage[0] != x509.ExtKeyUsageServerAuth {
+		t.Errorf("неверное назначение ключа: %v %v", c.KeyUsage, c.ExtKeyUsage)
+	}
+	if !c.NotAfter.Equal(ca.cert.NotAfter) {
+		t.Errorf("сертификат живёт дольше УЦ: %v > %v", c.NotAfter, ca.cert.NotAfter)
+	}
+	if len(c.Subject.CommonName) > maxCNLength {
+		t.Errorf("CommonName длиннее %d", maxCNLength)
+	}
+	if len(c.DNSNames) != 1 || len(c.IPAddresses) != 1 {
+		t.Errorf("имена и адреса: %v %v", c.DNSNames, c.IPAddresses)
+	}
+}
+
+func TestIssueServerRejectsBadHosts(t *testing.T) {
+	now := time.Now()
+	ca, err := NewCA("test CA", time.Hour, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	many := make([]string, maxHosts+1)
+	for i := range many {
+		many[i] = fmt.Sprintf("h%d", i)
+	}
+	for name, hosts := range map[string][]string{
+		"пустое":        {""},
+		"пробелы":       {" a"},
+		"шаблон":        {"*.example"},
+		"длинное":       {strings.Repeat("a", maxHostLen+1)},
+		"слишком много": many,
+	} {
+		if _, _, err := ca.IssueServer(hosts, time.Hour, now); err == nil {
+			t.Errorf("%s: ожидалась ошибка", name)
+		}
 	}
 }
 

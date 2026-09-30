@@ -12,11 +12,11 @@ var (
 	// SHA-256("abc") — FIPS 180-2, приложение B.1.
 	katSHA256In  = []byte("abc")
 	katSHA256Out = mustHex("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
-	// HMAC-SHA-256 — RFC 4231, тест 2 (ключ короче минимального для продукта,
-	// поэтому проверяется напрямую, а не через NewMAC).
-	katHMACKey = []byte("Jefe")
-	katHMACIn  = []byte("what do ya want for nothing?")
-	katHMACOut = mustHex("5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843")
+	// HMAC-SHA-256 — RFC 4231, тест 6: ключ 131 байт 0xaa, длиннее блока —
+	// проверяется через тот же NewMAC и Verify, что используют компоненты.
+	katHMACKey = bytes.Repeat([]byte{0xaa}, 131)
+	katHMACIn  = []byte("Test Using Larger Than Block-Size Key - Hash Key First")
+	katHMACOut = mustHex("60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54")
 )
 
 func mustHex(s string) []byte {
@@ -41,8 +41,15 @@ func SelfTest(p Provider) error {
 	if !bytes.Equal(h.Sum(katSHA256In), katSHA256Out) {
 		return errors.New("самотест: SHA-256 не совпал с эталоном")
 	}
-	if !bytes.Equal(hmacSHA256{key: katHMACKey}.Sum(katHMACIn), katHMACOut) {
+	m, err := p.NewMAC(katHMACKey)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(m.Sum(katHMACIn), katHMACOut) || !m.Verify(katHMACIn, katHMACOut) {
 		return errors.New("самотест: HMAC-SHA-256 не совпал с эталоном")
+	}
+	if m.Verify(katHMACIn[1:], katHMACOut) {
+		return errors.New("самотест: HMAC-SHA-256 принял чужое сообщение")
 	}
 	r, err := p.Random()
 	if err != nil {

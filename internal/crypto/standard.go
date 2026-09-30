@@ -6,6 +6,8 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"hash"
+	"io"
+	"log/slog"
 )
 
 // standard — профиль для коммерческих заказчиков: стандартная библиотека Go.
@@ -37,9 +39,19 @@ func (sha256Hasher) Sum(data []byte) []byte {
 	return s[:]
 }
 
+// hmacSHA256 хранит ключ; чтобы ключ не попал в логи и сообщения, тип
+// форматируется только именем алгоритма (Format, LogValue).
 type hmacSHA256 struct{ key []byte }
 
 func (hmacSHA256) Name() string { return "HMAC-SHA-256" }
+
+// Format выводит только имя алгоритма при любом глаголе fmt (%v, %+v, %#v, %x, %s…).
+func (m hmacSHA256) Format(f fmt.State, _ rune) {
+	_, _ = io.WriteString(f, m.Name()) //nolint:gosec // G104: у fmt.Formatter нет способа вернуть ошибку записи
+}
+
+// LogValue выводит в slog только имя алгоритма.
+func (m hmacSHA256) LogValue() slog.Value { return slog.StringValue(m.Name()) }
 
 func (m hmacSHA256) Sum(msg []byte) []byte {
 	h := hmac.New(sha256.New, m.key)

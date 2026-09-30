@@ -18,7 +18,8 @@ linters:
     - errcheck        # непроверенные ошибки
     - errorlint       # сравнение ошибок без errors.Is/As
     - forbidigo       # запрещённые вызовы
-    - gosec           # проверки безопасности
+    # gosec запускается отдельно, в make sast: его срабатывания проходят разметку
+    # docs/cert/sast-triage/ (ТЗ, 8.4). make sast входит в make check.
     - govet
     - ineffassign
     - nilerr          # возврат nil вместо ошибки

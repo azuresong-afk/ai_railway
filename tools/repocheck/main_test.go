@@ -31,14 +31,16 @@ func TestCheckNestedCrypto(t *testing.T) {
 		"internal/crypto/c.go":                  file("package crypto\n"),
 		"internal/gateway/internal/crypto/x.go": file("package crypto\n"),
 		"tools/internal/crypto/y.go":            file("package crypto\n"),
+		"internal/x/build/internal/crypto/z.go": file("package crypto\n"),
 	}
 	problems, err := check(fsys, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(problems) != 2 || !strings.Contains(problems[0], "internal/gateway/internal/crypto") ||
-		!strings.Contains(problems[1], "tools/internal/crypto") {
-		t.Fatalf("ожидались два лишних каталога crypto, получено %q", problems)
+	joined := strings.Join(problems, "\n")
+	if len(problems) != 3 || !strings.Contains(joined, "internal/gateway/internal/crypto") ||
+		!strings.Contains(joined, "tools/internal/crypto") || !strings.Contains(joined, "internal/x/build/internal/crypto") {
+		t.Fatalf("ожидались три лишних каталога crypto (в том числе во вложенном build/), получено %q", problems)
 	}
 }
 

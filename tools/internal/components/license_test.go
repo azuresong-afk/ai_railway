@@ -26,6 +26,9 @@ func TestEvalExpression(t *testing.T) {
 		{"Unknown-1.0", Forbidden},
 		{"OFL-1.1", Allowed},
 		{"ISC", Allowed},
+		{"LGPL-x", Forbidden},
+		{"MPL-2.0-no-copyleft-exception", Forbidden},
+		{"GPL-3.0-only", Forbidden},
 	}
 	for _, c := range cases {
 		got, _, err := EvalExpression(c.expr)
@@ -60,6 +63,7 @@ func TestCheckLicense(t *testing.T) {
 		{"GPL в сборке без решения", Component{License: "GPL-3.0-only", Scope: ScopeBuild}, false},
 		{"GPL в сборке с решением", Component{License: "GPL-3.0-only", Scope: ScopeBuild, LicenseDecision: "ADR-0003"}, true},
 		{"AGPL в сборке с решением", Component{License: "AGPL-3.0-only", Scope: ScopeBuild, LicenseDecision: "ADR-0003"}, false},
+		{"выдуманный GPL в сборке", Component{License: "GPL-x", Scope: ScopeBuild, LicenseDecision: "ADR-0003"}, false},
 		{"GPL и SSPL в сборке", Component{License: "GPL-3.0-only AND SSPL-1.0", Scope: ScopeBuild, LicenseDecision: "ADR-0003"}, false},
 		{"испорченное выражение", Component{License: "MIT AND", Scope: ScopeProduct}, false},
 	}

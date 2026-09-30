@@ -13,8 +13,16 @@ var (
 		"MIT": true, "BSD-2-Clause": true, "BSD-3-Clause": true,
 		"Apache-2.0": true, "ISC": true, "OFL-1.1": true,
 	}
-	// conditionalPrefixes — только отдельным решением (license_decision).
-	conditionalPrefixes = []string{"MPL-2.0", "LGPL-"}
+	// conditionalLicenses — только отдельным решением (license_decision).
+	conditionalLicenses = map[string]bool{
+		"MPL-2.0": true, "LGPL-2.1-only": true, "LGPL-2.1-or-later": true,
+		"LGPL-3.0-only": true, "LGPL-3.0-or-later": true,
+	}
+	// gplLicenses допустимы только для инструментов сборочной среды (ADR-0003).
+	gplLicenses = map[string]bool{
+		"GPL-2.0-only": true, "GPL-2.0-or-later": true,
+		"GPL-3.0-only": true, "GPL-3.0-or-later": true,
+	}
 )
 
 // Всё остальное запрещено: GPL, AGPL, SSPL, BUSL, Commons Clause, код без
@@ -38,10 +46,8 @@ func classify(id string) Verdict {
 	if allowedLicenses[id] {
 		return Allowed
 	}
-	for _, p := range conditionalPrefixes {
-		if strings.HasPrefix(id, p) {
-			return Conditional
-		}
+	if conditionalLicenses[id] {
+		return Conditional
 	}
 	return Forbidden
 }
@@ -49,7 +55,7 @@ func classify(id string) Verdict {
 // isGPLFamily сообщает, что идентификатор из семейства GPL, допустимого для
 // инструментов сборочной среды по ADR-0003.
 func isGPLFamily(id string) bool {
-	return strings.HasPrefix(id, "GPL-")
+	return gplLicenses[id]
 }
 
 // maxExprLen ограничивает длину выражения лицензии.

@@ -15,13 +15,12 @@ import (
 	"path"
 	"sort"
 	"strings"
+
+	"github.com/azuresong-afk/ai_railway/tools/internal/repofs"
 )
 
 // cryptoDir — единственный разрешённый каталог с криптографией.
 const cryptoDir = "internal/crypto"
-
-// skipDirs — каталоги, которые не относятся к коду продукта.
-var skipDirs = map[string]bool{".git": true, "vendor": true, "testdata": true, "bin": true, "build": true, "node_modules": true}
 
 // maxGoFile ограничивает размер разбираемого файла.
 const maxGoFile = 8 << 20
@@ -60,7 +59,7 @@ func check(fsys fs.FS, cgoAllowed []string) ([]string, error) {
 			return err
 		}
 		if d.IsDir() {
-			if p != "." && skipDirs[d.Name()] {
+			if repofs.Skip(p, d.Name()) {
 				return fs.SkipDir
 			}
 			if d.Name() == "crypto" && path.Base(path.Dir(p)) == "internal" && p != cryptoDir {

@@ -40,6 +40,8 @@ components:
     justification: j
     decision: d
     decided: 2026-09-29
+    license_files:
+      LICENSE: e5dcffe836b6ec8a58e492419b550e65fb8cbdc308503979e5dacb33ac7ea3b7
 `
 
 // h1 — корректный хеш модуля (32 нулевых байта в base64).

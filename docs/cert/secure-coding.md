@@ -19,7 +19,7 @@
 
 | Правило | Как проверяется |
 |---|---|
-| Криптография только в `internal/crypto` (`crypto/*`, `golang.org/x/crypto/*`) | depguard, правило `crypto`; действует и в тестах, и в `tools/`. Каталог `internal/crypto` в модуле ровно один — `./internal/crypto` (`make repocheck`), иначе вложенный `…/internal/crypto` снял бы запрет |
+| Криптография только в `internal/crypto` (`crypto/*`, `golang.org/x/crypto/*`) | depguard, правило `crypto`; действует и в тестах, и в `tools/`. Каталог `internal/crypto` в модуле ровно один — `./internal/crypto` (`make repocheck`), иначе вложенный `…/internal/crypto` снял бы запрет. Утилиты проверки пропускают `vendor/`, `build/`, `bin/`, `node_modules/` только в корне репозитория, а `testdata/` — на любой глубине: вложенный каталог с таким именем Go собирает, и пропуск открыл бы обход |
 | Без `unsafe`, `math/rand` (в том числе `math/rand/v2`), `net/http/pprof`, `plugin` | depguard, правило `unsafe-and-rand`; во всём коде |
 | Без `os/exec` в серверных компонентах | depguard, правило `server-exec`: `cmd/aisec-gateway`, `cmd/aisec-server`, `cmd/aisec-media`, `internal/`; там же запрещён `syscall` (исключение — по ADR с `//nolint:depguard`). Обходы через `os.StartProcess` и `syscall.Exec`/`ForkExec`/`StartProcess` ловит forbidigo во всём коде |
 | Без `reflect` в обход типов | depguard, правило `product-reflect`: `cmd/aisec-gateway`, `cmd/aisec-server`, `cmd/aisec-media`, `internal/` кроме тестов; исключение — `//nolint:depguard` с обоснованием |
@@ -28,7 +28,7 @@
 | Исходящие HTTP-запросы с контекстом | noctx |
 | Ошибки проверяются | errcheck, errorlint, nilerr, gosec G104 |
 | Закрытие тел ответов, строк и выражений SQL | bodyclose, rowserrcheck, sqlclosecheck |
-| Проверки безопасности | gosec в режиме аудита |
+| Проверки безопасности | gosec в режиме аудита — только в `make sast` (срабатывания размечаются в `docs/cert/sast-triage/`); `make sast` входит в `make check` |
 | Каждое подавление — с линтером и обоснованием | nolintlint (`require-specific`, `require-explanation`) |
 | Срабатывания SAST размечены | `make sast`: gosec в SARIF, сверка с `docs/cert/sast-triage/triage.yaml`, перечень подавлений `//nolint:gosec` (формат — `docs/cert/sast-triage/README.md`) |
 | Форматирование | gofmt (`make fmt-check` и форматтер в golangci-lint) |
