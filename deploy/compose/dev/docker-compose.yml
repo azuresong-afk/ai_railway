@@ -1,0 +1,49 @@
+# Стенд разработки: шлюз перед mock-llm (ТЗ, 11.5). Запуск — make dev.
+# PostgreSQL появится на этапе 2, сервер управления и веб-консоль — тоже.
+#
+# Сертификаты выпускает make devcerts в .dev-keys/ (ключ с правами 0600).
+# Контейнеры работают от UID и GID пользователя, который запускает стенд
+# (AISEC_UID, AISEC_GID задаёт make dev), иначе ключ нельзя было бы прочитать
+# без ослабления прав.
+name: aisec-dev
+
+x-hardening: &hardening
+  user: "${AISEC_UID:?задайте AISEC_UID (make dev)}:${AISEC_GID:?задайте AISEC_GID (make dev)}"
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  volumes:
+    - ../../../.dev-keys:/keys:ro
+  networks: [dev]
+
+services:
+  mock-llm:
+    <<: *hardening
+    build:
+      context: ../../..
+      dockerfile: deploy/compose/dev/Dockerfile
+      target: mock-llm
+    image: aisec-dev/mock-llm
+    # Наружу не публикуется: доступен только шлюзу во внутренней сети.
+    command: ["-listen", "0.0.0.0:9443", "-cert", "/keys/server.pem", "-key", "/keys/server-key.pem"]
+
+  aisec-gateway:
+    <<: *hardening
+    build:
+      context: ../../..
+      dockerfile: deploy/compose/dev/Dockerfile
+      target: aisec-gateway
+    image: aisec-dev/aisec-gateway
+    command:
+      - "-listen=0.0.0.0:8443"
+      - "-tls-cert=/keys/server.pem"
+      - "-tls-key=/keys/server-key.pem"
+      - "-upstream-url=https://mock-llm:9443"
+      - "-upstream-ca=/keys/ca.pem"
+      - "-forward-headers=X-Mock-Scenario"
+    # Только на 127.0.0.1 хоста: шлюз этапа 0 без аутентификации приложений.
+    ports: ["127.0.0.1:8443:8443"]
+    depends_on: [mock-llm]
+
+networks:
+  dev: {}

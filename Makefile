@@ -57,9 +57,9 @@ help: ## Список целей
 .PHONY: check
 # Проверки из CLAUDE.md, которые ещё не реализованы. Пока список не пуст,
 # зелёный make check неполный — об этом печатается предупреждение.
-PENDING_CHECKS := e2e
+PENDING_CHECKS :=
 
-check: fmt-check vet docs-check repocheck licenses lint lint-selftest sast test dm-coverage build sbom fuzz-smoke vuln ## Все проверки перед pull request
+check: fmt-check vet docs-check repocheck licenses lint lint-selftest sast test build e2e dm-coverage sbom fuzz-smoke vuln ## Все проверки перед pull request
 	@if [ -n "$(strip $(PENDING_CHECKS))" ]; then \
 		echo "ВНИМАНИЕ: make check неполный, ещё не реализованы: $(PENDING_CHECKS) (docs/plans/stage-0.md)"; fi
 
@@ -77,8 +77,9 @@ dm-coverage: ## Покрытие матрицы обнаружения 5.16 те
 	@mkdir -p $(BUILD)
 	@# Падения тестов ловит make test; здесь нужен полный отчёт, поэтому код возврата не важен.
 	go test -count=1 -json ./... > $(BUILD)/dm-tests.json || true
+	go test -tags e2e -count=1 -json ./test/e2e/ -bin $(BUILD)/bin > $(BUILD)/dm-e2e.json || true
 	go run ./tools/dm-coverage -spec docs/SPEC.md -stage $(STAGE) \
-		-gotest $(BUILD)/dm-tests.json -out $(BUILD)/dm-coverage
+		-gotest $(BUILD)/dm-tests.json,$(BUILD)/dm-e2e.json -out $(BUILD)/dm-coverage
 
 .PHONY: sbom
 sbom: build $(BIN)/sbom-utility ## SBOM продукта (CycloneDX 1.6) из собранных бинарников и проверка формата
@@ -171,13 +172,26 @@ tools: ## Установить инструменты разработки в bi
 # они падают, а не проходят молча.
 NOT_YET = @echo "$@: не реализовано — задача $(1) плана этапа 0 (docs/plans/stage-0.md)"; exit 1
 
-.PHONY: e2e dev manifest
-e2e: ## Сквозные тесты: шлюз и mock-llm
-	$(call NOT_YET,0.14)
-dev: ## Стенд разработки в docker compose
-	$(call NOT_YET,0.14)
+.PHONY: manifest
 manifest: ## Манифест целостности (ОЦЛ.1)
 	@echo "manifest: манифест целостности появляется на этапе 2 (ТЗ, ОЦЛ.1)"; exit 1
+
+.PHONY: e2e
+e2e: build ## Сквозные тесты: настоящие бинарники шлюза и mock-llm по TLS
+	go test -tags e2e -count=1 ./test/e2e/ -bin $(BUILD)/bin
+
+COMPOSE_DEV := docker compose -f deploy/compose/dev/docker-compose.yml
+
+.PHONY: dev
+dev: .dev-keys/ca.pem ## Стенд разработки в docker compose: шлюз на https://127.0.0.1:8443 перед mock-llm
+	AISEC_UID=$$(id -u) AISEC_GID=$$(id -g) $(COMPOSE_DEV) up --build
+
+.PHONY: dev-down
+dev-down: ## Остановить стенд разработки
+	AISEC_UID=$$(id -u) AISEC_GID=$$(id -g) $(COMPOSE_DEV) down
+
+.dev-keys/ca.pem:
+	go run ./tools/devcerts -out .dev-keys
 
 .PHONY: devcerts
 devcerts: ## Сертификаты стенда разработки в .dev-keys/ (УЦ и сервер; ключ УЦ не сохраняется)
