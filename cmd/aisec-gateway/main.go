@@ -4,12 +4,12 @@ package main
 
 import (
 	"context"
+	"errors"
+	"flag"
 	"fmt"
 	"log/slog"
 	"os"
-	"os/signal"
 	"strings"
-	"syscall" //nolint:depguard // только константа SIGTERM: корректное завершение по сигналу оркестратора (ТЗ, 4.4)
 
 	"github.com/azuresong-afk/ai_railway/internal/config"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
@@ -22,11 +22,14 @@ var version = "dev"
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil)).With("component", "aisec-gateway", "version", version)
 	cfg, err := config.LoadGateway(os.Args[1:], os.Getenv, os.Stderr)
+	if errors.Is(err, flag.ErrHelp) {
+		return // справка уже напечатана
+	}
 	if err != nil {
 		logger.Error("неверная конфигурация", "error", err)
 		os.Exit(2)
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := shutdownContext()
 	defer stop()
 	if err := run(ctx, cfg, logger); err != nil {
 		logger.Error("остановка с ошибкой", "error", err)

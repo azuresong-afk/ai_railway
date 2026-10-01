@@ -51,27 +51,38 @@ const (
 func LoadGateway(args []string, getenv func(string) string, errOut io.Writer) (*Gateway, error) {
 	fs := flag.NewFlagSet("aisec-gateway", flag.ContinueOnError)
 	fs.SetOutput(errOut)
-	def := func(name, fallback string) string {
-		if v := getenv(envPrefix + name); v != "" {
-			return v
-		}
-		return fallback
-	}
-	listen := fs.String("listen", def("LISTEN", DefaultGatewayListen), "адрес и порт шлюза (AISEC_GATEWAY_LISTEN)")
-	cert := fs.String("tls-cert", def("TLS_CERT", ""), "сертификат TLS шлюза, PEM (AISEC_GATEWAY_TLS_CERT)")
-	key := fs.String("tls-key", def("TLS_KEY", ""), "закрытый ключ TLS шлюза, PEM, права 0600 (AISEC_GATEWAY_TLS_KEY)")
-	upstream := fs.String("upstream-url", def("UPSTREAM_URL", ""), "базовый адрес провайдера https://хост[:порт] (AISEC_GATEWAY_UPSTREAM_URL)")
-	upstreamCA := fs.String("upstream-ca", def("UPSTREAM_CA", ""), "корневые сертификаты провайдера, PEM (AISEC_GATEWAY_UPSTREAM_CA)")
-	upstreamKey := fs.String("upstream-key-file", def("UPSTREAM_KEY_FILE", ""), "файл с ключом API провайдера, права 0600 (AISEC_GATEWAY_UPSTREAM_KEY_FILE)")
-	maxBody := fs.String("max-body-bytes", def("MAX_BODY_BYTES", strconv.Itoa(DefaultMaxBodyBytes)), "предел размера тела запроса, байт (AISEC_GATEWAY_MAX_BODY_BYTES)")
-	connect := fs.String("upstream-connect-timeout", def("UPSTREAM_CONNECT_TIMEOUT", DefaultConnectTimeout.String()), "таймаут соединения с провайдером (AISEC_GATEWAY_UPSTREAM_CONNECT_TIMEOUT)")
-	header := fs.String("upstream-header-timeout", def("UPSTREAM_HEADER_TIMEOUT", DefaultHeaderTimeout.String()), "таймаут до заголовков ответа провайдера (AISEC_GATEWAY_UPSTREAM_HEADER_TIMEOUT)")
-	forward := fs.String("forward-headers", def("FORWARD_HEADERS", ""), "дополнительные заголовки запроса для провайдера, через запятую (AISEC_GATEWAY_FORWARD_HEADERS)")
+	// Значения окружения применяются после разбора флагов, а не через
+	// значения по умолчанию: справка (-h) не должна печатать то, что задано
+	// в окружении, — там может оказаться, например, адрес с учётными данными.
+	listen := fs.String("listen", DefaultGatewayListen, "адрес и порт шлюза (AISEC_GATEWAY_LISTEN)")
+	cert := fs.String("tls-cert", "", "сертификат TLS шлюза, PEM (AISEC_GATEWAY_TLS_CERT)")
+	key := fs.String("tls-key", "", "закрытый ключ TLS шлюза, PEM, права 0600 (AISEC_GATEWAY_TLS_KEY)")
+	upstream := fs.String("upstream-url", "", "базовый адрес провайдера https://хост[:порт] (AISEC_GATEWAY_UPSTREAM_URL)")
+	upstreamCA := fs.String("upstream-ca", "", "корневые сертификаты провайдера, PEM (AISEC_GATEWAY_UPSTREAM_CA)")
+	upstreamKey := fs.String("upstream-key-file", "", "файл с ключом API провайдера, права 0600 (AISEC_GATEWAY_UPSTREAM_KEY_FILE)")
+	maxBody := fs.String("max-body-bytes", strconv.Itoa(DefaultMaxBodyBytes), "предел размера тела запроса, байт (AISEC_GATEWAY_MAX_BODY_BYTES)")
+	connect := fs.String("upstream-connect-timeout", DefaultConnectTimeout.String(), "таймаут соединения с провайдером (AISEC_GATEWAY_UPSTREAM_CONNECT_TIMEOUT)")
+	header := fs.String("upstream-header-timeout", DefaultHeaderTimeout.String(), "таймаут до заголовков ответа провайдера (AISEC_GATEWAY_UPSTREAM_HEADER_TIMEOUT)")
+	forward := fs.String("forward-headers", "", "дополнительные заголовки запроса для провайдера, через запятую (AISEC_GATEWAY_FORWARD_HEADERS)")
 	if err := fs.Parse(args); err != nil {
 		return nil, err
 	}
 	if fs.NArg() > 0 {
 		return nil, fmt.Errorf("лишние аргументы: %d", fs.NArg())
+	}
+	set := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+	for name, dst := range map[string]*string{
+		"listen": listen, "tls-cert": cert, "tls-key": key, "upstream-url": upstream, "upstream-ca": upstreamCA,
+		"upstream-key-file": upstreamKey, "max-body-bytes": maxBody, "upstream-connect-timeout": connect,
+		"upstream-header-timeout": header, "forward-headers": forward,
+	} {
+		if set[name] {
+			continue // флаг важнее окружения
+		}
+		if v := getenv(envName(name)); v != "" {
+			*dst = v
+		}
 	}
 
 	cfg := &Gateway{
@@ -117,6 +128,11 @@ func LoadGateway(args []string, getenv func(string) string, errOut io.Writer) (*
 	return cfg, nil
 }
 
+// envName — имя переменной окружения для флага: upstream-url → AISEC_GATEWAY_UPSTREAM_URL.
+func envName(flagName string) string {
+	return envPrefix + strings.ToUpper(strings.ReplaceAll(flagName, "-", "_"))
+}
+
 // ParseUpstreamURL проверяет базовый адрес провайдера: только https, без
 // учётных данных, запроса и фрагмента. Путь запроса приложения
 // (/v1/chat/completions) добавляется к пути адреса.
@@ -151,6 +167,7 @@ func parseTimeout(name, s string) (time.Duration, error) {
 // запрещено пробрасывать: учётные данные и служебные заголовки соединения.
 var neverForward = map[string]bool{
 	"Authorization": true, "Proxy-Authorization": true, "Cookie": true, "Host": true,
+	"Accept-Encoding": true, "Content-Encoding": true, "Expect": true,
 	"Connection": true, "Transfer-Encoding": true, "Content-Length": true, "Upgrade": true,
 	"Te": true, "Trailer": true, "Keep-Alive": true, "Proxy-Connection": true, "Forwarded": true,
 	"X-Forwarded-For": true, "X-Forwarded-Host": true, "X-Forwarded-Proto": true, "X-Real-Ip": true,

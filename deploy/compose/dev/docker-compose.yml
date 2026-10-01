@@ -12,9 +12,10 @@ x-hardening: &hardening
   read_only: true
   cap_drop: [ALL]
   security_opt: ["no-new-privileges:true"]
+  pids_limit: 128
+  mem_limit: 256m
   volumes:
     - ../../../.dev-keys:/keys:ro
-  networks: [dev]
 
 services:
   mock-llm:
@@ -24,7 +25,8 @@ services:
       dockerfile: deploy/compose/dev/Dockerfile
       target: mock-llm
     image: aisec-dev/mock-llm
-    # Наружу не публикуется: доступен только шлюзу во внутренней сети.
+    # Только внутренняя сеть без выхода наружу: доступен лишь шлюзу.
+    networks: [internal]
     command: ["-listen", "0.0.0.0:9443", "-cert", "/keys/server.pem", "-key", "/keys/server-key.pem"]
 
   aisec-gateway:
@@ -34,6 +36,8 @@ services:
       dockerfile: deploy/compose/dev/Dockerfile
       target: aisec-gateway
     image: aisec-dev/aisec-gateway
+    # internal — к mock-llm; edge — только ради опубликованного порта.
+    networks: [internal, edge]
     command:
       - "-listen=0.0.0.0:8443"
       - "-tls-cert=/keys/server.pem"
@@ -46,4 +50,7 @@ services:
     depends_on: [mock-llm]
 
 networks:
-  dev: {}
+  # Внутренняя сеть без выхода в интернет.
+  internal:
+    internal: true
+  edge: {}

@@ -1,6 +1,8 @@
 package config
 
 import (
+	"errors"
+	"flag"
 	"io"
 	"strings"
 	"testing"
@@ -70,6 +72,7 @@ func TestLoadGatewayErrors(t *testing.T) {
 		"Authorization":           with("-forward-headers", "authorization"),
 		"Cookie":                  with("-forward-headers", "Cookie"),
 		"X-Forwarded-For":         with("-forward-headers", "x-forwarded-for"),
+		"Accept-Encoding":         with("-forward-headers", "accept-encoding"),
 		"имя заголовка":           with("-forward-headers", "X Bad"),
 		"лишний аргумент":         with("лишнее"),
 		"неизвестный флаг":        with("-debug"),
@@ -80,6 +83,26 @@ func TestLoadGatewayErrors(t *testing.T) {
 				t.Fatal("ожидалась ошибка")
 			}
 		})
+	}
+}
+
+func TestHelpDoesNotPrintEnvironment(t *testing.T) {
+	var out strings.Builder
+	_, err := LoadGateway([]string{"-h"}, env(map[string]string{"AISEC_GATEWAY_UPSTREAM_URL": "https://user:s3cr3t@host"}), &out)
+	if !errors.Is(err, flag.ErrHelp) {
+		t.Fatalf("ожидался flag.ErrHelp, получено %v", err)
+	}
+	if strings.Contains(out.String(), "s3cr3t") {
+		t.Fatal("справка печатает значение из окружения")
+	}
+	if !strings.Contains(out.String(), "AISEC_GATEWAY_UPSTREAM_URL") {
+		t.Fatal("справка не называет переменные окружения")
+	}
+}
+
+func TestEnvNames(t *testing.T) {
+	if got := envName("upstream-key-file"); got != "AISEC_GATEWAY_UPSTREAM_KEY_FILE" {
+		t.Fatal(got)
 	}
 }
 

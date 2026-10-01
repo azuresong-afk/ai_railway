@@ -73,7 +73,7 @@ vet: ## go vet (с cgo, чтобы проверялись и файлы с impor
 	CGO_ENABLED=1 go vet ./...
 
 .PHONY: dm-coverage
-dm-coverage: ## Покрытие матрицы обнаружения 5.16 тестами (строки с этапом не выше STAGE)
+dm-coverage: build ## Покрытие матрицы обнаружения 5.16 тестами (строки с этапом не выше STAGE)
 	@mkdir -p $(BUILD)
 	@# Падения тестов ловит make test; здесь нужен полный отчёт, поэтому код возврата не важен.
 	go test -count=1 -json ./... > $(BUILD)/dm-tests.json || true

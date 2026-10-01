@@ -39,7 +39,13 @@ type ProxyConfig struct {
 	MaxBodyBytes   int64
 	ForwardHeaders []string // дополнительные заголовки запроса
 	Logger         *slog.Logger
+	// BodyReadTimeout — предел времени на чтение тела запроса: медленная
+	// передача тела не должна занимать соединения. Ноль — DefaultBodyReadTimeout.
+	BodyReadTimeout time.Duration
 }
+
+// DefaultBodyReadTimeout — время на чтение тела запроса по умолчанию.
+const DefaultBodyReadTimeout = 30 * time.Second
 
 // Proxy проксирует POST /v1/chat/completions на один upstream.
 type Proxy struct {
@@ -64,13 +70,16 @@ func NewProxy(cfg ProxyConfig) (*Proxy, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	if cfg.BodyReadTimeout <= 0 {
+		cfg.BodyReadTimeout = DefaultBodyReadTimeout
+	}
 	p := &Proxy{cfg: cfg, logger: logger}
 	p.allowed = append(append([]string{}, defaultRequestHeaders...), cfg.ForwardHeaders...)
 	p.rp = &httputil.ReverseProxy{
 		Rewrite:        p.rewrite,
 		Transport:      cfg.Transport,
 		FlushInterval:  -1, // SSE: каждая часть уходит клиенту сразу
-		ModifyResponse: filterResponse,
+		ModifyResponse: p.filterResponse,
 		ErrorHandler:   p.upstreamError,
 		ErrorLog:       slog.NewLogLogger(logger.Handler(), slog.LevelWarn),
 	}
@@ -111,6 +120,9 @@ func NewTransport(tp aisecCrypto.TLSProvider, rootsPEM []byte, connectTimeout, h
 
 func (p *Proxy) rewrite(pr *httputil.ProxyRequest) {
 	pr.SetURL(p.cfg.Upstream)
+	// Строка запроса клиента провайдеру не передаётся: её содержимое не
+	// проходит проверки и могло бы унести данные мимо allowlist.
+	pr.Out.URL.RawQuery = ""
 	out := http.Header{}
 	for _, h := range p.allowed {
 		if v := pr.In.Header.Values(h); len(v) > 0 {
@@ -123,7 +135,23 @@ func (p *Proxy) rewrite(pr *httputil.ProxyRequest) {
 	pr.Out.Header = out
 }
 
-func filterResponse(resp *http.Response) error {
+func (p *Proxy) filterResponse(resp *http.Response) error {
+	// Ошибка аутентификации у провайдера относится к ключу шлюза, а не к
+	// приложению; тело провайдера может содержать часть ключа — не передаём.
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		p.logger.Warn("провайдер отклонил учётные данные шлюза", "status", resp.StatusCode)
+		if err := resp.Body.Close(); err != nil {
+			p.logger.Warn("закрытие ответа провайдера", "error", errorClass(err))
+		}
+		body := []byte(`{"error":{"message":"провайдер модели отклонил учётные данные шлюза","type":"upstream_error","code":"upstream_auth_error"}}` + "\n")
+		resp.StatusCode = http.StatusBadGateway
+		resp.Status = http.StatusText(http.StatusBadGateway)
+		resp.Header = http.Header{"Content-Type": {"application/json"}}
+		resp.Body = io.NopCloser(bytes.NewReader(body))
+		resp.ContentLength = int64(len(body))
+		resp.Trailer = nil
+		return nil
+	}
 	out := http.Header{}
 	for _, h := range responseHeaders {
 		if v := resp.Header.Values(h); len(v) > 0 {
@@ -131,7 +159,36 @@ func filterResponse(resp *http.Response) error {
 		}
 	}
 	resp.Header = out
+	// Трейлеры провайдера не передаются: allowlist относится и к ним.
+	// Транспорт заполняет resp.Trailer при чтении конца тела, поэтому они
+	// удаляются в этот момент, а не здесь.
+	resp.Trailer = nil
+	resp.Body = &trailerStripper{ReadCloser: resp.Body, resp: resp}
 	return nil
+}
+
+// trailerStripper удаляет трейлеры ответа, как только транспорт их прочитал.
+type trailerStripper struct {
+	io.ReadCloser
+	resp *http.Response
+}
+
+func (t *trailerStripper) Read(p []byte) (int, error) {
+	n, err := t.ReadCloser.Read(p)
+	if err != nil {
+		t.resp.Trailer = nil
+	}
+	return n, err
+}
+
+// errorClass — описание ошибки без адреса и строки запроса: в *url.Error они
+// есть, а в журнал попадать не должны.
+func errorClass(err error) string {
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		return ue.Op + ": " + errorClass(ue.Err)
+	}
+	return err.Error()
 }
 
 func (p *Proxy) upstreamError(w http.ResponseWriter, r *http.Request, err error) {
@@ -142,11 +199,11 @@ func (p *Proxy) upstreamError(w http.ResponseWriter, r *http.Request, err error)
 	}
 	var ne net.Error
 	if errors.As(err, &ne) && ne.Timeout() || errors.Is(err, context.DeadlineExceeded) {
-		p.logger.Warn("провайдер не ответил вовремя", "error", err)
+		p.logger.Warn("провайдер не ответил вовремя", "error", errorClass(err))
 		WriteError(w, http.StatusGatewayTimeout, "провайдер модели не ответил вовремя", "upstream_error", "upstream_timeout")
 		return
 	}
-	p.logger.Warn("провайдер недоступен", "error", err)
+	p.logger.Warn("провайдер недоступен", "error", errorClass(err))
 	WriteError(w, http.StatusBadGateway, "провайдер модели недоступен", "upstream_error", "upstream_unavailable")
 }
 
@@ -157,12 +214,26 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusUnsupportedMediaType, "ожидается Content-Type: application/json", "invalid_request_error", "unsupported_media_type")
 		return
 	}
+	rc := http.NewResponseController(w)
+	if err := rc.SetReadDeadline(time.Now().Add(p.cfg.BodyReadTimeout)); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		p.logger.Warn("не удалось ограничить время чтения тела", "error", err)
+	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, p.cfg.MaxBodyBytes))
+	// После чтения тела срок снимается: дальше соединение нужно для ответа,
+	// в том числе долгого потокового.
+	if derr := rc.SetReadDeadline(time.Time{}); derr != nil && !errors.Is(derr, http.ErrNotSupported) {
+		p.logger.Warn("не удалось снять срок чтения", "error", derr)
+	}
 	if err != nil {
 		var tooLarge *http.MaxBytesError
 		if errors.As(err, &tooLarge) {
 			WriteError(w, http.StatusRequestEntityTooLarge,
 				fmt.Sprintf("тело запроса больше %d байт", p.cfg.MaxBodyBytes), "invalid_request_error", "request_too_large")
+			return
+		}
+		var ne net.Error
+		if errors.As(err, &ne) && ne.Timeout() {
+			WriteError(w, http.StatusRequestTimeout, "тело запроса передавалось слишком долго", "invalid_request_error", "request_timeout")
 			return
 		}
 		WriteError(w, http.StatusBadRequest, "не удалось прочитать тело запроса", "invalid_request_error", "invalid_request")

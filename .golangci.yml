@@ -104,6 +104,10 @@ linters:
         - pattern: ^syscall\.(Exec|ForkExec|StartProcess)$
           pkg: "^syscall$"
           msg: "запуск процессов в обход запрета os/exec"
+        # Из syscall разрешён только SIGTERM для корректного завершения (ADR-0004).
+        - pattern: ^syscall\.([^S].*|S[^I].*|SI[^G].*|SIG[^T].*|SIGT[^E].*|SIGTE[^R].*|SIGTER[^M].*|SIGTERM.+|S|SI|SIG|SIGT|SIGTE|SIGTER)$
+          pkg: "^syscall$"
+          msg: "из syscall разрешён только SIGTERM (ADR-0004); прочее — отдельным ADR"
 
     gosec:
       config:

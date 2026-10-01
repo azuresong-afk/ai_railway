@@ -49,8 +49,12 @@ func newKeys(t *testing.T) keys {
 	return k
 }
 
+// promptMarker — текст промпта, которого не должно быть в журналах компонентов.
+const promptMarker = "секретный-промпт-e2e"
+
 // start запускает компонент на свободном порту и возвращает адрес из строки
-// журнала «сервер запущен».
+// журнала «сервер запущен». После теста проверяет, что в журнал не попал
+// текст промпта (технические логи — без содержимого запросов).
 func start(t *testing.T, name string, args ...string) string {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -84,6 +88,9 @@ func start(t *testing.T, name string, args ...string) string {
 			t.Errorf("%s завершился с ошибкой: %v", name, err)
 		}
 		<-done
+		if strings.Contains(logs.String(), promptMarker) {
+			t.Errorf("текст промпта попал в журнал %s", name)
+		}
 		if t.Failed() {
 			t.Logf("журнал %s:\n%s", name, logs.String())
 		}
@@ -142,7 +149,7 @@ func chat(t *testing.T, client *http.Client, url, body string, hdr map[string]st
 
 func TestE2EChatThroughGateway(t *testing.T) {
 	url, client := stand(t)
-	resp := chat(t, client, url, `{"model":"mock-echo","messages":[{"role":"user","content":"привет через шлюз"}]}`, nil)
+	resp := chat(t, client, url, `{"model":"mock-echo","messages":[{"role":"user","content":"привет через шлюз `+promptMarker+`"}]}`, nil)
 	defer resp.Body.Close() //nolint:errcheck // тело прочитано; ошибка закрытия в тесте не важна
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("код %d", resp.StatusCode)
@@ -153,7 +160,7 @@ func TestE2EChatThroughGateway(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		t.Fatal(err)
 	}
-	if len(out.Choices) != 1 || out.Choices[0].Message.Content != "привет через шлюз" {
+	if len(out.Choices) != 1 || out.Choices[0].Message.Content != "привет через шлюз "+promptMarker {
 		t.Fatalf("ответ: %+v", out)
 	}
 }

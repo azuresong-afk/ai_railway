@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -348,12 +349,21 @@ func TestNewProxyErrors(t *testing.T) {
 }
 
 // Обработчик входящих HTTP-запросов шлюза — цель фаззинга (ТЗ, 8.5).
+// Перебираются метод, путь со строкой запроса, тело, Content-Type и
+// произвольный заголовок; провайдеру должны уходить только заголовки из
+// allowlist и только объект JSON без строки запроса.
 func FuzzProxyHandler(f *testing.F) {
-	f.Add([]byte(chatBody), "application/json")
-	f.Add([]byte("{"), "application/json")
-	f.Add([]byte(`{"a":1}`), "text/plain")
-	f.Add([]byte(strings.Repeat("{", 2000)), "application/json; charset=utf-8")
+	f.Add("POST", "/v1/chat/completions", []byte(chatBody), "application/json", "X-Custom", "v")
+	f.Add("POST", "/v1/chat/completions?k=v", []byte("{"), "application/json", "Authorization", "Bearer x")
+	f.Add("GET", "/v1/models", []byte(`{"a":1}`), "text/plain", "Cookie", "a=b")
+	f.Add("POST", "/v1/chat/completions", []byte(strings.Repeat("{", 2000)), "application/json; charset=utf-8", "X-Forwarded-For", "1.2.3.4")
+	var mu sync.Mutex
+	var seen http.Header
+	var seenQuery string
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seen, seenQuery = r.Header.Clone(), r.URL.RawQuery
+		mu.Unlock()
 		if _, err := io.Copy(w, r.Body); err != nil {
 			return
 		}
@@ -368,17 +378,179 @@ func FuzzProxyHandler(f *testing.F) {
 		f.Fatal(err)
 	}
 	g := New(Options{Logger: quiet(), Proxy: p})
-	allowed := map[int]bool{200: true, 400: true, 413: true, 415: true}
-	f.Fuzz(func(t *testing.T, body []byte, ctype string) {
-		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/chat/completions", strings.NewReader(string(body)))
+	// Что может прийти провайдеру: allowlist шлюза и то, что добавляет сам транспорт Go.
+	allowedUp := map[string]bool{"Content-Type": true, "Accept": true, "User-Agent": true, "X-Request-Id": true,
+		"Content-Length": true, "Accept-Encoding": true}
+	allowedCodes := map[int]bool{200: true, 400: true, 404: true, 405: true, 413: true, 415: true}
+	f.Fuzz(func(t *testing.T, method, target string, body []byte, ctype, hName, hValue string) {
+		if !strings.HasPrefix(target, "/") {
+			return
+		}
+		req, err := http.NewRequestWithContext(context.Background(), method, "http://gw"+target, strings.NewReader(string(body)))
+		if err != nil {
+			return // такой запрос не построить и клиенту
+		}
 		req.Header.Set("Content-Type", ctype)
+		if hName != "" {
+			req.Header.Set(hName, hValue)
+		}
+		mu.Lock()
+		seen, seenQuery = nil, ""
+		mu.Unlock()
 		rec := httptest.NewRecorder()
 		g.ServeHTTP(rec, req)
-		if !allowed[rec.Code] {
+		if !allowedCodes[rec.Code] {
 			t.Fatalf("неожиданный код %d: %q", rec.Code, rec.Body.String())
 		}
-		if rec.Code == 200 && !isJSONObject(body) {
+		mu.Lock()
+		defer mu.Unlock()
+		if seen == nil {
+			return // до провайдера запрос не дошёл
+		}
+		if !isJSONObject(body) {
 			t.Fatalf("провайдеру ушло тело, которое не объект JSON: %q", body)
+		}
+		if seenQuery != "" {
+			t.Fatalf("провайдеру ушла строка запроса %q", seenQuery)
+		}
+		for h := range seen {
+			if !allowedUp[h] {
+				t.Fatalf("провайдеру ушёл заголовок %s", h)
+			}
 		}
 	})
 }
+
+func TestProxyDropsQueryString(t *testing.T) {
+	var gotQuery string
+	up, _ := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.RawQuery
+		w.WriteHeader(http.StatusOK)
+	})
+	g := newGateway(t, up.URL, nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/chat/completions?api_key=secret&x=1", strings.NewReader(chatBody))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	g.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || gotQuery != "" {
+		t.Fatalf("строка запроса ушла провайдеру: %q (код %d)", gotQuery, rec.Code)
+	}
+}
+
+func TestProxyDropsTrailers(t *testing.T) {
+	up, _ := newUpstream(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Trailer", "X-Secret-Trailer")
+		w.WriteHeader(http.StatusOK)
+		if _, err := io.WriteString(w, "{}"); err != nil {
+			t.Error(err)
+		}
+		w.Header().Set("X-Secret-Trailer", "secret")
+	})
+	gw := httptest.NewServer(newGateway(t, up.URL, nil))
+	defer gw.Close()
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, gw.URL+"/v1/chat/completions", strings.NewReader(chatBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := gw.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close() //nolint:errcheck // тело читается ниже
+	if _, err := io.ReadAll(resp.Body); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Trailer.Get("X-Secret-Trailer") != "" {
+		t.Fatal("трейлер провайдера дошёл до приложения")
+	}
+}
+
+func TestProxyHidesUpstreamAuthErrorBody(t *testing.T) {
+	for _, code := range []int{http.StatusUnauthorized, http.StatusForbidden} {
+		up, _ := newUpstream(t, func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(code)
+			if _, err := io.WriteString(w, `{"error":{"message":"Incorrect API key provided: sk-...abcd"}}`); err != nil {
+				t.Error(err)
+			}
+		})
+		resp := postChat(t, newGateway(t, up.URL, func(c *ProxyConfig) { c.UpstreamKey = "sk-provider-abcd" }), chatBody, nil)
+		if resp.Code != http.StatusBadGateway || errCode(t, resp) != "upstream_auth_error" || strings.Contains(resp.Body.String(), "abcd") {
+			t.Fatalf("%d от провайдера: %d %s", code, resp.Code, resp.Body.String())
+		}
+	}
+}
+
+// Медленная передача тела не занимает соединение дольше предела.
+func TestProxySlowBodyTimesOut(t *testing.T) {
+	up, rec := newUpstream(t, nil)
+	gw := httptest.NewServer(newGateway(t, up.URL, func(c *ProxyConfig) { c.BodyReadTimeout = 200 * time.Millisecond }))
+	defer gw.Close()
+	pr, pw := io.Pipe()
+	go func() {
+		if _, err := io.WriteString(pw, `{"model":`); err != nil {
+			return
+		}
+		time.Sleep(2 * time.Second)
+		pw.Close() //nolint:errcheck,gosec // конец медленного тела; ошибка в тесте не важна
+	}()
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, gw.URL+"/v1/chat/completions", pr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	start := time.Now()
+	resp, err := gw.Client().Do(req)
+	if err == nil {
+		defer resp.Body.Close() //nolint:errcheck // тест проверяет только код
+		if resp.StatusCode != http.StatusRequestTimeout {
+			t.Fatalf("медленное тело: код %d", resp.StatusCode)
+		}
+	}
+	if time.Since(start) > 1500*time.Millisecond {
+		t.Fatalf("медленное тело держало соединение %s", time.Since(start))
+	}
+	if _, _, _, calls := rec.get(); calls != 0 {
+		t.Fatal("медленный запрос дошёл до провайдера")
+	}
+}
+
+// В журнал шлюза не попадают содержимое запроса, ключ провайдера и
+// клиентский Authorization (ТЗ: логи без содержимого и секретов).
+func TestProxyLogsHaveNoSecrets(t *testing.T) {
+	var logs strings.Builder
+	var mu sync.Mutex
+	logger := slog.New(slog.NewJSONHandler(writerFunc(func(p []byte) (int, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		return logs.Write(p)
+	}), &slog.HandlerOptions{Level: slog.LevelDebug}))
+	dead := httptest.NewServer(http.NotFoundHandler())
+	deadURL := dead.URL
+	dead.Close()
+	up, _ := newUpstream(t, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusUnauthorized) })
+	for _, target := range []string{deadURL, up.URL} {
+		g := newGateway(t, target, func(c *ProxyConfig) { c.UpstreamKey = "sk-provider-secret"; c.Logger = logger })
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/chat/completions?token=query-secret",
+			strings.NewReader(`{"model":"m","messages":[{"role":"user","content":"промпт-секрет"}]}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer client-secret")
+		g.ServeHTTP(httptest.NewRecorder(), req)
+	}
+	mu.Lock()
+	out := logs.String()
+	mu.Unlock()
+	if out == "" {
+		t.Fatal("журнал пуст — тест ничего не проверяет")
+	}
+	for _, secret := range []string{"промпт-секрет", "sk-provider-secret", "client-secret", "query-secret"} {
+		if strings.Contains(out, secret) {
+			t.Errorf("в журнал попало %q:\n%s", secret, out)
+		}
+	}
+}
+
+type writerFunc func([]byte) (int, error)
+
+func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
