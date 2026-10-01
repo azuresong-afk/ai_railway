@@ -101,3 +101,45 @@ components:
     decision: план этапа 0, Д3
     decided: 2026-09-29
     makefile_var: SBOM_UTILITY_VERSION
+
+  - name: golang (образ Docker)
+    version: 1.27.1-bookworm@sha256:69a7b9788769bec032d238959b61854e9ae87f57be9029ec04e9885fabf99195
+    type: image
+    scope: build
+    purpose: Основа сборочного образа (deploy/build/Dockerfile) и стадии сборки образов стенда разработки.
+    license: BSD-3-Clause
+    repository: https://github.com/docker-library/golang
+    attack_surface: false
+    security_function: false
+    provided_by: Docker Official Images (Docker, Inc.); Go — The Go Authors
+    justification: Официальный образ Go закреплён по digest (ТЗ, 8.7). Внутри — пакеты Debian под разными лицензиями, в том числе GPL; в продукт они не попадают — образы поставки собираются в scratch (ADR-0003).
+    decision: план этапа 0, Д4; ADR-0003
+    decided: 2026-10-01
+
+  - name: actions/checkout
+    version: v7.0.1@3d3c42e5aac5ba805825da76410c181273ba90b1
+    type: github-action
+    scope: build
+    purpose: Получение кода в CI.
+    license: MIT
+    repository: https://github.com/actions/checkout
+    attack_surface: false
+    security_function: false
+    provided_by: GitHub, Inc.
+    justification: Стандартный шаг CI; закреплён по SHA коммита (ADR-0002).
+    decision: план этапа 0, Д4; ADR-0002
+    decided: 2026-10-01
+
+  - name: actions/upload-artifact
+    version: v7.0.1@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+    type: github-action
+    scope: build
+    purpose: Выгрузка отчётов CI (SARIF, SBOM, покрытие матрицы) и найденных падений фаззинга.
+    license: MIT
+    repository: https://github.com/actions/upload-artifact
+    attack_surface: false
+    security_function: false
+    provided_by: GitHub, Inc.
+    justification: Стандартный шаг CI; закреплён по SHA коммита (ADR-0002).
+    decision: план этапа 0, Д4; ADR-0002
+    decided: 2026-10-01

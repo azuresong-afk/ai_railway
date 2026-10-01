@@ -191,6 +191,11 @@ func run(fsys fs.FS) ([]string, error) {
 	if !toolchainFound {
 		add("в реестре нет записи о Go toolchain (type: toolchain)")
 	}
+	pinProblems, err := checkPins(fsys, reg)
+	if err != nil {
+		return nil, err
+	}
+	problems = append(problems, pinProblems...)
 	sort.Strings(problems)
 	return problems, nil
 }
@@ -220,6 +225,74 @@ func licenseFiles(fsys fs.FS, dir string, hasher aisecCrypto.Hasher) (map[string
 		out[e.Name()] = hex.EncodeToString(hasher.Sum(data))
 	}
 	return out, nil
+}
+
+var (
+	usesRe      = regexp.MustCompile(`(?m)^\s*(?:-\s*)?uses:\s*([^\s@#]+)@(\S+)`)
+	golangImgRe = regexp.MustCompile(`golang:([^\s"']+)`)
+	shaRe       = regexp.MustCompile(`^[0-9a-f]{40}$`)
+)
+
+// checkPins сверяет закреплённые версии в CI и Dockerfile с реестром:
+// каждое действие GitHub — по SHA коммита и записано в реестре с тем же SHA,
+// каждый образ golang — по digest и записан в реестре с той же версией.
+func checkPins(fsys fs.FS, reg *components.Registry) ([]string, error) {
+	var problems []string
+	actions := map[string]string{}
+	images := map[string]bool{}
+	for _, c := range reg.Components {
+		switch c.Type {
+		case components.TypeGitHubAction:
+			if i := strings.LastIndexByte(c.Version, '@'); i >= 0 {
+				actions[c.Name] = c.Version[i+1:]
+			}
+		case components.TypeImage:
+			images[c.Version] = true
+		}
+	}
+	workflows, err := fs.Glob(fsys, ".github/workflows/*.yml")
+	if err != nil {
+		return nil, err
+	}
+	for _, wf := range workflows {
+		data, err := readLimited(fsys, wf)
+		if err != nil {
+			return nil, err
+		}
+		for _, m := range usesRe.FindAllStringSubmatch(string(data), -1) {
+			name, ref := m[1], m[2]
+			switch {
+			case !shaRe.MatchString(ref):
+				problems = append(problems, fmt.Sprintf("%s: %s@%s — действие закрепляется по SHA коммита (ADR-0002)", wf, name, ref))
+			case actions[name] == "":
+				problems = append(problems, fmt.Sprintf("%s: действия %s нет в реестре (type: github-action)", wf, name))
+			case actions[name] != ref:
+				problems = append(problems, fmt.Sprintf("%s: %s@%s, а в реестре SHA %s", wf, name, ref, actions[name]))
+			}
+		}
+	}
+	err = fs.WalkDir(fsys, "deploy", func(p string, d fs.DirEntry, err error) error {
+		if errors.Is(err, fs.ErrNotExist) {
+			return fs.SkipDir
+		}
+		if err != nil || d.IsDir() || d.Name() != "Dockerfile" {
+			return err
+		}
+		data, err := readLimited(fsys, p)
+		if err != nil {
+			return err
+		}
+		for _, m := range golangImgRe.FindAllStringSubmatch(string(data), -1) {
+			switch {
+			case !strings.Contains(m[1], "@sha256:"):
+				problems = append(problems, fmt.Sprintf("%s: образ golang:%s не закреплён по digest (ТЗ, 8.7)", p, m[1]))
+			case !images[m[1]]:
+				problems = append(problems, fmt.Sprintf("%s: образа golang:%s нет в реестре (type: image)", p, m[1]))
+			}
+		}
+		return nil
+	})
+	return problems, err
 }
 
 // goDirective возвращает значение директивы go.mod («go», «toolchain»).

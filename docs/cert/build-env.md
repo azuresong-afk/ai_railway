@@ -7,7 +7,12 @@
 
 Образы стенда разработки (`deploy/compose/dev/Dockerfile`): сборка в этом образе без сети (`GOFLAGS=-mod=vendor`, `GOPROXY=off`, `GOTOOLCHAIN=local`), запуск в `scratch` — только статический бинарник, без оболочки и пакетов ОС. В контекст сборки попадают только `go.mod`, `go.sum`, `vendor/`, `cmd/`, `internal/` (`Dockerfile.dockerignore`). Контейнеры: файловая система только для чтения, без привилегий (`cap_drop: ALL`, `no-new-privileges`), от UID пользователя, запустившего стенд.
 
-Сборочный образ со всеми инструментами для `make check` — задача 0.15.
+**Сборочный образ** (`deploy/build/Dockerfile`, `make build-image`) — тот же базовый образ плюс golangci-lint, govulncheck и sbom-utility в версиях из `Makefile` (передаются аргументами сборки; другого места с версиями нет). Инструменты ставятся в `/opt/aisec-tools/bin`, кеши — во временном каталоге.
+- `make check-docker` — `make check` в сборочном образе от UID пользователя: это проверка «на чистой машине» (критерий приёмки этапа 0).
+- `make check-offline VULNDB_DIR=<снимок>` — то же без сети (`--network=none`) с локальной базой уязвимостей: доказательство сборки без интернета (ADR-0003).
+- `make fuzz-long-docker` — ночной длительный фаззинг.
+
+Закреплённые версии сверяет `make licenses`: каждый образ `golang:` в `deploy/**/Dockerfile` — по digest и с той же версией, что в `components.yaml`; каждое действие в `.github/workflows/` — по SHA коммита и с тем же SHA, что в реестре.
 
 ## Инструменты
 Инструменты разработки не входят в поставку и не попадают в SBOM продукта; они учитываются в `docs/cert/components.yaml` с `scope: build` (решение Д5 плана этапа 0). `make licenses` (`tools/license-check`) сверяет реестр с `vendor/modules.txt`, версией toolchain в `go.mod` и версиями инструментов в `Makefile` и проверяет лицензии по политике `CLAUDE.md`: GPL допускается только для `scope: build` с `license_decision` (ADR-0003), MPL-2.0 и LGPL — только с `license_decision`, неизвестный идентификатор считается запрещённым. Версии зафиксированы в начале `Makefile`, установка — `make tools` в `bin/`.
@@ -36,7 +41,13 @@
 Сборка: `go build -trimpath -ldflags '-s -w -buildid= …'`, результат в `build/bin/`. Инструменты разработки ставятся `make tools` в `bin/` по версиям из переменных в начале `Makefile`.
 
 ## CI
-Заполняется в задаче 0.16 плана этапа 0.
+GitHub Actions — тонкая обёртка над `make` (ADR-0002):
+- `.github/workflows/check.yml` — на каждый pull request и push в `main`: `make check-docker`, выгрузка отчётов (SARIF, SBOM, покрытие матрицы) как артефактов на 90 дней. Права токена — только `contents: read`, учётные данные git после получения кода не сохраняются (`persist-credentials: false`).
+- `.github/workflows/fuzz-nightly.yml` — каждую ночь `make fuzz-long-docker`; при падении выгружаются найденные входы.
+- Сторонние действия закреплены по SHA коммита: `actions/checkout` v7.0.1, `actions/upload-artifact` v7.0.1.
+- `make vuln` в CI работает по онлайн-базе vuln.go.dev.
+
+**Настройки репозитория (делает владелец вручную):** защита `main` — обязательный pull request с одобрением, обязательная проверка `check`, запрет force-push и удаления; в настройках Actions — разрешить только действия, закреплённые по SHA, и права `GITHUB_TOKEN` по умолчанию «только чтение».
 
 ## Сборка без интернета
 Решение — [ADR-0003](../adr/0003-sborochnaya-sreda-i-offlain.md).

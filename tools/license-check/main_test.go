@@ -146,6 +146,71 @@ func TestRunBrokenInputs(t *testing.T) {
 	}
 }
 
+func TestCheckPins(t *testing.T) {
+	reg := goodRegistry + `  - name: actions/checkout
+    version: v7.0.1@3d3c42e5aac5ba805825da76410c181273ba90b1
+    type: github-action
+    scope: build
+    purpose: p
+    license: MIT
+    repository: https://github.com/actions/checkout
+    attack_surface: false
+    security_function: false
+    provided_by: GitHub
+    justification: j
+    decision: d
+    decided: 2026-10-01
+  - name: golang
+    version: 1.27.1-bookworm@sha256:aaaa
+    type: image
+    scope: build
+    purpose: p
+    license: BSD-3-Clause
+    repository: https://github.com/docker-library/golang
+    attack_surface: false
+    security_function: false
+    provided_by: Docker
+    justification: j
+    decision: d
+    decided: 2026-10-01
+`
+	good := func() fstest.MapFS {
+		f := repo(reg, "# example.com/m v1.0.0\n")
+		f[".github/workflows/ci.yml"] = &fstest.MapFile{Data: []byte("steps:\n  - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\n")}
+		f["deploy/build/Dockerfile"] = &fstest.MapFile{Data: []byte("ARG GO_IMAGE=golang:1.27.1-bookworm@sha256:aaaa\nFROM ${GO_IMAGE}\n")}
+		return f
+	}
+	problems, err := run(good())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(problems) != 0 {
+		t.Fatalf("ожидалось без нарушений: %q", problems)
+	}
+	cases := map[string]struct {
+		file, data, want string
+	}{
+		"тег вместо SHA":     {".github/workflows/ci.yml", "      - uses: actions/checkout@v7\n", "по SHA"},
+		"другой SHA":         {".github/workflows/ci.yml", "- uses: actions/checkout@0000000000000000000000000000000000000000\n", "в реестре SHA"},
+		"нет в реестре":      {".github/workflows/ci.yml", "- uses: actions/cache@0000000000000000000000000000000000000000\n", "нет в реестре"},
+		"образ без digest":   {"deploy/x/Dockerfile", "FROM golang:1.27.1-bookworm\n", "не закреплён"},
+		"образ не в реестре": {"deploy/x/Dockerfile", "FROM golang:1.27.1-bookworm@sha256:bbbb\n", "нет в реестре"},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := good()
+			f[c.file] = &fstest.MapFile{Data: []byte(c.data)}
+			problems, err := run(f)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(strings.Join(problems, "\n"), c.want) {
+				t.Fatalf("ожидалось нарушение %q, получено %q", c.want, problems)
+			}
+		})
+	}
+}
+
 func TestMakefileVars(t *testing.T) {
 	got := makefileVars([]byte("A := 1\nB ?= x\nC = y\nlower := no\nD := two words\n\tE := tab\n"))
 	if got["A"] != "1" || got["C"] != "y" || got["B"] != "" || got["lower"] != "" || got["D"] != "" || got["E"] != "" {

@@ -49,7 +49,7 @@
 | 0.12 | Шлюз: каркас, конфигурация, health | 0,5 | 0.10 | готова |
 | 0.13 | Шлюз: прозрачный прокси `/v1/chat/completions` с SSE | 1 | 0.11, 0.12 | готова |
 | 0.14 | e2e и docker compose для разработки | 1 | 0.13 | готова |
-| 0.15 | Сборочная среда и CI | 1 | 0.5–0.9, 0.14, Д4 | не начата |
+| 0.15 | Сборочная среда и CI | 1 | 0.5–0.9, 0.14, Д4 | готова |
 | 0.16 | Черновики документов сертификации | 1 | 0.15 | не начата |
 | 0.17 | Закрытие этапа | 0,5 | все | не начата |
 
@@ -215,7 +215,7 @@
 **Проверки.** Workflow проходит на pull request этой задачи; `make check-docker` и `make check-offline` локально.
 **Документы (раздел 9).** `build-env.md` (образ, digest, инструменты, CI), `attack-surface.md` (не меняется — CI не входит в продукт).
 **Зависит от.** Д4.
-**Статус.** не начата.
+**Статус.** готова. `deploy/build/Dockerfile` и `make build-image` (версии инструментов только из `Makefile`), `make check-docker`, `make check-offline VULNDB_DIR=…`, `make fuzz-long-docker`; `.github/workflows/check.yml` и `fuzz-nightly.yml` (права `contents: read`, действия по SHA). Образ и действия внесены в `components.yaml`; `make licenses` сверяет digest и SHA в Dockerfile и workflow с реестром. **В облачной среде не проверено: нет демона Docker** — сборочный образ, `check-docker` и workflow впервые выполнятся в CI на pull request. Настройки защиты `main` — вручную владельцем (`build-env.md`, раздел «CI»).
 
 ## 0.16 Черновики документов сертификации — 1 день
 **Результат.** Наполненные черновики:

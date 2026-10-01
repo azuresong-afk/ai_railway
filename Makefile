@@ -37,7 +37,8 @@ SBOM_UTILITY_VERSION  := v1.0.1
 # Прокси модулей только для make tools; контрольные суммы сверяются с sum.golang.org.
 TOOLS_GOPROXY ?= https://proxy.golang.org
 
-BIN   := $(CURDIR)/bin
+# В сборочном образе инструменты лежат в /opt/aisec-tools/bin (make check-docker).
+BIN   ?= $(CURDIR)/bin
 BUILD := $(CURDIR)/build
 
 # Компоненты в поставке. mock-llm в поставку не входит.
@@ -196,6 +197,36 @@ dev-down: ## Остановить стенд разработки
 .PHONY: devcerts
 devcerts: ## Сертификаты стенда разработки в .dev-keys/ (УЦ и сервер; ключ УЦ не сохраняется)
 	go run ./tools/devcerts -out .dev-keys -force
+
+# Сборочный образ (deploy/build/Dockerfile): версии инструментов — из переменных выше.
+BUILD_IMAGE := aisec-build:$(GO_VERSION)-lint$(GOLANGCI_LINT_VERSION)-vuln$(GOVULNCHECK_VERSION)-sbom$(SBOM_UTILITY_VERSION)
+DOCKER_RUN  := docker run --rm --user $$(id -u):$$(id -g) -v $(CURDIR):/src -w /src
+
+.PHONY: build-image
+build-image: ## Собрать сборочный образ со всеми инструментами make check
+	docker build -f deploy/build/Dockerfile \
+		--build-arg GOLANGCI_LINT_VERSION=$(GOLANGCI_LINT_VERSION) \
+		--build-arg GOVULNCHECK_VERSION=$(GOVULNCHECK_VERSION) \
+		--build-arg SBOM_UTILITY_VERSION=$(SBOM_UTILITY_VERSION) \
+		-t $(BUILD_IMAGE) deploy/build
+
+.PHONY: check-docker
+check-docker: build-image ## make check в сборочном образе — «чистая машина»
+	$(DOCKER_RUN) $(BUILD_IMAGE) make check BIN=/opt/aisec-tools/bin
+
+# Снимок базы уязвимостей Go для закрытого контура (ADR-0003): каталог в
+# формате базы (index/, ID/). Передаётся явно: VULNDB_DIR=/путь make check-offline.
+VULNDB_DIR ?=
+
+.PHONY: fuzz-long-docker
+fuzz-long-docker: build-image ## Длительный фаззинг в сборочном образе (ночной CI)
+	$(DOCKER_RUN) $(BUILD_IMAGE) make fuzz-long BIN=/opt/aisec-tools/bin
+
+.PHONY: check-offline
+check-offline: build-image ## make check в сборочном образе без сети (нужен VULNDB_DIR со снимком базы уязвимостей)
+	@test -n "$(VULNDB_DIR)" || { echo "Укажите VULNDB_DIR — каталог со снимком базы уязвимостей Go (ADR-0003)"; exit 1; }
+	$(DOCKER_RUN) --network=none -v $(abspath $(VULNDB_DIR)):/govulndb:ro $(BUILD_IMAGE) \
+		make check BIN=/opt/aisec-tools/bin GOVULNDB=file:///govulndb
 
 .PHONY: clean
 clean: ## Удалить результаты сборки
