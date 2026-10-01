@@ -9,6 +9,8 @@
 # Поля:
 #   name, version        — имя и точная версия.
 #   type                 — go-module | toolchain | tool | image | github-action.
+#                          Для image: name — репозиторий образа (golang), version — «тег@sha256:…».
+#                          Для github-action: version — «тег@SHA коммита».
 #   scope                — product (в поставке, в SBOM) | build (только сборочная среда, ADR-0003).
 #   purpose              — зачем нужен.
 #   license              — выражение SPDX (AND, OR, скобки).
@@ -102,12 +104,14 @@ components:
     decided: 2026-09-29
     makefile_var: SBOM_UTILITY_VERSION
 
-  - name: golang (образ Docker)
+  - name: golang
     version: 1.27.1-bookworm@sha256:69a7b9788769bec032d238959b61854e9ae87f57be9029ec04e9885fabf99195
     type: image
     scope: build
     purpose: Основа сборочного образа (deploy/build/Dockerfile) и стадии сборки образов стенда разработки.
-    license: BSD-3-Clause
+    # Go — BSD-3-Clause; пакеты Debian в образе (gcc, make, bash, git и др.) — в том числе GPL и LGPL.
+    license: BSD-3-Clause AND GPL-2.0-or-later AND GPL-3.0-or-later AND LGPL-2.1-or-later
+    license_decision: ADR-0003 — образ сборочной среды, в поставку не входит; образы поставки собираются в scratch
     repository: https://github.com/docker-library/golang
     attack_surface: false
     security_function: false

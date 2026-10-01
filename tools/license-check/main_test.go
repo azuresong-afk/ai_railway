@@ -147,6 +147,7 @@ func TestRunBrokenInputs(t *testing.T) {
 }
 
 func TestCheckPins(t *testing.T) {
+	const digest = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	reg := goodRegistry + `  - name: actions/checkout
     version: v7.0.1@3d3c42e5aac5ba805825da76410c181273ba90b1
     type: github-action
@@ -161,7 +162,7 @@ func TestCheckPins(t *testing.T) {
     decision: d
     decided: 2026-10-01
   - name: golang
-    version: 1.27.1-bookworm@sha256:aaaa
+    version: 1.27.1-bookworm@sha256:` + digest + `
     type: image
     scope: build
     purpose: p
@@ -174,10 +175,12 @@ func TestCheckPins(t *testing.T) {
     decision: d
     decided: 2026-10-01
 `
+	const checkout = "  - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\n"
 	good := func() fstest.MapFS {
 		f := repo(reg, "# example.com/m v1.0.0\n")
-		f[".github/workflows/ci.yml"] = &fstest.MapFile{Data: []byte("steps:\n  - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\n")}
-		f["deploy/build/Dockerfile"] = &fstest.MapFile{Data: []byte("ARG GO_IMAGE=golang:1.27.1-bookworm@sha256:aaaa\nFROM ${GO_IMAGE}\n")}
+		f[".github/workflows/ci.yml"] = &fstest.MapFile{Data: []byte("steps:\n" + checkout + "  - uses: ./.github/actions/local\n")}
+		f["deploy/build/Dockerfile"] = &fstest.MapFile{Data: []byte("ARG GO_IMAGE=golang:1.27.1-bookworm@sha256:" + digest +
+			"\nFROM ${GO_IMAGE} AS build\nFROM build AS test\nFROM scratch\nCOPY --from=build /x /x\n")}
 		return f
 	}
 	problems, err := run(good())
@@ -190,11 +193,20 @@ func TestCheckPins(t *testing.T) {
 	cases := map[string]struct {
 		file, data, want string
 	}{
-		"тег вместо SHA":     {".github/workflows/ci.yml", "      - uses: actions/checkout@v7\n", "по SHA"},
-		"другой SHA":         {".github/workflows/ci.yml", "- uses: actions/checkout@0000000000000000000000000000000000000000\n", "в реестре SHA"},
-		"нет в реестре":      {".github/workflows/ci.yml", "- uses: actions/cache@0000000000000000000000000000000000000000\n", "нет в реестре"},
-		"образ без digest":   {"deploy/x/Dockerfile", "FROM golang:1.27.1-bookworm\n", "не закреплён"},
-		"образ не в реестре": {"deploy/x/Dockerfile", "FROM golang:1.27.1-bookworm@sha256:bbbb\n", "нет в реестре"},
+		"тег вместо SHA":          {".github/workflows/ci.yml", checkout + "      - uses: actions/cache@v4\n", "по SHA"},
+		"другой SHA":              {".github/workflows/ci.yml", "- uses: actions/checkout@0000000000000000000000000000000000000000\n", "в реестре SHA"},
+		"нет в реестре":           {".github/workflows/ci.yml", checkout + "- uses: actions/cache@0000000000000000000000000000000000000000\n", "нет в реестре"},
+		"workflow .yaml":          {".github/workflows/x.yaml", checkout + "  - uses: actions/cache@v4\n", "x.yaml"},
+		"составное действие":      {".github/actions/a/action.yml", "runs:\n  steps:\n    - uses: \"actions/cache@v4\"\n", "action.yml"},
+		"docker без digest":       {".github/workflows/x.yml", checkout + "  - uses: docker://alpine:3\n", "по digest"},
+		"чужой образ без digest":  {"deploy/x/Dockerfile", "FROM alpine:3\n", "не закреплён"},
+		"Dockerfile с суффиксом":  {"deploy/x/Dockerfile.dev", "FROM golang:1.27.1-bookworm\n", "Dockerfile.dev"},
+		"Dockerfile вне deploy":   {"tools/x/Dockerfile", "FROM alpine:3\n", "tools/x/Dockerfile"},
+		"короткий digest":         {"deploy/x/Dockerfile", "FROM golang:1.27.1-bookworm@sha256:aaaa\n", "не закреплён"},
+		"образ не в реестре":      {"deploy/x/Dockerfile", "FROM postgres:17@sha256:" + digest + "\n", "нет в реестре"},
+		"неизвестный аргумент":    {"deploy/x/Dockerfile", "FROM ${NOPE}\n", "не задано"},
+		"неиспользуемое действие": {".github/workflows/ci.yml", "steps: []\n", "не используется в .github"},
+		"неиспользуемый образ":    {"deploy/build/Dockerfile", "FROM scratch\n", "не используется ни в одном Dockerfile"},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -208,6 +220,19 @@ func TestCheckPins(t *testing.T) {
 				t.Fatalf("ожидалось нарушение %q, получено %q", c.want, problems)
 			}
 		})
+	}
+	// Неверный формат версий в самом реестре.
+	bad := strings.Replace(reg, "@sha256:"+digest, "@sha256:abc", 1)
+	bad = strings.Replace(bad, "v7.0.1@3d3c42e5aac5ba805825da76410c181273ba90b1", "v7.0.1", 1)
+	f := good()
+	f["docs/cert/components.yaml"] = &fstest.MapFile{Data: []byte(bad)}
+	problems, err = run(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(problems, "\n")
+	if !strings.Contains(joined, "«тег@sha256:<64 hex>»") || !strings.Contains(joined, "«тег@SHA коммита»") {
+		t.Fatalf("неверный формат версий в реестре не пойман: %q", problems)
 	}
 }
 

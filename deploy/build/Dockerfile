@@ -15,6 +15,8 @@ ARG SBOM_UTILITY_VERSION
 ENV GOBIN=/opt/aisec-tools/bin \
     PATH=/opt/aisec-tools/bin:/usr/local/go/bin:$PATH \
     GOTOOLCHAIN=local
+# Только прокси модулей, без загрузки прямо из VCS (direct), как в make tools.
+ARG GOPROXY=https://proxy.golang.org
 RUN test -n "$GOLANGCI_LINT_VERSION" && test -n "$GOVULNCHECK_VERSION" && test -n "$SBOM_UTILITY_VERSION" \
  && GOFLAGS=-mod=mod go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${GOLANGCI_LINT_VERSION} \
  && GOFLAGS=-mod=mod go install golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION} \

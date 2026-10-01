@@ -24,6 +24,7 @@ import (
 
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/tools/internal/components"
+	"github.com/azuresong-afk/ai_railway/tools/internal/repofs"
 )
 
 func main() {
@@ -228,71 +229,153 @@ func licenseFiles(fsys fs.FS, dir string, hasher aisecCrypto.Hasher) (map[string
 }
 
 var (
-	usesRe      = regexp.MustCompile(`(?m)^\s*(?:-\s*)?uses:\s*([^\s@#]+)@(\S+)`)
-	golangImgRe = regexp.MustCompile(`golang:([^\s"']+)`)
-	shaRe       = regexp.MustCompile(`^[0-9a-f]{40}$`)
+	usesRe   = regexp.MustCompile(`(?m)^\s*(?:-\s*)?uses:\s*["']?([^\s"'#]+)`)
+	shaRe    = regexp.MustCompile(`^[0-9a-f]{40}$`)
+	digestRe = regexp.MustCompile(`@sha256:[0-9a-f]{64}$`)
+	fromRe   = regexp.MustCompile(`(?im)^\s*FROM\s+(?:--\S+\s+)*(\S+)(?:\s+AS\s+(\S+))?`)
+	argRe    = regexp.MustCompile(`(?im)^\s*ARG\s+([A-Za-z_][A-Za-z0-9_]*)=(\S+)`)
+	varRe    = regexp.MustCompile(`^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$`)
 )
 
 // checkPins сверяет закреплённые версии в CI и Dockerfile с реестром:
-// каждое действие GitHub — по SHA коммита и записано в реестре с тем же SHA,
-// каждый образ golang — по digest и записан в реестре с той же версией.
+//   - каждое действие GitHub (в workflow и составных действиях) — по SHA
+//     коммита и с тем же SHA, что в реестре; docker://-действия — по digest;
+//   - каждый образ в FROM любого Dockerfile — по digest и записан в реестре
+//     (имя записи — репозиторий образа, версия — «тег@sha256:…»);
+//   - записи github-action и image, которые нигде не используются, — ошибка.
 func checkPins(fsys fs.FS, reg *components.Registry) ([]string, error) {
 	var problems []string
+	add := func(format string, a ...any) { problems = append(problems, fmt.Sprintf(format, a...)) }
 	actions := map[string]string{}
-	images := map[string]bool{}
+	images := map[string]string{} // репозиторий → «тег@sha256:…»
+	usedActions, usedImages := map[string]bool{}, map[string]bool{}
 	for _, c := range reg.Components {
 		switch c.Type {
 		case components.TypeGitHubAction:
-			if i := strings.LastIndexByte(c.Version, '@'); i >= 0 {
-				actions[c.Name] = c.Version[i+1:]
+			i := strings.LastIndexByte(c.Version, '@')
+			if i < 0 || !shaRe.MatchString(c.Version[i+1:]) {
+				add("%s: версия действия в реестре — «тег@SHA коммита»", c.Name)
+				continue
 			}
+			actions[c.Name] = c.Version[i+1:]
 		case components.TypeImage:
-			images[c.Version] = true
+			if !digestRe.MatchString(c.Version) {
+				add("%s: версия образа в реестре — «тег@sha256:<64 hex>»", c.Name)
+				continue
+			}
+			images[c.Name] = c.Version
 		}
 	}
-	workflows, err := fs.Glob(fsys, ".github/workflows/*.yml")
+
+	var ciFiles []string
+	err := fs.WalkDir(fsys, ".github", func(p string, d fs.DirEntry, err error) error {
+		if errors.Is(err, fs.ErrNotExist) {
+			return fs.SkipDir
+		}
+		if err != nil || d.IsDir() {
+			return err
+		}
+		if strings.HasSuffix(p, ".yml") || strings.HasSuffix(p, ".yaml") {
+			ciFiles = append(ciFiles, p)
+		}
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
-	for _, wf := range workflows {
-		data, err := readLimited(fsys, wf)
+	for _, f := range ciFiles {
+		data, err := readLimited(fsys, f)
 		if err != nil {
 			return nil, err
 		}
 		for _, m := range usesRe.FindAllStringSubmatch(string(data), -1) {
-			name, ref := m[1], m[2]
+			ref := m[1]
 			switch {
-			case !shaRe.MatchString(ref):
-				problems = append(problems, fmt.Sprintf("%s: %s@%s — действие закрепляется по SHA коммита (ADR-0002)", wf, name, ref))
-			case actions[name] == "":
-				problems = append(problems, fmt.Sprintf("%s: действия %s нет в реестре (type: github-action)", wf, name))
-			case actions[name] != ref:
-				problems = append(problems, fmt.Sprintf("%s: %s@%s, а в реестре SHA %s", wf, name, ref, actions[name]))
+			case strings.HasPrefix(ref, "./"):
+				// Локальное действие из репозитория — проверяется как его файлы.
+			case strings.HasPrefix(ref, "docker://"):
+				if !digestRe.MatchString(ref) {
+					add("%s: %s — образ действия закрепляется по digest", f, ref)
+				}
+			default:
+				i := strings.LastIndexByte(ref, '@')
+				if i < 0 || !shaRe.MatchString(ref[i+1:]) {
+					add("%s: %s — действие закрепляется по SHA коммита (ADR-0002)", f, ref)
+					continue
+				}
+				name, sha := ref[:i], ref[i+1:]
+				usedActions[name] = true
+				switch {
+				case actions[name] == "":
+					add("%s: действия %s нет в реестре (type: github-action)", f, name)
+				case actions[name] != sha:
+					add("%s: %s@%s, а в реестре SHA %s", f, name, sha, actions[name])
+				}
 			}
 		}
 	}
-	err = fs.WalkDir(fsys, "deploy", func(p string, d fs.DirEntry, err error) error {
-		if errors.Is(err, fs.ErrNotExist) {
-			return fs.SkipDir
-		}
-		if err != nil || d.IsDir() || d.Name() != "Dockerfile" {
+
+	err = fs.WalkDir(fsys, ".", func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
 			return err
+		}
+		if d.IsDir() {
+			if repofs.Skip(p, d.Name()) {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasPrefix(d.Name(), "Dockerfile") || strings.HasSuffix(d.Name(), ".dockerignore") {
+			return nil
 		}
 		data, err := readLimited(fsys, p)
 		if err != nil {
 			return err
 		}
-		for _, m := range golangImgRe.FindAllStringSubmatch(string(data), -1) {
+		args := map[string]string{}
+		for _, m := range argRe.FindAllStringSubmatch(string(data), -1) {
+			args[m[1]] = m[2]
+		}
+		stages := map[string]bool{}
+		for _, m := range fromRe.FindAllStringSubmatch(string(data), -1) {
+			img := m[1]
+			if v := varRe.FindStringSubmatch(img); v != nil {
+				img = args[v[1]]
+			}
 			switch {
-			case !strings.Contains(m[1], "@sha256:"):
-				problems = append(problems, fmt.Sprintf("%s: образ golang:%s не закреплён по digest (ТЗ, 8.7)", p, m[1]))
-			case !images[m[1]]:
-				problems = append(problems, fmt.Sprintf("%s: образа golang:%s нет в реестре (type: image)", p, m[1]))
+			case img == "":
+				add("%s: FROM %s — значение аргумента не задано в Dockerfile", p, m[1])
+			case strings.EqualFold(img, "scratch") || stages[img]:
+				// Пустой образ или предыдущая стадия сборки.
+			case !digestRe.MatchString(img):
+				add("%s: образ %s не закреплён по digest (ТЗ, 8.7)", p, img)
+			default:
+				repo, ver, _ := strings.Cut(img, ":")
+				usedImages[repo] = true
+				if images[repo] != ver {
+					add("%s: образа %s нет в реестре (type: image, name: %s, version: %s)", p, img, repo, ver)
+				}
+			}
+			if m[2] != "" {
+				stages[m[2]] = true
 			}
 		}
 		return nil
 	})
-	return problems, err
+	if err != nil {
+		return nil, err
+	}
+	for name := range actions {
+		if !usedActions[name] {
+			add("%s: действие есть в реестре, но не используется в .github/ — удалите запись", name)
+		}
+	}
+	for name := range images {
+		if !usedImages[name] {
+			add("%s: образ есть в реестре, но не используется ни в одном Dockerfile — удалите запись", name)
+		}
+	}
+	return problems, nil
 }
 
 // goDirective возвращает значение директивы go.mod («go», «toolchain»).

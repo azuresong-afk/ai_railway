@@ -7,15 +7,22 @@
 set -euo pipefail
 
 fuzztime="${1:?укажите время на цель, например 10s}"
+# FUZZ_KEEP_GOING=1 — прогнать все цели, даже если какая-то упала (ночной
+# прогон), и завершиться с ошибкой в конце.
+keep_going="${FUZZ_KEEP_GOING:-}"
 total=0
+failed=()
 
 while IFS= read -r pkg; do
 	# go test -list печатает имена целей и строку "ok ..." в конце.
 	targets="$(go test -list '^Fuzz' "$pkg" | grep '^Fuzz' || true)"
 	for t in $targets; do
 		echo "fuzz: $pkg $t ($fuzztime)"
-		go test -run='^$' -fuzz="^${t}\$" -fuzztime="$fuzztime" "$pkg"
 		total=$((total + 1))
+		if ! go test -run='^$' -fuzz="^${t}\$" -fuzztime="$fuzztime" "$pkg"; then
+			failed+=("$pkg $t")
+			[ -n "$keep_going" ] || exit 1
+		fi
 	done
 done < <(go list ./...)
 
@@ -24,3 +31,8 @@ if [ "$total" -eq 0 ]; then
 	exit 1
 fi
 echo "fuzz: прогнано целей: $total"
+if [ "${#failed[@]}" -gt 0 ]; then
+	printf 'fuzz: упали цели:\n' >&2
+	printf '  %s\n' "${failed[@]}" >&2
+	exit 1
+fi

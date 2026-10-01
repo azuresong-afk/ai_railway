@@ -12,7 +12,9 @@ permissions:
 
 concurrency:
   group: check-${{ github.ref }}
-  cancel-in-progress: true
+  # Устаревшие прогоны отменяются только для pull request; проверки коммитов
+  # в main доводятся до конца.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   check:

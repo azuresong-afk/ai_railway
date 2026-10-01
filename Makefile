@@ -149,7 +149,7 @@ fuzz-smoke: ## Короткий прогон всех fuzz-целей (FUZZTIME 
 
 .PHONY: fuzz-long
 fuzz-long: ## Длительный прогон всех fuzz-целей (ночной, FUZZTIME_LONG на цель)
-	tools/scripts/fuzz.sh $(FUZZTIME_LONG)
+	FUZZ_KEEP_GOING=$(FUZZ_KEEP_GOING) tools/scripts/fuzz.sh $(FUZZTIME_LONG)
 
 # База уязвимостей Go. В закрытом контуре — локальный снимок:
 # make vuln GOVULNDB=file:///opt/govulndb (ADR-0003).
@@ -219,8 +219,12 @@ check-docker: build-image ## make check в сборочном образе — �
 VULNDB_DIR ?=
 
 .PHONY: fuzz-long-docker
-fuzz-long-docker: build-image ## Длительный фаззинг в сборочном образе (ночной CI)
-	$(DOCKER_RUN) $(BUILD_IMAGE) make fuzz-long BIN=/opt/aisec-tools/bin
+fuzz-long-docker: build-image ## Длительный фаззинг в сборочном образе (ночной CI); все цели, даже после падения
+	$(DOCKER_RUN) $(BUILD_IMAGE) make fuzz-long BIN=/opt/aisec-tools/bin FUZZ_KEEP_GOING=1
+
+.PHONY: vuln-docker
+vuln-docker: build-image ## Проверка уязвимостей в сборочном образе (ночной CI)
+	$(DOCKER_RUN) $(BUILD_IMAGE) make vuln BIN=/opt/aisec-tools/bin
 
 .PHONY: check-offline
 check-offline: build-image ## make check в сборочном образе без сети (нужен VULNDB_DIR со снимком базы уязвимостей)
