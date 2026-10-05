@@ -1,0 +1,106 @@
+package config
+
+import (
+	"os"
+	"strings"
+	"testing"
+	"time"
+)
+
+func readFixture(t *testing.T) string {
+	t.Helper()
+	b, err := os.ReadFile("../../testdata/fixtures/config/gateway.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+func TestParseGatewayFileFixture(t *testing.T) {
+	f, err := ParseGatewayFile(strings.NewReader(readFixture(t)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(f.Providers) != 2 || len(f.Applications) != 1 {
+		t.Fatalf("разбор: %+v", f)
+	}
+	p := f.Providers[0]
+	if !p.IsExternal() || time.Duration(p.ConnectTimeout) != 5*time.Second {
+		t.Fatalf("провайдер: %+v", p)
+	}
+	if !f.Providers[1].IsExternal() {
+		t.Fatal("провайдер без признака external должен считаться внешним (ТЗ, 5.4)")
+	}
+	a := f.Applications[0]
+	if a.Aliases["default"] != "mock-echo" || a.Quotas.MaxTokens != 4096 || a.Keys[0].Prefix != "aisec_abcd1234" {
+		t.Fatalf("приложение: %+v", a)
+	}
+}
+
+func TestParseGatewayFileErrors(t *testing.T) {
+	base := readFixture(t)
+	cases := map[string][2]string{
+		"неизвестное поле":     {"policy: base\n", "policy: base\n    debug: true\n"},
+		"схема":                {"schema_version: 1", "schema_version: 2"},
+		"http":                 {"https://mock-llm:9443", "http://mock-llm:9443"},
+		"учётные данные в URL": {"https://mock-llm:9443", "https://u:p@mock-llm:9443"},
+		"нет доверия":          {"    ca_file: /keys/ca.pem\n", ""},
+		"тип провайдера":       {"type: openai", "type: claude"},
+		"нет провайдера":       {"provider: mock", "provider: nope"},
+		"нет моделей":          {"models: [mock-echo, mock-stream-slow]", "models: []"},
+		"псевдоним":            {"default: mock-echo", "default: other"},
+		"full":                 {"storage: masked", "storage: full"},
+		"режим":                {"policy_mode: monitor", "policy_mode: audit"},
+		"fail mode":            {"fail_mode: fail_closed", "fail_mode: ignore"},
+		"user_from":            {"user_from: header", "user_from: cookie"},
+		"префикс":              {"prefix: aisec_abcd1234", "prefix: sk-1234"},
+		"хеш":                  {"sha256: 0000000000000000000000000000000000000000000000000000000000000000", "sha256: plain-secret"},
+		"срок":                 {"expires: 2027-01-01", "expires: 01.01.2027"},
+		"подсеть":              {"10.0.0.0/8", "10.0.0.0/33"},
+		"квота":                {"max_tokens: 4096", "max_tokens: -1"},
+		"таймаут":              {"connect_timeout: 5s", "connect_timeout: 1h"},
+		"длительность":         {"connect_timeout: 5s", "connect_timeout: 5"},
+		"gigachat без scope":   {"    scope: GIGACHAT_API_CORP\n", ""},
+		"id":                   {"id: support-bot", "id: Support Bot"},
+		"два документа":        {"schema_version: 1", "schema_version: 1\n---\nx: 1\n---"},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			if !strings.Contains(base, c[0]) {
+				t.Fatalf("фикстура не содержит %q", c[0])
+			}
+			doc := strings.Replace(base, c[0], c[1], 1)
+			if _, err := ParseGatewayFile(strings.NewReader(doc)); err == nil {
+				t.Fatal("ожидалась ошибка")
+			}
+		})
+	}
+	// Тот же блок приложения дважды: повтор id и префикса ключа.
+	app := base[strings.Index(base, "  - id: support-bot"):]
+	_, err := ParseGatewayFile(strings.NewReader(base + app))
+	if err == nil || !strings.Contains(err.Error(), "указано дважды") || !strings.Contains(err.Error(), "уже используется") {
+		t.Fatalf("повтор приложения и префикса ключа должен отвергаться: %v", err)
+	}
+	if _, err := ParseGatewayFile(strings.NewReader(strings.Repeat("#", MaxGatewayFile+1))); err == nil {
+		t.Fatal("слишком большой файл должен отвергаться")
+	}
+}
+
+func FuzzParseGatewayFile(f *testing.F) {
+	f.Add([]byte("schema_version: 1\napplications: []\n"))
+	f.Add([]byte("{"))
+	if b, err := os.ReadFile("../../testdata/fixtures/config/gateway.yaml"); err == nil {
+		f.Add(b)
+	}
+	f.Fuzz(func(t *testing.T, data []byte) {
+		cfg, err := ParseGatewayFile(strings.NewReader(string(data)))
+		if err != nil {
+			return
+		}
+		for _, a := range cfg.Applications {
+			if a.Storage == "full" || len(a.Keys) == 0 {
+				t.Fatalf("принята недопустимая конфигурация: %+v", a)
+			}
+		}
+	})
+}
