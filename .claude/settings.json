@@ -12,12 +12,21 @@
       "Bash(pip install:*)",
       "Bash(curl:*)",
       "Bash(wget:*)",
-      "Bash(git push:*)"
+      "Bash(git push:*)",
+      "Bash(make tools:*)",
+      "Bash(make build-image:*)",
+      "Bash(go mod download:*)",
+      "Bash(docker pull:*)",
+      "Bash(docker build:*)",
+      "Bash(git clone:*)"
     ],
     "deny": [
       "Read(./.env)",
       "Read(./secrets/**)",
-      "Read(./.dev-keys/**)"
+      "Read(./.dev-keys/**)",
+      "Read(./.env.*)",
+      "Edit(./.dev-keys/**)",
+      "Edit(./secrets/**)"
     ]
   }
 }
