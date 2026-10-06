@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/azuresong-afk/ai_railway/internal/chat"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 )
 
@@ -241,6 +242,22 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if !isJSONObject(body) {
 		WriteError(w, http.StatusBadRequest, "тело запроса — не объект JSON", "invalid_request_error", "invalid_request")
+		return
+	}
+	// Провайдеру уходит запрос, собранный заново из проверенной модели, а не
+	// исходные байты (см. пакет chat).
+	req, err := chat.Parse(body, chat.Limits{})
+	if err != nil {
+		var ce *chat.Error
+		if !errors.As(err, &ce) {
+			ce = &chat.Error{Code: chat.CodeInvalid, Message: "неверный запрос"}
+		}
+		WriteError(w, http.StatusBadRequest, ce.Message, "invalid_request_error", ce.Code)
+		return
+	}
+	if body, err = req.Marshal(); err != nil {
+		p.logger.Error("сборка запроса к провайдеру", "error", err)
+		WriteError(w, http.StatusInternalServerError, "внутренняя ошибка шлюза", "server_error", "internal_error")
 		return
 	}
 	r.Body = io.NopCloser(bytes.NewReader(body))

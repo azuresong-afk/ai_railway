@@ -192,6 +192,8 @@ func TestProxyRejectsBadInput(t *testing.T) {
 		{"не json", "{", "application/json", 400, "invalid_request"},
 		{"массив", "[1]", "application/json", 400, "invalid_request"},
 		{"пусто", "", "application/json", 400, "invalid_request"},
+		{"не запрос chat", `{"x":1}`, "application/json", 400, "unsupported_parameter"},
+		{"нет сообщений", `{"model":"m","messages":[]}`, "application/json", 400, "invalid_request"},
 		{"тип", chatBody, "text/plain", 415, "unsupported_media_type"},
 		{"без типа", chatBody, "", 415, "unsupported_media_type"},
 	}
@@ -209,7 +211,8 @@ func TestProxyRejectsBadInput(t *testing.T) {
 		})
 	}
 	// Граница: тело ровно в предел проходит.
-	exact := `{"x":"` + strings.Repeat("a", (1<<10)-8) + `"}`
+	prefix := `{"model":"m","messages":[{"role":"user","content":"`
+	exact := prefix + strings.Repeat("a", (1<<10)-len(prefix)-4) + `"}]}`
 	if resp := postChat(t, g, exact, nil); resp.Code != http.StatusOK {
 		t.Fatalf("тело ровно в предел: %d", resp.Code)
 	}
@@ -575,3 +578,18 @@ func TestProxyLogsHaveNoSecrets(t *testing.T) {
 type writerFunc func([]byte) (int, error)
 
 func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
+
+// Провайдер получает запрос, собранный заново: повторный ключ messages не
+// протащит текст, который не видели проверки.
+func TestProxySendsRebuiltBody(t *testing.T) {
+	up, rec := newUpstream(t, nil)
+	g := newGateway(t, up.URL, func(c *ProxyConfig) { c.MaxBodyBytes = 1 << 12 })
+	body := `{"model":"m",  "messages":[{"role":"user","content":"скрытое"}],"Messages":[{"role":"user","content":"видимое"}]}`
+	if resp := postChat(t, g, body, nil); resp.Code != http.StatusOK {
+		t.Fatalf("%d %s", resp.Code, resp.Body.String())
+	}
+	_, _, got, _ := rec.get()
+	if got != `{"model":"m","messages":[{"role":"user","content":"видимое"}]}` {
+		t.Fatalf("провайдер получил %s", got)
+	}
+}
