@@ -8,9 +8,20 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/azuresong-afk/ai_railway/internal/auth"
 )
 
 func quiet() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
+
+func mustNew(t testing.TB, opts Options) *Gateway {
+	t.Helper()
+	g, err := New(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return g
+}
 
 func do(t *testing.T, h http.Handler, method, path string) *httptest.ResponseRecorder {
 	t.Helper()
@@ -20,7 +31,7 @@ func do(t *testing.T, h http.Handler, method, path string) *httptest.ResponseRec
 }
 
 func TestHealth(t *testing.T) {
-	g := New(Options{Logger: quiet()})
+	g := mustNew(t, Options{Logger: quiet()})
 	for _, p := range []string{"/healthz", "/readyz"} {
 		rec := do(t, g, http.MethodGet, p)
 		if rec.Code != http.StatusOK || rec.Header().Get("Content-Type") != "application/json" {
@@ -30,7 +41,7 @@ func TestHealth(t *testing.T) {
 }
 
 func TestUnknownRoutesInOpenAIFormat(t *testing.T) {
-	g := New(Options{Logger: quiet(), Proxy: http.NotFoundHandler()})
+	g := mustNew(t, Options{Logger: quiet(), Proxy: http.NotFoundHandler(), Auth: newTestAuth(t, auth.LimiterConfig{}).cfg})
 	cases := []struct {
 		method, path string
 		code         int
@@ -55,7 +66,7 @@ func TestUnknownRoutesInOpenAIFormat(t *testing.T) {
 }
 
 func TestSecurityHeaders(t *testing.T) {
-	rec := do(t, New(Options{Logger: quiet()}), http.MethodGet, "/healthz")
+	rec := do(t, mustNew(t, Options{Logger: quiet()}), http.MethodGet, "/healthz")
 	for k, v := range map[string]string{"X-Content-Type-Options": "nosniff", "Cache-Control": "no-store"} {
 		if rec.Header().Get(k) != v {
 			t.Errorf("%s = %q", k, rec.Header().Get(k))
@@ -67,7 +78,7 @@ func TestSecurityHeaders(t *testing.T) {
 }
 
 func TestProxyRouteNotMountedWithoutProxy(t *testing.T) {
-	rec := do(t, New(Options{Logger: quiet()}), http.MethodPost, "/v1/chat/completions")
+	rec := do(t, mustNew(t, Options{Logger: quiet()}), http.MethodPost, "/v1/chat/completions")
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("без прокси маршрут должен отсутствовать: %d", rec.Code)
 	}

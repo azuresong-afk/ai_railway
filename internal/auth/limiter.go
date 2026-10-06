@@ -1,0 +1,151 @@
+package auth
+
+import (
+	"net/netip"
+	"sync"
+	"time"
+)
+
+// FailureLimiter ограничивает частоту неудачных попыток аутентификации с
+// одного адреса (ТЗ, 5.1; DM-38). Адреса IPv6 группируются по сети /64:
+// у одного клиента их обычно целая сеть. Пока адрес заблокирован, запросы с
+// него отклоняются до проверки ключа — иначе перебор продолжался бы.
+//
+// Память ограничена: при переполнении сначала удаляются записи с истёкшим
+// окном, затем — любая незаблокированная запись. Ограничитель — средство
+// против перебора и шума, а не единственная защита: ключ содержит 256 бит
+// случайных данных и подобрать его нельзя.
+type FailureLimiter struct {
+	mu         sync.Mutex
+	cfg        LimiterConfig
+	entries    map[netip.Prefix]*limiterEntry
+	lastSweep  time.Time
+	overflowed uint64
+}
+
+// LimiterConfig — параметры ограничителя.
+type LimiterConfig struct {
+	MaxFailures int           // неудач за окно до блокировки; по умолчанию 10
+	Window      time.Duration // окно подсчёта; по умолчанию 1 мин
+	Block       time.Duration // время блокировки; по умолчанию 15 мин
+	MaxEntries  int           // число отслеживаемых адресов; по умолчанию 65 536
+}
+
+type limiterEntry struct {
+	failures     int
+	windowStart  time.Time
+	blockedUntil time.Time
+}
+
+// NewFailureLimiter создаёт ограничитель; нулевые параметры — по умолчанию.
+func NewFailureLimiter(cfg LimiterConfig) *FailureLimiter {
+	if cfg.MaxFailures <= 0 {
+		cfg.MaxFailures = 10
+	}
+	if cfg.Window <= 0 {
+		cfg.Window = time.Minute
+	}
+	if cfg.Block <= 0 {
+		cfg.Block = 15 * time.Minute
+	}
+	if cfg.MaxEntries <= 0 {
+		cfg.MaxEntries = 1 << 16
+	}
+	return &FailureLimiter{cfg: cfg, entries: map[netip.Prefix]*limiterEntry{}}
+}
+
+// clientKey — ключ учёта: адрес IPv4 целиком или сеть IPv6 /64.
+func clientKey(a netip.Addr) netip.Prefix {
+	a = a.Unmap()
+	if a.Is4() {
+		return netip.PrefixFrom(a, 32)
+	}
+	p, err := a.Prefix(64)
+	if err != nil {
+		// Нулевой или неразобранный адрес — один общий ключ.
+		return netip.Prefix{}
+	}
+	return p
+}
+
+// Blocked сообщает, заблокирован ли адрес, и до какого момента.
+func (l *FailureLimiter) Blocked(a netip.Addr, now time.Time) (bool, time.Time) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	e, ok := l.entries[clientKey(a)]
+	if !ok || !now.Before(e.blockedUntil) {
+		return false, time.Time{}
+	}
+	return true, e.blockedUntil
+}
+
+// Fail учитывает неудачу. Возвращает true, если эта неудача привела к
+// блокировке адреса (о начале блокировки создаётся одно событие, а не по
+// событию на каждый отклонённый запрос).
+func (l *FailureLimiter) Fail(a netip.Addr, now time.Time) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	k := clientKey(a)
+	e, ok := l.entries[k]
+	if !ok {
+		if !l.makeRoom(now) {
+			l.overflowed++
+			return false
+		}
+		e = &limiterEntry{windowStart: now}
+		l.entries[k] = e
+	}
+	if now.Before(e.blockedUntil) {
+		return false
+	}
+	if now.Sub(e.windowStart) >= l.cfg.Window {
+		e.failures, e.windowStart = 0, now
+	}
+	e.failures++
+	if e.failures >= l.cfg.MaxFailures {
+		e.blockedUntil = now.Add(l.cfg.Block)
+		e.failures, e.windowStart = 0, now
+		return true
+	}
+	return false
+}
+
+// Overflowed — сколько неудач не учтено из-за переполнения (метрика).
+func (l *FailureLimiter) Overflowed() uint64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.overflowed
+}
+
+// makeRoom освобождает место под новую запись. Вызывается под блокировкой.
+func (l *FailureLimiter) makeRoom(now time.Time) bool {
+	if len(l.entries) < l.cfg.MaxEntries {
+		return true
+	}
+	// Полный проход — не чаще раза в секунду, чтобы поток неудач с разных
+	// адресов не превращал каждую из них в обход всей таблицы.
+	if now.Sub(l.lastSweep) >= time.Second {
+		l.lastSweep = now
+		for k, e := range l.entries {
+			if !now.Before(e.blockedUntil) && now.Sub(e.windowStart) >= l.cfg.Window {
+				delete(l.entries, k)
+			}
+		}
+		if len(l.entries) < l.cfg.MaxEntries {
+			return true
+		}
+	}
+	// Вытесняется первая попавшаяся незаблокированная запись; блокировки
+	// сохраняются. Просмотр ограничен, чтобы не обходить таблицу целиком.
+	n := 0
+	for k, e := range l.entries {
+		if !now.Before(e.blockedUntil) {
+			delete(l.entries, k)
+			return true
+		}
+		if n++; n >= 64 {
+			break
+		}
+	}
+	return false
+}

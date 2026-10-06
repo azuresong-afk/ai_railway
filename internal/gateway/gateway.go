@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 )
@@ -17,10 +18,13 @@ type Options struct {
 	Logger *slog.Logger
 	// Proxy обслуживает POST /v1/chat/completions; nil — маршрут не подключён.
 	Proxy http.Handler
+	// Auth — аутентификация приложений. Обязательна, если подключён хотя бы
+	// один маршрут для приложений: шлюз без проверки ключей не собирается.
+	Auth *AuthConfig
 }
 
 // New собирает маршруты шлюза.
-func New(opts Options) *Gateway {
+func New(opts Options) (*Gateway, error) {
 	logger := opts.Logger
 	if logger == nil {
 		logger = slog.Default()
@@ -29,9 +33,16 @@ func New(opts Options) *Gateway {
 	g.mux.HandleFunc("GET /healthz", g.healthz)
 	g.mux.HandleFunc("GET /readyz", g.healthz)
 	if opts.Proxy != nil {
-		g.mux.Handle("POST /v1/chat/completions", opts.Proxy)
+		if opts.Auth == nil {
+			return nil, errors.New("шлюз: маршруты приложений без аутентификации не подключаются")
+		}
+		h, err := RequireAppKey(*opts.Auth, opts.Proxy)
+		if err != nil {
+			return nil, err
+		}
+		g.mux.Handle("POST /v1/chat/completions", h)
 	}
-	return g
+	return g, nil
 }
 
 // ServeHTTP добавляет заголовки безопасности и отвечает на неизвестные

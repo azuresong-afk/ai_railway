@@ -226,10 +226,10 @@ func TestReadBinary(t *testing.T) {
 }
 
 func TestRunErrors(t *testing.T) {
-	if err := run("docs/cert/components.yaml", t.TempDir()+"/o.json", "1", "", nil); err == nil {
+	if err := run("docs/cert/components.yaml", "go.sum", t.TempDir()+"/o.json", "1", "", nil); err == nil {
 		t.Error("ожидалась ошибка без бинарников")
 	}
-	if err := run("нет.yaml", t.TempDir()+"/o.json", "1", "вчера", []string{"x"}); err == nil {
+	if err := run("нет.yaml", "go.sum", t.TempDir()+"/o.json", "1", "вчера", []string{"x"}); err == nil {
 		t.Error("ожидалась ошибка времени")
 	}
 }
@@ -248,4 +248,33 @@ func FuzzParseBOM(f *testing.F) {
 			t.Fatal("пустой текст ошибки")
 		}
 	})
+}
+
+func TestGoSumFillsVendorBuild(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/go.sum"
+	sum := "example.com/m v1.0.0 " + h1 + "\nexample.com/m v1.0.0/go.mod h1:BBBB\n\n"
+	if err := os.WriteFile(path, []byte(sum), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sums, err := readGoSum(path)
+	if err != nil || len(sums) != 1 {
+		t.Fatal(sums, err)
+	}
+	b := Binary{Deps: []Dep{{"example.com/m", "v1.0.0", ""}, {"example.com/other", "v2.0.0", ""}, {"example.com/own", "v1.0.0", "h1:own"}}}
+	fillSums(&b, sums)
+	// Хеш из сведений о сборке не заменяется; неизвестный модуль остаётся без
+	// хеша — Build отвергнет его.
+	if b.Deps[0].Sum != h1 || b.Deps[1].Sum != "" || b.Deps[2].Sum != "h1:own" {
+		t.Fatalf("%+v", b.Deps)
+	}
+	if err := os.WriteFile(path, []byte("example.com/m v1.0.0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readGoSum(path); err == nil {
+		t.Fatal("строка без хеша должна отвергаться")
+	}
+	if _, err := readGoSum(dir + "/нет"); err == nil {
+		t.Fatal("нет файла: ожидалась ошибка")
+	}
 }

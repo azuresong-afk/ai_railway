@@ -13,10 +13,13 @@ import (
 	"time"
 )
 
-// Gateway — конфигурация шлюза этапа 0: прозрачный прокси на один upstream.
-// Значения берутся из флагов, затем из переменных окружения AISEC_GATEWAY_*,
-// затем из значений по умолчанию.
+// Gateway — параметры запуска шлюза. Значения берутся из флагов, затем из
+// переменных окружения AISEC_GATEWAY_*, затем из значений по умолчанию.
+// Приложения, ключи и приёмник событий — в файле конфигурации (-config);
+// провайдер до задачи 1.7 этапа 1 — флагами upstream-*.
 type Gateway struct {
+	// ConfigFile — файл конфигурации шлюза (приложения и ключи, gwfile.go).
+	ConfigFile     string
 	Listen         string
 	TLSCertFile    string
 	TLSKeyFile     string
@@ -54,6 +57,7 @@ func LoadGateway(args []string, getenv func(string) string, errOut io.Writer) (*
 	// Значения окружения применяются после разбора флагов, а не через
 	// значения по умолчанию: справка (-h) не должна печатать то, что задано
 	// в окружении, — там может оказаться, например, адрес с учётными данными.
+	configFile := fs.String("config", "", "файл конфигурации шлюза: приложения, ключи, события (AISEC_GATEWAY_CONFIG)")
 	listen := fs.String("listen", DefaultGatewayListen, "адрес и порт шлюза (AISEC_GATEWAY_LISTEN)")
 	cert := fs.String("tls-cert", "", "сертификат TLS шлюза, PEM (AISEC_GATEWAY_TLS_CERT)")
 	key := fs.String("tls-key", "", "закрытый ключ TLS шлюза, PEM, права 0600 (AISEC_GATEWAY_TLS_KEY)")
@@ -73,7 +77,7 @@ func LoadGateway(args []string, getenv func(string) string, errOut io.Writer) (*
 	set := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
 	for name, dst := range map[string]*string{
-		"listen": listen, "tls-cert": cert, "tls-key": key, "upstream-url": upstream, "upstream-ca": upstreamCA,
+		"config": configFile, "listen": listen, "tls-cert": cert, "tls-key": key, "upstream-url": upstream, "upstream-ca": upstreamCA,
 		"upstream-key-file": upstreamKey, "max-body-bytes": maxBody, "upstream-connect-timeout": connect,
 		"upstream-header-timeout": header, "forward-headers": forward,
 	} {
@@ -86,14 +90,14 @@ func LoadGateway(args []string, getenv func(string) string, errOut io.Writer) (*
 	}
 
 	cfg := &Gateway{
-		Listen: *listen, TLSCertFile: *cert, TLSKeyFile: *key,
+		ConfigFile: *configFile, Listen: *listen, TLSCertFile: *cert, TLSKeyFile: *key,
 		UpstreamCAFile: *upstreamCA, UpstreamKeyFile: *upstreamKey,
 	}
 	var errs []error
 	if _, _, err := net.SplitHostPort(cfg.Listen); err != nil {
 		errs = append(errs, errors.New("listen: ожидается адрес:порт"))
 	}
-	for name, v := range map[string]string{"tls-cert": cfg.TLSCertFile, "tls-key": cfg.TLSKeyFile, "upstream-url": *upstream, "upstream-ca": cfg.UpstreamCAFile} {
+	for name, v := range map[string]string{"config": cfg.ConfigFile, "tls-cert": cfg.TLSCertFile, "tls-key": cfg.TLSKeyFile, "upstream-url": *upstream, "upstream-ca": cfg.UpstreamCAFile} {
 		if v == "" {
 			errs = append(errs, fmt.Errorf("%s: обязательный параметр", name))
 		}

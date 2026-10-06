@@ -1,7 +1,9 @@
 # Стенд разработки: шлюз перед mock-llm (ТЗ, 11.5). Запуск — make dev.
 # PostgreSQL появится на этапе 2, сервер управления и веб-консоль — тоже.
 #
-# Сертификаты выпускает make devcerts в .dev-keys/ (ключ с правами 0600).
+# Сертификаты, ключ приложения (.dev-keys/app-key) и конфигурацию шлюза
+# выпускает make devcerts в .dev-keys/ (ключи с правами 0600). События шлюза
+# пишутся в .dev-data/events.jsonl.
 # Контейнеры работают от UID и GID пользователя, который запускает стенд
 # (AISEC_UID, AISEC_GID задаёт make dev), иначе ключ нельзя было бы прочитать
 # без ослабления прав.
@@ -38,14 +40,18 @@ services:
     image: aisec-dev/aisec-gateway
     # internal — к mock-llm; edge — только ради опубликованного порта.
     networks: [internal, edge]
+    volumes:
+      - ../../../.dev-keys:/keys:ro
+      - ../../../.dev-data:/data
     command:
+      - "-config=/keys/gateway.yaml"
       - "-listen=0.0.0.0:8443"
       - "-tls-cert=/keys/server.pem"
       - "-tls-key=/keys/server-key.pem"
       - "-upstream-url=https://mock-llm:9443"
       - "-upstream-ca=/keys/ca.pem"
       - "-forward-headers=X-Mock-Scenario"
-    # Только на 127.0.0.1 хоста: шлюз этапа 0 без аутентификации приложений.
+    # Только на 127.0.0.1 хоста: стенд разработки, проверок содержимого пока нет.
     ports: ["127.0.0.1:8443:8443"]
     depends_on: [mock-llm]
 

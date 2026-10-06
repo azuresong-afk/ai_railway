@@ -84,7 +84,7 @@ dm-coverage: build ## Покрытие матрицы обнаружения 5.1
 
 .PHONY: sbom
 sbom: build $(BIN)/sbom-utility ## SBOM продукта (CycloneDX 1.6) из собранных бинарников и проверка формата
-	go run ./tools/sbom -registry docs/cert/components.yaml -out $(BUILD)/sbom/aisec.cdx.json \
+	go run ./tools/sbom -registry docs/cert/components.yaml -gosum go.sum -out $(BUILD)/sbom/aisec.cdx.json \
 		-version '$(VERSION)' -timestamp '$(SOURCE_DATE)' $(addprefix $(BUILD)/bin/,$(PRODUCT_CMDS))
 	$(BIN)/sbom-utility validate --quiet --input-file $(BUILD)/sbom/aisec.cdx.json
 	go run ./tools/sbom -check $(BUILD)/sbom/aisec.cdx.json
@@ -184,18 +184,20 @@ e2e: build ## Сквозные тесты: настоящие бинарники
 COMPOSE_DEV := docker compose -f deploy/compose/dev/docker-compose.yml
 
 .PHONY: dev
-dev: .dev-keys/ca.pem ## Стенд разработки в docker compose: шлюз на https://127.0.0.1:8443 перед mock-llm
+dev: .dev-keys/gateway.yaml ## Стенд разработки в docker compose: шлюз на https://127.0.0.1:8443 перед mock-llm
+	mkdir -p -m 0700 .dev-data
 	AISEC_UID=$$(id -u) AISEC_GID=$$(id -g) $(COMPOSE_DEV) up --build
 
 .PHONY: dev-down
 dev-down: ## Остановить стенд разработки
 	AISEC_UID=$$(id -u) AISEC_GID=$$(id -g) $(COMPOSE_DEV) down
 
-.dev-keys/ca.pem:
-	go run ./tools/devcerts -out .dev-keys
+# Конфигурации шлюза нет (первый запуск или каталог от этапа 0) — выпустить всё заново.
+.dev-keys/gateway.yaml:
+	go run ./tools/devcerts -out .dev-keys -force
 
 .PHONY: devcerts
-devcerts: ## Сертификаты стенда разработки в .dev-keys/ (УЦ и сервер; ключ УЦ не сохраняется)
+devcerts: ## Материалы стенда разработки в .dev-keys/: УЦ и сервер (ключ УЦ не сохраняется), ключ приложения, конфигурация шлюза
 	go run ./tools/devcerts -out .dev-keys -force
 
 # Сборочный образ (deploy/build/Dockerfile): версии инструментов — из переменных выше.

@@ -7,7 +7,7 @@ import (
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 )
 
-func prims(t *testing.T) (aisecCrypto.Random, aisecCrypto.Hasher) {
+func prims(t testing.TB) (aisecCrypto.Random, aisecCrypto.Hasher) {
 	t.Helper()
 	p, err := aisecCrypto.New(aisecCrypto.ProfileStandard)
 	if err != nil {

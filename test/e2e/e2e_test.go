@@ -20,7 +20,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/azuresong-afk/ai_railway/internal/auth"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
+	"github.com/azuresong-afk/ai_railway/internal/events"
 )
 
 var binDir = flag.String("bin", "../../build/bin", "каталог с собранными бинарниками")
@@ -104,17 +106,72 @@ func start(t *testing.T, name string, args ...string) string {
 	}
 }
 
+// env — поднятый стенд: адрес шлюза, клиент с доверием к УЦ стенда, ключ
+// приложения и файл событий шлюза.
+type env struct {
+	url    string
+	client *http.Client
+	key    string
+	events string
+}
+
+// gatewayConfig пишет файл конфигурации шлюза с одним приложением и
+// возвращает выпущенный для него ключ.
+func gatewayConfig(t *testing.T, dir string, p aisecCrypto.Provider) (path, key, eventsFile string) {
+	t.Helper()
+	rnd, err := p.Random()
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := p.Hasher()
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, prefix, hash, err := auth.NewAppKey(rnd, h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventsFile = filepath.Join(dir, "events.jsonl")
+	cfg := `schema_version: 1
+gateway:
+  events_file: ` + eventsFile + `
+providers:
+  - id: mock
+    type: openai
+    base_url: https://127.0.0.1:1
+    ca_file: ` + filepath.Join(dir, "ca.pem") + `
+applications:
+  - id: e2e-app
+    name: Сквозные тесты
+    env: test
+    provider: mock
+    models: [mock-echo]
+    policy: base
+    policy_mode: monitor
+    fail_mode: fail_closed
+    storage: none
+    user_from: none
+    keys:
+` + auth.FormatKeyEntry(prefix, hash, "")
+	path = filepath.Join(dir, "gateway.yaml")
+	if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path, key, eventsFile
+}
+
 // stand поднимает mock-llm и шлюз перед ним.
-func stand(t *testing.T) (gatewayURL string, client *http.Client) {
+func stand(t *testing.T) *env {
 	t.Helper()
 	k := newKeys(t)
-	mock := start(t, "mock-llm", "-listen", "127.0.0.1:0", "-cert", k.cert, "-key", k.key)
-	gw := start(t, "aisec-gateway", "-listen", "127.0.0.1:0", "-tls-cert", k.cert, "-tls-key", k.key,
-		"-upstream-url", "https://"+mock, "-upstream-ca", k.ca, "-forward-headers", "X-Mock-Scenario")
 	p, err := aisecCrypto.New(aisecCrypto.ProfileStandard)
 	if err != nil {
 		t.Fatal(err)
 	}
+	cfgPath, key, eventsFile := gatewayConfig(t, k.dir, p)
+	mock := start(t, "mock-llm", "-listen", "127.0.0.1:0", "-cert", k.cert, "-key", k.key)
+	gw := start(t, "aisec-gateway", "-config", cfgPath, "-listen", "127.0.0.1:0", "-tls-cert", k.cert, "-tls-key", k.key,
+		"-upstream-url", "https://"+mock, "-upstream-ca", k.ca, "-forward-headers", "X-Mock-Scenario")
 	tp, err := p.TLS()
 	if err != nil {
 		t.Fatal(err)
@@ -127,20 +184,27 @@ func stand(t *testing.T) (gatewayURL string, client *http.Client) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return "https://" + gw, &http.Client{Transport: &http.Transport{TLSClientConfig: cfg}, Timeout: 30 * time.Second}
+	return &env{url: "https://" + gw, client: &http.Client{Transport: &http.Transport{TLSClientConfig: cfg}, Timeout: 30 * time.Second},
+		key: key, events: eventsFile}
 }
 
-func chat(t *testing.T, client *http.Client, url, body string, hdr map[string]string) *http.Response {
+// chat отправляет запрос с ключом приложения стенда; заголовок Authorization
+// в hdr заменяет ключ, пустое значение — убирает его.
+func chat(t *testing.T, e *env, body string, hdr map[string]string) *http.Response {
 	t.Helper()
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, url+"/v1/chat/completions", strings.NewReader(body))
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, e.url+"/v1/chat/completions", strings.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+e.key)
 	for k, v := range hdr {
 		req.Header.Set(k, v)
+		if v == "" {
+			req.Header.Del(k)
+		}
 	}
-	resp, err := client.Do(req)
+	resp, err := e.client.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,8 +212,8 @@ func chat(t *testing.T, client *http.Client, url, body string, hdr map[string]st
 }
 
 func TestE2EChatThroughGateway(t *testing.T) {
-	url, client := stand(t)
-	resp := chat(t, client, url, `{"model":"mock-echo","messages":[{"role":"user","content":"привет через шлюз `+promptMarker+`"}]}`, nil)
+	e := stand(t)
+	resp := chat(t, e, `{"model":"mock-echo","messages":[{"role":"user","content":"привет через шлюз `+promptMarker+`"}]}`, nil)
 	defer resp.Body.Close() //nolint:errcheck // тело прочитано; ошибка закрытия в тесте не важна
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("код %d", resp.StatusCode)
@@ -166,10 +230,10 @@ func TestE2EChatThroughGateway(t *testing.T) {
 }
 
 func TestE2EStreamingThroughGateway(t *testing.T) {
-	url, client := stand(t)
+	e := stand(t)
 	body := `{"model":"x","stream":true,"messages":[{"role":"user","content":"раз два три четыре пять"}]}`
 	start := time.Now()
-	resp := chat(t, client, url, body, map[string]string{"X-Mock-Scenario": "stream-slow"})
+	resp := chat(t, e, body, map[string]string{"X-Mock-Scenario": "stream-slow"})
 	defer resp.Body.Close() //nolint:errcheck // тело прочитано; ошибка закрытия в тесте не важна
 	if resp.StatusCode != http.StatusOK || resp.Header.Get("Content-Type") != "text/event-stream" {
 		t.Fatalf("код %d, тип %s", resp.StatusCode, resp.Header.Get("Content-Type"))
@@ -210,8 +274,8 @@ func TestE2EStreamingThroughGateway(t *testing.T) {
 }
 
 func TestE2EUpstreamErrorPassedThrough(t *testing.T) {
-	url, client := stand(t)
-	resp := chat(t, client, url, `{"model":"m","messages":[{"role":"user","content":"x"}]}`, map[string]string{"X-Mock-Scenario": "error-429"})
+	e := stand(t)
+	resp := chat(t, e, `{"model":"m","messages":[{"role":"user","content":"x"}]}`, map[string]string{"X-Mock-Scenario": "error-429"})
 	defer resp.Body.Close() //nolint:errcheck // тело прочитано; ошибка закрытия в тесте не важна
 	b, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -223,8 +287,8 @@ func TestE2EUpstreamErrorPassedThrough(t *testing.T) {
 }
 
 func TestE2EPlainHTTPRejected(t *testing.T) {
-	url, _ := stand(t)
-	plain := strings.Replace(url, "https://", "http://", 1)
+	e := stand(t)
+	plain := strings.Replace(e.url, "https://", "http://", 1)
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, plain+"/healthz", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -237,4 +301,72 @@ func TestE2EPlainHTTPRejected(t *testing.T) {
 	if resp.StatusCode == http.StatusOK {
 		t.Fatalf("шлюз ответил по HTTP без TLS: %d", resp.StatusCode)
 	}
+}
+
+// Неудачная аутентификация: 401 без подробностей, событие auth_failure с
+// адресом, префиксом и причиной, без самого ключа (критерий приёмки этапа 1).
+func TestE2EDM38_AuthFailureEvent(t *testing.T) {
+	e := stand(t)
+	body := `{"model":"mock-echo","messages":[{"role":"user","content":"` + promptMarker + `"}]}`
+	forged := e.key[:len(e.key)-4] + "AAAA"
+	if forged == e.key {
+		forged = e.key[:len(e.key)-4] + "BBBB"
+	}
+	for _, authz := range []string{"", "Bearer " + forged} {
+		resp := chat(t, e, body, map[string]string{"Authorization": authz})
+		b, err := io.ReadAll(resp.Body)
+		if cerr := resp.Body.Close(); err != nil || cerr != nil {
+			t.Fatal(err, cerr)
+		}
+		if resp.StatusCode != http.StatusUnauthorized || !strings.Contains(string(b), "invalid_api_key") {
+			t.Fatalf("%q: %d %s", authz, resp.StatusCode, b)
+		}
+	}
+	// Очередь сбрасывает события раз в секунду.
+	var got []events.Event
+	deadline := time.Now().Add(5 * time.Second)
+	for len(got) < 2 && time.Now().Before(deadline) {
+		time.Sleep(200 * time.Millisecond)
+		got = readEvents(t, e.events)
+	}
+	if len(got) != 2 {
+		t.Fatalf("событий auth_failure: %d", len(got))
+	}
+	reasons := map[string]string{}
+	for _, ev := range got {
+		if ev.Type != events.TypeAuthFailure || ev.AuthFailure == nil || ev.AuthFailure.RemoteAddr != "127.0.0.1" {
+			t.Fatalf("событие: %+v", ev)
+		}
+		reasons[ev.AuthFailure.Reason] = ev.AuthFailure.KeyPrefix
+	}
+	if _, ok := reasons[auth.ReasonMissing]; !ok || reasons[auth.ReasonInvalid] != e.key[:len("aisec_12345678")] {
+		t.Fatalf("причины и префиксы: %v", reasons)
+	}
+	raw, err := os.ReadFile(e.events) //nolint:gosec // G304: файл событий стенда во временном каталоге теста
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), forged) || strings.Contains(string(raw), promptMarker) {
+		t.Fatal("в файл событий попал ключ или содержимое запроса")
+	}
+}
+
+func readEvents(t *testing.T, path string) []events.Event {
+	t.Helper()
+	raw, err := os.ReadFile(path) //nolint:gosec // G304: файл событий стенда во временном каталоге теста
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []events.Event
+	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		if line == "" {
+			continue
+		}
+		var ev events.Event
+		if err := json.Unmarshal([]byte(line), &ev); err != nil {
+			t.Fatalf("строка событий: %v", err)
+		}
+		out = append(out, ev)
+	}
+	return out
 }

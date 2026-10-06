@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/netip"
+	"os"
 	"regexp"
 	"time"
 
@@ -165,11 +166,38 @@ func ParseGatewayFile(r io.Reader) (*GatewayFile, error) {
 	return &f, nil
 }
 
+// LoadGatewayFile читает файл конфигурации. Секретов в нём нет, но по нему
+// принимаются решения о доступе, поэтому файл, который могут изменить
+// группа или остальные пользователи, не принимается.
+func LoadGatewayFile(path string) (*GatewayFile, error) {
+	f, err := os.Open(path) //nolint:gosec // G304: путь задаёт администратор флагом -config
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close() //nolint:errcheck // файл только читается; ошибка закрытия не важна
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s: не обычный файл", path)
+	}
+	if info.Mode().Perm()&0o022 != 0 {
+		return nil, fmt.Errorf("%s: файл конфигурации доступен на запись группе или остальным (права %o)", path, info.Mode().Perm())
+	}
+	return ParseGatewayFile(f)
+}
+
 func (f *GatewayFile) validate() error {
 	var errs []error
 	add := func(format string, a ...any) { errs = append(errs, fmt.Errorf(format, a...)) }
 	if f.SchemaVersion != 1 {
 		add("schema_version: ожидается 1")
+	}
+	// На этапе 1 файл JSONL — единственный приёмник событий, без него
+	// неудачные попытки входа (DM-38) нигде не были бы видны.
+	if f.Gateway.EventsFile == "" {
+		add("gateway.events_file: обязательный параметр")
 	}
 	providers := map[string]Provider{}
 	for i, p := range f.Providers {
@@ -288,8 +316,16 @@ func (f *GatewayFile) validate() error {
 				}
 			}
 			for _, c := range k.AllowedCIDRs {
-				if _, err := netip.ParsePrefix(c); err != nil {
+				p, err := netip.ParsePrefix(c)
+				switch {
+				case err != nil:
 					add("%s: allowed_cidrs: %q — подсеть вида 10.0.0.0/8", kat, c)
+				case p.Addr().Is4In6():
+					// Адрес клиента IPv4 сравнивается в обычной записи; подсеть
+					// ::ffff:a.b.c.d/n ему никогда не соответствовала бы.
+					add("%s: allowed_cidrs: %q — укажите подсеть IPv4 в обычной записи", kat, c)
+				case p.Masked() != p:
+					add("%s: allowed_cidrs: %q — адрес подсети с ненулевыми битами узла, имелось в виду %s?", kat, c, p.Masked())
 				}
 			}
 		}

@@ -14,6 +14,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/azuresong-afk/ai_railway/internal/auth"
 )
 
 const chatBody = `{"model":"m","messages":[{"role":"user","content":"привет"}]}`
@@ -63,7 +65,10 @@ func newUpstream(t *testing.T, handler http.HandlerFunc) (*httptest.Server, *ups
 	return srv, rec
 }
 
-func newGateway(t *testing.T, upstream string, mod func(*ProxyConfig)) *Gateway {
+// newGateway — шлюз с прокси на upstream. Запросы без Authorization получают
+// действующий ключ приложения: здесь проверяется прокси, аутентификация —
+// в auth_test.go.
+func newGateway(t *testing.T, upstream string, mod func(*ProxyConfig)) http.Handler {
 	t.Helper()
 	u, err := url.Parse(upstream)
 	if err != nil {
@@ -80,7 +85,19 @@ func newGateway(t *testing.T, upstream string, mod func(*ProxyConfig)) *Gateway 
 	if err != nil {
 		t.Fatal(err)
 	}
-	return New(Options{Logger: quiet(), Proxy: p})
+	ta := newTestAuth(t, auth.LimiterConfig{})
+	g := mustNew(t, Options{Logger: quiet(), Proxy: p, Auth: ta.cfg})
+	return withKey(g, ta.key)
+}
+
+// withKey добавляет ключ приложения в запрос без Authorization.
+func withKey(h http.Handler, key string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") == "" {
+			r.Header.Set("Authorization", "Bearer "+key)
+		}
+		h.ServeHTTP(w, r)
+	})
 }
 
 func postChat(t *testing.T, h http.Handler, body string, hdr map[string]string) *httptest.ResponseRecorder {
@@ -132,12 +149,12 @@ func TestProxyRequestHeaderAllowlist(t *testing.T) {
 		c.ForwardHeaders = []string{"X-Mock-Scenario"}
 	})
 	postChat(t, g, chatBody, map[string]string{
-		"Authorization": "Bearer client-secret", "Cookie": "a=b", "X-Forwarded-For": "10.0.0.1",
+		"Cookie": "a=b", "X-Forwarded-For": "10.0.0.1", // Authorization с ключом приложения добавляет withKey
 		"X-Mock-Scenario": "echo", "X-Custom": "x", "Accept-Encoding": "br",
 	})
 	_, hdr, _, _ := rec.get()
 	if hdr.Get("Authorization") != "Bearer sk-provider" {
-		t.Errorf("Authorization у провайдера: %q — должен быть ключ шлюза", hdr.Get("Authorization"))
+		t.Errorf("Authorization у провайдера: %q — должен быть ключ шлюза, а не приложения", hdr.Get("Authorization"))
 	}
 	for _, h := range []string{"Cookie", "X-Custom"} {
 		if hdr.Get(h) != "" {
@@ -377,11 +394,13 @@ func FuzzProxyHandler(f *testing.F) {
 	if err != nil {
 		f.Fatal(err)
 	}
-	g := New(Options{Logger: quiet(), Proxy: p})
+	// Порог неудач не достижим: иначе после первых отказов фаззинг упёрся бы в 429.
+	ta := newTestAuth(f, auth.LimiterConfig{MaxFailures: 1 << 30})
+	g := withKey(mustNew(f, Options{Logger: quiet(), Proxy: p, Auth: ta.cfg}), ta.key)
 	// Что может прийти провайдеру: allowlist шлюза и то, что добавляет сам транспорт Go.
 	allowedUp := map[string]bool{"Content-Type": true, "Accept": true, "User-Agent": true, "X-Request-Id": true,
 		"Content-Length": true, "Accept-Encoding": true}
-	allowedCodes := map[int]bool{200: true, 400: true, 404: true, 405: true, 413: true, 415: true}
+	allowedCodes := map[int]bool{200: true, 400: true, 401: true, 404: true, 405: true, 413: true, 415: true}
 	f.Fuzz(func(t *testing.T, method, target string, body []byte, ctype, hName, hValue string) {
 		if !strings.HasPrefix(target, "/") {
 			return
@@ -535,8 +554,10 @@ func TestProxyLogsHaveNoSecrets(t *testing.T) {
 		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/chat/completions?token=query-secret",
 			strings.NewReader(`{"model":"m","messages":[{"role":"user","content":"промпт-секрет"}]}`))
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer client-secret")
-		g.ServeHTTP(httptest.NewRecorder(), req)
+		g.ServeHTTP(httptest.NewRecorder(), req) // с действующим ключом приложения (withKey)
+		bad := req.Clone(context.Background())
+		bad.Header.Set("Authorization", "Bearer client-secret")
+		g.ServeHTTP(httptest.NewRecorder(), bad)
 	}
 	mu.Lock()
 	out := logs.String()
@@ -544,7 +565,7 @@ func TestProxyLogsHaveNoSecrets(t *testing.T) {
 	if out == "" {
 		t.Fatal("журнал пуст — тест ничего не проверяет")
 	}
-	for _, secret := range []string{"промпт-секрет", "sk-provider-secret", "client-secret", "query-secret"} {
+	for _, secret := range []string{"промпт-секрет", "sk-provider-secret", "client-secret", "query-secret", "aisec_"} {
 		if strings.Contains(out, secret) {
 			t.Errorf("в журнал попало %q:\n%s", secret, out)
 		}

@@ -13,7 +13,7 @@ func env(m map[string]string) func(string) string {
 	return func(k string) string { return m[k] }
 }
 
-var required = []string{"-tls-cert", "c.pem", "-tls-key", "k.pem", "-upstream-url", "https://mock-llm:9443", "-upstream-ca", "ca.pem"}
+var required = []string{"-config", "gateway.yaml", "-tls-cert", "c.pem", "-tls-key", "k.pem", "-upstream-url", "https://mock-llm:9443", "-upstream-ca", "ca.pem"}
 
 func TestLoadGatewayDefaults(t *testing.T) {
 	cfg, err := LoadGateway(required, env(nil), io.Discard)
@@ -22,13 +22,14 @@ func TestLoadGatewayDefaults(t *testing.T) {
 	}
 	if cfg.Listen != DefaultGatewayListen || cfg.MaxBodyBytes != DefaultMaxBodyBytes ||
 		cfg.UpstreamConnectTimeout != DefaultConnectTimeout || cfg.UpstreamHeaderTimeout != DefaultHeaderTimeout ||
-		cfg.UpstreamURL.String() != "https://mock-llm:9443" || len(cfg.ForwardHeaders) != 0 {
+		cfg.UpstreamURL.String() != "https://mock-llm:9443" || len(cfg.ForwardHeaders) != 0 || cfg.ConfigFile != "gateway.yaml" {
 		t.Fatalf("значения по умолчанию: %+v", cfg)
 	}
 }
 
 func TestLoadGatewayEnvAndFlagPrecedence(t *testing.T) {
 	e := env(map[string]string{
+		"AISEC_GATEWAY_CONFIG":          "env-gateway.yaml",
 		"AISEC_GATEWAY_TLS_CERT":        "env-c.pem",
 		"AISEC_GATEWAY_TLS_KEY":         "env-k.pem",
 		"AISEC_GATEWAY_UPSTREAM_URL":    "https://env.example/base/",
@@ -44,7 +45,7 @@ func TestLoadGatewayEnvAndFlagPrecedence(t *testing.T) {
 	if cfg.Listen != "127.0.0.1:1" {
 		t.Errorf("флаг должен быть важнее окружения: %s", cfg.Listen)
 	}
-	if cfg.TLSCertFile != "env-c.pem" || cfg.MaxBodyBytes != 2048 || cfg.UpstreamHeaderTimeout != 5*time.Second {
+	if cfg.ConfigFile != "env-gateway.yaml" || cfg.TLSCertFile != "env-c.pem" || cfg.MaxBodyBytes != 2048 || cfg.UpstreamHeaderTimeout != 5*time.Second {
 		t.Errorf("значения из окружения: %+v", cfg)
 	}
 	if cfg.UpstreamURL.Path != "/base" {
@@ -59,6 +60,7 @@ func TestLoadGatewayErrors(t *testing.T) {
 	with := func(extra ...string) []string { return append(append([]string{}, required...), extra...) }
 	cases := map[string][]string{
 		"нет обязательных": {},
+		"нет config":       required[2:],
 		"http":             with("-upstream-url", "http://mock-llm"),
 		"без хоста":        with("-upstream-url", "https:///v1"),
 		"учётные данные в адресе": with("-upstream-url", "https://user:secret@host"),

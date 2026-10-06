@@ -3,9 +3,12 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/azuresong-afk/ai_railway/internal/auth"
+	"github.com/azuresong-afk/ai_railway/internal/config"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 )
 
@@ -14,7 +17,7 @@ func TestRun(t *testing.T) {
 	if err := run(dir, []string{"localhost", "127.0.0.1"}, time.Hour, false, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	perms := map[string]os.FileMode{CAFile: publicPerm, CertFile: publicPerm, KeyFile: secretPerm}
+	perms := map[string]os.FileMode{CAFile: publicPerm, CertFile: publicPerm, KeyFile: secretPerm, AppKeyFile: secretPerm, ConfigFile: publicPerm}
 	for f, want := range perms {
 		info, err := os.Stat(filepath.Join(dir, f))
 		if err != nil {
@@ -76,7 +79,20 @@ func TestRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 3 {
+	// Конфигурация принимается шлюзом и содержит хеш выпущенного ключа.
+	gw, err := config.LoadGatewayFile(filepath.Join(dir, ConfigFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	appKey := strings.TrimSpace(string(read(AppKeyFile)))
+	h, err := p.Hasher()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if k := gw.Applications[0].Keys[0]; !auth.KeyMatches(h, appKey, k.SHA256) || k.Expires == "" {
+		t.Fatalf("ключ приложения не соответствует конфигурации: %+v", k)
+	}
+	if len(entries) != 5 {
 		t.Fatalf("в каталоге лишние файлы: %v", entries)
 	}
 }

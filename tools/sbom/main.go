@@ -20,6 +20,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
@@ -35,13 +36,14 @@ func main() {
 	version := flag.String("version", "dev", "версия продукта")
 	timestamp := flag.String("timestamp", "", "время формирования (RFC 3339), для воспроизводимости")
 	check := flag.String("check", "", "только проверить готовый SBOM на обязательные поля и выйти")
+	goSum := flag.String("gosum", "go.sum", "go.sum модуля: хеши модулей для сборки с vendor/, где их нет в сведениях о сборке")
 	flag.Parse()
 
 	var err error
 	if *check != "" {
 		err = checkFile(*check)
 	} else {
-		err = run(*registry, *out, *version, *timestamp, flag.Args())
+		err = run(*registry, *goSum, *out, *version, *timestamp, flag.Args())
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "sbom:", err)
@@ -49,7 +51,7 @@ func main() {
 	}
 }
 
-func run(registryPath, out, version, timestamp string, binaries []string) error {
+func run(registryPath, goSumPath, out, version, timestamp string, binaries []string) error {
 	if len(binaries) == 0 {
 		return errors.New("не указаны бинарники")
 	}
@@ -80,12 +82,17 @@ func run(registryPath, out, version, timestamp string, binaries []string) error 
 	if err != nil {
 		return err
 	}
+	sums, err := readGoSum(goSumPath)
+	if err != nil {
+		return err
+	}
 	var bins []Binary
 	for _, path := range binaries {
 		b, err := readBinary(path, hasher)
 		if err != nil {
 			return err
 		}
+		fillSums(&b, sums)
 		bins = append(bins, b)
 	}
 	bom, err := Build(reg, bins, version, ts, hasher)
@@ -151,6 +158,52 @@ func readBinary(path string, hasher aisecCrypto.Hasher) (Binary, error) {
 		b.Deps = append(b.Deps, Dep{Path: d.Path, Version: d.Version, Sum: d.Sum})
 	}
 	return b, nil
+}
+
+// maxGoSum ограничивает размер go.sum.
+const maxGoSum = 4 << 20
+
+// readGoSum читает хеши модулей из go.sum: «модуль версия» → «h1:…».
+// Строки go.mod-хешей («версия/go.mod») не нужны: в бинарник входит код модуля.
+func readGoSum(path string) (map[string]string, error) {
+	f, err := os.Open(path) //nolint:gosec // G304: путь к go.sum задаёт Makefile
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close() //nolint:errcheck // файл открыт только для чтения
+	data, err := io.ReadAll(io.LimitReader(f, maxGoSum+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxGoSum {
+		return nil, fmt.Errorf("%s больше %d байт", path, maxGoSum)
+	}
+	sums := map[string]string{}
+	for i, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		if len(fields) != 3 {
+			return nil, fmt.Errorf("%s:%d: ожидается «модуль версия хеш»", path, i+1)
+		}
+		if strings.HasSuffix(fields[1], "/go.mod") {
+			continue
+		}
+		sums[fields[0]+" "+fields[1]] = fields[2]
+	}
+	return sums, nil
+}
+
+// fillSums дополняет хеши модулей из go.sum. При сборке с -mod=vendor Go не
+// записывает хеш в сведения о сборке; соответствие vendor/ и go.sum
+// проверяет go при вендоринге и сборке (vendor/modules.txt).
+func fillSums(b *Binary, sums map[string]string) {
+	for i, d := range b.Deps {
+		if d.Sum == "" {
+			b.Deps[i].Sum = sums[d.Path+" "+d.Version]
+		}
+	}
 }
 
 // maxSBOM ограничивает размер проверяемого SBOM.

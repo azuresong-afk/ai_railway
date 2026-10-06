@@ -57,6 +57,9 @@ func TestParseGatewayFileErrors(t *testing.T) {
 		"хеш":                  {"sha256: 0000000000000000000000000000000000000000000000000000000000000000", "sha256: plain-secret"},
 		"срок":                 {"expires: 2027-01-01", "expires: 01.01.2027"},
 		"подсеть":              {"10.0.0.0/8", "10.0.0.0/33"},
+		"подсеть IPv4-in-IPv6": {"10.0.0.0/8", "::ffff:10.0.0.0/104"},
+		"биты узла в подсети":  {"10.0.0.0/8", "10.1.2.3/8"},
+		"нет events_file":      {"  events_file: /var/lib/aisec/events.jsonl\n", ""},
 		"квота":                {"max_tokens: 4096", "max_tokens: -1"},
 		"таймаут":              {"connect_timeout: 5s", "connect_timeout: 1h"},
 		"длительность":         {"connect_timeout: 5s", "connect_timeout: 5"},
@@ -83,6 +86,36 @@ func TestParseGatewayFileErrors(t *testing.T) {
 	}
 	if _, err := ParseGatewayFile(strings.NewReader(strings.Repeat("#", MaxGatewayFile+1))); err == nil {
 		t.Fatal("слишком большой файл должен отвергаться")
+	}
+}
+
+func TestLoadGatewayFilePermissions(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/gateway.yaml"
+	if err := os.WriteFile(path, []byte(readFixture(t)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Чтение группой и остальными допустимо: секретов в файле нет.
+	if err := os.Chmod(path, 0o644); err != nil { //nolint:gosec // G302: тест проверяет, что конфигурация с правами 0644 принимается
+		t.Fatal(err)
+	}
+	if _, err := LoadGatewayFile(path); err != nil {
+		t.Fatalf("файл 0644: %v", err)
+	}
+	// Файл, который может изменить группа или любой пользователь, не принимается.
+	for _, perm := range []os.FileMode{0o664, 0o646} {
+		if err := os.Chmod(path, perm); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadGatewayFile(path); err == nil {
+			t.Errorf("права %o: ожидалась ошибка", perm)
+		}
+	}
+	if _, err := LoadGatewayFile(dir); err == nil {
+		t.Error("каталог вместо файла: ожидалась ошибка")
+	}
+	if _, err := LoadGatewayFile(dir + "/нет.yaml"); err == nil {
+		t.Error("нет файла: ожидалась ошибка")
 	}
 }
 

@@ -1,7 +1,7 @@
-// Команда devcerts выпускает сертификаты для стенда разработки: УЦ и
-// серверный сертификат для шлюза и mock-llm. Только для разработки и e2e;
-// в поставку не входит. Закрытый ключ УЦ не сохраняется: после выпуска он не
-// нужен, а значит, не может утечь со стенда.
+// Команда devcerts выпускает материалы для стенда разработки: УЦ и серверный
+// сертификат для шлюза и mock-llm, ключ приложения и файл конфигурации шлюза
+// с его хешем. Только для разработки; в поставку не входит. Закрытый ключ УЦ
+// не сохраняется: после выпуска он не нужен, а значит, не может утечь со стенда.
 package main
 
 import (
@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/azuresong-afk/ai_railway/internal/auth"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 )
 
@@ -44,6 +45,8 @@ const (
 	CAFile     = "ca.pem"
 	CertFile   = "server.pem"
 	KeyFile    = "server-key.pem"
+	AppKeyFile = "app-key"      // ключ приложения стенда (Authorization: Bearer)
+	ConfigFile = "gateway.yaml" // конфигурация шлюза стенда
 	dirPerm    = 0o700
 	publicPerm = 0o644
 	secretPerm = 0o600
@@ -60,7 +63,7 @@ func run(dir string, hosts []string, validity time.Duration, force bool, now tim
 		return err
 	}
 	if !force {
-		for _, f := range []string{CAFile, CertFile, KeyFile} {
+		for _, f := range []string{CAFile, CertFile, KeyFile, AppKeyFile, ConfigFile} {
 			if _, err := os.Stat(filepath.Join(dir, f)); err == nil {
 				return fmt.Errorf("%s уже существует; укажите -force, чтобы перезаписать", filepath.Join(dir, f))
 			}
@@ -74,6 +77,23 @@ func run(dir string, hosts []string, validity time.Duration, force bool, now tim
 	if err != nil {
 		return err
 	}
+	p, err := aisecCrypto.New(aisecCrypto.ProfileStandard)
+	if err != nil {
+		return err
+	}
+	rnd, err := p.Random()
+	if err != nil {
+		return err
+	}
+	h, err := p.Hasher()
+	if err != nil {
+		return err
+	}
+	appKey, prefix, hash, err := auth.NewAppKey(rnd, h)
+	if err != nil {
+		return err
+	}
+	expires := now.Add(validity).UTC().Format(time.DateOnly)
 	// Ключ пишется первым и с правами 0600: даже при сбое посередине он не
 	// окажется доступен другим пользователям.
 	for _, f := range []struct {
@@ -82,16 +102,44 @@ func run(dir string, hosts []string, validity time.Duration, force bool, now tim
 		perm os.FileMode
 	}{
 		{KeyFile, keyPEM, secretPerm},
+		{AppKeyFile, []byte(appKey + "\n"), secretPerm},
 		{CertFile, certPEM, publicPerm},
 		{CAFile, ca.CertPEM(), publicPerm},
+		{ConfigFile, []byte(devConfig + auth.FormatKeyEntry(prefix, hash, expires)), publicPerm},
 	} {
 		if err := writeFile(filepath.Join(dir, f.name), f.data, f.perm); err != nil {
 			return err
 		}
 	}
-	_, err = fmt.Fprintf(os.Stdout, "devcerts: %s, %s, %s в %s (до %s)\n", CAFile, CertFile, KeyFile, dir, now.Add(validity).Format("02.01.2006"))
+	_, err = fmt.Fprintf(os.Stdout, "devcerts: %s, %s, %s, %s, %s в %s (до %s)\n",
+		CAFile, CertFile, KeyFile, AppKeyFile, ConfigFile, dir, now.Add(validity).Format("02.01.2006"))
 	return err
 }
+
+// devConfig — конфигурация шлюза стенда (docker compose, deploy/compose/dev):
+// пути — внутри контейнера; ключ приложения дописывается при выпуске.
+const devConfig = `# Конфигурация шлюза стенда разработки. Создана tools/devcerts; не для поставки.
+schema_version: 1
+gateway:
+  events_file: /data/events.jsonl
+providers:
+  - id: mock
+    type: openai
+    base_url: https://mock-llm:9443
+    ca_file: /keys/ca.pem
+applications:
+  - id: dev-app
+    name: Приложение стенда разработки
+    env: test
+    provider: mock
+    models: [mock-echo, mock-stream-slow]
+    policy: base
+    policy_mode: monitor
+    fail_mode: fail_closed
+    storage: none
+    user_from: none
+    keys:
+`
 
 // writeFile записывает файл через временный и переименование, выставляя права
 // до записи содержимого.
