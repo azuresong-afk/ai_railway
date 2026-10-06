@@ -16,8 +16,6 @@ x-hardening: &hardening
   security_opt: ["no-new-privileges:true"]
   pids_limit: 128
   mem_limit: 256m
-  volumes:
-    - ../../../.dev-keys:/keys:ro
 
 services:
   mock-llm:
@@ -29,6 +27,9 @@ services:
     image: aisec-dev/mock-llm
     # Только внутренняя сеть без выхода наружу: доступен лишь шлюзу.
     networks: [internal]
+    volumes:
+      - ../../../.dev-keys/server.pem:/keys/server.pem:ro
+      - ../../../.dev-keys/server-key.pem:/keys/server-key.pem:ro
     command: ["-listen", "0.0.0.0:9443", "-cert", "/keys/server.pem", "-key", "/keys/server-key.pem"]
 
   aisec-gateway:
@@ -40,8 +41,13 @@ services:
     image: aisec-dev/aisec-gateway
     # internal — к mock-llm; edge — только ради опубликованного порта.
     networks: [internal, edge]
+    # Только нужные шлюзу файлы: ключ приложения (app-key) — клиентский,
+    # в контейнер шлюза он не попадает.
     volumes:
-      - ../../../.dev-keys:/keys:ro
+      - ../../../.dev-keys/server.pem:/keys/server.pem:ro
+      - ../../../.dev-keys/server-key.pem:/keys/server-key.pem:ro
+      - ../../../.dev-keys/ca.pem:/keys/ca.pem:ro
+      - ../../../.dev-keys/gateway.yaml:/keys/gateway.yaml:ro
       - ../../../.dev-data:/data
     command:
       - "-config=/keys/gateway.yaml"

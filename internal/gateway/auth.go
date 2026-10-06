@@ -41,8 +41,8 @@ func IdentityFrom(ctx context.Context) (*auth.Identity, bool) {
 
 // RequireAppKey пропускает запрос к next только с действующим ключом
 // приложения (ТЗ, 5.1, 5.4). Отказ — 401 без подробностей, причина — только
-// в событии auth_failure; адрес, с которого слишком много неудач, получает
-// 429 до проверки ключа (DM-38).
+// в событии auth_failure; неудачи с адреса, с которого их слишком много,
+// получают 429 без событий (DM-38).
 func RequireAppKey(cfg AuthConfig, next http.Handler) (http.Handler, error) {
 	if cfg.Authenticator == nil || cfg.Limiter == nil || cfg.Events == nil || cfg.IDs == nil {
 		return nil, errors.New("аутентификация: не заданы зависимости")
@@ -56,13 +56,6 @@ func RequireAppKey(cfg AuthConfig, next http.Handler) (http.Handler, error) {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		now := cfg.Now()
 		remote := remoteAddr(r)
-		if blocked, until := cfg.Limiter.Blocked(remote, now); blocked {
-			// Секунды до снятия блокировки с округлением вверх.
-			w.Header().Set("Retry-After", strconv.FormatInt(int64((until.Sub(now)+time.Second-1)/time.Second), 10))
-			WriteError(w, http.StatusTooManyRequests, "слишком много неудачных попыток аутентификации, повторите позже",
-				"rate_limit_error", "auth_rate_limited")
-			return
-		}
 		var f *auth.Failure
 		var id *auth.Identity
 		if vals := r.Header.Values("Authorization"); len(vals) == 0 {
@@ -72,17 +65,31 @@ func RequireAppKey(cfg AuthConfig, next http.Handler) (http.Handler, error) {
 		} else {
 			id, f = cfg.Authenticator.Authenticate(key, remote, now)
 		}
-		if f != nil {
-			cfg.emit(remote, f, now)
-			if cfg.Limiter.Fail(remote, now) {
-				cfg.Logger.Warn("адрес заблокирован после неудачных попыток аутентификации", "remote_addr", addrString(remote))
-				cfg.emit(remote, &auth.Failure{Reason: auth.ReasonRateLimited}, now)
-			}
-			w.Header().Set("WWW-Authenticate", `Bearer realm="aisec"`)
-			WriteError(w, http.StatusUnauthorized, "ключ приложения не принят", "invalid_request_error", "invalid_api_key")
+		if f == nil {
+			// Действующий ключ проходит и с заблокированного адреса: иначе
+			// одно приложение с отозванным ключом в цикле повторов отключило
+			// бы соседей за тем же NAT. Подбор это не облегчает: секрет —
+			// 256 случайных бит.
+			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), identityKey{}, id)))
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), identityKey{}, id)))
+		if blocked, until := cfg.Limiter.Blocked(remote, now); blocked {
+			// Неудачи с заблокированного адреса событий не создают: о начале
+			// блокировки уже есть одно событие rate_limited.
+			// Секунды до снятия блокировки с округлением вверх.
+			w.Header().Set("Retry-After", strconv.FormatInt(int64((until.Sub(now)+time.Second-1)/time.Second), 10))
+			WriteError(w, http.StatusTooManyRequests, "слишком много неудачных попыток аутентификации, повторите позже",
+				"rate_limit_error", "auth_rate_limited")
+			return
+		}
+		cfg.emit(remote, f, now)
+		if cfg.Limiter.Fail(remote, now) {
+			// Адрес — только в событии: в техническом журнале его не нужно.
+			cfg.Logger.Warn("адрес заблокирован после неудачных попыток аутентификации, подробности — в событии auth_failure")
+			cfg.emit(remote, &auth.Failure{Reason: auth.ReasonRateLimited}, now)
+		}
+		w.Header().Set("WWW-Authenticate", `Bearer realm="aisec"`)
+		WriteError(w, http.StatusUnauthorized, "ключ приложения не принят", "invalid_request_error", "invalid_api_key")
 	}), nil
 }
 
@@ -122,8 +129,8 @@ func addrString(a netip.Addr) string {
 }
 
 // KeyRecords переводит ключи приложений из файла конфигурации в записи для
-// аутентификации. Срок expires — дата: ключ перестаёт действовать в начале
-// этих суток по UTC.
+// аутентификации. Срок expires — дата: ключ действует до 00:00 UTC этой даты
+// (03:00 МСК), сама дата в срок не входит. Раньше — безопаснее, чем позже.
 func KeyRecords(apps []config.Application) ([]auth.KeyRecord, error) {
 	var out []auth.KeyRecord
 	for _, a := range apps {

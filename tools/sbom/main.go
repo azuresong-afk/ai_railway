@@ -196,8 +196,10 @@ func readGoSum(path string) (map[string]string, error) {
 }
 
 // fillSums дополняет хеши модулей из go.sum. При сборке с -mod=vendor Go не
-// записывает хеш в сведения о сборке; соответствие vendor/ и go.sum
-// проверяет go при вендоринге и сборке (vendor/modules.txt).
+// записывает хеш в сведения о сборке. Это заявленный хеш модуля, а не хеш
+// кода из vendor/: сборка сверяет vendor/modules.txt только с go.mod, а
+// содержимое vendor/ с go.sum — только go mod vendor при вендоринге.
+// Неизменность vendor/ проверяется отдельно (план этапа 1, задача 1.28).
 func fillSums(b *Binary, sums map[string]string) {
 	for i, d := range b.Deps {
 		if d.Sum == "" {

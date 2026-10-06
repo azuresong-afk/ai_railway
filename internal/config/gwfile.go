@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/netip"
 	"os"
+	"path/filepath"
 	"regexp"
 	"time"
 
@@ -184,6 +185,17 @@ func LoadGatewayFile(path string) (*GatewayFile, error) {
 	}
 	if info.Mode().Perm()&0o022 != 0 {
 		return nil, fmt.Errorf("%s: файл конфигурации доступен на запись группе или остальным (права %o)", path, info.Mode().Perm())
+	}
+	// Каталог, в который могут писать другие, позволил бы подменить файл
+	// переименованием. Владелец файла не проверяется: для этого нужен
+	// syscall, запрещённый в серверных компонентах (ADR-0004); он задаётся
+	// при установке (этапы 3 и 6).
+	dir, err := os.Stat(filepath.Dir(path))
+	if err != nil {
+		return nil, err
+	}
+	if dir.Mode().Perm()&0o022 != 0 && dir.Mode()&os.ModeSticky == 0 {
+		return nil, fmt.Errorf("%s: каталог файла конфигурации доступен на запись группе или остальным (права %o)", filepath.Dir(path), dir.Mode().Perm())
 	}
 	return ParseGatewayFile(f)
 }

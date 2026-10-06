@@ -77,14 +77,26 @@ func TestLimiterMemoryBounded(t *testing.T) {
 		binary.BigEndian.PutUint16(b[2:], i)
 		return netip.AddrFrom4(b)
 	}
-	// Четыре адреса заблокированы — вытеснить нечего, новые не учитываются.
 	for i := range uint16(4) {
 		l.Fail(addr(i), now)
 		l.Fail(addr(i), now)
 	}
-	l.Fail(addr(100), now)
-	if l.Overflowed() != 1 || len(l.entries) != 4 {
+	// Четыре адреса заблокированы — вытеснить нечего: новые адреса делят
+	// общий счётчик, и он блокируется так же, как отдельный адрес.
+	if l.Fail(addr(100), now) {
+		t.Fatal("общий счётчик заблокирован после первой неудачи")
+	}
+	if b, _ := l.Blocked(addr(102), now); b {
+		t.Fatal("общий счётчик заблокирован до порога")
+	}
+	if !l.Fail(addr(101), now) {
+		t.Fatal("общий счётчик не заблокирован на пороге")
+	}
+	if l.Overflowed() != 2 || len(l.entries) != 4 {
 		t.Fatalf("переполнение: %d, записей %d", l.Overflowed(), len(l.entries))
+	}
+	if b, _ := l.Blocked(addr(102), now); !b {
+		t.Fatal("адрес вне таблицы не попадает под блокировку общего счётчика")
 	}
 	for i := range uint16(4) {
 		if b, _ := l.Blocked(addr(i), now); !b {

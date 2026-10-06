@@ -111,6 +111,26 @@ func TestLoadGatewayFilePermissions(t *testing.T) {
 			t.Errorf("права %o: ожидалась ошибка", perm)
 		}
 	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Каталог, в который может писать любой, — подмена файла переименованием.
+	if err := os.Chmod(dir, 0o777); err != nil { //nolint:gosec // G302: тест проверяет отказ при каталоге с записью для всех
+		t.Fatal(err)
+	}
+	if _, err := LoadGatewayFile(path); err == nil {
+		t.Error("каталог 0777: ожидалась ошибка")
+	}
+	// С битом sticky чужой файл не переименовать и не удалить — допустимо.
+	if err := os.Chmod(dir, 0o777|os.ModeSticky); err != nil { //nolint:gosec // G302: тест проверяет каталог с битом sticky
+		t.Fatal(err)
+	}
+	if _, err := LoadGatewayFile(path); err != nil {
+		t.Errorf("каталог с битом sticky: %v", err)
+	}
+	if err := os.Chmod(dir, 0o700); err != nil { //nolint:gosec // G302: каталогу нужен бит x; 0700 — только владелец
+		t.Fatal(err)
+	}
 	if _, err := LoadGatewayFile(dir); err == nil {
 		t.Error("каталог вместо файла: ожидалась ошибка")
 	}

@@ -66,7 +66,7 @@ func run(args []string, stdout, stderr io.Writer, now time.Time) int {
 func appKey(args []string, stdout, stderr io.Writer, now time.Time) error {
 	fs := flag.NewFlagSet("app-key", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	expires := fs.String("expires", "", "срок действия ключа, ГГГГ-ММ-ДД (рекомендуется)")
+	expires := fs.String("expires", "", "срок действия ключа, ГГГГ-ММ-ДД (рекомендуется): ключ действует до 00:00 UTC этой даты (03:00 МСК), сама дата в срок не входит")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}

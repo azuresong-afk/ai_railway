@@ -93,6 +93,10 @@ func start(t *testing.T, name string, args ...string) string {
 		if strings.Contains(logs.String(), promptMarker) {
 			t.Errorf("текст промпта попал в журнал %s", name)
 		}
+		// Ключи приложений (и даже их префиксы) в технический журнал не пишутся.
+		if strings.Contains(logs.String(), "aisec_") {
+			t.Errorf("ключ приложения попал в журнал %s", name)
+		}
 		if t.Failed() {
 			t.Logf("журнал %s:\n%s", name, logs.String())
 		}

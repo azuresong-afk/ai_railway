@@ -8,17 +8,21 @@ import (
 
 // FailureLimiter ограничивает частоту неудачных попыток аутентификации с
 // одного адреса (ТЗ, 5.1; DM-38). Адреса IPv6 группируются по сети /64:
-// у одного клиента их обычно целая сеть. Пока адрес заблокирован, запросы с
-// него отклоняются до проверки ключа — иначе перебор продолжался бы.
+// у одного клиента их обычно целая сеть. Пока адрес заблокирован, неудачи с
+// него отклоняются без событий; действующий ключ проходит (см. RequireAppKey).
 //
 // Память ограничена: при переполнении сначала удаляются записи с истёкшим
-// окном, затем — любая незаблокированная запись. Ограничитель — средство
-// против перебора и шума, а не единственная защита: ключ содержит 256 бит
-// случайных данных и подобрать его нельзя.
+// окном, затем — любая незаблокированная запись. Если места всё равно нет
+// (таблицу заполнили блокировками, например, из множества сетей IPv6 /64),
+// неудачи новых адресов учитываются в одном общем счётчике, который
+// блокируется так же: ограничение не перестаёт действовать, а поток событий
+// остаётся ограниченным. Ограничитель — средство против перебора и шума, а
+// не единственная защита: ключ содержит 256 бит случайных данных.
 type FailureLimiter struct {
 	mu         sync.Mutex
 	cfg        LimiterConfig
 	entries    map[netip.Prefix]*limiterEntry
+	overflow   limiterEntry // общий счётчик для адресов, не поместившихся в таблицу
 	lastSweep  time.Time
 	overflowed uint64
 }
@@ -62,18 +66,40 @@ func clientKey(a netip.Addr) netip.Prefix {
 	}
 	p, err := a.Prefix(64)
 	if err != nil {
-		// Нулевой или неразобранный адрес — один общий ключ.
+		// Нулевой адрес (RemoteAddr не разобран; у TCP-соединения так не
+		// бывает) — один общий ключ: такие клиенты делят один счётчик.
 		return netip.Prefix{}
 	}
 	return p
+}
+
+// entry возвращает запись адреса; если её нет и места нет — общий счётчик.
+// Вызывается под блокировкой.
+func (l *FailureLimiter) entry(k netip.Prefix, now time.Time, create bool) *limiterEntry {
+	if e, ok := l.entries[k]; ok {
+		return e
+	}
+	if !create {
+		if len(l.entries) >= l.cfg.MaxEntries {
+			return &l.overflow
+		}
+		return nil
+	}
+	if !l.makeRoom(now) {
+		l.overflowed++
+		return &l.overflow
+	}
+	e := &limiterEntry{windowStart: now}
+	l.entries[k] = e
+	return e
 }
 
 // Blocked сообщает, заблокирован ли адрес, и до какого момента.
 func (l *FailureLimiter) Blocked(a netip.Addr, now time.Time) (bool, time.Time) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	e, ok := l.entries[clientKey(a)]
-	if !ok || !now.Before(e.blockedUntil) {
+	e := l.entry(clientKey(a), now, false)
+	if e == nil || !now.Before(e.blockedUntil) {
 		return false, time.Time{}
 	}
 	return true, e.blockedUntil
@@ -85,16 +111,7 @@ func (l *FailureLimiter) Blocked(a netip.Addr, now time.Time) (bool, time.Time) 
 func (l *FailureLimiter) Fail(a netip.Addr, now time.Time) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	k := clientKey(a)
-	e, ok := l.entries[k]
-	if !ok {
-		if !l.makeRoom(now) {
-			l.overflowed++
-			return false
-		}
-		e = &limiterEntry{windowStart: now}
-		l.entries[k] = e
-	}
+	e := l.entry(clientKey(a), now, true)
 	if now.Before(e.blockedUntil) {
 		return false
 	}
@@ -110,7 +127,8 @@ func (l *FailureLimiter) Fail(a netip.Addr, now time.Time) bool {
 	return false
 }
 
-// Overflowed — сколько неудач не учтено из-за переполнения (метрика).
+// Overflowed — сколько неудач учтено в общем счётчике из-за переполнения
+// таблицы (метрика).
 func (l *FailureLimiter) Overflowed() uint64 {
 	l.mu.Lock()
 	defer l.mu.Unlock()

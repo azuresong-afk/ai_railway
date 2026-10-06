@@ -66,6 +66,10 @@ func TestDM38_AuthenticateReasons(t *testing.T) {
 			t.Errorf("%s: %+v", addr, f)
 		}
 	}
+	// Граница срока: за 1 нс до Expires ключ действует, ровно в Expires — нет.
+	if _, f := a.Authenticate(expired.key, client, now.Add(-time.Nanosecond)); f != nil {
+		t.Errorf("за 1 нс до срока: %+v", f)
+	}
 	// Нулевой адрес не входит ни в одну подсеть.
 	if _, f := a.Authenticate(cidr.key, netip.Addr{}, now); f == nil || f.Reason != ReasonAddress {
 		t.Errorf("нулевой адрес: %+v", f)

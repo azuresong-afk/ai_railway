@@ -182,10 +182,10 @@ func TestDM38_GatewayRateLimitsFailures(t *testing.T) {
 	if len(evs) != 4 || evs[3].AuthFailure.Reason != auth.ReasonRateLimited {
 		t.Fatalf("ожидалось три отказа и одно событие о блокировке: %d", len(evs))
 	}
-	// Во время блокировки отклоняется даже действующий ключ, событий больше нет.
+	// Во время блокировки неудачи получают 429 без событий.
 	for range 5 {
 		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, authReq(attacker, "Bearer "+ta.key))
+		h.ServeHTTP(rec, authReq(attacker, "Bearer "+ta.key[:len(ta.key)-1]+flip(ta.key[len(ta.key)-1])))
 		if rec.Code != http.StatusTooManyRequests || errCode(t, rec) != "auth_rate_limited" || rec.Header().Get("Retry-After") != "60" {
 			t.Fatalf("при блокировке: %d %s %q", rec.Code, rec.Body.String(), rec.Header().Get("Retry-After"))
 		}
@@ -193,18 +193,33 @@ func TestDM38_GatewayRateLimitsFailures(t *testing.T) {
 	if len(ta.log.all()) != 4 {
 		t.Fatal("отклонённые при блокировке запросы создали события")
 	}
-	// Другой адрес работает.
+	// Действующий ключ проходит и с заблокированного адреса: соседи по NAT
+	// не отключаются из-за чужого недействующего ключа.
 	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, authReq(attacker, "Bearer "+ta.key))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("действующий ключ с заблокированного адреса: %d", rec.Code)
+	}
+	// Другой адрес не заблокирован: его неудача — 401, а не 429.
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, authReq("198.51.100.6:1", "Bearer aisec_zzzzzzzz_"+strings.Repeat("A", 43)))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("соседний адрес: %d", rec.Code)
+	}
+	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, authReq("198.51.100.6:1", "Bearer "+ta.key))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("соседний адрес: %d", rec.Code)
 	}
-	// После блокировки адрес снова принимается.
+	// После блокировки неудача снова получает 401 и событие.
 	clock = clock.Add(time.Minute)
 	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, authReq(attacker, "Bearer "+ta.key))
-	if rec.Code != http.StatusOK {
+	h.ServeHTTP(rec, authReq(attacker, "Bearer aisec_zzzzzzzz_"+strings.Repeat("A", 43)))
+	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("после блокировки: %d", rec.Code)
+	}
+	if n := len(ta.log.all()); n != 6 {
+		t.Fatalf("событий %d, ожидалось 6", n)
 	}
 }
 
