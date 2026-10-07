@@ -296,7 +296,7 @@ func TestRequireAppKeyNeedsDependencies(t *testing.T) {
 	if _, err := RequireAppKey(AuthConfig{}, echoIdentity); err == nil {
 		t.Fatal("собран обработчик без зависимостей")
 	}
-	if _, err := New(Options{Proxy: echoIdentity}); err == nil {
+	if _, err := New(Options{Chat: echoIdentity}); err == nil {
 		t.Fatal("маршрут приложений подключён без аутентификации")
 	}
 }

@@ -68,9 +68,11 @@ type Provider struct {
 	ID      string `yaml:"id"`
 	Type    string `yaml:"type"`
 	BaseURL string `yaml:"base_url"`
-	// CAFile — дополнительные корневые сертификаты (например, НУЦ Минцифры).
+	// CAFile — корневые сертификаты, которым шлюз доверяет для этого
+	// провайдера (например, НУЦ Минцифры). Доверие системному хранилищу —
+	// только явно: путём к его файлу (/etc/ssl/certs/ca-certificates.crt).
 	CAFile string `yaml:"ca_file"`
-	// SystemRoots — доверять также системному хранилищу сертификатов.
+	// SystemRoots — зарезервировано; на этапе 1 не поддерживается.
 	SystemRoots bool `yaml:"system_roots"`
 	// KeyFile — учётные данные провайдера (ключ API или авторизационные данные
 	// GigaChat), права 0600.
@@ -227,8 +229,11 @@ func (f *GatewayFile) validate() error {
 		if _, err := ParseUpstreamURL(p.BaseURL); err != nil {
 			add("%s: base_url: %v", at, err)
 		}
-		if p.CAFile == "" && !p.SystemRoots {
-			add("%s: нужен ca_file или system_roots: true — иначе провайдеру нечем доверять", at)
+		if p.CAFile == "" {
+			add("%s: нужен ca_file — корневые сертификаты провайдера", at)
+		}
+		if p.SystemRoots {
+			add("%s: system_roots не поддерживается; укажите файл системного хранилища в ca_file явно", at)
 		}
 		for _, d := range []struct {
 			name string

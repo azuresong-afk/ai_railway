@@ -37,8 +37,6 @@ const full = `{
   "presence_penalty": 0,
   "frequency_penalty": -1.5,
   "logit_bias": {"50256": -100},
-  "logprobs": true,
-  "top_logprobs": 2,
   "response_format": {"type": "json_schema", "json_schema": {"name": "x", "schema": {"type": "object"}}},
   "seed": 42,
   "tools": [{"type": "function", "function": {"name": "get_weather", "description": "Погода", "parameters": {"type": "object"}}}],
@@ -210,6 +208,7 @@ func TestParseRejects(t *testing.T) {
 		{"хвост", msg(user) + `{}`, CodeInvalid},
 		{"неизвестное поле", `{"model":"m","messages":[` + user + `],"metadata":{"k":"v"}}`, CodeUnsupported},
 		{"prediction", `{"model":"m","messages":[` + user + `],"prediction":{"type":"content","content":"x"}}`, CodeUnsupported},
+		{"logprobs", `{"model":"m","messages":[` + user + `],"logprobs":true}`, CodeUnsupported},
 		{"legacy functions", `{"model":"m","messages":[` + user + `],"functions":[]}`, CodeUnsupported},
 		{"поле сообщения", msg(`{"role":"user","content":"x","extra":1}`), CodeUnsupported},
 		{"поле части", msg(`{"role":"user","content":[{"type":"text","text":"x","x":1}]}`), CodeUnsupported},
@@ -313,7 +312,7 @@ func FuzzParse(f *testing.F) {
 	f.Add([]byte(`{"model":"m","messages":[{"role":"assistant","content":null,"tool_calls":[{"id":"c","type":"function","function":{"name":"f","arguments":"{}"}}]}]}`))
 	known := map[string]bool{}
 	for _, k := range []string{"model", "messages", "stream", "stream_options", "max_tokens", "max_completion_tokens", "temperature", "top_p", "n", "stop",
-		"presence_penalty", "frequency_penalty", "logit_bias", "logprobs", "top_logprobs", "response_format", "seed", "tools", "tool_choice",
+		"presence_penalty", "frequency_penalty", "logit_bias", "response_format", "seed", "tools", "tool_choice",
 		"parallel_tool_calls", "user", "reasoning_effort"} {
 		known[k] = true
 	}

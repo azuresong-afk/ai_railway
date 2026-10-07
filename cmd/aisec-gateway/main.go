@@ -20,6 +20,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/gateway"
 	"github.com/azuresong-afk/ai_railway/internal/httpserver"
 	"github.com/azuresong-afk/ai_railway/internal/ids"
+	"github.com/azuresong-afk/ai_railway/internal/providers"
 )
 
 var version = "dev"
@@ -67,7 +68,15 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 	if err != nil {
 		return fmt.Errorf("ключ шлюза: %w", err)
 	}
-	proxy, err := newProxy(cfg, tp, logger)
+	provs, err := newProviders(file, tp, logger)
+	if err != nil {
+		return err
+	}
+	router, err := gateway.NewRouter(file.Applications, provs)
+	if err != nil {
+		return err
+	}
+	chatHandler, err := gateway.NewChatHandler(gateway.ChatConfig{Router: router, MaxBodyBytes: cfg.MaxBodyBytes, Logger: logger})
 	if err != nil {
 		return err
 	}
@@ -84,7 +93,7 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 			logger.Warn("события отброшены из-за переполнения очереди", "count", n)
 		}
 	}()
-	handler, err := gateway.New(gateway.Options{Logger: logger, Proxy: proxy, Auth: authCfg})
+	handler, err := gateway.New(gateway.Options{Logger: logger, Chat: chatHandler, Router: router, Auth: authCfg})
 	if err != nil {
 		return err
 	}
@@ -95,8 +104,8 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 	if err != nil {
 		return err
 	}
-	logger.Info("шлюз этапа 1 (в работе): аутентификация приложений включена, проверки содержимого ещё нет",
-		"upstream", cfg.UpstreamURL.Redacted(), "max_body_bytes", cfg.MaxBodyBytes, "applications", len(file.Applications))
+	logger.Info("шлюз этапа 1 (в работе): аутентификация, маршрутизация и разбор запросов включены, проверок содержимого ещё нет",
+		"max_body_bytes", cfg.MaxBodyBytes, "applications", len(file.Applications), "providers", len(provs))
 	return srv.Run(ctx)
 }
 
@@ -130,26 +139,49 @@ func newAuth(p aisecCrypto.Provider, file *config.GatewayFile, logger *slog.Logg
 	}, queue, sink.Close, nil
 }
 
-// newProxy собирает прозрачный прокси на upstream из конфигурации.
-func newProxy(cfg *config.Gateway, tp aisecCrypto.TLSProvider, logger *slog.Logger) (*gateway.Proxy, error) {
-	rootsPEM, err := aisecCrypto.ReadPEMFile(cfg.UpstreamCAFile)
-	if err != nil {
-		return nil, fmt.Errorf("корневые сертификаты провайдера: %w", err)
-	}
-	transport, err := gateway.NewTransport(tp, rootsPEM, cfg.UpstreamConnectTimeout, cfg.UpstreamHeaderTimeout)
-	if err != nil {
-		return nil, err
-	}
-	key := ""
-	if cfg.UpstreamKeyFile != "" {
-		b, err := aisecCrypto.ReadKeyFile(cfg.UpstreamKeyFile)
-		if err != nil {
-			return nil, fmt.Errorf("ключ провайдера: %w", err)
+// newProviders создаёт провайдеров из файла конфигурации. Ключи провайдеров
+// читаются из файлов с правами 0600 и в журнал не попадают.
+func newProviders(file *config.GatewayFile, tp aisecCrypto.TLSProvider, logger *slog.Logger) (map[string]providers.Provider, error) {
+	out := map[string]providers.Provider{}
+	for _, pc := range file.Providers {
+		if pc.Type != config.ProviderOpenAI {
+			// GigaChat и YandexGPT — задачи 1.8 и 1.9 этапа 1.
+			return nil, fmt.Errorf("провайдер %s: тип %s ещё не поддерживается", pc.ID, pc.Type)
 		}
-		key = strings.TrimSpace(string(b))
+		rootsPEM, err := aisecCrypto.ReadPEMFile(pc.CAFile)
+		if err != nil {
+			return nil, fmt.Errorf("провайдер %s: корневые сертификаты: %w", pc.ID, err)
+		}
+		connect, header := time.Duration(pc.ConnectTimeout), time.Duration(pc.HeaderTimeout)
+		if connect == 0 {
+			connect = config.DefaultConnectTimeout
+		}
+		if header == 0 {
+			header = config.DefaultHeaderTimeout
+		}
+		transport, err := providers.NewTransport(tp, rootsPEM, connect, header)
+		if err != nil {
+			return nil, fmt.Errorf("провайдер %s: %w", pc.ID, err)
+		}
+		key := ""
+		if pc.KeyFile != "" {
+			b, err := aisecCrypto.ReadKeyFile(pc.KeyFile)
+			if err != nil {
+				return nil, fmt.Errorf("провайдер %s: ключ: %w", pc.ID, err)
+			}
+			key = strings.TrimSpace(string(b))
+		}
+		u, err := config.ParseUpstreamURL(pc.BaseURL)
+		if err != nil {
+			return nil, fmt.Errorf("провайдер %s: %w", pc.ID, err)
+		}
+		p, err := providers.NewOpenAI(providers.OpenAIConfig{
+			ID: pc.ID, BaseURL: u, Key: key, External: pc.IsExternal(), Transport: transport, Logger: logger,
+		})
+		if err != nil {
+			return nil, err
+		}
+		out[pc.ID] = p
 	}
-	return gateway.NewProxy(gateway.ProxyConfig{
-		Upstream: cfg.UpstreamURL, Transport: transport, UpstreamKey: key,
-		MaxBodyBytes: cfg.MaxBodyBytes, ForwardHeaders: cfg.ForwardHeaders, Logger: logger,
-	})
+	return out, nil
 }

@@ -7,7 +7,7 @@ gateway:
 providers:
   - id: mock
     type: openai
-    base_url: https://mock-llm:9443
+    base_url: https://mock-llm:9443/v1
     ca_file: /keys/ca.pem
     external: true
     connect_timeout: 5s
@@ -18,7 +18,6 @@ providers:
     auth_url: https://ngw.devices.sberbank.ru:9443/api/v2/oauth
     scope: GIGACHAT_API_CORP
     key_file: /etc/aisec/gigachat.key
-    system_roots: true
     ca_file: /etc/aisec/russian-trusted-ca.pem
 applications:
   - id: support-bot

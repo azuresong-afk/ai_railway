@@ -41,7 +41,7 @@ func TestHealth(t *testing.T) {
 }
 
 func TestUnknownRoutesInOpenAIFormat(t *testing.T) {
-	g := mustNew(t, Options{Logger: quiet(), Proxy: http.NotFoundHandler(), Auth: newTestAuth(t, auth.LimiterConfig{}).cfg})
+	g := mustNew(t, Options{Logger: quiet(), Chat: http.NotFoundHandler(), Auth: newTestAuth(t, auth.LimiterConfig{}).cfg})
 	cases := []struct {
 		method, path string
 		code         int
@@ -77,7 +77,7 @@ func TestSecurityHeaders(t *testing.T) {
 	}
 }
 
-func TestProxyRouteNotMountedWithoutProxy(t *testing.T) {
+func TestChatRouteNotMountedWithoutHandler(t *testing.T) {
 	rec := do(t, mustNew(t, Options{Logger: quiet()}), http.MethodPost, "/v1/chat/completions")
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("без прокси маршрут должен отсутствовать: %d", rec.Code)

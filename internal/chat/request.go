@@ -12,7 +12,9 @@ import (
 
 // Request — запрос chat/completions. Поля — только известные шлюзу;
 // непрозрачные для шлюза (схемы JSON инструментов и формата ответа) хранятся
-// как json.RawMessage и проверяются на тип и размер.
+// как json.RawMessage и проверяются на тип и размер. logprobs и top_logprobs
+// не поддерживаются: в них ответ модели повторяется по токенам, и маскирование
+// ответа можно было бы обойти.
 type Request struct {
 	Model               string             `json:"model"`
 	Messages            []Message          `json:"messages"`
@@ -27,8 +29,6 @@ type Request struct {
 	PresencePenalty     *float64           `json:"presence_penalty,omitempty"`
 	FrequencyPenalty    *float64           `json:"frequency_penalty,omitempty"`
 	LogitBias           map[string]float64 `json:"logit_bias,omitempty"`
-	Logprobs            *bool              `json:"logprobs,omitempty"`
-	TopLogprobs         *int               `json:"top_logprobs,omitempty"`
 	ResponseFormat      json.RawMessage    `json:"response_format,omitempty"`
 	Seed                *int64             `json:"seed,omitempty"`
 	Tools               []Tool             `json:"tools,omitempty"`
@@ -383,9 +383,6 @@ func (r *Request) validate(lim Limits) error {
 		if f.v != nil && (math.IsNaN(*f.v) || *f.v < f.min || *f.v > f.max) {
 			return errf(CodeInvalid, "%s: от %g до %g", f.name, f.min, f.max)
 		}
-	}
-	if r.TopLogprobs != nil && (*r.TopLogprobs < 0 || *r.TopLogprobs > 20) {
-		return errf(CodeInvalid, "top_logprobs: от 0 до 20")
 	}
 	if len(r.LogitBias) > maxLogitBias {
 		return errf(CodeInvalid, "logit_bias: не больше %d элементов", maxLogitBias)

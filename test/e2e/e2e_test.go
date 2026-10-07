@@ -121,7 +121,7 @@ type env struct {
 
 // gatewayConfig пишет файл конфигурации шлюза с одним приложением и
 // возвращает выпущенный для него ключ.
-func gatewayConfig(t *testing.T, dir string, p aisecCrypto.Provider) (path, key, eventsFile string) {
+func gatewayConfig(t *testing.T, dir, mockAddr string, p aisecCrypto.Provider) (path, key, eventsFile string) {
 	t.Helper()
 	rnd, err := p.Random()
 	if err != nil {
@@ -142,14 +142,14 @@ gateway:
 providers:
   - id: mock
     type: openai
-    base_url: https://127.0.0.1:1
+    base_url: https://` + mockAddr + `/v1
     ca_file: ` + filepath.Join(dir, "ca.pem") + `
 applications:
   - id: e2e-app
     name: Сквозные тесты
     env: test
     provider: mock
-    models: [mock-echo]
+    models: [mock-echo, mock-stream-slow, mock-error-429]
     policy: base
     policy_mode: monitor
     fail_mode: fail_closed
@@ -172,10 +172,9 @@ func stand(t *testing.T) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfgPath, key, eventsFile := gatewayConfig(t, k.dir, p)
 	mock := start(t, "mock-llm", "-listen", "127.0.0.1:0", "-cert", k.cert, "-key", k.key)
-	gw := start(t, "aisec-gateway", "-config", cfgPath, "-listen", "127.0.0.1:0", "-tls-cert", k.cert, "-tls-key", k.key,
-		"-upstream-url", "https://"+mock, "-upstream-ca", k.ca, "-forward-headers", "X-Mock-Scenario")
+	cfgPath, key, eventsFile := gatewayConfig(t, k.dir, mock, p)
+	gw := start(t, "aisec-gateway", "-config", cfgPath, "-listen", "127.0.0.1:0", "-tls-cert", k.cert, "-tls-key", k.key)
 	tp, err := p.TLS()
 	if err != nil {
 		t.Fatal(err)
@@ -235,9 +234,9 @@ func TestE2EChatThroughGateway(t *testing.T) {
 
 func TestE2EStreamingThroughGateway(t *testing.T) {
 	e := stand(t)
-	body := `{"model":"x","stream":true,"messages":[{"role":"user","content":"раз два три четыре пять"}]}`
+	body := `{"model":"mock-stream-slow","stream":true,"messages":[{"role":"user","content":"раз два три четыре пять"}]}`
 	start := time.Now()
-	resp := chat(t, e, body, map[string]string{"X-Mock-Scenario": "stream-slow"})
+	resp := chat(t, e, body, nil)
 	defer resp.Body.Close() //nolint:errcheck // тело прочитано; ошибка закрытия в тесте не важна
 	if resp.StatusCode != http.StatusOK || resp.Header.Get("Content-Type") != "text/event-stream" {
 		t.Fatalf("код %d, тип %s", resp.StatusCode, resp.Header.Get("Content-Type"))
@@ -279,7 +278,7 @@ func TestE2EStreamingThroughGateway(t *testing.T) {
 
 func TestE2EUpstreamErrorPassedThrough(t *testing.T) {
 	e := stand(t)
-	resp := chat(t, e, `{"model":"m","messages":[{"role":"user","content":"x"}]}`, map[string]string{"X-Mock-Scenario": "error-429"})
+	resp := chat(t, e, `{"model":"mock-error-429","messages":[{"role":"user","content":"x"}]}`, nil)
 	defer resp.Body.Close() //nolint:errcheck // тело прочитано; ошибка закрытия в тесте не важна
 	b, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -373,4 +372,39 @@ func readEvents(t *testing.T, path string) []events.Event {
 		out = append(out, ev)
 	}
 	return out
+}
+
+// Неразрешённая модель отклоняется шлюзом, список моделей — только
+// разрешённые приложению (DM-33).
+func TestE2EDM33_ModelNotAllowed(t *testing.T) {
+	e := stand(t)
+	resp := chat(t, e, `{"model":"mock-fixed","messages":[{"role":"user","content":"x"}]}`, nil)
+	b, err := io.ReadAll(resp.Body)
+	if cerr := resp.Body.Close(); err != nil || cerr != nil {
+		t.Fatal(err, cerr)
+	}
+	if resp.StatusCode != http.StatusNotFound || !strings.Contains(string(b), "model_not_found") {
+		t.Fatalf("неразрешённая модель: %d %s", resp.StatusCode, b)
+	}
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, e.url+"/v1/models", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+e.key)
+	mr, err := e.client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mr.Body.Close() //nolint:errcheck // тело прочитано ниже
+	var list struct{ Data []struct{ ID string } }
+	if err := json.NewDecoder(mr.Body).Decode(&list); err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, m := range list.Data {
+		ids = append(ids, m.ID)
+	}
+	if strings.Join(ids, ",") != "mock-echo,mock-error-429,mock-stream-slow" {
+		t.Fatalf("/v1/models: %v", ids)
+	}
 }

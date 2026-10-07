@@ -54,9 +54,6 @@ services:
       - "-listen=0.0.0.0:8443"
       - "-tls-cert=/keys/server.pem"
       - "-tls-key=/keys/server-key.pem"
-      - "-upstream-url=https://mock-llm:9443"
-      - "-upstream-ca=/keys/ca.pem"
-      - "-forward-headers=X-Mock-Scenario"
     # Только на 127.0.0.1 хоста: стенд разработки, проверок содержимого пока нет.
     ports: ["127.0.0.1:8443:8443"]
     depends_on: [mock-llm]

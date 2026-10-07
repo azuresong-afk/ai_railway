@@ -125,14 +125,16 @@ gateway:
 providers:
   - id: mock
     type: openai
-    base_url: https://mock-llm:9443
+    base_url: https://mock-llm:9443/v1
     ca_file: /keys/ca.pem
 applications:
   - id: dev-app
     name: Приложение стенда разработки
     env: test
     provider: mock
-    models: [mock-echo, mock-stream-slow]
+    models: [mock-echo, mock-fixed, mock-stream-slow, mock-error-500, mock-error-429, mock-hang]
+    aliases:
+      default: mock-echo
     policy: base
     policy_mode: monitor
     fail_mode: fail_closed

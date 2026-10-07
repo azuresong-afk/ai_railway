@@ -45,6 +45,7 @@ func TestParseGatewayFileErrors(t *testing.T) {
 		"http":                 {"https://mock-llm:9443", "http://mock-llm:9443"},
 		"учётные данные в URL": {"https://mock-llm:9443", "https://u:p@mock-llm:9443"},
 		"нет доверия":          {"    ca_file: /keys/ca.pem\n", ""},
+		"system_roots":         {"    ca_file: /keys/ca.pem\n", "    ca_file: /keys/ca.pem\n    system_roots: true\n"},
 		"тип провайдера":       {"type: openai", "type: claude"},
 		"нет провайдера":       {"provider: mock", "provider: nope"},
 		"нет моделей":          {"models: [mock-echo, mock-stream-slow]", "models: []"},

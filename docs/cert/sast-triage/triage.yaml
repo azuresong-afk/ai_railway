@@ -2,13 +2,6 @@
 schema_version: 1
 entries:
   - rule: gosec/G101
-    file: internal/config/gateway_test.go
-    snippet: '_, err := LoadGateway([]string{"-h"}, env(map[string]string{"AISEC_GATEWAY_UPSTREAM_URL": "https://user:s3cr3t@host"}), &out)'
-    verdict: false_positive
-    justification: Тестовые данные. Адрес с выдуманными учётными данными user:s3cr3t нужен, чтобы проверить, что справка (-h) не печатает значения из окружения. Настоящих учётных данных здесь нет, в продукт код тестов не попадает.
-    author: Claude Code (ИИ-ассистент); проверяет владелец при ревью
-    date: 2026-10-01
-  - rule: gosec/G101
     file: internal/chat/request.go
     snippet: 'CodeMaxTokens      = "max_tokens_exceeded"'
     verdict: false_positive

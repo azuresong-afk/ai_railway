@@ -16,8 +16,10 @@ type Gateway struct {
 // Options — зависимости обработчика.
 type Options struct {
 	Logger *slog.Logger
-	// Proxy обслуживает POST /v1/chat/completions; nil — маршрут не подключён.
-	Proxy http.Handler
+	// Chat обслуживает POST /v1/chat/completions; nil — маршрут не подключён.
+	Chat http.Handler
+	// Router — приложения шлюза; с ним подключается GET /v1/models.
+	Router *Router
 	// Auth — аутентификация приложений. Обязательна, если подключён хотя бы
 	// один маршрут для приложений: шлюз без проверки ключей не собирается.
 	Auth *AuthConfig
@@ -32,15 +34,22 @@ func New(opts Options) (*Gateway, error) {
 	g := &Gateway{logger: logger, mux: http.NewServeMux()}
 	g.mux.HandleFunc("GET /healthz", g.healthz)
 	g.mux.HandleFunc("GET /readyz", g.healthz)
-	if opts.Proxy != nil {
-		if opts.Auth == nil {
-			return nil, errors.New("шлюз: маршруты приложений без аутентификации не подключаются")
-		}
-		h, err := RequireAppKey(*opts.Auth, opts.Proxy)
+	routes := map[string]http.Handler{}
+	if opts.Chat != nil {
+		routes["POST /v1/chat/completions"] = opts.Chat
+	}
+	if opts.Router != nil {
+		routes["GET /v1/models"] = http.HandlerFunc(opts.Router.models)
+	}
+	if len(routes) > 0 && opts.Auth == nil {
+		return nil, errors.New("шлюз: маршруты приложений без аутентификации не подключаются")
+	}
+	for pattern, h := range routes {
+		ah, err := RequireAppKey(*opts.Auth, h)
 		if err != nil {
 			return nil, err
 		}
-		g.mux.Handle("POST /v1/chat/completions", h)
+		g.mux.Handle(pattern, ah)
 	}
 	return g, nil
 }
