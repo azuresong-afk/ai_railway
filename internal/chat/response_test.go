@@ -99,18 +99,28 @@ func TestUnknownProviderFieldsDropped(t *testing.T) {
 func TestAssemblerOrderAndLimits(t *testing.T) {
 	a := NewAssembler()
 	s := func(v string) *string { return &v }
-	// Вызовы и варианты приходят не по порядку — в ответе они упорядочены.
+	// Вызовы приходят не по порядку — в ответе они упорядочены по индексу;
+	// аргументы склеиваются из частей.
 	for _, c := range []*Chunk{
-		{Choices: []ChunkChoice{{Index: 1, Delta: Delta{Content: s("b")}}}},
 		{Choices: []ChunkChoice{{Index: 0, Delta: Delta{Content: s("a"), ToolCalls: []ToolCallDelta{{Index: 2, ID: "t2"}, {Index: 0, ID: "t0"}}}}}},
+		{Choices: []ChunkChoice{{Index: 0, Delta: Delta{ToolCalls: []ToolCallDelta{{Index: 0}}}}}},
 		{Choices: []ChunkChoice{{Index: 0, Delta: Delta{Refusal: s("нет")}}}},
 	} {
 		if err := a.Add(c); err != nil {
 			t.Fatal(err)
 		}
 	}
+	add := func(idx int, args string) {
+		c := &Chunk{Choices: []ChunkChoice{{Delta: Delta{ToolCalls: []ToolCallDelta{{Index: idx}}}}}}
+		c.Choices[0].Delta.ToolCalls[0].Function.Arguments = args
+		if err := a.Add(c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	add(0, `{"a":`)
+	add(0, `1}`)
 	r := a.Response()
-	if r.Choices[0].Index != 0 || r.Choices[1].Index != 1 || r.Choices[0].Message.ToolCalls[0].ID != "t0" ||
+	if len(r.Choices) != 1 || r.Choices[0].Message.ToolCalls[0].ID != "t0" || r.Choices[0].Message.ToolCalls[0].Function.Arguments != `{"a":1}` ||
 		*r.Choices[0].Message.Refusal != "нет" || a.Text(0) != "a" || a.Text(5) != "" {
 		t.Fatalf("%+v", r)
 	}
@@ -122,6 +132,17 @@ func TestAssemblerOrderAndLimits(t *testing.T) {
 		if err := NewAssembler().Add(bad); err == nil {
 			t.Errorf("%+v: ожидалась ошибка", bad)
 		}
+	}
+	// Второй вариант ответа (n > 1) не принимается ни в потоке, ни целиком:
+	// он ушёл бы приложению мимо проверки ответа.
+	if _, err := ParseChunk(`{"choices":[{"index":1,"delta":{"content":"обход"}}]}`); err == nil {
+		t.Fatal("часть с вариантом 1 принята")
+	}
+	if _, err := ParseChunk(`{"choices":[{"index":0,"delta":{}},{"index":0,"delta":{}}]}`); err == nil {
+		t.Fatal("часть с двумя вариантами принята")
+	}
+	if _, err := ParseResponse([]byte(`{"choices":[{"index":0,"message":{"content":"a"}},{"index":1,"message":{"content":"обход"}}]}`)); err == nil {
+		t.Fatal("ответ с двумя вариантами принят")
 	}
 	// Бесконечный поток останавливается пределом размера.
 	big := NewAssembler()

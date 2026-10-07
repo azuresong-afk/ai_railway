@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 )
 
 // Response — ответ chat/completions (объект chat.completion). Неизвестные
@@ -85,8 +86,11 @@ type ToolCallDelta struct {
 const Done = "[DONE]"
 
 // Пределы ответа: защита памяти шлюза от бесконечного или раздутого потока.
+// Вариант ответа — ровно один (индекс 0): запрос с n > 1 шлюз не принимает,
+// а проверка ответа смотрит один вариант; лишние варианты ушли бы приложению
+// мимо выходных проверок.
 const (
-	MaxResponseChoices = 8
+	MaxResponseChoices = 1
 	MaxResponseTools   = 128
 	MaxResponseBytes   = 16 << 20 // суммарный текст ответа
 )
@@ -104,7 +108,7 @@ func ParseResponse(body []byte) (*Response, error) {
 		return nil, fmt.Errorf("ответ провайдера: вариантов %d", len(r.Choices))
 	}
 	for i, c := range r.Choices {
-		if c.Index < 0 || c.Index >= MaxResponseChoices || len(c.Message.ToolCalls) > MaxResponseTools {
+		if c.Index != 0 || len(c.Message.ToolCalls) > MaxResponseTools {
 			return nil, fmt.Errorf("ответ провайдера: вариант %d вне пределов", i)
 		}
 	}
@@ -122,6 +126,11 @@ func ParseChunk(data string) (*Chunk, error) {
 	}
 	if len(c.Choices) > MaxResponseChoices {
 		return nil, fmt.Errorf("часть потока: вариантов %d", len(c.Choices))
+	}
+	for _, ch := range c.Choices {
+		if ch.Index != 0 {
+			return nil, fmt.Errorf("часть потока: номер варианта %d", ch.Index)
+		}
 	}
 	return &c, nil
 }
@@ -141,9 +150,16 @@ type choiceAcc struct {
 	hasText   bool
 	refusal   bytes.Buffer
 	hasRef    bool
-	tools     map[int]*ToolCall
+	tools     map[int]*toolAcc
 	toolOrder []int
 	finish    string
+}
+
+// toolAcc — вызов инструмента в сборке; аргументы копятся в буфере, а не
+// склейкой строк (иначе мелкие части давали бы квадратичное копирование).
+type toolAcc struct {
+	call ToolCall
+	args strings.Builder
 }
 
 // NewAssembler создаёт сборщик.
@@ -166,7 +182,7 @@ func (a *Assembler) Add(c *Chunk) error {
 		}
 		acc, ok := a.choices[ch.Index]
 		if !ok {
-			acc = &choiceAcc{tools: map[int]*ToolCall{}}
+			acc = &choiceAcc{tools: map[int]*toolAcc{}}
 			a.choices[ch.Index] = acc
 			a.order = append(a.order, ch.Index)
 		}
@@ -188,12 +204,13 @@ func (a *Assembler) Add(c *Chunk) error {
 			if td.Index < 0 || td.Index >= MaxResponseTools {
 				return fmt.Errorf("часть потока: номер вызова %d вне пределов", td.Index)
 			}
-			tc, ok := acc.tools[td.Index]
+			ta, ok := acc.tools[td.Index]
 			if !ok {
-				tc = &ToolCall{Type: "function"}
-				acc.tools[td.Index] = tc
+				ta = &toolAcc{call: ToolCall{Type: "function"}}
+				acc.tools[td.Index] = ta
 				acc.toolOrder = append(acc.toolOrder, td.Index)
 			}
+			tc := &ta.call
 			// id, тип и имя берутся из первой части, где они есть: часть
 			// провайдеров повторяет их в каждой части.
 			if tc.ID == "" {
@@ -205,7 +222,7 @@ func (a *Assembler) Add(c *Chunk) error {
 			if tc.Function.Name == "" {
 				tc.Function.Name = td.Function.Name
 			}
-			tc.Function.Arguments += td.Function.Arguments
+			ta.args.WriteString(td.Function.Arguments)
 			a.size += len(td.Function.Arguments) + len(td.Function.Name) + len(td.ID)
 		}
 		if ch.FinishReason != nil {
@@ -248,7 +265,9 @@ func (a *Assembler) Response() *Response {
 		}
 		slices.Sort(acc.toolOrder)
 		for _, j := range acc.toolOrder {
-			msg.ToolCalls = append(msg.ToolCalls, *acc.tools[j])
+			tc := acc.tools[j].call
+			tc.Function.Arguments = acc.tools[j].args.String()
+			msg.ToolCalls = append(msg.ToolCalls, tc)
 		}
 		r.Choices = append(r.Choices, Choice{Index: i, Message: msg, FinishReason: acc.finish})
 	}

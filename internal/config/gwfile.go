@@ -81,6 +81,10 @@ type Provider struct {
 	External       *bool    `yaml:"external"`
 	ConnectTimeout Duration `yaml:"connect_timeout"`
 	HeaderTimeout  Duration `yaml:"header_timeout"`
+	// ResponseTimeout — общий срок ответа (по умолчанию 10 мин),
+	// StreamIdleTimeout — пауза между событиями потока (по умолчанию 60 с).
+	ResponseTimeout   Duration `yaml:"response_timeout"`
+	StreamIdleTimeout Duration `yaml:"stream_idle_timeout"`
 	// Параметры GigaChat: адрес выдачи токена и область доступа.
 	AuthURL string `yaml:"auth_url"`
 	Scope   string `yaml:"scope"`
@@ -238,7 +242,8 @@ func (f *GatewayFile) validate() error {
 		for _, d := range []struct {
 			name string
 			v    Duration
-		}{{"connect_timeout", p.ConnectTimeout}, {"header_timeout", p.HeaderTimeout}} {
+		}{{"connect_timeout", p.ConnectTimeout}, {"header_timeout", p.HeaderTimeout},
+			{"response_timeout", p.ResponseTimeout}, {"stream_idle_timeout", p.StreamIdleTimeout}} {
 			if d.v < 0 || time.Duration(d.v) > MaxUpstreamTimeout {
 				add("%s: %s — от 0 до %s (0 — по умолчанию)", at, d.name, MaxUpstreamTimeout)
 			}

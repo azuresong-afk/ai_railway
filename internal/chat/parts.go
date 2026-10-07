@@ -82,8 +82,10 @@ func (f *File) validate() *Error {
 	return nil
 }
 
-// mediaURL разбирает адрес медиа: data:<тип>;base64,<данные> или http(s).
-// Другие схемы (file:, ftp: и т. п.) не принимаются.
+// mediaURL разбирает адрес медиа: data:<тип>;base64,<данные> или https.
+// http:// и другие схемы (file:, ftp: и т. п.) не принимаются: ссылку
+// загружает провайдер, и через неё можно было бы обратиться к внутренним
+// адресам его контура (например, к службе метаданных облака).
 func mediaURL(u string) (inline bool, encodedLen int, err *Error) {
 	if rest, ok := cutPrefixFold(u, "data:"); ok {
 		header, data, found := strings.Cut(rest, ",")
@@ -92,10 +94,8 @@ func mediaURL(u string) (inline bool, encodedLen int, err *Error) {
 		}
 		return true, len(data), nil
 	}
-	_, okS := cutPrefixFold(u, "https://")
-	_, okP := cutPrefixFold(u, "http://")
-	if !okS && !okP {
-		return false, 0, errf(CodeInvalid, "адрес медиа — data:, https:// или http://")
+	if _, ok := cutPrefixFold(u, "https://"); !ok {
+		return false, 0, errf(CodeInvalid, "адрес медиа — data: или https://")
 	}
 	if len(u) > maxRemoteURLLen || strings.ContainsFunc(u, func(r rune) bool { return r <= ' ' || r == 0x7f }) {
 		return false, 0, errf(CodeInvalid, "адрес медиа — до %d байт без пробелов и управляющих символов", maxRemoteURLLen)
@@ -147,11 +147,13 @@ const (
 	SegContent  = "content"   // строка content или текстовая часть
 	SegRefusal  = "refusal"   // отказ ассистента в истории диалога
 	SegToolArgs = "tool_args" // аргументы вызова инструмента в истории диалога
+	SegFilename = "filename"  // имя файла в части file (бывает с ПДн: «Паспорт ….pdf»)
 )
 
 // Segment — текстовый фрагмент запроса, который проверяют детекторы.
 // Описания инструментов и схемы JSON (tools, response_format) задаёт
-// приложение, а не пользователь; на этапе 1 они не проверяются.
+// приложение, а не пользователь; на этапе 1 они не проверяются, как и
+// короткие стоп-последовательности stop.
 type Segment struct {
 	Message int
 	Role    string
@@ -168,6 +170,8 @@ func (s Segment) Location() string {
 	switch {
 	case s.Kind == SegToolArgs:
 		return fmt.Sprintf("%s.tool_calls[%d].function.arguments", at, s.ToolCall)
+	case s.Kind == SegFilename:
+		return fmt.Sprintf("%s.content[%d].file.filename", at, s.Part)
 	case s.Part >= 0:
 		return fmt.Sprintf("%s.content[%d]", at, s.Part)
 	case s.Kind == SegRefusal:
@@ -193,6 +197,8 @@ func (r *Request) Segments() []Segment {
 				add(SegContent, j, -1, *p.Text)
 			case p.Refusal != nil:
 				add(SegRefusal, j, -1, *p.Refusal)
+			case p.File != nil && p.File.Filename != "":
+				add(SegFilename, j, -1, p.File.Filename)
 			}
 		}
 		if m.Refusal != nil {
@@ -221,6 +227,8 @@ func (r *Request) SetText(s Segment, text string) error {
 			p.Text = &text
 		case s.Kind == SegRefusal && p.Refusal != nil:
 			p.Refusal = &text
+		case s.Kind == SegFilename && p.File != nil:
+			p.File.Filename = text
 		default:
 			return fmt.Errorf("фрагмент %s: вид не совпадает", s.Location())
 		}

@@ -177,6 +177,7 @@ func newProviders(file *config.GatewayFile, tp aisecCrypto.TLSProvider, logger *
 		}
 		p, err := providers.NewOpenAI(providers.OpenAIConfig{
 			ID: pc.ID, BaseURL: u, Key: key, External: pc.IsExternal(), Transport: transport, Logger: logger,
+			ResponseTimeout: time.Duration(pc.ResponseTimeout), StreamIdleTimeout: time.Duration(pc.StreamIdleTimeout),
 		})
 		if err != nil {
 			return nil, err

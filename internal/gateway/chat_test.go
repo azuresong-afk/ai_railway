@@ -194,6 +194,10 @@ func TestDM33_ModelsAndAliases(t *testing.T) {
 	if _, _, body, _ := rec.get(); !strings.Contains(body, `"model":"m"`) {
 		t.Fatalf("псевдоним не заменён: %s", body)
 	}
+	// Приложение видит запрошенное имя, а не модель провайдера.
+	if resp := postChat(t, g, `{"model":"default","messages":[{"role":"user","content":"x"}]}`, nil); !strings.Contains(resp.Body.String(), `"model":"default"`) {
+		t.Fatalf("имя модели в ответе: %s", resp.Body.String())
+	}
 	// GET /v1/models — только модели и псевдонимы приложения.
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/models", nil)
 	r := httptest.NewRecorder()
@@ -371,6 +375,18 @@ func TestChatSendsRebuiltBody(t *testing.T) {
 	rec.mu.Unlock()
 	if q != "" {
 		t.Fatalf("строка запроса ушла провайдеру: %q", q)
+	}
+}
+
+// Идентификатор пользователя внешнему провайдеру не передаётся.
+func TestChatDropsUserForExternalProvider(t *testing.T) {
+	up, rec := newUpstream(t, nil)
+	g := newGateway(t, up.URL, nil)
+	if resp := postChat(t, g, `{"model":"m","user":"ivanov@example.com","messages":[{"role":"user","content":"x"}]}`, nil); resp.Code != 200 {
+		t.Fatal(resp.Code)
+	}
+	if _, _, body, _ := rec.get(); strings.Contains(body, "ivanov") {
+		t.Fatalf("user ушёл внешнему провайдеру: %s", body)
 	}
 }
 

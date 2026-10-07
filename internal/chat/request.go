@@ -8,6 +8,7 @@ import (
 	"io"
 	"math"
 	"regexp"
+	"strings"
 )
 
 // Request — запрос chat/completions. Поля — только известные шлюзу;
@@ -317,7 +318,8 @@ func strict(data []byte, v any) error {
 }
 
 // Parse разбирает и проверяет тело запроса. Размер тела ограничивает
-// вызывающий (ProxyConfig.MaxBodyBytes).
+// вызывающий (gateway.ChatConfig.MaxBodyBytes). Если у приложения есть квота
+// max_tokens, а в запросе предела нет, подставляется квота.
 func Parse(body []byte, lim Limits) (*Request, error) {
 	lim = lim.withDefaults()
 	var r Request
@@ -326,6 +328,12 @@ func Parse(body []byte, lim Limits) (*Request, error) {
 	}
 	if err := r.validate(lim); err != nil {
 		return nil, err
+	}
+	// Без явного предела провайдер взял бы свой, и квоту приложения можно
+	// было бы обойти, просто не указав max_tokens (DM-15).
+	if _, ok := r.EffectiveMaxTokens(); !ok && lim.MaxTokens > 0 {
+		mt := lim.MaxTokens
+		r.MaxTokens = &mt
 	}
 	return &r, nil
 }
@@ -337,8 +345,13 @@ func decodeError(err error) *Error {
 		return errf(CodeUnsupported, "параметр %q не поддерживается шлюзом", m[1])
 	}
 	var te *json.UnmarshalTypeError
-	if errors.As(err, &te) && te.Field != "" && len(te.Field) <= 128 {
-		return errf(CodeInvalid, "неверный тип поля %q", te.Field)
+	if errors.As(err, &te) && te.Field != "" {
+		// Только поле верхнего уровня: у словарей (logit_bias) дальше в пути
+		// идёт ключ из запроса.
+		field, _, _ := strings.Cut(te.Field, ".")
+		if len(field) <= 64 {
+			return errf(CodeInvalid, "неверный тип поля %q", field)
+		}
 	}
 	var ce *Error
 	if errors.As(err, &ce) {
@@ -537,7 +550,7 @@ func (m *Message) validate(i int, lim Limits) error {
 	if (m.ToolCallID != "") != (m.Role == "tool") {
 		return errf(CodeInvalid, "%s: tool_call_id нужен роли tool и только ей", at)
 	}
-	empty := m.Content.Text == nil && m.Content.Parts == nil
+	empty := m.Content.Text == nil && len(m.Content.Parts) == 0
 	switch m.Role {
 	case "system", "developer", "tool":
 		if empty || !textOnly {

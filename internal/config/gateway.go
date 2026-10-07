@@ -90,7 +90,7 @@ func LoadGateway(args []string, getenv func(string) string, errOut io.Writer) (*
 	return cfg, nil
 }
 
-// envName — имя переменной окружения для флага: upstream-url → AISEC_GATEWAY_UPSTREAM_URL.
+// envName — имя переменной окружения для флага: max-body-bytes → AISEC_GATEWAY_MAX_BODY_BYTES.
 func envName(flagName string) string {
 	return envPrefix + strings.ToUpper(strings.ReplaceAll(flagName, "-", "_"))
 }
@@ -101,18 +101,18 @@ func envName(flagName string) string {
 func ParseUpstreamURL(s string) (*url.URL, error) {
 	u, err := url.Parse(s)
 	if err != nil {
-		return nil, errors.New("upstream-url: не разобран адрес")
+		return nil, errors.New("base_url: не разобран адрес")
 	}
 	switch {
 	case u.Scheme != "https":
-		return nil, errors.New("upstream-url: только https")
+		return nil, errors.New("base_url: только https")
 	case u.Host == "" || u.Hostname() == "":
-		return nil, errors.New("upstream-url: не указан хост")
+		return nil, errors.New("base_url: не указан хост")
 	case u.User != nil:
 		// Учётные данные в адресе попали бы в логи; ключ задаётся файлом.
-		return nil, errors.New("upstream-url: учётные данные в адресе запрещены, используйте key_file")
+		return nil, errors.New("base_url: учётные данные в адресе запрещены, используйте key_file")
 	case u.RawQuery != "" || u.Fragment != "":
-		return nil, errors.New("upstream-url: адрес без параметров запроса и фрагмента")
+		return nil, errors.New("base_url: адрес без параметров запроса и фрагмента")
 	}
 	u.Path = strings.TrimSuffix(u.Path, "/")
 	return u, nil

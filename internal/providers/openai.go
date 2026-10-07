@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/azuresong-afk/ai_railway/internal/chat"
@@ -31,7 +32,19 @@ type OpenAIConfig struct {
 	External  bool
 	Transport http.RoundTripper
 	Logger    *slog.Logger
+	// ResponseTimeout — общий срок ответа, в том числе потокового; ноль —
+	// DefaultResponseTimeout.
+	ResponseTimeout time.Duration
+	// StreamIdleTimeout — наибольшая пауза между событиями потока; ноль —
+	// DefaultStreamIdleTimeout.
+	StreamIdleTimeout time.Duration
 }
+
+// Сроки ответа провайдера по умолчанию (план этапа 1, Р11).
+const (
+	DefaultResponseTimeout   = 10 * time.Minute
+	DefaultStreamIdleTimeout = 60 * time.Second
+)
 
 // OpenAI — OpenAI-совместимый провайдер.
 type OpenAI struct {
@@ -54,6 +67,12 @@ func NewOpenAI(cfg OpenAIConfig) (*OpenAI, error) {
 	}
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
+	}
+	if cfg.ResponseTimeout <= 0 {
+		cfg.ResponseTimeout = DefaultResponseTimeout
+	}
+	if cfg.StreamIdleTimeout <= 0 {
+		cfg.StreamIdleTimeout = DefaultStreamIdleTimeout
 	}
 	u := *cfg.BaseURL
 	u.Path = strings.TrimSuffix(u.Path, "/") + "/chat/completions"
@@ -97,7 +116,9 @@ func NewTransport(tp aisecCrypto.TLSProvider, rootsPEM []byte, connectTimeout, h
 // do отправляет запрос и возвращает ответ с кодом 200 или ошибку по классам.
 // Meta возвращается и с ошибкой провайдера: Retry-After нужен приложению
 // именно при 429 и 503.
-func (p *OpenAI) do(ctx context.Context, req *chat.Request, stream bool) (*http.Response, Meta, error) {
+// ctx — контекст запроса к провайдеру (со сроком ответа), clientCtx —
+// контекст клиента: по нему отличается уход клиента от таймаута.
+func (p *OpenAI) do(ctx, clientCtx context.Context, req *chat.Request, stream bool) (*http.Response, Meta, error) {
 	out := *req
 	out.Stream = stream
 	if !stream {
@@ -123,7 +144,7 @@ func (p *OpenAI) do(ctx context.Context, req *chat.Request, stream bool) (*http.
 	}
 	resp, err := p.client.Do(hr)
 	if err != nil {
-		return nil, Meta{}, p.transportError(ctx, err)
+		return nil, Meta{}, p.transportError(clientCtx, err)
 	}
 	meta := metaFrom(resp.Header)
 	if resp.StatusCode == http.StatusOK {
@@ -135,11 +156,29 @@ func (p *OpenAI) do(ctx context.Context, req *chat.Request, stream bool) (*http.
 		p.logger.Warn("провайдер отклонил учётные данные шлюза", "provider", p.cfg.ID, "status", resp.StatusCode)
 		return nil, Meta{}, ErrAuth
 	}
-	return nil, meta, providerError(resp)
+	return nil, meta, p.providerError(resp)
+}
+
+// keyLeaks сообщает, что в тексте есть ключ провайдера или его фрагмент
+// длиной от 8 символов (провайдеры бывает цитируют неверный ключ в ошибке).
+func (p *OpenAI) keyLeaks(text string) bool {
+	k := p.cfg.Key
+	if k == "" {
+		return false
+	}
+	if len(k) <= 8 {
+		return strings.Contains(text, k)
+	}
+	for i := 0; i+8 <= len(k); i++ {
+		if strings.Contains(text, k[i:i+8]) {
+			return true
+		}
+	}
+	return false
 }
 
 // providerError разбирает ошибку провайдера в формате OpenAI.
-func providerError(resp *http.Response) error {
+func (p *OpenAI) providerError(resp *http.Response) error {
 	b, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 	e := &Error{Status: resp.StatusCode, Type: "upstream_error", Code: "upstream_error", Message: "ошибка провайдера модели"}
 	if resp.StatusCode < 400 || resp.StatusCode > 599 {
@@ -160,7 +199,7 @@ func providerError(resp *http.Response) error {
 	if json.Unmarshal(b, &body) != nil {
 		return e
 	}
-	if m := cleanText(body.Error.Message, maxErrorMessage); m != "" {
+	if m := cleanText(body.Error.Message, maxErrorMessage); m != "" && !p.keyLeaks(body.Error.Message) {
 		e.Message = m
 	}
 	if t := body.Error.Type; validCode(t) {
@@ -214,7 +253,11 @@ func ErrorClass(err error) string {
 
 // Chat — ответ целиком.
 func (p *OpenAI) Chat(ctx context.Context, req *chat.Request) (*chat.Response, Meta, error) {
-	resp, meta, err := p.do(ctx, req, false)
+	// Общий срок покрывает и чтение тела: провайдер, отдающий тело по байту,
+	// не удержит соединение дольше.
+	rctx, cancel := context.WithTimeout(ctx, p.cfg.ResponseTimeout)
+	defer cancel()
+	resp, meta, err := p.do(rctx, ctx, req, false)
 	if err != nil {
 		return nil, meta, err
 	}
@@ -237,8 +280,12 @@ func (p *OpenAI) Chat(ctx context.Context, req *chat.Request) (*chat.Response, M
 
 // Stream — потоковый ответ.
 func (p *OpenAI) Stream(ctx context.Context, req *chat.Request) (Stream, Meta, error) {
-	resp, meta, err := p.do(ctx, req, true)
+	// Общий срок потока и срок простоя между событиями (Р11): зависший или
+	// бесконечный поток не держит соединение и горутину.
+	rctx, cancel := context.WithTimeout(ctx, p.cfg.ResponseTimeout)
+	resp, meta, err := p.do(rctx, ctx, req, true)
 	if err != nil {
+		cancel()
 		return nil, meta, err
 	}
 	if mt, _, perr := mime.ParseMediaType(resp.Header.Get("Content-Type")); perr != nil || mt != "text/event-stream" {
@@ -246,17 +293,27 @@ func (p *OpenAI) Stream(ctx context.Context, req *chat.Request) (Stream, Meta, e
 		if cerr := resp.Body.Close(); cerr != nil {
 			p.logger.Warn("закрытие ответа провайдера", "error", ErrorClass(cerr))
 		}
+		cancel()
 		return nil, meta, ErrBadResponse
 	}
-	return &openAIStream{p: p, ctx: ctx, body: resp.Body, r: sse.NewReader(resp.Body, sse.Limits{})}, meta, nil
+	s := &openAIStream{p: p, ctx: ctx, cancel: cancel, body: resp.Body, r: sse.NewReader(resp.Body, sse.Limits{})}
+	s.idle = time.AfterFunc(p.cfg.StreamIdleTimeout, func() {
+		s.idleExpired.Store(true)
+		cancel()
+	})
+	return s, meta, nil
 }
 
 type openAIStream struct {
-	p    *OpenAI
-	ctx  context.Context
-	body io.ReadCloser
-	r    *sse.Reader
-	done bool
+	p           *OpenAI
+	ctx         context.Context // контекст клиента
+	cancel      context.CancelFunc
+	idle        *time.Timer
+	idleExpired atomic.Bool
+	body        io.ReadCloser
+	r           *sse.Reader
+	size        int
+	done        bool
 }
 
 func (s *openAIStream) Next() (*chat.Chunk, error) {
@@ -266,6 +323,9 @@ func (s *openAIStream) Next() (*chat.Chunk, error) {
 	for {
 		ev, err := s.r.Next()
 		switch {
+		case err != nil && s.idleExpired.Load():
+			s.p.logger.Warn("поток провайдера: превышен простой между событиями", "provider", s.p.cfg.ID)
+			return nil, ErrTimeout
 		case errors.Is(err, io.EOF):
 			return nil, ErrTruncated
 		case errors.Is(err, sse.ErrLineTooLong), errors.Is(err, sse.ErrEventTooLarge):
@@ -273,6 +333,11 @@ func (s *openAIStream) Next() (*chat.Chunk, error) {
 			return nil, ErrBadResponse
 		case err != nil:
 			return nil, s.p.transportError(s.ctx, err)
+		}
+		s.idle.Reset(s.p.cfg.StreamIdleTimeout)
+		if s.size += len(ev.Data); s.size > chat.MaxResponseBytes {
+			s.p.logger.Warn("поток провайдера больше предела", "provider", s.p.cfg.ID)
+			return nil, ErrBadResponse
 		}
 		if ev.Event != "" && ev.Event != "message" && ev.Event != "error" {
 			continue // служебные события провайдера не передаются
@@ -282,7 +347,7 @@ func (s *openAIStream) Next() (*chat.Chunk, error) {
 			return nil, io.EOF
 		}
 		if msg, ok := streamErrorMessage(ev.Data); ok {
-			return nil, streamError(msg)
+			return nil, s.p.streamError(msg)
 		}
 		c, err := chat.ParseChunk(ev.Data)
 		if err != nil {
@@ -301,22 +366,35 @@ func streamErrorMessage(data string) (msg string, ok bool) {
 		return "", false
 	}
 	var body struct {
-		Error *struct {
-			Message string `json:"message"`
-		} `json:"error"`
+		Error json.RawMessage `json:"error"`
 	}
-	if json.Unmarshal([]byte(data), &body) != nil || body.Error == nil {
+	if json.Unmarshal([]byte(data), &body) != nil || len(body.Error) == 0 || string(body.Error) == "null" {
 		return "", false
 	}
-	return body.Error.Message, true
+	// Ошибка — объект с message или просто строка; иное — без текста.
+	var obj struct {
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(body.Error, &obj) == nil {
+		return obj.Message, true
+	}
+	var str string
+	if json.Unmarshal(body.Error, &str) == nil {
+		return str, true
+	}
+	return "", true
 }
 
-func streamError(msg string) *Error {
+func (p *OpenAI) streamError(msg string) *Error {
 	e := &Error{Status: http.StatusBadGateway, Type: "upstream_error", Code: "upstream_error", Message: "ошибка провайдера модели"}
-	if m := cleanText(msg, maxErrorMessage); m != "" {
+	if m := cleanText(msg, maxErrorMessage); m != "" && !p.keyLeaks(msg) {
 		e.Message = m
 	}
 	return e
 }
 
-func (s *openAIStream) Close() error { return s.body.Close() }
+func (s *openAIStream) Close() error {
+	s.idle.Stop()
+	s.cancel()
+	return s.body.Close()
+}

@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/azuresong-afk/ai_railway/internal/chat"
 )
@@ -62,11 +63,14 @@ func TestProviderErrorParsing(t *testing.T) {
 		{400, `{"error":{"message":"x","code":"evil code with spaces"}}`, 400, "upstream_error", "x"},
 		{302, ``, 502, "upstream_error", "ошибка провайдера модели"},
 		{400, `{"error":{"message":"` + strings.Repeat("я", 1000) + `"}}`, 400, "upstream_error", strings.Repeat("я", maxErrorMessage) + "…"},
+		// Провайдер процитировал часть ключа шлюза — текст заменяется.
+		{400, `{"error":{"message":"Invalid key sk-provider-abc...","code":"invalid_key"}}`, 400, "invalid_key", "ошибка провайдера модели"},
 	}
+	p := &OpenAI{cfg: OpenAIConfig{Key: "sk-provider-abcdef123456"}}
 	for _, c := range cases {
 		resp := &http.Response{StatusCode: c.status, Body: io.NopCloser(strings.NewReader(c.body))}
 		var e *Error
-		if !errors.As(providerError(resp), &e) || e.Status != c.wantStatus || e.Code != c.wantCode || e.Message != c.msg {
+		if !errors.As(p.providerError(resp), &e) || e.Status != c.wantStatus || e.Code != c.wantCode || e.Message != c.msg {
 			t.Errorf("%d %s: %+v", c.status, c.body, e)
 		}
 	}
@@ -116,5 +120,79 @@ func TestStreamEndsAndTruncation(t *testing.T) {
 			t.Error(err)
 		}
 		srv.Close()
+	}
+}
+
+func TestStreamErrorForms(t *testing.T) {
+	for data, want := range map[string]string{
+		`{"error":{"message":"boom"}}`: "boom",
+		`{"error":"перегрузка"}`:       "перегрузка",
+		`{"error":42}`:                 "",
+	} {
+		if msg, ok := streamErrorMessage(data); !ok || msg != want {
+			t.Errorf("%s: %q %v", data, msg, ok)
+		}
+	}
+	for _, data := range []string{`{"choices":[]}`, `{"error":null,"choices":[]}`, `{"text":"error"}`} {
+		if _, ok := streamErrorMessage(data); ok {
+			t.Errorf("%s: принято за ошибку", data)
+		}
+	}
+}
+
+// Сроки ответа: тело без потока, переданное медленно, и поток с долгой паузой
+// между событиями прерываются (Р11).
+func TestResponseDeadlines(t *testing.T) {
+	slowBody := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		select {
+		case <-r.Context().Done():
+		case <-time.After(5 * time.Second):
+		}
+	}))
+	defer slowBody.Close()
+	u, err := url.Parse(slowBody.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := NewOpenAI(OpenAIConfig{ID: "p", BaseURL: u, Transport: &http.Transport{Proxy: nil}, ResponseTimeout: 200 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	if _, _, err := p.Chat(context.Background(), &chat.Request{Model: "m"}); !errors.Is(err, ErrTimeout) || time.Since(start) > 2*time.Second {
+		t.Fatalf("медленное тело: %v за %s", err, time.Since(start))
+	}
+	idle := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, `data: {"choices":[{"index":0,"delta":{"content":"a"}}]}`+"\n\n") //nolint:errcheck,gosec // тестовый провайдер
+		w.(http.Flusher).Flush()
+		select {
+		case <-r.Context().Done():
+		case <-time.After(5 * time.Second):
+		}
+	}))
+	defer idle.Close()
+	u, err = url.Parse(idle.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err = NewOpenAI(OpenAIConfig{ID: "p", BaseURL: u, Transport: &http.Transport{Proxy: nil}, StreamIdleTimeout: 200 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, _, err := p.Stream(context.Background(), &chat.Request{Model: "m"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close() //nolint:errcheck // тест
+	if _, err := st.Next(); err != nil {
+		t.Fatal(err)
+	}
+	start = time.Now()
+	if _, err := st.Next(); !errors.Is(err, ErrTimeout) || time.Since(start) > 2*time.Second {
+		t.Fatalf("простой потока: %v за %s", err, time.Since(start))
 	}
 }

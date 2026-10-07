@@ -116,15 +116,21 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusBadRequest, ce.Message, "invalid_request_error", ce.Code)
 		return
 	}
-	model, ok := app.Resolve(req.Model)
+	requested := req.Model
+	model, ok := app.Resolve(requested)
 	if !ok {
 		// Неразрешённая модель (DM-33): список разрешённых — в GET /v1/models.
 		WriteError(w, http.StatusNotFound, "модель недоступна для приложения", "invalid_request_error", "model_not_found")
 		return
 	}
 	req.Model = model
+	if app.Provider.External() {
+		// Идентификатор пользователя (часто e-mail или ФИО) внешнему
+		// провайдеру не передаётся (ТЗ, 5.4).
+		req.User = ""
+	}
 	if req.Stream {
-		h.stream(w, r, app, req)
+		h.stream(w, r, app, req, requested)
 		return
 	}
 	resp, meta, err := app.Provider.Chat(r.Context(), req)
@@ -133,6 +139,9 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.providerError(w, r, err)
 		return
 	}
+	// Приложение видит то имя модели, которое запросило (в том числе
+	// псевдоним), а не имя у провайдера (DM-33).
+	resp.Model = requested
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -163,7 +172,7 @@ func (h *ChatHandler) providerError(w http.ResponseWriter, r *http.Request, err 
 
 // stream передаёт потоковый ответ: каждая часть разбирается и собирается
 // заново, неизвестные поля провайдера приложению не уходят.
-func (h *ChatHandler) stream(w http.ResponseWriter, r *http.Request, app *App, req *chat.Request) {
+func (h *ChatHandler) stream(w http.ResponseWriter, r *http.Request, app *App, req *chat.Request, requested string) {
 	st, meta, err := app.Provider.Stream(r.Context(), req)
 	copyMeta(w, meta)
 	if err != nil {
@@ -201,6 +210,7 @@ func (h *ChatHandler) stream(w http.ResponseWriter, r *http.Request, app *App, r
 			send(streamErrorBody(err))
 			return
 		}
+		c.Model = requested
 		data, err := json.Marshal(c)
 		if err != nil || !send(data) {
 			return

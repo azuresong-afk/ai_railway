@@ -122,6 +122,7 @@ func TestSegmentsAndSetText(t *testing.T) {
 	want := []struct{ loc, kind, text string }{
 		{"messages[0].content", SegContent, "Ты помощник."},
 		{"messages[1].content[0]", SegContent, "Что на картинке?"},
+		{"messages[1].content[4].file.filename", SegFilename, "отчёт.pdf"},
 		{"messages[2].tool_calls[0].function.arguments", SegToolArgs, `{"city":"Москва"}`},
 		{"messages[3].content", SegContent, "+5"},
 		{"messages[4].content[0]", SegRefusal, "Не могу."},
@@ -228,6 +229,8 @@ func TestParseRejects(t *testing.T) {
 		{"схема file:", msg(`{"role":"user","content":[{"type":"image_url","image_url":{"url":"file:///etc/passwd"}}]}`), CodeInvalid},
 		{"data без base64", msg(`{"role":"user","content":[{"type":"image_url","image_url":{"url":"data:image/png,abc"}}]}`), CodeInvalid},
 		{"data с мусором", msg(`{"role":"user","content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,a b"}}]}`), CodeInvalid},
+		{"http без TLS", msg(`{"role":"user","content":[{"type":"image_url","image_url":{"url":"http://169.254.169.254/latest/meta-data"}}]}`), CodeInvalid},
+		{"пустой массив частей", msg(`{"role":"user","content":[]}`), CodeInvalid},
 		{"пробел в адресе", msg(`{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://a/ b"}}]}`), CodeInvalid},
 		{"detail", msg(`{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://a","detail":"max"}}]}`), CodeInvalid},
 		{"формат аудио", msg(`{"role":"user","content":[{"type":"input_audio","input_audio":{"data":"AA==","format":"ogg"}}]}`), CodeInvalid},
@@ -285,6 +288,22 @@ func TestDM15_RequestLimits(t *testing.T) {
 	if _, err := Parse([]byte(strings.Replace(msgs(1), `"max_tokens":10`, `"max_completion_tokens":11`, 1)), lim); !errors.As(err, &e) || e.Code != CodeMaxTokens {
 		t.Fatalf("max_tokens больше квоты: %v", err)
 	}
+	// Без max_tokens подставляется квота: иначе провайдер взял бы свой предел.
+	r, err := Parse([]byte(strings.Replace(msgs(1), `"max_tokens":10,`, ``, 1)), lim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mt, ok := r.EffectiveMaxTokens(); !ok || mt != 10 {
+		t.Fatalf("квота не подставлена: %v %v", mt, ok)
+	}
+	// Без квоты запрос не меняется.
+	r, err = Parse([]byte(strings.Replace(msgs(1), `"max_tokens":10,`, ``, 1)), Limits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := r.EffectiveMaxTokens(); ok {
+		t.Fatal("max_tokens подставлен без квоты")
+	}
 	parts := `{"model":"m","messages":[{"role":"user","content":[` + strings.TrimSuffix(strings.Repeat(`{"type":"text","text":"x"},`, 3), ",") + `]}]}`
 	if _, err := Parse([]byte(parts), Limits{MaxParts: 2}); !errors.As(err, &e) || e.Code != CodeTooMany {
 		t.Fatalf("частей больше предела: %v", err)
@@ -292,7 +311,11 @@ func TestDM15_RequestLimits(t *testing.T) {
 }
 
 func TestErrorDoesNotEchoContent(t *testing.T) {
-	_, err := Parse([]byte(`{"model":"m","messages":[{"role":"user","content":{"секрет-123":1}}]}`), Limits{})
+	_, err := Parse([]byte(`{"model":"m","messages":[{"role":"user","content":"x"}],"logit_bias":{"секрет-ключ":"x"}}`), Limits{})
+	if err == nil || strings.Contains(err.Error(), "секрет-ключ") {
+		t.Fatalf("ключ словаря в ошибке: %v", err)
+	}
+	_, err = Parse([]byte(`{"model":"m","messages":[{"role":"user","content":{"секрет-123":1}}]}`), Limits{})
 	if err == nil || strings.Contains(err.Error(), "секрет-123") {
 		t.Fatalf("ошибка содержит фрагмент запроса: %v", err)
 	}
