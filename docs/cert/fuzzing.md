@@ -37,6 +37,8 @@
 | `FuzzGigaChatChunk` | `internal/providers` | Перевод части потока GigaChat: без паники, только вариант 0 | 1.8 |
 | `FuzzToYandexGPT` | `internal/providers` | Перевод принятого шлюзом запроса в формат YandexGPT: всегда валидный JSON или ошибка 400 для приложения | 1.9 |
 | `FuzzYandexGPTStreamDelta` | `internal/providers` | Приращения потока YandexGPT из накопленного текста: склейка приращений всегда равна накопленному тексту | 1.9 |
+| `FuzzParse` | `internal/detect/corpus` | Разбор корпуса детектора (JSONL со строгой схемой): принятые примеры проходят проверку схемы | 1.10 |
+| `FuzzParseTable` | `tools/detector-quality` | Таблица детекторов в `docs/detectors.md`: метрики только 0–1 | 1.10 |
 | `FuzzAuthenticate` | `internal/auth` | Заголовок `Authorization` и проверка ключа: всегда ровно один исход (вход или отказ с причиной), вход — только с выпущенным ключом | 1.4 |
 | `FuzzEvalExpression` | `tools/internal/components` | Разбор выражений лицензий SPDX; выражение из разрешённых лицензий всегда разрешено | 0.7 |
 

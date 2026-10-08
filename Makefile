@@ -60,7 +60,7 @@ help: ## Список целей
 # зелёный make check неполный — об этом печатается предупреждение.
 PENDING_CHECKS :=
 
-check: fmt-check vet docs-check repocheck licenses lint lint-selftest sast test build e2e dm-coverage sbom fuzz-smoke vuln ## Все проверки перед pull request
+check: fmt-check vet docs-check repocheck licenses lint lint-selftest sast test build e2e dm-coverage detector-quality sbom fuzz-smoke vuln ## Все проверки перед pull request
 	@if [ -n "$(strip $(PENDING_CHECKS))" ]; then \
 		echo "ВНИМАНИЕ: make check неполный, ещё не реализованы: $(PENDING_CHECKS) (docs/plans/stage-0.md)"; fi
 
@@ -81,6 +81,14 @@ dm-coverage: build ## Покрытие матрицы обнаружения 5.1
 	go test -tags e2e -count=1 -json ./test/e2e/ -bin $(BUILD)/bin > $(BUILD)/dm-e2e.json || true
 	go run ./tools/dm-coverage -spec docs/SPEC.md -stage $(STAGE) \
 		-gotest $(BUILD)/dm-tests.json,$(BUILD)/dm-e2e.json -out $(BUILD)/dm-coverage
+
+.PHONY: detector-quality
+detector-quality: ## Точность и полнота детекторов на корпусах против docs/detectors.md (ТЗ, 5.2)
+	go run ./tools/detector-quality -doc docs/detectors.md -corpus testdata/corpus -out $(BUILD)/detector-quality.md
+
+.PHONY: bench
+bench: ## Бенчмарки детекторов и реестра (задержка против целей ТЗ, 5.1)
+	go test -run '^$$' -bench . -benchmem ./internal/detect/...
 
 .PHONY: sbom
 sbom: build $(BIN)/sbom-utility ## SBOM продукта (CycloneDX 1.6) из собранных бинарников и проверка формата
