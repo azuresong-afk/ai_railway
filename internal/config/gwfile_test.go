@@ -21,7 +21,7 @@ func TestParseGatewayFileFixture(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(f.Providers) != 2 || len(f.Applications) != 1 {
+	if len(f.Providers) != 3 || len(f.Applications) != 1 {
 		t.Fatalf("разбор: %+v", f)
 	}
 	p := f.Providers[0]
@@ -66,6 +66,8 @@ func TestParseGatewayFileErrors(t *testing.T) {
 		"длительность":         {"connect_timeout: 5s", "connect_timeout: 5"},
 		"gigachat без scope":   {"    scope: GIGACHAT_API_CORP\n", ""},
 		"gigachat scope":       {"scope: GIGACHAT_API_CORP", "scope: GIGACHAT_API_ALL"},
+		"yandex folder_id":     {"folder_id: b1gexamplefolder0000", "folder_id: B1G/../x"},
+		"yandex без folder_id": {"    folder_id: b1gexamplefolder0000\n", ""},
 		"id":                   {"id: support-bot", "id: Support Bot"},
 		"два документа":        {"schema_version: 1", "schema_version: 1\n---\nx: 1\n---"},
 	}

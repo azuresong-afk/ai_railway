@@ -148,10 +148,6 @@ func newAuth(p aisecCrypto.Provider, file *config.GatewayFile, logger *slog.Logg
 func newProviders(file *config.GatewayFile, tp aisecCrypto.TLSProvider, rnd aisecCrypto.Random, logger *slog.Logger) (map[string]providers.Provider, error) {
 	out := map[string]providers.Provider{}
 	for _, pc := range file.Providers {
-		if pc.Type == config.ProviderYandexGPT {
-			// YandexGPT — задача 1.9 этапа 1.
-			return nil, fmt.Errorf("провайдер %s: тип %s ещё не поддерживается", pc.ID, pc.Type)
-		}
 		rootsPEM, err := aisecCrypto.ReadPEMFile(pc.CAFile)
 		if err != nil {
 			return nil, fmt.Errorf("провайдер %s: корневые сертификаты: %w", pc.ID, err)
@@ -193,6 +189,8 @@ func newProviders(file *config.GatewayFile, tp aisecCrypto.TLSProvider, rnd aise
 				}
 			}
 			prov, err = providers.NewGigaChat(gc)
+		case config.ProviderYandexGPT:
+			prov, err = providers.NewYandexGPT(providers.YandexGPTConfig{BaseConfig: bc, BaseURL: u, APIKey: key, FolderID: pc.FolderID, Random: rnd})
 		default:
 			prov, err = providers.NewOpenAI(providers.OpenAIConfig{BaseConfig: bc, BaseURL: u, Key: key})
 		}

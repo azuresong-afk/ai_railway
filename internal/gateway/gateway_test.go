@@ -52,6 +52,9 @@ func TestUnknownRoutesInOpenAIFormat(t *testing.T) {
 		{http.MethodGet, "/v1/chat/completions", http.StatusMethodNotAllowed, "method_not_allowed"},
 		{http.MethodDelete, "/healthz", http.StatusMethodNotAllowed, "method_not_allowed"},
 		{http.MethodGet, "/../etc/passwd", http.StatusNotFound, "not_found"},
+		{http.MethodPost, "/v1//chat/completions", http.StatusNotFound, "not_found"},
+		{http.MethodPost, "/v1/./chat/completions", http.StatusNotFound, "not_found"},
+		{http.MethodGet, "/healthz/", http.StatusNotFound, "not_found"},
 	}
 	for _, c := range cases {
 		rec := do(t, g, c.method, c.path)

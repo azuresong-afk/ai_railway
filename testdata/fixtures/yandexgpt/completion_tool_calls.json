@@ -1,0 +1,1 @@
+{"result":{"alternatives":[{"message":{"role":"assistant","toolCallList":{"toolCalls":[{"functionCall":{"name":"weather_forecast","arguments":{"location":"Москва","num_days":1}}}]}},"status":"ALTERNATIVE_STATUS_TOOL_CALLS"}],"usage":{"inputTextTokens":"120","completionTokens":"30","totalTokens":"150"},"modelVersion":"23.10.2024"}}

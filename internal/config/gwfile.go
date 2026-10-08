@@ -142,6 +142,7 @@ var (
 	storages       = map[string]bool{"none": true, "masked": true}
 	userFrom       = map[string]bool{"header": true, "field": true, "none": true}
 	provTypes      = map[string]bool{ProviderOpenAI: true, ProviderGigaChat: true, ProviderYandexGPT: true}
+	folderRe       = regexp.MustCompile(`^[a-z0-9]{1,50}$`)
 	gigaChatScopes = map[string]bool{"GIGACHAT_API_PERS": true, "GIGACHAT_API_B2B": true, "GIGACHAT_API_CORP": true}
 	idRe           = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
 	prefixRe       = regexp.MustCompile(`^aisec_[a-z0-9]{8}$`)
@@ -263,7 +264,9 @@ func (f *GatewayFile) validate() error {
 			}
 		case ProviderYandexGPT:
 			if p.KeyFile == "" || p.FolderID == "" {
-				add("%s: для YandexGPT нужны key_file и folder_id", at)
+				add("%s: для YandexGPT нужны key_file (API-ключ сервисного аккаунта) и folder_id", at)
+			} else if !folderRe.MatchString(p.FolderID) {
+				add("%s: folder_id — строчные латинские буквы и цифры", at)
 			}
 		}
 	}

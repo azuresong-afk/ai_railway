@@ -19,6 +19,12 @@ providers:
     scope: GIGACHAT_API_CORP
     key_file: /etc/aisec/gigachat.key
     ca_file: /etc/aisec/russian-trusted-ca.pem
+  - id: yandex
+    type: yandexgpt
+    base_url: https://llm.api.cloud.yandex.net/foundationModels/v1
+    key_file: /etc/aisec/yandex.key
+    folder_id: b1gexamplefolder0000
+    ca_file: /etc/aisec/yandex-ca.pem
 applications:
   - id: support-bot
     name: Бот поддержки

@@ -272,9 +272,11 @@ type gcRequest struct {
 // unsupported — ошибка для приложения: параметр без аналога в GigaChat.
 // Молча отбрасывать параметр нельзя: приложение получило бы не то
 // поведение, которое запросило.
-func unsupported(what string) error {
+func unsupported(what string) error { return unsupportedBy("gigachat", what) }
+
+func unsupportedBy(provider, what string) error {
 	return &Error{Status: http.StatusBadRequest, Type: "invalid_request_error", Code: "unsupported_parameter",
-		Message: what + " не поддерживается провайдером gigachat"}
+		Message: what + " не поддерживается провайдером " + provider}
 }
 
 func invalid(msg string) error {
@@ -282,9 +284,9 @@ func invalid(msg string) error {
 }
 
 // textOf — текст сообщения: строка или текстовые части через перевод строки.
-// Нетекстовые части GigaChat принимает только загруженными файлами — на
-// этапе 1 это не поддерживается.
-func textOf(m chat.Message) (string, error) {
+// Нетекстовые части GigaChat и YandexGPT принимают только в своём формате
+// (загруженными файлами) — на этапе 1 это не поддерживается.
+func textOf(m chat.Message, provider string) (string, error) {
 	if m.Content.Text != nil {
 		return *m.Content.Text, nil
 	}
@@ -296,7 +298,7 @@ func textOf(m chat.Message) (string, error) {
 		case p.Refusal != nil:
 			parts = append(parts, *p.Refusal)
 		default:
-			return "", unsupported("нетекстовое содержимое (" + p.Type + ")")
+			return "", unsupportedBy(provider, "нетекстовое содержимое ("+p.Type+")")
 		}
 	}
 	if m.Refusal != nil {
@@ -357,7 +359,7 @@ func toGigaChat(req *chat.Request, stream bool) ([]byte, error) {
 	}
 	names := map[string]string{} // id вызова → имя функции
 	for i, m := range req.Messages {
-		text, err := textOf(m)
+		text, err := textOf(m, "gigachat")
 		if err != nil {
 			return nil, err
 		}

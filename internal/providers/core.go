@@ -1,6 +1,7 @@
 package providers
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -148,6 +149,11 @@ func (b *base) post(ctx, clientCtx context.Context, url string, body []byte, str
 	if auth != "" {
 		hr.Header.Set("Authorization", auth)
 	}
+	return b.do(hr, clientCtx)
+}
+
+// do выполняет подготовленный запрос: ответ 200 или ошибка по классам.
+func (b *base) do(hr *http.Request, clientCtx context.Context) (*http.Response, Meta, error) {
 	resp, err := b.client.Do(hr)
 	if err != nil {
 		return nil, Meta{}, b.transportError(clientCtx, err)
@@ -299,61 +305,150 @@ func (b *base) openStream(clientCtx context.Context, cancel context.CancelFunc, 
 		cancel()
 		return nil, ErrBadResponse
 	}
-	s := &sseStream{b: b, ctx: clientCtx, cancel: cancel, body: resp.Body, r: sse.NewReader(resp.Body, sse.Limits{}), decode: decode}
+	r := sse.NewReader(resp.Body, sse.Limits{})
+	next := func() (frame, error) {
+		ev, err := r.Next()
+		switch {
+		case errors.Is(err, io.EOF):
+			return frame{}, ErrTruncated // поток SSE штатно кончается событием [DONE]
+		case errors.Is(err, sse.ErrLineTooLong), errors.Is(err, sse.ErrEventTooLarge):
+			return frame{}, errFrameTooLarge
+		case err != nil:
+			return frame{}, err
+		}
+		if ev.Event != "" && ev.Event != "message" && ev.Event != "error" {
+			return frame{data: ev.Data, skip: true}, nil // служебные события провайдера не передаются
+		}
+		if ev.Data == chat.Done {
+			return frame{done: true}, nil
+		}
+		return frame{data: ev.Data}, nil
+	}
+	s := b.newFrameStream(clientCtx, cancel, resp.Body, next, decode)
+	s.countFrames = true
+	return s, nil
+}
+
+// openNDJSON — поток строк JSON (YandexGPT). Строка — до MaxResponseBytes.
+// Конец потока без ошибки — штатный, если final сообщает, что последняя
+// часть получена; иначе поток оборван. Объём считает decode: в строках
+// YandexGPT текст накопленный, и сумма длин строк не отражает размер ответа.
+func (b *base) openNDJSON(clientCtx context.Context, cancel context.CancelFunc, resp *http.Response,
+	decode func(data string) (*chat.Chunk, error), final func() bool) Stream {
+	br := bufio.NewReaderSize(resp.Body, 64<<10)
+	var line []byte
+	next := func() (frame, error) {
+		line = line[:0]
+		for {
+			chunk, err := br.ReadSlice('\n')
+			if len(line)+len(chunk) > chat.MaxResponseBytes {
+				return frame{}, errFrameTooLarge
+			}
+			line = append(line, chunk...)
+			switch {
+			case err == nil:
+				t := strings.TrimSpace(string(line))
+				if t == "" {
+					return frame{skip: true}, nil
+				}
+				return frame{data: t}, nil
+			case errors.Is(err, bufio.ErrBufferFull):
+				continue
+			case errors.Is(err, io.EOF):
+				if t := strings.TrimSpace(string(line)); t != "" {
+					return frame{data: t}, nil // последняя строка без перевода строки
+				}
+				if final() {
+					return frame{done: true}, nil
+				}
+				return frame{}, ErrTruncated
+			default:
+				return frame{}, err
+			}
+		}
+	}
+	return b.newFrameStream(clientCtx, cancel, resp.Body, next, decode)
+}
+
+// closeBody закрывает тело ответа провайдера, ошибку — в журнал.
+func (b *base) closeBody(resp *http.Response) {
+	if cerr := resp.Body.Close(); cerr != nil {
+		b.logger.Warn("закрытие ответа провайдера", "error", ErrorClass(cerr))
+	}
+}
+
+// frame — кадр потока: данные части, служебный кадр или конец потока.
+type frame struct {
+	data string
+	skip bool
+	done bool
+}
+
+var errFrameTooLarge = errors.New("кадр потока больше предела")
+
+func (b *base) newFrameStream(clientCtx context.Context, cancel context.CancelFunc, body io.ReadCloser,
+	next func() (frame, error), decode func(string) (*chat.Chunk, error)) *frameStream {
+	s := &frameStream{b: b, ctx: clientCtx, cancel: cancel, body: body, next: next, decode: decode}
 	s.idle = time.AfterFunc(b.cfg.StreamIdleTimeout, func() {
 		s.idleExpired.Store(true)
 		cancel()
 	})
-	return s, nil
+	return s
 }
 
-type sseStream struct {
+// frameStream — поток частей ответа с общим сроком (контекст запроса),
+// сроком простоя между кадрами и пределом объёма.
+type frameStream struct {
 	b           *base
 	ctx         context.Context // контекст клиента
 	cancel      context.CancelFunc
 	idle        *time.Timer
 	idleExpired atomic.Bool
 	body        io.ReadCloser
-	r           *sse.Reader
+	next        func() (frame, error)
 	decode      func(string) (*chat.Chunk, error)
 	size        int
+	countFrames bool // считать объём по кадрам (SSE)
 	done        bool
 }
 
-func (s *sseStream) Next() (*chat.Chunk, error) {
+func (s *frameStream) Next() (*chat.Chunk, error) {
 	if s.done {
 		return nil, io.EOF
 	}
 	for {
-		ev, err := s.r.Next()
+		f, err := s.next()
 		switch {
 		case err != nil && s.idleExpired.Load():
 			s.b.logger.Warn("поток провайдера: превышен простой между событиями", "provider", s.b.cfg.ID)
 			return nil, ErrTimeout
-		case errors.Is(err, io.EOF):
+		case errors.Is(err, ErrTruncated):
 			return nil, ErrTruncated
-		case errors.Is(err, sse.ErrLineTooLong), errors.Is(err, sse.ErrEventTooLarge):
+		case errors.Is(err, errFrameTooLarge):
 			s.b.logger.Warn("поток провайдера: событие больше предела", "provider", s.b.cfg.ID)
 			return nil, ErrBadResponse
 		case err != nil:
 			return nil, s.b.transportError(s.ctx, err)
 		}
 		s.idle.Reset(s.b.cfg.StreamIdleTimeout)
-		if s.size += len(ev.Data); s.size > chat.MaxResponseBytes {
+		if s.countFrames {
+			s.size += len(f.data)
+		}
+		if s.size > chat.MaxResponseBytes {
 			s.b.logger.Warn("поток провайдера больше предела", "provider", s.b.cfg.ID)
 			return nil, ErrBadResponse
 		}
-		if ev.Event != "" && ev.Event != "message" && ev.Event != "error" {
-			continue // служебные события провайдера не передаются
-		}
-		if ev.Data == chat.Done {
+		if f.done {
 			s.done = true
 			return nil, io.EOF
 		}
-		if msg, ok := streamErrorMessage(ev.Data); ok {
+		if f.skip {
+			continue
+		}
+		if msg, ok := streamErrorMessage(f.data); ok {
 			return nil, s.b.streamError(msg)
 		}
-		c, err := s.decode(ev.Data)
+		c, err := s.decode(f.data)
 		if err != nil {
 			s.b.logger.Warn("часть потока провайдера не разобрана", "provider", s.b.cfg.ID)
 			return nil, ErrBadResponse
@@ -364,7 +459,7 @@ func (s *sseStream) Next() (*chat.Chunk, error) {
 	}
 }
 
-func (s *sseStream) Close() error {
+func (s *frameStream) Close() error {
 	s.idle.Stop()
 	s.cancel()
 	return s.body.Close()

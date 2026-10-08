@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"path"
 )
 
 // Gateway — HTTP-обработчик шлюза.
@@ -61,6 +62,13 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.Set("X-Content-Type-Options", "nosniff")
 	h.Set("Cache-Control", "no-store")
 	h.Set("Strict-Transport-Security", "max-age=31536000")
+	// Неканонический путь (//, /./, /../, завершающий /) — 404: ServeMux
+	// ответил бы перенаправлением на очищенный путь, а шлюз клиента никуда
+	// не перенаправляет.
+	if p := r.URL.Path; p != "/" && path.Clean(p) != p {
+		WriteError(w, http.StatusNotFound, "адрес не найден", "invalid_request_error", "not_found")
+		return
+	}
 	_, pattern := g.mux.Handler(r)
 	if pattern == "" {
 		// ServeMux различает 404 и 405, но отвечает текстом; определяем сами.
