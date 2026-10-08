@@ -65,6 +65,7 @@ func TestParseGatewayFileErrors(t *testing.T) {
 		"таймаут":              {"connect_timeout: 5s", "connect_timeout: 1h"},
 		"длительность":         {"connect_timeout: 5s", "connect_timeout: 5"},
 		"gigachat без scope":   {"    scope: GIGACHAT_API_CORP\n", ""},
+		"gigachat scope":       {"scope: GIGACHAT_API_CORP", "scope: GIGACHAT_API_ALL"},
 		"id":                   {"id: support-bot", "id: Support Bot"},
 		"два документа":        {"schema_version: 1", "schema_version: 1\n---\nx: 1\n---"},
 	}

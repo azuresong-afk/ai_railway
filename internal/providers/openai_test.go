@@ -20,7 +20,7 @@ func newTestProvider(t *testing.T, base string, key string) *OpenAI {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := NewOpenAI(OpenAIConfig{ID: "p", BaseURL: u, Key: key, Transport: &http.Transport{Proxy: nil}})
+	p, err := NewOpenAI(OpenAIConfig{BaseConfig: BaseConfig{ID: "p", Transport: &http.Transport{Proxy: nil}}, BaseURL: u, Key: key})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -33,16 +33,16 @@ func TestNewOpenAI(t *testing.T) {
 		t.Fatal(err)
 	}
 	tr := &http.Transport{}
-	p, err := NewOpenAI(OpenAIConfig{ID: "p", BaseURL: u, Transport: tr})
+	p, err := NewOpenAI(OpenAIConfig{BaseConfig: BaseConfig{ID: "p", Transport: tr}, BaseURL: u})
 	if err != nil || p.endpoint != "https://llm.example/v1/chat/completions" || p.ID() != "p" {
 		t.Fatalf("%v %s", err, p.endpoint)
 	}
 	for name, c := range map[string]OpenAIConfig{
-		"без id":          {BaseURL: u, Transport: tr},
-		"без адреса":      {ID: "p", Transport: tr},
-		"без транспорта":  {ID: "p", BaseURL: u},
-		"ключ с \\n":      {ID: "p", BaseURL: u, Transport: tr, Key: "a\nX-Evil: 1"},
-		"ключ с пробелом": {ID: "p", BaseURL: u, Transport: tr, Key: "a b"},
+		"без id":          {BaseConfig: BaseConfig{Transport: tr}, BaseURL: u},
+		"без адреса":      {BaseConfig: BaseConfig{ID: "p", Transport: tr}},
+		"без транспорта":  {BaseConfig: BaseConfig{ID: "p"}, BaseURL: u},
+		"ключ с \\n":      {BaseConfig: BaseConfig{ID: "p", Transport: tr}, BaseURL: u, Key: "a\nX-Evil: 1"},
+		"ключ с пробелом": {BaseConfig: BaseConfig{ID: "p", Transport: tr}, BaseURL: u, Key: "a b"},
 	} {
 		if _, err := NewOpenAI(c); err == nil {
 			t.Errorf("%s: ожидалась ошибка", name)
@@ -66,7 +66,7 @@ func TestProviderErrorParsing(t *testing.T) {
 		// Провайдер процитировал часть ключа шлюза — текст заменяется.
 		{400, `{"error":{"message":"Invalid key sk-provider-abc...","code":"invalid_key"}}`, 400, "invalid_key", "ошибка провайдера модели"},
 	}
-	p := &OpenAI{cfg: OpenAIConfig{Key: "sk-provider-abcdef123456"}}
+	p := &base{secrets: []string{"sk-provider-abcdef123456"}}
 	for _, c := range cases {
 		resp := &http.Response{StatusCode: c.status, Body: io.NopCloser(strings.NewReader(c.body))}
 		var e *Error
@@ -157,7 +157,7 @@ func TestResponseDeadlines(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := NewOpenAI(OpenAIConfig{ID: "p", BaseURL: u, Transport: &http.Transport{Proxy: nil}, ResponseTimeout: 200 * time.Millisecond})
+	p, err := NewOpenAI(OpenAIConfig{BaseConfig: BaseConfig{ID: "p", Transport: &http.Transport{Proxy: nil}, ResponseTimeout: 200 * time.Millisecond}, BaseURL: u})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +179,7 @@ func TestResponseDeadlines(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err = NewOpenAI(OpenAIConfig{ID: "p", BaseURL: u, Transport: &http.Transport{Proxy: nil}, StreamIdleTimeout: 200 * time.Millisecond})
+	p, err = NewOpenAI(OpenAIConfig{BaseConfig: BaseConfig{ID: "p", Transport: &http.Transport{Proxy: nil}, StreamIdleTimeout: 200 * time.Millisecond}, BaseURL: u})
 	if err != nil {
 		t.Fatal(err)
 	}

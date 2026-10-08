@@ -96,7 +96,7 @@ func newGateway(t testing.TB, upstream string, mod func(*gwOpts)) http.Handler {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := providers.NewOpenAI(providers.OpenAIConfig{ID: "up", BaseURL: u, Key: o.key, External: true, Transport: o.transport, Logger: o.logger})
+	p, err := providers.NewOpenAI(providers.OpenAIConfig{BaseConfig: providers.BaseConfig{ID: "up", External: true, Transport: o.transport, Logger: o.logger}, BaseURL: u, Key: o.key})
 	if err != nil {
 		t.Fatal(err)
 	}

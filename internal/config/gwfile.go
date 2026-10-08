@@ -136,16 +136,17 @@ type AppKey struct {
 
 // Значения перечислимых полей.
 var (
-	envs      = map[string]bool{"prod": true, "test": true}
-	modes     = map[string]bool{"monitor": true, "enforce": true}
-	failModes = map[string]bool{"fail_open": true, "fail_closed": true}
-	storages  = map[string]bool{"none": true, "masked": true}
-	userFrom  = map[string]bool{"header": true, "field": true, "none": true}
-	provTypes = map[string]bool{ProviderOpenAI: true, ProviderGigaChat: true, ProviderYandexGPT: true}
-	idRe      = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
-	prefixRe  = regexp.MustCompile(`^aisec_[a-z0-9]{8}$`)
-	sha256Re  = regexp.MustCompile(`^[0-9a-f]{64}$`)
-	modelRe   = regexp.MustCompile(`^[A-Za-z0-9._:/-]{1,128}$`)
+	envs           = map[string]bool{"prod": true, "test": true}
+	modes          = map[string]bool{"monitor": true, "enforce": true}
+	failModes      = map[string]bool{"fail_open": true, "fail_closed": true}
+	storages       = map[string]bool{"none": true, "masked": true}
+	userFrom       = map[string]bool{"header": true, "field": true, "none": true}
+	provTypes      = map[string]bool{ProviderOpenAI: true, ProviderGigaChat: true, ProviderYandexGPT: true}
+	gigaChatScopes = map[string]bool{"GIGACHAT_API_PERS": true, "GIGACHAT_API_B2B": true, "GIGACHAT_API_CORP": true}
+	idRe           = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
+	prefixRe       = regexp.MustCompile(`^aisec_[a-z0-9]{8}$`)
+	sha256Re       = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	modelRe        = regexp.MustCompile(`^[A-Za-z0-9._:/-]{1,128}$`)
 )
 
 // ParseGatewayFile разбирает и проверяет файл конфигурации.
@@ -251,7 +252,9 @@ func (f *GatewayFile) validate() error {
 		switch p.Type {
 		case ProviderGigaChat:
 			if p.KeyFile == "" || p.Scope == "" {
-				add("%s: для GigaChat нужны key_file и scope", at)
+				add("%s: для GigaChat нужны key_file (ключ авторизации) и scope", at)
+			} else if !gigaChatScopes[p.Scope] {
+				add("%s: scope — GIGACHAT_API_PERS, GIGACHAT_API_B2B или GIGACHAT_API_CORP", at)
 			}
 			if p.AuthURL != "" {
 				if _, err := ParseUpstreamURL(p.AuthURL); err != nil {

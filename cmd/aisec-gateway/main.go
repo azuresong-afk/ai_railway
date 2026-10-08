@@ -68,7 +68,11 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 	if err != nil {
 		return fmt.Errorf("ключ шлюза: %w", err)
 	}
-	provs, err := newProviders(file, tp, logger)
+	rnd, err := p.Random()
+	if err != nil {
+		return err
+	}
+	provs, err := newProviders(file, tp, rnd, logger)
 	if err != nil {
 		return err
 	}
@@ -141,11 +145,11 @@ func newAuth(p aisecCrypto.Provider, file *config.GatewayFile, logger *slog.Logg
 
 // newProviders создаёт провайдеров из файла конфигурации. Ключи провайдеров
 // читаются из файлов с правами 0600 и в журнал не попадают.
-func newProviders(file *config.GatewayFile, tp aisecCrypto.TLSProvider, logger *slog.Logger) (map[string]providers.Provider, error) {
+func newProviders(file *config.GatewayFile, tp aisecCrypto.TLSProvider, rnd aisecCrypto.Random, logger *slog.Logger) (map[string]providers.Provider, error) {
 	out := map[string]providers.Provider{}
 	for _, pc := range file.Providers {
-		if pc.Type != config.ProviderOpenAI {
-			// GigaChat и YandexGPT — задачи 1.8 и 1.9 этапа 1.
+		if pc.Type == config.ProviderYandexGPT {
+			// YandexGPT — задача 1.9 этапа 1.
 			return nil, fmt.Errorf("провайдер %s: тип %s ещё не поддерживается", pc.ID, pc.Type)
 		}
 		rootsPEM, err := aisecCrypto.ReadPEMFile(pc.CAFile)
@@ -175,14 +179,27 @@ func newProviders(file *config.GatewayFile, tp aisecCrypto.TLSProvider, logger *
 		if err != nil {
 			return nil, fmt.Errorf("провайдер %s: %w", pc.ID, err)
 		}
-		p, err := providers.NewOpenAI(providers.OpenAIConfig{
-			ID: pc.ID, BaseURL: u, Key: key, External: pc.IsExternal(), Transport: transport, Logger: logger,
+		bc := providers.BaseConfig{
+			ID: pc.ID, External: pc.IsExternal(), Transport: transport, Logger: logger,
 			ResponseTimeout: time.Duration(pc.ResponseTimeout), StreamIdleTimeout: time.Duration(pc.StreamIdleTimeout),
-		})
+		}
+		var prov providers.Provider
+		switch pc.Type {
+		case config.ProviderGigaChat:
+			gc := providers.GigaChatConfig{BaseConfig: bc, BaseURL: u, AuthKey: key, Scope: pc.Scope, Random: rnd}
+			if pc.AuthURL != "" {
+				if gc.AuthURL, err = config.ParseUpstreamURL(pc.AuthURL); err != nil {
+					return nil, fmt.Errorf("провайдер %s: auth_url: %w", pc.ID, err)
+				}
+			}
+			prov, err = providers.NewGigaChat(gc)
+		default:
+			prov, err = providers.NewOpenAI(providers.OpenAIConfig{BaseConfig: bc, BaseURL: u, Key: key})
+		}
 		if err != nil {
 			return nil, err
 		}
-		out[pc.ID] = p
+		out[pc.ID] = prov
 	}
 	return out, nil
 }
