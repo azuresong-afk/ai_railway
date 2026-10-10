@@ -16,12 +16,12 @@
 {"id": "ogrn-03", "lang": "en", "direction": "input", "source": "user", "text": "OGRN 1000009005281 issued to the company", "expect": ["pii.ogrn"]}
 {"id": "ogrnip-01", "lang": "ru", "direction": "input", "source": "user", "text": "ОГРНИП 324006717755110", "expect": ["pii.ogrnip"]}
 {"id": "ogrnip-02", "lang": "ru", "direction": "input", "source": "user", "text": "Индивидуальный предприниматель, ОГРНИП: 311006275331008", "expect": ["pii.ogrnip"]}
-{"id": "card-01", "lang": "ru", "direction": "input", "source": "user", "text": "Номер карты 4000 0047 0541 1241, срок 12/27", "expect": ["pii.card"]}
+{"id": "card-01", "lang": "ru", "direction": "input", "source": "user", "text": "Номер карты 4000 0047 0541 1241, проверь баланс", "expect": ["pii.card"]}
 {"id": "card-02", "lang": "ru", "direction": "input", "source": "user", "text": "Оплати картой 5555556717755119", "expect": ["pii.card"]}
 {"id": "card-03", "lang": "en", "direction": "input", "source": "user", "text": "My card number is 4000-0062-7533-1006", "expect": ["pii.card"]}
 {"id": "card-04", "lang": "ru", "direction": "input", "source": "user", "text": "5555 5562 0900 5288 — переведи сюда", "expect": ["pii.card"], "note": "без ключевого слова, группы по 4"}
 {"id": "card-05", "lang": "ru", "direction": "input", "source": "user", "text": "Карта Мир 4000 0008 7212 2462 5 шт. заказано", "expect": ["pii.card"], "note": "лишняя группа цифр рядом"}
-{"id": "card-06", "lang": "en", "direction": "input", "source": "user", "text": "Visa 5555555705701317 exp 01/29", "expect": ["pii.card"]}
+{"id": "card-06", "lang": "en", "direction": "input", "source": "user", "text": "Visa 5555555705701317 was declined", "expect": ["pii.card"]}
 {"id": "mix-01", "lang": "ru", "direction": "input", "source": "user", "text": "Клиент: ИНН 008721224629, СНИЛС 994-469-522 90, карта 4000 0049 4469 5224", "expect": ["pii.inn", "pii.snils", "pii.card"]}
 {"id": "mix-02", "lang": "ru", "direction": "input", "source": "user", "text": "Договор с ООО, ИНН 0009005282, ОГРН 1280072122461", "expect": ["pii.inn", "pii.ogrn"]}
 {"id": "out-01", "lang": "ru", "direction": "output", "source": "output", "text": "Ваш ИНН: 007057013198. Используйте его в заявлении.", "expect": ["pii.inn"]}
@@ -50,8 +50,8 @@
 {"id": "neg-time-01", "lang": "ru", "direction": "input", "source": "user", "text": "Таймстемп 1791396000123 в миллисекундах", "expect": [], "note": "13 цифр, первая не 1/5 с верной суммой ОГРН — проверить"}
 {"id": "neg-coords-01", "lang": "en", "direction": "input", "source": "user", "text": "Coordinates 55.7558, 37.6173", "expect": []}
 {"id": "neg-table-01", "lang": "ru", "direction": "input", "source": "user", "text": "| 2021 | 2022 | 2023 | 2024 |", "expect": []}
-{"id": "neg-imei-01", "lang": "ru", "direction": "input", "source": "user", "text": "IMEI телефона 356938035643809, серийный номер на коробке", "expect": [], "note": "15 цифр, сумма Луна сходится, префикс 35 — не карта"}
-{"id": "neg-imei-02", "lang": "en", "direction": "input", "source": "user", "text": "Device 356938035643809 was lost", "expect": [], "note": "IMEI без ключевого слова"}
+{"id": "neg-imei-01", "lang": "ru", "direction": "input", "source": "user", "text": "IMEI телефона 350000123456788, серийный номер на коробке", "expect": [], "note": "синтетический IMEI: 15 цифр, сумма Луна сходится, префикс 35 — не карта"}
+{"id": "neg-imei-02", "lang": "en", "direction": "input", "source": "user", "text": "Device 350000000000006 was lost", "expect": [], "note": "IMEI без ключевого слова"}
 {"id": "neg-ts-01", "lang": "en", "direction": "input", "source": "user", "text": "created_at=1791396000123, updated_at=1791396999123", "expect": [], "note": "метки времени в миллисекундах (13 цифр на 1)"}
 {"id": "neg-ts-02", "lang": "en", "direction": "input", "source": "user", "text": "unix time 1791396000", "expect": []}
 {"id": "neg-bik-01", "lang": "ru", "direction": "input", "source": "user", "text": "БИК 044525225, корр. счёт 30101810400000000225", "expect": [], "note": "БИК 9 цифр; корр. счёт 20 цифр"}

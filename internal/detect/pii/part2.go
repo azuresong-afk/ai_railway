@@ -25,7 +25,7 @@ var (
 	domainRe = regexp.MustCompile(`^(?:[\p{L}\p{N}\-]{1,63}\.){1,8}(?i:[a-z]{2,24}|рф|рус)`)
 	// dateRe — 12.03.1985, 12/03/1985, 1985-03-12, 12 марта 1985.
 	dateRe = regexp.MustCompile(`(\d{1,2})([./])(\d{1,2})([./])(\d{4})|(\d{4})-(\d{2})-(\d{2})|(\d{1,2}) (?i:(января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)) (\d{4})`)
-	// passportNoRe — «45 06 № 123456», «4506 номер 123456».
+	// passportNoRe — «00 12 № 345678», «0012 номер 345678».
 	passportNoRe = regexp.MustCompile(`\d{2} ?\d{2} ?(?:№|N|No\.?|номер) ?\d{6}`)
 )
 
@@ -317,7 +317,7 @@ func accounts(text string, add addFunc) {
 	}
 }
 
-// passportsNo — «45 06 № 123456». Слитная серия «4506 № 123456» так же
+// passportsNo — «00 12 № 345678». Слитная серия «0012 № 345678» так же
 // пишется у договоров и заказов — без слова «паспорт» ниже порога.
 func passportsNo(text string, add addFunc) {
 	if !strings.Contains(text, "№") && !strings.Contains(text, "номер") && !strings.Contains(text, "N") {

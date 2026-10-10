@@ -24,12 +24,14 @@ func find(t testing.TB, text string, dir detect.Direction) []detect.Finding {
 }
 
 func TestChecksums(t *testing.T) {
-	// Общеизвестные значения из открытых справочников (не ПДн физических лиц):
-	// ИНН и ОГРН ПАО Сбербанк; СНИЛС 112-233-445 95 — пример из описания алгоритма.
+	// ИНН и ОГРН ПАО Сбербанк — открытые данные организации, не ПДн. СНИЛС —
+	// синтетические номера 9xx с контрольным числом, посчитанным вручную:
+	// 900000001 — сумма 82 (меньше 100); 999999999 — 405 mod 101 = 1.
 	for name, ok := range map[string]bool{
 		"inn10 Сбербанка":     ValidINN10("7707083893"),
 		"ogrn Сбербанка":      ValidOGRN("1027700132195"),
-		"snils пример":        ValidSNILS("11223344595"),
+		"snils сумма < 100":   ValidSNILS("90000000182"),
+		"snils mod 101":       ValidSNILS("99999999901"),
 		"luhn тестовой карты": ValidLuhn("4111111111111111"),
 		"synth inn12":         ValidINN12(SynthINN12(7)),
 		"synth ogrnip":        ValidOGRNIP(SynthOGRNIP(7)),
@@ -41,7 +43,7 @@ func TestChecksums(t *testing.T) {
 	for name, bad := range map[string]bool{
 		"inn10 цифра":        ValidINN10("7707083894"),
 		"inn12 вторая цифра": ValidINN12(bump(SynthINN12(7))),
-		"snils сумма":        ValidSNILS("11223344596"),
+		"snils сумма":        ValidSNILS("90000000183"),
 		"snils малый номер":  ValidSNILS("00100199800"),
 		"ogrn первая цифра":  ValidOGRN("2027700132195"),
 		"luhn":               ValidLuhn("4111111111111112"),
@@ -156,7 +158,7 @@ func TestNoFalsePositives(t *testing.T) {
 		"IP 192.168.100.200 и порт 8443",
 		"Сумма 12345678901234567890 копеек", // 20 цифр — не значение
 		"шифр 1234-5678",
-		"IMEI 356938035643809",     // 15 цифр, сумма Луна сходится, префикс 35
+		"IMEI 350000123456788",     // синтетический IMEI: 15 цифр, сумма Луна сходится, префикс 35
 		"created_at=1791396000123", // метка времени в мс: 13 цифр на 1
 		"",
 	} {
@@ -177,7 +179,7 @@ func TestKnownCardPrefix(t *testing.T) {
 		"2200000000000004":    true,  // Мир 16
 		"5555555555554444":    true,  // Mastercard
 		"378282246310005":     true,  // American Express 15
-		"356938035643809":     false, // IMEI (35, 15 цифр)
+		"350000123456788":     false, // IMEI (35, 15 цифр)
 		"5555555555555555557": false, // Mastercard не бывает 19 цифр
 		"6011000000000004":    false, // Discover — не в списке
 	} {

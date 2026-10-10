@@ -290,7 +290,7 @@ func score(rule string, first byte, kw bool) float64 {
 	case "passport.226":
 		return 0.6
 	case "passport.46":
-		// «4506 123456» — так пишут и другие номера; без слова «паспорт» — ниже порога.
+		// «0012 345678» — так пишут и другие номера; без слова «паспорт» — ниже порога.
 		return 0.35
 	}
 	return 0.5

@@ -59,13 +59,13 @@
 {"id": "neg2-acc-03", "lang": "ru", "direction": "input", "source": "user", "text": "Код 408178102000076388131", "expect": [], "note": "21 цифра"}
 {"id": "neg2-acc-04", "lang": "ru", "direction": "input", "source": "user", "text": "Счёт № 4081 от 01.02.2024", "expect": []}
 {"id": "neg2-acc-05", "lang": "ru", "direction": "input", "source": "user", "text": "Расскажи, как проверить ключ расчётного счёта по БИК", "expect": []}
-{"id": "neg2-pass-01", "lang": "ru", "direction": "input", "source": "user", "text": "Договор 2024 № 123456 от 01.02.2024", "expect": [], "note": "слитная серия и «№» без слова «паспорт»"}
-{"id": "neg2-pass-02", "lang": "ru", "direction": "input", "source": "user", "text": "Приказ 1205 № 004512", "expect": []}
+{"id": "neg2-pass-01", "lang": "ru", "direction": "input", "source": "user", "text": "Договор 0024 № 100500 от 01.02.2024", "expect": [], "note": "слитная серия и «№» без слова «паспорт»"}
+{"id": "neg2-pass-02", "lang": "ru", "direction": "input", "source": "user", "text": "Приказ 0012 № 004512", "expect": []}
 {"id": "neg2-pass-03", "lang": "ru", "direction": "input", "source": "user", "text": "Серия 2 сезона, 10 эпизодов", "expect": []}
-{"id": "neg2-pass-04", "lang": "ru", "direction": "input", "source": "user", "text": "Артикул 4506 123456", "expect": [], "note": "раскладка 4-6 без слова «паспорт»"}
+{"id": "neg2-pass-04", "lang": "ru", "direction": "input", "source": "user", "text": "Артикул 0045 061234", "expect": [], "note": "раскладка 4-6 без слова «паспорт»"}
 {"id": "neg2-pass-05", "lang": "ru", "direction": "input", "source": "user", "text": "Маска паспорта: XX XX XXXXXX", "expect": []}
 {"id": "neg2-ver-01", "lang": "ru", "direction": "input", "source": "user", "text": "Версия 8.300.763.88", "expect": []}
-{"id": "neg2-ip-01", "lang": "ru", "direction": "input", "source": "user", "text": "IP 83.0.76.38, порт 8813", "expect": []}
+{"id": "neg2-ip-01", "lang": "ru", "direction": "input", "source": "user", "text": "IP 198.51.100.38, порт 8813", "note": "адрес из RFC 5737 (для документации)", "expect": []}
 {"id": "neg2-date-09", "lang": "ru", "direction": "input", "source": "user", "text": "Дата рождения 29.02.1985", "expect": [], "note": "1985 — не високосный"}
 {"id": "neg2-phone-07", "lang": "ru", "direction": "input", "source": "user", "text": "Справочная организации: 8 (804) 333-22-11", "expect": [], "note": "коды 80x — непротарифицированные номера организаций"}
 {"id": "neg2-mail-08", "lang": "ru", "direction": "input", "source": "user", "text": "Адрес a@b — некорректный", "expect": []}
