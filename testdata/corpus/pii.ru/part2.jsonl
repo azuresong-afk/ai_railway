@@ -1,0 +1,71 @@
+{"id": "pass-01", "lang": "ru", "direction": "input", "source": "user", "text": "Паспорт 00 13 680323, выдан отделом УФМС 01.02.2010", "expect": ["pii.passport"]}
+{"id": "pass-02", "lang": "ru", "direction": "input", "source": "user", "text": "Серия и номер паспорта: 0023 093695", "expect": ["pii.passport"]}
+{"id": "pass-03", "lang": "ru", "direction": "input", "source": "user", "text": "паспорт 0095755838", "expect": ["pii.passport"], "note": "10 цифр подряд рядом со словом «паспорт» — не ИНН ЮЛ"}
+{"id": "pass-04", "lang": "ru", "direction": "input", "source": "user", "text": "Паспорт: серия 00 38 № 975941", "expect": ["pii.passport"]}
+{"id": "pass-05", "lang": "ru", "direction": "input", "source": "user", "text": "00 41 521095 — данные из анкеты", "expect": ["pii.passport"], "note": "раскладка 2-2-6 без ключевого слова"}
+{"id": "pass-06", "lang": "en", "direction": "input", "source": "user", "text": "Passport number 0095 841379", "expect": ["pii.passport"]}
+{"id": "pass-07", "lang": "ru", "direction": "input", "source": "user", "text": "00 70 № 621636", "expect": ["pii.passport"], "note": "серия с пробелом и «№» без ключевого слова"}
+{"id": "phone-01", "lang": "ru", "direction": "input", "source": "user", "text": "Перезвоните мне по номеру +7 300 763-88-13 после обеда.", "expect": ["pii.phone"]}
+{"id": "phone-02", "lang": "ru", "direction": "input", "source": "user", "text": "Телефон клиента +73004680323", "expect": ["pii.phone"]}
+{"id": "phone-03", "lang": "ru", "direction": "input", "source": "user", "text": "Позвоните 83000093695 или 8 (300) 575-58-38", "expect": ["pii.phone"], "note": "11 цифр на 8 — телефон, а не СНИЛС"}
+{"id": "phone-04", "lang": "ru", "direction": "input", "source": "user", "text": "WhatsApp 73009975941", "expect": ["pii.phone"]}
+{"id": "phone-05", "lang": "ru", "direction": "input", "source": "user", "text": "Мой мобильный: 8-300-652-10-95", "expect": ["pii.phone"]}
+{"id": "phone-06", "lang": "en", "direction": "input", "source": "user", "text": "Call me at +7 (300) 984-13-79", "expect": ["pii.phone"]}
+{"id": "phone-07", "lang": "ru", "direction": "input", "source": "user", "text": "(300) 071-23-70 — домашний", "expect": ["pii.phone"], "note": "местный формат без кода страны"}
+{"id": "email-01", "lang": "ru", "direction": "input", "source": "user", "text": "Пишите на client8813@pochta.test, отвечу вечером.", "expect": ["pii.email"]}
+{"id": "email-02", "lang": "ru", "direction": "input", "source": "user", "text": "E-mail клиента: Ivan.Petrov+crm@pochta.test", "expect": ["pii.email"]}
+{"id": "email-03", "lang": "ru", "direction": "input", "source": "user", "text": "почта: иван.петров@почта.test", "expect": ["pii.email"], "note": "кириллица в адресе"}
+{"id": "email-04", "lang": "en", "direction": "input", "source": "user", "text": "Send the report to client0323@pochta.test", "expect": ["pii.email"]}
+{"id": "birth-01", "lang": "ru", "direction": "input", "source": "user", "text": "Дата рождения: 12.03.1985", "expect": ["pii.birthdate"]}
+{"id": "birth-02", "lang": "ru", "direction": "input", "source": "user", "text": "Иванов Иван Иванович, 1985-03-12 г.р.", "expect": ["pii.birthdate"], "note": "«г.р.» после даты"}
+{"id": "birth-03", "lang": "ru", "direction": "input", "source": "user", "text": "Родилась 7 ноября 1990 года в Казани", "expect": ["pii.birthdate"]}
+{"id": "birth-04", "lang": "en", "direction": "input", "source": "user", "text": "Date of birth: 03/12/1985", "expect": ["pii.birthdate"]}
+{"id": "birth-05", "lang": "ru", "direction": "input", "source": "user", "text": "д.р. 01.01.2001", "expect": ["pii.birthdate"]}
+{"id": "birth-06", "lang": "en", "direction": "input", "source": "user", "text": "DOB 1990-11-07", "expect": ["pii.birthdate"]}
+{"id": "acc-01", "lang": "ru", "direction": "input", "source": "user", "text": "р/с 40817810200007638813 в банке, БИК 040000061", "expect": ["pii.account"], "note": "ключ счёта сходится с БИК"}
+{"id": "acc-02", "lang": "ru", "direction": "input", "source": "user", "text": "Расчётный счёт 40817810900004680323", "expect": ["pii.account"]}
+{"id": "acc-03", "lang": "ru", "direction": "input", "source": "user", "text": "Реквизиты для перевода: БИК 040000063, счёт получателя 40817810200000093695", "expect": ["pii.account"]}
+{"id": "acc-04", "lang": "ru", "direction": "input", "source": "user", "text": "Переведи на 40817810200005755838", "expect": ["pii.account"], "note": "без ключевого слова: 40817 и код валюты 810 на своих местах"}
+{"id": "acc-05", "lang": "ru", "direction": "input", "source": "user", "text": "Расчётный счёт 40702810900000012345", "expect": ["pii.account"], "note": "ключ не проверить — нет БИК, но есть слово «счёт»"}
+{"id": "mix2-01", "lang": "ru", "direction": "input", "source": "user", "text": "Клиент: паспорт 00 95 841379, тел. +7 300 071-23-70, client2370@pochta.test", "expect": ["pii.passport", "pii.phone", "pii.email"]}
+{"id": "mix2-02", "lang": "ru", "direction": "input", "source": "user", "text": "Анкета: дата рождения 12.03.1985, телефон 8 300 763 88 13", "expect": ["pii.birthdate", "pii.phone"]}
+{"id": "mix2-03", "lang": "ru", "direction": "input", "source": "user", "text": "ИНН 007054112401, р/с 40817810200007638813, БИК 040000061", "expect": ["pii.inn", "pii.account"]}
+{"id": "out2-01", "lang": "ru", "direction": "output", "source": "output", "text": "Контактный телефон клиента: +7 300 468-03-23", "expect": ["pii.phone"]}
+{"id": "out2-02", "lang": "ru", "direction": "output", "source": "output", "text": "Адрес для связи — client5838@pochta.test", "expect": ["pii.email"]}
+{"id": "out2-03", "lang": "ru", "direction": "output", "source": "output", "text": "Паспорт: 00 23 093695", "expect": ["pii.passport"]}
+{"id": "neg2-date-01", "lang": "ru", "direction": "input", "source": "user", "text": "Встреча назначена на 12.03.2024, отчёт к 2024-03-15.", "expect": []}
+{"id": "neg2-date-02", "lang": "ru", "direction": "input", "source": "user", "text": "Дата рождения: 31.02.1985", "expect": [], "note": "такой даты нет"}
+{"id": "neg2-date-03", "lang": "ru", "direction": "input", "source": "user", "text": "Дата рождения не указана, договор от 01.02.2020", "expect": [], "note": "слово «рождения» дальше окна"}
+{"id": "neg2-date-04", "lang": "ru", "direction": "input", "source": "user", "text": "Год рождения 1985, стаж 10 лет", "expect": [], "note": "только год"}
+{"id": "neg2-date-05", "lang": "en", "direction": "input", "source": "user", "text": "Released on 2024-03-12, born from a hackathon idea", "expect": []}
+{"id": "neg2-date-06", "lang": "ru", "direction": "input", "source": "user", "text": "ДР компании 12.03.2015, отмечаем в офисе", "expect": []}
+{"id": "neg2-date-07", "lang": "ru", "direction": "input", "source": "user", "text": "Время 12:30:45, дата 2024-03-12", "expect": []}
+{"id": "neg2-date-08", "lang": "ru", "direction": "input", "source": "user", "text": "Дата рождения: 12.03.1885", "expect": [], "note": "раньше 1900"}
+{"id": "neg2-phone-01", "lang": "ru", "direction": "input", "source": "user", "text": "Бесплатный звонок: 8 (800) 100-00-00", "expect": [], "note": "номер 8-800 — организации"}
+{"id": "neg2-phone-02", "lang": "ru", "direction": "input", "source": "user", "text": "ID 7300123456", "expect": [], "note": "10 цифр на 7"}
+{"id": "neg2-phone-03", "lang": "ru", "direction": "input", "source": "user", "text": "Заказ 830076388131 отгружен", "expect": [], "note": "12 цифр — не телефон"}
+{"id": "neg2-phone-04", "lang": "ru", "direction": "input", "source": "user", "text": "Формат телефона: +7 (XXX) XXX-XX-XX", "expect": []}
+{"id": "neg2-phone-05", "lang": "en", "direction": "input", "source": "user", "text": "Call center hours: 9:00-18:00, Mon-Fri", "expect": []}
+{"id": "neg2-phone-06", "lang": "ru", "direction": "input", "source": "user", "text": "Код региона 300, индекс 630076", "expect": []}
+{"id": "neg2-mail-01", "lang": "ru", "direction": "input", "source": "user", "text": "Пишите на support@pochta.test", "expect": [], "note": "общий ящик организации"}
+{"id": "neg2-mail-02", "lang": "en", "direction": "input", "source": "user", "text": "git clone git@pochta.test:team/repo.git", "expect": []}
+{"id": "neg2-mail-03", "lang": "ru", "direction": "input", "source": "user", "text": "Декоратор @property и @staticmethod в Python", "expect": []}
+{"id": "neg2-mail-04", "lang": "ru", "direction": "input", "source": "user", "text": "Упомяни @ivan_petrov в чате", "expect": []}
+{"id": "neg2-mail-05", "lang": "ru", "direction": "input", "source": "user", "text": "user@localhost — локальная учётка", "expect": []}
+{"id": "neg2-mail-06", "lang": "ru", "direction": "input", "source": "user", "text": "Шаблон адреса: имя@домен", "expect": []}
+{"id": "neg2-mail-07", "lang": "en", "direction": "input", "source": "user", "text": "Use noreply@pochta.test as the sender", "expect": []}
+{"id": "neg2-acc-01", "lang": "ru", "direction": "input", "source": "user", "text": "Корр. счёт 30101810400000000225, БИК 044525225", "expect": [], "note": "корр. счёт банка — не клиентский"}
+{"id": "neg2-acc-02", "lang": "ru", "direction": "input", "source": "user", "text": "Номер транзакции 12345678901234567890", "expect": []}
+{"id": "neg2-acc-03", "lang": "ru", "direction": "input", "source": "user", "text": "Код 408178102000076388131", "expect": [], "note": "21 цифра"}
+{"id": "neg2-acc-04", "lang": "ru", "direction": "input", "source": "user", "text": "Счёт № 4081 от 01.02.2024", "expect": []}
+{"id": "neg2-acc-05", "lang": "ru", "direction": "input", "source": "user", "text": "Расскажи, как проверить ключ расчётного счёта по БИК", "expect": []}
+{"id": "neg2-pass-01", "lang": "ru", "direction": "input", "source": "user", "text": "Договор 2024 № 123456 от 01.02.2024", "expect": [], "note": "слитная серия и «№» без слова «паспорт»"}
+{"id": "neg2-pass-02", "lang": "ru", "direction": "input", "source": "user", "text": "Приказ 1205 № 004512", "expect": []}
+{"id": "neg2-pass-03", "lang": "ru", "direction": "input", "source": "user", "text": "Серия 2 сезона, 10 эпизодов", "expect": []}
+{"id": "neg2-pass-04", "lang": "ru", "direction": "input", "source": "user", "text": "Артикул 4506 123456", "expect": [], "note": "раскладка 4-6 без слова «паспорт»"}
+{"id": "neg2-pass-05", "lang": "ru", "direction": "input", "source": "user", "text": "Маска паспорта: XX XX XXXXXX", "expect": []}
+{"id": "neg2-ver-01", "lang": "ru", "direction": "input", "source": "user", "text": "Версия 8.300.763.88", "expect": []}
+{"id": "neg2-ip-01", "lang": "ru", "direction": "input", "source": "user", "text": "IP 83.0.76.38, порт 8813", "expect": []}
+{"id": "neg2-date-09", "lang": "ru", "direction": "input", "source": "user", "text": "Дата рождения 29.02.1985", "expect": [], "note": "1985 — не високосный"}
+{"id": "neg2-phone-07", "lang": "ru", "direction": "input", "source": "user", "text": "Справочная организации: 8 (804) 333-22-11", "expect": [], "note": "коды 80x — непротарифицированные номера организаций"}
+{"id": "neg2-mail-08", "lang": "ru", "direction": "input", "source": "user", "text": "Адрес a@b — некорректный", "expect": []}

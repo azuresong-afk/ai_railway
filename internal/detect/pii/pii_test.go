@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/azuresong-afk/ai_railway/internal/detect"
 )
@@ -139,7 +140,7 @@ func TestDM09_PIIInResponse(t *testing.T) {
 }
 
 // Ложные срабатывания дороже пропусков (ТЗ, 1.6): числа без верной суммы,
-// телефоны, даты, суммы, номера заказов не считаются ПДн.
+// даты, суммы, номера заказов не считаются ПДн (часть 2 — part2_test.go).
 func TestNoFalsePositives(t *testing.T) {
 	snils := SynthSNILS(2)
 	wrongSnils := snils[:9] + "00"
@@ -147,8 +148,6 @@ func TestNoFalsePositives(t *testing.T) {
 		wrongSnils = snils[:9] + "01"
 	}
 	for _, text := range []string{
-		"Телефон +7 916 123-45-67",
-		"+79161234567",
 		"Дата 12.03.2024, сумма 1 500 000 руб.",
 		"Заказ № 4000 0012 3456 7891 отменён", // не проходит алгоритм Луна
 		"СНИЛС " + wrongSnils[:3] + "-" + wrongSnils[3:6] + "-" + wrongSnils[6:9] + " " + wrongSnils[9:],
@@ -159,7 +158,6 @@ func TestNoFalsePositives(t *testing.T) {
 		"шифр 1234-5678",
 		"IMEI 356938035643809",     // 15 цифр, сумма Луна сходится, префикс 35
 		"created_at=1791396000123", // метка времени в мс: 13 цифр на 1
-		"Позвоните 89161234567",    // 11 цифр на 8 без слова СНИЛС
 		"",
 	} {
 		if got := cats(find(t, text, detect.Input), 0.5); got != "" {
@@ -198,21 +196,48 @@ func TestContextCancelled(t *testing.T) {
 }
 
 // Детектор — цель фаззинга (ТЗ, 5.2, 8.5): без паники, находки корректны,
-// значение по позициям проходит свою контрольную сумму.
+// значение по позициям проходит свою проверку.
 func FuzzDetect(f *testing.F) {
 	f.Add("ИНН " + SynthINN12(1) + " карта " + SynthCard(2))
 	f.Add("123-456-789 01 9")
 	f.Add(strings.Repeat("1 ", 40))
+	f.Add("паспорт " + SynthPassport(1) + ", тел. " + SynthPhone(1) + ", " + SynthEmail(1))
+	f.Add("дата рождения 12 марта 1985, р/с " + SynthAccount(1) + " БИК " + SynthBIK(1))
 	f.Fuzz(func(t *testing.T, text string) {
 		for _, fd := range find(t, text, detect.Input) {
-			v := strings.NewReplacer(" ", "", "-", "").Replace(text[fd.Start:fd.End])
-			ok := map[string]func(string) bool{CatSNILS: ValidSNILS, CatOGRN: ValidOGRN, CatOGRNIP: ValidOGRNIP, CatCard: ValidLuhn,
-				CatINN: func(s string) bool { return ValidINN10(s) || ValidINN12(s) }}[fd.Category]
-			if ok == nil || !ok(v) {
+			if v := text[fd.Start:fd.End]; !validValue(fd.Category, v) {
 				t.Fatalf("находка %s %q не проходит проверку", fd.Category, v)
 			}
 		}
 	})
+}
+
+// validValue — значение находки соответствует категории.
+func validValue(cat, v string) bool {
+	d := onlyDigits(v)
+	switch cat {
+	case CatSNILS:
+		return ValidSNILS(d)
+	case CatOGRN:
+		return ValidOGRN(d)
+	case CatOGRNIP:
+		return ValidOGRNIP(d)
+	case CatCard:
+		return ValidLuhn(d)
+	case CatINN:
+		return ValidINN10(d) || ValidINN12(d)
+	case CatPassport:
+		return len(d) == 10
+	case CatPhone:
+		return len(d) == 10 || len(d) == 11
+	case CatEmail:
+		return strings.Count(v, "@") == 1 && utf8.ValidString(v)
+	case CatBirthdate:
+		return len(d) >= 5 && len(d) <= 8
+	case CatAccount:
+		return len(d) == 20 && d == v && accountPrefix[d[:3]]
+	}
+	return false
 }
 
 // Бенчмарк: промпт 8 КБ с несколькими значениями (цель ТЗ 5.1 — p95 ≤ 30 мс

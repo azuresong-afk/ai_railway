@@ -98,3 +98,25 @@ func ValidLuhn(d string) bool {
 	}
 	return s%10 == 0
 }
+
+// ValidAccountKey — ключ (9-я цифра) счёта в кредитной организации: три
+// последние цифры БИК и 20 цифр счёта с весами 7, 1, 3, …; сумма младших
+// разрядов произведений делится на 10.
+func ValidAccountKey(bik, acc string) bool {
+	return len(bik) == 9 && accountKey(bik[6:], acc)
+}
+
+// accountKey — проверка ключа по трём цифрам перед счётом (для корр. счетов
+// это «0» и разряды 5–6 БИК).
+func accountKey(prefix, acc string) bool {
+	if len(prefix) != 3 || len(acc) != 20 {
+		return false
+	}
+	d := prefix + acc
+	w := [3]int{7, 1, 3}
+	s := 0
+	for i := 0; i < len(d); i++ {
+		s += digit(d[i]) * w[i%3] % 10
+	}
+	return s%10 == 0
+}

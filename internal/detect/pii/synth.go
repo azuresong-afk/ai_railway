@@ -15,7 +15,9 @@ import (
 //   - карты — тестовые BIN 400000 (Visa) и 555555 (Mastercard), которые
 //     платёжные системы и эквайеры используют для тестов;
 //   - СНИЛС — номера 9xx-xxx-xxx: выдано около 200 млн номеров, нумерация
-//     сквозная и до этого диапазона не доходит (допущение, docs/detectors.md).
+//     сквозная и до этого диапазона не доходит (допущение, docs/detectors.md);
+//   - паспорт — серия на 00 (такого кода региона по ОКАТО нет), БИК — регион
+//     00, e-mail — домен .test, телефон — код 300 (не выделен).
 
 // mix — перемешивание номера (splitmix64), только для разнообразия цифр.
 func mix(n uint64) uint64 {
@@ -82,4 +84,39 @@ func SynthCard(n uint64) string {
 		}
 	}
 	return "" // недостижимо: одна из десяти цифр всегда даёт верную сумму
+}
+
+// SynthPassport — серия и номер паспорта «00 xx xxxxxx»: первые две цифры
+// серии — код региона по ОКАТО, кода 00 нет.
+func SynthPassport(n uint64) string {
+	return "00 " + digits(n, 2) + " " + digits(n+1, 6)
+}
+
+// SynthPhone — телефон «+7 300 xxx-xx-xx»: код 300 в российском плане
+// нумерации не выделен (допущение, docs/detectors.md).
+func SynthPhone(n uint64) string {
+	d := digits(n, 7)
+	return "+7 300 " + d[:3] + "-" + d[3:5] + "-" + d[5:]
+}
+
+// SynthEmail — адрес в домене .test (RFC 2606: зарезервирован для тестов).
+func SynthEmail(n uint64) string {
+	return "client" + digits(n, 4) + "@pochta.test"
+}
+
+// SynthBIK — БИК «04 00 00 xxx»: регион 00 не существует, номер банка
+// 050–999 (как у кредитных организаций).
+func SynthBIK(n uint64) string {
+	return fmt.Sprintf("040000%03d", 50+n%950)
+}
+
+// SynthAccount — счёт физлица в рублях (40817 810) с ключом по SynthBIK(n).
+func SynthAccount(n uint64) string {
+	tail := "0000" + digits(n, 7)
+	for k := 0; k <= 9; k++ {
+		if s := "40817810" + strconv.Itoa(k) + tail; ValidAccountKey(SynthBIK(n), s) {
+			return s
+		}
+	}
+	return "" // недостижимо: вес ключа 3 взаимно прост с 10
 }

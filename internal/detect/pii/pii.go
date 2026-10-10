@@ -3,6 +3,8 @@
 // к модели, DM-09 — в ответе).
 //
 // Часть 1 (задача 1.11): СНИЛС, ИНН ФЛ и ЮЛ, ОГРН, ОГРНИП, номер карты.
+// Часть 2 (задача 1.12, part2.go): паспорт РФ, телефон, e-mail, дата
+// рождения в контексте, расчётный счёт с проверкой ключа по БИК.
 // Кандидат — последовательность цифр с разделителями «пробел» и «дефис».
 // Значение засчитывается только с верной контрольной суммой и подходящей
 // раскладкой (СНИЛС — ddd-ddd-ddd dd, карта — группы по четыре, остальное —
@@ -21,7 +23,7 @@ import (
 // ID и версия детектора.
 const (
 	ID      = "pii.ru"
-	Version = "1.0.0"
+	Version = "1.1.0"
 )
 
 // Категории находок.
@@ -31,6 +33,12 @@ const (
 	CatOGRN   = "pii.ogrn"
 	CatOGRNIP = "pii.ogrnip"
 	CatCard   = "pii.card"
+	// Часть 2.
+	CatPassport  = "pii.passport"
+	CatPhone     = "pii.phone"
+	CatEmail     = "pii.email"
+	CatBirthdate = "pii.birthdate"
+	CatAccount   = "pii.account"
 )
 
 // Detector — детектор pii.ru. Без состояния, безопасен для одновременного
@@ -62,6 +70,10 @@ var keywords = map[string][]string{
 	CatOGRN:   {"огрн", "ogrn", "регистрационн"},
 	CatOGRNIP: {"огрнип", "ogrnip"},
 	CatCard:   {"карт", "card", "visa", "mastercard", "maestro", "мир ", "cvv", "оплат", "pan"},
+	// Часть 2.
+	CatPassport: {"паспорт", "серия", "passport"},
+	CatPhone:    {"тел", "phone", "моб", "звон", "whatsapp", "telegram", "сотов", "номер для связи"},
+	CatAccount:  {"р/с", "р/сч", "расч", "счёт", "счет", "лицев", "account", "acct"},
 }
 
 // contextWindow — сколько байт перед значением просматривается в поисках
@@ -83,7 +95,7 @@ func (d Detector) Detect(ctx context.Context, t detect.Text) ([]detect.Finding, 
 		if m[0] > 0 && isDigit(t.Text[m[0]-1]) || m[1] < len(t.Text) && isDigit(t.Text[m[1]]) {
 			continue
 		}
-		// «+7 …» — телефон, а не идентификатор (телефоны — часть 2).
+		// «+7 …» — телефон, а не идентификатор (телефоны — part2.go).
 		if m[0] > 0 && t.Text[m[0]-1] == '+' {
 			continue
 		}
@@ -93,7 +105,30 @@ func (d Detector) Detect(ctx context.Context, t detect.Text) ([]detect.Finding, 
 			out = append(out, v.f)
 		}
 	}
-	return out, nil
+	more, err := detectPart2(ctx, t.Text, threat)
+	if err != nil {
+		return nil, err
+	}
+	return dedupe(append(out, more...)), nil
+}
+
+// dedupe оставляет на одном и том же фрагменте одну находку — с наибольшей
+// оценкой («89161234567»: телефон, а не СНИЛС с низкой оценкой).
+func dedupe(fs []detect.Finding) []detect.Finding {
+	best := map[[2]int]int{}
+	var out []detect.Finding
+	for _, f := range fs {
+		k := [2]int{f.Start, f.End}
+		if i, ok := best[k]; ok {
+			if f.Score > out[i].Score {
+				out[i] = f
+			}
+			continue
+		}
+		best[k] = len(out)
+		out = append(out, f)
+	}
+	return out
 }
 
 func isDigit(b byte) bool { return b >= '0' && b <= '9' }
@@ -157,6 +192,10 @@ func classify(text string, gs []group) (match, bool) {
 	if len(gs) == 1 {
 		switch len(digits) {
 		case 10:
+			// 10 цифр подряд рядом со словом «паспорт» — серия и номер паспорта.
+			if hasKeyword(text, start, CatPassport) {
+				return mk(CatPassport, "passport.bare")
+			}
 			if ValidINN10(digits) {
 				return mk(CatINN, "inn10")
 			}
@@ -199,6 +238,12 @@ func classify(text string, gs []group) (match, bool) {
 		return mk(CatSNILS, "snils.formatted")
 	case cardLayout && ValidLuhn(digits):
 		return mk(CatCard, "card.grouped")
+	case equal(sizes, 2, 2, 6) && gs[1].sep == ' ' && gs[2].sep == ' ':
+		// Паспорт: серия «45 06» и номер — контрольной суммы нет, раскладка
+		// характерная.
+		return mk(CatPassport, "passport.226")
+	case equal(sizes, 4, 6) && gs[1].sep == ' ':
+		return mk(CatPassport, "passport.46")
 	}
 	return match{}, false
 }
@@ -242,6 +287,11 @@ func score(rule string, first byte, kw bool) float64 {
 		return 0.4
 	case "inn10":
 		return 0.3
+	case "passport.226":
+		return 0.6
+	case "passport.46":
+		// «4506 123456» — так пишут и другие номера; без слова «паспорт» — ниже порога.
+		return 0.35
 	}
 	return 0.5
 }
