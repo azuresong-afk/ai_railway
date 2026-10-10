@@ -28,7 +28,7 @@
 schema_version: 1
 components:
   - name: Go toolchain и стандартная библиотека
-    version: go1.27.1
+    version: go1.27.2
     type: toolchain
     scope: product
     purpose: Компилятор и стандартная библиотека; стандартная библиотека входит во все бинарники продукта (HTTP, TLS, JSON, криптография в internal/crypto).
@@ -38,8 +38,8 @@ components:
     security_function: true
     provided_by: The Go Authors (Google LLC)
     justification: Язык реализации продукта (ТЗ, 11.1).
-    decision: ТЗ 11.1; ADR-0001
-    decided: 2026-09-29
+    decision: ТЗ 11.1; ADR-0001; go1.27.2 — исправления уязвимостей стандартной библиотеки (GO-2026-6603…6617)
+    decided: 2026-10-10
 
   - name: go.yaml.in/yaml/v3
     version: v3.0.5
@@ -105,7 +105,7 @@ components:
     makefile_var: SBOM_UTILITY_VERSION
 
   - name: golang
-    version: 1.27.1-bookworm@sha256:69a7b9788769bec032d238959b61854e9ae87f57be9029ec04e9885fabf99195
+    version: 1.27.2-bookworm@sha256:5cf287a799e6b94384bad13d16b14904c531f51ba65792237e122ce42b392f61
     type: image
     scope: build
     purpose: Основа сборочного образа (deploy/build/Dockerfile) и стадии сборки образов стенда разработки.
