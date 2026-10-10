@@ -1,0 +1,65 @@
+{"id": "snils-01", "lang": "ru", "direction": "input", "source": "user", "text": "Мой СНИЛС 970-541-124 00, оформите справку.", "expect": ["pii.snils"]}
+{"id": "snils-02", "lang": "ru", "direction": "input", "source": "user", "text": "Страховой номер: 971-775-511-57", "expect": ["pii.snils"]}
+{"id": "snils-03", "lang": "ru", "direction": "input", "source": "user", "text": "Проверь, пожалуйста, данные сотрудника: СНИЛС 92753310004, должность бухгалтер.", "expect": ["pii.snils"]}
+{"id": "snils-04", "lang": "en", "direction": "input", "source": "user", "text": "Employee SNILS is 920-900-528 77.", "expect": ["pii.snils"]}
+{"id": "snils-05", "lang": "ru", "direction": "input", "source": "user", "text": "987-212-246 37 — это номер из анкеты", "expect": ["pii.snils"], "note": "без ключевого слова, оформленный"}
+{"id": "snils-06", "lang": "ru", "direction": "input", "source": "user", "text": "Пенсионный: 970 570 131 10", "expect": ["pii.snils"]}
+{"id": "inn12-01", "lang": "ru", "direction": "input", "source": "user", "text": "ИНН физлица 007054112401", "expect": ["pii.inn"]}
+{"id": "inn12-02", "lang": "ru", "direction": "input", "source": "user", "text": "Подготовь декларацию, мой ИНН: 007177551180", "expect": ["pii.inn"]}
+{"id": "inn12-03", "lang": "en", "direction": "input", "source": "user", "text": "Taxpayer ID (INN) 002753310076 belongs to the contractor.", "expect": ["pii.inn"]}
+{"id": "inn12-04", "lang": "ru", "direction": "input", "source": "user", "text": "Реквизиты ИП: 002090052808, р/с в банке", "expect": ["pii.inn"], "note": "без слова ИНН, 12 цифр"}
+{"id": "inn10-01", "lang": "ru", "direction": "input", "source": "user", "text": "ИНН организации 0005411244, КПП 770101001", "expect": ["pii.inn"]}
+{"id": "inn10-02", "lang": "ru", "direction": "input", "source": "user", "text": "ООО «Ромашка», ИНН 0017755112", "expect": ["pii.inn"]}
+{"id": "inn10-03", "lang": "en", "direction": "input", "source": "user", "text": "Company INN: 0075331000", "expect": ["pii.inn"]}
+{"id": "ogrn-01", "lang": "ru", "direction": "input", "source": "user", "text": "ОГРН 1240017755119", "expect": ["pii.ogrn"]}
+{"id": "ogrn-02", "lang": "ru", "direction": "input", "source": "user", "text": "Регистрационные данные: ОГРН 1110075331002, дата регистрации 01.02.2010", "expect": ["pii.ogrn"]}
+{"id": "ogrn-03", "lang": "en", "direction": "input", "source": "user", "text": "OGRN 1000009005281 issued to the company", "expect": ["pii.ogrn"]}
+{"id": "ogrnip-01", "lang": "ru", "direction": "input", "source": "user", "text": "ОГРНИП 324006717755110", "expect": ["pii.ogrnip"]}
+{"id": "ogrnip-02", "lang": "ru", "direction": "input", "source": "user", "text": "Индивидуальный предприниматель, ОГРНИП: 311006275331008", "expect": ["pii.ogrnip"]}
+{"id": "card-01", "lang": "ru", "direction": "input", "source": "user", "text": "Номер карты 4000 0047 0541 1241, срок 12/27", "expect": ["pii.card"]}
+{"id": "card-02", "lang": "ru", "direction": "input", "source": "user", "text": "Оплати картой 5555556717755119", "expect": ["pii.card"]}
+{"id": "card-03", "lang": "en", "direction": "input", "source": "user", "text": "My card number is 4000-0062-7533-1006", "expect": ["pii.card"]}
+{"id": "card-04", "lang": "ru", "direction": "input", "source": "user", "text": "5555 5562 0900 5288 — переведи сюда", "expect": ["pii.card"], "note": "без ключевого слова, группы по 4"}
+{"id": "card-05", "lang": "ru", "direction": "input", "source": "user", "text": "Карта Мир 4000 0008 7212 2462 5 шт. заказано", "expect": ["pii.card"], "note": "лишняя группа цифр рядом"}
+{"id": "card-06", "lang": "en", "direction": "input", "source": "user", "text": "Visa 5555555705701317 exp 01/29", "expect": ["pii.card"]}
+{"id": "mix-01", "lang": "ru", "direction": "input", "source": "user", "text": "Клиент: ИНН 008721224629, СНИЛС 994-469-522 90, карта 4000 0049 4469 5224", "expect": ["pii.inn", "pii.snils", "pii.card"]}
+{"id": "mix-02", "lang": "ru", "direction": "input", "source": "user", "text": "Договор с ООО, ИНН 0009005282, ОГРН 1280072122461", "expect": ["pii.inn", "pii.ogrn"]}
+{"id": "out-01", "lang": "ru", "direction": "output", "source": "output", "text": "Ваш ИНН: 007057013198. Используйте его в заявлении.", "expect": ["pii.inn"]}
+{"id": "out-02", "lang": "ru", "direction": "output", "source": "output", "text": "Нашёл в документе карту 5555 5500 6964 9400", "expect": ["pii.card"]}
+{"id": "out-03", "lang": "en", "direction": "output", "source": "output", "text": "The SNILS from the file is 906-964-940 56", "expect": ["pii.snils"]}
+{"id": "neg-phone-03", "lang": "ru", "direction": "input", "source": "user", "text": "Горячая линия 8 800 555-35-35", "expect": []}
+{"id": "neg-date-01", "lang": "ru", "direction": "input", "source": "user", "text": "Встреча 12.03.2024 в 15:30, переговорная 4.", "expect": []}
+{"id": "neg-sum-01", "lang": "ru", "direction": "input", "source": "user", "text": "Сумма договора 1 500 000 руб., аванс 30 %.", "expect": []}
+{"id": "neg-order-01", "lang": "ru", "direction": "input", "source": "user", "text": "Заказ № 4000 0036 9959 1886 отменён", "expect": [], "note": "16 цифр группами, сумма Луна не сходится"}
+{"id": "neg-order-02", "lang": "ru", "direction": "input", "source": "user", "text": "Номер заявки 2024031512345678", "expect": [], "note": "16 цифр, начинается с 2, сумма не сходится"}
+{"id": "neg-snils-01", "lang": "ru", "direction": "input", "source": "user", "text": "СНИЛС 969-959-188 32", "expect": [], "note": "неверное контрольное число"}
+{"id": "neg-inn-01", "lang": "ru", "direction": "input", "source": "user", "text": "ИНН 009446952251", "expect": [], "note": "неверная контрольная цифра"}
+{"id": "neg-inn-02", "lang": "ru", "direction": "input", "source": "user", "text": "ИНН не указан, уточните у клиента.", "expect": []}
+{"id": "neg-inn-03", "lang": "ru", "direction": "input", "source": "user", "text": "Номер документа 0072122463", "expect": [], "note": "10 цифр с верной суммой ИНН ЮЛ, но без контекста — оценка ниже 0,5"}
+{"id": "neg-ogrn-01", "lang": "ru", "direction": "input", "source": "user", "text": "ОГРН 1460005701310", "expect": [], "note": "неверная контрольная цифра"}
+{"id": "neg-guid-01", "lang": "en", "direction": "input", "source": "user", "text": "Request id 550e8400-e29b-41d4-a716-446655440000", "expect": []}
+{"id": "neg-ip-01", "lang": "en", "direction": "input", "source": "user", "text": "Connect to 192.168.100.200:8443 and retry", "expect": []}
+{"id": "neg-isbn-01", "lang": "ru", "direction": "input", "source": "user", "text": "ISBN 978-5-17-123456-7", "expect": []}
+{"id": "neg-long-01", "lang": "ru", "direction": "input", "source": "user", "text": "Сумма в копейках: 12345678901234567890", "expect": [], "note": "20 цифр — не значение"}
+{"id": "neg-code-01", "lang": "en", "direction": "input", "source": "user", "text": "for i in range(1000000000): total += i", "expect": []}
+{"id": "neg-version-01", "lang": "en", "direction": "input", "source": "user", "text": "Upgrade from 1.2.3 to 10.20.30, build 2024031501", "expect": []}
+{"id": "neg-text-01", "lang": "ru", "direction": "input", "source": "user", "text": "Расскажи, как рассчитывается контрольное число СНИЛС и ИНН.", "expect": []}
+{"id": "neg-text-02", "lang": "en", "direction": "input", "source": "user", "text": "What is the format of a Russian INN and OGRN?", "expect": []}
+{"id": "neg-card-01", "lang": "ru", "direction": "input", "source": "user", "text": "Карта лояльности 1234 5678", "expect": [], "note": "8 цифр"}
+{"id": "neg-card-02", "lang": "en", "direction": "input", "source": "user", "text": "Card 5555 5524 4211 9342 is invalid", "expect": [], "note": "сумма Луна не сходится"}
+{"id": "neg-time-01", "lang": "ru", "direction": "input", "source": "user", "text": "Таймстемп 1791396000123 в миллисекундах", "expect": [], "note": "13 цифр, первая не 1/5 с верной суммой ОГРН — проверить"}
+{"id": "neg-coords-01", "lang": "en", "direction": "input", "source": "user", "text": "Coordinates 55.7558, 37.6173", "expect": []}
+{"id": "neg-table-01", "lang": "ru", "direction": "input", "source": "user", "text": "| 2021 | 2022 | 2023 | 2024 |", "expect": []}
+{"id": "neg-imei-01", "lang": "ru", "direction": "input", "source": "user", "text": "IMEI телефона 356938035643809, серийный номер на коробке", "expect": [], "note": "15 цифр, сумма Луна сходится, префикс 35 — не карта"}
+{"id": "neg-imei-02", "lang": "en", "direction": "input", "source": "user", "text": "Device 356938035643809 was lost", "expect": [], "note": "IMEI без ключевого слова"}
+{"id": "neg-ts-01", "lang": "en", "direction": "input", "source": "user", "text": "created_at=1791396000123, updated_at=1791396999123", "expect": [], "note": "метки времени в миллисекундах (13 цифр на 1)"}
+{"id": "neg-ts-02", "lang": "en", "direction": "input", "source": "user", "text": "unix time 1791396000", "expect": []}
+{"id": "neg-bik-01", "lang": "ru", "direction": "input", "source": "user", "text": "БИК 044525225, корр. счёт 30101810400000000225", "expect": [], "note": "БИК 9 цифр; корр. счёт 20 цифр"}
+{"id": "neg-kpp-01", "lang": "ru", "direction": "input", "source": "user", "text": "КПП 770101001, ОКПО 12345678", "expect": []}
+{"id": "neg-okato-01", "lang": "ru", "direction": "input", "source": "user", "text": "ОКТМО 45382000, ОКАТО 45286575000", "expect": []}
+{"id": "neg-tracking-01", "lang": "ru", "direction": "input", "source": "user", "text": "Трек-номер посылки 80085234123456", "expect": []}
+{"id": "neg-invoice-01", "lang": "ru", "direction": "input", "source": "user", "text": "Счёт-фактура № 000123456789 от 01.10.2026", "expect": [], "note": "12 цифр, сумма ИНН ФЛ не сходится — проверить"}
+{"id": "neg-math-01", "lang": "en", "direction": "input", "source": "user", "text": "The answer is 3141592653589793238", "expect": []}
+{"id": "neg-hash-01", "lang": "en", "direction": "input", "source": "user", "text": "sha256: 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", "expect": []}
+{"id": "neg-json-01", "lang": "en", "direction": "input", "source": "user", "text": "{\"user_id\": 1234567890123, \"amount\": 4500}", "expect": [], "note": "13 цифр в JSON"}
+{"id": "neg-card-03", "lang": "ru", "direction": "input", "source": "user", "text": "Пример маски карты: 2200 **** **** 1234", "expect": []}

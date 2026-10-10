@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\"version\":\"2.1.0\",\"runs\":[{\"results\":[  {\"ruleId\":\"00000\",\"0000000\":{\"0000\":\"0000000000000000000000\"},   \"loCAtions\":[{\"phYsiCAlLoCAtion\":{\"ArtifACtLoCAtion\":{\"uri\":\"000000\"},\"region\":{\"stArtLine\":1}}}]},  {\"ruleId\":\"00000000\",\"0000000\":{\"0000\":\"000000000000000000\"},   \"loCAtions\":[{\"phYsiCAlLoCAtion\":{\"ArtifACtLoCAtion\":{\"uri\":\"file://\"},\"region\":{\"stArtLine\":1}}}]}]}]}")

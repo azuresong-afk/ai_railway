@@ -1,0 +1,44 @@
+# CI — тонкая обёртка над make (ADR-0002): вся логика в Makefile, здесь —
+# только сборочный образ, запуск make check в нём и выгрузка отчётов.
+name: check
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: check-${{ github.ref }}
+  # Устаревшие прогоны отменяются только для pull request; проверки коммитов
+  # в main доводятся до конца.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Получить код
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0 # git describe для версии в SBOM
+
+      - name: make check в сборочном образе
+        run: make check-docker
+
+      - name: Отчёты проверок
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: check-reports
+          if-no-files-found: warn
+          retention-days: 90
+          path: |
+            build/sast/
+            build/sbom/
+            build/dm-coverage.md
+            build/dm-coverage.json

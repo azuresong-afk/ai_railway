@@ -1,0 +1,1 @@
+{"result":{"alternatives":[{"message":{"role":"assistant","text":"Здравствуйте! Чем могу помочь?"},"status":"ALTERNATIVE_STATUS_FINAL"}],"usage":{"inputTextTokens":"18","completionTokens":"9","totalTokens":"27"},"modelVersion":"23.10.2024"}}
