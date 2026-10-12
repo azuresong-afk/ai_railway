@@ -117,8 +117,8 @@ components:
     security_function: false
     provided_by: Docker Official Images (Docker, Inc.); Go — The Go Authors
     justification: Официальный образ Go закреплён по digest (ТЗ, 8.7). Внутри — пакеты Debian под разными лицензиями, в том числе GPL; в продукт они не попадают — образы поставки собираются в scratch (ADR-0003).
-    decision: план этапа 0, Д4; ADR-0003
-    decided: 2026-10-01
+    decision: план этапа 0, Д4; ADR-0003; 1.27.2 — вместе с toolchain (исправления уязвимостей стандартной библиотеки)
+    decided: 2026-10-10
 
   - name: actions/checkout
     version: v7.0.1@3d3c42e5aac5ba805825da76410c181273ba90b1
