@@ -2,7 +2,8 @@ package pii
 
 // Часть 2 детектора pii.ru (задача 1.12): телефон, e-mail, дата рождения в
 // контексте, расчётный счёт с проверкой ключа по БИК, паспорт с «№».
-// Все выражения — RE2: время линейно от длины текста.
+// Все выражения — RE2: время линейно от длины текста; срок (ctx)
+// проверяется внутри каждого шага.
 
 import (
 	"context"
@@ -15,29 +16,47 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/detect"
 )
 
+// sep — необязательный разделитель внутри номера.
+const sep = `[` + sepClass + `]?`
+
 var (
-	// phoneRe — российский номер: +7, 8 или 7, код в скобках или без,
-	// разделители «пробел» и «дефис»; либо местный формат «(916) 123-45-67».
-	phoneRe = regexp.MustCompile(`(?:\+7|8|7)[ \-]?(?:\(\d{3}\)|\d{3})[ \-]?\d{3}[ \-]?\d{2}[ \-]?\d{2}|\(\d{3}\) ?\d{3}-\d{2}-\d{2}`)
+	// phoneRe — российский номер: +7, 8 или 7, код в скобках или без; либо
+	// местный формат «(916) 123-45-67».
+	phoneRe = regexp.MustCompile(`^(?:\+7|8|7)` + sep + `(?:\(\d{3}\)|\d{3})` + sep + `\d{3}` + sep + `\d{2}` + sep + `\d{2}|^\(\d{3}\)` + sep + `\d{3}[\-\x{2010}\x{2011}]\d{2}[\-\x{2010}\x{2011}]\d{2}`)
 	// domainRe — домен после «@»: до восьми меток и домен верхнего уровня
 	// латиницей или .рф, .рус. Применяется только с позиции после «@», а не
-	// ко всему тексту: Unicode-классы с повторами для NFA дороги.
-	domainRe = regexp.MustCompile(`^(?:[\p{L}\p{N}\-]{1,63}\.){1,8}(?i:[a-z]{2,24}|рф|рус)`)
+	// ко всему тексту: Unicode-классы с повторами для NFA дороги. \p{M} —
+	// буквы в форме NFD («й» = «и» + U+0306).
+	domainRe = regexp.MustCompile(`^(?:[\p{L}\p{M}\p{N}\-]{1,63}\.){1,8}(?i:[a-z]{2,24}|рф|рус)`)
 	// dateRe — 12.03.1985, 12/03/1985, 1985-03-12, 12 марта 1985.
-	dateRe = regexp.MustCompile(`(\d{1,2})([./])(\d{1,2})([./])(\d{4})|(\d{4})-(\d{2})-(\d{2})|(\d{1,2}) (?i:(января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)) (\d{4})`)
+	dateRe = regexp.MustCompile(`^(?:(\d{1,2})([./])(\d{1,2})([./])(\d{4})|(\d{4})-(\d{2})-(\d{2})|(\d{1,2})[ \x{00A0}](?i:(января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря))[ \x{00A0}](\d{4}))`)
 	// passportNoRe — «00 12 № 345678», «0012 номер 345678».
-	passportNoRe = regexp.MustCompile(`\d{2} ?\d{2} ?(?:№|N|No\.?|номер) ?\d{6}`)
+	passportNoRe = regexp.MustCompile(`^\d{2}` + sep + `\d{2}` + sep + `(?:№|N|No\.?|номер)` + sep + `\d{6}`)
 )
 
 // Ключевые слова, которые есть только в части 2.
 var (
-	birthBefore = []string{"рожд", "д.р", "д. р", "родил", "born", "birth", "dob"}
-	birthAfter  = []string{"г.р", "г. р", "года рождения"}
+	// birthBefore — перед датой: «дата рождения», «родился», «д.р.», «DOB».
+	// «Рождество» и «Adobe» не подходят: слова ищутся по границе слова.
+	birthBefore = kws("рожден*", "рождён*", "рожд.", "родил*", "born", "birth*", "dob", "д.р", "д. р")
+	// birthAfter — после даты: «1985 г.р.»; «г. регламентирует» — нет.
+	birthAfter = kws("г.р", "г. р", "года рождения")
+	// birthOrg — «день рождения компании»: дата основания, не ПДн.
+	birthOrg = kws("компани*", "организаци*", "фирм*", "предприяти*", "проект*", "магазин*", "сайт*", "бренд*", "company", "brand*")
 	// roleMailbox — общие ящики организаций: не ПДн конкретного человека.
 	roleMailbox = map[string]bool{
 		"info": true, "support": true, "noreply": true, "no-reply": true, "admin": true,
 		"postmaster": true, "webmaster": true, "sales": true, "help": true, "office": true,
 		"git": true, "press": true, "abuse": true, "root": true, "mail": true,
+	}
+	// fileExt — «logo@2x.png»: имя файла, а не адрес. Домены верхнего уровня,
+	// которые совпадают с расширениями и встречаются в адресах русскоязычных
+	// пользователей (.md — Молдова), сюда не входят.
+	fileExt = map[string]bool{
+		"png": true, "jpg": true, "jpeg": true, "gif": true, "webp": true, "svg": true, "bmp": true, "ico": true,
+		"js": true, "ts": true, "json": true, "css": true, "html": true, "htm": true, "txt": true, "pdf": true,
+		"zip": true, "gz": true, "tar": true, "mov": true, "mp4": true, "mp3": true, "wav": true, "py": true,
+		"go": true, "rs": true, "yaml": true, "yml": true, "xml": true, "csv": true, "exe": true, "dll": true,
 	}
 	months = map[string]time.Month{
 		"января": 1, "февраля": 2, "марта": 3, "апреля": 4, "мая": 5, "июня": 6,
@@ -55,35 +74,31 @@ var (
 // указана, договор от 01.02.2020» — дата договора, а не рождения.
 const birthWindow = 40
 
-// bounded — значение [s, e) не продолжает более длинное число.
-func bounded(text string, s, e int) bool {
-	return (s == 0 || !isDigit(text[s-1])) && (e == len(text) || !isDigit(text[e]))
-}
-
 // addFunc — добавить находку категории cat по правилу rule на [s, e).
 type addFunc = func(cat, rule string, s, e int, score float64)
 
-func detectPart2(ctx context.Context, text, threat string) ([]detect.Finding, error) {
+func detectPart2(ctx context.Context, text, threat string, year int) ([]detect.Finding, error) {
 	var out []detect.Finding
 	add := func(cat, rule string, s, e int, score float64) {
 		out = append(out, detect.Finding{Detector: ID, Version: Version, Category: cat, Threat: threat, Score: score, Start: s, End: e, Rule: rule})
 	}
-	for _, step := range []func(string, addFunc){phones, emails, birthdates, accounts, passportsNo} {
-		if err := ctx.Err(); err != nil {
+	steps := []func(context.Context, string, addFunc) error{
+		phones, emails, accounts, passportsNo,
+		func(ctx context.Context, text string, add addFunc) error { return birthdates(ctx, text, year, add) },
+	}
+	for _, step := range steps {
+		if err := step(ctx, text, add); err != nil {
 			return nil, err
 		}
-		step(text, add)
 	}
 	return out, nil
 }
 
-// phones — телефоны. Без ключевого слова оценка зависит от записи: «+7» —
-// почти наверняка телефон, «7» без плюса — часто просто число.
-func phones(text string, add addFunc) {
-	for _, m := range phoneRe.FindAllStringIndex(text, -1) {
-		s, e := m[0], m[1]
-		if !bounded(text, s, e) {
-			continue
+// phones — телефоны. Без ключевого слова оценка зависит от записи.
+func phones(ctx context.Context, text string, add addFunc) error {
+	return anchoredMatches(ctx, phoneRe, text, phoneStart, func(s, e int) {
+		if !standalone(text, s, e) {
+			return
 		}
 		v := text[s:e]
 		d := onlyDigits(v)
@@ -91,42 +106,64 @@ func phones(text string, add addFunc) {
 		// Коды 3xx, 4xx, 8xx — географические, 9xx — мобильные, 7xx —
 		// Казахстан; 0xx, 1xx, 2xx, 5xx, 6xx не выделены.
 		if !strings.ContainsRune("34789", rune(area[0])) {
-			continue
+			return
 		}
-		kw := hasKeyword(text, s, CatPhone)
-		var score float64
-		rule := "phone"
-		switch {
-		case strings.HasPrefix(area, "80"):
-			// 8 800 … и другие непротарифицированные номера — организации.
-			rule, score = "phone.service", 0.2
-			if kw {
-				score = 0.3
-			}
-		case kw:
-			score = 0.95
-		case v[0] == '+':
-			score = 0.85
-		case v[0] == '(':
-			score = 0.7
-		case v[0] == '7':
-			score = 0.45
-		case len(v) > len(d):
-			score = 0.8 // «8 916 …» с разделителями
-		default:
-			score = 0.7 // «89161234567»
-		}
-		add(CatPhone, rule, s, e, score)
-	}
+		rule, sc := phoneScore(v[0], area, len(v) > len(d), hasKeyword(text, s, CatPhone))
+		add(CatPhone, rule, s, e, sc)
+	})
 }
 
-// emails — адреса электронной почты; общие ящики организаций — ниже порога.
-func emails(text string, add addFunc) {
+// phoneStart — в позиции i может начаться телефон: «+», «(», «7» или «8»
+// не внутри числа.
+func phoneStart(text string, i int) bool {
+	switch text[i] {
+	case '+', '(', '7', '8':
+		return i == 0 || !isDigit(text[i-1])
+	}
+	return false
+}
+
+// phoneScore — оценка телефона по первому символу записи, коду зоны,
+// наличию разделителей и ключевому слову.
+func phoneScore(first byte, area string, separated, kw bool) (string, float64) {
+	switch {
+	case strings.HasPrefix(area, "80"):
+		// 8 800 … и другие непротарифицированные номера — организации.
+		if kw {
+			return "phone.service", 0.3
+		}
+		return "phone.service", 0.2
+	case kw:
+		return "phone", 0.95
+	case first == '+':
+		return "phone", 0.85
+	case first == '(':
+		return "phone", 0.7
+	case first == '7' && area[0] == '9':
+		// 7 и мобильный код 9xx — так номера хранят в базах и CRM.
+		return "phone", 0.7
+	case first == '7':
+		// 7 и другие коды без плюса — часто просто число.
+		return "phone", 0.45
+	case separated:
+		return "phone", 0.8 // «8 916 …» с разделителями
+	}
+	return "phone", 0.7 // «89161234567»
+}
+
+// emails — адреса электронной почты; общие ящики организаций и имена файлов
+// («logo@2x.png») — ниже порога.
+func emails(ctx context.Context, text string, add addFunc) error {
 	floor := 0 // конец предыдущего адреса: адреса не пересекаются
-	for i := 0; i < len(text); i++ {
+	for i, n := 0, 0; i < len(text); i, n = i+1, n+1 {
+		if n%64 == 0 {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+		}
 		at := strings.IndexByte(text[i:], '@')
 		if at < 0 {
-			return
+			return nil
 		}
 		at += i
 		i = at
@@ -140,25 +177,30 @@ func emails(text string, add addFunc) {
 		}
 		e := at + 1 + m[1]
 		// Домен верхнего уровня не обрезан: «user@mail.ruя» — не адрес.
-		if r, _ := utf8.DecodeRuneInString(text[e:]); e < len(text) && (unicode.IsLetter(r) || unicode.IsDigit(r)) {
+		if r, _ := utf8.DecodeRuneInString(text[e:]); e < len(text) && (isLetter(r) || unicode.IsDigit(r)) {
 			continue
 		}
-		if roleMailbox[strings.ToLower(text[s:at])] {
+		tld := strings.ToLower(text[strings.LastIndexByte(text[:e], '.')+1 : e])
+		switch {
+		case fileExt[tld]:
+			add(CatEmail, "email.file", s, e, 0.3)
+		case roleMailbox[strings.ToLower(text[s:at])]:
 			add(CatEmail, "email.role", s, e, 0.4)
-		} else {
+		default:
 			add(CatEmail, "email", s, e, 0.9)
 		}
 		floor, i = e, e-1
 	}
+	return nil
 }
 
 // localStart — начало локальной части адреса перед «@» в позиции at: до 64
-// символов из букв, цифр и «._%+-», не левее floor.
+// символов из букв (в том числе в форме NFD), цифр и «._%+-», не левее floor.
 func localStart(text string, at, floor int) int {
 	s := at
 	for n := 0; n < 64 && s > floor; n++ {
 		r, size := utf8.DecodeLastRuneInString(text[floor:s])
-		if !unicode.IsLetter(r) && !unicode.IsNumber(r) && !strings.ContainsRune("._%+-", r) {
+		if !isLetter(r) && !unicode.IsNumber(r) && !strings.ContainsRune("._%+-", r) {
 			break
 		}
 		s -= size
@@ -168,79 +210,53 @@ func localStart(text string, at, floor int) int {
 
 // birthdates — дата засчитывается только рядом со словом «рождения»: без
 // контекста даты встречаются повсюду и ПДн не являются.
-func birthdates(text string, add addFunc) {
-	if !hasBirthWord(text) {
-		return
+func birthdates(ctx context.Context, text string, year int, add addFunc) error {
+	if ok, err := containsFold(ctx, text, birthRoots); !ok || err != nil {
+		return err
 	}
-	now := time.Now().Year()
-	// Сначала границы дат без подгрупп (быстрее), затем разбор найденного.
-	for _, m := range dateRe.FindAllStringIndex(text, -1) {
-		s, e := m[0], m[1]
+	return anchoredMatches(ctx, dateRe, text, numberStart, func(s, e int) {
 		if !bounded(text, s, e) {
-			continue
+			return
 		}
 		sub := dateRe.FindStringSubmatch(text[s:e])
-		g := func(i int) string { return sub[i] }
-		var day, year int
+		var day, y int
 		var month time.Month
 		switch {
-		case g(1) != "":
-			if g(2) != g(4) {
-				continue // «12.03/1985»
+		case sub[1] != "":
+			if sub[2] != sub[4] {
+				return // «12.03/1985»
 			}
-			day, month, year = atoi(g(1)), time.Month(atoi(g(3))), atoi(g(5))
-		case g(6) != "":
-			year, month, day = atoi(g(6)), time.Month(atoi(g(7))), atoi(g(8))
+			day, month, y = atoi(sub[1]), time.Month(atoi(sub[3])), atoi(sub[5])
+		case sub[6] != "":
+			y, month, day = atoi(sub[6]), time.Month(atoi(sub[7])), atoi(sub[8])
 		default:
-			day, month, year = atoi(g(9)), months[strings.ToLower(g(10))], atoi(g(11))
+			day, month, y = atoi(sub[9]), months[strings.ToLower(sub[10])], atoi(sub[11])
 		}
-		if year < 1900 || year > now || !validDate(year, month, day) {
-			continue
-		}
-		if !birthContext(text, s, e) {
-			continue
+		if y < 1900 || y > year || !validDate(y, month, day) || !birthContext(text, s, e) {
+			return
 		}
 		add(CatBirthdate, "birthdate", s, e, 0.9)
-	}
+	})
 }
 
-// hasBirthWord — в тексте есть хотя бы одно слово контекста даты рождения:
-// без него даты не разбираются вовсе.
-func hasBirthWord(text string) bool {
-	lower := strings.ToLower(text)
-	for _, ks := range [][]string{birthBefore, birthAfter} {
-		for _, k := range ks {
-			if strings.Contains(lower, k) {
-				return true
-			}
-		}
-	}
-	return false
-}
+// birthRoots — грубый отбор: без этих сочетаний в тексте даты не разбираются.
+var birthRoots = []string{"рожд", "родил", "born", "birth", "dob", "д.р", "д. р", "г.р", "г. р"}
 
-// birthContext — «дата рождения», «д.р.», «born» перед датой или «г.р.» после.
+// birthContext — «дата рождения», «д.р.», «born» перед датой (и между ними
+// нет слов «компании», «проекта») или «г.р.» сразу после даты.
 func birthContext(text string, s, e int) bool {
-	from := max(s-birthWindow, 0)
-	for from < s && !utf8.RuneStart(text[from]) {
-		from++
+	if k := lastKeyword(text, s-birthWindow, s, birthBefore); k >= 0 && lastKeyword(text, k, s, birthOrg) < 0 {
+		return true
 	}
-	before := strings.ToLower(text[from:s])
-	for _, k := range birthBefore {
-		if strings.Contains(before, k) {
-			return true
+	p := e
+	for p < len(text) {
+		r, size := utf8.DecodeRuneInString(text[p:])
+		if sepRune(r) != ' ' {
+			break
 		}
+		p += size
 	}
-	to := min(e+32, len(text))
-	for to > e && to < len(text) && !utf8.RuneStart(text[to]) {
-		to--
-	}
-	after := strings.TrimLeft(strings.ToLower(text[e:to]), " ")
-	for _, k := range birthAfter {
-		if strings.HasPrefix(after, k) {
-			return true
-		}
-	}
-	return false
+	return p < len(text) && keywordAt(text, p, birthAfter) >= 0
 }
 
 func validDate(y int, m time.Month, d int) bool {
@@ -272,11 +288,16 @@ func onlyDigits(s string) string {
 
 // accounts — расчётные счета клиентов. Ключ (9-я цифра) проверяется по
 // любому БИК из того же текста: если сошёлся — это счёт почти наверняка.
-func accounts(text string, add addFunc) {
+func accounts(ctx context.Context, text string, add addFunc) error {
 	// Счёт — ровно 20 цифр подряд, БИК — ровно 9 на «04»; ищутся по
 	// максимальным последовательностям цифр без регулярных выражений.
 	var biks, accs [][2]int
-	for i := 0; i < len(text); {
+	for i, n := 0, 0; i < len(text); n++ {
+		if n%(64<<10) == 0 {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+		}
 		if !isDigit(text[i]) {
 			i++
 			continue
@@ -286,6 +307,7 @@ func accounts(text string, add addFunc) {
 			j++
 		}
 		switch {
+		case !standalone(text, i, j):
 		case j-i == 9 && text[i:i+2] == "04":
 			biks = append(biks, [2]int{i, j})
 		case j-i == 20 && accountPrefix[text[i:i+3]]:
@@ -293,7 +315,12 @@ func accounts(text string, add addFunc) {
 		}
 		i = j
 	}
-	for _, a := range accs {
+	for k, a := range accs {
+		if k%64 == 0 {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+		}
 		s, e := a[0], a[1]
 		acc := text[s:e]
 		keyOK := false
@@ -315,26 +342,27 @@ func accounts(text string, add addFunc) {
 			add(CatAccount, "account", s, e, 0.35)
 		}
 	}
+	return nil
 }
 
 // passportsNo — «00 12 № 345678». Слитная серия «0012 № 345678» так же
 // пишется у договоров и заказов — без слова «паспорт» ниже порога.
-func passportsNo(text string, add addFunc) {
+func passportsNo(ctx context.Context, text string, add addFunc) error {
 	if !strings.Contains(text, "№") && !strings.Contains(text, "номер") && !strings.Contains(text, "N") {
-		return
+		return nil
 	}
-	for _, m := range passportNoRe.FindAllStringIndex(text, -1) {
-		s, e := m[0], m[1]
-		if !bounded(text, s, e) {
-			continue
+	return anchoredMatches(ctx, passportNoRe, text, numberStart, func(s, e int) {
+		if !standalone(text, s, e) {
+			return
 		}
+		r, _ := utf8.DecodeRuneInString(text[s+2:])
 		switch {
-		case hasKeyword(text, s, CatPassport):
+		case hasKeyword(text, s, CatPassport) || lastKeyword(text, s-contextWindow, s, passportSeries) >= 0:
 			add(CatPassport, "passport.no", s, e, 0.97)
-		case text[s+2] == ' ':
+		case sepRune(r) == ' ':
 			add(CatPassport, "passport.no", s, e, 0.85)
 		default:
 			add(CatPassport, "passport.no", s, e, 0.4)
 		}
-	}
+	})
 }

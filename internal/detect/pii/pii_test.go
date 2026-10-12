@@ -2,8 +2,10 @@ package pii
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/azuresong-afk/ai_railway/internal/detect"
@@ -161,6 +163,16 @@ func TestNoFalsePositives(t *testing.T) {
 		"IMEI 350000123456788",     // синтетический IMEI: 15 цифр, сумма Луна сходится, префикс 35
 		"created_at=1791396000123", // метка времени в мс: 13 цифр на 1
 		"",
+		// Дробь, штрихкод EAN-13, идентификатор с латиницей — не карта.
+		"2/π ≈ 0.6366197723675814",
+		"Штрихкод 4600000000060",
+		"ID" + SynthCard(4) + "x",
+		// Ключевые слова — по границе слова: «инн» в «длинное», «inn» в «beginning».
+		"Длинное число 1760054400 в логе",
+		"Training beginning at 1760054417",
+		// «серия» без «паспорт» и паспорт внутри длинной последовательности.
+		"Вторая серия набрала 1000000000 просмотров",
+		"2024 03 15 100000 INFO",
 	} {
 		if got := cats(find(t, text, detect.Input), 0.5); got != "" {
 			t.Errorf("%q: ложное срабатывание %q", text, got)
@@ -173,6 +185,30 @@ func TestNoFalsePositives(t *testing.T) {
 	}
 }
 
+// Длинная последовательность через пробел или дефис разбирается по группам:
+// несколько значений подряд находятся все, лишние группы не мешают.
+func TestLongSequences(t *testing.T) {
+	snils, inn, card := SynthSNILS(6), SynthINN12(6), SynthCard(6)
+	snilsFmt := snils[:3] + "-" + snils[3:6] + "-" + snils[6:9] + " " + snils[9:]
+	cardFmt := card[:4] + " " + card[4:8] + " " + card[8:12] + " " + card[12:]
+	for _, c := range []struct{ text, want string }{
+		{"Сотрудник: " + snils + " " + inn, CatSNILS + "," + CatINN},
+		{"СНИЛС и ИНН: " + snilsFmt + " " + inn, CatSNILS + "," + CatINN},
+		{"Карта " + card + " 0000 000", CatCard},
+		{"Карта " + cardFmt + " 00 00 000", CatCard},
+		{"ИНН " + inn + "-" + inn + "-" + inn, CatINN + "," + CatINN + "," + CatINN},
+	} {
+		if got := cats(find(t, c.text, detect.Input), 0.5); got != c.want {
+			t.Errorf("%q: %q, ожидалось %q", c.text, got, c.want)
+		}
+	}
+	// 10 цифр после «Паспорт: …, ИНН» — ИНН, а не паспорт: ближе слово «ИНН».
+	fs := find(t, "Паспорт: "+SynthPassport(6)+", ИНН "+SynthINN10(6), detect.Input)
+	if cats(fs, 0.5) != CatPassport+","+CatINN {
+		t.Fatalf("%+v", fs)
+	}
+}
+
 func TestKnownCardPrefix(t *testing.T) {
 	for d, want := range map[string]bool{
 		"4000000000000002":    true,  // Visa 16
@@ -182,6 +218,8 @@ func TestKnownCardPrefix(t *testing.T) {
 		"350000123456788":     false, // IMEI (35, 15 цифр)
 		"5555555555555555557": false, // Mastercard не бывает 19 цифр
 		"6011000000000004":    false, // Discover — не в списке
+		"5000000000000000000": true,  // Maestro 19
+		"50000000000":         false, // Maestro короче 12
 	} {
 		if got := knownCardPrefix(d); got != want {
 			t.Errorf("%s: %v", d, got)
@@ -197,21 +235,58 @@ func TestContextCancelled(t *testing.T) {
 	}
 }
 
+// Детектор соблюдает срок и на больших текстах худшего вида: возвращает
+// ошибку контекста, а не дорабатывает до конца (брошенная реестром горутина
+// не занимает процессор после срока).
+func TestDeadline(t *testing.T) {
+	text := strings.Repeat("1-", 16<<20) // 32 МиБ — предел тела запроса шлюза
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err := New().Detect(ctx, detect.Text{Text: text, Direction: detect.Input})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("ошибка %v", err)
+	}
+	// Полный разбор 32 МиБ занимает около двух секунд (под детектором гонок —
+	// в разы дольше); остановка — через единицы миллисекунд после срока.
+	// Запас — на медленный CI.
+	if el := time.Since(start); el > time.Second {
+		t.Fatalf("остановился через %v", el)
+	}
+}
+
 // Детектор — цель фаззинга (ТЗ, 5.2, 8.5): без паники, находки корректны,
-// значение по позициям проходит свою проверку.
+// позиции стоят на границах символов UTF-8, значение по позициям проходит
+// свою проверку.
 func FuzzDetect(f *testing.F) {
 	f.Add("ИНН " + SynthINN12(1) + " карта " + SynthCard(2))
 	f.Add("123-456-789 01 9")
 	f.Add(strings.Repeat("1 ", 40))
 	f.Add("паспорт " + SynthPassport(1) + ", тел. " + SynthPhone(1) + ", " + SynthEmail(1))
 	f.Add("дата рождения 12 марта 1985, р/с " + SynthAccount(1) + " БИК " + SynthBIK(1))
+	f.Add("тел.\u00a0" + SynthPhone(2) + ", андре\u0438\u0306@pochta.test, 0.6366197723675814")
 	f.Fuzz(func(t *testing.T, text string) {
 		for _, fd := range find(t, text, detect.Input) {
+			if !runeBoundary(text, fd.Start) || !runeBoundary(text, fd.End) {
+				t.Fatalf("позиции [%d, %d) не на границах символов", fd.Start, fd.End)
+			}
 			if v := text[fd.Start:fd.End]; !validValue(fd.Category, v) {
 				t.Fatalf("находка %s %q не проходит проверку", fd.Category, v)
 			}
 		}
 	})
+}
+
+// runeBoundary — позиция p не разрезает символ UTF-8: совпадает с началом
+// символа при декодировании text слева направо (одиночный байт продолжения в
+// невалидном тексте — отдельный символ).
+func runeBoundary(text string, p int) bool {
+	for i := range text {
+		if i >= p {
+			return i == p
+		}
+	}
+	return p == len(text)
 }
 
 // validValue — значение находки соответствует категории.
@@ -240,6 +315,18 @@ func validValue(cat, v string) bool {
 		return len(d) == 20 && d == v && accountPrefix[d[:3]]
 	}
 	return false
+}
+
+// Худший случай: 1 МБ из цифр через дефис — одна огромная последовательность.
+func BenchmarkDetectWorst(b *testing.B) {
+	text := detect.Text{Text: strings.Repeat("1-", 1<<19), Direction: detect.Input}
+	d := New()
+	b.SetBytes(int64(len(text.Text)))
+	for b.Loop() {
+		if _, err := d.Detect(context.Background(), text); err != nil {
+			b.Fatal(err)
+		}
+	}
 }
 
 // Бенчмарк: промпт 8 КБ с несколькими значениями (цель ТЗ 5.1 — p95 ≤ 30 мс

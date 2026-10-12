@@ -1,8 +1,10 @@
 package pii
 
 import (
+	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/azuresong-afk/ai_railway/internal/detect"
 )
@@ -119,6 +121,15 @@ func TestNoFalsePositivesPart2(t *testing.T) {
 		"версия 1.2.3, сборка 7 916 1234",
 		"ID 7300123456", // 10 цифр на 7 — не телефон
 		"Справка: user@@pochta.test",
+		// Ключевые слова — по границе слова; «г.р.» — только целиком.
+		"Приказ от 12.03.2024 г. регламентирует порядок",
+		"Отчётный год. Расчёт от 01.11.2023", // «д. р» внутри «год. Р»
+		"Рождество 07.01.2025, офис закрыт",
+		"Adobe Reader 2024-03-12", // «dob» внутри «adobe»
+		"День рождения компании 12.03.2015",
+		"Дата рождения не указана, договор от 01.02.2020",
+		// Имена файлов с «@».
+		"logo@2x.png и icon@3x.webp",
 	} {
 		if got := cats(find(t, text, detect.Input), 0.5); got != "" {
 			t.Errorf("%q: ложное срабатывание %q", text, got)
@@ -140,6 +151,64 @@ func TestBirthdateEdges(t *testing.T) {
 	} {
 		if got := cats(find(t, text, detect.Input), 0.5) == CatBirthdate; got != want {
 			t.Errorf("%q: %v", text, got)
+		}
+	}
+}
+
+// Находки на тексте из Word и веба: неразрывные пробелы и дефисы, буквы в
+// форме NFD — позиции охватывают значение целиком (по ним маскирование).
+func TestTypographyAndNFD(t *testing.T) {
+	phone, card, snils := SynthPhone(5), SynthCard(5), SynthSNILS(5)
+	nbspPhone := strings.NewReplacer(" ", "\u00a0", "-", "\u2011").Replace(phone)
+	nbspCard := card[:4] + "\u00a0" + card[4:8] + "\u00a0" + card[8:12] + "\u00a0" + card[12:]
+	nbspSnils := snils[:3] + "\u2011" + snils[3:6] + "\u2011" + snils[6:9] + "\u202f" + snils[9:]
+	nfd := "андре\u0438\u0306.петров@pochta.test" // «й» = «и» + U+0306
+	for _, c := range []struct{ text, cat, value string }{
+		{"тел. " + nbspPhone, CatPhone, nbspPhone},
+		{"карта " + nbspCard, CatCard, nbspCard},
+		{"СНИЛС " + nbspSnils, CatSNILS, nbspSnils},
+		{"почта " + nfd, CatEmail, nfd},
+	} {
+		fs := find(t, c.text, detect.Input)
+		if len(fs) != 1 || fs[0].Category != c.cat || c.text[fs[0].Start:fs[0].End] != c.value || fs[0].Score < 0.5 {
+			t.Errorf("%q: %+v", c.text, fs)
+		}
+	}
+}
+
+// Оценка телефона: «7» и мобильный код 9xx — выше порога, «7» и другие
+// коды — ниже, номера 8-80x — организации.
+func TestPhoneScore(t *testing.T) {
+	for _, c := range []struct {
+		first     byte
+		area      string
+		separated bool
+		kw        bool
+		want      float64
+	}{
+		{'7', "900", false, false, 0.7},
+		{'7', "300", false, false, 0.45},
+		{'8', "300", false, false, 0.7},
+		{'8', "300", true, false, 0.8},
+		{'+', "300", true, false, 0.85},
+		{'8', "800", true, false, 0.2},
+		{'8', "800", true, true, 0.3},
+		{'7', "300", false, true, 0.95},
+	} {
+		if _, got := phoneScore(c.first, c.area, c.separated, c.kw); got != c.want {
+			t.Errorf("%+v: %v", c, got)
+		}
+	}
+}
+
+// Год рождения сверяется с часами детектора: дата позже текущего года —
+// не дата рождения.
+func TestBirthYearClock(t *testing.T) {
+	d := Detector{now: func() time.Time { return time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC) }}
+	for text, want := range map[string]int{"дата рождения 12.03.1999": 1, "дата рождения 12.03.2001": 0} {
+		fs, err := d.Detect(context.Background(), detect.Text{Text: text, Direction: detect.Input})
+		if err != nil || len(fs) != want {
+			t.Errorf("%q: %+v, %v", text, fs, err)
 		}
 	}
 }

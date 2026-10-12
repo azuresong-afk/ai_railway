@@ -5,16 +5,17 @@
 // Часть 1 (задача 1.11): СНИЛС, ИНН ФЛ и ЮЛ, ОГРН, ОГРНИП, номер карты.
 // Часть 2 (задача 1.12, part2.go): паспорт РФ, телефон, e-mail, дата
 // рождения в контексте, расчётный счёт с проверкой ключа по БИК.
-// Кандидат — последовательность цифр с разделителями «пробел» и «дефис».
-// Значение засчитывается только с верной контрольной суммой и подходящей
-// раскладкой (СНИЛС — ddd-ddd-ddd dd, карта — группы по четыре, остальное —
-// сплошные цифры); оценка выше, если рядом ключевое слово («ИНН», «карта»).
+// Кандидат — последовательность цифр с разделителями «пробел» и «дефис»
+// (в том числе неразрывными). Значение засчитывается только с верной
+// контрольной суммой и подходящей раскладкой (СНИЛС — ddd-ddd-ddd dd, карта —
+// группы по четыре, остальное — сплошные цифры); оценка выше, если рядом
+// ключевое слово («ИНН», «карта»).
 package pii
 
 import (
 	"context"
-	"regexp"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/azuresong-afk/ai_railway/internal/detect"
@@ -23,7 +24,7 @@ import (
 // ID и версия детектора.
 const (
 	ID      = "pii.ru"
-	Version = "1.1.0"
+	Version = "1.2.0"
 )
 
 // Категории находок.
@@ -41,9 +42,12 @@ const (
 	CatAccount   = "pii.account"
 )
 
-// Detector — детектор pii.ru. Без состояния, безопасен для одновременного
-// вызова.
-type Detector struct{}
+// Detector — детектор pii.ru. Без изменяемого состояния, безопасен для
+// одновременного вызова.
+type Detector struct {
+	// now — часы для проверки года рождения; nil — time.Now.
+	now func() time.Time
+}
 
 // New создаёт детектор.
 func New() Detector { return Detector{} }
@@ -59,26 +63,39 @@ func (Detector) Directions() []detect.Direction {
 	return []detect.Direction{detect.Input, detect.Output}
 }
 
-// candidateRe — от 10 до 19 цифр, между цифрами — не больше одного пробела
-// или дефиса. RE2: время линейно от длины текста.
-var candidateRe = regexp.MustCompile(`\d(?:[ \-]?\d){9,18}`)
-
-// keywords — слова контекста по категориям (в нижнем регистре).
-var keywords = map[string][]string{
-	CatSNILS:  {"снилс", "страхов", "пенсион", "snils"},
-	CatINN:    {"инн", "inn", "налогоплательщ", "taxpayer"},
-	CatOGRN:   {"огрн", "ogrn", "регистрационн"},
-	CatOGRNIP: {"огрнип", "ogrnip"},
-	CatCard:   {"карт", "card", "visa", "mastercard", "maestro", "мир ", "cvv", "оплат", "pan"},
-	// Часть 2.
-	CatPassport: {"паспорт", "серия", "passport"},
-	CatPhone:    {"тел", "phone", "моб", "звон", "whatsapp", "telegram", "сотов", "номер для связи"},
-	CatAccount:  {"р/с", "р/сч", "расч", "счёт", "счет", "лицев", "account", "acct"},
+func (d Detector) year() int {
+	if d.now != nil {
+		return d.now().Year()
+	}
+	return time.Now().Year()
 }
+
+// keywords — слова контекста по категориям: «слово*» — начало слова, «слово»
+// — слово целиком (kws). Короткие слова — только целиком: «инн» не должно
+// находиться в «длинное», «тел» — в «пользователь».
+var keywords = map[string][]keyword{
+	CatSNILS:  kws("снилс", "страхов*", "пенсион*", "snils"),
+	CatINN:    kws("инн", "inn", "налогоплательщ*", "taxpayer*"),
+	CatOGRN:   kws("огрн", "ogrn", "регистрационн*"),
+	CatOGRNIP: kws("огрнип", "ogrnip"),
+	CatCard:   kws("карт*", "card*", "visa", "mastercard", "maestro", "мир", "cvv", "оплат*", "pan"),
+	// Часть 2.
+	CatPassport: kws("паспорт*", "passport*"),
+	CatPhone:    kws("тел", "tel", "телефон*", "phone*", "моб*", "звон*", "позвон*", "перезвон*", "сотов*", "whatsapp", "telegram", "call*", "номер для связи"),
+	CatAccount:  kws("р/с", "р/сч", "расчётн*", "расчетн*", "счёт*", "счет*", "лицев*", "account*", "acct"),
+}
+
+// passportSeries — «серия» повышает оценку раскладок паспорта, но одна, без
+// 10 цифр подряд, паспортом не считается («вторая серия набрала …»).
+var passportSeries = kws("серия", "серии", "серию", "series")
 
 // contextWindow — сколько байт перед значением просматривается в поисках
 // ключевого слова.
 const contextWindow = 48
+
+func hasKeyword(text string, start int, cat string) bool {
+	return lastKeyword(text, start-contextWindow, start, keywords[cat]) >= 0
+}
 
 // Detect находит идентификаторы в тексте.
 func (d Detector) Detect(ctx context.Context, t detect.Text) ([]detect.Finding, error) {
@@ -86,26 +103,46 @@ func (d Detector) Detect(ctx context.Context, t detect.Text) ([]detect.Finding, 
 	if t.Direction == detect.Output {
 		threat = "DM-09"
 	}
+	text := t.Text
 	var out []detect.Finding
-	for _, m := range candidateRe.FindAllStringIndex(t.Text, -1) {
-		if err := ctx.Err(); err != nil {
+	emit := func(m match) {
+		m.f.Detector, m.f.Version, m.f.Threat = ID, Version, threat
+		kw := hasKeyword(text, m.f.Start, m.f.Category)
+		if m.f.Category == CatPassport && !kw {
+			kw = lastKeyword(text, m.f.Start-contextWindow, m.f.Start, passportSeries) >= 0
+		}
+		m.f.Score = score(m.rule, text[m.f.Start], kw)
+		out = append(out, m.f)
+	}
+	// Кандидат — цифры, между которыми не больше одного разделителя; длина
+	// не ограничена: длинная последовательность («СНИЛС ИНН» через пробел)
+	// разбирается по группам, а не отбрасывается.
+	for i, n := 0, 0; i < len(text); n++ {
+		if n%4096 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
+		if !isDigit(text[i]) {
+			i++
+			continue
+		}
+		s, e := i, 0
+		var err error
+		if e, err = candidateEnd(ctx, text, i); err != nil {
 			return nil, err
 		}
-		// Значение не должно продолжать более длинное число.
-		if m[0] > 0 && isDigit(t.Text[m[0]-1]) || m[1] < len(t.Text) && isDigit(t.Text[m[1]]) {
+		i = e
+		// Меньше 10 байт — меньше 10 цифр; «+7 …» — телефон (part2.go);
+		// дробь и идентификатор с латиницей — не значение.
+		if e-s < 10 || s > 0 && text[s-1] == '+' || !standalone(text, s, e) {
 			continue
 		}
-		// «+7 …» — телефон, а не идентификатор (телефоны — part2.go).
-		if m[0] > 0 && t.Text[m[0]-1] == '+' {
-			continue
-		}
-		for _, v := range scan(t.Text, m[0], m[1]) {
-			v.f.Detector, v.f.Version, v.f.Threat = ID, Version, threat
-			v.f.Score = score(v.rule, t.Text[v.f.Start], hasKeyword(t.Text, v.f.Start, v.f.Category))
-			out = append(out, v.f)
+		if err := scan(ctx, text, s, e, emit); err != nil {
+			return nil, err
 		}
 	}
-	more, err := detectPart2(ctx, t.Text, threat)
+	more, err := detectPart2(ctx, text, threat, d.year())
 	if err != nil {
 		return nil, err
 	}
@@ -113,7 +150,7 @@ func (d Detector) Detect(ctx context.Context, t detect.Text) ([]detect.Finding, 
 }
 
 // dedupe оставляет на одном и том же фрагменте одну находку — с наибольшей
-// оценкой («89161234567»: телефон, а не СНИЛС с низкой оценкой).
+// оценкой («83001234567»: телефон, а не СНИЛС с низкой оценкой).
 func dedupe(fs []detect.Finding) []detect.Finding {
 	best := map[[2]int]int{}
 	var out []detect.Finding
@@ -131,12 +168,10 @@ func dedupe(fs []detect.Finding) []detect.Finding {
 	return out
 }
 
-func isDigit(b byte) bool { return b >= '0' && b <= '9' }
-
 // group — группа цифр кандидата и разделитель перед ней.
 type group struct {
 	start, end int  // байтовые позиции в тексте
-	sep        byte // разделитель перед группой; 0 — первая группа
+	sep        byte // разделитель перед группой (' ' или '-'); 0 — первая группа
 }
 
 type match struct {
@@ -144,85 +179,124 @@ type match struct {
 	rule string
 }
 
-// scan ищет в кандидате [start, end) значения: перебирает подпоследовательности
-// групп от самой длинной, чтобы лишняя группа рядом («карта 4000 … 0002 15 шт»)
-// не мешала распознать значение.
-func scan(text string, start, end int) []match {
-	var groups []group
-	gs := start
+// maxGroups — наибольшее число групп в раскладке (карта 4-4-4-4-3).
+const maxGroups = 5
+
+// scan ищет значения в кандидате [start, end). Идёт по группам цифр окном до
+// maxGroups и в каждой позиции пробует самую длинную подходящую раскладку,
+// поэтому лишняя группа рядом не мешает («карта 4000 … 1241 15 шт»), а
+// несколько значений подряд находятся все. Память — O(1), время — линейно
+// от длины кандидата; ctx проверяется каждые 1024 шага.
+func scan(ctx context.Context, text string, start, end int, emit func(match)) error {
+	var win [maxGroups]group
+	n, pos := 0, start
 	var sep byte
-	for i := start; i <= end; i++ {
-		if i == end || !isDigit(text[i]) {
-			groups = append(groups, group{gs, i, sep})
-			if i < end {
-				sep, gs = text[i], i+1
+	read := func() bool {
+		if pos >= end {
+			return false
+		}
+		gs := pos
+		for pos < end && isDigit(text[pos]) {
+			pos++
+		}
+		win[n] = group{gs, pos, sep}
+		n++
+		if pos < end {
+			r, size := utf8.DecodeRuneInString(text[pos:])
+			sep = sepRune(r)
+			pos += size
+		}
+		return true
+	}
+	shift := func(k int) {
+		copy(win[:], win[k:n])
+		n -= k
+	}
+	for step := 0; ; step++ {
+		if step%1024 == 0 {
+			if err := ctx.Err(); err != nil {
+				return err
 			}
 		}
-	}
-	var out []match
-	for i := 0; i < len(groups); {
-		found := false
-		for j := len(groups); j > i; j-- {
-			if m, ok := classify(text, groups[i:j]); ok {
-				out = append(out, m)
-				i, found = j, true
+		for n < maxGroups && read() {
+		}
+		if n == 0 {
+			return nil
+		}
+		k := 1
+		for j := n; j >= 1; j-- {
+			whole := win[0].start == start && win[j-1].end == end
+			if m, ok := classify(text, win[:j], whole); ok {
+				emit(m)
+				k = j
 				break
 			}
 		}
-		if !found {
-			i++
-		}
+		shift(k)
 	}
-	return out
 }
 
 // classify определяет вид значения по раскладке групп и контрольной сумме.
-func classify(text string, gs []group) (match, bool) {
-	var b strings.Builder
-	sizes := make([]int, len(gs))
-	for k, g := range gs {
-		b.WriteString(text[g.start:g.end])
-		sizes[k] = g.end - g.start
-	}
-	digits := b.String()
+// whole — группы составляют весь кандидат: раскладки без контрольной суммы
+// (паспорт) засчитываются только так («2024 03 15 100000» — не паспорт).
+func classify(text string, gs []group, whole bool) (match, bool) {
 	start, end := gs[0].start, gs[len(gs)-1].end
 	mk := func(cat, rule string) (match, bool) {
 		return match{f: detect.Finding{Category: cat, Start: start, End: end, Rule: rule}, rule: rule}, true
 	}
 	if len(gs) == 1 {
-		switch len(digits) {
+		d := text[start:end]
+		switch len(d) {
 		case 10:
-			// 10 цифр подряд рядом со словом «паспорт» — серия и номер паспорта.
-			if hasKeyword(text, start, CatPassport) {
+			// 10 цифр подряд рядом со словом «паспорт» — серия и номер; но если
+			// ближе стоит «ИНН» и сумма ИНН сходится — это ИНН.
+			p := lastKeyword(text, start-contextWindow, start, keywords[CatPassport])
+			innNearer := ValidINN10(d) && lastKeyword(text, start-contextWindow, start, keywords[CatINN]) > p
+			if p >= 0 && !innNearer {
 				return mk(CatPassport, "passport.bare")
 			}
-			if ValidINN10(digits) {
+			if ValidINN10(d) {
 				return mk(CatINN, "inn10")
 			}
 		case 11:
-			if ValidSNILS(digits) {
+			if ValidSNILS(d) {
 				return mk(CatSNILS, "snils.bare")
 			}
 		case 12:
-			if ValidINN12(digits) {
+			if ValidINN12(d) {
 				return mk(CatINN, "inn12")
 			}
 		case 13:
-			if ValidOGRN(digits) {
+			if ValidOGRN(d) {
 				return mk(CatOGRN, "ogrn")
 			}
 		case 15:
-			if ValidOGRNIP(digits) {
+			if ValidOGRNIP(d) {
 				return mk(CatOGRNIP, "ogrnip")
 			}
 		}
 		// Без группировки — только с префиксом известной платёжной системы:
 		// иначе алгоритму Луна отвечает и IMEI телефона (15 цифр).
-		if ValidLuhn(digits) && knownCardPrefix(digits) {
-			return mk(CatCard, "card.bare")
+		if ValidLuhn(d) && knownCardPrefix(d) {
+			if len(d) == 16 && commonCard(d) {
+				return mk(CatCard, "card.bare")
+			}
+			// 13 цифр Visa (штрихкод EAN-13), Maestro, Amex — без слова
+			// «карта» ниже порога.
+			return mk(CatCard, "card.bare.other")
 		}
 		return match{}, false
 	}
+	var sizes [maxGroups]int
+	total := 0
+	for k, g := range gs {
+		sizes[k] = g.end - g.start
+		total += sizes[k]
+	}
+	if total < 10 || total > 19 {
+		return match{}, false
+	}
+	sz := sizes[:len(gs)]
 	sameSep := true
 	for _, g := range gs[2:] {
 		if g.sep != gs[1].sep {
@@ -230,19 +304,28 @@ func classify(text string, gs []group) (match, bool) {
 		}
 	}
 	// СНИЛС: 123-456-789 01, 123-456-789-01 или 123 456 789 01.
-	snilsLayout := equal(sizes, 3, 3, 3, 2) && gs[1].sep == gs[2].sep && (gs[3].sep == gs[1].sep || gs[3].sep == ' ')
+	snilsLayout := equal(sz, 3, 3, 3, 2) && gs[1].sep == gs[2].sep && (gs[3].sep == gs[1].sep || gs[3].sep == ' ')
 	// Карта: 4-4-4-4, 4-4-4-4-3 (19 цифр), 4-6-5 (American Express), 4-6-4.
-	cardLayout := sameSep && (equal(sizes, 4, 4, 4, 4) || equal(sizes, 4, 4, 4, 4, 3) || equal(sizes, 4, 6, 5) || equal(sizes, 4, 6, 4))
+	cardLayout := sameSep && (equal(sz, 4, 4, 4, 4) || equal(sz, 4, 4, 4, 4, 3) || equal(sz, 4, 6, 5) || equal(sz, 4, 6, 4))
 	switch {
-	case snilsLayout && ValidSNILS(digits):
-		return mk(CatSNILS, "snils.formatted")
-	case cardLayout && ValidLuhn(digits):
-		return mk(CatCard, "card.grouped")
-	case equal(sizes, 2, 2, 6) && gs[1].sep == ' ' && gs[2].sep == ' ':
-		// Паспорт: серия «45 06» и номер — контрольной суммы нет, раскладка
+	case snilsLayout || cardLayout:
+		var b strings.Builder
+		b.Grow(total)
+		for _, g := range gs {
+			b.WriteString(text[g.start:g.end])
+		}
+		d := b.String()
+		if snilsLayout && ValidSNILS(d) {
+			return mk(CatSNILS, "snils.formatted")
+		}
+		if cardLayout && ValidLuhn(d) {
+			return mk(CatCard, "card.grouped")
+		}
+	case whole && equal(sz, 2, 2, 6) && gs[1].sep == ' ' && gs[2].sep == ' ':
+		// Паспорт: серия «00 12» и номер — контрольной суммы нет, раскладка
 		// характерная.
 		return mk(CatPassport, "passport.226")
-	case equal(sizes, 4, 6) && gs[1].sep == ' ':
+	case whole && equal(sz, 4, 6) && gs[1].sep == ' ':
 		return mk(CatPassport, "passport.46")
 	}
 	return match{}, false
@@ -283,7 +366,7 @@ func score(rule string, first byte, kw bool) float64 {
 		return 0.65
 	case "ogrnip":
 		return 0.45
-	case "ogrn":
+	case "ogrn", "card.bare.other":
 		return 0.4
 	case "inn10":
 		return 0.3
@@ -310,31 +393,21 @@ func knownCardPrefix(d string) bool {
 	case p2 >= 51 && p2 <= 55, p4 >= 2221 && p4 <= 2720:
 		return n == 16
 	case p4 >= 2200 && p4 <= 2204, p2 == 62:
-		return n >= 16
+		return n >= 16 && n <= 19
 	case p2 == 34 || p2 == 37:
 		return n == 15
 	case p4 >= 3528 && p4 <= 3589:
 		return n == 16
 	case p2 == 50, p2 >= 56 && p2 <= 58, p2 == 63, p2 == 67:
-		return true
+		return n >= 12 && n <= 19
 	}
 	return false
 }
 
-// hasKeyword ищет ключевое слово категории в окне перед значением.
-func hasKeyword(text string, start int, cat string) bool {
-	from := start - contextWindow
-	if from < 0 {
-		from = 0
-	}
-	for from < start && !utf8.RuneStart(text[from]) {
-		from++
-	}
-	window := strings.ToLower(text[from:start])
-	for _, k := range keywords[cat] {
-		if strings.Contains(window, k) {
-			return true
-		}
-	}
-	return false
+// commonCard — 16 цифр Visa, Mastercard или Мир: только такие номера без
+// слова «карта» засчитываются выше порога.
+func commonCard(d string) bool {
+	p2 := int(d[0]-'0')*10 + int(d[1]-'0')
+	p4 := p2*100 + int(d[2]-'0')*10 + int(d[3]-'0')
+	return d[0] == '4' || p2 >= 51 && p2 <= 55 || p4 >= 2221 && p4 <= 2720 || p4 >= 2200 && p4 <= 2204
 }

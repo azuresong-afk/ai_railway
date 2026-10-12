@@ -63,3 +63,13 @@
 {"id": "neg-hash-01", "lang": "en", "direction": "input", "source": "user", "text": "sha256: 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", "expect": []}
 {"id": "neg-json-01", "lang": "en", "direction": "input", "source": "user", "text": "{\"user_id\": 1234567890123, \"amount\": 4500}", "expect": [], "note": "13 цифр в JSON"}
 {"id": "neg-card-03", "lang": "ru", "direction": "input", "source": "user", "text": "Пример маски карты: 2200 **** **** 1234", "expect": []}
+{"id": "long-01", "lang": "ru", "direction": "input", "source": "user", "text": "Сотрудник: 97054112400 007054112401", "expect": ["pii.snils", "pii.inn"], "note": "два значения через пробел — длинная последовательность разбирается по группам"}
+{"id": "long-02", "lang": "ru", "direction": "input", "source": "user", "text": "СНИЛС и ИНН: 970-541-124 00 007054112401", "expect": ["pii.snils", "pii.inn"]}
+{"id": "long-03", "lang": "ru", "direction": "input", "source": "user", "text": "Карта 4000 0047 0541 1241 00 00 000", "expect": ["pii.card"], "note": "лишние группы после номера"}
+{"id": "nbsp-01", "lang": "ru", "direction": "input", "source": "user", "text": "карта 4000 0047 0541 1241", "expect": ["pii.card"], "note": "неразрывные пробелы из Word"}
+{"id": "nbsp-02", "lang": "ru", "direction": "input", "source": "user", "text": "СНИЛС 970‑541‑124 00", "expect": ["pii.snils"], "note": "неразрывные дефисы"}
+{"id": "neg-frac-01", "lang": "ru", "direction": "input", "source": "user", "text": "2/π ≈ 0.6366197723675814", "expect": [], "note": "дробная часть числа, сумма Луна сходится"}
+{"id": "neg-ean-01", "lang": "ru", "direction": "input", "source": "user", "text": "Штрихкод 4600000000060", "expect": [], "note": "EAN-13 с верной суммой — Visa из 13 цифр без слова «карта» ниже порога"}
+{"id": "neg-kw-01", "lang": "ru", "direction": "input", "source": "user", "text": "Длинное число 1760054400 в логе", "expect": [], "note": "«инн» внутри «длинное» — не ключевое слово"}
+{"id": "neg-kw-02", "lang": "en", "direction": "input", "source": "user", "text": "Training beginning at 1760054417", "expect": [], "note": "«inn» внутри «beginning»"}
+{"id": "neg-id-01", "lang": "en", "direction": "input", "source": "user", "text": "ID4000004705411241x", "expect": [], "note": "идентификатор с латиницей"}

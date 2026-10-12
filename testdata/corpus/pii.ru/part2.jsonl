@@ -69,3 +69,14 @@
 {"id": "neg2-date-09", "lang": "ru", "direction": "input", "source": "user", "text": "Дата рождения 29.02.1985", "expect": [], "note": "1985 — не високосный"}
 {"id": "neg2-phone-07", "lang": "ru", "direction": "input", "source": "user", "text": "Справочная организации: 8 (804) 333-22-11", "expect": [], "note": "коды 80x — непротарифицированные номера организаций"}
 {"id": "neg2-mail-08", "lang": "ru", "direction": "input", "source": "user", "text": "Адрес a@b — некорректный", "expect": []}
+{"id": "phone-08", "lang": "ru", "direction": "input", "source": "user", "text": "тел. +7 300 763‑88‑13", "expect": ["pii.phone"], "note": "неразрывные пробелы и дефисы"}
+{"id": "email-05", "lang": "ru", "direction": "input", "source": "user", "text": "андрей.петров@pochta.test", "expect": ["pii.email"], "note": "«й» в форме NFD"}
+{"id": "pass-08", "lang": "ru", "direction": "input", "source": "user", "text": "Паспорт: 0023 093695, ИНН 0017755112", "expect": ["pii.passport", "pii.inn"], "note": "10 цифр после «ИНН» — ИНН, хотя «паспорт» тоже в окне"}
+{"id": "neg2-date-10", "lang": "ru", "direction": "input", "source": "user", "text": "Приказ от 12.03.2024 г. регламентирует порядок", "expect": [], "note": "«г. р» — начало слова, а не «г. р.»"}
+{"id": "neg2-date-11", "lang": "ru", "direction": "input", "source": "user", "text": "Отчётный год. Расчёт от 01.11.2023", "expect": [], "note": "«д. р» внутри «год. Р»"}
+{"id": "neg2-date-12", "lang": "ru", "direction": "input", "source": "user", "text": "Рождество 07.01.2025, офис закрыт", "expect": []}
+{"id": "neg2-date-13", "lang": "en", "direction": "input", "source": "user", "text": "Adobe Reader 2024-03-12", "expect": [], "note": "«dob» внутри «adobe»"}
+{"id": "neg2-date-14", "lang": "ru", "direction": "input", "source": "user", "text": "День рождения компании 12.03.2015", "expect": [], "note": "дата основания организации"}
+{"id": "neg2-pass-06", "lang": "ru", "direction": "input", "source": "user", "text": "Вторая серия набрала 1000000000 просмотров", "expect": [], "note": "«серия» без «паспорт»"}
+{"id": "neg2-pass-07", "lang": "en", "direction": "input", "source": "user", "text": "2024 03 15 100000 INFO", "expect": [], "note": "раскладка паспорта внутри длинной последовательности"}
+{"id": "neg2-mail-09", "lang": "mixed", "direction": "input", "source": "user", "text": "logo@2x.png и icon@3x.webp", "expect": [], "note": "имена файлов"}
