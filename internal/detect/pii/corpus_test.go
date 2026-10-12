@@ -8,8 +8,11 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/detect/corpus"
 )
 
-// Корпус детектора проходит с полнотой и точностью не ниже порогов из
-// docs/detectors.md (сводная проверка — make detector-quality).
+// Корпус детектора проходит без сбоев, ложных срабатываний и пропусков:
+// в docs/detectors.md зафиксированы точность и полнота 1,000, поэтому любая
+// ошибка на корпусе — регрессия. Сводная проверка с порогами — make
+// detector-quality; если в таблицу внесут значения ниже 1, здесь нужно
+// перейти на те же пороги.
 func TestCorpus(t *testing.T) {
 	ss, err := corpus.Load("../../../testdata/corpus/pii.ru")
 	if err != nil {
@@ -20,7 +23,7 @@ func TestCorpus(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("примеров %d, точность %.3f, полнота %.3f, ложные %v, пропуски %v", rep.Samples, rep.Total.Precision(), rep.Total.Recall(), rep.FalsePos, rep.Missed)
-	if len(rep.Errors) > 0 {
-		t.Fatalf("сбои: %v", rep.Errors)
+	if len(rep.Errors) > 0 || len(rep.FalsePos) > 0 || len(rep.Missed) > 0 {
+		t.Fatalf("сбои %v, ложные срабатывания %v, пропуски %v", rep.Errors, rep.FalsePos, rep.Missed)
 	}
 }

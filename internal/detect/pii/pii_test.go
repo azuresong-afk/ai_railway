@@ -18,7 +18,7 @@ func find(t testing.TB, text string, dir detect.Direction) []detect.Finding {
 		t.Fatal(err)
 	}
 	for _, f := range fs {
-		if err := detect.ValidateFinding(f, New(), len(text)); err != nil {
+		if err := detect.ValidateFinding(f, New(), text); err != nil {
 			t.Fatalf("%q: %v", text, err)
 		}
 	}
@@ -267,7 +267,7 @@ func FuzzDetect(f *testing.F) {
 	f.Add("тел.\u00a0" + SynthPhone(2) + ", андре\u0438\u0306@pochta.test, 0.6366197723675814")
 	f.Fuzz(func(t *testing.T, text string) {
 		for _, fd := range find(t, text, detect.Input) {
-			if !runeBoundary(text, fd.Start) || !runeBoundary(text, fd.End) {
+			if !detect.OnRuneBoundary(text, fd.Start) || !detect.OnRuneBoundary(text, fd.End) {
 				t.Fatalf("позиции [%d, %d) не на границах символов", fd.Start, fd.End)
 			}
 			if v := text[fd.Start:fd.End]; !validValue(fd.Category, v) {
@@ -275,18 +275,6 @@ func FuzzDetect(f *testing.F) {
 			}
 		}
 	})
-}
-
-// runeBoundary — позиция p не разрезает символ UTF-8: совпадает с началом
-// символа при декодировании text слева направо (одиночный байт продолжения в
-// невалидном тексте — отдельный символ).
-func runeBoundary(text string, p int) bool {
-	for i := range text {
-		if i >= p {
-			return i == p
-		}
-	}
-	return p == len(text)
 }
 
 // validValue — значение находки соответствует категории.

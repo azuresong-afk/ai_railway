@@ -90,6 +90,10 @@ func ParseTable(doc string) (map[string]Row, error) {
 		if r.Threshold, _, err = metric(cells[7]); err != nil {
 			return nil, fmt.Errorf("%s: порог: %w", r.ID, err)
 		}
+		// Больший порог фактически выключает проверку регрессии.
+		if r.Threshold > MaxThreshold {
+			return nil, fmt.Errorf("%s: порог регрессии %s больше %v", r.ID, cells[7], MaxThreshold)
+		}
 		r.Fixed = r.PrecisionSet && recallSet
 		if _, dup := rows[r.ID]; dup {
 			return nil, fmt.Errorf("детектор %s в таблице дважды", r.ID)
@@ -98,6 +102,9 @@ func ParseTable(doc string) (map[string]Row, error) {
 	}
 	return rows, nil
 }
+
+// MaxThreshold — наибольший допустимый порог регрессии.
+const MaxThreshold = 0.1
 
 // metric — число 0–1 с запятой или точкой; «—» — ещё не зафиксировано.
 func metric(s string) (float64, bool, error) {

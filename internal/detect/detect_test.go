@@ -109,7 +109,7 @@ func TestRegistryRun(t *testing.T) {
 func TestValidateFinding(t *testing.T) {
 	d := fakeDetector{id: "a"}
 	ok := Finding{Detector: "a", Version: "1.0.0", Category: "pii.snils", Threat: "DM-31", Score: 0.5, Start: 1, End: 3}
-	if err := ValidateFinding(ok, d, 3); err != nil {
+	if err := ValidateFinding(ok, d, "abc"); err != nil {
 		t.Fatal(err)
 	}
 	for name, mod := range map[string]func(*Finding){
@@ -126,9 +126,50 @@ func TestValidateFinding(t *testing.T) {
 	} {
 		f := ok
 		mod(&f)
-		if err := ValidateFinding(f, d, 3); err == nil {
+		if err := ValidateFinding(f, d, "abc"); err == nil {
 			t.Errorf("%s: ожидалась ошибка", name)
 		}
+	}
+	// Позиция посреди символа: «ж» занимает байты 1–2.
+	mid := ok
+	mid.Start, mid.End = 2, 3
+	if err := ValidateFinding(mid, d, "aжb"); err == nil {
+		t.Fatal("позиция посреди символа принята")
+	}
+}
+
+func TestOnRuneBoundary(t *testing.T) {
+	for _, c := range []struct {
+		text string
+		p    int
+		want bool
+	}{
+		{"aжb", 0, true}, {"aжb", 1, true}, {"aжb", 2, false}, {"aжb", 3, true}, {"aжb", 4, true},
+		{"aжb", 5, false}, {"aжb", -1, false},
+		{"€x", 1, false}, {"€x", 2, false}, {"€x", 3, true}, // € — 3 байта
+		{"😀", 3, false}, {"😀", 4, true}, // 4 байта
+		{"0@0.AA\x82", 6, true}, // одиночный байт продолжения — отдельный символ
+		{"\xe2\x80A", 1, true},  // неполная последовательность: каждый байт — символ
+		{"\xe2\x82\xac\x82", 3, true}, {"\xe2\x82\xac\x82", 2, false},
+	} {
+		if got := OnRuneBoundary(c.text, c.p); got != c.want {
+			t.Errorf("%q, %d: %v", c.text, c.p, got)
+		}
+	}
+}
+
+// Отмена вызывающим (клиент ушёл) — не превышение срока детектора: в сбое
+// ошибка контекста вызывающего, а не ErrDetectorTimeout.
+func TestRunParentCancelled(t *testing.T) {
+	r, err := NewRegistry(fakeDetector{id: "hang", mode: "hang"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(20*time.Millisecond, cancel)
+	_, errs, err := r.Run(ctx, r.IDs(), Text{Text: "x", Direction: Input}, 10*time.Second)
+	if err != nil || len(errs) != 1 || !errors.Is(errs[0].Err, context.Canceled) {
+		t.Fatalf("%v, %v", errs, err)
 	}
 }
 
@@ -146,4 +187,26 @@ func BenchmarkRegistryRun(b *testing.B) {
 			b.Fatal(err)
 		}
 	}
+}
+
+// OnRuneBoundary совпадает с эталоном — обходом строки по символам.
+func FuzzOnRuneBoundary(f *testing.F) {
+	f.Add("aжb€😀", 2)
+	f.Add("0@0.AA\x82", 6)
+	f.Add("\xf0\x80\x80\x80\x80", 3)
+	f.Fuzz(func(t *testing.T, text string, p int) {
+		want := p == len(text)
+		for i := range text {
+			if i >= p {
+				want = i == p
+				break
+			}
+		}
+		if p < 0 || p > len(text) {
+			want = false
+		}
+		if got := OnRuneBoundary(text, p); got != want {
+			t.Fatalf("%q, %d: %v, ожидалось %v", text, p, got, want)
+		}
+	})
 }

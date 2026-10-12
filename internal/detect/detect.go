@@ -9,6 +9,7 @@ import (
 	"slices"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // Direction — направление проверки.
@@ -78,8 +79,10 @@ var (
 )
 
 // ValidateFinding проверяет находку относительно текста: детектор с ошибкой
-// не должен испортить событие или маскирование (неверные позиции).
-func ValidateFinding(f Finding, d Detector, textLen int) error {
+// не должен испортить событие или маскирование (неверные позиции, в том
+// числе посреди символа UTF-8 — маскирование оставило бы обрывок символа).
+func ValidateFinding(f Finding, d Detector, text string) error {
+	textLen := len(text)
 	switch {
 	case f.Detector != d.ID() || f.Version != d.Version():
 		return errors.New("находка: детектор или версия не совпадают")
@@ -91,10 +94,32 @@ func ValidateFinding(f Finding, d Detector, textLen int) error {
 		return fmt.Errorf("находка: оценка %v вне 0–1", f.Score)
 	case f.Start < 0 || f.End < f.Start || f.End > textLen:
 		return fmt.Errorf("находка: позиции [%d, %d) вне текста длиной %d", f.Start, f.End, textLen)
+	case !OnRuneBoundary(text, f.Start) || !OnRuneBoundary(text, f.End):
+		return fmt.Errorf("находка: позиции [%d, %d) разрезают символ UTF-8", f.Start, f.End)
 	case !ruleRe.MatchString(f.Rule):
 		return errors.New("находка: недопустимое имя правила")
 	}
 	return nil
+}
+
+// OnRuneBoundary — позиция p (0 ≤ p ≤ len(text)) не разрезает символ UTF-8:
+// совпадает с началом символа при декодировании текста слева направо.
+// В невалидном тексте одиночный байт продолжения — отдельный символ.
+// Проверка локальная: символ UTF-8 не длиннее 4 байт.
+func OnRuneBoundary(text string, p int) bool {
+	if p <= 0 || p >= len(text) {
+		return p == 0 || p == len(text)
+	}
+	if utf8.RuneStart(text[p]) {
+		return true
+	}
+	for q := p - 1; q >= 0 && q >= p-3; q-- {
+		if utf8.RuneStart(text[q]) {
+			_, size := utf8.DecodeRuneInString(text[q:])
+			return q+size <= p
+		}
+	}
+	return true
 }
 
 // Registry — зарегистрированные детекторы.
@@ -183,8 +208,8 @@ func (r *Registry) Run(ctx context.Context, ids []string, t Text, timeout time.D
 // runOne выполняет детектор со сроком. Детектор, который не реагирует на
 // контекст, продолжит работу в своей горутине, но результат уже не ждут;
 // линейное время детекторов ограничивает такую утечку.
-func runOne(ctx context.Context, d Detector, t Text, timeout time.Duration) ([]Finding, error) {
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+func runOne(parent context.Context, d Detector, t Text, timeout time.Duration) ([]Finding, error) {
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	type out struct {
 		fs  []Finding
@@ -205,17 +230,27 @@ func runOne(ctx context.Context, d Detector, t Text, timeout time.Duration) ([]F
 	case o := <-ch:
 		if o.err != nil {
 			if ctx.Err() != nil {
-				return nil, ErrDetectorTimeout
+				return nil, stopReason(parent)
 			}
 			return nil, o.err
 		}
 		for _, f := range o.fs {
-			if err := ValidateFinding(f, d, len(t.Text)); err != nil {
+			if err := ValidateFinding(f, d, t.Text); err != nil {
 				return nil, err
 			}
 		}
 		return o.fs, nil
 	case <-ctx.Done():
-		return nil, ErrDetectorTimeout
+		return nil, stopReason(parent)
 	}
+}
+
+// stopReason — почему детектор остановлен: вызывающий отменил проверку или
+// истёк его общий срок (клиент ушёл) — ошибка его контекста; иначе —
+// детектор не уложился в свой срок.
+func stopReason(parent context.Context) error {
+	if err := parent.Err(); err != nil {
+		return err
+	}
+	return ErrDetectorTimeout
 }
