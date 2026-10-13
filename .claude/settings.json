@@ -22,11 +22,11 @@
     ],
     "deny": [
       "Read(./.env)",
-      "Read(./secrets/**)",
+      "Read(/secrets/**)",
       "Read(./.dev-keys/**)",
       "Read(./.env.*)",
       "Edit(./.dev-keys/**)",
-      "Edit(./secrets/**)"
+      "Edit(/secrets/**)"
     ]
   }
 }
