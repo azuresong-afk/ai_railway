@@ -14,24 +14,30 @@ func rx(expr string) *regexp.Regexp { return regexp.MustCompile("^(?:" + expr + 
 
 // --- Отмена инструкций (injection.override, DM-01) ---
 
-// overrideEN — «ignore all previous instructions»: глагол, слова из
-// закрытого списка, объект. Захват 1 — слова между глаголом и объектом (по
-// ним вес).
-var overrideEN = rx(`(?:ignore|disregard|forget|override|bypass|discard|abandon)` + `((?:` + sep + `(?:all|any|every|each|the|your|my|of|these|those|that|this|previous|prior|above|earlier|preceding|foregoing|original|initial|system|safety|existing|current|given|old|former|developer|content|moderation))*)` + sep +
-	`(?:instructions?|rules|prompts?|directions|directives?|guidelines|guardrails|constraints|restrictions|programming|polic(?:y|ies)|filters?|limitations)\b`)
+// Отмена инструкций: глагол, слова из закрытого списка, объект — на
+// английском, русском и вперемешку («Ignore все previous инструкции» —
+// смешение языков, DM-04). Русские глаголы — повелительные формы и
+// «игнорируешь»: «игнорирует» в рассказе о других («водители игнорируют
+// все правила») — не обращение к модели. Русские слова между глаголом и
+// объектом — с падежными окончаниями. «Забудь» — и без мягкого знака
+// (транслит «zabud»).
+const (
+	verbsEN  = `ignore|disregard|forget|override|bypass|discard|abandon`
+	verbsRU  = `игнорируй(?:те)?|проигнорируй(?:те)?|игнорируешь|забуд[ьъ]?(?:те)?|отмени(?:те)?|не обращай(?:те)? внимани[ея] на|не следуй(?:те)?|не соблюдай(?:те)?|не придерживайся|не придерживайтесь|обойди(?:те)?|отбрось(?:те)?|пренебреги(?:те)?|сбрось(?:те)?`
+	fillEN   = `all|any|every|each|the|your|my|of|these|those|that|this|previous|prior|above|earlier|preceding|foregoing|original|initial|system|safety|existing|current|given|old|former|developer|content|moderation`
+	fillRU   = `все|всем|всеми|всех|любые|любым|любыми|свои|своим|своими|своих|твои|твоим|твоими|твоих|ваши|вашим|вашими|ваших|мои|моим|моими|моих|эти|этим|этими|этих|те|тем|теми|тех|выше|ранее|(?:предыдущ|прошл|прежн|предшествующ|вышеуказанн|вышеизложенн|исходн|первоначальн|изначальн|системн|данн|полученн|изложенн|приведенн|заданн|текущ|стар|установленн|встроенн)\p{L}*`
+	objectEN = `(?:instructions?|rules|prompts?|directions|directives?|guidelines|guardrails|constraints|restrictions|programming|polic(?:y|ies)|filters?|limitations)\b`
+	objectRU = `(?:инструкци|правил|указани|ограничени|промпт|установк|директив|запрет)\p{L}*`
+)
 
-// overrideRU — повелительные формы (и «игнорируешь»): «игнорирует» в
-// рассказе о других («водители игнорируют все правила») — не обращение к
-// модели. Слова между глаголом и объектом — с падежными окончаниями.
-var overrideRU = rx(`(?:игнорируй(?:те)?|проигнорируй(?:те)?|игнорируешь|забудь(?:те)?|отмени(?:те)?|не обращай(?:те)? внимани[ея] на|не следуй(?:те)?|не соблюдай(?:те)?|не придерживайся|не придерживайтесь|обойди(?:те)?|отбрось(?:те)?|пренебреги(?:те)?|сбрось(?:те)?)` +
-	`((?:` + sep + `(?:все|всем|всеми|всех|любые|любым|любыми|свои|своим|своими|своих|твои|твоим|твоими|твоих|ваши|вашим|вашими|ваших|мои|моим|моими|моих|эти|этим|этими|этих|те|тем|теми|тех|выше|ранее|(?:предыдущ|прошл|прежн|предшествующ|вышеуказанн|вышеизложенн|исходн|первоначальн|изначальн|системн|данн|полученн|изложенн|приведенн|заданн|текущ|стар|установленн|встроенн)\p{L}*))*)` + sep +
-	`(?:инструкци|правил|указани|ограничени|промпт|установк|директив|запрет)\p{L}*`)
+// overrideRe — шаблон отмены. Захват 1 — слова между глаголом и объектом
+// (по ним вес).
+var overrideRe = rx(`(?:` + verbsEN + `|` + verbsRU + `)((?:` + sep + `(?:` + fillEN + `|` + fillRU + `))*)` + sep + `(?:` + objectEN + `|` + objectRU + `)`)
 
-// overrideAnchorsEN, overrideAnchorsRU — опорные слова для overrideEN и
-// overrideRU.
+// overrideAnchorsEN, overrideAnchorsRU — опорные слова шаблона отмены.
 var (
 	overrideAnchorsEN = []string{"ignore", "disregard", "forget", "override", "bypass", "discard", "abandon"}
-	overrideAnchorsRU = []string{"игнорир", "проигнорир", "забудь", "отмени", "не обращай", "не следуй", "не соблюдай", "не придерживай", "обойди", "отбрось", "пренебреги", "сбрось"}
+	overrideAnchorsRU = []string{"игнорир", "проигнорир", "забуд", "отмени", "не обращай", "не следуй", "не соблюдай", "не придерживай", "обойди", "отбрось", "пренебреги", "сбрось"}
 )
 
 // Слова между глаголом и объектом (сравниваются по началу: падежи).
@@ -131,8 +137,8 @@ var personaPhrases = []phrase{
 	{"role-play as", nil, "persona", 0.15},
 	{"imagine you are", nil, "persona", 0.15},
 	{"behave like", nil, "persona", 0.15},
-	{"ты теперь", nil, "persona", 0.15},
-	{"теперь ты", nil, "persona", 0.15},
+	{"ты тепер", nil, "persona", 0.15}, // и транслит без мягкого знака («ty teper»)
+	{"тепер", rx(`теперь?\s+(?:ты|вы)`), "persona", 0.15},
 	{"представь", rx(`представь(?:те)?,?\s+что\s+(?:ты|вы)`), "persona", 0.15},
 	{"притворись", nil, "persona", 0.2},
 	{"веди себя как", nil, "persona", 0.15},
@@ -280,3 +286,36 @@ var fmtWords = []string{"chatml", "chat template", "chat_template", "special tok
 // статья): веса шаблонов отмены, роли и извлечения снижаются.
 var metaWords = []string{"prompt injection", "промпт-инъекц", "инъекци", "injection attack", "пример атаки", "example of",
 	"how to protect", "how to prevent", "how to detect", "как защит", "защититься", "обнаружить атак", "jailbreak attempt"}
+
+// --- Обфускация (injection.obfuscation, DM-04) ---
+
+// leetLat, leetCyr — цифры и знаки вместо букв в слове латиницей и
+// кириллицей.
+var (
+	leetLat = map[rune]string{'0': "o", '1': "i", '3': "e", '4': "a", '5': "s", '7': "t", '8': "b", '@': "a", '$': "s"}
+	leetCyr = map[rune]string{'0': "о", '3': "з", '4': "ч", '6': "б", '@': "а"}
+)
+
+// Кавычки по обе стороны стыка при склейке строк.
+const (
+	closeQuotes = `"'»”` + "`"
+	openQuotes  = `"'«“` + "`"
+)
+
+// translitStems — основы шаблонов в транслите: без них транслит не
+// строится. Только русские основы: «prompt» есть и в английском тексте.
+var translitStems = []string{"ignorir", "zabud", "otmeni", "obrashch", "ne sled", "ne sobl", "pokazh", "vyvedi", "povtori", "sistemn",
+	"instrukc", "instrukts", "ogranichen", "cenzur", "tsenzur", "predstav", "pritvoris", "teper", "pravil", "ukazani", "zapret"}
+
+// translitPairs — сочетания латиницы (сначала длинные), translitOne —
+// одиночные буквы. «y» — отдельно: «й» после гласной, иначе «ы».
+var (
+	translitPairs = [][2]string{{"shch", "щ"}, {"sch", "щ"}, {"zh", "ж"}, {"kh", "х"}, {"ch", "ч"}, {"sh", "ш"}, {"ts", "ц"},
+		{"yu", "ю"}, {"ya", "я"}, {"yo", "е"}, {"ye", "е"}, {"ju", "ю"}, {"ja", "я"}, {"jo", "е"}}
+	translitOne = map[byte]string{'a': "а", 'b': "б", 'v': "в", 'g': "г", 'd': "д", 'e': "е", 'z': "з", 'i': "и", 'j': "й", 'k': "к",
+		'l': "л", 'm': "м", 'n': "н", 'o': "о", 'p': "п", 'r': "р", 's': "с", 't': "т", 'u': "у", 'f': "ф", 'h': "х", 'c': "ц",
+		'w': "в", 'x': "кс", 'q': "к", '\'': "ь"}
+)
+
+// rot13Hints — текст просит расшифровать ROT13.
+var rot13Hints = []string{"rot13", "rot-13", "rot 13", "rot_13", "caesar", "цезар"}

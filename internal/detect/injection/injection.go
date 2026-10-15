@@ -2,8 +2,9 @@
 // инъекции в промпт по шаблонам RU/EN (ТЗ, 5.2). Часть 1 (задача 1.15):
 // отмена инструкций, смена роли со снятием ограничений, извлечение
 // системного промпта, подделка структуры диалога (служебные токены,
-// фальшивые системные сообщения, many-shot). Часть 2 (задача 1.16):
-// декодирование кодировок, транслит, смешение языков.
+// фальшивые системные сообщения, many-shot). Часть 2 (задача 1.16,
+// obfuscation.go): декодирование кодировок, leetspeak, разрядка, склейка
+// строк, транслит, ROT13, смешение языков.
 //
 // Скоринг, а не единичные совпадения: у каждого сигнала свой вес; оценка
 // категории — вероятностное «или» её правил (у правила — самый сильный
@@ -17,7 +18,6 @@ package injection
 
 import (
 	"context"
-	"regexp"
 	"sort"
 	"strings"
 	"unicode"
@@ -30,7 +30,7 @@ import (
 // ID и версия детектора.
 const (
 	ID      = "injection.heuristic"
-	Version = "1.0.0"
+	Version = "1.1.0"
 )
 
 // Категории находок.
@@ -39,11 +39,14 @@ const (
 	CatRole      = "injection.role"
 	CatLeak      = "injection.prompt_leak"
 	CatStructure = "injection.structure"
+	// CatObfuscation — признак найден после декодирования или
+	// преобразования текста (DM-04); правило — «способ.правило».
+	CatObfuscation = "injection.obfuscation"
 )
 
 // threats — строка матрицы по категории для запроса пользователя; в
 // документах RAG и ответах инструментов — DM-07 (косвенная инъекция).
-var threats = map[string]string{CatOverride: "DM-01", CatRole: "DM-01", CatLeak: "DM-08", CatStructure: "DM-02"}
+var threats = map[string]string{CatOverride: "DM-01", CatRole: "DM-01", CatLeak: "DM-08", CatStructure: "DM-02", CatObfuscation: "DM-04"}
 
 // Detector — детектор injection.heuristic. Без состояния, безопасен для
 // одновременного вызова.
@@ -73,20 +76,32 @@ const (
 
 // Detect находит признаки инъекции в тексте.
 func (Detector) Detect(ctx context.Context, t detect.Text) ([]detect.Finding, error) {
-	st := &state{text: t.Text, indirect: t.Source == detect.SourceRAG || t.Source == detect.SourceTool, best: map[ruleKey]signal{}}
-	for cs := 0; cs < len(t.Text); {
+	st := newState(t.Text, t.Source == detect.SourceRAG || t.Source == detect.SourceTool)
+	if err := st.run(ctx); err != nil {
+		return nil, err
+	}
+	return st.findings(), nil
+}
+
+func newState(text string, indirect bool) *state {
+	return &state{text: text, indirect: indirect, best: map[ruleKey]signal{}}
+}
+
+// run разбирает текст по частям.
+func (st *state) run(ctx context.Context) error {
+	for cs := 0; cs < len(st.text); {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return err
 		}
-		ce := runeAlign(t.Text, min(cs+chunkSize, len(t.Text)))
-		we := runeAlign(t.Text, min(ce+overlap, len(t.Text)))
-		bs := runeAlign(t.Text, max(cs-back, 0))
+		ce := runeAlign(st.text, min(cs+chunkSize, len(st.text)))
+		we := runeAlign(st.text, min(ce+overlap, len(st.text)))
+		bs := runeAlign(st.text, max(cs-back, 0))
 		if err := st.chunk(ctx, bs, cs, ce, we); err != nil {
-			return nil, err
+			return err
 		}
 		cs = ce
 	}
-	return st.findings(), nil
+	return nil
 }
 
 func runeAlign(s string, i int) int {
@@ -104,6 +119,7 @@ type signal struct {
 	s, e      int
 	quoted    bool // шаблон в кавычках — скорее цитата
 	dampable  bool // вес снижается, если текст обсуждает атаки
+	chg       bool // задевает символы, изменённые преобразованием
 }
 
 // eff — вес с учётом кавычек.
@@ -124,23 +140,45 @@ type state struct {
 	meta     bool // текст обсуждает атаки
 	fmt      bool // текст обсуждает форматы чата
 	best     map[ruleKey]signal
+	depth    int // уровень вложенности декодированного текста
 	// many-shot: метки реплик в начале строк.
 	turns, userTurns, aiTurns int
 	turnFirst, turnLast       int
 }
 
-// view — часть текста [bs, we) после Clean и приведения к нижнему регистру.
+// view — часть текста [bs, we) после Clean и приведения к нижнему регистру
+// или её производное представление (obfuscation.go).
 type view struct {
 	low     string
+	clean   string // после Clean, до приведения регистра (только основное)
 	offs    []int
 	bs      int
 	cs, ce  int // своя часть [cs, ce); до и после — контекст
 	lineBOL bool
+	// Производное представление: способ преобразования и префиксные суммы
+	// изменённых байтов.
+	method string
+	chg    []int32
 	// Смена роли и снятие ограничений во всём окне — для пар (pairs).
 	persona, removal []signal
 }
 
 func (v *view) orig(i int) int { return v.bs + v.offs[i] }
+
+// changed — фрагмент [i, j) задевает изменённые преобразованием байты.
+func (v *view) changed(i, j int) bool { return v.chg != nil && v.chg[j]-v.chg[i] > 0 }
+
+// mark переносит сигнал производного представления в категорию обфускации.
+func (v *view) mark(sg signal) signal {
+	if v.method == "" {
+		return sg
+	}
+	sg.cat, sg.rule = CatObfuscation, v.method+"."+sg.rule
+	if v.method == "concat" {
+		sg.quoted = false // части склейки всегда в кавычках
+	}
+	return sg
+}
 
 // own — позиция i относится к своей части, а не к контексту (сигнал в
 // контексте достанется соседней части).
@@ -149,15 +187,16 @@ func (v *view) own(i int) bool { o := v.orig(i); return o >= v.cs && o < v.ce }
 func (st *state) add(v *view, cat, rule string, w float64, i, j int, dampable bool) {
 	// Название DAN-промпта пишут в кавычках в самом промпте.
 	q := rule != "dan" && quoted(v.low, i, j)
-	sg := signal{cat: cat, rule: rule, w: w, s: v.orig(i), e: v.orig(j), quoted: q, dampable: dampable}
+	sg := signal{cat: cat, rule: rule, w: w, s: v.orig(i), e: v.orig(j), quoted: q, dampable: dampable, chg: v.changed(i, j)}
 	switch rule {
 	case "persona":
 		v.persona = append(v.persona, sg)
 	case "removal":
 		v.removal = append(v.removal, sg)
 	}
-	if v.own(i) {
-		st.keep(sg)
+	// В производном представлении — только то, чего нет в основном.
+	if v.own(i) && (v.method == "" || sg.chg) {
+		st.keep(v.mark(sg))
 	}
 }
 
@@ -169,12 +208,35 @@ func (st *state) keep(sg signal) {
 	}
 }
 
-// chunk ищет сигналы в части [cs, ce) исходного текста, окно — [bs, we).
+// chunk ищет сигналы в части [cs, ce) исходного текста, окно — [bs, we):
+// в основном представлении, в производных (leetspeak, транслит…) и в
+// декодированных отрезках.
 func (st *state) chunk(ctx context.Context, bs, cs, ce, we int) error {
 	clean, offs := unihidden.Clean(st.text[bs:we])
-	v := &view{low: fold(clean), offs: offs, bs: bs, cs: cs, ce: ce, lineBOL: bs == 0 || st.text[bs-1] == '\n'}
+	v := &view{low: fold(clean), clean: clean, offs: offs, bs: bs, cs: cs, ce: ce, lineBOL: bs == 0 || st.text[bs-1] == '\n'}
 	st.meta = st.meta || containsAny(v.low, metaWords)
 	st.fmt = st.fmt || containsAny(v.low, fmtWords)
+	if err := st.scan(ctx, v); err != nil {
+		return err
+	}
+	for _, t := range transforms {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if b := t.build(v.low); b != nil {
+			if err := st.scan(ctx, v.derive(t.method, b)); err != nil {
+				return err
+			}
+		}
+	}
+	if st.depth < maxDepth {
+		return st.segments(ctx, v)
+	}
+	return nil
+}
+
+// scan проверяет представление всеми шаблонами.
+func (st *state) scan(ctx context.Context, v *view) error {
 	steps := []func(*view) error{
 		func(v *view) error { return st.overrides(ctx, v) },
 		func(v *view) error { return st.phrases(ctx, v, CatOverride, overridePhrases, true) },
@@ -230,9 +292,10 @@ func (st *state) pairs(v *view) {
 		if !isOwn(sg) {
 			other = own[1-k]
 		}
-		if other.ok && sg.s-other.sg.e <= 300 {
+		// В производном представлении — пара, которой нет в основном.
+		if other.ok && sg.s-other.sg.e <= 300 && (v.method == "" || sg.chg || other.sg.chg) {
 			p := other.sg
-			st.keep(signal{cat: CatRole, rule: "persona_removal", w: 0.4, s: p.s, e: max(p.e, sg.e), dampable: true, quoted: p.quoted && sg.quoted})
+			st.keep(v.mark(signal{cat: CatRole, rule: "persona_removal", w: 0.4, s: p.s, e: max(p.e, sg.e), dampable: true, quoted: p.quoted && sg.quoted}))
 		}
 		if !seen[k].ok || sg.e > seen[k].sg.e {
 			seen[k] = reach{sg, true}
@@ -250,22 +313,20 @@ func (st *state) pairs(v *view) {
 // (пользователь правит своё же указание); «твои», «системные» — 0,85;
 // объект с уточнением предлогом («все фильтры в таблице», «предыдущие
 // инструкции по оформлению») — 0,35; «все», «предыдущие» — 0,85; иначе 0,7.
+// Шаблон с английскими и русскими словами сразу («Ignore все previous
+// инструкции») — смешение языков: обфускация, правило
+// «mixed.ignore_instructions».
 func (st *state) overrides(ctx context.Context, v *view) error {
-	groups := []struct {
+	for _, g := range []struct {
 		anchors []string
-		re      *regexp.Regexp
 		en      bool
-	}{
-		{overrideAnchorsEN, overrideEN, true},
-		{overrideAnchorsRU, overrideRU, false},
-	}
-	for _, g := range groups {
+	}{{overrideAnchorsEN, true}, {overrideAnchorsRU, false}} {
 		for _, a := range g.anchors {
 			err := indexWord(ctx, v.low, a, func(i int) {
 				if negated(v.low, i) || g.en && !imperativeEN(v.low, i) {
 					return
 				}
-				m := g.re.FindStringSubmatchIndex(v.low[i:min(i+400, len(v.low))])
+				m := overrideRe.FindStringSubmatchIndex(v.low[i:min(i+400, len(v.low))])
 				if m == nil {
 					return
 				}
@@ -281,6 +342,10 @@ func (st *state) overrides(ctx context.Context, v *view) error {
 				case hasPrefix(words, strongWords):
 					w = 0.85
 				}
+				if mixedScript(v.low[i : i+m[1]]) {
+					st.add(v, CatObfuscation, "mixed.ignore_instructions", w, i, i+m[1], true)
+					return
+				}
 				st.add(v, CatOverride, "ignore_instructions", w, i, i+m[1], true)
 			})
 			if err != nil {
@@ -289,6 +354,20 @@ func (st *state) overrides(ctx context.Context, v *view) error {
 		}
 	}
 	return nil
+}
+
+// mixedScript — во фрагменте есть и латиница, и кириллица.
+func mixedScript(s string) bool {
+	lat, cyr := false, false
+	for _, r := range s {
+		switch {
+		case r < 0x80 && unicode.IsLetter(r):
+			lat = true
+		case unicode.Is(unicode.Cyrillic, r):
+			cyr = true
+		}
+	}
+	return lat && cyr
 }
 
 // phrases — сигналы-фразы с опорным словом и необязательным выражением.
@@ -453,7 +532,8 @@ func (st *state) line(v *view, i int) {
 	rest := v.low[j:min(j+80, len(v.low))] // самая длинная метка — 52 байта
 	for _, l := range turnLabels {
 		if strings.HasPrefix(rest, l.label) {
-			if !v.own(j) {
+			// Реплики считаются только в основном представлении.
+			if !v.own(j) || v.method != "" {
 				return
 			}
 			o := v.orig(j)
@@ -486,25 +566,22 @@ func (st *state) line(v *view, i int) {
 	}
 }
 
-// findings сводит сигналы в находки: одна на категорию — по самому сильному
-// сигналу, оценка — вероятностное «или» правил категории.
-func (st *state) findings() []detect.Finding {
-	// Many-shot: десятки вложенных реплик пользователя и ассистента.
-	if st.userTurns > 0 && st.aiTurns > 0 {
-		switch {
-		case st.turns >= 24:
-			st.keep(signal{cat: CatStructure, rule: "many_shot", w: 0.8, s: st.turnFirst, e: st.turnLast})
-		case st.turns >= 8:
-			st.keep(signal{cat: CatStructure, rule: "many_shot", w: 0.4, s: st.turnFirst, e: st.turnLast})
-		}
+// manyShot — десятки вложенных реплик пользователя и ассистента.
+func (st *state) manyShot() {
+	if st.userTurns == 0 || st.aiTurns == 0 {
+		return
 	}
-	type agg struct {
-		miss float64 // Π(1 − w)
-		best signal
-		bw   float64
+	switch {
+	case st.turns >= 24:
+		st.keep(signal{cat: CatStructure, rule: "many_shot", w: 0.8, s: st.turnFirst, e: st.turnLast})
+	case st.turns >= 8:
+		st.keep(signal{cat: CatStructure, rule: "many_shot", w: 0.4, s: st.turnFirst, e: st.turnLast})
 	}
-	// Порядок обхода — по ключам: результат не зависит от порядка карты
-	// (и в последних битах оценки).
+}
+
+// keys — правила по порядку: результат не зависит от порядка обхода карты
+// (и в последних битах оценки).
+func (st *state) keys() []ruleKey {
 	keys := make([]ruleKey, 0, len(st.best))
 	for k := range st.best {
 		keys = append(keys, k)
@@ -512,16 +589,35 @@ func (st *state) findings() []detect.Finding {
 	sort.Slice(keys, func(i, j int) bool {
 		return keys[i].cat < keys[j].cat || keys[i].cat == keys[j].cat && keys[i].rule < keys[j].rule
 	})
+	return keys
+}
+
+// weight — вес сигнала с понижениями: кавычки, обсуждение атак, обсуждение
+// форматов чата (для служебных токенов).
+func (st *state) weight(sg signal) float64 {
+	w := sg.eff()
+	if st.meta && sg.dampable {
+		w *= 0.7
+	}
+	if st.fmt && sg.rule == "token" {
+		w *= 0.5
+	}
+	return w
+}
+
+// findings сводит сигналы в находки: одна на категорию — по самому сильному
+// сигналу, оценка — вероятностное «или» правил категории.
+func (st *state) findings() []detect.Finding {
+	st.manyShot()
+	type agg struct {
+		miss float64 // Π(1 − w)
+		best signal
+		bw   float64
+	}
 	cats := map[string]*agg{}
-	for _, k := range keys {
+	for _, k := range st.keys() {
 		sg := st.best[k]
-		w := sg.eff()
-		if st.meta && sg.dampable {
-			w *= 0.7
-		}
-		if st.fmt && sg.rule == "token" {
-			w *= 0.5
-		}
+		w := st.weight(sg)
 		a := cats[sg.cat]
 		if a == nil {
 			a = &agg{miss: 1}
@@ -707,7 +803,17 @@ func qualified(s string, j int) bool {
 	return false
 }
 
-func isLetterOrDigit(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }
+// isLetterOrDigit — буква или цифра; ASCII и основная кириллица — без
+// таблиц Unicode (самый частый случай).
+func isLetterOrDigit(r rune) bool {
+	switch {
+	case r < 0x80:
+		return 'a' <= r && r <= 'z' || 'A' <= r && r <= 'Z' || '0' <= r && r <= '9'
+	case r >= 0x410 && r <= 0x44F || r == 0x401 || r == 0x451:
+		return true
+	}
+	return unicode.IsLetter(r) || unicode.IsDigit(r)
+}
 
 // wordStart — позиция i — начало слова (перед ней не буква и не цифра).
 func wordStart(s string, i int) bool {
