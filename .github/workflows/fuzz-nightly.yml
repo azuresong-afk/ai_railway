@@ -1,0 +1,40 @@
+# Ночные проверки: длительный прогон всех fuzz-целей (ТЗ, 8.5) и проверка
+# уязвимостей зависимостей — новые уязвимости появляются и без изменений кода
+# (ТЗ, 8.6). Найденные падения Go сохраняет в testdata/fuzz/ пакета — они
+# выгружаются для разбора.
+name: fuzz-nightly
+
+on:
+  schedule:
+    - cron: "17 1 * * *" # 04:17 по Москве
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - name: Получить код
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Сборочный образ
+        run: make build-image
+
+      - name: Уязвимости зависимостей
+        run: make vuln-docker
+
+      - name: Длительный фаззинг
+        if: always()
+        run: make fuzz-long-docker
+
+      - name: Найденные падения
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fuzz-crashers
+          path: "**/testdata/fuzz/**"

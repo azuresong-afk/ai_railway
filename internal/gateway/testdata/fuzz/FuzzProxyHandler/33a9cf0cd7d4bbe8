@@ -1,0 +1,7 @@
+go test fuzz v1
+string("POST")
+string("/v1//chat/completions")
+[]byte("0")
+string("0")
+string("0")
+string("0")

@@ -1,0 +1,1 @@
+{"error":{"grpcCode":3,"httpCode":400,"message":"Invalid temperature value","httpStatus":"Bad Request","details":[]}}

@@ -1,0 +1,134 @@
+# Конфигурация golangci-lint (формат v2). Правила продиктованы CLAUDE.md и ТЗ, 8.3–8.4.
+# Ослаблять правила ради «зелёной» сборки нельзя: ложное срабатывание
+# подавляется точечно — //nolint:<линтер> // <обоснование> — или размечается
+# в docs/cert/sast-triage/. Работу запретов проверяет make lint-selftest.
+version: "2"
+
+run:
+  timeout: 10m
+  tests: true
+  # Сквозные тесты (test/e2e) собираются только с тегом e2e — линтеры видят и их.
+  build-tags: [e2e]
+  modules-download-mode: vendor
+
+linters:
+  default: none
+  enable:
+    - bodyclose       # незакрытые тела HTTP-ответов
+    - depguard        # запрещённые импорты (криптография, unsafe, math/rand, os/exec, reflect, pprof)
+    - durationcheck   # ошибки умножения time.Duration
+    - errcheck        # непроверенные ошибки
+    - errorlint       # сравнение ошибок без errors.Is/As
+    - forbidigo       # запрещённые вызовы
+    # gosec запускается отдельно, в make sast: его срабатывания проходят разметку
+    # docs/cert/sast-triage/ (ТЗ, 8.4). make sast входит в make check.
+    - govet
+    - ineffassign
+    - nilerr          # возврат nil вместо ошибки
+    - noctx           # исходящие HTTP-запросы без контекста
+    - nolintlint      # каждое //nolint — с линтером и обоснованием
+    - rowserrcheck    # непроверенная ошибка итерации строк SQL
+    - sqlclosecheck   # незакрытые rows и statements
+    - staticcheck
+    - unused
+
+  settings:
+    depguard:
+      rules:
+        crypto:
+          # Криптография — только в internal/crypto (ТЗ, 10.2).
+          list-mode: lax
+          files:
+            - "$all"
+            - "!**/internal/crypto/**"
+          deny:
+            - pkg: "crypto"
+              desc: "криптография только в internal/crypto (ТЗ, 10.2); получите готовый объект из internal/crypto"
+            - pkg: "golang.org/x/crypto"
+              desc: "криптография только в internal/crypto (ТЗ, 10.2)"
+        unsafe-and-rand:
+          # Без unsafe, без math/rand — во всём коде, включая тесты и утилиты.
+          list-mode: lax
+          files:
+            - "$all"
+          deny:
+            - pkg: "unsafe"
+              desc: "unsafe запрещён (CLAUDE.md)"
+            - pkg: "math/rand"
+              desc: "math/rand запрещён; случайность — Random из internal/crypto"
+            - pkg: "net/http/pprof"
+              desc: "pprof открывает лишнюю поверхность атаки"
+            - pkg: "plugin"
+              desc: "загрузка кода во время работы запрещена: обходит контроль целостности"
+        server-exec:
+          # Без os/exec в серверных компонентах и пакетах продукта.
+          list-mode: lax
+          files:
+            - "**/cmd/aisec-gateway/**"
+            - "**/cmd/aisec-server/**"
+            - "**/cmd/aisec-media/**"
+            - "**/internal/**"
+          deny:
+            - pkg: "os/exec"
+              desc: "os/exec запрещён в серверных компонентах (CLAUDE.md)"
+            - pkg: "syscall"
+              desc: "прямые системные вызовы — только по ADR (например, изоляция aisec-media) с //nolint:depguard и обоснованием"
+        product-reflect:
+          # Без reflect в коде продукта; исключение — //nolint:depguard с обоснованием.
+          list-mode: lax
+          files:
+            - "**/cmd/aisec-gateway/**"
+            - "**/cmd/aisec-server/**"
+            - "**/cmd/aisec-media/**"
+            - "**/internal/**"
+            - "!$test"
+          deny:
+            - pkg: "reflect"
+              desc: "reflect в обход типов запрещён (CLAUDE.md)"
+
+    forbidigo:
+      # Сравнение по типам: псевдоним импорта (import f "fmt") не обходит запрет.
+      analyze-types: true
+      forbid:
+        - pattern: ^print(ln)?$
+          msg: "встроенные print/println запрещены"
+        - pattern: ^fmt\.Print(f|ln)?$
+          pkg: "^fmt$"
+          msg: "вывод в stdout без явного потока; для логов — log/slog, для вывода утилит — fmt.Fprint(os.Stdout, ...)"
+        - pattern: ^log\.(Print|Fatal|Panic)(f|ln)?$
+          pkg: "^log$"
+          msg: "технические логи — только log/slog в формате JSON (ТЗ, 15)"
+        - pattern: ^os\.StartProcess$
+          pkg: "^os$"
+          msg: "запуск процессов в обход запрета os/exec"
+        - pattern: ^syscall\.(Exec|ForkExec|StartProcess)$
+          pkg: "^syscall$"
+          msg: "запуск процессов в обход запрета os/exec"
+        # Из syscall разрешён только SIGTERM для корректного завершения (ADR-0004).
+        - pattern: ^syscall\.([^S].*|S[^I].*|SI[^G].*|SIG[^T].*|SIGT[^E].*|SIGTE[^R].*|SIGTER[^M].*|SIGTERM.+|S|SI|SIG|SIGT|SIGTE|SIGTER)$
+          pkg: "^syscall$"
+          msg: "из syscall разрешён только SIGTERM (ADR-0004); прочее — отдельным ADR"
+
+    gosec:
+      config:
+        global:
+          audit: true
+
+    nolintlint:
+      allow-unused: false
+      require-explanation: true
+      require-specific: true
+
+  exclusions:
+    generated: strict
+    warn-unused: true
+
+issues:
+  # Показываются все замечания, в том числе несколько на одной строке.
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  uniq-by-line: false
+
+formatters:
+  enable:
+    - gofmt

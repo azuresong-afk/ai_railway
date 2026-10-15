@@ -1,0 +1,17 @@
+# Разметка срабатываний статического анализа (ТЗ, 8.4). Формат — README.md рядом.
+schema_version: 1
+entries:
+  - rule: gosec/G101
+    file: internal/chat/request.go
+    snippet: 'CodeMaxTokens      = "max_tokens_exceeded"'
+    verdict: false_positive
+    justification: Код ошибки в формате OpenAI для ответа приложению («max_tokens больше квоты»). Правило реагирует на слово Tokens в имени константы; это число токенов модели, а не учётные данные, секрета в строке нет.
+    author: Claude Code (ИИ-ассистент); проверяет владелец при ревью
+    date: 2026-10-06
+  - rule: gosec/G704
+    file: internal/providers/core.go
+    snippet: 'resp, err := b.client.Do(hr)'
+    verdict: false_positive
+    justification: Запрос к провайдеру собирают адаптеры (post, YandexGPT.postFolder) только на адрес, вычисленный при создании провайдера из base_url и auth_url файла конфигурации администратора (allowlist исходящих соединений, ЗИ.3); из запроса приложения адрес не берётся. Перенаправления клиент не выполняет (CheckRedirect), прокси из окружения не используются. Анализ помечает параметр функции как недоверенный, не видя, откуда он пришёл.
+    author: Claude Code (ИИ-ассистент); проверяет владелец при ревью
+    date: 2026-10-08
