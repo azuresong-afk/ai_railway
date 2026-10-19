@@ -5,6 +5,10 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/azuresong-afk/ai_railway/internal/detect"
+	"github.com/azuresong-afk/ai_railway/internal/detect/builtin"
+	"github.com/azuresong-afk/ai_railway/internal/policy"
 )
 
 func readFixture(t *testing.T) string {
@@ -21,7 +25,7 @@ func TestParseGatewayFileFixture(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(f.Providers) != 3 || len(f.Applications) != 1 {
+	if len(f.Providers) != 3 || len(f.Applications) != 1 || len(f.Policies) != 1 || len(f.Policies[0].Rules) != 2 {
 		t.Fatalf("разбор: %+v", f)
 	}
 	p := f.Providers[0]
@@ -70,6 +74,12 @@ func TestParseGatewayFileErrors(t *testing.T) {
 		"yandex без folder_id": {"    folder_id: b1gexamplefolder0000\n", ""},
 		"id":                   {"id: support-bot", "id: Support Bot"},
 		"два документа":        {"schema_version: 1", "schema_version: 1\n---\nx: 1\n---"},
+		"нет политики":         {"policy: base", "policy: nope"},
+		"политика — шаблон":    {"  - id: support-strict", "  - id: pii-strict"},
+		"режим политики":       {"mode: enforce", "mode: audit"},
+		"действие правила":     {"action: block", "action: drop"},
+		"поле правила":         {"severity: high\n", "severity: high\n        enabled: true\n"},
+		"порог":                {"threshold: 0.5", "threshold: 2"},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -88,8 +98,48 @@ func TestParseGatewayFileErrors(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "указано дважды") || !strings.Contains(err.Error(), "уже используется") {
 		t.Fatalf("повтор приложения и префикса ключа должен отвергаться: %v", err)
 	}
+	pol := base[strings.Index(base, "  - id: support-strict"):strings.Index(base, "applications:")]
+	if _, err := ParseGatewayFile(strings.NewReader(strings.Replace(base, "applications:", pol+"applications:", 1))); err == nil || !strings.Contains(err.Error(), "политика указана дважды") {
+		t.Fatalf("повтор политики должен отвергаться: %v", err)
+	}
+	if _, err := ParseGatewayFile(strings.NewReader(strings.Replace(base, "applications:", strings.Repeat(pol, MaxPolicies)+"applications:", 1))); err == nil || !strings.Contains(err.Error(), "не больше") {
+		t.Fatalf("больше %d политик: %v", MaxPolicies, err)
+	}
 	if _, err := ParseGatewayFile(strings.NewReader(strings.Repeat("#", MaxGatewayFile+1))); err == nil {
 		t.Fatal("слишком большой файл должен отвергаться")
+	}
+}
+
+// Ссылка на политику: из policies, шаблон или пусто — base в режиме самой
+// политики (решение Р7).
+func TestGatewayFilePolicyReference(t *testing.T) {
+	base := readFixture(t)
+	reg, err := detect.NewRegistry(builtin.All()...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range [][2]string{
+		{"policy: base\n    policy_mode: monitor\n", "policy: support-strict\n    policy_mode: monitor\n"},
+		{"policy: base\n    policy_mode: monitor\n", "policy: monitor-only\n"},
+		{"    policy: base\n    policy_mode: monitor\n", ""},
+	} {
+		doc := strings.Replace(base, c[0], c[1], 1)
+		f, err := ParseGatewayFile(strings.NewReader(doc))
+		if err != nil {
+			t.Fatalf("%q: %v", c[1], err)
+		}
+		a := f.Applications[0]
+		if c[1] == "" && (a.Policy != "" || a.PolicyMode != "") {
+			t.Fatalf("пустые policy и policy_mode: %+v", a)
+		}
+		// Политики фикстуры компилируются со встроенными детекторами.
+		p, err := policy.Resolve(a.Policy, f.Policies, reg)
+		if err != nil {
+			t.Fatalf("%q: %v", c[1], err)
+		}
+		if c[1] == "" && (p.ID != policy.TemplateBase || p.Mode != policy.Monitor) {
+			t.Fatalf("политика по умолчанию: %+v", p)
+		}
 	}
 }
 
