@@ -30,7 +30,7 @@ import (
 // ID и версия детектора.
 const (
 	ID      = "injection.heuristic"
-	Version = "1.1.0"
+	Version = "1.2.0"
 )
 
 // Категории находок.
@@ -104,8 +104,11 @@ func (st *state) run(ctx context.Context) error {
 	return nil
 }
 
+// runeAlign сдвигает границу части на начало символа, не больше чем на 3
+// байта (символ UTF-8 — до 4 байт): в невалидном тексте байты продолжения
+// подряд иначе сделали бы весь текст одной частью.
 func runeAlign(s string, i int) int {
-	for i < len(s) && !utf8.RuneStart(s[i]) {
+	for k := 0; k < 3 && i < len(s) && !utf8.RuneStart(s[i]); k++ {
 		i++
 	}
 	return i
@@ -117,17 +120,11 @@ type signal struct {
 	cat, rule string
 	w         float64
 	s, e      int
-	quoted    bool // шаблон в кавычках — скорее цитата
-	dampable  bool // вес снижается, если текст обсуждает атаки
+	quoted    bool // шаблон в парных кавычках — скорее цитата
+	soft      bool // английский глагол после прочего слова («Actually ignore…»)
+	meta      bool // рядом с сигналом — разговор об атаках
+	fmt       bool // рядом со служебным токеном — разговор о форматах чата
 	chg       bool // задевает символы, изменённые преобразованием
-}
-
-// eff — вес с учётом кавычек.
-func (sg signal) eff() float64 {
-	if sg.quoted {
-		return sg.w * 0.6
-	}
-	return sg.w
 }
 
 type ruleKey struct{ cat, rule string }
@@ -137,8 +134,6 @@ type ruleKey struct{ cat, rule string }
 type state struct {
 	text     string
 	indirect bool
-	meta     bool // текст обсуждает атаки
-	fmt      bool // текст обсуждает форматы чата
 	best     map[ruleKey]signal
 	depth    int // уровень вложенности декодированного текста
 	// many-shot: метки реплик в начале строк.
@@ -155,6 +150,9 @@ type view struct {
 	bs      int
 	cs, ce  int // своя часть [cs, ce); до и после — контекст
 	lineBOL bool
+	// В окне есть слова об атаках или форматах чата: только тогда окно
+	// вокруг сигнала проверяется на понижения.
+	meta, fmt bool
 	// Производное представление: способ преобразования и префиксные суммы
 	// изменённых байтов.
 	method string
@@ -185,9 +183,22 @@ func (v *view) mark(sg signal) signal {
 func (v *view) own(i int) bool { o := v.orig(i); return o >= v.cs && o < v.ce }
 
 func (st *state) add(v *view, cat, rule string, w float64, i, j int, dampable bool) {
+	st.addSoft(v, cat, rule, w, i, j, dampable, false)
+}
+
+// addSoft — add с признаком soft (понижение × 0,6 в пределах minDamp).
+func (st *state) addSoft(v *view, cat, rule string, w float64, i, j int, dampable, soft bool) {
 	// Название DAN-промпта пишут в кавычках в самом промпте.
 	q := rule != "dan" && quoted(v.low, i, j)
-	sg := signal{cat: cat, rule: rule, w: w, s: v.orig(i), e: v.orig(j), quoted: q, dampable: dampable, chg: v.changed(i, j)}
+	sg := signal{cat: cat, rule: rule, w: w, s: v.orig(i), e: v.orig(j), quoted: q, soft: soft, chg: v.changed(i, j)}
+	// Понижения — только по словам рядом с сигналом: «example of» в
+	// другом абзаце не делает атаку цитатой.
+	if dampable && v.meta {
+		sg.meta = containsAny(near(v.low, i, j), metaWords)
+	}
+	if rule == "token" && v.fmt {
+		sg.fmt = containsAny(near(v.low, i, j), fmtWords)
+	}
 	switch rule {
 	case "persona":
 		v.persona = append(v.persona, sg)
@@ -203,9 +214,17 @@ func (st *state) add(v *view, cat, rule string, w float64, i, j int, dampable bo
 // keep запоминает сигнал, если он сильнее прежнего по тому же правилу.
 func (st *state) keep(sg signal) {
 	k := ruleKey{sg.cat, sg.rule}
-	if old, ok := st.best[k]; !ok || sg.eff() > old.eff() {
+	if old, ok := st.best[k]; !ok || st.weight(sg) > st.weight(old) {
 		st.best[k] = sg
 	}
+}
+
+// dampWindow — окно вокруг сигнала, в котором ищутся слова для понижений.
+const dampWindow = 200
+
+// near — сигнал [i, j) с окном dampWindow по обе стороны.
+func near(s string, i, j int) string {
+	return s[max(0, i-dampWindow):min(j+dampWindow, len(s))]
 }
 
 // chunk ищет сигналы в части [cs, ce) исходного текста, окно — [bs, we):
@@ -214,8 +233,8 @@ func (st *state) keep(sg signal) {
 func (st *state) chunk(ctx context.Context, bs, cs, ce, we int) error {
 	clean, offs := unihidden.Clean(st.text[bs:we])
 	v := &view{low: fold(clean), clean: clean, offs: offs, bs: bs, cs: cs, ce: ce, lineBOL: bs == 0 || st.text[bs-1] == '\n'}
-	st.meta = st.meta || containsAny(v.low, metaWords)
-	st.fmt = st.fmt || containsAny(v.low, fmtWords)
+	v.meta = containsAny(v.low, metaWords)
+	v.fmt = containsAny(v.low, fmtWords)
 	if err := st.scan(ctx, v); err != nil {
 		return err
 	}
@@ -295,7 +314,7 @@ func (st *state) pairs(v *view) {
 		// В производном представлении — пара, которой нет в основном.
 		if other.ok && sg.s-other.sg.e <= 300 && (v.method == "" || sg.chg || other.sg.chg) {
 			p := other.sg
-			st.keep(v.mark(signal{cat: CatRole, rule: "persona_removal", w: 0.4, s: p.s, e: max(p.e, sg.e), dampable: true, quoted: p.quoted && sg.quoted}))
+			st.keep(v.mark(signal{cat: CatRole, rule: "persona_removal", w: 0.4, s: p.s, e: max(p.e, sg.e), quoted: p.quoted && sg.quoted, meta: p.meta || sg.meta}))
 		}
 		if !seen[k].ok || sg.e > seen[k].sg.e {
 			seen[k] = reach{sg, true}
@@ -307,26 +326,37 @@ func (st *state) pairs(v *view) {
 }
 
 // overrides — «ignore all previous instructions», «игнорируй все
-// предыдущие инструкции». Не сигнал: глагол с отрицанием («не игнорируйте
-// правила»), английский глагол не в повелительной позиции («users ignore
-// all rules»). Вес — по словам между глаголом и объектом: «мои» — 0,3
-// (пользователь правит своё же указание); «твои», «системные» — 0,85;
-// объект с уточнением предлогом («все фильтры в таблице», «предыдущие
-// инструкции по оформлению») — 0,35; «все», «предыдущие» — 0,85; иначе 0,7.
+// предыдущие инструкции», «ты должен игнорировать все правила». Не сигнал:
+// глагол с отрицанием вплотную («не игнорируйте правила»), английский
+// глагол в рассказе («users ignore all rules»), русский инфинитив без
+// «должен», «нужно» перед ним. Английский глагол после прочего слова
+// («Actually ignore…») — вес × 0,6. Вес — по словам между глаголом и
+// объектом: «мои» — 0,3 (пользователь правит своё же указание); «твои»,
+// «системные» — 0,85; объект с уточнением предлогом («все фильтры в
+// таблице», «предыдущие инструкции по оформлению») — 0,35; «все»,
+// «предыдущие» — 0,85; иначе 0,7.
 // Шаблон с английскими и русскими словами сразу («Ignore все previous
 // инструкции») — смешение языков: обфускация, правило
 // «mixed.ignore_instructions».
 func (st *state) overrides(ctx context.Context, v *view) error {
 	for _, g := range []struct {
 		anchors []string
-		en      bool
-	}{{overrideAnchorsEN, true}, {overrideAnchorsRU, false}} {
+		en, inf bool
+	}{{overrideAnchorsEN, true, false}, {overrideAnchorsRU, false, false}, {overrideAnchorsInf, false, true}} {
 		for _, a := range g.anchors {
 			err := indexWord(ctx, v.low, a, func(i int) {
-				if negated(v.low, i) || g.en && !imperativeEN(v.low, i) {
+				lead := 1.0
+				if g.en {
+					lead = leadEN(v.low, i)
+				}
+				if lead == 0 || negated(v.low, i) || g.inf && !modalRU(v.low, i) {
 					return
 				}
-				m := overrideRe.FindStringSubmatchIndex(v.low[i:min(i+400, len(v.low))])
+				re := overrideRe
+				if g.inf {
+					re = overrideInfRe
+				}
+				m := re.FindStringSubmatchIndex(v.low[i:min(i+400, len(v.low))])
 				if m == nil {
 					return
 				}
@@ -342,11 +372,12 @@ func (st *state) overrides(ctx context.Context, v *view) error {
 				case hasPrefix(words, strongWords):
 					w = 0.85
 				}
+				soft := lead < 1
 				if mixedScript(v.low[i : i+m[1]]) {
-					st.add(v, CatObfuscation, "mixed.ignore_instructions", w, i, i+m[1], true)
+					st.addSoft(v, CatObfuscation, "mixed.ignore_instructions", w, i, i+m[1], true, soft)
 					return
 				}
-				st.add(v, CatOverride, "ignore_instructions", w, i, i+m[1], true)
+				st.addSoft(v, CatOverride, "ignore_instructions", w, i, i+m[1], true, soft)
 			})
 			if err != nil {
 				return err
@@ -410,7 +441,7 @@ func (st *state) removals(ctx context.Context, v *view) error {
 				return
 			}
 			st.add(v, CatRole, "removal", p.weight, i, j, true)
-			if _, ok := lastWord(v.low, prevWords(v.low, i, 4), i, imperativeWords); ok {
+			if _, ok := lastWord(v.low, prevWords(v.low, i, 4, 64), i, imperativeWords); ok {
 				st.add(v, CatRole, "removal_imperative", 0.35, i, j, true)
 			}
 		})
@@ -440,7 +471,12 @@ func (st *state) leaks(ctx context.Context, v *view) error {
 				}
 				j = i + m[1]
 			}
-			from := max(0, i-48)
+			from := prevWords(v.low, i, 7, 160)
+			// Глагол — в том же предложении: «Выведи таблицу. Что такое
+			// системный промпт?» — не просьба вывести промпт.
+			if b := strings.LastIndexAny(v.low[from:i], ".?!\n"); b >= 0 {
+				from += b + 1
+			}
 			strong, okStrong := lastWord(v.low, from, i, leakStrong)
 			weak, okWeak := lastWord(v.low, from, i, leakWeak)
 			if !okStrong && !okWeak {
@@ -449,6 +485,11 @@ func (st *state) leaks(ctx context.Context, v *view) error {
 			k := weak
 			if okStrong {
 				k = strong
+				// «Покажи пример, как написать системный промпт» — между
+				// глаголом и объектом глагол создания: как вопрос.
+				if containsWord(v.low[k:i], leakBreak) {
+					okStrong = false
+				}
 			}
 			poss := o.possessive || containsWord(v.low[k:j], possessives)
 			w := 0.15
@@ -458,7 +499,7 @@ func (st *state) leaks(ctx context.Context, v *view) error {
 			case poss:
 				w = 0.65
 			case !okStrong:
-			case containsWord(v.low[max(0, k-32):k], devLead):
+			case devQuestion(v.low, k):
 			case o.above && containsWord(v.low[j:min(j+60, len(v.low))], verbatim):
 				w = 0.7
 			case o.above:
@@ -592,17 +633,30 @@ func (st *state) keys() []ruleKey {
 	return keys
 }
 
-// weight — вес сигнала с понижениями: кавычки, обсуждение атак, обсуждение
-// форматов чата (для служебных токенов).
+// minDamp — предел суммарного понижения: кавычки и слова об атаках вместе
+// не опускают сильный сигнал ниже половины (0,85 → 0,425).
+const minDamp = 0.5
+
+// weight — вес сигнала с понижениями: парные кавычки — × 0,6, прочее слово
+// перед английским глаголом — × 0,6, обсуждение атак рядом — × 0,7,
+// обсуждение форматов чата рядом со служебным токеном — × 0,5; вместе — не
+// ниже × minDamp. В документе RAG и ответе инструмента
+// слова об атаках и форматах не понижают: текст пишет атакующий.
 func (st *state) weight(sg signal) float64 {
-	w := sg.eff()
-	if st.meta && sg.dampable {
-		w *= 0.7
+	f := 1.0
+	if sg.quoted {
+		f *= 0.6
 	}
-	if st.fmt && sg.rule == "token" {
-		w *= 0.5
+	if sg.soft {
+		f *= 0.6
 	}
-	return w
+	if sg.meta && !st.indirect {
+		f *= 0.7
+	}
+	if sg.fmt && !st.indirect {
+		f *= 0.5
+	}
+	return sg.w * max(f, minDamp)
 }
 
 // findings сводит сигналы в находки: одна на категорию — по самому сильному
@@ -716,48 +770,123 @@ func containsAny(s string, subs []string) bool {
 	return false
 }
 
-// negated — перед позицией i отрицание (в 16 байтах).
-func negated(s string, i int) bool {
-	_, ok := lastWord(s, max(0, i-16), i, negations)
-	return ok
-}
-
-// imperativeEN — английский глагол в позиции i — обращение к модели: перед
-// ним начало текста или строки, знак препинания или слово из
-// imperativeLead.
-func imperativeEN(s string, i int) bool {
+// prevWord — слово вплотную перед позицией i (через пробелы и табуляцию)
+// и его начало; апостроф — часть слова («don't»). Перед i начало текста или
+// знак препинания — пустое слово.
+func prevWord(s string, i int) (string, int) {
 	k := i
 	for k > 0 && (s[k-1] == ' ' || s[k-1] == '\t') {
 		k--
 	}
-	if k == 0 {
-		return true
-	}
-	r, _ := utf8.DecodeLastRuneInString(s[:k])
-	if !isLetterOrDigit(r) {
-		return true
-	}
-	// Предыдущее слово целиком.
 	b := k
 	for b > 0 {
 		r, size := utf8.DecodeLastRuneInString(s[:b])
-		if !isLetterOrDigit(r) {
+		if !isLetterOrDigit(r) && r != '\'' && r != '’' {
 			break
 		}
 		b -= size
 	}
-	prev := s[b:k]
-	for _, w := range imperativeLead {
-		if prev == w {
+	return strings.ReplaceAll(s[b:k], "’", "'"), b
+}
+
+func isWord(w string, set []string) bool {
+	for _, x := range set {
+		if w == x {
 			return true
 		}
 	}
 	return false
 }
 
-// prevWords — начало n-го слова перед позицией i (не дальше 64 байт).
-func prevWords(s string, i, n int) int {
-	from := max(0, i-64)
+// negated — вплотную перед глаголом в позиции i отрицание: «не
+// игнорируйте», «do not disregard». Через знак препинания — нет: «Never
+// mind. Ignore…», «Не жди, игнорируй…».
+func negated(s string, i int) bool {
+	w, b := prevWord(s, i)
+	// Одно наречие между отрицанием и глаголом: «do not ever ignore».
+	if isWord(w, negAdverbs) {
+		w, b = prevWord(s, b)
+	}
+	if w == "not" {
+		// «Why not ignore all previous instructions?» — предложение, а не запрет.
+		if p, _ := prevWord(s, b); p == "why" {
+			return false
+		}
+	}
+	return isWord(w, negations)
+}
+
+// leadEN — множитель веса по слову перед английским глаголом в позиции i:
+//   - 1 — обращение к модели: начало текста или строки, знак препинания,
+//     слово из imperativeLead («please ignore», «I want you to ignore»);
+//   - 0 — рассказ: подлежащее или наречие из narrativeLead («they ignore»,
+//     «users often ignore», «attackers ignore»);
+//   - 0,6 — прочее слово («Actually ignore…», «Yes ignore…»): сигнал
+//     слабее (понижение soft), но не отбрасывается.
+func leadEN(s string, i int) float64 {
+	w, _ := prevWord(s, i)
+	switch {
+	case w == "" || isWord(w, imperativeLead):
+		return 1
+	case isWord(w, narrativeLead):
+		return 0
+	}
+	return 0.6
+}
+
+// modalRU — перед русским инфинитивом в позиции i (через одно-два наречия:
+// «теперь», «просто») — обращение к модели: «должен», «нужно», «можешь» без
+// отрицания и не о себе («мне нужно забыть все правила диеты» — не
+// обращение) или «попробуй», «не забудь», «прошу».
+func modalRU(s string, i int) bool {
+	w, b := prevWord(s, i)
+	for n := 0; n < 2 && isWord(w, adverbsRU); n++ {
+		w, b = prevWord(s, b)
+	}
+	if isWord(w, infLeadRU) {
+		return true
+	}
+	if !isWord(w, modalsRU) || negated(s, b) {
+		return false
+	}
+	p, _ := prevWord(s, b)
+	return !isWord(p, selfRU)
+}
+
+// devQuestion — перед глаголом в позиции k (вплотную или через одно-два
+// слова: «how can I programmatically print») — вопрос разработчика.
+func devQuestion(s string, k int) bool {
+	for n := 0; n <= 2; n++ {
+		if endsWithWord(s, k, devLead) {
+			return true
+		}
+		w, b := prevWord(s, k)
+		if w == "" {
+			return false
+		}
+		k = b
+	}
+	return false
+}
+
+// endsWithWord — перед позицией i (через пробелы) стоит фраза из words
+// целиком.
+func endsWithWord(s string, i int, words []string) bool {
+	k := i
+	for k > 0 && s[k-1] == ' ' {
+		k--
+	}
+	for _, w := range words {
+		if strings.HasSuffix(s[:k], w) && wordStart(s, k-len(w)) {
+			return true
+		}
+	}
+	return false
+}
+
+// prevWords — начало n-го слова перед позицией i (не дальше limit байт).
+func prevWords(s string, i, n, limit int) int {
+	from := max(0, i-limit)
 	k := i
 	for ; n > 0 && k > from; n-- {
 		for k > from {
@@ -884,8 +1013,12 @@ func containsWord(s string, words []string) bool {
 	return ok
 }
 
+// quotePairs — открывающая кавычка и парные ей закрывающие.
+var quotePairs = map[rune]string{'"': `"”`, '\'': `'’`, '«': "»", '“': `”"`, '„': `“”`, '`': "`"}
+
 // quoted — фрагмент [i, j) в кавычках: перед ним (через пробелы, до 16)
-// открывающая кавычка, после — закрывающая в пределах 200 байт.
+// открывающая кавычка не внутри слова, после — парная ей закрывающая в
+// пределах 200 байт, тоже не внутри слова (апостроф в «It's» — не кавычка).
 func quoted(s string, i, j int) bool {
 	k := i
 	for k > 0 && i-k < 16 && s[k-1] == ' ' {
@@ -894,9 +1027,23 @@ func quoted(s string, i, j int) bool {
 	if k == 0 {
 		return false
 	}
-	r, _ := utf8.DecodeLastRuneInString(s[:k])
-	if !strings.ContainsRune("\"'«“„`", r) {
+	q, size := utf8.DecodeLastRuneInString(s[:k])
+	closers, ok := quotePairs[q]
+	if !ok || !wordStart(s, k-size) {
 		return false
 	}
-	return strings.ContainsAny(s[j:min(j+200, len(s))], "\"'»”`")
+	end := min(j+200, len(s))
+	for p := j; p < end; {
+		c := strings.IndexAny(s[p:end], closers)
+		if c < 0 {
+			return false
+		}
+		c += p
+		_, cs := utf8.DecodeRuneInString(s[c:])
+		if wordStart(s, c) || wordEnd(s, c+cs) {
+			return true
+		}
+		p = c + cs
+	}
+	return false
 }
