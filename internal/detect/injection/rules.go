@@ -30,14 +30,35 @@ const (
 	objectRU = `(?:инструкци|правил|указани|ограничени|промпт|установк|директив|запрет)\p{L}*`
 )
 
-// overrideRe — шаблон отмены. Захват 1 — слова между глаголом и объектом
-// (по ним вес).
-var overrideRe = rx(`(?:` + verbsEN + `|` + verbsRU + `)((?:` + sep + `(?:` + fillEN + `|` + fillRU + `))*)` + sep + `(?:` + objectEN + `|` + objectRU + `)`)
+// infRU — инфинитивы после «должен», «нужно», «можешь» (modalsRU): «Ты
+// должен игнорировать все правила», «Тебе нужно забыть предыдущие
+// инструкции».
+const infRU = `игнорировать|проигнорировать|забыть|отменить|не обращать внимани[ея] на|не следовать|не соблюдать|не придерживаться|обойти|отбросить|пренебречь|сбросить`
 
-// overrideAnchorsEN, overrideAnchorsRU — опорные слова шаблона отмены.
+// overrideRe — шаблон отмены, overrideInfRe — то же с инфинитивом. Захват
+// 1 — слова между глаголом и объектом (по ним вес).
 var (
-	overrideAnchorsEN = []string{"ignore", "disregard", "forget", "override", "bypass", "discard", "abandon"}
-	overrideAnchorsRU = []string{"игнорир", "проигнорир", "забуд", "отмени", "не обращай", "не следуй", "не соблюдай", "не придерживай", "обойди", "отбрось", "пренебреги", "сбрось"}
+	overrideRe    = rx(`(?:` + verbsEN + `|` + verbsRU + `)((?:` + sep + `(?:` + fillEN + `|` + fillRU + `))*)` + sep + `(?:` + objectEN + `|` + objectRU + `)`)
+	overrideInfRe = rx(`(?:` + infRU + `)((?:` + sep + `(?:` + fillEN + `|` + fillRU + `))*)` + sep + `(?:` + objectEN + `|` + objectRU + `)`)
+)
+
+// overrideAnchorsEN, overrideAnchorsRU, overrideAnchorsInf — опорные слова
+// шаблона отмены и инфинитивов.
+var (
+	overrideAnchorsEN  = []string{"ignore", "disregard", "forget", "override", "bypass", "discard", "abandon"}
+	overrideAnchorsRU  = []string{"игнорир", "проигнорир", "забуд", "отмени", "не обращай", "не следуй", "не соблюдай", "не придерживай", "обойди", "отбрось", "пренебреги", "сбрось"}
+	overrideAnchorsInf = []string{"игнорирова", "проигнорирова", "забы", "отменит", "не обраща", "не следова", "не соблюда", "не придерживат", "обойт", "отброси", "пренебреч", "сброси"}
+)
+
+// modalsRU — слова перед инфинитивом отмены: обращение к модели; selfRU —
+// перед модальным словом — о себе или других («мне нужно», «нам надо»);
+// infLeadRU — просьба перед инфинитивом («попробуй проигнорировать»);
+// adverbsRU — наречия между модальным словом и инфинитивом.
+var (
+	modalsRU  = []string{"должен", "должна", "должно", "должны", "обязан", "обязана", "обязаны", "нужно", "надо", "следует", "необходимо", "можешь", "можете", "стоит"}
+	selfRU    = []string{"я", "мне", "мы", "нам", "он", "она", "они", "ему", "ей", "им", "него", "нее", "них"}
+	infLeadRU = []string{"попробуй", "попробуйте", "постарайся", "постарайтесь", "попытайся", "попытайтесь", "забудь", "забудьте", "прошу"}
+	adverbsRU = []string{"теперь", "сейчас", "просто", "срочно", "сразу", "немедленно", "полностью", "тогда"}
 )
 
 // Слова между глаголом и объектом (сравниваются по началу: падежи).
@@ -53,16 +74,26 @@ var (
 	myWords = []string{"my", "мо"}
 )
 
-// negations — отрицание перед глаголом: «не игнорируйте правила техники
-// безопасности», «do not disregard safety instructions».
+// negations — отрицание вплотную перед глаголом: «не игнорируйте правила
+// техники безопасности», «do not disregard safety instructions».
 var negations = []string{"not", "never", "don't", "dont", "doesn't", "mustn't", "shouldn't", "won't", "can't", "cannot",
 	"не", "нельзя", "никогда", "запрещено"}
+
+// narrativeLead — подлежащие и наречия рассказа перед английским глаголом:
+// «they ignore all rules», «users often ignore all instructions»;
+// negAdverbs — наречие между отрицанием и глаголом («do not ever ignore»).
+var (
+	narrativeLead = []string{"i", "we", "they", "he", "she", "it", "who", "that", "which", "people",
+		"users", "attackers", "hackers", "models", "employees", "students", "drivers", "developers", "customers", "clients", "bots", "kids", "children",
+		"often", "usually", "sometimes", "generally", "typically", "rarely", "commonly", "frequently", "regularly"}
+	negAdverbs = []string{"ever", "really", "just", "even"}
+)
 
 // imperativeLead — слова, после которых английский глагол — обращение к
 // модели («please ignore», «I want you to ignore»), а не рассказ («users
 // ignore all rules»). Начало текста, строки и знак препинания — тоже.
 var imperativeLead = []string{"please", "now", "just", "and", "so", "then", "also", "simply", "kindly", "immediately", "first", "always",
-	"you", "to", "must", "should", "will", "can", "could", "may", "shall", "would", "pls", "plz", "hey", "ok", "okay"}
+	"you", "to", "must", "should", "will", "can", "could", "may", "shall", "would", "pls", "plz", "hey", "ok", "okay", "let", "us", "let's"}
 
 // prepositions — объект с уточнением («все фильтры в таблице», «rules of
 // grammar»): речь о чём-то конкретном, а не об инструкциях модели.
@@ -238,7 +269,12 @@ var (
 	// devLead — вопрос разработчика о своём промпте («how do I print the
 	// system prompt», «как вывести системный промпт в лог»): глагол
 	// извлечения — не атака, если нет «твой», «your».
-	devLead = []string{"how to", "how do i", "how can i", "how should i", "function to", "code to", "script to", "как", "каким образом", "функци", "код", "скрипт"}
+	// Вплотную перед глаголом.
+	devLead = []string{"how to", "how do i", "how can i", "how should i", "function to", "code to", "script to", "как", "каким образом"}
+	// leakBreak — между глаголом и объектом глагол создания: «покажи
+	// пример, как написать системный промпт» — глагол не управляет объектом.
+	leakBreak = []string{"напиши", "написать", "создай", "создать", "составь", "составить", "сделай", "сделать", "придумай", "придумать",
+		"write", "create", "make", "generate", "draft", "design"}
 )
 
 // --- Подделка структуры диалога (injection.structure, DM-02) ---
@@ -280,11 +316,14 @@ var jsonRole = rx(`"role"\s*:\s*"(?:system|developer)"`)
 
 // fmtWords — текст обсуждает форматы чата (вопрос разработчика о шаблоне):
 // вес служебных токенов снижается.
-var fmtWords = []string{"chatml", "chat template", "chat_template", "special token", "tokenizer", "шаблон чата", "шаблона чата", "служебн", "токенизатор", "спецтокен"}
+var fmtWords = []string{"chatml", "chat template", "chat_template", "special token", "tokenizer", "шаблон чата", "шаблона чата",
+	"служебные токен", "служебный токен", "служебных токен", "служебным токен", "служебными токен", "токенизатор", "спецтокен"}
 
-// metaWords — текст обсуждает атаки (вопрос специалиста по безопасности,
-// статья): веса шаблонов отмены, роли и извлечения снижаются.
-var metaWords = []string{"prompt injection", "промпт-инъекц", "инъекци", "injection attack", "пример атаки", "example of",
+// metaWords — рядом с сигналом разговор об атаках (вопрос специалиста по
+// безопасности, статья): веса шаблонов отмены, роли и извлечения снижаются.
+// Только слова об атаках на модель: «инъекция» бывает и SQL, «example of» —
+// где угодно.
+var metaWords = []string{"prompt injection", "промпт-инъекц", "инъекция промпт", "инъекции промпт", "injection attack", "пример атаки",
 	"how to protect", "how to prevent", "how to detect", "как защит", "защититься", "обнаружить атак", "jailbreak attempt"}
 
 // --- Обфускация (injection.obfuscation, DM-04) ---

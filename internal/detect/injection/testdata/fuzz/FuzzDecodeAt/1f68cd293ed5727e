@@ -1,0 +1,2 @@
+go test fuzz v1
+string("2700C820C8a0Y+2A00")
