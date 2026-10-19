@@ -33,6 +33,8 @@ const (
 	minHex     = 24      // шестнадцатеричных цифр подряд: от 12 байт
 	minEscapes = 6       // экранированных символов (\x, %, \u, &#) подряд
 	minDecoded = 8       // байт декодированного текста
+	headLen    = 48      // байт окна, по которому решается «текст или нет»
+	scanLen    = 256     // байт начала, в которых ищется такое окно
 )
 
 // --- Производные представления ---
@@ -482,7 +484,8 @@ func segmentStart(s string, i int) bool {
 
 // decodeAt декодирует отрезок с позиции i: конец отрезка (i — не отрезок),
 // способ и текст (nil — отрезок не похож на текст: двоичные данные, хеш,
-// длинное слово).
+// длинное слово). Hex — и с префиксом «0x»; base64 — и со сдвигом начала
+// на 1–3 символа («Decode:x<base64>»: буква вплотную к отрезку).
 func decodeAt(s string, i int) (end int, method string, dec []byte) {
 	if e, m, d := escapes(s, i); e > i {
 		return e, m, d
@@ -513,9 +516,15 @@ func decodeAt(s string, i int) (end int, method string, dec []byte) {
 	if len(run) < minB64 {
 		return i, "", nil
 	}
-	if isHexRun(run) {
-		if d, err := hex.DecodeString(run[:len(run)&^1]); err == nil && textLike(d) {
-			return j, "hex", d
+	h := run
+	if len(h) > 2 && h[0] == '0' && (h[1] == 'x' || h[1] == 'X') {
+		h = h[2:]
+	}
+	if isHexRun(h) {
+		if d, err := hex.DecodeString(h[:len(h)&^1]); err == nil {
+			if d = asText(d); d != nil {
+				return j, "hex", d
+			}
 		}
 		return j, "", nil
 	}
@@ -546,10 +555,35 @@ func isHexRun(run string) bool {
 }
 
 // decodeB64 декодирует base64 (обычный и URL-safe, с выравниванием и без,
-// с переводами строк). Сначала проверяется начало — двоичные данные
-// отбрасываются быстро.
+// с переводами строк), в том числе со сдвигом начала на 1–3 символа.
+// Сначала проверяется начало (до scanLen байт) — двоичные данные
+// отбрасываются быстро, весь отрезок очищается и декодируется один раз;
+// «текст или нет» решает только начало (asText).
 func decodeB64(run string) []byte {
-	clean := strings.Map(func(r rune) rune {
+	head := b64Clean(run[:min(len(run), 400)])
+	for k := 0; k <= 3 && len(head)-k >= minB64; k++ {
+		h := head[k:]
+		h = h[:min(len(h), scanLen/3*4+4)&^3]
+		if hd, err := base64.RawStdEncoding.DecodeString(h); err != nil || !textStart(hd) {
+			continue
+		}
+		clean := b64Clean(run)[k:]
+		if len(clean)%4 == 1 {
+			clean = clean[:len(clean)-1]
+		}
+		d, err := base64.RawStdEncoding.DecodeString(clean)
+		if err != nil {
+			return nil
+		}
+		return asText(d)
+	}
+	return nil
+}
+
+// b64Clean приводит base64 к обычному алфавиту без выравнивания и переводов
+// строк.
+func b64Clean(run string) string {
+	return strings.Map(func(r rune) rune {
 		switch r {
 		case '\n', '\r', '=':
 			return -1
@@ -560,18 +594,6 @@ func decodeB64(run string) []byte {
 		}
 		return r
 	}, run)
-	if len(clean)%4 == 1 {
-		clean = clean[:len(clean)-1]
-	}
-	head := clean[:min(len(clean), 64)&^3]
-	if hd, err := base64.RawStdEncoding.DecodeString(head); err != nil || !textLike(trimPartialRune(hd)) {
-		return nil
-	}
-	d, err := base64.RawStdEncoding.DecodeString(clean)
-	if err != nil || !textLike(d) {
-		return nil
-	}
-	return d
 }
 
 // escapes — отрезок в %-кодировке (ссылки: «ignore%20all%20previous») или
@@ -615,7 +637,7 @@ func escapes(s string, i int) (end int, method string, dec []byte) {
 	if tokens < minEscapes {
 		return i, "", nil
 	}
-	if !textLike(out) {
+	if out = asText(out); out == nil {
 		return j, "", nil
 	}
 	return j, "escape", out
@@ -661,10 +683,7 @@ func urlRun(s string, i int) (end int, dec []byte, ok bool) {
 			k++
 		}
 	}
-	if !textLike(out) {
-		return j, nil, true
-	}
-	return j, out, true
+	return j, asText(out), true
 }
 
 // escapeAt — экранированный символ в позиции j: символ (\uHHHH, &#…;) или
@@ -753,10 +772,10 @@ func hexRune(h string) (rune, bool) {
 	return r, r <= unicode.MaxRune
 }
 
-// textLike — декодированные байты похожи на текст: верный UTF-8, не больше
-// 5% непечатных символов, не меньше 40% букв.
+// textLike — декодированные байты похожи на текст: не больше 5% непечатных
+// символов и невалидных байтов UTF-8, не меньше 40% букв.
 func textLike(b []byte) bool {
-	if len(b) < minDecoded || !utf8.Valid(b) {
+	if len(b) < minDecoded {
 		return false
 	}
 	n, letters, bad := 0, 0, 0
@@ -766,11 +785,52 @@ func textLike(b []byte) bool {
 		case unicode.IsLetter(r):
 			letters++
 		case r == '\n' || r == '\t' || r == '\r':
-		case !unicode.IsPrint(r) && !unicode.IsSpace(r):
+		case r == utf8.RuneError, !unicode.IsPrint(r) && !unicode.IsSpace(r):
 			bad++
 		}
 	}
 	return bad*20 <= n && letters*5 >= n*2
+}
+
+// textStart — в первых scanLen байтах есть окно из headLen байт (с шагом
+// 16), похожее на текст: мусор в начале отрезка («\xff\xff\xff» + атака)
+// не прячет атаку, а работа на двоичных данных постоянна.
+func textStart(d []byte) bool {
+	for off := 0; off == 0 || off+headLen <= min(len(d), scanLen); off += 16 {
+		w := d[off:min(len(d), off+headLen)]
+		for n := 0; n < 3 && len(w) > 0 && !utf8.RuneStart(w[0]); n++ {
+			w = w[1:]
+		}
+		if textLike(trimPartialRune(w)) {
+			return true
+		}
+	}
+	return false
+}
+
+// asText — декодированные байты как текст или nil. «Текст или нет» решает
+// начало (textStart): двоичные данные отбрасываются быстро, а мусор в
+// начале или конце («атака + \xff», «атака + \x01…\x05») не прячет атаку.
+// В результате невалидные байты UTF-8 и управляющие символы заменены
+// пробелом, неполный символ в конце отрезан.
+func asText(d []byte) []byte {
+	d = trimPartialRune(d)
+	if !textStart(d) {
+		return nil
+	}
+	// Замена на месте: пробел не длиннее заменяемого.
+	w := 0
+	for r := 0; r < len(d); {
+		c, size := utf8.DecodeRune(d[r:])
+		if c == utf8.RuneError && size == 1 || c != '\n' && c != '\t' && c != '\r' && unicode.IsControl(c) {
+			d[w] = ' '
+			w++
+		} else {
+			w += copy(d[w:], d[r:r+size])
+		}
+		r += size
+	}
+	return d[:w]
 }
 
 // trimPartialRune отрезает неполный символ UTF-8 в конце (начало base64,
