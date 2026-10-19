@@ -13,6 +13,7 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
+	"github.com/azuresong-afk/ai_railway/internal/detect/lists"
 	"github.com/azuresong-afk/ai_railway/internal/policy"
 )
 
@@ -122,19 +123,24 @@ type Application struct {
 	Storage    string            `yaml:"storage"`
 	// UserFrom — откуда брать идентификатор конечного пользователя: header
 	// (X-AISec-User), field (поле user запроса) или none.
-	UserFrom string   `yaml:"user_from"`
-	Quotas   Quotas   `yaml:"quotas"`
-	Keys     []AppKey `yaml:"keys"`
+	UserFrom string `yaml:"user_from"`
+	Quotas   Quotas `yaml:"quotas"`
+	// Lists — словари и выражения заказчика для детектора lists (5.2).
+	Lists []lists.Spec `yaml:"lists"`
+	Keys  []AppKey     `yaml:"keys"`
 }
 
 // Quotas — лимиты приложения (5.2, quota). Ноль — без лимита.
 type Quotas struct {
 	RequestsPerMinute        int `yaml:"requests_per_minute"`
 	RequestsPerMinutePerUser int `yaml:"requests_per_minute_per_user"`
+	RequestsPerMinutePerKey  int `yaml:"requests_per_minute_per_key"`
 	TokensPerMinute          int `yaml:"tokens_per_minute"`
 	TokensPerDay             int `yaml:"tokens_per_day"`
 	MaxMessages              int `yaml:"max_messages"`
 	MaxTokens                int `yaml:"max_tokens"`
+	// MaxInputBytes — суммарный размер текста сообщений запроса, байт.
+	MaxInputBytes int `yaml:"max_input_bytes"`
 }
 
 // AppKey — ключ приложения: только префикс и SHA-256 (ИАФ.8).
@@ -350,10 +356,14 @@ func (f *GatewayFile) validate() error {
 		check("user_from", a.UserFrom, userFrom)
 		q := a.Quotas
 		for name, v := range map[string]int{"requests_per_minute": q.RequestsPerMinute, "requests_per_minute_per_user": q.RequestsPerMinutePerUser,
+			"requests_per_minute_per_key": q.RequestsPerMinutePerKey, "max_input_bytes": q.MaxInputBytes,
 			"tokens_per_minute": q.TokensPerMinute, "tokens_per_day": q.TokensPerDay, "max_messages": q.MaxMessages, "max_tokens": q.MaxTokens} {
 			if v < 0 || v > 1_000_000_000 {
 				add("%s: quotas.%s — от 0 до 10^9", at, name)
 			}
+		}
+		if err := lists.Validate(a.Lists); err != nil {
+			add("%s: %v", at, err)
 		}
 		if len(a.Keys) == 0 {
 			add("%s: нужен хотя бы один ключ приложения", at)
