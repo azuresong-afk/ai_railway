@@ -5,6 +5,8 @@ package builtin
 
 import (
 	"github.com/azuresong-afk/ai_railway/internal/detect"
+	"github.com/azuresong-afk/ai_railway/internal/detect/canary"
+	"github.com/azuresong-afk/ai_railway/internal/detect/exfil"
 	"github.com/azuresong-afk/ai_railway/internal/detect/injection"
 	"github.com/azuresong-afk/ai_railway/internal/detect/pii"
 	"github.com/azuresong-afk/ai_railway/internal/detect/secretscan"
@@ -13,5 +15,8 @@ import (
 
 // All — встроенные детекторы в порядке запуска.
 func All() []detect.Detector {
-	return []detect.Detector{unihidden.New(), pii.New(), secretscan.New(), injection.New()}
+	return []detect.Detector{
+		unihidden.New(), pii.New(), secretscan.New(), injection.New(),
+		canary.New(), exfil.New(),
+	}
 }
