@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/azuresong-afk/ai_railway/internal/chat"
+	"github.com/azuresong-afk/ai_railway/internal/detect"
 	"github.com/azuresong-afk/ai_railway/internal/events"
 	"github.com/azuresong-afk/ai_railway/internal/policy"
 	"github.com/azuresong-afk/ai_railway/internal/pseudonym"
@@ -45,7 +46,10 @@ type record struct {
 	respMode    string
 	respCut     bool
 	respCutRule string
-	respMasked  bool
+	// respCutFinding — находка, из-за которой поток оборван правилом
+	// stream_late (детектор и категория — в трассировку).
+	respCutFinding *detect.Finding
+	respMasked     bool
 	// respCheckFailed — поток оборван, потому что проверка не состоялась.
 	respCheckFailed bool
 	respFailures    []events.DetectorFailure
@@ -220,6 +224,13 @@ func (rec *record) fillResponse() {
 		case ruleStreamHold:
 			ed.Trace = append(ed.Trace, events.TraceStep{Rule: ruleStreamHold, Matched: true, Action: string(policy.Block),
 				Note: "непереданного текста больше предела проверки: поток оборван"})
+		case ruleStreamLate:
+			st := events.TraceStep{Rule: ruleStreamLate, Matched: true, Action: string(policy.Block),
+				Note: "находка целиком в уже переданном тексте, применить её поздно: поток оборван"}
+			if f := rec.respCutFinding; f != nil {
+				st.Detector, st.Note = f.Detector, st.Note+" ("+f.Category+", "+f.Threat+")"
+			}
+			ed.Trace = append(ed.Trace, st)
 		}
 	}
 	if d := in.Decision; d.Rule == ruleToolArgsJSON {

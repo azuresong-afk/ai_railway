@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"unicode/utf8"
 
 	"github.com/azuresong-afk/ai_railway/internal/chat"
@@ -84,7 +85,7 @@ type checkResponse struct {
 	Messages []checkMessage `json:"messages,omitempty"`
 }
 
-var checkRoles = map[string]bool{"system": true, "user": true, "assistant": true, "tool": true}
+var checkRoles = map[string]bool{"system": true, "developer": true, "user": true, "assistant": true, "tool": true}
 
 // parseCheck разбирает тело запроса и сводит его к фрагментам.
 func parseCheck(body []byte, maxMessages int) (*checkRequest, detect.Direction, []inspectText, *chat.Error) {
@@ -148,7 +149,7 @@ func parseCheck(body []byte, maxMessages int) (*checkRequest, detect.Direction, 
 	texts := make([]inspectText, len(r.Messages))
 	for i, m := range r.Messages {
 		if !checkRoles[m.Role] || m.Content == "" || !utf8.ValidString(m.Content) {
-			return nil, "", nil, &chat.Error{Code: chat.CodeInvalid, Message: fmt.Sprintf("messages[%d]: role system, user, assistant или tool и непустая строка content", i)}
+			return nil, "", nil, &chat.Error{Code: chat.CodeInvalid, Message: fmt.Sprintf("messages[%d]: role system, developer, user, assistant или tool и непустая строка content", i)}
 		}
 		texts[i] = inspectText{Text: m.Content, Source: pick(m.Role), Location: fmt.Sprintf("messages[%d].content", i)}
 	}
@@ -234,8 +235,14 @@ func (c *CheckHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Incomplete: len(in.Failures) > 0, Findings: []checkFinding{},
 		Unchecked: len(app.Policy.Detectors(dir)) == 0,
 	}
-	for i, f := range in.Findings {
-		if i >= maxEventFindings {
+	// Находки детекторов маскирования для хранения (storage: masked) — не
+	// ответ политики: от режима хранения ответ API не зависит.
+	policyIDs := app.Policy.Detectors(dir)
+	for _, f := range in.Findings {
+		if !slices.Contains(policyIDs, f.Detector) {
+			continue
+		}
+		if len(resp.Findings) >= maxEventFindings {
 			resp.Truncated = true
 			break
 		}

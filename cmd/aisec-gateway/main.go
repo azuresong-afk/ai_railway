@@ -132,7 +132,7 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 	if err != nil {
 		return err
 	}
-	logger.Info("шлюз этапа 1 (в работе): проверка запроса включена, проверки ответа ещё нет",
+	logger.Info("шлюз запущен: проверка запроса и ответа включена",
 		"max_body_bytes", cfg.MaxBodyBytes, "applications", len(file.Applications), "providers", len(provs))
 	return srv.Run(ctx)
 }

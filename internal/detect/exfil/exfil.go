@@ -391,9 +391,12 @@ func (s *scan) add(v verdict, start, end int, code bool) {
 // Detect находит эксфильтрацию и активное содержимое в ответе.
 func (d Detector) Detect(ctx context.Context, t detect.Text) ([]detect.Finding, error) {
 	text := t.Text
-	code, err := codeSpans(ctx, text)
-	if err != nil {
-		return nil, err
+	var code [][2]int
+	if !t.NoCode {
+		var err error
+		if code, err = codeSpans(ctx, text); err != nil {
+			return nil, err
+		}
 	}
 	s := &scan{d: d, text: text, code: code, imgRefs: map[string]bool{}, budget: 8*len(text) + 4*maxTag, stop: -1}
 	for i, n := 0, 0; i < len(text); n++ {

@@ -47,7 +47,10 @@ import (
 // Параметры режима incremental. Задержка — до streamCheckStep +
 // streamHoldBack байт текста (около сотни токенов); работа детекторов на
 // ответ — около (streamOverlap + streamCheckStep) / streamCheckStep его
-// длин.
+// длин, а когда окно начинается раньше с начала абзаца, пункта списка или
+// строки кода (exfil.Window) — до (exfil.MaxWindowBack + streamOverlap +
+// streamCheckStep) / streamCheckStep, около 25 длин
+// (TestIncrementalWorkBounded).
 const (
 	// streamCheckStep — новый текст, после которого проверяется окно.
 	streamCheckStep = 512
@@ -91,7 +94,16 @@ const (
 	ruleStreamCut = "stream_cut"
 	// ruleStreamHold — непереданного текста больше streamMaxPending.
 	ruleStreamHold = "stream_hold_limit"
+	// ruleStreamLate — находка для блокировки или маскирования целиком в
+	// уже переданном тексте: её нашла проверка с большим контекстом
+	// (следующее окно, весь ответ). Применить её поздно, поток обрывается,
+	// а событие не выглядит как исполненная блокировка.
+	ruleStreamLate = "stream_late"
 )
+
+// restoreContext — сколько переданного текста до и непереданного после
+// восстановленного фрагмента видит повторная проверка output.exfil в потоке.
+const restoreContext = 4 << 10
 
 // respRef — куда вернуть текст ответа.
 type respRef struct {
@@ -323,11 +335,10 @@ func (a *App) exfilAfterRestore(ctx context.Context, before, after string, timeo
 }
 
 // restoreToolCalls — обратная подстановка в аргументы вызовов одного
-// ответа. Вызовы восстанавливаются одним RestoreToolArgs по массиву JSON из
-// их аргументов: признак адреса в любом вызове запрещает подстановку во всех
-// (внедрённая инструкция может разнести адрес и значение по параллельным
-// вызовам — ревью 1.17–1.21, п. 9). Аргументы не JSON — подстановки нет,
-// false.
+// ответа (Vault.RestoreToolCalls): признак адреса в любом вызове запрещает
+// подстановку во всех (внедрённая инструкция может разнести адрес и значение
+// по параллельным вызовам — ревью 1.17–1.21, п. 9). Аргументы не JSON —
+// подстановки нет, false.
 func restoreToolCalls(v *pseudonym.Vault, args []string) ([]string, bool) {
 	var parts []string
 	for _, a := range args {
@@ -342,18 +353,14 @@ func restoreToolCalls(v *pseudonym.Vault, args []string) ([]string, bool) {
 	if len(parts) == 0 {
 		return args, false
 	}
-	restored := v.RestoreToolArgs("[" + strings.Join(parts, ",") + "]")
-	var raw []json.RawMessage
-	if err := json.Unmarshal([]byte(restored), &raw); err != nil || len(raw) != len(parts) {
-		return args, false
-	}
+	restored := v.RestoreToolCalls(parts)
 	out := make([]string, len(args))
 	k := 0
 	for i, a := range args {
 		if a == "" {
 			continue
 		}
-		out[i] = string(raw[k])
+		out[i] = restored[k]
 		k++
 	}
 	return out, true
@@ -456,13 +463,28 @@ type streamText struct {
 	// mask — словарь только для масок [[ТИП]]: в ответе псевдонимы не
 	// выдаются, а счётчики словаря запроса не смешиваются с ответом.
 	mask *pseudonym.Vault
+	// code — начало окна с учётом блоков кода, списков и абзацев markdown
+	// (exfil.Window): окно с середины блока кода прочитало бы код не так,
+	// как весь ответ (ревью 1.22–1.24, п. 1).
+	code exfil.Window
+	// done — фрагменты, отданные замаскированными: находка, которую новое
+	// окно видит в переданном тексте на их месте, уже применена.
+	done []protectSpan
 	// restore — обратная подстановка; nil — без подстановки.
 	restore *pseudonym.Stream
-	masked  bool // хотя бы один фрагмент отдан замаскированным
+	// restIn — текст, поданный в restore, но ещё задержанный им; ctxIn,
+	// ctxOut — конец отданного текста до и после подстановки (контекст
+	// повторной проверки).
+	restIn        string
+	ctxIn, ctxOut []byte
+	// exfilGrew — повторная проверка output.exfil после подстановки
+	// (exfilAfterRestore): true — подстановка отменяется; nil — без проверки.
+	exfilGrew func(before, after string) bool
+	masked    bool // хотя бы один фрагмент отдан замаскированным
 }
 
-func newStreamText(restore *pseudonym.Stream) *streamText {
-	return &streamText{mask: pseudonym.NewVault(pseudonym.Limits{}), restore: restore}
+func newStreamText(restore *pseudonym.Stream, exfilGrew func(before, after string) bool) *streamText {
+	return &streamText{mask: pseudonym.NewVault(pseudonym.Limits{}), restore: restore, exfilGrew: exfilGrew}
 }
 
 // unchecked — новый текст после последней проверки.
@@ -486,27 +508,45 @@ func (w *streamText) start() int {
 	return ws
 }
 
-// absorb принимает находки проверки окна (номер текста k, начало окна ws).
+// absorb принимает находки проверки окна (номер текста k, начало окна ws,
+// служебный префикс окна shift байт, strict — окно без учёта кода). late —
+// находка, из-за которой поток обрывается правилом ruleStreamLate.
 // Находки в уже переданном тексте ничего не меняют: замаскировать их
 // поздно, а в событие они попадут из итоговой проверки. false — находка,
 // которую надо заблокировать или замаскировать, задевает переданный текст:
 // поток обрывается.
-func (w *streamText) absorb(in *inspection, k, ws int) (cut bool, rule string) {
+func (w *streamText) absorb(in *inspection, k, ws, shift int, strict bool) (cut bool, rule string, late *detect.Finding) {
 	var pend []protectSpan
 	for _, m := range in.Decision.Matches {
 		f := in.Findings[m.Hit]
-		s, e := ws+f.Start, ws+f.End
-		if f.Text != k || e <= w.released {
+		if f.Text != k || f.End <= shift {
 			continue
 		}
-		if in.Decision.Block && m.Action == policy.Block {
-			return true, m.Rule
+		s, e := ws+max(f.Start-shift, 0), ws+f.End-shift
+		block := in.Decision.Block && m.Action == policy.Block
+		mask := m.Apply == policy.Redact || m.Apply == policy.Pseudonymize
+		if e <= w.released {
+			// Находка целиком в переданном тексте. Блокирующую прежние
+			// окна не видели (иначе поток уже оборван), маскируемую — если
+			// её место не закрыто отданными масками целиком: её нашёл
+			// только больший контекст (ревью 1.22–1.24, п. 1). Молча
+			// пропустить её нельзя. Строгое окно (код не учитывается)
+			// строже всего текста: его находки в переданном тексте решает
+			// итоговая проверка всего ответа, иначе обычный ответ с кодом
+			// обрывался бы ложно.
+			if !strict && (block || mask && !w.maskedAll(s, e)) {
+				return true, ruleStreamLate, &f.Finding
+			}
+			continue
 		}
-		if m.Apply != policy.Redact && m.Apply != policy.Pseudonymize {
+		if block {
+			return true, m.Rule, nil
+		}
+		if !mask {
 			continue
 		}
 		if s < w.released {
-			return true, ruleStreamCut
+			return true, ruleStreamCut, nil
 		}
 		pend = append(pend, protectSpan{s, e, f.Category, policy.Redact, cutOut(f.Finding)})
 	}
@@ -520,7 +560,26 @@ func (w *streamText) absorb(in *inspection, k, ws int) (cut bool, rule string) {
 	}
 	w.pending = pend
 	w.checked = w.acc.Len()
-	return false, ""
+	return false, "", nil
+}
+
+// maskedAll — фрагмент [s, e) целиком закрыт отданными масками: находка,
+// которая шире маски, применена не вся.
+func (w *streamText) maskedAll(s, e int) bool {
+	var cover []protectSpan
+	for _, sp := range w.done {
+		if sp.start < e && s < sp.end {
+			cover = append(cover, sp)
+		}
+	}
+	slices.SortFunc(cover, func(a, b protectSpan) int { return a.start - b.start })
+	for _, sp := range cover {
+		if sp.start > s {
+			return false
+		}
+		s = max(s, sp.end)
+	}
+	return s >= e
 }
 
 // releasePoint — докуда можно отдать текст после проверки: без хвоста
@@ -561,6 +620,7 @@ func (w *streamText) release(p int, final bool) (string, error) {
 		for _, sp := range w.pending {
 			if sp.end <= p {
 				spans = append(spans, protectSpan{sp.start - w.released, sp.end - w.released, sp.category, sp.action, sp.cut})
+				w.done = append(w.done, sp)
 			} else {
 				rest = append(rest, sp)
 			}
@@ -573,13 +633,71 @@ func (w *streamText) release(p int, final bool) (string, error) {
 		w.masked = w.masked || len(spans) > 0
 		w.pending, w.released = rest, p
 	}
-	if w.restore != nil {
-		piece = w.restore.Write(piece)
-		if final {
-			piece += w.restore.Flush()
+	return w.restorePiece(piece, final), nil
+}
+
+// restorePiece — обратная подстановка в отдаваемый текст; final — конец
+// текста: сбросить задержанный хвост. Подстановка, после которой
+// output.exfil находит новое (значение стало частью ссылки), отменяется,
+// как в ответе без потока (restoreChecked): фрагмент уходит с псевдонимом.
+// Проверка видит restoreContext байт отданного текста до фрагмента и
+// непереданного после него (в incremental — то, что ждёт следующей
+// проверки; в monitor после фрагмента ничего нет).
+func (w *streamText) restorePiece(piece string, final bool) string {
+	if w.restore == nil {
+		return piece
+	}
+	in := w.restIn + piece
+	out := w.restore.Write(piece)
+	if final {
+		out += w.restore.Flush()
+	}
+	raw := in[:len(in)-w.restore.Pending()]
+	w.restIn = in[len(raw):]
+	if out != raw && w.exfilGrew != nil {
+		ahead := w.restIn + w.acc.String()[w.released:]
+		ahead = ahead[:prefixLen(ahead, restoreContext)]
+		before, after := suffix(string(w.ctxIn), restoreContext), suffix(string(w.ctxOut), restoreContext)
+		if w.exfilGrew(before+raw+ahead, after+out+ahead) {
+			out = raw
 		}
 	}
-	return piece, nil
+	w.ctxIn, w.ctxOut = keepTail(w.ctxIn, raw), keepTail(w.ctxOut, out)
+	return out
+}
+
+// keepTail дописывает s в буфер контекста и держит в нём не больше
+// 2·restoreContext байт: обрезка — раз на restoreContext байт, без копии
+// контекста на каждую часть потока.
+func keepTail(b []byte, s string) []byte {
+	b = append(b, s...)
+	if len(b) > 2*restoreContext {
+		b = append(b[:0], b[len(b)-restoreContext:]...)
+	}
+	return b
+}
+
+// prefixLen — длина начала s не больше n байт, не разрезая символ.
+func prefixLen(s string, n int) int {
+	if n >= len(s) {
+		return len(s)
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return n
+}
+
+// suffix — конец s не длиннее n байт, не разрезая символ.
+func suffix(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	i := len(s) - n
+	for i < len(s) && !utf8.RuneStart(s[i]) {
+		i++
+	}
+	return s[i:]
 }
 
 // streamProc — передача потока с проверкой окнами (incremental) или без
@@ -615,7 +733,17 @@ func (h *ChatHandler) newStreamProc(r *http.Request, app *App, rec *record, requ
 		}
 		sp.holdTools = true
 	}
-	sp.content, sp.refusal = newStreamText(cr), newStreamText(rr)
+	// Повторная проверка после подстановки — с контекстом клиента: ушёл
+	// клиент — проверка падает, подстановка отменяется, а текст уже некому
+	// отдавать.
+	grew := func(before, after string) bool {
+		if app.exfilAfterRestore(r.Context(), before, after, h.cfg.DetectorTimeout) {
+			rec.withheld++
+			return true
+		}
+		return false
+	}
+	sp.content, sp.refusal = newStreamText(cr, grew), newStreamText(rr, grew)
 	sp.holdTools = sp.holdTools || incremental
 	return sp
 }
@@ -656,8 +784,16 @@ func (sp *streamProc) chunk(c *chat.Chunk) streamOut {
 		if !sp.holdTools {
 			od.ToolCalls = d.ToolCalls
 		}
-		final = final || ch.FinishReason != nil
-		out.Choices = append(out.Choices, chat.ChunkChoice{Index: ch.Index, Delta: od, FinishReason: ch.FinishReason})
+		fr := ch.FinishReason
+		if sp.finished {
+			// Повторная причина завершения без содержимого (её повторяют
+			// некоторые прокси в части с usage) не завершает ответ ещё раз:
+			// вызовы инструментов не уходят дважды, а весь ответ не
+			// проверяется заново (ревью 1.22–1.24, п. 2).
+			fr = nil
+		}
+		final = final || fr != nil
+		out.Choices = append(out.Choices, chat.ChunkChoice{Index: ch.Index, Delta: od, FinishReason: fr})
 	}
 	if final {
 		return sp.finish(&out)
@@ -678,8 +814,9 @@ func (sp *streamProc) chunk(c *chat.Chunk) streamOut {
 // checkWindows проверяет окна текстов с новым текстом (incremental).
 func (sp *streamProc) checkWindows() streamOut {
 	type item struct {
-		w  *streamText
-		ws int
+		w         *streamText
+		ws, shift int
+		strict    bool
 	}
 	var items []item
 	var texts []inspectText
@@ -693,9 +830,9 @@ func (sp *streamProc) checkWindows() streamOut {
 		if x.w.acc.Len()-x.w.released > streamMaxPending {
 			return sp.cut(true, ruleStreamHold, "")
 		}
-		ws := x.w.start()
-		items = append(items, item{x.w, ws})
-		texts = append(texts, inspectText{Text: x.w.acc.String()[ws:], Source: detect.SourceOutput, Location: x.loc})
+		win, ws, shift, strict := x.w.code.Next(x.w.acc.String(), x.w.start())
+		items = append(items, item{x.w, ws, shift, strict})
+		texts = append(texts, inspectText{Text: win, Source: detect.SourceOutput, Location: x.loc, NoCode: strict})
 	}
 	if len(texts) == 0 {
 		return streamGo
@@ -716,7 +853,8 @@ func (sp *streamProc) checkWindows() streamOut {
 		return sp.cut(false, "", "")
 	}
 	for k, it := range items {
-		if cut, rule := it.w.absorb(in, k, it.ws); cut {
+		if cut, rule, late := it.w.absorb(in, k, it.ws, it.shift, it.strict); cut {
+			sp.rec.respCutFinding = late
 			return sp.cut(true, rule, in.Decision.Message)
 		}
 	}
@@ -794,7 +932,8 @@ func (sp *streamProc) finish(out *chat.Chunk) streamOut {
 			case ref.refusal:
 				w = sp.refusal
 			}
-			if cut, rule := w.absorb(in, k, 0); cut {
+			if cut, rule, late := w.absorb(in, k, 0, 0, false); cut {
+				sp.rec.respCutFinding = late
 				return sp.cut(true, rule, in.Decision.Message)
 			}
 		}
@@ -848,7 +987,12 @@ func (sp *streamProc) finishTools(in *inspection, texts []inspectText, refs []re
 		for j := range calls {
 			args[j] = calls[j].Function.Arguments
 		}
-		if restored, ok := restoreToolCalls(v, args); ok {
+		restored, ok := restoreToolCalls(v, args)
+		if ok && sp.app.exfilAfterRestore(sp.r.Context(), strings.Join(args, "\n"), strings.Join(restored, "\n"), sp.h.cfg.DetectorTimeout) {
+			sp.rec.withheld += len(args)
+			ok = false
+		}
+		if ok {
 			for j := range calls {
 				calls[j].Function.Arguments = restored[j]
 			}
@@ -935,10 +1079,7 @@ func (sp *streamProc) cut(byPolicy bool, rule, msg string) streamOut {
 		w       *streamText
 		refusal bool
 	}{{sp.content, false}, {sp.refusal, true}} {
-		if x.w.restore == nil {
-			continue
-		}
-		if piece := x.w.restore.Flush(); piece != "" {
+		if piece := x.w.restorePiece("", true); piece != "" {
 			if len(out.Choices) == 0 {
 				out.Choices = []chat.ChunkChoice{{Index: 0}}
 			}

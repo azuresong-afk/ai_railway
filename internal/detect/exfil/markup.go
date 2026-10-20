@@ -29,12 +29,7 @@ const (
 func codeSpans(ctx context.Context, text string) ([][2]int, error) {
 	var out [][2]int
 	var err error
-	var fenceChar byte
-	var lists listStack
-	fenceLen, fenceStart, fenceBase, para := 0, 0, 0, 0
-	// noLazy — следующая строка не может быть ленивым продолжением абзаца
-	// пункта списка: перед ней пустая строка, ограда или заголовок.
-	inFence, noLazy := false, false
+	var b blockScan
 	n := 0
 	for ls := 0; ls < len(text); {
 		if n++; n&0x3FFF == 0 {
@@ -42,80 +37,110 @@ func codeSpans(ctx context.Context, text string) ([][2]int, error) {
 				return nil, err
 			}
 		}
-		le := strings.IndexByte(text[ls:], '\n')
-		next := len(text)
-		if le < 0 {
-			le = len(text)
-		} else {
-			le += ls
-			next = le + 1
+		le, next := lineEnd(text, ls)
+		fence, flush := b.line(text, ls, le, next)
+		if fence[1] > fence[0] {
+			out = append(out, fence)
 		}
-		line := text[ls:le]
-		ind, body := indent(line)
-		blank := strings.TrimSpace(line) == ""
-		if inFence {
-			if fenceBase == 0 || blank || ind >= fenceBase {
-				ch, run, rest := fence(body)
-				if ch == fenceChar && run >= fenceLen && ind-fenceBase <= 3 && strings.TrimSpace(rest) == "" {
-					out = append(out, [2]int{fenceStart, le})
-					inFence, noLazy = false, true
-					para = next
-				}
-				ls = next
-				continue
-			}
-			// Пункт списка кончился — кончилась и ограда внутри него;
-			// строка разбирается как обычная.
-			out = append(out, [2]int{fenceStart, ls})
-			inFence, noLazy = false, true
-			para = ls
-		}
-		if blank {
-			if out, err = inlineCode(ctx, out, text, para, ls); err != nil {
+		if flush >= 0 {
+			if out, err = inlineCode(ctx, out, text, flush, ls); err != nil {
 				return nil, err
-			}
-			para = next
-			noLazy = true
-			ls = next
-			continue
-		}
-		base := lists.base(ind)
-		rel := ind - base
-		ch, run, rest := fence(body)
-		isFence := rel <= 3 && run >= 3 && (ch == '~' || strings.IndexByte(rest, '`') < 0)
-		brk := rel <= 3 && !isFence && breakLine(body)
-		w, item := 0, false
-		if rel <= 3 && !isFence && !brk {
-			w, item = listItem(body)
-		}
-		block := brk || item
-		if isFence || block || noLazy {
-			lists.pop(ind) // пункты с отступом больше строки закрыты
-		}
-		noLazy = false
-		switch {
-		case isFence:
-			if out, err = inlineCode(ctx, out, text, para, ls); err != nil {
-				return nil, err
-			}
-			inFence, fenceChar, fenceLen, fenceStart, fenceBase = true, ch, run, ls, base
-		case block:
-			if out, err = inlineCode(ctx, out, text, para, ls); err != nil {
-				return nil, err
-			}
-			para = ls
-			if item {
-				lists.push(ind + w)
-			} else if body[0] != '>' && body[0] != '|' {
-				noLazy = true // заголовок, разделитель, HTML: абзаца нет
 			}
 		}
 		ls = next
 	}
-	if inFence {
-		return append(out, [2]int{fenceStart, len(text)}), nil
+	if b.inFence {
+		return append(out, [2]int{b.fenceStart, len(text)}), nil
 	}
-	return inlineCode(ctx, out, text, para, len(text))
+	return inlineCode(ctx, out, text, b.para, len(text))
+}
+
+// lineEnd — конец строки, начатой с ls, и начало следующей.
+func lineEnd(text string, ls int) (le, next int) {
+	le = strings.IndexByte(text[ls:], '\n')
+	if le < 0 {
+		return len(text), len(text)
+	}
+	return ls + le, ls + le + 1
+}
+
+// blockScan — разбор markdown по строкам для codeSpans (и окон Window):
+// ограды кода, абзацы, пункты списков. Нулевое значение — начало текста.
+type blockScan struct {
+	fenceChar                             byte
+	lists                                 listStack
+	fenceLen, fenceStart, fenceBase, para int
+	// reset — начало последней строки, после которой состояние разбора то
+	// же, что у разбора с этой строки с нуля: ограда или блок, после
+	// которых не осталось открытых пунктов списка (exfil.Window).
+	reset int
+	// noLazy — следующая строка не может быть ленивым продолжением абзаца
+	// пункта списка: перед ней пустая строка, ограда или заголовок.
+	inFence, noLazy bool
+}
+
+// line разбирает строку text[ls:le] (next — начало следующей). code —
+// закрытый этой строкой блок кода (code[1] > code[0]); flush ≥ 0 — абзац
+// [flush, ls), который эта строка закончила: в нём ищется встроенный код.
+func (b *blockScan) line(text string, ls, le, next int) (code [2]int, flush int) {
+	flush = -1
+	line := text[ls:le]
+	ind, body := indent(line)
+	blank := strings.TrimSpace(line) == ""
+	if b.inFence {
+		if b.fenceBase == 0 || blank || ind >= b.fenceBase {
+			ch, run, rest := fence(body)
+			if ch == b.fenceChar && run >= b.fenceLen && ind-b.fenceBase <= 3 && strings.TrimSpace(rest) == "" {
+				code = [2]int{b.fenceStart, le}
+				b.inFence, b.noLazy = false, true
+				b.para = next
+			}
+			return code, flush
+		}
+		// Пункт списка кончился — кончилась и ограда внутри него;
+		// строка разбирается как обычная.
+		code = [2]int{b.fenceStart, ls}
+		b.inFence, b.noLazy = false, true
+		b.para = ls
+	}
+	if blank {
+		flush, b.para, b.noLazy = b.para, next, true
+		return code, flush
+	}
+	base := b.lists.base(ind)
+	rel := ind - base
+	ch, run, rest := fence(body)
+	isFence := rel <= 3 && run >= 3 && (ch == '~' || strings.IndexByte(rest, '`') < 0)
+	brk := rel <= 3 && !isFence && breakLine(body)
+	w, item := 0, false
+	if rel <= 3 && !isFence && !brk {
+		w, item = listItem(body)
+	}
+	block := brk || item
+	if isFence || block || b.noLazy {
+		b.lists.pop(ind) // пункты с отступом больше строки закрыты
+	}
+	// Пустой после pop стек значит, что отступы всех пунктов больше ind:
+	// base(ind) и rel были бы теми же и с нуля. Строка без ограды и блока
+	// (ленивое продолжение) — не точка: встроенный код её абзаца мог
+	// начаться раньше.
+	if (isFence || block) && b.lists.n == 0 {
+		b.reset = ls
+	}
+	b.noLazy = false
+	switch {
+	case isFence:
+		flush = b.para
+		b.inFence, b.fenceChar, b.fenceLen, b.fenceStart, b.fenceBase = true, ch, run, ls, base
+	case block:
+		flush, b.para = b.para, ls
+		if item {
+			b.lists.push(ind + w)
+		} else if body[0] != '>' && body[0] != '|' {
+			b.noLazy = true // заголовок, разделитель, HTML: абзаца нет
+		}
+	}
+	return code, flush
 }
 
 // maxLists — глубина вложенности списков, которую отслеживает codeSpans;

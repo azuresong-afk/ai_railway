@@ -80,6 +80,8 @@ type inspectText struct {
 	// детекторы injection.*, а маскирование находки в склейке переносится
 	// на сами части.
 	Parts []int
+	// NoCode — окно потока без учёта разметки кода (detect.Text.NoCode).
+	NoCode bool
 }
 
 // joinedDetector — детектор проверяет и склейку частей сообщения.
@@ -177,7 +179,7 @@ func (a *App) inspect(ctx context.Context, req inspectRequest) (*inspection, err
 			in.overall(policyIDs, t.Location)
 			break
 		}
-		fs, rerrs, err := a.Detectors.Run(total, ids, detect.Text{Text: t.Text, Direction: req.Direction, Source: t.Source},
+		fs, rerrs, err := a.Detectors.Run(total, ids, detect.Text{Text: t.Text, Direction: req.Direction, Source: t.Source, NoCode: t.NoCode},
 			detectorTimeout(req.Timeout, len(t.Text)))
 		if err != nil {
 			return nil, err

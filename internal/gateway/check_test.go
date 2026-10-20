@@ -364,3 +364,23 @@ func onlyInputPolicy(t *testing.T, a *App) *policy.Policy {
 	}
 	return p
 }
+
+// Находки детекторов маскирования для хранения (storage: masked) не входят
+// в ответ: у выхода без правил ответ тот же, что без хранения
+// (ревью 1.22–1.24, п. 3).
+//
+// Покрывает: DM-09
+func TestCheckFindingsOnlyFromPolicy(t *testing.T) {
+	up, _ := newUpstream(t, nil)
+	g := newGateway(t, up.URL, func(o *gwOpts) {
+		o.app = func(a *config.Application) { a.Storage = "masked" }
+		o.setup = func(a *App) { a.Policy = onlyInputPolicy(t, a) }
+	})
+	r := decodeCheck(t, postCheck(t, g, `{"direction":"output","text":`+jsonString(t, "Почта "+piiEmail)+`}`))
+	if !r.Unchecked || len(r.Findings) != 0 {
+		t.Fatalf("ответ: %+v", r)
+	}
+	if r := decodeCheck(t, postCheck(t, g, `{"direction":"input","text":`+jsonString(t, "Почта "+piiEmail)+`}`)); len(r.Findings) == 0 {
+		t.Fatalf("находки политики потеряны: %+v", r)
+	}
+}
