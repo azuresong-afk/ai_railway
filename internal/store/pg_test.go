@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -58,15 +59,37 @@ func contains(s, sub string) bool {
 }
 
 func TestMigrateOnRealDB(t *testing.T) {
-	db := testDB(t)
+	admin := testDB(t)
 	ctx := context.Background()
-	// Чистая схема: откатываем всё созданное, чтобы тест повторялся.
-	err := db.InTx(ctx, func(tx Tx) error {
-		return tx.Exec(ctx, "DROP TABLE IF EXISTS organizations, schema_migrations CASCADE")
+	// Своя чистая схема: тест повторяется и не мешает тестам других пакетов
+	// (internal/audit) в той же БД.
+	const schema = "store_migrate_test"
+	resetSchema := func(create bool) error {
+		return admin.InTx(ctx, func(tx Tx) error {
+			if err := tx.Exec(ctx, "DROP SCHEMA IF EXISTS "+schema+" CASCADE"); err != nil || !create {
+				return err
+			}
+			return tx.Exec(ctx, "CREATE SCHEMA "+schema)
+		})
+	}
+	if err := resetSchema(true); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := resetSchema(false); err != nil {
+			t.Error(err)
+		}
 	})
+	dsn := os.Getenv("AISEC_TEST_DATABASE_URL")
+	sep := "?"
+	if strings.Contains(dsn, "?") {
+		sep = "&"
+	}
+	db, err := Open(ctx, dsn+sep+"search_path="+schema, 4)
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(db.Close)
 	ms, err := LoadMigrations(migrations.FS)
 	if err != nil {
 		t.Fatal(err)

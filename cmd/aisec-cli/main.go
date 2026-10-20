@@ -25,6 +25,7 @@ const usage = `aisec-cli — служебные операции AISec.
 Команды:
   app-key -expires ГГГГ-ММ-ДД   выпустить ключ приложения
   migrate                       применить SQL-миграции к PostgreSQL (строка подключения — AISEC_DATABASE_URL)
+  audit verify                  проверить цепочку журнала аудита (AISEC_DATABASE_URL); 3 — цепочка нарушена
   version                       версия
 `
 
@@ -61,6 +62,18 @@ func run(args []string, stdout, stderr io.Writer, now time.Time) int {
 				return 0
 			}
 			say(stderr, "aisec-cli migrate: %v\n", err)
+			return 1
+		}
+		return 0
+	case "audit":
+		if err := auditCmd(args[1:], os.Getenv("AISEC_DATABASE_URL"), stdout, stderr); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return 0
+			}
+			say(stderr, "aisec-cli audit: %v\n", err)
+			if errors.Is(err, errChainBroken) {
+				return 3
+			}
 			return 1
 		}
 		return 0
