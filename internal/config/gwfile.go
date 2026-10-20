@@ -13,6 +13,7 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
+	"github.com/azuresong-afk/ai_railway/internal/detect/exfil"
 	"github.com/azuresong-afk/ai_railway/internal/detect/lists"
 	"github.com/azuresong-afk/ai_railway/internal/policy"
 )
@@ -125,9 +126,14 @@ type Application struct {
 	// (X-AISec-User), field (поле user запроса) или none.
 	UserFrom string `yaml:"user_from"`
 	Quotas   Quotas `yaml:"quotas"`
-	// Lists — словари и выражения заказчика для детектора lists (5.2).
+	// Lists — словари и выражения заказчика для детектора lists (5.2);
+	// дополняют встроенный список грифов.
 	Lists []lists.Spec `yaml:"lists"`
-	Keys  []AppKey     `yaml:"keys"`
+	// ExfilAllowDomains — домены, на которые в ответе модели разрешены
+	// изображения и ссылки (детектор output.exfil, DM-11): example.com — сам
+	// домен, *.example.com — его поддомены. Пусто — ни на какие.
+	ExfilAllowDomains []string `yaml:"exfil_allow_domains"`
+	Keys              []AppKey `yaml:"keys"`
 }
 
 // Quotas — лимиты приложения (5.2, quota). Ноль — без лимита.
@@ -362,8 +368,11 @@ func (f *GatewayFile) validate() error {
 				add("%s: quotas.%s — от 0 до 10^9", at, name)
 			}
 		}
-		if err := lists.Validate(a.Lists); err != nil {
+		if err := lists.Validate(lists.WithDefaults(a.Lists)); err != nil {
 			add("%s: %v", at, err)
+		}
+		if _, err := exfil.NewWithConfig(exfil.Config{AllowDomains: a.ExfilAllowDomains}); err != nil {
+			add("%s: exfil_allow_domains: %v", at, err)
 		}
 		if len(a.Keys) == 0 {
 			add("%s: нужен хотя бы один ключ приложения", at)

@@ -14,6 +14,7 @@ package lists
 
 import (
 	"context"
+	"slices"
 	"sort"
 	"unicode/utf8"
 
@@ -67,8 +68,15 @@ var defaultSpecs = []Spec{{
 	},
 }}
 
+// WithDefaults — встроенный список грифов и списки приложения: встроенный
+// список действует всегда, заказчик его только дополняет. Его ID
+// (confidentiality-marks) занят, а своих списков у приложения — до MaxLists-1.
+func WithDefaults(specs []Spec) []Spec {
+	return append(slices.Clone(defaultSpecs), specs...)
+}
+
 // New — детектор со встроенным списком грифов. Конвейер шлюза (задача 1.22)
-// собирает детектор приложения через Compile.
+// собирает детектор приложения через Compile(WithDefaults(…)).
 func New() *Detector {
 	d, err := Compile(defaultSpecs)
 	if err != nil {

@@ -11,7 +11,8 @@ func request() *Event {
 	return &Event{
 		ID: "0192f1a0-7b3c-7d4e-8f00-000000000000", Time: time.Date(2026, 10, 5, 0, 0, 0, 0, time.UTC),
 		Type: TypeGatewayRequest, App: "app", PolicyMode: ModeMonitor, Storage: StorageMasked,
-		Decision: &Decision{Action: "block", Applied: []string{"pseudonymize"}},
+		Decision: &Decision{Action: "block", Applied: []string{"pseudonymize"}, Policy: "base", PolicyVersion: 1, Rule: "injection",
+			FailMode: "fail_open", Failures: []DetectorFailure{{Detector: "lists", Location: "messages[0].content", Reason: FailureTimeout}}},
 		Threats:  []string{"DM-01", "DM-31"},
 		Findings: []Finding{{Detector: "pii.ru", Threat: "DM-31", Score: 1}},
 		Content:  &Content{Request: "Позвоните [[PHONE_1]]"},
@@ -33,6 +34,8 @@ func TestValidateErrors(t *testing.T) {
 		"нет ID":            func(e *Event) { e.ID = "" },
 		"тип":               func(e *Event) { e.Type = "other" },
 		"нет решения":       func(e *Event) { e.Decision = nil },
+		"нет действия":      func(e *Event) { e.Decision.Action = "" },
+		"причина сбоя":      func(e *Event) { e.Decision.Failures = []DetectorFailure{{Detector: "pii.ru", Reason: "boom"}} },
 		"режим политики":    func(e *Event) { e.PolicyMode = "audit" },
 		"full":              func(e *Event) { e.Storage = StorageFull },
 		"none с содержимым": func(e *Event) { e.Storage = StorageNone },
@@ -58,7 +61,8 @@ func TestJSONFieldNames(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, f := range []string{`"policy_mode":"monitor"`, `"applied":["pseudonymize"]`, `"threats":["DM-01","DM-31"]`} {
+	for _, f := range []string{`"policy_mode":"monitor"`, `"applied":["pseudonymize"]`, `"threats":["DM-01","DM-31"]`,
+		`"failures":[{"detector":"lists","location":"messages[0].content","reason":"timeout"}]`} {
 		if !strings.Contains(string(b), f) {
 			t.Errorf("нет %s в %s", f, b)
 		}

@@ -59,6 +59,7 @@ applications:
     fail_mode: fail_closed
     storage: masked
     user_from: header
+    exfil_allow_domains: [docs.example.ru, "*.cdn.example.ru"]
     quotas:
       requests_per_minute: 600
       tokens_per_day: 1000000

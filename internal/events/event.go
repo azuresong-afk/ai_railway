@@ -61,6 +61,31 @@ type Decision struct {
 	// защита данных для внешнего провайдера, ТЗ, 5.3).
 	Applied []string    `json:"applied"`
 	Trace   []TraceStep `json:"trace,omitempty"`
+	// Policy и PolicyVersion — политика, по которой принято решение.
+	Policy        string `json:"policy,omitempty"`
+	PolicyVersion int    `json:"policy_version,omitempty"`
+	// Rule — правило, давшее итог Action; служебные имена: non_text,
+	// fail_closed, model_not_allowed, quota.<имя квоты>.
+	Rule     string `json:"rule,omitempty"`
+	Severity string `json:"severity,omitempty"`
+	// FailMode — режим приложения при сбое проверки (ТЗ, 4.4); Failures —
+	// детекторы, которые не дали результата.
+	FailMode string            `json:"fail_mode,omitempty"`
+	Failures []DetectorFailure `json:"failures,omitempty"`
+}
+
+// Причины сбоя детектора.
+const (
+	FailureTimeout = "timeout" // не уложился в срок
+	FailureError   = "error"   // ошибка, паника или некорректная находка
+)
+
+// DetectorFailure — сбой детектора на фрагменте. Текст ошибки не пишется:
+// в нём может оказаться фрагмент проверяемого текста.
+type DetectorFailure struct {
+	Detector string `json:"detector"`
+	Location string `json:"location"`
+	Reason   string `json:"reason"`
 }
 
 // Tokens — расход токенов.
@@ -118,8 +143,15 @@ func (e *Event) Validate() error {
 	}
 	switch e.Type {
 	case TypeGatewayRequest, TypeCheck:
-		if e.App == "" || e.Decision == nil {
+		if e.App == "" || e.Decision == nil || e.Decision.Action == "" {
 			errs = append(errs, fmt.Errorf("%s: нужны приложение и решение", e.Type))
+		}
+		if e.Decision != nil {
+			for _, f := range e.Decision.Failures {
+				if f.Reason != FailureTimeout && f.Reason != FailureError {
+					errs = append(errs, fmt.Errorf("сбой детектора %s: неизвестная причина %q", f.Detector, f.Reason))
+				}
+			}
 		}
 		if e.PolicyMode != ModeMonitor && e.PolicyMode != ModeEnforce {
 			errs = append(errs, fmt.Errorf("%s: неизвестный режим политики %q", e.Type, e.PolicyMode))
