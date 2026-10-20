@@ -260,7 +260,8 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rec.usage(resp.Usage)
-	rec.out = func() *chat.Response { return resp }
+	outBytes := responseBytes(resp)
+	rec.outBytes = func() int { return outBytes }
 	// Приложение видит то имя модели, которое запросило (в том числе
 	// псевдоним), а не имя у провайдера (DM-33).
 	resp.Model = requested
@@ -393,7 +394,9 @@ func requestTexts(req *chat.Request) ([]inspectText, []textRef) {
 		if s.Role == "tool" {
 			src = detect.SourceTool
 		}
-		if s.Kind == chat.SegContent && s.Part >= 0 {
+		// Текстовые части, части refusal и refusal сообщения — в том порядке,
+		// в каком их склеивают адаптеры GigaChat и YandexGPT (textOf).
+		if s.Kind == chat.SegContent || s.Kind == chat.SegRefusal {
 			parts[s.Message] = append(parts[s.Message], len(texts))
 		}
 		texts = append(texts, inspectText{Text: s.Text, Source: src, Location: s.Location()})

@@ -375,7 +375,7 @@ func restoreToolCalls(v *pseudonym.Vault, args []string) ([]string, bool) {
 // блокировка и сбой — обычные ответы с ошибкой, а не обрыв потока.
 func (h *ChatHandler) streamBuffered(w http.ResponseWriter, r *http.Request, app *App, st providers.Stream, requested string, rec *record) {
 	asm := chat.NewAssembler()
-	rec.out = asm.Response
+	rec.outBytes = func() int { return responseBytes(asm.Response()) }
 	for {
 		c, err := st.Next()
 		if errors.Is(err, io.EOF) {
@@ -730,7 +730,7 @@ type streamProc struct {
 
 func (h *ChatHandler) newStreamProc(r *http.Request, app *App, rec *record, requested string, incremental bool, send func([]byte) bool) *streamProc {
 	sp := &streamProc{h: h, app: app, rec: rec, r: r, send: send, requested: requested, incremental: incremental, asm: chat.NewAssembler()}
-	rec.out = sp.asm.Response
+	rec.outBytes = func() int { return responseBytes(sp.asm.Response()) }
 	var cr, rr *pseudonym.Stream
 	if v := rec.vault; v != nil && v.Len() > 0 {
 		cr, rr = v.NewStream(), v.NewStream()

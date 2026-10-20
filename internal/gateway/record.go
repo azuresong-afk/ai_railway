@@ -23,14 +23,14 @@ type record struct {
 	in    *inspection
 	texts []inspectText
 	// res — резерв квоты; sent — запрос ушёл провайдеру; tokens — расход
-	// по usage провайдера, -1 — неизвестен. Без usage расход оценивается по
-	// размеру: inTokens — оценка входа, out — собранный ответ (nil — ответа
-	// нет).
+	// по usage провайдера, -1 — неизвестен. Без usage (или с нулевым) расход
+	// оценивается по размеру: inTokens — оценка входа, outBytes — размер
+	// ответа провайдера до действий политики (nil — ответа нет).
 	res      *Reservation
 	sent     bool
 	tokens   int
 	inTokens int
-	out      func() *chat.Response
+	outBytes func() int
 	// skip — событие не отправляется: клиент ушёл до решения.
 	skip bool
 	// output — проверялся текст ответа: содержимое в событии пишется в
@@ -132,7 +132,8 @@ func (rec *record) usage(u *chat.Usage) {
 	if u == nil {
 		return
 	}
-	rec.tokens = u.TotalTokens
+	// Часть OpenAI-совместимых серверов не заполняет total_tokens.
+	rec.tokens = max(u.TotalTokens, u.PromptTokens+u.CompletionTokens)
 	rec.ev.Tokens = &events.Tokens{Prompt: u.PromptTokens, Completion: u.CompletionTokens}
 }
 
@@ -141,15 +142,16 @@ func (h *ChatHandler) emit(rec *record) {
 	switch {
 	case !rec.sent:
 		rec.res.Settle(0) // до модели не дошло — резерв возвращается
-	case rec.tokens >= 0:
+	case rec.tokens > 0:
 		rec.res.Settle(rec.tokens)
-	case rec.out != nil:
-		// Провайдер не прислал usage (поток без stream_options.include_usage):
-		// иначе резерв без max_tokens покрывал бы только вход, и ответ любой
-		// длины не учитывался бы в tokens_per_minute и tokens_per_day (DM-36).
-		if resp := rec.out(); resp != nil {
-			rec.res.SettleAtLeast(rec.inTokens + estimateTokens(responseBytes(resp)))
-		}
+	case rec.outBytes != nil:
+		// Провайдер не прислал usage (поток без stream_options.include_usage)
+		// или прислал нули: иначе резерв без max_tokens покрывал бы только
+		// вход (или возвращался бы целиком), и ответ любой длины не
+		// учитывался бы в tokens_per_minute и tokens_per_day (DM-36).
+		rec.res.SettleAtLeast(rec.inTokens + estimateTokens(rec.outBytes()))
+	case rec.tokens == 0:
+		rec.res.Settle(0)
 	}
 	if rec.skip {
 		return

@@ -169,6 +169,10 @@ func (a *App) inspect(ctx context.Context, req inspectRequest) (*inspection, err
 	total, cancel := context.WithTimeout(ctx, MaxDetectorTimeout)
 	defer cancel()
 	joinedIDs := slices.DeleteFunc(slices.Clone(runIDs), func(id string) bool { return !joinedDetector(id) })
+	// seen — находки по участкам частей: склейка повторяет находку внутри
+	// одной части, а две склейки (без разделителя и через перевод строки) —
+	// друг друга; в событие и решение каждая идёт один раз.
+	seen := map[string]bool{}
 	for i, t := range req.Texts {
 		ids := runIDs
 		if t.Parts != nil {
@@ -196,7 +200,13 @@ func (a *App) inspect(ctx context.Context, req inspectRequest) (*inspection, err
 			if t.Threat != "" {
 				f.Threat = t.Threat
 			}
-			in.Findings = append(in.Findings, locatedFinding{Finding: f, Text: i})
+			lf := locatedFinding{Finding: f, Text: i}
+			key := fmt.Sprint(f.Detector, "\x00", f.Category, "\x00", partSpans(req.Texts, lf))
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			in.Findings = append(in.Findings, lf)
 		}
 		for _, re := range rerrs {
 			reason := events.FailureError
