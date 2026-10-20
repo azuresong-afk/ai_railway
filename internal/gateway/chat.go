@@ -156,7 +156,7 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusBadRequest, ce.Message, "invalid_request_error", ce.Code)
 		return
 	}
-	user, ok := h.user(w, r, app, req)
+	user, ok := h.user(w, r, app, req.User)
 	if !ok {
 		return
 	}
@@ -257,7 +257,7 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // user — псевдоним конечного пользователя (ТЗ, 4.3, шаг 2; 5.5): HMAC
 // идентификатора на ключе установки. Исходный идентификатор нигде не
 // сохраняется. При ошибке ответ уже записан.
-func (h *ChatHandler) user(w http.ResponseWriter, r *http.Request, app *App, req *chat.Request) (string, bool) {
+func (h *ChatHandler) user(w http.ResponseWriter, r *http.Request, app *App, reqUser string) (string, bool) {
 	var id string
 	switch app.UserFrom {
 	case userFromHeader:
@@ -275,7 +275,7 @@ func (h *ChatHandler) user(w http.ResponseWriter, r *http.Request, app *App, req
 			}
 		}
 	case userFromField:
-		id = req.User // длину и состав проверил chat.Parse
+		id = reqUser // длину и состав проверил разбор запроса
 	}
 	if id == "" || h.cfg.UserMAC == nil {
 		return "", true
@@ -285,9 +285,6 @@ func (h *ChatHandler) user(w http.ResponseWriter, r *http.Request, app *App, req
 
 // admit проверяет квоты (ТЗ, 4.3, шаг 3). При отказе ответ уже записан.
 func (h *ChatHandler) admit(w http.ResponseWriter, r *http.Request, rec *record, req *chat.Request, user string, texts []inspectText) bool {
-	if h.cfg.Quotas == nil {
-		return true
-	}
 	// Размер входа — проверяемый текст (без склеек, они повторяют части) и
 	// схемы инструментов: они тоже уходят модели.
 	size := 0
@@ -300,7 +297,16 @@ func (h *ChatHandler) admit(w http.ResponseWriter, r *http.Request, rec *record,
 		size += len(tl.Function.Parameters)
 	}
 	maxOut, _ := req.EffectiveMaxTokens()
-	qr := QuotaRequest{App: rec.app.ID, User: user, InputBytes: size, Tokens: estimateTokens(size) + max(maxOut, 0)}
+	return h.admitSize(w, r, rec, user, size, estimateTokens(size)+max(maxOut, 0))
+}
+
+// admitSize проверяет квоты по размеру входа и оценке токенов; общая часть
+// chat/completions, embeddings и Check API. При отказе ответ уже записан.
+func (h *ChatHandler) admitSize(w http.ResponseWriter, r *http.Request, rec *record, user string, size, tokens int) bool {
+	if h.cfg.Quotas == nil {
+		return true
+	}
+	qr := QuotaRequest{App: rec.app.ID, User: user, InputBytes: size, Tokens: tokens}
 	if id, ok := IdentityFrom(r.Context()); ok {
 		qr.Key = id.KeyPrefix
 	}

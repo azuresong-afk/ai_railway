@@ -89,9 +89,12 @@ func joinedDetector(id string) bool { return strings.HasPrefix(id, "injection.")
 // inspectRequest — что проверяется.
 type inspectRequest struct {
 	Endpoint policy.Endpoint
-	External bool
-	Texts    []inspectText
-	Media    []policy.MediaPart
+	// Direction — направление проверки; пусто — вход (detect.Input). Выход
+	// проверяет Check API (задача 1.24).
+	Direction detect.Direction
+	External  bool
+	Texts     []inspectText
+	Media     []policy.MediaPart
 	// Mask — нужны находки детекторов маскирования (хранение masked).
 	Mask bool
 	// Timeout — базовый срок детектора (DefaultDetectorTimeout).
@@ -133,7 +136,10 @@ func (a *App) inspect(ctx context.Context, req inspectRequest) (*inspection, err
 	if req.Timeout <= 0 {
 		req.Timeout = DefaultDetectorTimeout
 	}
-	policyIDs := a.Policy.Detectors(detect.Input)
+	if req.Direction == "" {
+		req.Direction = detect.Input
+	}
+	policyIDs := a.Policy.Detectors(req.Direction)
 	runIDs := slices.Clone(policyIDs)
 	if req.Mask {
 		for _, id := range maskDetectors {
@@ -161,7 +167,7 @@ func (a *App) inspect(ctx context.Context, req inspectRequest) (*inspection, err
 			in.overall(policyIDs, t.Location)
 			break
 		}
-		fs, rerrs, err := a.Detectors.Run(total, ids, detect.Text{Text: t.Text, Direction: detect.Input, Source: t.Source},
+		fs, rerrs, err := a.Detectors.Run(total, ids, detect.Text{Text: t.Text, Direction: req.Direction, Source: t.Source},
 			detectorTimeout(req.Timeout, len(t.Text)))
 		if err != nil {
 			return nil, err
@@ -190,7 +196,7 @@ func (a *App) inspect(ctx context.Context, req inspectRequest) (*inspection, err
 		hits[i] = policy.Hit{Finding: f.Finding, Source: req.Texts[f.Text].Source}
 	}
 	in.Decision = a.Policy.Evaluate(policy.Request{
-		Endpoint: req.Endpoint, Direction: detect.Input, Mode: a.Mode, External: req.External, Hits: hits, Media: req.Media,
+		Endpoint: req.Endpoint, Direction: req.Direction, Mode: a.Mode, External: req.External, Hits: hits, Media: req.Media,
 	})
 	// Режим при сбое (ТЗ, 4.4) действует и в monitor: проверка, которая не
 	// состоялась, не может подтвердить, что защита данных не нужна.

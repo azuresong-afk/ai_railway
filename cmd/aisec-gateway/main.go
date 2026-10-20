@@ -100,14 +100,25 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 			logger.Warn("события отброшены из-за переполнения очереди", "count", n)
 		}
 	}()
-	chatHandler, err := gateway.NewChatHandler(gateway.ChatConfig{
+	// Квоты общие для всех маршрутов приложений: счётчики — один набор.
+	handlerCfg := gateway.ChatConfig{
 		Router: router, MaxBodyBytes: cfg.MaxBodyBytes, Logger: logger,
 		Events: queue, IDs: authCfg.IDs, Quotas: gateway.NewLimiter(file.Applications), UserMAC: userMAC,
-	})
+	}
+	chatHandler, err := gateway.NewChatHandler(handlerCfg)
 	if err != nil {
 		return err
 	}
-	handler, err := gateway.New(gateway.Options{Logger: logger, Chat: chatHandler, Router: router, Auth: authCfg})
+	embeddingsHandler, err := gateway.NewEmbeddingsHandler(handlerCfg)
+	if err != nil {
+		return err
+	}
+	checkHandler, err := gateway.NewCheckHandler(handlerCfg)
+	if err != nil {
+		return err
+	}
+	handler, err := gateway.New(gateway.Options{Logger: logger, Chat: chatHandler, Embeddings: embeddingsHandler,
+		Check: checkHandler, Router: router, Auth: authCfg})
 	if err != nil {
 		return err
 	}

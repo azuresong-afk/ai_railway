@@ -1,7 +1,233 @@
-# Контракт API управления — источник истины (ТЗ, раздел 13).
-# Эндпоинты появляются на этапе 2.
+# Контракт API — источник истины (ТЗ, раздел 13).
+# API управления появляется на этапе 2; здесь — интерфейсы шлюза для приложений,
+# которые добавляются по мере реализации (OpenAI-совместимые chat/completions
+# и models описываются отдельно).
 openapi: 3.1.0
 info:
   title: AISec API
   version: 0.0.0
-paths: {}
+security:
+  - appKey: []
+paths:
+  /guard/v1/check:
+    post:
+      summary: Check API — проверка текста по политике приложения
+      description: >
+        Текст проверяется конвейером шлюза без обращения к модели (ТЗ, 5.1).
+        Блокировка политикой — ответ 200 с `blocked: true` (проверяйте поле `blocked` или заголовок `X-AISec-Decision`, а не только код ответа) и без преобразованного
+        текста. Сбой проверки при `fail_closed` — 503 `check_unavailable`;
+        при `fail_open` проверка идёт дальше, ответ помечается `incomplete`.
+        Действие `pseudonymize` политики выполняется как `redact`: обратной
+        подстановки у Check API нет. Квоты приложения (частота, размер) действуют,
+        токены модели не тратятся.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CheckRequest' }
+      responses:
+        '200':
+          description: Решение по тексту
+          headers:
+            X-AISec-Event-Id: { $ref: '#/components/headers/EventId' }
+            X-AISec-Decision: { $ref: '#/components/headers/Decision' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CheckResponse' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '413': { $ref: '#/components/responses/InvalidRequest' }
+        '415': { $ref: '#/components/responses/InvalidRequest' }
+        '429': { $ref: '#/components/responses/QuotaExceeded' }
+        '503': { $ref: '#/components/responses/CheckUnavailable' }
+  /v1/embeddings:
+    post:
+      summary: Эмбеддинги — OpenAI-совместимый запрос с проверкой входного текста
+      description: >
+        Вход проверяется конвейером; допустимы только `redact` и `block`
+        (`pseudonymize` выполняется как `redact`, это видно в событии).
+        `encoding_format` — только `float`; массивы токенов не принимаются.
+        Идентификатор пользователя внешнему провайдеру не передаётся.
+        Провайдер без поддержки эмбеддингов (GigaChat, YandexGPT на этапе 1) —
+        501 `embeddings_not_supported`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EmbeddingsRequest' }
+      responses:
+        '200':
+          description: Векторы по одному на строку входа
+          headers:
+            X-AISec-Event-Id: { $ref: '#/components/headers/EventId' }
+            X-AISec-Decision: { $ref: '#/components/headers/Decision' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EmbeddingsResponse' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/InvalidRequest' }
+        '413': { $ref: '#/components/responses/InvalidRequest' }
+        '415': { $ref: '#/components/responses/InvalidRequest' }
+        '429': { $ref: '#/components/responses/QuotaExceeded' }
+        '501': { $ref: '#/components/responses/InvalidRequest' }
+        '502': { $ref: '#/components/responses/InvalidRequest' }
+        '503': { $ref: '#/components/responses/CheckUnavailable' }
+components:
+  securitySchemes:
+    appKey:
+      type: http
+      scheme: bearer
+      description: Ключ приложения `aisec_<префикс>_<секрет>` (ИАФ.8)
+  headers:
+    EventId:
+      description: Идентификатор события check или gateway_request
+      schema: { type: string }
+    Decision:
+      description: Что сделано с текстом
+      schema: { type: string, enum: [allow, log, redact, pseudonymize, block] }
+  responses:
+    InvalidRequest:
+      description: Ошибка запроса или провайдера в формате OpenAI
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unauthorized:
+      description: Ключ приложения не принят (`invalid_api_key`)
+      headers:
+        WWW-Authenticate: { schema: { type: string } }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    QuotaExceeded:
+      description: Превышена квота приложения (`quota_exceeded`)
+      headers:
+        Retry-After: { schema: { type: integer } }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    CheckUnavailable:
+      description: Проверка не состоялась при `fail_closed` (`check_unavailable`)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [message, type, code]
+          properties:
+            message: { type: string }
+            type: { type: string }
+            code: { type: string }
+    CheckRequest:
+      type: object
+      additionalProperties: false
+      required: [direction]
+      description: Ровно одно из `text` и `messages`.
+      properties:
+        direction:
+          type: string
+          enum: [input, output]
+          description: input — запрос к модели, документ RAG, ответ инструмента; output — ответ модели.
+        source:
+          type: string
+          enum: [user, rag, tool, output]
+          description: >
+            Для input — user, rag или tool; для output — output. Без указания:
+            для input сообщения с ролью tool — tool, остальные — user; для output — output.
+            Источники image и audio появятся с этапа 5.
+        text: { type: string, minLength: 1 }
+        messages:
+          type: array
+          maxItems: 256
+          items:
+            type: object
+            additionalProperties: false
+            required: [role, content]
+            properties:
+              role: { type: string, enum: [system, user, assistant, tool] }
+              content: { type: string, minLength: 1 }
+        user:
+          type: string
+          maxLength: 256
+          description: Идентификатор пользователя, если приложение берёт его из поля (`user_from: field`).
+    CheckResponse:
+      type: object
+      required: [id, decision, action, blocked, findings]
+      properties:
+        id: { type: string, description: Идентификатор события check }
+        decision:
+          type: string
+          enum: [allow, log, redact, pseudonymize, block]
+          description: Что сделано с текстом.
+        action:
+          type: string
+          description: Решение политики как в режиме enforce (в monitor может отличаться от decision).
+        blocked: { type: boolean, description: Текст использовать нельзя. }
+        message: { type: string, description: Сообщение политики при блокировке. }
+        incomplete: { type: boolean, description: Часть детекторов не дала результата (fail_open). }
+        unchecked: { type: boolean, description: 'У политики нет правил для этого направления: детекторы не запускались, allow не означает «проверено».' }
+        findings:
+          type: array
+          items:
+            type: object
+            required: [detector, category, score, start, end, location]
+            properties:
+              detector: { type: string }
+              category: { type: string }
+              score: { type: number }
+              start: { type: integer, description: Байтовое смещение в UTF-8 начала находки в тексте фрагмента. }
+              end: { type: integer }
+              location: { type: string, description: 'text или messages[i].content' }
+              threat: { type: string, description: ID строки матрицы обнаружения (DM-NN). }
+        findings_truncated: { type: boolean, description: Находок больше 1024, показаны первые. }
+        text: { type: string, description: 'Текст после действий политики; изменён только при decision=redact (в monitor действия не применяются). Не использовать без проверки blocked. Нет при блокировке.' }
+        messages:
+          type: array
+          description: Преобразованные сообщения в том же порядке; нет при блокировке.
+          items:
+            type: object
+            properties:
+              role: { type: string }
+              content: { type: string }
+    EmbeddingsRequest:
+      type: object
+      additionalProperties: false
+      required: [model, input]
+      properties:
+        model: { type: string }
+        input:
+          oneOf:
+            - type: string
+              minLength: 1
+            - type: array
+              minItems: 1
+              maxItems: 256
+              items: { type: string, minLength: 1 }
+        encoding_format: { type: string, enum: [float] }
+        dimensions: { type: integer, minimum: 1, maximum: 65536 }
+        user: { type: string, maxLength: 256 }
+    EmbeddingsResponse:
+      type: object
+      required: [object, data, model]
+      properties:
+        object: { type: string, enum: [list] }
+        model: { type: string }
+        data:
+          type: array
+          items:
+            type: object
+            required: [object, index, embedding]
+            properties:
+              object: { type: string, enum: [embedding] }
+              index: { type: integer }
+              embedding: { type: array, items: { type: number } }
+        usage:
+          type: object
+          properties:
+            prompt_tokens: { type: integer }
+            total_tokens: { type: integer }
