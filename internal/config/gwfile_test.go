@@ -5,6 +5,10 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/azuresong-afk/ai_railway/internal/detect"
+	"github.com/azuresong-afk/ai_railway/internal/detect/builtin"
+	"github.com/azuresong-afk/ai_railway/internal/policy"
 )
 
 func readFixture(t *testing.T) string {
@@ -21,7 +25,7 @@ func TestParseGatewayFileFixture(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(f.Providers) != 3 || len(f.Applications) != 1 {
+	if len(f.Providers) != 3 || len(f.Applications) != 1 || len(f.Policies) != 1 || len(f.Policies[0].Rules) != 2 {
 		t.Fatalf("разбор: %+v", f)
 	}
 	p := f.Providers[0]
@@ -32,7 +36,7 @@ func TestParseGatewayFileFixture(t *testing.T) {
 		t.Fatal("провайдер без признака external должен считаться внешним (ТЗ, 5.4)")
 	}
 	a := f.Applications[0]
-	if a.Aliases["default"] != "mock-echo" || a.Quotas.MaxTokens != 4096 || a.Keys[0].Prefix != "aisec_abcd1234" {
+	if a.Aliases["default"] != "mock-echo" || a.Quotas.MaxTokens != 4096 || a.Keys[0].Prefix != "aisec_abcd1234" || len(a.ExfilAllowDomains) != 2 {
 		t.Fatalf("приложение: %+v", a)
 	}
 }
@@ -70,6 +74,13 @@ func TestParseGatewayFileErrors(t *testing.T) {
 		"yandex без folder_id": {"    folder_id: b1gexamplefolder0000\n", ""},
 		"id":                   {"id: support-bot", "id: Support Bot"},
 		"два документа":        {"schema_version: 1", "schema_version: 1\n---\nx: 1\n---"},
+		"нет политики":         {"policy: base", "policy: nope"},
+		"политика — шаблон":    {"  - id: support-strict", "  - id: pii-strict"},
+		"режим политики":       {"mode: enforce", "mode: audit"},
+		"действие правила":     {"action: block", "action: drop"},
+		"поле правила":         {"severity: high\n", "severity: high\n        enabled: true\n"},
+		"порог":                {"threshold: 0.5", "threshold: 2"},
+		"домен allowlist":      {"docs.example.ru,", "https://docs.example.ru,"},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -88,8 +99,48 @@ func TestParseGatewayFileErrors(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "указано дважды") || !strings.Contains(err.Error(), "уже используется") {
 		t.Fatalf("повтор приложения и префикса ключа должен отвергаться: %v", err)
 	}
+	pol := base[strings.Index(base, "  - id: support-strict"):strings.Index(base, "applications:")]
+	if _, err := ParseGatewayFile(strings.NewReader(strings.Replace(base, "applications:", pol+"applications:", 1))); err == nil || !strings.Contains(err.Error(), "политика указана дважды") {
+		t.Fatalf("повтор политики должен отвергаться: %v", err)
+	}
+	if _, err := ParseGatewayFile(strings.NewReader(strings.Replace(base, "applications:", strings.Repeat(pol, MaxPolicies)+"applications:", 1))); err == nil || !strings.Contains(err.Error(), "не больше") {
+		t.Fatalf("больше %d политик: %v", MaxPolicies, err)
+	}
 	if _, err := ParseGatewayFile(strings.NewReader(strings.Repeat("#", MaxGatewayFile+1))); err == nil {
 		t.Fatal("слишком большой файл должен отвергаться")
+	}
+}
+
+// Ссылка на политику: из policies, шаблон или пусто — base в режиме самой
+// политики (решение Р7).
+func TestGatewayFilePolicyReference(t *testing.T) {
+	base := readFixture(t)
+	reg, err := detect.NewRegistry(builtin.All()...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range [][2]string{
+		{"policy: base\n    policy_mode: monitor\n", "policy: support-strict\n    policy_mode: monitor\n"},
+		{"policy: base\n    policy_mode: monitor\n", "policy: monitor-only\n"},
+		{"    policy: base\n    policy_mode: monitor\n", ""},
+	} {
+		doc := strings.Replace(base, c[0], c[1], 1)
+		f, err := ParseGatewayFile(strings.NewReader(doc))
+		if err != nil {
+			t.Fatalf("%q: %v", c[1], err)
+		}
+		a := f.Applications[0]
+		if c[1] == "" && (a.Policy != "" || a.PolicyMode != "") {
+			t.Fatalf("пустые policy и policy_mode: %+v", a)
+		}
+		// Политики фикстуры компилируются со встроенными детекторами.
+		p, err := policy.Resolve(a.Policy, f.Policies, reg)
+		if err != nil {
+			t.Fatalf("%q: %v", c[1], err)
+		}
+		if c[1] == "" && (p.ID != policy.TemplateBase || p.Mode != policy.Monitor) {
+			t.Fatalf("политика по умолчанию: %+v", p)
+		}
 	}
 }
 
@@ -160,4 +211,47 @@ func FuzzParseGatewayFile(f *testing.F) {
 			}
 		}
 	})
+}
+
+// TestGatewayFileWarnings — «Только мониторинг» с внешним провайдером
+// принимается, но с предупреждением (ревью 1.17–1.21, п. 15).
+func TestGatewayFileWarnings(t *testing.T) {
+	base := readFixture(t)
+	f, err := ParseGatewayFile(strings.NewReader(base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w := f.Warnings(); len(w) != 0 {
+		t.Fatalf("фикстура без опасных настроек: %v", w)
+	}
+	doc := strings.Replace(base, "policy: base\n    policy_mode: monitor\n", "policy: monitor-only\n", 1)
+	f, err = ParseGatewayFile(strings.NewReader(doc))
+	if err != nil {
+		t.Fatal(err)
+	}
+	external := false
+	for _, p := range f.Providers {
+		if p.ID == f.Applications[0].Provider {
+			external = p.IsExternal()
+		}
+	}
+	w := f.Warnings()
+	if external != (len(w) == 1) {
+		t.Fatalf("внешний провайдер %v, предупреждения: %v", external, w)
+	}
+	// Тот же провайдер, объявленный внутренним, — без предупреждения.
+	for i := range f.Providers {
+		no := false
+		f.Providers[i].External = &no
+	}
+	if w := f.Warnings(); len(w) != 0 {
+		t.Fatalf("внутренний провайдер: %v", w)
+	}
+	for i := range f.Providers {
+		yes := true
+		f.Providers[i].External = &yes
+	}
+	if w := f.Warnings(); len(w) != 1 || !strings.Contains(w[0], "monitor-only") {
+		t.Fatalf("внешний провайдер: %v", w)
+	}
 }

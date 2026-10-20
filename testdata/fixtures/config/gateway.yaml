@@ -25,6 +25,27 @@ providers:
     key_file: /etc/aisec/yandex.key
     folder_id: b1gexamplefolder0000
     ca_file: /etc/aisec/yandex-ca.pem
+# Политики заказчика (ТЗ, 5.3). Приложение ссылается на политику отсюда или
+# на шаблон: base («Базовая защита», по умолчанию), pii-strict, external-no-pii,
+# monitor-only.
+policies:
+  - id: support-strict
+    name: Бот поддержки — строго
+    version: 1
+    mode: enforce
+    non_text: allow_inline
+    response_check: buffered
+    rules:
+      - id: injection
+        detector: injection.heuristic
+        threshold: 0.5
+        action: block
+        severity: high
+      - id: pii-input
+        detector: pii.ru
+        directions: [input]
+        action: pseudonymize
+        severity: medium
 applications:
   - id: support-bot
     name: Бот поддержки
@@ -38,6 +59,7 @@ applications:
     fail_mode: fail_closed
     storage: masked
     user_from: header
+    exfil_allow_domains: [docs.example.ru, "*.cdn.example.ru"]
     quotas:
       requests_per_minute: 600
       tokens_per_day: 1000000

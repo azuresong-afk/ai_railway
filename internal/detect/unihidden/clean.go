@@ -18,7 +18,13 @@ import (
 //   - в слове со смешением латиницы, кириллицы и греческого похожие буквы
 //     меньшинства заменяются буквами основной письменности слова (при
 //     равенстве — латиницей). Невидимые символы внутри слова его не
-//     разрывают.
+//     разрывают;
+//   - комбинируемые знаки без ширины (Mn) после латинской, кириллической и
+//     греческой буквы и без основы удаляются: «взры\u0301вчатка» —
+//     «взрывчатка», «е\u0308» — «е» (как у детекторов, где «ё» = «е»);
+//     «и\u0306» сводится к «й» — это отдельная буква, а не ударение. Знаки
+//     после букв других письменностей (индийских, арабского, иврита) — часть
+//     орфографии и остаются.
 //
 // offs[i] — позиция в text байта i результата, offs[len(clean)] = len(text):
 // фрагмент [i, j) результата — это [offs[i], offs[j]) исходного текста (по
@@ -67,6 +73,13 @@ func Clean(text string) (clean string, offs []int) {
 		if a := asciiLookalike(r); a != 0 {
 			r = a
 		}
+		if unicode.Is(unicode.Mn, r) {
+			if n := len(word); n == 0 || combine(&word[n-1], r) {
+				continue // знак без основы или после латиницы, кириллицы, греческого
+			}
+			word = append(word, wordRune{r, pos})
+			continue
+		}
 		if unicode.IsLetter(r) || unicode.IsMark(r) && len(word) > 0 {
 			word = append(word, wordRune{r, pos})
 			continue
@@ -82,6 +95,22 @@ func Clean(text string) (clean string, offs []int) {
 type wordRune struct {
 	r   rune
 	pos int
+}
+
+// combine применяет знак Mn к предыдущей букве слова: «и»/«И» с бревисом —
+// «й»/«Й», знак после латинской, кириллической или греческой буквы
+// отбрасывается. false — буква другой письменности (или сам знак): знак
+// остаётся в слове.
+func combine(base *wordRune, mark rune) bool {
+	switch {
+	case mark == 0x0306 && base.r == 'и':
+		base.r = 'й'
+		return true
+	case mark == 0x0306 && base.r == 'И':
+		base.r = 'Й'
+		return true
+	}
+	return scriptOf(base.r) != sOther
 }
 
 // appendRune дописывает r в результат и позицию исходного символа для

@@ -2,6 +2,7 @@ package providers
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/url"
@@ -22,8 +23,9 @@ type OpenAIConfig struct {
 // OpenAI — OpenAI-совместимый провайдер.
 type OpenAI struct {
 	base
-	key      string
-	endpoint string
+	key       string
+	endpoint  string
+	embedding string
 }
 
 // NewOpenAI проверяет параметры и создаёт провайдера.
@@ -35,7 +37,8 @@ func NewOpenAI(cfg OpenAIConfig) (*OpenAI, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &OpenAI{base: b, key: cfg.Key, endpoint: endpoint(cfg.BaseURL, "/chat/completions")}, nil
+	return &OpenAI{base: b, key: cfg.Key, endpoint: endpoint(cfg.BaseURL, "/chat/completions"),
+		embedding: endpoint(cfg.BaseURL, "/embeddings")}, nil
 }
 
 func (p *OpenAI) send(ctx, clientCtx context.Context, req *chat.Request, stream bool) (*http.Response, Meta, error) {
@@ -87,4 +90,34 @@ func (p *OpenAI) Stream(ctx context.Context, req *chat.Request) (Stream, Meta, e
 	}
 	st, err := p.openStream(ctx, cancel, resp, chat.ParseChunk)
 	return st, meta, err
+}
+
+// Embeddings — эмбеддинги: запрос собирается заново, формат вектора всегда float.
+func (p *OpenAI) Embeddings(ctx context.Context, req *chat.EmbeddingRequest) (*chat.EmbeddingResponse, Meta, error) {
+	rctx, cancel := context.WithTimeout(ctx, p.cfg.ResponseTimeout)
+	defer cancel()
+	out := *req
+	out.EncodingFormat = "float"
+	body, err := json.Marshal(&out)
+	if err != nil {
+		return nil, Meta{}, err
+	}
+	auth := ""
+	if p.key != "" {
+		auth = "Bearer " + p.key
+	}
+	resp, meta, err := p.post(rctx, ctx, p.embedding, body, false, auth)
+	if err != nil {
+		return nil, meta, err
+	}
+	raw, err := p.readBody(ctx, resp)
+	if err != nil {
+		return nil, meta, err
+	}
+	res, err := chat.ParseEmbeddingResponse(raw, len(req.Input))
+	if err != nil {
+		p.logger.Warn("ответ провайдера не разобран", "provider", p.cfg.ID)
+		return nil, meta, ErrBadResponse
+	}
+	return res, meta, nil
 }

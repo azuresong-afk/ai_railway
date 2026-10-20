@@ -61,6 +61,31 @@ type Decision struct {
 	// защита данных для внешнего провайдера, ТЗ, 5.3).
 	Applied []string    `json:"applied"`
 	Trace   []TraceStep `json:"trace,omitempty"`
+	// Policy и PolicyVersion — политика, по которой принято решение.
+	Policy        string `json:"policy,omitempty"`
+	PolicyVersion int    `json:"policy_version,omitempty"`
+	// Rule — правило, давшее итог Action; служебные имена: non_text,
+	// fail_closed, model_not_allowed, quota.<имя квоты>.
+	Rule     string `json:"rule,omitempty"`
+	Severity string `json:"severity,omitempty"`
+	// FailMode — режим приложения при сбое проверки (ТЗ, 4.4); Failures —
+	// детекторы, которые не дали результата.
+	FailMode string            `json:"fail_mode,omitempty"`
+	Failures []DetectorFailure `json:"failures,omitempty"`
+}
+
+// Причины сбоя детектора.
+const (
+	FailureTimeout = "timeout" // не уложился в срок
+	FailureError   = "error"   // ошибка, паника или некорректная находка
+)
+
+// DetectorFailure — сбой детектора на фрагменте. Текст ошибки не пишется:
+// в нём может оказаться фрагмент проверяемого текста.
+type DetectorFailure struct {
+	Detector string `json:"detector"`
+	Location string `json:"location"`
+	Reason   string `json:"reason"`
 }
 
 // Tokens — расход токенов.
@@ -73,6 +98,43 @@ type Tokens struct {
 type Content struct {
 	Request  string `json:"request,omitempty"`
 	Response string `json:"response,omitempty"`
+}
+
+// Режимы проверки ответа модели (ТЗ, 5.1).
+const (
+	ResponseBuffered    = "buffered"
+	ResponseIncremental = "incremental"
+	ResponseMonitor     = "monitor"
+)
+
+// Response — проверка ответа модели (ТЗ, 4.3, шаг 7). Находки ответа — в
+// Event.Findings (место — choices[0].…), категории угроз — в Event.Threats.
+type Response struct {
+	// Mode — как проверялся ответ: buffered (в том числе ответ без потока),
+	// incremental или monitor (проверка после передачи, только журнал).
+	Mode     string    `json:"mode"`
+	Decision *Decision `json:"decision,omitempty"`
+	// Cut — поток ответа оборван политикой или сбоем проверки (incremental).
+	Cut bool `json:"cut,omitempty"`
+}
+
+// Pseudonyms — счётчики псевдонимизации запроса и обратной подстановки
+// (ТЗ, 5.1). Значений и псевдонимов не содержит.
+type Pseudonyms struct {
+	Issued        int `json:"issued"`
+	Pseudonymized int `json:"pseudonymized"`
+	Redacted      int `json:"redacted"`
+	Fallback      int `json:"fallback,omitempty"`
+	Restored      int `json:"restored"`
+	// Failed — неудачные подстановки: сумма Unknown, Mangled, Unsafe, Limited.
+	Failed  int `json:"failed"`
+	Unknown int `json:"unknown,omitempty"`
+	Mangled int `json:"mangled,omitempty"`
+	Unsafe  int `json:"unsafe,omitempty"`
+	Limited int `json:"limited,omitempty"`
+	// Withheld — тексты ответа, в которых подстановка отменена: после неё
+	// output.exfil нашёл новую ссылку (значение осталось замаскированным).
+	Withheld int `json:"withheld,omitempty"`
 }
 
 // AuthFailure — подробности неудачной аутентификации. Сам ключ не пишется.
@@ -103,6 +165,8 @@ type Event struct {
 	NonTextUnchecked bool             `json:"non_text_unchecked,omitempty"`
 	Storage          string           `json:"storage,omitempty"`
 	Content          *Content         `json:"content,omitempty"`
+	Response         *Response        `json:"response,omitempty"`
+	Pseudonyms       *Pseudonyms      `json:"pseudonyms,omitempty"`
 	AuthFailure      *AuthFailure     `json:"auth_failure,omitempty"`
 }
 
@@ -118,8 +182,30 @@ func (e *Event) Validate() error {
 	}
 	switch e.Type {
 	case TypeGatewayRequest, TypeCheck:
-		if e.App == "" || e.Decision == nil {
+		if e.App == "" || e.Decision == nil || e.Decision.Action == "" {
 			errs = append(errs, fmt.Errorf("%s: нужны приложение и решение", e.Type))
+		}
+		if e.Decision != nil {
+			for _, f := range e.Decision.Failures {
+				if f.Reason != FailureTimeout && f.Reason != FailureError {
+					errs = append(errs, fmt.Errorf("сбой детектора %s: неизвестная причина %q", f.Detector, f.Reason))
+				}
+			}
+		}
+		if r := e.Response; r != nil {
+			if r.Mode != ResponseBuffered && r.Mode != ResponseIncremental && r.Mode != ResponseMonitor {
+				errs = append(errs, fmt.Errorf("неизвестный режим проверки ответа %q", r.Mode))
+			}
+			if r.Decision != nil {
+				if r.Decision.Action == "" {
+					errs = append(errs, errors.New("решение по ответу без действия"))
+				}
+				for _, f := range r.Decision.Failures {
+					if f.Reason != FailureTimeout && f.Reason != FailureError {
+						errs = append(errs, fmt.Errorf("сбой детектора %s на ответе: неизвестная причина %q", f.Detector, f.Reason))
+					}
+				}
+			}
 		}
 		if e.PolicyMode != ModeMonitor && e.PolicyMode != ModeEnforce {
 			errs = append(errs, fmt.Errorf("%s: неизвестный режим политики %q", e.Type, e.PolicyMode))

@@ -136,6 +136,72 @@ func TestClean(t *testing.T) {
 	}
 }
 
+// TestCleanCombiningMarks (замечание 6 ревью 1.17–1.21): комбинируемые знаки
+// после латиницы, кириллицы и греческого удаляются, «и» с бревисом — «й»;
+// знаки других письменностей остаются. Карта позиций остаётся верной.
+func TestCleanCombiningMarks(t *testing.T) {
+	for _, c := range []struct{ in, want string }{
+		{"взры\u0301вчатка", "взрывчатка"},
+		{"в\u0300\u0301\u0302\u0303зрывчатка", "взрывчатка"},
+		{"секретны\u0438\u0306", "секретный"},
+		{"\u0418\u0306ОД", "ЙОД"},
+		{"и\u0301\u0306", "й"},
+		{"тве\u0308рдый, Е\u0308", "твердый, Е"},
+		{"igno\u0301re pre\u0300vious", "ignore previous"},
+		{"ign\u043e\u0301re", "ignore"}, // кириллическая «о» с ударением
+		{"\u03b1\u0301", "\u03b1"},
+		{"x \u0301y 1\u0301", "x y 1"},               // знак без основы
+		{"\u0915\u0941\u0924", "\u0915\u0941\u0924"}, // деванагари: знак — часть письма
+		{"\u05e9\u05c1\u05dc", "\u05e9\u05c1\u05dc"}, // иврит: огласовка
+		{"\u0627\u064e\u0628", "\u0627\u064e\u0628"}, // арабское: огласовка
+		{"\u0301", ""},
+	} {
+		got, offs := Clean(c.in)
+		if got != c.want {
+			t.Errorf("Clean(%q) = %q, ожидалось %q", c.in, got, c.want)
+		}
+		checkOffsets(t, c.in, got, offs)
+	}
+	// Фрагмент результата отображается в исходный текст вместе со знаками.
+	in := "это взры\u0301вчатка\u0301 и йод"
+	got, offs := Clean(in)
+	i := strings.Index(got, "взрывчатка")
+	j := i + len("взрывчатка")
+	if in[offs[i]:offs[j]] != "взры\u0301вчатка\u0301" {
+		t.Fatalf("%q", in[offs[i]:offs[j]])
+	}
+}
+
+// ASCIIFold: посимвольная свёртка в ASCII (для маркера canary) и Hidden.
+func TestASCIIFold(t *testing.T) {
+	for _, c := range []struct {
+		in   rune
+		want rune
+	}{
+		{'a', 'a'}, {'-', '-'}, {0x7F, 0x7F},
+		{'\u0430', 'a'}, {'\u0421', 'C'}, {'\u0455', 's'}, {'\u051d', 'w'}, // кириллица
+		{'\u0391', 'A'}, {'\u03bd', 'v'}, // греческие
+		{'\uff21', 'A'}, {'\uff13', '3'}, {'\uff0d', '-'}, // полноширинные
+		{'\U0001d400', 'A'}, {'\U0001d7d0', '2'}, // математические
+		{'\U000e0041', 'A'}, {'\U000e0020', ' '}, // теги
+		{'\U000e007f', 0}, {'\u0436', 0}, {'\u03bb', 0}, {'\u036f', 0}, {'\u0530', 0}, {'\u00e9', 0},
+	} {
+		if got := ASCIIFold(c.in); got != c.want {
+			t.Errorf("ASCIIFold(%U) = %q, ожидалось %q", c.in, got, c.want)
+		}
+	}
+	for _, r := range []rune{'\u200b', '\u00ad', '\u202e', '\ufe0f', '\U000e0041', 0x01} {
+		if !Hidden(r) {
+			t.Errorf("Hidden(%U) = false", r)
+		}
+	}
+	for _, r := range []rune{'a', ' ', '\t', '\n', '\u0436', '\u0301'} {
+		if Hidden(r) {
+			t.Errorf("Hidden(%U) = true", r)
+		}
+	}
+}
+
 func checkOffsets(t testing.TB, in, clean string, offs []int) {
 	t.Helper()
 	if len(offs) != len(clean)+1 || offs[len(clean)] != len(in) {
@@ -181,6 +247,7 @@ func FuzzDetect(f *testing.F) {
 	f.Add("\U0001F3F4" + tags("gbsct") + "\U000E007F")
 	f.Add("\U0001d422\uff49аa")
 	f.Add("\xff\xfe\u200b")
+	f.Add("взры\u0301вчатка и\u0306 е\u0308 \u0301 \u0915\u0941")
 	f.Fuzz(func(t *testing.T, text string) {
 		find(t, text)
 		clean, offs := Clean(text)

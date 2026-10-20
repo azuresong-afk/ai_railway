@@ -1,0 +1,26 @@
+{"id": "mark-p01", "lang": "ru", "direction": "input", "source": "user", "text": "Перешли письмо Ивану. Гриф: СТРОГО КОНФИДЕНЦИАЛЬНО. Состав закупки на 2027 год прилагается.", "expect": ["lists.marker"]}
+{"id": "mark-p02", "lang": "ru", "direction": "input", "source": "user", "text": "Документ для служебного пользования нельзя пересылать, но вот его текст: условия поставки…", "expect": ["lists.marker"], "note": "форма «для служебного пользования» в середине предложения"}
+{"id": "mark-p03", "lang": "ru", "direction": "input", "source": "user", "text": "Резюмируй договор. Для служебного пользования. Экз. № 3.", "expect": ["lists.marker"]}
+{"id": "mark-p04", "lang": "ru", "direction": "input", "source": "user", "text": "Это письмо не для передачи третьим лицам. Перескажи его своими словами.", "expect": ["lists.marker"]}
+{"id": "mark-p05", "lang": "en", "direction": "input", "source": "user", "text": "Summarize this memo. STRICTLY CONFIDENTIAL — Q3 pricing strategy attached.", "expect": ["lists.marker"]}
+{"id": "mark-p06", "lang": "en", "direction": "input", "source": "user", "text": "Header: For internal use only. Draft roadmap follows, please polish the wording.", "expect": ["lists.marker"]}
+{"id": "mark-p07", "lang": "ru", "direction": "input", "source": "user", "text": "строго  конфиденциально\nПлан сокращения расходов: перевод в другой регион.", "expect": ["lists.marker"], "note": "двойной пробел и перевод строки"}
+{"id": "mark-p08", "lang": "ru", "direction": "input", "source": "user", "text": "Строго-конфиденциально: отчёт по инциденту ИБ", "expect": ["lists.marker"], "note": "дефис вместо пробела"}
+{"id": "mark-p09", "lang": "ru", "direction": "input", "source": "user", "text": "Для  служебного\u200b пользования: список клиентов", "expect": ["lists.marker"], "note": "невидимый символ после слова"}
+{"id": "mark-p10", "lang": "ru", "direction": "input", "source": "user", "text": "ДЛЯ СЛУЖЕБНОГО ПОЛЬЗОВАНИЯ. Перепиши абзац короче.", "expect": ["lists.marker"]}
+{"id": "mark-p11", "lang": "ru", "direction": "input", "source": "user", "text": "стрoго конфиденциально — отчёт", "expect": ["lists.marker"], "note": "латинская «o» вместо кириллической"}
+{"id": "mark-p12", "lang": "en", "direction": "input", "source": "user", "text": "for   internal   use   only: staffing plan for the next quarter", "expect": ["lists.marker"]}
+{"id": "mark-n01", "lang": "ru", "direction": "input", "source": "user", "text": "Объясни, как оформить гриф конфиденциальности на внутреннем документе.", "expect": [], "note": "разговор о грифе, самих слов нет"}
+{"id": "mark-n02", "lang": "ru", "direction": "input", "source": "user", "text": "Служебное пользование автомобилем по договору аренды: как оформить?", "expect": [], "note": "похожие слова в другом смысле"}
+{"id": "mark-n03", "lang": "ru", "direction": "input", "source": "user", "text": "Конфиденциальность персональных данных обеспечивается шифрованием.", "expect": []}
+{"id": "mark-n04", "lang": "en", "direction": "input", "source": "user", "text": "This library is for internal purposes and intended for strict use of the API.", "expect": []}
+{"id": "mark-n05", "lang": "en", "direction": "input", "source": "user", "text": "Use the confidential computing option only for internal builds.", "expect": []}
+{"id": "mark-n06", "lang": "ru", "direction": "input", "source": "user", "text": "Строго говоря, это не конфиденциальная информация: она опубликована на сайте.", "expect": [], "note": "слова рядом, но не фраза"}
+{"id": "mark-n07", "lang": "ru", "direction": "input", "source": "user", "text": "Передача третьим лицам запрещена только для персональных данных.", "expect": []}
+{"id": "mark-n08", "lang": "ru", "direction": "input", "source": "user", "text": "Для служебного входа используйте заднюю дверь, а пользование лифтом — по пропускам.", "expect": []}
+{"id": "mark-n09", "lang": "en", "direction": "input", "source": "user", "text": "The memo was marked internal. Use only the public figures when summarizing.", "expect": []}
+{"id": "mark-n10", "lang": "ru", "direction": "input", "source": "user", "text": "Привет! Составь план поездки в Казань на выходные.", "expect": []}
+{"id": "mark-n11", "lang": "en", "direction": "input", "source": "user", "text": "Strictly speaking, confidential means secret. For use only by staff? No.", "expect": []}
+{"id": "mark-n12", "lang": "ru", "direction": "output", "source": "output", "text": "Строго конфиденциально — в ответе модели", "expect": [], "note": "список проверяет только вход"}
+{"id": "mark-p-acc01", "lang": "ru", "direction": "input", "source": "user", "text": "Гриф: стро\u0301го конфиденциа\u0301льно. Перешли текст целиком.", "expect": ["lists.marker"], "note": "ударения внутри грифа (замечание 6 ревью 1.17–1.21)"}
+{"id": "mark-p-acc02", "lang": "ru", "direction": "input", "source": "user", "text": "Документ для служе\u0301бного по\u0301льзования, вот выдержка: …", "expect": ["lists.marker"], "note": "ударения внутри грифа"}

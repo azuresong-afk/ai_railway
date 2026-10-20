@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"bytes"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,10 +11,20 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/azuresong-afk/ai_railway/internal/chat"
+	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
+	"github.com/azuresong-afk/ai_railway/internal/detect"
+	"github.com/azuresong-afk/ai_railway/internal/events"
+	"github.com/azuresong-afk/ai_railway/internal/ids"
+	"github.com/azuresong-afk/ai_railway/internal/policy"
 	"github.com/azuresong-afk/ai_railway/internal/providers"
+	"github.com/azuresong-afk/ai_railway/internal/pseudonym"
 	"github.com/azuresong-afk/ai_railway/internal/sse"
 )
 
@@ -25,7 +36,27 @@ type ChatConfig struct {
 	// BodyReadTimeout — предел времени на чтение тела запроса: медленная
 	// передача тела не должна занимать соединения. Ноль — DefaultBodyReadTimeout.
 	BodyReadTimeout time.Duration
+	// Events и IDs — события gateway_request (ТЗ, 5.5); обязательны.
+	Events EventSink
+	IDs    *ids.Generator
+	// Quotas — квоты приложений (DM-15, DM-36); nil — без квот.
+	Quotas *Limiter
+	// UserMAC — имитовставка для псевдонима пользователя в событиях и
+	// квотах (ТЗ, 5.5); nil — пользователь не учитывается.
+	UserMAC aisecCrypto.MAC
+	// DetectorTimeout — срок детектора на короткий текст; ноль —
+	// DefaultDetectorTimeout. Срок растёт с длиной текста (pipeline.go).
+	DetectorTimeout time.Duration
+	// Now — часы для задержек в событии; по умолчанию time.Now.
+	Now func() time.Time
 }
+
+// Заголовки шлюза (ТЗ, 5.1 и 4.3).
+const (
+	HeaderEventID  = "X-AISec-Event-Id"
+	HeaderDecision = "X-AISec-Decision"
+	HeaderUser     = "X-AISec-User"
+)
 
 // DefaultBodyReadTimeout — время на чтение тела запроса по умолчанию.
 const DefaultBodyReadTimeout = 30 * time.Second
@@ -42,6 +73,12 @@ type ChatHandler struct {
 func NewChatHandler(cfg ChatConfig) (*ChatHandler, error) {
 	if cfg.Router == nil || cfg.MaxBodyBytes <= 0 {
 		return nil, errors.New("chat: не заданы маршруты или предел размера тела")
+	}
+	if cfg.Events == nil || cfg.IDs == nil {
+		return nil, errors.New("chat: не заданы события: запрос без события не обрабатывается")
+	}
+	if cfg.Now == nil {
+		cfg.Now = time.Now
 	}
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
@@ -96,8 +133,12 @@ func isJSONObject(b []byte) bool {
 	return len(b) > 0 && b[0] == '{' && json.Valid(b)
 }
 
-// ServeHTTP обрабатывает POST /v1/chat/completions.
+// ServeHTTP обрабатывает POST /v1/chat/completions по шагам ТЗ, 4.3:
+// пользователь, модель, квоты, входные детекторы и решение, провайдер.
+// Событие gateway_request создаётся для каждого запроса, прошедшего разбор
+// и проверку X-AISec-User; ошибки разбора событий не создают.
 func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	start := h.cfg.Now()
 	app, ok := h.cfg.Router.app(r)
 	if !ok {
 		WriteError(w, http.StatusForbidden, "приложение не настроено", "invalid_request_error", "app_not_configured")
@@ -116,21 +157,100 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusBadRequest, ce.Message, "invalid_request_error", ce.Code)
 		return
 	}
+	user, ok := h.user(w, r, app, req.User)
+	if !ok {
+		return
+	}
+	rec, ok := h.newRecord(w, app, req, user, start)
+	if !ok {
+		return
+	}
+	defer h.emit(rec)
 	requested := req.Model
 	model, ok := app.Resolve(requested)
 	if !ok {
 		// Неразрешённая модель (DM-33): список разрешённых — в GET /v1/models.
+		rec.reject(ruleModel, "DM-33")
+		w.Header().Set(HeaderDecision, string(policy.Block))
 		WriteError(w, http.StatusNotFound, "модель недоступна для приложения", "invalid_request_error", "model_not_found")
 		return
 	}
 	req.Model = model
+	rec.ev.Model = model
+	texts, refs := requestTexts(req)
+	if !h.admit(w, r, rec, req, user, texts) {
+		return
+	}
+	// Словарь псевдонимов живёт только в памяти на время запроса (ТЗ, 5.1).
+	// Псевдонимы, которые уже есть в тексте запроса, не выдаются.
+	plain := make([]string, 0, len(texts))
+	for _, t := range texts {
+		if t.Parts == nil {
+			plain = append(plain, t.Text)
+		}
+	}
+	rec.vault = pseudonym.NewVault(pseudonym.Limits{}, plain...)
+	defer rec.vault.Clear()
+	rec.jsonMode = jsonResponseFormat(req.ResponseFormat)
+	checkStart := h.cfg.Now()
+	in, err := app.inspect(r.Context(), inspectRequest{
+		Endpoint: policy.EndpointChat, External: app.Provider.External(), Texts: texts, Media: policyMedia(req.Media()),
+		Mask: app.Storage == events.StorageMasked, Timeout: h.cfg.DetectorTimeout, Vault: rec.vault,
+	})
+	rec.ev.LatencyMS["input_check"] = h.cfg.Now().Sub(checkStart).Milliseconds()
+	switch {
+	case err != nil && r.Context().Err() != nil:
+		// Клиент ушёл до решения: отвечать некому, решения нет.
+		rec.skip = true
+		h.logger.Info("клиент прервал запрос во время проверки", "path", r.URL.Path)
+		return
+	case err != nil:
+		// Ошибка сборки конвейера (детектор политики не найден) или защиты
+		// данных — запрос не проверен и не уходит, независимо от fail_mode.
+		h.logger.Error("проверка запроса не выполнена", "app", app.ID, "event_id", rec.ev.ID, "error", err)
+		rec.failClosed()
+		w.Header().Set(HeaderDecision, string(policy.Block))
+		WriteError(w, http.StatusInternalServerError, "внутренняя ошибка шлюза", "server_error", "internal_error")
+		return
+	}
+	rec.in, rec.texts = in, texts
+	if len(in.Failures) > 0 {
+		h.logger.Warn("сбой детекторов при проверке запроса", "app", app.ID, "event_id", rec.ev.ID,
+			"failures", len(in.Failures), "fail_open", app.FailOpen)
+	}
+	w.Header().Set(HeaderDecision, in.headerDecision())
+	switch {
+	case in.FailBlock:
+		WriteError(w, http.StatusServiceUnavailable, "запрос не удалось проверить, повторите позже", "service_unavailable", "check_unavailable")
+		return
+	case in.Decision.Block:
+		// Какие детекторы сработали, приложению не сообщается (ТЗ, 5.1).
+		WriteError(w, http.StatusBadRequest, in.Decision.Message, "invalid_request_error", "policy_violation")
+		return
+	}
+	for i, changed := range in.Changed {
+		if !changed {
+			continue
+		}
+		if err := refs[i].set(req, in.Texts[i]); err != nil {
+			// Не удалось применить маскирование — запрос не уходит.
+			h.logger.Error("маскирование не применено", "app", app.ID, "event_id", rec.ev.ID, "error", err)
+			rec.failClosed()
+			w.Header().Set(HeaderDecision, string(policy.Block))
+			WriteError(w, http.StatusInternalServerError, "внутренняя ошибка шлюза", "server_error", "internal_error")
+			return
+		}
+	}
 	if app.Provider.External() {
 		// Идентификатор пользователя (часто e-mail или ФИО) внешнему
 		// провайдеру не передаётся (ТЗ, 5.4).
 		req.User = ""
 	}
+	rec.sent = true
+	providerStart := h.cfg.Now()
+	defer func() { rec.ev.LatencyMS["provider"] = h.cfg.Now().Sub(providerStart).Milliseconds() }()
 	if req.Stream {
-		h.stream(w, r, app, req, requested)
+		h.stream(w, r, app, req, requested, rec)
 		return
 	}
 	resp, meta, err := app.Provider.Chat(r.Context(), req)
@@ -139,10 +259,177 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.providerError(w, r, err)
 		return
 	}
+	rec.usage(resp.Usage)
 	// Приложение видит то имя модели, которое запросило (в том числе
 	// псевдоним), а не имя у провайдера (DM-33).
 	resp.Model = requested
+	if !h.checkFull(w, r, app, rec, resp) {
+		return
+	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// user — псевдоним конечного пользователя (ТЗ, 4.3, шаг 2; 5.5): HMAC
+// идентификатора на ключе установки. Исходный идентификатор нигде не
+// сохраняется. При ошибке ответ уже записан.
+func (h *ChatHandler) user(w http.ResponseWriter, r *http.Request, app *App, reqUser string) (string, bool) {
+	var id string
+	switch app.UserFrom {
+	case userFromHeader:
+		vals := r.Header.Values(HeaderUser)
+		if len(vals) > 1 {
+			WriteError(w, http.StatusBadRequest, "заголовок X-AISec-User указан несколько раз", "invalid_request_error", "invalid_user")
+			return "", false
+		}
+		if len(vals) == 1 {
+			id = vals[0]
+			if len(id) > maxUserIDLength || !utf8.ValidString(id) || strings.ContainsFunc(id, unicode.IsControl) {
+				WriteError(w, http.StatusBadRequest, fmt.Sprintf("X-AISec-User — до %d байт без управляющих символов", maxUserIDLength),
+					"invalid_request_error", "invalid_user")
+				return "", false
+			}
+		}
+	case userFromField:
+		id = reqUser // длину и состав проверил разбор запроса
+	}
+	if id == "" || h.cfg.UserMAC == nil {
+		return "", true
+	}
+	return hex.EncodeToString(h.cfg.UserMAC.Sum([]byte(id))[:16]), true
+}
+
+// admit проверяет квоты (ТЗ, 4.3, шаг 3). При отказе ответ уже записан.
+func (h *ChatHandler) admit(w http.ResponseWriter, r *http.Request, rec *record, req *chat.Request, user string, texts []inspectText) bool {
+	// Размер входа — проверяемый текст (без склеек, они повторяют части) и
+	// схемы инструментов: они тоже уходят модели.
+	size := 0
+	for _, t := range texts {
+		if t.Parts == nil {
+			size += len(t.Text)
+		}
+	}
+	for _, tl := range req.Tools {
+		size += len(tl.Function.Parameters)
+	}
+	maxOut, _ := req.EffectiveMaxTokens()
+	return h.admitSize(w, r, rec, user, size, estimateTokens(size)+max(maxOut, 0))
+}
+
+// admitSize проверяет квоты по размеру входа и оценке токенов; общая часть
+// chat/completions, embeddings и Check API. При отказе ответ уже записан.
+func (h *ChatHandler) admitSize(w http.ResponseWriter, r *http.Request, rec *record, user string, size, tokens int) bool {
+	if h.cfg.Quotas == nil {
+		return true
+	}
+	qr := QuotaRequest{App: rec.app.ID, User: user, InputBytes: size, Tokens: tokens}
+	if id, ok := IdentityFrom(r.Context()); ok {
+		qr.Key = id.KeyPrefix
+	}
+	res, err := h.cfg.Quotas.Admit(qr)
+	var ex *Exceeded
+	switch {
+	case err == nil:
+		rec.res = res
+		return true
+	case errors.As(err, &ex):
+		rec.reject(ruleQuotaPrefix+ex.Rule, ex.Threat)
+		w.Header().Set(HeaderDecision, string(policy.Block))
+		if ex.RetryAfter > 0 {
+			w.Header().Set("Retry-After", strconv.FormatInt(int64((ex.RetryAfter+time.Second-1)/time.Second), 10))
+		}
+		WriteError(w, http.StatusTooManyRequests, "превышена квота приложения", "rate_limit_error", "quota_exceeded")
+	default:
+		// Приложения нет в квотах — ошибка сборки шлюза; не пропускаем.
+		h.logger.Error("квоты не проверены", "app", rec.app.ID, "error", err)
+		rec.failClosed()
+		w.Header().Set(HeaderDecision, string(policy.Block))
+		WriteError(w, http.StatusInternalServerError, "внутренняя ошибка шлюза", "server_error", "internal_error")
+	}
+	return false
+}
+
+// estimateTokens — оценка токенов входа сверху для резерва квоты: около
+// трёх байт на токен (русский текст в UTF-8 даёт больше байт на токен).
+// После ответа резерв заменяется расходом из usage.
+func estimateTokens(inputBytes int) int { return (inputBytes + 2) / 3 }
+
+// textRef — куда вернуть замаскированный фрагмент: фрагмент сообщения или
+// описание инструмента; у склейки частей — никуда (маскируются части).
+type textRef struct {
+	seg  *chat.Segment
+	tool int
+}
+
+func (r textRef) set(req *chat.Request, text string) error {
+	switch {
+	case r.seg != nil:
+		return req.SetText(*r.seg, text)
+	case r.tool >= 0 && r.tool < len(req.Tools):
+		req.Tools[r.tool].Function.Description = text
+		return nil
+	}
+	return errors.New("фрагмент без места в запросе")
+}
+
+// requestTexts — текстовые фрагменты запроса для детекторов:
+//   - фрагменты сообщений (chat.Segments); сообщения с ролью tool —
+//     источник tool (ответы инструментов, DM-07), остальное — user:
+//     системный промпт и история тоже приходят от приложения;
+//   - склейки текстовых частей сообщения, если частей больше одной, — для
+//     injection.* (разрезанная на части инъекция);
+//   - описания инструментов tools[].function.description: модель читает их
+//     как инструкции. Схемы JSON (parameters, response_format) не
+//     проверяются.
+func requestTexts(req *chat.Request) ([]inspectText, []textRef) {
+	segs := req.Segments()
+	var texts []inspectText
+	var refs []textRef
+	parts := map[int][]int{} // сообщение → номера фрагментов-частей content
+	for i := range segs {
+		s := &segs[i]
+		src := detect.SourceUser
+		if s.Role == "tool" {
+			src = detect.SourceTool
+		}
+		if s.Kind == chat.SegContent && s.Part >= 0 {
+			parts[s.Message] = append(parts[s.Message], len(texts))
+		}
+		texts = append(texts, inspectText{Text: s.Text, Source: src, Location: s.Location()})
+		refs = append(refs, textRef{seg: s, tool: -1})
+	}
+	for m := range req.Messages {
+		ps := parts[m]
+		if len(ps) < 2 {
+			continue
+		}
+		var b strings.Builder
+		for _, p := range ps {
+			b.WriteString(texts[p].Text)
+		}
+		texts = append(texts, inspectText{Text: b.String(), Source: texts[ps[0]].Source,
+			Location: fmt.Sprintf("messages[%d].content", m), Parts: ps})
+		refs = append(refs, textRef{tool: -1})
+	}
+	for i, tl := range req.Tools {
+		if tl.Function.Description == "" {
+			continue
+		}
+		texts = append(texts, inspectText{Text: tl.Function.Description, Source: detect.SourceUser,
+			Location: fmt.Sprintf("tools[%d].function.description", i)})
+		refs = append(refs, textRef{tool: i})
+	}
+	return texts, refs
+}
+
+// policyMedia — нетекстовые части для non_text. Ссылкой считается адрес
+// изображения или видео, который загрузит провайдер; идентификатор файла у
+// провайдера — нет.
+func policyMedia(ms []chat.Media) []policy.MediaPart {
+	out := make([]policy.MediaPart, 0, len(ms))
+	for _, m := range ms {
+		out = append(out, policy.MediaPart{Kind: m.Kind, URL: !m.Inline && (m.Kind == chat.MediaImage || m.Kind == chat.MediaVideo)})
+	}
+	return out
 }
 
 func copyMeta(w http.ResponseWriter, m providers.Meta) {
@@ -171,8 +458,9 @@ func (h *ChatHandler) providerError(w http.ResponseWriter, r *http.Request, err 
 }
 
 // stream передаёт потоковый ответ: каждая часть разбирается и собирается
-// заново, неизвестные поля провайдера приложению не уходят.
-func (h *ChatHandler) stream(w http.ResponseWriter, r *http.Request, app *App, req *chat.Request, requested string) {
+// заново, неизвестные поля провайдера приложению не уходят. Ответ
+// проверяется в режиме streamResponseMode (response.go).
+func (h *ChatHandler) stream(w http.ResponseWriter, r *http.Request, app *App, req *chat.Request, requested string, rec *record) {
 	st, meta, err := app.Provider.Stream(r.Context(), req)
 	copyMeta(w, meta)
 	if err != nil {
@@ -184,6 +472,12 @@ func (h *ChatHandler) stream(w http.ResponseWriter, r *http.Request, app *App, r
 			h.logger.Debug("закрытие потока провайдера", "error", providers.ErrorClass(cerr))
 		}
 	}()
+	mode := streamResponseMode(app)
+	if mode == policy.ResponseBuffered {
+		h.streamBuffered(w, r, app, st, requested, rec)
+		return
+	}
+	rec.respMode = string(mode)
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.WriteHeader(http.StatusOK)
 	rc := http.NewResponseController(w)
@@ -193,26 +487,25 @@ func (h *ChatHandler) stream(w http.ResponseWriter, r *http.Request, app *App, r
 		}
 		return rc.Flush() == nil
 	}
+	sp := h.newStreamProc(r, app, rec, requested, mode == policy.ResponseIncremental, send)
+	defer func() {
+		rec.respMasked = sp.content.masked || sp.refusal.masked
+		rec.respFailures = sp.failures
+		sp.afterStream()
+	}()
 	for {
 		c, err := st.Next()
 		if errors.Is(err, io.EOF) {
-			send([]byte(chat.Done))
+			sp.end()
 			return
 		}
 		if err != nil {
-			if r.Context().Err() != nil {
-				h.logger.Info("клиент прервал поток", "path", r.URL.Path)
-				return
-			}
-			h.logger.Warn("поток провайдера прерван", "provider", app.Provider.ID(), "error", errorKind(err))
 			// Ошибка внутри потока — событием с объектом error, как у OpenAI;
 			// завершающего [DONE] нет: приложение видит, что ответ неполный.
-			send(streamErrorBody(err))
+			sp.upstreamFailed(err)
 			return
 		}
-		c.Model = requested
-		data, err := json.Marshal(c)
-		if err != nil || !send(data) {
+		if sp.chunk(c) != streamGo {
 			return
 		}
 	}

@@ -1,6 +1,7 @@
 // Команда aisec-gateway — шлюз между приложениями и провайдерами LLM (ТЗ, 5.1).
 // Этап 1 в работе: приложения аутентифицируются ключами из файла конфигурации,
-// запросы пока передаются провайдеру без проверок (см. internal/gateway).
+// запросы проверяются конвейером по политике приложения; проверка ответа —
+// задача 1.23 (см. internal/gateway).
 package main
 
 import (
@@ -48,6 +49,9 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 	if err != nil {
 		return fmt.Errorf("файл конфигурации: %w", err)
 	}
+	for _, w := range file.Warnings() {
+		logger.Warn("опасная настройка", "detail", w)
+	}
 	p, err := aisecCrypto.New(aisecCrypto.ProfileStandard)
 	if err != nil {
 		return err
@@ -76,11 +80,13 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 	if err != nil {
 		return err
 	}
-	router, err := gateway.NewRouter(file.Applications, provs)
+	// Политики компилируются по детекторам приложения при запуске:
+	// незарегистрированный детектор в политике заказчика — отказ запуска.
+	router, err := gateway.NewRouter(file.Applications, provs, file.Policies)
 	if err != nil {
 		return err
 	}
-	chatHandler, err := gateway.NewChatHandler(gateway.ChatConfig{Router: router, MaxBodyBytes: cfg.MaxBodyBytes, Logger: logger})
+	userMAC, err := newUserMAC(p, file)
 	if err != nil {
 		return err
 	}
@@ -97,7 +103,25 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 			logger.Warn("события отброшены из-за переполнения очереди", "count", n)
 		}
 	}()
-	handler, err := gateway.New(gateway.Options{Logger: logger, Chat: chatHandler, Router: router, Auth: authCfg})
+	// Квоты общие для всех маршрутов приложений: счётчики — один набор.
+	handlerCfg := gateway.ChatConfig{
+		Router: router, MaxBodyBytes: cfg.MaxBodyBytes, Logger: logger,
+		Events: queue, IDs: authCfg.IDs, Quotas: gateway.NewLimiter(file.Applications), UserMAC: userMAC,
+	}
+	chatHandler, err := gateway.NewChatHandler(handlerCfg)
+	if err != nil {
+		return err
+	}
+	embeddingsHandler, err := gateway.NewEmbeddingsHandler(handlerCfg)
+	if err != nil {
+		return err
+	}
+	checkHandler, err := gateway.NewCheckHandler(handlerCfg)
+	if err != nil {
+		return err
+	}
+	handler, err := gateway.New(gateway.Options{Logger: logger, Chat: chatHandler, Embeddings: embeddingsHandler,
+		Check: checkHandler, Router: router, Auth: authCfg})
 	if err != nil {
 		return err
 	}
@@ -108,9 +132,29 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 	if err != nil {
 		return err
 	}
-	logger.Info("шлюз этапа 1 (в работе): аутентификация, маршрутизация и разбор запросов включены, проверок содержимого ещё нет",
+	logger.Info("шлюз запущен: проверка запроса и ответа включена",
 		"max_body_bytes", cfg.MaxBodyBytes, "applications", len(file.Applications), "providers", len(provs))
 	return srv.Run(ctx)
+}
+
+// newUserMAC — имитовставка для псевдонимов пользователей (ТЗ, 5.5). Ключ
+// нужен, если хотя бы одно приложение передаёт идентификатор пользователя:
+// исходный идентификатор в события не пишется.
+func newUserMAC(p aisecCrypto.Provider, file *config.GatewayFile) (aisecCrypto.MAC, error) {
+	path := file.Gateway.UserHMACKeyFile
+	if path == "" {
+		for _, a := range file.Applications {
+			if a.UserFrom != "" && a.UserFrom != "none" {
+				return nil, fmt.Errorf("приложение %s: user_from %s требует gateway.user_hmac_key_file", a.ID, a.UserFrom)
+			}
+		}
+		return nil, nil
+	}
+	key, err := aisecCrypto.ReadKeyFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("ключ псевдонимов пользователей: %w", err)
+	}
+	return p.NewMAC(key)
 }
 
 // newAuth собирает аутентификацию приложений и очередь событий с приёмником

@@ -225,7 +225,9 @@ func (a *Assembler) Add(c *Chunk) error {
 			ta.args.WriteString(td.Function.Arguments)
 			a.size += len(td.Function.Arguments) + len(td.Function.Name) + len(td.ID)
 		}
-		if ch.FinishReason != nil {
+		if ch.FinishReason != nil && acc.finish == "" {
+			// Действует первая причина завершения: повтор (некоторые прокси
+			// повторяют её в части с usage) её не меняет.
 			acc.finish = *ch.FinishReason
 		}
 		if a.size > MaxResponseBytes {

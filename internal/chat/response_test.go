@@ -210,3 +210,18 @@ func FuzzAssembler(f *testing.F) {
 		}
 	})
 }
+
+// Действует первая причина завершения варианта, повтор её не меняет
+// (ревью 1.22–1.24, п. 2).
+func TestAssemblerRepeatedFinish(t *testing.T) {
+	a := NewAssembler()
+	tools, stop := "tool_calls", "stop"
+	for _, fr := range []*string{&tools, &stop} {
+		if err := a.Add(&Chunk{Choices: []ChunkChoice{{FinishReason: fr}}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if r := a.Response(); r.Choices[0].FinishReason != tools {
+		t.Fatalf("причина завершения %q", r.Choices[0].FinishReason)
+	}
+}

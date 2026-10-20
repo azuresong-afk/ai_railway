@@ -12,15 +12,22 @@ import (
 	"time"
 
 	"go.yaml.in/yaml/v3"
+
+	"github.com/azuresong-afk/ai_railway/internal/detect/exfil"
+	"github.com/azuresong-afk/ai_railway/internal/detect/lists"
+	"github.com/azuresong-afk/ai_railway/internal/policy"
 )
 
 // Файл конфигурации шлюза этапа 1 (план этапа 1, Р2): приложения, ключи,
-// провайдеры и модели. С этапа 2 эти данные приходят с сервера управления
-// подписанным пакетом. Секретов в файле нет: ключи провайдеров — путями к
+// провайдеры, модели и политики. С этапа 2 эти данные приходят с сервера
+// управления подписанным пакетом. Секретов в файле нет: ключи провайдеров — путями к
 // файлам, ключи приложений — только SHA-256.
 
 // MaxGatewayFile — предел размера файла конфигурации.
 const MaxGatewayFile = 4 << 20
+
+// MaxPolicies — предел числа политик в файле конфигурации.
+const MaxPolicies = 64
 
 // Типы провайдеров.
 const (
@@ -52,6 +59,10 @@ type GatewayFile struct {
 	Gateway       GatewaySection `yaml:"gateway"`
 	Providers     []Provider     `yaml:"providers"`
 	Applications  []Application  `yaml:"applications"`
+	// Policies — политики заказчика (ТЗ, 5.3). Приложение ссылается на
+	// политику отсюда или на шаблон (policy.TemplateIDs). Наличие детекторов
+	// проверяет policy.Resolve при запуске конвейера.
+	Policies []policy.Spec `yaml:"policies"`
 }
 
 // GatewaySection — общие параметры шлюза.
@@ -95,7 +106,10 @@ type Provider struct {
 // IsExternal — признак внешнего провайдера с учётом значения по умолчанию.
 func (p Provider) IsExternal() bool { return p.External == nil || *p.External }
 
-// Application — зарегистрированное приложение (5.4).
+// Application — зарегистрированное приложение (5.4). Policy — ID политики
+// из policies или шаблона, пусто — «Базовая защита» (base, решение Р7);
+// PolicyMode — режим политики для приложения, пусто — режим самой политики
+// (у base — monitor).
 type Application struct {
 	ID       string `yaml:"id"`
 	Name     string `yaml:"name"`
@@ -110,19 +124,29 @@ type Application struct {
 	Storage    string            `yaml:"storage"`
 	// UserFrom — откуда брать идентификатор конечного пользователя: header
 	// (X-AISec-User), field (поле user запроса) или none.
-	UserFrom string   `yaml:"user_from"`
-	Quotas   Quotas   `yaml:"quotas"`
-	Keys     []AppKey `yaml:"keys"`
+	UserFrom string `yaml:"user_from"`
+	Quotas   Quotas `yaml:"quotas"`
+	// Lists — словари и выражения заказчика для детектора lists (5.2);
+	// дополняют встроенный список грифов.
+	Lists []lists.Spec `yaml:"lists"`
+	// ExfilAllowDomains — домены, на которые в ответе модели разрешены
+	// изображения и ссылки (детектор output.exfil, DM-11): example.com — сам
+	// домен, *.example.com — его поддомены. Пусто — ни на какие.
+	ExfilAllowDomains []string `yaml:"exfil_allow_domains"`
+	Keys              []AppKey `yaml:"keys"`
 }
 
 // Quotas — лимиты приложения (5.2, quota). Ноль — без лимита.
 type Quotas struct {
 	RequestsPerMinute        int `yaml:"requests_per_minute"`
 	RequestsPerMinutePerUser int `yaml:"requests_per_minute_per_user"`
+	RequestsPerMinutePerKey  int `yaml:"requests_per_minute_per_key"`
 	TokensPerMinute          int `yaml:"tokens_per_minute"`
 	TokensPerDay             int `yaml:"tokens_per_day"`
 	MaxMessages              int `yaml:"max_messages"`
 	MaxTokens                int `yaml:"max_tokens"`
+	// MaxInputBytes — суммарный размер текста сообщений запроса, байт.
+	MaxInputBytes int `yaml:"max_input_bytes"`
 }
 
 // AppKey — ключ приложения: только префикс и SHA-256 (ИАФ.8).
@@ -208,6 +232,25 @@ func LoadGatewayFile(path string) (*GatewayFile, error) {
 	return ParseGatewayFile(f)
 }
 
+// Warnings — допустимые, но опасные настройки, о которых шлюз предупреждает
+// при запуске (конфигурация принимается). Сейчас — «Только мониторинг» у
+// приложения с внешним провайдером: ПДн и секреты уходят провайдеру как есть
+// (ревью 1.17–1.21, п. 15).
+func (f *GatewayFile) Warnings() []string {
+	external := map[string]bool{}
+	for _, p := range f.Providers {
+		external[p.ID] = p.IsExternal()
+	}
+	var out []string
+	for _, a := range f.Applications {
+		if a.Policy == policy.TemplateMonitorOnly && external[a.Provider] {
+			out = append(out, fmt.Sprintf("приложение %s: политика %s с внешним провайдером %s — ПДн и секреты передаются провайдеру без маскирования; для внешнего провайдера выберите %s или %s",
+				a.ID, policy.TemplateMonitorOnly, a.Provider, policy.TemplateBase, policy.TemplateExternalPII))
+		}
+	}
+	return out
+}
+
 func (f *GatewayFile) validate() error {
 	var errs []error
 	add := func(format string, a ...any) { errs = append(errs, fmt.Errorf(format, a...)) }
@@ -270,6 +313,24 @@ func (f *GatewayFile) validate() error {
 			}
 		}
 	}
+	policies := map[string]bool{}
+	if len(f.Policies) > MaxPolicies {
+		add("policies: не больше %d политик", MaxPolicies)
+	}
+	for i := range f.Policies {
+		p := &f.Policies[i]
+		at := fmt.Sprintf("policies[%d] (%s)", i, p.ID)
+		if err := p.Validate(); err != nil {
+			add("%s: %w", at, err)
+		}
+		if policy.IsTemplate(p.ID) {
+			add("%s: id совпадает с шаблоном политики; выберите другое", at)
+		}
+		if policies[p.ID] {
+			add("%s: политика указана дважды", at)
+		}
+		policies[p.ID] = true
+	}
 	appIDs := map[string]bool{}
 	prefixes := map[string]string{}
 	for i, a := range f.Applications {
@@ -299,8 +360,8 @@ func (f *GatewayFile) validate() error {
 				add("%s: псевдоним %q должен указывать на разрешённую модель", at, alias)
 			}
 		}
-		if !idRe.MatchString(a.Policy) {
-			add("%s: нужна политика (policy)", at)
+		if a.Policy != "" && !policies[a.Policy] && !policy.IsTemplate(a.Policy) {
+			add("%s: политика %q не описана в policies и не является шаблоном", at, a.Policy)
 		}
 		check := func(field, v string, set map[string]bool) {
 			if !set[v] {
@@ -308,7 +369,9 @@ func (f *GatewayFile) validate() error {
 			}
 		}
 		check("env", a.Env, envs)
-		check("policy_mode", a.PolicyMode, modes)
+		if a.PolicyMode != "" {
+			check("policy_mode", a.PolicyMode, modes)
+		}
 		check("fail_mode", a.FailMode, failModes)
 		if a.Storage == "full" {
 			add("%s: storage full недоступен до шифрования при хранении (этап 2, ЗИ.1)", at)
@@ -318,10 +381,17 @@ func (f *GatewayFile) validate() error {
 		check("user_from", a.UserFrom, userFrom)
 		q := a.Quotas
 		for name, v := range map[string]int{"requests_per_minute": q.RequestsPerMinute, "requests_per_minute_per_user": q.RequestsPerMinutePerUser,
+			"requests_per_minute_per_key": q.RequestsPerMinutePerKey, "max_input_bytes": q.MaxInputBytes,
 			"tokens_per_minute": q.TokensPerMinute, "tokens_per_day": q.TokensPerDay, "max_messages": q.MaxMessages, "max_tokens": q.MaxTokens} {
 			if v < 0 || v > 1_000_000_000 {
 				add("%s: quotas.%s — от 0 до 10^9", at, name)
 			}
+		}
+		if err := lists.Validate(lists.WithDefaults(a.Lists)); err != nil {
+			add("%s: %v", at, err)
+		}
+		if _, err := exfil.NewWithConfig(exfil.Config{AllowDomains: a.ExfilAllowDomains}); err != nil {
+			add("%s: exfil_allow_domains: %v", at, err)
 		}
 		if len(a.Keys) == 0 {
 			add("%s: нужен хотя бы один ключ приложения", at)
