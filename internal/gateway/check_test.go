@@ -104,7 +104,7 @@ func TestCheckRedactsAndReturnsTransformedText(t *testing.T) {
 	})
 	resp := postCheck(t, g, `{"direction":"input","text":`+jsonString(t, "Почта "+piiEmail+" в письме")+`}`)
 	r := decodeCheck(t, resp)
-	if resp.Code != http.StatusOK || r.Blocked || r.Decision != "redact" || r.Text == nil || *r.Text != "Почта "+RedactMark+" в письме" {
+	if resp.Code != http.StatusOK || r.Blocked || r.Decision != "redact" || r.Text == nil || *r.Text != "Почта "+emailMask+" в письме" {
 		t.Fatalf("%d %+v", resp.Code, r)
 	}
 	if len(r.Findings) != 1 || r.Findings[0].Location != "text" || r.Findings[0].Threat == "" {
@@ -123,7 +123,7 @@ func TestCheckPseudonymizeRunsAsRedact(t *testing.T) {
 	g := newGateway(t, up.URL, func(o *gwOpts) { o.app = enforce; log = o.events })
 	resp := postCheck(t, g, `{"direction":"input","text":`+jsonString(t, "Почта "+piiEmail)+`}`)
 	r := decodeCheck(t, resp)
-	if r.Text == nil || strings.Contains(*r.Text, piiEmail) || strings.Contains(*r.Text, "[[") {
+	if r.Text == nil || strings.Contains(*r.Text, piiEmail) || *r.Text != "Почта "+emailMask {
 		t.Fatalf("текст: %+v", r)
 	}
 	if e := lastCheckEvent(t, log, resp); e.Decision.Trace == nil || !strings.Contains(e.Decision.Trace[0].Note, "как redact") {
@@ -141,7 +141,7 @@ func TestDM09_CheckOutputDirection(t *testing.T) {
 	})
 	resp := postCheck(t, g, `{"direction":"output","text":`+jsonString(t, "Пишите на "+piiEmail)+`}`)
 	r := decodeCheck(t, resp)
-	if resp.Code != 200 || r.Blocked || r.Text == nil || strings.Contains(*r.Text, piiEmail) || !strings.Contains(*r.Text, RedactMark) {
+	if resp.Code != 200 || r.Blocked || r.Text == nil || strings.Contains(*r.Text, piiEmail) || !strings.Contains(*r.Text, emailMask) {
 		t.Fatalf("%d %s", resp.Code, resp.Body.String())
 	}
 	e := lastCheckEvent(t, log, resp)

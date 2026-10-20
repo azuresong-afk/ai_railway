@@ -100,6 +100,43 @@ type Content struct {
 	Response string `json:"response,omitempty"`
 }
 
+// Режимы проверки ответа модели (ТЗ, 5.1).
+const (
+	ResponseBuffered    = "buffered"
+	ResponseIncremental = "incremental"
+	ResponseMonitor     = "monitor"
+)
+
+// Response — проверка ответа модели (ТЗ, 4.3, шаг 7). Находки ответа — в
+// Event.Findings (место — choices[0].…), категории угроз — в Event.Threats.
+type Response struct {
+	// Mode — как проверялся ответ: buffered (в том числе ответ без потока),
+	// incremental или monitor (проверка после передачи, только журнал).
+	Mode     string    `json:"mode"`
+	Decision *Decision `json:"decision,omitempty"`
+	// Cut — поток ответа оборван политикой или сбоем проверки (incremental).
+	Cut bool `json:"cut,omitempty"`
+}
+
+// Pseudonyms — счётчики псевдонимизации запроса и обратной подстановки
+// (ТЗ, 5.1). Значений и псевдонимов не содержит.
+type Pseudonyms struct {
+	Issued        int `json:"issued"`
+	Pseudonymized int `json:"pseudonymized"`
+	Redacted      int `json:"redacted"`
+	Fallback      int `json:"fallback,omitempty"`
+	Restored      int `json:"restored"`
+	// Failed — неудачные подстановки: сумма Unknown, Mangled, Unsafe, Limited.
+	Failed  int `json:"failed"`
+	Unknown int `json:"unknown,omitempty"`
+	Mangled int `json:"mangled,omitempty"`
+	Unsafe  int `json:"unsafe,omitempty"`
+	Limited int `json:"limited,omitempty"`
+	// Withheld — тексты ответа, в которых подстановка отменена: после неё
+	// output.exfil нашёл новую ссылку (значение осталось замаскированным).
+	Withheld int `json:"withheld,omitempty"`
+}
+
 // AuthFailure — подробности неудачной аутентификации. Сам ключ не пишется.
 type AuthFailure struct {
 	RemoteAddr string `json:"remote_addr"`
@@ -128,6 +165,8 @@ type Event struct {
 	NonTextUnchecked bool             `json:"non_text_unchecked,omitempty"`
 	Storage          string           `json:"storage,omitempty"`
 	Content          *Content         `json:"content,omitempty"`
+	Response         *Response        `json:"response,omitempty"`
+	Pseudonyms       *Pseudonyms      `json:"pseudonyms,omitempty"`
 	AuthFailure      *AuthFailure     `json:"auth_failure,omitempty"`
 }
 
@@ -150,6 +189,21 @@ func (e *Event) Validate() error {
 			for _, f := range e.Decision.Failures {
 				if f.Reason != FailureTimeout && f.Reason != FailureError {
 					errs = append(errs, fmt.Errorf("сбой детектора %s: неизвестная причина %q", f.Detector, f.Reason))
+				}
+			}
+		}
+		if r := e.Response; r != nil {
+			if r.Mode != ResponseBuffered && r.Mode != ResponseIncremental && r.Mode != ResponseMonitor {
+				errs = append(errs, fmt.Errorf("неизвестный режим проверки ответа %q", r.Mode))
+			}
+			if r.Decision != nil {
+				if r.Decision.Action == "" {
+					errs = append(errs, errors.New("решение по ответу без действия"))
+				}
+				for _, f := range r.Decision.Failures {
+					if f.Reason != FailureTimeout && f.Reason != FailureError {
+						errs = append(errs, fmt.Errorf("сбой детектора %s на ответе: неизвестная причина %q", f.Detector, f.Reason))
+					}
 				}
 			}
 		}

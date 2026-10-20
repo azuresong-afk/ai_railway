@@ -9,6 +9,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/chat"
 	"github.com/azuresong-afk/ai_railway/internal/events"
 	"github.com/azuresong-afk/ai_railway/internal/policy"
+	"github.com/azuresong-afk/ai_railway/internal/pseudonym"
 )
 
 // record — событие gateway_request, которое собирается по ходу запроса и
@@ -30,6 +31,25 @@ type record struct {
 	// output — проверялся текст ответа: содержимое в событии пишется в
 	// content.response, а не в content.request (Check API).
 	output bool
+	// vault — словарь псевдонимов запроса чата; jsonMode — ответ в формате
+	// JSON (response_format).
+	vault    *pseudonym.Vault
+	jsonMode bool
+	// resp и respTexts — проверка ответа модели (задача 1.23); respMode —
+	// режим проверки; respCut — поток оборван (respCutRule — правило),
+	// respMasked — в потоке что-то замаскировано; respFailures — сбои
+	// детекторов на окнах потока; withheld — тексты, где подстановка
+	// отменена проверкой output.exfil.
+	resp        *inspection
+	respTexts   []inspectText
+	respMode    string
+	respCut     bool
+	respCutRule string
+	respMasked  bool
+	// respCheckFailed — поток оборван, потому что проверка не состоялась.
+	respCheckFailed bool
+	respFailures    []events.DetectorFailure
+	withheld        int
 }
 
 // newRecord заводит событие и сообщает его ID приложению заголовком
@@ -89,6 +109,16 @@ func (rec *record) failClosed() {
 	}
 }
 
+// respFailClosed — ответ не отдан из-за внутренней ошибки шлюза.
+func (rec *record) respFailClosed() {
+	if rec.resp == nil {
+		rec.resp = &inspection{Decision: policy.Decision{
+			PolicyID: rec.app.Policy.ID, Version: rec.app.Policy.Version, Mode: effectiveMode(rec.app), Action: policy.Allow,
+		}}
+	}
+	rec.resp.FailBlock = true
+}
+
 // usage запоминает расход токенов из ответа или последней части потока.
 func (rec *record) usage(u *chat.Usage) {
 	if u == nil {
@@ -113,6 +143,7 @@ func (h *ChatHandler) emit(rec *record) {
 	if rec.in != nil {
 		rec.fill()
 	}
+	rec.fillResponse()
 	if err := h.cfg.Events.Enqueue(rec.ev); err != nil {
 		h.logger.Error("событие не принято", "type", rec.ev.Type, "event_id", rec.ev.ID, "error", err)
 	}
@@ -121,6 +152,94 @@ func (h *ChatHandler) emit(rec *record) {
 // fill переносит в событие решение, находки, трассировку и содержимое.
 func (rec *record) fill() {
 	in := rec.in
+	d := in.Decision
+	ed := rec.decision(in)
+	threats := rec.findings(in, rec.texts)
+	if d.NonTextUnchecked || d.Rule == policy.NonTextRule {
+		threats["DM-14"] = true
+	}
+	rec.addThreats(threats)
+	rec.ev.Decision = ed
+	rec.ev.PolicyMode = string(d.Mode)
+	rec.ev.NonTextUnchecked = d.NonTextUnchecked && !in.FailBlock
+	if rec.app.Storage == events.StorageMasked {
+		if c, ok := in.maskedContent(rec.texts); ok {
+			rec.ev.Content = &events.Content{Request: c}
+			if rec.output {
+				rec.ev.Content = &events.Content{Response: c}
+			}
+		}
+	}
+}
+
+// fillResponse переносит в событие проверку ответа модели и счётчики
+// псевдонимизации.
+func (rec *record) fillResponse() {
+	if v := rec.vault; v != nil {
+		st := v.Stats()
+		if st != (pseudonym.Stats{}) || rec.withheld > 0 {
+			rec.ev.Pseudonyms = &events.Pseudonyms{
+				Issued: st.Issued, Pseudonymized: st.Pseudonymized, Redacted: st.Redacted, Fallback: st.Fallback,
+				Restored: st.Restored, Failed: st.Failed(), Unknown: st.Unknown, Mangled: st.Mangled, Unsafe: st.Unsafe,
+				Limited: st.Limited, Withheld: rec.withheld,
+			}
+		}
+	}
+	if rec.respMode == "" {
+		return
+	}
+	r := &events.Response{Mode: rec.respMode, Cut: rec.respCut}
+	rec.ev.Response = r
+	in := rec.resp
+	if in == nil {
+		return
+	}
+	for _, f := range rec.respFailures {
+		if !slices.Contains(in.Failures, f) {
+			in.Failures = append(in.Failures, f)
+		}
+	}
+	if rec.respCheckFailed {
+		in.FailBlock = true
+	}
+	ed := rec.decision(in)
+	if rec.respMode == events.ResponseIncremental {
+		// В incremental применено то, что сделано с потоком, а не итог
+		// проверки всего ответа.
+		ed.Applied = []string{}
+		if rec.respCut {
+			ed.Applied = append(ed.Applied, string(policy.Block))
+		}
+		if rec.respMasked {
+			ed.Applied = append(ed.Applied, string(policy.Redact))
+		}
+		switch rec.respCutRule {
+		case ruleStreamCut:
+			ed.Trace = append(ed.Trace, events.TraceStep{Rule: ruleStreamCut, Matched: true, Action: string(policy.Block),
+				Note: "фрагмент для маскирования начался в уже переданном тексте: поток оборван"})
+		case ruleStreamHold:
+			ed.Trace = append(ed.Trace, events.TraceStep{Rule: ruleStreamHold, Matched: true, Action: string(policy.Block),
+				Note: "непереданного текста больше предела проверки: поток оборван"})
+		}
+	}
+	if d := in.Decision; d.Rule == ruleToolArgsJSON {
+		ed.Trace = append(ed.Trace, events.TraceStep{Rule: ruleToolArgsJSON, Matched: true, Action: string(policy.Block),
+			Note: "маска сломала JSON аргументов вызова: ответ заблокирован"})
+	}
+	r.Decision = ed
+	rec.addThreats(rec.findings(in, rec.respTexts))
+	if rec.app.Storage == events.StorageMasked {
+		if c, ok := in.maskedContent(rec.respTexts); ok {
+			if rec.ev.Content == nil {
+				rec.ev.Content = &events.Content{}
+			}
+			rec.ev.Content.Response = c
+		}
+	}
+}
+
+// decision — решение для события: итог, применённое, трассировка, сбои.
+func (rec *record) decision(in *inspection) *events.Decision {
 	d := in.Decision
 	ed := &events.Decision{
 		Action: string(d.Action), Applied: []string{}, Rule: d.Rule, Severity: string(d.Severity),
@@ -141,47 +260,49 @@ func (rec *record) fill() {
 			ed.Applied = append([]string{string(policy.Block)}, ed.Applied...)
 		}
 	}
-	threats := map[string]bool{}
 	for _, m := range d.Matches {
-		f := in.Findings[m.Hit]
-		threats[f.Threat] = true
 		if len(ed.Trace) >= maxEventFindings {
-			continue
+			break
 		}
+		f := in.Findings[m.Hit]
 		ed.Trace = append(ed.Trace, events.TraceStep{Rule: m.Rule, Detector: f.Detector, Matched: true, Action: string(m.Action), Note: traceNote(m)})
 	}
 	if d.Rule == policy.NonTextRule {
 		ed.Trace = append(ed.Trace, events.TraceStep{Rule: policy.NonTextRule, Matched: true, Action: string(policy.Block)})
 	}
-	if len(rec.texts) > 0 && len(in.Findings) > 0 {
-		for i, f := range in.Findings {
-			if i >= maxEventFindings {
-				break
-			}
-			rec.ev.Findings = append(rec.ev.Findings, events.Finding{
-				Detector: f.Detector, Version: f.Version, Category: f.Category, Score: f.Score, Start: f.Start, End: f.End,
-				Location: rec.texts[f.Text].Location, Threat: f.Threat, Rule: f.Rule,
-			})
+	return ed
+}
+
+// findings добавляет находки в событие (всего не больше maxEventFindings)
+// и возвращает категории угроз решения.
+func (rec *record) findings(in *inspection, texts []inspectText) map[string]bool {
+	threats := map[string]bool{}
+	for _, m := range in.Decision.Matches {
+		threats[in.Findings[m.Hit].Threat] = true
+	}
+	for _, f := range in.Findings {
+		if len(rec.ev.Findings) >= maxEventFindings {
+			break
 		}
+		if f.Text >= len(texts) {
+			continue
+		}
+		rec.ev.Findings = append(rec.ev.Findings, events.Finding{
+			Detector: f.Detector, Version: f.Version, Category: f.Category, Score: f.Score, Start: f.Start, End: f.End,
+			Location: texts[f.Text].Location, Threat: f.Threat, Rule: f.Rule,
+		})
 	}
-	if d.NonTextUnchecked || d.Rule == policy.NonTextRule {
-		threats["DM-14"] = true
-	}
+	return threats
+}
+
+// addThreats добавляет категории угроз в событие без повторов.
+func (rec *record) addThreats(threats map[string]bool) {
 	for t := range threats {
-		rec.ev.Threats = append(rec.ev.Threats, t)
+		if t != "" && !slices.Contains(rec.ev.Threats, t) {
+			rec.ev.Threats = append(rec.ev.Threats, t)
+		}
 	}
 	slices.Sort(rec.ev.Threats)
-	rec.ev.Decision = ed
-	rec.ev.PolicyMode = string(d.Mode)
-	rec.ev.NonTextUnchecked = d.NonTextUnchecked && !in.FailBlock
-	if rec.app.Storage == events.StorageMasked {
-		if c, ok := in.maskedContent(rec.texts); ok {
-			rec.ev.Content = &events.Content{Request: c}
-			if rec.output {
-				rec.ev.Content = &events.Content{Response: c}
-			}
-		}
-	}
 }
 
 // traceNote — пояснение к шагу трассировки: что сделано с фрагментом,
@@ -194,13 +315,23 @@ func traceNote(m policy.Match) string {
 	case m.Apply == "" && m.Protect != "":
 		notes = append(notes, "не применено "+string(m.Protect)+" по правилу "+m.ProtectRule+" (monitor)")
 	}
-	switch {
-	case m.AsRedact:
+	if m.AsRedact {
 		notes = append(notes, "pseudonymize выполнено как redact: обратной подстановки нет")
-	case m.Protect == policy.Pseudonymize && m.Apply == policy.Redact:
-		notes = append(notes, "псевдонимизация в конвейере не подключена, выполнено redact")
 	}
 	return strings.Join(notes, "; ")
+}
+
+// headerDecision — X-AISec-Decision ответа без потока и buffered: самое
+// сильное из того, что шлюз сделал с запросом и с ответом.
+func (rec *record) headerDecision() string {
+	h := rec.in.headerDecision()
+	if rec.resp == nil {
+		return h
+	}
+	if r := rec.resp.headerDecision(); policy.Stronger(policy.Action(r), policy.Action(h)) {
+		return r
+	}
+	return h
 }
 
 // headerDecision — значение X-AISec-Decision: что шлюз сделал с запросом

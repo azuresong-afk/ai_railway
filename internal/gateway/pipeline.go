@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"sort"
 	"strings"
@@ -15,13 +16,15 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/detect/unihidden"
 	"github.com/azuresong-afk/ai_railway/internal/events"
 	"github.com/azuresong-afk/ai_railway/internal/policy"
+	"github.com/azuresong-afk/ai_railway/internal/pseudonym"
 )
 
-// Конвейер проверки входа (ТЗ, 4.3, шаги 4–5): детекторы политики по
+// Конвейер проверки (ТЗ, 4.3, шаги 4–5 и 7): детекторы политики по
 // каждому текстовому фрагменту — параллельно, каждый со своим сроком;
-// решение политики; режим приложения при сбое (ТЗ, 4.4); маскирование
-// фрагментов. Проверка ответа — задача 1.23, Check API — 1.24: оба
-// используют inspect.
+// решение политики; режим приложения при сбое (ТЗ, 4.4); защита данных во
+// фрагментах — псевдонимизация и маскирование (internal/pseudonym). Вход
+// чата, ответ модели (response.go), Check API и эмбеддинги используют
+// inspect.
 
 // Срок детектора. Он растёт с длиной текста: при постоянном сроке длинный
 // текст не успевал бы проверяться, и при fail_open запрос прошёл бы без
@@ -44,10 +47,6 @@ const (
 func detectorTimeout(base time.Duration, n int) time.Duration {
 	return min(base+time.Duration(n)*detectorTimePerKB/1024, MaxDetectorTimeout)
 }
-
-// RedactMark заменяет фрагмент при redact. Псевдонимы (1.20) — в двойных
-// скобках, поэтому маска в одинарных: обратная подстановка её не тронет.
-const RedactMark = "[REDACTED]"
 
 // Пределы события: решение принимается по всем находкам, но в событие
 // попадают первые maxEventFindings, а содержимое — не длиннее
@@ -90,15 +89,25 @@ func joinedDetector(id string) bool { return strings.HasPrefix(id, "injection.")
 type inspectRequest struct {
 	Endpoint policy.Endpoint
 	// Direction — направление проверки; пусто — вход (detect.Input). Выход
-	// проверяет Check API (задача 1.24).
+	// проверяют Check API (1.24) и проверка ответа (1.23).
 	Direction detect.Direction
-	External  bool
-	Texts     []inspectText
-	Media     []policy.MediaPart
+	// Mode — режим политики для решения; пусто — режим приложения. Ответ
+	// при потоковой передаче в режиме monitor проверяется с Mode = monitor:
+	// он уже передан, применять нечего (ТЗ, 5.1).
+	Mode     policy.Mode
+	External bool
+	Texts    []inspectText
+	Media    []policy.MediaPart
 	// Mask — нужны находки детекторов маскирования (хранение masked).
 	Mask bool
 	// Timeout — базовый срок детектора (DefaultDetectorTimeout).
 	Timeout time.Duration
+	// Vault — словарь псевдонимов запроса; nil — только маскирование
+	// (Check API, эмбеддинги, ответ модели: там pseudonymize не выполняется).
+	Vault *pseudonym.Vault
+	// DetectOnly — только находки и решение, фрагменты не меняются
+	// (окна потока, проверка после передачи).
+	DetectOnly bool
 }
 
 // locatedFinding — находка и номер фрагмента, в котором она найдена.
@@ -128,8 +137,9 @@ type inspection struct {
 func (in *inspection) Blocked() bool { return in.Decision.Block || in.FailBlock }
 
 // inspect проверяет фрагменты по политике приложения. Ошибка — клиент ушёл
-// (контекст отменён) или конвейер собран неверно (детектор политики не
-// зарегистрирован); решения тогда нет. Общий срок проверки запроса —
+// (контекст отменён), конвейер собран неверно (детектор политики не
+// зарегистрирован) или защита данных не применена (неверные позиции
+// находки); решения тогда нет. Общий срок проверки запроса —
 // MaxDetectorTimeout: фрагменты, до которых очередь не дошла, — сбой по
 // сроку у всех детекторов политики.
 func (a *App) inspect(ctx context.Context, req inspectRequest) (*inspection, error) {
@@ -195,22 +205,28 @@ func (a *App) inspect(ctx context.Context, req inspectRequest) (*inspection, err
 	for i, f := range in.Findings {
 		hits[i] = policy.Hit{Finding: f.Finding, Source: req.Texts[f.Text].Source}
 	}
+	mode := req.Mode
+	if mode == "" {
+		mode = a.Mode
+	}
 	in.Decision = a.Policy.Evaluate(policy.Request{
-		Endpoint: req.Endpoint, Direction: req.Direction, Mode: a.Mode, External: req.External, Hits: hits, Media: req.Media,
+		Endpoint: req.Endpoint, Direction: req.Direction, Mode: mode, External: req.External, Hits: hits, Media: req.Media,
 	})
 	// Режим при сбое (ТЗ, 4.4) действует и в monitor: проверка, которая не
-	// состоялась, не может подтвердить, что защита данных не нужна.
-	in.FailBlock = len(in.Failures) > 0 && !a.FailOpen
-	// Псевдонимизация подключается к конвейеру в задаче 1.23; до неё
-	// pseudonymize выполняется как redact: ПДн маскируются необратимо, но
-	// провайдеру не уходят.
-	for k := range in.Decision.Matches {
-		if m := &in.Decision.Matches[k]; m.Apply == policy.Pseudonymize {
-			m.Apply = policy.Redact
+	// состоялась, не может подтвердить, что защита данных не нужна. Ответу
+	// модели в monitor не применяется ничего (ТЗ, 5.3), поэтому сбой его
+	// проверки там только журналируется: блокировать ответ строже, чем при
+	// успешной проверке, незачем.
+	in.FailBlock = len(in.Failures) > 0 && !a.FailOpen &&
+		(req.Direction == detect.Input || req.Endpoint != policy.EndpointChat || in.Decision.Mode == policy.Enforce)
+	if !in.Blocked() && !req.DetectOnly {
+		v := req.Vault
+		if v == nil {
+			v = pseudonym.NewVault(pseudonym.Limits{})
 		}
-	}
-	if !in.Blocked() {
-		in.redact(req.Texts)
+		if err := in.protect(req.Texts, v); err != nil {
+			return nil, err
+		}
 	}
 	return in, nil
 }
@@ -257,35 +273,97 @@ type span struct {
 	repl       string
 }
 
-// redact выполняет защиту данных из решения: маскирует фрагменты, а
-// символы unicode.hidden вырезает (DM-05).
-func (in *inspection) redact(texts []inspectText) {
-	byText := map[int][]span{}
+// protectSpan — участок фрагмента под защитой данных.
+type protectSpan struct {
+	start, end int
+	category   string
+	action     policy.Action // redact или pseudonymize
+	// cut — вырезать символы (unicode.hidden), а не заменять маской.
+	cut bool
+}
+
+// protectSpans — участки защиты данных из решения по фрагментам.
+func (in *inspection) protectSpans(texts []inspectText) map[int][]protectSpan {
+	byText := map[int][]protectSpan{}
 	for _, m := range in.Decision.Matches {
-		if m.Apply != policy.Redact {
+		if m.Apply != policy.Redact && m.Apply != policy.Pseudonymize {
 			continue
 		}
 		f := in.Findings[m.Hit]
-		repl := RedactMark
-		if cutOut(f.Finding) {
-			repl = ""
-		}
 		for _, l := range partSpans(texts, f) {
-			byText[l.text] = append(byText[l.text], span{l.start, l.end, repl})
+			byText[l.text] = append(byText[l.text], protectSpan{l.start, l.end, f.Category, m.Apply, m.Apply == policy.Redact && cutOut(f.Finding)})
 		}
 	}
+	return byText
+}
+
+// protect выполняет защиту данных из решения: pseudonymize — псевдоним
+// [[ТИП_N]] из словаря v, redact — маска [[ТИП]] (ADR-0005), символы
+// unicode.hidden вырезаются (DM-05).
+func (in *inspection) protect(texts []inspectText, v *pseudonym.Vault) error {
+	byText := in.protectSpans(texts)
 	if len(byText) == 0 {
-		return
+		return nil
 	}
 	in.Texts = make([]string, len(texts))
 	in.Changed = make([]bool, len(texts))
 	for i, t := range texts {
 		in.Texts[i] = t.Text
 		if spans, ok := byText[i]; ok {
-			in.Texts[i] = rewrite(t.Text, spans)
-			in.Changed[i] = in.Texts[i] != t.Text
+			s, err := applySpans(t.Text, spans, v)
+			if err != nil {
+				return fmt.Errorf("%s: %w", t.Location, err)
+			}
+			in.Texts[i], in.Changed[i] = s, s != t.Text
 		}
 	}
+	return nil
+}
+
+// applySpans заменяет участки текста. Пересекающиеся участки сливаются в
+// один (как в Vault.Protect): если среди них есть redact или вырезание,
+// слитый участок маскируется необратимо, тип — по первому участку с маской;
+// участок только из вырезаний удаляется.
+func applySpans(text string, spans []protectSpan, v *pseudonym.Vault) (string, error) {
+	spans = slices.Clone(spans)
+	sort.Slice(spans, func(i, j int) bool {
+		if spans[i].start != spans[j].start {
+			return spans[i].start < spans[j].start
+		}
+		return spans[i].end > spans[j].end
+	})
+	var b strings.Builder
+	b.Grow(len(text))
+	pos := 0
+	for i := 0; i < len(spans); {
+		cur := spans[i]
+		masked := !cur.cut
+		for i++; i < len(spans) && spans[i].start < cur.end; i++ {
+			s := spans[i]
+			cur.end = max(cur.end, s.end)
+			if s.action == policy.Redact {
+				cur.action = policy.Redact
+			}
+			if !s.cut && !masked {
+				cur.category, masked = s.category, true
+			}
+		}
+		if cur.start < pos || cur.end > len(text) {
+			return "", errors.New("участок защиты данных вне текста")
+		}
+		b.WriteString(text[pos:cur.start])
+		pos = cur.end
+		if !masked {
+			continue
+		}
+		repl, err := v.Protect(text[cur.start:cur.end], []pseudonym.Span{{Start: 0, End: cur.end - cur.start, Category: cur.category, Action: cur.action}})
+		if err != nil {
+			return "", err
+		}
+		b.WriteString(repl)
+	}
+	b.WriteString(text[pos:])
+	return b.String(), nil
 }
 
 // cutOut — находка, которую redact вырезает, а не заменяет маской:
