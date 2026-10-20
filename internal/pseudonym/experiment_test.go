@@ -149,7 +149,7 @@ func post(t *testing.T, srv *httptest.Server, text string, stream bool) *http.Re
 func echo(t *testing.T, srv *httptest.Server, text string) string {
 	t.Helper()
 	resp := post(t, srv, text, false)
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck // тело читается ниже
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil || resp.StatusCode != http.StatusOK {
 		t.Fatalf("mock-llm: %d %v", resp.StatusCode, err)
@@ -297,7 +297,7 @@ func TestDM31_ExperimentMockLLMStream(t *testing.T) {
 					}
 				}
 			}
-			resp.Body.Close()
+			_ = resp.Body.Close() // тело прочитано, ошибка закрытия не влияет на опыт
 			b.WriteString(s.Flush())
 			if b.String() == p.text {
 				ok++

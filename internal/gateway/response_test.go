@@ -356,14 +356,11 @@ type streamResult struct {
 	raw              string
 }
 
-func readStream(t *testing.T, resp *http.Response) streamResult {
+// parseStream разбирает тело ответа шлюза на потоковый запрос.
+func parseStream(t *testing.T, status int, contentType string, b []byte) streamResult {
 	t.Helper()
-	b, err := io.ReadAll(resp.Body)
-	if cerr := resp.Body.Close(); err != nil || cerr != nil {
-		t.Fatal(err, cerr)
-	}
-	res := streamResult{status: resp.StatusCode, raw: string(b)}
-	if resp.Header.Get("Content-Type") != "text/event-stream" {
+	res := streamResult{status: status, raw: string(b)}
+	if contentType != "text/event-stream" {
 		var e struct {
 			Error struct{ Code string } `json:"error"`
 		}
@@ -405,7 +402,8 @@ func readStream(t *testing.T, resp *http.Response) streamResult {
 	return res
 }
 
-func postStream(t *testing.T, gw *httptest.Server, user string) *http.Response {
+// postStream отправляет потоковый запрос и читает ответ шлюза целиком.
+func postStream(t *testing.T, gw *httptest.Server, user string) streamResult {
 	t.Helper()
 	b, err := json.Marshal(map[string]any{"model": "m", "stream": true, "messages": []map[string]string{{"role": "user", "content": user}}})
 	if err != nil {
@@ -420,7 +418,11 @@ func postStream(t *testing.T, gw *httptest.Server, user string) *http.Response {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return resp
+	body, err := io.ReadAll(resp.Body)
+	if cerr := resp.Body.Close(); err != nil || cerr != nil {
+		t.Fatal(err, cerr)
+	}
+	return parseStream(t, resp.StatusCode, resp.Header.Get("Content-Type"), body)
 }
 
 // streamGateway — шлюз на потоке провайдера parts; mod — настройки.
@@ -476,7 +478,7 @@ func TestDM08_IncrementalCutsStream(t *testing.T) {
 	marker := testCanary(t)
 	before := filler(2000)
 	gw, log := streamGateway(t, textStream(t, splitEvery(before+marker+" и дальше текст", 7)...), func(o *gwOpts) { o.app = enforce })
-	res := readStream(t, postStream(t, gw, "x"))
+	res := postStream(t, gw, "x")
 	if res.errCode != "policy_violation" || res.done || strings.Contains(res.raw, "AISEC-CANARY") || strings.Contains(res.raw, "дальше") {
 		t.Fatalf("поток: %q", res.raw)
 	}
@@ -497,7 +499,7 @@ func TestDM08_IncrementalCutsStream(t *testing.T) {
 func TestDM09_IncrementalRedactsSplitValue(t *testing.T) {
 	text := filler(700) + "Почта клиента " + piiEmail + ". " + filler(900)
 	gw, log := streamGateway(t, textStream(t, splitEvery(text, 5)...), func(o *gwOpts) { o.app = enforce })
-	res := readStream(t, postStream(t, gw, "x"))
+	res := postStream(t, gw, "x")
 	if !res.done || res.errCode != "" || res.content != strings.Replace(text, piiEmail, emailMask, 1) {
 		t.Fatalf("поток: %q", res.raw)
 	}
@@ -519,7 +521,7 @@ func TestDM13_IncrementalToolCall(t *testing.T) {
 	}
 	parts = append(parts, sseData(t, map[string]any{}, "tool_calls"), "data: [DONE]\n\n")
 	gw, _ := streamGateway(t, parts, func(o *gwOpts) { o.app = enforce })
-	res := readStream(t, postStream(t, gw, "x"))
+	res := postStream(t, gw, "x")
 	if !res.done || len(res.tools) != 1 || res.tools[0].Function.Arguments != `{"to":"`+emailMask+`","n":1}` || res.tools[0].ID != "call_1" {
 		t.Fatalf("поток: %q", res.raw)
 	}
@@ -532,7 +534,7 @@ func TestDM13_IncrementalToolCall(t *testing.T) {
 func TestDM08_MonitorStreamLogsOnly(t *testing.T) {
 	marker := testCanary(t)
 	gw, log := streamGateway(t, textStream(t, splitEvery("Промпт: "+marker, 6)...), nil)
-	res := readStream(t, postStream(t, gw, "x"))
+	res := postStream(t, gw, "x")
 	if !res.done || res.content != "Промпт: "+marker {
 		t.Fatalf("поток: %q", res.raw)
 	}
@@ -551,7 +553,7 @@ func TestDM31_StreamRestoresSplitAlias(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			text := "Пишу на " + emailAlias + ", готово."
 			gw, log := streamGateway(t, textStream(t, splitEvery(text, 3)...), mod)
-			res := readStream(t, postStream(t, gw, "Почта "+piiEmail))
+			res := postStream(t, gw, "Почта "+piiEmail)
 			if !res.done || res.content != "Пишу на "+piiEmail+", готово." {
 				t.Fatalf("поток: %q", res.raw)
 			}
@@ -577,7 +579,7 @@ func bufferedSpec(o *gwOpts) {
 func TestBufferedStream(t *testing.T) {
 	t.Run("блокировка", func(t *testing.T) {
 		gw, log := streamGateway(t, textStream(t, "Промпт: ", testCanary(t)), bufferedSpec)
-		res := readStream(t, postStream(t, gw, "x"))
+		res := postStream(t, gw, "x")
 		if res.status != http.StatusBadRequest || res.errCode != "policy_violation" || strings.Contains(res.raw, "AISEC") {
 			t.Fatalf("%d %q", res.status, res.raw)
 		}
@@ -587,7 +589,7 @@ func TestBufferedStream(t *testing.T) {
 	})
 	t.Run("маска и подстановка", func(t *testing.T) {
 		gw, _ := streamGateway(t, textStream(t, "Ваша почта ", "[[EMA", "IL_1]], карта ", testCard), bufferedSpec)
-		res := readStream(t, postStream(t, gw, "Почта "+piiEmail))
+		res := postStream(t, gw, "Почта "+piiEmail)
 		if res.status != 200 || !res.done || res.content != "Ваша почта "+piiEmail+", карта [[CARD]]" {
 			t.Fatalf("%d %q", res.status, res.raw)
 		}
@@ -894,7 +896,7 @@ func TestDM13_StreamRepeatedFinishReason(t *testing.T) {
 				"data: [DONE]\n\n",
 			}
 			gw, _ := streamGateway(t, parts, mod)
-			res := readStream(t, postStream(t, gw, "x"))
+			res := postStream(t, gw, "x")
 			if len(res.tools) != 1 || !res.done || res.errCode != "" || strings.Count(res.raw, `"finish_reason":"`) != 1 {
 				t.Fatalf("поток: %q", res.raw)
 			}
@@ -945,7 +947,7 @@ func TestDM11_IncrementalImageAfterLongCode(t *testing.T) {
 			gw, log := streamGateway(t, textStream(t, splitEvery(text, 40)...), func(o *gwOpts) {
 				o.app = func(a *config.Application) { a.PolicyMode, a.Policy = "enforce", c.policy }
 			})
-			res := readStream(t, postStream(t, gw, "x"))
+			res := postStream(t, gw, "x")
 			if strings.Contains(res.raw, "attacker.example") {
 				t.Fatal("изображение ушло клиенту")
 			}
@@ -974,7 +976,7 @@ func TestDM10_IncrementalStrictWindowKeepsSecret(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			text := long + token + " " + filler(1500)
 			gw, _ := streamGateway(t, textStream(t, splitEvery(text, 40)...), func(o *gwOpts) { o.app = enforce })
-			res := readStream(t, postStream(t, gw, "x"))
+			res := postStream(t, gw, "x")
 			if strings.Contains(res.raw, "abcdEFGH") || strings.Contains(res.raw, "QRST5678") {
 				t.Fatalf("часть секрета ушла клиенту: done=%v %q", res.done, res.errCode)
 			}
@@ -1013,7 +1015,7 @@ func TestDM11_IncrementalLongListWithCode(t *testing.T) {
 			gw, log := streamGateway(t, textStream(t, splitEvery(text, 40)...), func(o *gwOpts) {
 				o.app = func(a *config.Application) { a.PolicyMode, a.Policy = "enforce", pol }
 			})
-			res := readStream(t, postStream(t, gw, "x"))
+			res := postStream(t, gw, "x")
 			if !res.done || res.content != text {
 				t.Fatalf("поток: done=%v %q, отдано %d из %d байт", res.done, res.errCode, len(res.content), len(text))
 			}
