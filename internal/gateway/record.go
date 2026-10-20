@@ -23,10 +23,14 @@ type record struct {
 	in    *inspection
 	texts []inspectText
 	// res — резерв квоты; sent — запрос ушёл провайдеру; tokens — расход
-	// по usage провайдера, -1 — неизвестен.
-	res    *Reservation
-	sent   bool
-	tokens int
+	// по usage провайдера, -1 — неизвестен. Без usage (или с нулевым) расход
+	// оценивается по размеру: inTokens — оценка входа, outBytes — размер
+	// ответа провайдера до действий политики (nil — ответа нет).
+	res      *Reservation
+	sent     bool
+	tokens   int
+	inTokens int
+	outBytes func() int
 	// skip — событие не отправляется: клиент ушёл до решения.
 	skip bool
 	// output — проверялся текст ответа: содержимое в событии пишется в
@@ -128,7 +132,8 @@ func (rec *record) usage(u *chat.Usage) {
 	if u == nil {
 		return
 	}
-	rec.tokens = u.TotalTokens
+	// Часть OpenAI-совместимых серверов не заполняет total_tokens.
+	rec.tokens = max(u.TotalTokens, u.PromptTokens+u.CompletionTokens)
 	rec.ev.Tokens = &events.Tokens{Prompt: u.PromptTokens, Completion: u.CompletionTokens}
 }
 
@@ -137,8 +142,16 @@ func (h *ChatHandler) emit(rec *record) {
 	switch {
 	case !rec.sent:
 		rec.res.Settle(0) // до модели не дошло — резерв возвращается
-	case rec.tokens >= 0:
+	case rec.tokens > 0:
 		rec.res.Settle(rec.tokens)
+	case rec.outBytes != nil:
+		// Провайдер не прислал usage (поток без stream_options.include_usage)
+		// или прислал нули: иначе резерв без max_tokens покрывал бы только
+		// вход (или возвращался бы целиком), и ответ любой длины не
+		// учитывался бы в tokens_per_minute и tokens_per_day (DM-36).
+		rec.res.SettleAtLeast(rec.inTokens + estimateTokens(rec.outBytes()))
+	case rec.tokens == 0:
+		rec.res.Settle(0)
 	}
 	if rec.skip {
 		return
@@ -356,4 +369,22 @@ func (in *inspection) headerDecision() string {
 		return string(a[0])
 	}
 	return string(policy.Allow)
+}
+
+// responseBytes — размер текста ответа для оценки токенов: содержимое,
+// отказ, имена и аргументы вызовов инструментов всех вариантов.
+func responseBytes(resp *chat.Response) int {
+	n := 0
+	for _, c := range resp.Choices {
+		if c.Message.Content != nil {
+			n += len(*c.Message.Content)
+		}
+		if c.Message.Refusal != nil {
+			n += len(*c.Message.Refusal)
+		}
+		for _, tc := range c.Message.ToolCalls {
+			n += len(tc.Function.Name) + len(tc.Function.Arguments)
+		}
+	}
+	return n
 }

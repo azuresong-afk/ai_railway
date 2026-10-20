@@ -262,14 +262,25 @@ func mockReset(t *testing.T, e *env) {
 }
 
 // waitEvent ждёт (очередь сбрасывает события раз в секунду) событие
-// gateway_request приложения app, для которого ok вернёт true.
+// gateway_request приложения app, для которого ok вернёт true. Ищет только
+// среди событий новее возвращённого прошлым вызовом для того же приложения:
+// иначе проверка события второго запроса получила бы событие первого.
 func waitEvent(t *testing.T, e *env, app string, ok func(events.Event) bool) events.Event {
 	t.Helper()
+	if e.seen == nil {
+		e.seen = map[string]int{}
+	}
 	deadline := time.Now().Add(8 * time.Second)
 	for {
 		if _, err := os.Stat(e.events); err == nil {
+			k := 0
 			for _, ev := range readEvents(t, e.events) {
-				if ev.Type == events.TypeGatewayRequest && ev.App == app && ok(ev) {
+				if ev.Type != events.TypeGatewayRequest || ev.App != app {
+					continue
+				}
+				k++
+				if k > e.seen[app] && ok(ev) {
+					e.seen[app] = k
 					return ev
 				}
 			}
@@ -321,7 +332,7 @@ func TestE2EDM31_PIIPseudonymizedAndRestored(t *testing.T) {
 					t.Fatalf("провайдер получил: %s", last.Body)
 				}
 				ev := waitEvent(t, e, app, func(ev events.Event) bool { return ev.Pseudonyms != nil && ev.Pseudonyms.Restored > 0 })
-				if ev.Pseudonyms.Issued < 1 || ev.Pseudonyms.Failed != 0 || !slices.Contains(ev.Decision.Applied, "pseudonymize") {
+				if ev.Stream != tc.stream || ev.Pseudonyms.Issued < 1 || ev.Pseudonyms.Failed != 0 || !slices.Contains(ev.Decision.Applied, "pseudonymize") {
 					t.Fatalf("событие: %+v %+v", ev.Pseudonyms, ev.Decision)
 				}
 			})
@@ -423,10 +434,10 @@ func TestE2EDM08_CanaryLeakDetected(t *testing.T) {
 		if !stream {
 			blocked(t, r)
 		}
-	}
-	ev := waitEvent(t, e, "enf", func(ev events.Event) bool { return ev.Response != nil && ev.Response.Decision != nil })
-	if ev.Response.Decision.Rule != "canary" || !slices.Equal(ev.Response.Decision.Applied, []string{"block"}) || !slices.Contains(ev.Threats, "DM-08") {
-		t.Fatalf("enforce, событие: %+v %v", ev.Response.Decision, ev.Threats)
+		ev := waitEvent(t, e, "enf", func(ev events.Event) bool { return ev.Response != nil && ev.Response.Decision != nil })
+		if ev.Stream != stream || ev.Response.Decision.Rule != "canary" || !slices.Equal(ev.Response.Decision.Applied, []string{"block"}) || !slices.Contains(ev.Threats, "DM-08") {
+			t.Fatalf("enforce (поток %v), событие: %+v %v", stream, ev.Response.Decision, ev.Threats)
+		}
 	}
 	if raw, err := os.ReadFile(e.events); err != nil || strings.Contains(string(raw), marker) {
 		t.Fatalf("в событиях значение канарейки: %v", err)
@@ -436,7 +447,7 @@ func TestE2EDM08_CanaryLeakDetected(t *testing.T) {
 	if r.status != http.StatusOK || !strings.Contains(r.text, marker) {
 		t.Fatalf("monitor не должен менять ответ: %d %s", r.status, r.raw)
 	}
-	ev = waitEvent(t, e, "mon", func(ev events.Event) bool { return ev.Response != nil && ev.Response.Decision != nil })
+	ev := waitEvent(t, e, "mon", func(ev events.Event) bool { return ev.Response != nil && ev.Response.Decision != nil })
 	if ev.Response.Decision.Action != "block" || slices.Contains(ev.Response.Decision.Applied, "block") || !slices.Contains(ev.Threats, "DM-08") {
 		t.Fatalf("monitor, событие: %+v %v", ev.Response.Decision, ev.Threats)
 	}
@@ -469,9 +480,9 @@ func TestE2EDM13_ToolCallArgumentsChecked(t *testing.T) {
 		}
 		return false
 	})
-	// Находка в аргументах относится к строке детектора (ПДн в ответе, DM-09);
-	// DM-13 описывает место — вызов функции.
-	if !slices.Contains(ev.Threats, "DM-09") {
+	// Находка в аргументах — утечка через вызов функции (DM-13), а не строка
+	// детектора (ПДн в ответе, DM-09).
+	if !slices.Contains(ev.Threats, "DM-13") || slices.Contains(ev.Threats, "DM-09") {
 		t.Fatalf("угрозы события: %v", ev.Threats)
 	}
 }

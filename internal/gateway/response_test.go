@@ -67,7 +67,7 @@ func replyMessage(t *testing.T, msg map[string]any) http.HandlerFunc {
 			t.Error(err)
 			return
 		}
-		w.Write(b) //nolint:errcheck,gosec // тестовый провайдер
+		w.Write(b) //nolint:errcheck,gosec // G104: ответ тестового провайдера; ошибка записи проявится у клиента теста
 	}
 }
 
@@ -210,8 +210,10 @@ func TestDM13_ToolCallArgumentsChecked(t *testing.T) {
 			t.Fatalf("аргументы: %s", args)
 		}
 		e, _ := respEvent(t, log, resp)
-		if !findingAt(e, locToolArgs(0)) || !slices.Contains(e.Threats, "DM-11") {
-			t.Fatalf("находки: %+v", e.Findings)
+		// Находки в аргументах — DM-13, какой бы детектор их ни нашёл.
+		if !findingAt(e, locToolArgs(0)) || !slices.Equal(e.Threats, []string{"DM-13"}) ||
+			slices.ContainsFunc(e.Findings, func(f events.Finding) bool { return f.Threat != "DM-13" }) {
+			t.Fatalf("угрозы %v, находки: %+v", e.Threats, e.Findings)
 		}
 	})
 	t.Run("число", func(t *testing.T) {

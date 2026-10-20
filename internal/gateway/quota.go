@@ -178,6 +178,15 @@ func (l *Limiter) Admit(r QuotaRequest) (*Reservation, error) {
 	return &Reservation{l: l, a: a, reserved: tokens, tpmB: a.tpm.bucket(now), tpdB: a.tpd.bucket(now)}, nil
 }
 
+// SettleAtLeast — Settle с оценкой расхода вместо фактического: резерв
+// только увеличивается, но не возвращается — оценка может быть занижена.
+func (rs *Reservation) SettleAtLeast(estimate int) {
+	if rs == nil {
+		return
+	}
+	rs.Settle(max(estimate, int(rs.reserved)))
+}
+
 // Settle заменяет резерв фактическим расходом токенов (после ответа
 // провайдера; 0 — запрос не дошёл до модели). Повторный вызов ничего не
 // меняет.

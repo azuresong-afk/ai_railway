@@ -75,13 +75,18 @@ type inspectText struct {
 	// Location — место фрагмента для события (messages[0].content).
 	Location string
 	// Parts — фрагмент склеен из текстовых частей одного сообщения (номера
-	// фрагментов по порядку): провайдер склеит их так же, и разрезанная на
-	// части инъекция видна только в склейке. Склейку проверяют только
-	// детекторы injection.*, а маскирование находки в склейке переносится
-	// на сами части.
+	// фрагментов по порядку) через Sep: разрезанная на части инъекция видна
+	// только в склейке. Провайдеры склеивают по-разному (без разделителя,
+	// через перевод строки — адаптеры GigaChat и YandexGPT), поэтому
+	// проверяются обе склейки. Склейку проверяют только детекторы
+	// injection.*, а маскирование находки в склейке переносится на сами части.
 	Parts []int
+	Sep   string
 	// NoCode — окно потока без учёта разметки кода (detect.Text.NoCode).
 	NoCode bool
+	// Threat — строка матрицы для всех находок фрагмента вместо строки
+	// детектора: аргументы tool_calls в ответе — DM-13 (ТЗ, 5.16).
+	Threat string
 }
 
 // joinedDetector — детектор проверяет и склейку частей сообщения.
@@ -164,6 +169,10 @@ func (a *App) inspect(ctx context.Context, req inspectRequest) (*inspection, err
 	total, cancel := context.WithTimeout(ctx, MaxDetectorTimeout)
 	defer cancel()
 	joinedIDs := slices.DeleteFunc(slices.Clone(runIDs), func(id string) bool { return !joinedDetector(id) })
+	// seen — находки по участкам частей: склейка повторяет находку внутри
+	// одной части, а две склейки (без разделителя и через перевод строки) —
+	// друг друга; в событие и решение каждая идёт один раз.
+	seen := map[string]bool{}
 	for i, t := range req.Texts {
 		ids := runIDs
 		if t.Parts != nil {
@@ -188,7 +197,16 @@ func (a *App) inspect(ctx context.Context, req inspectRequest) (*inspection, err
 			return nil, err
 		}
 		for _, f := range fs {
-			in.Findings = append(in.Findings, locatedFinding{Finding: f, Text: i})
+			if t.Threat != "" {
+				f.Threat = t.Threat
+			}
+			lf := locatedFinding{Finding: f, Text: i}
+			key := fmt.Sprint(f.Detector, "\x00", f.Category, "\x00", partSpans(req.Texts, lf))
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			in.Findings = append(in.Findings, lf)
 		}
 		for _, re := range rerrs {
 			reason := events.FailureError
@@ -240,8 +258,8 @@ type located struct {
 }
 
 // partSpans — участки, которые занимает находка: в самом фрагменте или,
-// для склейки, в каждой из частей, которые она задевает. Части склеены без
-// разделителя, границы частей — границы символов UTF-8.
+// для склейки, в каждой из частей, которые она задевает. Части склеены через
+// Sep, границы частей — границы символов UTF-8; разделитель не маскируется.
 func partSpans(texts []inspectText, f locatedFinding) []located {
 	t := texts[f.Text]
 	if t.Parts == nil {
@@ -254,7 +272,7 @@ func partSpans(texts []inspectText, f locatedFinding) []located {
 		if s, e := max(f.Start, off), min(f.End, off+n); s < e {
 			out = append(out, located{p, s - off, e - off})
 		}
-		off += n
+		off += n + len(t.Sep)
 	}
 	return out
 }

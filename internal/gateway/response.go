@@ -80,6 +80,10 @@ const (
 	locRefusal = "choices[0].message.refusal"
 )
 
+// threatToolArgs — строка матрицы находок в аргументах вызовов функций в
+// ответе: утечка через вызов функции, какой бы детектор её ни нашёл.
+const threatToolArgs = "DM-13"
+
 func locToolArgs(i int) string {
 	return fmt.Sprintf("choices[0].message.tool_calls[%d].function.arguments", i)
 }
@@ -129,7 +133,7 @@ func responseTexts(resp *chat.Response) ([]inspectText, []respRef) {
 			refs = append(refs, respRef{choice: ci, refusal: true, tool: -1})
 		}
 		for j := range m.ToolCalls {
-			texts = append(texts, inspectText{Text: m.ToolCalls[j].Function.Arguments, Source: detect.SourceOutput, Location: locToolArgs(j)})
+			texts = append(texts, inspectText{Text: m.ToolCalls[j].Function.Arguments, Source: detect.SourceOutput, Location: locToolArgs(j), Threat: threatToolArgs})
 			refs = append(refs, respRef{choice: ci, tool: j})
 		}
 	}
@@ -371,6 +375,7 @@ func restoreToolCalls(v *pseudonym.Vault, args []string) ([]string, bool) {
 // блокировка и сбой — обычные ответы с ошибкой, а не обрыв потока.
 func (h *ChatHandler) streamBuffered(w http.ResponseWriter, r *http.Request, app *App, st providers.Stream, requested string, rec *record) {
 	asm := chat.NewAssembler()
+	rec.outBytes = func() int { return responseBytes(asm.Response()) }
 	for {
 		c, err := st.Next()
 		if errors.Is(err, io.EOF) {
@@ -725,6 +730,7 @@ type streamProc struct {
 
 func (h *ChatHandler) newStreamProc(r *http.Request, app *App, rec *record, requested string, incremental bool, send func([]byte) bool) *streamProc {
 	sp := &streamProc{h: h, app: app, rec: rec, r: r, send: send, requested: requested, incremental: incremental, asm: chat.NewAssembler()}
+	rec.outBytes = func() int { return responseBytes(sp.asm.Response()) }
 	var cr, rr *pseudonym.Stream
 	if v := rec.vault; v != nil && v.Len() > 0 {
 		cr, rr = v.NewStream(), v.NewStream()

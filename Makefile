@@ -60,7 +60,7 @@ help: ## Список целей
 # зелёный make check неполный — об этом печатается предупреждение.
 PENDING_CHECKS :=
 
-check: fmt-check vet docs-check repocheck licenses lint lint-selftest sast test build e2e dm-coverage detector-quality sbom fuzz-smoke vuln ## Все проверки перед pull request
+check: fmt-check vet docs-check repocheck licenses vendor-check lint lint-selftest sast test build e2e dm-coverage detector-quality sbom fuzz-smoke vuln ## Все проверки перед pull request
 	@if [ -n "$(strip $(PENDING_CHECKS))" ]; then \
 		echo "ВНИМАНИЕ: make check неполный, ещё не реализованы: $(PENDING_CHECKS) (docs/plans/stage-0.md)"; fi
 
@@ -103,6 +103,18 @@ $(BIN)/sbom-utility:
 .PHONY: licenses
 licenses: ## Реестр компонентов и лицензии: docs/cert/components.yaml против vendor/, go.mod, Makefile
 	go run ./tools/license-check -root .
+
+.PHONY: vendor-check
+vendor-check: ## Неизменность vendor/: modules.txt, go.mod, go.sum и манифест docs/cert/vendor.sha256 (без сети)
+	go run ./tools/vendor-check -root .
+
+.PHONY: vendor-manifest
+vendor-manifest: ## Пересчитать манифест vendor/ после go mod vendor (изменение смотрит ревью)
+	go run ./tools/vendor-check -root . -update
+
+.PHONY: vendor-verify
+vendor-verify: ## Сверка vendor/ с go.sum: go mod vendor во временный каталог и сравнение (нужна сеть)
+	go run ./tools/vendor-check -root . -verify
 
 .PHONY: repocheck
 repocheck: ## Структурные правила: один internal/crypto, cgo только по ADR
