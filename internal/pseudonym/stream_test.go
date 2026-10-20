@@ -52,6 +52,11 @@ var streamTexts = []string{
 	"Неизвестный [[PHONE_7]] и [[INN_1]] и [[ТЕЛЕФОН_1]] и [[PASSWORD_1]]",
 	"[[[[PHONE_1]]]] \\\\[[PHONE_2]] [x] [[ [[PHONE_1]]",
 	"Юникод: «[[PHONE_1]]» — ёж 🦔 [[PHONE_2]]",
+	// Правило мест смотрит байты после псевдонима: решение не должно
+	// зависеть от того, где разрезан текст после него.
+	"Поддомен [[PHONE_1]].evil.example, конец [[PHONE_2]]. Далее [[PHONE_1]].",
+	"IDN [[PHONE_1]].пример.рф, «[[PHONE_2]].» и [[PHONE_1]].ё",
+	"Порт [[PHONE_1]]:80, вопрос [[PHONE_2]]? и [PHONE_1]@x [[PHONE_2]]\\.x",
 }
 
 // TestStreamSplitEverywhere — результат не зависит от разбиения: на две
@@ -60,6 +65,7 @@ func TestStreamSplitEverywhere(t *testing.T) {
 	jsonTexts := []string{
 		`{"a":"[[PASSWORD_1]]","b":"тел [[PHONE_1]]","u":"https:\/\/x\/[[PHONE_2]]"}`,
 		`{"q":"\"[[PASSWORD_1]]\\","r":[[PHONE_1]]}`,
+		`{"a":"[[PHONE_1]].x","b":"[[PHONE_2]]\u002e","c":"[[PHONE_1]]. ок","d":"пример.рф","e":"[[PHONE_2]]"}`,
 	}
 	check := func(t *testing.T, text string, json bool) {
 		restore, stream := streamVault(t), streamVault(t)
@@ -133,6 +139,8 @@ func FuzzStream(f *testing.F) {
 	}
 	f.Add(`{"a":"[[PASSWORD_1]]","u":"https:\/\/x\/[[PHONE_2]]"}`, []byte{9, 2, 11}, true)
 	f.Add(`\[\[PHONE\_1\]\]`, []byte{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1}, false)
+	f.Add("[[PHONE_1]].пример [[PHONE_2]].", []byte{11, 1, 1, 1, 12}, false)
+	f.Add(`{"h":"пример.рф","a":"[[PHONE_1]].x","b":"[[PHONE_2]]\u002e"}`, []byte{7, 4, 20, 1, 1}, true)
 	f.Fuzz(func(t *testing.T, text string, cuts []byte, json bool) {
 		if len(text) > 8192 || len(cuts) > 256 {
 			return

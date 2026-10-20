@@ -13,8 +13,11 @@
 // цифр: так тело без префикса не спутать с обычными словами.
 //
 // Модель может пересказать маркер с изменениями: другой регистр, пробелы,
-// подчёркивания или невидимые символы между буквами. Такие варианты тоже
-// находятся (между любыми двумя символами — до трёх разделителей).
+// запятые, косые черты, переводы строк, обратные кавычки или невидимые
+// символы между буквами, гомоглифы и полноширинные символы вместо букв.
+// Такие варианты тоже находятся: между любыми двумя символами — до трёх
+// разделителей и до четырёх пробельных символов. Ложные срабатывания
+// сдерживают 11 букв префикса и контрольные символы.
 package canary
 
 import (
@@ -22,16 +25,18 @@ import (
 	"errors"
 	"hash/crc32"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/internal/detect"
+	"github.com/azuresong-afk/ai_railway/internal/detect/unihidden"
 )
 
 // ID и версия детектора.
 const (
 	ID      = "canary"
-	Version = "1.0.0"
+	Version = "1.1.0"
 )
 
 // CatLeak — категория находки: маркер или его часть в ответе.
@@ -41,10 +46,15 @@ const CatLeak = "canary.leak"
 const Prefix = "AISEC-CANARY-"
 
 const (
-	bodyLen   = 16 // символов тела
-	checkLen  = 4  // контрольных символов
-	symbols   = bodyLen + checkLen
-	maxSeps   = 3 // разделителей между соседними символами маркера
+	bodyLen  = 16 // символов тела
+	checkLen = 4  // контрольных символов
+	symbols  = bodyLen + checkLen
+	maxSeps  = 3 // разделителей (кроме пробельных) между соседними символами маркера
+	// maxSpaces — пробельных символов между соседними символами маркера:
+	// «C, -, C» (по символу через запятую) — три разделителя и два пробела.
+	maxSpaces = 4
+	// maxGap — длина разделителя групп тела без префикса в символах.
+	maxGap    = 3
 	minDigits = 2
 	// partialMin — сколько символов после префикса нужно для находки
 	// «изменённый или обрезанный маркер».
@@ -177,24 +187,54 @@ func upper(c byte) byte {
 	return 0
 }
 
-// separator — символ между символами маркера: дефис, подчёркивание, точка,
-// пробелы, мягкий перенос, невидимые символы, типографские дефисы. Вторая
-// величина — длина в байтах; 0 — не разделитель.
-func separator(text string, i int) int {
-	c := text[i]
-	switch c {
-	case '-', '_', '.', ' ', '\t':
-		return 1
+// at — символ текста с позиции i: c — буква или цифра ASCII (после свёртки
+// гомоглифов, полноширинных и математических символов, тегов) в исходном
+// регистре или 0; sep — разделитель: любой символ ASCII, кроме букв и цифр,
+// пробелы и знаки препинания Unicode (Z*, P*), символы форматирования (Cf)
+// и скрытые символы; space — пробельный разделитель; n — длина в байтах
+// («\r\n» — один символ).
+//
+// Свёртка — посимвольная (unihidden.ASCIIFold), а не через unihidden.Clean:
+// маркер целиком латинский, поэтому подходит любой похожий символ, а Clean
+// на ответе до 32 МиБ потребовал бы карту позиций по 8 байт на байт текста.
+// Для ASCII свёртки нет — обычный текст проверяется без декодирования.
+func at(text string, i int) (c byte, sep, space bool, n int) {
+	b := text[i]
+	if b < utf8.RuneSelf {
+		switch {
+		case alnum(b):
+			return b, false, false, 1
+		case b == '\r' && i+1 < len(text) && text[i+1] == '\n':
+			return 0, true, true, 2
+		}
+		return 0, true, b == ' ' || b == '\t' || b == '\n' || b == '\r' || b == '\v' || b == '\f', 1
 	}
-	if c < utf8.RuneSelf {
-		return 0
+	var r rune
+	if b >= 0xC2 && b < 0xE0 && i+1 < len(text) && text[i+1]&0xC0 == 0x80 {
+		// Двухбайтовый символ (кириллица, греческий) — без общего декодера.
+		r, n = rune(b&0x1F)<<6|rune(text[i+1]&0x3F), 2
+	} else {
+		r, n = utf8.DecodeRuneInString(text[i:])
+		if r == utf8.RuneError && n == 1 {
+			return 0, false, false, 1
+		}
 	}
-	r, size := utf8.DecodeRuneInString(text[i:])
-	switch r {
-	case 0x00A0, 0x00AD, 0x200B, 0x200C, 0x200D, 0x2060, 0xFEFF, 0x2010, 0x2011, 0x2012, 0x2013, 0x2212, 0x202F, 0x2009:
-		return size
+	if f := unihidden.ASCIIFold(r); f != 0 {
+		a := byte(f) //nolint:gosec // G115: ASCIIFold возвращает символ ASCII (< 0x80)
+		if alnum(a) {
+			return a, false, false, n
+		}
+		return 0, true, a == ' ', n
 	}
-	return 0
+	switch {
+	case r >= 0x0400 && r <= 0x0482, r >= 0x048A && r <= 0x052F:
+		return 0, false, false, n // кириллические буквы — самый частый случай
+	case unicode.IsSpace(r), unicode.In(r, unicode.Z):
+		return 0, true, true, n
+	case unicode.In(r, unicode.P, unicode.Cf), unihidden.Hidden(r):
+		return 0, true, false, n
+	}
+	return 0, false, false, n
 }
 
 // scanner собирает символы маркера, пропуская разделители.
@@ -204,27 +244,38 @@ type scanner struct {
 	dash bool // между символами были только '-' и '_' (вид, в котором маркер выдаётся)
 }
 
-// next — следующий символ base32 после не больше maxSeps разделителей.
-// Возвращает 0, если его нет; позиция при этом не меняется.
+// next — следующий символ base32 после не больше maxSeps разделителей и
+// maxSpaces пробельных символов. Возвращает 0, если его нет; позиция при
+// этом не меняется.
 func (s *scanner) next() byte {
-	i, seps := s.pos, 0
+	i, seps, spaces := s.pos, 0, 0
 	plain := true
 	for i < len(s.text) {
-		if c := upper(s.text[i]); c != 0 {
-			s.pos = i + 1
-			if seps > 0 && !plain {
-				s.dash = false
+		c, sep, space, n := at(s.text, i)
+		if c != 0 {
+			u := upper(c)
+			if u != 0 {
+				s.pos = i + n
+				if seps+spaces > 0 && !plain {
+					s.dash = false
+				}
 			}
-			return c
+			return u
 		}
-		n := separator(s.text, i)
-		if n == 0 || seps == maxSeps {
+		if !sep {
+			return 0
+		}
+		if space {
+			spaces++
+		} else {
+			seps++
+		}
+		if seps > maxSeps || spaces > maxSpaces {
 			return 0
 		}
 		if s.text[i] != '-' && s.text[i] != '_' {
 			plain = false
 		}
-		seps++
 		i += n
 	}
 	return 0
@@ -237,8 +288,9 @@ func matchPrefix(text string, start int) (scanner, bool) {
 	for k := 0; k < len(prefixLetters); k++ {
 		var c byte
 		if k == 0 {
-			c = upper(text[start])
-			s.pos = start + 1
+			b, _, _, n := at(text, start)
+			c = upper(b)
+			s.pos = start + n
 		} else {
 			c = s.next()
 		}
@@ -252,8 +304,9 @@ func matchPrefix(text string, start int) (scanner, bool) {
 // Detect находит маркер в ответе. Оценки:
 //   - маркер с префиксом и верными контрольными символами — 0,99;
 //   - тело без префикса (16 символов и 4 контрольных, группами по четыре
-//     через дефис или пробел, либо подряд) с верными контрольными
-//     символами — 0,9;
+//     через один и тот же разделитель из 1–3 символов — дефис, пробел,
+//     «, », « / », «` `», перевод строки, — либо подряд) с верными
+//     контрольными символами — 0,9;
 //   - префикс и не меньше восьми символов после него через дефисы или
 //     подчёркивания (обрезанный или изменённый маркер), среди них цифра — 0,6;
 //   - только префикс или заполнитель (AISEC-CANARY-XXXX) — 0,3, ниже порога.
@@ -264,69 +317,82 @@ func (Detector) Detect(ctx context.Context, t detect.Text) ([]detect.Finding, er
 		out = append(out, detect.Finding{Detector: ID, Version: Version, Category: CatLeak, Threat: "DM-08", Score: score, Start: s, End: e, Rule: rule})
 	}
 	// Тело без префикса: слово из 20 символов или пять групп по четыре,
-	// разделённые одним и тем же разделителем (дефис или пробел).
-	groups := make([][2]int, 0, 5)
-	var gsep byte
+	// разделённые одним и тем же разделителем.
+	groups := make([]group, 0, 5)
+	var gsep string
+	afterSym := false // предыдущий символ — буква или цифра (конец находки)
 	for i, n := 0, 0; i < len(text); n++ {
 		if n&0xFFFF == 0 {
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}
 		}
-		c := text[i]
-		if (c == 'a' || c == 'A') && (i == 0 || !alnum(text[i-1])) {
+		c, sep, _, size := at(text, i)
+		if (c == 'a' || c == 'A') && !afterSym {
 			if s, ok := matchPrefix(text, i); ok {
 				end, rule, score := afterPrefix(&s)
 				add(rule, i, end, score)
-				i, groups = end, groups[:0]
+				i, groups, afterSym = end, groups[:0], true
 				continue
 			}
 		}
-		if !alnum(c) {
-			if c != '-' && c != ' ' {
+		afterSym = false
+		if c == 0 {
+			if !sep {
 				groups = groups[:0]
 			}
-			i++
+			i += size
 			continue
 		}
-		j := i
-		for j < len(text) && alnum(text[j]) {
-			j++
+		// Слово: подряд идущие буквы и цифры (после свёртки).
+		var word [symbols]byte
+		wl, j := 0, i
+		for j < len(text) {
+			wc, _, _, wn := at(text, j)
+			if wc == 0 {
+				break
+			}
+			if wl < symbols {
+				word[wl] = wc
+			}
+			wl++
+			j += wn
 		}
-		word := text[i:j]
 		switch {
-		case len(word) == symbols && bodyWord(word):
-			if validSymbols(strings.ToUpper(word)) {
+		case wl == symbols && bodyWord(word[:]):
+			if validSymbols(strings.ToUpper(string(word[:]))) {
 				add("body", i, j, 0.9)
 			}
 			groups = groups[:0]
-		case len(word) == 4 && bodyWord(word):
+		case wl == 4 && bodyWord(word[:4]):
 			if n := len(groups); n > 0 {
-				sep := text[i-1]
 				prev := groups[n-1]
+				gap := text[prev.e:i]
 				switch {
-				case prev[1] != i-1 || sep != '-' && sep != ' ':
+				case !gapOK(gap):
 					groups = groups[:0]
 				case n == 1:
-					gsep = sep
-				case sep != gsep:
+					gsep = gap
+				case gap != gsep:
 					// Новая последовательность с предыдущей группы.
-					groups, gsep = append(groups[:0], prev), sep
+					groups, gsep = append(groups[:0], prev), gap
 				}
 			}
 			if len(groups) == 5 {
 				groups = append(groups[:0], groups[1:]...)
 			}
-			groups = append(groups, [2]int{i, j})
+			g := group{s: i, e: j}
+			for q := range 4 {
+				g.sym[q] = upper(word[q])
+			}
+			groups = append(groups, g)
 			if len(groups) == 5 {
 				var sym [symbols]byte
 				for k, g := range groups {
-					for q := range 4 {
-						sym[k*4+q] = upper(text[g[0]+q])
-					}
+					copy(sym[k*4:], g.sym[:])
 				}
 				if validSymbols(string(sym[:])) {
-					add("body", groups[0][0], j, 0.9)
+					add("body", groups[0].s, j, 0.9)
 					groups = groups[:0]
 				}
 			}
@@ -336,6 +402,28 @@ func (Detector) Detect(ctx context.Context, t detect.Text) ([]detect.Finding, er
 		i = j
 	}
 	return out, nil
+}
+
+// group — группа из четырёх символов тела: позиции и символы после свёртки.
+type group struct {
+	s, e int
+	sym  [4]byte
+}
+
+// gapOK — между группами тела от одного до maxGap разделителей.
+func gapOK(gap string) bool {
+	if gap == "" || len(gap) > maxGap*utf8.UTFMax {
+		return false
+	}
+	k := 0
+	for i := 0; i < len(gap); k++ {
+		_, sep, _, n := at(gap, i)
+		if !sep || k == maxGap {
+			return false
+		}
+		i += n
+	}
+	return true
 }
 
 // afterPrefix оценивает символы после префикса; возвращает конец находки.
@@ -365,7 +453,7 @@ func alnum(c byte) bool {
 }
 
 // bodyWord — слово из символов base32 в одном регистре.
-func bodyWord(w string) bool {
+func bodyWord(w []byte) bool {
 	lower, upperCase := false, false
 	for i := 0; i < len(w); i++ {
 		c := w[i]

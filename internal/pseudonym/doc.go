@@ -21,8 +21,9 @@
 // Правило мест — ctxState и ADR-0005, п. 5.
 //
 // Тексты ответа: Restore и NewStream — content и refusal; RestoreJSON и
-// NewJSONStream — content при response_format JSON; RestoreToolArgs —
-// собранные аргументы одного вызова инструмента.
+// NewJSONStream — content при response_format JSON; RestoreToolCalls —
+// собранные аргументы всех вызовов инструментов одного ответа с общим
+// признаком адреса (RestoreToolArgs — то же для одного вызова).
 //
 // Подключение к конвейеру шлюза — задача 1.23.
 package pseudonym

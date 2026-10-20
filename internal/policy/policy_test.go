@@ -8,18 +8,21 @@ import (
 
 	"github.com/azuresong-afk/ai_railway/internal/detect"
 	"github.com/azuresong-afk/ai_railway/internal/detect/builtin"
+	"github.com/azuresong-afk/ai_railway/internal/detect/lists"
 )
 
-// fakeDetector — детектор с ID и направлениями; находок не выдаёт:
-// политике нужны только ID и направления.
+// fakeDetector — детектор с ID, направлениями и категориями; находок не
+// выдаёт: политике нужны только они.
 type fakeDetector struct {
 	id   string
 	dirs []detect.Direction
+	cats []string
 }
 
 func (d fakeDetector) ID() string                     { return d.id }
 func (fakeDetector) Version() string                  { return "1.0.0" }
 func (d fakeDetector) Directions() []detect.Direction { return d.dirs }
+func (d fakeDetector) Categories() []string           { return d.cats }
 func (fakeDetector) Detect(context.Context, detect.Text) ([]detect.Finding, error) {
 	return nil, nil
 }
@@ -37,9 +40,14 @@ func catalog(t *testing.T, ids ...string) *detect.Registry {
 		}
 		slices.Sort(ids)
 	}
+	// Категории — как у встроенных детекторов.
+	cats := map[string][]string{}
+	for _, d := range builtin.All() {
+		cats[d.ID()] = d.(detect.Categorizer).Categories()
+	}
 	var ds []detect.Detector
 	for _, id := range ids {
-		ds = append(ds, fakeDetector{id: id, dirs: all[id]})
+		ds = append(ds, fakeDetector{id: id, dirs: all[id], cats: cats[id]})
 	}
 	r, err := detect.NewRegistry(ds...)
 	if err != nil {
@@ -390,6 +398,13 @@ func TestPIIStrictInMonitorStillProtects(t *testing.T) {
 	if !d.Block || d.Rule != "pii-input" || d.Severity != High {
 		t.Fatalf("enforce: %+v", d)
 	}
+	// Скрытые символы в monitor тоже вырезаются, а не уходят провайдеру
+	// (ревью 1.17–1.21, п. 15).
+	tag := hit(detUnicode, "unicode.tag", 0.95, detect.SourceUser)
+	d = p.Evaluate(Request{Endpoint: EndpointChat, Direction: detect.Input, Mode: Monitor, External: true, Hits: []Hit{tag}})
+	if d.Block || !slices.Equal(d.Applied(), []Action{Redact}) {
+		t.Fatalf("скрытые символы в monitor: %+v", d)
+	}
 }
 
 func TestResolve(t *testing.T) {
@@ -417,5 +432,83 @@ func TestCheckPseudonymizeAsRedact(t *testing.T) {
 	m := d.Matches[0]
 	if m.Action != Redact || m.Apply != Redact || !m.AsRedact || d.Action != Redact {
 		t.Fatalf("check: %+v", d)
+	}
+}
+
+// TestCompileRejectsUnknownCategory — опечатка в категории правила (ревью
+// 1.17–1.21, п. 7) не даёт правила, которое молча никогда не срабатывает.
+func TestCompileRejectsUnknownCategory(t *testing.T) {
+	rule := func(det string, cats ...string) *Spec {
+		return &Spec{ID: "p", Name: "p", Version: 1, Mode: Enforce, Rules: []RuleSpec{
+			{ID: "r", Detector: det, Categories: cats, Action: Block, Severity: High},
+		}}
+	}
+	if _, err := Compile(rule(detPII, "pii.passport", "pii.card"), catalog(t)); err != nil {
+		t.Fatalf("верные категории: %v", err)
+	}
+	_, err := Compile(rule(detPII, "pii.card", "pii.pasport"), catalog(t))
+	if err == nil || !strings.Contains(err.Error(), `"pii.pasport"`) {
+		t.Fatalf("опечатка в категории: %v", err)
+	}
+	// Категория другого детектора — тоже ошибка.
+	if _, err := Compile(rule(detPII, "secret.api_key"), catalog(t)); err == nil {
+		t.Fatal("категория чужого детектора принята")
+	}
+	// Без categories проверять нечего.
+	if _, err := Compile(rule(detPII), catalog(t)); err != nil {
+		t.Fatal(err)
+	}
+	// Детектор, который не сообщает категории, — правило с categories
+	// отвергается: проверить его нельзя.
+	r, err := detect.NewRegistry(silentDetector{fakeDetector{id: "custom.det", dirs: in}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Compile(rule("custom.det", "custom.x"), r); err == nil {
+		t.Fatal("правило с categories у детектора без Categories() принято")
+	}
+	if _, err := Compile(rule("custom.det"), r); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// silentDetector — детектор без Categories() (поле, а не встраивание, чтобы
+// метод fakeDetector не перешёл к нему).
+type silentDetector struct{ d fakeDetector }
+
+func (s silentDetector) ID() string                     { return s.d.ID() }
+func (s silentDetector) Version() string                { return s.d.Version() }
+func (s silentDetector) Directions() []detect.Direction { return s.d.Directions() }
+func (s silentDetector) Detect(ctx context.Context, t detect.Text) ([]detect.Finding, error) {
+	return s.d.Detect(ctx, t)
+}
+
+// TestCompileListsCategories — категории lists берутся из списков
+// приложения: lists.topic есть только у детектора с таким списком.
+func TestCompileListsCategories(t *testing.T) {
+	spec := &Spec{ID: "p", Name: "p", Version: 1, Mode: Enforce, Rules: []RuleSpec{
+		{ID: "r", Detector: detLists, Categories: []string{"lists.topic"}, Action: Block, Severity: High},
+	}}
+	def, err := detect.NewRegistry(lists.New())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Compile(spec, def); err == nil {
+		t.Fatal("lists.topic принята без такого списка")
+	}
+	ld, err := lists.Compile(lists.WithDefaults([]lists.Spec{{ID: "topics", Category: "topic", Threat: "DM-32", Score: 0.8, Words: []string{"взрывчатка"}}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	app, err := detect.NewRegistry(ld)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Compile(spec, app); err != nil {
+		t.Fatalf("lists.topic у детектора приложения: %v", err)
+	}
+	spec.Rules[0].Categories = []string{"lists.marker", "lists.topik"}
+	if _, err := Compile(spec, app); err == nil {
+		t.Fatal("опечатка в категории lists принята")
 	}
 }

@@ -34,7 +34,7 @@ import (
 // ID и версия детектора.
 const (
 	ID      = "output.exfil"
-	Version = "1.0.0"
+	Version = "1.1.0"
 )
 
 // Категории находок.
@@ -530,7 +530,7 @@ func (s *scan) closeBracket(i int) {
 		if b.image {
 			s.imgRefs[normLabel(label)] = true
 		}
-	case next == ':' && !b.image && lineStart(text, b.pos) && s.budgetLeft(i):
+	case next == ':' && !b.image && defStart(text, b.pos) && s.budgetLeft(i):
 		q := skipSpace(text, i+2)
 		d, end, ok := rawDest(text, q, false, &s.budget)
 		if ok && d.raw != "" {
@@ -627,16 +627,56 @@ func trimBare(text string, from, j int) int {
 	return j
 }
 
-func lineStart(text string, p int) bool {
-	for k := 0; k <= 3; k++ {
-		if p-k == 0 || text[p-k-1] == '\n' {
-			return true
+// maxDefPrefix — сколько байт перед «[» просматривается в поисках начала
+// строки; префикс длиннее из одних отступов и маркеров — при сомнении
+// определение.
+const maxDefPrefix = 1024
+
+// defStart — «[» в позиции p может начинать определение сноски: перед ней
+// в строке только отступ и маркеры контейнеров — цитаты «>» и пункты списка
+// «-», «*», «+», «1.», «1)» с пробелом после. Определение внутри цитаты или
+// пункта списка действует на весь документ (CommonMark). Просмотр назад
+// идёт только по знакам префикса, а префиксы разных «[» не пересекаются —
+// время линейно.
+func defStart(text string, p int) bool {
+	k := p
+	for k > 0 && p-k < maxDefPrefix && strings.IndexByte(" \t>-*+.)0123456789", text[k-1]) >= 0 {
+		k--
+	}
+	if k > 0 && text[k-1] != '\n' {
+		return p-k >= maxDefPrefix
+	}
+	return containerPrefix(text[k:p])
+}
+
+// containerPrefix — строка из отступов и маркеров контейнеров.
+func containerPrefix(s string) bool {
+	for i := 0; i < len(s); {
+		c := s[i]
+		switch {
+		case c == ' ' || c == '\t' || c == '>':
+			i++
+			continue
+		case c == '-' || c == '*' || c == '+':
+			i++
+		case digit(c):
+			j := i
+			for j < len(s) && j-i < 9 && digit(s[j]) {
+				j++
+			}
+			if j == len(s) || s[j] != '.' && s[j] != ')' {
+				return false
+			}
+			i = j + 1
+		default:
+			return false
 		}
-		if text[p-k-1] != ' ' {
+		// После маркера пункта списка — пробел.
+		if i == len(s) || s[i] != ' ' && s[i] != '\t' {
 			return false
 		}
 	}
-	return false
+	return true
 }
 
 func normLabel(l string) string {

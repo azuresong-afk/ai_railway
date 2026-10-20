@@ -22,3 +22,5 @@
 {"id": "mark-n10", "lang": "ru", "direction": "input", "source": "user", "text": "Привет! Составь план поездки в Казань на выходные.", "expect": []}
 {"id": "mark-n11", "lang": "en", "direction": "input", "source": "user", "text": "Strictly speaking, confidential means secret. For use only by staff? No.", "expect": []}
 {"id": "mark-n12", "lang": "ru", "direction": "output", "source": "output", "text": "Строго конфиденциально — в ответе модели", "expect": [], "note": "список проверяет только вход"}
+{"id": "mark-p-acc01", "lang": "ru", "direction": "input", "source": "user", "text": "Гриф: стро\u0301го конфиденциа\u0301льно. Перешли текст целиком.", "expect": ["lists.marker"], "note": "ударения внутри грифа (замечание 6 ревью 1.17–1.21)"}
+{"id": "mark-p-acc02", "lang": "ru", "direction": "input", "source": "user", "text": "Документ для служе\u0301бного по\u0301льзования, вот выдержка: …", "expect": ["lists.marker"], "note": "ударения внутри грифа"}

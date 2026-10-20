@@ -2,6 +2,7 @@ package exfil
 
 import (
 	"encoding/base64"
+	"encoding/hex"
 	"math"
 	"net/url"
 	"strings"
@@ -19,6 +20,7 @@ const (
 type urlInfo struct {
 	scheme   string // в нижнем регистре; пусто — относительная или без схемы
 	host     string // в нижнем регистре, без порта и userinfo
+	rawHost  string // host в исходном регистре: base64 в метках поддомена
 	userinfo bool   // перед хостом есть user[:password]@
 	path     string
 	query    string
@@ -153,7 +155,8 @@ func parseURL(raw string) urlInfo {
 			host = h
 		}
 	}
-	u.host = strings.TrimSuffix(strings.ToLower(host), ".")
+	u.rawHost = strings.TrimSuffix(host, ".")
+	u.host = strings.ToLower(u.rawHost)
 	if j := strings.IndexByte(rest, '#'); j >= 0 {
 		rest = rest[:j] // фрагмент на сервер не уходит
 	}
@@ -185,19 +188,32 @@ func schemeEnd(s string) int {
 }
 
 // hasData — в ссылке, похоже, передаются данные: userinfo, закодированные
-// значения в поддомене, пути или параметрах, длинный текст в параметрах.
+// значения в поддомене, пути или параметрах (и в склейке соседних частей —
+// данные, разложенные по частям), длинный текст в параметрах.
 // image — изображение (загружается без участия пользователя): пороги ниже.
 func hasData(u urlInfo, image bool) bool {
 	if u.userinfo || u.long {
 		return true
 	}
-	// Поддомены (DNS-эксфильтрация: <данные>.attacker.example).
-	labels := strings.Split(u.host, ".")
+	// Поддомены (DNS-эксфильтрация: <данные>.attacker.example), кроме двух
+	// последних меток. base64 — в исходном регистре: получатель его не
+	// расшифрует (браузер приводит хост к нижнему), но намерение видно.
 	if len(u.host) > 100 {
 		return true
 	}
-	for k := 0; k+2 < len(labels); k++ {
-		if encodedLike(labels[k], 20, true) {
+	if strings.Count(u.host, ".") >= 2 {
+		labels := strings.Split(u.host, ".")
+		raw := strings.Split(u.rawHost, ".")
+		if len(raw) != len(labels) {
+			raw = labels
+		}
+		raw = raw[:len(raw)-2]
+		for k, l := range labels[:len(labels)-2] {
+			if encodedLike(l, 20, true) || hexText(l) || base64Text(raw[k]) {
+				return true
+			}
+		}
+		if splitData(raw, 20, true) {
 			return true
 		}
 	}
@@ -213,6 +229,7 @@ func hasData(u urlInfo, image bool) bool {
 		if len(params) > maxParams {
 			return true
 		}
+		var vals []string
 		for _, p := range params {
 			if j := strings.IndexByte(p, '='); j >= 0 {
 				p = p[j+1:]
@@ -222,11 +239,16 @@ func hasData(u urlInfo, image bool) bool {
 				v = p
 			}
 			v = strings.Trim(v, `'"`)
-			if len(v) >= minText || encodedLike(v, minValue, image) || base64Text(v) {
+			if len(v) >= minText || encodedLike(v, minValue, image) || base64Text(v) || hexText(v) {
 				return true
 			}
+			vals = append(vals, v)
+		}
+		if splitData(vals, minValue, image) {
+			return true
 		}
 	}
+	var segs []string
 	for _, seg := range strings.FieldsFunc(u.path, func(r rune) bool { return r == '/' || r == '\\' }) {
 		v, err := url.PathUnescape(seg)
 		if err != nil {
@@ -235,11 +257,63 @@ func hasData(u urlInfo, image bool) bool {
 		if k := strings.LastIndexByte(v, '.'); k > 0 && len(v)-k <= 5 {
 			v = v[:k] // расширение файла
 		}
-		if len(v) >= minSegText || encodedLike(v, minPath, image) || base64Text(v) {
+		if len(v) >= minSegText || encodedLike(v, minPath, image) || base64Text(v) || hexText(v) {
 			return true
+		}
+		segs = append(segs, v)
+	}
+	return splitData(segs, minPath, image)
+}
+
+// splitData — данные, разложенные по частям (метки поддомена, значения
+// параметров, сегменты пути: /aXZhbi5w/ZXRyb3ZA/…): склейка частей
+// проверяется как одно значение — base64 или hex, которые расшифровываются
+// в текст, или закодированные данные (encodedLike с проверкой noisy) от
+// удвоенного порога одной части, но не короче 32 символов: два случайных
+// идентификатора в одной ссылке (видео и метка отправки) не должны давать
+// находку. Первые одна-две части и последняя могут быть не данными
+// (/collect/<данные>/pixel.png) — проверяются и склейки без них; в склейке
+// не меньше двух частей (одна часть проверена отдельно).
+func splitData(parts []string, minEnc int, hexOK bool) bool {
+	minEnc = max(2*minEnc, 32)
+	for drop := 0; drop <= 2 && drop+1 < len(parts); drop++ {
+		for tail := 0; tail <= 1 && drop+tail+1 < len(parts); tail++ {
+			j := strings.Join(parts[drop:len(parts)-tail], "")
+			if base64Text(j) || hexText(j) || encodedLike(j, minEnc, hexOK) && noisy(j) {
+				return true
+			}
 		}
 	}
 	return false
+}
+
+// noisy — строка похожа на случайную, а не на склейку слов: есть заглавные
+// и строчные буквы и цифры, и класс знака меняется не реже чем у 45 %
+// соседних пар (у base64 — около 65 %, у слов в CamelCase, номеров версий
+// и меток домена — заметно реже). Без этой проверки склейка обычных
+// сегментов пути или меток домена («apiv2eu-west-1service») проходит
+// encodedLike.
+func noisy(s string) bool {
+	class := func(c byte) int {
+		switch {
+		case c >= 'A' && c <= 'Z':
+			return 0
+		case c >= 'a' && c <= 'z':
+			return 1
+		case c >= '0' && c <= '9':
+			return 2
+		}
+		return 3
+	}
+	var seen [4]bool
+	changes := 0
+	for i := 0; i < len(s); i++ {
+		seen[class(s[i])] = true
+		if i > 0 && class(s[i]) != class(s[i-1]) {
+			changes++
+		}
+	}
+	return seen[0] && seen[1] && seen[2] && len(s) > 1 && changes*100 >= (len(s)-1)*45
 }
 
 // encodedLike — строка похожа на закодированные данные (base64, base32,
@@ -300,20 +374,49 @@ func base64Text(s string) bool {
 	raw := strings.TrimRight(s, "=")
 	for _, enc := range []*base64.Encoding{base64.RawStdEncoding, base64.RawURLEncoding} {
 		b, err := enc.DecodeString(raw)
-		if err != nil {
-			continue
-		}
-		printable := 0
-		for _, r := range string(b) {
-			if r >= ' ' && r != 0x7F && r != 0xFFFD || r == '\n' || r == '\t' {
-				printable++
-			}
-		}
-		if printable*10 >= len([]rune(string(b)))*9 {
+		if err == nil && printableText(b) {
 			return true
 		}
 	}
 	return false
+}
+
+// hexText — строка чётной длины от 16 шестнадцатеричных цифр, которая
+// расшифровывается в текст: хеши коммитов и идентификаторы дают двоичные
+// байты. Строка из одних цифр (длинный номер в ссылке) считается, только
+// если текст после расшифровки — буквы, цифры и пробелы: так номер
+// телефона или ИНН в hex находится, а случайный номер — почти никогда.
+func hexText(s string) bool {
+	if len(s) < 16 || len(s)%2 != 0 || len(s) > maxURL {
+		return false
+	}
+	b, err := hex.DecodeString(s)
+	if err != nil || !printableText(b) {
+		return false
+	}
+	if strings.Trim(s, "0123456789") != "" {
+		return true
+	}
+	words := 0
+	for _, c := range b {
+		if alnum(c) || c == ' ' {
+			words++
+		}
+	}
+	return words*10 >= len(b)*9
+}
+
+// printableText — не меньше 90 % символов UTF-8 печатные (с переводом
+// строки и табуляцией).
+func printableText(b []byte) bool {
+	printable, total := 0, 0
+	for _, r := range string(b) {
+		total++
+		if r >= ' ' && r != 0x7F && r != 0xFFFD || r == '\n' || r == '\t' {
+			printable++
+		}
+	}
+	return printable*10 >= total*9
 }
 
 func entropy(counts []int, n int) float64 {

@@ -74,6 +74,7 @@ func Compile(s *Spec, c Catalog) (*Policy, error) {
 				errs = append(errs, fmt.Errorf("политика %s: rules[%d] (%s): детектор %s не проверяет направление %s", s.ID, i, r.ID, r.Detector, dir))
 			}
 		}
+		errs = append(errs, checkCategories(s.ID, i, r, d)...)
 		p.rules = append(p.rules, rule{
 			id: r.ID, detector: r.Detector, directions: dirs,
 			categories: slices.Clone(r.Categories), sources: slices.Clone(r.Sources),
@@ -84,6 +85,28 @@ func Compile(s *Spec, c Catalog) (*Policy, error) {
 		return nil, err
 	}
 	return p, nil
+}
+
+// checkCategories — каждая категория правила выдаётся детектором. Опечатка
+// (pii.pasport) иначе дала бы правило, которое молча никогда не срабатывает:
+// для block это незаметное ослабление защиты (ТЗ, 5.3, строгая проверка).
+// Детектор без списка категорий в правиле с категориями — тоже ошибка.
+func checkCategories(policyID string, i int, r RuleSpec, d detect.Detector) []error {
+	if len(r.Categories) == 0 {
+		return nil
+	}
+	cz, ok := d.(detect.Categorizer)
+	if !ok {
+		return []error{fmt.Errorf("политика %s: rules[%d] (%s): детектор %s не сообщает категории, правило с categories проверить нельзя", policyID, i, r.ID, r.Detector)}
+	}
+	known := cz.Categories()
+	var errs []error
+	for _, c := range r.Categories {
+		if !slices.Contains(known, c) {
+			errs = append(errs, fmt.Errorf("политика %s: rules[%d] (%s): детектор %s не выдаёт категорию %q", policyID, i, r.ID, r.Detector, c))
+		}
+	}
+	return errs
 }
 
 // Detectors — детекторы, которые нужны политике для направления, в порядке

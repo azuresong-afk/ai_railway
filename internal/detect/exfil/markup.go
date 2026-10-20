@@ -21,14 +21,20 @@ const (
 // там разметка не отображается, ссылки не загружаются. Интервалы [s, e)
 // по возрастанию, не пересекаются. Встроенный код не выходит за блок, как
 // в CommonMark: блок заканчивается пустой строкой, а строки заголовка,
-// пункта списка, цитаты и таблицы — отдельные блоки. Код с отступом в
-// четыре пробела не учитывается.
+// подчёркивания заголовка, разделителя, пункта списка, цитаты, таблицы и
+// HTML — отдельные блоки. Ограда с отступом внутри пункта списка — код
+// этого пункта: она кончается вместе с пунктом (строкой с меньшим
+// отступом). При сомнении — не код: ошибка в эту сторону даёт лишнюю
+// находку, а не пропуск. Код с отступом в четыре пробела не учитывается.
 func codeSpans(ctx context.Context, text string) ([][2]int, error) {
 	var out [][2]int
 	var err error
 	var fenceChar byte
-	fenceLen, fenceStart, para := 0, 0, 0
-	inFence := false
+	var lists listStack
+	fenceLen, fenceStart, fenceBase, para := 0, 0, 0, 0
+	// noLazy — следующая строка не может быть ленивым продолжением абзаца
+	// пункта списка: перед ней пустая строка, ограда или заголовок.
+	inFence, noLazy := false, false
 	n := 0
 	for ls := 0; ls < len(text); {
 		if n++; n&0x3FFF == 0 {
@@ -45,29 +51,64 @@ func codeSpans(ctx context.Context, text string) ([][2]int, error) {
 			next = le + 1
 		}
 		line := text[ls:le]
-		ch, run, rest := fence(line)
-		switch {
-		case inFence:
-			if ch == fenceChar && run >= fenceLen && strings.TrimSpace(rest) == "" {
-				out = append(out, [2]int{fenceStart, le})
-				inFence = false
-				para = next
+		ind, body := indent(line)
+		blank := strings.TrimSpace(line) == ""
+		if inFence {
+			if fenceBase == 0 || blank || ind >= fenceBase {
+				ch, run, rest := fence(body)
+				if ch == fenceChar && run >= fenceLen && ind-fenceBase <= 3 && strings.TrimSpace(rest) == "" {
+					out = append(out, [2]int{fenceStart, le})
+					inFence, noLazy = false, true
+					para = next
+				}
+				ls = next
+				continue
 			}
-		case run >= 3 && (ch == '~' || strings.IndexByte(rest, '`') < 0):
-			if out, err = inlineCode(ctx, out, text, para, ls); err != nil {
-				return nil, err
-			}
-			inFence, fenceChar, fenceLen, fenceStart = true, ch, run, ls
-		case strings.TrimSpace(line) == "":
+			// Пункт списка кончился — кончилась и ограда внутри него;
+			// строка разбирается как обычная.
+			out = append(out, [2]int{fenceStart, ls})
+			inFence, noLazy = false, true
+			para = ls
+		}
+		if blank {
 			if out, err = inlineCode(ctx, out, text, para, ls); err != nil {
 				return nil, err
 			}
 			para = next
-		case blockStart(line):
+			noLazy = true
+			ls = next
+			continue
+		}
+		base := lists.base(ind)
+		rel := ind - base
+		ch, run, rest := fence(body)
+		isFence := rel <= 3 && run >= 3 && (ch == '~' || strings.IndexByte(rest, '`') < 0)
+		brk := rel <= 3 && !isFence && breakLine(body)
+		w, item := 0, false
+		if rel <= 3 && !isFence && !brk {
+			w, item = listItem(body)
+		}
+		block := brk || item
+		if isFence || block || noLazy {
+			lists.pop(ind) // пункты с отступом больше строки закрыты
+		}
+		noLazy = false
+		switch {
+		case isFence:
+			if out, err = inlineCode(ctx, out, text, para, ls); err != nil {
+				return nil, err
+			}
+			inFence, fenceChar, fenceLen, fenceStart, fenceBase = true, ch, run, ls, base
+		case block:
 			if out, err = inlineCode(ctx, out, text, para, ls); err != nil {
 				return nil, err
 			}
 			para = ls
+			if item {
+				lists.push(ind + w)
+			} else if body[0] != '>' && body[0] != '|' {
+				noLazy = true // заголовок, разделитель, HTML: абзаца нет
+			}
 		}
 		ls = next
 	}
@@ -77,41 +118,133 @@ func codeSpans(ctx context.Context, text string) ([][2]int, error) {
 	return inlineCode(ctx, out, text, para, len(text))
 }
 
-// blockStart — строка начинает свой блок: заголовок, пункт списка, цитата,
-// строка таблицы.
-func blockStart(line string) bool {
-	t := strings.TrimLeft(line, " ")
-	if len(line)-len(t) > 3 || t == "" {
-		return false
-	}
-	switch t[0] {
-	case '#', '>', '|':
-		return true
-	case '-', '*', '+':
-		return len(t) == 1 || t[1] == ' ' || t[1] == '\t'
-	}
-	j := 0
-	for j < len(t) && j < 9 && digit(t[j]) {
-		j++
-	}
-	return j > 0 && j < len(t) && (t[j] == '.' || t[j] == ')') && (j+1 == len(t) || t[j+1] == ' ')
+// maxLists — глубина вложенности списков, которую отслеживает codeSpans;
+// более глубокие пункты не учитываются (ограда в них — не код).
+const maxLists = 32
+
+// listStack — отступы содержимого открытых пунктов списка, по возрастанию.
+type listStack struct {
+	w [maxLists]int
+	n int
 }
 
-// fence — начало строки-ограды: до трёх пробелов, затем от трёх «`» или «~».
-func fence(line string) (ch byte, run int, rest string) {
-	i := 0
-	for i < len(line) && i < 3 && line[i] == ' ' {
-		i++
+// base — отступ содержимого самого глубокого пункта, которому может
+// принадлежать строка с отступом ind; 0 — верхний уровень.
+func (l *listStack) base(ind int) int {
+	for k := l.n - 1; k >= 0; k-- {
+		if l.w[k] <= ind {
+			return l.w[k]
+		}
 	}
-	if i == len(line) || line[i] != '`' && line[i] != '~' {
+	return 0
+}
+
+// pop закрывает пункты, отступ содержимого которых больше ind.
+func (l *listStack) pop(ind int) {
+	for l.n > 0 && l.w[l.n-1] > ind {
+		l.n--
+	}
+}
+
+func (l *listStack) push(w int) {
+	if l.n < maxLists && (l.n == 0 || w > l.w[l.n-1]) {
+		l.w[l.n] = w
+		l.n++
+	}
+}
+
+// indent — ширина отступа строки в колонках (табуляция — до следующей
+// кратной 4, как в CommonMark) и строка без отступа.
+func indent(line string) (int, string) {
+	col, i := 0, 0
+	for ; i < len(line); i++ {
+		switch line[i] {
+		case ' ':
+			col++
+		case '\t':
+			col += 4 - col%4
+		default:
+			return col, line[i:]
+		}
+	}
+	return col, ""
+}
+
+// breakLine — строка без отступа (body) начинает свой блок и это не пункт
+// списка: заголовок, цитата, строка таблицы, разделитель (***, ---, ___),
+// подчёркивание заголовка (===, ---), HTML-тег или комментарий.
+func breakLine(body string) bool {
+	if body == "" {
+		return false
+	}
+	switch c := body[0]; {
+	case c == '#' || c == '>' || c == '|':
+		return true
+	case c == '<':
+		return len(body) > 1 && (letter(body[1]) || body[1] == '/' || body[1] == '!' || body[1] == '?')
+	case c == '*' || c == '-' || c == '_':
+		// Разделитель: от трёх одинаковых знаков, между ними пробелы.
+		k := 0
+		for i := 0; i < len(body); i++ {
+			switch body[i] {
+			case c:
+				k++
+			case ' ', '\t', '\r':
+			default:
+				return false
+			}
+		}
+		// Подчёркивание заголовка «---» — без пробелов между знаками.
+		return k >= 3 || c == '-' && strings.Trim(strings.TrimRight(body, " \t\r"), "-") == ""
+	case c == '=':
+		return strings.Trim(strings.TrimRight(body, " \t\r"), "=") == ""
+	}
+	return false
+}
+
+// listItem — строка без отступа (body) начинается с маркера пункта списка
+// («-», «*», «+», «1.», «1)» и пробел или конец строки); w — отступ
+// содержимого пункта от начала body.
+func listItem(body string) (w int, ok bool) {
+	m := 0
+	switch {
+	case body == "":
+		return 0, false
+	case body[0] == '-' || body[0] == '*' || body[0] == '+':
+		m = 1
+	default:
+		for m < len(body) && m < 9 && digit(body[m]) {
+			m++
+		}
+		if m == 0 || m == len(body) || body[m] != '.' && body[m] != ')' {
+			return 0, false
+		}
+		m++
+	}
+	if m < len(body) && body[m] != ' ' && body[m] != '\t' && body[m] != '\r' {
+		return 0, false
+	}
+	sp := 0
+	for m+sp < len(body) && (body[m+sp] == ' ' || body[m+sp] == '\t') {
+		sp++
+	}
+	if sp == 0 || sp > 4 || m+sp == len(body) {
+		sp = 1 // пустой пункт или код с отступом внутри пункта
+	}
+	return m + sp, true
+}
+
+// fence — начало строки-ограды без отступа: от трёх «`» или «~».
+func fence(body string) (ch byte, run int, rest string) {
+	if body == "" || body[0] != '`' && body[0] != '~' {
 		return 0, 0, ""
 	}
-	ch = line[i]
-	j := i
-	for j < len(line) && line[j] == ch {
+	ch = body[0]
+	j := 0
+	for j < len(body) && body[j] == ch {
 		j++
 	}
-	return ch, j - i, line[j:]
+	return ch, j, body[j:]
 }
 
 // inlineCode добавляет встроенный код блока [s, e): последовательность из
@@ -159,11 +292,27 @@ func inlineCode(ctx context.Context, out [][2]int, text string, s, e int) ([][2]
 	}
 	for k := 0; k < len(runs); k++ {
 		if j := nextSame[k]; j > 0 && !runs[k].escaped {
-			out = append(out, [2]int{runs[k].s, runs[j].e})
+			// Таблица GFM сначала делит строку на ячейки по «|», даже внутри
+			// обратных кавычек, и только потом разбирает разметку: код с
+			// неэкранированной «|» может не быть кодом при отрисовке. При
+			// сомнении — не код. Отрезки не пересекаются — время линейно.
+			if !hasPipe(text[runs[k].e:runs[j].s]) {
+				out = append(out, [2]int{runs[k].s, runs[j].e})
+			}
 			k = j
 		}
 	}
 	return out, ctx.Err()
+}
+
+// hasPipe — в s есть «|» без «\» перед ней.
+func hasPipe(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] == '|' && (i == 0 || s[i-1] != '\\') {
+			return true
+		}
+	}
+	return false
 }
 
 // escapedAt — символ в позиции i экранирован: перед ним нечётное число «\\»

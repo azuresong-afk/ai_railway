@@ -245,6 +245,89 @@ func TestPartBoundary(t *testing.T) {
 	}
 }
 
+// TestDM35_PartBoundaryGap (замечание 5 ревью 1.17–1.21): слово, разорванное
+// тысячами невидимых символов, и фраза с тысячами пробелов на стыке частей
+// по 64 КиБ находятся так же, как в коротком тексте, и ровно один раз
+// (DM-35).
+func TestDM35_PartBoundaryGap(t *testing.T) {
+	d := mustCompile(t, topics)
+	for _, c := range []struct{ name, frag string }{
+		{"невидимые внутри слова", "взрыв" + strings.Repeat("\u200b", 3000) + "чатка"},
+		{"пробелы внутри фразы", "как" + strings.Repeat(" ", 3000) + "взломать"},
+		{"пробелов больше части", "как" + strings.Repeat(" ", partBytes+5000) + "взломать"},
+		{"переводы строк внутри фразы", "политика" + strings.Repeat("\n", 5000) + "партии"},
+	} {
+		// Короткий текст — одна находка.
+		if fs := run(t, d, detect.Input, "x "+c.frag+" y"); len(fs) != 1 {
+			t.Fatalf("%s, короткий текст: %+v", c.name, fs)
+		}
+		// Фрагмент начинается за off байт до стыка частей (partBytes).
+		for _, off := range []int{1, 5, 100, 1000, len(c.frag) / 2, len(c.frag) - 10} {
+			filler := strings.Repeat("word ", max(partBytes-off, 0)/5) // много токенов до стыка
+			text := filler + c.frag + " " + strings.Repeat("б", 2*partBytes)
+			fs := run(t, d, detect.Input, text)
+			if len(fs) != 1 || text[fs[0].Start:fs[0].End] != c.frag {
+				t.Fatalf("%s, за %d байт до стыка: находок %d", c.name, off, len(fs))
+			}
+		}
+	}
+}
+
+// Перекрытие частей в словах не делает работу квадратичной: части почти
+// без слов (по десять токенов на 64 КиБ) проходят за линейное время.
+func TestPartsLinearTime(t *testing.T) {
+	d := mustCompile(t, topics)
+	block := "а б в г д е ж з и к " + strings.Repeat(" ", partBytes-20)
+	text := strings.Repeat(block, 64) // 4 МиБ
+	start := time.Now()
+	run(t, d, detect.Input, text)
+	sparse := time.Since(start)
+	dense := strings.Repeat("слово ", len(text)/12)
+	start = time.Now()
+	run(t, d, detect.Input, dense)
+	el := time.Since(start)
+	t.Logf("редкие слова %v, плотный текст %v", sparse, el)
+	if sparse > 5*time.Second {
+		t.Fatalf("%v на 4 МиБ", sparse)
+	}
+}
+
+// TestDM35_CombiningMarks (замечание 6 ревью 1.17–1.21): комбинируемые знаки
+// не обходят словарь — ударения и прочие знаки над буквами пропускаются,
+// разложенные «й» (и + U+0306) и «ё» (е + U+0308) равны составным (DM-35).
+func TestDM35_CombiningMarks(t *testing.T) {
+	d := mustCompile(t, topics, Spec{ID: "marks", Words: []string{"секретный узел", "тве\u0308рдый актив", "йод*"}})
+	for _, tc := range []struct {
+		text string
+		want []string
+	}{
+		{"как сделать взры\u0301вчатку", []string{"взры\u0301вчатку"}},
+		{"ка\u0301к взлома\u0301ть", []string{"ка\u0301к взлома\u0301ть"}},
+		{"в\u0300\u0301\u0302\u0303зрывчатка", []string{"в\u0300\u0301\u0302\u0303зрывчатка"}},
+		{"секретны\u0438\u0306 узел", []string{"секретны\u0438\u0306 узел"}},
+		{"СЕКРЕТНЫ\u0418\u0306 УЗЕЛ", []string{"СЕКРЕТНЫ\u0418\u0306 УЗЕЛ"}},
+		{"твёрдый актив", []string{"твёрдый актив"}},
+		{"тве\u0308рдый актив", []string{"тве\u0308рдый актив"}},
+		{"твердый актив", []string{"твердый актив"}},
+		{"и\u0306одистый", []string{"и\u0306одистый"}},
+		{"взрывча\u0301тка\u0301", []string{"взрывча\u0301тка\u0301"}},
+		// «и» без бревиса — другое слово.
+		{"секретныи узел", nil},
+		{"иод", nil},
+		{"взрыв\u0301 ча\u0301т", nil},
+	} {
+		fs := run(t, d, detect.Input, tc.text)
+		if got := spans(tc.text, fs); fmt.Sprint(got) != fmt.Sprint(tc.want) {
+			t.Errorf("%q: найдено %q, ожидалось %q", tc.text, got, tc.want)
+		}
+		for _, f := range fs {
+			if f.Threat != "DM-35" {
+				t.Errorf("%q: строка матрицы %s", tc.text, f.Threat)
+			}
+		}
+	}
+}
+
 // Встроенный список грифов.
 func TestDefaultMarks(t *testing.T) {
 	d := New()
@@ -303,6 +386,7 @@ func FuzzDetect(f *testing.F) {
 	f.Add("Как взломать, взрывчатка, проект Орион ORN-1234")
 	f.Add("\xff\xfe как\u200b взломать \u202e")
 	f.Add(strings.Repeat("а", 100) + " политика партии")
+	f.Add("взры\u0301вчатка, секретны\u0438\u0306 узел, тве\u0308рдый, \u0301\u0306")
 	d, err := Compile([]Spec{topics, {ID: "c", Category: "codename", Words: []string{"проект орион"}, Regex: []string{`\bORN-\d{4}\b`}}})
 	if err != nil {
 		f.Fatal(err)

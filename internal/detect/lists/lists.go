@@ -4,8 +4,9 @@
 // находкой, решает политика.
 //
 // Словарь ищет слова и фразы без учёта регистра (ё = е), не обращая
-// внимания на знаки препинания, скрытые символы и подмену букв
-// латиницей/кириллицей (через unihidden.Clean); слово с основой
+// внимания на знаки препинания, скрытые символы, ударения и другие
+// комбинируемые знаки над буквами и подмену букв латиницей/кириллицей
+// (через unihidden.Clean); слово с основой
 // («взрывчат*») находит любые формы. Выражения — стандартный regexp (RE2,
 // линейное время) по исходному тексту; число и размер правил ограничены
 // (spec.go). Находка называет список и вид, но не содержит найденного
@@ -16,6 +17,7 @@ import (
 	"context"
 	"slices"
 	"sort"
+	"strings"
 	"unicode/utf8"
 
 	"github.com/azuresong-afk/ai_railway/internal/detect"
@@ -24,7 +26,7 @@ import (
 // ID и версия детектора.
 const (
 	ID      = "lists"
-	Version = "1.0.0"
+	Version = "1.1.0"
 )
 
 // Пределы работы.
@@ -32,11 +34,10 @@ const (
 	// MaxFindings — предел находок на текст: список из тысяч совпадений не
 	// должен раздувать событие. Решение принимается и по первым.
 	MaxFindings = 256
-	// partBytes и overlapBytes — текст обрабатывается частями (память Clean
-	// пропорциональна части, а не тексту); соседние части перекрываются,
-	// чтобы не потерять фразу на границе.
-	partBytes    = 64 << 10
-	overlapBytes = 1 << 10
+	// partBytes — текст обрабатывается частями (память Clean
+	// пропорциональна части, а не тексту); соседние части перекрываются на
+	// MaxWordTokens слов, чтобы не потерять слово или фразу на границе.
+	partBytes = 64 << 10
 )
 
 // Detector — детектор lists с набором списков. Без изменяемого состояния,
@@ -152,11 +153,16 @@ func (d *Detector) hasWords() bool {
 	return false
 }
 
-// scanWords просматривает текст частями. Часть кончается на границе слова,
-// следующая начинается на overlapBytes раньше; находки, целиком лежащие в
-// уже просмотренном перекрытии, пропускаются.
+// scanWords просматривает текст частями. Часть кончается на границе слова
+// (wordEdge), но слово может быть и разрезано: между его буквами бывают
+// тысячи невидимых символов, которые Clean удаляет. А между словами фразы
+// бывают тысячи пробелов, поэтому перекрытие частей считается в словах, а
+// не в байтах (см. scanPart): последний токен части, возможно обрезанный,
+// разбирается заново в следующей части, а предыдущие MaxWordTokens-1
+// токенов переносятся в неё готовыми — с них могут начинаться фразы, конец
+// которых в следующей части. Каждый байт разбирается не больше двух раз.
 func (d *Detector) scanWords(ctx context.Context, text string, dir int, add func(list int, rule string, s, e int) bool) error {
-	scanned := 0 // всё до этой позиции уже просмотрено
+	var c carry
 	for start := 0; start < len(text); {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -165,22 +171,21 @@ func (d *Detector) scanWords(ctx context.Context, text string, dir int, add func
 		if end < len(text) {
 			end = wordEdge(text, end)
 		}
-		if !d.scanPart(text, start, end, scanned, dir, add) {
+		final := end >= len(text)
+		next, ok := d.scanPart(text, start, end, final, &c, dir, add)
+		if !ok || final {
 			return nil
 		}
-		scanned = end
-		if end >= len(text) {
-			break
-		}
-		start = end - overlapBytes
-		for start > 0 && !utf8.RuneStart(text[start]) {
-			start--
-		}
-		if start < 0 {
-			start = 0
-		}
+		start = next
 	}
 	return nil
+}
+
+// carry — токены, перенесённые в следующую часть: с них начинаются фразы,
+// ещё не проверенные целиком. Позиции os, oe — в тексте, ns, ne — в norm.
+type carry struct {
+	norm string
+	toks []token
 }
 
 // wordEdge сдвигает конец части вперёд до пробела (не дальше 4 КиБ), иначе
@@ -198,14 +203,55 @@ func wordEdge(text string, end int) int {
 	return end
 }
 
-func (d *Detector) scanPart(text string, s, e, scanned, dir int, add func(int, string, int, int) bool) bool {
-	_, toks, norm := tokenize(text[s:e])
+// scanPart ищет слова и фразы в части [s, e) вместе с перенесёнными из
+// предыдущей части токенами c; final — часть последняя. Сообщает фразы,
+// которые начинаются не позже MaxWordTokens токенов до конца части: их
+// последнее слово не дальше предпоследнего токена, то есть целое. Остальные
+// токены, кроме последнего, переносятся в c; следующая часть начинается с
+// последнего токена (next), чтобы разобрать его целиком. Если последний
+// токен начинается в начале части (слово длиннее части), он считается
+// целым: иначе разбор не продвинулся бы. Возвращает false, если достигнут
+// предел находок.
+func (d *Detector) scanPart(text string, s, e int, final bool, c *carry, dir int, add func(int, string, int, int) bool) (next int, ok bool) {
+	_, part, norm := tokenize(text[s:e])
 	ns := string(norm)
-	emit := func(lists []uint16, rule string, from, to int) bool {
-		os, oe := s+toks[from].os, s+toks[to].oe
-		if oe <= scanned {
-			return true // найдено в предыдущей части
+	toks := part
+	if len(c.toks) > 0 {
+		shift := len(c.norm) + 1
+		ns = c.norm + " " + ns
+		toks = make([]token, 0, len(c.toks)+len(part))
+		toks = append(toks, c.toks...)
+		for _, t := range part {
+			t.ns, t.ne = t.ns+shift, t.ne+shift
+			toks = append(toks, t)
 		}
+	}
+	for i := len(toks) - len(part); i < len(toks); i++ {
+		toks[i].os, toks[i].oe = toks[i].os+s, toks[i].oe+s
+	}
+	// Фразы с токена from и дальше — в следующей части; [from, keep) переносятся.
+	from, keep := len(toks), len(toks)
+	next = e
+	if !final {
+		if n := len(toks); len(part) > 0 && toks[n-1].os > s {
+			next, keep = toks[n-1].os, n-1
+		}
+		from = max(keep-(MaxWordTokens-1), 0)
+	}
+	defer func() {
+		c.toks = c.toks[:0]
+		c.norm = ""
+		if from < keep {
+			base := toks[from].ns
+			c.norm = strings.Clone(ns[base:toks[keep-1].ne])
+			for _, t := range toks[from:keep] {
+				t.ns, t.ne = t.ns-base, t.ne-base
+				c.toks = append(c.toks, t)
+			}
+		}
+	}()
+	emit := func(lists []uint16, rule string, first, last int) bool {
+		os, oe := toks[first].os, toks[last].oe
 		for _, li := range lists {
 			if d.c.lists[li].dirs[dir] && !add(int(li), rule, os, oe) {
 				return false
@@ -213,7 +259,7 @@ func (d *Detector) scanPart(text string, s, e, scanned, dir int, add func(int, s
 		}
 		return true
 	}
-	for i := range toks {
+	for i := range from {
 		maxN := 1
 		mask := d.c.first[ns[toks[i].ns:toks[i].ne]]
 		for n := 2; n <= MaxWordTokens; n++ {
@@ -228,7 +274,7 @@ func (d *Detector) scanPart(text string, s, e, scanned, dir int, add func(int, s
 			last := i + n - 1
 			key := ns[toks[i].ns:toks[last].ne]
 			if ls, ok := d.c.exact[key]; ok && !emit(ls, ".word", i, last) {
-				return false
+				return next, false
 			}
 			if len(d.c.stemLens[n]) == 0 {
 				continue
@@ -242,12 +288,12 @@ func (d *Detector) scanPart(text string, s, e, scanned, dir int, add func(int, s
 					continue
 				}
 				if ls, ok := d.c.stem[n][head+word[:p]]; ok && !emit(ls, ".stem", i, last) {
-					return false
+					return next, false
 				}
 			}
 		}
 	}
-	return true
+	return next, true
 }
 
 // runePrefix — длина в байтах первых l символов слова; -1, если слово короче.

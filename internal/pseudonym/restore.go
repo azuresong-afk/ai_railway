@@ -3,6 +3,8 @@ package pseudonym
 import (
 	"encoding/json"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // restorer — обратная подстановка в одном тексте ответа. pend — хвост
@@ -22,6 +24,12 @@ func (r *restorer) run(chunk string, final bool) string {
 	r.pend = ""
 	r.v.mu.Lock()
 	defer r.v.mu.Unlock()
+	if r.v.cleared {
+		// Запрос завершён (Clear): значений нет, текст отдаётся как есть,
+		// без задержки и без учёта в метриках — обрыв потока не должен
+		// портить Failed().
+		return s
+	}
 	issued := len(r.v.next) > 0
 	var b strings.Builder
 	last := 0
@@ -39,7 +47,11 @@ func (r *restorer) run(chunk string, final bool) string {
 				return hold(i)
 			}
 			if res == scanMatch {
-				if value, ok := r.v.lookup(t, r.ctx.unsafe()); ok {
+				after, more := r.addrAfter(s, t.end, final)
+				if more {
+					return hold(i)
+				}
+				if value, ok := r.v.lookup(t, r.ctx.unsafe() || after); ok {
 					b.WriteString(s[last:i])
 					b.WriteString(r.escape(value))
 					last = t.end
@@ -78,6 +90,60 @@ func (r *restorer) run(chunk string, final bool) string {
 	return b.String()
 }
 
+// afterLen — сколько байт после конца псевдонима смотрит правило мест:
+// знак и следующий символ UTF-8. Входит в MaxPending.
+const afterLen = 1 + utf8.UTFMax
+
+// addrAfter — за псевдонимом идёт продолжение адреса, и значение станет его
+// частью: поддоменом ([[INN_1]].evil.example — превью ссылки сделает запрос
+// DNS и HTTP), именем ящика ([[INN_1]]@evil.example), портом или путём.
+// Признаки: «/ @ # %», латинская буква, цифра, «-» и «_» (продолжение
+// метки) сразу после псевдонима; «.» перед буквой (любого
+// алфавита: IDN) или цифрой; «:» и «?» перед латинской буквой, цифрой или
+// «/ \ @ %»; экранирование «\.», «\@», «\/», «\:» (markdown) или «\/»,
+// «\u», «\\» (JSON). Конец предложения («[[PERSON_1]]. Далее»,
+// «[[PERSON_1]].» в конце текста, «[[PERSON_1]]?», «[[PERSON_1]]: …») —
+// не адрес. Решение зависит только от s[end:end+afterLen]; more — этих байт
+// ещё нет (final = false).
+func (r *restorer) addrAfter(s string, end int, final bool) (unsafe, more bool) {
+	if end >= len(s) {
+		return false, !final
+	}
+	c := s[end]
+	switch {
+	case strings.IndexByte("/@#%", c) >= 0:
+		return true, false
+	case isLetter(c) || isDigit(c) || c == '-' || c == '_':
+		// Продолжение метки домена: «[[INN_1]]x.evil.example» дало бы
+		// хост «7707083893x.evil.example». Псевдоним, слитый с латинским
+		// словом, — и так искажение; кириллический суффикс («[[PERSON_1]]у»)
+		// разрешён.
+		return true, false
+	case c != '.' && c != ':' && c != '?' && c != '\\':
+		return false, false
+	case end+1 >= len(s):
+		return false, !final
+	}
+	n := s[end+1]
+	switch c {
+	case '\\':
+		if r.ctx.json {
+			return n == '/' || n == 'u' || n == '\\', false
+		}
+		return strings.IndexByte("./:@", n) >= 0, false
+	case '.':
+		if n >= utf8.RuneSelf {
+			if !final && !utf8.FullRuneInString(s[end+1:]) {
+				return false, true
+			}
+			ch, _ := utf8.DecodeRuneInString(s[end+1:])
+			return unicode.IsLetter(ch), false
+		}
+		return isLetter(n) || isDigit(n), false
+	}
+	return isLetter(n) || isDigit(n) || strings.IndexByte(`/\@%`, n) >= 0, false
+}
+
 // skip — переход за разобранный псевдоним (end — его конец). Экранирование
 // «\» перед псевдонимом на символ после него не переносится.
 func (r *restorer) skip(end int) int {
@@ -113,14 +179,22 @@ const maxJSONDepth = 64
 //
 // JSON (response_format JSON, аргументы tool_calls):
 //   - вне строки, в ключе объекта, сразу после «\»;
-//   - если в какой-либо строке до псевдонима был признак адреса: «/ % &»,
-//     «\/», «\u», «\\», «www.» или «:» после латинской буквы. Признак
-//     действует до конца текста: адрес мог быть в соседнем поле, а
-//     псевдоним — в теле запроса инструмента.
+//   - если в какой-либо строке до псевдонима был признак адреса: «/ % & @ =»,
+//     «\/», «\u», «\\», «www.», «:» после латинской буквы, «?» перед
+//     латинской буквой, цифрой или «[ = & %» (знак вопроса в конце фразы —
+//     не признак), похожее на домен: латинская буква после «.», перед
+//     которой буква или цифра (evil.example; «1.5» — не домен), IPv4
+//     (четыре группы цифр через точку), кириллический домен верхнего
+//     уровня (пример.рф). Признак действует до конца текста: адрес мог быть
+//     в соседнем поле, а псевдоним — в теле запроса инструмента.
+//
+// В обоих видах — если сразу за псевдонимом идёт продолжение адреса
+// (restorer.addrAfter).
 type ctxState struct {
 	json bool
 
 	prev      byte // предыдущий символ
+	prev2     byte // символ перед prev
 	backslash bool // предыдущий символ — неэкранированная «\»
 	w         int  // подряд идущих «w»
 
@@ -136,6 +210,10 @@ type ctxState struct {
 	urlSeen   bool // в тексте уже был признак адреса
 	broken    bool // вложенность глубже maxJSONDepth
 	stack     []byte
+	dots      int  // точек в текущей группе цифр через точку (IPv4)
+	labDot    bool // текущая метка не ASCII начата после «буква.»
+	labN      int  // её длина в байтах
+	lab       [maxTLDLen]byte
 }
 
 // unsafe — восстанавливать значение в этой позиции нельзя.
@@ -162,6 +240,7 @@ func (u *ctxState) observe(c byte) {
 	} else {
 		u.w = 0
 	}
+	u.prev2 = u.prev
 	u.prev = c
 }
 
@@ -210,9 +289,10 @@ func (u *ctxState) observeJSON(c byte, bs bool) {
 			}
 		case c == '"':
 			u.inString = false
-		case c == '/' || c == '%' || c == '&', c == ':' && isLetter(u.prev):
+		case strings.IndexByte("/%&@=", c) >= 0, c == ':' && isLetter(u.prev):
 			u.mark()
 		}
+		u.observeHost(c, bs)
 		return
 	}
 	top := byte(0)
@@ -240,6 +320,81 @@ func (u *ctxState) observeJSON(c byte, bs bool) {
 	case ':':
 		u.expectKey = false
 	}
+}
+
+// maxTLDLen — длина в байтах самого длинного из cyrTLD.
+const maxTLDLen = 16
+
+// cyrTLD — домены верхнего уровня кириллицей: адрес «пример.рф» в JSON без
+// схемы и латиницы. Список, а не «буква.буква» любого алфавита: иначе
+// сокращения «т.е.», «г.Москва» в аргументах давали бы ложные блокировки.
+var cyrTLD = []string{"рф", "рус", "москва", "дети", "сайт", "онлайн", "орг", "ком", "бел", "укр", "срб", "мкд", "мон", "қаз", "бг", "католик"}
+
+// observeHost — признаки адреса без схемы внутри строки JSON: «?» перед
+// продолжением запроса, домен «буква.буква», IPv4 и кириллический домен
+// верхнего уровня. c — символ строки (не закрывающая кавычка); bs — он
+// экранирован.
+func (u *ctxState) observeHost(c byte, bs bool) {
+	if !u.inString {
+		// Закрывающая кавычка завершает метку.
+		u.endLabel()
+		u.dots = 0
+		return
+	}
+	alnum := func(b byte) bool { return isLetter(b) || isDigit(b) || b >= utf8.RuneSelf }
+	switch {
+	case bs:
+	case isLetter(c) && u.prev == '.' && alnum(u.prev2):
+		u.mark() // evil.example, пример.com
+	case u.prev == '?' && (isWord(c) || strings.IndexByte("[=&%", c) >= 0):
+		u.mark() // ?q=, ?[[INN_1]]
+	case isDigit(c) && u.prev == '.' && u.dots >= 3:
+		u.mark() // 203.0.113.5
+	}
+	switch {
+	case isDigit(c):
+	case c == '.' && isDigit(u.prev):
+		u.dots++
+	default:
+		u.dots = 0
+	}
+	switch {
+	case c >= utf8.RuneSelf:
+		if u.labDot {
+			if u.labN < len(u.lab) {
+				u.lab[u.labN] = c
+				u.labN++
+			} else {
+				u.labDot = false
+			}
+		}
+	case isLetter(c) || isDigit(c) || c == '-':
+		u.labDot = false
+	default:
+		u.endLabel()
+		u.labDot = c == '.' && !bs && alnum(u.prev)
+		u.labN = 0
+	}
+}
+
+// observeEnd — конец текста: незакрытая строка завершает метку.
+func (u *ctxState) observeEnd() { u.endLabel() }
+
+// endLabel — метка кончилась: если это кириллический домен верхнего уровня
+// после «буква.», это признак адреса.
+func (u *ctxState) endLabel() {
+	if u.labDot && u.labN > 0 {
+		label := string(u.lab[:u.labN])
+		for _, tld := range cyrTLD {
+			// Строчными или прописными целиком, но не с прописной буквы:
+			// «г.Москва» — адрес в тексте, а не домен.
+			if label == tld || label == strings.ToUpper(tld) {
+				u.urlSeen = true
+				break
+			}
+		}
+	}
+	u.labDot, u.labN = false, 0
 }
 
 func isSpace(c byte) bool {

@@ -70,6 +70,7 @@ func Template(id string) (*Spec, bool) {
 		// monitor: там block только журналируется (ТЗ, 5.3).
 		s = &Spec{Name: "ПДн — строго", Mode: Enforce, NonText: NonTextBlock, Rules: []RuleSpec{
 			{ID: "unicode-hidden", Detector: detUnicode, Directions: in, Categories: hidden, Action: Block, Severity: High},
+			{ID: "unicode-hidden-protect", Detector: detUnicode, Directions: in, Categories: hidden, Action: Redact, Severity: High},
 			{ID: "unicode-homoglyph", Detector: detUnicode, Directions: in, Categories: []string{"unicode.homoglyph"}, Action: Log, Severity: Low},
 			{ID: "injection", Detector: detInjection, Directions: in, Action: Block, Severity: High},
 			{ID: "pii-input", Detector: detPII, Directions: in, Action: Block, Severity: High},

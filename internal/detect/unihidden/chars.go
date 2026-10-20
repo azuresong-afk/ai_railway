@@ -3,7 +3,10 @@ package unihidden
 // Классификация символов: невидимые, управление направлением, теги,
 // селекторы вариантов, гомоглифы.
 
-import "unicode"
+import (
+	"unicode"
+	"unicode/utf8"
+)
 
 // kind — вид скрытого символа.
 type kind uint8
@@ -173,3 +176,43 @@ func asciiLookalike(r rune) rune {
 	}
 	return 0
 }
+
+// Hidden — r скрыт в обычном тексте: невидимый, управление направлением,
+// тег, селектор варианта, мягкий перенос, управляющий (кроме табуляции и
+// перевода строки). Те же символы удаляет Clean.
+func Hidden(r rune) bool { return classify(r) != kNone }
+
+// ASCIIFold — символ ASCII, на который r похож независимо от окружения:
+// полноширинные и математические буквы и цифры, теги U+E0020–E007E
+// (невидимая копия ASCII), кириллические и греческие буквы, неотличимые от
+// латинских. 0 — такого нет; для ASCII — сам r.
+//
+// В отличие от Clean, буква сводится к латинице без учёта письменности
+// слова: это нужно там, где искомая строка заведомо латинская (маркер
+// canary), и не годится для обычного текста — «сор» стал бы «cop».
+func ASCIIFold(r rune) rune {
+	switch {
+	case r < utf8.RuneSelf:
+		return r
+	case r >= foldLo && r < foldHi:
+		return rune(foldTable[r-foldLo])
+	case r >= 0xE0020 && r <= 0xE007E:
+		return r - 0xE0000
+	}
+	return asciiLookalike(r)
+}
+
+// foldTable — латинская буква для греческих и кириллических букв
+// U+0370–U+052F, неотличимых от латинских (cyrToLat, greekToLat); 0 — нет
+// такой. Таблица вместо словарей: ASCIIFold вызывается на каждом символе
+// ответа модели.
+const foldLo, foldHi = 0x0370, 0x0530
+
+var foldTable = func() (t [foldHi - foldLo]byte) {
+	for _, m := range []map[rune]rune{cyrToLat, greekToLat} {
+		for k, v := range m {
+			t[k-foldLo] = byte(v) //nolint:gosec // G115: в таблицах только латинские буквы ASCII
+		}
+	}
+	return t
+}()

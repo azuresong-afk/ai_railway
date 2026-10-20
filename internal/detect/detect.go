@@ -70,6 +70,14 @@ type Detector interface {
 	Detect(ctx context.Context, t Text) ([]Finding, error)
 }
 
+// Categorizer — необязательный интерфейс детектора: все категории находок,
+// которые он может выдать. По нему политика проверяет категории правил:
+// опечатка в категории не должна давать правило, которое молча никогда не
+// срабатывает (ТЗ, 5.3). Встроенные детекторы реализуют его все.
+type Categorizer interface {
+	Categories() []string
+}
+
 var (
 	idRe       = regexp.MustCompile(`^[a-z][a-z0-9]*(\.[a-z][a-z0-9]*)*$`)
 	versionRe  = regexp.MustCompile(`^\d+\.\d+\.\d+$`)

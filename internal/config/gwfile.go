@@ -232,6 +232,25 @@ func LoadGatewayFile(path string) (*GatewayFile, error) {
 	return ParseGatewayFile(f)
 }
 
+// Warnings — допустимые, но опасные настройки, о которых шлюз предупреждает
+// при запуске (конфигурация принимается). Сейчас — «Только мониторинг» у
+// приложения с внешним провайдером: ПДн и секреты уходят провайдеру как есть
+// (ревью 1.17–1.21, п. 15).
+func (f *GatewayFile) Warnings() []string {
+	external := map[string]bool{}
+	for _, p := range f.Providers {
+		external[p.ID] = p.IsExternal()
+	}
+	var out []string
+	for _, a := range f.Applications {
+		if a.Policy == policy.TemplateMonitorOnly && external[a.Provider] {
+			out = append(out, fmt.Sprintf("приложение %s: политика %s с внешним провайдером %s — ПДн и секреты передаются провайдеру без маскирования; для внешнего провайдера выберите %s или %s",
+				a.ID, policy.TemplateMonitorOnly, a.Provider, policy.TemplateBase, policy.TemplateExternalPII))
+		}
+	}
+	return out
+}
+
 func (f *GatewayFile) validate() error {
 	var errs []error
 	add := func(format string, a ...any) { errs = append(errs, fmt.Errorf(format, a...)) }

@@ -49,6 +49,9 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 	if err != nil {
 		return fmt.Errorf("файл конфигурации: %w", err)
 	}
+	for _, w := range file.Warnings() {
+		logger.Warn("опасная настройка", "detail", w)
+	}
 	p, err := aisecCrypto.New(aisecCrypto.ProfileStandard)
 	if err != nil {
 		return err

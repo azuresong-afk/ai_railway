@@ -30,7 +30,7 @@ import (
 // ID и версия детектора.
 const (
 	ID      = "injection.heuristic"
-	Version = "1.2.0"
+	Version = "1.3.0"
 )
 
 // Категории находок.

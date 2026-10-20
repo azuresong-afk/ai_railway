@@ -212,3 +212,46 @@ func FuzzParseGatewayFile(f *testing.F) {
 		}
 	})
 }
+
+// TestGatewayFileWarnings — «Только мониторинг» с внешним провайдером
+// принимается, но с предупреждением (ревью 1.17–1.21, п. 15).
+func TestGatewayFileWarnings(t *testing.T) {
+	base := readFixture(t)
+	f, err := ParseGatewayFile(strings.NewReader(base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w := f.Warnings(); len(w) != 0 {
+		t.Fatalf("фикстура без опасных настроек: %v", w)
+	}
+	doc := strings.Replace(base, "policy: base\n    policy_mode: monitor\n", "policy: monitor-only\n", 1)
+	f, err = ParseGatewayFile(strings.NewReader(doc))
+	if err != nil {
+		t.Fatal(err)
+	}
+	external := false
+	for _, p := range f.Providers {
+		if p.ID == f.Applications[0].Provider {
+			external = p.IsExternal()
+		}
+	}
+	w := f.Warnings()
+	if external != (len(w) == 1) {
+		t.Fatalf("внешний провайдер %v, предупреждения: %v", external, w)
+	}
+	// Тот же провайдер, объявленный внутренним, — без предупреждения.
+	for i := range f.Providers {
+		no := false
+		f.Providers[i].External = &no
+	}
+	if w := f.Warnings(); len(w) != 0 {
+		t.Fatalf("внутренний провайдер: %v", w)
+	}
+	for i := range f.Providers {
+		yes := true
+		f.Providers[i].External = &yes
+	}
+	if w := f.Warnings(); len(w) != 1 || !strings.Contains(w[0], "monitor-only") {
+		t.Fatalf("внешний провайдер: %v", w)
+	}
+}
