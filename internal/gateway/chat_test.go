@@ -90,6 +90,7 @@ type gwOpts struct {
 	userMAC    aisecCrypto.MAC
 	detTimeout time.Duration
 	internal   bool // провайдер внутри контура
+	noKey      bool // не подставлять ключ приложения (проверки доступа)
 	// events — события gateway_request (заполняет newGateway до mod).
 	events *eventLog
 }
@@ -131,7 +132,20 @@ func newGateway(t testing.TB, upstream string, mod func(*gwOpts)) http.Handler {
 	if err != nil {
 		t.Fatal(err)
 	}
-	g := mustNew(t, Options{Logger: o.logger, Chat: ch, Router: rt, Auth: ta.cfg})
+	hcfg := ChatConfig{Router: rt, MaxBodyBytes: o.maxBody, Logger: o.logger, BodyReadTimeout: o.bodyTimeout,
+		Events: o.events, IDs: ta.cfg.IDs, Quotas: ch.cfg.Quotas, UserMAC: o.userMAC, DetectorTimeout: o.detTimeout}
+	eh, err := NewEmbeddingsHandler(hcfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kh, err := NewCheckHandler(hcfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := mustNew(t, Options{Logger: o.logger, Chat: ch, Embeddings: eh, Check: kh, Router: rt, Auth: ta.cfg})
+	if o.noKey {
+		return g
+	}
 	return withKey(g, ta.key)
 }
 

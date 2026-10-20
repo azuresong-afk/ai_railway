@@ -409,3 +409,13 @@ func TestResolve(t *testing.T) {
 		t.Fatal("политика заказчика проверяется строго")
 	}
 }
+
+// Check API: ответа модели, где можно подставить исходные значения, нет —
+// pseudonymize выполняется как redact, как и для эмбеддингов.
+func TestCheckPseudonymizeAsRedact(t *testing.T) {
+	d := base(t).Evaluate(Request{Endpoint: EndpointCheck, Direction: detect.Input, Mode: Enforce, Hits: []Hit{pii}})
+	m := d.Matches[0]
+	if m.Action != Redact || m.Apply != Redact || !m.AsRedact || d.Action != Redact {
+		t.Fatalf("check: %+v", d)
+	}
+}

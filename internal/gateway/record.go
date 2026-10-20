@@ -27,11 +27,19 @@ type record struct {
 	tokens int
 	// skip — событие не отправляется: клиент ушёл до решения.
 	skip bool
+	// output — проверялся текст ответа: содержимое в событии пишется в
+	// content.response, а не в content.request (Check API).
+	output bool
 }
 
 // newRecord заводит событие и сообщает его ID приложению заголовком
 // X-AISec-Event-Id. Без ID события запрос не обрабатывается.
 func (h *ChatHandler) newRecord(w http.ResponseWriter, app *App, req *chat.Request, user string, start time.Time) (*record, bool) {
+	return h.newEventRecord(w, app, events.TypeGatewayRequest, req.Model, req.Stream, user, start)
+}
+
+// newEventRecord заводит событие заданного типа: gateway_request, check.
+func (h *ChatHandler) newEventRecord(w http.ResponseWriter, app *App, typ, model string, stream bool, user string, start time.Time) (*record, bool) {
 	u, err := h.cfg.IDs.New()
 	if err != nil {
 		h.logger.Error("идентификатор события", "error", err)
@@ -39,8 +47,8 @@ func (h *ChatHandler) newRecord(w http.ResponseWriter, app *App, req *chat.Reque
 		return nil, false
 	}
 	rec := &record{start: start, app: app, tokens: -1, ev: events.Event{
-		ID: u.String(), Time: start.UTC(), Type: events.TypeGatewayRequest, App: app.ID, Env: app.Env, User: user,
-		Provider: app.Provider.ID(), Model: req.Model, PolicyMode: string(effectiveMode(app)), Stream: req.Stream,
+		ID: u.String(), Time: start.UTC(), Type: typ, App: app.ID, Env: app.Env, User: user,
+		Provider: app.Provider.ID(), Model: model, PolicyMode: string(effectiveMode(app)), Stream: stream,
 		Storage: app.Storage, LatencyMS: map[string]int64{},
 	}}
 	w.Header().Set(HeaderEventID, rec.ev.ID)
@@ -106,7 +114,7 @@ func (h *ChatHandler) emit(rec *record) {
 		rec.fill()
 	}
 	if err := h.cfg.Events.Enqueue(rec.ev); err != nil {
-		h.logger.Error("событие gateway_request не принято", "event_id", rec.ev.ID, "error", err)
+		h.logger.Error("событие не принято", "type", rec.ev.Type, "event_id", rec.ev.ID, "error", err)
 	}
 }
 
@@ -169,6 +177,9 @@ func (rec *record) fill() {
 	if rec.app.Storage == events.StorageMasked {
 		if c, ok := in.maskedContent(rec.texts); ok {
 			rec.ev.Content = &events.Content{Request: c}
+			if rec.output {
+				rec.ev.Content = &events.Content{Response: c}
+			}
 		}
 	}
 }
@@ -185,7 +196,7 @@ func traceNote(m policy.Match) string {
 	}
 	switch {
 	case m.AsRedact:
-		notes = append(notes, "pseudonymize для эмбеддингов выполнено как redact")
+		notes = append(notes, "pseudonymize выполнено как redact: обратной подстановки нет")
 	case m.Protect == policy.Pseudonymize && m.Apply == policy.Redact:
 		notes = append(notes, "псевдонимизация в конвейере не подключена, выполнено redact")
 	}
