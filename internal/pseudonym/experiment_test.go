@@ -297,7 +297,7 @@ func TestDM31_ExperimentMockLLMStream(t *testing.T) {
 					}
 				}
 			}
-			_ = resp.Body.Close() // тело прочитано, ошибка закрытия не влияет на опыт
+			resp.Body.Close() //nolint:errcheck // поток прочитан; ошибка закрытия не важна
 			b.WriteString(s.Flush())
 			if b.String() == p.text {
 				ok++
