@@ -1,8 +1,10 @@
 # Контракт API — источник истины (ТЗ, раздел 13).
-# API управления появляется на этапе 2; здесь — интерфейсы шлюза для приложений,
-# которые добавляются по мере реализации. OpenAI-совместимые /v1/chat/completions
-# и /v1/models, а также /healthz и /readyz пока описаны только в
-# docs/cert/attack-surface.md; их схемы — задача этапа 2 (контрактные тесты).
+# Здесь — интерфейсы шлюза для приложений и API управления (aisec-server,
+# префикс /api/v1), которые добавляются по мере реализации. Ошибки API
+# управления — Problem Details (RFC 9457), ошибки шлюза — формат OpenAI.
+# OpenAI-совместимые /v1/chat/completions и /v1/models пока описаны только в
+# docs/cert/attack-surface.md. Контрактный тест internal/api сверяет маршруты
+# сервера с этим файлом в обе стороны.
 openapi: 3.1.0
 info:
   title: AISec API
@@ -27,6 +29,35 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/CheckRequest' }
       responses:
+    ProblemUnauthorized:
+      description: Требуется вход (`unauthorized`)
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    ProblemForbidden:
+      description: Недостаточно прав (`forbidden`)
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    ProblemInternal:
+      description: Внутренняя ошибка (`internal_error`)
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    RateLimited:
+      description: Превышен предел частоты запросов (`rate_limited`, ЗИ.6)
+      headers:
+        Retry-After: { description: Через сколько секунд повторить, schema: { type: integer } }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Unavailable:
+      description: Сервер не готов (`service_unavailable`)
+      headers:
+        Retry-After: { description: Через сколько секунд повторить, schema: { type: integer } }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
         '200':
           description: Решение по тексту
           headers:
@@ -86,12 +117,75 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
+  /healthz:
+    get:
+      summary: Живость процесса (шлюз и сервер управления)
+      security: []
+      responses:
+        '200':
+          description: Процесс работает
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Status' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+  /readyz:
+    get:
+      summary: 'Готовность к работе (сервер управления: доступна база данных)'
+      security: []
+      responses:
+        '200':
+          description: Готов
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Status' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/system/info:
+    get:
+      summary: Сведения о сервере (версия)
+      description: Право `system.read`. Служит образцом защищённого эндпоинта каркаса.
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      responses:
+        '200':
+          description: Сведения о сервере
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SystemInfo' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
 components:
   securitySchemes:
     appKey:
       type: http
       scheme: bearer
       description: Ключ приложения `aisec_<префикс>_<секрет>` (ИАФ.8)
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: aisec_session
+      description: Сессия веб-консоли (HttpOnly, Secure, SameSite=Strict); изменяющие запросы — с CSRF-токеном
+    bearerToken:
+      type: http
+      scheme: bearer
+      description: Токен API для автоматизации (ИАФ.9)
+  parameters:
+    Limit:
+      name: limit
+      in: query
+      description: Размер страницы
+      schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+    Cursor:
+      name: cursor
+      in: query
+      description: Непрозрачный курсор из `next_cursor` предыдущей страницы
+      schema: { type: string, maxLength: 256 }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      description: Ключ повторяемости создающего запроса, 1–64 символа `[A-Za-z0-9._-]`
+      schema: { type: string, minLength: 1, maxLength: 64, pattern: '^[A-Za-z0-9._-]+$' }
   headers:
     EventId:
       description: Идентификатор события check или gateway_request
@@ -135,6 +229,43 @@ components:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
   schemas:
+    Status:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string }
+    SystemInfo:
+      type: object
+      required: [version]
+      properties:
+        version: { type: string }
+    Problem:
+      description: Problem Details (RFC 9457); `detail` — русский текст для пользователя
+      type: object
+      required: [type, title, status, detail, code]
+      properties:
+        type: { type: string, description: 'URN вида urn:aisec:problem:<code>' }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        code:
+          type: string
+          enum: [invalid_request, unauthorized, forbidden, not_found, method_not_allowed, conflict,
+                 payload_too_large, unsupported_media_type, unprocessable, rate_limited,
+                 internal_error, service_unavailable]
+        errors:
+          type: array
+          items:
+            type: object
+            required: [field, detail]
+            properties:
+              field: { type: string }
+              detail: { type: string }
+    PageInfo:
+      description: Поле конверта страницы списка; на последней странице отсутствует
+      type: object
+      properties:
+        next_cursor: { type: string }
     Error:
       type: object
       required: [error]
@@ -178,7 +309,7 @@ components:
         user:
           type: string
           maxLength: 256
-          description: Идентификатор пользователя, если приложение берёт его из поля (`user_from: field`).
+          description: "Идентификатор пользователя, если приложение берёт его из поля (`user_from: field`)."
     CheckResponse:
       type: object
       required: [id, decision, action, blocked, findings]
