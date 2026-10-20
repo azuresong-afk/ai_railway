@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -57,6 +58,7 @@ func newUpstream(t *testing.T, handler http.HandlerFunc) (*httptest.Server, *ups
 		rec.path, rec.query, rec.header, rec.body = r.URL.Path, r.URL.RawQuery, r.Header.Clone(), string(b)
 		rec.calls++
 		rec.mu.Unlock()
+		r.Body = io.NopCloser(bytes.NewReader(b))
 		if handler != nil {
 			handler(w, r)
 			return

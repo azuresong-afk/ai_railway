@@ -24,6 +24,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/ids"
 	"github.com/azuresong-afk/ai_railway/internal/policy"
 	"github.com/azuresong-afk/ai_railway/internal/providers"
+	"github.com/azuresong-afk/ai_railway/internal/pseudonym"
 	"github.com/azuresong-afk/ai_railway/internal/sse"
 )
 
@@ -180,10 +181,21 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !h.admit(w, r, rec, req, user, texts) {
 		return
 	}
+	// Словарь псевдонимов живёт только в памяти на время запроса (ТЗ, 5.1).
+	// Псевдонимы, которые уже есть в тексте запроса, не выдаются.
+	plain := make([]string, 0, len(texts))
+	for _, t := range texts {
+		if t.Parts == nil {
+			plain = append(plain, t.Text)
+		}
+	}
+	rec.vault = pseudonym.NewVault(pseudonym.Limits{}, plain...)
+	defer rec.vault.Clear()
+	rec.jsonMode = jsonResponseFormat(req.ResponseFormat)
 	checkStart := h.cfg.Now()
 	in, err := app.inspect(r.Context(), inspectRequest{
 		Endpoint: policy.EndpointChat, External: app.Provider.External(), Texts: texts, Media: policyMedia(req.Media()),
-		Mask: app.Storage == events.StorageMasked, Timeout: h.cfg.DetectorTimeout,
+		Mask: app.Storage == events.StorageMasked, Timeout: h.cfg.DetectorTimeout, Vault: rec.vault,
 	})
 	rec.ev.LatencyMS["input_check"] = h.cfg.Now().Sub(checkStart).Milliseconds()
 	switch {
@@ -193,8 +205,8 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.logger.Info("клиент прервал запрос во время проверки", "path", r.URL.Path)
 		return
 	case err != nil:
-		// Ошибка сборки конвейера (детектор политики не найден) — запрос не
-		// проверен и не уходит, независимо от fail_mode.
+		// Ошибка сборки конвейера (детектор политики не найден) или защиты
+		// данных — запрос не проверен и не уходит, независимо от fail_mode.
 		h.logger.Error("проверка запроса не выполнена", "app", app.ID, "event_id", rec.ev.ID, "error", err)
 		rec.failClosed()
 		w.Header().Set(HeaderDecision, string(policy.Block))
@@ -251,6 +263,9 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Приложение видит то имя модели, которое запросило (в том числе
 	// псевдоним), а не имя у провайдера (DM-33).
 	resp.Model = requested
+	if !h.checkFull(w, r, app, rec, resp) {
+		return
+	}
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -443,7 +458,8 @@ func (h *ChatHandler) providerError(w http.ResponseWriter, r *http.Request, err 
 }
 
 // stream передаёт потоковый ответ: каждая часть разбирается и собирается
-// заново, неизвестные поля провайдера приложению не уходят.
+// заново, неизвестные поля провайдера приложению не уходят. Ответ
+// проверяется в режиме streamResponseMode (response.go).
 func (h *ChatHandler) stream(w http.ResponseWriter, r *http.Request, app *App, req *chat.Request, requested string, rec *record) {
 	st, meta, err := app.Provider.Stream(r.Context(), req)
 	copyMeta(w, meta)
@@ -456,6 +472,12 @@ func (h *ChatHandler) stream(w http.ResponseWriter, r *http.Request, app *App, r
 			h.logger.Debug("закрытие потока провайдера", "error", providers.ErrorClass(cerr))
 		}
 	}()
+	mode := streamResponseMode(app)
+	if mode == policy.ResponseBuffered {
+		h.streamBuffered(w, r, app, st, requested, rec)
+		return
+	}
+	rec.respMode = string(mode)
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.WriteHeader(http.StatusOK)
 	rc := http.NewResponseController(w)
@@ -465,27 +487,25 @@ func (h *ChatHandler) stream(w http.ResponseWriter, r *http.Request, app *App, r
 		}
 		return rc.Flush() == nil
 	}
+	sp := h.newStreamProc(r, app, rec, requested, mode == policy.ResponseIncremental, send)
+	defer func() {
+		rec.respMasked = sp.content.masked || sp.refusal.masked
+		rec.respFailures = sp.failures
+		sp.afterStream()
+	}()
 	for {
 		c, err := st.Next()
 		if errors.Is(err, io.EOF) {
-			send([]byte(chat.Done))
+			sp.end()
 			return
 		}
 		if err != nil {
-			if r.Context().Err() != nil {
-				h.logger.Info("клиент прервал поток", "path", r.URL.Path)
-				return
-			}
-			h.logger.Warn("поток провайдера прерван", "provider", app.Provider.ID(), "error", errorKind(err))
 			// Ошибка внутри потока — событием с объектом error, как у OpenAI;
 			// завершающего [DONE] нет: приложение видит, что ответ неполный.
-			send(streamErrorBody(err))
+			sp.upstreamFailed(err)
 			return
 		}
-		rec.usage(c.Usage)
-		c.Model = requested
-		data, err := json.Marshal(c)
-		if err != nil || !send(data) {
+		if sp.chunk(c) != streamGo {
 			return
 		}
 	}

@@ -81,7 +81,7 @@ func TestEmbeddingsRedactsPIIBeforeProvider(t *testing.T) {
 	if resp.Code != 200 || resp.Header().Get(HeaderDecision) != "redact" {
 		t.Fatalf("%d %s %q", resp.Code, resp.Body.String(), resp.Header().Get(HeaderDecision))
 	}
-	if _, _, body, _ := rec.get(); strings.Contains(body, piiEmail) || !strings.Contains(body, RedactMark) {
+	if _, _, body, _ := rec.get(); strings.Contains(body, piiEmail) || !strings.Contains(body, emailMask) {
 		t.Fatalf("провайдер получил: %s", body)
 	}
 	e := lastEmbEvent(t, log, resp)
