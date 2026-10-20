@@ -12,3 +12,4 @@
 | [0004](0004-syscall-sigterm.md) | Исключение для `syscall.SIGTERM` в серверных компонентах | принято |
 | [0005](0005-format-psevdonima.md) | Формат псевдонима `[[ТИП_N]]` и правила обратной подстановки | предложено (предварительное до пилота) |
 | [0006](0006-paroli-shifrovanie-podpis-totp.md) | Пароли (Argon2id), AES-256-GCM, Ed25519 и исключение HMAC-SHA-1 для TOTP | предложено |
+| [0007](0007-klyuchi-ustanovki-i-init.md) | Ключи установки, `aisec-cli init`, предел AES-GCM и ротация | предложено |
