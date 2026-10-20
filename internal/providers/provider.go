@@ -23,6 +23,14 @@ type Provider interface {
 	Stream(ctx context.Context, req *chat.Request) (Stream, Meta, error)
 }
 
+// Embedder — провайдер, умеющий считать эмбеддинги (POST /v1/embeddings).
+// Интерфейс необязательный: GigaChat и YandexGPT на этапе 1 его не
+// реализуют, шлюз отвечает по ним «не поддерживается».
+type Embedder interface {
+	// Embeddings возвращает по вектору на каждую строку входа.
+	Embeddings(ctx context.Context, req *chat.EmbeddingRequest) (*chat.EmbeddingResponse, Meta, error)
+}
+
 // Stream — части потокового ответа. Next возвращает io.EOF после штатного
 // завершения потока; поток, оборванный без завершения, — ErrTruncated.
 type Stream interface {

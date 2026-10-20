@@ -146,7 +146,8 @@ type Match struct {
 	Protect     Action
 	ProtectRule string
 	Severity    Severity
-	// AsRedact — правило с pseudonymize выполняется как redact (эмбеддинги).
+	// AsRedact — правило с pseudonymize выполняется как redact (эмбеддинги и
+	// Check API: обратной подстановки там нет).
 	AsRedact bool
 	// Apply — что фактически делается с фрагментом: redact, pseudonymize
 	// или ничего. Блокировку целиком отражает Decision.Block.
@@ -261,7 +262,7 @@ func (p *Policy) match(i int, h Hit, req Request) (Match, bool) {
 			continue
 		}
 		a, asRedact := r.action, false
-		if req.Endpoint == EndpointEmbeddings && a == Pseudonymize {
+		if (req.Endpoint == EndpointEmbeddings || req.Endpoint == EndpointCheck) && a == Pseudonymize {
 			a, asRedact = Redact, true
 		}
 		if m.order < 0 || Stronger(a, m.Action) {

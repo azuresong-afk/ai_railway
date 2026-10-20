@@ -102,5 +102,8 @@ const (
 	// EndpointEmbeddings — /v1/embeddings: из вектора псевдоним не
 	// восстановить, поэтому pseudonymize выполняется как redact (ТЗ, 5.1).
 	EndpointEmbeddings Endpoint = "embeddings"
-	EndpointCheck      Endpoint = "check"
+	// EndpointCheck — /guard/v1/check: ответа модели, в котором можно
+	// подставить исходные значения, нет, поэтому pseudonymize тоже
+	// выполняется как redact.
+	EndpointCheck Endpoint = "check"
 )

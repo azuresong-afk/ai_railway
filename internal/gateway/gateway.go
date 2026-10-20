@@ -19,6 +19,10 @@ type Options struct {
 	Logger *slog.Logger
 	// Chat обслуживает POST /v1/chat/completions; nil — маршрут не подключён.
 	Chat http.Handler
+	// Embeddings обслуживает POST /v1/embeddings; nil — маршрут не подключён.
+	Embeddings http.Handler
+	// Check обслуживает POST /guard/v1/check; nil — маршрут не подключён.
+	Check http.Handler
 	// Router — приложения шлюза; с ним подключается GET /v1/models.
 	Router *Router
 	// Auth — аутентификация приложений. Обязательна, если подключён хотя бы
@@ -38,6 +42,12 @@ func New(opts Options) (*Gateway, error) {
 	routes := map[string]http.Handler{}
 	if opts.Chat != nil {
 		routes["POST /v1/chat/completions"] = opts.Chat
+	}
+	if opts.Embeddings != nil {
+		routes["POST /v1/embeddings"] = opts.Embeddings
+	}
+	if opts.Check != nil {
+		routes["POST /guard/v1/check"] = opts.Check
 	}
 	if opts.Router != nil {
 		routes["GET /v1/models"] = http.HandlerFunc(opts.Router.models)
