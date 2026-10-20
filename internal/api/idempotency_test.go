@@ -102,23 +102,31 @@ func TestMemoryIdempotencyBoundsAndTTL(t *testing.T) {
 	now := time.Unix(1000, 0)
 	m := NewMemoryIdempotency(time.Minute, 2, func() time.Time { return now })
 	ctx := t.Context()
+	begin := func(scope, key string) IdemState {
+		t.Helper()
+		st, _, err := m.Begin(ctx, scope, key, "f")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return st
+	}
 	for _, k := range []string{"a", "b"} {
-		if s, _, _ := m.Begin(ctx, "s", k, "f"); s != IdemNew {
+		if s := begin("s", k); s != IdemNew {
 			t.Fatal(k)
 		}
 	}
-	if s, _, _ := m.Begin(ctx, "s", "c", "f"); s != IdemFull {
+	if s := begin("s", "c"); s != IdemFull {
 		t.Fatalf("ожидалось переполнение: %v", s)
 	}
-	if s, _, _ := m.Begin(ctx, "s", "a", "f"); s != IdemBusy {
+	if s := begin("s", "a"); s != IdemBusy {
 		t.Fatalf("тот же запрос выполняется: %v", s)
 	}
 	now = now.Add(2 * time.Minute)
-	if s, _, _ := m.Begin(ctx, "s", "c", "f"); s != IdemNew {
+	if s := begin("s", "c"); s != IdemNew {
 		t.Fatalf("после срока место освобождается: %v", s)
 	}
 	// Ключи разных субъектов не пересекаются.
-	if s, _, _ := m.Begin(ctx, "other", "c", "f"); s != IdemNew {
+	if s := begin("other", "c"); s != IdemNew {
 		t.Fatalf("другая область: %v", s)
 	}
 }

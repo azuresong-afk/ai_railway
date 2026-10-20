@@ -37,8 +37,11 @@ func TestUUIDv7Format(t *testing.T) {
 
 func TestUUIDv7Ordering(t *testing.T) {
 	r := mustRandom(t)
-	a, _ := NewUUIDv7(time.UnixMilli(1000), r)
-	b, _ := NewUUIDv7(time.UnixMilli(1001), r)
+	a, errA := NewUUIDv7(time.UnixMilli(1000), r)
+	b, errB := NewUUIDv7(time.UnixMilli(1001), r)
+	if errA != nil || errB != nil {
+		t.Fatal(errA, errB)
+	}
 	if a >= b {
 		t.Fatalf("%s не меньше %s", a, b)
 	}

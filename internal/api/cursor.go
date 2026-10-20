@@ -44,6 +44,10 @@ func DecodeCursor(s string) (Cursor, error) {
 	if err != nil {
 		return Cursor{}, errBadCursor
 	}
+	// Декодер пропускает переводы строк: неканоническую запись отвергаем.
+	if base64.RawURLEncoding.EncodeToString(raw) != s {
+		return Cursor{}, errBadCursor
+	}
 	ts, id, ok := strings.Cut(string(raw), ":")
 	if !ok || !validCursorID(id) || !validDecimal(ts) {
 		return Cursor{}, errBadCursor

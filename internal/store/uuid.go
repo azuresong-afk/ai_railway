@@ -25,7 +25,7 @@ func NewUUIDv7(now time.Time, r crypto.Random) (UUID, error) {
 	}
 	var u [16]byte
 	for i := 0; i < 6; i++ {
-		u[i] = byte(ms >> (8 * (5 - i)))
+		u[i] = byte((ms >> (8 * (5 - i))) & 0xff)
 	}
 	copy(u[6:], b)
 	u[6] = u[6]&0x0f | 0x70 // версия 7

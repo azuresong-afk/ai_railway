@@ -20,8 +20,14 @@ func TestOverRealTLS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tp, _ := p.TLS()
-	hasher, _ := p.Hasher()
+	tp, err := p.TLS()
+	if err != nil {
+		t.Fatal(err)
+	}
+	hasher, err := p.Hasher()
+	if err != nil {
+		t.Fatal(err)
+	}
 	now := time.Now()
 	ca, err := aisecCrypto.NewCA("test", time.Hour, now)
 	if err != nil {
@@ -43,13 +49,22 @@ func TestOverRealTLS(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() { done <- srv.Run(ctx) }()
-	cc, _ := tp.ClientConfig(ca.CertPEM())
-	cl := &http.Client{Transport: &http.Transport{TLSClientConfig: cc}, Timeout: 5 * time.Second}
-	resp, err := cl.Get("https://" + srv.Addr() + "/api/v1/system/info")
+	cc, err := tp.ClientConfig(ca.CertPEM())
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = resp.Body.Close()
+	cl := &http.Client{Transport: &http.Transport{TLSClientConfig: cc}, Timeout: 5 * time.Second}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+srv.Addr()+"/api/v1/system/info", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := cl.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := resp.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
 	if resp.StatusCode != 401 || resp.Header.Get("Content-Type") != api.ContentTypeProblem || resp.Header.Get("Content-Security-Policy") != api.DefaultCSP {
 		t.Fatalf("%d %v", resp.StatusCode, resp.Header)
 	}

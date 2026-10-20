@@ -55,16 +55,16 @@ func FuzzDecodeCursor(f *testing.F) {
 
 func TestParsePage(t *testing.T) {
 	good := Cursor{TimeMicro: 7, ID: "a"}.Encode()
-	p, prob := ParsePage(httptest.NewRequest("GET", "/x?limit=10&cursor="+good, nil))
+	p, prob := ParsePage(httptest.NewRequestWithContext(t.Context(), "GET", "/x?limit=10&cursor="+good, nil))
 	if prob != nil || p.Limit != 10 || p.Cursor == nil || p.Cursor.ID != "a" {
 		t.Fatalf("%+v %v", p, prob)
 	}
-	p, prob = ParsePage(httptest.NewRequest("GET", "/x", nil))
+	p, prob = ParsePage(httptest.NewRequestWithContext(t.Context(), "GET", "/x", nil))
 	if prob != nil || p.Limit != DefaultPageLimit || p.Cursor != nil {
 		t.Fatalf("умолчания: %+v %v", p, prob)
 	}
 	for _, q := range []string{"limit=0", "limit=201", "limit=abc", "limit=1&limit=2", "cursor=%21", "cursor=" + good + "&cursor=" + good, "limit=-5"} {
-		if _, prob := ParsePage(httptest.NewRequest("GET", "/x?"+q, nil)); prob == nil || prob.Status != 400 || len(prob.Errors) == 0 {
+		if _, prob := ParsePage(httptest.NewRequestWithContext(t.Context(), "GET", "/x?"+q, nil)); prob == nil || prob.Status != 400 || len(prob.Errors) == 0 {
 			t.Errorf("%s: принято", q)
 		}
 	}

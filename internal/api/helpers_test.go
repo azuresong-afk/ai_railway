@@ -50,7 +50,7 @@ func newHandler(t testing.TB, o Options) (http.Handler, *Router) {
 }
 
 func do(h http.Handler, method, target, body string, hdr ...string) *httptest.ResponseRecorder {
-	r := httptest.NewRequest(method, target, strings.NewReader(body))
+	r := httptest.NewRequestWithContext(context.Background(), method, target, strings.NewReader(body))
 	r.RemoteAddr = "192.0.2.1:1234"
 	for i := 0; i+1 < len(hdr); i += 2 {
 		r.Header.Add(hdr[i], hdr[i+1])

@@ -92,9 +92,9 @@ func TestNotFoundAndMethodNotAllowedAreProblems(t *testing.T) {
 }
 
 func TestFallbackOnlyOutsideAPI(t *testing.T) {
-	fb := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("static")) })
+	fb := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { http.Error(w, "static", http.StatusOK) })
 	h, _ := newHandler(t, Options{Fallback: fb})
-	if w := do(h, "GET", "/index.html", ""); w.Body.String() != "static" {
+	if w := do(h, "GET", "/index.html", ""); w.Body.String() != "static\n" {
 		t.Fatal("статика не отдана")
 	}
 	mustProblem(t, do(h, "GET", "/api/v1/zzz", ""), 404, CodeNotFound)

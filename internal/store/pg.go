@@ -72,7 +72,7 @@ func (d *DB) InTx(ctx context.Context, fn func(Tx) error) error {
 		return fmt.Errorf("начало транзакции: %w", err)
 	}
 	// Откат после коммита безвреден; ошибку отката скрывает исходная.
-	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }() //nolint:gosec,errcheck // откат после коммита безвреден, ошибку скрывает исходная
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }() //nolint:gosec // G104: откат после коммита безвреден, ошибку скрывает исходная
 	if err := fn(pgTx{tx}); err != nil {
 		return err
 	}
