@@ -7,10 +7,17 @@ import (
 
 	"github.com/azuresong-afk/ai_railway/internal/chat"
 	"github.com/azuresong-afk/ai_railway/internal/config"
+	"github.com/azuresong-afk/ai_railway/internal/detect"
+	"github.com/azuresong-afk/ai_railway/internal/detect/builtin"
+	"github.com/azuresong-afk/ai_railway/internal/detect/exfil"
+	"github.com/azuresong-afk/ai_railway/internal/detect/lists"
+	"github.com/azuresong-afk/ai_railway/internal/events"
+	"github.com/azuresong-afk/ai_railway/internal/policy"
 	"github.com/azuresong-afk/ai_railway/internal/providers"
 )
 
-// App — маршрут приложения: провайдер, разрешённые модели и пределы запроса.
+// App — маршрут приложения: провайдер, разрешённые модели, пределы запроса
+// и всё, что нужно конвейеру проверки.
 type App struct {
 	ID       string
 	Env      string
@@ -18,6 +25,19 @@ type App struct {
 	models   map[string]bool
 	aliases  map[string]string
 	Limits   chat.Limits
+	// Policy — политика приложения, Detectors — детекторы с его списками
+	// lists и allowlist output.exfil; политика скомпилирована по ним.
+	Policy    *policy.Policy
+	Detectors *detect.Registry
+	// Mode — режим политики приложения; пусто — режим самой политики.
+	Mode policy.Mode
+	// FailOpen — при сбое проверки пропустить запрос (fail_open); иначе
+	// заблокировать (fail_closed, и по умолчанию).
+	FailOpen bool
+	// Storage — режим хранения содержимого в событиях (none, masked).
+	Storage string
+	// UserFrom — откуда идентификатор пользователя: header, field, none.
+	UserFrom string
 }
 
 // Resolve возвращает модель провайдера для имени из запроса: разрешённую
@@ -50,15 +70,36 @@ type Router struct {
 }
 
 // NewRouter строит маршруты из конфигурации; провайдеры уже созданы.
-func NewRouter(apps []config.Application, provs map[string]providers.Provider) (*Router, error) {
+// Политика приложения ищется среди specs, затем среди шаблонов; пусто —
+// «Базовая защита» (решение Р7). Детектор из политики заказчика, которого
+// нет среди встроенных, — ошибка запуска.
+func NewRouter(apps []config.Application, provs map[string]providers.Provider, specs []policy.Spec) (*Router, error) {
 	rt := &Router{apps: map[string]*App{}}
 	for _, a := range apps {
 		p, ok := provs[a.Provider]
 		if !ok {
 			return nil, fmt.Errorf("приложение %s: провайдер %q не создан", a.ID, a.Provider)
 		}
+		reg, err := appDetectors(a)
+		if err != nil {
+			return nil, fmt.Errorf("приложение %s: %w", a.ID, err)
+		}
+		pol, err := policy.Resolve(a.Policy, specs, reg)
+		if err != nil {
+			return nil, fmt.Errorf("приложение %s: %w", a.ID, err)
+		}
+		storage := a.Storage
+		if storage == "" {
+			storage = events.StorageNone
+		}
+		userFrom := a.UserFrom
+		if userFrom == "" {
+			userFrom = userFromNone
+		}
 		app := &App{ID: a.ID, Env: a.Env, Provider: p, models: map[string]bool{}, aliases: map[string]string{},
-			Limits: chat.Limits{MaxMessages: a.Quotas.MaxMessages, MaxTokens: a.Quotas.MaxTokens}}
+			Limits: chat.Limits{MaxMessages: a.Quotas.MaxMessages, MaxTokens: a.Quotas.MaxTokens},
+			Policy: pol, Detectors: reg, Mode: policy.Mode(a.PolicyMode), FailOpen: a.FailMode == failOpen,
+			Storage: storage, UserFrom: userFrom}
 		for _, m := range a.Models {
 			app.models[m] = true
 		}
@@ -71,6 +112,44 @@ func NewRouter(apps []config.Application, provs map[string]providers.Provider) (
 		rt.apps[a.ID] = app
 	}
 	return rt, nil
+}
+
+// Значения полей приложения в конфигурации.
+const (
+	failOpen        = "fail_open"
+	userFromHeader  = "header"
+	userFromField   = "field"
+	userFromNone    = "none"
+	maxUserIDLength = 256
+)
+
+// appDetectors — встроенные детекторы с настройками приложения: lists — со
+// списками заказчика вдобавок к встроенному, output.exfil — с allowlist.
+func appDetectors(a config.Application) (*detect.Registry, error) {
+	ds := builtin.All()
+	for i, d := range ds {
+		switch d.ID() {
+		case lists.ID:
+			if len(a.Lists) == 0 {
+				continue
+			}
+			ld, err := lists.Compile(lists.WithDefaults(a.Lists))
+			if err != nil {
+				return nil, err
+			}
+			ds[i] = ld
+		case exfil.ID:
+			if len(a.ExfilAllowDomains) == 0 {
+				continue
+			}
+			ed, err := exfil.NewWithConfig(exfil.Config{AllowDomains: a.ExfilAllowDomains})
+			if err != nil {
+				return nil, err
+			}
+			ds[i] = ed
+		}
+	}
+	return detect.NewRegistry(ds...)
 }
 
 // app — приложение запроса (после RequireAppKey).

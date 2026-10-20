@@ -17,6 +17,8 @@ import (
 
 	"github.com/azuresong-afk/ai_railway/internal/auth"
 	"github.com/azuresong-afk/ai_railway/internal/config"
+	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
+	"github.com/azuresong-afk/ai_railway/internal/policy"
 	"github.com/azuresong-afk/ai_railway/internal/providers"
 )
 
@@ -80,6 +82,16 @@ type gwOpts struct {
 	quotas      config.Quotas
 	limiter     auth.LimiterConfig
 	transport   http.RoundTripper
+	// app меняет приложение до сборки, specs — политики заказчика,
+	// setup — собранное приложение (подмена детекторов в тестах сбоев).
+	app        func(*config.Application)
+	specs      []policy.Spec
+	setup      func(*App)
+	userMAC    aisecCrypto.MAC
+	detTimeout time.Duration
+	internal   bool // провайдер внутри контура
+	// events — события gateway_request (заполняет newGateway до mod).
+	events *eventLog
 }
 
 // newGateway — шлюз с OpenAI-совместимым провайдером на upstream и одним
@@ -88,7 +100,7 @@ type gwOpts struct {
 // обработка запроса, аутентификация — в auth_test.go.
 func newGateway(t testing.TB, upstream string, mod func(*gwOpts)) http.Handler {
 	t.Helper()
-	o := gwOpts{logger: quiet(), maxBody: 1 << 10, transport: &http.Transport{Proxy: nil, ResponseHeaderTimeout: 2 * time.Second}}
+	o := gwOpts{logger: quiet(), maxBody: 1 << 10, transport: &http.Transport{Proxy: nil, ResponseHeaderTimeout: 2 * time.Second}, events: &eventLog{}}
 	if mod != nil {
 		mod(&o)
 	}
@@ -96,20 +108,29 @@ func newGateway(t testing.TB, upstream string, mod func(*gwOpts)) http.Handler {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := providers.NewOpenAI(providers.OpenAIConfig{BaseConfig: providers.BaseConfig{ID: "up", External: true, Transport: o.transport, Logger: o.logger}, BaseURL: u, Key: o.key})
+	p, err := providers.NewOpenAI(providers.OpenAIConfig{BaseConfig: providers.BaseConfig{ID: "up", External: !o.internal, Transport: o.transport, Logger: o.logger}, BaseURL: u, Key: o.key})
 	if err != nil {
 		t.Fatal(err)
 	}
-	rt, err := NewRouter([]config.Application{{ID: "app", Env: "test", Provider: "up", Models: []string{"m", "mock-echo", "mock-stream-slow"},
-		Aliases: map[string]string{"default": "m"}, Quotas: o.quotas}}, map[string]providers.Provider{"up": p})
+	app := config.Application{ID: "app", Env: "test", Provider: "up", Models: []string{"m", "mock-echo", "mock-stream-slow"},
+		Aliases: map[string]string{"default": "m"}, Quotas: o.quotas}
+	if o.app != nil {
+		o.app(&app)
+	}
+	apps := []config.Application{app}
+	rt, err := NewRouter(apps, map[string]providers.Provider{"up": p}, o.specs)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ch, err := NewChatHandler(ChatConfig{Router: rt, MaxBodyBytes: o.maxBody, Logger: o.logger, BodyReadTimeout: o.bodyTimeout})
-	if err != nil {
-		t.Fatal(err)
+	if o.setup != nil {
+		o.setup(rt.apps["app"])
 	}
 	ta := newTestAuth(t, o.limiter)
+	ch, err := NewChatHandler(ChatConfig{Router: rt, MaxBodyBytes: o.maxBody, Logger: o.logger, BodyReadTimeout: o.bodyTimeout,
+		Events: o.events, IDs: ta.cfg.IDs, Quotas: NewLimiter(apps), UserMAC: o.userMAC, DetectorTimeout: o.detTimeout})
+	if err != nil {
+		t.Fatal(err)
+	}
 	g := mustNew(t, Options{Logger: o.logger, Chat: ch, Router: rt, Auth: ta.cfg})
 	return withKey(g, ta.key)
 }
@@ -642,7 +663,8 @@ func FuzzProxyHandler(f *testing.F) {
 	g := newGateway(f, up.URL, func(o *gwOpts) { o.limiter = auth.LimiterConfig{MaxFailures: 1 << 30}; o.maxBody = 1 << 12 })
 	// Что может прийти провайдеру: заголовки шлюза и то, что добавляет сам транспорт Go.
 	allowedUp := map[string]bool{"Content-Type": true, "Accept": true, "User-Agent": true, "Content-Length": true, "Accept-Encoding": true}
-	allowedCodes := map[int]bool{200: true, 400: true, 401: true, 404: true, 405: true, 413: true, 415: true}
+	// 503 — сбой проверки при fail_closed (срок детектора под нагрузкой фаззинга).
+	allowedCodes := map[int]bool{200: true, 400: true, 401: true, 404: true, 405: true, 413: true, 415: true, 503: true}
 	f.Fuzz(func(t *testing.T, method, target string, body []byte, ctype, hName, hValue string) {
 		if !strings.HasPrefix(target, "/") {
 			return

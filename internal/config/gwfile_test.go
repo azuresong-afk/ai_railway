@@ -36,7 +36,7 @@ func TestParseGatewayFileFixture(t *testing.T) {
 		t.Fatal("провайдер без признака external должен считаться внешним (ТЗ, 5.4)")
 	}
 	a := f.Applications[0]
-	if a.Aliases["default"] != "mock-echo" || a.Quotas.MaxTokens != 4096 || a.Keys[0].Prefix != "aisec_abcd1234" {
+	if a.Aliases["default"] != "mock-echo" || a.Quotas.MaxTokens != 4096 || a.Keys[0].Prefix != "aisec_abcd1234" || len(a.ExfilAllowDomains) != 2 {
 		t.Fatalf("приложение: %+v", a)
 	}
 }
@@ -80,6 +80,7 @@ func TestParseGatewayFileErrors(t *testing.T) {
 		"действие правила":     {"action: block", "action: drop"},
 		"поле правила":         {"severity: high\n", "severity: high\n        enabled: true\n"},
 		"порог":                {"threshold: 0.5", "threshold: 2"},
+		"домен allowlist":      {"docs.example.ru,", "https://docs.example.ru,"},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
