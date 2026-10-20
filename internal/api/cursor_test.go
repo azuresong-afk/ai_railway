@@ -41,6 +41,8 @@ func FuzzDecodeCursor(f *testing.F) {
 	f.Add(Cursor{TimeMicro: 5, ID: "x"}.Encode())
 	f.Add("")
 	f.Add("MTox")
+	f.Add("\rNzp0")
+	f.Add("Mzo\n0")
 	f.Fuzz(func(t *testing.T, s string) {
 		c, err := DecodeCursor(s)
 		if err != nil {
