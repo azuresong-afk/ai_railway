@@ -193,29 +193,80 @@ func TestEdgeCases(t *testing.T) {
 	nilRes.Settle(1)
 }
 
-// Пользователей больше предела: память ограничена, лишние делят общую
-// корзину — их суммарная частота всё равно ограничена.
+// Пользователей больше предела: память ограничена, лишние делятся на
+// OverflowBuckets корзин по хешу — новые пользователи не получают отказ все
+// разом (ревью 1.17–1.21, п. 8), а их суммарная частота ограничена.
 func TestUserTableBounded(t *testing.T) {
 	l, clk := newTestLimiter(config.Quotas{RequestsPerMinutePerUser: 1})
-	for i := range MaxTrackedPerApp + 50 {
+	for i := range MaxTrackedPerApp {
 		if _, err := l.Admit(QuotaRequest{App: "app", User: fmt.Sprint("u", i)}); err != nil {
-			// сверх предела пользователи делят одну корзину: первый проходит, остальные нет
-			if i < MaxTrackedPerApp {
-				t.Fatalf("пользователь %d: %v", i, err)
-			}
+			t.Fatalf("пользователь %d: %v", i, err)
 		}
 	}
-	if n := len(l.apps["app"].users.m); n > MaxTrackedPerApp+1 {
-		t.Fatalf("записей %d", n)
+	// Сверх предела: 1000 новых пользователей по одному запросу. С одной
+	// общей корзиной прошёл бы один; с 4096 корзинами по хешу отказ — только
+	// при совпадении корзины (в среднем около 11 %).
+	const extra = 1000
+	denied := 0
+	for i := range extra {
+		if _, err := l.Admit(QuotaRequest{App: "app", User: fmt.Sprint("x", i)}); err != nil {
+			exceeded(t, err, QuotaRequestsPerMinutePerUser, "DM-36")
+			denied++
+		}
+	}
+	if denied > extra/4 {
+		t.Fatalf("отказано %d из %d новых пользователей сверх предела", denied, extra)
+	}
+	u := l.apps["app"].users
+	if len(u.m) > MaxTrackedPerApp || len(u.over) > OverflowBuckets {
+		t.Fatalf("записей %d, корзин %d", len(u.m), len(u.over))
+	}
+	// Пользователь в корзине сверх предела ограничен её лимитом.
+	if _, err := l.Admit(QuotaRequest{App: "app", User: "x0"}); err == nil {
+		t.Fatal("повторный запрос пользователя сверх предела прошёл")
 	}
 	// через минуту устаревшие записи вычищаются и новые пользователи снова отслеживаются
 	clk.advance(2 * time.Minute)
 	if _, err := l.Admit(QuotaRequest{App: "app", User: "fresh"}); err != nil {
 		t.Fatal(err)
 	}
-	if n := len(l.apps["app"].users.m); n > 2 {
-		t.Fatalf("после чистки записей %d", n)
+	if len(u.m) > 2 || len(u.over) != 0 {
+		t.Fatalf("после чистки записей %d, корзин %d", len(u.m), len(u.over))
 	}
+}
+
+// TestDM36_WindowFromStart — корзины считаются от запуска лимитера
+// (now.Sub(start), монотонные часы), а не от UnixNano: перевод системных
+// часов назад не обнуляет окна (ревью 1.17–1.21, п. 13). Запуск в 12:00:00,9:
+// при корзинах по UnixNano запросы ушли бы из окна через 59,1 с.
+func TestDM36_WindowFromStart(t *testing.T) {
+	clk := &fakeClock{t: time.Date(2026, 10, 19, 12, 0, 0, 900_000_000, time.UTC)}
+	l := newLimiter([]config.Application{{ID: "app", Quotas: config.Quotas{RequestsPerMinute: 2}}}, clk.now)
+	for range 2 {
+		if _, err := l.Admit(QuotaRequest{App: "app"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	clk.advance(59500 * time.Millisecond)
+	e := exceeded(t, admitErr(l), QuotaRequestsPerMinute, "DM-36")
+	if e.RetryAfter <= 0 || e.RetryAfter > time.Second {
+		t.Fatalf("RetryAfter %v", e.RetryAfter)
+	}
+	clk.advance(e.RetryAfter)
+	if err := admitErr(l); err != nil {
+		t.Fatalf("после RetryAfter: %v", err)
+	}
+	// Время раньше запуска (часы без монотонной составляющей) — первая
+	// корзина, а не отрицательный номер.
+	w := newWindow(clk.t, time.Second, 60)
+	if b := w.bucket(clk.t.Add(-time.Hour)); b != 1 {
+		t.Fatalf("корзина до запуска: %d", b)
+	}
+}
+
+func admitErr(l *Limiter) error {
+	_, err := l.Admit(QuotaRequest{App: "app"})
+	return err
 }
 
 // Параллельные запросы не проскакивают лимит (go test -race).

@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"errors"
+	"hash/maphash"
 	"sync"
 	"time"
 
@@ -33,10 +34,17 @@ const (
 // MaxTrackedPerApp — предел различных пользователей (и ключей) одного
 // приложения в памяти. Идентификатор пользователя приходит от приложения
 // (заголовок или поле запроса), поэтому его разнообразие не должно
-// исчерпать память: сверх предела пользователи делят одну общую корзину.
+// исчерпать память: сверх предела пользователи делятся на OverflowBuckets
+// корзин по хешу идентификатора.
 const MaxTrackedPerApp = 10000
 
-const overflowKey = "\x00overflow"
+// OverflowBuckets — корзин для пользователей сверх MaxTrackedPerApp. Одна
+// общая корзина отказывала бы всем новым пользователям крупного приложения
+// сразу (ревью 1.17–1.21, п. 8); с хешем пользователь делит лимит в среднем
+// с немногими. Хеш — maphash со случайным зерном экземпляра: подобрать
+// идентификатор в корзину жертвы заранее нельзя (идентификатор — к тому же
+// псевдоним HMAC).
+const OverflowBuckets = 4096
 
 // ErrUnknownApp — приложения нет в конфигурации квот.
 var ErrUnknownApp = errors.New("квоты: неизвестное приложение")
@@ -74,6 +82,10 @@ type Limiter struct {
 	apps map[string]*appQuota
 }
 
+// Номера корзин считаются от запуска по монотонным часам (now.Sub(start)):
+// перевод системных часов назад не обнуляет окна и не продлевает их
+// (ревью 1.17–1.21, п. 13).
+
 type appQuota struct {
 	q          config.Quotas
 	rpm        *window
@@ -86,11 +98,12 @@ func NewLimiter(apps []config.Application) *Limiter { return newLimiter(apps, ti
 
 func newLimiter(apps []config.Application, now func() time.Time) *Limiter {
 	l := &Limiter{now: now, apps: map[string]*appQuota{}}
+	start := now()
 	for _, a := range apps {
 		l.apps[a.ID] = &appQuota{
 			q:   a.Quotas,
-			rpm: newWindow(time.Second, 60), tpm: newWindow(time.Second, 60), tpd: newWindow(time.Hour, 24),
-			users: newTracked(), key: newTracked(),
+			rpm: newWindow(start, time.Second, 60), tpm: newWindow(start, time.Second, 60), tpd: newWindow(start, time.Hour, 24),
+			users: newTracked(start), key: newTracked(start),
 		}
 	}
 	return l
@@ -187,18 +200,23 @@ func (rs *Reservation) Settle(actual int) {
 	rs.a.tpd.addAt(now, rs.tpdB, delta)
 }
 
-// window — скользящее окно из n корзин по step.
+// window — скользящее окно из n корзин по step, отсчёт от start.
 type window struct {
-	step time.Duration
-	idx  []int64 // номер корзины, записанной в слот
-	cnt  []int64
+	start time.Time
+	step  time.Duration
+	idx   []int64 // номер корзины, записанной в слот
+	cnt   []int64
 }
 
-func newWindow(step time.Duration, n int) *window {
-	return &window{step: step, idx: make([]int64, n), cnt: make([]int64, n)}
+func newWindow(start time.Time, step time.Duration, n int) *window {
+	return &window{start: start, step: step, idx: make([]int64, n), cnt: make([]int64, n)}
 }
 
-func (w *window) bucket(now time.Time) int64 { return now.UnixNano()/int64(w.step) + 1 }
+// elapsed — время от start по монотонным часам; не меньше нуля.
+func (w *window) elapsed(now time.Time) time.Duration { return max(now.Sub(w.start), 0) }
+
+// bucket — номер корзины от 1 (0 в idx — пустой слот).
+func (w *window) bucket(now time.Time) int64 { return int64(w.elapsed(now)/w.step) + 1 }
 
 // add прибавляет v к текущей корзине; отрицательная поправка не опускает
 // корзину ниже нуля.
@@ -238,18 +256,23 @@ func (w *window) sum(now time.Time) (total int64, retry time.Duration) {
 		return 0, 0
 	}
 	// корзина oldest выходит из окна, когда номер текущей станет oldest+n
-	retry = time.Duration((oldest+n-1)*int64(w.step)) - time.Duration(now.UnixNano())
+	retry = time.Duration((oldest+n-1)*int64(w.step)) - w.elapsed(now)
 	return total, max(retry, time.Millisecond)
 }
 
 // tracked — окна по ключу (пользователь, ключ приложения) с пределом числа
-// записей.
+// записей; сверх предела — окна корзин по хешу ключа.
 type tracked struct {
+	start time.Time
 	m     map[string]*window
+	over  map[uint64]*window
+	seed  maphash.Seed
 	swept time.Time
 }
 
-func newTracked() *tracked { return &tracked{m: map[string]*window{}} }
+func newTracked(start time.Time) *tracked {
+	return &tracked{start: start, m: map[string]*window{}, over: map[uint64]*window{}, seed: maphash.MakeSeed()}
+}
 
 func (t *tracked) get(now time.Time, key string, n int) *window {
 	if w, ok := t.m[key]; ok {
@@ -259,25 +282,33 @@ func (t *tracked) get(now time.Time, key string, n int) *window {
 		t.sweep(now)
 	}
 	if len(t.m) >= MaxTrackedPerApp {
-		key = overflowKey
-		if w, ok := t.m[key]; ok {
-			return w
+		b := maphash.String(t.seed, key) % OverflowBuckets
+		w, ok := t.over[b]
+		if !ok {
+			w = newWindow(t.start, time.Second, n)
+			t.over[b] = w
 		}
+		return w
 	}
-	w := newWindow(time.Second, n)
+	w := newWindow(t.start, time.Second, n)
 	t.m[key] = w
 	return w
 }
 
 // sweep удаляет записи без живых запросов; не чаще раза в секунду.
 func (t *tracked) sweep(now time.Time) {
-	if now.Sub(t.swept) < time.Second {
+	if !t.swept.IsZero() && now.Sub(t.swept) < time.Second && now.Sub(t.swept) >= 0 {
 		return
 	}
 	t.swept = now
 	for k, w := range t.m {
-		if total, _ := w.sum(now); total == 0 && k != overflowKey {
+		if total, _ := w.sum(now); total == 0 {
 			delete(t.m, k)
+		}
+	}
+	for k, w := range t.over {
+		if total, _ := w.sum(now); total == 0 {
+			delete(t.over, k)
 		}
 	}
 }
