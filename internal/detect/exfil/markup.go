@@ -202,12 +202,12 @@ func breakLine(body string) bool {
 	if body == "" {
 		return false
 	}
-	switch c := body[0]; {
-	case c == '#' || c == '>' || c == '|':
+	switch c := body[0]; c {
+	case '#', '>', '|':
 		return true
-	case c == '<':
+	case '<':
 		return len(body) > 1 && (letter(body[1]) || body[1] == '/' || body[1] == '!' || body[1] == '?')
-	case c == '*' || c == '-' || c == '_':
+	case '*', '-', '_':
 		// Разделитель: от трёх одинаковых знаков, между ними пробелы.
 		k := 0
 		for i := 0; i < len(body); i++ {
@@ -221,7 +221,7 @@ func breakLine(body string) bool {
 		}
 		// Подчёркивание заголовка «---» — без пробелов между знаками.
 		return k >= 3 || c == '-' && strings.Trim(strings.TrimRight(body, " \t\r"), "-") == ""
-	case c == '=':
+	case '=':
 		return strings.Trim(strings.TrimRight(body, " \t\r"), "=") == ""
 	}
 	return false
