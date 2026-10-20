@@ -1,7 +1,8 @@
 # Контракт API — источник истины (ТЗ, раздел 13).
 # API управления появляется на этапе 2; здесь — интерфейсы шлюза для приложений,
-# которые добавляются по мере реализации (OpenAI-совместимые chat/completions
-# и models описываются отдельно).
+# которые добавляются по мере реализации. OpenAI-совместимые /v1/chat/completions
+# и /v1/models, а также /healthz и /readyz пока описаны только в
+# docs/cert/attack-surface.md; их схемы — задача этапа 2 (контрактные тесты).
 openapi: 3.1.0
 info:
   title: AISec API
@@ -112,7 +113,7 @@ components:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
     QuotaExceeded:
-      description: Превышена квота приложения (`quota_exceeded`)
+      description: Превышена квота приложения (`quota_exceeded`) или частота неудачных попыток аутентификации с адреса клиента (`auth_rate_limited`, тип `rate_limit_error`, DM-38)
       headers:
         Retry-After: { schema: { type: integer } }
       content:
@@ -209,7 +210,7 @@ components:
               location: { type: string, description: 'text или messages[i].content' }
               threat: { type: string, description: ID строки матрицы обнаружения (DM-NN). }
         findings_truncated: { type: boolean, description: Находок больше 1024, показаны первые. }
-        text: { type: string, description: 'Текст после действий политики; изменён только при decision=redact (в monitor действия не применяются). Не использовать без проверки blocked. Нет при блокировке.' }
+        text: { type: string, description: 'Текст после действий политики; изменён только при decision=redact; в monitor маскирование входа применяется, если провайдер приложения внешний (ТЗ 5.3), остальные действия — нет. Не использовать без проверки blocked. Нет при блокировке.' }
         messages:
           type: array
           description: Преобразованные сообщения в том же порядке; нет при блокировке.

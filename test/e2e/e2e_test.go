@@ -121,6 +121,10 @@ type env struct {
 	// адрес mock-llm.
 	keys map[string]string
 	mock string
+	// seen — сколько событий gateway_request приложения уже вернул waitEvent:
+	// следующий вызов ищет только среди более новых (тесты стенда идут
+	// последовательно).
+	seen map[string]int
 }
 
 // gatewayConfig пишет файл конфигурации шлюза с одним приложением и

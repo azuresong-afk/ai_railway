@@ -17,6 +17,7 @@
 | `FuzzParse` | `tools/internal/components` | Разбор реестра `components.yaml` со строгой схемой | 0.7 |
 | `FuzzParseModulesTxt` | `tools/internal/components` | Разбор `vendor/modules.txt` | 0.7 |
 | `FuzzParseSARIF` | `tools/sast-triage` | Разбор отчёта SARIF 2.1.0 | 0.5 |
+| `FuzzReadManifest`, `FuzzParseGoMod`, `FuzzParseModules`, `FuzzParseGoSum` | `tools/vendor-check` | Разбор манифеста `vendor/`, `go.mod`, `vendor/modules.txt`, `go.sum` | 1.28, ревью этапа 1 |
 | `FuzzParseTriage` | `tools/sast-triage` | Разбор файла разметки SAST | 0.5 |
 | `FuzzParseBOM` | `tools/sbom` | Разбор SBOM CycloneDX и проверка обязательных полей | 0.8 |
 | `FuzzParseMatrix` | `tools/dm-coverage` | Разбор матрицы 5.16 из ТЗ | 0.9 |

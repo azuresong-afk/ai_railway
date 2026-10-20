@@ -10,15 +10,18 @@
 //     изменённый файл — нарушение;
 //   - -update: пересчитывает манифест (после go mod vendor, изменение попадает
 //     в дифф ревью);
-//   - -verify (нужна сеть): go mod vendor во временный каталог и сравнение с
-//     vendor/. Это настоящая сверка с go.sum и sum.golang.org.
+//   - -verify (нужна сеть): go mod vendor во временный каталог с пустым кешем
+//     модулей и сравнение с vendor/. Модули скачиваются заново и сверяются
+//     с хешами go.sum, поэтому отравленный кеш сборочной машины не помогает.
+//
+// Директивы replace запрещены: подменённый модуль сверялся бы по хешам
+// другого пути, а лицензии и реестр компонентов — по исходному.
 package main
 
 import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"encoding/hex"
 	"flag"
 	"fmt"
@@ -31,6 +34,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 )
 
 const (
@@ -56,10 +61,10 @@ func main() {
 		if err != nil {
 			fail(err)
 		}
-		if err := os.WriteFile(filepath.Join(*root, manifestPath), formatManifest(sums), 0o644); err != nil { // #nosec G306 -- публичный документ
+		if err := os.WriteFile(filepath.Join(*root, manifestPath), formatManifest(sums), 0o644); err != nil { //nolint:gosec // G306: манифест — публичный документ в репозитории, 0644 как у остальных файлов
 			fail(err)
 		}
-		fmt.Printf("vendor-check: манифест обновлён, файлов: %d\n", len(sums))
+		fmt.Fprintf(os.Stdout, "vendor-check: манифест обновлён, файлов: %d\n", len(sums))
 		return
 	case *verify:
 		p, err := verifyRebuild(*root, fsys)
@@ -89,7 +94,11 @@ func fail(err error) {
 }
 
 // module — запись «# путь версия» из vendor/modules.txt.
-type module struct{ path, version string }
+type module struct {
+	path, version string
+	// replaced — в строке есть «=> …» (go.mod с replace).
+	replaced bool
+}
 
 // check — проверка без сети.
 func check(fsys fs.FS) ([]string, error) {
@@ -98,9 +107,12 @@ func check(fsys fs.FS) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	req, err := parseRequires(fsys)
+	req, replaces, err := parseRequires(fsys)
 	if err != nil {
 		return nil, err
+	}
+	for _, r := range replaces {
+		problems = append(problems, fmt.Sprintf("go.mod: директива replace запрещена (%s)", r))
 	}
 	sums, err := parseGoSum(fsys)
 	if err != nil {
@@ -108,6 +120,9 @@ func check(fsys fs.FS) ([]string, error) {
 	}
 	have := map[string]string{}
 	for _, m := range mods {
+		if m.replaced {
+			problems = append(problems, fmt.Sprintf("%s: замена модуля в vendor/modules.txt запрещена", m.path))
+		}
 		have[m.path] = m.version
 		if v, ok := req[m.path]; !ok {
 			problems = append(problems, fmt.Sprintf("%s: модуль есть в vendor/modules.txt, но не в go.mod", m.path))
@@ -164,8 +179,12 @@ func diff(want, got map[string]string, wantName, gotName string) []string {
 // fsys. Символические ссылки и прочие не обычные файлы — ошибка: в vendor/
 // их быть не должно.
 func hashTree(fsys fs.FS, dir string) (map[string]string, error) {
+	hasher, err := sha256Hasher()
+	if err != nil {
+		return nil, err
+	}
 	res := map[string]string{}
-	err := fs.WalkDir(fsys, dir, func(p string, d fs.DirEntry, err error) error {
+	err = fs.WalkDir(fsys, dir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -179,8 +198,7 @@ func hashTree(fsys fs.FS, dir string) (map[string]string, error) {
 		if err != nil {
 			return err
 		}
-		sum := sha256.Sum256(b)
-		res[p] = hex.EncodeToString(sum[:])
+		res[p] = hex.EncodeToString(hasher.Sum(b))
 		return nil
 	})
 	return res, err
@@ -236,7 +254,7 @@ func readManifest(fsys fs.FS) (map[string]string, error) {
 			continue
 		}
 		h, p, ok := strings.Cut(line, "  ")
-		if !ok || len(h) != 64 || !isHex(h) || !strings.HasPrefix(p, "vendor/") || path.Clean(p) != p {
+		if !ok || len(h) != 64 || !isHex(h) || !strings.HasPrefix(p, "vendor/") || path.Clean(p) != p || strings.ContainsAny(p, " \t\r") {
 			return nil, fmt.Errorf("%s:%d: неверная строка манифеста", manifestPath, n)
 		}
 		if _, dup := res[p]; dup {
@@ -271,19 +289,21 @@ func parseModules(fsys fs.FS) ([]module, error) {
 		if len(f) < 2 {
 			return nil, fmt.Errorf("%s: неверная строка %q", modulesPath, line)
 		}
-		mods = append(mods, module{f[0], f[1]})
+		mods = append(mods, module{path: f[0], version: f[1], replaced: len(f) > 2 && f[2] == "=>"})
 	}
 	return mods, nil
 }
 
-// parseRequires читает require из go.mod (одиночные и блочные), без замен.
-func parseRequires(fsys fs.FS) (map[string]string, error) {
+// parseRequires читает require из go.mod (одиночные и блочные) и возвращает
+// отдельно строки директив replace.
+func parseRequires(fsys fs.FS) (map[string]string, []string, error) {
 	b, err := readLimited(fsys, "go.mod", maxManifest)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	res := map[string]string{}
-	inBlock := false
+	var replaces []string
+	inBlock, inReplace := false, false
 	for _, line := range strings.Split(string(b), "\n") {
 		line = strings.TrimSpace(strings.SplitN(line, "//", 2)[0])
 		switch {
@@ -291,6 +311,14 @@ func parseRequires(fsys fs.FS) (map[string]string, error) {
 			inBlock = true
 		case inBlock && line == ")":
 			inBlock = false
+		case line == "replace (" || line == "replace(":
+			inReplace = true
+		case inReplace && line == ")":
+			inReplace = false
+		case inReplace && line != "":
+			replaces = append(replaces, line)
+		case line == "replace" || strings.HasPrefix(line, "replace ") || strings.HasPrefix(line, "replace\t"):
+			replaces = append(replaces, line)
 		case inBlock && line != "":
 			if f := strings.Fields(line); len(f) == 2 {
 				res[f[0]] = f[1]
@@ -301,7 +329,7 @@ func parseRequires(fsys fs.FS) (map[string]string, error) {
 			}
 		}
 	}
-	return res, nil
+	return res, replaces, nil
 }
 
 // parseGoSum возвращает множество «путь версия» и «путь версия/go.mod»,
@@ -321,22 +349,30 @@ func parseGoSum(fsys fs.FS) (map[string]bool, error) {
 	return res, nil
 }
 
-// verifyRebuild выполняет go mod vendor во временный каталог (с сетью и
-// проверкой по go.sum / sum.golang.org) и сравнивает результат с vendor/.
+// verifyRebuild выполняет go mod vendor во временный каталог с пустым кешем
+// модулей (модули скачиваются заново и сверяются с go.sum) и сравнивает
+// результат с vendor/.
 func verifyRebuild(root string, fsys fs.FS) ([]string, error) {
+	// Сначала проверка без сети: replace и расхождения go.mod — сразу отказ.
+	if p, err := check(fsys); err != nil || len(p) > 0 {
+		return p, err
+	}
 	tmp, err := os.MkdirTemp("", "vendor-verify-")
 	if err != nil {
 		return nil, err
 	}
 	defer os.RemoveAll(tmp) //nolint:errcheck // временный каталог
 	out := filepath.Join(tmp, "vendor")
+	modcache := filepath.Join(tmp, "modcache")
 
 	ctx, cancel := context.WithTimeout(context.Background(), verifyLimit)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "go", "mod", "vendor", "-o", out) // #nosec G204 -- фиксированные аргументы
+	cmd := exec.CommandContext(ctx, "go", "mod", "vendor", "-o", out) //nolint:gosec // G204: аргументы фиксированы, out — временный каталог этой команды
 	cmd.Dir = root
-	// Сеть нужна, vendor/ при этом не читается: -mod=mod.
-	cmd.Env = append(os.Environ(), "GOFLAGS=-mod=mod")
+	// Сеть нужна, vendor/ при этом не читается: -mod=mod. Пустой кеш модулей —
+	// чтобы всё скачалось и сверилось с go.sum; -modcacherw — чтобы его можно
+	// было удалить.
+	cmd.Env = append(os.Environ(), "GOFLAGS=-mod=mod -modcacherw", "GOMODCACHE="+modcache)
 	if msg, err := cmd.CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("go mod vendor: %w\n%s", err, msg)
 	}
@@ -351,4 +387,13 @@ func verifyRebuild(root string, fsys fs.FS) ([]string, error) {
 	p := diff(want, got, "свежей сборке", "vendor/")
 	sort.Strings(p)
 	return p, nil
+}
+
+// sha256Hasher — SHA-256 профиля standard из internal/crypto (Р9 этапа 0).
+func sha256Hasher() (aisecCrypto.Hasher, error) {
+	p, err := aisecCrypto.New(aisecCrypto.ProfileStandard)
+	if err != nil {
+		return nil, err
+	}
+	return p.Hasher()
 }

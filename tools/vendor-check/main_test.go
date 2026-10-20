@@ -64,6 +64,18 @@ func TestVendorCheck(t *testing.T) {
 		{"модуль только в vendor", func(f fstest.MapFS) { f["go.mod"] = &fstest.MapFile{Data: []byte("module x\n")} }, "не в go.mod"},
 		{"нет манифеста", func(f fstest.MapFS) { delete(f, manifestPath) }, "ошибка: манифест"},
 		{"битый манифест", func(f fstest.MapFS) { f[manifestPath] = &fstest.MapFile{Data: []byte("zz  vendor/a\n")} }, "неверная строка"},
+		{"replace в go.mod", func(f fstest.MapFS) {
+			f["go.mod"] = &fstest.MapFile{Data: []byte(goMod + "\nreplace example.com/m => evil.example/m v6.6.6\n")}
+		}, "директива replace запрещена"},
+		{"replace блоком в go.mod", func(f fstest.MapFS) {
+			f["go.mod"] = &fstest.MapFile{Data: []byte(goMod + "\nreplace (\n\texample.com/m => ../m\n)\n")}
+		}, "директива replace запрещена (example.com/m => ../m)"},
+		{"замена в modules.txt", func(f fstest.MapFS) {
+			f["vendor/modules.txt"] = &fstest.MapFile{Data: []byte("# example.com/m v1.0.0 => evil.example/m v6.6.6\n## explicit\nexample.com/m\n")}
+		}, "замена модуля в vendor/modules.txt запрещена"},
+		{"пробел в пути манифеста", func(f fstest.MapFS) {
+			f[manifestPath] = &fstest.MapFile{Data: []byte(strings.Repeat("a", 64) + "  vendor/a  x\n")}
+		}, "неверная строка"},
 		{"путь манифеста вне vendor", func(f fstest.MapFS) {
 			f[manifestPath] = &fstest.MapFile{Data: []byte(strings.Repeat("a", 64) + "  ../etc/passwd\n")}
 		}, "неверная строка"},
@@ -102,6 +114,24 @@ func FuzzParseGoMod(f *testing.F) {
 	f.Add([]byte(goMod))
 	f.Add([]byte("require (\n\ta b\n"))
 	f.Fuzz(func(t *testing.T, data []byte) {
-		_, _ = parseRequires(fstest.MapFS{"go.mod": {Data: data}})
+		_, _, _ = parseRequires(fstest.MapFS{"go.mod": {Data: data}})
+	})
+}
+
+// FuzzParseModules — разборщик vendor/modules.txt не паникует.
+func FuzzParseModules(f *testing.F) {
+	f.Add([]byte(modTxt))
+	f.Add([]byte("# a v1 => b v2\n# \n#  \n"))
+	f.Fuzz(func(t *testing.T, data []byte) {
+		_, _ = parseModules(fstest.MapFS{modulesPath: {Data: data}})
+	})
+}
+
+// FuzzParseGoSum — разборщик go.sum не паникует.
+func FuzzParseGoSum(f *testing.F) {
+	f.Add([]byte(goSum))
+	f.Add([]byte("a b\n\n a b h1:\n"))
+	f.Fuzz(func(t *testing.T, data []byte) {
+		_, _ = parseGoSum(fstest.MapFS{"go.sum": {Data: data}})
 	})
 }

@@ -67,7 +67,7 @@ func replyMessage(t *testing.T, msg map[string]any) http.HandlerFunc {
 			t.Error(err)
 			return
 		}
-		w.Write(b) //nolint:errcheck,gosec // тестовый провайдер
+		w.Write(b) //nolint:errcheck,gosec // G104: ответ тестового провайдера; ошибка записи проявится у клиента теста
 	}
 }
 

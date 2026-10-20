@@ -260,6 +260,7 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rec.usage(resp.Usage)
+	rec.out = func() *chat.Response { return resp }
 	// Приложение видит то имя модели, которое запросило (в том числе
 	// псевдоним), а не имя у провайдера (DM-33).
 	resp.Model = requested
@@ -312,6 +313,7 @@ func (h *ChatHandler) admit(w http.ResponseWriter, r *http.Request, rec *record,
 		size += len(tl.Function.Parameters)
 	}
 	maxOut, _ := req.EffectiveMaxTokens()
+	rec.inTokens = estimateTokens(size)
 	return h.admitSize(w, r, rec, user, size, estimateTokens(size)+max(maxOut, 0))
 }
 
@@ -402,13 +404,18 @@ func requestTexts(req *chat.Request) ([]inspectText, []textRef) {
 		if len(ps) < 2 {
 			continue
 		}
-		var b strings.Builder
-		for _, p := range ps {
-			b.WriteString(texts[p].Text)
+		for _, sep := range []string{"", "\n"} {
+			var b strings.Builder
+			for j, p := range ps {
+				if j > 0 {
+					b.WriteString(sep)
+				}
+				b.WriteString(texts[p].Text)
+			}
+			texts = append(texts, inspectText{Text: b.String(), Source: texts[ps[0]].Source,
+				Location: fmt.Sprintf("messages[%d].content", m), Parts: ps, Sep: sep})
+			refs = append(refs, textRef{tool: -1})
 		}
-		texts = append(texts, inspectText{Text: b.String(), Source: texts[ps[0]].Source,
-			Location: fmt.Sprintf("messages[%d].content", m), Parts: ps})
-		refs = append(refs, textRef{tool: -1})
 	}
 	for i, tl := range req.Tools {
 		if tl.Function.Description == "" {
