@@ -183,15 +183,15 @@ func TestEmbeddingsProviderErrorsAndBadResponse(t *testing.T) {
 		"ошибка провайдера": {func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusTooManyRequests)
-			_, _ = io.WriteString(w, `{"error":{"message":"лимит","type":"rate_limit_error","code":"rate_limit"}}`)
+			_, _ = io.WriteString(w, `{"error":{"message":"лимит","type":"rate_limit_error","code":"rate_limit"}}`) //nolint:gosec // G104: тестовый провайдер, ошибка записи не важна
 		}, http.StatusTooManyRequests, "rate_limit"},
 		"векторов меньше, чем строк": {func(w http.ResponseWriter, _ *http.Request) {
-			_, _ = io.WriteString(w, `{"object":"list","data":[],"model":"m"}`)
+			_, _ = io.WriteString(w, `{"object":"list","data":[],"model":"m"}`) //nolint:gosec // G104: тестовый провайдер, ошибка записи не важна
 		}, http.StatusBadGateway, "upstream_bad_response"},
-		"не JSON": {func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, `<html>`) },
+		"не JSON": {func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, `<html>`) }, //nolint:gosec // G104: тестовый провайдер, ошибка записи не важна
 			http.StatusBadGateway, "upstream_bad_response"},
 		"пустой вектор": {func(w http.ResponseWriter, _ *http.Request) {
-			_, _ = io.WriteString(w, `{"object":"list","data":[{"index":0,"embedding":[]}]}`)
+			_, _ = io.WriteString(w, `{"object":"list","data":[{"index":0,"embedding":[]}]}`) //nolint:gosec // G104: тестовый провайдер, ошибка записи не важна
 		}, http.StatusBadGateway, "upstream_bad_response"},
 	} {
 		t.Run(name, func(t *testing.T) {

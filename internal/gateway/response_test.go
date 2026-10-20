@@ -67,7 +67,7 @@ func replyMessage(t *testing.T, msg map[string]any) http.HandlerFunc {
 			t.Error(err)
 			return
 		}
-		w.Write(b) //nolint:errcheck // тестовый провайдер
+		w.Write(b) //nolint:errcheck,gosec // тестовый провайдер
 	}
 }
 
@@ -164,7 +164,7 @@ func TestDM09_PIIInResponse(t *testing.T) {
 
 // Покрывает: DM-10
 func TestDM10_SecretInResponseRedacted(t *testing.T) {
-	key := "-----BEGIN RSA PRIVATE KEY-----\nhp57Dp7UAPS84pTAbCwX0mUucOEsGGn6bAcMIhvXC5XyUsuufLq7FeFnzgZNTNWf\nLljjw7Ti+5Tpziu/0ns1J22se68H3wzhnZi2teU29GgYqGsci5h14VdkWZWUbA2g\n-----END RSA PRIVATE KEY-----"
+	key := "-----BEGIN RSA PRIVATE KEY-----\nhp57Dp7UAPS84pTAbCwX0mUucOEsGGn6bAcMIhvXC5XyUsuufLq7FeFnzgZNTNWf\nLljjw7Ti+5Tpziu/0ns1J22se68H3wzhnZi2teU29GgYqGsci5h14VdkWZWUbA2g\n-----END RSA PRIVATE KEY-----" //nolint:gosec // G101: синтетический ключ для теста DM-10, не выдан и нигде не используется
 	up, _ := newUpstream(t, replyText(t, "Ключ:\n"+key))
 	g := newGateway(t, up.URL, func(o *gwOpts) { o.app = enforce })
 	resp := postChat(t, g, chatBody, nil)
