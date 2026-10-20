@@ -78,6 +78,16 @@
 - **Конфигурация шлюза.** Раздел `policies` файла конфигурации (решение Р2); ID политики заказчика не совпадает с шаблоном; приложение ссылается на политику из `policies` или на шаблон, пусто — `base`. Политика приложения находится через `policy.Resolve`.
 - **Тесты.** `TestPriorityTable`, `TestConflictStrongestWins`, `TestDM01_InjectionBlockedInEnforceLoggedInMonitor`, `TestDM31_MonitorProtectsDataForExternalProvider`, `TestDM32_SecretsRedacted`, `TestMonitorOutputNotApplied`, `TestEmbeddingsPseudonymizeAsRedact`, `TestDM14_NonText`, `TestRuleConditions`, `TestModeResolution`, `TestBlockMessage`, `TestCompileChecksDetectors`, `TestTemplates`, `TestTemplateOmitsMissingDetectors`, `TestPIIStrictInMonitorStillProtects`, `TestResolve`, `TestParseRejects`, `TestMarshalRoundTrip`, `FuzzParse`; в `internal/config` — `TestGatewayFilePolicyReference`, `TestParseGatewayFileErrors`.
 
+## Псевдонимизация (ТЗ, 5.1)
+Функция исключения передачи защищаемой информации разработчику модели (ТЗ, 2.1; DM-31). Статус — частично (задача 1.20): пакет `internal/pseudonym`, формат и правила — ADR-0005; подключение к конвейеру шлюза — задача 1.23.
+
+- **Замена.** `Vault.Protect` заменяет фрагменты с действием `pseudonymize` псевдонимом `[[ТИП_N]]`, с `redact` — маркером `[[ТИП]]`; пересекающиеся фрагменты объединяются, `redact` среди них делает объединение необратимым. Одинаковое значение — один псевдоним; псевдонимы, которые уже есть в запросе (`Reserve`), не выдаются. Неверные позиции или действие — ошибка, текст не возвращается.
+- **Обратная подстановка.** `Vault.Restore` (текст ответа) и `Vault.RestoreJSON` (аргументы `tool_calls`) возвращают только значения из словаря этого запроса и принимают ограниченный набор искажений моделью. Не восстанавливаются: искажённые сильнее допустимого, неизвестные номера, псевдонимы внутри адреса (DM-11), в JSON — вне строки (DM-13); значение в JSON экранируется. Восстановленное значение повторно не разбирается.
+- **Метрика неудачных подстановок** — `Stats.Failed()` (неизвестный номер, небезопасное место, превышение объёма); счётчики значений не содержат.
+- **Пределы.** До 4096 значений в словаре (сверх — необратимое маскирование), до 4 МиБ вставленных значений на ответ.
+- **Словарь** — только в памяти на время запроса; `String`, `GoString`, `LogValue` печатают только число записей; `Clear` удаляет значения. Режим хранения `full` — этап 2 (решение Р3).
+- **Тесты.** `TestDM31_PseudonymizeRoundTrip`, `TestDM31_ExperimentMockLLM`, `TestExperimentCollisions`, `TestProtectOverlap`, `TestProtectRejects`, `TestReserveExisting`, `TestFallbackToRedact`, `TestRestoreTolerant`, `TestRestoreUnchanged`, `TestRestoreNoRecursion`, `TestDM11_RestoreNotInURL`, `TestDM13_RestoreJSON`, `TestRestoreLimit`, `TestVaultNoLeak`, `FuzzProtectRestore`.
+
 ## Криптопрофиль (ТЗ, раздел 10)
 Реализован в `internal/crypto`; импорт `crypto/*` вне пакета запрещён линтером (`make lint-selftest` это доказывает).
 
