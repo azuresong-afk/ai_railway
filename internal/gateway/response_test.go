@@ -356,11 +356,14 @@ type streamResult struct {
 	raw              string
 }
 
-// parseStream разбирает тело ответа шлюза на потоковый запрос.
-func parseStream(t *testing.T, status int, contentType string, b []byte) streamResult {
+func readStream(t *testing.T, resp *http.Response) streamResult {
 	t.Helper()
-	res := streamResult{status: status, raw: string(b)}
-	if contentType != "text/event-stream" {
+	b, err := io.ReadAll(resp.Body)
+	if cerr := resp.Body.Close(); err != nil || cerr != nil {
+		t.Fatal(err, cerr)
+	}
+	res := streamResult{status: resp.StatusCode, raw: string(b)}
+	if resp.Header.Get("Content-Type") != "text/event-stream" {
 		var e struct {
 			Error struct{ Code string } `json:"error"`
 		}
@@ -402,7 +405,7 @@ func parseStream(t *testing.T, status int, contentType string, b []byte) streamR
 	return res
 }
 
-// postStream отправляет потоковый запрос и читает ответ шлюза целиком.
+// postStream отправляет потоковый запрос и разбирает ответ.
 func postStream(t *testing.T, gw *httptest.Server, user string) streamResult {
 	t.Helper()
 	b, err := json.Marshal(map[string]any{"model": "m", "stream": true, "messages": []map[string]string{{"role": "user", "content": user}}})
@@ -418,11 +421,8 @@ func postStream(t *testing.T, gw *httptest.Server, user string) streamResult {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body, err := io.ReadAll(resp.Body)
-	if cerr := resp.Body.Close(); err != nil || cerr != nil {
-		t.Fatal(err, cerr)
-	}
-	return parseStream(t, resp.StatusCode, resp.Header.Get("Content-Type"), body)
+	defer resp.Body.Close() //nolint:errcheck // тело закрывает и readStream, проверяя ошибку
+	return readStream(t, resp)
 }
 
 // streamGateway — шлюз на потоке провайдера parts; mod — настройки.
