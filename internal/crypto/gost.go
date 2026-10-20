@@ -10,3 +10,13 @@ func (gost) Hasher() (Hasher, error)    { return nil, ErrNotImplemented }
 func (gost) NewMAC([]byte) (MAC, error) { return nil, ErrNotImplemented }
 func (gost) Random() (Random, error)    { return nil, ErrNotImplemented }
 func (gost) TLS() (TLSProvider, error)  { return nil, ErrNotImplemented }
+
+func (gost) PasswordHasher() (PasswordHasher, error) { return nil, ErrNotImplemented }
+func (gost) NewAEAD([]byte) (AEAD, error)            { return nil, ErrNotImplemented }
+func (gost) GenerateSigner() (Signer, error)         { return nil, ErrNotImplemented }
+func (gost) NewSigner([]byte) (Signer, error)        { return nil, ErrNotImplemented }
+func (gost) NewVerifier([]byte) (Verifier, error)    { return nil, ErrNotImplemented }
+
+// NewTOTP: применимость исключения HMAC-SHA-1 в профиле gost решается вместе
+// с выбором СКЗИ на этапе 6 (ADR-0006).
+func (gost) NewTOTP([]byte) (TOTP, error) { return nil, ErrNotImplemented }

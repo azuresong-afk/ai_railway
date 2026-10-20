@@ -30,6 +30,27 @@ func (standard) Random() (Random, error) { return systemRandom{}, nil }
 
 func (standard) TLS() (TLSProvider, error) { return standardTLS{}, nil }
 
+func (standard) PasswordHasher() (PasswordHasher, error) { return newArgon2id(systemRandom{}), nil }
+
+func (standard) NewAEAD(key []byte) (AEAD, error) { return newAESGCM(key) }
+
+func (standard) GenerateSigner() (Signer, error) {
+	seed, err := RandomBytes(systemRandom{}, SigningSeedSize)
+	if err != nil {
+		return nil, err
+	}
+	defer clear(seed)
+	return newEd25519Signer(seed)
+}
+
+func (standard) NewSigner(seed []byte) (Signer, error) { return newEd25519Signer(seed) }
+
+func (standard) NewVerifier(publicKey []byte) (Verifier, error) {
+	return newEd25519Verifier(publicKey)
+}
+
+func (standard) NewTOTP(secret []byte) (TOTP, error) { return newTOTP(secret) }
+
 type sha256Hasher struct{}
 
 func (sha256Hasher) Name() string   { return "SHA-256" }

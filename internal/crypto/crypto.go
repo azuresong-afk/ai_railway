@@ -51,6 +51,17 @@ type Provider interface {
 	NewMAC(key []byte) (MAC, error)
 	Random() (Random, error)
 	TLS() (TLSProvider, error)
+	// PasswordHasher — хеширование паролей учётных записей.
+	PasswordHasher() (PasswordHasher, error)
+	// NewAEAD — шифрование ключом длины AEADKeySize.
+	NewAEAD(key []byte) (AEAD, error)
+	// GenerateSigner создаёт новую пару ключей подписи из источника профиля.
+	GenerateSigner() (Signer, error)
+	// NewSigner восстанавливает ключ подписи из сохранённого Signer.Seed.
+	NewSigner(seed []byte) (Signer, error)
+	NewVerifier(publicKey []byte) (Verifier, error)
+	// NewTOTP — проверка кодов второго фактора по секрету длины TOTPSecretSize.
+	NewTOTP(secret []byte) (TOTP, error)
 }
 
 // New возвращает криптопрофиль по имени.
