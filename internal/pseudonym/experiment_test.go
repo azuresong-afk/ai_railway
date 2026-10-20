@@ -12,12 +12,14 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/azuresong-afk/ai_railway/internal/chat"
 	"github.com/azuresong-afk/ai_railway/internal/detect"
 	"github.com/azuresong-afk/ai_railway/internal/detect/corpus"
 	"github.com/azuresong-afk/ai_railway/internal/mockllm"
 	"github.com/azuresong-afk/ai_railway/internal/policy"
+	"github.com/azuresong-afk/ai_railway/internal/sse"
 )
 
 // Эксперимент ADR-0005 (решение Р9): формат псевдонима на корпусах
@@ -120,20 +122,33 @@ var distortions = []distortion{
 
 var canonicalRe = regexp.MustCompile(`\[\[([A-Z][A-Z0-9]*)_([1-9][0-9]*)\]\]`)
 
-// echo отправляет текст в mock-llm (сценарий echo) и возвращает ответ.
-func echo(t *testing.T, srv *httptest.Server, text string) string {
+// post отправляет текст в mock-llm (сценарий echo).
+func post(t *testing.T, srv *httptest.Server, text string, stream bool) *http.Response {
 	t.Helper()
 	body, err := json.Marshal(map[string]any{
 		"model":    "mock-echo",
+		"stream":   stream,
 		"messages": []map[string]string{{"role": "user", "content": text}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp, err := http.Post(srv.URL+"/v1/chat/completions", "application/json", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, srv.URL+"/v1/chat/completions", bytes.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
 	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp
+}
+
+// echo отправляет текст в mock-llm и возвращает ответ.
+func echo(t *testing.T, srv *httptest.Server, text string) string {
+	t.Helper()
+	resp := post(t, srv, text, false)
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil || resp.StatusCode != http.StatusOK {
@@ -169,10 +184,7 @@ func piiSamples(t *testing.T) []pseudonymized {
 		if len(spans) == 0 {
 			continue
 		}
-		v := NewVault(Limits{})
-		if err := v.Reserve(s.Text); err != nil {
-			t.Fatal(err)
-		}
+		v := NewVault(Limits{}, s.Text)
 		p := pseudonymized{id: s.ID, text: s.Text, vault: v, protected: protect(t, v, s.Text, spans...)}
 		for _, sp := range spans {
 			p.values = append(p.values, s.Text[sp.Start:sp.End])
@@ -193,6 +205,8 @@ func TestDM31_ExperimentMockLLM(t *testing.T) {
 	defer srv.Close()
 	samples := piiSamples(t)
 	ok := make([]int, len(distortions))
+	failed := make([]int, len(distortions))
+	tokens := make([]int, len(distortions))
 	for _, p := range samples {
 		for _, val := range p.values {
 			if strings.Contains(p.protected, val) {
@@ -208,10 +222,13 @@ func TestDM31_ExperimentMockLLM(t *testing.T) {
 				m := canonicalRe.FindStringSubmatch(tok)
 				return d.apply(m[1], m[2])
 			})
+			before := p.vault.Stats().Failed()
 			got := p.vault.Restore(distorted)
 			if got == p.text {
 				ok[i]++
 			}
+			failed[i] += p.vault.Stats().Failed() - before
+			tokens[i] += len(canonicalRe.FindAllString(p.protected, -1))
 			if !d.recoverable {
 				for _, val := range p.values {
 					if strings.Contains(got, val) && !strings.Contains(distorted, val) {
@@ -223,12 +240,76 @@ func TestDM31_ExperimentMockLLM(t *testing.T) {
 	}
 	t.Logf("примеров pii.ru с ПДн: %d", len(samples))
 	for i, d := range distortions {
-		t.Logf("%-30s восстановлено %d из %d", d.name, ok[i], len(samples))
+		t.Logf("%-30s восстановлено %d из %d, неудачных подстановок %d из %d", d.name, ok[i], len(samples), failed[i], tokens[i])
+		if want := map[bool]int{true: 0, false: tokens[i]}[d.recoverable]; failed[i] != want {
+			t.Errorf("%s: неудачных подстановок %d, ожидалось %d", d.name, failed[i], want)
+		}
 		if d.recoverable && ok[i] != len(samples) {
 			t.Errorf("%s: восстановлено %d из %d", d.name, ok[i], len(samples))
 		}
 		if !d.recoverable && ok[i] != 0 {
 			t.Errorf("%s: восстановлено %d, ожидалось 0", d.name, ok[i])
 		}
+	}
+}
+
+// TestDM31_ExperimentMockLLMStream — то же при потоковой передаче: модель
+// «пишет» искажённые псевдонимы, mock-llm отдаёт их частями SSE по словам
+// (пробелы у скобок разрезают псевдоним между частями), обратная
+// подстановка идёт по частям.
+func TestDM31_ExperimentMockLLMStream(t *testing.T) {
+	srv := httptest.NewServer(mockllm.New(slog.New(slog.DiscardHandler)).Handler())
+	defer srv.Close()
+	samples := piiSamples(t)
+	held := 0
+	for _, d := range distortions {
+		if !d.recoverable {
+			continue
+		}
+		ok := 0
+		for _, p := range samples {
+			distorted := canonicalRe.ReplaceAllStringFunc(p.protected, func(tok string) string {
+				m := canonicalRe.FindStringSubmatch(tok)
+				return d.apply(m[1], m[2])
+			})
+			resp := post(t, srv, distorted, true)
+			r := sse.NewReader(resp.Body, sse.Limits{})
+			s := p.vault.NewStream()
+			var b strings.Builder
+			for {
+				ev, err := r.Next()
+				if err != nil {
+					t.Fatalf("%s: поток: %v", p.id, err)
+				}
+				c, err := chat.ParseChunk(ev.Data)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if c == nil {
+					break
+				}
+				for _, ch := range c.Choices {
+					if ch.Delta.Content != nil {
+						b.WriteString(s.Write(*ch.Delta.Content))
+						if s.Pending() > 0 {
+							held++
+						}
+					}
+				}
+			}
+			resp.Body.Close()
+			b.WriteString(s.Flush())
+			if b.String() == p.text {
+				ok++
+			}
+		}
+		t.Logf("поток, %-28s восстановлено %d из %d", d.name, ok, len(samples))
+		if ok != len(samples) {
+			t.Errorf("поток, %s: восстановлено %d из %d", d.name, ok, len(samples))
+		}
+	}
+	t.Logf("частей, после которых хвост задержан: %d", held)
+	if held == 0 {
+		t.Error("ни один псевдоним не разрезан между частями: буфер не проверен")
 	}
 }
