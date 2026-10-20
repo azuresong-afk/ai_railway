@@ -117,6 +117,10 @@ type env struct {
 	client *http.Client
 	key    string
 	events string
+	// keys — ключи приложений многоприложенческого стенда (stand1), mock —
+	// адрес mock-llm.
+	keys map[string]string
+	mock string
 }
 
 // gatewayConfig пишет файл конфигурации шлюза с одним приложением и
