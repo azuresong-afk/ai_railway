@@ -156,7 +156,7 @@ func (r *restorer) escape(value string) string {
 	if !r.ctx.json {
 		return value
 	}
-	q, _ := json.Marshal(value) // строка всегда кодируется; неверный UTF-8 заменяется на U+FFFD
+	q, _ := json.Marshal(value) //nolint:gosec // G104: строка всегда кодируется; неверный UTF-8 заменяется на U+FFFD
 	return string(q[1 : len(q)-1])
 }
 
