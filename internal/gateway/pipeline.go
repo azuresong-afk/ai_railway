@@ -75,7 +75,16 @@ type inspectText struct {
 	Source detect.Source
 	// Location — место фрагмента для события (messages[0].content).
 	Location string
+	// Parts — фрагмент склеен из текстовых частей одного сообщения (номера
+	// фрагментов по порядку): провайдер склеит их так же, и разрезанная на
+	// части инъекция видна только в склейке. Склейку проверяют только
+	// детекторы injection.*, а маскирование находки в склейке переносится
+	// на сами части.
+	Parts []int
 }
+
+// joinedDetector — детектор проверяет и склейку частей сообщения.
+func joinedDetector(id string) bool { return strings.HasPrefix(id, "injection.") }
 
 // inspectRequest — что проверяется.
 type inspectRequest struct {
@@ -136,8 +145,13 @@ func (a *App) inspect(ctx context.Context, req inspectRequest) (*inspection, err
 	in := &inspection{}
 	total, cancel := context.WithTimeout(ctx, MaxDetectorTimeout)
 	defer cancel()
+	joinedIDs := slices.DeleteFunc(slices.Clone(runIDs), func(id string) bool { return !joinedDetector(id) })
 	for i, t := range req.Texts {
-		if t.Text == "" || len(runIDs) == 0 {
+		ids := runIDs
+		if t.Parts != nil {
+			ids = joinedIDs
+		}
+		if t.Text == "" || len(ids) == 0 {
 			continue
 		}
 		if total.Err() != nil {
@@ -147,7 +161,7 @@ func (a *App) inspect(ctx context.Context, req inspectRequest) (*inspection, err
 			in.overall(policyIDs, t.Location)
 			break
 		}
-		fs, rerrs, err := a.Detectors.Run(total, runIDs, detect.Text{Text: t.Text, Direction: detect.Input, Source: t.Source},
+		fs, rerrs, err := a.Detectors.Run(total, ids, detect.Text{Text: t.Text, Direction: detect.Input, Source: t.Source},
 			detectorTimeout(req.Timeout, len(t.Text)))
 		if err != nil {
 			return nil, err
@@ -195,6 +209,32 @@ func (a *App) inspect(ctx context.Context, req inspectRequest) (*inspection, err
 	return in, nil
 }
 
+// located — участок фрагмента.
+type located struct {
+	text       int
+	start, end int
+}
+
+// partSpans — участки, которые занимает находка: в самом фрагменте или,
+// для склейки, в каждой из частей, которые она задевает. Части склеены без
+// разделителя, границы частей — границы символов UTF-8.
+func partSpans(texts []inspectText, f locatedFinding) []located {
+	t := texts[f.Text]
+	if t.Parts == nil {
+		return []located{{f.Text, f.Start, f.End}}
+	}
+	var out []located
+	off := 0
+	for _, p := range t.Parts {
+		n := len(texts[p].Text)
+		if s, e := max(f.Start, off), min(f.End, off+n); s < e {
+			out = append(out, located{p, s - off, e - off})
+		}
+		off += n
+	}
+	return out
+}
+
 // overall — общий срок проверки истёк: оставшиеся фрагменты (начиная с
 // location) не проверены ни одним детектором политики, детекторы
 // маскирования — тоже.
@@ -224,7 +264,9 @@ func (in *inspection) redact(texts []inspectText) {
 		if cutOut(f.Finding) {
 			repl = ""
 		}
-		byText[f.Text] = append(byText[f.Text], span{f.Start, f.End, repl})
+		for _, l := range partSpans(texts, f) {
+			byText[l.text] = append(byText[l.text], span{l.start, l.end, repl})
+		}
 	}
 	if len(byText) == 0 {
 		return
@@ -302,10 +344,15 @@ func (in *inspection) maskedContent(texts []inspectText) (string, bool) {
 		if cut {
 			repl = ""
 		}
-		byText[f.Text] = append(byText[f.Text], span{f.Start, f.End, repl})
+		for _, l := range partSpans(texts, f) {
+			byText[l.text] = append(byText[l.text], span{l.start, l.end, repl})
+		}
 	}
 	var b strings.Builder
 	for i, t := range texts {
+		if t.Parts != nil {
+			continue // склейка повторяет части
+		}
 		if b.Len() >= maxEventContent {
 			break
 		}

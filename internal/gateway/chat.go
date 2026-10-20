@@ -176,7 +176,7 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	req.Model = model
 	rec.ev.Model = model
-	texts, segs := requestTexts(req)
+	texts, refs := requestTexts(req)
 	if !h.admit(w, r, rec, req, user, texts) {
 		return
 	}
@@ -220,7 +220,7 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if !changed {
 			continue
 		}
-		if err := req.SetText(segs[i], in.Texts[i]); err != nil {
+		if err := refs[i].set(req, in.Texts[i]); err != nil {
 			// Не удалось применить маскирование — запрос не уходит.
 			h.logger.Error("маскирование не применено", "app", app.ID, "event_id", rec.ev.ID, "error", err)
 			rec.failClosed()
@@ -288,14 +288,16 @@ func (h *ChatHandler) admit(w http.ResponseWriter, r *http.Request, rec *record,
 	if h.cfg.Quotas == nil {
 		return true
 	}
-	// Размер входа — проверяемый текст и описания инструментов: они
-	// тоже уходят модели (до 16 КиБ на инструмент).
+	// Размер входа — проверяемый текст (без склеек, они повторяют части) и
+	// схемы инструментов: они тоже уходят модели.
 	size := 0
 	for _, t := range texts {
-		size += len(t.Text)
+		if t.Parts == nil {
+			size += len(t.Text)
+		}
 	}
 	for _, tl := range req.Tools {
-		size += len(tl.Function.Description) + len(tl.Function.Parameters)
+		size += len(tl.Function.Parameters)
 	}
 	maxOut, _ := req.EffectiveMaxTokens()
 	qr := QuotaRequest{App: rec.app.ID, User: user, InputBytes: size, Tokens: estimateTokens(size) + max(maxOut, 0)}
@@ -330,20 +332,72 @@ func (h *ChatHandler) admit(w http.ResponseWriter, r *http.Request, rec *record,
 // После ответа резерв заменяется расходом из usage.
 func estimateTokens(inputBytes int) int { return (inputBytes + 2) / 3 }
 
-// requestTexts — текстовые фрагменты запроса для детекторов. Сообщения
-// с ролью tool — источник tool (ответы инструментов, DM-07), остальное —
-// user: системный промпт и история тоже приходят от приложения.
-func requestTexts(req *chat.Request) ([]inspectText, []chat.Segment) {
+// textRef — куда вернуть замаскированный фрагмент: фрагмент сообщения или
+// описание инструмента; у склейки частей — никуда (маскируются части).
+type textRef struct {
+	seg  *chat.Segment
+	tool int
+}
+
+func (r textRef) set(req *chat.Request, text string) error {
+	switch {
+	case r.seg != nil:
+		return req.SetText(*r.seg, text)
+	case r.tool >= 0 && r.tool < len(req.Tools):
+		req.Tools[r.tool].Function.Description = text
+		return nil
+	}
+	return errors.New("фрагмент без места в запросе")
+}
+
+// requestTexts — текстовые фрагменты запроса для детекторов:
+//   - фрагменты сообщений (chat.Segments); сообщения с ролью tool —
+//     источник tool (ответы инструментов, DM-07), остальное — user:
+//     системный промпт и история тоже приходят от приложения;
+//   - склейки текстовых частей сообщения, если частей больше одной, — для
+//     injection.* (разрезанная на части инъекция);
+//   - описания инструментов tools[].function.description: модель читает их
+//     как инструкции. Схемы JSON (parameters, response_format) не
+//     проверяются.
+func requestTexts(req *chat.Request) ([]inspectText, []textRef) {
 	segs := req.Segments()
-	texts := make([]inspectText, len(segs))
-	for i, s := range segs {
+	var texts []inspectText
+	var refs []textRef
+	parts := map[int][]int{} // сообщение → номера фрагментов-частей content
+	for i := range segs {
+		s := &segs[i]
 		src := detect.SourceUser
 		if s.Role == "tool" {
 			src = detect.SourceTool
 		}
-		texts[i] = inspectText{Text: s.Text, Source: src, Location: s.Location()}
+		if s.Kind == chat.SegContent && s.Part >= 0 {
+			parts[s.Message] = append(parts[s.Message], len(texts))
+		}
+		texts = append(texts, inspectText{Text: s.Text, Source: src, Location: s.Location()})
+		refs = append(refs, textRef{seg: s, tool: -1})
 	}
-	return texts, segs
+	for m := range req.Messages {
+		ps := parts[m]
+		if len(ps) < 2 {
+			continue
+		}
+		var b strings.Builder
+		for _, p := range ps {
+			b.WriteString(texts[p].Text)
+		}
+		texts = append(texts, inspectText{Text: b.String(), Source: texts[ps[0]].Source,
+			Location: fmt.Sprintf("messages[%d].content", m), Parts: ps})
+		refs = append(refs, textRef{tool: -1})
+	}
+	for i, tl := range req.Tools {
+		if tl.Function.Description == "" {
+			continue
+		}
+		texts = append(texts, inspectText{Text: tl.Function.Description, Source: detect.SourceUser,
+			Location: fmt.Sprintf("tools[%d].function.description", i)})
+		refs = append(refs, textRef{tool: i})
+	}
+	return texts, refs
 }
 
 // policyMedia — нетекстовые части для non_text. Ссылкой считается адрес
