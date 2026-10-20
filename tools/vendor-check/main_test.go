@@ -105,7 +105,15 @@ func FuzzReadManifest(f *testing.F) {
 	f.Add([]byte(strings.Repeat("a", 64) + "  vendor/x\n"))
 	f.Add([]byte("\n\n  \n"))
 	f.Fuzz(func(t *testing.T, data []byte) {
-		_, _ = readManifest(fstest.MapFS{manifestPath: {Data: data}})
+		m, err := readManifest(fstest.MapFS{manifestPath: {Data: data}})
+		if err != nil {
+			return
+		}
+		for p, h := range m {
+			if !strings.HasPrefix(p, "vendor/") || len(h) != 64 {
+				t.Fatalf("принята строка %q %q", h, p)
+			}
+		}
 	})
 }
 
@@ -114,7 +122,20 @@ func FuzzParseGoMod(f *testing.F) {
 	f.Add([]byte(goMod))
 	f.Add([]byte("require (\n\ta b\n"))
 	f.Fuzz(func(t *testing.T, data []byte) {
-		_, _, _ = parseRequires(fstest.MapFS{"go.mod": {Data: data}})
+		req, reps, err := parseRequires(fstest.MapFS{"go.mod": {Data: data}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for p, v := range req {
+			if p == "" || v == "" {
+				t.Fatalf("пустой модуль или версия: %q %q", p, v)
+			}
+		}
+		for _, r := range reps {
+			if r == "" {
+				t.Fatal("пустая строка replace")
+			}
+		}
 	})
 }
 
@@ -123,7 +144,15 @@ func FuzzParseModules(f *testing.F) {
 	f.Add([]byte(modTxt))
 	f.Add([]byte("# a v1 => b v2\n# \n#  \n"))
 	f.Fuzz(func(t *testing.T, data []byte) {
-		_, _ = parseModules(fstest.MapFS{modulesPath: {Data: data}})
+		mods, err := parseModules(fstest.MapFS{modulesPath: {Data: data}})
+		if err != nil {
+			return
+		}
+		for _, m := range mods {
+			if m.path == "" || m.version == "" {
+				t.Fatalf("пустой модуль или версия: %+v", m)
+			}
+		}
 	})
 }
 
@@ -132,6 +161,14 @@ func FuzzParseGoSum(f *testing.F) {
 	f.Add([]byte(goSum))
 	f.Add([]byte("a b\n\n a b h1:\n"))
 	f.Fuzz(func(t *testing.T, data []byte) {
-		_, _ = parseGoSum(fstest.MapFS{"go.sum": {Data: data}})
+		sums, err := parseGoSum(fstest.MapFS{"go.sum": {Data: data}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for k := range sums {
+			if !strings.Contains(k, " ") {
+				t.Fatalf("ключ без версии: %q", k)
+			}
+		}
 	})
 }

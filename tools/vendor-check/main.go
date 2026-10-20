@@ -64,7 +64,9 @@ func main() {
 		if err := os.WriteFile(filepath.Join(*root, manifestPath), formatManifest(sums), 0o644); err != nil { //nolint:gosec // G306: манифест — публичный документ в репозитории, 0644 как у остальных файлов
 			fail(err)
 		}
-		fmt.Fprintf(os.Stdout, "vendor-check: манифест обновлён, файлов: %d\n", len(sums))
+		if _, err := fmt.Fprintf(os.Stdout, "vendor-check: манифест обновлён, файлов: %d\n", len(sums)); err != nil {
+			fail(err)
+		}
 		return
 	case *verify:
 		p, err := verifyRebuild(*root, fsys)
