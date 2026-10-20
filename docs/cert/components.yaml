@@ -58,6 +58,38 @@ components:
       LICENSE: d18f6323b71b0b768bb5e9616e36da390fbd39369a81807cca352de4e4e6aa0b
       NOTICE: f6c2dd3a67b576eafb89b80200b8b1627230bf3821a0c14cb99a22ac19107d00
 
+  - name: golang.org/x/crypto
+    version: v0.58.0
+    type: go-module
+    scope: product
+    purpose: Argon2id для паролей учётных записей (PasswordHasher, ТЗ 10.2); используются только пакеты argon2 и blake2b, импорт — только в internal/crypto (depguard).
+    license: BSD-3-Clause
+    repository: https://go.googlesource.com/crypto
+    attack_surface: true
+    security_function: true
+    provided_by: The Go Authors (Google)
+    justification: Argon2id нет в стандартной библиотеке Go, а собственные реализации алгоритмов запрещены. Библиотеку называет ТЗ 11.2; сопровождает команда Go, выпуски ежемесячно. В vendor попадают только argon2 и blake2b; x/net, x/term и x/text нужны лишь для графа модулей и в сборку не входят.
+    decision: ТЗ 11.2; ADR-0006; согласие владельца в потоке A2 этапа 2
+    decided: 2026-10-20
+    license_files:
+      LICENSE: 911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad
+
+  - name: golang.org/x/sys
+    version: v0.49.0
+    type: go-module
+    scope: product
+    purpose: Транзитивная зависимость golang.org/x/crypto — только пакет cpu (выбор ускоренной реализации BLAKE2b по возможностям процессора).
+    license: BSD-3-Clause
+    repository: https://go.googlesource.com/sys
+    attack_surface: false
+    security_function: false
+    provided_by: The Go Authors (Google)
+    justification: Требуется golang.org/x/crypto; в vendor попадает только golang.org/x/sys/cpu.
+    decision: ADR-0006; согласие владельца в потоке A2 этапа 2
+    decided: 2026-10-20
+    license_files:
+      LICENSE: 911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad
+
   - name: golangci-lint
     version: v2.14.0
     type: tool
