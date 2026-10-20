@@ -25,6 +25,7 @@
 | `FuzzParseCovers` | `tools/dm-coverage` | Разбор маркеров «Покрывает:» | 0.9 |
 | `FuzzParseChatRequest` | `internal/mockllm` | Разбор запроса chat/completions (строка или массив частей в `content`) | 0.11 |
 | `FuzzChatCompletionsHandler` | `internal/mockllm` | Обработчик входящих HTTP-запросов mock-llm: любой ответ-ошибка — JSON в формате OpenAI | 0.11 |
+| `FuzzOptionsHandler` | `internal/mockllm` | Ответ mock-llm при любых значениях параметров канарейки, exfil-ссылки и tool_calls | 1.25 |
 | `FuzzParseUpstreamURL` | `internal/config` | Адрес провайдера: только https, без учётных данных и параметров | 0.12 |
 | `FuzzProxyHandler` | `internal/gateway` | Обработчик входящих HTTP-запросов шлюза (аутентификация, разбор, маршрутизация, провайдер): перебираются метод, путь со строкой запроса, тело, `Content-Type` и произвольный заголовок. Запрос без `Authorization` получает действующий ключ приложения, фаззинг может его заменить. Ожидается: только коды 200, 400, 401, 404, 405, 413, 415; провайдеру уходят только собранный заново объект JSON, заголовки шлюза и никакой строки запроса | 0.13, 1.7 |
 | `FuzzParse` | `internal/ids` | Разбор UUIDv7: принимаются только версия 7 и вариант RFC 9562 | 1.1 |
