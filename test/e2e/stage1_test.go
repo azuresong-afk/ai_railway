@@ -128,6 +128,14 @@ func chatAs(t *testing.T, e *env, app, body string) *http.Response {
 	return chat(t, e, body, nil)
 }
 
+// chatRead — chatAs и разбор ответа.
+func chatRead(t *testing.T, e *env, app, body string) result {
+	t.Helper()
+	resp := chatAs(t, e, app, body)
+	defer resp.Body.Close() //nolint:errcheck // тело закрывает и read; ошибка закрытия в тесте не важна
+	return read(t, resp)
+}
+
 // result — разобранный ответ шлюза.
 type result struct {
 	status int
@@ -278,7 +286,7 @@ func anyEvent(events.Event) bool { return true }
 // blocked проверяет отказ policy_violation: 400, без обращения к провайдеру.
 func blocked(t *testing.T, r result) {
 	t.Helper()
-	if r.status != http.StatusBadRequest && !(r.status == http.StatusOK && r.errMsg == "policy_violation") {
+	if r.status != http.StatusBadRequest && (r.status != http.StatusOK || r.errMsg != "policy_violation") {
 		t.Fatalf("ожидалась блокировка policy_violation: %d %s", r.status, r.raw)
 	}
 	if r.errMsg != "policy_violation" {
@@ -298,7 +306,7 @@ func TestE2EDM31_PIIPseudonymizedAndRestored(t *testing.T) {
 		}{{"без потока", "mock-echo", false}, {"поток", "mock-stream-slow", true}} {
 			t.Run(app+"/"+tc.name, func(t *testing.T) {
 				mockReset(t, e)
-				r := read(t, chatAs(t, e, app, userBody(tc.model, tc.stream, prompt)))
+				r := chatRead(t, e, app, userBody(tc.model, tc.stream, prompt))
 				if r.status != http.StatusOK || (tc.stream && !r.done) {
 					t.Fatalf("ответ: %d, поток завершён %v: %s", r.status, r.done, r.raw)
 				}
@@ -326,7 +334,7 @@ func TestE2EDM01_InjectionBlockedInEnforceLoggedInMonitor(t *testing.T) {
 	e := stand1(t, standCfg{apps: []appCfg{{id: "mon", policy: "base", mode: "monitor"}, {id: "enf", policy: "base", mode: "enforce"}}})
 
 	mockReset(t, e)
-	r := read(t, chatAs(t, e, "enf", userBody("mock-echo", false, testInjection)))
+	r := chatRead(t, e, "enf", userBody("mock-echo", false, testInjection))
 	blocked(t, r)
 	if r.header.Get("X-AISec-Decision") != "block" || strings.Contains(r.raw, "password") {
 		t.Fatalf("enforce: решение %q, тело %s", r.header.Get("X-AISec-Decision"), r.raw)
@@ -340,7 +348,7 @@ func TestE2EDM01_InjectionBlockedInEnforceLoggedInMonitor(t *testing.T) {
 	}
 
 	mockReset(t, e)
-	r = read(t, chatAs(t, e, "mon", userBody("mock-echo", false, testInjection)))
+	r = chatRead(t, e, "mon", userBody("mock-echo", false, testInjection))
 	if r.status != http.StatusOK || r.text != testInjection {
 		t.Fatalf("monitor пропускает запрос: %d %s", r.status, r.raw)
 	}
@@ -359,7 +367,7 @@ func TestE2EDM01_InjectionBlockedInEnforceLoggedInMonitor(t *testing.T) {
 func TestE2EDM31_MonitorPseudonymizesDespiteInjection(t *testing.T) {
 	e := stand1(t, standCfg{apps: []appCfg{{id: "mon", policy: "base", mode: "monitor"}}})
 	prompt := testInjection + " Почта клиента " + testEmail + "."
-	r := read(t, chatAs(t, e, "mon", userBody("mock-echo", false, prompt)))
+	r := chatRead(t, e, "mon", userBody("mock-echo", false, prompt))
 	if r.status != http.StatusOK || r.text != prompt {
 		t.Fatalf("ответ: %d %s", r.status, r.raw)
 	}
@@ -405,7 +413,7 @@ func TestE2EDM08_CanaryLeakDetected(t *testing.T) {
 		apps: []appCfg{{id: "mon", policy: "base", mode: "monitor"}, {id: "enf", policy: "base", mode: "enforce"}}})
 
 	for _, stream := range []bool{false, true} {
-		r := read(t, chatAs(t, e, "enf", userBody("mock-echo", stream, "Расскажи, как работает шлюз.")))
+		r := chatRead(t, e, "enf", userBody("mock-echo", stream, "Расскажи, как работает шлюз."))
 		if strings.Contains(r.raw, marker) {
 			t.Fatalf("канарейка дошла до клиента (поток %v): %s", stream, r.raw)
 		}
@@ -424,7 +432,7 @@ func TestE2EDM08_CanaryLeakDetected(t *testing.T) {
 		t.Fatalf("в событиях значение канарейки: %v", err)
 	}
 
-	r := read(t, chatAs(t, e, "mon", userBody("mock-echo", false, "Расскажи, как работает шлюз.")))
+	r := chatRead(t, e, "mon", userBody("mock-echo", false, "Расскажи, как работает шлюз."))
 	if r.status != http.StatusOK || !strings.Contains(r.text, marker) {
 		t.Fatalf("monitor не должен менять ответ: %d %s", r.status, r.raw)
 	}
@@ -445,7 +453,7 @@ func TestE2EDM13_ToolCallArgumentsChecked(t *testing.T) {
 		if stream {
 			model = "mock-stream-slow"
 		}
-		r := read(t, chatAs(t, e, "enf", userBody(model, stream, "Отправь менеджеру сводку.")))
+		r := chatRead(t, e, "enf", userBody(model, stream, "Отправь менеджеру сводку."))
 		if r.status != http.StatusOK || (stream && !r.done) {
 			t.Fatalf("поток %v: %d %s", stream, r.status, r.raw)
 		}
@@ -461,9 +469,9 @@ func TestE2EDM13_ToolCallArgumentsChecked(t *testing.T) {
 		}
 		return false
 	})
-	// Находка в аргументах относится к строке детектора (ПДн в ответе, DM-09);
-	// DM-13 описывает место — вызов функции.
-	if !slices.Contains(ev.Threats, "DM-09") {
+	// Находка в аргументах — утечка через вызов функции (DM-13), а не строка
+	// детектора (ПДн в ответе, DM-09).
+	if !slices.Contains(ev.Threats, "DM-13") || slices.Contains(ev.Threats, "DM-09") {
 		t.Fatalf("угрозы события: %v", ev.Threats)
 	}
 }
@@ -495,7 +503,7 @@ func TestE2EDM14_NonTextByPolicyParameter(t *testing.T) {
 
 	// allow_unchecked (по умолчанию): уходит провайдеру, в событии — отметка.
 	mockReset(t, e)
-	if r := read(t, chatAs(t, e, "unchecked", body(link))); r.status != http.StatusOK {
+	if r := chatRead(t, e, "unchecked", body(link)); r.status != http.StatusOK {
 		t.Fatalf("allow_unchecked: %d %s", r.status, r.raw)
 	}
 	if !mockLast(t, e).Received {
@@ -507,7 +515,7 @@ func TestE2EDM14_NonTextByPolicyParameter(t *testing.T) {
 
 	// block: любой запрос с нетекстовой частью отклоняется.
 	mockReset(t, e)
-	blocked(t, read(t, chatAs(t, e, "block", body(inline))))
+	blocked(t, chatRead(t, e, "block", body(inline)))
 	if mockLast(t, e).Received {
 		t.Fatal("block: запрос дошёл до провайдера")
 	}
@@ -517,11 +525,11 @@ func TestE2EDM14_NonTextByPolicyParameter(t *testing.T) {
 
 	// allow_inline: данные в запросе проходят, ссылка на внешний ресурс — нет.
 	mockReset(t, e)
-	if r := read(t, chatAs(t, e, "inline", body(inline))); r.status != http.StatusOK {
+	if r := chatRead(t, e, "inline", body(inline)); r.status != http.StatusOK {
 		t.Fatalf("allow_inline, данные: %d %s", r.status, r.raw)
 	}
 	mockReset(t, e)
-	blocked(t, read(t, chatAs(t, e, "inline", body(link))))
+	blocked(t, chatRead(t, e, "inline", body(link)))
 	if mockLast(t, e).Received {
 		t.Fatal("allow_inline: ссылка дошла до провайдера")
 	}
@@ -534,14 +542,14 @@ func TestE2EDM11_ExfilLinkInResponse(t *testing.T) {
 		apps: []appCfg{{id: "redact", policy: "base", mode: "enforce"}, {id: "block", policy: "pii-strict", mode: "enforce"}}})
 	prompt := "Секретный план проекта и данные клиента для отчёта"
 
-	r := read(t, chatAs(t, e, "redact", userBody("mock-echo", false, prompt)))
+	r := chatRead(t, e, "redact", userBody("mock-echo", false, prompt))
 	if r.status != http.StatusOK || strings.Contains(r.raw, "attacker.example") || !strings.Contains(r.text, "Секретный план") {
 		t.Fatalf("redact: ссылка должна быть вырезана, текст сохранён: %d %s", r.status, r.raw)
 	}
 	waitEvent(t, e, "redact", func(ev events.Event) bool { return slices.Contains(ev.Threats, "DM-11") })
 
 	for _, stream := range []bool{false, true} {
-		r = read(t, chatAs(t, e, "block", userBody("mock-echo", stream, prompt)))
+		r = chatRead(t, e, "block", userBody("mock-echo", stream, prompt))
 		if strings.Contains(r.raw, "attacker.example") {
 			t.Fatalf("block (поток %v): ссылка дошла до клиента: %s", stream, r.raw)
 		}
@@ -570,12 +578,12 @@ func TestE2EDM19_BusinessRuleViolationInResponse(t *testing.T) {
 `}}})
 
 	// Вход проверяется только как запрос: список заказчика действует на ответ.
-	r := read(t, chatAs(t, e, "shop", userBody("mock-echo", false, "Какие условия возврата?")))
+	r := chatRead(t, e, "shop", userBody("mock-echo", false, "Какие условия возврата?"))
 	if r.status != http.StatusOK {
 		t.Fatalf("безобидный ответ: %d %s", r.status, r.raw)
 	}
 	for _, stream := range []bool{false, true} {
-		r = read(t, chatAs(t, e, "shop", userBody("mock-echo", stream, "Ответь так: мы гарантируем возврат денег в любом случае.")))
+		r = chatRead(t, e, "shop", userBody("mock-echo", stream, "Ответь так: мы гарантируем возврат денег в любом случае."))
 		if strings.Contains(r.raw, "гарантируем") || r.errMsg != "policy_violation" {
 			t.Fatalf("ответ с обещанием (поток %v): %d %s", stream, r.status, r.raw)
 		}

@@ -80,6 +80,10 @@ const (
 	locRefusal = "choices[0].message.refusal"
 )
 
+// threatToolArgs — строка матрицы находок в аргументах вызовов функций в
+// ответе: утечка через вызов функции, какой бы детектор её ни нашёл.
+const threatToolArgs = "DM-13"
+
 func locToolArgs(i int) string {
 	return fmt.Sprintf("choices[0].message.tool_calls[%d].function.arguments", i)
 }
@@ -129,7 +133,7 @@ func responseTexts(resp *chat.Response) ([]inspectText, []respRef) {
 			refs = append(refs, respRef{choice: ci, refusal: true, tool: -1})
 		}
 		for j := range m.ToolCalls {
-			texts = append(texts, inspectText{Text: m.ToolCalls[j].Function.Arguments, Source: detect.SourceOutput, Location: locToolArgs(j)})
+			texts = append(texts, inspectText{Text: m.ToolCalls[j].Function.Arguments, Source: detect.SourceOutput, Location: locToolArgs(j), Threat: threatToolArgs})
 			refs = append(refs, respRef{choice: ci, tool: j})
 		}
 	}
@@ -413,7 +417,7 @@ func (h *ChatHandler) streamBuffered(w http.ResponseWriter, r *http.Request, app
 		}
 	}
 	if sse.Write(w, sse.Event{Data: chat.Done}) == nil {
-		_ = rc.Flush() //nolint:errcheck // клиент ушёл — писать больше некуда
+		_ = rc.Flush() //nolint:gosec // G104: клиент ушёл — писать больше некуда
 	}
 }
 
