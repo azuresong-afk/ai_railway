@@ -54,7 +54,7 @@ func TestParseRejects(t *testing.T) {
 		"пустое имя":                   {"name: Бот поддержки — строго", "name: \" \""},
 		"длинное имя":                  {"name: Бот поддержки — строго", "name: " + strings.Repeat("я", MaxNameLen+1)},
 		"управляющий символ":           {"name: Бот поддержки — строго", `name: "Бот\u0007"`},
-		"скрытый символ":               {"message: Документ не прошёл проверку.", `message: "Документ​"`},
+		"скрытый символ":               {"message: Документ не прошёл проверку.", "message: \"Документ\\u200b\""},
 		"версия":                       {"version: 2", "version: 0"},
 		"режим":                        {"mode: enforce", "mode: audit"},
 		"non_text":                     {"non_text: allow_inline", "non_text: allow"},
