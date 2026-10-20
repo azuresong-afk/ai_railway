@@ -413,7 +413,7 @@ func (h *ChatHandler) streamBuffered(w http.ResponseWriter, r *http.Request, app
 		}
 	}
 	if sse.Write(w, sse.Event{Data: chat.Done}) == nil {
-		_ = rc.Flush() //nolint:errcheck // клиент ушёл — писать больше некуда
+		_ = rc.Flush() //nolint:gosec // G104: клиент ушёл — писать больше некуда
 	}
 }
 
