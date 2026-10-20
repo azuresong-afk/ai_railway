@@ -469,9 +469,9 @@ func TestE2EDM13_ToolCallArgumentsChecked(t *testing.T) {
 		}
 		return false
 	})
-	// Находка в аргументах относится к строке детектора (ПДн в ответе, DM-09);
-	// DM-13 описывает место — вызов функции.
-	if !slices.Contains(ev.Threats, "DM-09") {
+	// Находка в аргументах — утечка через вызов функции (DM-13), а не строка
+	// детектора (ПДн в ответе, DM-09).
+	if !slices.Contains(ev.Threats, "DM-13") || slices.Contains(ev.Threats, "DM-09") {
 		t.Fatalf("угрозы события: %v", ev.Threats)
 	}
 }

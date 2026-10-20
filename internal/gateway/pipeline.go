@@ -82,6 +82,9 @@ type inspectText struct {
 	Parts []int
 	// NoCode — окно потока без учёта разметки кода (detect.Text.NoCode).
 	NoCode bool
+	// Threat — строка матрицы для всех находок фрагмента вместо строки
+	// детектора: аргументы tool_calls в ответе — DM-13 (ТЗ, 5.16).
+	Threat string
 }
 
 // joinedDetector — детектор проверяет и склейку частей сообщения.
@@ -188,6 +191,9 @@ func (a *App) inspect(ctx context.Context, req inspectRequest) (*inspection, err
 			return nil, err
 		}
 		for _, f := range fs {
+			if t.Threat != "" {
+				f.Threat = t.Threat
+			}
 			in.Findings = append(in.Findings, locatedFinding{Finding: f, Text: i})
 		}
 		for _, re := range rerrs {
