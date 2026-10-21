@@ -31,7 +31,7 @@
 schema_version: 1
 components:
   - name: Go toolchain и стандартная библиотека
-    version: go1.27.2
+    version: go1.27.3
     type: toolchain
     scope: product
     purpose: Компилятор и стандартная библиотека; стандартная библиотека входит во все бинарники продукта (HTTP, TLS, JSON, криптография в internal/crypto).
@@ -41,7 +41,7 @@ components:
     security_function: true
     provided_by: The Go Authors (Google LLC)
     justification: Язык реализации продукта (ТЗ, 11.1).
-    decision: ТЗ 11.1; ADR-0001; go1.27.2 — исправления уязвимостей стандартной библиотеки (GO-2026-6603…6617)
+    decision: ТЗ 11.1; ADR-0001; go1.27.3 — исправление уязвимости crypto/x509 (GO-2026-6809); go1.27.2 — GO-2026-6603…6617
     decided: 2026-10-10
 
   - name: go.yaml.in/yaml/v3
@@ -156,7 +156,7 @@ components:
     makefile_var: SBOM_UTILITY_VERSION
 
   - name: golang
-    version: 1.27.2-bookworm@sha256:5cf287a799e6b94384bad13d16b14904c531f51ba65792237e122ce42b392f61
+    version: 1.27.3-bookworm@sha256:21ade014faf952365b9ecbd8dbdb87176fbacb82fac9fb132d9f2a7b8cc3f132
     type: image
     scope: build
     purpose: Основа сборочного образа (deploy/build/Dockerfile) и стадии сборки образов стенда разработки.
@@ -168,7 +168,7 @@ components:
     security_function: false
     provided_by: Docker Official Images (Docker, Inc.); Go — The Go Authors
     justification: Официальный образ Go закреплён по digest (ТЗ, 8.7). Внутри — пакеты Debian под разными лицензиями, в том числе GPL; в продукт они не попадают — образы поставки собираются в scratch (ADR-0003).
-    decision: план этапа 0, Д4; ADR-0003; 1.27.2 — вместе с toolchain (исправления уязвимостей стандартной библиотеки)
+    decision: план этапа 0, Д4; ADR-0003; 1.27.3 — вместе с toolchain (исправления уязвимостей стандартной библиотеки)
     decided: 2026-10-10
 
   - name: actions/checkout
