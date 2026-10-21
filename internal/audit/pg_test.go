@@ -198,7 +198,8 @@ func TestAppendOnlyForAppRole(t *testing.T) {
 }
 
 // Триггеры запрещают UPDATE и TRUNCATE даже владельцу таблицы; DELETE —
-// только процедуре архивации под aisec_audit_archiver (задача 2.5).
+// только процедуре архивации под aisec_audit_archiver и только записей,
+// покрытых контрольной точкой (задача 2.5).
 func TestTriggersBlockOwner(t *testing.T) {
 	env := setupDB(t)
 	ctx := ctxT(t)
@@ -216,7 +217,8 @@ func TestTriggersBlockOwner(t *testing.T) {
 			t.Errorf("%s владельцем: %v", q, err)
 		}
 	}
-	// Путь процедуры архивации: роль aisec_audit_archiver с правом DELETE.
+	// Даже роль aisec_audit_archiver не удаляет запись, не покрытую
+	// контрольной точкой (0005_audit_archive); путь с точкой — archive_pg_test.go.
 	tx, err := env.owner.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -224,13 +226,14 @@ func TestTriggersBlockOwner(t *testing.T) {
 	defer func() { _ = tx.Rollback(ctx) }() //nolint:gosec // G104: тест откатывает всё
 	for _, q := range []string{
 		"GRANT USAGE ON SCHEMA " + pgx.Identifier{env.schema}.Sanitize() + " TO aisec_audit_archiver",
-		"GRANT SELECT, DELETE ON audit_log TO aisec_audit_archiver",
 		"SET LOCAL ROLE aisec_audit_archiver",
-		"DELETE FROM audit_log WHERE seq = 1",
 	} {
 		if _, err := tx.Exec(ctx, q); err != nil {
 			t.Fatalf("%s: %v", q, err)
 		}
+	}
+	if _, err := tx.Exec(ctx, "DELETE FROM audit_log WHERE seq = 1"); sqlState(err) != "42501" {
+		t.Fatalf("удаление без контрольной точки: %v", err)
 	}
 }
 

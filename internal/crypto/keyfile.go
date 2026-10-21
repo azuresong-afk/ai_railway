@@ -19,6 +19,12 @@ const (
 	KeyKindSigning = "AISEC SIGNING KEY"
 	// KeyKindSigningPublic — открытый ключ проверки пакетов для шлюзов.
 	KeyKindSigningPublic = "AISEC SIGNING PUBLIC KEY"
+	// KeyKindAuditSigning — закрытый ключ подписи контрольных точек
+	// архивации журнала аудита (РСБ.4, ADR-0008). Отдельный вид: ключ пакетов
+	// нельзя подложить вместо него и наоборот.
+	KeyKindAuditSigning = "AISEC AUDIT SIGNING KEY"
+	// KeyKindAuditSigningPublic — открытый ключ проверки контрольных точек.
+	KeyKindAuditSigningPublic = "AISEC AUDIT SIGNING PUBLIC KEY"
 )
 
 // maxKeyFile ограничивает размер файла ключа: ключ — десятки байт.
@@ -28,9 +34,11 @@ const profileHeader = "Profile"
 
 // keyFileSize — длина ключа каждого вида в профиле standard.
 var keyFileSize = map[string]int{
-	KeyKindMaster:        AEADKeySize,
-	KeyKindSigning:       SigningSeedSize,
-	KeyKindSigningPublic: PublicKeySize,
+	KeyKindMaster:             AEADKeySize,
+	KeyKindSigning:            SigningSeedSize,
+	KeyKindSigningPublic:      PublicKeySize,
+	KeyKindAuditSigning:       SigningSeedSize,
+	KeyKindAuditSigningPublic: PublicKeySize,
 }
 
 // EncodeKeyPEM кодирует ключ вида kind для профиля profile.
@@ -123,4 +131,22 @@ func truncate(s string, n int) string {
 		return s[:n] + "…"
 	}
 	return s
+}
+
+// LoadVerifierFile читает открытый ключ вида kind (например,
+// KeyKindAuditSigningPublic) из файла и проверяет, что он создан для
+// профиля p.
+func LoadVerifierFile(p Provider, path, kind string) (Verifier, error) {
+	data, err := ReadPEMFile(path)
+	if err != nil {
+		return nil, err
+	}
+	profile, pub, err := DecodeKeyPEM(data, kind)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	if profile != p.Name() {
+		return nil, fmt.Errorf("%s: ключ профиля %s, а установка — %s", path, profile, p.Name())
+	}
+	return p.NewVerifier(pub)
 }

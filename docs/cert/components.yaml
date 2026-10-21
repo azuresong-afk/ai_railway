@@ -800,16 +800,16 @@ components:
     decided: 2026-10-20
 
   # Транзитивная зависимость поставки с лицензией вне списка CLAUDE.md. 0BSD —
-  # допускающая лицензия без условий; решение владельца подтверждено только
-  # для пакетов сборочной среды, для этого пакета поставки — на подтверждении
-  # (docs/adr/0011-instrumenty-frontenda.md, «Открытый вопрос»).
+  # допускающая лицензия без условий; решение владельца о 0BSD для сборки дано 20.10.2026, для этого
+  # пакета поставки — подтверждено 21.10.2026
+  # (docs/adr/0011-instrumenty-frontenda.md, п. 5).
   - name: tslib
     version: 2.3.0
     type: npm-package
     scope: product
     purpose: Вспомогательные функции TypeScript; зависимость echarts и zrender.
     license: 0BSD
-    license_decision: ADR-0011 — ожидает подтверждения владельца
+    license_decision: ADR-0011, п. 5 — подтверждено владельцем 21.10.2026
     repository: https://github.com/microsoft/tslib
     attack_surface: true
     security_function: false

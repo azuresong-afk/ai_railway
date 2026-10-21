@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -27,6 +28,9 @@ type memInitStore struct {
 	existsErr error
 	saved     *initRecords
 	actor     audit.Actor
+	// recordErr и recorded — для init -add-audit-key.
+	recordErr error
+	recorded  []audit.Entry
 }
 
 func (m *memInitStore) DataKeyExists(context.Context, string) (bool, error) {
@@ -34,6 +38,14 @@ func (m *memInitStore) DataKeyExists(context.Context, string) (bool, error) {
 }
 
 func (m *memInitStore) HasDataKey(context.Context, string) (bool, error) { return m.has, m.hasErr }
+
+func (m *memInitStore) Record(_ context.Context, e audit.Entry) error {
+	if m.recordErr != nil {
+		return m.recordErr
+	}
+	m.recorded = append(m.recorded, e)
+	return nil
+}
 
 func (m *memInitStore) Save(_ context.Context, r *initRecords, a audit.Actor) error {
 	if m.saveErr != nil {
@@ -87,7 +99,13 @@ func TestInitCreatesKeys(t *testing.T) {
 	r := st.saved
 
 	// Права файлов: закрытые — 0400, открытые — 0444.
-	want := map[string]os.FileMode{masterKeyFile: 0o400, signingKeyFile: 0o400, caKeyFile: 0o400, signingPubFile: 0o444, caCertFile: 0o444}
+	want := map[string]os.FileMode{
+		masterKeyFile: 0o400, signingKeyFile: 0o400, caKeyFile: 0o400, auditKeyFile: 0o400,
+		signingPubFile: 0o444, caCertFile: 0o444, auditPubFile: 0o444,
+	}
+	if len(want) != len(initFileNames) || countFiles(t, dir) != len(initFileNames) {
+		t.Fatalf("файлов %d, ожидалось %d", countFiles(t, dir), len(initFileNames))
+	}
 	read := map[string][]byte{}
 	for name, perm := range want {
 		info, err := os.Stat(filepath.Join(dir, name))
@@ -152,6 +170,16 @@ func TestInitCreatesKeys(t *testing.T) {
 		t.Fatalf("подпись не проверяется открытым ключом из файла: %v", err)
 	}
 
+	// Ключ аудита — отдельная пара, не совпадающая с ключом пакетов (ADR-0008).
+	auditSigner, _, err := loadAuditSigner(p, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if aisecCrypto.Equal(auditSigner.PublicKey(), pub) {
+		t.Fatal("ключ аудита совпадает с ключом подписи пакетов")
+	}
+	auditSeed := auditSigner.Seed()
+
 	// УЦ загружается из файлов и выпускает сертификаты (задача 2.14).
 	ca, err := aisecCrypto.LoadCA(read[caCertFile], read[caKeyFile])
 	if err != nil {
@@ -181,7 +209,7 @@ func TestInitCreatesKeys(t *testing.T) {
 	}
 
 	// Ни один секрет не попал в вывод.
-	for name, secret := range map[string][]byte{"мастер-ключ": master, "ключ данных": dataKey, "ключ подписи": seed} {
+	for name, secret := range map[string][]byte{"мастер-ключ": master, "ключ данных": dataKey, "ключ подписи": seed, "ключ аудита": auditSeed} {
 		for _, enc := range []string{base64.StdEncoding.EncodeToString(secret), base64.RawURLEncoding.EncodeToString(secret)} {
 			if strings.Contains(out.String(), enc) {
 				t.Errorf("%s в выводе", name)
@@ -208,7 +236,7 @@ func TestInitCreatesKeys(t *testing.T) {
 
 func TestInitNeverOverwrites(t *testing.T) {
 	p := standardProvider(t)
-	for _, name := range []string{masterKeyFile, signingKeyFile, signingPubFile, caKeyFile, caCertFile} {
+	for _, name := range initFileNames {
 		dir := keyDir(t)
 		existing := filepath.Join(dir, name)
 		if err := os.WriteFile(existing, []byte("старый ключ"), 0o400); err != nil {
@@ -278,7 +306,7 @@ func TestInitCommitErrorButCommitted(t *testing.T) {
 	if err := runInit(context.Background(), dir, standardProvider(t), st, cliActor(), now, &out); err != nil {
 		t.Fatalf("зафиксированная транзакция считается сбоем: %v", err)
 	}
-	if n := countFiles(t, dir); n != 5 || !setupTokenRe.MatchString(out.String()) {
+	if n := countFiles(t, dir); n != len(initFileNames) || !setupTokenRe.MatchString(out.String()) {
 		t.Fatalf("файлов %d, вывод: %s", n, out.String())
 	}
 }
@@ -293,7 +321,7 @@ func TestInitCommitOutcomeUnknownKeepsFiles(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "исход транзакции неизвестен") {
 		t.Fatalf("ошибка: %v", err)
 	}
-	if n := countFiles(t, dir); n != 5 {
+	if n := countFiles(t, dir); n != len(initFileNames) {
 		t.Fatalf("файлы удалены при неизвестном исходе: %d", n)
 	}
 	if setupTokenRe.MatchString(out.String()) || setupTokenRe.MatchString(err.Error()) {
@@ -335,6 +363,72 @@ func TestInitKeyDirChecks(t *testing.T) {
 		var out bytes.Buffer
 		if err := runInit(context.Background(), dir, p, &memInitStore{}, cliActor(), now, &out); err == nil {
 			t.Errorf("%s: принято", name)
+		}
+	}
+}
+
+// init -add-audit-key: только пара ключей аудита в каталоге установки.
+func TestInitAddAuditKey(t *testing.T) {
+	p := standardProvider(t)
+	dir := keyDir(t)
+	if err := runInit(context.Background(), dir, p, &memInitStore{}, cliActor(), now, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	// Установка до ADR-0008: ключа аудита ещё нет.
+	for _, name := range []string{auditKeyFile, auditPubFile} {
+		if err := os.Remove(filepath.Join(dir, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	master, err := os.ReadFile(filepath.Join(dir, masterKeyFile)) //nolint:gosec // G304: файл во временном каталоге теста
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := &memInitStore{has: true}
+	var out bytes.Buffer
+	if err := runAddAuditKey(context.Background(), dir, p, st, cliActor(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := loadAuditSigner(p, dir); err != nil {
+		t.Fatal(err)
+	}
+	if len(st.recorded) != 1 || st.recorded[0].Action != "system.audit_key" || st.saved != nil {
+		t.Fatalf("записи аудита: %+v", st.recorded)
+	}
+	if got, err := os.ReadFile(filepath.Join(dir, masterKeyFile)); err != nil || !bytes.Equal(got, master) { //nolint:gosec // G304: файл во временном каталоге теста
+		t.Fatal("мастер-ключ изменён")
+	}
+	if n := countFiles(t, dir); n != len(initFileNames) {
+		t.Fatalf("файлов %d", n)
+	}
+	if e, ok := audit.Lookup("system.audit_key"); !ok || !e.Mandatory {
+		t.Fatal("system.audit_key нет в перечне или оно отключаемое")
+	}
+	// Повторно — отказ, существующий ключ не перезаписывается.
+	if err := runAddAuditKey(context.Background(), dir, p, st, cliActor(), &out); err == nil {
+		t.Fatal("ключ аудита перезаписан")
+	}
+
+	// Отказы: не каталог установки, установка не инициализирована, ошибка
+	// записи аудита (файлы удаляются).
+	empty := keyDir(t)
+	if err := runAddAuditKey(context.Background(), empty, p, &memInitStore{has: true}, cliActor(), &out); err == nil || countFiles(t, empty) != 0 {
+		t.Fatalf("без master.key: %v", err)
+	}
+	for name, st := range map[string]*memInitStore{
+		"нет ключа данных": {},
+		"ошибка БД":        {hasErr: errors.New("нет таблицы")},
+		"ошибка аудита":    {has: true, recordErr: errors.New("журнал недоступен")},
+	} {
+		d := keyDir(t)
+		if err := os.WriteFile(filepath.Join(d, masterKeyFile), master, 0o400); err != nil { //nolint:gosec // G703: путь во временном каталоге теста
+			t.Fatal(err)
+		}
+		if err := runAddAuditKey(context.Background(), d, p, st, cliActor(), &out); err == nil {
+			t.Errorf("%s: принято", name)
+		}
+		if n := countFiles(t, d); n != 1 {
+			t.Errorf("%s: файлов %d", name, n)
 		}
 	}
 }

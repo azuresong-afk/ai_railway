@@ -19,15 +19,34 @@ import (
 // (DM-43) от ошибки выполнения.
 var errChainBroken = errors.New("цепочка журнала аудита нарушена")
 
-// auditCmd — операции с журналом аудита. verify проверяет цепочку хешей по
-// команде (РСБ.4, DM-43); итог пишется в журнал аудита.
+// auditCmd — операции с журналом аудита: verify — проверка цепочки по
+// команде (РСБ.4, DM-43); archive, export, verify-archive — архивация,
+// выгрузка и проверка архива (РСБ.4–5, ADR-0008, audit_archive.go).
 func auditCmd(args []string, dsn string, stdout, stderr io.Writer) error {
-	if len(args) == 0 || args[0] != "verify" {
-		return errors.New("ожидается подкоманда: verify")
+	if len(args) == 0 {
+		return errors.New("ожидается подкоманда: verify, archive, export, verify-archive")
 	}
+	switch args[0] {
+	case "verify":
+		return auditVerify(args[1:], dsn, stdout, stderr)
+	case "archive":
+		return auditArchive(args[1:], dsn, stdout, stderr)
+	case "export":
+		return auditExport(args[1:], dsn, stdout, stderr)
+	case "verify-archive":
+		return auditVerifyArchive(args[1:], stdout, stderr)
+	}
+	return fmt.Errorf("неизвестная подкоманда %q: ожидается verify, archive, export, verify-archive", args[0])
+}
+
+// auditVerify проверяет цепочку; итог пишется в журнал аудита. С -keys
+// подписи контрольных точек архивации проверяются открытым ключом аудита,
+// без него — только их связность.
+func auditVerify(args []string, dsn string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("audit verify", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	if err := fs.Parse(args[1:]); err != nil {
+	keys := fs.String("keys", "", "каталог ключей: проверять подписи контрольных точек ключом audit-signing.pub")
+	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() > 0 {
@@ -43,13 +62,19 @@ func auditCmd(args []string, dsn string, stdout, stderr io.Writer) error {
 	if err := aisecCrypto.SelfTest(p); err != nil {
 		return err
 	}
+	var v aisecCrypto.Verifier
+	if *keys != "" {
+		if v, err = loadAuditVerifier(p, *keys); err != nil {
+			return err
+		}
+	}
 	ctx := context.Background()
 	db, err := store.Open(ctx, dsn, 2)
 	if err != nil {
 		return err
 	}
 	defer db.Close()
-	l, err := audit.New(db.Pool(), p)
+	l, err := openAuditLog(db, p, v)
 	if err != nil {
 		return err
 	}
@@ -64,6 +89,16 @@ func auditCmd(args []string, dsn string, stdout, stderr io.Writer) error {
 	}
 	say(stdout, "Цепочка цела. Проверено записей: %d, последняя — %d.\n", res.Checked, res.Head.Seq)
 	return nil
+}
+
+// openAuditLog — журнал с контрольными точками архивации (v = nil — без
+// проверки подписей).
+func openAuditLog(db *store.DB, p aisecCrypto.Provider, v aisecCrypto.Verifier) (*audit.Log, error) {
+	cps, err := audit.NewPGCheckpoints(db.Pool(), p, v)
+	if err != nil {
+		return nil, err
+	}
+	return audit.New(db.Pool(), p, audit.WithCheckpoints(cps))
 }
 
 // cliActor — «кто» для записи о ручной проверке (РСБ.1): пользователь ОС,

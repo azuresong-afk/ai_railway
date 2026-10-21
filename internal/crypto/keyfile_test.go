@@ -8,6 +8,8 @@ import (
 	"encoding/pem"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -281,4 +283,46 @@ func FuzzLoadCA(f *testing.F) {
 			t.Fatal("принят некорректный УЦ")
 		}
 	})
+}
+
+func TestLoadVerifierFile(t *testing.T) {
+	p, err := New(ProfileStandard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := p.GenerateSigner()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	write := func(name, kind, profile string, key []byte) string {
+		t.Helper()
+		data, err := EncodeKeyPEM(kind, profile, key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, data, 0o444); err != nil { //nolint:gosec // G306,G703: открытый ключ во временном каталоге теста
+			t.Fatal(err)
+		}
+		return path
+	}
+	good := write("audit.pub", KeyKindAuditSigningPublic, ProfileStandard, s.PublicKey())
+	v, err := LoadVerifierFile(p, good, KeyKindAuditSigningPublic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sig, err := s.Sign([]byte("точка"))
+	if err != nil || !v.Verify([]byte("точка"), sig) {
+		t.Fatalf("подпись не проверяется ключом из файла: %v", err)
+	}
+	for name, path := range map[string]string{
+		"ключ пакетов вместо ключа аудита": write("bundle.pub", KeyKindSigningPublic, ProfileStandard, s.PublicKey()),
+		"чужой профиль":                    write("gost.pub", KeyKindAuditSigningPublic, ProfileGOST, s.PublicKey()),
+		"нет файла":                        filepath.Join(dir, "missing.pub"),
+	} {
+		if _, err := LoadVerifierFile(p, path, KeyKindAuditSigningPublic); err == nil {
+			t.Errorf("%s: принято", name)
+		}
+	}
 }
