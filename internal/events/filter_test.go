@@ -124,6 +124,19 @@ func TestFilterSQLParameterized(t *testing.T) {
 	if !reflect.DeepEqual(a.args[1], []string{evil}) || a.args[3] != true || len(a.args) != 7 {
 		t.Fatalf("параметры %v", a.args)
 	}
+
+	// Значение, совпадающее с частью SQL (корпус fuzz value-substring-of-sql),
+	// тоже уходит только параметром.
+	f, err = ParseFilter(`app = "p = "`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.Reset()
+	a = &sqlArgs{}
+	f.appendSQL(&b, a)
+	if b.String() != ` AND e.app = ANY($1::text[])` || !reflect.DeepEqual(a.args, []any{[]string{"p = "}}) {
+		t.Fatalf("SQL %q, параметры %v", b.String(), a.args)
+	}
 }
 
 func TestBuildQueryShape(t *testing.T) {
@@ -217,23 +230,41 @@ func FuzzParseFilter(f *testing.F) {
 		if !reflect.DeepEqual(again, flt) || again.String() != canon {
 			t.Fatalf("круг: %q → %q", canon, again.String())
 		}
-		// SQL — только константы и ссылки на параметры.
+		// SQL — только константы и ссылки на параметры: тот же фильтр с
+		// другими значениями даёт ту же строку SQL, а значения целиком
+		// уходят параметрами. Поиск значения подстрокой в SQL здесь не
+		// годится: «p = » — часть константы «e.app = ANY(».
 		var b strings.Builder
 		a := &sqlArgs{}
 		flt.appendSQL(&b, a)
-		for _, c := range flt.Conds {
-			for _, v := range c.Values {
-				if len(v) > 3 && strings.Contains(b.String(), v) && !strings.Contains(sqlKeywords, v) {
-					t.Fatalf("значение %q попало в SQL", v)
+		probe := Filter{Conds: make([]Cond, len(flt.Conds))}
+		for i, c := range flt.Conds {
+			probe.Conds[i] = c
+			if filterFields[c.Field].kind == kindBool {
+				continue
+			}
+			probe.Conds[i].Values = make([]string, len(c.Values))
+			for j := range c.Values {
+				probe.Conds[i].Values[j] = "probe" + strconv.Itoa(i) + "_" + strconv.Itoa(j)
+			}
+		}
+		var pb strings.Builder
+		pa := &sqlArgs{}
+		probe.appendSQL(&pb, pa)
+		if pb.String() != b.String() {
+			t.Fatalf("SQL зависит от значений:\n%s\n%s", b.String(), pb.String())
+		}
+		if len(a.args) != len(flt.Conds) {
+			t.Fatalf("параметров %d, условий %d", len(a.args), len(flt.Conds))
+		}
+		for i, c := range flt.Conds {
+			if filterFields[c.Field].kind == kindBool {
+				if a.args[i] != (c.Values[0] == "true") {
+					t.Fatalf("параметр %d: %v", i, a.args[i])
 				}
+			} else if !reflect.DeepEqual(a.args[i], c.Values) {
+				t.Fatalf("параметр %d: %v, значения %q", i, a.args[i], c.Values)
 			}
 		}
 	})
 }
-
-// sqlKeywords — текст фрагментов: значение, совпавшее с его частью, не
-// означает подстановку.
-const sqlKeywords = ` AND e.app e.env e.user_alias e.provider e.model e.source e.policy_mode e.action e.rule ` +
-	`e.severity e.storage e.type e.gateway_id e.threats e.details e.stream e.non_text_unchecked e.has_content ` +
-	`= ANY( ::text[] ::uuid[] IS NULL OR <> ALL( NOT ( && EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE( ` +
-	`->'findings', '[]'::jsonb)) AS f WHERE f->>'detector' = ANY( ))`
