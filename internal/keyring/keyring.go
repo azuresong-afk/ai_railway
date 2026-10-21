@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"sync"
 	"time"
 
@@ -49,9 +50,15 @@ type Box struct {
 	aead  aisecCrypto.AEAD
 	// reserve резервирует n шифрований ключа; nil — без учёта (тесты).
 	reserve func(ctx context.Context, n int64) error
+	// Производные ключи (ADR-0007, п. 8): kdf хранит только состояние
+	// HKDF после извлечения; nil — выведение недоступно (NewStatic).
+	provider      aisecCrypto.Provider
+	kdf           aisecCrypto.KDF
+	reserveDerive func(ctx context.Context, purpose, day string, n int64) error
 
-	mu   sync.Mutex
-	left int64
+	mu      sync.Mutex
+	left    int64
+	derived map[string]*Derived
 }
 
 // Load читает мастер-ключ из dir, расшифровывает действующий ключ данных
@@ -103,18 +110,39 @@ func Load(ctx context.Context, db DB, p aisecCrypto.Provider, dir, orgID string)
 		return nil, fmt.Errorf("ключ данных: не расшифрован мастер-ключом: %w", err)
 	}
 	defer clear(key)
+	b, err := newBox(p, id, key)
+	if err != nil {
+		return nil, err
+	}
+	b.reserve = func(ctx context.Context, n int64) error { return reserveDB(ctx, db, id, n) }
+	b.reserveDerive = func(ctx context.Context, purpose, day string, n int64) error {
+		return reserveDerivedDB(ctx, db, id, purpose, day, n)
+	}
+	return b, nil
+}
+
+func newBox(p aisecCrypto.Provider, keyID string, key []byte) (*Box, error) {
 	aead, err := p.NewAEAD(key)
 	if err != nil {
 		return nil, err
 	}
-	b := &Box{keyID: id, aead: aead}
-	b.reserve = func(ctx context.Context, n int64) error { return reserveDB(ctx, db, id, n) }
-	return b, nil
+	kdf, err := p.NewKDF(key)
+	if err != nil {
+		return nil, err
+	}
+	return &Box{keyID: keyID, aead: aead, provider: p, kdf: kdf}, nil
 }
 
 // NewStatic — Box без учёта шифрований в БД (тесты и хранилище в памяти).
+// Производных ключей у него нет.
 func NewStatic(keyID string, aead aisecCrypto.AEAD) *Box {
 	return &Box{keyID: keyID, aead: aead}
+}
+
+// NewStaticKey — Box из открытого ключа данных без учёта шифрований в БД,
+// с производными ключами (тесты и хранилище в памяти).
+func NewStaticKey(p aisecCrypto.Provider, keyID string, key []byte) (*Box, error) {
+	return newBox(p, keyID, key)
 }
 
 func dbCtx(ctx context.Context) (context.Context, context.CancelFunc) {
@@ -191,4 +219,151 @@ func (b *Box) Open(keyID string, sealed []byte, table, column, rowID string) ([]
 		return nil, err
 	}
 	return b.aead.Open(sealed, aad)
+}
+
+// Производные ключи суток (ADR-0007, п. 8): поток шифрований содержимого
+// событий в режиме full велик (500 RPS — 2^31 шифрований примерно за 50
+// дней), поэтому для каждых суток и назначения выводится свой ключ
+// HKDF(ключ данных, «aisec-derived-v1|назначение|ID ключа|ГГГГ-ММ-ДД»), а
+// предел 2^31 считается на производный ключ в derived_key_usage.
+
+// maxDerivedCached — предел производных ключей в памяти: обычно нужны
+// сегодняшние и вчерашние сутки (события около полуночи).
+const maxDerivedCached = 8
+
+var purposeRe = regexp.MustCompile(`^[a-z][a-z0-9_.-]{0,31}$`)
+
+// ErrNoDerive — у Box нет выведения ключей (NewStatic).
+var ErrNoDerive = errors.New("ключ данных: производные ключи недоступны")
+
+// Derived — производный ключ суток для одного назначения.
+type Derived struct {
+	keyID   string
+	purpose string
+	day     string
+	aead    aisecCrypto.AEAD
+	reserve func(ctx context.Context, n int64) error
+
+	mu   sync.Mutex
+	left int64
+}
+
+// KeyID — ID ключа данных, из которого выведен ключ.
+func (d *Derived) KeyID() string { return d.keyID }
+
+// Alg — имя алгоритма шифрования.
+func (d *Derived) Alg() string { return d.aead.Name() }
+
+// Seal шифрует plaintext производным ключом с AAD места хранения,
+// предварительно резервируя шифрование в счётчике производного ключа.
+func (d *Derived) Seal(ctx context.Context, plaintext []byte, table, column, rowID string) ([]byte, error) {
+	aad, err := aisecCrypto.StorageAAD(table, column, rowID)
+	if err != nil {
+		return nil, err
+	}
+	if err := d.take(ctx); err != nil {
+		return nil, err
+	}
+	return d.aead.Seal(plaintext, aad)
+}
+
+func (d *Derived) take(ctx context.Context) error {
+	if d.reserve == nil {
+		return nil
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.left == 0 {
+		if err := d.reserve(ctx, reserveBatch); err != nil {
+			return err
+		}
+		d.left = reserveBatch
+	}
+	d.left--
+	return nil
+}
+
+// dayKey — сутки UTC в виде ГГГГ-ММ-ДД.
+func dayKey(t time.Time) string { return t.UTC().Format(time.DateOnly) }
+
+// Derive возвращает производный ключ суток day (UTC) для назначения
+// purpose. Ключ для одних суток и назначения в процессе один: счётчик
+// резерва общий.
+func (b *Box) Derive(purpose string, day time.Time) (*Derived, error) {
+	if b.kdf == nil {
+		return nil, ErrNoDerive
+	}
+	if !purposeRe.MatchString(purpose) {
+		return nil, fmt.Errorf("ключ данных: неверное назначение производного ключа %q", purpose)
+	}
+	dk := dayKey(day)
+	name := purpose + "|" + dk
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if d, ok := b.derived[name]; ok {
+		return d, nil
+	}
+	aead, err := b.deriveAEAD(purpose, dk)
+	if err != nil {
+		return nil, err
+	}
+	d := &Derived{keyID: b.keyID, purpose: purpose, day: dk, aead: aead}
+	if b.reserveDerive != nil {
+		d.reserve = func(ctx context.Context, n int64) error { return b.reserveDerive(ctx, purpose, dk, n) }
+	}
+	if b.derived == nil || len(b.derived) >= maxDerivedCached {
+		// Старые сутки больше не шифруются: их резерв просто теряется.
+		b.derived = map[string]*Derived{}
+	}
+	b.derived[name] = d
+	return d, nil
+}
+
+func (b *Box) deriveAEAD(purpose, day string) (aisecCrypto.AEAD, error) {
+	key, err := b.kdf.Derive([]byte("aisec-derived-v1|"+purpose+"|"+b.keyID+"|"+day), aisecCrypto.AEADKeySize)
+	if err != nil {
+		return nil, err
+	}
+	defer clear(key)
+	return b.provider.NewAEAD(key)
+}
+
+// OpenDerived расшифровывает шифротекст производного ключа суток day для
+// назначения purpose, выведенного из ключа данных keyID.
+func (b *Box) OpenDerived(keyID, purpose string, day time.Time, sealed []byte, table, column, rowID string) ([]byte, error) {
+	if keyID != b.keyID {
+		return nil, ErrUnknownKey
+	}
+	d, err := b.Derive(purpose, day)
+	if err != nil {
+		return nil, err
+	}
+	aad, err := aisecCrypto.StorageAAD(table, column, rowID)
+	if err != nil {
+		return nil, err
+	}
+	return d.aead.Open(sealed, aad)
+}
+
+// reserveDerivedDB увеличивает счётчик шифрований производного ключа.
+// Ключ данных выведен из употребления или предел исчерпан — ErrExhausted.
+func reserveDerivedDB(ctx context.Context, db DB, keyID, purpose, day string, n int64) error {
+	ctx, cancel := dbCtx(ctx)
+	defer cancel()
+	var sealed int64
+	err := db.QueryRow(ctx, `INSERT INTO derived_key_usage (data_key_id, purpose, day, sealed)
+		SELECT id, $2, $3::date, $4 FROM data_keys WHERE id = $1 AND retired_at IS NULL
+		ON CONFLICT (data_key_id, purpose, day) DO UPDATE SET sealed = derived_key_usage.sealed + EXCLUDED.sealed
+		RETURNING sealed`, keyID, purpose, day, n).Scan(&sealed)
+	var pe *pgconn.PgError
+	if errors.As(err, &pe) && pe.Code == "23514" {
+		return ErrExhausted
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrExhausted
+	}
+	if err != nil {
+		return fmt.Errorf("ключ данных: резерв шифрований производного ключа: %w", err)
+	}
+	return nil
 }

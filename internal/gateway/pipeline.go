@@ -465,7 +465,32 @@ func (in *inspection) maskedContent(texts []inspectText) (string, bool) {
 		b.WriteString(rewrite(t.Text, byText[i]))
 		b.WriteByte('\n')
 	}
-	return truncateUTF8(b.String(), maxEventContent), true
+	return eventText(b.String()), true
+}
+
+// fullContent — содержимое для события в режиме full: тексты как есть.
+// Хранится только на сервере, зашифрованным (ЗИ.1, задача 2.15).
+func fullContent(texts []inspectText) string {
+	var b strings.Builder
+	for _, t := range texts {
+		if t.Parts != nil {
+			continue // склейка повторяет части
+		}
+		if b.Len() >= maxEventContent {
+			break
+		}
+		b.WriteString(t.Location)
+		b.WriteString(": ")
+		b.WriteString(t.Text)
+		b.WriteByte('\n')
+	}
+	return eventText(b.String())
+}
+
+// eventText обрезает содержимое события до maxEventContent и заменяет U+0000
+// (его не хранит PostgreSQL, и сервер отверг бы событие).
+func eventText(s string) string {
+	return strings.ReplaceAll(truncateUTF8(s, maxEventContent), "\x00", "\uFFFD")
 }
 
 // truncateUTF8 обрезает строку до n байт, не разрезая символ.

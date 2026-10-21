@@ -1,10 +1,10 @@
 // Команда aisec-server — сервер управления: API, веб-консоль, оповещения, инциденты, отчёты, аудит.
-// Сейчас (задачи 2.6–2.8, 2.14, 2.17 этапа 2): HTTPS, маршрутизатор с
+// Сейчас (задачи 2.6–2.9, 2.14, 2.15, 2.17 этапа 2): HTTPS, маршрутизатор с
 // проверкой прав, Problem Details, ограничение частоты, вход в консоль,
-// второй фактор и учётные записи, регистрация шлюзов и внутренний API на
-// отдельном порту с mTLS, контроль целостности. Статика веб-консоли встроена
-// в бинарник (web/embed.go, ADR-0011) и сверяется с манифестом; раздача — в
-// задачах каркаса консоли;
+// второй фактор, учётные записи и роли, регистрация шлюзов и внутренний API на
+// отдельном порту с mTLS, приём событий шлюзов, контроль целостности.
+// Статика веб-консоли встроена в бинарник (web/embed.go, ADR-0011) и
+// сверяется с манифестом; раздача — в задачах каркаса консоли;
 // остальные ресурсы API добавляются следующими задачами.
 package main
 
@@ -21,6 +21,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/audit"
 	"github.com/azuresong-afk/ai_railway/internal/auth"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
+	"github.com/azuresong-afk/ai_railway/internal/events"
 	"github.com/azuresong-afk/ai_railway/internal/gwregistry"
 	"github.com/azuresong-afk/ai_railway/internal/httpserver"
 	"github.com/azuresong-afk/ai_railway/internal/integrity"
@@ -120,7 +121,11 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	authSvc, err := auth.NewService(ctx, users, auditLog, p, auth.WithSecretBox(box))
+	roles, err := auth.NewPGRoles(db.Pool(), auditLog)
+	if err != nil {
+		return err
+	}
+	authSvc, err := auth.NewService(ctx, users, auditLog, p, auth.WithSecretBox(box), auth.WithRoleStore(roles))
 	if err != nil {
 		return err
 	}
@@ -155,6 +160,18 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		logger.Warn("внутренний УЦ не задан (-ca-cert, -ca-key): регистрация шлюзов и внутренний API выключены")
 	}
 
+	// События шлюзов (ТЗ 5.5, задача 2.15): секции создаются до приёма,
+	// дальше фоновое задание раз в час держит их на неделю вперёд и удаляет
+	// просроченные.
+	eventStore, err := events.NewPGStore(db.Pool(), box, auditLog, audit.DefaultOrgID)
+	if err != nil {
+		return err
+	}
+	if err := events.Maintain(ctx, eventStore, logger); err != nil {
+		return fmt.Errorf("секции событий: %w", err)
+	}
+	go events.RunMaintenance(ctx, eventStore, events.MaintainEvery, logger)
+
 	handler, _, err := api.New(api.Options{
 		Logger: logger, Version: version, Hasher: hasher,
 		Ready:     db.Ping,
@@ -174,7 +191,7 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	}
 	servers := []*httpserver.Server{srv}
 	if gateways != nil {
-		internal, err := newInternalServer(ctx, cfg, tp, hasher, gateways, ca, certPEM, keyPEM, logger)
+		internal, err := newInternalServer(ctx, cfg, tp, hasher, gateways, eventStore, ca, certPEM, keyPEM, logger)
 		if err != nil {
 			return err
 		}
@@ -251,7 +268,8 @@ func loadCA(certFile, keyFile string) (*aisecCrypto.CA, error) {
 // newInternalServer — внутренний API шлюзов на отдельном порту: TLS с
 // обязательным клиентским сертификатом внутреннего УЦ (mTLS, ИАФ.10).
 func newInternalServer(ctx context.Context, cfg *serverConfig, tp aisecCrypto.TLSProvider, hasher aisecCrypto.Hasher,
-	gateways *gwregistry.Service, ca *aisecCrypto.CA, certPEM, keyPEM []byte, logger *slog.Logger) (*httpserver.Server, error) {
+	gateways *gwregistry.Service, eventStore events.Store, ca *aisecCrypto.CA, certPEM, keyPEM []byte,
+	logger *slog.Logger) (*httpserver.Server, error) {
 	if cfg.InternalTLSCertFile != "" {
 		var err error
 		if certPEM, err = aisecCrypto.ReadPEMFile(cfg.InternalTLSCertFile); err != nil {
@@ -262,7 +280,7 @@ func newInternalServer(ctx context.Context, cfg *serverConfig, tp aisecCrypto.TL
 		}
 	}
 	ilog := logger.With("listener", "internal")
-	handler, _, err := api.NewInternal(api.InternalOptions{Logger: ilog, Hasher: hasher, Gateways: gateways})
+	handler, _, err := api.NewInternal(api.InternalOptions{Logger: ilog, Hasher: hasher, Gateways: gateways, Events: eventStore})
 	if err != nil {
 		return nil, err
 	}

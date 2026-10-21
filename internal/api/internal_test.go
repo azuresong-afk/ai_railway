@@ -12,7 +12,9 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"github.com/azuresong-afk/ai_railway/internal/audit"
+	"github.com/azuresong-afk/ai_railway/internal/auth"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
+	"github.com/azuresong-afk/ai_railway/internal/events"
 	"github.com/azuresong-afk/ai_railway/internal/gwregistry"
 )
 
@@ -30,7 +32,7 @@ func (g asGateway) Authorize(_ *http.Request, perm string) (Principal, Decision)
 	if perm != PermGatewayInternal {
 		return Principal{ID: string(g)}, Forbidden
 	}
-	return Principal{ID: string(g)}, Allow
+	return Principal{ID: string(g), Grants: auth.Grants{PermGatewayInternal: auth.ScopeAll}}, Allow
 }
 
 // newGatewayEnv — реестр в памяти с УЦ и одним зарегистрированным шлюзом.
@@ -69,7 +71,7 @@ func newInternalHandler(t testing.TB, authz Authorizer) (http.Handler, *Router) 
 	t.Helper()
 	svc, _ := newGatewayEnv(t)
 	h, rt, err := NewInternal(InternalOptions{Logger: quiet(), Hasher: testHasher(t), Gateways: svc, Authorizer: authz,
-		RateLimit: RateConfig{Rules: []RateRule{{Prefix: "/", Max: 0}}}})
+		Events: events.NewMemory(), RateLimit: RateConfig{Rules: []RateRule{{Prefix: "/", Max: 0}}}})
 	if err != nil {
 		t.Fatal(err)
 	}

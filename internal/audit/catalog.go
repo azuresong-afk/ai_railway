@@ -42,6 +42,12 @@ var catalog = []Event{
 	{"gateway.register", "Регистрация шлюза: выпуск сертификата по токену", true},
 	{"gateway.revoke", "Отзыв шлюза", true},
 	{"gateway.mtls_denied", "Отказ шлюзу во внутреннем API: сертификат отозван или неизвестен", true},
+	// Роли и доступ (РСБ.1, УПД.1–2, 6).
+	{"role.create", "Создание своей роли", true},
+	{"role.update", "Изменение своей роли", true},
+	{"role.delete", "Удаление своей роли", true},
+	{"user.role_changed", "Назначение роли пользователю", true},
+	{"access.denied", "Отказ в доступе к функции управления", true},
 	// Компоненты (РСБ.2).
 	{"component.start", "Запуск компонента", true},
 	{"component.stop", "Остановка компонента", true},
@@ -57,6 +63,7 @@ var catalog = []Event{
 	{"backup.restore", "Восстановление из резервной копии", true},
 	{"data.export", "Выгрузка данных", true},
 	{"events.content_read", "Доступ к содержимому события", true},
+	{"events.retention", "Удаление событий по сроку хранения", true},
 	// Сам журнал аудита (РСБ.3–4).
 	{"audit.settings_changed", "Изменение настроек журнала аудита", true},
 	{"audit.chain_verified", "Проверка цепочки журнала аудита: цела", true},

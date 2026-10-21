@@ -34,7 +34,7 @@ type App struct {
 	// FailOpen — при сбое проверки пропустить запрос (fail_open); иначе
 	// заблокировать (fail_closed, и по умолчанию).
 	FailOpen bool
-	// Storage — режим хранения содержимого в событиях (none, masked).
+	// Storage — режим хранения содержимого в событиях (none, masked, full).
 	Storage string
 	// UserFrom — откуда идентификатор пользователя: header, field, none.
 	UserFrom string

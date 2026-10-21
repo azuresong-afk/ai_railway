@@ -301,8 +301,8 @@ export interface paths {
         put?: never;
         /**
          * Проверить целостность сервера по команде администратора
-         * @description Право `integrity.verify` (ОЦЛ.2). До модели ролей (задача 2.9) права нет
-         *     ни у одной роли — эндпоинт отвечает 403. Сверяет исполняемый файл сервера
+         * @description Право `integrity.verify` (ОЦЛ.2): из предустановленных ролей — только у
+         *     администратора безопасности (задача 2.9). Сверяет исполняемый файл сервера
          *     и встроенную статику веб-консоли с подписанным манифестом; итог пишется в
          *     `integrity_checks` и журнал аудита (`integrity.check`) от имени
          *     пользователя. Нарушение — `ok: false` с ответом 200; при
@@ -1446,6 +1446,327 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/users/{id}/role": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Назначить роль пользователю
+         * @description Право `roles.manage` (УПД.1–2). Все сессии пользователя завершаются: новые права
+         *     действуют со следующего входа. Свою роль сменить нельзя (422). Права текущей и
+         *     новой роли пользователя должны входить в права назначающего (403). Снять роль
+         *     `security_admin` с последнего активного администратора безопасности нельзя (409).
+         *     Пишет `user.role_changed`; отказ по правам — ту же запись с результатом `denied`.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID учётной записи (UUID) */
+                    id: components["parameters"]["UserID"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["RoleAssignment"];
+                };
+            };
+            responses: {
+                /** @description Роль назначена */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["RoleAssigned"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/permissions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Каталог разрешений
+         * @description Право `roles.read` (УПД.1). Из этих разрешений собираются свои роли.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Разрешения */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PermissionList"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/roles": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Роли
+         * @description Право `roles.read` (УПД.1). Сначала предустановленные роли (права задаёт
+         *     продукт, изменить их нельзя), затем свои по ID. Все роли — на одной странице.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Роли с разрешениями и числом пользователей */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["RoleList"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+            };
+        };
+        put?: never;
+        /**
+         * Создать свою роль
+         * @description Право `roles.manage` (УПД.1). Выдать можно только разрешения, которые есть у
+         *     самого пользователя (403, УПД.2). Роль с любым разрешением на изменение
+         *     требует второй фактор. Пишет `role.create`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["NewRole"];
+                };
+            };
+            responses: {
+                /** @description Роль создана */
+                201: {
+                    headers: {
+                        Location?: string;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["RoleDetails"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/roles/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Роль
+         * @description Право `roles.read`.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description ID роли */
+                    id: components["parameters"]["RoleID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Роль */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["RoleDetails"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+            };
+        };
+        /**
+         * Изменить свою роль
+         * @description Право `roles.manage` (УПД.1–2). Заменяет название, описание и набор разрешений.
+         *     Предустановленную роль и роль, которую носит сам пользователь, изменить нельзя
+         *     (422). Прежние и новые разрешения роли должны входить в права пользователя (403).
+         *     Изменение действует на пользователей роли сразу. Пишет `role.update` со значениями
+         *     до и после.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID роли */
+                    id: components["parameters"]["RoleID"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["RoleInput"];
+                };
+            };
+            responses: {
+                /** @description Роль изменена */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["RoleDetails"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+            };
+        };
+        post?: never;
+        /**
+         * Удалить свою роль
+         * @description Право `roles.manage` (УПД.1). Роль с пользователями, включая деактивированных,
+         *     не удаляется (409). Предустановленную и свою роль удалить нельзя (422). Пишет
+         *     `role.delete`.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID роли */
+                    id: components["parameters"]["RoleID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Роль удалена */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                409: components["responses"]["ProblemConflict"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1571,8 +1892,81 @@ export interface components {
              */
             mfa_required_all: boolean;
         };
-        /** @enum {string} */
-        Role: "security_admin" | "system_admin" | "analyst" | "auditor" | "app_owner";
+        /**
+         * @description ID роли. Предустановленные: `security_admin`, `system_admin`, `analyst`, `auditor`,
+         *     `app_owner` (ТЗ 1.3); свои роли — латиница, цифры и «_» (УПД.1).
+         */
+        Role: string;
+        Permission: {
+            /** @description Имя разрешения, например `users.read` */
+            name: string;
+            title: string;
+            /** @description Раздел консоли */
+            group: string;
+            /** @description Управление функциями безопасности: администратору системы не выдаётся (УПД.2) */
+            security: boolean;
+            /** @description Может выдаваться только на свои объекты (scope `own`, УПД.8) */
+            ownable: boolean;
+        };
+        PermissionList: {
+            items: components["schemas"]["Permission"][];
+        };
+        Grant: {
+            permission: string;
+            /**
+             * @description `own` — только свои объекты (УПД.8)
+             * @default all
+             * @enum {string}
+             */
+            scope: "all" | "own";
+        };
+        RoleInput: {
+            /** @description Если указан, совпадает с ID в пути */
+            id?: components["schemas"]["Role"];
+            display_name: string;
+            description?: string;
+            /** @description Требовать второй фактор; включается принудительно, если есть разрешение на изменение */
+            mfa_required?: boolean;
+            permissions: components["schemas"]["Grant"][];
+        };
+        NewRole: components["schemas"]["RoleInput"] & Record<string, never>;
+        RoleDetails: {
+            id: components["schemas"]["Role"];
+            display_name: string;
+            description: string;
+            /** @description Предустановленная роль не изменяется */
+            builtin: boolean;
+            mfa_required: boolean;
+            /** @description Без `session` и `self`: их добавляет сессия, в роль они не назначаются */
+            permissions: {
+                permission: string;
+                /** @enum {string} */
+                scope: "all" | "own";
+            }[];
+            /** @description Число учётных записей с ролью */
+            users: number;
+            /**
+             * Format: date-time
+             * @description Только у своих ролей
+             */
+            created_at?: string;
+            /**
+             * Format: date-time
+             * @description Только у своих ролей
+             */
+            updated_at?: string;
+        };
+        RoleList: {
+            items: components["schemas"]["RoleDetails"][];
+        };
+        RoleAssignment: {
+            role: components["schemas"]["Role"];
+        };
+        RoleAssigned: {
+            user: components["schemas"]["User"];
+            /** @description Сколько сессий пользователя завершено */
+            revoked_sessions: number;
+        };
         User: {
             /** Format: uuid */
             id: string;
@@ -1625,6 +2019,8 @@ export interface components {
                 /** @description Обязателен по роли или по политике mfa_required_all */
                 required: boolean;
             };
+            /** @description Разрешения, действующие в сессии, включая `session` и, после второго фактора, `self`. Консоль скрывает недоступное; права проверяет сервер */
+            permissions: string[];
         };
         /**
          * @description `active` — полный доступ; `password_change` — только смена пароля; `mfa_pending` —
@@ -1969,6 +2365,8 @@ export interface components {
         CSRFToken: string;
         /** @description ID учётной записи (UUID) */
         UserID: string;
+        /** @description ID роли */
+        RoleID: components["schemas"]["Role"];
         /** @description Ключ повторяемости создающего запроса, 1–64 символа `[A-Za-z0-9._-]` */
         IdempotencyKey: string;
     };

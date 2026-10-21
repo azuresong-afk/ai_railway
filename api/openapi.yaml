@@ -5,6 +5,9 @@
 # OpenAI-совместимые /v1/chat/completions и /v1/models пока описаны только в
 # docs/cert/attack-surface.md. Контрактный тест internal/api сверяет маршруты
 # сервера с этим файлом в обе стороны.
+# У каждой защищённой операции API управления есть расширение x-permission —
+# имя разрешения из internal/auth/permissions.go (УПД.3). Из него строится
+# матрица «роль × эндпоинт» (docs/cert/rbac-matrix.md, tools/rbac-matrix).
 openapi: 3.1.0
 info:
   title: AISec API
@@ -115,6 +118,7 @@ paths:
     get:
       summary: Сведения о сервере (версия)
       description: Право `system.read`. Служит образцом защищённого эндпоинта каркаса.
+      x-permission: system.read
       security: [{ sessionCookie: [] }, { bearerToken: [] }]
       responses:
         '200':
@@ -135,6 +139,7 @@ paths:
         `aisec-cli verify` — при запуске с `AISEC_DATABASE_URL` (ОЦЛ.2, ОЦЛ.5).
         Шлюз пишет итоги в технический журнал.
       security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      x-permission: system.read
       responses:
         '200':
           description: Итоги проверок
@@ -150,13 +155,14 @@ paths:
     post:
       summary: Проверить целостность сервера по команде администратора
       description: |
-        Право `integrity.verify` (ОЦЛ.2). До модели ролей (задача 2.9) права нет
-        ни у одной роли — эндпоинт отвечает 403. Сверяет исполняемый файл сервера
+        Право `integrity.verify` (ОЦЛ.2): из предустановленных ролей — только у
+        администратора безопасности (задача 2.9). Сверяет исполняемый файл сервера
         и встроенную статику веб-консоли с подписанным манифестом; итог пишется в
         `integrity_checks` и журнал аудита (`integrity.check`) от имени
         пользователя. Нарушение — `ok: false` с ответом 200; при
         `-integrity-action stop` сервер после ответа останавливается.
       security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      x-permission: integrity.verify
       parameters:
         - $ref: '#/components/parameters/CSRFToken'
       responses:
@@ -251,6 +257,7 @@ paths:
     post:
       summary: Выход — завершение текущей сессии
       description: Право `session` (любое состояние сессии). Изменяющий запрос — с заголовком `X-CSRF-Token`. Пишет `auth.logout`.
+      x-permission: session
       security: [{ sessionCookie: [] }]
       parameters:
         - $ref: '#/components/parameters/CSRFToken'
@@ -270,6 +277,7 @@ paths:
         остальные сессии пользователя завершаются, текущая получает полный доступ.
         Пока учётная запись заблокирована, пароль не меняется и текущий не проверяется — 409.
         Пишет `auth.password_changed`.
+      x-permission: self
       security: [{ sessionCookie: [] }]
       parameters:
         - $ref: '#/components/parameters/CSRFToken'
@@ -292,6 +300,7 @@ paths:
     get:
       summary: Парольная политика и настройки входа
       description: Право `auth_policy.read` (ИАФ.2, ИАФ.4, УПД.4).
+      x-permission: auth_policy.read
       security: [{ sessionCookie: [] }]
       responses:
         '200':
@@ -306,6 +315,7 @@ paths:
     put:
       summary: Изменить парольную политику и настройки входа
       description: Право `auth_policy.manage`. Все поля обязательны. Пишет `auth.policy_changed` со значениями до и после.
+      x-permission: auth_policy.manage
       security: [{ sessionCookie: [] }]
       parameters:
         - $ref: '#/components/parameters/CSRFToken'
@@ -339,6 +349,7 @@ paths:
         хранится только шифротекстом ключа данных. Повторный вызов заменяет неподтверждённый
         секрет. Пишет `auth.mfa_setup_started`. Без ключа данных на сервере — 503.
       security: [{ sessionCookie: [] }]
+      x-permission: session
       parameters:
         - $ref: '#/components/parameters/CSRFToken'
       requestBody:
@@ -371,6 +382,7 @@ paths:
         `mfa_setup` заменяется новой (`active` или `password_change`) с новыми cookie, прежняя
         завершается с причиной `mfa_passed`; полная сессия остаётся прежней. Пишет `auth.mfa_enabled`.
       security: [{ sessionCookie: [] }]
+      x-permission: session
       parameters:
         - $ref: '#/components/parameters/CSRFToken'
       requestBody:
@@ -409,6 +421,7 @@ paths:
         прежняя завершается с причиной `mfa_passed`. Пишет `auth.mfa_verified` или
         `auth.recovery_code_used`.
       security: [{ sessionCookie: [] }]
+      x-permission: session
       parameters:
         - $ref: '#/components/parameters/CSRFToken'
       requestBody:
@@ -441,6 +454,7 @@ paths:
         TOTP. Прежние неиспользованные коды гасятся. Неверный код — 400 и неудачная попытка
         (ИАФ.4). Пишет `auth.recovery_codes_regenerated`.
       security: [{ sessionCookie: [] }]
+      x-permission: session
       parameters:
         - $ref: '#/components/parameters/CSRFToken'
       requestBody:
@@ -467,6 +481,7 @@ paths:
     get:
       summary: Текущий пользователь и состояние сессии
       description: Право `session` (любое состояние сессии). Вне `/api/v1/auth/`, чтобы строгий предел частоты входа не мешал консоли.
+      x-permission: session
       security: [{ sessionCookie: [] }]
       responses:
         '200':
@@ -482,6 +497,7 @@ paths:
     get:
       summary: Список учётных записей
       description: Право `users.read`. Порядок — по времени создания.
+      x-permission: users.read
       security: [{ sessionCookie: [] }]
       parameters:
         - $ref: '#/components/parameters/Limit'
@@ -504,6 +520,7 @@ paths:
         показывает один раз; при первом входе его нужно сменить. Без `Idempotency-Key`:
         ответ с паролем не запоминается, повтор отклоняется по занятому логину (409).
         Пишет `user.create`.
+      x-permission: users.manage
       security: [{ sessionCookie: [] }]
       parameters:
         - $ref: '#/components/parameters/CSRFToken'
@@ -532,6 +549,7 @@ paths:
     get:
       summary: Учётная запись
       description: Право `users.read`.
+      x-permission: users.read
       security: [{ sessionCookie: [] }]
       parameters:
         - $ref: '#/components/parameters/UserID'
@@ -553,6 +571,7 @@ paths:
         Право `users.manage` (УПД.5). Учётные записи не удаляются. Сессии завершаются.
         Нельзя деактивировать себя (422) и последнего активного администратора
         безопасности (409). Пишет `user.deactivate`.
+      x-permission: users.manage
       security: [{ sessionCookie: [] }]
       parameters:
         - $ref: '#/components/parameters/UserID'
@@ -574,6 +593,7 @@ paths:
     post:
       summary: Повторно активировать учётную запись и снять блокировку
       description: Право `users.manage` (УПД.5, ИАФ.4). Снимает и блокировку после неудачных попыток. Пишет `user.activate`.
+      x-permission: users.manage
       security: [{ sessionCookie: [] }]
       parameters:
         - $ref: '#/components/parameters/UserID'
@@ -597,6 +617,7 @@ paths:
         Право `users.manage` (ИАФ.3). Новый временный пароль показывается один раз,
         блокировка снимается, сессии пользователя завершаются. Свой пароль так не
         сбрасывается (422). Пишет `user.password_reset`.
+      x-permission: users.manage
       security: [{ sessionCookie: [] }]
       parameters:
         - $ref: '#/components/parameters/UserID'
@@ -622,6 +643,7 @@ paths:
         пользователя завершаются; при следующем входе фактор подключается заново. Свой
         фактор так не сбрасывается (422); фактор не подключён — 409. Пишет `auth.mfa_reset`.
       security: [{ sessionCookie: [] }]
+      x-permission: users.manage
       parameters:
         - $ref: '#/components/parameters/UserID'
         - $ref: '#/components/parameters/CSRFToken'
@@ -638,6 +660,7 @@ paths:
     get:
       summary: Незавершённые сессии пользователя
       description: Право `sessions.read` (УПД.4). Токены не выдаются.
+      x-permission: sessions.read
       security: [{ sessionCookie: [] }]
       parameters:
         - $ref: '#/components/parameters/UserID'
@@ -655,6 +678,7 @@ paths:
     delete:
       summary: Принудительно завершить все сессии пользователя
       description: Право `sessions.manage` (УПД.4). Пишет `auth.sessions_revoked`.
+      x-permission: sessions.manage
       security: [{ sessionCookie: [] }]
       parameters:
         - $ref: '#/components/parameters/UserID'
@@ -709,6 +733,179 @@ paths:
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ProblemInternal' }
         '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/users/{id}/role:
+    put:
+      summary: Назначить роль пользователю
+      description: |
+        Право `roles.manage` (УПД.1–2). Все сессии пользователя завершаются: новые права
+        действуют со следующего входа. Свою роль сменить нельзя (422). Права текущей и
+        новой роли пользователя должны входить в права назначающего (403). Снять роль
+        `security_admin` с последнего активного администратора безопасности нельзя (409).
+        Пишет `user.role_changed`; отказ по правам — ту же запись с результатом `denied`.
+      security: [{ sessionCookie: [] }]
+      x-permission: roles.manage
+      parameters:
+        - $ref: '#/components/parameters/UserID'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RoleAssignment' }
+      responses:
+        '200':
+          description: Роль назначена
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RoleAssigned' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '409': { $ref: '#/components/responses/ProblemConflict' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '422': { $ref: '#/components/responses/ProblemUnprocessable' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+  /api/v1/permissions:
+    get:
+      summary: Каталог разрешений
+      description: Право `roles.read` (УПД.1). Из этих разрешений собираются свои роли.
+      security: [{ sessionCookie: [] }]
+      x-permission: roles.read
+      responses:
+        '200':
+          description: Разрешения
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PermissionList' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+  /api/v1/roles:
+    get:
+      summary: Роли
+      description: |
+        Право `roles.read` (УПД.1). Сначала предустановленные роли (права задаёт
+        продукт, изменить их нельзя), затем свои по ID. Все роли — на одной странице.
+      security: [{ sessionCookie: [] }]
+      x-permission: roles.read
+      responses:
+        '200':
+          description: Роли с разрешениями и числом пользователей
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RoleList' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+    post:
+      summary: Создать свою роль
+      description: |
+        Право `roles.manage` (УПД.1). Выдать можно только разрешения, которые есть у
+        самого пользователя (403, УПД.2). Роль с любым разрешением на изменение
+        требует второй фактор. Пишет `role.create`.
+      security: [{ sessionCookie: [] }]
+      x-permission: roles.manage
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NewRole' }
+      responses:
+        '201':
+          description: Роль создана
+          headers:
+            Location: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RoleDetails' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '409': { $ref: '#/components/responses/ProblemConflict' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '422': { $ref: '#/components/responses/ProblemUnprocessable' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+  /api/v1/roles/{id}:
+    get:
+      summary: Роль
+      description: Право `roles.read`.
+      security: [{ sessionCookie: [] }]
+      x-permission: roles.read
+      parameters:
+        - $ref: '#/components/parameters/RoleID'
+      responses:
+        '200':
+          description: Роль
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RoleDetails' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+    put:
+      summary: Изменить свою роль
+      description: |
+        Право `roles.manage` (УПД.1–2). Заменяет название, описание и набор разрешений.
+        Предустановленную роль и роль, которую носит сам пользователь, изменить нельзя
+        (422). Прежние и новые разрешения роли должны входить в права пользователя (403).
+        Изменение действует на пользователей роли сразу. Пишет `role.update` со значениями
+        до и после.
+      security: [{ sessionCookie: [] }]
+      x-permission: roles.manage
+      parameters:
+        - $ref: '#/components/parameters/RoleID'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RoleInput' }
+      responses:
+        '200':
+          description: Роль изменена
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RoleDetails' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '422': { $ref: '#/components/responses/ProblemUnprocessable' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+    delete:
+      summary: Удалить свою роль
+      description: |
+        Право `roles.manage` (УПД.1). Роль с пользователями, включая деактивированных,
+        не удаляется (409). Предустановленную и свою роль удалить нельзя (422). Пишет
+        `role.delete`.
+      security: [{ sessionCookie: [] }]
+      x-permission: roles.manage
+      parameters:
+        - $ref: '#/components/parameters/RoleID'
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '204': { description: Роль удалена }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '409': { $ref: '#/components/responses/ProblemConflict' }
+        '422': { $ref: '#/components/responses/ProblemUnprocessable' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
 components:
   securitySchemes:
     appKey:
@@ -747,6 +944,12 @@ components:
       required: true
       description: ID учётной записи (UUID)
       schema: { type: string, format: uuid }
+    RoleID:
+      name: id
+      in: path
+      required: true
+      description: ID роли
+      schema: { $ref: '#/components/schemas/Role' }
     IdempotencyKey:
       name: Idempotency-Key
       in: header
@@ -966,7 +1169,84 @@ components:
         mfa_required_all: { type: boolean, default: false, description: 'Второй фактор обязателен для всех ролей (для security_admin и system_admin — всегда)' }
     Role:
       type: string
-      enum: [security_admin, system_admin, analyst, auditor, app_owner]
+      pattern: '^[a-z][a-z0-9_]{2,47}$'
+      description: |
+        ID роли. Предустановленные: `security_admin`, `system_admin`, `analyst`, `auditor`,
+        `app_owner` (ТЗ 1.3); свои роли — латиница, цифры и «_» (УПД.1).
+    Permission:
+      type: object
+      required: [name, title, group, security, ownable]
+      properties:
+        name: { type: string, description: 'Имя разрешения, например `users.read`' }
+        title: { type: string }
+        group: { type: string, description: Раздел консоли }
+        security: { type: boolean, description: 'Управление функциями безопасности: администратору системы не выдаётся (УПД.2)' }
+        ownable: { type: boolean, description: 'Может выдаваться только на свои объекты (scope `own`, УПД.8)' }
+    PermissionList:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/Permission' } }
+    Grant:
+      type: object
+      required: [permission]
+      additionalProperties: false
+      properties:
+        permission: { type: string, maxLength: 64 }
+        scope: { type: string, enum: [all, own], default: all, description: '`own` — только свои объекты (УПД.8)' }
+    RoleInput:
+      type: object
+      required: [display_name, permissions]
+      additionalProperties: false
+      properties:
+        id: { $ref: '#/components/schemas/Role', description: 'Если указан, совпадает с ID в пути' }
+        display_name: { type: string, minLength: 1, maxLength: 200 }
+        description: { type: string, maxLength: 500 }
+        mfa_required: { type: boolean, description: 'Требовать второй фактор; включается принудительно, если есть разрешение на изменение' }
+        permissions: { type: array, maxItems: 64, items: { $ref: '#/components/schemas/Grant' } }
+    NewRole:
+      allOf:
+        - $ref: '#/components/schemas/RoleInput'
+        - type: object
+          required: [id]
+    RoleDetails:
+      type: object
+      required: [id, display_name, description, builtin, mfa_required, permissions, users]
+      properties:
+        id: { $ref: '#/components/schemas/Role' }
+        display_name: { type: string }
+        description: { type: string }
+        builtin: { type: boolean, description: Предустановленная роль не изменяется }
+        mfa_required: { type: boolean }
+        permissions:
+          type: array
+          description: 'Без `session` и `self`: их добавляет сессия, в роль они не назначаются'
+          items:
+            type: object
+            required: [permission, scope]
+            properties:
+              permission: { type: string }
+              scope: { type: string, enum: [all, own] }
+        users: { type: integer, description: Число учётных записей с ролью, включая деактивированные }
+        created_at: { type: string, format: date-time, description: Только у своих ролей }
+        updated_at: { type: string, format: date-time, description: Только у своих ролей }
+    RoleList:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/RoleDetails' } }
+    RoleAssignment:
+      type: object
+      required: [role]
+      additionalProperties: false
+      properties:
+        role: { $ref: '#/components/schemas/Role' }
+    RoleAssigned:
+      type: object
+      required: [user, revoked_sessions]
+      properties:
+        user: { $ref: '#/components/schemas/User' }
+        revoked_sessions: { type: integer, description: Сколько сессий пользователя завершено }
     User:
       type: object
       required: [id, login, display_name, role, status, locked, must_change_password, password_changed_at, created_at]
@@ -1008,7 +1288,7 @@ components:
               items: { $ref: '#/components/schemas/User' }
     Me:
       type: object
-      required: [user, session_state]
+      required: [user, session_state, permissions]
       properties:
         user: { $ref: '#/components/schemas/User' }
         session_state: { $ref: '#/components/schemas/SessionState' }
@@ -1020,6 +1300,10 @@ components:
           properties:
             enabled: { type: boolean }
             required: { type: boolean, description: 'Обязателен по роли или по политике mfa_required_all' }
+        permissions:
+          type: array
+          items: { type: string }
+          description: 'Разрешения, действующие в сессии, включая `session` и, после второго фактора, `self`. Консоль скрывает недоступное; права проверяет сервер'
     SessionState:
       type: string
       enum: [active, password_change, mfa_pending, mfa_setup]
