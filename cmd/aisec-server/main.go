@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"net/http"
 	"os"
 	"time"
 
@@ -227,6 +228,16 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		return err
 	}
 
+	// Консоль отдаётся, только если она собрана (make web-build перед go build); иначе сервер — чистый API.
+	var console http.Handler
+	if dist, err := fs.Sub(web.Dist, "dist"); err == nil {
+		if c, err := consoleFS(dist); err == nil {
+			console = staticFallback(c)
+		} else {
+			logger.Warn("веб-консоль не встроена: выполните make web-build до сборки сервера", "component", "aisec-server", "version", version)
+		}
+	}
+
 	handler, _, err := api.New(api.Options{
 		Logger: logger, Version: version, Hasher: hasher,
 		Apps:      appsSvc,
@@ -237,7 +248,7 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		Status:    statusSvc,
 		Events:    eventStore,
 		Audit:     auditLog,
-		Fallback:  staticFallback(),
+		Fallback:  console,
 
 		TrustedProxies: cfg.TrustedProxies,
 	})
