@@ -336,3 +336,30 @@ func BenchmarkAdmit(b *testing.B) {
 		r.Settle(80)
 	}
 }
+
+// TestDM36_ReconfigureKeepsCounters: новый пакет конфигурации (задача 2.13)
+// не обнуляет счётчики оставшихся приложений — иначе частая смена
+// конфигурации снимала бы квоту; новые пределы действуют сразу.
+func TestDM36_ReconfigureKeepsCounters(t *testing.T) {
+	l, clk := newTestLimiter(config.Quotas{RequestsPerMinute: 3})
+	for range 3 {
+		if _, err := l.Admit(QuotaRequest{App: "app"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	l.Reconfigure([]config.Application{{ID: "app", Quotas: config.Quotas{RequestsPerMinute: 4}}, {ID: "new"}})
+	if _, err := l.Admit(QuotaRequest{App: "app"}); err != nil {
+		t.Fatalf("новый предел 4: %v", err)
+	}
+	exceeded(t, func() error { _, err := l.Admit(QuotaRequest{App: "app"}); return err }(), QuotaRequestsPerMinute, "DM-36")
+	if _, err := l.Admit(QuotaRequest{App: "other"}); !errors.Is(err, ErrUnknownApp) {
+		t.Fatalf("удалённое приложение: %v", err)
+	}
+	if _, err := l.Admit(QuotaRequest{App: "new"}); err != nil {
+		t.Fatalf("новое приложение: %v", err)
+	}
+	clk.advance(61 * time.Second)
+	if _, err := l.Admit(QuotaRequest{App: "app"}); err != nil {
+		t.Fatal(err)
+	}
+}

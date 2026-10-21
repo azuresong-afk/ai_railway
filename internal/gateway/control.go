@@ -74,7 +74,8 @@ func (e *controlError) Error() string {
 	return fmt.Sprintf("сервер управления ответил %d", e.Status)
 }
 
-// postControl отправляет JSON и разбирает ответ с кодом want в out.
+// postControl отправляет JSON и разбирает ответ с кодом want в out; out = nil —
+// тело ответа не разбирается.
 func postControl(ctx context.Context, client *http.Client, u string, in, out any, want int) error {
 	body, err := json.Marshal(in)
 	if err != nil {
@@ -113,6 +114,9 @@ func postControl(ctx context.Context, client *http.Client, u string, in, out any
 			ce.RetryAfter = time.Duration(s) * time.Second
 		}
 		return ce
+	}
+	if out == nil {
+		return nil // ответ без тела (204)
 	}
 	if err := json.Unmarshal(data, out); err != nil {
 		return errors.New("ответ сервера управления — не ожидаемый JSON")

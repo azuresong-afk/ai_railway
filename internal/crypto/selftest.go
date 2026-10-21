@@ -99,7 +99,32 @@ func SelfTest(p Provider) error {
 	if err := selfTestTOTP(p); err != nil {
 		return err
 	}
+	if err := selfTestHPKE(p); err != nil {
+		return err
+	}
 	return selfTestArgon2id()
+}
+
+// selfTestHPKE — шифрование для получателя: эталона с фиксированным
+// эфемерным ключом стандартная библиотека не допускает, поэтому проверяются
+// расшифрование своего шифротекста и отказ при другом info.
+func selfTestHPKE(p Provider) error {
+	r, err := p.GenerateRecipient()
+	if err != nil {
+		return err
+	}
+	sealed, err := p.SealTo(r.PublicKey(), katHMACIn, katSHA256In)
+	if err != nil {
+		return err
+	}
+	got, err := r.Open(sealed, katHMACIn)
+	if err != nil || !bytes.Equal(got, katSHA256In) {
+		return errors.New("самотест: HPKE не расшифровал свой шифротекст")
+	}
+	if _, err := r.Open(sealed, katHMACIn[1:]); err == nil {
+		return errors.New("самотест: HPKE расшифровал шифротекст с чужим info")
+	}
+	return nil
 }
 
 func selfTestArgon2id() error {

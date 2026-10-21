@@ -133,7 +133,8 @@ func runRegister(ctx context.Context, cfg *regConfig, out io.Writer) error {
 		}
 	}
 	_, err = fmt.Fprintf(out, "Шлюз %s зарегистрирован (ID %s), сертификат действует до %s.\n"+
-		"Запуск: aisec-gateway ... -server https://<сервер>:8445 -server-ca <корень сервера> -client-cert %s/%s -client-key %s/%s\n",
+		"Запуск: aisec-gateway ... -server https://<сервер>:8445 -server-ca <корень сервера> -client-cert %s/%s -client-key %s/%s"+
+		" -bundle-pub <bundle-signing.pub> -state-dir <каталог 0700>\n",
 		reg.Name, reg.GatewayID, reg.NotAfter.UTC().Format("2006-01-02"), cfg.OutDir, regCertFile, cfg.OutDir, regKeyFile)
 	return err
 }

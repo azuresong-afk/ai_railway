@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"path"
+	"sync/atomic"
 )
 
 // Gateway — HTTP-обработчик шлюза.
@@ -63,6 +64,48 @@ func New(opts Options) (*Gateway, error) {
 		g.mux.Handle(pattern, ah)
 	}
 	return g, nil
+}
+
+// NewUnavailable — шлюз до первого пакета конфигурации от сервера (задача
+// 2.13): /healthz отвечает, /readyz и маршруты приложений — 503
+// config_unavailable. Приложения не обслуживаются без политик и ключей.
+func NewUnavailable(logger *slog.Logger) *Gateway {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	g := &Gateway{logger: logger, mux: http.NewServeMux()}
+	g.mux.HandleFunc("GET /healthz", g.healthz)
+	unavailable := func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "30")
+		WriteError(w, http.StatusServiceUnavailable, "шлюз ещё не получил конфигурацию от сервера управления, повторите позже",
+			"service_unavailable", "config_unavailable")
+	}
+	for _, p := range []string{"GET /readyz", "POST /v1/chat/completions", "POST /v1/embeddings", "POST /guard/v1/check", "GET /v1/models"} {
+		g.mux.HandleFunc(p, unavailable)
+	}
+	return g
+}
+
+// Switch — обработчик, который целиком заменяется при применении пакета
+// конфигурации: запрос обслуживается одним набором приложений, политик и
+// провайдеров от начала до конца, без частично применённой конфигурации.
+type Switch struct {
+	cur  atomic.Pointer[http.Handler]
+	idle http.Handler
+}
+
+// NewSwitch — переключатель с обработчиком idle до первой замены.
+func NewSwitch(idle http.Handler) *Switch { return &Switch{idle: idle} }
+
+// Store подменяет обработчик; запросы в работе завершаются на прежнем.
+func (s *Switch) Store(h http.Handler) { s.cur.Store(&h) }
+
+func (s *Switch) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if h := s.cur.Load(); h != nil {
+		(*h).ServeHTTP(w, r)
+		return
+	}
+	s.idle.ServeHTTP(w, r)
 }
 
 // ServeHTTP добавляет заголовки безопасности и отвечает на неизвестные

@@ -282,7 +282,13 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	}
 	servers := []*httpserver.Server{srv}
 	if gateways != nil {
-		internal, err := newInternalServer(ctx, cfg, tp, hasher, gateways, eventStore, ca, certPEM, keyPEM, logger)
+		// Пакеты конфигурации (задача 2.13): без ключа подписи внутренний
+		// порт не открывается — шлюзы не получили бы конфигурацию.
+		bundleRoutes, err := newBundleRoutes(cfg, p, db, auditLog, appsSvc, policiesSvc, logger)
+		if err != nil {
+			return err
+		}
+		internal, err := newInternalServer(ctx, cfg, tp, hasher, gateways, eventStore, ca, certPEM, keyPEM, bundleRoutes, logger)
 		if err != nil {
 			return err
 		}
@@ -441,7 +447,7 @@ func loadCA(certFile, keyFile string) (*aisecCrypto.CA, error) {
 // обязательным клиентским сертификатом внутреннего УЦ (mTLS, ИАФ.10).
 func newInternalServer(ctx context.Context, cfg *serverConfig, tp aisecCrypto.TLSProvider, hasher aisecCrypto.Hasher,
 	gateways *gwregistry.Service, eventStore events.Store, ca *aisecCrypto.CA, certPEM, keyPEM []byte,
-	logger *slog.Logger) (*httpserver.Server, error) {
+	extra []api.Route, logger *slog.Logger) (*httpserver.Server, error) {
 	if cfg.InternalTLSCertFile != "" {
 		var err error
 		if certPEM, err = aisecCrypto.ReadPEMFile(cfg.InternalTLSCertFile); err != nil {
@@ -452,7 +458,8 @@ func newInternalServer(ctx context.Context, cfg *serverConfig, tp aisecCrypto.TL
 		}
 	}
 	ilog := logger.With("listener", "internal")
-	handler, _, err := api.NewInternal(api.InternalOptions{Logger: ilog, Hasher: hasher, Gateways: gateways, Events: eventStore})
+	handler, _, err := api.NewInternal(api.InternalOptions{Logger: ilog, Hasher: hasher, Gateways: gateways, Events: eventStore,
+		Extra: extra})
 	if err != nil {
 		return nil, err
 	}

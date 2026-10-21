@@ -9,7 +9,8 @@
 # api/openapi.yaml. Ошибки — Problem Details (RFC 9457). Контрактный тест
 # internal/api сверяет маршруты внутреннего порта с этим файлом в обе стороны.
 # Приём событий (POST /internal/v1/events:batch) — задача 2.15; пакеты
-# конфигурации (GET /internal/v1/policies/bundle) добавит задача 2.13.
+# конфигурации (GET /internal/v1/policies/bundle и отчёт о применении) —
+# задача 2.13.
 openapi: 3.1.0
 info:
   title: AISec internal API
@@ -83,6 +84,76 @@ paths:
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ProblemInternal' }
         '503': { $ref: '#/components/responses/ProblemUnavailable' }
+  /internal/v1/policies/bundle:
+    get:
+      summary: Подписанный пакет конфигурации шлюза (Р7, ОЦЛ.3, задача 2.13)
+      description: |
+        Пакет — приложения с хешами ключей и словарями, провайдеры без
+        учётных данных, текущие версии политик (ADR-0009, раздел «Пакеты
+        конфигурации»). Подпись Ed25519 ключом `bundle-signing.key` над байтами
+        заголовка, содержимого и секретов; шлюз проверяет её, свой ID и версию
+        до разбора содержимого. Учётные данные провайдеров — только в разделе
+        `secrets`, зашифрованном HPKE (DHKEM X25519, HKDF-SHA256, AES-256-GCM)
+        для ключа из заголовка `AISec-Bundle-Key`: открытым текстом их нет ни
+        в ответе, ни в журналах. Сервер собирает новую версию, когда меняются
+        данные (`bundle.build` в аудите); данные, которые шлюз отверг бы
+        (например, политика ссылается на словарь, которого нет у приложения),
+        не собираются — выдаётся последняя корректная версия. Каждая выдача
+        200 пишется в аудит (`bundle.deliver`), 304 — нет. Предел частоты —
+        общий для внутреннего порта (600 в минуту с адреса); шлюз опрашивает
+        раз в 30 секунд.
+      parameters:
+        - name: AISec-Bundle-Key
+          in: header
+          required: true
+          description: Открытый ключ шлюза X25519 (32 байта, base64url без дополнения) для шифрования учётных данных
+          schema: { type: string, pattern: '^[A-Za-z0-9_-]{43}$' }
+        - name: If-None-Match
+          in: header
+          required: false
+          description: ETag применённой версии; совпал — 304 без тела
+          schema: { type: string, maxLength: 128 }
+      responses:
+        '200':
+          description: Пакет (не больше 8 МиБ)
+          headers:
+            ETag: { description: 'Версия пакета в кавычках, например "1761048000123"', schema: { type: string } }
+            Cache-Control: { description: no-store, schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ConfigBundle' }
+        '304':
+          description: У шлюза уже эта версия
+          headers:
+            ETag: { schema: { type: string } }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/ProblemUnavailable' }
+  /internal/v1/policies/bundle/status:
+    post:
+      summary: Итог применения пакета на шлюзе
+      description: |
+        Шлюз сообщает, что применил версию (`bundle.applied` в аудите) или
+        отклонил пакет (`bundle.rejected`, DM-42: подпись, откат версии, чужой
+        шлюз, формат, содержимое, размер, расшифрование). Одинаковые отчёты
+        пишутся не чаще раза в минуту на шлюз. Тело до 1 КиБ.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BundleStatus' }
+      responses:
+        '204': { description: Отчёт записан }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
 components:
   securitySchemes:
     gatewayCert:
@@ -105,7 +176,7 @@ components:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }
     ProblemTooLarge:
-      description: Тело больше предела маршрута — heartbeat 4 КиБ, пакет событий 8 МиБ (`payload_too_large`)
+      description: Тело больше предела маршрута — heartbeat 4 КиБ, пакет событий 8 МиБ, отчёт о пакете 1 КиБ (`payload_too_large`)
       content:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }
@@ -139,6 +210,37 @@ components:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }
   schemas:
+    ConfigBundle:
+      description: |
+        Конверт пакета (internal/policy/bundle). Части — стандартный base64:
+        `header` — JSON {format, version, issued_at, gateway_id, content_hash,
+        hash_alg}; `content` — JSON {providers, applications, policies} без
+        учётных данных; `secrets` — шифротекст HPKE списка {provider,
+        credential}; `signature` — Ed25519 над
+        `format || 0x00 || len(header) || header || len(content) || content || len(secrets) || secrets`
+        (длины — 4 байта big-endian). Неизвестные поля на любом уровне — отказ
+        на шлюзе.
+      type: object
+      required: [format, key_id, header, content, secrets, signature]
+      additionalProperties: false
+      properties:
+        format: { type: string, enum: [aisec-config-bundle/1] }
+        key_id: { type: string, pattern: '^[0-9a-f]{16}$', description: Первые 8 байт хеша открытого ключа подписи }
+        header: { type: string }
+        content: { type: string }
+        secrets: { type: string }
+        signature: { type: string }
+    BundleStatus:
+      type: object
+      required: [result, version]
+      additionalProperties: false
+      properties:
+        result: { type: string, enum: [applied, rejected] }
+        version: { type: integer, minimum: 0, description: 'Версия из пакета; 0 — версия не прочитана (пакет отклонён до проверки подписи)' }
+        reason:
+          type: string
+          enum: [too_large, format, signature, gateway_mismatch, rollback, invalid_content, decrypt]
+          description: Только для rejected
     HeartbeatRequest:
       type: object
       required: [version]

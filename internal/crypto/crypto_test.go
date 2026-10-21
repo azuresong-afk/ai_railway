@@ -201,6 +201,15 @@ func assertAllNotImplemented(t *testing.T, p Provider) {
 	if _, err := p.NewTOTP(make([]byte, TOTPSecretSize)); !errors.Is(err, ErrNotImplemented) {
 		t.Errorf("NewTOTP: %v", err)
 	}
+	if _, err := p.GenerateRecipient(); !errors.Is(err, ErrNotImplemented) {
+		t.Errorf("GenerateRecipient: %v", err)
+	}
+	if _, err := p.NewRecipient(make([]byte, RecipientKeySize)); !errors.Is(err, ErrNotImplemented) {
+		t.Errorf("NewRecipient: %v", err)
+	}
+	if _, err := p.SealTo(make([]byte, RecipientPublicKeySize), nil, []byte("x")); !errors.Is(err, ErrNotImplemented) {
+		t.Errorf("SealTo: %v", err)
+	}
 	if err := SelfTest(p); !errors.Is(err, ErrNotImplemented) {
 		t.Errorf("SelfTest: %v", err)
 	}
