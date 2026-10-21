@@ -1,6 +1,7 @@
 package crypto
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -29,8 +30,10 @@ const (
 	maxCNLength = 64  // ub-common-name (RFC 5280)
 )
 
-// CA — удостоверяющий центр в памяти.
+// CA — удостоверяющий центр в памяти. При выводе через fmt и slog
+// показывается только имя алгоритма: закрытый ключ не попадёт в логи.
 type CA struct {
+	redacted
 	cert *x509.Certificate
 	key  *ecdsa.PrivateKey
 	der  []byte
@@ -67,8 +70,87 @@ func NewCA(commonName string, validity time.Duration, now time.Time) (*CA, error
 	if err != nil {
 		return nil, err
 	}
-	return &CA{cert: cert, key: key, der: der}, nil
+	return &CA{redacted: caName, cert: cert, key: key, der: der}, nil
 }
+
+var caName = redacted{"ECDSA P-256 CA"}
+
+// LoadCA восстанавливает УЦ из файлов aisec-cli init (Р8): сертификат в PEM и
+// закрытый ключ PKCS#8 в PEM. Проверяется, что сертификат — УЦ с правом
+// подписи сертификатов, ключ — ECDSA P-256 и соответствует сертификату.
+// Срок действия не проверяется здесь: его проверяет выпуск (IssueServer).
+func LoadCA(certPEM, keyPEM []byte) (*CA, error) {
+	if len(certPEM) > maxPEMFile || len(keyPEM) > maxPEMFile {
+		return nil, fmt.Errorf("УЦ: файл больше %d байт", maxPEMFile)
+	}
+	der, err := singlePEM(certPEM, "CERTIFICATE")
+	if err != nil {
+		return nil, fmt.Errorf("сертификат УЦ: %w", err)
+	}
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		return nil, fmt.Errorf("сертификат УЦ: %w", err)
+	}
+	if !cert.BasicConstraintsValid || !cert.IsCA || cert.KeyUsage&x509.KeyUsageCertSign == 0 {
+		return nil, errors.New("сертификат УЦ: не сертификат удостоверяющего центра")
+	}
+	// Корневой УЦ подписан своим ключом: иначе это чужой сертификат с
+	// подложенными расширениями.
+	if err := cert.CheckSignatureFrom(cert); err != nil {
+		return nil, errors.New("сертификат УЦ: не самоподписанный")
+	}
+	certKey, ok := cert.PublicKey.(*ecdsa.PublicKey)
+	if !ok || certKey.Curve != elliptic.P256() {
+		return nil, errors.New("сертификат УЦ: ключ не ECDSA P-256")
+	}
+	keyDER, err := singlePEM(keyPEM, "PRIVATE KEY")
+	if err != nil {
+		return nil, fmt.Errorf("ключ УЦ: %w", err)
+	}
+	parsed, err := x509.ParsePKCS8PrivateKey(keyDER)
+	if err != nil {
+		return nil, errors.New("ключ УЦ: не PKCS#8") // подробности разбора ключа не выводятся
+	}
+	key, ok := parsed.(*ecdsa.PrivateKey)
+	if !ok || key.Curve != elliptic.P256() {
+		return nil, errors.New("ключ УЦ: не ECDSA P-256")
+	}
+	if !key.PublicKey.Equal(certKey) {
+		return nil, errors.New("ключ УЦ не соответствует сертификату")
+	}
+	return &CA{redacted: caName, cert: cert, key: key, der: cert.Raw}, nil
+}
+
+// singlePEM возвращает содержимое единственного блока PEM типа typ.
+func singlePEM(data []byte, typ string) ([]byte, error) {
+	if !startsWithPEM(data) {
+		return nil, errors.New("данные перед блоком PEM или нет блока")
+	}
+	block, rest := pem.Decode(data)
+	if block == nil {
+		return nil, errors.New("нет блока PEM")
+	}
+	if block.Type != typ || len(block.Headers) != 0 {
+		return nil, fmt.Errorf("ожидается блок %s без заголовков", typ)
+	}
+	if len(bytes.TrimSpace(rest)) != 0 {
+		return nil, errors.New("данные после блока PEM")
+	}
+	return block.Bytes, nil
+}
+
+// KeyPEM — закрытый ключ УЦ в PKCS#8 PEM для файла 0400 (ТЗ, 10.4). Не
+// логируется и не передаётся по сети.
+func (ca *CA) KeyPEM() ([]byte, error) {
+	der, err := x509.MarshalPKCS8PrivateKey(ca.key)
+	if err != nil {
+		return nil, err
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), nil
+}
+
+// NotAfter — окончание срока действия сертификата УЦ.
+func (ca *CA) NotAfter() time.Time { return ca.cert.NotAfter }
 
 // CertPEM — сертификат УЦ в PEM (для списка доверенных корневых).
 func (ca *CA) CertPEM() []byte {
@@ -83,6 +165,9 @@ func (ca *CA) IssueServer(hosts []string, validity time.Duration, now time.Time)
 	}
 	if err := checkValidity(validity); err != nil {
 		return nil, nil, err
+	}
+	if !now.Before(ca.cert.NotAfter) {
+		return nil, nil, errors.New("срок действия сертификата УЦ истёк")
 	}
 	notAfter := now.Add(validity)
 	if notAfter.After(ca.cert.NotAfter) {

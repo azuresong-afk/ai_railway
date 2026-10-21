@@ -31,7 +31,10 @@ type Config struct {
 	TLS     aisecCrypto.TLSProvider
 	CertPEM []byte
 	KeyPEM  []byte
-	Logger  *slog.Logger
+	// ClientCAPEM — если задан, сервер принимает только клиентов с
+	// сертификатом этого УЦ (mTLS, внутренний API сервера).
+	ClientCAPEM []byte
+	Logger      *slog.Logger
 	// ReadTimeout — предел на чтение всего запроса. Ноль — без предела:
 	// потоковым ответам нужен долгий ответ, а тело ограничивают обработчики.
 	ReadTimeout time.Duration
@@ -53,7 +56,11 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 	if len(cfg.CertPEM) == 0 || len(cfg.KeyPEM) == 0 {
 		return nil, errors.New("httpserver: не заданы сертификат и ключ TLS; работа без TLS не поддерживается")
 	}
+	// Тип *tls.Config не называется явно: crypto/* импортирует только internal/crypto.
 	tlsCfg, err := cfg.TLS.ServerConfig(cfg.CertPEM, cfg.KeyPEM)
+	if err == nil && len(cfg.ClientCAPEM) > 0 {
+		tlsCfg, err = cfg.TLS.MutualServerConfig(cfg.CertPEM, cfg.KeyPEM, cfg.ClientCAPEM)
+	}
 	if err != nil {
 		return nil, err
 	}

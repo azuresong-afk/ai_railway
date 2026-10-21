@@ -8,8 +8,11 @@
 #
 # Поля:
 #   name, version        — имя и точная версия.
-#   type                 — go-module | toolchain | tool | image | github-action.
+#   type                 — go-module | toolchain | tool | image | github-action | npm-package.
 #                          Для image: name — репозиторий образа (golang), version — «тег@sha256:…».
+#                          Для npm-package: прямая зависимость web/package.json (dependencies — scope product,
+#                          devDependencies — build); транзитивные пакеты проверяет make licenses по web/package-lock.json
+#                          (ADR-0011), в реестр попадают только исключения с license_decision.
 #                          Для github-action: version — «тег@SHA коммита».
 #   scope                — product (в поставке, в SBOM) | build (только сборочная среда, ADR-0003).
 #   purpose              — зачем нужен.
@@ -57,6 +60,54 @@ components:
     license_files:
       LICENSE: d18f6323b71b0b768bb5e9616e36da390fbd39369a81807cca352de4e4e6aa0b
       NOTICE: f6c2dd3a67b576eafb89b80200b8b1627230bf3821a0c14cb99a22ac19107d00
+
+  - name: golang.org/x/crypto
+    version: v0.58.0
+    type: go-module
+    scope: product
+    purpose: Argon2id для паролей учётных записей (PasswordHasher, ТЗ 10.2); используются только пакеты argon2 и blake2b, импорт — только в internal/crypto (depguard).
+    license: BSD-3-Clause
+    repository: https://go.googlesource.com/crypto
+    attack_surface: true
+    security_function: true
+    provided_by: The Go Authors (Google)
+    justification: Argon2id нет в стандартной библиотеке Go, а собственные реализации алгоритмов запрещены. Библиотеку называет ТЗ 11.2; сопровождает команда Go, выпуски ежемесячно. В vendor попадают только argon2 и blake2b; x/net и x/term нужны лишь для графа модулей и в сборку не входят. Граф x/crypto поднимает версии x/sync и x/text, которые вендорятся для pgx.
+    decision: ТЗ 11.2; ADR-0006; согласие владельца в потоке A2 этапа 2
+    decided: 2026-10-20
+    license_files:
+      LICENSE: 911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad
+
+  - name: golang.org/x/sys
+    version: v0.49.0
+    type: go-module
+    scope: product
+    purpose: Транзитивная зависимость golang.org/x/crypto — только пакет cpu (выбор ускоренной реализации BLAKE2b по возможностям процессора).
+    license: BSD-3-Clause
+    repository: https://go.googlesource.com/sys
+    attack_surface: false
+    security_function: false
+    provided_by: The Go Authors (Google)
+    justification: Требуется golang.org/x/crypto; в vendor попадает только golang.org/x/sys/cpu.
+    decision: ADR-0006; согласие владельца в потоке A2 этапа 2
+    decided: 2026-10-20
+    license_files:
+      LICENSE: 911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad
+
+  - name: rsc.io/qr
+    version: v0.2.0
+    type: go-module
+    scope: product
+    purpose: Кодирование ссылки otpauth в матрицу QR-кода при подключении второго фактора (ИАФ.5, задача 2.8); сервер отдаёт матрицу модулей, консоль рисует её SVG-прямоугольниками.
+    license: BSD-3-Clause
+    repository: https://github.com/rsc/qr
+    attack_surface: false
+    security_function: false
+    provided_by: Russ Cox (The Go Authors)
+    justification: В стандартной библиотеке Go нет кодировщика QR (Рида — Соломона и масок), а собственная реализация — лишний непроверенный код. Модуль без зависимостей (go.mod без require), чистый Go, только кодирование; вход — строка, сформированная сервером (логин до 64 символов). В vendor попадают пакеты qr, qr/coding, qr/gf256; libqrencode (cgo) не импортируется и в сборку не входит. Последний выпуск v0.2.0 — июнь 2018 года; кодировщик стандарта ISO/IEC 18004 не требует обновлений, а входные данные доверенные (формирует сервер), поэтому низкая активность допустима.
+    decision: решение Р2 этапа 2; согласие владельца на план задачи 2.8 (поток C1, 21.10.2026)
+    decided: 2026-10-21
+    license_files:
+      LICENSE: 2d36597f7117c38b006835ae7f537487207d8ec407aa9d9980794b2030cbc067
 
   - name: golangci-lint
     version: v2.14.0
@@ -147,3 +198,733 @@ components:
     justification: Стандартный шаг CI; закреплён по SHA коммита (ADR-0002).
     decision: план этапа 0, Д4; ADR-0002
     decided: 2026-10-01
+
+  - name: '@tanstack/react-query'
+    version: 5.104.5
+    type: npm-package
+    scope: product
+    purpose: Запросы к API управления и кэш ответов.
+    license: MIT
+    repository: https://github.com/TanStack/query
+    attack_surface: true
+    security_function: false
+    provided_by: Авторы пакета (реестр npm)
+    justification: Библиотека из перечня ТЗ 11.2; собственная реализация не оправдана.
+    decision: 'ТЗ 11.2; ADR-0011; план этапа 2, задача 2.21'
+    decided: 2026-10-20
+
+  - name: '@tanstack/react-table'
+    version: 9.3.1
+    type: npm-package
+    scope: product
+    purpose: Таблицы событий и списков.
+    license: MIT
+    repository: https://github.com/TanStack/table
+    attack_surface: true
+    security_function: false
+    provided_by: Авторы пакета (реестр npm)
+    justification: Библиотека из перечня ТЗ 11.2; собственная реализация не оправдана.
+    decision: 'ТЗ 11.2; ADR-0011; план этапа 2, задача 2.21'
+    decided: 2026-10-20
+
+  - name: '@tanstack/react-virtual'
+    version: 3.14.21
+    type: npm-package
+    scope: product
+    purpose: Виртуализация длинных списков событий.
+    license: MIT
+    repository: https://github.com/TanStack/virtual
+    attack_surface: true
+    security_function: false
+    provided_by: Авторы пакета (реестр npm)
+    justification: Библиотека из перечня ТЗ 11.2; собственная реализация не оправдана.
+    decision: 'ТЗ 11.2; ADR-0011; план этапа 2, задача 2.21'
+    decided: 2026-10-20
+
+  - name: date-fns
+    version: 4.4.0
+    type: npm-package
+    scope: product
+    purpose: Форматирование дат и времени.
+    license: MIT
+    repository: https://github.com/date-fns/date-fns
+    attack_surface: true
+    security_function: false
+    provided_by: Авторы пакета (реестр npm)
+    justification: Библиотека из перечня ТЗ 11.2; собственная реализация не оправдана.
+    decision: 'ТЗ 11.2; ADR-0011; план этапа 2, задача 2.21'
+    decided: 2026-10-20
+
+  - name: echarts
+    version: 6.1.0
+    type: npm-package
+    scope: product
+    purpose: Графики на дашбордах.
+    license: Apache-2.0
+    repository: https://github.com/apache/echarts
+    attack_surface: true
+    security_function: false
+    provided_by: Авторы пакета (реестр npm)
+    justification: Библиотека из перечня ТЗ 11.2; собственная реализация не оправдана.
+    decision: 'ТЗ 11.2; ADR-0011; план этапа 2, задача 2.21'
+    decided: 2026-10-20
+
+  - name: lucide-react
+    version: 1.60.0
+    type: npm-package
+    scope: product
+    purpose: Иконки интерфейса (локально, без внешних шрифтов).
+    license: ISC
+    repository: https://github.com/lucide-icons/lucide
+    attack_surface: true
+    security_function: false
+    provided_by: Авторы пакета (реестр npm)
+    justification: Библиотека из перечня ТЗ 11.2; собственная реализация не оправдана.
+    decision: 'ТЗ 11.2; ADR-0011; план этапа 2, задача 2.21'
+    decided: 2026-10-20
+
+  - name: '@radix-ui/react-alert-dialog'
+    version: 1.2.1
+    type: npm-package
+    scope: product
+    purpose: Примитив интерфейса «alert-dialog» (Radix UI) для экранов консоли.
+    license: MIT
+    repository: https://github.com/radix-ui/primitives
+    attack_surface: true
+    security_function: false
+    provided_by: Авторы пакета (реестр npm)
+    justification: Библиотека из перечня ТЗ 11.2; доступные примитивы (клавиатура, фокус, ARIA) дешевле и надёжнее собственных.
+    decision: 'ТЗ 11.2; ADR-0010; согласие владельца 2026-10-21; план этапа 2, задача 2.22'
+    decided: 2026-10-21
+
+  - name: '@radix-ui/react-checkbox'
+    version: 1.4.1
+    type: npm-package
+    scope: product
+    purpose: Примитив интерфейса «checkbox» (Radix UI) для экранов консоли.
+    license: MIT
+    repository: https://github.com/radix-ui/primitives
+    attack_surface: true
+    security_function: false
+    provided_by: Авторы пакета (реестр npm)
+    justification: Библиотека из перечня ТЗ 11.2; доступные примитивы (клавиатура, фокус, ARIA) дешевле и надёжнее собственных.
+    decision: 'ТЗ 11.2; ADR-0010; согласие владельца 2026-10-21; план этапа 2, задача 2.22'
+    decided: 2026-10-21
+
+  - name: '@radix-ui/react-collapsible'
+    version: 1.2.1
+    type: npm-package
+    scope: product
+    purpose: Примитив интерфейса «collapsible» (Radix UI) для экранов консоли.
+    license: MIT
+    repository: https://github.com/radix-ui/primitives
+    attack_surface: true
+    security_function: false
+    provided_by: Авторы пакета (реестр npm)
+    justification: Библиотека из перечня ТЗ 11.2; доступные примитивы (клавиатура, фокус, ARIA) дешевле и надёжнее собственных.
+    decision: 'ТЗ 11.2; ADR-0010; согласие владельца 2026-10-21; план этапа 2, задача 2.22'
+    decided: 2026-10-21
+
+  - name: '@radix-ui/react-dialog'
+    version: 1.3.1
+    type: npm-package
+    scope: product
+    purpose: Примитив интерфейса «dialog» (Radix UI) для экранов консоли.
+    license: MIT
+    repository: https://github.com/radix-ui/primitives
+    attack_surface: true
+    security_function: false
+    provided_by: Авторы пакета (реестр npm)
+    justification: Библиотека из перечня ТЗ 11.2; доступные примитивы (клавиатура, фокус, ARIA) дешевле и надёжнее собственных.
+    decision: 'ТЗ 11.2; ADR-0010; согласие владельца 2026-10-21; план этапа 2, задача 2.22'
+    decided: 2026-10-21
+
+  - name: '@radix-ui/react-dropdown-menu'
+    version: 2.2.1
+    type: npm-package
+    scope: product
+    purpose: Примитив интерфейса «dropdown-menu» (Radix UI) для экранов консоли.
+    license: MIT
+    repository: https://github.com/radix-ui/primitives
+    attack_surface: true
+    security_function: false
+    provided_by: Авторы пакета (реестр npm)
+    justification: Библиотека из перечня ТЗ 11.2; доступные примитивы (клавиатура, фокус, ARIA) дешевле и надёжнее собственных.
+    decision: 'ТЗ 11.2; ADR-0010; согласие владельца 2026-10-21; план этапа 2, задача 2.22'
+    decided: 2026-10-21
+
+  - name: '@radix-ui/react-label'
+    version: 2.1.17
+    type: npm-package
+    scope: product
+    purpose: Примитив интерфейса «label» (Radix UI) для экранов консоли.
+    license: MIT
+    repository: https://github.com/radix-ui/primitives
+    attack_surface: true
+    security_function: false
+    provided_by: Авторы пакета (реестр npm)
+    justification: Библиотека из перечня ТЗ 11.2; доступные примитивы (клавиатура, фокус, ARIA) дешевле и надёжнее собственных.
+    decision: 'ТЗ 11.2; ADR-0010; согласие владельца 2026-10-21; план этапа 2, задача 2.22'
+    decided: 2026-10-21
+
+  - name: '@radix-ui/react-popover'
+    version: 1.3.1
+    type: npm-package
+    scope: product
+    purpose: Примитив интерфейса «popover» (Radix UI) для экранов консоли.
+    license: MIT
+    repository: https://github.com/radix-ui/primitives
+    attack_surface: true
+    security_function: false
+    provided_by: Авторы пакета (реестр npm)
+    justification: Библиотека из перечня ТЗ 11.2; доступные примитивы (клавиатура, фокус, ARIA) дешевле и надёжнее собственных.
+    decision: 'ТЗ 11.2; ADR-0010; согласие владельца 2026-10-21; план этапа 2, задача 2.22'
+    decided: 2026-10-21
+
+  - name: '@radix-ui/react-radio-group'
+    version: 1.5.1
+    type: npm-package
+    scope: product
+    purpose: Примитив интерфейса «radio-group» (Radix UI) для экранов консоли.
+    license: MIT
+    repository: https://github.com/radix-ui/primitives
+    attack_surface: true
+    security_function: false
+    provided_by: Авторы пакета (реестр npm)
+    justification: Библиотека из перечня ТЗ 11.2; доступные примитивы (клавиатура, фокус, ARIA) дешевле и надёжнее собственных.
+    decision: 'ТЗ 11.2; ADR-0010; согласие владельца 2026-10-21; план этапа 2, задача 2.22'
+    decided: 2026-10-21
+
+  - name: '@radix-ui/react-switch'
+    version: 1.4.1
+    type: npm-package
+    scope: product
+    purpose: Примитив интерфейса «switch» (Radix UI) для экранов консоли.
+    license: MIT
+    repository: https://github.com/radix-ui/primitives
+    attack_surface: true
+    security_function: false
+    provided_by: Авторы пакета (реестр npm)
+    justification: Библиотека из перечня ТЗ 11.2; доступные примитивы (клавиатура, фокус, ARIA) дешевле и надёжнее собственных.
+    decision: 'ТЗ 11.2; ADR-0010; согласие владельца 2026-10-21; план этапа 2, задача 2.22'
+    decided: 2026-10-21
+
+  - name: '@radix-ui/react-tabs'
+    version: 1.2.1
+    type: npm-package
+    scope: product
+    purpose: Примитив интерфейса «tabs» (Radix UI) для экранов консоли.
+    license: MIT
+    repository: https://github.com/radix-ui/primitives
+    attack_surface: true
+    security_function: false
+    provided_by: Авторы пакета (реестр npm)
+    justification: Библиотека из перечня ТЗ 11.2; доступные примитивы (клавиатура, фокус, ARIA) дешевле и надёжнее собственных.
+    decision: 'ТЗ 11.2; ADR-0010; согласие владельца 2026-10-21; план этапа 2, задача 2.22'
+    decided: 2026-10-21
+
+  - name: '@radix-ui/react-toast'
+    version: 1.3.1
+    type: npm-package
+    scope: product
+    purpose: Примитив интерфейса «toast» (Radix UI) для экранов консоли.
+    license: MIT
+    repository: https://github.com/radix-ui/primitives
+    attack_surface: true
+    security_function: false
+    provided_by: Авторы пакета (реестр npm)
+    justification: Библиотека из перечня ТЗ 11.2; доступные примитивы (клавиатура, фокус, ARIA) дешевле и надёжнее собственных.
+    decision: 'ТЗ 11.2; ADR-0010; согласие владельца 2026-10-21; план этапа 2, задача 2.22'
+    decided: 2026-10-21
+
+  - name: '@radix-ui/react-tooltip'
+    version: 1.4.1
+    type: npm-package
+    scope: product
+    purpose: Примитив интерфейса «tooltip» (Radix UI) для экранов консоли.
+    license: MIT
+    repository: https://github.com/radix-ui/primitives
+    attack_surface: true
+    security_function: false
+    provided_by: Авторы пакета (реестр npm)
+    justification: Библиотека из перечня ТЗ 11.2; доступные примитивы (клавиатура, фокус, ARIA) дешевле и надёжнее собственных.
+    decision: 'ТЗ 11.2; ADR-0010; согласие владельца 2026-10-21; план этапа 2, задача 2.22'
+    decided: 2026-10-21
+
+  - name: react
+    version: 19.3.1
+    type: npm-package
+    scope: product
+    purpose: Библиотека построения интерфейса консоли.
+    license: MIT
+    repository: https://github.com/facebook/react
+    attack_surface: true
+    security_function: false
+    provided_by: Авторы пакета (реестр npm)
+    justification: Библиотека из перечня ТЗ 11.2; собственная реализация не оправдана.
+    decision: 'ТЗ 11.2; ADR-0011; план этапа 2, задача 2.21'
+    decided: 2026-10-20
+
+  - name: react-dom
+    version: 19.3.1
+    type: npm-package
+    scope: product
+    purpose: Отрисовка React в браузере.
+    license: MIT
+    repository: https://github.com/facebook/react
+    attack_surface: true
+    security_function: false
+    provided_by: Авторы пакета (реестр npm)
+    justification: Библиотека из перечня ТЗ 11.2; собственная реализация не оправдана.
+    decision: 'ТЗ 11.2; ADR-0011; план этапа 2, задача 2.21'
+    decided: 2026-10-20
+
+  - name: react-hook-form
+    version: 7.90.0
+    type: npm-package
+    scope: product
+    purpose: Формы консоли.
+    license: MIT
+    repository: https://github.com/react-hook-form/react-hook-form
+    attack_surface: true
+    security_function: false
+    provided_by: Авторы пакета (реестр npm)
+    justification: Библиотека из перечня ТЗ 11.2; собственная реализация не оправдана.
+    decision: 'ТЗ 11.2; ADR-0011; план этапа 2, задача 2.21'
+    decided: 2026-10-20
+
+  - name: react-router
+    version: 8.5.0
+    type: npm-package
+    scope: product
+    purpose: Маршрутизация страниц консоли.
+    license: MIT
+    repository: https://github.com/remix-run/react-router
+    attack_surface: true
+    security_function: false
+    provided_by: Авторы пакета (реестр npm)
+    justification: Библиотека из перечня ТЗ 11.2; собственная реализация не оправдана.
+    decision: 'ТЗ 11.2; ADR-0011; план этапа 2, задача 2.21'
+    decided: 2026-10-20
+
+  - name: zod
+    version: 4.6.7
+    type: npm-package
+    scope: product
+    purpose: Проверка данных форм и ответов API на стороне браузера.
+    license: MIT
+    repository: https://github.com/colinhacks/zod
+    attack_surface: true
+    security_function: false
+    provided_by: Авторы пакета (реестр npm)
+    justification: Библиотека из перечня ТЗ 11.2; собственная реализация не оправдана.
+    decision: 'ТЗ 11.2; ADR-0011; план этапа 2, задача 2.21'
+    decided: 2026-10-20
+
+  - name: '@eslint/js'
+    version: 10.0.1
+    type: npm-package
+    scope: build
+    purpose: Базовые правила ESLint.
+    license: MIT
+    repository: https://github.com/eslint/eslint
+    attack_surface: false
+    security_function: false
+    provided_by: Авторы пакета (реестр npm), только сборочная среда
+    justification: Инструмент из перечня ТЗ 11.2 или его необходимая зависимость; в поставку не входит.
+    decision: 'ТЗ 11.2; ADR-0011; план этапа 2, задача 2.21'
+    decided: 2026-10-20
+
+  - name: '@playwright/test'
+    version: 1.64.1
+    type: npm-package
+    scope: build
+    purpose: Сквозные тесты консоли в браузере, в том числе при строгом CSP.
+    license: Apache-2.0
+    repository: https://github.com/microsoft/playwright
+    attack_surface: false
+    security_function: false
+    provided_by: Авторы пакета (реестр npm), только сборочная среда
+    justification: Инструмент из перечня ТЗ 11.2 или его необходимая зависимость; в поставку не входит.
+    decision: 'ТЗ 11.2; ADR-0011; план этапа 2, задача 2.21'
+    decided: 2026-10-20
+
+  - name: '@tailwindcss/vite'
+    version: 4.3.3
+    type: npm-package
+    scope: build
+    purpose: Подключение Tailwind CSS к Vite.
+    license: MIT
+    repository: https://github.com/tailwindlabs/tailwindcss
+    attack_surface: false
+    security_function: false
+    provided_by: Авторы пакета (реестр npm), только сборочная среда
+    justification: Инструмент из перечня ТЗ 11.2 или его необходимая зависимость; в поставку не входит.
+    decision: 'ТЗ 11.2; ADR-0011; план этапа 2, задача 2.21'
+    decided: 2026-10-20
+
+  - name: '@testing-library/dom'
+    version: 10.4.2
+    type: npm-package
+    scope: build
+    purpose: Запросы к DOM в тестах (зависимость @testing-library/react).
+    license: MIT
+    repository: https://github.com/testing-library/dom-testing-library
+    attack_surface: false
+    security_function: false
+    provided_by: Авторы пакета (реестр npm), только сборочная среда
+    justification: Инструмент из перечня ТЗ 11.2 или его необходимая зависимость; в поставку не входит.
+    decision: 'ТЗ 11.2; ADR-0011; план этапа 2, задача 2.21'
+    decided: 2026-10-20
+
+  - name: '@testing-library/jest-dom'
+    version: 7.0.1
+    type: npm-package
+    scope: build
+    purpose: Проверки состояния DOM в тестах.
+    license: MIT
+    repository: https://github.com/testing-library/jest-dom
+    attack_surface: false
+    security_function: false
+    provided_by: Авторы пакета (реестр npm), только сборочная среда
+    justification: Инструмент из перечня ТЗ 11.2 или его необходимая зависимость; в поставку не входит.
+    decision: 'ТЗ 11.2; ADR-0011; план этапа 2, задача 2.21'
+    decided: 2026-10-20
+
+  - name: '@testing-library/react'
+    version: 16.3.3
+    type: npm-package
+    scope: build
+    purpose: Тестирование компонентов React.
+    license: MIT
+    repository: https://github.com/testing-library/react-testing-library
+    attack_surface: false
+    security_function: false
+    provided_by: Авторы пакета (реестр npm), только сборочная среда
+    justification: Инструмент из перечня ТЗ 11.2 или его необходимая зависимость; в поставку не входит.
+    decision: 'ТЗ 11.2; ADR-0011; план этапа 2, задача 2.21'
+    decided: 2026-10-20
+
+  - name: '@types/node'
+    version: 26.6.5
+    type: npm-package
+    scope: build
+    purpose: Типы Node.js для конфигураций сборки и тестов.
+    license: MIT
+    repository: https://github.com/DefinitelyTyped/DefinitelyTyped
+    attack_surface: false
+    security_function: false
+    provided_by: Авторы пакета (реестр npm), только сборочная среда
+    justification: Инструмент из перечня ТЗ 11.2 или его необходимая зависимость; в поставку не входит.
+    decision: 'ТЗ 11.2; ADR-0011; план этапа 2, задача 2.21'
+    decided: 2026-10-20
+
+  - name: '@types/react'
+    version: 19.3.0
+    type: npm-package
+    scope: build
+    purpose: Типы React.
+    license: MIT
+    repository: https://github.com/DefinitelyTyped/DefinitelyTyped
+    attack_surface: false
+    security_function: false
+    provided_by: Авторы пакета (реестр npm), только сборочная среда
+    justification: Инструмент из перечня ТЗ 11.2 или его необходимая зависимость; в поставку не входит.
+    decision: 'ТЗ 11.2; ADR-0011; план этапа 2, задача 2.21'
+    decided: 2026-10-20
+
+  - name: '@types/react-dom'
+    version: 19.3.0
+    type: npm-package
+    scope: build
+    purpose: Типы React DOM.
+    license: MIT
+    repository: https://github.com/DefinitelyTyped/DefinitelyTyped
+    attack_surface: false
+    security_function: false
+    provided_by: Авторы пакета (реестр npm), только сборочная среда
+    justification: Инструмент из перечня ТЗ 11.2 или его необходимая зависимость; в поставку не входит.
+    decision: 'ТЗ 11.2; ADR-0011; план этапа 2, задача 2.21'
+    decided: 2026-10-20
+
+  - name: '@vitejs/plugin-react'
+    version: 6.1.2
+    type: npm-package
+    scope: build
+    purpose: Подключение React к Vite.
+    license: MIT
+    repository: https://github.com/vitejs/vite-plugin-react
+    attack_surface: false
+    security_function: false
+    provided_by: Авторы пакета (реестр npm), только сборочная среда
+    justification: Инструмент из перечня ТЗ 11.2 или его необходимая зависимость; в поставку не входит.
+    decision: 'ТЗ 11.2; ADR-0011; план этапа 2, задача 2.21'
+    decided: 2026-10-20
+
+  - name: eslint
+    version: 10.13.0
+    type: npm-package
+    scope: build
+    purpose: 'Линтер TypeScript (запреты dangerouslySetInnerHTML, eval, new Function, localStorage).'
+    license: MIT
+    repository: https://github.com/eslint/eslint
+    attack_surface: false
+    security_function: false
+    provided_by: Авторы пакета (реестр npm), только сборочная среда
+    justification: Инструмент из перечня ТЗ 11.2 или его необходимая зависимость; в поставку не входит.
+    decision: 'ТЗ 11.2; ADR-0011; план этапа 2, задача 2.21'
+    decided: 2026-10-20
+
+  - name: eslint-plugin-react-hooks
+    version: 7.1.1
+    type: npm-package
+    scope: build
+    purpose: Правила ESLint для хуков React.
+    license: MIT
+    repository: https://github.com/facebook/react
+    attack_surface: false
+    security_function: false
+    provided_by: Авторы пакета (реестр npm), только сборочная среда
+    justification: Инструмент из перечня ТЗ 11.2 или его необходимая зависимость; в поставку не входит.
+    decision: 'ТЗ 11.2; ADR-0011; план этапа 2, задача 2.21'
+    decided: 2026-10-20
+
+  - name: eslint-plugin-security
+    version: 4.2.0
+    type: npm-package
+    scope: build
+    purpose: Правила ESLint для небезопасных конструкций JavaScript.
+    license: Apache-2.0
+    repository: https://github.com/eslint-community/eslint-plugin-security
+    attack_surface: false
+    security_function: false
+    provided_by: Авторы пакета (реестр npm), только сборочная среда
+    justification: Инструмент из перечня ТЗ 11.2 или его необходимая зависимость; в поставку не входит.
+    decision: 'ТЗ 11.2; ADR-0011; план этапа 2, задача 2.21'
+    decided: 2026-10-20
+
+  - name: globals
+    version: 17.13.0
+    type: npm-package
+    scope: build
+    purpose: Списки глобальных имён для ESLint.
+    license: MIT
+    repository: https://github.com/sindresorhus/globals
+    attack_surface: false
+    security_function: false
+    provided_by: Авторы пакета (реестр npm), только сборочная среда
+    justification: Инструмент из перечня ТЗ 11.2 или его необходимая зависимость; в поставку не входит.
+    decision: 'ТЗ 11.2; ADR-0011; план этапа 2, задача 2.21'
+    decided: 2026-10-20
+
+  - name: jsdom
+    version: 29.1.1
+    type: npm-package
+    scope: build
+    purpose: Среда DOM для модульных тестов.
+    license: MIT
+    repository: https://github.com/jsdom/jsdom
+    attack_surface: false
+    security_function: false
+    provided_by: Авторы пакета (реестр npm), только сборочная среда
+    justification: Инструмент из перечня ТЗ 11.2 или его необходимая зависимость; в поставку не входит.
+    decision: 'ТЗ 11.2; ADR-0011; план этапа 2, задача 2.21'
+    decided: 2026-10-20
+
+  - name: openapi-typescript
+    version: 7.13.0
+    type: npm-package
+    scope: build
+    purpose: Типы TypeScript из api/openapi.yaml (источник истины контракта API).
+    license: MIT
+    repository: https://github.com/openapi-ts/openapi-typescript
+    attack_surface: false
+    security_function: false
+    provided_by: Авторы пакета (реестр npm), только сборочная среда
+    justification: Инструмент из перечня ТЗ 11.2 или его необходимая зависимость; в поставку не входит.
+    decision: 'ТЗ 11.2; ADR-0011; план этапа 2, задача 2.21'
+    decided: 2026-10-20
+
+  - name: tailwindcss
+    version: 4.3.3
+    type: npm-package
+    scope: build
+    purpose: Генерация CSS из утилитарных классов.
+    license: MIT
+    repository: https://github.com/tailwindlabs/tailwindcss
+    attack_surface: false
+    security_function: false
+    provided_by: Авторы пакета (реестр npm), только сборочная среда
+    justification: Инструмент из перечня ТЗ 11.2 или его необходимая зависимость; в поставку не входит.
+    decision: 'ТЗ 11.2; ADR-0011; план этапа 2, задача 2.21'
+    decided: 2026-10-20
+
+  - name: typescript
+    version: 5.9.3
+    type: npm-package
+    scope: build
+    purpose: Проверка типов фронтенда.
+    license: Apache-2.0
+    repository: https://github.com/microsoft/TypeScript
+    attack_surface: false
+    security_function: false
+    provided_by: Авторы пакета (реестр npm), только сборочная среда
+    justification: Инструмент из перечня ТЗ 11.2 или его необходимая зависимость; в поставку не входит.
+    decision: 'ТЗ 11.2; ADR-0011; план этапа 2, задача 2.21'
+    decided: 2026-10-20
+
+  - name: typescript-eslint
+    version: 8.72.0
+    type: npm-package
+    scope: build
+    purpose: Разбор и правила ESLint для TypeScript.
+    license: MIT
+    repository: https://github.com/typescript-eslint/typescript-eslint
+    attack_surface: false
+    security_function: false
+    provided_by: Авторы пакета (реестр npm), только сборочная среда
+    justification: Инструмент из перечня ТЗ 11.2 или его необходимая зависимость; в поставку не входит.
+    decision: 'ТЗ 11.2; ADR-0011; план этапа 2, задача 2.21'
+    decided: 2026-10-20
+
+  - name: vite
+    version: 8.3.4
+    type: npm-package
+    scope: build
+    purpose: Сборка и локальный сервер разработки веб-консоли.
+    license: MIT
+    repository: https://github.com/vitejs/vite
+    attack_surface: false
+    security_function: false
+    provided_by: Авторы пакета (реестр npm), только сборочная среда
+    justification: Инструмент из перечня ТЗ 11.2 или его необходимая зависимость; в поставку не входит.
+    decision: 'ТЗ 11.2; ADR-0011; план этапа 2, задача 2.21'
+    decided: 2026-10-20
+
+  - name: vitest
+    version: 5.0.5
+    type: npm-package
+    scope: build
+    purpose: Модульные тесты фронтенда.
+    license: MIT
+    repository: https://github.com/vitest-dev/vitest
+    attack_surface: false
+    security_function: false
+    provided_by: Авторы пакета (реестр npm), только сборочная среда
+    justification: Инструмент из перечня ТЗ 11.2 или его необходимая зависимость; в поставку не входит.
+    decision: 'ТЗ 11.2; ADR-0011; план этапа 2, задача 2.21'
+    decided: 2026-10-20
+
+  # Транзитивная зависимость поставки с лицензией вне списка CLAUDE.md. 0BSD —
+  # допускающая лицензия без условий; решение владельца о 0BSD для сборки дано 20.10.2026, для этого
+  # пакета поставки — подтверждено 21.10.2026
+  # (docs/adr/0011-instrumenty-frontenda.md, п. 5).
+  - name: tslib
+    version: 2.3.0
+    type: npm-package
+    scope: product
+    purpose: Вспомогательные функции TypeScript; зависимость echarts и zrender.
+    license: 0BSD
+    license_decision: ADR-0011, п. 5 — подтверждено владельцем 21.10.2026
+    repository: https://github.com/microsoft/tslib
+    attack_surface: true
+    security_function: false
+    provided_by: Microsoft (реестр npm)
+    justification: Транзитивная зависимость echarts, заменить нельзя без отказа от echarts.
+    decision: 'ADR-0011; план этапа 2, задача 2.21'
+    decided: 2026-10-20
+  - name: github.com/jackc/pgpassfile
+    version: v1.0.0
+    type: go-module
+    scope: product
+    purpose: Разбор .pgpass для pgx (транзитивная).
+    license: MIT
+    repository: https://github.com/jackc/pgpassfile
+    attack_surface: false
+    security_function: false
+    provided_by: Jack Christensen (github.com/jackc/pgpassfile)
+    justification: Транзитивная зависимость pgx/v5.
+    decision: ТЗ 11.2; план этапа 2 (Новые библиотеки); согласие владельца 2026-10-20
+    decided: 2026-10-20
+    license_files:
+      LICENSE: adb1663fda031df8f4344aa68f299fd87d80353e31339406742ded21dae65702
+
+  - name: github.com/jackc/pgservicefile
+    version: v0.0.0-20240606120523-5a60cdf6a761
+    type: go-module
+    scope: product
+    purpose: Разбор pg_service.conf для pgx (транзитивная).
+    license: MIT
+    repository: https://github.com/jackc/pgservicefile
+    attack_surface: false
+    security_function: false
+    provided_by: Jack Christensen (github.com/jackc/pgservicefile)
+    justification: Транзитивная зависимость pgx/v5.
+    decision: ТЗ 11.2; план этапа 2 (Новые библиотеки); согласие владельца 2026-10-20
+    decided: 2026-10-20
+    license_files:
+      LICENSE: fc505773403fe869ed64cc2235cdd13988a427bb7e3a7e7004a3f4b27420f8fc
+
+  - name: github.com/jackc/pgx/v5
+    version: v5.11.0
+    type: go-module
+    scope: product
+    purpose: Драйвер и пул соединений PostgreSQL для internal/store (задача 2.1 этапа 2).
+    license: MIT
+    repository: https://github.com/jackc/pgx
+    attack_surface: true
+    security_function: false
+    provided_by: Jack Christensen (github.com/jackc/pgx)
+    justification: В стандартной библиотеке нет драйвера PostgreSQL (database/sql без драйвера). pgx — параметризованные запросы, пул, бинарный протокол; x/crypto в собранных пакетах не используется.
+    decision: ТЗ 11.2; план этапа 2 (Новые библиотеки); согласие владельца 2026-10-20
+    decided: 2026-10-20
+    license_files:
+      LICENSE: 467f95e074fe23079a5623ed652619682692041b8551da27e3c2ddb9659a1507
+
+  - name: github.com/jackc/puddle/v2
+    version: v2.2.2
+    type: go-module
+    scope: product
+    purpose: Пул ресурсов под pgxpool (транзитивная).
+    license: MIT
+    repository: https://github.com/jackc/puddle
+    attack_surface: false
+    security_function: false
+    provided_by: Jack Christensen (github.com/jackc/puddle)
+    justification: Транзитивная зависимость pgx/v5.
+    decision: ТЗ 11.2; план этапа 2 (Новые библиотеки); согласие владельца 2026-10-20
+    decided: 2026-10-20
+    license_files:
+      LICENSE: 2d50e98a4900b4d6457a38d39c1432fdc156fc2f7b365f2e33ec9344acbb0057
+
+  - name: golang.org/x/sync
+    version: v0.24.0
+    type: go-module
+    scope: product
+    purpose: Примитивы синхронизации под puddle (транзитивная).
+    license: BSD-3-Clause
+    repository: https://github.com/golang/sync
+    attack_surface: false
+    security_function: false
+    provided_by: The Go Authors (github.com/golang/sync)
+    justification: Транзитивная зависимость pgx/v5. Версию поднимает минимальный выбор версий Go — её требует граф модулей golang.org/x/crypto v0.58.0 (задача 2.2).
+    decision: ТЗ 11.2; план этапа 2 (Новые библиотеки); согласие владельца 2026-10-20
+    decided: 2026-10-20
+    license_files:
+      LICENSE: 911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad
+
+  - name: golang.org/x/text
+    version: v0.43.0
+    type: go-module
+    scope: product
+    purpose: Кодировки и нормализация текста под pgx (транзитивная).
+    license: BSD-3-Clause
+    repository: https://github.com/golang/text
+    attack_surface: false
+    security_function: false
+    provided_by: The Go Authors (github.com/golang/text)
+    justification: Транзитивная зависимость pgx/v5. Версию поднимает минимальный выбор версий Go — её требует граф модулей golang.org/x/crypto v0.58.0 (задача 2.2).
+    decision: ТЗ 11.2; план этапа 2 (Новые библиотеки); согласие владельца 2026-10-20
+    decided: 2026-10-20
+    license_files:
+      LICENSE: 911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad

@@ -1,8 +1,10 @@
 # Контракт API — источник истины (ТЗ, раздел 13).
-# API управления появляется на этапе 2; здесь — интерфейсы шлюза для приложений,
-# которые добавляются по мере реализации. OpenAI-совместимые /v1/chat/completions
-# и /v1/models, а также /healthz и /readyz пока описаны только в
-# docs/cert/attack-surface.md; их схемы — задача этапа 2 (контрактные тесты).
+# Здесь — интерфейсы шлюза для приложений и API управления (aisec-server,
+# префикс /api/v1), которые добавляются по мере реализации. Ошибки API
+# управления — Problem Details (RFC 9457), ошибки шлюза — формат OpenAI.
+# OpenAI-совместимые /v1/chat/completions и /v1/models пока описаны только в
+# docs/cert/attack-surface.md. Контрактный тест internal/api сверяет маршруты
+# сервера с этим файлом в обе стороны.
 openapi: 3.1.0
 info:
   title: AISec API
@@ -86,12 +88,626 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
+  /healthz:
+    get:
+      summary: Живость процесса (шлюз и сервер управления)
+      security: []
+      responses:
+        '200':
+          description: Процесс работает
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Status' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+  /readyz:
+    get:
+      summary: 'Готовность к работе (сервер управления: доступна база данных)'
+      security: []
+      responses:
+        '200':
+          description: Готов
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Status' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/system/info:
+    get:
+      summary: Сведения о сервере (версия)
+      description: Право `system.read`. Служит образцом защищённого эндпоинта каркаса.
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      responses:
+        '200':
+          description: Сведения о сервере
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SystemInfo' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+  /api/v1/auth/setup:
+    get:
+      summary: Нужна ли первичная настройка
+      description: Открыт. `setup_required` — в установке ещё нет ни одной учётной записи (ЗИ.4).
+      security: []
+      responses:
+        '200':
+          description: Состояние настройки
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SetupStatus' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+    post:
+      summary: Первичная настройка — создание первого администратора безопасности
+      description: |
+        ЗИ.4, ИАФ.1. Открыт, но требует одноразовый токен из вывода `aisec-cli init`
+        (`aisec_setup_` и 43 символа base64url, срок — 24 часа). Пароль задаёт сам
+        администратор, он проверяется по парольной политике. Токен гасится в одной транзакции
+        с созданием учётной записи; параллельные запросы создадут ровно одного администратора.
+        Неверный, истёкший или погашенный токен, а также уже выполненная настройка — 403
+        без уточнения причины. Пишет `setup.completed` (успех и отказ, без токена). Сессию не
+        открывает: дальше — обычный вход.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SetupRequest' }
+      responses:
+        '201':
+          description: Администратор безопасности создан
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+  /api/v1/auth/login:
+    post:
+      summary: Вход в консоль по логину и паролю
+      description: |
+        ИАФ.1–4, УПД.4, решение Р6. Любой отказ (нет учётной записи, неверный пароль,
+        блокировка после неудач, деактивация, истёкший временный пароль) — один и тот же
+        ответ 401: по ответу нельзя перебирать логины. Причина пишется в журнал аудита
+        (`auth.login_failed`, `auth.locked`). При успехе выдаются cookie `__Host-aisec_session`
+        (HttpOnly, Secure, SameSite=Strict) и `__Host-aisec_csrf` (Secure, SameSite=Strict,
+        читается интерфейсом). Если пароль временный или истёк, сессия получает
+        `session_state: password_change` — доступны только `/api/v1/me`, смена пароля и выход.
+        Второй фактор (ИАФ.5): если он подключён, сессия получает `mfa_pending` (дальше —
+        `/api/v1/auth/mfa/verify`), если обязателен, но не подключён — `mfa_setup`
+        (`/api/v1/auth/mfa/setup`). Без ключа данных на сервере такой вход — 503.
+        Тело — только `application/json`, поэтому HTML-форма с чужого сайта вход не выполнит.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoginRequest' }
+      responses:
+        '200':
+          description: Вход выполнен
+          headers:
+            Set-Cookie: { description: '`__Host-aisec_session` и `__Host-aisec_csrf`', schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Me' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/auth/logout:
+    post:
+      summary: Выход — завершение текущей сессии
+      description: Право `session` (любое состояние сессии). Изменяющий запрос — с заголовком `X-CSRF-Token`. Пишет `auth.logout`.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '204': { description: Сессия завершена, cookie удалены }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+  /api/v1/auth/password:
+    post:
+      summary: Смена своего пароля
+      description: |
+        Право `self`; доступно и сессии `password_change` (ИАФ.3). Проверяются текущий
+        пароль, парольная политика и история (ИАФ.2). Неверный текущий пароль считается
+        неудачной попыткой (ИАФ.4): при блокировке завершаются все сессии. После смены
+        остальные сессии пользователя завершаются, текущая получает полный доступ.
+        Пока учётная запись заблокирована, пароль не меняется и текущий не проверяется — 409.
+        Пишет `auth.password_changed`.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PasswordChange' }
+      responses:
+        '204': { description: Пароль изменён }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '409': { $ref: '#/components/responses/ProblemConflict' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+  /api/v1/auth/policy:
+    get:
+      summary: Парольная политика и настройки входа
+      description: Право `auth_policy.read` (ИАФ.2, ИАФ.4, УПД.4).
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200':
+          description: Настройки
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthPolicy' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+    put:
+      summary: Изменить парольную политику и настройки входа
+      description: Право `auth_policy.manage`. Все поля обязательны. Пишет `auth.policy_changed` со значениями до и после.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuthPolicy' }
+      responses:
+        '200':
+          description: Настройки сохранены
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthPolicy' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+  /api/v1/auth/mfa/setup:
+    post:
+      summary: Выдать секрет TOTP для подключения второго фактора
+      description: |
+        ИАФ.5, решения Р1, Р2, ADR-0006. Право `session`; доступно сессии `mfa_setup`
+        (первый вход роли, где второй фактор обязателен) и полной сессии без подключённого
+        фактора, иначе 409. Из полной сессии нужен текущий пароль (`current_password`):
+        пустой — 400, неверный — 400 и неудачная попытка входа (ИАФ.4). Возвращает секрет,
+        ссылку `otpauth://` и матрицу QR-кода — показываются один раз; на сервере секрет
+        хранится только шифротекстом ключа данных. Повторный вызов заменяет неподтверждённый
+        секрет. Пишет `auth.mfa_setup_started`. Без ключа данных на сервере — 503.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MFASetupRequest' }
+      responses:
+        '200':
+          description: Секрет выдан
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MFASetup' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '409': { $ref: '#/components/responses/ProblemConflict' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/auth/mfa/setup/confirm:
+    post:
+      summary: Подтвердить подключение второго фактора кодом из приложения
+      description: |
+        ИАФ.5. Право `session`. Код принимается один раз (шаг не меньше последнего
+        принятого); неверный код — 400 и неудачная попытка входа (ИАФ.4). При успехе
+        фактор подключён, выдаются 10 кодов восстановления (показываются один раз). Сессия
+        `mfa_setup` заменяется новой (`active` или `password_change`) с новыми cookie, прежняя
+        завершается с причиной `mfa_passed`; полная сессия остаётся прежней. Пишет `auth.mfa_enabled`.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MFACode' }
+      responses:
+        '200':
+          description: Фактор подключён
+          headers:
+            Set-Cookie: { description: 'Новые `__Host-aisec_session` и `__Host-aisec_csrf` — только при переходе из `mfa_setup`', schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RecoveryCodes' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '409': { $ref: '#/components/responses/ProblemConflict' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/auth/mfa/verify:
+    post:
+      summary: Второй шаг входа — код TOTP или код восстановления
+      description: |
+        ИАФ.4, ИАФ.5. Право `session`; только для сессии `mfa_pending` (живёт 5 минут), иначе
+        409. Ровно одно поле: `code` (6 цифр из приложения) или `recovery_code` (одноразовый,
+        регистр, дефисы и пробелы не важны). Неверный код — 400 и неудачная попытка входа:
+        счётчик неудач общий с паролем и до принятого кода не сбрасывается; на пороге
+        учётная запись блокируется, сессии завершаются. Попытки по всем сессиям пользователя
+        проверяются по очереди под блокировкой строки — параллельные запросы порог не обходят.
+        При успехе сессия заменяется новой (`active` или `password_change`) с новыми cookie,
+        прежняя завершается с причиной `mfa_passed`. Пишет `auth.mfa_verified` или
+        `auth.recovery_code_used`.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MFAVerify' }
+      responses:
+        '200':
+          description: Вход выполнен
+          headers:
+            Set-Cookie: { description: 'Новые `__Host-aisec_session` и `__Host-aisec_csrf`', schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Me' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '409': { $ref: '#/components/responses/ProblemConflict' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/auth/mfa/recovery-codes:
+    post:
+      summary: Выпустить новые коды восстановления
+      description: |
+        ИАФ.5. Право `session`; только полная сессия с подключённым фактором, по текущему коду
+        TOTP. Прежние неиспользованные коды гасятся. Неверный код — 400 и неудачная попытка
+        (ИАФ.4). Пишет `auth.recovery_codes_regenerated`.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MFACode' }
+      responses:
+        '200':
+          description: Новые коды выданы
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RecoveryCodes' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '409': { $ref: '#/components/responses/ProblemConflict' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/me:
+    get:
+      summary: Текущий пользователь и состояние сессии
+      description: Право `session` (любое состояние сессии). Вне `/api/v1/auth/`, чтобы строгий предел частоты входа не мешал консоли.
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200':
+          description: Пользователь
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Me' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+  /api/v1/users:
+    get:
+      summary: Список учётных записей
+      description: Право `users.read`. Порядок — по времени создания.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Страница списка
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserPage' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+    post:
+      summary: Создать учётную запись с временным паролем
+      description: |
+        Право `users.manage` (ИАФ.1, ИАФ.3). Временный пароль генерирует сервер и
+        показывает один раз; при первом входе его нужно сменить. Без `Idempotency-Key`:
+        ответ с паролем не запоминается, повтор отклоняется по занятому логину (409).
+        Пишет `user.create`.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NewUser' }
+      responses:
+        '201':
+          description: Учётная запись создана
+          headers:
+            Location: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserWithPassword' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '409': { $ref: '#/components/responses/ProblemConflict' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+  /api/v1/users/{id}:
+    get:
+      summary: Учётная запись
+      description: Право `users.read`.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/UserID'
+      responses:
+        '200':
+          description: Учётная запись
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+  /api/v1/users/{id}/deactivate:
+    post:
+      summary: Деактивировать учётную запись
+      description: |
+        Право `users.manage` (УПД.5). Учётные записи не удаляются. Сессии завершаются.
+        Нельзя деактивировать себя (422) и последнего активного администратора
+        безопасности (409). Пишет `user.deactivate`.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/UserID'
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '200':
+          description: Учётная запись деактивирована
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '409': { $ref: '#/components/responses/ProblemConflict' }
+        '422': { $ref: '#/components/responses/ProblemUnprocessable' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+  /api/v1/users/{id}/activate:
+    post:
+      summary: Повторно активировать учётную запись и снять блокировку
+      description: Право `users.manage` (УПД.5, ИАФ.4). Снимает и блокировку после неудачных попыток. Пишет `user.activate`.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/UserID'
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '200':
+          description: Учётная запись активна
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '422': { $ref: '#/components/responses/ProblemUnprocessable' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+  /api/v1/users/{id}/password-reset:
+    post:
+      summary: Сбросить пароль пользователя на временный
+      description: |
+        Право `users.manage` (ИАФ.3). Новый временный пароль показывается один раз,
+        блокировка снимается, сессии пользователя завершаются. Свой пароль так не
+        сбрасывается (422). Пишет `user.password_reset`.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/UserID'
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '200':
+          description: Временный пароль выдан
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserWithPassword' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '422': { $ref: '#/components/responses/ProblemUnprocessable' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+  /api/v1/users/{id}/mfa/reset:
+    post:
+      summary: Сбросить второй фактор пользователя
+      description: |
+        Право `users.manage` (ИАФ.5). Секрет и коды восстановления уничтожаются, сессии
+        пользователя завершаются; при следующем входе фактор подключается заново. Свой
+        фактор так не сбрасывается (422); фактор не подключён — 409. Пишет `auth.mfa_reset`.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/UserID'
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '204': { description: Второй фактор сброшен }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '409': { $ref: '#/components/responses/ProblemConflict' }
+        '422': { $ref: '#/components/responses/ProblemUnprocessable' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+  /api/v1/users/{id}/sessions:
+    get:
+      summary: Незавершённые сессии пользователя
+      description: Право `sessions.read` (УПД.4). Токены не выдаются.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/UserID'
+      responses:
+        '200':
+          description: Сессии, новые первыми
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SessionList' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+    delete:
+      summary: Принудительно завершить все сессии пользователя
+      description: Право `sessions.manage` (УПД.4). Пишет `auth.sessions_revoked`.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/UserID'
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '200':
+          description: Сессии завершены
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [revoked]
+                properties:
+                  revoked: { type: integer, description: Сколько сессий завершено }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+  /api/v1/gateways/register:
+    post:
+      summary: Регистрация шлюза — сертификат внутреннего УЦ по одноразовому токену
+      description: |
+        ИАФ.10, решение Р8, ADR-0009. Открыт, но требует одноразовый токен из вывода
+        `aisec-cli gateway token` (`aisec_gwreg_` и 43 символа base64url, срок по умолчанию —
+        24 часа). Шлюз сам создаёт ключ ECDSA P-256 и присылает CSR; закрытый ключ сервер не
+        видит. Из CSR берётся только открытый ключ: CN сертификата — ID шлюза, назначение —
+        только `clientAuth`, срок — 365 дней, но не дольше УЦ. Неверный CSR — 400 до проверки
+        токена (токен не тратится). Неверный, истёкший или погашенный токен, токен
+        отозванного шлюза — 403 без уточнения причины. Токен гасится в одной транзакции с
+        выпуском сертификата и записью `gateway.register`; отказы тоже пишутся в аудит (без
+        токена). Повторная регистрация того же шлюза (новый токен с `-reregister`) заменяет
+        сертификат: прежний перестаёт приниматься внутренним API сразу. Без внутреннего УЦ
+        на сервере (`-ca-cert`) — 503. Предел частоты — 10 запросов в минуту с адреса.
+        Без `Idempotency-Key`: ответ содержит выпущенный сертификат.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/GatewayRegisterRequest' }
+      responses:
+        '201':
+          description: Сертификат выпущен
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GatewayRegistration' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
 components:
   securitySchemes:
     appKey:
       type: http
       scheme: bearer
       description: Ключ приложения `aisec_<префикс>_<секрет>` (ИАФ.8)
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: __Host-aisec_session
+      description: Сессия веб-консоли (HttpOnly, Secure, SameSite=Strict); изменяющие запросы — с CSRF-токеном
+    bearerToken:
+      type: http
+      scheme: bearer
+      description: Токен API для автоматизации (ИАФ.9)
+  parameters:
+    Limit:
+      name: limit
+      in: query
+      description: Размер страницы
+      schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+    Cursor:
+      name: cursor
+      in: query
+      description: Непрозрачный курсор из `next_cursor` предыдущей страницы
+      schema: { type: string, maxLength: 256 }
+    CSRFToken:
+      name: X-CSRF-Token
+      in: header
+      required: true
+      description: Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403
+      schema: { type: string, minLength: 43, maxLength: 43 }
+    UserID:
+      name: id
+      in: path
+      required: true
+      description: ID учётной записи (UUID)
+      schema: { type: string, format: uuid }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      description: Ключ повторяемости создающего запроса, 1–64 символа `[A-Za-z0-9._-]`
+      schema: { type: string, minLength: 1, maxLength: 64, pattern: '^[A-Za-z0-9._-]+$' }
   headers:
     EventId:
       description: Идентификатор события check или gateway_request
@@ -134,7 +750,282 @@ components:
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
+    ProblemUnauthorized:
+      description: Требуется вход (`unauthorized`)
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    ProblemForbidden:
+      description: Недостаточно прав (`forbidden`)
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    ProblemInternal:
+      description: Внутренняя ошибка (`internal_error`)
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    ProblemInvalid:
+      description: Неверный запрос (`invalid_request`); ошибки полей — в `errors`
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    ProblemNotFound:
+      description: Не найдено (`not_found`)
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    ProblemConflict:
+      description: Конфликт с состоянием (`conflict`)
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    ProblemUnprocessable:
+      description: Действие недопустимо (`unprocessable`)
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    ProblemTooLarge:
+      description: Тело запроса больше допустимого (`payload_too_large`)
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    ProblemUnsupportedMedia:
+      description: Тело не в формате JSON (`unsupported_media_type`)
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    RateLimited:
+      description: Превышен предел частоты запросов (`rate_limited`, ЗИ.6)
+      headers:
+        Retry-After: { description: Через сколько секунд повторить, schema: { type: integer } }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Unavailable:
+      description: Сервер не готов (`service_unavailable`)
+      headers:
+        Retry-After: { description: Через сколько секунд повторить, schema: { type: integer } }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
   schemas:
+    Status:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string }
+    SystemInfo:
+      type: object
+      required: [version]
+      properties:
+        version: { type: string }
+    SetupStatus:
+      type: object
+      required: [setup_required]
+      additionalProperties: false
+      properties:
+        setup_required: { type: boolean }
+    GatewayRegisterRequest:
+      type: object
+      required: [token, csr]
+      additionalProperties: false
+      properties:
+        token: { type: string, minLength: 1, maxLength: 128, format: password, description: 'Токен из вывода aisec-cli gateway token' }
+        csr: { type: string, minLength: 1, maxLength: 16384, description: 'CSR (PKCS#10) в PEM на ключ ECDSA P-256' }
+    GatewayRegistration:
+      type: object
+      required: [gateway_id, name, certificate, ca_certificate, not_after]
+      properties:
+        gateway_id: { type: string, format: uuid, description: 'ID шлюза; он же CN сертификата' }
+        name: { type: string }
+        certificate: { type: string, description: 'Клиентский сертификат шлюза в PEM' }
+        ca_certificate: { type: string, description: 'Сертификат внутреннего УЦ в PEM' }
+        not_after: { type: string, format: date-time }
+    SetupRequest:
+      type: object
+      required: [token, login, display_name, password]
+      additionalProperties: false
+      properties:
+        token: { type: string, minLength: 1, maxLength: 128, format: password, description: 'Токен из вывода aisec-cli init' }
+        login: { type: string, minLength: 1, maxLength: 256 }
+        display_name: { type: string, minLength: 1, maxLength: 200 }
+        password: { type: string, minLength: 1, maxLength: 1024, format: password }
+    LoginRequest:
+      type: object
+      required: [login, password]
+      additionalProperties: false
+      properties:
+        login: { type: string, minLength: 1, maxLength: 256, description: 'Логин без учёта регистра: латиница, цифры, «.», «_», «-», до 64 символов' }
+        password: { type: string, minLength: 1, maxLength: 1024, format: password }
+    PasswordChange:
+      type: object
+      required: [current_password, new_password]
+      additionalProperties: false
+      properties:
+        current_password: { type: string, format: password }
+        new_password: { type: string, format: password, description: 'По парольной политике (ИАФ.2), не совпадает с текущим и последними из истории' }
+    AuthPolicy:
+      type: object
+      additionalProperties: false
+      required: [password_min_length, password_min_classes, password_history, password_max_age_days,
+                 password_warn_days, lockout_threshold, lockout_minutes, session_idle_minutes,
+                 session_max_per_user, temp_password_hours, mfa_required_all]
+      properties:
+        password_min_length: { type: integer, minimum: 8, maximum: 64, default: 12 }
+        password_min_classes: { type: integer, minimum: 1, maximum: 4, default: 3, description: 'Строчные, прописные, цифры, прочие символы' }
+        password_history: { type: integer, minimum: 0, maximum: 24, default: 5 }
+        password_max_age_days: { type: integer, minimum: 0, maximum: 365, default: 90, description: '0 — бессрочно' }
+        password_warn_days: { type: integer, minimum: 0, maximum: 60, default: 14 }
+        lockout_threshold: { type: integer, minimum: 3, maximum: 20, default: 5 }
+        lockout_minutes: { type: integer, minimum: 0, maximum: 1440, default: 15, description: '0 — до разблокировки администратором' }
+        session_idle_minutes: { type: integer, minimum: 1, maximum: 240, default: 15 }
+        session_max_per_user: { type: integer, minimum: 1, maximum: 20, default: 5 }
+        temp_password_hours: { type: integer, minimum: 1, maximum: 168, default: 72 }
+        mfa_required_all: { type: boolean, default: false, description: 'Второй фактор обязателен для всех ролей (для security_admin и system_admin — всегда)' }
+    Role:
+      type: string
+      enum: [security_admin, system_admin, analyst, auditor, app_owner]
+    User:
+      type: object
+      required: [id, login, display_name, role, status, locked, must_change_password, password_changed_at, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        login: { type: string }
+        display_name: { type: string }
+        role: { $ref: '#/components/schemas/Role' }
+        status: { type: string, enum: [active, deactivated] }
+        locked: { type: boolean, description: 'Заблокирована после неудачных попыток (ИАФ.4)' }
+        locked_until: { type: string, format: date-time, description: 'Нет при блокировке до разблокировки администратором' }
+        must_change_password: { type: boolean }
+        password_changed_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+        last_login_at: { type: string, format: date-time }
+        deactivated_at: { type: string, format: date-time }
+    NewUser:
+      type: object
+      required: [login, display_name, role]
+      additionalProperties: false
+      properties:
+        login: { type: string, pattern: '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$' }
+        display_name: { type: string, minLength: 1, maxLength: 200 }
+        role: { $ref: '#/components/schemas/Role' }
+    UserWithPassword:
+      type: object
+      required: [user, temporary_password]
+      properties:
+        user: { $ref: '#/components/schemas/User' }
+        temporary_password: { type: string, format: password, description: 'Показывается один раз (ИАФ.3)' }
+    UserPage:
+      allOf:
+        - $ref: '#/components/schemas/PageInfo'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/User' }
+    Me:
+      type: object
+      required: [user, session_state]
+      properties:
+        user: { $ref: '#/components/schemas/User' }
+        session_state: { $ref: '#/components/schemas/SessionState' }
+        password_expires_in_days: { type: integer, description: 'Есть, если пора предупредить о смене пароля (ИАФ.2)' }
+        mfa:
+          type: object
+          required: [enabled, required]
+          description: Второй фактор (ИАФ.5)
+          properties:
+            enabled: { type: boolean }
+            required: { type: boolean, description: 'Обязателен по роли или по политике mfa_required_all' }
+    SessionState:
+      type: string
+      enum: [active, password_change, mfa_pending, mfa_setup]
+      description: |
+        `active` — полный доступ; `password_change` — только смена пароля; `mfa_pending` —
+        ждёт код второго фактора (5 минут); `mfa_setup` — только подключение второго фактора (15 минут).
+    MFASetupRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        current_password: { type: string, format: password, description: 'Текущий пароль; обязателен из полной сессии, в сессии `mfa_setup` не нужен' }
+    MFASetup:
+      type: object
+      required: [secret, otpauth_uri, qr]
+      properties:
+        secret: { type: string, format: password, description: 'Секрет TOTP в base32 без «=»; показывается один раз' }
+        otpauth_uri: { type: string, format: password, description: 'Ссылка otpauth://totp/… для приложения-аутентификатора' }
+        qr:
+          type: array
+          description: Матрица модулей QR-кода ссылки — строка на ряд, «1» — тёмный модуль
+          items: { type: string, pattern: '^[01]+$' }
+    MFACode:
+      type: object
+      required: [code]
+      additionalProperties: false
+      properties:
+        code: { type: string, minLength: 1, maxLength: 64, description: 'Код из приложения (6 цифр)' }
+    MFAVerify:
+      type: object
+      additionalProperties: false
+      description: Ровно одно из полей
+      properties:
+        code: { type: string, maxLength: 64, description: 'Код из приложения (6 цифр)' }
+        recovery_code: { type: string, maxLength: 64, format: password, description: 'Код восстановления XXXX-XXXX-XXXX-XXXX' }
+    RecoveryCodes:
+      type: object
+      required: [recovery_codes, session_state]
+      properties:
+        recovery_codes:
+          type: array
+          description: Коды восстановления — показываются один раз
+          items: { type: string, format: password }
+        session_state: { $ref: '#/components/schemas/SessionState' }
+    SessionList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            required: [id, state, created_at, last_seen_at, expires_at, user_agent]
+            properties:
+              id: { type: string, format: uuid }
+              state: { $ref: '#/components/schemas/SessionState' }
+              created_at: { type: string, format: date-time }
+              last_seen_at: { type: string, format: date-time }
+              expires_at: { type: string, format: date-time }
+              source_ip: { type: string }
+              user_agent: { type: string }
+    Problem:
+      description: Problem Details (RFC 9457); `detail` — русский текст для пользователя
+      type: object
+      required: [type, title, status, detail, code]
+      properties:
+        type: { type: string, description: 'URN вида urn:aisec:problem:<code>' }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        code:
+          type: string
+          enum: [invalid_request, unauthorized, forbidden, not_found, method_not_allowed, conflict,
+                 payload_too_large, unsupported_media_type, unprocessable, rate_limited,
+                 internal_error, service_unavailable]
+        errors:
+          type: array
+          items:
+            type: object
+            required: [field, detail]
+            properties:
+              field: { type: string }
+              detail: { type: string }
+    PageInfo:
+      description: Поле конверта страницы списка; на последней странице отсутствует
+      type: object
+      properties:
+        next_cursor: { type: string }
     Error:
       type: object
       required: [error]
@@ -178,7 +1069,7 @@ components:
         user:
           type: string
           maxLength: 256
-          description: Идентификатор пользователя, если приложение берёт его из поля (`user_from: field`).
+          description: "Идентификатор пользователя, если приложение берёт его из поля (`user_from: field`)."
     CheckResponse:
       type: object
       required: [id, decision, action, blocked, findings]

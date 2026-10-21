@@ -21,6 +21,11 @@ type TLSProvider interface {
 	// ClientConfig — настройки клиента, который доверяет только корневым
 	// сертификатам rootsPEM (системное хранилище не используется).
 	ClientConfig(rootsPEM []byte) (*tls.Config, error)
+	// MutualServerConfig — сервер, который принимает только клиентов с
+	// сертификатом УЦ clientCAPEM (mTLS, ИАФ.10).
+	MutualServerConfig(certPEM, keyPEM, clientCAPEM []byte) (*tls.Config, error)
+	// ClientCertConfig — клиент с собственным сертификатом для mTLS.
+	ClientCertConfig(rootsPEM, certPEM, keyPEM []byte) (*tls.Config, error)
 }
 
 // standardTLS — TLS 1.2 и 1.3 средствами Go (ТЗ, 10.3).
@@ -63,6 +68,16 @@ func (standardTLS) ServerConfig(certPEM, keyPEM []byte) (*tls.Config, error) {
 }
 
 func (standardTLS) ClientConfig(rootsPEM []byte) (*tls.Config, error) {
+	pool, err := rootPool(rootsPEM)
+	if err != nil {
+		return nil, err
+	}
+	cfg := baseConfig()
+	cfg.RootCAs = pool
+	return cfg, nil
+}
+
+func rootPool(rootsPEM []byte) (*x509.CertPool, error) {
 	if len(rootsPEM) > maxPEMFile {
 		return nil, errors.New("TLS: файл корневых сертификатов слишком большой")
 	}
@@ -70,9 +85,7 @@ func (standardTLS) ClientConfig(rootsPEM []byte) (*tls.Config, error) {
 	if !pool.AppendCertsFromPEM(rootsPEM) {
 		return nil, errors.New("TLS: не найдено ни одного корневого сертификата")
 	}
-	cfg := baseConfig()
-	cfg.RootCAs = pool
-	return cfg, nil
+	return pool, nil
 }
 
 // ReadPEMFile читает файл сертификата с ограничением размера. Проверки

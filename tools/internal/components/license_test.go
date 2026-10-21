@@ -101,3 +101,26 @@ func FuzzEvalExpression(f *testing.F) {
 		}
 	})
 }
+
+func TestCheckNPMLicense(t *testing.T) {
+	cases := []struct {
+		expr    string
+		product bool
+		ok      bool
+	}{
+		{"MIT", true, true},
+		{"(MIT OR CC0-1.0)", true, true},
+		{"MPL-2.0", true, false},
+		{"MPL-2.0", false, true},
+		{"0BSD", true, false},
+		{"0BSD", false, true},
+		{"GPL-3.0-only", false, false},
+		{"MIT AND GPL-3.0-only", false, false},
+		{"", false, false},
+	}
+	for _, c := range cases {
+		if err := CheckNPMLicense(c.expr, c.product); (err == nil) != c.ok {
+			t.Errorf("%q product=%v: ok=%v, ошибка %v", c.expr, c.product, c.ok, err)
+		}
+	}
+}

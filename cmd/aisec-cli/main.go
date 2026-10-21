@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -11,8 +12,11 @@ import (
 	"os"
 	"time"
 
+	"github.com/azuresong-afk/ai_railway/internal/audit"
 	"github.com/azuresong-afk/ai_railway/internal/auth"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
+	"github.com/azuresong-afk/ai_railway/internal/store"
+	"github.com/azuresong-afk/ai_railway/migrations"
 )
 
 var version = "dev"
@@ -21,6 +25,21 @@ const usage = `aisec-cli — служебные операции AISec.
 
 Команды:
   app-key -expires ГГГГ-ММ-ДД   выпустить ключ приложения
+  init -dir КАТАЛОГ             создать ключи установки и токен первичной настройки (AISEC_DATABASE_URL)
+  init -dir КАТАЛОГ -add-audit-key
+                                создать только ключ подписи журнала аудита (установка до ADR-0008)
+  migrate                       применить SQL-миграции к PostgreSQL (строка подключения — AISEC_DATABASE_URL)
+  audit verify [-keys КАТАЛОГ]  проверить цепочку журнала аудита (AISEC_DATABASE_URL); 3 — цепочка нарушена
+  audit archive -keys КАТАЛОГ -out ФАЙЛ [-before ГГГГ-ММ-ДД]
+                                архивировать записи старше срока хранения с подписанной контрольной точкой
+  audit export -out ФАЙЛ [-from ГГГГ-ММ-ДД] [-to ГГГГ-ММ-ДД]
+                                выгрузить журнал аудита в файл
+  audit verify-archive -keys КАТАЛОГ ФАЙЛ
+                                проверить файл архива без БД; 3 — архив недействителен
+  gateway token -name ИМЯ [-ttl 24h] [-reregister]
+                                выпустить одноразовый токен регистрации шлюза (AISEC_DATABASE_URL)
+  gateway list                  шлюзы, сроки сертификатов и последний контакт
+  gateway revoke -name ИМЯ      отозвать шлюз: сертификат перестаёт приниматься сразу
   version                       версия
 `
 
@@ -48,6 +67,45 @@ func run(args []string, stdout, stderr io.Writer, now time.Time) int {
 				return 0
 			}
 			say(stderr, "aisec-cli app-key: %v\n", err)
+			return 1
+		}
+		return 0
+	case "migrate":
+		if err := migrate(args[1:], os.Getenv("AISEC_DATABASE_URL"), stdout, stderr); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return 0
+			}
+			say(stderr, "aisec-cli migrate: %v\n", err)
+			return 1
+		}
+		return 0
+	case "init":
+		if err := initCmd(args[1:], os.Getenv("AISEC_DATABASE_URL"), stdout, stderr, now); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return 0
+			}
+			say(stderr, "aisec-cli init: %v\n", err)
+			return 1
+		}
+		return 0
+	case "audit":
+		if err := auditCmd(args[1:], os.Getenv("AISEC_DATABASE_URL"), stdout, stderr); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return 0
+			}
+			say(stderr, "aisec-cli audit: %v\n", err)
+			if errors.Is(err, errChainBroken) || errors.Is(err, audit.ErrArchiveInvalid) {
+				return 3
+			}
+			return 1
+		}
+		return 0
+	case "gateway":
+		if err := gatewayCmd(args[1:], os.Getenv("AISEC_DATABASE_URL"), stdout, stderr); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return 0
+			}
+			say(stderr, "aisec-cli gateway: %v\n", err)
 			return 1
 		}
 		return 0
@@ -104,4 +162,47 @@ func appKey(args []string, stdout, stderr io.Writer, now time.Time) error {
 	_, err = fmt.Fprintf(stdout, "Ключ приложения (показывается один раз, передайте владельцу приложения по защищённому каналу):\n\n  %s\n\n"+
 		"Добавьте в applications[].keys файла конфигурации шлюза:\n\n%s", key, auth.FormatKeyEntry(prefix, hash, *expires))
 	return err
+}
+
+// migrate применяет встроенные миграции. Строка подключения содержит пароль,
+// поэтому приходит только из окружения, а не из аргументов командной строки.
+func migrate(args []string, dsn string, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("migrate", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("лишние аргументы: %d", fs.NArg())
+	}
+	if dsn == "" {
+		return errors.New("задайте AISEC_DATABASE_URL (postgres://пользователь@хост:порт/база)")
+	}
+	p, err := aisecCrypto.New(aisecCrypto.ProfileStandard)
+	if err != nil {
+		return err
+	}
+	if err := aisecCrypto.SelfTest(p); err != nil {
+		return err
+	}
+	h, err := p.Hasher()
+	if err != nil {
+		return err
+	}
+	ms, err := store.LoadMigrations(migrations.FS)
+	if err != nil {
+		return err
+	}
+	ctx := context.Background()
+	db, err := store.Open(ctx, dsn, 2)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	done, err := (&store.Migrator{Exec: db, Hasher: h, Migrations: ms}).Up(ctx)
+	if err != nil {
+		return err
+	}
+	say(stdout, "применено миграций: %d\n", len(done))
+	return nil
 }
