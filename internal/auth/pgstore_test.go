@@ -157,8 +157,12 @@ func setupPG(t *testing.T) *pgEnv {
 		t.Fatal(err)
 	}
 	e.keyID = keyID
+	roles, err := auth.NewPGRoles(e.app, e.log)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if e.svc, err = auth.NewService(ctx, e.store, e.log, p, auth.WithClock(e.clock.now), auth.WithPasswordHasher(&authtest.Hasher{}),
-		auth.WithSecretBox(box)); err != nil {
+		auth.WithSecretBox(box), auth.WithRoleStore(roles)); err != nil {
 		t.Fatal(err)
 	}
 	e.mfa = newMFAKeys(e.svc, e.store, e.clock)
@@ -488,7 +492,8 @@ func TestPGColumnGrants(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, q := range []string{
-		"UPDATE users SET login = 'x'", "UPDATE users SET role = 'security_admin'", "UPDATE users SET org_id = org_id",
+		// Роль меняется (назначение, задача 2.9): её проверяет TestPGRoleGuards.
+		"UPDATE users SET login = 'x'", "UPDATE users SET org_id = org_id",
 		"UPDATE sessions SET token_hash = csrf_hash", "UPDATE sessions SET user_id = user_id", "UPDATE sessions SET expires_at = now()",
 		"UPDATE setup_tokens SET expires_at = now()",
 	} {

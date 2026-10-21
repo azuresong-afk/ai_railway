@@ -65,7 +65,7 @@ func newEnv(t *testing.T) *env {
 	t.Helper()
 	e := &env{mem: authtest.NewMemory(), hash: &authtest.Hasher{}, clock: &clock{t: time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)}}
 	svc, err := auth.NewService(context.Background(), e.mem, e.mem, provider(t),
-		auth.WithClock(e.clock.now), auth.WithPasswordHasher(e.hash), auth.WithSecretBox(testBox(t)))
+		auth.WithClock(e.clock.now), auth.WithPasswordHasher(e.hash), auth.WithSecretBox(testBox(t)), auth.WithRoleStore(e.mem))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -406,7 +406,7 @@ func TestTemporaryPasswordFlow(t *testing.T) {
 		t.Fatalf("состояние сессии: %s", first.Caller.Session.State)
 	}
 	c := e.mustCaller(t, second.Token)
-	if auth.Allowed(c, auth.PermUsersRead) || !auth.Allowed(c, auth.PermSelf) {
+	if allowed(t, e, c, auth.PermUsersRead) || !allowed(t, e, c, auth.PermSelf) {
 		t.Fatal("сессия с временным паролем получила права роли")
 	}
 	if err := e.svc.ChangePassword(ctx, c, temp, temp); err == nil {
@@ -416,7 +416,7 @@ func TestTemporaryPasswordFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 	c, err = e.caller(t, second.Token)
-	if err != nil || c.Session.State != auth.SessionActive || !auth.Allowed(c, auth.PermUsersRead) {
+	if err != nil || c.Session.State != auth.SessionActive || !allowed(t, e, c, auth.PermUsersRead) {
 		t.Fatalf("после смены пароля: %v, %s", err, c.Session.State)
 	}
 	if _, err := e.caller(t, first.Token); !errors.Is(err, auth.ErrUnauthenticated) {
@@ -471,7 +471,7 @@ func TestPasswordExpiry(t *testing.T) {
 		}
 	}
 	c, err := e.caller(t, res.Token)
-	if err != nil || c.Session.State != auth.SessionPasswordChange || auth.Allowed(c, auth.PermSystemRead) {
+	if err != nil || c.Session.State != auth.SessionPasswordChange || allowed(t, e, c, auth.PermSystemRead) {
 		t.Fatalf("открытая сессия после истечения пароля: %v %s", err, c.Session.State)
 	}
 	res = e.mustLogin(t, "ivanov", phrase)

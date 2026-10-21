@@ -130,6 +130,9 @@ type PasswordChange struct {
 	// ExpectHash — текущий хеш, с которым сверялся пароль; пусто — без
 	// сверки (сброс администратором). Не совпал — ErrWrongPassword.
 	ExpectHash string
+	// ExpectRole — роль, по которой проверялись права администратора
+	// (УПД.2); пусто — без сверки. Роль сменилась — ErrRoleChanged.
+	ExpectRole Role
 	// Temporary — пароль выдан администратором (ИАФ.3): после входа его нужно сменить.
 	Temporary   bool
 	TempExpires time.Time

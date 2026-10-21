@@ -68,6 +68,8 @@ type Service struct {
 	// при входе с неизвестным логином, чтобы время ответа не выдавало,
 	// есть ли учётная запись (ADR-0006).
 	dummy string
+	// roles — свои роли (задача 2.9); nil — только предустановленные.
+	roles RoleStore
 }
 
 // Option настраивает Service.
@@ -209,11 +211,15 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (LoginResult, error)
 	if err != nil {
 		return LoginResult{}, err
 	}
+	mfaReq, err := s.mfaRequired(ctx, u, pol)
+	if err != nil {
+		return LoginResult{}, err
+	}
 	var state SessionState
 	switch {
 	case mfaOn:
 		state = SessionMFAPending
-	case MFARequired(u, pol):
+	case mfaReq:
 		state = SessionMFASetup
 	default:
 		state = afterMFA(u, pol, now)

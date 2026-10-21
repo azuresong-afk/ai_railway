@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/azuresong-afk/ai_railway/internal/auth"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/internal/gwregistry"
 )
@@ -61,7 +62,7 @@ func (a GatewayAuthorizer) Authorize(r *http.Request, permission string) (Princi
 	if permission != PermGatewayInternal {
 		return Principal{ID: gw.ID}, Forbidden
 	}
-	return Principal{ID: gw.ID}, Allow
+	return Principal{ID: gw.ID, Grants: auth.Grants{PermGatewayInternal: auth.ScopeAll}}, Allow
 }
 
 // NewInternal собирает обработчик внутреннего порта: восстановление после

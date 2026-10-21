@@ -81,6 +81,15 @@ func authProblem(logger *slog.Logger, err error) *Problem {
 	case errors.Is(err, auth.ErrSelf):
 		return NewProblem(http.StatusUnprocessableEntity, CodeUnprocessable,
 			"Это действие нельзя выполнить над своей учётной записью.")
+	case errors.Is(err, auth.ErrRoleChanged):
+		return NewProblem(http.StatusConflict, CodeConflict,
+			"Роль пользователя изменилась во время запроса: обновите страницу и повторите.")
+	case errors.Is(err, auth.ErrEscalation):
+		return NewProblem(http.StatusForbidden, CodeForbidden,
+			"Недостаточно прав: у учётной записи или роли есть разрешения, которых нет у вас.")
+	}
+	if p := roleProblem(err); p != nil {
+		return p
 	}
 	logger.Error("ошибка входа и учётных записей", "error", err)
 	return errInternal()
@@ -103,6 +112,9 @@ type MeResponse struct {
 	// пароля, если пора предупреждать (ИАФ.2).
 	PasswordExpiresInDays *int      `json:"password_expires_in_days,omitempty"`
 	MFA                   MFAStatus `json:"mfa"`
+	// Permissions — разрешения, действующие в сессии (консоль скрывает
+	// недоступные действия; права всё равно проверяет сервер).
+	Permissions []string `json:"permissions"`
 }
 
 // MFAStatus — второй фактор пользователя (ИАФ.5).
@@ -145,6 +157,12 @@ func (d Deps) login(w http.ResponseWriter, r *http.Request) {
 
 func (d Deps) writeMe(w http.ResponseWriter, r *http.Request, c auth.Caller) {
 	resp := MeResponse{User: userView(c.User, time.Now()), SessionState: string(c.Session.State)}
+	g, err := d.Auth.CallerGrants(r.Context(), c)
+	if err != nil {
+		WriteProblem(w, authProblem(d.Logger, err))
+		return
+	}
+	resp.Permissions = g.Names()
 	left, warn, err := d.Auth.PasswordExpiresIn(r.Context(), c.User)
 	if err != nil {
 		WriteProblem(w, authProblem(d.Logger, err))

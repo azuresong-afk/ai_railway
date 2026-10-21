@@ -23,7 +23,8 @@ const (
 )
 
 // SessionAuthorizer проверяет права по сессии консоли: cookie → сессия
-// (бездействие, срок) → CSRF для изменяющих запросов → право роли.
+// (бездействие, срок) → CSRF для изменяющих запросов → права роли
+// (предустановленной или своей, УПД.1).
 type SessionAuthorizer struct {
 	Auth   *auth.Service
 	Logger *slog.Logger
@@ -43,11 +44,19 @@ func (a SessionAuthorizer) Authorize(r *http.Request, permission string) (Princi
 		}
 		return Principal{}, Unauthenticated
 	}
-	p := Principal{ID: caller.User.ID, Caller: &caller}
+	g, err := a.Auth.CallerGrants(r.Context(), caller)
+	if err != nil {
+		if a.Logger != nil {
+			a.Logger.Error("права роли не получены", "error", err)
+		}
+		// Сбой хранилища — не отказ по правам: 503 без записи access.denied.
+		return Principal{}, Unavailable
+	}
+	p := Principal{ID: caller.User.ID, Caller: &caller, Grants: g}
 	if unsafeMethod(r.Method) && !a.Auth.CheckCSRF(caller, r.Header.Get(CSRFHeader)) {
 		return p, Forbidden
 	}
-	if !auth.Allowed(caller, permission) {
+	if !g.Allows(permission) {
 		return p, Forbidden
 	}
 	return p, Allow

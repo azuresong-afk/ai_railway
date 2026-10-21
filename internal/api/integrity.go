@@ -12,10 +12,10 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/integrity"
 )
 
-// PermIntegrityVerify — проверка целостности по команде (ОЦЛ.2). Модель
-// ролей — задача 2.9: до неё права нет ни у одной роли и эндпоинт отвечает
-// 403 всем (отказ по умолчанию); 2.9 переносит право в internal/auth.
-const PermIntegrityVerify = "integrity.verify"
+// PermIntegrityVerify — проверка целостности по команде (ОЦЛ.2); разрешение
+// каталога internal/auth (задача 2.9), из предустановленных ролей — только у
+// администратора безопасности.
+const PermIntegrityVerify = auth.PermIntegrityVerify
 
 // IntegrityService — контроль целостности сервера (задача 2.17).
 type IntegrityService interface {

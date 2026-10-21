@@ -42,6 +42,12 @@ var catalog = []Event{
 	{"gateway.register", "Регистрация шлюза: выпуск сертификата по токену", true},
 	{"gateway.revoke", "Отзыв шлюза", true},
 	{"gateway.mtls_denied", "Отказ шлюзу во внутреннем API: сертификат отозван или неизвестен", true},
+	// Роли и доступ (РСБ.1, УПД.1–2, 6).
+	{"role.create", "Создание своей роли", true},
+	{"role.update", "Изменение своей роли", true},
+	{"role.delete", "Удаление своей роли", true},
+	{"user.role_changed", "Назначение роли пользователю", true},
+	{"access.denied", "Отказ в доступе к функции управления", true},
 	// Компоненты (РСБ.2).
 	{"component.start", "Запуск компонента", true},
 	{"component.stop", "Остановка компонента", true},
