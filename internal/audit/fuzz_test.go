@@ -12,6 +12,9 @@ func FuzzCanonicalJSON(f *testing.F) {
 	for _, s := range []string{
 		`{}`, `{"b":1,"a":2}`, `{"a":{"b":[1,2.50,"x",null,true]}}`, `{"x":"<&> "}`,
 		`{"a":1}{"b":2}`, `[1]`, `{"password":"x"}`, `{"a":"\xff"}`, `{"n":1e400}`, `{"a":1,"a":2}`,
+		// Маскирование значений (В4 ревью 2.r1).
+		`{"r":"Bearer abc def"}`, `{"r":["basic  x","bearer bearer y"]}`, `{"u":"p://a:b:c@d/e ftp://x:y@z"}`,
+		`{"r":"Bearer [скрыто]"}`, `{"u":"p://a:[скрыто]@d"}`, `{"r":"bearer\t"}`,
 	} {
 		f.Add([]byte(s))
 	}

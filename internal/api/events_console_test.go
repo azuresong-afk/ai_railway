@@ -21,10 +21,13 @@ import (
 // События в консоли (задача 2.16) на хранилище Memory: права, причина
 // доступа к содержимому, запись в аудит, выгрузка, фильтры, сроки.
 
-// recAudit — журнал аудита в памяти; err — сбой записи.
+// recAudit — журнал аудита в памяти; err — сбой записи. Подробности
+// проходят ту же нормализацию, что в журнале (audit.CanonicalDetails):
+// отказ фильтра секретов — сбой записи; canon — что попало бы в журнал.
 type recAudit struct {
 	mu      sync.Mutex
 	entries []audit.Entry
+	canon   []string
 	err     error
 }
 
@@ -34,7 +37,12 @@ func (a *recAudit) Record(_ context.Context, e audit.Entry) error {
 	if a.err != nil {
 		return a.err
 	}
+	d, err := audit.CanonicalDetails(e.Details)
+	if err != nil {
+		return err
+	}
 	a.entries = append(a.entries, e)
+	a.canon = append(a.canon, string(d))
 	return nil
 }
 
@@ -188,6 +196,26 @@ func TestEventCard(t *testing.T) {
 	}
 	mustProblem(t, do(h, "GET", "/api/v1/events/"+liveEventID(time.Now(), 99), ""), 404, CodeNotFound)
 	mustProblem(t, do(h, "GET", "/api/v1/events/not-an-id", ""), 404, CodeNotFound)
+}
+
+// В4 ревью 2.r1: причина со строкой вида «Bearer …» не ломает запись
+// аудита — содержимое выдаётся, запись есть, токена в ней нет.
+func TestEventContentReasonWithBearer(t *testing.T) {
+	env := newConsoleEnv(t)
+	h := env.handler(t, auth.PermEventsContentRead)
+	w := do(h, "POST", "/api/v1/events/"+env.ids[0]+"/content", `{"reason":"Bearer abc123 утёк, разбор"}`, jsonCT()...)
+	if w.Code != 200 || !strings.Contains(w.Body.String(), promptMarker) {
+		t.Fatalf("содержимое: %d %s", w.Code, w.Body)
+	}
+	if got := env.audit.find("events.content_read"); len(got) != 1 {
+		t.Fatalf("записей о доступе: %d", len(got))
+	}
+	env.audit.mu.Lock()
+	defer env.audit.mu.Unlock()
+	last := env.audit.canon[len(env.audit.canon)-1]
+	if strings.Contains(last, "abc123") || !strings.Contains(last, `"reason":"Bearer [скрыто] утёк, разбор"`) {
+		t.Fatalf("подробности в журнале: %s", last)
+	}
 }
 
 // УПД.7: содержимое — только с events.content.read и причиной; каждое

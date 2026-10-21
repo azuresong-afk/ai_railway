@@ -328,6 +328,26 @@ func (b *Box) deriveAEAD(purpose, day string) (aisecCrypto.AEAD, error) {
 	return b.provider.NewAEAD(key)
 }
 
+// MAC возвращает имитовставку на ключе назначения purpose, выведенном из
+// действующего ключа данных: HKDF(ключ данных, «aisec-mac-v1|назначение|ID
+// ключа»). Ключ не зависит от суток и не входит в учёт шифрований: он ничего
+// не шифрует. Так ключ имитовставки хранится вне БД (под мастер-ключом), а
+// не рядом с данными, которые он защищает (опора цепочки аудита, ADR-0008).
+func (b *Box) MAC(purpose string) (aisecCrypto.MAC, error) {
+	if b.kdf == nil {
+		return nil, ErrNoDerive
+	}
+	if !purposeRe.MatchString(purpose) {
+		return nil, fmt.Errorf("ключ данных: неверное назначение ключа имитовставки %q", purpose)
+	}
+	key, err := b.kdf.Derive([]byte("aisec-mac-v1|"+purpose+"|"+b.keyID), aisecCrypto.MinMACKeySize)
+	if err != nil {
+		return nil, err
+	}
+	defer clear(key)
+	return b.provider.NewMAC(key)
+}
+
 // OpenDerived расшифровывает шифротекст производного ключа суток day для
 // назначения purpose, выведенного из ключа данных keyID.
 func (b *Box) OpenDerived(keyID, purpose string, day time.Time, sealed []byte, table, column, rowID string) ([]byte, error) {

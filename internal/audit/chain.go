@@ -29,6 +29,9 @@ const (
 	ReasonAlgMismatch Reason = "alg_mismatch"
 	// ReasonInvalid — запись не приводится к канонической форме.
 	ReasonInvalid Reason = "invalid_record"
+	// ReasonAnchorForged — у прошлой проверки в audit_verifications неверная
+	// имитовставка головы: строку подделали в БД (ключа вне БД у нарушителя нет).
+	ReasonAnchorForged Reason = "anchor_forged"
 )
 
 // Anchor — точка, от которой проверяется цепочка: номер и хеш записи перед

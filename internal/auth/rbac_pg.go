@@ -444,7 +444,7 @@ func (s *PGRoles) AssignRole(ctx context.Context, orgID, actorID, userID string,
 			return ErrLastAdmin
 		}
 		if u.Role == role {
-			return nil
+			return ErrRoleUnchanged
 		}
 		if _, err := tx.Exec(ctx, "UPDATE users SET role = $2 WHERE id = $1", userID, string(role)); err != nil {
 			if sqlStateOf(err) == pgForeignKeyViolation {

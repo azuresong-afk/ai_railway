@@ -100,23 +100,30 @@ func auditArchive(args []string, dsn string, stdout, stderr io.Writer) error {
 		return nil
 	}
 	if err != nil {
-		return archiveFailed(ctx, db, p, *out, res, err)
+		return archiveFailed(ctx, db, p, *out, res, err, stdout)
 	}
 	if cerr != nil {
 		return fmt.Errorf("архивация выполнена, но файл архива не закрыт: %w", cerr)
 	}
+	sayArchived(stdout, res, *out)
+	return nil
+}
+
+// sayArchived выводит итог архивации: что архивировано и куда.
+func sayArchived(stdout io.Writer, res *audit.ArchiveResult, out string) {
 	cp := res.Checkpoint
 	say(stdout, "Архивировано записей: %d (номера %d–%d, старше %s) в %s.\nКонтрольная точка: запись %d, хеш %s.\n"+
 		"Перенесите архив на внешний носитель; проверка — aisec-cli audit verify-archive.\n",
-		cp.Records, cp.PrevSeq+1, cp.Seq, res.Cutoff.Format(time.DateOnly), *out, cp.Seq, hex.EncodeToString(cp.Hash))
-	return nil
+		cp.Records, cp.PrevSeq+1, cp.Seq, res.Cutoff.Format(time.DateOnly), out, cp.Seq, hex.EncodeToString(cp.Hash))
 }
 
 // archiveFailed решает судьбу файла после ошибки. Точка не подписана или
 // точно не записана — файл удаляется. Записана (ошибку вернул только ответ
-// на COMMIT) — успех. Неизвестно — файл сохраняется: записи могли быть уже
-// удалены, и архив — их единственная копия.
-func archiveFailed(ctx context.Context, db *store.DB, p aisecCrypto.Provider, out string, res *audit.ArchiveResult, err error) error {
+// на COMMIT) — успех с тем же итогом, что и без ошибки (Н6 ревью 2.r1).
+// Неизвестно — файл сохраняется: записи могли быть уже удалены, и архив —
+// их единственная копия.
+func archiveFailed(ctx context.Context, db *store.DB, p aisecCrypto.Provider, out string, res *audit.ArchiveResult, err error,
+	stdout io.Writer) error {
 	if res == nil || res.Checkpoint == nil {
 		removeQuietly(out)
 		return err
@@ -131,6 +138,7 @@ func archiveFailed(ctx context.Context, db *store.DB, p aisecCrypto.Provider, ou
 		return fmt.Errorf("%w; исход неизвестен (%w) — файл %s сохранён: проверьте, есть ли в audit_checkpoints точка %s",
 			err, cerr, out, res.Checkpoint.ID)
 	case ok:
+		sayArchived(stdout, res, out)
 		return nil
 	}
 	removeQuietly(out)

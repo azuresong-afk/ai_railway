@@ -40,6 +40,10 @@ const usage = `aisec-cli — служебные операции AISec.
                                 выпустить одноразовый токен регистрации шлюза (AISEC_DATABASE_URL)
   gateway list                  шлюзы, сроки сертификатов и последний контакт
   gateway revoke -name ИМЯ      отозвать шлюз: сертификат перестаёт приниматься сразу
+  user unlock -login ЛОГИН       снять блокировку учётной записи консоли (AISEC_DATABASE_URL)
+  user reset-password -login ЛОГИН
+                                выдать временный пароль; сессии завершаются, токены API отзываются
+  user reset-mfa -login ЛОГИН    сбросить второй фактор; сессии завершаются
   verify [-manifest ФАЙЛ]       проверить целостность установки по подписанному манифесту без сервера;
                                 с AISEC_DATABASE_URL итог пишется в журнал; 3 — целостность нарушена
   version                       версия
@@ -108,6 +112,15 @@ func run(args []string, stdout, stderr io.Writer, now time.Time) int {
 				return 0
 			}
 			say(stderr, "aisec-cli gateway: %v\n", err)
+			return 1
+		}
+		return 0
+	case "user":
+		if err := userCmd(args[1:], os.Getenv("AISEC_DATABASE_URL"), stdout, stderr); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return 0
+			}
+			say(stderr, "aisec-cli user: %v\n", err)
 			return 1
 		}
 		return 0

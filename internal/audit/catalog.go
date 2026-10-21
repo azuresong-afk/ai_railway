@@ -19,6 +19,7 @@ var catalog = []Event{
 	{"auth.logout", "Выход из консоли", true},
 	{"auth.login_failed", "Неудачная попытка входа в консоль", true},
 	{"auth.locked", "Учётная запись заблокирована после неудачных попыток", true},
+	{"auth.unlocked", "Снятие блокировки учётной записи командой aisec-cli", true},
 	{"auth.mfa_reset", "Сброс второго фактора пользователя", true},
 	{"auth.mfa_setup_started", "Выдача секрета для подключения второго фактора", true},
 	{"auth.mfa_enabled", "Подключение второго фактора (TOTP)", true},

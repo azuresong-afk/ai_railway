@@ -44,6 +44,13 @@ type Store interface {
 	// активного администратора безопасности; активация снимает блокировку.
 	// В подробности rec добавляется прежнее состояние (previous_status).
 	SetStatus(ctx context.Context, orgID, userID string, s Status, now time.Time, rec audit.Entry) error
+	// Unlock снимает блокировку и сбрасывает счётчик неудач активной записи
+	// (аварийная команда aisec-cli, В7 ревью 2.r2). Деактивированная запись
+	// — ErrDeactivated. В подробности rec добавляется was_locked.
+	Unlock(ctx context.Context, orgID, userID string, now time.Time, rec audit.Entry) error
+	// UnlockedSecurityAdmins — сколько активных и не заблокированных на now
+	// администраторов безопасности, кроме exceptID.
+	UnlockedSecurityAdmins(ctx context.Context, orgID, exceptID string, now time.Time) (int, error)
 	// SetupFirstUser гасит одноразовый токен первичной настройки (ЗИ.4) и
 	// создаёт первую учётную запись — только если в организации ещё нет
 	// пользователей. Неизвестный, истёкший или погашенный токен, токен другого
@@ -69,7 +76,9 @@ type Store interface {
 	// сессия не меняется и записи не даёт.
 	RevokeSession(ctx context.Context, id, reason string, now time.Time, rec audit.Entry) error
 	// RevokeUserSessions завершает все сессии пользователя.
-	RevokeUserSessions(ctx context.Context, userID, reason string, now time.Time, rec audit.Entry) (int, error)
+	// tokens != nil — в той же транзакции отзываются и токены API
+	// пользователя; их число — в подробностях rec (revoked_api_tokens).
+	RevokeUserSessions(ctx context.Context, userID, reason string, now time.Time, tokens *TokenRevocation, rec audit.Entry) (int, error)
 	// ListSessions — незавершённые сессии пользователя, новые первыми.
 	ListSessions(ctx context.Context, userID string) ([]Session, error)
 
@@ -149,6 +158,19 @@ type PasswordChange struct {
 	// ErrDeactivated: временный пароль не ложится на параллельно
 	// деактивированную запись.
 	RequireActive bool
+	// RevokeTokens — отозвать и токены API пользователя (сброс пароля
+	// администратором, В8 ревью 2.r2); их число — в подробностях rec
+	// (revoked_api_tokens).
+	RevokeTokens *TokenRevocation
+}
+
+// TokenRevocation — отзыв всех токенов API пользователя вместе с другим
+// действием администратора.
+type TokenRevocation struct {
+	Reason string // APITokenRevokedBy*
+	// By — ID пользователя консоли; пусто — действие aisec-cli
+	// (допускается только с APITokenRevokedByPasswordReset).
+	By string
 }
 
 // AddDetail добавляет поле в подробности записи аудита (хранилища дописывают

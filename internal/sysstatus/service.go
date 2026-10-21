@@ -58,6 +58,9 @@ type Store interface {
 	// AuditCounts — число блокировок учётных записей и отказов в доступе
 	// в журнале аудита начиная с since.
 	AuditCounts(ctx context.Context, since time.Time) (locked, denied int, err error)
+	// AuditChain — итог последней проверки цепочки журнала аудита; nil —
+	// проверок не было.
+	AuditChain(ctx context.Context) (*AuditChainStatus, error)
 	// AlertStates — сохранённые состояния условий по коду.
 	AlertStates(ctx context.Context) (map[string]AlertState, error)
 	// Transition записывает состояние условия. Если оно изменилось (или
@@ -247,6 +250,19 @@ func (s *Service) collect(ctx context.Context) collected {
 		}
 	}
 
+	// Цепочка журнала аудита (РСБ.4): последняя проверка — фоновая или ручная.
+	if s.o.Store != nil {
+		actx, cancel := s.dbCtx(ctx)
+		chain, err := s.o.Store.AuditChain(actx)
+		cancel()
+		if err != nil {
+			s.unavailable(&c, "audit_chain", err)
+		} else {
+			c.st.AuditChain = chain
+			c.conditions[ConditionAuditLog] = chain != nil && !chain.OK
+		}
+	}
+
 	c.conditions[ConditionTime] = clk.Sync == SyncUnsynchronized
 	c.conditions[ConditionStorage] = c.st.Storage.WarnExceeded
 	c.conditions[ConditionIntegrity] = integrityFailed
@@ -281,6 +297,7 @@ func gatewayState(g gwregistry.Gateway, now time.Time) string {
 var conditionInfo = []struct{ code, requirement, title string }{
 	{ConditionAccount, "ИАФ.4", "Блокировки учётных записей после неудачных попыток входа"},
 	{ConditionDenied, "УПД.6", "Отказы в доступе к функциям управления"},
+	{ConditionAuditLog, "РСБ.4", "Нарушена цепочка журнала аудита"},
 	{ConditionStorage, "РСБ.5", "Журнал аудита приближается к пределу хранилища"},
 	{ConditionIntegrity, "ОЦЛ.5", "Нарушена целостность или не пройден самотест компонента"},
 	{ConditionTime, "ВРМ.1", "Системное время не синхронизировано"},
@@ -343,7 +360,7 @@ func dedupe(s []string) []string {
 // systemActor — «кто» для записей об уведомлениях.
 var systemActor = audit.Actor{Type: audit.ActorSystem, ID: "system-status", Name: "Состояние системы"}
 
-// Evaluate вычисляет условия ВРМ.1, РСБ.5 и ОЦЛ.5 и при смене состояния
+// Evaluate вычисляет условия ВРМ.1, РСБ.4, РСБ.5 и ОЦЛ.5 и при смене состояния
 // пишет запись system.alert в журнал аудита. Повторный вызов без изменений
 // ничего не пишет. ИАФ.4 и УПД.6 уже фиксируются записями auth.locked и
 // access.denied, поэтому здесь не дублируются.
@@ -390,6 +407,13 @@ func (s *Service) alertEntry(code, requirement string, active bool, st Status) a
 		d["sync"] = st.Time.Sync
 	case ConditionStorage:
 		d["used_percent"], d["warn_percent"] = st.Storage.UsedPercent, st.Storage.WarnPercent
+	case ConditionAuditLog:
+		if ch := st.AuditChain; ch != nil {
+			d["reason"] = ch.Reason
+			if ch.BrokenSeq != nil {
+				d["broken_seq"] = *ch.BrokenSeq
+			}
+		}
 	}
 	return audit.Entry{
 		Actor: systemActor, Action: "system.alert", Object: audit.Object{Type: "system", ID: code},

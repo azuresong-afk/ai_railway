@@ -89,6 +89,28 @@ function EventsRoute({ me }: { me: Me }) {
   );
 }
 
+const AdminScreen = lazy(() => import("../admin/AdminScreen").then((m) => ({ default: m.AdminScreen })));
+const SystemScreen = lazy(() => import("../system/SystemScreen").then((m) => ({ default: m.SystemScreen })));
+
+function SystemRoute({ me }: { me: Me }) {
+  if (!me.permissions.includes("system.read")) {
+    return <EmptyState title="Нет доступа к состоянию системы" action={<p className="text-sm text-muted">Обратитесь к администратору.</p>} />;
+  }
+  return (
+    <Suspense fallback={null}>
+      <SystemScreen me={me} />
+    </Suspense>
+  );
+}
+
+function AdminRoute({ me }: { me: Me }) {
+  return (
+    <Suspense fallback={null}>
+      <AdminScreen me={me} />
+    </Suspense>
+  );
+}
+
 function Frame({ me, onLogout }: { me: Me; onLogout: () => void }) {
   const [collapsed, setCollapsed] = useState(false);
   const [theme, setTheme] = useTheme();
@@ -202,6 +224,8 @@ function Frame({ me, onLogout }: { me: Me; onLogout: () => void }) {
           <main className="min-w-0 flex-1 overflow-auto p-6">
             <Routes>
               <Route path="/events" element={<EventsRoute me={me} />} />
+              <Route path="/admin" element={<AdminRoute me={me} />} />
+              <Route path="/system" element={<SystemRoute me={me} />} />
               <Route path="*" element={<Stub />} />
             </Routes>
           </main>

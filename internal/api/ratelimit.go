@@ -1,7 +1,6 @@
 package api
 
 import (
-	"net"
 	"net/http"
 	"net/netip"
 	"strconv"
@@ -11,9 +10,10 @@ import (
 )
 
 // RateRule — предел запросов с одного клиента за окно для адресов с префиксом
-// Prefix. Max = 0 — без предела.
+// Prefix и, если задан Method, только для этого метода. Max = 0 — без предела.
 type RateRule struct {
 	Prefix string
+	Method string
 	Max    int
 	Window time.Duration
 }
@@ -26,11 +26,18 @@ type RateConfig struct {
 	Now        func() time.Time
 }
 
-// DefaultRateRules — значения по умолчанию: вход строже остального API.
+// DefaultRateRules — значения по умолчанию. Строгий предел — только у
+// запросов, которые проверяют пароль или код второго фактора (перебор):
+// вход, первичная настройка, второй фактор, смена пароля. Выход, чтение
+// состояния настройки и настроек входа идут по общему правилу: за NAT или
+// прокси консоль офиса иначе упиралась бы в 429 (замечание В3 ревью 2.r1).
 func DefaultRateRules() []RateRule {
 	return []RateRule{
 		{Prefix: "/", Max: 600, Window: time.Minute},
-		{Prefix: "/api/v1/auth/", Max: 10, Window: time.Minute},
+		{Prefix: "/api/v1/auth/login", Method: http.MethodPost, Max: 10, Window: time.Minute},
+		{Prefix: "/api/v1/auth/setup", Method: http.MethodPost, Max: 10, Window: time.Minute},
+		{Prefix: "/api/v1/auth/mfa/", Method: http.MethodPost, Max: 10, Window: time.Minute},
+		{Prefix: "/api/v1/auth/password", Method: http.MethodPost, Max: 10, Window: time.Minute},
 		{Prefix: "/api/v1/gateways/register", Max: 10, Window: time.Minute},
 		{Prefix: "/internal/", Max: 600, Window: time.Minute},
 		{Prefix: "/healthz", Max: 60, Window: time.Minute},
@@ -72,9 +79,12 @@ func NewRateLimiter(cfg RateConfig) *RateLimiter {
 	return &RateLimiter{cfg: cfg, entries: map[rateKey]*rateEntry{}, overflow: map[int]*rateEntry{}}
 }
 
-func (l *RateLimiter) ruleFor(path string) int {
+func (l *RateLimiter) ruleFor(method, path string) int {
 	best, bestLen := -1, -1
 	for i, r := range l.cfg.Rules {
+		if r.Method != "" && r.Method != method {
+			continue
+		}
 		if strings.HasPrefix(path, r.Prefix) && len(r.Prefix) > bestLen {
 			best, bestLen = i, len(r.Prefix)
 		}
@@ -83,8 +93,8 @@ func (l *RateLimiter) ruleFor(path string) int {
 }
 
 // Allow учитывает запрос; при отказе возвращает время до сброса окна.
-func (l *RateLimiter) Allow(path string, client netip.Prefix) (ok bool, retryAfter time.Duration) {
-	i := l.ruleFor(path)
+func (l *RateLimiter) Allow(method, path string, client netip.Prefix) (ok bool, retryAfter time.Duration) {
+	i := l.ruleFor(method, path)
 	if i < 0 || l.cfg.Rules[i].Max <= 0 {
 		return true, 0
 	}
@@ -135,15 +145,9 @@ func (l *RateLimiter) sweep(now time.Time) {
 	}
 }
 
-// clientPrefix — клиент по адресу соединения. Заголовкам X-Forwarded-For и
-// подобным не доверяем: их задаёт сам клиент. IPv6 группируется по сети /64.
-func clientPrefix(remote string) netip.Prefix {
-	host, _, err := net.SplitHostPort(remote)
-	if err != nil {
-		host = remote
-	}
-	addr, err := netip.ParseAddr(host)
-	if err != nil {
+// clientPrefix — клиент для счётчика: адрес IPv6 группируется по сети /64.
+func clientPrefix(addr netip.Addr) netip.Prefix {
+	if !addr.IsValid() {
 		return netip.Prefix{}
 	}
 	addr = addr.Unmap()
@@ -161,7 +165,7 @@ func clientPrefix(remote string) netip.Prefix {
 // Middleware отклоняет превышение предела ответом 429 с Retry-After.
 func (l *RateLimiter) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ok, wait := l.Allow(r.URL.Path, clientPrefix(r.RemoteAddr))
+		ok, wait := l.Allow(r.Method, r.URL.Path, clientPrefix(clientAddr(r)))
 		if !ok {
 			secs := int((wait + time.Second - 1) / time.Second)
 			if secs < 1 {

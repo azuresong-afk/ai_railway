@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"net/http"
+	"time"
 
 	"github.com/azuresong-afk/ai_railway/internal/auth"
 )
@@ -17,6 +18,8 @@ type Principal struct {
 	// Scoped пропускает только разрешение на все объекты; со Scoped
 	// обработчик сам отбирает объекты по Grants.Scope (УПД.8).
 	Grants auth.Grants
+	// RetryAfter — через сколько повторить запрос (только при RateLimited).
+	RetryAfter time.Duration
 }
 
 // Denial — отказ в доступе к маршруту (УПД.6).
@@ -67,6 +70,9 @@ const (
 	// Unavailable — права не удалось проверить (сбой хранилища): 503 без
 	// записи об отказе, причина — в техническом журнале.
 	Unavailable
+	// RateLimited — с адреса клиента слишком много неудачных проверок
+	// токена API: 429 без записи об отказе (В9 ревью 2.r2).
+	RateLimited
 )
 
 // Authorizer решает, можно ли запросу выполнить действие с правом permission

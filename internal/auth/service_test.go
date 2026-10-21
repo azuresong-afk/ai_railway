@@ -669,7 +669,7 @@ func TestRevokeSessionsByAdmin(t *testing.T) {
 	admin := e.adminCaller(t)
 	a := e.mustLogin(t, "ivanov", phrase)
 	e.mustLogin(t, "ivanov", phrase)
-	n, err := e.svc.RevokeSessions(context.Background(), admin, userID)
+	n, err := e.svc.RevokeSessions(context.Background(), admin, userID, false)
 	if err != nil || n != 2 {
 		t.Fatalf("завершено %d, %v", n, err)
 	}

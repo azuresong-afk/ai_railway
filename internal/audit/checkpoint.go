@@ -191,9 +191,14 @@ func NewPGCheckpoints(db DB, p crypto.Provider, v crypto.Verifier) (*PGCheckpoin
 
 // Latest проверяет всю последовательность точек и возвращает последнюю.
 func (c *PGCheckpoints) Latest(ctx context.Context) (Anchor, bool, error) {
+	return c.LatestIn(ctx, c.db)
+}
+
+// LatestIn — Latest в транзакции q (запись в пустой журнал, Н8 ревью 2.r1).
+func (c *PGCheckpoints) LatestIn(ctx context.Context, q querier) (Anchor, bool, error) {
 	ctx, cancel := withTimeout(ctx, batchTimeout)
 	defer cancel()
-	cps, err := loadCheckpoints(ctx, c.db)
+	cps, err := loadCheckpoints(ctx, q)
 	if err != nil {
 		return Anchor{}, false, err
 	}
@@ -205,6 +210,18 @@ func (c *PGCheckpoints) Latest(ctx context.Context) (Anchor, bool, error) {
 		return Anchor{}, false, err
 	}
 	return a, true, nil
+}
+
+// Any сообщает, есть ли в журнале хотя бы одна контрольная точка: с ними
+// сервер без открытого ключа аудита не запускается (замечание В5 ревью 2.r1).
+func (c *PGCheckpoints) Any(ctx context.Context) (bool, error) {
+	ctx, cancel := withTimeout(ctx, batchTimeout)
+	defer cancel()
+	var ok bool
+	if err := c.db.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM audit_checkpoints)").Scan(&ok); err != nil {
+		return false, fmt.Errorf("журнал аудита: контрольные точки: %w", err)
+	}
+	return ok, nil
 }
 
 // Exists сообщает, записана ли точка id: после ошибки фиксации архивации

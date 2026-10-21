@@ -512,3 +512,38 @@ func TestPGColumnGrants(t *testing.T) {
 		t.Errorf("оживление сессии владельцем: %v", err)
 	}
 }
+
+// В7 ревью 2.r2 на PostgreSQL: последний незаблокированный администратор
+// безопасности при бессрочной блокировке в настройках блокируется на 15 минут.
+func TestPGLastAdminLockoutCapped(t *testing.T) {
+	e := setupPG(t)
+	ctx := pgCtx(t)
+	e.addUser(t, adminID, "admin", auth.RoleSecurityAdmin)
+	e.addUser(t, userID, "ivanov", auth.RoleAnalyst)
+	admin := e.mfa.complete(t, mustPGLogin(t, e, "admin"))
+	p := auth.DefaultPolicy()
+	p.LockoutMinutes = 0
+	if err := e.svc.SetPolicy(ctx, admin, p); err != nil {
+		t.Fatal(err)
+	}
+	for _, login := range []string{"admin", "ivanov"} {
+		for range p.LockoutThreshold {
+			if _, err := e.login(t, login, wrongPhrase); !errors.Is(err, auth.ErrInvalidCredentials) {
+				t.Fatal(err)
+			}
+		}
+	}
+	var (
+		adminFor *time.Duration
+		until    *time.Time
+	)
+	if err := e.owner.QueryRow(ctx, "SELECT locked_until - locked_at FROM users WHERE id = $1", adminID).Scan(&adminFor); err != nil {
+		t.Fatal(err)
+	}
+	if adminFor == nil || *adminFor != 15*time.Minute {
+		t.Fatalf("блокировка последнего администратора: %v", adminFor)
+	}
+	if err := e.owner.QueryRow(ctx, "SELECT locked_until FROM users WHERE id = $1 AND locked_at IS NOT NULL", userID).Scan(&until); err != nil || until != nil {
+		t.Fatalf("бессрочная блокировка пользователя: %v %v", until, err)
+	}
+}

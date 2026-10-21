@@ -6,12 +6,15 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/user"
+	"path/filepath"
 	"strconv"
 
 	"github.com/azuresong-afk/ai_railway/internal/audit"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
+	"github.com/azuresong-afk/ai_railway/internal/keyring"
 	"github.com/azuresong-afk/ai_railway/internal/store"
 )
 
@@ -78,7 +81,17 @@ func auditVerify(args []string, dsn string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	res, err := audit.NewVerifier(l).VerifyBy(ctx, cliActor())
+	var opts []audit.VerifierOption
+	if *keys != "" {
+		m, err := headMAC(ctx, db, p, *keys)
+		if err != nil {
+			return err
+		}
+		if m != nil {
+			opts = append(opts, audit.WithHeadMAC(*m))
+		}
+	}
+	res, err := audit.NewVerifier(l, opts...).VerifyBy(ctx, cliActor())
 	if err != nil {
 		return err
 	}
@@ -89,6 +102,24 @@ func auditVerify(args []string, dsn string, stdout, stderr io.Writer) error {
 	}
 	say(stdout, "Цепочка цела. Проверено записей: %d, последняя — %d.\n", res.Checked, res.Head.Seq)
 	return nil
+}
+
+// headMAC — имитовставка головы цепочки на ключе из ключа данных, как у
+// сервера (назначение audit-head). Нет master.key в каталоге ключей — nil:
+// проверка идёт без опоры на прошлые проверки сервера.
+func headMAC(ctx context.Context, db *store.DB, p aisecCrypto.Provider, dir string) (*audit.HeadMAC, error) {
+	if _, err := os.Stat(filepath.Join(dir, keyring.MasterKeyFile)); errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	box, err := keyring.Load(ctx, db.Pool(), p, dir, audit.DefaultOrgID)
+	if err != nil {
+		return nil, err
+	}
+	m, err := box.MAC(audit.HeadMACPurpose)
+	if err != nil {
+		return nil, err
+	}
+	return &audit.HeadMAC{KeyID: box.KeyID(), MAC: m}, nil
 }
 
 // openAuditLog — журнал с контрольными точками архивации (v = nil — без

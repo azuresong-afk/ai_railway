@@ -71,7 +71,7 @@ test("каркас: тема, свёртка панели, выход", async ({
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
   await page.getByRole("button", { name: "Свернуть панель разделов" }).click();
   await expect(page.getByRole("button", { name: "Развернуть панель разделов" })).toBeVisible();
-  await page.getByRole("link", { name: "Состояние системы" }).click();
+  await page.getByRole("link", { name: "Отчёты" }).click();
   await expect(page.getByText("раздел в разработке")).toBeVisible();
   await page.keyboard.press("?");
   await expect(page.getByRole("heading", { name: "Горячие клавиши" })).toBeVisible();

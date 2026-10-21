@@ -12,10 +12,10 @@ import (
 // /api/v1/auth/ — со строгим пределом частоты входа (ЗИ.6).
 func mfaRoutes(d Deps) []Route {
 	return []Route{
-		{Method: http.MethodPost, Path: "/api/v1/auth/mfa/setup", Permission: auth.PermSession, MaxBody: authMaxBody, Handler: needAuth(d, d.mfaSetup)},
-		{Method: http.MethodPost, Path: "/api/v1/auth/mfa/setup/confirm", Permission: auth.PermSession, MaxBody: authMaxBody, Handler: needAuth(d, d.mfaConfirm)},
+		{Method: http.MethodPost, Path: "/api/v1/auth/mfa/setup", Permission: auth.PermSession, SecretOnce: true, MaxBody: authMaxBody, Handler: needAuth(d, d.mfaSetup)},
+		{Method: http.MethodPost, Path: "/api/v1/auth/mfa/setup/confirm", Permission: auth.PermSession, SecretOnce: true, MaxBody: authMaxBody, Handler: needAuth(d, d.mfaConfirm)},
 		{Method: http.MethodPost, Path: "/api/v1/auth/mfa/verify", Permission: auth.PermSession, MaxBody: authMaxBody, Handler: needAuth(d, d.mfaVerify)},
-		{Method: http.MethodPost, Path: "/api/v1/auth/mfa/recovery-codes", Permission: auth.PermSession, MaxBody: authMaxBody, Handler: needAuth(d, d.mfaRecoveryCodes)},
+		{Method: http.MethodPost, Path: "/api/v1/auth/mfa/recovery-codes", Permission: auth.PermSession, SecretOnce: true, MaxBody: authMaxBody, Handler: needAuth(d, d.mfaRecoveryCodes)},
 		{Method: http.MethodPost, Path: "/api/v1/users/{id}/mfa/reset", Permission: auth.PermUsersManage, Handler: needAuth(d, d.mfaReset)},
 	}
 }
