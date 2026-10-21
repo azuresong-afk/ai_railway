@@ -17,11 +17,13 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/auth"
 	"github.com/azuresong-afk/ai_railway/internal/config"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
+	"github.com/azuresong-afk/ai_railway/internal/detect/builtin"
 	"github.com/azuresong-afk/ai_railway/internal/events"
 	"github.com/azuresong-afk/ai_railway/internal/gateway"
 	"github.com/azuresong-afk/ai_railway/internal/httpserver"
 	"github.com/azuresong-afk/ai_railway/internal/ids"
 	"github.com/azuresong-afk/ai_railway/internal/integrity"
+	"github.com/azuresong-afk/ai_railway/internal/integrity/selftest"
 	"github.com/azuresong-afk/ai_railway/internal/providers"
 )
 
@@ -79,9 +81,14 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 	if err != nil {
 		return err
 	}
-	// Самотест криптопрофиля до приёма трафика (ТЗ, ОЦЛ.4).
-	if err := aisecCrypto.SelfTest(p); err != nil {
-		return fmt.Errorf("самотест: %w", err)
+	// Самотест до приёма трафика (ТЗ, ОЦЛ.4–5): криптопрофиль и все
+	// встроенные детекторы на эталонах. Своей БД у шлюза нет — итог в
+	// техническом журнале; передача на сервер — с каналом шлюз — сервер (2.20).
+	if _, err := selftest.Startup(ctx, selftest.StartupConfig{
+		Config: selftest.Config{Component: "gateway", Provider: p, Detectors: builtin.All()},
+		Action: integrity.Action(cfg.SelftestAction), Logger: logger,
+	}); err != nil {
+		return err
 	}
 	// Контроль целостности до приёма трафика (ОЦЛ.2–3): нарушение с
 	// реакцией stop после запуска отменяет контекст с причиной ErrViolation.
