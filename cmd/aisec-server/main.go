@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/azuresong-afk/ai_railway/internal/api"
+	"github.com/azuresong-afk/ai_railway/internal/apps"
 	"github.com/azuresong-afk/ai_railway/internal/audit"
 	"github.com/azuresong-afk/ai_railway/internal/auth"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
@@ -193,8 +194,31 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		return err
 	}
 
+	// Приложения, ключи и провайдеры (ТЗ 5.4, задача 2.11): учётные данные
+	// провайдеров — под ключом данных (ЗИ.1); владелец приложения —
+	// действующая учётная запись консоли.
+	appStore, err := apps.NewPGStore(db.Pool(), auditLog)
+	if err != nil {
+		return err
+	}
+	appsSvc, err := apps.New(apps.Options{Store: appStore, Provider: p, Box: box,
+		OwnerCheck: func(ctx context.Context, id string) error {
+			u, err := authSvc.User(ctx, id)
+			if err != nil {
+				return err
+			}
+			if u.Status != auth.StatusActive {
+				return errors.New("учётная запись не активна")
+			}
+			return nil
+		}})
+	if err != nil {
+		return err
+	}
+
 	handler, _, err := api.New(api.Options{
 		Logger: logger, Version: version, Hasher: hasher,
+		Apps:      appsSvc,
 		Ready:     db.Ping,
 		Auth:      authSvc,
 		Gateways:  gateways,

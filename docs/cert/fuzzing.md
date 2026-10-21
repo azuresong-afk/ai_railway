@@ -80,6 +80,8 @@
 | `FuzzEventsBatchRequest` | `internal/api` | Тело `POST /internal/v1/events:batch` и `Content-Type`: только 200 или ошибка клиента в формате Problem Details, без 500 | 2.15 |
 | `FuzzRegisterGatewayRequest` | `internal/api` | Тело `POST /api/v1/gateways/register`: только 400, 403 или 413; без действующего токена сертификат не выпускается | 2.14 |
 | `FuzzParseServerURL` | `internal/config` | Адрес сервера управления для шлюза: только https, хост и порт, без учётных данных, пути и параметров | 2.14 |
+| `FuzzApplicationRequest` | `internal/api` | Тело `POST /api/v1/applications` (поля приложения, квоты, списки, поля защиты): без 5xx и паники; принятое тело даёт приложение, которое читается | 2.11 |
+| `FuzzProviderRequest` | `internal/api` | Тело `POST /api/v1/providers` (адреса, корневые сертификаты PEM, таймауты, поля GigaChat и YandexGPT): без 5xx и паники | 2.11 |
 
 ## Кампании и результаты
 | Дата | Цель | Что найдено | Исправление |

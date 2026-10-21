@@ -41,6 +41,16 @@ const (
 	PermEventsExport          = "events.export"
 	PermEventsContentRead     = "events.content.read"
 	PermEventsRetentionManage = "events.retention.manage"
+	// Приложения, ключи и провайдеры (ТЗ 5.4, ИАФ.8; задача 2.11). Поля
+	// защиты приложения (политика, режим, режим хранения) и снятие
+	// признака «внешний» у провайдера — функции безопасности (УПД.2, DM-40).
+	PermApplicationsRead   = "applications.read"
+	PermApplicationsManage = "applications.manage"
+	PermApplicationsPolicy = "applications.policy"
+	PermAppKeysManage      = "app_keys.manage"
+	PermProvidersRead      = "providers.read"
+	PermProvidersManage    = "providers.manage"
+	PermProvidersExternal  = "providers.external"
 )
 
 // Permission — разрешение из каталога.
@@ -85,6 +95,13 @@ var permissionCatalog = []Permission{
 	{Name: PermEventsExport, Title: "Выгрузка событий в CSV и JSON (без содержимого)", Group: "События"},
 	{Name: PermEventsContentRead, Title: "Просмотр содержимого запросов и ответов с указанием причины", Group: "События", Security: true},
 	{Name: PermEventsRetentionManage, Title: "Изменение сроков хранения событий", Group: "События", Security: true},
+	{Name: PermApplicationsRead, Title: "Просмотр приложений и их ключей (без секретов)", Group: "Приложения", Ownable: true},
+	{Name: PermApplicationsManage, Title: "Создание, изменение и архивация приложений", Group: "Приложения"},
+	{Name: PermApplicationsPolicy, Title: "Политика, режим политики и режим хранения приложения", Group: "Приложения", Security: true},
+	{Name: PermAppKeysManage, Title: "Выпуск, ротация и отзыв ключей приложений", Group: "Приложения", Ownable: true},
+	{Name: PermProvidersRead, Title: "Просмотр провайдеров (без учётных данных)", Group: "Провайдеры"},
+	{Name: PermProvidersManage, Title: "Создание, изменение и удаление провайдеров, учётные данные", Group: "Провайдеры"},
+	{Name: PermProvidersExternal, Title: "Снятие и установка признака «внешний» у провайдера", Group: "Провайдеры", Security: true},
 }
 
 var permissionIndex = func() map[string]Permission {
@@ -251,16 +268,18 @@ var builtinRoles = []RoleDef{
 		Grants:      allPermissions()},
 	{ID: RoleSystemAdmin, DisplayName: "Администратор системы", Builtin: true, MFARequired: true,
 		Description: "Приложения, провайдеры, интеграции, обновления, резервное копирование. Политики безопасности не меняет",
-		Grants:      Grants{PermSystemRead: ScopeAll, PermAPITokensRead: ScopeOwn, PermAPITokensManage: ScopeOwn}},
+		Grants: Grants{PermSystemRead: ScopeAll, PermAPITokensRead: ScopeOwn, PermAPITokensManage: ScopeOwn,
+			PermApplicationsRead: ScopeAll, PermApplicationsManage: ScopeAll, PermAppKeysManage: ScopeAll,
+			PermProvidersRead: ScopeAll, PermProvidersManage: ScopeAll}},
 	{ID: RoleAnalyst, DisplayName: "Аналитик", Builtin: true,
 		Description: "Разбор оповещений и инцидентов, поиск по событиям",
-		Grants:      grantAll(PermSystemRead, PermEventsRead, PermEventsExport)},
+		Grants:      grantAll(PermSystemRead, PermEventsRead, PermEventsExport, PermApplicationsRead, PermProvidersRead)},
 	{ID: RoleAuditor, DisplayName: "Аудитор", Builtin: true,
 		Description: "Только просмотр: журнал аудита, отчёты, состояние соответствия. Ничего не меняет",
 		Grants:      readPermissions()},
 	{ID: RoleAppOwner, DisplayName: "Владелец приложения", Builtin: true,
 		Description: "Статистика и события только своих приложений, без доступа к содержимому",
-		Grants:      Grants{}},
+		Grants:      Grants{PermApplicationsRead: ScopeOwn}},
 }
 
 var builtinIndex = func() map[Role]RoleDef {

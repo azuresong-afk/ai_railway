@@ -206,7 +206,8 @@ func TestRolesAPI(t *testing.T) {
 	mustProblem(t, e.call(admin, "GET", "/api/v1/roles/nope_role", "", false), 404, CodeNotFound)
 	mustProblem(t, e.call(admin, "GET", "/api/v1/roles/..", "", false), 404, CodeNotFound)
 
-	w = e.call(admin, "PUT", "/api/v1/roles/soc_lead", `{"display_name":"SOC","permissions":[{"permission":"users.manage"}]}`, true)
+	// applications.read — чтобы роль покрывала права владельца приложения (задача 2.11).
+	w = e.call(admin, "PUT", "/api/v1/roles/soc_lead", `{"display_name":"SOC","permissions":[{"permission":"users.manage"},{"permission":"applications.read"}]}`, true)
 	if w.Code != 200 || !decode[RoleView](t, w.Body.Bytes()).MFARequired {
 		t.Fatalf("изменение: %d %s", w.Code, w.Body)
 	}
@@ -252,9 +253,9 @@ func TestRolesAPI(t *testing.T) {
 func TestMePermissions(t *testing.T) {
 	e := newAuthEnv(t)
 	for login, want := range map[string]string{
-		"analyst": `"permissions":["events.export","events.read","self","session","system.read"]`,
+		"analyst": `"permissions":["applications.read","events.export","events.read","providers.read","self","session","system.read"]`,
 		// Без events.content.read: содержимое событий — только у администратора безопасности (ТЗ 1.3).
-		"auditor": `"permissions":["api_tokens.read","auth_policy.read","events.read","roles.read","self","session","sessions.read","system.read","users.read"]`,
+		"auditor": `"permissions":["api_tokens.read","applications.read","auth_policy.read","events.read","providers.read","roles.read","self","session","sessions.read","system.read","users.read"]`,
 	} {
 		s := e.mustLogin(t, login)
 		if w := e.call(s, "GET", "/api/v1/me", "", false); !strings.Contains(w.Body.String(), want) {

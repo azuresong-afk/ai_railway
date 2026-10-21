@@ -323,8 +323,9 @@ var (
 	secretParts = []string{"password", "passwd", "passphrase", "secret", "credentials", "cookie"}
 	// Окончание ключа: api_token, access_key, private_key.
 	secretSuffixes = []string{"token", "key"}
-	// Окончания на key и token, которые не секрет.
-	notSecret = map[string]bool{"publickey": true, "keyid": true, "tokenid": true}
+	// Окончания на key и token, которые не секрет. requests_per_minute_per_key —
+	// числовой лимит запросов на ключ приложения в квотах (ТЗ 5.2).
+	notSecret = map[string]bool{"publickey": true, "keyid": true, "tokenid": true, "requestsperminuteperkey": true}
 )
 
 func secretKey(k string) bool {

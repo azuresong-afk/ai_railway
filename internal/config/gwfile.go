@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/netip"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -13,7 +12,6 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
-	"github.com/azuresong-afk/ai_railway/internal/detect/exfil"
 	"github.com/azuresong-afk/ai_railway/internal/detect/lists"
 	"github.com/azuresong-afk/ai_railway/internal/policy"
 )
@@ -107,6 +105,13 @@ type Provider struct {
 // IsExternal — признак внешнего провайдера с учётом значения по умолчанию.
 func (p Provider) IsExternal() bool { return p.External == nil || *p.External }
 
+// Params — параметры провайдера для общих проверок.
+func (p Provider) Params() ProviderParams {
+	return ProviderParams{Type: p.Type, BaseURL: p.BaseURL, AuthURL: p.AuthURL, Scope: p.Scope, FolderID: p.FolderID,
+		ConnectTimeout: time.Duration(p.ConnectTimeout), HeaderTimeout: time.Duration(p.HeaderTimeout),
+		ResponseTimeout: time.Duration(p.ResponseTimeout), StreamIdleTimeout: time.Duration(p.StreamIdleTimeout)}
+}
+
 // Application — зарегистрированное приложение (5.4). Policy — ID политики
 // из policies или шаблона, пусто — «Базовая защита» (base, решение Р7);
 // PolicyMode — режим политики для приложения, пусто — режим самой политики
@@ -135,6 +140,12 @@ type Application struct {
 	// домен, *.example.com — его поддомены. Пусто — ни на какие.
 	ExfilAllowDomains []string `yaml:"exfil_allow_domains"`
 	Keys              []AppKey `yaml:"keys"`
+}
+
+// Params — параметры приложения для общих проверок.
+func (a Application) Params() AppParams {
+	return AppParams{Env: a.Env, PolicyMode: a.PolicyMode, FailMode: a.FailMode, Storage: a.Storage, UserFrom: a.UserFrom,
+		Models: a.Models, Aliases: a.Aliases, Quotas: a.Quotas, Lists: a.Lists, ExfilAllowDomains: a.ExfilAllowDomains}
 }
 
 // Quotas — лимиты приложения (5.2, quota). Ноль — без лимита.
@@ -289,11 +300,8 @@ func (f *GatewayFile) validate() error {
 			add("%s: провайдер указан дважды", at)
 		}
 		providers[p.ID] = p
-		if !provTypes[p.Type] {
-			add("%s: type — openai, gigachat или yandexgpt", at)
-		}
-		if _, err := ParseUpstreamURL(p.BaseURL); err != nil {
-			add("%s: base_url: %v", at, err)
+		if err := prefixed(at, p.Params().Check()); err != nil {
+			errs = append(errs, err)
 		}
 		if p.CAFile == "" {
 			add("%s: нужен ca_file — корневые сертификаты провайдера", at)
@@ -301,32 +309,14 @@ func (f *GatewayFile) validate() error {
 		if p.SystemRoots {
 			add("%s: system_roots не поддерживается; укажите файл системного хранилища в ca_file явно", at)
 		}
-		for _, d := range []struct {
-			name string
-			v    Duration
-		}{{"connect_timeout", p.ConnectTimeout}, {"header_timeout", p.HeaderTimeout},
-			{"response_timeout", p.ResponseTimeout}, {"stream_idle_timeout", p.StreamIdleTimeout}} {
-			if d.v < 0 || time.Duration(d.v) > MaxUpstreamTimeout {
-				add("%s: %s — от 0 до %s (0 — по умолчанию)", at, d.name, MaxUpstreamTimeout)
-			}
-		}
 		switch p.Type {
 		case ProviderGigaChat:
 			if p.KeyFile == "" || p.Scope == "" {
 				add("%s: для GigaChat нужны key_file (ключ авторизации) и scope", at)
-			} else if !gigaChatScopes[p.Scope] {
-				add("%s: scope — GIGACHAT_API_PERS, GIGACHAT_API_B2B или GIGACHAT_API_CORP", at)
-			}
-			if p.AuthURL != "" {
-				if _, err := ParseUpstreamURL(p.AuthURL); err != nil {
-					add("%s: auth_url: %v", at, err)
-				}
 			}
 		case ProviderYandexGPT:
 			if p.KeyFile == "" || p.FolderID == "" {
 				add("%s: для YandexGPT нужны key_file (API-ключ сервисного аккаунта) и folder_id", at)
-			} else if !folderRe.MatchString(p.FolderID) {
-				add("%s: folder_id — строчные латинские буквы и цифры", at)
 			}
 		}
 	}
@@ -362,49 +352,11 @@ func (f *GatewayFile) validate() error {
 		if _, ok := providers[a.Provider]; !ok {
 			add("%s: провайдер %q не описан в providers", at, a.Provider)
 		}
-		if len(a.Models) == 0 {
-			add("%s: нужен хотя бы один разрешённый model (DM-33)", at)
-		}
-		allowed := map[string]bool{}
-		for _, m := range a.Models {
-			if !modelRe.MatchString(m) {
-				add("%s: недопустимое имя модели %q", at, m)
-			}
-			allowed[m] = true
-		}
-		for alias, m := range a.Aliases {
-			if !modelRe.MatchString(alias) || !allowed[m] {
-				add("%s: псевдоним %q должен указывать на разрешённую модель", at, alias)
-			}
-		}
 		if a.Policy != "" && !policies[a.Policy] && !policy.IsTemplate(a.Policy) {
 			add("%s: политика %q не описана в policies и не является шаблоном", at, a.Policy)
 		}
-		check := func(field, v string, set map[string]bool) {
-			if !set[v] {
-				add("%s: недопустимое значение %s %q", at, field, v)
-			}
-		}
-		check("env", a.Env, envs)
-		if a.PolicyMode != "" {
-			check("policy_mode", a.PolicyMode, modes)
-		}
-		check("fail_mode", a.FailMode, failModes)
-		check("storage", a.Storage, storages)
-		check("user_from", a.UserFrom, userFrom)
-		q := a.Quotas
-		for name, v := range map[string]int{"requests_per_minute": q.RequestsPerMinute, "requests_per_minute_per_user": q.RequestsPerMinutePerUser,
-			"requests_per_minute_per_key": q.RequestsPerMinutePerKey, "max_input_bytes": q.MaxInputBytes,
-			"tokens_per_minute": q.TokensPerMinute, "tokens_per_day": q.TokensPerDay, "max_messages": q.MaxMessages, "max_tokens": q.MaxTokens} {
-			if v < 0 || v > 1_000_000_000 {
-				add("%s: quotas.%s — от 0 до 10^9", at, name)
-			}
-		}
-		if err := lists.Validate(lists.WithDefaults(a.Lists)); err != nil {
-			add("%s: %v", at, err)
-		}
-		if _, err := exfil.NewWithConfig(exfil.Config{AllowDomains: a.ExfilAllowDomains}); err != nil {
-			add("%s: exfil_allow_domains: %v", at, err)
+		if err := prefixed(at, a.Params().Check()); err != nil {
+			errs = append(errs, err)
 		}
 		if len(a.Keys) == 0 {
 			add("%s: нужен хотя бы один ключ приложения", at)
@@ -426,18 +378,8 @@ func (f *GatewayFile) validate() error {
 					add("%s: expires — ГГГГ-ММ-ДД", kat)
 				}
 			}
-			for _, c := range k.AllowedCIDRs {
-				p, err := netip.ParsePrefix(c)
-				switch {
-				case err != nil:
-					add("%s: allowed_cidrs: %q — подсеть вида 10.0.0.0/8", kat, c)
-				case p.Addr().Is4In6():
-					// Адрес клиента IPv4 сравнивается в обычной записи; подсеть
-					// ::ffff:a.b.c.d/n ему никогда не соответствовала бы.
-					add("%s: allowed_cidrs: %q — укажите подсеть IPv4 в обычной записи", kat, c)
-				case p.Masked() != p:
-					add("%s: allowed_cidrs: %q — адрес подсети с ненулевыми битами узла, имелось в виду %s?", kat, c, p.Masked())
-				}
+			if err := prefixed(kat, CheckCIDRs(k.AllowedCIDRs)); err != nil {
+				errs = append(errs, err)
 			}
 		}
 	}

@@ -86,8 +86,11 @@ func TestBuiltinRoleInvariants(t *testing.T) {
 			t.Errorf("у аудитора есть %s (ТЗ 1.3)", p.Name)
 		}
 	}
-	if len(roles[auth.RoleAppOwner].Grants) != 0 {
-		t.Errorf("у владельца приложения есть права сверх своих объектов: %v", roles[auth.RoleAppOwner].Grants)
+	// УПД.8: владелец приложения видит только свои объекты.
+	for p, s := range roles[auth.RoleAppOwner].Grants {
+		if s != auth.ScopeOwn {
+			t.Errorf("у владельца приложения есть право %s сверх своих объектов", p)
+		}
 	}
 	if !roles[auth.RoleSecurityAdmin].MFARequired || !roles[auth.RoleSystemAdmin].MFARequired {
 		t.Error("административные роли без обязательного второго фактора")
@@ -185,7 +188,8 @@ func TestCreateRoleValidation(t *testing.T) {
 func TestNoPrivilegeEscalation(t *testing.T) {
 	e := newEnv(t)
 	ctx := context.Background()
-	e.createRole(t, "helpdesk", auth.PermUsersRead, auth.PermUsersManage, auth.PermSessionsManage, auth.PermRolesManage)
+	// applications.read покрывает права владельца приложения (задача 2.11).
+	e.createRole(t, "helpdesk", auth.PermUsersRead, auth.PermUsersManage, auth.PermSessionsManage, auth.PermRolesManage, auth.PermApplicationsRead)
 	e.mem.AddUser(e.user(helperID, "helper", "helpdesk"))
 	e.mem.AddUser(e.user(ownerID, "owner", auth.RoleAppOwner))
 	helper := e.mfa.complete(t, e.mustLogin(t, "helper", phrase))

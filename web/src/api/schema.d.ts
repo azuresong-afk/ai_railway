@@ -2516,6 +2516,857 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/providers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Провайдеры
+         * @description Право `providers.read` (ТЗ 5.4). Все провайдеры организации по `slug`, не больше 1000.
+         *     Учётных данных в ответе нет — только признак `credential_set` и время установки.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Список провайдеров */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ProviderList"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        /**
+         * Создать провайдера
+         * @description Право `providers.manage` (ТЗ 5.4). Новый провайдер всегда внешний (`external: true`);
+         *     снять признак можно только отдельным действием с правом `providers.external`.
+         *     Корневые сертификаты (`ca_pem`, до 256 КиБ) обязательны: доверие системному хранилищу —
+         *     только его содержимым. Учётные данные задаются отдельно (`PUT …/credentials`).
+         *     `slug` — ID провайдера в пакете для шлюзов, неизменяем. Пишет `provider.create`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                    /** @description Ключ повторяемости создающего запроса, 1–64 символа `[A-Za-z0-9._-]` */
+                    "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["NewProvider"];
+                };
+            };
+            responses: {
+                /** @description Провайдер создан */
+                201: {
+                    headers: {
+                        Location?: string;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Provider"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/providers/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Провайдер
+         * @description Право `providers.read`. Учётных данных в ответе нет.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description ID провайдера (UUID) */
+                    id: components["parameters"]["ProviderID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Провайдер */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Provider"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        /**
+         * Изменить провайдера
+         * @description Право `providers.manage`. Меняются все поля, кроме `slug`, признака «внешний» и
+         *     учётных данных. Пишет `provider.update` (до и после, без учётных данных; сертификаты —
+         *     только размером).
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID провайдера (UUID) */
+                    id: components["parameters"]["ProviderID"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["ProviderFields"];
+                };
+            };
+            responses: {
+                /** @description Провайдер изменён */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Provider"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        post?: never;
+        /**
+         * Удалить провайдера
+         * @description Право `providers.manage`. Только провайдера, который не указан ни в одном приложении,
+         *     в том числе архивном (иначе 409). Зашифрованные учётные данные удаляются вместе с ним.
+         *     Пишет `provider.delete`.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID провайдера (UUID) */
+                    id: components["parameters"]["ProviderID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Провайдер удалён */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                409: components["responses"]["ProblemConflict"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/providers/{id}/credentials": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Задать учётные данные провайдера
+         * @description Право `providers.manage` (ЗИ.1). Ключ API или авторизационные данные (до 16 КиБ)
+         *     шифруются ключом данных с AAD `providers|credential|<id>` и не возвращаются ни в одном
+         *     ответе; в журналы не попадают. Без ключа данных — 503. Пишет `provider.credentials_set`
+         *     (только признак замены).
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID провайдера (UUID) */
+                    id: components["parameters"]["ProviderID"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["ProviderCredential"];
+                };
+            };
+            responses: {
+                /** @description Учётные данные сохранены */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Provider"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/providers/{id}/external": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Изменить признак «внешний»
+         * @description Право `providers.external` (признак `security`: только администратор безопасности,
+         *     токену API недоступно). Снятие признака — ослабление защиты (DM-40): в режиме `monitor`
+         *     данные к провайдеру больше не маскируются. Причина обязательна. Пишет
+         *     `provider.external_changed` с `weakening: true` при снятии; без изменения — 200 без записи.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID провайдера (UUID) */
+                    id: components["parameters"]["ProviderID"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["ProviderExternal"];
+                };
+            };
+            responses: {
+                /** @description Признак изменён */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Provider"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/applications": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Приложения
+         * @description Право `applications.read` (ТЗ 5.4). С областью `own` — только приложения, где
+         *     пользователь — владелец (УПД.8), с `all` — все. Порядок — по времени создания,
+         *     включая архивные (`status: archived`).
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description Размер страницы */
+                    limit?: components["parameters"]["Limit"];
+                    /** @description Непрозрачный курсор из `next_cursor` предыдущей страницы */
+                    cursor?: components["parameters"]["Cursor"];
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Страница списка */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ApplicationPage"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        /**
+         * Создать приложение
+         * @description Право `applications.manage` (ТЗ 5.4). Поля защиты `policy`, `policy_mode`, `storage`
+         *     принимаются только при праве `applications.policy` (УПД.2); без него переданные
+         *     значения — 422, а приложение получает умолчания: политика `base`, режим — режим
+         *     выбранной политики, хранение `masked`. Владелец по умолчанию — создающий. `slug` —
+         *     ID приложения в событиях и пакете для шлюзов, неизменяем. Проверки полей — те же, что у
+         *     файла конфигурации шлюза. Пишет `application.create`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                    /** @description Ключ повторяемости создающего запроса, 1–64 символа `[A-Za-z0-9._-]` */
+                    "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["NewApplication"];
+                };
+            };
+            responses: {
+                /** @description Приложение создано */
+                201: {
+                    headers: {
+                        Location?: string;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Application"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/applications/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Приложение
+         * @description Право `applications.read`. Чужое приложение при области `own` — 404 (УПД.8).
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description ID приложения (UUID) */
+                    id: components["parameters"]["ApplicationID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Приложение */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Application"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        /**
+         * Изменить приложение
+         * @description Право `applications.manage`. Меняются все поля, кроме `slug` и полей защиты
+         *     (`PUT …/protection`). Архивное приложение не меняется (409). Пишет `application.update`.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID приложения (UUID) */
+                    id: components["parameters"]["ApplicationID"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["ApplicationFields"];
+                };
+            };
+            responses: {
+                /** @description Приложение изменено */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Application"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        post?: never;
+        /**
+         * Перевести приложение в архив
+         * @description Право `applications.manage`. Приложение не удаляется: оно отмечается архивным, все его
+         *     неотозванные ключи отзываются той же транзакцией; ссылки из событий и аудита остаются.
+         *     Повторно — 409. Пишет `application.archive` с числом отозванных ключей.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID приложения (UUID) */
+                    id: components["parameters"]["ApplicationID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Приложение в архиве */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Application"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                409: components["responses"]["ProblemConflict"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/applications/{id}/protection": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Изменить политику, режим и режим хранения приложения
+         * @description Право `applications.policy` (признак `security`: администратор системы политики
+         *     безопасности не меняет, УПД.2; токену API недоступно). Пустое поле — прежнее значение;
+         *     при смене политики без `policy_mode` режим берётся из новой политики. Пишет
+         *     `application.protection_changed` (до, после); перевод в `monitor`, режим хранения
+         *     `none` или `full`, политика `monitor-only` — с `weakening: true` (DM-40). Без
+         *     изменений — 200 без записи.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID приложения (UUID) */
+                    id: components["parameters"]["ApplicationID"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["ApplicationProtection"];
+                };
+            };
+            responses: {
+                /** @description Поля защиты изменены */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Application"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/applications/{id}/keys": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Ключи приложения
+         * @description Право `applications.read` (ИАФ.8). Без секретов: префикс, состояние, срок, подсети.
+         *     Новые первыми, не больше 500. Чужое приложение при области `own` — 404.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description ID приложения (UUID) */
+                    id: components["parameters"]["ApplicationID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Ключи */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["AppKeyList"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        /**
+         * Выпустить ключ приложения
+         * @description Право `app_keys.manage` (ИАФ.8); с областью `own` — только для своего приложения
+         *     (иначе 404). Ключ `aisec_<префикс>_<секрет>` показывается один раз, хранится только
+         *     хеш профиля. Срок обязателен: 1–730 суток, по умолчанию 365. Привязка к подсетям — до 64
+         *     подсетей в каноническом виде. Не больше 20 действующих ключей (422); архивное
+         *     приложение — 409. Без `Idempotency-Key`: сохранённый ответ содержал бы ключ. Пишет
+         *     `app_key.issue` (префикс, срок, подсети).
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID приложения (UUID) */
+                    id: components["parameters"]["ApplicationID"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["NewAppKey"];
+                };
+            };
+            responses: {
+                /** @description Ключ выпущен (Cache-Control no-store) */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["CreatedAppKey"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/app-keys/{id}/rotate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ротация ключа приложения
+         * @description Право `app_keys.manage`. Выпускает новый ключ с тем же именем и подсетями; прежний
+         *     действует ещё `overlap_hours` (0–720, по умолчанию 24; срок только сокращается).
+         *     Отозванный или истёкший ключ — 409. Новый ключ показывается один раз. Тело можно не
+         *     передавать. Пишет `app_key.rotate` (новый и прежний префиксы, новый срок прежнего).
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID ключа приложения (UUID) */
+                    id: components["parameters"]["AppKeyID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": components["schemas"]["AppKeyRotation"];
+                };
+            };
+            responses: {
+                /** @description Новый ключ выпущен (Cache-Control no-store) */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["CreatedAppKey"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/app-keys/{id}/revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Отозвать ключ приложения
+         * @description Право `app_keys.manage`. Отзыв действует сразу (в шлюзе — с доставкой пакета
+         *     конфигурации, задача 2.13); отозванный ключ не оживает, повторно — 409. Пишет
+         *     `app_key.revoke`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID ключа приложения (UUID) */
+                    id: components["parameters"]["AppKeyID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Ключ отозван */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["AppKey"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                409: components["responses"]["ProblemConflict"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -2859,6 +3710,227 @@ export interface components {
             api_token: components["schemas"]["APIToken"];
             /** @description Токен для заголовка `Authorization: Bearer`. Показывается один раз */
             token: string;
+        };
+        /** @description Таймауты, секунды; 0 — значение шлюза по умолчанию */
+        ProviderTimeouts: {
+            connect?: number;
+            header?: number;
+            response?: number;
+            stream_idle?: number;
+        };
+        ProviderFields: {
+            name: string;
+            /** @enum {string} */
+            type: "openai" | "gigachat" | "yandexgpt";
+            /** @description `https`, с версией API (`https://llm.example/v1`), без учётных данных и параметров */
+            base_url: string;
+            /** @description Корневые сертификаты провайдера в PEM */
+            ca_pem: string;
+            /** @description Только GigaChat — адрес выдачи токена */
+            auth_url?: string;
+            /**
+             * @description Только GigaChat, обязателен
+             * @enum {string}
+             */
+            scope?: "GIGACHAT_API_PERS" | "GIGACHAT_API_B2B" | "GIGACHAT_API_CORP";
+            /** @description Только YandexGPT, обязателен */
+            folder_id?: string;
+            timeouts?: components["schemas"]["ProviderTimeouts"];
+        };
+        NewProvider: components["schemas"]["ProviderFields"] & {
+            slug: string;
+        };
+        Provider: {
+            /** Format: uuid */
+            id: string;
+            slug: string;
+            name: string;
+            /** @enum {string} */
+            type: "openai" | "gigachat" | "yandexgpt";
+            base_url: string;
+            ca_pem: string;
+            auth_url?: string;
+            scope?: string;
+            folder_id?: string;
+            timeouts: components["schemas"]["ProviderTimeouts"];
+            /** @description Провайдер вне контура заказчика (ТЗ 5.4) */
+            external: boolean;
+            /** @description Учётные данные заданы; само значение не возвращается */
+            credential_set: boolean;
+            /** Format: date-time */
+            credential_set_at?: string;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        ProviderList: {
+            items: components["schemas"]["Provider"][];
+        };
+        ProviderCredential: {
+            /** @description Ключ API или авторизационные данные: только видимые символы ASCII и пробел */
+            credential: string;
+        };
+        ProviderExternal: {
+            external: boolean;
+            reason: string;
+        };
+        /** @description Лимиты (ТЗ 5.2); 0 — без лимита, не больше 10^9 */
+        AppQuotas: {
+            requests_per_minute?: number;
+            requests_per_minute_per_user?: number;
+            requests_per_minute_per_key?: number;
+            tokens_per_minute?: number;
+            tokens_per_day?: number;
+            max_messages?: number;
+            max_tokens?: number;
+            max_input_bytes?: number;
+        };
+        /** @description Словарь или выражения заказчика для детектора `lists` (`docs/detectors.md`) */
+        AppList: {
+            id: string;
+            category: string;
+            /** @enum {string} */
+            threat?: "DM-18" | "DM-19" | "DM-32" | "DM-35";
+            score?: number;
+            /** @enum {string} */
+            direction?: "input" | "output" | "both";
+            words?: string[];
+            regex?: string[];
+            case_sensitive?: boolean;
+        };
+        ApplicationFields: {
+            name: string;
+            description?: string;
+            department?: string;
+            /**
+             * Format: uuid
+             * @description Владелец — действующая учётная запись; при создании по умолчанию создающий
+             */
+            owner_id?: string;
+            /** @enum {string} */
+            env: "prod" | "test";
+            /** Format: uuid */
+            provider_id: string;
+            models: string[];
+            /** @description Имя для приложения → разрешённая модель */
+            aliases?: {
+                [key: string]: string;
+            };
+            /**
+             * @default fail_closed
+             * @enum {string}
+             */
+            fail_mode: "fail_open" | "fail_closed";
+            /**
+             * @default none
+             * @enum {string}
+             */
+            user_from: "header" | "field" | "none";
+            quotas?: components["schemas"]["AppQuotas"];
+            lists?: components["schemas"]["AppList"][];
+            exfil_allow_domains?: string[];
+        };
+        /** @description Поля защиты; меняет только обладатель права `applications.policy` */
+        ApplicationProtection: {
+            /** @description Шаблон (`base`, `pii-strict`, `external-no-pii`, `monitor-only`) или политика организации */
+            policy?: string;
+            /**
+             * @description По умолчанию — режим выбранной политики
+             * @enum {string}
+             */
+            policy_mode?: "monitor" | "enforce";
+            /**
+             * @default masked
+             * @enum {string}
+             */
+            storage: "none" | "masked" | "full";
+        };
+        NewApplication: components["schemas"]["ApplicationFields"] & components["schemas"]["ApplicationProtection"] & {
+            slug: string;
+        };
+        Application: {
+            /** Format: uuid */
+            id: string;
+            slug: string;
+            name: string;
+            description: string;
+            department: string;
+            /** Format: uuid */
+            owner_id: string;
+            /** @enum {string} */
+            env: "prod" | "test";
+            /** Format: uuid */
+            provider_id: string;
+            models: string[];
+            aliases: {
+                [key: string]: string;
+            };
+            policy: string;
+            /** @enum {string} */
+            policy_mode: "monitor" | "enforce";
+            /** @enum {string} */
+            storage: "none" | "masked" | "full";
+            /** @enum {string} */
+            fail_mode: "fail_open" | "fail_closed";
+            /** @enum {string} */
+            user_from: "header" | "field" | "none";
+            quotas: components["schemas"]["AppQuotas"];
+            lists: components["schemas"]["AppList"][];
+            exfil_allow_domains: string[];
+            /** @enum {string} */
+            status: "active" | "archived";
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+            /** Format: date-time */
+            archived_at?: string;
+        };
+        ApplicationPage: components["schemas"]["PageInfo"] & {
+            items: components["schemas"]["Application"][];
+        };
+        AppKey: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            application_id: string;
+            name: string;
+            /** @description Начало ключа для поиска и показа; не секрет */
+            prefix: string;
+            /** @enum {string} */
+            status: "active" | "expired" | "revoked";
+            allowed_cidrs: string[];
+            /** Format: date-time */
+            expires_at: string;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: uuid */
+            rotated_from?: string;
+            /** Format: date-time */
+            revoked_at?: string;
+        };
+        AppKeyList: {
+            items: components["schemas"]["AppKey"][];
+        };
+        NewAppKey: {
+            name: string;
+            /** @default 365 */
+            expires_in_days: number;
+            /** @description Подсети в каноническом виде (`10.0.0.0/8`); пусто — с любых адресов */
+            allowed_cidrs?: string[];
+        };
+        AppKeyRotation: {
+            /** @default 24 */
+            overlap_hours: number;
+            /** @default 365 */
+            expires_in_days: number;
+        };
+        CreatedAppKey: {
+            app_key: components["schemas"]["AppKey"];
+            /** @description Ключ для заголовка `Authorization: Bearer` в шлюзе. Показывается один раз */
+            key: string;
+            previous?: components["schemas"]["AppKey"];
         };
         RoleAssigned: {
             user: components["schemas"]["User"];
@@ -3384,6 +4456,12 @@ export interface components {
         APITokenID: string;
         /** @description ID события (UUIDv7) */
         EventID: string;
+        /** @description ID провайдера (UUID) */
+        ProviderID: string;
+        /** @description ID приложения (UUID) */
+        ApplicationID: string;
+        /** @description ID ключа приложения (UUID) */
+        AppKeyID: string;
         /** @description ID сохранённого фильтра (UUIDv7) */
         FilterID: string;
         /** @description Начало периода включительно (RFC 3339); по умолчанию to минус 24 часа */

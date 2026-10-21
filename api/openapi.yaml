@@ -1308,6 +1308,488 @@ paths:
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ProblemInternal' }
         '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/providers:
+    get:
+      summary: Провайдеры
+      description: |
+        Право `providers.read` (ТЗ 5.4). Все провайдеры организации по `slug`, не больше 1000.
+        Учётных данных в ответе нет — только признак `credential_set` и время установки.
+      x-permission: providers.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      responses:
+        '200':
+          description: Список провайдеров
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProviderList' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    post:
+      summary: Создать провайдера
+      description: |
+        Право `providers.manage` (ТЗ 5.4). Новый провайдер всегда внешний (`external: true`);
+        снять признак можно только отдельным действием с правом `providers.external`.
+        Корневые сертификаты (`ca_pem`, до 256 КиБ) обязательны: доверие системному хранилищу —
+        только его содержимым. Учётные данные задаются отдельно (`PUT …/credentials`).
+        `slug` — ID провайдера в пакете для шлюзов, неизменяем. Пишет `provider.create`.
+      x-permission: providers.manage
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NewProvider' }
+      responses:
+        '201':
+          description: Провайдер создан
+          headers:
+            Location: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Provider' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '409': { $ref: '#/components/responses/ProblemConflict' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '422': { $ref: '#/components/responses/ProblemUnprocessable' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/providers/{id}:
+    get:
+      summary: Провайдер
+      description: Право `providers.read`. Учётных данных в ответе нет.
+      x-permission: providers.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ProviderID'
+      responses:
+        '200':
+          description: Провайдер
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Provider' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    put:
+      summary: Изменить провайдера
+      description: |
+        Право `providers.manage`. Меняются все поля, кроме `slug`, признака «внешний» и
+        учётных данных. Пишет `provider.update` (до и после, без учётных данных; сертификаты —
+        только размером).
+      x-permission: providers.manage
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ProviderID'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProviderFields' }
+      responses:
+        '200':
+          description: Провайдер изменён
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Provider' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    delete:
+      summary: Удалить провайдера
+      description: |
+        Право `providers.manage`. Только провайдера, который не указан ни в одном приложении,
+        в том числе архивном (иначе 409). Зашифрованные учётные данные удаляются вместе с ним.
+        Пишет `provider.delete`.
+      x-permission: providers.manage
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ProviderID'
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '204': { description: Провайдер удалён }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '409': { $ref: '#/components/responses/ProblemConflict' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/providers/{id}/credentials:
+    put:
+      summary: Задать учётные данные провайдера
+      description: |
+        Право `providers.manage` (ЗИ.1). Ключ API или авторизационные данные (до 16 КиБ)
+        шифруются ключом данных с AAD `providers|credential|<id>` и не возвращаются ни в одном
+        ответе; в журналы не попадают. Без ключа данных — 503. Пишет `provider.credentials_set`
+        (только признак замены).
+      x-permission: providers.manage
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ProviderID'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProviderCredential' }
+      responses:
+        '200':
+          description: Учётные данные сохранены
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Provider' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/providers/{id}/external:
+    put:
+      summary: Изменить признак «внешний»
+      description: |
+        Право `providers.external` (признак `security`: только администратор безопасности,
+        токену API недоступно). Снятие признака — ослабление защиты (DM-40): в режиме `monitor`
+        данные к провайдеру больше не маскируются. Причина обязательна. Пишет
+        `provider.external_changed` с `weakening: true` при снятии; без изменения — 200 без записи.
+      x-permission: providers.external
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ProviderID'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProviderExternal' }
+      responses:
+        '200':
+          description: Признак изменён
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Provider' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/applications:
+    get:
+      summary: Приложения
+      description: |
+        Право `applications.read` (ТЗ 5.4). С областью `own` — только приложения, где
+        пользователь — владелец (УПД.8), с `all` — все. Порядок — по времени создания,
+        включая архивные (`status: archived`).
+      x-permission: applications.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Страница списка
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApplicationPage' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    post:
+      summary: Создать приложение
+      description: |
+        Право `applications.manage` (ТЗ 5.4). Поля защиты `policy`, `policy_mode`, `storage`
+        принимаются только при праве `applications.policy` (УПД.2); без него переданные
+        значения — 422, а приложение получает умолчания: политика `base`, режим — режим
+        выбранной политики, хранение `masked`. Владелец по умолчанию — создающий. `slug` —
+        ID приложения в событиях и пакете для шлюзов, неизменяем. Проверки полей — те же, что у
+        файла конфигурации шлюза. Пишет `application.create`.
+      x-permission: applications.manage
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NewApplication' }
+      responses:
+        '201':
+          description: Приложение создано
+          headers:
+            Location: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Application' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '409': { $ref: '#/components/responses/ProblemConflict' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '422': { $ref: '#/components/responses/ProblemUnprocessable' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/applications/{id}:
+    get:
+      summary: Приложение
+      description: Право `applications.read`. Чужое приложение при области `own` — 404 (УПД.8).
+      x-permission: applications.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ApplicationID'
+      responses:
+        '200':
+          description: Приложение
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Application' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    put:
+      summary: Изменить приложение
+      description: |
+        Право `applications.manage`. Меняются все поля, кроме `slug` и полей защиты
+        (`PUT …/protection`). Архивное приложение не меняется (409). Пишет `application.update`.
+      x-permission: applications.manage
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ApplicationID'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApplicationFields' }
+      responses:
+        '200':
+          description: Приложение изменено
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Application' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '409': { $ref: '#/components/responses/ProblemConflict' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '422': { $ref: '#/components/responses/ProblemUnprocessable' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    delete:
+      summary: Перевести приложение в архив
+      description: |
+        Право `applications.manage`. Приложение не удаляется: оно отмечается архивным, все его
+        неотозванные ключи отзываются той же транзакцией; ссылки из событий и аудита остаются.
+        Повторно — 409. Пишет `application.archive` с числом отозванных ключей.
+      x-permission: applications.manage
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ApplicationID'
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '200':
+          description: Приложение в архиве
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Application' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '409': { $ref: '#/components/responses/ProblemConflict' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/applications/{id}/protection:
+    put:
+      summary: Изменить политику, режим и режим хранения приложения
+      description: |
+        Право `applications.policy` (признак `security`: администратор системы политики
+        безопасности не меняет, УПД.2; токену API недоступно). Пустое поле — прежнее значение;
+        при смене политики без `policy_mode` режим берётся из новой политики. Пишет
+        `application.protection_changed` (до, после); перевод в `monitor`, режим хранения
+        `none` или `full`, политика `monitor-only` — с `weakening: true` (DM-40). Без
+        изменений — 200 без записи.
+      x-permission: applications.policy
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ApplicationID'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApplicationProtection' }
+      responses:
+        '200':
+          description: Поля защиты изменены
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Application' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '409': { $ref: '#/components/responses/ProblemConflict' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/applications/{id}/keys:
+    get:
+      summary: Ключи приложения
+      description: |
+        Право `applications.read` (ИАФ.8). Без секретов: префикс, состояние, срок, подсети.
+        Новые первыми, не больше 500. Чужое приложение при области `own` — 404.
+      x-permission: applications.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ApplicationID'
+      responses:
+        '200':
+          description: Ключи
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AppKeyList' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    post:
+      summary: Выпустить ключ приложения
+      description: |
+        Право `app_keys.manage` (ИАФ.8); с областью `own` — только для своего приложения
+        (иначе 404). Ключ `aisec_<префикс>_<секрет>` показывается один раз, хранится только
+        хеш профиля. Срок обязателен: 1–730 суток, по умолчанию 365. Привязка к подсетям — до 64
+        подсетей в каноническом виде. Не больше 20 действующих ключей (422); архивное
+        приложение — 409. Без `Idempotency-Key`: сохранённый ответ содержал бы ключ. Пишет
+        `app_key.issue` (префикс, срок, подсети).
+      x-permission: app_keys.manage
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ApplicationID'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NewAppKey' }
+      responses:
+        '201':
+          description: Ключ выпущен (Cache-Control no-store)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CreatedAppKey' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '409': { $ref: '#/components/responses/ProblemConflict' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '422': { $ref: '#/components/responses/ProblemUnprocessable' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/app-keys/{id}/rotate:
+    post:
+      summary: Ротация ключа приложения
+      description: |
+        Право `app_keys.manage`. Выпускает новый ключ с тем же именем и подсетями; прежний
+        действует ещё `overlap_hours` (0–720, по умолчанию 24; срок только сокращается).
+        Отозванный или истёкший ключ — 409. Новый ключ показывается один раз. Тело можно не
+        передавать. Пишет `app_key.rotate` (новый и прежний префиксы, новый срок прежнего).
+      x-permission: app_keys.manage
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/AppKeyID'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AppKeyRotation' }
+      responses:
+        '201':
+          description: Новый ключ выпущен (Cache-Control no-store)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CreatedAppKey' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '409': { $ref: '#/components/responses/ProblemConflict' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/app-keys/{id}/revoke:
+    post:
+      summary: Отозвать ключ приложения
+      description: |
+        Право `app_keys.manage`. Отзыв действует сразу (в шлюзе — с доставкой пакета
+        конфигурации, задача 2.13); отозванный ключ не оживает, повторно — 409. Пишет
+        `app_key.revoke`.
+      x-permission: app_keys.manage
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/AppKeyID'
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '200':
+          description: Ключ отозван
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AppKey' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '409': { $ref: '#/components/responses/ProblemConflict' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
 components:
   securitySchemes:
     appKey:
@@ -1368,6 +1850,24 @@ components:
       in: path
       required: true
       description: ID события (UUIDv7)
+      schema: { type: string, format: uuid }
+    ProviderID:
+      name: id
+      in: path
+      required: true
+      description: ID провайдера (UUID)
+      schema: { type: string, format: uuid }
+    ApplicationID:
+      name: id
+      in: path
+      required: true
+      description: ID приложения (UUID)
+      schema: { type: string, format: uuid }
+    AppKeyID:
+      name: id
+      in: path
+      required: true
+      description: ID ключа приложения (UUID)
       schema: { type: string, format: uuid }
     FilterID:
       name: id
@@ -1848,6 +2348,216 @@ components:
           type: string
           pattern: '^aisec_pat_[a-z0-9]{8}_[A-Za-z0-9_-]{43}$'
           description: 'Токен для заголовка `Authorization: Bearer`. Показывается один раз'
+    ProviderTimeouts:
+      type: object
+      additionalProperties: false
+      description: Таймауты, секунды; 0 — значение шлюза по умолчанию
+      properties:
+        connect: { type: integer, minimum: 0, maximum: 600 }
+        header: { type: integer, minimum: 0, maximum: 600 }
+        response: { type: integer, minimum: 0, maximum: 600 }
+        stream_idle: { type: integer, minimum: 0, maximum: 600 }
+    ProviderFields:
+      type: object
+      required: [name, type, base_url, ca_pem]
+      additionalProperties: false
+      properties:
+        name: { type: string, minLength: 1, maxLength: 200 }
+        type: { type: string, enum: [openai, gigachat, yandexgpt] }
+        base_url: { type: string, maxLength: 2048, description: '`https`, с версией API (`https://llm.example/v1`), без учётных данных и параметров' }
+        ca_pem: { type: string, maxLength: 262144, description: Корневые сертификаты провайдера в PEM }
+        auth_url: { type: string, maxLength: 2048, description: Только GigaChat — адрес выдачи токена }
+        scope: { type: string, enum: [GIGACHAT_API_PERS, GIGACHAT_API_B2B, GIGACHAT_API_CORP], description: 'Только GigaChat, обязателен' }
+        folder_id: { type: string, pattern: '^[a-z0-9]{1,50}$', description: 'Только YandexGPT, обязателен' }
+        timeouts: { $ref: '#/components/schemas/ProviderTimeouts' }
+    NewProvider:
+      allOf:
+        - $ref: '#/components/schemas/ProviderFields'
+        - type: object
+          required: [slug]
+          properties:
+            slug: { type: string, pattern: '^[a-z0-9][a-z0-9-]{0,62}$' }
+    Provider:
+      type: object
+      required: [id, slug, name, type, base_url, ca_pem, timeouts, external, credential_set, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        slug: { type: string }
+        name: { type: string }
+        type: { type: string, enum: [openai, gigachat, yandexgpt] }
+        base_url: { type: string }
+        ca_pem: { type: string }
+        auth_url: { type: string }
+        scope: { type: string }
+        folder_id: { type: string }
+        timeouts: { $ref: '#/components/schemas/ProviderTimeouts' }
+        external: { type: boolean, description: Провайдер вне контура заказчика (ТЗ 5.4) }
+        credential_set: { type: boolean, description: Учётные данные заданы; само значение не возвращается }
+        credential_set_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    ProviderList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/Provider' }
+    ProviderCredential:
+      type: object
+      required: [credential]
+      additionalProperties: false
+      properties:
+        credential: { type: string, minLength: 1, maxLength: 16384, pattern: '^[\x20-\x7e]+$', writeOnly: true, description: "Ключ API или авторизационные данные: только видимые символы ASCII и пробел" }
+    ProviderExternal:
+      type: object
+      required: [external, reason]
+      additionalProperties: false
+      properties:
+        external: { type: boolean }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+    AppQuotas:
+      type: object
+      additionalProperties: false
+      description: Лимиты (ТЗ 5.2); 0 — без лимита, не больше 10^9
+      properties:
+        requests_per_minute: { type: integer, minimum: 0 }
+        requests_per_minute_per_user: { type: integer, minimum: 0 }
+        requests_per_minute_per_key: { type: integer, minimum: 0 }
+        tokens_per_minute: { type: integer, minimum: 0 }
+        tokens_per_day: { type: integer, minimum: 0 }
+        max_messages: { type: integer, minimum: 0 }
+        max_tokens: { type: integer, minimum: 0 }
+        max_input_bytes: { type: integer, minimum: 0 }
+    AppList:
+      type: object
+      required: [id, category]
+      additionalProperties: false
+      description: Словарь или выражения заказчика для детектора `lists` (`docs/detectors.md`)
+      properties:
+        id: { type: string, pattern: '^[a-z0-9][a-z0-9-]{0,31}$' }
+        category: { type: string, pattern: '^[a-z][a-z0-9_]{0,31}$' }
+        threat: { type: string, enum: [DM-18, DM-19, DM-32, DM-35] }
+        score: { type: number, minimum: 0.1, maximum: 1 }
+        direction: { type: string, enum: [input, output, both] }
+        words: { type: array, items: { type: string } }
+        regex: { type: array, items: { type: string, maxLength: 512 } }
+        case_sensitive: { type: boolean }
+    ApplicationFields:
+      type: object
+      required: [name, env, provider_id, models]
+      additionalProperties: false
+      properties:
+        name: { type: string, minLength: 1, maxLength: 200 }
+        description: { type: string, maxLength: 2000 }
+        department: { type: string, maxLength: 200 }
+        owner_id: { type: string, format: uuid, description: Владелец — действующая учётная запись; при создании по умолчанию создающий }
+        env: { type: string, enum: [prod, test] }
+        provider_id: { type: string, format: uuid }
+        models: { type: array, minItems: 1, maxItems: 100, items: { type: string, pattern: '^[A-Za-z0-9._:/-]{1,128}$' } }
+        aliases: { type: object, additionalProperties: { type: string }, description: Имя для приложения → разрешённая модель }
+        fail_mode: { type: string, enum: [fail_open, fail_closed], default: fail_closed }
+        user_from: { type: string, enum: [header, field, none], default: none }
+        quotas: { $ref: '#/components/schemas/AppQuotas' }
+        lists: { type: array, maxItems: 63, items: { $ref: '#/components/schemas/AppList' } }
+        exfil_allow_domains: { type: array, maxItems: 1000, items: { type: string } }
+    ApplicationProtection:
+      type: object
+      additionalProperties: false
+      description: Поля защиты; меняет только обладатель права `applications.policy`
+      properties:
+        policy: { type: string, description: 'Шаблон (`base`, `pii-strict`, `external-no-pii`, `monitor-only`) или политика организации' }
+        policy_mode: { type: string, enum: [monitor, enforce], description: По умолчанию — режим выбранной политики }
+        storage: { type: string, enum: [none, masked, full], default: masked }
+    NewApplication:
+      allOf:
+        - $ref: '#/components/schemas/ApplicationFields'
+        - $ref: '#/components/schemas/ApplicationProtection'
+        - type: object
+          required: [slug]
+          properties:
+            slug: { type: string, pattern: '^[a-z0-9][a-z0-9-]{0,62}$' }
+    Application:
+      type: object
+      required: [id, slug, name, description, department, owner_id, env, provider_id, models, aliases, policy,
+        policy_mode, storage, fail_mode, user_from, quotas, lists, exfil_allow_domains, status, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        slug: { type: string }
+        name: { type: string }
+        description: { type: string }
+        department: { type: string }
+        owner_id: { type: string, format: uuid }
+        env: { type: string, enum: [prod, test] }
+        provider_id: { type: string, format: uuid }
+        models: { type: array, items: { type: string } }
+        aliases: { type: object, additionalProperties: { type: string } }
+        policy: { type: string }
+        policy_mode: { type: string, enum: [monitor, enforce] }
+        storage: { type: string, enum: [none, masked, full] }
+        fail_mode: { type: string, enum: [fail_open, fail_closed] }
+        user_from: { type: string, enum: [header, field, none] }
+        quotas: { $ref: '#/components/schemas/AppQuotas' }
+        lists: { type: array, items: { $ref: '#/components/schemas/AppList' } }
+        exfil_allow_domains: { type: array, items: { type: string } }
+        status: { type: string, enum: [active, archived] }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        archived_at: { type: string, format: date-time }
+    ApplicationPage:
+      allOf:
+        - $ref: '#/components/schemas/PageInfo'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/Application' }
+    AppKey:
+      type: object
+      required: [id, application_id, name, prefix, status, allowed_cidrs, expires_at, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        application_id: { type: string, format: uuid }
+        name: { type: string }
+        prefix: { type: string, pattern: '^aisec_[a-z0-9]{8}$', description: Начало ключа для поиска и показа; не секрет }
+        status: { type: string, enum: [active, expired, revoked] }
+        allowed_cidrs: { type: array, items: { type: string } }
+        expires_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+        rotated_from: { type: string, format: uuid }
+        revoked_at: { type: string, format: date-time }
+    AppKeyList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/AppKey' }
+    NewAppKey:
+      type: object
+      required: [name]
+      additionalProperties: false
+      properties:
+        name: { type: string, minLength: 1, maxLength: 200 }
+        expires_in_days: { type: integer, minimum: 1, maximum: 730, default: 365 }
+        allowed_cidrs: { type: array, maxItems: 64, items: { type: string }, description: 'Подсети в каноническом виде (`10.0.0.0/8`); пусто — с любых адресов' }
+    AppKeyRotation:
+      type: object
+      additionalProperties: false
+      properties:
+        overlap_hours: { type: integer, minimum: 0, maximum: 720, default: 24 }
+        expires_in_days: { type: integer, minimum: 1, maximum: 730, default: 365 }
+    CreatedAppKey:
+      type: object
+      required: [app_key, key]
+      properties:
+        app_key: { $ref: '#/components/schemas/AppKey' }
+        key:
+          type: string
+          pattern: '^aisec_[a-z0-9]{8}_[A-Za-z0-9_-]{43}$'
+          description: 'Ключ для заголовка `Authorization: Bearer` в шлюзе. Показывается один раз'
+        previous: { $ref: '#/components/schemas/AppKey' }
     RoleAssigned:
       type: object
       required: [user, revoked_sessions]
