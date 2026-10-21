@@ -1,7 +1,8 @@
 // Команда aisec-server — сервер управления: API, веб-консоль, оповещения, инциденты, отчёты, аудит.
-// Сейчас (задачи 2.6–2.8 этапа 2): HTTPS, маршрутизатор с проверкой прав,
-// Problem Details, ограничение частоты, вход в консоль, второй фактор и
-// учётные записи;
+// Сейчас (задачи 2.6–2.8, 2.14 этапа 2): HTTPS, маршрутизатор с проверкой
+// прав, Problem Details, ограничение частоты, вход в консоль, второй фактор
+// и учётные записи, регистрация шлюзов и внутренний API на отдельном порту
+// с mTLS;
 // остальные ресурсы API добавляются следующими задачами.
 package main
 
@@ -17,6 +18,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/audit"
 	"github.com/azuresong-afk/ai_railway/internal/auth"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
+	"github.com/azuresong-afk/ai_railway/internal/gwregistry"
 	"github.com/azuresong-afk/ai_railway/internal/httpserver"
 	"github.com/azuresong-afk/ai_railway/internal/keyring"
 	"github.com/azuresong-afk/ai_railway/internal/store"
@@ -113,10 +115,32 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		return err
 	}
 
+	// Реестр шлюзов и внутренний УЦ (ИАФ.10, Р8): без -ca-cert
+	// регистрация отвечает 503, а внутренний порт не открывается.
+	var gateways *gwregistry.Service
+	var ca *aisecCrypto.CA
+	if cfg.CACert != "" {
+		if ca, err = loadCA(cfg.CACert, cfg.CAKey); err != nil {
+			return err
+		}
+		gwStore, err := gwregistry.NewPGStore(db.Pool(), auditLog)
+		if err != nil {
+			return err
+		}
+		if gateways, err = gwregistry.New(gwregistry.Options{
+			Store: gwStore, Provider: p, CA: ca, Audit: auditLog, Logger: logger,
+		}); err != nil {
+			return err
+		}
+	} else {
+		logger.Warn("внутренний УЦ не задан (-ca-cert, -ca-key): регистрация шлюзов и внутренний API выключены")
+	}
+
 	handler, _, err := api.New(api.Options{
 		Logger: logger, Version: version, Hasher: hasher,
 		Ready:    db.Ping,
 		Auth:     authSvc,
+		Gateways: gateways,
 		Fallback: staticFallback(),
 	})
 	if err != nil {
@@ -128,6 +152,73 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	servers := []*httpserver.Server{srv}
+	if gateways != nil {
+		internal, err := newInternalServer(ctx, cfg, tp, hasher, gateways, ca, certPEM, keyPEM, logger)
+		if err != nil {
+			return err
+		}
+		servers = append(servers, internal)
+	}
 	logger.Info("сервер управления запущен")
-	return srv.Run(ctx)
+	return runAll(ctx, servers...)
+}
+
+// loadCA читает внутренний УЦ: сертификат и ключ (права 0400 или 0600).
+func loadCA(certFile, keyFile string) (*aisecCrypto.CA, error) {
+	certPEM, err := aisecCrypto.ReadPEMFile(certFile)
+	if err != nil {
+		return nil, fmt.Errorf("сертификат УЦ: %w", err)
+	}
+	keyPEM, err := aisecCrypto.ReadKeyFile(keyFile)
+	if err != nil {
+		return nil, fmt.Errorf("ключ УЦ: %w", err)
+	}
+	ca, err := aisecCrypto.LoadCA(certPEM, keyPEM)
+	if err != nil {
+		return nil, fmt.Errorf("внутренний УЦ: %w", err)
+	}
+	return ca, nil
+}
+
+// newInternalServer — внутренний API шлюзов на отдельном порту: TLS с
+// обязательным клиентским сертификатом внутреннего УЦ (mTLS, ИАФ.10).
+func newInternalServer(ctx context.Context, cfg *serverConfig, tp aisecCrypto.TLSProvider, hasher aisecCrypto.Hasher,
+	gateways *gwregistry.Service, ca *aisecCrypto.CA, certPEM, keyPEM []byte, logger *slog.Logger) (*httpserver.Server, error) {
+	if cfg.InternalTLSCertFile != "" {
+		var err error
+		if certPEM, err = aisecCrypto.ReadPEMFile(cfg.InternalTLSCertFile); err != nil {
+			return nil, fmt.Errorf("сертификат внутреннего порта: %w", err)
+		}
+		if keyPEM, err = aisecCrypto.ReadKeyFile(cfg.InternalTLSKeyFile); err != nil {
+			return nil, fmt.Errorf("ключ внутреннего порта: %w", err)
+		}
+	}
+	ilog := logger.With("listener", "internal")
+	handler, _, err := api.NewInternal(api.InternalOptions{Logger: ilog, Hasher: hasher, Gateways: gateways})
+	if err != nil {
+		return nil, err
+	}
+	return httpserver.New(ctx, httpserver.Config{
+		Addr: cfg.InternalListen, Handler: handler, TLS: tp, CertPEM: certPEM, KeyPEM: keyPEM,
+		ClientCAPEM: ca.CertPEM(), Logger: ilog,
+	})
+}
+
+// runAll обслуживает все порты; ошибка одного останавливает остальные.
+func runAll(ctx context.Context, servers ...*httpserver.Server) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	errs := make(chan error, len(servers))
+	for _, s := range servers {
+		go func() { errs <- s.Run(ctx) }()
+	}
+	var all []error
+	for range servers {
+		if err := <-errs; err != nil {
+			all = append(all, err)
+			cancel()
+		}
+	}
+	return errors.Join(all...)
 }

@@ -42,16 +42,35 @@ func TestLoadConfigRejects(t *testing.T) {
 		args []string
 		env  map[string]string
 	}{
-		"нет сертификата":  {nil, without("AISEC_SERVER_TLS_CERT")},
-		"нет ключа":        {nil, without("AISEC_SERVER_TLS_KEY")},
-		"нет БД":           {nil, without("AISEC_DATABASE_URL")},
-		"нет ключей":       {nil, without("AISEC_SERVER_KEYS_DIR")},
-		"плохой адрес":     {[]string{"-listen", "8444"}, full},
-		"лишний аргумент":  {[]string{"x"}, full},
-		"неизвестный флаг": {[]string{"-database-url", "postgres://u:p@h/d"}, full},
+		"нет сертификата":                 {nil, without("AISEC_SERVER_TLS_CERT")},
+		"нет ключа":                       {nil, without("AISEC_SERVER_TLS_KEY")},
+		"нет БД":                          {nil, without("AISEC_DATABASE_URL")},
+		"нет ключей":                      {nil, without("AISEC_SERVER_KEYS_DIR")},
+		"плохой адрес":                    {[]string{"-listen", "8444"}, full},
+		"лишний аргумент":                 {[]string{"x"}, full},
+		"неизвестный флаг":                {[]string{"-database-url", "postgres://u:p@h/d"}, full},
+		"УЦ без ключа":                    {[]string{"-ca-cert", "ca.crt"}, full},
+		"ключ УЦ без сертификата":         {[]string{"-ca-key", "ca.key"}, full},
+		"внутренний порт = консоль":       {[]string{"-internal-listen", "127.0.0.1:8444"}, full},
+		"плохой внутренний адрес":         {[]string{"-internal-listen", "8445"}, full},
+		"внутренний сертификат без ключа": {[]string{"-internal-tls-cert", "i.crt"}, full},
 	} {
 		if _, err := loadConfig(tc.args, env(tc.env), io.Discard); err == nil {
 			t.Errorf("%s: принято", name)
 		}
+	}
+}
+
+func TestLoadConfigInternalAPI(t *testing.T) {
+	e := env(map[string]string{"AISEC_SERVER_TLS_CERT": "c", "AISEC_SERVER_TLS_KEY": "k", "AISEC_SERVER_KEYS_DIR": "/keys", "AISEC_DATABASE_URL": "postgres://u@h/d",
+		"AISEC_SERVER_CA_CERT": "/keys/ca.crt", "AISEC_SERVER_CA_KEY": "/keys/ca.key"})
+	cfg, err := loadConfig(nil, e, io.Discard)
+	if err != nil || cfg.InternalListen != defaultInternalListen || cfg.CACert != "/keys/ca.crt" || cfg.CAKey != "/keys/ca.key" ||
+		cfg.InternalTLSCertFile != "" {
+		t.Fatalf("%+v %v", cfg, err)
+	}
+	cfg, err = loadConfig([]string{"-internal-listen", "0.0.0.0:9445", "-internal-tls-cert", "i.crt", "-internal-tls-key", "i.key"}, e, io.Discard)
+	if err != nil || cfg.InternalListen != "0.0.0.0:9445" || cfg.InternalTLSKeyFile != "i.key" {
+		t.Fatalf("%+v %v", cfg, err)
 	}
 }

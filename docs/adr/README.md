@@ -14,4 +14,5 @@
 | [0006](0006-paroli-shifrovanie-podpis-totp.md) | Пароли (Argon2id), AES-256-GCM, Ed25519 и исключение HMAC-SHA-1 для TOTP | предложено |
 | [0007](0007-klyuchi-ustanovki-i-init.md) | Ключи установки, `aisec-cli init`, предел AES-GCM и ротация | предложено |
 | [0008](0008-arkhivatsiya-zhurnala-audita.md) | Архивация журнала аудита с подписанной контрольной точкой | предложено |
+| [0009](0009-svyaz-shlyuza-i-servera.md) | Связь шлюза и сервера: mTLS и регистрация шлюзов (пакеты конфигурации — задача 2.13) | предложено |
 | [0011](0011-instrumenty-frontenda.md) | Инструменты фронтенда и лицензии npm | принято |

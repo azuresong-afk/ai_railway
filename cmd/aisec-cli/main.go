@@ -36,6 +36,10 @@ const usage = `aisec-cli — служебные операции AISec.
                                 выгрузить журнал аудита в файл
   audit verify-archive -keys КАТАЛОГ ФАЙЛ
                                 проверить файл архива без БД; 3 — архив недействителен
+  gateway token -name ИМЯ [-ttl 24h] [-reregister]
+                                выпустить одноразовый токен регистрации шлюза (AISEC_DATABASE_URL)
+  gateway list                  шлюзы, сроки сертификатов и последний контакт
+  gateway revoke -name ИМЯ      отозвать шлюз: сертификат перестаёт приниматься сразу
   version                       версия
 `
 
@@ -93,6 +97,15 @@ func run(args []string, stdout, stderr io.Writer, now time.Time) int {
 			if errors.Is(err, errChainBroken) || errors.Is(err, audit.ErrArchiveInvalid) {
 				return 3
 			}
+			return 1
+		}
+		return 0
+	case "gateway":
+		if err := gatewayCmd(args[1:], os.Getenv("AISEC_DATABASE_URL"), stdout, stderr); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return 0
+			}
+			say(stderr, "aisec-cli gateway: %v\n", err)
 			return 1
 		}
 		return 0

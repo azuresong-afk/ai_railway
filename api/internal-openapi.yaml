@@ -1,0 +1,123 @@
+# Контракт внутреннего API сервера управления для шлюзов (ТЗ 11.1, 13;
+# ИАФ.10, решение Р8, ADR-0009). Отдельный порт aisec-server
+# (-internal-listen, по умолчанию 127.0.0.1:8445) и отдельный файл: этот API
+# не для веб-консоли и не попадает в типы фронтенда. Аутентификация — только
+# mTLS: TLS не устанавливается без клиентского сертификата внутреннего УЦ
+# (RequireAndVerifyClientCert), а сертификат при каждом запросе сверяется с
+# действующей строкой реестра шлюзов (серийный номер и ID). Сертификат шлюз
+# получает по токену на порту консоли: POST /api/v1/gateways/register в
+# api/openapi.yaml. Ошибки — Problem Details (RFC 9457). Контрактный тест
+# internal/api сверяет маршруты внутреннего порта с этим файлом в обе стороны.
+# События (POST /internal/v1/events:batch) и пакеты конфигурации
+# (GET /internal/v1/policies/bundle) добавят задачи 2.15 и 2.13.
+openapi: 3.1.0
+info:
+  title: AISec internal API
+  version: 0.0.0
+security:
+  - gatewayCert: []
+paths:
+  /internal/v1/heartbeat:
+    post:
+      summary: Heartbeat шлюза — последний контакт, версия шлюза и пакета
+      description: |
+        Сервер отмечает время, адрес, версию шлюза и ETag применённого пакета
+        конфигурации. Не чаще одного раза в 10 секунд на шлюз (иначе 429 с
+        `Retry-After`) и не больше общего предела внутреннего порта с адреса
+        (600 в минуту). Ответ — время сервера (шлюз предупреждает о расхождении
+        часов больше 30 секунд, ВРМ.1) и рекомендуемый период. Отозванный шлюз,
+        заменённый или неизвестный сертификат — 401 и запись `gateway.mtls_denied`
+        в аудит (не чаще раза в минуту на сертификат).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/HeartbeatRequest' }
+      responses:
+        '200':
+          description: Контакт отмечен
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HeartbeatResponse' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+components:
+  securitySchemes:
+    gatewayCert:
+      type: mutualTLS
+      description: Клиентский сертификат шлюза от внутреннего УЦ (CN — ID шлюза, назначение clientAuth)
+  responses:
+    ProblemInvalid:
+      description: Ошибка в теле запроса (`invalid_request`)
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    ProblemUnauthorized:
+      description: Сертификат не принадлежит действующему шлюзу (`unauthorized`)
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    ProblemForbidden:
+      description: Действие не разрешено шлюзу (`forbidden`)
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    ProblemTooLarge:
+      description: Тело больше 4 КиБ (`payload_too_large`)
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    ProblemUnsupportedMedia:
+      description: Тело не в формате JSON (`unsupported_media_type`)
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    RateLimited:
+      description: Превышен предел частоты (`rate_limited`, ЗИ.6)
+      headers:
+        Retry-After: { description: Через сколько секунд повторить, schema: { type: integer } }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    ProblemInternal:
+      description: Внутренняя ошибка (`internal_error`)
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+  schemas:
+    HeartbeatRequest:
+      type: object
+      required: [version]
+      additionalProperties: false
+      properties:
+        version: { type: string, minLength: 1, maxLength: 64, pattern: '^[0-9A-Za-z.+_-]+$', description: Версия шлюза }
+        bundle_etag: { type: string, maxLength: 128, pattern: '^[!-~]*$', description: 'ETag применённого пакета конфигурации; пусто — пакета нет' }
+    HeartbeatResponse:
+      type: object
+      required: [server_time, interval_seconds]
+      properties:
+        server_time: { type: string, format: date-time }
+        interval_seconds: { type: integer, minimum: 1, description: Рекомендуемый период heartbeat }
+    Problem:
+      description: Problem Details (RFC 9457), как в api/openapi.yaml
+      type: object
+      required: [type, title, status, detail, code]
+      properties:
+        type: { type: string }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        code: { type: string }
+        errors:
+          type: array
+          items:
+            type: object
+            required: [field, detail]
+            properties:
+              field: { type: string }
+              detail: { type: string }

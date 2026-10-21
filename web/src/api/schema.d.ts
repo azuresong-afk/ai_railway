@@ -1286,6 +1286,67 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/gateways/register": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Регистрация шлюза — сертификат внутреннего УЦ по одноразовому токену
+         * @description ИАФ.10, решение Р8, ADR-0009. Открыт, но требует одноразовый токен из вывода
+         *     `aisec-cli gateway token` (`aisec_gwreg_` и 43 символа base64url, срок по умолчанию —
+         *     24 часа). Шлюз сам создаёт ключ ECDSA P-256 и присылает CSR; закрытый ключ сервер не
+         *     видит. Из CSR берётся только открытый ключ: CN сертификата — ID шлюза, назначение —
+         *     только `clientAuth`, срок — 365 дней, но не дольше УЦ. Неверный CSR — 400 до проверки
+         *     токена (токен не тратится). Неверный, истёкший или погашенный токен, токен
+         *     отозванного шлюза — 403 без уточнения причины. Токен гасится в одной транзакции с
+         *     выпуском сертификата и записью `gateway.register`; отказы тоже пишутся в аудит (без
+         *     токена). Повторная регистрация того же шлюза (новый токен с `-reregister`) заменяет
+         *     сертификат: прежний перестаёт приниматься внутренним API сразу. Без внутреннего УЦ
+         *     на сервере (`-ca-cert`) — 503. Предел частоты — 10 запросов в минуту с адреса.
+         *     Без `Idempotency-Key`: ответ содержит выпущенный сертификат.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["GatewayRegisterRequest"];
+                };
+            };
+            responses: {
+                /** @description Сертификат выпущен */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["GatewayRegistration"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                403: components["responses"]["ProblemForbidden"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1298,6 +1359,29 @@ export interface components {
         };
         SetupStatus: {
             setup_required: boolean;
+        };
+        GatewayRegisterRequest: {
+            /**
+             * Format: password
+             * @description Токен из вывода aisec-cli gateway token
+             */
+            token: string;
+            /** @description CSR (PKCS#10) в PEM на ключ ECDSA P-256 */
+            csr: string;
+        };
+        GatewayRegistration: {
+            /**
+             * Format: uuid
+             * @description ID шлюза; он же CN сертификата
+             */
+            gateway_id: string;
+            name: string;
+            /** @description Клиентский сертификат шлюза в PEM */
+            certificate: string;
+            /** @description Сертификат внутреннего УЦ в PEM */
+            ca_certificate: string;
+            /** Format: date-time */
+            not_after: string;
         };
         SetupRequest: {
             /**

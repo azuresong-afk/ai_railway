@@ -22,6 +22,20 @@ entries:
     justification: Cookie __Host-aisec_csrf намеренно без HttpOnly — это схема двойной отправки (решение Р6 этапа 2, ТЗ 6.9) — интерфейс читает CSRF-токен из cookie и возвращает его в заголовке X-CSRF-Token. Secure и SameSite=Strict выставлены в той же записи. Токен не даёт доступа без cookie сессии __Host-aisec_session (HttpOnly) и привязан к своей сессии; сессионный токен скриптам недоступен.
     author: Claude Code (ИИ-ассистент); проверяет владелец при ревью
     date: 2026-10-20
+  - rule: gosec/G101
+    file: internal/gwregistry/gwregistry.go
+    snippet: 'const TokenPrefix = "aisec_gwreg_"'
+    verdict: false_positive
+    justification: Публичный префикс формата токена регистрации шлюза (как «ghp_» у GitHub) — по нему токен распознаётся в логах и сканерами секретов. Секретная часть — 32 случайных байта от генератора криптопрофиля (aisecCrypto.RandomBytes) — дописывается при выпуске в IssueToken и в коде не хранится; в БД — только хеш токена (SHA-256 в профиле standard).
+    author: Claude Code (ИИ-ассистент); проверяет владелец при ревью
+    date: 2026-10-21
+  - rule: gosec/G101
+    file: cmd/aisec-gateway/register.go
+    snippet: 'tokenEnv = "AISEC_GATEWAY_REGISTRATION_TOKEN"'
+    verdict: false_positive
+    justification: Имя переменной окружения, из которой aisec-gateway register читает токен регистрации (аргументом токен не принимается, чтобы он не был виден в списке процессов). Значения токена в коде нет.
+    author: Claude Code (ИИ-ассистент); проверяет владелец при ревью
+    date: 2026-10-21
   - rule: gosec/G124
     file: internal/api/session.go
     snippet: 'http.SetCookie(w, &http.Cookie{Name: CSRFCookie, Value: "", Path: "/", MaxAge: -1,'
