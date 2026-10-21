@@ -170,7 +170,11 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	// События шлюзов (ТЗ 5.5, задача 2.15): секции создаются до приёма,
 	// дальше фоновое задание раз в час держит их на неделю вперёд и удаляет
 	// просроченные.
-	eventStore, err := events.NewPGStore(db.Pool(), box, auditLog, audit.DefaultOrgID)
+	rnd, err := p.Random()
+	if err != nil {
+		return err
+	}
+	eventStore, err := events.NewPGStore(db.Pool(), box, auditLog, audit.DefaultOrgID, events.WithRandom(rnd))
 	if err != nil {
 		return err
 	}
@@ -178,6 +182,8 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		return fmt.Errorf("секции событий: %w", err)
 	}
 	go events.RunMaintenance(ctx, eventStore, events.MaintainEvery, logger)
+	// Агрегаты для дашбордов (задача 2.16) — фоновым заданием раз в минуту.
+	go events.RunAggregates(ctx, eventStore, events.AggregateEvery, logger)
 
 	// «Состояние системы» (задача 2.20): шлюзы читаются из реестра и без
 	// внутреннего УЦ; уведомления ВРМ.1, РСБ.5, ОЦЛ.5 пишутся в аудит при
@@ -194,6 +200,8 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		Gateways:  gateways,
 		Integrity: integritySvc,
 		Status:    statusSvc,
+		Events:    eventStore,
+		Audit:     auditLog,
 		Fallback:  staticFallback(),
 	})
 	if err != nil {

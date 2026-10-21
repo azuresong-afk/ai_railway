@@ -80,8 +80,10 @@ func TestBuiltinRoleInvariants(t *testing.T) {
 		if !p.ReadOnly() && roles[auth.RoleAuditor].Grants.Allows(p.Name) {
 			t.Errorf("у аудитора есть %s (УПД.2)", p.Name)
 		}
-		if p.Security && p.ReadOnly() {
-			t.Errorf("%s: разрешение на чтение помечено как управление безопасностью", p.Name)
+		// Чтение с признаком безопасности (содержимое событий, УПД.7) —
+		// только у администратора безопасности (ТЗ 1.3).
+		if p.Security && roles[auth.RoleAuditor].Grants.Allows(p.Name) {
+			t.Errorf("у аудитора есть %s (ТЗ 1.3)", p.Name)
 		}
 	}
 	if len(roles[auth.RoleAppOwner].Grants) != 0 {

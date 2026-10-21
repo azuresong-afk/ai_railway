@@ -2003,6 +2003,519 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Список событий за период по фильтру
+         * @description Право `events.read` (ТЗ 5.5). Только метаданные, без содержимого запросов и ответов.
+         *     Порядок — от новых к старым по времени из ID события. Период — не длиннее 31 суток
+         *     (по умолчанию последние 24 часа). Язык фильтра — условия через `and`, например
+         *     `app = "crm-bot" and severity in ("high", "critical") and stream = true`; поля:
+         *     type, app, env, user, provider, model, source, policy_mode, action, rule, severity,
+         *     storage, gateway, threat, detector, stream, non_text_unchecked, has_content; операторы
+         *     `=`, `!=`, `in (…)`, `not in (…)` (у логических полей — только `=`). Лимиты: 2048 байт,
+         *     20 условий, 50 значений в списке, значение до 256 байт. Пишет `events.list`
+         *     (отключаемое событие).
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description Начало периода включительно (RFC 3339); по умолчанию to минус 24 часа */
+                    from?: components["parameters"]["From"];
+                    /** @description Конец периода, не включая (RFC 3339); по умолчанию — текущее время */
+                    to?: components["parameters"]["To"];
+                    /** @description Фильтр событий (язык — в описании GET /api/v1/events), до 2048 байт */
+                    filter?: components["parameters"]["EventFilter"];
+                    /** @description Размер страницы */
+                    limit?: components["parameters"]["Limit"];
+                    /** @description Непрозрачный курсор из `next_cursor` предыдущей страницы */
+                    cursor?: components["parameters"]["Cursor"];
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Страница списка */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["EventPage"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/events/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Карточка события без содержимого
+         * @description Право `events.read`. Решение с трассировкой, находки, задержки, токены (`details`);
+         *     `has_content` — есть ли сохранённое содержимое. Пишет `events.view` (отключаемое).
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description ID события (UUIDv7) */
+                    id: components["parameters"]["EventID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Событие */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Event"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/events/{id}/content": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Содержимое события с указанием причины
+         * @description Право `events.content.read` (УПД.7, ТЗ 5.5). Причина обязательна: 3–500 символов.
+         *     Каждое обращение пишет `events.content_read` с ID события и причиной до ответа; если
+         *     запись в журнал аудита не удалась — 503, содержимое не выдаётся. Содержимое `full`
+         *     расшифровывается на сервере. Нет сохранённого содержимого (режим `none` или удалено
+         *     по сроку) — 404, обращение тоже пишется в аудит.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID события (UUIDv7) */
+                    id: components["parameters"]["EventID"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["EventContentRequest"];
+                };
+            };
+            responses: {
+                /** @description Содержимое */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["EventContent"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/events/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Выгрузка событий в CSV или JSON
+         * @description Право `events.export` (ТЗ 5.5). Только метаданные, без содержимого. Тот же фильтр и
+         *     период, что у списка; не больше 100 000 строк (иначе 422). Строки считаются по
+         *     снимку — события, принятые до начала выгрузки. До передачи данных пишет
+         *     `data.export` с форматом, фильтром, периодом и числом строк; если запись не удалась —
+         *     503. Ячейки CSV, начинающиеся с `=`, `+`, `-`, `@`, табуляции или возврата каретки,
+         *     получают в начале апостроф (защита от формул). JSON — массив объектов `Event`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["EventExportRequest"];
+                };
+            };
+            responses: {
+                /** @description Файл выгрузки (Content-Disposition attachment) */
+                200: {
+                    headers: {
+                        /** @description Число строк в выгрузке */
+                        "X-Export-Rows"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/csv": string;
+                        "application/json": components["schemas"]["Event"][];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/events/stats": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Агрегаты событий по минутам или часам
+         * @description Право `events.read` (ТЗ 5.5, 5.8). Агрегаты считает фоновое задание раз в минуту:
+         *     данные последней минуты могут ещё не войти. `minute` — период до суток, `hour` — до
+         *     31 суток; не больше 10 000 строк (иначе 422).
+         */
+        get: {
+            parameters: {
+                query?: {
+                    interval?: "minute" | "hour";
+                    /** @description Начало периода включительно (RFC 3339); по умолчанию to минус 24 часа */
+                    from?: components["parameters"]["From"];
+                    /** @description Конец периода, не включая (RFC 3339); по умолчанию — текущее время */
+                    to?: components["parameters"]["To"];
+                    /** @description Только одно приложение */
+                    app?: string;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Агрегаты */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["EventStats"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/events/filters": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Свои сохранённые фильтры
+         * @description Право `events.read`. Фильтры личные — видны только их автору.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Фильтры по имени */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["SavedFilterList"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        /**
+         * Сохранить фильтр
+         * @description Право `events.read`. Фильтр проверяется и хранится в канонической записи. Не больше
+         *     50 фильтров на пользователя (422), имя уникально у пользователя (409).
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["NewSavedFilter"];
+                };
+            };
+            responses: {
+                /** @description Фильтр сохранён */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["SavedFilter"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/events/filters/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Удалить свой фильтр
+         * @description Право `events.read`. Чужой фильтр неотличим от отсутствующего (404).
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID сохранённого фильтра (UUIDv7) */
+                    id: components["parameters"]["FilterID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Фильтр удалён */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/events/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Сроки хранения событий
+         * @description Право `events.read` (ТЗ 5.5).
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Сроки хранения */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["EventRetention"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        /**
+         * Изменить сроки хранения событий
+         * @description Право `events.retention.manage` (ТЗ 5.5). Метаданные — 30–3650 суток, содержимое —
+         *     7–3650 и не дольше метаданных. Изменение и запись `events.settings_changed` (до, после,
+         *     признак сокращения `reduced`) — одной транзакцией. Данные старше нового срока удаляет
+         *     фоновое задание целыми суточными секциями (раз в час).
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["EventRetentionInput"];
+                };
+            };
+            responses: {
+                /** @description Сроки изменены */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["EventRetention"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -2482,6 +2995,121 @@ export interface components {
                 detail: string;
             }[];
         };
+        /** @description Событие без содержимого запросов и ответов (ТЗ 5.5) */
+        Event: {
+            /** Format: uuid */
+            id: string;
+            /**
+             * Format: date-time
+             * @description Время события по часам шлюза
+             */
+            time: string;
+            /** Format: date-time */
+            received_at: string;
+            /** Format: uuid */
+            gateway_id: string;
+            /** @enum {string} */
+            type: "gateway_request" | "check" | "auth_failure";
+            app?: string;
+            env?: string;
+            /** @description Псевдоним пользователя (HMAC) */
+            user?: string;
+            provider?: string;
+            model?: string;
+            source?: string;
+            /** @enum {string} */
+            policy_mode?: "monitor" | "enforce";
+            action?: string;
+            rule?: string;
+            severity?: string;
+            /** @enum {string} */
+            storage: "none" | "masked" | "full";
+            threats: string[];
+            stream: boolean;
+            non_text_unchecked: boolean;
+            has_content: boolean;
+            /** @description Только в карточке и выгрузке JSON — решение с трассировкой, находки, задержки, токены, проверка ответа */
+            details?: {
+                [key: string]: unknown;
+            };
+        };
+        EventPage: components["schemas"]["PageInfo"] & {
+            items: components["schemas"]["Event"][];
+        };
+        EventContentRequest: {
+            /** @description Причина доступа (УПД.7) */
+            reason: string;
+        };
+        EventContent: {
+            /** Format: uuid */
+            event_id: string;
+            /** @enum {string} */
+            storage: "masked" | "full";
+            request?: string;
+            response?: string;
+        };
+        EventExportRequest: {
+            /** @enum {string} */
+            format: "csv" | "json";
+            /** Format: date-time */
+            from?: string;
+            /** Format: date-time */
+            to?: string;
+            filter?: string;
+        };
+        EventAggregate: {
+            /** Format: date-time */
+            bucket: string;
+            /** @description Пустая строка — приложение не указано */
+            app: string;
+            type: string;
+            action: string;
+            severity: string;
+            events: number;
+            with_findings: number;
+            non_text_unchecked: number;
+            tokens_prompt: number;
+            tokens_completion: number;
+            /** @description Число событий по ID строк матрицы обнаружения */
+            threats: {
+                [key: string]: number;
+            };
+        };
+        EventStats: {
+            /** @enum {string} */
+            interval: "minute" | "hour";
+            /** Format: date-time */
+            from: string;
+            /** Format: date-time */
+            to: string;
+            items: components["schemas"]["EventAggregate"][];
+        };
+        NewSavedFilter: {
+            name: string;
+            filter: string;
+        };
+        SavedFilter: {
+            /** Format: uuid */
+            id: string;
+            name: string;
+            /** @description Каноническая запись фильтра */
+            filter: string;
+            /** Format: date-time */
+            created_at: string;
+        };
+        SavedFilterList: {
+            items: components["schemas"]["SavedFilter"][];
+        };
+        EventRetention: {
+            metadata_days: number;
+            content_days: number;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        EventRetentionInput: {
+            metadata_days: number;
+            content_days: number;
+        };
         /** @description Поле конверта страницы списка; на последней странице отсутствует */
         PageInfo: {
             next_cursor?: string;
@@ -2754,6 +3382,16 @@ export interface components {
         RoleID: components["schemas"]["Role"];
         /** @description ID токена API (UUID) */
         APITokenID: string;
+        /** @description ID события (UUIDv7) */
+        EventID: string;
+        /** @description ID сохранённого фильтра (UUIDv7) */
+        FilterID: string;
+        /** @description Начало периода включительно (RFC 3339); по умолчанию to минус 24 часа */
+        From: string;
+        /** @description Конец периода, не включая (RFC 3339); по умолчанию — текущее время */
+        To: string;
+        /** @description Фильтр событий (язык — в описании GET /api/v1/events), до 2048 байт */
+        EventFilter: string;
         /** @description Ключ повторяемости создающего запроса, 1–64 символа `[A-Za-z0-9._-]` */
         IdempotencyKey: string;
     };

@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/azuresong-afk/ai_railway/internal/audit"
+	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/internal/ids"
 	"github.com/azuresong-afk/ai_railway/internal/keyring"
 )
@@ -69,6 +70,7 @@ func dbError(what string, err error) error {
 // PGDB — доступ к PostgreSQL; *pgxpool.Pool ему соответствует.
 type PGDB interface {
 	Begin(ctx context.Context) (pgx.Tx, error)
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
@@ -95,18 +97,34 @@ type PGStore struct {
 	box   *keyring.Box
 	audit *audit.Log
 	orgID string
+	// ids — UUIDv7 сохранённых фильтров (задача 2.16); nil — сохранение
+	// фильтров недоступно.
+	ids *ids.Generator
+}
+
+// PGOption — необязательная настройка PGStore.
+type PGOption func(*PGStore)
+
+// WithRandom задаёт источник случайности криптопрофиля для ID новых строк
+// (сохранённые фильтры).
+func WithRandom(r aisecCrypto.Random) PGOption {
+	return func(s *PGStore) { s.ids = ids.NewGenerator(r) }
 }
 
 // NewPGStore создаёт хранилище. box нужен для содержимого full, журнал —
-// для записи об удалении секций.
-func NewPGStore(db PGDB, box *keyring.Box, a *audit.Log, orgID string) (*PGStore, error) {
+// для записи об удалении секций и изменении сроков хранения.
+func NewPGStore(db PGDB, box *keyring.Box, a *audit.Log, orgID string, opts ...PGOption) (*PGStore, error) {
 	if db == nil || box == nil || a == nil {
 		return nil, errors.New("хранилище событий: нет БД, ключа данных или журнала аудита")
 	}
 	if orgID == "" {
 		orgID = audit.DefaultOrgID
 	}
-	return &PGStore{db: db, box: box, audit: a, orgID: orgID}, nil
+	s := &PGStore{db: db, box: box, audit: a, orgID: orgID}
+	for _, o := range opts {
+		o(s)
+	}
+	return s, nil
 }
 
 func pgCtx(ctx context.Context) (context.Context, context.CancelFunc) {

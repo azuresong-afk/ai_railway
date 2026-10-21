@@ -257,7 +257,9 @@ func parseRole(in RoleInput) (RoleDef, error) {
 			return RoleDef{}, &InputError{"permissions", rolePermsPrefix + "повторяются."}
 		}
 		g[p.Name] = scope
-		mfa = mfa || !p.ReadOnly()
+		// Второй фактор — у ролей, которые что-то меняют или читают данные
+		// безопасности (содержимое событий, УПД.7).
+		mfa = mfa || !p.ReadOnly() || p.Security
 	}
 	return RoleDef{DisplayName: name, Description: desc, MFARequired: mfa, Grants: g}, nil
 }

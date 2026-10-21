@@ -35,6 +35,12 @@ const (
 	// выдаются (TokenGrantable).
 	PermAPITokensRead   = "api_tokens.read"
 	PermAPITokensManage = "api_tokens.manage"
+	// События (ТЗ 5.5, задача 2.16). Содержимое запросов и ответов —
+	// отдельное разрешение с указанием причины (УПД.7).
+	PermEventsRead            = "events.read"
+	PermEventsExport          = "events.export"
+	PermEventsContentRead     = "events.content.read"
+	PermEventsRetentionManage = "events.retention.manage"
 )
 
 // Permission — разрешение из каталога.
@@ -75,6 +81,10 @@ var permissionCatalog = []Permission{
 	{Name: PermRolesManage, Title: "Создание, изменение и удаление ролей, назначение ролей", Group: "Роли", Security: true},
 	{Name: PermAPITokensRead, Title: "Просмотр токенов API", Group: "Токены API", Ownable: true},
 	{Name: PermAPITokensManage, Title: "Выпуск и отзыв токенов API", Group: "Токены API", Ownable: true},
+	{Name: PermEventsRead, Title: "Просмотр событий без содержимого, сохранённые фильтры, агрегаты", Group: "События"},
+	{Name: PermEventsExport, Title: "Выгрузка событий в CSV и JSON (без содержимого)", Group: "События"},
+	{Name: PermEventsContentRead, Title: "Просмотр содержимого запросов и ответов с указанием причины", Group: "События", Security: true},
+	{Name: PermEventsRetentionManage, Title: "Изменение сроков хранения событий", Group: "События", Security: true},
 }
 
 var permissionIndex = func() map[string]Permission {
@@ -97,22 +107,33 @@ func LookupPermission(name string) (Permission, bool) {
 	return p, ok
 }
 
-// validPermissionName — «раздел.действие»: латиница в нижнем регистре, цифры, «_».
+// permissionNameByte — допустимый символ части имени разрешения.
+func permissionNameByte(c byte) bool {
+	return c >= 'a' && c <= 'z' || c == '_' || c >= '0' && c <= '9'
+}
+
+// validPermissionName — «раздел.действие» или «раздел.объект.действие»
+// (events.content.read из ТЗ 5.5): части из латиницы в нижнем регистре,
+// цифр и «_», часть не начинается с цифры.
 func validPermissionName(s string) bool {
 	if len(s) < 3 || len(s) > 64 {
 		return false
 	}
-	dot := false
-	for i := 0; i < len(s); i++ {
-		switch c := s[i]; {
-		case c >= 'a' && c <= 'z', c == '_', c >= '0' && c <= '9' && i > 0:
-		case c == '.' && i > 0 && i < len(s)-1 && !dot:
-			dot = true
-		default:
+	parts := strings.Split(s, ".")
+	if len(parts) < 2 || len(parts) > 3 {
+		return false
+	}
+	for _, p := range parts {
+		if p == "" || p[0] >= '0' && p[0] <= '9' {
 			return false
 		}
+		for i := 0; i < len(p); i++ {
+			if !permissionNameByte(p[i]) {
+				return false
+			}
+		}
 	}
-	return dot
+	return true
 }
 
 // Scope — область действия разрешения (УПД.8).
@@ -205,11 +226,13 @@ func allPermissions() Grants {
 	return g
 }
 
-// readPermissions — все разрешения каталога только на чтение.
+// readPermissions — все разрешения каталога только на чтение, кроме
+// разрешений безопасности: чтение содержимого событий (УПД.7) аудитору
+// не выдаётся (ТЗ 1.3).
 func readPermissions() Grants {
 	g := Grants{}
 	for _, p := range permissionCatalog {
-		if p.ReadOnly() {
+		if p.ReadOnly() && !p.Security {
 			g[p.Name] = ScopeAll
 		}
 	}
@@ -231,7 +254,7 @@ var builtinRoles = []RoleDef{
 		Grants:      Grants{PermSystemRead: ScopeAll, PermAPITokensRead: ScopeOwn, PermAPITokensManage: ScopeOwn}},
 	{ID: RoleAnalyst, DisplayName: "Аналитик", Builtin: true,
 		Description: "Разбор оповещений и инцидентов, поиск по событиям",
-		Grants:      grantAll(PermSystemRead)},
+		Grants:      grantAll(PermSystemRead, PermEventsRead, PermEventsExport)},
 	{ID: RoleAuditor, DisplayName: "Аудитор", Builtin: true,
 		Description: "Только просмотр: журнал аудита, отчёты, состояние соответствия. Ничего не меняет",
 		Grants:      readPermissions()},

@@ -1036,6 +1036,278 @@ paths:
         '409': { $ref: '#/components/responses/ProblemConflict' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ProblemInternal' }
+  /api/v1/events:
+    get:
+      summary: Список событий за период по фильтру
+      description: |
+        Право `events.read` (ТЗ 5.5). Только метаданные, без содержимого запросов и ответов.
+        Порядок — от новых к старым по времени из ID события. Период — не длиннее 31 суток
+        (по умолчанию последние 24 часа). Язык фильтра — условия через `and`, например
+        `app = "crm-bot" and severity in ("high", "critical") and stream = true`; поля:
+        type, app, env, user, provider, model, source, policy_mode, action, rule, severity,
+        storage, gateway, threat, detector, stream, non_text_unchecked, has_content; операторы
+        `=`, `!=`, `in (…)`, `not in (…)` (у логических полей — только `=`). Лимиты: 2048 байт,
+        20 условий, 50 значений в списке, значение до 256 байт. Пишет `events.list`
+        (отключаемое событие).
+      x-permission: events.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+        - $ref: '#/components/parameters/EventFilter'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Страница списка
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EventPage' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/events/{id}:
+    get:
+      summary: Карточка события без содержимого
+      description: |
+        Право `events.read`. Решение с трассировкой, находки, задержки, токены (`details`);
+        `has_content` — есть ли сохранённое содержимое. Пишет `events.view` (отключаемое).
+      x-permission: events.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/EventID'
+      responses:
+        '200':
+          description: Событие
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Event' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/events/{id}/content:
+    post:
+      summary: Содержимое события с указанием причины
+      description: |
+        Право `events.content.read` (УПД.7, ТЗ 5.5). Причина обязательна: 3–500 символов.
+        Каждое обращение пишет `events.content_read` с ID события и причиной до ответа; если
+        запись в журнал аудита не удалась — 503, содержимое не выдаётся. Содержимое `full`
+        расшифровывается на сервере. Нет сохранённого содержимого (режим `none` или удалено
+        по сроку) — 404, обращение тоже пишется в аудит.
+      x-permission: events.content.read
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/EventID'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EventContentRequest' }
+      responses:
+        '200':
+          description: Содержимое
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EventContent' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/events/export:
+    post:
+      summary: Выгрузка событий в CSV или JSON
+      description: |
+        Право `events.export` (ТЗ 5.5). Только метаданные, без содержимого. Тот же фильтр и
+        период, что у списка; не больше 100 000 строк (иначе 422). Строки считаются по
+        снимку — события, принятые до начала выгрузки. До передачи данных пишет
+        `data.export` с форматом, фильтром, периодом и числом строк; если запись не удалась —
+        503. Ячейки CSV, начинающиеся с `=`, `+`, `-`, `@`, табуляции или возврата каретки,
+        получают в начале апостроф (защита от формул). JSON — массив объектов `Event`.
+      x-permission: events.export
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EventExportRequest' }
+      responses:
+        '200':
+          description: Файл выгрузки (Content-Disposition attachment)
+          headers:
+            X-Export-Rows: { description: Число строк в выгрузке, schema: { type: integer } }
+          content:
+            text/csv:
+              schema: { type: string }
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Event' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '422': { $ref: '#/components/responses/ProblemUnprocessable' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/events/stats:
+    get:
+      summary: Агрегаты событий по минутам или часам
+      description: |
+        Право `events.read` (ТЗ 5.5, 5.8). Агрегаты считает фоновое задание раз в минуту:
+        данные последней минуты могут ещё не войти. `minute` — период до суток, `hour` — до
+        31 суток; не больше 10 000 строк (иначе 422).
+      x-permission: events.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - name: interval
+          in: query
+          schema: { type: string, enum: [minute, hour], default: hour }
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+        - name: app
+          in: query
+          description: Только одно приложение
+          schema: { type: string, maxLength: 256 }
+      responses:
+        '200':
+          description: Агрегаты
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EventStats' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '422': { $ref: '#/components/responses/ProblemUnprocessable' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/events/filters:
+    get:
+      summary: Свои сохранённые фильтры
+      description: Право `events.read`. Фильтры личные — видны только их автору.
+      x-permission: events.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      responses:
+        '200':
+          description: Фильтры по имени
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SavedFilterList' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    post:
+      summary: Сохранить фильтр
+      description: |
+        Право `events.read`. Фильтр проверяется и хранится в канонической записи. Не больше
+        50 фильтров на пользователя (422), имя уникально у пользователя (409).
+      x-permission: events.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NewSavedFilter' }
+      responses:
+        '201':
+          description: Фильтр сохранён
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SavedFilter' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '409': { $ref: '#/components/responses/ProblemConflict' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '422': { $ref: '#/components/responses/ProblemUnprocessable' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/events/filters/{id}:
+    delete:
+      summary: Удалить свой фильтр
+      description: Право `events.read`. Чужой фильтр неотличим от отсутствующего (404).
+      x-permission: events.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/FilterID'
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '204': { description: Фильтр удалён }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/events/settings:
+    get:
+      summary: Сроки хранения событий
+      description: Право `events.read` (ТЗ 5.5).
+      x-permission: events.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      responses:
+        '200':
+          description: Сроки хранения
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EventRetention' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    put:
+      summary: Изменить сроки хранения событий
+      description: |
+        Право `events.retention.manage` (ТЗ 5.5). Метаданные — 30–3650 суток, содержимое —
+        7–3650 и не дольше метаданных. Изменение и запись `events.settings_changed` (до, после,
+        признак сокращения `reduced`) — одной транзакцией. Данные старше нового срока удаляет
+        фоновое задание целыми суточными секциями (раз в час).
+      x-permission: events.retention.manage
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EventRetentionInput' }
+      responses:
+        '200':
+          description: Сроки изменены
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EventRetention' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
 components:
   securitySchemes:
     appKey:
@@ -1091,6 +1363,33 @@ components:
       required: true
       description: ID токена API (UUID)
       schema: { type: string, format: uuid }
+    EventID:
+      name: id
+      in: path
+      required: true
+      description: ID события (UUIDv7)
+      schema: { type: string, format: uuid }
+    FilterID:
+      name: id
+      in: path
+      required: true
+      description: ID сохранённого фильтра (UUIDv7)
+      schema: { type: string, format: uuid }
+    From:
+      name: from
+      in: query
+      description: Начало периода включительно (RFC 3339); по умолчанию to минус 24 часа
+      schema: { type: string, format: date-time }
+    To:
+      name: to
+      in: query
+      description: Конец периода, не включая (RFC 3339); по умолчанию — текущее время
+      schema: { type: string, format: date-time }
+    EventFilter:
+      name: filter
+      in: query
+      description: Фильтр событий (язык — в описании GET /api/v1/events), до 2048 байт
+      schema: { type: string, maxLength: 2048 }
     IdempotencyKey:
       name: Idempotency-Key
       in: header
@@ -1694,6 +1993,134 @@ components:
             properties:
               field: { type: string }
               detail: { type: string }
+    Event:
+      description: Событие без содержимого запросов и ответов (ТЗ 5.5)
+      type: object
+      required: [id, time, received_at, gateway_id, type, storage, threats, stream, non_text_unchecked, has_content]
+      properties:
+        id: { type: string, format: uuid }
+        time: { type: string, format: date-time, description: Время события по часам шлюза }
+        received_at: { type: string, format: date-time }
+        gateway_id: { type: string, format: uuid }
+        type: { type: string, enum: [gateway_request, check, auth_failure] }
+        app: { type: string }
+        env: { type: string }
+        user: { type: string, description: Псевдоним пользователя (HMAC), не исходный идентификатор }
+        provider: { type: string }
+        model: { type: string }
+        source: { type: string }
+        policy_mode: { type: string, enum: [monitor, enforce] }
+        action: { type: string }
+        rule: { type: string }
+        severity: { type: string }
+        storage: { type: string, enum: [none, masked, full] }
+        threats:
+          type: array
+          items: { type: string, pattern: '^DM-\d{2}$' }
+        stream: { type: boolean }
+        non_text_unchecked: { type: boolean }
+        has_content: { type: boolean }
+        details:
+          type: object
+          description: Только в карточке и выгрузке JSON — решение с трассировкой, находки, задержки, токены, проверка ответа
+          additionalProperties: true
+    EventPage:
+      allOf:
+        - $ref: '#/components/schemas/PageInfo'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/Event' }
+    EventContentRequest:
+      type: object
+      required: [reason]
+      additionalProperties: false
+      properties:
+        reason: { type: string, minLength: 3, maxLength: 500, description: Причина доступа (УПД.7) }
+    EventContent:
+      type: object
+      required: [event_id, storage]
+      properties:
+        event_id: { type: string, format: uuid }
+        storage: { type: string, enum: [masked, full] }
+        request: { type: string }
+        response: { type: string }
+    EventExportRequest:
+      type: object
+      required: [format]
+      additionalProperties: false
+      properties:
+        format: { type: string, enum: [csv, json] }
+        from: { type: string, format: date-time }
+        to: { type: string, format: date-time }
+        filter: { type: string, maxLength: 2048 }
+    EventAggregate:
+      type: object
+      required: [bucket, app, type, action, severity, events, with_findings, non_text_unchecked,
+                 tokens_prompt, tokens_completion, threats]
+      properties:
+        bucket: { type: string, format: date-time }
+        app: { type: string, description: Пустая строка — приложение не указано }
+        type: { type: string }
+        action: { type: string }
+        severity: { type: string }
+        events: { type: integer }
+        with_findings: { type: integer }
+        non_text_unchecked: { type: integer }
+        tokens_prompt: { type: integer }
+        tokens_completion: { type: integer }
+        threats:
+          type: object
+          description: Число событий по ID строк матрицы обнаружения
+          additionalProperties: { type: integer }
+    EventStats:
+      type: object
+      required: [interval, from, to, items]
+      properties:
+        interval: { type: string, enum: [minute, hour] }
+        from: { type: string, format: date-time }
+        to: { type: string, format: date-time }
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/EventAggregate' }
+    NewSavedFilter:
+      type: object
+      required: [name, filter]
+      additionalProperties: false
+      properties:
+        name: { type: string, minLength: 1, maxLength: 100 }
+        filter: { type: string, maxLength: 2048 }
+    SavedFilter:
+      type: object
+      required: [id, name, filter, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        filter: { type: string, description: Каноническая запись фильтра }
+        created_at: { type: string, format: date-time }
+    SavedFilterList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/SavedFilter' }
+    EventRetention:
+      type: object
+      required: [metadata_days, content_days, updated_at]
+      properties:
+        metadata_days: { type: integer, minimum: 30, maximum: 3650 }
+        content_days: { type: integer, minimum: 7, maximum: 3650 }
+        updated_at: { type: string, format: date-time }
+    EventRetentionInput:
+      type: object
+      required: [metadata_days, content_days]
+      additionalProperties: false
+      properties:
+        metadata_days: { type: integer, minimum: 30, maximum: 3650 }
+        content_days: { type: integer, minimum: 7, maximum: 3650 }
     PageInfo:
       description: Поле конверта страницы списка; на последней странице отсутствует
       type: object

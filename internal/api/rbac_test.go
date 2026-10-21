@@ -252,8 +252,9 @@ func TestRolesAPI(t *testing.T) {
 func TestMePermissions(t *testing.T) {
 	e := newAuthEnv(t)
 	for login, want := range map[string]string{
-		"analyst": `"permissions":["self","session","system.read"]`,
-		"auditor": `"permissions":["api_tokens.read","auth_policy.read","roles.read","self","session","sessions.read","system.read","users.read"]`,
+		"analyst": `"permissions":["events.export","events.read","self","session","system.read"]`,
+		// Без events.content.read: содержимое событий — только у администратора безопасности (ТЗ 1.3).
+		"auditor": `"permissions":["api_tokens.read","auth_policy.read","events.read","roles.read","self","session","sessions.read","system.read","users.read"]`,
 	} {
 		s := e.mustLogin(t, login)
 		if w := e.call(s, "GET", "/api/v1/me", "", false); !strings.Contains(w.Body.String(), want) {
