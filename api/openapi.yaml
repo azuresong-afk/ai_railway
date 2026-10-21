@@ -178,7 +178,7 @@ components:
         user:
           type: string
           maxLength: 256
-          description: Идентификатор пользователя, если приложение берёт его из поля (`user_from: field`).
+          description: 'Идентификатор пользователя, если приложение берёт его из поля (`user_from: field`).'
     CheckResponse:
       type: object
       required: [id, decision, action, blocked, findings]

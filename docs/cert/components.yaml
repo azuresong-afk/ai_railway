@@ -8,8 +8,11 @@
 #
 # Поля:
 #   name, version        — имя и точная версия.
-#   type                 — go-module | toolchain | tool | image | github-action.
+#   type                 — go-module | toolchain | tool | image | github-action | npm-package.
 #                          Для image: name — репозиторий образа (golang), version — «тег@sha256:…».
+#                          Для npm-package: прямая зависимость web/package.json (dependencies — scope product,
+#                          devDependencies — build); транзитивные пакеты проверяет make licenses по web/package-lock.json
+#                          (ADR-0011), в реестр попадают только исключения с license_decision.
 #                          Для github-action: version — «тег@SHA коммита».
 #   scope                — product (в поставке, в SBOM) | build (только сборочная среда, ADR-0003).
 #   purpose              — зачем нужен.
@@ -147,3 +150,470 @@ components:
     justification: Стандартный шаг CI; закреплён по SHA коммита (ADR-0002).
     decision: план этапа 0, Д4; ADR-0002
     decided: 2026-10-01
+
+  - name: '@tanstack/react-query'
+    version: 5.104.5
+    type: npm-package
+    scope: product
+    purpose: Запросы к API управления и кэш ответов.
+    license: MIT
+    repository: https://github.com/TanStack/query
+    attack_surface: true
+    security_function: false
+    provided_by: Авторы пакета (реестр npm)
+    justification: Библиотека из перечня ТЗ 11.2; собственная реализация не оправдана.
+    decision: 'ТЗ 11.2; ADR-0011; план этапа 2, задача 2.21'
+    decided: 2026-10-20
+
+  - name: '@tanstack/react-table'
+    version: 9.3.1
+    type: npm-package
+    scope: product
+    purpose: Таблицы событий и списков.
+    license: MIT
+    repository: https://github.com/TanStack/table
+    attack_surface: true
+    security_function: false
+    provided_by: Авторы пакета (реестр npm)
+    justification: Библиотека из перечня ТЗ 11.2; собственная реализация не оправдана.
+    decision: 'ТЗ 11.2; ADR-0011; план этапа 2, задача 2.21'
+    decided: 2026-10-20
+
+  - name: '@tanstack/react-virtual'
+    version: 3.14.21
+    type: npm-package
+    scope: product
+    purpose: Виртуализация длинных списков событий.
+    license: MIT
+    repository: https://github.com/TanStack/virtual
+    attack_surface: true
+    security_function: false
+    provided_by: Авторы пакета (реестр npm)
+    justification: Библиотека из перечня ТЗ 11.2; собственная реализация не оправдана.
+    decision: 'ТЗ 11.2; ADR-0011; план этапа 2, задача 2.21'
+    decided: 2026-10-20
+
+  - name: date-fns
+    version: 4.4.0
+    type: npm-package
+    scope: product
+    purpose: Форматирование дат и времени.
+    license: MIT
+    repository: https://github.com/date-fns/date-fns
+    attack_surface: true
+    security_function: false
+    provided_by: Авторы пакета (реестр npm)
+    justification: Библиотека из перечня ТЗ 11.2; собственная реализация не оправдана.
+    decision: 'ТЗ 11.2; ADR-0011; план этапа 2, задача 2.21'
+    decided: 2026-10-20
+
+  - name: echarts
+    version: 6.1.0
+    type: npm-package
+    scope: product
+    purpose: Графики на дашбордах.
+    license: Apache-2.0
+    repository: https://github.com/apache/echarts
+    attack_surface: true
+    security_function: false
+    provided_by: Авторы пакета (реестр npm)
+    justification: Библиотека из перечня ТЗ 11.2; собственная реализация не оправдана.
+    decision: 'ТЗ 11.2; ADR-0011; план этапа 2, задача 2.21'
+    decided: 2026-10-20
+
+  - name: lucide-react
+    version: 1.60.0
+    type: npm-package
+    scope: product
+    purpose: Иконки интерфейса (локально, без внешних шрифтов).
+    license: ISC
+    repository: https://github.com/lucide-icons/lucide
+    attack_surface: true
+    security_function: false
+    provided_by: Авторы пакета (реестр npm)
+    justification: Библиотека из перечня ТЗ 11.2; собственная реализация не оправдана.
+    decision: 'ТЗ 11.2; ADR-0011; план этапа 2, задача 2.21'
+    decided: 2026-10-20
+
+  - name: react
+    version: 19.3.1
+    type: npm-package
+    scope: product
+    purpose: Библиотека построения интерфейса консоли.
+    license: MIT
+    repository: https://github.com/facebook/react
+    attack_surface: true
+    security_function: false
+    provided_by: Авторы пакета (реестр npm)
+    justification: Библиотека из перечня ТЗ 11.2; собственная реализация не оправдана.
+    decision: 'ТЗ 11.2; ADR-0011; план этапа 2, задача 2.21'
+    decided: 2026-10-20
+
+  - name: react-dom
+    version: 19.3.1
+    type: npm-package
+    scope: product
+    purpose: Отрисовка React в браузере.
+    license: MIT
+    repository: https://github.com/facebook/react
+    attack_surface: true
+    security_function: false
+    provided_by: Авторы пакета (реестр npm)
+    justification: Библиотека из перечня ТЗ 11.2; собственная реализация не оправдана.
+    decision: 'ТЗ 11.2; ADR-0011; план этапа 2, задача 2.21'
+    decided: 2026-10-20
+
+  - name: react-hook-form
+    version: 7.90.0
+    type: npm-package
+    scope: product
+    purpose: Формы консоли.
+    license: MIT
+    repository: https://github.com/react-hook-form/react-hook-form
+    attack_surface: true
+    security_function: false
+    provided_by: Авторы пакета (реестр npm)
+    justification: Библиотека из перечня ТЗ 11.2; собственная реализация не оправдана.
+    decision: 'ТЗ 11.2; ADR-0011; план этапа 2, задача 2.21'
+    decided: 2026-10-20
+
+  - name: react-router
+    version: 8.5.0
+    type: npm-package
+    scope: product
+    purpose: Маршрутизация страниц консоли.
+    license: MIT
+    repository: https://github.com/remix-run/react-router
+    attack_surface: true
+    security_function: false
+    provided_by: Авторы пакета (реестр npm)
+    justification: Библиотека из перечня ТЗ 11.2; собственная реализация не оправдана.
+    decision: 'ТЗ 11.2; ADR-0011; план этапа 2, задача 2.21'
+    decided: 2026-10-20
+
+  - name: zod
+    version: 4.6.7
+    type: npm-package
+    scope: product
+    purpose: Проверка данных форм и ответов API на стороне браузера.
+    license: MIT
+    repository: https://github.com/colinhacks/zod
+    attack_surface: true
+    security_function: false
+    provided_by: Авторы пакета (реестр npm)
+    justification: Библиотека из перечня ТЗ 11.2; собственная реализация не оправдана.
+    decision: 'ТЗ 11.2; ADR-0011; план этапа 2, задача 2.21'
+    decided: 2026-10-20
+
+  - name: '@eslint/js'
+    version: 10.0.1
+    type: npm-package
+    scope: build
+    purpose: Базовые правила ESLint.
+    license: MIT
+    repository: https://github.com/eslint/eslint
+    attack_surface: false
+    security_function: false
+    provided_by: Авторы пакета (реестр npm), только сборочная среда
+    justification: Инструмент из перечня ТЗ 11.2 или его необходимая зависимость; в поставку не входит.
+    decision: 'ТЗ 11.2; ADR-0011; план этапа 2, задача 2.21'
+    decided: 2026-10-20
+
+  - name: '@playwright/test'
+    version: 1.64.1
+    type: npm-package
+    scope: build
+    purpose: Сквозные тесты консоли в браузере, в том числе при строгом CSP.
+    license: Apache-2.0
+    repository: https://github.com/microsoft/playwright
+    attack_surface: false
+    security_function: false
+    provided_by: Авторы пакета (реестр npm), только сборочная среда
+    justification: Инструмент из перечня ТЗ 11.2 или его необходимая зависимость; в поставку не входит.
+    decision: 'ТЗ 11.2; ADR-0011; план этапа 2, задача 2.21'
+    decided: 2026-10-20
+
+  - name: '@tailwindcss/vite'
+    version: 4.3.3
+    type: npm-package
+    scope: build
+    purpose: Подключение Tailwind CSS к Vite.
+    license: MIT
+    repository: https://github.com/tailwindlabs/tailwindcss
+    attack_surface: false
+    security_function: false
+    provided_by: Авторы пакета (реестр npm), только сборочная среда
+    justification: Инструмент из перечня ТЗ 11.2 или его необходимая зависимость; в поставку не входит.
+    decision: 'ТЗ 11.2; ADR-0011; план этапа 2, задача 2.21'
+    decided: 2026-10-20
+
+  - name: '@testing-library/dom'
+    version: 10.4.2
+    type: npm-package
+    scope: build
+    purpose: Запросы к DOM в тестах (зависимость @testing-library/react).
+    license: MIT
+    repository: https://github.com/testing-library/dom-testing-library
+    attack_surface: false
+    security_function: false
+    provided_by: Авторы пакета (реестр npm), только сборочная среда
+    justification: Инструмент из перечня ТЗ 11.2 или его необходимая зависимость; в поставку не входит.
+    decision: 'ТЗ 11.2; ADR-0011; план этапа 2, задача 2.21'
+    decided: 2026-10-20
+
+  - name: '@testing-library/jest-dom'
+    version: 7.0.1
+    type: npm-package
+    scope: build
+    purpose: Проверки состояния DOM в тестах.
+    license: MIT
+    repository: https://github.com/testing-library/jest-dom
+    attack_surface: false
+    security_function: false
+    provided_by: Авторы пакета (реестр npm), только сборочная среда
+    justification: Инструмент из перечня ТЗ 11.2 или его необходимая зависимость; в поставку не входит.
+    decision: 'ТЗ 11.2; ADR-0011; план этапа 2, задача 2.21'
+    decided: 2026-10-20
+
+  - name: '@testing-library/react'
+    version: 16.3.3
+    type: npm-package
+    scope: build
+    purpose: Тестирование компонентов React.
+    license: MIT
+    repository: https://github.com/testing-library/react-testing-library
+    attack_surface: false
+    security_function: false
+    provided_by: Авторы пакета (реестр npm), только сборочная среда
+    justification: Инструмент из перечня ТЗ 11.2 или его необходимая зависимость; в поставку не входит.
+    decision: 'ТЗ 11.2; ADR-0011; план этапа 2, задача 2.21'
+    decided: 2026-10-20
+
+  - name: '@types/node'
+    version: 26.6.5
+    type: npm-package
+    scope: build
+    purpose: Типы Node.js для конфигураций сборки и тестов.
+    license: MIT
+    repository: https://github.com/DefinitelyTyped/DefinitelyTyped
+    attack_surface: false
+    security_function: false
+    provided_by: Авторы пакета (реестр npm), только сборочная среда
+    justification: Инструмент из перечня ТЗ 11.2 или его необходимая зависимость; в поставку не входит.
+    decision: 'ТЗ 11.2; ADR-0011; план этапа 2, задача 2.21'
+    decided: 2026-10-20
+
+  - name: '@types/react'
+    version: 19.3.0
+    type: npm-package
+    scope: build
+    purpose: Типы React.
+    license: MIT
+    repository: https://github.com/DefinitelyTyped/DefinitelyTyped
+    attack_surface: false
+    security_function: false
+    provided_by: Авторы пакета (реестр npm), только сборочная среда
+    justification: Инструмент из перечня ТЗ 11.2 или его необходимая зависимость; в поставку не входит.
+    decision: 'ТЗ 11.2; ADR-0011; план этапа 2, задача 2.21'
+    decided: 2026-10-20
+
+  - name: '@types/react-dom'
+    version: 19.3.0
+    type: npm-package
+    scope: build
+    purpose: Типы React DOM.
+    license: MIT
+    repository: https://github.com/DefinitelyTyped/DefinitelyTyped
+    attack_surface: false
+    security_function: false
+    provided_by: Авторы пакета (реестр npm), только сборочная среда
+    justification: Инструмент из перечня ТЗ 11.2 или его необходимая зависимость; в поставку не входит.
+    decision: 'ТЗ 11.2; ADR-0011; план этапа 2, задача 2.21'
+    decided: 2026-10-20
+
+  - name: '@vitejs/plugin-react'
+    version: 6.1.2
+    type: npm-package
+    scope: build
+    purpose: Подключение React к Vite.
+    license: MIT
+    repository: https://github.com/vitejs/vite-plugin-react
+    attack_surface: false
+    security_function: false
+    provided_by: Авторы пакета (реестр npm), только сборочная среда
+    justification: Инструмент из перечня ТЗ 11.2 или его необходимая зависимость; в поставку не входит.
+    decision: 'ТЗ 11.2; ADR-0011; план этапа 2, задача 2.21'
+    decided: 2026-10-20
+
+  - name: eslint
+    version: 10.13.0
+    type: npm-package
+    scope: build
+    purpose: 'Линтер TypeScript (запреты dangerouslySetInnerHTML, eval, new Function, localStorage).'
+    license: MIT
+    repository: https://github.com/eslint/eslint
+    attack_surface: false
+    security_function: false
+    provided_by: Авторы пакета (реестр npm), только сборочная среда
+    justification: Инструмент из перечня ТЗ 11.2 или его необходимая зависимость; в поставку не входит.
+    decision: 'ТЗ 11.2; ADR-0011; план этапа 2, задача 2.21'
+    decided: 2026-10-20
+
+  - name: eslint-plugin-react-hooks
+    version: 7.1.1
+    type: npm-package
+    scope: build
+    purpose: Правила ESLint для хуков React.
+    license: MIT
+    repository: https://github.com/facebook/react
+    attack_surface: false
+    security_function: false
+    provided_by: Авторы пакета (реестр npm), только сборочная среда
+    justification: Инструмент из перечня ТЗ 11.2 или его необходимая зависимость; в поставку не входит.
+    decision: 'ТЗ 11.2; ADR-0011; план этапа 2, задача 2.21'
+    decided: 2026-10-20
+
+  - name: eslint-plugin-security
+    version: 4.2.0
+    type: npm-package
+    scope: build
+    purpose: Правила ESLint для небезопасных конструкций JavaScript.
+    license: Apache-2.0
+    repository: https://github.com/eslint-community/eslint-plugin-security
+    attack_surface: false
+    security_function: false
+    provided_by: Авторы пакета (реестр npm), только сборочная среда
+    justification: Инструмент из перечня ТЗ 11.2 или его необходимая зависимость; в поставку не входит.
+    decision: 'ТЗ 11.2; ADR-0011; план этапа 2, задача 2.21'
+    decided: 2026-10-20
+
+  - name: globals
+    version: 17.13.0
+    type: npm-package
+    scope: build
+    purpose: Списки глобальных имён для ESLint.
+    license: MIT
+    repository: https://github.com/sindresorhus/globals
+    attack_surface: false
+    security_function: false
+    provided_by: Авторы пакета (реестр npm), только сборочная среда
+    justification: Инструмент из перечня ТЗ 11.2 или его необходимая зависимость; в поставку не входит.
+    decision: 'ТЗ 11.2; ADR-0011; план этапа 2, задача 2.21'
+    decided: 2026-10-20
+
+  - name: jsdom
+    version: 29.1.1
+    type: npm-package
+    scope: build
+    purpose: Среда DOM для модульных тестов.
+    license: MIT
+    repository: https://github.com/jsdom/jsdom
+    attack_surface: false
+    security_function: false
+    provided_by: Авторы пакета (реестр npm), только сборочная среда
+    justification: Инструмент из перечня ТЗ 11.2 или его необходимая зависимость; в поставку не входит.
+    decision: 'ТЗ 11.2; ADR-0011; план этапа 2, задача 2.21'
+    decided: 2026-10-20
+
+  - name: openapi-typescript
+    version: 7.13.0
+    type: npm-package
+    scope: build
+    purpose: Типы TypeScript из api/openapi.yaml (источник истины контракта API).
+    license: MIT
+    repository: https://github.com/openapi-ts/openapi-typescript
+    attack_surface: false
+    security_function: false
+    provided_by: Авторы пакета (реестр npm), только сборочная среда
+    justification: Инструмент из перечня ТЗ 11.2 или его необходимая зависимость; в поставку не входит.
+    decision: 'ТЗ 11.2; ADR-0011; план этапа 2, задача 2.21'
+    decided: 2026-10-20
+
+  - name: tailwindcss
+    version: 4.3.3
+    type: npm-package
+    scope: build
+    purpose: Генерация CSS из утилитарных классов.
+    license: MIT
+    repository: https://github.com/tailwindlabs/tailwindcss
+    attack_surface: false
+    security_function: false
+    provided_by: Авторы пакета (реестр npm), только сборочная среда
+    justification: Инструмент из перечня ТЗ 11.2 или его необходимая зависимость; в поставку не входит.
+    decision: 'ТЗ 11.2; ADR-0011; план этапа 2, задача 2.21'
+    decided: 2026-10-20
+
+  - name: typescript
+    version: 5.9.3
+    type: npm-package
+    scope: build
+    purpose: Проверка типов фронтенда.
+    license: Apache-2.0
+    repository: https://github.com/microsoft/TypeScript
+    attack_surface: false
+    security_function: false
+    provided_by: Авторы пакета (реестр npm), только сборочная среда
+    justification: Инструмент из перечня ТЗ 11.2 или его необходимая зависимость; в поставку не входит.
+    decision: 'ТЗ 11.2; ADR-0011; план этапа 2, задача 2.21'
+    decided: 2026-10-20
+
+  - name: typescript-eslint
+    version: 8.72.0
+    type: npm-package
+    scope: build
+    purpose: Разбор и правила ESLint для TypeScript.
+    license: MIT
+    repository: https://github.com/typescript-eslint/typescript-eslint
+    attack_surface: false
+    security_function: false
+    provided_by: Авторы пакета (реестр npm), только сборочная среда
+    justification: Инструмент из перечня ТЗ 11.2 или его необходимая зависимость; в поставку не входит.
+    decision: 'ТЗ 11.2; ADR-0011; план этапа 2, задача 2.21'
+    decided: 2026-10-20
+
+  - name: vite
+    version: 8.3.4
+    type: npm-package
+    scope: build
+    purpose: Сборка и локальный сервер разработки веб-консоли.
+    license: MIT
+    repository: https://github.com/vitejs/vite
+    attack_surface: false
+    security_function: false
+    provided_by: Авторы пакета (реестр npm), только сборочная среда
+    justification: Инструмент из перечня ТЗ 11.2 или его необходимая зависимость; в поставку не входит.
+    decision: 'ТЗ 11.2; ADR-0011; план этапа 2, задача 2.21'
+    decided: 2026-10-20
+
+  - name: vitest
+    version: 5.0.5
+    type: npm-package
+    scope: build
+    purpose: Модульные тесты фронтенда.
+    license: MIT
+    repository: https://github.com/vitest-dev/vitest
+    attack_surface: false
+    security_function: false
+    provided_by: Авторы пакета (реестр npm), только сборочная среда
+    justification: Инструмент из перечня ТЗ 11.2 или его необходимая зависимость; в поставку не входит.
+    decision: 'ТЗ 11.2; ADR-0011; план этапа 2, задача 2.21'
+    decided: 2026-10-20
+
+  # Транзитивная зависимость поставки с лицензией вне списка CLAUDE.md. 0BSD —
+  # допускающая лицензия без условий; решение владельца подтверждено только
+  # для пакетов сборочной среды, для этого пакета поставки — на подтверждении
+  # (docs/adr/0011-instrumenty-frontenda.md, «Открытый вопрос»).
+  - name: tslib
+    version: 2.3.0
+    type: npm-package
+    scope: product
+    purpose: Вспомогательные функции TypeScript; зависимость echarts и zrender.
+    license: 0BSD
+    license_decision: ADR-0011 — ожидает подтверждения владельца
+    repository: https://github.com/microsoft/tslib
+    attack_surface: true
+    security_function: false
+    provided_by: Microsoft (реестр npm)
+    justification: Транзитивная зависимость echarts, заменить нельзя без отказа от echarts.
+    decision: 'ADR-0011; план этапа 2, задача 2.21'
+    decided: 2026-10-20

@@ -60,9 +60,19 @@ help: ## Список целей
 # зелёный make check неполный — об этом печатается предупреждение.
 PENDING_CHECKS :=
 
-check: fmt-check vet docs-check repocheck licenses vendor-check lint lint-selftest sast test build e2e dm-coverage detector-quality sbom fuzz-smoke vuln ## Все проверки перед pull request
+# Проверки фронтенда нужны Node.js и npm (ADR-0011). Пока их нет в сборочном
+# образе, на такой машине проверки не запускаются молча, а попадают в
+# PENDING_CHECKS с предупреждением в конце make check.
+ifeq ($(shell command -v npm 2>/dev/null),)
+PENDING_CHECKS += web-check web-e2e
+WEB_CHECKS :=
+else
+WEB_CHECKS := web-check web-e2e
+endif
+
+check: fmt-check vet docs-check repocheck licenses vendor-check lint lint-selftest sast test build e2e dm-coverage detector-quality sbom fuzz-smoke vuln $(WEB_CHECKS) ## Все проверки перед pull request
 	@if [ -n "$(strip $(PENDING_CHECKS))" ]; then \
-		echo "ВНИМАНИЕ: make check неполный, ещё не реализованы: $(PENDING_CHECKS) (docs/plans/stage-0.md)"; fi
+		echo "ВНИМАНИЕ: make check неполный, не выполнены: $(PENDING_CHECKS) (docs/plans/stage-0.md; для web-* нужен Node.js, web/README.md)"; fi
 
 .PHONY: fmt-check
 fmt-check: ## Форматирование Go-кода (gofmt)
@@ -92,7 +102,7 @@ bench: ## Бенчмарки детекторов и реестра (задер�
 
 .PHONY: sbom
 sbom: build $(BIN)/sbom-utility ## SBOM продукта (CycloneDX 1.6) из собранных бинарников и проверка формата
-	go run ./tools/sbom -registry docs/cert/components.yaml -gosum go.sum -out $(BUILD)/sbom/aisec.cdx.json \
+	go run ./tools/sbom -registry docs/cert/components.yaml -gosum go.sum -npm-lock web/package-lock.json -out $(BUILD)/sbom/aisec.cdx.json \
 		-version '$(VERSION)' -timestamp '$(SOURCE_DATE)' $(addprefix $(BUILD)/bin/,$(PRODUCT_CMDS))
 	$(BIN)/sbom-utility validate --quiet --input-file $(BUILD)/sbom/aisec.cdx.json
 	go run ./tools/sbom -check $(BUILD)/sbom/aisec.cdx.json
@@ -182,6 +192,56 @@ vuln: $(BIN)/govulncheck ## Уязвимости зависимостей (govul
 $(BIN)/govulncheck:
 	@echo "Нет $@: выполните make tools (или используйте сборочный образ)"; exit 1
 
+# Фронтенд (web/, ADR-0011). Скрытых загрузок нет: зависимости ставит только
+# make web-deps (сеть или кэш npm) строго по package-lock.json с проверкой
+# integrity и без скриптов установки; остальные цели работают с готовым
+# web/node_modules.
+WEB_NPM := npm --prefix web
+
+.PHONY: web-deps
+web-deps: ## Установить зависимости фронтенда из web/package-lock.json (нужна сеть или кэш npm)
+	$(WEB_NPM) ci --ignore-scripts
+
+.PHONY: web-deps-offline
+web-deps-offline: ## То же без сети: только из кэша npm
+	$(WEB_NPM) ci --ignore-scripts --offline
+
+web/node_modules/.package-lock.json:
+	@echo "Нет web/node_modules: выполните make web-deps (или web-deps-offline)"; exit 1
+
+.PHONY: web-lint
+web-lint: web/node_modules/.package-lock.json ## ESLint фронтенда (запреты dangerouslySetInnerHTML, eval, new Function, localStorage)
+	$(WEB_NPM) run lint
+
+.PHONY: web-typecheck
+web-typecheck: web/node_modules/.package-lock.json ## Проверка типов фронтенда
+	$(WEB_NPM) run typecheck
+
+.PHONY: web-test
+web-test: web/node_modules/.package-lock.json ## Модульные тесты фронтенда (vitest)
+	$(WEB_NPM) run test
+
+.PHONY: web-api-types
+web-api-types: web/node_modules/.package-lock.json ## Типы TypeScript из api/openapi.yaml (web/src/api/schema.d.ts)
+	$(WEB_NPM) run gen:api
+
+.PHONY: web-api-check
+web-api-check: web-api-types ## Типы API в репозитории соответствуют api/openapi.yaml
+	@git diff --exit-code -- web/src/api/schema.d.ts || { echo "web/src/api/schema.d.ts устарел: make web-api-types и закоммитьте"; exit 1; }
+
+.PHONY: web-build
+web-build: web/node_modules/.package-lock.json ## Сборка статики в web/dist (встраивается в aisec-server при go build)
+	$(WEB_NPM) run build
+
+.PHONY: web-check
+web-check: web-lint web-typecheck web-test web-api-check web-build ## Все проверки фронтенда без браузера
+
+# Браузер — из PLAYWRIGHT_BROWSERS_PATH (сборочный образ) или AISEC_CHROMIUM;
+# Playwright ничего не скачивает (скрипты установки отключены).
+.PHONY: web-e2e
+web-e2e: web-build ## Сквозные тесты консоли в Chromium при строгом CSP (ТЗ, 6.9)
+	$(WEB_NPM) run e2e
+
 .PHONY: tools
 tools: ## Установить инструменты разработки в bin/ по зафиксированным версиям
 	@mkdir -p $(BIN)
@@ -257,3 +317,4 @@ check-offline: build-image ## make check в сборочном образе бе
 .PHONY: clean
 clean: ## Удалить результаты сборки
 	rm -rf $(BUILD)
+	find web/dist -mindepth 1 ! -name .gitkeep -delete 2>/dev/null || true

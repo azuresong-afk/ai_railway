@@ -25,6 +25,7 @@ import (
 
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/tools/internal/components"
+	"github.com/azuresong-afk/ai_railway/tools/internal/npmlock"
 )
 
 // maxBinary ограничивает размер анализируемого бинарника.
@@ -37,13 +38,14 @@ func main() {
 	timestamp := flag.String("timestamp", "", "время формирования (RFC 3339), для воспроизводимости")
 	check := flag.String("check", "", "только проверить готовый SBOM на обязательные поля и выйти")
 	goSum := flag.String("gosum", "go.sum", "go.sum модуля: хеши модулей для сборки с vendor/, где их нет в сведениях о сборке")
+	npmLock := flag.String("npm-lock", "", "package-lock.json веб-консоли: npm-пакеты поставки попадают в SBOM (пусто — без них)")
 	flag.Parse()
 
 	var err error
 	if *check != "" {
 		err = checkFile(*check)
 	} else {
-		err = run(*registry, *goSum, *out, *version, *timestamp, flag.Args())
+		err = run(*registry, *goSum, *npmLock, *out, *version, *timestamp, flag.Args())
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "sbom:", err)
@@ -51,7 +53,7 @@ func main() {
 	}
 }
 
-func run(registryPath, goSumPath, out, version, timestamp string, binaries []string) error {
+func run(registryPath, goSumPath, npmLockPath, out, version, timestamp string, binaries []string) error {
 	if len(binaries) == 0 {
 		return errors.New("не указаны бинарники")
 	}
@@ -82,6 +84,16 @@ func run(registryPath, goSumPath, out, version, timestamp string, binaries []str
 	if err != nil {
 		return err
 	}
+	var lock *npmlock.Lock
+	if npmLockPath != "" {
+		data, err := readSBOMInput(npmLockPath)
+		if err != nil {
+			return err
+		}
+		if lock, err = npmlock.Parse(data); err != nil {
+			return fmt.Errorf("%s: %w", npmLockPath, err)
+		}
+	}
 	sums, err := readGoSum(goSumPath)
 	if err != nil {
 		return err
@@ -95,7 +107,7 @@ func run(registryPath, goSumPath, out, version, timestamp string, binaries []str
 		fillSums(&b, sums)
 		bins = append(bins, b)
 	}
-	bom, err := Build(reg, bins, version, ts, hasher)
+	bom, err := BuildWithNPM(reg, bins, lock, version, ts, hasher)
 	if err != nil {
 		return err
 	}
@@ -245,4 +257,16 @@ func ParseBOM(data []byte) (*BOM, error) {
 		return nil, fmt.Errorf("разбор SBOM: %w", err)
 	}
 	return &bom, nil
+}
+
+// readSBOMInput читает входной файл (lock-файл) с ограничением размера.
+func readSBOMInput(path string) ([]byte, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if info.Size() > npmlock.MaxFileSize {
+		return nil, fmt.Errorf("%s больше %d байт", path, npmlock.MaxFileSize)
+	}
+	return os.ReadFile(path) //nolint:gosec // G304: путь к lock-файлу задаёт Makefile
 }
