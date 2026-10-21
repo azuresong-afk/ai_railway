@@ -29,65 +29,6 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/CheckRequest' }
       responses:
-    ProblemUnauthorized:
-      description: Требуется вход (`unauthorized`)
-      content:
-        application/problem+json:
-          schema: { $ref: '#/components/schemas/Problem' }
-    ProblemForbidden:
-      description: Недостаточно прав (`forbidden`)
-      content:
-        application/problem+json:
-          schema: { $ref: '#/components/schemas/Problem' }
-    ProblemInternal:
-      description: Внутренняя ошибка (`internal_error`)
-      content:
-        application/problem+json:
-          schema: { $ref: '#/components/schemas/Problem' }
-    ProblemInvalid:
-      description: Неверный запрос (`invalid_request`); ошибки полей — в `errors`
-      content:
-        application/problem+json:
-          schema: { $ref: '#/components/schemas/Problem' }
-    ProblemNotFound:
-      description: Не найдено (`not_found`)
-      content:
-        application/problem+json:
-          schema: { $ref: '#/components/schemas/Problem' }
-    ProblemConflict:
-      description: Конфликт с состоянием (`conflict`)
-      content:
-        application/problem+json:
-          schema: { $ref: '#/components/schemas/Problem' }
-    ProblemUnprocessable:
-      description: Действие недопустимо (`unprocessable`)
-      content:
-        application/problem+json:
-          schema: { $ref: '#/components/schemas/Problem' }
-    ProblemTooLarge:
-      description: Тело запроса больше допустимого (`payload_too_large`)
-      content:
-        application/problem+json:
-          schema: { $ref: '#/components/schemas/Problem' }
-    ProblemUnsupportedMedia:
-      description: Тело не в формате JSON (`unsupported_media_type`)
-      content:
-        application/problem+json:
-          schema: { $ref: '#/components/schemas/Problem' }
-    RateLimited:
-      description: Превышен предел частоты запросов (`rate_limited`, ЗИ.6)
-      headers:
-        Retry-After: { description: Через сколько секунд повторить, schema: { type: integer } }
-      content:
-        application/problem+json:
-          schema: { $ref: '#/components/schemas/Problem' }
-    Unavailable:
-      description: Сервер не готов (`service_unavailable`)
-      headers:
-        Retry-After: { description: Через сколько секунд повторить, schema: { type: integer } }
-      content:
-        application/problem+json:
-          schema: { $ref: '#/components/schemas/Problem' }
         '200':
           description: Решение по тексту
           headers:
@@ -614,6 +555,65 @@ components:
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
+    ProblemUnauthorized:
+      description: Требуется вход (`unauthorized`)
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    ProblemForbidden:
+      description: Недостаточно прав (`forbidden`)
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    ProblemInternal:
+      description: Внутренняя ошибка (`internal_error`)
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    ProblemInvalid:
+      description: Неверный запрос (`invalid_request`); ошибки полей — в `errors`
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    ProblemNotFound:
+      description: Не найдено (`not_found`)
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    ProblemConflict:
+      description: Конфликт с состоянием (`conflict`)
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    ProblemUnprocessable:
+      description: Действие недопустимо (`unprocessable`)
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    ProblemTooLarge:
+      description: Тело запроса больше допустимого (`payload_too_large`)
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    ProblemUnsupportedMedia:
+      description: Тело не в формате JSON (`unsupported_media_type`)
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    RateLimited:
+      description: Превышен предел частоты запросов (`rate_limited`, ЗИ.6)
+      headers:
+        Retry-After: { description: Через сколько секунд повторить, schema: { type: integer } }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Unavailable:
+      description: Сервер не готов (`service_unavailable`)
+      headers:
+        Retry-After: { description: Через сколько секунд повторить, schema: { type: integer } }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
   schemas:
     Status:
       type: object

@@ -125,10 +125,1021 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/healthz": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Живость процесса (шлюз и сервер управления) */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Процесс работает */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Status"];
+                    };
+                };
+                429: components["responses"]["RateLimited"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/readyz": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Готовность к работе (сервер управления: доступна база данных) */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Готов */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Status"];
+                    };
+                };
+                429: components["responses"]["RateLimited"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/system/info": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Сведения о сервере (версия)
+         * @description Право `system.read`. Служит образцом защищённого эндпоинта каркаса.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Сведения о сервере */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["SystemInfo"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/setup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Нужна ли первичная настройка
+         * @description Открыт. `setup_required` — в установке ещё нет ни одной учётной записи (ЗИ.4).
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Состояние настройки */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["SetupStatus"];
+                    };
+                };
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+            };
+        };
+        put?: never;
+        /**
+         * Первичная настройка — создание первого администратора безопасности
+         * @description ЗИ.4, ИАФ.1. Открыт, но требует одноразовый токен из вывода `aisec-cli init`
+         *     (`aisec_setup_` и 43 символа base64url, срок — 24 часа). Пароль задаёт сам
+         *     администратор, он проверяется по парольной политике. Токен гасится в одной транзакции
+         *     с созданием учётной записи; параллельные запросы создадут ровно одного администратора.
+         *     Неверный, истёкший или погашенный токен, а также уже выполненная настройка — 403
+         *     без уточнения причины. Пишет `setup.completed` (успех и отказ, без токена). Сессию не
+         *     открывает: дальше — обычный вход.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["SetupRequest"];
+                };
+            };
+            responses: {
+                /** @description Администратор безопасности создан */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["User"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                403: components["responses"]["ProblemForbidden"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/login": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Вход в консоль по логину и паролю
+         * @description ИАФ.1–4, УПД.4, решение Р6. Любой отказ (нет учётной записи, неверный пароль,
+         *     блокировка после неудач, деактивация, истёкший временный пароль) — один и тот же
+         *     ответ 401: по ответу нельзя перебирать логины. Причина пишется в журнал аудита
+         *     (`auth.login_failed`, `auth.locked`). При успехе выдаются cookie `__Host-aisec_session`
+         *     (HttpOnly, Secure, SameSite=Strict) и `__Host-aisec_csrf` (Secure, SameSite=Strict,
+         *     читается интерфейсом). Если пароль временный или истёк, сессия получает
+         *     `session_state: password_change` — доступны только `/api/v1/me`, смена пароля и выход.
+         *     Тело — только `application/json`, поэтому HTML-форма с чужого сайта вход не выполнит.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["LoginRequest"];
+                };
+            };
+            responses: {
+                /** @description Вход выполнен */
+                200: {
+                    headers: {
+                        /** @description `__Host-aisec_session` и `__Host-aisec_csrf` */
+                        "Set-Cookie"?: string;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Me"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/logout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Выход — завершение текущей сессии
+         * @description Право `self`. Изменяющий запрос — с заголовком `X-CSRF-Token`. Пишет `auth.logout`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Сессия завершена */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/password": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Смена своего пароля
+         * @description Право `self`; доступно и сессии `password_change` (ИАФ.3). Проверяются текущий
+         *     пароль, парольная политика и история (ИАФ.2). Неверный текущий пароль считается
+         *     неудачной попыткой (ИАФ.4): при блокировке завершаются все сессии. После смены
+         *     остальные сессии пользователя завершаются, текущая получает полный доступ.
+         *     Пока учётная запись заблокирована, пароль не меняется и текущий не проверяется — 409.
+         *     Пишет `auth.password_changed`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["PasswordChange"];
+                };
+            };
+            responses: {
+                /** @description Пароль изменён */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/policy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Парольная политика и настройки входа
+         * @description Право `auth_policy.read` (ИАФ.2, ИАФ.4, УПД.4).
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Настройки */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["AuthPolicy"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+            };
+        };
+        /**
+         * Изменить парольную политику и настройки входа
+         * @description Право `auth_policy.manage`. Все поля обязательны. Пишет `auth.policy_changed` со значениями до и после.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["AuthPolicy"];
+                };
+            };
+            responses: {
+                /** @description Настройки сохранены */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["AuthPolicy"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Текущий пользователь и состояние сессии
+         * @description Право `self`. Вне `/api/v1/auth/`, чтобы строгий предел частоты входа не мешал консоли.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Пользователь */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Me"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/users": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Список учётных записей
+         * @description Право `users.read`. Порядок — по времени создания.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description Размер страницы */
+                    limit?: components["parameters"]["Limit"];
+                    /** @description Непрозрачный курсор из `next_cursor` предыдущей страницы */
+                    cursor?: components["parameters"]["Cursor"];
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Страница списка */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["UserPage"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+            };
+        };
+        put?: never;
+        /**
+         * Создать учётную запись с временным паролем
+         * @description Право `users.manage` (ИАФ.1, ИАФ.3). Временный пароль генерирует сервер и
+         *     показывает один раз; при первом входе его нужно сменить. Без `Idempotency-Key`:
+         *     ответ с паролем не запоминается, повтор отклоняется по занятому логину (409).
+         *     Пишет `user.create`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["NewUser"];
+                };
+            };
+            responses: {
+                /** @description Учётная запись создана */
+                201: {
+                    headers: {
+                        Location?: string;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["UserWithPassword"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/users/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Учётная запись
+         * @description Право `users.read`.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description ID учётной записи (UUID) */
+                    id: components["parameters"]["UserID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Учётная запись */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["User"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/users/{id}/deactivate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Деактивировать учётную запись
+         * @description Право `users.manage` (УПД.5). Учётные записи не удаляются. Сессии завершаются.
+         *     Нельзя деактивировать себя (422) и последнего активного администратора
+         *     безопасности (409). Пишет `user.deactivate`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID учётной записи (UUID) */
+                    id: components["parameters"]["UserID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Учётная запись деактивирована */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["User"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                409: components["responses"]["ProblemConflict"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/users/{id}/activate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Повторно активировать учётную запись и снять блокировку
+         * @description Право `users.manage` (УПД.5, ИАФ.4). Снимает и блокировку после неудачных попыток. Пишет `user.activate`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID учётной записи (UUID) */
+                    id: components["parameters"]["UserID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Учётная запись активна */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["User"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/users/{id}/password-reset": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Сбросить пароль пользователя на временный
+         * @description Право `users.manage` (ИАФ.3). Новый временный пароль показывается один раз,
+         *     блокировка снимается, сессии пользователя завершаются. Свой пароль так не
+         *     сбрасывается (422). Пишет `user.password_reset`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID учётной записи (UUID) */
+                    id: components["parameters"]["UserID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Временный пароль выдан */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["UserWithPassword"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/users/{id}/sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Незавершённые сессии пользователя
+         * @description Право `sessions.read` (УПД.4). Токены не выдаются.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description ID учётной записи (UUID) */
+                    id: components["parameters"]["UserID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Сессии, новые первыми */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["SessionList"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+            };
+        };
+        put?: never;
+        post?: never;
+        /**
+         * Принудительно завершить все сессии пользователя
+         * @description Право `sessions.manage` (УПД.4). Пишет `auth.sessions_revoked`.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID учётной записи (UUID) */
+                    id: components["parameters"]["UserID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Сессии завершены */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            /** @description Сколько сессий завершено */
+                            revoked: number;
+                        };
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        Status: {
+            status: string;
+        };
+        SystemInfo: {
+            version: string;
+        };
+        SetupStatus: {
+            setup_required: boolean;
+        };
+        SetupRequest: {
+            /**
+             * Format: password
+             * @description Токен из вывода aisec-cli init
+             */
+            token: string;
+            login: string;
+            display_name: string;
+            /** Format: password */
+            password: string;
+        };
+        LoginRequest: {
+            /** @description Логин без учёта регистра: латиница, цифры, «.», «_», «-», до 64 символов */
+            login: string;
+            /** Format: password */
+            password: string;
+        };
+        PasswordChange: {
+            /** Format: password */
+            current_password: string;
+            /**
+             * Format: password
+             * @description По парольной политике (ИАФ.2), не совпадает с текущим и последними из истории
+             */
+            new_password: string;
+        };
+        AuthPolicy: {
+            /** @default 12 */
+            password_min_length: number;
+            /**
+             * @description Строчные, прописные, цифры, прочие символы
+             * @default 3
+             */
+            password_min_classes: number;
+            /** @default 5 */
+            password_history: number;
+            /**
+             * @description 0 — бессрочно
+             * @default 90
+             */
+            password_max_age_days: number;
+            /** @default 14 */
+            password_warn_days: number;
+            /** @default 5 */
+            lockout_threshold: number;
+            /**
+             * @description 0 — до разблокировки администратором
+             * @default 15
+             */
+            lockout_minutes: number;
+            /** @default 15 */
+            session_idle_minutes: number;
+            /** @default 5 */
+            session_max_per_user: number;
+            /** @default 72 */
+            temp_password_hours: number;
+        };
+        /** @enum {string} */
+        Role: "security_admin" | "system_admin" | "analyst" | "auditor" | "app_owner";
+        User: {
+            /** Format: uuid */
+            id: string;
+            login: string;
+            display_name: string;
+            role: components["schemas"]["Role"];
+            /** @enum {string} */
+            status: "active" | "deactivated";
+            /** @description Заблокирована после неудачных попыток (ИАФ.4) */
+            locked: boolean;
+            /**
+             * Format: date-time
+             * @description Нет при блокировке до разблокировки администратором
+             */
+            locked_until?: string;
+            must_change_password: boolean;
+            /** Format: date-time */
+            password_changed_at: string;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            last_login_at?: string;
+            /** Format: date-time */
+            deactivated_at?: string;
+        };
+        NewUser: {
+            login: string;
+            display_name: string;
+            role: components["schemas"]["Role"];
+        };
+        UserWithPassword: {
+            user: components["schemas"]["User"];
+            /**
+             * Format: password
+             * @description Показывается один раз (ИАФ.3)
+             */
+            temporary_password: string;
+        };
+        UserPage: components["schemas"]["PageInfo"] & {
+            items: components["schemas"]["User"][];
+        };
+        Me: {
+            user: components["schemas"]["User"];
+            /** @enum {string} */
+            session_state: "active" | "password_change";
+            /** @description Есть, если пора предупредить о смене пароля (ИАФ.2) */
+            password_expires_in_days?: number;
+        };
+        SessionList: {
+            items: {
+                /** Format: uuid */
+                id: string;
+                /** @enum {string} */
+                state: "active" | "password_change";
+                /** Format: date-time */
+                created_at: string;
+                /** Format: date-time */
+                last_seen_at: string;
+                /** Format: date-time */
+                expires_at: string;
+                source_ip?: string;
+                user_agent: string;
+            }[];
+        };
+        /** @description Problem Details (RFC 9457); `detail` — русский текст для пользователя */
+        Problem: {
+            /** @description URN вида urn:aisec:problem:<code> */
+            type: string;
+            title: string;
+            status: number;
+            detail: string;
+            /** @enum {string} */
+            code: "invalid_request" | "unauthorized" | "forbidden" | "not_found" | "method_not_allowed" | "conflict" | "payload_too_large" | "unsupported_media_type" | "unprocessable" | "rate_limited" | "internal_error" | "service_unavailable";
+            errors?: {
+                field: string;
+                detail: string;
+            }[];
+        };
+        /** @description Поле конверта страницы списка; на последней странице отсутствует */
+        PageInfo: {
+            next_cursor?: string;
+        };
         Error: {
             error: {
                 message: string;
@@ -280,8 +1291,122 @@ export interface components {
                 "application/json": components["schemas"]["Error"];
             };
         };
+        /** @description Требуется вход (`unauthorized`) */
+        ProblemUnauthorized: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/problem+json": components["schemas"]["Problem"];
+            };
+        };
+        /** @description Недостаточно прав (`forbidden`) */
+        ProblemForbidden: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/problem+json": components["schemas"]["Problem"];
+            };
+        };
+        /** @description Внутренняя ошибка (`internal_error`) */
+        ProblemInternal: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/problem+json": components["schemas"]["Problem"];
+            };
+        };
+        /** @description Неверный запрос (`invalid_request`); ошибки полей — в `errors` */
+        ProblemInvalid: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/problem+json": components["schemas"]["Problem"];
+            };
+        };
+        /** @description Не найдено (`not_found`) */
+        ProblemNotFound: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/problem+json": components["schemas"]["Problem"];
+            };
+        };
+        /** @description Конфликт с состоянием (`conflict`) */
+        ProblemConflict: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/problem+json": components["schemas"]["Problem"];
+            };
+        };
+        /** @description Действие недопустимо (`unprocessable`) */
+        ProblemUnprocessable: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/problem+json": components["schemas"]["Problem"];
+            };
+        };
+        /** @description Тело запроса больше допустимого (`payload_too_large`) */
+        ProblemTooLarge: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/problem+json": components["schemas"]["Problem"];
+            };
+        };
+        /** @description Тело не в формате JSON (`unsupported_media_type`) */
+        ProblemUnsupportedMedia: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/problem+json": components["schemas"]["Problem"];
+            };
+        };
+        /** @description Превышен предел частоты запросов (`rate_limited`, ЗИ.6) */
+        RateLimited: {
+            headers: {
+                /** @description Через сколько секунд повторить */
+                "Retry-After"?: number;
+                [name: string]: unknown;
+            };
+            content: {
+                "application/problem+json": components["schemas"]["Problem"];
+            };
+        };
+        /** @description Сервер не готов (`service_unavailable`) */
+        Unavailable: {
+            headers: {
+                /** @description Через сколько секунд повторить */
+                "Retry-After"?: number;
+                [name: string]: unknown;
+            };
+            content: {
+                "application/problem+json": components["schemas"]["Problem"];
+            };
+        };
     };
-    parameters: never;
+    parameters: {
+        /** @description Размер страницы */
+        Limit: number;
+        /** @description Непрозрачный курсор из `next_cursor` предыдущей страницы */
+        Cursor: string;
+        /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+        CSRFToken: string;
+        /** @description ID учётной записи (UUID) */
+        UserID: string;
+        /** @description Ключ повторяемости создающего запроса, 1–64 символа `[A-Za-z0-9._-]` */
+        IdempotencyKey: string;
+    };
     requestBodies: never;
     headers: {
         /** @description Идентификатор события check или gateway_request */
