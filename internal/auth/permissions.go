@@ -51,6 +51,11 @@ const (
 	PermProvidersRead      = "providers.read"
 	PermProvidersManage    = "providers.manage"
 	PermProvidersExternal  = "providers.external"
+	// Политики (ТЗ 5.3, задача 2.12): изменение — функция безопасности
+	// (УПД.2, DM-40); песочница ничего не меняет и выдаётся отдельно.
+	PermPoliciesRead   = "policies.read"
+	PermPoliciesManage = "policies.manage"
+	PermPoliciesTest   = "policies.test"
 )
 
 // Permission — разрешение из каталога.
@@ -102,6 +107,9 @@ var permissionCatalog = []Permission{
 	{Name: PermProvidersRead, Title: "Просмотр провайдеров (без учётных данных)", Group: "Провайдеры"},
 	{Name: PermProvidersManage, Title: "Создание, изменение и удаление провайдеров, учётные данные", Group: "Провайдеры"},
 	{Name: PermProvidersExternal, Title: "Снятие и установка признака «внешний» у провайдера", Group: "Провайдеры", Security: true},
+	{Name: PermPoliciesRead, Title: "Просмотр политик, их версий и выгрузка в YAML", Group: "Политики"},
+	{Name: PermPoliciesManage, Title: "Создание, изменение, откат и загрузка политик", Group: "Политики", Security: true},
+	{Name: PermPoliciesTest, Title: "Проверка текста в песочнице политик", Group: "Политики"},
 }
 
 var permissionIndex = func() map[string]Permission {
@@ -270,10 +278,11 @@ var builtinRoles = []RoleDef{
 		Description: "Приложения, провайдеры, интеграции, обновления, резервное копирование. Политики безопасности не меняет",
 		Grants: Grants{PermSystemRead: ScopeAll, PermAPITokensRead: ScopeOwn, PermAPITokensManage: ScopeOwn,
 			PermApplicationsRead: ScopeAll, PermApplicationsManage: ScopeAll, PermAppKeysManage: ScopeAll,
-			PermProvidersRead: ScopeAll, PermProvidersManage: ScopeAll}},
+			PermProvidersRead: ScopeAll, PermProvidersManage: ScopeAll, PermPoliciesRead: ScopeAll, PermPoliciesTest: ScopeAll}},
 	{ID: RoleAnalyst, DisplayName: "Аналитик", Builtin: true,
 		Description: "Разбор оповещений и инцидентов, поиск по событиям",
-		Grants:      grantAll(PermSystemRead, PermEventsRead, PermEventsExport, PermApplicationsRead, PermProvidersRead)},
+		Grants: grantAll(PermSystemRead, PermEventsRead, PermEventsExport, PermApplicationsRead, PermProvidersRead,
+			PermPoliciesRead, PermPoliciesTest)},
 	{ID: RoleAuditor, DisplayName: "Аудитор", Builtin: true,
 		Description: "Только просмотр: журнал аудита, отчёты, состояние соответствия. Ничего не меняет",
 		Grants:      readPermissions()},

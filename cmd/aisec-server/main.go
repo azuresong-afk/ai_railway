@@ -24,12 +24,15 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/audit"
 	"github.com/azuresong-afk/ai_railway/internal/auth"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
+	"github.com/azuresong-afk/ai_railway/internal/detect"
+	"github.com/azuresong-afk/ai_railway/internal/detect/builtin"
 	"github.com/azuresong-afk/ai_railway/internal/events"
 	"github.com/azuresong-afk/ai_railway/internal/gwregistry"
 	"github.com/azuresong-afk/ai_railway/internal/httpserver"
 	"github.com/azuresong-afk/ai_railway/internal/integrity"
 	"github.com/azuresong-afk/ai_railway/internal/integrity/selftest"
 	"github.com/azuresong-afk/ai_railway/internal/keyring"
+	"github.com/azuresong-afk/ai_railway/internal/policy/versions"
 	"github.com/azuresong-afk/ai_railway/internal/store"
 	"github.com/azuresong-afk/ai_railway/internal/sysstatus"
 	"github.com/azuresong-afk/ai_railway/web"
@@ -206,6 +209,21 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		return err
 	}
 
+	// Политики и их версии (ТЗ 5.3, задача 2.12): проверяются строго по
+	// встроенным детекторам — тем же, что у шлюза.
+	detectors, err := detect.NewRegistry(builtin.All()...)
+	if err != nil {
+		return err
+	}
+	policyStore, err := versions.NewPGStore(db.Pool(), auditLog)
+	if err != nil {
+		return err
+	}
+	policiesSvc, err := versions.New(versions.Options{Store: policyStore, Provider: p, Catalog: detectors})
+	if err != nil {
+		return err
+	}
+
 	// Приложения, ключи и провайдеры (ТЗ 5.4, задача 2.11): учётные данные
 	// провайдеров — под ключом данных (ЗИ.1); владелец приложения —
 	// действующая учётная запись консоли.
@@ -213,7 +231,7 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	appsSvc, err := apps.New(apps.Options{Store: appStore, Provider: p, Box: box,
+	appsSvc, err := apps.New(apps.Options{Store: appStore, Provider: p, Box: box, Policies: policiesSvc,
 		OwnerCheck: func(ctx context.Context, id string) error {
 			u, err := authSvc.User(ctx, id)
 			if err != nil {
@@ -241,6 +259,7 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	handler, _, err := api.New(api.Options{
 		Logger: logger, Version: version, Hasher: hasher,
 		Apps:      appsSvc,
+		Policies:  policiesSvc,
 		Ready:     db.Ping,
 		Auth:      authSvc,
 		Gateways:  gateways,

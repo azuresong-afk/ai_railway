@@ -82,6 +82,9 @@
 | `FuzzParseServerURL` | `internal/config` | Адрес сервера управления для шлюза: только https, хост и порт, без учётных данных, пути и параметров | 2.14 |
 | `FuzzApplicationRequest` | `internal/api` | Тело `POST /api/v1/applications` (поля приложения, квоты, списки, поля защиты): без 5xx и паники; принятое тело даёт приложение, которое читается | 2.11 |
 | `FuzzProviderRequest` | `internal/api` | Тело `POST /api/v1/providers` (адреса, корневые сертификаты PEM, таймауты, поля GigaChat и YandexGPT): без 5xx и паники | 2.11 |
+| `FuzzDiff` | `internal/policy/versions` | Сравнение двух произвольных разобранных политик: без паники; сравнение с собой пустое; ослабление указывает на правило первой версии | 2.12 |
+| `FuzzImportPolicyRequest` | `internal/api` | Тело `POST /api/v1/policies/import` (YAML): только 2xx или 4xx; принятая политика выгружается и загружается обратно в ту же (сравнение версий пустое) | 2.12 |
+| `FuzzPolicyTestRequest` | `internal/api` | Тело песочницы `POST /api/v1/policies/test` (политика, черновик, запрос Check API): без 5xx и паники | 2.12 |
 
 ## Кампании и результаты
 | Дата | Цель | Что найдено | Исправление |
