@@ -31,6 +31,10 @@ type Options struct {
 	Integrity IntegrityService
 	// Status — «Состояние системы» (задача 2.20); nil — эндпоинт отвечает 503.
 	Status StatusService
+	// Events и Audit — события в консоли (задача 2.16); без любого из них
+	// эндпоинты событий отвечают 503.
+	Events EventsAPI
+	Audit  AuditRecorder
 	// OnDenied — вызывается при каждом отказе в доступе (УПД.6). По
 	// умолчанию, если задан Auth, отказ аутентифицированному субъекту
 	// пишется в журнал аудита (access.denied).
@@ -63,6 +67,9 @@ type Deps struct {
 	Integrity IntegrityService
 	// Status — nil, если сбор состояния не подключён: эндпоинт отвечает 503.
 	Status StatusService
+	// Events и Audit — nil, если события не подключены: их эндпоинты отвечают 503.
+	Events EventsAPI
+	Audit  AuditRecorder
 }
 
 // New собирает обработчик сервера: восстановление после паники, заголовки
@@ -95,7 +102,8 @@ func New(o Options) (http.Handler, *Router, error) {
 		logger: o.Logger, fallback: o.Fallback, onDenied: o.OnDenied, onTokenUsed: o.OnTokenUsed,
 	}
 	rt.mux.HandleFunc("/", rt.notFound)
-	deps := Deps{Logger: o.Logger, Version: o.Version, Ready: o.Ready, Auth: o.Auth, Gateways: o.Gateways, Integrity: o.Integrity, Status: o.Status}
+	deps := Deps{Logger: o.Logger, Version: o.Version, Ready: o.Ready, Auth: o.Auth, Gateways: o.Gateways, Integrity: o.Integrity,
+		Status: o.Status, Events: o.Events, Audit: o.Audit}
 	if err := rt.Add(append(Routes(deps), o.Extra...)...); err != nil {
 		return nil, nil, err
 	}

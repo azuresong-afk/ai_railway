@@ -71,6 +71,7 @@ var catalog = []Event{
 	{"data.export", "Выгрузка данных", true},
 	{"events.content_read", "Доступ к содержимому события", true},
 	{"events.retention", "Удаление событий по сроку хранения", true},
+	{"events.settings_changed", "Изменение сроков хранения событий", true},
 	// Сам журнал аудита (РСБ.3–4).
 	{"audit.settings_changed", "Изменение настроек журнала аудита", true},
 	{"audit.chain_verified", "Проверка цепочки журнала аудита: цела", true},

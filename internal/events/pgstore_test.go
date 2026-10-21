@@ -156,7 +156,7 @@ func setupPG(t *testing.T) *pgEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	st, err := events.NewPGStore(app, box, l, "")
+	st, err := events.NewPGStore(app, box, l, "", events.WithRandom(r))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -307,12 +307,17 @@ func TestPGEventsAppRights(t *testing.T) {
 	}
 	part := "events_p" + time.Now().UTC().Format("20060102")
 	for sql, want := range map[string]string{
-		"UPDATE events SET app = 'x'":                "42501",
-		"DELETE FROM events":                         "42501",
-		"DELETE FROM event_content":                  "42501",
-		"TRUNCATE events":                            "42501",
-		"DROP TABLE " + part:                         "42501",
-		"UPDATE event_settings SET content_days = 7": "42501",
+		"UPDATE events SET app = 'x'": "42501",
+		"DELETE FROM events":          "42501",
+		"DELETE FROM event_content":   "42501",
+		"TRUNCATE events":             "42501",
+		"DROP TABLE " + part:          "42501",
+		// Сроки хранения сервер меняет (2.16), но только эти столбцы.
+		"UPDATE event_settings SET id = false":        "42501",
+		"DELETE FROM event_settings":                  "42501",
+		"UPDATE event_filters SET filter = ''":        "42501",
+		"DELETE FROM event_aggregate_state":           "42501",
+		"UPDATE event_aggregate_state SET id = false": "42501",
 		"CREATE TABLE events_p20990101 PARTITION OF events FOR VALUES FROM ('2099-01-01') TO ('2099-01-02')": "42501",
 		"SELECT events_ensure_partitions(100, 0)":                                                            "22023",
 	} {

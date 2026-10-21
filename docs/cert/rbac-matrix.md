@@ -22,6 +22,16 @@
 | POST | `/api/v1/auth/password` | `self` | да | да | да | да | да | — |
 | GET | `/api/v1/auth/policy` | `auth_policy.read` | да | — | — | да | — | да |
 | PUT | `/api/v1/auth/policy` | `auth_policy.manage` | да | — | — | — | — | — |
+| GET | `/api/v1/events` | `events.read` | да | — | да | да | — | да |
+| POST | `/api/v1/events/export` | `events.export` | да | — | да | — | — | да |
+| GET | `/api/v1/events/filters` | `events.read` | да | — | да | да | — | да |
+| POST | `/api/v1/events/filters` | `events.read` | да | — | да | да | — | да |
+| DELETE | `/api/v1/events/filters/{id}` | `events.read` | да | — | да | да | — | да |
+| GET | `/api/v1/events/settings` | `events.read` | да | — | да | да | — | да |
+| PUT | `/api/v1/events/settings` | `events.retention.manage` | да | — | — | — | — | — |
+| GET | `/api/v1/events/stats` | `events.read` | да | — | да | да | — | да |
+| GET | `/api/v1/events/{id}` | `events.read` | да | — | да | да | — | да |
+| POST | `/api/v1/events/{id}/content` | `events.content.read` | да | — | — | — | — | — |
 | GET | `/api/v1/me` | `session` | да | да | да | да | да | — |
 | GET | `/api/v1/permissions` | `roles.read` | да | — | — | да | — | да |
 | GET | `/api/v1/roles` | `roles.read` | да | — | — | да | — | да |
