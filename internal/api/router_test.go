@@ -50,7 +50,10 @@ func TestEveryProtectedRouteDenies(t *testing.T) {
 			o.Authorizer = tc.authz
 			h, _ := newHandler(t, o)
 			w := do(h, r.Method, target, "", "Content-Type", "application/json")
-			if w.Code != tc.want {
+			// С правом обработчик может отказать по содержимому запроса
+			// (400, 404), но не по правам.
+			denied := w.Code == 401 || w.Code == 403
+			if (tc.want == 200 && denied) || (tc.want != 200 && w.Code != tc.want) {
 				t.Errorf("%s %s (%s): %d, ожидалось %d", r.Method, r.Path, name, w.Code, tc.want)
 			}
 			if tc.want != 200 {

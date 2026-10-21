@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/azuresong-afk/ai_railway/internal/auth"
+	"github.com/azuresong-afk/ai_railway/internal/auth/authtest"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 )
 
@@ -28,20 +30,44 @@ func testHasher(t testing.TB) aisecCrypto.Hasher {
 
 func quiet() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
-// allowPerm разрешает только перечисленные права.
+// allowPerm разрешает только перечисленные права. Субъект — сессия
+// консоли синтетического пользователя, которого нет в хранилище.
 type allowPerm map[string]bool
 
 func (a allowPerm) Authorize(_ *http.Request, perm string) (Principal, Decision) {
+	c := &auth.Caller{User: auth.User{ID: "01900000-0000-7000-8000-0000000000f1", Login: "u1", Role: auth.RoleSecurityAdmin},
+		Session: auth.Session{ID: "01900000-0000-7000-8000-0000000000f2", State: auth.SessionActive}}
 	if a[perm] {
-		return Principal{ID: "u1"}, Allow
+		return Principal{ID: "u1", Caller: c}, Allow
 	}
-	return Principal{ID: "u1"}, Forbidden
+	return Principal{ID: "u1", Caller: c}, Forbidden
+}
+
+// testAuth — сервис входа на хранилище в памяти и быстром хешере.
+func testAuth(t testing.TB, mem *authtest.Memory) *auth.Service {
+	t.Helper()
+	p, err := aisecCrypto.New(aisecCrypto.ProfileStandard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc, err := auth.NewService(context.Background(), mem, mem, p, auth.WithPasswordHasher(&authtest.Hasher{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return svc
 }
 
 func newHandler(t testing.TB, o Options) (http.Handler, *Router) {
 	t.Helper()
 	o.Hasher = testHasher(t)
 	o.Logger = quiet()
+	if o.Auth == nil {
+		o.Auth = testAuth(t, authtest.NewMemory())
+		// Без явного Authorizer тесты каркаса ждут DenyAll, а не сессии.
+		if o.Authorizer == nil {
+			o.Authorizer = DenyAll{}
+		}
+	}
 	h, rt, err := New(o)
 	if err != nil {
 		t.Fatal(err)

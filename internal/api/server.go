@@ -8,6 +8,7 @@ import (
 	"runtime/debug"
 	"time"
 
+	"github.com/azuresong-afk/ai_railway/internal/auth"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 )
 
@@ -18,8 +19,11 @@ type Options struct {
 	Version string
 	// Hasher нужен для отпечатков Idempotency-Key.
 	Hasher aisecCrypto.Hasher
-	// Authorizer — проверка прав; по умолчанию DenyAll.
+	// Authorizer — проверка прав; по умолчанию SessionAuthorizer, если задан
+	// Auth, иначе DenyAll.
 	Authorizer Authorizer
+	// Auth — вход, сессии и учётные записи консоли (задача 2.7).
+	Auth *auth.Service
 	// OnDenied — вызывается при каждом отказе в доступе (УПД.6).
 	OnDenied func(r *http.Request, permission string, d Decision)
 	// Ready проверяет готовность (например, связь с PostgreSQL); nil — всегда готов.
@@ -39,6 +43,8 @@ type Deps struct {
 	Logger  *slog.Logger
 	Version string
 	Ready   func(ctx context.Context) error
+	// Auth — nil, если вход не подключён: его эндпоинты отвечают 503.
+	Auth *auth.Service
 }
 
 // New собирает обработчик сервера: восстановление после паники, заголовки
@@ -52,6 +58,9 @@ func New(o Options) (http.Handler, *Router, error) {
 	}
 	if o.Authorizer == nil {
 		o.Authorizer = DenyAll{}
+		if o.Auth != nil {
+			o.Authorizer = SessionAuthorizer{Auth: o.Auth, Logger: o.Logger}
+		}
 	}
 	if o.Idempotency == nil {
 		o.Idempotency = NewMemoryIdempotency(0, 0, nil)
@@ -61,7 +70,7 @@ func New(o Options) (http.Handler, *Router, error) {
 		logger: o.Logger, fallback: o.Fallback, onDenied: o.OnDenied,
 	}
 	rt.mux.HandleFunc("/", rt.notFound)
-	deps := Deps{Logger: o.Logger, Version: o.Version, Ready: o.Ready}
+	deps := Deps{Logger: o.Logger, Version: o.Version, Ready: o.Ready, Auth: o.Auth}
 	if err := rt.Add(append(Routes(deps), o.Extra...)...); err != nil {
 		return nil, nil, err
 	}

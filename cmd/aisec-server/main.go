@@ -1,6 +1,7 @@
 // Команда aisec-server — сервер управления: API, веб-консоль, оповещения, инциденты, отчёты, аудит.
-// Сейчас (задача 2.6 этапа 2) — каркас: HTTPS, маршрутизатор с проверкой прав,
-// Problem Details, ограничение частоты; ресурсы API добавляются следующими задачами.
+// Сейчас (задачи 2.6–2.7 этапа 2): HTTPS, маршрутизатор с проверкой прав,
+// Problem Details, ограничение частоты, вход в консоль и учётные записи;
+// остальные ресурсы API добавляются следующими задачами.
 package main
 
 import (
@@ -12,6 +13,8 @@ import (
 	"os"
 
 	"github.com/azuresong-afk/ai_railway/internal/api"
+	"github.com/azuresong-afk/ai_railway/internal/audit"
+	"github.com/azuresong-afk/ai_railway/internal/auth"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/internal/httpserver"
 	"github.com/azuresong-afk/ai_railway/internal/store"
@@ -71,9 +74,23 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	}
 	defer db.Close()
 
+	auditLog, err := audit.New(db.Pool(), p)
+	if err != nil {
+		return err
+	}
+	users, err := auth.NewPGStore(db.Pool(), auditLog)
+	if err != nil {
+		return err
+	}
+	authSvc, err := auth.NewService(ctx, users, auditLog, p)
+	if err != nil {
+		return err
+	}
+
 	handler, _, err := api.New(api.Options{
 		Logger: logger, Version: version, Hasher: hasher,
 		Ready:    db.Ping,
+		Auth:     authSvc,
 		Fallback: staticFallback(),
 	})
 	if err != nil {

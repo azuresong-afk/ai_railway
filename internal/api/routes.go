@@ -3,6 +3,8 @@ package api
 import (
 	"net/http"
 	"time"
+
+	"github.com/azuresong-afk/ai_railway/internal/auth"
 )
 
 // Routes — единственное место, где собираются маршруты сервера. Следующие
@@ -12,7 +14,8 @@ import (
 func Routes(d Deps) []Route {
 	var routes []Route
 	routes = append(routes, systemRoutes(d)...)
-	// Сюда: routes = append(routes, authRoutes(d)...) и т. д.
+	routes = append(routes, authRoutes(d)...)
+	routes = append(routes, userRoutes(d)...)
 	return routes
 }
 
@@ -35,7 +38,7 @@ func systemRoutes(d Deps) []Route {
 			}
 			WriteJSON(w, http.StatusOK, map[string]string{"status": "ready"})
 		}},
-		{Method: http.MethodGet, Path: "/api/v1/system/info", Permission: "system.read", Handler: func(w http.ResponseWriter, _ *http.Request) {
+		{Method: http.MethodGet, Path: "/api/v1/system/info", Permission: auth.PermSystemRead, Handler: func(w http.ResponseWriter, _ *http.Request) {
 			WriteJSON(w, http.StatusOK, SystemInfo{Version: d.Version})
 		}},
 	}
