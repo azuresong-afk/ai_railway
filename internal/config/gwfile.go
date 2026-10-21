@@ -67,7 +67,8 @@ type GatewayFile struct {
 
 // GatewaySection — общие параметры шлюза.
 type GatewaySection struct {
-	// EventsFile — приёмник-заглушка событий JSONL (этап 1, 5.5).
+	// EventsFile — приёмник-заглушка событий JSONL (этап 1, 5.5): только
+	// без сервера управления; с -server события уходят на сервер.
 	EventsFile string `yaml:"events_file"`
 	// UserHMACKeyFile — ключ HMAC для псевдонимов пользователей в событиях
 	// (5.5), не короче 32 байт, права 0600.
@@ -163,7 +164,7 @@ var (
 	envs           = map[string]bool{"prod": true, "test": true}
 	modes          = map[string]bool{"monitor": true, "enforce": true}
 	failModes      = map[string]bool{"fail_open": true, "fail_closed": true}
-	storages       = map[string]bool{"none": true, "masked": true}
+	storages       = map[string]bool{"none": true, "masked": true, "full": true}
 	userFrom       = map[string]bool{"header": true, "field": true, "none": true}
 	provTypes      = map[string]bool{ProviderOpenAI: true, ProviderGigaChat: true, ProviderYandexGPT: true}
 	folderRe       = regexp.MustCompile(`^[a-z0-9]{1,50}$`)
@@ -251,16 +252,32 @@ func (f *GatewayFile) Warnings() []string {
 	return out
 }
 
+// CheckEventsSink проверяет приёмник событий. С сервером управления
+// (withServer) события уходят на сервер по mTLS. Без сервера нужен файл
+// JSONL этапа 1 — иначе неудачные попытки входа (DM-38) нигде не были бы
+// видны, — а режим full недоступен: полное содержимое хранится только на
+// сервере и только зашифрованным (ЗИ.1).
+func (f *GatewayFile) CheckEventsSink(withServer bool) error {
+	if withServer {
+		return nil
+	}
+	var errs []error
+	if f.Gateway.EventsFile == "" {
+		errs = append(errs, errors.New("gateway.events_file: обязателен, если сервер управления не задан (-server)"))
+	}
+	for _, a := range f.Applications {
+		if a.Storage == "full" {
+			errs = append(errs, fmt.Errorf("приложение %s: storage full — только с сервером управления (-server): содержимое хранится на сервере зашифрованным (ЗИ.1), в файл событий оно не пишется", a.ID))
+		}
+	}
+	return errors.Join(errs...)
+}
+
 func (f *GatewayFile) validate() error {
 	var errs []error
 	add := func(format string, a ...any) { errs = append(errs, fmt.Errorf(format, a...)) }
 	if f.SchemaVersion != 1 {
 		add("schema_version: ожидается 1")
-	}
-	// На этапе 1 файл JSONL — единственный приёмник событий, без него
-	// неудачные попытки входа (DM-38) нигде не были бы видны.
-	if f.Gateway.EventsFile == "" {
-		add("gateway.events_file: обязательный параметр")
 	}
 	providers := map[string]Provider{}
 	for i, p := range f.Providers {
@@ -373,11 +390,7 @@ func (f *GatewayFile) validate() error {
 			check("policy_mode", a.PolicyMode, modes)
 		}
 		check("fail_mode", a.FailMode, failModes)
-		if a.Storage == "full" {
-			add("%s: storage full недоступен до шифрования при хранении (этап 2, ЗИ.1)", at)
-		} else {
-			check("storage", a.Storage, storages)
-		}
+		check("storage", a.Storage, storages)
 		check("user_from", a.UserFrom, userFrom)
 		q := a.Quotas
 		for name, v := range map[string]int{"requests_per_minute": q.RequestsPerMinute, "requests_per_minute_per_user": q.RequestsPerMinutePerUser,

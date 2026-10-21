@@ -14,6 +14,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/audit"
 	"github.com/azuresong-afk/ai_railway/internal/auth"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
+	"github.com/azuresong-afk/ai_railway/internal/events"
 	"github.com/azuresong-afk/ai_railway/internal/gwregistry"
 )
 
@@ -70,7 +71,7 @@ func newInternalHandler(t testing.TB, authz Authorizer) (http.Handler, *Router) 
 	t.Helper()
 	svc, _ := newGatewayEnv(t)
 	h, rt, err := NewInternal(InternalOptions{Logger: quiet(), Hasher: testHasher(t), Gateways: svc, Authorizer: authz,
-		RateLimit: RateConfig{Rules: []RateRule{{Prefix: "/", Max: 0}}}})
+		Events: events.NewMemory(), RateLimit: RateConfig{Rules: []RateRule{{Prefix: "/", Max: 0}}}})
 	if err != nil {
 		t.Fatal(err)
 	}

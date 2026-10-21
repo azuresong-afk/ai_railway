@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -65,6 +66,10 @@ type fakeDB struct {
 	sealed   int64
 	limit    int64
 	retired  bool
+	// Производные ключи: счётчики по «назначение|сутки».
+	derived      map[string]int64
+	derivedRes   int
+	derivedLimit int64
 }
 
 func (f *fakeDB) QueryRow(_ context.Context, sql string, args ...any) pgx.Row {
@@ -78,6 +83,19 @@ func (f *fakeDB) QueryRow(_ context.Context, sql string, args ...any) pgx.Row {
 	}
 	if f.retired {
 		return fakeRow{err: pgx.ErrNoRows}
+	}
+	if strings.Contains(sql, "derived_key_usage") {
+		name := args[1].(string) + "|" + args[2].(string)
+		n := args[3].(int64)
+		if f.derived == nil {
+			f.derived = map[string]int64{}
+		}
+		if f.derivedLimit > 0 && f.derived[name]+n > f.derivedLimit {
+			return fakeRow{err: &pgconn.PgError{Code: "23514"}}
+		}
+		f.derivedRes++
+		f.derived[name] += n
+		return fakeRow{vals: []any{f.derived[name]}}
 	}
 	n := args[1].(int64)
 	if f.limit > 0 && f.sealed+n > f.limit {
@@ -273,5 +291,114 @@ func TestNewStaticNoReserve(t *testing.T) {
 	}
 	if got, err := b.Open(keyID, sealed, "t", "c", "r"); err != nil || string(got) != "s" {
 		t.Fatalf("%q %v", got, err)
+	}
+}
+
+// Производные ключи суток (ADR-0007, п. 8): свой ключ на сутки и
+// назначение, счётчик — на производный ключ, а не на ключ данных.
+func TestDeriveSealOpen(t *testing.T) {
+	p := provider(t)
+	dir, db := install(t, p)
+	b, err := keyring.Load(context.Background(), db, p, dir, orgID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	day := time.Date(2026, 10, 21, 23, 59, 0, 0, time.UTC)
+	d, err := b.Derive("event-content", day)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.KeyID() != keyID || d.Alg() == "" {
+		t.Fatalf("ключ %s, алгоритм %s", d.KeyID(), d.Alg())
+	}
+	sealed, err := d.Seal(context.Background(), []byte("содержимое"), "event_content", "sealed", "row-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Те же сутки в другом часовом поясе — тот же ключ.
+	msk := time.FixedZone("MSK", 3*3600)
+	got, err := b.OpenDerived(keyID, "event-content", day.In(msk), sealed, "event_content", "sealed", "row-1")
+	if err != nil || string(got) != "содержимое" {
+		t.Fatalf("%q %v", got, err)
+	}
+	for name, open := range map[string]func() ([]byte, error){
+		"другие сутки": func() ([]byte, error) {
+			return b.OpenDerived(keyID, "event-content", day.Add(time.Minute), sealed, "event_content", "sealed", "row-1")
+		},
+		"другое назначение": func() ([]byte, error) {
+			return b.OpenDerived(keyID, "other", day, sealed, "event_content", "sealed", "row-1")
+		},
+		"другая строка": func() ([]byte, error) {
+			return b.OpenDerived(keyID, "event-content", day, sealed, "event_content", "sealed", "row-2")
+		},
+		"ключом данных": func() ([]byte, error) { return b.Open(keyID, sealed, "event_content", "sealed", "row-1") },
+	} {
+		if _, err := open(); !errors.Is(err, aisecCrypto.ErrDecrypt) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	if _, err := b.OpenDerived("other-key", "event-content", day, sealed, "event_content", "sealed", "row-1"); !errors.Is(err, keyring.ErrUnknownKey) {
+		t.Fatalf("чужой ключ: %v", err)
+	}
+	if db.sealed != 0 || db.derived["event-content|2026-10-21"] != 4096 {
+		t.Fatalf("счётчики: ключ данных %d, производные %v", db.sealed, db.derived)
+	}
+}
+
+func TestDeriveReserveBatches(t *testing.T) {
+	p := provider(t)
+	dir, db := install(t, p)
+	b, err := keyring.Load(context.Background(), db, p, dir, orgID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	day := time.Date(2026, 10, 21, 0, 0, 0, 0, time.UTC)
+	for i := 0; i < 4097; i++ {
+		d, err := b.Derive("event-content", day)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := d.Seal(context.Background(), []byte("x"), "t", "c", "r"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if db.derivedRes != 2 || db.derived["event-content|2026-10-21"] != 2*4096 {
+		t.Fatalf("резервов %d, счётчики %v", db.derivedRes, db.derived)
+	}
+	db.derivedLimit = 1
+	d, err := b.Derive("event-content", day.Add(24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Seal(context.Background(), []byte("x"), "t", "c", "r"); !errors.Is(err, keyring.ErrExhausted) {
+		t.Fatalf("предел производного ключа: %v", err)
+	}
+}
+
+func TestDeriveRejects(t *testing.T) {
+	p := provider(t)
+	a, err := p.NewAEAD(make([]byte, aisecCrypto.AEADKeySize))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := keyring.NewStatic(keyID, a).Derive("event-content", time.Now()); !errors.Is(err, keyring.ErrNoDerive) {
+		t.Fatalf("NewStatic: %v", err)
+	}
+	b, err := keyring.NewStaticKey(p, keyID, make([]byte, aisecCrypto.AEADKeySize))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, purpose := range []string{"", "Event", "a|b", strings.Repeat("a", 33)} {
+		if _, err := b.Derive(purpose, time.Now()); err == nil {
+			t.Errorf("назначение %q принято", purpose)
+		}
+	}
+	d1, err := b.Derive("event-content", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	d2, err := b.Derive("event-content", time.Now())
+	if err != nil || d1 != d2 {
+		t.Fatal("ключ суток должен быть один на процесс")
 	}
 }

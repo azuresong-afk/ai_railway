@@ -72,6 +72,8 @@
 | `FuzzVerifyArchive` | `internal/audit` | Файл архива журнала аудита с внешнего носителя (`aisec-cli audit verify-archive`): любая ошибка — `ErrArchiveInvalid`; принятый архив подписан ожидаемым ключом и описывает непустой диапазон, согласованный с точкой | 2.5 |
 | `FuzzIssueClient` | `internal/crypto` | CSR шлюза (недоверенный PEM): принятый запрос даёт только клиентский сертификат на ключ P-256 с именем, заданным сервером | 2.14 |
 | `FuzzHeartbeatRequest` | `internal/api` | Тело `POST /internal/v1/heartbeat` и `Content-Type`: только 200 или ошибка клиента в формате Problem Details, без 500 | 2.14 |
+| `FuzzDecodeBatch` | `internal/events` | Пакет событий от шлюза: любая ошибка структуры — `ErrBatch`; принятое проверкой событие имеет корректный UUIDv7, лежит в окне времени и не содержит U+0000 | 2.15 |
+| `FuzzEventsBatchRequest` | `internal/api` | Тело `POST /internal/v1/events:batch` и `Content-Type`: только 200 или ошибка клиента в формате Problem Details, без 500 | 2.15 |
 | `FuzzRegisterGatewayRequest` | `internal/api` | Тело `POST /api/v1/gateways/register`: только 400, 403 или 413; без действующего токена сертификат не выпускается | 2.14 |
 | `FuzzParseServerURL` | `internal/config` | Адрес сервера управления для шлюза: только https, хост и порт, без учётных данных, пути и параметров | 2.14 |
 

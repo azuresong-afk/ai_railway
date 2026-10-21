@@ -132,7 +132,18 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 	if err != nil {
 		return err
 	}
-	authCfg, queue, closeEvents, err := newAuth(p, file, logger)
+	// Сервер управления (ИАФ.10): heartbeat и события по mTLS. Без него —
+	// автономный режим этапа 1 с файлом событий JSONL.
+	var control *http.Client
+	if cfg.Server != nil {
+		if control, err = newControlClient(cfg, tp, logger); err != nil {
+			return err
+		}
+	}
+	if err := file.CheckEventsSink(control != nil); err != nil {
+		return fmt.Errorf("файл конфигурации: %w", err)
+	}
+	authCfg, queue, closeEvents, err := newAuth(p, file, cfg, control, logger)
 	if err != nil {
 		return err
 	}
@@ -142,7 +153,7 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 		defer cancel()
 		err = errors.Join(err, queue.Close(cctx), closeEvents())
 		if n := queue.Dropped(); n > 0 {
-			logger.Warn("события отброшены из-за переполнения очереди", "count", n)
+			logger.Warn("события отброшены: очередь переполнена или сервер недоступен при остановке", "count", n)
 		}
 	}()
 	// Квоты общие для всех маршрутов приложений: счётчики — один набор.
@@ -174,12 +185,10 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 	if err != nil {
 		return err
 	}
-	if cfg.Server != nil {
-		if err := startHeartbeat(ctx, cfg, tp, logger); err != nil {
-			return err
-		}
+	if control != nil {
+		startHeartbeat(ctx, cfg, control, logger)
 	} else {
-		logger.Info("сервер управления не задан (-server): шлюз работает без регистрации")
+		logger.Info("сервер управления не задан (-server): шлюз работает без регистрации, события пишутся в файл")
 	}
 	logger.Info("шлюз запущен: проверка запроса и ответа включена",
 		"max_body_bytes", cfg.MaxBodyBytes, "applications", len(file.Applications), "providers", len(provs))
@@ -220,42 +229,46 @@ func startIntegrity(ctx context.Context, cfg *config.Gateway, p aisecCrypto.Prov
 	return nil
 }
 
-// startHeartbeat запускает heartbeat на внутренний API сервера по mTLS
-// (ИАФ.10). Сертификат и ключ шлюза — от aisec-gateway register; сервер
-// недоступен — шлюз всё равно работает (ТЗ, 4.2).
-func startHeartbeat(ctx context.Context, cfg *config.Gateway, tp aisecCrypto.TLSProvider, logger *slog.Logger) error {
+// newControlClient — HTTP-клиент к внутреннему API сервера по mTLS
+// (ИАФ.10): сертификат и ключ шлюза — от aisec-gateway register.
+func newControlClient(cfg *config.Gateway, tp aisecCrypto.TLSProvider, logger *slog.Logger) (*http.Client, error) {
 	rootsPEM, err := aisecCrypto.ReadPEMFile(cfg.ServerCAFile)
 	if err != nil {
-		return fmt.Errorf("корневой сертификат сервера: %w", err)
+		return nil, fmt.Errorf("корневой сертификат сервера: %w", err)
 	}
 	certPEM, err := aisecCrypto.ReadPEMFile(cfg.ClientCertFile)
 	if err != nil {
-		return fmt.Errorf("сертификат шлюза для сервера: %w", err)
+		return nil, fmt.Errorf("сертификат шлюза для сервера: %w", err)
 	}
 	keyPEM, err := aisecCrypto.ReadKeyFile(cfg.ClientKeyFile)
 	if err != nil {
-		return fmt.Errorf("ключ шлюза для сервера: %w", err)
+		return nil, fmt.Errorf("ключ шлюза для сервера: %w", err)
 	}
 	id, err := aisecCrypto.ParseCertInfo(certPEM)
 	if err != nil {
-		return fmt.Errorf("сертификат шлюза для сервера: %w", err)
+		return nil, fmt.Errorf("сертификат шлюза для сервера: %w", err)
 	}
 	if time.Until(id.NotAfter) < 30*24*time.Hour {
 		logger.Warn("сертификат шлюза скоро истекает: нужна повторная регистрация", "not_after", id.NotAfter.UTC())
 	}
 	transport, err := gateway.ControlTransport(tp, rootsPEM, certPEM, keyPEM)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	logger.Info("связь с сервером управления по mTLS: heartbeat и события", "gateway_id", id.CommonName, "server", cfg.Server.Host)
+	return &http.Client{Transport: transport}, nil
+}
+
+// startHeartbeat запускает heartbeat на внутренний API сервера. Сервер
+// недоступен — шлюз всё равно работает (ТЗ, 4.2).
+func startHeartbeat(ctx context.Context, cfg *config.Gateway, client *http.Client, logger *slog.Logger) {
 	v := version
 	if !gateway.ValidVersion(v) {
 		v = "unknown"
 	}
-	logger.Info("heartbeat на сервер управления включён", "gateway_id", id.CommonName, "server", cfg.Server.Host)
 	go gateway.RunHeartbeat(ctx, gateway.HeartbeatConfig{
-		Client: &http.Client{Transport: transport}, Server: cfg.Server, Version: v, Logger: logger,
+		Client: client, Server: cfg.Server, Version: v, Logger: logger,
 	})
-	return nil
 }
 
 // newUserMAC — имитовставка для псевдонимов пользователей (ТЗ, 5.5). Ключ
@@ -278,9 +291,10 @@ func newUserMAC(p aisecCrypto.Provider, file *config.GatewayFile) (aisecCrypto.M
 	return p.NewMAC(key)
 }
 
-// newAuth собирает аутентификацию приложений и очередь событий с приёмником
-// JSONL из файла конфигурации.
-func newAuth(p aisecCrypto.Provider, file *config.GatewayFile, logger *slog.Logger) (*gateway.AuthConfig, *events.Queue, func() error, error) {
+// newAuth собирает аутентификацию приложений и очередь событий: с сервером
+// управления (control) — отправитель на сервер по mTLS, без него — файл JSONL.
+func newAuth(p aisecCrypto.Provider, file *config.GatewayFile, cfg *config.Gateway, control *http.Client,
+	logger *slog.Logger) (*gateway.AuthConfig, *events.Queue, func() error, error) {
 	h, err := p.Hasher()
 	if err != nil {
 		return nil, nil, nil, err
@@ -297,15 +311,36 @@ func newAuth(p aisecCrypto.Provider, file *config.GatewayFile, logger *slog.Logg
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	sink, err := events.NewFileSink(file.Gateway.EventsFile)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("файл событий: %w", err)
+	var queue *events.Queue
+	var closeSink func() error
+	if control != nil {
+		if file.Gateway.EventsFile != "" {
+			logger.Warn("gateway.events_file не используется: события отправляются на сервер управления")
+		}
+		sink, err := gateway.NewServerSink(gateway.ServerSinkConfig{Client: control, Server: cfg.Server, Logger: logger})
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		queue = events.NewQueue(sink, events.QueueConfig{Logger: logger, SendTimeout: gateway.SinkSendTimeout})
+		sink.CountDropped(queue.Dropped)
+		closeSink = func() error {
+			if n := sink.Rejected(); n > 0 {
+				logger.Warn("сервер управления отклонил события", "count", n)
+			}
+			return nil
+		}
+	} else {
+		sink, err := events.NewFileSink(file.Gateway.EventsFile)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("файл событий: %w", err)
+		}
+		queue = events.NewQueue(sink, events.QueueConfig{Logger: logger})
+		closeSink = sink.Close
 	}
-	queue := events.NewQueue(sink, events.QueueConfig{Logger: logger})
 	return &gateway.AuthConfig{
 		Authenticator: a, Limiter: auth.NewFailureLimiter(auth.LimiterConfig{}),
 		Events: queue, IDs: ids.NewGenerator(rnd), Logger: logger,
-	}, queue, sink.Close, nil
+	}, queue, closeSink, nil
 }
 
 // newProviders создаёт провайдеров из файла конфигурации. Ключи провайдеров

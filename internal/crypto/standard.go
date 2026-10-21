@@ -51,6 +51,8 @@ func (standard) NewVerifier(publicKey []byte) (Verifier, error) {
 
 func (standard) NewTOTP(secret []byte) (TOTP, error) { return newTOTP(secret) }
 
+func (standard) NewKDF(secret []byte) (KDF, error) { return newHKDF(secret) }
+
 type sha256Hasher struct{}
 
 func (sha256Hasher) Name() string   { return "SHA-256" }
