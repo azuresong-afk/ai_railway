@@ -280,7 +280,7 @@ endif
 	$(BUILD)/bin/aisec-cli verify -manifest $(BUILD)/aisec-manifest.json
 
 .PHONY: e2e
-e2e: build ## Сквозные тесты: настоящие бинарники шлюза и mock-llm по TLS
+e2e: manifest ## Сквозные тесты: шлюз и mock-llm по TLS (этап 1); сервер, CLI и PostgreSQL (этап 2, нужен AISEC_TEST_DATABASE_URL — иначе пропускаются)
 	go test -tags e2e -count=1 ./test/e2e/ -bin $(BUILD)/bin
 
 COMPOSE_DEV := docker compose -f deploy/compose/dev/docker-compose.yml
