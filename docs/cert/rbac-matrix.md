@@ -24,6 +24,8 @@
 | GET | `/api/v1/applications/{id}/keys` | `applications.read` | да | да | да | да | свои | да |
 | POST | `/api/v1/applications/{id}/keys` | `app_keys.manage` | да | да | — | — | — | да |
 | PUT | `/api/v1/applications/{id}/protection` | `applications.policy` | да | — | — | — | — | — |
+| GET | `/api/v1/audit` | `audit.read` | да | — | — | да | — | да |
+| POST | `/api/v1/audit/verify` | `audit.verify` | да | — | — | да | — | да |
 | POST | `/api/v1/auth/logout` | `session` | да | да | да | да | да | — |
 | POST | `/api/v1/auth/mfa/recovery-codes` | `session` | да | да | да | да | да | — |
 | POST | `/api/v1/auth/mfa/setup` | `session` | да | да | да | да | да | — |

@@ -45,6 +45,11 @@ type Options struct {
 	// Policies — политики и их версии (задача 2.12); nil — их эндпоинты
 	// отвечают 503.
 	Policies *versions.Service
+	// AuditLog и AuditVerifier — журнал аудита в консоли (задача 2.4a):
+	// просмотр и проверка цепочки той же проверкой, что фоновая; nil — их
+	// эндпоинты отвечают 503.
+	AuditLog      AuditJournal
+	AuditVerifier AuditChainVerifier
 	// OnDenied — вызывается при каждом отказе в доступе (УПД.6). По
 	// умолчанию, если задан Auth, отказ аутентифицированному субъекту
 	// пишется в журнал аудита (access.denied).
@@ -87,6 +92,10 @@ type Deps struct {
 	Apps *apps.Service
 	// Policies — nil, если политики не подключены: их эндпоинты отвечают 503.
 	Policies *versions.Service
+	// AuditLog и AuditVerifier — nil, если журнал аудита не подключён к
+	// консоли: соответствующий эндпоинт отвечает 503.
+	AuditLog      AuditJournal
+	AuditVerifier AuditChainVerifier
 }
 
 // New собирает обработчик сервера: восстановление после паники, заголовки
@@ -121,7 +130,8 @@ func New(o Options) (http.Handler, *Router, error) {
 	}
 	rt.mux.HandleFunc("/", rt.notFound)
 	deps := Deps{Logger: o.Logger, Version: o.Version, Ready: o.Ready, Auth: o.Auth, Gateways: o.Gateways, Integrity: o.Integrity,
-		Status: o.Status, Events: o.Events, Audit: o.Audit, Apps: o.Apps, Policies: o.Policies}
+		Status: o.Status, Events: o.Events, Audit: o.Audit, Apps: o.Apps, Policies: o.Policies,
+		AuditLog: o.AuditLog, AuditVerifier: o.AuditVerifier}
 	if err := rt.Add(append(Routes(deps), o.Extra...)...); err != nil {
 		return nil, nil, err
 	}

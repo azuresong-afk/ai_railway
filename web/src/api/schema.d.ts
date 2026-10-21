@@ -399,6 +399,131 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/audit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Записи журнала аудита за период по фильтру
+         * @description Право `audit.read` (ТЗ 6.3 п. 11, задача 2.4a): из предустановленных ролей — у аудитора и
+         *     администратора безопасности. Только чтение: изменить или удалить запись через API
+         *     нельзя (УПД.2). Порядок — от новых к старым по номеру записи. Период — не длиннее
+         *     31 суток (по умолчанию последние 7). Фильтры по белому списку: `action` (до 20 раз;
+         *     точный код `auth.login` или группа `auth.*`), `actor_type`, `actor` (ID или имя
+         *     субъекта, точное совпадение), `object_type`, `object_id`, `result`; неизвестный
+         *     параметр — 400. Секреты в подробностях замаскированы при записи (`[скрыто]`),
+         *     исходных значений в журнале нет. Пишет `audit.list` (отключаемое событие) после
+         *     чтения: в текущую страницу запись не попадает.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description Начало периода включительно (RFC 3339); по умолчанию to минус 7 суток */
+                    from?: string;
+                    /** @description Конец периода, не включая (RFC 3339); по умолчанию — текущее время */
+                    to?: components["parameters"]["To"];
+                    /** @description Код события или группа `группа.*`; повторяется до 20 раз, совпадение с любым */
+                    action?: string[];
+                    actor_type?: "user" | "api_token" | "system" | "gateway" | "cli";
+                    /** @description ID или имя субъекта (логин), точное совпадение */
+                    actor?: string;
+                    object_type?: string;
+                    object_id?: string;
+                    result?: "success" | "failure" | "denied";
+                    /** @description Размер страницы */
+                    limit?: components["parameters"]["Limit"];
+                    /** @description Непрозрачный курсор из `next_cursor` предыдущей страницы */
+                    cursor?: components["parameters"]["Cursor"];
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Страница журнала */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["AuditPage"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/audit/verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Проверить цепочку журнала аудита по команде
+         * @description Право `audit.verify` (РСБ.4, DM-43, задача 2.4a): у аудитора и администратора
+         *     безопасности; проверка ничего не меняет, кроме записи своего итога. Выполняет ту же
+         *     проверку, что фоновая (одна реализация, общая опора с имитовставкой головы). Если
+         *     проверка уже идёт (фоновая или по другой команде) — 409 с `Retry-After`. Не чаще
+         *     5 раз в минуту с адреса. Обрыв соединения проверку не прерывает; предел — 5 минут.
+         *     Итог пишется в `audit_verifications` (раздел `audit_chain` «Состояния системы») и в
+         *     журнал аудита (`audit.chain_verified` или `audit.chain_broken`) от имени субъекта с
+         *     адресом. Нарушение — `ok: false` с ответом 200. Тело не нужно.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Итог проверки */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["AuditVerification"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                409: components["responses"]["ProblemConflict"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/setup": {
         parameters: {
             query?: never;
@@ -4730,6 +4855,59 @@ export interface components {
         };
         EventPage: components["schemas"]["PageInfo"] & {
             items: components["schemas"]["Event"][];
+        };
+        AuditRecord: {
+            /** @description Номер записи в цепочке */
+            seq: number;
+            /** Format: uuid */
+            id: string;
+            /**
+             * Format: date-time
+             * @description null — время записи не читается (подмена в обход продукта)
+             */
+            ts: string | null;
+            actor: {
+                /** @enum {string} */
+                type: "user" | "api_token" | "system" | "gateway" | "cli";
+                id: string;
+                name: string;
+            };
+            /** @description Адрес субъекта; null — без адреса (системные события) */
+            source_ip: string | null;
+            action: string;
+            /** @description Описание события из перечня; пусто — кода нет в перечне этой версии */
+            action_title: string;
+            object: {
+                type: string;
+                id: string;
+            };
+            /** @enum {string} */
+            result: "success" | "failure" | "denied";
+            /** @description Подробности, как записаны (каноническая форма); секреты замаскированы при записи */
+            details: unknown;
+            /** @description Хеш записи в цепочке (hex) — для сверки с архивом */
+            hash: string;
+        };
+        AuditPage: components["schemas"]["PageInfo"] & {
+            items: components["schemas"]["AuditRecord"][];
+        };
+        AuditVerification: {
+            /** Format: date-time */
+            checked_at: string;
+            ok: boolean;
+            /** @description Проверено записей */
+            checked: number;
+            /** @description Последняя проверенная запись */
+            last_seq: number;
+            /**
+             * @description ok или причина: `rewritten` — проверенная раньше запись пропала или изменилась
+             *     (журнал обрезан или пересчитан после прошлой проверки); `tail_truncated` — после
+             *     контрольной точки архивации нет записей.
+             * @enum {string}
+             */
+            reason: "ok" | "hash_mismatch" | "prev_mismatch" | "gap" | "head_missing" | "tail_truncated" | "rewritten" | "alg_mismatch" | "invalid_record" | "checkpoint_invalid" | "anchor_forged";
+            /** @description Запись, на которой цепочка нарушена */
+            broken_seq: number | null;
         };
         EventContentRequest: {
             /** @description Причина доступа (УПД.7) */

@@ -1,5 +1,6 @@
 import type { Me } from "../api/client";
 import { EmptyState, TabBar } from "../ui/Layout";
+import { AuditTab } from "./AuditTab";
 import { PolicyTab } from "./PolicyTab";
 import { RetentionTab } from "./RetentionTab";
 import { RolesTab } from "./RolesTab";
@@ -15,6 +16,7 @@ export function AdminScreen({ me }: { me: Me }) {
     has("auth_policy.read") && { value: "policy", title: "Вход и сессии", content: <PolicyTab me={me} /> },
     has("api_tokens.read") && { value: "tokens", title: "Токены API", content: <TokensTab me={me} /> },
     has("events.read") && { value: "retention", title: "Время и хранение", content: <RetentionTab me={me} /> },
+    has("audit.read") && { value: "audit", title: "Журнал аудита", content: <AuditTab me={me} /> },
   ].filter((t): t is { value: string; title: string; content: React.JSX.Element } => t !== false);
 
   if (tabs.length === 0) {

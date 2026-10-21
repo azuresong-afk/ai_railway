@@ -136,7 +136,10 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	// -audit-verify-interval. Голова цепочки защищена имитовставкой на ключе
 	// из ключа данных (вне БД). Нарушение не останавливает сервер — оно
 	// поднимает уведомление в «Состоянии системы».
-	if err := startAuditVerify(ctx, cfg, auditLog, box, logger); err != nil {
+	// Тот же Verifier проверяет цепочку по команде из API (задача 2.4a):
+	// проверки не идут параллельно, опора в памяти общая.
+	chainVerifier, err := startAuditVerify(ctx, cfg, auditLog, box, logger)
+	if err != nil {
 		return err
 	}
 	roles, err := auth.NewPGRoles(db.Pool(), auditLog)
@@ -269,6 +272,9 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		Audit:     auditLog,
 		Fallback:  console,
 
+		AuditLog:      auditLog,
+		AuditVerifier: chainVerifier,
+
 		TrustedProxies: cfg.TrustedProxies,
 	})
 	if err != nil {
@@ -351,11 +357,12 @@ func requireAuditKey(ctx context.Context, cps checkpointSource, haveKey bool, lo
 	return nil
 }
 
-// startAuditVerify запускает фоновую проверку цепочки журнала аудита.
-func startAuditVerify(ctx context.Context, cfg *serverConfig, auditLog *audit.Log, box *keyring.Box, logger *slog.Logger) error {
+// startAuditVerify запускает фоновую проверку цепочки журнала аудита и
+// возвращает её Verifier для проверки по команде.
+func startAuditVerify(ctx context.Context, cfg *serverConfig, auditLog *audit.Log, box *keyring.Box, logger *slog.Logger) (*audit.Verifier, error) {
 	mac, err := box.MAC(audit.HeadMACPurpose)
 	if err != nil {
-		return fmt.Errorf("ключ имитовставки цепочки аудита: %w", err)
+		return nil, fmt.Errorf("ключ имитовставки цепочки аудита: %w", err)
 	}
 	v := audit.NewVerifier(auditLog, audit.WithHeadMAC(audit.HeadMAC{KeyID: box.KeyID(), MAC: mac}))
 	go func() {
@@ -374,7 +381,7 @@ func startAuditVerify(ctx context.Context, cfg *serverConfig, auditLog *audit.Lo
 			logger.Error("проверка цепочки журнала аудита не запущена", "error", err)
 		}
 	}()
-	return nil
+	return v, nil
 }
 
 // startIntegrity проверяет целостность сервера при запуске и запускает

@@ -56,6 +56,11 @@ const (
 	PermPoliciesRead   = "policies.read"
 	PermPoliciesManage = "policies.manage"
 	PermPoliciesTest   = "policies.test"
+	// Журнал аудита (ТЗ 6.3 п. 11, РСБ.4; задача 2.4a): просмотр и проверка
+	// цепочки по команде. Проверка ничего не меняет, кроме записи своего
+	// итога, поэтому есть у аудитора (ТЗ 1.3).
+	PermAuditRead   = "audit.read"
+	PermAuditVerify = "audit.verify"
 )
 
 // Permission — разрешение из каталога.
@@ -110,7 +115,13 @@ var permissionCatalog = []Permission{
 	{Name: PermPoliciesRead, Title: "Просмотр политик, их версий и выгрузка в YAML", Group: "Политики"},
 	{Name: PermPoliciesManage, Title: "Создание, изменение, откат и загрузка политик", Group: "Политики", Security: true},
 	{Name: PermPoliciesTest, Title: "Проверка текста в песочнице политик", Group: "Политики"},
+	{Name: PermAuditRead, Title: "Просмотр журнала аудита", Group: "Журнал аудита"},
+	{Name: PermAuditVerify, Title: "Проверка цепочки журнала аудита по команде", Group: "Журнал аудита"},
 }
+
+// auditorExtra — разрешения аудитора сверх чтения: они ничего не меняют,
+// кроме записи своего итога в журнал аудита (УПД.2 «аудитор только читает»).
+var auditorExtra = []string{PermAuditVerify}
 
 var permissionIndex = func() map[string]Permission {
 	m := make(map[string]Permission, len(permissionCatalog))
@@ -264,6 +275,18 @@ func readPermissions() Grants {
 	return g
 }
 
+// auditorPermissions — права аудитора: чтение и auditorExtra.
+func auditorPermissions() Grants {
+	g := readPermissions()
+	for _, p := range auditorExtra {
+		g[p] = ScopeAll
+	}
+	return g
+}
+
+// AuditorExtra — разрешения аудитора не на чтение (для тестов УПД.2).
+func AuditorExtra() []string { return slices.Clone(auditorExtra) }
+
 // builtinRoles — права предустановленных ролей задаются кодом и
 // обновляются вместе с продуктом; изменить их из консоли нельзя (УПД.1).
 // Администратор безопасности управляет пользователями, ролями и входом;
@@ -285,7 +308,7 @@ var builtinRoles = []RoleDef{
 			PermPoliciesRead, PermPoliciesTest)},
 	{ID: RoleAuditor, DisplayName: "Аудитор", Builtin: true,
 		Description: "Только просмотр: журнал аудита, отчёты, состояние соответствия. Ничего не меняет",
-		Grants:      readPermissions()},
+		Grants:      auditorPermissions()},
 	{ID: RoleAppOwner, DisplayName: "Владелец приложения", Builtin: true,
 		Description: "Статистика и события только своих приложений, без доступа к содержимому",
 		Grants:      Grants{PermApplicationsRead: ScopeOwn}},

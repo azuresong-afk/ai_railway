@@ -20,10 +20,14 @@ const (
 	// ReasonHeadMissing — журнал начинается не с записи после контрольной
 	// точки: удалено начало.
 	ReasonHeadMissing Reason = "head_missing"
-	// ReasonTailTruncated — записей меньше, чем при прошлой проверке.
+	// ReasonTailTruncated — после контрольной точки архивации нет записей:
+	// удалён хвост (последняя запись не архивируется никогда, ADR-0008).
 	ReasonTailTruncated Reason = "tail_truncated"
-	// ReasonRewritten — запись, проверенная в прошлый раз, теперь с другим
-	// хешем: цепочка пересчитана заново.
+	// ReasonRewritten — запись, проверенная в прошлый раз, пропала или теперь
+	// с другим хешем: журнал изменён после прошлой проверки (обрезан или
+	// пересчитан). Одно название на оба случая: если после обрезки в журнал
+	// успели дописать, на месте проверенной записи стоит другая, и отличить
+	// обрезку от пересчёта нельзя (задача 2.4a).
 	ReasonRewritten Reason = "rewritten"
 	// ReasonAlgMismatch — запись захеширована не алгоритмом профиля.
 	ReasonAlgMismatch Reason = "alg_mismatch"
@@ -123,7 +127,7 @@ func (c *chain) add(r *Record) *Break {
 func (c *chain) finish() *Break {
 	for i := range c.known {
 		if !c.hit[i] {
-			return &Break{Seq: c.nextSeq, Reason: ReasonTailTruncated}
+			return &Break{Seq: c.nextSeq, Reason: ReasonRewritten}
 		}
 	}
 	return nil

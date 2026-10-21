@@ -111,10 +111,33 @@ func (v *Verifier) Verify(ctx context.Context) (Verification, error) {
 func (v *Verifier) VerifyBy(ctx context.Context, by Actor) (Verification, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	res, err := v.verify(ctx, by)
+	return v.verifyLogged(ctx, by, netip.Addr{})
+}
+
+// ErrVerifyBusy — проверка цепочки уже выполняется (фоновая или по другой
+// команде); новая не запускается.
+var ErrVerifyBusy = errors.New("журнал аудита: проверка цепочки уже выполняется")
+
+// TryVerifyBy — VerifyBy по команде из API (задача 2.4a): с адресом
+// субъекта (РСБ.1 «откуда») и без ожидания. Если проверка уже идёт —
+// ErrVerifyBusy: ждать на блокировке нельзя, она не учитывает срок запроса.
+func (v *Verifier) TryVerifyBy(ctx context.Context, by Actor, ip netip.Addr) (Verification, error) {
+	if !v.mu.TryLock() {
+		return Verification{}, ErrVerifyBusy
+	}
+	defer v.mu.Unlock()
+	return v.verifyLogged(ctx, by, ip)
+}
+
+// verifyLogged — проверка под v.mu; сбой пишется в журнал технического состояния.
+func (v *Verifier) verifyLogged(ctx context.Context, by Actor, ip netip.Addr) (Verification, error) {
+	res, err := v.verify(ctx, by, ip)
 	if err != nil {
 		// Лучшее, что можно сделать: БД может быть недоступна и для этой записи.
-		_ = v.log.Tech(ctx, TechEntry{ //nolint:gosec // G104: исходная ошибка важнее, её получает вызывающий
+		// Свой срок: сбой по истёкшему сроку проверки тоже должен оставить след.
+		tctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), writeTimeout)
+		defer cancel()
+		_ = v.log.Tech(tctx, TechEntry{ //nolint:gosec // G104: исходная ошибка важнее, её получает вызывающий
 			Component: "audit", Kind: TechError, Level: LevelError, Class: ClassDB,
 			Message: "проверка цепочки журнала аудита не выполнена",
 		})
@@ -122,21 +145,21 @@ func (v *Verifier) VerifyBy(ctx context.Context, by Actor) (Verification, error)
 	return res, err
 }
 
-func (v *Verifier) verify(ctx context.Context, by Actor) (Verification, error) {
+func (v *Verifier) verify(ctx context.Context, by Actor, ip netip.Addr) (Verification, error) {
 	known, forged, err := v.lastKnown(ctx)
 	if err != nil {
 		return Verification{}, err
 	}
 	if forged != nil {
 		res := Verification{At: v.log.now().UTC().Truncate(time.Microsecond), Break: forged}
-		return res, v.save(ctx, res, by)
+		return res, v.save(ctx, res, by, ip)
 	}
 	anchor, err := v.log.anchor(ctx)
 	if errors.Is(err, ErrCheckpointInvalid) {
 		// Начало хранимой цепочки не подтверждается: это нарушение (DM-43),
 		// а не сбой проверки.
 		res := Verification{At: v.log.now().UTC().Truncate(time.Microsecond), Break: &Break{Seq: 0, Reason: ReasonCheckpoint}}
-		return res, v.save(ctx, res, by)
+		return res, v.save(ctx, res, by, ip)
 	}
 	if err != nil {
 		return Verification{}, err
@@ -166,7 +189,7 @@ func (v *Verifier) verify(ctx context.Context, by Actor) (Verification, error) {
 		brk = &Break{Seq: anchor.Seq + 1, Reason: ReasonTailTruncated}
 	}
 	res := Verification{At: v.log.now().UTC().Truncate(time.Microsecond), Checked: c.checked, Head: c.head(), Break: brk}
-	if err := v.save(ctx, res, by); err != nil {
+	if err := v.save(ctx, res, by, ip); err != nil {
 		return res, err
 	}
 	if res.OK() && res.Head.Seq > anchor.Seq {
@@ -315,8 +338,9 @@ func scanRecord(row pgx.Row) (Record, error) {
 	return r, nil
 }
 
-// save пишет итог проверки в audit_verifications и в журналы.
-func (v *Verifier) save(ctx context.Context, res Verification, by Actor) error {
+// save пишет итог проверки в audit_verifications и в журналы; ip — адрес
+// субъекта by (нулевой — проверка без адреса: фоновая, aisec-cli).
+func (v *Verifier) save(ctx context.Context, res Verification, by Actor, ip netip.Addr) error {
 	ctx, cancel := withTimeout(ctx, writeTimeout)
 	defer cancel()
 	id, err := store.NewUUIDv7(res.At, v.log.random)
@@ -359,7 +383,7 @@ func (v *Verifier) save(ctx context.Context, res Verification, by Actor) error {
 			}
 		}
 		_, err := v.log.recordTx(ctx, tx, Entry{
-			Actor:  by,
+			Actor: by, SourceIP: ip,
 			Action: action, Object: Object{Type: "audit_log"}, Result: result, Details: details,
 		})
 		return err

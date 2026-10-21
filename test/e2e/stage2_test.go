@@ -391,16 +391,19 @@ func TestE2EDM43_AuditTampered(t *testing.T) {
 		{"удаление записи из середины", func(s *s2Stand, first, last int64) {
 			s.tamperAudit(`DELETE FROM audit_log WHERE seq = $1`, (first+last)/2)
 		}, []string{"gap", "prev_mismatch"}, nil},
+		// Одна причина и сразу после обрезки, и после дописанных записей
+		// (CLI, запуск сервера): проверенная раньше запись пропала или
+		// изменилась — rewritten (задача 2.4a).
 		{"обрезан хвост журнала", func(s *s2Stand, first, last int64) {
 			s.tamperAudit(`DELETE FROM audit_log WHERE seq > $1`, last-3)
-		}, []string{"tail_truncated", "head_missing", "rewritten"}, nil},
+		}, []string{"rewritten"}, nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			s := s2NewStand(t)
 			s.mustStart()
 			admin := s.setupAdmin()
-			admin.createUser("e2e-auditor", auth.RoleAuditor)
+			auditor := admin.createUser("e2e-auditor", auth.RoleAuditor)
 			s.srv.stop()
 			keys := []string{"audit", "verify", "-keys", s.keysDir}
 
@@ -464,6 +467,52 @@ func TestE2EDM43_AuditTampered(t *testing.T) {
 			}
 			if r := s.client("198.51.100.31").do("GET", "/healthz", nil); r.code != http.StatusOK {
 				t.Errorf("сервер остановился из-за нарушения цепочки: %s", r)
+			}
+
+			// По команде из консоли (задача 2.4a): аудитор проверяет цепочку
+			// через API; пока идёт фоновая проверка — 409, при исчерпании
+			// предела частоты — 429: ждём и повторяем, затем итог.
+			ac := s.client("198.51.100.32")
+			ac.signIn(auditor)
+			var v struct {
+				OK        bool
+				Reason    string
+				BrokenSeq *int64 `json:"broken_seq"`
+			}
+			done := s2WaitFor(90*time.Second, func() bool {
+				r := ac.do("POST", "/api/v1/audit/verify", nil)
+				if r.code == http.StatusConflict || r.code == http.StatusTooManyRequests {
+					time.Sleep(5 * time.Second)
+					return false
+				}
+				if r.code != http.StatusOK {
+					t.Fatalf("/audit/verify: %s", r)
+				}
+				r.json(t, &v)
+				return true
+			})
+			if !done || v.OK || v.BrokenSeq == nil || !slices.Contains(tc.reasons, v.Reason) {
+				t.Errorf("проверка через API: %+v, ожидалась одна из %v", v, tc.reasons)
+			}
+			if tc.seq != nil && v.BrokenSeq != nil && *v.BrokenSeq != tc.seq(first, last) {
+				t.Errorf("через API цепочка оборвана на записи %d, ожидалась %d", *v.BrokenSeq, tc.seq(first, last))
+			}
+			// Итог виден в журнале от имени аудитора с адресом.
+			r := ac.do("GET", "/api/v1/audit?action=audit.chain_broken&actor=e2e-auditor", nil)
+			var page struct {
+				Items []struct {
+					SourceIP *string `json:"source_ip"`
+					Details  struct {
+						Reason string
+					}
+				}
+			}
+			if r.code != http.StatusOK {
+				t.Fatalf("/audit: %s", r)
+			}
+			r.json(t, &page)
+			if len(page.Items) == 0 || page.Items[0].SourceIP == nil || page.Items[0].Details.Reason != v.Reason {
+				t.Errorf("в журнале нет итога проверки аудитора: %s", r)
 			}
 		})
 	}

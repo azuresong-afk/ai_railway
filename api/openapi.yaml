@@ -207,6 +207,94 @@ paths:
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ProblemInternal' }
         '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/audit:
+    get:
+      summary: Записи журнала аудита за период по фильтру
+      description: |
+        Право `audit.read` (ТЗ 6.3 п. 11, задача 2.4a): из предустановленных ролей — у аудитора и
+        администратора безопасности. Только чтение: изменить или удалить запись через API
+        нельзя (УПД.2). Порядок — от новых к старым по номеру записи. Период — не длиннее
+        31 суток (по умолчанию последние 7). Фильтры по белому списку: `action` (до 20 раз;
+        точный код `auth.login` или группа `auth.*`), `actor_type`, `actor` (ID или имя
+        субъекта, точное совпадение), `object_type`, `object_id`, `result`; неизвестный
+        параметр — 400. Секреты в подробностях замаскированы при записи (`[скрыто]`),
+        исходных значений в журнале нет. Пишет `audit.list` (отключаемое событие) после
+        чтения: в текущую страницу запись не попадает.
+      x-permission: audit.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - name: from
+          in: query
+          description: Начало периода включительно (RFC 3339); по умолчанию to минус 7 суток
+          schema: { type: string, format: date-time }
+        - $ref: '#/components/parameters/To'
+        - name: action
+          in: query
+          description: Код события или группа `группа.*`; повторяется до 20 раз, совпадение с любым
+          schema:
+            type: array
+            maxItems: 20
+            items: { type: string, maxLength: 66 }
+          style: form
+          explode: true
+        - name: actor_type
+          in: query
+          schema: { type: string, enum: [user, api_token, system, gateway, cli] }
+        - name: actor
+          in: query
+          description: ID или имя субъекта (логин), точное совпадение
+          schema: { type: string, minLength: 1, maxLength: 256 }
+        - name: object_type
+          in: query
+          schema: { type: string, minLength: 1, maxLength: 64 }
+        - name: object_id
+          in: query
+          schema: { type: string, minLength: 1, maxLength: 256 }
+        - name: result
+          in: query
+          schema: { type: string, enum: [success, failure, denied] }
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Страница журнала
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuditPage' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/audit/verify:
+    post:
+      summary: Проверить цепочку журнала аудита по команде
+      description: |
+        Право `audit.verify` (РСБ.4, DM-43, задача 2.4a): у аудитора и администратора
+        безопасности; проверка ничего не меняет, кроме записи своего итога. Выполняет ту же
+        проверку, что фоновая (одна реализация, общая опора с имитовставкой головы). Если
+        проверка уже идёт (фоновая или по другой команде) — 409 с `Retry-After`. Не чаще
+        5 раз в минуту с адреса. Обрыв соединения проверку не прерывает; предел — 5 минут.
+        Итог пишется в `audit_verifications` (раздел `audit_chain` «Состояния системы») и в
+        журнал аудита (`audit.chain_verified` или `audit.chain_broken`) от имени субъекта с
+        адресом. Нарушение — `ok: false` с ответом 200. Тело не нужно.
+      x-permission: audit.verify
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '200':
+          description: Итог проверки
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuditVerification' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '409': { $ref: '#/components/responses/ProblemConflict' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
   /api/v1/auth/setup:
     get:
       summary: Нужна ли первичная настройка
@@ -3123,6 +3211,62 @@ components:
             items:
               type: array
               items: { $ref: '#/components/schemas/Event' }
+    AuditRecord:
+      type: object
+      required: [seq, id, ts, actor, source_ip, action, action_title, object, result, details, hash]
+      additionalProperties: false
+      properties:
+        seq: { type: integer, minimum: 1, description: Номер записи в цепочке }
+        id: { type: string, format: uuid }
+        ts: { type: [string, 'null'], format: date-time, description: 'null — время записи не читается (подмена в обход продукта)' }
+        actor:
+          type: object
+          required: [type, id, name]
+          additionalProperties: false
+          properties:
+            type: { type: string, enum: [user, api_token, system, gateway, cli] }
+            id: { type: string, maxLength: 128 }
+            name: { type: string, maxLength: 256 }
+        source_ip: { type: [string, 'null'], description: 'Адрес субъекта; null — без адреса (системные события)' }
+        action: { type: string, maxLength: 64 }
+        action_title: { type: string, description: 'Описание события из перечня; пусто — кода нет в перечне этой версии' }
+        object:
+          type: object
+          required: [type, id]
+          additionalProperties: false
+          properties:
+            type: { type: string, maxLength: 64 }
+            id: { type: string, maxLength: 256 }
+        result: { type: string, enum: [success, failure, denied] }
+        details: { description: 'Подробности, как записаны (каноническая форма); секреты замаскированы при записи' }
+        hash: { type: string, description: Хеш записи в цепочке (hex) — для сверки с архивом }
+    AuditPage:
+      allOf:
+        - $ref: '#/components/schemas/PageInfo'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/AuditRecord' }
+    AuditVerification:
+      type: object
+      required: [checked_at, ok, checked, last_seq, reason, broken_seq]
+      additionalProperties: false
+      properties:
+        checked_at: { type: string, format: date-time }
+        ok: { type: boolean }
+        checked: { type: integer, minimum: 0, description: Проверено записей }
+        last_seq: { type: integer, minimum: 0, description: Последняя проверенная запись }
+        reason:
+          type: string
+          description: |
+            ok или причина: `rewritten` — проверенная раньше запись пропала или изменилась
+            (журнал обрезан или пересчитан после прошлой проверки); `tail_truncated` — после
+            контрольной точки архивации нет записей.
+          enum: [ok, hash_mismatch, prev_mismatch, gap, head_missing, tail_truncated, rewritten, alg_mismatch,
+            invalid_record, checkpoint_invalid, anchor_forged]
+        broken_seq: { type: [integer, 'null'], minimum: 0, description: 'Запись, на которой цепочка нарушена' }
     EventContentRequest:
       type: object
       required: [reason]

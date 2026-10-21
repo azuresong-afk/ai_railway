@@ -16,6 +16,11 @@ export type RoleInput = Pick<S["RoleInput"], "display_name" | "description" | "m
 export type NewRole = RoleInput & { id: string };
 export type EventRetention = S["EventRetention"];
 export type SessionList = S["SessionList"];
+export type AuditRecord = S["AuditRecord"];
+export type AuditPage = S["AuditPage"];
+export type AuditVerification = S["AuditVerification"];
+// Фильтр журнала аудита: коды или группы «auth.*», субъект и итог (задача 2.4a).
+export type AuditFilter = { from: string; to: string; actions: string[]; actor: string; result: string };
 
 const id = encodeURIComponent;
 
@@ -64,4 +69,14 @@ export const adminApi = {
   retention: (signal?: AbortSignal) => request<EventRetention>("GET", "/api/v1/events/settings", undefined, signal),
   saveRetention: (b: { metadata_days: number; content_days: number }) =>
     request<EventRetention>("PUT", "/api/v1/events/settings", b),
+
+  audit: (f: AuditFilter, cursor: string | undefined, signal?: AbortSignal) => {
+    const q = new URLSearchParams({ from: f.from, to: f.to, limit: "100" });
+    for (const a of f.actions) q.append("action", a);
+    if (f.actor) q.set("actor", f.actor);
+    if (f.result) q.set("result", f.result);
+    if (cursor) q.set("cursor", cursor);
+    return request<AuditPage>("GET", `/api/v1/audit?${q}`, undefined, signal);
+  },
+  verifyAudit: () => request<AuditVerification>("POST", "/api/v1/audit/verify"),
 };
