@@ -207,6 +207,18 @@ func (c *PGCheckpoints) Latest(ctx context.Context) (Anchor, bool, error) {
 	return a, true, nil
 }
 
+// Any сообщает, есть ли в журнале хотя бы одна контрольная точка: с ними
+// сервер без открытого ключа аудита не запускается (замечание В5 ревью 2.r1).
+func (c *PGCheckpoints) Any(ctx context.Context) (bool, error) {
+	ctx, cancel := withTimeout(ctx, batchTimeout)
+	defer cancel()
+	var ok bool
+	if err := c.db.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM audit_checkpoints)").Scan(&ok); err != nil {
+		return false, fmt.Errorf("журнал аудита: контрольные точки: %w", err)
+	}
+	return ok, nil
+}
+
 // Exists сообщает, записана ли точка id: после ошибки фиксации архивации
 // по ней решается, удалять ли файл архива. Сначала берётся та же
 // блокировка, что у архивации: она держится до конца исходной транзакции,

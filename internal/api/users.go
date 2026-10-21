@@ -17,11 +17,11 @@ import (
 func userRoutes(d Deps) []Route {
 	return []Route{
 		{Method: http.MethodGet, Path: "/api/v1/users", Permission: auth.PermUsersRead, Handler: needAuth(d, d.listUsers)},
-		{Method: http.MethodPost, Path: "/api/v1/users", Permission: auth.PermUsersManage, MaxBody: authMaxBody, Handler: needAuth(d, d.createUser)},
+		{Method: http.MethodPost, Path: "/api/v1/users", Permission: auth.PermUsersManage, SecretOnce: true, MaxBody: authMaxBody, Handler: needAuth(d, d.createUser)},
 		{Method: http.MethodGet, Path: "/api/v1/users/{id}", Permission: auth.PermUsersRead, Handler: needAuth(d, d.getUser)},
 		{Method: http.MethodPost, Path: "/api/v1/users/{id}/deactivate", Permission: auth.PermUsersManage, Handler: needAuth(d, d.setStatus(auth.StatusDeactivated))},
 		{Method: http.MethodPost, Path: "/api/v1/users/{id}/activate", Permission: auth.PermUsersManage, Handler: needAuth(d, d.setStatus(auth.StatusActive))},
-		{Method: http.MethodPost, Path: "/api/v1/users/{id}/password-reset", Permission: auth.PermUsersManage, Handler: needAuth(d, d.resetPassword)},
+		{Method: http.MethodPost, Path: "/api/v1/users/{id}/password-reset", Permission: auth.PermUsersManage, SecretOnce: true, Handler: needAuth(d, d.resetPassword)},
 		{Method: http.MethodGet, Path: "/api/v1/users/{id}/sessions", Permission: auth.PermSessionsRead, Handler: needAuth(d, d.listSessions)},
 		{Method: http.MethodDelete, Path: "/api/v1/users/{id}/sessions", Permission: auth.PermSessionsManage, Handler: needAuth(d, d.revokeSessions)},
 	}

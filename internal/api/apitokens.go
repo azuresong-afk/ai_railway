@@ -18,7 +18,7 @@ const apiTokenMaxBody = 16 << 10
 func apiTokenRoutes(d Deps) []Route {
 	return []Route{
 		{Method: http.MethodGet, Path: "/api/v1/api-tokens", Permission: auth.PermAPITokensRead, Scoped: true, Handler: needAuth(d, d.listAPITokens)},
-		{Method: http.MethodPost, Path: "/api/v1/api-tokens", Permission: auth.PermAPITokensManage, Scoped: true,
+		{Method: http.MethodPost, Path: "/api/v1/api-tokens", Permission: auth.PermAPITokensManage, Scoped: true, SecretOnce: true,
 			MaxBody: apiTokenMaxBody, Handler: needAuth(d, d.createAPIToken)},
 		{Method: http.MethodGet, Path: "/api/v1/api-tokens/{id}", Permission: auth.PermAPITokensRead, Scoped: true, Handler: needAuth(d, d.getAPIToken)},
 		{Method: http.MethodDelete, Path: "/api/v1/api-tokens/{id}", Permission: auth.PermAPITokensManage, Scoped: true, Handler: needAuth(d, d.revokeAPIToken)},

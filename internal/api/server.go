@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"runtime/debug"
 	"time"
 
@@ -52,6 +53,9 @@ type Options struct {
 	Idempotency IdempotencyStore
 	// RateLimit — настройки ЗИ.6; по умолчанию DefaultRateRules.
 	RateLimit RateConfig
+	// TrustedProxies — сети обратных прокси, от которых принимается
+	// X-Forwarded-For (ТЗ 10.3); пусто — адрес клиента по соединению.
+	TrustedProxies []netip.Prefix
 	// Fallback обслуживает пути вне /api и /internal (статика веб-консоли, задача 2.21).
 	Fallback http.Handler
 	// Extra — дополнительные маршруты (тесты); рабочие регистрируются в routes.go.
@@ -116,6 +120,7 @@ func New(o Options) (http.Handler, *Router, error) {
 	limiter := NewRateLimiter(o.RateLimit)
 	var h http.Handler = rt
 	h = limiter.Middleware(h)
+	h = ClientAddrMiddleware(o.TrustedProxies, h)
 	h = SecurityHeaders(h)
 	h = recoverer(o.Logger, h)
 	return h, rt, nil

@@ -396,7 +396,16 @@ func openKeyDir(dir string) (*os.Root, error) {
 
 // writeKeyFiles создаёт файлы с O_EXCL (существующий файл или ссылка — ошибка)
 // и сбрасывает их на диск. Возвращает имена созданных файлов, даже при ошибке.
+// Копии закрытых ключей (файлы без доступа для группы и остальных) в памяти
+// затираются после записи, в том числе при ошибке (Н4 ревью 2.r1).
 func writeKeyFiles(root *os.Root, files []keyFile) (created []string, err error) {
+	defer func() {
+		for i := range files {
+			if files[i].perm&0o077 == 0 {
+				clear(files[i].data)
+			}
+		}
+	}()
 	for _, f := range files {
 		if err := writeNewFile(root, f.name, f.data, f.perm); err != nil {
 			if !errors.Is(err, fs.ErrExist) {

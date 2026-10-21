@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/azuresong-afk/ai_railway/internal/audit"
 	"github.com/azuresong-afk/ai_railway/internal/integrity"
 	"github.com/azuresong-afk/ai_railway/internal/sysstatus"
 )
@@ -26,9 +28,15 @@ type serverConfig struct {
 	TLSCertFile string
 	TLSKeyFile  string
 	// AuditSigningPub — открытый ключ подписи контрольных точек архивации
-	// аудита (audit-signing.pub, ADR-0008); пусто — подписи точек не
-	// проверяются, только их связность.
+	// аудита (audit-signing.pub, ADR-0008). Пусто допустимо только пока в
+	// журнале нет контрольных точек: иначе сервер не запускается.
 	AuditSigningPub string
+	// AuditVerifyInterval — период фоновой проверки цепочки журнала аудита
+	// (РСБ.4, DM-43); первая проверка — при запуске.
+	AuditVerifyInterval time.Duration
+	// TrustedProxies — сети обратных прокси (TLS-шлюз ГОСТ и т. п., ТЗ 10.3),
+	// от которых принимается X-Forwarded-For; пусто — заголовку не доверяем.
+	TrustedProxies []netip.Prefix
 	// KeysDir — каталог ключей aisec-cli init (master.key, ADR-0007): мастер-ключ
 	// расшифровывает ключ данных для секретов в БД (TOTP, ИАФ.5).
 	KeysDir string
@@ -83,6 +91,8 @@ func loadConfig(args []string, getenv func(string) string, errOut io.Writer) (*s
 	tz := fs.String("timezone", "UTC", "часовой пояс для показа времени, имя IANA, например Europe/Moscow (AISEC_SERVER_TIMEZONE)")
 	storageLimit := fs.String("audit-storage-limit", strconv.FormatInt(sysstatus.DefaultStorageLimit, 10), "предел размера журнала аудита в байтах для расчёта заполнения (AISEC_SERVER_AUDIT_STORAGE_LIMIT)")
 	storageWarn := fs.String("audit-storage-warn-percent", strconv.Itoa(sysstatus.DefaultWarnPercent), "порог предупреждения о заполнении журнала аудита, 1–100 процентов (AISEC_SERVER_AUDIT_STORAGE_WARN_PERCENT)")
+	verifyInterval := fs.String("audit-verify-interval", audit.DefaultVerifyInterval.String(), "период проверки цепочки журнала аудита, не меньше 1m (AISEC_SERVER_AUDIT_VERIFY_INTERVAL)")
+	proxies := fs.String("trusted-proxies", "", "сети доверенных обратных прокси через запятую, например 10.0.0.5/32; от них принимается X-Forwarded-For (AISEC_SERVER_TRUSTED_PROXIES)")
 	if err := fs.Parse(args); err != nil {
 		return nil, err
 	}
@@ -94,7 +104,8 @@ func loadConfig(args []string, getenv func(string) string, errOut io.Writer) (*s
 	for name, dst := range map[string]*string{"listen": listen, "tls-cert": cert, "tls-key": key, "audit-signing-pub": auditPub, "keys-dir": keysDir,
 		"manifest": manifest, "integrity-action": action, "integrity-interval": interval,
 		"ca-cert": caCert, "ca-key": caKey, "internal-listen": internalListen, "internal-tls-cert": internalCert, "internal-tls-key": internalKey,
-		"timezone": tz, "audit-storage-limit": storageLimit, "audit-storage-warn-percent": storageWarn} {
+		"timezone": tz, "audit-storage-limit": storageLimit, "audit-storage-warn-percent": storageWarn,
+		"audit-verify-interval": verifyInterval, "trusted-proxies": proxies} {
 		if set[name] {
 			continue
 		}
@@ -115,6 +126,12 @@ func loadConfig(args []string, getenv func(string) string, errOut io.Writer) (*s
 	}
 	if cfg.AuditStorageWarnPercent, err = strconv.Atoi(*storageWarn); err != nil || cfg.AuditStorageWarnPercent < 1 || cfg.AuditStorageWarnPercent > 100 {
 		errs = append(errs, errors.New("audit-storage-warn-percent: целое число от 1 до 100"))
+	}
+	if cfg.AuditVerifyInterval, err = time.ParseDuration(*verifyInterval); err != nil || cfg.AuditVerifyInterval < audit.MinVerifyInterval {
+		errs = append(errs, fmt.Errorf("audit-verify-interval: длительность не меньше %s, например 1h", audit.MinVerifyInterval))
+	}
+	if cfg.TrustedProxies, err = parsePrefixes(*proxies); err != nil {
+		errs = append(errs, fmt.Errorf("trusted-proxies: %w", err))
 	}
 	if cfg.IntegrityAction, err = integrity.ParseAction(*action); err != nil {
 		errs = append(errs, fmt.Errorf("integrity-action: %w", err))
@@ -152,4 +169,44 @@ func loadConfig(args []string, getenv func(string) string, errOut io.Writer) (*s
 		return nil, fmt.Errorf("конфигурация сервера: %w", err)
 	}
 	return cfg, nil
+}
+
+// maxTrustedProxies — предел числа сетей в -trusted-proxies.
+const maxTrustedProxies = 64
+
+// parsePrefixes разбирает список сетей через запятую; адрес без маски —
+// одна машина (/32 или /128).
+func parsePrefixes(s string) ([]netip.Prefix, error) {
+	if strings.TrimSpace(s) == "" {
+		return nil, nil
+	}
+	parts := strings.Split(s, ",")
+	if len(parts) > maxTrustedProxies {
+		return nil, fmt.Errorf("не больше %d сетей", maxTrustedProxies)
+	}
+	out := make([]netip.Prefix, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if !strings.Contains(p, "/") {
+			a, err := netip.ParseAddr(p)
+			if err != nil || a.Zone() != "" {
+				return nil, fmt.Errorf("%q: ожидается адрес или сеть CIDR", p)
+			}
+			a = a.Unmap()
+			out = append(out, netip.PrefixFrom(a, a.BitLen()))
+			continue
+		}
+		pr, err := netip.ParsePrefix(p)
+		if err != nil {
+			return nil, fmt.Errorf("%q: ожидается адрес или сеть CIDR", p)
+		}
+		if pr.Addr().Is4In6() || pr.Addr().Zone() != "" {
+			return nil, fmt.Errorf("%q: сеть IPv4 записывается без ::ffff:, без зоны интерфейса", p)
+		}
+		if pr.Bits() == 0 {
+			return nil, fmt.Errorf("%q: сеть /0 означала бы доверие заголовку от любого клиента", p)
+		}
+		out = append(out, pr.Masked())
+	}
+	return out, nil
 }

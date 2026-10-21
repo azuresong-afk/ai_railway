@@ -89,6 +89,23 @@ func (s *PGStore) AuditCounts(ctx context.Context, since time.Time) (locked, den
 	return locked, denied, nil
 }
 
+// AuditChain — см. Store. Последняя строка audit_verifications: её пишут
+// фоновая проверка сервера и aisec-cli audit verify.
+func (s *PGStore) AuditChain(ctx context.Context) (*AuditChainStatus, error) {
+	var ch AuditChainStatus
+	err := s.db.QueryRow(ctx, `SELECT ts, ok, checked, last_seq, reason, broken_seq
+		FROM audit_verifications ORDER BY ts DESC, id DESC LIMIT 1`).
+		Scan(&ch.CheckedAt, &ch.OK, &ch.Checked, &ch.LastSeq, &ch.Reason, &ch.BrokenSeq)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("проверка цепочки аудита: %w", err)
+	}
+	ch.CheckedAt = ch.CheckedAt.UTC()
+	return &ch, nil
+}
+
 // AlertStates — см. Store.
 func (s *PGStore) AlertStates(ctx context.Context) (map[string]AlertState, error) {
 	rows, err := s.db.Query(ctx, "SELECT condition, active, since FROM system_alert_state WHERE org_id = $1", s.orgID)

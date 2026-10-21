@@ -604,3 +604,30 @@ func TestInitOnRealDB(t *testing.T) {
 		t.Fatal("повторный init создал файлы")
 	}
 }
+
+// Н4 ревью 2.r1: копии закрытых ключей в памяти затираются после записи,
+// открытые остаются как есть.
+func TestWriteKeyFilesClearsPrivate(t *testing.T) {
+	root, err := os.OpenRoot(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }() //nolint:gosec // G104: каталог только читался и писался тестом
+	files := []keyFile{
+		{name: "private.key", data: []byte("секрет"), perm: 0o400},
+		{name: "public.pub", data: []byte("открытый"), perm: 0o444},
+	}
+	if _, err := writeKeyFiles(root, files); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(files[0].data, make([]byte, len("секрет"))) {
+		t.Fatalf("закрытый ключ не затёрт: %q", files[0].data)
+	}
+	if string(files[1].data) != "открытый" {
+		t.Fatalf("открытый ключ изменён: %q", files[1].data)
+	}
+	got, err := root.ReadFile("private.key")
+	if err != nil || string(got) != "секрет" {
+		t.Fatalf("на диске: %q %v", got, err)
+	}
+}

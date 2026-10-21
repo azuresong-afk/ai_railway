@@ -221,4 +221,22 @@ func TestPGProbes(t *testing.T) {
 	if err != nil || len(stats) != 0 {
 		t.Fatalf("%v %v", stats, err)
 	}
+	// Цепочка аудита: без проверок — nil, затем итог последней проверки.
+	if ch, err := e.store.AuditChain(ctx); err != nil || ch != nil {
+		t.Fatalf("без проверок: %+v %v", ch, err)
+	}
+	if _, err := audit.NewVerifier(e.log).Verify(ctx); err != nil {
+		t.Fatal(err)
+	}
+	ch, err := e.store.AuditChain(ctx)
+	if err != nil || ch == nil || !ch.OK || ch.Reason != "ok" || ch.LastSeq < 4 || ch.BrokenSeq != nil {
+		t.Fatalf("после проверки: %+v %v", ch, err)
+	}
+	// Условие audit_chain принимается ограничением таблицы (миграция 0015).
+	if _, err := e.store.Transition(ctx, sysstatus.ConditionAuditLog, true, time.Now(), func(bool) audit.Entry {
+		return audit.Entry{Actor: audit.Actor{Type: audit.ActorSystem, ID: "t"}, Action: "system.alert",
+			Object: audit.Object{Type: "system", ID: sysstatus.ConditionAuditLog}, Result: audit.ResultFailure}
+	}); err != nil {
+		t.Fatal(err)
+	}
 }

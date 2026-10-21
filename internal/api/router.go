@@ -25,6 +25,10 @@ type Route struct {
 	Scoped bool
 	// Idempotent включает поддержку заголовка Idempotency-Key (создающие запросы).
 	Idempotent bool
+	// SecretOnce — ответ показывает секрет один раз (токен API, ключ
+	// приложения, секрет TOTP, коды восстановления). Такой ответ нельзя
+	// хранить для повтора по Idempotency-Key: признаки несовместимы.
+	SecretOnce bool
 	// MaxBody — предел тела; ноль — DefaultMaxBody.
 	MaxBody int64
 	Handler http.HandlerFunc
@@ -77,6 +81,8 @@ func (rt *Router) add(r Route) error {
 		return fmt.Errorf("признак Scoped у открытого маршрута")
 	case r.Idempotent && r.Method != http.MethodPost && r.Method != http.MethodPatch:
 		return fmt.Errorf("Idempotency-Key поддерживается для POST и PATCH")
+	case r.Idempotent && r.SecretOnce:
+		return fmt.Errorf("ответ с одноразовым секретом не хранится для повтора: Idempotent несовместим с SecretOnce")
 	case r.MaxBody < 0:
 		return fmt.Errorf("MaxBody меньше нуля")
 	}

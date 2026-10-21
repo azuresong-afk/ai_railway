@@ -259,9 +259,11 @@ export interface paths {
          *     обращений к NTP; на системах без `adjtimex` — `unknown`), часовой пояс
          *     показа (ВРМ.2, настройка `-timezone`), отброшенные и отклонённые
          *     события (счётчики шлюзов с их последнего запуска), заполнение журнала
-         *     аудита (РСБ.5; предел и порог — настройки) и уведомления раздела 7
-         *     (ИАФ.4, УПД.6, РСБ.5, ОЦЛ.5, ВРМ.1). Доставка уведомлений по каналам —
-         *     этап 3; на этапе 2 при смене состояния ВРМ.1, РСБ.5 или ОЦЛ.5
+         *     аудита (РСБ.5; предел и порог — настройки), итог последней проверки
+         *     цепочки журнала аудита (РСБ.4; сервер проверяет её при запуске и раз в
+         *     `-audit-verify-interval`) и уведомления раздела 7 (ИАФ.4, УПД.6,
+         *     РСБ.4, РСБ.5, ОЦЛ.5, ВРМ.1). Доставка уведомлений по каналам —
+         *     этап 3; на этапе 2 при смене состояния ВРМ.1, РСБ.4, РСБ.5 или ОЦЛ.5
          *     сервер пишет в журнал аудита запись `system.alert`. Запрос ничего не
          *     записывает. Если раздел собрать не удалось, его имя — в `unavailable`,
          *     остальные разделы корректны.
@@ -3418,11 +3420,25 @@ export interface components {
                 warn_percent: number;
                 warn_exceeded: boolean;
             };
+            /** @description Последняя проверка цепочки журнала аудита — фоновая или aisec-cli audit verify (РСБ.4); null — проверок не было */
+            audit_chain?: null | {
+                /** Format: date-time */
+                checked_at: string;
+                ok: boolean;
+                /** @description Проверено записей */
+                checked: number;
+                /** @description Последняя проверенная запись */
+                last_seq: number;
+                /** @enum {string} */
+                reason: "ok" | "hash_mismatch" | "prev_mismatch" | "gap" | "head_missing" | "tail_truncated" | "rewritten" | "alg_mismatch" | "invalid_record" | "checkpoint_invalid" | "anchor_forged";
+                /** @description Запись, на которой цепочка нарушена */
+                broken_seq: number | null;
+            };
             notifications: {
                 /** @enum {string} */
-                condition: "account_lockout" | "access_denied" | "audit_storage" | "integrity" | "time_sync";
+                condition: "account_lockout" | "access_denied" | "audit_chain" | "audit_storage" | "integrity" | "time_sync";
                 /** @enum {string} */
-                requirement: "ИАФ.4" | "УПД.6" | "РСБ.5" | "ОЦЛ.5" | "ВРМ.1";
+                requirement: "ИАФ.4" | "УПД.6" | "РСБ.4" | "РСБ.5" | "ОЦЛ.5" | "ВРМ.1";
                 title: string;
                 active: boolean;
                 /**
@@ -3433,7 +3449,7 @@ export interface components {
                 /** @description Число событий за 24 часа (только ИАФ.4 и УПД.6) */
                 count: number | null;
             }[];
-            unavailable: ("integrity" | "gateways" | "events" | "storage" | "notifications")[];
+            unavailable: ("integrity" | "gateways" | "events" | "storage" | "audit_chain" | "notifications")[];
         };
         StatusReport: {
             ok: boolean;

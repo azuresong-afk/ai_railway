@@ -15,8 +15,8 @@ const appMaxBody = 1 << 20
 // applicationRoutes — приложения и их ключи (ТЗ 5.4, ИАФ.8, УПД.8; задача
 // 2.11). Чтение и ключи — со Scoped: при области own обработчик отбирает
 // только приложения, где пользователь — владелец, чужие отвечают 404.
-// Выпуск и ротация ключа без Idempotency-Key: сохранённый ответ содержал
-// бы сам ключ.
+// Выпуск и ротация ключа — SecretOnce, без Idempotency-Key: сохранённый
+// ответ содержал бы сам ключ.
 func applicationRoutes(d Deps) []Route {
 	return []Route{
 		{Method: http.MethodGet, Path: "/api/v1/applications", Permission: auth.PermApplicationsRead, Scoped: true,
@@ -33,9 +33,9 @@ func applicationRoutes(d Deps) []Route {
 			MaxBody: smallMaxBody, Handler: needApps(d, d.setProtection)},
 		{Method: http.MethodGet, Path: "/api/v1/applications/{id}/keys", Permission: auth.PermApplicationsRead, Scoped: true,
 			Handler: needApps(d, d.listAppKeys)},
-		{Method: http.MethodPost, Path: "/api/v1/applications/{id}/keys", Permission: auth.PermAppKeysManage, Scoped: true,
+		{Method: http.MethodPost, Path: "/api/v1/applications/{id}/keys", Permission: auth.PermAppKeysManage, Scoped: true, SecretOnce: true,
 			MaxBody: smallMaxBody, Handler: needApps(d, d.issueAppKey)},
-		{Method: http.MethodPost, Path: "/api/v1/app-keys/{id}/rotate", Permission: auth.PermAppKeysManage, Scoped: true,
+		{Method: http.MethodPost, Path: "/api/v1/app-keys/{id}/rotate", Permission: auth.PermAppKeysManage, Scoped: true, SecretOnce: true,
 			MaxBody: smallMaxBody, Handler: needApps(d, d.rotateAppKey)},
 		{Method: http.MethodPost, Path: "/api/v1/app-keys/{id}/revoke", Permission: auth.PermAppKeysManage, Scoped: true,
 			Handler: needApps(d, d.revokeAppKey)},

@@ -18,10 +18,35 @@ func TestRouteValidation(t *testing.T) {
 		"без обработчика":       {Method: "GET", Path: "/api/v1/a", Permission: "x"},
 		"idempotent для GET":    {Method: "GET", Path: "/api/v1/a", Permission: "x", Idempotent: true, Handler: noop},
 		"дубликат":              {Method: "GET", Path: "/healthz", Public: true, Handler: noop},
+		// Н1 ревью 2.r1: ответ с одноразовым секретом не хранится для повтора.
+		"одноразовый секрет с Idempotency-Key": {Method: "POST", Path: "/api/v1/a", Permission: "x", Idempotent: true, SecretOnce: true, Handler: noop},
 	} {
 		if err := rt.Add(r); err == nil {
 			t.Errorf("%s: маршрут принят", name)
 		}
+	}
+}
+
+// Н1 ревью 2.r1: маршруты, которые показывают секрет один раз, помечены
+// SecretOnce (и потому не могут получить Idempotent).
+func TestSecretOnceRoutes(t *testing.T) {
+	_, rt := newHandler(t, Options{})
+	want := map[string]bool{
+		"POST /api/v1/api-tokens": true, "POST /api/v1/auth/mfa/setup": true, "POST /api/v1/auth/mfa/setup/confirm": true,
+		"POST /api/v1/auth/mfa/recovery-codes": true, "POST /api/v1/users": true, "POST /api/v1/users/{id}/password-reset": true,
+		"POST /api/v1/applications/{id}/keys": true, "POST /api/v1/app-keys/{id}/rotate": true,
+	}
+	for _, r := range rt.Routes() {
+		key := r.Method + " " + r.Path
+		if want[key] {
+			if !r.SecretOnce || r.Idempotent {
+				t.Errorf("%s: SecretOnce=%v Idempotent=%v", key, r.SecretOnce, r.Idempotent)
+			}
+			delete(want, key)
+		}
+	}
+	for k := range want {
+		t.Errorf("маршрут %s не найден", k)
 	}
 }
 

@@ -82,9 +82,9 @@ func TestNewValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	st := s.Status(context.Background())
-	// Без источников: пустые массивы, UTC, умолчания, все пять условий.
+	// Без источников: пустые массивы, UTC, умолчания, все шесть условий.
 	if st.Time.Timezone != "UTC" || st.Storage.LimitBytes != sysstatus.DefaultStorageLimit || st.Storage.WarnPercent != 80 ||
-		len(st.Notifications) != 5 || st.Gateways == nil || st.Unavailable == nil || st.Server.Integrity == nil {
+		len(st.Notifications) != 6 || st.Gateways == nil || st.Unavailable == nil || st.Server.Integrity == nil {
 		t.Fatalf("%+v", st)
 	}
 }
@@ -146,7 +146,7 @@ func TestStatusSectionsUnavailable(t *testing.T) {
 	e.integ.err = errors.New("db down")
 	st := e.svc(t).Status(context.Background())
 	got := strings.Join(st.Unavailable, ",")
-	if got != "events,gateways,integrity,notifications,storage" {
+	if got != "audit_chain,events,gateways,integrity,notifications,storage" {
 		t.Fatalf("недоступные разделы: %s", got)
 	}
 	if st.Storage.Available || st.Time.Sync != sysstatus.SyncSynchronized || st.Server.Version != "1.0" {
@@ -155,6 +155,43 @@ func TestStatusSectionsUnavailable(t *testing.T) {
 	// Текст ошибки БД клиенту не передаётся.
 	if strings.Contains(fmt.Sprintf("%+v", st), "db down") {
 		t.Error("текст ошибки в ответе")
+	}
+}
+
+// РСБ.4 (замечание В1 ревью 2.r1): нарушение цепочки аудита поднимает
+// уведомление и пишет system.alert один раз; восстановление его снимает.
+func TestAuditChainNotification(t *testing.T) {
+	e := newEnv()
+	s := e.svc(t)
+	ctx := context.Background()
+	if st := s.Status(ctx); st.AuditChain != nil || notif(st, sysstatus.ConditionAuditLog).Active {
+		t.Fatalf("без проверок: %+v", st.AuditChain)
+	}
+	seq := int64(7)
+	e.mem.SetAuditChain(&sysstatus.AuditChainStatus{CheckedAt: t0, OK: false, Checked: 6, LastSeq: 6, Reason: "rewritten", BrokenSeq: &seq})
+	for range 2 {
+		if err := s.Evaluate(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	st := s.Status(ctx)
+	n := notif(st, sysstatus.ConditionAuditLog)
+	if !n.Active || n.Requirement != "РСБ.4" || n.Since == nil || st.AuditChain == nil || st.AuditChain.Reason != "rewritten" {
+		t.Fatalf("уведомление: %+v, цепочка: %+v", n, st.AuditChain)
+	}
+	if len(e.mem.Records) != 1 {
+		t.Fatalf("записей system.alert: %d", len(e.mem.Records))
+	}
+	d := e.mem.Records[0].Details.(map[string]any)
+	if d["condition"] != sysstatus.ConditionAuditLog || d["state"] != "raised" || d["reason"] != "rewritten" || d["broken_seq"] != seq {
+		t.Fatalf("подробности: %+v", d)
+	}
+	e.mem.SetAuditChain(&sysstatus.AuditChainStatus{CheckedAt: t0.Add(time.Hour), OK: true, Checked: 8, LastSeq: 8, Reason: "ok"})
+	if err := s.Evaluate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if notif(s.Status(ctx), sysstatus.ConditionAuditLog).Active || len(e.mem.Records) != 2 {
+		t.Fatalf("после восстановления: записей %d", len(e.mem.Records))
 	}
 }
 

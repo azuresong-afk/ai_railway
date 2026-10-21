@@ -17,6 +17,7 @@ type Memory struct {
 	locked int
 	denied int
 	states map[string]AlertState
+	chain  *AuditChainStatus
 	// Records — записи аудита об изменении состояния.
 	Records []audit.Entry
 	// Err — ошибка, которую вернут все методы (проверка отказа БД).
@@ -43,6 +44,20 @@ func (m *Memory) SetCounts(locked, denied int) {
 	m.mu.Lock()
 	m.locked, m.denied = locked, denied
 	m.mu.Unlock()
+}
+
+// SetAuditChain задаёт итог последней проверки цепочки аудита.
+func (m *Memory) SetAuditChain(ch *AuditChainStatus) { m.mu.Lock(); m.chain = ch; m.mu.Unlock() }
+
+// AuditChain — см. Store.
+func (m *Memory) AuditChain(context.Context) (*AuditChainStatus, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.Err != nil || m.chain == nil {
+		return nil, m.Err
+	}
+	ch := *m.chain
+	return &ch, nil
 }
 
 // AuditSize — см. Store.
