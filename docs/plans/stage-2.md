@@ -143,7 +143,7 @@
 | 20.10.2026 | 2.0 (поток E2) | план этапа 2 | черновик, ждёт подтверждения владельца |
 | 20.10.2026 | 2.1 (поток A1) | PostgreSQL в стенде, `internal/store` (пул pgx v5.11.0, исполнитель миграций, UUIDv7), `migrations/`, `aisec-cli migrate`, тесты на PostgreSQL 16 | готова; lint/vuln — в CI |
 | 20.10.2026 | 2.21 (поток A3) | захват задачи | в работе |
-| 21.10.2026 | 2.21 (поток A3) | web/ (Vite, React, Tailwind, eslint, vitest, Playwright при строгом CSP), `make web-*`, npm в `license-check` и `sbom`, `go:embed` в `aisec-server`, ADR-0011 | готова; `make check` в облаке не полностью (lint, vuln — в CI), 0BSD у `tslib` ждёт подтверждения |
+| 21.10.2026 | 2.21 (поток A3) | web/ (Vite, React, Tailwind, eslint, vitest, Playwright при строгом CSP), `make web-*`, npm в `license-check` и `sbom`, `go:embed` в `aisec-server`, ADR-0011 | готова; `make check` в облаке не полностью (lint, vuln — в CI); 0BSD у `tslib` подтверждено 21.10.2026 |
 | 20.10.2026 | 2.2 (поток A2) | захват задачи | в работе |
 | 20.10.2026 | 2.2 (поток A2) | `internal/crypto`: `PasswordHasher` (Argon2id, `golang.org/x/crypto` v0.58.0 — согласие владельца), `AEAD` (AES-256-GCM), `Signer`/`Verifier` (Ed25519), `TOTP` (Р1), самотест и контрактные тесты обоих профилей, fuzz разбора хеша, `AEAD.Open` и `TOTP.Verify`; ADR-0006; ревью `cert-reviewer` — исправлено | готова |
 | 20.10.2026 | 2.6 (поток B3) | каркас `aisec-server`: `internal/api` (маршрутизатор с обязательной проверкой прав и `DenyAll` по умолчанию, Problem Details, курсор, `Idempotency-Key` с хранилищем в памяти, ограничение частоты ЗИ.6, заголовки и CSP, `DecodeJSON`), `cmd/aisec-server` (TLS из `internal/crypto`, `store.Open`, `/readyz` по `Ping`), контрактные тесты против `api/openapi.yaml`; в спецификации исправлена ошибка YAML (строка 312). Код Sonnet в строке Opus — «в ближайшую точку ревью». Новые маршруты — в `internal/api/routes.go`; статика 2.21 — в `cmd/aisec-server/static.go`; lint/vuln — в CI | готова |
@@ -160,5 +160,5 @@
 ### Ждут решения владельца
 - Подтвердить план, решения Р1–Р13 и библиотеки (`pgx`, `x/crypto`, `rsc.io/qr`, npm-пакеты из ТЗ 11.2).
 - Интеграционная ветка этапа 2.
-- Задача 2.21: подтвердить 0BSD для `tslib` (зависимость `echarts`, входит в поставку; ADR-0011, п. 5). Дополнительные dev-пакеты сверх перечня ТЗ 11.2: `@eslint/js`, `globals`, `@testing-library/jest-dom`, `@types/*`, `jsdom`, `@vitejs/plugin-react`, `@tailwindcss/vite`. В сборочный образ нужны Node.js ≥ 22.12 и кэш npm (иначе `web-check`, `web-e2e` в CI не выполняются).
+- Задача 2.21: Дополнительные dev-пакеты сверх перечня ТЗ 11.2: `@eslint/js`, `globals`, `@testing-library/jest-dom`, `@types/*`, `jsdom`, `@vitejs/plugin-react`, `@tailwindcss/vite`. В сборочный образ нужны Node.js ≥ 22.12 и кэш npm (иначе `web-check`, `web-e2e` в CI не выполняются).
 - Перенесено с этапа 1 и влияет на этап 2: решения 1.19 о политиках (`allow_inline`, пустой `policy_mode` против ТЗ 5.4) — от них зависит схема политик в сервере (2.12) и мастер подключения (2.25).
