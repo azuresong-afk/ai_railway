@@ -4,7 +4,7 @@
 # Сборка — в официальном образе Go, закреплённом по digest (ТЗ, 8.7), без
 # сети: зависимости из vendor/, прокси модулей выключен. Запуск — в пустом
 # образе scratch: только статический бинарник, без оболочки и пакетов ОС.
-ARG GO_IMAGE=golang:1.27.2-bookworm@sha256:5cf287a799e6b94384bad13d16b14904c531f51ba65792237e122ce42b392f61
+ARG GO_IMAGE=golang:1.27.3-bookworm@sha256:21ade014faf952365b9ecbd8dbdb87176fbacb82fac9fb132d9f2a7b8cc3f132
 
 FROM ${GO_IMAGE} AS build
 WORKDIR /src
