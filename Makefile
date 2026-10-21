@@ -265,7 +265,8 @@ COMPOSE_DEV := docker compose -f deploy/compose/dev/docker-compose.yml
 
 .PHONY: dev
 dev: .dev-keys/gateway.yaml ## Стенд разработки в docker compose: шлюз на https://127.0.0.1:8443 перед mock-llm
-	mkdir -p -m 0700 .dev-data
+	mkdir -p -m 0700 .dev-data .dev-data/pg
+	test -s .dev-keys/pg-password || (umask 077; head -c 24 /dev/urandom | base64 | tr -d '/+=\n' > .dev-keys/pg-password)
 	AISEC_UID=$$(id -u) AISEC_GID=$$(id -g) $(COMPOSE_DEV) up --build
 
 .PHONY: dev-down

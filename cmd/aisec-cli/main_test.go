@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"regexp"
 	"strings"
 	"testing"
@@ -58,5 +59,18 @@ func TestAppKeyErrors(t *testing.T) {
 	var out, errOut strings.Builder
 	if code := run([]string{"app-key", "-h"}, &out, &errOut, now); code != 0 {
 		t.Errorf("-h: код %d", code)
+	}
+}
+
+func TestMigrateErrors(t *testing.T) {
+	var out, errb bytes.Buffer
+	if err := migrate(nil, "", &out, &errb); err == nil {
+		t.Error("пустая строка подключения принята")
+	}
+	if err := migrate([]string{"x"}, "postgres://u@127.0.0.1:1/x", &out, &errb); err == nil {
+		t.Error("лишний аргумент принят")
+	}
+	if err := migrate(nil, "postgres://u@127.0.0.1:1/x", &out, &errb); err == nil {
+		t.Error("недоступная БД принята")
 	}
 }

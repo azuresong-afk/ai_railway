@@ -2,6 +2,7 @@ package crypto
 
 import (
 	"bytes"
+	"context"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -101,7 +102,73 @@ func TestProfileContract(t *testing.T) {
 			if _, err := p.TLS(); err != nil {
 				t.Fatal(err)
 			}
+			assertPrimitivesContract(t, p)
 		})
+	}
+}
+
+// assertPrimitivesContract — общие требования к паролям, AEAD, подписи и TOTP:
+// круговая проверка, отказ на чужих данных и на ключах неверной длины.
+func assertPrimitivesContract(t *testing.T, p Provider) {
+	t.Helper()
+	ph, err := p.PasswordHasher()
+	if err != nil {
+		t.Fatal(err)
+	}
+	enc, err := ph.Hash(context.Background(), []byte("пароль"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, _, err := ph.Verify(context.Background(), []byte("пароль"), enc); !ok || err != nil {
+		t.Fatalf("PasswordHasher: %v %v", ok, err)
+	}
+	if ok, _, err := ph.Verify(context.Background(), []byte("парол"), enc); ok || err != nil {
+		t.Fatalf("PasswordHasher, чужой пароль: %v %v", ok, err)
+	}
+
+	a, err := p.NewAEAD(make([]byte, AEADKeySize))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed, err := a.Seal([]byte("данные"), []byte("aad"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out, err := a.Open(sealed, []byte("aad")); err != nil || string(out) != "данные" {
+		t.Fatalf("AEAD: %q %v", out, err)
+	}
+	if _, err := a.Open(sealed, []byte("aaD")); err == nil {
+		t.Fatal("AEAD принял чужие AAD")
+	}
+	if _, err := p.NewAEAD(make([]byte, AEADKeySize-1)); err == nil {
+		t.Fatal("AEAD принял короткий ключ")
+	}
+
+	s, err := p.GenerateSigner()
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := p.NewVerifier(s.PublicKey())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sig, err := s.Sign([]byte("пакет"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !v.Verify([]byte("пакет"), sig) || v.Verify([]byte("пакеТ"), sig) {
+		t.Fatal("Signer/Verifier: подпись проверяется неверно")
+	}
+
+	tp, err := p.NewTOTP(make([]byte, TOTPSecretSize))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tp.Name() == "" {
+		t.Fatal("у TOTP нет имени")
+	}
+	if _, err := p.NewTOTP(make([]byte, TOTPSecretSize-1)); err == nil {
+		t.Fatal("TOTP принял короткий секрет")
 	}
 }
 
@@ -115,6 +182,24 @@ func assertAllNotImplemented(t *testing.T, p Provider) {
 	}
 	if _, err := p.TLS(); !errors.Is(err, ErrNotImplemented) {
 		t.Errorf("TLS: %v", err)
+	}
+	if _, err := p.PasswordHasher(); !errors.Is(err, ErrNotImplemented) {
+		t.Errorf("PasswordHasher: %v", err)
+	}
+	if _, err := p.NewAEAD(make([]byte, AEADKeySize)); !errors.Is(err, ErrNotImplemented) {
+		t.Errorf("NewAEAD: %v", err)
+	}
+	if _, err := p.GenerateSigner(); !errors.Is(err, ErrNotImplemented) {
+		t.Errorf("GenerateSigner: %v", err)
+	}
+	if _, err := p.NewSigner(make([]byte, SigningSeedSize)); !errors.Is(err, ErrNotImplemented) {
+		t.Errorf("NewSigner: %v", err)
+	}
+	if _, err := p.NewVerifier(make([]byte, PublicKeySize)); !errors.Is(err, ErrNotImplemented) {
+		t.Errorf("NewVerifier: %v", err)
+	}
+	if _, err := p.NewTOTP(make([]byte, TOTPSecretSize)); !errors.Is(err, ErrNotImplemented) {
+		t.Errorf("NewTOTP: %v", err)
 	}
 	if err := SelfTest(p); !errors.Is(err, ErrNotImplemented) {
 		t.Errorf("SelfTest: %v", err)
