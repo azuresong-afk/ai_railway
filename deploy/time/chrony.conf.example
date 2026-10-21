@@ -1,0 +1,41 @@
+# Шаблон /etc/chrony/chrony.conf для хоста с AISec (руководство: docs/install/time-sync.md).
+# Все адреса ниже — заглушки: подставьте внутренние серверы времени организации.
+# Публичный пул (pool.ntp.org и подобные) по умолчанию не включён: заказчик решает сам.
+
+# 2–4 независимых источника. Один источник не позволяет отличить сбой от ошибки времени.
+server ntp1.example.internal iburst
+server ntp2.example.internal iburst
+server ntp3.example.internal iburst
+# Для внешних источников, если администратор их разрешил, — NTS (аутентификация):
+# server time.example.org iburst nts
+# Для внутренних — симметричный ключ из файла keyfile (права 0640, владелец root:chrony):
+# server ntp4.example.internal iburst key 1
+# keyfile /etc/chrony/chrony.keys
+
+# Не доверять одиночному источнику, не принимать источники с большим удалением от эталона.
+minsources 2
+maxdistance 3.0
+
+# Ступенчатая подстройка только в первые три обновления после запуска;
+# дальше время меняется плавно, скачков назад на работающей системе нет.
+makestep 1.0 3
+
+# Ядро помечает часы синхронизированными и передаёт оценку ошибки (её читает проверка 2.20).
+rtcsync
+
+# Секунды координации: часы идут плавно, без «секунды 60».
+leapsecmode slew
+maxslewrate 1000
+# Таблицу часовых поясов и високосных секунд берём из ОС.
+leapsectz right/UTC
+
+# Хост не раздаёт время и не принимает команды по сети.
+port 0
+cmdport 0
+bindcmdaddress 127.0.0.1
+# Если хост сам служит источником для других узлов контура, уберите «port 0» и ограничьте клиентов:
+# allow 10.0.0.0/8
+
+driftfile /var/lib/chrony/chrony.drift
+logdir /var/log/chrony
+log tracking measurements statistics
