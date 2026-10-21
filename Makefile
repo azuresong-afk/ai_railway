@@ -249,7 +249,8 @@ web-check: web-lint web-typecheck web-test web-api-check web-build ## Все п�
 # Браузер — из PLAYWRIGHT_BROWSERS_PATH (сборочный образ) или AISEC_CHROMIUM;
 # Playwright ничего не скачивает (скрипты установки отключены).
 .PHONY: web-e2e
-web-e2e: web-build ## Сквозные тесты консоли в Chromium при строгом CSP (ТЗ, 6.9)
+web-e2e: web/node_modules/.package-lock.json ## Сквозные тесты консоли в Chromium при строгом CSP (ТЗ, 6.9)
+	$(WEB_NPM) run build:e2e
 	$(WEB_NPM) run e2e
 
 .PHONY: tools

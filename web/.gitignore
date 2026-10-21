@@ -3,3 +3,4 @@ node_modules/
 !/dist/.gitkeep
 playwright-report/
 test-results/
+/dist-e2e/
