@@ -50,3 +50,8 @@ golang.org/x/text/transform
 golang.org/x/text/unicode/bidi
 golang.org/x/text/unicode/norm
 golang.org/x/text/width
+# rsc.io/qr v0.2.0
+## explicit
+rsc.io/qr
+rsc.io/qr/coding
+rsc.io/qr/gf256

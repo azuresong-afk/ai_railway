@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"encoding/base32"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -12,12 +13,14 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/azuresong-afk/ai_railway/internal/audit"
 	"github.com/azuresong-afk/ai_railway/internal/auth"
 	"github.com/azuresong-afk/ai_railway/internal/auth/authtest"
+	"github.com/azuresong-afk/ai_railway/internal/crypto/cryptotest"
 )
 
 // Синтетические учётные записи и пароль.
@@ -31,14 +34,37 @@ const (
 )
 
 type authEnv struct {
-	h   http.Handler
-	mem *authtest.Memory
-	log *bytes.Buffer
+	h     http.Handler
+	mem   *authtest.Memory
+	log   *bytes.Buffer
+	clock *testClock
+	// secrets — секреты TOTP по логину (приложение-аутентификатор теста).
+	secrets map[string][]byte
+}
+
+// testClock — часы сервиса входа: каждый код TOTP берётся на следующем
+// шаге, чтобы повторные входы не упирались в защиту от повтора.
+type testClock struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+func (c *testClock) now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.t
+}
+
+func (c *testClock) next() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.t = c.t.Add(30 * time.Second)
+	return c.t
 }
 
 func newAuthEnv(t *testing.T) *authEnv {
 	t.Helper()
-	e := &authEnv{mem: authtest.NewMemory(), log: &bytes.Buffer{}}
+	e := &authEnv{mem: authtest.NewMemory(), log: &bytes.Buffer{}, clock: &testClock{t: time.Now()}, secrets: map[string][]byte{}}
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	for _, u := range []struct {
 		id, login string
@@ -48,7 +74,7 @@ func newAuthEnv(t *testing.T) *authEnv {
 			Status: auth.StatusActive, PasswordHash: authtest.HashOf(tPhrase), PasswordChangedAt: now, CreatedAt: now, CreatedBy: "test"})
 	}
 	logger := slog.New(slog.NewTextHandler(e.log, nil))
-	h, _, err := New(Options{Hasher: testHasher(t), Logger: logger, Auth: testAuth(t, e.mem),
+	h, _, err := New(Options{Hasher: testHasher(t), Logger: logger, Auth: testAuth(t, e.mem, auth.WithClock(e.clock.now)),
 		RateLimit: RateConfig{Rules: []RateRule{{Prefix: "/", Max: 10000, Window: time.Minute}}}})
 	if err != nil {
 		t.Fatal(err)
@@ -85,13 +111,71 @@ func (e *authEnv) login(t *testing.T, login, password string) (*httptest.Respons
 	return w, s
 }
 
+// mustLogin — полный вход: пароль и второй фактор (подключение при первом
+// входе роли, где он обязателен).
 func (e *authEnv) mustLogin(t *testing.T, login string) session {
 	t.Helper()
 	w, s := e.login(t, login, tPhrase)
 	if w.Code != 200 {
 		t.Fatalf("вход %s: %d %s", login, w.Code, w.Body)
 	}
-	return s
+	var me MeResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &me); err != nil {
+		t.Fatal(err)
+	}
+	switch me.SessionState {
+	case string(auth.SessionMFASetup):
+		e.enroll(t, s, login)
+		w = e.call(s, "POST", "/api/v1/auth/mfa/setup/confirm", mustJSON(t, mfaCodeRequest{Code: e.code(t, login)}), true)
+	case string(auth.SessionMFAPending):
+		w = e.call(s, "POST", "/api/v1/auth/mfa/verify", mustJSON(t, mfaVerifyRequest{Code: e.code(t, login)}), true)
+	}
+	if w.Code != 200 {
+		t.Fatalf("второй фактор %s: %d %s", login, w.Code, w.Body)
+	}
+	return s.renewed(w)
+}
+
+// renewed — сессия с cookie из ответа, если сервер их сменил (второй
+// фактор пройден: сессия заменена полной).
+func (s session) renewed(w *httptest.ResponseRecorder) session {
+	var fresh session
+	for _, c := range w.Result().Cookies() {
+		fresh.cookies = append(fresh.cookies, c)
+		if c.Name == CSRFCookie {
+			fresh.csrf = c.Value
+		}
+	}
+	if fresh.csrf == "" {
+		return s
+	}
+	return fresh
+}
+
+// enroll выдаёт секрет TOTP в сессии и запоминает его.
+func (e *authEnv) enroll(t *testing.T, s session, login string) MFASetup {
+	t.Helper()
+	w := e.call(s, "POST", "/api/v1/auth/mfa/setup", mustJSON(t, mfaSetupRequest{CurrentPassword: tPhrase}), true)
+	var en MFASetup
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &en) != nil {
+		t.Fatalf("выдача секрета: %d %s", w.Code, w.Body)
+	}
+	secret, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(en.Secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.secrets[login] = secret
+	return en
+}
+
+// code — код TOTP пользователя на следующем шаге часов сервиса.
+func (e *authEnv) code(t *testing.T, login string) string {
+	t.Helper()
+	c, err := cryptotest.TOTPCode(e.secrets[login], e.clock.next())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
 }
 
 // call выполняет запрос в сессии; csrf = false — без заголовка X-CSRF-Token.
@@ -116,7 +200,7 @@ func (e *authEnv) call(s session, method, target, body string, csrf bool) *httpt
 
 func TestLoginSetsSecureCookies(t *testing.T) {
 	e := newAuthEnv(t)
-	w, s := e.login(t, "admin", tPhrase)
+	w, s := e.login(t, "analyst", tPhrase)
 	if w.Code != 200 {
 		t.Fatalf("%d %s", w.Code, w.Body)
 	}
@@ -137,7 +221,8 @@ func TestLoginSetsSecureCookies(t *testing.T) {
 		t.Fatalf("cookie CSRF: %+v", cc)
 	}
 	var me MeResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &me); err != nil || me.User.Login != "admin" || me.SessionState != "active" {
+	if err := json.Unmarshal(w.Body.Bytes(), &me); err != nil || me.User.Login != "analyst" || me.SessionState != "active" ||
+		me.MFA.Enabled || me.MFA.Required {
 		t.Fatalf("ответ: %s", w.Body)
 	}
 	if strings.Contains(w.Body.String(), sc.Value) || strings.Contains(w.Body.String(), "$fake$") {

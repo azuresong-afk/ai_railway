@@ -50,8 +50,10 @@ type Store interface {
 	// алгоритма или уже выполненная настройка — ErrSetupUnavailable.
 	SetupFirstUser(ctx context.Context, tokenHash []byte, hashAlg string, u User, rec audit.Entry) error
 
-	// CreateSession сохраняет сессию; если активных сессий пользователя
-	// станет больше limit, самые старые завершаются (RevokeLimit), их ID
+	// CreateSession сохраняет сессию; если незавершённых сессий пользователя
+	// того же рода (до второго фактора или полных) станет больше limit, самые
+	// старые из них завершаются (RevokeLimit): вход по одному паролю не
+	// вытесняет полные сессии. Их ID
 	// добавляются в подробности rec (evicted_sessions). При входе (login != nil)
 	// в той же транзакции под блокировкой строки проверяется, что запись всё
 	// ещё активна, не заблокирована и пароль не сменился с момента проверки
@@ -70,6 +72,32 @@ type Store interface {
 	RevokeUserSessions(ctx context.Context, userID, reason string, now time.Time, rec audit.Entry) (int, error)
 	// ListSessions — незавершённые сессии пользователя, новые первыми.
 	ListSessions(ctx context.Context, userID string) ([]Session, error)
+
+	// MFA — второй фактор пользователя; нет — ErrNotFound.
+	MFA(ctx context.Context, userID string) (MFA, error)
+	// SaveMFAPending сохраняет новый неподтверждённый секрет с записью
+	// аудита, заменяя прежний неподтверждённый; шаг последнего кода не
+	// уменьшается. Подключённый фактор — ErrMFAEnabled.
+	SaveMFAPending(ctx context.Context, m MFA, rec audit.Entry) error
+	// MFAStep проверяет код второго фактора и выполняет действие st.Kind в
+	// одной транзакции под блокировкой строки пользователя: параллельные
+	// попытки сериализуются, и кодов проверяется не больше порога блокировки
+	// (ИАФ.4). Запись заблокирована — ErrLocked, деактивирована или сессия
+	// завершена — ErrUnauthenticated, сессия не в FromState — ErrSessionState,
+	// фактор не в нужном состоянии — ErrMFANotEnabled или ErrMFAEnabled.
+	// Неверный код: счётчик неудач растёт (на пороге — блокировка и
+	// завершение всех сессий пользователя), записи st.Failed фиксируются,
+	// возвращается ErrInvalidCode. Принятый код: шаг сохраняется, фактор
+	// подключается (MFAStepConfirm), коды восстановления заменяются
+	// (RecoveryHashes), сессия заменяется NewSession (прежняя завершается с
+	// RevokeMFAPassed, лишние полные сессии сверх SessionLimit — с
+	// RevokeLimit), при входе (MFAStepVerify) сбрасывается счётчик неудач;
+	// rec пишется с подробностями evicted_sessions и recovery_codes_left.
+	MFAStep(ctx context.Context, st MFAStep, rec audit.Entry) error
+	// ResetMFA удаляет второй фактор (нет — ErrMFANotEnabled), гасит коды
+	// восстановления и завершает сессии пользователя (RevokeMFAReset).
+	// В подробности rec добавляются previous_state и revoked_sessions.
+	ResetMFA(ctx context.Context, userID string, now time.Time, rec audit.Entry) error
 }
 
 // Auditor — журнал аудита для событий без изменения данных (вход, неудача).
@@ -90,6 +118,9 @@ type LoginCheck struct {
 	// Rehash — новый хеш того же пароля (параметры хеширования обновились); пусто — не менять.
 	Rehash string
 	Now    time.Time
+	// KeepFailures — не сбрасывать счётчик неудач: вход завершит второй
+	// фактор (ИАФ.4, ИАФ.5), счётчик сбросит принятый код.
+	KeepFailures bool
 }
 
 // PasswordChange — смена или сброс пароля.

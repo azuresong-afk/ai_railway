@@ -93,6 +93,22 @@ components:
     license_files:
       LICENSE: 911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad
 
+  - name: rsc.io/qr
+    version: v0.2.0
+    type: go-module
+    scope: product
+    purpose: Кодирование ссылки otpauth в матрицу QR-кода при подключении второго фактора (ИАФ.5, задача 2.8); сервер отдаёт матрицу модулей, консоль рисует её SVG-прямоугольниками.
+    license: BSD-3-Clause
+    repository: https://github.com/rsc/qr
+    attack_surface: false
+    security_function: false
+    provided_by: Russ Cox (The Go Authors)
+    justification: В стандартной библиотеке Go нет кодировщика QR (Рида — Соломона и масок), а собственная реализация — лишний непроверенный код. Модуль без зависимостей (go.mod без require), чистый Go, только кодирование; вход — строка, сформированная сервером (логин до 64 символов). В vendor попадают пакеты qr, qr/coding, qr/gf256; libqrencode (cgo) не импортируется и в сборку не входит. Последний выпуск v0.2.0 — июнь 2018 года; кодировщик стандарта ISO/IEC 18004 не требует обновлений, а входные данные доверенные (формирует сервер), поэтому низкая активность допустима.
+    decision: решение Р2 этапа 2; согласие владельца на план задачи 2.8 (поток C1, 21.10.2026)
+    decided: 2026-10-21
+    license_files:
+      LICENSE: 2d36597f7117c38b006835ae7f537487207d8ec407aa9d9980794b2030cbc067
+
   - name: golangci-lint
     version: v2.14.0
     type: tool

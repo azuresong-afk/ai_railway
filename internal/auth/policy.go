@@ -23,6 +23,9 @@ type Policy struct {
 	SessionIdleMinutes int `json:"session_idle_minutes"`
 	SessionMaxPerUser  int `json:"session_max_per_user"`
 	TempPasswordHours  int `json:"temp_password_hours"`
+	// MFARequiredAll — второй фактор обязателен для всех ролей; для ролей
+	// управления он обязателен всегда (ИАФ.5).
+	MFARequiredAll bool `json:"mfa_required_all"`
 }
 
 // DefaultPolicy — значения по умолчанию (ТЗ: длина 12, бездействие 15 минут).

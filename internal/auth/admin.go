@@ -189,7 +189,7 @@ func policyDetails(p Policy) map[string]any {
 		"history": p.PasswordHistory, "max_age_days": p.PasswordMaxAgeDays, "warn_days": p.PasswordWarnDays,
 		"lockout_threshold": p.LockoutThreshold, "lockout_minutes": p.LockoutMinutes,
 		"idle_minutes": p.SessionIdleMinutes, "max_sessions": p.SessionMaxPerUser,
-		"temp_hours": p.TempPasswordHours,
+		"temp_hours": p.TempPasswordHours, "mfa_all": p.MFARequiredAll,
 	}
 }
 

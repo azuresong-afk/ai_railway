@@ -115,6 +115,12 @@ const (
 	// SessionPasswordChange — пароль временный или истёк: доступны только
 	// свои данные, смена пароля и выход (ИАФ.2, ИАФ.3).
 	SessionPasswordChange SessionState = "password_change"
+	// SessionMFAPending — пароль верен, нужен код второго фактора (ИАФ.5):
+	// доступны только ввод кода, свои данные и выход.
+	SessionMFAPending SessionState = "mfa_pending"
+	// SessionMFASetup — второй фактор обязателен, но не подключён: доступны
+	// только его подключение, свои данные и выход.
+	SessionMFASetup SessionState = "mfa_setup"
 )
 
 // Причины завершения сессии (столбец sessions.revoke_reason).
@@ -128,6 +134,9 @@ const (
 	RevokePasswordReset   = "password_reset"
 	RevokeDeactivated     = "deactivated"
 	RevokeLocked          = "locked"
+	RevokeMFAReset        = "mfa_reset"
+	// RevokeMFAPassed — сессия до второго фактора заменена полной с новыми токенами.
+	RevokeMFAPassed = "mfa_passed"
 )
 
 // Session — сессия консоли (решение Р6). Токен и CSRF-токен хранятся только хешами.

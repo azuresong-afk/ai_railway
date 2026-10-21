@@ -49,6 +49,7 @@ type env struct {
 	mem   *authtest.Memory
 	hash  *authtest.Hasher
 	clock *clock
+	mfa   *mfaKeys
 }
 
 func provider(t testing.TB) aisecCrypto.Provider {
@@ -64,11 +65,12 @@ func newEnv(t *testing.T) *env {
 	t.Helper()
 	e := &env{mem: authtest.NewMemory(), hash: &authtest.Hasher{}, clock: &clock{t: time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)}}
 	svc, err := auth.NewService(context.Background(), e.mem, e.mem, provider(t),
-		auth.WithClock(e.clock.now), auth.WithPasswordHasher(e.hash))
+		auth.WithClock(e.clock.now), auth.WithPasswordHasher(e.hash), auth.WithSecretBox(testBox(t)))
 	if err != nil {
 		t.Fatal(err)
 	}
 	e.svc = svc
+	e.mfa = newMFAKeys(svc, e.mem, e.clock)
 	e.mem.AddUser(e.user(adminID, "admin", auth.RoleSecurityAdmin))
 	e.mem.AddUser(e.user(userID, "ivanov", auth.RoleAnalyst))
 	t.Cleanup(func() { checkRecords(t, e.mem.Records()) })
@@ -317,10 +319,11 @@ func TestLockoutExpiredResetsCounter(t *testing.T) {
 	e.mustLogin(t, "ivanov", phrase)
 }
 
+// adminCaller — полный вход администратора безопасности: пароль и второй
+// фактор (при первом входе — его подключение).
 func (e *env) adminCaller(t *testing.T) auth.Caller {
 	t.Helper()
-	res := e.mustLogin(t, "admin", phrase)
-	return res.Caller
+	return e.mfa.complete(t, e.mustLogin(t, "admin", phrase))
 }
 
 func TestDeactivatedCannotLogin(t *testing.T) {

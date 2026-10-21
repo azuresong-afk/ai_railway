@@ -21,9 +21,9 @@ func authRoutes(d Deps) []Route {
 		{Method: http.MethodGet, Path: "/api/v1/auth/setup", Public: true, Handler: needAuth(d, d.setupStatus)},
 		{Method: http.MethodPost, Path: "/api/v1/auth/setup", Public: true, MaxBody: authMaxBody, Handler: needAuth(d, d.setup)},
 		{Method: http.MethodPost, Path: "/api/v1/auth/login", Public: true, MaxBody: authMaxBody, Handler: needAuth(d, d.login)},
-		{Method: http.MethodPost, Path: "/api/v1/auth/logout", Permission: auth.PermSelf, Handler: needAuth(d, d.logout)},
+		{Method: http.MethodPost, Path: "/api/v1/auth/logout", Permission: auth.PermSession, Handler: needAuth(d, d.logout)},
 		{Method: http.MethodPost, Path: "/api/v1/auth/password", Permission: auth.PermSelf, MaxBody: authMaxBody, Handler: needAuth(d, d.changePassword)},
-		{Method: http.MethodGet, Path: "/api/v1/me", Permission: auth.PermSelf, Handler: needAuth(d, d.me)},
+		{Method: http.MethodGet, Path: "/api/v1/me", Permission: auth.PermSession, Handler: needAuth(d, d.me)},
 		{Method: http.MethodGet, Path: "/api/v1/auth/policy", Permission: auth.PermAuthPolicyRead, Handler: needAuth(d, d.getPolicy)},
 		{Method: http.MethodPut, Path: "/api/v1/auth/policy", Permission: auth.PermAuthPolicyManage, MaxBody: authMaxBody, Handler: needAuth(d, d.putPolicy)},
 	}
@@ -65,6 +65,19 @@ func authProblem(logger *slog.Logger, err error) *Problem {
 	case errors.Is(err, auth.ErrLocked):
 		return NewProblem(http.StatusConflict, CodeConflict,
 			"Учётная запись заблокирована после неудачных попыток: дождитесь окончания блокировки или обратитесь к администратору безопасности.")
+	case errors.Is(err, auth.ErrInvalidCode):
+		return Invalid("Код не принят: проверьте его и введите новый код из приложения.",
+			FieldError{"code", "Код не принят."})
+	case errors.Is(err, auth.ErrSessionState):
+		return NewProblem(http.StatusConflict, CodeConflict, "Это действие недоступно на текущем шаге входа.")
+	case errors.Is(err, auth.ErrMFAEnabled):
+		return NewProblem(http.StatusConflict, CodeConflict,
+			"Второй фактор уже подключён. Чтобы подключить его заново, обратитесь к администратору безопасности.")
+	case errors.Is(err, auth.ErrMFANotEnabled):
+		return NewProblem(http.StatusConflict, CodeConflict, "Второй фактор не подключён.")
+	case errors.Is(err, auth.ErrMFAUnavailable):
+		return NewProblem(http.StatusServiceUnavailable, CodeUnavailable,
+			"Второй фактор недоступен: на сервере не загружен ключ данных. Обратитесь к администратору системы.")
 	case errors.Is(err, auth.ErrSelf):
 		return NewProblem(http.StatusUnprocessableEntity, CodeUnprocessable,
 			"Это действие нельзя выполнить над своей учётной записью.")
@@ -88,7 +101,14 @@ type MeResponse struct {
 	SessionState string   `json:"session_state"`
 	// PasswordExpiresInDays — сколько дней осталось до обязательной смены
 	// пароля, если пора предупреждать (ИАФ.2).
-	PasswordExpiresInDays *int `json:"password_expires_in_days,omitempty"`
+	PasswordExpiresInDays *int      `json:"password_expires_in_days,omitempty"`
+	MFA                   MFAStatus `json:"mfa"`
+}
+
+// MFAStatus — второй фактор пользователя (ИАФ.5).
+type MFAStatus struct {
+	Enabled  bool `json:"enabled"`
+	Required bool `json:"required"`
 }
 
 func (d Deps) login(w http.ResponseWriter, r *http.Request) {
@@ -134,6 +154,12 @@ func (d Deps) writeMe(w http.ResponseWriter, r *http.Request, c auth.Caller) {
 		days := int(left / (24 * time.Hour))
 		resp.PasswordExpiresInDays = &days
 	}
+	mfa, err := d.Auth.MFAStatus(r.Context(), c.User)
+	if err != nil {
+		WriteProblem(w, authProblem(d.Logger, err))
+		return
+	}
+	resp.MFA = MFAStatus{Enabled: mfa.Enabled, Required: mfa.Required}
 	WriteJSON(w, http.StatusOK, resp)
 }
 
@@ -199,16 +225,17 @@ func (d Deps) getPolicy(w http.ResponseWriter, r *http.Request) {
 // policyRequest — все поля обязательны: пропущенное поле не должно молча
 // стать нулём (например, отключить срок действия пароля).
 type policyRequest struct {
-	PasswordMinLength  *int `json:"password_min_length"`
-	PasswordMinClasses *int `json:"password_min_classes"`
-	PasswordHistory    *int `json:"password_history"`
-	PasswordMaxAgeDays *int `json:"password_max_age_days"`
-	PasswordWarnDays   *int `json:"password_warn_days"`
-	LockoutThreshold   *int `json:"lockout_threshold"`
-	LockoutMinutes     *int `json:"lockout_minutes"`
-	SessionIdleMinutes *int `json:"session_idle_minutes"`
-	SessionMaxPerUser  *int `json:"session_max_per_user"`
-	TempPasswordHours  *int `json:"temp_password_hours"`
+	PasswordMinLength  *int  `json:"password_min_length"`
+	PasswordMinClasses *int  `json:"password_min_classes"`
+	PasswordHistory    *int  `json:"password_history"`
+	PasswordMaxAgeDays *int  `json:"password_max_age_days"`
+	PasswordWarnDays   *int  `json:"password_warn_days"`
+	LockoutThreshold   *int  `json:"lockout_threshold"`
+	LockoutMinutes     *int  `json:"lockout_minutes"`
+	SessionIdleMinutes *int  `json:"session_idle_minutes"`
+	SessionMaxPerUser  *int  `json:"session_max_per_user"`
+	TempPasswordHours  *int  `json:"temp_password_hours"`
+	MFARequiredAll     *bool `json:"mfa_required_all"`
 }
 
 func (d Deps) putPolicy(w http.ResponseWriter, r *http.Request) {
@@ -241,6 +268,11 @@ func (d Deps) putPolicy(w http.ResponseWriter, r *http.Request) {
 	set("session_idle_minutes", req.SessionIdleMinutes, &p.SessionIdleMinutes)
 	set("session_max_per_user", req.SessionMaxPerUser, &p.SessionMaxPerUser)
 	set("temp_password_hours", req.TempPasswordHours, &p.TempPasswordHours)
+	if req.MFARequiredAll == nil {
+		missing = append(missing, FieldError{"mfa_required_all", "Поле обязательно."})
+	} else {
+		p.MFARequiredAll = *req.MFARequiredAll
+	}
 	if len(missing) > 0 {
 		WriteProblem(w, Invalid("Укажите все настройки входа.", missing...))
 		return

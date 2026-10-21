@@ -19,6 +19,8 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/auth"
 	"github.com/azuresong-afk/ai_railway/internal/auth/authtest"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
+	"github.com/azuresong-afk/ai_railway/internal/keyring"
+	"github.com/azuresong-afk/ai_railway/internal/keyring/keyringtest"
 	"github.com/azuresong-afk/ai_railway/internal/store"
 	"github.com/azuresong-afk/ai_railway/migrations"
 )
@@ -35,6 +37,9 @@ type pgEnv struct {
 	store *auth.PGStore
 	svc   *auth.Service
 	clock *clock
+	mfa   *mfaKeys
+	// keyID — ID ключа данных установки (data_keys).
+	keyID string
 }
 
 func pgCtx(t *testing.T) context.Context {
@@ -145,9 +150,18 @@ func setupPG(t *testing.T) *pgEnv {
 	if e.store, err = auth.NewPGStore(e.app, e.log); err != nil {
 		t.Fatal(err)
 	}
-	if e.svc, err = auth.NewService(ctx, e.store, e.log, p, auth.WithClock(e.clock.now), auth.WithPasswordHasher(&authtest.Hasher{})); err != nil {
+	// Ключи установки — как после aisec-cli init; сервер загружает их так же.
+	dir, keyID := keyringtest.Install(t, ctx, owner, p, audit.DefaultOrgID)
+	box, err := keyring.Load(ctx, e.app, p, dir, audit.DefaultOrgID)
+	if err != nil {
 		t.Fatal(err)
 	}
+	e.keyID = keyID
+	if e.svc, err = auth.NewService(ctx, e.store, e.log, p, auth.WithClock(e.clock.now), auth.WithPasswordHasher(&authtest.Hasher{}),
+		auth.WithSecretBox(box)); err != nil {
+		t.Fatal(err)
+	}
+	e.mfa = newMFAKeys(e.svc, e.store, e.clock)
 	return e
 }
 
@@ -195,7 +209,7 @@ func TestPGFlow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	admin := res.Caller
+	admin := e.mfa.complete(t, res)
 	u, temp, err := e.svc.CreateUser(ctx, admin, auth.NewUser{Login: "ivanov", DisplayName: "Иванов", Role: auth.RoleAnalyst})
 	if err != nil {
 		t.Fatal(err)
@@ -317,7 +331,7 @@ func TestPGLastAdminConcurrent(t *testing.T) {
 	}
 	var wg sync.WaitGroup
 	errs := make([]error, 2)
-	for i, pair := range [][2]any{{r1.Caller, second}, {r2.Caller, adminID}} {
+	for i, pair := range [][2]any{{e.mfa.complete(t, r1), second}, {e.mfa.complete(t, r2), adminID}} {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

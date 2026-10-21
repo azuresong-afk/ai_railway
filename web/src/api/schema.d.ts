@@ -341,6 +341,9 @@ export interface paths {
          *     (HttpOnly, Secure, SameSite=Strict) и `__Host-aisec_csrf` (Secure, SameSite=Strict,
          *     читается интерфейсом). Если пароль временный или истёк, сессия получает
          *     `session_state: password_change` — доступны только `/api/v1/me`, смена пароля и выход.
+         *     Второй фактор (ИАФ.5): если он подключён, сессия получает `mfa_pending` (дальше —
+         *     `/api/v1/auth/mfa/verify`), если обязателен, но не подключён — `mfa_setup`
+         *     (`/api/v1/auth/mfa/setup`). Без ключа данных на сервере такой вход — 503.
          *     Тело — только `application/json`, поэтому HTML-форма с чужого сайта вход не выполнит.
          */
         post: {
@@ -373,6 +376,7 @@ export interface paths {
                 415: components["responses"]["ProblemUnsupportedMedia"];
                 429: components["responses"]["RateLimited"];
                 500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
             };
         };
         delete?: never;
@@ -392,7 +396,7 @@ export interface paths {
         put?: never;
         /**
          * Выход — завершение текущей сессии
-         * @description Право `self`. Изменяющий запрос — с заголовком `X-CSRF-Token`. Пишет `auth.logout`.
+         * @description Право `session` (любое состояние сессии). Изменяющий запрос — с заголовком `X-CSRF-Token`. Пишет `auth.logout`.
          */
         post: {
             parameters: {
@@ -562,6 +566,250 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/auth/mfa/setup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Выдать секрет TOTP для подключения второго фактора
+         * @description ИАФ.5, решения Р1, Р2, ADR-0006. Право `session`; доступно сессии `mfa_setup`
+         *     (первый вход роли, где второй фактор обязателен) и полной сессии без подключённого
+         *     фактора, иначе 409. Из полной сессии нужен текущий пароль (`current_password`):
+         *     пустой — 400, неверный — 400 и неудачная попытка входа (ИАФ.4). Возвращает секрет,
+         *     ссылку `otpauth://` и матрицу QR-кода — показываются один раз; на сервере секрет
+         *     хранится только шифротекстом ключа данных. Повторный вызов заменяет неподтверждённый
+         *     секрет. Пишет `auth.mfa_setup_started`. Без ключа данных на сервере — 503.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["MFASetupRequest"];
+                };
+            };
+            responses: {
+                /** @description Секрет выдан */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["MFASetup"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/mfa/setup/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Подтвердить подключение второго фактора кодом из приложения
+         * @description ИАФ.5. Право `session`. Код принимается один раз (шаг не меньше последнего
+         *     принятого); неверный код — 400 и неудачная попытка входа (ИАФ.4). При успехе
+         *     фактор подключён, выдаются 10 кодов восстановления (показываются один раз). Сессия
+         *     `mfa_setup` заменяется новой (`active` или `password_change`) с новыми cookie, прежняя
+         *     завершается с причиной `mfa_passed`; полная сессия остаётся прежней. Пишет `auth.mfa_enabled`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["MFACode"];
+                };
+            };
+            responses: {
+                /** @description Фактор подключён */
+                200: {
+                    headers: {
+                        /** @description Новые `__Host-aisec_session` и `__Host-aisec_csrf` — только при переходе из `mfa_setup` */
+                        "Set-Cookie"?: string;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["RecoveryCodes"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/mfa/verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Второй шаг входа — код TOTP или код восстановления
+         * @description ИАФ.4, ИАФ.5. Право `session`; только для сессии `mfa_pending` (живёт 5 минут), иначе
+         *     409. Ровно одно поле: `code` (6 цифр из приложения) или `recovery_code` (одноразовый,
+         *     регистр, дефисы и пробелы не важны). Неверный код — 400 и неудачная попытка входа:
+         *     счётчик неудач общий с паролем и до принятого кода не сбрасывается; на пороге
+         *     учётная запись блокируется, сессии завершаются. Попытки по всем сессиям пользователя
+         *     проверяются по очереди под блокировкой строки — параллельные запросы порог не обходят.
+         *     При успехе сессия заменяется новой (`active` или `password_change`) с новыми cookie,
+         *     прежняя завершается с причиной `mfa_passed`. Пишет `auth.mfa_verified` или
+         *     `auth.recovery_code_used`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["MFAVerify"];
+                };
+            };
+            responses: {
+                /** @description Вход выполнен */
+                200: {
+                    headers: {
+                        /** @description Новые `__Host-aisec_session` и `__Host-aisec_csrf` */
+                        "Set-Cookie"?: string;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Me"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/mfa/recovery-codes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Выпустить новые коды восстановления
+         * @description ИАФ.5. Право `session`; только полная сессия с подключённым фактором, по текущему коду
+         *     TOTP. Прежние неиспользованные коды гасятся. Неверный код — 400 и неудачная попытка
+         *     (ИАФ.4). Пишет `auth.recovery_codes_regenerated`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["MFACode"];
+                };
+            };
+            responses: {
+                /** @description Новые коды выданы */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["RecoveryCodes"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/me": {
         parameters: {
             query?: never;
@@ -571,7 +819,7 @@ export interface paths {
         };
         /**
          * Текущий пользователь и состояние сессии
-         * @description Право `self`. Вне `/api/v1/auth/`, чтобы строгий предел частоты входа не мешал консоли.
+         * @description Право `session` (любое состояние сессии). Вне `/api/v1/auth/`, чтобы строгий предел частоты входа не мешал консоли.
          */
         get: {
             parameters: {
@@ -902,6 +1150,58 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/users/{id}/mfa/reset": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Сбросить второй фактор пользователя
+         * @description Право `users.manage` (ИАФ.5). Секрет и коды восстановления уничтожаются, сессии
+         *     пользователя завершаются; при следующем входе фактор подключается заново. Свой
+         *     фактор так не сбрасывается (422); фактор не подключён — 409. Пишет `auth.mfa_reset`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID учётной записи (UUID) */
+                    id: components["parameters"]["UserID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Второй фактор сброшен */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                409: components["responses"]["ProblemConflict"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/users/{id}/sessions": {
         parameters: {
             query?: never;
@@ -1055,6 +1355,11 @@ export interface components {
             session_max_per_user: number;
             /** @default 72 */
             temp_password_hours: number;
+            /**
+             * @description Второй фактор обязателен для всех ролей (для security_admin и system_admin — всегда)
+             * @default false
+             */
+            mfa_required_all: boolean;
         };
         /** @enum {string} */
         Role: "security_admin" | "system_admin" | "analyst" | "auditor" | "app_owner";
@@ -1101,17 +1406,67 @@ export interface components {
         };
         Me: {
             user: components["schemas"]["User"];
-            /** @enum {string} */
-            session_state: "active" | "password_change";
+            session_state: components["schemas"]["SessionState"];
             /** @description Есть, если пора предупредить о смене пароля (ИАФ.2) */
             password_expires_in_days?: number;
+            /** @description Второй фактор (ИАФ.5) */
+            mfa?: {
+                enabled: boolean;
+                /** @description Обязателен по роли или по политике mfa_required_all */
+                required: boolean;
+            };
+        };
+        /**
+         * @description `active` — полный доступ; `password_change` — только смена пароля; `mfa_pending` —
+         *     ждёт код второго фактора (5 минут); `mfa_setup` — только подключение второго фактора (15 минут).
+         * @enum {string}
+         */
+        SessionState: "active" | "password_change" | "mfa_pending" | "mfa_setup";
+        MFASetupRequest: {
+            /**
+             * Format: password
+             * @description Текущий пароль; обязателен из полной сессии, в сессии `mfa_setup` не нужен
+             */
+            current_password?: string;
+        };
+        MFASetup: {
+            /**
+             * Format: password
+             * @description Секрет TOTP в base32 без «=»; показывается один раз
+             */
+            secret: string;
+            /**
+             * Format: password
+             * @description Ссылка otpauth://totp/… для приложения-аутентификатора
+             */
+            otpauth_uri: string;
+            /** @description Матрица модулей QR-кода ссылки — строка на ряд, «1» — тёмный модуль */
+            qr: string[];
+        };
+        MFACode: {
+            /** @description Код из приложения (6 цифр) */
+            code: string;
+        };
+        /** @description Ровно одно из полей */
+        MFAVerify: {
+            /** @description Код из приложения (6 цифр) */
+            code?: string;
+            /**
+             * Format: password
+             * @description Код восстановления XXXX-XXXX-XXXX-XXXX
+             */
+            recovery_code?: string;
+        };
+        RecoveryCodes: {
+            /** @description Коды восстановления — показываются один раз */
+            recovery_codes: string[];
+            session_state: components["schemas"]["SessionState"];
         };
         SessionList: {
             items: {
                 /** Format: uuid */
                 id: string;
-                /** @enum {string} */
-                state: "active" | "password_change";
+                state: components["schemas"]["SessionState"];
                 /** Format: date-time */
                 created_at: string;
                 /** Format: date-time */

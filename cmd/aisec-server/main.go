@@ -1,6 +1,7 @@
 // Команда aisec-server — сервер управления: API, веб-консоль, оповещения, инциденты, отчёты, аудит.
-// Сейчас (задачи 2.6–2.7 этапа 2): HTTPS, маршрутизатор с проверкой прав,
-// Problem Details, ограничение частоты, вход в консоль и учётные записи;
+// Сейчас (задачи 2.6–2.8 этапа 2): HTTPS, маршрутизатор с проверкой прав,
+// Problem Details, ограничение частоты, вход в консоль, второй фактор и
+// учётные записи;
 // остальные ресурсы API добавляются следующими задачами.
 package main
 
@@ -17,6 +18,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/auth"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/internal/httpserver"
+	"github.com/azuresong-afk/ai_railway/internal/keyring"
 	"github.com/azuresong-afk/ai_railway/internal/store"
 	"github.com/azuresong-afk/ai_railway/web"
 )
@@ -100,7 +102,13 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	authSvc, err := auth.NewService(ctx, users, auditLog, p)
+	// Ключ данных обязателен: без него не расшифровать секреты TOTP, а
+	// роли с обязательным вторым фактором не смогли бы войти (ИАФ.5).
+	box, err := keyring.Load(ctx, db.Pool(), p, cfg.KeysDir, audit.DefaultOrgID)
+	if err != nil {
+		return err
+	}
+	authSvc, err := auth.NewService(ctx, users, auditLog, p, auth.WithSecretBox(box))
 	if err != nil {
 		return err
 	}

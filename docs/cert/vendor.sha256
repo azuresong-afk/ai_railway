@@ -369,4 +369,10 @@ beab5a02e5ed5d5fed7abd24dd9b45d9a6a37f91e91a637570b2e499536f1347  vendor/golang.
 889bee56ec2b4ece137a2c6412f3a4147df12264daa628739771cc6a2e905ab0  vendor/golang.org/x/text/width/transform.go
 144b5fff894f16912d7f82adc42f0ed1e3892761b8f88c26e4af39ac685229c9  vendor/golang.org/x/text/width/trieval.go
 62badf24785e146fc7a90f71d587fe29616b5d3038d99ba1f6ea02423c6a3533  vendor/golang.org/x/text/width/width.go
-c64fc3a30f1414196e0bbb1aceee140482d898b562ed20ca0caed9dec66564b3  vendor/modules.txt
+54654f9fa23da229ef64a12da17c0195f5c8ea75f98381c639c73a0fdbe6ef72  vendor/modules.txt
+2d36597f7117c38b006835ae7f537487207d8ec407aa9d9980794b2030cbc067  vendor/rsc.io/qr/LICENSE
+b477ee2b3d9fb2ccea758a9ba84a2807c8d44d2344f9a4bad2b8b8cbf5164ff4  vendor/rsc.io/qr/README.md
+0ec8e6e40aaa9270c6c85571ff1e86db3ef24b0d524958e841fc6e075e5eef34  vendor/rsc.io/qr/coding/qr.go
+12ea9929c9e652f4937ee810a2f8d575096554cb3b927f98eb12ca6fc3e0d66c  vendor/rsc.io/qr/gf256/gf256.go
+968e1fab9bb842c7c771bdfa4f1c90d27160ec8f57798316dee972d885927b5d  vendor/rsc.io/qr/png.go
+6900219a619c454ec6844d9764bd8911065e9f851d49a05e67011009ad16d21f  vendor/rsc.io/qr/qr.go

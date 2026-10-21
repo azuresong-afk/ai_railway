@@ -25,8 +25,15 @@ type Memory struct {
 	sessions map[string]*auth.Session
 	records  []audit.Entry
 	setup    []*setupToken
+	mfa      map[string]*auth.MFA
+	codes    map[string][]*recoveryCode
 	// Fail — если не nil, возвращается из каждого метода (сбой хранилища).
 	Fail error
+}
+
+type recoveryCode struct {
+	hash []byte
+	used bool
 }
 
 type setupToken struct {
@@ -41,6 +48,7 @@ func NewMemory() *Memory {
 	return &Memory{
 		policy: map[string]auth.Policy{}, users: map[string]*auth.User{},
 		history: map[string][]string{}, sessions: map[string]*auth.Session{},
+		mfa: map[string]*auth.MFA{}, codes: map[string][]*recoveryCode{},
 	}
 }
 
@@ -387,24 +395,42 @@ func (m *Memory) CreateSession(_ context.Context, s auth.Session, limit int, log
 		if u.Status != auth.StatusActive || u.PasswordHash != login.VerifiedHash {
 			return auth.ErrInvalidCredentials
 		}
-		u.FailedAttempts, u.LockedAt, u.LockedUntil, u.LastLoginAt = 0, time.Time{}, time.Time{}, login.Now
+		if !login.KeepFailures || !u.LockedAt.IsZero() {
+			u.FailedAttempts = 0
+		}
+		u.LockedAt, u.LockedUntil, u.LastLoginAt = time.Time{}, time.Time{}, login.Now
 		if login.Rehash != "" {
 			u.PasswordHash = login.Rehash
 		}
 	}
 	m.sessions[s.ID] = &s
-	var evicted []string
-	for i, x := range m.activeSessions(s.UserID) {
-		if i >= limit {
-			x.RevokedAt = s.CreatedAt
-			evicted = append(evicted, x.ID)
-		}
-	}
-	if len(evicted) > 0 {
-		auth.AddDetail(&rec, "evicted_sessions", evicted)
-	}
+	m.evict(s.UserID, s.State, s.CreatedAt, limit, &rec)
 	m.records = append(m.records, rec)
 	return nil
+}
+
+func preMFA(st auth.SessionState) bool {
+	return st == auth.SessionMFAPending || st == auth.SessionMFASetup
+}
+
+// evict — как в PGStore: сверх limit завершаются самые старые сессии того же
+// рода (до второго фактора или полные).
+func (m *Memory) evict(userID string, st auth.SessionState, now time.Time, limit int, rec *audit.Entry) {
+	var evicted []string
+	i := 0
+	for _, x := range m.activeSessions(userID) {
+		if preMFA(x.State) != preMFA(st) {
+			continue
+		}
+		if i >= limit {
+			x.RevokedAt = now
+			evicted = append(evicted, x.ID)
+		}
+		i++
+	}
+	if len(evicted) > 0 {
+		auth.AddDetail(rec, "evicted_sessions", evicted)
+	}
 }
 
 func (m *Memory) SessionByToken(_ context.Context, tokenHash []byte) (auth.Session, auth.User, error) {
@@ -478,4 +504,187 @@ func (m *Memory) ListSessions(_ context.Context, userID string) ([]auth.Session,
 		out = append(out, *s)
 	}
 	return out, nil
+}
+
+func (m *Memory) MFA(_ context.Context, userID string) (auth.MFA, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.Fail != nil {
+		return auth.MFA{}, m.Fail
+	}
+	f, ok := m.mfa[userID]
+	if !ok {
+		return auth.MFA{}, auth.ErrNotFound
+	}
+	c := *f
+	c.Secret = bytes.Clone(f.Secret)
+	return c, nil
+}
+
+func (m *Memory) SaveMFAPending(_ context.Context, f auth.MFA, rec audit.Entry) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.Fail != nil {
+		return m.Fail
+	}
+	old, ok := m.mfa[f.UserID]
+	if ok && old.State == auth.MFAEnabled {
+		return auth.ErrMFAEnabled
+	}
+	f.State, f.Secret, f.EnabledAt = auth.MFAPending, bytes.Clone(f.Secret), time.Time{}
+	f.LastStep = 0
+	if ok {
+		f.LastStep = old.LastStep
+	}
+	m.mfa[f.UserID] = &f
+	m.records = append(m.records, rec)
+	return nil
+}
+
+func (m *Memory) replaceCodes(userID string, hashes [][]byte) {
+	for _, c := range m.codes[userID] {
+		c.used = true
+	}
+	for _, h := range hashes {
+		m.codes[userID] = append(m.codes[userID], &recoveryCode{hash: bytes.Clone(h)})
+	}
+}
+
+func (m *Memory) unusedCodes(userID string) int {
+	n := 0
+	for _, c := range m.codes[userID] {
+		if !c.used {
+			n++
+		}
+	}
+	return n
+}
+
+// MFAStep — как в PGStore: проверки до изменений, отказ ничего не меняет
+// (как откат транзакции), неверный код фиксирует только неудачу.
+func (m *Memory) MFAStep(_ context.Context, st auth.MFAStep, rec audit.Entry) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.Fail != nil {
+		return m.Fail
+	}
+	u, ok := m.users[st.UserID]
+	if !ok || u.Status != auth.StatusActive {
+		return auth.ErrUnauthenticated
+	}
+	if !u.LockedAt.IsZero() {
+		if u.LockedUntil.IsZero() || st.Now.Before(u.LockedUntil) {
+			return auth.ErrLocked
+		}
+		u.FailedAttempts, u.LockedAt, u.LockedUntil = 0, time.Time{}, time.Time{}
+	}
+	s, ok := m.sessions[st.SessionID]
+	if !ok || s.UserID != st.UserID || !s.RevokedAt.IsZero() {
+		return auth.ErrUnauthenticated
+	}
+	if s.State != st.FromState {
+		return auth.ErrSessionState
+	}
+	f, ok := m.mfa[st.UserID]
+	want := auth.MFAEnabled
+	if st.Kind == auth.MFAStepConfirm {
+		want = auth.MFAPending
+	}
+	if !ok || f.State != want {
+		if want == auth.MFAPending && ok {
+			return auth.ErrMFAEnabled
+		}
+		return auth.ErrMFANotEnabled
+	}
+	var (
+		step int64
+		code *recoveryCode
+		good bool
+	)
+	switch {
+	case st.Check != nil:
+		c := *f
+		var err error
+		if step, good, err = st.Check(c); err != nil {
+			return err
+		}
+		good = good && step > f.LastStep
+	case st.RecoveryHash != nil && st.Kind == auth.MFAStepVerify:
+		for _, c := range m.codes[st.UserID] {
+			if !c.used && bytes.Equal(c.hash, st.RecoveryHash) {
+				code = c
+			}
+		}
+		good = code != nil
+	}
+	if !good {
+		u.FailedAttempts++
+		locked := u.LockedAt.IsZero() && u.FailedAttempts >= st.Threshold
+		if locked {
+			u.LockedAt, u.LockedUntil = st.Now, st.LockUntil
+		}
+		if u.FailedAttempts >= st.Threshold {
+			for _, x := range m.activeSessions(st.UserID) {
+				x.RevokedAt = st.Now
+			}
+		}
+		if st.Failed != nil {
+			m.records = append(m.records, st.Failed(u.FailedAttempts, locked)...)
+		}
+		return auth.ErrInvalidCode
+	}
+	if code != nil {
+		code.used = true
+	}
+	if step > 0 {
+		f.LastStep = step
+	}
+	if st.Kind == auth.MFAStepConfirm {
+		f.State, f.EnabledAt = auth.MFAEnabled, st.Now
+	}
+	if st.RecoveryHashes != nil {
+		m.replaceCodes(st.UserID, st.RecoveryHashes)
+	}
+	if ns := st.NewSession; ns != nil {
+		s.RevokedAt = st.Now
+		c := *ns
+		m.sessions[c.ID] = &c
+		m.evict(st.UserID, c.State, st.Now, st.SessionLimit, &rec)
+	}
+	if st.Kind == auth.MFAStepVerify {
+		u.FailedAttempts, u.LockedAt, u.LockedUntil = 0, time.Time{}, time.Time{}
+		auth.AddDetail(&rec, "recovery_codes_left", m.unusedCodes(st.UserID))
+	}
+	m.records = append(m.records, rec)
+	return nil
+}
+
+func (m *Memory) ResetMFA(_ context.Context, userID string, now time.Time, rec audit.Entry) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.Fail != nil {
+		return m.Fail
+	}
+	f, ok := m.mfa[userID]
+	if !ok {
+		return auth.ErrMFANotEnabled
+	}
+	delete(m.mfa, userID)
+	m.replaceCodes(userID, nil)
+	n := 0
+	for _, s := range m.activeSessions(userID) {
+		s.RevokedAt = now
+		n++
+	}
+	auth.AddDetail(&rec, "previous_state", string(f.State))
+	auth.AddDetail(&rec, "revoked_sessions", n)
+	m.records = append(m.records, rec)
+	return nil
+}
+
+// UnusedRecoveryCodes — сколько кодов восстановления пользователя не погашено (проверки тестов).
+func (m *Memory) UnusedRecoveryCodes(userID string) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.unusedCodes(userID)
 }

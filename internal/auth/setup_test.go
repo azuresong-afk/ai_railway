@@ -22,11 +22,13 @@ func newSetupEnv(t *testing.T) (*env, string) {
 	t.Helper()
 	e := &env{mem: authtest.NewMemory(), hash: &authtest.Hasher{}, clock: &clock{t: time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)}}
 	p := provider(t)
-	svc, err := auth.NewService(context.Background(), e.mem, e.mem, p, auth.WithClock(e.clock.now), auth.WithPasswordHasher(e.hash))
+	svc, err := auth.NewService(context.Background(), e.mem, e.mem, p, auth.WithClock(e.clock.now), auth.WithPasswordHasher(e.hash),
+		auth.WithSecretBox(testBox(t)))
 	if err != nil {
 		t.Fatal(err)
 	}
 	e.svc = svc
+	e.mfa = newMFAKeys(svc, e.mem, e.clock)
 	h, err := p.Hasher()
 	if err != nil {
 		t.Fatal(err)
@@ -97,7 +99,10 @@ func TestSetupCreatesFirstAdmin(t *testing.T) {
 	if _, err := e.setup(other, "admin3", shortPhrase); !errors.Is(err, auth.ErrSetupUnavailable) {
 		t.Fatalf("слабый пароль после настройки: %v", err)
 	}
-	e.mustLogin(t, "admin", phrase)
+	// Первый вход администратора — сразу к подключению второго фактора (ИАФ.5).
+	if res := e.mustLogin(t, "admin", phrase); res.Caller.Session.State != auth.SessionMFASetup {
+		t.Fatalf("первый вход администратора: %s", res.Caller.Session.State)
+	}
 }
 
 func TestSetupRejects(t *testing.T) {

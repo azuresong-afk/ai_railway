@@ -3,7 +3,10 @@ package auth
 // Разрешения эндпоинтов консоли. Полный набор и свои роли (УПД.1–3, 8) —
 // задача 2.9; до неё права предустановленных ролей заданы таблицей ниже.
 const (
-	// PermSelf — свои данные, смена своего пароля и выход: есть у любой роли.
+	// PermSession — любая сессия, в том числе до второго фактора: свои
+	// данные, выход и второй фактор (ИАФ.5). Состояние сессии проверяет обработчик.
+	PermSession = "session"
+	// PermSelf — смена своего пароля: есть у любой роли, но не до второго фактора.
 	PermSelf             = "self"
 	PermSystemRead       = "system.read"
 	PermUsersRead        = "users.read"
@@ -35,10 +38,28 @@ func set(perms ...string) map[string]bool {
 }
 
 // Allowed — может ли сессия caller выполнить действие с правом perm.
-// Сессия со временным или истёкшим паролем получает только PermSelf.
+// Сессия со временным или истёкшим паролем получает только PermSelf и
+// PermSession, сессия до второго фактора — только PermSession.
 func Allowed(c Caller, perm string) bool {
-	if c.Session.State != SessionActive {
-		return perm == PermSelf
+	if perm == PermSession {
+		return true
 	}
-	return rolePermissions[c.User.Role][perm]
+	switch c.Session.State {
+	case SessionActive:
+		return rolePermissions[c.User.Role][perm]
+	case SessionPasswordChange:
+		return perm == PermSelf
+	default:
+		return false
+	}
+}
+
+// mfaRoles — роли, которым второй фактор обязателен всегда (ИАФ.5): они
+// управляют учётными записями, политиками или системой. В задаче 2.9 признак
+// переходит в модель ролей (RoleRequiresMFA).
+var mfaRoles = map[Role]bool{RoleSecurityAdmin: true, RoleSystemAdmin: true}
+
+// MFARequired — обязателен ли второй фактор пользователю при политике p.
+func MFARequired(u User, p Policy) bool {
+	return p.MFARequiredAll || mfaRoles[u.Role]
 }

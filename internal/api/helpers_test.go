@@ -13,6 +13,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/auth"
 	"github.com/azuresong-afk/ai_railway/internal/auth/authtest"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
+	"github.com/azuresong-afk/ai_railway/internal/keyring"
 )
 
 func testHasher(t testing.TB) aisecCrypto.Hasher {
@@ -43,14 +44,29 @@ func (a allowPerm) Authorize(_ *http.Request, perm string) (Principal, Decision)
 	return Principal{ID: "u1", Caller: c}, Forbidden
 }
 
-// testAuth — сервис входа на хранилище в памяти и быстром хешере.
-func testAuth(t testing.TB, mem *authtest.Memory) *auth.Service {
+// testAuth — сервис входа на хранилище в памяти, быстром хешере и ключе
+// данных в памяти (второй фактор).
+func testAuth(t testing.TB, mem *authtest.Memory, opts ...auth.Option) *auth.Service {
 	t.Helper()
 	p, err := aisecCrypto.New(aisecCrypto.ProfileStandard)
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc, err := auth.NewService(context.Background(), mem, mem, p, auth.WithPasswordHasher(&authtest.Hasher{}))
+	r, err := p.Random()
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := aisecCrypto.RandomBytes(r, aisecCrypto.AEADKeySize)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aead, err := p.NewAEAD(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts = append([]auth.Option{auth.WithPasswordHasher(&authtest.Hasher{}),
+		auth.WithSecretBox(keyring.NewStatic("01900000-0000-7000-8000-0000000000d1", aead))}, opts...)
+	svc, err := auth.NewService(context.Background(), mem, mem, p, opts...)
 	if err != nil {
 		t.Fatal(err)
 	}

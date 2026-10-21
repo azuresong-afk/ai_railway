@@ -60,6 +60,10 @@ type Service struct {
 	random aisecCrypto.Random
 	now    func() time.Time
 	orgID  string
+	// provider — криптопрофиль: проверка кодов TOTP (ИАФ.5).
+	provider aisecCrypto.Provider
+	// box — ключ данных для секретов TOTP; nil — второй фактор недоступен.
+	box SecretBox
 	// dummy — хеш случайного пароля с параметрами по умолчанию: проверяется
 	// при входе с неизвестным логином, чтобы время ответа не выдавало,
 	// есть ли учётная запись (ADR-0006).
@@ -84,7 +88,7 @@ func NewService(ctx context.Context, st Store, a Auditor, p aisecCrypto.Provider
 	if st == nil || a == nil || p == nil {
 		return nil, errors.New("сервис входа: нет хранилища, журнала аудита или криптопрофиля")
 	}
-	s := &Service{store: st, audit: a, now: time.Now, orgID: audit.DefaultOrgID}
+	s := &Service{store: st, audit: a, now: time.Now, orgID: audit.DefaultOrgID, provider: p}
 	var err error
 	if s.hasher, err = p.Hasher(); err != nil {
 		return nil, err
@@ -197,11 +201,30 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (LoginResult, error)
 			return LoginResult{}, err
 		}
 	}
-	state := SessionActive
-	if exp := u.PasswordExpires(pol); u.MustChangePassword || (!exp.IsZero() && !now.Before(exp)) {
-		state = SessionPasswordChange
+	// Второй фактор (ИАФ.5): подключён — сессия ждёт код; обязателен, но не
+	// подключён — сессия только для его подключения. Счётчик неудач до
+	// принятого кода не сбрасывается: иначе знающий пароль перебирал бы коды
+	// TOTP, входя заново перед каждой блокировкой.
+	mfaOn, err := s.mfaEnabled(ctx, u.ID)
+	if err != nil {
+		return LoginResult{}, err
 	}
-	res, err := s.openSession(ctx, u, state, in, pol, &LoginCheck{VerifiedHash: hash, Rehash: rehash, Now: now})
+	var state SessionState
+	switch {
+	case mfaOn:
+		state = SessionMFAPending
+	case MFARequired(u, pol):
+		state = SessionMFASetup
+	default:
+		state = afterMFA(u, pol, now)
+	}
+	if state == SessionMFAPending || state == SessionMFASetup {
+		if s.box == nil {
+			return LoginResult{}, ErrMFAUnavailable
+		}
+	}
+	res, err := s.openSession(ctx, u, state, in, pol,
+		&LoginCheck{VerifiedHash: hash, Rehash: rehash, Now: now, KeepFailures: mfaOn})
 	// Пока проверялся пароль, запись заблокировали параллельные неудачи,
 	// деактивировали или сменили ей пароль: вход не засчитывается.
 	if errors.Is(err, ErrLocked) {
@@ -320,6 +343,10 @@ func (s *Service) Authenticate(ctx context.Context, token string, ip netip.Addr)
 			return Caller{}, err
 		}
 		sess.LastSeenAt = now
+	}
+	// Сессия до второго фактора живёт недолго: код вводят сразу после пароля.
+	if ttl := mfaStateTTL(sess.State); ttl > 0 && now.Sub(sess.CreatedAt) >= ttl {
+		return Caller{}, s.expire(ctx, u, sess, RevokeExpired, ip, now)
 	}
 	if exp := u.PasswordExpires(pol); sess.State == SessionActive && !exp.IsZero() && !now.Before(exp) {
 		sess.State = SessionPasswordChange

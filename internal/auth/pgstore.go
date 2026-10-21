@@ -82,7 +82,7 @@ func (s *PGStore) record(ctx context.Context, tx pgx.Tx, rec audit.Entry) error 
 
 const policyCols = `password_min_length, password_min_classes, password_history, password_max_age_days,
 	password_warn_days, lockout_threshold, lockout_minutes, session_idle_minutes, session_max_per_user,
-	temp_password_hours`
+	temp_password_hours, mfa_required_all`
 
 // Policy возвращает настройки; нет строки — DefaultPolicy.
 func (s *PGStore) Policy(ctx context.Context, orgID string) (Policy, error) {
@@ -92,7 +92,7 @@ func (s *PGStore) Policy(ctx context.Context, orgID string) (Policy, error) {
 	err := s.db.QueryRow(ctx, "SELECT "+policyCols+" FROM auth_settings WHERE org_id = $1", orgID).Scan(
 		&p.PasswordMinLength, &p.PasswordMinClasses, &p.PasswordHistory, &p.PasswordMaxAgeDays,
 		&p.PasswordWarnDays, &p.LockoutThreshold, &p.LockoutMinutes, &p.SessionIdleMinutes,
-		&p.SessionMaxPerUser, &p.TempPasswordHours)
+		&p.SessionMaxPerUser, &p.TempPasswordHours, &p.MFARequiredAll)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return DefaultPolicy(), nil
 	}
@@ -108,17 +108,17 @@ func (s *PGStore) SetPolicy(ctx context.Context, orgID string, p Policy, rec aud
 	defer cancel()
 	return s.inTx(ctx, func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `INSERT INTO auth_settings (org_id, `+policyCols+`, updated_at)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, now())
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, now())
 			ON CONFLICT (org_id) DO UPDATE SET
 			password_min_length = EXCLUDED.password_min_length, password_min_classes = EXCLUDED.password_min_classes,
 			password_history = EXCLUDED.password_history, password_max_age_days = EXCLUDED.password_max_age_days,
 			password_warn_days = EXCLUDED.password_warn_days, lockout_threshold = EXCLUDED.lockout_threshold,
 			lockout_minutes = EXCLUDED.lockout_minutes, session_idle_minutes = EXCLUDED.session_idle_minutes,
 			session_max_per_user = EXCLUDED.session_max_per_user, temp_password_hours = EXCLUDED.temp_password_hours,
-			updated_at = now()`,
+			mfa_required_all = EXCLUDED.mfa_required_all, updated_at = now()`,
 			orgID, p.PasswordMinLength, p.PasswordMinClasses, p.PasswordHistory, p.PasswordMaxAgeDays,
 			p.PasswordWarnDays, p.LockoutThreshold, p.LockoutMinutes, p.SessionIdleMinutes,
-			p.SessionMaxPerUser, p.TempPasswordHours)
+			p.SessionMaxPerUser, p.TempPasswordHours, p.MFARequiredAll)
 		if err != nil {
 			return fmt.Errorf("настройки входа: запись: %w", err)
 		}
@@ -525,38 +525,60 @@ func (s *PGStore) CreateSession(ctx context.Context, se Session, limit int, logi
 			if login.Rehash != "" {
 				newHash = &login.Rehash
 			}
-			if _, err := tx.Exec(ctx, `UPDATE users SET failed_attempts = 0, locked_at = NULL, locked_until = NULL,
-				last_login_at = $2, password_hash = COALESCE($3, password_hash) WHERE id = $1`,
-				se.UserID, login.Now, newHash); err != nil {
+			// KeepFailures: счётчик сохраняется до второго фактора, но истёкшая
+			// блокировка снимается вместе со счётчиком (как в RecordFailure).
+			if _, err := tx.Exec(ctx, `UPDATE users SET failed_attempts = CASE WHEN $4 AND locked_at IS NULL THEN failed_attempts ELSE 0 END,
+				locked_at = NULL, locked_until = NULL, last_login_at = $2, password_hash = COALESCE($3, password_hash)
+				WHERE id = $1`, se.UserID, login.Now, newHash, login.KeepFailures); err != nil {
 				return fmt.Errorf("учётные записи: отметка входа: %w", err)
 			}
 		}
-		var ip *string
-		if se.SourceIP.IsValid() {
-			a := se.SourceIP.WithZone("").Unmap().String()
-			ip = &a
+		if err := insertSession(ctx, tx, se); err != nil {
+			return err
 		}
-		if _, err := tx.Exec(ctx, `INSERT INTO sessions (id, user_id, token_hash, csrf_hash, state, created_at,
-			last_seen_at, expires_at, source_ip, user_agent) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::inet, $10)`,
-			se.ID, se.UserID, se.TokenHash, se.CSRFHash, string(se.State), se.CreatedAt, se.LastSeenAt,
-			se.ExpiresAt, ip, se.UserAgent); err != nil {
-			return fmt.Errorf("сессии: создание: %w", err)
-		}
-		rows, err := tx.Query(ctx, `UPDATE sessions SET revoked_at = $2, revoke_reason = $3 WHERE id IN
-			(SELECT id FROM sessions WHERE user_id = $1 AND revoked_at IS NULL
-			 ORDER BY created_at DESC, id DESC OFFSET $4) RETURNING id::text`, se.UserID, se.CreatedAt, RevokeLimit, limit)
-		if err != nil {
-			return fmt.Errorf("сессии: лимит: %w", err)
-		}
-		evicted, err := pgx.CollectRows(rows, pgx.RowTo[string])
-		if err != nil {
-			return fmt.Errorf("сессии: лимит: %w", err)
-		}
-		if len(evicted) > 0 {
-			AddDetail(&rec, "evicted_sessions", evicted)
+		if err := evictSessions(ctx, tx, se.UserID, se.State, se.CreatedAt, limit, &rec); err != nil {
+			return err
 		}
 		return s.record(ctx, tx, rec)
 	})
+}
+
+func insertSession(ctx context.Context, tx pgx.Tx, se Session) error {
+	var ip *string
+	if se.SourceIP.IsValid() {
+		a := se.SourceIP.WithZone("").Unmap().String()
+		ip = &a
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO sessions (id, user_id, token_hash, csrf_hash, state, created_at,
+		last_seen_at, expires_at, source_ip, user_agent) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::inet, $10)`,
+		se.ID, se.UserID, se.TokenHash, se.CSRFHash, string(se.State), se.CreatedAt, se.LastSeenAt,
+		se.ExpiresAt, ip, se.UserAgent); err != nil {
+		return fmt.Errorf("сессии: создание: %w", err)
+	}
+	return nil
+}
+
+// evictSessions завершает самые старые незавершённые сессии пользователя
+// того же рода, что state (до второго фактора или полные), сверх limit и
+// добавляет их ID в подробности rec (evicted_sessions). Сессии до второго
+// фактора полные не вытесняют: вход по одному паролю не выбьет из консоли
+// пользователя, вошедшего полностью.
+func evictSessions(ctx context.Context, tx pgx.Tx, userID string, state SessionState, now time.Time, limit int, rec *audit.Entry) error {
+	rows, err := tx.Query(ctx, `UPDATE sessions SET revoked_at = $2, revoke_reason = $3 WHERE id IN
+		(SELECT id FROM sessions WHERE user_id = $1 AND revoked_at IS NULL
+		 AND (state IN ('mfa_pending', 'mfa_setup')) = $5
+		 ORDER BY created_at DESC, id DESC OFFSET $4) RETURNING id::text`, userID, now, RevokeLimit, limit, preMFA(state))
+	if err != nil {
+		return fmt.Errorf("сессии: лимит: %w", err)
+	}
+	evicted, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return fmt.Errorf("сессии: лимит: %w", err)
+	}
+	if len(evicted) > 0 {
+		AddDetail(rec, "evicted_sessions", evicted)
+	}
+	return nil
 }
 
 // SessionByToken — незавершённая сессия по хешу токена.
