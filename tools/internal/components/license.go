@@ -66,10 +66,43 @@ const maxExprLen = 512
 // худший вердикт), OR — достаточно одной (лучший вердикт). Возвращает
 // также список идентификаторов выражения.
 func EvalExpression(expr string) (Verdict, []string, error) {
+	return evalExpression(expr, nil)
+}
+
+// NPMBuildLicenses — лицензии, которые допускаются только у npm-пакетов
+// сборочной среды (достижимых лишь из devDependencies) и не попадают в
+// поставку. Решение владельца от 20.10.2026, ADR-0011.
+var NPMBuildLicenses = map[string]bool{
+	"MPL-2.0": true, "0BSD": true, "MIT-0": true, "BlueOak-1.0.0": true,
+	"CC0-1.0": true, "CC-BY-4.0": true, "Python-2.0": true,
+}
+
+// CheckNPMLicense проверяет лицензию пакета из package-lock.json. Пакеты
+// поставки (product) — только по политике CLAUDE.md; пакеты сборочной среды —
+// ещё и по NPMBuildLicenses.
+func CheckNPMLicense(expr string, product bool) error {
+	if strings.TrimSpace(expr) == "" {
+		return errors.New("в package-lock.json нет лицензии пакета")
+	}
+	var extra map[string]bool
+	if !product {
+		extra = NPMBuildLicenses
+	}
+	v, _, err := evalExpression(expr, extra)
+	if err != nil {
+		return err
+	}
+	if v != Allowed {
+		return fmt.Errorf("лицензия %q не допускается для этого пакета (CLAUDE.md, «Зависимости»; ADR-0011)", expr)
+	}
+	return nil
+}
+
+func evalExpression(expr string, extra map[string]bool) (Verdict, []string, error) {
 	if len(expr) > maxExprLen {
 		return Forbidden, nil, fmt.Errorf("выражение лицензии длиннее %d символов", maxExprLen)
 	}
-	p := &exprParser{toks: tokenize(expr)}
+	p := &exprParser{toks: tokenize(expr), extra: extra}
 	if len(p.toks) == 0 {
 		return Forbidden, nil, errors.New("пустое выражение лицензии")
 	}
@@ -93,9 +126,11 @@ func tokenize(s string) []string {
 const maxDepth = 16
 
 type exprParser struct {
-	toks []string
-	pos  int
-	ids  []string
+	// extra — идентификаторы, разрешённые в этом разборе сверх политики.
+	extra map[string]bool
+	toks  []string
+	pos   int
+	ids   []string
 }
 
 func (p *exprParser) peek() string {
@@ -161,6 +196,9 @@ func (p *exprParser) parseAtom(depth int) (Verdict, error) {
 	}
 	p.pos++
 	p.ids = append(p.ids, t)
+	if p.extra[t] {
+		return Allowed, nil
+	}
 	return classify(t), nil
 }
 
@@ -180,6 +218,12 @@ func CheckLicense(c Component) error {
 			return fmt.Errorf("лицензия %q допускается только отдельным решением: заполните license_decision", c.License)
 		}
 		return nil
+	}
+	// Лицензии npm из NPMBuildLicenses — при отдельном решении (ADR-0011).
+	if c.Type == TypeNPM && strings.TrimSpace(c.LicenseDecision) != "" {
+		if v, _, err := evalExpression(c.License, NPMBuildLicenses); err == nil && v == Allowed {
+			return nil
+		}
 	}
 	if c.Scope == ScopeBuild && strings.TrimSpace(c.LicenseDecision) != "" {
 		gplOnly := true

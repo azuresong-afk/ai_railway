@@ -197,6 +197,11 @@ func run(fsys fs.FS) ([]string, error) {
 		return nil, err
 	}
 	problems = append(problems, pinProblems...)
+	npmProblems, err := checkNPM(fsys, reg)
+	if err != nil {
+		return nil, err
+	}
+	problems = append(problems, npmProblems...)
 	sort.Strings(problems)
 	return problems, nil
 }

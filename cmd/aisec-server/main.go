@@ -18,9 +18,14 @@ import (
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/internal/httpserver"
 	"github.com/azuresong-afk/ai_railway/internal/store"
+	"github.com/azuresong-afk/ai_railway/web"
 )
 
 var version = "dev"
+
+// Статика веб-консоли встроена в бинарник (web/embed.go, ADR-0011);
+// раздача — в задачах каркаса консоли этапа 2.
+var _ = web.Dist
 
 // dbPoolSize — число соединений с PostgreSQL.
 const dbPoolSize = 10

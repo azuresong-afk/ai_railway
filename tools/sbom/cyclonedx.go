@@ -11,6 +11,7 @@ import (
 
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/tools/internal/components"
+	"github.com/azuresong-afk/ai_railway/tools/internal/npmlock"
 )
 
 // Структуры CycloneDX 1.6 — только используемые поля.
@@ -132,6 +133,14 @@ func fromRegistry(c components.Component, typ, ref, name, version, purl string) 
 
 // Build собирает документ из сведений о бинарниках и реестра.
 func Build(reg *components.Registry, bins []Binary, version string, ts time.Time, hasher aisecCrypto.Hasher) (*BOM, error) {
+	return BuildWithNPM(reg, bins, nil, version, ts, hasher)
+}
+
+// embedsConsole — бинарник, в который встроена статика веб-консоли.
+const embedsConsole = "aisec-server"
+
+// BuildWithNPM — Build с npm-пакетами веб-консоли из lock-файла (nil — без них).
+func BuildWithNPM(reg *components.Registry, bins []Binary, lock *npmlock.Lock, version string, ts time.Time, hasher aisecCrypto.Hasher) (*BOM, error) {
 	var errs []error
 	goVersion := ""
 	modules := map[string]Dep{}
@@ -189,6 +198,16 @@ func Build(reg *components.Registry, bins []Binary, version string, ts time.Time
 	}
 
 	var deps []Dependency
+	var npmRefs []string
+	if lock != nil {
+		npmComps, npmDeps, direct, err := npmComponents(reg, lock)
+		if err != nil {
+			errs = append(errs, err)
+		}
+		comps = append(comps, npmComps...)
+		deps = append(deps, npmDeps...)
+		npmRefs = direct
+	}
 	var binRefs []string
 	for _, b := range bins {
 		ref := "file:" + b.Name
@@ -202,6 +221,9 @@ func Build(reg *components.Registry, bins []Binary, version string, ts time.Time
 			if r, ok := moduleRefs[d.Path]; ok {
 				dep.DependsOn = append(dep.DependsOn, r)
 			}
+		}
+		if b.Name == embedsConsole {
+			dep.DependsOn = append(dep.DependsOn, npmRefs...)
 		}
 		sort.Strings(dep.DependsOn)
 		deps = append(deps, dep)
