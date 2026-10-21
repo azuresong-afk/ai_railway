@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/netip"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -79,6 +80,19 @@ type Gateway struct {
 	LastAddr     netip.Addr
 	Version      string
 	BundleETag   string
+	// Selftest и Integrity — последние итоги, которые шлюз сообщил в heartbeat
+	// (задача 2.20); nil — шлюз их не присылал (старая версия или ещё нет).
+	Selftest  *CheckReport
+	Integrity *CheckReport
+}
+
+// CheckReport — итог самотеста или контроля целостности шлюза: только
+// результат и счётчик, без путей и имён детекторов.
+type CheckReport struct {
+	OK     bool
+	At     time.Time
+	Reason string // для целостности — причина из перечня; для самотеста пусто
+	Failed int
 }
 
 // NewToken — выпуск токена регистрации (aisec-cli).
@@ -104,6 +118,9 @@ type Heartbeat struct {
 	BundleETag string // пусто — пакета ещё нет (задача 2.13)
 	Addr       netip.Addr
 	At         time.Time
+	// Selftest и Integrity — nil: итог не обновляется.
+	Selftest  *CheckReport
+	Integrity *CheckReport
 }
 
 // Store — хранилище реестра (миграция 0007_gateways). Рабочая реализация —
@@ -423,11 +440,56 @@ func prune(m map[string]time.Time, now time.Time, age time.Duration) {
 type HeartbeatInput struct {
 	Version    string
 	BundleETag string
+	// Selftest и Integrity — необязательные итоги проверок шлюза (задача 2.20).
+	Selftest  *CheckReport
+	Integrity *CheckReport
+}
+
+// Пределы итогов проверок в heartbeat.
+const (
+	maxReportFailed = 1000
+	// maxReportFuture — насколько время проверки может опережать часы сервера.
+	maxReportFuture = 5 * time.Minute
+)
+
+// integrityReasons — причины итога целостности (миграция 0008_integrity).
+var integrityReasons = []string{"ok", "manifest_missing", "manifest_invalid", "signature_invalid", "files_mismatch"}
+
+func (r *CheckReport) validate(name string, integrity bool) error {
+	if r == nil {
+		return nil
+	}
+	if r.Failed < 0 || r.Failed > maxReportFailed {
+		return fmt.Errorf("%w: %s.failed — от 0 до %d", ErrInvalidRequest, name, maxReportFailed)
+	}
+	if r.At.IsZero() {
+		return fmt.Errorf("%w: %s.checked_at обязателен", ErrInvalidRequest, name)
+	}
+	if r.OK && r.Failed != 0 {
+		return fmt.Errorf("%w: %s: ok при ненулевом failed", ErrInvalidRequest, name)
+	}
+	if !integrity {
+		if r.Reason != "" {
+			return fmt.Errorf("%w: %s.reason не используется", ErrInvalidRequest, name)
+		}
+		return nil
+	}
+	if !slices.Contains(integrityReasons, r.Reason) || r.OK != (r.Reason == "ok") {
+		return fmt.Errorf("%w: %s.reason не из перечня или не согласован с ok", ErrInvalidRequest, name)
+	}
+	return nil
 }
 
 // Validate проверяет поля heartbeat: версия — 1–64 символа
-// [0-9A-Za-z.+_-], ETag — до 128 печатных символов ASCII.
+// [0-9A-Za-z.+_-], ETag — до 128 печатных символов ASCII, итоги проверок —
+// по пределам CheckReport.
 func (in HeartbeatInput) Validate() error {
+	if err := in.Selftest.validate("selftest", false); err != nil {
+		return err
+	}
+	if err := in.Integrity.validate("integrity", true); err != nil {
+		return err
+	}
 	if in.Version == "" || len(in.Version) > maxVersion {
 		return fmt.Errorf("%w: version — от 1 до %d символов", ErrInvalidRequest, maxVersion)
 	}
@@ -454,6 +516,11 @@ func (s *Service) Heartbeat(ctx context.Context, gatewayID string, in HeartbeatI
 		return time.Time{}, err
 	}
 	now := s.clock().UTC()
+	for _, r := range []*CheckReport{in.Selftest, in.Integrity} {
+		if r != nil && r.At.After(now.Add(maxReportFuture)) {
+			return time.Time{}, fmt.Errorf("%w: время проверки в будущем", ErrInvalidRequest)
+		}
+	}
 	s.mu.Lock()
 	if last, ok := s.lastHB[gatewayID]; ok && now.Sub(last) < s.minHB {
 		s.mu.Unlock()
@@ -462,7 +529,9 @@ func (s *Service) Heartbeat(ctx context.Context, gatewayID string, in HeartbeatI
 	prune(s.lastHB, now, s.minHB)
 	s.lastHB[gatewayID] = now
 	s.mu.Unlock()
-	if err := s.store.Touch(ctx, gatewayID, Heartbeat{Version: in.Version, BundleETag: in.BundleETag, Addr: ip, At: now}); err != nil {
+	if err := s.store.Touch(ctx, gatewayID, Heartbeat{
+		Version: in.Version, BundleETag: in.BundleETag, Addr: ip, At: now, Selftest: in.Selftest, Integrity: in.Integrity,
+	}); err != nil {
 		return time.Time{}, err
 	}
 	return now, nil

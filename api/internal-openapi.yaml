@@ -146,6 +146,32 @@ components:
       properties:
         version: { type: string, minLength: 1, maxLength: 64, pattern: '^[0-9A-Za-z.+_-]+$', description: Версия шлюза }
         bundle_etag: { type: string, maxLength: 128, pattern: '^[!-~]*$', description: 'ETag применённого пакета конфигурации; пусто — пакета нет' }
+        selftest:
+          description: |
+            Итог самотестирования шлюза при запуске (ОЦЛ.4–5, задача 2.20).
+            Необязателен: шлюз прежней версии поле не присылает, сервер тогда
+            показывает «нет данных». `reason` у самотеста не задаётся.
+          allOf: [{ $ref: '#/components/schemas/CheckReport' }]
+        integrity:
+          description: |
+            Последний итог контроля целостности шлюза (ОЦЛ.2). `reason` — из
+            перечня; `ok: true` только при `reason: ok`.
+          allOf: [{ $ref: '#/components/schemas/CheckReport' }]
+    CheckReport:
+      description: |
+        Итог проверки шлюза: только результат и число провалов. Пути файлов,
+        имена детекторов и тексты эталонов на сервер не передаются.
+      type: object
+      required: [ok, checked_at, failed]
+      additionalProperties: false
+      properties:
+        ok: { type: boolean }
+        checked_at: { type: string, format: date-time, description: 'Время проверки; не позже чем на 5 минут вперёд от часов сервера' }
+        reason:
+          type: string
+          enum: [ok, manifest_missing, manifest_invalid, signature_invalid, files_mismatch]
+          description: Только у integrity
+        failed: { type: integer, minimum: 0, maximum: 1000, description: 'Число провалов; при `ok: true` — 0' }
     HeartbeatResponse:
       type: object
       required: [server_time, interval_seconds]

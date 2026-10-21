@@ -72,14 +72,19 @@ func (s *PGStore) inTx(ctx context.Context, fn func(pgx.Tx) error) error {
 }
 
 const gatewayCols = `id::text, org_id::text, name, status, created_at, created_by, registered_at, revoked_at,
-	cert_serial, cert_not_after, last_seen_at, host(last_addr), version, bundle_etag`
+	cert_serial, cert_not_after, last_seen_at, host(last_addr), version, bundle_etag,
+	selftest_ok, selftest_at, selftest_failed, integrity_ok, integrity_at, integrity_reason, integrity_failed`
 
 func scanGateway(row pgx.Row) (Gateway, error) {
 	var g Gateway
 	var registered, revoked, notAfter, seen *time.Time
-	var serial, addr, version, etag *string
+	var serial, addr, version, etag, integrityReason *string
+	var stOK, inOK *bool
+	var stAt, inAt *time.Time
+	var stFailed, inFailed *int
 	if err := row.Scan(&g.ID, &g.OrgID, &g.Name, &g.Status, &g.CreatedAt, &g.CreatedBy, &registered, &revoked,
-		&serial, &notAfter, &seen, &addr, &version, &etag); err != nil {
+		&serial, &notAfter, &seen, &addr, &version, &etag,
+		&stOK, &stAt, &stFailed, &inOK, &inAt, &integrityReason, &inFailed); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return Gateway{}, ErrNotFound
 		}
@@ -91,6 +96,12 @@ func scanGateway(row pgx.Row) (Gateway, error) {
 		if a, err := netip.ParseAddr(*addr); err == nil {
 			g.LastAddr = a
 		}
+	}
+	if stOK != nil && stAt != nil && stFailed != nil {
+		g.Selftest = &CheckReport{OK: *stOK, At: *stAt, Failed: *stFailed}
+	}
+	if inOK != nil && inAt != nil && inFailed != nil && integrityReason != nil {
+		g.Integrity = &CheckReport{OK: *inOK, At: *inAt, Reason: *integrityReason, Failed: *inFailed}
 	}
 	return g, nil
 }
@@ -227,8 +238,25 @@ func (s *PGStore) Touch(ctx context.Context, id string, hb Heartbeat) error {
 		a := hb.Addr.Unmap().String()
 		addr = &a
 	}
-	tag, err := s.db.Exec(ctx, `UPDATE gateways SET last_seen_at = $2, last_addr = $3::inet, version = $4, bundle_etag = $5
-		WHERE id = $1 AND status = 'active'`, id, hb.At, addr, hb.Version, nullStr(hb.BundleETag))
+	// Итоги проверок обновляются только присланные: старый шлюз или heartbeat
+	// без итогов не стирает прежние.
+	var stOK, inOK *bool
+	var stAt, inAt *time.Time
+	var stFailed, inFailed *int
+	var inReason *string
+	if r := hb.Selftest; r != nil {
+		stOK, stAt, stFailed = &r.OK, &r.At, &r.Failed
+	}
+	if r := hb.Integrity; r != nil {
+		inOK, inAt, inFailed, inReason = &r.OK, &r.At, &r.Failed, &r.Reason
+	}
+	tag, err := s.db.Exec(ctx, `UPDATE gateways SET last_seen_at = $2, last_addr = $3::inet, version = $4, bundle_etag = $5,
+		selftest_ok = COALESCE($6, selftest_ok), selftest_at = COALESCE($7, selftest_at),
+		selftest_failed = COALESCE($8, selftest_failed),
+		integrity_ok = COALESCE($9, integrity_ok), integrity_at = COALESCE($10, integrity_at),
+		integrity_reason = COALESCE($11, integrity_reason), integrity_failed = COALESCE($12, integrity_failed)
+		WHERE id = $1 AND status = 'active'`, id, hb.At, addr, hb.Version, nullStr(hb.BundleETag),
+		stOK, stAt, stFailed, inOK, inAt, inReason, inFailed)
 	if err != nil {
 		return fmt.Errorf("реестр шлюзов: heartbeat: %w", err)
 	}

@@ -10,10 +10,12 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/azuresong-afk/ai_railway/internal/audit"
 	"github.com/azuresong-afk/ai_railway/internal/auth"
 	"github.com/azuresong-afk/ai_railway/internal/config"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
@@ -83,18 +85,25 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 	}
 	// Самотест до приёма трафика (ТЗ, ОЦЛ.4–5): криптопрофиль и все
 	// встроенные детекторы на эталонах. Своей БД у шлюза нет — итог в
-	// техническом журнале; передача на сервер — с каналом шлюз — сервер (2.20).
-	if _, err := selftest.Startup(ctx, selftest.StartupConfig{
+	// техническом журнале и в heartbeat на сервер (2.20).
+	reports := &gateway.Reports{}
+	if res, err := selftest.Startup(ctx, selftest.StartupConfig{
 		Config: selftest.Config{Component: "gateway", Provider: p, Detectors: builtin.All()},
 		Action: integrity.Action(cfg.SelftestAction), Logger: logger,
 	}); err != nil {
 		return err
+	} else {
+		failed := len(res.Failures)
+		if !res.CryptoOK {
+			failed++
+		}
+		reports.SetSelftest(res.OK(), res.At, failed)
 	}
 	// Контроль целостности до приёма трафика (ОЦЛ.2–3): нарушение с
 	// реакцией stop после запуска отменяет контекст с причиной ErrViolation.
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
-	if err := startIntegrity(ctx, cfg, p, logger, cancel); err != nil {
+	if err := startIntegrity(ctx, cfg, p, logger, cancel, reports); err != nil {
 		return err
 	}
 	defer func() {
@@ -186,7 +195,7 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 		return err
 	}
 	if control != nil {
-		startHeartbeat(ctx, cfg, control, logger)
+		startHeartbeat(ctx, cfg, control, logger, reports)
 	} else {
 		logger.Info("сервер управления не задан (-server): шлюз работает без регистрации, события пишутся в файл")
 	}
@@ -199,7 +208,7 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 // периодическую проверку: исполняемый файл и файл конфигурации, изменённый
 // после запуска (ОЦЛ.3). Своей БД у шлюза нет — итоги идут в технический
 // журнал; передача на сервер — вместе с каналом шлюз — сервер (2.14, 2.20).
-func startIntegrity(ctx context.Context, cfg *config.Gateway, p aisecCrypto.Provider, logger *slog.Logger, stop context.CancelCauseFunc) error {
+func startIntegrity(ctx context.Context, cfg *config.Gateway, p aisecCrypto.Provider, logger *slog.Logger, stop context.CancelCauseFunc, reports *gateway.Reports) error {
 	exe, err := os.Executable()
 	if err != nil {
 		exe = "" // проверка отметит исполняемый файл как нечитаемый
@@ -218,6 +227,11 @@ func startIntegrity(ctx context.Context, cfg *config.Gateway, p aisecCrypto.Prov
 	mon, err := integrity.NewMonitor(integrity.MonitorConfig{
 		Checker: checker, Action: integrity.Action(cfg.IntegrityAction), Interval: cfg.IntegrityInterval,
 		Logger: logger, OnStop: stop,
+		// Итог каждой проверки — в heartbeat на сервер (2.20); БД у шлюза нет.
+		Record: func(_ context.Context, res integrity.Result, _ audit.Actor, _ netip.Addr) error {
+			reports.SetIntegrity(res.OK(), res.At, string(res.Reason), len(res.Failures)+res.Omitted)
+			return nil
+		},
 	})
 	if err != nil {
 		return err
@@ -261,13 +275,13 @@ func newControlClient(cfg *config.Gateway, tp aisecCrypto.TLSProvider, logger *s
 
 // startHeartbeat запускает heartbeat на внутренний API сервера. Сервер
 // недоступен — шлюз всё равно работает (ТЗ, 4.2).
-func startHeartbeat(ctx context.Context, cfg *config.Gateway, client *http.Client, logger *slog.Logger) {
+func startHeartbeat(ctx context.Context, cfg *config.Gateway, client *http.Client, logger *slog.Logger, reports *gateway.Reports) {
 	v := version
 	if !gateway.ValidVersion(v) {
 		v = "unknown"
 	}
 	go gateway.RunHeartbeat(ctx, gateway.HeartbeatConfig{
-		Client: client, Server: cfg.Server, Version: v, Logger: logger,
+		Client: client, Server: cfg.Server, Version: v, Logger: logger, Reports: reports,
 	})
 }
 

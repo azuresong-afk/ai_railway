@@ -243,6 +243,61 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/system/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Состояние системы
+         * @description Право `system.read` (ТЗ 6.2 п. 12). Компоненты и версии, шлюзы
+         *     (последний контакт, версия пакета, итоги самотеста и целостности,
+         *     присланные шлюзом в heartbeat), итоги контроля целостности и
+         *     самотестирования сервера, синхронизация времени ядром ОС (ВРМ.1, без
+         *     обращений к NTP; на системах без `adjtimex` — `unknown`), часовой пояс
+         *     показа (ВРМ.2, настройка `-timezone`), отброшенные и отклонённые
+         *     события (счётчики шлюзов с их последнего запуска), заполнение журнала
+         *     аудита (РСБ.5; предел и порог — настройки) и уведомления раздела 7
+         *     (ИАФ.4, УПД.6, РСБ.5, ОЦЛ.5, ВРМ.1). Доставка уведомлений по каналам —
+         *     этап 3; на этапе 2 при смене состояния ВРМ.1, РСБ.5 или ОЦЛ.5
+         *     сервер пишет в журнал аудита запись `system.alert`. Запрос ничего не
+         *     записывает. Если раздел собрать не удалось, его имя — в `unavailable`,
+         *     остальные разделы корректны.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Состояние системы */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["SystemStatus"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/system/integrity": {
         parameters: {
             query?: never;
@@ -1776,6 +1831,113 @@ export interface components {
         };
         SystemInfo: {
             version: string;
+        };
+        SystemStatus: {
+            /** Format: date-time */
+            generated_at: string;
+            server: {
+                version: string;
+                /** Format: date-time */
+                started_at: string;
+                selftest: components["schemas"]["StatusReport"] | null;
+                integrity: components["schemas"]["StatusIntegrity"][];
+            };
+            gateways: components["schemas"]["StatusGateway"][];
+            /** @description Суммы счётчиков по шлюзам, каждый — с последнего запуска шлюза */
+            events: {
+                /** @description Отброшены шлюзом: очередь переполнена (DM-44) */
+                dropped: number;
+                /** @description Отклонены сервером */
+                rejected: number;
+            };
+            time: {
+                /**
+                 * Format: date-time
+                 * @description Время сервера в UTC
+                 */
+                server_time: string;
+                /** @description Часовой пояс показа, имя IANA (ВРМ.2) */
+                timezone: string;
+                /** @enum {string} */
+                sync: "synchronized" | "unsynchronized" | "unknown";
+                /** @description Оценка ошибки времени ядром, мкс */
+                error_micros: number | null;
+            };
+            /** @description Заполнение журнала аудита (РСБ.5) */
+            storage: {
+                /** @description Размер определён; иначе остальные поля — только настройки */
+                available: boolean;
+                audit_bytes: number;
+                limit_bytes: number;
+                used_percent: number;
+                warn_percent: number;
+                warn_exceeded: boolean;
+            };
+            notifications: {
+                /** @enum {string} */
+                condition: "account_lockout" | "access_denied" | "audit_storage" | "integrity" | "time_sync";
+                /** @enum {string} */
+                requirement: "ИАФ.4" | "УПД.6" | "РСБ.5" | "ОЦЛ.5" | "ВРМ.1";
+                title: string;
+                active: boolean;
+                /**
+                 * Format: date-time
+                 * @description Когда условие возникло; у ИАФ.4 и УПД.6 не задаётся
+                 */
+                since: string | null;
+                /** @description Число событий за 24 часа (только ИАФ.4 и УПД.6) */
+                count: number | null;
+            }[];
+            unavailable: ("integrity" | "gateways" | "events" | "storage" | "notifications")[];
+        };
+        StatusReport: {
+            ok: boolean;
+            /** Format: date-time */
+            checked_at: string;
+            /** @description Причина итога целостности; у самотеста не задаётся */
+            reason?: string;
+            failed: number;
+        };
+        StatusIntegrity: {
+            component: string;
+            /** @enum {string} */
+            trigger: "startup" | "periodic" | "manual";
+            /** Format: date-time */
+            checked_at: string;
+            ok: boolean;
+            reason: string;
+            manifest_version: string;
+            test_signed: boolean;
+            /** @description Число нарушений, включая не вошедшие в список */
+            failed: number;
+        };
+        StatusGateway: {
+            id: string;
+            name: string;
+            /**
+             * @description `offline` — нет heartbeat дольше трёх периодов (90 секунд) или контакта не было
+             * @enum {string}
+             */
+            state: "online" | "offline" | "pending" | "revoked";
+            /** Format: date-time */
+            last_seen_at: string | null;
+            version: string;
+            bundle_etag: string;
+            /** Format: date-time */
+            cert_not_after: string | null;
+            selftest: components["schemas"]["StatusReport"] | null;
+            integrity: components["schemas"]["StatusReport"] | null;
+            events: {
+                dropped: number;
+                rejected: number;
+                /**
+                 * Format: date-time
+                 * @description Запуск шлюза
+                 */
+                started_at: string;
+                /** Format: date-time */
+                reported_at: string;
+            } | null;
         };
         IntegrityList: {
             items: components["schemas"]["IntegrityCheck"][];

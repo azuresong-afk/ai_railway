@@ -130,6 +130,35 @@ paths:
         '403': { $ref: '#/components/responses/ProblemForbidden' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ProblemInternal' }
+  /api/v1/system/status:
+    get:
+      summary: Состояние системы
+      description: |
+        Право `system.read` (ТЗ 6.2 п. 12). Компоненты и версии, шлюзы
+        (последний контакт, версия пакета, итоги самотеста и целостности,
+        присланные шлюзом в heartbeat), итоги контроля целостности и
+        самотестирования сервера, синхронизация времени ядром ОС (ВРМ.1, без
+        обращений к NTP; на системах без `adjtimex` — `unknown`), часовой пояс
+        показа (ВРМ.2, настройка `-timezone`), отброшенные и отклонённые
+        события (счётчики шлюзов с их последнего запуска), заполнение журнала
+        аудита (РСБ.5; предел и порог — настройки) и уведомления раздела 7
+        (ИАФ.4, УПД.6, РСБ.5, ОЦЛ.5, ВРМ.1). Доставка уведомлений по каналам —
+        этап 3; на этапе 2 при смене состояния ВРМ.1, РСБ.5 или ОЦЛ.5
+        сервер пишет в журнал аудита запись `system.alert`. Запрос ничего не
+        записывает. Если раздел собрать не удалось, его имя — в `unavailable`,
+        остальные разделы корректны.
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      x-permission: system.read
+      responses:
+        '200':
+          description: Состояние системы
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SystemStatus' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/Unavailable' }
   /api/v1/system/integrity:
     get:
       summary: Итоги контроля целостности по компонентам
@@ -1067,6 +1096,124 @@ components:
       required: [version]
       properties:
         version: { type: string }
+    SystemStatus:
+      type: object
+      required: [generated_at, server, gateways, events, time, storage, notifications, unavailable]
+      additionalProperties: false
+      properties:
+        generated_at: { type: string, format: date-time }
+        server:
+          type: object
+          required: [version, started_at, selftest, integrity]
+          additionalProperties: false
+          properties:
+            version: { type: string }
+            started_at: { type: string, format: date-time }
+            selftest:
+              oneOf: [{ $ref: '#/components/schemas/StatusReport' }, { type: 'null' }]
+            integrity:
+              type: array
+              items: { $ref: '#/components/schemas/StatusIntegrity' }
+        gateways:
+          type: array
+          items: { $ref: '#/components/schemas/StatusGateway' }
+        events:
+          type: object
+          description: Суммы счётчиков по шлюзам, каждый — с последнего запуска шлюза
+          required: [dropped, rejected]
+          additionalProperties: false
+          properties:
+            dropped: { type: integer, minimum: 0, description: 'Отброшены шлюзом: очередь переполнена (DM-44)' }
+            rejected: { type: integer, minimum: 0, description: Отклонены сервером }
+        time:
+          type: object
+          required: [server_time, timezone, sync, error_micros]
+          additionalProperties: false
+          properties:
+            server_time: { type: string, format: date-time, description: Время сервера в UTC }
+            timezone: { type: string, description: 'Часовой пояс показа, имя IANA (ВРМ.2)' }
+            sync: { type: string, enum: [synchronized, unsynchronized, unknown] }
+            error_micros: { type: [integer, 'null'], minimum: 0, description: 'Оценка ошибки времени ядром, мкс' }
+        storage:
+          type: object
+          description: Заполнение журнала аудита (РСБ.5)
+          required: [available, audit_bytes, limit_bytes, used_percent, warn_percent, warn_exceeded]
+          additionalProperties: false
+          properties:
+            available: { type: boolean, description: 'Размер определён; иначе остальные поля — только настройки' }
+            audit_bytes: { type: integer, minimum: 0 }
+            limit_bytes: { type: integer, minimum: 1 }
+            used_percent: { type: integer, minimum: 0, maximum: 100 }
+            warn_percent: { type: integer, minimum: 1, maximum: 100 }
+            warn_exceeded: { type: boolean }
+        notifications:
+          type: array
+          items:
+            type: object
+            required: [condition, requirement, title, active, since, count]
+            additionalProperties: false
+            properties:
+              condition: { type: string, enum: [account_lockout, access_denied, audit_storage, integrity, time_sync] }
+              requirement: { type: string, enum: [ИАФ.4, УПД.6, РСБ.5, ОЦЛ.5, ВРМ.1] }
+              title: { type: string }
+              active: { type: boolean }
+              since: { type: [string, 'null'], format: date-time, description: 'Когда условие возникло; у ИАФ.4 и УПД.6 не задаётся' }
+              count: { type: [integer, 'null'], minimum: 0, description: 'Число событий за 24 часа (только ИАФ.4 и УПД.6)' }
+        unavailable:
+          type: array
+          items: { type: string, enum: [integrity, gateways, events, storage, notifications] }
+    StatusReport:
+      type: object
+      required: [ok, checked_at, failed]
+      additionalProperties: false
+      properties:
+        ok: { type: boolean }
+        checked_at: { type: string, format: date-time }
+        reason: { type: string, description: 'Причина итога целостности; у самотеста не задаётся' }
+        failed: { type: integer, minimum: 0 }
+    StatusIntegrity:
+      type: object
+      required: [component, trigger, checked_at, ok, reason, manifest_version, test_signed, failed]
+      additionalProperties: false
+      properties:
+        component: { type: string }
+        trigger: { type: string, enum: [startup, periodic, manual] }
+        checked_at: { type: string, format: date-time }
+        ok: { type: boolean }
+        reason: { type: string }
+        manifest_version: { type: string }
+        test_signed: { type: boolean }
+        failed: { type: integer, minimum: 0, description: 'Число нарушений, включая не вошедшие в список' }
+    StatusGateway:
+      type: object
+      required: [id, name, state, last_seen_at, version, bundle_etag, cert_not_after, selftest, integrity, events]
+      additionalProperties: false
+      properties:
+        id: { type: string }
+        name: { type: string }
+        state:
+          type: string
+          enum: [online, offline, pending, revoked]
+          description: '`offline` — нет heartbeat дольше трёх периодов (90 секунд) или контакта не было'
+        last_seen_at: { type: [string, 'null'], format: date-time }
+        version: { type: string }
+        bundle_etag: { type: string }
+        cert_not_after: { type: [string, 'null'], format: date-time }
+        selftest:
+          oneOf: [{ $ref: '#/components/schemas/StatusReport' }, { type: 'null' }]
+        integrity:
+          oneOf: [{ $ref: '#/components/schemas/StatusReport' }, { type: 'null' }]
+        events:
+          oneOf:
+            - type: object
+              required: [dropped, rejected, started_at, reported_at]
+              additionalProperties: false
+              properties:
+                dropped: { type: integer, minimum: 0 }
+                rejected: { type: integer, minimum: 0 }
+                started_at: { type: string, format: date-time, description: Запуск шлюза }
+                reported_at: { type: string, format: date-time }
+            - type: 'null'
     IntegrityList:
       type: object
       required: [items]

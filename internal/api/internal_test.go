@@ -165,7 +165,10 @@ func FuzzHeartbeatRequest(f *testing.F) {
 	if err != nil {
 		f.Fatal(err)
 	}
-	for _, s := range []string{`{"version":"1"}`, `{"version":"1","bundle_etag":"x"}`, `{}`, `[]`, `{"version":1}`, "\x00", `{"version":"1"}{}`} {
+	for _, s := range []string{`{"version":"1"}`, `{"version":"1","bundle_etag":"x"}`, `{}`, `[]`, `{"version":1}`, "\x00", `{"version":"1"}{}`,
+		`{"version":"1","selftest":{"ok":true,"checked_at":"2026-10-21T10:00:00Z","failed":0}}`,
+		`{"version":"1","integrity":{"ok":false,"checked_at":"2026-10-21T10:00:00Z","reason":"files_mismatch","failed":2}}`,
+		`{"version":"1","selftest":{"ok":"да"}}`, `{"version":"1","integrity":null}`, `{"version":"1","selftest":[]}`} {
 		f.Add(s, "application/json")
 	}
 	f.Add(`{"version":"1"}`, "text/plain")

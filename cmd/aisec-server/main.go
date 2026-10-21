@@ -16,6 +16,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
+	"time"
 
 	"github.com/azuresong-afk/ai_railway/internal/api"
 	"github.com/azuresong-afk/ai_railway/internal/audit"
@@ -28,6 +29,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/integrity/selftest"
 	"github.com/azuresong-afk/ai_railway/internal/keyring"
 	"github.com/azuresong-afk/ai_railway/internal/store"
+	"github.com/azuresong-afk/ai_railway/internal/sysstatus"
 	"github.com/azuresong-afk/ai_railway/web"
 )
 
@@ -172,12 +174,21 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	}
 	go events.RunMaintenance(ctx, eventStore, events.MaintainEvery, logger)
 
+	// «Состояние системы» (задача 2.20): шлюзы читаются из реестра и без
+	// внутреннего УЦ; уведомления ВРМ.1, РСБ.5, ОЦЛ.5 пишутся в аудит при
+	// смене состояния, раз в минуту.
+	statusSvc, err := newStatus(ctx, cfg, db, auditLog, integritySvc, selftestRes, logger)
+	if err != nil {
+		return err
+	}
+
 	handler, _, err := api.New(api.Options{
 		Logger: logger, Version: version, Hasher: hasher,
 		Ready:     db.Ping,
 		Auth:      authSvc,
 		Gateways:  gateways,
 		Integrity: integritySvc,
+		Status:    statusSvc,
 		Fallback:  staticFallback(),
 	})
 	if err != nil {
@@ -203,6 +214,37 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		return errors.Join(err, cause)
 	}
 	return err
+}
+
+// newStatus собирает «Состояние системы» и запускает фоновую проверку
+// условий уведомлений раздела 7.
+func newStatus(ctx context.Context, cfg *serverConfig, db *store.DB, auditLog *audit.Log, integritySvc integrity.Service,
+	selftestRes selftest.Result, logger *slog.Logger) (*sysstatus.Service, error) {
+	gwStore, err := gwregistry.NewPGStore(db.Pool(), auditLog)
+	if err != nil {
+		return nil, err
+	}
+	pg, err := sysstatus.NewPGStore(db.Pool(), auditLog, audit.DefaultOrgID)
+	if err != nil {
+		return nil, err
+	}
+	failed := len(selftestRes.Failures)
+	if !selftestRes.CryptoOK {
+		failed++
+	}
+	svc, err := sysstatus.New(sysstatus.Options{
+		Version: version, StartedAt: time.Now(),
+		Selftest:  &sysstatus.SelftestSummary{OK: selftestRes.OK(), At: selftestRes.At, Failed: failed},
+		Gateways:  sysstatus.GatewayLister{Store: gwStore},
+		Integrity: integritySvc.Store, Store: pg,
+		Timezone: cfg.Timezone, StorageLimit: cfg.AuditStorageLimit, WarnPercent: cfg.AuditStorageWarnPercent,
+		Logger: logger,
+	})
+	if err != nil {
+		return nil, err
+	}
+	go svc.Run(ctx, sysstatus.DefaultEvalInterval)
+	return svc, nil
 }
 
 // startIntegrity проверяет целостность сервера при запуске и запускает
