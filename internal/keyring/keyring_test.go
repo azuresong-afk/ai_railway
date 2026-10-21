@@ -375,6 +375,49 @@ func TestDeriveReserveBatches(t *testing.T) {
 	}
 }
 
+// Чтение содержимого за много разных суток не сбрасывает кэш с ключом
+// текущих суток: следующее шифрование не резервирует новую пачку (Н23
+// ревью 2.r3a).
+func TestOpenDerivedKeepsSealCache(t *testing.T) {
+	p := provider(t)
+	dir, db := install(t, p)
+	b, err := keyring.Load(context.Background(), db, p, dir, orgID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	day := time.Date(2026, 10, 21, 0, 0, 0, 0, time.UTC)
+	d, err := b.Derive("event-content", day)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed, err := d.Seal(context.Background(), []byte("x"), "t", "c", "r")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range 20 {
+		_, err := b.OpenDerived(b.KeyID(), "event-content", day.AddDate(0, 0, -i-1), sealed, "t", "c", "r")
+		if !errors.Is(err, aisecCrypto.ErrDecrypt) {
+			t.Fatalf("чужие сутки: %v", err)
+		}
+	}
+	if got, err := b.OpenDerived(b.KeyID(), "event-content", day, sealed, "t", "c", "r"); err != nil || string(got) != "x" {
+		t.Fatalf("свои сутки: %q %v", got, err)
+	}
+	d2, err := b.Derive("event-content", day)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d2.Seal(context.Background(), []byte("y"), "t", "c", "r"); err != nil {
+		t.Fatal(err)
+	}
+	if db.derivedRes != 1 || d2 != d {
+		t.Fatalf("резервов %d, ключ суток вытеснен из кэша: %v", db.derivedRes, d2 != d)
+	}
+	if _, err := b.OpenDerived(b.KeyID(), "Bad purpose", day, sealed, "t", "c", "r"); err == nil {
+		t.Fatal("неверное назначение принято")
+	}
+}
+
 func TestDeriveRejects(t *testing.T) {
 	p := provider(t)
 	a, err := p.NewAEAD(make([]byte, aisecCrypto.AEADKeySize))

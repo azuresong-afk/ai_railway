@@ -53,6 +53,16 @@ func (standard) NewTOTP(secret []byte) (TOTP, error) { return newTOTP(secret) }
 
 func (standard) NewKDF(secret []byte) (KDF, error) { return newHKDF(secret) }
 
+func (standard) GenerateRecipient() (Recipient, error) { return generateHPKERecipient() }
+
+func (standard) NewRecipient(privateKey []byte) (Recipient, error) {
+	return newHPKERecipient(privateKey)
+}
+
+func (standard) SealTo(publicKey, info, plaintext []byte) ([]byte, error) {
+	return hpkeSealTo(publicKey, info, plaintext)
+}
+
 type sha256Hasher struct{}
 
 func (sha256Hasher) Name() string   { return "SHA-256" }

@@ -149,6 +149,11 @@ func (s *ServerSink) encode(batch []events.Event) ([]byte, error) {
 // accepted учитывает ответ сервера: отклонённые события — в счётчик и
 // журнал (только коды, без содержимого).
 func (s *ServerSink) accepted(batch []events.Event, res events.BatchResult) {
+	if res.Truncated > 0 {
+		// Событие записано, но содержимое full обрезано сервером под предел
+		// хранения (В10 ревью 2.r3a).
+		s.logger.Warn("сервер управления обрезал содержимое событий", "count", res.Truncated)
+	}
 	if len(res.Rejected) == 0 {
 		return
 	}

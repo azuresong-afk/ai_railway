@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/azuresong-afk/ai_railway/internal/audit"
@@ -184,7 +185,14 @@ type Service struct {
 	mu       sync.Mutex
 	lastHB   map[string]time.Time // ID шлюза → последний принятый heartbeat
 	lastDeny map[string]time.Time // серийный номер → последняя запись об отказе
+
+	// malformed — запросы регистрации с токеном неверного формата: они идут
+	// в технический журнал, а не в аудит (Н17 ревью 2.r3a, как В9).
+	malformed atomic.Uint64
 }
+
+// MalformedTokens — число запросов регистрации с токеном неверного формата.
+func (s *Service) MalformedTokens() uint64 { return s.malformed.Load() }
 
 // New создаёт сервис.
 func New(o Options) (*Service, error) {
@@ -329,7 +337,12 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (Registration,
 	now := s.clock().UTC()
 	raw, err := parseToken(in.Token)
 	if err != nil {
-		return Registration{}, s.registerFailed(ctx, in.SourceIP, "bad_format")
+		// Мусор вместо токена — не попытка с настоящим токеном: счётчик и
+		// технический журнал без записи в аудит, чтобы перебор с открытого
+		// маршрута не раздувал журнал аудита (Н17 ревью 2.r3a).
+		n := s.malformed.Add(1)
+		s.logger.Warn("регистрация шлюза: токен неверного формата", "source_ip", in.SourceIP.String(), "total", n)
+		return Registration{}, ErrTokenInvalid
 	}
 	// Поиск по хешу: время сравнения в индексе зависит от хеша, а не от
 	// токена; совпавший хеш дополнительно сверяется за постоянное время.

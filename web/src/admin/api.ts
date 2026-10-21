@@ -67,7 +67,7 @@ export const adminApi = {
   revokeToken: (tid: string) => request<unknown>("DELETE", `/api/v1/api-tokens/${id(tid)}`),
 
   retention: (signal?: AbortSignal) => request<EventRetention>("GET", "/api/v1/events/settings", undefined, signal),
-  saveRetention: (b: { metadata_days: number; content_days: number }) =>
+  saveRetention: (b: S["EventRetentionInput"]) =>
     request<EventRetention>("PUT", "/api/v1/events/settings", b),
 
   audit: (f: AuditFilter, cursor: string | undefined, signal?: AbortSignal) => {

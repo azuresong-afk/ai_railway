@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -150,6 +151,24 @@ func appDetectors(a config.Application) (*detect.Registry, error) {
 		}
 	}
 	return detect.NewRegistry(ds...)
+}
+
+// CheckApplications компилирует политику каждого приложения по его
+// детекторам, как NewRouter при запуске: правило на категорию lists.*, для
+// которой у приложения нет словаря, — ошибка. Сервер вызывает её до сборки
+// пакета (задача 2.13), чтобы не подписать то, что шлюз отвергнет.
+func CheckApplications(apps []config.Application, specs []policy.Spec) error {
+	var errs []error
+	for _, a := range apps {
+		reg, err := appDetectors(a)
+		if err == nil {
+			_, err = policy.Resolve(a.Policy, specs, reg)
+		}
+		if err != nil {
+			errs = append(errs, fmt.Errorf("приложение %s: %w", a.ID, err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // app — приложение запроса (после RequireAppKey).

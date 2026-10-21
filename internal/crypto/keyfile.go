@@ -32,6 +32,9 @@ const (
 	// KeyKindManifestSigningPublic — открытый ключ проверки манифеста,
 	// встраивается в бинарники (ТЗ, 10.4).
 	KeyKindManifestSigningPublic = "AISEC MANIFEST SIGNING PUBLIC KEY"
+	// KeyKindBundleEncryption — закрытый ключ получателя шлюза: им шлюз
+	// расшифровывает секреты провайдеров в пакете конфигурации (Р7).
+	KeyKindBundleEncryption = "AISEC BUNDLE ENCRYPTION KEY"
 )
 
 // maxKeyFile ограничивает размер файла ключа: ключ — десятки байт.
@@ -48,6 +51,7 @@ var keyFileSize = map[string]int{
 	KeyKindAuditSigningPublic:    PublicKeySize,
 	KeyKindManifestSigning:       SigningSeedSize,
 	KeyKindManifestSigningPublic: PublicKeySize,
+	KeyKindBundleEncryption:      RecipientKeySize,
 }
 
 // EncodeKeyPEM кодирует ключ вида kind для профиля profile.

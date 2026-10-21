@@ -23,3 +23,8 @@ func (gost) NewTOTP([]byte) (TOTP, error) { return nil, ErrNotImplemented }
 
 // NewKDF: в профиле gost — KDF на «Стрибоге» (Р 50.1.113-2016) через СКЗИ этапа 6.
 func (gost) NewKDF([]byte) (KDF, error) { return nil, ErrNotImplemented }
+
+// Шифрование по открытому ключу в профиле gost — через СКЗИ этапа 6.
+func (gost) GenerateRecipient() (Recipient, error)  { return nil, ErrNotImplemented }
+func (gost) NewRecipient([]byte) (Recipient, error) { return nil, ErrNotImplemented }
+func (gost) SealTo(_, _, _ []byte) ([]byte, error)  { return nil, ErrNotImplemented }

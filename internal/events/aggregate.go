@@ -127,7 +127,7 @@ func (s *PGStore) Aggregates(ctx context.Context, q StatsQuery) ([]Aggregate, er
 		" tokens_prompt, tokens_completion, threats FROM " + aggregateTable(q.Interval) +
 		" WHERE org_id = $1 AND bucket >= $2 AND bucket < $3 AND ($4 = '' OR app = $4)" +
 		" ORDER BY bucket, app, type, action, severity LIMIT $5"
-	rows, err := s.db.Query(ctx, sql, s.orgID, q.From.UTC(), q.To.UTC(), q.App, MaxStatsRows+1)
+	rows, err := s.rdb.Query(ctx, sql, s.orgID, q.From.UTC(), q.To.UTC(), q.App, MaxStatsRows+1)
 	if err != nil {
 		return nil, dbError("агрегаты событий", err)
 	}

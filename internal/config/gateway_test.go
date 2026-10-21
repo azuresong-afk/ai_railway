@@ -143,28 +143,54 @@ func FuzzParseUpstreamURL(f *testing.F) {
 }
 
 func TestLoadGatewayServer(t *testing.T) {
-	with := func(extra ...string) []string { return append(append([]string{}, required...), extra...) }
-	full := with("-server", "https://server.example:8445", "-server-ca", "ca.crt", "-client-cert", "gw.crt", "-client-key", "gw.key")
-	cfg, err := LoadGateway(full, env(nil), io.Discard)
-	if err != nil || cfg.Server == nil || cfg.Server.Host != "server.example:8445" || cfg.ClientKeyFile != "gw.key" {
+	tls := []string{"-tls-cert", "c.pem", "-tls-key", "k.pem"}
+	with := func(extra ...string) []string { return append(append([]string{}, tls...), extra...) }
+	srv := []string{"-server", "https://server.example:8445", "-server-ca", "ca.crt", "-client-cert", "gw.crt", "-client-key", "gw.key",
+		"-bundle-pub", "bundle-signing.pub", "-state-dir", "state"}
+	cfg, err := LoadGateway(with(srv...), env(nil), io.Discard)
+	if err != nil || cfg.Server == nil || cfg.Server.Host != "server.example:8445" || cfg.ClientKeyFile != "gw.key" ||
+		cfg.StateDir != "state" || len(cfg.BundlePubFiles) != 1 || cfg.ConfigFile != "" {
 		t.Fatalf("%+v %v", cfg, err)
 	}
-	cfg, err = LoadGateway(required, env(map[string]string{
+	cfg, err = LoadGateway(with(append(srv, "-bundle-pub", "old.pub,new.pub", "-user-hmac-key", "user.key")...), env(nil), io.Discard)
+	if err != nil || len(cfg.BundlePubFiles) != 2 || cfg.BundlePubFiles[1] != "new.pub" || cfg.UserHMACKeyFile != "user.key" {
+		t.Fatalf("ротация ключа: %+v %v", cfg, err)
+	}
+	cfg, err = LoadGateway(tls, env(map[string]string{
 		"AISEC_GATEWAY_SERVER": "https://s:8445", "AISEC_GATEWAY_SERVER_CA": "ca", "AISEC_GATEWAY_CLIENT_CERT": "c", "AISEC_GATEWAY_CLIENT_KEY": "k",
+		"AISEC_GATEWAY_BUNDLE_PUB": "b.pub", "AISEC_GATEWAY_STATE_DIR": "st",
 	}), io.Discard)
-	if err != nil || cfg.Server == nil || cfg.ServerCAFile != "ca" {
+	if err != nil || cfg.Server == nil || cfg.ServerCAFile != "ca" || cfg.StateDir != "st" {
 		t.Fatalf("из окружения: %+v %v", cfg, err)
 	}
 	if cfg, err := LoadGateway(required, env(nil), io.Discard); err != nil || cfg.Server != nil {
 		t.Fatalf("без сервера: %+v %v", cfg, err)
 	}
+	base := func(drop string, extra ...string) []string {
+		var out []string
+		for i := 0; i < len(srv); i += 2 {
+			if srv[i] != drop {
+				out = append(out, srv[i], srv[i+1])
+			}
+		}
+		return with(append(out, extra...)...)
+	}
 	for name, args := range map[string][]string{
-		"без корня":       with("-server", "https://s:8445", "-client-cert", "c", "-client-key", "k"),
-		"без сертификата": with("-server", "https://s:8445", "-server-ca", "ca", "-client-key", "k"),
-		"без ключа":       with("-server", "https://s:8445", "-server-ca", "ca", "-client-cert", "c"),
-		"http":            with("-server", "http://s:8445", "-server-ca", "ca", "-client-cert", "c", "-client-key", "k"),
-		"путь":            with("-server", "https://s:8445/api", "-server-ca", "ca", "-client-cert", "c", "-client-key", "k"),
-		"учётные данные":  with("-server", "https://u:p@s:8445", "-server-ca", "ca", "-client-cert", "c", "-client-key", "k"),
+		"без корня":                    base("-server-ca"),
+		"без сертификата":              base("-client-cert"),
+		"без ключа":                    base("-client-key"),
+		"без ключа пакетов":            base("-bundle-pub"),
+		"без каталога":                 base("-state-dir"),
+		"с файлом":                     base("", "-config", "gateway.yaml"),
+		"три ключа пакетов":            base("", "-bundle-pub", "a,b,c"),
+		"пустой ключ пакетов":          base("", "-bundle-pub", "a,"),
+		"http":                         base("", "-server", "http://s:8445"),
+		"путь":                         base("", "-server", "https://s:8445/api"),
+		"учётные данные":               base("", "-server", "https://u:p@s:8445"),
+		"без сервера и файла":          tls,
+		"ключ пакетов без сервера":     append(append([]string{}, required...), "-bundle-pub", "b.pub"),
+		"каталог без сервера":          append(append([]string{}, required...), "-state-dir", "st"),
+		"ключ псевдонимов без сервера": append(append([]string{}, required...), "-user-hmac-key", "u.key"),
 	} {
 		if _, err := LoadGateway(args, env(nil), io.Discard); err == nil {
 			t.Errorf("%s: принято", name)

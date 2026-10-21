@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/azuresong-afk/ai_railway/migrations"
 )
 
@@ -100,5 +102,31 @@ func TestMigrateOnRealDB(t *testing.T) {
 	}
 	if done, err := m.Up(ctx); err != nil || len(done) != 0 {
 		t.Fatalf("повторный Up = %v, %v", done, err)
+	}
+}
+
+// Пул чтения событий получает statement_timeout в параметрах сессии (В11
+// ревью 2.r3a); на живой БД — значение в сессии.
+func TestWithStatementTimeout(t *testing.T) {
+	cfg, err := pgxpool.ParseConfig("postgres://u@127.0.0.1:5432/db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	WithStatementTimeout(130 * time.Second)(cfg)
+	if got := cfg.ConnConfig.RuntimeParams["statement_timeout"]; got != "130000" {
+		t.Fatalf("statement_timeout = %q", got)
+	}
+	dsn := os.Getenv("AISEC_TEST_DATABASE_URL")
+	if dsn == "" {
+		return
+	}
+	db, err := Open(context.Background(), dsn, 1, WithStatementTimeout(1500*time.Millisecond))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var v string
+	if err := db.Pool().QueryRow(context.Background(), "SHOW statement_timeout").Scan(&v); err != nil || v != "1500ms" {
+		t.Fatalf("SHOW statement_timeout: %q %v", v, err)
 	}
 }

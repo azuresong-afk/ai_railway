@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -42,7 +43,21 @@ type Gateway struct {
 	// (aisec-gateway register) и его закрытый ключ (0600).
 	ClientCertFile string
 	ClientKeyFile  string
+	// BundlePubFiles — открытые ключи проверки пакетов конфигурации
+	// (bundle-signing.pub, задача 2.13): один или два на время ротации.
+	// Только с Server.
+	BundlePubFiles []string
+	// StateDir — каталог состояния (0700): ключ получателя шлюза и последний
+	// применённый пакет. Только с Server.
+	StateDir string
+	// UserHMACKeyFile — ключ псевдонимов пользователей (ТЗ, 5.5) в режиме с
+	// сервером; без сервера — gateway.user_hmac_key_file в файле конфигурации.
+	UserHMACKeyFile string
 }
+
+// MaxBundlePubFiles — ключей проверки пакетов одновременно (как
+// bundle.MaxVerifiers: действующий и новый на время ротации).
+const MaxBundlePubFiles = 2
 
 // Границы и значения по умолчанию.
 const (
@@ -84,6 +99,9 @@ func LoadGateway(args []string, getenv func(string) string, errOut io.Writer) (*
 	serverCA := fs.String("server-ca", "", "корневой сертификат для проверки сервера, PEM (AISEC_GATEWAY_SERVER_CA)")
 	clientCert := fs.String("client-cert", "", "сертификат шлюза от внутреннего УЦ, PEM (AISEC_GATEWAY_CLIENT_CERT)")
 	clientKey := fs.String("client-key", "", "закрытый ключ сертификата шлюза, права 0600 (AISEC_GATEWAY_CLIENT_KEY)")
+	bundlePub := fs.String("bundle-pub", "", "открытый ключ проверки пакетов конфигурации bundle-signing.pub; на время ротации — два файла через запятую (AISEC_GATEWAY_BUNDLE_PUB)")
+	stateDir := fs.String("state-dir", "", "каталог состояния 0700: ключ шлюза для секретов пакета и последний пакет (AISEC_GATEWAY_STATE_DIR)")
+	userKey := fs.String("user-hmac-key", "", "ключ псевдонимов пользователей, права 0600; в режиме с сервером (AISEC_GATEWAY_USER_HMAC_KEY)")
 	if err := fs.Parse(args); err != nil {
 		return nil, err
 	}
@@ -96,6 +114,7 @@ func LoadGateway(args []string, getenv func(string) string, errOut io.Writer) (*
 		"config": configFile, "listen": listen, "tls-cert": cert, "tls-key": key, "max-body-bytes": maxBody,
 		"manifest": manifest, "integrity-action": action, "integrity-interval": interval, "selftest-action": selftestAction,
 		"server": server, "server-ca": serverCA, "client-cert": clientCert, "client-key": clientKey,
+		"bundle-pub": bundlePub, "state-dir": stateDir, "user-hmac-key": userKey,
 	} {
 		if set[name] {
 			continue // флаг важнее окружения
@@ -107,7 +126,11 @@ func LoadGateway(args []string, getenv func(string) string, errOut io.Writer) (*
 
 	cfg := &Gateway{ConfigFile: *configFile, Listen: *listen, TLSCertFile: *cert, TLSKeyFile: *key,
 		Manifest: *manifest, IntegrityAction: *action, SelftestAction: *selftestAction,
-		ServerCAFile: *serverCA, ClientCertFile: *clientCert, ClientKeyFile: *clientKey}
+		ServerCAFile: *serverCA, ClientCertFile: *clientCert, ClientKeyFile: *clientKey,
+		StateDir: *stateDir, UserHMACKeyFile: *userKey}
+	if *bundlePub != "" {
+		cfg.BundlePubFiles = strings.Split(*bundlePub, ",")
+	}
 	var errs []error
 	if cfg.IntegrityAction != IntegrityAlert && cfg.IntegrityAction != IntegrityStop {
 		errs = append(errs, fmt.Errorf("integrity-action: ожидается %s или %s", IntegrityAlert, IntegrityStop))
@@ -123,7 +146,7 @@ func LoadGateway(args []string, getenv func(string) string, errOut io.Writer) (*
 	if _, _, err := net.SplitHostPort(cfg.Listen); err != nil {
 		errs = append(errs, errors.New("listen: ожидается адрес:порт"))
 	}
-	for name, v := range map[string]string{"config": cfg.ConfigFile, "tls-cert": cfg.TLSCertFile, "tls-key": cfg.TLSKeyFile} {
+	for name, v := range map[string]string{"tls-cert": cfg.TLSCertFile, "tls-key": cfg.TLSKeyFile} {
 		if v == "" {
 			errs = append(errs, fmt.Errorf("%s: обязательный параметр", name))
 		}
@@ -137,9 +160,27 @@ func LoadGateway(args []string, getenv func(string) string, errOut io.Writer) (*
 		if cfg.Server, err = ParseServerURL(*server); err != nil {
 			errs = append(errs, err)
 		}
-		for name, v := range map[string]string{"server-ca": cfg.ServerCAFile, "client-cert": cfg.ClientCertFile, "client-key": cfg.ClientKeyFile} {
+		for name, v := range map[string]string{"server-ca": cfg.ServerCAFile, "client-cert": cfg.ClientCertFile, "client-key": cfg.ClientKeyFile,
+			"bundle-pub": *bundlePub, "state-dir": cfg.StateDir} {
 			if v == "" {
 				errs = append(errs, fmt.Errorf("%s: обязателен вместе с server", name))
+			}
+		}
+		// Конфигурация с сервером приходит подписанным пакетом (задача
+		// 2.13): локальный файл рядом с ним был бы вторым источником правды.
+		if cfg.ConfigFile != "" {
+			errs = append(errs, errors.New("config: с server не задаётся — приложения, ключи и политики приходят пакетом с сервера"))
+		}
+		if len(cfg.BundlePubFiles) > MaxBundlePubFiles || slices.Contains(cfg.BundlePubFiles, "") {
+			errs = append(errs, fmt.Errorf("bundle-pub: от 1 до %d файлов через запятую", MaxBundlePubFiles))
+		}
+	} else {
+		if cfg.ConfigFile == "" {
+			errs = append(errs, errors.New("config: обязательный параметр без server"))
+		}
+		for name, v := range map[string]string{"bundle-pub": *bundlePub, "state-dir": cfg.StateDir, "user-hmac-key": cfg.UserHMACKeyFile} {
+			if v != "" {
+				errs = append(errs, fmt.Errorf("%s: только вместе с server; без сервера — файл конфигурации", name))
 			}
 		}
 	}

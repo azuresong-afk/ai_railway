@@ -41,7 +41,9 @@ func testEvent(n int, content string) events.Event {
 
 type failStore struct{ err error }
 
-func (f failStore) Insert(context.Context, events.Ingest) (int, int, error) { return 0, 0, f.err }
+func (f failStore) Insert(context.Context, events.Ingest) (events.InsertResult, error) {
+	return events.InsertResult{}, f.err
+}
 
 func newEventsHandler(t testing.TB, st events.Store, logger *slog.Logger) http.Handler {
 	t.Helper()
@@ -98,6 +100,38 @@ func TestEventsBatchAccepts(t *testing.T) {
 	// Содержимое событий в технический журнал не попадает.
 	if strings.Contains(logs.String(), "4510") || !strings.Contains(logs.String(), "события пакета отклонены") {
 		t.Fatalf("журнал: %s", logs.String())
+	}
+}
+
+// Отказ СУБД в одном событии касается только его (В10 ревью 2.r3a):
+// остальные события пакета приняты, индексы отказов — по пакету, с учётом
+// событий, отклонённых Check раньше.
+func TestEventsBatchStorageRejectsOne(t *testing.T) {
+	var logs bytes.Buffer
+	mem := events.NewMemory()
+	mem.Reject = func(e *events.Event) bool { return e.ID == testEventID(3) }
+	h := newEventsHandler(t, mem, slog.New(slog.NewJSONHandler(&logs, nil)))
+	early := testEvent(1, "x")
+	early.Time = eventsNow.Add(-8 * 24 * time.Hour)
+	authFail := testEvent(4, "")
+	authFail.Type, authFail.App, authFail.Decision, authFail.Content, authFail.Storage = events.TypeAuthFailure, "", nil, nil, ""
+	authFail.AuthFailure = &events.AuthFailure{RemoteAddr: "192.0.2.1", Reason: "invalid_key"}
+	authFail.PolicyMode = "audit"
+	body := batchBody(t, early, testEvent(2, "x"), testEvent(3, "x"), authFail, testEvent(5, "x"))
+	w := do(h, http.MethodPost, "/internal/v1/events:batch", body, "Content-Type", "application/json")
+	if w.Code != http.StatusOK {
+		t.Fatalf("код %d: %s", w.Code, w.Body)
+	}
+	var res events.BatchResult
+	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+		t.Fatal(err)
+	}
+	want := []events.Rejection{{Index: 0, Code: events.RejectTime}, {Index: 2, Code: events.RejectStorage}, {Index: 3, Code: events.RejectInvalid}}
+	if res.Accepted != 2 || fmt.Sprint(res.Rejected) != fmt.Sprint(want) {
+		t.Fatalf("итог %+v", res)
+	}
+	if mem.Len() != 2 || !strings.Contains(logs.String(), `"storage":1`) {
+		t.Fatalf("событий %d, журнал: %s", mem.Len(), logs.String())
 	}
 }
 

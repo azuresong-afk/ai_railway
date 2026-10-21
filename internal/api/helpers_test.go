@@ -35,8 +35,11 @@ func quiet() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)
 // консоли синтетического пользователя, которого нет в хранилище.
 type allowPerm map[string]bool
 
+// allowPermUserID — ID пользователя сессии allowPerm.
+const allowPermUserID = "01900000-0000-7000-8000-0000000000f1"
+
 func (a allowPerm) Authorize(_ *http.Request, perm string) (Principal, Decision) {
-	c := &auth.Caller{User: auth.User{ID: "01900000-0000-7000-8000-0000000000f1", Login: "u1", Role: auth.RoleSecurityAdmin},
+	c := &auth.Caller{User: auth.User{ID: allowPermUserID, Login: "u1", Role: auth.RoleSecurityAdmin},
 		Session: auth.Session{ID: "01900000-0000-7000-8000-0000000000f2", State: auth.SessionActive}}
 	g := auth.Grants{}
 	for p, ok := range a {

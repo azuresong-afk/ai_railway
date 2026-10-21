@@ -40,8 +40,20 @@ import (
 
 var version = "dev"
 
-// dbPoolSize — число соединений с PostgreSQL.
-const dbPoolSize = 10
+// Пулы соединений с PostgreSQL. Чтение событий консолью (список, карточка,
+// выгрузка, агрегаты) — в отдельном пуле с пределом времени запроса, чтобы
+// медленные выборки не занимали соединения входа, журнала аудита и приёма
+// событий шлюзов (В11 ревью 2.r3a).
+const (
+	// dbPoolSize — основной пул.
+	dbPoolSize = 10
+	// eventsReadPoolSize — пул чтения событий; больше api.MaxExportsTotal,
+	// чтобы списки не ждали выгрузок.
+	eventsReadPoolSize = 4
+	// eventsReadStatementTimeout — statement_timeout пула чтения: выгрузка
+	// (events.ExportTimeout) и запас.
+	eventsReadStatementTimeout = events.ExportTimeout + 10*time.Second
+)
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil)).With("component", "aisec-server", "version", version)
@@ -193,7 +205,13 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	eventStore, err := events.NewPGStore(db.Pool(), box, auditLog, audit.DefaultOrgID, events.WithRandom(rnd))
+	readDB, err := store.Open(ctx, cfg.DatabaseURL, eventsReadPoolSize, store.WithStatementTimeout(eventsReadStatementTimeout))
+	if err != nil {
+		return err
+	}
+	defer readDB.Close()
+	eventStore, err := events.NewPGStore(db.Pool(), box, auditLog, audit.DefaultOrgID, events.WithRandom(rnd),
+		events.WithReadDB(readDB.Pool()))
 	if err != nil {
 		return err
 	}
@@ -288,7 +306,13 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	}
 	servers := []*httpserver.Server{srv}
 	if gateways != nil {
-		internal, err := newInternalServer(ctx, cfg, tp, hasher, gateways, eventStore, ca, certPEM, keyPEM, logger)
+		// Пакеты конфигурации (задача 2.13): без ключа подписи внутренний
+		// порт не открывается — шлюзы не получили бы конфигурацию.
+		bundleRoutes, err := newBundleRoutes(cfg, p, db, auditLog, appsSvc, policiesSvc, logger)
+		if err != nil {
+			return err
+		}
+		internal, err := newInternalServer(ctx, cfg, tp, hasher, gateways, eventStore, ca, certPEM, keyPEM, bundleRoutes, logger)
 		if err != nil {
 			return err
 		}
@@ -448,7 +472,7 @@ func loadCA(certFile, keyFile string) (*aisecCrypto.CA, error) {
 // обязательным клиентским сертификатом внутреннего УЦ (mTLS, ИАФ.10).
 func newInternalServer(ctx context.Context, cfg *serverConfig, tp aisecCrypto.TLSProvider, hasher aisecCrypto.Hasher,
 	gateways *gwregistry.Service, eventStore events.Store, ca *aisecCrypto.CA, certPEM, keyPEM []byte,
-	logger *slog.Logger) (*httpserver.Server, error) {
+	extra []api.Route, logger *slog.Logger) (*httpserver.Server, error) {
 	if cfg.InternalTLSCertFile != "" {
 		var err error
 		if certPEM, err = aisecCrypto.ReadPEMFile(cfg.InternalTLSCertFile); err != nil {
@@ -459,7 +483,8 @@ func newInternalServer(ctx context.Context, cfg *serverConfig, tp aisecCrypto.TL
 		}
 	}
 	ilog := logger.With("listener", "internal")
-	handler, _, err := api.NewInternal(api.InternalOptions{Logger: ilog, Hasher: hasher, Gateways: gateways, Events: eventStore})
+	handler, _, err := api.NewInternal(api.InternalOptions{Logger: ilog, Hasher: hasher, Gateways: gateways, Events: eventStore,
+		Extra: extra})
 	if err != nil {
 		return nil, err
 	}
