@@ -674,6 +674,41 @@ paths:
         '404': { $ref: '#/components/responses/ProblemNotFound' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ProblemInternal' }
+  /api/v1/gateways/register:
+    post:
+      summary: Регистрация шлюза — сертификат внутреннего УЦ по одноразовому токену
+      description: |
+        ИАФ.10, решение Р8, ADR-0009. Открыт, но требует одноразовый токен из вывода
+        `aisec-cli gateway token` (`aisec_gwreg_` и 43 символа base64url, срок по умолчанию —
+        24 часа). Шлюз сам создаёт ключ ECDSA P-256 и присылает CSR; закрытый ключ сервер не
+        видит. Из CSR берётся только открытый ключ: CN сертификата — ID шлюза, назначение —
+        только `clientAuth`, срок — 365 дней, но не дольше УЦ. Неверный CSR — 400 до проверки
+        токена (токен не тратится). Неверный, истёкший или погашенный токен, токен
+        отозванного шлюза — 403 без уточнения причины. Токен гасится в одной транзакции с
+        выпуском сертификата и записью `gateway.register`; отказы тоже пишутся в аудит (без
+        токена). Повторная регистрация того же шлюза (новый токен с `-reregister`) заменяет
+        сертификат: прежний перестаёт приниматься внутренним API сразу. Без внутреннего УЦ
+        на сервере (`-ca-cert`) — 503. Предел частоты — 10 запросов в минуту с адреса.
+        Без `Idempotency-Key`: ответ содержит выпущенный сертификат.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/GatewayRegisterRequest' }
+      responses:
+        '201':
+          description: Сертификат выпущен
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GatewayRegistration' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
 components:
   securitySchemes:
     appKey:
@@ -872,6 +907,22 @@ components:
       additionalProperties: false
       properties:
         setup_required: { type: boolean }
+    GatewayRegisterRequest:
+      type: object
+      required: [token, csr]
+      additionalProperties: false
+      properties:
+        token: { type: string, minLength: 1, maxLength: 128, format: password, description: 'Токен из вывода aisec-cli gateway token' }
+        csr: { type: string, minLength: 1, maxLength: 16384, description: 'CSR (PKCS#10) в PEM на ключ ECDSA P-256' }
+    GatewayRegistration:
+      type: object
+      required: [gateway_id, name, certificate, ca_certificate, not_after]
+      properties:
+        gateway_id: { type: string, format: uuid, description: 'ID шлюза; он же CN сертификата' }
+        name: { type: string }
+        certificate: { type: string, description: 'Клиентский сертификат шлюза в PEM' }
+        ca_certificate: { type: string, description: 'Сертификат внутреннего УЦ в PEM' }
+        not_after: { type: string, format: date-time }
     SetupRequest:
       type: object
       required: [token, login, display_name, password]

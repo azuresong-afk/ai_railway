@@ -127,3 +127,50 @@ func FuzzParseUpstreamURL(f *testing.F) {
 		}
 	})
 }
+
+func TestLoadGatewayServer(t *testing.T) {
+	with := func(extra ...string) []string { return append(append([]string{}, required...), extra...) }
+	full := with("-server", "https://server.example:8445", "-server-ca", "ca.crt", "-client-cert", "gw.crt", "-client-key", "gw.key")
+	cfg, err := LoadGateway(full, env(nil), io.Discard)
+	if err != nil || cfg.Server == nil || cfg.Server.Host != "server.example:8445" || cfg.ClientKeyFile != "gw.key" {
+		t.Fatalf("%+v %v", cfg, err)
+	}
+	cfg, err = LoadGateway(required, env(map[string]string{
+		"AISEC_GATEWAY_SERVER": "https://s:8445", "AISEC_GATEWAY_SERVER_CA": "ca", "AISEC_GATEWAY_CLIENT_CERT": "c", "AISEC_GATEWAY_CLIENT_KEY": "k",
+	}), io.Discard)
+	if err != nil || cfg.Server == nil || cfg.ServerCAFile != "ca" {
+		t.Fatalf("из окружения: %+v %v", cfg, err)
+	}
+	if cfg, err := LoadGateway(required, env(nil), io.Discard); err != nil || cfg.Server != nil {
+		t.Fatalf("без сервера: %+v %v", cfg, err)
+	}
+	for name, args := range map[string][]string{
+		"без корня":       with("-server", "https://s:8445", "-client-cert", "c", "-client-key", "k"),
+		"без сертификата": with("-server", "https://s:8445", "-server-ca", "ca", "-client-key", "k"),
+		"без ключа":       with("-server", "https://s:8445", "-server-ca", "ca", "-client-cert", "c"),
+		"http":            with("-server", "http://s:8445", "-server-ca", "ca", "-client-cert", "c", "-client-key", "k"),
+		"путь":            with("-server", "https://s:8445/api", "-server-ca", "ca", "-client-cert", "c", "-client-key", "k"),
+		"учётные данные":  with("-server", "https://u:p@s:8445", "-server-ca", "ca", "-client-cert", "c", "-client-key", "k"),
+	} {
+		if _, err := LoadGateway(args, env(nil), io.Discard); err == nil {
+			t.Errorf("%s: принято", name)
+		} else if strings.Contains(err.Error(), "u:p") {
+			t.Errorf("%s: учётные данные в тексте ошибки", name)
+		}
+	}
+}
+
+func FuzzParseServerURL(f *testing.F) {
+	for _, s := range []string{"https://h:8445", "https://h:8445/", "http://h", "https://u:p@h", "https://h/p", "https://h?q", "::", "https:opaque"} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, s string) {
+		u, err := ParseServerURL(s)
+		if err != nil {
+			return
+		}
+		if u.Scheme != "https" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Path != "" || u.Hostname() == "" {
+			t.Fatalf("принят недопустимый адрес %q", s)
+		}
+	})
+}

@@ -13,7 +13,10 @@ import (
 )
 
 // Значения по умолчанию.
-const defaultListen = "127.0.0.1:8444"
+const (
+	defaultListen         = "127.0.0.1:8444"
+	defaultInternalListen = "127.0.0.1:8445"
+)
 
 // serverConfig — параметры запуска сервера управления.
 type serverConfig struct {
@@ -34,6 +37,17 @@ type serverConfig struct {
 	IntegrityAction integrity.Action
 	// IntegrityInterval — период проверки целостности (ОЦЛ.2).
 	IntegrityInterval time.Duration
+	// CACert и CAKey — внутренний УЦ (ca.crt, ca.key из aisec-cli init,
+	// Р8): им проверяются клиентские сертификаты шлюзов и выпускаются
+	// сертификаты при регистрации. Пусто — внутренний порт не открывается.
+	CACert string
+	CAKey  string
+	// InternalListen — порт внутреннего API шлюзов (mTLS, ИАФ.10).
+	InternalListen string
+	// InternalTLSCertFile и InternalTLSKeyFile — сертификат внутреннего
+	// порта; пусто — тот же, что у консоли.
+	InternalTLSCertFile string
+	InternalTLSKeyFile  string
 	// DatabaseURL содержит пароль, поэтому берётся только из окружения, не из
 	// аргументов командной строки (их видно в списке процессов).
 	DatabaseURL string
@@ -51,6 +65,11 @@ func loadConfig(args []string, getenv func(string) string, errOut io.Writer) (*s
 	manifest := fs.String("manifest", "", "манифест целостности; по умолчанию ../aisec-manifest.json от каталога бинарника (AISEC_SERVER_MANIFEST)")
 	action := fs.String("integrity-action", string(integrity.ActionAlert), "реакция на нарушение целостности: alert или stop (AISEC_SERVER_INTEGRITY_ACTION)")
 	interval := fs.String("integrity-interval", integrity.DefaultInterval.String(), "период проверки целостности, не меньше 1m (AISEC_SERVER_INTEGRITY_INTERVAL)")
+	caCert := fs.String("ca-cert", "", "сертификат внутреннего УЦ ca.crt для mTLS шлюзов; без него внутренний порт закрыт (AISEC_SERVER_CA_CERT)")
+	caKey := fs.String("ca-key", "", "закрытый ключ внутреннего УЦ ca.key, права 0400 или 0600 (AISEC_SERVER_CA_KEY)")
+	internalListen := fs.String("internal-listen", defaultInternalListen, "адрес и порт внутреннего API шлюзов, mTLS (AISEC_SERVER_INTERNAL_LISTEN)")
+	internalCert := fs.String("internal-tls-cert", "", "сертификат TLS внутреннего порта; по умолчанию — tls-cert (AISEC_SERVER_INTERNAL_TLS_CERT)")
+	internalKey := fs.String("internal-tls-key", "", "закрытый ключ TLS внутреннего порта; по умолчанию — tls-key (AISEC_SERVER_INTERNAL_TLS_KEY)")
 	if err := fs.Parse(args); err != nil {
 		return nil, err
 	}
@@ -60,7 +79,8 @@ func loadConfig(args []string, getenv func(string) string, errOut io.Writer) (*s
 	set := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
 	for name, dst := range map[string]*string{"listen": listen, "tls-cert": cert, "tls-key": key, "audit-signing-pub": auditPub, "keys-dir": keysDir,
-		"manifest": manifest, "integrity-action": action, "integrity-interval": interval} {
+		"manifest": manifest, "integrity-action": action, "integrity-interval": interval,
+		"ca-cert": caCert, "ca-key": caKey, "internal-listen": internalListen, "internal-tls-cert": internalCert, "internal-tls-key": internalKey} {
 		if set[name] {
 			continue
 		}
@@ -68,7 +88,9 @@ func loadConfig(args []string, getenv func(string) string, errOut io.Writer) (*s
 			*dst = v
 		}
 	}
-	cfg := &serverConfig{Listen: *listen, TLSCertFile: *cert, TLSKeyFile: *key, AuditSigningPub: *auditPub, KeysDir: *keysDir, Manifest: *manifest, DatabaseURL: getenv("AISEC_DATABASE_URL")}
+	cfg := &serverConfig{Listen: *listen, TLSCertFile: *cert, TLSKeyFile: *key, AuditSigningPub: *auditPub, KeysDir: *keysDir,
+		Manifest: *manifest, CACert: *caCert, CAKey: *caKey, InternalListen: *internalListen,
+		InternalTLSCertFile: *internalCert, InternalTLSKeyFile: *internalKey, DatabaseURL: getenv("AISEC_DATABASE_URL")}
 	var errs []error
 	var err error
 	if cfg.IntegrityAction, err = integrity.ParseAction(*action); err != nil {
@@ -88,6 +110,17 @@ func loadConfig(args []string, getenv func(string) string, errOut io.Writer) (*s
 	}
 	if cfg.KeysDir == "" {
 		errs = append(errs, errors.New("keys-dir: обязательный параметр (каталог ключей aisec-cli init)"))
+	}
+	if (cfg.CACert == "") != (cfg.CAKey == "") {
+		errs = append(errs, errors.New("ca-cert и ca-key задаются вместе"))
+	}
+	if (cfg.InternalTLSCertFile == "") != (cfg.InternalTLSKeyFile == "") {
+		errs = append(errs, errors.New("internal-tls-cert и internal-tls-key задаются вместе"))
+	}
+	if _, _, err := net.SplitHostPort(cfg.InternalListen); err != nil {
+		errs = append(errs, errors.New("internal-listen: ожидается адрес:порт"))
+	} else if cfg.InternalListen == cfg.Listen {
+		errs = append(errs, errors.New("internal-listen: внутренний API — на отдельном порту, не на порту консоли"))
 	}
 	if cfg.DatabaseURL == "" {
 		errs = append(errs, errors.New("AISEC_DATABASE_URL: обязательная переменная (postgres://пользователь@хост:порт/база)"))

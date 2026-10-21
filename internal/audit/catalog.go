@@ -37,6 +37,11 @@ var catalog = []Event{
 	{"user.deactivate", "Деактивация учётной записи", true},
 	{"user.activate", "Повторная активация учётной записи", true},
 	{"user.password_reset", "Сброс пароля пользователя администратором", true},
+	// Регистрация шлюзов и mTLS (ИАФ.10, задача 2.14).
+	{"gateway.token_issue", "Выпуск токена регистрации шлюза", true},
+	{"gateway.register", "Регистрация шлюза: выпуск сертификата по токену", true},
+	{"gateway.revoke", "Отзыв шлюза", true},
+	{"gateway.mtls_denied", "Отказ шлюзу во внутреннем API: сертификат отозван или неизвестен", true},
 	// Компоненты (РСБ.2).
 	{"component.start", "Запуск компонента", true},
 	{"component.stop", "Остановка компонента", true},

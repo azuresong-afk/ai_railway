@@ -10,6 +10,7 @@ import (
 
 	"github.com/azuresong-afk/ai_railway/internal/auth"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
+	"github.com/azuresong-afk/ai_railway/internal/gwregistry"
 )
 
 // Options — зависимости каркаса. Последующие задачи добавляют сюда свои
@@ -24,6 +25,8 @@ type Options struct {
 	Authorizer Authorizer
 	// Auth — вход, сессии и учётные записи консоли (задача 2.7).
 	Auth *auth.Service
+	// Gateways — регистрация шлюзов по токену (задача 2.14); nil — 503.
+	Gateways *gwregistry.Service
 	// Integrity — контроль целостности (задача 2.17); nil — эндпоинты отвечают 503.
 	Integrity IntegrityService
 	// OnDenied — вызывается при каждом отказе в доступе (УПД.6).
@@ -47,6 +50,8 @@ type Deps struct {
 	Ready   func(ctx context.Context) error
 	// Auth — nil, если вход не подключён: его эндпоинты отвечают 503.
 	Auth *auth.Service
+	// Gateways — nil, если внутренний УЦ не подключён: регистрация отвечает 503.
+	Gateways *gwregistry.Service
 	// Integrity — nil, если контроль целостности не подключён: его эндпоинты отвечают 503.
 	Integrity IntegrityService
 }
@@ -74,7 +79,7 @@ func New(o Options) (http.Handler, *Router, error) {
 		logger: o.Logger, fallback: o.Fallback, onDenied: o.OnDenied,
 	}
 	rt.mux.HandleFunc("/", rt.notFound)
-	deps := Deps{Logger: o.Logger, Version: o.Version, Ready: o.Ready, Auth: o.Auth, Integrity: o.Integrity}
+	deps := Deps{Logger: o.Logger, Version: o.Version, Ready: o.Ready, Auth: o.Auth, Gateways: o.Gateways, Integrity: o.Integrity}
 	if err := rt.Add(append(Routes(deps), o.Extra...)...); err != nil {
 		return nil, nil, err
 	}

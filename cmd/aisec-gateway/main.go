@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -28,6 +29,10 @@ var version = "dev"
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil)).With("component", "aisec-gateway", "version", version)
+	if len(os.Args) > 1 && os.Args[1] == "register" {
+		mainRegister(logger)
+		return
+	}
 	cfg, err := config.LoadGateway(os.Args[1:], os.Getenv, os.Stderr)
 	if errors.Is(err, flag.ErrHelp) {
 		return // справка уже напечатана
@@ -40,6 +45,24 @@ func main() {
 	defer stop()
 	if err := run(ctx, cfg, logger); err != nil {
 		logger.Error("остановка с ошибкой", "error", err)
+		os.Exit(1)
+	}
+}
+
+// mainRegister — подкоманда register: получение сертификата шлюза по токену.
+func mainRegister(logger *slog.Logger) {
+	cfg, err := loadRegConfig(os.Args[2:], os.Getenv, os.Stderr)
+	if errors.Is(err, flag.ErrHelp) {
+		return
+	}
+	if err != nil {
+		logger.Error("неверные параметры регистрации", "error", err)
+		os.Exit(2)
+	}
+	ctx, stop := shutdownContext()
+	defer stop()
+	if err := runRegister(ctx, cfg, os.Stdout); err != nil {
+		logger.Error("регистрация не выполнена", "error", err)
 		os.Exit(1)
 	}
 }
@@ -144,6 +167,13 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 	if err != nil {
 		return err
 	}
+	if cfg.Server != nil {
+		if err := startHeartbeat(ctx, cfg, tp, logger); err != nil {
+			return err
+		}
+	} else {
+		logger.Info("сервер управления не задан (-server): шлюз работает без регистрации")
+	}
 	logger.Info("шлюз запущен: проверка запроса и ответа включена",
 		"max_body_bytes", cfg.MaxBodyBytes, "applications", len(file.Applications), "providers", len(provs))
 	return srv.Run(ctx)
@@ -180,6 +210,44 @@ func startIntegrity(ctx context.Context, cfg *config.Gateway, p aisecCrypto.Prov
 		return err
 	}
 	go mon.Run(ctx)
+	return nil
+}
+
+// startHeartbeat запускает heartbeat на внутренний API сервера по mTLS
+// (ИАФ.10). Сертификат и ключ шлюза — от aisec-gateway register; сервер
+// недоступен — шлюз всё равно работает (ТЗ, 4.2).
+func startHeartbeat(ctx context.Context, cfg *config.Gateway, tp aisecCrypto.TLSProvider, logger *slog.Logger) error {
+	rootsPEM, err := aisecCrypto.ReadPEMFile(cfg.ServerCAFile)
+	if err != nil {
+		return fmt.Errorf("корневой сертификат сервера: %w", err)
+	}
+	certPEM, err := aisecCrypto.ReadPEMFile(cfg.ClientCertFile)
+	if err != nil {
+		return fmt.Errorf("сертификат шлюза для сервера: %w", err)
+	}
+	keyPEM, err := aisecCrypto.ReadKeyFile(cfg.ClientKeyFile)
+	if err != nil {
+		return fmt.Errorf("ключ шлюза для сервера: %w", err)
+	}
+	id, err := aisecCrypto.ParseCertInfo(certPEM)
+	if err != nil {
+		return fmt.Errorf("сертификат шлюза для сервера: %w", err)
+	}
+	if time.Until(id.NotAfter) < 30*24*time.Hour {
+		logger.Warn("сертификат шлюза скоро истекает: нужна повторная регистрация", "not_after", id.NotAfter.UTC())
+	}
+	transport, err := gateway.ControlTransport(tp, rootsPEM, certPEM, keyPEM)
+	if err != nil {
+		return err
+	}
+	v := version
+	if !gateway.ValidVersion(v) {
+		v = "unknown"
+	}
+	logger.Info("heartbeat на сервер управления включён", "gateway_id", id.CommonName, "server", cfg.Server.Host)
+	go gateway.RunHeartbeat(ctx, gateway.HeartbeatConfig{
+		Client: &http.Client{Transport: transport}, Server: cfg.Server, Version: v, Logger: logger,
+	})
 	return nil
 }
 

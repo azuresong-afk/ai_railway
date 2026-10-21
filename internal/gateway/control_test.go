@@ -1,0 +1,376 @@
+package gateway_test
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/azuresong-afk/ai_railway/internal/api"
+	"github.com/azuresong-afk/ai_railway/internal/audit"
+	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
+	"github.com/azuresong-afk/ai_railway/internal/gateway"
+	"github.com/azuresong-afk/ai_railway/internal/gwregistry"
+)
+
+// Сквозная проверка ИАФ.10 на настоящем TLS: регистрация на порту консоли
+// по токену, heartbeat на внутренний порт по mTLS, отказ без сертификата,
+// с сертификатом чужого УЦ и после отзыва.
+
+type nopAuditor struct{}
+
+func (nopAuditor) Record(context.Context, audit.Entry) error { return nil }
+
+func quiet() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
+
+type mtlsEnv struct {
+	tp       aisecCrypto.TLSProvider
+	ca       *aisecCrypto.CA
+	mem      *gwregistry.Memory
+	svc      *gwregistry.Service
+	console  *url.URL
+	internal *url.URL
+}
+
+func newMTLSEnv(t *testing.T) *mtlsEnv {
+	t.Helper()
+	p, err := aisecCrypto.New(aisecCrypto.ProfileStandard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tp, err := p.TLS()
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := p.Hasher()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	ca, err := aisecCrypto.NewCA("AISec test CA", 24*time.Hour, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certPEM, keyPEM, err := ca.IssueServer([]string{"127.0.0.1"}, time.Hour, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := &mtlsEnv{tp: tp, ca: ca, mem: gwregistry.NewMemory()}
+	e.svc, err = gwregistry.New(gwregistry.Options{Store: e.mem, Provider: p, CA: ca, Audit: nopAuditor{}, Logger: quiet()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	consoleH, _, err := api.New(api.Options{Logger: quiet(), Hasher: h, Gateways: e.svc})
+	if err != nil {
+		t.Fatal(err)
+	}
+	internalH, _, err := api.NewInternal(api.InternalOptions{Logger: quiet(), Hasher: h, Gateways: e.svc})
+	if err != nil {
+		t.Fatal(err)
+	}
+	consoleTLS, err := tp.ServerConfig(certPEM, keyPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	internalTLS, err := tp.MutualServerConfig(certPEM, keyPEM, ca.CertPEM())
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := func(hd http.Handler, mutual bool) *url.URL {
+		s := httptest.NewUnstartedServer(hd)
+		s.TLS = consoleTLS
+		if mutual {
+			s.TLS = internalTLS
+		}
+		s.Config.ErrorLog = slog.NewLogLogger(quiet().Handler(), slog.LevelError)
+		s.StartTLS()
+		t.Cleanup(s.Close)
+		u, err := url.Parse(s.URL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return u
+	}
+	e.console = start(consoleH, false)
+	e.internal = start(internalH, true)
+	return e
+}
+
+func (e *mtlsEnv) client(t *testing.T, certPEM, keyPEM []byte) *http.Client {
+	t.Helper()
+	tr, err := gateway.ControlTransport(e.tp, e.ca.CertPEM(), certPEM, keyPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(tr.CloseIdleConnections)
+	return &http.Client{Transport: tr}
+}
+
+func (e *mtlsEnv) registerGateway(t *testing.T, name string) gateway.Registration {
+	t.Helper()
+	tok, _, err := e.svc.IssueToken(context.Background(), gwregistry.TokenInput{Name: name, Actor: audit.Actor{Type: audit.ActorCLI, ID: "uid:0"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg, err := gateway.Register(context.Background(), e.client(t, nil, nil), e.console, tok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return reg
+}
+
+// reply — то, что тестам нужно от ответа; тело читается и закрывается в post.
+type reply struct {
+	StatusCode int
+	Header     http.Header
+}
+
+func post(t *testing.T, c *http.Client, u *url.URL, path, body string) (reply, error) {
+	t.Helper()
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, u.JoinPath(path).String(), strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.Do(req)
+	if err != nil {
+		return reply{}, err
+	}
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104: тело прочитано, ошибка закрытия тесту не важна
+	if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+		return reply{}, err
+	}
+	return reply{StatusCode: resp.StatusCode, Header: resp.Header}, nil
+}
+
+func TestRegisterAndHeartbeatOverMTLS(t *testing.T) {
+	e := newMTLSEnv(t)
+	reg := e.registerGateway(t, "gw-1")
+	if !bytes.Contains(reg.KeyPEM, []byte("PRIVATE KEY")) || reg.GatewayID == "" || reg.Name != "gw-1" {
+		t.Fatalf("регистрация: %+v", reg.GatewayID)
+	}
+	if !bytes.Equal(reg.CAPEM, e.ca.CertPEM()) {
+		t.Fatal("в ответе не корень внутреннего УЦ")
+	}
+	// Закрытый ключ шлюза сервер не видел: в реестре только серийный номер.
+	c := e.client(t, reg.CertPEM, reg.KeyPEM)
+	var stopped bool
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	gateway.RunHeartbeat(ctx, gateway.HeartbeatConfig{
+		Client: c, Server: e.internal, Version: "2.0.0", Logger: quiet(),
+		Sleep: func(context.Context, time.Duration) bool { stopped = true; return false },
+	})
+	if !stopped {
+		t.Fatal("цикл heartbeat не дошёл до паузы")
+	}
+	list, err := e.svc.List(context.Background())
+	if err != nil || len(list) != 1 || list[0].Version != "2.0.0" || list[0].LastSeenAt.IsZero() {
+		t.Fatalf("heartbeat не записан: %+v %v", list, err)
+	}
+	// Сразу второй heartbeat — 429 с Retry-After.
+	resp, err := post(t, c, e.internal, "/internal/v1/heartbeat", `{"version":"2.0.0"}`)
+	if err != nil || resp.StatusCode != http.StatusTooManyRequests || resp.Header.Get("Retry-After") == "" {
+		t.Fatalf("частый heartbeat: %v %v", resp, err)
+	}
+}
+
+func TestInternalAPIRejectsClients(t *testing.T) {
+	e := newMTLSEnv(t)
+	reg := e.registerGateway(t, "gw-1")
+
+	t.Run("без сертификата", func(t *testing.T) {
+		if _, err := post(t, e.client(t, nil, nil), e.internal, "/internal/v1/heartbeat", `{"version":"1"}`); err == nil {
+			t.Fatal("внутренний API принял клиента без сертификата")
+		}
+	})
+	t.Run("сертификат чужого УЦ", func(t *testing.T) {
+		foreign, err := aisecCrypto.NewCA("Foreign CA", time.Hour, time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		key, csr, err := aisecCrypto.NewClientCSR("x")
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Тот же CN, что у настоящего шлюза: имя не помогает без нашего УЦ.
+		cert, _, err := foreign.IssueClient(csr, reg.GatewayID, time.Hour, time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := post(t, e.client(t, cert, key), e.internal, "/internal/v1/heartbeat", `{"version":"1"}`); err == nil {
+			t.Fatal("внутренний API принял сертификат чужого УЦ")
+		}
+	})
+	t.Run("регистрация не на внутреннем порту", func(t *testing.T) {
+		resp, err := post(t, e.client(t, reg.CertPEM, reg.KeyPEM), e.internal, "/api/v1/gateways/register", `{}`)
+		if err != nil || resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("маршрут консоли на внутреннем порту: %v %v", resp, err)
+		}
+	})
+	t.Run("внутренний API не на порту консоли", func(t *testing.T) {
+		resp, err := post(t, e.client(t, nil, nil), e.console, "/internal/v1/heartbeat", `{"version":"1"}`)
+		if err != nil || resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("heartbeat на порту консоли: %v %v", resp, err)
+		}
+	})
+	t.Run("неверное тело", func(t *testing.T) {
+		c := e.client(t, reg.CertPEM, reg.KeyPEM)
+		for body, want := range map[string]int{
+			`{"version":"1","extra":1}`: http.StatusBadRequest,
+			`{"version":""}`:            http.StatusBadRequest,
+			`{"version":"1 2"}`:         http.StatusBadRequest,
+			`[]`:                        http.StatusBadRequest,
+			`{"version":"` + strings.Repeat("1", 5000) + `"}`:                  http.StatusRequestEntityTooLarge,
+			`{"version":"1","bundle_etag":"` + "é" + `"}`:                      http.StatusBadRequest,
+			`{"version":"1"} {"version":"2"}`:                                  http.StatusBadRequest,
+			`{"version":"1","bundle_etag":"` + strings.Repeat("a", 129) + `"}`: http.StatusBadRequest,
+		} {
+			resp, err := post(t, c, e.internal, "/internal/v1/heartbeat", body)
+			if err != nil || resp.StatusCode != want {
+				t.Errorf("%.40s: %v %v, ожидается %d", body, resp, err, want)
+			}
+		}
+	})
+	t.Run("после отзыва", func(t *testing.T) {
+		if _, err := e.svc.Revoke(context.Background(), "gw-1", audit.Actor{Type: audit.ActorCLI, ID: "uid:0"}); err != nil {
+			t.Fatal(err)
+		}
+		resp, err := post(t, e.client(t, reg.CertPEM, reg.KeyPEM), e.internal, "/internal/v1/heartbeat", `{"version":"1"}`)
+		if err != nil || resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("отозванный шлюз: %v %v", resp, err)
+		}
+	})
+}
+
+func TestRegisterRejected(t *testing.T) {
+	e := newMTLSEnv(t)
+	bad := gwregistry.TokenPrefix + strings.Repeat("A", gwregistry.TokenLen-len(gwregistry.TokenPrefix))
+	_, err := gateway.Register(context.Background(), e.client(t, nil, nil), e.console, bad)
+	if err == nil || !strings.Contains(err.Error(), "403") {
+		t.Fatalf("неверный токен: %v", err)
+	}
+	if strings.Contains(err.Error(), bad) {
+		t.Fatal("токен в тексте ошибки")
+	}
+	// Тело регистрации ограничено.
+	resp, err := post(t, e.client(t, nil, nil), e.console, "/api/v1/gateways/register",
+		`{"token":"x","csr":"`+strings.Repeat("a", 17<<10)+`"}`)
+	if err != nil || resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("большое тело регистрации: %v %v", resp, err)
+	}
+	resp, err = post(t, e.client(t, nil, nil), e.console, "/api/v1/gateways/register", `{"token":"x","csr":"не CSR"}`)
+	if err != nil || resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("неверный CSR: %v %v", resp, err)
+	}
+}
+
+// Регистрация без подключённого УЦ — 503.
+func TestRegisterUnavailable(t *testing.T) {
+	p, err := aisecCrypto.New(aisecCrypto.ProfileStandard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := p.Hasher()
+	if err != nil {
+		t.Fatal(err)
+	}
+	hd, _, err := api.New(api.Options{Logger: quiet(), Hasher: h})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/v1/gateways/register", strings.NewReader(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	hd.ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("код %d", rec.Code)
+	}
+}
+
+// Реакция цикла heartbeat на ответы сервера: интервал, 401, Retry-After, сбой сети.
+func TestHeartbeatBackoff(t *testing.T) {
+	var mu sync.Mutex
+	status, retry := http.StatusOK, ""
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		if retry != "" {
+			w.Header().Set("Retry-After", retry)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		if status == http.StatusOK {
+			_ = json.NewEncoder(w).Encode(map[string]any{"server_time": time.Now().Add(-time.Hour), "interval_seconds": 1}) //nolint:gosec // G104: ответ тестового сервера; обрыв увидит клиент
+		} else {
+			_, _ = io.WriteString(w, `{"detail":"нет"}`) //nolint:gosec // G104: ответ тестового сервера; обрыв увидит клиент
+		}
+	}))
+	defer srv.Close()
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var waits []time.Duration
+	steps := []func(){
+		func() { status, retry = http.StatusUnauthorized, "" },
+		func() { status, retry = http.StatusTooManyRequests, "120" },
+		func() { srv.Close() },
+	}
+	gateway.RunHeartbeat(context.Background(), gateway.HeartbeatConfig{
+		Client: srv.Client(), Server: u, Version: "1", Logger: quiet(),
+		Sleep: func(_ context.Context, d time.Duration) bool {
+			waits = append(waits, d)
+			if len(waits) > len(steps) {
+				return false
+			}
+			mu.Lock()
+			steps[len(waits)-1]()
+			mu.Unlock()
+			return true
+		},
+	})
+	// 200 с интервалом 1 с — не чаще 10 с; 401 — пауза 5 минут; 429 —
+	// не меньше Retry-After; сбой сети — растущая пауза.
+	want := []time.Duration{10 * time.Second, 5 * time.Minute, 120 * time.Second, 40 * time.Second}
+	if len(waits) != len(want) {
+		t.Fatalf("паузы %v", waits)
+	}
+	for i := range want {
+		if waits[i] != want[i] {
+			t.Fatalf("пауза %d: %v, ожидается %v (все: %v)", i, waits[i], want[i], waits)
+		}
+	}
+}
+
+func TestControlTransportErrors(t *testing.T) {
+	p, err := aisecCrypto.New(aisecCrypto.ProfileStandard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tp, err := p.TLS()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gateway.ControlTransport(tp, nil, nil, nil); err == nil {
+		t.Fatal("транспорт без корня")
+	}
+	ca, err := aisecCrypto.NewCA("CA", time.Hour, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gateway.ControlTransport(tp, ca.CertPEM(), []byte("x"), []byte("y")); err == nil {
+		t.Fatal("транспорт с неверным сертификатом")
+	}
+	if !gateway.ValidVersion("2.0.0-rc.1+abc") || gateway.ValidVersion("") || gateway.ValidVersion("1 0") {
+		t.Fatal("ValidVersion")
+	}
+}

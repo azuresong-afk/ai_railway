@@ -30,6 +30,15 @@ type Gateway struct {
 	IntegrityAction string
 	// IntegrityInterval — период проверки целостности (ОЦЛ.2).
 	IntegrityInterval time.Duration
+	// Server — адрес внутреннего API сервера управления (mTLS, ИАФ.10);
+	// пусто — режим «без сервера» (только файл конфигурации).
+	Server *url.URL
+	// ServerCAFile — корень, которому шлюз доверяет при обращении к серверу.
+	ServerCAFile string
+	// ClientCertFile и ClientKeyFile — сертификат шлюза от внутреннего УЦ
+	// (aisec-gateway register) и его закрытый ключ (0600).
+	ClientCertFile string
+	ClientKeyFile  string
 }
 
 // Границы и значения по умолчанию.
@@ -67,6 +76,10 @@ func LoadGateway(args []string, getenv func(string) string, errOut io.Writer) (*
 	manifest := fs.String("manifest", "", "манифест целостности; по умолчанию ../aisec-manifest.json от каталога бинарника (AISEC_GATEWAY_MANIFEST)")
 	action := fs.String("integrity-action", IntegrityAlert, "реакция на нарушение целостности: alert или stop (AISEC_GATEWAY_INTEGRITY_ACTION)")
 	interval := fs.String("integrity-interval", DefaultIntegrityInterval.String(), "период проверки целостности, не меньше 1m (AISEC_GATEWAY_INTEGRITY_INTERVAL)")
+	server := fs.String("server", "", "адрес внутреннего API сервера управления, https://хост:8445; пусто — без сервера (AISEC_GATEWAY_SERVER)")
+	serverCA := fs.String("server-ca", "", "корневой сертификат для проверки сервера, PEM (AISEC_GATEWAY_SERVER_CA)")
+	clientCert := fs.String("client-cert", "", "сертификат шлюза от внутреннего УЦ, PEM (AISEC_GATEWAY_CLIENT_CERT)")
+	clientKey := fs.String("client-key", "", "закрытый ключ сертификата шлюза, права 0600 (AISEC_GATEWAY_CLIENT_KEY)")
 	if err := fs.Parse(args); err != nil {
 		return nil, err
 	}
@@ -78,6 +91,7 @@ func LoadGateway(args []string, getenv func(string) string, errOut io.Writer) (*
 	for name, dst := range map[string]*string{
 		"config": configFile, "listen": listen, "tls-cert": cert, "tls-key": key, "max-body-bytes": maxBody,
 		"manifest": manifest, "integrity-action": action, "integrity-interval": interval,
+		"server": server, "server-ca": serverCA, "client-cert": clientCert, "client-key": clientKey,
 	} {
 		if set[name] {
 			continue // флаг важнее окружения
@@ -88,7 +102,8 @@ func LoadGateway(args []string, getenv func(string) string, errOut io.Writer) (*
 	}
 
 	cfg := &Gateway{ConfigFile: *configFile, Listen: *listen, TLSCertFile: *cert, TLSKeyFile: *key,
-		Manifest: *manifest, IntegrityAction: *action}
+		Manifest: *manifest, IntegrityAction: *action,
+		ServerCAFile: *serverCA, ClientCertFile: *clientCert, ClientKeyFile: *clientKey}
 	var errs []error
 	if cfg.IntegrityAction != IntegrityAlert && cfg.IntegrityAction != IntegrityStop {
 		errs = append(errs, fmt.Errorf("integrity-action: ожидается %s или %s", IntegrityAlert, IntegrityStop))
@@ -111,6 +126,16 @@ func LoadGateway(args []string, getenv func(string) string, errOut io.Writer) (*
 		errs = append(errs, fmt.Errorf("max-body-bytes: число от %d до %d", MinBodyBytes, MaxBodyBytesLimit))
 	}
 	cfg.MaxBodyBytes = n
+	if *server != "" {
+		if cfg.Server, err = ParseServerURL(*server); err != nil {
+			errs = append(errs, err)
+		}
+		for name, v := range map[string]string{"server-ca": cfg.ServerCAFile, "client-cert": cfg.ClientCertFile, "client-key": cfg.ClientKeyFile} {
+			if v == "" {
+				errs = append(errs, fmt.Errorf("%s: обязателен вместе с server", name))
+			}
+		}
+	}
 	if err := errors.Join(errs...); err != nil {
 		return nil, fmt.Errorf("конфигурация шлюза: %w", err)
 	}
@@ -120,6 +145,26 @@ func LoadGateway(args []string, getenv func(string) string, errOut io.Writer) (*
 // envName — имя переменной окружения для флага: max-body-bytes → AISEC_GATEWAY_MAX_BODY_BYTES.
 func envName(flagName string) string {
 	return envPrefix + strings.ToUpper(strings.ReplaceAll(flagName, "-", "_"))
+}
+
+// ParseServerURL проверяет адрес сервера управления для шлюза: только https,
+// хост, без учётных данных, пути, параметров и фрагмента.
+func ParseServerURL(s string) (*url.URL, error) {
+	u, err := url.Parse(s)
+	switch {
+	case err != nil:
+		return nil, errors.New("server: не разобран адрес")
+	case u.Scheme != "https":
+		return nil, errors.New("server: только https")
+	case u.Host == "" || u.Hostname() == "":
+		return nil, errors.New("server: не указан хост")
+	case u.User != nil:
+		return nil, errors.New("server: учётные данные в адресе запрещены")
+	case (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" || u.Opaque != "":
+		return nil, errors.New("server: только схема, хост и порт, без пути и параметров")
+	}
+	u.Path = ""
+	return u, nil
 }
 
 // ParseUpstreamURL проверяет базовый адрес провайдера: только https, без
