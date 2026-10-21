@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/netip"
 	"runtime/debug"
+	"sync/atomic"
 	"time"
 
 	"github.com/azuresong-afk/ai_railway/internal/apps"
@@ -95,7 +96,8 @@ func New(o Options) (http.Handler, *Router, error) {
 		o.Authorizer = DenyAll{}
 		if o.Auth != nil {
 			o.Authorizer = BearerAuthorizer{Auth: o.Auth, Logger: o.Logger,
-				Next: SessionAuthorizer{Auth: o.Auth, Logger: o.Logger}}
+				Next:    SessionAuthorizer{Auth: o.Auth, Logger: o.Logger},
+				Limiter: auth.NewFailureLimiter(auth.LimiterConfig{}), Malformed: new(atomic.Uint64)}
 		}
 	}
 	if o.OnDenied == nil && o.Auth != nil {

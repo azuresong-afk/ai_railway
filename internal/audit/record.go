@@ -230,6 +230,21 @@ func CanonicalDetails(v any) (json.RawMessage, error) {
 	return CanonicalJSON(raw)
 }
 
+// withDetail добавляет поле key в канонические подробности raw (значение
+// key, заданное вызывающим, заменяется).
+func withDetail(raw json.RawMessage, key string, v any) (json.RawMessage, error) {
+	obj, err := decodeObject(raw)
+	if err != nil {
+		return nil, err
+	}
+	obj[key] = v
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return nil, errors.New("подробности: сериализация")
+	}
+	return CanonicalJSON(out)
+}
+
 // CanonicalJSON приводит JSON-объект к канонической форме и проверяет
 // лимиты и отсутствие ключей с секретами. Повторное применение не меняет
 // результат.

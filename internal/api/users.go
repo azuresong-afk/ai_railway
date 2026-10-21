@@ -248,7 +248,18 @@ func (d Deps) revokeSessions(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	n, err := d.Auth.RevokeSessions(r.Context(), c, id)
+	// Токены API отзываются вместе с сессиями, если не отказаться явно
+	// (В8 ревью 2.r2): завершение сессий — реакция на компрометацию.
+	revokeTokens := true
+	switch r.URL.Query().Get("revoke_api_tokens") {
+	case "", "true":
+	case "false":
+		revokeTokens = false
+	default:
+		WriteProblem(w, Invalid("Проверьте параметры запроса.", FieldError{"revoke_api_tokens", "Допустимо true или false."}))
+		return
+	}
+	n, err := d.Auth.RevokeSessions(r.Context(), c, id, revokeTokens)
 	if err != nil {
 		WriteProblem(w, authProblem(d.Logger, err))
 		return

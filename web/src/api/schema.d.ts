@@ -1264,7 +1264,8 @@ export interface paths {
         /**
          * Сбросить пароль пользователя на временный
          * @description Право `users.manage` (ИАФ.3). Новый временный пароль показывается один раз,
-         *     блокировка снимается, сессии пользователя завершаются. Свой пароль так не
+         *     блокировка снимается, сессии пользователя завершаются, его токены API отзываются
+         *     (`revoke_reason` = `password_reset`, В8 ревью 2.r2). Свой пароль так не
          *     сбрасывается (422). Пишет `user.password_reset`.
          */
         post: {
@@ -1401,11 +1402,14 @@ export interface paths {
         post?: never;
         /**
          * Принудительно завершить все сессии пользователя
-         * @description Право `sessions.manage` (УПД.4). Пишет `auth.sessions_revoked`.
+         * @description Право `sessions.manage` (УПД.4). Пишет `auth.sessions_revoked`. По умолчанию в той же транзакции отзываются и токены API пользователя (`revoke_reason` = `sessions_revoked`, их число — в подробностях записи аудита); `revoke_api_tokens=false` оставляет токены.
          */
         delete: {
             parameters: {
-                query?: never;
+                query?: {
+                    /** @description Отозвать токены API пользователя (по умолчанию — да). */
+                    revoke_api_tokens?: boolean;
+                };
                 header: {
                     /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
                     "X-CSRF-Token": components["parameters"]["CSRFToken"];
@@ -1516,7 +1520,8 @@ export interface paths {
          * @description Право `roles.manage` (УПД.1–2). Все сессии пользователя завершаются: новые права
          *     действуют со следующего входа. Свою роль сменить нельзя (422). Права текущей и
          *     новой роли пользователя должны входить в права назначающего (403). Снять роль
-         *     `security_admin` с последнего активного администратора безопасности нельзя (409).
+         *     `security_admin` с последнего активного администратора безопасности нельзя (409);
+         *     назначение уже назначенной роли — тоже 409 (ничего не меняется).
          *     Пишет `user.role_changed`; отказ по правам — ту же запись с результатом `denied`.
          */
         put: {
@@ -1876,6 +1881,10 @@ export interface paths {
          *     нет у пользователя, — 403. Срок обязателен: 1–365 дней, по умолчанию 90. Не больше
          *     20 действующих токенов на пользователя (422). Сам токен показывается один раз, в
          *     журналы не попадает. Без `Idempotency-Key`: сохранённый ответ содержал бы токен.
+         *     Нужна повторная проверка (В8 ревью 2.r2): текущий пароль (`password`) или код
+         *     TOTP (`code`), ровно одно из двух, иначе 400. Неверное значение — 403 с кодом
+         *     `reauthentication_failed` и неудачная попытка ИАФ.4 (общий счётчик блокировки;
+         *     запись `api_token.create` с итогом failure или `auth.mfa_failed`).
          *     Пишет `api_token.create`.
          */
         post: {
@@ -3710,7 +3719,7 @@ export interface components {
             /** Format: date-time */
             revoked_at?: string;
             /** @enum {string} */
-            revoke_reason?: "owner" | "admin";
+            revoke_reason?: "owner" | "admin" | "password_reset" | "sessions_revoked";
         };
         APITokenPage: components["schemas"]["PageInfo"] & {
             items: components["schemas"]["APIToken"][];
@@ -3721,6 +3730,13 @@ export interface components {
             expires_in_days: number;
             /** @description Разрешения без признака `security` и не на токены */
             permissions: components["schemas"]["Grant"][];
+            /**
+             * Format: password
+             * @description Текущий пароль (повторная проверка, ровно одно из password и code)
+             */
+            password?: string;
+            /** @description Код из приложения-аутентификатора, если второй фактор подключён */
+            code?: string;
         };
         CreatedAPIToken: {
             api_token: components["schemas"]["APIToken"];
@@ -4077,7 +4093,7 @@ export interface components {
             status: number;
             detail: string;
             /** @enum {string} */
-            code: "invalid_request" | "unauthorized" | "forbidden" | "not_found" | "method_not_allowed" | "conflict" | "payload_too_large" | "unsupported_media_type" | "unprocessable" | "rate_limited" | "internal_error" | "service_unavailable";
+            code: "invalid_request" | "unauthorized" | "forbidden" | "not_found" | "method_not_allowed" | "conflict" | "payload_too_large" | "unsupported_media_type" | "unprocessable" | "rate_limited" | "internal_error" | "service_unavailable" | "reauthentication_failed";
             errors?: {
                 field: string;
                 detail: string;

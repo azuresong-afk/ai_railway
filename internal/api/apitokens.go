@@ -122,6 +122,8 @@ type createAPITokenRequest struct {
 	Name          string      `json:"name"`
 	ExpiresInDays int         `json:"expires_in_days"`
 	Permissions   []GrantView `json:"permissions"`
+	Password      string      `json:"password"`
+	Code          string      `json:"code"`
 }
 
 // CreatedAPIToken — ответ на выпуск: токен показывается один раз (ИАФ.9).
@@ -141,7 +143,7 @@ func (d Deps) createAPIToken(w http.ResponseWriter, r *http.Request) {
 		WriteProblem(w, p)
 		return
 	}
-	in := auth.APITokenInput{Name: req.Name, ExpiresInDays: req.ExpiresInDays}
+	in := auth.APITokenInput{Name: req.Name, ExpiresInDays: req.ExpiresInDays, Password: req.Password, Code: req.Code}
 	for _, g := range req.Permissions {
 		in.Permissions = append(in.Permissions, auth.GrantInput{Permission: g.Permission, Scope: g.Scope})
 	}

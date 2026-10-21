@@ -191,9 +191,14 @@ func NewPGCheckpoints(db DB, p crypto.Provider, v crypto.Verifier) (*PGCheckpoin
 
 // Latest проверяет всю последовательность точек и возвращает последнюю.
 func (c *PGCheckpoints) Latest(ctx context.Context) (Anchor, bool, error) {
+	return c.LatestIn(ctx, c.db)
+}
+
+// LatestIn — Latest в транзакции q (запись в пустой журнал, Н8 ревью 2.r1).
+func (c *PGCheckpoints) LatestIn(ctx context.Context, q querier) (Anchor, bool, error) {
 	ctx, cancel := withTimeout(ctx, batchTimeout)
 	defer cancel()
-	cps, err := loadCheckpoints(ctx, c.db)
+	cps, err := loadCheckpoints(ctx, q)
 	if err != nil {
 		return Anchor{}, false, err
 	}

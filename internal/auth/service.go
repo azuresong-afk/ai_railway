@@ -270,12 +270,16 @@ func (s *Service) loginFailed(ctx context.Context, in LoginInput, login string, 
 		}
 		return ErrInvalidCredentials
 	}
-	_, _, err := s.store.RecordFailure(ctx, u.ID, now, pol.LockoutThreshold, s.lockUntil(pol, now),
+	until, err := s.lockUntil(ctx, u, pol, now)
+	if err != nil {
+		return err
+	}
+	_, _, err = s.store.RecordFailure(ctx, u.ID, now, pol.LockoutThreshold, until,
 		func(attempts int, lockedNow bool) []audit.Entry {
 			recs := []audit.Entry{failed(map[string]any{"reason": reason, "attempts": attempts})}
 			if lockedNow {
 				recs = append(recs, s.entry(actor, in.SourceIP, "auth.locked", obj, audit.ResultSuccess,
-					map[string]any{"threshold": pol.LockoutThreshold, "lockout_minutes": pol.LockoutMinutes}))
+					map[string]any{"threshold": pol.LockoutThreshold, "lockout_minutes": lockMinutes(until, now)}))
 			}
 			return recs
 		})
@@ -285,13 +289,38 @@ func (s *Service) loginFailed(ctx context.Context, in LoginInput, login string, 
 	return ErrInvalidCredentials
 }
 
-// lockUntil — конец блокировки, если она наступит сейчас; нулевое — до
-// разблокировки администратором.
-func (s *Service) lockUntil(pol Policy, now time.Time) time.Time {
-	if pol.LockoutMinutes == 0 {
-		return time.Time{}
+// lastAdminLockout — блокировка администратора безопасности, которого
+// некому разблокировать, при бессрочной блокировке в настройках (В7 ревью 2.r2).
+const lastAdminLockout = 15 * time.Minute
+
+// lockUntil — конец блокировки u, если она наступит сейчас; нулевое — до
+// разблокировки администратором. Администратора безопасности, кроме
+// которого нет другого активного и не заблокированного, бессрочно не
+// блокируем: снять блокировку было бы некому, и подбор пароля по известному
+// логину закрыл бы консоль. Ему — lastAdminLockout.
+func (s *Service) lockUntil(ctx context.Context, u User, pol Policy, now time.Time) (time.Time, error) {
+	if pol.LockoutMinutes > 0 {
+		return now.Add(time.Duration(pol.LockoutMinutes) * time.Minute), nil
 	}
-	return now.Add(time.Duration(pol.LockoutMinutes) * time.Minute)
+	if u.Role != RoleSecurityAdmin {
+		return time.Time{}, nil
+	}
+	n, err := s.store.UnlockedSecurityAdmins(ctx, s.orgID, u.ID, now)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if n == 0 {
+		return now.Add(lastAdminLockout), nil
+	}
+	return time.Time{}, nil
+}
+
+// lockMinutes — длительность блокировки для аудита; 0 — бессрочная.
+func lockMinutes(until, now time.Time) int {
+	if until.IsZero() {
+		return 0
+	}
+	return int(until.Sub(now) / time.Minute)
 }
 
 func (s *Service) openSession(ctx context.Context, u User, state SessionState, in LoginInput, pol Policy, check *LoginCheck) (LoginResult, error) {
@@ -360,6 +389,19 @@ func (s *Service) Authenticate(ctx context.Context, token string, ip netip.Addr)
 	// Сессия до второго фактора живёт недолго: код вводят сразу после пароля.
 	if ttl := mfaStateTTL(sess.State); ttl > 0 && now.Sub(sess.CreatedAt) >= ttl {
 		return Caller{}, s.expire(ctx, u, sess, RevokeExpired, ip, now)
+	}
+	// Второй фактор стал обязателен полной сессии, которая его не проходила
+	// (роли добавили права на изменение, включён mfa_required_all): права
+	// роли без фактора не действуют, сессия завершается, вход — заново
+	// через второй фактор (В6 ревью 2.r2, ADR-0013 п. 6).
+	if sess.State == SessionActive && !sess.MFAVerified {
+		req, err := s.mfaRequired(ctx, u, pol)
+		if err != nil {
+			return Caller{}, err
+		}
+		if req {
+			return Caller{}, s.expire(ctx, u, sess, RevokeMFARequired, ip, now)
+		}
 	}
 	if exp := u.PasswordExpires(pol); sess.State == SessionActive && !exp.IsZero() && !now.Before(exp) {
 		sess.State = SessionPasswordChange
@@ -442,13 +484,23 @@ func (s *Service) verify(ctx context.Context, password, hash string) (bool, erro
 }
 
 func (s *Service) wrongCurrentPassword(ctx context.Context, c Caller, pol Policy, now time.Time) error {
-	attempts, _, err := s.store.RecordFailure(ctx, c.User.ID, now, pol.LockoutThreshold, s.lockUntil(pol, now),
+	return s.wrongPasswordFor(ctx, c, pol, now, "auth.password_changed")
+}
+
+// wrongPasswordFor — неверный текущий пароль перед действием action: запись
+// неудачи action, счётчик ИАФ.4, на пороге — блокировка и завершение сессий.
+func (s *Service) wrongPasswordFor(ctx context.Context, c Caller, pol Policy, now time.Time, action string) error {
+	until, err := s.lockUntil(ctx, c.User, pol, now)
+	if err != nil {
+		return err
+	}
+	attempts, _, err := s.store.RecordFailure(ctx, c.User.ID, now, pol.LockoutThreshold, until,
 		func(attempts int, lockedNow bool) []audit.Entry {
-			recs := []audit.Entry{s.entry(c.actor(), c.SourceIP, "auth.password_changed", userObject(c.User.ID),
+			recs := []audit.Entry{s.entry(c.actor(), c.SourceIP, action, userObject(c.User.ID),
 				audit.ResultFailure, map[string]any{"reason": reasonWrongPassword, "attempts": attempts})}
 			if lockedNow {
 				recs = append(recs, s.entry(c.actor(), c.SourceIP, "auth.locked", userObject(c.User.ID), audit.ResultSuccess,
-					map[string]any{"threshold": pol.LockoutThreshold, "lockout_minutes": pol.LockoutMinutes}))
+					map[string]any{"threshold": pol.LockoutThreshold, "lockout_minutes": lockMinutes(until, now)}))
 			}
 			return recs
 		})
@@ -459,7 +511,7 @@ func (s *Service) wrongCurrentPassword(ctx context.Context, c Caller, pol Policy
 	if attempts >= pol.LockoutThreshold {
 		rec := s.entry(c.actor(), c.SourceIP, "auth.sessions_revoked", userObject(c.User.ID), audit.ResultSuccess,
 			map[string]any{"reason": RevokeLocked})
-		if _, err := s.store.RevokeUserSessions(ctx, c.User.ID, RevokeLocked, now, rec); err != nil {
+		if _, err := s.store.RevokeUserSessions(ctx, c.User.ID, RevokeLocked, now, nil, rec); err != nil {
 			return err
 		}
 	}
@@ -490,4 +542,59 @@ func (s *Service) checkHistory(ctx context.Context, u User, next string, pol Pol
 		}
 	}
 	return nil
+}
+
+// ErrReauthentication — повторная проверка перед действием не пройдена:
+// неверный пароль или код (неудача ИАФ.4 уже учтена).
+var ErrReauthentication = errors.New("повторная проверка не пройдена")
+
+// reauthenticate — повторная проверка владельца полной сессии перед
+// действием action (В8 ревью 2.r2): текущий пароль или код TOTP, ровно
+// одно из двух. Неверное значение — неудачная попытка ИАФ.4 с общим
+// счётчиком (на пороге — блокировка и завершение сессий), ответ —
+// ErrReauthentication.
+func (s *Service) reauthenticate(ctx context.Context, c Caller, password, code, action string) error {
+	if (password == "") == (code == "") {
+		return &InputError{"password", "Введите текущий пароль или код из приложения-аутентификатора."}
+	}
+	if c.Session.State != SessionActive {
+		return ErrSessionState
+	}
+	pol, err := s.store.Policy(ctx, s.orgID)
+	if err != nil {
+		return err
+	}
+	now := s.clock()
+	if c.User.Locked(now) {
+		return ErrLocked
+	}
+	if password != "" {
+		ok, err := s.verify(ctx, password, c.User.PasswordHash)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			if err := s.wrongPasswordFor(ctx, c, pol, now, action); !errors.Is(err, ErrWrongPassword) {
+				return err
+			}
+			return ErrReauthentication
+		}
+		return nil
+	}
+	if s.box == nil {
+		return ErrMFAUnavailable
+	}
+	st := MFAStep{Kind: MFAStepReauth, Now: now}
+	st.Check = s.totpCheck(code, now)
+	if err := s.prepare(ctx, &st, c, pol, "reauth"); err != nil {
+		return err
+	}
+	err = s.store.MFAStep(ctx, st, audit.Entry{})
+	switch {
+	case errors.Is(err, ErrInvalidCode):
+		return ErrReauthentication
+	case errors.Is(err, ErrMFANotEnabled):
+		return &InputError{"code", "Второй фактор не подключён: введите текущий пароль."}
+	}
+	return err
 }

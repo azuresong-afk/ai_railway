@@ -5,7 +5,9 @@ import (
 	"log/slog"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
+	"time"
 
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 )
@@ -142,6 +144,11 @@ func (rt *Router) wrap(r Route) http.Handler {
 		case Unavailable:
 			WriteProblem(w, NewProblem(http.StatusServiceUnavailable, CodeUnavailable,
 				"Не удалось проверить права доступа: повторите запрос позже."))
+		case RateLimited:
+			secs := max(int((p.RetryAfter+time.Second-1)/time.Second), 1)
+			w.Header().Set("Retry-After", strconv.Itoa(secs))
+			WriteProblem(w, NewProblem(http.StatusTooManyRequests, CodeRateLimited,
+				"Слишком много неудачных попыток входа по токену API с вашего адреса. Повторите через "+strconv.Itoa(secs)+" с."))
 		default:
 			rt.denied(req, Denial{Method: r.Method, Path: r.Path, Permission: r.Permission, Decision: Unauthenticated})
 			WriteProblem(w, errUnauthorized())

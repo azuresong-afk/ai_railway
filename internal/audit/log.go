@@ -126,6 +126,18 @@ func (l *Log) recordTx(ctx context.Context, tx pgx.Tx, e Entry) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("журнал аудита: %w", err)
 	}
+	if e.Actor.Type == ActorCLI {
+		// «Кто» для aisec-cli — пользователь ОС и логин СУБД, под которым
+		// выполнено действие (Н5 ревью 2.r1). Логин берётся из самой
+		// транзакции: вызывающий его не задаёт.
+		var dbUser string
+		if err := tx.QueryRow(ctx, "SELECT session_user::text").Scan(&dbUser); err != nil {
+			return false, fmt.Errorf("журнал аудита: логин СУБД: %w", err)
+		}
+		if details, err = withDetail(details, "db_user", dbUser); err != nil {
+			return false, fmt.Errorf("журнал аудита: %w", err)
+		}
+	}
 	org := e.OrgID
 	if org == "" {
 		org = DefaultOrgID
@@ -188,10 +200,10 @@ func (l *Log) recordTx(ctx context.Context, tx pgx.Tx, e Entry) (bool, error) {
 }
 
 // head — последняя запись цепочки; пустой журнал продолжает контрольную
-// точку архивации, а без неё начинается с нулевого хеша.
-func (l *Log) head(ctx context.Context, q interface {
-	QueryRow(context.Context, string, ...any) pgx.Row
-}) (Anchor, error) {
+// точку архивации, а без неё начинается с нулевого хеша. Точка читается в
+// той же транзакции tx: второе соединение при удержании блокировки цепочки
+// не нужно (Н8 ревью 2.r1).
+func (l *Log) head(ctx context.Context, q pgx.Tx) (Anchor, error) {
 	var a Anchor
 	err := q.QueryRow(ctx, "SELECT seq, hash FROM audit_log ORDER BY seq DESC LIMIT 1").Scan(&a.Seq, &a.Hash)
 	if err == nil {
@@ -200,13 +212,31 @@ func (l *Log) head(ctx context.Context, q interface {
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return Anchor{}, fmt.Errorf("журнал аудита: последняя запись: %w", err)
 	}
-	return l.anchor(ctx)
+	return l.anchorIn(ctx, q)
 }
 
 // anchor — начало хранимой части цепочки.
-func (l *Log) anchor(ctx context.Context) (Anchor, error) {
+func (l *Log) anchor(ctx context.Context) (Anchor, error) { return l.anchorIn(ctx, nil) }
+
+// txCheckpoints — источник контрольных точек, который читает их в
+// переданной транзакции.
+type txCheckpoints interface {
+	LatestIn(ctx context.Context, q querier) (Anchor, bool, error)
+}
+
+// anchorIn — anchor в транзакции q (nil — отдельным запросом).
+func (l *Log) anchorIn(ctx context.Context, q querier) (Anchor, error) {
 	if l.checkpoints != nil {
-		a, ok, err := l.checkpoints.Latest(ctx)
+		var (
+			a   Anchor
+			ok  bool
+			err error
+		)
+		if tc, in := l.checkpoints.(txCheckpoints); in && q != nil {
+			a, ok, err = tc.LatestIn(ctx, q)
+		} else {
+			a, ok, err = l.checkpoints.Latest(ctx)
+		}
 		if err != nil {
 			return Anchor{}, fmt.Errorf("журнал аудита: контрольная точка: %w", err)
 		}
