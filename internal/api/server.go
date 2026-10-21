@@ -24,6 +24,8 @@ type Options struct {
 	Authorizer Authorizer
 	// Auth — вход, сессии и учётные записи консоли (задача 2.7).
 	Auth *auth.Service
+	// Integrity — контроль целостности (задача 2.17); nil — эндпоинты отвечают 503.
+	Integrity IntegrityService
 	// OnDenied — вызывается при каждом отказе в доступе (УПД.6).
 	OnDenied func(r *http.Request, permission string, d Decision)
 	// Ready проверяет готовность (например, связь с PostgreSQL); nil — всегда готов.
@@ -45,6 +47,8 @@ type Deps struct {
 	Ready   func(ctx context.Context) error
 	// Auth — nil, если вход не подключён: его эндпоинты отвечают 503.
 	Auth *auth.Service
+	// Integrity — nil, если контроль целостности не подключён: его эндпоинты отвечают 503.
+	Integrity IntegrityService
 }
 
 // New собирает обработчик сервера: восстановление после паники, заголовки
@@ -70,7 +74,7 @@ func New(o Options) (http.Handler, *Router, error) {
 		logger: o.Logger, fallback: o.Fallback, onDenied: o.OnDenied,
 	}
 	rt.mux.HandleFunc("/", rt.notFound)
-	deps := Deps{Logger: o.Logger, Version: o.Version, Ready: o.Ready, Auth: o.Auth}
+	deps := Deps{Logger: o.Logger, Version: o.Version, Ready: o.Ready, Auth: o.Auth, Integrity: o.Integrity}
 	if err := rt.Add(append(Routes(deps), o.Extra...)...); err != nil {
 		return nil, nil, err
 	}

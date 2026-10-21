@@ -36,7 +36,9 @@ const usage = `aisec-cli — служебные операции AISec.
                                 выгрузить журнал аудита в файл
   audit verify-archive -keys КАТАЛОГ ФАЙЛ
                                 проверить файл архива без БД; 3 — архив недействителен
-  version                       версия
+  verify [-manifest ФАЙЛ]       проверить целостность установки по подписанному манифесту без сервера;
+                                с AISEC_DATABASE_URL итог пишется в журнал; 3 — целостность нарушена
+  version                     версия
 `
 
 func main() {
@@ -91,6 +93,18 @@ func run(args []string, stdout, stderr io.Writer, now time.Time) int {
 			}
 			say(stderr, "aisec-cli audit: %v\n", err)
 			if errors.Is(err, errChainBroken) || errors.Is(err, audit.ErrArchiveInvalid) {
+				return 3
+			}
+			return 1
+		}
+		return 0
+	case "verify":
+		if err := verifyCmd(args[1:], os.Getenv("AISEC_DATABASE_URL"), stdout, stderr); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return 0
+			}
+			say(stderr, "aisec-cli verify: %v\n", err)
+			if errors.Is(err, errIntegrityViolated) {
 				return 3
 			}
 			return 1

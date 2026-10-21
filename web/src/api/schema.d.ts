@@ -243,6 +243,105 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/system/integrity": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Итоги контроля целостности по компонентам
+         * @description Право `system.read`. Последняя проверка каждого компонента, записанная
+         *     в БД: сервер — при запуске, раз в `-integrity-interval` и по команде;
+         *     `aisec-cli verify` — при запуске с `AISEC_DATABASE_URL` (ОЦЛ.2, ОЦЛ.5).
+         *     Шлюз пишет итоги в технический журнал.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Итоги проверок */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["IntegrityList"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/system/integrity/verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Проверить целостность сервера по команде администратора
+         * @description Право `integrity.verify` (ОЦЛ.2). До модели ролей (задача 2.9) права нет
+         *     ни у одной роли — эндпоинт отвечает 403. Сверяет исполняемый файл сервера
+         *     и встроенную статику веб-консоли с подписанным манифестом; итог пишется в
+         *     `integrity_checks` и журнал аудита (`integrity.check`) от имени
+         *     пользователя. Нарушение — `ok: false` с ответом 200; при
+         *     `-integrity-action stop` сервер после ответа останавливается.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Итог проверки */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["IntegrityCheck"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/setup": {
         parameters: {
             query?: never;
@@ -1295,6 +1394,33 @@ export interface components {
         };
         SystemInfo: {
             version: string;
+        };
+        IntegrityList: {
+            items: components["schemas"]["IntegrityCheck"][];
+        };
+        /** @description Итог проверки целостности компонента (ОЦЛ.2, ОЦЛ.5, DM-42) */
+        IntegrityCheck: {
+            /** @description server, gateway или cli */
+            component: string;
+            /** @enum {string} */
+            trigger: "startup" | "periodic" | "manual";
+            /** Format: date-time */
+            checked_at: string;
+            ok: boolean;
+            /** @enum {string} */
+            reason: "ok" | "manifest_missing" | "manifest_invalid" | "signature_invalid" | "files_mismatch";
+            /** @description Версия продукта из манифеста; пусто, если манифест не принят */
+            manifest_version: string;
+            /** @description Сборка с тестовым ключом манифеста — не для поставки */
+            test_signed: boolean;
+            checked_files: number;
+            failures: {
+                path: string;
+                /** @enum {string} */
+                problem: "modified" | "size" | "missing" | "extra" | "not_regular" | "unreadable" | "no_entry" | "changed";
+            }[];
+            /** @description Сколько нарушений не вошло в failures */
+            omitted: number;
         };
         SetupStatus: {
             setup_required: boolean;

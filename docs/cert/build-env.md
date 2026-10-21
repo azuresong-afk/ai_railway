@@ -43,7 +43,12 @@
 
 `make lint` сверяет версию `bin/golangci-lint` с `GOLANGCI_LINT_VERSION`. Пока не все проверки этапа 0 реализованы, `make check` печатает предупреждение со списком недостающих (`PENDING_CHECKS`).
 
-Сборка: `go build -trimpath -ldflags '-s -w -buildid= …'`, результат в `build/bin/`. Инструменты разработки ставятся `make tools` в `bin/` по версиям из переменных в начале `Makefile`.
+Сборка: `go build -trimpath -tags '$(BUILD_TAGS)' -ldflags '-s -w -buildid= …'`, результат в `build/bin/`.
+
+Манифест целостности (ОЦЛ.1, ADR-0012) создаёт `make manifest` (входит в `make check`): `build/aisec-manifest.json` и подпись `.sig` по бинарникам поставки, `web/dist` и `migrations/`, затем проверка готового манифеста через `build/bin/aisec-cli verify`.
+- По умолчанию манифест подписывается тестовым ключом `testdata/integrity/manifest-test.signkey` («не для поставки»), а бинарники встраивают его открытую пару.
+- Поставочная сборка — `make manifest RELEASE=1 MANIFEST_KEY=<ключ производителя вне репозитория>`. `RELEASE=1` собирает с тегом `aisec_release`, и бинарники встраивают открытый ключ производителя `internal/integrity/keys/manifest.pub`.
+- Без `MANIFEST_KEY` поставочный манифест не создаётся, а без файла открытого ключа поставочная сборка не компилируется. Инструменты разработки ставятся `make tools` в `bin/` по версиям из переменных в начале `Makefile`.
 
 ## CI
 GitHub Actions — тонкая обёртка над `make` (ADR-0002):

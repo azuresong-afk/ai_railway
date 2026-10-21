@@ -3,6 +3,9 @@ package main
 import (
 	"io"
 	"testing"
+	"time"
+
+	"github.com/azuresong-afk/ai_railway/internal/integrity"
 )
 
 func env(m map[string]string) func(string) string { return func(k string) string { return m[k] } }
@@ -24,6 +27,32 @@ func TestLoadConfigDefaultsAndEnv(t *testing.T) {
 		"AISEC_SERVER_AUDIT_SIGNING_PUB": "/keys/audit-signing.pub"})
 	if cfg, err = loadConfig(nil, e, io.Discard); err != nil || cfg.AuditSigningPub != "/keys/audit-signing.pub" {
 		t.Fatalf("ключ аудита из окружения: %+v %v", cfg, err)
+	}
+}
+
+func TestLoadConfigIntegrity(t *testing.T) {
+	base := map[string]string{"AISEC_SERVER_TLS_CERT": "c", "AISEC_SERVER_TLS_KEY": "k", "AISEC_SERVER_KEYS_DIR": "/keys", "AISEC_DATABASE_URL": "postgres://u@h/d"}
+	cfg, err := loadConfig(nil, env(base), io.Discard)
+	if err != nil || cfg.Manifest != "" || cfg.IntegrityAction != integrity.ActionAlert || cfg.IntegrityInterval != time.Hour {
+		t.Fatalf("по умолчанию: %+v %v", cfg, err)
+	}
+	base["AISEC_SERVER_MANIFEST"] = "/opt/aisec/aisec-manifest.json"
+	base["AISEC_SERVER_INTEGRITY_ACTION"] = "stop"
+	base["AISEC_SERVER_INTEGRITY_INTERVAL"] = "15m"
+	cfg, err = loadConfig(nil, env(base), io.Discard)
+	if err != nil || cfg.Manifest != "/opt/aisec/aisec-manifest.json" || cfg.IntegrityAction != integrity.ActionStop || cfg.IntegrityInterval != 15*time.Minute {
+		t.Fatalf("из окружения: %+v %v", cfg, err)
+	}
+	cfg, err = loadConfig([]string{"-integrity-action", "alert", "-integrity-interval", "2h"}, env(base), io.Discard)
+	if err != nil || cfg.IntegrityAction != integrity.ActionAlert || cfg.IntegrityInterval != 2*time.Hour {
+		t.Fatalf("флаг важнее окружения: %+v %v", cfg, err)
+	}
+	for _, args := range [][]string{
+		{"-integrity-action", "ignore"}, {"-integrity-interval", "30s"}, {"-integrity-interval", "час"},
+	} {
+		if _, err := loadConfig(args, env(base), io.Discard); err == nil {
+			t.Errorf("%v: принято", args)
+		}
 	}
 }
 

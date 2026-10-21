@@ -25,6 +25,13 @@ const (
 	KeyKindAuditSigning = "AISEC AUDIT SIGNING KEY"
 	// KeyKindAuditSigningPublic — открытый ключ проверки контрольных точек.
 	KeyKindAuditSigningPublic = "AISEC AUDIT SIGNING PUBLIC KEY"
+	// KeyKindManifestSigning — закрытый ключ производителя для подписи
+	// манифеста целостности (ОЦЛ.1, Р10). Хранится вне репозитория и
+	// установки; в репозитории — только тестовая пара «не для поставки».
+	KeyKindManifestSigning = "AISEC MANIFEST SIGNING KEY"
+	// KeyKindManifestSigningPublic — открытый ключ проверки манифеста,
+	// встраивается в бинарники (ТЗ, 10.4).
+	KeyKindManifestSigningPublic = "AISEC MANIFEST SIGNING PUBLIC KEY"
 )
 
 // maxKeyFile ограничивает размер файла ключа: ключ — десятки байт.
@@ -34,11 +41,13 @@ const profileHeader = "Profile"
 
 // keyFileSize — длина ключа каждого вида в профиле standard.
 var keyFileSize = map[string]int{
-	KeyKindMaster:             AEADKeySize,
-	KeyKindSigning:            SigningSeedSize,
-	KeyKindSigningPublic:      PublicKeySize,
-	KeyKindAuditSigning:       SigningSeedSize,
-	KeyKindAuditSigningPublic: PublicKeySize,
+	KeyKindMaster:                AEADKeySize,
+	KeyKindSigning:               SigningSeedSize,
+	KeyKindSigningPublic:         PublicKeySize,
+	KeyKindAuditSigning:          SigningSeedSize,
+	KeyKindAuditSigningPublic:    PublicKeySize,
+	KeyKindManifestSigning:       SigningSeedSize,
+	KeyKindManifestSigningPublic: PublicKeySize,
 }
 
 // EncodeKeyPEM кодирует ключ вида kind для профиля profile.

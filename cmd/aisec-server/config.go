@@ -7,6 +7,9 @@ import (
 	"io"
 	"net"
 	"strings"
+	"time"
+
+	"github.com/azuresong-afk/ai_railway/internal/integrity"
 )
 
 // Значения по умолчанию.
@@ -24,6 +27,13 @@ type serverConfig struct {
 	// KeysDir — каталог ключей aisec-cli init (master.key, ADR-0007): мастер-ключ
 	// расшифровывает ключ данных для секретов в БД (TOTP, ИАФ.5).
 	KeysDir string
+	// Manifest — манифест целостности (ОЦЛ.1); пусто — aisec-manifest.json
+	// в корне установки, над каталогом bin/ с исполняемым файлом.
+	Manifest string
+	// IntegrityAction — реакция на нарушение целостности: alert или stop.
+	IntegrityAction integrity.Action
+	// IntegrityInterval — период проверки целостности (ОЦЛ.2).
+	IntegrityInterval time.Duration
 	// DatabaseURL содержит пароль, поэтому берётся только из окружения, не из
 	// аргументов командной строки (их видно в списке процессов).
 	DatabaseURL string
@@ -38,6 +48,9 @@ func loadConfig(args []string, getenv func(string) string, errOut io.Writer) (*s
 	key := fs.String("tls-key", "", "закрытый ключ TLS сервера, PEM, права 0600 (AISEC_SERVER_TLS_KEY)")
 	auditPub := fs.String("audit-signing-pub", "", "открытый ключ проверки контрольных точек аудита audit-signing.pub (AISEC_SERVER_AUDIT_SIGNING_PUB)")
 	keysDir := fs.String("keys-dir", "", "каталог ключей aisec-cli init с master.key, права 0700 (AISEC_SERVER_KEYS_DIR)")
+	manifest := fs.String("manifest", "", "манифест целостности; по умолчанию ../aisec-manifest.json от каталога бинарника (AISEC_SERVER_MANIFEST)")
+	action := fs.String("integrity-action", string(integrity.ActionAlert), "реакция на нарушение целостности: alert или stop (AISEC_SERVER_INTEGRITY_ACTION)")
+	interval := fs.String("integrity-interval", integrity.DefaultInterval.String(), "период проверки целостности, не меньше 1m (AISEC_SERVER_INTEGRITY_INTERVAL)")
 	if err := fs.Parse(args); err != nil {
 		return nil, err
 	}
@@ -46,7 +59,8 @@ func loadConfig(args []string, getenv func(string) string, errOut io.Writer) (*s
 	}
 	set := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
-	for name, dst := range map[string]*string{"listen": listen, "tls-cert": cert, "tls-key": key, "audit-signing-pub": auditPub, "keys-dir": keysDir} {
+	for name, dst := range map[string]*string{"listen": listen, "tls-cert": cert, "tls-key": key, "audit-signing-pub": auditPub, "keys-dir": keysDir,
+		"manifest": manifest, "integrity-action": action, "integrity-interval": interval} {
 		if set[name] {
 			continue
 		}
@@ -54,8 +68,15 @@ func loadConfig(args []string, getenv func(string) string, errOut io.Writer) (*s
 			*dst = v
 		}
 	}
-	cfg := &serverConfig{Listen: *listen, TLSCertFile: *cert, TLSKeyFile: *key, AuditSigningPub: *auditPub, KeysDir: *keysDir, DatabaseURL: getenv("AISEC_DATABASE_URL")}
+	cfg := &serverConfig{Listen: *listen, TLSCertFile: *cert, TLSKeyFile: *key, AuditSigningPub: *auditPub, KeysDir: *keysDir, Manifest: *manifest, DatabaseURL: getenv("AISEC_DATABASE_URL")}
 	var errs []error
+	var err error
+	if cfg.IntegrityAction, err = integrity.ParseAction(*action); err != nil {
+		errs = append(errs, fmt.Errorf("integrity-action: %w", err))
+	}
+	if cfg.IntegrityInterval, err = time.ParseDuration(*interval); err != nil || cfg.IntegrityInterval < integrity.MinInterval {
+		errs = append(errs, fmt.Errorf("integrity-interval: длительность не меньше %s, например 1h", integrity.MinInterval))
+	}
 	if _, _, err := net.SplitHostPort(cfg.Listen); err != nil {
 		errs = append(errs, errors.New("listen: ожидается адрес:порт"))
 	}
