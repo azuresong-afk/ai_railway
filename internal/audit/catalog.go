@@ -67,6 +67,11 @@ var catalog = []Event{
 	{"app_key.issue", "Выпуск ключа приложения", true},
 	{"app_key.rotate", "Ротация ключа приложения", true},
 	{"app_key.revoke", "Отзыв ключа приложения", true},
+	// Политики (ТЗ 5.3, DM-40; задача 2.12).
+	{"policy.create", "Создание политики", true},
+	{"policy.update", "Новая версия политики", true},
+	{"policy.rollback", "Откат политики к прежней версии", true},
+	{"policy.import", "Импорт политики из YAML", true},
 	// Компоненты (РСБ.2).
 	{"component.start", "Запуск компонента", true},
 	{"component.stop", "Остановка компонента", true},
@@ -97,6 +102,8 @@ var catalog = []Event{
 	{"events.list", "Просмотр списка событий", false},
 	{"events.view", "Просмотр карточки события без содержимого", false},
 	{"audit.list", "Просмотр журнала аудита", false},
+	{"policy.export", "Выгрузка политики в YAML", false},
+	{"policy.test", "Проверка текста в песочнице политик (без текста)", false},
 }
 
 var catalogIndex = func() map[string]Event {

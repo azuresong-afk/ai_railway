@@ -3378,6 +3378,597 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/policies": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Политики и шаблоны
+         * @description Право `policies.read` (ТЗ 5.3). Сначала четыре шаблона (только чтение, без версий),
+         *     затем политики организации по ID, не больше 1000.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Политики */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PolicyList"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        /**
+         * Создать политику
+         * @description Право `policies.manage` (признак `security`: только администратор безопасности, УПД.2;
+         *     токену API недоступно). Содержимое `spec` или копия шаблона `from_template`; версия 1.
+         *     Проверка строгая: неизвестный детектор, направление или категория — 400 с полем
+         *     (`rules[2].action`). Пустой `non_text` — `allow_inline` (решение 1.19), пустой
+         *     `response_check` — `incremental`; сохранённая версия хранит их явно. Пишет `policy.create`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                    /** @description Ключ повторяемости создающего запроса, 1–64 символа `[A-Za-z0-9._-]` */
+                    "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["NewPolicy"];
+                };
+            };
+            responses: {
+                /** @description Политика создана */
+                201: {
+                    headers: {
+                        Location?: string;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Policy"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/policies/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Загрузить политику из YAML
+         * @description Право `policies.manage`. Тело — документ YAML до 1 МиБ по строгой схеме этапа 1
+         *     (`docs/cert/security-functions.md`, «Политики»): неизвестное поле, второй документ, лишний размер, неизвестный
+         *     детектор — 400. Политики с таким `id` нет — создаётся (201); есть — новая версия поверх
+         *     `base_version` (200), без него — 409. Пустой `non_text` при загрузке — `allow_unchecked`,
+         *     как в шлюзе этапа 1. Пишет `policy.import` (сводка изменений и признак `weakening`).
+         */
+        post: {
+            parameters: {
+                query?: {
+                    /** @description Текущая версия политики, поверх которой загружается файл; для новой — не указывается */
+                    base_version?: number;
+                    /** @description Комментарий к версии */
+                    comment?: string;
+                };
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/yaml": string;
+                };
+            };
+            responses: {
+                /** @description Новая версия политики */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Policy"];
+                    };
+                };
+                /** @description Политика создана */
+                201: {
+                    headers: {
+                        Location?: string;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Policy"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/policies/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Проверить текст в песочнице
+         * @description Право `policies.test` (ТЗ 5.3). Текст проверяется тем же конвейером, что Check API
+         *     шлюза (`endpoint=check`), сохранённой версией, шаблоном или черновиком `spec`; с
+         *     `application_id` — с режимом политики, `fail_mode`, словарями `lists`, доменами
+         *     `output.exfil` и признаком «внешний» провайдера приложения (нужно право
+         *     `applications.read` на это приложение). Без приложения провайдер считается внешним.
+         *     Ничего не сохраняется: ни событие, ни текст; к модели запрос не идёт. Пишет
+         *     необязательную запись `policy.test` без текста (РСБ.3). Тело — до 256 КиБ.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["PolicyTestRequest"];
+                };
+            };
+            responses: {
+                /** @description Решение политики */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PolicyTestResult"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/policies/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Политика (текущая версия) или шаблон */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description ID политики или шаблона */
+                    id: components["parameters"]["PolicyID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Политика */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Policy"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        /**
+         * Сохранить новую версию политики
+         * @description Право `policies.manage`. Версии неизменяемы: изменение — новая версия с номером
+         *     `base_version + 1`. Если с `base_version` политику уже сохранили — 409, чужая правка не
+         *     затирается. Шаблон не меняется — 422. Пишет `policy.update`: поля, правила
+         *     добавленные, удалённые и изменённые, признак `weakening` и причины (DM-40).
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID политики или шаблона */
+                    id: components["parameters"]["PolicyID"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["PolicyUpdate"];
+                };
+            };
+            responses: {
+                /** @description Новая версия */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Policy"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/policies/{id}/versions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Версии политики
+         * @description Право `policies.read`. Без содержимого, новые первыми; у шаблона — пусто.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description Только версии с номером меньше этого (значение `next_before`) */
+                    before?: number;
+                    limit?: number;
+                };
+                header?: never;
+                path: {
+                    /** @description ID политики или шаблона */
+                    id: components["parameters"]["PolicyID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Версии */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PolicyVersionList"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/policies/{id}/versions/{n}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Версия политики */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description ID политики или шаблона */
+                    id: components["parameters"]["PolicyID"];
+                    /** @description Номер версии */
+                    n: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Версия */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Policy"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/policies/{id}/diff": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Сравнить две версии политики
+         * @description Право `policies.read`. Структурное сравнение: поля политики (до и после), правила
+         *     добавленные, удалённые и изменённые (по ID правила, с именами полей), смена порядка и
+         *     признаки ослабления защиты (DM-40). По умолчанию — текущая версия с предыдущей.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    from?: number;
+                    to?: number;
+                };
+                header?: never;
+                path: {
+                    /** @description ID политики или шаблона */
+                    id: components["parameters"]["PolicyID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Различия */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PolicyDiff"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/policies/{id}/rollback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Откатить политику к прежней версии
+         * @description Право `policies.manage`. Откат — новая версия с содержимым версии `version`
+         *     (`rolled_back_from`); прежние версии остаются. Пишет `policy.rollback` со сводкой
+         *     изменений и признаком `weakening`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID политики или шаблона */
+                    id: components["parameters"]["PolicyID"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["PolicyRollback"];
+                };
+            };
+            responses: {
+                /** @description Новая версия */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Policy"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/policies/{id}/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Выгрузить политику в YAML
+         * @description Право `policies.read`. Каноничный YAML версии (по умолчанию текущей) или шаблона —
+         *     файл, который принимает загрузка и шлюз этапа 1. Пишет необязательную запись
+         *     `policy.export`.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    version?: number;
+                };
+                header?: never;
+                path: {
+                    /** @description ID политики или шаблона */
+                    id: components["parameters"]["PolicyID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Файл политики */
+                200: {
+                    headers: {
+                        "Content-Disposition"?: string;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/yaml": string;
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -4214,6 +4805,193 @@ export interface components {
             metadata_days: number;
             content_days: number;
         };
+        /** @description Правило политики; поля и значения — как в YAML (`docs/cert/security-functions.md`, «Политики»). */
+        PolicyRule: {
+            id: string;
+            /** @description ID детектора */
+            detector: string;
+            directions?: ("input" | "output")[];
+            categories?: string[];
+            sources?: ("user" | "rag" | "tool" | "output")[];
+            threshold?: number;
+            /** @enum {string} */
+            action: "allow" | "log" | "redact" | "pseudonymize" | "block";
+            /** @enum {string} */
+            severity: "info" | "low" | "medium" | "high" | "critical";
+            message?: string;
+        };
+        /** @description Содержимое политики (ТЗ 5.3). ID и номер версии задаёт сервер. */
+        PolicySpec: {
+            name: string;
+            /** @enum {string} */
+            mode: "monitor" | "enforce";
+            /**
+             * @description Пусто при сохранении — allow_inline (решение 1.19)
+             * @enum {string}
+             */
+            non_text?: "allow_unchecked" | "allow_inline" | "block";
+            /**
+             * @description Пусто при сохранении — incremental
+             * @enum {string}
+             */
+            response_check?: "buffered" | "incremental" | "monitor";
+            block_message?: string;
+            rules: components["schemas"]["PolicyRule"][];
+        };
+        PolicySummary: {
+            id: string;
+            name: string;
+            /** @enum {string} */
+            mode: "monitor" | "enforce";
+            /** @description Шаблон — только чтение */
+            template: boolean;
+            current_version?: number;
+            /** Format: date-time */
+            updated_at?: string;
+        };
+        PolicyList: {
+            items: components["schemas"]["PolicySummary"][];
+        };
+        PolicyVersion: {
+            version: number;
+            /** @description Хеш каноничного YAML версии (hex) по криптопрофилю */
+            hash: string;
+            hash_alg: string;
+            /** @enum {string} */
+            source: "api" | "import" | "rollback" | "template";
+            comment: string;
+            /** @description Номер версии */
+            rolled_back_from?: number;
+            /** Format: date-time */
+            created_at: string;
+            created_by: string;
+        };
+        PolicyVersionList: {
+            items: components["schemas"]["PolicyVersion"][];
+            next_before?: number;
+        };
+        Policy: components["schemas"]["PolicySummary"] & {
+            version?: components["schemas"]["PolicyVersion"];
+            spec: components["schemas"]["PolicySpec"];
+        };
+        /** @description Ровно одно из `spec` и `from_template`. */
+        NewPolicy: {
+            /** @description ID политики; ID шаблонов заняты */
+            id: string;
+            spec?: components["schemas"]["PolicySpec"];
+            /** @enum {string} */
+            from_template?: "base" | "pii-strict" | "external-no-pii" | "monitor-only";
+            /** @description Название копии шаблона */
+            name?: string;
+            comment?: string;
+        };
+        PolicyUpdate: {
+            /** @description Версия */
+            base_version: number;
+            spec: components["schemas"]["PolicySpec"];
+            comment?: string;
+        };
+        PolicyRollback: {
+            /** @description Версия */
+            version: number;
+            base_version: number;
+            comment?: string;
+        };
+        PolicyDiff: {
+            from: number;
+            to: number;
+            fields: {
+                /** @enum {string} */
+                field: "name" | "mode" | "non_text" | "response_check" | "block_message";
+                before: string;
+                after: string;
+            }[];
+            rules_added: components["schemas"]["PolicyRule"][];
+            rules_removed: components["schemas"]["PolicyRule"][];
+            rules_changed: {
+                id: string;
+                fields: string[];
+                before: components["schemas"]["PolicyRule"];
+                after: components["schemas"]["PolicyRule"];
+            }[];
+            reordered: boolean;
+            /** @description Изменение ослабляет защиту (DM-40) */
+            weakening: boolean;
+            weakening_reasons: {
+                /** @enum {string} */
+                kind: "mode_monitor" | "non_text_weakened" | "response_check_weakened" | "rule_removed" | "action_weakened" | "threshold_raised" | "scope_narrowed" | "detector_changed";
+                rule?: string;
+            }[];
+        };
+        /** @description Ровно одно из `policy_id` и `spec`. */
+        PolicyTestRequest: {
+            /** @description ID политики или шаблона */
+            policy_id?: string;
+            /** @description Версия политики; по умолчанию текущая */
+            version?: number;
+            spec?: components["schemas"]["PolicySpec"];
+            /** Format: uuid */
+            application_id?: string;
+            request: components["schemas"]["CheckRequest"];
+        };
+        PolicyTestResult: {
+            policy_id?: string;
+            version?: number;
+            draft: boolean;
+            /** Format: uuid */
+            application_id?: string;
+            /** @enum {string} */
+            direction: "input" | "output";
+            /** @enum {string} */
+            mode: "monitor" | "enforce";
+            /**
+             * @description Что сделано с текстом (как заголовок X-AISec-Decision шлюза)
+             * @enum {string}
+             */
+            decision: "allow" | "redact" | "pseudonymize" | "block";
+            /**
+             * @description Решение как в enforce
+             * @enum {string}
+             */
+            action: "allow" | "log" | "redact" | "pseudonymize" | "block";
+            /** @description Правило, давшее решение */
+            rule?: string;
+            blocked: boolean;
+            /** @description Сбой детектора при fail_closed: шлюз ответил бы 503 */
+            fail_block: boolean;
+            message?: string;
+            incomplete: boolean;
+            unchecked: boolean;
+            failures: {
+                detector: string;
+                location: string;
+                /** @enum {string} */
+                reason: "timeout" | "error";
+            }[];
+            findings: {
+                detector: string;
+                category: string;
+                score: number;
+                /** @description Байтовое смещение в UTF-8 в исходном фрагменте */
+                start: number;
+                end: number;
+                location: string;
+                threat?: string;
+                /** @description Правило с самым сильным действием по находке; пусто — не совпало ни одно */
+                rule?: string;
+                action?: string;
+                /** @description Что сделано с фрагментом: redact или пусто */
+                apply?: string;
+            }[];
+            findings_truncated?: boolean;
+            /** @description Фрагменты после защиты данных; пусто при блокировке. */
+            texts: {
+                location: string;
+                role?: string;
+                text: string;
+                changed: boolean;
+            }[];
+        };
         /** @description Поле конверта страницы списка; на последней странице отсутствует */
         PageInfo: {
             next_cursor?: string;
@@ -4492,6 +5270,8 @@ export interface components {
         ProviderID: string;
         /** @description ID приложения (UUID) */
         ApplicationID: string;
+        /** @description ID политики или шаблона */
+        PolicyID: string;
         /** @description ID ключа приложения (UUID) */
         AppKeyID: string;
         /** @description ID сохранённого фильтра (UUIDv7) */
