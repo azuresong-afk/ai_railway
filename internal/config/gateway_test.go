@@ -42,6 +42,20 @@ func TestLoadGatewayIntegrity(t *testing.T) {
 	}
 }
 
+func TestLoadGatewaySelftest(t *testing.T) {
+	cfg, err := LoadGateway(required, env(nil), io.Discard)
+	if err != nil || cfg.SelftestAction != IntegrityAlert {
+		t.Fatalf("по умолчанию: %+v %v", cfg, err)
+	}
+	cfg, err = LoadGateway(required, env(map[string]string{"AISEC_GATEWAY_SELFTEST_ACTION": "stop"}), io.Discard)
+	if err != nil || cfg.SelftestAction != IntegrityStop {
+		t.Fatalf("из окружения: %+v %v", cfg, err)
+	}
+	if _, err := LoadGateway(append(append([]string{}, required...), "-selftest-action", "off"), env(nil), io.Discard); err == nil {
+		t.Error("неизвестная реакция принята")
+	}
+}
+
 func TestLoadGatewayEnvAndFlagPrecedence(t *testing.T) {
 	e := env(map[string]string{
 		"AISEC_GATEWAY_CONFIG":         "env-gateway.yaml",

@@ -24,6 +24,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/gwregistry"
 	"github.com/azuresong-afk/ai_railway/internal/httpserver"
 	"github.com/azuresong-afk/ai_railway/internal/integrity"
+	"github.com/azuresong-afk/ai_railway/internal/integrity/selftest"
 	"github.com/azuresong-afk/ai_railway/internal/keyring"
 	"github.com/azuresong-afk/ai_railway/internal/store"
 	"github.com/azuresong-afk/ai_railway/web"
@@ -57,9 +58,13 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	// Самотест криптопрофиля до приёма запросов (ТЗ, ОЦЛ.4).
-	if err := aisecCrypto.SelfTest(p); err != nil {
-		return fmt.Errorf("самотест: %w", err)
+	// Самотест криптопрофиля до приёма запросов (ТЗ, ОЦЛ.4). Детекторов у
+	// сервера нет; провал криптопрофиля останавливает запуск всегда (ОЦЛ.5).
+	selftestRes, err := selftest.Startup(ctx, selftest.StartupConfig{
+		Config: selftest.Config{Component: "server", Provider: p}, Action: integrity.ActionStop, Logger: logger,
+	})
+	if err != nil {
+		return err
 	}
 	tp, err := p.TLS()
 	if err != nil {
@@ -99,6 +104,11 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	auditLog, err := audit.New(db.Pool(), p, audit.WithCheckpoints(checkpoints))
 	if err != nil {
 		return err
+	}
+	// Итог самотеста — в журнал аудита (selftest.result); до открытия БД
+	// он есть только в техническом журнале.
+	if err := selftest.RecordAudit(ctx, auditLog, selftestRes); err != nil {
+		logger.Error("итог самотестирования не сохранён в журнал аудита", "class", "db", "error", err)
 	}
 	users, err := auth.NewPGStore(db.Pool(), auditLog)
 	if err != nil {
