@@ -8,14 +8,15 @@ import tailwindcss from "@tailwindcss/vite";
 export const csp =
   "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
 
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
   plugins: [react(), tailwindcss()],
   resolve: {
     // react-remove-scroll вставляет <style>, несовместимый со строгим CSP (ADR-0010).
     alias: { "react-remove-scroll": fileURLToPath(new URL("./src/shims/remove-scroll.tsx", import.meta.url)) },
   },
   build: {
-    outDir: "dist",
+    // Сборка e2e содержит страницы разработки и не встраивается в aisec-server.
+    outDir: mode === "e2e" ? "dist-e2e" : "dist",
     emptyOutDir: false, // в dist/ лежит .gitkeep для go:embed
     sourcemap: false,
     // Никаких встроенных скриптов и стилей: CSP без 'unsafe-inline'.
@@ -30,4 +31,4 @@ export default defineConfig({
     setupFiles: ["src/test-setup.ts"],
     include: ["src/**/*.test.{ts,tsx}"],
   },
-});
+}));

@@ -11,7 +11,7 @@ export default defineConfig({
   reporter: "list",
   use: { baseURL: "http://127.0.0.1:4173", launchOptions: { executablePath } },
   webServer: {
-    command: "npx vite preview",
+    command: "npx vite preview --mode e2e",
     url: "http://127.0.0.1:4173",
     reuseExistingServer: false,
     timeout: 30_000,

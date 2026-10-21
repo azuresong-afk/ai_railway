@@ -1,6 +1,42 @@
 @import "tailwindcss";
+@import "./design/fonts.css";
+@import "./design/tokens.css";
 
-/* Блокировка прокрутки под модальными окнами (src/shims/remove-scroll.tsx, ADR-0010). */
+/* Токены (design/tokens.css) как утилиты Tailwind: bg-surface, text-muted, border-line и т. д. */
+@theme inline {
+  --color-bg: var(--c-bg);
+  --color-surface: var(--c-surface);
+  --color-surface-hover: var(--c-surface-hover);
+  --color-fg: var(--c-text);
+  --color-muted: var(--c-text-muted);
+  --color-accent: var(--c-accent);
+  --color-on-accent: var(--c-on-accent);
+  --color-line: var(--c-border);
+  --color-line-strong: var(--c-border-strong);
+  --color-sev-critical: var(--c-sev-critical);
+  --color-sev-high: var(--c-sev-high);
+  --color-sev-medium: var(--c-sev-medium);
+  --color-sev-low: var(--c-sev-low);
+  --color-sev-info: var(--c-sev-info);
+  --font-sans: var(--ff-sans);
+  --font-mono: var(--ff-mono);
+  --text-xs: var(--fs-xs);
+  --text-sm: var(--fs-sm);
+  --text-base: var(--fs-base);
+  --text-lg: var(--fs-lg);
+  --text-xl: var(--fs-xl);
+  --text-2xl: var(--fs-2xl);
+  --radius-control: var(--r-control);
+  --radius-panel: var(--r-panel);
+  --shadow-popup: var(--sh-popup);
+}
+
+/* Блокировка прокрутки под модальными окнами (src/shims/remove-scroll.tsx, ADR-0010).
+   Полоса прокрутки не должна сдвигать страницу: резервируем её место всегда. */
+html {
+  scrollbar-gutter: stable;
+}
+
 body[data-scroll-locked] {
   overflow: hidden;
 }

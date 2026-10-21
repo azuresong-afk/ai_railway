@@ -9,6 +9,7 @@
   },
   "scripts": {
     "build": "tsc --noEmit && vite build",
+    "build:e2e": "tsc --noEmit && vite build --mode e2e",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test": "vitest run",
