@@ -1,7 +1,7 @@
 // Команда aisec-server — сервер управления: API, веб-консоль, оповещения, инциденты, отчёты, аудит.
-// Сейчас (задачи 2.6–2.9, 2.14, 2.15, 2.17 этапа 2): HTTPS, маршрутизатор с
+// Сейчас (задачи 2.6–2.10, 2.14, 2.15, 2.17 этапа 2): HTTPS, маршрутизатор с
 // проверкой прав, Problem Details, ограничение частоты, вход в консоль,
-// второй фактор, учётные записи и роли, регистрация шлюзов и внутренний API на
+// второй фактор, учётные записи и роли, токены API, регистрация шлюзов и внутренний API на
 // отдельном порту с mTLS, приём событий шлюзов, контроль целостности.
 // Статика веб-консоли встроена в бинарник (web/embed.go, ADR-0011) и
 // сверяется с манифестом; раздача — в задачах каркаса консоли;
@@ -127,7 +127,12 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	authSvc, err := auth.NewService(ctx, users, auditLog, p, auth.WithSecretBox(box), auth.WithRoleStore(roles))
+	tokens, err := auth.NewPGAPITokens(db.Pool(), auditLog)
+	if err != nil {
+		return err
+	}
+	authSvc, err := auth.NewService(ctx, users, auditLog, p, auth.WithSecretBox(box), auth.WithRoleStore(roles),
+		auth.WithAPITokenStore(tokens))
 	if err != nil {
 		return err
 	}

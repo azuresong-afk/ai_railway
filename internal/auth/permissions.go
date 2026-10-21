@@ -30,6 +30,11 @@ const (
 	PermAuthPolicyManage = "auth_policy.manage"
 	PermRolesRead        = "roles.read"
 	PermRolesManage      = "roles.manage"
+	// PermAPITokensRead и PermAPITokensManage — токены API (ИАФ.9, задача
+	// 2.10). Со ScopeOwn — только свои токены (УПД.8). Самому токену не
+	// выдаются (TokenGrantable).
+	PermAPITokensRead   = "api_tokens.read"
+	PermAPITokensManage = "api_tokens.manage"
 )
 
 // Permission — разрешение из каталога.
@@ -48,6 +53,15 @@ type Permission struct {
 // ReadOnly — разрешение только на чтение (имя оканчивается на «.read»).
 func (p Permission) ReadOnly() bool { return strings.HasSuffix(p.Name, ".read") }
 
+// TokenGrantable — разрешение можно выдать токену API (решение владельца
+// по задаче 2.10): кроме функций безопасности и самих токенов. Управление
+// доступом остаётся за человеком с паролем и вторым фактором; токен не
+// выпускает и не продлевает токены.
+func TokenGrantable(perm string) bool {
+	p, ok := LookupPermission(perm)
+	return ok && !p.Security && !strings.HasPrefix(p.Name, "api_tokens.")
+}
+
 var permissionCatalog = []Permission{
 	{Name: PermSystemRead, Title: "Просмотр состояния и версии системы", Group: "Система"},
 	{Name: PermIntegrityVerify, Title: "Запуск проверки целостности", Group: "Система", Security: true},
@@ -59,6 +73,8 @@ var permissionCatalog = []Permission{
 	{Name: PermAuthPolicyManage, Title: "Изменение парольной политики и настроек входа", Group: "Вход", Security: true},
 	{Name: PermRolesRead, Title: "Просмотр ролей и разрешений", Group: "Роли"},
 	{Name: PermRolesManage, Title: "Создание, изменение и удаление ролей, назначение ролей", Group: "Роли", Security: true},
+	{Name: PermAPITokensRead, Title: "Просмотр токенов API", Group: "Токены API", Ownable: true},
+	{Name: PermAPITokensManage, Title: "Выпуск и отзыв токенов API", Group: "Токены API", Ownable: true},
 }
 
 var permissionIndex = func() map[string]Permission {
@@ -203,8 +219,8 @@ func readPermissions() Grants {
 // builtinRoles — права предустановленных ролей задаются кодом и
 // обновляются вместе с продуктом; изменить их из консоли нельзя (УПД.1).
 // Администратор безопасности управляет пользователями, ролями и входом;
-// администратор системы не меняет политики безопасности; аудитор только
-// читает (УПД.2). Разрешения следующих задач (приложения, политики,
+// администратор системы не меняет политики безопасности и выпускает
+// только свои токены API; аудитор только читает (УПД.2). Разрешения следующих задач (приложения, политики,
 // события) добавляются сюда вместе с эндпоинтами.
 var builtinRoles = []RoleDef{
 	{ID: RoleSecurityAdmin, DisplayName: "Администратор безопасности", Builtin: true, MFARequired: true,
@@ -212,7 +228,7 @@ var builtinRoles = []RoleDef{
 		Grants:      allPermissions()},
 	{ID: RoleSystemAdmin, DisplayName: "Администратор системы", Builtin: true, MFARequired: true,
 		Description: "Приложения, провайдеры, интеграции, обновления, резервное копирование. Политики безопасности не меняет",
-		Grants:      grantAll(PermSystemRead)},
+		Grants:      Grants{PermSystemRead: ScopeAll, PermAPITokensRead: ScopeOwn, PermAPITokensManage: ScopeOwn}},
 	{ID: RoleAnalyst, DisplayName: "Аналитик", Builtin: true,
 		Description: "Разбор оповещений и инцидентов, поиск по событиям",
 		Grants:      grantAll(PermSystemRead)},

@@ -97,8 +97,10 @@ func clearSessionCookies(w http.ResponseWriter) {
 		Secure: true, SameSite: http.SameSiteStrictMode})
 }
 
-// callerFrom — сессия консоли из контекста запроса; ok = false, если
-// субъект не сессия (такие маршруты для токенов API не предназначены).
+// callerFrom — пользователь запроса (сессия консоли или токен API, у
+// токена Caller.Token не nil); ok = false, если субъект не пользователь.
+// Маршруты своих данных (self, session) токену недоступны: этих
+// разрешений у него нет.
 func callerFrom(r *http.Request) (auth.Caller, bool) {
 	p, ok := PrincipalFrom(r.Context())
 	if !ok || p.Caller == nil {

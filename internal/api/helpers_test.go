@@ -70,7 +70,7 @@ func testAuth(t testing.TB, mem *authtest.Memory, opts ...auth.Option) *auth.Ser
 	if err != nil {
 		t.Fatal(err)
 	}
-	opts = append([]auth.Option{auth.WithPasswordHasher(&authtest.Hasher{}), auth.WithRoleStore(mem),
+	opts = append([]auth.Option{auth.WithPasswordHasher(&authtest.Hasher{}), auth.WithRoleStore(mem), auth.WithAPITokenStore(mem),
 		auth.WithSecretBox(keyring.NewStatic("01900000-0000-7000-8000-0000000000d1", aead))}, opts...)
 	svc, err := auth.NewService(context.Background(), mem, mem, p, opts...)
 	if err != nil {

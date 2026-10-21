@@ -1,7 +1,9 @@
 package auth
 
 import (
+	"encoding/base64"
 	"regexp"
+	"strings"
 	"testing"
 	"unicode/utf8"
 )
@@ -35,6 +37,38 @@ func FuzzParseRole(f *testing.F) {
 			if !perm.ReadOnly() && !r.MFARequired {
 				t.Fatalf("роль с %q без обязательного второго фактора", p)
 			}
+		}
+	})
+}
+
+// apiTokenPattern — тот же шаблон префикса, что CHECK в миграции 0012_api_tokens.
+var apiTokenPattern = regexp.MustCompile(`^aisec_pat_[a-z0-9]{8}$`)
+
+// Разбор предъявленного токена API: без паники; принятый токен — каноничная
+// запись ровно 32 байт секрета, префикс проходит CHECK миграции и не
+// принимается вместо ключа приложения.
+func FuzzParseAPIToken(f *testing.F) {
+	f.Add("aisec_pat_abcd1234_" + strings.Repeat("A", 43))
+	f.Add("aisec_pat_abcd1234_" + strings.Repeat("A", 42) + "B")
+	f.Add("aisec_abcd1234_" + strings.Repeat("A", 43))
+	f.Add("Bearer aisec_pat_abcd1234_")
+	f.Fuzz(func(t *testing.T, s string) {
+		prefix, err := ParseAPIToken(s)
+		if err != nil {
+			if prefix != "" {
+				t.Fatalf("префикс при ошибке: %q", prefix)
+			}
+			return
+		}
+		if !apiTokenPattern.MatchString(prefix) || !strings.HasPrefix(s, prefix+"_") {
+			t.Fatalf("префикс %q из %q", prefix, s)
+		}
+		b, err := base64.RawURLEncoding.Strict().DecodeString(s[len(prefix)+1:])
+		if err != nil || len(b) != tokenBytes || base64.RawURLEncoding.EncodeToString(b) != s[len(prefix)+1:] {
+			t.Fatalf("принят неканоничный секрет: %q", s)
+		}
+		if _, err := ParseAppKey(s); err == nil {
+			t.Fatalf("строка принята и как токен, и как ключ приложения: %q", s)
 		}
 	})
 }

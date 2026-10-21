@@ -65,7 +65,7 @@ func newEnv(t *testing.T) *env {
 	t.Helper()
 	e := &env{mem: authtest.NewMemory(), hash: &authtest.Hasher{}, clock: &clock{t: time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)}}
 	svc, err := auth.NewService(context.Background(), e.mem, e.mem, provider(t),
-		auth.WithClock(e.clock.now), auth.WithPasswordHasher(e.hash), auth.WithSecretBox(testBox(t)), auth.WithRoleStore(e.mem))
+		auth.WithClock(e.clock.now), auth.WithPasswordHasher(e.hash), auth.WithSecretBox(testBox(t)), auth.WithRoleStore(e.mem), auth.WithAPITokenStore(e.mem))
 	if err != nil {
 		t.Fatal(err)
 	}

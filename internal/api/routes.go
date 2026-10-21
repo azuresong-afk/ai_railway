@@ -21,6 +21,7 @@ func Routes(d Deps) []Route {
 	routes = append(routes, integrityRoutes(d)...)
 	routes = append(routes, roleRoutes(d)...)
 	routes = append(routes, statusRoutes(d)...)
+	routes = append(routes, apiTokenRoutes(d)...)
 	return routes
 }
 

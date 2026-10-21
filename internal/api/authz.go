@@ -10,8 +10,8 @@ import (
 // Principal — аутентифицированный субъект запроса.
 type Principal struct {
 	ID string
-	// Caller — сессия консоли и её пользователь; nil — субъект не сессия
-	// (токен API, тесты).
+	// Caller — пользователь запроса: сессия консоли или токен API
+	// (Caller.Token); nil — субъект не пользователь (шлюз, тесты).
 	Caller *auth.Caller
 	// Grants — права, действующие в запросе (УПД.1). Маршрут без признака
 	// Scoped пропускает только разрешение на все объекты; со Scoped
@@ -72,8 +72,8 @@ const (
 // Authorizer решает, можно ли запросу выполнить действие с правом permission
 // (УПД.3), и возвращает субъекта с его правами. Решение Allow означает, что
 // разрешение есть хотя бы со ScopeOwn; область проверяет маршрутизатор.
-// Сессии консоли проверяет SessionAuthorizer по правам роли (задача 2.9);
-// токены API — задача 2.10.
+// Сессии консоли проверяет SessionAuthorizer по правам роли (задача 2.9),
+// токены API — BearerAuthorizer (задача 2.10).
 type Authorizer interface {
 	Authorize(r *http.Request, permission string) (Principal, Decision)
 }

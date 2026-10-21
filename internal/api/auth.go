@@ -91,6 +91,9 @@ func authProblem(logger *slog.Logger, err error) *Problem {
 	if p := roleProblem(err); p != nil {
 		return p
 	}
+	if p := apiTokenProblem(err); p != nil {
+		return p
+	}
 	logger.Error("ошибка входа и учётных записей", "error", err)
 	return errInternal()
 }

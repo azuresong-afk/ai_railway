@@ -11,8 +11,13 @@ func Allowed(c Caller, g Grants, perm string) bool {
 // SessionGrants — права, действующие в сессии caller. PermSession есть у
 // любой сессии, в том числе до второго фактора; PermSelf — у сессии с
 // подтверждённым входом, включая временный или истёкший пароль; права
-// роли g — только у SessionActive.
+// роли g — только у SessionActive. У запроса по токену API — пересечение
+// области токена с правами роли владельца (TokenGrants), без PermSelf и
+// PermSession.
 func SessionGrants(c Caller, g Grants) Grants {
+	if c.Token != nil {
+		return TokenGrants(c.Token.Grants, g)
+	}
 	switch c.Session.State {
 	case SessionActive:
 		out := g.Clone()

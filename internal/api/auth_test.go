@@ -96,6 +96,8 @@ func mustJSON(t *testing.T, v any) string {
 type session struct {
 	cookies []*http.Cookie
 	csrf    string
+	// bearer — токен API для заголовка Authorization (задача 2.10).
+	bearer string
 }
 
 func (e *authEnv) login(t *testing.T, login, password string) (*httptest.ResponseRecorder, session) {
@@ -192,6 +194,9 @@ func (e *authEnv) call(s session, method, target, body string, csrf bool) *httpt
 	}
 	if csrf {
 		r.Header.Set(CSRFHeader, s.csrf)
+	}
+	if s.bearer != "" {
+		r.Header.Set("Authorization", "Bearer "+s.bearer)
 	}
 	w := httptest.NewRecorder()
 	e.h.ServeHTTP(w, r)

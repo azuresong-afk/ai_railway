@@ -44,6 +44,9 @@ type Router struct {
 	fallback http.Handler
 	// onDenied вызывается при каждом отказе в доступе (УПД.6).
 	onDenied func(r *http.Request, d Denial)
+	// onTokenUsed вызывается после каждого пропущенного запроса по токену
+	// API с шаблоном маршрута и кодом ответа (РСБ.1, задача 2.10).
+	onTokenUsed func(r *http.Request, p Principal, method, path string, status int)
 }
 
 // Routes возвращает копию списка маршрутов (контрактные тесты и документация).
@@ -121,7 +124,12 @@ func (rt *Router) wrap(r Route) http.Handler {
 		}
 		switch d {
 		case Allow:
-			h.ServeHTTP(w, req.WithContext(WithPrincipal(req.Context(), p)))
+			req = req.WithContext(WithPrincipal(req.Context(), p))
+			if p.Caller != nil && p.Caller.Token != nil && rt.onTokenUsed != nil {
+				rt.serveToken(w, req, h, p, r)
+				return
+			}
+			h.ServeHTTP(w, req)
 		case Forbidden:
 			rt.denied(req, Denial{Principal: p, Method: r.Method, Path: r.Path, Permission: r.Permission, Decision: d, Reason: reason})
 			WriteProblem(w, errForbidden())
@@ -133,6 +141,24 @@ func (rt *Router) wrap(r Route) http.Handler {
 			WriteProblem(w, errUnauthorized())
 		}
 	})
+}
+
+// serveToken выполняет обработчик запроса по токену и пишет его итог;
+// паника обработчика записывается как 500 и передаётся дальше (recoverer).
+func (rt *Router) serveToken(w http.ResponseWriter, req *http.Request, h http.Handler, p Principal, r Route) {
+	sw := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+	defer func() {
+		v := recover()
+		status := sw.status
+		if v != nil {
+			status = http.StatusInternalServerError
+		}
+		rt.onTokenUsed(req, p, r.Method, r.Path, status)
+		if v != nil {
+			panic(v)
+		}
+	}()
+	h.ServeHTTP(sw, req)
 }
 
 func (rt *Router) denied(r *http.Request, d Denial) {

@@ -80,6 +80,12 @@ func TestRoutesMatchSpec(t *testing.T) {
 			if _, ok := auth.LookupPermission(r.Permission); !ok && r.Permission != auth.PermSelf && r.Permission != auth.PermSession {
 				t.Errorf("%s %s: разрешения %q нет в каталоге", r.Method, r.Path, r.Permission)
 			}
+			// Токен API указан в security ровно у операций, доступных токену (ИАФ.9).
+			bearer := slices.ContainsFunc(op.Security, func(m map[string]any) bool { _, ok := m["bearerToken"]; return ok })
+			if bearer != auth.TokenGrantable(r.Permission) {
+				t.Errorf("%s %s: bearerToken в security — %v, а токену разрешение %q доступно — %v",
+					r.Method, r.Path, bearer, r.Permission, auth.TokenGrantable(r.Permission))
+			}
 		} else if op.Security == nil || len(op.Security) != 0 || op.Permission != "" {
 			t.Errorf("%s %s: открытый маршрут должен иметь security: [] и не иметь x-permission", r.Method, r.Path)
 		}

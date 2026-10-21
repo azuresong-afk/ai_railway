@@ -29,6 +29,8 @@ type Memory struct {
 	codes    map[string][]*recoveryCode
 	// roles — свои роли по организациям (roles.go).
 	roles map[string]map[auth.Role]auth.RoleDef
+	// tokens — токены API по ID (apitokens.go).
+	tokens map[string]*auth.APIToken
 	// Fail — если не nil, возвращается из каждого метода (сбой хранилища).
 	Fail error
 }

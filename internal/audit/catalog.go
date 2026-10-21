@@ -48,6 +48,11 @@ var catalog = []Event{
 	{"role.delete", "Удаление своей роли", true},
 	{"user.role_changed", "Назначение роли пользователю", true},
 	{"access.denied", "Отказ в доступе к функции управления", true},
+	// Токены API (ИАФ.9, РСБ.1; задача 2.10).
+	{"api_token.create", "Выпуск токена API", true},
+	{"api_token.revoke", "Отзыв токена API", true},
+	{"api_token.used", "Запрос по токену API", true},
+	{"api_token.auth_failed", "Неудачная аутентификация по токену API", true},
 	// Компоненты (РСБ.2).
 	{"component.start", "Запуск компонента", true},
 	{"component.stop", "Остановка компонента", true},

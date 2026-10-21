@@ -1822,6 +1822,187 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/api-tokens": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Токены API
+         * @description Право `api_tokens.read` (ИАФ.9). С областью `own` — только свои токены, с `all` —
+         *     все токены организации (УПД.8). Порядок — по времени выпуска. Секретов в ответе нет.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description Размер страницы */
+                    limit?: components["parameters"]["Limit"];
+                    /** @description Непрозрачный курсор из `next_cursor` предыдущей страницы */
+                    cursor?: components["parameters"]["Cursor"];
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Страница списка */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["APITokenPage"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+            };
+        };
+        put?: never;
+        /**
+         * Выпустить себе токен API
+         * @description Право `api_tokens.manage` (ИАФ.9), только из сессии консоли. Токен действует от
+         *     имени выпустившего: его права — пересечение указанных разрешений с текущими
+         *     правами роли владельца, понижение роли сразу сужает токен. Разрешения с признаком
+         *     `security` и разрешения на сами токены токену не выдаются (400); разрешение, которого
+         *     нет у пользователя, — 403. Срок обязателен: 1–365 дней, по умолчанию 90. Не больше
+         *     20 действующих токенов на пользователя (422). Сам токен показывается один раз, в
+         *     журналы не попадает. Без `Idempotency-Key`: сохранённый ответ содержал бы токен.
+         *     Пишет `api_token.create`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["NewAPIToken"];
+                };
+            };
+            responses: {
+                /** @description Токен выпущен */
+                201: {
+                    headers: {
+                        Location?: string;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["CreatedAPIToken"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/api-tokens/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Токен API
+         * @description Право `api_tokens.read`. Чужой токен при области `own` — 404 (УПД.8).
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description ID токена API (UUID) */
+                    id: components["parameters"]["APITokenID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Токен без секрета */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["APIToken"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+            };
+        };
+        put?: never;
+        post?: never;
+        /**
+         * Отозвать токен API
+         * @description Право `api_tokens.manage`. Свой токен — при любой области; чужой — только при
+         *     области `all` и если права владельца входят в права отзывающего (403, УПД.2), иначе
+         *     404. Токен не удаляется: отмечается отзыв, отозванный токен не оживает; повторный
+         *     отзыв — 409. Пишет `api_token.revoke`.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID токена API (UUID) */
+                    id: components["parameters"]["APITokenID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Токен отозван */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["APIToken"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                409: components["responses"]["ProblemConflict"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -2123,6 +2304,48 @@ export interface components {
         };
         RoleAssignment: {
             role: components["schemas"]["Role"];
+        };
+        APIToken: {
+            /** Format: uuid */
+            id: string;
+            /**
+             * Format: uuid
+             * @description Владелец — от его имени действует токен
+             */
+            user_id: string;
+            name: string;
+            /** @description Начало токена для поиска и показа; не секрет */
+            prefix: string;
+            /** @description Область токена; действуют только разрешения, которые есть и у роли владельца */
+            permissions: components["schemas"]["Grant"][];
+            /** @enum {string} */
+            status: "active" | "expired" | "revoked";
+            /** Format: date-time */
+            expires_at: string;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            last_used_at?: string;
+            last_used_ip?: string;
+            /** Format: date-time */
+            revoked_at?: string;
+            /** @enum {string} */
+            revoke_reason?: "owner" | "admin";
+        };
+        APITokenPage: components["schemas"]["PageInfo"] & {
+            items: components["schemas"]["APIToken"][];
+        };
+        NewAPIToken: {
+            name: string;
+            /** @default 90 */
+            expires_in_days: number;
+            /** @description Разрешения без признака `security` и не на токены */
+            permissions: components["schemas"]["Grant"][];
+        };
+        CreatedAPIToken: {
+            api_token: components["schemas"]["APIToken"];
+            /** @description Токен для заголовка `Authorization: Bearer`. Показывается один раз */
+            token: string;
         };
         RoleAssigned: {
             user: components["schemas"]["User"];
@@ -2529,6 +2752,8 @@ export interface components {
         UserID: string;
         /** @description ID роли */
         RoleID: components["schemas"]["Role"];
+        /** @description ID токена API (UUID) */
+        APITokenID: string;
         /** @description Ключ повторяемости создающего запроса, 1–64 символа `[A-Za-z0-9._-]` */
         IdempotencyKey: string;
     };

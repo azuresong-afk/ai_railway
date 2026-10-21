@@ -44,9 +44,14 @@ type Caller struct {
 	Session Session
 	// SourceIP — адрес клиента текущего запроса (для аудита).
 	SourceIP netip.Addr
+	// Token — токен API запроса (задача 2.10); nil — сессия консоли.
+	Token *APIToken
 }
 
 func (c Caller) actor() audit.Actor {
+	if c.Token != nil {
+		return c.Token.actor(c.User)
+	}
 	return audit.Actor{Type: audit.ActorUser, ID: c.User.ID, Name: c.User.Login}
 }
 
@@ -70,6 +75,8 @@ type Service struct {
 	dummy string
 	// roles — свои роли (задача 2.9); nil — только предустановленные.
 	roles RoleStore
+	// tokens — токены API (задача 2.10); nil — токены не принимаются.
+	tokens APITokenStore
 }
 
 // Option настраивает Service.

@@ -190,7 +190,7 @@ paths:
         `integrity_checks` и журнал аудита (`integrity.check`) от имени
         пользователя. Нарушение — `ok: false` с ответом 200; при
         `-integrity-action stop` сервер после ответа останавливается.
-      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      security: [{ sessionCookie: [] }]
       x-permission: integrity.verify
       parameters:
         - $ref: '#/components/parameters/CSRFToken'
@@ -330,7 +330,7 @@ paths:
       summary: Парольная политика и настройки входа
       description: Право `auth_policy.read` (ИАФ.2, ИАФ.4, УПД.4).
       x-permission: auth_policy.read
-      security: [{ sessionCookie: [] }]
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
       responses:
         '200':
           description: Настройки
@@ -527,7 +527,7 @@ paths:
       summary: Список учётных записей
       description: Право `users.read`. Порядок — по времени создания.
       x-permission: users.read
-      security: [{ sessionCookie: [] }]
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
       parameters:
         - $ref: '#/components/parameters/Limit'
         - $ref: '#/components/parameters/Cursor'
@@ -579,7 +579,7 @@ paths:
       summary: Учётная запись
       description: Право `users.read`.
       x-permission: users.read
-      security: [{ sessionCookie: [] }]
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
       parameters:
         - $ref: '#/components/parameters/UserID'
       responses:
@@ -690,7 +690,7 @@ paths:
       summary: Незавершённые сессии пользователя
       description: Право `sessions.read` (УПД.4). Токены не выдаются.
       x-permission: sessions.read
-      security: [{ sessionCookie: [] }]
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
       parameters:
         - $ref: '#/components/parameters/UserID'
       responses:
@@ -801,7 +801,7 @@ paths:
     get:
       summary: Каталог разрешений
       description: Право `roles.read` (УПД.1). Из этих разрешений собираются свои роли.
-      security: [{ sessionCookie: [] }]
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
       x-permission: roles.read
       responses:
         '200':
@@ -819,7 +819,7 @@ paths:
       description: |
         Право `roles.read` (УПД.1). Сначала предустановленные роли (права задаёт
         продукт, изменить их нельзя), затем свои по ID. Все роли — на одной странице.
-      security: [{ sessionCookie: [] }]
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
       x-permission: roles.read
       responses:
         '200':
@@ -867,7 +867,7 @@ paths:
     get:
       summary: Роль
       description: Право `roles.read`.
-      security: [{ sessionCookie: [] }]
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
       x-permission: roles.read
       parameters:
         - $ref: '#/components/parameters/RoleID'
@@ -935,6 +935,107 @@ paths:
         '422': { $ref: '#/components/responses/ProblemUnprocessable' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ProblemInternal' }
+  /api/v1/api-tokens:
+    get:
+      summary: Токены API
+      description: |
+        Право `api_tokens.read` (ИАФ.9). С областью `own` — только свои токены, с `all` —
+        все токены организации (УПД.8). Порядок — по времени выпуска. Секретов в ответе нет.
+      security: [{ sessionCookie: [] }]
+      x-permission: api_tokens.read
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Страница списка
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/APITokenPage' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+    post:
+      summary: Выпустить себе токен API
+      description: |
+        Право `api_tokens.manage` (ИАФ.9), только из сессии консоли. Токен действует от
+        имени выпустившего: его права — пересечение указанных разрешений с текущими
+        правами роли владельца, понижение роли сразу сужает токен. Разрешения с признаком
+        `security` и разрешения на сами токены токену не выдаются (400); разрешение, которого
+        нет у пользователя, — 403. Срок обязателен: 1–365 дней, по умолчанию 90. Не больше
+        20 действующих токенов на пользователя (422). Сам токен показывается один раз, в
+        журналы не попадает. Без `Idempotency-Key`: сохранённый ответ содержал бы токен.
+        Пишет `api_token.create`.
+      security: [{ sessionCookie: [] }]
+      x-permission: api_tokens.manage
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NewAPIToken' }
+      responses:
+        '201':
+          description: Токен выпущен
+          headers:
+            Location: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CreatedAPIToken' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '422': { $ref: '#/components/responses/ProblemUnprocessable' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+  /api/v1/api-tokens/{id}:
+    get:
+      summary: Токен API
+      description: Право `api_tokens.read`. Чужой токен при области `own` — 404 (УПД.8).
+      security: [{ sessionCookie: [] }]
+      x-permission: api_tokens.read
+      parameters:
+        - $ref: '#/components/parameters/APITokenID'
+      responses:
+        '200':
+          description: Токен без секрета
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/APIToken' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+    delete:
+      summary: Отозвать токен API
+      description: |
+        Право `api_tokens.manage`. Свой токен — при любой области; чужой — только при
+        области `all` и если права владельца входят в права отзывающего (403, УПД.2), иначе
+        404. Токен не удаляется: отмечается отзыв, отозванный токен не оживает; повторный
+        отзыв — 409. Пишет `api_token.revoke`.
+      security: [{ sessionCookie: [] }]
+      x-permission: api_tokens.manage
+      parameters:
+        - $ref: '#/components/parameters/APITokenID'
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '200':
+          description: Токен отозван
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/APIToken' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '409': { $ref: '#/components/responses/ProblemConflict' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
 components:
   securitySchemes:
     appKey:
@@ -949,7 +1050,12 @@ components:
     bearerToken:
       type: http
       scheme: bearer
-      description: Токен API для автоматизации (ИАФ.9)
+      description: |
+        Токен API `aisec_pat_<префикс>_<секрет>` для автоматизации (ИАФ.9). С заголовком
+        `Authorization` cookie не проверяется, CSRF не нужен. Права — пересечение области
+        токена с правами роли владельца; разрешения своих данных (`self`, `session`), с
+        признаком `security` и на токены токену недоступны. Операции, доступные токену,
+        перечисляют `bearerToken` в `security`. Каждый запрос пишет `api_token.used`.
   parameters:
     Limit:
       name: limit
@@ -979,6 +1085,12 @@ components:
       required: true
       description: ID роли
       schema: { $ref: '#/components/schemas/Role' }
+    APITokenID:
+      name: id
+      in: path
+      required: true
+      description: ID токена API (UUID)
+      schema: { type: string, format: uuid }
     IdempotencyKey:
       name: Idempotency-Key
       in: header
@@ -1388,6 +1500,55 @@ components:
       additionalProperties: false
       properties:
         role: { $ref: '#/components/schemas/Role' }
+    APIToken:
+      type: object
+      required: [id, user_id, name, prefix, permissions, status, expires_at, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        user_id: { type: string, format: uuid, description: Владелец — от его имени действует токен }
+        name: { type: string }
+        prefix: { type: string, pattern: '^aisec_pat_[a-z0-9]{8}$', description: Начало токена для поиска и показа; не секрет }
+        permissions:
+          type: array
+          description: Область токена; действуют только разрешения, которые есть и у роли владельца
+          items: { $ref: '#/components/schemas/Grant' }
+        status: { type: string, enum: [active, expired, revoked] }
+        expires_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+        last_used_at: { type: string, format: date-time }
+        last_used_ip: { type: string }
+        revoked_at: { type: string, format: date-time }
+        revoke_reason: { type: string, enum: [owner, admin] }
+    APITokenPage:
+      allOf:
+        - $ref: '#/components/schemas/PageInfo'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/APIToken' }
+    NewAPIToken:
+      type: object
+      required: [name, permissions]
+      additionalProperties: false
+      properties:
+        name: { type: string, minLength: 1, maxLength: 200 }
+        expires_in_days: { type: integer, minimum: 1, maximum: 365, default: 90 }
+        permissions:
+          type: array
+          minItems: 1
+          description: Разрешения без признака `security` и не на токены
+          items: { $ref: '#/components/schemas/Grant' }
+    CreatedAPIToken:
+      type: object
+      required: [api_token, token]
+      properties:
+        api_token: { $ref: '#/components/schemas/APIToken' }
+        token:
+          type: string
+          pattern: '^aisec_pat_[a-z0-9]{8}_[A-Za-z0-9_-]{43}$'
+          description: 'Токен для заголовка `Authorization: Bearer`. Показывается один раз'
     RoleAssigned:
       type: object
       required: [user, revoked_sessions]

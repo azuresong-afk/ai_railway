@@ -155,12 +155,14 @@ func Render(ops []Operation, roles []auth.RoleDef) string {
 	b.WriteString("Каждую пару проверяет тест `TestRBACMatrixDenials` (`internal/api`): для «—» — ответ 403 и запись `access.denied` в журнале аудита, ")
 	b.WriteString("для остальных — ни 401, ни 403. Тот же тест проверяет свою роль без разрешений: ей доступны только эндпоинты с `self` и `session`. ")
 	b.WriteString("Сессия с временным или истёкшим паролем получает только `self` и `session`, сессия до второго фактора — только `session`, независимо от роли.\n\n")
+	b.WriteString("Колонка «токен API» — можно ли выдать разрешение токену API (ИАФ.9, `auth.TokenGrantable`): функции безопасности, свои данные и сами токены токену недоступны. ")
+	b.WriteString("Права токена — пересечение его области с правами роли владельца; эти пары проверяет `TestRBACMatrixTokenDenials`.\n\n")
 	b.WriteString("## Защищённые эндпоинты\n\n| Метод | Путь | Разрешение |")
 	for _, r := range roles {
 		b.WriteString(" " + string(r.ID) + " |")
 	}
-	b.WriteString("\n|---|---|---|")
-	b.WriteString(strings.Repeat("---|", len(roles)))
+	b.WriteString(" токен API |\n|---|---|---|")
+	b.WriteString(strings.Repeat("---|", len(roles)+1))
 	b.WriteString("\n")
 	var public []Operation
 	for _, o := range ops {
@@ -174,7 +176,11 @@ func Render(ops []Operation, roles []auth.RoleDef) string {
 			g := auth.SessionGrants(auth.Caller{Session: auth.Session{State: auth.SessionActive}}, r.Grants)
 			b.WriteString(" " + Cell(g, o.Permission) + " |")
 		}
-		b.WriteString("\n")
+		token := "—"
+		if auth.TokenGrantable(o.Permission) {
+			token = "да"
+		}
+		b.WriteString(" " + token + " |\n")
 	}
 	b.WriteString("\n## Открытые эндпоинты (без аутентификации)\n\n")
 	for _, o := range public {

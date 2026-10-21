@@ -161,8 +161,12 @@ func setupPG(t *testing.T) *pgEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
+	tokens, err := auth.NewPGAPITokens(e.app, e.log)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if e.svc, err = auth.NewService(ctx, e.store, e.log, p, auth.WithClock(e.clock.now), auth.WithPasswordHasher(&authtest.Hasher{}),
-		auth.WithSecretBox(box), auth.WithRoleStore(roles)); err != nil {
+		auth.WithSecretBox(box), auth.WithRoleStore(roles), auth.WithAPITokenStore(tokens)); err != nil {
 		t.Fatal(err)
 	}
 	e.mfa = newMFAKeys(e.svc, e.store, e.clock)
