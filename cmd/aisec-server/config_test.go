@@ -17,6 +17,14 @@ func TestLoadConfigDefaultsAndEnv(t *testing.T) {
 	if err != nil || cfg.Listen != "0.0.0.0:9000" || cfg.TLSCertFile != "c2" {
 		t.Fatalf("флаг важнее окружения: %+v %v", cfg, err)
 	}
+	if cfg.AuditSigningPub != "" {
+		t.Fatalf("ключ аудита по умолчанию: %q", cfg.AuditSigningPub)
+	}
+	e = env(map[string]string{"AISEC_SERVER_TLS_CERT": "c", "AISEC_SERVER_TLS_KEY": "k", "AISEC_DATABASE_URL": "postgres://u@h/d",
+		"AISEC_SERVER_AUDIT_SIGNING_PUB": "/keys/audit-signing.pub"})
+	if cfg, err = loadConfig(nil, e, io.Discard); err != nil || cfg.AuditSigningPub != "/keys/audit-signing.pub" {
+		t.Fatalf("ключ аудита из окружения: %+v %v", cfg, err)
+	}
 }
 
 func TestLoadConfigRejects(t *testing.T) {

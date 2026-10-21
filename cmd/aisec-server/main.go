@@ -74,7 +74,20 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	}
 	defer db.Close()
 
-	auditLog, err := audit.New(db.Pool(), p)
+	// Контрольные точки архивации (ADR-0008): без них после архивации
+	// начало хранимой цепочки не подтверждается. С открытым ключом аудита
+	// проверяются и подписи точек, без него — только связность.
+	var auditVerifier aisecCrypto.Verifier
+	if cfg.AuditSigningPub != "" {
+		if auditVerifier, err = aisecCrypto.LoadVerifierFile(p, cfg.AuditSigningPub, aisecCrypto.KeyKindAuditSigningPublic); err != nil {
+			return fmt.Errorf("ключ проверки аудита: %w", err)
+		}
+	}
+	checkpoints, err := audit.NewPGCheckpoints(db.Pool(), p, auditVerifier)
+	if err != nil {
+		return err
+	}
+	auditLog, err := audit.New(db.Pool(), p, audit.WithCheckpoints(checkpoints))
 	if err != nil {
 		return err
 	}

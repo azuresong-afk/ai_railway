@@ -79,16 +79,59 @@ func (v *Verifier) verify(ctx context.Context, by Actor) (Verification, error) {
 		return Verification{}, err
 	}
 	anchor, err := v.log.anchor(ctx)
+	if errors.Is(err, ErrCheckpointInvalid) {
+		// Начало хранимой цепочки не подтверждается: это нарушение (DM-43),
+		// а не сбой проверки.
+		res := Verification{At: v.log.now().UTC().Truncate(time.Microsecond), Break: &Break{Seq: 0, Reason: ReasonCheckpoint}}
+		return res, v.save(ctx, res, by)
+	}
 	if err != nil {
 		return Verification{}, err
 	}
+	c, brk, err := v.walk(ctx, anchor, known)
+	if err != nil {
+		return Verification{}, err
+	}
+	if brk != nil {
+		// Архивация могла зафиксироваться между чтением точки и записей:
+		// тогда начало журнала ушло в архив законно. Если точка сменилась,
+		// цепочка проверяется заново от новой точки (один раз).
+		next, err := v.log.anchor(ctx)
+		if err != nil && !errors.Is(err, ErrCheckpointInvalid) {
+			return Verification{}, err
+		}
+		if err == nil && next.Seq != anchor.Seq {
+			anchor = next
+			if c, brk, err = v.walk(ctx, anchor, known); err != nil {
+				return Verification{}, err
+			}
+		}
+	}
+	if brk == nil && anchor.Seq > 0 && c.checked == 0 {
+		// Последняя запись журнала не архивируется никогда: после точки
+		// всегда есть записи. Их нет — удалён хвост (ADR-0008).
+		brk = &Break{Seq: anchor.Seq + 1, Reason: ReasonTailTruncated}
+	}
+	res := Verification{At: v.log.now().UTC().Truncate(time.Microsecond), Checked: c.checked, Head: c.head(), Break: brk}
+	if err := v.save(ctx, res, by); err != nil {
+		return res, err
+	}
+	if res.OK() && res.Head.Seq > anchor.Seq {
+		h := res.Head
+		v.known = &h
+	}
+	return res, nil
+}
+
+// walk проверяет записи после anchor.
+func (v *Verifier) walk(ctx context.Context, anchor Anchor, known []Anchor) (*chain, *Break, error) {
 	c := newChain(v.log.hasher, anchor, known)
 	var brk *Break
 	cursor := anchor.Seq
 	for brk == nil {
 		batch, err := v.readBatch(ctx, cursor)
 		if err != nil {
-			return Verification{}, err
+			return nil, nil, err
 		}
 		for i := range batch {
 			if brk = c.add(&batch[i]); brk != nil {
@@ -103,15 +146,7 @@ func (v *Verifier) verify(ctx context.Context, by Actor) (Verification, error) {
 	if brk == nil {
 		brk = c.finish()
 	}
-	res := Verification{At: v.log.now().UTC().Truncate(time.Microsecond), Checked: c.checked, Head: c.head(), Break: brk}
-	if err := v.save(ctx, res, by); err != nil {
-		return res, err
-	}
-	if res.OK() && res.Head.Seq > anchor.Seq {
-		h := res.Head
-		v.known = &h
-	}
-	return res, nil
+	return c, brk, nil
 }
 
 // lastKnown — записи, проверенные успешно раньше: из памяти процесса и

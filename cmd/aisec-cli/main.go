@@ -12,6 +12,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/azuresong-afk/ai_railway/internal/audit"
 	"github.com/azuresong-afk/ai_railway/internal/auth"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/internal/store"
@@ -25,8 +26,16 @@ const usage = `aisec-cli — служебные операции AISec.
 Команды:
   app-key -expires ГГГГ-ММ-ДД   выпустить ключ приложения
   init -dir КАТАЛОГ             создать ключи установки и токен первичной настройки (AISEC_DATABASE_URL)
+  init -dir КАТАЛОГ -add-audit-key
+                                создать только ключ подписи журнала аудита (установка до ADR-0008)
   migrate                       применить SQL-миграции к PostgreSQL (строка подключения — AISEC_DATABASE_URL)
-  audit verify                  проверить цепочку журнала аудита (AISEC_DATABASE_URL); 3 — цепочка нарушена
+  audit verify [-keys КАТАЛОГ]  проверить цепочку журнала аудита (AISEC_DATABASE_URL); 3 — цепочка нарушена
+  audit archive -keys КАТАЛОГ -out ФАЙЛ [-before ГГГГ-ММ-ДД]
+                                архивировать записи старше срока хранения с подписанной контрольной точкой
+  audit export -out ФАЙЛ [-from ГГГГ-ММ-ДД] [-to ГГГГ-ММ-ДД]
+                                выгрузить журнал аудита в файл
+  audit verify-archive -keys КАТАЛОГ ФАЙЛ
+                                проверить файл архива без БД; 3 — архив недействителен
   version                       версия
 `
 
@@ -81,7 +90,7 @@ func run(args []string, stdout, stderr io.Writer, now time.Time) int {
 				return 0
 			}
 			say(stderr, "aisec-cli audit: %v\n", err)
-			if errors.Is(err, errChainBroken) {
+			if errors.Is(err, errChainBroken) || errors.Is(err, audit.ErrArchiveInvalid) {
 				return 3
 			}
 			return 1

@@ -17,6 +17,10 @@ type serverConfig struct {
 	Listen      string
 	TLSCertFile string
 	TLSKeyFile  string
+	// AuditSigningPub — открытый ключ подписи контрольных точек архивации
+	// аудита (audit-signing.pub, ADR-0008); пусто — подписи точек не
+	// проверяются, только их связность.
+	AuditSigningPub string
 	// DatabaseURL содержит пароль, поэтому берётся только из окружения, не из
 	// аргументов командной строки (их видно в списке процессов).
 	DatabaseURL string
@@ -29,6 +33,7 @@ func loadConfig(args []string, getenv func(string) string, errOut io.Writer) (*s
 	listen := fs.String("listen", defaultListen, "адрес и порт сервера (AISEC_SERVER_LISTEN)")
 	cert := fs.String("tls-cert", "", "сертификат TLS сервера, PEM (AISEC_SERVER_TLS_CERT)")
 	key := fs.String("tls-key", "", "закрытый ключ TLS сервера, PEM, права 0600 (AISEC_SERVER_TLS_KEY)")
+	auditPub := fs.String("audit-signing-pub", "", "открытый ключ проверки контрольных точек аудита audit-signing.pub (AISEC_SERVER_AUDIT_SIGNING_PUB)")
 	if err := fs.Parse(args); err != nil {
 		return nil, err
 	}
@@ -37,7 +42,7 @@ func loadConfig(args []string, getenv func(string) string, errOut io.Writer) (*s
 	}
 	set := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
-	for name, dst := range map[string]*string{"listen": listen, "tls-cert": cert, "tls-key": key} {
+	for name, dst := range map[string]*string{"listen": listen, "tls-cert": cert, "tls-key": key, "audit-signing-pub": auditPub} {
 		if set[name] {
 			continue
 		}
@@ -45,7 +50,7 @@ func loadConfig(args []string, getenv func(string) string, errOut io.Writer) (*s
 			*dst = v
 		}
 	}
-	cfg := &serverConfig{Listen: *listen, TLSCertFile: *cert, TLSKeyFile: *key, DatabaseURL: getenv("AISEC_DATABASE_URL")}
+	cfg := &serverConfig{Listen: *listen, TLSCertFile: *cert, TLSKeyFile: *key, AuditSigningPub: *auditPub, DatabaseURL: getenv("AISEC_DATABASE_URL")}
 	var errs []error
 	if _, _, err := net.SplitHostPort(cfg.Listen); err != nil {
 		errs = append(errs, errors.New("listen: ожидается адрес:порт"))

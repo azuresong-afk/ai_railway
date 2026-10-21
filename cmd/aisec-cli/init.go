@@ -25,7 +25,13 @@ const (
 	signingPubFile = "bundle-signing.pub"
 	caKeyFile      = "ca.key"
 	caCertFile     = "ca.crt"
+	// Ключ подписи контрольных точек архивации журнала аудита (ADR-0008).
+	auditKeyFile = "audit-signing.key"
+	auditPubFile = "audit-signing.pub"
 )
+
+// initFileNames — все файлы, которые создаёт init.
+var initFileNames = []string{masterKeyFile, signingKeyFile, signingPubFile, caKeyFile, caCertFile, auditKeyFile, auditPubFile}
 
 const (
 	permSecret = 0o400
@@ -72,6 +78,8 @@ type initRecords struct {
 type initStore interface {
 	// HasDataKey сообщает, создан ли уже ключ данных организации.
 	HasDataKey(ctx context.Context, orgID string) (bool, error)
+	// Record пишет запись аудита (init -add-audit-key).
+	Record(ctx context.Context, e audit.Entry) error
 	// Save записывает ключ данных, хеш токена и запись аудита одной транзакцией.
 	Save(ctx context.Context, r *initRecords, actor audit.Actor) error
 	// DataKeyExists после ошибки Save выясняет, была ли транзакция
@@ -86,6 +94,7 @@ func initCmd(args []string, dsn string, stdout, stderr io.Writer, now time.Time)
 	fset.SetOutput(stderr)
 	dir := fset.String("dir", "", "каталог ключей: существует, права 0700, файлов ключей в нём ещё нет (обязательно)")
 	profile := fset.String("profile", aisecCrypto.ProfileStandard, "криптопрофиль установки: standard (gost — с этапа 6, пока отказ)")
+	addAuditKey := fset.Bool("add-audit-key", false, "только создать ключ подписи журнала аудита в каталоге уже инициализированной установки")
 	if err := fset.Parse(args); err != nil {
 		return err
 	}
@@ -115,7 +124,11 @@ func initCmd(args []string, dsn string, stdout, stderr io.Writer, now time.Time)
 	if err != nil {
 		return err
 	}
-	return runInit(ctx, *dir, p, pgInitStore{pool: db.Pool(), log: l}, cliActor(), now, stdout)
+	st := pgInitStore{pool: db.Pool(), log: l}
+	if *addAuditKey {
+		return runAddAuditKey(ctx, *dir, p, st, cliActor(), stdout)
+	}
+	return runInit(ctx, *dir, p, st, cliActor(), now, stdout)
 }
 
 // runInit создаёт ключи. Порядок выбран так, чтобы сбой не оставил
@@ -129,7 +142,7 @@ func runInit(ctx context.Context, dir string, p aisecCrypto.Provider, st initSto
 		return err
 	}
 	defer closeQuietly(root)
-	for _, name := range []string{masterKeyFile, signingKeyFile, signingPubFile, caKeyFile, caCertFile} {
+	for _, name := range initFileNames {
 		if _, err := root.Lstat(name); !errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("%s: файл уже существует или недоступен — init не перезаписывает ключи (ротация — ADR-0007)", name)
 		}
@@ -242,6 +255,12 @@ func generateInit(p aisecCrypto.Provider, now time.Time) (files []keyFile, rec *
 		return nil, nil, "", err
 	}
 
+	// Ключ подписи контрольных точек журнала аудита (ADR-0008).
+	auditFiles, err := generateAuditKey(p)
+	if err != nil {
+		return nil, nil, "", err
+	}
+
 	// Внутренний УЦ для mTLS шлюз — сервер (Р8).
 	ca, err := aisecCrypto.NewCA(caCommonName, aisecCrypto.MaxCertValidity, now)
 	if err != nil {
@@ -274,10 +293,83 @@ func generateInit(p aisecCrypto.Provider, now time.Time) (files []keyFile, rec *
 		{caKeyFile, caKeyPEM, permSecret},
 		{caCertFile, ca.CertPEM(), permPublic},
 	}
+	files = append(files, auditFiles...)
 	for _, f := range files {
 		rec.Files = append(rec.Files, f.name)
 	}
 	return files, rec, token, nil
+}
+
+// generateAuditKey создаёт пару ключей подписи контрольных точек аудита.
+// Пара отдельная от ключа пакетов: её компрометация не позволяет подписать
+// конфигурацию шлюза, и наоборот.
+func generateAuditKey(p aisecCrypto.Provider) ([]keyFile, error) {
+	s, err := p.GenerateSigner()
+	if err != nil {
+		return nil, err
+	}
+	seed := s.Seed()
+	defer clear(seed)
+	keyPEM, err := aisecCrypto.EncodeKeyPEM(aisecCrypto.KeyKindAuditSigning, p.Name(), seed)
+	if err != nil {
+		return nil, err
+	}
+	pubPEM, err := aisecCrypto.EncodeKeyPEM(aisecCrypto.KeyKindAuditSigningPublic, p.Name(), s.PublicKey())
+	if err != nil {
+		return nil, err
+	}
+	return []keyFile{{auditKeyFile, keyPEM, permSecret}, {auditPubFile, pubPEM, permPublic}}, nil
+}
+
+// runAddAuditKey — init -add-audit-key: ключ аудита для установки,
+// инициализированной до ADR-0008. Требует каталог ключей этой установки
+// (master.key на месте) и ключ данных в БД; существующий ключ аудита не
+// перезаписывается. Если запись аудита не удалась, файлы удаляются: ключ
+// без записи о создании не остаётся.
+func runAddAuditKey(ctx context.Context, dir string, p aisecCrypto.Provider, st initStore, actor audit.Actor, stdout io.Writer) error {
+	root, err := openKeyDir(dir)
+	if err != nil {
+		return err
+	}
+	defer closeQuietly(root)
+	if info, err := root.Lstat(masterKeyFile); err != nil || !info.Mode().IsRegular() {
+		return fmt.Errorf("%s: нет в каталоге — это не каталог ключей установки (сначала init)", masterKeyFile)
+	}
+	for _, name := range []string{auditKeyFile, auditPubFile} {
+		if _, err := root.Lstat(name); !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("%s: файл уже существует или недоступен — ключ аудита не перезаписывается (ротация — ADR-0008)", name)
+		}
+	}
+	has, err := st.HasDataKey(ctx, audit.DefaultOrgID)
+	if err != nil {
+		return err
+	}
+	if !has {
+		return errors.New("ключа данных нет: установка не инициализирована — выполните init без -add-audit-key")
+	}
+	files, err := generateAuditKey(p)
+	if err != nil {
+		return err
+	}
+	created, err := writeKeyFiles(root, files)
+	if err != nil {
+		removeFiles(root, created)
+		return err
+	}
+	if err := st.Record(ctx, audit.Entry{
+		OrgID: audit.DefaultOrgID, Actor: actor, Action: "system.audit_key",
+		Object: audit.Object{Type: "key_file", ID: auditPubFile}, Result: audit.ResultSuccess,
+		Details: map[string]any{"profile": p.Name(), "files": []any{auditKeyFile, auditPubFile}},
+	}); err != nil {
+		removeFiles(root, created)
+		return err
+	}
+	say(stdout, "Ключ подписи журнала аудита создан в %s (профиль %s):\n", dir, p.Name())
+	for _, f := range files {
+		say(stdout, "  %-20s %04o\n", f.name, f.perm)
+	}
+	say(stdout, "Передайте файлы пользователю, который запускает aisec-cli audit archive (chown).\n")
+	return nil
 }
 
 // openKeyDir открывает существующий каталог, закрытый для группы и
@@ -376,6 +468,12 @@ func (s pgInitStore) HasDataKey(ctx context.Context, orgID string) (bool, error)
 		return false, fmt.Errorf("проверка ключа данных (миграции применены? aisec-cli migrate): %w", err)
 	}
 	return exists, nil
+}
+
+func (s pgInitStore) Record(ctx context.Context, e audit.Entry) error {
+	ctx, cancel := context.WithTimeout(ctx, initDBTimeout)
+	defer cancel()
+	return s.log.Record(ctx, e)
 }
 
 func (s pgInitStore) DataKeyExists(ctx context.Context, id string) (bool, error) {

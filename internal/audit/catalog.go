@@ -36,6 +36,7 @@ var catalog = []Event{
 	{"component.stop", "Остановка компонента", true},
 	{"system.error", "Ошибка или сбой", true},
 	{"system.init", "Создание ключей установки (aisec-cli init)", true},
+	{"system.audit_key", "Создание ключа подписи журнала аудита (aisec-cli init -add-audit-key)", true},
 	// Целостность и самотестирование (РСБ.2, ОЦЛ).
 	{"integrity.check", "Результат контроля целостности", true},
 	{"selftest.result", "Результат самотестирования", true},
