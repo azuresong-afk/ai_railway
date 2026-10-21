@@ -32,7 +32,7 @@ test("ui-kit открывается в обеих темах и плотност
   for (const theme of ["Светлая", "Тёмная"]) {
     await page.getByLabel("Тема").selectOption({ label: theme });
     const bg = await page.evaluate(() => getComputedStyle(document.body).backgroundColor);
-    expect(bg).toBe(theme === "Светлая" ? "rgb(238, 241, 244)" : "rgb(22, 32, 43)");
+    expect(bg).toBe(theme === "Светлая" ? "rgb(237, 242, 248)" : "rgb(20, 30, 43)");
     for (const density of ["Компактно", "Удобно"]) {
       await page.getByLabel("Плотность").selectOption({ label: density });
     }

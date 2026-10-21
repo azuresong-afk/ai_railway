@@ -17,7 +17,10 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/auth"
 	"github.com/azuresong-afk/ai_railway/internal/auth/authtest"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
+	"github.com/azuresong-afk/ai_railway/internal/detect"
+	"github.com/azuresong-afk/ai_railway/internal/detect/builtin"
 	"github.com/azuresong-afk/ai_railway/internal/keyring"
+	"github.com/azuresong-afk/ai_railway/internal/policy/versions"
 )
 
 // Синтетические учётные записи для приложений.
@@ -33,13 +36,15 @@ const (
 type appsEnv struct {
 	*authEnv
 	apps  *apps.Memory
+	pols  *versions.Memory
+	rec   *recAudit
 	caPEM string
 }
 
 func newAppsEnv(t testing.TB) *appsEnv {
 	t.Helper()
 	e := &appsEnv{authEnv: &authEnv{mem: authtest.NewMemory(), log: &bytes.Buffer{}, clock: &testClock{t: time.Now()}, secrets: map[string][]byte{}},
-		apps: apps.NewMemory()}
+		apps: apps.NewMemory(), pols: versions.NewMemory(), rec: &recAudit{}}
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	ctx := context.Background()
 	// Своя роль: только свои приложения и их ключи (УПД.2, объектный уровень).
@@ -54,7 +59,7 @@ func newAppsEnv(t testing.TB) *appsEnv {
 		role      auth.Role
 	}{
 		{tAdminID, "admin", auth.RoleSecurityAdmin}, {tSysAdminID, "sysadm", auth.RoleSystemAdmin},
-		{tAuditorID, "auditor", auth.RoleAuditor}, {tOwnerID, "owner", auth.RoleAppOwner},
+		{tAuditorID, "auditor", auth.RoleAuditor}, {tOwnerID, "owner", auth.RoleAppOwner}, {tAnalystID, "analyst", auth.RoleAnalyst},
 		{tOwner2ID, "owner2", auth.RoleAppOwner}, {tKeyMgrID, "keymgr", tKeyRole},
 	} {
 		e.mem.AddUser(auth.User{ID: u.id, OrgID: audit.DefaultOrgID, Login: u.login, DisplayName: u.login, Role: u.role,
@@ -76,7 +81,15 @@ func newAppsEnv(t testing.TB) *appsEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc, err := apps.New(apps.Options{Store: e.apps, Provider: p, Box: box, OwnerCheck: func(ctx context.Context, id string) error {
+	reg, err := detect.NewRegistry(builtin.All()...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pols, err := versions.New(versions.Options{Store: e.pols, Provider: p, Catalog: reg})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc, err := apps.New(apps.Options{Store: e.apps, Provider: p, Box: box, Policies: pols, OwnerCheck: func(ctx context.Context, id string) error {
 		u, err := e.mem.UserByID(ctx, audit.DefaultOrgID, id)
 		if err != nil || u.Status != auth.StatusActive {
 			return errors.New("владелец не найден")
@@ -93,6 +106,7 @@ func newAppsEnv(t testing.TB) *appsEnv {
 	e.caPEM = string(ca.CertPEM())
 	logger := slog.New(slog.NewTextHandler(e.log, nil))
 	h, _, err := New(Options{Hasher: testHasher(t), Logger: logger, Auth: testAuth(t, e.mem, auth.WithClock(e.clock.now)), Apps: svc,
+		Policies: pols, Audit: e.rec,
 		RateLimit: RateConfig{Rules: []RateRule{{Prefix: "/", Max: 100000, Window: time.Minute}}}})
 	if err != nil {
 		t.Fatal(err)
