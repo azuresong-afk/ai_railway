@@ -60,6 +60,36 @@ describe.each(themes)("%s тема", (_name, t) => {
   );
 });
 
+// Оттенок (0–360°) и насыщенность по HSL.
+function hueSat(hex: string): [number, number] {
+  const h = hex.replace("#", "");
+  const [r, g, b] = [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16) / 255) as [number, number, number];
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const d = max - min;
+  const l = (max + min) / 2;
+  const s = d === 0 ? 0 : d / (1 - Math.abs(2 * l - 1));
+  let hue = 0;
+  if (d > 0) {
+    if (max === r) hue = ((g - b) / d) % 6;
+    else if (max === g) hue = (b - r) / d + 2;
+    else hue = (r - g) / d + 4;
+  }
+  return [(hue * 60 + 360) % 360, s];
+}
+
+// Цветные значки серьёзности и решений не сливаются с акцентом: оттенки расходятся не меньше чем на 30°.
+// Серые (насыщенность < 0,25, например «Информация») отличаются от акцента насыщенностью.
+describe.each(themes)("%s тема: значки отличимы от акцента", (_name, t) => {
+  const [accentHue] = hueSat(get(t, "--c-accent"));
+  it.each([...light.keys()].filter((k) => k.startsWith("--c-sev-") || k.startsWith("--c-dec-")))("%s", (k) => {
+    const [hue, sat] = hueSat(get(t, k));
+    if (sat < 0.25) return;
+    const diff = Math.min(Math.abs(hue - accentHue), 360 - Math.abs(hue - accentHue));
+    expect(diff).toBeGreaterThanOrEqual(30);
+  });
+});
+
 it("тёмная тема по prefers-color-scheme совпадает с data-theme=dark", () => {
   expect(darkAuto).toEqual(dark);
 });
