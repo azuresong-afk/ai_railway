@@ -3,7 +3,7 @@
 #
 # Версии инструментов передаёт Makefile (make build-image) из своих
 # переменных — единственного места, где они заданы.
-ARG GO_IMAGE=golang:1.27.2-bookworm@sha256:5cf287a799e6b94384bad13d16b14904c531f51ba65792237e122ce42b392f61
+ARG GO_IMAGE=golang:1.27.3-bookworm@sha256:21ade014faf952365b9ecbd8dbdb87176fbacb82fac9fb132d9f2a7b8cc3f132
 FROM ${GO_IMAGE}
 
 ARG GOLANGCI_LINT_VERSION
