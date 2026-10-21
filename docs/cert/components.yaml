@@ -928,3 +928,35 @@ components:
     decided: 2026-10-20
     license_files:
       LICENSE: 911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad
+
+  - name: Onest
+    version: fontsource-variable-5.3.1
+    type: font
+    scope: product
+    purpose: Шрифт интерфейса веб-консоли (кириллица и латиница, вариативный woff2).
+    license: OFL-1.1
+    repository: https://github.com/simpals/onest
+    attack_surface: false
+    security_function: false
+    provided_by: The Onest Project Authors; woff2-файлы из пакета @fontsource-variable/onest 5.3.1 (реестр npm), в репозитории лежат файлами, пакет не подключён
+    justification: ТЗ 6.2 — шрифты хранятся локально. Файлы в web/src/assets/fonts вместо npm-пакета — без новой зависимости цепочки поставки. SHA-256 файлов - onest-cyrillic-wght-normal.woff2 68e5e01d6265bd68967746d4f5a9d18d0e6cbb5d15583c7082d6384ab1229b27; onest-latin-wght-normal.woff2 052df74533250c2e0ca0c4bdd32de594e107d99c1648e63820ef9c6142067828.
+    decision: 'ТЗ 6.2; план этапа 2, задача 2.23; выбор шрифта и способа подключения — согласие владельца 2026-10-21'
+    decided: 2026-10-21
+    license_files:
+      OFL-Onest.txt: a2a09da98a3d0d1ec79fc2d6deeac748b20a8153e26699552e7b59b5a40b63a3
+
+  - name: JetBrains Mono
+    version: fontsource-variable-5.3.0
+    type: font
+    scope: product
+    purpose: Моноширинный шрифт веб-консоли для сырого содержимого, идентификаторов и кода (вариативный woff2).
+    license: OFL-1.1
+    repository: https://github.com/JetBrains/JetBrainsMono
+    attack_surface: false
+    security_function: false
+    provided_by: The JetBrains Mono Project Authors; woff2-файлы из пакета @fontsource-variable/jetbrains-mono 5.3.0 (реестр npm), в репозитории лежат файлами, пакет не подключён
+    justification: ТЗ 6.2 — шрифты хранятся локально. SHA-256 файлов - jetbrains-mono-cyrillic-wght-normal.woff2 d274604c40757f98f07df623a8b8fb5194508a6fa4f5413a7a107f09e3b7452a; jetbrains-mono-latin-wght-normal.woff2 18be452724bfdc236c074ca94a249a7f41a86752c7d04ab258ce9ed5651f6a7e.
+    decision: 'ТЗ 6.2; план этапа 2, задача 2.23; согласие владельца 2026-10-21'
+    decided: 2026-10-21
+    license_files:
+      OFL-JetBrainsMono.txt: 403581b69dac5cff4079205e01c6b467e56af449ecbd7247693ddb1baafa005b

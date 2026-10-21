@@ -68,8 +68,8 @@ func TestEveryProtectedRouteDenies(t *testing.T) {
 
 func TestOnDeniedHook(t *testing.T) {
 	var got []string
-	h, _ := newHandler(t, Options{OnDenied: func(_ *http.Request, perm string, d Decision) {
-		got = append(got, perm+":"+map[Decision]string{Unauthenticated: "401", Forbidden: "403"}[d])
+	h, _ := newHandler(t, Options{OnDenied: func(_ *http.Request, d Denial) {
+		got = append(got, d.Permission+":"+map[Decision]string{Unauthenticated: "401", Forbidden: "403"}[d.Decision])
 	}})
 	do(h, "GET", "/api/v1/system/info", "")
 	if len(got) != 1 || got[0] != "system.read:401" {

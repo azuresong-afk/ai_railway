@@ -1,0 +1,91 @@
+# Матрица «роль × эндпоинт» (УПД.3)
+
+Файл создан командой `make rbac-matrix` (`tools/rbac-matrix`) из `api/openapi.yaml` (расширение `x-permission`) и прав предустановленных ролей (`internal/auth/permissions.go`). Руками не правится: тест `tools/rbac-matrix` падает, если файл устарел.
+
+«да» — доступ есть; «свои» — только к своим объектам (УПД.8); «—» — отказ 403. Каждую пару проверяет тест `TestRBACMatrixDenials` (`internal/api`): для «—» — ответ 403 и запись `access.denied` в журнале аудита, для остальных — ни 401, ни 403. Тот же тест проверяет свою роль без разрешений: ей доступны только эндпоинты с `self` и `session`. Сессия с временным или истёкшим паролем получает только `self` и `session`, сессия до второго фактора — только `session`, независимо от роли.
+
+Колонка «токен API» — можно ли выдать разрешение токену API (ИАФ.9, `auth.TokenGrantable`): функции безопасности, свои данные и сами токены токену недоступны. Права токена — пересечение его области с правами роли владельца; эти пары проверяет `TestRBACMatrixTokenDenials`.
+
+## Защищённые эндпоинты
+
+| Метод | Путь | Разрешение | security_admin | system_admin | analyst | auditor | app_owner | токен API |
+|---|---|---|---|---|---|---|---|---|
+| GET | `/api/v1/api-tokens` | `api_tokens.read` | да | свои | — | да | — | — |
+| POST | `/api/v1/api-tokens` | `api_tokens.manage` | да | свои | — | — | — | — |
+| GET | `/api/v1/api-tokens/{id}` | `api_tokens.read` | да | свои | — | да | — | — |
+| DELETE | `/api/v1/api-tokens/{id}` | `api_tokens.manage` | да | свои | — | — | — | — |
+| POST | `/api/v1/app-keys/{id}/revoke` | `app_keys.manage` | да | да | — | — | — | да |
+| POST | `/api/v1/app-keys/{id}/rotate` | `app_keys.manage` | да | да | — | — | — | да |
+| GET | `/api/v1/applications` | `applications.read` | да | да | да | да | свои | да |
+| POST | `/api/v1/applications` | `applications.manage` | да | да | — | — | — | да |
+| GET | `/api/v1/applications/{id}` | `applications.read` | да | да | да | да | свои | да |
+| PUT | `/api/v1/applications/{id}` | `applications.manage` | да | да | — | — | — | да |
+| DELETE | `/api/v1/applications/{id}` | `applications.manage` | да | да | — | — | — | да |
+| GET | `/api/v1/applications/{id}/keys` | `applications.read` | да | да | да | да | свои | да |
+| POST | `/api/v1/applications/{id}/keys` | `app_keys.manage` | да | да | — | — | — | да |
+| PUT | `/api/v1/applications/{id}/protection` | `applications.policy` | да | — | — | — | — | — |
+| POST | `/api/v1/auth/logout` | `session` | да | да | да | да | да | — |
+| POST | `/api/v1/auth/mfa/recovery-codes` | `session` | да | да | да | да | да | — |
+| POST | `/api/v1/auth/mfa/setup` | `session` | да | да | да | да | да | — |
+| POST | `/api/v1/auth/mfa/setup/confirm` | `session` | да | да | да | да | да | — |
+| POST | `/api/v1/auth/mfa/verify` | `session` | да | да | да | да | да | — |
+| POST | `/api/v1/auth/password` | `self` | да | да | да | да | да | — |
+| GET | `/api/v1/auth/policy` | `auth_policy.read` | да | — | — | да | — | да |
+| PUT | `/api/v1/auth/policy` | `auth_policy.manage` | да | — | — | — | — | — |
+| GET | `/api/v1/events` | `events.read` | да | — | да | да | — | да |
+| POST | `/api/v1/events/export` | `events.export` | да | — | да | — | — | да |
+| GET | `/api/v1/events/filters` | `events.read` | да | — | да | да | — | да |
+| POST | `/api/v1/events/filters` | `events.read` | да | — | да | да | — | да |
+| DELETE | `/api/v1/events/filters/{id}` | `events.read` | да | — | да | да | — | да |
+| GET | `/api/v1/events/settings` | `events.read` | да | — | да | да | — | да |
+| PUT | `/api/v1/events/settings` | `events.retention.manage` | да | — | — | — | — | — |
+| GET | `/api/v1/events/stats` | `events.read` | да | — | да | да | — | да |
+| GET | `/api/v1/events/{id}` | `events.read` | да | — | да | да | — | да |
+| POST | `/api/v1/events/{id}/content` | `events.content.read` | да | — | — | — | — | — |
+| GET | `/api/v1/me` | `session` | да | да | да | да | да | — |
+| GET | `/api/v1/permissions` | `roles.read` | да | — | — | да | — | да |
+| GET | `/api/v1/providers` | `providers.read` | да | да | да | да | — | да |
+| POST | `/api/v1/providers` | `providers.manage` | да | да | — | — | — | да |
+| GET | `/api/v1/providers/{id}` | `providers.read` | да | да | да | да | — | да |
+| PUT | `/api/v1/providers/{id}` | `providers.manage` | да | да | — | — | — | да |
+| DELETE | `/api/v1/providers/{id}` | `providers.manage` | да | да | — | — | — | да |
+| PUT | `/api/v1/providers/{id}/credentials` | `providers.manage` | да | да | — | — | — | да |
+| PUT | `/api/v1/providers/{id}/external` | `providers.external` | да | — | — | — | — | — |
+| GET | `/api/v1/roles` | `roles.read` | да | — | — | да | — | да |
+| POST | `/api/v1/roles` | `roles.manage` | да | — | — | — | — | — |
+| GET | `/api/v1/roles/{id}` | `roles.read` | да | — | — | да | — | да |
+| PUT | `/api/v1/roles/{id}` | `roles.manage` | да | — | — | — | — | — |
+| DELETE | `/api/v1/roles/{id}` | `roles.manage` | да | — | — | — | — | — |
+| GET | `/api/v1/system/info` | `system.read` | да | да | да | да | — | да |
+| GET | `/api/v1/system/integrity` | `system.read` | да | да | да | да | — | да |
+| POST | `/api/v1/system/integrity/verify` | `integrity.verify` | да | — | — | — | — | — |
+| GET | `/api/v1/system/status` | `system.read` | да | да | да | да | — | да |
+| GET | `/api/v1/users` | `users.read` | да | — | — | да | — | да |
+| POST | `/api/v1/users` | `users.manage` | да | — | — | — | — | — |
+| GET | `/api/v1/users/{id}` | `users.read` | да | — | — | да | — | да |
+| POST | `/api/v1/users/{id}/activate` | `users.manage` | да | — | — | — | — | — |
+| POST | `/api/v1/users/{id}/deactivate` | `users.manage` | да | — | — | — | — | — |
+| POST | `/api/v1/users/{id}/mfa/reset` | `users.manage` | да | — | — | — | — | — |
+| POST | `/api/v1/users/{id}/password-reset` | `users.manage` | да | — | — | — | — | — |
+| PUT | `/api/v1/users/{id}/role` | `roles.manage` | да | — | — | — | — | — |
+| GET | `/api/v1/users/{id}/sessions` | `sessions.read` | да | — | — | да | — | да |
+| DELETE | `/api/v1/users/{id}/sessions` | `sessions.manage` | да | — | — | — | — | — |
+
+## Открытые эндпоинты (без аутентификации)
+
+- POST `/api/v1/auth/login`
+- GET `/api/v1/auth/setup`
+- POST `/api/v1/auth/setup`
+- POST `/api/v1/gateways/register`
+- GET `/healthz`
+- GET `/readyz`
+
+## Предустановленные роли
+
+| Роль | Название | Второй фактор обязателен |
+|---|---|---|
+| security_admin | Администратор безопасности | да |
+| system_admin | Администратор системы | да |
+| analyst | Аналитик | нет |
+| auditor | Аудитор | нет |
+| app_owner | Владелец приложения | нет |

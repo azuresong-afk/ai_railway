@@ -149,7 +149,11 @@ func (s *Service) MFAStatus(ctx context.Context, u User) (MFAInfo, error) {
 	if err != nil {
 		return MFAInfo{}, err
 	}
-	return MFAInfo{Enabled: enabled, Required: MFARequired(u, pol)}, nil
+	required, err := s.mfaRequired(ctx, u, pol)
+	if err != nil {
+		return MFAInfo{}, err
+	}
+	return MFAInfo{Enabled: enabled, Required: required}, nil
 }
 
 func (s *Service) mfaEnabled(ctx context.Context, userID string) (bool, error) {
@@ -445,7 +449,12 @@ func (s *Service) ResetMFA(ctx context.Context, by Caller, userID string) error 
 	if by.User.ID == userID {
 		return ErrSelf
 	}
-	if _, err := s.store.UserByID(ctx, s.orgID, userID); err != nil {
+	u, err := s.store.UserByID(ctx, s.orgID, userID)
+	if err != nil {
+		return err
+	}
+	// Фактор более сильной учётной записи не сбрасывает (УПД.2, задача 2.9).
+	if err := s.canManage(ctx, by, u.Role, "auth.mfa_reset", userObject(userID)); err != nil {
 		return err
 	}
 	rec := s.entry(by.actor(), by.SourceIP, "auth.mfa_reset", userObject(userID), audit.ResultSuccess, nil)

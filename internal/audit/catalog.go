@@ -42,6 +42,30 @@ var catalog = []Event{
 	{"gateway.register", "Регистрация шлюза: выпуск сертификата по токену", true},
 	{"gateway.revoke", "Отзыв шлюза", true},
 	{"gateway.mtls_denied", "Отказ шлюзу во внутреннем API: сертификат отозван или неизвестен", true},
+	// Роли и доступ (РСБ.1, УПД.1–2, 6).
+	{"role.create", "Создание своей роли", true},
+	{"role.update", "Изменение своей роли", true},
+	{"role.delete", "Удаление своей роли", true},
+	{"user.role_changed", "Назначение роли пользователю", true},
+	{"access.denied", "Отказ в доступе к функции управления", true},
+	// Токены API (ИАФ.9, РСБ.1; задача 2.10).
+	{"api_token.create", "Выпуск токена API", true},
+	{"api_token.revoke", "Отзыв токена API", true},
+	{"api_token.used", "Запрос по токену API", true},
+	{"api_token.auth_failed", "Неудачная аутентификация по токену API", true},
+	// Приложения, ключи и провайдеры (ИАФ.8, ЗИ.1, DM-40; задача 2.11).
+	{"provider.create", "Создание провайдера", true},
+	{"provider.update", "Изменение провайдера", true},
+	{"provider.delete", "Удаление провайдера", true},
+	{"provider.credentials_set", "Замена учётных данных провайдера", true},
+	{"provider.external_changed", "Изменение признака «внешний» у провайдера", true},
+	{"application.create", "Создание приложения", true},
+	{"application.update", "Изменение приложения", true},
+	{"application.protection_changed", "Изменение политики, режима или режима хранения приложения", true},
+	{"application.archive", "Архивация приложения", true},
+	{"app_key.issue", "Выпуск ключа приложения", true},
+	{"app_key.rotate", "Ротация ключа приложения", true},
+	{"app_key.revoke", "Отзыв ключа приложения", true},
 	// Компоненты (РСБ.2).
 	{"component.start", "Запуск компонента", true},
 	{"component.stop", "Остановка компонента", true},
@@ -51,12 +75,16 @@ var catalog = []Event{
 	// Целостность и самотестирование (РСБ.2, ОЦЛ).
 	{"integrity.check", "Результат контроля целостности", true},
 	{"selftest.result", "Результат самотестирования", true},
+	// Уведомления раздела 7 на этапе 2: смена состояния условия (ВРМ.1, РСБ.5, ОЦЛ.5).
+	{"system.alert", "Условие уведомления возникло или снято", true},
 	// Обновления, резервное копирование, выгрузки (РСБ.2).
 	{"update.install", "Обновление компонента", true},
 	{"backup.create", "Резервное копирование", true},
 	{"backup.restore", "Восстановление из резервной копии", true},
 	{"data.export", "Выгрузка данных", true},
 	{"events.content_read", "Доступ к содержимому события", true},
+	{"events.retention", "Удаление событий по сроку хранения", true},
+	{"events.settings_changed", "Изменение сроков хранения событий", true},
 	// Сам журнал аудита (РСБ.3–4).
 	{"audit.settings_changed", "Изменение настроек журнала аудита", true},
 	{"audit.chain_verified", "Проверка цепочки журнала аудита: цела", true},

@@ -14,8 +14,9 @@ const (
 	TypeAuthFailure    = "auth_failure"    // неудачная аутентификация на шлюзе (DM-38)
 )
 
-// Режимы хранения содержимого (ТЗ, 5.5). Режим full на этапе 1 недоступен:
-// нужно шифрование при хранении (ЗИ.1, этап 2).
+// Режимы хранения содержимого (ТЗ, 5.5). Содержимое full хранится только на
+// сервере и только зашифрованным (ЗИ.1, задача 2.15); шлюз без сервера
+// (приёмник JSONL) режим full не принимает.
 const (
 	StorageNone   = "none"
 	StorageMasked = "masked"
@@ -225,9 +226,7 @@ func (e *Event) Validate() error {
 		if e.Content != nil {
 			errs = append(errs, errors.New("режим хранения none: содержимое не сохраняется"))
 		}
-	case StorageMasked:
-	case StorageFull:
-		errs = append(errs, errors.New("режим хранения full недоступен до шифрования при хранении (ЗИ.1, этап 2)"))
+	case StorageMasked, StorageFull:
 	default:
 		errs = append(errs, fmt.Errorf("неизвестный режим хранения %q", e.Storage))
 	}

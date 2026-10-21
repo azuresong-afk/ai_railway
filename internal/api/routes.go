@@ -19,6 +19,12 @@ func Routes(d Deps) []Route {
 	routes = append(routes, userRoutes(d)...)
 	routes = append(routes, gatewayRoutes(d)...)
 	routes = append(routes, integrityRoutes(d)...)
+	routes = append(routes, roleRoutes(d)...)
+	routes = append(routes, statusRoutes(d)...)
+	routes = append(routes, apiTokenRoutes(d)...)
+	routes = append(routes, eventsConsoleRoutes(d)...)
+	routes = append(routes, providerRoutes(d)...)
+	routes = append(routes, applicationRoutes(d)...)
 	return routes
 }
 

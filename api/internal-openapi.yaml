@@ -8,8 +8,8 @@
 # получает по токену на порту консоли: POST /api/v1/gateways/register в
 # api/openapi.yaml. Ошибки — Problem Details (RFC 9457). Контрактный тест
 # internal/api сверяет маршруты внутреннего порта с этим файлом в обе стороны.
-# События (POST /internal/v1/events:batch) и пакеты конфигурации
-# (GET /internal/v1/policies/bundle) добавят задачи 2.15 и 2.13.
+# Приём событий (POST /internal/v1/events:batch) — задача 2.15; пакеты
+# конфигурации (GET /internal/v1/policies/bundle) добавит задача 2.13.
 openapi: 3.1.0
 info:
   title: AISec internal API
@@ -46,6 +46,43 @@ paths:
         '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ProblemInternal' }
+  /internal/v1/events:batch:
+    post:
+      summary: Пакет событий шлюза (ТЗ 5.5, решение Р9)
+      description: |
+        Шлюз отправляет события пакетами по 1–500, тело до 8 МиБ. Событие
+        привязывается к шлюзу из клиентского сертификата; поля шлюза в теле нет
+        (неизвестные поля — 400). Приём идемпотентен по ID события (UUIDv7):
+        повтор пакета после обрыва ответа не создаёт дублей (`duplicates`).
+        Ошибка структуры пакета — 400 на весь пакет; ошибка отдельного события —
+        отказ только в нём (`rejected`: индекс и код). Окно приёма — время
+        события не старше 7 суток и не дальше 5 минут в будущем и не дальше
+        5 минут от времени в его UUIDv7. Содержимое `full` сервер шифрует ключом
+        данных (ЗИ.1), `masked` хранит как прислал шлюз, при `none` содержимого
+        быть не должно. Предел частоты — общий для внутреннего порта (600 в
+        минуту с адреса). 503 с `Retry-After` — хранилище временно недоступно,
+        пакет стоит повторить; 422 — хранилище отвергло данные, повтор не
+        поможет.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EventBatch' }
+      responses:
+        '200':
+          description: Пакет обработан
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EventBatchResult' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '422': { $ref: '#/components/responses/ProblemUnprocessable' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/ProblemUnavailable' }
 components:
   securitySchemes:
     gatewayCert:
@@ -68,7 +105,7 @@ components:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }
     ProblemTooLarge:
-      description: Тело больше 4 КиБ (`payload_too_large`)
+      description: Тело больше предела маршрута — heartbeat 4 КиБ, пакет событий 8 МиБ (`payload_too_large`)
       content:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }
@@ -89,6 +126,18 @@ components:
       content:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }
+    ProblemUnprocessable:
+      description: Хранилище отвергло данные пакета; повтор не поможет (`unprocessable`)
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    ProblemUnavailable:
+      description: Хранилище временно недоступно; повторить после `Retry-After` (`service_unavailable`)
+      headers:
+        Retry-After: { description: Через сколько секунд повторить, schema: { type: integer } }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
   schemas:
     HeartbeatRequest:
       type: object
@@ -97,12 +146,110 @@ components:
       properties:
         version: { type: string, minLength: 1, maxLength: 64, pattern: '^[0-9A-Za-z.+_-]+$', description: Версия шлюза }
         bundle_etag: { type: string, maxLength: 128, pattern: '^[!-~]*$', description: 'ETag применённого пакета конфигурации; пусто — пакета нет' }
+        selftest:
+          description: |
+            Итог самотестирования шлюза при запуске (ОЦЛ.4–5, задача 2.20).
+            Необязателен: шлюз прежней версии поле не присылает, сервер тогда
+            показывает «нет данных». `reason` у самотеста не задаётся.
+          allOf: [{ $ref: '#/components/schemas/CheckReport' }]
+        integrity:
+          description: |
+            Последний итог контроля целостности шлюза (ОЦЛ.2). `reason` — из
+            перечня; `ok: true` только при `reason: ok`.
+          allOf: [{ $ref: '#/components/schemas/CheckReport' }]
+    CheckReport:
+      description: |
+        Итог проверки шлюза: только результат и число провалов. Пути файлов,
+        имена детекторов и тексты эталонов на сервер не передаются.
+      type: object
+      required: [ok, checked_at, failed]
+      additionalProperties: false
+      properties:
+        ok: { type: boolean }
+        checked_at: { type: string, format: date-time, description: 'Время проверки; не позже чем на 5 минут вперёд от часов сервера' }
+        reason:
+          type: string
+          enum: [ok, manifest_missing, manifest_invalid, signature_invalid, files_mismatch]
+          description: Только у integrity
+        failed: { type: integer, minimum: 0, maximum: 1000, description: 'Число провалов; при `ok: true` — 0' }
     HeartbeatResponse:
       type: object
       required: [server_time, interval_seconds]
       properties:
         server_time: { type: string, format: date-time }
         interval_seconds: { type: integer, minimum: 1, description: Рекомендуемый период heartbeat }
+    EventBatch:
+      type: object
+      required: [events]
+      additionalProperties: false
+      properties:
+        events:
+          type: array
+          minItems: 1
+          maxItems: 500
+          items: { $ref: '#/components/schemas/Event' }
+        stats: { $ref: '#/components/schemas/SenderStats' }
+    SenderStats:
+      description: Счётчики отправителя шлюза с его запуска (DM-44, «Состояние системы»)
+      type: object
+      required: [started_at, dropped, rejected]
+      additionalProperties: false
+      properties:
+        started_at: { type: string, format: date-time }
+        dropped: { type: integer, minimum: 0, description: 'Отброшены: очередь переполнена или сервер недоступен при остановке' }
+        rejected: { type: integer, minimum: 0, description: Отклонены сервером }
+    Event:
+      description: |
+        Событие шлюза (ТЗ 5.5; схема — internal/events.Event). Строки
+        приложения, среды, пользователя, провайдера, модели, источника, полей
+        решения и находок — до 256 байт; содержимое запроса и ответа — до
+        64 КиБ каждое; находок — до 1024; категорий угроз — до 64 (`DM-NN`);
+        символ U+0000 не допускается. Неизвестные поля на любом уровне — 400.
+      type: object
+      required: [id, time, type]
+      additionalProperties: false
+      properties:
+        id: { type: string, description: UUIDv7 в канонической записи строчными }
+        time: { type: string, format: date-time }
+        type: { type: string, enum: [gateway_request, check, auth_failure] }
+        app: { type: string, maxLength: 256 }
+        env: { type: string, maxLength: 256 }
+        user: { type: string, maxLength: 256, description: 'Псевдоним пользователя (HMAC), не исходный идентификатор' }
+        provider: { type: string, maxLength: 256 }
+        model: { type: string, maxLength: 256 }
+        source: { type: string, maxLength: 256 }
+        policy_mode: { type: string, enum: [monitor, enforce] }
+        decision: { type: object, description: 'Решение и трассировка (internal/events.Decision)' }
+        findings: { type: array, maxItems: 1024, items: { type: object } }
+        threats: { type: array, maxItems: 64, items: { type: string, pattern: '^DM-[0-9]{2}$' } }
+        latency_ms: { type: object, additionalProperties: { type: integer, minimum: 0 } }
+        tokens: { type: object }
+        stream: { type: boolean }
+        non_text_unchecked: { type: boolean }
+        storage: { type: string, enum: [none, masked, full] }
+        content:
+          type: object
+          additionalProperties: false
+          properties:
+            request: { type: string }
+            response: { type: string }
+        response: { type: object }
+        pseudonyms: { type: object }
+        auth_failure: { type: object }
+    EventBatchResult:
+      type: object
+      required: [accepted, duplicates, rejected]
+      properties:
+        accepted: { type: integer, minimum: 0, description: Записано новых событий }
+        duplicates: { type: integer, minimum: 0, description: 'Уже были записаны (повтор пакета)' }
+        rejected:
+          type: array
+          items:
+            type: object
+            required: [index, code]
+            properties:
+              index: { type: integer, minimum: 0, description: Номер события в пакете }
+              code: { type: string, enum: [invalid, id, time, limits, nul] }
     Problem:
       description: Problem Details (RFC 9457), как в api/openapi.yaml
       type: object

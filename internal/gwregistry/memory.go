@@ -118,6 +118,14 @@ func (m *Memory) Touch(_ context.Context, id string, hb Heartbeat) error {
 		return ErrNotFound
 	}
 	g.LastSeenAt, g.LastAddr, g.Version, g.BundleETag = hb.At, hb.Addr, hb.Version, hb.BundleETag
+	if hb.Selftest != nil {
+		r := *hb.Selftest
+		g.Selftest = &r
+	}
+	if hb.Integrity != nil {
+		r := *hb.Integrity
+		g.Integrity = &r
+	}
 	return nil
 }
 

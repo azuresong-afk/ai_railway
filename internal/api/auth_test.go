@@ -83,7 +83,7 @@ func newAuthEnv(t *testing.T) *authEnv {
 	return e
 }
 
-func mustJSON(t *testing.T, v any) string {
+func mustJSON(t testing.TB, v any) string {
 	t.Helper()
 	b, err := json.Marshal(v)
 	if err != nil {
@@ -96,9 +96,11 @@ func mustJSON(t *testing.T, v any) string {
 type session struct {
 	cookies []*http.Cookie
 	csrf    string
+	// bearer — токен API для заголовка Authorization (задача 2.10).
+	bearer string
 }
 
-func (e *authEnv) login(t *testing.T, login, password string) (*httptest.ResponseRecorder, session) {
+func (e *authEnv) login(t testing.TB, login, password string) (*httptest.ResponseRecorder, session) {
 	t.Helper()
 	w := do(e.h, "POST", "/api/v1/auth/login", mustJSON(t, loginRequest{Login: login, Password: password}), "Content-Type", "application/json")
 	var s session
@@ -113,7 +115,7 @@ func (e *authEnv) login(t *testing.T, login, password string) (*httptest.Respons
 
 // mustLogin — полный вход: пароль и второй фактор (подключение при первом
 // входе роли, где он обязателен).
-func (e *authEnv) mustLogin(t *testing.T, login string) session {
+func (e *authEnv) mustLogin(t testing.TB, login string) session {
 	t.Helper()
 	w, s := e.login(t, login, tPhrase)
 	if w.Code != 200 {
@@ -153,7 +155,7 @@ func (s session) renewed(w *httptest.ResponseRecorder) session {
 }
 
 // enroll выдаёт секрет TOTP в сессии и запоминает его.
-func (e *authEnv) enroll(t *testing.T, s session, login string) MFASetup {
+func (e *authEnv) enroll(t testing.TB, s session, login string) MFASetup {
 	t.Helper()
 	w := e.call(s, "POST", "/api/v1/auth/mfa/setup", mustJSON(t, mfaSetupRequest{CurrentPassword: tPhrase}), true)
 	var en MFASetup
@@ -169,7 +171,7 @@ func (e *authEnv) enroll(t *testing.T, s session, login string) MFASetup {
 }
 
 // code — код TOTP пользователя на следующем шаге часов сервиса.
-func (e *authEnv) code(t *testing.T, login string) string {
+func (e *authEnv) code(t testing.TB, login string) string {
 	t.Helper()
 	c, err := cryptotest.TOTPCode(e.secrets[login], e.clock.next())
 	if err != nil {
@@ -192,6 +194,9 @@ func (e *authEnv) call(s session, method, target, body string, csrf bool) *httpt
 	}
 	if csrf {
 		r.Header.Set(CSRFHeader, s.csrf)
+	}
+	if s.bearer != "" {
+		r.Header.Set("Authorization", "Bearer "+s.bearer)
 	}
 	w := httptest.NewRecorder()
 	e.h.ServeHTTP(w, r)

@@ -152,7 +152,7 @@ func TestMFARequiredForAdminRoles(t *testing.T) {
 		t.Fatalf("первый вход администратора: %s", c.Session.State)
 	}
 	// До второго фактора — только свои данные, выход и подключение фактора.
-	if !auth.Allowed(c, auth.PermSession) || auth.Allowed(c, auth.PermSelf) || auth.Allowed(c, auth.PermUsersRead) {
+	if !allowed(t, e, c, auth.PermSession) || allowed(t, e, c, auth.PermSelf) || allowed(t, e, c, auth.PermUsersRead) {
 		t.Fatal("сессия mfa_setup получила права роли")
 	}
 	info, err := e.svc.MFAStatus(ctx, c.User)
@@ -196,7 +196,7 @@ func TestMFARequiredForAdminRoles(t *testing.T) {
 	if _, err := e.caller(t, res.Token); !errors.Is(err, auth.ErrUnauthenticated) {
 		t.Fatalf("токен до второго фактора: %v", err)
 	}
-	if c := e.mustCaller(t, r.Token); c.Session.State != auth.SessionActive || !auth.Allowed(c, auth.PermUsersRead) {
+	if c := e.mustCaller(t, r.Token); c.Session.State != auth.SessionActive || !allowed(t, e, c, auth.PermUsersRead) {
 		t.Fatalf("после подключения: %s", c.Session.State)
 	}
 	// Повторное подключение — только после сброса.
@@ -208,7 +208,7 @@ func TestMFARequiredForAdminRoles(t *testing.T) {
 	if res2.Caller.Session.State != auth.SessionMFAPending {
 		t.Fatalf("второй вход: %s", res2.Caller.Session.State)
 	}
-	if auth.Allowed(res2.Caller, auth.PermSelf) {
+	if allowed(t, e, res2.Caller, auth.PermSelf) {
 		t.Fatal("сессия mfa_pending получила право self")
 	}
 	c2 := e.mfa.complete(t, res2)
@@ -440,7 +440,7 @@ func TestMFAThenPasswordChange(t *testing.T) {
 	u.MustChangePassword = true
 	e.mem.AddUser(u)
 	c := e.mfa.complete(t, e.mustLogin(t, "admin", phrase))
-	if c.Session.State != auth.SessionPasswordChange || !auth.Allowed(c, auth.PermSelf) {
+	if c.Session.State != auth.SessionPasswordChange || !allowed(t, e, c, auth.PermSelf) {
 		t.Fatalf("после кода с временным паролем: %s", c.Session.State)
 	}
 	if err := e.svc.ChangePassword(ctx, c, phrase, phrase2); err != nil {

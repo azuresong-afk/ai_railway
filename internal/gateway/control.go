@@ -175,8 +175,10 @@ type HeartbeatConfig struct {
 	Version string
 	// BundleETag — текущий пакет конфигурации (задача 2.13); nil — пусто.
 	BundleETag func() string
-	Logger     *slog.Logger
-	Clock      func() time.Time
+	// Reports — итоги самотеста и целостности для сервера (задача 2.20); nil — не передаются.
+	Reports *Reports
+	Logger  *slog.Logger
+	Clock   func() time.Time
 	// Sleep ждёт d или отмены ctx (тесты подменяют его).
 	Sleep func(ctx context.Context, d time.Duration) bool
 }
@@ -220,7 +222,9 @@ func (c HeartbeatConfig) beat(ctx context.Context, u string, interval, backoff *
 		IntervalSeconds int       `json:"interval_seconds"`
 	}
 	sent := c.Clock()
-	err := postControl(ctx, c.Client, u, map[string]string{"version": c.Version, "bundle_etag": etag}, &resp, http.StatusOK)
+	body := heartbeatBody{Version: c.Version, BundleETag: etag}
+	body.Selftest, body.Integrity = c.Reports.snapshot()
+	err := postControl(ctx, c.Client, u, body, &resp, http.StatusOK)
 	if ctx.Err() != nil {
 		return 0, false
 	}

@@ -19,6 +19,10 @@ type Route struct {
 	Permission string
 	// Public — маршрут без аутентификации (только статус и вход).
 	Public bool
+	// Scoped — обработчик проверяет права на уровне объектов (УПД.8) и
+	// пускает субъекта с разрешением только на свои объекты (ScopeOwn).
+	// Без признака нужно разрешение на все объекты.
+	Scoped bool
 	// Idempotent включает поддержку заголовка Idempotency-Key (создающие запросы).
 	Idempotent bool
 	// MaxBody — предел тела; ноль — DefaultMaxBody.
@@ -38,8 +42,11 @@ type Router struct {
 	hasher   aisecCrypto.Hasher
 	logger   *slog.Logger
 	fallback http.Handler
-	// OnDenied вызывается при отказе в доступе (основа УПД.6 и аудита, задача 2.9).
-	onDenied func(r *http.Request, permission string, d Decision)
+	// onDenied вызывается при каждом отказе в доступе (УПД.6).
+	onDenied func(r *http.Request, d Denial)
+	// onTokenUsed вызывается после каждого пропущенного запроса по токену
+	// API с шаблоном маршрута и кодом ответа (РСБ.1, задача 2.10).
+	onTokenUsed func(r *http.Request, p Principal, method, path string, status int)
 }
 
 // Routes возвращает копию списка маршрутов (контрактные тесты и документация).
@@ -66,6 +73,8 @@ func (rt *Router) add(r Route) error {
 		return fmt.Errorf("нет обработчика")
 	case r.Public == (r.Permission != ""):
 		return fmt.Errorf("нужно ровно одно из: Public или Permission")
+	case r.Public && r.Scoped:
+		return fmt.Errorf("признак Scoped у открытого маршрута")
 	case r.Idempotent && r.Method != http.MethodPost && r.Method != http.MethodPatch:
 		return fmt.Errorf("Idempotency-Key поддерживается для POST и PATCH")
 	case r.MaxBody < 0:
@@ -104,22 +113,57 @@ func (rt *Router) wrap(r Route) http.Handler {
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		p, d := rt.authz.Authorize(req, r.Permission)
+		reason := DenyReasonPermission
+		if d == Forbidden && p.Grants.Allows(r.Permission) {
+			reason = DenyReasonCheck
+		}
+		// Разрешение только на свои объекты пускает лишь к маршрутам,
+		// которые сами отбирают объекты (УПД.8).
+		if d == Allow && !r.Scoped && !p.Grants.Full(r.Permission) {
+			d, reason = Forbidden, DenyReasonScope
+		}
 		switch d {
 		case Allow:
-			h.ServeHTTP(w, req.WithContext(WithPrincipal(req.Context(), p)))
+			req = req.WithContext(WithPrincipal(req.Context(), p))
+			if p.Caller != nil && p.Caller.Token != nil && rt.onTokenUsed != nil {
+				rt.serveToken(w, req, h, p, r)
+				return
+			}
+			h.ServeHTTP(w, req)
 		case Forbidden:
-			rt.denied(req, r.Permission, d)
+			rt.denied(req, Denial{Principal: p, Method: r.Method, Path: r.Path, Permission: r.Permission, Decision: d, Reason: reason})
 			WriteProblem(w, errForbidden())
+		case Unavailable:
+			WriteProblem(w, NewProblem(http.StatusServiceUnavailable, CodeUnavailable,
+				"Не удалось проверить права доступа: повторите запрос позже."))
 		default:
-			rt.denied(req, r.Permission, Unauthenticated)
+			rt.denied(req, Denial{Method: r.Method, Path: r.Path, Permission: r.Permission, Decision: Unauthenticated})
 			WriteProblem(w, errUnauthorized())
 		}
 	})
 }
 
-func (rt *Router) denied(r *http.Request, permission string, d Decision) {
+// serveToken выполняет обработчик запроса по токену и пишет его итог;
+// паника обработчика записывается как 500 и передаётся дальше (recoverer).
+func (rt *Router) serveToken(w http.ResponseWriter, req *http.Request, h http.Handler, p Principal, r Route) {
+	sw := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+	defer func() {
+		v := recover()
+		status := sw.status
+		if v != nil {
+			status = http.StatusInternalServerError
+		}
+		rt.onTokenUsed(req, p, r.Method, r.Path, status)
+		if v != nil {
+			panic(v)
+		}
+	}()
+	h.ServeHTTP(sw, req)
+}
+
+func (rt *Router) denied(r *http.Request, d Denial) {
 	if rt.onDenied != nil {
-		rt.onDenied(r, permission, d)
+		rt.onDenied(r, d)
 	}
 }
 

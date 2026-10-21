@@ -27,6 +27,7 @@ const (
 	TypeImage        = "image"         // образ контейнера
 	TypeGitHubAction = "github-action" // шаг CI
 	TypeNPM          = "npm-package"   // прямая зависимость web/package.json
+	TypeFont         = "font"          // шрифт, файлы которого лежат в репозитории (web/src/assets/fonts)
 )
 
 // Области применения.
@@ -65,7 +66,7 @@ type Registry struct {
 }
 
 var (
-	validTypes  = map[string]bool{TypeGoModule: true, TypeToolchain: true, TypeTool: true, TypeImage: true, TypeGitHubAction: true, TypeNPM: true}
+	validTypes  = map[string]bool{TypeGoModule: true, TypeToolchain: true, TypeTool: true, TypeImage: true, TypeGitHubAction: true, TypeNPM: true, TypeFont: true}
 	validScopes = map[string]bool{ScopeProduct: true, ScopeBuild: true}
 	makeVarRe   = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
 	sha256HexRe = regexp.MustCompile(`^[0-9a-f]{64}$`)

@@ -133,7 +133,7 @@ func TestCanonicalJSONRejects(t *testing.T) {
 		}
 	}
 	// Похожие, но безопасные ключи проходят.
-	for _, k := range []string{"key_prefix", "token_id", "api_token_id", "keyring_size", "public_key", "key_id"} {
+	for _, k := range []string{"key_prefix", "token_id", "api_token_id", "keyring_size", "public_key", "key_id", "requests_per_minute_per_key"} {
 		if _, err := CanonicalJSON([]byte(`{"` + k + `":"x"}`)); err != nil {
 			t.Errorf("%s отклонён: %v", k, err)
 		}

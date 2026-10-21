@@ -144,6 +144,10 @@ repocheck: ## Структурные правила: один internal/crypto, c
 docs-check: ## Относительные ссылки в документах ведут на существующие файлы
 	go run ./tools/docs-check -root .
 
+.PHONY: rbac-matrix
+rbac-matrix: ## Матрица «роль × эндпоинт» из api/openapi.yaml в docs/cert/rbac-matrix.md (УПД.3)
+	go run ./tools/rbac-matrix -spec api/openapi.yaml -out docs/cert/rbac-matrix.md
+
 .PHONY: test
 test: ## Модульные тесты с детектором гонок
 	CGO_ENABLED=1 go test -race -count=1 ./...
@@ -249,7 +253,8 @@ web-check: web-lint web-typecheck web-test web-api-check web-build ## Все п�
 # Браузер — из PLAYWRIGHT_BROWSERS_PATH (сборочный образ) или AISEC_CHROMIUM;
 # Playwright ничего не скачивает (скрипты установки отключены).
 .PHONY: web-e2e
-web-e2e: web-build ## Сквозные тесты консоли в Chromium при строгом CSP (ТЗ, 6.9)
+web-e2e: web/node_modules/.package-lock.json ## Сквозные тесты консоли в Chromium при строгом CSP (ТЗ, 6.9)
+	$(WEB_NPM) run build:e2e
 	$(WEB_NPM) run e2e
 
 .PHONY: tools

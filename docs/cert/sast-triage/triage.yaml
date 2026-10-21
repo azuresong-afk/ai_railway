@@ -43,3 +43,10 @@ entries:
     justification: Удаление cookie __Host-aisec_csrf при выходе (пустое значение, MaxAge -1) с теми же атрибутами, что при выдаче — без HttpOnly по схеме двойной отправки (Р6), с Secure и SameSite=Strict. Значения в cookie нет.
     author: Claude Code (ИИ-ассистент); проверяет владелец при ревью
     date: 2026-10-20
+  - rule: gosec/G101
+    file: internal/auth/permissions.go
+    snippet: 'PermAPITokensManage = "api_tokens.manage"'
+    verdict: false_positive
+    justification: Имя разрешения RBAC «выпуск и отзыв токенов API» (задача 2.10) — строка каталога прав, которая попадает в api/openapi.yaml (x-permission) и в матрицу ролей. Правило реагирует на слово Tokens в имени константы; секрета в строке нет.
+    author: Claude Code (ИИ-ассистент); проверяет владелец при ревью
+    date: 2026-10-21

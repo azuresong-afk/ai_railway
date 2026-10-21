@@ -38,10 +38,16 @@ type allowPerm map[string]bool
 func (a allowPerm) Authorize(_ *http.Request, perm string) (Principal, Decision) {
 	c := &auth.Caller{User: auth.User{ID: "01900000-0000-7000-8000-0000000000f1", Login: "u1", Role: auth.RoleSecurityAdmin},
 		Session: auth.Session{ID: "01900000-0000-7000-8000-0000000000f2", State: auth.SessionActive}}
-	if a[perm] {
-		return Principal{ID: "u1", Caller: c}, Allow
+	g := auth.Grants{}
+	for p, ok := range a {
+		if ok {
+			g[p] = auth.ScopeAll
+		}
 	}
-	return Principal{ID: "u1", Caller: c}, Forbidden
+	if a[perm] {
+		return Principal{ID: "u1", Caller: c, Grants: g}, Allow
+	}
+	return Principal{ID: "u1", Caller: c, Grants: g}, Forbidden
 }
 
 // testAuth — сервис входа на хранилище в памяти, быстром хешере и ключе
@@ -64,7 +70,7 @@ func testAuth(t testing.TB, mem *authtest.Memory, opts ...auth.Option) *auth.Ser
 	if err != nil {
 		t.Fatal(err)
 	}
-	opts = append([]auth.Option{auth.WithPasswordHasher(&authtest.Hasher{}),
+	opts = append([]auth.Option{auth.WithPasswordHasher(&authtest.Hasher{}), auth.WithRoleStore(mem), auth.WithAPITokenStore(mem),
 		auth.WithSecretBox(keyring.NewStatic("01900000-0000-7000-8000-0000000000d1", aead))}, opts...)
 	svc, err := auth.NewService(context.Background(), mem, mem, p, opts...)
 	if err != nil {

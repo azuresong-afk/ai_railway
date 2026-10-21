@@ -7,7 +7,9 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/azuresong-afk/ai_railway/internal/auth"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
+	"github.com/azuresong-afk/ai_railway/internal/events"
 	"github.com/azuresong-afk/ai_railway/internal/gwregistry"
 )
 
@@ -33,7 +35,11 @@ type InternalOptions struct {
 	Authorizer Authorizer
 	// RateLimit — настройки ЗИ.6; по умолчанию DefaultRateRules.
 	RateLimit RateConfig
-	// Extra — дополнительные маршруты (тесты и следующие задачи: события 2.15, пакеты 2.13).
+	// Events — хранилище событий (задача 2.15); nil — приём событий выключен.
+	Events events.Store
+	// Now — часы для окна приёма событий; по умолчанию time.Now.
+	Now func() time.Time
+	// Extra — дополнительные маршруты (тесты и следующие задачи: пакеты 2.13).
 	Extra []Route
 }
 
@@ -61,7 +67,7 @@ func (a GatewayAuthorizer) Authorize(r *http.Request, permission string) (Princi
 	if permission != PermGatewayInternal {
 		return Principal{ID: gw.ID}, Forbidden
 	}
-	return Principal{ID: gw.ID}, Allow
+	return Principal{ID: gw.ID, Grants: auth.Grants{PermGatewayInternal: auth.ScopeAll}}, Allow
 }
 
 // NewInternal собирает обработчик внутреннего порта: восстановление после
@@ -81,7 +87,14 @@ func NewInternal(o InternalOptions) (http.Handler, *Router, error) {
 		idem: NewMemoryIdempotency(0, 0, nil), hasher: o.Hasher, logger: o.Logger,
 	}
 	rt.mux.HandleFunc("/", rt.notFound)
-	if err := rt.Add(append(internalRoutes(o.Gateways, o.Logger), o.Extra...)...); err != nil {
+	if o.Now == nil {
+		o.Now = time.Now
+	}
+	routes := internalRoutes(o.Gateways, o.Logger)
+	if o.Events != nil {
+		routes = append(routes, eventsRoutes(o.Events, o.Now, o.Logger)...)
+	}
+	if err := rt.Add(append(routes, o.Extra...)...); err != nil {
 		return nil, nil, err
 	}
 	var h http.Handler = rt
@@ -102,6 +115,25 @@ func internalRoutes(g *gwregistry.Service, logger *slog.Logger) []Route {
 type HeartbeatRequest struct {
 	Version    string `json:"version"`
 	BundleETag string `json:"bundle_etag,omitempty"`
+	// Selftest и Integrity — необязательные итоги проверок шлюза (задача 2.20).
+	Selftest  *HeartbeatReport `json:"selftest,omitempty"`
+	Integrity *HeartbeatReport `json:"integrity,omitempty"`
+}
+
+// HeartbeatReport — итог самотеста или контроля целостности шлюза: результат,
+// время и число провалов, без путей и имён детекторов.
+type HeartbeatReport struct {
+	OK        bool      `json:"ok"`
+	CheckedAt time.Time `json:"checked_at"`
+	Reason    string    `json:"reason,omitempty"`
+	Failed    int       `json:"failed"`
+}
+
+func (r *HeartbeatReport) report() *gwregistry.CheckReport {
+	if r == nil {
+		return nil
+	}
+	return &gwregistry.CheckReport{OK: r.OK, At: r.CheckedAt.UTC(), Reason: r.Reason, Failed: r.Failed}
 }
 
 // HeartbeatResponse — ответ на heartbeat: время сервера (шлюз сверяет часы,
@@ -119,9 +151,11 @@ func heartbeat(g *gwregistry.Service, logger *slog.Logger) http.HandlerFunc {
 			WriteProblem(w, prob)
 			return
 		}
-		in := gwregistry.HeartbeatInput{Version: req.Version, BundleETag: req.BundleETag}
+		in := gwregistry.HeartbeatInput{
+			Version: req.Version, BundleETag: req.BundleETag, Selftest: req.Selftest.report(), Integrity: req.Integrity.report(),
+		}
 		if err := in.Validate(); err != nil {
-			WriteProblem(w, Invalid("Неверные поля heartbeat: version — 1–64 символа латиницы, цифр и «.+_-», bundle_etag — до 128 печатных символов ASCII."))
+			WriteProblem(w, Invalid("Неверные поля heartbeat: version — 1–64 символа латиницы, цифр и «.+_-», bundle_etag — до 128 печатных символов ASCII, selftest и integrity — результат, время проверки и число провалов 0–1000."))
 			return
 		}
 		ctx, cancel := contextTimeout(r, 5*time.Second)
@@ -131,6 +165,9 @@ func heartbeat(g *gwregistry.Service, logger *slog.Logger) http.HandlerFunc {
 		case errors.Is(err, gwregistry.ErrTooFrequent):
 			w.Header().Set("Retry-After", retryAfterSeconds(g.HeartbeatMinInterval()))
 			WriteProblem(w, NewProblem(http.StatusTooManyRequests, CodeRateLimited, "Heartbeat отправляется слишком часто."))
+			return
+		case errors.Is(err, gwregistry.ErrInvalidRequest):
+			WriteProblem(w, Invalid("Неверные поля heartbeat: время проверки не может быть в будущем."))
 			return
 		case errors.Is(err, gwregistry.ErrNotFound):
 			// Шлюз отозван между проверкой сертификата и записью.

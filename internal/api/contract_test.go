@@ -11,6 +11,8 @@ import (
 	"testing"
 
 	"go.yaml.in/yaml/v3"
+
+	"github.com/azuresong-afk/ai_railway/internal/auth"
 )
 
 // Контрактные тесты: маршруты сервера и спецификация api/openapi.yaml
@@ -28,6 +30,7 @@ type spec struct {
 
 type operation struct {
 	Security   []map[string]any          `yaml:"security"`
+	Permission string                    `yaml:"x-permission"`
 	Parameters []map[string]any          `yaml:"parameters"`
 	Responses  map[string]map[string]any `yaml:"responses"`
 }
@@ -70,8 +73,21 @@ func TestRoutesMatchSpec(t *testing.T) {
 					t.Errorf("%s %s: не описан ответ %s", r.Method, r.Path, code)
 				}
 			}
-		} else if op.Security == nil || len(op.Security) != 0 {
-			t.Errorf("%s %s: открытый маршрут должен иметь security: []", r.Method, r.Path)
+			// Разрешение в спецификации совпадает с разрешением маршрута (УПД.3).
+			if op.Permission != r.Permission {
+				t.Errorf("%s %s: x-permission %q, а у маршрута %q", r.Method, r.Path, op.Permission, r.Permission)
+			}
+			if _, ok := auth.LookupPermission(r.Permission); !ok && r.Permission != auth.PermSelf && r.Permission != auth.PermSession {
+				t.Errorf("%s %s: разрешения %q нет в каталоге", r.Method, r.Path, r.Permission)
+			}
+			// Токен API указан в security ровно у операций, доступных токену (ИАФ.9).
+			bearer := slices.ContainsFunc(op.Security, func(m map[string]any) bool { _, ok := m["bearerToken"]; return ok })
+			if bearer != auth.TokenGrantable(r.Permission) {
+				t.Errorf("%s %s: bearerToken в security — %v, а токену разрешение %q доступно — %v",
+					r.Method, r.Path, bearer, r.Permission, auth.TokenGrantable(r.Permission))
+			}
+		} else if op.Security == nil || len(op.Security) != 0 || op.Permission != "" {
+			t.Errorf("%s %s: открытый маршрут должен иметь security: [] и не иметь x-permission", r.Method, r.Path)
 		}
 		if r.Idempotent && !slices.ContainsFunc(op.Parameters, func(p map[string]any) bool {
 			ref, _ := p["$ref"].(string)

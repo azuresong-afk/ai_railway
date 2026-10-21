@@ -82,10 +82,10 @@ func TestIntegrityVerifyDenied(t *testing.T) {
 	if len(fi.by) != 0 {
 		t.Fatal("проверка выполнена без права")
 	}
-	for _, role := range []auth.Role{auth.RoleSecurityAdmin, auth.RoleSystemAdmin, auth.RoleAnalyst, auth.RoleAuditor, auth.RoleAppOwner} {
-		c := auth.Caller{User: auth.User{Role: role}, Session: auth.Session{State: auth.SessionActive}}
-		if auth.Allowed(c, PermIntegrityVerify) {
-			t.Errorf("роль %s получила %s до модели ролей 2.9", role, PermIntegrityVerify)
+	// Из предустановленных ролей право есть только у администратора безопасности (УПД.2).
+	for _, r := range auth.BuiltinRoles() {
+		if r.Grants.Allows(PermIntegrityVerify) != (r.ID == auth.RoleSecurityAdmin) {
+			t.Errorf("роль %s: право %s — %v", r.ID, PermIntegrityVerify, r.Grants.Allows(PermIntegrityVerify))
 		}
 	}
 }

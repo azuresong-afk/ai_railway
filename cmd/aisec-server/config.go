@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/azuresong-afk/ai_railway/internal/integrity"
+	"github.com/azuresong-afk/ai_railway/internal/sysstatus"
 )
 
 // Значения по умолчанию.
@@ -48,6 +50,14 @@ type serverConfig struct {
 	// порта; пусто — тот же, что у консоли.
 	InternalTLSCertFile string
 	InternalTLSKeyFile  string
+	// Timezone — часовой пояс для показа времени в консоли (ВРМ.2); хранение
+	// всегда в UTC.
+	Timezone *time.Location
+	// AuditStorageLimit — предел размера журнала аудита в байтах, при котором
+	// заполнение равно 100% (РСБ.5); AuditStorageWarnPercent — порог
+	// предупреждения.
+	AuditStorageLimit       int64
+	AuditStorageWarnPercent int
 	// DatabaseURL содержит пароль, поэтому берётся только из окружения, не из
 	// аргументов командной строки (их видно в списке процессов).
 	DatabaseURL string
@@ -70,6 +80,9 @@ func loadConfig(args []string, getenv func(string) string, errOut io.Writer) (*s
 	internalListen := fs.String("internal-listen", defaultInternalListen, "адрес и порт внутреннего API шлюзов, mTLS (AISEC_SERVER_INTERNAL_LISTEN)")
 	internalCert := fs.String("internal-tls-cert", "", "сертификат TLS внутреннего порта; по умолчанию — tls-cert (AISEC_SERVER_INTERNAL_TLS_CERT)")
 	internalKey := fs.String("internal-tls-key", "", "закрытый ключ TLS внутреннего порта; по умолчанию — tls-key (AISEC_SERVER_INTERNAL_TLS_KEY)")
+	tz := fs.String("timezone", "UTC", "часовой пояс для показа времени, имя IANA, например Europe/Moscow (AISEC_SERVER_TIMEZONE)")
+	storageLimit := fs.String("audit-storage-limit", strconv.FormatInt(sysstatus.DefaultStorageLimit, 10), "предел размера журнала аудита в байтах для расчёта заполнения (AISEC_SERVER_AUDIT_STORAGE_LIMIT)")
+	storageWarn := fs.String("audit-storage-warn-percent", strconv.Itoa(sysstatus.DefaultWarnPercent), "порог предупреждения о заполнении журнала аудита, 1–100 процентов (AISEC_SERVER_AUDIT_STORAGE_WARN_PERCENT)")
 	if err := fs.Parse(args); err != nil {
 		return nil, err
 	}
@@ -80,7 +93,8 @@ func loadConfig(args []string, getenv func(string) string, errOut io.Writer) (*s
 	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
 	for name, dst := range map[string]*string{"listen": listen, "tls-cert": cert, "tls-key": key, "audit-signing-pub": auditPub, "keys-dir": keysDir,
 		"manifest": manifest, "integrity-action": action, "integrity-interval": interval,
-		"ca-cert": caCert, "ca-key": caKey, "internal-listen": internalListen, "internal-tls-cert": internalCert, "internal-tls-key": internalKey} {
+		"ca-cert": caCert, "ca-key": caKey, "internal-listen": internalListen, "internal-tls-cert": internalCert, "internal-tls-key": internalKey,
+		"timezone": tz, "audit-storage-limit": storageLimit, "audit-storage-warn-percent": storageWarn} {
 		if set[name] {
 			continue
 		}
@@ -93,6 +107,15 @@ func loadConfig(args []string, getenv func(string) string, errOut io.Writer) (*s
 		InternalTLSCertFile: *internalCert, InternalTLSKeyFile: *internalKey, DatabaseURL: getenv("AISEC_DATABASE_URL")}
 	var errs []error
 	var err error
+	if cfg.Timezone, err = time.LoadLocation(*tz); err != nil || *tz == "" || *tz == "Local" {
+		errs = append(errs, errors.New("timezone: имя часового пояса IANA, например UTC или Europe/Moscow"))
+	}
+	if cfg.AuditStorageLimit, err = strconv.ParseInt(*storageLimit, 10, 64); err != nil || cfg.AuditStorageLimit < 1<<20 {
+		errs = append(errs, errors.New("audit-storage-limit: целое число байт, не меньше 1 МиБ"))
+	}
+	if cfg.AuditStorageWarnPercent, err = strconv.Atoi(*storageWarn); err != nil || cfg.AuditStorageWarnPercent < 1 || cfg.AuditStorageWarnPercent > 100 {
+		errs = append(errs, errors.New("audit-storage-warn-percent: целое число от 1 до 100"))
+	}
 	if cfg.IntegrityAction, err = integrity.ParseAction(*action); err != nil {
 		errs = append(errs, fmt.Errorf("integrity-action: %w", err))
 	}

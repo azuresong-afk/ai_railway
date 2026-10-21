@@ -27,6 +27,10 @@ type Memory struct {
 	setup    []*setupToken
 	mfa      map[string]*auth.MFA
 	codes    map[string][]*recoveryCode
+	// roles — свои роли по организациям (roles.go).
+	roles map[string]map[auth.Role]auth.RoleDef
+	// tokens — токены API по ID (apitokens.go).
+	tokens map[string]*auth.APIToken
 	// Fail — если не nil, возвращается из каждого метода (сбой хранилища).
 	Fail error
 }
@@ -288,6 +292,9 @@ func (m *Memory) SetPassword(_ context.Context, ch auth.PasswordChange, rec audi
 	}
 	if ch.RequireActive && u.Status != auth.StatusActive {
 		return auth.ErrDeactivated
+	}
+	if ch.ExpectRole != "" && ch.ExpectRole != u.Role {
+		return auth.ErrRoleChanged
 	}
 	if ch.ExpectHash != "" && ch.ExpectHash != u.PasswordHash {
 		return auth.ErrWrongPassword

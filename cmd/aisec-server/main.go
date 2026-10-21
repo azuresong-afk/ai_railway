@@ -1,10 +1,10 @@
 // Команда aisec-server — сервер управления: API, веб-консоль, оповещения, инциденты, отчёты, аудит.
-// Сейчас (задачи 2.6–2.8, 2.14, 2.17 этапа 2): HTTPS, маршрутизатор с
+// Сейчас (задачи 2.6–2.10, 2.14, 2.15, 2.17 этапа 2): HTTPS, маршрутизатор с
 // проверкой прав, Problem Details, ограничение частоты, вход в консоль,
-// второй фактор и учётные записи, регистрация шлюзов и внутренний API на
-// отдельном порту с mTLS, контроль целостности. Статика веб-консоли встроена
-// в бинарник (web/embed.go, ADR-0011) и сверяется с манифестом; раздача — в
-// задачах каркаса консоли;
+// второй фактор, учётные записи и роли, токены API, регистрация шлюзов и внутренний API на
+// отдельном порту с mTLS, приём событий шлюзов, контроль целостности.
+// Статика веб-консоли встроена в бинарник (web/embed.go, ADR-0011) и
+// сверяется с манифестом; раздача — в задачах каркаса консоли;
 // остальные ресурсы API добавляются следующими задачами.
 package main
 
@@ -16,17 +16,21 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
+	"time"
 
 	"github.com/azuresong-afk/ai_railway/internal/api"
+	"github.com/azuresong-afk/ai_railway/internal/apps"
 	"github.com/azuresong-afk/ai_railway/internal/audit"
 	"github.com/azuresong-afk/ai_railway/internal/auth"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
+	"github.com/azuresong-afk/ai_railway/internal/events"
 	"github.com/azuresong-afk/ai_railway/internal/gwregistry"
 	"github.com/azuresong-afk/ai_railway/internal/httpserver"
 	"github.com/azuresong-afk/ai_railway/internal/integrity"
 	"github.com/azuresong-afk/ai_railway/internal/integrity/selftest"
 	"github.com/azuresong-afk/ai_railway/internal/keyring"
 	"github.com/azuresong-afk/ai_railway/internal/store"
+	"github.com/azuresong-afk/ai_railway/internal/sysstatus"
 	"github.com/azuresong-afk/ai_railway/web"
 )
 
@@ -120,7 +124,16 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	authSvc, err := auth.NewService(ctx, users, auditLog, p, auth.WithSecretBox(box))
+	roles, err := auth.NewPGRoles(db.Pool(), auditLog)
+	if err != nil {
+		return err
+	}
+	tokens, err := auth.NewPGAPITokens(db.Pool(), auditLog)
+	if err != nil {
+		return err
+	}
+	authSvc, err := auth.NewService(ctx, users, auditLog, p, auth.WithSecretBox(box), auth.WithRoleStore(roles),
+		auth.WithAPITokenStore(tokens))
 	if err != nil {
 		return err
 	}
@@ -155,12 +168,64 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		logger.Warn("внутренний УЦ не задан (-ca-cert, -ca-key): регистрация шлюзов и внутренний API выключены")
 	}
 
+	// События шлюзов (ТЗ 5.5, задача 2.15): секции создаются до приёма,
+	// дальше фоновое задание раз в час держит их на неделю вперёд и удаляет
+	// просроченные.
+	rnd, err := p.Random()
+	if err != nil {
+		return err
+	}
+	eventStore, err := events.NewPGStore(db.Pool(), box, auditLog, audit.DefaultOrgID, events.WithRandom(rnd))
+	if err != nil {
+		return err
+	}
+	if err := events.Maintain(ctx, eventStore, logger); err != nil {
+		return fmt.Errorf("секции событий: %w", err)
+	}
+	go events.RunMaintenance(ctx, eventStore, events.MaintainEvery, logger)
+	// Агрегаты для дашбордов (задача 2.16) — фоновым заданием раз в минуту.
+	go events.RunAggregates(ctx, eventStore, events.AggregateEvery, logger)
+
+	// «Состояние системы» (задача 2.20): шлюзы читаются из реестра и без
+	// внутреннего УЦ; уведомления ВРМ.1, РСБ.5, ОЦЛ.5 пишутся в аудит при
+	// смене состояния, раз в минуту.
+	statusSvc, err := newStatus(ctx, cfg, db, auditLog, integritySvc, selftestRes, logger)
+	if err != nil {
+		return err
+	}
+
+	// Приложения, ключи и провайдеры (ТЗ 5.4, задача 2.11): учётные данные
+	// провайдеров — под ключом данных (ЗИ.1); владелец приложения —
+	// действующая учётная запись консоли.
+	appStore, err := apps.NewPGStore(db.Pool(), auditLog)
+	if err != nil {
+		return err
+	}
+	appsSvc, err := apps.New(apps.Options{Store: appStore, Provider: p, Box: box,
+		OwnerCheck: func(ctx context.Context, id string) error {
+			u, err := authSvc.User(ctx, id)
+			if err != nil {
+				return err
+			}
+			if u.Status != auth.StatusActive {
+				return errors.New("учётная запись не активна")
+			}
+			return nil
+		}})
+	if err != nil {
+		return err
+	}
+
 	handler, _, err := api.New(api.Options{
 		Logger: logger, Version: version, Hasher: hasher,
+		Apps:      appsSvc,
 		Ready:     db.Ping,
 		Auth:      authSvc,
 		Gateways:  gateways,
 		Integrity: integritySvc,
+		Status:    statusSvc,
+		Events:    eventStore,
+		Audit:     auditLog,
 		Fallback:  staticFallback(),
 	})
 	if err != nil {
@@ -174,7 +239,7 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	}
 	servers := []*httpserver.Server{srv}
 	if gateways != nil {
-		internal, err := newInternalServer(ctx, cfg, tp, hasher, gateways, ca, certPEM, keyPEM, logger)
+		internal, err := newInternalServer(ctx, cfg, tp, hasher, gateways, eventStore, ca, certPEM, keyPEM, logger)
 		if err != nil {
 			return err
 		}
@@ -186,6 +251,37 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		return errors.Join(err, cause)
 	}
 	return err
+}
+
+// newStatus собирает «Состояние системы» и запускает фоновую проверку
+// условий уведомлений раздела 7.
+func newStatus(ctx context.Context, cfg *serverConfig, db *store.DB, auditLog *audit.Log, integritySvc integrity.Service,
+	selftestRes selftest.Result, logger *slog.Logger) (*sysstatus.Service, error) {
+	gwStore, err := gwregistry.NewPGStore(db.Pool(), auditLog)
+	if err != nil {
+		return nil, err
+	}
+	pg, err := sysstatus.NewPGStore(db.Pool(), auditLog, audit.DefaultOrgID)
+	if err != nil {
+		return nil, err
+	}
+	failed := len(selftestRes.Failures)
+	if !selftestRes.CryptoOK {
+		failed++
+	}
+	svc, err := sysstatus.New(sysstatus.Options{
+		Version: version, StartedAt: time.Now(),
+		Selftest:  &sysstatus.SelftestSummary{OK: selftestRes.OK(), At: selftestRes.At, Failed: failed},
+		Gateways:  sysstatus.GatewayLister{Store: gwStore},
+		Integrity: integritySvc.Store, Store: pg,
+		Timezone: cfg.Timezone, StorageLimit: cfg.AuditStorageLimit, WarnPercent: cfg.AuditStorageWarnPercent,
+		Logger: logger,
+	})
+	if err != nil {
+		return nil, err
+	}
+	go svc.Run(ctx, sysstatus.DefaultEvalInterval)
+	return svc, nil
 }
 
 // startIntegrity проверяет целостность сервера при запуске и запускает
@@ -251,7 +347,8 @@ func loadCA(certFile, keyFile string) (*aisecCrypto.CA, error) {
 // newInternalServer — внутренний API шлюзов на отдельном порту: TLS с
 // обязательным клиентским сертификатом внутреннего УЦ (mTLS, ИАФ.10).
 func newInternalServer(ctx context.Context, cfg *serverConfig, tp aisecCrypto.TLSProvider, hasher aisecCrypto.Hasher,
-	gateways *gwregistry.Service, ca *aisecCrypto.CA, certPEM, keyPEM []byte, logger *slog.Logger) (*httpserver.Server, error) {
+	gateways *gwregistry.Service, eventStore events.Store, ca *aisecCrypto.CA, certPEM, keyPEM []byte,
+	logger *slog.Logger) (*httpserver.Server, error) {
 	if cfg.InternalTLSCertFile != "" {
 		var err error
 		if certPEM, err = aisecCrypto.ReadPEMFile(cfg.InternalTLSCertFile); err != nil {
@@ -262,7 +359,7 @@ func newInternalServer(ctx context.Context, cfg *serverConfig, tp aisecCrypto.TL
 		}
 	}
 	ilog := logger.With("listener", "internal")
-	handler, _, err := api.NewInternal(api.InternalOptions{Logger: ilog, Hasher: hasher, Gateways: gateways})
+	handler, _, err := api.NewInternal(api.InternalOptions{Logger: ilog, Hasher: hasher, Gateways: gateways, Events: eventStore})
 	if err != nil {
 		return nil, err
 	}

@@ -54,7 +54,6 @@ func TestParseGatewayFileErrors(t *testing.T) {
 		"нет провайдера":       {"provider: mock", "provider: nope"},
 		"нет моделей":          {"models: [mock-echo, mock-stream-slow]", "models: []"},
 		"псевдоним":            {"default: mock-echo", "default: other"},
-		"full":                 {"storage: masked", "storage: full"},
 		"режим":                {"policy_mode: monitor", "policy_mode: audit"},
 		"fail mode":            {"fail_mode: fail_closed", "fail_mode: ignore"},
 		"user_from":            {"user_from: header", "user_from: cookie"},
@@ -64,7 +63,6 @@ func TestParseGatewayFileErrors(t *testing.T) {
 		"подсеть":              {"10.0.0.0/8", "10.0.0.0/33"},
 		"подсеть IPv4-in-IPv6": {"10.0.0.0/8", "::ffff:10.0.0.0/104"},
 		"биты узла в подсети":  {"10.0.0.0/8", "10.1.2.3/8"},
-		"нет events_file":      {"  events_file: /var/lib/aisec/events.jsonl\n", ""},
 		"квота":                {"max_tokens: 4096", "max_tokens: -1"},
 		"таймаут":              {"connect_timeout: 5s", "connect_timeout: 1h"},
 		"длительность":         {"connect_timeout: 5s", "connect_timeout: 5"},
@@ -253,5 +251,38 @@ func TestGatewayFileWarnings(t *testing.T) {
 	}
 	if w := f.Warnings(); len(w) != 1 || !strings.Contains(w[0], "monitor-only") {
 		t.Fatalf("внешний провайдер: %v", w)
+	}
+}
+
+// Без сервера управления нужен файл событий, а режим full недоступен;
+// с сервером — события уходят на сервер, full хранится там зашифрованным.
+func TestCheckEventsSink(t *testing.T) {
+	base := readFixture(t)
+	f, err := ParseGatewayFile(strings.NewReader(base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.CheckEventsSink(false); err != nil {
+		t.Fatalf("фикстура без сервера: %v", err)
+	}
+	noFile, err := ParseGatewayFile(strings.NewReader(strings.Replace(base, "  events_file: /var/lib/aisec/events.jsonl\n", "", 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := noFile.CheckEventsSink(false); err == nil || !strings.Contains(err.Error(), "events_file") {
+		t.Fatalf("без сервера и файла событий: %v", err)
+	}
+	if err := noFile.CheckEventsSink(true); err != nil {
+		t.Fatalf("с сервером файл событий не нужен: %v", err)
+	}
+	full, err := ParseGatewayFile(strings.NewReader(strings.Replace(base, "storage: masked", "storage: full", 1)))
+	if err != nil {
+		t.Fatalf("storage full разбирается: %v", err)
+	}
+	if err := full.CheckEventsSink(false); err == nil || !strings.Contains(err.Error(), "storage full") {
+		t.Fatalf("full без сервера: %v", err)
+	}
+	if err := full.CheckEventsSink(true); err != nil {
+		t.Fatalf("full с сервером: %v", err)
 	}
 }
