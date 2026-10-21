@@ -46,12 +46,15 @@ const (
 	CodeRateLimited      = "rate_limited"
 	CodeInternal         = "internal_error"
 	CodeUnavailable      = "service_unavailable"
+	// CodeReauthFailed — неверный пароль или код повторной проверки (В8 ревью 2.r2).
+	CodeReauthFailed = "reauthentication_failed"
 )
 
 var problemTitles = map[string]string{
 	CodeInvalidRequest:   "Неверный запрос",
 	CodeUnauthorized:     "Требуется вход",
 	CodeForbidden:        "Доступ запрещён",
+	CodeReauthFailed:     "Повторная проверка не пройдена",
 	CodeNotFound:         "Не найдено",
 	CodeMethodNotAllowed: "Метод не поддерживается",
 	CodeConflict:         "Конфликт",

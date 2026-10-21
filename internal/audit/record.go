@@ -230,6 +230,21 @@ func CanonicalDetails(v any) (json.RawMessage, error) {
 	return CanonicalJSON(raw)
 }
 
+// withDetail добавляет поле key в канонические подробности raw (значение
+// key, заданное вызывающим, заменяется).
+func withDetail(raw json.RawMessage, key string, v any) (json.RawMessage, error) {
+	obj, err := decodeObject(raw)
+	if err != nil {
+		return nil, err
+	}
+	obj[key] = v
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return nil, errors.New("подробности: сериализация")
+	}
+	return CanonicalJSON(out)
+}
+
 // CanonicalJSON приводит JSON-объект к канонической форме и проверяет
 // лимиты и отсутствие ключей с секретами. Повторное применение не меняет
 // результат.
@@ -241,10 +256,11 @@ func CanonicalJSON(raw []byte) (json.RawMessage, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := checkValue(obj, 1); err != nil {
+	clean, err := sanitizeValue(obj, 1)
+	if err != nil {
 		return nil, err
 	}
-	out, err := json.Marshal(obj)
+	out, err := json.Marshal(clean)
 	if err != nil {
 		return nil, errors.New("подробности: сериализация")
 	}
@@ -283,32 +299,40 @@ func decodeObject(raw []byte) (map[string]any, error) {
 	return obj, nil
 }
 
-func checkValue(v any, depth int) error {
+// sanitizeValue проверяет вложенность и ключи и маскирует строки, похожие
+// на секрет. Ключ, похожий на секрет, — ошибка программиста: запись
+// отклоняется. Значение задаёт пользователь (причина просмотра содержимого,
+// название), поэтому подозрительный фрагмент заменяется на «[скрыто]», а
+// запись пишется: обязательное событие не теряется, секрет в журнал не
+// попадает (замечание В4 ревью 2.r1).
+func sanitizeValue(v any, depth int) (any, error) {
 	if depth > maxDetailsDepth {
-		return fmt.Errorf("подробности: вложенность больше %d", maxDetailsDepth)
+		return nil, fmt.Errorf("подробности: вложенность больше %d", maxDetailsDepth)
 	}
 	switch x := v.(type) {
 	case map[string]any:
 		for k, val := range x {
 			if secretKey(k) {
-				return fmt.Errorf("подробности: ключ %q похож на секрет — секреты в журнал не пишутся", k)
+				return nil, fmt.Errorf("подробности: ключ %q похож на секрет — секреты в журнал не пишутся", k)
 			}
-			if err := checkValue(val, depth+1); err != nil {
-				return err
+			clean, err := sanitizeValue(val, depth+1)
+			if err != nil {
+				return nil, err
 			}
+			x[k] = clean
 		}
 	case []any:
-		for _, val := range x {
-			if err := checkValue(val, depth+1); err != nil {
-				return err
+		for i, val := range x {
+			clean, err := sanitizeValue(val, depth+1)
+			if err != nil {
+				return nil, err
 			}
+			x[i] = clean
 		}
 	case string:
-		if secretValue(x) {
-			return errors.New("подробности: значение похоже на секрет (авторизация или URL с паролем)")
-		}
+		return maskSecrets(x), nil
 	}
-	return nil
+	return v, nil
 }
 
 // Ключи подробностей, которые выглядят как секреты (после приведения к
@@ -355,21 +379,107 @@ func secretKey(k string) bool {
 	return false
 }
 
-// secretValue — значение, которое выглядит как секрет при любом ключе:
-// заголовок авторизации или URL с паролем (строка подключения к БД).
-func secretValue(v string) bool {
-	l := strings.ToLower(strings.TrimSpace(v))
-	if strings.HasPrefix(l, "bearer ") || strings.HasPrefix(l, "basic ") {
-		return true
+// Masked — замена фрагмента, похожего на секрет, в подробностях аудита.
+const Masked = "[скрыто]"
+
+// maskSecrets заменяет фрагменты, похожие на секрет при любом ключе:
+// учётные данные после схемы авторизации («Bearer …», «Basic …») в любом
+// месте строки и пароль в URL (строка подключения к БД). Повторное
+// применение строку не меняет.
+func maskSecrets(v string) string {
+	v = maskAuthSchemes(v)
+	return maskURLPasswords(v)
+}
+
+// authSchemes — схемы заголовка Authorization (в нижнем регистре).
+var authSchemes = []string{"bearer", "basic"}
+
+// maskAuthSchemes заменяет слово после «Bearer» или «Basic» (без учёта
+// регистра, после пробелов) на Masked.
+func maskAuthSchemes(v string) string {
+	var b strings.Builder
+	rest := v
+	for {
+		i, n := nextScheme(rest)
+		if i < 0 {
+			b.WriteString(rest)
+			return b.String()
+		}
+		// Схема и пробелы после неё остаются; слово учётных данных — нет.
+		j := i + n
+		for j < len(rest) && (rest[j] == ' ' || rest[j] == '\t') {
+			j++
+		}
+		k := j
+		for k < len(rest) && !isSpace(rest[k]) {
+			k++
+		}
+		b.WriteString(rest[:j])
+		if k > j {
+			b.WriteString(Masked)
+		}
+		rest = rest[k:]
 	}
-	if i := strings.Index(l, "://"); i > 0 {
-		rest := l[i+3:]
-		if at := strings.IndexByte(rest, '@'); at > 0 {
-			end := strings.IndexAny(rest, "/?#")
-			if (end < 0 || at < end) && strings.Contains(rest[:at], ":") {
-				return true
+}
+
+// nextScheme — позиция и длина первой схемы авторизации, за которой идёт
+// пробел; -1 — нет.
+func nextScheme(s string) (int, int) {
+	l := strings.ToLower(s)
+	best, n := -1, 0
+	for _, sc := range authSchemes {
+		from := 0
+		for {
+			i := strings.Index(l[from:], sc)
+			if i < 0 {
+				break
 			}
+			i += from
+			end := i + len(sc)
+			// Отдельное слово: слева начало строки или не буква, справа пробел.
+			if (i == 0 || !isLetter(l[i-1])) && end < len(l) && (l[end] == ' ' || l[end] == '\t') {
+				if best < 0 || i < best {
+					best, n = i, len(sc)
+				}
+				break
+			}
+			from = end
 		}
 	}
-	return false
+	return best, n
+}
+
+func isSpace(c byte) bool { return c == ' ' || c == '\t' || c == '\n' || c == '\r' }
+
+// isLetter — латинская буква или байт многобайтового символа UTF-8.
+func isLetter(c byte) bool { return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= 0x80 }
+
+// maskURLPasswords заменяет пароль в URL вида схема://пользователь:пароль@хост.
+func maskURLPasswords(v string) string {
+	var b strings.Builder
+	rest := v
+	for {
+		i := strings.Index(rest, "://")
+		if i < 0 {
+			b.WriteString(rest)
+			return b.String()
+		}
+		start := i + 3
+		// Учётные данные — до первого '@' в пределах полномочий URL.
+		end := strings.IndexAny(rest[start:], "/?# \t\n")
+		auth := rest[start:]
+		if end >= 0 {
+			auth = rest[start : start+end]
+		}
+		at := strings.LastIndexByte(auth, '@')
+		colon := strings.IndexByte(auth, ':')
+		if at > 0 && colon >= 0 && colon < at && auth[colon+1:at] != Masked {
+			b.WriteString(rest[:start+colon+1])
+			b.WriteString(Masked)
+			rest = rest[start+at:]
+			continue
+		}
+		b.WriteString(rest[:start])
+		rest = rest[start:]
+	}
 }

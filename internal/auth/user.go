@@ -147,6 +147,8 @@ const (
 	RevokeMFAReset        = "mfa_reset"
 	// RevokeMFAPassed — сессия до второго фактора заменена полной с новыми токенами.
 	RevokeMFAPassed = "mfa_passed"
+	// RevokeMFARequired — полной сессии без второго фактора он стал обязателен.
+	RevokeMFARequired = "mfa_required"
 )
 
 // Session — сессия консоли (решение Р6). Токен и CSRF-токен хранятся только хешами.
@@ -162,6 +164,8 @@ type Session struct {
 	RevokedAt  time.Time
 	SourceIP   netip.Addr
 	UserAgent  string
+	// MFAVerified — в сессии принят код второго фактора (В6 ревью 2.r2).
+	MFAVerified bool
 }
 
 // Пределы полей учётной записи и сессии; те же — в CHECK миграции.

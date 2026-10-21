@@ -3,9 +3,7 @@ package api
 import (
 	"errors"
 	"log/slog"
-	"net"
 	"net/http"
-	"net/netip"
 
 	"github.com/azuresong-afk/ai_railway/internal/auth"
 )
@@ -64,20 +62,6 @@ func (a SessionAuthorizer) Authorize(r *http.Request, permission string) (Princi
 
 func unsafeMethod(m string) bool {
 	return m != http.MethodGet && m != http.MethodHead && m != http.MethodOptions
-}
-
-// clientAddr — адрес клиента по соединению; заголовкам прокси не доверяем
-// (как и ограничитель частоты).
-func clientAddr(r *http.Request) netip.Addr {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		host = r.RemoteAddr
-	}
-	a, err := netip.ParseAddr(host)
-	if err != nil {
-		return netip.Addr{}
-	}
-	return a.WithZone("").Unmap()
 }
 
 // setSessionCookies выдаёт cookie сессии и CSRF. Без Max-Age: cookie

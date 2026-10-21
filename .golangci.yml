@@ -73,6 +73,24 @@ linters:
               desc: "os/exec запрещён в серверных компонентах (CLAUDE.md)"
             - pkg: "syscall"
               desc: "прямые системные вызовы — только по ADR (например, изоляция aisec-media) с //nolint:depguard и обоснованием"
+        test-doubles:
+          # Подмены для тестов (хранилище в памяти, фиктивные хеши и ключи) —
+          # только в тестах: в сервере или CLI они незаметно ослабили бы
+          # защиту (Н14 ревью 2.r2).
+          list-mode: lax
+          files:
+            - "$all"
+            - "!$test"
+            - "!**/internal/auth/authtest/**"
+            - "!**/internal/keyring/keyringtest/**"
+            - "!**/internal/crypto/cryptotest/**"
+          deny:
+            - pkg: "github.com/azuresong-afk/ai_railway/internal/auth/authtest"
+              desc: "подмены для тестов — только в *_test.go (Н14 ревью 2.r2)"
+            - pkg: "github.com/azuresong-afk/ai_railway/internal/keyring/keyringtest"
+              desc: "подмены для тестов — только в *_test.go (Н14 ревью 2.r2)"
+            - pkg: "github.com/azuresong-afk/ai_railway/internal/crypto/cryptotest"
+              desc: "подмены для тестов — только в *_test.go (Н14 ревью 2.r2)"
         product-reflect:
           # Без reflect в коде продукта; исключение — //nolint:depguard с обоснованием.
           list-mode: lax

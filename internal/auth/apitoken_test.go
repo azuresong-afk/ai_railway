@@ -27,7 +27,7 @@ func (e *env) sysadmCaller(t *testing.T) auth.Caller {
 
 func (e *env) issue(t *testing.T, by auth.Caller, perms ...string) (auth.APIToken, string) {
 	t.Helper()
-	tok, raw, err := e.svc.CreateAPIToken(context.Background(), by, auth.APITokenInput{Name: "Выгрузка", Permissions: grants(perms...)})
+	tok, raw, err := e.svc.CreateAPIToken(context.Background(), by, auth.APITokenInput{Password: phrase, Name: "Выгрузка", Permissions: grants(perms...)})
 	if err != nil {
 		t.Fatalf("выпуск токена: %v", err)
 	}
@@ -114,19 +114,19 @@ func TestCreateAPITokenValidation(t *testing.T) {
 	admin := e.adminCaller(t)
 	ctx := context.Background()
 	for name, in := range map[string]auth.APITokenInput{
-		"без названия":      {Name: " ", Permissions: grants(auth.PermSystemRead)},
-		"без разрешений":    {Name: "x"},
-		"срок 0 дней":       {Name: "x", ExpiresInDays: -1, Permissions: grants(auth.PermSystemRead)},
-		"срок 366 дней":     {Name: "x", ExpiresInDays: 366, Permissions: grants(auth.PermSystemRead)},
-		"безопасность":      {Name: "x", Permissions: grants(auth.PermUsersManage)},
-		"роли":              {Name: "x", Permissions: grants(auth.PermRolesManage)},
-		"проверка целостн.": {Name: "x", Permissions: grants(auth.PermIntegrityVerify)},
-		"токены":            {Name: "x", Permissions: grants(auth.PermAPITokensRead)},
-		"своё self":         {Name: "x", Permissions: grants(auth.PermSelf)},
-		"неизвестное":       {Name: "x", Permissions: grants("unknown.read")},
-		"повтор":            {Name: "x", Permissions: grants(auth.PermSystemRead, auth.PermSystemRead)},
-		"own у не Ownable":  {Name: "x", Permissions: []auth.GrantInput{{Permission: auth.PermSystemRead, Scope: "own"}}},
-		"неизвестная обл.":  {Name: "x", Permissions: []auth.GrantInput{{Permission: auth.PermSystemRead, Scope: "any"}}},
+		"без названия":      {Password: phrase, Name: " ", Permissions: grants(auth.PermSystemRead)},
+		"без разрешений":    {Password: phrase, Name: "x"},
+		"срок 0 дней":       {Password: phrase, Name: "x", ExpiresInDays: -1, Permissions: grants(auth.PermSystemRead)},
+		"срок 366 дней":     {Password: phrase, Name: "x", ExpiresInDays: 366, Permissions: grants(auth.PermSystemRead)},
+		"безопасность":      {Password: phrase, Name: "x", Permissions: grants(auth.PermUsersManage)},
+		"роли":              {Password: phrase, Name: "x", Permissions: grants(auth.PermRolesManage)},
+		"проверка целостн.": {Password: phrase, Name: "x", Permissions: grants(auth.PermIntegrityVerify)},
+		"токены":            {Password: phrase, Name: "x", Permissions: grants(auth.PermAPITokensRead)},
+		"своё self":         {Password: phrase, Name: "x", Permissions: grants(auth.PermSelf)},
+		"неизвестное":       {Password: phrase, Name: "x", Permissions: grants("unknown.read")},
+		"повтор":            {Password: phrase, Name: "x", Permissions: grants(auth.PermSystemRead, auth.PermSystemRead)},
+		"own у не Ownable":  {Password: phrase, Name: "x", Permissions: []auth.GrantInput{{Permission: auth.PermSystemRead, Scope: "own"}}},
+		"неизвестная обл.":  {Password: phrase, Name: "x", Permissions: []auth.GrantInput{{Permission: auth.PermSystemRead, Scope: "any"}}},
 	} {
 		var ie *auth.InputError
 		if _, _, err := e.svc.CreateAPIToken(ctx, admin, in); !errors.As(err, &ie) {
@@ -153,14 +153,14 @@ func TestCreateAPITokenEscalation(t *testing.T) {
 	e := newEnv(t)
 	ctx := context.Background()
 	sys := e.sysadmCaller(t)
-	if _, _, err := e.svc.CreateAPIToken(ctx, sys, auth.APITokenInput{Name: "x", Permissions: grants(auth.PermUsersRead)}); !errors.Is(err, auth.ErrEscalation) {
+	if _, _, err := e.svc.CreateAPIToken(ctx, sys, auth.APITokenInput{Password: phrase, Name: "x", Permissions: grants(auth.PermUsersRead)}); !errors.Is(err, auth.ErrEscalation) {
 		t.Fatalf("разрешение сверх роли: %v", err)
 	}
 	if deniedRecords(e.mem, "api_token.create") != 1 {
 		t.Fatal("отказ не записан в аудит")
 	}
 	analyst := e.mustCaller(t, e.mustLogin(t, "ivanov", phrase).Token)
-	if _, _, err := e.svc.CreateAPIToken(ctx, analyst, auth.APITokenInput{Name: "x", Permissions: grants(auth.PermSystemRead)}); !errors.Is(err, auth.ErrEscalation) {
+	if _, _, err := e.svc.CreateAPIToken(ctx, analyst, auth.APITokenInput{Password: phrase, Name: "x", Permissions: grants(auth.PermSystemRead)}); !errors.Is(err, auth.ErrEscalation) {
 		t.Fatalf("аналитик выпустил токен: %v", err)
 	}
 	_, raw := e.issue(t, sys, auth.PermSystemRead)
@@ -168,13 +168,13 @@ func TestCreateAPITokenEscalation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := e.svc.CreateAPIToken(ctx, viaToken, auth.APITokenInput{Name: "x", Permissions: grants(auth.PermSystemRead)}); !errors.Is(err, auth.ErrEscalation) {
+	if _, _, err := e.svc.CreateAPIToken(ctx, viaToken, auth.APITokenInput{Password: phrase, Name: "x", Permissions: grants(auth.PermSystemRead)}); !errors.Is(err, auth.ErrEscalation) {
 		t.Fatalf("токен выпустил токен: %v", err)
 	}
 	for i := 1; i < auth.MaxAPITokensPerUser; i++ {
 		e.issue(t, sys, auth.PermSystemRead)
 	}
-	if _, _, err := e.svc.CreateAPIToken(ctx, sys, auth.APITokenInput{Name: "x", Permissions: grants(auth.PermSystemRead)}); !errors.Is(err, auth.ErrTooManyAPITokens) {
+	if _, _, err := e.svc.CreateAPIToken(ctx, sys, auth.APITokenInput{Password: phrase, Name: "x", Permissions: grants(auth.PermSystemRead)}); !errors.Is(err, auth.ErrTooManyAPITokens) {
 		t.Fatalf("предел: %v", err)
 	}
 }
@@ -341,5 +341,104 @@ func TestAuthenticateAPITokenStoreFailure(t *testing.T) {
 	e.mem.Fail = nil
 	if err == nil || errors.Is(err, auth.ErrUnauthenticated) {
 		t.Fatalf("сбой хранилища: %v", err)
+	}
+}
+
+// В8 ревью 2.r2: выпуск токена — только с текущим паролем или кодом TOTP;
+// неверное значение — неудача ИАФ.4 с общим счётчиком блокировки.
+func TestCreateAPITokenReauth(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	admin := e.adminCaller(t)
+	in := func(password, code string) auth.APITokenInput {
+		return auth.APITokenInput{Name: "x", Permissions: grants(auth.PermSystemRead), Password: password, Code: code}
+	}
+	var ie *auth.InputError
+	for name, v := range map[string]auth.APITokenInput{"без проверки": in("", ""), "пароль и код": in(phrase, "123456")} {
+		if _, _, err := e.svc.CreateAPIToken(ctx, admin, v); !errors.As(err, &ie) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	if _, _, err := e.svc.CreateAPIToken(ctx, admin, in(wrongPhrase, "")); !errors.Is(err, auth.ErrReauthentication) {
+		t.Fatalf("неверный пароль: %v", err)
+	}
+	if rec := lastRecord(t, e.mem, "api_token.create"); rec.Result != audit.ResultFailure || e.userByID(t, adminID).FailedAttempts != 1 {
+		t.Fatalf("неудача не учтена: %+v", rec)
+	}
+	if _, _, err := e.svc.CreateAPIToken(ctx, admin, in("", "000000")); !errors.Is(err, auth.ErrReauthentication) {
+		t.Fatalf("неверный код: %v", err)
+	}
+	if d := lastRecord(t, e.mem, "auth.mfa_failed").Details.(map[string]any); d["kind"] != "reauth" || d["attempts"] != 2 {
+		t.Fatalf("неудача кода: %v", d)
+	}
+	e.clock.add(time.Minute)
+	if _, _, err := e.svc.CreateAPIToken(ctx, admin, in("", e.mfa.code(t, adminID))); err != nil {
+		t.Fatalf("верный код: %v", err)
+	}
+	if _, _, err := e.svc.CreateAPIToken(ctx, admin, in(phrase, "")); err != nil {
+		t.Fatalf("верный пароль: %v", err)
+	}
+	// Подбор пароля через выпуск токена блокирует учётную запись и завершает сессии.
+	e.mem.AddUser(e.user(helperID, "admin2", auth.RoleSecurityAdmin))
+	second := e.mfa.completeLogin(t, e.mustLogin(t, "admin2", phrase))
+	for range auth.DefaultPolicy().LockoutThreshold {
+		if _, _, err := e.svc.CreateAPIToken(ctx, second.Caller, in(wrongPhrase, "")); !errors.Is(err, auth.ErrReauthentication) {
+			t.Fatal(err)
+		}
+	}
+	if u := e.userByID(t, helperID); !u.Locked(e.clock.now()) {
+		t.Fatal("подбор пароля не заблокировал запись")
+	}
+	if _, err := e.caller(t, second.Token); !errors.Is(err, auth.ErrUnauthenticated) {
+		t.Fatal("сессия после блокировки")
+	}
+}
+
+// В8: сброс пароля администратором всегда отзывает токены пользователя,
+// завершение сессий — по выбору; смена своего пароля токены не трогает.
+func TestTokensRevokedOnCompromiseResponse(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	admin := e.adminCaller(t)
+	e.mem.AddUser(e.user(helperID, "admin2", auth.RoleSecurityAdmin))
+	admin2 := e.mfa.complete(t, e.mustLogin(t, "admin2", phrase))
+	_, raw1 := e.issue(t, admin2, auth.PermSystemRead)
+	alive := func(raw string) bool {
+		_, err := e.svc.AuthenticateAPIToken(ctx, raw, tokenIP)
+		return err == nil
+	}
+	if _, err := e.svc.RevokeSessions(ctx, admin, helperID, false); err != nil || !alive(raw1) {
+		t.Fatalf("завершение сессий без отзыва токенов: %v", err)
+	}
+	if _, err := e.svc.RevokeSessions(ctx, admin, helperID, true); err != nil || alive(raw1) {
+		t.Fatalf("завершение сессий с отзывом токенов: %v", err)
+	}
+	if d := lastRecord(t, e.mem, "auth.sessions_revoked").Details.(map[string]any); d["revoked_api_tokens"] != 1 || d["revoke_api_tokens"] != true {
+		t.Fatalf("подробности: %v", d)
+	}
+	admin2 = e.mfa.complete(t, e.mustLogin(t, "admin2", phrase))
+	_, raw2 := e.issue(t, admin2, auth.PermSystemRead)
+	if err := e.svc.ChangePassword(ctx, admin2, phrase, phrase2); err != nil || !alive(raw2) {
+		t.Fatalf("смена своего пароля отозвала токен: %v", err)
+	}
+	if _, err := e.svc.ResetPassword(ctx, admin, helperID); err != nil || alive(raw2) {
+		t.Fatalf("сброс пароля не отозвал токен: %v", err)
+	}
+	if rec := authFailed(t, e); rec.Details.(map[string]any)["reason"] != auth.ReasonRevoked {
+		t.Fatalf("причина отказа: %v", rec.Details)
+	}
+	toks, err := e.mem.ListAPITokens(ctx, audit.DefaultOrgID, helperID, nil, 10)
+	if err != nil || len(toks) != 2 {
+		t.Fatalf("токены: %d %v", len(toks), err)
+	}
+	reasons := map[string]bool{}
+	for _, tk := range toks {
+		if tk.RevokedBy != adminID {
+			t.Errorf("%s отозван %q", tk.Prefix, tk.RevokedBy)
+		}
+		reasons[tk.RevokeReason] = true
+	}
+	if !reasons[auth.APITokenRevokedBySessions] || !reasons[auth.APITokenRevokedByPasswordReset] {
+		t.Fatalf("причины отзыва: %v", reasons)
 	}
 }

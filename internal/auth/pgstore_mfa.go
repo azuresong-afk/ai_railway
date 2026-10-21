@@ -172,6 +172,11 @@ func (s *PGStore) MFAStep(ctx context.Context, st MFAStep, rec audit.Entry) erro
 			if err := s.replaceSession(ctx, tx, st, &rec); err != nil {
 				return err
 			}
+		} else if _, err := tx.Exec(ctx, "UPDATE sessions SET mfa_verified = true WHERE id = $1 AND NOT mfa_verified",
+			st.SessionID); err != nil {
+			// Код принят в полной сессии (подключение фактора, новые коды):
+			// сессия прошла второй фактор (В6 ревью 2.r2).
+			return fmt.Errorf("сессии: второй фактор: %w", err)
 		}
 		if st.Kind == MFAStepVerify {
 			if _, err := tx.Exec(ctx, "UPDATE users SET failed_attempts = 0, locked_at = NULL, locked_until = NULL WHERE id = $1",
@@ -184,6 +189,10 @@ func (s *PGStore) MFAStep(ctx context.Context, st MFAStep, rec audit.Entry) erro
 				return fmt.Errorf("коды восстановления: %w", err)
 			}
 			AddDetail(&rec, "recovery_codes_left", left)
+		}
+		if rec.Action == "" {
+			// Повторная проверка (MFAStepReauth): успех запишет само действие.
+			return nil
 		}
 		return s.record(ctx, tx, rec)
 	})

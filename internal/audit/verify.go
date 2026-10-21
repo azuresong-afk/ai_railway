@@ -2,6 +2,7 @@ package audit
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/internal/store"
 )
 
@@ -20,8 +22,15 @@ const (
 	batchTimeout = 30 * time.Second
 	// DefaultVerifyInterval — период фоновой проверки цепочки (DM-43).
 	DefaultVerifyInterval = time.Hour
-	minVerifyInterval     = time.Minute
+	// MinVerifyInterval — наименьший период фоновой проверки.
+	MinVerifyInterval = time.Minute
 )
+
+// headMACContext — контекст имитовставки головы цепочки.
+const headMACContext = "aisec-audit-head-v1"
+
+// HeadMACPurpose — назначение ключа имитовставки головы в keyring.Box.MAC.
+const HeadMACPurpose = "audit-head"
 
 // Verification — итог проверки цепочки.
 type Verification struct {
@@ -37,15 +46,55 @@ func (v Verification) OK() bool { return v.Break == nil }
 // Verifier проверяет цепочку журнала периодически и по команде (DM-43).
 // Последняя проверенная запись хранится в памяти и в audit_verifications:
 // по ней видно удаление хвоста и пересчёт цепочки после прошлой проверки.
+//
+// С имитовставкой головы (WithHeadMAC) опорой из audit_verifications служат
+// только строки с верной имитовставкой: переписать журнал, пересчитать
+// цепочку и добавить «успешную» проверку новой головы нельзя без ключа вне
+// БД (замечание В2 ревью 2.r1).
 type Verifier struct {
 	log *Log
+	mac *HeadMAC
 	// mu сериализует проверки и защищает known.
 	mu    sync.Mutex
 	known *Anchor
 }
 
+// HeadMAC — имитовставка головы цепочки на ключе вне БД: KeyID — ID ключа
+// данных, из которого выведен ключ (keyring.Box.MAC, назначение audit-head).
+type HeadMAC struct {
+	KeyID string
+	MAC   crypto.MAC
+}
+
+// VerifierOption — настройка проверки цепочки.
+type VerifierOption func(*Verifier)
+
+// WithHeadMAC включает имитовставку головы цепочки в audit_verifications.
+func WithHeadMAC(m HeadMAC) VerifierOption {
+	return func(v *Verifier) {
+		if m.MAC != nil && m.KeyID != "" {
+			v.mac = &m
+		}
+	}
+}
+
 // NewVerifier создаёт проверку для журнала l.
-func NewVerifier(l *Log) *Verifier { return &Verifier{log: l} }
+func NewVerifier(l *Log, opts ...VerifierOption) *Verifier {
+	v := &Verifier{log: l}
+	for _, o := range opts {
+		o(v)
+	}
+	return v
+}
+
+// headMessage — то, на что ставится имитовставка: контекст, номер и хеш головы.
+func headMessage(a Anchor) []byte {
+	msg := make([]byte, 0, len(headMACContext)+1+8+len(a.Hash))
+	msg = append(msg, headMACContext...)
+	msg = append(msg, 0)
+	msg = binary.BigEndian.AppendUint64(msg, uint64(a.Seq)) //nolint:gosec // G115: номер записи неотрицателен (CHECK last_seq >= 0)
+	return append(msg, a.Hash...)
+}
 
 // Verify проверяет всю хранимую цепочку, пишет итог в audit_verifications,
 // в журнал аудита (audit.chain_verified или audit.chain_broken) и, при
@@ -74,9 +123,13 @@ func (v *Verifier) VerifyBy(ctx context.Context, by Actor) (Verification, error)
 }
 
 func (v *Verifier) verify(ctx context.Context, by Actor) (Verification, error) {
-	known, err := v.lastKnown(ctx)
+	known, forged, err := v.lastKnown(ctx)
 	if err != nil {
 		return Verification{}, err
+	}
+	if forged != nil {
+		res := Verification{At: v.log.now().UTC().Truncate(time.Microsecond), Break: forged}
+		return res, v.save(ctx, res, by)
 	}
 	anchor, err := v.log.anchor(ctx)
 	if errors.Is(err, ErrCheckpointInvalid) {
@@ -152,12 +205,25 @@ func (v *Verifier) walk(ctx context.Context, anchor Anchor, known []Anchor) (*ch
 // lastKnown — записи, проверенные успешно раньше: из памяти процесса и
 // последняя из audit_verifications. Сверяются обе: строку в
 // audit_verifications может добавить и нарушитель с ролью приложения.
-func (v *Verifier) lastKnown(ctx context.Context) ([]Anchor, error) {
+// С имитовставкой головы из БД берётся последняя строка с имитовставкой
+// действующего ключа данных; неверная имитовставка — нарушение
+// ReasonAnchorForged.
+func (v *Verifier) lastKnown(ctx context.Context) ([]Anchor, *Break, error) {
 	ctx, cancel := withTimeout(ctx, batchTimeout)
 	defer cancel()
 	var out []Anchor
 	if v.known != nil {
 		out = append(out, *v.known)
+	}
+	if v.mac != nil {
+		a, brk, err := v.macAnchor(ctx)
+		if err != nil || brk != nil {
+			return nil, brk, err
+		}
+		if a != nil {
+			out = append(out, *a)
+		}
+		return out, nil, nil
 	}
 	var a Anchor
 	err := v.log.db.QueryRow(ctx, `SELECT last_seq, last_hash FROM audit_verifications
@@ -165,11 +231,31 @@ func (v *Verifier) lastKnown(ctx context.Context) ([]Anchor, error) {
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 	case err != nil:
-		return nil, fmt.Errorf("журнал аудита: прошлые проверки: %w", err)
+		return nil, nil, fmt.Errorf("журнал аудита: прошлые проверки: %w", err)
 	default:
 		out = append(out, a)
 	}
-	return out, nil
+	return out, nil, nil
+}
+
+// macAnchor — последняя проверка с имитовставкой действующего ключа данных.
+// Строки без имитовставки (aisec-cli без каталога ключей, проверки до
+// миграции 0015) и строки прежнего ключа данных опорой не служат.
+func (v *Verifier) macAnchor(ctx context.Context) (*Anchor, *Break, error) {
+	var a Anchor
+	var tag []byte
+	err := v.log.db.QueryRow(ctx, `SELECT last_seq, last_hash, head_mac FROM audit_verifications
+		WHERE ok AND last_hash IS NOT NULL AND head_mac IS NOT NULL AND mac_key_id = $1::uuid
+		ORDER BY last_seq DESC LIMIT 1`, v.mac.KeyID).Scan(&a.Seq, &a.Hash, &tag)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return nil, nil, nil
+	case err != nil:
+		return nil, nil, fmt.Errorf("журнал аудита: прошлые проверки: %w", err)
+	case !v.mac.MAC.Verify(headMessage(a), tag):
+		return nil, &Break{Seq: a.Seq, Reason: ReasonAnchorForged}, nil
+	}
+	return &a, nil, nil
 }
 
 func (v *Verifier) readBatch(ctx context.Context, after int64) ([]Record, error) {
@@ -249,15 +335,19 @@ func (v *Verifier) save(ctx context.Context, res Verification, by Actor) error {
 		details["broken_seq"] = s
 		details["reason"] = reason
 	}
-	var lastHash []byte
+	var lastHash, headMAC []byte
+	var macKeyID *string
 	if res.OK() && res.Head.Seq > 0 {
 		lastHash = res.Head.Hash
+		if v.mac != nil {
+			headMAC, macKeyID = v.mac.MAC.Sum(headMessage(res.Head)), &v.mac.KeyID
+		}
 	}
 	return v.log.inTx(ctx, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `INSERT INTO audit_verifications
-			(id, ts, ok, checked, last_seq, last_hash, reason, broken_seq)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-			string(id), res.At, res.OK(), res.Checked, res.Head.Seq, lastHash, reason, brokenSeq); err != nil {
+			(id, ts, ok, checked, last_seq, last_hash, reason, broken_seq, head_mac, mac_key_id)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::uuid)`,
+			string(id), res.At, res.OK(), res.Checked, res.Head.Seq, lastHash, reason, brokenSeq, headMAC, macKeyID); err != nil {
 			return fmt.Errorf("журнал аудита: запись итога проверки: %w", err)
 		}
 		if res.Break != nil {
@@ -279,8 +369,8 @@ func (v *Verifier) save(ctx context.Context, res Verification, by Actor) error {
 // Run проверяет цепочку сразу и затем каждые interval, пока не отменён ctx.
 // report получает каждый итог или ошибку (может быть nil).
 func (v *Verifier) Run(ctx context.Context, interval time.Duration, report func(Verification, error)) error {
-	if interval < minVerifyInterval {
-		return fmt.Errorf("период проверки цепочки не меньше %s", minVerifyInterval)
+	if interval < MinVerifyInterval {
+		return fmt.Errorf("период проверки цепочки не меньше %s", MinVerifyInterval)
 	}
 	t := time.NewTicker(interval)
 	defer t.Stop()

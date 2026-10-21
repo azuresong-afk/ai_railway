@@ -211,7 +211,7 @@ func TestNoPrivilegeEscalation(t *testing.T) {
 	if err := e.svc.SetStatus(ctx, helper, adminID, auth.StatusDeactivated); !errors.Is(err, auth.ErrEscalation) {
 		t.Fatalf("деактивация администратора: %v", err)
 	}
-	if _, err := e.svc.RevokeSessions(ctx, helper, adminID); !errors.Is(err, auth.ErrEscalation) {
+	if _, err := e.svc.RevokeSessions(ctx, helper, adminID, true); !errors.Is(err, auth.ErrEscalation) {
 		t.Fatalf("завершение сессий администратора: %v", err)
 	}
 	if err := e.svc.ResetMFA(ctx, helper, adminID); !errors.Is(err, auth.ErrEscalation) {
@@ -274,9 +274,10 @@ func TestAssignRole(t *testing.T) {
 	if !allowed(t, e, b.Caller, auth.PermUsersRead) || allowed(t, e, b.Caller, auth.PermUsersManage) {
 		t.Fatal("права после смены роли")
 	}
-	// Повторное назначение той же роли ничего не меняет.
+	// Повторное назначение той же роли ничего не меняет и отвечает отказом,
+	// а не успехом без записи в аудите (Н13 ревью 2.r2).
 	before := len(e.mem.Records())
-	if n, err := e.svc.AssignRole(ctx, admin, userID, auth.RoleAuditor); err != nil || n != 0 || len(e.mem.Records()) != before {
+	if n, err := e.svc.AssignRole(ctx, admin, userID, auth.RoleAuditor); !errors.Is(err, auth.ErrRoleUnchanged) || n != 0 || len(e.mem.Records()) != before {
 		t.Fatalf("та же роль: %d, %v", n, err)
 	}
 }
@@ -529,4 +530,65 @@ func TestAccessDeniedAudit(t *testing.T) {
 		d["reason"] != "permission" {
 		t.Fatalf("аудит: %+v", rec)
 	}
+}
+
+// В6 ревью 2.r2: роль получила права, при которых второй фактор обязателен,
+// — открытые сессии без фактора завершаются; сессия, прошедшая фактор,
+// продолжает работу.
+func TestRoleGainsMFARequirement(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	admin := e.adminCaller(t)
+	e.createRole(t, "reader", auth.PermUsersRead)
+	e.mem.AddUser(e.user(helperID, "reader", "reader"))
+	plain := e.mustLogin(t, "reader", phrase)
+	if plain.Caller.Session.State != auth.SessionActive || plain.Caller.Session.MFAVerified {
+		t.Fatalf("вход без фактора: %+v", plain.Caller.Session)
+	}
+	// Второй пользователь роли подключил фактор в своей сессии.
+	const other = "01900000-0000-7000-8000-00000000b003"
+	e.mem.AddUser(e.user(other, "reader2", "reader"))
+	withMFA := e.mustLogin(t, "reader2", phrase)
+	e.mfa.enroll(t, withMFA.Caller)
+	if _, err := e.svc.ConfirmMFA(ctx, withMFA.Caller, e.mfa.code(t, other)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.svc.UpdateRole(ctx, admin, "reader", auth.RoleInput{DisplayName: "Управление",
+		Permissions: grants(auth.PermUsersRead, auth.PermUsersManage)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.caller(t, plain.Token); !errors.Is(err, auth.ErrUnauthenticated) {
+		t.Fatalf("сессия без фактора после расширения роли: %v", err)
+	}
+	if rec := lastRecord(t, e.mem, "auth.session_expired"); rec.Details.(map[string]any)["reason"] != auth.RevokeMFARequired {
+		t.Fatalf("причина: %v", rec.Details)
+	}
+	if c := e.mustCaller(t, withMFA.Token); !allowed(t, e, c, auth.PermUsersManage) {
+		t.Fatal("сессия с фактором потеряла права")
+	}
+	if r := e.mustLogin(t, "reader", phrase); r.Caller.Session.State != auth.SessionMFASetup {
+		t.Fatalf("новый вход: %s", r.Caller.Session.State)
+	}
+}
+
+// В6: включение mfa_required_all завершает полные сессии без фактора;
+// сессия, прошедшая фактор при входе, продолжает работу.
+func TestMFARequiredAllExpiresPlainSessions(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	admin := e.mfa.completeLogin(t, e.mustLogin(t, "admin", phrase))
+	if !admin.Caller.Session.MFAVerified {
+		t.Fatal("сессия после второго фактора без признака")
+	}
+	plain := e.mustLogin(t, "ivanov", phrase)
+	e.mustCaller(t, plain.Token)
+	p := auth.DefaultPolicy()
+	p.MFARequiredAll = true
+	if err := e.svc.SetPolicy(ctx, admin.Caller, p); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.caller(t, plain.Token); !errors.Is(err, auth.ErrUnauthenticated) {
+		t.Fatalf("сессия без фактора: %v", err)
+	}
+	e.mustCaller(t, admin.Token)
 }

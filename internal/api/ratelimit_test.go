@@ -14,25 +14,25 @@ func TestRateLimiterWindowAndRules(t *testing.T) {
 	})
 	c := netip.MustParsePrefix("192.0.2.1/32")
 	for i := 0; i < 3; i++ {
-		if ok, _ := l.Allow("/api/v1/x", c); !ok {
+		if ok, _ := l.Allow("GET", "/api/v1/x", c); !ok {
 			t.Fatalf("запрос %d", i)
 		}
 	}
-	ok, wait := l.Allow("/api/v1/x", c)
+	ok, wait := l.Allow("GET", "/api/v1/x", c)
 	if ok || wait <= 0 || wait > time.Minute {
 		t.Fatalf("ожидался отказ: %v %v", ok, wait)
 	}
-	if ok, _ := l.Allow("/api/v1/auth/login", c); !ok {
+	if ok, _ := l.Allow("GET", "/api/v1/auth/login", c); !ok {
 		t.Fatal("у входа свой счётчик")
 	}
-	if ok, _ := l.Allow("/api/v1/auth/login", c); ok {
+	if ok, _ := l.Allow("GET", "/api/v1/auth/login", c); ok {
 		t.Fatal("вход строже")
 	}
-	if ok, _ := l.Allow("/free", c); !ok {
+	if ok, _ := l.Allow("GET", "/free", c); !ok {
 		t.Fatal("Max=0 — без предела")
 	}
 	now = now.Add(time.Minute)
-	if ok, _ := l.Allow("/api/v1/x", c); !ok {
+	if ok, _ := l.Allow("GET", "/api/v1/x", c); !ok {
 		t.Fatal("окно сброшено")
 	}
 }
@@ -40,12 +40,12 @@ func TestRateLimiterWindowAndRules(t *testing.T) {
 func TestRateLimiterBoundedMemory(t *testing.T) {
 	l := NewRateLimiter(RateConfig{Rules: []RateRule{{Prefix: "/", Max: 2, Window: time.Minute}}, MaxEntries: 2, Now: func() time.Time { return time.Unix(0, 0) }})
 	for _, a := range []string{"192.0.2.1/32", "192.0.2.2/32"} {
-		l.Allow("/x", netip.MustParsePrefix(a))
+		l.Allow("GET", "/x", netip.MustParsePrefix(a))
 	}
 	// Таблица полна: новые клиенты делят общий счётчик и всё равно ограничены.
 	denied := false
 	for i := 0; i < 5; i++ {
-		if ok, _ := l.Allow("/x", netip.MustParsePrefix("198.51.100.0/24")); !ok {
+		if ok, _ := l.Allow("GET", "/x", netip.MustParsePrefix("198.51.100.0/24")); !ok {
 			denied = true
 		}
 	}
@@ -56,17 +56,48 @@ func TestRateLimiterBoundedMemory(t *testing.T) {
 
 func TestClientPrefix(t *testing.T) {
 	for in, want := range map[string]string{
-		"192.0.2.9:80":            "192.0.2.9/32",
-		"[2001:db8::1:2:3:4]:443": "2001:db8::/64",
-		"[::ffff:192.0.2.9]:1":    "192.0.2.9/32",
-		"192.0.2.9":               "192.0.2.9/32",
+		"192.0.2.9":         "192.0.2.9/32",
+		"2001:db8::1:2:3:4": "2001:db8::/64",
+		"::ffff:192.0.2.9":  "192.0.2.9/32",
 	} {
-		if got := clientPrefix(in); got.String() != want {
+		if got := clientPrefix(netip.MustParseAddr(in)); got.String() != want {
 			t.Errorf("%s: %s, ожидалось %s", in, got, want)
 		}
 	}
-	if clientPrefix("мусор").IsValid() {
-		t.Error("мусор принят")
+	if clientPrefix(netip.Addr{}).IsValid() {
+		t.Error("пустой адрес принят")
+	}
+}
+
+// В3 ревью 2.r1: строгий предел — только у POST, которые проверяют пароль
+// или код; выход, чтение настройки и прочее — по общему правилу.
+func TestDefaultRateRulesAuth(t *testing.T) {
+	l := NewRateLimiter(RateConfig{Now: func() time.Time { return time.Unix(0, 0) }})
+	c := netip.MustParsePrefix("192.0.2.1/32")
+	for _, tc := range []struct {
+		method, path string
+		strict       bool
+	}{
+		{"POST", "/api/v1/auth/login", true},
+		{"POST", "/api/v1/auth/setup", true},
+		{"POST", "/api/v1/auth/mfa/verify", true},
+		{"POST", "/api/v1/auth/mfa/setup/confirm", true},
+		{"POST", "/api/v1/auth/password", true},
+		{"GET", "/api/v1/auth/setup", false},
+		{"POST", "/api/v1/auth/logout", false},
+		{"GET", "/api/v1/auth/policy", false},
+	} {
+		i := l.ruleFor(tc.method, tc.path)
+		if got := l.cfg.Rules[i].Max == 10; got != tc.strict {
+			t.Errorf("%s %s: строгий %v, ожидалось %v", tc.method, tc.path, got, tc.strict)
+		}
+	}
+	// Выход не съедает предел входа.
+	for range 20 {
+		l.Allow("POST", "/api/v1/auth/logout", c)
+	}
+	if ok, _ := l.Allow("POST", "/api/v1/auth/login", c); !ok {
+		t.Fatal("выход исчерпал предел входа")
 	}
 }
 

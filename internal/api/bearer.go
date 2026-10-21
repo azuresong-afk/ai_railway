@@ -5,6 +5,9 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/netip"
+	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/azuresong-afk/ai_railway/internal/auth"
@@ -14,37 +17,82 @@ import (
 const tokenAuditTimeout = 5 * time.Second
 
 // BearerAuthorizer проверяет запросы по токену API (ИАФ.9, задача 2.10).
-// Есть заголовок Authorization — проверяется только он: в cookie не
-// откатываемся, CSRF не нужен (заголовок браузер сам не подставляет).
-// Заголовка нет — решает Next (сессия консоли). Права токена — пересечение
-// его области с текущими правами роли владельца (auth.TokenGrants).
+// Есть заголовок Authorization со схемой Bearer — проверяется только он: в
+// cookie не откатываемся, CSRF не нужен (заголовок браузер сам не
+// подставляет). Заголовка Bearer нет — решает Next (сессия консоли):
+// Basic от обратного прокси консоль не ломает (Н10 ревью 2.r2). Права
+// токена — пересечение его области с текущими правами роли владельца
+// (auth.TokenGrants).
 type BearerAuthorizer struct {
 	Auth   *auth.Service
 	Logger *slog.Logger
-	// Next — проверка без заголовка Authorization; nil — DenyAll.
+	// Next — проверка без заголовка Bearer; nil — DenyAll.
 	Next Authorizer
+	// Limiter — неудачи проверки токена по адресу клиента (В9 ревью 2.r2):
+	// после порога — 429 без записей в аудит до конца блокировки, о начале
+	// блокировки — одна запись. nil — без ограничения.
+	Limiter *auth.FailureLimiter
+	// Malformed — счётчик заголовков Bearer неверного формата (в аудит они
+	// не пишутся: подделать формат может любой, журнал не раздувается).
+	Malformed *atomic.Uint64
+	// Now — часы ограничителя; nil — time.Now.
+	Now func() time.Time
+}
+
+// hasBearer — среди заголовков Authorization есть схема Bearer.
+func hasBearer(values []string) bool {
+	for _, v := range values {
+		if scheme, _, _ := strings.Cut(strings.TrimLeft(v, " \t"), " "); strings.EqualFold(scheme, "bearer") {
+			return true
+		}
+	}
+	return false
 }
 
 // Authorize — Authorizer.
 func (a BearerAuthorizer) Authorize(r *http.Request, permission string) (Principal, Decision) {
 	values := r.Header.Values("Authorization")
-	if len(values) == 0 {
+	if !hasBearer(values) {
 		if a.Next == nil {
 			return DenyAll{}.Authorize(r, permission)
 		}
 		return a.Next.Authorize(r, permission)
 	}
-	// Не Bearer или несколько заголовков — пустая строка: отказ с причиной
-	// malformed в журнале аудита, без самого значения заголовка.
-	raw, err := auth.BearerToken(values)
-	if err != nil {
-		raw = ""
+	ip := clientAddr(r)
+	now := time.Now()
+	if a.Now != nil {
+		now = a.Now()
 	}
-	c, err := a.Auth.AuthenticateAPIToken(r.Context(), raw, clientAddr(r))
+	if a.Limiter != nil {
+		if blocked, until := a.Limiter.Blocked(ip, now); blocked {
+			return Principal{RetryAfter: until.Sub(now)}, RateLimited
+		}
+	}
+	// Несколько заголовков или неверный формат — отказ без записи в аудит,
+	// счётчиком в технический журнал (без значения заголовка).
+	raw, err := auth.BearerToken(values)
+	if err == nil {
+		_, err = auth.ParseAPIToken(raw)
+	}
+	if err != nil {
+		n := uint64(0)
+		if a.Malformed != nil {
+			n = a.Malformed.Add(1)
+		}
+		if a.Logger != nil {
+			a.Logger.Info("заголовок Bearer неверного формата", "client", ip.String(), "total", n)
+		}
+		a.failed(r.Context(), ip, now)
+		return Principal{}, Unauthenticated
+	}
+	c, err := a.Auth.AuthenticateAPIToken(r.Context(), raw, ip)
 	if err != nil {
 		if !errors.Is(err, auth.ErrUnauthenticated) && a.Logger != nil {
 			// Сбой хранилища или журнала: отказ, причина — в техническом журнале (без токена).
 			a.Logger.Error("проверка токена API не выполнена", "error", err)
+		}
+		if errors.Is(err, auth.ErrUnauthenticated) {
+			a.failed(r.Context(), ip, now)
 		}
 		return Principal{}, Unauthenticated
 	}
@@ -62,6 +110,17 @@ func (a BearerAuthorizer) Authorize(r *http.Request, permission string) (Princip
 		return p, Forbidden
 	}
 	return p, Allow
+}
+
+// failed учитывает неудачу адреса ip; на пороге — одна запись о блокировке.
+func (a BearerAuthorizer) failed(ctx context.Context, ip netip.Addr, now time.Time) {
+	if a.Limiter == nil || !a.Limiter.Fail(ip, now) {
+		return
+	}
+	_, until := a.Limiter.Blocked(ip, now)
+	if err := a.Auth.APITokenRateLimited(ctx, ip, until); err != nil && a.Logger != nil {
+		a.Logger.Error("блокировка адреса по неудачам токена API не записана в журнал аудита", "error", err)
+	}
 }
 
 // statusRecorder запоминает код ответа обработчика (аудит api_token.used).

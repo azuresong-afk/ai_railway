@@ -16,6 +16,9 @@ type Status struct {
 	Events      EventsStatus    `json:"events"`
 	Time        TimeStatus      `json:"time"`
 	Storage     StorageStatus   `json:"storage"`
+	// AuditChain — последняя проверка цепочки журнала аудита (РСБ.4); nil —
+	// проверок ещё не было.
+	AuditChain *AuditChainStatus `json:"audit_chain"`
 	// Notifications — по одной записи на каждое условие раздела 7.
 	Notifications []Notification `json:"notifications"`
 	// Unavailable — разделы, которые не удалось собрать (сбой БД и т. п.);
@@ -116,6 +119,20 @@ type StorageStatus struct {
 	WarnExceeded bool  `json:"warn_exceeded"`
 }
 
+// AuditChainStatus — итог последней проверки цепочки журнала аудита:
+// фоновой проверки сервера или ручной aisec-cli audit verify.
+type AuditChainStatus struct {
+	CheckedAt time.Time `json:"checked_at"`
+	OK        bool      `json:"ok"`
+	// Checked — проверено записей; LastSeq — последняя проверенная запись.
+	Checked int64 `json:"checked"`
+	LastSeq int64 `json:"last_seq"`
+	// Reason — ok или причина нарушения (rewritten, tail_truncated и т. п.).
+	Reason string `json:"reason"`
+	// BrokenSeq — номер записи, на которой цепочка нарушена; nil — цела.
+	BrokenSeq *int64 `json:"broken_seq"`
+}
+
 // Условия уведомлений раздела 7.
 const (
 	ConditionAccount   = "account_lockout" // ИАФ.4: блокировки учётных записей
@@ -123,12 +140,13 @@ const (
 	ConditionStorage   = "audit_storage"   // РСБ.5: журнал близок к пределу
 	ConditionIntegrity = "integrity"       // ОЦЛ.5: нарушение целостности или провал самотеста
 	ConditionTime      = "time_sync"       // ВРМ.1: рассинхронизация времени
+	ConditionAuditLog  = "audit_chain"     // РСБ.4: нарушена цепочка журнала аудита
 )
 
 // Notification — условие уведомления на этапе 2.
 type Notification struct {
 	Condition   string `json:"condition"`
-	Requirement string `json:"requirement"` // ИАФ.4, УПД.6, РСБ.5, ОЦЛ.5, ВРМ.1
+	Requirement string `json:"requirement"` // ИАФ.4, УПД.6, РСБ.4, РСБ.5, ОЦЛ.5, ВРМ.1
 	Title       string `json:"title"`
 	Active      bool   `json:"active"`
 	// Since — когда условие возникло; nil — неактивно или момент не известен.

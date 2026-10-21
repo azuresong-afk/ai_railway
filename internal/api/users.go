@@ -17,11 +17,11 @@ import (
 func userRoutes(d Deps) []Route {
 	return []Route{
 		{Method: http.MethodGet, Path: "/api/v1/users", Permission: auth.PermUsersRead, Handler: needAuth(d, d.listUsers)},
-		{Method: http.MethodPost, Path: "/api/v1/users", Permission: auth.PermUsersManage, MaxBody: authMaxBody, Handler: needAuth(d, d.createUser)},
+		{Method: http.MethodPost, Path: "/api/v1/users", Permission: auth.PermUsersManage, SecretOnce: true, MaxBody: authMaxBody, Handler: needAuth(d, d.createUser)},
 		{Method: http.MethodGet, Path: "/api/v1/users/{id}", Permission: auth.PermUsersRead, Handler: needAuth(d, d.getUser)},
 		{Method: http.MethodPost, Path: "/api/v1/users/{id}/deactivate", Permission: auth.PermUsersManage, Handler: needAuth(d, d.setStatus(auth.StatusDeactivated))},
 		{Method: http.MethodPost, Path: "/api/v1/users/{id}/activate", Permission: auth.PermUsersManage, Handler: needAuth(d, d.setStatus(auth.StatusActive))},
-		{Method: http.MethodPost, Path: "/api/v1/users/{id}/password-reset", Permission: auth.PermUsersManage, Handler: needAuth(d, d.resetPassword)},
+		{Method: http.MethodPost, Path: "/api/v1/users/{id}/password-reset", Permission: auth.PermUsersManage, SecretOnce: true, Handler: needAuth(d, d.resetPassword)},
 		{Method: http.MethodGet, Path: "/api/v1/users/{id}/sessions", Permission: auth.PermSessionsRead, Handler: needAuth(d, d.listSessions)},
 		{Method: http.MethodDelete, Path: "/api/v1/users/{id}/sessions", Permission: auth.PermSessionsManage, Handler: needAuth(d, d.revokeSessions)},
 	}
@@ -248,7 +248,18 @@ func (d Deps) revokeSessions(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	n, err := d.Auth.RevokeSessions(r.Context(), c, id)
+	// Токены API отзываются вместе с сессиями, если не отказаться явно
+	// (В8 ревью 2.r2): завершение сессий — реакция на компрометацию.
+	revokeTokens := true
+	switch r.URL.Query().Get("revoke_api_tokens") {
+	case "", "true":
+	case "false":
+		revokeTokens = false
+	default:
+		WriteProblem(w, Invalid("Проверьте параметры запроса.", FieldError{"revoke_api_tokens", "Допустимо true или false."}))
+		return
+	}
+	n, err := d.Auth.RevokeSessions(r.Context(), c, id, revokeTokens)
 	if err != nil {
 		WriteProblem(w, authProblem(d.Logger, err))
 		return

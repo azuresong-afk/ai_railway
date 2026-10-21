@@ -13,5 +13,5 @@ func SystemClock() ClockState {
 	if err != nil {
 		return ClockState{Sync: SyncUnknown}
 	}
-	return classifyClock(state, int64(tx.Status), tx.Esterror) //nolint:forbidigo // ADR-0014: поля Status и Esterror только читаются
+	return classifyClock(state, int64(tx.Status), int64(tx.Esterror)) //nolint:forbidigo // ADR-0014: поля Status и Esterror только читаются; приведение — для 32-битных Linux, где Esterror — int32
 }

@@ -5,7 +5,9 @@ import (
 	"log/slog"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
+	"time"
 
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 )
@@ -25,6 +27,10 @@ type Route struct {
 	Scoped bool
 	// Idempotent включает поддержку заголовка Idempotency-Key (создающие запросы).
 	Idempotent bool
+	// SecretOnce — ответ показывает секрет один раз (токен API, ключ
+	// приложения, секрет TOTP, коды восстановления). Такой ответ нельзя
+	// хранить для повтора по Idempotency-Key: признаки несовместимы.
+	SecretOnce bool
 	// MaxBody — предел тела; ноль — DefaultMaxBody.
 	MaxBody int64
 	Handler http.HandlerFunc
@@ -77,6 +83,8 @@ func (rt *Router) add(r Route) error {
 		return fmt.Errorf("признак Scoped у открытого маршрута")
 	case r.Idempotent && r.Method != http.MethodPost && r.Method != http.MethodPatch:
 		return fmt.Errorf("Idempotency-Key поддерживается для POST и PATCH")
+	case r.Idempotent && r.SecretOnce:
+		return fmt.Errorf("ответ с одноразовым секретом не хранится для повтора: Idempotent несовместим с SecretOnce")
 	case r.MaxBody < 0:
 		return fmt.Errorf("MaxBody меньше нуля")
 	}
@@ -136,6 +144,11 @@ func (rt *Router) wrap(r Route) http.Handler {
 		case Unavailable:
 			WriteProblem(w, NewProblem(http.StatusServiceUnavailable, CodeUnavailable,
 				"Не удалось проверить права доступа: повторите запрос позже."))
+		case RateLimited:
+			secs := max(int((p.RetryAfter+time.Second-1)/time.Second), 1)
+			w.Header().Set("Retry-After", strconv.Itoa(secs))
+			WriteProblem(w, NewProblem(http.StatusTooManyRequests, CodeRateLimited,
+				"Слишком много неудачных попыток входа по токену API с вашего адреса. Повторите через "+strconv.Itoa(secs)+" с."))
 		default:
 			rt.denied(req, Denial{Method: r.Method, Path: r.Path, Permission: r.Permission, Decision: Unauthenticated})
 			WriteProblem(w, errUnauthorized())

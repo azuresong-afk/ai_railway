@@ -255,3 +255,42 @@ func TestPGPreMFASessionsDoNotEvictFull(t *testing.T) {
 		t.Fatalf("новая сессия: %v", err)
 	}
 }
+
+// В6 ревью 2.r2: признак пройденного фактора хранится в сессии — после
+// второго шага входа и после подключения фактора в полной сессии.
+func TestPGMFAVerifiedFlag(t *testing.T) {
+	e := setupPG(t)
+	ctx := pgCtx(t)
+	e.addUser(t, adminID, "admin", auth.RoleSecurityAdmin)
+	e.addUser(t, userID, "ivanov", auth.RoleAnalyst)
+	admin := e.mfa.completeLogin(t, mustPGLogin(t, e, "admin"))
+	verified := func(id string) bool {
+		t.Helper()
+		var v bool
+		if err := e.owner.QueryRow(ctx, "SELECT mfa_verified FROM sessions WHERE id = $1", id).Scan(&v); err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	if !verified(admin.Caller.Session.ID) {
+		t.Fatal("сессия после второго фактора без признака")
+	}
+	if c, err := e.svc.Authenticate(ctx, admin.Token, testIP); err != nil || !c.Session.MFAVerified {
+		t.Fatalf("признак не читается: %v", err)
+	}
+	plain := mustPGLogin(t, e, "ivanov")
+	if verified(plain.Caller.Session.ID) {
+		t.Fatal("вход без фактора с признаком")
+	}
+	e.mfa.enroll(t, plain.Caller)
+	if _, err := e.svc.ConfirmMFA(ctx, plain.Caller, e.mfa.code(t, userID)); err != nil {
+		t.Fatal(err)
+	}
+	if !verified(plain.Caller.Session.ID) {
+		t.Fatal("подключение фактора в полной сессии не поставило признак")
+	}
+	// Признак есть только у полной сессии.
+	if _, err := e.owner.Exec(ctx, "UPDATE sessions SET state = 'mfa_pending' WHERE id = $1", plain.Caller.Session.ID); sqlState(err) != "23514" {
+		t.Fatalf("сессия до фактора с признаком: %v", err)
+	}
+}

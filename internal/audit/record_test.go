@@ -106,26 +106,24 @@ func TestCanonicalDetails(t *testing.T) {
 func TestCanonicalJSONRejects(t *testing.T) {
 	deep := strings.Repeat(`{"a":`, maxDetailsDepth+1) + "1" + strings.Repeat("}", maxDetailsDepth+1)
 	cases := map[string]string{ //nolint:gosec // G101: синтетические строки для проверки фильтра секретов, не настоящие учётные данные
-		"не объект":         `[1,2]`,
-		"строка":            `"x"`,
-		"неверный JSON":     `{"a":`,
-		"хвост":             `{"a":1} {"b":2}`,
-		"глубина":           deep,
-		"размер":            `{"a":"` + strings.Repeat("x", maxDetailsSize) + `"}`,
-		"пароль":            `{"new_password":"x"}`,
-		"секрет вложенно":   `{"after":{"provider":{"api_key":"x"}}}`,
-		"токен в массиве":   `{"list":[{"Session-Token":"x"}]}`,
-		"TOTP":              `{"totp":"123456"}`,
-		"ключ":              `{"key":"x"}`,
-		"Authorization":     `{"Authorization":"Bearer x"}`,
-		"secret_key":        `{"secret_key":"x"}`,
-		"access_key":        `{"AccessKey":"x"}`,
-		"хеш пароля":        `{"password_hash":"x"}`,
-		"pwd":               `{"pwd":"x"}`,
-		"dsn":               `{"dsn":"x"}`,
-		"сессия":            `{"session":"x"}`,
-		"Bearer в значении": `{"header":"Bearer abc"}`,
-		"URL с паролем":     `{"url":"postgres://aisec:pass@db:5432/aisec"}`,
+		"не объект":       `[1,2]`,
+		"строка":          `"x"`,
+		"неверный JSON":   `{"a":`,
+		"хвост":           `{"a":1} {"b":2}`,
+		"глубина":         deep,
+		"размер":          `{"a":"` + strings.Repeat("x", maxDetailsSize) + `"}`,
+		"пароль":          `{"new_password":"x"}`,
+		"секрет вложенно": `{"after":{"provider":{"api_key":"x"}}}`,
+		"токен в массиве": `{"list":[{"Session-Token":"x"}]}`,
+		"TOTP":            `{"totp":"123456"}`,
+		"ключ":            `{"key":"x"}`,
+		"Authorization":   `{"Authorization":"Bearer x"}`,
+		"secret_key":      `{"secret_key":"x"}`,
+		"access_key":      `{"AccessKey":"x"}`,
+		"хеш пароля":      `{"password_hash":"x"}`,
+		"pwd":             `{"pwd":"x"}`,
+		"dsn":             `{"dsn":"x"}`,
+		"сессия":          `{"session":"x"}`,
 	}
 	for name, in := range cases {
 		if _, err := CanonicalJSON([]byte(in)); err == nil {
@@ -139,8 +137,47 @@ func TestCanonicalJSONRejects(t *testing.T) {
 		}
 	}
 	for _, v := range []string{"https://example.com/a@b", "mailto:a@b", "user@example.com", "https://u@h/x"} {
-		if _, err := CanonicalJSON([]byte(`{"v":"` + v + `"}`)); err != nil {
-			t.Errorf("%s отклонено: %v", v, err)
+		got, err := CanonicalJSON([]byte(`{"v":"` + v + `"}`))
+		if err != nil || string(got) != `{"v":"`+v+`"}` {
+			t.Errorf("%s: %s, %v", v, got, err)
+		}
+	}
+}
+
+// В4 ревью 2.r1: значение, похожее на секрет, маскируется, а запись не
+// отклоняется — обязательное событие (причина просмотра содержимого)
+// пишется, секрет в журнал не попадает.
+func TestCanonicalJSONMasksSecretValues(t *testing.T) {
+	cases := map[string]string{ //nolint:gosec // G101: синтетические строки для проверки фильтра секретов, не настоящие учётные данные
+		`Bearer abc`:      `Bearer [скрыто]`,
+		`bearer  abc def`: `bearer  [скрыто] def`,
+		`Bearer-токен утёк, разбор`:                  `Bearer-токен утёк, разбор`,
+		`Bearer abc утёк, разбор`:                    `Bearer [скрыто] утёк, разбор`,
+		`утёк токен: BEARER eyJ.x.y, и Basic dXNlcg`: `утёк токен: BEARER [скрыто] и Basic [скрыто]`,
+		`подбор basic`:                               `подбор basic`,
+		`Bearer [скрыто]`:                            `Bearer [скрыто]`,
+		`Обычный bearerish текст`:                    `Обычный bearerish текст`,
+		`postgres://aisec:pass@db:5432/aisec`:        `postgres://aisec:[скрыто]@db:5432/aisec`,
+		`см. https://u:p@h/x и ftp://a:b@c`:          `см. https://u:[скрыто]@h/x и ftp://a:[скрыто]@c`,
+		`postgres://aisec:[скрыто]@db/aisec`:         `postgres://aisec:[скрыто]@db/aisec`,
+	}
+	for in, want := range cases {
+		got, err := CanonicalDetails(map[string]any{"reason": in, "list": []any{in}})
+		if err != nil {
+			t.Errorf("%q: отклонено: %v", in, err)
+			continue
+		}
+		wantJSON, err := json.Marshal(map[string]any{"list": []string{want}, "reason": want})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != string(wantJSON) {
+			t.Errorf("%q: %s, ожидалось %s", in, got, wantJSON)
+		}
+		// Повторное применение (проверка канонической формы) не меняет запись.
+		again, err := CanonicalJSON(got)
+		if err != nil || string(again) != string(got) {
+			t.Errorf("%q: повторно %s, %v", in, again, err)
 		}
 	}
 }
