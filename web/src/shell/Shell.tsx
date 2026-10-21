@@ -1,5 +1,5 @@
 import { Keyboard, LogOut, Maximize2, PanelLeft, Search, X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { HashRouter, NavLink, Route, Routes, useLocation, useNavigate, useSearchParams } from "react-router";
 import type { Me } from "../api/client";
 import { Button } from "../ui/Button";
@@ -72,6 +72,20 @@ function Stub() {
       title={`${item?.title ?? "Раздел"}: раздел в разработке`}
       action={<p className="text-sm text-muted">Экран появится в одной из следующих задач этапа.</p>}
     />
+  );
+}
+
+// Экран загружается отдельным куском (ТЗ 6.8: разделение кода по маршрутам).
+const EventsScreen = lazy(() => import("../events/EventsScreen").then((m) => ({ default: m.EventsScreen })));
+
+function EventsRoute({ me }: { me: Me }) {
+  if (!me.permissions.includes("events.read")) {
+    return <EmptyState title="Нет доступа к событиям" action={<p className="text-sm text-muted">Обратитесь к администратору.</p>} />;
+  }
+  return (
+    <Suspense fallback={null}>
+      <EventsScreen me={me} />
+    </Suspense>
   );
 }
 
@@ -187,6 +201,7 @@ function Frame({ me, onLogout }: { me: Me; onLogout: () => void }) {
         <div className="flex min-h-0 flex-1">
           <main className="min-w-0 flex-1 overflow-auto p-6">
             <Routes>
+              <Route path="/events" element={<EventsRoute me={me} />} />
               <Route path="*" element={<Stub />} />
             </Routes>
           </main>
