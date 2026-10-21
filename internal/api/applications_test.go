@@ -27,7 +27,7 @@ const (
 	tOwner2ID   = "01900000-0000-7000-8000-00000000e002"
 	tKeyMgrID   = "01900000-0000-7000-8000-00000000e003"
 	tKeyRole    = "key_owner"
-	tSecret     = "sk-synthetic-provider-credential-0042"
+	tSecret     = "sk-synthetic-provider-credential-0042" //nolint:gosec // G101: синтетические учётные данные провайдера для теста, нигде не выданы
 )
 
 type appsEnv struct {

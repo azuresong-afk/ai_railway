@@ -319,8 +319,8 @@ func TestProviderExternal(t *testing.T) {
 	if _, err := e.svc.SetExternal(ctx, e.by, p.ID, false, "снова"); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := e.svc.UpdateProvider(ctx, e.by, p.ID, e.providerInput("")); got.External {
-		t.Fatal("PUT провайдера вернул признак «внешний»")
+	if got, err := e.svc.UpdateProvider(ctx, e.by, p.ID, e.providerInput("")); err != nil || got.External {
+		t.Fatalf("PUT провайдера вернул признак «внешний»: %v", err)
 	}
 }
 
@@ -601,7 +601,10 @@ func TestArchive(t *testing.T) {
 	e := newEnv(t, false)
 	ctx := context.Background()
 	a := e.app(t, "crm", e.provider(t, "main").ID, ownerA)
-	k1, _, _ := e.svc.IssueKey(ctx, e.by, a.ID, "", apps.KeyInput{Name: "a"})
+	k1, _, err := e.svc.IssueKey(ctx, e.by, a.ID, "", apps.KeyInput{Name: "a"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, _, err := e.svc.IssueKey(ctx, e.by, a.ID, "", apps.KeyInput{Name: "b"}); err != nil {
 		t.Fatal(err)
 	}
@@ -615,7 +618,10 @@ func TestArchive(t *testing.T) {
 	if d := e.last(t, "application.archive").Details.(map[string]any); d["revoked_keys"] != 1 {
 		t.Fatalf("отозвано ключей: %v", d)
 	}
-	keys, _ := e.svc.Keys(ctx, a.ID, "")
+	keys, err := e.svc.Keys(ctx, a.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, k := range keys {
 		if k.Status(e.clock.t) != apps.KeyRevoked {
 			t.Fatalf("ключ архивного приложения действует: %+v", k)

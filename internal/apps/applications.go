@@ -97,7 +97,7 @@ func (s *Service) checkApp(ctx context.Context, in AppInput) error {
 // Режим политики при создании — режим выбранной политики (решение по
 // вопросу 1.19): выбор «ПДн — строго» не превращается молча в monitor.
 func (s *Service) protection(ctx context.Context, in ProtectionInput, prev *Protection) (Protection, error) {
-	out := Protection{Policy: in.Policy, PolicyMode: in.PolicyMode, Storage: in.Storage}
+	out := Protection(in)
 	if prev != nil {
 		if out.Policy == "" {
 			out.Policy = prev.Policy

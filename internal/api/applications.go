@@ -202,7 +202,7 @@ func (d Deps) createApplication(w http.ResponseWriter, r *http.Request) {
 	var prot *apps.ProtectionInput
 	if pr.Grants.Allows(auth.PermApplicationsPolicy) {
 		prot = &apps.ProtectionInput{Policy: req.Policy, PolicyMode: req.PolicyMode, Storage: req.Storage}
-	} else if !req.protectionFields.empty() {
+	} else if !req.empty() {
 		WriteProblem(w, NewProblem(http.StatusUnprocessableEntity, CodeUnprocessable,
 			"Политику, режим политики и режим хранения задаёт администратор безопасности: создайте приложение без них."))
 		return
