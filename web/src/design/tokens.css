@@ -7,15 +7,15 @@
 
 :root {
   /* Светлая тема (по умолчанию) */
-  --c-bg: #eef1f4;
+  --c-bg: #edf2f8;
   --c-surface: #ffffff;
-  --c-text: #1e2630;
-  --c-text-muted: #5d6b7a;
-  --c-accent: #0b6e75;
+  --c-text: #1c2533;
+  --c-text-muted: #5a6a7e;
+  --c-accent: #1d63c9;
   --c-on-accent: #ffffff;
-  --c-border: #d5dce3;
-  --c-border-strong: #7f8b98;
-  --c-surface-hover: #f3f6f8;
+  --c-border: #d3dce7;
+  --c-border-strong: #7b8a9c;
+  --c-surface-hover: #f2f6fb;
   --c-overlay: rgb(22 32 43 / 0.45);
   --sh-popup: 0 6px 20px rgb(22 32 43 / 0.18), 0 1px 3px rgb(22 32 43 / 0.12);
 
@@ -23,12 +23,12 @@
   --c-sev-critical: #d13b33;
   --c-sev-high: #d2601f;
   --c-sev-medium: #b08300;
-  --c-sev-low: #3f85c4;
+  --c-sev-low: #8a63d2;
   --c-sev-info: #6f7c8a;
 
   /* Решения политики */
   --c-dec-allowed: #2f8f5b;
-  --c-dec-masked: #3f85c4;
+  --c-dec-masked: #8a63d2;
   --c-dec-blocked: #d13b33;
   --c-dec-would-block: #b08300;
 
@@ -64,30 +64,30 @@
 }
 
 :root[data-theme="dark"] {
-  --c-bg: #16202b;
-  --c-surface: #1d2935;
-  --c-text: #e6ebf0;
-  --c-text-muted: #9aa8b6;
-  --c-accent: #3fb2b9;
-  --c-on-accent: #16202b;
-  --c-border: #2c3a48;
-  --c-border-strong: #6b7b8b;
-  --c-surface-hover: #243241;
+  --c-bg: #141e2b;
+  --c-surface: #1b2737;
+  --c-text: #e5ebf2;
+  --c-text-muted: #98a8ba;
+  --c-accent: #5ea4f3;
+  --c-on-accent: #0f1a27;
+  --c-border: #2a3a4d;
+  --c-border-strong: #687b90;
+  --c-surface-hover: #223246;
   --c-overlay: rgb(0 0 0 / 0.6);
   --sh-popup: 0 6px 24px rgb(0 0 0 / 0.5), 0 1px 3px rgb(0 0 0 / 0.4);
 }
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --c-bg: #16202b;
-    --c-surface: #1d2935;
-    --c-text: #e6ebf0;
-    --c-text-muted: #9aa8b6;
-    --c-accent: #3fb2b9;
-    --c-on-accent: #16202b;
-    --c-border: #2c3a48;
-    --c-border-strong: #6b7b8b;
-    --c-surface-hover: #243241;
+    --c-bg: #141e2b;
+    --c-surface: #1b2737;
+    --c-text: #e5ebf2;
+    --c-text-muted: #98a8ba;
+    --c-accent: #5ea4f3;
+    --c-on-accent: #0f1a27;
+    --c-border: #2a3a4d;
+    --c-border-strong: #687b90;
+    --c-surface-hover: #223246;
     --c-overlay: rgb(0 0 0 / 0.6);
     --sh-popup: 0 6px 24px rgb(0 0 0 / 0.5), 0 1px 3px rgb(0 0 0 / 0.4);
   }

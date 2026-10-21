@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -18,7 +20,7 @@ func testDist() fstest.MapFS {
 
 func get(h http.Handler, method, url string) *httptest.ResponseRecorder {
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(method, url, nil))
+	h.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), method, url, nil))
 	return rec
 }
 
@@ -55,7 +57,7 @@ func TestStaticFallback(t *testing.T) {
 }
 
 func TestConsoleFS(t *testing.T) {
-	if _, err := consoleFS(fstest.MapFS{".gitkeep": {}}); err != errNoConsole {
+	if _, err := consoleFS(fstest.MapFS{".gitkeep": {}}); !errors.Is(err, errNoConsole) {
 		t.Fatalf("без index.html ожидался errNoConsole, получено %v", err)
 	}
 	if _, err := consoleFS(testDist()); err != nil {
@@ -70,7 +72,7 @@ func FuzzStaticFallbackPath(f *testing.F) {
 	}
 	h := staticFallback(testDist())
 	f.Fuzz(func(t *testing.T, p string) {
-		req, err := http.NewRequest("GET", "/", nil)
+		req, err := http.NewRequestWithContext(context.Background(), "GET", "/", nil)
 		if err != nil {
 			t.Skip()
 		}
