@@ -7,6 +7,9 @@ import (
 	"io"
 	"net"
 	"strings"
+	"time"
+
+	"github.com/azuresong-afk/ai_railway/internal/integrity"
 )
 
 // Значения по умолчанию.
@@ -27,6 +30,13 @@ type serverConfig struct {
 	// KeysDir — каталог ключей aisec-cli init (master.key, ADR-0007): мастер-ключ
 	// расшифровывает ключ данных для секретов в БД (TOTP, ИАФ.5).
 	KeysDir string
+	// Manifest — манифест целостности (ОЦЛ.1); пусто — aisec-manifest.json
+	// в корне установки, над каталогом bin/ с исполняемым файлом.
+	Manifest string
+	// IntegrityAction — реакция на нарушение целостности: alert или stop.
+	IntegrityAction integrity.Action
+	// IntegrityInterval — период проверки целостности (ОЦЛ.2).
+	IntegrityInterval time.Duration
 	// CACert и CAKey — внутренний УЦ (ca.crt, ca.key из aisec-cli init,
 	// Р8): им проверяются клиентские сертификаты шлюзов и выпускаются
 	// сертификаты при регистрации. Пусто — внутренний порт не открывается.
@@ -52,6 +62,9 @@ func loadConfig(args []string, getenv func(string) string, errOut io.Writer) (*s
 	key := fs.String("tls-key", "", "закрытый ключ TLS сервера, PEM, права 0600 (AISEC_SERVER_TLS_KEY)")
 	auditPub := fs.String("audit-signing-pub", "", "открытый ключ проверки контрольных точек аудита audit-signing.pub (AISEC_SERVER_AUDIT_SIGNING_PUB)")
 	keysDir := fs.String("keys-dir", "", "каталог ключей aisec-cli init с master.key, права 0700 (AISEC_SERVER_KEYS_DIR)")
+	manifest := fs.String("manifest", "", "манифест целостности; по умолчанию ../aisec-manifest.json от каталога бинарника (AISEC_SERVER_MANIFEST)")
+	action := fs.String("integrity-action", string(integrity.ActionAlert), "реакция на нарушение целостности: alert или stop (AISEC_SERVER_INTEGRITY_ACTION)")
+	interval := fs.String("integrity-interval", integrity.DefaultInterval.String(), "период проверки целостности, не меньше 1m (AISEC_SERVER_INTEGRITY_INTERVAL)")
 	caCert := fs.String("ca-cert", "", "сертификат внутреннего УЦ ca.crt для mTLS шлюзов; без него внутренний порт закрыт (AISEC_SERVER_CA_CERT)")
 	caKey := fs.String("ca-key", "", "закрытый ключ внутреннего УЦ ca.key, права 0400 или 0600 (AISEC_SERVER_CA_KEY)")
 	internalListen := fs.String("internal-listen", defaultInternalListen, "адрес и порт внутреннего API шлюзов, mTLS (AISEC_SERVER_INTERNAL_LISTEN)")
@@ -66,6 +79,7 @@ func loadConfig(args []string, getenv func(string) string, errOut io.Writer) (*s
 	set := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
 	for name, dst := range map[string]*string{"listen": listen, "tls-cert": cert, "tls-key": key, "audit-signing-pub": auditPub, "keys-dir": keysDir,
+		"manifest": manifest, "integrity-action": action, "integrity-interval": interval,
 		"ca-cert": caCert, "ca-key": caKey, "internal-listen": internalListen, "internal-tls-cert": internalCert, "internal-tls-key": internalKey} {
 		if set[name] {
 			continue
@@ -75,9 +89,16 @@ func loadConfig(args []string, getenv func(string) string, errOut io.Writer) (*s
 		}
 	}
 	cfg := &serverConfig{Listen: *listen, TLSCertFile: *cert, TLSKeyFile: *key, AuditSigningPub: *auditPub, KeysDir: *keysDir,
-		CACert: *caCert, CAKey: *caKey, InternalListen: *internalListen,
+		Manifest: *manifest, CACert: *caCert, CAKey: *caKey, InternalListen: *internalListen,
 		InternalTLSCertFile: *internalCert, InternalTLSKeyFile: *internalKey, DatabaseURL: getenv("AISEC_DATABASE_URL")}
 	var errs []error
+	var err error
+	if cfg.IntegrityAction, err = integrity.ParseAction(*action); err != nil {
+		errs = append(errs, fmt.Errorf("integrity-action: %w", err))
+	}
+	if cfg.IntegrityInterval, err = time.ParseDuration(*interval); err != nil || cfg.IntegrityInterval < integrity.MinInterval {
+		errs = append(errs, fmt.Errorf("integrity-interval: длительность не меньше %s, например 1h", integrity.MinInterval))
+	}
 	if _, _, err := net.SplitHostPort(cfg.Listen); err != nil {
 		errs = append(errs, errors.New("listen: ожидается адрес:порт"))
 	}

@@ -1,8 +1,10 @@
 // Команда aisec-server — сервер управления: API, веб-консоль, оповещения, инциденты, отчёты, аудит.
-// Сейчас (задачи 2.6–2.8, 2.14 этапа 2): HTTPS, маршрутизатор с проверкой
-// прав, Problem Details, ограничение частоты, вход в консоль, второй фактор
-// и учётные записи, регистрация шлюзов и внутренний API на отдельном порту
-// с mTLS;
+// Сейчас (задачи 2.6–2.8, 2.14, 2.17 этапа 2): HTTPS, маршрутизатор с
+// проверкой прав, Problem Details, ограничение частоты, вход в консоль,
+// второй фактор и учётные записи, регистрация шлюзов и внутренний API на
+// отдельном порту с mTLS, контроль целостности. Статика веб-консоли встроена
+// в бинарник (web/embed.go, ADR-0011) и сверяется с манифестом; раздача — в
+// задачах каркаса консоли;
 // остальные ресурсы API добавляются следующими задачами.
 package main
 
@@ -11,6 +13,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 
@@ -20,16 +23,13 @@ import (
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/internal/gwregistry"
 	"github.com/azuresong-afk/ai_railway/internal/httpserver"
+	"github.com/azuresong-afk/ai_railway/internal/integrity"
 	"github.com/azuresong-afk/ai_railway/internal/keyring"
 	"github.com/azuresong-afk/ai_railway/internal/store"
 	"github.com/azuresong-afk/ai_railway/web"
 )
 
 var version = "dev"
-
-// Статика веб-консоли встроена в бинарник (web/embed.go, ADR-0011);
-// раздача — в задачах каркаса консоли этапа 2.
-var _ = web.Dist
 
 // dbPoolSize — число соединений с PostgreSQL.
 const dbPoolSize = 10
@@ -114,6 +114,15 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	// Контроль целостности при запуске, раз в Interval и по команде (ОЦЛ.2).
+	// Нарушение с реакцией stop после запуска останавливает сервер штатно:
+	// контекст отменяется с причиной integrity.ErrViolation.
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	integritySvc, err := startIntegrity(ctx, cfg, p, db, auditLog, logger, cancel)
+	if err != nil {
+		return err
+	}
 
 	// Реестр шлюзов и внутренний УЦ (ИАФ.10, Р8): без -ca-cert
 	// регистрация отвечает 503, а внутренний порт не открывается.
@@ -138,10 +147,11 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 
 	handler, _, err := api.New(api.Options{
 		Logger: logger, Version: version, Hasher: hasher,
-		Ready:    db.Ping,
-		Auth:     authSvc,
-		Gateways: gateways,
-		Fallback: staticFallback(),
+		Ready:     db.Ping,
+		Auth:      authSvc,
+		Gateways:  gateways,
+		Integrity: integritySvc,
+		Fallback:  staticFallback(),
 	})
 	if err != nil {
 		return err
@@ -161,7 +171,54 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		servers = append(servers, internal)
 	}
 	logger.Info("сервер управления запущен")
-	return runAll(ctx, servers...)
+	err = runAll(ctx, servers...)
+	if cause := context.Cause(ctx); errors.Is(cause, integrity.ErrViolation) {
+		return errors.Join(err, cause)
+	}
+	return err
+}
+
+// startIntegrity проверяет целостность сервера при запуске и запускает
+// периодическую проверку. Сверяются исполняемый файл и встроенная статика
+// веб-консоли.
+func startIntegrity(ctx context.Context, cfg *serverConfig, p aisecCrypto.Provider, db *store.DB, auditLog *audit.Log,
+	logger *slog.Logger, stop context.CancelCauseFunc) (integrity.Service, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		exe = "" // проверка отметит исполняемый файл как нечитаемый
+	}
+	manifest := cfg.Manifest
+	if manifest == "" {
+		manifest = integrity.DefaultManifestPath(exe)
+	}
+	dist, err := fs.Sub(web.Dist, "dist")
+	if err != nil {
+		return integrity.Service{}, err
+	}
+	checker, err := integrity.NewChecker(integrity.Config{
+		Component: "server", Provider: p, ManifestPath: manifest,
+		Executable: exe, BinaryName: "bin/aisec-server",
+		Embedded: map[string]fs.FS{"web/dist": dist},
+	})
+	if err != nil {
+		return integrity.Service{}, err
+	}
+	pg, err := integrity.NewPGStore(db.Pool(), auditLog, p)
+	if err != nil {
+		return integrity.Service{}, err
+	}
+	mon, err := integrity.NewMonitor(integrity.MonitorConfig{
+		Checker: checker, Action: cfg.IntegrityAction, Interval: cfg.IntegrityInterval, Logger: logger,
+		Record: pg.Record, OnStop: stop,
+	})
+	if err != nil {
+		return integrity.Service{}, err
+	}
+	if _, err := mon.Startup(ctx); err != nil {
+		return integrity.Service{}, err
+	}
+	go mon.Run(ctx)
+	return integrity.Service{Monitor: mon, Store: pg}, nil
 }
 
 // loadCA читает внутренний УЦ: сертификат и ключ (права 0400 или 0600).

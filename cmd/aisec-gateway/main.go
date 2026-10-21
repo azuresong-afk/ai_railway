@@ -21,6 +21,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/gateway"
 	"github.com/azuresong-afk/ai_railway/internal/httpserver"
 	"github.com/azuresong-afk/ai_railway/internal/ids"
+	"github.com/azuresong-afk/ai_railway/internal/integrity"
 	"github.com/azuresong-afk/ai_railway/internal/providers"
 )
 
@@ -82,6 +83,18 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 	if err := aisecCrypto.SelfTest(p); err != nil {
 		return fmt.Errorf("самотест: %w", err)
 	}
+	// Контроль целостности до приёма трафика (ОЦЛ.2–3): нарушение с
+	// реакцией stop после запуска отменяет контекст с причиной ErrViolation.
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	if err := startIntegrity(ctx, cfg, p, logger, cancel); err != nil {
+		return err
+	}
+	defer func() {
+		if cause := context.Cause(ctx); errors.Is(cause, integrity.ErrViolation) {
+			err = errors.Join(err, cause)
+		}
+	}()
 	tp, err := p.TLS()
 	if err != nil {
 		return err
@@ -164,6 +177,40 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 	logger.Info("шлюз запущен: проверка запроса и ответа включена",
 		"max_body_bytes", cfg.MaxBodyBytes, "applications", len(file.Applications), "providers", len(provs))
 	return srv.Run(ctx)
+}
+
+// startIntegrity проверяет целостность шлюза при запуске и запускает
+// периодическую проверку: исполняемый файл и файл конфигурации, изменённый
+// после запуска (ОЦЛ.3). Своей БД у шлюза нет — итоги идут в технический
+// журнал; передача на сервер — вместе с каналом шлюз — сервер (2.14, 2.20).
+func startIntegrity(ctx context.Context, cfg *config.Gateway, p aisecCrypto.Provider, logger *slog.Logger, stop context.CancelCauseFunc) error {
+	exe, err := os.Executable()
+	if err != nil {
+		exe = "" // проверка отметит исполняемый файл как нечитаемый
+	}
+	manifest := cfg.Manifest
+	if manifest == "" {
+		manifest = integrity.DefaultManifestPath(exe)
+	}
+	checker, err := integrity.NewChecker(integrity.Config{
+		Component: "gateway", Provider: p, ManifestPath: manifest,
+		Executable: exe, BinaryName: "bin/aisec-gateway", Watch: []string{cfg.ConfigFile},
+	})
+	if err != nil {
+		return err
+	}
+	mon, err := integrity.NewMonitor(integrity.MonitorConfig{
+		Checker: checker, Action: integrity.Action(cfg.IntegrityAction), Interval: cfg.IntegrityInterval,
+		Logger: logger, OnStop: stop,
+	})
+	if err != nil {
+		return err
+	}
+	if _, err := mon.Startup(ctx); err != nil {
+		return err
+	}
+	go mon.Run(ctx)
+	return nil
 }
 
 // startHeartbeat запускает heartbeat на внутренний API сервера по mTLS

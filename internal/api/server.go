@@ -27,6 +27,8 @@ type Options struct {
 	Auth *auth.Service
 	// Gateways — регистрация шлюзов по токену (задача 2.14); nil — 503.
 	Gateways *gwregistry.Service
+	// Integrity — контроль целостности (задача 2.17); nil — эндпоинты отвечают 503.
+	Integrity IntegrityService
 	// OnDenied — вызывается при каждом отказе в доступе (УПД.6).
 	OnDenied func(r *http.Request, permission string, d Decision)
 	// Ready проверяет готовность (например, связь с PostgreSQL); nil — всегда готов.
@@ -50,6 +52,8 @@ type Deps struct {
 	Auth *auth.Service
 	// Gateways — nil, если внутренний УЦ не подключён: регистрация отвечает 503.
 	Gateways *gwregistry.Service
+	// Integrity — nil, если контроль целостности не подключён: его эндпоинты отвечают 503.
+	Integrity IntegrityService
 }
 
 // New собирает обработчик сервера: восстановление после паники, заголовки
@@ -75,7 +79,7 @@ func New(o Options) (http.Handler, *Router, error) {
 		logger: o.Logger, fallback: o.Fallback, onDenied: o.OnDenied,
 	}
 	rt.mux.HandleFunc("/", rt.notFound)
-	deps := Deps{Logger: o.Logger, Version: o.Version, Ready: o.Ready, Auth: o.Auth, Gateways: o.Gateways}
+	deps := Deps{Logger: o.Logger, Version: o.Version, Ready: o.Ready, Auth: o.Auth, Gateways: o.Gateways, Integrity: o.Integrity}
 	if err := rt.Add(append(Routes(deps), o.Extra...)...); err != nil {
 		return nil, nil, err
 	}

@@ -24,6 +24,24 @@ func TestLoadGatewayDefaults(t *testing.T) {
 	}
 }
 
+func TestLoadGatewayIntegrity(t *testing.T) {
+	cfg, err := LoadGateway(required, env(nil), io.Discard)
+	if err != nil || cfg.Manifest != "" || cfg.IntegrityAction != IntegrityAlert || cfg.IntegrityInterval != DefaultIntegrityInterval {
+		t.Fatalf("по умолчанию: %+v %v", cfg, err)
+	}
+	e := env(map[string]string{"AISEC_GATEWAY_MANIFEST": "/opt/aisec/aisec-manifest.json",
+		"AISEC_GATEWAY_INTEGRITY_ACTION": "stop", "AISEC_GATEWAY_INTEGRITY_INTERVAL": "10m"})
+	cfg, err = LoadGateway(required, e, io.Discard)
+	if err != nil || cfg.Manifest != "/opt/aisec/aisec-manifest.json" || cfg.IntegrityAction != IntegrityStop || cfg.IntegrityInterval.Minutes() != 10 {
+		t.Fatalf("из окружения: %+v %v", cfg, err)
+	}
+	for _, extra := range [][]string{{"-integrity-action", "ignore"}, {"-integrity-interval", "59s"}, {"-integrity-interval", "-1h"}} {
+		if _, err := LoadGateway(append(append([]string{}, required...), extra...), env(nil), io.Discard); err == nil {
+			t.Errorf("%v: принято", extra)
+		}
+	}
+}
+
 func TestLoadGatewayEnvAndFlagPrecedence(t *testing.T) {
 	e := env(map[string]string{
 		"AISEC_GATEWAY_CONFIG":         "env-gateway.yaml",

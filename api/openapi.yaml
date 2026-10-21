@@ -126,6 +126,50 @@ paths:
         '403': { $ref: '#/components/responses/ProblemForbidden' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ProblemInternal' }
+  /api/v1/system/integrity:
+    get:
+      summary: Итоги контроля целостности по компонентам
+      description: |
+        Право `system.read`. Последняя проверка каждого компонента, записанная
+        в БД: сервер — при запуске, раз в `-integrity-interval` и по команде;
+        `aisec-cli verify` — при запуске с `AISEC_DATABASE_URL` (ОЦЛ.2, ОЦЛ.5).
+        Шлюз пишет итоги в технический журнал.
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      responses:
+        '200':
+          description: Итоги проверок
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IntegrityList' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/system/integrity/verify:
+    post:
+      summary: Проверить целостность сервера по команде администратора
+      description: |
+        Право `integrity.verify` (ОЦЛ.2). До модели ролей (задача 2.9) права нет
+        ни у одной роли — эндпоинт отвечает 403. Сверяет исполняемый файл сервера
+        и встроенную статику веб-консоли с подписанным манифестом; итог пишется в
+        `integrity_checks` и журнал аудита (`integrity.check`) от имени
+        пользователя. Нарушение — `ok: false` с ответом 200; при
+        `-integrity-action stop` сервер после ответа останавливается.
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '200':
+          description: Итог проверки
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IntegrityCheck' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
   /api/v1/auth/setup:
     get:
       summary: Нужна ли первичная настройка
@@ -820,6 +864,43 @@ components:
       required: [version]
       properties:
         version: { type: string }
+    IntegrityList:
+      type: object
+      required: [items]
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/IntegrityCheck' }
+    IntegrityCheck:
+      type: object
+      description: Итог проверки целостности компонента (ОЦЛ.2, ОЦЛ.5, DM-42)
+      required: [component, trigger, checked_at, ok, reason, manifest_version, test_signed, checked_files, failures, omitted]
+      additionalProperties: false
+      properties:
+        component: { type: string, description: 'server, gateway или cli' }
+        trigger: { type: string, enum: [startup, periodic, manual] }
+        checked_at: { type: string, format: date-time }
+        ok: { type: boolean }
+        reason:
+          type: string
+          enum: [ok, manifest_missing, manifest_invalid, signature_invalid, files_mismatch]
+        manifest_version: { type: string, description: 'Версия продукта из манифеста; пусто, если манифест не принят' }
+        test_signed: { type: boolean, description: 'Сборка с тестовым ключом манифеста — не для поставки' }
+        checked_files: { type: integer, minimum: 0 }
+        failures:
+          type: array
+          maxItems: 100
+          items:
+            type: object
+            required: [path, problem]
+            additionalProperties: false
+            properties:
+              path: { type: string }
+              problem:
+                type: string
+                enum: [modified, size, missing, extra, not_regular, unreadable, no_entry, changed]
+        omitted: { type: integer, minimum: 0, description: 'Сколько нарушений не вошло в failures' }
     SetupStatus:
       type: object
       required: [setup_required]

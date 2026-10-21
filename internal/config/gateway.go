@@ -23,6 +23,13 @@ type Gateway struct {
 	TLSCertFile  string
 	TLSKeyFile   string
 	MaxBodyBytes int64
+	// Manifest — манифест целостности (ОЦЛ.1); пусто — aisec-manifest.json
+	// в корне установки, над каталогом bin/ с исполняемым файлом.
+	Manifest string
+	// IntegrityAction — реакция на нарушение целостности: alert или stop.
+	IntegrityAction string
+	// IntegrityInterval — период проверки целостности (ОЦЛ.2).
+	IntegrityInterval time.Duration
 	// Server — адрес внутреннего API сервера управления (mTLS, ИАФ.10);
 	// пусто — режим «без сервера» (только файл конфигурации).
 	Server *url.URL
@@ -44,6 +51,13 @@ const (
 	DefaultHeaderTimeout  = 60 * time.Second
 	MaxUpstreamTimeout    = 10 * time.Minute
 	envPrefix             = "AISEC_GATEWAY_"
+	// Контроль целостности: значения совпадают с internal/integrity
+	// (DefaultInterval, MinInterval, ActionAlert, ActionStop); пакет config
+	// не зависит от integrity, сверка — в тесте.
+	DefaultIntegrityInterval = time.Hour
+	MinIntegrityInterval     = time.Minute
+	IntegrityAlert           = "alert"
+	IntegrityStop            = "stop"
 )
 
 // LoadGateway разбирает аргументы командной строки и окружение. getenv
@@ -59,6 +73,9 @@ func LoadGateway(args []string, getenv func(string) string, errOut io.Writer) (*
 	cert := fs.String("tls-cert", "", "сертификат TLS шлюза, PEM (AISEC_GATEWAY_TLS_CERT)")
 	key := fs.String("tls-key", "", "закрытый ключ TLS шлюза, PEM, права 0600 (AISEC_GATEWAY_TLS_KEY)")
 	maxBody := fs.String("max-body-bytes", strconv.Itoa(DefaultMaxBodyBytes), "предел размера тела запроса, байт (AISEC_GATEWAY_MAX_BODY_BYTES)")
+	manifest := fs.String("manifest", "", "манифест целостности; по умолчанию ../aisec-manifest.json от каталога бинарника (AISEC_GATEWAY_MANIFEST)")
+	action := fs.String("integrity-action", IntegrityAlert, "реакция на нарушение целостности: alert или stop (AISEC_GATEWAY_INTEGRITY_ACTION)")
+	interval := fs.String("integrity-interval", DefaultIntegrityInterval.String(), "период проверки целостности, не меньше 1m (AISEC_GATEWAY_INTEGRITY_INTERVAL)")
 	server := fs.String("server", "", "адрес внутреннего API сервера управления, https://хост:8445; пусто — без сервера (AISEC_GATEWAY_SERVER)")
 	serverCA := fs.String("server-ca", "", "корневой сертификат для проверки сервера, PEM (AISEC_GATEWAY_SERVER_CA)")
 	clientCert := fs.String("client-cert", "", "сертификат шлюза от внутреннего УЦ, PEM (AISEC_GATEWAY_CLIENT_CERT)")
@@ -73,6 +90,7 @@ func LoadGateway(args []string, getenv func(string) string, errOut io.Writer) (*
 	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
 	for name, dst := range map[string]*string{
 		"config": configFile, "listen": listen, "tls-cert": cert, "tls-key": key, "max-body-bytes": maxBody,
+		"manifest": manifest, "integrity-action": action, "integrity-interval": interval,
 		"server": server, "server-ca": serverCA, "client-cert": clientCert, "client-key": clientKey,
 	} {
 		if set[name] {
@@ -84,8 +102,17 @@ func LoadGateway(args []string, getenv func(string) string, errOut io.Writer) (*
 	}
 
 	cfg := &Gateway{ConfigFile: *configFile, Listen: *listen, TLSCertFile: *cert, TLSKeyFile: *key,
+		Manifest: *manifest, IntegrityAction: *action,
 		ServerCAFile: *serverCA, ClientCertFile: *clientCert, ClientKeyFile: *clientKey}
 	var errs []error
+	if cfg.IntegrityAction != IntegrityAlert && cfg.IntegrityAction != IntegrityStop {
+		errs = append(errs, fmt.Errorf("integrity-action: ожидается %s или %s", IntegrityAlert, IntegrityStop))
+	}
+	iv, err := time.ParseDuration(*interval)
+	if err != nil || iv < MinIntegrityInterval {
+		errs = append(errs, fmt.Errorf("integrity-interval: длительность не меньше %s, например 1h", MinIntegrityInterval))
+	}
+	cfg.IntegrityInterval = iv
 	if _, _, err := net.SplitHostPort(cfg.Listen); err != nil {
 		errs = append(errs, errors.New("listen: ожидается адрес:порт"))
 	}

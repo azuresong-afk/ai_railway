@@ -50,6 +50,16 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 SOURCE_DATE ?= $(shell git log -1 --format=%cI 2>/dev/null || echo 1970-01-01T00:00:00Z)
 LDFLAGS := -s -w -buildid= -X main.version=$(VERSION)
 
+# Поставочная сборка (ADR-0012): RELEASE=1 встраивает открытый ключ
+# производителя internal/integrity/keys/manifest.pub вместо тестового, а
+# make manifest требует MANIFEST_KEY — закрытый ключ производителя вне
+# репозитория. Без RELEASE сборка и манифест — с тестовым ключом «не для
+# поставки» (testdata/integrity/).
+RELEASE ?=
+BUILD_TAGS := $(if $(filter 1,$(RELEASE)),aisec_release,)
+MANIFEST_KEY ?=
+MANIFEST_TEST_KEY := testdata/integrity/manifest-test.signkey
+
 .PHONY: help
 help: ## Список целей
 	@grep -E '^[a-zA-Z0-9_-]+:.*## ' $(MAKEFILE_LIST) | \
@@ -70,7 +80,7 @@ else
 WEB_CHECKS := web-check web-e2e
 endif
 
-check: fmt-check vet docs-check repocheck licenses vendor-check lint lint-selftest sast test build e2e dm-coverage detector-quality sbom fuzz-smoke vuln $(WEB_CHECKS) ## Все проверки перед pull request
+check: fmt-check vet docs-check repocheck licenses vendor-check lint lint-selftest sast test build manifest e2e dm-coverage detector-quality sbom fuzz-smoke vuln $(WEB_CHECKS) ## Все проверки перед pull request
 	@if [ -n "$(strip $(PENDING_CHECKS))" ]; then \
 		echo "ВНИМАНИЕ: make check неполный, не выполнены: $(PENDING_CHECKS) (docs/plans/stage-0.md; для web-* нужен Node.js, web/README.md)"; fi
 
@@ -141,7 +151,7 @@ test: ## Модульные тесты с детектором гонок
 .PHONY: build
 build: ## Сборка бинарников в build/bin
 	@mkdir -p $(BUILD)/bin
-	go build -trimpath -ldflags '$(LDFLAGS)' -o $(BUILD)/bin/ $(addprefix ./cmd/,$(PRODUCT_CMDS) $(DEV_CMDS))
+	go build -trimpath -tags '$(BUILD_TAGS)' -ldflags '$(LDFLAGS)' -o $(BUILD)/bin/ $(addprefix ./cmd/,$(PRODUCT_CMDS) $(DEV_CMDS))
 
 .PHONY: lint
 lint: lint-version ## Линтеры, в том числе depguard (.golangci.yml); с cgo, чтобы проверялись все файлы
@@ -254,8 +264,15 @@ tools: ## Установить инструменты разработки в bi
 NOT_YET = @echo "$@: не реализовано — задача $(1) плана этапа 0 (docs/plans/stage-0.md)"; exit 1
 
 .PHONY: manifest
-manifest: ## Манифест целостности (ОЦЛ.1)
-	@echo "manifest: манифест целостности появляется на этапе 2 (ТЗ, ОЦЛ.1)"; exit 1
+manifest: build ## Подписанный манифест целостности build/aisec-manifest.json (ОЦЛ.1) и его проверка aisec-cli verify
+ifeq ($(filter 1,$(RELEASE)),1)
+	@test -n '$(MANIFEST_KEY)' || { echo "manifest: для RELEASE=1 задайте MANIFEST_KEY — ключ производителя"; exit 1; }
+endif
+	go run ./tools/manifest build -out $(BUILD)/aisec-manifest.json \
+		$(if $(MANIFEST_KEY),-key '$(MANIFEST_KEY)',-test-key $(MANIFEST_TEST_KEY)) \
+		-version '$(VERSION)' -created '$(SOURCE_DATE)' -bin $(BUILD)/bin -cmds '$(PRODUCT_CMDS)' \
+		-static web/dist -migrations migrations
+	$(BUILD)/bin/aisec-cli verify -manifest $(BUILD)/aisec-manifest.json
 
 .PHONY: e2e
 e2e: build ## Сквозные тесты: настоящие бинарники шлюза и mock-llm по TLS
