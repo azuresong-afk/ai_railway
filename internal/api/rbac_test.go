@@ -225,6 +225,8 @@ func TestRolesAPI(t *testing.T) {
 		t.Fatalf("назначение: %+v", got)
 	}
 	mustProblem(t, e.call(an, "GET", "/api/v1/me", "", false), 401, CodeUnauthorized)
+	// Та же роль — 409 (Н13 ревью 2.r2).
+	mustProblem(t, e.call(admin, "PUT", "/api/v1/users/"+tAnalystID+"/role", `{"role":"soc_lead"}`, true), 409, CodeConflict)
 	mustProblem(t, e.call(admin, "PUT", "/api/v1/users/"+tAdminID+"/role", `{"role":"auditor"}`, true), 422, CodeUnprocessable)
 	mustProblem(t, e.call(admin, "PUT", "/api/v1/users/"+tAnalystID+"/role", `{"role":"no_role"}`, true), 400, CodeInvalidRequest)
 	mustProblem(t, e.call(admin, "PUT", "/api/v1/users/not-a-uuid/role", `{"role":"auditor"}`, true), 404, CodeNotFound)

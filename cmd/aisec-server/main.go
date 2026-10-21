@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"net/http"
 	"os"
 	"time"
 
@@ -93,8 +94,9 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	defer db.Close()
 
 	// Контрольные точки архивации (ADR-0008): без них после архивации
-	// начало хранимой цепочки не подтверждается. С открытым ключом аудита
-	// проверяются и подписи точек, без него — только связность.
+	// начало хранимой цепочки не подтверждается. Подписи точек проверяются
+	// открытым ключом аудита; без ключа сервер запускается, только пока
+	// точек нет (новая установка).
 	var auditVerifier aisecCrypto.Verifier
 	if cfg.AuditSigningPub != "" {
 		if auditVerifier, err = aisecCrypto.LoadVerifierFile(p, cfg.AuditSigningPub, aisecCrypto.KeyKindAuditSigningPublic); err != nil {
@@ -103,6 +105,9 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	}
 	checkpoints, err := audit.NewPGCheckpoints(db.Pool(), p, auditVerifier)
 	if err != nil {
+		return err
+	}
+	if err := requireAuditKey(ctx, checkpoints, auditVerifier != nil, logger); err != nil {
 		return err
 	}
 	auditLog, err := audit.New(db.Pool(), p, audit.WithCheckpoints(checkpoints))
@@ -122,6 +127,13 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	// роли с обязательным вторым фактором не смогли бы войти (ИАФ.5).
 	box, err := keyring.Load(ctx, db.Pool(), p, cfg.KeysDir, audit.DefaultOrgID)
 	if err != nil {
+		return err
+	}
+	// Проверка цепочки журнала аудита (РСБ.4, DM-43): сразу и раз в
+	// -audit-verify-interval. Голова цепочки защищена имитовставкой на ключе
+	// из ключа данных (вне БД). Нарушение не останавливает сервер — оно
+	// поднимает уведомление в «Состоянии системы».
+	if err := startAuditVerify(ctx, cfg, auditLog, box, logger); err != nil {
 		return err
 	}
 	roles, err := auth.NewPGRoles(db.Pool(), auditLog)
@@ -216,6 +228,16 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		return err
 	}
 
+	// Консоль отдаётся, только если она собрана (make web-build перед go build); иначе сервер — чистый API.
+	var console http.Handler
+	if dist, err := fs.Sub(web.Dist, "dist"); err == nil {
+		if c, err := consoleFS(dist); err == nil {
+			console = staticFallback(c)
+		} else {
+			logger.Warn("веб-консоль не встроена: выполните make web-build до сборки сервера", "component", "aisec-server", "version", version)
+		}
+	}
+
 	handler, _, err := api.New(api.Options{
 		Logger: logger, Version: version, Hasher: hasher,
 		Apps:      appsSvc,
@@ -226,7 +248,9 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		Status:    statusSvc,
 		Events:    eventStore,
 		Audit:     auditLog,
-		Fallback:  staticFallback(),
+		Fallback:  console,
+
+		TrustedProxies: cfg.TrustedProxies,
 	})
 	if err != nil {
 		return err
@@ -282,6 +306,56 @@ func newStatus(ctx context.Context, cfg *serverConfig, db *store.DB, auditLog *a
 	}
 	go svc.Run(ctx, sysstatus.DefaultEvalInterval)
 	return svc, nil
+}
+
+// checkpointSource — наличие контрольных точек архивации (audit.PGCheckpoints).
+type checkpointSource interface {
+	Any(ctx context.Context) (bool, error)
+}
+
+// requireAuditKey не даёт запуститься без открытого ключа аудита, если в
+// журнале уже есть контрольные точки: иначе точку с любой подписью приняли
+// бы за настоящую (решение владельца по В5 ревью 2.r1).
+func requireAuditKey(ctx context.Context, cps checkpointSource, haveKey bool, logger *slog.Logger) error {
+	if haveKey {
+		return nil
+	}
+	exist, err := cps.Any(ctx)
+	if err != nil {
+		return err
+	}
+	if exist {
+		return errors.New("в журнале аудита есть контрольные точки архивации, а ключ их проверки не задан: " +
+			"укажите -audit-signing-pub (audit-signing.pub из aisec-cli init)")
+	}
+	logger.Warn("ключ проверки контрольных точек аудита не задан (-audit-signing-pub): после первой архивации сервер без него не запустится")
+	return nil
+}
+
+// startAuditVerify запускает фоновую проверку цепочки журнала аудита.
+func startAuditVerify(ctx context.Context, cfg *serverConfig, auditLog *audit.Log, box *keyring.Box, logger *slog.Logger) error {
+	mac, err := box.MAC(audit.HeadMACPurpose)
+	if err != nil {
+		return fmt.Errorf("ключ имитовставки цепочки аудита: %w", err)
+	}
+	v := audit.NewVerifier(auditLog, audit.WithHeadMAC(audit.HeadMAC{KeyID: box.KeyID(), MAC: mac}))
+	go func() {
+		// Итог каждой проверки уже в аудите и audit_verifications; здесь —
+		// только техническое сообщение.
+		err := v.Run(ctx, cfg.AuditVerifyInterval, func(res audit.Verification, verr error) {
+			switch {
+			case verr != nil && ctx.Err() == nil:
+				logger.Error("проверка цепочки журнала аудита не выполнена", "class", "db", "error", verr)
+			case verr == nil && !res.OK():
+				logger.Error("цепочка журнала аудита нарушена", "class", "integrity",
+					"broken_seq", res.Break.Seq, "reason", string(res.Break.Reason))
+			}
+		})
+		if err != nil {
+			logger.Error("проверка цепочки журнала аудита не запущена", "error", err)
+		}
+	}()
+	return nil
 }
 
 // startIntegrity проверяет целостность сервера при запуске и запускает

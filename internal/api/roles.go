@@ -35,6 +35,8 @@ func roleProblem(err error) *Problem {
 	case errors.Is(err, auth.ErrRoleInUse):
 		return NewProblem(http.StatusConflict, CodeConflict,
 			"Роль назначена пользователям, в том числе деактивированным: сначала назначьте им другую роль.")
+	case errors.Is(err, auth.ErrRoleUnchanged):
+		return NewProblem(http.StatusConflict, CodeConflict, "Пользователю уже назначена эта роль.")
 	case errors.Is(err, auth.ErrRoleBuiltin):
 		return NewProblem(http.StatusUnprocessableEntity, CodeUnprocessable,
 			"Предустановленную роль нельзя изменить или удалить: создайте свою роль на её основе.")

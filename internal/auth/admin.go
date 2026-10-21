@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"errors"
+	"net/netip"
 	"time"
 
 	"github.com/azuresong-afk/ai_railway/internal/audit"
@@ -117,8 +118,10 @@ func (s *Service) SetStatus(ctx context.Context, by Caller, userID string, st St
 	return s.store.SetStatus(ctx, s.orgID, userID, st, s.clock(), rec)
 }
 
-// ResetPassword выдаёт новый временный пароль (ИАФ.3), снимает блокировку и
-// завершает сессии пользователя. Свой пароль меняется через ChangePassword.
+// ResetPassword выдаёт новый временный пароль (ИАФ.3), снимает блокировку,
+// завершает сессии и отзывает токены API пользователя (решение владельца
+// по В8 ревью 2.r2: сброс — реакция на компрометацию). Свой пароль
+// меняется через ChangePassword.
 func (s *Service) ResetPassword(ctx context.Context, by Caller, userID string) (string, error) {
 	if by.User.ID == userID {
 		return "", ErrSelf
@@ -130,6 +133,13 @@ func (s *Service) ResetPassword(ctx context.Context, by Caller, userID string) (
 	if err := s.canManage(ctx, by, u.Role, "user.password_reset", userObject(userID)); err != nil {
 		return "", err
 	}
+	return s.resetPassword(ctx, by.actor(), by.SourceIP, u, by.User.ID)
+}
+
+// resetPassword — общая часть сброса пароля администратором и aisec-cli;
+// revokedBy — ID администратора консоли, пусто — aisec-cli.
+func (s *Service) resetPassword(ctx context.Context, actor audit.Actor, ip netip.Addr, u User, revokedBy string) (string, error) {
+	userID := u.ID
 	if u.Status != StatusActive {
 		return "", errResetDeactivated
 	}
@@ -146,12 +156,13 @@ func (s *Service) ResetPassword(ctx context.Context, by Caller, userID string) (
 		return "", err
 	}
 	now := s.clock()
-	rec := s.entry(by.actor(), by.SourceIP, "user.password_reset", userObject(userID), audit.ResultSuccess, nil)
+	rec := s.entry(actor, ip, "user.password_reset", userObject(userID), audit.ResultSuccess, nil)
 	err = s.store.SetPassword(ctx, PasswordChange{
 		UserID: userID, NewHash: h, Temporary: true,
 		TempExpires: now.Add(time.Duration(pol.TempPasswordHours) * time.Hour),
 		Now:         now, Keep: pol.PasswordHistory, RevokeReason: RevokePasswordReset, Unlock: true, RequireActive: true,
-		ExpectRole: u.Role,
+		ExpectRole:   u.Role,
+		RevokeTokens: &TokenRevocation{Reason: APITokenRevokedByPasswordReset, By: revokedBy},
 	}, rec)
 	if errors.Is(err, ErrDeactivated) {
 		return "", errResetDeactivated
@@ -170,8 +181,10 @@ func (s *Service) Sessions(ctx context.Context, userID string) ([]Session, error
 	return s.store.ListSessions(ctx, userID)
 }
 
-// RevokeSessions принудительно завершает сессии пользователя (УПД.4).
-func (s *Service) RevokeSessions(ctx context.Context, by Caller, userID string) (int, error) {
+// RevokeSessions принудительно завершает сессии пользователя (УПД.4);
+// revokeTokens — отозвать и его токены API (В8 ревью 2.r2, в консоли
+// включено по умолчанию).
+func (s *Service) RevokeSessions(ctx context.Context, by Caller, userID string, revokeTokens bool) (int, error) {
 	u, err := s.store.UserByID(ctx, s.orgID, userID)
 	if err != nil {
 		return 0, err
@@ -179,8 +192,13 @@ func (s *Service) RevokeSessions(ctx context.Context, by Caller, userID string) 
 	if err := s.canManage(ctx, by, u.Role, "auth.sessions_revoked", userObject(userID)); err != nil {
 		return 0, err
 	}
-	rec := s.entry(by.actor(), by.SourceIP, "auth.sessions_revoked", userObject(userID), audit.ResultSuccess, nil)
-	return s.store.RevokeUserSessions(ctx, userID, RevokeAdmin, s.clock(), rec)
+	var tokens *TokenRevocation
+	if revokeTokens {
+		tokens = &TokenRevocation{Reason: APITokenRevokedBySessions, By: by.User.ID}
+	}
+	rec := s.entry(by.actor(), by.SourceIP, "auth.sessions_revoked", userObject(userID), audit.ResultSuccess,
+		map[string]any{"revoke_api_tokens": revokeTokens})
+	return s.store.RevokeUserSessions(ctx, userID, RevokeAdmin, s.clock(), tokens, rec)
 }
 
 // Policy — настройки входа организации.

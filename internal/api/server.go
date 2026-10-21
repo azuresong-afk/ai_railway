@@ -5,7 +5,9 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"runtime/debug"
+	"sync/atomic"
 	"time"
 
 	"github.com/azuresong-afk/ai_railway/internal/apps"
@@ -52,6 +54,9 @@ type Options struct {
 	Idempotency IdempotencyStore
 	// RateLimit — настройки ЗИ.6; по умолчанию DefaultRateRules.
 	RateLimit RateConfig
+	// TrustedProxies — сети обратных прокси, от которых принимается
+	// X-Forwarded-For (ТЗ 10.3); пусто — адрес клиента по соединению.
+	TrustedProxies []netip.Prefix
 	// Fallback обслуживает пути вне /api и /internal (статика веб-консоли, задача 2.21).
 	Fallback http.Handler
 	// Extra — дополнительные маршруты (тесты); рабочие регистрируются в routes.go.
@@ -91,7 +96,8 @@ func New(o Options) (http.Handler, *Router, error) {
 		o.Authorizer = DenyAll{}
 		if o.Auth != nil {
 			o.Authorizer = BearerAuthorizer{Auth: o.Auth, Logger: o.Logger,
-				Next: SessionAuthorizer{Auth: o.Auth, Logger: o.Logger}}
+				Next:    SessionAuthorizer{Auth: o.Auth, Logger: o.Logger},
+				Limiter: auth.NewFailureLimiter(auth.LimiterConfig{}), Malformed: new(atomic.Uint64)}
 		}
 	}
 	if o.OnDenied == nil && o.Auth != nil {
@@ -116,6 +122,7 @@ func New(o Options) (http.Handler, *Router, error) {
 	limiter := NewRateLimiter(o.RateLimit)
 	var h http.Handler = rt
 	h = limiter.Middleware(h)
+	h = ClientAddrMiddleware(o.TrustedProxies, h)
 	h = SecurityHeaders(h)
 	h = recoverer(o.Logger, h)
 	return h, rt, nil

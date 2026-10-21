@@ -7,6 +7,7 @@ import (
 
 	"github.com/azuresong-afk/ai_railway/internal/audit"
 	"github.com/azuresong-afk/ai_railway/internal/auth"
+	"github.com/azuresong-afk/ai_railway/internal/auth/authtest"
 )
 
 // Тесты токенов API на живой БД (AISEC_TEST_DATABASE_URL); без переменной
@@ -27,7 +28,7 @@ func TestPGAPITokensFlow(t *testing.T) {
 	}
 	sys := e.mfa.complete(t, res)
 
-	tok, raw, err := e.svc.CreateAPIToken(ctx, sys, auth.APITokenInput{Name: "Мониторинг", ExpiresInDays: 30,
+	tok, raw, err := e.svc.CreateAPIToken(ctx, sys, auth.APITokenInput{Password: phrase, Name: "Мониторинг", ExpiresInDays: 30,
 		Permissions: grants(auth.PermSystemRead)})
 	if err != nil {
 		t.Fatal(err)
@@ -52,7 +53,7 @@ func TestPGAPITokensFlow(t *testing.T) {
 	}
 
 	// Список: свои при own, все при all; курсор.
-	tok2, _, err := e.svc.CreateAPIToken(ctx, admin, auth.APITokenInput{Name: "Отчёты", Permissions: grants(auth.PermUsersRead)})
+	tok2, _, err := e.svc.CreateAPIToken(ctx, admin, auth.APITokenInput{Password: phrase, Name: "Отчёты", Permissions: grants(auth.PermUsersRead)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +100,7 @@ func TestPGAPITokensGuard(t *testing.T) {
 		t.Fatal(err)
 	}
 	admin := e.mfa.complete(t, res)
-	tok, _, err := e.svc.CreateAPIToken(ctx, admin, auth.APITokenInput{Name: "x", Permissions: grants(auth.PermSystemRead)})
+	tok, _, err := e.svc.CreateAPIToken(ctx, admin, auth.APITokenInput{Password: phrase, Name: "x", Permissions: grants(auth.PermSystemRead)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +149,7 @@ func TestPGAPITokensLimitConcurrent(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, _, err := e.svc.CreateAPIToken(ctx, admin, auth.APITokenInput{Name: "x", Permissions: grants(auth.PermSystemRead)})
+			_, _, err := e.svc.CreateAPIToken(ctx, admin, auth.APITokenInput{Password: phrase, Name: "x", Permissions: grants(auth.PermSystemRead)})
 			switch {
 			case err == nil:
 				mu.Lock()
@@ -162,5 +163,81 @@ func TestPGAPITokensLimitConcurrent(t *testing.T) {
 	wg.Wait()
 	if ok != auth.MaxAPITokensPerUser {
 		t.Fatalf("выпущено %d токенов", ok)
+	}
+}
+
+// В8 ревью 2.r2 на PostgreSQL: отзыв токенов при сбросе пароля и
+// завершении сессий — в той же транзакции; сброс через aisec-cli — без
+// revoked_by. Без причины password_reset пустой revoked_by отвергает CHECK.
+func TestPGTokensRevokedWithAdminActions(t *testing.T) {
+	e := setupPG(t)
+	ctx := pgCtx(t)
+	e.addUser(t, adminID, "admin", auth.RoleSecurityAdmin)
+	e.addUser(t, helperID, "admin2", auth.RoleSecurityAdmin)
+	admin := e.mfa.complete(t, mustPGLogin(t, e, "admin"))
+	issue := func() string {
+		t.Helper()
+		second := e.mfa.complete(t, mustPGLogin(t, e, "admin2"))
+		tok, _, err := e.svc.CreateAPIToken(ctx, second, auth.APITokenInput{Password: phrase, Name: "x", Permissions: grants(auth.PermSystemRead)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return tok.ID
+	}
+	row := func(id string) (reason string, by *string) {
+		t.Helper()
+		var r *string
+		if err := e.owner.QueryRow(ctx, "SELECT revoke_reason, revoked_by::text FROM api_tokens WHERE id = $1", id).Scan(&r, &by); err != nil {
+			t.Fatal(err)
+		}
+		if r != nil {
+			reason = *r
+		}
+		return reason, by
+	}
+	t1 := issue()
+	if _, err := e.svc.RevokeSessions(ctx, admin, helperID, false); err != nil {
+		t.Fatal(err)
+	}
+	if r, _ := row(t1); r != "" {
+		t.Fatalf("отозван без запроса: %s", r)
+	}
+	if _, err := e.svc.RevokeSessions(ctx, admin, helperID, true); err != nil {
+		t.Fatal(err)
+	}
+	if r, by := row(t1); r != auth.APITokenRevokedBySessions || by == nil || *by != adminID {
+		t.Fatalf("завершение сессий: %s %v", r, by)
+	}
+	t2 := issue()
+	if _, err := e.svc.ResetPassword(ctx, admin, helperID); err != nil {
+		t.Fatal(err)
+	}
+	if r, by := row(t2); r != auth.APITokenRevokedByPasswordReset || by == nil || *by != adminID {
+		t.Fatalf("сброс пароля: %s %v", r, by)
+	}
+	restore := func() {
+		t.Helper()
+		if _, err := e.owner.Exec(ctx, `UPDATE users SET must_change_password = false, temp_password_expires_at = NULL,
+			password_hash = $2 WHERE id = $1`, helperID, authtest.HashOf(phrase)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	restore()
+	t3 := issue()
+	cli := audit.Actor{Type: audit.ActorCLI, ID: "uid:0", Name: "root"}
+	if _, err := e.svc.LocalResetPassword(ctx, cli, "admin2"); err != nil {
+		t.Fatal(err)
+	}
+	if r, by := row(t3); r != auth.APITokenRevokedByPasswordReset || by != nil {
+		t.Fatalf("сброс через aisec-cli: %s %v", r, by)
+	}
+	var dbUser string
+	if err := e.owner.QueryRow(ctx, `SELECT details->>'db_user' FROM audit_log WHERE action = 'user.password_reset'
+		AND actor_type = 'cli' ORDER BY seq DESC LIMIT 1`).Scan(&dbUser); err != nil || dbUser == "" {
+		t.Fatalf("логин СУБД в записи aisec-cli: %q %v", dbUser, err)
+	}
+	restore()
+	if _, err := e.owner.Exec(ctx, `UPDATE api_tokens SET revoked_at = now(), revoke_reason = 'admin' WHERE id = $1`, issue()); sqlState(err) != "23514" {
+		t.Fatalf("отзыв без revoked_by: %v", err)
 	}
 }

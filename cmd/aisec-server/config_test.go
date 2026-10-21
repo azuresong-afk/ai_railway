@@ -144,3 +144,28 @@ func TestLoadConfigStatus(t *testing.T) {
 		}
 	}
 }
+
+// В1 и В3 ревью 2.r1: период проверки цепочки аудита и доверенные прокси.
+func TestLoadConfigAuditVerifyAndProxies(t *testing.T) {
+	base := map[string]string{"AISEC_SERVER_TLS_CERT": "c", "AISEC_SERVER_TLS_KEY": "k", "AISEC_SERVER_KEYS_DIR": "/keys", "AISEC_DATABASE_URL": "postgres://u@h/d"}
+	cfg, err := loadConfig(nil, env(base), io.Discard)
+	if err != nil || cfg.AuditVerifyInterval != time.Hour || cfg.TrustedProxies != nil {
+		t.Fatalf("по умолчанию: %+v %v", cfg, err)
+	}
+	base["AISEC_SERVER_AUDIT_VERIFY_INTERVAL"] = "10m"
+	base["AISEC_SERVER_TRUSTED_PROXIES"] = "10.0.0.5, 192.0.2.0/24,2001:db8::/48"
+	cfg, err = loadConfig(nil, env(base), io.Discard)
+	if err != nil || cfg.AuditVerifyInterval != 10*time.Minute || len(cfg.TrustedProxies) != 3 ||
+		cfg.TrustedProxies[0].String() != "10.0.0.5/32" || cfg.TrustedProxies[2].String() != "2001:db8::/48" {
+		t.Fatalf("из окружения: %+v %v", cfg, err)
+	}
+	for _, args := range [][]string{
+		{"-audit-verify-interval", "30s"}, {"-audit-verify-interval", "час"},
+		{"-trusted-proxies", "0.0.0.0/0"}, {"-trusted-proxies", "::/0"}, {"-trusted-proxies", "прокси"},
+		{"-trusted-proxies", "10.0.0.1,"}, {"-trusted-proxies", "fe80::1%eth0"}, {"-trusted-proxies", "::ffff:10.0.0.0/104"},
+	} {
+		if _, err := loadConfig(args, env(base), io.Discard); err == nil {
+			t.Errorf("%v: принято", args)
+		}
+	}
+}

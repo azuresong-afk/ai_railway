@@ -219,7 +219,7 @@ func (m *Memory) AssignRole(_ context.Context, orgID, actorID, userID string, ro
 		}
 	}
 	if u.Role == role {
-		return 0, nil
+		return 0, auth.ErrRoleUnchanged
 	}
 	u.Role = role
 	n := 0

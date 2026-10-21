@@ -402,3 +402,45 @@ func TestDeriveRejects(t *testing.T) {
 		t.Fatal("ключ суток должен быть один на процесс")
 	}
 }
+
+// Ключ имитовставки (опора цепочки аудита, В2 ревью 2.r1): один для
+// назначения и ключа данных, разный для разных назначений и ключей данных.
+func TestMAC(t *testing.T) {
+	p := provider(t)
+	a, err := p.NewAEAD(make([]byte, aisecCrypto.AEADKeySize))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := keyring.NewStatic(keyID, a).MAC("audit-head"); !errors.Is(err, keyring.ErrNoDerive) {
+		t.Fatalf("NewStatic: %v", err)
+	}
+	b, err := keyring.NewStaticKey(p, keyID, make([]byte, aisecCrypto.AEADKeySize))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, purpose := range []string{"", "Audit", "a|b", strings.Repeat("a", 33)} {
+		if _, err := b.MAC(purpose); err == nil {
+			t.Errorf("назначение %q принято", purpose)
+		}
+	}
+	msg := []byte("голова")
+	m1, err := b.MAC("audit-head")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m2, err := b.MAC("audit-head")
+	if err != nil || !m2.Verify(msg, m1.Sum(msg)) {
+		t.Fatalf("тот же ключ должен давать ту же имитовставку: %v", err)
+	}
+	other, err := b.MAC("other")
+	if err != nil || other.Verify(msg, m1.Sum(msg)) {
+		t.Fatalf("другое назначение — другой ключ: %v", err)
+	}
+	b2, err := keyring.NewStaticKey(p, "0192f3a0-0000-7000-8000-0000000000b2", make([]byte, aisecCrypto.AEADKeySize))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m3, err := b2.MAC("audit-head"); err != nil || m3.Verify(msg, m1.Sum(msg)) {
+		t.Fatalf("другой ID ключа данных — другой ключ: %v", err)
+	}
+}

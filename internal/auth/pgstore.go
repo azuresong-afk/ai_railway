@@ -417,6 +417,9 @@ func (s *PGStore) SetPassword(ctx context.Context, ch PasswordChange, rec audit.
 			ch.UserID, keep, ch.Now, ch.RevokeReason); err != nil {
 			return fmt.Errorf("смена пароля: завершение сессий: %w", err)
 		}
+		if err := revokeUserTokens(ctx, tx, ch.UserID, ch.Now, ch.RevokeTokens, &rec); err != nil {
+			return err
+		}
 		if keep != nil {
 			if _, err := tx.Exec(ctx, "UPDATE sessions SET state = $2 WHERE id = $1 AND revoked_at IS NULL",
 				*keep, string(SessionActive)); err != nil {
@@ -448,9 +451,13 @@ func (s *PGStore) SetStatus(ctx context.Context, orgID, userID string, st Status
 				return fmt.Errorf("учётные записи: администраторы: %w", err)
 			}
 		}
-		var role, status string
-		err := tx.QueryRow(ctx, "SELECT role, status FROM users WHERE org_id = $1 AND id = $2 FOR UPDATE", orgID, userID).
-			Scan(&role, &status)
+		var (
+			role, status string
+			lockedAt     *time.Time
+			lockedUntil  *time.Time
+		)
+		err := tx.QueryRow(ctx, "SELECT role, status, locked_at, locked_until FROM users WHERE org_id = $1 AND id = $2 FOR UPDATE",
+			orgID, userID).Scan(&role, &status, &lockedAt, &lockedUntil)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrNotFound
 		}
@@ -471,6 +478,8 @@ func (s *PGStore) SetStatus(ctx context.Context, orgID, userID string, st Status
 				return fmt.Errorf("учётные записи: завершение сессий: %w", err)
 			}
 		} else {
+			// Активация снимает и блокировку: в журнале видно, была ли она (Н15 ревью 2.r2).
+			AddDetail(&rec, "was_locked", lockedAt != nil && (lockedUntil == nil || now.Before(*lockedUntil)))
 			if _, err := tx.Exec(ctx, `UPDATE users SET status = $2, deactivated_at = NULL,
 				failed_attempts = 0, locked_at = NULL, locked_until = NULL WHERE id = $1`, userID, string(st)); err != nil {
 				return fmt.Errorf("учётные записи: активация: %w", err)
@@ -481,11 +490,11 @@ func (s *PGStore) SetStatus(ctx context.Context, orgID, userID string, st Status
 }
 
 const sessionCols = `s.id::text, s.user_id::text, s.token_hash, s.csrf_hash, s.state, s.created_at, s.last_seen_at,
-	s.expires_at, s.revoked_at, host(s.source_ip), s.user_agent`
+	s.expires_at, s.revoked_at, host(s.source_ip), s.user_agent, s.mfa_verified`
 
 func sessionDst(se *Session, state *string, revoked **time.Time, ip **string) []any {
 	return []any{&se.ID, &se.UserID, &se.TokenHash, &se.CSRFHash, state, &se.CreatedAt, &se.LastSeenAt,
-		&se.ExpiresAt, revoked, ip, &se.UserAgent}
+		&se.ExpiresAt, revoked, ip, &se.UserAgent, &se.MFAVerified}
 }
 
 func finishSession(se *Session, state string, revoked *time.Time, ip *string) {
@@ -553,9 +562,9 @@ func insertSession(ctx context.Context, tx pgx.Tx, se Session) error {
 		ip = &a
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO sessions (id, user_id, token_hash, csrf_hash, state, created_at,
-		last_seen_at, expires_at, source_ip, user_agent) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::inet, $10)`,
+		last_seen_at, expires_at, source_ip, user_agent, mfa_verified) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::inet, $10, $11)`,
 		se.ID, se.UserID, se.TokenHash, se.CSRFHash, string(se.State), se.CreatedAt, se.LastSeenAt,
-		se.ExpiresAt, ip, se.UserAgent); err != nil {
+		se.ExpiresAt, ip, se.UserAgent, se.MFAVerified); err != nil {
 		return fmt.Errorf("сессии: создание: %w", err)
 	}
 	return nil
@@ -643,8 +652,52 @@ func (s *PGStore) RevokeSession(ctx context.Context, id, reason string, now time
 	})
 }
 
+// Unlock снимает блокировку активной записи с записью аудита.
+func (s *PGStore) Unlock(ctx context.Context, orgID, userID string, now time.Time, rec audit.Entry) error {
+	ctx, cancel := pgCtx(ctx)
+	defer cancel()
+	return s.inTx(ctx, func(tx pgx.Tx) error {
+		var (
+			status      string
+			lockedAt    *time.Time
+			lockedUntil *time.Time
+		)
+		err := tx.QueryRow(ctx, "SELECT status, locked_at, locked_until FROM users WHERE org_id = $1 AND id = $2 FOR UPDATE",
+			orgID, userID).Scan(&status, &lockedAt, &lockedUntil)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("учётные записи: %w", err)
+		}
+		if Status(status) != StatusActive {
+			return ErrDeactivated
+		}
+		AddDetail(&rec, "was_locked", lockedAt != nil && (lockedUntil == nil || now.Before(*lockedUntil)))
+		if _, err := tx.Exec(ctx, "UPDATE users SET failed_attempts = 0, locked_at = NULL, locked_until = NULL WHERE id = $1",
+			userID); err != nil {
+			return fmt.Errorf("учётные записи: снятие блокировки: %w", err)
+		}
+		return s.record(ctx, tx, rec)
+	})
+}
+
+// UnlockedSecurityAdmins — число активных незаблокированных администраторов безопасности, кроме exceptID.
+func (s *PGStore) UnlockedSecurityAdmins(ctx context.Context, orgID, exceptID string, now time.Time) (int, error) {
+	ctx, cancel := pgCtx(ctx)
+	defer cancel()
+	var n int
+	if err := s.db.QueryRow(ctx, `SELECT count(*) FROM users WHERE org_id = $1 AND role = $2 AND status = $3
+		AND id::text <> $4 AND (locked_at IS NULL OR (locked_until IS NOT NULL AND locked_until <= $5))`,
+		orgID, string(RoleSecurityAdmin), string(StatusActive), exceptID, now).Scan(&n); err != nil {
+		return 0, fmt.Errorf("учётные записи: администраторы: %w", err)
+	}
+	return n, nil
+}
+
 // RevokeUserSessions завершает все сессии пользователя с записью аудита.
-func (s *PGStore) RevokeUserSessions(ctx context.Context, userID, reason string, now time.Time, rec audit.Entry) (int, error) {
+func (s *PGStore) RevokeUserSessions(ctx context.Context, userID, reason string, now time.Time, tokens *TokenRevocation,
+	rec audit.Entry) (int, error) {
 	ctx, cancel := pgCtx(ctx)
 	defer cancel()
 	var n int
@@ -655,9 +708,31 @@ func (s *PGStore) RevokeUserSessions(ctx context.Context, userID, reason string,
 			return fmt.Errorf("сессии: завершение: %w", err)
 		}
 		n = int(tag.RowsAffected())
+		if err := revokeUserTokens(ctx, tx, userID, now, tokens, &rec); err != nil {
+			return err
+		}
 		return s.record(ctx, tx, rec)
 	})
 	return n, err
+}
+
+// revokeUserTokens отзывает незавершённые токены API пользователя (tr == nil
+// — ничего) и добавляет их число в подробности rec.
+func revokeUserTokens(ctx context.Context, tx pgx.Tx, userID string, now time.Time, tr *TokenRevocation, rec *audit.Entry) error {
+	if tr == nil {
+		return nil
+	}
+	var by *string
+	if tr.By != "" {
+		by = &tr.By
+	}
+	tag, err := tx.Exec(ctx, `UPDATE api_tokens SET revoked_at = $2, revoked_by = $3::uuid, revoke_reason = $4
+		WHERE user_id = $1 AND revoked_at IS NULL`, userID, now, by, tr.Reason)
+	if err != nil {
+		return fmt.Errorf("токены API: отзыв: %w", err)
+	}
+	AddDetail(rec, "revoked_api_tokens", tag.RowsAffected())
+	return nil
 }
 
 // ListSessions — незавершённые сессии пользователя, новые первыми.

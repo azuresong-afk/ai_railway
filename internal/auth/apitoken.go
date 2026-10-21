@@ -38,6 +38,10 @@ const (
 const (
 	APITokenRevokedByOwner = "owner"
 	APITokenRevokedByAdmin = "admin"
+	// APITokenRevokedByPasswordReset — пароль владельца сброшен администратором (В8 ревью 2.r2).
+	APITokenRevokedByPasswordReset = "password_reset"
+	// APITokenRevokedBySessions — администратор завершил сессии владельца с отзывом токенов.
+	APITokenRevokedBySessions = "sessions_revoked"
 )
 
 // reasonOwnerInactive — владелец токена деактивирован (api_token.auth_failed).
@@ -179,6 +183,11 @@ type APITokenInput struct {
 	// ExpiresInDays — срок в днях, 1–365; ноль — APITokenDefaultDays.
 	ExpiresInDays int
 	Permissions   []GrantInput
+	// Password или Code — повторная проверка владельца сессии (ровно одно
+	// из двух; код TOTP — при подключённом факторе): чужая оставленная
+	// сессия не выпустит долгоживущий токен (В8 ревью 2.r2).
+	Password string
+	Code     string
 }
 
 const (
@@ -257,6 +266,9 @@ func (s *Service) CreateAPIToken(ctx context.Context, by Caller, in APITokenInpu
 	}
 	if by.Token != nil {
 		return APIToken{}, "", s.denied(ctx, by, "api_token.create", audit.Object{Type: "api_token"}, ErrEscalation)
+	}
+	if err := s.reauthenticate(ctx, by, in.Password, in.Code, "api_token.create"); err != nil {
+		return APIToken{}, "", err
 	}
 	now := s.clock()
 	raw, prefix, err := newAPIToken(s.random)
@@ -359,6 +371,16 @@ func (s *Service) tokenFailed(ctx context.Context, t *APIToken, owner User, pref
 		return err
 	}
 	return ErrUnauthenticated
+}
+
+// APITokenRateLimited пишет одну запись api_token.auth_failed с причиной
+// rate_limited, когда адрес клиента заблокирован ограничителем неудач (В9
+// ревью 2.r2). Дальнейшие запросы с адреса до конца блокировки отклоняются
+// без записей: перебор не раздувает журнал аудита.
+func (s *Service) APITokenRateLimited(ctx context.Context, ip netip.Addr, until time.Time) error {
+	by := audit.Actor{Type: audit.ActorAPIToken, ID: unknownActor, Name: "(ограничение частоты)"}
+	return s.audit.Record(ctx, s.entry(by, ip, "api_token.auth_failed", audit.Object{Type: "api_token"}, audit.ResultFailure,
+		map[string]any{"reason": ReasonRateLimited, "blocked_until": until.UTC().Format(time.RFC3339)}))
 }
 
 // APITokenUsed пишет в аудит запрос по токену (РСБ.1): метод, шаблон пути

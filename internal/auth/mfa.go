@@ -5,6 +5,7 @@ import (
 	"encoding/base32"
 	"errors"
 	"fmt"
+	"net/netip"
 	"net/url"
 	"strings"
 	"time"
@@ -86,6 +87,9 @@ const (
 	MFAStepVerify
 	// MFAStepRegenerate — выпуск новых кодов восстановления.
 	MFAStepRegenerate
+	// MFAStepReauth — повторная проверка перед выпуском токена API (В8
+	// ревью 2.r2): только код TOTP, запись об успехе пишет само действие.
+	MFAStepReauth
 )
 
 // MFAStep — проверка кода второго фактора и действие по её итогу (Store.MFAStep).
@@ -302,15 +306,19 @@ type MFAResult struct {
 // prepare заполняет общие поля шага: пользователь, сессия, порог блокировки
 // и записи аудита неудачи (auth.mfa_failed, на пороге — auth.locked и
 // auth.sessions_revoked).
-func (s *Service) prepare(st *MFAStep, c Caller, pol Policy, kind string) {
+func (s *Service) prepare(ctx context.Context, st *MFAStep, c Caller, pol Policy, kind string) error {
+	until, err := s.lockUntil(ctx, c.User, pol, st.Now)
+	if err != nil {
+		return err
+	}
 	st.UserID, st.SessionID, st.FromState = c.User.ID, c.Session.ID, c.Session.State
-	st.Threshold, st.LockUntil, st.SessionLimit = pol.LockoutThreshold, s.lockUntil(pol, st.Now), pol.SessionMaxPerUser
+	st.Threshold, st.LockUntil, st.SessionLimit = pol.LockoutThreshold, until, pol.SessionMaxPerUser
 	st.Failed = func(attempts int, lockedNow bool) []audit.Entry {
 		recs := []audit.Entry{s.entry(c.actor(), c.SourceIP, "auth.mfa_failed", userObject(c.User.ID),
 			audit.ResultFailure, map[string]any{"kind": kind, "attempts": attempts})}
 		if lockedNow {
 			recs = append(recs, s.entry(c.actor(), c.SourceIP, "auth.locked", userObject(c.User.ID), audit.ResultSuccess,
-				map[string]any{"threshold": pol.LockoutThreshold, "lockout_minutes": pol.LockoutMinutes}))
+				map[string]any{"threshold": pol.LockoutThreshold, "lockout_minutes": lockMinutes(until, st.Now)}))
 		}
 		if attempts >= pol.LockoutThreshold {
 			recs = append(recs, s.entry(c.actor(), c.SourceIP, "auth.sessions_revoked", userObject(c.User.ID),
@@ -318,6 +326,7 @@ func (s *Service) prepare(st *MFAStep, c Caller, pol Policy, kind string) {
 		}
 		return recs
 	}
+	return nil
 }
 
 // fullSession готовит полную сессию в состоянии next взамен сессии до
@@ -337,6 +346,7 @@ func (s *Service) fullSession(c Caller, next SessionState, now time.Time) (*Sess
 	}
 	ns := c.Session
 	ns.ID, ns.TokenHash, ns.CSRFHash, ns.State = string(id), tokenHash, csrfHash, next
+	ns.MFAVerified = true
 	ns.CreatedAt, ns.LastSeenAt = now, now
 	return &ns, token, csrf, nil
 }
@@ -361,7 +371,9 @@ func (s *Service) ConfirmMFA(ctx context.Context, c Caller, code string) (MFARes
 	}
 	st := MFAStep{Kind: MFAStepConfirm, Now: s.clock(), RecoveryHashes: hashes}
 	st.Check = s.totpCheck(code, st.Now)
-	s.prepare(&st, c, pol, "setup")
+	if err := s.prepare(ctx, &st, c, pol, "setup"); err != nil {
+		return MFAResult{}, err
+	}
 	res := MFAResult{Caller: c, RecoveryCodes: codes}
 	if c.Session.State == SessionMFASetup {
 		if st.NewSession, res.Token, res.CSRF, err = s.fullSession(c, afterMFA(c.User, pol, st.Now), st.Now); err != nil {
@@ -400,7 +412,9 @@ func (s *Service) VerifyMFA(ctx context.Context, c Caller, code, recovery string
 	} else {
 		st.Check = s.totpCheck(code, st.Now)
 	}
-	s.prepare(&st, c, pol, kind)
+	if err := s.prepare(ctx, &st, c, pol, kind); err != nil {
+		return MFAResult{}, err
+	}
 	res := MFAResult{Caller: c}
 	if st.NewSession, res.Token, res.CSRF, err = s.fullSession(c, afterMFA(c.User, pol, st.Now), st.Now); err != nil {
 		return MFAResult{}, err
@@ -433,7 +447,9 @@ func (s *Service) RegenerateRecoveryCodes(ctx context.Context, c Caller, code st
 	}
 	st := MFAStep{Kind: MFAStepRegenerate, Now: s.clock(), RecoveryHashes: hashes}
 	st.Check = s.totpCheck(code, st.Now)
-	s.prepare(&st, c, pol, "totp")
+	if err := s.prepare(ctx, &st, c, pol, "totp"); err != nil {
+		return nil, err
+	}
 	rec := s.entry(c.actor(), c.SourceIP, "auth.recovery_codes_regenerated", userObject(c.User.ID), audit.ResultSuccess,
 		map[string]any{"recovery_codes": len(codes)})
 	if err := s.store.MFAStep(ctx, st, rec); err != nil {
@@ -457,7 +473,12 @@ func (s *Service) ResetMFA(ctx context.Context, by Caller, userID string) error 
 	if err := s.canManage(ctx, by, u.Role, "auth.mfa_reset", userObject(userID)); err != nil {
 		return err
 	}
-	rec := s.entry(by.actor(), by.SourceIP, "auth.mfa_reset", userObject(userID), audit.ResultSuccess, nil)
+	return s.resetMFA(ctx, by.actor(), by.SourceIP, userID)
+}
+
+// resetMFA — общая часть сброса фактора администратором и aisec-cli.
+func (s *Service) resetMFA(ctx context.Context, actor audit.Actor, ip netip.Addr, userID string) error {
+	rec := s.entry(actor, ip, "auth.mfa_reset", userObject(userID), audit.ResultSuccess, nil)
 	return s.store.ResetMFA(ctx, userID, s.clock(), rec)
 }
 

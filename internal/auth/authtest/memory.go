@@ -327,6 +327,7 @@ func (m *Memory) SetPassword(_ context.Context, ch auth.PasswordChange, rec audi
 		}
 		s.RevokedAt = ch.Now
 	}
+	m.revokeUserTokens(ch.UserID, ch.Now, ch.RevokeTokens, &rec)
 	m.records = append(m.records, rec)
 	return nil
 }
@@ -361,11 +362,46 @@ func (m *Memory) SetStatus(_ context.Context, orgID, userID string, st auth.Stat
 			}
 		}
 	} else {
+		auth.AddDetail(&rec, "was_locked", u.Locked(now))
 		u.Status, u.DeactivatedAt = st, time.Time{}
 		u.FailedAttempts, u.LockedAt, u.LockedUntil = 0, time.Time{}, time.Time{}
 	}
 	m.records = append(m.records, rec)
 	return nil
+}
+
+func (m *Memory) Unlock(_ context.Context, orgID, userID string, now time.Time, rec audit.Entry) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.Fail != nil {
+		return m.Fail
+	}
+	u, ok := m.users[userID]
+	if !ok || u.OrgID != orgID {
+		return auth.ErrNotFound
+	}
+	if u.Status != auth.StatusActive {
+		return auth.ErrDeactivated
+	}
+	auth.AddDetail(&rec, "was_locked", u.Locked(now))
+	u.FailedAttempts, u.LockedAt, u.LockedUntil = 0, time.Time{}, time.Time{}
+	m.records = append(m.records, rec)
+	return nil
+}
+
+func (m *Memory) UnlockedSecurityAdmins(_ context.Context, orgID, exceptID string, now time.Time) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.Fail != nil {
+		return 0, m.Fail
+	}
+	n := 0
+	for _, u := range m.users {
+		if u.OrgID == orgID && u.ID != exceptID && u.Role == auth.RoleSecurityAdmin && u.Status == auth.StatusActive && !u.Locked(now) {
+			n++
+		}
+	}
+	return n, nil
 }
 
 func (m *Memory) activeSessions(userID string) []*auth.Session {
@@ -485,7 +521,8 @@ func (m *Memory) RevokeSession(_ context.Context, id, _ string, now time.Time, r
 	return nil
 }
 
-func (m *Memory) RevokeUserSessions(_ context.Context, userID, _ string, now time.Time, rec audit.Entry) (int, error) {
+func (m *Memory) RevokeUserSessions(_ context.Context, userID, _ string, now time.Time, tokens *auth.TokenRevocation,
+	rec audit.Entry) (int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.Fail != nil {
@@ -496,6 +533,7 @@ func (m *Memory) RevokeUserSessions(_ context.Context, userID, _ string, now tim
 		s.RevokedAt = now
 		n++
 	}
+	m.revokeUserTokens(userID, now, tokens, &rec)
 	m.records = append(m.records, rec)
 	return n, nil
 }
@@ -657,12 +695,16 @@ func (m *Memory) MFAStep(_ context.Context, st auth.MFAStep, rec audit.Entry) er
 		c := *ns
 		m.sessions[c.ID] = &c
 		m.evict(st.UserID, c.State, st.Now, st.SessionLimit, &rec)
+	} else {
+		s.MFAVerified = true
 	}
 	if st.Kind == auth.MFAStepVerify {
 		u.FailedAttempts, u.LockedAt, u.LockedUntil = 0, time.Time{}, time.Time{}
 		auth.AddDetail(&rec, "recovery_codes_left", m.unusedCodes(st.UserID))
 	}
-	m.records = append(m.records, rec)
+	if rec.Action != "" {
+		m.records = append(m.records, rec)
+	}
 	return nil
 }
 
@@ -694,4 +736,20 @@ func (m *Memory) UnusedRecoveryCodes(userID string) int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.unusedCodes(userID)
+}
+
+// revokeUserTokens — как в PGStore: отзыв токенов пользователя вместе с
+// действием администратора.
+func (m *Memory) revokeUserTokens(userID string, now time.Time, tr *auth.TokenRevocation, rec *audit.Entry) {
+	if tr == nil {
+		return
+	}
+	n := 0
+	for _, t := range m.tokens {
+		if t.UserID == userID && t.RevokedAt.IsZero() {
+			t.RevokedAt, t.RevokedBy, t.RevokeReason = now, tr.By, tr.Reason
+			n++
+		}
+	}
+	auth.AddDetail(rec, "revoked_api_tokens", n)
 }

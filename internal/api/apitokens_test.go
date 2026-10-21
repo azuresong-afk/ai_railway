@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -17,7 +18,7 @@ import (
 // issueToken выпускает токен через API от имени сессии s.
 func (e *authEnv) issueToken(t *testing.T, s session, perms ...string) CreatedAPIToken {
 	t.Helper()
-	req := createAPITokenRequest{Name: "Автоматизация"}
+	req := createAPITokenRequest{Name: "Автоматизация", Password: tPhrase}
 	for _, p := range perms {
 		req.Permissions = append(req.Permissions, GrantView{Permission: p})
 	}
@@ -79,7 +80,7 @@ func TestAPITokenBearerFlow(t *testing.T) {
 		{"POST", "/api/v1/auth/logout", ""},
 		{"POST", "/api/v1/users", `{"login":"x","display_name":"x","role":"analyst"}`},
 		{"GET", "/api/v1/api-tokens", ""},
-		{"POST", "/api/v1/api-tokens", `{"name":"x","permissions":[{"permission":"system.read"}]}`},
+		{"POST", "/api/v1/api-tokens", `{"name":"x","password":"Синтетический-Пароль-42","permissions":[{"permission":"system.read"}]}`},
 	} {
 		_, before := lastAction(t, e, "access.denied")
 		if w := e.call(bearer, c.method, c.path, c.body, false); w.Code != http.StatusForbidden {
@@ -135,18 +136,18 @@ func TestAPITokenCreateRejects(t *testing.T) {
 	e := newAuthEnv(t)
 	admin := e.mustLogin(t, "admin")
 	for name, body := range map[string]string{
-		"безопасность": `{"name":"x","permissions":[{"permission":"users.manage"}]}`,
-		"токены":       `{"name":"x","permissions":[{"permission":"api_tokens.manage"}]}`,
-		"без прав":     `{"name":"x","permissions":[]}`,
-		"срок":         `{"name":"x","expires_in_days":400,"permissions":[{"permission":"system.read"}]}`,
-		"лишнее поле":  `{"name":"x","token":"aisec_pat_x","permissions":[{"permission":"system.read"}]}`,
+		"безопасность": `{"name":"x","password":"Синтетический-Пароль-42","permissions":[{"permission":"users.manage"}]}`,
+		"токены":       `{"name":"x","password":"Синтетический-Пароль-42","permissions":[{"permission":"api_tokens.manage"}]}`,
+		"без прав":     `{"name":"x","password":"Синтетический-Пароль-42","permissions":[]}`,
+		"срок":         `{"name":"x","password":"Синтетический-Пароль-42","expires_in_days":400,"permissions":[{"permission":"system.read"}]}`,
+		"лишнее поле":  `{"name":"x","password":"Синтетический-Пароль-42","token":"aisec_pat_x","permissions":[{"permission":"system.read"}]}`,
 	} {
 		if w := e.call(admin, "POST", "/api/v1/api-tokens", body, true); w.Code != http.StatusBadRequest {
 			t.Errorf("%s: %d %s", name, w.Code, w.Body)
 		}
 	}
 	// Без CSRF выпуск из сессии не проходит.
-	if w := e.call(admin, "POST", "/api/v1/api-tokens", `{"name":"x","permissions":[{"permission":"system.read"}]}`, false); w.Code != http.StatusForbidden {
+	if w := e.call(admin, "POST", "/api/v1/api-tokens", `{"name":"x","password":"Синтетический-Пароль-42","permissions":[{"permission":"system.read"}]}`, false); w.Code != http.StatusForbidden {
 		t.Fatalf("без CSRF: %d", w.Code)
 	}
 	// Аналитику токены не положены.
@@ -251,5 +252,99 @@ func TestTokenUsedRecordedOnPanic(t *testing.T) {
 	}
 	if len(got) != 2 || got[0] != http.StatusAccepted || got[1] != http.StatusInternalServerError {
 		t.Fatalf("коды в api_token.used: %v", got)
+	}
+}
+
+// В8 ревью 2.r2: неверный пароль при выпуске токена — 403
+// reauthentication_failed (не 401: сессия действительна); завершение
+// сессий по умолчанию отзывает токены, revoke_api_tokens=false — нет.
+func TestAPITokenReauthAndRevokeViaAPI(t *testing.T) {
+	e := newAuthEnv(t)
+	admin := e.mustLogin(t, "admin")
+	mustProblem(t, e.call(admin, "POST", "/api/v1/api-tokens",
+		`{"name":"x","password":"неверный","permissions":[{"permission":"system.read"}]}`, true), http.StatusForbidden, CodeReauthFailed)
+	mustProblem(t, e.call(admin, "POST", "/api/v1/api-tokens",
+		`{"name":"x","permissions":[{"permission":"system.read"}]}`, true), http.StatusBadRequest, CodeInvalidRequest)
+	if w := e.call(admin, "GET", "/api/v1/me", "", false); w.Code != http.StatusOK {
+		t.Fatalf("сессия после неверного пароля: %d", w.Code)
+	}
+	created := e.issueToken(t, admin, auth.PermUsersRead)
+	bearer := session{bearer: created.Token}
+	mustProblem(t, e.call(admin, "DELETE", "/api/v1/users/"+tAdminID+"/sessions?revoke_api_tokens=нет", "", true),
+		http.StatusBadRequest, CodeInvalidRequest)
+	if w := e.call(admin, "DELETE", "/api/v1/users/"+tAdminID+"/sessions?revoke_api_tokens=false", "", true); w.Code != http.StatusOK {
+		t.Fatalf("завершение сессий без отзыва токенов: %d %s", w.Code, w.Body)
+	}
+	if w := e.call(bearer, "GET", "/api/v1/users", "", false); w.Code != http.StatusOK {
+		t.Fatalf("токен после revoke_api_tokens=false: %d", w.Code)
+	}
+	admin = e.mustLogin(t, "admin")
+	if w := e.call(admin, "DELETE", "/api/v1/users/"+tAdminID+"/sessions", "", true); w.Code != http.StatusOK {
+		t.Fatalf("завершение сессий: %d %s", w.Code, w.Body)
+	}
+	mustProblem(t, e.call(bearer, "GET", "/api/v1/users", "", false), http.StatusUnauthorized, CodeUnauthorized)
+}
+
+// callAuthz — запрос с сессией s и заголовком Authorization как есть.
+func (e *authEnv) callAuthz(s session, method, target, authz string) *httptest.ResponseRecorder {
+	r := httptest.NewRequestWithContext(context.Background(), method, target, nil)
+	r.RemoteAddr = "192.0.2.1:1234"
+	for _, c := range s.cookies {
+		if c.Name == SessionCookie {
+			r.AddCookie(c)
+		}
+	}
+	r.Header.Set("Authorization", authz)
+	w := httptest.NewRecorder()
+	e.h.ServeHTTP(w, r)
+	return w
+}
+
+// Н10 ревью 2.r2: заголовок другой схемы (Basic от обратного прокси) не
+// отключает сессию консоли и не пишет api_token.auth_failed.
+func TestNonBearerAuthorizationUsesSession(t *testing.T) {
+	e := newAuthEnv(t)
+	admin := e.mustLogin(t, "admin")
+	if w := e.callAuthz(admin, "GET", "/api/v1/users", "Basic cHJveHk6cHJveHk="); w.Code != http.StatusOK {
+		t.Fatalf("Basic с сессией: %d %s", w.Code, w.Body)
+	}
+	if _, n := lastAction(t, e, "api_token.auth_failed"); n != 0 {
+		t.Fatalf("записей api_token.auth_failed: %d", n)
+	}
+	mustProblem(t, e.callAuthz(session{}, "GET", "/api/v1/users", "Basic cHJveHk6cHJveHk="), http.StatusUnauthorized, CodeUnauthorized)
+}
+
+// В9 ревью 2.r2: неверный формат Bearer в аудит не пишется; после порога
+// неудач с адреса — 429 без записей, о блокировке — одна запись.
+func TestBearerFailureLimiter(t *testing.T) {
+	e := newAuthEnv(t)
+	for range 3 {
+		mustProblem(t, e.callAuthz(session{}, "GET", "/api/v1/users", "Bearer мусор"), http.StatusUnauthorized, CodeUnauthorized)
+	}
+	if _, n := lastAction(t, e, "api_token.auth_failed"); n != 0 {
+		t.Fatalf("неверный формат записан в аудит: %d", n)
+	}
+	bad := "Bearer aisec_pat_00000000_" + strings.Repeat("A", 43)
+	for range 7 {
+		mustProblem(t, e.callAuthz(session{}, "GET", "/api/v1/users", bad), http.StatusUnauthorized, CodeUnauthorized)
+	}
+	// 3 + 7 неудач — порог; записаны 7 неверных токенов и одна запись о блокировке.
+	rec, n := lastAction(t, e, "api_token.auth_failed")
+	if n != 8 || rec.Details.(map[string]any)["reason"] != auth.ReasonRateLimited {
+		t.Fatalf("записей %d, последняя %v", n, rec.Details)
+	}
+	for range 5 {
+		w := e.callAuthz(session{}, "GET", "/api/v1/users", bad)
+		mustProblem(t, w, http.StatusTooManyRequests, CodeRateLimited)
+		if w.Header().Get("Retry-After") == "" {
+			t.Fatal("нет Retry-After")
+		}
+	}
+	if _, n2 := lastAction(t, e, "api_token.auth_failed"); n2 != n {
+		t.Fatalf("записи во время блокировки: %d", n2-n)
+	}
+	// Сессия консоли с того же адреса работает: ограничение — только для токенов.
+	if w := e.call(e.mustLogin(t, "admin"), "GET", "/api/v1/users", "", false); w.Code != http.StatusOK {
+		t.Fatalf("сессия во время блокировки токенов: %d", w.Code)
 	}
 }

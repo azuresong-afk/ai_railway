@@ -63,10 +63,21 @@ var archiveActor = Actor{Type: ActorCLI, ID: "uid:0", Name: "root"}
 func TestArchivePostgres(t *testing.T) {
 	env, l, s, v := archiveSetup(t)
 	ctx := ctxT(t)
+	// Есть ли точки — по ним сервер решает, обязателен ли ключ аудита (В5).
+	cps, err := NewPGCheckpoints(env.app, provider(t), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := cps.Any(ctx); err != nil || ok {
+		t.Fatalf("точки до архивации: %v %v", ok, err)
+	}
 	var out syncBuffer
 	res, err := l.Archive(ctx, ArchiveOptions{Out: &out, ArchiveName: "audit-1.jsonl", Signer: s, Verifier: v, By: archiveActor})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if ok, err := cps.Any(ctx); err != nil || !ok {
+		t.Fatalf("точки после архивации: %v %v", ok, err)
 	}
 	cp := res.Checkpoint
 	if cp.Seq != 5 || cp.Records != 5 || cp.PrevSeq != 0 {

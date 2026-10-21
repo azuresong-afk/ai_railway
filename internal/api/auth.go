@@ -50,6 +50,10 @@ func authProblem(logger *slog.Logger, err error) *Problem {
 		return Invalid("Проверьте введённые данные.", FieldError{ie.Field, ie.Reason})
 	case errors.As(err, &pe):
 		return Invalid("Пароль не соответствует парольной политике.", FieldError{"new_password", pe.Reason})
+	case errors.Is(err, auth.ErrReauthentication):
+		// 403, а не 401: сессия действительна, клиент не должен уходить на вход.
+		return NewProblem(http.StatusForbidden, CodeReauthFailed,
+			"Пароль или код не принят. После нескольких неудачных попыток учётная запись блокируется.")
 	case errors.Is(err, auth.ErrWrongPassword):
 		return Invalid("Текущий пароль неверен.", FieldError{"current_password", "Текущий пароль неверен."})
 	case errors.Is(err, auth.ErrNotFound):
