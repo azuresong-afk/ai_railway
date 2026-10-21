@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -33,6 +34,10 @@ const testGateway = "01900000-0000-7000-8000-0000000000a1"
 
 type pgEnv struct {
 	owner, app *pgxpool.Pool
+	dsn        string
+	schema     string
+	box        *keyring.Box
+	log        *audit.Log
 	st         *events.PGStore
 	ids        *ids.Generator
 	keyID      string
@@ -160,7 +165,7 @@ func setupPG(t *testing.T) *pgEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &pgEnv{owner: owner, app: app, st: st, ids: ids.NewGenerator(r), keyID: keyID}
+	return &pgEnv{owner: owner, app: app, dsn: dsn, schema: schema, box: box, log: l, st: st, ids: ids.NewGenerator(r), keyID: keyID}
 }
 
 func (e *pgEnv) event(t *testing.T, storage string, c *events.Content) events.Event {
@@ -203,14 +208,14 @@ func TestPGEventsInsertContent(t *testing.T) {
 	started := time.Now().Add(-time.Hour).UTC().Truncate(time.Microsecond)
 	in := events.Ingest{GatewayID: testGateway, ReceivedAt: time.Now(), Events: []events.Event{none, masked, full},
 		Stats: &events.SenderStats{StartedAt: started, Dropped: 5, Rejected: 1}}
-	acc, dup, err := e.st.Insert(ctx, in)
-	if err != nil || acc != 3 || dup != 0 {
-		t.Fatalf("запись: %d %d %v", acc, dup, err)
+	res, err := e.st.Insert(ctx, in)
+	if err != nil || res.Accepted != 3 || res.Duplicates != 0 || res.Truncated != 0 || len(res.Rejected) != 0 {
+		t.Fatalf("запись: %+v %v", res, err)
 	}
 	// Повтор пакета — дубли пропускаются, содержимое не перезаписывается.
 	in.Stats = &events.SenderStats{StartedAt: started, Dropped: 3, Rejected: 1}
-	if acc, dup, err := e.st.Insert(ctx, in); err != nil || acc != 0 || dup != 3 {
-		t.Fatalf("повтор: %d %d %v", acc, dup, err)
+	if res, err := e.st.Insert(ctx, in); err != nil || res.Accepted != 0 || res.Duplicates != 3 {
+		t.Fatalf("повтор: %+v %v", res, err)
 	}
 	var count, contents int
 	if err := e.owner.QueryRow(ctx, "SELECT (SELECT count(*) FROM events), (SELECT count(*) FROM event_content)").Scan(&count, &contents); err != nil {
@@ -276,7 +281,7 @@ func TestPGEventsSwappedCiphertext(t *testing.T) {
 	}
 	a := e.event(t, events.StorageFull, &events.Content{Request: "секрет A"})
 	b := e.event(t, events.StorageNone, nil)
-	if _, _, err := e.st.Insert(ctx, events.Ingest{GatewayID: testGateway, ReceivedAt: time.Now(), Events: []events.Event{a, b}}); err != nil {
+	if _, err := e.st.Insert(ctx, events.Ingest{GatewayID: testGateway, ReceivedAt: time.Now(), Events: []events.Event{a, b}}); err != nil {
 		t.Fatal(err)
 	}
 	tb, err := events.PartitionTime(b.ID)
@@ -302,7 +307,7 @@ func TestPGEventsAppRights(t *testing.T) {
 		t.Fatal(err)
 	}
 	ev := e.event(t, events.StorageMasked, &events.Content{Request: "x"})
-	if _, _, err := e.st.Insert(ctx, events.Ingest{GatewayID: testGateway, ReceivedAt: time.Now(), Events: []events.Event{ev}}); err != nil {
+	if _, err := e.st.Insert(ctx, events.Ingest{GatewayID: testGateway, ReceivedAt: time.Now(), Events: []events.Event{ev}}); err != nil {
 		t.Fatal(err)
 	}
 	part := "events_p" + time.Now().UTC().Format("20060102")
@@ -339,22 +344,103 @@ func TestPGEventsNoPartition(t *testing.T) {
 	e := setupPG(t)
 	ctx := pgCtx(t)
 	ev := e.event(t, events.StorageNone, nil)
-	_, _, err := e.st.Insert(ctx, events.Ingest{GatewayID: testGateway, ReceivedAt: time.Now(), Events: []events.Event{ev}})
+	_, err := e.st.Insert(ctx, events.Ingest{GatewayID: testGateway, ReceivedAt: time.Now(), Events: []events.Event{ev}})
 	if !errors.Is(err, events.ErrNoPartition) {
 		t.Fatalf("без секций: %v", err)
 	}
 	if _, err := e.st.EnsurePartitions(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if acc, _, err := e.st.Insert(ctx, events.Ingest{GatewayID: testGateway, ReceivedAt: time.Now(), Events: []events.Event{ev}}); err != nil || acc != 1 {
-		t.Fatalf("после создания секций: %d %v", acc, err)
+	if res, err := e.st.Insert(ctx, events.Ingest{GatewayID: testGateway, ReceivedAt: time.Now(), Events: []events.Event{ev}}); err != nil || res.Accepted != 1 {
+		t.Fatalf("после создания секций: %+v %v", res, err)
 	}
-	// Ошибка СУБД без значений полей: в журнал и ответ уходит только код.
-	bad := e.event(t, events.StorageNone, nil)
-	bad.App = "a\x00b"
-	_, _, err = e.st.Insert(ctx, events.Ingest{GatewayID: testGateway, ReceivedAt: time.Now(), Events: []events.Event{bad}})
-	if !errors.Is(err, events.ErrRejectedByDB) || bytes.Contains([]byte(err.Error()), []byte("a\x00b")) {
-		t.Fatalf("NUL: %v", err)
+}
+
+// Событие, которое СУБД отвергла (Check в обход), не губит пакет: пакет
+// записывается по одному событию, отказ — только у отвергнутых (В10 ревью
+// 2.r3a). Проверяются NUL в тексте и чужой policy_mode у auth_failure.
+func TestPGEventsRejectOneOfBatch(t *testing.T) {
+	e := setupPG(t)
+	ctx := pgCtx(t)
+	if _, err := e.st.EnsurePartitions(ctx); err != nil {
+		t.Fatal(err)
+	}
+	nul := e.event(t, events.StorageNone, nil)
+	nul.App = "a\x00b"
+	mode := e.event(t, events.StorageNone, nil)
+	mode.Type, mode.App, mode.Decision = events.TypeAuthFailure, "", nil
+	mode.AuthFailure = &events.AuthFailure{RemoteAddr: "192.0.2.1", Reason: "invalid_key"}
+	mode.PolicyMode = "audit"
+	good := e.event(t, events.StorageFull, &events.Content{Request: "запрос", Response: "ответ"})
+	plain := e.event(t, events.StorageMasked, &events.Content{Request: "x"})
+	stats := &events.SenderStats{StartedAt: time.Now().Add(-time.Minute).UTC().Truncate(time.Microsecond), Dropped: 2}
+	res, err := e.st.Insert(ctx, events.Ingest{GatewayID: testGateway, ReceivedAt: time.Now(),
+		Events: []events.Event{nul, good, mode, plain}, Stats: stats})
+	if err != nil || res.Accepted != 2 || res.Duplicates != 0 || !slices.Equal(res.Rejected, []int{0, 2}) {
+		t.Fatalf("пакет с отвергнутыми событиями: %+v %v", res, err)
+	}
+	if got, err := e.st.Content(ctx, good.ID); err != nil || got.Content.Request != "запрос" {
+		t.Fatalf("содержимое принятого события: %+v %v", got, err)
+	}
+	var count int
+	var dropped int64
+	if err := e.owner.QueryRow(ctx, "SELECT (SELECT count(*) FROM events), (SELECT dropped FROM gateway_event_stats)").
+		Scan(&count, &dropped); err != nil || count != 2 || dropped != 2 {
+		t.Fatalf("строк событий %d, счётчик %d: %v", count, dropped, err)
+	}
+	// Повтор пакета: принятые — дубли, отвергнутые — снова отказ.
+	res, err = e.st.Insert(ctx, events.Ingest{GatewayID: testGateway, ReceivedAt: time.Now(),
+		Events: []events.Event{nul, good, mode, plain}})
+	if err != nil || res.Accepted != 0 || res.Duplicates != 2 || !slices.Equal(res.Rejected, []int{0, 2}) {
+		t.Fatalf("повтор: %+v %v", res, err)
+	}
+}
+
+// Содержимое full из 64 КиБ «<» и управляющих символов не помещалось в
+// предел шифротекста и губило пакет (В10 ревью 2.r3a). Теперь оно
+// обрезается, событие записывается с отметкой content_truncated, соседние
+// события пакета — как обычно.
+func TestPGEventsTruncateLargeContent(t *testing.T) {
+	e := setupPG(t)
+	ctx := pgCtx(t)
+	if _, err := e.st.EnsurePartitions(ctx); err != nil {
+		t.Fatal(err)
+	}
+	lt := strings.Repeat("<", events.MaxContentBytes)
+	ctl := strings.Repeat("\x01", events.MaxContentBytes)
+	html := e.event(t, events.StorageFull, &events.Content{Request: lt, Response: lt})
+	ctrl := e.event(t, events.StorageFull, &events.Content{Request: ctl, Response: ctl})
+	small := e.event(t, events.StorageFull, &events.Content{Request: "обычный запрос"})
+	none := e.event(t, events.StorageNone, nil)
+	for _, ev := range []events.Event{html, ctrl, small, none} {
+		if code := events.Check(&ev, time.Now()); code != "" {
+			t.Fatalf("Check: %s", code)
+		}
+	}
+	res, err := e.st.Insert(ctx, events.Ingest{GatewayID: testGateway, ReceivedAt: time.Now(),
+		Events: []events.Event{html, ctrl, small, none}})
+	if err != nil || res.Accepted != 4 || res.Truncated != 1 || len(res.Rejected) != 0 {
+		t.Fatalf("запись: %+v %v", res, err)
+	}
+	// «<» без HTML-экранирования помещается целиком.
+	if got, err := e.st.Content(ctx, html.ID); err != nil || got.Content.Request != lt || got.Content.Response != lt {
+		t.Fatalf("«<»: %v", err)
+	}
+	got, err := e.st.Content(ctx, ctrl.ID)
+	if err != nil || !strings.HasSuffix(got.Content.Request, "…") || !strings.HasPrefix(ctl, strings.TrimSuffix(got.Content.Request, "…")) ||
+		len(got.Content.Request) < 20000 {
+		t.Fatalf("обрезанное содержимое: %d байт, %v", len(got.Content.Request), err)
+	}
+	for id, want := range map[string]bool{html.ID: false, ctrl.ID: true, small.ID: false} {
+		rec, err := e.st.Card(ctx, id)
+		if err != nil || rec.Details == nil || rec.Details.ContentTruncated != want {
+			t.Fatalf("отметка обрезки %s: %+v %v", id, rec.Details, err)
+		}
+	}
+	var size int
+	if err := e.owner.QueryRow(ctx, "SELECT octet_length(sealed) FROM event_content WHERE event_id = $1", ctrl.ID).Scan(&size); err != nil ||
+		size > events.MaxSealedBytes {
+		t.Fatalf("размер шифротекста %d: %v", size, err)
 	}
 }
 
@@ -428,5 +514,27 @@ func TestPGEventsRetention(t *testing.T) {
 	}
 	if _, err := e.owner.Exec(ctx, "UPDATE event_settings SET content_days = 6"); sqlState(err) != "23514" {
 		t.Fatalf("содержимое меньше 7 суток: %v", err)
+	}
+}
+
+// received_at ставят часы СУБД, а не приложения (Н22 ревью 2.r3a): при
+// отставании часов сервера приложения событие не попадает в уже пройденное
+// окно агрегатов.
+func TestPGEventsReceivedAtFromDB(t *testing.T) {
+	e := setupPG(t)
+	ctx := pgCtx(t)
+	if _, err := e.st.EnsurePartitions(ctx); err != nil {
+		t.Fatal(err)
+	}
+	ev := e.event(t, events.StorageNone, nil)
+	if _, err := e.st.Insert(ctx, events.Ingest{GatewayID: testGateway, ReceivedAt: time.Now().Add(-time.Hour), Events: []events.Event{ev}}); err != nil {
+		t.Fatal(err)
+	}
+	var lag time.Duration
+	if err := e.owner.QueryRow(ctx, "SELECT now() - received_at FROM events WHERE id = $1", ev.ID).Scan(&lag); err != nil {
+		t.Fatal(err)
+	}
+	if lag > time.Minute || lag < -time.Minute {
+		t.Fatalf("received_at отстаёт от часов СУБД на %v", lag)
 	}
 }

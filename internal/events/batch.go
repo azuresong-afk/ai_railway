@@ -65,6 +65,9 @@ const (
 	RejectTime    = "time"    // время вне окна приёма или не совпадает с ID
 	RejectLimits  = "limits"  // превышены пределы полей
 	RejectNUL     = "nul"     // символ U+0000: PostgreSQL его не хранит
+	// RejectStorage — СУБД отвергла событие при поштучной записи пакета:
+	// проверка Check разошлась с ограничениями таблиц (В10 ревью 2.r3a).
+	RejectStorage = "storage"
 )
 
 // Rejection — отказ в событии пакета.
@@ -78,6 +81,9 @@ type BatchResult struct {
 	Accepted   int         `json:"accepted"`
 	Duplicates int         `json:"duplicates"`
 	Rejected   []Rejection `json:"rejected"`
+	// Truncated — принятые события full, содержимое которых обрезано под
+	// предел хранения (у события отметка details.content_truncated).
+	Truncated int `json:"truncated,omitempty"`
 }
 
 // ErrBatch — пакет отвергнут целиком: не JSON, лишние поля, пустой или
@@ -177,6 +183,9 @@ type Details struct {
 	Response    *Response        `json:"response,omitempty"`
 	Pseudonyms  *Pseudonyms      `json:"pseudonyms,omitempty"`
 	AuthFailure *AuthFailure     `json:"auth_failure,omitempty"`
+	// ContentTruncated — содержимое full обрезано сервером под предел
+	// шифротекста (FitContent); ставит только сервер при записи.
+	ContentTruncated bool `json:"content_truncated,omitempty"`
 }
 
 // Details возвращает метаданные события для хранения.

@@ -354,15 +354,24 @@ func (b *Box) OpenDerived(keyID, purpose string, day time.Time, sealed []byte, t
 	if keyID != b.keyID {
 		return nil, ErrUnknownKey
 	}
-	d, err := b.Derive(purpose, day)
-	if err != nil {
-		return nil, err
+	if b.kdf == nil {
+		return nil, ErrNoDerive
+	}
+	if !purposeRe.MatchString(purpose) {
+		return nil, fmt.Errorf("ключ данных: неверное назначение производного ключа %q", purpose)
 	}
 	aad, err := aisecCrypto.StorageAAD(table, column, rowID)
 	if err != nil {
 		return nil, err
 	}
-	return d.aead.Open(sealed, aad)
+	// Ключ для чтения выводится заново, без кэша и резерва шифрований:
+	// просмотр содержимого за разные сутки не вытесняет из кэша ключ
+	// текущих суток и не растит счётчик derived_key_usage (Н23 ревью 2.r3a).
+	aead, err := b.deriveAEAD(purpose, dayKey(day))
+	if err != nil {
+		return nil, err
+	}
+	return aead.Open(sealed, aad)
 }
 
 // reserveDerivedDB увеличивает счётчик шифрований производного ключа.

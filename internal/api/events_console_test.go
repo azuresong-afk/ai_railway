@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"sync"
@@ -103,7 +104,7 @@ func newConsoleEnv(t *testing.T) *consoleEnv {
 		evs = append(evs, e)
 		env.ids = append(env.ids, e.ID)
 	}
-	if _, _, err := env.mem.Insert(context.Background(), events.Ingest{GatewayID: testGatewayID, ReceivedAt: now, Events: evs}); err != nil {
+	if _, err := env.mem.Insert(context.Background(), events.Ingest{GatewayID: testGatewayID, ReceivedAt: now, Events: evs}); err != nil {
 		t.Fatal(err)
 	}
 	return env
@@ -281,7 +282,11 @@ func TestEventsExportCSV(t *testing.T) {
 	if strings.Contains(w.Body.String(), promptMarker) {
 		t.Fatal("содержимое в выгрузке")
 	}
-	rows, err := csv.NewReader(strings.NewReader(w.Body.String())).ReadAll()
+	body, ok := strings.CutPrefix(w.Body.String(), "\ufeff")
+	if !ok {
+		t.Fatal("нет BOM UTF-8")
+	}
+	rows, err := csv.NewReader(strings.NewReader(body)).ReadAll()
 	if err != nil || len(rows) != 4 {
 		t.Fatalf("CSV: %v %v", err, rows)
 	}
@@ -327,8 +332,8 @@ func TestEventsExportJSONAndRejects(t *testing.T) {
 
 type bigCount struct{ *events.Memory }
 
-func (bigCount) Count(context.Context, events.Query, int) (int, error) {
-	return events.MaxExportRows + 1, nil
+func (bigCount) Export(context.Context, events.Query, func(int) error, func(*events.Record) error) error {
+	return events.ErrTooManyRows
 }
 
 func TestEventFilters(t *testing.T) {
@@ -498,4 +503,75 @@ func FuzzEventsListQuery(f *testing.F) {
 			t.Fatalf("предел %d", p.query.Limit)
 		}
 	})
+}
+
+// blockingExport — выгрузка, которая ждёт release: так тест держит
+// выгрузки «идущими» без пауз и зависимости от планировщика.
+type blockingExport struct {
+	*events.Memory
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (b blockingExport) Export(_ context.Context, _ events.Query, start func(int) error, _ func(*events.Record) error) error {
+	b.entered <- struct{}{}
+	<-b.release
+	return start(0)
+}
+
+// subjectAuthz пропускает perm от субъекта из заголовка X-Test-Subject.
+type subjectAuthz string
+
+func (a subjectAuthz) Authorize(r *http.Request, perm string) (Principal, Decision) {
+	p := Principal{ID: r.Header.Get("X-Test-Subject"), Grants: auth.Grants{string(a): auth.ScopeAll}}
+	if perm == string(a) {
+		return p, Allow
+	}
+	return p, Forbidden
+}
+
+// Одновременных выгрузок — не больше одной на субъект и двух на сервер
+// (В11 ревью 2.r3a); сверх предела — 429 с Retry-After без записи в аудит.
+func TestEventsExportConcurrencyLimit(t *testing.T) {
+	env := newConsoleEnv(t)
+	st := blockingExport{Memory: env.mem, entered: make(chan struct{}, 8), release: make(chan struct{})}
+	h, _ := newHandler(t, Options{Authorizer: subjectAuthz(auth.PermEventsExport), Events: st, Audit: env.audit})
+	export := func(subject string) *httptest.ResponseRecorder {
+		return do(h, "POST", "/api/v1/events/export", `{"format":"csv"}`, "Content-Type", "application/json", "X-Test-Subject", subject)
+	}
+	var wg sync.WaitGroup
+	codes := make(chan int, 2)
+	for _, subject := range []string{"a", "b"} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			codes <- export(subject).Code
+		}()
+		<-st.entered
+	}
+	for name, subject := range map[string]string{"тот же субъект": "a", "третья на сервер": "c"} {
+		w := export(subject)
+		mustProblem(t, w, http.StatusTooManyRequests, CodeRateLimited)
+		if w.Header().Get("Retry-After") == "" {
+			t.Fatalf("%s: нет Retry-After", name)
+		}
+	}
+	if n := len(env.audit.find("data.export")); n != 0 {
+		t.Fatalf("записей data.export до завершения: %d", n)
+	}
+	close(st.release)
+	wg.Wait()
+	close(codes)
+	for c := range codes {
+		if c != http.StatusOK {
+			t.Fatalf("занятая выгрузка: %d", c)
+		}
+	}
+	// Места освобождены: выгрузка снова проходит.
+	if w := export("a"); w.Code != http.StatusOK {
+		t.Fatalf("после завершения: %d %s", w.Code, w.Body)
+	}
+	if n := len(env.audit.find("data.export")); n != 3 {
+		t.Fatalf("записей data.export: %d", n)
+	}
 }
