@@ -144,6 +144,10 @@ repocheck: ## Структурные правила: один internal/crypto, c
 docs-check: ## Относительные ссылки в документах ведут на существующие файлы
 	go run ./tools/docs-check -root .
 
+.PHONY: rbac-matrix
+rbac-matrix: ## Матрица «роль × эндпоинт» из api/openapi.yaml в docs/cert/rbac-matrix.md (УПД.3)
+	go run ./tools/rbac-matrix -spec api/openapi.yaml -out docs/cert/rbac-matrix.md
+
 .PHONY: test
 test: ## Модульные тесты с детектором гонок
 	CGO_ENABLED=1 go test -race -count=1 ./...

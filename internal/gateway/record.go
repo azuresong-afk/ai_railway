@@ -179,12 +179,17 @@ func (rec *record) fill() {
 	rec.ev.Decision = ed
 	rec.ev.PolicyMode = string(d.Mode)
 	rec.ev.NonTextUnchecked = d.NonTextUnchecked && !in.FailBlock
-	if rec.app.Storage == events.StorageMasked {
-		if c, ok := in.maskedContent(rec.texts); ok {
-			rec.ev.Content = &events.Content{Request: c}
-			if rec.output {
-				rec.ev.Content = &events.Content{Response: c}
-			}
+	c, ok := "", false
+	switch rec.app.Storage {
+	case events.StorageMasked:
+		c, ok = in.maskedContent(rec.texts)
+	case events.StorageFull:
+		c, ok = fullContent(rec.texts), true
+	}
+	if ok && c != "" {
+		rec.ev.Content = &events.Content{Request: c}
+		if rec.output {
+			rec.ev.Content = &events.Content{Response: c}
 		}
 	}
 }
@@ -252,13 +257,18 @@ func (rec *record) fillResponse() {
 	}
 	r.Decision = ed
 	rec.addThreats(rec.findings(in, rec.respTexts))
-	if rec.app.Storage == events.StorageMasked {
-		if c, ok := in.maskedContent(rec.respTexts); ok {
-			if rec.ev.Content == nil {
-				rec.ev.Content = &events.Content{}
-			}
-			rec.ev.Content.Response = c
+	c, ok := "", false
+	switch rec.app.Storage {
+	case events.StorageMasked:
+		c, ok = in.maskedContent(rec.respTexts)
+	case events.StorageFull:
+		c, ok = fullContent(rec.respTexts), true
+	}
+	if ok && c != "" {
+		if rec.ev.Content == nil {
+			rec.ev.Content = &events.Content{}
 		}
+		rec.ev.Content.Response = c
 	}
 }
 

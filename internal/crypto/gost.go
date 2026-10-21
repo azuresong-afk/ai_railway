@@ -20,3 +20,6 @@ func (gost) NewVerifier([]byte) (Verifier, error)    { return nil, ErrNotImpleme
 // NewTOTP: применимость исключения HMAC-SHA-1 в профиле gost решается вместе
 // с выбором СКЗИ на этапе 6 (ADR-0006).
 func (gost) NewTOTP([]byte) (TOTP, error) { return nil, ErrNotImplemented }
+
+// NewKDF: в профиле gost — KDF на «Стрибоге» (Р 50.1.113-2016) через СКЗИ этапа 6.
+func (gost) NewKDF([]byte) (KDF, error) { return nil, ErrNotImplemented }

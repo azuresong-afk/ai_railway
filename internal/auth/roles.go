@@ -1,65 +1,39 @@
 package auth
 
-// Разрешения эндпоинтов консоли. Полный набор и свои роли (УПД.1–3, 8) —
-// задача 2.9; до неё права предустановленных ролей заданы таблицей ниже.
-const (
-	// PermSession — любая сессия, в том числе до второго фактора: свои
-	// данные, выход и второй фактор (ИАФ.5). Состояние сессии проверяет обработчик.
-	PermSession = "session"
-	// PermSelf — смена своего пароля: есть у любой роли, но не до второго фактора.
-	PermSelf             = "self"
-	PermSystemRead       = "system.read"
-	PermUsersRead        = "users.read"
-	PermUsersManage      = "users.manage"
-	PermSessionsRead     = "sessions.read"
-	PermSessionsManage   = "sessions.manage"
-	PermAuthPolicyRead   = "auth_policy.read"
-	PermAuthPolicyManage = "auth_policy.manage"
-)
+import "context"
 
-// rolePermissions — права предустановленных ролей (ТЗ, 1.3). Управляет
-// пользователями администратор безопасности; аудитор только читает
-// (УПД.2); администратор системы политики безопасности не меняет.
-var rolePermissions = map[Role]map[string]bool{
-	RoleSecurityAdmin: set(PermSelf, PermSystemRead, PermUsersRead, PermUsersManage,
-		PermSessionsRead, PermSessionsManage, PermAuthPolicyRead, PermAuthPolicyManage),
-	RoleSystemAdmin: set(PermSelf, PermSystemRead),
-	RoleAnalyst:     set(PermSelf, PermSystemRead),
-	RoleAuditor:     set(PermSelf, PermSystemRead, PermUsersRead, PermSessionsRead, PermAuthPolicyRead),
-	RoleAppOwner:    set(PermSelf),
+// Allowed — может ли сессия caller с правами роли g выполнить действие с
+// правом perm (любая область).
+func Allowed(c Caller, g Grants, perm string) bool {
+	return SessionGrants(c, g).Allows(perm)
 }
 
-func set(perms ...string) map[string]bool {
-	m := make(map[string]bool, len(perms))
-	for _, p := range perms {
-		m[p] = true
-	}
-	return m
-}
-
-// Allowed — может ли сессия caller выполнить действие с правом perm.
-// Сессия со временным или истёкшим паролем получает только PermSelf и
-// PermSession, сессия до второго фактора — только PermSession.
-func Allowed(c Caller, perm string) bool {
-	if perm == PermSession {
-		return true
-	}
+// SessionGrants — права, действующие в сессии caller. PermSession есть у
+// любой сессии, в том числе до второго фактора; PermSelf — у сессии с
+// подтверждённым входом, включая временный или истёкший пароль; права
+// роли g — только у SessionActive.
+func SessionGrants(c Caller, g Grants) Grants {
 	switch c.Session.State {
 	case SessionActive:
-		return rolePermissions[c.User.Role][perm]
+		out := g.Clone()
+		if out == nil {
+			out = Grants{}
+		}
+		out[PermSelf], out[PermSession] = ScopeAll, ScopeAll
+		return out
 	case SessionPasswordChange:
-		return perm == PermSelf
+		return Grants{PermSelf: ScopeAll, PermSession: ScopeAll}
 	default:
-		return false
+		return Grants{PermSession: ScopeAll}
 	}
 }
 
-// mfaRoles — роли, которым второй фактор обязателен всегда (ИАФ.5): они
-// управляют учётными записями, политиками или системой. В задаче 2.9 признак
-// переходит в модель ролей (RoleRequiresMFA).
-var mfaRoles = map[Role]bool{RoleSecurityAdmin: true, RoleSystemAdmin: true}
-
-// MFARequired — обязателен ли второй фактор пользователю при политике p.
-func MFARequired(u User, p Policy) bool {
-	return p.MFARequiredAll || mfaRoles[u.Role]
+// mfaRequired — обязателен ли второй фактор пользователю u при политике p
+// (ИАФ.5): политика требует его от всех или роль требует его сама
+// (RoleRequiresMFA; у security_admin и system_admin — всегда).
+func (s *Service) mfaRequired(ctx context.Context, u User, p Policy) (bool, error) {
+	if p.MFARequiredAll {
+		return true, nil
+	}
+	return s.RoleRequiresMFA(ctx, u.Role)
 }

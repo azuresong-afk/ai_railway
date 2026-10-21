@@ -34,11 +34,11 @@ var (
 	ErrDeactivated = errors.New("учётная запись деактивирована")
 )
 
-// Role — предустановленная роль (ТЗ, 1.3). Свои роли из набора
-// разрешений (УПД.1) появляются в задаче 2.9.
+// Role — ID роли: предустановленной (ТЗ, 1.3) или своей из набора
+// разрешений (УПД.1). Права ролей — permissions.go и rbac.go.
 type Role string
 
-// Предустановленные роли.
+// Предустановленные роли; ID совпадают во всех установках.
 const (
 	RoleSecurityAdmin Role = "security_admin"
 	RoleSystemAdmin   Role = "system_admin"
@@ -47,10 +47,20 @@ const (
 	RoleAppOwner      Role = "app_owner"
 )
 
-// Valid — роль из числа предустановленных.
+// Valid — ID роли допустим: латиница в нижнем регистре, цифры и «_»,
+// начинается с буквы, от 3 до 48 символов (тот же CHECK в миграции).
+// Существует ли такая роль, проверяет сервис.
 func (r Role) Valid() bool {
-	_, ok := rolePermissions[r]
-	return ok
+	s := string(r)
+	if len(s) < 3 || len(s) > MaxRoleIDLen || s[0] < 'a' || s[0] > 'z' {
+		return false
+	}
+	for i := 1; i < len(s); i++ {
+		if c := s[i]; (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '_' {
+			return false
+		}
+	}
+	return true
 }
 
 // Status — состояние учётной записи (УПД.5). Записи не удаляются.

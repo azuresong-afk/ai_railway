@@ -62,6 +62,8 @@ type Provider interface {
 	NewVerifier(publicKey []byte) (Verifier, error)
 	// NewTOTP — проверка кодов второго фактора по секрету длины TOTPSecretSize.
 	NewTOTP(secret []byte) (TOTP, error)
+	// NewKDF — выведение ключей из секрета не короче MinKDFKeySize.
+	NewKDF(secret []byte) (KDF, error)
 }
 
 // New возвращает криптопрофиль по имени.

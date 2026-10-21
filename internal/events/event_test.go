@@ -31,6 +31,16 @@ func TestValidateOK(t *testing.T) {
 	}
 }
 
+// Режим full с этапа 2 допустим: содержимое шифрует сервер (ЗИ.1, 2.15).
+func TestValidateFull(t *testing.T) {
+	e := request()
+	e.Storage = StorageFull
+	e.Content = &Content{Request: "Позвоните +7 900 000-00-00", Response: "Готово"}
+	if err := e.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestValidateErrors(t *testing.T) {
 	cases := map[string]func(*Event){
 		"нет ID":             func(e *Event) { e.ID = "" },
@@ -44,7 +54,6 @@ func TestValidateErrors(t *testing.T) {
 		"сбой на ответе": func(e *Event) {
 			e.Response.Decision.Failures = []DetectorFailure{{Detector: "canary", Reason: "boom"}}
 		},
-		"full":              func(e *Event) { e.Storage = StorageFull },
 		"none с содержимым": func(e *Event) { e.Storage = StorageNone },
 		"режим хранения":    func(e *Event) { e.Storage = "all" },
 		"категория":         func(e *Event) { e.Threats = []string{"LLM01"} },

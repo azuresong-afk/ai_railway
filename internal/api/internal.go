@@ -7,7 +7,9 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/azuresong-afk/ai_railway/internal/auth"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
+	"github.com/azuresong-afk/ai_railway/internal/events"
 	"github.com/azuresong-afk/ai_railway/internal/gwregistry"
 )
 
@@ -33,7 +35,11 @@ type InternalOptions struct {
 	Authorizer Authorizer
 	// RateLimit — настройки ЗИ.6; по умолчанию DefaultRateRules.
 	RateLimit RateConfig
-	// Extra — дополнительные маршруты (тесты и следующие задачи: события 2.15, пакеты 2.13).
+	// Events — хранилище событий (задача 2.15); nil — приём событий выключен.
+	Events events.Store
+	// Now — часы для окна приёма событий; по умолчанию time.Now.
+	Now func() time.Time
+	// Extra — дополнительные маршруты (тесты и следующие задачи: пакеты 2.13).
 	Extra []Route
 }
 
@@ -61,7 +67,7 @@ func (a GatewayAuthorizer) Authorize(r *http.Request, permission string) (Princi
 	if permission != PermGatewayInternal {
 		return Principal{ID: gw.ID}, Forbidden
 	}
-	return Principal{ID: gw.ID}, Allow
+	return Principal{ID: gw.ID, Grants: auth.Grants{PermGatewayInternal: auth.ScopeAll}}, Allow
 }
 
 // NewInternal собирает обработчик внутреннего порта: восстановление после
@@ -81,7 +87,14 @@ func NewInternal(o InternalOptions) (http.Handler, *Router, error) {
 		idem: NewMemoryIdempotency(0, 0, nil), hasher: o.Hasher, logger: o.Logger,
 	}
 	rt.mux.HandleFunc("/", rt.notFound)
-	if err := rt.Add(append(internalRoutes(o.Gateways, o.Logger), o.Extra...)...); err != nil {
+	if o.Now == nil {
+		o.Now = time.Now
+	}
+	routes := internalRoutes(o.Gateways, o.Logger)
+	if o.Events != nil {
+		routes = append(routes, eventsRoutes(o.Events, o.Now, o.Logger)...)
+	}
+	if err := rt.Add(append(routes, o.Extra...)...); err != nil {
 		return nil, nil, err
 	}
 	var h http.Handler = rt

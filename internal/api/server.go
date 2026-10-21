@@ -29,8 +29,10 @@ type Options struct {
 	Gateways *gwregistry.Service
 	// Integrity — контроль целостности (задача 2.17); nil — эндпоинты отвечают 503.
 	Integrity IntegrityService
-	// OnDenied — вызывается при каждом отказе в доступе (УПД.6).
-	OnDenied func(r *http.Request, permission string, d Decision)
+	// OnDenied — вызывается при каждом отказе в доступе (УПД.6). По
+	// умолчанию, если задан Auth, отказ аутентифицированному субъекту
+	// пишется в журнал аудита (access.denied).
+	OnDenied func(r *http.Request, d Denial)
 	// Ready проверяет готовность (например, связь с PostgreSQL); nil — всегда готов.
 	Ready func(ctx context.Context) error
 	// Idempotency — хранилище ключей; по умолчанию в памяти.
@@ -70,6 +72,9 @@ func New(o Options) (http.Handler, *Router, error) {
 		if o.Auth != nil {
 			o.Authorizer = SessionAuthorizer{Auth: o.Auth, Logger: o.Logger}
 		}
+	}
+	if o.OnDenied == nil && o.Auth != nil {
+		o.OnDenied = auditDenied(o.Auth, o.Logger)
 	}
 	if o.Idempotency == nil {
 		o.Idempotency = NewMemoryIdempotency(0, 0, nil)

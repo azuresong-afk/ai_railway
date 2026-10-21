@@ -358,8 +358,8 @@ func (s *PGStore) SetPassword(ctx context.Context, ch PasswordChange, rec audit.
 	ctx, cancel := pgCtx(ctx)
 	defer cancel()
 	return s.inTx(ctx, func(tx pgx.Tx) error {
-		var old, status string
-		err := tx.QueryRow(ctx, "SELECT password_hash, status FROM users WHERE id = $1 FOR UPDATE", ch.UserID).Scan(&old, &status)
+		var old, status, role string
+		err := tx.QueryRow(ctx, "SELECT password_hash, status, role FROM users WHERE id = $1 FOR UPDATE", ch.UserID).Scan(&old, &status, &role)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrNotFound
 		}
@@ -368,6 +368,9 @@ func (s *PGStore) SetPassword(ctx context.Context, ch PasswordChange, rec audit.
 		}
 		if ch.RequireActive && Status(status) != StatusActive {
 			return ErrDeactivated
+		}
+		if ch.ExpectRole != "" && ch.ExpectRole != Role(role) {
+			return ErrRoleChanged
 		}
 		// Пароль сменили параллельно после проверки текущего — отказ.
 		if ch.ExpectHash != "" && ch.ExpectHash != old {

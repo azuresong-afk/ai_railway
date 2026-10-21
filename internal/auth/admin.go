@@ -44,8 +44,15 @@ func (s *Service) CreateUser(ctx context.Context, by Caller, nu NewUser) (User, 
 	if !ok {
 		return User{}, "", &InputError{"display_name", displayNameRule}
 	}
-	if !nu.Role.Valid() {
+	if _, err := s.RoleDef(ctx, nu.Role); errors.Is(err, ErrRoleNotFound) {
 		return User{}, "", &InputError{"role", "Неизвестная роль."}
+	} else if err != nil {
+		return User{}, "", err
+	}
+	// Создатель узнаёт временный пароль: учётная запись сильнее его — путь
+	// к повышению своих прав (УПД.2).
+	if err := s.canManage(ctx, by, nu.Role, "user.create", audit.Object{Type: "user"}); err != nil {
+		return User{}, "", err
 	}
 	pol, err := s.store.Policy(ctx, s.orgID)
 	if err != nil {
@@ -99,6 +106,13 @@ func (s *Service) SetStatus(ctx context.Context, by Caller, userID string, st St
 	if st == StatusDeactivated {
 		action = "user.deactivate"
 	}
+	u, err := s.store.UserByID(ctx, s.orgID, userID)
+	if err != nil {
+		return err
+	}
+	if err := s.canManage(ctx, by, u.Role, action, userObject(userID)); err != nil {
+		return err
+	}
 	rec := s.entry(by.actor(), by.SourceIP, action, userObject(userID), audit.ResultSuccess, nil)
 	return s.store.SetStatus(ctx, s.orgID, userID, st, s.clock(), rec)
 }
@@ -111,6 +125,9 @@ func (s *Service) ResetPassword(ctx context.Context, by Caller, userID string) (
 	}
 	u, err := s.store.UserByID(ctx, s.orgID, userID)
 	if err != nil {
+		return "", err
+	}
+	if err := s.canManage(ctx, by, u.Role, "user.password_reset", userObject(userID)); err != nil {
 		return "", err
 	}
 	if u.Status != StatusActive {
@@ -134,6 +151,7 @@ func (s *Service) ResetPassword(ctx context.Context, by Caller, userID string) (
 		UserID: userID, NewHash: h, Temporary: true,
 		TempExpires: now.Add(time.Duration(pol.TempPasswordHours) * time.Hour),
 		Now:         now, Keep: pol.PasswordHistory, RevokeReason: RevokePasswordReset, Unlock: true, RequireActive: true,
+		ExpectRole: u.Role,
 	}, rec)
 	if errors.Is(err, ErrDeactivated) {
 		return "", errResetDeactivated
@@ -154,7 +172,11 @@ func (s *Service) Sessions(ctx context.Context, userID string) ([]Session, error
 
 // RevokeSessions принудительно завершает сессии пользователя (УПД.4).
 func (s *Service) RevokeSessions(ctx context.Context, by Caller, userID string) (int, error) {
-	if _, err := s.store.UserByID(ctx, s.orgID, userID); err != nil {
+	u, err := s.store.UserByID(ctx, s.orgID, userID)
+	if err != nil {
+		return 0, err
+	}
+	if err := s.canManage(ctx, by, u.Role, "auth.sessions_revoked", userObject(userID)); err != nil {
 		return 0, err
 	}
 	rec := s.entry(by.actor(), by.SourceIP, "auth.sessions_revoked", userObject(userID), audit.ResultSuccess, nil)

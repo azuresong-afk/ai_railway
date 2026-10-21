@@ -17,6 +17,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/api"
 	"github.com/azuresong-afk/ai_railway/internal/audit"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
+	"github.com/azuresong-afk/ai_railway/internal/events"
 	"github.com/azuresong-afk/ai_railway/internal/gateway"
 	"github.com/azuresong-afk/ai_railway/internal/gwregistry"
 )
@@ -36,6 +37,7 @@ type mtlsEnv struct {
 	ca       *aisecCrypto.CA
 	mem      *gwregistry.Memory
 	svc      *gwregistry.Service
+	events   *events.Memory
 	console  *url.URL
 	internal *url.URL
 }
@@ -63,7 +65,7 @@ func newMTLSEnv(t *testing.T) *mtlsEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e := &mtlsEnv{tp: tp, ca: ca, mem: gwregistry.NewMemory()}
+	e := &mtlsEnv{tp: tp, ca: ca, mem: gwregistry.NewMemory(), events: events.NewMemory()}
 	e.svc, err = gwregistry.New(gwregistry.Options{Store: e.mem, Provider: p, CA: ca, Audit: nopAuditor{}, Logger: quiet()})
 	if err != nil {
 		t.Fatal(err)
@@ -72,7 +74,7 @@ func newMTLSEnv(t *testing.T) *mtlsEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	internalH, _, err := api.NewInternal(api.InternalOptions{Logger: quiet(), Hasher: h, Gateways: e.svc})
+	internalH, _, err := api.NewInternal(api.InternalOptions{Logger: quiet(), Hasher: h, Gateways: e.svc, Events: e.events})
 	if err != nil {
 		t.Fatal(err)
 	}
