@@ -13,7 +13,7 @@ STAGE := 1
 # прокси модулей выключен, toolchain должен быть уже установлен. Переменные
 # окружения эти запреты не снимают (override). Единственная цель, которая
 # ходит в сеть явно, — make tools.
-GO_VERSION := go1.27.3
+GO_VERSION := go1.27.2
 override GOFLAGS := -mod=vendor
 override GOPROXY := off
 export GOFLAGS GOPROXY
