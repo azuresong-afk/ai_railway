@@ -2,7 +2,6 @@ package events
 
 import (
 	"bufio"
-	"encoding/csv"
 	"encoding/json"
 	"io"
 	"strconv"
@@ -67,35 +66,75 @@ var csvHeader = []string{"id", "time", "received_at", "gateway_id", "type", "app
 	"non_text_unchecked", "has_content"}
 
 // CSVCell защищает ячейку от исполнения как формулы в табличных
-// редакторах (CSV injection): значение, начинающееся с «=», «+», «-», «@»,
-// табуляции или возврата каретки, получает в начале апостроф.
+// редакторах (CSV injection). Апостроф ставится перед «=», «+», «-», «@»
+// в начале значения и после любого из «,», «;», табуляции, «\r», «\n»,
+// если между ними только пробелы и кавычки: Excel в русской локали делит
+// строку по «;», и такой кусок стал бы отдельной ячейкой-формулой (В12
+// ревью 2.r3a). Табуляция и «\r» в начале значения тоже получают апостроф.
 func CSVCell(s string) string {
-	if s == "" {
-		return s
+	var b strings.Builder
+	b.Grow(len(s) + 1)
+	if s != "" && (s[0] == '\t' || s[0] == '\r') {
+		b.WriteByte('\'')
 	}
-	switch s[0] {
-	case '=', '+', '-', '@', '\t', '\r':
-		return "'" + s
+	start := true // начало значения или куска после разделителя
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c == ',' || c == ';' || c == '\t' || c == '\r' || c == '\n':
+			start = true
+		case start && (c == ' ' || c == '"'):
+		case start && (c == '=' || c == '+' || c == '-' || c == '@'):
+			b.WriteByte('\'')
+			start = false
+		default:
+			start = false
+		}
+		b.WriteByte(c)
 	}
-	return s
+	return b.String()
 }
 
 func csvRow(r *Record) []string {
-	row := []string{r.ID, r.Time.UTC().Format(time.RFC3339Nano), r.ReceivedAt.UTC().Format(time.RFC3339Nano),
+	return []string{r.ID, r.Time.UTC().Format(time.RFC3339Nano), r.ReceivedAt.UTC().Format(time.RFC3339Nano),
 		r.GatewayID, r.Type, r.App, r.Env, r.User, r.Provider, r.Model, r.Source, r.PolicyMode, r.Action, r.Rule,
 		r.Severity, r.Storage, strings.Join(r.Threats, ";"), strconv.FormatBool(r.Stream),
 		strconv.FormatBool(r.NonTextUnchecked), strconv.FormatBool(r.HasContent)}
-	for i := range row {
-		row[i] = CSVCell(row[i])
+}
+
+// utf8BOM — метка порядка байтов в начале CSV: без неё Excel открывает
+// кириллицу в кодировке Windows-1251.
+const utf8BOM = "\ufeff"
+
+// writeCSVRow пишет строку CSV (RFC 4180): каждое поле в кавычках, кавычки
+// внутри удваиваются, значения проходят CSVCell, конец строки — CRLF.
+// encoding/csv берёт в кавычки не каждое поле, и «;» оставался бы вне
+// кавычек (В12 ревью 2.r3a).
+func writeCSVRow(w *bufio.Writer, row []string) error {
+	for i, f := range row {
+		if i > 0 {
+			if err := w.WriteByte(','); err != nil {
+				return err
+			}
+		}
+		if err := w.WriteByte('"'); err != nil {
+			return err
+		}
+		if _, err := w.WriteString(strings.ReplaceAll(CSVCell(f), `"`, `""`)); err != nil {
+			return err
+		}
+		if err := w.WriteByte('"'); err != nil {
+			return err
+		}
 	}
-	return row
+	_, err := w.WriteString("\r\n")
+	return err
 }
 
 // Exporter пишет выгрузку в w: Write — по записи, Close — завершение.
 type Exporter struct {
 	format string
 	bw     *bufio.Writer
-	cw     *csv.Writer
 	rows   int
 }
 
@@ -104,8 +143,10 @@ func NewExporter(w io.Writer, format string) (*Exporter, error) {
 	e := &Exporter{format: format, bw: bufio.NewWriterSize(w, 64<<10)}
 	switch format {
 	case FormatCSV:
-		e.cw = csv.NewWriter(e.bw)
-		if err := e.cw.Write(csvHeader); err != nil {
+		if _, err := e.bw.WriteString(utf8BOM); err != nil {
+			return nil, err
+		}
+		if err := writeCSVRow(e.bw, csvHeader); err != nil {
 			return nil, err
 		}
 	case FormatJSON:
@@ -121,8 +162,8 @@ func NewExporter(w io.Writer, format string) (*Exporter, error) {
 // Write добавляет запись.
 func (e *Exporter) Write(r *Record) error {
 	e.rows++
-	if e.cw != nil {
-		return e.cw.Write(csvRow(r))
+	if e.format == FormatCSV {
+		return writeCSVRow(e.bw, csvRow(r))
 	}
 	b, err := json.Marshal(r.View())
 	if err != nil {
@@ -145,13 +186,10 @@ func (e *Exporter) Rows() int { return e.rows }
 
 // Close завершает выгрузку и сбрасывает буфер.
 func (e *Exporter) Close() error {
-	if e.cw != nil {
-		e.cw.Flush()
-		if err := e.cw.Error(); err != nil {
+	if e.format == FormatJSON {
+		if _, err := e.bw.WriteString("\n]\n"); err != nil {
 			return err
 		}
-	} else if _, err := e.bw.WriteString("\n]\n"); err != nil {
-		return err
 	}
 	return e.bw.Flush()
 }

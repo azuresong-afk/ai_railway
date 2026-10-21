@@ -241,6 +241,26 @@ func TestSelfTestDetectsBrokenRandom(t *testing.T) {
 	}
 }
 
+// Самотест ловит неверный KDF профиля (Н19 ревью 2.r3a): ключ, не
+// совпадающий с HKDF-SHA-256 по RFC 5869, останавливает запуск.
+func TestSelfTestDetectsBrokenKDF(t *testing.T) {
+	err := SelfTest(brokenKDFProvider{standard{}})
+	if err == nil || !strings.Contains(err.Error(), "выведение ключей") {
+		t.Fatalf("ожидался отказ самотеста, получено %v", err)
+	}
+}
+
+type brokenKDFProvider struct{ standard }
+
+func (brokenKDFProvider) NewKDF([]byte) (KDF, error) { return constKDF{}, nil }
+
+// constKDF выдаёт один и тот же ключ для любого контекста.
+type constKDF struct{}
+
+func (constKDF) Name() string { return "broken" }
+
+func (constKDF) Derive(_ []byte, n int) ([]byte, error) { return make([]byte, n), nil }
+
 type brokenRandomProvider struct{ standard }
 
 func (brokenRandomProvider) Random() (Random, error) { return zeroRandom{}, nil }

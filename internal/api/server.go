@@ -87,6 +87,8 @@ type Deps struct {
 	Apps *apps.Service
 	// Policies — nil, если политики не подключены: их эндпоинты отвечают 503.
 	Policies *versions.Service
+	// Exports — ограничение одновременных выгрузок событий (В11 ревью 2.r3a).
+	Exports *ExportGate
 }
 
 // New собирает обработчик сервера: восстановление после паники, заголовки
@@ -121,7 +123,8 @@ func New(o Options) (http.Handler, *Router, error) {
 	}
 	rt.mux.HandleFunc("/", rt.notFound)
 	deps := Deps{Logger: o.Logger, Version: o.Version, Ready: o.Ready, Auth: o.Auth, Gateways: o.Gateways, Integrity: o.Integrity,
-		Status: o.Status, Events: o.Events, Audit: o.Audit, Apps: o.Apps, Policies: o.Policies}
+		Status: o.Status, Events: o.Events, Audit: o.Audit, Apps: o.Apps, Policies: o.Policies,
+		Exports: NewExportGate(MaxExportsPerSubject, MaxExportsTotal)}
 	if err := rt.Add(append(Routes(deps), o.Extra...)...); err != nil {
 		return nil, nil, err
 	}

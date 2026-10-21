@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"sync"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/azuresong-afk/ai_railway/internal/audit"
 	"github.com/azuresong-afk/ai_railway/internal/auth"
+	"github.com/azuresong-afk/ai_railway/internal/auth/authtest"
 	"github.com/azuresong-afk/ai_railway/internal/events"
 )
 
@@ -103,7 +105,7 @@ func newConsoleEnv(t *testing.T) *consoleEnv {
 		evs = append(evs, e)
 		env.ids = append(env.ids, e.ID)
 	}
-	if _, _, err := env.mem.Insert(context.Background(), events.Ingest{GatewayID: testGatewayID, ReceivedAt: now, Events: evs}); err != nil {
+	if _, err := env.mem.Insert(context.Background(), events.Ingest{GatewayID: testGatewayID, ReceivedAt: now, Events: evs}); err != nil {
 		t.Fatal(err)
 	}
 	return env
@@ -120,8 +122,52 @@ func (env *consoleEnv) handlerWith(t *testing.T, st EventsAPI, perms ...string) 
 	for _, p := range perms {
 		a[p] = true
 	}
-	h, _ := newHandler(t, Options{Authorizer: a, Events: st, Audit: env.audit})
+	return env.handlerWithAuthz(t, st, a, nil)
+}
+
+func (env *consoleEnv) handlerWithAuthz(t *testing.T, st EventsAPI, a Authorizer, svc *auth.Service) http.Handler {
+	t.Helper()
+	h, _ := newHandler(t, Options{Authorizer: a, Auth: svc, Events: st, Audit: env.audit})
 	return h
+}
+
+// reauthHandler — обработчик, где у пользователя сессии есть пароль tPhrase
+// в хранилище входа: для повторной проверки (В13 ревью 2.r3a).
+func (env *consoleEnv) reauthHandler(t *testing.T, perms ...string) (http.Handler, *authtest.Memory) {
+	t.Helper()
+	a := allowPerm{}
+	for _, p := range perms {
+		a[p] = true
+	}
+	mem := authtest.NewMemory()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	u := passwordPerm{allow: a, user: auth.User{ID: allowPermUserID, OrgID: audit.DefaultOrgID, Login: "u1", DisplayName: "u1",
+		Role: auth.RoleSecurityAdmin, Status: auth.StatusActive, PasswordHash: authtest.HashOf(tPhrase),
+		PasswordChangedAt: now, CreatedAt: now, CreatedBy: "test"}}
+	mem.AddUser(u.user)
+	return env.handlerWithAuthz(t, env.mem, u, testAuth(t, mem)), mem
+}
+
+// passwordPerm — allowPerm с полной учётной записью пользователя.
+type passwordPerm struct {
+	allow allowPerm
+	user  auth.User
+}
+
+func (a passwordPerm) Authorize(r *http.Request, perm string) (Principal, Decision) {
+	p, d := a.allow.Authorize(r, perm)
+	p.Caller.User = a.user
+	return p, d
+}
+
+// tokenPerm — вызов по токену API с заданными правами.
+type tokenPerm map[string]bool
+
+func (a tokenPerm) Authorize(r *http.Request, perm string) (Principal, Decision) {
+	p, d := allowPerm(a).Authorize(r, perm)
+	p.Caller.Token = &auth.APIToken{ID: "01900000-0000-7000-8000-0000000000b9", Prefix: "aisec_pat_abcdefgh"}
+	p.Caller.Session = auth.Session{}
+	return p, d
 }
 
 func jsonCT() []string { return []string{"Content-Type", "application/json"} }
@@ -281,7 +327,11 @@ func TestEventsExportCSV(t *testing.T) {
 	if strings.Contains(w.Body.String(), promptMarker) {
 		t.Fatal("содержимое в выгрузке")
 	}
-	rows, err := csv.NewReader(strings.NewReader(w.Body.String())).ReadAll()
+	body, ok := strings.CutPrefix(w.Body.String(), "\ufeff")
+	if !ok {
+		t.Fatal("нет BOM UTF-8")
+	}
+	rows, err := csv.NewReader(strings.NewReader(body)).ReadAll()
 	if err != nil || len(rows) != 4 {
 		t.Fatalf("CSV: %v %v", err, rows)
 	}
@@ -327,8 +377,8 @@ func TestEventsExportJSONAndRejects(t *testing.T) {
 
 type bigCount struct{ *events.Memory }
 
-func (bigCount) Count(context.Context, events.Query, int) (int, error) {
-	return events.MaxExportRows + 1, nil
+func (bigCount) Export(context.Context, events.Query, func(int) error, func(*events.Record) error) error {
+	return events.ErrTooManyRows
 }
 
 func TestEventFilters(t *testing.T) {
@@ -384,12 +434,37 @@ func TestEventSettings(t *testing.T) {
 	}
 	mustProblem(t, do(read, "PUT", "/api/v1/events/settings", `{"metadata_days":30,"content_days":7}`, jsonCT()...), 403, CodeForbidden)
 
-	h := env.handler(t, auth.PermEventsRetentionManage, auth.PermEventsRead)
+	h, mem := env.reauthHandler(t, auth.PermEventsRetentionManage, auth.PermEventsRead)
 	for _, b := range []string{`{"metadata_days":29,"content_days":7}`, `{"metadata_days":30,"content_days":31}`,
 		`{"metadata_days":30}`, `{"metadata_days":"30","content_days":7}`} {
 		mustProblem(t, do(h, "PUT", "/api/v1/events/settings", b, jsonCT()...), 400, CodeInvalidRequest)
 	}
-	w := do(h, "PUT", "/api/v1/events/settings", `{"metadata_days":180,"content_days":30}`, jsonCT()...)
+	// В13 ревью 2.r3a: сокращение срока без пароля или с неверным паролем
+	// отклоняется, сроки не меняются.
+	mustProblem(t, do(h, "PUT", "/api/v1/events/settings", `{"metadata_days":180,"content_days":30}`, jsonCT()...),
+		400, CodeInvalidRequest)
+	mustProblem(t, do(h, "PUT", "/api/v1/events/settings", `{"metadata_days":365,"content_days":30,"password":"неверный"}`, jsonCT()...),
+		403, CodeReauthFailed)
+	mustProblem(t, do(h, "PUT", "/api/v1/events/settings",
+		mustJSON(t, map[string]any{"metadata_days": 180, "content_days": 90, "password": tPhrase, "code": "123456"}), jsonCT()...),
+		400, CodeInvalidRequest)
+	if r, err := env.mem.Retention(context.Background()); err != nil || r.MetadataDays != 365 || r.ContentDays != 90 {
+		t.Fatalf("сроки изменились без повторной проверки: %+v", r)
+	}
+	if len(env.audit.find("events.settings_changed")) != 0 {
+		t.Fatal("отклонённое сокращение записано как изменение")
+	}
+	var failed []audit.Entry
+	for _, e := range mem.Records() {
+		if e.Action == "events.settings_changed" {
+			failed = append(failed, e)
+		}
+	}
+	if len(failed) != 1 || failed[0].Result != audit.ResultFailure {
+		t.Fatalf("неверный пароль не записан в аудит: %+v", failed)
+	}
+	w := do(h, "PUT", "/api/v1/events/settings",
+		mustJSON(t, map[string]any{"metadata_days": 180, "content_days": 30, "password": tPhrase}), jsonCT()...)
 	if w.Code != 200 || !strings.Contains(w.Body.String(), `"metadata_days":180,"content_days":30`) {
 		t.Fatalf("изменение: %d %s", w.Code, w.Body)
 	}
@@ -399,6 +474,20 @@ func TestEventSettings(t *testing.T) {
 	}
 	if d, _ := got[0].Details.(map[string]any); d["reduced"] != true {
 		t.Fatalf("признак сокращения: %+v", d)
+	}
+	// Увеличение — без повторной проверки; те же сроки — тоже.
+	for _, b := range []string{`{"metadata_days":200,"content_days":30}`, `{"metadata_days":200,"content_days":30}`} {
+		if w := do(h, "PUT", "/api/v1/events/settings", b, jsonCT()...); w.Code != 200 {
+			t.Fatalf("увеличение: %d %s", w.Code, w.Body)
+		}
+	}
+	// Токен API сокращать сроки не может даже с правом.
+	tok := env.handlerWithAuthz(t, env.mem, tokenPerm{auth.PermEventsRetentionManage: true}, nil)
+	mustProblem(t, do(tok, "PUT", "/api/v1/events/settings", `{"metadata_days":180,"content_days":30,"password":"x"}`, jsonCT()...),
+		403, CodeForbidden)
+	if w := do(h, "PUT", "/api/v1/events/settings",
+		mustJSON(t, map[string]any{"metadata_days": 180, "content_days": 30, "password": tPhrase}), jsonCT()...); w.Code != 200 {
+		t.Fatalf("возврат сроков: %d %s", w.Code, w.Body)
 	}
 	// Журнал недоступен — сроки не меняются.
 	env.audit.fail(errors.New("журнал недоступен"))
@@ -498,4 +587,75 @@ func FuzzEventsListQuery(f *testing.F) {
 			t.Fatalf("предел %d", p.query.Limit)
 		}
 	})
+}
+
+// blockingExport — выгрузка, которая ждёт release: так тест держит
+// выгрузки «идущими» без пауз и зависимости от планировщика.
+type blockingExport struct {
+	*events.Memory
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (b blockingExport) Export(_ context.Context, _ events.Query, start func(int) error, _ func(*events.Record) error) error {
+	b.entered <- struct{}{}
+	<-b.release
+	return start(0)
+}
+
+// subjectAuthz пропускает perm от субъекта из заголовка X-Test-Subject.
+type subjectAuthz string
+
+func (a subjectAuthz) Authorize(r *http.Request, perm string) (Principal, Decision) {
+	p := Principal{ID: r.Header.Get("X-Test-Subject"), Grants: auth.Grants{string(a): auth.ScopeAll}}
+	if perm == string(a) {
+		return p, Allow
+	}
+	return p, Forbidden
+}
+
+// Одновременных выгрузок — не больше одной на субъект и двух на сервер
+// (В11 ревью 2.r3a); сверх предела — 429 с Retry-After без записи в аудит.
+func TestEventsExportConcurrencyLimit(t *testing.T) {
+	env := newConsoleEnv(t)
+	st := blockingExport{Memory: env.mem, entered: make(chan struct{}, 8), release: make(chan struct{})}
+	h, _ := newHandler(t, Options{Authorizer: subjectAuthz(auth.PermEventsExport), Events: st, Audit: env.audit})
+	export := func(subject string) *httptest.ResponseRecorder {
+		return do(h, "POST", "/api/v1/events/export", `{"format":"csv"}`, "Content-Type", "application/json", "X-Test-Subject", subject)
+	}
+	var wg sync.WaitGroup
+	codes := make(chan int, 2)
+	for _, subject := range []string{"a", "b"} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			codes <- export(subject).Code
+		}()
+		<-st.entered
+	}
+	for name, subject := range map[string]string{"тот же субъект": "a", "третья на сервер": "c"} {
+		w := export(subject)
+		mustProblem(t, w, http.StatusTooManyRequests, CodeRateLimited)
+		if w.Header().Get("Retry-After") == "" {
+			t.Fatalf("%s: нет Retry-After", name)
+		}
+	}
+	if n := len(env.audit.find("data.export")); n != 0 {
+		t.Fatalf("записей data.export до завершения: %d", n)
+	}
+	close(st.release)
+	wg.Wait()
+	close(codes)
+	for c := range codes {
+		if c != http.StatusOK {
+			t.Fatalf("занятая выгрузка: %d", c)
+		}
+	}
+	// Места освобождены: выгрузка снова проходит.
+	if w := export("a"); w.Code != http.StatusOK {
+		t.Fatalf("после завершения: %d %s", w.Code, w.Body)
+	}
+	if n := len(env.audit.find("data.export")); n != 3 {
+		t.Fatalf("записей data.export: %d", n)
+	}
 }

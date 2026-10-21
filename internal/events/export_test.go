@@ -25,6 +25,17 @@ func TestCSVCell(t *testing.T) {
 		"a=1":          "a=1",
 		"'уже":         "'уже",
 		"=HYPERLINK()": "'=HYPERLINK()",
+		// После разделителя русской локали и других (В12 ревью 2.r3a).
+		"x;=cmd|' /C calc'!A0": "x;'=cmd|' /C calc'!A0",
+		"gpt;=1+2":             "gpt;'=1+2",
+		"a,=1":                 "a,'=1",
+		"a\n=1":                "a\n'=1",
+		"a\t@x":                "a\t'@x",
+		"a; \"=1\"":            "a; \"'=1\"",
+		"a;-1;+2":              "a;'-1;'+2",
+		"DM-05;DM-13":          "DM-05;DM-13",
+		"2026-10-21T12:00:00Z": "2026-10-21T12:00:00Z",
+		"a-b=c":                "a-b=c",
 	} {
 		if got := CSVCell(in); got != want {
 			t.Errorf("%q → %q, ожидалось %q", in, got, want)
@@ -53,7 +64,11 @@ func TestExportCSV(t *testing.T) {
 	if err := ex.Close(); err != nil {
 		t.Fatal(err)
 	}
-	rows, err := csv.NewReader(&buf).ReadAll()
+	body, ok := strings.CutPrefix(buf.String(), utf8BOM)
+	if !ok {
+		t.Fatal("нет BOM UTF-8")
+	}
+	rows, err := csv.NewReader(strings.NewReader(body)).ReadAll()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,6 +94,67 @@ func TestExportCSV(t *testing.T) {
 			t.Fatalf("столбец %s в выгрузке", h)
 		}
 	}
+}
+
+// excelRuPieces режет строку файла так, как Excel в русской локали режет
+// чужой CSV: по «;», «,», табуляции и переводам строк без учёта кавычек.
+// Ведущие пробелы и кавычки куска Excel тоже отбрасывает.
+func excelRuPieces(s string) []string {
+	var out []string
+	for _, p := range strings.FieldsFunc(s, func(r rune) bool { return strings.ContainsRune(";,\t\r\n", r) }) {
+		out = append(out, strings.TrimLeft(p, " \""))
+	}
+	return out
+}
+
+// Ни один кусок выгрузки после деления по любому разделителю не начинается с
+// символа формулы (В12 ревью 2.r3a): значения model, app, env, rule задаёт
+// клиент LLM-приложения.
+func TestExportCSVRussianLocale(t *testing.T) {
+	attacks := []string{`x;=cmd|' /C calc'!A0`, "gpt;=1+2", "a,=1", "a\n=1", `a; "=1"`, "a;\t+1", "a\r\n@SUM(1)", `";=1;"`, "=1", "-2;-3"}
+	for _, a := range attacks {
+		r := exportRecord()
+		r.App, r.Env, r.Model, r.Rule = a, a, a, a
+		var buf bytes.Buffer
+		ex, err := NewExporter(&buf, FormatCSV)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := ex.Write(r); err != nil {
+			t.Fatal(err)
+		}
+		if err := ex.Close(); err != nil {
+			t.Fatal(err)
+		}
+		for _, p := range excelRuPieces(strings.TrimPrefix(buf.String(), utf8BOM)) {
+			if p != "" && strings.ContainsRune("=+-@", rune(p[0])) {
+				t.Fatalf("%q: кусок %q начинается с формулы", a, p)
+			}
+		}
+		// Разбор по RFC 4180 возвращает значение с апострофами, без потерь
+		// (encoding/csv заменяет \r\n внутри поля на \n).
+		rows, err := csv.NewReader(strings.NewReader(strings.TrimPrefix(buf.String(), utf8BOM))).ReadAll()
+		if err != nil || len(rows) != 2 || rows[1][5] != strings.ReplaceAll(CSVCell(a), "\r\n", "\n") {
+			t.Fatalf("%q: разбор %v %v", a, rows, err)
+		}
+	}
+}
+
+func FuzzCSVCell(f *testing.F) {
+	for _, s := range []string{"", "=1", "a;=1", "a; \"@x", "\t-1", "обычный текст"} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, s string) {
+		out := CSVCell(s)
+		if strings.ReplaceAll(out, "'", "") != strings.ReplaceAll(s, "'", "") {
+			t.Fatalf("CSVCell изменил не только апострофы: %q → %q", s, out)
+		}
+		for _, p := range excelRuPieces(out) {
+			if p != "" && strings.ContainsRune("=+-@", rune(p[0])) {
+				t.Fatalf("%q: кусок %q начинается с формулы", s, p)
+			}
+		}
+	})
 }
 
 func TestExportJSON(t *testing.T) {

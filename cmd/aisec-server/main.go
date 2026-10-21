@@ -40,8 +40,20 @@ import (
 
 var version = "dev"
 
-// dbPoolSize — число соединений с PostgreSQL.
-const dbPoolSize = 10
+// Пулы соединений с PostgreSQL. Чтение событий консолью (список, карточка,
+// выгрузка, агрегаты) — в отдельном пуле с пределом времени запроса, чтобы
+// медленные выборки не занимали соединения входа, журнала аудита и приёма
+// событий шлюзов (В11 ревью 2.r3a).
+const (
+	// dbPoolSize — основной пул.
+	dbPoolSize = 10
+	// eventsReadPoolSize — пул чтения событий; больше api.MaxExportsTotal,
+	// чтобы списки не ждали выгрузок.
+	eventsReadPoolSize = 4
+	// eventsReadStatementTimeout — statement_timeout пула чтения: выгрузка
+	// (events.ExportTimeout) и запас.
+	eventsReadStatementTimeout = events.ExportTimeout + 10*time.Second
+)
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil)).With("component", "aisec-server", "version", version)
@@ -190,7 +202,13 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	eventStore, err := events.NewPGStore(db.Pool(), box, auditLog, audit.DefaultOrgID, events.WithRandom(rnd))
+	readDB, err := store.Open(ctx, cfg.DatabaseURL, eventsReadPoolSize, store.WithStatementTimeout(eventsReadStatementTimeout))
+	if err != nil {
+		return err
+	}
+	defer readDB.Close()
+	eventStore, err := events.NewPGStore(db.Pool(), box, auditLog, audit.DefaultOrgID, events.WithRandom(rnd),
+		events.WithReadDB(readDB.Pool()))
 	if err != nil {
 		return err
 	}

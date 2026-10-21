@@ -218,8 +218,10 @@ func TestRegisterRejectsTokens(t *testing.T) {
 			denied++
 		}
 	}
-	if denied != 8 {
-		t.Fatalf("записей об отказе регистрации: %d, ожидается 8", denied)
+	// Неверный формат (5 случаев) — только счётчик и технический журнал
+	// (Н17 ревью 2.r3a); в аудите — неизвестный, повторный и истёкший токены.
+	if denied != 3 || e.svc.MalformedTokens() != 5 {
+		t.Fatalf("записей об отказе регистрации: %d, ожидается 3; неверный формат: %d", denied, e.svc.MalformedTokens())
 	}
 }
 

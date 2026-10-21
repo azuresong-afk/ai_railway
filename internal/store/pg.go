@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -24,9 +25,21 @@ type DB struct {
 	pool *pgxpool.Pool
 }
 
+// Option — необязательная настройка пула.
+type Option func(*pgxpool.Config)
+
+// WithStatementTimeout задаёт statement_timeout сессий пула: СУБД сама
+// прерывает запрос дольше d, даже если клиент перестал читать ответ (пул
+// чтения событий, В11 ревью 2.r3a).
+func WithStatementTimeout(d time.Duration) Option {
+	return func(c *pgxpool.Config) {
+		c.ConnConfig.RuntimeParams["statement_timeout"] = strconv.FormatInt(d.Milliseconds(), 10)
+	}
+}
+
 // Open открывает пул и проверяет доступность БД. Строка подключения — URL
 // postgres://…; ошибки не содержат саму строку (в ней пароль).
-func Open(ctx context.Context, dsn string, maxConns int32) (*DB, error) {
+func Open(ctx context.Context, dsn string, maxConns int32, opts ...Option) (*DB, error) {
 	if dsn == "" || len(dsn) > maxDSNLen {
 		return nil, errors.New("строка подключения к БД пуста или длиннее 2048 байт")
 	}
@@ -42,6 +55,9 @@ func Open(ctx context.Context, dsn string, maxConns int32) (*DB, error) {
 	}
 	cfg.MaxConns = maxConns
 	cfg.ConnConfig.ConnectTimeout = connectTimeout
+	for _, o := range opts {
+		o(cfg)
+	}
 	ctx, cancel := context.WithTimeout(ctx, connectTimeout)
 	defer cancel()
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)

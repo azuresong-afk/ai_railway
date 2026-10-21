@@ -1,10 +1,12 @@
 package gateway_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -227,5 +229,33 @@ func TestServerSinkSplitsLargeBatch(t *testing.T) {
 	}
 	if total != 200 || len(sizes) < 2 {
 		t.Fatalf("части %v", sizes)
+	}
+}
+
+// Отказ сервера в отдельном событии (storage) и обрезка содержимого не
+// делают пакет ошибкой: шлюз считает отказ и пишет число обрезанных в
+// журнал без содержимого (В10 ревью 2.r3a).
+func TestServerSinkStorageRejectAndTruncated(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body) //nolint:gosec // G104: тело тестового запроса не нужно
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"accepted":1,"duplicates":0,"rejected":[{"index":1,"code":"storage"}],"truncated":1}`) //nolint:gosec // G104: ответ тестового сервера
+	}))
+	defer srv.Close()
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs bytes.Buffer
+	sink, err := gateway.NewServerSink(gateway.ServerSinkConfig{Client: srv.Client(), Server: u,
+		Logger: slog.New(slog.NewJSONHandler(&logs, nil))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sink.Send(context.Background(), []events.Event{newEvent(t), newEvent(t)}); err != nil {
+		t.Fatal(err)
+	}
+	if sink.Rejected() != 1 || !strings.Contains(logs.String(), "обрезал содержимое") || !strings.Contains(logs.String(), `"storage":1`) {
+		t.Fatalf("отклонено %d, журнал: %s", sink.Rejected(), logs.String())
 	}
 }

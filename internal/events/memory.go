@@ -14,6 +14,9 @@ type Memory struct {
 	stats  map[string]SenderStats
 	// Err — ошибка, которую вернёт следующий Insert (проверка отказа БД).
 	Err error
+	// Reject — события, которые Insert отвергнет поштучно, как СУБД при
+	// расхождении с её ограничениями (InsertResult.Rejected).
+	Reject func(*Event) bool
 	// Чтение для API (задача 2.16): сроки хранения, сохранённые фильтры.
 	retention Retention
 	filters   map[string][]SavedFilter
@@ -39,24 +42,29 @@ func NewMemory() *Memory {
 }
 
 // Insert — см. Store.
-func (m *Memory) Insert(_ context.Context, in Ingest) (int, int, error) {
+func (m *Memory) Insert(_ context.Context, in Ingest) (InsertResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.Err != nil {
-		return 0, 0, m.Err
+		return InsertResult{}, m.Err
 	}
-	accepted := 0
-	for _, e := range in.Events {
+	var res InsertResult
+	for i, e := range in.Events {
+		if m.Reject != nil && m.Reject(&e) {
+			res.Rejected = append(res.Rejected, i)
+			continue
+		}
 		if _, ok := m.events[e.ID]; ok {
+			res.Duplicates++
 			continue
 		}
 		m.events[e.ID] = Stored{GatewayID: in.GatewayID, ReceivedAt: in.ReceivedAt, Event: e}
-		accepted++
+		res.Accepted++
 	}
 	if in.Stats != nil {
 		m.stats[in.GatewayID] = *in.Stats
 	}
-	return accepted, len(in.Events) - accepted, nil
+	return res, nil
 }
 
 // Get возвращает событие по ID.

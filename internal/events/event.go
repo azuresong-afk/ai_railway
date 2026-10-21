@@ -218,6 +218,11 @@ func (e *Event) Validate() error {
 		if e.Content != nil {
 			errs = append(errs, errors.New("auth_failure: событие не содержит содержимого запроса"))
 		}
+		// Столбец policy_mode принимает только monitor и enforce: чужое значение
+		// не должно доходить до СУБД (В10 ревью 2.r3a).
+		if e.PolicyMode != "" && e.PolicyMode != ModeMonitor && e.PolicyMode != ModeEnforce {
+			errs = append(errs, fmt.Errorf("auth_failure: неизвестный режим политики %q", e.PolicyMode))
+		}
 	default:
 		errs = append(errs, fmt.Errorf("неизвестный тип события %q", e.Type))
 	}

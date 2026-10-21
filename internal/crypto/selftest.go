@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hkdf"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -25,6 +27,14 @@ var (
 	// AES-256-GCM — McGrew, Viega «The Galois/Counter Mode of Operation», тест 14:
 	// нулевые ключ, nonce и 16 байт открытого текста.
 	katGCMOut = mustHex("cea7403d4d606b6e074ec5d3baf39d18d0d1c8a799996bf0265b98b5d48ab919")
+	// HKDF-SHA-256 — RFC 5869, приложение A.1 (тест 1): от него зависят
+	// производные ключи содержимого full и имитовставки цепочки аудита
+	// (Н19 ревью 2.r3a).
+	katHKDFIKM  = bytes.Repeat([]byte{0x0b}, 22)
+	katHKDFSalt = mustHex("000102030405060708090a0b0c")
+	katHKDFInfo = mustHex("f0f1f2f3f4f5f6f7f8f9")
+	katHKDFPRK  = mustHex("077709362c2e32df0ddc3f0dc47bba6390b6c73bb50f9c3122ec844ad7c2b3e5")
+	katHKDFOKM  = mustHex("3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf34007208d5b887185865")
 	// Ed25519 — RFC 8032, раздел 7.1, тест 1 (пустое сообщение).
 	katEd25519Seed = mustHex("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60")
 	katEd25519Pub  = mustHex("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a")
@@ -91,6 +101,9 @@ func SelfTest(p Provider) error {
 		return errors.New("самотест: источник случайности выдаёт повторяющиеся значения")
 	}
 	if err := selfTestAEAD(p); err != nil {
+		return err
+	}
+	if err := selfTestKDF(p); err != nil {
 		return err
 	}
 	if err := selfTestSign(p); err != nil {
@@ -168,6 +181,36 @@ func selfTestAEAD(p Provider) error {
 	sealed[len(sealed)-1] ^= 1
 	if _, err := a.Open(sealed, katHMACIn); err == nil {
 		return errors.New("самотест: AES-256-GCM принял подменённый шифротекст")
+	}
+	return nil
+}
+
+func selfTestKDF(p Provider) error {
+	prk, err := hkdf.Extract(sha256.New, katHKDFIKM, katHKDFSalt)
+	if err != nil || !bytes.Equal(prk, katHKDFPRK) {
+		return errors.New("самотест: HKDF-SHA-256 (извлечение) не совпал с эталоном")
+	}
+	okm, err := hkdf.Expand(sha256.New, prk, string(katHKDFInfo), len(katHKDFOKM))
+	if err != nil || !bytes.Equal(okm, katHKDFOKM) {
+		return errors.New("самотест: HKDF-SHA-256 (расширение) не совпал с эталоном")
+	}
+	// Рабочий KDF профиля — HKDF без соли: сверяется с проверенным выше
+	// примитивом; разные контексты дают разные ключи.
+	k, err := p.NewKDF(katHMACKey[:MinKDFKeySize])
+	if err != nil {
+		return err
+	}
+	a, err := k.Derive(katHKDFInfo, AEADKeySize)
+	if err != nil {
+		return err
+	}
+	b, err := k.Derive(katHKDFInfo[1:], AEADKeySize)
+	if err != nil {
+		return err
+	}
+	ref, err := hkdf.Key(sha256.New, katHMACKey[:MinKDFKeySize], nil, string(katHKDFInfo), AEADKeySize)
+	if err != nil || !bytes.Equal(a, ref) || bytes.Equal(a, b) {
+		return errors.New("самотест: выведение ключей профиля работает неверно")
 	}
 	return nil
 }
