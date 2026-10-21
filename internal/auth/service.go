@@ -548,6 +548,13 @@ func (s *Service) checkHistory(ctx context.Context, u User, next string, pol Pol
 // неверный пароль или код (неудача ИАФ.4 уже учтена).
 var ErrReauthentication = errors.New("повторная проверка не пройдена")
 
+// Reauthenticate — повторная проверка перед необратимым действием action
+// вне internal/auth: сокращение сроков хранения событий (В13 ревью 2.r3a).
+// Правила те же, что у выпуска токена (В8): ровно одно из password и code.
+func (s *Service) Reauthenticate(ctx context.Context, c Caller, password, code, action string) error {
+	return s.reauthenticate(ctx, c, password, code, action)
+}
+
 // reauthenticate — повторная проверка владельца полной сессии перед
 // действием action (В8 ревью 2.r2): текущий пароль или код TOTP, ровно
 // одно из двух. Неверное значение — неудачная попытка ИАФ.4 с общим

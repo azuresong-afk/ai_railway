@@ -1306,6 +1306,12 @@ paths:
         7–3650 и не дольше метаданных. Изменение и запись `events.settings_changed` (до, после,
         признак сокращения `reduced`) — одной транзакцией. Данные старше нового срока удаляет
         фоновое задание целыми суточными секциями (раз в час).
+        Сокращение любого срока необратимо удаляет данные и требует повторной проверки
+        (В13 ревью 2.r3a): текущий пароль (`password`) или код TOTP (`code`), ровно одно из
+        двух, иначе 400. Неверное значение — 403 с кодом `reauthentication_failed` и неудачная
+        попытка ИАФ.4 (общий счётчик блокировки; запись `events.settings_changed` с итогом
+        failure или `auth.mfa_failed`). Увеличение и сохранение тех же сроков — без проверки.
+        Только из сессии консоли.
       x-permission: events.retention.manage
       security: [{ sessionCookie: [] }]
       parameters:
@@ -3217,6 +3223,8 @@ components:
       properties:
         metadata_days: { type: integer, minimum: 30, maximum: 3650 }
         content_days: { type: integer, minimum: 7, maximum: 3650 }
+        password: { type: string, maxLength: 1024, format: password, description: 'Текущий пароль при сокращении срока (ровно одно из password и code)' }
+        code: { type: string, maxLength: 64, description: 'Код из приложения-аутентификатора при сокращении срока, если второй фактор подключён' }
     PolicyRule:
       type: object
       required: [id, detector, action, severity]

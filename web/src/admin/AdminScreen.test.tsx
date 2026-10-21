@@ -68,6 +68,13 @@ beforeEach(() => {
         }
         return json({ items: [] });
       }
+      if (url === "/api/v1/events/settings") {
+        const b = body as { metadata_days?: number; content_days?: number; password?: string } | undefined;
+        if (init.method === "PUT" && b?.password === "неверный") {
+          return json({ code: "reauthentication_failed", detail: "Пароль или код не принят.", status: 403 }, 403);
+        }
+        return json({ metadata_days: b?.metadata_days ?? 365, content_days: b?.content_days ?? 90, updated_at: "2026-10-01T00:00:00Z" });
+      }
       return json({ code: "not_found", detail: "нет", status: 404 }, 404);
     }),
   );
@@ -147,6 +154,40 @@ describe("администрирование", () => {
     fireEvent.click(screen.getByRole("button", { name: "Я сохранил значение" }));
     await waitFor(() => expect(screen.queryByDisplayValue("aisec_pat_abcd1234_SECRETVALUE")).toBeNull());
     expect(document.body.textContent).not.toContain("SECRETVALUE");
+  });
+});
+
+describe("сроки хранения", () => {
+  const renderRetention = async () => {
+    renderScreen(["events.read", "events.retention.manage"]);
+    return screen.findByLabelText("Срок хранения содержимого запросов и ответов, суток");
+  };
+
+  it("увеличение срока — без повторной проверки", async () => {
+    fireEvent.change(await renderRetention(), { target: { value: "120" } });
+    fireEvent.change(screen.getByLabelText("Срок хранения метаданных событий, суток"), { target: { value: "400" } });
+    fireEvent.click(screen.getByRole("button", { name: "Сохранить сроки" }));
+    await screen.findByText(/Сроки сохранены/);
+    const put = calls.find((c) => c.method === "PUT");
+    expect(put?.body).toEqual({ metadata_days: 400, content_days: 120 });
+  });
+
+  it("сокращение срока требует пароль, отказ сервера остаётся в диалоге (В13)", async () => {
+    fireEvent.change(await renderRetention(), { target: { value: "30" } });
+    fireEvent.click(screen.getByRole("button", { name: "Сохранить сроки" }));
+    const dialog = await screen.findByRole("dialog");
+    const action = within(dialog).getByRole("button", { name: "Сократить срок и удалить старые данные" });
+    expect(action).toBeDisabled();
+    expect(calls.some((c) => c.method === "PUT")).toBe(false);
+    fireEvent.change(within(dialog).getByLabelText("Текущий пароль"), { target: { value: "неверный" } });
+    fireEvent.click(action);
+    await within(dialog).findByText(/Пароль или код не принят/);
+    fireEvent.change(within(dialog).getByLabelText("Текущий пароль"), { target: { value: "Correct-Horse-1" } });
+    fireEvent.click(action);
+    await screen.findByText(/Сроки сохранены/);
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    const puts = calls.filter((c) => c.method === "PUT");
+    expect(puts.at(-1)?.body).toEqual({ metadata_days: 365, content_days: 30, password: "Correct-Horse-1" });
   });
 });
 

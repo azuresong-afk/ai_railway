@@ -6,7 +6,7 @@ import { Button } from "../ui/Button";
 import { Field, Input } from "../ui/Field";
 import { Banner } from "../ui/Layout";
 import { adminApi, type EventRetention } from "./api";
-import { ConfirmDialog, ErrorBanner } from "./common";
+import { ErrorBanner, FormDialog } from "./common";
 
 // Сроки и режим хранения событий (ТЗ 5.5). Часовой пояс показа сервер берёт из флага -timezone:
 // записи через API нет, поэтому здесь только пояснение (открытый вопрос 2.24 в docs/plans/stage-2.md).
@@ -21,16 +21,17 @@ export function RetentionTab({ me }: { me: Me }) {
       </Banner>
       {q.isError && <ErrorBanner error={q.error} />}
       {!q.data && !q.isError && <p className="text-sm text-muted">Загрузка настроек…</p>}
-      {q.data && <RetentionForm initial={q.data} canManage={canManage} />}
+      {q.data && <RetentionForm initial={q.data} canManage={canManage} mfa={me.mfa?.enabled === true} />}
     </div>
   );
 }
 
-function RetentionForm({ initial, canManage }: { initial: EventRetention; canManage: boolean }) {
+function RetentionForm({ initial, canManage, mfa }: { initial: EventRetention; canManage: boolean; mfa: boolean }) {
   const qc = useQueryClient();
   const [meta, setMeta] = useState(String(initial.metadata_days));
   const [content, setContent] = useState(String(initial.content_days));
   const [confirm, setConfirm] = useState(false);
+  const [secret, setSecret] = useState("");
   const [saved, setSaved] = useState(false);
   const mn = Number(meta);
   const cn = Number(content);
@@ -44,9 +45,16 @@ function RetentionForm({ initial, canManage }: { initial: EventRetention; canMan
   const reduced = mn < initial.metadata_days || cn < initial.content_days;
 
   const m = useMutation({
-    mutationFn: () => adminApi.saveRetention({ metadata_days: mn, content_days: cn }),
+    mutationFn: () =>
+      adminApi.saveRetention({
+        metadata_days: mn,
+        content_days: cn,
+        // Сокращение срока — с повторной проверкой: второй фактор, если подключён, иначе пароль (В13).
+        ...(reduced ? (mfa ? { code: secret } : { password: secret }) : {}),
+      }),
     onSuccess: (r) => {
       qc.setQueryData(["admin", "retention"], r);
+      setSecret("");
       setConfirm(false);
       setSaved(true);
     },
@@ -57,45 +65,69 @@ function RetentionForm({ initial, canManage }: { initial: EventRetention; canMan
     if (reduced) setConfirm(true);
     else m.mutate();
   };
+  const closeConfirm = () => {
+    setConfirm(false);
+    setSecret("");
+    m.reset();
+  };
+  const submitConfirm = (e: FormEvent) => {
+    e.preventDefault();
+    m.mutate();
+  };
+  // Диалог — вне формы сроков: событие submit из портала всплывало бы в неё.
   return (
-    <form onSubmit={submit} className="flex flex-col gap-3">
-      <Field label="Срок хранения метаданных событий, суток" hint="От 30 до 3650." error={metaErr}>
-        {({ id, describedBy, invalid }) => (
-          <Input id={id} aria-describedby={describedBy} aria-invalid={invalid} inputMode="numeric" disabled={!canManage} value={meta} onChange={(e) => { setSaved(false); setMeta(e.target.value); }} />
+    <>
+      <form onSubmit={submit} className="flex flex-col gap-3">
+        <Field label="Срок хранения метаданных событий, суток" hint="От 30 до 3650." error={metaErr}>
+          {({ id, describedBy, invalid }) => (
+            <Input id={id} aria-describedby={describedBy} aria-invalid={invalid} inputMode="numeric" disabled={!canManage} value={meta} onChange={(e) => { setSaved(false); setMeta(e.target.value); }} />
+          )}
+        </Field>
+        <Field label="Срок хранения содержимого запросов и ответов, суток" hint="От 7 до 3650 и не дольше метаданных." error={contentErr}>
+          {({ id, describedBy, invalid }) => (
+            <Input id={id} aria-describedby={describedBy} aria-invalid={invalid} inputMode="numeric" disabled={!canManage} value={content} onChange={(e) => { setSaved(false); setContent(e.target.value); }} />
+          )}
+        </Field>
+        <p className="text-xs text-muted">Последнее изменение: {formatAbsolute(initial.updated_at)}.</p>
+        <ErrorBanner error={confirm ? null : m.error} />
+        {saved && <Banner kind="info">Сроки сохранены. Данные старше нового срока удаляются фоновым заданием целыми сутками.</Banner>}
+        {canManage ? (
+          <div>
+            <Button type="submit" variant="primary" disabled={m.isPending || Boolean(metaErr) || Boolean(contentErr)}>
+              Сохранить сроки
+            </Button>
+          </div>
+        ) : (
+          <p className="text-sm text-muted">Менять сроки может администратор безопасности.</p>
         )}
-      </Field>
-      <Field label="Срок хранения содержимого запросов и ответов, суток" hint="От 7 до 3650 и не дольше метаданных." error={contentErr}>
-        {({ id, describedBy, invalid }) => (
-          <Input id={id} aria-describedby={describedBy} aria-invalid={invalid} inputMode="numeric" disabled={!canManage} value={content} onChange={(e) => { setSaved(false); setContent(e.target.value); }} />
-        )}
-      </Field>
-      <p className="text-xs text-muted">Последнее изменение: {formatAbsolute(initial.updated_at)}.</p>
-      <ErrorBanner error={confirm ? null : m.error} />
-      {saved && <Banner kind="info">Сроки сохранены. Данные старше нового срока удаляются фоновым заданием целыми сутками.</Banner>}
-      {canManage ? (
-        <div>
-          <Button type="submit" variant="primary" disabled={m.isPending || Boolean(metaErr) || Boolean(contentErr)}>
-            Сохранить сроки
-          </Button>
-        </div>
-      ) : (
-        <p className="text-sm text-muted">Менять сроки может администратор безопасности.</p>
-      )}
-      <ConfirmDialog
+      </form>
+      <FormDialog
         open={confirm}
-        onOpenChange={(v) => {
-          if (!v) {
-            setConfirm(false);
-            m.reset();
-          }
-        }}
+        onOpenChange={(v) => !v && closeConfirm()}
         title="Сократить срок хранения"
-        description="Данные старше нового срока будут удалены без возможности восстановления. Изменение записывается в журнал аудита."
-        actionLabel="Сократить срок и удалить старые данные"
-        busy={m.isPending}
-        error={m.error}
-        onConfirm={() => m.mutate()}
-      />
-    </form>
+        description="Данные старше нового срока будут удалены без возможности восстановления. Изменение записывается в журнал аудита. Нужна повторная проверка: подтвердите, что это вы."
+      >
+        <form onSubmit={submitConfirm} className="flex flex-col gap-3">
+          <Field label={mfa ? "Код из приложения-аутентификатора" : "Текущий пароль"}>
+            {({ id }) => (
+              <Input
+                id={id}
+                autoComplete={mfa ? "one-time-code" : "current-password"}
+                type={mfa ? "text" : "password"}
+                value={secret}
+                onChange={(e) => setSecret(e.target.value)}
+              />
+            )}
+          </Field>
+          <ErrorBanner error={m.error} />
+          <div className="flex justify-end gap-2">
+            <Button onClick={closeConfirm}>Отменить</Button>
+            <Button type="submit" variant="danger" disabled={m.isPending || !secret}>
+              Сократить срок и удалить старые данные
+            </Button>
+          </div>
+        </form>
+      </FormDialog>
+    </>
   );
 }

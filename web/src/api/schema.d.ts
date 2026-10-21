@@ -2488,6 +2488,12 @@ export interface paths {
          *     7–3650 и не дольше метаданных. Изменение и запись `events.settings_changed` (до, после,
          *     признак сокращения `reduced`) — одной транзакцией. Данные старше нового срока удаляет
          *     фоновое задание целыми суточными секциями (раз в час).
+         *     Сокращение любого срока необратимо удаляет данные и требует повторной проверки
+         *     (В13 ревью 2.r3a): текущий пароль (`password`) или код TOTP (`code`), ровно одно из
+         *     двух, иначе 400. Неверное значение — 403 с кодом `reauthentication_failed` и неудачная
+         *     попытка ИАФ.4 (общий счётчик блокировки; запись `events.settings_changed` с итогом
+         *     failure или `auth.mfa_failed`). Увеличение и сохранение тех же сроков — без проверки.
+         *     Только из сессии консоли.
          */
         put: {
             parameters: {
@@ -4811,6 +4817,13 @@ export interface components {
         EventRetentionInput: {
             metadata_days: number;
             content_days: number;
+            /**
+             * Format: password
+             * @description Текущий пароль при сокращении срока (ровно одно из password и code)
+             */
+            password?: string;
+            /** @description Код из приложения-аутентификатора при сокращении срока, если второй фактор подключён */
+            code?: string;
         };
         /** @description Правило политики; поля и значения — как в YAML (`docs/cert/security-functions.md`, «Политики»). */
         PolicyRule: {

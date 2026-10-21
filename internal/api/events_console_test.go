@@ -16,6 +16,7 @@ import (
 
 	"github.com/azuresong-afk/ai_railway/internal/audit"
 	"github.com/azuresong-afk/ai_railway/internal/auth"
+	"github.com/azuresong-afk/ai_railway/internal/auth/authtest"
 	"github.com/azuresong-afk/ai_railway/internal/events"
 )
 
@@ -121,8 +122,52 @@ func (env *consoleEnv) handlerWith(t *testing.T, st EventsAPI, perms ...string) 
 	for _, p := range perms {
 		a[p] = true
 	}
-	h, _ := newHandler(t, Options{Authorizer: a, Events: st, Audit: env.audit})
+	return env.handlerWithAuthz(t, st, a, nil)
+}
+
+func (env *consoleEnv) handlerWithAuthz(t *testing.T, st EventsAPI, a Authorizer, svc *auth.Service) http.Handler {
+	t.Helper()
+	h, _ := newHandler(t, Options{Authorizer: a, Auth: svc, Events: st, Audit: env.audit})
 	return h
+}
+
+// reauthHandler — обработчик, где у пользователя сессии есть пароль tPhrase
+// в хранилище входа: для повторной проверки (В13 ревью 2.r3a).
+func (env *consoleEnv) reauthHandler(t *testing.T, perms ...string) (http.Handler, *authtest.Memory) {
+	t.Helper()
+	a := allowPerm{}
+	for _, p := range perms {
+		a[p] = true
+	}
+	mem := authtest.NewMemory()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	u := passwordPerm{allow: a, user: auth.User{ID: allowPermUserID, OrgID: audit.DefaultOrgID, Login: "u1", DisplayName: "u1",
+		Role: auth.RoleSecurityAdmin, Status: auth.StatusActive, PasswordHash: authtest.HashOf(tPhrase),
+		PasswordChangedAt: now, CreatedAt: now, CreatedBy: "test"}}
+	mem.AddUser(u.user)
+	return env.handlerWithAuthz(t, env.mem, u, testAuth(t, mem)), mem
+}
+
+// passwordPerm — allowPerm с полной учётной записью пользователя.
+type passwordPerm struct {
+	allow allowPerm
+	user  auth.User
+}
+
+func (a passwordPerm) Authorize(r *http.Request, perm string) (Principal, Decision) {
+	p, d := a.allow.Authorize(r, perm)
+	p.Caller.User = a.user
+	return p, d
+}
+
+// tokenPerm — вызов по токену API с заданными правами.
+type tokenPerm map[string]bool
+
+func (a tokenPerm) Authorize(r *http.Request, perm string) (Principal, Decision) {
+	p, d := allowPerm(a).Authorize(r, perm)
+	p.Caller.Token = &auth.APIToken{ID: "01900000-0000-7000-8000-0000000000b9", Prefix: "aisec_pat_abcdefgh"}
+	p.Caller.Session = auth.Session{}
+	return p, d
 }
 
 func jsonCT() []string { return []string{"Content-Type", "application/json"} }
@@ -389,12 +434,37 @@ func TestEventSettings(t *testing.T) {
 	}
 	mustProblem(t, do(read, "PUT", "/api/v1/events/settings", `{"metadata_days":30,"content_days":7}`, jsonCT()...), 403, CodeForbidden)
 
-	h := env.handler(t, auth.PermEventsRetentionManage, auth.PermEventsRead)
+	h, mem := env.reauthHandler(t, auth.PermEventsRetentionManage, auth.PermEventsRead)
 	for _, b := range []string{`{"metadata_days":29,"content_days":7}`, `{"metadata_days":30,"content_days":31}`,
 		`{"metadata_days":30}`, `{"metadata_days":"30","content_days":7}`} {
 		mustProblem(t, do(h, "PUT", "/api/v1/events/settings", b, jsonCT()...), 400, CodeInvalidRequest)
 	}
-	w := do(h, "PUT", "/api/v1/events/settings", `{"metadata_days":180,"content_days":30}`, jsonCT()...)
+	// В13 ревью 2.r3a: сокращение срока без пароля или с неверным паролем
+	// отклоняется, сроки не меняются.
+	mustProblem(t, do(h, "PUT", "/api/v1/events/settings", `{"metadata_days":180,"content_days":30}`, jsonCT()...),
+		400, CodeInvalidRequest)
+	mustProblem(t, do(h, "PUT", "/api/v1/events/settings", `{"metadata_days":365,"content_days":30,"password":"неверный"}`, jsonCT()...),
+		403, CodeReauthFailed)
+	mustProblem(t, do(h, "PUT", "/api/v1/events/settings",
+		mustJSON(t, map[string]any{"metadata_days": 180, "content_days": 90, "password": tPhrase, "code": "123456"}), jsonCT()...),
+		400, CodeInvalidRequest)
+	if r, err := env.mem.Retention(context.Background()); err != nil || r.MetadataDays != 365 || r.ContentDays != 90 {
+		t.Fatalf("сроки изменились без повторной проверки: %+v", r)
+	}
+	if len(env.audit.find("events.settings_changed")) != 0 {
+		t.Fatal("отклонённое сокращение записано как изменение")
+	}
+	var failed []audit.Entry
+	for _, e := range mem.Records() {
+		if e.Action == "events.settings_changed" {
+			failed = append(failed, e)
+		}
+	}
+	if len(failed) != 1 || failed[0].Result != audit.ResultFailure {
+		t.Fatalf("неверный пароль не записан в аудит: %+v", failed)
+	}
+	w := do(h, "PUT", "/api/v1/events/settings",
+		mustJSON(t, map[string]any{"metadata_days": 180, "content_days": 30, "password": tPhrase}), jsonCT()...)
 	if w.Code != 200 || !strings.Contains(w.Body.String(), `"metadata_days":180,"content_days":30`) {
 		t.Fatalf("изменение: %d %s", w.Code, w.Body)
 	}
@@ -404,6 +474,20 @@ func TestEventSettings(t *testing.T) {
 	}
 	if d, _ := got[0].Details.(map[string]any); d["reduced"] != true {
 		t.Fatalf("признак сокращения: %+v", d)
+	}
+	// Увеличение — без повторной проверки; те же сроки — тоже.
+	for _, b := range []string{`{"metadata_days":200,"content_days":30}`, `{"metadata_days":200,"content_days":30}`} {
+		if w := do(h, "PUT", "/api/v1/events/settings", b, jsonCT()...); w.Code != 200 {
+			t.Fatalf("увеличение: %d %s", w.Code, w.Body)
+		}
+	}
+	// Токен API сокращать сроки не может даже с правом.
+	tok := env.handlerWithAuthz(t, env.mem, tokenPerm{auth.PermEventsRetentionManage: true}, nil)
+	mustProblem(t, do(tok, "PUT", "/api/v1/events/settings", `{"metadata_days":180,"content_days":30,"password":"x"}`, jsonCT()...),
+		403, CodeForbidden)
+	if w := do(h, "PUT", "/api/v1/events/settings",
+		mustJSON(t, map[string]any{"metadata_days": 180, "content_days": 30, "password": tPhrase}), jsonCT()...); w.Code != 200 {
+		t.Fatalf("возврат сроков: %d %s", w.Code, w.Body)
 	}
 	// Журнал недоступен — сроки не меняются.
 	env.audit.fail(errors.New("журнал недоступен"))

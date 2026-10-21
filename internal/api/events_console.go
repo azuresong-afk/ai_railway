@@ -653,11 +653,17 @@ func (d Deps) getEventSettings(w http.ResponseWriter, r *http.Request) {
 type retentionRequest struct {
 	MetadataDays int `json:"metadata_days"`
 	ContentDays  int `json:"content_days"`
+	// Password или Code — повторная проверка при сокращении срока (В13).
+	Password string `json:"password"`
+	Code     string `json:"code"`
 }
 
 // putEventSettings — сроки хранения (ТЗ 5.5): изменение и запись
 // events.settings_changed одной транзакцией. Удаление данных — фоновым
-// заданием секций по новым срокам.
+// заданием секций по новым срокам. Сокращение любого срока необратимо
+// удаляет данные, поэтому требует повторной проверки текущим паролем или
+// кодом TOTP, как выпуск токена (В13 ревью 2.r3a, решение владельца);
+// увеличение — без неё.
 func (d Deps) putEventSettings(w http.ResponseWriter, r *http.Request) {
 	p, _ := PrincipalFrom(r.Context())
 	var req retentionRequest
@@ -674,11 +680,34 @@ func (d Deps) putEventSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := contextTimeout(r, eventsReadTimeout)
 	defer cancel()
+	cur, err := d.Events.Retention(ctx)
+	if err != nil {
+		WriteProblem(w, d.eventsProblem(err, "сроки хранения событий не прочитаны"))
+		return
+	}
+	if ret.MetadataDays < cur.MetadataDays || ret.ContentDays < cur.ContentDays {
+		// Повторная проверка возможна только в сессии консоли: у токена API нет
+		// пароля, и права безопасности ему не выдаются (задача 2.10).
+		c, ok := callerFrom(r)
+		if !ok || c.Token != nil {
+			WriteProblem(w, errForbidden())
+			return
+		}
+		if d.Auth == nil {
+			WriteProblem(w, NewProblem(http.StatusServiceUnavailable, CodeUnavailable,
+				"Повторная проверка недоступна: вход в консоль не настроен на сервере."))
+			return
+		}
+		if err := d.Auth.Reauthenticate(ctx, c, req.Password, req.Code, "events.settings_changed"); err != nil {
+			WriteProblem(w, authProblem(d.Logger, err))
+			return
+		}
+	}
 	if _, err := d.Events.SetRetention(ctx, ret, eventsActor(p), clientAddr(r)); err != nil {
 		WriteProblem(w, d.eventsProblem(err, "сроки хранения событий не изменены"))
 		return
 	}
-	cur, err := d.Events.Retention(ctx)
+	cur, err = d.Events.Retention(ctx)
 	if err != nil {
 		WriteProblem(w, d.eventsProblem(err, "сроки хранения событий не прочитаны"))
 		return
