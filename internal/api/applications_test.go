@@ -269,7 +269,8 @@ func TestAppKeysAndOwnerScopeViaAPI(t *testing.T) {
 	if err != nil || prefix != created.AppKey.Prefix || created.AppKey.Status != "active" {
 		t.Fatalf("ключ %+v: %v", created.AppKey, err)
 	}
-	secret := created.Key[strings.LastIndex(created.Key, "_")+1:]
+	// Секрет — по длине префикса: в base64url есть «_».
+	secret := created.Key[len(prefix)+1:]
 	w = e.call(keymgr, "GET", "/api/v1/applications/"+mine.ID+"/keys", "", false)
 	if w.Code != http.StatusOK || strings.Contains(w.Body.String(), secret) || !strings.Contains(w.Body.String(), created.AppKey.Prefix) {
 		t.Fatalf("список ключей: %d %s", w.Code, w.Body)
@@ -300,7 +301,11 @@ func TestAppKeysAndOwnerScopeViaAPI(t *testing.T) {
 	mustProblem(t, e.call(keymgr, "POST", "/api/v1/app-keys/"+other.AppKey.ID+"/rotate", `{}`, true), 404, CodeNotFound)
 
 	for _, k := range []string{created.Key, rotated.Key, other.Key} {
-		s := k[strings.LastIndex(k, "_")+1:]
+		p, err := auth.ParseAppKey(k)
+		if err != nil {
+			t.Fatal(err)
+		}
+		s := k[len(p)+1:]
 		if strings.Contains(e.log.String(), s) || strings.Contains(fmt.Sprintf("%+v", e.apps.Records()), s) {
 			t.Fatal("секрет ключа в журналах")
 		}

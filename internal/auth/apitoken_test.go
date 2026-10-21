@@ -34,10 +34,16 @@ func (e *env) issue(t *testing.T, by auth.Caller, perms ...string) (auth.APIToke
 	return tok, raw
 }
 
-// noSecret — секрета токена нет ни в одной записи аудита.
+// noSecret — секрета токена нет ни в одной записи аудита. Секрет отделяется
+// по длине префикса: в base64url есть «_», и отрезок после последнего «_»
+// мог оказаться из одного-двух символов и случайно найтись в записи.
 func noSecret(t *testing.T, e *env, raw string) {
 	t.Helper()
-	secret := raw[strings.LastIndex(raw, "_")+1:]
+	prefix, err := auth.ParseAPIToken(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret := raw[len(prefix)+1:]
 	for _, r := range e.mem.Records() {
 		if s := fmt.Sprintf("%+v", r); strings.Contains(s, secret) {
 			t.Fatalf("секрет токена в записи %s", r.Action)
