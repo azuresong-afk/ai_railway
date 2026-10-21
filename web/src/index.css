@@ -1,1 +1,6 @@
 @import "tailwindcss";
+
+/* Блокировка прокрутки под модальными окнами (src/shims/remove-scroll.tsx, ADR-0010). */
+body[data-scroll-locked] {
+  overflow: hidden;
+}

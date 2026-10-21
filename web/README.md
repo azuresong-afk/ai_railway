@@ -25,3 +25,10 @@ Node.js ≥ 22.12 и npm. Зависимости ставятся только �
 - Никаких CDN, внешних шрифтов, скриптов и стилей; шрифты и иконки — локально. Сборка не создаёт встроенных скриптов и стилей, интерфейс работает при CSP без `'unsafe-inline'`.
 - Playwright не скачивает браузеры. Браузер берётся из `PLAYWRIGHT_BROWSERS_PATH` сборочного образа; путь к исполняемому файлу можно задать `AISEC_CHROMIUM`.
 - `src/api/schema.d.ts` генерируется, руками не правится.
+
+## Radix UI и строгий CSP (задача 2.22, [ADR-0010](../docs/adr/0010-radix-ui-i-strogiy-csp.md))
+Макет всех нужных примитивов — `#/dev/radix`, проверка — `e2e/radix.spec.ts` (падает на любом нарушении CSP, ошибке консоли и элементе `<style>`).
+- Работают как есть: `popover`, `tooltip`, `tabs`, `checkbox`, `switch`, `radio-group`, `collapsible`, `label`, `toast`.
+- Работают через замену `react-remove-scroll` (алиас в `vite.config.ts`, `src/shims/remove-scroll.tsx`): `dialog`, `alert-dialog`, `dropdown-menu`.
+- Не используются (вставляют `<style>`): `select` — вместо него родной `<select>`; `scroll-area` — нативная прокрутка.
+- Новый примитив Radix сначала добавляется в макет и e2e.

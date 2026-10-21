@@ -267,6 +267,174 @@ components:
     decision: 'ТЗ 11.2; ADR-0011; план этапа 2, задача 2.21'
     decided: 2026-10-20
 
+  - name: '@radix-ui/react-alert-dialog'
+    version: 1.2.1
+    type: npm-package
+    scope: product
+    purpose: Примитив интерфейса «alert-dialog» (Radix UI) для экранов консоли.
+    license: MIT
+    repository: https://github.com/radix-ui/primitives
+    attack_surface: true
+    security_function: false
+    provided_by: Авторы пакета (реестр npm)
+    justification: Библиотека из перечня ТЗ 11.2; доступные примитивы (клавиатура, фокус, ARIA) дешевле и надёжнее собственных.
+    decision: 'ТЗ 11.2; ADR-0010; согласие владельца 2026-10-21; план этапа 2, задача 2.22'
+    decided: 2026-10-21
+
+  - name: '@radix-ui/react-checkbox'
+    version: 1.4.1
+    type: npm-package
+    scope: product
+    purpose: Примитив интерфейса «checkbox» (Radix UI) для экранов консоли.
+    license: MIT
+    repository: https://github.com/radix-ui/primitives
+    attack_surface: true
+    security_function: false
+    provided_by: Авторы пакета (реестр npm)
+    justification: Библиотека из перечня ТЗ 11.2; доступные примитивы (клавиатура, фокус, ARIA) дешевле и надёжнее собственных.
+    decision: 'ТЗ 11.2; ADR-0010; согласие владельца 2026-10-21; план этапа 2, задача 2.22'
+    decided: 2026-10-21
+
+  - name: '@radix-ui/react-collapsible'
+    version: 1.2.1
+    type: npm-package
+    scope: product
+    purpose: Примитив интерфейса «collapsible» (Radix UI) для экранов консоли.
+    license: MIT
+    repository: https://github.com/radix-ui/primitives
+    attack_surface: true
+    security_function: false
+    provided_by: Авторы пакета (реестр npm)
+    justification: Библиотека из перечня ТЗ 11.2; доступные примитивы (клавиатура, фокус, ARIA) дешевле и надёжнее собственных.
+    decision: 'ТЗ 11.2; ADR-0010; согласие владельца 2026-10-21; план этапа 2, задача 2.22'
+    decided: 2026-10-21
+
+  - name: '@radix-ui/react-dialog'
+    version: 1.3.1
+    type: npm-package
+    scope: product
+    purpose: Примитив интерфейса «dialog» (Radix UI) для экранов консоли.
+    license: MIT
+    repository: https://github.com/radix-ui/primitives
+    attack_surface: true
+    security_function: false
+    provided_by: Авторы пакета (реестр npm)
+    justification: Библиотека из перечня ТЗ 11.2; доступные примитивы (клавиатура, фокус, ARIA) дешевле и надёжнее собственных.
+    decision: 'ТЗ 11.2; ADR-0010; согласие владельца 2026-10-21; план этапа 2, задача 2.22'
+    decided: 2026-10-21
+
+  - name: '@radix-ui/react-dropdown-menu'
+    version: 2.2.1
+    type: npm-package
+    scope: product
+    purpose: Примитив интерфейса «dropdown-menu» (Radix UI) для экранов консоли.
+    license: MIT
+    repository: https://github.com/radix-ui/primitives
+    attack_surface: true
+    security_function: false
+    provided_by: Авторы пакета (реестр npm)
+    justification: Библиотека из перечня ТЗ 11.2; доступные примитивы (клавиатура, фокус, ARIA) дешевле и надёжнее собственных.
+    decision: 'ТЗ 11.2; ADR-0010; согласие владельца 2026-10-21; план этапа 2, задача 2.22'
+    decided: 2026-10-21
+
+  - name: '@radix-ui/react-label'
+    version: 2.1.17
+    type: npm-package
+    scope: product
+    purpose: Примитив интерфейса «label» (Radix UI) для экранов консоли.
+    license: MIT
+    repository: https://github.com/radix-ui/primitives
+    attack_surface: true
+    security_function: false
+    provided_by: Авторы пакета (реестр npm)
+    justification: Библиотека из перечня ТЗ 11.2; доступные примитивы (клавиатура, фокус, ARIA) дешевле и надёжнее собственных.
+    decision: 'ТЗ 11.2; ADR-0010; согласие владельца 2026-10-21; план этапа 2, задача 2.22'
+    decided: 2026-10-21
+
+  - name: '@radix-ui/react-popover'
+    version: 1.3.1
+    type: npm-package
+    scope: product
+    purpose: Примитив интерфейса «popover» (Radix UI) для экранов консоли.
+    license: MIT
+    repository: https://github.com/radix-ui/primitives
+    attack_surface: true
+    security_function: false
+    provided_by: Авторы пакета (реестр npm)
+    justification: Библиотека из перечня ТЗ 11.2; доступные примитивы (клавиатура, фокус, ARIA) дешевле и надёжнее собственных.
+    decision: 'ТЗ 11.2; ADR-0010; согласие владельца 2026-10-21; план этапа 2, задача 2.22'
+    decided: 2026-10-21
+
+  - name: '@radix-ui/react-radio-group'
+    version: 1.5.1
+    type: npm-package
+    scope: product
+    purpose: Примитив интерфейса «radio-group» (Radix UI) для экранов консоли.
+    license: MIT
+    repository: https://github.com/radix-ui/primitives
+    attack_surface: true
+    security_function: false
+    provided_by: Авторы пакета (реестр npm)
+    justification: Библиотека из перечня ТЗ 11.2; доступные примитивы (клавиатура, фокус, ARIA) дешевле и надёжнее собственных.
+    decision: 'ТЗ 11.2; ADR-0010; согласие владельца 2026-10-21; план этапа 2, задача 2.22'
+    decided: 2026-10-21
+
+  - name: '@radix-ui/react-switch'
+    version: 1.4.1
+    type: npm-package
+    scope: product
+    purpose: Примитив интерфейса «switch» (Radix UI) для экранов консоли.
+    license: MIT
+    repository: https://github.com/radix-ui/primitives
+    attack_surface: true
+    security_function: false
+    provided_by: Авторы пакета (реестр npm)
+    justification: Библиотека из перечня ТЗ 11.2; доступные примитивы (клавиатура, фокус, ARIA) дешевле и надёжнее собственных.
+    decision: 'ТЗ 11.2; ADR-0010; согласие владельца 2026-10-21; план этапа 2, задача 2.22'
+    decided: 2026-10-21
+
+  - name: '@radix-ui/react-tabs'
+    version: 1.2.1
+    type: npm-package
+    scope: product
+    purpose: Примитив интерфейса «tabs» (Radix UI) для экранов консоли.
+    license: MIT
+    repository: https://github.com/radix-ui/primitives
+    attack_surface: true
+    security_function: false
+    provided_by: Авторы пакета (реестр npm)
+    justification: Библиотека из перечня ТЗ 11.2; доступные примитивы (клавиатура, фокус, ARIA) дешевле и надёжнее собственных.
+    decision: 'ТЗ 11.2; ADR-0010; согласие владельца 2026-10-21; план этапа 2, задача 2.22'
+    decided: 2026-10-21
+
+  - name: '@radix-ui/react-toast'
+    version: 1.3.1
+    type: npm-package
+    scope: product
+    purpose: Примитив интерфейса «toast» (Radix UI) для экранов консоли.
+    license: MIT
+    repository: https://github.com/radix-ui/primitives
+    attack_surface: true
+    security_function: false
+    provided_by: Авторы пакета (реестр npm)
+    justification: Библиотека из перечня ТЗ 11.2; доступные примитивы (клавиатура, фокус, ARIA) дешевле и надёжнее собственных.
+    decision: 'ТЗ 11.2; ADR-0010; согласие владельца 2026-10-21; план этапа 2, задача 2.22'
+    decided: 2026-10-21
+
+  - name: '@radix-ui/react-tooltip'
+    version: 1.4.1
+    type: npm-package
+    scope: product
+    purpose: Примитив интерфейса «tooltip» (Radix UI) для экранов консоли.
+    license: MIT
+    repository: https://github.com/radix-ui/primitives
+    attack_surface: true
+    security_function: false
+    provided_by: Авторы пакета (реестр npm)
+    justification: Библиотека из перечня ТЗ 11.2; доступные примитивы (клавиатура, фокус, ARIA) дешевле и надёжнее собственных.
+    decision: 'ТЗ 11.2; ADR-0010; согласие владельца 2026-10-21; план этапа 2, задача 2.22'
+    decided: 2026-10-21
+
   - name: react
     version: 19.3.1
     type: npm-package

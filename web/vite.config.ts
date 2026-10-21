@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
@@ -9,6 +10,10 @@ export const csp =
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  resolve: {
+    // react-remove-scroll вставляет <style>, несовместимый со строгим CSP (ADR-0010).
+    alias: { "react-remove-scroll": fileURLToPath(new URL("./src/shims/remove-scroll.tsx", import.meta.url)) },
+  },
   build: {
     outDir: "dist",
     emptyOutDir: false, // в dist/ лежит .gitkeep для go:embed
