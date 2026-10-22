@@ -21,10 +21,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     # Сквозные тесты этапа 2 идут на живой PostgreSQL (ADR-0002, дополнение):
-    # той же версии, что в docker compose. Пароль — тестовый, база одноразовая.
+    # тот же образ, что в compose пилота (ADR-0019). Пароль — тестовый, база одноразовая.
     services:
       postgres:
-        image: postgres:17.6-alpine
+        image: postgres:17.11-alpine3.24@sha256:eee6c6e1b0894fa4fe0075eb054af9fd1cf39a35321c2d4110626cfe506411fb
         env:
           POSTGRES_USER: aisec
           POSTGRES_PASSWORD: devtest
@@ -60,3 +60,33 @@ jobs:
             build/sbom/
             build/dm-coverage.md
             build/dm-coverage.json
+
+  # Образы поставки пилота (ADR-0019, ЗИ.5): сборка с тестовым ключом
+  # манифеста — НЕ ДЛЯ ПОСТАВКИ — и проверка tools/imagecheck: не root, нет
+  # оболочки и пакетов ОС, только свои порты, бинарники совпадают с
+  # подписанным выпуском; правила compose пилота. Поставочные образы
+  # (make images, RELEASE=1) собирает владелец ключа производителя.
+  images:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Получить код
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0 # git describe для версии образов
+
+      - name: Сборка и проверка образов
+        run: make images-test-docker
+
+      - name: SBOM и архивы образов
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pilot-images-test
+          if-no-files-found: warn
+          retention-days: 30
+          path: |
+            build/images/
+            build/release/aisec-manifest.json
+            build/release/aisec-manifest.json.sig

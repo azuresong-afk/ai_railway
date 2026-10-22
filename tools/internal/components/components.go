@@ -34,6 +34,10 @@ const (
 const (
 	ScopeProduct = "product" // попадает в поставку и в SBOM продукта
 	ScopeBuild   = "build"   // только сборочная среда (ADR-0003)
+	// ScopeExternal — образ, с которым работает установка, но который продукт
+	// не распространяет: заказчик берёт его сам (PostgreSQL в compose
+	// пилота, ADR-0019). В SBOM продукта не попадает.
+	ScopeExternal = "external"
 )
 
 // Component — запись реестра.
@@ -67,7 +71,7 @@ type Registry struct {
 
 var (
 	validTypes  = map[string]bool{TypeGoModule: true, TypeToolchain: true, TypeTool: true, TypeImage: true, TypeGitHubAction: true, TypeNPM: true, TypeFont: true}
-	validScopes = map[string]bool{ScopeProduct: true, ScopeBuild: true}
+	validScopes = map[string]bool{ScopeProduct: true, ScopeBuild: true, ScopeExternal: true}
 	makeVarRe   = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
 	sha256HexRe = regexp.MustCompile(`^[0-9a-f]{64}$`)
 	decisionRe  = regexp.MustCompile(`^ADR-(\d{4})\b`)
@@ -137,6 +141,9 @@ func (r *Registry) validate() error {
 		}
 		if c.Scope != "" && !validScopes[c.Scope] {
 			errs = append(errs, fmt.Errorf("%s: неизвестный scope %q", id, c.Scope))
+		}
+		if c.Scope == ScopeExternal && c.Type != TypeImage {
+			errs = append(errs, fmt.Errorf("%s: scope external — только для type: image", id))
 		}
 		if c.Decided != "" {
 			if _, err := time.Parse(time.DateOnly, c.Decided); err != nil {

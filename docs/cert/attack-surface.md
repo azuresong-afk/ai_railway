@@ -107,9 +107,54 @@
 
 `aisec-cli`: `AISEC_DATABASE_URL` — строка подключения к PostgreSQL для `migrate`, `init`, `keys …`, `audit verify`, `audit archive`, `audit export`, `gateway token`, `gateway list`, `gateway revoke` и `user unlock`, `user reset-password`, `user reset-mfa`, `backup create`, `backup restore`, необязательно — для `verify` (запись итога в `integrity_checks` и аудит) (`audit verify-archive` к БД не подключается). Тесты `internal/store`, `internal/audit` и `cmd/aisec-cli` на живой БД читают `AISEC_TEST_DATABASE_URL` (без неё пропускаются); только для разработки.
 
+## Установка пилота в docker compose (задача 3.5, ADR-0019)
+Файлы — `deploy/compose/pilot/`. Образы — `deploy/build/Dockerfile.release`. Правила проверяет `tools/imagecheck`: compose — в `make test`, образы — в `make images-verify` и в CI.
+
+**Образы** `aisec-server`, `aisec-gateway`, `aisec-cli` собраны на `scratch`. Внутри только `/opt/aisec/bin/<компонент>` (в `aisec-cli` — все бинарники выпуска), `/opt/aisec/aisec-manifest.json` и подпись к нему. Владелец файлов — root, `USER 65534:65534`, оболочки и пакетов ОС нет. `EXPOSE`: 8444 и 8445 у сервера, 8443 у шлюза, у `aisec-cli` портов нет. Метка `ru.aisec.build-kind` — `release` или `test`. Образы `aisec-test/…:ВЕРСИЯ-test` собраны с тестовым ключом манифеста и не поставляются. Формат поставки — архивы `docker save` (`images/*.tar`) рядом с каталогом выпуска: `aisec-manifest.json`, `.sig`, `bin/`.
+
+**Сеть.**
+| Сервис | Опубликован на хосте | Сети compose | Исходящие |
+|---|---|---|---|
+| `aisec-server` | `${AISEC_CONSOLE_BIND:-127.0.0.1}:${AISEC_CONSOLE_PORT:-8444}` → 8444 (консоль и API) | `db`, `control` (псевдоним `${AISEC_CONSOLE_HOST}`), `console` | PostgreSQL; SMTP, syslog и webhook — только из настроек администратора. Мост `console` выход наружу не закрывает: ограничение — в коде (ЗИ.2, repocheck), руководство рекомендует правило `DOCKER-USER` |
+| `aisec-server`, внутренний порт 8445 | не публикуется | `control` (внутренняя) | — |
+| `aisec-gateway` | `${AISEC_GATEWAY_BIND:-127.0.0.1}:${AISEC_GATEWAY_PORT:-8443}` → 8443 | `control`, `gateway` | сервер (`https://${AISEC_CONSOLE_HOST}:8445`, mTLS), провайдеры LLM из пакета конфигурации |
+| `postgres` | не публикуется | `db` (внутренняя) | нет |
+| `aisec-cli` | не публикуется; запускается только `docker compose run` | `db` (внутренняя) | только PostgreSQL |
+
+Связь сервера и `aisec-cli` с PostgreSQL идёт во внутренней сети одного хоста без TLS (`sslmode=disable`). Для своей СУБД заказчика — `AISEC_SERVER_DB_URL` и `AISEC_OWNER_DB_URL` с `sslmode=verify-full`.
+
+**Запуск.** У всех сервисов `read_only`, `cap_drop: [ALL]`, `no-new-privileges:true`, `pids_limit` и `mem_limit`. Пользователи хоста: `aisec` (сервер, `aisec-cli`), `aisec-gw` (шлюз), `aisec-db` (PostgreSQL); UID и GID берутся из обязательных переменных. `tmpfs` есть только у PostgreSQL (`/tmp`, `/var/run/postgresql`) и `aisec-cli` (`/tmp`, 16 МБ). Healthcheck — только у PostgreSQL: `pg_isready -h 127.0.0.1`.
+
+**Тома и секреты** (`AISEC_DATA_DIR`, по умолчанию `/srv/aisec`):
+| Путь на хосте | В контейнере | Кто | Защита |
+|---|---|---|---|
+| `keys/` | `/etc/aisec/keys` | `aisec-cli` — запись (`init`), сервер — только чтение | каталог 0700 `aisec`; файлы `aisec-cli init` 0400 и 0444 |
+| `gateway/reg/`, `gateway/state/` | `/var/lib/aisec-gateway/reg`, `…/state` (два тома) | шлюз | каталоги 0700 `aisec-gw` в каталоге `gateway/` (root, 0755, не монтируется) |
+| `backups/` | `/var/lib/aisec/backups` | `aisec-cli backup` | каталог 0700 `aisec` |
+| `pg/` | `/var/lib/postgresql/data` | PostgreSQL | каталог 0700 `aisec-db` |
+| `secrets/console.crt`, `console.key` | `/run/secrets/console-tls-*` | сервер | владелец `aisec`, ключ 0600 или 0400 |
+| `secrets/gateway.crt`, `gateway.key` | `/run/secrets/gateway-tls-*` | шлюз | владелец `aisec-gw`, ключ 0600 или 0400 |
+| `secrets/console-ca.crt` | `/run/secrets/console-ca` | шлюз (`-server-ca`, `register -console-ca`) | 0644 |
+| `keys/bundle-signing.pub` | `/run/secrets/bundle-signing-pub` | шлюз (`-bundle-pub`) | 0444 |
+| `secrets/db-postgres-password`, `db-owner-password`, `db-server-password` | `/run/secrets/…` | PostgreSQL: `POSTGRES_PASSWORD_FILE` и `initdb/10-aisec-roles.sql` | владелец `aisec-db`, 0400 |
+| `secrets/db-owner.pgpass`, `db-server.pgpass` | `/run/secrets/db-*-pgpass` | `aisec-cli`, сервер: параметр `passfile` строки подключения pgx | владелец `aisec`, 0400, формат `*:*:*:роль:пароль` |
+| `deploy/compose/pilot/initdb/` | `/docker-entrypoint-initdb.d` (только чтение) | PostgreSQL, один раз на пустом каталоге данных | роли `aisec_owner` (владелец схемы, член `aisec_audit_archiver`), `aisec_server` (член `aisec_app`); пароли в журнал СУБД не пишутся |
+
+**Переменные `.env`** (секретов нет): `AISEC_VERSION`, `AISEC_IMAGE_REPO`, `AISEC_POSTGRES_IMAGE` (только реестр, digest закреплён в `compose.yaml`), `AISEC_DATA_DIR`, `AISEC_UID`/`AISEC_GID`, `AISEC_GW_UID`/`AISEC_GW_GID`, `AISEC_DB_UID`/`AISEC_DB_GID`, `AISEC_CONSOLE_HOST`, `AISEC_CONSOLE_BIND`, `AISEC_CONSOLE_PORT`, `AISEC_GATEWAY_BIND`, `AISEC_GATEWAY_PORT`, `AISEC_TRUSTED_PROXIES` (→ `AISEC_SERVER_TRUSTED_PROXIES`), `AISEC_INTEGRITY_ACTION` (→ `AISEC_SERVER_INTEGRITY_ACTION`), `COMPOSE_PROFILES` (`db`), `AISEC_SERVER_DB_URL`, `AISEC_OWNER_DB_URL` (своя СУБД; пароль только в passfile). Внутри контейнеров `AISEC_DATABASE_URL` передаётся без пароля. pgx читает и стандартную переменную `PGPASSFILE`, но compose её не задаёт.
+
+**Скрипты на хосте** (POSIX sh, вне контейнеров):
+- `prepare-host.sh` — от root. Создаёт пользователей без входа, каталоги, пароли ролей БД из `/dev/urandom` (64 шестнадцатеричных символа, не выводятся), записывает UID и GID в `.env` (0644). Повторный запуск ничего не перезаписывает, восстанавливает недостающий passfile из сохранённого пароля и отказывается работать, если каталог данных — символьная ссылка или существующий пользователь `aisec*` — root или с входом в систему. Владельца и права закрытых ключей TLS проверяет и сообщает о расхождении.
+- `verify-release.sh КАТАЛОГ` — проверка выпуска (ОБН.1). Входные данные недоверенные: каталог выпуска и архивы `images/*.tar`. Порядок:
+  - `aisec-cli` установленной версии без сети, только для чтения, без capabilities, от 65534 проверяет подпись и файлы нового каталога (монтирование `--mount …,readonly`);
+  - до `docker load` в архиве проверяются записи (только метаданные OCI и блобы, без обратной косой черты) и имена: ровно один образ `${AISEC_IMAGE_REPO}/<компонент>:<версия из проверенного манифеста>`, отличной от установленной;
+  - после загрузки — точные настройки образа (`docker image inspect`) и полный список файлов (`docker export | tar -tv`) без символьных ссылок; затем `docker cp` и побайтная сверка (`cmp`) бинарников, манифеста и подписи;
+  - при любом расхождении загруженные образы удаляются (`docker rmi`). Контейнеры нового выпуска не запускаются.
+
 ## Компоненты вне поставки
 | Компонент | Интерфейс | Примечание |
 |---|---|---|
+| `tools/imagecheck` (задача 3.5) | CLI: `image -kind release\|test [-release КАТАЛОГ] АРХИВ…`, `compose ФАЙЛ` | Читает архивы `docker save` (tar, слои tar или tar+gzip; до 2 ГиБ, 10 000 записей, 64 слоя, файл до 256 МиБ, JSON до 1 МиБ) и compose до 1 МиБ; хеш каждого blob и `diff_id` сверяется; контейнеры не запускает. Fuzz: `FuzzParseDockerManifest`, `FuzzCheckCompose` |
+| Сборка образов (`make images`, `images-test`, `images-test-docker`) | `docker build --network=none --pull=false` из `build/release`, `docker save` | Ключ производителя (`MANIFEST_KEY`) читает только `tools/manifest` на хосте, в контекст сборки он не попадает |
 | `mock-llm` (`cmd/mock-llm`) | HTTPS, по умолчанию `127.0.0.1:9443`: `GET /healthz`, `GET /v1/models`, `POST /v1/chat/completions` (в том числе SSE). CLI: `-listen`, `-cert`, `-key`; по умолчанию выключенные `-canary`, `-exfil-url`, `-tool-name`, `-tool-args`, `-record-last` (при нём — `GET`/`DELETE /mock/last-request`) | Только для разработки и e2e, в поставку и SBOM продукта не входит. Только TLS (HTTP без TLS отвергается), тело до 1 МиБ, до 256 сообщений, таймаут чтения заголовков 10 с, лимит заголовков 64 КиБ; содержимое сообщений не журналируется |
 | `tools/devcerts` | CLI: `-out`, `-hosts`, `-days`, `-force` | Выпуск сертификатов, ключа приложения и конфигурации шлюза стенда разработки |
 | Стенд разработки (`make dev`, `deploy/compose/dev/`) | Шлюз опубликован только на `127.0.0.1:8443` хоста; mock-llm — только во внутренней сети compose без выхода в интернет (`internal: true`) | Контейнеры `scratch`, только чтение, без привилегий, лимиты процессов и памяти; из `.dev-keys/` монтируются только нужные каждому контейнеру файлы и только для чтения (клиентский `app-key` — ни в один); события — в `.dev-data/` (каталог 0700, в `.gitignore`), единственный каталог шлюза с записью |
