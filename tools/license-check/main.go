@@ -240,13 +240,22 @@ var (
 	fromRe   = regexp.MustCompile(`(?im)^\s*FROM\s+(?:--\S+\s+)*(\S+)(?:\s+AS\s+(\S+))?`)
 	argRe    = regexp.MustCompile(`(?im)^\s*ARG\s+([A-Za-z_][A-Za-z0-9_]*)=(\S+)`)
 	varRe    = regexp.MustCompile(`^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$`)
+	imageRe  = regexp.MustCompile(`(?m)^\s*(?:-\s*)?image:\s*["']?([^\s"'#]+)`)
+	// leadingDefaultRe — ведущая переменная со значением по умолчанию.
+	// productImageRe — только точные имена образов продукта и стенда
+	// разработки (PRODUCT_CMDS, DEV_CMDS Makefile), тег — версия выпуска.
+	// imageRe обрывает строку на пробеле, поэтому «}» может не попасть.
+	productImageRe   = regexp.MustCompile(`^aisec(-dev|-test)?/(aisec-gateway|aisec-server|aisec-cli|aisec-media|mock-llm)(:\$\{AISEC_VERSION(:\?[^}]*)?\}?)?$`)
+	leadingDefaultRe = regexp.MustCompile(`^\$\{[A-Za-z_][A-Za-z0-9_]*:-([^}]*)\}`)
 )
 
-// checkPins сверяет закреплённые версии в CI и Dockerfile с реестром:
+// checkPins сверяет закреплённые версии в CI, Dockerfile и compose с реестром:
 //   - каждое действие GitHub (в workflow и составных действиях) — по SHA
 //     коммита и с тем же SHA, что в реестре; docker://-действия — по digest;
-//   - каждый образ в FROM любого Dockerfile — по digest и записан в реестре
-//     (имя записи — репозиторий образа, версия — «тег@sha256:…»);
+//   - каждый образ в FROM любого Dockerfile и в image: файлов compose и
+//     workflow — по digest и записан в реестре (имя записи — репозиторий
+//     образа, версия — «тег@sha256:…»); образы продукта (aisec…, со ссылкой
+//     на переменную) собираются из репозитория и не проверяются;
 //   - записи github-action и image, которые нигде не используются, — ошибка.
 func checkPins(fsys fs.FS, reg *components.Registry) ([]string, error) {
 	var problems []string
@@ -293,6 +302,7 @@ func checkPins(fsys fs.FS, reg *components.Registry) ([]string, error) {
 		if err != nil {
 			return nil, err
 		}
+		checkImageRefs(f, data, images, usedImages, add)
 		for _, m := range usesRe.FindAllStringSubmatch(string(data), -1) {
 			ref := m[1]
 			switch {
@@ -328,6 +338,14 @@ func checkPins(fsys fs.FS, reg *components.Registry) ([]string, error) {
 			if repofs.Skip(p, d.Name()) {
 				return fs.SkipDir
 			}
+			return nil
+		}
+		if composeNames[d.Name()] {
+			data, err := readLimited(fsys, p)
+			if err != nil {
+				return err
+			}
+			checkImageRefs(p, data, images, usedImages, add)
 			return nil
 		}
 		if !strings.HasPrefix(d.Name(), "Dockerfile") || strings.HasSuffix(d.Name(), ".dockerignore") {
@@ -377,10 +395,43 @@ func checkPins(fsys fs.FS, reg *components.Registry) ([]string, error) {
 	}
 	for name := range images {
 		if !usedImages[name] {
-			add("%s: образ есть в реестре, но не используется ни в одном Dockerfile — удалите запись", name)
+			add("%s: образ есть в реестре, но не используется ни в одном Dockerfile, compose и workflow — удалите запись", name)
 		}
 	}
 	return problems, nil
+}
+
+// composeNames — имена файлов compose, в которых проверяются образы.
+var composeNames = map[string]bool{
+	"compose.yaml": true, "compose.yml": true, "docker-compose.yaml": true, "docker-compose.yml": true,
+}
+
+// checkImageRefs проверяет строки image: файла compose или workflow.
+// Значение по умолчанию ведущей переменной (${ИМЯ:-postgres}:тег@…)
+// подставляется: так заказчик меняет реестр, а не версию и digest.
+func checkImageRefs(file string, data []byte, images map[string]string, used map[string]bool, add func(string, ...any)) {
+	for _, m := range imageRe.FindAllStringSubmatch(string(data), -1) {
+		ref := m[1]
+		if d := leadingDefaultRe.FindStringSubmatch(ref); d != nil {
+			ref = d[1] + ref[len(d[0]):]
+		}
+		if productImageRe.MatchString(ref) {
+			continue // образ продукта: собирается из этого репозитория
+		}
+		if strings.Contains(ref, "${") {
+			add("%s: образ %s: переменная в имени, кроме реестра по умолчанию, не проверяется — закрепите имя", file, m[1])
+			continue
+		}
+		if !digestRe.MatchString(ref) {
+			add("%s: образ %s не закреплён по digest (ТЗ, 8.7)", file, m[1])
+			continue
+		}
+		repo, ver, _ := strings.Cut(ref, ":")
+		used[repo] = true
+		if images[repo] != ver {
+			add("%s: образа %s нет в реестре (type: image, name: %s, version: %s)", file, m[1], repo, ver)
+		}
+	}
 }
 
 // goDirective возвращает значение директивы go.mod («go», «toolchain»).

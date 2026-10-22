@@ -61,7 +61,8 @@ services:
 
   postgres:
     <<: *hardening
-    image: postgres:17.6-alpine
+    # Тот же образ, что в compose пилота (docs/cert/components.yaml).
+    image: postgres:17.11-alpine3.24@sha256:eee6c6e1b0894fa4fe0075eb054af9fd1cf39a35321c2d4110626cfe506411fb
     networks: [internal, edge]
     environment:
       POSTGRES_USER: aisec

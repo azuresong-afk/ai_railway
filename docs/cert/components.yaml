@@ -187,6 +187,23 @@ components:
     decision: план этапа 0, Д4; ADR-0003; 1.27.3 — вместе с toolchain (исправления уязвимостей стандартной библиотеки)
     decided: 2026-10-10
 
+  - name: postgres
+    version: 17.11-alpine3.24@sha256:eee6c6e1b0894fa4fe0075eb054af9fd1cf39a35321c2d4110626cfe506411fb
+    type: image
+    scope: external
+    purpose: СУБД установки пилота (deploy/compose/pilot, ADR-0019); та же версия — в стенде разработки и в CI (сквозные тесты этапа 2).
+    # PostgreSQL — PostgreSQL License; пакеты Alpine в образе — в том числе musl (MIT), busybox и apk-tools (GPL-2.0),
+    # OpenSSL (Apache-2.0), zlib (Zlib), ca-certificates (MPL-2.0). Полный состав образа — у поставщика образа.
+    license: PostgreSQL AND MIT AND GPL-2.0-only AND Apache-2.0 AND Zlib AND MPL-2.0
+    license_decision: ADR-0019 — внешний компонент, продукт его не распространяет; заказчик берёт официальный образ из Docker Hub или своего реестра
+    repository: https://github.com/docker-library/postgres
+    attack_surface: true
+    security_function: false
+    provided_by: Docker Official Images (Docker, Inc.); PostgreSQL — The PostgreSQL Global Development Group
+    justification: Продукт хранит конфигурацию, события и журнал аудита в PostgreSQL (ТЗ 11.2). Официальный образ закреплён по digest (ТЗ, 8.7), версия 17 — как у стенда разработки и тестов. Своя СУБД заказчика — по желанию (Р2).
+    decision: решение владельца Р2 этапа 3 (22.10.2026); ADR-0019
+    decided: 2026-10-22
+
   - name: actions/checkout
     version: v7.0.1@3d3c42e5aac5ba805825da76410c181273ba90b1
     type: github-action

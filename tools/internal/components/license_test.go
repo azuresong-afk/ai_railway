@@ -66,6 +66,11 @@ func TestCheckLicense(t *testing.T) {
 		{"выдуманный GPL в сборке", Component{License: "GPL-x", Scope: ScopeBuild, LicenseDecision: "ADR-0003"}, false},
 		{"GPL и SSPL в сборке", Component{License: "GPL-3.0-only AND SSPL-1.0", Scope: ScopeBuild, LicenseDecision: "ADR-0003"}, false},
 		{"испорченное выражение", Component{License: "MIT AND", Scope: ScopeProduct}, false},
+		{"внешний образ с решением", Component{License: "PostgreSQL AND MIT AND GPL-2.0-only AND Zlib", Scope: ScopeExternal, LicenseDecision: "ADR-0019"}, true},
+		{"внешний образ без решения", Component{License: "PostgreSQL AND MIT", Scope: ScopeExternal}, false},
+		{"PostgreSQL в продукте", Component{License: "PostgreSQL", Scope: ScopeProduct, LicenseDecision: "ADR-0019"}, false},
+		{"PostgreSQL в сборке", Component{License: "PostgreSQL", Scope: ScopeBuild, LicenseDecision: "ADR-0003"}, false},
+		{"AGPL во внешнем образе", Component{License: "AGPL-3.0-only", Scope: ScopeExternal, LicenseDecision: "ADR-0019"}, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
