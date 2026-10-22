@@ -201,7 +201,7 @@ func TestAlertRulesViaAPI(t *testing.T) {
 	}
 	w := e.call(auditor, "GET", "/api/v1/alert-rules", "", false)
 	list := decode[AlertRuleList](t, w.Body.Bytes())
-	if w.Code != 200 || len(list.Items) != 5 {
+	if w.Code != 200 || len(list.Items) != 25 { // 5 встроенных задачи 3.10, 15 задачи 3.11 и 5 задачи 3.12
 		t.Fatalf("правила: %d %s", w.Code, w.Body)
 	}
 	var sec AlertRuleView
@@ -303,4 +303,64 @@ func TestAlertsByAPIToken(t *testing.T) {
 	if auth.TokenGrantable(auth.PermAlertRulesManage) {
 		t.Fatal("правила оповещений выдаются токену")
 	}
+}
+
+// Состояние правил фоновой задачи (задача 3.12): чтение — alert_rules.read;
+// аномалия без истории — обучение; правило «порог» фоновой задачей не
+// считается. Создание правил «частота», «аномалия», «бюджет» — через API.
+func TestAlertRuleStateViaAPI(t *testing.T) {
+	e := newAlertsEnv(t)
+	admin := e.mustLogin(t, "admin")
+	auditor := e.mustLogin(t, "auditor")
+	owner := e.mustLogin(t, "owner")
+	w := e.call(auditor, "GET", "/api/v1/alert-rules", "", false)
+	var spike, threshold string
+	for _, r := range decode[AlertRuleList](t, w.Body.Bytes()).Items {
+		switch r.Builtin {
+		case alerting.BuiltinActivitySpike:
+			spike = r.ID
+		case alerting.BuiltinInjectionBlocked:
+			threshold = r.ID
+		}
+	}
+	state := "/api/v1/alert-rules/" + spike + "/state"
+	if got := decode[AlertRuleStateView](t, e.call(auditor, "GET", state, "", false).Body.Bytes()); got.Evaluated || got.Kind != "anomaly" {
+		t.Fatalf("до прохода: %+v", got)
+	}
+	e.alerts.AddActivity(alerting.Activity{Bucket: time.Now().Add(-30 * time.Minute), App: "crm-bot", Requests: 500})
+	if _, err := e.alerts.Periodic(context.Background(), nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	w = e.call(auditor, "GET", state, "", false)
+	got := decode[AlertRuleStateView](t, w.Body.Bytes())
+	if w.Code != 200 || !got.Evaluated || !got.Learning || got.LearningUntil == nil || len(got.Keys) != 1 ||
+		got.Keys[0].Group["app"] != "crm-bot" || !got.Keys[0].Learning {
+		t.Fatalf("обучение: %d %s", w.Code, w.Body)
+	}
+	if got := decode[AlertRuleStateView](t, e.call(auditor, "GET", "/api/v1/alert-rules/"+threshold+"/state", "", false).Body.Bytes()); got.Evaluated || got.Keys == nil {
+		t.Fatalf("порог: %+v", got)
+	}
+	mustProblem(t, e.call(owner, "GET", state, "", false), 403, CodeForbidden)
+	mustProblem(t, e.call(auditor, "GET", "/api/v1/alert-rules/01900000-0000-7000-8000-0000000fffff/state", "", false), 404, CodeNotFound)
+	// Токен только с alert_rules.read: объёмы приложений скрыты (нужно
+	// events.read), состояние вычисления видно.
+	bearer := session{bearer: e.issueToken(t, admin, auth.PermAlertRulesRead).Token}
+	w = e.call(bearer, "GET", state, "", false)
+	if got := decode[AlertRuleStateView](t, w.Body.Bytes()); w.Code != 200 || !got.Evaluated || !got.KeysHidden ||
+		len(got.Keys) != 0 || got.KeysTotal != 0 {
+		t.Fatalf("без events.read: %d %s", w.Code, w.Body)
+	}
+
+	w = e.call(admin, "POST", "/api/v1/alert-rules", `{"kind":"frequency","name":"Серия блокировок",`+
+		`"condition":{"filter":"action = \"block\"","count":5,"window_minutes":15},"group_by":["user"]}`, true)
+	if r := decode[AlertRuleView](t, w.Body.Bytes()); w.Code != 201 || r.Condition.Count != 5 || r.Condition.WindowMinutes != 15 {
+		t.Fatalf("частота: %d %s", w.Code, w.Body)
+	}
+	w = e.call(admin, "POST", "/api/v1/alert-rules", `{"kind":"budget","name":"Бюджет 90","condition":{"warn_percent":90}}`, true)
+	if r := decode[AlertRuleView](t, w.Body.Bytes()); w.Code != 201 || r.Condition.WarnPercent != 90 {
+		t.Fatalf("бюджет: %d %s", w.Code, w.Body)
+	}
+	mustProblem(t, e.call(admin, "POST", "/api/v1/alert-rules", `{"kind":"anomaly","name":"x","condition":{"metric":"requests","factor":0.5}}`, true),
+		400, CodeInvalidRequest)
+	mustProblem(t, e.call(admin, "POST", "/api/v1/alert-rules", `{"kind":"system","name":"x"}`, true), 400, CodeInvalidRequest)
 }

@@ -153,6 +153,7 @@ func (h *ChatHandler) emit(rec *record) {
 	case rec.tokens == 0:
 		rec.res.Settle(0)
 	}
+	h.spend(rec)
 	if rec.skip {
 		return
 	}
@@ -164,6 +165,26 @@ func (h *ChatHandler) emit(rec *record) {
 	if err := h.cfg.Events.Enqueue(rec.ev); err != nil {
 		h.logger.Error("событие не принято", "type", rec.ev.Type, "event_id", rec.ev.ID, "error", err)
 	}
+}
+
+// spend учитывает расход запроса, ушедшего провайдеру (задача 3.18): по
+// usage провайдера, без него — по оценке размера входа и ответа (оценка
+// сверху: бюджет не занижается). Ответа нет и usage нет — провайдер
+// запрос не выполнил, расхода нет и запрос не считается.
+func (h *ChatHandler) spend(rec *record) {
+	if h.cfg.Budget == nil || !rec.sent || rec.ev.Type != events.TypeGatewayRequest {
+		return
+	}
+	var in, out int64
+	switch t := rec.ev.Tokens; {
+	case t != nil && t.Prompt+t.Completion > 0:
+		in, out = int64(t.Prompt), int64(t.Completion)
+	case rec.outBytes != nil:
+		in, out = int64(rec.inTokens), int64(estimateTokens(rec.outBytes()))
+	default:
+		return
+	}
+	h.cfg.Budget.Record(rec.app.ID, rec.ev.Provider, rec.ev.Model, in, out)
 }
 
 // fill переносит в событие решение, находки, трассировку и содержимое.

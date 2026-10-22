@@ -14,6 +14,9 @@
 | POST | `/api/v1/alert-rules` | `alert_rules.manage` | да | — | — | — | — | — |
 | GET | `/api/v1/alert-rules/{id}` | `alert_rules.read` | да | — | да | да | — | да |
 | PUT | `/api/v1/alert-rules/{id}` | `alert_rules.manage` | да | — | — | — | — | — |
+| GET | `/api/v1/alert-rules/{id}/state` | `alert_rules.read` | да | — | да | да | — | да |
+| GET | `/api/v1/alert-settings` | `alert_rules.read` | да | — | да | да | — | да |
+| PUT | `/api/v1/alert-settings` | `alert_rules.manage` | да | — | — | — | — | — |
 | GET | `/api/v1/alerts` | `alerts.read` | да | — | да | да | — | да |
 | GET | `/api/v1/alerts/{id}` | `alerts.read` | да | — | да | да | — | да |
 | POST | `/api/v1/alerts/{id}/status` | `alerts.manage` | да | — | да | — | — | да |
@@ -28,6 +31,9 @@
 | GET | `/api/v1/applications/{id}` | `applications.read` | да | да | да | да | свои | да |
 | PUT | `/api/v1/applications/{id}` | `applications.manage` | да | да | — | — | — | да |
 | DELETE | `/api/v1/applications/{id}` | `applications.manage` | да | да | — | — | — | да |
+| GET | `/api/v1/applications/{id}/budget` | `budgets.read` | да | да | да | да | — | да |
+| PUT | `/api/v1/applications/{id}/budget` | `budgets.manage` | да | да | — | — | — | да |
+| DELETE | `/api/v1/applications/{id}/budget` | `budgets.manage` | да | да | — | — | — | да |
 | GET | `/api/v1/applications/{id}/keys` | `applications.read` | да | да | да | да | свои | да |
 | POST | `/api/v1/applications/{id}/keys` | `app_keys.manage` | да | да | — | — | — | да |
 | PUT | `/api/v1/applications/{id}/protection` | `applications.policy` | да | — | — | — | — | — |
@@ -41,6 +47,7 @@
 | POST | `/api/v1/auth/password` | `self` | да | да | да | да | да | — |
 | GET | `/api/v1/auth/policy` | `auth_policy.read` | да | — | — | да | — | да |
 | PUT | `/api/v1/auth/policy` | `auth_policy.manage` | да | — | — | — | — | — |
+| GET | `/api/v1/budgets` | `budgets.read` | да | да | да | да | — | да |
 | GET | `/api/v1/events` | `events.read` | да | — | да | да | — | да |
 | POST | `/api/v1/events/export` | `events.export` | да | — | да | — | — | да |
 | GET | `/api/v1/events/filters` | `events.read` | да | — | да | да | — | да |
@@ -52,6 +59,16 @@
 | GET | `/api/v1/events/{id}` | `events.read` | да | — | да | да | — | да |
 | POST | `/api/v1/events/{id}/content` | `events.content.read` | да | — | — | — | — | — |
 | GET | `/api/v1/me` | `session` | да | да | да | да | да | — |
+| GET | `/api/v1/model-prices` | `model_prices.read` | да | да | да | да | — | да |
+| POST | `/api/v1/model-prices` | `model_prices.manage` | да | да | — | — | — | да |
+| PUT | `/api/v1/model-prices/{id}` | `model_prices.manage` | да | да | — | — | — | да |
+| DELETE | `/api/v1/model-prices/{id}` | `model_prices.manage` | да | да | — | — | — | да |
+| GET | `/api/v1/notify-channels` | `notify_channels.read` | да | — | — | да | — | да |
+| POST | `/api/v1/notify-channels` | `notify_channels.manage` | да | — | — | — | — | — |
+| GET | `/api/v1/notify-channels/{id}` | `notify_channels.read` | да | — | — | да | — | да |
+| PUT | `/api/v1/notify-channels/{id}` | `notify_channels.manage` | да | — | — | — | — | — |
+| GET | `/api/v1/notify-channels/{id}/deliveries` | `notify_channels.read` | да | — | — | да | — | да |
+| POST | `/api/v1/notify-channels/{id}/test` | `notify_channels.manage` | да | — | — | — | — | — |
 | GET | `/api/v1/permissions` | `roles.read` | да | — | — | да | — | да |
 | GET | `/api/v1/policies` | `policies.read` | да | да | да | да | — | да |
 | POST | `/api/v1/policies` | `policies.manage` | да | — | — | — | — | — |

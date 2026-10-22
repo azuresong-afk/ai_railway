@@ -37,6 +37,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/integrity"
 	"github.com/azuresong-afk/ai_railway/internal/integrity/selftest"
 	"github.com/azuresong-afk/ai_railway/internal/keyring"
+	"github.com/azuresong-afk/ai_railway/internal/notify"
 	"github.com/azuresong-afk/ai_railway/internal/policy/bundle/build"
 	"github.com/azuresong-afk/ai_railway/internal/policy/versions"
 	"github.com/azuresong-afk/ai_railway/internal/store"
@@ -274,7 +275,8 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		RoleCheck: func(ctx context.Context, id string) error {
 			_, err := authSvc.RoleDef(ctx, auth.Role(id))
 			return err
-		}})
+		},
+		Retention: alertStore})
 	if err != nil {
 		return err
 	}
@@ -283,6 +285,28 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	} else if n > 0 {
 		logger.Info("созданы встроенные правила оповещений", "count", n)
 	}
+	// Системные правила и правила безопасности (задача 3.11, ADR-0020, п. 1)
+	// считаются в транзакции записи аудита — после создания встроенных
+	// правил; закрытые оповещения удаляются по сроку хранения.
+	auditLog.SetRecordHook(alertStore.OnAudit)
+	go alerting.RunRetention(ctx, alertStore, alerting.RetentionInterval, logger)
+	// Каналы уведомлений (задача 3.13, Р4): адреса задаёт администратор,
+	// очередь доставки — в БД. Постановку новых оповещений в очередь
+	// подключает задача 3.14.
+	notifyStore, err := notify.NewPGStore(db.Pool(), auditLog, rnd, audit.DefaultOrgID)
+	if err != nil {
+		return err
+	}
+	notifyTransport, err := notify.NewTransport(p, version, notify.DefaultSendTimeout)
+	if err != nil {
+		return err
+	}
+	notifySvc, err := notify.New(notify.Options{Store: notifyStore, Box: box, Provider: p, Transport: notifyTransport,
+		OrgID: audit.DefaultOrgID})
+	if err != nil {
+		return err
+	}
+	go notifySvc.RunDispatcher(ctx, notify.DispatchInterval, logger)
 	if err := events.Maintain(ctx, eventStore, logger); err != nil {
 		return fmt.Errorf("секции событий: %w", err)
 	}
@@ -341,6 +365,19 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		st, err := authSvc.InstallSettings(ctx)
 		return st.RetentionMode, err
 	})
+	// Месяц расхода и бюджетов — в часовом поясе установки; счётчики
+	// расхода приходят от шлюзов в heartbeat (задача 3.18).
+	appsSvc.SetTimezone(func(ctx context.Context) (string, error) {
+		st, err := authSvc.InstallSettings(ctx)
+		return st.Timezone, err
+	})
+	if gateways != nil {
+		gateways.SetBudgetSync(appsSvc)
+	}
+	// Правила «частота», «аномалия» и «бюджет» (задача 3.12, Р3) — фоновой
+	// задачей раз в минуту; расход — приложений с заданным бюджетом.
+	alertStore.SetBudgetSource(budgetUsage(appsSvc))
+	go alerting.RunPeriodic(ctx, alertStore, alerting.PeriodicInterval, logger)
 
 	// Консоль отдаётся, только если она собрана (make web-build перед go build); иначе сервер — чистый API.
 	var console http.Handler
@@ -363,6 +400,7 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		Status:    statusSvc,
 		Events:    eventStore,
 		Alerts:    alertsSvc,
+		Notify:    notifySvc,
 		Audit:     auditLog,
 		Fallback:  console,
 
@@ -403,6 +441,26 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	}
 	recordStop(ctx, auditLog, err, logger)
 	return err
+}
+
+// budgetUsage — расход приложений с бюджетом за текущий месяц для правил
+// «бюджет» (задача 3.12).
+func budgetUsage(svc *apps.Service) alerting.BudgetSource {
+	return func(ctx context.Context) ([]alerting.BudgetUsage, error) {
+		st, _, err := svc.BudgetStatuses(ctx, "")
+		if err != nil {
+			return nil, err
+		}
+		var out []alerting.BudgetUsage
+		for i := range st {
+			if st[i].Budget == nil {
+				continue
+			}
+			out = append(out, alerting.BudgetUsage{AppID: st[i].App.ID, App: st[i].App.Slug, Month: st[i].Month,
+				Mode: st[i].Budget.Mode, Percent: st[i].Percent, Exhausted: st[i].Exhausted})
+		}
+		return out, nil
+	}
 }
 
 // newStatus собирает «Состояние системы» и запускает фоновую проверку

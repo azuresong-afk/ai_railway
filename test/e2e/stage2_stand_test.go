@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"net/netip"
@@ -272,6 +273,10 @@ type s2Stand struct {
 	base          string
 	roots         []byte
 	admin         *s2User
+	// dial — подмена адресов «имя:порт» → «IP:порт» для стенда compose
+	// пилота: консоль и шлюз доступны только по адресам контейнеров, а имя в
+	// URL нужно для проверки сертификата.
+	dial map[string]string
 }
 
 // s2NewStand готовит БД, ключи и токен первичной настройки, сервер не
@@ -386,7 +391,17 @@ func (s *s2Stand) transport() *http.Transport {
 	if err != nil {
 		s.t.Fatal(err)
 	}
-	return &http.Transport{TLSClientConfig: cfg}
+	tr := &http.Transport{TLSClientConfig: cfg}
+	if len(s.dial) > 0 {
+		d := &net.Dialer{Timeout: 10 * time.Second}
+		tr.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+			if to, ok := s.dial[addr]; ok {
+				addr = to
+			}
+			return d.DialContext(ctx, network, addr)
+		}
+	}
+	return tr
 }
 
 // s2User — учётная запись стенда с её текущим паролем и секретом TOTP.

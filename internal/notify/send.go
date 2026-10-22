@@ -1,0 +1,325 @@
+package notify
+
+import (
+	"bytes"
+	"context"
+	"encoding/hex"
+	"errors"
+	"io"
+	"net"
+	"net/http"
+	"net/smtp"
+	"os"
+	"strconv"
+	"sync/atomic"
+	"time"
+
+	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
+)
+
+// Коды ошибок доставки: в журнал доставки и аудит пишется только код, без
+// текста ответа получателя и адресов (в адресе webhook бывает токен).
+const (
+	ErrCodeDial        = "dial"
+	ErrCodeTLS         = "tls"
+	ErrCodeNoSTARTTLS  = "starttls_unsupported"
+	ErrCodeAuth        = "auth"
+	ErrCodeRejected    = "rejected"
+	ErrCodeTimeout     = "timeout"
+	ErrCodeWrite       = "write"
+	ErrCodeConfig      = "config"
+	ErrCodeDisabled    = "channel_disabled"
+	ErrCodeInternal    = "internal"
+	errCodeHTTPPrefix  = "http_"
+	maxResponseBody    = 64 << 10
+	maxResponseHeaders = 64 << 10
+)
+
+// DefaultSendTimeout — предел одной попытки доставки.
+const DefaultSendTimeout = 30 * time.Second
+
+// SignatureHeader — подпись тела webhook: «t=<unix>,v1=<hex>» от
+// «t + "." + тело» на MAC криптопрофиля (ADR-0020 п. 9). Получатель
+// сверяет за постоянное время и отвергает метку старше 5 минут.
+const SignatureHeader = "AISec-Signature"
+
+// DeliveryError — неудачная попытка: только код.
+type DeliveryError struct{ Code string }
+
+func (e *DeliveryError) Error() string {
+	return "уведомление не доставлено: " + e.Code
+}
+
+func failed(code string) error { return &DeliveryError{Code: code} }
+
+// ErrorCode — код ошибки доставки для журнала.
+func ErrorCode(err error) string {
+	var de *DeliveryError
+	if errors.As(err, &de) {
+		return de.Code
+	}
+	return ErrCodeInternal
+}
+
+// netCode — код сетевой ошибки: истёк срок или нет соединения.
+func netCode(err error, fallback string) error {
+	var ne net.Error
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, os.ErrDeadlineExceeded) || (errors.As(err, &ne) && ne.Timeout()) {
+		return failed(ErrCodeTimeout)
+	}
+	return failed(fallback)
+}
+
+// Transport отправляет уведомления по адресам, заданным администратором
+// в канале (ЗИ.3): прокси из окружения и перенаправления не используются.
+type Transport struct {
+	tls      aisecCrypto.TLSProvider
+	provider aisecCrypto.Provider
+	version  string
+	now      func() time.Time
+	timeout  time.Duration
+}
+
+// NewTransport создаёт отправитель на криптопрофиле p.
+func NewTransport(p aisecCrypto.Provider, version string, timeout time.Duration) (*Transport, error) {
+	if p == nil {
+		return nil, errors.New("уведомления: не задан криптопрофиль")
+	}
+	t, err := p.TLS()
+	if err != nil {
+		return nil, err
+	}
+	if timeout <= 0 {
+		timeout = DefaultSendTimeout
+	}
+	if version == "" {
+		version = "dev"
+	}
+	return &Transport{tls: t, provider: p, version: version, now: time.Now, timeout: timeout}, nil
+}
+
+// Send — одна попытка доставки msg в канал ch с секретами sec.
+func (t *Transport) Send(ctx context.Context, ch Channel, sec Secrets, msg Message) error {
+	ctx, cancel := context.WithTimeout(ctx, t.timeout)
+	defer cancel()
+	switch ch.Type {
+	case TypeEmail:
+		return t.sendEmail(ctx, ch, sec, msg)
+	case TypeWebhook:
+		return t.sendWebhook(ctx, ch, sec, msg)
+	case TypeSyslog:
+		return t.sendSyslog(ctx, ch, msg)
+	}
+	return failed(ErrCodeConfig)
+}
+
+// tlsDial — соединение TCP и TLS с корнями канала и проверкой имени узла
+// host. Настройки TLS — только из internal/crypto.
+func (t *Transport) tlsDial(ctx context.Context, ch Channel, host string, port int) (net.Conn, error) {
+	cfg, err := t.tls.ClientConfig([]byte(ch.Settings.CAPEM))
+	if err != nil {
+		return nil, failed(ErrCodeConfig)
+	}
+	cfg.ServerName = host
+	conn, err := t.dial(ctx, host, port)
+	if err != nil {
+		return nil, err
+	}
+	tc, err := aisecCrypto.ClientTLS(ctx, conn, cfg)
+	if err != nil {
+		return nil, netCode(err, ErrCodeTLS)
+	}
+	return tc, nil
+}
+
+// dial — TCP-соединение со сроком из ctx.
+func (t *Transport) dial(ctx context.Context, host string, port int) (net.Conn, error) {
+	d := net.Dialer{Timeout: t.timeout, KeepAlive: -1}
+	conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(host, strconv.Itoa(port)))
+	if err != nil {
+		return nil, netCode(err, ErrCodeDial)
+	}
+	if dl, ok := ctx.Deadline(); ok {
+		if err := conn.SetDeadline(dl); err != nil {
+			_ = conn.Close() //nolint:gosec // G104: возвращается ошибка установки срока
+			return nil, failed(ErrCodeDial)
+		}
+	}
+	return conn, nil
+}
+
+// sendEmail — net/smtp: STARTTLS обязателен; сервер без STARTTLS — отказ
+// до передачи пароля и письма.
+func (t *Transport) sendEmail(ctx context.Context, ch Channel, sec Secrets, msg Message) error {
+	s := ch.Settings
+	cfg, err := t.tls.ClientConfig([]byte(s.CAPEM))
+	if err != nil {
+		return failed(ErrCodeConfig)
+	}
+	cfg.ServerName = s.Host
+	conn, err := t.dial(ctx, s.Host, s.Port)
+	if err != nil {
+		return err
+	}
+	// Закрытие по отмене ctx прерывает зависший обмен.
+	stop := context.AfterFunc(ctx, func() { _ = conn.Close() }) //nolint:gosec // G104: соединение прерывается
+	defer stop()
+	defer func() { _ = conn.Close() }() //nolint:gosec // G104: ошибка закрытия после обмена не важна
+	// Ответы сервера SMTP читаются построчно без предела длины строки:
+	// объём чтения за попытку ограничен.
+	c, err := smtp.NewClient(&limitedConn{Conn: conn, left: maxSMTPRead}, s.Host)
+	if err != nil {
+		return netCode(err, ErrCodeDial)
+	}
+	if err := c.Hello(DefaultHostname); err != nil {
+		return netCode(err, ErrCodeRejected)
+	}
+	if ok, _ := c.Extension("STARTTLS"); !ok {
+		return failed(ErrCodeNoSTARTTLS)
+	}
+	if err := c.StartTLS(cfg); err != nil {
+		return netCode(err, ErrCodeTLS)
+	}
+	if s.Username != "" {
+		if ok, _ := c.Extension("AUTH"); !ok {
+			return failed(ErrCodeAuth)
+		}
+		if err := c.Auth(smtp.PlainAuth("", s.Username, sec.Password, s.Host)); err != nil {
+			return netCode(err, ErrCodeAuth)
+		}
+	}
+	if err := c.Mail(s.From); err != nil {
+		return netCode(err, ErrCodeRejected)
+	}
+	for _, to := range s.To {
+		if err := c.Rcpt(to); err != nil {
+			return netCode(err, ErrCodeRejected)
+		}
+	}
+	w, err := c.Data()
+	if err != nil {
+		return netCode(err, ErrCodeRejected)
+	}
+	if _, err := w.Write(emailMessage(msg, s.From, s.To, msg.ID, t.now())); err != nil {
+		return netCode(err, ErrCodeWrite)
+	}
+	if err := w.Close(); err != nil {
+		return netCode(err, ErrCodeRejected)
+	}
+	_ = c.Quit() //nolint:gosec // G104: письмо принято, ответ на QUIT не важен
+	return nil
+}
+
+// maxSMTPRead — предел чтения от сервера SMTP за одну попытку.
+const maxSMTPRead = 1 << 20
+
+// limitedConn — соединение, из которого можно прочитать не больше left байт.
+type limitedConn struct {
+	net.Conn
+	left int64
+}
+
+func (c *limitedConn) Read(b []byte) (int, error) {
+	if c.left <= 0 {
+		return 0, errors.New("уведомления: ответ сервера слишком большой")
+	}
+	if int64(len(b)) > c.left {
+		b = b[:c.left]
+	}
+	n, err := c.Conn.Read(b)
+	c.left -= int64(n)
+	return n, err
+}
+
+// sendWebhook — POST по https с подписью тела. Ответ 2xx — доставлено;
+// перенаправление не выполняется и считается отказом.
+func (t *Transport) sendWebhook(ctx context.Context, ch Channel, sec Secrets, msg Message) error {
+	u, err := parseWebhookURL(sec.URL)
+	if err != nil {
+		return failed(ErrCodeConfig)
+	}
+	var body []byte
+	if ch.Settings.Format == FormatMattermost {
+		body, err = mattermostBody(msg)
+	} else {
+		body, err = jsonBody(msg, t.version)
+	}
+	if err != nil {
+		return failed(ErrCodeInternal)
+	}
+	mac, err := t.provider.NewMAC([]byte(sec.SigningKey))
+	if err != nil {
+		return failed(ErrCodeConfig)
+	}
+	ts := strconv.FormatInt(t.now().Unix(), 10)
+	sig := "t=" + ts + ",v1=" + hex.EncodeToString(mac.Sum(append([]byte(ts+"."), body...)))
+
+	// Соединение TLS устанавливает tlsDial, HTTP/2 не используется. Код
+	// ошибки соединения и рукопожатия сохраняется атомарно: набор может
+	// завершиться уже после возврата из Do (отмена).
+	var dialErr atomic.Pointer[DeliveryError]
+	client := &http.Client{
+		Transport: &http.Transport{
+			Proxy: nil,
+			DialTLSContext: func(ctx context.Context, _, addr string) (net.Conn, error) {
+				host, port, err := net.SplitHostPort(addr)
+				if err != nil {
+					dialErr.Store(&DeliveryError{Code: ErrCodeConfig})
+					return nil, failed(ErrCodeConfig)
+				}
+				p, err := strconv.Atoi(port)
+				if err != nil {
+					dialErr.Store(&DeliveryError{Code: ErrCodeConfig})
+					return nil, failed(ErrCodeConfig)
+				}
+				conn, err := t.tlsDial(ctx, ch, host, p)
+				if err != nil {
+					dialErr.Store(&DeliveryError{Code: ErrorCode(err)})
+				}
+				return conn, err
+			},
+			ResponseHeaderTimeout: t.timeout, MaxResponseHeaderBytes: maxResponseHeaders, DisableKeepAlives: true,
+		},
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		Timeout:       t.timeout,
+	}
+	defer client.CloseIdleConnections()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), bytes.NewReader(body))
+	if err != nil {
+		return failed(ErrCodeConfig)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "AISec/"+t.version)
+	req.Header.Set(SignatureHeader, sig)
+	resp, err := client.Do(req)
+	if err != nil {
+		if de := dialErr.Load(); de != nil {
+			return de
+		}
+		return netCode(err, ErrCodeWrite)
+	}
+	defer func() { _ = resp.Body.Close() }()                               //nolint:gosec // G104: тело прочитано
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxResponseBody)) //nolint:gosec // G104: тело ответа не нужно
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return failed(errCodeHTTPPrefix + strconv.Itoa(resp.StatusCode))
+	}
+	return nil
+}
+
+// sendSyslog — запись RFC 5424 по TLS (RFC 5425) с фреймингом RFC 6587.
+func (t *Transport) sendSyslog(ctx context.Context, ch Channel, msg Message) error {
+	s := ch.Settings
+	rec, err := syslogRecord(msg, s, t.version)
+	if err != nil {
+		return failed(ErrCodeInternal)
+	}
+	tc, err := t.tlsDial(ctx, ch, s.Host, s.Port)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tc.Close() }() //nolint:gosec // G104: запись передана
+	if _, err := tc.Write(rec); err != nil {
+		return netCode(err, ErrCodeWrite)
+	}
+	return nil
+}

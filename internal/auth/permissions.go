@@ -72,6 +72,18 @@ const (
 	PermAlertsManage     = "alerts.manage"
 	PermAlertRulesRead   = "alert_rules.read"
 	PermAlertRulesManage = "alert_rules.manage"
+	// Каналы уведомлений (ТЗ 5.6, Р4; задача 3.13 этапа 3): изменение и
+	// тестовая отправка — функция безопасности (отключение и смена адреса —
+	// ослабление, DM-40); секреты каналов в ответах не показываются.
+	PermNotifyChannelsRead   = "notify_channels.read"
+	PermNotifyChannelsManage = "notify_channels.manage"
+	// Цены моделей и бюджеты приложений (ТЗ 5.8, задача 3.18 этапа 3).
+	// Снятие или повышение жёсткого бюджета — не ослабление защиты (не
+	// DM-40): права не относятся к безопасности, изменения пишутся в аудит.
+	PermModelPricesRead   = "model_prices.read"
+	PermModelPricesManage = "model_prices.manage"
+	PermBudgetsRead       = "budgets.read"
+	PermBudgetsManage     = "budgets.manage"
 )
 
 // Permission — разрешение из каталога.
@@ -133,6 +145,13 @@ var permissionCatalog = []Permission{
 	{Name: PermAlertsManage, Title: "Принятие оповещений в работу и закрытие", Group: "Оповещения"},
 	{Name: PermAlertRulesRead, Title: "Просмотр правил оповещений и получателей", Group: "Оповещения"},
 	{Name: PermAlertRulesManage, Title: "Создание и изменение правил оповещений и получателей", Group: "Оповещения", Security: true},
+	{Name: PermNotifyChannelsRead, Title: "Просмотр каналов уведомлений (без секретов) и журнала доставки", Group: "Оповещения"},
+	{Name: PermNotifyChannelsManage, Title: "Создание, изменение и тестовая отправка каналов уведомлений", Group: "Оповещения",
+		Security: true},
+	{Name: PermModelPricesRead, Title: "Просмотр цен моделей", Group: "Потребление"},
+	{Name: PermModelPricesManage, Title: "Задание, изменение и удаление цен моделей", Group: "Потребление"},
+	{Name: PermBudgetsRead, Title: "Просмотр бюджетов и расхода приложений", Group: "Потребление"},
+	{Name: PermBudgetsManage, Title: "Задание, изменение и снятие бюджетов приложений", Group: "Потребление"},
 }
 
 // auditorExtra — разрешения аудитора сверх чтения: они ничего не меняют,
@@ -317,11 +336,12 @@ var builtinRoles = []RoleDef{
 		Description: "Приложения, провайдеры, интеграции, обновления, резервное копирование. Политики безопасности не меняет",
 		Grants: Grants{PermSystemRead: ScopeAll, PermAPITokensRead: ScopeOwn, PermAPITokensManage: ScopeOwn,
 			PermApplicationsRead: ScopeAll, PermApplicationsManage: ScopeAll, PermAppKeysManage: ScopeAll,
-			PermProvidersRead: ScopeAll, PermProvidersManage: ScopeAll, PermPoliciesRead: ScopeAll, PermPoliciesTest: ScopeAll}},
+			PermProvidersRead: ScopeAll, PermProvidersManage: ScopeAll, PermPoliciesRead: ScopeAll, PermPoliciesTest: ScopeAll,
+			PermModelPricesRead: ScopeAll, PermModelPricesManage: ScopeAll, PermBudgetsRead: ScopeAll, PermBudgetsManage: ScopeAll}},
 	{ID: RoleAnalyst, DisplayName: "Аналитик", Builtin: true,
 		Description: "Разбор оповещений и инцидентов, поиск по событиям",
 		Grants: grantAll(PermSystemRead, PermEventsRead, PermEventsExport, PermApplicationsRead, PermProvidersRead,
-			PermPoliciesRead, PermPoliciesTest, PermAlertsRead, PermAlertsManage, PermAlertRulesRead)},
+			PermPoliciesRead, PermPoliciesTest, PermAlertsRead, PermAlertsManage, PermAlertRulesRead, PermModelPricesRead, PermBudgetsRead)},
 	{ID: RoleAuditor, DisplayName: "Аудитор", Builtin: true,
 		Description: "Только просмотр: журнал аудита, отчёты, состояние соответствия. Ничего не меняет",
 		Grants:      auditorPermissions()},
