@@ -14,7 +14,7 @@ import (
 
 // Срок хранения закрытых оповещений (решение волны B этапа 3, ADR-0020):
 // закрытые хранятся DefaultRetentionDays и затем удаляются фоновой задачей
-// вместе со ссылками и историей; открытые и «в работе» не
+// вместе со ссылками, историей и журналом доставки; открытые и «в работе» не
 // удаляются никогда; связанные с инцидентом — по сроку инцидента (3.16).
 const (
 	DefaultRetentionDays = 365
@@ -36,8 +36,8 @@ type RetentionStore interface {
 	// SetRetentionDays меняет срок под блокировкой строки настроек: fn
 	// получает прежний срок и возвращает запись аудита той же транзакции.
 	SetRetentionDays(ctx context.Context, days int, fn func(old int) (audit.Entry, error)) (int, error)
-	// PurgeExpired удаляет одну пачку истёкших закрытых оповещений;
-	// возвращает число удалённых оповещений.
+	// PurgeExpired удаляет одну пачку истёкших закрытых оповещений и
+	// тестовых доставок; возвращает число удалённых оповещений.
 	PurgeExpired(ctx context.Context) (int, error)
 }
 
@@ -95,12 +95,19 @@ func (s *PGStore) PurgeExpired(ctx context.Context) (int, error) {
 		if err != nil {
 			return err
 		}
-		if len(victims) == 0 {
+		// Тестовые отправки журнала доставки (задача 3.13) — по тому же сроку.
+		tests, err := tx.Exec(ctx, `DELETE FROM alert_deliveries WHERE org_id = $1 AND alert_id IS NULL
+			AND created_at < now() - make_interval(days => $2)`, s.orgID, days)
+		if err != nil {
+			return dbErr(err)
+		}
+		if len(victims) == 0 && tests.RowsAffected() == 0 {
 			return nil
 		}
 		for _, q := range []string{
 			`DELETE FROM alert_events WHERE alert_id = ANY($1::uuid[])`,
 			`DELETE FROM alert_history WHERE alert_id = ANY($1::uuid[])`,
+			`DELETE FROM alert_deliveries WHERE alert_id = ANY($1::uuid[])`,
 			`DELETE FROM alerts WHERE id = ANY($1::uuid[])`,
 		} {
 			if _, err := tx.Exec(ctx, q, victims); err != nil {
@@ -110,7 +117,8 @@ func (s *PGStore) PurgeExpired(ctx context.Context) (int, error) {
 		n = len(victims)
 		return s.audit.RecordTx(ctx, tx, audit.Entry{
 			OrgID: s.orgID, Actor: systemBy.Actor, Action: "alert.retention", Object: audit.Object{Type: "alerts"},
-			Result: audit.ResultSuccess, Details: map[string]any{"alerts": n, "retention_days": days},
+			Result: audit.ResultSuccess, Details: map[string]any{"alerts": n, "test_deliveries": tests.RowsAffected(),
+				"retention_days": days},
 		})
 	})
 	if err != nil {

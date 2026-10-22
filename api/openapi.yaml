@@ -2605,6 +2605,175 @@ paths:
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ProblemInternal' }
         '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/notify-channels:
+    get:
+      summary: Каналы уведомлений
+      description: |
+        Право `notify_channels.read`. Все каналы организации (не больше 50). Секретов в ответе нет:
+        `secrets_set` перечисляет заданные (`password`, `url`, `signing_key`), у webhook вместо адреса —
+        `settings.url_origin` (схема, узел и порт).
+      x-permission: notify_channels.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      responses:
+        '200':
+          description: Каналы
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NotifyChannelList' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    post:
+      summary: Создать канал уведомлений
+      description: |
+        Право `notify_channels.manage` (признак `security`: только администратор безопасности, не
+        токену). Типы: `email` (SMTP с обязательным STARTTLS), `webhook` (только https, подпись
+        `AISec-Signature`), `syslog` (RFC 5424 по TLS, JSON или CEF). Для всех типов обязательны
+        корневые сертификаты получателя `settings.ca_pem` (системное хранилище не используется).
+        Секреты (`secrets.password`, `secrets.url`, `secrets.signing_key`) шифруются ключом данных и
+        больше не показываются. Не больше 50 каналов — иначе 422; повтор названия — 409. Пишет
+        `notify_channel.create` (без секретов).
+      x-permission: notify_channels.manage
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NotifyChannelInput' }
+      responses:
+        '201':
+          description: Канал создан
+          headers:
+            Location: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NotifyChannel' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '409': { $ref: '#/components/responses/ProblemConflict' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '422': { $ref: '#/components/responses/ProblemUnprocessable' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/notify-channels/{id}:
+    get:
+      summary: Канал уведомлений
+      description: Право `notify_channels.read`. Без секретов.
+      x-permission: notify_channels.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/NotifyChannelID'
+      responses:
+        '200':
+          description: Канал
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NotifyChannel' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    put:
+      summary: Изменить канал уведомлений
+      description: |
+        Право `notify_channels.manage`. Полная замена настроек; `version` — версия, которую открыли
+        для изменения (устаревшая — 409). Тип канала не меняется. Секрет, не переданный в `secrets`,
+        остаётся прежним; пустая строка удаляет необязательный секрет. Каналы не удаляются —
+        отключаются. Ослабление (DM-40) — отключение, повышение `min_severity`, смена узла, порта или
+        адреса webhook, смена корневых сертификатов, удаление адресата письма — пишется с
+        `weakening: true` и требует текущего пароля (`password`) или кода TOTP (`code`): без них
+        403, неверное значение — 403 `reauthentication_failed`. Пишет `notify_channel.update` (до,
+        после, какие секреты изменены — без значений).
+      x-permission: notify_channels.manage
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/NotifyChannelID'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NotifyChannelUpdate' }
+      responses:
+        '200':
+          description: Канал изменён
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NotifyChannel' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '409': { $ref: '#/components/responses/ProblemConflict' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/notify-channels/{id}/test:
+    post:
+      summary: Тестовая отправка в канал
+      description: |
+        Право `notify_channels.manage`. Одна попытка отправки тестового уведомления (в том числе в
+        отключённый канал — до включения); итог — строка журнала доставки с `kind: test` и код
+        ошибки без текста ответа получателя. Не чаще 5 раз в минуту на канал — иначе 429. Пишет
+        `notify_channel.test` (итог, код ошибки).
+      x-permission: notify_channels.manage
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/NotifyChannelID'
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '200':
+          description: Итог отправки (status sent или failed)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NotifyDelivery' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/notify-channels/{id}/deliveries:
+    get:
+      summary: Журнал доставки канала
+      description: |
+        Право `notify_channels.read`. Последние строки журнала доставки, новые сначала (`limit` — от
+        1 до 200, по умолчанию 50). Без содержимого запросов и секретов. Повторы: 5 попыток с
+        задержкой 30 с, 2, 8 и 10 минут; после пятой — `failed` и оповещение «Уведомление не
+        доставлено» (DM-44).
+      x-permission: notify_channels.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/NotifyChannelID'
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        '200':
+          description: Журнал доставки
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NotifyDeliveryList' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
 components:
   securitySchemes:
     appKey:
@@ -2707,6 +2876,12 @@ components:
       in: path
       required: true
       description: ID правила оповещения (UUIDv7)
+      schema: { type: string, format: uuid }
+    NotifyChannelID:
+      name: id
+      in: path
+      required: true
+      description: ID канала уведомлений (UUIDv7)
       schema: { type: string, format: uuid }
     From:
       name: from
@@ -4189,6 +4364,103 @@ components:
         retention_days: { type: integer, minimum: 90, maximum: 1825 }
         password: { type: string, maxLength: 1024, format: password, description: 'Текущий пароль, если срок сокращается' }
         code: { type: string, maxLength: 64, description: 'Код из приложения-аутентификатора вместо пароля' }
+    NotifyChannelSettings:
+      type: object
+      additionalProperties: false
+      description: |
+        Настройки без секретов. Почта — host, port (587), username, from, to (1–20 адресов); webhook —
+        format (generic, mattermost); syslog — host, port (6514), format (json, cef), facility (0–23,
+        по умолчанию 10), hostname (по умолчанию aisec-server). Для всех — ca_pem.
+      properties:
+        host: { type: string, maxLength: 253 }
+        port: { type: integer, minimum: 1, maximum: 65535 }
+        ca_pem: { type: string, maxLength: 262144, description: Корневые сертификаты получателя в PEM }
+        username: { type: string, maxLength: 256 }
+        from: { type: string, format: email, maxLength: 254 }
+        to: { type: array, maxItems: 20, items: { type: string, format: email, maxLength: 254 } }
+        format: { type: string, enum: [generic, mattermost, json, cef] }
+        facility: { type: integer, minimum: 0, maximum: 23 }
+        hostname: { type: string, maxLength: 255 }
+        url_origin: { type: string, readOnly: true, description: Схема, узел и порт адреса webhook (сам адрес — секрет) }
+    NotifyChannelSecrets:
+      type: object
+      additionalProperties: false
+      description: Секреты канала; поле не передано — прежнее значение, пустая строка — удалить необязательный.
+      properties:
+        password: { type: string, maxLength: 1024, format: password, description: Пароль SMTP }
+        url: { type: string, maxLength: 2048, format: password, description: Адрес webhook https:// }
+        signing_key: { type: string, minLength: 32, maxLength: 512, format: password, description: Ключ подписи webhook }
+    NotifyChannelInput:
+      type: object
+      required: [name, type, settings]
+      additionalProperties: false
+      properties:
+        name: { type: string, minLength: 1, maxLength: 200 }
+        type: { type: string, enum: [email, webhook, syslog] }
+        enabled: { type: boolean, default: true }
+        min_severity: { $ref: '#/components/schemas/AlertSeverity' }
+        settings: { $ref: '#/components/schemas/NotifyChannelSettings' }
+        secrets: { $ref: '#/components/schemas/NotifyChannelSecrets' }
+        version: { type: integer }
+    NotifyChannelUpdate:
+      type: object
+      required: [name, settings, version]
+      additionalProperties: false
+      properties:
+        name: { type: string, minLength: 1, maxLength: 200 }
+        type: { type: string, enum: [email, webhook, syslog], description: Не меняется }
+        enabled: { type: boolean }
+        min_severity: { $ref: '#/components/schemas/AlertSeverity' }
+        settings: { $ref: '#/components/schemas/NotifyChannelSettings' }
+        secrets: { $ref: '#/components/schemas/NotifyChannelSecrets' }
+        version: { type: integer, minimum: 1 }
+        password: { type: string, maxLength: 1024, format: password, description: 'Текущий пароль, если изменение ослабляет доставку' }
+        code: { type: string, maxLength: 64, description: 'Код из приложения-аутентификатора вместо пароля' }
+    NotifyChannel:
+      type: object
+      required: [id, name, type, enabled, min_severity, settings, secrets_set, version, created_at, created_by, updated_at, updated_by]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        type: { type: string, enum: [email, webhook, syslog] }
+        enabled: { type: boolean }
+        min_severity: { $ref: '#/components/schemas/AlertSeverity' }
+        settings: { $ref: '#/components/schemas/NotifyChannelSettings' }
+        secrets_set: { type: array, items: { type: string, enum: [password, url, signing_key] } }
+        version: { type: integer }
+        created_at: { type: string, format: date-time }
+        created_by: { type: string }
+        updated_at: { type: string, format: date-time }
+        updated_by: { type: string }
+    NotifyChannelList:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/NotifyChannel' } }
+    NotifyDelivery:
+      type: object
+      required: [id, channel_id, kind, status, attempts, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        channel_id: { type: string, format: uuid }
+        alert_id: { type: string, format: uuid }
+        kind: { type: string, enum: [alert, test] }
+        status: { type: string, enum: [pending, sent, failed] }
+        attempts: { type: integer, minimum: 0, maximum: 5 }
+        next_at: { type: string, format: date-time, description: Следующая попытка (только pending) }
+        error:
+          type: string
+          description: |
+            Код ошибки без текста ответа получателя: dial, tls, starttls_unsupported, auth, rejected,
+            timeout, write, config, channel_disabled, internal, http_NNN.
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        sent_at: { type: string, format: date-time }
+    NotifyDeliveryList:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/NotifyDelivery' } }
     AlertRule:
       type: object
       required: [id, kind, name, description, enabled, locked, severity, condition, group_by, suppress_minutes,

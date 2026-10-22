@@ -28,9 +28,10 @@ export CGO_ENABLED ?= 0
 # Пути, где cgo разрешён по ADR (через запятую). Пока таких нет.
 CGO_ALLOWED :=
 # Пути, где разрешены сетевые клиенты (ЗИ.2, H-Р11): шлюз (регистрация, пакет,
-# heartbeat, отправка событий) и провайдеры LLM. Уведомления (internal/notify)
-# добавятся сюда вместе с отправкой SMTP, syslog и webhook.
-NET_CLIENT_ALLOWED := cmd/aisec-gateway,internal/gateway,internal/providers
+# heartbeat, отправка событий), провайдеры LLM и каналы уведомлений
+# internal/notify — SMTP, webhook, syslog только по адресам администратора
+# (Р4, задача 3.13; обоснование — docs/cert/attack-surface.md).
+NET_CLIENT_ALLOWED := cmd/aisec-gateway,internal/gateway,internal/providers,internal/notify
 
 # Версии инструментов разработки (ТЗ, 8.2). Меняются только вместе с
 # docs/cert/components.yaml (scope: build) и сборочным образом.

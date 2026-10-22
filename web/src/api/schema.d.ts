@@ -1697,7 +1697,8 @@ export interface paths {
          *     отозванного шлюза — 403 без уточнения причины. Токен гасится в одной транзакции с
          *     выпуском сертификата и записью `gateway.register`; отказы тоже пишутся в аудит (без
          *     токена). Повторная регистрация того же шлюза (новый токен с `-reregister`) заменяет
-         *     сертификат: прежний перестаёт приниматься внутренним API сразу. Без внутреннего УЦ
+         *     сертификат и закреплённый ключ получателя (`bundle_key`): прежний сертификат перестаёт
+         *     приниматься внутренним API сразу. Без внутреннего УЦ
          *     на сервере (`-ca-cert`) — 503. Предел частоты — 10 запросов в минуту с адреса.
          *     Без `Idempotency-Key`: ответ содержит выпущенный сертификат.
          */
@@ -4604,6 +4605,396 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/alert-settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Срок хранения оповещений
+         * @description Право `alert_rules.read`. Срок хранения закрытых оповещений, суток (по умолчанию 365).
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Настройки */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["AlertSettings"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        /**
+         * Изменить срок хранения оповещений
+         * @description Право `alert_rules.manage`. Закрытые оповещения без инцидента старше срока удаляются фоновой
+         *     задачей раз в час вместе со ссылками на события, историей и доставками (`alert.retention` в
+         *     аудите); открытые и принятые в работу не удаляются никогда. Срок — от 90 до 1825 суток.
+         *     Сокращение необратимо и требует текущего пароля (`password`) или кода TOTP (`code`): без них
+         *     403, неверное значение — 403 `reauthentication_failed`; пишется с `weakening: true` и
+         *     порождает оповещение «Ослабление защиты» (DM-40). До первичной настройки — 409. Пишет
+         *     `alert.settings_changed` (до, после).
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["AlertSettingsUpdate"];
+                };
+            };
+            responses: {
+                /** @description Срок изменён */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["AlertSettings"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/notify-channels": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Каналы уведомлений
+         * @description Право `notify_channels.read`. Все каналы организации (не больше 50). Секретов в ответе нет:
+         *     `secrets_set` перечисляет заданные (`password`, `url`, `signing_key`), у webhook вместо адреса —
+         *     `settings.url_origin` (схема, узел и порт).
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Каналы */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["NotifyChannelList"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        /**
+         * Создать канал уведомлений
+         * @description Право `notify_channels.manage` (признак `security`: только администратор безопасности, не
+         *     токену). Типы: `email` (SMTP с обязательным STARTTLS), `webhook` (только https, подпись
+         *     `AISec-Signature`), `syslog` (RFC 5424 по TLS, JSON или CEF). Для всех типов обязательны
+         *     корневые сертификаты получателя `settings.ca_pem` (системное хранилище не используется).
+         *     Секреты (`secrets.password`, `secrets.url`, `secrets.signing_key`) шифруются ключом данных и
+         *     больше не показываются. Не больше 50 каналов — иначе 422; повтор названия — 409. Пишет
+         *     `notify_channel.create` (без секретов).
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                    /** @description Ключ повторяемости создающего запроса, 1–64 символа `[A-Za-z0-9._-]` */
+                    "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["NotifyChannelInput"];
+                };
+            };
+            responses: {
+                /** @description Канал создан */
+                201: {
+                    headers: {
+                        Location?: string;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["NotifyChannel"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/notify-channels/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Канал уведомлений
+         * @description Право `notify_channels.read`. Без секретов.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description ID канала уведомлений (UUIDv7) */
+                    id: components["parameters"]["NotifyChannelID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Канал */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["NotifyChannel"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        /**
+         * Изменить канал уведомлений
+         * @description Право `notify_channels.manage`. Полная замена настроек; `version` — версия, которую открыли
+         *     для изменения (устаревшая — 409). Тип канала не меняется. Секрет, не переданный в `secrets`,
+         *     остаётся прежним; пустая строка удаляет необязательный секрет. Каналы не удаляются —
+         *     отключаются. Ослабление (DM-40) — отключение, повышение `min_severity`, смена узла, порта или
+         *     адреса webhook, смена корневых сертификатов, удаление адресата письма — пишется с
+         *     `weakening: true` и требует текущего пароля (`password`) или кода TOTP (`code`): без них
+         *     403, неверное значение — 403 `reauthentication_failed`. Пишет `notify_channel.update` (до,
+         *     после, какие секреты изменены — без значений).
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID канала уведомлений (UUIDv7) */
+                    id: components["parameters"]["NotifyChannelID"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["NotifyChannelUpdate"];
+                };
+            };
+            responses: {
+                /** @description Канал изменён */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["NotifyChannel"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/notify-channels/{id}/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Тестовая отправка в канал
+         * @description Право `notify_channels.manage`. Одна попытка отправки тестового уведомления (в том числе в
+         *     отключённый канал — до включения); итог — строка журнала доставки с `kind: test` и код
+         *     ошибки без текста ответа получателя. Не чаще 5 раз в минуту на канал — иначе 429. Пишет
+         *     `notify_channel.test` (итог, код ошибки).
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID канала уведомлений (UUIDv7) */
+                    id: components["parameters"]["NotifyChannelID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Итог отправки (status sent или failed) */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["NotifyDelivery"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/notify-channels/{id}/deliveries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Журнал доставки канала
+         * @description Право `notify_channels.read`. Последние строки журнала доставки, новые сначала (`limit` — от
+         *     1 до 200, по умолчанию 50). Без содержимого запросов и секретов. Повторы: 5 попыток с
+         *     задержкой 30 с, 2, 8 и 10 минут; после пятой — `failed` и оповещение «Уведомление не
+         *     доставлено» (DM-44).
+         */
+        get: {
+            parameters: {
+                query?: {
+                    limit?: number;
+                };
+                header?: never;
+                path: {
+                    /** @description ID канала уведомлений (UUIDv7) */
+                    id: components["parameters"]["NotifyChannelID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Журнал доставки */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["NotifyDeliveryList"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -4690,10 +5081,10 @@ export interface components {
             };
             notifications: {
                 /** @enum {string} */
-                condition: "account_lockout" | "access_denied" | "audit_chain" | "audit_storage" | "integrity" | "time_sync" | "config_bundle" | "config_bundle_lag" | "test_build";
+                condition: "account_lockout" | "access_denied" | "audit_chain" | "audit_storage" | "integrity" | "time_sync" | "config_bundle" | "config_bundle_lag" | "test_build" | "gateway_offline" | "events_dropped" | "reports_stale" | "cert_expiry";
                 /** @enum {string} */
-                requirement: "ИАФ.4" | "УПД.6" | "РСБ.4" | "РСБ.5" | "ОЦЛ.3" | "ОЦЛ.5" | "ВРМ.1";
-                /** @description Компоненты с активным условием (integrity — server или gateway:<ID>, config_bundle_lag — gateway:<ID>); каждое ведётся отдельно и пишется в system.alert (В18 ревью 2.r3b). test_build (ОЦЛ.1) — компоненты, собранные с тестовым ключом манифеста (Н34 ревью 2.r4); integrity шлюза поднимает и откат выпуска, и чужой ключ проверки пакетов (В19, В20 ревью 2.r4) */
+                requirement: "ИАФ.4" | "ИАФ.10" | "УПД.6" | "РСБ.4" | "РСБ.5" | "РСБ.7" | "ОЦЛ.1" | "ОЦЛ.3" | "ОЦЛ.5" | "ВРМ.1";
+                /** @description Компоненты с активным условием (integrity — server или gateway:<ID>, config_bundle_lag, gateway_offline, events_dropped, reports_stale, cert_expiry — gateway:<ID>); каждое ведётся отдельно и пишется в system.alert (В18 ревью 2.r3b), а возникшее условие порождает оповещение системного правила (задача 3.11 этапа 3, DM-42–DM-44). test_build (ОЦЛ.1) — компоненты, собранные с тестовым ключом манифеста (Н34 ревью 2.r4); integrity шлюза поднимает и откат выпуска, и чужой ключ проверки пакетов (В19, В20 ревью 2.r4). DM-44: gateway_offline — шлюз не на связи дольше трёх периодов heartbeat, events_dropped — счётчик отброшенных событий вырос за 15 минут, cert_expiry — сертификат истекает меньше чем через 14 суток, reports_stale — итог целостности старше двух часов или не приходит (Н29) */
                 components?: string[];
                 title: string;
                 active: boolean;
@@ -4714,6 +5105,8 @@ export interface components {
             /** @description Причина итога целостности; у самотеста не задаётся */
             reason?: string;
             failed: number;
+            /** @description Итог старше двух периодов проверки — «нет данных» (Н29); только у целостности шлюза */
+            stale?: boolean;
         };
         StatusIntegrity: {
             component: string;
@@ -4804,6 +5197,13 @@ export interface components {
             token: string;
             /** @description CSR (PKCS#10) в PEM на ключ ECDSA P-256 */
             csr: string;
+            /**
+             * @description Открытый ключ получателя секретов пакета конфигурации (X25519, 32 байта,
+             *     base64url без дополнения; ADR-0018, п. 7). Сервер закрепляет его за шлюзом:
+             *     пакет для другого ключа не выдаётся (409 `bundle_key_mismatch` на внутреннем
+             *     порту). Нет поля — ключ закрепляется при первом запросе пакета.
+             */
+            bundle_key?: string;
         };
         GatewayRegistration: {
             /**
@@ -5404,7 +5804,7 @@ export interface components {
             status: number;
             detail: string;
             /** @enum {string} */
-            code: "invalid_request" | "unauthorized" | "forbidden" | "not_found" | "method_not_allowed" | "conflict" | "payload_too_large" | "unsupported_media_type" | "unprocessable" | "rate_limited" | "internal_error" | "service_unavailable" | "reauthentication_failed";
+            code: "invalid_request" | "unauthorized" | "forbidden" | "not_found" | "method_not_allowed" | "conflict" | "payload_too_large" | "unsupported_media_type" | "unprocessable" | "rate_limited" | "internal_error" | "service_unavailable" | "reauthentication_failed" | "bundle_key_mismatch";
             errors?: {
                 field: string;
                 detail: string;
@@ -5927,6 +6327,143 @@ export interface components {
             /** @description Код из приложения-аутентификатора вместо пароля */
             code?: string;
         };
+        AlertSettings: {
+            /** @description Срок хранения закрытых оповещений, суток */
+            retention_days: number;
+        };
+        AlertSettingsUpdate: {
+            retention_days: number;
+            /**
+             * Format: password
+             * @description Текущий пароль, если срок сокращается
+             */
+            password?: string;
+            /** @description Код из приложения-аутентификатора вместо пароля */
+            code?: string;
+        };
+        /**
+         * @description Настройки без секретов. Почта — host, port (587), username, from, to (1–20 адресов); webhook —
+         *     format (generic, mattermost); syslog — host, port (6514), format (json, cef), facility (0–23,
+         *     по умолчанию 10), hostname (по умолчанию aisec-server). Для всех — ca_pem.
+         */
+        NotifyChannelSettings: {
+            host?: string;
+            port?: number;
+            /** @description Корневые сертификаты получателя в PEM */
+            ca_pem?: string;
+            username?: string;
+            /** Format: email */
+            from?: string;
+            to?: string[];
+            /** @enum {string} */
+            format?: "generic" | "mattermost" | "json" | "cef";
+            facility?: number;
+            hostname?: string;
+            /** @description Схема */
+            readonly url_origin?: string;
+        };
+        /** @description Секреты канала; поле не передано — прежнее значение, пустая строка — удалить необязательный. */
+        NotifyChannelSecrets: {
+            /**
+             * Format: password
+             * @description Пароль SMTP
+             */
+            password?: string;
+            /**
+             * Format: password
+             * @description Адрес webhook https://
+             */
+            url?: string;
+            /**
+             * Format: password
+             * @description Ключ подписи webhook
+             */
+            signing_key?: string;
+        };
+        NotifyChannelInput: {
+            name: string;
+            /** @enum {string} */
+            type: "email" | "webhook" | "syslog";
+            /** @default true */
+            enabled: boolean;
+            min_severity?: components["schemas"]["AlertSeverity"];
+            settings: components["schemas"]["NotifyChannelSettings"];
+            secrets?: components["schemas"]["NotifyChannelSecrets"];
+            version?: number;
+        };
+        NotifyChannelUpdate: {
+            name: string;
+            /**
+             * @description Не меняется
+             * @enum {string}
+             */
+            type?: "email" | "webhook" | "syslog";
+            enabled?: boolean;
+            min_severity?: components["schemas"]["AlertSeverity"];
+            settings: components["schemas"]["NotifyChannelSettings"];
+            secrets?: components["schemas"]["NotifyChannelSecrets"];
+            version: number;
+            /**
+             * Format: password
+             * @description Текущий пароль, если изменение ослабляет доставку
+             */
+            password?: string;
+            /** @description Код из приложения-аутентификатора вместо пароля */
+            code?: string;
+        };
+        NotifyChannel: {
+            /** Format: uuid */
+            id: string;
+            name: string;
+            /** @enum {string} */
+            type: "email" | "webhook" | "syslog";
+            enabled: boolean;
+            min_severity: components["schemas"]["AlertSeverity"];
+            settings: components["schemas"]["NotifyChannelSettings"];
+            secrets_set: ("password" | "url" | "signing_key")[];
+            version: number;
+            /** Format: date-time */
+            created_at: string;
+            created_by: string;
+            /** Format: date-time */
+            updated_at: string;
+            updated_by: string;
+        };
+        NotifyChannelList: {
+            items: components["schemas"]["NotifyChannel"][];
+        };
+        NotifyDelivery: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            channel_id: string;
+            /** Format: uuid */
+            alert_id?: string;
+            /** @enum {string} */
+            kind: "alert" | "test";
+            /** @enum {string} */
+            status: "pending" | "sent" | "failed";
+            attempts: number;
+            /**
+             * Format: date-time
+             * @description Следующая попытка (только pending)
+             */
+            next_at?: string;
+            /**
+             * @description Код ошибки без текста ответа получателя: dial, tls, starttls_unsupported, auth, rejected,
+             *     timeout, write, config, channel_disabled, internal, http_NNN.
+             */
+            error?: string;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+            /** Format: date-time */
+            sent_at?: string;
+        };
+        NotifyDeliveryList: {
+            items: components["schemas"]["NotifyDelivery"][];
+        };
         AlertRule: {
             /** Format: uuid */
             id: string;
@@ -6245,6 +6782,8 @@ export interface components {
         AlertID: string;
         /** @description ID правила оповещения (UUIDv7) */
         AlertRuleID: string;
+        /** @description ID канала уведомлений (UUIDv7) */
+        NotifyChannelID: string;
         /** @description Начало периода включительно (RFC 3339); по умолчанию to минус 24 часа */
         From: string;
         /** @description Конец периода, не включая (RFC 3339); по умолчанию — текущее время */

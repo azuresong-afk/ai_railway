@@ -37,6 +37,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/integrity"
 	"github.com/azuresong-afk/ai_railway/internal/integrity/selftest"
 	"github.com/azuresong-afk/ai_railway/internal/keyring"
+	"github.com/azuresong-afk/ai_railway/internal/notify"
 	"github.com/azuresong-afk/ai_railway/internal/policy/bundle/build"
 	"github.com/azuresong-afk/ai_railway/internal/policy/versions"
 	"github.com/azuresong-afk/ai_railway/internal/store"
@@ -289,6 +290,23 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	// правил; закрытые оповещения удаляются по сроку хранения.
 	auditLog.SetRecordHook(alertStore.OnAudit)
 	go alerting.RunRetention(ctx, alertStore, alerting.RetentionInterval, logger)
+	// Каналы уведомлений (задача 3.13, Р4): адреса задаёт администратор,
+	// очередь доставки — в БД. Постановку новых оповещений в очередь
+	// подключает задача 3.14.
+	notifyStore, err := notify.NewPGStore(db.Pool(), auditLog, rnd, audit.DefaultOrgID)
+	if err != nil {
+		return err
+	}
+	notifyTransport, err := notify.NewTransport(p, version, notify.DefaultSendTimeout)
+	if err != nil {
+		return err
+	}
+	notifySvc, err := notify.New(notify.Options{Store: notifyStore, Box: box, Provider: p, Transport: notifyTransport,
+		OrgID: audit.DefaultOrgID})
+	if err != nil {
+		return err
+	}
+	go notifySvc.RunDispatcher(ctx, notify.DispatchInterval, logger)
 	if err := events.Maintain(ctx, eventStore, logger); err != nil {
 		return fmt.Errorf("секции событий: %w", err)
 	}
@@ -364,6 +382,7 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		Status:    statusSvc,
 		Events:    eventStore,
 		Alerts:    alertsSvc,
+		Notify:    notifySvc,
 		Audit:     auditLog,
 		Fallback:  console,
 
