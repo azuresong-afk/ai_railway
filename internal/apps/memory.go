@@ -308,7 +308,7 @@ func (m *Memory) insertKey(k Key) error {
 }
 
 // UpdateKey — см. Store.
-func (m *Memory) UpdateKey(_ context.Context, orgID, id string, fn func(*Key, Application) (*Key, audit.Entry, error)) (Key, error) {
+func (m *Memory) UpdateKey(_ context.Context, orgID, id string, now time.Time, fn func(*Key, Application, int) (*Key, audit.Entry, error)) (Key, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	k, ok := m.keys[id]
@@ -321,7 +321,7 @@ func (m *Memory) UpdateKey(_ context.Context, orgID, id string, fn func(*Key, Ap
 	}
 	old := cloneKey(k)
 	k = cloneKey(k)
-	created, rec, err := fn(&k, a)
+	created, rec, err := fn(&k, a, len(m.activeKeys(k.AppID, now)))
 	if err != nil {
 		return Key{}, err
 	}

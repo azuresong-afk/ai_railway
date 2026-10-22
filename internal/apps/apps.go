@@ -297,9 +297,10 @@ type Store interface {
 	// CreateKey блокирует приложение, считает его действующие ключи и
 	// сохраняет ключ, который вернула fn.
 	CreateKey(ctx context.Context, orgID, appID string, now time.Time, fn func(a Application, active int) (Key, audit.Entry, error)) (Key, error)
-	// UpdateKey блокирует ключ: fn меняет срок или отметку отзыва и может
-	// вернуть новый ключ (ротация), который сохраняется той же транзакцией.
-	UpdateKey(ctx context.Context, orgID, id string, fn func(k *Key, a Application) (*Key, audit.Entry, error)) (Key, error)
+	// UpdateKey блокирует приложение и ключ, считает действующие на now
+	// ключи приложения: fn меняет срок или отметку отзыва и может вернуть
+	// новый ключ (ротация), который сохраняется той же транзакцией.
+	UpdateKey(ctx context.Context, orgID, id string, now time.Time, fn func(k *Key, a Application, active int) (*Key, audit.Entry, error)) (Key, error)
 	Key(ctx context.Context, orgID, id string) (Key, error)
 	// Keys — ключи приложения, новые первыми, не больше MaxKeysListed.
 	Keys(ctx context.Context, orgID, appID string) ([]Key, error)

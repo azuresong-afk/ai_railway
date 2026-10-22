@@ -489,6 +489,21 @@ func TestKeyIssue(t *testing.T) {
 	if _, _, err := e.svc.IssueKey(ctx, e.by, a.ID, "", apps.KeyInput{Name: "over"}); !errors.Is(err, apps.ErrTooManyKeys) {
 		t.Fatalf("лимит: %v", err)
 	}
+	// Ротация тоже упирается в лимит (Н24 ревью 2.r3b): прежний ключ
+	// действует до конца перекрытия, новый — ещё один действующий.
+	keys, err := e.svc.Keys(ctx, a.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := e.svc.RotateKey(ctx, e.by, keys[0].ID, "", apps.RotateInput{}); !errors.Is(err, apps.ErrTooManyKeys) {
+		t.Fatalf("ротация сверх лимита: %v", err)
+	}
+	if _, err := e.svc.RevokeKey(ctx, e.by, keys[1].ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := e.svc.RotateKey(ctx, e.by, keys[0].ID, "", apps.RotateInput{}); err != nil {
+		t.Fatalf("ротация в пределе: %v", err)
+	}
 	if _, _, err := e.svc.IssueKey(ctx, e.by, nobody, "", apps.KeyInput{Name: "x"}); !errors.Is(err, apps.ErrNotFound) {
 		t.Fatalf("нет приложения: %v", err)
 	}

@@ -553,7 +553,7 @@ func (s *PGStore) CreateKey(ctx context.Context, orgID, appID string, now time.T
 }
 
 // UpdateKey — см. Store.
-func (s *PGStore) UpdateKey(ctx context.Context, orgID, id string, fn func(*Key, Application) (*Key, audit.Entry, error)) (Key, error) {
+func (s *PGStore) UpdateKey(ctx context.Context, orgID, id string, now time.Time, fn func(*Key, Application, int) (*Key, audit.Entry, error)) (Key, error) {
 	var out Key
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
 		k, err := scanKey(tx.QueryRow(ctx, `SELECT `+keyCols+` FROM app_keys WHERE org_id = $1 AND id = $2`, orgID, id))
@@ -568,7 +568,12 @@ func (s *PGStore) UpdateKey(ctx context.Context, orgID, id string, fn func(*Key,
 		if k, err = scanKey(tx.QueryRow(ctx, `SELECT `+keyCols+` FROM app_keys WHERE org_id = $1 AND id = $2 FOR UPDATE`, orgID, id)); err != nil {
 			return err
 		}
-		created, rec, err := fn(&k, a)
+		var active int
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM app_keys WHERE app_id = $1 AND revoked_at IS NULL AND expires_at > $2`,
+			k.AppID, now).Scan(&active); err != nil {
+			return err
+		}
+		created, rec, err := fn(&k, a, active)
 		if err != nil {
 			return err
 		}
