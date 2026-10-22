@@ -89,6 +89,16 @@ function EventsRoute({ me }: { me: Me }) {
   );
 }
 
+const AppsScreen = lazy(() => import("../apps/AppsScreen").then((m) => ({ default: m.AppsScreen })));
+const PoliciesScreen = lazy(() => import("../policies/PoliciesScreen").then((m) => ({ default: m.PoliciesScreen })));
+
+function GuardedRoute({ me, perm, title, children }: { me: Me; perm: string; title: string; children: React.ReactNode }) {
+  if (!me.permissions.includes(perm)) {
+    return <EmptyState title={`Нет доступа: ${title}`} action={<p className="text-sm text-muted">Обратитесь к администратору.</p>} />;
+  }
+  return <Suspense fallback={null}>{children}</Suspense>;
+}
+
 const AdminScreen = lazy(() => import("../admin/AdminScreen").then((m) => ({ default: m.AdminScreen })));
 const SystemScreen = lazy(() => import("../system/SystemScreen").then((m) => ({ default: m.SystemScreen })));
 
@@ -224,6 +234,8 @@ function Frame({ me, onLogout }: { me: Me; onLogout: () => void }) {
           <main className="min-w-0 flex-1 overflow-auto p-6">
             <Routes>
               <Route path="/events" element={<EventsRoute me={me} />} />
+              <Route path="/apps" element={<GuardedRoute me={me} perm="applications.read" title="приложения"><AppsScreen me={me} /></GuardedRoute>} />
+              <Route path="/policies" element={<GuardedRoute me={me} perm="policies.read" title="политики"><PoliciesScreen me={me} /></GuardedRoute>} />
               <Route path="/admin" element={<AdminRoute me={me} />} />
               <Route path="/system" element={<SystemRoute me={me} />} />
               <Route path="*" element={<Stub />} />
