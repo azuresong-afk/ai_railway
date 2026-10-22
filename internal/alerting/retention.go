@@ -146,7 +146,7 @@ func (s *Service) Retention(ctx context.Context) (RetentionSettings, error) {
 // паролем или кодом TOTP (как В13 этапа 2) и пишется с weakening (DM-40).
 func (s *Service) SetRetention(ctx context.Context, by By, days int) (RetentionSettings, error) {
 	if days < MinRetentionDays || days > MaxRetentionDays {
-		return RetentionSettings{}, invalidf("retention_days: от %d до %d суток", MinRetentionDays, MaxRetentionDays)
+		return RetentionSettings{}, &InputError{Errs: []error{fmt.Errorf("retention_days: от %d до %d суток", MinRetentionDays, MaxRetentionDays)}}
 	}
 	if s.retention == nil {
 		return RetentionSettings{}, ErrNotSetUp
