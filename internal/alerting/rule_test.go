@@ -199,8 +199,8 @@ func TestUpdateRule(t *testing.T) {
 		t.Fatalf("после окна группировки: %+v", alerts)
 	}
 	// Подробности не содержат ничего, кроме правил и получателей.
-	if b, _ := json.Marshal(alerts[0].Details); strings.Contains(string(b), "password") {
-		t.Fatalf("подробности: %s", b)
+	if b, err := json.Marshal(alerts[0].Details); err != nil || strings.Contains(string(b), "password") {
+		t.Fatalf("подробности: %s %v", b, err)
 	}
 	// Предел числа правил.
 	for range MaxRules - 1 {

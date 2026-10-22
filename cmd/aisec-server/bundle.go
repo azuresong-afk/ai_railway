@@ -215,10 +215,6 @@ func loadServerCA(cfg *serverConfig, p aisecCrypto.Provider, t *serverTrust) (*s
 	return out, nil
 }
 
-// bundleReuse — сколько секунд опросы шлюзов получают уже собранный
-// результат без новой выборки данных (Н26 ревью 2.r3b).
-const bundleReuse = 5 * time.Second
-
 // newBundleRoutes — сборка и выдача пакетов конфигурации шлюзам (задача
 // 2.13): маршруты внутреннего порта. Изменения приложений и политик
 // проверяются сборкой при сохранении (В16 ревью 2.r3b).
@@ -244,8 +240,11 @@ func newBundleRoutes(cfg *serverConfig, p aisecCrypto.Provider, db *store.DB, au
 	if err != nil {
 		return nil, nil, err
 	}
+	// Пакет собирается заново только при смене счётчика изменений
+	// конфигурации (Н26, задача 3.34).
 	svc, err := build.New(build.Options{Apps: appsSvc, Policies: policiesSvc, Store: st, Audit: auditLog,
-		Sealer: sealer, Provider: p, Logger: logger, Reuse: bundleReuse})
+		Sealer: sealer, Provider: p, Logger: logger,
+		Revision: func(ctx context.Context) (int64, error) { return st.Revision(ctx, audit.DefaultOrgID) }})
 	if err != nil {
 		return nil, nil, err
 	}

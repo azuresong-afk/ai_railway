@@ -296,18 +296,18 @@ func TestImageRelease(t *testing.T) {
 	fx := gatewayFixture(t)
 	img := load(t, fx)
 	dir := t.TempDir()
-	if err := os.Mkdir(filepath.Join(dir, "bin"), 0o755); err != nil { //nolint:gosec // тест: каталог выпуска во временном каталоге, права как у поставки
+	if err := os.Mkdir(filepath.Join(dir, "bin"), 0o750); err != nil {
 		t.Fatal(err)
 	}
 	for in, out := range map[string]string{manifestFile: "aisec-manifest.json", signatureFile: "aisec-manifest.json.sig", binDir + "/aisec-gateway": "bin/aisec-gateway"} {
-		if err := os.WriteFile(filepath.Join(dir, out), img.Files[in].Data, 0o644); err != nil { //nolint:gosec // тест: файлы выпуска во временном каталоге, права как у поставки
+		if err := os.WriteFile(filepath.Join(dir, out), img.Files[in].Data, 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
 	if p := checkImage(img, "test", dir); len(p) > 0 {
 		t.Fatal(p)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "bin/aisec-gateway"), []byte("другой"), 0o644); err != nil { //nolint:gosec // тест: подмена бинарника во временном каталоге
+	if err := os.WriteFile(filepath.Join(dir, "bin/aisec-gateway"), []byte("другой"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if p := checkImage(img, "test", dir); len(p) != 1 || !strings.Contains(p[0], "отличается") {
@@ -387,8 +387,12 @@ func FuzzReadLayer(f *testing.F) {
 	f.Add(raw)
 	var gz bytes.Buffer
 	zw := gzip.NewWriter(&gz)
-	_, _ = zw.Write(raw) //nolint:gosec // тест: запись в bytes.Buffer не ошибается
-	_ = zw.Close()       //nolint:gosec // тест: запись в bytes.Buffer не ошибается
+	if _, err := zw.Write(raw); err != nil {
+		f.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		f.Fatal(err)
+	}
 	f.Add(gz.Bytes())
 	f.Add([]byte{gzipMagic0, gzipMagic1})
 	h := hasher(f)

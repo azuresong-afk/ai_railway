@@ -179,3 +179,19 @@ func (s *PGStore) Create(ctx context.Context, rec Record, entry audit.Entry) err
 	}
 	return nil
 }
+
+// Revision — счётчик изменений конфигурации организации (миграция
+// 0030_config_revision, задача 3.34): 0 — изменений ещё не было.
+func (s *PGStore) Revision(ctx context.Context, orgID string) (int64, error) {
+	ctx, cancel := pgCtx(ctx)
+	defer cancel()
+	var rev int64
+	err := s.db.QueryRow(ctx, `SELECT revision FROM config_revisions WHERE org_id = $1`, orgID).Scan(&rev)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("пакеты: счётчик изменений: %w", err)
+	}
+	return rev, nil
+}
