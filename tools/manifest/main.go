@@ -156,6 +156,10 @@ func loadSigner(p aisecCrypto.Provider, keyFile, testKey string) (aisecCrypto.Si
 	if err != nil {
 		return nil, err
 	}
+	// Тестовый ключ через -key — путь в поставку для ключа из репозитория (Н35).
+	if keyFile != "" && integrity.IsTestPublicKey(s.PublicKey()) {
+		return nil, fmt.Errorf("%s: это тестовый ключ репозитория — для поставки нужен ключ производителя", path)
+	}
 	if testKey != "" {
 		v, isTest, err := integrity.EmbeddedVerifier(p)
 		if err != nil {

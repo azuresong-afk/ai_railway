@@ -254,7 +254,6 @@ type s2GatewayEnv struct {
 	regDir     string // gateway.key, gateway.crt, ca.crt
 	stateDir   string
 	proxyAddr  string
-	gatewayID  string
 	proxy      *bundleProxy
 	bundleFile string
 }

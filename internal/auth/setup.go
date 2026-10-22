@@ -35,7 +35,7 @@ type SetupInput struct {
 // Умолчания первичной настройки (ТЗ 6.4, решение H-Р4).
 const (
 	DefaultTimezone      = "Europe/Moscow"
-	DefaultRetentionMode = "masked"
+	DefaultRetentionMode = RetentionMasked
 	maxTimezoneLen       = 64
 )
 
@@ -47,7 +47,10 @@ type InstallSettings struct {
 }
 
 // retentionModes — допустимые режимы хранения содержимого (ТЗ 5.5).
-var retentionModes = map[string]bool{"none": true, "masked": true, "full": true}
+// RetentionMasked — режим хранения по умолчанию: содержимое с маскированием.
+const RetentionMasked = "masked"
+
+var retentionModes = map[string]bool{"none": true, RetentionMasked: true, "full": true}
 
 // installSettings проверяет и дополняет умолчаниями выбор администратора.
 func installSettings(in SetupInput) (InstallSettings, error) {
@@ -58,8 +61,11 @@ func installSettings(in SetupInput) (InstallSettings, error) {
 	if cfg.RetentionMode == "" {
 		cfg.RetentionMode = DefaultRetentionMode
 	}
-	// «Local» и пустое имя LoadLocation принимает, но это не имя IANA.
-	if len(cfg.Timezone) > maxTimezoneLen || cfg.Timezone == "Local" || !utf8.ValidString(cfg.Timezone) {
+	// «Local» и пустое имя LoadLocation принимает, но это не имя IANA; без
+	// «/» из базы IANA годится только UTC — posixrules, localtime, Factory
+	// и подобные отклоняются (Н43 ревью 2.r4).
+	if len(cfg.Timezone) > maxTimezoneLen || !utf8.ValidString(cfg.Timezone) ||
+		cfg.Timezone != "UTC" && !strings.Contains(cfg.Timezone, "/") {
 		return InstallSettings{}, &InputError{"timezone", timezoneRule}
 	}
 	if _, err := time.LoadLocation(cfg.Timezone); err != nil {
@@ -137,7 +143,10 @@ func (s *Service) Setup(ctx context.Context, in SetupInput) (User, error) {
 	}
 	rec := s.entry(system, in.SourceIP, "setup.completed", userObject(u.ID), audit.ResultSuccess,
 		map[string]any{"login": login, "role": string(RoleSecurityAdmin),
-			"timezone": cfg.Timezone, "retention_mode": cfg.RetentionMode})
+			"timezone": cfg.Timezone, "retention_mode": cfg.RetentionMode,
+			// Хранение содержимого целиком или отказ от хранения — ослабление
+			// относительно masked, как у приложений (Н42 ревью 2.r4, DM-40).
+			"weakening": cfg.RetentionMode != RetentionMasked})
 	err = s.store.SetupFirstUser(ctx, tokenHash, s.hasher.Name(), u, cfg, rec)
 	if errors.Is(err, ErrSetupUnavailable) {
 		return User{}, s.setupFailed(ctx, system, in.SourceIP, "unavailable")

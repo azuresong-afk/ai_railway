@@ -363,7 +363,10 @@ export interface paths {
          *     и встроенную статику веб-консоли с подписанным манифестом; итог пишется в
          *     `integrity_checks` и журнал аудита (`integrity.check`) от имени
          *     пользователя. Нарушение — `ok: false` с ответом 200; при
-         *     `-integrity-action stop` сервер после ответа останавливается.
+         *     `-integrity-action stop` сервер после ответа останавливается. Манифест
+         *     собран раньше манифеста последней успешной проверки — `manifest_rollback`
+         *     (откат на старый выпуск, В20 ревью 2.r4). Итог не удалось записать в
+         *     журнал аудита — 503 (Н36 ревью 2.r4), итог остаётся в техническом журнале.
          */
         post: {
             parameters: {
@@ -4224,10 +4227,10 @@ export interface components {
             };
             notifications: {
                 /** @enum {string} */
-                condition: "account_lockout" | "access_denied" | "audit_chain" | "audit_storage" | "integrity" | "time_sync" | "config_bundle" | "config_bundle_lag";
+                condition: "account_lockout" | "access_denied" | "audit_chain" | "audit_storage" | "integrity" | "time_sync" | "config_bundle" | "config_bundle_lag" | "test_build";
                 /** @enum {string} */
                 requirement: "ИАФ.4" | "УПД.6" | "РСБ.4" | "РСБ.5" | "ОЦЛ.3" | "ОЦЛ.5" | "ВРМ.1";
-                /** @description Компоненты с активным условием (integrity — server или gateway:<ID>, config_bundle_lag — gateway:<ID>); каждое ведётся отдельно и пишется в system.alert (В18 ревью 2.r3b) */
+                /** @description Компоненты с активным условием (integrity — server или gateway:<ID>, config_bundle_lag — gateway:<ID>); каждое ведётся отдельно и пишется в system.alert (В18 ревью 2.r3b). test_build (ОЦЛ.1) — компоненты, собранные с тестовым ключом манифеста (Н34 ревью 2.r4); integrity шлюза поднимает и откат выпуска, и чужой ключ проверки пакетов (В19, В20 ревью 2.r4) */
                 components?: string[];
                 title: string;
                 active: boolean;
@@ -4302,10 +4305,18 @@ export interface components {
             /** Format: date-time */
             checked_at: string;
             ok: boolean;
-            /** @enum {string} */
-            reason: "ok" | "manifest_missing" | "manifest_invalid" | "signature_invalid" | "files_mismatch";
+            /**
+             * @description `manifest_rollback` — манифест подписан верно, но собран раньше манифеста последней успешной проверки (откат выпуска)
+             * @enum {string}
+             */
+            reason: "ok" | "manifest_missing" | "manifest_invalid" | "signature_invalid" | "files_mismatch" | "manifest_rollback";
             /** @description Версия продукта из манифеста; пусто, если манифест не принят */
             manifest_version: string;
+            /**
+             * Format: date-time
+             * @description Время сборки манифеста; null, если манифест не принят
+             */
+            manifest_created: string | null;
             /** @description Сборка с тестовым ключом манифеста — не для поставки */
             test_signed: boolean;
             checked_files: number;
@@ -4511,7 +4522,7 @@ export interface components {
             /** Format: date-time */
             revoked_at?: string;
             /** @enum {string} */
-            revoke_reason?: "owner" | "admin" | "password_reset" | "sessions_revoked";
+            revoke_reason?: "owner" | "admin" | "password_reset" | "sessions_revoked" | "backup_restore";
         };
         APITokenPage: components["schemas"]["PageInfo"] & {
             items: components["schemas"]["APIToken"][];
