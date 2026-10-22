@@ -3116,6 +3116,243 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/model-prices": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Цены моделей
+         * @description Право `model_prices.read` (ТЗ 5.8, задача 3.18). Цены в рублях за 1 000 токенов
+         *     входа и выхода по провайдеру и модели (имя модели у провайдера, после псевдонимов),
+         *     не больше 10 000. Суммы — десятичные строки, без плавающей точки.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Список цен */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ModelPriceList"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        /**
+         * Задать цену модели
+         * @description Право `model_prices.manage`. Одна цена на модель провайдера (повтор — 409); провайдера
+         *     нет — 422. Цены входят в пакет конфигурации шлюзов (раздел `budgets`): шлюз считает
+         *     расход запросов. Запросы к модели без цены не отклоняются, их стоимость «не
+         *     определена». Пишет `model_price.create`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                    /** @description Ключ повторяемости создающего запроса, 1–64 символа `[A-Za-z0-9._-]` */
+                    "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["NewModelPrice"];
+                };
+            };
+            responses: {
+                /** @description Цена задана */
+                201: {
+                    headers: {
+                        Location?: string;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ModelPrice"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/model-prices/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Изменить цену модели
+         * @description Право `model_prices.manage`. Меняются цены входа и выхода; провайдер и модель
+         *     неизменны. Пишет `model_price.update` (до и после).
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID цены модели (UUID) */
+                    id: components["parameters"]["PriceID"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["ModelPriceFields"];
+                };
+            };
+            responses: {
+                /** @description Цена изменена */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ModelPrice"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        post?: never;
+        /**
+         * Удалить цену модели
+         * @description Право `model_prices.manage`. Стоимость запросов к модели становится «не определена».
+         *     Удаление провайдера удаляет и его цены. Пишет `model_price.delete`.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID цены модели (UUID) */
+                    id: components["parameters"]["PriceID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Цена удалена */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/budgets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Бюджеты и расход приложений за месяц
+         * @description Право `budgets.read` (ТЗ 5.8, задача 3.18). Приложения с бюджетом или с расходом за
+         *     месяц `month` (по умолчанию текущий) в часовом поясе установки, по `slug`. Расход —
+         *     сумма счётчиков, присланных шлюзами в heartbeat (задержка до периода heartbeat),
+         *     в рублях с копейками с округлением вверх. Запросы к моделям без цены в расход не
+         *     входят: их число — `unpriced_requests` («стоимость не определена»).
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description Месяц «ГГГГ-ММ» в часовом поясе установки; по умолчанию текущий */
+                    month?: components["parameters"]["BudgetMonth"];
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Бюджеты и расход */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BudgetStatusList"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/applications": {
         parameters: {
             query?: never;
@@ -3424,6 +3661,142 @@ export interface paths {
         };
         post?: never;
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/applications/{id}/budget": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Бюджет и расход приложения
+         * @description Право `budgets.read`. Бюджет (или `null`) и расход приложения за месяц `month`.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description Месяц «ГГГГ-ММ» в часовом поясе установки; по умолчанию текущий */
+                    month?: components["parameters"]["BudgetMonth"];
+                };
+                header?: never;
+                path: {
+                    /** @description ID приложения (UUID) */
+                    id: components["parameters"]["ApplicationID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Бюджет и расход */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BudgetStatus"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        /**
+         * Задать бюджет приложения
+         * @description Право `budgets.manage` (решение Р7 этапа 3). Месячный бюджет в рублях: `soft` — только
+         *     учёт и оповещения (80 % и 100 %, задача 3.12); `hard` — шлюз отклоняет запросы
+         *     приложения к модели (chat/completions, embeddings), когда расход месяца достиг бюджета
+         *     (ровно 100 % — исчерпан): 429 `budget_exceeded` с `Retry-After` до начала следующего
+         *     месяца. Check API бюджет не тратит. Жёсткий бюджет входит в пакет конфигурации
+         *     шлюзов. Архивному приложению — 409. Снятие или повышение жёсткого бюджета — не
+         *     ослабление защиты (не DM-40): без повторной проверки, но `budget.set` пишется с
+         *     `relaxed: true` (до и после).
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID приложения (UUID) */
+                    id: components["parameters"]["ApplicationID"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["BudgetFields"];
+                };
+            };
+            responses: {
+                /** @description Бюджет задан; расход за текущий месяц */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BudgetStatus"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        post?: never;
+        /**
+         * Снять бюджет приложения
+         * @description Право `budgets.manage`. Расход продолжает учитываться. Пишет `budget.delete`
+         *     (`relaxed: true`, если бюджет был жёстким). Бюджета нет — 404.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID приложения (UUID) */
+                    id: components["parameters"]["ApplicationID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Бюджет снят */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
         options?: never;
         head?: never;
         patch?: never;
@@ -4455,9 +4828,14 @@ export interface paths {
          * @description Право `alert_rules.manage` (признак `security`: только администратор безопасности, не
          *     токену). Через API создаются правила «порог» (`threshold`: фильтр событий языка
          *     `GET /api/v1/events` и/или наименьшая серьёзность, до 4 полей группировки) и «новое»
-         *     (`new`: поле `model`, `provider`, `user` или `app`, ключ — его значение). Окно подавления
-         *     после закрытия — `suppress_minutes` (по умолчанию 60, до 10 080). Не больше 200 правил —
-         *     иначе 422. Пишет `alert_rule.create`.
+         *     (`new`: поле `model`, `provider`, `user` или `app`, ключ — его значение). Фоновая задача
+         *     сервера раз в минуту считает «частоту» (`frequency`: условие как у «порога», `count`
+         *     событий за `window_minutes` по ключу группировки), «аномалию» (`anomaly`: метрика `metric`
+         *     последнего часа выше медианы того же часа недели за 2–8 недель в `factor` раз и не меньше
+         *     `min_volume`; группировка — нет или `app`; первые 14 суток данных молчит) и «бюджет»
+         *     (`budget`: `warn_percent` и 100 % месячного бюджета приложения, по одному оповещению на
+         *     порог в месяц; группировка — `app`). Окно подавления после закрытия — `suppress_minutes`
+         *     (по умолчанию 60, до 10 080). Не больше 200 правил — иначе 422. Пишет `alert_rule.create`.
          */
         post: {
             parameters: {
@@ -4598,6 +4976,61 @@ export interface paths {
                 503: components["responses"]["Unavailable"];
             };
         };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/alert-rules/{id}/state": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Состояние правила фоновой задачи
+         * @description Право `alert_rules.read`. Что посчитала фоновая задача сервера (раз в минуту) по правилу
+         *     «частота», «аномалия» или «бюджет»: время вычисления, обучение базовой линии «аномалии»
+         *     (первые 14 суток данных ключа правило молчит, `learning: true` и `learning_until`), ключи
+         *     группировки с текущим объёмом, медианой базовой линии и числом недель в ней (не больше 50,
+         *     всего — `keys_total`); у «бюджета» — месяц и процент расхода; у «частоты» — ключи, сработавшие
+         *     в последнем проходе. Объёмы «аномалии» показываются только с правом `events.read`, расход
+         *     «бюджета» — с `budgets.read`, иначе `keys` пуст и `keys_hidden: true`. У остальных видов и
+         *     до первого вычисления — `evaluated: false`. Содержимого событий нет.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description ID правила оповещения (UUIDv7) */
+                    id: components["parameters"]["AlertRuleID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Состояние */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["AlertRuleState"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
         post?: never;
         delete?: never;
         options?: never;
@@ -5080,8 +5513,11 @@ export interface components {
                 lagging: string[];
             };
             notifications: {
-                /** @enum {string} */
-                condition: "account_lockout" | "access_denied" | "audit_chain" | "audit_storage" | "integrity" | "time_sync" | "config_bundle" | "config_bundle_lag" | "test_build" | "gateway_offline" | "events_dropped" | "reports_stale" | "cert_expiry";
+                /**
+                 * @description ca_expiry (ИАФ.10) — действующему корню внутреннего УЦ осталось 60 суток и меньше, нужна ротация `aisec-cli keys rotate-ca`; system.alert пишется за 60 суток (ca_expiry) и за 7 суток (ca_expiry:critical), 3В5 ревью 3.r1
+                 * @enum {string}
+                 */
+                condition: "account_lockout" | "access_denied" | "audit_chain" | "audit_storage" | "integrity" | "time_sync" | "config_bundle" | "config_bundle_lag" | "test_build" | "gateway_offline" | "events_dropped" | "reports_stale" | "cert_expiry" | "ca_expiry";
                 /** @enum {string} */
                 requirement: "ИАФ.4" | "ИАФ.10" | "УПД.6" | "РСБ.4" | "РСБ.5" | "РСБ.7" | "ОЦЛ.1" | "ОЦЛ.3" | "ОЦЛ.5" | "ВРМ.1";
                 /** @description Компоненты с активным условием (integrity — server или gateway:<ID>, config_bundle_lag, gateway_offline, events_dropped, reports_stale, cert_expiry — gateway:<ID>); каждое ведётся отдельно и пишется в system.alert (В18 ревью 2.r3b), а возникшее условие порождает оповещение системного правила (задача 3.11 этапа 3, DM-42–DM-44). test_build (ОЦЛ.1) — компоненты, собранные с тестовым ключом манифеста (Н34 ревью 2.r4); integrity шлюза поднимает и откат выпуска, и чужой ключ проверки пакетов (В19, В20 ревью 2.r4). DM-44: gateway_offline — шлюз не на связи дольше трёх периодов heartbeat, events_dropped — счётчик отброшенных событий вырос за 15 минут, cert_expiry — сертификат истекает меньше чем через 14 суток, reports_stale — итог целостности старше двух часов или не приходит (Н29) */
@@ -5486,6 +5922,95 @@ export interface components {
             /** Format: date-time */
             updated_at: string;
         };
+        ModelPriceFields: {
+            input_price: components["schemas"]["PriceAmount"];
+            output_price: components["schemas"]["PriceAmount"];
+        };
+        NewModelPrice: {
+            /** Format: uuid */
+            provider_id: string;
+            /** @description Имя модели у провайдера (цель псевдонима), печатные символы */
+            model: string;
+            input_price: components["schemas"]["PriceAmount"];
+            output_price: components["schemas"]["PriceAmount"];
+        };
+        /** @description Рубли за 1 000 токенов, до 4 знаков после точки, от 0 до 1000000; например "0.1500" */
+        PriceAmount: string;
+        ModelPrice: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            provider_id: string;
+            model: string;
+            /** @description Рубли за 1 000 токенов входа */
+            input_price: string;
+            /** @description Рубли за 1 000 токенов выхода */
+            output_price: string;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        ModelPriceList: {
+            items: components["schemas"]["ModelPrice"][];
+        };
+        BudgetFields: {
+            /**
+             * @description `soft` — учёт и оповещения; `hard` — запросы сверх бюджета отклоняются
+             * @enum {string}
+             */
+            mode: "soft" | "hard";
+            /** @description Рубли в месяц, от 0.01 до 1000000000, до 2 знаков после точки */
+            monthly_limit: string;
+        };
+        Budget: {
+            /** @enum {string} */
+            mode: "soft" | "hard";
+            /** @description Рубли в месяц */
+            monthly_limit: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        BudgetStatus: {
+            /** Format: uuid */
+            application_id: string;
+            /** @description ID (slug) приложения */
+            application: string;
+            name: string;
+            month: string;
+            /** @description Бюджет; `null` — не задан */
+            budget: components["schemas"]["Budget"] | null;
+            /** @description Расход по моделям с ценой, рубли с копейками (округление вверх) */
+            spent: string;
+            /** Format: int64 */
+            priced_tokens: number;
+            /**
+             * Format: int64
+             * @description Токены моделей без цены
+             */
+            unpriced_tokens: number;
+            /**
+             * Format: int64
+             * @description Запросы
+             */
+            requests: number;
+            /**
+             * Format: int64
+             * @description Из них к моделям без цены: стоимость не определена
+             */
+            unpriced_requests: number;
+            /**
+             * Format: int64
+             * @description Доля расхода от бюджета
+             */
+            percent: number;
+            /** @description Расход достиг бюджета (≥ 100 %) */
+            exhausted: boolean;
+        };
+        BudgetStatusList: {
+            month: string;
+            items: components["schemas"]["BudgetStatus"][];
+        };
         ProviderList: {
             items: components["schemas"]["Provider"][];
         };
@@ -5804,7 +6329,7 @@ export interface components {
             status: number;
             detail: string;
             /** @enum {string} */
-            code: "invalid_request" | "unauthorized" | "forbidden" | "not_found" | "method_not_allowed" | "conflict" | "payload_too_large" | "unsupported_media_type" | "unprocessable" | "rate_limited" | "internal_error" | "service_unavailable" | "reauthentication_failed" | "bundle_key_mismatch";
+            code: "invalid_request" | "unauthorized" | "forbidden" | "not_found" | "method_not_allowed" | "conflict" | "payload_too_large" | "unsupported_media_type" | "unprocessable" | "rate_limited" | "internal_error" | "service_unavailable" | "reauthentication_failed" | "bundle_key_mismatch" | "reissue_not_needed";
             errors?: {
                 field: string;
                 detail: string;
@@ -6204,7 +6729,7 @@ export interface components {
         /** @enum {string} */
         AlertSeverity: "info" | "low" | "medium" | "high" | "critical";
         /**
-         * @description Вид правила (ТЗ 5.6); через API создаются threshold и new
+         * @description Вид правила (ТЗ 5.6); через API создаются threshold, new, frequency, anomaly и budget
          * @enum {string}
          */
         AlertKind: "threshold" | "new" | "frequency" | "anomaly" | "budget" | "system" | "security";
@@ -6285,6 +6810,21 @@ export interface components {
              * @enum {string}
              */
             field?: "model" | "provider" | "user" | "app";
+            /** @description Порог «частоты»: событий в окне по ключу группировки */
+            count?: number;
+            /** @description Окно «частоты» */
+            window_minutes?: number;
+            /**
+             * @description Метрика «аномалии» (запросы, токены, токены ответа) по часовым агрегатам событий
+             * @enum {string}
+             */
+            metric?: "requests" | "tokens" | "completion_tokens";
+            /** @description Во сколько раз объём окна «аномалии» (последний час) выше медианы того же часа недели за 2–8 недель; по умолчанию 3 */
+            factor?: number;
+            /** @description Наименьший объём окна «аномалии»; по умолчанию 100 запросов, 200 000 токенов, 100 000 токенов ответа */
+            min_volume?: number;
+            /** @description Предупреждение «бюджета», % месячного бюджета (по умолчанию 80); второй порог — 100 % */
+            warn_percent?: number;
         };
         /** @description Получатели сверх обязательных ролей security_admin и auditor */
         AlertRecipients: {
@@ -6293,7 +6833,7 @@ export interface components {
         };
         AlertRuleInput: {
             /** @enum {string} */
-            kind: "threshold" | "new";
+            kind: "threshold" | "new" | "frequency" | "anomaly" | "budget";
             name: string;
             description?: string;
             /** @default true */
@@ -6491,6 +7031,39 @@ export interface components {
             updated_at: string;
             updated_by: string;
         };
+        AlertRuleState: {
+            /** Format: uuid */
+            rule_id: string;
+            kind: components["schemas"]["AlertKind"];
+            /** @description Фоновая задача уже считала правило */
+            evaluated: boolean;
+            /** Format: date-time */
+            evaluated_at?: string;
+            /** @description «Аномалия» на обучении: ни у одного ключа нет 14 суток истории */
+            learning: boolean;
+            /** Format: date-time */
+            learning_until?: string;
+            /** @description Месяц «бюджета» в часовом поясе установки */
+            month?: string;
+            keys: {
+                group: {
+                    [key: string]: string;
+                };
+                learning: boolean;
+                /** Format: date-time */
+                ready_at?: string;
+                /** @description Объём окна («аномалия»), процент расхода («бюджет») или событий в окне у ключей «частоты», сработавших в последнем проходе */
+                current: number;
+                /** @description Медиана базовой линии */
+                baseline: number;
+                /** @description Недель в базовой линии */
+                samples: number;
+                triggered: boolean;
+            }[];
+            keys_total: number;
+            /** @description Ключи скрыты: у «аномалии» нужно право events.read, у «бюджета» — budgets.read */
+            keys_hidden: boolean;
+        };
         AlertRuleList: {
             items: components["schemas"]["AlertRule"][];
         };
@@ -6612,7 +7185,7 @@ export interface components {
                 "application/json": components["schemas"]["Error"];
             };
         };
-        /** @description Превышена квота приложения (`quota_exceeded`) или частота неудачных попыток аутентификации с адреса клиента (`auth_rate_limited`, тип `rate_limit_error`, DM-38) */
+        /** @description Превышена квота приложения (`quota_exceeded`), исчерпан жёсткий месячный бюджет приложения (`budget_exceeded`, `Retry-After` — до начала следующего месяца в часовом поясе установки; только chat/completions и embeddings, задача 3.18) или частота неудачных попыток аутентификации с адреса клиента (`auth_rate_limited`, тип `rate_limit_error`, DM-38) */
         QuotaExceeded: {
             headers: {
                 "Retry-After"?: number;
@@ -6770,6 +7343,10 @@ export interface components {
         EventID: string;
         /** @description ID провайдера (UUID) */
         ProviderID: string;
+        /** @description ID цены модели (UUID) */
+        PriceID: string;
+        /** @description Месяц «ГГГГ-ММ» в часовом поясе установки; по умолчанию текущий */
+        BudgetMonth: string;
         /** @description ID приложения (UUID) */
         ApplicationID: string;
         /** @description ID политики или шаблона */
