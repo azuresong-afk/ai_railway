@@ -215,20 +215,27 @@ func ParseGatewayFile(r io.Reader) (*GatewayFile, error) {
 // принимаются решения о доступе, поэтому файл, который могут изменить
 // группа или остальные пользователи, не принимается.
 func LoadGatewayFile(path string) (*GatewayFile, error) {
+	f, _, err := ReadGatewayFile(path)
+	return f, err
+}
+
+// ReadGatewayFile — как LoadGatewayFile, но возвращает и прочитанные байты:
+// эталон контроля целостности файла — их хеш (Н37 ревью 2.r4).
+func ReadGatewayFile(path string) (*GatewayFile, []byte, error) {
 	f, err := os.Open(path) //nolint:gosec // G304: путь задаёт администратор флагом -config
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer f.Close() //nolint:errcheck // файл только читается; ошибка закрытия не важна
 	info, err := f.Stat()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("%s: не обычный файл", path)
+		return nil, nil, fmt.Errorf("%s: не обычный файл", path)
 	}
 	if info.Mode().Perm()&0o022 != 0 {
-		return nil, fmt.Errorf("%s: файл конфигурации доступен на запись группе или остальным (права %o)", path, info.Mode().Perm())
+		return nil, nil, fmt.Errorf("%s: файл конфигурации доступен на запись группе или остальным (права %o)", path, info.Mode().Perm())
 	}
 	// Каталог, в который могут писать другие, позволил бы подменить файл
 	// переименованием. Владелец файла не проверяется: для этого нужен
@@ -236,12 +243,20 @@ func LoadGatewayFile(path string) (*GatewayFile, error) {
 	// при установке (этапы 3 и 6).
 	dir, err := os.Stat(filepath.Dir(path))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if dir.Mode().Perm()&0o022 != 0 && dir.Mode()&os.ModeSticky == 0 {
-		return nil, fmt.Errorf("%s: каталог файла конфигурации доступен на запись группе или остальным (права %o)", filepath.Dir(path), dir.Mode().Perm())
+		return nil, nil, fmt.Errorf("%s: каталог файла конфигурации доступен на запись группе или остальным (права %o)", filepath.Dir(path), dir.Mode().Perm())
 	}
-	return ParseGatewayFile(f)
+	data, err := io.ReadAll(io.LimitReader(f, MaxGatewayFile+1))
+	if err != nil {
+		return nil, nil, err
+	}
+	gf, err := ParseGatewayFile(bytes.NewReader(data))
+	if err != nil {
+		return nil, nil, err
+	}
+	return gf, data, nil
 }
 
 // Warnings — допустимые, но опасные настройки, о которых шлюз предупреждает

@@ -157,7 +157,7 @@ func TestPGStoreRecordAndLatestPostgres(t *testing.T) {
 		res Result
 		by  audit.Actor
 	}{{ok, systemActor("server")}, {bad, user}, {cli, audit.Actor{Type: audit.ActorCLI, ID: "uid:0"}}} {
-		if err := env.store.Record(ctx, rc.res, rc.by, netip.MustParseAddr("192.0.2.1")); err != nil {
+		if _, err := env.store.Record(ctx, rc.res, rc.by, netip.MustParseAddr("192.0.2.1")); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -200,7 +200,7 @@ func TestPGStoreRecordAndLatestPostgres(t *testing.T) {
 func TestIntegrityChecksAppendOnlyPostgres(t *testing.T) {
 	env := setupPG(t)
 	ctx := pgCtx(t)
-	if err := env.store.Record(ctx, Result{Component: "server", Trigger: TriggerStartup, At: time.Now().UTC(), Reason: ReasonOK},
+	if _, err := env.store.Record(ctx, Result{Component: "server", Trigger: TriggerStartup, At: time.Now().UTC(), Reason: ReasonOK},
 		systemActor("server"), netip.Addr{}); err != nil {
 		t.Fatal(err)
 	}
@@ -225,5 +225,73 @@ func TestIntegrityChecksAppendOnlyPostgres(t *testing.T) {
 	var pe *pgconn.PgError
 	if !errors.As(err, &pe) || pe.Code != "23514" {
 		t.Fatalf("CHECK: %v", err)
+	}
+}
+
+// DM-42, В20 ревью 2.r4 (на PostgreSQL, поэтому без префикса TestDM42_):
+// проверка манифестом старше последней успешной — manifest_rollback;
+// принятый откат (-accept-rollback) сбрасывает максимум для всех
+// компонентов, следующий итог — ok.
+func TestRollbackDetectedAndAcceptedPostgres(t *testing.T) {
+	env := setupPG(t)
+	ctx := pgCtx(t)
+	at := time.Date(2026, 10, 22, 10, 0, 0, 0, time.UTC)
+	newer, older := time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC), time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	res := func(component string, minute int, version string, created time.Time) Result {
+		return Result{Component: component, Trigger: TriggerPeriodic, At: at.Add(time.Duration(minute) * time.Minute),
+			Reason: ReasonOK, ManifestVersion: version, ManifestCreated: created, Checked: 3}
+	}
+	by := systemActor("server")
+	for i, c := range []string{"server", "cli"} {
+		got, err := env.store.Record(ctx, res(c, i, "1.1.0", newer), by, netip.Addr{})
+		if err != nil || !got.OK() {
+			t.Fatalf("%s: %+v %v", c, got, err)
+		}
+	}
+	// Тот же выпуск — не откат.
+	if got, err := env.store.Record(ctx, res("server", 2, "1.1.0", newer), by, netip.Addr{}); err != nil || !got.OK() {
+		t.Fatalf("%+v %v", got, err)
+	}
+	// Отката нет — принимать нечего.
+	if _, err := env.store.AcceptRollback(ctx, res("cli", 3, "1.1.0", newer), audit.Actor{Type: audit.ActorCLI, ID: "uid:0"}); !errors.Is(err, ErrNoRollback) {
+		t.Fatalf("принят откат без отката: %v", err)
+	}
+	// Возвращён выпуск 1.0.0 со своим подписанным манифестом.
+	got, err := env.store.Record(ctx, res("server", 4, "1.0.0", older), by, netip.Addr{})
+	if err != nil || got.Reason != ReasonManifestRollback || got.OK() {
+		t.Fatalf("откат не обнаружен: %+v %v", got, err)
+	}
+	var prev string
+	if err := env.owner.QueryRow(ctx, `SELECT details->>'previous_version' FROM audit_log WHERE action = 'integrity.check'
+		AND result = 'failure' ORDER BY seq DESC LIMIT 1`).Scan(&prev); err != nil || prev != "1.1.0" {
+		t.Fatalf("%q %v", prev, err)
+	}
+	// Нарушение файлов откатом не принимается.
+	bad := res("cli", 5, "1.0.0", older)
+	bad.Reason, bad.Failures = ReasonFilesMismatch, []Failure{{Path: "bin/aisec-cli", Problem: ProblemModified}}
+	if _, err := env.store.AcceptRollback(ctx, bad, audit.Actor{Type: audit.ActorCLI, ID: "uid:0"}); err == nil {
+		t.Fatal("откат принят при нарушении файлов")
+	}
+	// Намеренный откат: aisec-cli verify -accept-rollback.
+	acc, err := env.store.AcceptRollback(ctx, res("cli", 6, "1.0.0", older), audit.Actor{Type: audit.ActorCLI, ID: "uid:0"})
+	if err != nil || !acc.OK() {
+		t.Fatalf("%+v %v", acc, err)
+	}
+	var from, to string
+	if err := env.owner.QueryRow(ctx, `SELECT details->>'previous_version', details->>'manifest_version' FROM audit_log
+		WHERE action = 'integrity.rollback_accepted'`).Scan(&from, &to); err != nil || from != "1.1.0" || to != "1.0.0" {
+		t.Fatalf("%q→%q %v", from, to, err)
+	}
+	// После принятия максимум сброшен и у сервера.
+	if got, err := env.store.Record(ctx, res("server", 7, "1.0.0", older), by, netip.Addr{}); err != nil || !got.OK() {
+		t.Fatalf("после принятия: %+v %v", got, err)
+	}
+	latest, err := env.store.Latest(ctx)
+	if err != nil || len(latest) != 2 || !latest[1].ManifestCreated.Equal(older) {
+		t.Fatalf("%+v %v", latest, err)
+	}
+	v, err := audit.NewVerifier(env.log).Verify(ctx)
+	if err != nil || !v.OK() {
+		t.Fatalf("%+v %v", v, err)
 	}
 }

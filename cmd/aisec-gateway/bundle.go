@@ -12,31 +12,33 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/providers"
 )
 
-// newBundleClient — режим с сервером (задача 2.13): ключи проверки пакетов,
-// каталог состояния с ключом получателя и применение пакета заменой
-// обработчика в sw.
+// newBundleClient — режим с сервером (задача 2.13): ключи проверки пакетов
+// (pubs — содержимое файлов -bundle-pub, прочитанное при запуске), каталог
+// состояния с ключом получателя и применение пакета заменой обработчика в
+// sw. Возвращает и KeyID ключей проверки для heartbeat (В19 ревью 2.r4).
 func newBundleClient(cfg *config.Gateway, p aisecCrypto.Provider, tp aisecCrypto.TLSProvider, rnd aisecCrypto.Random,
-	gatewayID string, control *http.Client, hb *handlerBuilder, sw *gateway.Switch, logger *slog.Logger) (*gateway.BundleClient, error) {
+	gatewayID string, control *http.Client, hb *handlerBuilder, sw *gateway.Switch, pubs [][]byte,
+	logger *slog.Logger) (*gateway.BundleClient, []string, error) {
 	var verifiers []aisecCrypto.Verifier
-	for _, path := range cfg.BundlePubFiles {
-		v, err := aisecCrypto.LoadVerifierFile(p, path, aisecCrypto.KeyKindSigningPublic)
+	for i, data := range pubs {
+		v, err := aisecCrypto.ParseVerifierPEM(p, cfg.BundlePubFiles[i], data, aisecCrypto.KeyKindSigningPublic)
 		if err != nil {
-			return nil, fmt.Errorf("ключ проверки пакетов конфигурации: %w", err)
+			return nil, nil, fmt.Errorf("ключ проверки пакетов конфигурации: %w", err)
 		}
 		verifiers = append(verifiers, v)
 	}
 	state, err := gateway.OpenBundleState(cfg.StateDir, rnd)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	// Каталог открыт до остановки процесса: os.Root держит дескриптор.
 	recipient, err := state.Recipient(p)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	opener, err := bundle.NewOpener(p, verifiers, recipient, gatewayID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	apply := func(b *bundle.Bundle) error {
 		h, err := buildFromBundle(b, tp, rnd, hb, logger)
@@ -46,8 +48,9 @@ func newBundleClient(cfg *config.Gateway, p aisecCrypto.Provider, tp aisecCrypto
 		sw.Store(h)
 		return nil
 	}
-	return gateway.NewBundleClient(gateway.BundleConfig{Client: control, Server: cfg.Server, Opener: opener,
+	bc, err := gateway.NewBundleClient(gateway.BundleConfig{Client: control, Server: cfg.Server, Opener: opener,
 		RecipientKey: recipient.PublicKey(), State: state, Apply: apply, Logger: logger})
+	return bc, opener.KeyIDs(), err
 }
 
 // buildFromBundle собирает обработчик по проверенному пакету: провайдеры с

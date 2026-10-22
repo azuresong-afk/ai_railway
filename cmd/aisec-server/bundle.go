@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"path/filepath"
 	"sync/atomic"
@@ -12,6 +14,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/apps"
 	"github.com/azuresong-afk/ai_railway/internal/audit"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
+	"github.com/azuresong-afk/ai_railway/internal/gwregistry"
 	"github.com/azuresong-afk/ai_railway/internal/policy/bundle"
 	"github.com/azuresong-afk/ai_railway/internal/policy/bundle/build"
 	"github.com/azuresong-afk/ai_railway/internal/policy/versions"
@@ -19,9 +22,14 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/sysstatus"
 )
 
-// bundleSigningKeyFile — ключ подписи пакетов конфигурации в каталоге
-// ключей aisec-cli init (ADR-0007, п. 3).
-const bundleSigningKeyFile = "bundle-signing.key"
+// Ключи подписи пакетов конфигурации в каталоге ключей aisec-cli init
+// (ADR-0007, п. 3). bundleSigningNextFile — необязательный второй открытый
+// ключ на время ротации: шлюз с ним не считается подменённым (В19 ревью 2.r4).
+const (
+	bundleSigningKeyFile  = "bundle-signing.key"
+	bundleSigningPubFile  = "bundle-signing.pub"
+	bundleSigningNextFile = "bundle-signing.next.pub"
+)
 
 // loadBundleSigner читает ключ подписи пакетов (0400) и проверяет профиль.
 func loadBundleSigner(p aisecCrypto.Provider, keysDir string) (aisecCrypto.Signer, error) {
@@ -41,6 +49,30 @@ func loadBundleSigner(p aisecCrypto.Provider, keysDir string) (aisecCrypto.Signe
 	return p.NewSigner(seed)
 }
 
+// bundleKeys — ключи подписи пакетов для сверки с ключами шлюзов в
+// heartbeat (В19 ревью 2.r4): действующий и второй на время ротации.
+func bundleKeys(p aisecCrypto.Provider, keysDir, current string) (gwregistry.BundleKeys, error) {
+	keys := gwregistry.BundleKeys{Current: current}
+	path := filepath.Join(keysDir, bundleSigningNextFile)
+	data, err := aisecCrypto.ReadPEMFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return keys, nil
+	}
+	if err != nil {
+		return keys, fmt.Errorf("второй ключ подписи пакетов: %w", err)
+	}
+	v, err := aisecCrypto.ParseVerifierPEM(p, path, data, aisecCrypto.KeyKindSigningPublic)
+	if err != nil {
+		return keys, fmt.Errorf("второй ключ подписи пакетов: %w", err)
+	}
+	h, err := p.Hasher()
+	if err != nil {
+		return keys, err
+	}
+	keys.Next = bundle.KeyID(h, v.PublicKey())
+	return keys, nil
+}
+
 // bundleReuse — сколько секунд опросы шлюзов получают уже собранный
 // результат без новой выборки данных (Н26 ревью 2.r3b).
 const bundleReuse = 5 * time.Second
@@ -49,7 +81,7 @@ const bundleReuse = 5 * time.Second
 // 2.13): маршруты внутреннего порта. Изменения приложений и политик
 // проверяются сборкой при сохранении (В16 ревью 2.r3b).
 func newBundleRoutes(cfg *serverConfig, p aisecCrypto.Provider, db *store.DB, auditLog *audit.Log,
-	appsSvc *apps.Service, policiesSvc *versions.Service, logger *slog.Logger) ([]api.Route, *build.Service, error) {
+	appsSvc *apps.Service, policiesSvc *versions.Service, gateways *gwregistry.Service, logger *slog.Logger) ([]api.Route, *build.Service, error) {
 	signer, err := loadBundleSigner(p, cfg.KeysDir)
 	if err != nil {
 		return nil, nil, err
@@ -58,6 +90,11 @@ func newBundleRoutes(cfg *serverConfig, p aisecCrypto.Provider, db *store.DB, au
 	if err != nil {
 		return nil, nil, err
 	}
+	keys, err := bundleKeys(p, cfg.KeysDir, sealer.KeyID())
+	if err != nil {
+		return nil, nil, err
+	}
+	gateways.SetBundleKeys(keys)
 	st, err := build.NewPGStore(db.Pool(), auditLog)
 	if err != nil {
 		return nil, nil, err

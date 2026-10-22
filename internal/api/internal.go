@@ -118,6 +118,8 @@ type HeartbeatRequest struct {
 	// Selftest и Integrity — необязательные итоги проверок шлюза (задача 2.20).
 	Selftest  *HeartbeatReport `json:"selftest,omitempty"`
 	Integrity *HeartbeatReport `json:"integrity,omitempty"`
+	// BundleKeys — KeyID ключей проверки пакетов шлюза (В19 ревью 2.r4).
+	BundleKeys []string `json:"bundle_keys,omitempty"`
 }
 
 // HeartbeatReport — итог самотеста или контроля целостности шлюза: результат,
@@ -127,13 +129,22 @@ type HeartbeatReport struct {
 	CheckedAt time.Time `json:"checked_at"`
 	Reason    string    `json:"reason,omitempty"`
 	Failed    int       `json:"failed"`
+	// Только у integrity (В20, Н34 ревью 2.r4): манифест и тестовый ключ.
+	ManifestVersion string     `json:"manifest_version,omitempty"`
+	ManifestCreated *time.Time `json:"manifest_created,omitempty"`
+	TestSigned      bool       `json:"test_signed,omitempty"`
 }
 
 func (r *HeartbeatReport) report() *gwregistry.CheckReport {
 	if r == nil {
 		return nil
 	}
-	return &gwregistry.CheckReport{OK: r.OK, At: r.CheckedAt.UTC(), Reason: r.Reason, Failed: r.Failed}
+	out := &gwregistry.CheckReport{OK: r.OK, At: r.CheckedAt.UTC(), Reason: r.Reason, Failed: r.Failed,
+		ManifestVersion: r.ManifestVersion, TestSigned: r.TestSigned}
+	if r.ManifestCreated != nil {
+		out.ManifestCreated = r.ManifestCreated.UTC()
+	}
+	return out
 }
 
 // HeartbeatResponse — ответ на heartbeat: время сервера (шлюз сверяет часы,
@@ -153,9 +164,10 @@ func heartbeat(g *gwregistry.Service, logger *slog.Logger) http.HandlerFunc {
 		}
 		in := gwregistry.HeartbeatInput{
 			Version: req.Version, BundleETag: req.BundleETag, Selftest: req.Selftest.report(), Integrity: req.Integrity.report(),
+			BundleKeys: req.BundleKeys,
 		}
 		if err := in.Validate(); err != nil {
-			WriteProblem(w, Invalid("Неверные поля heartbeat: version — 1–64 символа латиницы, цифр и «.+_-», bundle_etag — до 128 печатных символов ASCII, selftest и integrity — результат, время проверки и число провалов 0–1000."))
+			WriteProblem(w, Invalid("Неверные поля heartbeat: version — 1–64 символа латиницы, цифр и «.+_-», bundle_etag — до 128 печатных символов ASCII, selftest и integrity — результат, время проверки и число провалов 0–1000, манифест — версия и время вместе, bundle_keys — до 2 идентификаторов ключей."))
 			return
 		}
 		ctx, cancel := contextTimeout(r, 5*time.Second)

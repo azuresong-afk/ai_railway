@@ -185,6 +185,9 @@ const (
 	ConditionBundle = "config_bundle"
 	// ConditionBundleLag — ОЦЛ.3: шлюз работает на устаревшем пакете (Н28).
 	ConditionBundleLag = "config_bundle_lag"
+	// ConditionTestBuild — ОЦЛ.1: компонент собран с тестовым ключом
+	// манифеста, сборка не для поставки (Н34 ревью 2.r4).
+	ConditionTestBuild = "test_build"
 )
 
 // Коды условий по компоненту (В18 ревью 2.r3b): ОЦЛ.5 и отставание пакета
