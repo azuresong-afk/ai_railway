@@ -60,6 +60,10 @@ func AuditFiles(id, anchorID string) (key, pub string) {
 	return "audit-signing." + id + ".key", "audit-signing." + id + ".pub"
 }
 
+// AuditRotationFile — файл подписанной смены ключа аудита id (3В3 ревью
+// 3.r1): по таким файлам audit verify-archive строит расписание без БД.
+func AuditRotationFile(id string) string { return "audit-signing." + id + ".rotation" }
+
 // CAFiles — файлы корня УЦ id (сертификат и ключ).
 func CAFiles(id, anchorID string) (crt, key string) {
 	if id == anchorID {
@@ -268,6 +272,21 @@ func AnchorRootID(root *os.Root, h aisecCrypto.Hasher) (string, error) {
 		return "", fmt.Errorf("корень УЦ: %w", err)
 	}
 	return bundle.RootID(h, der), nil
+}
+
+// RootNotAfter — срок сертификата корня УЦ id из каталога ключей (3В5
+// ревью 3.r1: keys status -dir показывает срок каждого корня).
+func RootNotAfter(root *os.Root, id, anchorRoot string) (time.Time, error) {
+	crt, _ := CAFiles(id, anchorRoot)
+	data, err := ReadKeyDirFile(root, crt, false)
+	if err != nil {
+		return time.Time{}, err
+	}
+	info, err := aisecCrypto.ParseCertInfo(data)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("%s: %w", crt, err)
+	}
+	return info.NotAfter, nil
 }
 
 // commit подписывает заявление действующим ключом, проверяет его цепочкой и
@@ -551,9 +570,14 @@ func RotateAudit(ctx context.Context, db Owner, rec Recorder, p aisecCrypto.Prov
 		if err != nil {
 			return err
 		}
+		rotData, err := audit.MarshalKeyRotation(&r)
+		if err != nil {
+			return err
+		}
 		keyName, pubName := AuditFiles(out.NewID, anchorID)
-		if out.Files, err = writeKeyPair(root, map[string][]byte{keyName: keyPEM, pubName: pubPEM},
-			map[string]fs.FileMode{keyName: permSecret, pubName: permPublic}); err != nil {
+		rotName := AuditRotationFile(out.NewID)
+		if out.Files, err = writeKeyPair(root, map[string][]byte{keyName: keyPEM, pubName: pubPEM, rotName: rotData},
+			map[string]fs.FileMode{keyName: permSecret, pubName: permPublic, rotName: permPublic}); err != nil {
 			return err
 		}
 		sent = true
