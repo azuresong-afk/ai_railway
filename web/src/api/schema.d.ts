@@ -4243,6 +4243,367 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/alerts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Оповещения
+         * @description Право `alerts.read` (ТЗ 5.6, ADR-0020). От новых к старым, фильтры `status`, `severity`,
+         *     `rule_id` (каждый не больше одного раза). Содержимого запросов и ответов в оповещениях нет:
+         *     значения группировки (`group`) — метаданные событий, пользователь — псевдоним.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description Размер страницы */
+                    limit?: components["parameters"]["Limit"];
+                    /** @description Непрозрачный курсор из `next_cursor` предыдущей страницы */
+                    cursor?: components["parameters"]["Cursor"];
+                    status?: "new" | "in_progress" | "closed";
+                    severity?: components["schemas"]["AlertSeverity"];
+                    rule_id?: string;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Страница списка */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["AlertPage"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/alerts/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Карточка оповещения
+         * @description Право `alerts.read`. Ссылки на события (первые 100; `events_truncated` — срабатываний
+         *     больше), история переходов статуса и подробности без содержимого запросов. Событие
+         *     открывается `GET /api/v1/events/{id}` с правом `events.read`.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description ID оповещения (UUIDv7) */
+                    id: components["parameters"]["AlertID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Оповещение */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["AlertCard"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/alerts/{id}/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Принять оповещение в работу или закрыть
+         * @description Право `alerts.manage` (ТЗ 5.6). Переходы: `new → in_progress`, `new → closed`,
+         *     `in_progress → closed`; другой переход — 409. Принявший в работу становится
+         *     исполнителем (у токена — его владелец). Закрытое не открывается: повтор после окна
+         *     подавления — новое оповещение. Пишет историю и `alert.status_changed`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID оповещения (UUIDv7) */
+                    id: components["parameters"]["AlertID"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["AlertStatusUpdate"];
+                };
+            };
+            responses: {
+                /** @description Статус изменён */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Alert"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/alert-rules": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Правила оповещений
+         * @description Право `alert_rules.read`. Все правила организации: встроенные (`builtin`) и созданные
+         *     администратором, по времени создания. `effective_roles` — роли-получатели вместе с
+         *     обязательными `security_admin` и `auditor`.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Правила */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["AlertRuleList"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        /**
+         * Создать правило оповещения
+         * @description Право `alert_rules.manage` (признак `security`: только администратор безопасности, не
+         *     токену). Через API создаются правила «порог» (`threshold`: фильтр событий языка
+         *     `GET /api/v1/events` и/или наименьшая серьёзность, до 4 полей группировки) и «новое»
+         *     (`new`: поле `model`, `provider`, `user` или `app`, ключ — его значение). Окно подавления
+         *     после закрытия — `suppress_minutes` (по умолчанию 60, до 10 080). Не больше 200 правил —
+         *     иначе 422. Пишет `alert_rule.create`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                    /** @description Ключ повторяемости создающего запроса, 1–64 символа `[A-Za-z0-9._-]` */
+                    "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["AlertRuleInput"];
+                };
+            };
+            responses: {
+                /** @description Правило создано */
+                201: {
+                    headers: {
+                        Location?: string;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["AlertRule"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/alert-rules/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Правило оповещения
+         * @description Право `alert_rules.read`.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description ID правила оповещения (UUIDv7) */
+                    id: components["parameters"]["AlertRuleID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Правило */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["AlertRule"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        /**
+         * Изменить правило оповещения
+         * @description Право `alert_rules.manage`. Полная замена настроек; `version` — версия, которую открыли
+         *     для изменения (устаревшая — 409). Вид правила не меняется. У системных правил и правил
+         *     безопасности (`locked`) меняются только получатели; отключение и другие поля — 422.
+         *     Ослабление (DM-40) — отключение, смена условия или группировки, повышение
+         *     `min_severity`, понижение серьёзности, увеличение окна, удаление получателя — пишется с
+         *     `weakening: true` и требует текущего пароля (`password`) или кода TOTP (`code`): без них
+         *     403, неверное значение — 403 `reauthentication_failed`. Изменение получателей порождает
+         *     оповещение «Изменены получатели оповещений» (ТЗ 5.6). Без изменений — 200 без записи.
+         *     Пишет `alert_rule.update` (до, после).
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID правила оповещения (UUIDv7) */
+                    id: components["parameters"]["AlertRuleID"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["AlertRuleUpdate"];
+                };
+            };
+            responses: {
+                /** @description Правило изменено */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["AlertRule"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -5440,6 +5801,162 @@ export interface components {
                 changed: boolean;
             }[];
         };
+        /** @enum {string} */
+        AlertSeverity: "info" | "low" | "medium" | "high" | "critical";
+        /**
+         * @description Вид правила (ТЗ 5.6); через API создаются threshold и new
+         * @enum {string}
+         */
+        AlertKind: "threshold" | "new" | "frequency" | "anomaly" | "budget" | "system" | "security";
+        Alert: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            rule_id: string;
+            rule_name: string;
+            kind: components["schemas"]["AlertKind"];
+            severity: components["schemas"]["AlertSeverity"];
+            title: string;
+            /** @enum {string} */
+            status: "new" | "in_progress" | "closed";
+            /** @description Значения полей группировки (ключ дедупликации) */
+            group: {
+                [key: string]: string;
+            };
+            /** @description Срабатываний в оповещении */
+            count: number;
+            /** @description Срабатываний в окне подавления после закрытия */
+            suppressed: number;
+            /** Format: date-time */
+            first_event_at?: string;
+            /** Format: date-time */
+            last_event_at?: string;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            last_triggered_at: string;
+            /** Format: date-time */
+            updated_at: string;
+            /** Format: uuid */
+            assignee_id?: string;
+            /** Format: date-time */
+            closed_at?: string;
+            closed_by?: string;
+            /** Format: uuid */
+            incident_id?: string;
+        };
+        AlertPage: components["schemas"]["PageInfo"] & {
+            items: components["schemas"]["Alert"][];
+        };
+        AlertCard: components["schemas"]["Alert"] & {
+            events: {
+                /** Format: uuid */
+                id: string;
+                /** Format: date-time */
+                ts: string;
+            }[];
+            events_truncated: boolean;
+            history: {
+                /** Format: date-time */
+                at: string;
+                actor: string;
+                /** @enum {string} */
+                from: "new" | "in_progress" | "closed";
+                /** @enum {string} */
+                to: "new" | "in_progress" | "closed";
+                comment: string;
+            }[];
+            /** @description Подробности без содержимого запросов (список изменений) */
+            details: {
+                [key: string]: unknown;
+            };
+        };
+        AlertStatusUpdate: {
+            /** @enum {string} */
+            status: "in_progress" | "closed";
+            comment?: string;
+        };
+        AlertCondition: {
+            /** @description Фильтр событий (язык — в описании GET /api/v1/events) */
+            filter?: string;
+            min_severity?: components["schemas"]["AlertSeverity"];
+            /**
+             * @description Поле правила «новое»
+             * @enum {string}
+             */
+            field?: "model" | "provider" | "user" | "app";
+        };
+        /** @description Получатели сверх обязательных ролей security_admin и auditor */
+        AlertRecipients: {
+            roles?: string[];
+            users?: string[];
+        };
+        AlertRuleInput: {
+            /** @enum {string} */
+            kind: "threshold" | "new";
+            name: string;
+            description?: string;
+            /** @default true */
+            enabled: boolean;
+            severity?: components["schemas"]["AlertSeverity"];
+            condition: components["schemas"]["AlertCondition"];
+            group_by?: ("type" | "app" | "env" | "user" | "provider" | "model" | "source" | "gateway" | "action" | "rule" | "severity" | "policy_mode")[];
+            /** @default 60 */
+            suppress_minutes: number;
+            recipients?: components["schemas"]["AlertRecipients"];
+            /** @description Не используется при создании */
+            version?: number;
+        };
+        AlertRuleUpdate: {
+            kind?: components["schemas"]["AlertKind"];
+            name?: string;
+            description?: string;
+            enabled?: boolean;
+            severity?: components["schemas"]["AlertSeverity"];
+            condition?: components["schemas"]["AlertCondition"];
+            group_by?: string[];
+            suppress_minutes?: number;
+            recipients?: components["schemas"]["AlertRecipients"];
+            /** @description Версия */
+            version: number;
+            /**
+             * Format: password
+             * @description Текущий пароль, если изменение ослабляет оповещения
+             */
+            password?: string;
+            /** @description Код из приложения-аутентификатора вместо пароля */
+            code?: string;
+        };
+        AlertRule: {
+            /** Format: uuid */
+            id: string;
+            /** @description Ключ встроенного правила */
+            builtin?: string;
+            kind: components["schemas"]["AlertKind"];
+            name: string;
+            description: string;
+            enabled: boolean;
+            /** @description Правило не отключается */
+            locked: boolean;
+            severity: components["schemas"]["AlertSeverity"];
+            condition: components["schemas"]["AlertCondition"];
+            group_by: string[];
+            suppress_minutes: number;
+            /** @description Окно группировки (DM-40); 0 — пока оповещение не закрыто */
+            group_minutes: number;
+            recipients: components["schemas"]["AlertRecipients"];
+            effective_roles: string[];
+            version: number;
+            /** Format: date-time */
+            created_at: string;
+            created_by: string;
+            /** Format: date-time */
+            updated_at: string;
+            updated_by: string;
+        };
+        AlertRuleList: {
+            items: components["schemas"]["AlertRule"][];
+        };
         /** @description Поле конверта страницы списка; на последней странице отсутствует */
         PageInfo: {
             next_cursor?: string;
@@ -5724,6 +6241,10 @@ export interface components {
         AppKeyID: string;
         /** @description ID сохранённого фильтра (UUIDv7) */
         FilterID: string;
+        /** @description ID оповещения (UUIDv7) */
+        AlertID: string;
+        /** @description ID правила оповещения (UUIDv7) */
+        AlertRuleID: string;
         /** @description Начало периода включительно (RFC 3339); по умолчанию to минус 24 часа */
         From: string;
         /** @description Конец периода, не включая (RFC 3339); по умолчанию — текущее время */

@@ -122,6 +122,22 @@ type PGStore struct {
 	// ids — UUIDv7 сохранённых фильтров (задача 2.16); nil — сохранение
 	// фильтров недоступно.
 	ids *ids.Generator
+	// hook — движок оповещений в транзакции приёма (ADR-0020); nil — без
+	// оповещений.
+	hook IngestHook
+}
+
+// IngestHook вызывается в транзакции приёма пакета для событий, которые
+// записаны впервые (дубли не передаются): правила оповещений «порог» и
+// «новое» (ADR-0020, п. 1). Ошибка откатывает весь пакет — шлюз повторит
+// его, поэтому срабатывание не теряется и не удваивается.
+type IngestHook interface {
+	OnIngest(ctx context.Context, tx pgx.Tx, gatewayID string, accepted []*Event) error
+}
+
+// WithIngestHook подключает движок оповещений к приёму событий.
+func WithIngestHook(h IngestHook) PGOption {
+	return func(s *PGStore) { s.hook = h }
 }
 
 // PGOption — необязательная настройка PGStore.
@@ -261,6 +277,17 @@ func (s *PGStore) insertRows(ctx context.Context, in Ingest, rows []eventRow, on
 			}
 		}
 		res.Duplicates = len(rows) - res.Accepted - len(res.Rejected)
+		if s.hook != nil && res.Accepted > 0 {
+			accepted := make([]*Event, 0, res.Accepted)
+			for i, r := range rows {
+				if inserted[i] {
+					accepted = append(accepted, r.ev)
+				}
+			}
+			if err := s.hook.OnIngest(ctx, tx, in.GatewayID, accepted); err != nil {
+				return fmt.Errorf("хранилище событий: оповещения: %w", err)
+			}
+		}
 		return s.insertStats(ctx, tx, in)
 	})
 	return res, err
