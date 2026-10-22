@@ -36,6 +36,9 @@ export const alertsApi = {
   setStatus: (alertId: string, status: "in_progress" | "closed", comment: string) =>
     request<Alert>("POST", `/api/v1/alerts/${id(alertId)}/status`, comment ? { status, comment } : { status }),
 
+  // Инцидент из оповещения: название, серьёзность и категория берутся из оповещения; повтор вернёт тот же инцидент.
+  createIncident: (alertId: string) => request<S["Incident"]>("POST", "/api/v1/incidents", { alert_id: alertId }),
+
   rules: (signal?: AbortSignal) => request<S["AlertRuleList"]>("GET", "/api/v1/alert-rules", undefined, signal),
   ruleState: (ruleId: string, signal?: AbortSignal) =>
     request<AlertRuleState>("GET", `/api/v1/alert-rules/${id(ruleId)}/state`, undefined, signal),

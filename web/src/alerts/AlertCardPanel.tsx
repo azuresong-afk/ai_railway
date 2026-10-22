@@ -17,7 +17,7 @@ const groupTitle = new Map<string, string>(Object.entries({
 }));
 
 // Карточка оповещения: жизненный цикл новое → в работе → закрыто, история, переход к событиям. Кнопка «Создать инцидент»
-// скрыта, пока в API нет /incidents (задача 3.16, поток C2); в оповещении с инцидентом показывается его ID.
+// видна при incidents.manage, пока у оповещения нет инцидента; после создания показывается ID инцидента.
 export function AlertCardPanel({ id, me, onClose }: { id: string; me: Me; onClose: () => void }) {
   const qc = useQueryClient();
   const canManage = me.permissions.includes("alerts.manage");
@@ -32,6 +32,11 @@ export function AlertCardPanel({ id, me, onClose }: { id: string; me: Me; onClos
       setComment("");
       await qc.invalidateQueries({ queryKey: ["alerts"] });
     },
+  });
+  const canIncident = me.permissions.includes("incidents.manage");
+  const incidentM = useMutation({
+    mutationFn: () => alertsApi.createIncident(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["alerts"] }),
   });
   const a = q.data;
   const [now] = useState(() => Date.now());
@@ -103,6 +108,17 @@ export function AlertCardPanel({ id, me, onClose }: { id: string; me: Me; onClos
                 <Button variant="primary" onClick={() => setTarget("closed")}>
                   Закрыть оповещение
                 </Button>
+              </div>
+            )}
+
+            {canIncident && !a.incident_id && (
+              <div className="flex flex-col gap-2">
+                <div>
+                  <Button onClick={() => incidentM.mutate()} disabled={incidentM.isPending}>
+                    Создать инцидент
+                  </Button>
+                </div>
+                <ErrorBanner error={incidentM.error} />
               </div>
             )}
 

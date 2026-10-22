@@ -65,6 +65,7 @@ beforeEach(() => {
       if (url.startsWith("/api/v1/alerts?")) return r(json({ items: store.alerts }));
       if (url === "/api/v1/alerts/al-1" && method === "GET") return r(json(card(store.alerts[0]!)));
       if (url === "/api/v1/alerts/al-1/status") return r(json({ ...store.alerts[0], status: c.body.status }));
+      if (url === "/api/v1/incidents" && method === "POST") return r(json({ id: "inc-1" }, 201));
       if (url === "/api/v1/alert-rules" && method === "GET") return r(json({ items: store.rules }));
       if (url === "/api/v1/alert-rules" && method === "POST") return r(json(rule({ id: "r-9", name: c.body.name }), 201));
       if (url.startsWith("/api/v1/alert-rules/") && method === "PUT") return r(json(rule({ id: url.split("/").pop()! })));
@@ -135,6 +136,18 @@ describe("экран «Оповещения»: список и карточка"
     expect(screen.queryByRole("tab", { name: "Правила" })).toBeNull();
     expect(screen.queryByRole("tab", { name: "Каналы" })).toBeNull();
     expect(screen.queryByRole("tab", { name: "Срок хранения" })).toBeNull();
+  });
+
+  it("«Создать инцидент» видна только с incidents.manage и отправляет alert_id", async () => {
+    const { unmount } = renderScreen([...allPerms, "incidents.manage"]);
+    fireEvent.click(await screen.findByRole("button", { name: /Открыть оповещение/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Создать инцидент" }));
+    await waitFor(() => expect(calls.find((c) => c.url === "/api/v1/incidents")?.body).toEqual({ alert_id: "al-1" }));
+    unmount();
+    renderScreen(allPerms);
+    fireEvent.click(await screen.findByRole("button", { name: /Открыть оповещение/ }));
+    await screen.findByRole("complementary", { name: "Карточка оповещения" });
+    expect(screen.queryByRole("button", { name: "Создать инцидент" })).toBeNull();
   });
 
   it("сервер отказал (403): диалог остаётся с ошибкой", async () => {
