@@ -49,16 +49,6 @@ func newPKI(t *testing.T, p aisecCrypto.Provider) (string, aisecCrypto.TLSProvid
 	return string(ca.CertPEM()), tp, cert, key
 }
 
-func hostPort(t *testing.T, addr string) (string, int) {
-	t.Helper()
-	h, p, err := net.SplitHostPort(addr)
-	if err != nil {
-		t.Fatal(err)
-	}
-	n, _ := strconv.Atoi(p)
-	return h, n
-}
-
 // smtpServer — минимальный SMTP-приёмник (RFC 5321) со STARTTLS (RFC 3207)
 // и AUTH PLAIN после TLS.
 type smtpServer struct {
@@ -78,11 +68,11 @@ func newSMTPServer(t *testing.T, tp aisecCrypto.TLSProvider, cert, key []byte, s
 	if err != nil {
 		t.Fatal(err)
 	}
-	l, err := net.Listen("tcp", "127.0.0.1:0")
+	l, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = l.Close() })
+	t.Cleanup(func() { _ = l.Close() }) //nolint:gosec // G104: закрытие тестового приёмника
 	s := &smtpServer{addr: l.Addr().String(), startTLS: startTLS}
 	go func() {
 		for {
@@ -97,10 +87,10 @@ func newSMTPServer(t *testing.T, tp aisecCrypto.TLSProvider, cert, key []byte, s
 }
 
 func (s *smtpServer) serve(conn net.Conn, upgrade func(net.Conn) net.Conn) {
-	defer func() { _ = conn.Close() }()
-	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+	defer func() { _ = conn.Close() }()                    //nolint:gosec // G104: закрытие тестового приёмника
+	_ = conn.SetDeadline(time.Now().Add(10 * time.Second)) //nolint:gosec // G104: срок соединения тестового приёмника
 	r := bufio.NewReader(conn)
-	w := func(line string) { _, _ = io.WriteString(conn, line+"\r\n") }
+	w := func(line string) { _, _ = io.WriteString(conn, line+"\r\n") } //nolint:gosec // G104: ответ тестового приёмника; обрыв увидит отправитель
 	w("220 test ESMTP")
 	secure := false
 	for {
@@ -132,7 +122,7 @@ func (s *smtpServer) serve(conn net.Conn, upgrade func(net.Conn) net.Conn) {
 			s.mu.Unlock()
 		case "AUTH":
 			parts := strings.Fields(line)
-			raw, _ := base64.StdEncoding.DecodeString(parts[len(parts)-1])
+			raw, _ := base64.StdEncoding.DecodeString(parts[len(parts)-1]) //nolint:gosec // G104: неверный base64 даст пустой пароль и отказ AUTH
 			s.mu.Lock()
 			s.auth = append(s.auth, string(raw))
 			s.mu.Unlock()
@@ -194,7 +184,7 @@ func newWebhookServer(t *testing.T, tp aisecCrypto.TLSProvider, cert, key []byte
 	}
 	ws := &webhookServer{status: http.StatusOK}
 	ws.srv = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		b, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+		b, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20)) //nolint:gosec // G104: неполное тело проверит тест
 		ws.mu.Lock()
 		ws.bodies = append(ws.bodies, b)
 		ws.sigs = append(ws.sigs, r.Header.Get(SignatureHeader))
@@ -236,12 +226,12 @@ func newSyslogServer(t *testing.T, tp aisecCrypto.TLSProvider, cert, key []byte)
 	if err != nil {
 		t.Fatal(err)
 	}
-	l, err := net.Listen("tcp", "127.0.0.1:0")
+	l, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	tl := aisecCrypto.TLSListener(l, cfg)
-	t.Cleanup(func() { _ = tl.Close() })
+	t.Cleanup(func() { _ = tl.Close() }) //nolint:gosec // G104: закрытие тестового приёмника
 	s := &syslogServer{addr: l.Addr().String(), records: make(chan string, 16)}
 	go func() {
 		for {
@@ -250,8 +240,8 @@ func newSyslogServer(t *testing.T, tp aisecCrypto.TLSProvider, cert, key []byte)
 				return
 			}
 			go func() {
-				defer func() { _ = conn.Close() }()
-				_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+				defer func() { _ = conn.Close() }()                    //nolint:gosec // G104: закрытие тестового приёмника
+				_ = conn.SetDeadline(time.Now().Add(10 * time.Second)) //nolint:gosec // G104: срок соединения тестового приёмника
 				r := bufio.NewReader(conn)
 				for {
 					n, err := r.ReadString(' ')

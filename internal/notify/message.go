@@ -104,7 +104,7 @@ func clean(s string) string {
 // mdEscaper — разметка Markdown Mattermost/Rocket.Chat: значения выводятся
 // как текст, упоминания @channel и @all не срабатывают.
 var mdEscaper = strings.NewReplacer(`\`, `\\`, "*", `\*`, "_", `\_`, "`", "\\`", "~", `\~`, "[", `\[`, "]", `\]`,
-	"(", `\(`, ")", `\)`, "<", `\<`, ">", `\>`, "#", `\#`, "|", `\|`, "!", `\!`, "@", "@​")
+	"(", `\(`, ")", `\)`, "<", `\<`, ">", `\>`, "#", `\#`, "|", `\|`, "!", `\!`, "@", "@\u200b")
 
 func mattermostBody(m Message) ([]byte, error) {
 	ls := lines(m)

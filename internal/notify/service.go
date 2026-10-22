@@ -183,7 +183,7 @@ func (s *Service) seal(ctx context.Context, c *Channel, sec Secrets) error {
 	if len(c.SecretFields) == 0 {
 		return nil
 	}
-	raw, err := json.Marshal(sec)
+	raw, err := json.Marshal(sec) //nolint:gosec // G117: секреты сериализуются только для шифрования ключом данных (SealKey)
 	if err != nil {
 		return err
 	}

@@ -79,7 +79,7 @@ func TestNotifyChannelsAPI(t *testing.T) {
 	auditor := e.mustLogin(t, "auditor")
 	analyst := e.mustLogin(t, "analyst")
 	sys := e.mustLogin(t, "sysadm")
-	ca, _ := json.Marshal(e.caPEM)
+	ca, _ := json.Marshal(e.caPEM) //nolint:gosec // G104: строка всегда сериализуется
 	hook := `{"name":"Mattermost SOC","type":"webhook","min_severity":"high","settings":{"format":"mattermost","ca_pem":` +
 		string(ca) + `},"secrets":{"url":"https://127.0.0.1:1/hooks/synthetic-token","signing_key":"0123456789abcdef0123456789abcdef"}}`
 

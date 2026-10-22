@@ -267,7 +267,11 @@ func (t *Transport) sendWebhook(ctx context.Context, ch Channel, sec Secrets, ms
 					dialErr.Store(&DeliveryError{Code: ErrCodeConfig})
 					return nil, failed(ErrCodeConfig)
 				}
-				p, _ := strconv.Atoi(port)
+				p, err := strconv.Atoi(port)
+				if err != nil {
+					dialErr.Store(&DeliveryError{Code: ErrCodeConfig})
+					return nil, failed(ErrCodeConfig)
+				}
 				conn, err := t.tlsDial(ctx, ch, host, p)
 				if err != nil {
 					dialErr.Store(&DeliveryError{Code: ErrorCode(err)})
