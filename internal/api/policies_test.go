@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -269,13 +268,12 @@ func TestPolicySandboxViaAPI(t *testing.T) {
 	text := req("Проект Северное сияние")
 	mustProblem(t, e.call(analyst, "POST", "/api/v1/policies/test", `{"policy_id":"codenames","request":`+text+`}`, true), 422, CodeUnprocessable)
 	prov := e.provider(t, sys, "openai-main")
-	appBody := fmt.Sprintf(`{"slug":"crm","name":"CRM","owner_id":%q,"env":"prod","provider_id":%q,"models":["m"],`+
-		`"lists":[{"id":"codename","category":"codename","words":["Северное сияние"]}]}`, tOwnerID, prov.ID)
-	w = e.call(sys, "POST", "/api/v1/applications", appBody, true)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("приложение: %d %s", w.Code, w.Body)
+	app := e.application(t, sys, "crm", prov.ID, tOwnerID)
+	w = e.call(admin, "PUT", "/api/v1/applications/"+app.ID+"/protection",
+		`{"lists":[{"id":"codename","category":"codename","words":["Северное сияние"]}]}`, true)
+	if w.Code != http.StatusOK {
+		t.Fatalf("словарь приложения: %d %s", w.Code, w.Body)
 	}
-	app := decode[ApplicationView](t, w.Body.Bytes())
 	w = e.call(analyst, "POST", "/api/v1/policies/test", `{"policy_id":"codenames","application_id":"`+app.ID+`","request":`+text+`}`, true)
 	res = decode[PolicyTestResult](t, w.Body.Bytes())
 	// Режим приложения (monitor по умолчанию) важнее режима политики, как в шлюзе.

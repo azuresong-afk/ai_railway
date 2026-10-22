@@ -80,6 +80,12 @@ var (
 	ErrTooMany          = errors.New("достигнут предел числа объектов")
 	ErrNoDataKey        = errors.New("ключ данных не подключён: учётные данные провайдеров недоступны")
 	ErrNoCredential     = errors.New("учётные данные провайдера не заданы")
+	// ErrPolicyRequired — изменение ослабляет защиту и требует права
+	// applications.policy (В15 ревью 2.r3b).
+	ErrPolicyRequired = errors.New("нужно право applications.policy")
+	// ErrConfirmRequired — ослабление защиты без повторной проверки
+	// субъекта (Н32 ревью 2.r3b): её нечем выполнить.
+	ErrConfirmRequired = errors.New("ослабление защиты требует повторной проверки")
 	// errImmutable — попытка изменить неизменяемое (ошибка программиста;
 	// в PostgreSQL то же запрещают триггеры).
 	errImmutable = errors.New("приложения: изменение неизменяемого поля")
@@ -361,6 +367,12 @@ func New(o Options) (*Service, error) {
 type By struct {
 	Actor audit.Actor
 	IP    netip.Addr
+	// Policy — у субъекта есть право applications.policy (УПД.2).
+	Policy bool
+	// Confirm — повторная проверка субъекта (пароль или код TOTP) перед
+	// ослаблением защиты (Н32 ревью 2.r3b); nil — ослабление отклоняется
+	// с ErrConfirmRequired.
+	Confirm func(ctx context.Context) error
 }
 
 func (b By) entry(action, objType, objID string, details any) audit.Entry {

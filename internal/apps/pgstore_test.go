@@ -151,7 +151,7 @@ func setupPG(t *testing.T) *pgEnv {
 	}
 	e := &pgEnv{owner: owner, app: newPool(t, dsn, schema, "aisec_app"),
 		clock: &clock{t: time.Now().UTC().Truncate(time.Microsecond)},
-		by:    apps.By{Actor: audit.Actor{Type: audit.ActorUser, ID: ownerA, Name: "admin"}}}
+		by:    apps.By{Actor: audit.Actor{Type: audit.ActorUser, ID: ownerA, Name: "admin"}, Policy: true, Confirm: confirmed}}
 	var dir string
 	dir, e.keyID = keyringtest.Install(t, ctx, owner, p, audit.DefaultOrgID)
 	if e.box, err = keyring.Load(ctx, e.app, p, dir, audit.DefaultOrgID); err != nil {
@@ -240,10 +240,17 @@ func TestPGApplicationsLifecycle(t *testing.T) {
 	}
 	in := appInput("helpdesk", p.ID, ownerB)
 	in.Quotas.RequestsPerMinutePerKey = 300
-	in.ExfilAllowDomains = []string{"corp.example"}
 	upd, err := e.svc.UpdateApplication(ctx, e.by, a.ID, in)
 	if err != nil || upd.OwnerID != ownerB || upd.Quotas.RequestsPerMinutePerKey != 300 {
 		t.Fatalf("изменение: %+v %v", upd, err)
+	}
+	dom := []string{"corp.example"}
+	prot, err := e.svc.SetProtection(ctx, e.by, a.ID, apps.ProtectionInput{FailMode: "fail_open", ExfilAllowDomains: &dom})
+	if err != nil || prot.FailMode != "fail_open" || len(prot.ExfilAllowDomains) != 1 {
+		t.Fatalf("поля защиты: %+v %v", prot, err)
+	}
+	if got, err := e.svc.Application(ctx, a.ID, ""); err != nil || got.FailMode != "fail_open" || got.ExfilAllowDomains[0] != "corp.example" {
+		t.Fatalf("поля защиты после чтения: %+v %v", got, err)
 	}
 	list, err := e.svc.Applications(ctx, ownerB, nil, 10)
 	if err != nil || len(list) != 1 {

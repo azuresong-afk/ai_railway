@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -52,7 +53,7 @@ func newEnv(t *testing.T, withBox bool) *env {
 		t.Fatal(err)
 	}
 	e := &env{mem: apps.NewMemory(), clock: &clock{t: time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)},
-		by: apps.By{Actor: audit.Actor{Type: audit.ActorUser, ID: ownerA, Name: "admin"}}}
+		by: apps.By{Actor: audit.Actor{Type: audit.ActorUser, ID: ownerA, Name: "admin"}, Policy: true, Confirm: confirmed}}
 	if withBox {
 		if e.box, err = keyring.NewStaticKey(p, "01900000-0000-7000-8000-0000000000d1", key); err != nil {
 			t.Fatal(err)
@@ -92,6 +93,9 @@ func (e *env) provider(t *testing.T, slug string) apps.Provider {
 	}
 	return p
 }
+
+// confirmed — повторная проверка пройдена (Н32).
+func confirmed(context.Context) error { return nil }
 
 func appInput(slug, providerID, owner string) apps.AppInput {
 	return apps.AppInput{Slug: slug, Name: "Приложение " + slug, OwnerID: owner, Env: "test", ProviderID: providerID,
@@ -363,19 +367,21 @@ func TestApplicationProtectionDefaults(t *testing.T) {
 	inputErr(t, err, "owner_id")
 	// Проверки — те же, что у файла шлюза.
 	for want, mod := range map[string]func(*apps.AppInput){
-		"DM-33":               func(in *apps.AppInput) { in.Models = nil },
-		"псевдоним":           func(in *apps.AppInput) { in.Aliases = map[string]string{"x": "not-allowed"} },
-		"env":                 func(in *apps.AppInput) { in.Env = "stage" },
-		"quotas.max_tokens":   func(in *apps.AppInput) { in.Quotas.MaxTokens = -1 },
-		"exfil_allow_domains": func(in *apps.AppInput) { in.ExfilAllowDomains = []string{"http://bad"} },
-		"name":                func(in *apps.AppInput) { in.Name = strings.Repeat("я", 201) },
-		"provider_id":         func(in *apps.AppInput) { in.ProviderID = "not-a-uuid" },
+		"DM-33":             func(in *apps.AppInput) { in.Models = nil },
+		"псевдоним":         func(in *apps.AppInput) { in.Aliases = map[string]string{"x": "not-allowed"} },
+		"env":               func(in *apps.AppInput) { in.Env = "stage" },
+		"quotas.max_tokens": func(in *apps.AppInput) { in.Quotas.MaxTokens = -1 },
+		"name":              func(in *apps.AppInput) { in.Name = strings.Repeat("я", 201) },
+		"provider_id":       func(in *apps.AppInput) { in.ProviderID = "not-a-uuid" },
 	} {
 		in := appInput("v-"+fmt.Sprint(len(want)), p.ID, ownerA)
 		mod(&in)
 		_, err := e.svc.CreateApplication(ctx, e.by, in, nil)
 		inputErr(t, err, want)
 	}
+	bad := []string{"http://bad"}
+	_, err = e.svc.CreateApplication(ctx, e.by, appInput("exfil", p.ID, ownerA), &apps.ProtectionInput{ExfilAllowDomains: &bad})
+	inputErr(t, err, "exfil_allow_domains")
 	// Граница длины названия.
 	in := appInput("long", p.ID, ownerA)
 	in.Name = strings.Repeat("я", 200)
@@ -638,6 +644,96 @@ func TestArchive(t *testing.T) {
 	}
 	if _, err := e.svc.SetProtection(ctx, e.by, a.ID, apps.ProtectionInput{Storage: "none"}); !errors.Is(err, apps.ErrArchived) {
 		t.Fatalf("поля защиты архивного: %v", err)
+	}
+	checkRecords(t, e)
+}
+
+// В15 и Н32 ревью 2.r3b: какие изменения полей защиты ослабляют её и что
+// без повторной проверки ослабление отклоняется.
+func TestProtectionWeakening(t *testing.T) {
+	e := newEnv(t, false)
+	ctx := context.Background()
+	p := e.provider(t, "main")
+	ls := []apps.List{{ID: "code", Category: "codename", Words: []string{"зенит", "орион"}, Regex: []string{`\bPRJ-\d+\b`}}}
+	a, err := e.svc.CreateApplication(ctx, e.by, appInput("crm", p.ID, ownerA),
+		&apps.ProtectionInput{Policy: "pii-strict", Lists: &ls})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := e.last(t, "application.create").Details.(map[string]any); d["weakening"] != false {
+		t.Fatalf("словарь при создании — не ослабление: %v", d)
+	}
+	list := func(mod func(*apps.List)) *[]apps.List {
+		l := ls[0]
+		l.Words, l.Regex = slices.Clone(l.Words), slices.Clone(l.Regex)
+		mod(&l)
+		return &[]apps.List{l}
+	}
+	dom := func(d ...string) *[]string { return &d }
+	for _, c := range []struct {
+		name string
+		in   apps.ProtectionInput
+		weak bool
+	}{
+		{"новое слово", apps.ProtectionInput{Lists: list(func(l *apps.List) { l.Words = append(l.Words, "вега") })}, false},
+		{"удалено слово", apps.ProtectionInput{Lists: list(func(l *apps.List) { l.Words = l.Words[:2] })}, true},
+		{"удалено выражение", apps.ProtectionInput{Lists: list(func(l *apps.List) { l.Regex = nil })}, true},
+		{"учёт регистра", apps.ProtectionInput{Lists: list(func(l *apps.List) { l.CaseSensitive = true })}, true},
+		{"словарь возвращён", apps.ProtectionInput{Lists: &ls}, false},
+		{"удалён словарь", apps.ProtectionInput{Lists: &[]apps.List{}}, true},
+		{"новый домен", apps.ProtectionInput{ExfilAllowDomains: dom("files.example")}, true},
+		{"тот же домен в другом регистре", apps.ProtectionInput{ExfilAllowDomains: dom("Files.Example")}, false},
+		{"домен убран", apps.ProtectionInput{ExfilAllowDomains: dom()}, false},
+		{"fail_open", apps.ProtectionInput{FailMode: "fail_open"}, true},
+		{"fail_closed", apps.ProtectionInput{FailMode: "fail_closed"}, false},
+	} {
+		if _, err := e.svc.SetProtection(ctx, e.by, a.ID, c.in); err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if d := e.last(t, "application.protection_changed").Details.(map[string]any); d["weakening"] != c.weak {
+			t.Errorf("%s: weakening = %v", c.name, d["weakening"])
+		}
+	}
+	// Без проверки ослабление отклоняется, усиление проходит.
+	noConfirm := apps.By{Actor: e.by.Actor, Policy: true}
+	if _, err := e.svc.SetProtection(ctx, noConfirm, a.ID, apps.ProtectionInput{FailMode: "fail_open"}); !errors.Is(err, apps.ErrConfirmRequired) {
+		t.Fatalf("ослабление без проверки: %v", err)
+	}
+	denied := errors.New("пароль не принят")
+	wrong := apps.By{Actor: e.by.Actor, Policy: true, Confirm: func(context.Context) error { return denied }}
+	if _, err := e.svc.SetProtection(ctx, wrong, a.ID, apps.ProtectionInput{Storage: "full"}); !errors.Is(err, denied) {
+		t.Fatalf("неверный пароль: %v", err)
+	}
+	if _, err := e.svc.CreateApplication(ctx, noConfirm, appInput("bi", p.ID, ownerA), &apps.ProtectionInput{Storage: "none"}); !errors.Is(err, apps.ErrConfirmRequired) {
+		t.Fatalf("создание с ослаблением без проверки: %v", err)
+	}
+	if _, err := e.svc.SetProtection(ctx, noConfirm, a.ID, apps.ProtectionInput{Lists: list(func(l *apps.List) { l.Words = append(l.Words, "вега", "лира") })}); err != nil {
+		t.Fatalf("усиление без проверки: %v", err)
+	}
+	if got, _ := e.svc.Application(ctx, a.ID, ""); got.FailMode != "fail_closed" || got.Storage != "masked" {
+		t.Fatalf("отклонённые изменения сохранены: %+v", got)
+	}
+	// Снятие признака «внешний» у провайдера — тоже с проверкой.
+	if _, err := e.svc.SetExternal(ctx, noConfirm, p.ID, false, "свой контур"); !errors.Is(err, apps.ErrConfirmRequired) {
+		t.Fatalf("снятие признака без проверки: %v", err)
+	}
+	// Переход на невнешнего провайдера — только с правом applications.policy.
+	in := e.provider(t, "vllm")
+	if _, err := e.svc.SetExternal(ctx, e.by, in.ID, false, "свой контур"); err != nil {
+		t.Fatal(err)
+	}
+	sys := apps.By{Actor: e.by.Actor, Confirm: confirmed}
+	if _, err := e.svc.UpdateApplication(ctx, sys, a.ID, appInput("", in.ID, ownerA)); !errors.Is(err, apps.ErrPolicyRequired) {
+		t.Fatalf("переход без права: %v", err)
+	}
+	if _, err := e.svc.UpdateApplication(ctx, e.by, a.ID, appInput("", in.ID, ownerA)); err != nil {
+		t.Fatal(err)
+	}
+	if d := e.last(t, "application.update").Details.(map[string]any); d["weakening"] != true {
+		t.Fatalf("переход на невнешнего: %v", d)
+	}
+	if _, err := e.svc.UpdateApplication(ctx, sys, a.ID, appInput("", in.ID, ownerB)); err != nil {
+		t.Fatalf("правка без смены провайдера: %v", err)
 	}
 	checkRecords(t, e)
 }

@@ -233,7 +233,8 @@ func (s *Service) OpenCredential(ctx context.Context, id string) ([]byte, error)
 
 // SetExternal ставит или снимает признак «внешний» (ТЗ 5.4). Снятие —
 // ослабление защиты (DM-40): в режиме monitor данные к провайдеру больше не
-// маскируются. Право на маршрут — только у администратора безопасности.
+// маскируются, поэтому оно требует повторной проверки (Н32 ревью 2.r3b).
+// Право на маршрут — только у администратора безопасности.
 func (s *Service) SetExternal(ctx context.Context, by By, id string, external bool, reason string) (Provider, error) {
 	reason = strings.TrimSpace(reason)
 	if err := textLen("reason", reason, 1, maxReason); err != nil {
@@ -245,6 +246,11 @@ func (s *Service) SetExternal(ctx context.Context, by By, id string, external bo
 	p, err := s.store.UpdateProvider(ctx, s.orgID, id, func(p *Provider) (audit.Entry, error) {
 		if p.External == external {
 			return audit.Entry{}, errUnchanged
+		}
+		if !external {
+			if err := by.confirm(ctx); err != nil {
+				return audit.Entry{}, err
+			}
 		}
 		p.External = external
 		p.UpdatedAt, p.UpdatedBy = s.now(), by.ref()
