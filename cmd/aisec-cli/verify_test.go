@@ -23,11 +23,23 @@ func verifyInstall(t *testing.T) (root string) {
 // verifyInstallAt — то же с заданными временем сборки и версией манифеста.
 func verifyInstallAt(t *testing.T, created time.Time, version string) (root string) {
 	t.Helper()
+	root = signedRelease(t, created, version, "синтетический aisec-cli")
+	prev := executable
+	executable = func() (string, error) { return filepath.Join(root, "bin", "aisec-cli"), nil }
+	t.Cleanup(func() { executable = prev })
+	t.Setenv("AISEC_DATABASE_URL", "")
+	return root
+}
+
+// signedRelease — каталог выпуска с подписанным тестовым ключом манифестом;
+// cli — содержимое bin/aisec-cli (в настоящих выпусках в него вшита версия).
+func signedRelease(t *testing.T, created time.Time, version, cli string) (root string) {
+	t.Helper()
 	root = t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "bin"), 0o750); err != nil {
 		t.Fatal(err)
 	}
-	for name, body := range map[string]string{"aisec-cli": "синтетический aisec-cli", "aisec-server": "синтетический aisec-server"} {
+	for name, body := range map[string]string{"aisec-cli": cli, "aisec-server": "синтетический aisec-server"} {
 		if err := os.WriteFile(filepath.Join(root, "bin", name), []byte(body), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -76,10 +88,6 @@ func verifyInstallAt(t *testing.T, created time.Time, version string) (root stri
 			t.Fatal(err)
 		}
 	}
-	prev := executable
-	executable = func() (string, error) { return filepath.Join(root, "bin", "aisec-cli"), nil }
-	t.Cleanup(func() { executable = prev })
-	t.Setenv("AISEC_DATABASE_URL", "")
 	return root
 }
 
@@ -127,6 +135,87 @@ func TestVerifyArgs(t *testing.T) {
 		{"verify", "-accept-rollback"},                  // без БД откат не принять
 		{"verify", "-gateway", "gw-1"},                  // -gateway только с -accept-rollback
 		{"verify", "-accept-rollback", "-gateway", "Ш"}, // без БД и с неверным именем
+	} {
+		if code := run(args, &out, &errOut, now); code != 1 {
+			t.Fatalf("%v: код %d", args, code)
+		}
+	}
+}
+
+// ОБН.1, A2-В1: установленный aisec-cli проверяет выпуск другой версии.
+// -manifest сверяет с новым манифестом и сам aisec-cli и потому отвергает
+// любое обновление; -release проверяет подпись и файлы каталога, но не себя.
+func TestVerifyReleaseOtherVersion(t *testing.T) {
+	verifyInstall(t)
+	next := signedRelease(t, time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC), "2", "синтетический aisec-cli версии 2")
+	var out, errOut strings.Builder
+	if code := run([]string{"verify", "-manifest", filepath.Join(next, integrity.ManifestFile)}, &out, &errOut, now); code != 3 || !strings.Contains(out.String(), "bin/aisec-cli") {
+		t.Fatalf("-manifest: ожидалось нарушение bin/aisec-cli, код %d: %s", code, out.String())
+	}
+	// Режим выпуска не обращается к БД, даже если она задана.
+	t.Setenv("AISEC_DATABASE_URL", "postgres://нет-такого-хоста.invalid/aisec")
+	out.Reset()
+	if code := run([]string{"verify", "-release", next}, &out, &errOut, now); code != 0 || !strings.Contains(out.String(), "Выпуск 2 проверен") {
+		t.Fatalf("-release: код %d: %s %s", code, out.String(), errOut.String())
+	}
+}
+
+func TestVerifyReleaseRejects(t *testing.T) {
+	for name, edit := range map[string]func(t *testing.T, dir string){
+		"подменён бинарник": func(t *testing.T, dir string) {
+			if err := os.WriteFile(filepath.Join(dir, "bin", "aisec-server"), []byte("подменённый aisec-server!!"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"подменён aisec-cli": func(t *testing.T, dir string) {
+			if err := os.WriteFile(filepath.Join(dir, "bin", "aisec-cli"), []byte("подменённый aisec-cli версии 2"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"нет файла": func(t *testing.T, dir string) {
+			if err := os.Remove(filepath.Join(dir, "bin", "aisec-server")); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"ссылка вместо файла": func(t *testing.T, dir string) {
+			p := filepath.Join(dir, "bin", "aisec-server")
+			if err := os.Rename(p, p+".orig"); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink("aisec-server.orig", p); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"неверная подпись": func(t *testing.T, dir string) {
+			if err := os.WriteFile(filepath.Join(dir, integrity.SignatureFile), []byte("AAAA\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"нет манифеста": func(t *testing.T, dir string) {
+			if err := os.Remove(filepath.Join(dir, integrity.ManifestFile)); err != nil {
+				t.Fatal(err)
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			verifyInstall(t)
+			next := signedRelease(t, time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC), "2", "синтетический aisec-cli версии 2")
+			edit(t, next)
+			var out, errOut strings.Builder
+			if code := run([]string{"verify", "-release", next}, &out, &errOut, now); code != 3 || !strings.Contains(out.String(), "Выпуск не прошёл проверку") {
+				t.Fatalf("код %d: %s %s", code, out.String(), errOut.String())
+			}
+		})
+	}
+}
+
+func TestVerifyReleaseArgs(t *testing.T) {
+	root := verifyInstall(t)
+	var out, errOut strings.Builder
+	for _, args := range [][]string{
+		{"verify", "-release", root, "-manifest", filepath.Join(root, integrity.ManifestFile)},
+		{"verify", "-release", root, "-accept-rollback"},
+		{"verify", "-release", root, "-gateway", "gw-1"},
 	} {
 		if code := run(args, &out, &errOut, now); code != 1 {
 			t.Fatalf("%v: код %d", args, code)

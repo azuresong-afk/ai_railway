@@ -61,7 +61,7 @@ esac
 echo "1. Подпись и файлы выпуска — aisec-cli $installed (установленная версия)."
 docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges:true \
 	--user 65534:65534 --mount "type=bind,source=$release,target=/release,readonly" \
-	"$repo/aisec-cli:$installed" verify -manifest /release/aisec-manifest.json ||
+	"$repo/aisec-cli:$installed" verify -release /release ||
 	die "выпуск не прошёл проверку подписи и файлов — не устанавливайте его"
 
 # Манифест проверен: версия и список бинарников берутся из него.
