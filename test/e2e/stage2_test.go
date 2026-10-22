@@ -277,7 +277,7 @@ func TestE2EDM42_BinaryTampered(t *testing.T) {
 		}
 		// Меняем один знак встроенной страницы, как при подмене статики в бинарнике.
 		exe[at+len(page)/2] ^= 0x01
-		if err := os.WriteFile(bad.path("aisec-server"), exe, 0o700); err != nil {
+		if err := os.WriteFile(bad.path("aisec-server"), exe, 0o700); err != nil { //nolint:gosec // G306, G703: исполняемый файл в копии установки во временном каталоге теста
 			t.Fatal(err)
 		}
 		if _, ok := s.startServer(bad, "-integrity-action", "stop"); ok {
@@ -333,7 +333,7 @@ func TestE2EDM42_BinaryTampered(t *testing.T) {
 		} else {
 			raw[j] = '0'
 		}
-		if err := os.WriteFile(bad.manifest(), raw, 0o600); err != nil {
+		if err := os.WriteFile(bad.manifest(), raw, 0o600); err != nil { //nolint:gosec // G703: манифест копии установки во временном каталоге теста
 			t.Fatal(err)
 		}
 		if out, code := s2Run(t, bad.path("aisec-cli"), nil, "verify"); code != 3 {

@@ -46,7 +46,7 @@ func getBundle(svc *build.Service, logger *slog.Logger) http.HandlerFunc {
 		vals := r.Header.Values(BundleKeyHeader)
 		var key []byte
 		if len(vals) == 1 && len(vals[0]) <= 64 {
-			key, _ = base64.RawURLEncoding.Strict().DecodeString(vals[0])
+			key, _ = base64.RawURLEncoding.Strict().DecodeString(vals[0]) //nolint:gosec // G104: неверная запись даёт ключ не той длины, и проверка ниже отвечает 400
 		}
 		if len(key) != aisecCrypto.RecipientPublicKeySize {
 			WriteProblem(w, Invalid("Нужен заголовок "+BundleKeyHeader+": открытый ключ шлюза X25519, 32 байта в base64url без дополнения."))

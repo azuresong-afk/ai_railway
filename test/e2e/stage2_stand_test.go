@@ -41,8 +41,8 @@ import (
 // (12 знаков, три класса), настоящим людям не принадлежат.
 const (
 	s2AdminLogin = "e2e-secadmin"
-	s2AdminPass  = "Syn-Passw0rd-e2e-1"
-	s2UserPass   = "Syn-Passw0rd-e2e-2"
+	s2AdminPass  = "Syn-Passw0rd-e2e-1" //nolint:gosec // G101: синтетический пароль стенда e2e
+	s2UserPass   = "Syn-Passw0rd-e2e-2" //nolint:gosec // G101: синтетический пароль стенда e2e
 	// s2CSRFCookie — cookie двойной отправки (решение Р6).
 	s2CSRFCookie = "__Host-aisec_csrf"
 )
@@ -252,7 +252,7 @@ func s2Copy(t *testing.T, from, to string, perm os.FileMode) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(to, data, perm); err != nil {
+	if err := os.WriteFile(to, data, perm); err != nil { //nolint:gosec // G703: путь во временном каталоге теста
 		t.Fatal(err)
 	}
 }

@@ -25,7 +25,7 @@ import (
 
 const (
 	owner      = "01900000-0000-7000-8000-00000000a0a1"
-	credential = "sk-synthetic-provider-credential-01"
+	credential = "sk-synthetic-provider-credential-01" //nolint:gosec // G101: синтетические учётные данные провайдера для теста, нигде не выданы
 )
 
 type recorder struct {
@@ -171,7 +171,7 @@ func TestBuildVersionsOnlyOnChange(t *testing.T) {
 	if err != nil || r3.Version != r1.Version+1 {
 		t.Fatalf("после отзыва: %d, %v", r3.Version, err)
 	}
-	if c, _ := bundle.ParseContent(r3.Content); len(c.Applications[0].Keys) != 0 {
+	if c, _ := bundle.ParseContent(r3.Content); len(c.Applications[0].Keys) != 0 { //nolint:gosec // G104: содержимое уже разобрано выше без ошибки, важен список ключей
 		t.Fatal("отозванный ключ в пакете")
 	}
 

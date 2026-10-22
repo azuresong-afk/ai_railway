@@ -118,7 +118,7 @@ func newBundleEnv(t *testing.T) *bundleEnv {
 func stateDir(t *testing.T) string {
 	t.Helper()
 	d := t.TempDir()
-	if err := os.Chmod(d, 0o700); err != nil {
+	if err := os.Chmod(d, 0o700); err != nil { //nolint:gosec // G302: каталог теста, права как у каталога состояния шлюза
 		t.Fatal(err)
 	}
 	return d
@@ -135,7 +135,7 @@ func (e *bundleEnv) client(t *testing.T) *gateway.BundleClient {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = st.Close() })
+	t.Cleanup(func() { _ = st.Close() }) //nolint:gosec // G104: закрытие хранилища в очистке теста
 	c, err := gateway.NewBundleClient(gateway.BundleConfig{Client: http.DefaultClient, Server: e.url, Opener: e.fx.Opener(t),
 		RecipientKey: e.fx.Recipient.PublicKey(), State: st,
 		Apply: func(b *bundle.Bundle) error {
@@ -343,7 +343,7 @@ func TestBundleClientLoadSaved(t *testing.T) {
 	if err := os.WriteFile(path, v1, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chmod(path, 0o644); err != nil {
+	if err := os.Chmod(path, 0o644); err != nil { //nolint:gosec // G302: тест нарочно ослабляет права файла и ждёт отказа
 		t.Fatal(err)
 	}
 	if e.client(t).LoadSaved() {
@@ -406,7 +406,7 @@ func TestBundleStateRecipientAndPerms(t *testing.T) {
 	}
 	_ = st2.Close() //nolint:gosec // G104: каталог только читался
 	open := t.TempDir()
-	if err := os.Chmod(open, 0o755); err != nil {
+	if err := os.Chmod(open, 0o755); err != nil { //nolint:gosec // G302: тест нарочно ослабляет права каталога и ждёт отказа
 		t.Fatal(err)
 	}
 	if _, err := gateway.OpenBundleState(open, rnd); err == nil {

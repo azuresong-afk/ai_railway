@@ -17,7 +17,7 @@ import (
 const GatewayID = "0192a000-0000-7000-8000-000000000001"
 
 // Credential — синтетические учётные данные провайдера «llm».
-const Credential = "sk-synthetic-test-credential-0001"
+const Credential = "sk-synthetic-test-credential-0001" //nolint:gosec // G101: синтетические учётные данные для тестов, нигде не выданы
 
 // Key — ключ приложения «crm» (SHA-256 из KeyHash): синтетический.
 const (

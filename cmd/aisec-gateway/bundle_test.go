@@ -57,7 +57,7 @@ func newBundleBuild(t *testing.T) *bundleBuild {
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	queue := events.NewQueue(nopSink{}, events.QueueConfig{Logger: logger})
-	t.Cleanup(func() { _ = queue.Close(context.Background()) })
+	t.Cleanup(func() { _ = queue.Close(context.Background()) }) //nolint:gosec // G104: очередь теста без событий, ошибка закрытия не влияет на проверки
 	authBase := &gateway.AuthConfig{Limiter: auth.NewFailureLimiter(auth.LimiterConfig{}), Events: queue,
 		IDs: ids.NewGenerator(rnd), Logger: logger}
 	hb := &handlerBuilder{cfg: &config.Gateway{MaxBodyBytes: config.DefaultMaxBodyBytes}, logger: logger, hasher: h,
