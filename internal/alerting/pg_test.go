@@ -36,6 +36,7 @@ type pgEnv struct {
 	svc        *alerting.Service
 	ids        *ids.Generator
 	by         alerting.By
+	log        *audit.Log
 }
 
 func pgCtx(t *testing.T) context.Context {
@@ -179,7 +180,7 @@ func setupPG(t *testing.T) *pgEnv {
 	}
 	by := alerting.By{Actor: audit.Actor{Type: audit.ActorUser, ID: "01900000-0000-7000-8000-0000000000b1", Name: "admin"},
 		UserID: "01900000-0000-7000-8000-0000000000b1", Confirm: func(context.Context) error { return nil }}
-	return &pgEnv{owner: owner, app: app, events: ev, alerts: al, svc: svc, ids: ids.NewGenerator(r), by: by}
+	return &pgEnv{owner: owner, app: app, events: ev, alerts: al, svc: svc, ids: ids.NewGenerator(r), by: by, log: l}
 }
 
 func (e *pgEnv) event(t *testing.T, app, model, action string, threats ...string) events.Event {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -47,6 +48,25 @@ type Log struct {
 	now         func() time.Time
 	// rdb — пул чтения для просмотра журнала консолью; nil — основной.
 	rdb Querier
+	// hook — точка вызова правил оповещений в транзакции записи (RecordHook).
+	hook atomic.Pointer[RecordHook]
+}
+
+// RecordHook вызывается в транзакции записи аудита сразу после вставки
+// записи r: правила оповещений безопасности и системные правила считаются
+// в той же транзакции, что и действие (ADR-0020, п. 1; задача 3.11 этапа 3).
+// Ошибка откатывает транзакцию: действие без оповещения не фиксируется.
+// Точка вызова не пишет в журнал аудита сама.
+type RecordHook func(ctx context.Context, tx pgx.Tx, r *Record) error
+
+// SetRecordHook подключает точку вызова; nil — отключает. Сервер подключает
+// её после создания встроенных правил оповещений.
+func (l *Log) SetRecordHook(h RecordHook) {
+	if h == nil {
+		l.hook.Store(nil)
+		return
+	}
+	l.hook.Store(&h)
 }
 
 // Querier — чтение из БД (пул чтения, *pgxpool.Pool).
@@ -222,6 +242,11 @@ func (l *Log) recordTx(ctx context.Context, tx pgx.Tx, e Entry) (bool, error) {
 		r.Object.Type, r.Object.ID, string(r.Result), string(r.Details), r.HashAlg, r.PrevHash, r.Hash)
 	if err != nil {
 		return false, fmt.Errorf("журнал аудита: вставка записи: %w", err)
+	}
+	if h := l.hook.Load(); h != nil {
+		if err := (*h)(ctx, tx, &r); err != nil {
+			return false, fmt.Errorf("журнал аудита: правила оповещений: %w", err)
+		}
 	}
 	return true, nil
 }

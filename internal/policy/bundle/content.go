@@ -51,6 +51,9 @@ type Content struct {
 	// 2.r3b): шлюз принимает их действующие ключи и отвечает 503, остальные
 	// приложения пакета работают.
 	Unavailable []Unavailable `json:"unavailable,omitempty"`
+	// Budgets — цены моделей и жёсткие бюджеты (задача 3.18 этапа 3); нет
+	// раздела — ни цен, ни бюджетов не задано, шлюз расход не считает.
+	Budgets *Budgets `json:"budgets,omitempty"`
 }
 
 // Unavailable — приложение, исключённое из пакета: только ID, контур и
@@ -247,6 +250,8 @@ func (c *Content) Validate() error {
 		}
 		errs = append(errs, checkKeys(at, u.Keys, prefixes)...)
 	}
+	provIDs, appIDs := c.budgetIDs()
+	errs = append(errs, c.Budgets.validate(provIDs, appIDs)...)
 	return errors.Join(errs...)
 }
 

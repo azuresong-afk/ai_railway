@@ -41,6 +41,9 @@ type ChatConfig struct {
 	IDs    *ids.Generator
 	// Quotas — квоты приложений (DM-15, DM-36); nil — без квот.
 	Quotas *Limiter
+	// Budget — учёт расхода и жёсткие бюджеты приложений (DM-15, задача
+	// 3.18); nil — расход не считается.
+	Budget *Budget
 	// UserMAC — имитовставка для псевдонима пользователя в событиях и
 	// квотах (ТЗ, 5.5); nil — пользователь не учитывается.
 	UserMAC aisecCrypto.MAC
@@ -321,6 +324,17 @@ func (h *ChatHandler) admit(w http.ResponseWriter, r *http.Request, rec *record,
 // admitSize проверяет квоты по размеру входа и оценке токенов; общая часть
 // chat/completions, embeddings и Check API. При отказе ответ уже записан.
 func (h *ChatHandler) admitSize(w http.ResponseWriter, r *http.Request, rec *record, user string, size, tokens int) bool {
+	// Жёсткий бюджет — до квот: отказ не тратит квоту. Check API модели
+	// не вызывает и бюджет не тратит.
+	if b := h.cfg.Budget; b != nil && rec.ev.Type == events.TypeGatewayRequest {
+		if out, wait := b.Exhausted(rec.app.ID); out {
+			rec.reject(ruleBudget, "DM-15")
+			w.Header().Set(HeaderDecision, string(policy.Block))
+			w.Header().Set("Retry-After", strconv.FormatInt(int64((wait+time.Second-1)/time.Second), 10))
+			WriteError(w, http.StatusTooManyRequests, "исчерпан месячный бюджет приложения", "rate_limit_error", "budget_exceeded")
+			return false
+		}
+	}
 	if h.cfg.Quotas == nil {
 		return true
 	}

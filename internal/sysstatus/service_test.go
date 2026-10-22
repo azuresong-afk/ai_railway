@@ -87,9 +87,9 @@ func TestNewValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	st := s.Status(context.Background())
-	// Без источников: пустые массивы, UTC, умолчания, все десять условий.
+	// Без источников: пустые массивы, UTC, умолчания, все четырнадцать условий.
 	if st.Time.Timezone != "UTC" || st.Storage.LimitBytes != sysstatus.DefaultStorageLimit || st.Storage.WarnPercent != 80 ||
-		len(st.Notifications) != 10 || st.Bundle != nil || st.Gateways == nil || st.Unavailable == nil || st.Server.Integrity == nil {
+		len(st.Notifications) != 14 || st.Bundle != nil || st.Gateways == nil || st.Unavailable == nil || st.Server.Integrity == nil {
 		t.Fatalf("%+v", st)
 	}
 }
@@ -578,7 +578,10 @@ func TestEvaluateBundleLagOffline(t *testing.T) {
 		var got []string
 		for _, r := range e.mem.Records {
 			d := r.Details.(map[string]any)
-			got = append(got, d["condition"].(string)+":"+d["state"].(string))
+			// Связь шлюза (DM-44) проверяет TestEvaluateGatewayBlinding.
+			if c := d["condition"].(string); strings.HasPrefix(c, sysstatus.ConditionBundleLag) {
+				got = append(got, c+":"+d["state"].(string))
+			}
 		}
 		return got
 	}
@@ -600,6 +603,104 @@ func TestEvaluateBundleLagOffline(t *testing.T) {
 		if got := states(); !slices.Equal(got, step.want) {
 			t.Fatalf("%s, связь %v: %v", step.status, step.lastSeen, got)
 		}
+	}
+}
+
+// DM-44 (задача 3.11 этапа 3), Н29: условия «ослепления» по шлюзу —
+// недоступен, отбрасывает события (рост счётчика), скоро истекает
+// сертификат, итог целостности старше двух периодов («нет данных») —
+// пишутся в журнал при смене состояния; отозванный шлюз их снимает.
+func TestEvaluateGatewayBlinding(t *testing.T) {
+	e := newEnv()
+	s, err := sysstatus.New(e.opts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	raised := func() map[string]string {
+		got := map[string]string{}
+		for _, r := range e.mem.Records {
+			d := r.Details.(map[string]any)
+			got[d["condition"].(string)] = d["state"].(string)
+		}
+		return got
+	}
+	fresh := &gwregistry.CheckReport{OK: true, At: t0.Add(-10 * time.Minute)}
+	gw := gwregistry.Gateway{ID: "g1", Name: "gw-1", Status: gwregistry.StatusActive, LastSeenAt: t0, StartedAt: t0.Add(-5 * time.Hour),
+		CertNotAfter: t0.Add(60 * 24 * time.Hour), Integrity: fresh}
+	e.gws.list = []gwregistry.Gateway{gw}
+	started := t0.Add(-5 * time.Hour)
+	e.mem.SetEventStats("g1", sysstatus.GatewayEvents{Dropped: 3, StartedAt: started, ReportedAt: t0})
+	if err := s.Evaluate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// Первое наблюдение счётчика — точка отсчёта, всё в порядке.
+	if got := raised(); len(got) != 0 {
+		t.Fatalf("исправный шлюз: %v", got)
+	}
+	// Счётчик вырос, сертификат истекает через 10 суток, итог целостности
+	// устарел (старше двух часов).
+	e.clock = t0.Add(time.Minute)
+	gw.LastSeenAt = e.clock
+	gw.CertNotAfter = e.clock.Add(10 * 24 * time.Hour)
+	gw.Integrity = &gwregistry.CheckReport{OK: true, At: e.clock.Add(-sysstatus.StaleAfter - time.Minute)}
+	e.gws.list = []gwregistry.Gateway{gw}
+	e.mem.SetEventStats("g1", sysstatus.GatewayEvents{Dropped: 5, StartedAt: started, ReportedAt: e.clock})
+	if err := s.Evaluate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got := raised()
+	for _, c := range []string{"events_dropped:g1", "cert_expiry:g1", "reports_stale:g1"} {
+		if got[c] != "raised" {
+			t.Fatalf("%s: %v", c, got)
+		}
+	}
+	st := s.Status(ctx)
+	if g := st.Gateways[0]; g.Integrity == nil || !g.Integrity.Stale {
+		t.Fatalf("устаревший итог не помечен: %+v", g.Integrity)
+	}
+	if n := notif(st, sysstatus.ConditionReportsStale); !n.Active || !slices.Equal(n.Components, []string{"gateway:g1"}) {
+		t.Fatalf("уведомление Н29: %+v", n)
+	}
+	// Без роста за окно условие снимается; шлюз пропал со связи.
+	e.clock = e.clock.Add(sysstatus.DroppedWindow + time.Minute)
+	e.mem.SetEventStats("g1", sysstatus.GatewayEvents{Dropped: 5, StartedAt: started, ReportedAt: e.clock})
+	if err := s.Evaluate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got = raised()
+	if got["events_dropped:g1"] != "cleared" || got["gateway_offline:g1"] != "raised" {
+		t.Fatalf("после окна: %v", got)
+	}
+	// Отзыв шлюза снимает его условия.
+	gw.Status = gwregistry.StatusRevoked
+	e.gws.list = []gwregistry.Gateway{gw}
+	if err := s.Evaluate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got = raised()
+	for _, c := range []string{"gateway_offline:g1", "cert_expiry:g1", "reports_stale:g1"} {
+		if got[c] != "cleared" {
+			t.Fatalf("отзыв, %s: %v", c, got)
+		}
+	}
+}
+
+// Н29: шлюз новой версии на связи, но итог целостности не присылает
+// дольше двух периодов — «нет данных».
+func TestEvaluateReportsMissing(t *testing.T) {
+	e := newEnv()
+	s, err := sysstatus.New(e.opts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.gws.list = []gwregistry.Gateway{{ID: "g1", Name: "gw-1", Status: gwregistry.StatusActive, LastSeenAt: t0,
+		StartedAt: t0.Add(-sysstatus.StaleAfter - time.Minute)}}
+	if err := s.Evaluate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if n := notif(s.Status(context.Background()), sysstatus.ConditionReportsStale); !n.Active {
+		t.Fatalf("нет итога: %+v", n)
 	}
 }
 

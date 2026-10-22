@@ -27,6 +27,9 @@ import (
 const (
 	controlTimeout     = 10 * time.Second
 	maxControlResponse = 64 << 10
+	// maxHeartbeatResponse — ответ heartbeat с разделом budget: расход до
+	// 2 000 приложений (задача 3.18).
+	maxHeartbeatResponse = 512 << 10
 	// Границы периода heartbeat: сервер подсказывает период, но шлюз не
 	// уходит в частые запросы и не замолкает надолго.
 	minHeartbeatInterval = 10 * time.Second
@@ -99,6 +102,11 @@ func (e *controlError) Error() string {
 // postControl отправляет JSON и разбирает ответ с кодом want в out; out = nil —
 // тело ответа не разбирается.
 func postControl(ctx context.Context, client *http.Client, u string, in, out any, want int) error {
+	return postControlLimit(ctx, client, u, in, out, want, maxControlResponse)
+}
+
+// postControlLimit — postControl с пределом размера ответа limit.
+func postControlLimit(ctx context.Context, client *http.Client, u string, in, out any, want int, limit int) error {
 	body, err := json.Marshal(in)
 	if err != nil {
 		return err
@@ -117,11 +125,11 @@ func postControl(ctx context.Context, client *http.Client, u string, in, out any
 		return err
 	}
 	defer func() { _ = resp.Body.Close() }() //nolint:gosec // G104: тело уже прочитано или ответ отброшен; ошибка закрытия не меняет результат
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxControlResponse+1))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, int64(limit)+1))
 	if err != nil {
 		return err
 	}
-	if len(data) > maxControlResponse {
+	if len(data) > limit {
 		return errors.New("ответ сервера управления слишком большой")
 	}
 	if resp.StatusCode != want {
@@ -219,8 +227,11 @@ type HeartbeatConfig struct {
 	// Reissue — перевыпуск сертификата шлюза по признаку из ответа
 	// heartbeat (ADR-0018, п. 6.3); nil — не выполняется.
 	Reissue func(ctx context.Context) error
-	Logger  *slog.Logger
-	Clock   func() time.Time
+	// Budget — счётчики расхода для сервера и расход остальных процессов из
+	// ответа (задача 3.18); nil — не передаются. Только вместе с StartedAt.
+	Budget *Budget
+	Logger *slog.Logger
+	Clock  func() time.Time
 	// Sleep ждёт d или отмены ctx (тесты подменяют его).
 	Sleep func(ctx context.Context, d time.Duration) bool
 }
@@ -270,6 +281,10 @@ func (c HeartbeatConfig) stopping(ctx context.Context, u string) {
 	}
 	at := c.StartedAt
 	body := heartbeatBody{Version: c.Version, BundleETag: etag, StartedAt: &at, Stopping: true}
+	if c.Budget != nil {
+		// Расход с последнего heartbeat не теряется при остановке.
+		body.Budget = c.Budget.report()
+	}
 	if err := postControl(ctx, c.Client, u, body, nil, http.StatusOK); err != nil {
 		c.Logger.Warn("остановка не сообщена серверу управления", "error", err)
 	}
@@ -291,6 +306,8 @@ func (c HeartbeatConfig) beat(ctx context.Context, u string, interval, backoff *
 		VerifyRequestedAt *time.Time `json:"verify_requested_at"`
 		// Reissue — сертификат шлюза нужно перевыпустить.
 		Reissue bool `json:"reissue"`
+		// Budget — расход остальных процессов (задача 3.18).
+		Budget *budgetState `json:"budget"`
 	}
 	sent := c.Clock()
 	body := heartbeatBody{Version: c.Version, BundleETag: etag}
@@ -299,7 +316,10 @@ func (c HeartbeatConfig) beat(ctx context.Context, u string, interval, backoff *
 		body.StartedAt = &at
 	}
 	body.Selftest, body.Integrity, body.BundleKeys, body.VerifyRequest = c.Reports.snapshot()
-	err := postControl(ctx, c.Client, u, body, &resp, http.StatusOK)
+	if c.Budget != nil && body.StartedAt != nil {
+		body.Budget = c.Budget.report()
+	}
+	err := postControlLimit(ctx, c.Client, u, body, &resp, http.StatusOK, maxHeartbeatResponse)
 	if ctx.Err() != nil {
 		return 0, false
 	}
@@ -321,6 +341,9 @@ func (c HeartbeatConfig) beat(ctx context.Context, u string, interval, backoff *
 		return wait, true
 	}
 	*backoff = 0
+	if c.Budget != nil {
+		c.Budget.apply(body.Budget, resp.Budget)
+	}
 	if resp.IntervalSeconds > 0 {
 		*interval = min(max(time.Duration(resp.IntervalSeconds)*time.Second, minHeartbeatInterval), maxHeartbeatInterval)
 	}

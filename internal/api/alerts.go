@@ -29,6 +29,8 @@ func alertRoutes(d Deps) []Route {
 		{Method: http.MethodGet, Path: "/api/v1/alert-rules/{id}", Permission: auth.PermAlertRulesRead, Handler: needAlerts(d, d.getAlertRule)},
 		{Method: http.MethodPut, Path: "/api/v1/alert-rules/{id}", Permission: auth.PermAlertRulesManage,
 			MaxBody: alerting.MaxRuleBody, Handler: needAlerts(d, d.updateAlertRule)},
+		{Method: http.MethodGet, Path: "/api/v1/alert-rules/{id}/state", Permission: auth.PermAlertRulesRead,
+			Handler: needAlerts(d, d.getAlertRuleState)},
 	}
 }
 
@@ -399,4 +401,69 @@ func (d Deps) updateAlertRule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	WriteJSON(w, http.StatusOK, alertRuleView(x))
+}
+
+// AlertRuleStateView — состояние правила «частота», «аномалия» или
+// «бюджет», вычисленное фоновой задачей (задача 3.12): когда считалось, идёт
+// ли обучение базовой линии и по каким ключам. Значения — объёмы и
+// проценты из агрегатов, без содержимого событий.
+type AlertRuleStateView struct {
+	RuleID string `json:"rule_id"`
+	Kind   string `json:"kind"`
+	// Evaluated — фоновая задача уже считала правило; у «порога», «нового»,
+	// системных правил и правил безопасности — всегда false.
+	Evaluated   bool       `json:"evaluated"`
+	EvaluatedAt *time.Time `json:"evaluated_at,omitempty"`
+	// Learning — правило «аномалия» на обучении и пока молчит.
+	Learning      bool                `json:"learning"`
+	LearningUntil *time.Time          `json:"learning_until,omitempty"`
+	Month         string              `json:"month,omitempty"`
+	Keys          []alerting.KeyState `json:"keys"`
+	KeysTotal     int                 `json:"keys_total"`
+	// KeysHidden — ключи скрыты: объёмы «аномалии» видны с правом
+	// events.read, расход «бюджета» — с budgets.read (3Н13 ревью 3.12).
+	KeysHidden bool `json:"keys_hidden"`
+}
+
+// stateKeysPermission — право, без которого ключи состояния правила вида
+// kind не показываются: те же данные закрыты им в других разделах.
+func stateKeysPermission(kind string) string {
+	switch kind {
+	case alerting.KindAnomaly:
+		return auth.PermEventsRead
+	case alerting.KindBudget:
+		return auth.PermBudgetsRead
+	}
+	return ""
+}
+
+func (d Deps) getAlertRuleState(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r, ruleNotFound)
+	if !ok {
+		return
+	}
+	rule, st, evaluated, err := d.Alerts.RuleState(r.Context(), id)
+	if err != nil {
+		WriteProblem(w, alertsProblem(d.Logger, err, ruleNotFound))
+		return
+	}
+	v := AlertRuleStateView{RuleID: rule.ID, Kind: rule.Kind, Evaluated: evaluated, Learning: st.Learning,
+		LearningUntil: st.LearningUntil, Month: st.Month, Keys: st.Keys, KeysTotal: st.KeysTotal}
+	if evaluated {
+		v.EvaluatedAt = optTime(st.EvaluatedAt)
+	}
+	if perm := stateKeysPermission(rule.Kind); perm != "" {
+		if pr, ok := PrincipalFrom(r.Context()); !ok || !pr.Grants.Allows(perm) {
+			v.Keys, v.KeysTotal, v.KeysHidden = nil, 0, true
+		}
+	}
+	if v.Keys == nil {
+		v.Keys = []alerting.KeyState{}
+	}
+	for i := range v.Keys {
+		if v.Keys[i].Group == nil {
+			v.Keys[i].Group = map[string]string{}
+		}
+	}
+	WriteJSON(w, http.StatusOK, v)
 }

@@ -255,9 +255,9 @@ func TestRolesAPI(t *testing.T) {
 func TestMePermissions(t *testing.T) {
 	e := newAuthEnv(t)
 	for login, want := range map[string]string{
-		"analyst": `"permissions":["alert_rules.read","alerts.manage","alerts.read","applications.read","events.export","events.read","policies.read","policies.test","providers.read","self","session","system.read"]`,
+		"analyst": `"permissions":["alert_rules.read","alerts.manage","alerts.read","applications.read","budgets.read","events.export","events.read","incidents.export","incidents.manage","incidents.read","model_prices.read","policies.read","policies.test","providers.read","self","session","system.read"]`,
 		// Без events.content.read: содержимое событий — только у администратора безопасности (ТЗ 1.3).
-		"auditor": `"permissions":["alert_rules.read","alerts.read","api_tokens.read","applications.read","audit.read","audit.verify","auth_policy.read","events.read","policies.read","providers.read","roles.read","self","session","sessions.read","system.read","users.read"]`,
+		"auditor": `"permissions":["alert_rules.read","alerts.read","api_tokens.read","applications.read","audit.read","audit.verify","auth_policy.read","budgets.read","events.read","incidents.read","model_prices.read","notify_channels.read","policies.read","providers.read","roles.read","self","session","sessions.read","system.read","users.read"]`,
 	} {
 		s := e.mustLogin(t, login)
 		if w := e.call(s, "GET", "/api/v1/me", "", false); !strings.Contains(w.Body.String(), want) {

@@ -153,10 +153,12 @@ type RewrapCounts struct {
 	MFA       int64 `json:"mfa"`
 	Providers int64 `json:"providers"`
 	Content   int64 `json:"content"`
+	// Channels — секреты каналов уведомлений (задача 3.13 этапа 3).
+	Channels int64 `json:"channels"`
 }
 
 // Total — всего строк.
-func (c RewrapCounts) Total() int64 { return c.MFA + c.Providers + c.Content }
+func (c RewrapCounts) Total() int64 { return c.MFA + c.Providers + c.Content + c.Channels }
 
 // RewrapOptions — параметры перешифрования.
 type RewrapOptions struct {
@@ -176,16 +178,18 @@ type RewrapOptions struct {
 const DefaultRewrapBatch = 500
 
 // Места хранения шифротекстов ключа данных: те же AAD, что у internal/auth
-// (TOTP), internal/apps (учётные данные провайдеров) и internal/events
-// (содержимое full).
+// (TOTP), internal/apps (учётные данные провайдеров), internal/events
+// (содержимое full) и internal/notify (секреты каналов).
 const (
 	mfaTable, mfaColumn             = "user_mfa", "secret"
 	providersTable, providersColumn = "providers", "credential"
 	contentTable, contentColumn     = "event_content", "sealed"
+	channelsTable, channelsColumn   = "notify_channels", "secret"
 )
 
 // Rewrap перешифровывает действующей версией box все строки прежних версий:
-// секреты TOTP, учётные данные провайдеров и содержимое событий full.
+// секреты TOTP, учётные данные провайдеров, содержимое событий full и
+// секреты каналов уведомлений.
 // Каждая пачка — своя транзакция; строка обновляется, только если её ключ
 // не сменился (сервер мог заменить её параллельно). Прерванное
 // перешифрование продолжается повторным вызовом. box — из Load под
@@ -210,6 +214,9 @@ func Rewrap(ctx context.Context, db Owner, box *Box, o RewrapOptions) (RewrapCou
 		}},
 		{&total.Content, func(ctx context.Context, tx pgx.Tx, active string) (int, error) {
 			return rewrapContent(ctx, tx, box, active, o.ContentPurpose, o.Batch)
+		}},
+		{&total.Channels, func(ctx context.Context, tx pgx.Tx, active string) (int, error) {
+			return rewrapChannels(ctx, tx, box, active, o.Batch)
 		}},
 	}
 	for _, st := range steps {
@@ -308,6 +315,34 @@ func rewrapProviders(ctx context.Context, tx pgx.Tx, box *Box, active string, ba
 	return len(rows), nil
 }
 
+// rewrapChannels — пачка секретов каналов уведомлений (internal/notify).
+func rewrapChannels(ctx context.Context, tx pgx.Tx, box *Box, active string, batch int) (int, error) {
+	type row struct {
+		id, keyID string
+		sealed    []byte
+	}
+	rows, err := collect(ctx, tx, `SELECT id::text, secret_key_id::text, secret FROM notify_channels
+		WHERE secret_key_id <> $1 ORDER BY id LIMIT $2 FOR UPDATE`, []any{active, batch},
+		func(r pgx.Rows) (row, error) {
+			var x row
+			return x, r.Scan(&x.id, &x.keyID, &x.sealed)
+		})
+	if err != nil {
+		return 0, fmt.Errorf("перешифрование секретов каналов уведомлений: %w", err)
+	}
+	for _, x := range rows {
+		keyID, sealed, err := reseal(ctx, box, active, x.keyID, x.sealed, channelsTable, channelsColumn, x.id)
+		if err != nil {
+			return 0, fmt.Errorf("перешифрование секретов канала %s: %w", x.id, err)
+		}
+		if _, err := tx.Exec(ctx, `UPDATE notify_channels SET secret = $1, secret_key_id = $2 WHERE id = $3 AND secret_key_id = $4`,
+			sealed, keyID, x.id, x.keyID); err != nil {
+			return 0, fmt.Errorf("перешифрование секретов канала %s: %w", x.id, err)
+		}
+	}
+	return len(rows), nil
+}
+
 // rewrapContent — пачка содержимого событий full: производный ключ тех же
 // суток от новой версии (ADR-0007, п. 8).
 func rewrapContent(ctx context.Context, tx pgx.Tx, box *Box, active, purpose string, batch int) (int, error) {
@@ -400,7 +435,8 @@ func Status(ctx context.Context, db Owner, orgID string) ([]VersionStatus, error
 	rows, err := db.Query(ctx, `SELECT k.id::text, k.version, k.master_version, k.sealed, k.created_at, k.retired_at,
 		(SELECT count(*) FROM user_mfa WHERE data_key_id = k.id),
 		(SELECT count(*) FROM providers WHERE credential_key_id = k.id),
-		(SELECT count(*) FROM event_content WHERE key_id = k.id)
+		(SELECT count(*) FROM event_content WHERE key_id = k.id),
+		(SELECT count(*) FROM notify_channels WHERE secret_key_id = k.id)
 		FROM data_keys k WHERE k.org_id = $1 ORDER BY k.version`, orgID)
 	if err != nil {
 		return nil, fmt.Errorf("ключ данных: состояние: %w", err)
@@ -410,7 +446,7 @@ func Status(ctx context.Context, db Owner, orgID string) ([]VersionStatus, error
 	for rows.Next() {
 		var v VersionStatus
 		if err := rows.Scan(&v.ID, &v.Version, &v.MasterVersion, &v.Sealed, &v.CreatedAt, &v.RetiredAt,
-			&v.Rows.MFA, &v.Rows.Providers, &v.Rows.Content); err != nil {
+			&v.Rows.MFA, &v.Rows.Providers, &v.Rows.Content, &v.Rows.Channels); err != nil {
 			return nil, err
 		}
 		out = append(out, v)
@@ -443,8 +479,9 @@ func DestroyRetired(ctx context.Context, db Owner, rec Recorder, orgID string, a
 		err := InTx(ctx, db, func(tx pgx.Tx) error {
 			if err := tx.QueryRow(ctx, `SELECT (SELECT count(*) FROM user_mfa WHERE data_key_id = $1),
 				(SELECT count(*) FROM providers WHERE credential_key_id = $1),
-				(SELECT count(*) FROM event_content WHERE key_id = $1)`, v.ID).
-				Scan(&left.MFA, &left.Providers, &left.Content); err != nil {
+				(SELECT count(*) FROM event_content WHERE key_id = $1),
+				(SELECT count(*) FROM notify_channels WHERE secret_key_id = $1)`, v.ID).
+				Scan(&left.MFA, &left.Providers, &left.Content, &left.Channels); err != nil {
 				return err
 			}
 			if left.Total() > 0 {

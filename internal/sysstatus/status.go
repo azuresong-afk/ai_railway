@@ -36,6 +36,9 @@ type Report struct {
 	// Reason — причина итога целостности; у самотеста пусто.
 	Reason string `json:"reason,omitempty"`
 	Failed int    `json:"failed"`
+	// Stale — итог старше двух периодов проверки: «нет данных» (Н29), в
+	// уведомлениях — условие reports_stale (DM-44).
+	Stale bool `json:"stale,omitempty"`
 }
 
 // ServerStatus — сервер управления.
@@ -188,12 +191,35 @@ const (
 	// ConditionTestBuild — ОЦЛ.1: компонент собран с тестовым ключом
 	// манифеста, сборка не для поставки (Н34 ревью 2.r4).
 	ConditionTestBuild = "test_build"
+	// Условия DM-44 по шлюзу (задача 3.11 этапа 3): «ослепление»
+	// мониторинга. Код — семейство и ID шлюза.
+	ConditionEventsDropped = "events_dropped"  // шлюз отбрасывает события
+	ConditionOffline       = "gateway_offline" // шлюз не выходит на связь
+	ConditionCertExpiry    = "cert_expiry"     // сертификат шлюза скоро истекает
+	ConditionReportsStale  = "reports_stale"   // итог целостности шлюза устарел (Н29)
 	// ConditionCAExpiry — ИАФ.10: действующему корню внутреннего УЦ осталось
 	// CAExpiryWarn и меньше; нужна ротация (aisec-cli keys rotate-ca). За
 	// CAExpiryCritical пишется ещё одно system.alert (код ca_expiry:critical).
 	// Сертификаты шлюзов после этого не продлеваются: их срок обрезан сроком
 	// корня (3В5 ревью 3.r1).
 	ConditionCAExpiry = "ca_expiry"
+)
+
+// Пороги условий DM-44 (обоснование — ADR-0020).
+const (
+	// CertExpiryWarn — за сколько до истечения сертификата шлюза условие
+	// активно. Сервер перевыпускает сертификат за 30 суток
+	// (gwregistry.ReissueBefore): 14 суток без перевыпуска — сбой ротации.
+	CertExpiryWarn = 14 * 24 * time.Hour
+	// GatewayIntegrityPeriod — период контроля целостности шлюза по
+	// умолчанию (config.DefaultIntegrityInterval). Шлюз свой период не
+	// сообщает: итог старше двух периодов по умолчанию — «нет данных» (Н29).
+	GatewayIntegrityPeriod = time.Hour
+	// StaleAfter — возраст итога, после которого он устарел.
+	StaleAfter = 2 * GatewayIntegrityPeriod
+	// DroppedWindow — сколько условие отброшенных событий остаётся активным
+	// после последнего роста счётчика.
+	DroppedWindow = 15 * time.Minute
 )
 
 // Пороги условия ca_expiry (3В5 ревью 3.r1): за 60 суток — время на
@@ -215,6 +241,10 @@ const (
 	componentServer  = "server"
 	componentGateway = "gateway:"
 )
+
+// gatewayFamilies — семейства условий с кодом «семейство:ID шлюза».
+var gatewayFamilies = []string{ConditionBundleLag, ConditionEventsDropped, ConditionOffline, ConditionCertExpiry,
+	ConditionReportsStale}
 
 // Notification — условие уведомления на этапе 2.
 type Notification struct {
