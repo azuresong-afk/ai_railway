@@ -17,7 +17,7 @@ func TestCheckClean(t *testing.T) {
 		"tools/x/testdata/internal/crypto": &fstest.MapFile{Mode: 0o755 | 1<<31},
 		"README.md":                        file("# x"),
 	}
-	problems, err := check(fsys, []string{"cmd/aisec-media"})
+	problems, err := check(fsys, Rules{CgoAllowed: []string{"cmd/aisec-media"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -33,7 +33,7 @@ func TestCheckNestedCrypto(t *testing.T) {
 		"tools/internal/crypto/y.go":            file("package crypto\n"),
 		"internal/x/build/internal/crypto/z.go": file("package crypto\n"),
 	}
-	problems, err := check(fsys, nil)
+	problems, err := check(fsys, Rules{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +51,7 @@ func TestCheckCgo(t *testing.T) {
 		"cmd/aisec-media/ok.go":  file("package main\nimport \"C\"\n"),
 		"internal/gateway/ok.go": file("package gateway\nimport \"fmt\"\n"),
 	}
-	problems, err := check(fsys, []string{"cmd/aisec-media"})
+	problems, err := check(fsys, Rules{CgoAllowed: []string{"cmd/aisec-media"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,8 +63,47 @@ func TestCheckCgo(t *testing.T) {
 
 func TestCheckSyntaxError(t *testing.T) {
 	fsys := fstest.MapFS{"a.go": file("package")}
-	if _, err := check(fsys, nil); err == nil {
+	if _, err := check(fsys, Rules{}); err == nil {
 		t.Fatal("ожидалась ошибка разбора")
+	}
+}
+
+// ЗИ.2, H-Р11 ревью 2.r5: сетевые клиенты — только в разрешённых путях;
+// сервер, тесты и инструменты не ограничиваются; псевдоним импорта и
+// локальная переменная с именем пакета не обманывают проверку.
+func TestCheckNetClients(t *testing.T) {
+	fsys := fstest.MapFS{
+		"internal/providers/p.go":   file("package providers\nimport \"net/http\"\nvar c = &http.Client{}\n"),
+		"internal/api/server.go":    file("package api\nimport \"net/http\"\nvar s = &http.Server{}\nfunc h(w http.ResponseWriter, r *http.Request) {}\n"),
+		"internal/api/x_test.go":    file("package api\nimport \"net/http\"\nvar c = http.DefaultClient\n"),
+		"tools/sbom/s.go":           file("package main\nimport \"net/http\"\nvar c = http.Client{}\n"),
+		"internal/notify/n.go":      file("package notify\nimport \"net/smtp\"\nvar _ = smtp.PlainAuth\n"),
+		"internal/alerting/a.go":    file("package alerting\nimport web \"net/http\"\nfunc f() { _, _ = web.Get(\"http://x\") }\n"),
+		"internal/events/e.go":      file("package events\nimport \"net\"\nfunc f() { var d net.Dialer; _ = d; _, _ = net.LookupHost(\"x\") }\n"),
+		"cmd/aisec-server/s.go":     file("package main\nimport \"net\"\nfunc f() { _, _ = net.Listen(\"tcp\", \":1\") }\n"),
+		"internal/store/shadow.go":  file("package store\nimport \"net/http\"\ntype t struct{ Client int }\nfunc f(http t) int { return http.Client }\nvar _ http.Header\n"),
+		"internal/audit/syslog.go":  file("package audit\nimport _ \"log/syslog\"\n"),
+		"cmd/aisec-cli/resolver.go": file("package main\nimport \"net\"\nvar r = net.DefaultResolver\n"),
+	}
+	problems, err := check(fsys, Rules{NetClientAllowed: []string{"internal/providers"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"cmd/aisec-cli/resolver.go: сетевой клиент net.DefaultResolver",
+		"internal/alerting/a.go: сетевой клиент net/http.Get",
+		"internal/audit/syslog.go: сетевой клиент log/syslog (импорт _)",
+		"internal/events/e.go: сетевой клиент net.Dialer",
+		"internal/events/e.go: сетевой клиент net.LookupHost",
+		"internal/notify/n.go: сетевой клиент net/smtp.PlainAuth",
+	}
+	if len(problems) != len(want) {
+		t.Fatalf("ожидалось %d нарушений, получено %q", len(want), problems)
+	}
+	for i, w := range want {
+		if !strings.HasPrefix(problems[i], w) {
+			t.Errorf("нарушение %d: %q, ожидалось начало %q", i, problems[i], w)
+		}
 	}
 }
 

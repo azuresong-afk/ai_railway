@@ -51,6 +51,7 @@
 | Без `os/exec` в серверных компонентах | depguard, правило `server-exec`: `cmd/aisec-gateway`, `cmd/aisec-server`, `cmd/aisec-media`, `internal/`; там же запрещён `syscall`. Единственное исключение — `syscall.SIGTERM` в файле `signal.go` команды (ADR-0004); forbidigo во всём коде запрещает любые `syscall.*`, кроме `SIGTERM`. Обходы через `os.StartProcess` и `syscall.Exec`/`ForkExec`/`StartProcess` ловит forbidigo во всём коде |
 | Без `reflect` в обход типов | depguard, правило `product-reflect`: `cmd/aisec-gateway`, `cmd/aisec-server`, `cmd/aisec-media`, `internal/` кроме тестов; исключение — `//nolint:depguard` с обоснованием |
 | cgo — только по ADR | `make repocheck`: файлы с `import "C"` разрешены только в путях из `CGO_ALLOWED` в `Makefile` (сейчас пусто). `make lint` и `make vet` идут с `CGO_ENABLED=1`, чтобы линтеры видели и файлы с cgo |
+| Сетевые клиенты — только в разрешённых путях (ЗИ.2) | `make repocheck`: в `cmd/` и `internal/` (без тестов) исходящие HTTP-запросы, `net.Dial*`, `net.Resolver`, `tls.Dial*`, `ReverseProxy`, SMTP, RPC и syslog разрешены только в путях из `NET_CLIENT_ALLOWED` в `Makefile` (шлюз и провайдеры LLM); серверная сторона (`http.Server`, `net.Listen`) не ограничивается (H-Р11 ревью 2.r5) |
 | Технические логи только через `log/slog`; без `print`, `fmt.Print*`, `log.Print*` | forbidigo с анализом типов: псевдоним импорта (`import f "fmt"`) запрет не обходит |
 | Исходящие HTTP-запросы с контекстом | noctx |
 | Ошибки проверяются | errcheck, errorlint, nilerr, gosec G104 |
