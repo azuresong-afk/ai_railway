@@ -109,7 +109,7 @@ test("политики: откат с ослаблением защиты тре
   await page.getByRole("button", { name: "Откатить к версии 1" }).click();
   const dialog = page.getByRole("dialog");
   await dialog.getByRole("button", { name: "Откатить к версии 1" }).click();
-  await expect(dialog.getByText(/Изменение ослабляет защиту/)).toBeVisible();
+  await expect(dialog.getByText(/Подтвердите, что это вы/)).toBeVisible();
   const confirm = dialog.getByRole("button", { name: "Откатить к версии 1" });
   await expect(confirm).toBeDisabled();
   await dialog.getByLabel("Текущий пароль").fill("Пароль-для-проверки-1");

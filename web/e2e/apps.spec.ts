@@ -40,6 +40,16 @@ async function mockApps(page: Page): Promise<Seen> {
     if (p === "/api/v1/applications/a-2/keys") return req.method() === "POST" ? json({ app_key: key, key: SECRET }, 201) : json({ items: [] });
     if (p === "/api/v1/app-keys/k-1/revoke") return json({ ...key, status: "revoked" });
     if (p === "/api/v1/providers") return json({ items: [provider] });
+    if (p === "/api/v1/policies") return json({ items: [{ id: "base", name: "Базовая защита", mode: "enforce", template: true }] });
+    // Ослабление защиты: без пароля сервер просит подтверждение (В25 ревью 2.r5).
+    if (p === "/api/v1/applications/a-1/protection") {
+      const b = body as { password?: string; fail_mode: string };
+      if (!b.password) {
+        return json({ type: "urn:aisec:problem:invalid_request", title: "invalid", status: 400, code: "invalid_request", detail: "Проверьте введённые данные.",
+          errors: [{ field: "password", detail: "Введите текущий пароль или код из приложения-аутентификатора." }] }, 400);
+      }
+      return json({ ...app, fail_mode: b.fail_mode });
+    }
     return json({ code: "not_found", detail: "Нет такого маршрута." }, 404);
   });
   return seen;
@@ -99,4 +109,33 @@ test("приложения: владелец без права управлен�
   await expect(page.getByRole("button", { name: "Подключить приложение" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: /В архив/ })).toHaveCount(0);
   done();
+});
+
+test("приложения: изменение защиты с подтверждением паролем", async ({ page }) => {
+  const done = watch(page);
+  await mockApi(page, { me: meOf("active", [...perms, "applications.policy", "policies.read"]) });
+  const seen = await mockApps(page);
+  await page.goto("/#/apps");
+  await page.getByRole("button", { name: "Защита приложения Бот поддержки" }).click();
+  const dlg = page.getByRole("dialog", { name: "Защита приложения «Бот поддержки»" });
+  await dlg.getByLabel("При сбое проверки").selectOption("fail_open");
+  await dlg.getByLabel(/Домены-исключения/).fill("partner.example.ru");
+  await dlg.getByRole("button", { name: "Сохранить защиту" }).click();
+  await expect(dlg.getByText(/Подтвердите, что это вы/)).toBeVisible();
+  await expect(dlg.getByRole("button", { name: "Сохранить защиту" })).toBeDisabled();
+  await dlg.getByLabel("Текущий пароль").fill("Пароль-для-проверки-1");
+  await dlg.getByRole("button", { name: "Сохранить защиту" }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  const calls = seen.calls.filter((c) => c.path === "/api/v1/applications/a-1/protection").map((c) => c.body);
+  const sent = { policy: "base", policy_mode: "enforce", storage: "masked", fail_mode: "fail_open", exfil_allow_domains: ["partner.example.ru"] };
+  expect(calls).toEqual([sent, { ...sent, password: "Пароль-для-проверки-1" }]);
+  done();
+});
+
+test("приложения: без права applications.policy кнопки «Защита» нет", async ({ page }) => {
+  await mockApi(page, { me: meOf("active", perms) });
+  await mockApps(page);
+  await page.goto("/#/apps");
+  await expect(page.getByText("Бот поддержки")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Защита приложения Бот поддержки" })).toHaveCount(0);
 });
