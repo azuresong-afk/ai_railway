@@ -320,3 +320,106 @@ func TestGatewayVerifyRequest(t *testing.T) {
 		t.Fatalf("verify_request без итога: %v", err)
 	}
 }
+
+// Запуск и остановка шлюза — в журнал аудита по started_at и stopping
+// (В27 ревью 2.r5, РСБ.2).
+func TestGatewayStartStop(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	reg, _ := e.register(t, e.token(t, "gw-1", false))
+	id := reg.Gateway.ID
+	beat := func(in gwregistry.HeartbeatInput, wait bool) error {
+		t.Helper()
+		if wait {
+			e.clock.add(gwregistry.DefaultHeartbeatMinInterval)
+		}
+		_, err := e.svc.Heartbeat(ctx, id, in, testIP)
+		return err
+	}
+	actions := func(from int) []string {
+		var out []string
+		for _, r := range e.mem.Records[from:] {
+			out = append(out, r.Action)
+		}
+		return out
+	}
+	// Наносекунды отбрасываются: PostgreSQL хранит микросекунды.
+	first := e.clock.now().Add(-time.Minute).Add(123 * time.Nanosecond)
+	before := len(e.mem.Records)
+	if err := beat(gwregistry.HeartbeatInput{Version: "1", StartedAt: first}, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := beat(gwregistry.HeartbeatInput{Version: "1", StartedAt: first}, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := actions(before); len(got) != 1 || got[0] != "component.start" {
+		t.Fatalf("записи запуска: %v", got)
+	}
+	if d := e.mem.Records[before].Details.(map[string]any); d["component"] != "gateway" || d["previous_started_at"] != nil {
+		t.Fatalf("подробности запуска: %v", d)
+	}
+	// Остановка сразу за heartbeat — не отклоняется пределом частоты; повтор
+	// и остановка чужого запуска записей не дают.
+	before = len(e.mem.Records)
+	if err := beat(gwregistry.HeartbeatInput{Version: "1", StartedAt: first.Add(time.Second), Stopping: true}, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := beat(gwregistry.HeartbeatInput{Version: "1", StartedAt: first, Stopping: true}, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := beat(gwregistry.HeartbeatInput{Version: "1", StartedAt: first, Stopping: true}, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := actions(before); len(got) != 1 || got[0] != "component.stop" {
+		t.Fatalf("записи остановки: %v", got)
+	}
+	list, err := e.mem.List(ctx, reg.Gateway.OrgID)
+	if err != nil || len(list) != 1 || !list[0].StartedAt.IsZero() {
+		t.Fatalf("время запуска не стёрто после остановки: %+v %v", list, err)
+	}
+	// Поток heartbeat остановки упирается в свой предел частоты.
+	if err := beat(gwregistry.HeartbeatInput{Version: "1", StartedAt: first, Stopping: true}, false); !errors.Is(err, gwregistry.ErrTooFrequent) {
+		t.Fatalf("повтор остановки без паузы: %v", err)
+	}
+	// Корректный перезапуск, затем аварийный: у второго — прежний запуск
+	// без записи об остановке.
+	second, third := first.Add(time.Hour), first.Add(2*time.Hour)
+	e.clock.add(3 * time.Hour)
+	before = len(e.mem.Records)
+	if err := beat(gwregistry.HeartbeatInput{Version: "1", StartedAt: second}, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := beat(gwregistry.HeartbeatInput{Version: "2", StartedAt: third}, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := actions(before); len(got) != 2 || got[0] != "component.start" || got[1] != "component.start" {
+		t.Fatalf("записи перезапусков: %v", got)
+	}
+	if d := e.mem.Records[before].Details.(map[string]any); d["previous_started_at"] != nil {
+		t.Fatalf("корректный перезапуск помечен аварийным: %v", d)
+	}
+	d := e.mem.Records[before+1].Details.(map[string]any)
+	if d["previous_stop_recorded"] != false || d["previous_started_at"] != second.UTC().Truncate(time.Microsecond).Format(time.RFC3339Nano) || d["version"] != "2" {
+		t.Fatalf("аварийный перезапуск: %v", d)
+	}
+	// Шлюз прежней версии без started_at записей не даёт.
+	before = len(e.mem.Records)
+	if err := beat(gwregistry.HeartbeatInput{Version: "1"}, true); err != nil || len(e.mem.Records) != before {
+		t.Fatalf("heartbeat без started_at: %v, записей %d", err, len(e.mem.Records)-before)
+	}
+}
+
+func TestGatewayStartStopInvalid(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	reg, _ := e.register(t, e.token(t, "gw-1", false))
+	for _, in := range []gwregistry.HeartbeatInput{
+		{Version: "1", Stopping: true},
+		{Version: "1", StartedAt: e.clock.now().Add(time.Hour)},
+	} {
+		e.clock.add(gwregistry.DefaultHeartbeatMinInterval)
+		if _, err := e.svc.Heartbeat(ctx, reg.Gateway.ID, in, testIP); !errors.Is(err, gwregistry.ErrInvalidRequest) {
+			t.Fatalf("%+v: %v", in, err)
+		}
+	}
+}

@@ -73,6 +73,9 @@ func mainRegister(logger *slog.Logger) {
 }
 
 func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err error) {
+	// Время запуска процесса — для записи запуска и остановки на сервере
+	// (В27 ревью 2.r5).
+	started := time.Now().UTC()
 	// Без сервера — файл конфигурации этапа 1; с сервером — подписанный
 	// пакет (задача 2.13), файла нет.
 	var file *config.GatewayFile
@@ -216,7 +219,15 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 			logger.Warn("пакета конфигурации ещё нет: приложения получат 503 до первого пакета от сервера")
 		}
 		go bundles.Run(ctx)
-		startHeartbeat(ctx, cfg, control, logger, reports, bundles.ETag, verify)
+		// Heartbeat остановки уходит после отмены: выход ждёт его (не
+		// дольше stopHeartbeatTimeout). Отмена своя — сервер может
+		// завершиться с ошибкой и без отмены ctx.
+		hbCtx, hbCancel := context.WithCancel(ctx)
+		hbDone := startHeartbeat(hbCtx, cfg, control, logger, reports, bundles.ETag, verify, started)
+		defer func() {
+			hbCancel()
+			<-hbDone
+		}()
 	} else {
 		logger.Info("сервер управления не задан (-server): шлюз работает без регистрации, события пишутся в файл")
 	}
@@ -408,14 +419,20 @@ func newControlClient(cfg *config.Gateway, tp aisecCrypto.TLSProvider, rootsPEM 
 // startHeartbeat запускает heartbeat на внутренний API сервера. Сервер
 // недоступен — шлюз всё равно работает (ТЗ, 4.2).
 func startHeartbeat(ctx context.Context, cfg *config.Gateway, client *http.Client, logger *slog.Logger, reports *gateway.Reports, etag func() string,
-	verify func(context.Context)) {
+	verify func(context.Context), started time.Time) <-chan struct{} {
 	v := version
 	if !gateway.ValidVersion(v) {
 		v = "unknown"
 	}
-	go gateway.RunHeartbeat(ctx, gateway.HeartbeatConfig{
-		Client: client, Server: cfg.Server, Version: v, Logger: logger, Reports: reports, BundleETag: etag, Verify: verify,
-	})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		gateway.RunHeartbeat(ctx, gateway.HeartbeatConfig{
+			Client: client, Server: cfg.Server, Version: v, Logger: logger, Reports: reports, BundleETag: etag, Verify: verify,
+			StartedAt: started,
+		})
+	}()
+	return done
 }
 
 // newUserMAC — имитовставка для псевдонимов пользователей (ТЗ, 5.5). Ключ

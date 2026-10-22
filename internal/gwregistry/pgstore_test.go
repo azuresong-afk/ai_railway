@@ -356,3 +356,38 @@ func TestPGGatewayVerifyRequest(t *testing.T) {
 		t.Fatalf("журнал: %v", a)
 	}
 }
+
+// Запуск и остановка шлюза на PostgreSQL (В27 ревью 2.r5): время с
+// наносекундами сравнивается после округления, записи — в одной
+// транзакции с heartbeat.
+func TestPGGatewayStartStop(t *testing.T) {
+	e := setupPG(t)
+	ctx := pgCtx(t)
+	reg := e.register(t, e.issue(t, "gw-1", false))
+	id := reg.Gateway.ID
+	started := e.clock.now().Add(-time.Minute).Add(789 * time.Nanosecond)
+	for i, in := range []gwregistry.HeartbeatInput{
+		{Version: "1", StartedAt: started},
+		{Version: "1", StartedAt: started},
+		{Version: "1", StartedAt: started, Stopping: true},
+		{Version: "1", StartedAt: started.Add(time.Second)},
+	} {
+		e.clock.add(gwregistry.DefaultHeartbeatMinInterval)
+		if _, err := e.srv.Heartbeat(ctx, id, in, testIP); err != nil {
+			t.Fatalf("heartbeat %d: %v", i, err)
+		}
+		if i == 2 {
+			list, err := e.cli.List(ctx)
+			if err != nil || len(list) != 1 || !list[0].StartedAt.IsZero() {
+				t.Fatalf("время запуска не стёрто: %+v %v", list, err)
+			}
+		}
+	}
+	if a := e.actions(t); a["component.start/success"] != 2 || a["component.stop/success"] != 1 {
+		t.Fatalf("журнал: %v", a)
+	}
+	list, err := e.cli.List(ctx)
+	if err != nil || len(list) != 1 || !list[0].StartedAt.Equal(started.Add(time.Second).Truncate(time.Microsecond)) {
+		t.Fatalf("время запуска: %+v %v", list, err)
+	}
+}

@@ -427,3 +427,54 @@ func TestControlTransportErrors(t *testing.T) {
 		t.Fatal("ValidVersion")
 	}
 }
+
+// Время запуска уходит в каждом heartbeat, после отмены — heartbeat
+// остановки с тем же временем (В27 ревью 2.r5, РСБ.2).
+func TestHeartbeatStartedAndStopping(t *testing.T) {
+	started := time.Date(2026, 10, 22, 9, 30, 0, 123456789, time.UTC)
+	var mu sync.Mutex
+	var bodies []map[string]any
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var b map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&b) //nolint:gosec // G104: тело проверяет тест
+		mu.Lock()
+		bodies = append(bodies, b)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"server_time": time.Now(), "interval_seconds": 60}) //nolint:gosec // G104: ответ тестового сервера
+	}))
+	defer srv.Close()
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	gateway.RunHeartbeat(ctx, gateway.HeartbeatConfig{
+		Client: srv.Client(), Server: u, Version: "1", Logger: quiet(), StartedAt: started,
+		Sleep: func(context.Context, time.Duration) bool {
+			cancel()
+			return false
+		},
+	})
+	if len(bodies) != 2 {
+		t.Fatalf("heartbeat: %v", bodies)
+	}
+	for i, b := range bodies {
+		got, _ := b["started_at"].(string)
+		if at, err := time.Parse(time.RFC3339Nano, got); err != nil || !at.Equal(started) {
+			t.Fatalf("started_at в heartbeat %d: %v", i, b)
+		}
+	}
+	if _, ok := bodies[0]["stopping"]; ok || bodies[1]["stopping"] != true {
+		t.Fatalf("stopping: %v", bodies)
+	}
+	// Без времени запуска (прежний режим) heartbeat остановки не уходит.
+	bodies = nil
+	gateway.RunHeartbeat(context.Background(), gateway.HeartbeatConfig{
+		Client: srv.Client(), Server: u, Version: "1", Logger: quiet(),
+		Sleep: func(context.Context, time.Duration) bool { return false },
+	})
+	if len(bodies) != 1 || bodies[0]["started_at"] != nil {
+		t.Fatalf("без времени запуска: %v", bodies)
+	}
+}

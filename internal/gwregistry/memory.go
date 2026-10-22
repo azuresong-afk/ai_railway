@@ -110,17 +110,19 @@ func (m *Memory) BySerial(_ context.Context, serial string) (Gateway, error) {
 }
 
 // Touch — см. Store.
-func (m *Memory) Touch(_ context.Context, id string, hb Heartbeat, verified func(time.Time) audit.Entry) (time.Time, bool, error) {
+func (m *Memory) Touch(_ context.Context, id string, hb Heartbeat, audits func(TouchChange) []audit.Entry) (TouchChange, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	g := m.gateways[id]
 	if g == nil || g.Status != StatusActive {
-		return time.Time{}, false, ErrNotFound
+		return TouchChange{}, ErrNotFound
 	}
-	requested := g.VerifyRequestedAt
-	if !requested.IsZero() && hb.Integrity != nil && hb.VerifyRequest.Equal(requested) {
-		g.VerifyRequestedAt = time.Time{}
-		m.Records = append(m.Records, verified(requested))
+	ch := TouchChange{VerifyRequested: g.VerifyRequestedAt}
+	if !ch.VerifyRequested.IsZero() && hb.Integrity != nil && hb.VerifyRequest.Equal(ch.VerifyRequested) {
+		g.VerifyRequestedAt, ch.VerifyDone = time.Time{}, true
+	}
+	if next, set := startChange(g.StartedAt, hb, &ch); set {
+		g.StartedAt = next
 	}
 	g.LastSeenAt, g.LastAddr, g.Version, g.BundleETag = hb.At, hb.Addr, hb.Version, hb.BundleETag
 	if hb.Selftest != nil {
@@ -138,7 +140,8 @@ func (m *Memory) Touch(_ context.Context, id string, hb Heartbeat, verified func
 		ok := *hb.BundleKeysOK
 		g.BundleKeysOK = &ok
 	}
-	return requested, !g.VerifyRequestedAt.IsZero(), nil
+	m.Records = append(m.Records, audits(ch)...)
+	return ch, nil
 }
 
 // RequestVerify — см. Store.

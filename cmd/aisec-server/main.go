@@ -355,11 +355,13 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		}
 		servers = append(servers, internal)
 	}
+	recordStart(ctx, auditLog, logger)
 	logger.Info("сервер управления запущен")
 	err = runAll(ctx, servers...)
 	if cause := context.Cause(ctx); errors.Is(cause, integrity.ErrViolation) {
-		return errors.Join(err, cause)
+		err = errors.Join(err, cause)
 	}
+	recordStop(ctx, auditLog, err, logger)
 	return err
 }
 

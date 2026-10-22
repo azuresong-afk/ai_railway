@@ -123,6 +123,10 @@ type HeartbeatRequest struct {
 	// VerifyRequest — запрос проверки из консоли, на который выполнена
 	// проверка с итогом Integrity (Н38 ревью 2.r4).
 	VerifyRequest *time.Time `json:"verify_request,omitempty"`
+	// StartedAt — время запуска процесса шлюза; Stopping — последний
+	// heartbeat при корректной остановке (В27 ревью 2.r5, РСБ.2).
+	StartedAt *time.Time `json:"started_at,omitempty"`
+	Stopping  bool       `json:"stopping,omitempty"`
 }
 
 // HeartbeatReport — итог самотеста или контроля целостности шлюза: результат,
@@ -171,13 +175,16 @@ func heartbeat(g *gwregistry.Service, logger *slog.Logger) http.HandlerFunc {
 		}
 		in := gwregistry.HeartbeatInput{
 			Version: req.Version, BundleETag: req.BundleETag, Selftest: req.Selftest.report(), Integrity: req.Integrity.report(),
-			BundleKeys: req.BundleKeys,
+			BundleKeys: req.BundleKeys, Stopping: req.Stopping,
 		}
 		if req.VerifyRequest != nil {
 			in.VerifyRequest = *req.VerifyRequest
 		}
+		if req.StartedAt != nil {
+			in.StartedAt = req.StartedAt.UTC()
+		}
 		if err := in.Validate(); err != nil {
-			WriteProblem(w, Invalid("Неверные поля heartbeat: version — 1–64 символа латиницы, цифр и «.+_-», bundle_etag — до 128 печатных символов ASCII, selftest и integrity — результат, время проверки и число провалов 0–1000, манифест — версия и время вместе, bundle_keys — до 2 идентификаторов ключей."))
+			WriteProblem(w, Invalid("Неверные поля heartbeat: version — 1–64 символа латиницы, цифр и «.+_-», bundle_etag — до 128 печатных символов ASCII, selftest и integrity — результат, время проверки и число провалов 0–1000, манифест — версия и время вместе, bundle_keys — до 2 идентификаторов ключей, stopping — только вместе с started_at."))
 			return
 		}
 		ctx, cancel := contextTimeout(r, 5*time.Second)

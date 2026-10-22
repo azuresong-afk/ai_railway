@@ -124,4 +124,8 @@ type heartbeatBody struct {
 	// VerifyRequest — запрос проверки из консоли, на который выполнена
 	// проверка, итог которой в Integrity (Н38 ревью 2.r4).
 	VerifyRequest *time.Time `json:"verify_request,omitempty"`
+	// StartedAt — время запуска процесса шлюза, Stopping — последний
+	// heartbeat при остановке (В27 ревью 2.r5).
+	StartedAt *time.Time `json:"started_at,omitempty"`
+	Stopping  bool       `json:"stopping,omitempty"`
 }

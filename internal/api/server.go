@@ -160,7 +160,7 @@ func recoverer(logger *slog.Logger, next http.Handler) http.Handler {
 				if v == http.ErrAbortHandler { //nolint:errorlint // sentinel-значение, не ошибка в цепочке
 					panic(v)
 				}
-				logger.Error("паника в обработчике", "method", r.Method, "path", r.URL.Path,
+				logger.Error("паника в обработчике", "class", "internal", "method", r.Method, "path", r.URL.Path,
 					"stack", string(debug.Stack()))
 				WriteProblem(w, errInternal())
 			}
