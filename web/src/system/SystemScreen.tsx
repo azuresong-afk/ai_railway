@@ -14,7 +14,7 @@ import { chainReasonText, formatBytes, gatewayText, problemText, reasonText, syn
 function Tag({ ok, children }: { ok: boolean | null; children: ReactNode }) {
   return (
     <span className="inline-flex items-center gap-1.5">
-      <span className={ok === null ? "text-sev-info" : ok ? "text-sev-low" : "text-sev-critical"}>
+      <span className={ok === null ? "text-sev-info" : ok ? "text-[var(--c-dec-allowed)]" : "text-sev-critical"}>
         <ShapeIcon kind={ok === null ? "info" : ok ? "low" : "critical"} />
       </span>
       {children}

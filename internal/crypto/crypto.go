@@ -64,6 +64,14 @@ type Provider interface {
 	NewTOTP(secret []byte) (TOTP, error)
 	// NewKDF — выведение ключей из секрета не короче MinKDFKeySize.
 	NewKDF(secret []byte) (KDF, error)
+	// GenerateRecipient создаёт ключ получателя для шифрования по открытому
+	// ключу (секреты в пакете конфигурации шлюза, Р7).
+	GenerateRecipient() (Recipient, error)
+	// NewRecipient восстанавливает ключ получателя из Recipient.PrivateKey.
+	NewRecipient(privateKey []byte) (Recipient, error)
+	// SealTo шифрует plaintext для владельца открытого ключа; info
+	// привязывает шифротекст к месту, Open с другим info не расшифрует.
+	SealTo(publicKey, info, plaintext []byte) ([]byte, error)
 }
 
 // New возвращает криптопрофиль по имени.

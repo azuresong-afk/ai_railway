@@ -128,11 +128,12 @@ func TestDM43_ChainBroken(t *testing.T) {
 			rs[0].PrevHash = genesis(h)
 			rehash(t, h, rs, 0)
 			return rs, []Anchor{{Seq: 6, Hash: base[5].Hash}}
-		}, 0, ReasonTailTruncated},
+		}, 0, ReasonRewritten},
+		// Обрезка и обрезка с дописыванием — одна причина (задача 2.4a).
 		{"удаление хвоста", func(rs []Record) ([]Record, []Anchor) {
 			known := []Anchor{{Seq: 6, Hash: rs[5].Hash}}
 			return rs[:4], known
-		}, 5, ReasonTailTruncated},
+		}, 5, ReasonRewritten},
 		{"удаление хвоста и дописывание новых записей", func(rs []Record) ([]Record, []Anchor) {
 			known := []Anchor{{Seq: 6, Hash: rs[5].Hash}}
 			rs = rs[:4]

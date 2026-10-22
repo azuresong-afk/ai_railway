@@ -24,12 +24,15 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/audit"
 	"github.com/azuresong-afk/ai_railway/internal/auth"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
+	"github.com/azuresong-afk/ai_railway/internal/detect"
+	"github.com/azuresong-afk/ai_railway/internal/detect/builtin"
 	"github.com/azuresong-afk/ai_railway/internal/events"
 	"github.com/azuresong-afk/ai_railway/internal/gwregistry"
 	"github.com/azuresong-afk/ai_railway/internal/httpserver"
 	"github.com/azuresong-afk/ai_railway/internal/integrity"
 	"github.com/azuresong-afk/ai_railway/internal/integrity/selftest"
 	"github.com/azuresong-afk/ai_railway/internal/keyring"
+	"github.com/azuresong-afk/ai_railway/internal/policy/versions"
 	"github.com/azuresong-afk/ai_railway/internal/store"
 	"github.com/azuresong-afk/ai_railway/internal/sysstatus"
 	"github.com/azuresong-afk/ai_railway/web"
@@ -37,8 +40,20 @@ import (
 
 var version = "dev"
 
-// dbPoolSize — число соединений с PostgreSQL.
-const dbPoolSize = 10
+// Пулы соединений с PostgreSQL. Чтение событий консолью (список, карточка,
+// выгрузка, агрегаты) — в отдельном пуле с пределом времени запроса, чтобы
+// медленные выборки не занимали соединения входа, журнала аудита и приёма
+// событий шлюзов (В11 ревью 2.r3a).
+const (
+	// dbPoolSize — основной пул.
+	dbPoolSize = 10
+	// eventsReadPoolSize — пул чтения событий; больше api.MaxExportsTotal,
+	// чтобы списки не ждали выгрузок.
+	eventsReadPoolSize = 4
+	// eventsReadStatementTimeout — statement_timeout пула чтения: выгрузка
+	// (events.ExportTimeout) и запас.
+	eventsReadStatementTimeout = events.ExportTimeout + 10*time.Second
+)
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil)).With("component", "aisec-server", "version", version)
@@ -133,7 +148,10 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	// -audit-verify-interval. Голова цепочки защищена имитовставкой на ключе
 	// из ключа данных (вне БД). Нарушение не останавливает сервер — оно
 	// поднимает уведомление в «Состоянии системы».
-	if err := startAuditVerify(ctx, cfg, auditLog, box, logger); err != nil {
+	// Тот же Verifier проверяет цепочку по команде из API (задача 2.4a):
+	// проверки не идут параллельно, опора в памяти общая.
+	chainVerifier, err := startAuditVerify(ctx, cfg, auditLog, box, logger)
+	if err != nil {
 		return err
 	}
 	roles, err := auth.NewPGRoles(db.Pool(), auditLog)
@@ -187,7 +205,13 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	eventStore, err := events.NewPGStore(db.Pool(), box, auditLog, audit.DefaultOrgID, events.WithRandom(rnd))
+	readDB, err := store.Open(ctx, cfg.DatabaseURL, eventsReadPoolSize, store.WithStatementTimeout(eventsReadStatementTimeout))
+	if err != nil {
+		return err
+	}
+	defer readDB.Close()
+	eventStore, err := events.NewPGStore(db.Pool(), box, auditLog, audit.DefaultOrgID, events.WithRandom(rnd),
+		events.WithReadDB(readDB.Pool()))
 	if err != nil {
 		return err
 	}
@@ -206,6 +230,21 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		return err
 	}
 
+	// Политики и их версии (ТЗ 5.3, задача 2.12): проверяются строго по
+	// встроенным детекторам — тем же, что у шлюза.
+	detectors, err := detect.NewRegistry(builtin.All()...)
+	if err != nil {
+		return err
+	}
+	policyStore, err := versions.NewPGStore(db.Pool(), auditLog)
+	if err != nil {
+		return err
+	}
+	policiesSvc, err := versions.New(versions.Options{Store: policyStore, Provider: p, Catalog: detectors})
+	if err != nil {
+		return err
+	}
+
 	// Приложения, ключи и провайдеры (ТЗ 5.4, задача 2.11): учётные данные
 	// провайдеров — под ключом данных (ЗИ.1); владелец приложения —
 	// действующая учётная запись консоли.
@@ -213,7 +252,7 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	appsSvc, err := apps.New(apps.Options{Store: appStore, Provider: p, Box: box,
+	appsSvc, err := apps.New(apps.Options{Store: appStore, Provider: p, Box: box, Policies: policiesSvc,
 		OwnerCheck: func(ctx context.Context, id string) error {
 			u, err := authSvc.User(ctx, id)
 			if err != nil {
@@ -241,6 +280,7 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	handler, _, err := api.New(api.Options{
 		Logger: logger, Version: version, Hasher: hasher,
 		Apps:      appsSvc,
+		Policies:  policiesSvc,
 		Ready:     db.Ping,
 		Auth:      authSvc,
 		Gateways:  gateways,
@@ -249,6 +289,9 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		Events:    eventStore,
 		Audit:     auditLog,
 		Fallback:  console,
+
+		AuditLog:      auditLog,
+		AuditVerifier: chainVerifier,
 
 		TrustedProxies: cfg.TrustedProxies,
 	})
@@ -263,7 +306,13 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	}
 	servers := []*httpserver.Server{srv}
 	if gateways != nil {
-		internal, err := newInternalServer(ctx, cfg, tp, hasher, gateways, eventStore, ca, certPEM, keyPEM, logger)
+		// Пакеты конфигурации (задача 2.13): без ключа подписи внутренний
+		// порт не открывается — шлюзы не получили бы конфигурацию.
+		bundleRoutes, err := newBundleRoutes(cfg, p, db, auditLog, appsSvc, policiesSvc, logger)
+		if err != nil {
+			return err
+		}
+		internal, err := newInternalServer(ctx, cfg, tp, hasher, gateways, eventStore, ca, certPEM, keyPEM, bundleRoutes, logger)
 		if err != nil {
 			return err
 		}
@@ -332,11 +381,12 @@ func requireAuditKey(ctx context.Context, cps checkpointSource, haveKey bool, lo
 	return nil
 }
 
-// startAuditVerify запускает фоновую проверку цепочки журнала аудита.
-func startAuditVerify(ctx context.Context, cfg *serverConfig, auditLog *audit.Log, box *keyring.Box, logger *slog.Logger) error {
+// startAuditVerify запускает фоновую проверку цепочки журнала аудита и
+// возвращает её Verifier для проверки по команде.
+func startAuditVerify(ctx context.Context, cfg *serverConfig, auditLog *audit.Log, box *keyring.Box, logger *slog.Logger) (*audit.Verifier, error) {
 	mac, err := box.MAC(audit.HeadMACPurpose)
 	if err != nil {
-		return fmt.Errorf("ключ имитовставки цепочки аудита: %w", err)
+		return nil, fmt.Errorf("ключ имитовставки цепочки аудита: %w", err)
 	}
 	v := audit.NewVerifier(auditLog, audit.WithHeadMAC(audit.HeadMAC{KeyID: box.KeyID(), MAC: mac}))
 	go func() {
@@ -355,7 +405,7 @@ func startAuditVerify(ctx context.Context, cfg *serverConfig, auditLog *audit.Lo
 			logger.Error("проверка цепочки журнала аудита не запущена", "error", err)
 		}
 	}()
-	return nil
+	return v, nil
 }
 
 // startIntegrity проверяет целостность сервера при запуске и запускает
@@ -422,7 +472,7 @@ func loadCA(certFile, keyFile string) (*aisecCrypto.CA, error) {
 // обязательным клиентским сертификатом внутреннего УЦ (mTLS, ИАФ.10).
 func newInternalServer(ctx context.Context, cfg *serverConfig, tp aisecCrypto.TLSProvider, hasher aisecCrypto.Hasher,
 	gateways *gwregistry.Service, eventStore events.Store, ca *aisecCrypto.CA, certPEM, keyPEM []byte,
-	logger *slog.Logger) (*httpserver.Server, error) {
+	extra []api.Route, logger *slog.Logger) (*httpserver.Server, error) {
 	if cfg.InternalTLSCertFile != "" {
 		var err error
 		if certPEM, err = aisecCrypto.ReadPEMFile(cfg.InternalTLSCertFile); err != nil {
@@ -433,7 +483,8 @@ func newInternalServer(ctx context.Context, cfg *serverConfig, tp aisecCrypto.TL
 		}
 	}
 	ilog := logger.With("listener", "internal")
-	handler, _, err := api.NewInternal(api.InternalOptions{Logger: ilog, Hasher: hasher, Gateways: gateways, Events: eventStore})
+	handler, _, err := api.NewInternal(api.InternalOptions{Logger: ilog, Hasher: hasher, Gateways: gateways, Events: eventStore,
+		Extra: extra})
 	if err != nil {
 		return nil, err
 	}

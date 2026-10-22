@@ -39,6 +39,8 @@ func DefaultRateRules() []RateRule {
 		{Prefix: "/api/v1/auth/mfa/", Method: http.MethodPost, Max: 10, Window: time.Minute},
 		{Prefix: "/api/v1/auth/password", Method: http.MethodPost, Max: 10, Window: time.Minute},
 		{Prefix: "/api/v1/gateways/register", Max: 10, Window: time.Minute},
+		// Проверка цепочки аудита читает весь журнал (задача 2.4a).
+		{Prefix: "/api/v1/audit/verify", Method: http.MethodPost, Max: 5, Window: time.Minute},
 		{Prefix: "/internal/", Max: 600, Window: time.Minute},
 		{Prefix: "/healthz", Max: 60, Window: time.Minute},
 		{Prefix: "/readyz", Max: 60, Window: time.Minute},

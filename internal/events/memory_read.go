@@ -136,6 +136,36 @@ func (m *Memory) Count(_ context.Context, q Query, limit int) (int, error) {
 	return min(len(m.selectLocked(&q)), limit+1), nil
 }
 
+// Export — см. Reader: выборка берётся одним снимком под блокировкой.
+func (m *Memory) Export(_ context.Context, q Query, start func(n int) error, fn func(*Record) error) error {
+	if err := q.Validate(); err != nil {
+		return err
+	}
+	limit := q.Limit
+	if limit <= 0 || limit > MaxExportRows {
+		limit = MaxExportRows
+	}
+	m.mu.Lock()
+	if m.ReadErr != nil {
+		m.mu.Unlock()
+		return m.ReadErr
+	}
+	out := m.selectLocked(&q)
+	m.mu.Unlock()
+	if len(out) > limit {
+		return ErrTooManyRows
+	}
+	if err := start(len(out)); err != nil {
+		return err
+	}
+	for i := range out {
+		if err := fn(&out[i]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // Card — см. Reader.
 func (m *Memory) Card(_ context.Context, id string) (Record, error) {
 	m.mu.Lock()

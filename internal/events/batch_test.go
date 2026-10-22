@@ -131,7 +131,12 @@ func TestCheckRejects(t *testing.T) {
 		edit func(*Event)
 		code string
 	}{
-		"схема":                   {func(e *Event) { e.PolicyMode = "audit" }, RejectInvalid},
+		"схема": {func(e *Event) { e.PolicyMode = "audit" }, RejectInvalid},
+		"auth_failure с чужим режимом": {func(e *Event) {
+			e.Type, e.App, e.Decision, e.Content, e.Storage, e.Findings = TypeAuthFailure, "", nil, nil, "", nil
+			e.AuthFailure = &AuthFailure{RemoteAddr: "192.0.2.1", Reason: "invalid_key"}
+			e.PolicyMode = "audit"
+		}, RejectInvalid},
 		"none с содержимым":       {func(e *Event) { e.Storage = StorageNone }, RejectInvalid},
 		"ID не UUID":              {func(e *Event) { e.ID = "not-a-uuid" }, RejectID},
 		"ID прописными":           {func(e *Event) { e.ID = strings.ToUpper(e.ID) }, RejectID},

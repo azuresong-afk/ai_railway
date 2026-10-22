@@ -39,7 +39,7 @@ func seed(t *testing.T, e *pgEnv, n int) []events.Event {
 		evs = append(evs, ev)
 		time.Sleep(2 * time.Millisecond) // разные миллисекунды UUIDv7
 	}
-	if _, _, err := e.st.Insert(ctx, events.Ingest{GatewayID: testGateway, ReceivedAt: time.Now(), Events: evs}); err != nil {
+	if _, err := e.st.Insert(ctx, events.Ingest{GatewayID: testGateway, ReceivedAt: time.Now(), Events: evs}); err != nil {
 		t.Fatal(err)
 	}
 	return evs
@@ -309,5 +309,74 @@ func TestPGEventsAggregates(t *testing.T) {
 		if err := <-errs; err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+// Чтение событий консолью идёт через свой пул (В11 ревью 2.r3a): когда все
+// его соединения заняты (медленные выгрузки), приём событий шлюзов идёт
+// через основной пул, а чтение ждёт до срока своего контекста.
+func TestPGEventsReadPoolSeparate(t *testing.T) {
+	e := setupPG(t)
+	ctx := pgCtx(t)
+	seed(t, e, 1)
+	read := newPool(t, e.dsn, e.schema, "aisec_app")
+	st, err := events.NewPGStore(e.app, e.box, e.log, "", events.WithReadDB(read))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := st.List(ctx, lastHour()); err != nil || len(got) != 1 {
+		t.Fatalf("список через пул чтения: %d %v", len(got), err)
+	}
+	for range read.Stat().MaxConns() {
+		c, err := read.Acquire(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer c.Release()
+	}
+	ev := e.event(t, events.StorageNone, nil)
+	if res, err := st.Insert(ctx, events.Ingest{GatewayID: testGateway, ReceivedAt: time.Now(), Events: []events.Event{ev}}); err != nil || res.Accepted != 1 {
+		t.Fatalf("приём при занятом пуле чтения: %+v %v", res, err)
+	}
+	short, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+	defer cancel()
+	if _, err := st.List(short, lastHour()); err == nil {
+		t.Fatal("чтение прошло при занятом пуле чтения")
+	}
+}
+
+// Подсчёт и выгрузка видят один снимок (Н21 ревью 2.r3a): событие,
+// записанное между ними, в выгрузку не попадает, число строк совпадает.
+func TestPGEventsExportSnapshot(t *testing.T) {
+	e := setupPG(t)
+	ctx := pgCtx(t)
+	seed(t, e, 3)
+	late := e.event(t, events.StorageNone, nil)
+	var counted, written int
+	err := e.st.Export(ctx, lastHour(), func(n int) error {
+		counted = n
+		_, err := e.st.Insert(ctx, events.Ingest{GatewayID: testGateway, ReceivedAt: time.Now(), Events: []events.Event{late}})
+		return err
+	}, func(*events.Record) error {
+		written++
+		return nil
+	})
+	if err != nil || counted != 3 || written != 3 {
+		t.Fatalf("снимок: подсчитано %d, выгружено %d, %v", counted, written, err)
+	}
+	q := lastHour()
+	q.Limit = 3
+	if n, err := e.st.Count(ctx, q, 100); err != nil || n != 4 {
+		t.Fatalf("после выгрузки: %d %v", n, err)
+	}
+	if err := e.st.Export(ctx, q, func(int) error { return nil }, func(*events.Record) error { return nil }); !errors.Is(err, events.ErrTooManyRows) {
+		t.Fatalf("больше предела: %v", err)
+	}
+	stop := errors.New("журнал недоступен")
+	if err := e.st.Export(ctx, lastHour(), func(int) error { return stop }, func(*events.Record) error {
+		t.Fatal("выгрузка без записи в аудит")
+		return nil
+	}); !errors.Is(err, stop) {
+		t.Fatalf("отказ start: %v", err)
 	}
 }

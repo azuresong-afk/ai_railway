@@ -24,6 +24,8 @@
 | GET | `/api/v1/applications/{id}/keys` | `applications.read` | да | да | да | да | свои | да |
 | POST | `/api/v1/applications/{id}/keys` | `app_keys.manage` | да | да | — | — | — | да |
 | PUT | `/api/v1/applications/{id}/protection` | `applications.policy` | да | — | — | — | — | — |
+| GET | `/api/v1/audit` | `audit.read` | да | — | — | да | — | да |
+| POST | `/api/v1/audit/verify` | `audit.verify` | да | — | — | да | — | да |
 | POST | `/api/v1/auth/logout` | `session` | да | да | да | да | да | — |
 | POST | `/api/v1/auth/mfa/recovery-codes` | `session` | да | да | да | да | да | — |
 | POST | `/api/v1/auth/mfa/setup` | `session` | да | да | да | да | да | — |
@@ -44,6 +46,17 @@
 | POST | `/api/v1/events/{id}/content` | `events.content.read` | да | — | — | — | — | — |
 | GET | `/api/v1/me` | `session` | да | да | да | да | да | — |
 | GET | `/api/v1/permissions` | `roles.read` | да | — | — | да | — | да |
+| GET | `/api/v1/policies` | `policies.read` | да | да | да | да | — | да |
+| POST | `/api/v1/policies` | `policies.manage` | да | — | — | — | — | — |
+| POST | `/api/v1/policies/import` | `policies.manage` | да | — | — | — | — | — |
+| POST | `/api/v1/policies/test` | `policies.test` | да | да | да | — | — | да |
+| GET | `/api/v1/policies/{id}` | `policies.read` | да | да | да | да | — | да |
+| PUT | `/api/v1/policies/{id}` | `policies.manage` | да | — | — | — | — | — |
+| GET | `/api/v1/policies/{id}/diff` | `policies.read` | да | да | да | да | — | да |
+| GET | `/api/v1/policies/{id}/export` | `policies.read` | да | да | да | да | — | да |
+| POST | `/api/v1/policies/{id}/rollback` | `policies.manage` | да | — | — | — | — | — |
+| GET | `/api/v1/policies/{id}/versions` | `policies.read` | да | да | да | да | — | да |
+| GET | `/api/v1/policies/{id}/versions/{n}` | `policies.read` | да | да | да | да | — | да |
 | GET | `/api/v1/providers` | `providers.read` | да | да | да | да | — | да |
 | POST | `/api/v1/providers` | `providers.manage` | да | да | — | — | — | да |
 | GET | `/api/v1/providers/{id}` | `providers.read` | да | да | да | да | — | да |

@@ -306,7 +306,7 @@ func TestChainBrokenPostgres(t *testing.T) {
 		{"правка подробностей", `UPDATE audit_log SET details = '{"i":0,"method":"none"}' WHERE seq = 2`, false, ReasonHashMismatch, 2},
 		{"удаление из середины", "DELETE FROM audit_log WHERE seq = 3", false, ReasonGap, 4},
 		{"удаление начала", "DELETE FROM audit_log WHERE seq <= 2", false, ReasonHeadMissing, 3},
-		{"удаление хвоста", "DELETE FROM audit_log WHERE seq >= 4", true, ReasonTailTruncated, 0},
+		{"удаление хвоста", "DELETE FROM audit_log WHERE seq >= 4", true, ReasonRewritten, 0},
 		{"бесконечное время в обход CHECK", "ALTER TABLE audit_log DROP CONSTRAINT audit_log_ts_check; " +
 			"UPDATE audit_log SET ts = 'infinity' WHERE seq = 2", false, ReasonInvalid, 2},
 		{"пробелы в подробностях", `UPDATE audit_log SET details = '{"i": 0, "method": "password"}' WHERE seq = 1`, false, ReasonInvalid, 1},

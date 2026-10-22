@@ -114,8 +114,12 @@ type Reader interface {
 	Content(ctx context.Context, id string) (StoredContent, error)
 	// Count — число событий выборки, но не больше limit+1.
 	Count(ctx context.Context, q Query, limit int) (int, error)
-	// Each передаёт fn события выборки по одному (выгрузка).
+	// Each передаёт fn события выборки по одному.
 	Each(ctx context.Context, q Query, fn func(*Record) error) error
+	// Export — выгрузка по одному снимку: подсчёт (больше q.Limit —
+	// ErrTooManyRows), start(n) до первой записи (запись data.export в
+	// аудит; ошибка отменяет выгрузку), затем записи по одной в fn.
+	Export(ctx context.Context, q Query, start func(n int) error, fn func(*Record) error) error
 }
 
 // selectColumns — столбцы записи; details — только с WithDetails.
@@ -220,9 +224,19 @@ func (s *PGStore) Each(ctx context.Context, q Query, fn func(*Record) error) err
 	return s.each(ctx, &q, fn)
 }
 
+// querier — пул или транзакция, из которых читается выборка.
+type querier interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
 func (s *PGStore) each(ctx context.Context, q *Query, fn func(*Record) error) error {
+	return s.eachIn(ctx, s.rdb, q, fn)
+}
+
+func (s *PGStore) eachIn(ctx context.Context, db querier, q *Query, fn func(*Record) error) error {
 	sql, args := s.buildQuery(q, 0)
-	rows, err := s.db.Query(ctx, sql, args...)
+	rows, err := db.Query(ctx, sql, args...)
 	if err != nil {
 		return dbError("чтение событий", err)
 	}
@@ -252,12 +266,51 @@ func (s *PGStore) Count(ctx context.Context, q Query, limit int) (int, error) {
 	}
 	ctx, cancel := pgCtx(ctx)
 	defer cancel()
-	sql, args := s.buildQuery(&q, limit)
+	return s.countIn(ctx, s.rdb, &q, limit)
+}
+
+func (s *PGStore) countIn(ctx context.Context, db querier, q *Query, limit int) (int, error) {
+	sql, args := s.buildQuery(q, limit)
 	var n int
-	if err := s.db.QueryRow(ctx, sql, args...).Scan(&n); err != nil {
+	if err := db.QueryRow(ctx, sql, args...).Scan(&n); err != nil {
 		return 0, dbError("подсчёт событий", err)
 	}
 	return n, nil
+}
+
+// Export — см. Reader. Подсчёт и выборка — в одной транзакции REPEATABLE
+// READ READ ONLY на пуле чтения: оба видят один снимок, и число строк в
+// записи data.export совпадает с переданным (Н21 ревью 2.r3a). Срок задаёт
+// контекст вызывающего (ExportTimeout).
+func (s *PGStore) Export(ctx context.Context, q Query, start func(n int) error, fn func(*Record) error) error {
+	if err := q.Validate(); err != nil {
+		return err
+	}
+	if q.Limit <= 0 || q.Limit > MaxExportRows {
+		q.Limit = MaxExportRows
+	}
+	ctx, cancel := pgCtx(ctx)
+	defer cancel()
+	tx, err := s.rdb.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return fmt.Errorf("хранилище событий: начало транзакции выгрузки: %w", err)
+	}
+	defer func() {
+		rctx, rcancel := context.WithTimeout(context.WithoutCancel(ctx), pgRollbackTimeout)
+		defer rcancel()
+		_ = tx.Rollback(rctx) //nolint:gosec // G104: транзакция только читает, откат — её завершение
+	}()
+	n, err := s.countIn(ctx, tx, &q, q.Limit)
+	if err != nil {
+		return err
+	}
+	if n > q.Limit {
+		return ErrTooManyRows
+	}
+	if err := start(n); err != nil {
+		return err
+	}
+	return s.eachIn(ctx, tx, &q, fn)
 }
 
 // Card — см. Reader.
@@ -268,7 +321,7 @@ func (s *PGStore) Card(ctx context.Context, id string) (Record, error) {
 	}
 	ctx, cancel := pgCtx(ctx)
 	defer cancel()
-	r, err := scanRecord(s.db.QueryRow(ctx, "SELECT "+selectColumns+", e.details FROM events e"+
+	r, err := scanRecord(s.rdb.QueryRow(ctx, "SELECT "+selectColumns+", e.details FROM events e"+
 		" WHERE e.id = $1 AND e.ts = $2 AND e.org_id = $3", id, ts, s.orgID), true)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Record{}, ErrNotFound

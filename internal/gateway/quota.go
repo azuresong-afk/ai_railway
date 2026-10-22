@@ -98,15 +98,32 @@ func NewLimiter(apps []config.Application) *Limiter { return newLimiter(apps, ti
 
 func newLimiter(apps []config.Application, now func() time.Time) *Limiter {
 	l := &Limiter{now: now, apps: map[string]*appQuota{}}
-	start := now()
+	l.Reconfigure(apps)
+	return l
+}
+
+// Reconfigure применяет новый набор приложений (пакет конфигурации с
+// сервера, задача 2.13): у оставшихся приложений счётчики сохраняются и
+// действуют новые пределы, новые начинают с нуля, удалённые забываются.
+// Иначе каждая смена конфигурации обнуляла бы квоты (DM-36).
+func (l *Limiter) Reconfigure(apps []config.Application) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	start := l.now()
+	next := make(map[string]*appQuota, len(apps))
 	for _, a := range apps {
-		l.apps[a.ID] = &appQuota{
+		if cur, ok := l.apps[a.ID]; ok {
+			cur.q = a.Quotas
+			next[a.ID] = cur
+			continue
+		}
+		next[a.ID] = &appQuota{
 			q:   a.Quotas,
 			rpm: newWindow(start, time.Second, 60), tpm: newWindow(start, time.Second, 60), tpd: newWindow(start, time.Hour, 24),
 			users: newTracked(start), key: newTracked(start),
 		}
 	}
-	return l
+	l.apps = next
 }
 
 // Reservation — зарезервированные токены допущенного запроса.

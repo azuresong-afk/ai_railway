@@ -127,9 +127,21 @@ func slug(det string) string {
 // в реестре нет, опускаются, направления — только те, что детектор
 // проверяет.
 func TemplatePolicy(id string, c Catalog) (*Policy, error) {
-	s, ok := Template(id)
+	s, ok := TemplateFor(id, c)
 	if !ok {
 		return nil, fmt.Errorf("шаблон политики %q не существует", id)
+	}
+	return Compile(s, c)
+}
+
+// TemplateFor — копия шаблона для реестра: правила детекторов, которых в
+// реестре нет, опущены, направления — только те, что детектор проверяет.
+// Такую спецификацию принимает строгая Compile (копия шаблона в сервере,
+// задача 2.12).
+func TemplateFor(id string, c Catalog) (*Spec, bool) {
+	s, ok := Template(id)
+	if !ok {
+		return nil, false
 	}
 	rules := s.Rules[:0]
 	for _, r := range s.Rules {
@@ -148,7 +160,7 @@ func TemplatePolicy(id string, c Catalog) (*Policy, error) {
 		rules = append(rules, r)
 	}
 	s.Rules = rules
-	return Compile(s, c)
+	return s, true
 }
 
 // Resolve находит политику приложения: политику заказчика из specs

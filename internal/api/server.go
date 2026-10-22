@@ -14,6 +14,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/auth"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/internal/gwregistry"
+	"github.com/azuresong-afk/ai_railway/internal/policy/versions"
 )
 
 // Options — зависимости каркаса. Последующие задачи добавляют сюда свои
@@ -41,6 +42,14 @@ type Options struct {
 	// Apps — приложения, ключи и провайдеры (задача 2.11); nil — их
 	// эндпоинты отвечают 503.
 	Apps *apps.Service
+	// Policies — политики и их версии (задача 2.12); nil — их эндпоинты
+	// отвечают 503.
+	Policies *versions.Service
+	// AuditLog и AuditVerifier — журнал аудита в консоли (задача 2.4a):
+	// просмотр и проверка цепочки той же проверкой, что фоновая; nil — их
+	// эндпоинты отвечают 503.
+	AuditLog      AuditJournal
+	AuditVerifier AuditChainVerifier
 	// OnDenied — вызывается при каждом отказе в доступе (УПД.6). По
 	// умолчанию, если задан Auth, отказ аутентифицированному субъекту
 	// пишется в журнал аудита (access.denied).
@@ -81,6 +90,14 @@ type Deps struct {
 	Audit  AuditRecorder
 	// Apps — nil, если приложения не подключены: их эндпоинты отвечают 503.
 	Apps *apps.Service
+	// Policies — nil, если политики не подключены: их эндпоинты отвечают 503.
+	Policies *versions.Service
+	// AuditLog и AuditVerifier — nil, если журнал аудита не подключён к
+	// консоли: соответствующий эндпоинт отвечает 503.
+	AuditLog      AuditJournal
+	AuditVerifier AuditChainVerifier
+	// Exports — ограничение одновременных выгрузок событий (В11 ревью 2.r3a).
+	Exports *ExportGate
 }
 
 // New собирает обработчик сервера: восстановление после паники, заголовки
@@ -115,7 +132,9 @@ func New(o Options) (http.Handler, *Router, error) {
 	}
 	rt.mux.HandleFunc("/", rt.notFound)
 	deps := Deps{Logger: o.Logger, Version: o.Version, Ready: o.Ready, Auth: o.Auth, Gateways: o.Gateways, Integrity: o.Integrity,
-		Status: o.Status, Events: o.Events, Audit: o.Audit, Apps: o.Apps}
+		Status: o.Status, Events: o.Events, Audit: o.Audit, Apps: o.Apps, Policies: o.Policies,
+		AuditLog: o.AuditLog, AuditVerifier: o.AuditVerifier,
+		Exports: NewExportGate(MaxExportsPerSubject, MaxExportsTotal)}
 	if err := rt.Add(append(Routes(deps), o.Extra...)...); err != nil {
 		return nil, nil, err
 	}

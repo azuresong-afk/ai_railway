@@ -394,9 +394,20 @@ func parseExport(req *exportRequest, now time.Time) (events.Query, *Problem) {
 	return q, nil
 }
 
-// exportEvents — выгрузка без содержимого. Сначала подсчёт строк по
-// снимку (принятые до начала выгрузки), затем запись data.export с
-// фильтром и числом строк и только после неё — данные.
+// errExportAudit — запись data.export не удалась: выгрузка отменена.
+var errExportAudit = errors.New("выгрузка событий не записана в журнал аудита")
+
+// exportSubject — ключ субъекта для ограничения одновременных выгрузок.
+func exportSubject(p Principal) string {
+	a := eventsActor(p)
+	return string(a.Type) + ":" + a.ID
+}
+
+// exportEvents — выгрузка без содержимого. Подсчёт строк и выборка — по
+// одному снимку (Н21 ревью 2.r3a); между ними запись data.export с
+// фильтром и числом строк, и только после неё — данные. Одновременных
+// выгрузок — не больше MaxExportsPerSubject на субъект и MaxExportsTotal
+// на сервер (В11 ревью 2.r3a).
 func (d Deps) exportEvents(w http.ResponseWriter, r *http.Request) {
 	p, _ := PrincipalFrom(r.Context())
 	var req exportRequest
@@ -410,48 +421,63 @@ func (d Deps) exportEvents(w http.ResponseWriter, r *http.Request) {
 		WriteProblem(w, prob)
 		return
 	}
+	subject := exportSubject(p)
+	if d.Exports != nil {
+		if !d.Exports.Acquire(subject) {
+			d.Logger.Warn("выгрузка событий отклонена: предел одновременных выгрузок", "actor_type", eventsActor(p).Type)
+			w.Header().Set("Retry-After", exportRetryAfter)
+			WriteProblem(w, NewProblem(http.StatusTooManyRequests, CodeRateLimited,
+				"Выгрузка уже выполняется: дождитесь её окончания и повторите."))
+			return
+		}
+		defer d.Exports.Release(subject)
+	}
 	ctx, cancel := contextTimeout(r, events.ExportTimeout)
 	defer cancel()
-	n, err := d.Events.Count(ctx, q, events.MaxExportRows)
-	if err != nil {
-		WriteProblem(w, d.eventsProblem(err, "события для выгрузки не подсчитаны"))
-		return
+	var ex *events.Exporter
+	started := false // заголовок ответа отправлен
+	start := func(n int) error {
+		actx, acancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
+		defer acancel()
+		if err := d.Audit.Record(actx, audit.Entry{
+			Actor: eventsActor(p), SourceIP: clientAddr(r), Action: "data.export", Object: audit.Object{Type: "events"},
+			Result: audit.ResultSuccess, Details: map[string]any{
+				"format": req.Format, "filter": q.Filter.String(), "from": q.From, "to": q.To, "snapshot": now, "rows": n,
+			},
+		}); err != nil {
+			return fmt.Errorf("%w: %w", errExportAudit, err)
+		}
+		ctype := "text/csv; charset=utf-8"
+		if req.Format == events.FormatJSON {
+			ctype = "application/json"
+		}
+		h := w.Header()
+		h.Set("Content-Type", ctype)
+		h.Set("Content-Disposition", `attachment; filename="events-`+now.Format("20060102T150405Z")+"."+req.Format+`"`)
+		h.Set("X-Export-Rows", strconv.Itoa(n))
+		started = true
+		w.WriteHeader(http.StatusOK)
+		var err error
+		ex, err = events.NewExporter(w, req.Format)
+		return err
 	}
-	if n > events.MaxExportRows {
-		WriteProblem(w, NewProblem(http.StatusUnprocessableEntity, CodeUnprocessable,
-			fmt.Sprintf("В выгрузке больше %d строк: сузьте период или фильтр.", events.MaxExportRows)))
-		return
-	}
-	actx, acancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
-	defer acancel()
-	if err := d.Audit.Record(actx, audit.Entry{
-		Actor: eventsActor(p), SourceIP: clientAddr(r), Action: "data.export", Object: audit.Object{Type: "events"},
-		Result: audit.ResultSuccess, Details: map[string]any{
-			"format": req.Format, "filter": q.Filter.String(), "from": q.From, "to": q.To, "snapshot": now, "rows": n,
-		},
-	}); err != nil {
-		d.Logger.Error("выгрузка событий не записана в журнал аудита: выгрузка отменена", "error", err)
-		WriteProblem(w, NewProblem(http.StatusServiceUnavailable, CodeUnavailable,
-			"Не удалось записать выгрузку в журнал аудита: выгрузка отменена. Повторите позже."))
-		return
-	}
-	ctype := "text/csv; charset=utf-8"
-	if req.Format == events.FormatJSON {
-		ctype = "application/json"
-	}
-	h := w.Header()
-	h.Set("Content-Type", ctype)
-	h.Set("Content-Disposition", `attachment; filename="events-`+now.Format("20060102T150405Z")+"."+req.Format+`"`)
-	h.Set("X-Export-Rows", strconv.Itoa(n))
-	w.WriteHeader(http.StatusOK)
-	ex, err := events.NewExporter(w, req.Format)
-	if err == nil {
-		err = d.Events.Each(ctx, q, ex.Write)
-	}
+	err := d.Events.Export(ctx, q, start, func(rec *events.Record) error { return ex.Write(rec) })
 	if err == nil {
 		err = ex.Close()
 	}
-	if err != nil {
+	switch {
+	case err == nil:
+		d.Logger.Info("выгрузка событий завершена", "format", req.Format, "rows", ex.Rows())
+	case !started && errors.Is(err, events.ErrTooManyRows):
+		WriteProblem(w, NewProblem(http.StatusUnprocessableEntity, CodeUnprocessable,
+			fmt.Sprintf("В выгрузке больше %d строк: сузьте период или фильтр.", events.MaxExportRows)))
+	case !started && errors.Is(err, errExportAudit):
+		d.Logger.Error("выгрузка событий не записана в журнал аудита: выгрузка отменена", "error", err)
+		WriteProblem(w, NewProblem(http.StatusServiceUnavailable, CodeUnavailable,
+			"Не удалось записать выгрузку в журнал аудита: выгрузка отменена. Повторите позже."))
+	case !started:
+		WriteProblem(w, d.eventsProblem(err, "события для выгрузки не прочитаны"))
+	default:
 		// Заголовок уже отправлен: обрываем соединение, чтобы неполный файл
 		// не выглядел законченным.
 		rows := 0
@@ -627,11 +653,17 @@ func (d Deps) getEventSettings(w http.ResponseWriter, r *http.Request) {
 type retentionRequest struct {
 	MetadataDays int `json:"metadata_days"`
 	ContentDays  int `json:"content_days"`
+	// Password или Code — повторная проверка при сокращении срока (В13).
+	Password string `json:"password"`
+	Code     string `json:"code"`
 }
 
 // putEventSettings — сроки хранения (ТЗ 5.5): изменение и запись
 // events.settings_changed одной транзакцией. Удаление данных — фоновым
-// заданием секций по новым срокам.
+// заданием секций по новым срокам. Сокращение любого срока необратимо
+// удаляет данные, поэтому требует повторной проверки текущим паролем или
+// кодом TOTP, как выпуск токена (В13 ревью 2.r3a, решение владельца);
+// увеличение — без неё.
 func (d Deps) putEventSettings(w http.ResponseWriter, r *http.Request) {
 	p, _ := PrincipalFrom(r.Context())
 	var req retentionRequest
@@ -648,11 +680,34 @@ func (d Deps) putEventSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := contextTimeout(r, eventsReadTimeout)
 	defer cancel()
+	cur, err := d.Events.Retention(ctx)
+	if err != nil {
+		WriteProblem(w, d.eventsProblem(err, "сроки хранения событий не прочитаны"))
+		return
+	}
+	if ret.MetadataDays < cur.MetadataDays || ret.ContentDays < cur.ContentDays {
+		// Повторная проверка возможна только в сессии консоли: у токена API нет
+		// пароля, и права безопасности ему не выдаются (задача 2.10).
+		c, ok := callerFrom(r)
+		if !ok || c.Token != nil {
+			WriteProblem(w, errForbidden())
+			return
+		}
+		if d.Auth == nil {
+			WriteProblem(w, NewProblem(http.StatusServiceUnavailable, CodeUnavailable,
+				"Повторная проверка недоступна: вход в консоль не настроен на сервере."))
+			return
+		}
+		if err := d.Auth.Reauthenticate(ctx, c, req.Password, req.Code, "events.settings_changed"); err != nil {
+			WriteProblem(w, authProblem(d.Logger, err))
+			return
+		}
+	}
 	if _, err := d.Events.SetRetention(ctx, ret, eventsActor(p), clientAddr(r)); err != nil {
 		WriteProblem(w, d.eventsProblem(err, "сроки хранения событий не изменены"))
 		return
 	}
-	cur, err := d.Events.Retention(ctx)
+	cur, err = d.Events.Retention(ctx)
 	if err != nil {
 		WriteProblem(w, d.eventsProblem(err, "сроки хранения событий не прочитаны"))
 		return

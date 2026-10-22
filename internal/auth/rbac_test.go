@@ -77,7 +77,8 @@ func TestBuiltinRoleInvariants(t *testing.T) {
 		if p.Security && roles[auth.RoleSystemAdmin].Grants.Allows(p.Name) {
 			t.Errorf("у администратора системы есть %s (УПД.2)", p.Name)
 		}
-		if !p.ReadOnly() && roles[auth.RoleAuditor].Grants.Allows(p.Name) {
+		// Исключение — проверка цепочки аудита: ничего не меняет (задача 2.4a).
+		if !p.ReadOnly() && !slices.Contains(auth.AuditorExtra(), p.Name) && roles[auth.RoleAuditor].Grants.Allows(p.Name) {
 			t.Errorf("у аудитора есть %s (УПД.2)", p.Name)
 		}
 		// Чтение с признаком безопасности (содержимое событий, УПД.7) —

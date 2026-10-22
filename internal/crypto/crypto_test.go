@@ -201,6 +201,15 @@ func assertAllNotImplemented(t *testing.T, p Provider) {
 	if _, err := p.NewTOTP(make([]byte, TOTPSecretSize)); !errors.Is(err, ErrNotImplemented) {
 		t.Errorf("NewTOTP: %v", err)
 	}
+	if _, err := p.GenerateRecipient(); !errors.Is(err, ErrNotImplemented) {
+		t.Errorf("GenerateRecipient: %v", err)
+	}
+	if _, err := p.NewRecipient(make([]byte, RecipientKeySize)); !errors.Is(err, ErrNotImplemented) {
+		t.Errorf("NewRecipient: %v", err)
+	}
+	if _, err := p.SealTo(make([]byte, RecipientPublicKeySize), nil, []byte("x")); !errors.Is(err, ErrNotImplemented) {
+		t.Errorf("SealTo: %v", err)
+	}
 	if err := SelfTest(p); !errors.Is(err, ErrNotImplemented) {
 		t.Errorf("SelfTest: %v", err)
 	}
@@ -231,6 +240,26 @@ func TestSelfTestDetectsBrokenRandom(t *testing.T) {
 		t.Fatalf("ожидался отказ самотеста, получено %v", err)
 	}
 }
+
+// Самотест ловит неверный KDF профиля (Н19 ревью 2.r3a): ключ, не
+// совпадающий с HKDF-SHA-256 по RFC 5869, останавливает запуск.
+func TestSelfTestDetectsBrokenKDF(t *testing.T) {
+	err := SelfTest(brokenKDFProvider{standard{}})
+	if err == nil || !strings.Contains(err.Error(), "выведение ключей") {
+		t.Fatalf("ожидался отказ самотеста, получено %v", err)
+	}
+}
+
+type brokenKDFProvider struct{ standard }
+
+func (brokenKDFProvider) NewKDF([]byte) (KDF, error) { return constKDF{}, nil }
+
+// constKDF выдаёт один и тот же ключ для любого контекста.
+type constKDF struct{}
+
+func (constKDF) Name() string { return "broken" }
+
+func (constKDF) Derive(_ []byte, n int) ([]byte, error) { return make([]byte, n), nil }
 
 type brokenRandomProvider struct{ standard }
 

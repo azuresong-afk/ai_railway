@@ -84,6 +84,7 @@ linters:
             - "!**/internal/auth/authtest/**"
             - "!**/internal/keyring/keyringtest/**"
             - "!**/internal/crypto/cryptotest/**"
+            - "!**/internal/policy/bundle/bundletest/**"
           deny:
             - pkg: "github.com/azuresong-afk/ai_railway/internal/auth/authtest"
               desc: "подмены для тестов — только в *_test.go (Н14 ревью 2.r2)"
@@ -91,6 +92,8 @@ linters:
               desc: "подмены для тестов — только в *_test.go (Н14 ревью 2.r2)"
             - pkg: "github.com/azuresong-afk/ai_railway/internal/crypto/cryptotest"
               desc: "подмены для тестов — только в *_test.go (Н14 ревью 2.r2)"
+            - pkg: "github.com/azuresong-afk/ai_railway/internal/policy/bundle/bundletest"
+              desc: "ключи и пакеты для тестов — только в *_test.go (задача 2.13)"
         product-reflect:
           # Без reflect в коде продукта; исключение — //nolint:depguard с обоснованием.
           list-mode: lax
