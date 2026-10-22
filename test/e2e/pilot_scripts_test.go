@@ -243,8 +243,9 @@ func TestE2EPilotScripts_RestoreRefuses(t *testing.T) {
 				t.Fatalf("ожидался отказ «%s», код %d:\n%s", c.want, code, out)
 			}
 			if c.prepare == nil {
-				if left, _ := os.ReadDir(filepath.Join(s.data, "keys")); len(left) != 0 {
-					t.Fatalf("после отказа в keys/ появились файлы: %v", left)
+				left, err := os.ReadDir(filepath.Join(s.data, "keys"))
+				if err != nil || len(left) != 0 {
+					t.Fatalf("после отказа в keys/ появились файлы: %v %v", left, err)
 				}
 			}
 		})
