@@ -193,24 +193,30 @@ func syslogRecord(m Message, s Settings, version string) ([]byte, error) {
 			return nil, err
 		}
 	}
-	facility := DefaultFacility
-	if s.Facility != nil {
-		facility = *s.Facility
-	}
 	sev, ok := syslogSeverity[m.Severity]
 	if !ok {
 		sev = 6
-	}
-	host := s.Hostname
-	if !syslogName(host, 255) {
-		host = DefaultHostname
 	}
 	msgID := "alert"
 	if m.Kind == KindTest {
 		msgID = "test"
 	}
+	return syslogFrame(s, sev, m.CreatedAt, msgID, msg), nil
+}
+
+// syslogFrame — запись RFC 5424 с MSGID msgID и временем ts, в рамке
+// octet counting (RFC 6587).
+func syslogFrame(s Settings, sev int, ts time.Time, msgID string, msg []byte) []byte {
+	facility := DefaultFacility
+	if s.Facility != nil {
+		facility = *s.Facility
+	}
+	host := s.Hostname
+	if !syslogName(host, 255) {
+		host = DefaultHostname
+	}
 	rec := fmt.Appendf(nil, "<%d>1 %s %s aisec - %s - ", facility*8+sev,
-		m.CreatedAt.UTC().Format("2006-01-02T15:04:05.000000Z07:00"), host, msgID)
+		ts.UTC().Format("2006-01-02T15:04:05.000000Z07:00"), host, msgID)
 	rec = append(rec, msg...)
-	return append(fmt.Appendf(nil, "%d ", len(rec)), rec...), nil
+	return append(fmt.Appendf(nil, "%d ", len(rec)), rec...)
 }

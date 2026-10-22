@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -175,5 +176,75 @@ func TestNotifyChannelsAPI(t *testing.T) {
 func TestNotifyChannelsManageNotTokenGrantable(t *testing.T) {
 	if auth.TokenGrantable(auth.PermNotifyChannelsManage) || !auth.TokenGrantable(auth.PermNotifyChannelsRead) {
 		t.Fatal("права токена на каналы")
+	}
+}
+
+// Передача журнала аудита в SIEM (задача 3.14): подписка только у syslog и
+// webhook общего формата, состояние передачи — с правом notify_channels.read,
+// снятие подписки — ослабление.
+func TestAuditStreamAPI(t *testing.T) {
+	e := newNotifyEnv(t)
+	admin := e.mustLogin(t, "admin")
+	auditor := e.mustLogin(t, "auditor")
+	analyst := e.mustLogin(t, "analyst")
+	sys := e.mustLogin(t, "sysadm")
+	ca, _ := json.Marshal(e.caPEM) //nolint:gosec // G104: строка всегда сериализуется
+	e.store.AddAudit(audit.Record{ID: "01900000-0000-7000-8000-0000000a0001", OrgID: audit.DefaultOrgID, TS: time.Now(),
+		Action: "auth.login", Result: audit.ResultSuccess, Details: json.RawMessage(`{}`)})
+
+	hook := `{"name":"Mattermost SOC","type":"webhook","audit_stream":true,"settings":{"format":"mattermost","ca_pem":` +
+		string(ca) + `},"secrets":{"url":"https://127.0.0.1:1/hooks/x","signing_key":"0123456789abcdef0123456789abcdef"}}`
+	w := e.call(admin, "POST", "/api/v1/notify-channels", hook, true)
+	mustProblem(t, w, 400, CodeInvalidRequest)
+	if !strings.Contains(w.Body.String(), `"field":"audit_stream"`) {
+		t.Fatalf("поле ошибки: %s", w.Body)
+	}
+	siem := `{"name":"SIEM","type":"syslog","audit_stream":true,"settings":{"host":"127.0.0.1","port":1,"format":"json","ca_pem":` +
+		string(ca) + `}`
+	w = e.call(admin, "POST", "/api/v1/notify-channels", siem+`}`, true)
+	c := decode[NotifyChannelView](t, w.Body.Bytes())
+	if w.Code != 201 || !c.AuditStream {
+		t.Fatalf("создание: %d %s", w.Code, w.Body)
+	}
+	url := "/api/v1/notify-channels/" + c.ID + "/audit-stream"
+	for _, s := range []session{analyst, sys} {
+		mustProblem(t, e.call(s, "GET", url, "", false), 403, CodeForbidden)
+	}
+	mustProblem(t, e.call(auditor, "GET", "/api/v1/notify-channels/01900000-0000-7000-8000-0000000fffff/audit-stream", "", false),
+		404, CodeNotFound)
+	// Передача начинается с конца журнала на момент подписки.
+	e.store.AddAudit(audit.Record{ID: "01900000-0000-7000-8000-0000000a0002", OrgID: audit.DefaultOrgID, TS: time.Now(),
+		Action: "auth.login", Result: audit.ResultSuccess, Details: json.RawMessage(`{}`)})
+	w = e.call(auditor, "GET", url, "", false)
+	st := decode[AuditStreamView](t, w.Body.Bytes())
+	if w.Code != 200 || !st.Subscribed || !st.Active || st.LastSeq != 1 || st.HeadSeq != 2 || st.Pending != 1 ||
+		st.OldestPendingAt == nil || st.Lagging {
+		t.Fatalf("состояние: %d %s", w.Code, w.Body)
+	}
+
+	// Снятие подписки — ослабление: без пароля отказ.
+	off := strings.Replace(siem, `"type":"syslog","audit_stream":true`, `"audit_stream":false`, 1) + fmt.Sprintf(`,"version":%d`, c.Version)
+	w = e.call(admin, "PUT", "/api/v1/notify-channels/"+c.ID, off+`}`, true)
+	mustProblem(t, w, 400, CodeInvalidRequest)
+	if !strings.Contains(w.Body.String(), `"field":"password"`) {
+		t.Fatalf("нет требования пароля: %s", w.Body)
+	}
+	w = e.call(admin, "PUT", "/api/v1/notify-channels/"+c.ID, off+`,"password":"`+tPhrase+`"}`, true)
+	if got := decode[NotifyChannelView](t, w.Body.Bytes()); w.Code != 200 || got.AuditStream {
+		t.Fatalf("снятие подписки: %d %s", w.Code, w.Body)
+	}
+	w = e.call(auditor, "GET", url, "", false)
+	if st := decode[AuditStreamView](t, w.Body.Bytes()); w.Code != 200 || st.Subscribed || st.Active || st.Pending != 0 {
+		t.Fatalf("без подписки: %d %s", w.Code, w.Body)
+	}
+	var weak bool
+	for _, r := range e.store.Audited() {
+		if d, ok := r.Details.(map[string]any); ok && r.Action == "notify_channel.update" && d["weakening"] == true {
+			reasons, _ := d["weakening_reasons"].([]string)
+			weak = slices.Contains(reasons, "audit_stream_disabled")
+		}
+	}
+	if !weak {
+		t.Fatal("снятие подписки не записано ослаблением")
 	}
 }
