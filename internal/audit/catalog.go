@@ -87,6 +87,7 @@ var catalog = []Event{
 	{"system.setup_token_reissued", "Повторный выпуск токена первичной настройки (aisec-cli init -reissue-setup-token)", true},
 	// Целостность и самотестирование (РСБ.2, ОЦЛ).
 	{"integrity.check", "Результат контроля целостности", true},
+	{"integrity.verify_requested", "Запрос проверки целостности шлюзов из консоли", true},
 	{"integrity.rollback_accepted", "Принят откат на более старый выпуск", true},
 	{"selftest.result", "Результат самотестирования", true},
 	// Уведомления раздела 7 на этапе 2: смена состояния условия (ВРМ.1, РСБ.5, ОЦЛ.5).

@@ -120,6 +120,9 @@ type HeartbeatRequest struct {
 	Integrity *HeartbeatReport `json:"integrity,omitempty"`
 	// BundleKeys — KeyID ключей проверки пакетов шлюза (В19 ревью 2.r4).
 	BundleKeys []string `json:"bundle_keys,omitempty"`
+	// VerifyRequest — запрос проверки из консоли, на который выполнена
+	// проверка с итогом Integrity (Н38 ревью 2.r4).
+	VerifyRequest *time.Time `json:"verify_request,omitempty"`
 }
 
 // HeartbeatReport — итог самотеста или контроля целостности шлюза: результат,
@@ -148,10 +151,14 @@ func (r *HeartbeatReport) report() *gwregistry.CheckReport {
 }
 
 // HeartbeatResponse — ответ на heartbeat: время сервера (шлюз сверяет часы,
-// ВРМ.1) и рекомендуемый период.
+// ВРМ.1), рекомендуемый период и запрос проверки целостности из консоли.
 type HeartbeatResponse struct {
 	ServerTime      time.Time `json:"server_time"`
 	IntervalSeconds int       `json:"interval_seconds"`
+	// VerifyRequestedAt — администратор запросил проверку целостности шлюза
+	// (Н38 ревью 2.r4): шлюз проверяет себя и присылает итог с этим временем
+	// в verify_request.
+	VerifyRequestedAt *time.Time `json:"verify_requested_at,omitempty"`
 }
 
 func heartbeat(g *gwregistry.Service, logger *slog.Logger) http.HandlerFunc {
@@ -166,13 +173,16 @@ func heartbeat(g *gwregistry.Service, logger *slog.Logger) http.HandlerFunc {
 			Version: req.Version, BundleETag: req.BundleETag, Selftest: req.Selftest.report(), Integrity: req.Integrity.report(),
 			BundleKeys: req.BundleKeys,
 		}
+		if req.VerifyRequest != nil {
+			in.VerifyRequest = *req.VerifyRequest
+		}
 		if err := in.Validate(); err != nil {
 			WriteProblem(w, Invalid("Неверные поля heartbeat: version — 1–64 символа латиницы, цифр и «.+_-», bundle_etag — до 128 печатных символов ASCII, selftest и integrity — результат, время проверки и число провалов 0–1000, манифест — версия и время вместе, bundle_keys — до 2 идентификаторов ключей."))
 			return
 		}
 		ctx, cancel := contextTimeout(r, 5*time.Second)
 		defer cancel()
-		now, err := g.Heartbeat(ctx, p.ID, in, clientAddr(r))
+		res, err := g.Heartbeat(ctx, p.ID, in, clientAddr(r))
 		switch {
 		case errors.Is(err, gwregistry.ErrTooFrequent):
 			w.Header().Set("Retry-After", retryAfterSeconds(g.HeartbeatMinInterval()))
@@ -190,9 +200,12 @@ func heartbeat(g *gwregistry.Service, logger *slog.Logger) http.HandlerFunc {
 			WriteProblem(w, errInternal())
 			return
 		}
-		WriteJSON(w, http.StatusOK, HeartbeatResponse{
-			ServerTime: now.UTC(), IntervalSeconds: int(gwregistry.DefaultHeartbeatInterval / time.Second),
-		})
+		resp := HeartbeatResponse{ServerTime: res.At.UTC(), IntervalSeconds: int(gwregistry.DefaultHeartbeatInterval / time.Second)}
+		if !res.VerifyRequestedAt.IsZero() {
+			at := res.VerifyRequestedAt.UTC()
+			resp.VerifyRequestedAt = &at
+		}
+		WriteJSON(w, http.StatusOK, resp)
 	}
 }
 

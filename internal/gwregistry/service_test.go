@@ -153,9 +153,10 @@ func TestRegisterAuthenticateHeartbeat(t *testing.T) {
 	if err != nil || got.ID != gw.ID {
 		t.Fatalf("Authenticate: %+v %v", got, err)
 	}
-	at, err := e.svc.Heartbeat(ctx, gw.ID, gwregistry.HeartbeatInput{Version: "2.0.0-dev", BundleETag: `"sha256:ab"`}, testIP)
-	if err != nil || !at.Equal(e.clock.now()) {
-		t.Fatalf("Heartbeat: %v %v", at, err)
+	hb, err := e.svc.Heartbeat(ctx, gw.ID, gwregistry.HeartbeatInput{Version: "2.0.0-dev", BundleETag: `"sha256:ab"`}, testIP)
+	at := hb.At
+	if err != nil || !at.Equal(e.clock.now()) || !hb.VerifyRequestedAt.IsZero() {
+		t.Fatalf("Heartbeat: %+v %v", hb, err)
 	}
 	list, err := e.svc.List(ctx)
 	if err != nil || len(list) != 1 || list[0].Version != "2.0.0-dev" || !list[0].LastSeenAt.Equal(at) || list[0].LastAddr != testIP {

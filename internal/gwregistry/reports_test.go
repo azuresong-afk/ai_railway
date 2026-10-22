@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/azuresong-afk/ai_railway/internal/audit"
 	"github.com/azuresong-afk/ai_railway/internal/gwregistry"
 )
 
@@ -259,5 +260,63 @@ func TestPGHeartbeatManifestAndKeys(t *testing.T) {
 	g, err = e.cli.AcceptRollback(ctx, "gw-1", cliActor)
 	if err != nil || g.Rollback() || !g.ManifestMaxCreated.Equal(older) {
 		t.Fatalf("%+v %v", g, err)
+	}
+}
+
+// Н38 ревью 2.r4: проверка шлюзов по команде из консоли. Запрос уходит в
+// ответе heartbeat, пока шлюз не пришлёт итог целостности именно на него;
+// итог пишется в журнал аудита (integrity.check, trigger manual).
+func TestGatewayVerifyRequest(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	reg, _ := e.register(t, e.token(t, "gw-1", false))
+	id := reg.Gateway.ID
+	n, err := e.svc.RequestVerify(ctx, cliActor, testIP)
+	if err != nil || n != 1 {
+		t.Fatalf("запрос: %d %v", n, err)
+	}
+	if r := e.mem.Records[len(e.mem.Records)-1]; r.Action != "integrity.verify_requested" || r.Details.(map[string]any)["gateways"] != 1 {
+		t.Fatalf("аудит запроса: %+v", r)
+	}
+	beat := func(in gwregistry.HeartbeatInput) gwregistry.HeartbeatResult {
+		t.Helper()
+		e.clock.add(gwregistry.DefaultHeartbeatMinInterval)
+		res, err := e.svc.Heartbeat(ctx, id, in, testIP)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res
+	}
+	res := beat(gwregistry.HeartbeatInput{Version: "1"})
+	requested := res.VerifyRequestedAt
+	if requested.IsZero() {
+		t.Fatal("запрос не передан шлюзу")
+	}
+	bad := &gwregistry.CheckReport{At: e.clock.now(), Reason: "files_mismatch", Failed: 1}
+	// Итог периодической проверки или на чужой запрос запрос не снимает.
+	if res := beat(gwregistry.HeartbeatInput{Version: "1", Integrity: bad}); !res.VerifyRequestedAt.Equal(requested) {
+		t.Fatalf("снят без ответа на запрос: %+v", res)
+	}
+	if res := beat(gwregistry.HeartbeatInput{Version: "1", Integrity: bad, VerifyRequest: requested.Add(-time.Second)}); res.VerifyRequestedAt.IsZero() {
+		t.Fatal("снят ответом на другой запрос")
+	}
+	before := len(e.mem.Records)
+	if res := beat(gwregistry.HeartbeatInput{Version: "1", Integrity: bad, VerifyRequest: requested}); !res.VerifyRequestedAt.IsZero() {
+		t.Fatalf("не снят после ответа: %+v", res)
+	}
+	if len(e.mem.Records) != before+1 {
+		t.Fatalf("записей итога: %d", len(e.mem.Records)-before)
+	}
+	r := e.mem.Records[before]
+	if d := r.Details.(map[string]any); r.Action != "integrity.check" || r.Result != audit.ResultFailure || d["trigger"] != "manual" || d["reason"] != "files_mismatch" {
+		t.Fatalf("аудит итога: %+v", r)
+	}
+	// Повтор того же ответа второй записи не даёт.
+	if beat(gwregistry.HeartbeatInput{Version: "1", Integrity: bad, VerifyRequest: requested}); len(e.mem.Records) != before+1 {
+		t.Fatal("повторная запись итога")
+	}
+	e.clock.add(gwregistry.DefaultHeartbeatMinInterval)
+	if _, err := e.svc.Heartbeat(ctx, id, gwregistry.HeartbeatInput{Version: "1", VerifyRequest: requested}, testIP); !errors.Is(err, gwregistry.ErrInvalidRequest) {
+		t.Fatalf("verify_request без итога: %v", err)
 	}
 }

@@ -118,7 +118,8 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 	// реакцией stop после запуска отменяет контекст с причиной ErrViolation.
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
-	if err := startIntegrity(ctx, cfg, p, logger, cancel, reports, trust.watch); err != nil {
+	verify, err := startIntegrity(ctx, cfg, p, logger, cancel, reports, trust.watch)
+	if err != nil {
 		return err
 	}
 	defer func() {
@@ -215,7 +216,7 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 			logger.Warn("пакета конфигурации ещё нет: приложения получат 503 до первого пакета от сервера")
 		}
 		go bundles.Run(ctx)
-		startHeartbeat(ctx, cfg, control, logger, reports, bundles.ETag)
+		startHeartbeat(ctx, cfg, control, logger, reports, bundles.ETag, verify)
 	} else {
 		logger.Info("сервер управления не задан (-server): шлюз работает без регистрации, события пишутся в файл")
 	}
@@ -327,9 +328,9 @@ func readTrustFiles(cfg *config.Gateway, file *config.GatewayFile) (trustFiles, 
 // без сервера, корни доверия с сервером (ОЦЛ.3, В19 ревью 2.r4). Своей БД
 // у шлюза нет — итоги идут в технический журнал и в heartbeat (2.20).
 func startIntegrity(ctx context.Context, cfg *config.Gateway, p aisecCrypto.Provider, logger *slog.Logger, stop context.CancelCauseFunc,
-	reports *gateway.Reports, watch []integrity.WatchFile) error {
-	exe, err := os.Executable()
-	if err != nil {
+	reports *gateway.Reports, watch []integrity.WatchFile) (verify func(context.Context), err error) {
+	exe, exeErr := os.Executable()
+	if exeErr != nil {
 		exe = "" // проверка отметит исполняемый файл как нечитаемый
 	}
 	manifest := cfg.Manifest
@@ -346,7 +347,7 @@ func startIntegrity(ctx context.Context, cfg *config.Gateway, p aisecCrypto.Prov
 		Executable: running, BinaryName: "bin/aisec-gateway", Watch: watch,
 	})
 	if err != nil {
-		return err
+		return nil, err
 	}
 	mon, err := integrity.NewMonitor(integrity.MonitorConfig{
 		Checker: checker, Action: integrity.Action(cfg.IntegrityAction), Interval: cfg.IntegrityInterval,
@@ -360,13 +361,20 @@ func startIntegrity(ctx context.Context, cfg *config.Gateway, p aisecCrypto.Prov
 		},
 	})
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if _, err := mon.Startup(ctx); err != nil {
-		return err
+		return nil, err
 	}
 	go mon.Run(ctx)
-	return nil
+	// Проверка по запросу из консоли (Н38 ревью 2.r4): реакция та же, что
+	// у периодической; итог уходит в heartbeat.
+	verify = func(ctx context.Context) {
+		if _, err := mon.CheckBy(ctx, audit.Actor{Type: audit.ActorSystem, ID: "gateway", Name: "Запрос из консоли"}, netip.Addr{}); err != nil {
+			logger.Error("проверка целостности по запросу не выполнена", "class", "integrity", "error", err)
+		}
+	}
+	return verify, nil
 }
 
 // newControlClient — HTTP-клиент к внутреннему API сервера по mTLS
@@ -399,13 +407,14 @@ func newControlClient(cfg *config.Gateway, tp aisecCrypto.TLSProvider, rootsPEM 
 
 // startHeartbeat запускает heartbeat на внутренний API сервера. Сервер
 // недоступен — шлюз всё равно работает (ТЗ, 4.2).
-func startHeartbeat(ctx context.Context, cfg *config.Gateway, client *http.Client, logger *slog.Logger, reports *gateway.Reports, etag func() string) {
+func startHeartbeat(ctx context.Context, cfg *config.Gateway, client *http.Client, logger *slog.Logger, reports *gateway.Reports, etag func() string,
+	verify func(context.Context)) {
 	v := version
 	if !gateway.ValidVersion(v) {
 		v = "unknown"
 	}
 	go gateway.RunHeartbeat(ctx, gateway.HeartbeatConfig{
-		Client: client, Server: cfg.Server, Version: v, Logger: logger, Reports: reports, BundleETag: etag,
+		Client: client, Server: cfg.Server, Version: v, Logger: logger, Reports: reports, BundleETag: etag, Verify: verify,
 	})
 }
 

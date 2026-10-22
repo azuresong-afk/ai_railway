@@ -41,6 +41,24 @@ type Reports struct {
 	integrity *CheckReport
 	// bundleKeys — KeyID ключей проверки пакетов (-bundle-pub, В19).
 	bundleKeys []string
+	// verifyFor — запрос проверки из консоли (время с сервера), на который
+	// выполнена проверка целостности (Н38 ревью 2.r4); нулевое — запросов не было.
+	verifyFor time.Time
+}
+
+// verified — на запрос at проверка уже выполнена.
+func (r *Reports) verified(at time.Time) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.verifyFor.Equal(at)
+}
+
+// setVerified отмечает, что проверка по запросу at выполнена: следующий
+// heartbeat сообщит её итог вместе с временем запроса.
+func (r *Reports) setVerified(at time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.verifyFor = at
 }
 
 // SetBundleKeys запоминает KeyID ключей проверки пакетов: сервер сверяет
@@ -74,13 +92,17 @@ func (r *Reports) SetIntegrity(ok bool, at time.Time, reason string, failed int,
 }
 
 // snapshot возвращает копии итогов; nil — итога ещё нет.
-func (r *Reports) snapshot() (selftest, integrity *CheckReport, bundleKeys []string) {
+func (r *Reports) snapshot() (selftest, integrity *CheckReport, bundleKeys []string, verifyFor *time.Time) {
 	if r == nil {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	bundleKeys = append([]string(nil), r.bundleKeys...)
+	if !r.verifyFor.IsZero() {
+		v := r.verifyFor
+		verifyFor = &v
+	}
 	if r.selftest != nil {
 		c := *r.selftest
 		selftest = &c
@@ -89,7 +111,7 @@ func (r *Reports) snapshot() (selftest, integrity *CheckReport, bundleKeys []str
 		c := *r.integrity
 		integrity = &c
 	}
-	return selftest, integrity, bundleKeys
+	return selftest, integrity, bundleKeys, verifyFor
 }
 
 // heartbeatBody — тело POST /internal/v1/heartbeat.
@@ -99,4 +121,7 @@ type heartbeatBody struct {
 	Selftest   *CheckReport `json:"selftest,omitempty"`
 	Integrity  *CheckReport `json:"integrity,omitempty"`
 	BundleKeys []string     `json:"bundle_keys,omitempty"`
+	// VerifyRequest — запрос проверки из консоли, на который выполнена
+	// проверка, итог которой в Integrity (Н38 ревью 2.r4).
+	VerifyRequest *time.Time `json:"verify_request,omitempty"`
 }

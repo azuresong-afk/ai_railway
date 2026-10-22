@@ -99,6 +99,9 @@ type Gateway struct {
 	// BundleKeysOK — ключи проверки пакетов шлюза совпадают с ключом подписи
 	// сервера (В19 ревью 2.r4); nil — шлюз их не присылал.
 	BundleKeysOK *bool
+	// VerifyRequestedAt — администратор запросил проверку целостности, итога
+	// ещё нет (Н38 ревью 2.r4); нулевое — запроса нет.
+	VerifyRequestedAt time.Time
 }
 
 // Rollback — шлюз работает на выпуске старше того, что уже проверялся
@@ -169,6 +172,9 @@ type Heartbeat struct {
 	Integrity *CheckReport
 	// BundleKeysOK — итог сверки ключей проверки пакетов; nil — не обновляется.
 	BundleKeysOK *bool
+	// VerifyRequest — запрос проверки, на который выполнена проверка с итогом
+	// Integrity (Н38 ревью 2.r4); нулевое — шлюз не сообщил.
+	VerifyRequest time.Time
 }
 
 // Store — хранилище реестра (миграция 0007_gateways). Рабочая реализация —
@@ -186,8 +192,14 @@ type Store interface {
 		issue func(Gateway) (aisecCrypto.CertInfo, error), rec func(Gateway) audit.Entry) (Gateway, error)
 	// BySerial — шлюз, чей действующий сертификат имеет этот серийный номер.
 	BySerial(ctx context.Context, serial string) (Gateway, error)
-	// Touch отмечает heartbeat активного шлюза.
-	Touch(ctx context.Context, id string, hb Heartbeat) error
+	// Touch отмечает heartbeat активного шлюза. Если шлюз прислал итог
+	// целостности на текущий запрос проверки, запрос снимается и в той же
+	// транзакции пишется verified(запрос). pending — запрос остаётся
+	// невыполненным; requested — его время.
+	Touch(ctx context.Context, id string, hb Heartbeat, verified func(requested time.Time) audit.Entry) (requested time.Time, pending bool, err error)
+	// RequestVerify отмечает запрос проверки у всех активных шлюзов
+	// организации и пишет rec(число шлюзов) одной транзакцией.
+	RequestVerify(ctx context.Context, orgID string, at time.Time, rec func(n int) audit.Entry) (int, error)
 	// Revoke отзывает шлюз по имени и гасит его токены.
 	Revoke(ctx context.Context, orgID, name string, now time.Time, rec func(Gateway) audit.Entry) (Gateway, error)
 	// List — все шлюзы организации по имени.
@@ -545,6 +557,9 @@ type HeartbeatInput struct {
 	// BundleKeys — KeyID ключей проверки пакетов шлюза (-bundle-pub, В19
 	// ревью 2.r4); пусто — шлюз их не присылает (прежняя версия).
 	BundleKeys []string
+	// VerifyRequest — время запроса проверки из консоли, на который шлюз
+	// выполнил проверку с итогом Integrity (Н38 ревью 2.r4); нулевое — нет.
+	VerifyRequest time.Time
 }
 
 // Пределы итогов проверок в heartbeat.
@@ -607,6 +622,9 @@ func (in HeartbeatInput) Validate() error {
 	if err := in.Integrity.validate("integrity", true); err != nil {
 		return err
 	}
+	if !in.VerifyRequest.IsZero() && in.Integrity == nil {
+		return fmt.Errorf("%w: verify_request — только вместе с итогом integrity", ErrInvalidRequest)
+	}
 	if in.Version == "" || len(in.Version) > maxVersion {
 		return fmt.Errorf("%w: version — от 1 до %d символов", ErrInvalidRequest, maxVersion)
 	}
@@ -636,14 +654,14 @@ func (in HeartbeatInput) Validate() error {
 }
 
 // Heartbeat отмечает контакт шлюза. Чаще HeartbeatMinInterval — ErrTooFrequent.
-func (s *Service) Heartbeat(ctx context.Context, gatewayID string, in HeartbeatInput, ip netip.Addr) (time.Time, error) {
+func (s *Service) Heartbeat(ctx context.Context, gatewayID string, in HeartbeatInput, ip netip.Addr) (HeartbeatResult, error) {
 	if err := in.Validate(); err != nil {
-		return time.Time{}, err
+		return HeartbeatResult{}, err
 	}
 	now := s.clock().UTC()
 	for _, r := range []*CheckReport{in.Selftest, in.Integrity} {
 		if r != nil && (r.At.After(now.Add(maxReportFuture)) || r.ManifestCreated.After(now.Add(maxReportFuture))) {
-			return time.Time{}, fmt.Errorf("%w: время проверки в будущем", ErrInvalidRequest)
+			return HeartbeatResult{}, fmt.Errorf("%w: время проверки в будущем", ErrInvalidRequest)
 		}
 	}
 	// Сверка ключей проверки пакетов с ключом подписи сервера (В19).
@@ -655,18 +673,59 @@ func (s *Service) Heartbeat(ctx context.Context, gatewayID string, in HeartbeatI
 	s.mu.Lock()
 	if last, ok := s.lastHB[gatewayID]; ok && now.Sub(last) < s.minHB {
 		s.mu.Unlock()
-		return time.Time{}, ErrTooFrequent
+		return HeartbeatResult{}, ErrTooFrequent
 	}
 	prune(s.lastHB, now, s.minHB)
 	s.lastHB[gatewayID] = now
 	s.mu.Unlock()
-	if err := s.store.Touch(ctx, gatewayID, Heartbeat{
+	requested, pending, err := s.store.Touch(ctx, gatewayID, Heartbeat{
 		Version: in.Version, BundleETag: in.BundleETag, Addr: ip, At: now, Selftest: in.Selftest, Integrity: in.Integrity,
-		BundleKeysOK: keysOK,
-	}); err != nil {
-		return time.Time{}, err
+		BundleKeysOK: keysOK, VerifyRequest: in.VerifyRequest,
+	}, func(req time.Time) audit.Entry {
+		// Итог проверки шлюза по команде — в журнал аудита (Н38 ревью 2.r4).
+		r := in.Integrity
+		res := audit.ResultSuccess
+		if !r.OK {
+			res = audit.ResultFailure
+		}
+		return audit.Entry{
+			OrgID: s.orgID, Actor: audit.Actor{Type: audit.ActorSystem, ID: "gateway:" + gatewayID},
+			Action: "integrity.check", Object: audit.Object{Type: "component", ID: "gateway:" + gatewayID}, Result: res,
+			SourceIP: ip,
+			Details: map[string]any{"trigger": "manual", "requested_at": req.UTC().Format(time.RFC3339Nano),
+				"reason": r.Reason, "failed": r.Failed, "manifest_version": r.ManifestVersion, "test_signed": r.TestSigned},
+		}
+	})
+	if err != nil {
+		return HeartbeatResult{}, err
 	}
-	return now, nil
+	out := HeartbeatResult{At: now}
+	if pending {
+		out.VerifyRequestedAt = requested
+	}
+	return out, nil
+}
+
+// HeartbeatResult — ответ на heartbeat: время сервера и запрос проверки
+// целостности (нулевое — запроса нет).
+type HeartbeatResult struct {
+	At                time.Time
+	VerifyRequestedAt time.Time
+}
+
+// RequestVerify — проверка целостности всех активных шлюзов по команде
+// администратора (Н38 ревью 2.r4, ОЦЛ.2): признак уходит шлюзам в ответах
+// heartbeat, итог каждого шлюза пишется в журнал аудита, когда придёт.
+// Возвращает число шлюзов, которым передан запрос.
+func (s *Service) RequestVerify(ctx context.Context, by audit.Actor, ip netip.Addr) (int, error) {
+	at := s.clock().UTC().Truncate(time.Microsecond)
+	return s.store.RequestVerify(ctx, s.orgID, at, func(n int) audit.Entry {
+		return audit.Entry{
+			OrgID: s.orgID, Actor: by, Action: "integrity.verify_requested", SourceIP: ip,
+			Object: audit.Object{Type: "component", ID: "gateways"}, Result: audit.ResultSuccess,
+			Details: map[string]any{"gateways": n, "requested_at": at.Format(time.RFC3339Nano)},
+		}
+	})
 }
 
 // HeartbeatMinInterval — минимальный промежуток между heartbeat шлюза.

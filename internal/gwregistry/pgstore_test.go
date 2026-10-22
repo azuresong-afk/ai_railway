@@ -327,3 +327,32 @@ func TestPGRegistryGuards(t *testing.T) {
 		t.Fatalf("heartbeat отозванного: %v", err)
 	}
 }
+
+// Н38 ревью 2.r4 на PostgreSQL под aisec_app: запрос проверки, передача в
+// heartbeat, снятие ответом с записью итога в журнал одной транзакцией.
+func TestPGGatewayVerifyRequest(t *testing.T) {
+	e := setupPG(t)
+	ctx := pgCtx(t)
+	reg := e.register(t, e.issue(t, "gw-1", false))
+	id := reg.Gateway.ID
+	if n, err := e.srv.RequestVerify(ctx, cliActor, testIP); err != nil || n != 1 {
+		t.Fatalf("запрос: %d %v", n, err)
+	}
+	res, err := e.srv.Heartbeat(ctx, id, gwregistry.HeartbeatInput{Version: "1"}, testIP)
+	if err != nil || res.VerifyRequestedAt.IsZero() {
+		t.Fatalf("запрос в heartbeat: %+v %v", res, err)
+	}
+	e.clock.add(gwregistry.DefaultHeartbeatMinInterval)
+	in := gwregistry.HeartbeatInput{Version: "1", VerifyRequest: res.VerifyRequestedAt,
+		Integrity: &gwregistry.CheckReport{OK: true, At: e.clock.now(), Reason: "ok"}}
+	if res, err := e.srv.Heartbeat(ctx, id, in, testIP); err != nil || !res.VerifyRequestedAt.IsZero() {
+		t.Fatalf("ответ на запрос: %+v %v", res, err)
+	}
+	list, err := e.cli.List(ctx)
+	if err != nil || len(list) != 1 || !list[0].VerifyRequestedAt.IsZero() {
+		t.Fatalf("запрос не снят: %+v %v", list, err)
+	}
+	if a := e.actions(t); a["integrity.verify_requested/success"] != 1 || a["integrity.check/success"] != 1 {
+		t.Fatalf("журнал: %v", a)
+	}
+}

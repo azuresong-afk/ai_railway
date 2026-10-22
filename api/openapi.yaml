@@ -244,6 +244,11 @@ paths:
         собран раньше манифеста последней успешной проверки — `manifest_rollback`
         (откат на старый выпуск, В20 ревью 2.r4). Итог не удалось записать в
         журнал аудита — 503 (Н36 ревью 2.r4), итог остаётся в техническом журнале.
+        Заодно всем действующим шлюзам передаётся запрос проверки (Н38 ревью 2.r4,
+        запись `integrity.verify_requested`, число — `gateways_requested`): шлюз
+        получает его в ответе heartbeat, проверяет себя и присылает итог; итог
+        каждого шлюза пишется в журнал аудита (`integrity.check`, `trigger: manual`)
+        и виден в «Состоянии системы». Запрос не записан — 503.
       security: [{ sessionCookie: [] }]
       x-permission: integrity.verify
       parameters:
@@ -2772,6 +2777,7 @@ components:
                 type: string
                 enum: [modified, size, missing, extra, not_regular, unreadable, no_entry, changed]
         omitted: { type: integer, minimum: 0, description: 'Сколько нарушений не вошло в failures' }
+        gateways_requested: { type: integer, minimum: 0, description: 'Только в ответе на проверку по команде: скольким действующим шлюзам передан запрос проверки (Н38 ревью 2.r4)' }
     SetupStatus:
       type: object
       required: [setup_required]

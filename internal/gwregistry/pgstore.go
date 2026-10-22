@@ -74,7 +74,8 @@ func (s *PGStore) inTx(ctx context.Context, fn func(pgx.Tx) error) error {
 const gatewayCols = `id::text, org_id::text, name, status, created_at, created_by, registered_at, revoked_at,
 	cert_serial, cert_not_after, last_seen_at, host(last_addr), version, bundle_etag,
 	selftest_ok, selftest_at, selftest_failed, integrity_ok, integrity_at, integrity_reason, integrity_failed,
-	manifest_version, manifest_created, manifest_max_version, manifest_max_created, test_signed, bundle_keys_ok`
+	manifest_version, manifest_created, manifest_max_version, manifest_max_created, test_signed, bundle_keys_ok,
+	verify_requested_at`
 
 func scanGateway(row pgx.Row) (Gateway, error) {
 	var g Gateway
@@ -86,10 +87,11 @@ func scanGateway(row pgx.Row) (Gateway, error) {
 	var mVersion, mMaxVersion *string
 	var mCreated, mMaxCreated *time.Time
 	var testSigned *bool
+	var verifyReq *time.Time
 	if err := row.Scan(&g.ID, &g.OrgID, &g.Name, &g.Status, &g.CreatedAt, &g.CreatedBy, &registered, &revoked,
 		&serial, &notAfter, &seen, &addr, &version, &etag,
 		&stOK, &stAt, &stFailed, &inOK, &inAt, &integrityReason, &inFailed,
-		&mVersion, &mCreated, &mMaxVersion, &mMaxCreated, &testSigned, &g.BundleKeysOK); err != nil {
+		&mVersion, &mCreated, &mMaxVersion, &mMaxCreated, &testSigned, &g.BundleKeysOK, &verifyReq); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return Gateway{}, ErrNotFound
 		}
@@ -110,6 +112,7 @@ func scanGateway(row pgx.Row) (Gateway, error) {
 			ManifestVersion: derefS(mVersion), ManifestCreated: deref(mCreated), TestSigned: testSigned != nil && *testSigned}
 	}
 	g.ManifestMaxVersion, g.ManifestMaxCreated = derefS(mMaxVersion), deref(mMaxCreated)
+	g.VerifyRequestedAt = deref(verifyReq)
 	return g, nil
 }
 
@@ -237,7 +240,7 @@ func (s *PGStore) BySerial(ctx context.Context, serial string) (Gateway, error) 
 }
 
 // Touch — см. Store.
-func (s *PGStore) Touch(ctx context.Context, id string, hb Heartbeat) error {
+func (s *PGStore) Touch(ctx context.Context, id string, hb Heartbeat, verified func(time.Time) audit.Entry) (time.Time, bool, error) {
 	ctx, cancel := pgCtx(ctx)
 	defer cancel()
 	var addr *string
@@ -262,29 +265,67 @@ func (s *PGStore) Touch(ctx context.Context, id string, hb Heartbeat) error {
 			mVersion, mCreated = &r.ManifestVersion, &r.ManifestCreated
 		}
 	}
-	// Максимум манифеста растёт только по успешным проверкам (В20): текущий
-	// манифест старше максимума — откат шлюза.
-	tag, err := s.db.Exec(ctx, `UPDATE gateways SET last_seen_at = $2, last_addr = $3::inet, version = $4, bundle_etag = $5,
-		selftest_ok = COALESCE($6, selftest_ok), selftest_at = COALESCE($7, selftest_at),
-		selftest_failed = COALESCE($8, selftest_failed),
-		integrity_ok = COALESCE($9, integrity_ok), integrity_at = COALESCE($10, integrity_at),
-		integrity_reason = COALESCE($11, integrity_reason), integrity_failed = COALESCE($12, integrity_failed),
-		manifest_version = CASE WHEN $9::boolean IS NULL THEN manifest_version ELSE $13 END,
-		manifest_created = CASE WHEN $9::boolean IS NULL THEN manifest_created ELSE $14 END,
-		manifest_max_version = CASE WHEN $9 AND $14::timestamptz IS NOT NULL
-			AND (manifest_max_created IS NULL OR $14 > manifest_max_created) THEN $13 ELSE manifest_max_version END,
-		manifest_max_created = CASE WHEN $9 AND $14::timestamptz IS NOT NULL
-			AND (manifest_max_created IS NULL OR $14 > manifest_max_created) THEN $14 ELSE manifest_max_created END,
-		test_signed = COALESCE($15, test_signed), bundle_keys_ok = COALESCE($16, bundle_keys_ok)
-		WHERE id = $1 AND status = 'active'`, id, hb.At, addr, hb.Version, nullStr(hb.BundleETag),
-		stOK, stAt, stFailed, inOK, inAt, inReason, inFailed, mVersion, mCreated, testSigned, hb.BundleKeysOK)
+	var requested *time.Time
+	var done bool
+	err := s.inTx(ctx, func(tx pgx.Tx) error {
+		requested, done = nil, false
+		err := tx.QueryRow(ctx, "SELECT verify_requested_at FROM gateways WHERE id = $1 AND status = 'active' FOR UPDATE", id).Scan(&requested)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("реестр шлюзов: heartbeat: %w", err)
+		}
+		// Запрос выполнен, если шлюз прислал итог целостности именно на него.
+		done = requested != nil && hb.Integrity != nil && hb.VerifyRequest.Equal(*requested)
+		// Максимум манифеста растёт только по успешным проверкам (В20): текущий
+		// манифест старше максимума — откат шлюза.
+		tag, err := tx.Exec(ctx, `UPDATE gateways SET last_seen_at = $2, last_addr = $3::inet, version = $4, bundle_etag = $5,
+			selftest_ok = COALESCE($6, selftest_ok), selftest_at = COALESCE($7, selftest_at),
+			selftest_failed = COALESCE($8, selftest_failed),
+			integrity_ok = COALESCE($9, integrity_ok), integrity_at = COALESCE($10, integrity_at),
+			integrity_reason = COALESCE($11, integrity_reason), integrity_failed = COALESCE($12, integrity_failed),
+			manifest_version = CASE WHEN $9::boolean IS NULL THEN manifest_version ELSE $13 END,
+			manifest_created = CASE WHEN $9::boolean IS NULL THEN manifest_created ELSE $14 END,
+			manifest_max_version = CASE WHEN $9 AND $14::timestamptz IS NOT NULL
+				AND (manifest_max_created IS NULL OR $14 > manifest_max_created) THEN $13 ELSE manifest_max_version END,
+			manifest_max_created = CASE WHEN $9 AND $14::timestamptz IS NOT NULL
+				AND (manifest_max_created IS NULL OR $14 > manifest_max_created) THEN $14 ELSE manifest_max_created END,
+			test_signed = COALESCE($15, test_signed), bundle_keys_ok = COALESCE($16, bundle_keys_ok),
+			verify_requested_at = CASE WHEN $17 THEN NULL ELSE verify_requested_at END
+			WHERE id = $1 AND status = 'active'`, id, hb.At, addr, hb.Version, nullStr(hb.BundleETag),
+			stOK, stAt, stFailed, inOK, inAt, inReason, inFailed, mVersion, mCreated, testSigned, hb.BundleKeysOK, done)
+		if err != nil {
+			return fmt.Errorf("реестр шлюзов: heartbeat: %w", err)
+		}
+		if tag.RowsAffected() == 0 {
+			return ErrNotFound
+		}
+		if done {
+			return s.record(ctx, tx, verified(*requested))
+		}
+		return nil
+	})
 	if err != nil {
-		return fmt.Errorf("реестр шлюзов: heartbeat: %w", err)
+		return time.Time{}, false, err
 	}
-	if tag.RowsAffected() == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return deref(requested), requested != nil && !done, nil
+}
+
+// RequestVerify — см. Store.
+func (s *PGStore) RequestVerify(ctx context.Context, orgID string, at time.Time, rec func(int) audit.Entry) (int, error) {
+	ctx, cancel := pgCtx(ctx)
+	defer cancel()
+	var n int
+	err := s.inTx(ctx, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, "UPDATE gateways SET verify_requested_at = $2 WHERE org_id = $1 AND status = 'active'", orgID, at)
+		if err != nil {
+			return fmt.Errorf("реестр шлюзов: запрос проверки: %w", err)
+		}
+		n = int(tag.RowsAffected())
+		return s.record(ctx, tx, rec(n))
+	})
+	return n, err
 }
 
 // Revoke — см. Store. Выполняется под логином владельца схемы (aisec-cli).
