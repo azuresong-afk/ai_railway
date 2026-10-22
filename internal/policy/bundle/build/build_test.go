@@ -72,8 +72,9 @@ func newEnv(t *testing.T) *env {
 	ctx := context.Background()
 	fx := bundletest.New(t)
 	e := &env{fx: fx, now: time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC), store: build.NewMemory(), audit: &recorder{},
-		appsBy: apps.By{Actor: audit.Actor{Type: audit.ActorUser, ID: owner, Name: "admin"}},
-		polBy:  versions.By{Actor: audit.Actor{Type: audit.ActorUser, ID: owner, Name: "admin"}}}
+		appsBy: apps.By{Actor: audit.Actor{Type: audit.ActorUser, ID: owner, Name: "admin"}, Policy: true,
+			Confirm: func(context.Context) error { return nil }},
+		polBy: versions.By{Actor: audit.Actor{Type: audit.ActorUser, ID: owner, Name: "admin"}}}
 	reg, err := detect.NewRegistry(builtin.All()...)
 	if err != nil {
 		t.Fatal(err)
@@ -116,9 +117,9 @@ func newEnv(t *testing.T) *env {
 		t.Fatal(err)
 	}
 	if e.app, err = e.apps.CreateApplication(ctx, e.appsBy, apps.AppInput{Slug: "crm", Name: "CRM", Env: "prod", OwnerID: owner,
-		ProviderID: e.provider.ID, Models: []string{"gpt-4o"},
-		Lists: []apps.List{{ID: "projects", Category: "codename", Words: []string{"проект зенит"}}}},
-		&apps.ProtectionInput{Policy: "corp", PolicyMode: "enforce"}); err != nil {
+		ProviderID: e.provider.ID, Models: []string{"gpt-4o"}},
+		&apps.ProtectionInput{Policy: "corp", PolicyMode: "enforce",
+			Lists: &[]apps.List{{ID: "projects", Category: "codename", Words: []string{"проект зенит"}}}}); err != nil {
 		t.Fatal(err)
 	}
 	if e.key, _, err = e.apps.IssueKey(ctx, e.appsBy, e.app.ID, "", apps.KeyInput{Name: "k1"}); err != nil {
@@ -240,8 +241,7 @@ func TestBuildInvalidKeepsLastGood(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.apps.UpdateApplication(ctx, e.appsBy, e.app.ID, apps.AppInput{Name: "CRM", Env: "prod", OwnerID: owner,
-		ProviderID: e.provider.ID, Models: []string{"gpt-4o"}}); err != nil {
+	if _, err := e.apps.SetProtection(ctx, e.appsBy, e.app.ID, apps.ProtectionInput{Lists: &[]apps.List{}}); err != nil {
 		t.Fatal(err)
 	}
 	for range 3 {
@@ -267,8 +267,7 @@ func TestBuildInvalidKeepsLastGood(t *testing.T) {
 func TestBuildInvalidWithoutVersion(t *testing.T) {
 	ctx := context.Background()
 	e := newEnv(t)
-	if _, err := e.apps.UpdateApplication(ctx, e.appsBy, e.app.ID, apps.AppInput{Name: "CRM", Env: "prod", OwnerID: owner,
-		ProviderID: e.provider.ID, Models: []string{"gpt-4o"}}); err != nil {
+	if _, err := e.apps.SetProtection(ctx, e.appsBy, e.app.ID, apps.ProtectionInput{Lists: &[]apps.List{}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := e.svc.Current(ctx); !errors.Is(err, build.ErrNoBundle) {

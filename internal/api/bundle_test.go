@@ -62,7 +62,8 @@ func newBundleEnv(t testing.TB, withLists bool) *bundleEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	by := apps.By{Actor: audit.Actor{Type: audit.ActorUser, ID: tOwnerID, Name: "owner"}}
+	by := apps.By{Actor: audit.Actor{Type: audit.ActorUser, ID: tOwnerID, Name: "owner"}, Policy: true,
+		Confirm: func(context.Context) error { return nil }}
 	ca, err := aisecCrypto.NewCA("AISec test provider CA", time.Hour, time.Now())
 	if err != nil {
 		t.Fatal(err)
@@ -83,10 +84,11 @@ func newBundleEnv(t testing.TB, withLists bool) *bundleEnv {
 		t.Fatal(err)
 	}
 	in := apps.AppInput{Slug: "crm", Name: "CRM", Env: "prod", OwnerID: tOwnerID, ProviderID: prov.ID, Models: []string{"gpt-4o"}}
+	prot := apps.ProtectionInput{Policy: "corp", PolicyMode: "enforce"}
 	if withLists {
-		in.Lists = []apps.List{{ID: "projects", Category: "codename", Words: []string{"проект зенит"}}}
+		prot.Lists = &[]apps.List{{ID: "projects", Category: "codename", Words: []string{"проект зенит"}}}
 	}
-	app, err := as.CreateApplication(ctx, by, in, &apps.ProtectionInput{Policy: "corp", PolicyMode: "enforce"})
+	app, err := as.CreateApplication(ctx, by, in, &prot)
 	if err != nil {
 		t.Fatal(err)
 	}

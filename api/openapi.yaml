@@ -1588,7 +1588,9 @@ paths:
       description: |
         Право `providers.external` (признак `security`: только администратор безопасности,
         токену API недоступно). Снятие признака — ослабление защиты (DM-40): в режиме `monitor`
-        данные к провайдеру больше не маскируются. Причина обязательна. Пишет
+        данные к провайдеру больше не маскируются. Причина обязательна. Снятие признака требует
+        повторной проверки (Н32 ревью 2.r3b): текущий пароль (`password`) или код TOTP (`code`),
+        ровно одно из двух, иначе 400; неверное значение — 403 `reauthentication_failed`. Пишет
         `provider.external_changed` с `weakening: true` при снятии; без изменения — 200 без записи.
       x-permission: providers.external
       security: [{ sessionCookie: [] }]
@@ -1642,10 +1644,14 @@ paths:
     post:
       summary: Создать приложение
       description: |
-        Право `applications.manage` (ТЗ 5.4). Поля защиты `policy`, `policy_mode`, `storage`
-        принимаются только при праве `applications.policy` (УПД.2); без него переданные
-        значения — 422, а приложение получает умолчания: политика `base`, режим — режим
-        выбранной политики, хранение `masked`. Владелец по умолчанию — создающий. `slug` —
+        Право `applications.manage` (ТЗ 5.4). Поля защиты (`policy`, `policy_mode`, `storage`,
+        `fail_mode`, `lists`, `exfil_allow_domains`) принимаются только при праве
+        `applications.policy` (УПД.2, В15 ревью 2.r3b); без него переданные значения — 422, а
+        приложение получает умолчания: политика `base`, режим — режим выбранной политики,
+        хранение `masked`, `fail_closed`, без словарей и доменов-исключений. Хранение `none` или
+        `full`, `fail_open` и домены-исключения — ослабление относительно умолчаний:
+        `weakening: true` и повторная проверка паролем или кодом TOTP (Н32; 400 без них,
+        403 `reauthentication_failed` при неверном). Владелец по умолчанию — создающий. `slug` —
         ID приложения в событиях и пакете для шлюзов, неизменяем. Проверки полей — те же, что у
         файла конфигурации шлюза. Пишет `application.create`.
       x-permission: applications.manage
@@ -1700,7 +1706,11 @@ paths:
       summary: Изменить приложение
       description: |
         Право `applications.manage`. Меняются все поля, кроме `slug` и полей защиты
-        (`PUT …/protection`). Архивное приложение не меняется (409). Пишет `application.update`.
+        (`PUT …/protection`; переданные здесь `fail_mode`, `lists`, `exfil_allow_domains` —
+        400). Переход с внешнего провайдера на невнешнего выключает маскирование в `monitor`
+        (В15 ревью 2.r3b): только при праве `applications.policy` (иначе 403), с повторной
+        проверкой паролем или кодом TOTP и с `weakening: true`. Архивное приложение не
+        меняется (409). Пишет `application.update`.
       x-permission: applications.manage
       security: [{ sessionCookie: [] }, { bearerToken: [] }]
       parameters:
@@ -1710,7 +1720,7 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/ApplicationFields' }
+            schema: { $ref: '#/components/schemas/ApplicationUpdate' }
       responses:
         '200':
           description: Приложение изменено
@@ -1754,14 +1764,20 @@ paths:
         '503': { $ref: '#/components/responses/Unavailable' }
   /api/v1/applications/{id}/protection:
     put:
-      summary: Изменить политику, режим и режим хранения приложения
+      summary: Изменить поля защиты приложения
       description: |
         Право `applications.policy` (признак `security`: администратор системы политики
-        безопасности не меняет, УПД.2; токену API недоступно). Пустое поле — прежнее значение;
+        безопасности не меняет, УПД.2; токену API недоступно). Поля защиты: политика, режим,
+        режим хранения, режим при сбое детекторов, словари и домены-исключения DM-11 (В15
+        ревью 2.r3b). Отсутствующее поле — прежнее значение (`lists: []` удаляет все словари);
         при смене политики без `policy_mode` режим берётся из новой политики. Пишет
-        `application.protection_changed` (до, после); перевод в `monitor`, режим хранения
-        `none` или `full`, политика `monitor-only` — с `weakening: true` (DM-40). Без
-        изменений — 200 без записи.
+        `application.protection_changed` (до, после). Ослабление (DM-40) — перевод в
+        `monitor`, режим хранения `none` или `full`, политика `monitor-only`, `fail_open`,
+        новый домен-исключение, удалённый словарь, слово или выражение, изменённые категория,
+        угроза, балл или направление словаря, включённый учёт регистра — пишется с
+        `weakening: true` и требует повторной проверки (Н32): текущий пароль (`password`) или
+        код TOTP (`code`), ровно одно из двух, иначе 400; неверное значение — 403
+        `reauthentication_failed` и неудачная попытка ИАФ.4. Без изменений — 200 без записи.
       x-permission: applications.policy
       security: [{ sessionCookie: [] }]
       parameters:
@@ -1771,7 +1787,7 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/ApplicationProtection' }
+            schema: { $ref: '#/components/schemas/ProtectionUpdate' }
       responses:
         '200':
           description: Поля защиты изменены
@@ -2904,6 +2920,8 @@ components:
       properties:
         external: { type: boolean }
         reason: { type: string, minLength: 1, maxLength: 500 }
+        password: { type: string, maxLength: 1024, format: password, description: 'Текущий пароль при снятии признака (ровно одно из password и code)' }
+        code: { type: string, maxLength: 64, description: 'Код из приложения-аутентификатора при снятии признака' }
     AppQuotas:
       type: object
       additionalProperties: false
@@ -2944,23 +2962,38 @@ components:
         provider_id: { type: string, format: uuid }
         models: { type: array, minItems: 1, maxItems: 100, items: { type: string, pattern: '^[A-Za-z0-9._:/-]{1,128}$' } }
         aliases: { type: object, additionalProperties: { type: string }, description: Имя для приложения → разрешённая модель }
-        fail_mode: { type: string, enum: [fail_open, fail_closed], default: fail_closed }
         user_from: { type: string, enum: [header, field, none], default: none }
         quotas: { $ref: '#/components/schemas/AppQuotas' }
-        lists: { type: array, maxItems: 63, items: { $ref: '#/components/schemas/AppList' } }
-        exfil_allow_domains: { type: array, maxItems: 1000, items: { type: string } }
     ApplicationProtection:
       type: object
       additionalProperties: false
-      description: Поля защиты; меняет только обладатель права `applications.policy`
+      description: Поля защиты; меняет только обладатель права `applications.policy` (В15 ревью 2.r3b)
       properties:
         policy: { type: string, description: 'Шаблон (`base`, `pii-strict`, `external-no-pii`, `monitor-only`) или политика организации' }
         policy_mode: { type: string, enum: [monitor, enforce], description: По умолчанию — режим выбранной политики }
         storage: { type: string, enum: [none, masked, full], default: masked }
+        fail_mode: { type: string, enum: [fail_open, fail_closed], default: fail_closed }
+        lists: { type: array, maxItems: 63, items: { $ref: '#/components/schemas/AppList' } }
+        exfil_allow_domains: { type: array, maxItems: 1000, items: { type: string } }
+    Reauth:
+      type: object
+      description: Повторная проверка перед ослаблением защиты (Н32 ревью 2.r3b)
+      properties:
+        password: { type: string, maxLength: 1024, format: password, description: 'Текущий пароль (ровно одно из password и code)' }
+        code: { type: string, maxLength: 64, description: 'Код из приложения-аутентификатора' }
+    ApplicationUpdate:
+      allOf:
+        - $ref: '#/components/schemas/ApplicationFields'
+        - $ref: '#/components/schemas/Reauth'
+    ProtectionUpdate:
+      allOf:
+        - $ref: '#/components/schemas/ApplicationProtection'
+        - $ref: '#/components/schemas/Reauth'
     NewApplication:
       allOf:
         - $ref: '#/components/schemas/ApplicationFields'
         - $ref: '#/components/schemas/ApplicationProtection'
+        - $ref: '#/components/schemas/Reauth'
         - type: object
           required: [slug]
           properties:

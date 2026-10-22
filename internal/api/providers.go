@@ -59,7 +59,16 @@ var fieldRe = regexp.MustCompile(`^([a-z_][a-z0-9_.\[\]]*)(?: — |: )`)
 // причина — в техническом журнале.
 func appsProblem(logger *slog.Logger, err error, notFound string) *Problem {
 	var ie *apps.InputError
+	var re *reauthError
 	switch {
+	case errors.As(err, &re):
+		return authProblem(logger, re.err)
+	case errors.Is(err, apps.ErrPolicyRequired):
+		return NewProblem(http.StatusForbidden, CodeForbidden,
+			"Переход на провайдера без признака «внешний» выключает маскирование: его выполняет администратор безопасности.")
+	case errors.Is(err, apps.ErrConfirmRequired):
+		return NewProblem(http.StatusForbidden, CodeForbidden,
+			"Изменение ослабляет защиту: выполните его в консоли с вводом текущего пароля или кода.")
 	case errors.As(err, &ie):
 		fields := make([]FieldError, 0, len(ie.Errs))
 		for _, e := range ie.Errs {
@@ -304,6 +313,7 @@ func (d Deps) setProviderCredential(w http.ResponseWriter, r *http.Request) {
 type externalRequest struct {
 	External *bool  `json:"external"`
 	Reason   string `json:"reason"`
+	reauthFields
 }
 
 func (d Deps) setProviderExternal(w http.ResponseWriter, r *http.Request) {
@@ -325,6 +335,7 @@ func (d Deps) setProviderExternal(w http.ResponseWriter, r *http.Request) {
 		WriteProblem(w, Invalid("Проверьте введённые данные.", FieldError{"external", "Укажите true или false."}))
 		return
 	}
+	by = d.withConfirm(r, by, req.reauthFields, "provider.external_changed")
 	p, err := d.Apps.SetExternal(r.Context(), by, id, *req.External, req.Reason)
 	if err != nil {
 		WriteProblem(w, appsProblem(d.Logger, err, providerNotFound))
