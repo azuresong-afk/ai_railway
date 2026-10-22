@@ -258,7 +258,7 @@ func (d Deps) createApplication(w http.ResponseWriter, r *http.Request) {
 	if by.Policy {
 		p := req.protectionFields.input()
 		prot = &p
-	} else if !req.protectionFields.empty() {
+	} else if !req.empty() {
 		WriteProblem(w, NewProblem(http.StatusUnprocessableEntity, CodeUnprocessable,
 			"Политику, режимы, словари и домены-исключения задаёт администратор безопасности: создайте приложение без них."))
 		return
@@ -348,7 +348,7 @@ func (d Deps) setProtection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	by = d.withConfirm(r, by, req.reauthFields, "application.protection_changed")
-	a, err := d.Apps.SetProtection(r.Context(), by, id, req.protectionFields.input())
+	a, err := d.Apps.SetProtection(r.Context(), by, id, req.input())
 	if err != nil {
 		WriteProblem(w, appsProblem(d.Logger, err, appNotFound))
 		return
