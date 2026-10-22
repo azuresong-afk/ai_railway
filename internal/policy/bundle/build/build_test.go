@@ -478,8 +478,8 @@ func TestBuildOnlyOnRevisionChange(t *testing.T) {
 	if _, err := e.apps.RevokeKey(ctx, e.appsBy, e.key.ID, ""); err != nil {
 		t.Fatal(err)
 	}
-	if r, _ := svc.Current(ctx); r.Version != first.Version || svc.Builds() != 1 {
-		t.Fatalf("без смены счётчика: версия %d, выборок %d", r.Version, svc.Builds())
+	if r, err := svc.Current(ctx); err != nil || r.Version != first.Version || svc.Builds() != 1 {
+		t.Fatalf("без смены счётчика: версия %d, выборок %d, %v", r.Version, svc.Builds(), err)
 	}
 	rev++
 	r, err := svc.Current(ctx)
