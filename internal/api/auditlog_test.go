@@ -33,6 +33,7 @@ type memJournal struct {
 	// failRecord — запись в журнал не удаётся; hold — выборка ждёт его
 	// закрытия, о входе в выборку сообщает entered.
 	failRecord bool
+	verifyErr  error
 	hold       chan struct{}
 	entered    chan struct{}
 }
@@ -112,6 +113,9 @@ func (j *memJournal) TryVerifyBy(_ context.Context, by audit.Actor, ip netip.Add
 	defer j.mu.Unlock()
 	if j.busy {
 		return audit.Verification{}, audit.ErrVerifyBusy
+	}
+	if j.verifyErr != nil {
+		return audit.Verification{}, j.verifyErr
 	}
 	checked, brk := audit.VerifyRecords(j.h, j.anchor, nil, j.records)
 	res := audit.Verification{At: time.Now().UTC(), Checked: checked, Break: brk}
@@ -443,5 +447,16 @@ func TestListAuditRecordFails(t *testing.T) {
 	mustProblem(t, w, http.StatusServiceUnavailable, CodeUnavailable)
 	if strings.Contains(w.Body.String(), "auth.login") {
 		t.Errorf("данные в ответе: %s", w.Body)
+	}
+}
+
+// Проверка недавно не завершилась — 503 с Retry-After (самопроверка H4, С1).
+func TestVerifyAuditFailedRecently(t *testing.T) {
+	j := newMemJournal(t, 3)
+	j.verifyErr = audit.ErrVerifyFailedRecently
+	w := do(auditHandler(t, j, auth.PermAuditVerify), "POST", "/api/v1/audit/verify", "")
+	mustProblem(t, w, http.StatusServiceUnavailable, CodeUnavailable)
+	if w.Header().Get("Retry-After") != "600" {
+		t.Errorf("Retry-After: %q", w.Header().Get("Retry-After"))
 	}
 }

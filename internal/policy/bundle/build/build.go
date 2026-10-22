@@ -567,7 +567,18 @@ func (s *Service) checkSize(ctx context.Context, before *apps.Application, ba bu
 // CheckPolicy проверяет новую версию политики организации со всеми
 // действующими приложениями, которые на неё ссылаются (В16 ревью 2.r3b):
 // правило на словарь, которого нет у приложения, — versions.ErrBreaksBundle.
+// Приложение, которое не проходит и с текущей версией (уже исключено из
+// пакета), сохранение не блокирует: иначе нельзя было бы срочно ужесточить
+// общую политику, пока не исправлено чужое приложение (самопроверка H4, С3).
 func (s *Service) CheckPolicy(ctx context.Context, spec *policy.Spec) error {
+	var cur *policy.Spec
+	switch doc, err := s.policies.Get(ctx, spec.ID, 0); {
+	case errors.Is(err, versions.ErrNotFound):
+	case err != nil:
+		return err
+	default:
+		cur = doc.Spec
+	}
 	var failed []string
 	var after *apps.Cursor
 	for {
@@ -583,9 +594,13 @@ func (s *Service) CheckPolicy(ctx context.Context, spec *policy.Spec) error {
 		}
 		for _, ba := range batch {
 			one := bundle.Content{Applications: []bundle.Application{ba}}
-			if err := gateway.CheckApplications(one.GatewayApplications(), []policy.Spec{*spec}); err != nil {
-				failed = append(failed, ba.ID)
+			if err := gateway.CheckApplications(one.GatewayApplications(), []policy.Spec{*spec}); err == nil {
+				continue
 			}
+			if cur != nil && gateway.CheckApplications(one.GatewayApplications(), []policy.Spec{*cur}) != nil {
+				continue
+			}
+			failed = append(failed, ba.ID)
 		}
 		if len(page) < appsPage {
 			break

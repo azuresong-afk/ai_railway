@@ -365,6 +365,11 @@ func (d Deps) verifyAudit(w http.ResponseWriter, r *http.Request) {
 		WriteProblem(w, NewProblem(http.StatusConflict, CodeConflict,
 			"Проверка цепочки уже выполняется. Повторите через "+strconv.Itoa(auditVerifyRetry)+" секунд."))
 		return
+	case errors.Is(err, audit.ErrVerifyFailedRecently):
+		w.Header().Set("Retry-After", strconv.Itoa(int(audit.VerifyCacheFor.Seconds())))
+		WriteProblem(w, NewProblem(http.StatusServiceUnavailable, CodeUnavailable,
+			"Последняя проверка цепочки не завершилась: повторите позже или выполните aisec-cli audit verify."))
+		return
 	case errors.Is(err, context.DeadlineExceeded):
 		d.Logger.Error("проверка цепочки журнала аудита по команде не уложилась в срок", "class", "db", "timeout", auditVerifyTimeout.String())
 		WriteProblem(w, NewProblem(http.StatusServiceUnavailable, CodeUnavailable, "Проверка не уложилась в отведённое время: повторите позже."))

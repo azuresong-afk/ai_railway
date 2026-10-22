@@ -66,8 +66,10 @@ type Verifier struct {
 	// mu сериализует проверки и защищает known и last.
 	mu    sync.Mutex
 	known *Anchor
-	// last — итог последней выполненной проверки этого процесса.
-	last *Verification
+	// last — итог последней выполненной проверки этого процесса; failedAt —
+	// когда проверка последний раз не завершилась (сбой, истёк срок).
+	last     *Verification
+	failedAt time.Time
 }
 
 // HeadMAC — имитовставка головы цепочки на ключе вне БД: KeyID — ID ключа
@@ -129,6 +131,11 @@ func (v *Verifier) VerifyBy(ctx context.Context, by Actor) (Verification, error)
 // команде); новая не запускается.
 var ErrVerifyBusy = errors.New("журнал аудита: проверка цепочки уже выполняется")
 
+// ErrVerifyFailedRecently — проверка не завершилась менее VerifyCacheFor
+// назад; новая по команде из API не запускается (самопроверка H4, С1: иначе
+// проход, который не укладывается в срок, повторялся бы непрерывно).
+var ErrVerifyFailedRecently = errors.New("журнал аудита: проверка цепочки недавно не завершилась")
+
 // TryVerifyBy — VerifyBy по команде из API (задача 2.4a): с адресом
 // субъекта (РСБ.1 «откуда») и без ожидания. Если проверка уже идёт —
 // ErrVerifyBusy: ждать на блокировке нельзя, она не учитывает срок запроса.
@@ -139,10 +146,14 @@ func (v *Verifier) TryVerifyBy(ctx context.Context, by Actor, ip netip.Addr) (Ve
 		return Verification{}, ErrVerifyBusy
 	}
 	defer v.mu.Unlock()
-	if l := v.last; l != nil && v.log.now().Sub(l.At) < VerifyCacheFor {
+	now := v.log.now()
+	if l := v.last; l != nil && now.Sub(l.At) < VerifyCacheFor && !l.At.Before(v.failedAt) {
 		res := *l
 		res.Cached = true
 		return res, nil
+	}
+	if !v.failedAt.IsZero() && now.Sub(v.failedAt) < VerifyCacheFor {
+		return Verification{}, ErrVerifyFailedRecently
 	}
 	return v.verifyLogged(ctx, by, ip)
 }
@@ -153,6 +164,8 @@ func (v *Verifier) verifyLogged(ctx context.Context, by Actor, ip netip.Addr) (V
 	if err == nil {
 		last := res
 		v.last = &last
+	} else {
+		v.failedAt = v.log.now()
 	}
 	if err != nil {
 		// Лучшее, что можно сделать: БД может быть недоступна и для этой записи.
