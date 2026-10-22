@@ -95,18 +95,24 @@ type incidentHook struct {
 	o IncidentOpener
 }
 
-// WithIncidents — обработчик приёма событий: правила «порог», «новое» и
-// DM-38 (как OnIngest) и инциденты по оповещениям правил с признаком «инцидент».
+// WithIncidents — обработчик приёма событий: правила «порог», «новое»,
+// счёт «частоты» и DM-38 (как OnIngest) и инциденты по оповещениям правил с признаком «инцидент».
 func (s *PGStore) WithIncidents(o IncidentOpener) events.IngestHook {
 	return incidentHook{s: s, o: o}
 }
 
 // OnIngest — см. events.IngestHook.
 func (h incidentHook) OnIngest(ctx context.Context, tx pgx.Tx, gatewayID string, accepted []*events.Event) error {
+	// Те же шаги, что в PGStore.OnIngest (меняются вместе с ним), но через
+	// linkOps: срабатывания правил с признаком «инцидент» запоминаются.
 	ops := &linkOps{txOps: pgOps{s: h.s, tx: tx}}
-	if err := process(ctx, ops, gatewayID, accepted, func(err error) {
+	skipped := func(err error) {
 		h.s.logger.Error("оповещения: правило пропущено", "error", err)
-	}); err != nil {
+	}
+	if err := process(ctx, ops, gatewayID, accepted, skipped); err != nil {
+		return err
+	}
+	if err := countFrequency(ctx, pgOps{s: h.s, tx: tx}, time.Now(), gatewayID, accepted, skipped); err != nil {
 		return err
 	}
 	if err := processAuthFailures(ctx, ops, accepted); err != nil {
@@ -260,8 +266,12 @@ func (m *Memory) IngestWithIncidents(ctx context.Context, gatewayID string, evs 
 		m.mu.Unlock()
 		return err
 	}
+	// Те же шаги, что в Memory.Ingest.
 	ops := &linkOps{txOps: memOps{m}}
 	err := process(ctx, ops, gatewayID, evs, nil)
+	if err == nil {
+		err = countFrequency(ctx, memOps{m}, m.now(), gatewayID, evs, nil)
+	}
 	if err == nil {
 		err = processAuthFailures(ctx, ops, evs)
 	}

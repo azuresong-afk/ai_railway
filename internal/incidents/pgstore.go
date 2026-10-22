@@ -30,7 +30,7 @@ type PGDB interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
-// PGStore — Store на PostgreSQL (миграция 0034_incidents). Оповещения
+// PGStore — Store на PostgreSQL (миграция 0035_incidents). Оповещения
 // блокируются и закрываются через alerting.PGStore в той же транзакции.
 type PGStore struct {
 	db     PGDB

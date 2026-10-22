@@ -55,6 +55,9 @@ type Store interface {
 	// UpdateAlert меняет оповещение под блокировкой строки и добавляет
 	// переход в историю.
 	UpdateAlert(ctx context.Context, orgID, id string, fn func(*Alert) (History, audit.Entry, error)) (Alert, error)
+	// RuleState — состояние правила, вычисленное фоновой задачей; false —
+	// задача правило ещё не считала.
+	RuleState(ctx context.Context, orgID, ruleID string) (RuleState, bool, error)
 }
 
 // Options — зависимости сервиса.
@@ -303,6 +306,24 @@ func (s *Service) recipientsRaise(by By, r *Rule, before Recipients) Raise {
 		"at": r.UpdatedAt.Format(time.RFC3339Nano)}
 	return Raise{Key: BuiltinRecipientsChanged, Trigger: Trigger{Key: "actor=" + by.ref(), Values: values, Count: 1,
 		Details: map[string]any{"items": []any{item}}}}
+}
+
+// RuleState — состояние правила «частота», «аномалия» или «бюджет»:
+// последнее вычисление, обучение и ключи. У остальных видов и до первого
+// прохода фоновой задачи — пустое состояние (ok = false).
+func (s *Service) RuleState(ctx context.Context, id string) (Rule, RuleState, bool, error) {
+	r, err := s.store.Rule(ctx, s.orgID, id)
+	if err != nil {
+		return Rule{}, RuleState{}, false, err
+	}
+	if r.Kind != KindFrequency && r.Kind != KindAnomaly && r.Kind != KindBudget {
+		return r, RuleState{Keys: []KeyState{}}, false, nil
+	}
+	st, ok, err := s.store.RuleState(ctx, s.orgID, id)
+	if st.Keys == nil {
+		st.Keys = []KeyState{}
+	}
+	return r, st, ok, err
 }
 
 // Alerts — страница оповещений от новых к старым.

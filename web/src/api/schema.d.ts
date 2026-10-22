@@ -4828,9 +4828,14 @@ export interface paths {
          * @description Право `alert_rules.manage` (признак `security`: только администратор безопасности, не
          *     токену). Через API создаются правила «порог» (`threshold`: фильтр событий языка
          *     `GET /api/v1/events` и/или наименьшая серьёзность, до 4 полей группировки) и «новое»
-         *     (`new`: поле `model`, `provider`, `user` или `app`, ключ — его значение). Окно подавления
-         *     после закрытия — `suppress_minutes` (по умолчанию 60, до 10 080). Не больше 200 правил —
-         *     иначе 422. Пишет `alert_rule.create`.
+         *     (`new`: поле `model`, `provider`, `user` или `app`, ключ — его значение). Фоновая задача
+         *     сервера раз в минуту считает «частоту» (`frequency`: условие как у «порога», `count`
+         *     событий за `window_minutes` по ключу группировки), «аномалию» (`anomaly`: метрика `metric`
+         *     последнего часа выше медианы того же часа недели за 2–8 недель в `factor` раз и не меньше
+         *     `min_volume`; группировка — нет или `app`; первые 14 суток данных молчит) и «бюджет»
+         *     (`budget`: `warn_percent` и 100 % месячного бюджета приложения, по одному оповещению на
+         *     порог в месяц; группировка — `app`). Окно подавления после закрытия — `suppress_minutes`
+         *     (по умолчанию 60, до 10 080). Не больше 200 правил — иначе 422. Пишет `alert_rule.create`.
          */
         post: {
             parameters: {
@@ -4971,6 +4976,61 @@ export interface paths {
                 503: components["responses"]["Unavailable"];
             };
         };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/alert-rules/{id}/state": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Состояние правила фоновой задачи
+         * @description Право `alert_rules.read`. Что посчитала фоновая задача сервера (раз в минуту) по правилу
+         *     «частота», «аномалия» или «бюджет»: время вычисления, обучение базовой линии «аномалии»
+         *     (первые 14 суток данных ключа правило молчит, `learning: true` и `learning_until`), ключи
+         *     группировки с текущим объёмом, медианой базовой линии и числом недель в ней (не больше 50,
+         *     всего — `keys_total`); у «бюджета» — месяц и процент расхода; у «частоты» — ключи, сработавшие
+         *     в последнем проходе. Объёмы «аномалии» показываются только с правом `events.read`, расход
+         *     «бюджета» — с `budgets.read`, иначе `keys` пуст и `keys_hidden: true`. У остальных видов и
+         *     до первого вычисления — `evaluated: false`. Содержимого событий нет.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description ID правила оповещения (UUIDv7) */
+                    id: components["parameters"]["AlertRuleID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Состояние */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["AlertRuleState"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
         post?: never;
         delete?: never;
         options?: never;
@@ -7315,7 +7375,7 @@ export interface components {
         /** @enum {string} */
         AlertSeverity: "info" | "low" | "medium" | "high" | "critical";
         /**
-         * @description Вид правила (ТЗ 5.6); через API создаются threshold и new
+         * @description Вид правила (ТЗ 5.6); через API создаются threshold, new, frequency, anomaly и budget
          * @enum {string}
          */
         AlertKind: "threshold" | "new" | "frequency" | "anomaly" | "budget" | "system" | "security";
@@ -7396,6 +7456,21 @@ export interface components {
              * @enum {string}
              */
             field?: "model" | "provider" | "user" | "app";
+            /** @description Порог «частоты»: событий в окне по ключу группировки */
+            count?: number;
+            /** @description Окно «частоты» */
+            window_minutes?: number;
+            /**
+             * @description Метрика «аномалии» (запросы, токены, токены ответа) по часовым агрегатам событий
+             * @enum {string}
+             */
+            metric?: "requests" | "tokens" | "completion_tokens";
+            /** @description Во сколько раз объём окна «аномалии» (последний час) выше медианы того же часа недели за 2–8 недель; по умолчанию 3 */
+            factor?: number;
+            /** @description Наименьший объём окна «аномалии»; по умолчанию 100 запросов, 200 000 токенов, 100 000 токенов ответа */
+            min_volume?: number;
+            /** @description Предупреждение «бюджета», % месячного бюджета (по умолчанию 80); второй порог — 100 % */
+            warn_percent?: number;
         };
         /** @description Получатели сверх обязательных ролей security_admin и auditor */
         AlertRecipients: {
@@ -7404,7 +7479,7 @@ export interface components {
         };
         AlertRuleInput: {
             /** @enum {string} */
-            kind: "threshold" | "new";
+            kind: "threshold" | "new" | "frequency" | "anomaly" | "budget";
             name: string;
             description?: string;
             /** @default true */
@@ -7601,6 +7676,39 @@ export interface components {
             /** Format: date-time */
             updated_at: string;
             updated_by: string;
+        };
+        AlertRuleState: {
+            /** Format: uuid */
+            rule_id: string;
+            kind: components["schemas"]["AlertKind"];
+            /** @description Фоновая задача уже считала правило */
+            evaluated: boolean;
+            /** Format: date-time */
+            evaluated_at?: string;
+            /** @description «Аномалия» на обучении: ни у одного ключа нет 14 суток истории */
+            learning: boolean;
+            /** Format: date-time */
+            learning_until?: string;
+            /** @description Месяц «бюджета» в часовом поясе установки */
+            month?: string;
+            keys: {
+                group: {
+                    [key: string]: string;
+                };
+                learning: boolean;
+                /** Format: date-time */
+                ready_at?: string;
+                /** @description Объём окна («аномалия»), процент расхода («бюджет») или событий в окне у ключей «частоты», сработавших в последнем проходе */
+                current: number;
+                /** @description Медиана базовой линии */
+                baseline: number;
+                /** @description Недель в базовой линии */
+                samples: number;
+                triggered: boolean;
+            }[];
+            keys_total: number;
+            /** @description Ключи скрыты: у «аномалии» нужно право events.read, у «бюджета» — budgets.read */
+            keys_hidden: boolean;
         };
         AlertRuleList: {
             items: components["schemas"]["AlertRule"][];

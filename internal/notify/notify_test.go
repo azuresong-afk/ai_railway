@@ -76,7 +76,7 @@ func (e *env) emailInput(addr string, user string) ChannelInput {
 
 func hostPortStr(addr string) (string, int) {
 	i := strings.LastIndex(addr, ":")
-	n, _ := strconv.Atoi(addr[i+1:])
+	n, _ := strconv.Atoi(addr[i+1:]) //nolint:gosec // G104: адрес тестового приёмника корректен
 	return addr[:i], n
 }
 
@@ -143,7 +143,7 @@ func TestEmailNegative(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sec, _ := e.svc.secrets(testCtx(t), c)
+	sec, _ := e.svc.secrets(testCtx(t), c) //nolint:gosec // G104: ошибку покажет следующая проверка теста
 	if err := e.tr.Send(testCtx(t), c, sec, sampleAlert()); ErrorCode(err) != ErrCodeNoSTARTTLS {
 		t.Fatalf("без STARTTLS: %v", err)
 	}
@@ -458,7 +458,7 @@ func TestChannelUpdateWeakening(t *testing.T) {
 		t.Fatal(err)
 	}
 	last := e.mem.Audited()[len(e.mem.Audited())-1]
-	raw, _ := json.Marshal(last.Details)
+	raw, _ := json.Marshal(last.Details) //nolint:gosec // G104: значение всегда сериализуется
 	if last.Action != "notify_channel.update" || strings.Contains(string(raw), "synthetic-Pa") ||
 		!strings.Contains(string(raw), `"protected_changed":["password"]`) || !strings.Contains(string(raw), `"weakening":false`) {
 		t.Fatalf("аудит изменения: %s", raw)
@@ -496,7 +496,7 @@ func TestChannelUpdateWeakening(t *testing.T) {
 		t.Fatalf("нет канала: %v", err)
 	}
 	// Секреты по-прежнему расшифровываются после замены.
-	cur, _ := e.svc.Channel(ctx, c.ID)
+	cur, _ := e.svc.Channel(ctx, c.ID) //nolint:gosec // G104: ошибку покажет следующая проверка теста
 	sec, err := e.svc.secrets(ctx, cur)
 	if err != nil || sec.Password != "synthetic-Pa66" {
 		t.Fatalf("секрет после изменения: %v", err)
@@ -579,11 +579,11 @@ func TestDispatchRetries(t *testing.T) {
 			t.Fatalf("попытка %d: %d %v", i+1, n, err)
 		}
 	}
-	list, _ := e.svc.Deliveries(ctx, c.ID, 0)
+	list, _ := e.svc.Deliveries(ctx, c.ID, 0) //nolint:gosec // G104: проверяется результат
 	if len(list) != 1 || list[0].Status != StatusFailed || list[0].Attempts != MaxAttempts || list[0].Error != "http_503" {
 		t.Fatalf("итог: %+v", list)
 	}
-	if l, _ := e.svc.Deliveries(ctx, high.ID, 0); len(l) != 0 {
+	if l, _ := e.svc.Deliveries(ctx, high.ID, 0); len(l) != 0 { //nolint:gosec // G104: проверяется результат
 		t.Fatalf("канал выше порога получил: %+v", l)
 	}
 	last := e.mem.Audited()[len(e.mem.Audited())-1]
@@ -591,7 +591,7 @@ func TestDispatchRetries(t *testing.T) {
 		t.Fatalf("аудит отказа: %+v", last)
 	}
 	e.now = e.now.Add(time.Hour)
-	if n, _ := e.svc.DispatchOnce(ctx); n != 0 {
+	if n, _ := e.svc.DispatchOnce(ctx); n != 0 { //nolint:gosec // G104: проверяется результат
 		t.Fatalf("повтор после failed: %d", n)
 	}
 
@@ -604,7 +604,7 @@ func TestDispatchRetries(t *testing.T) {
 	if n, err := e.svc.DispatchOnce(ctx); err != nil || n != 2 {
 		t.Fatalf("доставка: %d %v", n, err)
 	}
-	if l, _ := e.svc.Deliveries(ctx, high.ID, 1); l[0].Status != StatusSent || l[0].SentAt.IsZero() {
+	if l, _ := e.svc.Deliveries(ctx, high.ID, 1); l[0].Status != StatusSent || l[0].SentAt.IsZero() { //nolint:gosec // G104: проверяется результат
 		t.Fatalf("доставка: %+v", l)
 	}
 	// Канал отключили после постановки в очередь: не отправляется.
@@ -612,7 +612,7 @@ func TestDispatchRetries(t *testing.T) {
 		Title: "x", CreatedAt: e.now}, newID); n != 2 {
 		t.Fatalf("в очередь: %d", n)
 	}
-	cur, _ := e.svc.Channel(ctx, high.ID)
+	cur, _ := e.svc.Channel(ctx, high.ID) //nolint:gosec // G104: ошибку покажет следующая проверка теста
 	if _, err := e.svc.UpdateChannel(ctx, e.by, high.ID, ChannelInput{Name: cur.Name, Enabled: ptr(false), MinSeverity: cur.MinSeverity,
 		Settings: cur.Settings, Version: cur.Version}); err != nil {
 		t.Fatal(err)
@@ -622,7 +622,7 @@ func TestDispatchRetries(t *testing.T) {
 		t.Fatal(err)
 	}
 	after, _ := ws.received()
-	if l, _ := e.svc.Deliveries(ctx, high.ID, 1); l[0].Status != StatusFailed || l[0].Error != ErrCodeDisabled || len(after) != len(before)+1 {
+	if l, _ := e.svc.Deliveries(ctx, high.ID, 1); l[0].Status != StatusFailed || l[0].Error != ErrCodeDisabled || len(after) != len(before)+1 { //nolint:gosec // G104: проверяется результат
 		t.Fatalf("отключённый канал: %+v, запросов %d → %d", l, len(before), len(after))
 	}
 }
@@ -643,7 +643,7 @@ func FuzzDecodeChannelInput(f *testing.F) {
 	if err != nil {
 		f.Fatal(err)
 	}
-	caJSON, _ := json.Marshal(string(ca.CertPEM()))
+	caJSON, _ := json.Marshal(string(ca.CertPEM())) //nolint:gosec // G104: значение всегда сериализуется
 	f.Add([]byte(`{"name":"Почта","type":"email","settings":{"host":"smtp.example.ru","from":"a@example.ru","to":["b@example.ru"],"ca_pem":` +
 		string(caJSON) + `}}`))
 	f.Add([]byte(`{"name":"Hook","type":"webhook","settings":{"format":"mattermost","ca_pem":` + string(caJSON) +
