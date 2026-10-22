@@ -2797,8 +2797,11 @@ export interface paths {
         /**
          * Изменить провайдера
          * @description Право `providers.manage`. Меняются все поля, кроме `slug`, признака «внешний» и
-         *     учётных данных. Пишет `provider.update` (до и после, без учётных данных; сертификаты —
-         *     только размером).
+         *     учётных данных. Смена адресата — узла (схема, хост, порт) `base_url` или `auth_url`,
+         *     `ca_pem` или `type` — сбрасывает учётные данные и возвращает признак «внешний» (В14
+         *     ревью 2.r3b): их задают заново, снятие признака — снова через `PUT …/external`. Пишет
+         *     `provider.update` (до и после, без учётных данных; сертификаты — только размером; при
+         *     смене адресата — `credential_reset`, `external_reset`).
          */
         put: {
             parameters: {
@@ -4172,7 +4175,7 @@ export interface components {
                 warn_exceeded: boolean;
             };
             /** @description Последняя проверка цепочки журнала аудита — фоновая или aisec-cli audit verify (РСБ.4); null — проверок не было */
-            audit_chain?: null | {
+            audit_chain: null | {
                 /** Format: date-time */
                 checked_at: string;
                 ok: boolean;
@@ -4185,11 +4188,32 @@ export interface components {
                 /** @description Запись, на которой цепочка нарушена */
                 broken_seq: number | null;
             };
+            /** @description Пакет конфигурации шлюзов (ОЦЛ.3; В16, Н28 ревью 2.r3b); null — сервер без внутреннего порта для шлюзов */
+            bundle: null | {
+                /** @description Текущая корректная версия; 0 — её нет */
+                version: number;
+                etag: string;
+                /** Format: date-time */
+                built_at: string | null;
+                /** @description В версии все действующие приложения */
+                complete: boolean;
+                /** @description Почему содержимое не собрано целиком (например, размер); шлюзам выдаётся прежняя версия */
+                reason?: string;
+                /** @description Приложения, исключённые из пакета: шлюз принимает их ключи и отвечает 503 app_unavailable */
+                excluded: {
+                    application: string;
+                    reason: string;
+                }[];
+                /** @description Шлюзы на связи, которые дольше 10 минут работают на другой версии */
+                lagging: string[];
+            };
             notifications: {
                 /** @enum {string} */
-                condition: "account_lockout" | "access_denied" | "audit_chain" | "audit_storage" | "integrity" | "time_sync";
+                condition: "account_lockout" | "access_denied" | "audit_chain" | "audit_storage" | "integrity" | "time_sync" | "config_bundle" | "config_bundle_lag";
                 /** @enum {string} */
-                requirement: "ИАФ.4" | "УПД.6" | "РСБ.4" | "РСБ.5" | "ОЦЛ.5" | "ВРМ.1";
+                requirement: "ИАФ.4" | "УПД.6" | "РСБ.4" | "РСБ.5" | "ОЦЛ.3" | "ОЦЛ.5" | "ВРМ.1";
+                /** @description Компоненты с активным условием (integrity — server или gateway:<ID>, config_bundle_lag — gateway:<ID>); каждое ведётся отдельно и пишется в system.alert (В18 ревью 2.r3b) */
+                components?: string[];
                 title: string;
                 active: boolean;
                 /**
@@ -4200,7 +4224,7 @@ export interface components {
                 /** @description Число событий за 24 часа (только ИАФ.4 и УПД.6) */
                 count: number | null;
             }[];
-            unavailable: ("integrity" | "gateways" | "events" | "storage" | "audit_chain" | "notifications")[];
+            unavailable: ("integrity" | "gateways" | "events" | "storage" | "audit_chain" | "bundle" | "notifications")[];
         };
         StatusReport: {
             ok: boolean;
