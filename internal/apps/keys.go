@@ -202,7 +202,13 @@ func (s *Service) RevokeKey(ctx context.Context, by By, keyID, ownerID string) (
 	})
 }
 
-// Keys — ключи приложения без секретов; ownerID не пуст — только своего.
+// ActiveKeysAt — действующие на момент now ключи всех приложений (пакет
+// конфигурации, Н25 ревью 2.r3b): одним запросом и без предела выдачи.
+func (s *Service) ActiveKeysAt(ctx context.Context, now time.Time) ([]Key, error) {
+	return s.store.ActiveKeys(ctx, s.orgID, now)
+}
+
+// Keys — ключи приложения (новые первыми); ownerID не пуст — только своего.
 func (s *Service) Keys(ctx context.Context, appID, ownerID string) ([]Key, error) {
 	if _, err := s.Application(ctx, appID, ownerID); err != nil {
 		return nil, err

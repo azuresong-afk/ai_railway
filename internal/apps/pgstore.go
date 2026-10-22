@@ -594,6 +594,27 @@ func (s *PGStore) Key(ctx context.Context, orgID, id string) (Key, error) {
 	return scanKey(s.db.QueryRow(ctx, `SELECT `+keyCols+` FROM app_keys WHERE org_id = $1 AND id = $2`, orgID, id))
 }
 
+// ActiveKeys — см. Store.
+func (s *PGStore) ActiveKeys(ctx context.Context, orgID string, now time.Time) ([]Key, error) {
+	ctx, cancel := pgCtx(ctx)
+	defer cancel()
+	rows, err := s.db.Query(ctx, `SELECT `+keyCols+` FROM app_keys WHERE org_id = $1 AND revoked_at IS NULL AND expires_at > $2
+		ORDER BY app_id, prefix`, orgID, now)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Key{}
+	for rows.Next() {
+		k, err := scanKey(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, k)
+	}
+	return out, rows.Err()
+}
+
 // Keys — см. Store.
 func (s *PGStore) Keys(ctx context.Context, orgID, appID string) ([]Key, error) {
 	ctx, cancel := pgCtx(ctx)

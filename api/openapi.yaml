@@ -2487,7 +2487,7 @@ components:
         version: { type: string }
     SystemStatus:
       type: object
-      required: [generated_at, server, gateways, events, time, storage, notifications, unavailable]
+      required: [generated_at, server, gateways, events, time, storage, audit_chain, bundle, notifications, unavailable]
       additionalProperties: false
       properties:
         generated_at: { type: string, format: date-time }
@@ -2552,6 +2552,33 @@ components:
                   enum: [ok, hash_mismatch, prev_mismatch, gap, head_missing, tail_truncated, rewritten, alg_mismatch,
                     invalid_record, checkpoint_invalid, anchor_forged]
                 broken_seq: { type: [integer, 'null'], minimum: 0, description: 'Запись, на которой цепочка нарушена' }
+        bundle:
+          description: 'Пакет конфигурации шлюзов (ОЦЛ.3; В16, Н28 ревью 2.r3b); null — сервер без внутреннего порта для шлюзов'
+          oneOf:
+            - type: 'null'
+            - type: object
+              required: [version, etag, built_at, complete, excluded, lagging]
+              additionalProperties: false
+              properties:
+                version: { type: integer, minimum: 0, description: 'Текущая корректная версия; 0 — её нет' }
+                etag: { type: string }
+                built_at: { type: [string, 'null'], format: date-time }
+                complete: { type: boolean, description: 'В версии все действующие приложения' }
+                reason: { type: string, description: 'Почему содержимое не собрано целиком (например, размер); шлюзам выдаётся прежняя версия' }
+                excluded:
+                  type: array
+                  description: 'Приложения, исключённые из пакета: шлюз принимает их ключи и отвечает 503 app_unavailable'
+                  items:
+                    type: object
+                    required: [application, reason]
+                    additionalProperties: false
+                    properties:
+                      application: { type: string }
+                      reason: { type: string }
+                lagging:
+                  type: array
+                  description: 'Шлюзы на связи, которые дольше 10 минут работают на другой версии'
+                  items: { type: string }
         notifications:
           type: array
           items:
@@ -2559,15 +2586,21 @@ components:
             required: [condition, requirement, title, active, since, count]
             additionalProperties: false
             properties:
-              condition: { type: string, enum: [account_lockout, access_denied, audit_chain, audit_storage, integrity, time_sync] }
-              requirement: { type: string, enum: [ИАФ.4, УПД.6, РСБ.4, РСБ.5, ОЦЛ.5, ВРМ.1] }
+              condition:
+                type: string
+                enum: [account_lockout, access_denied, audit_chain, audit_storage, integrity, time_sync, config_bundle, config_bundle_lag]
+              requirement: { type: string, enum: [ИАФ.4, УПД.6, РСБ.4, РСБ.5, ОЦЛ.3, ОЦЛ.5, ВРМ.1] }
+              components:
+                type: array
+                items: { type: string }
+                description: 'Компоненты с активным условием (integrity — server или gateway:<ID>, config_bundle_lag — gateway:<ID>); каждое ведётся отдельно и пишется в system.alert (В18 ревью 2.r3b)'
               title: { type: string }
               active: { type: boolean }
               since: { type: [string, 'null'], format: date-time, description: 'Когда условие возникло; у ИАФ.4 и УПД.6 не задаётся' }
               count: { type: [integer, 'null'], minimum: 0, description: 'Число событий за 24 часа (только ИАФ.4 и УПД.6)' }
         unavailable:
           type: array
-          items: { type: string, enum: [integrity, gateways, events, storage, audit_chain, notifications] }
+          items: { type: string, enum: [integrity, gateways, events, storage, audit_chain, bundle, notifications] }
     StatusReport:
       type: object
       required: [ok, checked_at, failed]

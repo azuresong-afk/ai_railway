@@ -352,6 +352,25 @@ func (m *Memory) Key(_ context.Context, orgID, id string) (Key, error) {
 	return cloneKey(k), nil
 }
 
+// ActiveKeys — см. Store.
+func (m *Memory) ActiveKeys(_ context.Context, orgID string, now time.Time) ([]Key, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := []Key{}
+	for _, k := range m.keys {
+		if k.OrgID == orgID && k.RevokedAt.IsZero() && now.Before(k.ExpiresAt) {
+			out = append(out, cloneKey(k))
+		}
+	}
+	slices.SortFunc(out, func(a, b Key) int {
+		if c := strings.Compare(a.AppID, b.AppID); c != 0 {
+			return c
+		}
+		return strings.Compare(a.Prefix, b.Prefix)
+	})
+	return out, nil
+}
+
 // Keys — см. Store.
 func (m *Memory) Keys(_ context.Context, orgID, appID string) ([]Key, error) {
 	m.mu.Lock()

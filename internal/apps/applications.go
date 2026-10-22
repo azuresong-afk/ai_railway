@@ -316,6 +316,9 @@ func (s *Service) CreateApplication(ctx context.Context, by By, in AppInput, pro
 	if len(errs) > 0 {
 		return Application{}, invalid(errs...)
 	}
+	if err := s.checkBundle(ctx, nil, a); err != nil {
+		return Application{}, err
+	}
 	base := Application{Protection: Protection{PolicyMode: pr.PolicyMode, Storage: DefaultStorage, Policy: pr.Policy},
 		FailMode: DefaultFailMode}
 	weak := weakening(guardOf(base, true), guardOf(a, true))
@@ -377,6 +380,9 @@ func (s *Service) UpdateApplication(ctx context.Context, by By, id string, in Ap
 	if err := s.checkApp(ctx, next); err != nil {
 		return Application{}, err
 	}
+	if err := s.checkBundle(ctx, &cur, next); err != nil {
+		return Application{}, err
+	}
 	extOf, err := s.externalOf(ctx, cur.ProviderID, in.ProviderID)
 	if err != nil {
 		return Application{}, err
@@ -414,6 +420,9 @@ func (s *Service) SetProtection(ctx context.Context, by By, id string, in Protec
 	next.Protection = pr
 	in.apply(&next)
 	if err := s.checkApp(ctx, next); err != nil {
+		return Application{}, err
+	}
+	if err := s.checkBundle(ctx, &cur, next); err != nil {
 		return Application{}, err
 	}
 	a, err := s.store.UpdateApplication(ctx, s.orgID, id, func(a *Application) (audit.Entry, error) {
