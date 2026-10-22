@@ -117,6 +117,14 @@ describe("экран «Оповещения»: список и карточка"
     await waitFor(() => expect(calls.filter((c) => c.url.endsWith("/status")).at(-1)?.body).toEqual({ status: "closed" }));
   });
 
+  it("период отбирает сервер: в запрос уходит from", async () => {
+    renderScreen(allPerms);
+    await screen.findByRole("button", { name: /Открыть оповещение/ });
+    expect(calls.find((c) => c.url.startsWith("/api/v1/alerts?"))?.url).not.toContain("from=");
+    fireEvent.change(screen.getByLabelText("Период"), { target: { value: "7d" } });
+    await waitFor(() => expect(calls.some((c) => c.url.startsWith("/api/v1/alerts?") && c.url.includes("from="))).toBe(true));
+  });
+
   it("ссылки на события ведут на экран «События» с фильтром по группе", async () => {
     renderScreen(allPerms);
     fireEvent.click(await screen.findByRole("button", { name: /Открыть оповещение/ }));

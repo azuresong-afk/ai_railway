@@ -4973,6 +4973,367 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/dashboards/overview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Дашборд «Обзор»
+         * @description Право `dashboards.read`. Агрегаты событий без содержимого запросов и ответов. Период — `period`
+         *     (15m, 1h, 24h, 7d, 30d; по умолчанию 24h) либо `from` и `to` (RFC 3339, не длиннее 366 суток).
+         *     До 2 часов данные читаются из событий поминутно, до 31 суток — по часам (начало округляется
+         *     до часа вниз), дольше — по суткам в часовом поясе установки.
+         *     Показатели, график запросов по решениям, топ детекторов, приложения по риску и «Лента решений»
+         *     (`feed=all` — все решения, по умолчанию только с действием).
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description Именованный период дашборда; не сочетается с from и to. По умолчанию 24h */
+                    period?: components["parameters"]["DashPeriod"];
+                    /** @description Начало произвольного периода (RFC 3339); вместе с to */
+                    from?: components["parameters"]["DashFrom"];
+                    /** @description Конец произвольного периода, не включая (RFC 3339); по умолчанию и в будущем — текущий момент */
+                    to?: components["parameters"]["DashTo"];
+                    /** @description «Лента решений»: all — все решения, actions — только с действием (по умолчанию) */
+                    feed?: components["parameters"]["DashFeed"];
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Снимок дашборда */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["DashboardOverview"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/dashboards/threats": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Дашборд «Угрозы»
+         * @description Право `dashboards.read`. Агрегаты событий без содержимого запросов и ответов. Период — `period`
+         *     (15m, 1h, 24h, 7d, 30d; по умолчанию 24h) либо `from` и `to` (RFC 3339, не длиннее 366 суток).
+         *     До 2 часов данные читаются из событий поминутно, до 31 суток — по часам (начало округляется
+         *     до часа вниз), дольше — по суткам в часовом поясе установки.
+         *     Находки по строкам матрицы обнаружения, категориям и детекторам во времени (ряды — для десяти самых частых
+         *     значений), тепловая карта день недели × час в поясе установки, доля непроверенного нетекстового содержимого.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description Именованный период дашборда; не сочетается с from и to. По умолчанию 24h */
+                    period?: components["parameters"]["DashPeriod"];
+                    /** @description Начало произвольного периода (RFC 3339); вместе с to */
+                    from?: components["parameters"]["DashFrom"];
+                    /** @description Конец произвольного периода, не включая (RFC 3339); по умолчанию и в будущем — текущий момент */
+                    to?: components["parameters"]["DashTo"];
+                    /** @description «Лента решений»: all — все решения, actions — только с действием (по умолчанию) */
+                    feed?: components["parameters"]["DashFeed"];
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Снимок дашборда */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["DashboardThreats"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/dashboards/pii": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Дашборд «ПДн»
+         * @description Право `dashboards.read`. Агрегаты событий без содержимого запросов и ответов. Период — `period`
+         *     (15m, 1h, 24h, 7d, 30d; по умолчанию 24h) либо `from` и `to` (RFC 3339, не длиннее 366 суток).
+         *     До 2 часов данные читаются из событий поминутно, до 31 суток — по часам (начало округляется
+         *     до часа вниз), дольше — по суткам в часовом поясе установки.
+         *     Типы ПДн (категории `pii.*`), приложения и действия.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description Именованный период дашборда; не сочетается с from и to. По умолчанию 24h */
+                    period?: components["parameters"]["DashPeriod"];
+                    /** @description Начало произвольного периода (RFC 3339); вместе с to */
+                    from?: components["parameters"]["DashFrom"];
+                    /** @description Конец произвольного периода, не включая (RFC 3339); по умолчанию и в будущем — текущий момент */
+                    to?: components["parameters"]["DashTo"];
+                    /** @description «Лента решений»: all — все решения, actions — только с действием (по умолчанию) */
+                    feed?: components["parameters"]["DashFeed"];
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Снимок дашборда */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["DashboardPII"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/dashboards/consumption": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Дашборд «Потребление»
+         * @description Право `dashboards.read`. Агрегаты событий без содержимого запросов и ответов. Период — `period`
+         *     (15m, 1h, 24h, 7d, 30d; по умолчанию 24h) либо `from` и `to` (RFC 3339, не длиннее 366 суток).
+         *     До 2 часов данные читаются из событий поминутно, до 31 суток — по часам (начало округляется
+         *     до часа вниз), дольше — по суткам в часовом поясе установки.
+         *     Токены, запросы и стоимость в рублях по приложениям, моделям, провайдерам, подразделениям и пользователям
+         *     (псевдонимам), прогноз до конца месяца и исполнение бюджетов (последнее — только с правом `budgets.read`).
+         *     Стоимость считается по ценам модели на момент приёма события; запросы к моделям без цены в стоимость
+         *     не входят и считаются отдельно (`unpriced_requests`).
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description Именованный период дашборда; не сочетается с from и to. По умолчанию 24h */
+                    period?: components["parameters"]["DashPeriod"];
+                    /** @description Начало произвольного периода (RFC 3339); вместе с to */
+                    from?: components["parameters"]["DashFrom"];
+                    /** @description Конец произвольного периода, не включая (RFC 3339); по умолчанию и в будущем — текущий момент */
+                    to?: components["parameters"]["DashTo"];
+                    /** @description «Лента решений»: all — все решения, actions — только с действием (по умолчанию) */
+                    feed?: components["parameters"]["DashFeed"];
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Снимок дашборда */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["DashboardConsumption"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/dashboards/app/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Дашборд «Приложение»
+         * @description Право `dashboards.read`. Агрегаты событий без содержимого запросов и ответов. Период — `period`
+         *     (15m, 1h, 24h, 7d, 30d; по умолчанию 24h) либо `from` и `to` (RFC 3339, не длиннее 366 суток).
+         *     До 2 часов данные читаются из событий поминутно, до 31 суток — по часам (начало округляется
+         *     до часа вниз), дольше — по суткам в часовом поясе установки.
+         *     Владелец приложения (область `own`) видит только свои приложения; чужое — 404 (УПД.8).
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description Именованный период дашборда; не сочетается с from и to. По умолчанию 24h */
+                    period?: components["parameters"]["DashPeriod"];
+                    /** @description Начало произвольного периода (RFC 3339); вместе с to */
+                    from?: components["parameters"]["DashFrom"];
+                    /** @description Конец произвольного периода, не включая (RFC 3339); по умолчанию и в будущем — текущий момент */
+                    to?: components["parameters"]["DashTo"];
+                    /** @description «Лента решений»: all — все решения, actions — только с действием (по умолчанию) */
+                    feed?: components["parameters"]["DashFeed"];
+                };
+                header?: never;
+                path: {
+                    /** @description ID приложения (UUID) */
+                    id: components["parameters"]["ApplicationID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Снимок дашборда */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["DashboardApp"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/dashboards/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Поток обновлений дашборда (SSE)
+         * @description Право `dashboards.read`. Режим реального времени (ТЗ 5.8): `text/event-stream`, событие `snapshot`
+         *     с тем же JSON, что у GET-дашборда, при подключении и после каждого изменения данных; задержка
+         *     не больше 5 с; пустой комментарий `: ping` вместо неизменного снимка. Права проверяются на каждом
+         *     шаге: выход, отзыв токена или потеря права закрывают поток. Не больше трёх потоков на пользователя
+         *     или токен (иначе 429). Для `dashboard=app` нужен `app_id`; владелец приложения (область `own`) —
+         *     только свои приложения.
+         */
+        get: {
+            parameters: {
+                query: {
+                    dashboard: "overview" | "threats" | "pii" | "consumption" | "app";
+                    app_id?: string;
+                    /** @description Именованный период дашборда; не сочетается с from и to. По умолчанию 24h */
+                    period?: components["parameters"]["DashPeriod"];
+                    /** @description Начало произвольного периода (RFC 3339); вместе с to */
+                    from?: components["parameters"]["DashFrom"];
+                    /** @description Конец произвольного периода, не включая (RFC 3339); по умолчанию и в будущем — текущий момент */
+                    to?: components["parameters"]["DashTo"];
+                    /** @description «Лента решений»: all — все решения, actions — только с действием (по умолчанию) */
+                    feed?: components["parameters"]["DashFeed"];
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Поток событий SSE */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/event-stream": string;
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/alerts": {
         parameters: {
             query?: never;
@@ -4983,7 +5344,7 @@ export interface paths {
         /**
          * Оповещения
          * @description Право `alerts.read` (ТЗ 5.6, ADR-0020). От новых к старым, фильтры `status`, `severity`,
-         *     `rule_id` (каждый не больше одного раза). Содержимого запросов и ответов в оповещениях нет:
+         *     `rule_id`, `from`, `to` (период по времени последнего срабатывания; каждый не больше одного раза). Содержимого запросов и ответов в оповещениях нет:
          *     значения группировки (`group`) — метаданные событий, пользователь — псевдоним.
          */
         get: {
@@ -4996,6 +5357,10 @@ export interface paths {
                     status?: "new" | "in_progress" | "closed";
                     severity?: components["schemas"]["AlertSeverity"];
                     rule_id?: string;
+                    /** @description Последнее срабатывание не раньше (RFC 3339, включительно); без параметра — без нижней границы */
+                    from?: string;
+                    /** @description Последнее срабатывание раньше (RFC 3339, не включая); без параметра — без верхней границы. from раньше to */
+                    to?: string;
                 };
                 header?: never;
                 path?: never;
@@ -7009,6 +7374,208 @@ export interface components {
             /** @description Расход достиг бюджета (≥ 100 %) */
             exhausted: boolean;
         };
+        DashPeriodInfo: {
+            /** @description Именованный период или custom */
+            name: string;
+            /**
+             * Format: date-time
+             * @description Начало; для часовых данных округлено до часа вниз
+             */
+            from: string;
+            /** Format: date-time */
+            to: string;
+            /**
+             * @description Шаг рядов
+             * @enum {string}
+             */
+            unit: "minute" | "hour" | "day";
+            /** @description Часовой пояс установки */
+            timezone: string;
+            /** @description Досчёт прошлых периодов закончен: цифры полные */
+            aggregates_ready: boolean;
+        };
+        DashTotals: {
+            /** Format: int64 */
+            requests: number;
+            /** Format: int64 */
+            with_findings: number;
+            /** Format: int64 */
+            non_text_unchecked: number;
+            /**
+             * Format: int64
+             * @description Заблокировано (режим enforce)
+             */
+            blocked: number;
+            /**
+             * Format: int64
+             * @description Заблокировало бы (режим monitor)
+             */
+            would_block: number;
+            /**
+             * Format: int64
+             * @description Замаскировано или псевдонимизировано
+             */
+            masked: number;
+            /** Format: int64 */
+            tokens_prompt: number;
+            /** Format: int64 */
+            tokens_completion: number;
+            /** @description Стоимость, рубли, 7 знаков после точки */
+            cost: string;
+            /**
+             * Format: int64
+             * @description Запросы моделей без цены
+             */
+            unpriced_requests: number;
+        };
+        DashLatency: {
+            /** @description Верхняя граница корзины p95 задержки шлюза, мс; 0 — данных нет */
+            p95_ms: number;
+            /** @description p95 больше последней границы (5 с) */
+            overflow: boolean;
+            /** Format: int64 */
+            requests: number;
+        };
+        DashPoint: {
+            /** Format: date-time */
+            bucket: string;
+            key: string;
+            /** Format: int64 */
+            value: number;
+        };
+        DashTop: {
+            key: string;
+            /** Format: int64 */
+            value: number;
+        };
+        DashRequestRow: {
+            /** @description Приложение, модель, провайдер, подразделение или псевдоним пользователя; пусто — не указано */
+            key: string;
+            /** Format: int64 */
+            requests: number;
+            /** Format: int64 */
+            with_findings: number;
+            /** Format: int64 */
+            blocked: number;
+            /** Format: int64 */
+            would_block: number;
+            /** Format: int64 */
+            masked: number;
+            /** Format: int64 */
+            tokens_prompt: number;
+            /** Format: int64 */
+            tokens_completion: number;
+            cost: string;
+            /** Format: int64 */
+            unpriced_requests: number;
+        };
+        /** @description Решение в ленте — метаданные события без содержимого; карточка — GET /api/v1/events/{id} */
+        DashFeedItem: {
+            /** Format: uuid */
+            id: string;
+            /** Format: date-time */
+            time: string;
+            app: string;
+            model: string;
+            action: string;
+            policy_mode: string;
+            severity: string;
+            rule: string;
+            threats: string[];
+        };
+        DashCell: {
+            /** @description 1 — понедельник */
+            weekday: number;
+            /** @description Час суток в поясе установки */
+            hour: number;
+            /** Format: int64 */
+            findings: number;
+        };
+        DashPIIRow: {
+            category: string;
+            app: string;
+            action: string;
+            /** Format: int64 */
+            findings: number;
+        };
+        DashboardOverview: {
+            period: components["schemas"]["DashPeriodInfo"];
+            totals: components["schemas"]["DashTotals"];
+            latency: components["schemas"]["DashLatency"];
+            /** @description Ключи: blocked, would_block, masked, allowed */
+            decisions: components["schemas"]["DashPoint"][];
+            top_detectors: components["schemas"]["DashTop"][];
+            apps: components["schemas"]["DashRequestRow"][];
+            feed: components["schemas"]["DashFeedItem"][];
+        };
+        DashboardThreats: {
+            period: components["schemas"]["DashPeriodInfo"];
+            totals: components["schemas"]["DashTotals"];
+            non_text_unchecked_share: number;
+            top_threats: components["schemas"]["DashTop"][];
+            top_categories: components["schemas"]["DashTop"][];
+            top_detectors: components["schemas"]["DashTop"][];
+            by_threat: components["schemas"]["DashPoint"][];
+            by_category: components["schemas"]["DashPoint"][];
+            by_detector: components["schemas"]["DashPoint"][];
+            heatmap: components["schemas"]["DashCell"][];
+        };
+        DashboardPII: {
+            period: components["schemas"]["DashPeriodInfo"];
+            /** Format: int64 */
+            findings: number;
+            types: components["schemas"]["DashTop"][];
+            rows: components["schemas"]["DashPIIRow"][];
+            series: components["schemas"]["DashPoint"][];
+        };
+        DashAppRef: {
+            /** Format: uuid */
+            id: string;
+            slug: string;
+            name: string;
+        };
+        DashboardApp: {
+            period: components["schemas"]["DashPeriodInfo"];
+            application: components["schemas"]["DashAppRef"];
+            totals: components["schemas"]["DashTotals"];
+            latency: components["schemas"]["DashLatency"];
+            decisions: components["schemas"]["DashPoint"][];
+            top_detectors: components["schemas"]["DashTop"][];
+            models: components["schemas"]["DashRequestRow"][];
+            feed: components["schemas"]["DashFeedItem"][];
+        };
+        DashUsagePoint: {
+            /** Format: date-time */
+            bucket: string;
+            /** Format: int64 */
+            requests: number;
+            /** Format: int64 */
+            tokens: number;
+            cost: string;
+        };
+        DashForecast: {
+            month: string;
+            /** @description Расход с начала месяца по цене на момент запросов */
+            spent: string;
+            /** @description Линейный прогноз до конца месяца */
+            projected: string;
+            /** @description Данных достаточно: прошли сутки месяца и есть расход */
+            enough: boolean;
+            month_elapsed: number;
+        };
+        DashboardConsumption: {
+            period: components["schemas"]["DashPeriodInfo"];
+            totals: components["schemas"]["DashTotals"];
+            series: components["schemas"]["DashUsagePoint"][];
+            by_app: components["schemas"]["DashRequestRow"][];
+            by_model: components["schemas"]["DashRequestRow"][];
+            by_provider: components["schemas"]["DashRequestRow"][];
+            by_department: components["schemas"]["DashRequestRow"][];
+            by_user: components["schemas"]["DashRequestRow"][];
+            forecast: components["schemas"]["DashForecast"];
+            /** @description Исполнение бюджетов текущего месяца; пусто без права budgets.read */
+            budgets: components["schemas"]["BudgetStatus"][];
+        };
         BudgetStatusList: {
             month: string;
             items: components["schemas"]["BudgetStatus"][];
@@ -8692,6 +9259,14 @@ export interface components {
         From: string;
         /** @description Конец периода, не включая (RFC 3339); по умолчанию — текущее время */
         To: string;
+        /** @description Именованный период дашборда; не сочетается с from и to. По умолчанию 24h */
+        DashPeriod: "15m" | "1h" | "24h" | "7d" | "30d";
+        /** @description Начало произвольного периода (RFC 3339); вместе с to */
+        DashFrom: string;
+        /** @description Конец произвольного периода, не включая (RFC 3339); по умолчанию и в будущем — текущий момент */
+        DashTo: string;
+        /** @description «Лента решений»: all — все решения, actions — только с действием (по умолчанию) */
+        DashFeed: "all" | "actions";
         /** @description Фильтр событий (язык — в описании GET /api/v1/events), до 2048 байт */
         EventFilter: string;
         /** @description Ключ повторяемости создающего запроса, 1–64 символа `[A-Za-z0-9._-]` */

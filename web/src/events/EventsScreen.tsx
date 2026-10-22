@@ -155,7 +155,13 @@ export function EventsScreen({ me }: { me: Me }) {
           </>
         )}
       </section>
-      {selected && <EventCard key={selected} id={selected} canReadContent={canReadContent} onClose={() => set("event", null)} />}
+      {selected && <EventCard
+          key={selected}
+          id={selected}
+          canReadContent={canReadContent}
+          rights={{ canMark: me.permissions.includes("events.mark"), canException: me.permissions.includes("policies.manage"), mfa: me.mfa?.enabled === true }}
+          onClose={() => set("event", null)}
+        />}
       <Toaster open={toast !== null} onOpenChange={(v) => !v && setToast(null)} title={toast?.title ?? ""}>
         {toast?.text}
       </Toaster>

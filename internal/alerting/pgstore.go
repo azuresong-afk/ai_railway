@@ -459,8 +459,10 @@ func (s *PGStore) Alerts(ctx context.Context, orgID string, q AlertQuery) ([]Ale
 		WHERE a.org_id = $1 AND ($2 = '' OR a.status = $2) AND ($3 = '' OR a.severity = $3)
 			AND ($4 = '' OR a.rule_id::text = $4)
 			AND ($5::timestamptz IS NULL OR (a.created_at, a.id) < ($5, $6::uuid))
-		ORDER BY a.created_at DESC, a.id DESC LIMIT $7`,
-		orgID, q.Status, q.Severity, q.RuleID, afterAt, afterID, limit)
+			AND ($7::timestamptz IS NULL OR a.last_triggered_at >= $7)
+			AND ($8::timestamptz IS NULL OR a.last_triggered_at < $8)
+		ORDER BY a.created_at DESC, a.id DESC LIMIT $9`,
+		orgID, q.Status, q.Severity, q.RuleID, afterAt, afterID, nullTime(q.From), nullTime(q.To), limit)
 	if err != nil {
 		return nil, err
 	}

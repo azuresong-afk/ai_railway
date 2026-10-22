@@ -46,6 +46,7 @@ async function mockPolicies(page: Page, testStatus = 200): Promise<Seen> {
       return json({
         from: 2, to: 1, fields: [], rules_added: [], rules_removed: [rule], rules_changed: [], reordered: false,
         weakening: true, weakening_reasons: [{ kind: "rule_removed", rule: "pii-ru" }],
+        exceptions_added: [], exceptions_removed: [], exceptions_changed: [],
       });
     }
     // Откат с ослаблением: без пароля сервер просит подтверждение (В23 ревью 2.r5).

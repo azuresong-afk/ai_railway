@@ -315,6 +315,47 @@ func TestPGAlertsOnIngest(t *testing.T) {
 	}
 }
 
+// Период по времени последнего срабатывания на PostgreSQL: [from, to), границы по отдельности (задача 3.19).
+func TestPGAlertsPeriod(t *testing.T) {
+	e := setupPG(t)
+	ctx := pgCtx(t)
+	e.ingest(t, e.event(t, "old-bot", "gigachat", "allow"), e.event(t, "new-bot", "gigachat", "allow"))
+	all := e.list(t, alerting.BuiltinNewModel)
+	if len(all) == 0 {
+		t.Fatal("нет оповещений для проверки периода")
+	}
+	// Одно оповещение «старим» на сутки.
+	old := all[0].ID
+	if _, err := e.owner.Exec(ctx, `UPDATE alerts SET last_triggered_at = last_triggered_at - interval '1 day' WHERE id = $1`, old); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	ids := func(q alerting.AlertQuery) map[string]bool {
+		q.Limit = 100
+		got, err := e.svc.Alerts(ctx, q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		m := map[string]bool{}
+		for _, a := range got {
+			m[a.ID] = true
+		}
+		return m
+	}
+	if m := ids(alerting.AlertQuery{From: now.Add(-time.Hour)}); m[old] {
+		t.Fatalf("from исключает старое: %v", m)
+	}
+	if m := ids(alerting.AlertQuery{To: now.Add(-time.Hour)}); !m[old] || len(m) != 1 {
+		t.Fatalf("to оставляет только старое: %v", m)
+	}
+	if m := ids(alerting.AlertQuery{From: now.Add(-48 * time.Hour), To: now.Add(time.Hour)}); !m[old] {
+		t.Fatalf("широкий период: %v", m)
+	}
+	if m := ids(alerting.AlertQuery{From: now.Add(time.Hour)}); len(m) != 0 {
+		t.Fatalf("период в будущем: %v", m)
+	}
+}
+
 func sqlState(err error) string {
 	var pe *pgconn.PgError
 	if errors.As(err, &pe) {

@@ -173,6 +173,9 @@ type AlertQuery struct {
 	Status   string
 	Severity string
 	RuleID   string
+	// From и To — период по времени последнего срабатывания: [From, To);
+	// нулевое время — без границы.
+	From, To time.Time
 	// After — последняя выданная запись предыдущей страницы.
 	After *Position
 	Limit int
@@ -190,5 +193,6 @@ func (a *Alert) before(p *Position) bool {
 
 func (q *AlertQuery) match(a *Alert) bool {
 	return (q.Status == "" || a.Status == q.Status) && (q.Severity == "" || a.Severity == q.Severity) &&
-		(q.RuleID == "" || a.RuleID == q.RuleID) && (q.After == nil || a.before(q.After))
+		(q.RuleID == "" || a.RuleID == q.RuleID) && (q.After == nil || a.before(q.After)) &&
+		(q.From.IsZero() || !a.LastTriggeredAt.Before(q.From)) && (q.To.IsZero() || a.LastTriggeredAt.Before(q.To))
 }
