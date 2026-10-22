@@ -109,9 +109,9 @@ services:
       - "-server-ca=/run/secrets/console-ca"
       - "-client-cert=/var/lib/aisec-gateway/reg/gateway.crt"
       - "-client-key=/var/lib/aisec-gateway/reg/gateway.key"
-      - "-bundle-pub=/run/secrets/bundle-signing-pub"
+      - "-bundle-pub=/run/secrets/gateway-bundle-anchor"
       - "-state-dir=/var/lib/aisec-gateway/state"
-    secrets: [gateway-tls-cert, gateway-tls-key, console-ca, bundle-signing-pub]
+    secrets: [gateway-tls-cert, gateway-tls-key, console-ca, gateway-bundle-anchor]
     volumes:
       # reg/ — сертификат и ключ шлюза (aisec-gateway register), state/ —
       # ключ секретов пакета и последний пакет; оба каталога 0700. Каталог
@@ -156,9 +156,12 @@ secrets:
     file: ${AISEC_DATA_DIR:?задайте AISEC_DATA_DIR}/secrets/gateway.crt
   gateway-tls-key:
     file: ${AISEC_DATA_DIR:?задайте AISEC_DATA_DIR}/secrets/gateway.key
-  # Открытый ключ проверки пакетов конфигурации из aisec-cli init.
-  bundle-signing-pub:
-    file: ${AISEC_DATA_DIR:?задайте AISEC_DATA_DIR}/keys/bundle-signing.pub
+  # Якорь проверки пакетов конфигурации шлюза — копия keys/bundle-signing.pub
+  # после aisec-cli init (install-pilot.md, шаг 3.4). Отдельный файл: при
+  # компрометации ключа подписи якорь шлюза меняется, а якорь сервера в
+  # keys/ остаётся (ADR-0018, п. 4.4; 3В6 ревью 3.r1).
+  gateway-bundle-anchor:
+    file: ${AISEC_DATA_DIR:?задайте AISEC_DATA_DIR}/secrets/gateway-bundle-anchor.pub
   db-postgres-password:
     file: ${AISEC_DATA_DIR:?задайте AISEC_DATA_DIR}/secrets/db-postgres-password
   db-owner-password:
