@@ -98,7 +98,10 @@ func TestWriteFileAtomic(t *testing.T) {
 	if got, _ := os.ReadFile(path); string(got) != "данные" { //nolint:gosec // G304: путь из t.TempDir
 		t.Fatalf("содержимое: %q", got)
 	}
-	entries, _ := os.ReadDir(filepath.Dir(path))
+	entries, err := os.ReadDir(filepath.Dir(path))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(entries) != 1 {
 		t.Fatalf("временный файл остался: %v", entries)
 	}

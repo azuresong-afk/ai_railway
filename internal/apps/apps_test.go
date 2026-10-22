@@ -725,8 +725,8 @@ func TestProtectionWeakening(t *testing.T) {
 	if _, err := e.svc.SetProtection(ctx, noConfirm, a.ID, apps.ProtectionInput{Lists: list(func(l *apps.List) { l.Words = append(l.Words, "вега", "лира") })}); err != nil {
 		t.Fatalf("усиление без проверки: %v", err)
 	}
-	if got, _ := e.svc.Application(ctx, a.ID, ""); got.FailMode != "fail_closed" || got.Storage != "masked" {
-		t.Fatalf("отклонённые изменения сохранены: %+v", got)
+	if got, err := e.svc.Application(ctx, a.ID, ""); err != nil || got.FailMode != "fail_closed" || got.Storage != "masked" {
+		t.Fatalf("отклонённые изменения сохранены: %+v %v", got, err)
 	}
 	// Снятие признака «внешний» у провайдера — тоже с проверкой.
 	if _, err := e.svc.SetExternal(ctx, noConfirm, p.ID, false, "свой контур"); !errors.Is(err, apps.ErrConfirmRequired) {

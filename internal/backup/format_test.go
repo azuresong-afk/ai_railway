@@ -119,8 +119,14 @@ func TestSealOpenRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, _ := json.Marshal(a.Snapshot)
-	exp, _ := json.Marshal(want)
+	got, err := json.Marshal(a.Snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exp, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !bytes.Equal(got, exp) {
 		t.Fatalf("содержимое отличается:\n%s\n%s", got, exp)
 	}
