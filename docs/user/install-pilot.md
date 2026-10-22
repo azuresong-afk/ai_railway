@@ -39,6 +39,7 @@
 1. Запустите БД: `docker compose up -d postgres`. При первом запуске создаются роли `aisec_owner` (владелец схемы) и `aisec_server` (вход сервера, не владелец таблиц), а также база `aisec`.
 2. Выполните миграции: `docker compose run --rm aisec-cli migrate`.
 3. Создайте ключи установки: `docker compose run --rm aisec-cli init -dir /etc/aisec/keys`. Сохраните **токен первичной настройки**: он показывается один раз и действует 24 часа. Ключи лежат в `/srv/aisec/keys` и принадлежат пользователю `aisec`. Резервную копию `master.key` храните отдельно от копии БД.
+   Затем ещё раз выполните `sudo ./prepare-host.sh`: он положит якорь шлюза `/srv/aisec/secrets/gateway-bundle-anchor.pub` — копию `keys/bundle-signing.pub`, по которой шлюз проверяет пакеты конфигурации. Это отдельный файл: при компрометации ключа подписи меняется только он, а ключи сервера в `keys/` остаются ([руководство администратора](admin-guide.md), раздел 14).
 4. Запустите сервер: `docker compose up -d aisec-server`. Откройте `https://AISEC_CONSOLE_HOST:8444` и выполните первичную настройку ([руководство администратора](admin-guide.md), раздел 3).
 5. Зарегистрируйте шлюз. Токен вводится без отображения и не попадает в историю оболочки:
    ```
@@ -46,10 +47,10 @@
    read -rs AISEC_GATEWAY_REGISTRATION_TOKEN && export AISEC_GATEWAY_REGISTRATION_TOKEN
    docker compose run --rm --no-deps -e AISEC_GATEWAY_REGISTRATION_TOKEN \
      aisec-gateway register -console https://AISEC_CONSOLE_HOST:8444 -console-ca /run/secrets/console-ca \
-     -out-dir /var/lib/aisec-gateway/reg
+     -out-dir /var/lib/aisec-gateway/reg -state-dir /var/lib/aisec-gateway/state
    unset AISEC_GATEWAY_REGISTRATION_TOKEN
    ```
-   Здесь `AISEC_CONSOLE_HOST` — то же имя, что в `.env`.
+   Здесь `AISEC_CONSOLE_HOST` — то же имя, что в `.env`. С `-state-dir` шлюз создаёт ключ для учётных данных провайдеров при регистрации, и сервер сразу его закрепляет: другой ключ он не примет.
 6. Запустите всё: `docker compose up -d`. Шлюз получит подписанный пакет конфигурации от сервера, после этого `GET https://<шлюз>:8443/readyz` отвечает `{"status":"ok"}`. Провайдеры, приложения и политики настраиваются в консоли ([руководство администратора](admin-guide.md), разделы 5–7).
 
 Проверка установки: `docker compose run --rm aisec-cli verify` сверяет все файлы выпуска с подписанным манифестом, код возврата 3 означает нарушение. Состояние компонентов показывает экран «Состояние системы».
@@ -68,11 +69,23 @@
 ## 5. Своя СУБД
 Задайте `COMPOSE_PROFILES=` (пусто), создайте роли и базу так же, как в `initdb/10-aisec-roles.sql`, и задайте в `.env` строки `AISEC_SERVER_DB_URL` и `AISEC_OWNER_DB_URL` с `sslmode=verify-full`. Пароли кладите только в passfile `secrets/db-server.pgpass` и `secrets/db-owner.pgpass` (формат `*:*:*:роль:пароль`, владелец `aisec`, права `0400`). Корень УЦ СУБД подключите дополнительным секретом.
 
-## 6. Где что лежит
+## 6. Ротация ключей
+Команды выполняются в каталоге `deploy/compose/pilot`. Новые файлы сразу принадлежат пользователю `aisec`, менять владельца не нужно. Когда что менять и что делать при компрометации, описано в [руководстве администратора](admin-guide.md), раздел 14.
+```
+docker compose run --rm aisec-cli keys status -dir /etc/aisec/keys
+docker compose run --rm aisec-cli keys rotate-master -dir /etc/aisec/keys
+docker compose run --rm aisec-cli keys rotate-data -dir /etc/aisec/keys
+docker compose run --rm aisec-cli keys rotate-signing -dir /etc/aisec/keys    # затем: docker compose restart aisec-server
+docker compose run --rm aisec-cli keys rotate-ca -dir /etc/aisec/keys         # затем: docker compose restart aisec-server
+docker compose run --rm aisec-cli keys rotate-audit -dir /etc/aisec/keys      # затем: docker compose restart aisec-server
+```
+Якорь шлюза `/srv/aisec/secrets/gateway-bundle-anchor.pub` при плановой ротации не меняется: шлюз узнаёт о новом ключе подписи из пакета.
+
+## 7. Где что лежит
 | Путь на хосте | Владелец | Что |
 |---|---|---|
 | `/srv/aisec/keys` | `aisec`, `0700` | ключи `aisec-cli init` (мастер-ключ, УЦ шлюзов, ключи подписи) |
-| `/srv/aisec/secrets` | `root`, `0700` | сертификаты TLS, пароли и passfile ролей БД |
+| `/srv/aisec/secrets` | `root`, `0700` | сертификаты TLS, пароли и passfile ролей БД, якорь шлюза `gateway-bundle-anchor.pub` (`0644`) |
 | `/srv/aisec/pg` | `aisec-db`, `0700` | данные PostgreSQL |
-| `/srv/aisec/gateway` | `root`, `0755` | каталоги шлюза: `reg/` (сертификат шлюза) и `state/` (последний пакет и ключ секретов пакета), оба `aisec-gw`, `0700` |
+| `/srv/aisec/gateway` | `root`, `0755` | каталоги шлюза: `reg/` (сертификат шлюза) и `state/` (последний пакет, ключ секретов пакета, заявления о доверии `trust.json`, перевыпущенный сертификат `client.pem`), оба `aisec-gw`, `0700` |
 | `/srv/aisec/backups` | `aisec`, `0700` | резервные копии `aisec-cli backup` (`/var/lib/aisec/backups` в контейнере) |
