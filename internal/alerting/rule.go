@@ -239,10 +239,6 @@ type InputError struct{ Errs []error }
 
 func (e *InputError) Error() string { return errors.Join(e.Errs...).Error() }
 
-func invalidf(format string, a ...any) error {
-	return &InputError{Errs: []error{fmt.Errorf(format, a...)}}
-}
-
 // RuleInput — правило из запроса API (создание и полная замена).
 type RuleInput struct {
 	Kind        string    `json:"kind"`
