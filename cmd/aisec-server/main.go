@@ -55,6 +55,12 @@ const (
 	// eventsReadStatementTimeout — statement_timeout пула чтения: выгрузка
 	// (events.ExportTimeout) и запас.
 	eventsReadStatementTimeout = events.ExportTimeout + 10*time.Second
+	// auditReadPoolSize — пул выборок журнала аудита консолью, по пределу
+	// api.MaxAuditReadsTotal (В17 ревью 2.r3b).
+	auditReadPoolSize = api.MaxAuditReadsTotal
+	// auditReadStatementTimeout — statement_timeout пула выборок журнала:
+	// срок выборки (audit.QueryTimeout) и запас; раньше обрывает контекст.
+	auditReadStatementTimeout = audit.QueryTimeout + 2*time.Second
 )
 
 func main() {
@@ -127,7 +133,12 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	if err := requireAuditKey(ctx, checkpoints, auditVerifier != nil, logger); err != nil {
 		return err
 	}
-	auditLog, err := audit.New(db.Pool(), p, audit.WithCheckpoints(checkpoints))
+	auditReadDB, err := store.Open(ctx, cfg.DatabaseURL, auditReadPoolSize, store.WithStatementTimeout(auditReadStatementTimeout))
+	if err != nil {
+		return err
+	}
+	defer auditReadDB.Close()
+	auditLog, err := audit.New(db.Pool(), p, audit.WithCheckpoints(checkpoints), audit.WithReadDB(auditReadDB.Pool()))
 	if err != nil {
 		return err
 	}

@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -29,6 +30,11 @@ type memJournal struct {
 	entries []audit.Entry
 	lastQ   audit.Query
 	busy    bool
+	// failRecord — запись в журнал не удаётся; hold — выборка ждёт его
+	// закрытия, о входе в выборку сообщает entered.
+	failRecord bool
+	hold       chan struct{}
+	entered    chan struct{}
 }
 
 func newMemJournal(t testing.TB, n int) *memJournal {
@@ -71,6 +77,9 @@ func (j *memJournal) append(t testing.TB, e audit.Entry) {
 func (j *memJournal) Record(_ context.Context, e audit.Entry) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
+	if j.failRecord {
+		return errors.New("журнал недоступен")
+	}
 	j.entries = append(j.entries, e)
 	return nil
 }
@@ -79,12 +88,17 @@ func (j *memJournal) List(_ context.Context, q audit.Query) ([]audit.Record, err
 	if err := q.Validate(); err != nil {
 		return nil, err
 	}
+	if j.hold != nil {
+		j.entered <- struct{}{}
+		<-j.hold
+	}
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	j.lastQ = q
 	var out []audit.Record
+	// Время записей растёт вместе с номером: порядок (ts, seq) — по номеру.
 	for i := len(j.records) - 1; i >= 0 && len(out) < q.Limit; i-- {
-		if q.BeforeSeq == 0 || j.records[i].Seq < q.BeforeSeq {
+		if a := q.After; a == nil || j.records[i].TS.Before(a.TS) || j.records[i].TS.Equal(a.TS) && j.records[i].Seq < a.Seq {
 			out = append(out, j.records[i])
 		}
 	}
@@ -178,6 +192,9 @@ func TestParseAuditList(t *testing.T) {
 		"курсор":                  "cursor=xyz",
 		"курсор не номер":         "cursor=" + Cursor{TimeMicro: 1, ID: "abc"}.Encode(),
 		"курсор ноль":             "cursor=" + Cursor{TimeMicro: 1, ID: "0"}.Encode(),
+		"курсор inf со временем":  "cursor=" + Cursor{TimeMicro: 1, ID: "inf-5"}.Encode(),
+		"курсор inf без номера":   "cursor=" + Cursor{ID: "inf-"}.Encode(),
+		"курсор inf с нулём":      "cursor=" + Cursor{ID: "inf-05"}.Encode(),
 		"длинная строка":          "actor=" + strings.Repeat("a", auditQueryMax),
 	}
 	for name, raw := range bad {
@@ -218,8 +235,8 @@ func TestListAudit(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &page); err != nil || w.Code != 200 {
 		t.Fatal(w.Code, err)
 	}
-	if len(page.Items) != 2 || page.Items[0].Seq != 3 || j.lastQ.BeforeSeq != 4 {
-		t.Errorf("вторая страница: %+v, курсор %d", page.Items, j.lastQ.BeforeSeq)
+	if a := j.lastQ.After; len(page.Items) != 2 || page.Items[0].Seq != 3 || a == nil || a.Seq != 4 || !a.TS.Equal(j.records[3].TS) {
+		t.Errorf("вторая страница: %+v, курсор %+v", page.Items, j.lastQ.After)
 	}
 	// Каждый просмотр — audit.list; в саму выдачу запись не попадает.
 	if got := j.actions(); len(got) != 2 || got[0] != "audit.list" {
@@ -366,4 +383,65 @@ func FuzzParseAuditList(f *testing.F) {
 			t.Fatalf("принят неверный запрос %q: %v", raw, err)
 		}
 	})
+}
+
+// Курсор после записи с не конечным временем продолжает эту часть выборки,
+// после обычной — период по (ts, seq) (В17 ревью 2.r3b).
+func TestAuditCursorRoundTrip(t *testing.T) {
+	at := time.Date(2026, 10, 21, 12, 0, 0, 123456000, time.UTC)
+	for _, r := range []audit.Record{{Seq: 7, TS: at}, {Seq: 9}} {
+		c, err := DecodeCursor(auditCursor(&r).Encode())
+		if err != nil {
+			t.Fatal(err)
+		}
+		pos, ok := auditCursorPosition(c)
+		if !ok || pos.Seq != r.Seq || !pos.TS.Equal(r.TS) {
+			t.Errorf("%+v: %+v %v", r, pos, ok)
+		}
+	}
+}
+
+// Не больше MaxAuditReadsPerSubject одновременных выборок на субъект:
+// следующая — 429 без записи в аудит (В17 ревью 2.r3b).
+func TestListAuditConcurrencyLimit(t *testing.T) {
+	j := newMemJournal(t, 3)
+	j.hold, j.entered = make(chan struct{}), make(chan struct{}, MaxAuditReadsPerSubject)
+	h := auditHandler(t, j, auth.PermAuditRead)
+	codes := make(chan int, MaxAuditReadsPerSubject)
+	var wg sync.WaitGroup
+	for range MaxAuditReadsPerSubject {
+		wg.Go(func() { codes <- do(h, "GET", "/api/v1/audit", "").Code })
+		<-j.entered
+	}
+	w := do(h, "GET", "/api/v1/audit", "")
+	mustProblem(t, w, http.StatusTooManyRequests, CodeRateLimited)
+	if w.Header().Get("Retry-After") == "" {
+		t.Error("нет Retry-After")
+	}
+	close(j.hold)
+	wg.Wait()
+	close(codes)
+	for c := range codes {
+		if c != http.StatusOK {
+			t.Errorf("выборка в пределе: %d", c)
+		}
+	}
+	if got := j.actions(); len(got) != MaxAuditReadsPerSubject {
+		t.Errorf("записи аудита: %v", got)
+	}
+	j.hold = nil
+	if w := do(h, "GET", "/api/v1/audit", ""); w.Code != http.StatusOK {
+		t.Errorf("после освобождения: %d", w.Code)
+	}
+}
+
+// Просмотр без записи audit.list не выдаёт данных: 503 (Н30 ревью 2.r3b).
+func TestListAuditRecordFails(t *testing.T) {
+	j := newMemJournal(t, 3)
+	j.failRecord = true
+	w := do(auditHandler(t, j, auth.PermAuditRead), "GET", "/api/v1/audit", "")
+	mustProblem(t, w, http.StatusServiceUnavailable, CodeUnavailable)
+	if strings.Contains(w.Body.String(), "auth.login") {
+		t.Errorf("данные в ответе: %s", w.Body)
+	}
 }

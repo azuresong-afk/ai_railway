@@ -23,8 +23,8 @@ const (
 	MaxQueryLimit = 1000
 	// MaxQueryActions — наибольшее число кодов и групп в фильтре.
 	MaxQueryActions = 20
-	// queryTimeout — предел на выборку, если у контекста нет своего срока.
-	queryTimeout = 10 * time.Second
+	// QueryTimeout — предел на выборку, если у контекста нет своего срока.
+	QueryTimeout = 10 * time.Second
 )
 
 // ErrBadQuery — параметры выборки неверны (ошибка вызывающего кода: API
@@ -61,9 +61,17 @@ type Query struct {
 	ObjectID   string
 	// Result — итог; пусто — любой.
 	Result Result
-	// BeforeSeq — записи с номером меньше (курсор); 0 — с последней.
-	BeforeSeq int64
-	Limit     int
+	// After — курсор: последняя запись предыдущей страницы; nil — с начала.
+	After *Position
+	Limit int
+}
+
+// Position — место записи в выборке. Записи идут от новых к старым по
+// (TS, Seq); записи с не конечным временем (подмена в обход CHECK) — в
+// начале выборки по Seq, у них TS нулевое.
+type Position struct {
+	TS  time.Time
+	Seq int64
 }
 
 // Validate проверяет период, пределы и значения из белых списков.
@@ -75,7 +83,7 @@ func (q *Query) Validate() error {
 		return fmt.Errorf("%w: limit", ErrBadQuery)
 	case len(q.Actions)+len(q.Groups) > MaxQueryActions:
 		return fmt.Errorf("%w: коды событий", ErrBadQuery)
-	case q.BeforeSeq < 0:
+	case q.After != nil && q.After.Seq < 1:
 		return fmt.Errorf("%w: курсор", ErrBadQuery)
 	case utf8.RuneCountInString(q.Actor) > maxActorName || utf8.RuneCountInString(q.ObjectType) > maxObjectType ||
 		utf8.RuneCountInString(q.ObjectID) > maxObjectID:
@@ -104,8 +112,22 @@ func (q *Query) Validate() error {
 	return nil
 }
 
+// listColumns — столбцы записи в частях выборки и во внешнем SELECT.
+const (
+	listInner = `seq, id, org_id, ts, actor_type, actor_id, actor_name, source_ip, action,
+		object_type, object_id, result, details, hash_alg, prev_hash, hash`
+	listOuter = `seq, id::text, org_id::text, CASE WHEN isfinite(ts) THEN ts END, actor_type, actor_id, actor_name,
+		host(source_ip), action, object_type, object_id, result, details::text, hash_alg, prev_hash, hash`
+)
+
 // buildList — SELECT выборки. Текст запроса собирается только из констант;
 // значения пользователя — параметрами.
+//
+// Две части UNION ALL (В17 ревью 2.r3b): записи с не конечным временем — по
+// частичному индексу audit_log_not_finite (обычно пусто), и период
+// ts >= $2 AND ts < $3 по индексу (org_id, ts) с порядком (ts, seq) от
+// новых к старым. Условие «период или не конечное время» в одной части не
+// позволяло применить индекс: выборка шла назад по seq через весь журнал.
 func buildList(q *Query) (string, []any) {
 	org := q.OrgID
 	if org == "" {
@@ -116,11 +138,7 @@ func buildList(q *Query) (string, []any) {
 		args = append(args, v)
 		return "$" + strconv.Itoa(len(args))
 	}
-	var b strings.Builder
-	b.WriteString(`SELECT seq, id::text, org_id::text,
-		CASE WHEN isfinite(ts) THEN ts END, actor_type, actor_id, actor_name,
-		host(source_ip), action, object_type, object_id, result, details::text, hash_alg, prev_hash, hash
-		FROM audit_log WHERE org_id = $1::uuid AND (ts >= $2 AND ts < $3 OR NOT isfinite(ts))`)
+	var f strings.Builder
 	if len(q.Actions) > 0 || len(q.Groups) > 0 {
 		// Группа сравнивается через starts_with, а не LIKE: «_» в кодах
 		// был бы шаблоном.
@@ -129,44 +147,59 @@ func buildList(q *Query) (string, []any) {
 			groups[i] = g + "."
 		}
 		actions := append([]string{}, q.Actions...)
-		b.WriteString(" AND (action = ANY(" + arg(actions) + "::text[]) OR EXISTS (SELECT 1 FROM unnest(" +
+		f.WriteString(" AND (action = ANY(" + arg(actions) + "::text[]) OR EXISTS (SELECT 1 FROM unnest(" +
 			arg(groups) + "::text[]) AS g(p) WHERE starts_with(action, g.p)))")
 	}
 	if q.ActorType != "" {
-		b.WriteString(" AND actor_type = " + arg(string(q.ActorType)))
+		f.WriteString(" AND actor_type = " + arg(string(q.ActorType)))
 	}
 	if q.Actor != "" {
 		p := arg(q.Actor)
-		b.WriteString(" AND (actor_id = " + p + " OR actor_name = " + p + ")")
+		f.WriteString(" AND (actor_id = " + p + " OR actor_name = " + p + ")")
 	}
 	if q.ObjectType != "" {
-		b.WriteString(" AND object_type = " + arg(q.ObjectType))
+		f.WriteString(" AND object_type = " + arg(q.ObjectType))
 	}
 	if q.ObjectID != "" {
-		b.WriteString(" AND object_id = " + arg(q.ObjectID))
+		f.WriteString(" AND object_id = " + arg(q.ObjectID))
 	}
 	if q.Result != "" {
-		b.WriteString(" AND result = " + arg(string(q.Result)))
+		f.WriteString(" AND result = " + arg(string(q.Result)))
 	}
-	if q.BeforeSeq > 0 {
-		b.WriteString(" AND seq < " + arg(q.BeforeSeq))
+	filter := f.String()
+	limit := arg(q.Limit)
+	var b strings.Builder
+	b.WriteString("SELECT " + listOuter + " FROM (")
+	// Курсор в первой части (не конечное время) — продолжаем её по seq;
+	// курсор во второй — первая часть уже выдана.
+	if q.After == nil || q.After.TS.IsZero() {
+		b.WriteString("(SELECT 0 AS part, " + listInner + " FROM audit_log WHERE org_id = $1::uuid AND NOT isfinite(ts)" + filter)
+		if q.After != nil {
+			b.WriteString(" AND seq < " + arg(q.After.Seq))
+		}
+		b.WriteString(" ORDER BY seq DESC LIMIT " + limit + ") UNION ALL ")
 	}
-	b.WriteString(" ORDER BY seq DESC LIMIT " + arg(q.Limit))
+	b.WriteString("(SELECT 1 AS part, " + listInner + " FROM audit_log WHERE org_id = $1::uuid AND ts >= $2 AND ts < $3" + filter)
+	if q.After != nil && !q.After.TS.IsZero() {
+		b.WriteString(" AND (ts, seq) < (" + arg(q.After.TS.UTC()) + ", " + arg(q.After.Seq) + ")")
+	}
+	b.WriteString(" ORDER BY ts DESC, seq DESC LIMIT " + limit + ")")
+	b.WriteString(") AS q ORDER BY part, CASE WHEN part = 1 THEN ts END DESC, seq DESC LIMIT " + limit)
 	return b.String(), args
 }
 
 // List возвращает записи выборки q от новых к старым. Запись, которой в
-// обход CHECK записали не конечное время, попадает в любой период и
-// возвращается с нулевым TS: просмотр не скрывает следы подмены, их
-// находит проверка.
+// обход CHECK записали не конечное время, попадает в любой период (в начале
+// выборки) и возвращается с нулевым TS: просмотр не скрывает следы подмены,
+// их находит проверка. Читает через пул чтения (WithReadDB), если он задан.
 func (l *Log) List(ctx context.Context, q Query) ([]Record, error) {
 	if err := q.Validate(); err != nil {
 		return nil, err
 	}
-	ctx, cancel := withTimeout(ctx, queryTimeout)
+	ctx, cancel := withTimeout(ctx, QueryTimeout)
 	defer cancel()
 	sql, args := buildList(&q)
-	rows, err := l.db.Query(ctx, sql, args...)
+	rows, err := l.reader().Query(ctx, sql, args...)
 	if err != nil {
 		return nil, fmt.Errorf("журнал аудита: выборка: %w", err)
 	}

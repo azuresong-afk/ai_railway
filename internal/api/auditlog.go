@@ -45,6 +45,16 @@ const (
 	// auditVerifyRetry — через сколько секунд повторить, если проверка занята.
 	auditVerifyRetry = 30
 	auditVerifyBody  = 1 << 10
+	// MaxAuditReadsPerSubject и MaxAuditReadsTotal — одновременных выборок
+	// журнала на субъект и на сервер (В17 ревью 2.r3b); сервер — по размеру
+	// пула чтения журнала. Сверх предела — 429 без записи в аудит.
+	MaxAuditReadsPerSubject = 2
+	MaxAuditReadsTotal      = 4
+	// auditReadRetry — подсказка клиенту, когда повторить выборку, с.
+	auditReadRetry = "5"
+	// auditCursorInfinite — приставка ID курсора в части выборки с не
+	// конечным временем.
+	auditCursorInfinite = "inf-"
 )
 
 func auditLogRoutes(d Deps) []Route {
@@ -150,11 +160,11 @@ func parseAuditList(r *http.Request, now time.Time) (auditListParams, *Problem) 
 	}
 	out := auditListParams{page: page, query: audit.Query{From: from, To: to, Limit: page.Limit + 1}}
 	if c := page.Cursor; c != nil {
-		seq, err := strconv.ParseInt(c.ID, 10, 64)
-		if err != nil || seq < 1 || !validDecimal(c.ID) {
+		if pos, ok := auditCursorPosition(*c); ok {
+			out.query.After = &pos
+		} else {
 			bad = append(bad, FieldError{"cursor", "Курсор неверен или устарел: начните выборку сначала."})
 		}
-		out.query.BeforeSeq = seq
 	}
 	if vs := q["action"]; len(vs) > audit.MaxQueryActions {
 		bad = append(bad, FieldError{"action", "Не больше " + strconv.Itoa(audit.MaxQueryActions) + " кодов событий."})
@@ -215,6 +225,29 @@ func parseAuditList(r *http.Request, now time.Time) (auditListParams, *Problem) 
 	return out, nil
 }
 
+// auditCursor — курсор после записи r: время и номер; у записи с не
+// конечным временем — номер с приставкой auditCursorInfinite.
+func auditCursor(r *audit.Record) Cursor {
+	seq := strconv.FormatInt(r.Seq, 10)
+	if r.TS.IsZero() {
+		return Cursor{ID: auditCursorInfinite + seq}
+	}
+	return Cursor{TimeMicro: max(r.TS.UnixMicro(), 0), ID: seq}
+}
+
+// auditCursorPosition — позиция выборки из курсора; false — курсор неверен.
+func auditCursorPosition(c Cursor) (audit.Position, bool) {
+	id, inf := strings.CutPrefix(c.ID, auditCursorInfinite)
+	seq, err := strconv.ParseInt(id, 10, 64)
+	if err != nil || seq < 1 || !validDecimal(id) || inf && c.TimeMicro != 0 {
+		return audit.Position{}, false
+	}
+	if inf {
+		return audit.Position{Seq: seq}, true
+	}
+	return audit.Position{TS: time.UnixMicro(c.TimeMicro).UTC(), Seq: seq}, true
+}
+
 func (d Deps) listAudit(w http.ResponseWriter, r *http.Request) {
 	if d.AuditLog == nil {
 		WriteProblem(w, NewProblem(http.StatusServiceUnavailable, CodeUnavailable, "Журнал аудита не подключён к серверу."))
@@ -225,6 +258,19 @@ func (d Deps) listAudit(w http.ResponseWriter, r *http.Request) {
 	if prob != nil {
 		WriteProblem(w, prob)
 		return
+	}
+	// Одновременных выборок — не больше MaxAuditReadsPerSubject на субъект
+	// и MaxAuditReadsTotal на сервер (В17 ревью 2.r3b).
+	subject := exportSubject(p)
+	if d.AuditReads != nil {
+		if !d.AuditReads.Acquire(subject) {
+			d.Logger.Warn("выборка журнала аудита отклонена: предел одновременных выборок", "actor_type", eventsActor(p).Type)
+			w.Header().Set("Retry-After", auditReadRetry)
+			WriteProblem(w, NewProblem(http.StatusTooManyRequests, CodeRateLimited,
+				"Слишком много одновременных запросов к журналу аудита: дождитесь ответа и повторите."))
+			return
+		}
+		defer d.AuditReads.Release(subject)
 	}
 	ctx, cancel := contextTimeout(r, auditReadTimeout)
 	defer cancel()
@@ -241,15 +287,14 @@ func (d Deps) listAudit(w http.ResponseWriter, r *http.Request) {
 	resp := PageResponse[AuditRecordView]{Items: make([]AuditRecordView, 0, min(len(list), lp.page.Limit))}
 	for i := range list {
 		if i == lp.page.Limit {
-			last := list[i-1]
-			resp.NextCursor = Cursor{TimeMicro: max(last.TS.UnixMicro(), 0), ID: strconv.FormatInt(last.Seq, 10)}.Encode()
+			resp.NextCursor = auditCursor(&list[i-1]).Encode()
 			break
 		}
 		resp.Items = append(resp.Items, auditRecordView(&list[i]))
 	}
-	// Просмотр — необязательное событие audit.list (РСБ.1). Пишется после
-	// чтения: в текущую страницу не попадает, рекурсии нет. Сбой записи не
-	// мешает ответу, но попадает в технический журнал.
+	// Просмотр — событие audit.list (РСБ.1). Пишется после выборки (в
+	// текущую страницу не попадает, рекурсии нет), но до ответа: без записи
+	// данные не выдаются, ответ — 503 (Н30 ревью 2.r3b).
 	q := lp.query
 	details := map[string]any{"from": q.From, "to": q.To, "count": len(resp.Items), "next_page": lp.page.Cursor != nil}
 	for k, v := range map[string]string{"actor_type": string(q.ActorType), "actor": q.Actor,
@@ -271,6 +316,8 @@ func (d Deps) listAudit(w http.ResponseWriter, r *http.Request) {
 		Result: audit.ResultSuccess, Details: details,
 	}); err != nil {
 		d.Logger.Error("просмотр журнала аудита не записан в журнал аудита", "error", err)
+		WriteProblem(w, NewProblem(http.StatusServiceUnavailable, CodeUnavailable, "Журнал аудита временно недоступен: повторите позже."))
+		return
 	}
 	WriteJSON(w, http.StatusOK, resp)
 }
@@ -284,10 +331,12 @@ type AuditVerifyView struct {
 	// Reason — ok или причина нарушения (как audit_chain «Состояния системы»).
 	Reason    string `json:"reason"`
 	BrokenSeq *int64 `json:"broken_seq"`
+	// Cached — итог прежней проверки не старше 10 минут (Н31 ревью 2.r3b).
+	Cached bool `json:"cached"`
 }
 
 func auditVerifyView(res audit.Verification) AuditVerifyView {
-	v := AuditVerifyView{CheckedAt: res.At.UTC(), OK: res.OK(), Checked: res.Checked, LastSeq: res.Head.Seq, Reason: "ok"}
+	v := AuditVerifyView{CheckedAt: res.At.UTC(), OK: res.OK(), Checked: res.Checked, LastSeq: res.Head.Seq, Reason: "ok", Cached: res.Cached}
 	if b := res.Break; b != nil {
 		seq := b.Seq
 		v.Reason, v.BrokenSeq = string(b.Reason), &seq
