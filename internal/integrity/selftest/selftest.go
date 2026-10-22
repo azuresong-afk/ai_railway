@@ -74,7 +74,7 @@ const DefaultTimeout = time.Second
 type Config struct {
 	Component string
 	Provider  aisecCrypto.Provider
-	// Detectors — детекторы компонента; у сервера их нет.
+	// Detectors — детекторы компонента (у сервера — для песочницы политик).
 	Detectors []detect.Detector
 	Timeout   time.Duration // 0 — DefaultTimeout
 	Now       func() time.Time

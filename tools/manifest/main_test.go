@@ -56,6 +56,18 @@ func TestBuildWithTestKey(t *testing.T) {
 	if err := run(append(args, "-key", other), io.Discard, io.Discard); err != nil {
 		t.Fatal(err)
 	}
+	// Тестовый ключ репозитория как ключ производителя — отказ (Н35 ревью 2.r4).
+	testSign, err := os.ReadFile("../../testdata/integrity/manifest-test.signkey")
+	if err != nil {
+		t.Fatal(err)
+	}
+	asVendor := filepath.Join(dir, "vendor.signkey")
+	if err := os.WriteFile(asVendor, testSign, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(append(args, "-key", asVendor), io.Discard, io.Discard); err == nil || !strings.Contains(err.Error(), "тестовый ключ") {
+		t.Fatalf("тестовый ключ через -key: %v", err)
+	}
 	// Повторная генерация не перезаписывает ключ.
 	if err := run([]string{"gen-key", "-key", other, "-pub", filepath.Join(dir, "other2.pub")}, io.Discard, io.Discard); err == nil {
 		t.Fatal("ключ перезаписан")

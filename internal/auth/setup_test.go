@@ -195,13 +195,28 @@ func TestSetupInstallSettings(t *testing.T) {
 			t.Fatalf("настройки: %+v", got)
 		}
 		d, _ := lastRecord(t, e.mem, "setup.completed").Details.(map[string]any)
-		if d["timezone"] != "Asia/Yekaterinburg" || d["retention_mode"] != "none" {
+		if d["timezone"] != "Asia/Yekaterinburg" || d["retention_mode"] != "none" || d["weakening"] != true {
 			t.Fatalf("аудит: %v", d)
+		}
+	})
+	// Н42 ревью 2.r4: только masked — без ослабления.
+	t.Run("ослабление в аудите", func(t *testing.T) {
+		for mode, weak := range map[string]bool{"": false, "masked": false, "full": true} {
+			e, token := newSetupEnv(t)
+			if err := setup(e, token, "UTC", mode); err != nil {
+				t.Fatal(err)
+			}
+			if d, _ := lastRecord(t, e.mem, "setup.completed").Details.(map[string]any); d["weakening"] != weak {
+				t.Fatalf("%q: %v", mode, d)
+			}
 		}
 	})
 	bad := map[string][2]string{
 		"неизвестный пояс":  {"Mars/Olympus", ""},
 		"Local":             {"Local", ""},
+		"posixrules":        {"posixrules", ""}, // Н43: не имя IANA
+		"localtime":         {"localtime", ""},
+		"Factory":           {"Factory", ""},
 		"обход каталога":    {"../etc/passwd", ""},
 		"слишком длинный":   {strings.Repeat("A", 65), ""},
 		"не UTF-8":          {"\xff\xfe", ""},

@@ -37,6 +37,7 @@ export const reasonText = new Map([
   ["manifest_invalid", "Манифест повреждён"],
   ["signature_invalid", "Подпись манифеста неверна"],
   ["files_mismatch", "Файлы не совпадают с манифестом"],
+  ["manifest_rollback", "Выпуск старше уже проверенного (откат)"],
 ]);
 
 export const problemText = new Map([

@@ -745,3 +745,20 @@ func TestMonitorRunPeriodic(t *testing.T) {
 		t.Fatalf("%+v", rec.runs)
 	}
 }
+
+// Н35 ревью 2.r4: тестовый ключ узнаётся в любой сборке.
+func TestIsTestPublicKey(t *testing.T) {
+	_, pub, err := aisecCrypto.DecodeKeyPEM(testKeyPEM, aisecCrypto.KeyKindManifestSigningPublic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !IsTestPublicKey(pub) {
+		t.Fatal("тестовый ключ не узнан")
+	}
+	if v, isTest, err := EmbeddedVerifier(provider(t)); err != nil || IsTestPublicKey(v.PublicKey()) != isTest {
+		t.Fatalf("встроенный ключ: тестовый %v, %v", isTest, err)
+	}
+	if IsTestPublicKey(make([]byte, len(pub))) || IsTestPublicKey(nil) {
+		t.Fatal("чужой ключ принят за тестовый")
+	}
+}

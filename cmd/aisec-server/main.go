@@ -20,6 +20,9 @@ import (
 	"path/filepath"
 	"sync/atomic"
 	"time"
+	// База часовых поясов IANA в бинарнике: первичная настройка принимает
+	// пояс и на хосте без /usr/share/zoneinfo (Н43 ревью 2.r4).
+	_ "time/tzdata"
 
 	"github.com/azuresong-afk/ai_railway/internal/api"
 	"github.com/azuresong-afk/ai_railway/internal/apps"
@@ -87,10 +90,14 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	// Самотест криптопрофиля до приёма запросов (ТЗ, ОЦЛ.4). Детекторов у
-	// сервера нет; провал криптопрофиля останавливает запуск всегда (ОЦЛ.5).
+	// Самотест до приёма запросов (ТЗ, ОЦЛ.4): криптопрофиль и встроенные
+	// детекторы — сервер выполняет их в песочнице политик (2.12), по её итогам
+	// политики принимаются (Н33 ревью 2.r4). Провал криптопрофиля
+	// останавливает запуск всегда (ОЦЛ.5); провал детекторов — оповещение:
+	// песочница не основная функция сервера, итог — в selftest.result.
 	selftestRes, err := selftest.Startup(ctx, selftest.StartupConfig{
-		Config: selftest.Config{Component: "server", Provider: p}, Action: integrity.ActionStop, Logger: logger,
+		Config: selftest.Config{Component: "server", Provider: p, Detectors: builtin.All()},
+		Action: integrity.ActionAlert, Logger: logger,
 	})
 	if err != nil {
 		return err
