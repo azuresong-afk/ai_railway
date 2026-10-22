@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -41,7 +42,7 @@ func TestKeysCmdErrors(t *testing.T) {
 		}
 	}
 	open := t.TempDir()
-	if err := os.Chmod(open, 0o755); err != nil {
+	if err := os.Chmod(open, 0o755); err != nil { //nolint:gosec // G302: тест проверяет отказ на каталоге с широкими правами
 		t.Fatal(err)
 	}
 	if err := keysCmd([]string{"rotate-master", "-dir", open}, "postgres://x", &out, &errb, now); err == nil ||
@@ -89,7 +90,7 @@ func keysInstallation(t *testing.T, schema string) (*installation, *keysEnv, []s
 }
 
 func contentPlain(i int) []byte {
-	return []byte(`{"request":"синтетический запрос ` + string(rune('0'+i)) + `","response":"ответ"}`)
+	return []byte(`{"request":"синтетический запрос ` + strconv.Itoa(i) + `","response":"ответ"}`)
 }
 
 // checkSecrets — все секреты установки расшифровываются box и совпадают
@@ -347,7 +348,7 @@ func TestKeysRotateMasterOnRealDB(t *testing.T) {
 	checkSecrets(t, in, box, ids, in.box.KeyID())
 	// Прежний мастер-ключ больше не открывает ключ данных.
 	oldDir := keyDir(t)
-	if err := os.WriteFile(filepath.Join(oldDir, keyring.MasterKeyFile), before, 0o400); err != nil {
+	if err := os.WriteFile(filepath.Join(oldDir, keyring.MasterKeyFile), before, 0o400); err != nil { //nolint:gosec // G703: путь — временный каталог теста
 		t.Fatal(err)
 	}
 	if _, err := keyring.Load(ctx, in.db.Pool(), p, oldDir, audit.DefaultOrgID); err == nil {
@@ -374,8 +375,8 @@ func TestKeysRotateMasterOnRealDB(t *testing.T) {
 	if err != nil || !r2.Recovered {
 		t.Fatalf("восстановление: %+v %v", r2, err)
 	}
-	if got, _ := os.ReadFile(filepath.Join(in.keys, keyring.MasterKeyFile)); !bytes.Equal(got, cur) {
-		t.Fatal("после восстановления master.key — не новый ключ")
+	if got, err := os.ReadFile(filepath.Join(in.keys, keyring.MasterKeyFile)); err != nil || !bytes.Equal(got, cur) {
+		t.Fatalf("после восстановления master.key — не новый ключ: %v", err)
 	}
 
 	// Сбой до фиксации: остался master.key.new, которым ничего не

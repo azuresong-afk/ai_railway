@@ -130,8 +130,11 @@ func TestClientCertSwitch(t *testing.T) {
 		}
 		return c.Certificate[0]
 	}
-	d1, _ := CertDER(c1)
-	d2, _ := CertDER(c2)
+	d1, err1 := CertDER(c1)
+	d2, err2 := CertDER(c2)
+	if err1 != nil || err2 != nil {
+		t.Fatal(err1, err2)
+	}
 	if !bytes.Equal(leaf(), d1) {
 		t.Fatal("начальная пара")
 	}

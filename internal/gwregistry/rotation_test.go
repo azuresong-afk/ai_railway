@@ -243,7 +243,7 @@ func TestBundleKeyPinning(t *testing.T) {
 		t.Fatalf("записей о чужом ключе за минуту: %d, ожидается 1", n)
 	}
 	e.clock.add(time.Minute)
-	_ = e.svc.CheckBundleKey(ctx, id, k2, testIP) //nolint:errcheck // проверяется запись аудита
+	_ = e.svc.CheckBundleKey(ctx, id, k2, testIP) //nolint:gosec // G104: ошибка ожидаема, проверяется запись аудита
 	if n := countAction(e.actions(), "gateway.bundle_key_mismatch"); n != 2 {
 		t.Fatalf("записей о чужом ключе через минуту: %d, ожидается 2", n)
 	}

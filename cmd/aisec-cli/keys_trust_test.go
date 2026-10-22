@@ -92,8 +92,8 @@ func TestKeysRotateTrustOnRealDB(t *testing.T) {
 	if fileMode(t, filepath.Join(in.keys, keyName)) != 0o400 || fileMode(t, filepath.Join(in.keys, pubName)) != 0o444 {
 		t.Fatal("права файлов нового ключа")
 	}
-	if got, _ := os.ReadFile(filepath.Join(in.keys, keyring.SigningPubFile)); !bytes.Equal(got, anchorPub) {
-		t.Fatal("файл-якорь изменён")
+	if got, err := os.ReadFile(filepath.Join(in.keys, keyring.SigningPubFile)); err != nil || !bytes.Equal(got, anchorPub) {
+		t.Fatalf("файл-якорь изменён: %v", err)
 	}
 	// Корень УЦ из ca.crt вошёл в первое заявление.
 	caPEM, err := os.ReadFile(filepath.Join(in.keys, keyring.CACertFile))

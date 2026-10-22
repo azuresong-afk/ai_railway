@@ -105,7 +105,7 @@ func TestDM42_BundleClientTrustRotation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("trust.json: %v", err)
 	}
-	if info, _ := os.Stat(filepath.Join(e.dir, gateway.TrustFile)); info.Mode().Perm() != 0o600 || len(data) == 0 {
+	if info, err := os.Stat(filepath.Join(e.dir, gateway.TrustFile)); err != nil || info.Mode().Perm() != 0o600 || len(data) == 0 {
 		t.Fatalf("права trust.json: %v", info.Mode())
 	}
 
