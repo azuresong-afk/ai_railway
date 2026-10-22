@@ -477,7 +477,10 @@ func TestEvaluateBundle(t *testing.T) {
 	}
 	// Сбой сборки — раздел недоступен, состояние не меняется.
 	o.Bundle = func(context.Context) (*sysstatus.BundleHealth, error) { return nil, errors.New("db") }
-	s2, _ := sysstatus.New(o)
+	s2, err := sysstatus.New(o)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := s2.Evaluate(ctx); err != nil {
 		t.Fatal(err)
 	}

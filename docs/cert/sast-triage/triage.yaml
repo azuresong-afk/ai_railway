@@ -50,3 +50,80 @@ entries:
     justification: Имя разрешения RBAC «выпуск и отзыв токенов API» (задача 2.10) — строка каталога прав, которая попадает в api/openapi.yaml (x-permission) и в матрицу ролей. Правило реагирует на слово Tokens в имени константы; секрета в строке нет.
     author: Claude Code (ИИ-ассистент); проверяет владелец при ревью
     date: 2026-10-21
+  - rule: gosec/G703
+    file: cmd/aisec-server/main.go
+    snippet: 'if _, err := os.Stat(path); err == nil {'
+    verdict: false_positive
+    justification: Путь собирается из каталога ключей (флаг -keys-dir, задаёт администратор при запуске сервера) и констант bundleSigningPubFile и bundleSigningNextFile; из запросов к серверу путь не берётся. os.Stat только проверяет наличие файла, чтобы поставить его под контроль целостности.
+    author: Claude Code (ИИ-ассистент); проверяет владелец при ревью
+    date: 2026-10-22
+  - rule: gosec/G101
+    file: internal/backup/format.go
+    snippet: 'PassphraseHint = "возьмите 4–5 случайных слов через пробел"'
+    verdict: false_positive
+    justification: Подсказка пользователю aisec-cli, как выбрать фразу резервной копии (Н41 ревью 2.r4). Правило реагирует на слово Passphrase в имени константы; фразы или ключа в строке нет.
+    author: Claude Code (ИИ-ассистент); проверяет владелец при ревью
+    date: 2026-10-22
+  - rule: gosec/G101
+    file: internal/backup/snapshot.go
+    snippet: 'secretUserHMACKey        = "user_hmac_key"'
+    verdict: false_positive
+    justification: Имя вида секрета в разделе секретов резервной копии (метка, по которой при восстановлении находится запись). Сам ключ HMAC в коде не хранится, в копии он зашифрован ключом копии.
+    author: Claude Code (ИИ-ассистент); проверяет владелец при ревью
+    date: 2026-10-22
+  - rule: gosec/G104
+    file: internal/integrity/monitor.go
+    snippet: 'res, _, err := m.checkRecorded(ctx, trig, by, ip)'
+    verdict: false_positive
+    justification: Отбрасывается recErr — ошибка сохранения итога проверки в БД. checkRecorded уже записывает её в технический журнал (класс db), а реакция на итог применяется и без записи. Ошибку самой проверки (err) check возвращает вызывающему.
+    author: Claude Code (ИИ-ассистент); проверяет владелец при ревью
+    date: 2026-10-22
+  - rule: gosec/G101
+    file: cmd/aisec-cli/backup_test.go
+    snippet: 'pw := "$argon2id$v=19$m=65536,t=3,p=2$c2FsdHNhbHRzYWx0c2FsdA$a2V5a2V5a2V5a2V5a2V5a2V5a2V5a2V5a2V5a2U"'
+    verdict: false_positive
+    justification: Синтетический хэш argon2id для теста восстановления. Соль и значение — повторы слов salt и key в base64; пароля, которому он соответствует, нет, и нигде он не выдавался.
+    author: Claude Code (ИИ-ассистент); проверяет владелец при ревью
+    date: 2026-10-22
+  - rule: gosec/G101
+    file: internal/backup/format_test.go
+    snippet: 'Users: []User{{ID: user1, Login: "admin", DisplayName: "Админ", Role: "security_admin", Status: "active",'
+    verdict: false_positive
+    justification: Синтетический пользователь теста формата копии с синтетическим хэшем argon2id (повторы слов salt и key в base64). Пароля, которому соответствует хэш, нет.
+    author: Claude Code (ИИ-ассистент); проверяет владелец при ревью
+    date: 2026-10-22
+  - rule: gosec/G703
+    file: cmd/aisec-cli/backup_test.go
+    snippet: 'if err := os.WriteFile(tampered, bad, 0o600); err != nil {'
+    verdict: false_positive
+    justification: Путь — filepath.Join от t.TempDir() и константного имени файла; внешнего ввода в тесте нет.
+    author: Claude Code (ИИ-ассистент); проверяет владелец при ревью
+    date: 2026-10-22
+  - rule: gosec/G703
+    file: tools/manifest/main_test.go
+    snippet: 'if err := os.WriteFile(asVendor, testSign, 0o400); err != nil {'
+    verdict: false_positive
+    justification: Путь — filepath.Join от t.TempDir() и константного имени файла; внешнего ввода в тесте нет.
+    author: Claude Code (ИИ-ассистент); проверяет владелец при ревью
+    date: 2026-10-22
+  - rule: gosec/G704
+    file: test/e2e/stage2_bundle_test.go
+    snippet: 'req, err := http.NewRequestWithContext(r.Context(), r.Method, p.upstream+r.URL.RequestURI(), bytes.NewReader(body))'
+    verdict: false_positive
+    justification: Тестовый прокси между шлюзом и сервером e2e-теста. Адрес назначения p.upstream задаёт сам тест (внутренний порт запущенного им сервера на 127.0.0.1); из запроса берётся только путь, хост и схема — нет.
+    author: Claude Code (ИИ-ассистент); проверяет владелец при ревью
+    date: 2026-10-22
+  - rule: gosec/G704
+    file: test/e2e/stage2_bundle_test.go
+    snippet: 'resp, err := p.up.Do(req)'
+    verdict: false_positive
+    justification: Отправка запроса тестового прокси, собранного строкой выше на адрес p.upstream, который задаёт сам тест (127.0.0.1); хост из входящего запроса не берётся.
+    author: Claude Code (ИИ-ассистент); проверяет владелец при ревью
+    date: 2026-10-22
+  - rule: gosec/G304
+    file: test/e2e/stage2_bundle_test.go
+    snippet: 'b, err := os.ReadFile(path)'
+    verdict: false_positive
+    justification: Читаются файлы, которые создал сам тест в своём временном каталоге (сертификаты TLS, файл пакета шлюза); внешнего ввода в тесте нет.
+    author: Claude Code (ИИ-ассистент); проверяет владелец при ревью
+    date: 2026-10-22
