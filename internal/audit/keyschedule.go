@@ -1,6 +1,7 @@
 package audit
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"encoding/json"
@@ -64,6 +65,78 @@ func (r *KeyRotation) SignedBytes() ([]byte, error) {
 		return nil, err
 	}
 	return append([]byte(keyRotationContext), b...), nil
+}
+
+// Файл смены ключа (3В3 ревью 3.r1): keys rotate-audit кладёт его рядом с
+// открытым ключом, audit verify-archive строит по таким файлам расписание
+// без БД. В файле — поля SignedBytes и обе подписи; доверие к нему — только
+// по подписям от якоря (NewKeySchedule), не по месту в каталоге.
+const (
+	keyRotationFormat = "aisec-audit-key-rotation"
+	// MaxKeyRotationFile — предел файла смены.
+	MaxKeyRotationFile = 16 << 10
+)
+
+type keyRotationFile struct {
+	Format string `json:"format"`
+	keyRotationPayload
+	SigAlg        string `json:"sig_alg"`
+	PrevSignature string `json:"prev_signature"`
+	Signature     string `json:"signature"`
+}
+
+// MarshalKeyRotation — файл смены ключа аудита.
+func MarshalKeyRotation(r *KeyRotation) ([]byte, error) {
+	b, err := json.Marshal(keyRotationFile{Format: keyRotationFormat, keyRotationPayload: keyRotationPayload{
+		V: formatVersion, OrgID: r.OrgID, Seq: r.Seq, PrevKeyID: r.PrevKeyID, KeyID: r.KeyID,
+		PublicKey: hex.EncodeToString(r.PublicKey), CheckpointSeq: r.CheckpointSeq, RotatedAt: r.RotatedAt.UTC().Format(tsLayout),
+	}, SigAlg: r.SigAlg, PrevSignature: hex.EncodeToString(r.PrevSignature), Signature: hex.EncodeToString(r.Signature)})
+	if err != nil {
+		return nil, err
+	}
+	return append(b, '\n'), nil
+}
+
+// ParseKeyRotation разбирает файл смены. Вход недоверенный (каталог ключей
+// на носителе с архивами), разбор покрыт FuzzParseKeyRotation; подписи
+// проверяет NewKeySchedule.
+func ParseKeyRotation(data []byte) (KeyRotation, error) {
+	bad := func(what string) (KeyRotation, error) {
+		return KeyRotation{}, fmt.Errorf("%w: файл смены: %s", ErrKeyRotationInvalid, what)
+	}
+	if len(data) > MaxKeyRotationFile {
+		return bad("слишком большой")
+	}
+	var f keyRotationFile
+	if err := strictUnmarshal(bytes.TrimSuffix(data, []byte{'\n'}), &f); err != nil {
+		return bad(err.Error())
+	}
+	if f.Format != keyRotationFormat || f.V != formatVersion {
+		return bad("неизвестный формат или версия")
+	}
+	if f.Seq < 1 || f.Seq > maxKeyRotations || f.CheckpointSeq < 0 {
+		return bad("номер смены или точки")
+	}
+	r := KeyRotation{OrgID: f.OrgID, Seq: f.Seq, PrevKeyID: f.PrevKeyID, KeyID: f.KeyID,
+		CheckpointSeq: f.CheckpointSeq, SigAlg: f.SigAlg}
+	var err error
+	if r.PublicKey, err = hex.DecodeString(f.PublicKey); err != nil {
+		return bad("public_key")
+	}
+	if r.PrevSignature, err = hex.DecodeString(f.PrevSignature); err != nil {
+		return bad("prev_signature")
+	}
+	if r.Signature, err = hex.DecodeString(f.Signature); err != nil {
+		return bad("signature")
+	}
+	if r.RotatedAt, err = time.Parse(tsLayout, f.RotatedAt); err != nil {
+		return bad("rotated_at")
+	}
+	// Подписанная форма должна воспроизводиться из разобранной смены.
+	if r.RotatedAt.UTC().Format(tsLayout) != f.RotatedAt || hex.EncodeToString(r.PublicKey) != f.PublicKey {
+		return bad("неканоническая форма")
+	}
+	return r, nil
 }
 
 // KeyID — идентификатор ключа аудита: первые 8 байт хеша открытого ключа.

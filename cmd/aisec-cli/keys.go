@@ -173,15 +173,41 @@ func trustStatus(ctx context.Context, env *keysEnv, dir string, stdout io.Writer
 		}
 		return "перекрытие до " + t.UTC().Format(time.DateTime) + " UTC"
 	}
+	h, err := env.p.Hasher()
+	if err != nil {
+		return err
+	}
+	anchorRoot, err := keyring.AnchorRootID(root, h)
+	if err != nil {
+		return err
+	}
+	// Срок сертификата корня (3В5 ревью 3.r1): за 60 суток до него нужна
+	// ротация, сертификаты шлюзов дольше корня не выпускаются.
+	expiry := func(id string) string {
+		na, err := keyring.RootNotAfter(root, id, anchorRoot)
+		if err != nil {
+			return "срок корня не прочитан: " + err.Error()
+		}
+		left := time.Until(na)
+		s := fmt.Sprintf("корень действует до %s UTC", na.UTC().Format(time.DateTime))
+		switch {
+		case left <= 0:
+			s += " — ИСТЁК, выполните keys rotate-ca"
+		case left <= 60*24*time.Hour:
+			s += fmt.Sprintf(" — осталось %d сут., выполните keys rotate-ca", int(left/(24*time.Hour)))
+		}
+		return s
+	}
 	if st := chain.Latest(); st == nil {
 		say(stdout, "Ключ подписи пакетов: %s (файл-якорь), ротаций не было.\n", chain.ActiveKeyID())
+		say(stdout, "Корень УЦ %s (файл-якорь): %s.\n", anchorRoot, expiry(anchorRoot))
 	} else {
 		say(stdout, "Заявление о доверии №%d от %s UTC:\n", st.Seq, st.IssuedAt.Format(time.DateTime))
 		for _, k := range st.Keys {
 			say(stdout, "  ключ подписи пакетов %s: %s\n", k.ID, until(k.NotAfter))
 		}
 		for _, r := range st.Roots {
-			say(stdout, "  корень УЦ %s: %s\n", r.ID, until(r.NotAfter))
+			say(stdout, "  корень УЦ %s: %s; %s\n", r.ID, until(r.NotAfter), expiry(r.ID))
 		}
 	}
 	auditAnchor, err := keyring.ReadVerifier(root, env.p, keyring.AuditPubFile, aisecCrypto.KeyKindAuditSigningPublic)
@@ -230,10 +256,10 @@ func keysRotateTrustCmd(name string, args []string, dsn string, stdout, stderr i
 	say(stdout, "%s заменён: %s → %s (заявление о доверии №%d). Новые файлы: %v.\n", what, r.OldID, r.NewID, r.Seq, r.Files)
 	say(stdout, "Прежний принимается шлюзами до %s UTC.\n", r.OverlapUntil.Format(time.DateTime))
 	if name == "rotate-ca" {
-		say(stdout, "Передайте новые файлы пользователю службы (chown) и перезапустите сервер: он выпускает сертификаты новым корнем,\n"+
+		say(stdout, "Если команда запущена не от пользователя службы, передайте ему новые файлы (chown; в docker compose не нужно).\nПерезапустите сервер: он выпускает сертификаты новым корнем,\n"+
 			"а шлюзы получают их при heartbeat. Прежний ca.key удалите после конца перекрытия.\n")
 	} else {
-		say(stdout, "Передайте новые файлы пользователю службы (chown) и перезапустите сервер: он подписывает пакеты новым ключом,\n"+
+		say(stdout, "Если команда запущена не от пользователя службы, передайте ему новые файлы (chown; в docker compose не нужно).\nПерезапустите сервер: он подписывает пакеты новым ключом,\n"+
 			"а шлюзы узнают о нём из заявления в пакете. Прежний закрытый ключ удалите после перезапуска.\n")
 	}
 	return nil
@@ -423,6 +449,6 @@ func keysRotateMasterCmd(args []string, dsn string, stdout, stderr io.Writer, no
 	}
 	say(stdout, "Прежний мастер-ключ сохранён как %s: он нужен для восстановления дампа БД, снятого до ротации.\n"+
 		"Сделайте резервную копию нового %s отдельно от копии БД, затем удалите прежний файл.\n"+
-		"Передайте новый файл пользователю службы (chown). Перезапуск сервера не нужен.\n", r.Retired, keyring.MasterKeyFile)
+		"Если команда запущена не от пользователя службы, передайте ему новый файл (chown; в docker compose не нужно).\nПерезапуск сервера не нужен.\n", r.Retired, keyring.MasterKeyFile)
 	return nil
 }

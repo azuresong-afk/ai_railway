@@ -37,10 +37,15 @@ const (
 	ClientPairFile = "client.pem"
 	// trustFormat — формат trust.json.
 	trustFormat = "aisec-gateway-trust/1"
-	// maxTrustFile — предел trust.json: до 64 заявлений по 16 КиБ в base64.
-	maxTrustFile = 1408 << 10
-	// maxTrustStored — сколько последних заявлений хранится.
-	maxTrustStored = 64
+	// MaxTrustStored — сколько заявлений хранит trust.json. Хранятся все от
+	// №1: цепочка проверяется от -bundle-pub, и без первых заявлений шлюз
+	// после перезапуска откатился бы к якорю (3Н1 ревью 3.r1). Тысяча
+	// ротаций ключа подписи и УЦ — века эксплуатации; сверх — отказ записи,
+	// прежний файл остаётся.
+	MaxTrustStored = 1024
+	// maxTrustFile — предел trust.json: MaxTrustStored заявлений по 16 КиБ
+	// в base64 с запасом на разметку.
+	maxTrustFile = MaxTrustStored*((bundle.MaxTrustStatement+2)/3*4+3) + 1<<10
 	// maxPairFile — предел client.pem.
 	maxPairFile = 16 << 10
 )
@@ -157,16 +162,22 @@ type trustDoc struct {
 	Statements []string `json:"statements"`
 }
 
-// SaveTrust сохраняет принятые заявления о доверии (последние
-// maxTrustStored) атомарно.
+// SaveTrust сохраняет все принятые заявления о доверии (от №1) атомарно.
+// Больше MaxTrustStored — ошибка без записи: прежний файл остаётся.
 func (s *BundleState) SaveTrust(raws [][]byte) error {
+	if len(raws) > MaxTrustStored {
+		return fmt.Errorf("%s: заявлений о доверии больше %d — файл не обновлён", TrustFile, MaxTrustStored)
+	}
 	doc := trustDoc{Format: trustFormat, Statements: []string{}}
-	for _, raw := range raws[max(0, len(raws)-maxTrustStored):] {
+	for _, raw := range raws {
 		doc.Statements = append(doc.Statements, base64.StdEncoding.EncodeToString(raw))
 	}
 	data, err := json.Marshal(doc)
 	if err != nil {
 		return err
+	}
+	if len(data) > maxTrustFile {
+		return fmt.Errorf("%s: больше %d байт", TrustFile, maxTrustFile)
 	}
 	return s.saveAtomic(TrustFile, data)
 }
@@ -181,10 +192,19 @@ func (s *BundleState) LoadTrust() ([][]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	return parseTrust(data)
+}
+
+// parseTrust разбирает trust.json. Вход недоверенный (каталог состояния
+// мог быть изменён), разбор покрыт FuzzParseTrust (3Н4 ревью 3.r1).
+func parseTrust(data []byte) ([][]byte, error) {
+	if len(data) > maxTrustFile {
+		return nil, fmt.Errorf("%s: файл больше %d байт", TrustFile, maxTrustFile)
+	}
 	var doc trustDoc
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
-	if err := dec.Decode(&doc); err != nil || doc.Format != trustFormat || len(doc.Statements) > maxTrustStored {
+	if err := dec.Decode(&doc); err != nil || doc.Format != trustFormat || len(doc.Statements) > MaxTrustStored || dec.More() {
 		return nil, fmt.Errorf("%s: неверный формат", TrustFile)
 	}
 	out := make([][]byte, 0, len(doc.Statements))
@@ -217,6 +237,16 @@ func (s *BundleState) LoadClientPair() (certPEM, keyPEM []byte, err error) {
 		return nil, nil, err
 	}
 	defer clear(data)
+	return parseClientPair(data)
+}
+
+// parseClientPair разбирает client.pem: ровно один CERTIFICATE и один
+// PRIVATE KEY. Вход недоверенный, разбор покрыт FuzzParseClientPair (3Н4
+// ревью 3.r1); сертификат и ключ дальше проверяет VerifyClientCert.
+func parseClientPair(data []byte) (certPEM, keyPEM []byte, err error) {
+	if len(data) > maxPairFile {
+		return nil, nil, fmt.Errorf("%s: файл больше %d байт", ClientPairFile, maxPairFile)
+	}
 	rest := data
 	for len(bytes.TrimSpace(rest)) > 0 {
 		var block *pem.Block

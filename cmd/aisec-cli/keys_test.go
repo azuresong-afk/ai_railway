@@ -6,7 +6,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -42,7 +41,7 @@ func TestKeysCmdErrors(t *testing.T) {
 		}
 	}
 	open := t.TempDir()
-	if err := os.Chmod(open, 0o755); err != nil { //nolint:gosec // G302: тест проверяет отказ на каталоге с широкими правами
+	if err := os.Chmod(open, 0o755); err != nil { //nolint:gosec // тест: каталог, открытый для группы, — проверка отказа
 		t.Fatal(err)
 	}
 	if err := keysCmd([]string{"rotate-master", "-dir", open}, "postgres://x", &out, &errb, now); err == nil ||
@@ -90,7 +89,7 @@ func keysInstallation(t *testing.T, schema string) (*installation, *keysEnv, []s
 }
 
 func contentPlain(i int) []byte {
-	return []byte(`{"request":"синтетический запрос ` + strconv.Itoa(i) + `","response":"ответ"}`)
+	return []byte(`{"request":"синтетический запрос ` + string(rune('0'+i)) + `","response":"ответ"}`) //nolint:gosec // i — номер записи теста (0–9)
 }
 
 // checkSecrets — все секреты установки расшифровываются box и совпадают
@@ -348,7 +347,7 @@ func TestKeysRotateMasterOnRealDB(t *testing.T) {
 	checkSecrets(t, in, box, ids, in.box.KeyID())
 	// Прежний мастер-ключ больше не открывает ключ данных.
 	oldDir := keyDir(t)
-	if err := os.WriteFile(filepath.Join(oldDir, keyring.MasterKeyFile), before, 0o400); err != nil { //nolint:gosec // G703: путь — временный каталог теста
+	if err := os.WriteFile(filepath.Join(oldDir, keyring.MasterKeyFile), before, 0o400); err != nil { //nolint:gosec // тест: путь во временном каталоге теста
 		t.Fatal(err)
 	}
 	if _, err := keyring.Load(ctx, in.db.Pool(), p, oldDir, audit.DefaultOrgID); err == nil {
@@ -375,8 +374,28 @@ func TestKeysRotateMasterOnRealDB(t *testing.T) {
 	if err != nil || !r2.Recovered {
 		t.Fatalf("восстановление: %+v %v", r2, err)
 	}
-	if got, err := os.ReadFile(filepath.Join(in.keys, keyring.MasterKeyFile)); err != nil || !bytes.Equal(got, cur) {
-		t.Fatalf("после восстановления master.key — не новый ключ: %v", err)
+	if got, _ := os.ReadFile(filepath.Join(in.keys, keyring.MasterKeyFile)); !bytes.Equal(got, cur) { //nolint:gosec // тест: ошибка чтения даёт пустой файл и провал сравнения
+		t.Fatal("после восстановления master.key — не новый ключ")
+	}
+
+	// 3В1 ревью 3.r1: сбой между двумя переименованиями — master.key уже
+	// стал .retired, master.key.new ещё не переименован. Повторный запуск
+	// завершает второе переименование, ключ данных открывается новым ключом.
+	if err := os.Rename(filepath.Join(in.keys, keyring.MasterKeyFile), filepath.Join(in.keys, keyring.MasterKeyNextFile)); err != nil {
+		t.Fatal(err)
+	}
+	r3, err := keyring.RotateMaster(ctx, env.db.Pool(), env.log, p, in.keys, audit.DefaultOrgID, cliActor(), now.Add(90*time.Second))
+	if err != nil || !r3.Recovered || r3.Retired != r2.Retired {
+		t.Fatalf("восстановление после первого переименования: %+v %v", r3, err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(in.keys, keyring.MasterKeyFile)); !bytes.Equal(got, cur) { //nolint:gosec // тест: ошибка чтения даёт пустой файл и провал сравнения
+		t.Fatal("после восстановления master.key — не новый ключ")
+	}
+	if _, err := os.Stat(filepath.Join(in.keys, keyring.MasterKeyNextFile)); !os.IsNotExist(err) {
+		t.Fatalf("master.key.new остался: %v", err)
+	}
+	if _, err := keyring.Load(ctx, in.db.Pool(), p, in.keys, audit.DefaultOrgID); err != nil {
+		t.Fatalf("ключ данных после восстановления: %v", err)
 	}
 
 	// Сбой до фиксации: остался master.key.new, которым ничего не
@@ -402,6 +421,10 @@ func TestKeysRotateMasterOnRealDB(t *testing.T) {
 	checkSecrets(t, in, box, ids, "")
 	if n := in.count(t, "SELECT count(*) FROM audit_log WHERE action = 'keys.master_rotated'"); n != 2 {
 		t.Fatalf("keys.master_rotated: записей %d", n)
+	}
+	// 3Н5: каждое восстановление — запись аудита (два завершения, одно удаление .new).
+	if n := in.count(t, "SELECT count(*) FROM audit_log WHERE action = 'keys.master_recovered'"); n != 3 {
+		t.Fatalf("keys.master_recovered: записей %d", n)
 	}
 	// Ключ данных после ротации мастер-ключа поворачивается как обычно.
 	if err := runRotateData(ctx, env, in.keys, rotateDataOptions{Batch: 100}, cliActor(), time.Now(), &out); err != nil {

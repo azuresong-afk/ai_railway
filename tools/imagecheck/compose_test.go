@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -64,10 +65,20 @@ func TestComposeRejects(t *testing.T) {
 		"неизвестный сервис":    {"\nsecrets:\n", "\n  shell:\n    image: busybox\n\nsecrets:\n", "неизвестный сервис"},
 		"нет сервиса":           {"  aisec-cli:\n", "  aisec-tool:\n", "нет сервиса aisec-cli"},
 		"seccomp выключен":      {`  security_opt: ["no-new-privileges:true"]`, `  security_opt: ["no-new-privileges:true", "seccomp=unconfined"]`, "security_opt"},
-		"весь каталог данных":   {"}/backups:/var/lib/aisec/backups", "}:/var/lib/aisec/backups", "подкаталог"},
-		"каталог секретов":      {"}/backups:/var/lib/aisec/backups", "}/secrets:/var/lib/aisec/backups", "подкаталог"},
-		"чужой секрет":          {"    secrets: [db-owner-pgpass]", "    secrets: [db-owner-pgpass, console-tls-key]", "сервису не нужен"},
-		"необъявленный секрет":  {"    secrets: [db-owner-pgpass]", "    secrets: [db-owner-pgpass, nope]", "не объявлен"},
+		"весь каталог данных":   {"}/backups:/var/lib/aisec/backups", "}:/var/lib/aisec/backups", "не из списка"},
+		"каталог секретов":      {"}/backups:/var/lib/aisec/backups", "}/secrets:/var/lib/aisec/backups", "не из списка"},
+		// 3В8 ревью 3.r1: тома и файлы секретов привязаны к сервису.
+		"ключи у шлюза": {"      - ${AISEC_DATA_DIR:?задайте AISEC_DATA_DIR}/gateway/state:/var/lib/aisec-gateway/state\n",
+			"      - ${AISEC_DATA_DIR:?задайте AISEC_DATA_DIR}/gateway/state:/var/lib/aisec-gateway/state\n      - ${AISEC_DATA_DIR:?задайте AISEC_DATA_DIR}/keys:/etc/aisec/keys:ro\n",
+			"aisec-gateway: том"},
+		"ключи сервера на запись":    {"}/keys:/etc/aisec/keys:ro", "}/keys:/etc/aisec/keys", "aisec-server: том"},
+		"нет тома шлюза":             {"      - ${AISEC_DATA_DIR:?задайте AISEC_DATA_DIR}/gateway/state:/var/lib/aisec-gateway/state\n", "", "нет тома DATA/gateway/state"},
+		"том в другую цель":          {"}/gateway/reg:/var/lib/aisec-gateway/reg", "}/gateway/reg:/var/lib/aisec-gateway/state", "aisec-gateway: том"},
+		"секрет — мастер-ключ":       {"}/secrets/gateway-bundle-anchor.pub", "}/keys/master.key", "секрет gateway-bundle-anchor: файл DATA/keys/master.key"},
+		"якорь шлюза — файл сервера": {"}/secrets/gateway-bundle-anchor.pub", "}/keys/bundle-signing.pub", "ожидается DATA/secrets/gateway-bundle-anchor.pub"},
+		"секреты переставлены":       {"}/secrets/console.key\n", "}/secrets/db-server.pgpass\n", "секрет console-tls-key"},
+		"чужой секрет":               {"    secrets: [db-owner-pgpass]", "    secrets: [db-owner-pgpass, console-tls-key]", "сервису не нужен"},
+		"необъявленный секрет":       {"    secrets: [db-owner-pgpass]", "    secrets: [db-owner-pgpass, nope]", "не объявлен"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if !strings.Contains(base, tc.old) {
@@ -125,9 +136,26 @@ func FuzzCheckCompose(f *testing.F) {
 		if err != nil {
 			return
 		}
+		problems := checkCompose(c)
 		// Файл без всех четырёх сервисов никогда не проходит проверку.
-		if len(c.Services) < len(composeRules) && len(checkCompose(c)) == 0 {
+		if len(c.Services) < len(composeRules) && len(problems) == 0 {
 			t.Fatal("неполный compose прошёл проверку")
+		}
+		if len(problems) > 0 {
+			return
+		}
+		// Прошедший проверку файл: тома и секреты — ровно из правил (3В8).
+		for name, s := range c.Services {
+			for _, v := range s.Volumes {
+				if !slices.Contains(composeRules[name].Volumes, normVolume(v)) {
+					t.Fatalf("%s: том %q вне правил прошёл проверку", name, v)
+				}
+			}
+		}
+		for name, sec := range c.Secrets {
+			if f, _ := dataPath(sec.File); f != secretFiles[name] {
+				t.Fatalf("секрет %s: файл %q вне правил прошёл проверку", name, sec.File)
+			}
 		}
 	})
 }

@@ -127,3 +127,10 @@ entries:
     justification: Читаются файлы, которые создал сам тест в своём временном каталоге (сертификаты TLS, файл пакета шлюза); внешнего ввода в тесте нет.
     author: Claude Code (ИИ-ассистент); проверяет владелец при ревью
     date: 2026-10-22
+  - rule: gosec/G101
+    file: tools/imagecheck/compose.go
+    snippet: 'var secretFiles = map[string]string{'
+    verdict: false_positive
+    justification: Таблица правил проверки compose пилота (3В8 ревью 3.r1) — имя секрета compose и ожидаемый путь его файла на хосте («DATA/secrets/…»). Значений секретов в ней нет; правило реагирует на слова secret и password в ключах карты. Инструмент сборки, в поставку не входит.
+    author: Claude Code (ИИ-ассистент); проверяет владелец при ревью
+    date: 2026-10-22

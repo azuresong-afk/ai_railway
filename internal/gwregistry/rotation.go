@@ -27,6 +27,14 @@ const reissueEvery = time.Minute
 // получателя в минуту на шлюз.
 const bundleKeyMismatchEvery = time.Minute
 
+// reissueDeniedEvery — не чаще одной записи аудита о ненужном перевыпуске
+// в минуту на шлюз.
+const reissueDeniedEvery = time.Minute
+
+// caSlack — сертификат, срок которого не раньше срока УЦ минус caSlack,
+// перевыпуском не продлить: IssueClient обрезает срок сроком УЦ (3В5).
+const caSlack = time.Minute
+
 // Ошибки ротации.
 var (
 	// ErrBundleKeyMismatch — ключ получателя в запросе пакета не совпадает с
@@ -95,20 +103,41 @@ func (s *Service) checkRoot(rootDER []byte, now time.Time) string {
 
 // needReissue — сертификат шлюза выпущен не действующим корнем или
 // истекает через ReissueBefore и меньше. certCA = "" — сертификат выпущен до
-// ротаций корнем из -ca-cert.
+// ротаций корнем из -ca-cert. Сертификат действующего корня, который уже
+// истекает вместе с УЦ, не перевыпускается: новый получил бы тот же срок,
+// и шлюз запрашивал бы его каждую минуту до истечения корня (3В5 ревью
+// 3.r1). Об истечении корня предупреждает «Состояние системы» (ca_expiry).
 func (s *Service) needReissue(certCA string, notAfter, now time.Time) bool {
 	if s.ca == nil {
 		return false
 	}
-	if certCA == "" && s.ca != nil {
+	if certCA == "" {
 		certCA = s.anchorRoot
 	}
-	return certCA != s.activeRoot() || notAfter.Sub(now) <= ReissueBefore
+	if certCA != s.activeRoot() {
+		return true
+	}
+	if !notAfter.Before(s.ca.NotAfter().Add(-caSlack)) {
+		return false
+	}
+	return notAfter.Sub(now) <= ReissueBefore
+}
+
+// CANotAfter — срок действующего корня УЦ (нулевое время — УЦ не подключён).
+func (s *Service) CANotAfter() time.Time {
+	if s.ca == nil {
+		return time.Time{}
+	}
+	return s.ca.NotAfter()
 }
 
 // Reissue выпускает шлюзу новый сертификат по CSR (POST
 // /internal/v1/certificate, ADR-0018, п. 6.3). Сертификат сохраняется как
-// следующий: прежний действует, пока шлюз не придёт с новым.
+// следующий: прежний действует, пока шлюз не придёт с новым. Выпуск —
+// только когда его требует needReissue (как признак reissue в heartbeat),
+// иначе ErrReissueNotNeeded с записью аудита не чаще раза в минуту на
+// шлюз: украденный ключ шлюза не продлевает доступ бессрочно и не
+// вытесняет настоящий шлюз новым сертификатом (3В4 ревью 3.r1, ИАФ.10).
 func (s *Service) Reissue(ctx context.Context, gatewayID string, csr []byte, ip netip.Addr) ([]byte, aisecCrypto.CertInfo, error) {
 	if s.ca == nil {
 		return nil, aisecCrypto.CertInfo{}, ErrNoCA
@@ -117,6 +146,16 @@ func (s *Service) Reissue(ctx context.Context, gatewayID string, csr []byte, ip 
 		return nil, aisecCrypto.CertInfo{}, fmt.Errorf("%w: %v", ErrInvalidRequest, err) //nolint:errorlint // причина CSR — только текстом
 	}
 	now := s.clock().UTC()
+	gw, err := s.store.ByID(ctx, gatewayID)
+	if err != nil {
+		return nil, aisecCrypto.CertInfo{}, err
+	}
+	if gw.Status != StatusActive {
+		return nil, aisecCrypto.CertInfo{}, ErrNotFound
+	}
+	if !s.needReissue(gw.CertCA, gw.CertNotAfter, now) {
+		return nil, aisecCrypto.CertInfo{}, s.reissueDenied(ctx, gw, ip, now)
+	}
 	s.mu.Lock()
 	if last, ok := s.lastReissue[gatewayID]; ok && now.Sub(last) < reissueEvery {
 		s.mu.Unlock()
@@ -142,6 +181,32 @@ func (s *Service) Reissue(ctx context.Context, gatewayID string, csr []byte, ip 
 		return nil, aisecCrypto.CertInfo{}, err
 	}
 	return certPEM, info, nil
+}
+
+// reissueDenied пишет отказ в ненужном перевыпуске не чаще раза в минуту
+// на шлюз и возвращает ErrReissueNotNeeded.
+func (s *Service) reissueDenied(ctx context.Context, gw Gateway, ip netip.Addr, now time.Time) error {
+	key := gw.ID + "\x00reissue"
+	s.mu.Lock()
+	last, seen := s.lastMismatch[key]
+	write := !seen || now.Sub(last) >= reissueDeniedEvery
+	if write {
+		prune(s.lastMismatch, now, reissueDeniedEvery)
+		s.lastMismatch[key] = now
+	}
+	s.mu.Unlock()
+	if !write {
+		return ErrReissueNotNeeded
+	}
+	if err := s.audit.Record(ctx, audit.Entry{
+		OrgID: s.orgID, Actor: audit.Actor{Type: audit.ActorGateway, ID: gw.ID, Name: gw.Name}, SourceIP: ip,
+		Action: "gateway.cert_reissue", Object: audit.Object{Type: "gateway", ID: gw.ID}, Result: audit.ResultDenied,
+		Details: map[string]any{"stage": "denied", "reason": "not_needed", "cert_serial": gw.CertSerial,
+			"cert_not_after": gw.CertNotAfter.UTC().Format(time.RFC3339), "root_id": gw.CertCA},
+	}); err != nil {
+		return fmt.Errorf("аудит отказа в перевыпуске: %w", err)
+	}
+	return ErrReissueNotNeeded
 }
 
 // promote делает следующий сертификат действующим при первом запросе с ним.

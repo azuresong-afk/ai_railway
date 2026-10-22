@@ -51,6 +51,9 @@ const (
 	// CodeBundleKeyMismatch — ключ получателя шлюза не совпадает с
 	// закреплённым (Н27, ADR-0018, п. 7); только внутренний API.
 	CodeBundleKeyMismatch = "bundle_key_mismatch"
+	// CodeReissueNotNeeded — перевыпуск сертификата шлюза не нужен (3В4
+	// ревью 3.r1); только внутренний API.
+	CodeReissueNotNeeded = "reissue_not_needed"
 )
 
 var problemTitles = map[string]string{
@@ -68,6 +71,7 @@ var problemTitles = map[string]string{
 	CodeInternal:          "Внутренняя ошибка",
 	CodeUnavailable:       "Сервис недоступен",
 	CodeBundleKeyMismatch: "Ключ получателя не совпадает с закреплённым",
+	CodeReissueNotNeeded:  "Перевыпуск сертификата не нужен",
 }
 
 // NewProblem собирает ошибку по коду; заголовок берётся из таблицы.

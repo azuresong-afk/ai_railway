@@ -111,6 +111,16 @@ func (m *Memory) BySerial(_ context.Context, serial string) (Gateway, error) {
 	return Gateway{}, ErrNotFound
 }
 
+// ByID — см. Store.
+func (m *Memory) ByID(_ context.Context, id string) (Gateway, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if g, ok := m.gateways[id]; ok {
+		return *g, nil
+	}
+	return Gateway{}, ErrNotFound
+}
+
 // Touch — см. Store.
 func (m *Memory) Touch(_ context.Context, id string, hb Heartbeat, audits func(TouchChange) []audit.Entry) (TouchChange, error) {
 	m.mu.Lock()

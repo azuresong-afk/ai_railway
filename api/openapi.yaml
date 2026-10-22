@@ -3109,8 +3109,9 @@ components:
             properties:
               condition:
                 type: string
-                enum: [account_lockout, access_denied, audit_chain, audit_storage, integrity, time_sync, config_bundle, config_bundle_lag, test_build]
-              requirement: { type: string, enum: [ИАФ.4, УПД.6, РСБ.4, РСБ.5, ОЦЛ.3, ОЦЛ.5, ВРМ.1] }
+                enum: [account_lockout, access_denied, audit_chain, audit_storage, integrity, time_sync, config_bundle, config_bundle_lag, test_build, ca_expiry]
+                description: 'ca_expiry (ИАФ.10) — действующему корню внутреннего УЦ осталось 60 суток и меньше, нужна ротация `aisec-cli keys rotate-ca`; system.alert пишется за 60 суток (ca_expiry) и за 7 суток (ca_expiry:critical), 3В5 ревью 3.r1'
+              requirement: { type: string, enum: [ИАФ.4, ИАФ.10, УПД.6, РСБ.4, РСБ.5, ОЦЛ.1, ОЦЛ.3, ОЦЛ.5, ВРМ.1] }
               components:
                 type: array
                 items: { type: string }
@@ -3884,7 +3885,8 @@ components:
           type: string
           enum: [invalid_request, unauthorized, forbidden, not_found, method_not_allowed, conflict,
                  payload_too_large, unsupported_media_type, unprocessable, rate_limited,
-                 internal_error, service_unavailable, reauthentication_failed, bundle_key_mismatch]
+                 internal_error, service_unavailable, reauthentication_failed, bundle_key_mismatch,
+                 reissue_not_needed]
         errors:
           type: array
           items:

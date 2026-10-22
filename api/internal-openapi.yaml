@@ -69,9 +69,14 @@ paths:
         сертификат сохраняется как следующий: прежний принимается, пока шлюз
         не придёт с новым, после чего прежний перестаёт приниматься. Аудит —
         `gateway.cert_reissue` со `stage: issued` при выпуске и
-        `stage: activated` при первом запросе с новым сертификатом. Не чаще
-        раза в минуту на шлюз (429 с `Retry-After`). Тело до 16 КиБ. Без
-        внутреннего УЦ на сервере — 503.
+        `stage: activated` при первом запросе с новым сертификатом. Сертификат
+        выпускается только тогда, когда heartbeat требует перевыпуск; иначе —
+        409 `reissue_not_needed` и запись `gateway.cert_reissue` с результатом
+        `denied` (`stage: denied`, `reason: not_needed`, не чаще раза в минуту
+        на шлюз): украденный ключ шлюза не продлевает доступ (3В4 ревью 3.r1).
+        Сертификат действующего корня, срок которого уже равен сроку корня,
+        не перевыпускается (3В5). Не чаще раза в минуту на шлюз (429 с
+        `Retry-After`). Тело до 16 КиБ. Без внутреннего УЦ на сервере — 503.
       requestBody:
         required: true
         content:
@@ -87,6 +92,11 @@ paths:
         '401': { $ref: '#/components/responses/ProblemUnauthorized' }
         '403': { $ref: '#/components/responses/ProblemForbidden' }
         '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '409':
+          description: Перевыпуск не нужен (`reissue_not_needed`)
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
         '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ProblemInternal' }

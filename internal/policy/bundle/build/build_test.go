@@ -233,6 +233,31 @@ func TestDeliverEncryptsForGateway(t *testing.T) {
 	}
 }
 
+// 3Н2 ревью 3.r1: шлюз знает заявление о доверии новее сервера (БД
+// восстановлена из дампа до ротации) — запись bundle.trust_rollback не
+// чаще раза в минуту на шлюз; пакет выдаётся как обычно.
+func TestDeliverTrustRollback(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	for range 2 {
+		if _, err := e.svc.Deliver(ctx, build.Gateway{ID: bundletest.GatewayID}, e.fx.Recipient.PublicKey(), "", 5); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := []string{"bundle.trust_rollback:failure", "bundle.deliver:success", "bundle.deliver:success"}
+	if got := e.audit.actions(); !slices.Equal(got, want) {
+		t.Fatalf("аудит: %v, ожидалось %v", got, want)
+	}
+	// Номер не больше серверного — без записи.
+	e.now = e.now.Add(2 * time.Minute)
+	if _, err := e.svc.Deliver(ctx, build.Gateway{ID: bundletest.GatewayID}, e.fx.Recipient.PublicKey(), "", 0); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.audit.actions(); len(got) != 4 || got[3] != "bundle.deliver:success" {
+		t.Fatalf("аудит: %v", got)
+	}
+}
+
 // TestBuildExcludesInvalidApp — В16 ревью 2.r3b: политика ссылается на
 // словарь, которого нет у приложения. Шлюз не применил бы такое
 // приложение, поэтому оно исключается: в пакете остаются его ID и

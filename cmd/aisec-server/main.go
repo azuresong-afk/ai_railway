@@ -298,7 +298,12 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		st, err := authSvc.InstallSettings(ctx)
 		return st.Timezone, err
 	}
-	statusSvc, err := newStatus(ctx, cfg, db, auditLog, integritySvc, selftestRes, bundleHealth(&bundleSvc), timezone, logger)
+	// Срок действующего корня УЦ — условие ca_expiry (3В5 ревью 3.r1).
+	var caNotAfter time.Time
+	if ca != nil {
+		caNotAfter = ca.ca.NotAfter()
+	}
+	statusSvc, err := newStatus(ctx, cfg, db, auditLog, integritySvc, selftestRes, bundleHealth(&bundleSvc), timezone, caNotAfter, logger)
 	if err != nil {
 		return err
 	}
@@ -413,7 +418,7 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 // условий уведомлений раздела 7.
 func newStatus(ctx context.Context, cfg *serverConfig, db *store.DB, auditLog *audit.Log, integritySvc integrity.Service,
 	selftestRes selftest.Result, bundle func(context.Context) (*sysstatus.BundleHealth, error),
-	timezone func(context.Context) (string, error), logger *slog.Logger) (*sysstatus.Service, error) {
+	timezone func(context.Context) (string, error), caNotAfter time.Time, logger *slog.Logger) (*sysstatus.Service, error) {
 	gwStore, err := gwregistry.NewPGStore(db.Pool(), auditLog)
 	if err != nil {
 		return nil, err
@@ -432,7 +437,7 @@ func newStatus(ctx context.Context, cfg *serverConfig, db *store.DB, auditLog *a
 		Gateways:  sysstatus.GatewayLister{Store: gwStore},
 		Integrity: integritySvc.Store, Store: pg,
 		Timezone: timezone, StorageLimit: cfg.AuditStorageLimit, WarnPercent: cfg.AuditStorageWarnPercent,
-		Logger: logger, Bundle: bundle,
+		Logger: logger, Bundle: bundle, CANotAfter: caNotAfter,
 	})
 	if err != nil {
 		return nil, err
@@ -469,7 +474,9 @@ func requireAuditKey(ctx context.Context, cps checkpointSource, haveKey bool, lo
 // возвращает её Verifier для проверки по команде.
 func startAuditVerify(ctx context.Context, cfg *serverConfig, auditLog *audit.Log, box *keyring.Box, logger *slog.Logger) (*audit.Verifier, error) {
 	// Опоры прежних версий ключа данных сверяются, пока версия не удалена
-	// ротацией (ADR-0018, п. 3.4).
+	// ротацией (ADR-0018, п. 3.4). Версии берутся из box перед каждой
+	// проверкой: после keys rotate-data опора пишется новой версией без
+	// перезапуска (3В2 ревью 3.r1).
 	opts, err := audit.HeadMACOptions(box)
 	if err != nil {
 		return nil, err

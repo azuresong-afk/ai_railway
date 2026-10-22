@@ -17,17 +17,29 @@ import (
 // доверия на внутреннем порту (задача 3.3, ADR-0018, п. 4, 6, 7).
 
 func TestReissueCertificateHandler(t *testing.T) {
-	svc, gw := newGatewayEnv(t)
+	now := time.Now()
+	clock := func() time.Time { return now }
+	svc, gw := newGatewayEnvAt(t, 400*24*time.Hour, clock)
 	h, _, err := NewInternal(InternalOptions{Logger: quiet(), Hasher: testHasher(t), Gateways: svc, Authorizer: asGateway(gw.ID)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	// УЦ теста действует час: сертификат истекает раньше 30 суток.
-	w := do(h, http.MethodPost, "/internal/v1/heartbeat", `{"version":"1"}`, "Content-Type", "application/json")
+	const path = "/internal/v1/certificate"
+	// 3В4 ревью 3.r1: свежему сертификату перевыпуск не нужен — 409.
+	_, freshCSR, err := aisecCrypto.NewClientCSR("gw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := do(h, http.MethodPost, path, `{"csr":`+jsonString(string(freshCSR))+`}`, "Content-Type", "application/json")
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), `"code":"reissue_not_needed"`) {
+		t.Fatalf("перевыпуск без признака reissue: %d %s", w.Code, w.Body)
+	}
+	// Сертификату (365 суток) остаётся 15 суток: heartbeat требует перевыпуск.
+	now = now.Add(350 * 24 * time.Hour)
+	w = do(h, http.MethodPost, "/internal/v1/heartbeat", `{"version":"1"}`, "Content-Type", "application/json")
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"reissue":true`) {
 		t.Fatalf("heartbeat: %d %s", w.Code, w.Body)
 	}
-	const path = "/internal/v1/certificate"
 	for name, body := range map[string]string{
 		"не CSR":        `{"csr":"-----BEGIN CERTIFICATE REQUEST-----\nAAAA\n-----END CERTIFICATE REQUEST-----\n"}`,
 		"пусто":         `{"csr":""}`,
@@ -52,7 +64,7 @@ func TestReissueCertificateHandler(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)
 	}
-	if err := aisecCrypto.VerifyClientCert([]byte(resp.Certificate), key, gw.ID, nil, time.Now()); err != nil {
+	if err := aisecCrypto.VerifyClientCert([]byte(resp.Certificate), key, gw.ID, nil, now); err != nil {
 		t.Fatalf("сертификат не к ключу CSR: %v", err)
 	}
 	peer, err := aisecCrypto.ParseCertInfo([]byte(resp.Certificate))

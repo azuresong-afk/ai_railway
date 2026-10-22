@@ -84,7 +84,7 @@ func TestArchivePostgres(t *testing.T) {
 		t.Fatalf("точка: %+v", cp)
 	}
 	h := hasher(t)
-	got, err := VerifyArchive(bytes.NewReader(out.Bytes()), h, v)
+	got, err := VerifyArchive(bytes.NewReader(out.Bytes()), h, SingleKey(v))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -57,7 +57,7 @@ func newMTLSEnv(t *testing.T) *mtlsEnv {
 		t.Fatal(err)
 	}
 	now := time.Now()
-	ca, err := aisecCrypto.NewCA("AISec test CA", 24*time.Hour, now)
+	ca, err := aisecCrypto.NewCA("AISec test CA", 400*24*time.Hour, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +66,10 @@ func newMTLSEnv(t *testing.T) *mtlsEnv {
 		t.Fatal(err)
 	}
 	e := &mtlsEnv{tp: tp, ca: ca, mem: gwregistry.NewMemory(), events: events.NewMemory()}
-	e.svc, err = gwregistry.New(gwregistry.Options{Store: e.mem, Provider: p, CA: ca, Audit: nopAuditor{}, Logger: quiet()})
+	// Сертификат шлюза на 12 часов: heartbeat требует перевыпуск (истекает
+	// раньше 30 суток), а сертификат не истекает вместе с УЦ (3В5 ревью 3.r1).
+	e.svc, err = gwregistry.New(gwregistry.Options{Store: e.mem, Provider: p, CA: ca, Audit: nopAuditor{}, Logger: quiet(),
+		CertValidity: 12 * time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}

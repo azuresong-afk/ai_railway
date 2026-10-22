@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -62,7 +63,8 @@ func RotateMaster(ctx context.Context, db Owner, rec Recorder, p aisecCrypto.Pro
 		if err != nil {
 			return out, err
 		}
-		return MasterRotation{Retired: retired, Recovered: true}, nil
+		out = MasterRotation{Retired: retired, Recovered: true}
+		return out, recordRecovery(ctx, db, rec, orgID, actor, "rename_completed", retired)
 	case stateCurrentWithStale:
 		// Транзакция не прошла: .new ничего не защищает.
 		if err := root.Remove(MasterKeyNextFile); err != nil {
@@ -72,6 +74,9 @@ func RotateMaster(ctx context.Context, db Owner, rec Recorder, p aisecCrypto.Pro
 			return out, err
 		}
 		out.StaleRemoved = true
+		if err := recordRecovery(ctx, db, rec, orgID, actor, "stale_removed", ""); err != nil {
+			return out, err
+		}
 	}
 	current, err := ReadMaster(dir, p)
 	if err != nil {
@@ -138,6 +143,23 @@ func RotateMaster(ctx context.Context, db Owner, rec Recorder, p aisecCrypto.Pro
 		return out, fmt.Errorf("мастер-ключ перешифрован, но файлы не переименованы (%w): повторите keys rotate-master", err)
 	}
 	return out, nil
+}
+
+// recordRecovery пишет keys.master_recovered: повторный запуск завершил
+// прерванную ротацию (step rename_completed, retired — имя прежнего файла)
+// или удалил master.key.new несостоявшейся (stale_removed) — файлы ключей
+// меняются только с записью аудита (3Н5 ревью 3.r1).
+func recordRecovery(ctx context.Context, db Owner, rec Recorder, orgID string, actor audit.Actor, step, retired string) error {
+	d := map[string]any{"step": step}
+	if retired != "" {
+		d["retired"] = retired
+	}
+	return InTx(ctx, db, func(tx pgx.Tx) error {
+		return rec.RecordTx(ctx, tx, audit.Entry{
+			OrgID: orgID, Actor: actor, Action: "keys.master_recovered",
+			Object: audit.Object{Type: "key_file", ID: MasterKeyFile}, Result: audit.ResultSuccess, Details: d,
+		})
+	})
 }
 
 // rewrapDataKeys перешифровывает обёртки всех версий ключа данных.
@@ -242,8 +264,22 @@ func masterState(ctx context.Context, db Owner, p aisecCrypto.Provider, dir, org
 }
 
 // swapMaster переименовывает master.key в master.key.<время>.retired и
-// master.key.new в master.key. Возвращает имя прежнего файла.
+// master.key.new в master.key. Возвращает имя прежнего файла. Если
+// master.key уже нет (сбой между двумя переименованиями, 3В1 ревью 3.r1),
+// остаётся второе переименование, а прежний файл — самый поздний
+// master.key.*.retired.
 func swapMaster(root *os.Root, now time.Time) (string, error) {
+	if _, err := root.Lstat(MasterKeyFile); errors.Is(err, fs.ErrNotExist) {
+		if err := root.Rename(MasterKeyNextFile, MasterKeyFile); err != nil {
+			return "", fmt.Errorf("%s: %w", MasterKeyNextFile, err)
+		}
+		if err := syncRoot(root); err != nil {
+			return "", err
+		}
+		return latestRetired(root)
+	} else if err != nil {
+		return "", fmt.Errorf("%s: %w", MasterKeyFile, err)
+	}
 	retired := MasterKeyFile + "." + now.UTC().Format("20060102T150405Z") + retiredSuffix
 	if _, err := root.Lstat(retired); !errors.Is(err, fs.ErrNotExist) {
 		return "", fmt.Errorf("%s: файл уже существует", retired)
@@ -255,6 +291,27 @@ func swapMaster(root *os.Root, now time.Time) (string, error) {
 		return "", fmt.Errorf("%s: %w", MasterKeyNextFile, err)
 	}
 	return retired, syncRoot(root)
+}
+
+// latestRetired — имя самого позднего master.key.<время>.retired (время в
+// имени сортируется как строка); нет — пусто.
+func latestRetired(root *os.Root) (string, error) {
+	d, err := root.Open(".")
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = d.Close() }() //nolint:gosec // G104: каталог только читается
+	names, err := d.Readdirnames(-1)
+	if err != nil {
+		return "", err
+	}
+	latest := ""
+	for _, n := range names {
+		if strings.HasPrefix(n, MasterKeyFile+".") && strings.HasSuffix(n, retiredSuffix) && n > latest {
+			latest = n
+		}
+	}
+	return latest, nil
 }
 
 // OpenKeyDir открывает каталог ключей: существует и закрыт для группы и

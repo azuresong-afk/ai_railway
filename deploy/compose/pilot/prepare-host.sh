@@ -138,4 +138,26 @@ key_mode() {
 }
 key_mode console.key aisec
 key_mode gateway.key aisec-gw
+# Якорь проверки пакетов шлюза — отдельная копия ключа подписи после
+# aisec-cli init (3В6 ревью 3.r1). Существующий файл не перезаписывается:
+# при компрометации ключа подписи его заменяет администратор.
+anchor="$secrets/gateway-bundle-anchor.pub"
+if [ ! -s "$anchor" ]; then
+	if [ -s "$data_dir/keys/bundle-signing.pub" ]; then
+		# Каталог keys/ принадлежит aisec: файл читается от его имени, чтобы
+		# символьная ссылка не открыла root чужой файл.
+		tmp="$anchor.tmp.$$"
+		runuser -u aisec -- head -c 8192 "$data_dir/keys/bundle-signing.pub" >"$tmp" ||
+			die "не прочитать $data_dir/keys/bundle-signing.pub"
+		grep -q '^-----BEGIN AISEC SIGNING PUBLIC KEY-----$' "$tmp" || {
+			rm -f "$tmp"
+			die "$data_dir/keys/bundle-signing.pub — не открытый ключ подписи"
+		}
+		chmod 0644 "$tmp"
+		mv "$tmp" "$anchor"
+		echo "Якорь шлюза: $anchor — копия keys/bundle-signing.pub."
+	else
+		echo "После aisec-cli init запустите prepare-host.sh ещё раз: он положит якорь шлюза $anchor."
+	fi
+fi
 echo "Хост подготовлен: $data_dir."

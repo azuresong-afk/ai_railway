@@ -35,7 +35,7 @@ func TestSystemStatus(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Server.Version != "1.2.3" || got.Time.Sync != sysstatus.SyncSynchronized || len(got.Notifications) != 9 {
+	if got.Server.Version != "1.2.3" || got.Time.Sync != sysstatus.SyncSynchronized || len(got.Notifications) != 10 {
 		t.Fatalf("%+v", got)
 	}
 	// Пустые списки — массивы, не null: клиент консоли не проверяет на null.

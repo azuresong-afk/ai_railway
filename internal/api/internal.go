@@ -151,6 +151,10 @@ func reissueCertificate(g *gwregistry.Service, logger *slog.Logger) http.Handler
 			w.Header().Set("Retry-After", "60")
 			WriteProblem(w, NewProblem(http.StatusTooManyRequests, CodeRateLimited, "Сертификат перевыпускается не чаще раза в минуту."))
 			return
+		case errors.Is(err, gwregistry.ErrReissueNotNeeded):
+			WriteProblem(w, NewProblem(http.StatusConflict, CodeReissueNotNeeded,
+				"Сертификат выпущен действующим корнем УЦ и не истекает в ближайшие 30 суток (или истекает вместе с корнем): перевыпуск не нужен."))
+			return
 		case errors.Is(err, gwregistry.ErrNoCA):
 			WriteProblem(w, NewProblem(http.StatusServiceUnavailable, CodeUnavailable, "Внутренний УЦ не подключён."))
 			return
