@@ -28,14 +28,14 @@ export interface NavItem {
 
 // Разделы по ТЗ 6.3. Право на раздел задано, когда оно уже есть в модели RBAC.
 export const navItems: NavItem[] = [
-  { path: "/", title: "Обзор", icon: LayoutDashboard },
+  { path: "/", title: "Обзор", icon: LayoutDashboard, anyOf: ["dashboards.read"] },
   { path: "/events", title: "События", icon: List, anyOf: ["events.read"] },
   { path: "/alerts", title: "Оповещения", icon: Bell, anyOf: ["alerts.read"] },
   { path: "/incidents", title: "Инциденты", icon: ShieldAlert, anyOf: ["incidents.read"] },
   { path: "/apps", title: "Приложения", icon: AppWindow, anyOf: ["applications.read"] },
   { path: "/providers", title: "Провайдеры", icon: Server, anyOf: ["providers.read"] },
   { path: "/policies", title: "Политики", icon: ScrollText, anyOf: ["policies.read"] },
-  { path: "/usage", title: "Потребление", icon: Gauge },
+  { path: "/usage", title: "Потребление", icon: Gauge, anyOf: ["dashboards.read"] },
   { path: "/agents", title: "Агенты", icon: Bot, stage4: true },
   { path: "/shadow-ai", title: "Теневой ИИ", icon: EyeOff, stage4: true },
   { path: "/compliance", title: "Соответствие", icon: BadgeCheck, stage4: true },

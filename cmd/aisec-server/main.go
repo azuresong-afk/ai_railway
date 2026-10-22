@@ -261,8 +261,17 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	// Агрегаты дашбордов (задача 3.19) прибавляются в той же транзакции приёма.
+	dashStore, err := events.NewDashStore(db.Pool(), readDB.Pool(), audit.DefaultOrgID, logger)
+	if err != nil {
+		return err
+	}
+	if err := dashStore.Init(ctx); err != nil {
+		return err
+	}
 	eventStore, err := events.NewPGStore(db.Pool(), box, auditLog, audit.DefaultOrgID, events.WithRandom(rnd),
-		events.WithReadDB(readDB.Pool()), events.WithIngestHook(alertStore.WithIncidents(incidentStore)))
+		events.WithReadDB(readDB.Pool()),
+		events.WithIngestHook(events.ChainHooks(alertStore.WithIncidents(incidentStore), dashStore.Hook())))
 	if err != nil {
 		return err
 	}
@@ -341,6 +350,7 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	go events.RunMaintenance(ctx, eventStore, events.MaintainEvery, logger)
 	// Агрегаты для дашбордов (задача 2.16) — фоновым заданием раз в минуту.
 	go events.RunAggregates(ctx, eventStore, events.AggregateEvery, logger)
+	go dashStore.RunBackfill(ctx, events.DashBackfillEvery)
 
 	// «Состояние системы» (задача 2.20): шлюзы читаются из реестра и без
 	// внутреннего УЦ; уведомления ВРМ.1, РСБ.5, ОЦЛ.5 пишутся в аудит при
@@ -419,19 +429,20 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 
 	handler, _, err := api.New(api.Options{
 		Logger: logger, Version: version, Hasher: hasher,
-		Apps:      appsSvc,
-		Policies:  policiesSvc,
-		Ready:     db.Ping,
-		Auth:      authSvc,
-		Gateways:  gateways,
-		Integrity: integritySvc,
-		Status:    statusSvc,
-		Events:    eventStore,
-		Alerts:    alertsSvc,
-		Notify:    notifySvc,
-		Incidents: incidentsSvc,
-		Audit:     auditLog,
-		Fallback:  console,
+		Apps:       appsSvc,
+		Policies:   policiesSvc,
+		Ready:      db.Ping,
+		Auth:       authSvc,
+		Gateways:   gateways,
+		Integrity:  integritySvc,
+		Status:     statusSvc,
+		Events:     eventStore,
+		Alerts:     alertsSvc,
+		Notify:     notifySvc,
+		Incidents:  incidentsSvc,
+		Dashboards: dashStore,
+		Audit:      auditLog,
+		Fallback:   console,
 
 		AuditLog:      auditLog,
 		AuditVerifier: chainVerifier,

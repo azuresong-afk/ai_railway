@@ -365,3 +365,52 @@ func TestAlertRuleStateViaAPI(t *testing.T) {
 		400, CodeInvalidRequest)
 	mustProblem(t, e.call(admin, "POST", "/api/v1/alert-rules", `{"kind":"system","name":"x"}`, true), 400, CodeInvalidRequest)
 }
+
+// from/to в списке оповещений: период по времени последнего срабатывания,
+// граница from включается, to не включается; неверные значения — 400.
+func TestAlertsPeriodViaAPI(t *testing.T) {
+	e := newAlertsEnv(t)
+	analyst := e.mustLogin(t, "analyst")
+	e.ingest(t, e.blocked(t, "crm-bot"), e.blocked(t, "hr-bot"))
+	all := decode[PageResponse[AlertView]](t, e.call(analyst, "GET", "/api/v1/alerts", "", false).Body.Bytes())
+	total := len(all.Items)
+	if total < 2 {
+		t.Fatalf("без периода: %+v", all)
+	}
+	at := all.Items[0].LastTriggeredAt
+	count := func(q string) int {
+		t.Helper()
+		w := e.call(analyst, "GET", "/api/v1/alerts?"+q, "", false)
+		if w.Code != 200 {
+			t.Fatalf("%s: %d %s", q, w.Code, w.Body)
+		}
+		return len(decode[PageResponse[AlertView]](t, w.Body.Bytes()).Items)
+	}
+	f := func(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
+	if n := count("from=" + f(at.Add(-time.Hour)) + "&to=" + f(at.Add(time.Hour))); n != total {
+		t.Fatalf("период вокруг срабатывания: %d", n)
+	}
+	if n := count("from=" + f(at.Add(time.Hour))); n != 0 {
+		t.Fatalf("from после срабатываний: %d", n)
+	}
+	if n := count("to=" + f(at.Add(-time.Hour))); n != 0 {
+		t.Fatalf("to до срабатываний: %d", n)
+	}
+	// Границы: from включается, to не включается (наибольшее время срабатывания).
+	latest := at
+	for _, a := range all.Items {
+		if a.LastTriggeredAt.After(latest) {
+			latest = a.LastTriggeredAt
+		}
+	}
+	if n := count("from=" + f(latest)); n < 1 {
+		t.Fatalf("from не включил границу: %d", n)
+	}
+	if n := count("to=" + f(latest)); n >= total {
+		t.Fatalf("to включил границу: %d из %d", n, total)
+	}
+	for _, q := range []string{"from=вчера", "to=2026-13-01", "from=" + f(at) + "&from=" + f(at), "from=" + f(at) + "&to=" + f(at),
+		"from=" + f(at.Add(time.Hour)) + "&to=" + f(at)} {
+		mustProblem(t, e.call(analyst, "GET", "/api/v1/alerts?"+q, "", false), 400, CodeInvalidRequest)
+	}
+}

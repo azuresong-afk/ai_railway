@@ -88,6 +88,10 @@ const (
 	PermModelPricesManage = "model_prices.manage"
 	PermBudgetsRead       = "budgets.read"
 	PermBudgetsManage     = "budgets.manage"
+	// Дашборды (ТЗ 5.8, задача 3.19 этапа 3): агрегаты без содержимого
+	// запросов. Со ScopeOwn (владелец приложения) — только дашборд «Приложение»
+	// своих приложений (УПД.8); остальные дашборды видят роли со ScopeAll.
+	PermDashboardsRead = "dashboards.read"
 	// Инциденты (ТЗ 5.7, задача 3.16 этапа 3): разбор — работа аналитика,
 	// доступна и токену (SOAR, IRP); выгрузка карточки — отдельное право
 	// (data.export, DM-41); инструкции реагирования — функция безопасности.
@@ -160,6 +164,7 @@ var permissionCatalog = []Permission{
 	{Name: PermNotifyChannelsRead, Title: "Просмотр каналов уведомлений (без секретов) и журнала доставки", Group: "Оповещения"},
 	{Name: PermNotifyChannelsManage, Title: "Создание, изменение и тестовая отправка каналов уведомлений", Group: "Оповещения",
 		Security: true},
+	{Name: PermDashboardsRead, Title: "Просмотр дашбордов: агрегаты без содержимого запросов", Group: "Дашборды", Ownable: true},
 	{Name: PermModelPricesRead, Title: "Просмотр цен моделей", Group: "Потребление"},
 	{Name: PermModelPricesManage, Title: "Задание, изменение и удаление цен моделей", Group: "Потребление"},
 	{Name: PermBudgetsRead, Title: "Просмотр бюджетов и расхода приложений", Group: "Потребление"},
@@ -353,18 +358,19 @@ var builtinRoles = []RoleDef{
 		Grants: Grants{PermSystemRead: ScopeAll, PermAPITokensRead: ScopeOwn, PermAPITokensManage: ScopeOwn,
 			PermApplicationsRead: ScopeAll, PermApplicationsManage: ScopeAll, PermAppKeysManage: ScopeAll,
 			PermProvidersRead: ScopeAll, PermProvidersManage: ScopeAll, PermPoliciesRead: ScopeAll, PermPoliciesTest: ScopeAll,
-			PermModelPricesRead: ScopeAll, PermModelPricesManage: ScopeAll, PermBudgetsRead: ScopeAll, PermBudgetsManage: ScopeAll}},
+			PermModelPricesRead: ScopeAll, PermModelPricesManage: ScopeAll, PermBudgetsRead: ScopeAll, PermBudgetsManage: ScopeAll,
+			PermDashboardsRead: ScopeAll}},
 	{ID: RoleAnalyst, DisplayName: "Аналитик", Builtin: true,
 		Description: "Разбор оповещений и инцидентов, поиск по событиям",
 		Grants: grantAll(PermSystemRead, PermEventsRead, PermEventsExport, PermEventsMark, PermApplicationsRead, PermProvidersRead,
 			PermPoliciesRead, PermPoliciesTest, PermAlertsRead, PermAlertsManage, PermAlertRulesRead, PermModelPricesRead, PermBudgetsRead,
-			PermIncidentsRead, PermIncidentsManage, PermIncidentsExport)},
+			PermDashboardsRead, PermIncidentsRead, PermIncidentsManage, PermIncidentsExport)},
 	{ID: RoleAuditor, DisplayName: "Аудитор", Builtin: true,
 		Description: "Только просмотр: журнал аудита, отчёты, состояние соответствия. Ничего не меняет",
 		Grants:      auditorPermissions()},
 	{ID: RoleAppOwner, DisplayName: "Владелец приложения", Builtin: true,
 		Description: "Статистика и события только своих приложений, без доступа к содержимому",
-		Grants:      Grants{PermApplicationsRead: ScopeOwn}},
+		Grants:      Grants{PermApplicationsRead: ScopeOwn, PermDashboardsRead: ScopeOwn}},
 }
 
 var builtinIndex = func() map[Role]RoleDef {

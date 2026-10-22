@@ -102,6 +102,9 @@ function GuardedRoute({ me, perm, title, children }: { me: Me; perm: string; tit
   return <Suspense fallback={null}>{children}</Suspense>;
 }
 
+const DashboardsScreen = lazy(() => import("../dashboards/DashboardsScreen").then((m) => ({ default: m.DashboardsScreen })));
+const UsageScreen = lazy(() => import("../consumption/UsageScreen").then((m) => ({ default: m.UsageScreen })));
+
 const AdminScreen = lazy(() => import("../admin/AdminScreen").then((m) => ({ default: m.AdminScreen })));
 const SystemScreen = lazy(() => import("../system/SystemScreen").then((m) => ({ default: m.SystemScreen })));
 
@@ -236,6 +239,8 @@ function Frame({ me, onLogout }: { me: Me; onLogout: () => void }) {
         <div className="flex min-h-0 flex-1">
           <main className="min-w-0 flex-1 overflow-auto p-6">
             <Routes>
+              <Route path="/" element={<GuardedRoute me={me} perm="dashboards.read" title="обзор"><DashboardsScreen me={me} /></GuardedRoute>} />
+              <Route path="/usage" element={<GuardedRoute me={me} perm="dashboards.read" title="потребление"><UsageScreen me={me} /></GuardedRoute>} />
               <Route path="/events" element={<EventsRoute me={me} />} />
               <Route path="/apps" element={<GuardedRoute me={me} perm="applications.read" title="приложения"><AppsScreen me={me} /></GuardedRoute>} />
               <Route path="/alerts" element={<GuardedRoute me={me} perm="alerts.read" title="оповещения"><AlertsScreen me={me} /></GuardedRoute>} />

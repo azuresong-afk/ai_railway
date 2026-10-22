@@ -2755,12 +2755,196 @@ paths:
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ProblemInternal' }
         '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/dashboards/overview:
+    get:
+      summary: Дашборд «Обзор»
+      description: |
+        Право `dashboards.read`. Агрегаты событий без содержимого запросов и ответов. Период — `period`
+        (15m, 1h, 24h, 7d, 30d; по умолчанию 24h) либо `from` и `to` (RFC 3339, не длиннее 366 суток).
+        До 2 часов данные читаются из событий поминутно, до 31 суток — по часам (начало округляется
+        до часа вниз), дольше — по суткам в часовом поясе установки.
+        Показатели, график запросов по решениям, топ детекторов, приложения по риску и «Лента решений»
+        (`feed=all` — все решения, по умолчанию только с действием).
+      x-permission: dashboards.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/DashPeriod'
+        - $ref: '#/components/parameters/DashFrom'
+        - $ref: '#/components/parameters/DashTo'
+        - $ref: '#/components/parameters/DashFeed'
+      responses:
+        '200':
+          description: Снимок дашборда
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DashboardOverview' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/dashboards/threats:
+    get:
+      summary: Дашборд «Угрозы»
+      description: |
+        Право `dashboards.read`. Агрегаты событий без содержимого запросов и ответов. Период — `period`
+        (15m, 1h, 24h, 7d, 30d; по умолчанию 24h) либо `from` и `to` (RFC 3339, не длиннее 366 суток).
+        До 2 часов данные читаются из событий поминутно, до 31 суток — по часам (начало округляется
+        до часа вниз), дольше — по суткам в часовом поясе установки.
+        Находки по строкам матрицы обнаружения, категориям и детекторам во времени (ряды — для десяти самых частых
+        значений), тепловая карта день недели × час в поясе установки, доля непроверенного нетекстового содержимого.
+      x-permission: dashboards.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/DashPeriod'
+        - $ref: '#/components/parameters/DashFrom'
+        - $ref: '#/components/parameters/DashTo'
+        - $ref: '#/components/parameters/DashFeed'
+      responses:
+        '200':
+          description: Снимок дашборда
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DashboardThreats' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/dashboards/pii:
+    get:
+      summary: Дашборд «ПДн»
+      description: |
+        Право `dashboards.read`. Агрегаты событий без содержимого запросов и ответов. Период — `period`
+        (15m, 1h, 24h, 7d, 30d; по умолчанию 24h) либо `from` и `to` (RFC 3339, не длиннее 366 суток).
+        До 2 часов данные читаются из событий поминутно, до 31 суток — по часам (начало округляется
+        до часа вниз), дольше — по суткам в часовом поясе установки.
+        Типы ПДн (категории `pii.*`), приложения и действия.
+      x-permission: dashboards.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/DashPeriod'
+        - $ref: '#/components/parameters/DashFrom'
+        - $ref: '#/components/parameters/DashTo'
+        - $ref: '#/components/parameters/DashFeed'
+      responses:
+        '200':
+          description: Снимок дашборда
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DashboardPII' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/dashboards/consumption:
+    get:
+      summary: Дашборд «Потребление»
+      description: |
+        Право `dashboards.read`. Агрегаты событий без содержимого запросов и ответов. Период — `period`
+        (15m, 1h, 24h, 7d, 30d; по умолчанию 24h) либо `from` и `to` (RFC 3339, не длиннее 366 суток).
+        До 2 часов данные читаются из событий поминутно, до 31 суток — по часам (начало округляется
+        до часа вниз), дольше — по суткам в часовом поясе установки.
+        Токены, запросы и стоимость в рублях по приложениям, моделям, провайдерам, подразделениям и пользователям
+        (псевдонимам), прогноз до конца месяца и исполнение бюджетов (последнее — только с правом `budgets.read`).
+        Стоимость считается по ценам модели на момент приёма события; запросы к моделям без цены в стоимость
+        не входят и считаются отдельно (`unpriced_requests`).
+      x-permission: dashboards.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/DashPeriod'
+        - $ref: '#/components/parameters/DashFrom'
+        - $ref: '#/components/parameters/DashTo'
+        - $ref: '#/components/parameters/DashFeed'
+      responses:
+        '200':
+          description: Снимок дашборда
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DashboardConsumption' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/dashboards/app/{id}:
+    get:
+      summary: Дашборд «Приложение»
+      description: |
+        Право `dashboards.read`. Агрегаты событий без содержимого запросов и ответов. Период — `period`
+        (15m, 1h, 24h, 7d, 30d; по умолчанию 24h) либо `from` и `to` (RFC 3339, не длиннее 366 суток).
+        До 2 часов данные читаются из событий поминутно, до 31 суток — по часам (начало округляется
+        до часа вниз), дольше — по суткам в часовом поясе установки.
+        Владелец приложения (область `own`) видит только свои приложения; чужое — 404 (УПД.8).
+      x-permission: dashboards.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ApplicationID'
+        - $ref: '#/components/parameters/DashPeriod'
+        - $ref: '#/components/parameters/DashFrom'
+        - $ref: '#/components/parameters/DashTo'
+        - $ref: '#/components/parameters/DashFeed'
+      responses:
+        '200':
+          description: Снимок дашборда
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DashboardApp' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/dashboards/stream:
+    get:
+      summary: Поток обновлений дашборда (SSE)
+      description: |
+        Право `dashboards.read`. Режим реального времени (ТЗ 5.8): `text/event-stream`, событие `snapshot`
+        с тем же JSON, что у GET-дашборда, при подключении и после каждого изменения данных; задержка
+        не больше 5 с; пустой комментарий `: ping` вместо неизменного снимка. Права проверяются на каждом
+        шаге: выход, отзыв токена или потеря права закрывают поток. Не больше трёх потоков на пользователя
+        или токен (иначе 429). Для `dashboard=app` нужен `app_id`; владелец приложения (область `own`) —
+        только свои приложения.
+      x-permission: dashboards.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - name: dashboard
+          in: query
+          required: true
+          schema: { type: string, enum: [overview, threats, pii, consumption, app] }
+        - name: app_id
+          in: query
+          schema: { type: string, format: uuid }
+        - $ref: '#/components/parameters/DashPeriod'
+        - $ref: '#/components/parameters/DashFrom'
+        - $ref: '#/components/parameters/DashTo'
+        - $ref: '#/components/parameters/DashFeed'
+      responses:
+        '200':
+          description: Поток событий SSE
+          content:
+            text/event-stream:
+              schema: { type: string }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
   /api/v1/alerts:
     get:
       summary: Оповещения
       description: |
         Право `alerts.read` (ТЗ 5.6, ADR-0020). От новых к старым, фильтры `status`, `severity`,
-        `rule_id` (каждый не больше одного раза). Содержимого запросов и ответов в оповещениях нет:
+        `rule_id`, `from`, `to` (период по времени последнего срабатывания; каждый не больше одного раза). Содержимого запросов и ответов в оповещениях нет:
         значения группировки (`group`) — метаданные событий, пользователь — псевдоним.
       x-permission: alerts.read
       security: [{ sessionCookie: [] }, { bearerToken: [] }]
@@ -2776,6 +2960,14 @@ paths:
         - name: rule_id
           in: query
           schema: { type: string, format: uuid }
+        - name: from
+          in: query
+          description: Последнее срабатывание не раньше (RFC 3339, включительно); без параметра — без нижней границы
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          description: Последнее срабатывание раньше (RFC 3339, не включая); без параметра — без верхней границы. from раньше to
+          schema: { type: string, format: date-time }
       responses:
         '200':
           description: Страница списка
@@ -3728,6 +3920,26 @@ components:
       in: query
       description: Конец периода, не включая (RFC 3339); по умолчанию — текущее время
       schema: { type: string, format: date-time }
+    DashPeriod:
+      name: period
+      in: query
+      description: Именованный период дашборда; не сочетается с from и to. По умолчанию 24h
+      schema: { type: string, enum: ['15m', '1h', '24h', '7d', '30d'] }
+    DashFrom:
+      name: from
+      in: query
+      description: Начало произвольного периода (RFC 3339); вместе с to
+      schema: { type: string, format: date-time }
+    DashTo:
+      name: to
+      in: query
+      description: Конец произвольного периода, не включая (RFC 3339); по умолчанию и в будущем — текущий момент
+      schema: { type: string, format: date-time }
+    DashFeed:
+      name: feed
+      in: query
+      description: '«Лента решений»: all — все решения, actions — только с действием (по умолчанию)'
+      schema: { type: string, enum: [all, actions] }
     EventFilter:
       name: filter
       in: query
@@ -4407,6 +4619,177 @@ components:
         unpriced_requests: { type: integer, format: int64, minimum: 0, description: 'Из них к моделям без цены: стоимость не определена' }
         percent: { type: integer, format: int64, minimum: 0, description: Доля расхода от бюджета, целые проценты вниз; без бюджета 0 }
         exhausted: { type: boolean, description: 'Расход достиг бюджета (≥ 100 %)' }
+    DashPeriodInfo:
+      type: object
+      required: [name, from, to, unit, timezone, aggregates_ready]
+      properties:
+        name: { type: string, description: 'Именованный период или custom' }
+        from: { type: string, format: date-time, description: 'Начало; для часовых данных округлено до часа вниз' }
+        to: { type: string, format: date-time }
+        unit: { type: string, enum: [minute, hour, day], description: 'Шаг рядов' }
+        timezone: { type: string, description: 'Часовой пояс установки' }
+        aggregates_ready: { type: boolean, description: 'Досчёт прошлых периодов закончен: цифры полные' }
+    DashTotals:
+      type: object
+      required: [requests, with_findings, non_text_unchecked, blocked, would_block, masked, tokens_prompt, tokens_completion, cost, unpriced_requests]
+      properties:
+        requests: { type: integer, format: int64 }
+        with_findings: { type: integer, format: int64 }
+        non_text_unchecked: { type: integer, format: int64 }
+        blocked: { type: integer, format: int64, description: 'Заблокировано (режим enforce)' }
+        would_block: { type: integer, format: int64, description: 'Заблокировало бы (режим monitor)' }
+        masked: { type: integer, format: int64, description: 'Замаскировано или псевдонимизировано' }
+        tokens_prompt: { type: integer, format: int64 }
+        tokens_completion: { type: integer, format: int64 }
+        cost: { type: string, description: 'Стоимость, рубли, 7 знаков после точки' }
+        unpriced_requests: { type: integer, format: int64, description: 'Запросы моделей без цены' }
+    DashLatency:
+      type: object
+      required: [p95_ms, overflow, requests]
+      properties:
+        p95_ms: { type: integer, description: 'Верхняя граница корзины p95 задержки шлюза, мс; 0 — данных нет' }
+        overflow: { type: boolean, description: 'p95 больше последней границы (5 с)' }
+        requests: { type: integer, format: int64 }
+    DashPoint:
+      type: object
+      required: [bucket, key, value]
+      properties:
+        bucket: { type: string, format: date-time }
+        key: { type: string }
+        value: { type: integer, format: int64 }
+    DashTop:
+      type: object
+      required: [key, value]
+      properties:
+        key: { type: string }
+        value: { type: integer, format: int64 }
+    DashRequestRow:
+      type: object
+      required: [key, requests, with_findings, blocked, would_block, masked, tokens_prompt, tokens_completion, cost, unpriced_requests]
+      properties:
+        key: { type: string, description: 'Приложение, модель, провайдер, подразделение или псевдоним пользователя; пусто — не указано' }
+        requests: { type: integer, format: int64 }
+        with_findings: { type: integer, format: int64 }
+        blocked: { type: integer, format: int64 }
+        would_block: { type: integer, format: int64 }
+        masked: { type: integer, format: int64 }
+        tokens_prompt: { type: integer, format: int64 }
+        tokens_completion: { type: integer, format: int64 }
+        cost: { type: string }
+        unpriced_requests: { type: integer, format: int64 }
+    DashFeedItem:
+      type: object
+      description: Решение в ленте — метаданные события без содержимого; карточка — GET /api/v1/events/{id}
+      required: [id, time, app, model, action, policy_mode, severity, rule, threats]
+      properties:
+        id: { type: string, format: uuid }
+        time: { type: string, format: date-time }
+        app: { type: string }
+        model: { type: string }
+        action: { type: string }
+        policy_mode: { type: string }
+        severity: { type: string }
+        rule: { type: string }
+        threats: { type: array, items: { type: string, pattern: '^DM-[0-9]{2}$' } }
+    DashCell:
+      type: object
+      required: [weekday, hour, findings]
+      properties:
+        weekday: { type: integer, minimum: 1, maximum: 7, description: '1 — понедельник' }
+        hour: { type: integer, minimum: 0, maximum: 23, description: 'Час суток в поясе установки' }
+        findings: { type: integer, format: int64 }
+    DashPIIRow:
+      type: object
+      required: [category, app, action, findings]
+      properties:
+        category: { type: string, pattern: '^pii\.' }
+        app: { type: string }
+        action: { type: string }
+        findings: { type: integer, format: int64 }
+    DashboardOverview:
+      type: object
+      required: [period, totals, latency, decisions, top_detectors, apps, feed]
+      properties:
+        period: { $ref: '#/components/schemas/DashPeriodInfo' }
+        totals: { $ref: '#/components/schemas/DashTotals' }
+        latency: { $ref: '#/components/schemas/DashLatency' }
+        decisions: { type: array, items: { $ref: '#/components/schemas/DashPoint' }, description: 'Ключи: blocked, would_block, masked, allowed' }
+        top_detectors: { type: array, items: { $ref: '#/components/schemas/DashTop' } }
+        apps: { type: array, items: { $ref: '#/components/schemas/DashRequestRow' } }
+        feed: { type: array, items: { $ref: '#/components/schemas/DashFeedItem' } }
+    DashboardThreats:
+      type: object
+      required: [period, totals, non_text_unchecked_share, top_threats, top_categories, top_detectors, by_threat, by_category, by_detector, heatmap]
+      properties:
+        period: { $ref: '#/components/schemas/DashPeriodInfo' }
+        totals: { $ref: '#/components/schemas/DashTotals' }
+        non_text_unchecked_share: { type: number, minimum: 0, maximum: 1 }
+        top_threats: { type: array, items: { $ref: '#/components/schemas/DashTop' } }
+        top_categories: { type: array, items: { $ref: '#/components/schemas/DashTop' } }
+        top_detectors: { type: array, items: { $ref: '#/components/schemas/DashTop' } }
+        by_threat: { type: array, items: { $ref: '#/components/schemas/DashPoint' } }
+        by_category: { type: array, items: { $ref: '#/components/schemas/DashPoint' } }
+        by_detector: { type: array, items: { $ref: '#/components/schemas/DashPoint' } }
+        heatmap: { type: array, items: { $ref: '#/components/schemas/DashCell' } }
+    DashboardPII:
+      type: object
+      required: [period, findings, types, rows, series]
+      properties:
+        period: { $ref: '#/components/schemas/DashPeriodInfo' }
+        findings: { type: integer, format: int64 }
+        types: { type: array, items: { $ref: '#/components/schemas/DashTop' } }
+        rows: { type: array, items: { $ref: '#/components/schemas/DashPIIRow' } }
+        series: { type: array, items: { $ref: '#/components/schemas/DashPoint' } }
+    DashAppRef:
+      type: object
+      required: [id, slug, name]
+      properties:
+        id: { type: string, format: uuid }
+        slug: { type: string }
+        name: { type: string }
+    DashboardApp:
+      type: object
+      required: [period, application, totals, latency, decisions, top_detectors, models, feed]
+      properties:
+        period: { $ref: '#/components/schemas/DashPeriodInfo' }
+        application: { $ref: '#/components/schemas/DashAppRef' }
+        totals: { $ref: '#/components/schemas/DashTotals' }
+        latency: { $ref: '#/components/schemas/DashLatency' }
+        decisions: { type: array, items: { $ref: '#/components/schemas/DashPoint' } }
+        top_detectors: { type: array, items: { $ref: '#/components/schemas/DashTop' } }
+        models: { type: array, items: { $ref: '#/components/schemas/DashRequestRow' } }
+        feed: { type: array, items: { $ref: '#/components/schemas/DashFeedItem' } }
+    DashUsagePoint:
+      type: object
+      required: [bucket, requests, tokens, cost]
+      properties:
+        bucket: { type: string, format: date-time }
+        requests: { type: integer, format: int64 }
+        tokens: { type: integer, format: int64 }
+        cost: { type: string }
+    DashForecast:
+      type: object
+      required: [month, spent, projected, enough, month_elapsed]
+      properties:
+        month: { type: string, pattern: '^[0-9]{4}-(0[1-9]|1[0-2])$' }
+        spent: { type: string, description: 'Расход с начала месяца по цене на момент запросов' }
+        projected: { type: string, description: 'Линейный прогноз до конца месяца' }
+        enough: { type: boolean, description: 'Данных достаточно: прошли сутки месяца и есть расход' }
+        month_elapsed: { type: number, minimum: 0, maximum: 1 }
+    DashboardConsumption:
+      type: object
+      required: [period, totals, series, by_app, by_model, by_provider, by_department, by_user, forecast, budgets]
+      properties:
+        period: { $ref: '#/components/schemas/DashPeriodInfo' }
+        totals: { $ref: '#/components/schemas/DashTotals' }
+        series: { type: array, items: { $ref: '#/components/schemas/DashUsagePoint' } }
+        by_app: { type: array, items: { $ref: '#/components/schemas/DashRequestRow' } }
+        by_model: { type: array, items: { $ref: '#/components/schemas/DashRequestRow' } }
+        by_provider: { type: array, items: { $ref: '#/components/schemas/DashRequestRow' } }
+        by_department: { type: array, items: { $ref: '#/components/schemas/DashRequestRow' } }
+        by_user: { type: array, items: { $ref: '#/components/schemas/DashRequestRow' } }
+        forecast: { $ref: '#/components/schemas/DashForecast' }
+        budgets: { type: array, items: { $ref: '#/components/schemas/BudgetStatus' }, description: 'Исполнение бюджетов текущего месяца; пусто без права budgets.read' }
     BudgetStatusList:
       type: object
       required: [month, items]

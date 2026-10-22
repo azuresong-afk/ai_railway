@@ -22,6 +22,8 @@ export interface AlertQuery {
   status: string;
   severity: string;
   rule_id: string;
+  // Начало периода по времени последнего срабатывания, RFC 3339; пусто — без границы.
+  from?: string;
 }
 
 // Права проверяет сервер, консоль только скрывает недоступное. Тела запросов и ответов — из api/openapi.yaml.

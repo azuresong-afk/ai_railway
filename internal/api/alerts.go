@@ -185,6 +185,22 @@ func alertQuery(r *http.Request) (alerting.AlertQuery, *Problem) {
 	out.Severity = one("severity", func(s string) bool { return slices.Contains(alerting.Severities(), s) },
 		"Одно из значений: info, low, medium, high, critical.")
 	out.RuleID = one("rule_id", func(s string) bool { _, err := store.ParseUUID(s); return err == nil }, "Укажите ID правила (UUID).")
+	timeParam := func(name string) time.Time {
+		vs, ok := q[name]
+		if !ok {
+			return time.Time{}
+		}
+		t, err := time.Parse(time.RFC3339Nano, first(vs))
+		if len(vs) != 1 || err != nil {
+			bad = append(bad, FieldError{name, "Укажите время в формате RFC 3339, например 2026-10-21T15:00:00Z."})
+			return time.Time{}
+		}
+		return t.UTC()
+	}
+	out.From, out.To = timeParam("from"), timeParam("to")
+	if !out.From.IsZero() && !out.To.IsZero() && !out.From.Before(out.To) {
+		bad = append(bad, FieldError{"from", "Начало периода должно быть раньше конца (to)."})
+	}
 	if len(bad) > 0 {
 		return alerting.AlertQuery{}, Invalid("Параметры выборки заданы неверно.", bad...)
 	}

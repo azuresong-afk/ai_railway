@@ -189,8 +189,9 @@ func TestCreateRoleValidation(t *testing.T) {
 func TestNoPrivilegeEscalation(t *testing.T) {
 	e := newEnv(t)
 	ctx := context.Background()
-	// applications.read покрывает права владельца приложения (задача 2.11).
-	e.createRole(t, "helpdesk", auth.PermUsersRead, auth.PermUsersManage, auth.PermSessionsManage, auth.PermRolesManage, auth.PermApplicationsRead)
+	// applications.read и dashboards.read покрывают права владельца приложения (задачи 2.11, 3.19).
+	e.createRole(t, "helpdesk", auth.PermUsersRead, auth.PermUsersManage, auth.PermSessionsManage, auth.PermRolesManage, auth.PermApplicationsRead,
+		auth.PermDashboardsRead)
 	e.mem.AddUser(e.user(helperID, "helper", "helpdesk"))
 	e.mem.AddUser(e.user(ownerID, "owner", auth.RoleAppOwner))
 	helper := e.mfa.complete(t, e.mustLogin(t, "helper", phrase))
