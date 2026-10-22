@@ -393,6 +393,34 @@ images-test-docker: build-image ## make images-test, где Go-шаги идут
 e2e: manifest ## Сквозные тесты: шлюз и mock-llm по TLS (этап 1); сервер, CLI и PostgreSQL (этап 2, нужен AISEC_TEST_DATABASE_URL — иначе пропускаются)
 	go test -tags e2e -count=1 ./test/e2e/ -bin $(BUILD)/bin
 
+# e2e пилота в docker compose (задачи 3.7 и 3.8 этапа 3): сети без выхода
+# наружу и ловушка сети (test/e2e/netwatch), копия и восстановление
+# (backup.sh, restore.sh). Образы — make images-test (тот же VERSION).
+# Тестовый бинарник запускается от root: prepare-host.sh создаёт
+# пользователей хоста; не от root — через sudo -n.
+PILOT_E2E := $(BUILD)/pilot-e2e
+PILOT_E2E_SUDO := $(if $(filter 0,$(shell id -u)),,sudo -n)
+
+.PHONY: e2e-pilot-bin
+e2e-pilot-bin: ## Сборка e2e пилота: тестовый бинарник, ловушка сети netwatch и mock-llm (статические)
+	mkdir -p $(PILOT_E2E)
+	CGO_ENABLED=0 go test -c -tags e2e -o $(PILOT_E2E)/e2e.test ./test/e2e/
+	CGO_ENABLED=0 go build -trimpath -tags e2e -o $(PILOT_E2E)/ ./test/e2e/netwatch ./cmd/mock-llm
+
+.PHONY: e2e-pilot-bin-docker
+e2e-pilot-bin-docker: build-image ## make e2e-pilot-bin в сборочном образе (CI)
+	$(DOCKER_RUN) $(BUILD_IMAGE) make e2e-pilot-bin BIN=/opt/aisec-tools/bin
+
+.PHONY: e2e-pilot-run
+e2e-pilot-run: ## e2e пилота на собранных образах и бинарниках (root или sudo -n, Docker); AISEC_POSTGRES_IMAGE — свой реестр
+	cd test/e2e && $(PILOT_E2E_SUDO) env AISEC_E2E_PILOT=1 AISEC_VERSION='$(IMAGE_TAG)' AISEC_IMAGE_REPO='$(IMAGE_REPO)' \
+		AISEC_E2E_TOOLS='$(abspath $(PILOT_E2E))' $(if $(AISEC_POSTGRES_IMAGE),AISEC_POSTGRES_IMAGE='$(AISEC_POSTGRES_IMAGE)') \
+		'$(abspath $(PILOT_E2E))/e2e.test' -test.run '^TestE2EPilot' -test.v -test.count=1 -test.timeout 30m
+
+.PHONY: e2e-pilot
+e2e-pilot: e2e-pilot-bin ## e2e пилота: без интернета (3.7), копия и восстановление (3.8); сначала make images-test
+	$(MAKE) e2e-pilot-run
+
 COMPOSE_DEV := docker compose -f deploy/compose/dev/docker-compose.yml
 
 .PHONY: dev

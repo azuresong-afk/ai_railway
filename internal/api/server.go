@@ -15,6 +15,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/auth"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/internal/gwregistry"
+	"github.com/azuresong-afk/ai_railway/internal/incidents"
 	"github.com/azuresong-afk/ai_railway/internal/notify"
 	"github.com/azuresong-afk/ai_railway/internal/policy/versions"
 )
@@ -58,6 +59,9 @@ type Options struct {
 	// Notify — каналы уведомлений (задача 3.13 этапа 3); nil — их
 	// эндпоинты отвечают 503.
 	Notify *notify.Service
+	// Incidents — инциденты (задача 3.16 этапа 3); nil — их эндпоинты
+	// отвечают 503.
+	Incidents *incidents.Service
 	// OnDenied — вызывается при каждом отказе в доступе (УПД.6). По
 	// умолчанию, если задан Auth, отказ аутентифицированному субъекту
 	// пишется в журнал аудита (access.denied).
@@ -108,6 +112,8 @@ type Deps struct {
 	Alerts *alerting.Service
 	// Notify — nil, если каналы уведомлений не подключены: их эндпоинты отвечают 503.
 	Notify *notify.Service
+	// Incidents — nil, если инциденты не подключены: их эндпоинты отвечают 503.
+	Incidents *incidents.Service
 	// Exports — ограничение одновременных выгрузок событий (В11 ревью 2.r3a).
 	Exports *ExportGate
 	// AuditReads — ограничение одновременных выборок журнала аудита (В17
@@ -148,7 +154,7 @@ func New(o Options) (http.Handler, *Router, error) {
 	rt.mux.HandleFunc("/", rt.notFound)
 	deps := Deps{Logger: o.Logger, Version: o.Version, Ready: o.Ready, Auth: o.Auth, Gateways: o.Gateways, Integrity: o.Integrity,
 		Status: o.Status, Events: o.Events, Audit: o.Audit, Apps: o.Apps, Policies: o.Policies,
-		AuditLog: o.AuditLog, AuditVerifier: o.AuditVerifier, Alerts: o.Alerts, Notify: o.Notify,
+		AuditLog: o.AuditLog, AuditVerifier: o.AuditVerifier, Alerts: o.Alerts, Notify: o.Notify, Incidents: o.Incidents,
 		Exports: NewExportGate(MaxExportsPerSubject, MaxExportsTotal), AuditReads: NewExportGate(MaxAuditReadsPerSubject, MaxAuditReadsTotal)}
 	if err := rt.Add(append(Routes(deps), o.Extra...)...); err != nil {
 		return nil, nil, err

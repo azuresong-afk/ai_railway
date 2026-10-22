@@ -1,6 +1,10 @@
 package alerting
 
-import "github.com/azuresong-afk/ai_railway/internal/events"
+import (
+	"slices"
+
+	"github.com/azuresong-afk/ai_railway/internal/events"
+)
 
 // Ключи встроенных правил. Правила создаёт сервер при запуске, если их нет
 // (Service.EnsureBuiltins); удаления нет. «Порог» и «новое» можно менять и
@@ -34,8 +38,10 @@ func canonical(filter string) string {
 	return f.String()
 }
 
-// builtinRules — встроенные правила этапа 3: задача 3.10 и системные
-// правила и правила безопасности DM-38–DM-44 задачи 3.11 (securityRules).
+// builtinRules — встроенные правила этапа 3: задача 3.10, «частота»,
+// «аномалия» и «бюджет» задачи 3.12 (periodicRules), системные правила и
+// правила безопасности DM-38–DM-44 задачи 3.11 (securityRules) и правила с
+// признаком «инцидент» задачи 3.16 (incidentRules).
 func builtinRules() []Rule {
 	none := Recipients{Roles: []string{}, Users: []string{}}
 	return append([]Rule{
@@ -59,7 +65,7 @@ func builtinRules() []Rule {
 		{BuiltinKey: BuiltinRecipientsChanged, Kind: KindSecurity, Name: "Изменены получатели оповещений",
 			Description: "Изменение получателей правила оповещения (ТЗ 5.6). Изменения одного пользователя за 10 минут — одно оповещение.",
 			Enabled:     true, Severity: "high", GroupBy: []string{"actor"}, GroupMinutes: 10, Recipients: none},
-	}, append(periodicRules(), securityRules()...)...)
+	}, slices.Concat(periodicRules(), securityRules(), incidentRules())...)
 }
 
 // periodicRules — встроенные правила «частота», «аномалия» и «бюджет»

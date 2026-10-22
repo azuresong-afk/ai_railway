@@ -2735,7 +2735,7 @@ paths:
         Ослабление (DM-40) — отключение, смена условия или группировки, повышение
         `min_severity`, понижение серьёзности, увеличение окна, удаление получателя — пишется с
         `weakening: true` и требует текущего пароля (`password`) или кода TOTP (`code`): без них
-        403, неверное значение — 403 `reauthentication_failed`. Изменение получателей порождает
+        400 (поле `password`), неверное значение — 403 `reauthentication_failed`. Изменение получателей порождает
         оповещение «Изменены получатели оповещений» (ТЗ 5.6). Без изменений — 200 без записи.
         Пишет `alert_rule.update` (до, после).
       x-permission: alert_rules.manage
@@ -2932,7 +2932,7 @@ paths:
         адреса webhook, смена корневых сертификатов, удаление адресата письма, снятие подписки на
         журнал аудита (`audit_stream`) — пишется с
         `weakening: true` и требует текущего пароля (`password`) или кода TOTP (`code`): без них
-        400 (поле `password`), неверное значение — 403 `reauthentication_failed`. Пишет `notify_channel.update` (до,
+        403, неверное значение — 403 `reauthentication_failed`. Пишет `notify_channel.update` (до,
         после, какие секреты изменены — без значений).
       x-permission: notify_channels.manage
       security: [{ sessionCookie: [] }]
@@ -3011,6 +3011,378 @@ paths:
         '401': { $ref: '#/components/responses/ProblemUnauthorized' }
         '403': { $ref: '#/components/responses/ProblemForbidden' }
         '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/incidents:
+    get:
+      summary: Инциденты
+      description: |
+        Право `incidents.read` (ТЗ 5.7). От новых к старым, фильтры `status` (статус или `open` —
+        все незакрытые), `severity`, `category`, `assignee_id`, `source` — каждый не больше одного
+        раза. `overdue` — срок реакции истёк, а инцидент всё ещё новый.
+      x-permission: incidents.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - name: status
+          in: query
+          schema: { type: string, enum: [new, in_progress, contained, closed, open] }
+        - name: severity
+          in: query
+          schema: { $ref: '#/components/schemas/AlertSeverity' }
+        - name: category
+          in: query
+          schema: { $ref: '#/components/schemas/IncidentCategoryID' }
+        - name: assignee_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: source
+          in: query
+          schema: { $ref: '#/components/schemas/IncidentSource' }
+      responses:
+        '200':
+          description: Страница списка
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IncidentPage' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    post:
+      summary: Создать инцидент
+      description: |
+        Право `incidents.manage`. Три способа:
+        - вручную — `title`, `severity`, `category` обязательны;
+        - из оповещения — `alert_id`; название, серьёзность и категория по умолчанию берутся из
+          оповещения и его правила, ссылки на события копируются, оповещение получает ссылку на
+          инцидент. Оповещение уже в инциденте — 200 и тот же инцидент, без записей;
+        - повторное открытие — `reopen_of` (только закрытый, иначе 409): новый инцидент со
+          ссылкой на прежний и его событиями. Уже открытый заново — 200 и тот же новый инцидент.
+        Номер сквозной по организации. Срок реакции — по серьёзности: критическая 1 ч, высокая
+        4 ч, средняя 24 ч, низкая 72 ч, информационная 7 суток. Содержимое запросов и ответов в
+        инцидент не копируется. Пишет `incident.create`.
+      x-permission: incidents.manage
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/IncidentCreate' }
+      responses:
+        '200':
+          description: Оповещение уже в инциденте или закрытый уже открыт заново
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Incident' }
+        '201':
+          description: Инцидент создан
+          headers:
+            Location: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Incident' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '409': { $ref: '#/components/responses/ProblemConflict' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/incidents/{id}:
+    get:
+      summary: Карточка инцидента
+      description: |
+        Право `incidents.read`. Этапы реагирования, хронология (автоматические и ручные записи),
+        комментарии со всеми версиями (`superseded` — есть исправленная), связанные оповещения,
+        ссылки на события (до 1000) и инструкция реагирования категории. Событие открывается
+        `GET /api/v1/events/{id}` с правом `events.read`.
+      x-permission: incidents.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/IncidentID'
+      responses:
+        '200':
+          description: Инцидент
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IncidentCard' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/incidents/{id}/status:
+    post:
+      summary: Сменить статус инцидента
+      description: |
+        Право `incidents.manage`. Переходы: `new → in_progress`, `new → closed`,
+        `in_progress → contained`, `in_progress → closed`, `contained → closed`; другой — 409.
+        Закрытие — только с резолюцией `resolved`, `false_positive` или `risk_accepted`;
+        незакрытые связанные оповещения закрываются вместе с инцидентом. Первый уход из статуса
+        «новый» отмечает реакцию, а без ответственного назначает им субъекта (у токена — его
+        владельца). Закрытый инцидент не меняется — 409. Пишет хронологию и
+        `incident.status_changed`.
+      x-permission: incidents.manage
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/IncidentID'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/IncidentStatusUpdate' }
+      responses:
+        '200':
+          description: Статус изменён
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Incident' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '409': { $ref: '#/components/responses/ProblemConflict' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '422': { $ref: '#/components/responses/ProblemUnprocessable' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/incidents/{id}/assignee:
+    put:
+      summary: Назначить ответственного
+      description: |
+        Право `incidents.manage`. `user_id` — активный пользователь (иначе 400) или пустая строка
+        (снять назначение). Без изменений — 200 без записи. Пишет хронологию и `incident.assigned`.
+      x-permission: incidents.manage
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/IncidentID'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/IncidentAssign' }
+      responses:
+        '200':
+          description: Ответственный назначен
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Incident' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '409': { $ref: '#/components/responses/ProblemConflict' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '422': { $ref: '#/components/responses/ProblemUnprocessable' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/incidents/{id}/comments:
+    post:
+      summary: Добавить комментарий
+      description: |
+        Право `incidents.manage`. Комментарии только добавляются (до 4000 символов, до 500 в
+        инциденте). Правка — новая запись с `replaces`: только своего комментария (иначе 403) и
+        только последней версии (иначе 409). Пишет хронологию и `incident.comment_added` (без
+        текста).
+      x-permission: incidents.manage
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/IncidentID'
+        - $ref: '#/components/parameters/CSRFToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/IncidentCommentInput' }
+      responses:
+        '201':
+          description: Комментарий добавлен
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IncidentComment' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '409': { $ref: '#/components/responses/ProblemConflict' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '422': { $ref: '#/components/responses/ProblemUnprocessable' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/incidents/{id}/stages/{stage}:
+    post:
+      summary: Отметить этап реагирования
+      description: |
+        Право `incidents.manage`. Этапы шаблона ТЗ 5.7: `intake` (приём сообщения), `triage` (сбор
+        первичных сведений), `containment` (локализация), `investigation` (сбор сведений для
+        расследования). Отмеченный этап не снимается — 409. Пишет хронологию и
+        `incident.stage_completed`.
+      x-permission: incidents.manage
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/IncidentID'
+        - name: stage
+          in: path
+          required: true
+          schema: { type: string, enum: [intake, triage, containment, investigation] }
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/IncidentStageInput' }
+      responses:
+        '200':
+          description: Этап отмечен
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Incident' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '409': { $ref: '#/components/responses/ProblemConflict' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '422': { $ref: '#/components/responses/ProblemUnprocessable' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/incidents/{id}/alerts:
+    post:
+      summary: Добавить оповещение в инцидент
+      description: |
+        Право `incidents.manage` (ТЗ 6.3, п. 5). Оповещение получает ссылку на инцидент, его
+        ссылки на события копируются. Уже в этом инциденте — 200 без записей, в другом — 409,
+        инцидент закрыт — 409. Не больше 100 оповещений в инциденте. Пишет хронологию и
+        `incident.alert_linked`.
+      x-permission: incidents.manage
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/IncidentID'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/IncidentAlertLink' }
+      responses:
+        '200':
+          description: Оповещение в инциденте
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Incident' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '409': { $ref: '#/components/responses/ProblemConflict' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '422': { $ref: '#/components/responses/ProblemUnprocessable' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/incidents/{id}/export:
+    get:
+      summary: Выгрузить карточку инцидента в JSON
+      description: |
+        Право `incidents.export` (ТЗ 5.7). Карточка в формате `aisec-incident/1` для передачи в
+        SIEM или IRP заказчика (ГосСОПКА — через его сертифицированные системы, ТЗ 10.1): поля,
+        этапы, хронология, комментарии, оповещения и ссылки на события, без содержимого событий.
+        Файл `incident-<номер>.json`. Запись `data.export` пишется до выдачи данных.
+      x-permission: incidents.export
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/IncidentID'
+      responses:
+        '200':
+          description: Карточка
+          headers:
+            Content-Disposition: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IncidentDocument' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/incident-categories:
+    get:
+      summary: Категории инцидентов и инструкции реагирования
+      description: |
+        Право `incidents.read`. Категории ТЗ 5.7 со строками матрицы обнаружения (ТЗ 5.16), из
+        которых они выводятся, и действующей инструкцией: `default` — текст по умолчанию.
+      x-permission: incidents.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      responses:
+        '200':
+          description: Категории
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IncidentCategoryList' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/incident-categories/{category}:
+    put:
+      summary: Изменить инструкцию реагирования
+      description: |
+        Право `incident_categories.manage` (признак `security`: только администратор безопасности,
+        не токену). Новая версия текста (до 8000 символов); прежние версии хранятся. `version` —
+        версия, открытая для правки (у текста по умолчанию — 1); устаревшая — 409. Без изменений —
+        200 без записи. Пишет `incident_category.update` (версии до и после).
+      x-permission: incident_categories.manage
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - name: category
+          in: path
+          required: true
+          schema: { $ref: '#/components/schemas/IncidentCategoryID' }
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/IncidentInstructionsUpdate' }
+      responses:
+        '200':
+          description: Инструкция сохранена
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IncidentInstruction' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '409': { $ref: '#/components/responses/ProblemConflict' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ProblemInternal' }
         '503': { $ref: '#/components/responses/Unavailable' }
@@ -3163,6 +3535,12 @@ components:
       in: path
       required: true
       description: ID канала уведомлений (UUIDv7)
+      schema: { type: string, format: uuid }
+    IncidentID:
+      name: id
+      in: path
+      required: true
+      description: ID инцидента (UUIDv7)
       schema: { type: string, format: uuid }
     From:
       name: from
@@ -4927,6 +5305,204 @@ components:
         items:
           type: array
           items: { $ref: '#/components/schemas/AlertRule' }
+    IncidentCategoryID:
+      type: string
+      description: Категория инцидента (ТЗ 5.7); справочник — GET /api/v1/incident-categories
+      enum: [prompt_injection, pii_leak, system_prompt_leak, quota_abuse, anomalous_activity, agent_policy_violation,
+        model_compromise, platform_access, other]
+    IncidentSource:
+      type: string
+      description: manual — вручную, alert — из оповещения, auto — правилом в приёме событий, reopen — повторное открытие
+      enum: [manual, alert, auto, reopen]
+    Incident:
+      type: object
+      required: [id, number, title, severity, category, status, source, reaction_due_at, overdue, created_at, created_by,
+        updated_at, updated_by, version]
+      properties:
+        id: { type: string, format: uuid }
+        number: { type: integer, description: Сквозной номер в организации }
+        title: { type: string, maxLength: 300 }
+        severity: { $ref: '#/components/schemas/AlertSeverity' }
+        category: { $ref: '#/components/schemas/IncidentCategoryID' }
+        status: { type: string, enum: [new, in_progress, contained, closed] }
+        resolution: { type: string, enum: [resolved, false_positive, risk_accepted] }
+        resolution_comment: { type: string, maxLength: 2000 }
+        source: { $ref: '#/components/schemas/IncidentSource' }
+        reopened_from: { type: string, format: uuid }
+        assignee_id: { type: string, format: uuid }
+        reaction_due_at: { type: string, format: date-time, description: Срок реакции — создание плюс норматив по серьёзности }
+        overdue: { type: boolean, description: Срок реакции истёк, а инцидент всё ещё новый }
+        reacted_at: { type: string, format: date-time }
+        contained_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+        created_by: { type: string }
+        updated_at: { type: string, format: date-time }
+        updated_by: { type: string }
+        closed_at: { type: string, format: date-time }
+        closed_by: { type: string }
+        version: { type: integer }
+    IncidentPage:
+      allOf:
+        - $ref: '#/components/schemas/PageInfo'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/Incident' }
+    IncidentComment:
+      type: object
+      required: [id, at, author, author_name, body, superseded]
+      properties:
+        id: { type: string, format: uuid }
+        at: { type: string, format: date-time }
+        author: { type: string }
+        author_name: { type: string }
+        body: { type: string, maxLength: 4000 }
+        replaces: { type: string, format: uuid }
+        superseded: { type: boolean, description: Есть исправленная версия }
+    IncidentInstruction:
+      type: object
+      required: [category, body, version, default]
+      properties:
+        category: { $ref: '#/components/schemas/IncidentCategoryID' }
+        body: { type: string, maxLength: 8000 }
+        version: { type: integer, description: 1 — текст по умолчанию }
+        default: { type: boolean }
+        updated_at: { type: string, format: date-time }
+        updated_by: { type: string }
+    IncidentCard:
+      allOf:
+        - $ref: '#/components/schemas/Incident'
+        - type: object
+          required: [category_title, stages, timeline, comments, alerts, events, events_truncated, instruction]
+          properties:
+            category_title: { type: string }
+            stages:
+              type: array
+              items:
+                type: object
+                required: [key, title]
+                properties:
+                  key: { type: string, enum: [intake, triage, containment, investigation] }
+                  title: { type: string }
+                  done_at: { type: string, format: date-time }
+                  done_by: { type: string }
+                  note: { type: string, maxLength: 2000 }
+            timeline:
+              type: array
+              maxItems: 2000
+              items:
+                type: object
+                required: [at, actor, kind, details]
+                properties:
+                  at: { type: string, format: date-time }
+                  actor: { type: string }
+                  kind:
+                    type: string
+                    enum: [created, status_changed, assigned, comment_added, stage_completed, alert_linked, alert_triggered,
+                      reopened]
+                  details: { type: object, additionalProperties: true, description: Подробности без содержимого запросов }
+            comments:
+              type: array
+              maxItems: 500
+              items: { $ref: '#/components/schemas/IncidentComment' }
+            alerts:
+              type: array
+              maxItems: 100
+              items:
+                type: object
+                required: [id, rule_id, rule_name, title, severity, status, count, created_at]
+                properties:
+                  id: { type: string, format: uuid }
+                  rule_id: { type: string, format: uuid }
+                  rule_name: { type: string }
+                  title: { type: string }
+                  severity: { $ref: '#/components/schemas/AlertSeverity' }
+                  status: { type: string, enum: [new, in_progress, closed] }
+                  count: { type: integer }
+                  created_at: { type: string, format: date-time }
+            events:
+              type: array
+              maxItems: 1000
+              items:
+                type: object
+                required: [id, ts]
+                properties:
+                  id: { type: string, format: uuid }
+                  ts: { type: string, format: date-time }
+            events_truncated: { type: boolean, description: Ссылок столько, сколько допускает предел 1000 }
+            instruction: { $ref: '#/components/schemas/IncidentInstruction' }
+    IncidentDocument:
+      allOf:
+        - type: object
+          required: [format, exported_at]
+          properties:
+            format: { type: string, enum: [aisec-incident/1] }
+            exported_at: { type: string, format: date-time }
+        - $ref: '#/components/schemas/IncidentCard'
+    IncidentCreate:
+      type: object
+      additionalProperties: false
+      properties:
+        title: { type: string, minLength: 1, maxLength: 300 }
+        severity: { $ref: '#/components/schemas/AlertSeverity' }
+        category: { $ref: '#/components/schemas/IncidentCategoryID' }
+        alert_id: { type: string, format: uuid, description: Создать из оповещения }
+        reopen_of: { type: string, format: uuid, description: Открыть заново закрытый инцидент }
+    IncidentStatusUpdate:
+      type: object
+      required: [status]
+      additionalProperties: false
+      properties:
+        status: { type: string, enum: [in_progress, contained, closed] }
+        resolution: { type: string, enum: [resolved, false_positive, risk_accepted], description: Обязательна при закрытии }
+        comment: { type: string, maxLength: 2000 }
+    IncidentAssign:
+      type: object
+      required: [user_id]
+      additionalProperties: false
+      properties:
+        user_id: { type: string, description: ID активного пользователя или пустая строка }
+    IncidentCommentInput:
+      type: object
+      required: [body]
+      additionalProperties: false
+      properties:
+        body: { type: string, minLength: 1, maxLength: 4000 }
+        replaces: { type: string, format: uuid, description: Правка — ID своего комментария (последней версии) }
+    IncidentStageInput:
+      type: object
+      additionalProperties: false
+      properties:
+        note: { type: string, maxLength: 2000 }
+    IncidentAlertLink:
+      type: object
+      required: [alert_id]
+      additionalProperties: false
+      properties:
+        alert_id: { type: string, format: uuid }
+    IncidentInstructionsUpdate:
+      type: object
+      required: [body, version]
+      additionalProperties: false
+      properties:
+        body: { type: string, maxLength: 8000 }
+        version: { type: integer, minimum: 1 }
+    IncidentCategoryList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            required: [id, title, rows, instruction]
+            properties:
+              id: { $ref: '#/components/schemas/IncidentCategoryID' }
+              title: { type: string }
+              rows: { type: array, items: { type: string, pattern: '^DM-[0-9]{2}$' } }
+              instruction: { $ref: '#/components/schemas/IncidentInstruction' }
     PageInfo:
       description: Поле конверта страницы списка; на последней странице отсутствует
       type: object

@@ -11,6 +11,7 @@ import {
   List,
   type LucideIcon,
   ScrollText,
+  Server,
   Settings,
   ShieldAlert,
 } from "lucide-react";
@@ -29,9 +30,10 @@ export interface NavItem {
 export const navItems: NavItem[] = [
   { path: "/", title: "Обзор", icon: LayoutDashboard },
   { path: "/events", title: "События", icon: List, anyOf: ["events.read"] },
-  { path: "/alerts", title: "Оповещения", icon: Bell },
+  { path: "/alerts", title: "Оповещения", icon: Bell, anyOf: ["alerts.read"] },
   { path: "/incidents", title: "Инциденты", icon: ShieldAlert },
   { path: "/apps", title: "Приложения", icon: AppWindow, anyOf: ["applications.read"] },
+  { path: "/providers", title: "Провайдеры", icon: Server, anyOf: ["providers.read"] },
   { path: "/policies", title: "Политики", icon: ScrollText, anyOf: ["policies.read"] },
   { path: "/usage", title: "Потребление", icon: Gauge },
   { path: "/agents", title: "Агенты", icon: Bot, stage4: true },
