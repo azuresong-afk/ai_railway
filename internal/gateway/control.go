@@ -184,8 +184,8 @@ type HeartbeatConfig struct {
 	// Verify — проверка целостности по запросу из консоли (Н38 ревью 2.r4):
 	// итог записывается в Reports. nil — запросы не выполняются.
 	Verify func(ctx context.Context)
-	Logger  *slog.Logger
-	Clock   func() time.Time
+	Logger *slog.Logger
+	Clock  func() time.Time
 	// Sleep ждёт d или отмены ctx (тесты подменяют его).
 	Sleep func(ctx context.Context, d time.Duration) bool
 }

@@ -189,7 +189,7 @@ export function ConnectWizard({
       {step === "provider" && (
         <form onSubmit={next("key", Boolean(errs.provider || errs.models))} className="flex flex-col gap-3">
           <ErrorBanner error={providers.error} />
-          <Field label="Провайдер" error={providers.isSuccess && providerList.length === 0 ? "Провайдеров нет. Сначала добавьте провайдера." : undefined}>
+          <Field label="Провайдер" error={providers.isSuccess && providerList.length === 0 ? "Провайдеров нет. Провайдера пока добавляют через API (/api/v1/providers), см. руководство администратора, раздел 5." : undefined}>
             {({ id, describedBy, invalid }) => (
               <Select id={id} aria-describedby={describedBy} aria-invalid={invalid} value={f.provider_id} onChange={set("provider_id")}>
                 <option value="">Выберите провайдера</option>
@@ -243,10 +243,11 @@ export function ConnectWizard({
                   </Select>
                 )}
               </Field>
-              <Field label="Хранение содержимого" hint="Пусто — маскированное.">
+              <Field label="Хранение содержимого" hint="По умолчанию — режим из «Администрирования» → «Время и хранение».">
                 {({ id, describedBy }) => (
                   <Select id={id} aria-describedby={describedBy} value={f.storage} onChange={set("storage")}>
-                    <option value="">Маскированное (по умолчанию)</option>
+                    <option value="">Как в настройках установки</option>
+                    <option value="masked">Маскированное</option>
                     <option value="none">Не хранить</option>
                     <option value="full">Полное (повышенный риск)</option>
                   </Select>
