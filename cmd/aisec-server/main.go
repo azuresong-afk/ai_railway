@@ -374,6 +374,10 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	if gateways != nil {
 		gateways.SetBudgetSync(appsSvc)
 	}
+	// Правила «частота», «аномалия» и «бюджет» (задача 3.12, Р3) — фоновой
+	// задачей раз в минуту; расход — приложений с заданным бюджетом.
+	alertStore.SetBudgetSource(budgetUsage(appsSvc))
+	go alerting.RunPeriodic(ctx, alertStore, alerting.PeriodicInterval, logger)
 
 	// Консоль отдаётся, только если она собрана (make web-build перед go build); иначе сервер — чистый API.
 	var console http.Handler
@@ -437,6 +441,26 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	}
 	recordStop(ctx, auditLog, err, logger)
 	return err
+}
+
+// budgetUsage — расход приложений с бюджетом за текущий месяц для правил
+// «бюджет» (задача 3.12).
+func budgetUsage(svc *apps.Service) alerting.BudgetSource {
+	return func(ctx context.Context) ([]alerting.BudgetUsage, error) {
+		st, _, err := svc.BudgetStatuses(ctx, "")
+		if err != nil {
+			return nil, err
+		}
+		var out []alerting.BudgetUsage
+		for i := range st {
+			if st[i].Budget == nil {
+				continue
+			}
+			out = append(out, alerting.BudgetUsage{AppID: st[i].App.ID, App: st[i].App.Slug, Month: st[i].Month,
+				Mode: st[i].Budget.Mode, Percent: st[i].Percent, Exhausted: st[i].Exhausted})
+		}
+		return out, nil
+	}
 }
 
 // newStatus собирает «Состояние системы» и запускает фоновую проверку

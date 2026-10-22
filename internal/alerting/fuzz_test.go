@@ -18,6 +18,11 @@ func FuzzParseRuleInput(f *testing.F) {
 		`{"kind":"threshold","name":"x","condition":{"filter":"app in (\"a\", \"b\") and stream = true"},"enabled":false,"severity":"low"}`,
 		`{"kind":"new","name":"","condition":{"field":"threat"}}`,
 		`{"kind":"anomaly"}`,
+		`{"kind":"frequency","name":"Серия","condition":{"min_severity":"medium","count":10,"window_minutes":10},"group_by":["app","user"]}`,
+		`{"kind":"anomaly","name":"Рост","condition":{"metric":"requests","factor":2.5,"min_volume":100},"group_by":["app"]}`,
+		`{"kind":"anomaly","name":"Рост","condition":{"metric":"completion_tokens","factor":1e308}}`,
+		`{"kind":"budget","name":"Бюджет","condition":{"warn_percent":90}}`,
+		`{"kind":"budget","name":"Бюджет","condition":{"warn_percent":-1},"group_by":["app"]}`,
 		`{"kind":"threshold","name":"x","condition":{"filter":"app = \"\\\"\""}}`,
 	} {
 		f.Add([]byte(s))
@@ -50,6 +55,23 @@ func FuzzParseRuleInput(f *testing.F) {
 		}
 		if severityRank(r.Severity) == 0 || len(r.GroupBy) > MaxGroupBy || r.SuppressMinutes < 0 || r.SuppressMinutes > MaxSuppressMinutes {
 			t.Fatalf("правило вне пределов: %+v", r)
+		}
+		// Параметры правил фоновой задачи (задача 3.12) — в пределах.
+		c := r.Condition
+		switch r.Kind {
+		case KindFrequency:
+			if c.Count < MinFrequencyCount || c.Count > MaxFrequencyCount || c.WindowMinutes < 1 || c.WindowMinutes > MaxWindowMinutes {
+				t.Fatalf("частота вне пределов: %+v", c)
+			}
+		case KindAnomaly:
+			if !slices.Contains(Metrics(), c.Metric) || !(c.Factor >= MinAnomalyFactor && c.Factor <= MaxAnomalyFactor) ||
+				c.MinVolume < 1 || c.MinVolume > MaxMinVolume || c.Filter != "" {
+				t.Fatalf("аномалия вне пределов: %+v", c)
+			}
+		case KindBudget:
+			if c.WarnPercent < MinWarnPercent || c.WarnPercent > MaxWarnPercent || !slices.Equal(r.GroupBy, []string{"app"}) {
+				t.Fatalf("бюджет вне пределов: %+v %v", c, r.GroupBy)
+			}
 		}
 		if _, err := compile(r); err != nil {
 			t.Fatalf("правило не компилируется: %v", err)
