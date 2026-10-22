@@ -52,15 +52,14 @@ var s2SetupToken = regexp.MustCompile(`aisec_setup_[A-Za-z0-9_-]+`)
 // s2Proc — запущенный процесс продукта: журнал stderr, адрес из строки
 // «сервер запущен» и канал завершения.
 type s2Proc struct {
-	t     *testing.T
-	name  string
-	cmd   *exec.Cmd
-	mu    sync.Mutex
-	logs  strings.Builder
-	addr  chan string
-	done  chan struct{}
-	err   error
-	ended bool
+	t    *testing.T
+	name string
+	cmd  *exec.Cmd
+	mu   sync.Mutex
+	logs strings.Builder
+	addr chan string
+	done chan struct{}
+	err  error
 }
 
 func (p *s2Proc) log() string {
@@ -93,11 +92,11 @@ func (p *s2Proc) stop() {
 		return
 	default:
 	}
-	_ = p.cmd.Process.Signal(os.Interrupt) //nolint:errcheck // процесс мог завершиться сам
+	_ = p.cmd.Process.Signal(os.Interrupt) //nolint:gosec // G104: процесс мог завершиться сам
 	select {
 	case <-p.done:
 	case <-time.After(15 * time.Second):
-		_ = p.cmd.Process.Kill() //nolint:errcheck // добиваем зависший процесс
+		_ = p.cmd.Process.Kill() //nolint:gosec // G104: добиваем зависший процесс
 		<-p.done
 	}
 }
@@ -106,7 +105,8 @@ func (p *s2Proc) stop() {
 // завершился раньше, возвращается его код и журнал.
 func s2Start(t *testing.T, bin string, env []string, args ...string) (*s2Proc, string) {
 	t.Helper()
-	cmd := exec.Command(bin, args...) //nolint:gosec // G204: тест запускает собственные бинарники из каталога сборки
+	// Без отмены по контексту: процесс живёт до stop() — сигнал прерывания, затем Kill.
+	cmd := exec.CommandContext(context.Background(), bin, args...) //nolint:gosec // G204: тест запускает собственные бинарники из каталога сборки
 	cmd.Env = append(os.Environ(), env...)
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
@@ -302,7 +302,7 @@ func s2NewStand(t *testing.T) *s2Stand {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		defer func() { _ = conn.Close(ctx) }() //nolint:errcheck // закрытие соединения очистки
+		defer func() { _ = conn.Close(ctx) }() //nolint:gosec // G104: закрытие соединения очистки
 		if _, err := conn.Exec(ctx, `DROP DATABASE IF EXISTS `+dbName+` WITH (FORCE)`); err != nil {
 			t.Logf("очистка: удаление БД %s: %v", dbName, err)
 		}
@@ -368,13 +368,6 @@ func (s *s2Stand) mustStart(extra ...string) {
 	if p, ok := s.startServer(s.in, extra...); !ok {
 		s.t.Fatalf("сервер не запустился (код %d):\n%s", p.exitCode(time.Second), p.log())
 	}
-}
-
-// restart останавливает сервер и запускает заново (прежняя установка).
-func (s *s2Stand) restart(extra ...string) {
-	s.t.Helper()
-	s.srv.stop()
-	s.mustStart(extra...)
 }
 
 // transport строит HTTPS-транспорт с доверием к УЦ стенда.
@@ -632,7 +625,7 @@ func (s *s2Stand) pg() *pgx.Conn {
 	if err != nil {
 		s.t.Fatal(err)
 	}
-	s.t.Cleanup(func() { _ = conn.Close(ctx) }) //nolint:errcheck // закрытие соединения очистки
+	s.t.Cleanup(func() { _ = conn.Close(ctx) }) //nolint:gosec // G104: закрытие соединения очистки
 	return conn
 }
 
