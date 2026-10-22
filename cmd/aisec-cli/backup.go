@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"encoding/hex"
 	"errors"
@@ -10,7 +9,6 @@ import (
 	"io"
 	"io/fs"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -18,6 +16,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"golang.org/x/term"
 
 	"github.com/azuresong-afk/ai_railway/internal/audit"
 	"github.com/azuresong-afk/ai_railway/internal/backup"
@@ -34,8 +33,6 @@ const (
 	// restoreLockID — рекомендательная блокировка: два восстановления не
 	// идут одновременно.
 	restoreLockID = 0x424B5550 // "BKUP"
-	// sttyTimeout — предел вызова stty.
-	sttyTimeout = 5 * time.Second
 )
 
 // errBackupInvalid — файл копии не прошёл проверку (код возврата 3).
@@ -573,23 +570,22 @@ func readPassphraseFile(path string) ([]byte, error) {
 	return phrase, nil
 }
 
-// readPassphraseTTY читает фразу с терминала (stdin) без отображения:
-// отображение выключает stty из состава ОС (без новой зависимости,
-// ADR-0017). Stdin не терминал — отказ: фраза из канала легко попадает в
+// readPassphraseTTY читает фразу с терминала (stdin) без отображения через
+// golang.org/x/term (ADR-0017, п. 8): без внешних процессов и без stty в
+// составе ОС. Stdin не терминал — отказ: фраза из канала легко попадает в
 // историю и скрипты, для автоматизации есть -passphrase-file.
 func readPassphraseTTY(confirm bool, prompt io.Writer) ([]byte, error) {
-	info, err := os.Stdin.Stat()
-	if err != nil || info.Mode()&os.ModeCharDevice == 0 {
-		return nil, errors.New("парольная фраза вводится с терминала или из файла -passphrase-file (права 0400)")
+	fd := int(os.Stdin.Fd()) //nolint:gosec // G115: дескриптор stdin — 0, переполнения нет
+	if !term.IsTerminal(fd) {
+		return nil, errors.New("stdin — не терминал: парольная фраза вводится с терминала или из файла -passphrase-file (права 0400)")
 	}
-	restore, err := echoOff()
+	release, err := restoreOnSignal(fd)
 	if err != nil {
 		return nil, err
 	}
-	defer restore()
-	r := bufio.NewReaderSize(os.Stdin, 2*aisecCrypto.MaxPasswordLen)
+	defer release()
 	say(prompt, "Парольная фраза копии (не короче %d символов): ", backup.MinPassphraseChars)
-	first, err := readLine(r)
+	first, err := readHidden(fd)
 	say(prompt, "\n")
 	if err != nil {
 		return nil, err
@@ -598,7 +594,7 @@ func readPassphraseTTY(confirm bool, prompt io.Writer) ([]byte, error) {
 		return first, nil
 	}
 	say(prompt, "Повторите фразу: ")
-	second, err := readLine(r)
+	second, err := readHidden(fd)
 	say(prompt, "\n")
 	defer clear(second)
 	if err != nil {
@@ -612,52 +608,30 @@ func readPassphraseTTY(confirm bool, prompt io.Writer) ([]byte, error) {
 	return first, nil
 }
 
-// readLine читает строку без перевода строки; длиннее предела — ошибка.
-func readLine(r *bufio.Reader) ([]byte, error) {
-	line, err := r.ReadSlice('\n')
+// readHidden читает строку с терминала без отображения; длиннее предела —
+// ошибка. Буферы term.ReadPassword растут и могут оставить в куче копии
+// фразы: это остаточный риск ввода с терминала (для фразы из файла его нет).
+func readHidden(fd int) ([]byte, error) {
+	line, err := term.ReadPassword(fd)
 	if err != nil {
 		clear(line)
-		if errors.Is(err, bufio.ErrBufferFull) {
-			return nil, fmt.Errorf("парольная фраза длиннее %d байт", aisecCrypto.MaxPasswordLen)
-		}
 		return nil, fmt.Errorf("ввод парольной фразы: %w", err)
 	}
-	n := len(line) - 1
-	if n > 0 && line[n-1] == '\r' {
-		n--
+	if len(line) > aisecCrypto.MaxPasswordLen {
+		clear(line)
+		return nil, fmt.Errorf("парольная фраза длиннее %d байт", aisecCrypto.MaxPasswordLen)
 	}
-	out := make([]byte, n)
-	copy(out, line)
-	clear(line)
-	return out, nil
+	return line, nil
 }
 
-// sttyPaths — где искать stty: только системные каталоги, не PATH.
-var sttyPaths = []string{"/usr/bin/stty", "/bin/stty"}
-
-// echoOff выключает отображение ввода на терминале stdin и возвращает
-// функцию, которая его включает. Отображение возвращается и при SIGINT и
-// SIGTERM во время ввода.
-func echoOff() (func(), error) {
-	stty := ""
-	for _, p := range sttyPaths {
-		if info, err := os.Stat(p); err == nil && info.Mode().IsRegular() {
-			stty = p
-			break
-		}
-	}
-	if stty == "" {
-		return nil, errors.New("нет stty для ввода фразы без отображения: используйте -passphrase-file")
-	}
-	run := func(arg string) error {
-		ctx, cancel := context.WithTimeout(context.Background(), sttyTimeout)
-		defer cancel()
-		cmd := exec.CommandContext(ctx, stty, arg) //nolint:gosec // G204: путь из фиксированного списка, аргумент — константа
-		cmd.Stdin = os.Stdin
-		return cmd.Run()
-	}
-	if err := run("-echo"); err != nil {
-		return nil, fmt.Errorf("stdin — не терминал (stty: %w): фраза вводится с терминала или из файла -passphrase-file (права 0400)", err)
+// restoreOnSignal запоминает состояние терминала и возвращает его при
+// SIGINT и SIGTERM во время ввода: term.ReadPassword включает отображение
+// сам, но не тогда, когда процесс прерывают посреди ввода. Возвращает
+// функцию, которая снимает обработчик.
+func restoreOnSignal(fd int) (func(), error) {
+	state, err := term.GetState(fd)
+	if err != nil {
+		return nil, fmt.Errorf("состояние терминала: %w", err)
 	}
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
@@ -665,7 +639,7 @@ func echoOff() (func(), error) {
 	go func() {
 		select {
 		case <-sig:
-			_ = run("echo") //nolint:gosec // G104: процесс завершается, вернуть отображение — лучшее, что можно сделать
+			_ = term.Restore(fd, state) //nolint:gosec // G104: процесс завершается, вернуть отображение — лучшее, что можно сделать
 			os.Exit(130)
 		case <-done:
 		}
@@ -673,6 +647,5 @@ func echoOff() (func(), error) {
 	return func() {
 		signal.Stop(sig)
 		close(done)
-		_ = run("echo") //nolint:gosec // G104: если не удалось, терминал восстановит команда reset; фраза уже прочитана
 	}, nil
 }
