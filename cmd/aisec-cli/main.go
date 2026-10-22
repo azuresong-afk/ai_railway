@@ -28,6 +28,7 @@ const usage = `aisec-cli — служебные операции AISec.
   init -dir КАТАЛОГ             создать ключи установки и токен первичной настройки (AISEC_DATABASE_URL)
   init -dir КАТАЛОГ -add-audit-key
                                 создать только ключ подписи журнала аудита (установка до ADR-0008)
+  init -reissue-setup-token     выпустить новый токен первичной настройки, прежние погасить (только до первичной настройки)
   migrate                       применить SQL-миграции к PostgreSQL (строка подключения — AISEC_DATABASE_URL)
   audit verify [-keys КАТАЛОГ]  проверить цепочку журнала аудита (AISEC_DATABASE_URL); 3 — цепочка нарушена
   audit archive -keys КАТАЛОГ -out ФАЙЛ [-before ГГГГ-ММ-ДД]

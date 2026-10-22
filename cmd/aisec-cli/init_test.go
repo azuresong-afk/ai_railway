@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -602,6 +603,104 @@ func TestInitOnRealDB(t *testing.T) {
 	}
 	if n := countFiles(t, dir2); n != 0 {
 		t.Fatal("повторный init создал файлы")
+	}
+
+	// H-Р13 ревью 2.r5: повторный выпуск гасит прежний токен, новый действует,
+	// запись аудита — в цепочке; после первичной настройки — отказ.
+	out.Reset()
+	if err := initCmd([]string{"-reissue-setup-token"}, sdsn, &out, &errb, time.Now()); err != nil {
+		t.Fatalf("повторный выпуск: %v", err)
+	}
+	token2 := setupTokenRe.FindString(out.String())
+	if token2 == "" || token2 == token || !strings.Contains(out.String(), "погашено: 1") {
+		t.Fatalf("вывод повторного выпуска: %s", out.String())
+	}
+	var oldLive, newLive, reissued int
+	if err := db.Pool().QueryRow(ctx, "SELECT count(*) FROM setup_tokens WHERE token_hash = $1 AND used_at IS NULL", h.Sum([]byte(token))).Scan(&oldLive); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Pool().QueryRow(ctx, "SELECT count(*) FROM setup_tokens WHERE token_hash = $1 AND used_at IS NULL AND expires_at > now()", h.Sum([]byte(token2))).Scan(&newLive); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Pool().QueryRow(ctx, `SELECT count(*) FROM audit_log WHERE action = 'system.setup_token_reissued'
+		AND actor_type = 'cli' AND (details->>'revoked_tokens')::int = 1`).Scan(&reissued); err != nil {
+		t.Fatal(err)
+	}
+	if oldLive != 0 || newLive != 1 || reissued != 1 {
+		t.Fatalf("прежний действует %d, новый %d, записей %d", oldLive, newLive, reissued)
+	}
+	if err := auditCmd([]string{"verify"}, sdsn, &out, &errb); err != nil {
+		t.Fatalf("цепочка после повторного выпуска: %v", err)
+	}
+	if _, err := db.Pool().Exec(ctx, `INSERT INTO users (id, org_id, login, display_name, role, status, password_hash,
+		password_changed_at, must_change_password, created_at, created_by) VALUES ('01900000-0000-7000-8000-00000000aa01', $1,
+		'admin', 'Админ', 'security_admin', 'active', 'x', now(), false, now(), 'setup')`, audit.DefaultOrgID); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	if err := initCmd([]string{"-reissue-setup-token"}, sdsn, &out, &errb, time.Now()); !errors.Is(err, errSetupDone) || setupTokenRe.MatchString(out.String()) {
+		t.Fatalf("выпуск после первичной настройки: %v %s", err, out.String())
+	}
+	if err := db.Pool().QueryRow(ctx, "SELECT count(*) FROM setup_tokens WHERE used_at IS NULL").Scan(&newLive); err != nil || newLive != 1 {
+		t.Fatalf("отказ изменил токены: %d %v", newLive, err)
+	}
+}
+
+// memReissueStore — reissueStore в памяти.
+type memReissueStore struct {
+	err     error
+	revoked int
+	saved   *reissueRecord
+	rec     audit.Entry
+}
+
+func (m *memReissueStore) Reissue(_ context.Context, r *reissueRecord, rec audit.Entry) (int, error) {
+	if m.err != nil {
+		return 0, m.err
+	}
+	m.saved, m.rec = r, rec
+	return m.revoked, nil
+}
+
+// H-Р13 ревью 2.r5: токен показывается один раз, в БД и аудите — только хеш
+// и ID записи; отказ хранилища и сбой вывода — ошибка.
+func TestReissueSetupToken(t *testing.T) {
+	p := standardProvider(t)
+	now := time.Date(2026, 10, 22, 10, 0, 0, 0, time.UTC)
+	st := &memReissueStore{revoked: 2}
+	var out bytes.Buffer
+	if err := runReissueSetupToken(context.Background(), p, st, cliActor(), now, &out); err != nil {
+		t.Fatal(err)
+	}
+	token := setupTokenRe.FindString(out.String())
+	h, err := p.Hasher()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if token == "" || !strings.Contains(out.String(), "погашено: 2") || !strings.Contains(out.String(), "2026-10-23 10:00") {
+		t.Fatalf("вывод: %s", out.String())
+	}
+	if !bytes.Equal(st.saved.TokenHash, h.Sum([]byte(token))) || st.saved.HashAlg != h.Name() || !st.saved.Expires.Equal(now.Add(setupTokenTTL)) {
+		t.Fatalf("строка токена: %+v", st.saved)
+	}
+	if st.rec.Action != "system.setup_token_reissued" || st.rec.Object.ID != st.saved.TokenID ||
+		strings.Contains(fmt.Sprint(st.rec.Details), token) {
+		t.Fatalf("запись аудита: %+v", st.rec)
+	}
+	out.Reset()
+	if err := runReissueSetupToken(context.Background(), p, &memReissueStore{err: errSetupDone}, cliActor(), now, &out); !errors.Is(err, errSetupDone) || out.Len() != 0 {
+		t.Fatalf("после первичной настройки: %v %q", err, out.String())
+	}
+	if err := runReissueSetupToken(context.Background(), p, &memReissueStore{}, cliActor(), now, failWriter{}); err == nil {
+		t.Fatal("сбой вывода токена не замечен")
+	}
+	for _, args := range [][]string{{"-reissue-setup-token", "-dir", "/tmp/x"}, {"-reissue-setup-token", "-add-audit-key"}} {
+		if err := initCmd(args, "postgres://u@h/d", io.Discard, io.Discard, now); err == nil || !strings.Contains(err.Error(), "не сочетается") {
+			t.Errorf("%v: %v", args, err)
+		}
+	}
+	if err := initCmd([]string{"-reissue-setup-token"}, "", io.Discard, io.Discard, now); err == nil {
+		t.Error("без AISEC_DATABASE_URL принято")
 	}
 }
 
