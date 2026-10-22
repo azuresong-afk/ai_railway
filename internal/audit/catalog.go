@@ -73,6 +73,10 @@ var catalog = []Event{
 	{"policy.update", "Новая версия политики", true},
 	{"policy.rollback", "Откат политики к прежней версии", true},
 	{"policy.import", "Импорт политики из YAML", true},
+	// Оповещения (ТЗ 5.6, DM-40; задача 3.10 этапа 3, ADR-0020).
+	{"alert_rule.create", "Создание правила оповещения", true},
+	{"alert_rule.update", "Изменение правила оповещения: условие, включение, получатели", true},
+	{"alert.status_changed", "Смена статуса оповещения: принято в работу или закрыто", true},
 	// Пакеты конфигурации для шлюзов (Р7, ОЦЛ.3, DM-42; задача 2.13).
 	{"bundle.build", "Сборка новой версии пакета конфигурации для шлюзов", true},
 	{"bundle.deliver", "Выдача пакета конфигурации шлюзу", true},
@@ -84,6 +88,11 @@ var catalog = []Event{
 	{"system.error", "Ошибка или сбой", true},
 	{"system.init", "Создание ключей установки (aisec-cli init)", true},
 	{"system.audit_key", "Создание ключа подписи журнала аудита (aisec-cli init -add-audit-key)", true},
+	// Ротация ключей установки (ЗИ.1, ADR-0018; задачи 3.2, 3.3 этапа 3).
+	{"keys.master_rotated", "Ротация мастер-ключа (aisec-cli keys rotate-master)", true},
+	{"keys.data_rotated", "Новая версия ключа данных (aisec-cli keys rotate-data)", true},
+	{"keys.data_rewrapped", "Перешифрование секретов и содержимого событий новой версией ключа данных", true},
+	{"keys.data_key_destroyed", "Удаление прежней версии ключа данных после перешифрования", true},
 	{"system.setup_token_reissued", "Повторный выпуск токена первичной настройки (aisec-cli init -reissue-setup-token)", true},
 	// Целостность и самотестирование (РСБ.2, ОЦЛ).
 	{"integrity.check", "Результат контроля целостности", true},

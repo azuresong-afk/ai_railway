@@ -24,6 +24,7 @@ import (
 	// пояс и на хосте без /usr/share/zoneinfo (Н43 ревью 2.r4).
 	_ "time/tzdata"
 
+	"github.com/azuresong-afk/ai_railway/internal/alerting"
 	"github.com/azuresong-afk/ai_railway/internal/api"
 	"github.com/azuresong-afk/ai_railway/internal/apps"
 	"github.com/azuresong-afk/ai_railway/internal/audit"
@@ -169,6 +170,11 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	// После ротации ключа данных (aisec-cli keys rotate-data) сервер
+	// переходит на новую версию без перезапуска (ADR-0018, п. 3.2).
+	go box.Watch(ctx, keyring.WatchInterval, func(err error) {
+		logger.Warn("опрос действующей версии ключа данных не выполнен", "class", "db", "error", err)
+	})
 	// Проверка цепочки журнала аудита (РСБ.4, DM-43): сразу и раз в
 	// -audit-verify-interval. Голова цепочки защищена имитовставкой на ключе
 	// из ключа данных (вне БД). Нарушение не останавливает сервер — оно
@@ -235,10 +241,41 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		return err
 	}
 	defer readDB.Close()
-	eventStore, err := events.NewPGStore(db.Pool(), box, auditLog, audit.DefaultOrgID, events.WithRandom(rnd),
-		events.WithReadDB(readDB.Pool()))
+	// Оповещения (ТЗ 5.6, задача 3.10, ADR-0020): правила «порог» и «новое»
+	// считаются в транзакции приёма событий; встроенные правила создаются
+	// при запуске.
+	alertStore, err := alerting.NewPGStore(db.Pool(), auditLog, rnd, audit.DefaultOrgID, logger)
 	if err != nil {
 		return err
+	}
+	eventStore, err := events.NewPGStore(db.Pool(), box, auditLog, audit.DefaultOrgID, events.WithRandom(rnd),
+		events.WithReadDB(readDB.Pool()), events.WithIngestHook(alertStore))
+	if err != nil {
+		return err
+	}
+	activeUser := func(ctx context.Context, id string) error {
+		u, err := authSvc.User(ctx, id)
+		if err != nil {
+			return err
+		}
+		if u.Status != auth.StatusActive {
+			return errors.New("учётная запись не активна")
+		}
+		return nil
+	}
+	alertsSvc, err := alerting.New(alerting.Options{Store: alertStore, Provider: p, OrgID: audit.DefaultOrgID,
+		UserCheck: activeUser,
+		RoleCheck: func(ctx context.Context, id string) error {
+			_, err := authSvc.RoleDef(ctx, auth.Role(id))
+			return err
+		}})
+	if err != nil {
+		return err
+	}
+	if n, err := alertsSvc.EnsureBuiltins(ctx); err != nil {
+		return fmt.Errorf("встроенные правила оповещений: %w", err)
+	} else if n > 0 {
+		logger.Info("созданы встроенные правила оповещений", "count", n)
 	}
 	if err := events.Maintain(ctx, eventStore, logger); err != nil {
 		return fmt.Errorf("секции событий: %w", err)
@@ -283,16 +320,7 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		return err
 	}
 	appsSvc, err := apps.New(apps.Options{Store: appStore, Provider: p, Box: box, Policies: policiesSvc,
-		OwnerCheck: func(ctx context.Context, id string) error {
-			u, err := authSvc.User(ctx, id)
-			if err != nil {
-				return err
-			}
-			if u.Status != auth.StatusActive {
-				return errors.New("учётная запись не активна")
-			}
-			return nil
-		}})
+		OwnerCheck: activeUser})
 	if err != nil {
 		return err
 	}
@@ -323,6 +351,7 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		Integrity: integritySvc,
 		Status:    statusSvc,
 		Events:    eventStore,
+		Alerts:    alertsSvc,
 		Audit:     auditLog,
 		Fallback:  console,
 
@@ -424,11 +453,13 @@ func requireAuditKey(ctx context.Context, cps checkpointSource, haveKey bool, lo
 // startAuditVerify запускает фоновую проверку цепочки журнала аудита и
 // возвращает её Verifier для проверки по команде.
 func startAuditVerify(ctx context.Context, cfg *serverConfig, auditLog *audit.Log, box *keyring.Box, logger *slog.Logger) (*audit.Verifier, error) {
-	mac, err := box.MAC(audit.HeadMACPurpose)
+	// Опоры прежних версий ключа данных сверяются, пока версия не удалена
+	// ротацией (ADR-0018, п. 3.4).
+	opts, err := audit.HeadMACOptions(box)
 	if err != nil {
-		return nil, fmt.Errorf("ключ имитовставки цепочки аудита: %w", err)
+		return nil, err
 	}
-	v := audit.NewVerifier(auditLog, audit.WithHeadMAC(audit.HeadMAC{KeyID: box.KeyID(), MAC: mac}))
+	v := audit.NewVerifier(auditLog, opts...)
 	go func() {
 		// Итог каждой проверки уже в аудите и audit_verifications; здесь —
 		// только техническое сообщение.

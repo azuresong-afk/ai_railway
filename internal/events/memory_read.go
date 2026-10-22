@@ -36,6 +36,13 @@ func record(s *Stored) Record {
 	return r
 }
 
+// RecordOf — запись события для проверки фильтра (Filter.Match) без
+// чтения из хранилища: правила оповещений в транзакции приёма (ADR-0020).
+// ReceivedAt не заполняется.
+func RecordOf(gatewayID string, e *Event) Record {
+	return record(&Stored{GatewayID: gatewayID, Event: *e})
+}
+
 // selectLocked — записи выборки q по порядку (вызывать под m.mu).
 // before — запись идёт в выдаче после позиции a (сортировка по убыванию ts, id).
 func (r *Record) before(a *Position) bool {

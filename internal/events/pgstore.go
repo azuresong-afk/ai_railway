@@ -122,6 +122,22 @@ type PGStore struct {
 	// ids — UUIDv7 сохранённых фильтров (задача 2.16); nil — сохранение
 	// фильтров недоступно.
 	ids *ids.Generator
+	// hook — движок оповещений в транзакции приёма (ADR-0020); nil — без
+	// оповещений.
+	hook IngestHook
+}
+
+// IngestHook вызывается в транзакции приёма пакета для событий, которые
+// записаны впервые (дубли не передаются): правила оповещений «порог» и
+// «новое» (ADR-0020, п. 1). Ошибка откатывает весь пакет — шлюз повторит
+// его, поэтому срабатывание не теряется и не удваивается.
+type IngestHook interface {
+	OnIngest(ctx context.Context, tx pgx.Tx, gatewayID string, accepted []*Event) error
+}
+
+// WithIngestHook подключает движок оповещений к приёму событий.
+func WithIngestHook(h IngestHook) PGOption {
+	return func(s *PGStore) { s.hook = h }
 }
 
 // PGOption — необязательная настройка PGStore.
@@ -261,6 +277,17 @@ func (s *PGStore) insertRows(ctx context.Context, in Ingest, rows []eventRow, on
 			}
 		}
 		res.Duplicates = len(rows) - res.Accepted - len(res.Rejected)
+		if s.hook != nil && res.Accepted > 0 {
+			accepted := make([]*Event, 0, res.Accepted)
+			for i, r := range rows {
+				if inserted[i] {
+					accepted = append(accepted, r.ev)
+				}
+			}
+			if err := s.hook.OnIngest(ctx, tx, in.GatewayID, accepted); err != nil {
+				return fmt.Errorf("хранилище событий: оповещения: %w", err)
+			}
+		}
 		return s.insertStats(ctx, tx, in)
 	})
 	return res, err
@@ -402,16 +429,14 @@ func (s *PGStore) contentArgs(ctx context.Context, r eventRow) ([]any, error) {
 		return []any{e.ID, r.ts, s.orgID, StorageMasked, null(e.Content.Request), null(e.Content.Response),
 			nil, nil, nil, nil}, nil
 	}
-	d, err := s.box.Derive(ContentKeyPurpose, r.ts)
-	if err != nil {
-		return nil, fmt.Errorf("хранилище событий: ключ содержимого: %w", err)
-	}
-	sealed, err := d.Seal(ctx, r.plain, contentTable, contentColumn, e.ID)
+	// ID версии ключа — от того же шифрования: ротация ключа данных
+	// (ADR-0018) может сменить версию между вызовами.
+	keyID, alg, sealed, err := s.box.SealDerived(ctx, ContentKeyPurpose, r.ts, r.plain, contentTable, contentColumn, e.ID)
 	if err != nil {
 		return nil, fmt.Errorf("хранилище событий: шифрование содержимого: %w", err)
 	}
 	day := r.ts.UTC().Format(time.DateOnly)
-	return []any{e.ID, r.ts, s.orgID, StorageFull, nil, nil, d.KeyID(), day, d.Alg(), sealed}, nil
+	return []any{e.ID, r.ts, s.orgID, StorageFull, nil, nil, keyID, day, alg, sealed}, nil
 }
 
 // StoredContent — содержимое события после чтения.
@@ -453,7 +478,7 @@ func (s *PGStore) Content(ctx context.Context, id string) (StoredContent, error)
 	if keyID == nil || keyDay == nil {
 		return StoredContent{}, errors.New("хранилище событий: у шифротекста нет ключа")
 	}
-	plain, err := s.box.OpenDerived(*keyID, ContentKeyPurpose, *keyDay, sealed, contentTable, contentColumn, id)
+	plain, err := s.box.OpenDerivedContext(ctx, *keyID, ContentKeyPurpose, *keyDay, sealed, contentTable, contentColumn, id)
 	if err != nil {
 		return StoredContent{}, fmt.Errorf("хранилище событий: расшифрование содержимого: %w", err)
 	}

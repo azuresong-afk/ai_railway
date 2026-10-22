@@ -25,9 +25,10 @@ type SecretOpener interface {
 }
 
 // SecretSealer шифрует секреты ключом данных новой установки
-// (keyring.Box ему соответствует).
+// (keyring.Box ему соответствует). SealKey возвращает ID версии ключа,
+// которой зашифровано (ротация, ADR-0018).
 type SecretSealer interface {
-	Seal(ctx context.Context, plaintext []byte, table, column, rowID string) ([]byte, error)
+	SealKey(ctx context.Context, plaintext []byte, table, column, rowID string) (string, []byte, error)
 	KeyID() string
 	Alg() string
 }
@@ -540,7 +541,13 @@ func Prepare(ctx context.Context, a *Archive, box SecretSealer) (*Prepared, erro
 			return nil, err
 		}
 		defer clear(plain)
-		return box.Seal(ctx, plain, table, column, id)
+		keyID, sealed, err := box.SealKey(ctx, plain, table, column, id)
+		if err == nil && keyID != p.keyID {
+			// Все секреты копии записываются с одним ID ключа: версия
+			// сменилась во время восстановления (ADR-0018, п. 3.7).
+			return nil, errors.New("ключ данных сменился во время восстановления (ротация): повторите восстановление")
+		}
+		return sealed, err
 	}
 	for _, pr := range a.Snapshot.Providers {
 		if pr.Credential == nil {

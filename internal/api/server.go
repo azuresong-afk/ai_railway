@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/azuresong-afk/ai_railway/internal/alerting"
 	"github.com/azuresong-afk/ai_railway/internal/apps"
 	"github.com/azuresong-afk/ai_railway/internal/auth"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
@@ -50,6 +51,9 @@ type Options struct {
 	// эндпоинты отвечают 503.
 	AuditLog      AuditJournal
 	AuditVerifier AuditChainVerifier
+	// Alerts — оповещения и правила (задача 3.10 этапа 3); nil — их
+	// эндпоинты отвечают 503.
+	Alerts *alerting.Service
 	// OnDenied — вызывается при каждом отказе в доступе (УПД.6). По
 	// умолчанию, если задан Auth, отказ аутентифицированному субъекту
 	// пишется в журнал аудита (access.denied).
@@ -96,6 +100,8 @@ type Deps struct {
 	// консоли: соответствующий эндпоинт отвечает 503.
 	AuditLog      AuditJournal
 	AuditVerifier AuditChainVerifier
+	// Alerts — nil, если оповещения не подключены: их эндпоинты отвечают 503.
+	Alerts *alerting.Service
 	// Exports — ограничение одновременных выгрузок событий (В11 ревью 2.r3a).
 	Exports *ExportGate
 	// AuditReads — ограничение одновременных выборок журнала аудита (В17
@@ -136,7 +142,7 @@ func New(o Options) (http.Handler, *Router, error) {
 	rt.mux.HandleFunc("/", rt.notFound)
 	deps := Deps{Logger: o.Logger, Version: o.Version, Ready: o.Ready, Auth: o.Auth, Gateways: o.Gateways, Integrity: o.Integrity,
 		Status: o.Status, Events: o.Events, Audit: o.Audit, Apps: o.Apps, Policies: o.Policies,
-		AuditLog: o.AuditLog, AuditVerifier: o.AuditVerifier,
+		AuditLog: o.AuditLog, AuditVerifier: o.AuditVerifier, Alerts: o.Alerts,
 		Exports: NewExportGate(MaxExportsPerSubject, MaxExportsTotal), AuditReads: NewExportGate(MaxAuditReadsPerSubject, MaxAuditReadsTotal)}
 	if err := rt.Add(append(Routes(deps), o.Extra...)...); err != nil {
 		return nil, nil, err

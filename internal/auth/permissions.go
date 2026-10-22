@@ -65,6 +65,13 @@ const (
 	// итога, поэтому есть у аудитора (ТЗ 1.3).
 	PermAuditRead   = "audit.read"
 	PermAuditVerify = "audit.verify"
+	// Оповещения (ТЗ 5.6, задача 3.10 этапа 3, ADR-0020): разбор
+	// оповещений — работа аналитика, доступна и токену (SOAR); правила —
+	// функция безопасности (ослабление — DM-40).
+	PermAlertsRead       = "alerts.read"
+	PermAlertsManage     = "alerts.manage"
+	PermAlertRulesRead   = "alert_rules.read"
+	PermAlertRulesManage = "alert_rules.manage"
 )
 
 // Permission — разрешение из каталога.
@@ -122,6 +129,10 @@ var permissionCatalog = []Permission{
 	{Name: PermPoliciesTest, Title: "Проверка текста в песочнице политик", Group: "Политики"},
 	{Name: PermAuditRead, Title: "Просмотр журнала аудита", Group: "Журнал аудита"},
 	{Name: PermAuditVerify, Title: "Проверка цепочки журнала аудита по команде", Group: "Журнал аудита"},
+	{Name: PermAlertsRead, Title: "Просмотр оповещений и ссылок на события", Group: "Оповещения"},
+	{Name: PermAlertsManage, Title: "Принятие оповещений в работу и закрытие", Group: "Оповещения"},
+	{Name: PermAlertRulesRead, Title: "Просмотр правил оповещений и получателей", Group: "Оповещения"},
+	{Name: PermAlertRulesManage, Title: "Создание и изменение правил оповещений и получателей", Group: "Оповещения", Security: true},
 }
 
 // auditorExtra — разрешения аудитора сверх чтения: они ничего не меняют,
@@ -310,7 +321,7 @@ var builtinRoles = []RoleDef{
 	{ID: RoleAnalyst, DisplayName: "Аналитик", Builtin: true,
 		Description: "Разбор оповещений и инцидентов, поиск по событиям",
 		Grants: grantAll(PermSystemRead, PermEventsRead, PermEventsExport, PermApplicationsRead, PermProvidersRead,
-			PermPoliciesRead, PermPoliciesTest)},
+			PermPoliciesRead, PermPoliciesTest, PermAlertsRead, PermAlertsManage, PermAlertRulesRead)},
 	{ID: RoleAuditor, DisplayName: "Аудитор", Builtin: true,
 		Description: "Только просмотр: журнал аудита, отчёты, состояние соответствия. Ничего не меняет",
 		Grants:      auditorPermissions()},
