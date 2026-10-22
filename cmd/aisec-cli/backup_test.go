@@ -690,7 +690,9 @@ func TestBackupRestoreInvalidObjectsOnRealDB(t *testing.T) {
 		src.dsn, &out, &errb, time.Now()); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	err = backupCmd([]string{"restore", "-keys", dst.keys, "-in", file, "-passphrase-file", phrase}, dst.dsn, &out, &errb, time.Now())
+	// Токены проверяются, только если остаются действующими (-keep-api-tokens).
+	err = backupCmd([]string{"restore", "-keys", dst.keys, "-in", file, "-passphrase-file", phrase, "-keep-api-tokens"},
+		dst.dsn, &out, &errb, time.Now())
 	var ie *invalidObjectsError
 	if !errors.Is(err, errBackupInvalid) || !errors.As(err, &ie) {
 		t.Fatalf("недопустимые объекты: %v", err)
@@ -702,8 +704,8 @@ func TestBackupRestoreInvalidObjectsOnRealDB(t *testing.T) {
 	}
 	t.Setenv("AISEC_DATABASE_URL", dst.dsn)
 	if code := run([]string{"backup", "restore", "-keys", dst.keys, "-in", file, "-passphrase-file", phrase}, &out, &errb,
-		time.Now()); code != 3 {
-		t.Fatalf("код возврата %d", code)
+		time.Now()); code != 3 || strings.Contains(errb.String(), "aisec_pat_vvvv7777") {
+		t.Fatalf("код возврата %d: %s", code, errb.String())
 	}
 	if n := dst.count(t, `SELECT count(*) FROM audit_log WHERE action = 'backup.restore' AND result = 'failure'
 		AND details->>'stage' = 'refused' AND details->>'reason' LIKE 'invalid:%'`); n != 2 {

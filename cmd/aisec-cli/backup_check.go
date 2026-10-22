@@ -44,8 +44,10 @@ func (e *invalidObjectsError) Error() string {
 // по правилам API и так, как их проверит шлюз (словари, политики),
 // свои роли и токены API — по каталогу разрешений и правилу 2.10. Копия
 // от другого выпуска иначе прошла бы восстановление, а сломалась при
-// сборке пакета для шлюзов (В22 ревью 2.r4).
-func checkSnapshot(s *backup.Snapshot) error {
+// сборке пакета для шлюзов (В22 ревью 2.r4). Токены проверяются только
+// те, что останутся действующими (keepTokens): отозванный токен прав не
+// даёт, а неизвестное новому выпуску право в нём не повод отклонять копию.
+func checkSnapshot(s *backup.Snapshot, keepTokens bool) error {
 	reg, err := detect.NewRegistry(builtin.All()...)
 	if err != nil {
 		return err
@@ -64,6 +66,9 @@ func checkSnapshot(s *backup.Snapshot) error {
 		}
 	}
 	for _, t := range s.APITokens {
+		if !keepTokens || t.RevokedAt != nil {
+			continue
+		}
 		if err := auth.CheckStoredTokenGrants(t.Permissions); err != nil {
 			add("токен API "+t.Prefix, err)
 		}

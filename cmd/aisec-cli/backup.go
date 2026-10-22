@@ -287,7 +287,7 @@ func backupRestore(args []string, dsn string, stdout, stderr io.Writer, now time
 		return fail(audit.ResultFailure, "invalid", fmt.Errorf("%w: %w", errBackupInvalid, err))
 	}
 	// Объекты — правилами сервиса этого выпуска, до записи «до» (В22).
-	if err := checkSnapshot(snap); err != nil {
+	if err := checkSnapshot(snap, *keepTokens); err != nil {
 		return fail(audit.ResultFailure, "invalid", fmt.Errorf("%w: %w", errBackupInvalid, err))
 	}
 	details := snap.Counts()

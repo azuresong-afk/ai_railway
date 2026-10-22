@@ -144,8 +144,8 @@ func (m *Memory) AcceptRollback(_ context.Context, orgID, name string, rec func(
 		if g.OrgID != orgID || g.Name != name {
 			continue
 		}
-		if !g.Rollback() {
-			return Gateway{}, ErrNoRollback
+		if err := checkAcceptRollback(*g); err != nil {
+			return Gateway{}, err
 		}
 		prev := *g
 		g.ManifestMaxVersion, g.ManifestMaxCreated = g.Integrity.ManifestVersion, g.Integrity.ManifestCreated

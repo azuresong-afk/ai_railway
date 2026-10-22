@@ -58,15 +58,17 @@ var keyIDRe = regexp.MustCompile(`^[0-9a-f]{16}$`)
 // Ошибки. Тексты для журнала; клиенту внутреннего API причины отказа не
 // раскрываются.
 var (
-	ErrNotFound       = errors.New("шлюз не найден")
-	ErrNameTaken      = errors.New("шлюз с таким именем уже есть")
-	ErrRevoked        = errors.New("шлюз отозван")
-	ErrTokenInvalid   = errors.New("токен регистрации неверный, истёк или уже использован")
-	ErrUnknownCert    = errors.New("сертификат не принадлежит действующему шлюзу")
-	ErrTooFrequent    = errors.New("heartbeat слишком часто")
-	ErrNoRollback     = errors.New("откат не обнаружен: шлюз работает на манифесте не старше проверенного")
-	ErrNoCA           = errors.New("внутренний УЦ не подключён: регистрация шлюзов недоступна")
-	ErrInvalidRequest = errors.New("неверные данные")
+	ErrNotFound     = errors.New("шлюз не найден")
+	ErrNameTaken    = errors.New("шлюз с таким именем уже есть")
+	ErrRevoked      = errors.New("шлюз отозван")
+	ErrTokenInvalid = errors.New("токен регистрации неверный, истёк или уже использован")
+	ErrUnknownCert  = errors.New("сертификат не принадлежит действующему шлюзу")
+	ErrTooFrequent  = errors.New("heartbeat слишком часто")
+	ErrNoRollback   = errors.New("откат не обнаружен: шлюз работает на манифесте не старше проверенного")
+	// ErrRollbackViolated — откат не принимается при нарушенной целостности.
+	ErrRollbackViolated = errors.New("откат не принимается: последняя проверка целостности шлюза выявила нарушение")
+	ErrNoCA             = errors.New("внутренний УЦ не подключён: регистрация шлюзов недоступна")
+	ErrInvalidRequest   = errors.New("неверные данные")
 )
 
 // Gateway — шлюз в реестре.
@@ -100,10 +102,29 @@ type Gateway struct {
 }
 
 // Rollback — шлюз работает на выпуске старше того, что уже проверялся
-// успешно (В20 ревью 2.r4, DM-42).
+// успешно (В20 ревью 2.r4, DM-42). Успешная проверка без сведений о
+// манифесте после выпуска, который их присылал, — тоже откат: на выпуск,
+// вышедший до этих сведений.
 func (g Gateway) Rollback() bool {
-	return g.Integrity != nil && !g.Integrity.ManifestCreated.IsZero() && !g.ManifestMaxCreated.IsZero() &&
-		g.Integrity.ManifestCreated.Before(g.ManifestMaxCreated)
+	if g.Integrity == nil || g.ManifestMaxCreated.IsZero() {
+		return false
+	}
+	if g.Integrity.ManifestCreated.IsZero() {
+		return g.Integrity.OK
+	}
+	return g.Integrity.ManifestCreated.Before(g.ManifestMaxCreated)
+}
+
+// checkAcceptRollback — откат шлюза принимается, только если он есть и
+// последняя проверка целостности шлюза успешна (как у сервера).
+func checkAcceptRollback(g Gateway) error {
+	switch {
+	case !g.Rollback():
+		return ErrNoRollback
+	case !g.Integrity.OK:
+		return ErrRollbackViolated
+	}
+	return nil
 }
 
 // CheckReport — итог самотеста или контроля целостности шлюза: только

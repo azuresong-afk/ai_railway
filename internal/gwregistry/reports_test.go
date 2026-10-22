@@ -156,6 +156,10 @@ func TestDM42_GatewayManifestRollback(t *testing.T) {
 	if g := beat("1.0.0", older, false); !g.Rollback() || g.ManifestMaxVersion != "1.1.0" {
 		t.Fatalf("%+v", g)
 	}
+	// При нарушенной целостности откат не принимается (ревью исправлений).
+	if _, err := e.svc.AcceptRollback(ctx, "gw-1", actor); !errors.Is(err, gwregistry.ErrRollbackViolated) {
+		t.Fatalf("принят откат при нарушении: %v", err)
+	}
 	if g := beat("1.0.0", older, true); !g.Rollback() {
 		t.Fatalf("откат не обнаружен: %+v", g)
 	}
@@ -167,6 +171,13 @@ func TestDM42_GatewayManifestRollback(t *testing.T) {
 	d := last.Details.(map[string]any)
 	if last.Action != "integrity.rollback_accepted" || d["previous_version"] != "1.1.0" || d["manifest_version"] != "1.0.0" {
 		t.Fatalf("%+v", last)
+	}
+	// Выпуск без сведений о манифесте после выпуска со сведениями — откат.
+	if g := beat("", time.Time{}, true); !g.Rollback() {
+		t.Fatalf("откат на выпуск без сведений не обнаружен: %+v", g)
+	}
+	if g, err := e.svc.AcceptRollback(ctx, "gw-1", actor); err != nil || g.Rollback() || !g.ManifestMaxCreated.IsZero() {
+		t.Fatalf("%+v %v", g, err)
 	}
 }
 

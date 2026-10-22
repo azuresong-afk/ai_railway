@@ -324,8 +324,8 @@ func (s *PGStore) AcceptRollback(ctx context.Context, orgID, name string, rec fu
 		if err != nil {
 			return err
 		}
-		if !cur.Rollback() {
-			return ErrNoRollback
+		if err := checkAcceptRollback(cur); err != nil {
+			return err
 		}
 		gw, err = scanGateway(tx.QueryRow(ctx, `UPDATE gateways SET manifest_max_version = manifest_version,
 			manifest_max_created = manifest_created WHERE id = $1 RETURNING `+gatewayCols, cur.ID))

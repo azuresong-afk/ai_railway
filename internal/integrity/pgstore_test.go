@@ -295,3 +295,34 @@ func TestRollbackDetectedAndAcceptedPostgres(t *testing.T) {
 		t.Fatalf("%+v %v", v, err)
 	}
 }
+
+// Ревью исправлений В20: у сервера и aisec-cli один манифест — откат,
+// увиденный только сервером, видит и обычная проверка cli, и принимает
+// aisec-cli verify -accept-rollback без своей прежней проверки.
+func TestRollbackSharedByComponentsPostgres(t *testing.T) {
+	env := setupPG(t)
+	ctx := pgCtx(t)
+	at := time.Date(2026, 10, 22, 10, 0, 0, 0, time.UTC)
+	newer, older := time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC), time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	res := func(component string, minute int, created time.Time) Result {
+		return Result{Component: component, Trigger: TriggerPeriodic, At: at.Add(time.Duration(minute) * time.Minute),
+			Reason: ReasonOK, ManifestVersion: "v", ManifestCreated: created, Checked: 3}
+	}
+	by := systemActor("server")
+	cli := audit.Actor{Type: audit.ActorCLI, ID: "uid:0"}
+	if got, err := env.store.Record(ctx, res("server", 0, newer), by, netip.Addr{}); err != nil || !got.OK() {
+		t.Fatalf("%+v %v", got, err)
+	}
+	if got, err := env.store.Record(ctx, res("server", 1, older), by, netip.Addr{}); err != nil || got.Reason != ReasonManifestRollback {
+		t.Fatalf("сервер: %+v %v", got, err)
+	}
+	if got, err := env.store.Record(ctx, res("cli", 2, older), cli, netip.Addr{}); err != nil || got.Reason != ReasonManifestRollback {
+		t.Fatalf("cli без своей истории не видит отката: %+v %v", got, err)
+	}
+	if got, err := env.store.AcceptRollback(ctx, res("cli", 3, older), cli); err != nil || !got.OK() {
+		t.Fatalf("принятие из cli: %+v %v", got, err)
+	}
+	if got, err := env.store.Record(ctx, res("server", 4, older), by, netip.Addr{}); err != nil || !got.OK() {
+		t.Fatalf("сервер после принятия: %+v %v", got, err)
+	}
+}

@@ -55,25 +55,27 @@ func dbCtx(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(ctx, pgTimeout)
 }
 
-// Baseline — самый поздний манифест успешных проверок компонента после
+// Baseline — самый поздний манифест успешных проверок установки после
 // последнего принятого отката: с ним сравнивается новый итог (В20).
 type Baseline struct {
 	Version string
 	Created time.Time
 }
 
-// baselineSQL — максимум по успешным проверкам компонента. Принятый откат
-// (rollback_accepted) сбрасывает максимум для всех компонентов установки:
-// у них один манифест.
+// baselineSQL — максимум по успешным проверкам всех компонентов установки
+// (сервер, aisec-cli): у них один манифест, поэтому откат, увиденный
+// сервером, принимает aisec-cli verify, даже если сам он этот выпуск с БД
+// не проверял, а его обычная проверка видит тот же откат. Принятый откат
+// (rollback_accepted) сбрасывает максимум для всех. Шлюзы — в gateways.
 const baselineSQL = `SELECT manifest_version, manifest_created FROM integrity_checks
-	WHERE org_id = $1 AND component = $2 AND ok AND manifest_created IS NOT NULL
+	WHERE org_id = $1 AND ok AND manifest_created IS NOT NULL
 	AND ts >= COALESCE((SELECT max(ts) FROM integrity_checks WHERE org_id = $1 AND rollback_accepted), '-infinity')
 	ORDER BY manifest_created DESC, ts DESC LIMIT 1`
 
-// baseline читает Baseline компонента; ok = false — успешных проверок нет.
-func baseline(ctx context.Context, tx pgx.Tx, component string) (Baseline, bool, error) {
+// baseline читает Baseline установки; ok = false — успешных проверок нет.
+func baseline(ctx context.Context, tx pgx.Tx) (Baseline, bool, error) {
 	var b Baseline
-	err := tx.QueryRow(ctx, baselineSQL, audit.DefaultOrgID, component).Scan(&b.Version, &b.Created)
+	err := tx.QueryRow(ctx, baselineSQL, audit.DefaultOrgID).Scan(&b.Version, &b.Created)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Baseline{}, false, nil
 	}
@@ -126,7 +128,7 @@ func (s *PGStore) record(ctx context.Context, res Result, by audit.Actor, ip net
 	var prev Baseline
 	rollback := false
 	if res.OK() && !res.ManifestCreated.IsZero() {
-		b, found, err := baseline(ctx, tx, res.Component)
+		b, found, err := baseline(ctx, tx)
 		if err != nil {
 			return res, err
 		}
