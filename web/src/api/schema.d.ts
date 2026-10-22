@@ -410,13 +410,18 @@ export interface paths {
          * Записи журнала аудита за период по фильтру
          * @description Право `audit.read` (ТЗ 6.3 п. 11, задача 2.4a): из предустановленных ролей — у аудитора и
          *     администратора безопасности. Только чтение: изменить или удалить запись через API
-         *     нельзя (УПД.2). Порядок — от новых к старым по номеру записи. Период — не длиннее
+         *     нельзя (УПД.2). Порядок — от новых к старым по времени и номеру записи; записи с
+         *     нечитаемым временем (подмена в обход продукта, `ts: null`) — в начале любой выборки.
+         *     Период — не длиннее
          *     31 суток (по умолчанию последние 7). Фильтры по белому списку: `action` (до 20 раз;
          *     точный код `auth.login` или группа `auth.*`), `actor_type`, `actor` (ID или имя
          *     субъекта, точное совпадение), `object_type`, `object_id`, `result`; неизвестный
          *     параметр — 400. Секреты в подробностях замаскированы при записи (`[скрыто]`),
          *     исходных значений в журнале нет. Пишет `audit.list` (отключаемое событие) после
-         *     чтения: в текущую страницу запись не попадает.
+         *     выборки и до ответа: в текущую страницу запись не попадает, а если записать её не
+         *     удалось — 503 без данных (Н30 ревью 2.r3b). Одновременно — не больше 2 выборок на
+         *     пользователя или токен и 4 на сервер, сверх этого — 429 с `Retry-After`; выборка идёт
+         *     в отдельном пуле соединений с пределом 10 с, дольше — 503 (В17 ревью 2.r3b).
          */
         get: {
             parameters: {
@@ -487,7 +492,9 @@ export interface paths {
          *     5 раз в минуту с адреса. Обрыв соединения проверку не прерывает; предел — 5 минут.
          *     Итог пишется в `audit_verifications` (раздел `audit_chain` «Состояния системы») и в
          *     журнал аудита (`audit.chain_verified` или `audit.chain_broken`) от имени субъекта с
-         *     адресом. Нарушение — `ok: false` с ответом 200. Тело не нужно.
+         *     адресом. Нарушение — `ok: false` с ответом 200. Тело не нужно. Если последняя проверка
+         *     сервера моложе 10 минут, новая не выполняется: ответ — её итог с `cached: true`, без
+         *     записи в журнал (Н31 ревью 2.r3b); немедленная проверка — `aisec-cli audit verify`.
          */
         post: {
             parameters: {
@@ -2797,8 +2804,11 @@ export interface paths {
         /**
          * Изменить провайдера
          * @description Право `providers.manage`. Меняются все поля, кроме `slug`, признака «внешний» и
-         *     учётных данных. Пишет `provider.update` (до и после, без учётных данных; сертификаты —
-         *     только размером).
+         *     учётных данных. Смена адресата — узла (схема, хост, порт) `base_url` или `auth_url`,
+         *     `ca_pem` или `type` — сбрасывает учётные данные и возвращает признак «внешний» (В14
+         *     ревью 2.r3b): их задают заново, снятие признака — снова через `PUT …/external`. Пишет
+         *     `provider.update` (до и после, без учётных данных; сертификаты — только размером; при
+         *     смене адресата — `credential_reset`, `external_reset`).
          */
         put: {
             parameters: {
@@ -4172,7 +4182,7 @@ export interface components {
                 warn_exceeded: boolean;
             };
             /** @description Последняя проверка цепочки журнала аудита — фоновая или aisec-cli audit verify (РСБ.4); null — проверок не было */
-            audit_chain?: null | {
+            audit_chain: null | {
                 /** Format: date-time */
                 checked_at: string;
                 ok: boolean;
@@ -4185,11 +4195,32 @@ export interface components {
                 /** @description Запись, на которой цепочка нарушена */
                 broken_seq: number | null;
             };
+            /** @description Пакет конфигурации шлюзов (ОЦЛ.3; В16, Н28 ревью 2.r3b); null — сервер без внутреннего порта для шлюзов */
+            bundle: null | {
+                /** @description Текущая корректная версия; 0 — её нет */
+                version: number;
+                etag: string;
+                /** Format: date-time */
+                built_at: string | null;
+                /** @description В версии все действующие приложения */
+                complete: boolean;
+                /** @description Почему содержимое не собрано целиком (например, размер); шлюзам выдаётся прежняя версия */
+                reason?: string;
+                /** @description Приложения, исключённые из пакета: шлюз принимает их ключи и отвечает 503 app_unavailable */
+                excluded: {
+                    application: string;
+                    reason: string;
+                }[];
+                /** @description Шлюзы на связи, которые дольше 10 минут работают на другой версии */
+                lagging: string[];
+            };
             notifications: {
                 /** @enum {string} */
-                condition: "account_lockout" | "access_denied" | "audit_chain" | "audit_storage" | "integrity" | "time_sync";
+                condition: "account_lockout" | "access_denied" | "audit_chain" | "audit_storage" | "integrity" | "time_sync" | "config_bundle" | "config_bundle_lag";
                 /** @enum {string} */
-                requirement: "ИАФ.4" | "УПД.6" | "РСБ.4" | "РСБ.5" | "ОЦЛ.5" | "ВРМ.1";
+                requirement: "ИАФ.4" | "УПД.6" | "РСБ.4" | "РСБ.5" | "ОЦЛ.3" | "ОЦЛ.5" | "ВРМ.1";
+                /** @description Компоненты с активным условием (integrity — server или gateway:<ID>, config_bundle_lag — gateway:<ID>); каждое ведётся отдельно и пишется в system.alert (В18 ревью 2.r3b) */
+                components?: string[];
                 title: string;
                 active: boolean;
                 /**
@@ -4200,7 +4231,7 @@ export interface components {
                 /** @description Число событий за 24 часа (только ИАФ.4 и УПД.6) */
                 count: number | null;
             }[];
-            unavailable: ("integrity" | "gateways" | "events" | "storage" | "audit_chain" | "notifications")[];
+            unavailable: ("integrity" | "gateways" | "events" | "storage" | "audit_chain" | "bundle" | "notifications")[];
         };
         StatusReport: {
             ok: boolean;
@@ -4953,6 +4984,8 @@ export interface components {
         AuditVerification: {
             /** Format: date-time */
             checked_at: string;
+            /** @description Итог прежней проверки не старше 10 минут, новая не выполнялась */
+            cached: boolean;
             ok: boolean;
             /** @description Проверено записей */
             checked: number;

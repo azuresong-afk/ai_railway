@@ -186,6 +186,9 @@ func assertAllNotImplemented(t *testing.T, p Provider) {
 	if _, err := p.PasswordHasher(); !errors.Is(err, ErrNotImplemented) {
 		t.Errorf("PasswordHasher: %v", err)
 	}
+	if _, err := p.PassphraseKDF(); !errors.Is(err, ErrNotImplemented) {
+		t.Errorf("PassphraseKDF: %v", err)
+	}
 	if _, err := p.NewAEAD(make([]byte, AEADKeySize)); !errors.Is(err, ErrNotImplemented) {
 		t.Errorf("NewAEAD: %v", err)
 	}

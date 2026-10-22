@@ -86,6 +86,9 @@ var (
 	// ErrConfirmRequired — ослабление защиты без повторной проверки
 	// субъекта (Н32 ревью 2.r3b): её нечем выполнить.
 	ErrConfirmRequired = errors.New("ослабление защиты требует повторной проверки")
+	// ErrBreaksBundle — изменение исключило бы приложение из пакета
+	// конфигурации шлюзов (В16 ревью 2.r3b).
+	ErrBreaksBundle = errors.New("изменение не войдёт в пакет конфигурации шлюзов")
 	// errImmutable — попытка изменить неизменяемое (ошибка программиста;
 	// в PostgreSQL то же запрещают триггеры).
 	errImmutable = errors.New("приложения: изменение неизменяемого поля")
@@ -294,12 +297,16 @@ type Store interface {
 	// CreateKey блокирует приложение, считает его действующие ключи и
 	// сохраняет ключ, который вернула fn.
 	CreateKey(ctx context.Context, orgID, appID string, now time.Time, fn func(a Application, active int) (Key, audit.Entry, error)) (Key, error)
-	// UpdateKey блокирует ключ: fn меняет срок или отметку отзыва и может
-	// вернуть новый ключ (ротация), который сохраняется той же транзакцией.
-	UpdateKey(ctx context.Context, orgID, id string, fn func(k *Key, a Application) (*Key, audit.Entry, error)) (Key, error)
+	// UpdateKey блокирует приложение и ключ, считает действующие на now
+	// ключи приложения: fn меняет срок или отметку отзыва и может вернуть
+	// новый ключ (ротация), который сохраняется той же транзакцией.
+	UpdateKey(ctx context.Context, orgID, id string, now time.Time, fn func(k *Key, a Application, active int) (*Key, audit.Entry, error)) (Key, error)
 	Key(ctx context.Context, orgID, id string) (Key, error)
 	// Keys — ключи приложения, новые первыми, не больше MaxKeysListed.
 	Keys(ctx context.Context, orgID, appID string) ([]Key, error)
+	// ActiveKeys — все неотозванные ключи организации со сроком позже now
+	// (пакет конфигурации, Н25 ревью 2.r3b), по приложению и префиксу.
+	ActiveKeys(ctx context.Context, orgID string, now time.Time) ([]Key, error)
 }
 
 // Options — зависимости Service.
@@ -330,6 +337,23 @@ type Service struct {
 	clock    func() time.Time
 	policies Policies
 	owner    func(ctx context.Context, userID string) error
+	// bundleCheck — проверка приложения сборкой пакета (В16 ревью 2.r3b);
+	// nil — без проверки.
+	bundleCheck func(ctx context.Context, before *Application, after Application) error
+}
+
+// SetBundleCheck задаёт проверку приложения сборкой пакета (ошибка — с
+// ErrBreaksBundle). Вызывается до начала обслуживания запросов: сборка
+// создаётся после сервиса приложений.
+func (s *Service) SetBundleCheck(fn func(ctx context.Context, before *Application, after Application) error) {
+	s.bundleCheck = fn
+}
+
+func (s *Service) checkBundle(ctx context.Context, before *Application, after Application) error {
+	if s.bundleCheck == nil {
+		return nil
+	}
+	return s.bundleCheck(ctx, before, after)
 }
 
 // New создаёт сервис.

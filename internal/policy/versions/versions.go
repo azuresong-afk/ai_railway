@@ -59,6 +59,9 @@ var (
 	// ErrTemplate — шаблон не меняется, его ID не занять.
 	ErrTemplate = errors.New("шаблон политики не меняется")
 	ErrTooMany  = errors.New("достигнут предел числа политик")
+	// ErrBreaksBundle — новая версия исключила бы приложения из пакета
+	// конфигурации шлюзов (В16 ревью 2.r3b).
+	ErrBreaksBundle = errors.New("версия не войдёт в пакет конфигурации шлюзов")
 	// errSequence — версия не следующая по номеру (ошибка программиста; в
 	// PostgreSQL то же запрещает триггер).
 	errSequence = errors.New("политики: номер версии не по порядку")
@@ -160,6 +163,16 @@ type Service struct {
 	catalog policy.Catalog
 	orgID   string
 	clock   func() time.Time
+	// bundleCheck — проверка новой версии с приложениями, которые на неё
+	// ссылаются (В16 ревью 2.r3b); nil — без проверки.
+	bundleCheck func(ctx context.Context, spec *policy.Spec) error
+}
+
+// SetBundleCheck задаёт проверку новой версии сборкой пакета (ошибка —
+// с ErrBreaksBundle). Вызывается до начала обслуживания запросов: сборка
+// создаётся после сервиса политик.
+func (s *Service) SetBundleCheck(fn func(ctx context.Context, spec *policy.Spec) error) {
+	s.bundleCheck = fn
 }
 
 // New создаёт сервис.
@@ -430,6 +443,11 @@ func (s *Service) addVersion(ctx context.Context, by By, slug string, base int, 
 	// Проверка до блокировки: номер версии подставляется в YAML ниже.
 	if _, err := s.prepare(spec, slug, base+1, d); err != nil {
 		return Doc{}, err
+	}
+	if s.bundleCheck != nil {
+		if err := s.bundleCheck(ctx, spec); err != nil {
+			return Doc{}, err
+		}
 	}
 	var out Doc
 	p, v, err := s.store.AddVersion(ctx, s.orgID, slug, base, func(p Policy, cur Version) (Version, audit.Entry, error) {

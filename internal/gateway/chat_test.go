@@ -95,6 +95,8 @@ type gwOpts struct {
 	noKey      bool // не подставлять ключ приложения (проверки доступа)
 	// events — события gateway_request (заполняет newGateway до mod).
 	events *eventLog
+	// unavailable — приложения, исключённые сервером из пакета.
+	unavailable []string
 }
 
 // newGateway — шлюз с OpenAI-совместимым провайдером на upstream и одним
@@ -125,6 +127,7 @@ func newGateway(t testing.TB, upstream string, mod func(*gwOpts)) http.Handler {
 	if err != nil {
 		t.Fatal(err)
 	}
+	rt.SetUnavailable(o.unavailable)
 	if o.setup != nil {
 		o.setup(rt.apps["app"])
 	}
@@ -718,4 +721,42 @@ func FuzzProxyHandler(f *testing.F) {
 			}
 		}
 	})
+}
+
+// Приложение ключа, которого нет в маршрутах: 403 app_not_configured, а если
+// сервер исключил его из пакета, — 503 app_unavailable на всех маршрутах
+// (В16 ревью 2.r3b).
+func TestAppNotConfiguredOrUnavailable(t *testing.T) {
+	up, rec := newUpstream(t, nil)
+	reqs := []struct{ method, path, body string }{
+		{http.MethodPost, "/v1/chat/completions", chatBody},
+		{http.MethodPost, "/v1/embeddings", `{"model":"m","input":"привет"}`},
+		{http.MethodPost, "/guard/v1/check", `{"direction":"input","messages":[{"role":"user","content":"привет"}]}`},
+		{http.MethodGet, "/v1/models", ""},
+	}
+	for _, tc := range []struct {
+		unavailable []string
+		status      int
+		code        string
+	}{
+		{nil, http.StatusForbidden, "app_not_configured"},
+		{[]string{"app"}, http.StatusServiceUnavailable, "app_unavailable"},
+	} {
+		g := newGateway(t, up.URL, func(o *gwOpts) {
+			o.app = func(a *config.Application) { a.ID = "other" }
+			o.unavailable = tc.unavailable
+		})
+		for _, r := range reqs {
+			req := httptest.NewRequestWithContext(context.Background(), r.method, r.path, strings.NewReader(r.body))
+			req.Header.Set("Content-Type", "application/json")
+			resp := httptest.NewRecorder()
+			g.ServeHTTP(resp, req)
+			if resp.Code != tc.status || errCode(t, resp) != tc.code {
+				t.Errorf("%s %s (%v): %d %s", r.method, r.path, tc.unavailable, resp.Code, resp.Body.String())
+			}
+		}
+	}
+	if path, _, _, _ := rec.get(); path != "" {
+		t.Fatalf("запрос дошёл до провайдера: %s", path)
+	}
 }

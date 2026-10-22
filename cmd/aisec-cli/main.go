@@ -46,6 +46,10 @@ const usage = `aisec-cli — служебные операции AISec.
   user reset-mfa -login ЛОГИН    сбросить второй фактор; сессии завершаются
   verify [-manifest ФАЙЛ]       проверить целостность установки по подписанному манифесту без сервера;
                                 с AISEC_DATABASE_URL итог пишется в журнал; 3 — целостность нарушена
+  backup create -keys КАТАЛОГ -out ФАЙЛ (-user-hmac-key ФАЙЛ | -no-user-hmac-key) [-passphrase-file ФАЙЛ]
+                                резервная копия конфигурации в зашифрованный файл (AISEC_DATABASE_URL)
+  backup restore -keys КАТАЛОГ -in ФАЙЛ [-user-hmac-key-out ФАЙЛ] [-passphrase-file ФАЙЛ] [-allow-nonempty]
+                                восстановить конфигурацию в новую установку после init; 3 — копия недействительна
   version                       версия
 `
 
@@ -131,6 +135,18 @@ func run(args []string, stdout, stderr io.Writer, now time.Time) int {
 			}
 			say(stderr, "aisec-cli verify: %v\n", err)
 			if errors.Is(err, errIntegrityViolated) {
+				return 3
+			}
+			return 1
+		}
+		return 0
+	case "backup":
+		if err := backupCmd(args[1:], os.Getenv("AISEC_DATABASE_URL"), stdout, stderr, now); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return 0
+			}
+			say(stderr, "aisec-cli backup: %v\n", err)
+			if errors.Is(err, errBackupInvalid) {
 				return 3
 			}
 			return 1
