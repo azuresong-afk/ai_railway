@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -99,7 +100,14 @@ func TestPoliciesViaAPI(t *testing.T) {
 	// Новая версия: ослабление (block → log) помечено в аудите.
 	weak := strings.Replace(tPolicySpec, `"action":"block"`, `"action":"log"`, 1)
 	mustProblem(t, e.call(sys, "PUT", "/api/v1/policies/support", `{"base_version":1,"spec":`+weak+`}`, true), 403, CodeForbidden)
-	w = e.call(admin, "PUT", "/api/v1/policies/support", `{"base_version":1,"spec":`+weak+`,"comment":"Меньше ложных"}`, true)
+	// Ослабление — только с текущим паролем или кодом (В23 ревью 2.r5).
+	w = e.call(admin, "PUT", "/api/v1/policies/support", `{"base_version":1,"spec":`+weak+`}`, true)
+	mustProblem(t, w, 400, CodeInvalidRequest)
+	if !strings.Contains(w.Body.String(), `"field":"password"`) {
+		t.Fatalf("ослабление без пароля: %s", w.Body)
+	}
+	mustProblem(t, e.call(admin, "PUT", "/api/v1/policies/support", `{"base_version":1,"spec":`+weak+`,"password":"неверный"}`, true), 403, CodeReauthFailed)
+	w = e.call(admin, "PUT", "/api/v1/policies/support", `{"base_version":1,"spec":`+weak+`,"comment":"Меньше ложных","password":"`+tPhrase+`"}`, true)
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"version":2`) {
 		t.Fatalf("версия 2: %d %s", w.Code, w.Body)
 	}
@@ -170,7 +178,8 @@ func TestPoliciesViaAPI(t *testing.T) {
 	}
 	mustProblem(t, e.callYAML(sys, "/api/v1/policies/import?base_version=3", exported, "application/yaml"), 403, CodeForbidden)
 	mustProblem(t, e.callYAML(admin, "/api/v1/policies/import", exported, "application/yaml"), 409, CodeConflict)
-	mustProblem(t, e.callYAML(admin, "/api/v1/policies/import?base_version=3", exported, "application/json"), 415, CodeUnsupportedMedia)
+	mustProblem(t, e.callYAML(admin, "/api/v1/policies/import?base_version=3", exported, "text/plain"), 415, CodeUnsupportedMedia)
+	mustProblem(t, e.callYAML(admin, "/api/v1/policies/import?base_version=3", exported, "application/json"), 400, CodeInvalidRequest)
 	w = e.callYAML(admin, "/api/v1/policies/import?base_version=3&comment=Из+файла", exported, "application/yaml")
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"version":4`) || !strings.Contains(w.Body.String(), `"source":"import"`) {
 		t.Fatalf("загрузка: %d %s", w.Code, w.Body)
@@ -179,6 +188,35 @@ func TestPoliciesViaAPI(t *testing.T) {
 	if df := decode[PolicyDiffView](t, w.Body.Bytes()); len(df.Fields)+len(df.Added)+len(df.Removed)+len(df.Changed) != 0 || df.Reordered {
 		t.Fatalf("выгрузка и загрузка дали другую политику: %s", w.Body)
 	}
+	// Загрузка версии 2 (block → log) поверх 4 ослабляет защиту: YAML без
+	// пароля — 400 с полем password, обёртка JSON с паролем — новая версия.
+	w = e.call(auditor, "GET", "/api/v1/policies/support/export?version=2", "", false)
+	weakYAML := w.Body.String()
+	w = e.callYAML(admin, "/api/v1/policies/import?base_version=4", weakYAML, "application/yaml")
+	mustProblem(t, w, 400, CodeInvalidRequest)
+	if !strings.Contains(w.Body.String(), `"field":"password"`) {
+		t.Fatalf("загрузка с ослаблением без пароля: %s", w.Body)
+	}
+	wrap := func(pass string) string {
+		b, _ := json.Marshal(map[string]any{"document": weakYAML, "base_version": 4, "comment": "Обёртка", "password": pass})
+		return string(b)
+	}
+	mustProblem(t, e.callYAML(admin, "/api/v1/policies/import", wrap("неверный"), "application/json"), 403, CodeReauthFailed)
+	w = e.callYAML(admin, "/api/v1/policies/import", wrap(tPhrase), "application/json")
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"version":5`) || !strings.Contains(w.Body.String(), `"comment":"Обёртка"`) {
+		t.Fatalf("загрузка в обёртке: %d %s", w.Code, w.Body)
+	}
+	mustProblem(t, e.callYAML(admin, "/api/v1/policies/import", `{"base_version":5}`, "application/json"), 400, CodeInvalidRequest)
+	// Откат к версии 4 возвращает block — ужесточение, без пароля.
+	if w := e.call(admin, "POST", "/api/v1/policies/support/rollback", `{"version":4,"base_version":5}`, true); w.Code != http.StatusOK {
+		t.Fatalf("откат-ужесточение: %d %s", w.Code, w.Body)
+	}
+	// Откат к версии 5 (log) — ослабление.
+	mustProblem(t, e.call(admin, "POST", "/api/v1/policies/support/rollback", `{"version":5,"base_version":6}`, true), 400, CodeInvalidRequest)
+	if w := e.call(admin, "POST", "/api/v1/policies/support/rollback", `{"version":5,"base_version":6,"password":"`+tPhrase+`"}`, true); w.Code != http.StatusOK {
+		t.Fatalf("откат-ослабление с паролем: %d %s", w.Code, w.Body)
+	}
+
 	// Загрузка новой: пустой non_text — allow_unchecked, как в шлюзе этапа 1.
 	fresh := "id: legacy\nname: Из этапа 1\nversion: 7\nmode: monitor\nrules:\n  - id: pii\n    detector: pii.ru\n    action: redact\n    severity: medium\n"
 	w = e.callYAML(admin, "/api/v1/policies/import", fresh, "application/yaml")
@@ -200,7 +238,7 @@ func TestPoliciesViaAPI(t *testing.T) {
 	big := fresh + "# " + strings.Repeat("x", importMaxBody) + "\n"
 	mustProblem(t, e.callYAML(admin, "/api/v1/policies/import", big, "application/yaml"), 413, CodePayloadTooLarge)
 
-	for a, want := range map[string]int{"policy.create": 2, "policy.update": 1, "policy.rollback": 1, "policy.import": 2} {
+	for a, want := range map[string]int{"policy.create": 2, "policy.update": 1, "policy.rollback": 3, "policy.import": 3} {
 		if _, n := e.polAction(a); n != want {
 			t.Errorf("%s: %d записей, ожидалось %d", a, n, want)
 		}

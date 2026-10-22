@@ -425,6 +425,12 @@ func (s *Service) SetProtection(ctx context.Context, by By, id string, in Protec
 	if err := s.checkBundle(ctx, &cur, next); err != nil {
 		return Application{}, err
 	}
+	// Сравнение политик — до транзакции (хранилище в памяти держит общую
+	// блокировку); политику успели сменить — переход считается ослаблением.
+	polWeak, err := s.weakerPolicy(ctx, cur.Policy, next.Policy)
+	if err != nil {
+		return Application{}, err
+	}
 	a, err := s.store.UpdateApplication(ctx, s.orgID, id, func(a *Application) (audit.Entry, error) {
 		pr, err := s.protection(ctx, in, &a.Protection)
 		if err != nil {
@@ -437,7 +443,10 @@ func (s *Service) SetProtection(ctx context.Context, by By, id string, in Protec
 		if guardEqual(before, after) {
 			return audit.Entry{}, errUnchanged
 		}
-		weak := weakening(before, after)
+		if before.Policy != cur.Policy || after.Policy != next.Policy {
+			polWeak = before.Policy != after.Policy
+		}
+		weak := weakening(before, after) || polWeak
 		if weak {
 			if err := by.confirm(ctx); err != nil {
 				return audit.Entry{}, err

@@ -47,6 +47,13 @@ func newEnv(t testing.TB) *env {
 	return e
 }
 
+// confirmed — субъект, прошедший повторную проверку (В23 ревью 2.r5).
+func (e *env) confirmed() versions.By {
+	by := e.by
+	by.Confirm = func(context.Context) error { return nil }
+	return by
+}
+
 func spec(id string, mode policy.Mode, rules ...policy.RuleSpec) *policy.Spec {
 	return &policy.Spec{ID: id, Name: "Политика " + id, Mode: mode, Rules: rules}
 }
@@ -122,7 +129,7 @@ func TestCreateAndVersions(t *testing.T) {
 	// Новая версия поверх текущей; устаревшая base_version — конфликт.
 	e.now = e.now.Add(time.Hour)
 	weaker := spec("crm-strict", policy.Monitor, rulePII)
-	d2, err := e.svc.Update(ctx, e.by, "crm-strict", 1, weaker, versions.SourceAPI, "вторая", versions.ConsoleDefaults)
+	d2, err := e.svc.Update(ctx, e.confirmed(), "crm-strict", 1, weaker, versions.SourceAPI, "вторая", versions.ConsoleDefaults)
 	if err != nil || d2.Version.Version != 2 || d2.Policy.Current != 2 || d2.Policy.Mode != "monitor" || !d2.Policy.UpdatedAt.Equal(e.now) {
 		t.Fatalf("версия 2: %+v %v", d2.Policy, err)
 	}
@@ -167,7 +174,7 @@ func TestRollback(t *testing.T) {
 	if _, err := e.svc.Create(ctx, e.by, spec("p", policy.Enforce, ruleInjection), versions.SourceAPI, "", versions.ConsoleDefaults); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.svc.Update(ctx, e.by, "p", 1, spec("p", policy.Monitor), versions.SourceAPI, "", versions.ConsoleDefaults); err != nil {
+	if _, err := e.svc.Update(ctx, e.confirmed(), "p", 1, spec("p", policy.Monitor), versions.SourceAPI, "", versions.ConsoleDefaults); err != nil {
 		t.Fatal(err)
 	}
 	d, err := e.svc.Rollback(ctx, e.by, "p", 1, 2, "вернуть блокировку")
@@ -295,4 +302,73 @@ func TestListsCategoriesLenient(t *testing.T) {
 		Action: policy.Block, Severity: policy.High})
 	_, err = e.svc.Create(ctx, e.by, odd, versions.SourceAPI, "", versions.ConsoleDefaults)
 	inputErr(t, err, "pii.card")
+}
+
+// Версия, ослабляющая защиту, — только после повторной проверки субъекта:
+// изменение, откат и загрузка YAML (В23 ревью 2.r5). Ужесточение проверки не
+// требует; отказ проверки не создаёт версию.
+func TestWeakeningVersionNeedsConfirm(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	if _, err := e.svc.Create(ctx, e.by, spec("p", policy.Enforce, ruleInjection, rulePII), versions.SourceAPI, "", versions.ConsoleDefaults); err != nil {
+		t.Fatal(err)
+	}
+	weaker := spec("p", policy.Enforce, ruleInjection)
+	if _, err := e.svc.Update(ctx, e.by, "p", 1, weaker, versions.SourceAPI, "", versions.ConsoleDefaults); !errors.Is(err, versions.ErrConfirmRequired) {
+		t.Fatalf("удалено правило без проверки: %v", err)
+	}
+	denied := errors.New("неверный пароль")
+	bad := e.by
+	bad.Confirm = func(context.Context) error { return denied }
+	if _, err := e.svc.Update(ctx, bad, "p", 1, spec("p", policy.Monitor, ruleInjection, rulePII), versions.SourceAPI, "", versions.ConsoleDefaults); !errors.Is(err, denied) {
+		t.Fatalf("режим monitor при неверной проверке: %v", err)
+	}
+	y := "id: p\nname: p\nversion: 2\nmode: enforce\nrules: []\n"
+	if _, _, err := e.svc.Import(ctx, e.by, strings.NewReader(y), 1, ""); !errors.Is(err, versions.ErrConfirmRequired) {
+		t.Fatalf("загрузка без правил без проверки: %v", err)
+	}
+	if d, err := e.svc.Get(ctx, "p", 0); err != nil || d.Version.Version != 1 {
+		t.Fatalf("после отказов появилась версия: %+v %v", d.Version, err)
+	}
+	// Ужесточение (правило добавлено) — без проверки.
+	stricter := spec("p", policy.Enforce, ruleInjection, rulePII, policy.RuleSpec{ID: "canary", Detector: "canary",
+		Directions: []detect.Direction{detect.Output}, Action: policy.Block, Severity: policy.High})
+	if _, err := e.svc.Update(ctx, e.by, "p", 1, stricter, versions.SourceAPI, "", versions.ConsoleDefaults); err != nil {
+		t.Fatalf("ужесточение: %v", err)
+	}
+	// Откат к версии 1 удаляет правило canary — ослабление.
+	if _, err := e.svc.Rollback(ctx, e.by, "p", 1, 2, ""); !errors.Is(err, versions.ErrConfirmRequired) {
+		t.Fatalf("откат с ослаблением без проверки: %v", err)
+	}
+	if d, err := e.svc.Rollback(ctx, e.confirmed(), "p", 1, 2, ""); err != nil || d.Version.Version != 3 {
+		t.Fatalf("откат после проверки: %+v %v", d.Version, err)
+	}
+	if det := e.last(t, "policy.rollback").Details.(map[string]any); det["weakening"] != true {
+		t.Fatalf("аудит отката: %v", det)
+	}
+}
+
+// Weaker сравнивает текущие версии двух политик: переход на политику без
+// защитного правила или в режим monitor — ослабление (В23 ревью 2.r5).
+func TestWeaker(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	for _, s := range []*policy.Spec{spec("full", policy.Enforce, ruleInjection, rulePII), spec("part", policy.Enforce, ruleInjection),
+		spec("lax", policy.Monitor, ruleInjection, rulePII)} {
+		if _, err := e.svc.Create(ctx, e.by, s, versions.SourceAPI, "", versions.ConsoleDefaults); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, c := range []struct {
+		from, to string
+		want     bool
+	}{{"full", "full", false}, {"full", "part", true}, {"part", "full", false}, {"full", "lax", true}, {"no-such", "full", true}} {
+		got, err := e.svc.Weaker(ctx, c.from, c.to)
+		if err != nil || got != c.want {
+			t.Errorf("%s → %s: %v %v, ожидалось %v", c.from, c.to, got, err, c.want)
+		}
+	}
+	if _, err := e.svc.Weaker(ctx, "full", "no-such"); !errors.Is(err, versions.ErrNotFound) {
+		t.Errorf("неизвестная новая политика: %v", err)
+	}
 }

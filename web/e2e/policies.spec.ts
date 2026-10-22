@@ -42,6 +42,21 @@ async function mockPolicies(page: Page, testStatus = 200): Promise<Seen> {
         incomplete: false, unchecked: false, failures: [], findings: [], texts: [],
       });
     }
+    if (p === "/api/v1/policies/mine/diff") {
+      return json({
+        from: 2, to: 1, fields: [], rules_added: [], rules_removed: [rule], rules_changed: [], reordered: false,
+        weakening: true, weakening_reasons: [{ kind: "rule_removed", rule: "pii-ru" }],
+      });
+    }
+    // Откат с ослаблением: без пароля сервер просит подтверждение (В23 ревью 2.r5).
+    if (p === "/api/v1/policies/mine/rollback") {
+      const b = body as { password?: string };
+      if (!b.password) {
+        return json({ type: "urn:aisec:problem:invalid_request", title: "invalid", status: 400, code: "invalid_request", detail: "Проверьте введённые данные.",
+          errors: [{ field: "password", detail: "Введите текущий пароль или код из приложения-аутентификатора." }] }, 400);
+      }
+      return json({ ...mine, current_version: 3, spec });
+    }
     if (p === "/api/v1/applications") return json({ items: [] });
     return json({ code: "not_found", detail: "Нет такого маршрута." }, 404);
   });
@@ -81,5 +96,29 @@ test("политики: 422 песочницы по словарю показа�
   await page.getByRole("button", { name: "Проверить текст" }).click();
   await expect(page.getByText(/словаря нет у приложения/)).toBeVisible();
   await expect(page.getByRole("link", { name: "разделе «Приложения»" })).toHaveAttribute("href", "#/apps");
+  done();
+});
+
+test("политики: откат с ослаблением защиты требует пароль", async ({ page }) => {
+  const done = watch(page);
+  await mockApi(page, { me: meOf("active", perms) });
+  const seen = await mockPolicies(page);
+  await page.goto("/#/policies");
+  await page.getByRole("button", { name: "Открыть политику Моя политика" }).click();
+  await page.getByRole("tab", { name: "Версии" }).click();
+  await page.getByRole("button", { name: "Откатить к версии 1" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("button", { name: "Откатить к версии 1" }).click();
+  await expect(dialog.getByText(/Изменение ослабляет защиту/)).toBeVisible();
+  const confirm = dialog.getByRole("button", { name: "Откатить к версии 1" });
+  await expect(confirm).toBeDisabled();
+  await dialog.getByLabel("Текущий пароль").fill("Пароль-для-проверки-1");
+  await confirm.click();
+  await expect(dialog).toHaveCount(0);
+  const calls = seen.calls.filter((c) => c.path === "/api/v1/policies/mine/rollback");
+  expect(calls.map((c) => c.body)).toEqual([
+    { version: 1, base_version: 2 },
+    { version: 1, base_version: 2, password: "Пароль-для-проверки-1" },
+  ]);
   done();
 });

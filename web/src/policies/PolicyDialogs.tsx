@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ChangeEvent, type FormEvent, useState } from "react";
 import { ErrorBanner, FormDialog } from "../admin/common";
+import { ReauthPrompt, useReauth, visibleError } from "../admin/reauth";
 import { Button } from "../ui/Button";
 import { Field, Input, Select } from "../ui/Field";
 import { Banner } from "../ui/Layout";
@@ -68,22 +69,42 @@ export function CreateDialog({ open, onClose, onDone }: { open: boolean; onClose
 const maxYaml = 1 << 20;
 
 // Загрузка YAML по строгой схеме этапа 1: новая политика или новая версия выбранной (поверх её текущей версии).
-export function ImportDialog({ open, onClose, current, onDone }: { open: boolean; onClose: () => void; current?: PolicySummary; onDone: (p: Policy) => void }) {
+export function ImportDialog({
+  open,
+  onClose,
+  current,
+  mfa,
+  onDone,
+}: {
+  open: boolean;
+  onClose: () => void;
+  current?: PolicySummary;
+  mfa: boolean;
+  onDone: (p: Policy) => void;
+}) {
   const qc = useQueryClient();
   const [yaml, setYaml] = useState("");
   const [comment, setComment] = useState("");
   const [asVersion, setAsVersion] = useState(true);
   const [fileErr, setFileErr] = useState<string>();
+  const re = useReauth(mfa);
   const baseVersion = current && !current.template ? current.current_version : undefined;
   const m = useMutation({
-    mutationFn: () => policiesApi.importYaml(yaml, asVersion ? baseVersion : undefined, comment.trim()),
-    onSuccess: async (text) => {
+    mutationFn: () => policiesApi.importYaml(yaml, asVersion ? baseVersion : undefined, comment.trim(), re.body()),
+    onSuccess: async (p) => {
+      re.reset();
       await qc.invalidateQueries({ queryKey: ["policies"] });
       setYaml("");
       setComment("");
-      onDone(JSON.parse(text) as Policy);
+      onDone(p);
     },
+    onError: re.onError,
   });
+  const close = () => {
+    re.reset();
+    m.reset();
+    onClose();
+  };
   const onFile = async (e: ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0];
     if (!f) return;
@@ -97,10 +118,10 @@ export function ImportDialog({ open, onClose, current, onDone }: { open: boolean
   const tooBig = new TextEncoder().encode(yaml).length > maxYaml;
   const submit = (e: FormEvent) => {
     e.preventDefault();
-    if (yaml.trim() !== "" && !tooBig) m.mutate();
+    if (yaml.trim() !== "" && !tooBig && re.ready) m.mutate();
   };
   return (
-    <FormDialog open={open} onOpenChange={(v) => !v && onClose()} title="Загрузить политику из YAML" description="Файл проверяется строго: неизвестное поле, второй документ или неизвестный детектор отклоняют загрузку целиком.">
+    <FormDialog open={open} onOpenChange={(v) => !v && close()} title="Загрузить политику из YAML" description="Файл проверяется строго: неизвестное поле, второй документ или неизвестный детектор отклоняют загрузку целиком.">
       <form onSubmit={submit} className="flex flex-col gap-3">
         <Field label="Файл YAML" error={fileErr}>
           {({ id, describedBy }) => <input id={id} aria-describedby={describedBy} type="file" accept=".yaml,.yml,text/yaml,application/yaml" onChange={onFile} className="text-sm" />}
@@ -125,10 +146,11 @@ export function ImportDialog({ open, onClose, current, onDone }: { open: boolean
           </label>
         )}
         <Field label="Комментарий к версии (необязательно)">{({ id }) => <Input id={id} value={comment} onChange={(e) => setComment(e.target.value)} maxLength={500} />}</Field>
-        <ErrorBanner error={m.error} />
+        <ReauthPrompt r={re} />
+        <ErrorBanner error={visibleError(m.error)} />
         <div className="flex justify-end gap-2">
-          <Button onClick={onClose}>Отменить</Button>
-          <Button type="submit" variant="primary" disabled={m.isPending || yaml.trim() === "" || tooBig}>
+          <Button onClick={close}>Отменить</Button>
+          <Button type="submit" variant="primary" disabled={m.isPending || yaml.trim() === "" || tooBig || !re.ready}>
             Загрузить политику
           </Button>
         </div>
@@ -142,12 +164,14 @@ export function RollbackDialog({
   policyId,
   current,
   target,
+  mfa,
   onClose,
   onDone,
 }: {
   policyId: string;
   current: number;
   target: number | undefined;
+  mfa: boolean;
   onClose: () => void;
   onDone: (p: Policy) => void;
 }) {
@@ -159,29 +183,38 @@ export function RollbackDialog({
     enabled: open,
   });
   const [comment, setComment] = useState("");
+  const re = useReauth(mfa);
   const m = useMutation({
-    mutationFn: () => policiesApi.rollback(policyId, target!, current, comment.trim()),
+    mutationFn: () => policiesApi.rollback(policyId, target!, current, comment.trim(), re.body()),
     onSuccess: async (p) => {
+      re.reset();
       await qc.invalidateQueries({ queryKey: ["policies"] });
       setComment("");
       onDone(p);
     },
+    onError: re.onError,
   });
+  const close = () => {
+    re.reset();
+    m.reset();
+    onClose();
+  };
   return (
     <FormDialog
       open={open}
-      onOpenChange={(v) => !v && onClose()}
+      onOpenChange={(v) => !v && close()}
       title={`Откатить к версии ${target ?? ""}`}
       description={`Появится новая версия ${current + 1} с содержимым версии ${target ?? ""}. Прежние версии останутся.`}
     >
       <ErrorBanner error={diff.error} />
       {diff.data && <DiffView diff={diff.data} />}
       <Field label="Комментарий (необязательно)">{({ id }) => <Input id={id} value={comment} onChange={(e) => setComment(e.target.value)} maxLength={500} />}</Field>
-      {m.error && <ErrorBanner error={m.error} />}
+      <ReauthPrompt r={re} />
+      <ErrorBanner error={visibleError(m.error)} />
       {!diff.data && !diff.error && <Banner kind="info">Загружаю различия…</Banner>}
       <div className="flex justify-end gap-2">
-        <Button onClick={onClose}>Отменить</Button>
-        <Button variant="danger" disabled={m.isPending || !diff.data} onClick={() => m.mutate()}>
+        <Button onClick={close}>Отменить</Button>
+        <Button variant="danger" disabled={m.isPending || !diff.data || !re.ready} onClick={() => m.mutate()}>
           Откатить к версии {target}
         </Button>
       </div>

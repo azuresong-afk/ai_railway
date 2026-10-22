@@ -1,3 +1,4 @@
+import type { ReauthBody } from "../admin/reauth";
 import { requestText } from "../api/client";
 import { request } from "../api/client";
 import type { components } from "../api/schema";
@@ -23,25 +24,37 @@ export const policiesApi = {
   diff: (pid: string, from: number, to: number, signal?: AbortSignal) =>
     request<PolicyDiff>("GET", `/api/v1/policies/${id(pid)}/diff?from=${from}&to=${to}`, undefined, signal),
   create: (b: NewPolicy) => request<Policy>("POST", "/api/v1/policies", b),
-  rollback: (pid: string, version: number, baseVersion: number, comment: string) =>
+  // Откат, ослабляющий защиту, — с паролем или кодом (В23 ревью 2.r5).
+  rollback: (pid: string, version: number, baseVersion: number, comment: string, re: ReauthBody = {}) =>
     request<Policy>("POST", `/api/v1/policies/${id(pid)}/rollback`, {
       version,
       base_version: baseVersion,
       ...(comment ? { comment } : {}),
+      ...re,
     }),
   // Экспорт и загрузка идут документом YAML, а не JSON.
   exportYaml: (pid: string, version?: number) =>
     requestText("GET", `/api/v1/policies/${id(pid)}/export${version ? `?version=${version}` : ""}`, { accept: "application/yaml" }),
-  importYaml: (yaml: string, baseVersion: number | undefined, comment: string) => {
+  // Без подтверждения — документом YAML; с паролем или кодом (версия ослабляет защиту) — в обёртке JSON (В23 ревью 2.r5).
+  importYaml: async (yaml: string, baseVersion: number | undefined, comment: string, re: ReauthBody = {}): Promise<Policy> => {
+    if (Object.keys(re).length > 0) {
+      return request<Policy>("POST", "/api/v1/policies/import", {
+        document: yaml,
+        ...(baseVersion ? { base_version: baseVersion } : {}),
+        ...(comment ? { comment } : {}),
+        ...re,
+      });
+    }
     const q = new URLSearchParams({
       ...(baseVersion ? { base_version: String(baseVersion) } : {}),
       ...(comment ? { comment } : {}),
     });
-    return requestText("POST", `/api/v1/policies/import${q.size > 0 ? `?${q}` : ""}`, {
+    const text = await requestText("POST", `/api/v1/policies/import${q.size > 0 ? `?${q}` : ""}`, {
       accept: "application/json",
       body: yaml,
       contentType: "application/yaml",
     });
+    return JSON.parse(text) as Policy;
   },
   test: (b: PolicyTestRequest) => request<PolicyTestResult>("POST", "/api/v1/policies/test", b),
 };

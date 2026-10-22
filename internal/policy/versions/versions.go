@@ -62,6 +62,9 @@ var (
 	// ErrBreaksBundle — новая версия исключила бы приложения из пакета
 	// конфигурации шлюзов (В16 ревью 2.r3b).
 	ErrBreaksBundle = errors.New("версия не войдёт в пакет конфигурации шлюзов")
+	// ErrConfirmRequired — версия ослабляет защиту, а повторной проверки
+	// субъекта нет (В23 ревью 2.r5).
+	ErrConfirmRequired = errors.New("ослабление защиты требует повторной проверки")
 	// errSequence — версия не следующая по номеру (ошибка программиста; в
 	// PostgreSQL то же запрещает триггер).
 	errSequence = errors.New("политики: номер версии не по порядку")
@@ -202,6 +205,18 @@ func New(o Options) (*Service, error) {
 type By struct {
 	Actor audit.Actor
 	IP    netip.Addr
+	// Confirm — повторная проверка субъекта паролем или кодом TOTP перед
+	// версией, ослабляющей защиту (В23 ревью 2.r5); nil — проверить нечем,
+	// ослабление отклоняется с ErrConfirmRequired.
+	Confirm func(context.Context) error
+}
+
+// confirm — повторная проверка перед ослаблением, как у приложений (Н32).
+func (b By) confirm(ctx context.Context) error {
+	if b.Confirm == nil {
+		return ErrConfirmRequired
+	}
+	return b.Confirm(ctx)
 }
 
 func (b By) entry(action, objID string, details any) audit.Entry {
@@ -464,6 +479,11 @@ func (s *Service) addVersion(ctx context.Context, by By, slug string, base int, 
 		v := s.newVersion(p.ID, n, y, source, comment, by, now)
 		v.RolledBackFrom = rolledBackFrom
 		diff := Compare(prev, spec)
+		if diff.Weakened() {
+			if err := by.confirm(ctx); err != nil {
+				return Version{}, audit.Entry{}, err
+			}
+		}
 		action := "policy.update"
 		switch source {
 		case SourceRollback:
@@ -573,4 +593,28 @@ func (s *Service) PolicyMode(ctx context.Context, orgID, id string) (string, boo
 		return "", false, err
 	}
 	return p.Mode, true, nil
+}
+
+// Weaker — переход приложения с политики from на политику to ослабляет
+// защиту (В23 ревью 2.r5): сравнение текущих версий тем же Compare, что и
+// у версий одной политики. Правила сопоставляются по ID, поэтому правило
+// from, которого нет в to, считается удалённым — переход между несхожими
+// политиками требует подтверждения. Политику from не найти — тоже
+// ослабление: сравнить не с чем.
+func (s *Service) Weaker(ctx context.Context, from, to string) (bool, error) {
+	if from == to {
+		return false, nil
+	}
+	a, err := s.Get(ctx, from, 0)
+	switch {
+	case errors.Is(err, ErrNotFound):
+		return true, nil
+	case err != nil:
+		return false, err
+	}
+	b, err := s.Get(ctx, to, 0)
+	if err != nil {
+		return false, err
+	}
+	return Compare(a.Spec, b.Spec).Weakened(), nil
 }

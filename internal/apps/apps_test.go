@@ -392,6 +392,48 @@ func TestApplicationProtectionDefaults(t *testing.T) {
 }
 
 // DM-40: перевод в monitor и режим хранения none/full — ослабление.
+// Смена политики приложения на более слабую по сравнению политик — ослабление
+// с повторной проверкой, даже если это не шаблон «Только мониторинг» (В23
+// ревью 2.r5); переход на более строгую — без проверки.
+func TestSetProtectionWeakerPolicy(t *testing.T) {
+	e := newEnv(t, false)
+	ctx := context.Background()
+	p := e.provider(t, "main")
+	a, err := e.svc.CreateApplication(ctx, e.by, appInput("crm", p.ID, ownerA), &apps.ProtectionInput{Policy: "pii-strict"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var asked [][2]string
+	e.svc.SetPolicyWeaker(func(_ context.Context, from, to string) (bool, error) {
+		asked = append(asked, [2]string{from, to})
+		return to == "base", nil
+	})
+	noConfirm := e.by
+	noConfirm.Confirm = nil
+	if _, err := e.svc.SetProtection(ctx, noConfirm, a.ID, apps.ProtectionInput{Policy: "base"}); !errors.Is(err, apps.ErrConfirmRequired) {
+		t.Fatalf("переход на более слабую политику без проверки: %v", err)
+	}
+	if got, err := e.svc.Application(ctx, a.ID, ""); err != nil || got.Policy != "pii-strict" {
+		t.Fatalf("политика сменилась после отказа: %+v %v", got.Protection, err)
+	}
+	if _, err := e.svc.SetProtection(ctx, e.by, a.ID, apps.ProtectionInput{Policy: "base"}); err != nil {
+		t.Fatal(err)
+	}
+	if d := e.last(t, "application.protection_changed").Details.(map[string]any); d["weakening"] != true {
+		t.Fatalf("ослабление не отмечено: %v", d)
+	}
+	if _, err := e.svc.SetProtection(ctx, noConfirm, a.ID, apps.ProtectionInput{Policy: "pii-strict"}); err != nil {
+		t.Fatalf("переход на более строгую: %v", err)
+	}
+	if len(asked) != 3 || asked[0] != [2]string{"pii-strict", "base"} || asked[2] != [2]string{"base", "pii-strict"} {
+		t.Fatalf("сравнения: %v", asked)
+	}
+	e.svc.SetPolicyWeaker(func(context.Context, string, string) (bool, error) { return false, errors.New("сбой БД") })
+	if _, err := e.svc.SetProtection(ctx, e.by, a.ID, apps.ProtectionInput{Policy: "base"}); err == nil {
+		t.Fatal("сбой сравнения политик проигнорирован")
+	}
+}
+
 func TestSetProtection(t *testing.T) {
 	e := newEnv(t, false)
 	ctx := context.Background()

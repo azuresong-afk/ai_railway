@@ -3656,6 +3656,9 @@ export interface paths {
          *     `base_version` (200), без него — 409. Пустой `non_text` при загрузке — `allow_unchecked`,
          *     как в шлюзе этапа 1. Пишет `policy.import` (сводка изменений и признак `weakening`).
          *     Изменение, после которого пакет конфигурации шлюзов не соберётся (например, правило `lists.*` на словарь, которого нет у приложения), — 422 с причиной и ID приложений в `detail` (В16 ревью 2.r3b).
+         *     Версия, ослабляющая защиту (`weakening`), принимается только в обёртке JSON (`PolicyImport`) с текущим паролем
+         *     или кодом TOTP: без них — 400 с полем `password`, неверные — 403 `reauthentication_failed` (В23 ревью 2.r5).
+         *     В обёртке `base_version` и `comment` берутся из тела, параметры запроса не читаются.
          */
         post: {
             parameters: {
@@ -3675,6 +3678,7 @@ export interface paths {
             requestBody: {
                 content: {
                     "application/yaml": string;
+                    "application/json": components["schemas"]["PolicyImport"];
                 };
             };
             responses: {
@@ -3820,6 +3824,8 @@ export interface paths {
          *     `base_version + 1`. Если с `base_version` политику уже сохранили — 409, чужая правка не
          *     затирается. Шаблон не меняется — 422. Пишет `policy.update`: поля, правила
          *     добавленные, удалённые и изменённые, признак `weakening` и причины (DM-40).
+         *     Версия с `weakening` требует текущий пароль или код TOTP в теле: без них — 400 с полем `password`,
+         *     неверные — 403 `reauthentication_failed` (В23 ревью 2.r5).
          *     Изменение, после которого пакет конфигурации шлюзов не соберётся (например, правило `lists.*` на словарь, которого нет у приложения), — 422 с причиной и ID приложений в `detail` (В16 ревью 2.r3b).
          */
         put: {
@@ -4037,7 +4043,8 @@ export interface paths {
          * Откатить политику к прежней версии
          * @description Право `policies.manage`. Откат — новая версия с содержимым версии `version`
          *     (`rolled_back_from`); прежние версии остаются. Пишет `policy.rollback` со сводкой
-         *     изменений и признаком `weakening`.
+         *     изменений и признаком `weakening`. Откат, ослабляющий защиту, требует текущий пароль или код TOTP
+         *     (400 без них, 403 `reauthentication_failed` при неверных; В23 ревью 2.r5).
          *     Изменение, после которого пакет конфигурации шлюзов не соберётся (например, правило `lists.*` на словарь, которого нет у приложения), — 422 с причиной и ID приложений в `detail` (В16 ревью 2.r3b).
          */
         post: {
@@ -4666,7 +4673,7 @@ export interface components {
             user_from: "header" | "field" | "none";
             quotas?: components["schemas"]["AppQuotas"];
         };
-        /** @description Поля защиты; меняет только обладатель права `applications.policy` (В15 ревью 2.r3b) */
+        /** @description Поля защиты; меняет только обладатель права `applications.policy` (В15 ревью 2.r3b). Смена политики на ту, что по сравнению версий (`GET /policies/{id}/diff`) слабее текущей, — ослабление с повторной проверкой (В23 ревью 2.r5) */
         ApplicationProtection: {
             /** @description Шаблон (`base`, `pii-strict`, `external-no-pii`, `monitor-only`) или политика организации */
             policy?: string;
@@ -5186,12 +5193,36 @@ export interface components {
             base_version: number;
             spec: components["schemas"]["PolicySpec"];
             comment?: string;
+            /**
+             * Format: password
+             * @description Текущий пароль, если версия ослабляет защиту (В23 ревью 2.r5)
+             */
+            password?: string;
+            /** @description Код из приложения-аутентификатора вместо пароля */
+            code?: string;
         };
         PolicyRollback: {
             /** @description Версия */
             version: number;
             base_version: number;
             comment?: string;
+            /**
+             * Format: password
+             * @description Текущий пароль, если откат ослабляет защиту (В23 ревью 2.r5)
+             */
+            password?: string;
+            /** @description Код из приложения-аутентификатора вместо пароля */
+            code?: string;
+        };
+        /** @description Загрузка в обёртке JSON — так вместе с документом передаётся пароль или код, если версия ослабляет защиту (В23 ревью 2.r5) */
+        PolicyImport: {
+            /** @description Документ YAML политики */
+            document: string;
+            base_version?: number;
+            comment?: string;
+            /** Format: password */
+            password?: string;
+            code?: string;
         };
         PolicyDiff: {
             from: number;

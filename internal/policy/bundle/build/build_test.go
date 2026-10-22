@@ -75,7 +75,8 @@ func newEnv(t *testing.T) *env {
 	e := &env{fx: fx, now: time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC), store: build.NewMemory(), audit: &recorder{},
 		appsBy: apps.By{Actor: audit.Actor{Type: audit.ActorUser, ID: owner, Name: "admin"}, Policy: true,
 			Confirm: func(context.Context) error { return nil }},
-		polBy: versions.By{Actor: audit.Actor{Type: audit.ActorUser, ID: owner, Name: "admin"}}}
+		polBy: versions.By{Actor: audit.Actor{Type: audit.ActorUser, ID: owner, Name: "admin"},
+			Confirm: func(context.Context) error { return nil }}}
 	reg, err := detect.NewRegistry(builtin.All()...)
 	if err != nil {
 		t.Fatal(err)

@@ -1,7 +1,6 @@
 package api
 
 import (
-	"bytes"
 	"context"
 	"encoding/hex"
 	"encoding/json"
@@ -48,7 +47,7 @@ func policyRoutes(d Deps) []Route {
 		{Method: http.MethodPost, Path: "/api/v1/policies", Permission: auth.PermPoliciesManage, Idempotent: true,
 			MaxBody: policyMaxBody, Handler: needPolicies(d, d.createPolicy)},
 		{Method: http.MethodPost, Path: "/api/v1/policies/import", Permission: auth.PermPoliciesManage,
-			MaxBody: importMaxBody, Handler: needPolicies(d, d.importPolicy)},
+			MaxBody: policyMaxBody, Handler: needPolicies(d, d.importPolicy)},
 		{Method: http.MethodPost, Path: "/api/v1/policies/test", Permission: auth.PermPoliciesTest,
 			MaxBody: sandboxMaxBody, Handler: needPolicies(d, d.testPolicy)},
 		{Method: http.MethodGet, Path: "/api/v1/policies/{id}", Permission: auth.PermPoliciesRead, Handler: needPolicies(d, d.showPolicy)},
@@ -134,7 +133,13 @@ func policyField(msg string) (string, string) {
 // policiesProblem переводит ошибки internal/policy/versions.
 func policiesProblem(logger *slog.Logger, err error) *Problem {
 	var ie *versions.InputError
+	var re *reauthError
 	switch {
+	case errors.As(err, &re):
+		return authProblem(logger, re.err)
+	case errors.Is(err, versions.ErrConfirmRequired):
+		return NewProblem(http.StatusForbidden, CodeForbidden,
+			"Версия ослабляет защиту: сохраните её в консоли с вводом текущего пароля или кода.")
 	case errors.As(err, &ie):
 		fields := make([]FieldError, 0, len(ie.Errs))
 		for _, e := range ie.Errs {
@@ -165,6 +170,13 @@ func policiesProblem(logger *slog.Logger, err error) *Problem {
 func policyActor(r *http.Request) (versions.By, bool) {
 	by, ok := actorOf(r)
 	return versions.By{Actor: by.Actor, IP: by.IP}, ok
+}
+
+// withPolicyConfirm — повторная проверка перед версией, ослабляющей защиту
+// (В23 ревью 2.r5).
+func (d Deps) withPolicyConfirm(r *http.Request, by versions.By, re reauthFields, action string) versions.By {
+	by.Confirm = d.confirmFunc(r, re, action, versions.ErrConfirmRequired)
+	return by
 }
 
 // PolicyRuleJSON — правило политики в API: поля как в YAML (ТЗ 5.3).
@@ -363,6 +375,7 @@ type updatePolicyRequest struct {
 	BaseVersion int            `json:"base_version"`
 	Spec        PolicySpecJSON `json:"spec"`
 	Comment     string         `json:"comment"`
+	reauthFields
 }
 
 func (d Deps) updatePolicy(w http.ResponseWriter, r *http.Request) {
@@ -380,6 +393,7 @@ func (d Deps) updatePolicy(w http.ResponseWriter, r *http.Request) {
 		WriteProblem(w, p)
 		return
 	}
+	by = d.withPolicyConfirm(r, by, req.reauthFields, "policy.update")
 	doc, err := d.Policies.Update(r.Context(), by, slug, req.BaseVersion, req.Spec.spec(slug), versions.SourceAPI, req.Comment,
 		versions.ConsoleDefaults)
 	if err != nil {
@@ -542,6 +556,7 @@ type rollbackPolicyRequest struct {
 	Version     int    `json:"version"`
 	BaseVersion int    `json:"base_version"`
 	Comment     string `json:"comment"`
+	reauthFields
 }
 
 func (d Deps) rollbackPolicy(w http.ResponseWriter, r *http.Request) {
@@ -559,6 +574,7 @@ func (d Deps) rollbackPolicy(w http.ResponseWriter, r *http.Request) {
 		WriteProblem(w, p)
 		return
 	}
+	by = d.withPolicyConfirm(r, by, req.reauthFields, "policy.rollback")
 	doc, err := d.Policies.Rollback(r.Context(), by, slug, req.Version, req.BaseVersion, req.Comment)
 	if err != nil {
 		WriteProblem(w, policiesProblem(d.Logger, err))
@@ -622,32 +638,63 @@ func (d Deps) exportPolicy(w http.ResponseWriter, r *http.Request) {
 // yamlTypes — допустимые Content-Type тела загрузки.
 var yamlTypes = map[string]bool{"application/yaml": true, "application/x-yaml": true, "text/yaml": true}
 
+// importPolicyRequest — загрузка в обёртке JSON: так вместе с документом
+// передаётся пароль или код, если версия ослабляет защиту (В23 ревью 2.r5).
+type importPolicyRequest struct {
+	Document    string `json:"document"`
+	BaseVersion int    `json:"base_version"`
+	Comment     string `json:"comment"`
+	reauthFields
+}
+
 // importPolicy — POST /api/v1/policies/import: тело — YAML политики по
-// строгой схеме этапа 1. Новой политики нет — создаётся (201), есть — новая
-// версия поверх base_version (200).
+// строгой схеме этапа 1 или обёртка JSON с тем же документом. Новой
+// политики нет — создаётся (201), есть — новая версия поверх base_version
+// (200). Версия, ослабляющая защиту, — только из обёртки с паролем или кодом.
 func (d Deps) importPolicy(w http.ResponseWriter, r *http.Request) {
 	by, ok := policyActor(r)
 	if !ok {
 		WriteProblem(w, errForbidden())
 		return
 	}
-	if mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || !yamlTypes[mt] {
+	mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || !yamlTypes[mt] && mt != "application/json" {
 		WriteProblem(w, NewProblem(http.StatusUnsupportedMediaType, CodeUnsupportedMedia,
-			"Тело запроса должно быть файлом политики YAML (Content-Type: application/yaml)."))
+			"Тело запроса должно быть файлом политики YAML (Content-Type: application/yaml) или JSON с полем document."))
 		return
 	}
-	base, p := queryInt(r, "base_version", maxVersion)
-	if p != nil {
-		WriteProblem(w, p)
-		return
+	var req importPolicyRequest
+	if mt == "application/json" {
+		if p := DecodeJSON(w, r, &req, policyMaxBody); p != nil {
+			WriteProblem(w, p)
+			return
+		}
+		switch {
+		case req.Document == "":
+			WriteProblem(w, Invalid("Вставьте документ политики.", FieldError{"document", "Документ YAML политики."}))
+			return
+		case len(req.Document) > importMaxBody:
+			WriteProblem(w, Invalid("Документ слишком большой.", FieldError{"document", "Не больше 1 МиБ."}))
+			return
+		case req.BaseVersion < 0 || req.BaseVersion > maxVersion:
+			WriteProblem(w, Invalid("Проверьте введённые данные.", FieldError{"base_version", "Номер версии."}))
+			return
+		}
+	} else {
+		base, p := queryInt(r, "base_version", maxVersion)
+		if p != nil {
+			WriteProblem(w, p)
+			return
+		}
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, importMaxBody))
+		if err != nil {
+			WriteProblem(w, bodyProblem(err))
+			return
+		}
+		req = importPolicyRequest{Document: string(body), BaseVersion: base, Comment: r.URL.Query().Get("comment")}
 	}
-	comment := r.URL.Query().Get("comment")
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, importMaxBody))
-	if err != nil {
-		WriteProblem(w, bodyProblem(err))
-		return
-	}
-	doc, created, err := d.Policies.Import(r.Context(), by, bytes.NewReader(body), base, comment)
+	by = d.withPolicyConfirm(r, by, req.reauthFields, "policy.import")
+	doc, created, err := d.Policies.Import(r.Context(), by, strings.NewReader(req.Document), req.BaseVersion, req.Comment)
 	if err != nil {
 		WriteProblem(w, policiesProblem(d.Logger, err))
 		return

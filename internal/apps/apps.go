@@ -340,6 +340,10 @@ type Service struct {
 	// bundleCheck — проверка приложения сборкой пакета (В16 ревью 2.r3b);
 	// nil — без проверки.
 	bundleCheck func(ctx context.Context, before *Application, after Application) error
+	// policyWeaker — переход с политики from на to ослабляет защиту (В23
+	// ревью 2.r5); nil — ослаблением считается только переход на шаблон
+	// «Только мониторинг».
+	policyWeaker func(ctx context.Context, from, to string) (bool, error)
 }
 
 // SetBundleCheck задаёт проверку приложения сборкой пакета (ошибка — с
@@ -347,6 +351,20 @@ type Service struct {
 // создаётся после сервиса приложений.
 func (s *Service) SetBundleCheck(fn func(ctx context.Context, before *Application, after Application) error) {
 	s.bundleCheck = fn
+}
+
+// SetPolicyWeaker задаёт сравнение политик для смены политики приложения
+// (versions.Service.Weaker). Вызывается до начала обслуживания запросов.
+func (s *Service) SetPolicyWeaker(fn func(ctx context.Context, from, to string) (bool, error)) {
+	s.policyWeaker = fn
+}
+
+// weakerPolicy — смена политики from на to ослабляет защиту.
+func (s *Service) weakerPolicy(ctx context.Context, from, to string) (bool, error) {
+	if from == to || s.policyWeaker == nil {
+		return false, nil
+	}
+	return s.policyWeaker(ctx, from, to)
 }
 
 func (s *Service) checkBundle(ctx context.Context, before *Application, after Application) error {

@@ -292,6 +292,8 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	// Смена политики приложения на более слабую требует подтверждения (В23 ревью 2.r5).
+	appsSvc.SetPolicyWeaker(policiesSvc.Weaker)
 
 	// Консоль отдаётся, только если она собрана (make web-build перед go build); иначе сервер — чистый API.
 	var console http.Handler
