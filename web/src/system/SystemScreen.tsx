@@ -74,7 +74,10 @@ export function SystemScreen({ me }: { me: Me }) {
       {s && <Body s={s} />}
       {s && (
         <Section title="Целостность программы">
-          <p className="text-sm text-muted">Сверка исполняемого файла и веб-консоли сервера с подписанным манифестом (ОЦЛ.2).</p>
+          <p className="text-sm text-muted">
+            Сверка исполняемого файла и веб-консоли сервера с подписанным манифестом (ОЦЛ.2). Действующие шлюзы получают запрос проверки со
+            следующим контактом с сервером, их итоги появятся в разделе шлюзов и в журнале аудита.
+          </p>
           {canVerify ? (
             <div>
               <Button variant="primary" disabled={verify.isPending} onClick={() => verify.mutate()}>
@@ -100,6 +103,13 @@ function VerifyResult({ r }: { r: IntegrityCheck }) {
         Проверка от {formatAbsolute(r.checked_at)}: {reasonText.get(r.reason) ?? r.reason}. Проверено файлов: {formatNumber(r.checked_files)}.
         {r.test_signed ? " Сборка подписана тестовым ключом, не для поставки." : ""}
       </Banner>
+      {r.gateways_requested !== undefined && (
+        <p className="text-sm text-muted">
+          {r.gateways_requested > 0
+            ? `Запрос проверки передан шлюзам: ${formatNumber(r.gateways_requested)}. Итоги придут в течение нескольких минут.`
+            : "Действующих шлюзов нет."}
+        </p>
+      )}
       {r.failures.length > 0 && (
         <ul className="list-disc pl-5 text-sm">
           {r.failures.map((f) => (

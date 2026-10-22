@@ -1,5 +1,6 @@
 import { request } from "../api/client";
 import type { components } from "../api/schema";
+import type { ReauthBody } from "./reauth";
 
 type S = components["schemas"];
 export type User = S["User"];
@@ -15,6 +16,7 @@ export type RoleInput = Pick<S["RoleInput"], "display_name" | "description" | "m
 };
 export type NewRole = RoleInput & { id: string };
 export type EventRetention = S["EventRetention"];
+export type InstallSettings = S["InstallSettings"];
 export type SessionList = S["SessionList"];
 export type AuditRecord = S["AuditRecord"];
 export type AuditPage = S["AuditPage"];
@@ -57,7 +59,8 @@ export const adminApi = {
   deleteRole: (rid: string) => request<void>("DELETE", `/api/v1/roles/${id(rid)}`),
 
   policy: (signal?: AbortSignal) => request<AuthPolicy>("GET", "/api/v1/auth/policy", undefined, signal),
-  savePolicy: (b: AuthPolicy) => request<AuthPolicy>("PUT", "/api/v1/auth/policy", b),
+  // Ослабление настроек входа — с паролем или кодом (В24 ревью 2.r5).
+  savePolicy: (b: AuthPolicy, re: ReauthBody = {}) => request<AuthPolicy>("PUT", "/api/v1/auth/policy", { ...b, ...re }),
 
   tokens: async (signal?: AbortSignal): Promise<APIToken[]> => {
     const p = await request<S["APITokenPage"]>("GET", "/api/v1/api-tokens?limit=200", undefined, signal);
@@ -65,6 +68,11 @@ export const adminApi = {
   },
   createToken: (b: NewAPIToken) => request<CreatedAPIToken>("POST", "/api/v1/api-tokens", b),
   revokeToken: (tid: string) => request<unknown>("DELETE", `/api/v1/api-tokens/${id(tid)}`),
+
+  // Часовой пояс показа и режим хранения по умолчанию (В26 ревью 2.r5): none или full — с паролем или кодом.
+  installSettings: (signal?: AbortSignal) => request<InstallSettings>("GET", "/api/v1/system/settings", undefined, signal),
+  saveInstallSettings: (b: InstallSettings, re: ReauthBody = {}) =>
+    request<InstallSettings>("PUT", "/api/v1/system/settings", { ...b, ...re }),
 
   retention: (signal?: AbortSignal) => request<EventRetention>("GET", "/api/v1/events/settings", undefined, signal),
   saveRetention: (b: S["EventRetentionInput"]) =>

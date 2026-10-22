@@ -95,11 +95,22 @@ func initCmd(args []string, dsn string, stdout, stderr io.Writer, now time.Time)
 	dir := fset.String("dir", "", "каталог ключей: существует, права 0700, файлов ключей в нём ещё нет (обязательно)")
 	profile := fset.String("profile", aisecCrypto.ProfileStandard, "криптопрофиль установки: standard (gost — с этапа 6, пока отказ)")
 	addAuditKey := fset.Bool("add-audit-key", false, "только создать ключ подписи журнала аудита в каталоге уже инициализированной установки")
+	reissue := fset.Bool("reissue-setup-token", false, "выпустить новый токен первичной настройки вместо утерянного или истёкшего (только пока настройка не выполнена)")
 	if err := fset.Parse(args); err != nil {
 		return err
 	}
 	if fset.NArg() > 0 {
 		return fmt.Errorf("лишние аргументы: %d", fset.NArg())
+	}
+	if *reissue {
+		// Ключи не нужны: криптопрофиль берётся из ключа данных установки.
+		if *dir != "" || *addAuditKey {
+			return errors.New("-reissue-setup-token не сочетается с -dir и -add-audit-key")
+		}
+		if dsn == "" {
+			return errors.New("задайте AISEC_DATABASE_URL (postgres://пользователь@хост:порт/база)")
+		}
+		return reissueCmd(dsn, stdout, now)
 	}
 	if *dir == "" {
 		return errors.New("укажите -dir — каталог ключей")
@@ -129,6 +140,35 @@ func initCmd(args []string, dsn string, stdout, stderr io.Writer, now time.Time)
 		return runAddAuditKey(ctx, *dir, p, st, cliActor(), stdout)
 	}
 	return runInit(ctx, *dir, p, st, cliActor(), now, stdout)
+}
+
+// reissueCmd подключается к БД и выпускает новый токен первичной настройки.
+func reissueCmd(dsn string, stdout io.Writer, now time.Time) error {
+	ctx := context.Background()
+	db, err := store.Open(ctx, dsn, 2)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	st := pgReissueStore{pool: db.Pool()}
+	profile, ok, err := st.SetupProfile(ctx, audit.DefaultOrgID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return errors.New("ключа данных нет: установка не инициализирована — выполните init -dir")
+	}
+	p, err := aisecCrypto.New(profile)
+	if err != nil {
+		return err
+	}
+	if err := aisecCrypto.SelfTest(p); err != nil {
+		return err
+	}
+	if st.log, err = audit.New(db.Pool(), p); err != nil {
+		return err
+	}
+	return runReissueSetupToken(ctx, p, st, cliActor(), now, stdout)
 }
 
 // runInit создаёт ключи. Порядок выбран так, чтобы сбой не оставил

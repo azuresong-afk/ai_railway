@@ -8,6 +8,7 @@ import { SystemScreen } from "./SystemScreen";
 const me = (permissions: string[]): Me => ({
   user: { id: "u1", login: "a", display_name: "A", role: "security_admin", status: "active", locked: false, must_change_password: false, password_changed_at: "2026-10-01T00:00:00Z", created_at: "2026-10-01T00:00:00Z" },
   session_state: "active",
+  timezone: "Europe/Moscow",
   permissions,
 });
 
@@ -38,6 +39,7 @@ beforeEach(() => {
             JSON.stringify({
               component: "server", trigger: "manual", checked_at: "2026-10-21T12:05:00Z", ok: false, reason: "files_mismatch",
               manifest_version: "0.2.0", test_signed: false, checked_files: 40, failures: [{ path: "web/index.html", problem: "modified" }], omitted: 2,
+              gateways_requested: 2,
             }),
           ),
         );
@@ -80,6 +82,8 @@ describe("состояние системы", () => {
     expect(await screen.findByText(/Проверка от 21\.10\.2026/)).toBeInTheDocument();
     expect(screen.getByText("web/index.html")).toBeInTheDocument();
     expect(screen.getByText(/и ещё 2/)).toBeInTheDocument();
+    // Н38 ревью 2.r4: запрос проверки передан шлюзам.
+    expect(screen.getByText(/Запрос проверки передан шлюзам: 2/)).toBeInTheDocument();
   });
 
   it("отказ сервера объясняется", async () => {

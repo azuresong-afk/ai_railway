@@ -288,7 +288,7 @@ func TestLockoutUntilAdminUnlock(t *testing.T) {
 	pol := auth.DefaultPolicy()
 	pol.LockoutMinutes = 0
 	admin := e.adminCaller(t)
-	if err := e.svc.SetPolicy(context.Background(), admin, pol); err != nil {
+	if err := e.svc.SetPolicy(context.Background(), admin, pol, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	for range pol.LockoutThreshold {
@@ -688,12 +688,12 @@ func TestSetPolicy(t *testing.T) {
 	bad := auth.DefaultPolicy()
 	bad.PasswordMinLength = 4
 	var ie *auth.InputError
-	if err := e.svc.SetPolicy(ctx, admin, bad); !errors.As(err, &ie) {
+	if err := e.svc.SetPolicy(ctx, admin, bad, "", ""); !errors.As(err, &ie) {
 		t.Fatalf("длина 4: %v", err)
 	}
 	p := auth.DefaultPolicy()
 	p.LockoutThreshold = 3
-	if err := e.svc.SetPolicy(ctx, admin, p); err != nil {
+	if err := e.svc.SetPolicy(ctx, admin, p, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	if got, err := e.svc.Policy(ctx); err != nil || got != p {
@@ -703,6 +703,82 @@ func TestSetPolicy(t *testing.T) {
 	d := rec.Details.(map[string]any)
 	if d["before"].(map[string]any)["lockout_threshold"] != 5 || d["after"].(map[string]any)["lockout_threshold"] != 3 {
 		t.Fatalf("до и после: %v", d)
+	}
+}
+
+// Ослабление настроек входа — только с повторной проверкой и отметкой
+// weakening (В24 ревью 2.r5): порог блокировки, обязательный TOTP и др.
+func TestSetPolicyWeakeningNeedsReauth(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	admin := e.adminCaller(t)
+	stricter := auth.DefaultPolicy()
+	stricter.MFARequiredAll = true
+	if err := e.svc.SetPolicy(ctx, admin, stricter, "", ""); err != nil {
+		t.Fatalf("ужесточение: %v", err)
+	}
+	if d := lastRecord(t, e.mem, "auth.policy_changed").Details.(map[string]any); d["weakening"] != false {
+		t.Fatalf("ужесточение отмечено ослаблением: %v", d)
+	}
+	weaker := stricter
+	weaker.LockoutThreshold = 20
+	weaker.MFARequiredAll = false
+	var ie *auth.InputError
+	if err := e.svc.SetPolicy(ctx, admin, weaker, "", ""); !errors.As(err, &ie) {
+		t.Fatalf("ослабление без пароля: %v", err)
+	}
+	if err := e.svc.SetPolicy(ctx, admin, weaker, wrongPhrase, ""); !errors.Is(err, auth.ErrReauthentication) {
+		t.Fatalf("ослабление с неверным паролем: %v", err)
+	}
+	if got, err := e.svc.Policy(ctx); err != nil || got != stricter {
+		t.Fatalf("настройки изменились после отказа: %+v %v", got, err)
+	}
+	if err := e.svc.SetPolicy(ctx, admin, weaker, phrase, ""); err != nil {
+		t.Fatalf("ослабление с паролем: %v", err)
+	}
+	d := lastRecord(t, e.mem, "auth.policy_changed").Details.(map[string]any)
+	if w, _ := d["weakened"].([]string); d["weakening"] != true || len(w) != 2 || w[0] != "lockout_threshold" || w[1] != "mfa_required_all" {
+		t.Fatalf("аудит ослабления: %v", d)
+	}
+}
+
+func TestWeakenedFields(t *testing.T) {
+	base := auth.DefaultPolicy()
+	for _, c := range []struct {
+		name string
+		mod  func(*auth.Policy)
+		want string
+	}{
+		{"длина", func(p *auth.Policy) { p.PasswordMinLength = 10 }, "password_min_length"},
+		{"классы", func(p *auth.Policy) { p.PasswordMinClasses = 2 }, "password_min_classes"},
+		{"история", func(p *auth.Policy) { p.PasswordHistory = 0 }, "password_history"},
+		{"бессрочный пароль", func(p *auth.Policy) { p.PasswordMaxAgeDays = 0 }, "password_max_age_days"},
+		{"срок пароля дольше", func(p *auth.Policy) { p.PasswordMaxAgeDays = 180 }, "password_max_age_days"},
+		{"порог", func(p *auth.Policy) { p.LockoutThreshold = 6 }, "lockout_threshold"},
+		{"блокировка короче", func(p *auth.Policy) { p.LockoutMinutes = 1 }, "lockout_minutes"},
+		{"бездействие", func(p *auth.Policy) { p.SessionIdleMinutes = 16 }, "session_idle_minutes"},
+		{"сессии", func(p *auth.Policy) { p.SessionMaxPerUser = 6 }, "session_max_per_user"},
+		{"временный пароль", func(p *auth.Policy) { p.TempPasswordHours = 73 }, "temp_password_hours"},
+		{"бессрочная блокировка", func(p *auth.Policy) { p.LockoutMinutes = 0 }, ""},
+		{"срок пароля короче", func(p *auth.Policy) { p.PasswordMaxAgeDays = 30 }, ""},
+		{"предупреждение", func(p *auth.Policy) { p.PasswordWarnDays = 0 }, ""},
+	} {
+		after := base
+		c.mod(&after)
+		got := strings.Join(auth.WeakenedFields(base, after), ",")
+		if got != c.want {
+			t.Errorf("%s: %q, ожидалось %q", c.name, got, c.want)
+		}
+	}
+	untimed := base
+	untimed.LockoutMinutes = 0
+	if got := auth.WeakenedFields(untimed, base); len(got) != 1 || got[0] != "lockout_minutes" {
+		t.Errorf("бессрочная → 15 минут: %v", got)
+	}
+	never := base
+	never.PasswordMaxAgeDays = 0
+	if got := auth.WeakenedFields(never, base); len(got) != 0 {
+		t.Errorf("бессрочный → 90 суток: %v", got)
 	}
 }
 
@@ -907,5 +983,56 @@ func TestResetPasswordRequiresActive(t *testing.T) {
 	}
 	if _, err := e.svc.ResetPassword(context.Background(), e.adminCaller(t), userID); err == nil {
 		t.Fatal("сброс деактивированной записи прошёл")
+	}
+}
+
+// В26 ревью 2.r5, H-Р10: настройки установки меняются в «Администрировании»;
+// умолчание хранения none или full — ослабление с повторной проверкой.
+func TestSetInstallSettings(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	admin := e.adminCaller(t)
+	got, err := e.svc.InstallSettings(ctx)
+	if err != nil || got.Timezone != auth.DefaultTimezone || got.RetentionMode != auth.RetentionMasked {
+		t.Fatalf("умолчания до первичной настройки: %+v %v", got, err)
+	}
+	got, err = e.svc.SetInstallSettings(ctx, admin, auth.InstallSettings{Timezone: "Asia/Novosibirsk"}, "", "")
+	if err != nil || got.Timezone != "Asia/Novosibirsk" || got.RetentionMode != auth.RetentionMasked {
+		t.Fatalf("смена часового пояса: %+v %v", got, err)
+	}
+	if d := lastRecord(t, e.mem, "setup.settings_changed").Details.(map[string]any); d["weakening"] != false {
+		t.Fatalf("смена пояса отмечена ослаблением: %v", d)
+	}
+	var ie *auth.InputError
+	for name, in := range map[string]auth.InstallSettings{
+		"неизвестный пояс":  {Timezone: "Mars/Olympus"},
+		"локальный пояс":    {Timezone: "Local"},
+		"неизвестный режим": {RetentionMode: "off"},
+	} {
+		if _, err := e.svc.SetInstallSettings(ctx, admin, in, "", ""); !errors.As(err, &ie) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	for _, mode := range []string{"full", "none"} {
+		if _, err := e.svc.SetInstallSettings(ctx, admin, auth.InstallSettings{RetentionMode: mode}, "", ""); !errors.As(err, &ie) || ie.Field != "password" {
+			t.Fatalf("%s без пароля: %v", mode, err)
+		}
+		if _, err := e.svc.SetInstallSettings(ctx, admin, auth.InstallSettings{RetentionMode: mode}, wrongPhrase, ""); !errors.Is(err, auth.ErrReauthentication) {
+			t.Fatalf("%s с неверным паролем: %v", mode, err)
+		}
+	}
+	if got, err := e.svc.InstallSettings(ctx); err != nil || got.RetentionMode != auth.RetentionMasked {
+		t.Fatalf("режим изменился после отказа: %+v %v", got, err)
+	}
+	if _, err := e.svc.SetInstallSettings(ctx, admin, auth.InstallSettings{RetentionMode: "full"}, phrase, ""); err != nil {
+		t.Fatalf("full с паролем: %v", err)
+	}
+	d := lastRecord(t, e.mem, "setup.settings_changed").Details.(map[string]any)
+	if d["weakening"] != true || d["after"].(map[string]any)["retention_mode"] != "full" {
+		t.Fatalf("аудит ослабления: %v", d)
+	}
+	// Возврат к masked усиливает защиту: без повторной проверки.
+	if _, err := e.svc.SetInstallSettings(ctx, admin, auth.InstallSettings{RetentionMode: auth.RetentionMasked}, "", ""); err != nil {
+		t.Fatalf("возврат к masked: %v", err)
 	}
 }

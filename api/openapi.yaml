@@ -130,6 +130,55 @@ paths:
         '403': { $ref: '#/components/responses/ProblemForbidden' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ProblemInternal' }
+  /api/v1/system/settings:
+    get:
+      summary: Настройки установки
+      description: |
+        Право `system.read`. Часовой пояс показа времени (ВРМ.2) и режим хранения содержимого по умолчанию
+        для новых приложений (ТЗ 5.5). Задаются при первичной настройке; это единственный источник часового
+        пояса (H-Р10, В26 ревью 2.r5). До первичной настройки — умолчания `Europe/Moscow` и `masked`.
+      x-permission: system.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      responses:
+        '200':
+          description: Настройки
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InstallSettings' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+    put:
+      summary: Изменить настройки установки
+      description: |
+        Право `settings.manage` (функция безопасности, только администратор безопасности). Пустое или
+        пропущенное поле оставляет прежнее значение. Пишет `setup.settings_changed` со значениями до и после.
+        Новый режим хранения по умолчанию `none` или `full` ослабляет защиту (DM-40): нужен текущий пароль
+        или код TOTP — без них 400 с полем `password`, неверные — 403 `reauthentication_failed`; запись — с
+        `weakening`. Действующие приложения не меняются: умолчание применяется к новым.
+      x-permission: settings.manage
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/InstallSettingsUpdate' }
+      responses:
+        '200':
+          description: Настройки сохранены
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InstallSettings' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
   /api/v1/system/status:
     get:
       summary: Состояние системы
@@ -139,7 +188,7 @@ paths:
         присланные шлюзом в heartbeat), итоги контроля целостности и
         самотестирования сервера, синхронизация времени ядром ОС (ВРМ.1, без
         обращений к NTP; на системах без `adjtimex` — `unknown`), часовой пояс
-        показа (ВРМ.2, настройка `-timezone`), отброшенные и отклонённые
+        показа (ВРМ.2, настройки установки, `GET /api/v1/system/settings`), отброшенные и отклонённые
         события (счётчики шлюзов с их последнего запуска), заполнение журнала
         аудита (РСБ.5; предел и порог — настройки), итог последней проверки
         цепочки журнала аудита (РСБ.4; сервер проверяет её при запуске и раз в
@@ -195,6 +244,11 @@ paths:
         собран раньше манифеста последней успешной проверки — `manifest_rollback`
         (откат на старый выпуск, В20 ревью 2.r4). Итог не удалось записать в
         журнал аудита — 503 (Н36 ревью 2.r4), итог остаётся в техническом журнале.
+        Заодно всем действующим шлюзам передаётся запрос проверки (Н38 ревью 2.r4,
+        запись `integrity.verify_requested`, число — `gateways_requested`): шлюз
+        получает его в ответе heartbeat, проверяет себя и присылает итог; итог
+        каждого шлюза пишется в журнал аудита (`integrity.check`, `trigger: manual`)
+        и виден в «Состоянии системы». Запрос не записан — 503.
       security: [{ sessionCookie: [] }]
       x-permission: integrity.verify
       parameters:
@@ -444,7 +498,12 @@ paths:
         '500': { $ref: '#/components/responses/ProblemInternal' }
     put:
       summary: Изменить парольную политику и настройки входа
-      description: Право `auth_policy.manage`. Все поля обязательны. Пишет `auth.policy_changed` со значениями до и после.
+      description: |
+        Право `auth_policy.manage`. Все поля обязательны. Пишет `auth.policy_changed` со значениями до и после.
+        Ослабление (длина, классы или история пароля меньше; срок пароля больше или бессрочный; порог блокировки
+        выше; блокировка короче или по времени вместо бессрочной; бездействие, сессии, срок временного пароля
+        больше; `mfa_required_all` снят) требует текущий пароль или код TOTP: без них — 400 с полем `password`,
+        неверные — 403 `reauthentication_failed`; запись — с `weakening` и списком `weakened` (В24 ревью 2.r5).
       x-permission: auth_policy.manage
       security: [{ sessionCookie: [] }]
       parameters:
@@ -453,7 +512,7 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/AuthPolicy' }
+            schema: { $ref: '#/components/schemas/AuthPolicyUpdate' }
       responses:
         '200':
           description: Настройки сохранены
@@ -2004,6 +2063,9 @@ paths:
         `base_version` (200), без него — 409. Пустой `non_text` при загрузке — `allow_unchecked`,
         как в шлюзе этапа 1. Пишет `policy.import` (сводка изменений и признак `weakening`).
         Изменение, после которого пакет конфигурации шлюзов не соберётся (например, правило `lists.*` на словарь, которого нет у приложения), — 422 с причиной и ID приложений в `detail` (В16 ревью 2.r3b).
+        Версия, ослабляющая защиту (`weakening`), принимается только в обёртке JSON (`PolicyImport`) с текущим паролем
+        или кодом TOTP: без них — 400 с полем `password`, неверные — 403 `reauthentication_failed` (В23 ревью 2.r5).
+        В обёртке `base_version` и `comment` берутся из тела, параметры запроса не читаются.
       x-permission: policies.manage
       security: [{ sessionCookie: [] }]
       parameters:
@@ -2021,6 +2083,8 @@ paths:
         content:
           application/yaml:
             schema: { type: string, maxLength: 1048576 }
+          application/json:
+            schema: { $ref: '#/components/schemas/PolicyImport' }
       responses:
         '200':
           description: Новая версия политики
@@ -2106,6 +2170,8 @@ paths:
         `base_version + 1`. Если с `base_version` политику уже сохранили — 409, чужая правка не
         затирается. Шаблон не меняется — 422. Пишет `policy.update`: поля, правила
         добавленные, удалённые и изменённые, признак `weakening` и причины (DM-40).
+        Версия с `weakening` требует текущий пароль или код TOTP в теле: без них — 400 с полем `password`,
+        неверные — 403 `reauthentication_failed` (В23 ревью 2.r5).
         Изменение, после которого пакет конфигурации шлюзов не соберётся (например, правило `lists.*` на словарь, которого нет у приложения), — 422 с причиной и ID приложений в `detail` (В16 ревью 2.r3b).
       x-permission: policies.manage
       security: [{ sessionCookie: [] }]
@@ -2222,7 +2288,8 @@ paths:
       description: |
         Право `policies.manage`. Откат — новая версия с содержимым версии `version`
         (`rolled_back_from`); прежние версии остаются. Пишет `policy.rollback` со сводкой
-        изменений и признаком `weakening`.
+        изменений и признаком `weakening`. Откат, ослабляющий защиту, требует текущий пароль или код TOTP
+        (400 без них, 403 `reauthentication_failed` при неверных; В23 ревью 2.r5).
         Изменение, после которого пакет конфигурации шлюзов не соберётся (например, правило `lists.*` на словарь, которого нет у приложения), — 422 с причиной и ID приложений в `detail` (В16 ревью 2.r3b).
       x-permission: policies.manage
       security: [{ sessionCookie: [] }]
@@ -2710,6 +2777,7 @@ components:
                 type: string
                 enum: [modified, size, missing, extra, not_regular, unreadable, no_entry, changed]
         omitted: { type: integer, minimum: 0, description: 'Сколько нарушений не вошло в failures' }
+        gateways_requested: { type: integer, minimum: 0, description: 'Только в ответе на проверку по команде: скольким действующим шлюзам передан запрос проверки (Н38 ревью 2.r4)' }
     SetupStatus:
       type: object
       required: [setup_required]
@@ -2783,6 +2851,23 @@ components:
         session_max_per_user: { type: integer, minimum: 1, maximum: 20, default: 5 }
         temp_password_hours: { type: integer, minimum: 1, maximum: 168, default: 72 }
         mfa_required_all: { type: boolean, default: false, description: 'Второй фактор обязателен для всех ролей (для security_admin и system_admin — всегда)' }
+    InstallSettings:
+      type: object
+      required: [timezone, retention_mode]
+      properties:
+        timezone: { type: string, maxLength: 64, description: 'Часовой пояс показа времени, имя IANA (ВРМ.2); хранение всегда в UTC', example: Europe/Moscow }
+        retention_mode: { type: string, enum: [none, masked, full], description: 'Режим хранения содержимого для новых приложений без явного выбора (ТЗ 5.5)' }
+    InstallSettingsUpdate:
+      allOf:
+        - type: object
+          properties:
+            timezone: { type: string, maxLength: 64, description: 'Имя IANA, например Europe/Moscow или UTC; пусто — без изменений' }
+            retention_mode: { type: string, enum: ['', none, masked, full], description: 'Пусто — без изменений' }
+        - $ref: '#/components/schemas/Reauth'
+    AuthPolicyUpdate:
+      allOf:
+        - $ref: '#/components/schemas/AuthPolicy'
+        - $ref: '#/components/schemas/Reauth'
     Role:
       type: string
       pattern: '^[a-z][a-z0-9_]{2,47}$'
@@ -3023,7 +3108,7 @@ components:
     ApplicationProtection:
       type: object
       additionalProperties: false
-      description: Поля защиты; меняет только обладатель права `applications.policy` (В15 ревью 2.r3b)
+      description: Поля защиты; меняет только обладатель права `applications.policy` (В15 ревью 2.r3b). Смена политики на ту, что по сравнению версий (`GET /policies/{id}/diff`) слабее текущей, — ослабление с повторной проверкой (В23 ревью 2.r5)
       properties:
         policy: { type: string, description: 'Шаблон (`base`, `pii-strict`, `external-no-pii`, `monitor-only`) или политика организации' }
         policy_mode: { type: string, enum: [monitor, enforce], description: По умолчанию — режим выбранной политики }
@@ -3182,7 +3267,7 @@ components:
               items: { $ref: '#/components/schemas/User' }
     Me:
       type: object
-      required: [user, session_state, permissions]
+      required: [user, session_state, permissions, timezone]
       properties:
         user: { $ref: '#/components/schemas/User' }
         session_state: { $ref: '#/components/schemas/SessionState' }
@@ -3198,6 +3283,7 @@ components:
           type: array
           items: { type: string }
           description: 'Разрешения, действующие в сессии, включая `session` и, после второго фактора, `self`. Консоль скрывает недоступное; права проверяет сервер'
+        timezone: { type: string, description: 'Часовой пояс показа времени из настроек установки (ВРМ.2): консоль показывает даты в нём' }
     SessionState:
       type: string
       enum: [active, password_change, mfa_pending, mfa_setup]
@@ -3556,6 +3642,8 @@ components:
         base_version: { type: integer, minimum: 1, description: Версия, которую открыли для изменения }
         spec: { $ref: '#/components/schemas/PolicySpec' }
         comment: { type: string, maxLength: 500 }
+        password: { type: string, maxLength: 1024, format: password, description: 'Текущий пароль, если версия ослабляет защиту (В23 ревью 2.r5)' }
+        code: { type: string, maxLength: 64, description: 'Код из приложения-аутентификатора вместо пароля' }
     PolicyRollback:
       type: object
       required: [version, base_version]
@@ -3564,6 +3652,19 @@ components:
         version: { type: integer, minimum: 1, description: Версия, содержимое которой вернуть }
         base_version: { type: integer, minimum: 1 }
         comment: { type: string, maxLength: 500 }
+        password: { type: string, maxLength: 1024, format: password, description: 'Текущий пароль, если откат ослабляет защиту (В23 ревью 2.r5)' }
+        code: { type: string, maxLength: 64, description: 'Код из приложения-аутентификатора вместо пароля' }
+    PolicyImport:
+      type: object
+      required: [document]
+      additionalProperties: false
+      description: Загрузка в обёртке JSON — так вместе с документом передаётся пароль или код, если версия ослабляет защиту (В23 ревью 2.r5)
+      properties:
+        document: { type: string, maxLength: 1048576, description: Документ YAML политики }
+        base_version: { type: integer, minimum: 1 }
+        comment: { type: string, maxLength: 500 }
+        password: { type: string, maxLength: 1024, format: password }
+        code: { type: string, maxLength: 64 }
     PolicyDiff:
       type: object
       required: [from, to, fields, rules_added, rules_removed, rules_changed, reordered, weakening, weakening_reasons]

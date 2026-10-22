@@ -207,8 +207,11 @@ func (s *Service) Policy(ctx context.Context) (Policy, error) {
 }
 
 // SetPolicy меняет настройки входа (ИАФ.2, ИАФ.4, УПД.4) с записью
-// auth.policy_changed со значениями до и после.
-func (s *Service) SetPolicy(ctx context.Context, by Caller, p Policy) error {
+// auth.policy_changed со значениями до и после. Ослабление (WeakenedFields)
+// требует повторной проверки текущим паролем или кодом TOTP и отмечается
+// weakening (В24 ревью 2.r5): иначе украденная сессия снимает защиту от
+// перебора (DM-39) одним запросом.
+func (s *Service) SetPolicy(ctx context.Context, by Caller, p Policy, password, code string) error {
 	if err := p.Validate(); err != nil {
 		return &InputError{"policy", err.Error()}
 	}
@@ -216,8 +219,18 @@ func (s *Service) SetPolicy(ctx context.Context, by Caller, p Policy) error {
 	if err != nil {
 		return err
 	}
+	weakened := WeakenedFields(before, p)
+	if len(weakened) > 0 {
+		if err := s.reauthenticate(ctx, by, password, code, "auth.policy_changed"); err != nil {
+			return err
+		}
+	}
+	details := map[string]any{"before": policyDetails(before), "after": policyDetails(p), "weakening": len(weakened) > 0}
+	if len(weakened) > 0 {
+		details["weakened"] = weakened
+	}
 	rec := s.entry(by.actor(), by.SourceIP, "auth.policy_changed", audit.Object{Type: "auth_policy", ID: s.orgID},
-		audit.ResultSuccess, map[string]any{"before": policyDetails(before), "after": policyDetails(p)})
+		audit.ResultSuccess, details)
 	return s.store.SetPolicy(ctx, s.orgID, p, rec)
 }
 

@@ -585,7 +585,7 @@ func TestMFARequiredAllExpiresPlainSessions(t *testing.T) {
 	e.mustCaller(t, plain.Token)
 	p := auth.DefaultPolicy()
 	p.MFARequiredAll = true
-	if err := e.svc.SetPolicy(ctx, admin.Caller, p); err != nil {
+	if err := e.svc.SetPolicy(ctx, admin.Caller, p, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := e.caller(t, plain.Token); !errors.Is(err, auth.ErrUnauthenticated) {

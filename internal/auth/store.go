@@ -56,6 +56,12 @@ type Store interface {
 	// пользователей. Неизвестный, истёкший или погашенный токен, токен другого
 	// алгоритма или уже выполненная настройка — ErrSetupUnavailable.
 	SetupFirstUser(ctx context.Context, tokenHash []byte, hashAlg string, u User, cfg InstallSettings, rec audit.Entry) error
+	// InstallSettings — настройки установки; ok = false — строки ещё нет
+	// (первичная настройка не выполнена).
+	InstallSettings(ctx context.Context, orgID string) (cfg InstallSettings, ok bool, err error)
+	// SetInstallSettings сохраняет настройки установки и запись аудита одной
+	// транзакцией.
+	SetInstallSettings(ctx context.Context, orgID string, cfg InstallSettings, now time.Time, rec audit.Entry) error
 
 	// CreateSession сохраняет сессию; если незавершённых сессий пользователя
 	// того же рода (до второго фактора или полных) станет больше limit, самые

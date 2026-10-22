@@ -327,3 +327,67 @@ func TestPGRegistryGuards(t *testing.T) {
 		t.Fatalf("heartbeat отозванного: %v", err)
 	}
 }
+
+// Н38 ревью 2.r4 на PostgreSQL под aisec_app: запрос проверки, передача в
+// heartbeat, снятие ответом с записью итога в журнал одной транзакцией.
+func TestPGGatewayVerifyRequest(t *testing.T) {
+	e := setupPG(t)
+	ctx := pgCtx(t)
+	reg := e.register(t, e.issue(t, "gw-1", false))
+	id := reg.Gateway.ID
+	if n, err := e.srv.RequestVerify(ctx, cliActor, testIP); err != nil || n != 1 {
+		t.Fatalf("запрос: %d %v", n, err)
+	}
+	res, err := e.srv.Heartbeat(ctx, id, gwregistry.HeartbeatInput{Version: "1"}, testIP)
+	if err != nil || res.VerifyRequestedAt.IsZero() {
+		t.Fatalf("запрос в heartbeat: %+v %v", res, err)
+	}
+	e.clock.add(gwregistry.DefaultHeartbeatMinInterval)
+	in := gwregistry.HeartbeatInput{Version: "1", VerifyRequest: res.VerifyRequestedAt,
+		Integrity: &gwregistry.CheckReport{OK: true, At: e.clock.now(), Reason: "ok"}}
+	if res, err := e.srv.Heartbeat(ctx, id, in, testIP); err != nil || !res.VerifyRequestedAt.IsZero() {
+		t.Fatalf("ответ на запрос: %+v %v", res, err)
+	}
+	list, err := e.cli.List(ctx)
+	if err != nil || len(list) != 1 || !list[0].VerifyRequestedAt.IsZero() {
+		t.Fatalf("запрос не снят: %+v %v", list, err)
+	}
+	if a := e.actions(t); a["integrity.verify_requested/success"] != 1 || a["integrity.check/success"] != 1 {
+		t.Fatalf("журнал: %v", a)
+	}
+}
+
+// Запуск и остановка шлюза на PostgreSQL (В27 ревью 2.r5): время с
+// наносекундами сравнивается после округления, записи — в одной
+// транзакции с heartbeat.
+func TestPGGatewayStartStop(t *testing.T) {
+	e := setupPG(t)
+	ctx := pgCtx(t)
+	reg := e.register(t, e.issue(t, "gw-1", false))
+	id := reg.Gateway.ID
+	started := e.clock.now().Add(-time.Minute).Add(789 * time.Nanosecond)
+	for i, in := range []gwregistry.HeartbeatInput{
+		{Version: "1", StartedAt: started},
+		{Version: "1", StartedAt: started},
+		{Version: "1", StartedAt: started, Stopping: true},
+		{Version: "1", StartedAt: started.Add(time.Second)},
+	} {
+		e.clock.add(gwregistry.DefaultHeartbeatMinInterval)
+		if _, err := e.srv.Heartbeat(ctx, id, in, testIP); err != nil {
+			t.Fatalf("heartbeat %d: %v", i, err)
+		}
+		if i == 2 {
+			list, err := e.cli.List(ctx)
+			if err != nil || len(list) != 1 || !list[0].StartedAt.IsZero() {
+				t.Fatalf("время запуска не стёрто: %+v %v", list, err)
+			}
+		}
+	}
+	if a := e.actions(t); a["component.start/success"] != 2 || a["component.stop/success"] != 1 {
+		t.Fatalf("журнал: %v", a)
+	}
+	list, err := e.cli.List(ctx)
+	if err != nil || len(list) != 1 || !list[0].StartedAt.Equal(started.Add(time.Second).Truncate(time.Microsecond)) {
+		t.Fatalf("время запуска: %+v %v", list, err)
+	}
+}

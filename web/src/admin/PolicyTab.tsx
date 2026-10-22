@@ -6,6 +6,7 @@ import { Check, Field, Input } from "../ui/Field";
 import { Banner } from "../ui/Layout";
 import { type AuthPolicy, adminApi } from "./api";
 import { ErrorBanner } from "./common";
+import { ReauthPrompt, useReauth, visibleError } from "./reauth";
 
 type NumKey = Exclude<keyof AuthPolicy, "mfa_required_all">;
 
@@ -28,11 +29,12 @@ export function PolicyTab({ me }: { me: Me }) {
   const q = useQuery({ queryKey: ["admin", "policy"], queryFn: ({ signal }) => adminApi.policy(signal) });
   if (q.isError) return <ErrorBanner error={q.error} />;
   if (!q.data) return <p className="text-sm text-muted">Загрузка настроек…</p>;
-  return <PolicyForm initial={q.data} canManage={canManage} />;
+  return <PolicyForm initial={q.data} canManage={canManage} mfa={me.mfa?.enabled === true} />;
 }
 
-function PolicyForm({ initial, canManage }: { initial: AuthPolicy; canManage: boolean }) {
+function PolicyForm({ initial, canManage, mfa }: { initial: AuthPolicy; canManage: boolean; mfa: boolean }) {
   const qc = useQueryClient();
+  const re = useReauth(mfa);
   const [draft, setDraft] = useState<Record<NumKey, string>>(
     () => Object.fromEntries(fields.map((f) => [f.key, String(initial[f.key])])) as Record<NumKey, string>,
   );
@@ -47,12 +49,15 @@ function PolicyForm({ initial, canManage }: { initial: AuthPolicy; canManage: bo
     mutationFn: () => {
       const body = { mfa_required_all: mfaAll } as AuthPolicy;
       for (const f of fields) body[f.key] = Number(draft[f.key]);
-      return adminApi.savePolicy(body);
+      return adminApi.savePolicy(body, re.body());
     },
     onSuccess: (p) => {
+      re.reset();
       qc.setQueryData(["admin", "policy"], p);
       setSaved(true);
     },
+    // Ослабление сервер подтверждает паролем или кодом: поле появляется по его ответу.
+    onError: re.onError,
   });
   const submit = (e: FormEvent) => {
     e.preventDefault();
@@ -81,11 +86,12 @@ function PolicyForm({ initial, canManage }: { initial: AuthPolicy; canManage: bo
         </Field>
       ))}
       <Check label="Второй фактор обязателен для всех" checked={mfaAll} disabled={!canManage} onCheckedChange={(v) => { setSaved(false); setMfaAll(v); }} />
-      <ErrorBanner error={m.error} />
+      <ReauthPrompt r={re} />
+      <ErrorBanner error={visibleError(m.error)} />
       {saved && <Banner kind="info">Настройки сохранены.</Banner>}
       {canManage ? (
         <div>
-          <Button type="submit" variant="primary" disabled={m.isPending || invalid}>
+          <Button type="submit" variant="primary" disabled={m.isPending || invalid || !re.ready}>
             Сохранить настройки
           </Button>
         </div>

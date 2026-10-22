@@ -110,12 +110,19 @@ func (m *Memory) BySerial(_ context.Context, serial string) (Gateway, error) {
 }
 
 // Touch — см. Store.
-func (m *Memory) Touch(_ context.Context, id string, hb Heartbeat) error {
+func (m *Memory) Touch(_ context.Context, id string, hb Heartbeat, audits func(TouchChange) []audit.Entry) (TouchChange, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	g := m.gateways[id]
 	if g == nil || g.Status != StatusActive {
-		return ErrNotFound
+		return TouchChange{}, ErrNotFound
+	}
+	ch := TouchChange{VerifyRequested: g.VerifyRequestedAt}
+	if !ch.VerifyRequested.IsZero() && hb.Integrity != nil && hb.VerifyRequest.Equal(ch.VerifyRequested) {
+		g.VerifyRequestedAt, ch.VerifyDone = time.Time{}, true
+	}
+	if next, set := startChange(g.StartedAt, hb, &ch); set {
+		g.StartedAt = next
 	}
 	g.LastSeenAt, g.LastAddr, g.Version, g.BundleETag = hb.At, hb.Addr, hb.Version, hb.BundleETag
 	if hb.Selftest != nil {
@@ -133,7 +140,23 @@ func (m *Memory) Touch(_ context.Context, id string, hb Heartbeat) error {
 		ok := *hb.BundleKeysOK
 		g.BundleKeysOK = &ok
 	}
-	return nil
+	m.Records = append(m.Records, audits(ch)...)
+	return ch, nil
+}
+
+// RequestVerify — см. Store.
+func (m *Memory) RequestVerify(_ context.Context, orgID string, at time.Time, rec func(int) audit.Entry) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n := 0
+	for _, g := range m.gateways {
+		if g.OrgID == orgID && g.Status == StatusActive {
+			g.VerifyRequestedAt = at
+			n++
+		}
+	}
+	m.Records = append(m.Records, rec(n))
+	return n, nil
 }
 
 // AcceptRollback — см. Store.

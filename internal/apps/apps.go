@@ -340,6 +340,13 @@ type Service struct {
 	// bundleCheck — проверка приложения сборкой пакета (В16 ревью 2.r3b);
 	// nil — без проверки.
 	bundleCheck func(ctx context.Context, before *Application, after Application) error
+	// policyWeaker — переход с политики from на to ослабляет защиту (В23
+	// ревью 2.r5); nil — ослаблением считается только переход на шаблон
+	// «Только мониторинг».
+	policyWeaker func(ctx context.Context, from, to string) (bool, error)
+	// defaultStorage — режим хранения новых приложений из настроек
+	// установки (Н42 ревью 2.r4, В26 ревью 2.r5); nil — DefaultStorage.
+	defaultStorage func(ctx context.Context) (string, error)
 }
 
 // SetBundleCheck задаёт проверку приложения сборкой пакета (ошибка — с
@@ -347,6 +354,34 @@ type Service struct {
 // создаётся после сервиса приложений.
 func (s *Service) SetBundleCheck(fn func(ctx context.Context, before *Application, after Application) error) {
 	s.bundleCheck = fn
+}
+
+// SetPolicyWeaker задаёт сравнение политик для смены политики приложения
+// (versions.Service.Weaker). Вызывается до начала обслуживания запросов.
+func (s *Service) SetPolicyWeaker(fn func(ctx context.Context, from, to string) (bool, error)) {
+	s.policyWeaker = fn
+}
+
+// SetDefaultStorage задаёт чтение режима хранения по умолчанию из настроек
+// установки. Вызывается до начала обслуживания запросов.
+func (s *Service) SetDefaultStorage(fn func(ctx context.Context) (string, error)) {
+	s.defaultStorage = fn
+}
+
+// storageDefault — режим хранения нового приложения без явного выбора.
+func (s *Service) storageDefault(ctx context.Context) (string, error) {
+	if s.defaultStorage == nil {
+		return DefaultStorage, nil
+	}
+	return s.defaultStorage(ctx)
+}
+
+// weakerPolicy — смена политики from на to ослабляет защиту.
+func (s *Service) weakerPolicy(ctx context.Context, from, to string) (bool, error) {
+	if from == to || s.policyWeaker == nil {
+		return false, nil
+	}
+	return s.policyWeaker(ctx, from, to)
 }
 
 func (s *Service) checkBundle(ctx context.Context, before *Application, after Application) error {

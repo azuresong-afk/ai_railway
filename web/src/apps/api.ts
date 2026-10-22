@@ -10,6 +10,7 @@ export type NewAppKey = S["NewAppKey"];
 export type AppKeyRotation = S["AppKeyRotation"];
 export type Provider = S["Provider"];
 export type PolicySummary = S["PolicySummary"];
+export type ProtectionUpdate = S["ProtectionUpdate"];
 
 const id = encodeURIComponent;
 
@@ -31,6 +32,8 @@ export const appsApi = {
   providers: (signal?: AbortSignal) => request<S["ProviderList"]>("GET", "/api/v1/providers", undefined, signal),
   policies: (signal?: AbortSignal) => request<S["PolicyList"]>("GET", "/api/v1/policies", undefined, signal),
   create: (b: NewApplication) => request<Application>("POST", "/api/v1/applications", b),
+  // Поля защиты — только через /protection (право applications.policy, В15 ревью 2.r3b).
+  setProtection: (appId: string, b: ProtectionUpdate) => request<Application>("PUT", `/api/v1/applications/${id(appId)}/protection`, b),
   archive: (appId: string) => request<Application>("DELETE", `/api/v1/applications/${id(appId)}`),
   keys: (appId: string, signal?: AbortSignal) =>
     request<S["AppKeyList"]>("GET", `/api/v1/applications/${id(appId)}/keys`, undefined, signal),

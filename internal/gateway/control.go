@@ -181,14 +181,26 @@ type HeartbeatConfig struct {
 	BundleETag func() string
 	// Reports — итоги самотеста и целостности для сервера (задача 2.20); nil — не передаются.
 	Reports *Reports
-	Logger  *slog.Logger
-	Clock   func() time.Time
+	// Verify — проверка целостности по запросу из консоли (Н38 ревью 2.r4):
+	// итог записывается в Reports. nil — запросы не выполняются.
+	Verify func(ctx context.Context)
+	// StartedAt — время запуска процесса шлюза: по нему сервер пишет запуск
+	// и остановку в журнал аудита (В27 ревью 2.r5, РСБ.2). Нулевое — не
+	// передаётся, heartbeat остановки не отправляется.
+	StartedAt time.Time
+	Logger    *slog.Logger
+	Clock     func() time.Time
 	// Sleep ждёт d или отмены ctx (тесты подменяют его).
 	Sleep func(ctx context.Context, d time.Duration) bool
 }
 
+// stopHeartbeatTimeout — срок heartbeat остановки: остановку шлюза он не
+// задерживает дольше.
+const stopHeartbeatTimeout = 3 * time.Second
+
 // RunHeartbeat отправляет heartbeat до отмены ctx. Ошибки не останавливают
 // шлюз (он работает автономно, ТЗ 4.2): пауза растёт до heartbeatBackoffMax.
+// После отмены отправляется heartbeat остановки (stopping).
 func RunHeartbeat(ctx context.Context, c HeartbeatConfig) {
 	if c.Logger == nil {
 		c.Logger = slog.Default()
@@ -200,6 +212,7 @@ func RunHeartbeat(ctx context.Context, c HeartbeatConfig) {
 		c.Sleep = sleepCtx
 	}
 	u := c.Server.JoinPath("/internal/v1/heartbeat").String()
+	defer c.stopping(ctx, u)
 	interval, backoff := minHeartbeatInterval*3, time.Duration(0)
 	for {
 		wait, ok := c.beat(ctx, u, &interval, &backoff)
@@ -209,6 +222,25 @@ func RunHeartbeat(ctx context.Context, c HeartbeatConfig) {
 		if !c.Sleep(ctx, wait) {
 			return
 		}
+	}
+}
+
+// stopping сообщает серверу о корректной остановке; неудача только в
+// технический журнал: сервер увидит новый запуск без записи об остановке.
+func (c HeartbeatConfig) stopping(ctx context.Context, u string) {
+	if c.StartedAt.IsZero() {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), stopHeartbeatTimeout)
+	defer cancel()
+	etag := ""
+	if c.BundleETag != nil {
+		etag = c.BundleETag()
+	}
+	at := c.StartedAt
+	body := heartbeatBody{Version: c.Version, BundleETag: etag, StartedAt: &at, Stopping: true}
+	if err := postControl(ctx, c.Client, u, body, nil, http.StatusOK); err != nil {
+		c.Logger.Warn("остановка не сообщена серверу управления", "error", err)
 	}
 }
 
@@ -224,10 +256,16 @@ func (c HeartbeatConfig) beat(ctx context.Context, u string, interval, backoff *
 	var resp struct {
 		ServerTime      time.Time `json:"server_time"`
 		IntervalSeconds int       `json:"interval_seconds"`
+		// VerifyRequestedAt — администратор запросил проверку шлюза.
+		VerifyRequestedAt *time.Time `json:"verify_requested_at"`
 	}
 	sent := c.Clock()
 	body := heartbeatBody{Version: c.Version, BundleETag: etag}
-	body.Selftest, body.Integrity, body.BundleKeys = c.Reports.snapshot()
+	if !c.StartedAt.IsZero() {
+		at := c.StartedAt
+		body.StartedAt = &at
+	}
+	body.Selftest, body.Integrity, body.BundleKeys, body.VerifyRequest = c.Reports.snapshot()
 	err := postControl(ctx, c.Client, u, body, &resp, http.StatusOK)
 	if ctx.Err() != nil {
 		return 0, false
@@ -255,6 +293,14 @@ func (c HeartbeatConfig) beat(ctx context.Context, u string, interval, backoff *
 	}
 	if skew := resp.ServerTime.Sub(sent); !resp.ServerTime.IsZero() && (skew > clockSkewWarn || skew < -clockSkewWarn) {
 		c.Logger.Warn("часы шлюза расходятся с сервером управления", "skew_seconds", int(skew/time.Second))
+	}
+	// Проверка по запросу из консоли — один раз на запрос; итог уйдёт со
+	// следующим heartbeat вместе с временем запроса (Н38 ревью 2.r4).
+	if at := resp.VerifyRequestedAt; at != nil && c.Verify != nil && c.Reports != nil && !c.Reports.verified(*at) {
+		c.Logger.Info("проверка целостности по запросу из консоли", "class", "integrity")
+		c.Verify(ctx)
+		c.Reports.setVerified(*at)
+		return minHeartbeatInterval, true
 	}
 	return *interval, true
 }

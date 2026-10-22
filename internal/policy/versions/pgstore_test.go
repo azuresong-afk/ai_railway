@@ -137,7 +137,9 @@ func setupPG(t *testing.T) *pgEnv {
 		t.Fatal(err)
 	}
 	e := &pgEnv{owner: owner, app: newPool(t, dsn, schema, "aisec_app"),
-		by: versions.By{Actor: audit.Actor{Type: audit.ActorUser, ID: "01900000-0000-7000-8000-00000000a001", Name: "admin"}}}
+		// Повторная проверка пройдена: отказы без неё проверяют тесты на памяти (В23 ревью 2.r5).
+		by: versions.By{Actor: audit.Actor{Type: audit.ActorUser, ID: "01900000-0000-7000-8000-00000000a001", Name: "admin"},
+			Confirm: func(context.Context) error { return nil }}}
 	l, err := audit.New(e.app, p)
 	if err != nil {
 		t.Fatal(err)

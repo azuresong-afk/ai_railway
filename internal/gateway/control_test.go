@@ -353,6 +353,57 @@ func TestHeartbeatBackoff(t *testing.T) {
 	}
 }
 
+// Н38 ревью 2.r4: запрос проверки из консоли выполняется один раз, итог
+// уходит со следующим heartbeat вместе с временем запроса.
+func TestHeartbeatVerifyRequest(t *testing.T) {
+	requested := time.Date(2026, 10, 22, 12, 0, 0, 123456000, time.UTC)
+	var mu sync.Mutex
+	var bodies []map[string]any
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var b map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&b) //nolint:gosec // G104: тело проверяет тест
+		mu.Lock()
+		bodies = append(bodies, b)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"server_time": time.Now(), "interval_seconds": 60, "verify_requested_at": requested}) //nolint:gosec // G104: ответ тестового сервера
+	}))
+	defer srv.Close()
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reports := &gateway.Reports{}
+	verifies := 0
+	var waits []time.Duration
+	gateway.RunHeartbeat(context.Background(), gateway.HeartbeatConfig{
+		Client: srv.Client(), Server: u, Version: "1", Logger: quiet(), Reports: reports,
+		Verify: func(context.Context) {
+			verifies++
+			reports.SetIntegrity(false, time.Now(), "files_mismatch", 1, gateway.Manifest{})
+		},
+		Sleep: func(_ context.Context, d time.Duration) bool {
+			waits = append(waits, d)
+			return len(waits) < 3
+		},
+	})
+	if verifies != 1 {
+		t.Fatalf("проверок по одному запросу: %d", verifies)
+	}
+	// После проверки — следующий heartbeat через минимальную паузу, дальше — обычный период.
+	if len(waits) != 3 || waits[0] != 10*time.Second || waits[1] != time.Minute {
+		t.Fatalf("паузы %v", waits)
+	}
+	if _, ok := bodies[0]["verify_request"]; ok {
+		t.Fatal("ответ на запрос до проверки")
+	}
+	got, _ := bodies[1]["verify_request"].(string)
+	in, _ := bodies[1]["integrity"].(map[string]any)
+	if at, err := time.Parse(time.RFC3339Nano, got); err != nil || !at.Equal(requested) || in["reason"] != "files_mismatch" {
+		t.Fatalf("итог по запросу: %v", bodies[1])
+	}
+}
+
 func TestControlTransportErrors(t *testing.T) {
 	p, err := aisecCrypto.New(aisecCrypto.ProfileStandard)
 	if err != nil {
@@ -374,5 +425,56 @@ func TestControlTransportErrors(t *testing.T) {
 	}
 	if !gateway.ValidVersion("2.0.0-rc.1+abc") || gateway.ValidVersion("") || gateway.ValidVersion("1 0") {
 		t.Fatal("ValidVersion")
+	}
+}
+
+// Время запуска уходит в каждом heartbeat, после отмены — heartbeat
+// остановки с тем же временем (В27 ревью 2.r5, РСБ.2).
+func TestHeartbeatStartedAndStopping(t *testing.T) {
+	started := time.Date(2026, 10, 22, 9, 30, 0, 123456789, time.UTC)
+	var mu sync.Mutex
+	var bodies []map[string]any
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var b map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&b) //nolint:gosec // G104: тело проверяет тест
+		mu.Lock()
+		bodies = append(bodies, b)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"server_time": time.Now(), "interval_seconds": 60}) //nolint:gosec // G104: ответ тестового сервера
+	}))
+	defer srv.Close()
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	gateway.RunHeartbeat(ctx, gateway.HeartbeatConfig{
+		Client: srv.Client(), Server: u, Version: "1", Logger: quiet(), StartedAt: started,
+		Sleep: func(context.Context, time.Duration) bool {
+			cancel()
+			return false
+		},
+	})
+	if len(bodies) != 2 {
+		t.Fatalf("heartbeat: %v", bodies)
+	}
+	for i, b := range bodies {
+		got, _ := b["started_at"].(string)
+		if at, err := time.Parse(time.RFC3339Nano, got); err != nil || !at.Equal(started) {
+			t.Fatalf("started_at в heartbeat %d: %v", i, b)
+		}
+	}
+	if _, ok := bodies[0]["stopping"]; ok || bodies[1]["stopping"] != true {
+		t.Fatalf("stopping: %v", bodies)
+	}
+	// Без времени запуска (прежний режим) heartbeat остановки не уходит.
+	bodies = nil
+	gateway.RunHeartbeat(context.Background(), gateway.HeartbeatConfig{
+		Client: srv.Client(), Server: u, Version: "1", Logger: quiet(),
+		Sleep: func(context.Context, time.Duration) bool { return false },
+	})
+	if len(bodies) != 1 || bodies[0]["started_at"] != nil {
+		t.Fatalf("без времени запуска: %v", bodies)
 	}
 }

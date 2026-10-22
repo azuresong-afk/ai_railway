@@ -190,17 +190,24 @@ func (e *reauthError) Unwrap() error { return e.err }
 func (d Deps) withConfirm(r *http.Request, by apps.By, re reauthFields, action string) apps.By {
 	pr, _ := PrincipalFrom(r.Context())
 	by.Policy = pr.Grants.Allows(auth.PermApplicationsPolicy)
-	by.Confirm = func(ctx context.Context) error {
+	by.Confirm = d.confirmFunc(r, re, action, apps.ErrConfirmRequired)
+	return by
+}
+
+// confirmFunc — повторная проверка субъекта перед ослаблением защиты:
+// приложения, политики, настройки входа и установки (Н32 ревью 2.r3b,
+// В23, В24 и В26 ревью 2.r5). Без сессии консоли — noSession.
+func (d Deps) confirmFunc(r *http.Request, re reauthFields, action string, noSession error) func(context.Context) error {
+	return func(ctx context.Context) error {
 		c, ok := callerFrom(r)
 		if !ok || c.Token != nil || d.Auth == nil {
-			return apps.ErrConfirmRequired
+			return noSession
 		}
 		if err := d.Auth.Reauthenticate(ctx, c, re.Password, re.Code, action); err != nil {
 			return &reauthError{err}
 		}
 		return nil
 	}
-	return by
 }
 
 func (d Deps) listApplications(w http.ResponseWriter, r *http.Request) {

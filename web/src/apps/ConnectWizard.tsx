@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, useState } from "react";
 import { ApiError } from "../api/client";
 import { ErrorBanner, FormDialog } from "../admin/common";
+import { ReauthPrompt, useReauth, visibleError } from "../admin/reauth";
 import { Button } from "../ui/Button";
 import { Field, Input, Select } from "../ui/Field";
 import { Banner, RawText } from "../ui/Layout";
@@ -26,11 +27,13 @@ export function ConnectWizard({
   onClose,
   canPolicy,
   canKey,
+  mfa,
 }: {
   open: boolean;
   onClose: () => void;
   canPolicy: boolean;
   canKey: boolean;
+  mfa: boolean;
 }) {
   const qc = useQueryClient();
   const [step, setStep] = useState<Step>("app");
@@ -41,6 +44,8 @@ export function ConnectWizard({
   });
   const [created, setCreated] = useState<Application>();
   const [secret, setSecret] = useState<string>();
+  // Режим «Мониторинг», «Не хранить» или «Полное» ослабляют защиту: сервер просит пароль или код (В25 ревью 2.r5).
+  const re = useReauth(mfa);
   const set = (k: keyof typeof f) => (e: { target: { value: string } }) => setF((p) => ({ ...p, [k]: e.target.value }));
 
   const providers = useQuery({ queryKey: ["apps", "providers"], queryFn: ({ signal }) => appsApi.providers(signal), enabled: open });
@@ -69,6 +74,7 @@ export function ConnectWizard({
     setF((p) => ({ ...p, name: "", slug: "", slugTouched: false, description: "", department: "", provider_id: "", models: "", policy: "", policy_mode: "", storage: "", key_name: "основной", expires_in_days: "365", cidrs: "" }));
     setCreated(undefined);
     setSecret(undefined);
+    re.reset();
     create.reset();
   };
   const close = () => {
@@ -96,8 +102,10 @@ export function ConnectWizard({
           ...(canPolicy && f.policy ? { policy: f.policy } : {}),
           ...(canPolicy && f.policy_mode ? { policy_mode: f.policy_mode as "monitor" | "enforce" } : {}),
           ...(canPolicy && f.storage ? { storage: f.storage as "none" | "masked" | "full" } : {}),
+          ...re.body(),
         } as NewApplication;
         app = await appsApi.create(body);
+        re.reset();
         setCreated(app);
         await qc.invalidateQueries({ queryKey: ["apps", "list"] });
       }
@@ -112,6 +120,7 @@ export function ConnectWizard({
       }
     },
     onSuccess: () => setStep("done"),
+    onError: re.onError,
   });
 
   const next = (to: Step, bad: boolean) => (e: FormEvent) => {
@@ -120,7 +129,7 @@ export function ConnectWizard({
   };
   const submitKey = (e: FormEvent) => {
     e.preventDefault();
-    if (!(canKey && (errs.keyName || errs.days || errs.cidrs))) create.mutate();
+    if (!(canKey && (errs.keyName || errs.days || errs.cidrs)) && re.ready) create.mutate();
   };
 
   const idx = steps.findIndex(([s]) => s === step);
@@ -180,7 +189,7 @@ export function ConnectWizard({
       {step === "provider" && (
         <form onSubmit={next("key", Boolean(errs.provider || errs.models))} className="flex flex-col gap-3">
           <ErrorBanner error={providers.error} />
-          <Field label="Провайдер" error={providers.isSuccess && providerList.length === 0 ? "Провайдеров нет. Сначала добавьте провайдера." : undefined}>
+          <Field label="Провайдер" error={providers.isSuccess && providerList.length === 0 ? "Провайдеров нет. Провайдера пока добавляют через API (/api/v1/providers), см. руководство администратора, раздел 5." : undefined}>
             {({ id, describedBy, invalid }) => (
               <Select id={id} aria-describedby={describedBy} aria-invalid={invalid} value={f.provider_id} onChange={set("provider_id")}>
                 <option value="">Выберите провайдера</option>
@@ -234,10 +243,11 @@ export function ConnectWizard({
                   </Select>
                 )}
               </Field>
-              <Field label="Хранение содержимого" hint="Пусто — маскированное.">
+              <Field label="Хранение содержимого" hint="По умолчанию — режим из «Администрирования» → «Время и хранение».">
                 {({ id, describedBy }) => (
                   <Select id={id} aria-describedby={describedBy} value={f.storage} onChange={set("storage")}>
-                    <option value="">Маскированное (по умолчанию)</option>
+                    <option value="">Как в настройках установки</option>
+                    <option value="masked">Маскированное</option>
                     <option value="none">Не хранить</option>
                     <option value="full">Полное (повышенный риск)</option>
                   </Select>
@@ -279,7 +289,8 @@ export function ConnectWizard({
           ) : (
             <Banner kind="info">У вас нет права выпускать ключи. Приложение будет создано, ключ выпустит администратор.</Banner>
           )}
-          <ErrorBanner error={create.error} />
+          <ReauthPrompt r={re} />
+          <ErrorBanner error={visibleError(create.error)} />
           {create.error instanceof ApiError && create.error.status === 409 && !created && (
             <p className="text-sm text-muted">Вернитесь на первый шаг и выберите другой ID приложения.</p>
           )}
@@ -287,7 +298,7 @@ export function ConnectWizard({
             onCancel={close}
             onBack={() => setStep("provider")}
             nextLabel={canKey ? (created ? "Выпустить ключ" : "Создать приложение и выпустить ключ") : "Создать приложение"}
-            nextDisabled={create.isPending || (canKey && Boolean(errs.keyName || errs.days || errs.cidrs))}
+            nextDisabled={create.isPending || !re.ready || (canKey && Boolean(errs.keyName || errs.days || errs.cidrs))}
           />
         </form>
       )}

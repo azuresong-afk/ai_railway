@@ -3,26 +3,121 @@ import { type FormEvent, useState } from "react";
 import type { Me } from "../api/client";
 import { formatAbsolute } from "../events/format";
 import { Button } from "../ui/Button";
-import { Field, Input } from "../ui/Field";
+import { Field, Input, Select } from "../ui/Field";
 import { Banner } from "../ui/Layout";
-import { adminApi, type EventRetention } from "./api";
+import { adminApi, type EventRetention, type InstallSettings } from "./api";
 import { ErrorBanner, FormDialog } from "./common";
+import { ReauthPrompt, useReauth, visibleError } from "./reauth";
 
-// Сроки и режим хранения событий (ТЗ 5.5). Часовой пояс показа сервер берёт из флага -timezone:
-// записи через API нет, поэтому здесь только пояснение (открытый вопрос 2.24 в docs/plans/stage-2.md).
+// Настройки установки, сроки хранения событий (ТЗ 5.5, ВРМ.2). Часовой пояс показа и режим хранения по умолчанию —
+// настройки установки (H-Р10, В26 ревью 2.r5): единственный источник, флага запуска нет.
 export function RetentionTab({ me }: { me: Me }) {
   const q = useQuery({ queryKey: ["admin", "retention"], queryFn: ({ signal }) => adminApi.retention(signal) });
   const canManage = me.permissions.includes("events.retention.manage");
+  const mfa = me.mfa?.enabled === true;
   return (
-    <div className="flex max-w-2xl flex-col gap-4">
-      <Banner kind="info">
-        Часовой пояс показа (ВРМ.2) задаёт администратор при запуске сервера флагом <code>-timezone</code>; текущее значение видно в разделе «Состояние
-        системы». Режим хранения содержимого (<code>full</code>, <code>masked</code>, <code>off</code>) выбирается в настройках шлюза.
-      </Banner>
+    <div className="flex max-w-2xl flex-col gap-6">
+      {me.permissions.includes("system.read") && <InstallSettingsSection canManage={me.permissions.includes("settings.manage")} mfa={mfa} />}
+      <section className="flex flex-col gap-3">
+        <h2 className="text-lg font-semibold">Сроки хранения событий</h2>
+        {q.isError && <ErrorBanner error={q.error} />}
+        {!q.data && !q.isError && <p className="text-sm text-muted">Загрузка настроек…</p>}
+        {q.data && <RetentionForm initial={q.data} canManage={canManage} mfa={mfa} />}
+      </section>
+    </div>
+  );
+}
+
+function InstallSettingsSection({ canManage, mfa }: { canManage: boolean; mfa: boolean }) {
+  const q = useQuery({ queryKey: ["admin", "install-settings"], queryFn: ({ signal }) => adminApi.installSettings(signal) });
+  return (
+    <section className="flex flex-col gap-3">
+      <h2 className="text-lg font-semibold">Часовой пояс и хранение по умолчанию</h2>
       {q.isError && <ErrorBanner error={q.error} />}
       {!q.data && !q.isError && <p className="text-sm text-muted">Загрузка настроек…</p>}
-      {q.data && <RetentionForm initial={q.data} canManage={canManage} mfa={me.mfa?.enabled === true} />}
-    </div>
+      {q.data && <InstallSettingsForm initial={q.data} canManage={canManage} mfa={mfa} />}
+    </section>
+  );
+}
+
+// Пояса, которые чаще всего нужны в России; другое имя IANA вводится вручную, проверяет сервер.
+const zones = [
+  "Europe/Kaliningrad",
+  "Europe/Moscow",
+  "Europe/Samara",
+  "Asia/Yekaterinburg",
+  "Asia/Omsk",
+  "Asia/Novosibirsk",
+  "Asia/Krasnoyarsk",
+  "Asia/Irkutsk",
+  "Asia/Yakutsk",
+  "Asia/Vladivostok",
+  "Asia/Magadan",
+  "Asia/Kamchatka",
+  "UTC",
+];
+
+function InstallSettingsForm({ initial, canManage, mfa }: { initial: InstallSettings; canManage: boolean; mfa: boolean }) {
+  const qc = useQueryClient();
+  const re = useReauth(mfa);
+  const [f, setF] = useState(initial);
+  const [saved, setSaved] = useState(false);
+  const m = useMutation({
+    mutationFn: () => adminApi.saveInstallSettings({ timezone: f.timezone.trim(), retention_mode: f.retention_mode }, re.body()),
+    onSuccess: async (v) => {
+      re.reset();
+      qc.setQueryData(["admin", "install-settings"], v);
+      setSaved(true);
+      // Пояс показа приходит в /me: после обновления все даты консоли пересчитываются.
+      await qc.invalidateQueries({ queryKey: ["me"] });
+    },
+    onError: re.onError,
+  });
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    setSaved(false);
+    if (re.ready) m.mutate();
+  };
+  const set = (k: keyof InstallSettings) => (e: { target: { value: string } }) => {
+    setSaved(false);
+    setF((p) => ({ ...p, [k]: e.target.value }));
+  };
+  return (
+    <form onSubmit={submit} className="flex flex-col gap-3">
+      <Field label="Часовой пояс показа времени" hint="Имя IANA, например Europe/Moscow. Время хранится в UTC; пояс влияет только на показ в консоли и отчётах.">
+        {({ id, describedBy }) => (
+          <>
+            <Input id={id} aria-describedby={describedBy} list={`${id}-zones`} disabled={!canManage} value={f.timezone} onChange={set("timezone")} />
+            <datalist id={`${id}-zones`}>
+              {zones.map((z) => (
+                <option key={z} value={z} />
+              ))}
+            </datalist>
+          </>
+        )}
+      </Field>
+      <Field label="Хранение содержимого для новых приложений" hint="Действующие приложения не меняются: режим приложения меняется кнопкой «Защита» на экране «Приложения».">
+        {({ id, describedBy }) => (
+          <Select id={id} aria-describedby={describedBy} disabled={!canManage} value={f.retention_mode} onChange={set("retention_mode")}>
+            <option value="masked">Маскированное (рекомендуется)</option>
+            <option value="none">Не хранить</option>
+            <option value="full">Полное (повышенный риск)</option>
+          </Select>
+        )}
+      </Field>
+      <ReauthPrompt r={re} />
+      <ErrorBanner error={visibleError(m.error)} />
+      {saved && <Banner kind="info">Настройки сохранены. Даты в консоли показываются в выбранном поясе.</Banner>}
+      {canManage ? (
+        <div>
+          <Button type="submit" variant="primary" disabled={m.isPending || f.timezone.trim() === "" || !re.ready}>
+            Сохранить настройки
+          </Button>
+        </div>
+      ) : (
+        <p className="text-sm text-muted">Менять эти настройки может администратор безопасности.</p>
+      )}
+    </form>
   );
 }
 

@@ -294,14 +294,23 @@ func (s *Service) CreateApplication(ctx context.Context, by By, in AppInput, pro
 	if prot == nil {
 		prot = &ProtectionInput{}
 	}
-	pr, err := s.protection(ctx, *prot, nil)
+	// Режим хранения без явного выбора — умолчание установки (Н42 ревью 2.r4).
+	storage, err := s.storageDefault(ctx)
+	if err != nil {
+		return Application{}, err
+	}
+	pin := *prot
+	if pin.Storage == "" {
+		pin.Storage = storage
+	}
+	pr, err := s.protection(ctx, pin, nil)
 	if err != nil {
 		var ie *InputError
 		if !errors.As(err, &ie) {
 			return Application{}, err
 		}
 		errs = append(errs, ie.Errs...)
-		pr.Storage = DefaultStorage
+		pr.Storage = storage
 	}
 	a := Application{OrgID: s.orgID, Slug: in.Slug, Protection: pr, FailMode: DefaultFailMode}
 	in.apply(&a)
@@ -319,7 +328,10 @@ func (s *Service) CreateApplication(ctx context.Context, by By, in AppInput, pro
 	if err := s.checkBundle(ctx, nil, a); err != nil {
 		return Application{}, err
 	}
-	base := Application{Protection: Protection{PolicyMode: pr.PolicyMode, Storage: DefaultStorage, Policy: pr.Policy},
+	// Повторная проверка — только за ослабление, выбранное явно: умолчание
+	// установки уже подтвердил администратор безопасности. В журнале
+	// ослаблением отмечается и режим none или full из умолчания.
+	base := Application{Protection: Protection{PolicyMode: pr.PolicyMode, Storage: storage, Policy: pr.Policy},
 		FailMode: DefaultFailMode}
 	weak := weakening(guardOf(base, true), guardOf(a, true))
 	if weak {
@@ -333,7 +345,7 @@ func (s *Service) CreateApplication(ctx context.Context, by By, in AppInput, pro
 	now := s.now()
 	a.CreatedAt, a.CreatedBy, a.UpdatedAt, a.UpdatedBy = now, by.ref(), now, by.ref()
 	d := appDetails(a)
-	d["weakening"] = weak
+	d["weakening"] = weak || a.Storage != DefaultStorage
 	if err := s.store.CreateApplication(ctx, a, by.entry("application.create", "application", a.ID, d)); err != nil {
 		return Application{}, err
 	}
@@ -425,6 +437,12 @@ func (s *Service) SetProtection(ctx context.Context, by By, id string, in Protec
 	if err := s.checkBundle(ctx, &cur, next); err != nil {
 		return Application{}, err
 	}
+	// Сравнение политик — до транзакции (хранилище в памяти держит общую
+	// блокировку); политику успели сменить — переход считается ослаблением.
+	polWeak, err := s.weakerPolicy(ctx, cur.Policy, next.Policy)
+	if err != nil {
+		return Application{}, err
+	}
 	a, err := s.store.UpdateApplication(ctx, s.orgID, id, func(a *Application) (audit.Entry, error) {
 		pr, err := s.protection(ctx, in, &a.Protection)
 		if err != nil {
@@ -437,7 +455,10 @@ func (s *Service) SetProtection(ctx context.Context, by By, id string, in Protec
 		if guardEqual(before, after) {
 			return audit.Entry{}, errUnchanged
 		}
-		weak := weakening(before, after)
+		if before.Policy != cur.Policy || after.Policy != next.Policy {
+			polWeak = before.Policy != after.Policy
+		}
+		weak := weakening(before, after) || polWeak
 		if weak {
 			if err := by.confirm(ctx); err != nil {
 				return audit.Entry{}, err

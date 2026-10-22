@@ -99,6 +99,12 @@ type Gateway struct {
 	// BundleKeysOK — ключи проверки пакетов шлюза совпадают с ключом подписи
 	// сервера (В19 ревью 2.r4); nil — шлюз их не присылал.
 	BundleKeysOK *bool
+	// VerifyRequestedAt — администратор запросил проверку целостности, итога
+	// ещё нет (Н38 ревью 2.r4); нулевое — запроса нет.
+	VerifyRequestedAt time.Time
+	// StartedAt — время запуска процесса шлюза из heartbeat (В27 ревью
+	// 2.r5); нулевое — шлюз остановлен корректно или не сообщал.
+	StartedAt time.Time
 }
 
 // Rollback — шлюз работает на выпуске старше того, что уже проверялся
@@ -169,6 +175,30 @@ type Heartbeat struct {
 	Integrity *CheckReport
 	// BundleKeysOK — итог сверки ключей проверки пакетов; nil — не обновляется.
 	BundleKeysOK *bool
+	// VerifyRequest — запрос проверки, на который выполнена проверка с итогом
+	// Integrity (Н38 ревью 2.r4); нулевое — шлюз не сообщил.
+	VerifyRequest time.Time
+	// StartedAt — время запуска процесса шлюза (В27 ревью 2.r5); нулевое —
+	// шлюз не сообщил (прежняя версия).
+	StartedAt time.Time
+	// Stopping — последний heartbeat при корректной остановке шлюза.
+	Stopping bool
+}
+
+// TouchChange — что heartbeat изменил в строке шлюза; по нему сервис
+// решает, что записать в журнал аудита в той же транзакции.
+type TouchChange struct {
+	// VerifyRequested — текущий запрос проверки (нулевое — запроса нет);
+	// VerifyDone — шлюз прислал итог на этот запрос, запрос снят.
+	VerifyRequested time.Time
+	VerifyDone      bool
+	// Started — запущен новый процесс шлюза: StartedAt отличается от
+	// сохранённого. PrevStartedAt — прежний запуск, о чьей остановке шлюз
+	// не сообщил (нулевое — такого нет).
+	Started       bool
+	PrevStartedAt time.Time
+	// Stopped — шлюз сообщил о корректной остановке записанного запуска.
+	Stopped bool
 }
 
 // Store — хранилище реестра (миграция 0007_gateways). Рабочая реализация —
@@ -186,8 +216,14 @@ type Store interface {
 		issue func(Gateway) (aisecCrypto.CertInfo, error), rec func(Gateway) audit.Entry) (Gateway, error)
 	// BySerial — шлюз, чей действующий сертификат имеет этот серийный номер.
 	BySerial(ctx context.Context, serial string) (Gateway, error)
-	// Touch отмечает heartbeat активного шлюза.
-	Touch(ctx context.Context, id string, hb Heartbeat) error
+	// Touch отмечает heartbeat активного шлюза. Если шлюз прислал итог
+	// целостности на текущий запрос проверки, запрос снимается. Новый
+	// StartedAt запоминается, Stopping с тем же StartedAt его стирает.
+	// Записи audits(изменение) пишутся в той же транзакции.
+	Touch(ctx context.Context, id string, hb Heartbeat, audits func(TouchChange) []audit.Entry) (TouchChange, error)
+	// RequestVerify отмечает запрос проверки у всех активных шлюзов
+	// организации и пишет rec(число шлюзов) одной транзакцией.
+	RequestVerify(ctx context.Context, orgID string, at time.Time, rec func(n int) audit.Entry) (int, error)
 	// Revoke отзывает шлюз по имени и гасит его токены.
 	Revoke(ctx context.Context, orgID, name string, now time.Time, rec func(Gateway) audit.Entry) (Gateway, error)
 	// List — все шлюзы организации по имени.
@@ -545,6 +581,14 @@ type HeartbeatInput struct {
 	// BundleKeys — KeyID ключей проверки пакетов шлюза (-bundle-pub, В19
 	// ревью 2.r4); пусто — шлюз их не присылает (прежняя версия).
 	BundleKeys []string
+	// VerifyRequest — время запроса проверки из консоли, на который шлюз
+	// выполнил проверку с итогом Integrity (Н38 ревью 2.r4); нулевое — нет.
+	VerifyRequest time.Time
+	// StartedAt — время запуска процесса шлюза, Stopping — шлюз
+	// останавливается (В27 ревью 2.r5, РСБ.2); нулевое StartedAt — шлюз
+	// прежней версии.
+	StartedAt time.Time
+	Stopping  bool
 }
 
 // Пределы итогов проверок в heartbeat.
@@ -607,6 +651,12 @@ func (in HeartbeatInput) Validate() error {
 	if err := in.Integrity.validate("integrity", true); err != nil {
 		return err
 	}
+	if !in.VerifyRequest.IsZero() && in.Integrity == nil {
+		return fmt.Errorf("%w: verify_request — только вместе с итогом integrity", ErrInvalidRequest)
+	}
+	if in.Stopping && in.StartedAt.IsZero() {
+		return fmt.Errorf("%w: stopping — только вместе с started_at", ErrInvalidRequest)
+	}
 	if in.Version == "" || len(in.Version) > maxVersion {
 		return fmt.Errorf("%w: version — от 1 до %d символов", ErrInvalidRequest, maxVersion)
 	}
@@ -636,37 +686,117 @@ func (in HeartbeatInput) Validate() error {
 }
 
 // Heartbeat отмечает контакт шлюза. Чаще HeartbeatMinInterval — ErrTooFrequent.
-func (s *Service) Heartbeat(ctx context.Context, gatewayID string, in HeartbeatInput, ip netip.Addr) (time.Time, error) {
+func (s *Service) Heartbeat(ctx context.Context, gatewayID string, in HeartbeatInput, ip netip.Addr) (HeartbeatResult, error) {
 	if err := in.Validate(); err != nil {
-		return time.Time{}, err
+		return HeartbeatResult{}, err
 	}
 	now := s.clock().UTC()
 	for _, r := range []*CheckReport{in.Selftest, in.Integrity} {
 		if r != nil && (r.At.After(now.Add(maxReportFuture)) || r.ManifestCreated.After(now.Add(maxReportFuture))) {
-			return time.Time{}, fmt.Errorf("%w: время проверки в будущем", ErrInvalidRequest)
+			return HeartbeatResult{}, fmt.Errorf("%w: время проверки в будущем", ErrInvalidRequest)
 		}
 	}
+	if in.StartedAt.After(now.Add(maxReportFuture)) {
+		return HeartbeatResult{}, fmt.Errorf("%w: started_at в будущем", ErrInvalidRequest)
+	}
+	// PostgreSQL хранит микросекунды: шлюз присылает то же время в каждом
+	// heartbeat, сравнение идёт после того же округления.
+	in.StartedAt = in.StartedAt.Truncate(time.Microsecond)
 	// Сверка ключей проверки пакетов с ключом подписи сервера (В19).
 	var keysOK *bool
 	if k := s.bundleKeys.Load(); k != nil && len(in.BundleKeys) > 0 {
 		ok := k.Match(in.BundleKeys)
 		keysOK = &ok
 	}
+	// Heartbeat остановки идёт сразу за обычным: у него свой предел частоты,
+	// чтобы остановка записалась, а поток таких heartbeat не обходил предел.
+	key := gatewayID
+	if in.Stopping {
+		key += "\x00stopping"
+	}
 	s.mu.Lock()
-	if last, ok := s.lastHB[gatewayID]; ok && now.Sub(last) < s.minHB {
+	if last, ok := s.lastHB[key]; ok && now.Sub(last) < s.minHB {
 		s.mu.Unlock()
-		return time.Time{}, ErrTooFrequent
+		return HeartbeatResult{}, ErrTooFrequent
 	}
 	prune(s.lastHB, now, s.minHB)
-	s.lastHB[gatewayID] = now
+	s.lastHB[key] = now
 	s.mu.Unlock()
-	if err := s.store.Touch(ctx, gatewayID, Heartbeat{
+	ch, err := s.store.Touch(ctx, gatewayID, Heartbeat{
 		Version: in.Version, BundleETag: in.BundleETag, Addr: ip, At: now, Selftest: in.Selftest, Integrity: in.Integrity,
-		BundleKeysOK: keysOK,
-	}); err != nil {
-		return time.Time{}, err
+		BundleKeysOK: keysOK, VerifyRequest: in.VerifyRequest, StartedAt: in.StartedAt, Stopping: in.Stopping,
+	}, func(ch TouchChange) []audit.Entry {
+		return s.heartbeatEntries(gatewayID, in, ip, ch)
+	})
+	if err != nil {
+		return HeartbeatResult{}, err
 	}
-	return now, nil
+	out := HeartbeatResult{At: now}
+	if !ch.VerifyDone {
+		out.VerifyRequestedAt = ch.VerifyRequested
+	}
+	return out, nil
+}
+
+// heartbeatEntries — записи аудита по итогам heartbeat: проверка
+// целостности по команде (Н38 ревью 2.r4), запуск и остановка шлюза
+// (РСБ.2, В27 ревью 2.r5).
+func (s *Service) heartbeatEntries(gatewayID string, in HeartbeatInput, ip netip.Addr, ch TouchChange) []audit.Entry {
+	actor := audit.Actor{Type: audit.ActorSystem, ID: "gateway:" + gatewayID}
+	obj := audit.Object{Type: "component", ID: "gateway:" + gatewayID}
+	var out []audit.Entry
+	if ch.VerifyDone {
+		r := in.Integrity
+		res := audit.ResultSuccess
+		if !r.OK {
+			res = audit.ResultFailure
+		}
+		out = append(out, audit.Entry{
+			OrgID: s.orgID, Actor: actor, Action: "integrity.check", Object: obj, Result: res, SourceIP: ip,
+			Details: map[string]any{"trigger": "manual", "requested_at": ch.VerifyRequested.UTC().Format(time.RFC3339Nano),
+				"reason": r.Reason, "failed": r.Failed, "manifest_version": r.ManifestVersion, "test_signed": r.TestSigned},
+		})
+	}
+	started := in.StartedAt.UTC().Format(time.RFC3339Nano)
+	if ch.Started {
+		d := map[string]any{"component": "gateway", "version": in.Version, "started_at": started}
+		// Прежний запуск без записи об остановке — аварийная остановка или
+		// потеря связи при остановке.
+		if !ch.PrevStartedAt.IsZero() {
+			d["previous_started_at"] = ch.PrevStartedAt.UTC().Format(time.RFC3339Nano)
+			d["previous_stop_recorded"] = false
+		}
+		out = append(out, audit.Entry{OrgID: s.orgID, Actor: actor, Action: "component.start", Object: obj,
+			Result: audit.ResultSuccess, SourceIP: ip, Details: d})
+	}
+	if ch.Stopped {
+		out = append(out, audit.Entry{OrgID: s.orgID, Actor: actor, Action: "component.stop", Object: obj,
+			Result: audit.ResultSuccess, SourceIP: ip,
+			Details: map[string]any{"component": "gateway", "version": in.Version, "started_at": started}})
+	}
+	return out
+}
+
+// HeartbeatResult — ответ на heartbeat: время сервера и запрос проверки
+// целостности (нулевое — запроса нет).
+type HeartbeatResult struct {
+	At                time.Time
+	VerifyRequestedAt time.Time
+}
+
+// RequestVerify — проверка целостности всех активных шлюзов по команде
+// администратора (Н38 ревью 2.r4, ОЦЛ.2): признак уходит шлюзам в ответах
+// heartbeat, итог каждого шлюза пишется в журнал аудита, когда придёт.
+// Возвращает число шлюзов, которым передан запрос.
+func (s *Service) RequestVerify(ctx context.Context, by audit.Actor, ip netip.Addr) (int, error) {
+	at := s.clock().UTC().Truncate(time.Microsecond)
+	return s.store.RequestVerify(ctx, s.orgID, at, func(n int) audit.Entry {
+		return audit.Entry{
+			OrgID: s.orgID, Actor: by, Action: "integrity.verify_requested", SourceIP: ip,
+			Object: audit.Object{Type: "component", ID: "gateways"}, Result: audit.ResultSuccess,
+			Details: map[string]any{"gateways": n, "requested_at": at.Format(time.RFC3339Nano)},
+		}
+	})
 }
 
 // HeartbeatMinInterval — минимальный промежуток между heartbeat шлюза.
@@ -709,3 +839,20 @@ func (s *Service) AcceptRollback(ctx context.Context, name string, actor audit.A
 
 // List — шлюзы организации.
 func (s *Service) List(ctx context.Context) ([]Gateway, error) { return s.store.List(ctx, s.orgID) }
+
+// startChange — запуск и остановка по heartbeat (общее для хранилищ):
+// prev — сохранённое время запуска (нулевое — нет). set — StartedAt
+// строки меняется на next (нулевое — стирается).
+func startChange(prev time.Time, hb Heartbeat, ch *TouchChange) (next time.Time, set bool) {
+	switch {
+	case hb.Stopping:
+		if !prev.IsZero() && prev.Equal(hb.StartedAt) {
+			ch.Stopped = true
+			return time.Time{}, true
+		}
+	case !hb.StartedAt.IsZero() && !prev.Equal(hb.StartedAt):
+		ch.Started, ch.PrevStartedAt = true, prev
+		return hb.StartedAt, true
+	}
+	return time.Time{}, false
+}

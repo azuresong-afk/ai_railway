@@ -304,6 +304,38 @@ func (s *PGStore) SetupFirstUser(ctx context.Context, tokenHash []byte, hashAlg 
 	})
 }
 
+// InstallSettings возвращает настройки установки; нет строки — ok = false.
+func (s *PGStore) InstallSettings(ctx context.Context, orgID string) (InstallSettings, bool, error) {
+	ctx, cancel := pgCtx(ctx)
+	defer cancel()
+	var cfg InstallSettings
+	err := s.db.QueryRow(ctx, "SELECT timezone, retention_mode FROM install_settings WHERE org_id = $1", orgID).
+		Scan(&cfg.Timezone, &cfg.RetentionMode)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return InstallSettings{}, false, nil
+	}
+	if err != nil {
+		return InstallSettings{}, false, fmt.Errorf("настройки установки: %w", err)
+	}
+	return cfg, true, nil
+}
+
+// SetInstallSettings сохраняет настройки установки и запись аудита одной
+// транзакцией.
+func (s *PGStore) SetInstallSettings(ctx context.Context, orgID string, cfg InstallSettings, now time.Time, rec audit.Entry) error {
+	ctx, cancel := pgCtx(ctx)
+	defer cancel()
+	return s.inTx(ctx, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `INSERT INTO install_settings (org_id, timezone, retention_mode, updated_at)
+			VALUES ($1, $2, $3, $4) ON CONFLICT (org_id) DO UPDATE SET timezone = EXCLUDED.timezone,
+			retention_mode = EXCLUDED.retention_mode, updated_at = EXCLUDED.updated_at`,
+			orgID, cfg.Timezone, cfg.RetentionMode, now); err != nil {
+			return fmt.Errorf("настройки установки: запись: %w", err)
+		}
+		return s.record(ctx, tx, rec)
+	})
+}
+
 // RecordFailure считает неудачу под блокировкой строки: параллельные
 // неудачи не теряются, блокировка наступает ровно один раз, а записи аудита
 // фиксируются вместе со счётчиком.

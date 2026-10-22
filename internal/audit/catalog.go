@@ -34,6 +34,7 @@ var catalog = []Event{
 	{"gateway.auth_failed", "Неудачная аутентификация на шлюзе", true},
 	// Учётные записи (РСБ.2, УПД.5, ЗИ.4).
 	{"setup.completed", "Первичная настройка: создан первый администратор", true},
+	{"setup.settings_changed", "Изменение часового пояса и режима хранения по умолчанию", true},
 	{"user.create", "Создание учётной записи", true},
 	{"user.deactivate", "Деактивация учётной записи", true},
 	{"user.activate", "Повторная активация учётной записи", true},
@@ -83,8 +84,10 @@ var catalog = []Event{
 	{"system.error", "Ошибка или сбой", true},
 	{"system.init", "Создание ключей установки (aisec-cli init)", true},
 	{"system.audit_key", "Создание ключа подписи журнала аудита (aisec-cli init -add-audit-key)", true},
+	{"system.setup_token_reissued", "Повторный выпуск токена первичной настройки (aisec-cli init -reissue-setup-token)", true},
 	// Целостность и самотестирование (РСБ.2, ОЦЛ).
 	{"integrity.check", "Результат контроля целостности", true},
+	{"integrity.verify_requested", "Запрос проверки целостности шлюзов из консоли", true},
 	{"integrity.rollback_accepted", "Принят откат на более старый выпуск", true},
 	{"selftest.result", "Результат самотестирования", true},
 	// Уведомления раздела 7 на этапе 2: смена состояния условия (ВРМ.1, РСБ.5, ОЦЛ.5).

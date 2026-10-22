@@ -17,6 +17,7 @@ export const meOf = (session_state: string, permissions: string[] = ["session", 
   user,
   session_state,
   permissions,
+  timezone: "Europe/Moscow",
 });
 
 const problem = (status: number, code: string, detail: string) => ({

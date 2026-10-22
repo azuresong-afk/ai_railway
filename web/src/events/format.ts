@@ -1,5 +1,7 @@
 // Форматы по ТЗ 6.7: ДД.ММ.ГГГГ, 24-часовое время, пробел в разрядах, десятичная запятая.
-const abs = new Intl.DateTimeFormat("ru-RU", {
+// Время показывается в часовом поясе из настроек установки (ВРМ.2, В26 ревью 2.r5): его отдаёт /me,
+// а не браузер. До входа — пояс браузера.
+const absOptions: Intl.DateTimeFormatOptions = {
   day: "2-digit",
   month: "2-digit",
   year: "numeric",
@@ -7,7 +9,23 @@ const abs = new Intl.DateTimeFormat("ru-RU", {
   minute: "2-digit",
   second: "2-digit",
   hour12: false,
-});
+};
+let zone: string | undefined;
+let abs = new Intl.DateTimeFormat("ru-RU", absOptions);
+
+// Часовой пояс показа (имя IANA). Неизвестное браузеру имя не ломает консоль: остаётся пояс браузера.
+export function setDisplayTimezone(tz: string | undefined) {
+  if (tz === zone) return;
+  try {
+    abs = new Intl.DateTimeFormat("ru-RU", { ...absOptions, timeZone: tz });
+    zone = tz;
+  } catch {
+    abs = new Intl.DateTimeFormat("ru-RU", absOptions);
+    zone = undefined;
+  }
+}
+
+export const displayTimezone = (): string | undefined => zone;
 const rel = new Intl.RelativeTimeFormat("ru-RU", { numeric: "auto" });
 const num = new Intl.NumberFormat("ru-RU");
 

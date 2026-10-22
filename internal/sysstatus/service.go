@@ -91,8 +91,9 @@ type Options struct {
 	Clock func() time.Time
 	// Sync — чтение состояния часов ОС; по умолчанию SystemClock.
 	Sync ClockReader
-	// Timezone — часовой пояс для показа (ВРМ.2); nil — UTC.
-	Timezone *time.Location
+	// Timezone — часовой пояс для показа из настроек установки (ВРМ.2,
+	// H-Р10); nil — UTC.
+	Timezone func(ctx context.Context) (string, error)
 	// StorageLimit и WarnPercent — РСБ.5; ноль — значения по умолчанию.
 	StorageLimit int64
 	WarnPercent  int
@@ -128,7 +129,7 @@ func New(o Options) (*Service, error) {
 		o.Sync = SystemClock
 	}
 	if o.Timezone == nil {
-		o.Timezone = time.UTC
+		o.Timezone = func(context.Context) (string, error) { return "UTC", nil }
 	}
 	if o.Logger == nil {
 		o.Logger = slog.Default()
@@ -288,7 +289,15 @@ func (s *Service) collect(ctx context.Context) collected {
 
 	// Время (ВРМ.1–2).
 	clk := s.o.Sync()
-	c.st.Time = TimeStatus{ServerTime: now, Timezone: s.o.Timezone.String(), Sync: clk.Sync, ErrorMicros: clk.ErrorMicros}
+	c.st.Time = TimeStatus{ServerTime: now, Sync: clk.Sync, ErrorMicros: clk.ErrorMicros}
+	tctx, cancel := s.dbCtx(ctx)
+	tz, err := s.o.Timezone(tctx)
+	cancel()
+	if err != nil {
+		s.unavailable(&c, "timezone", err)
+	} else {
+		c.st.Time.Timezone = tz
+	}
 
 	// Заполнение журнала аудита (РСБ.5).
 	c.st.Storage = StorageStatus{LimitBytes: s.o.StorageLimit, WarnPercent: s.o.WarnPercent}

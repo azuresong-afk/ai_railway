@@ -8,6 +8,7 @@ import { EmptyState, Panel, Table, Td, Th } from "../ui/Layout";
 import { type Application, appsApi } from "./api";
 import { ConnectWizard } from "./ConnectWizard";
 import { KeysPanel } from "./KeysPanel";
+import { ProtectionDialog } from "./ProtectionDialog";
 
 const envText = { prod: "Промышленная", test: "Тестовая" } as const;
 const modeText = { monitor: "Мониторинг", enforce: "Защита" } as const;
@@ -22,6 +23,8 @@ export function AppsScreen({ me }: { me: Me }) {
   const [wizard, setWizard] = useState(false);
   const [selected, setSelected] = useState<string>();
   const [archive, setArchive] = useState<Application>();
+  const [protect, setProtect] = useState<Application>();
+  const mfa = me.mfa?.enabled === true;
   const archiveM = useMutation({
     mutationFn: (a: Application) => appsApi.archive(a.id),
     onSuccess: () => {
@@ -90,6 +93,11 @@ export function AppsScreen({ me }: { me: Me }) {
                       <Button onClick={() => setSelected(a.id === selected ? undefined : a.id)} aria-label={`Ключи приложения ${a.name}`}>
                         Ключи
                       </Button>
+                      {has("applications.policy") && a.status === "active" && (
+                        <Button onClick={() => setProtect(a)} aria-label={`Защита приложения ${a.name}`}>
+                          Защита
+                        </Button>
+                      )}
                       {has("applications.manage") && a.status === "active" && (
                         <Button
                           variant="danger"
@@ -112,7 +120,14 @@ export function AppsScreen({ me }: { me: Me }) {
       )}
       {current && <KeysPanel key={current.id} app={current} canKey={has("app_keys.manage")} />}
 
-      <ConnectWizard open={wizard} onClose={() => setWizard(false)} canPolicy={has("applications.policy")} canKey={has("app_keys.manage")} />
+      {protect && <ProtectionDialog key={protect.id} app={protect} mfa={mfa} onClose={() => setProtect(undefined)} />}
+      <ConnectWizard
+        open={wizard}
+        onClose={() => setWizard(false)}
+        canPolicy={has("applications.policy")}
+        canKey={has("app_keys.manage")}
+        mfa={mfa}
+      />
       <ConfirmDialog
         open={archive !== undefined}
         onOpenChange={(v) => !v && setArchive(undefined)}

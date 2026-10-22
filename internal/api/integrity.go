@@ -65,6 +65,9 @@ type IntegrityCheck struct {
 	CheckedFiles    int                `json:"checked_files"`
 	Failures        []IntegrityFailure `json:"failures"`
 	Omitted         int                `json:"omitted"`
+	// GatewaysRequested — только в ответе на проверку по команде: скольким
+	// шлюзам передан запрос проверки (Н38 ревью 2.r4).
+	GatewaysRequested *int `json:"gateways_requested,omitempty"`
 }
 
 // IntegrityList — ответ GET /api/v1/system/integrity.
@@ -136,5 +139,18 @@ func (d Deps) integrityVerify(w http.ResponseWriter, r *http.Request) {
 		WriteProblem(w, errInternal())
 		return
 	}
-	WriteJSON(w, http.StatusOK, integrityView(res))
+	v := integrityView(res)
+	// Шлюзы проверяются по запросу в ответе heartbeat; итог каждого
+	// приходит позже и пишется в журнал аудита (Н38 ревью 2.r4).
+	if d.Gateways != nil {
+		n, err := d.Gateways.RequestVerify(ctx, by, clientAddr(r))
+		if err != nil {
+			d.Logger.Error("запрос проверки шлюзов не записан", "error", err)
+			WriteProblem(w, NewProblem(http.StatusServiceUnavailable, CodeUnavailable,
+				"Сервер проверен, но запрос проверки шлюзов не записан: база данных недоступна. Повторите позже."))
+			return
+		}
+		v.GatewaysRequested = &n
+	}
+	WriteJSON(w, http.StatusOK, v)
 }

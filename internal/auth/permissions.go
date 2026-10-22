@@ -21,7 +21,11 @@ const (
 	PermSystemRead = "system.read"
 	// PermIntegrityVerify — проверка целостности по команде (ОЦЛ.2, задача
 	// 2.17): при -integrity-action stop нарушение останавливает сервер.
-	PermIntegrityVerify  = "integrity.verify"
+	PermIntegrityVerify = "integrity.verify"
+	// PermSettingsManage — настройки установки: часовой пояс показа и режим
+	// хранения по умолчанию (ВРМ.2, ТЗ 5.5; В26 ревью 2.r5). Режим хранения
+	// — функция безопасности (DM-40).
+	PermSettingsManage   = "settings.manage"
 	PermUsersRead        = "users.read"
 	PermUsersManage      = "users.manage"
 	PermSessionsRead     = "sessions.read"
@@ -91,6 +95,7 @@ func TokenGrantable(perm string) bool {
 var permissionCatalog = []Permission{
 	{Name: PermSystemRead, Title: "Просмотр состояния и версии системы", Group: "Система"},
 	{Name: PermIntegrityVerify, Title: "Запуск проверки целостности", Group: "Система", Security: true},
+	{Name: PermSettingsManage, Title: "Изменение часового пояса и режима хранения по умолчанию", Group: "Система", Security: true},
 	{Name: PermUsersRead, Title: "Просмотр учётных записей", Group: "Пользователи"},
 	{Name: PermUsersManage, Title: "Создание, деактивация и сброс пароля учётных записей", Group: "Пользователи", Security: true},
 	{Name: PermSessionsRead, Title: "Просмотр сессий пользователей", Group: "Пользователи"},

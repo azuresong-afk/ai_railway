@@ -202,3 +202,30 @@ func uniform(r aisecCrypto.Random, n int) (int, error) {
 		}
 	}
 }
+
+// WeakenedFields — настройки, которые изменение before → after ослабляет
+// (В24 ревью 2.r5): длина, классы и история пароля меньше; срок пароля
+// больше или бессрочный; порог блокировки выше; блокировка короче или
+// вместо «до разблокировки администратором» — по времени; бездействие,
+// число сессий и срок временного пароля больше; второй фактор перестал быть
+// обязательным для всех. Срок предупреждения о смене пароля защиту не меняет.
+func WeakenedFields(before, after Policy) []string {
+	var out []string
+	add := func(weak bool, name string) {
+		if weak {
+			out = append(out, name)
+		}
+	}
+	add(after.PasswordMinLength < before.PasswordMinLength, "password_min_length")
+	add(after.PasswordMinClasses < before.PasswordMinClasses, "password_min_classes")
+	add(after.PasswordHistory < before.PasswordHistory, "password_history")
+	add(before.PasswordMaxAgeDays != 0 && (after.PasswordMaxAgeDays == 0 || after.PasswordMaxAgeDays > before.PasswordMaxAgeDays),
+		"password_max_age_days")
+	add(after.LockoutThreshold > before.LockoutThreshold, "lockout_threshold")
+	add(after.LockoutMinutes != 0 && (before.LockoutMinutes == 0 || after.LockoutMinutes < before.LockoutMinutes), "lockout_minutes")
+	add(after.SessionIdleMinutes > before.SessionIdleMinutes, "session_idle_minutes")
+	add(after.SessionMaxPerUser > before.SessionMaxPerUser, "session_max_per_user")
+	add(after.TempPasswordHours > before.TempPasswordHours, "temp_password_hours")
+	add(before.MFARequiredAll && !after.MFARequiredAll, "mfa_required_all")
+	return out
+}

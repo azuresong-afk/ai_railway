@@ -6,6 +6,7 @@ import { MfaSetup } from "./auth/MfaSetup";
 import { MfaVerify } from "./auth/MfaVerify";
 import { PasswordChange } from "./auth/PasswordChange";
 import { Setup } from "./auth/Setup";
+import { setDisplayTimezone } from "./events/format";
 import { Shell } from "./shell/Shell";
 import { Banner } from "./ui/Layout";
 
@@ -60,6 +61,8 @@ function Gate() {
       </>
     );
   }
+  // Все даты консоли — в часовом поясе установки (ВРМ.2), а не браузера.
+  setDisplayTimezone(data.timezone);
   const out = () => logout.mutate();
   switch (data.session_state) {
     case "mfa_pending":

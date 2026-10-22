@@ -26,6 +26,8 @@ func authRoutes(d Deps) []Route {
 		{Method: http.MethodGet, Path: "/api/v1/me", Permission: auth.PermSession, Handler: needAuth(d, d.me)},
 		{Method: http.MethodGet, Path: "/api/v1/auth/policy", Permission: auth.PermAuthPolicyRead, Handler: needAuth(d, d.getPolicy)},
 		{Method: http.MethodPut, Path: "/api/v1/auth/policy", Permission: auth.PermAuthPolicyManage, MaxBody: authMaxBody, Handler: needAuth(d, d.putPolicy)},
+		{Method: http.MethodGet, Path: "/api/v1/system/settings", Permission: auth.PermSystemRead, Handler: needAuth(d, d.getInstallSettings)},
+		{Method: http.MethodPut, Path: "/api/v1/system/settings", Permission: auth.PermSettingsManage, MaxBody: authMaxBody, Handler: needAuth(d, d.putInstallSettings)},
 	}
 }
 
@@ -122,6 +124,9 @@ type MeResponse struct {
 	// Permissions — разрешения, действующие в сессии (консоль скрывает
 	// недоступные действия; права всё равно проверяет сервер).
 	Permissions []string `json:"permissions"`
+	// Timezone — часовой пояс показа времени из настроек установки (ВРМ.2,
+	// В26 ревью 2.r5): консоль показывает все даты в нём.
+	Timezone string `json:"timezone"`
 }
 
 // MFAStatus — второй фактор пользователя (ИАФ.5).
@@ -185,6 +190,12 @@ func (d Deps) writeMe(w http.ResponseWriter, r *http.Request, c auth.Caller) {
 		return
 	}
 	resp.MFA = MFAStatus{Enabled: mfa.Enabled, Required: mfa.Required}
+	cfg, err := d.Auth.InstallSettings(r.Context())
+	if err != nil {
+		WriteProblem(w, authProblem(d.Logger, err))
+		return
+	}
+	resp.Timezone = cfg.Timezone
 	WriteJSON(w, http.StatusOK, resp)
 }
 
@@ -261,6 +272,8 @@ type policyRequest struct {
 	SessionMaxPerUser  *int  `json:"session_max_per_user"`
 	TempPasswordHours  *int  `json:"temp_password_hours"`
 	MFARequiredAll     *bool `json:"mfa_required_all"`
+	// Повторная проверка, если изменение ослабляет вход (В24 ревью 2.r5).
+	reauthFields
 }
 
 func (d Deps) putPolicy(w http.ResponseWriter, r *http.Request) {
@@ -302,11 +315,55 @@ func (d Deps) putPolicy(w http.ResponseWriter, r *http.Request) {
 		WriteProblem(w, Invalid("Укажите все настройки входа.", missing...))
 		return
 	}
-	if err := d.Auth.SetPolicy(r.Context(), c, p); err != nil {
+	if err := d.Auth.SetPolicy(r.Context(), c, p, req.Password, req.Code); err != nil {
 		WriteProblem(w, authProblem(d.Logger, err))
 		return
 	}
 	WriteJSON(w, http.StatusOK, p)
+}
+
+// InstallSettingsView — настройки установки (ВРМ.2, ТЗ 5.5).
+type InstallSettingsView struct {
+	Timezone      string `json:"timezone"`
+	RetentionMode string `json:"retention_mode"`
+}
+
+func (d Deps) getInstallSettings(w http.ResponseWriter, r *http.Request) {
+	cfg, err := d.Auth.InstallSettings(r.Context())
+	if err != nil {
+		WriteProblem(w, authProblem(d.Logger, err))
+		return
+	}
+	WriteJSON(w, http.StatusOK, InstallSettingsView{Timezone: cfg.Timezone, RetentionMode: cfg.RetentionMode})
+}
+
+// installSettingsRequest — пустое или пропущенное поле оставляет прежнее
+// значение. Переход умолчания хранения на none или full — с повторной
+// проверкой (В26 ревью 2.r5).
+type installSettingsRequest struct {
+	Timezone      string `json:"timezone"`
+	RetentionMode string `json:"retention_mode"`
+	reauthFields
+}
+
+func (d Deps) putInstallSettings(w http.ResponseWriter, r *http.Request) {
+	c, ok := callerFrom(r)
+	if !ok {
+		WriteProblem(w, errForbidden())
+		return
+	}
+	var req installSettingsRequest
+	if p := DecodeJSON(w, r, &req, authMaxBody); p != nil {
+		WriteProblem(w, p)
+		return
+	}
+	cfg, err := d.Auth.SetInstallSettings(r.Context(), c,
+		auth.InstallSettings{Timezone: req.Timezone, RetentionMode: req.RetentionMode}, req.Password, req.Code)
+	if err != nil {
+		WriteProblem(w, authProblem(d.Logger, err))
+		return
+	}
+	WriteJSON(w, http.StatusOK, InstallSettingsView{Timezone: cfg.Timezone, RetentionMode: cfg.RetentionMode})
 }
 
 // SetupStatus — нужна ли первичная настройка.

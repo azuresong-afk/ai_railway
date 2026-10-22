@@ -104,12 +104,13 @@ func TestLoadConfigInternalAPI(t *testing.T) {
 	}
 }
 
-// Настройки «Состояния системы» (задача 2.20, ВРМ.2, РСБ.5): умолчания,
-// окружение, флаг важнее окружения, отказ на неверных значениях.
+// Настройки «Состояния системы» (задача 2.20, РСБ.5): умолчания, окружение,
+// флаг важнее окружения, отказ на неверных значениях. Флага -timezone нет:
+// часовой пояс — в настройках установки (H-Р10, В26 ревью 2.r5).
 func TestLoadConfigStatus(t *testing.T) {
 	base := map[string]string{"AISEC_SERVER_TLS_CERT": "c", "AISEC_SERVER_TLS_KEY": "k", "AISEC_SERVER_KEYS_DIR": "/keys", "AISEC_DATABASE_URL": "postgres://u@h/d"}
 	cfg, err := loadConfig(nil, env(base), io.Discard)
-	if err != nil || cfg.Timezone.String() != "UTC" || cfg.AuditStorageLimit != 20<<30 || cfg.AuditStorageWarnPercent != 80 {
+	if err != nil || cfg.AuditStorageLimit != 20<<30 || cfg.AuditStorageWarnPercent != 80 {
 		t.Fatalf("умолчания: %+v %v", cfg, err)
 	}
 	with := func(k, v string) map[string]string {
@@ -119,25 +120,19 @@ func TestLoadConfigStatus(t *testing.T) {
 		}
 		return m
 	}
-	cfg, err = loadConfig(nil, env(with("AISEC_SERVER_TIMEZONE", "Europe/Moscow")), io.Discard)
-	if err != nil || cfg.Timezone.String() != "Europe/Moscow" {
-		t.Fatalf("часовой пояс из окружения: %v %v", cfg, err)
-	}
-	cfg, err = loadConfig([]string{"-timezone", "UTC", "-audit-storage-limit", "1073741824", "-audit-storage-warn-percent", "90"},
-		env(with("AISEC_SERVER_TIMEZONE", "Europe/Moscow")), io.Discard)
-	if err != nil || cfg.Timezone.String() != "UTC" || cfg.AuditStorageLimit != 1<<30 || cfg.AuditStorageWarnPercent != 90 {
+	cfg, err = loadConfig([]string{"-audit-storage-limit", "1073741824", "-audit-storage-warn-percent", "90"},
+		env(with("AISEC_SERVER_AUDIT_STORAGE_WARN_PERCENT", "50")), io.Discard)
+	if err != nil || cfg.AuditStorageLimit != 1<<30 || cfg.AuditStorageWarnPercent != 90 {
 		t.Fatalf("флаги: %+v %v", cfg, err)
 	}
 	for name, args := range map[string][]string{
-		"неизвестный пояс":   {"-timezone", "Mars/Olympus"},
-		"пустой пояс":        {"-timezone", ""},
-		"локальный пояс":     {"-timezone", "Local"},
-		"предел не число":    {"-audit-storage-limit", "много"},
-		"предел мал":         {"-audit-storage-limit", "1024"},
-		"предел отрицателен": {"-audit-storage-limit", "-1"},
-		"порог ноль":         {"-audit-storage-warn-percent", "0"},
-		"порог больше 100":   {"-audit-storage-warn-percent", "101"},
-		"порог не число":     {"-audit-storage-warn-percent", "x"},
+		"флаг часового пояса удалён": {"-timezone", "Europe/Moscow"},
+		"предел не число":            {"-audit-storage-limit", "много"},
+		"предел мал":                 {"-audit-storage-limit", "1024"},
+		"предел отрицателен":         {"-audit-storage-limit", "-1"},
+		"порог ноль":                 {"-audit-storage-warn-percent", "0"},
+		"порог больше 100":           {"-audit-storage-warn-percent", "101"},
+		"порог не число":             {"-audit-storage-warn-percent", "x"},
 	} {
 		if _, err := loadConfig(args, env(base), io.Discard); err == nil {
 			t.Errorf("%s: принято", name)

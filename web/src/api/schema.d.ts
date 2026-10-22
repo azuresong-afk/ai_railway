@@ -243,6 +243,92 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/system/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Настройки установки
+         * @description Право `system.read`. Часовой пояс показа времени (ВРМ.2) и режим хранения содержимого по умолчанию
+         *     для новых приложений (ТЗ 5.5). Задаются при первичной настройке; это единственный источник часового
+         *     пояса (H-Р10, В26 ревью 2.r5). До первичной настройки — умолчания `Europe/Moscow` и `masked`.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Настройки */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["InstallSettings"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+            };
+        };
+        /**
+         * Изменить настройки установки
+         * @description Право `settings.manage` (функция безопасности, только администратор безопасности). Пустое или
+         *     пропущенное поле оставляет прежнее значение. Пишет `setup.settings_changed` со значениями до и после.
+         *     Новый режим хранения по умолчанию `none` или `full` ослабляет защиту (DM-40): нужен текущий пароль
+         *     или код TOTP — без них 400 с полем `password`, неверные — 403 `reauthentication_failed`; запись — с
+         *     `weakening`. Действующие приложения не меняются: умолчание применяется к новым.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["InstallSettingsUpdate"];
+                };
+            };
+            responses: {
+                /** @description Настройки сохранены */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["InstallSettings"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/system/status": {
         parameters: {
             query?: never;
@@ -257,7 +343,7 @@ export interface paths {
          *     присланные шлюзом в heartbeat), итоги контроля целостности и
          *     самотестирования сервера, синхронизация времени ядром ОС (ВРМ.1, без
          *     обращений к NTP; на системах без `adjtimex` — `unknown`), часовой пояс
-         *     показа (ВРМ.2, настройка `-timezone`), отброшенные и отклонённые
+         *     показа (ВРМ.2, настройки установки, `GET /api/v1/system/settings`), отброшенные и отклонённые
          *     события (счётчики шлюзов с их последнего запуска), заполнение журнала
          *     аудита (РСБ.5; предел и порог — настройки), итог последней проверки
          *     цепочки журнала аудита (РСБ.4; сервер проверяет её при запуске и раз в
@@ -367,6 +453,11 @@ export interface paths {
          *     собран раньше манифеста последней успешной проверки — `manifest_rollback`
          *     (откат на старый выпуск, В20 ревью 2.r4). Итог не удалось записать в
          *     журнал аудита — 503 (Н36 ревью 2.r4), итог остаётся в техническом журнале.
+         *     Заодно всем действующим шлюзам передаётся запрос проверки (Н38 ревью 2.r4,
+         *     запись `integrity.verify_requested`, число — `gateways_requested`): шлюз
+         *     получает его в ответе heartbeat, проверяет себя и присылает итог; итог
+         *     каждого шлюза пишется в журнал аудита (`integrity.check`, `trigger: manual`)
+         *     и виден в «Состоянии системы». Запрос не записан — 503.
          */
         post: {
             parameters: {
@@ -816,6 +907,10 @@ export interface paths {
         /**
          * Изменить парольную политику и настройки входа
          * @description Право `auth_policy.manage`. Все поля обязательны. Пишет `auth.policy_changed` со значениями до и после.
+         *     Ослабление (длина, классы или история пароля меньше; срок пароля больше или бессрочный; порог блокировки
+         *     выше; блокировка короче или по времени вместо бессрочной; бездействие, сессии, срок временного пароля
+         *     больше; `mfa_required_all` снят) требует текущий пароль или код TOTP: без них — 400 с полем `password`,
+         *     неверные — 403 `reauthentication_failed`; запись — с `weakening` и списком `weakened` (В24 ревью 2.r5).
          */
         put: {
             parameters: {
@@ -829,7 +924,7 @@ export interface paths {
             };
             requestBody: {
                 content: {
-                    "application/json": components["schemas"]["AuthPolicy"];
+                    "application/json": components["schemas"]["AuthPolicyUpdate"];
                 };
             };
             responses: {
@@ -3656,6 +3751,9 @@ export interface paths {
          *     `base_version` (200), без него — 409. Пустой `non_text` при загрузке — `allow_unchecked`,
          *     как в шлюзе этапа 1. Пишет `policy.import` (сводка изменений и признак `weakening`).
          *     Изменение, после которого пакет конфигурации шлюзов не соберётся (например, правило `lists.*` на словарь, которого нет у приложения), — 422 с причиной и ID приложений в `detail` (В16 ревью 2.r3b).
+         *     Версия, ослабляющая защиту (`weakening`), принимается только в обёртке JSON (`PolicyImport`) с текущим паролем
+         *     или кодом TOTP: без них — 400 с полем `password`, неверные — 403 `reauthentication_failed` (В23 ревью 2.r5).
+         *     В обёртке `base_version` и `comment` берутся из тела, параметры запроса не читаются.
          */
         post: {
             parameters: {
@@ -3675,6 +3773,7 @@ export interface paths {
             requestBody: {
                 content: {
                     "application/yaml": string;
+                    "application/json": components["schemas"]["PolicyImport"];
                 };
             };
             responses: {
@@ -3820,6 +3919,8 @@ export interface paths {
          *     `base_version + 1`. Если с `base_version` политику уже сохранили — 409, чужая правка не
          *     затирается. Шаблон не меняется — 422. Пишет `policy.update`: поля, правила
          *     добавленные, удалённые и изменённые, признак `weakening` и причины (DM-40).
+         *     Версия с `weakening` требует текущий пароль или код TOTP в теле: без них — 400 с полем `password`,
+         *     неверные — 403 `reauthentication_failed` (В23 ревью 2.r5).
          *     Изменение, после которого пакет конфигурации шлюзов не соберётся (например, правило `lists.*` на словарь, которого нет у приложения), — 422 с причиной и ID приложений в `detail` (В16 ревью 2.r3b).
          */
         put: {
@@ -4037,7 +4138,8 @@ export interface paths {
          * Откатить политику к прежней версии
          * @description Право `policies.manage`. Откат — новая версия с содержимым версии `version`
          *     (`rolled_back_from`); прежние версии остаются. Пишет `policy.rollback` со сводкой
-         *     изменений и признаком `weakening`.
+         *     изменений и признаком `weakening`. Откат, ослабляющий защиту, требует текущий пароль или код TOTP
+         *     (400 без них, 403 `reauthentication_failed` при неверных; В23 ревью 2.r5).
          *     Изменение, после которого пакет конфигурации шлюзов не соберётся (например, правило `lists.*` на словарь, которого нет у приложения), — 422 с причиной и ID приложений в `detail` (В16 ревью 2.r3b).
          */
         post: {
@@ -4327,6 +4429,8 @@ export interface components {
             }[];
             /** @description Сколько нарушений не вошло в failures */
             omitted: number;
+            /** @description Только в ответе на проверку по команде: скольким действующим шлюзам передан запрос проверки (Н38 ревью 2.r4) */
+            gateways_requested?: number;
         };
         SetupStatus: {
             setup_required: boolean;
@@ -4427,6 +4531,28 @@ export interface components {
              */
             mfa_required_all: boolean;
         };
+        InstallSettings: {
+            /**
+             * @description Часовой пояс показа времени, имя IANA (ВРМ.2); хранение всегда в UTC
+             * @example Europe/Moscow
+             */
+            timezone: string;
+            /**
+             * @description Режим хранения содержимого для новых приложений без явного выбора (ТЗ 5.5)
+             * @enum {string}
+             */
+            retention_mode: "none" | "masked" | "full";
+        };
+        InstallSettingsUpdate: {
+            /** @description Имя IANA, например Europe/Moscow или UTC; пусто — без изменений */
+            timezone?: string;
+            /**
+             * @description Пусто — без изменений
+             * @enum {string}
+             */
+            retention_mode?: "" | "none" | "masked" | "full";
+        } & components["schemas"]["Reauth"];
+        AuthPolicyUpdate: components["schemas"]["AuthPolicy"] & components["schemas"]["Reauth"];
         /**
          * @description ID роли. Предустановленные: `security_admin`, `system_admin`, `analyst`, `auditor`,
          *     `app_owner` (ТЗ 1.3); свои роли — латиница, цифры и «_» (УПД.1).
@@ -4666,7 +4792,7 @@ export interface components {
             user_from: "header" | "field" | "none";
             quotas?: components["schemas"]["AppQuotas"];
         };
-        /** @description Поля защиты; меняет только обладатель права `applications.policy` (В15 ревью 2.r3b) */
+        /** @description Поля защиты; меняет только обладатель права `applications.policy` (В15 ревью 2.r3b). Смена политики на ту, что по сравнению версий (`GET /policies/{id}/diff`) слабее текущей, — ослабление с повторной проверкой (В23 ревью 2.r5) */
         ApplicationProtection: {
             /** @description Шаблон (`base`, `pii-strict`, `external-no-pii`, `monitor-only`) или политика организации */
             policy?: string;
@@ -4845,6 +4971,8 @@ export interface components {
             };
             /** @description Разрешения, действующие в сессии, включая `session` и, после второго фактора, `self`. Консоль скрывает недоступное; права проверяет сервер */
             permissions: string[];
+            /** @description Часовой пояс показа времени из настроек установки (ВРМ.2): консоль показывает даты в нём */
+            timezone: string;
         };
         /**
          * @description `active` — полный доступ; `password_change` — только смена пароля; `mfa_pending` —
@@ -5186,12 +5314,36 @@ export interface components {
             base_version: number;
             spec: components["schemas"]["PolicySpec"];
             comment?: string;
+            /**
+             * Format: password
+             * @description Текущий пароль, если версия ослабляет защиту (В23 ревью 2.r5)
+             */
+            password?: string;
+            /** @description Код из приложения-аутентификатора вместо пароля */
+            code?: string;
         };
         PolicyRollback: {
             /** @description Версия */
             version: number;
             base_version: number;
             comment?: string;
+            /**
+             * Format: password
+             * @description Текущий пароль, если откат ослабляет защиту (В23 ревью 2.r5)
+             */
+            password?: string;
+            /** @description Код из приложения-аутентификатора вместо пароля */
+            code?: string;
+        };
+        /** @description Загрузка в обёртке JSON — так вместе с документом передаётся пароль или код, если версия ослабляет защиту (В23 ревью 2.r5) */
+        PolicyImport: {
+            /** @description Документ YAML политики */
+            document: string;
+            base_version?: number;
+            comment?: string;
+            /** Format: password */
+            password?: string;
+            code?: string;
         };
         PolicyDiff: {
             from: number;

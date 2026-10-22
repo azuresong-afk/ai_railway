@@ -246,7 +246,7 @@ func TestMFAOptionalAndPolicyForAll(t *testing.T) {
 	// Политика «для всех ролей»: новый аналитик без фактора — на подключение.
 	p := auth.DefaultPolicy()
 	p.MFARequiredAll = true
-	if err := e.svc.SetPolicy(ctx, e.adminCaller(t), p); err != nil {
+	if err := e.svc.SetPolicy(ctx, e.adminCaller(t), p, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	const other = "01900000-0000-7000-8000-00000000b002"

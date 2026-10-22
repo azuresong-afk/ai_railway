@@ -88,6 +88,7 @@ export function PoliciesScreen({ me }: { me: Me }) {
         open={imp}
         onClose={() => setImp(false)}
         current={selected}
+        mfa={me.mfa?.enabled === true}
         onDone={(p) => {
           setImp(false);
           setSel(p.id);
@@ -265,6 +266,7 @@ function PolicyDetail({ summary, me, onSelect, onImport }: { summary: PolicySumm
           policyId={pid}
           current={current}
           target={rollback}
+          mfa={me.mfa?.enabled === true}
           onClose={() => setRollback(undefined)}
           onDone={(p) => {
             setRollback(undefined);

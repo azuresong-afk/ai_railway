@@ -27,6 +27,10 @@ export CGO_ENABLED ?= 0
 
 # Пути, где cgo разрешён по ADR (через запятую). Пока таких нет.
 CGO_ALLOWED :=
+# Пути, где разрешены сетевые клиенты (ЗИ.2, H-Р11): шлюз (регистрация, пакет,
+# heartbeat, отправка событий) и провайдеры LLM. Уведомления (internal/notify)
+# добавятся сюда вместе с отправкой SMTP, syslog и webhook.
+NET_CLIENT_ALLOWED := cmd/aisec-gateway,internal/gateway,internal/providers
 
 # Версии инструментов разработки (ТЗ, 8.2). Меняются только вместе с
 # docs/cert/components.yaml (scope: build) и сборочным образом.
@@ -137,8 +141,8 @@ vendor-verify: ## Сверка vendor/ с go.sum: go mod vendor во време�
 	go run ./tools/vendor-check -root . -verify
 
 .PHONY: repocheck
-repocheck: ## Структурные правила: один internal/crypto, cgo только по ADR
-	go run ./tools/repocheck -root . -cgo-allowed '$(CGO_ALLOWED)'
+repocheck: ## Структурные правила: один internal/crypto, cgo только по ADR, сетевые клиенты только в разрешённых путях
+	go run ./tools/repocheck -root . -cgo-allowed '$(CGO_ALLOWED)' -net-client-allowed '$(NET_CLIENT_ALLOWED)'
 
 .PHONY: docs-check
 docs-check: ## Относительные ссылки в документах ведут на существующие файлы

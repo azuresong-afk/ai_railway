@@ -144,6 +144,10 @@ func TestHeartbeatHandler(t *testing.T) {
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"interval_seconds":30`) {
 		t.Fatalf("heartbeat: %d %s", w.Code, w.Body)
 	}
+	// stopping без started_at — 400 (В27 ревью 2.r5).
+	if w := do(h, http.MethodPost, "/internal/v1/heartbeat", `{"version":"1","stopping":true}`, "Content-Type", "application/json"); w.Code != http.StatusBadRequest {
+		t.Fatalf("stopping без started_at: %d %s", w.Code, w.Body)
+	}
 	// Шлюз, которого нет в реестре (отозван между проверками), — 401.
 	h2, _, err := NewInternal(InternalOptions{Logger: quiet(), Hasher: testHasher(t), Gateways: svc, Authorizer: asGateway("nope")})
 	if err != nil {
@@ -169,7 +173,8 @@ func FuzzHeartbeatRequest(f *testing.F) {
 	for _, s := range []string{`{"version":"1"}`, `{"version":"1","bundle_etag":"x"}`, `{}`, `[]`, `{"version":1}`, "\x00", `{"version":"1"}{}`,
 		`{"version":"1","selftest":{"ok":true,"checked_at":"2026-10-21T10:00:00Z","failed":0}}`,
 		`{"version":"1","integrity":{"ok":false,"checked_at":"2026-10-21T10:00:00Z","reason":"files_mismatch","failed":2}}`,
-		`{"version":"1","selftest":{"ok":"да"}}`, `{"version":"1","integrity":null}`, `{"version":"1","selftest":[]}`} {
+		`{"version":"1","selftest":{"ok":"да"}}`, `{"version":"1","integrity":null}`, `{"version":"1","selftest":[]}`,
+		`{"version":"1","started_at":"2026-10-21T10:00:00.123456789Z","stopping":true}`, `{"version":"1","stopping":true}`} {
 		f.Add(s, "application/json")
 	}
 	f.Add(`{"version":"1"}`, "text/plain")
