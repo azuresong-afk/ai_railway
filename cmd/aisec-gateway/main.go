@@ -180,7 +180,7 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 		}
 		// Политики компилируются по детекторам приложения при запуске:
 		// незарегистрированный детектор в политике заказчика — отказ запуска.
-		if handler, err = hb.build(file.Applications, provs, file.Policies, recs); err != nil {
+		if handler, err = hb.build(file.Applications, provs, file.Policies, recs, nil); err != nil {
 			return err
 		}
 		logger.Info("конфигурация из файла", "applications", len(file.Applications), "providers", len(provs))
@@ -224,7 +224,7 @@ type handlerBuilder struct {
 }
 
 func (hb *handlerBuilder) build(apps []config.Application, provs map[string]providers.Provider, specs []policy.Spec,
-	recs []auth.KeyRecord) (http.Handler, error) {
+	recs []auth.KeyRecord, unavailable []string) (http.Handler, error) {
 	for _, a := range apps {
 		if hb.userMAC == nil && a.UserFrom != "" && a.UserFrom != "none" {
 			return nil, fmt.Errorf("приложение %s: user_from %s требует ключ псевдонимов пользователей (user-hmac-key)", a.ID, a.UserFrom)
@@ -234,6 +234,7 @@ func (hb *handlerBuilder) build(apps []config.Application, provs map[string]prov
 	if err != nil {
 		return nil, err
 	}
+	router.SetUnavailable(unavailable)
 	a, err := auth.NewAuthenticator(hb.hasher, recs)
 	if err != nil {
 		return nil, err

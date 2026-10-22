@@ -55,7 +55,7 @@ type Store interface {
 	// создаёт первую учётную запись — только если в организации ещё нет
 	// пользователей. Неизвестный, истёкший или погашенный токен, токен другого
 	// алгоритма или уже выполненная настройка — ErrSetupUnavailable.
-	SetupFirstUser(ctx context.Context, tokenHash []byte, hashAlg string, u User, rec audit.Entry) error
+	SetupFirstUser(ctx context.Context, tokenHash []byte, hashAlg string, u User, cfg InstallSettings, rec audit.Entry) error
 
 	// CreateSession сохраняет сессию; если незавершённых сессий пользователя
 	// того же рода (до второго фактора или полных) станет больше limit, самые

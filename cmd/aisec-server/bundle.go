@@ -1,9 +1,12 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"sync/atomic"
+	"time"
 
 	"github.com/azuresong-afk/ai_railway/internal/api"
 	"github.com/azuresong-afk/ai_railway/internal/apps"
@@ -13,6 +16,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/policy/bundle/build"
 	"github.com/azuresong-afk/ai_railway/internal/policy/versions"
 	"github.com/azuresong-afk/ai_railway/internal/store"
+	"github.com/azuresong-afk/ai_railway/internal/sysstatus"
 )
 
 // bundleSigningKeyFile — ключ подписи пакетов конфигурации в каталоге
@@ -37,27 +41,57 @@ func loadBundleSigner(p aisecCrypto.Provider, keysDir string) (aisecCrypto.Signe
 	return p.NewSigner(seed)
 }
 
+// bundleReuse — сколько секунд опросы шлюзов получают уже собранный
+// результат без новой выборки данных (Н26 ревью 2.r3b).
+const bundleReuse = 5 * time.Second
+
 // newBundleRoutes — сборка и выдача пакетов конфигурации шлюзам (задача
-// 2.13): маршруты внутреннего порта.
+// 2.13): маршруты внутреннего порта. Изменения приложений и политик
+// проверяются сборкой при сохранении (В16 ревью 2.r3b).
 func newBundleRoutes(cfg *serverConfig, p aisecCrypto.Provider, db *store.DB, auditLog *audit.Log,
-	appsSvc *apps.Service, policiesSvc *versions.Service, logger *slog.Logger) ([]api.Route, error) {
+	appsSvc *apps.Service, policiesSvc *versions.Service, logger *slog.Logger) ([]api.Route, *build.Service, error) {
 	signer, err := loadBundleSigner(p, cfg.KeysDir)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	sealer, err := bundle.NewSealer(p, signer)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	st, err := build.NewPGStore(db.Pool(), auditLog)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	svc, err := build.New(build.Options{Apps: appsSvc, Policies: policiesSvc, Store: st, Audit: auditLog,
-		Sealer: sealer, Provider: p, Logger: logger})
+		Sealer: sealer, Provider: p, Logger: logger, Reuse: bundleReuse})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
+	appsSvc.SetBundleCheck(svc.CheckApplication)
+	policiesSvc.SetBundleCheck(svc.CheckPolicy)
 	logger.Info("пакеты конфигурации шлюзов подписываются ключом", "key_id", sealer.KeyID())
-	return api.BundleRoutes(svc, logger.With("listener", "internal")), nil
+	return api.BundleRoutes(svc, logger.With("listener", "internal")), svc, nil
+}
+
+// bundleHealth — итог сборки для «Состояния системы»: nil, пока сборка не
+// создана (сервер без внутреннего порта).
+func bundleHealth(ref *atomic.Pointer[build.Service]) func(ctx context.Context) (*sysstatus.BundleHealth, error) {
+	return func(ctx context.Context) (*sysstatus.BundleHealth, error) {
+		svc := ref.Load()
+		if svc == nil {
+			return nil, nil
+		}
+		h, err := svc.Health(ctx)
+		if err != nil {
+			return nil, err
+		}
+		out := &sysstatus.BundleHealth{Version: h.Version, BuiltAt: h.BuiltAt, Failed: h.Failed, Reason: h.Reason}
+		if h.Version > 0 {
+			out.ETag = bundle.ETag(h.Version)
+		}
+		for _, x := range h.Excluded {
+			out.Excluded = append(out.Excluded, sysstatus.ExcludedApp{Application: x.Application, Reason: x.Reason})
+		}
+		return out, nil
+	}
 }

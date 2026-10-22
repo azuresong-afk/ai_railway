@@ -504,11 +504,26 @@ func TestSetupViaAPI(t *testing.T) {
 	if w := post("", tPhrase); w.Code != 400 {
 		t.Fatalf("пустой токен: %d %s", w.Code, w.Body)
 	}
-	w := post(token, tPhrase)
+	// H-Р4: неверные необязательные поля — 400 с именем поля, токен остаётся годным.
+	for field, body := range map[string]setupRequest{
+		"timezone":       {Timezone: "Mars/Olympus"},
+		"retention_mode": {RetentionMode: "everything"},
+	} {
+		body.Token, body.Login, body.DisplayName, body.Password = token, "admin", "Администратор", tPhrase
+		w := do(hd, "POST", "/api/v1/auth/setup", mustJSON(t, body), "Content-Type", "application/json")
+		if w.Code != 400 || !strings.Contains(w.Body.String(), `"`+field+`"`) {
+			t.Fatalf("%s: %d %s", field, w.Code, w.Body)
+		}
+	}
+	w := do(hd, "POST", "/api/v1/auth/setup", mustJSON(t, setupRequest{Token: token, Login: "admin", DisplayName: "Администратор",
+		Password: tPhrase, Timezone: "Europe/Samara", RetentionMode: "full"}), "Content-Type", "application/json")
 	var u UserView
 	if w.Code != 201 || json.Unmarshal(w.Body.Bytes(), &u) != nil || u.Role != string(auth.RoleSecurityAdmin) ||
 		strings.Contains(w.Body.String(), "$fake$") {
 		t.Fatalf("настройка: %d %s", w.Code, w.Body)
+	}
+	if got := mem.InstallSettings(); got.Timezone != "Europe/Samara" || got.RetentionMode != "full" {
+		t.Fatalf("настройки установки: %+v", got)
 	}
 	if status() {
 		t.Fatal("настройка требуется после создания администратора")

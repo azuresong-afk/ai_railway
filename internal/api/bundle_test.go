@@ -62,7 +62,8 @@ func newBundleEnv(t testing.TB, withLists bool) *bundleEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	by := apps.By{Actor: audit.Actor{Type: audit.ActorUser, ID: tOwnerID, Name: "owner"}}
+	by := apps.By{Actor: audit.Actor{Type: audit.ActorUser, ID: tOwnerID, Name: "owner"}, Policy: true,
+		Confirm: func(context.Context) error { return nil }}
 	ca, err := aisecCrypto.NewCA("AISec test provider CA", time.Hour, time.Now())
 	if err != nil {
 		t.Fatal(err)
@@ -83,10 +84,11 @@ func newBundleEnv(t testing.TB, withLists bool) *bundleEnv {
 		t.Fatal(err)
 	}
 	in := apps.AppInput{Slug: "crm", Name: "CRM", Env: "prod", OwnerID: tOwnerID, ProviderID: prov.ID, Models: []string{"gpt-4o"}}
+	prot := apps.ProtectionInput{Policy: "corp", PolicyMode: "enforce"}
 	if withLists {
-		in.Lists = []apps.List{{ID: "projects", Category: "codename", Words: []string{"проект зенит"}}}
+		prot.Lists = &[]apps.List{{ID: "projects", Category: "codename", Words: []string{"проект зенит"}}}
 	}
-	app, err := as.CreateApplication(ctx, by, in, &apps.ProtectionInput{Policy: "corp", PolicyMode: "enforce"})
+	app, err := as.CreateApplication(ctx, by, in, &prot)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,14 +164,23 @@ func TestBundleGet(t *testing.T) {
 	}
 }
 
-func TestBundleGetUnavailable(t *testing.T) {
+// В16 ревью 2.r3b: приложение без нужного словаря исключается из пакета, а
+// пакет выдаётся: в нём ID и ключи приложения, шлюз ответит на них 503.
+func TestBundleExcludesInvalidApp(t *testing.T) {
 	e := newBundleEnv(t, false)
 	h := e.handler(t, asGateway(bundletest.GatewayID))
 	w := do(h, http.MethodGet, "/internal/v1/policies/bundle", "", BundleKeyHeader,
 		base64.RawURLEncoding.EncodeToString(e.fx.Recipient.PublicKey()))
-	mustProblem(t, w, http.StatusServiceUnavailable, CodeUnavailable)
-	if w.Header().Get("Retry-After") == "" {
-		t.Fatal("нет Retry-After")
+	if w.Code != http.StatusOK {
+		t.Fatalf("пакет: %d %s", w.Code, w.Body)
+	}
+	b, err := e.fx.Opener(t).Open(w.Body.Bytes(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(b.Content.Applications) != 0 || len(b.Content.Unavailable) != 1 || b.Content.Unavailable[0].ID != "crm" ||
+		len(b.Content.Unavailable[0].Keys) != 1 {
+		t.Fatalf("содержимое: %+v", b.Content)
 	}
 }
 

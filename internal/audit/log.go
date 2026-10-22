@@ -44,6 +44,32 @@ type Log struct {
 	random      crypto.Random
 	checkpoints Checkpoints
 	now         func() time.Time
+	// rdb — пул чтения для просмотра журнала консолью; nil — основной.
+	rdb Querier
+}
+
+// Querier — чтение из БД (пул чтения, *pgxpool.Pool).
+type Querier interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
+
+// WithReadDB задаёт отдельный пул для выборок консоли (List): медленные
+// выборки не занимают соединения записи аудита, входа и приёма событий
+// (В17 ревью 2.r3b).
+func WithReadDB(db Querier) Option {
+	return func(l *Log) {
+		if db != nil {
+			l.rdb = db
+		}
+	}
+}
+
+// reader — пул для выборок консоли.
+func (l *Log) reader() Querier {
+	if l.rdb != nil {
+		return l.rdb
+	}
+	return l.db
 }
 
 // Option настраивает Log.

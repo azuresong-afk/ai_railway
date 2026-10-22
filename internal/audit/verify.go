@@ -38,7 +38,16 @@ type Verification struct {
 	Checked int64  // проверено записей
 	Head    Anchor // последняя проверенная запись
 	Break   *Break // nil — цепочка цела
+	// Cached — итог прежней проверки не старше VerifyCacheFor, новая не
+	// выполнялась (только TryVerifyBy).
+	Cached bool
 }
+
+// VerifyCacheFor — сколько итог проверки отвечает на команду из API без
+// новой проверки (Н31 ревью 2.r3b): полный проход журнала (до 20 ГиБ) по
+// каждой команде держал бы СУБД занятой. Немедленная проверка — aisec-cli
+// audit verify.
+const VerifyCacheFor = 10 * time.Minute
 
 // OK — цепочка цела.
 func (v Verification) OK() bool { return v.Break == nil }
@@ -54,9 +63,11 @@ func (v Verification) OK() bool { return v.Break == nil }
 type Verifier struct {
 	log *Log
 	mac *HeadMAC
-	// mu сериализует проверки и защищает known.
+	// mu сериализует проверки и защищает known и last.
 	mu    sync.Mutex
 	known *Anchor
+	// last — итог последней выполненной проверки этого процесса.
+	last *Verification
 }
 
 // HeadMAC — имитовставка головы цепочки на ключе вне БД: KeyID — ID ключа
@@ -121,17 +132,28 @@ var ErrVerifyBusy = errors.New("журнал аудита: проверка це
 // TryVerifyBy — VerifyBy по команде из API (задача 2.4a): с адресом
 // субъекта (РСБ.1 «откуда») и без ожидания. Если проверка уже идёт —
 // ErrVerifyBusy: ждать на блокировке нельзя, она не учитывает срок запроса.
+// Если последняя проверка моложе VerifyCacheFor — её итог с Cached, без
+// новой проверки и без записи в журнал.
 func (v *Verifier) TryVerifyBy(ctx context.Context, by Actor, ip netip.Addr) (Verification, error) {
 	if !v.mu.TryLock() {
 		return Verification{}, ErrVerifyBusy
 	}
 	defer v.mu.Unlock()
+	if l := v.last; l != nil && v.log.now().Sub(l.At) < VerifyCacheFor {
+		res := *l
+		res.Cached = true
+		return res, nil
+	}
 	return v.verifyLogged(ctx, by, ip)
 }
 
 // verifyLogged — проверка под v.mu; сбой пишется в журнал технического состояния.
 func (v *Verifier) verifyLogged(ctx context.Context, by Actor, ip netip.Addr) (Verification, error) {
 	res, err := v.verify(ctx, by, ip)
+	if err == nil {
+		last := res
+		v.last = &last
+	}
 	if err != nil {
 		// Лучшее, что можно сделать: БД может быть недоступна и для этой записи.
 		// Свой срок: сбой по истёкшему сроку проверки тоже должен оставить след.

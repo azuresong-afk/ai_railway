@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"sync"
@@ -72,8 +73,9 @@ func newEnv(t *testing.T) *env {
 	ctx := context.Background()
 	fx := bundletest.New(t)
 	e := &env{fx: fx, now: time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC), store: build.NewMemory(), audit: &recorder{},
-		appsBy: apps.By{Actor: audit.Actor{Type: audit.ActorUser, ID: owner, Name: "admin"}},
-		polBy:  versions.By{Actor: audit.Actor{Type: audit.ActorUser, ID: owner, Name: "admin"}}}
+		appsBy: apps.By{Actor: audit.Actor{Type: audit.ActorUser, ID: owner, Name: "admin"}, Policy: true,
+			Confirm: func(context.Context) error { return nil }},
+		polBy: versions.By{Actor: audit.Actor{Type: audit.ActorUser, ID: owner, Name: "admin"}}}
 	reg, err := detect.NewRegistry(builtin.All()...)
 	if err != nil {
 		t.Fatal(err)
@@ -116,9 +118,9 @@ func newEnv(t *testing.T) *env {
 		t.Fatal(err)
 	}
 	if e.app, err = e.apps.CreateApplication(ctx, e.appsBy, apps.AppInput{Slug: "crm", Name: "CRM", Env: "prod", OwnerID: owner,
-		ProviderID: e.provider.ID, Models: []string{"gpt-4o"},
-		Lists: []apps.List{{ID: "projects", Category: "codename", Words: []string{"проект зенит"}}}},
-		&apps.ProtectionInput{Policy: "corp", PolicyMode: "enforce"}); err != nil {
+		ProviderID: e.provider.ID, Models: []string{"gpt-4o"}},
+		&apps.ProtectionInput{Policy: "corp", PolicyMode: "enforce",
+			Lists: &[]apps.List{{ID: "projects", Category: "codename", Words: []string{"проект зенит"}}}}); err != nil {
 		t.Fatal(err)
 	}
 	if e.key, _, err = e.apps.IssueKey(ctx, e.appsBy, e.app.ID, "", apps.KeyInput{Name: "k1"}); err != nil {
@@ -230,19 +232,100 @@ func TestDeliverEncryptsForGateway(t *testing.T) {
 	}
 }
 
-// TestBuildInvalidKeepsLastGood — политика ссылается на словарь, которого
-// нет у приложения: шлюз отверг бы такой пакет, поэтому сервер его не
-// собирает и выдаёт последнюю корректную версию; неудача в аудите один раз.
-func TestBuildInvalidKeepsLastGood(t *testing.T) {
+// TestBuildExcludesInvalidApp — В16 ревью 2.r3b: политика ссылается на
+// словарь, которого нет у приложения. Шлюз не применил бы такое
+// приложение, поэтому оно исключается: в пакете остаются его ID и
+// действующие ключи (шлюз отвечает 503), остальные приложения и отзыв
+// ключей доставляются.
+func TestBuildExcludesInvalidApp(t *testing.T) {
 	ctx := context.Background()
 	e := newEnv(t)
 	good, err := e.svc.Current(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.apps.UpdateApplication(ctx, e.appsBy, e.app.ID, apps.AppInput{Name: "CRM", Env: "prod", OwnerID: owner,
-		ProviderID: e.provider.ID, Models: []string{"gpt-4o"}}); err != nil {
+	other, err := e.apps.CreateApplication(ctx, e.appsBy, apps.AppInput{Slug: "bot", Name: "Бот", Env: "test", OwnerID: owner,
+		ProviderID: e.provider.ID, Models: []string{"gpt-4o"}}, nil)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if _, err := e.apps.SetProtection(ctx, e.appsBy, e.app.ID, apps.ProtectionInput{Lists: &[]apps.List{}}); err != nil {
+		t.Fatal(err)
+	}
+	k2, _, err := e.apps.IssueKey(ctx, e.appsBy, e.app.ID, "", apps.KeyInput{Name: "k2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.now = e.now.Add(time.Minute)
+	r, err := e.svc.Current(ctx)
+	if err != nil || r.Version == good.Version {
+		t.Fatalf("сборка с неверным приложением: %d, %v", r.Version, err)
+	}
+	c, err := bundle.ParseContent(r.Content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.Applications) != 1 || c.Applications[0].ID != other.Slug || len(c.Unavailable) != 1 ||
+		c.Unavailable[0].ID != "crm" || len(c.Unavailable[0].Keys) != 2 || len(c.Policies) != 0 {
+		t.Fatalf("содержимое: %+v", c)
+	}
+	recs := e.store.Records()
+	d := recs[len(recs)-1].Details.(map[string]any)
+	ex, _ := d["excluded"].([]build.Excluded)
+	if d["excluded_count"] != 1 || len(ex) != 1 || ex[0].Application != "crm" || !strings.Contains(ex[0].Reason, "lists.codename") {
+		t.Fatalf("исключение в аудите: %v", d)
+	}
+	h, err := e.svc.Health(ctx)
+	if err != nil || h.Failed || len(h.Excluded) != 1 || h.Version != r.Version {
+		t.Fatalf("состояние сборки: %+v %v", h, err)
+	}
+	// Отзыв ключа исключённого приложения доходит до шлюзов.
+	if _, err := e.apps.RevokeKey(ctx, e.appsBy, k2.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	r2, err := e.svc.Current(ctx)
+	if err != nil || r2.Version == r.Version {
+		t.Fatalf("после отзыва: %d %v", r2.Version, err)
+	}
+	if c, _ := bundle.ParseContent(r2.Content); len(c.Unavailable[0].Keys) != 1 || c.Unavailable[0].Keys[0].Prefix != e.key.Prefix { //nolint:gosec // G104: содержимое уже проверено сборкой, важен список ключей
+		t.Fatalf("отозванный ключ исключённого приложения в пакете: %+v", c.Unavailable)
+	}
+	// Архив — приложение пропадает из пакета вместе с ключами.
+	if _, err := e.apps.ArchiveApplication(ctx, e.appsBy, e.app.ID); err != nil {
+		t.Fatal(err)
+	}
+	r3, err := e.svc.Current(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c, _ := bundle.ParseContent(r3.Content); len(c.Unavailable) != 0 || len(c.Applications) != 1 { //nolint:gosec // G104: содержимое уже проверено сборкой
+		t.Fatalf("архивное приложение в пакете: %+v", c)
+	}
+	if h, _ := e.svc.Health(ctx); len(h.Excluded) != 0 { //nolint:gosec // G104: ошибка проверена выше тем же вызовом Current
+		t.Fatalf("исключение осталось после архивации: %+v", h)
+	}
+}
+
+// TestBuildTooLargeKeepsLastGood — сбой уровня пакета (размер больше
+// половины MaxSize): шлюзам выдаётся последняя корректная версия, неудача
+// в аудите один раз; без корректной версии — ErrNoBundle.
+func TestBuildTooLargeKeepsLastGood(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	good, err := e.svc.Current(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	words := make([]string, 0, 19000)
+	for i := range 19000 {
+		words = append(words, fmt.Sprintf("%06d %s", i, strings.Repeat("я", 45)))
+	}
+	big := &[]apps.List{{ID: "big", Category: "big", Words: words[:10000]}, {ID: "big2", Category: "big2", Words: words[10000:]}}
+	for i := range 3 {
+		if _, err := e.apps.CreateApplication(ctx, e.appsBy, apps.AppInput{Slug: fmt.Sprintf("big-%d", i), Name: "Большое",
+			Env: "test", OwnerID: owner, ProviderID: e.provider.ID, Models: []string{"gpt-4o"}}, &apps.ProtectionInput{Lists: big}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	for range 3 {
 		got, err := e.svc.Current(ctx)
@@ -259,23 +342,54 @@ func TestBuildInvalidKeepsLastGood(t *testing.T) {
 	if failures != 1 {
 		t.Fatalf("неудачных сборок в аудите: %d (%v)", failures, e.audit.actions())
 	}
-	if !strings.Contains(e.audit.entries[0].Details.(map[string]any)["reason"].(string), "crm") {
-		t.Fatalf("в причине нет приложения: %v", e.audit.entries[0].Details)
+	if h, err := e.svc.Health(ctx); err != nil || !h.Failed || !strings.Contains(h.Reason, "больше") || h.Version != good.Version {
+		t.Fatalf("состояние сборки: %+v %v", h, err)
+	}
+
+	// Без корректной версии — ErrNoBundle и отказ выдачи.
+	fresh, err := build.New(build.Options{Apps: e.apps, Policies: e.policies, Store: build.NewMemory(), Audit: e.audit,
+		Sealer: e.fx.Sealer, Provider: e.fx.Provider, Clock: e.clock})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fresh.Current(ctx); !errors.Is(err, build.ErrNoBundle) {
+		t.Fatalf("нет корректной версии: %v", err)
+	}
+	if _, err := fresh.Deliver(ctx, build.Gateway{ID: bundletest.GatewayID}, e.fx.Recipient.PublicKey(), ""); !errors.Is(err, build.ErrNoBundle) {
+		t.Fatalf("выдача: %v", err)
 	}
 }
 
-func TestBuildInvalidWithoutVersion(t *testing.T) {
+// В16 ревью 2.r3b: проверка при сохранении — изменение, исключающее
+// приложение из пакета, отклоняется до записи.
+func TestCheckOnSave(t *testing.T) {
 	ctx := context.Background()
 	e := newEnv(t)
-	if _, err := e.apps.UpdateApplication(ctx, e.appsBy, e.app.ID, apps.AppInput{Name: "CRM", Env: "prod", OwnerID: owner,
-		ProviderID: e.provider.ID, Models: []string{"gpt-4o"}}); err != nil {
+	cur, err := e.apps.Application(ctx, e.app.ID, "")
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.svc.Current(ctx); !errors.Is(err, build.ErrNoBundle) {
-		t.Fatalf("нет корректной версии: %v", err)
+	if err := e.svc.CheckApplication(ctx, &cur, cur); err != nil {
+		t.Fatalf("текущее приложение: %v", err)
 	}
-	if _, err := e.svc.Deliver(ctx, build.Gateway{ID: bundletest.GatewayID}, e.fx.Recipient.PublicKey(), ""); !errors.Is(err, build.ErrNoBundle) {
-		t.Fatalf("выдача: %v", err)
+	noLists := cur
+	noLists.Lists = nil
+	if err := e.svc.CheckApplication(ctx, &cur, noLists); !errors.Is(err, apps.ErrBreaksBundle) || !strings.Contains(err.Error(), "lists.codename") {
+		t.Fatalf("приложение без словаря: %v", err)
+	}
+	spec, _ := policy.Template(policy.TemplateBase)
+	spec.ID = "corp"
+	if err := e.svc.CheckPolicy(ctx, spec); err != nil {
+		t.Fatalf("политика без словаря: %v", err)
+	}
+	spec.Rules = append(spec.Rules, policy.RuleSpec{ID: "secret", Detector: "lists", Categories: []string{"lists.secret"},
+		Action: policy.Block, Severity: policy.High})
+	if err := e.svc.CheckPolicy(ctx, spec); !errors.Is(err, versions.ErrBreaksBundle) || !strings.Contains(err.Error(), "crm") {
+		t.Fatalf("политика со словарём, которого нет у приложения: %v", err)
+	}
+	spec.ID = "unused"
+	if err := e.svc.CheckPolicy(ctx, spec); err != nil {
+		t.Fatalf("политика без приложений: %v", err)
 	}
 }
 

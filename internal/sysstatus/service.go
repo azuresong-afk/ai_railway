@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/azuresong-afk/ai_railway/internal/audit"
@@ -96,6 +97,9 @@ type Options struct {
 	StorageLimit int64
 	WarnPercent  int
 	Logger       *slog.Logger
+	// Bundle — итог сборки пакета конфигурации шлюзов (В16 ревью 2.r3b);
+	// nil или ответ nil — сервер без внутреннего порта, раздела нет.
+	Bundle func(ctx context.Context) (*BundleHealth, error)
 }
 
 // Service собирает состояние системы и ведёт уведомления.
@@ -132,11 +136,18 @@ func New(o Options) (*Service, error) {
 	return &Service{o: o}, nil
 }
 
-// collected — собранное состояние и вычисленные условия.
+// collected — собранное состояние и вычисленные условия. Ключи conditions —
+// коды условий, в том числе по компоненту (integrity:server и т. п.);
+// details — подробности записи system.alert по коду.
 type collected struct {
 	st         Status
 	conditions map[string]bool
+	details    map[string]map[string]any
 }
+
+// bundleTimeout — предел сборки пакета при запросе состояния: сборка читает
+// все приложения и политики.
+const bundleTimeout = 10 * time.Second
 
 func (s *Service) dbCtx(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(ctx, dbTimeout)
@@ -165,7 +176,7 @@ func timePtr(t time.Time) *time.Time {
 
 func (s *Service) collect(ctx context.Context) collected {
 	now := s.o.Clock().UTC()
-	c := collected{conditions: map[string]bool{}}
+	c := collected{conditions: map[string]bool{}, details: map[string]map[string]any{}}
 	c.st = Status{
 		GeneratedAt: now,
 		Server:      ServerStatus{Version: s.o.Version, StartedAt: s.o.StartedAt.UTC(), Integrity: []IntegrityStatus{}},
@@ -175,8 +186,14 @@ func (s *Service) collect(ctx context.Context) collected {
 		c.st.Server.Selftest = &Report{OK: sm.OK, CheckedAt: sm.At.UTC(), Failed: sm.Failed}
 	}
 
-	// Целостность сервера.
-	integrityFailed := c.st.Server.Selftest != nil && !c.st.Server.Selftest.OK
+	// Целостность сервера: одно условие integrity:server на все его
+	// компоненты, в подробностях — какие и почему (В18 ревью 2.r3b).
+	serverFailed := c.st.Server.Selftest != nil && !c.st.Server.Selftest.OK
+	var serverIssues []map[string]any
+	if serverFailed {
+		serverIssues = append(serverIssues, map[string]any{"component": "aisec-server", "source": "selftest",
+			"failed": c.st.Server.Selftest.Failed})
+	}
 	if s.o.Integrity != nil {
 		ictx, cancel := s.dbCtx(ctx)
 		list, err := s.o.Integrity.Latest(ictx)
@@ -190,9 +207,15 @@ func (s *Service) collect(ctx context.Context) collected {
 				Reason: string(r.Reason), ManifestVersion: r.ManifestVersion, TestSigned: r.TestSigned,
 				Failed: len(r.Failures) + r.Omitted,
 			})
-			integrityFailed = integrityFailed || !r.OK()
+			if !r.OK() {
+				serverFailed = true
+				serverIssues = append(serverIssues, map[string]any{"component": r.Component, "source": "integrity",
+					"reason": string(r.Reason), "failed": len(r.Failures) + r.Omitted})
+			}
 		}
 	}
+	c.conditions[integrityServer] = serverFailed
+	c.details[integrityServer] = map[string]any{"component": componentServer, "issues": serverIssues}
 
 	// Шлюзы и счётчики событий.
 	var stats map[string]GatewayEvents
@@ -225,7 +248,16 @@ func (s *Service) collect(ctx context.Context) collected {
 				c.st.Events.Rejected += ev.Rejected
 			}
 			if g.Status == gwregistry.StatusActive {
-				integrityFailed = integrityFailed || (gs.Selftest != nil && !gs.Selftest.OK) || (gs.Integrity != nil && !gs.Integrity.OK)
+				code := integrityGateway + g.ID
+				var issues []map[string]any
+				if gs.Selftest != nil && !gs.Selftest.OK {
+					issues = append(issues, map[string]any{"source": "selftest", "failed": gs.Selftest.Failed})
+				}
+				if gs.Integrity != nil && !gs.Integrity.OK {
+					issues = append(issues, map[string]any{"source": "integrity", "reason": gs.Integrity.Reason, "failed": gs.Integrity.Failed})
+				}
+				c.conditions[code] = len(issues) > 0
+				c.details[code] = map[string]any{"component": componentGateway + g.ID, "gateway_name": g.Name, "issues": issues}
 			}
 			c.st.Gateways = append(c.st.Gateways, gs)
 		}
@@ -263,11 +295,58 @@ func (s *Service) collect(ctx context.Context) collected {
 		}
 	}
 
+	// Пакет конфигурации шлюзов (В16, Н28 ревью 2.r3b).
+	if s.o.Bundle != nil {
+		bctx, cancel := context.WithTimeout(ctx, bundleTimeout)
+		h, err := s.o.Bundle(bctx)
+		cancel()
+		switch {
+		case err != nil:
+			s.unavailable(&c, "bundle", err)
+		case h != nil:
+			s.bundle(&c, h, now)
+		}
+	}
+
 	c.conditions[ConditionTime] = clk.Sync == SyncUnsynchronized
 	c.conditions[ConditionStorage] = c.st.Storage.WarnExceeded
-	c.conditions[ConditionIntegrity] = integrityFailed
 	sort.Strings(c.st.Unavailable)
 	return c
+}
+
+// bundle заполняет раздел пакета и условия ОЦЛ.3: пакет собран не
+// полностью; действующий шлюз на связи дольше BundleLagAfter работает на
+// другой версии (защита от отката держится на файле шлюза — Н28).
+func (s *Service) bundle(c *collected, h *BundleHealth, now time.Time) {
+	bs := &BundleStatus{Version: h.Version, ETag: h.ETag, BuiltAt: timePtr(h.BuiltAt), Complete: !h.Failed && len(h.Excluded) == 0,
+		Reason: h.Reason, Excluded: slices.Clone(h.Excluded), Lagging: []string{}}
+	if bs.Excluded == nil {
+		bs.Excluded = []ExcludedApp{}
+	}
+	c.conditions[ConditionBundle] = !bs.Complete
+	excluded := make([]string, 0, len(h.Excluded))
+	for _, x := range h.Excluded {
+		excluded = append(excluded, x.Application)
+	}
+	c.details[ConditionBundle] = map[string]any{"version": h.Version, "failed": h.Failed, "reason": h.Reason,
+		"excluded": excluded[:min(len(excluded), 50)], "excluded_count": len(excluded)}
+	if !slices.Contains(c.st.Unavailable, "gateways") {
+		for _, g := range c.st.Gateways {
+			if g.State != GatewayOnline {
+				continue
+			}
+			code := bundleLagGateway + g.ID
+			// Шлюз без пакета (файл конфигурации этапа 1) ETag не присылает.
+			lag := h.Version > 0 && g.BundleETag != "" && g.BundleETag != h.ETag && now.Sub(h.BuiltAt) > BundleLagAfter
+			c.conditions[code] = lag
+			c.details[code] = map[string]any{"component": componentGateway + g.ID, "gateway_name": g.Name,
+				"gateway_etag": g.BundleETag, "current_etag": h.ETag}
+			if lag {
+				bs.Lagging = append(bs.Lagging, g.ID)
+			}
+		}
+	}
+	c.st.Bundle = bs
 }
 
 // percent — доля size от limit в процентах, не больше 100; limit > 0.
@@ -301,6 +380,39 @@ var conditionInfo = []struct{ code, requirement, title string }{
 	{ConditionStorage, "РСБ.5", "Журнал аудита приближается к пределу хранилища"},
 	{ConditionIntegrity, "ОЦЛ.5", "Нарушена целостность или не пройден самотест компонента"},
 	{ConditionTime, "ВРМ.1", "Системное время не синхронизировано"},
+	{ConditionBundle, "ОЦЛ.3", "Пакет конфигурации шлюзов собран не полностью"},
+	{ConditionBundleLag, "ОЦЛ.3", "Шлюз работает на устаревшем пакете конфигурации"},
+}
+
+// family — условие раздела 7, к которому относится код (integrity:server —
+// к integrity).
+func family(code string) string {
+	if i := strings.IndexByte(code, ':'); i > 0 {
+		return code[:i]
+	}
+	return code
+}
+
+// component — компонент кода условия по компоненту: server или gateway:<ID>.
+func component(code string) string {
+	switch {
+	case code == integrityServer:
+		return componentServer
+	case strings.HasPrefix(code, integrityGateway):
+		return componentGateway + strings.TrimPrefix(code, integrityGateway)
+	case strings.HasPrefix(code, bundleLagGateway):
+		return componentGateway + strings.TrimPrefix(code, bundleLagGateway)
+	}
+	return ""
+}
+
+func requirementOf(fam string) string {
+	for _, ci := range conditionInfo {
+		if ci.code == fam {
+			return ci.requirement
+		}
+	}
+	return ""
 }
 
 // Status собирает текущее состояние системы. Сбой одного раздела не мешает
@@ -333,6 +445,19 @@ func (s *Service) Status(ctx context.Context) Status {
 			n.Count, n.Active = locked, locked != nil && *locked > 0
 		case ConditionDenied:
 			n.Count, n.Active = denied, denied != nil && *denied > 0
+		case ConditionIntegrity, ConditionBundleLag:
+			// Одна строка на все компоненты; «с» — самое раннее из активных.
+			for _, code := range sortedCodes(c.conditions) {
+				if family(code) != ci.code || !c.conditions[code] {
+					continue
+				}
+				n.Active = true
+				n.Components = append(n.Components, component(code))
+				if st, ok := states[code]; ok && st.Active && (n.Since == nil || st.Since.Before(*n.Since)) {
+					since := st.Since.UTC()
+					n.Since = &since
+				}
+			}
 		default:
 			n.Active = c.conditions[ci.code]
 			if st, ok := states[ci.code]; ok && st.Active && n.Active {
@@ -345,6 +470,15 @@ func (s *Service) Status(ctx context.Context) Status {
 	sort.Strings(c.st.Unavailable)
 	c.st.Unavailable = dedupe(c.st.Unavailable)
 	return c.st
+}
+
+func sortedCodes(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func dedupe(s []string) []string {
@@ -360,49 +494,85 @@ func dedupe(s []string) []string {
 // systemActor — «кто» для записей об уведомлениях.
 var systemActor = audit.Actor{Type: audit.ActorSystem, ID: "system-status", Name: "Состояние системы"}
 
-// Evaluate вычисляет условия ВРМ.1, РСБ.4, РСБ.5 и ОЦЛ.5 и при смене состояния
-// пишет запись system.alert в журнал аудита. Повторный вызов без изменений
-// ничего не пишет. ИАФ.4 и УПД.6 уже фиксируются записями auth.locked и
-// access.denied, поэтому здесь не дублируются.
+// Evaluate вычисляет условия ВРМ.1, РСБ.4, РСБ.5, ОЦЛ.3 и ОЦЛ.5 и при смене
+// состояния пишет запись system.alert в журнал аудита. ОЦЛ.5 и отставание
+// пакета ведутся по компоненту (В18 ревью 2.r3b): нарушение второго шлюза,
+// пока первый ещё нарушен, тоже записывается. Повторный вызов без
+// изменений ничего не пишет. ИАФ.4 и УПД.6 уже фиксируются записями
+// auth.locked и access.denied, поэтому здесь не дублируются.
 func (s *Service) Evaluate(ctx context.Context) error {
 	if s.o.Store == nil {
 		return nil
 	}
 	c := s.collect(ctx)
 	now := c.st.GeneratedAt
+	// Активные в хранилище условия компонентов, которых больше нет (шлюз
+	// отозван или удалён), и прежнее общее условие integrity снимаются.
+	sctx, cancel := s.dbCtx(ctx)
+	states, err := s.o.Store.AlertStates(sctx)
+	cancel()
+	if err != nil {
+		return fmt.Errorf("состояния уведомлений: %w", err)
+	}
+	for code, st := range states {
+		if _, ok := c.conditions[code]; !ok && st.Active && (code == ConditionIntegrity || component(code) != "") {
+			c.conditions[code] = false
+		}
+	}
 	var errs []error
-	for _, ci := range conditionInfo {
-		active, tracked := c.conditions[ci.code]
-		if !tracked {
+	for _, code := range sortedCodes(c.conditions) {
+		active := c.conditions[code]
+		if s.skip(c, family(code)) {
 			continue
 		}
-		// Раздел не собран — состояние не меняем: ложное «снято» хуже паузы.
-		if (ci.code == ConditionStorage && !c.st.Storage.Available) ||
-			(ci.code == ConditionIntegrity && (slices.Contains(c.st.Unavailable, "integrity") || slices.Contains(c.st.Unavailable, "gateways"))) {
-			continue
-		}
-		rec := func(active bool) audit.Entry { return s.alertEntry(ci.code, ci.requirement, active, c.st) }
+		rec := func(active bool) audit.Entry { return s.alertEntry(code, active, c) }
 		tctx, cancel := s.dbCtx(ctx)
-		changed, err := s.o.Store.Transition(tctx, ci.code, active, now, rec)
+		changed, err := s.o.Store.Transition(tctx, code, active, now, rec)
 		cancel()
 		if err != nil {
-			errs = append(errs, fmt.Errorf("условие %s: %w", ci.code, err))
+			errs = append(errs, fmt.Errorf("условие %s: %w", code, err))
 			continue
 		}
 		if changed {
-			s.o.Logger.Warn("изменилось состояние уведомления", "class", "status", "condition", ci.code, "active", active)
+			s.o.Logger.Warn("изменилось состояние уведомления", "class", "status", "condition", code, "active", active)
 		}
 	}
 	return errors.Join(errs...)
 }
 
-func (s *Service) alertEntry(code, requirement string, active bool, st Status) audit.Entry {
+// skip — раздел условия не собран: состояние не меняем, ложное «снято» хуже
+// паузы.
+func (s *Service) skip(c collected, fam string) bool {
+	missing := func(sections ...string) bool {
+		for _, sec := range sections {
+			if slices.Contains(c.st.Unavailable, sec) {
+				return true
+			}
+		}
+		return false
+	}
+	switch fam {
+	case ConditionStorage:
+		return !c.st.Storage.Available
+	case ConditionIntegrity:
+		return missing("integrity", "gateways")
+	case ConditionBundle:
+		return missing("bundle") || c.st.Bundle == nil
+	case ConditionBundleLag:
+		return missing("bundle", "gateways") || c.st.Bundle == nil
+	}
+	return false
+}
+
+func (s *Service) alertEntry(code string, active bool, c collected) audit.Entry {
+	st := c.st
+	fam := family(code)
 	state, result := "cleared", audit.ResultSuccess
 	if active {
 		state, result = "raised", audit.ResultFailure
 	}
-	d := map[string]any{"condition": code, "requirement": requirement, "state": state}
-	switch code {
+	d := map[string]any{"condition": code, "requirement": requirementOf(fam), "state": state}
+	switch fam {
 	case ConditionTime:
 		d["sync"] = st.Time.Sync
 	case ConditionStorage:
@@ -413,6 +583,21 @@ func (s *Service) alertEntry(code, requirement string, active bool, st Status) a
 			if ch.BrokenSeq != nil {
 				d["broken_seq"] = *ch.BrokenSeq
 			}
+		}
+	}
+	if code == ConditionIntegrity {
+		// Общее условие прежних версий: заменено условиями по компоненту.
+		d["superseded"] = true
+	}
+	for k, v := range c.details[code] {
+		if k == "issues" && !active {
+			continue
+		}
+		d[k] = v
+	}
+	if active && fam == ConditionIntegrity {
+		if issues, _ := c.details[code]["issues"].([]map[string]any); issues != nil {
+			d["violations"] = len(issues)
 		}
 	}
 	return audit.Entry{

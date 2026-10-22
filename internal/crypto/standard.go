@@ -32,6 +32,8 @@ func (standard) TLS() (TLSProvider, error) { return standardTLS{}, nil }
 
 func (standard) PasswordHasher() (PasswordHasher, error) { return newArgon2id(systemRandom{}), nil }
 
+func (standard) PassphraseKDF() (PassphraseKDF, error) { return newArgon2idKDF(), nil }
+
 func (standard) NewAEAD(key []byte) (AEAD, error) { return newAESGCM(key) }
 
 func (standard) GenerateSigner() (Signer, error) {

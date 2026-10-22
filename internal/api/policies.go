@@ -152,6 +152,8 @@ func policiesProblem(logger *slog.Logger, err error) *Problem {
 	case errors.Is(err, versions.ErrTemplate):
 		return NewProblem(http.StatusUnprocessableEntity, CodeUnprocessable,
 			"Шаблон не меняется, его ID занять нельзя: создайте политику копией шаблона.")
+	case errors.Is(err, versions.ErrBreaksBundle):
+		return NewProblem(http.StatusUnprocessableEntity, CodeUnprocessable, err.Error()+".")
 	case errors.Is(err, versions.ErrTooMany):
 		return NewProblem(http.StatusUnprocessableEntity, CodeUnprocessable, "Достигнут предел числа политик.")
 	}

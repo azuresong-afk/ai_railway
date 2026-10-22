@@ -3,6 +3,7 @@ package apps
 import (
 	"context"
 	"errors"
+	"net/url"
 	"strings"
 	"unicode"
 
@@ -149,17 +150,52 @@ func (s *Service) CreateProvider(ctx context.Context, by By, in ProviderInput) (
 }
 
 // UpdateProvider меняет параметры провайдера, кроме slug, признака
-// «внешний» и учётных данных.
+// «внешний» и учётных данных. Смена адресата — узла (схема, хост, порт)
+// base_url или auth_url, корневых сертификатов или типа — сбрасывает
+// учётные данные и возвращает признак «внешний» (В14 ревью 2.r3b):
+// providers.manage — не право безопасности, и без сброса оно отправило бы
+// незамаскированные данные и чужой секрет на новый адрес.
 func (s *Service) UpdateProvider(ctx context.Context, by By, id string, in ProviderInput) (Provider, error) {
 	if err := s.checkProvider(in); err != nil {
 		return Provider{}, err
 	}
 	return s.store.UpdateProvider(ctx, s.orgID, id, func(p *Provider) (audit.Entry, error) {
 		before := providerDetails(*p)
+		old := *p
 		in.apply(p)
+		d := map[string]any{"before": before, "after": providerDetails(*p)}
+		if retargeted(old, *p) {
+			d["credential_reset"] = p.Credential != nil
+			d["external_reset"] = !p.External
+			p.Credential, p.External = nil, true
+			d["after"] = providerDetails(*p)
+		}
 		p.UpdatedAt, p.UpdatedBy = s.now(), by.ref()
-		return by.entry("provider.update", "provider", id, map[string]any{"before": before, "after": providerDetails(*p)}), nil
+		return by.entry("provider.update", "provider", id, d), nil
 	})
+}
+
+// retargeted — у провайдера сменился адресат: тип, корневые сертификаты
+// или узел base_url либо auth_url.
+func retargeted(a, b Provider) bool {
+	return a.Type != b.Type || a.CAPEM != b.CAPEM || origin(a.BaseURL) != origin(b.BaseURL) || origin(a.AuthURL) != origin(b.AuthURL)
+}
+
+// origin — схема, хост и порт адреса в каноническом виде (порт https по
+// умолчанию — 443). Неразбираемый адрес сравнивается как есть.
+func origin(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	scheme, port := strings.ToLower(u.Scheme), u.Port()
+	if port == "" && scheme == "https" {
+		port = "443"
+	}
+	return scheme + "://" + strings.ToLower(strings.TrimSuffix(u.Hostname(), ".")) + ":" + port
 }
 
 // DeleteProvider удаляет провайдера без приложений (в том числе архивных).
@@ -233,7 +269,8 @@ func (s *Service) OpenCredential(ctx context.Context, id string) ([]byte, error)
 
 // SetExternal ставит или снимает признак «внешний» (ТЗ 5.4). Снятие —
 // ослабление защиты (DM-40): в режиме monitor данные к провайдеру больше не
-// маскируются. Право на маршрут — только у администратора безопасности.
+// маскируются, поэтому оно требует повторной проверки (Н32 ревью 2.r3b).
+// Право на маршрут — только у администратора безопасности.
 func (s *Service) SetExternal(ctx context.Context, by By, id string, external bool, reason string) (Provider, error) {
 	reason = strings.TrimSpace(reason)
 	if err := textLen("reason", reason, 1, maxReason); err != nil {
@@ -245,6 +282,11 @@ func (s *Service) SetExternal(ctx context.Context, by By, id string, external bo
 	p, err := s.store.UpdateProvider(ctx, s.orgID, id, func(p *Provider) (audit.Entry, error) {
 		if p.External == external {
 			return audit.Entry{}, errUnchanged
+		}
+		if !external {
+			if err := by.confirm(ctx); err != nil {
+				return audit.Entry{}, err
+			}
 		}
 		p.External = external
 		p.UpdatedAt, p.UpdatedBy = s.now(), by.ref()

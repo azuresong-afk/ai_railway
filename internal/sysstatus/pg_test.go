@@ -196,6 +196,18 @@ func TestPGTransitionWritesAuditOnlyOnChange(t *testing.T) {
 	if n := len(e.alerts(t, ctx)); n != 2 {
 		t.Fatalf("запись аудита осталась при откате: %d", n)
 	}
+	// Условия по компоненту (В18, Н28 ревью 2.r3b): коды с UUID шлюза.
+	for _, code := range []string{"integrity:server", "integrity:gateway:0192a000-0000-7000-8000-000000000001",
+		"config_bundle", "config_bundle_lag:0192a000-0000-7000-8000-000000000001"} {
+		if _, err := e.store.Transition(ctx, code, true, now, rec); err != nil {
+			t.Fatalf("%s: %v", code, err)
+		}
+	}
+	for _, code := range []string{"integrity:gateway:", "integrity:gateway:G1'--", "integrity:other", "config_bundle_lag:x y"} {
+		if _, err := e.store.Transition(ctx, code, true, now, rec); err == nil {
+			t.Fatalf("неверный код %q принят", code)
+		}
+	}
 }
 
 func TestPGProbes(t *testing.T) {
