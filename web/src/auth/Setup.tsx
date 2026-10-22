@@ -1,8 +1,31 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { ApiError, api } from "../api/client";
-import { Field, Input } from "../ui/Field";
+import { Field, Input, Select } from "../ui/Field";
 import { AuthCard } from "./AuthCard";
+
+// Часовые пояса России и UTC (ВРМ.2); остальные имена IANA сервер тоже примет, список нужен для удобства.
+const timezones: [string, string][] = [
+  ["Europe/Kaliningrad", "Калининград (UTC+2)"],
+  ["Europe/Moscow", "Москва (UTC+3)"],
+  ["Europe/Samara", "Самара (UTC+4)"],
+  ["Asia/Yekaterinburg", "Екатеринбург (UTC+5)"],
+  ["Asia/Omsk", "Омск (UTC+6)"],
+  ["Asia/Krasnoyarsk", "Красноярск (UTC+7)"],
+  ["Asia/Irkutsk", "Иркутск (UTC+8)"],
+  ["Asia/Yakutsk", "Якутск (UTC+9)"],
+  ["Asia/Vladivostok", "Владивосток (UTC+10)"],
+  ["Asia/Magadan", "Магадан (UTC+11)"],
+  ["Asia/Kamchatka", "Камчатка (UTC+12)"],
+  ["UTC", "UTC"],
+];
+
+// Режимы хранения содержимого по умолчанию для новых приложений (ТЗ 5.5).
+const retentionModes: [string, string][] = [
+  ["masked", "Маскированное: персональные данные заменены метками (рекомендуется)"],
+  ["none", "Не хранить содержимое: только метаданные"],
+  ["full", "Полное: содержимое как есть (повышенный риск, нужны сроки хранения)"],
+];
 
 function setupErrorText(e: unknown): string {
   if (e instanceof ApiError && e.status === 400) return e.detail;
@@ -14,12 +37,13 @@ function setupErrorText(e: unknown): string {
 // Первичная настройка (ЗИ.4): первый администратор безопасности по одноразовому токену.
 export function Setup({ onDone }: { onDone: () => void }) {
   const qc = useQueryClient();
-  const [f, setF] = useState({ token: "", login: "", display_name: "", password: "", repeat: "" });
+  const [f, setF] = useState({ token: "", login: "", display_name: "", password: "", repeat: "", timezone: "Europe/Moscow", retention_mode: "masked" });
   const [local, setLocal] = useState<string>();
   const set = (k: keyof typeof f) => (e: { target: { value: string } }) => setF({ ...f, [k]: e.target.value });
   const m = useMutation({
     mutationFn: () =>
-      api.setup({ token: f.token.trim(), login: f.login.trim(), display_name: f.display_name.trim(), password: f.password }),
+      api.setup({ token: f.token.trim(), login: f.login.trim(), display_name: f.display_name.trim(), password: f.password,
+        timezone: f.timezone, retention_mode: f.retention_mode as "none" | "masked" | "full" }),
     onSuccess: () => {
       onDone();
       return qc.invalidateQueries({ queryKey: ["setup"] });
@@ -56,6 +80,28 @@ export function Setup({ onDone }: { onDone: () => void }) {
       </Field>
       <Field label="Пароль ещё раз">
         {({ id }) => <Input id={id} type="password" autoComplete="new-password" value={f.repeat} onChange={set("repeat")} required />}
+      </Field>
+      <Field label="Часовой пояс" hint="Так показывается время в консоли; хранится оно всегда в UTC.">
+        {({ id, describedBy }) => (
+          <Select id={id} aria-describedby={describedBy} value={f.timezone} onChange={set("timezone")}>
+            {timezones.map(([v, t]) => (
+              <option key={v} value={v}>
+                {t}
+              </option>
+            ))}
+          </Select>
+        )}
+      </Field>
+      <Field label="Хранение содержимого по умолчанию" hint="Для новых приложений; у каждого приложения режим можно изменить.">
+        {({ id, describedBy }) => (
+          <Select id={id} aria-describedby={describedBy} value={f.retention_mode} onChange={set("retention_mode")}>
+            {retentionModes.map(([v, t]) => (
+              <option key={v} value={v}>
+                {t}
+              </option>
+            ))}
+          </Select>
+        )}
       </Field>
     </AuthCard>
   );

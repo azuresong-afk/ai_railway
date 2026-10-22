@@ -328,6 +328,9 @@ type setupRequest struct {
 	Login       string `json:"login"`
 	DisplayName string `json:"display_name"`
 	Password    string `json:"password"`
+	// Необязательные настройки установки (ТЗ 6.4, H-Р4); пусто — умолчания.
+	Timezone      string `json:"timezone"`
+	RetentionMode string `json:"retention_mode"`
 }
 
 // maxSetupToken — предел поля токена до разбора.
@@ -356,7 +359,8 @@ func (d Deps) setup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u, err := d.Auth.Setup(r.Context(), auth.SetupInput{
-		Token: req.Token, Login: req.Login, DisplayName: req.DisplayName, Password: req.Password, SourceIP: clientAddr(r),
+		Token: req.Token, Login: req.Login, DisplayName: req.DisplayName, Password: req.Password,
+		Timezone: req.Timezone, RetentionMode: req.RetentionMode, SourceIP: clientAddr(r),
 	})
 	var pe *auth.PasswordError
 	switch {

@@ -483,6 +483,12 @@ func TestPGSetupConcurrent(t *testing.T) {
 	if got := auditCount(t, e, "setup.completed"); got != n {
 		t.Fatalf("записей setup.completed %d, ожидалось %d", got, n)
 	}
+	// Настройки установки записаны той же транзакцией, что и администратор (H-Р4).
+	var tz, mode string
+	if err := e.owner.QueryRow(ctx, "SELECT timezone, retention_mode FROM install_settings").Scan(&tz, &mode); err != nil ||
+		tz != "Europe/Moscow" || mode != "masked" {
+		t.Fatalf("настройки установки: %q %q %v", tz, mode, err)
+	}
 }
 
 // Роль приложения меняет только «живые» столбцы: логин, роль, хеши токенов

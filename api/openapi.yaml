@@ -2669,6 +2669,16 @@ components:
         login: { type: string, minLength: 1, maxLength: 256 }
         display_name: { type: string, minLength: 1, maxLength: 200 }
         password: { type: string, minLength: 1, maxLength: 1024, format: password }
+        timezone:
+          type: string
+          maxLength: 64
+          default: Europe/Moscow
+          description: 'Часовой пояс показа времени (ВРМ.2), имя IANA; «Local» не принимается. Хранение — всегда UTC'
+        retention_mode:
+          type: string
+          enum: [none, masked, full]
+          default: masked
+          description: 'Режим хранения содержимого по умолчанию для новых приложений (ТЗ 5.5)'
     LoginRequest:
       type: object
       required: [login, password]

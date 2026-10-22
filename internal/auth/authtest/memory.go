@@ -25,6 +25,7 @@ type Memory struct {
 	sessions map[string]*auth.Session
 	records  []audit.Entry
 	setup    []*setupToken
+	install  auth.InstallSettings
 	mfa      map[string]*auth.MFA
 	codes    map[string][]*recoveryCode
 	// roles — свои роли по организациям (roles.go).
@@ -213,6 +214,13 @@ func (m *Memory) AddUser(u auth.User) {
 	m.users[u.ID] = &u
 }
 
+// InstallSettings — настройки установки, сохранённые первичной настройкой.
+func (m *Memory) InstallSettings() auth.InstallSettings {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.install
+}
+
 // AddSetupToken кладёт токен первичной настройки (как aisec-cli init).
 func (m *Memory) AddSetupToken(orgID, hashAlg string, hash []byte, expires time.Time) {
 	m.mu.Lock()
@@ -221,7 +229,7 @@ func (m *Memory) AddSetupToken(orgID, hashAlg string, hash []byte, expires time.
 	m.setup = append(m.setup, &setupToken{id: id, orgID: orgID, alg: hashAlg, hash: bytes.Clone(hash), expires: expires})
 }
 
-func (m *Memory) SetupFirstUser(_ context.Context, tokenHash []byte, hashAlg string, u auth.User, rec audit.Entry) error {
+func (m *Memory) SetupFirstUser(_ context.Context, tokenHash []byte, hashAlg string, u auth.User, cfg auth.InstallSettings, rec audit.Entry) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.Fail != nil {
@@ -237,6 +245,7 @@ func (m *Memory) SetupFirstUser(_ context.Context, tokenHash []byte, hashAlg str
 			t.used = true
 			auth.AddDetail(&rec, "setup_record_id", t.id)
 			m.users[u.ID] = &u
+			m.install = cfg
 			m.records = append(m.records, rec)
 			return nil
 		}

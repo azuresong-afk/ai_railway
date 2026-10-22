@@ -4298,6 +4298,17 @@ export interface components {
             display_name: string;
             /** Format: password */
             password: string;
+            /**
+             * @description Часовой пояс показа времени (ВРМ.2), имя IANA; «Local» не принимается. Хранение — всегда UTC
+             * @default Europe/Moscow
+             */
+            timezone: string;
+            /**
+             * @description Режим хранения содержимого по умолчанию для новых приложений (ТЗ 5.5)
+             * @default masked
+             * @enum {string}
+             */
+            retention_mode: "none" | "masked" | "full";
         };
         LoginRequest: {
             /** @description Логин без учёта регистра: латиница, цифры, «.», «_», «-», до 64 символов */

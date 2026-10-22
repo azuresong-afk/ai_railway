@@ -54,10 +54,16 @@ test("первичная настройка создаёт администра�
   await page.getByLabel("Имя в интерфейсе").fill("Администратор");
   await page.getByLabel("Пароль", { exact: true }).fill("Brand-New-Pass-9");
   await page.getByLabel("Пароль ещё раз").fill("Brand-New-Pass-9");
+  // Умолчания по ТЗ 6.4: Москва и маскированное хранение; меняем оба поля.
+  await expect(page.getByLabel("Часовой пояс")).toHaveValue("Europe/Moscow");
+  await expect(page.getByLabel("Хранение содержимого по умолчанию")).toHaveValue("masked");
+  await page.getByLabel("Часовой пояс").selectOption("Asia/Yekaterinburg");
+  await page.getByLabel("Хранение содержимого по умолчанию").selectOption("none");
   await page.getByRole("button", { name: "Создать администратора" }).click();
   await expect(page.getByRole("heading", { name: "Вход в AISec" })).toBeVisible();
   await expect(page.getByText("Администратор создан")).toBeVisible();
-  expect(st.calls.some((c) => c.path === "/api/v1/auth/setup" && c.method === "POST")).toBe(true);
+  const post = st.calls.find((c) => c.path === "/api/v1/auth/setup" && c.method === "POST");
+  expect(post?.body).toMatchObject({ timezone: "Asia/Yekaterinburg", retention_mode: "none" });
   done();
 });
 

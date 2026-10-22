@@ -166,3 +166,60 @@ func TestSetupFailureAudited(t *testing.T) {
 		t.Fatalf("аудит отказа: %+v", rec)
 	}
 }
+
+// H-Р4: часовой пояс и режим хранения — необязательные поля; без них
+// действуют умолчания, неверные значения отклоняются до погашения токена.
+func TestSetupInstallSettings(t *testing.T) {
+	setup := func(e *env, token string, tz, mode string) error {
+		_, err := e.svc.Setup(context.Background(), auth.SetupInput{
+			Token: token, Login: "admin", DisplayName: "Первый администратор", Password: phrase,
+			Timezone: tz, RetentionMode: mode, SourceIP: testIP,
+		})
+		return err
+	}
+	t.Run("умолчания", func(t *testing.T) {
+		e, token := newSetupEnv(t)
+		if err := setup(e, token, "", ""); err != nil {
+			t.Fatal(err)
+		}
+		if got := e.mem.InstallSettings(); got.Timezone != "Europe/Moscow" || got.RetentionMode != "masked" {
+			t.Fatalf("настройки: %+v", got)
+		}
+	})
+	t.Run("свои значения и аудит", func(t *testing.T) {
+		e, token := newSetupEnv(t)
+		if err := setup(e, token, "Asia/Yekaterinburg", "none"); err != nil {
+			t.Fatal(err)
+		}
+		if got := e.mem.InstallSettings(); got.Timezone != "Asia/Yekaterinburg" || got.RetentionMode != "none" {
+			t.Fatalf("настройки: %+v", got)
+		}
+		d, _ := lastRecord(t, e.mem, "setup.completed").Details.(map[string]any)
+		if d["timezone"] != "Asia/Yekaterinburg" || d["retention_mode"] != "none" {
+			t.Fatalf("аудит: %v", d)
+		}
+	})
+	bad := map[string][2]string{
+		"неизвестный пояс":  {"Mars/Olympus", ""},
+		"Local":             {"Local", ""},
+		"обход каталога":    {"../etc/passwd", ""},
+		"слишком длинный":   {strings.Repeat("A", 65), ""},
+		"не UTF-8":          {"\xff\xfe", ""},
+		"неизвестный режим": {"", "all"},
+		"режим с пробелом":  {"", "full "},
+		"режим в верхнем":   {"", "FULL"},
+	}
+	for name, c := range bad {
+		t.Run(name, func(t *testing.T) {
+			e, token := newSetupEnv(t)
+			var ie *auth.InputError
+			if err := setup(e, token, c[0], c[1]); !errors.As(err, &ie) {
+				t.Fatalf("ожидалась ошибка ввода: %v", err)
+			}
+			// Токен не погашен: настройка с верными значениями проходит.
+			if err := setup(e, token, "", ""); err != nil {
+				t.Fatalf("токен погашен отказом: %v", err)
+			}
+		})
+	}
+}
