@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { Link } from "react-router";
+import { Link, useNavigate } from "react-router";
 import { ErrorBanner, FormDialog } from "../admin/common";
 import type { Me } from "../api/client";
 import { formatAbsolute } from "../events/format";
@@ -34,9 +34,15 @@ export function AlertCardPanel({ id, me, onClose }: { id: string; me: Me; onClos
     },
   });
   const canIncident = me.permissions.includes("incidents.manage");
+  const canIncidentsRead = me.permissions.includes("incidents.read");
+  const nav = useNavigate();
+  // Созданный (или уже существовавший) инцидент открывается в своей карточке.
   const incidentM = useMutation({
     mutationFn: () => alertsApi.createIncident(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["alerts"] }),
+    onSuccess: async (inc) => {
+      await qc.invalidateQueries({ queryKey: ["alerts"] });
+      nav(`/incidents?${new URLSearchParams({ id: inc.id })}`);
+    },
   });
   const a = q.data;
   const [now] = useState(() => Date.now());
@@ -91,7 +97,15 @@ export function AlertCardPanel({ id, me, onClose }: { id: string; me: Me; onClos
               {a.incident_id && (
                 <>
                   <dt className="text-muted">Инцидент</dt>
-                  <dd className="font-mono">{a.incident_id}</dd>
+                  <dd>
+                    {canIncidentsRead ? (
+                      <Link className="text-accent underline" to={`/incidents?${new URLSearchParams({ id: a.incident_id })}`}>
+                        Открыть инцидент
+                      </Link>
+                    ) : (
+                      <span className="font-mono">{a.incident_id}</span>
+                    )}
+                  </dd>
                 </>
               )}
               {Object.entries(a.group).map(([k, v]) => (

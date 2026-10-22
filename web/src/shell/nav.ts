@@ -31,7 +31,7 @@ export const navItems: NavItem[] = [
   { path: "/", title: "Обзор", icon: LayoutDashboard },
   { path: "/events", title: "События", icon: List, anyOf: ["events.read"] },
   { path: "/alerts", title: "Оповещения", icon: Bell, anyOf: ["alerts.read"] },
-  { path: "/incidents", title: "Инциденты", icon: ShieldAlert },
+  { path: "/incidents", title: "Инциденты", icon: ShieldAlert, anyOf: ["incidents.read"] },
   { path: "/apps", title: "Приложения", icon: AppWindow, anyOf: ["applications.read"] },
   { path: "/providers", title: "Провайдеры", icon: Server, anyOf: ["providers.read"] },
   { path: "/policies", title: "Политики", icon: ScrollText, anyOf: ["policies.read"] },

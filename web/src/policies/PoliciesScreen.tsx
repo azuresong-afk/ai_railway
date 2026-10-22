@@ -7,7 +7,9 @@ import { Button } from "../ui/Button";
 import { EmptyState, Panel, TabBar, Table, Td, Th } from "../ui/Layout";
 import { actionText, type PolicySummary, policiesApi } from "./api";
 import { DiffView } from "./DiffView";
+import { ExceptionsPanel } from "./ExceptionsPanel";
 import { CreateDialog, ImportDialog, RollbackDialog } from "./PolicyDialogs";
+import { RulesEditor } from "./RulesEditor";
 import { Sandbox } from "./Sandbox";
 
 const modeText = { monitor: "Мониторинг", enforce: "Защита" } as const;
@@ -237,6 +239,18 @@ function PolicyDetail({ summary, me, onSelect, onImport }: { summary: PolicySumm
                 )}
               </div>
             ),
+          },
+        ]),
+    ...(!summary.template && has("policies.manage") && policy.data
+      ? [{ value: "editor", title: "Редактор правил", content: <RulesEditor key={policy.data.current_version} policy={policy.data} mfa={me.mfa?.enabled === true} onSaved={() => void 0} /> }]
+      : []),
+    ...(summary.template
+      ? []
+      : [
+          {
+            value: "exceptions",
+            title: "Исключения",
+            content: <ExceptionsPanel policyId={pid} canManage={has("policies.manage")} canEvents={has("events.read")} mfa={me.mfa?.enabled === true} />,
           },
         ]),
     ...(has("policies.test")

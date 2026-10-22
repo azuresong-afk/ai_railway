@@ -13,6 +13,10 @@ export type PolicyDiff = S["PolicyDiff"];
 export type PolicyTestRequest = S["PolicyTestRequest"];
 export type PolicyTestResult = S["PolicyTestResult"];
 export type NewPolicy = S["NewPolicy"];
+export type PolicyException = S["PolicyException"];
+export type PolicyExceptionItem = S["PolicyExceptionItem"];
+export type NewPolicyException = S["NewPolicyException"];
+export type PolicyExceptionExtend = S["PolicyExceptionExtend"];
 
 const id = encodeURIComponent;
 
@@ -56,6 +60,19 @@ export const policiesApi = {
     });
     return JSON.parse(text) as Policy;
   },
+  // Исключения версии (ТЗ 5.3, задача 3.22): добавление и продление — ослабление защиты, нужны пароль или код.
+  exceptions: (pid: string, signal?: AbortSignal) =>
+    request<S["PolicyExceptionList"]>("GET", `/api/v1/policies/${id(pid)}/exceptions`, undefined, signal),
+  addException: (pid: string, b: NewPolicyException) => request<S["PolicyExceptionChange"]>("POST", `/api/v1/policies/${id(pid)}/exceptions`, b),
+  extendException: (pid: string, exc: string, b: PolicyExceptionExtend) =>
+    request<S["PolicyExceptionChange"]>("POST", `/api/v1/policies/${id(pid)}/exceptions/${id(exc)}/extend`, b),
+  deleteException: (pid: string, exc: string, baseVersion: number, comment: string) => {
+    const q = new URLSearchParams({ base_version: String(baseVersion), ...(comment ? { comment } : {}) });
+    return request<S["PolicyExceptionChange"]>("DELETE", `/api/v1/policies/${id(pid)}/exceptions/${id(exc)}?${q}`);
+  },
+  // Сохранение новой версии из редактора правил (PUT /policies/{id}); ослабление — с паролем или кодом.
+  update: (pid: string, baseVersion: number, spec: PolicySpec, comment: string, re: ReauthBody = {}) =>
+    request<Policy>("PUT", `/api/v1/policies/${id(pid)}`, { base_version: baseVersion, spec, ...(comment ? { comment } : {}), ...re }),
   test: (b: PolicyTestRequest) => request<PolicyTestResult>("POST", "/api/v1/policies/test", b),
 };
 

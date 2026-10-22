@@ -61,6 +61,16 @@ export const fields: FieldInfo[] = [
       { value: "full", title: "полностью" },
     ],
   },
+  {
+    id: "mark",
+    title: "Отметка",
+    options: [
+      { value: "false_positive", title: "ложное срабатывание" },
+      { value: "confirmed", title: "подтверждено" },
+      { value: "none", title: "без отметки" },
+    ],
+  },
+  { id: "exception", title: "Исключение (ID)" },
   { id: "gateway", title: "Шлюз (ID)" },
   { id: "threat", title: "Угроза (строка матрицы, DM-NN)" },
   { id: "detector", title: "Детектор" },
