@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"time"
 
 	"github.com/azuresong-afk/ai_railway/internal/detect"
 )
@@ -24,6 +25,8 @@ type Policy struct {
 	ResponseCheck ResponseCheck
 	BlockMessage  string
 	rules         []rule
+	// exceptions — исключения версии (exception.go), в порядке спецификации.
+	exceptions []ExceptionSpec
 }
 
 type rule struct {
@@ -81,9 +84,15 @@ func Compile(s *Spec, c Catalog) (*Policy, error) {
 			threshold: r.threshold(), action: r.Action, severity: r.Severity, message: r.Message,
 		})
 	}
+	for i, e := range s.Exceptions {
+		if _, ok := c.Get(e.Detector); !ok {
+			errs = append(errs, fmt.Errorf("политика %s: exceptions[%d] (%s): детектор %q не зарегистрирован", s.ID, i, e.ID, e.Detector))
+		}
+	}
 	if err := errors.Join(errs...); err != nil {
 		return nil, err
 	}
+	p.exceptions = slices.Clone(s.Exceptions)
 	return p, nil
 }
 
@@ -125,6 +134,9 @@ func (p *Policy) Detectors(dir detect.Direction) []string {
 type Hit struct {
 	Finding detect.Finding
 	Source  detect.Source
+	// Fragment — хеш текста находки (HMAC на ключе шлюза, hex) для
+	// исключений по фрагменту; пусто — хеша нет (ключ не задан).
+	Fragment string
 }
 
 // MediaPart — нетекстовая часть запроса для non_text (DM-14). Шлюз медиа не
@@ -150,6 +162,12 @@ type Request struct {
 	Hits     []Hit
 	// Media — нетекстовые части запроса (только вход chat/completions).
 	Media []MediaPart
+	// App и User — приложение и псевдоним пользователя запроса: условия
+	// исключений. Пусто — условие с приложением или пользователем не совпадает.
+	App  string
+	User string
+	// Now — время для сроков исключений; нулевое — часы процесса.
+	Now time.Time
 }
 
 // NonTextRule — имя «правила» в решении, когда итог дал параметр non_text.
@@ -194,6 +212,8 @@ type Decision struct {
 	// Message — безопасное сообщение пользователю при блокировке.
 	Message string
 	Matches []Match
+	// Excepted — находки, пропущенные по исключениям: в Matches их нет.
+	Excepted []Excepted
 	// NonTextUnchecked — нетекстовые части уходят провайдеру без проверки
 	// (отметка в событии, ТЗ, 5.1).
 	NonTextUnchecked bool
@@ -218,7 +238,9 @@ func (d *Decision) Applied() []Action {
 // правила (детектор, направление, источник, категория, порог), итог по
 // находке — самое сильное действие по таблице приоритетов; итог решения —
 // самое сильное по всем находкам и параметру non_text. Правило не может
-// ослабить другое: allow не отменяет block (исключения — этап 2).
+// ослабить другое: allow не отменяет block. Находка под действующим
+// исключением (exception.go) правилами не рассматривается: она в
+// Decision.Excepted и не защищается и не блокируется.
 //
 // Режим monitor (ТЗ, 5.3): применяется только защита данных (redact,
 // pseudonymize) во входе, если провайдер внешний, — в том числе когда итог
@@ -237,7 +259,15 @@ func (p *Policy) Evaluate(req Request) Decision {
 	d := Decision{PolicyID: p.ID, Version: p.Version, Mode: mode, Action: Allow}
 	applyProtect := mode == Enforce || req.Direction == detect.Input && req.External
 	best := -1
+	now := req.Now
+	if now.IsZero() {
+		now = time.Now()
+	}
 	for i, h := range req.Hits {
+		if id := p.exceptionFor(h, req, now); id != "" {
+			d.Excepted = append(d.Excepted, Excepted{Hit: i, Exception: id})
+			continue
+		}
 		m, ok := p.match(i, h, req)
 		if !ok {
 			continue

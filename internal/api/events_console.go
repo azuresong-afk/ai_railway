@@ -28,6 +28,7 @@ type EventsAPI interface {
 	events.RetentionStore
 	events.FilterStore
 	events.StatsReader
+	events.MarkStore
 }
 
 // AuditRecorder — запись действий консоли в журнал аудита (*audit.Log).

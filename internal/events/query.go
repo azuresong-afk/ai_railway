@@ -64,6 +64,8 @@ type Record struct {
 	Stream           bool
 	NonTextUnchecked bool
 	HasContent       bool
+	// Mark — отметка аналитика (marks.go); nil — нет.
+	Mark *Mark
 	// Details — решение с трассировкой, находки, задержки; заполняется для
 	// карточки и выгрузки JSON (Query.WithDetails).
 	Details *Details
@@ -125,7 +127,12 @@ type Reader interface {
 // selectColumns — столбцы записи; details — только с WithDetails.
 const selectColumns = `e.id::text, e.ts, e.event_time, e.received_at, e.gateway_id::text, e.type, e.app, e.env,
 	e.user_alias, e.provider, e.model, e.source, e.policy_mode, e.action, e.rule, e.severity, e.storage,
-	e.threats, e.stream, e.non_text_unchecked, e.has_content`
+	e.threats, e.stream, e.non_text_unchecked, e.has_content,
+	m.mark, m.comment, m.marked_at, m.marked_by, m.marked_by_name`
+
+// fromEvents — события с отметками (marks.go): отметка не больше одной на
+// событие, поэтому соединение строк не размножает.
+const fromEvents = ` FROM events e LEFT JOIN event_marks m ON m.event_id = e.id AND m.event_ts = e.ts AND m.org_id = e.org_id`
 
 // buildQuery — SELECT выборки. Текст запроса собирается только из
 // констант и фрагментов фильтра (filter.appendSQL); значения пользователя —
@@ -141,7 +148,12 @@ func (s *PGStore) buildQuery(q *Query, count int) (string, []any) {
 			b.WriteString(", e.details")
 		}
 	}
-	b.WriteString(" FROM events e WHERE e.org_id = " + a.add(s.orgID))
+	if count > 0 {
+		b.WriteString(" FROM events e")
+	} else {
+		b.WriteString(fromEvents)
+	}
+	b.WriteString(" WHERE e.org_id = " + a.add(s.orgID))
 	b.WriteString(" AND e.ts >= " + a.add(q.From.UTC()) + " AND e.ts < " + a.add(q.To.UTC()))
 	if !q.ReceivedBefore.IsZero() {
 		b.WriteString(" AND e.received_at <= " + a.add(q.ReceivedBefore.UTC()))
@@ -166,11 +178,13 @@ func scanRecord(row pgx.Row, withDetails bool) (Record, error) {
 		r                                             Record
 		app, env, user, provider, model, source, mode *string
 		action, rule, severity                        *string
+		mark, comment, markedBy, markedByName         *string
+		markedAt                                      *time.Time
 		details                                       []byte
 	)
 	dest := []any{&r.ID, &r.TS, &r.Time, &r.ReceivedAt, &r.GatewayID, &r.Type, &app, &env, &user, &provider,
 		&model, &source, &mode, &action, &rule, &severity, &r.Storage, &r.Threats, &r.Stream,
-		&r.NonTextUnchecked, &r.HasContent}
+		&r.NonTextUnchecked, &r.HasContent, &mark, &comment, &markedAt, &markedBy, &markedByName}
 	if withDetails {
 		dest = append(dest, &details)
 	}
@@ -180,6 +194,9 @@ func scanRecord(row pgx.Row, withDetails bool) (Record, error) {
 	r.App, r.Env, r.User, r.Provider, r.Model = deref(app), deref(env), deref(user), deref(provider), deref(model)
 	r.Source, r.PolicyMode, r.Action, r.Rule, r.Severity = deref(source), deref(mode), deref(action), deref(rule), deref(severity)
 	r.TS, r.Time, r.ReceivedAt = r.TS.UTC(), r.Time.UTC(), r.ReceivedAt.UTC()
+	if mark != nil && markedAt != nil {
+		r.Mark = &Mark{Mark: *mark, Comment: deref(comment), At: markedAt.UTC(), By: deref(markedBy), ByName: deref(markedByName)}
+	}
 	if withDetails {
 		var d Details
 		if err := json.Unmarshal(details, &d); err != nil {
@@ -321,7 +338,7 @@ func (s *PGStore) Card(ctx context.Context, id string) (Record, error) {
 	}
 	ctx, cancel := pgCtx(ctx)
 	defer cancel()
-	r, err := scanRecord(s.rdb.QueryRow(ctx, "SELECT "+selectColumns+", e.details FROM events e"+
+	r, err := scanRecord(s.rdb.QueryRow(ctx, "SELECT "+selectColumns+", e.details"+fromEvents+
 		" WHERE e.id = $1 AND e.ts = $2 AND e.org_id = $3", id, ts, s.orgID), true)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Record{}, ErrNotFound

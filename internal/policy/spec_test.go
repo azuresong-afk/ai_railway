@@ -48,7 +48,7 @@ func TestParseSample(t *testing.T) {
 
 func TestParseRejects(t *testing.T) {
 	cases := map[string][2]string{
-		"неизвестное поле":      {"version: 2\n", "version: 2\nexceptions: []\n"},
+		"неизвестное поле":      {"version: 2\n", "version: 2\noverrides: []\n"},
 		"неизвестное в правиле": {"    severity: high\n", "    severity: high\n    enabled: true\n"},
 		"id":                           {"id: support-strict", "id: Support Strict"},
 		"пустое имя":                   {"name: Бот поддержки — строго", "name: \" \""},
@@ -145,6 +145,8 @@ func FuzzParse(f *testing.F) {
 	}
 	f.Add([]byte("id: p\nname: x\nversion: 1\nmode: monitor\nrules: [{id: a, detector: x, action: log, severity: info, threshold: .inf}]"))
 	f.Add([]byte("a: &a [*a, *a]"))
+	f.Add([]byte(sample + "exceptions:\n  - {id: e1, detector: injection.heuristic, app: support, reason: r, author: user:u1, " +
+		"created_at: 2026-10-01T03:00:00+03:00, expires_at: 2026-10-31T00:00:00Z}\n"))
 	f.Fuzz(func(t *testing.T, data []byte) {
 		s, err := Parse(bytes.NewReader(data))
 		if err != nil {

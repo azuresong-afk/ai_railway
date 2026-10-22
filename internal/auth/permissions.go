@@ -45,6 +45,10 @@ const (
 	PermEventsExport          = "events.export"
 	PermEventsContentRead     = "events.content.read"
 	PermEventsRetentionManage = "events.retention.manage"
+	// PermEventsMark — отметки «ложное срабатывание» и «подтверждено» (ТЗ
+	// 5.5, задача 3.22 этапа 3): работа аналитика; исключение по отметке
+	// создаёт только администратор безопасности (policies.manage).
+	PermEventsMark = "events.mark"
 	// Приложения, ключи и провайдеры (ТЗ 5.4, ИАФ.8; задача 2.11). Поля
 	// защиты приложения (политика, режим, режим хранения) и снятие
 	// признака «внешний» у провайдера — функции безопасности (УПД.2, DM-40).
@@ -136,6 +140,7 @@ var permissionCatalog = []Permission{
 	{Name: PermEventsExport, Title: "Выгрузка событий в CSV и JSON (без содержимого)", Group: "События"},
 	{Name: PermEventsContentRead, Title: "Просмотр содержимого запросов и ответов с указанием причины", Group: "События", Security: true},
 	{Name: PermEventsRetentionManage, Title: "Изменение сроков хранения событий", Group: "События", Security: true},
+	{Name: PermEventsMark, Title: "Отметки «ложное срабатывание» и «подтверждено» в событиях", Group: "События"},
 	{Name: PermApplicationsRead, Title: "Просмотр приложений и их ключей (без секретов)", Group: "Приложения", Ownable: true},
 	{Name: PermApplicationsManage, Title: "Создание, изменение и архивация приложений", Group: "Приложения"},
 	{Name: PermApplicationsPolicy, Title: "Политика, режим политики и режим хранения приложения", Group: "Приложения", Security: true},
@@ -351,7 +356,7 @@ var builtinRoles = []RoleDef{
 			PermModelPricesRead: ScopeAll, PermModelPricesManage: ScopeAll, PermBudgetsRead: ScopeAll, PermBudgetsManage: ScopeAll}},
 	{ID: RoleAnalyst, DisplayName: "Аналитик", Builtin: true,
 		Description: "Разбор оповещений и инцидентов, поиск по событиям",
-		Grants: grantAll(PermSystemRead, PermEventsRead, PermEventsExport, PermApplicationsRead, PermProvidersRead,
+		Grants: grantAll(PermSystemRead, PermEventsRead, PermEventsExport, PermEventsMark, PermApplicationsRead, PermProvidersRead,
 			PermPoliciesRead, PermPoliciesTest, PermAlertsRead, PermAlertsManage, PermAlertRulesRead, PermModelPricesRead, PermBudgetsRead,
 			PermIncidentsRead, PermIncidentsManage, PermIncidentsExport)},
 	{ID: RoleAuditor, DisplayName: "Аудитор", Builtin: true,

@@ -11,7 +11,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/audit"
 )
 
-// Передача журнала в SIEM на PostgreSQL (миграция 0036_audit_stream).
+// Передача журнала в SIEM на PostgreSQL (миграция 0037_audit_stream).
 
 // headSeqSQL — последняя запись журнала: после архивации журнал может быть
 // пуст, тогда — контрольная точка архивации.

@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"slices"
@@ -10,6 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/internal/detect"
 	"github.com/azuresong-afk/ai_railway/internal/detect/pii"
 	"github.com/azuresong-afk/ai_railway/internal/detect/secretscan"
@@ -115,6 +117,8 @@ type inspectRequest struct {
 	// DetectOnly — только находки и решение, фрагменты не меняются
 	// (окна потока, проверка после передачи).
 	DetectOnly bool
+	// User — псевдоним пользователя запроса (условие исключений).
+	User string
 }
 
 // locatedFinding — находка и номер фрагмента, в котором она найдена.
@@ -138,6 +142,50 @@ type inspection struct {
 	// Texts — фрагменты после маскирования; Changed[i] — фрагмент изменён.
 	Texts   []string
 	Changed []bool
+	// Fragments — хеши текста находок (fragmentHash) по номерам Findings;
+	// nil — ключа нет.
+	Fragments []string
+}
+
+// excepted — номер находки → ID исключения, по которому она пропущена.
+func (in *inspection) excepted() map[int]string {
+	if len(in.Decision.Excepted) == 0 {
+		return nil
+	}
+	out := make(map[int]string, len(in.Decision.Excepted))
+	for _, x := range in.Decision.Excepted {
+		out[x.Hit] = x.Exception
+	}
+	return out
+}
+
+// fragmentDomain — разделитель назначения имитовставки: псевдоним
+// пользователя — HMAC идентификатора без управляющих символов, поэтому
+// хеш фрагмента с префиксом из U+0000 с ним не совпадает.
+const fragmentDomain = "\x00aisec-fragment/1\x00"
+
+// fragmentHash — хеш текста находки для исключений по фрагменту (ТЗ 5.3,
+// решение Р8 этапа 3): HMAC на ключе псевдонимов шлюза, 16 байт в hex, как
+// псевдоним пользователя. Простой хеш не годится: ПДн из находки (номер
+// карты, телефон) перебираются по словарю.
+func fragmentHash(mac aisecCrypto.MAC, text string) string {
+	return hex.EncodeToString(mac.Sum([]byte(fragmentDomain + text))[:16])
+}
+
+// fragments — хеши текста находок; nil без ключа.
+func (a *App) fragments(texts []inspectText, fs []locatedFinding) []string {
+	if a.fragmentMAC == nil || len(fs) == 0 {
+		return nil
+	}
+	out := make([]string, len(fs))
+	for i, f := range fs {
+		t := texts[f.Text].Text
+		if f.Start < 0 || f.End > len(t) || f.Start >= f.End {
+			continue // позиции проверены ValidateFinding; защита от ошибки кода
+		}
+		out[i] = fragmentHash(a.fragmentMAC, t[f.Start:f.End])
+	}
+	return out
 }
 
 // Blocked — запрос не пропускается: решение политики или fail_closed.
@@ -221,16 +269,23 @@ func (a *App) inspect(ctx context.Context, req inspectRequest) (*inspection, err
 			}
 		}
 	}
+	in.Fragments = a.fragments(req.Texts, in.Findings)
 	hits := make([]policy.Hit, len(in.Findings))
 	for i, f := range in.Findings {
 		hits[i] = policy.Hit{Finding: f.Finding, Source: req.Texts[f.Text].Source}
+		if in.Fragments != nil {
+			hits[i].Fragment = in.Fragments[i]
+		}
 	}
 	mode := req.Mode
 	if mode == "" {
 		mode = a.Mode
 	}
+	// Исключения применяются после детекторов и до решения политики, по
+	// часам шлюза: истёкшее исключение не действует без нового пакета.
 	in.Decision = a.Policy.Evaluate(policy.Request{
 		Endpoint: req.Endpoint, Direction: req.Direction, Mode: mode, External: req.External, Hits: hits, Media: req.Media,
+		App: a.ID, User: req.User, Now: a.now(),
 	})
 	// Режим при сбое (ТЗ, 4.4) действует и в monitor: проверка, которая не
 	// состоялась, не может подтвердить, что защита данных не нужна. Ответу
