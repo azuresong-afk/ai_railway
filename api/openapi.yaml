@@ -1691,6 +1691,135 @@ paths:
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ProblemInternal' }
         '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/model-prices:
+    get:
+      summary: Цены моделей
+      description: |
+        Право `model_prices.read` (ТЗ 5.8, задача 3.18). Цены в рублях за 1 000 токенов
+        входа и выхода по провайдеру и модели (имя модели у провайдера, после псевдонимов),
+        не больше 10 000. Суммы — десятичные строки, без плавающей точки.
+      x-permission: model_prices.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      responses:
+        '200':
+          description: Список цен
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ModelPriceList' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    post:
+      summary: Задать цену модели
+      description: |
+        Право `model_prices.manage`. Одна цена на модель провайдера (повтор — 409); провайдера
+        нет — 422. Цены входят в пакет конфигурации шлюзов (раздел `budgets`): шлюз считает
+        расход запросов. Запросы к модели без цены не отклоняются, их стоимость «не
+        определена». Пишет `model_price.create`.
+      x-permission: model_prices.manage
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NewModelPrice' }
+      responses:
+        '201':
+          description: Цена задана
+          headers:
+            Location: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ModelPrice' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '409': { $ref: '#/components/responses/ProblemConflict' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '422': { $ref: '#/components/responses/ProblemUnprocessable' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/model-prices/{id}:
+    put:
+      summary: Изменить цену модели
+      description: |
+        Право `model_prices.manage`. Меняются цены входа и выхода; провайдер и модель
+        неизменны. Пишет `model_price.update` (до и после).
+      x-permission: model_prices.manage
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/PriceID'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ModelPriceFields' }
+      responses:
+        '200':
+          description: Цена изменена
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ModelPrice' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    delete:
+      summary: Удалить цену модели
+      description: |
+        Право `model_prices.manage`. Стоимость запросов к модели становится «не определена».
+        Удаление провайдера удаляет и его цены. Пишет `model_price.delete`.
+      x-permission: model_prices.manage
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/PriceID'
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '204': { description: Цена удалена }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/budgets:
+    get:
+      summary: Бюджеты и расход приложений за месяц
+      description: |
+        Право `budgets.read` (ТЗ 5.8, задача 3.18). Приложения с бюджетом или с расходом за
+        месяц `month` (по умолчанию текущий) в часовом поясе установки, по `slug`. Расход —
+        сумма счётчиков, присланных шлюзами в heartbeat (задержка до периода heartbeat),
+        в рублях с копейками с округлением вверх. Запросы к моделям без цены в расход не
+        входят: их число — `unpriced_requests` («стоимость не определена»).
+      x-permission: budgets.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/BudgetMonth'
+      responses:
+        '200':
+          description: Бюджеты и расход
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BudgetStatusList' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
   /api/v1/applications:
     get:
       summary: Приложения
@@ -1880,6 +2009,83 @@ paths:
         '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '422': { $ref: '#/components/responses/ProblemUnprocessable' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/applications/{id}/budget:
+    get:
+      summary: Бюджет и расход приложения
+      description: Право `budgets.read`. Бюджет (или `null`) и расход приложения за месяц `month`.
+      x-permission: budgets.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ApplicationID'
+        - $ref: '#/components/parameters/BudgetMonth'
+      responses:
+        '200':
+          description: Бюджет и расход
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BudgetStatus' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    put:
+      summary: Задать бюджет приложения
+      description: |
+        Право `budgets.manage` (решение Р7 этапа 3). Месячный бюджет в рублях: `soft` — только
+        учёт и оповещения (80 % и 100 %, задача 3.12); `hard` — шлюз отклоняет запросы
+        приложения к модели (chat/completions, embeddings), когда расход месяца достиг бюджета
+        (ровно 100 % — исчерпан): 429 `budget_exceeded` с `Retry-After` до начала следующего
+        месяца. Check API бюджет не тратит. Жёсткий бюджет входит в пакет конфигурации
+        шлюзов. Архивному приложению — 409. Снятие или повышение жёсткого бюджета — не
+        ослабление защиты (не DM-40): без повторной проверки, но `budget.set` пишется с
+        `relaxed: true` (до и после).
+      x-permission: budgets.manage
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ApplicationID'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BudgetFields' }
+      responses:
+        '200':
+          description: Бюджет задан; расход за текущий месяц
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BudgetStatus' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '409': { $ref: '#/components/responses/ProblemConflict' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    delete:
+      summary: Снять бюджет приложения
+      description: |
+        Право `budgets.manage`. Расход продолжает учитываться. Пишет `budget.delete`
+        (`relaxed: true`, если бюджет был жёстким). Бюджета нет — 404.
+      x-permission: budgets.manage
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ApplicationID'
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '204': { description: Бюджет снят }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ProblemInternal' }
         '503': { $ref: '#/components/responses/Unavailable' }
   /api/v1/applications/{id}/keys:
@@ -2621,6 +2827,17 @@ components:
       required: true
       description: ID провайдера (UUID)
       schema: { type: string, format: uuid }
+    PriceID:
+      name: id
+      in: path
+      required: true
+      description: ID цены модели (UUID)
+      schema: { type: string, format: uuid }
+    BudgetMonth:
+      name: month
+      in: query
+      description: Месяц «ГГГГ-ММ» в часовом поясе установки; по умолчанию текущий
+      schema: { type: string, pattern: '^[0-9]{4}-(0[1-9]|1[0-2])$' }
     ApplicationID:
       name: id
       in: path
@@ -2698,7 +2915,7 @@ components:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
     QuotaExceeded:
-      description: Превышена квота приложения (`quota_exceeded`) или частота неудачных попыток аутентификации с адреса клиента (`auth_rate_limited`, тип `rate_limit_error`, DM-38)
+      description: Превышена квота приложения (`quota_exceeded`), исчерпан жёсткий месячный бюджет приложения (`budget_exceeded`, `Retry-After` — до начала следующего месяца в часовом поясе установки; только chat/completions и embeddings, задача 3.18) или частота неудачных попыток аутентификации с адреса клиента (`auth_rate_limited`, тип `rate_limit_error`, DM-38)
       headers:
         Retry-After: { schema: { type: integer } }
       content:
@@ -3268,6 +3485,89 @@ components:
         credential_set_at: { type: string, format: date-time }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
+    ModelPriceFields:
+      type: object
+      required: [input_price, output_price]
+      additionalProperties: false
+      properties:
+        input_price: { $ref: '#/components/schemas/PriceAmount' }
+        output_price: { $ref: '#/components/schemas/PriceAmount' }
+    NewModelPrice:
+      type: object
+      required: [provider_id, model, input_price, output_price]
+      additionalProperties: false
+      properties:
+        provider_id: { type: string, format: uuid }
+        model: { type: string, minLength: 1, maxLength: 128, description: 'Имя модели у провайдера (цель псевдонима), печатные символы' }
+        input_price: { $ref: '#/components/schemas/PriceAmount' }
+        output_price: { $ref: '#/components/schemas/PriceAmount' }
+    PriceAmount:
+      type: string
+      maxLength: 32
+      pattern: '^[0-9]+(\.[0-9]{1,4})?$'
+      description: 'Рубли за 1 000 токенов, до 4 знаков после точки, от 0 до 1000000; например "0.1500"'
+    ModelPrice:
+      type: object
+      required: [id, provider_id, model, input_price, output_price, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        provider_id: { type: string, format: uuid }
+        model: { type: string }
+        input_price: { type: string, description: Рубли за 1 000 токенов входа, 4 знака после точки }
+        output_price: { type: string, description: Рубли за 1 000 токенов выхода, 4 знака после точки }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    ModelPriceList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ModelPrice' }
+    BudgetFields:
+      type: object
+      required: [mode, monthly_limit]
+      additionalProperties: false
+      properties:
+        mode: { type: string, enum: [soft, hard], description: '`soft` — учёт и оповещения; `hard` — запросы сверх бюджета отклоняются' }
+        monthly_limit:
+          type: string
+          maxLength: 32
+          pattern: '^[0-9]+(\.[0-9]{1,2})?$'
+          description: 'Рубли в месяц, от 0.01 до 1000000000, до 2 знаков после точки'
+    Budget:
+      type: object
+      required: [mode, monthly_limit, updated_at]
+      properties:
+        mode: { type: string, enum: [soft, hard] }
+        monthly_limit: { type: string, description: Рубли в месяц, 2 знака после точки }
+        updated_at: { type: string, format: date-time }
+    BudgetStatus:
+      type: object
+      required: [application_id, application, name, month, budget, spent, priced_tokens, unpriced_tokens, requests, unpriced_requests, percent, exhausted]
+      properties:
+        application_id: { type: string, format: uuid }
+        application: { type: string, description: ID (slug) приложения }
+        name: { type: string }
+        month: { type: string, pattern: '^[0-9]{4}-(0[1-9]|1[0-2])$' }
+        budget:
+          description: Бюджет; `null` — не задан
+          oneOf: [{ $ref: '#/components/schemas/Budget' }, { type: 'null' }]
+        spent: { type: string, description: 'Расход по моделям с ценой, рубли с копейками (округление вверх)' }
+        priced_tokens: { type: integer, format: int64, minimum: 0 }
+        unpriced_tokens: { type: integer, format: int64, minimum: 0, description: Токены моделей без цены }
+        requests: { type: integer, format: int64, minimum: 0, description: Запросы, ушедшие провайдеру }
+        unpriced_requests: { type: integer, format: int64, minimum: 0, description: 'Из них к моделям без цены: стоимость не определена' }
+        percent: { type: integer, format: int64, minimum: 0, description: Доля расхода от бюджета, целые проценты вниз; без бюджета 0 }
+        exhausted: { type: boolean, description: 'Расход достиг бюджета (≥ 100 %)' }
+    BudgetStatusList:
+      type: object
+      required: [month, items]
+      properties:
+        month: { type: string, pattern: '^[0-9]{4}-(0[1-9]|1[0-2])$' }
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/BudgetStatus' }
     ProviderList:
       type: object
       required: [items]

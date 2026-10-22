@@ -231,7 +231,7 @@ func TestInternalAPIRejectsClients(t *testing.T) {
 			`{"version":""}`:            http.StatusBadRequest,
 			`{"version":"1 2"}`:         http.StatusBadRequest,
 			`[]`:                        http.StatusBadRequest,
-			`{"version":"` + strings.Repeat("1", 5000) + `"}`:                  http.StatusRequestEntityTooLarge,
+			`{"version":"` + strings.Repeat("1", 1<<20) + `"}`:                 http.StatusRequestEntityTooLarge,
 			`{"version":"1","bundle_etag":"` + "é" + `"}`:                      http.StatusBadRequest,
 			`{"version":"1"} {"version":"2"}`:                                  http.StatusBadRequest,
 			`{"version":"1","bundle_etag":"` + strings.Repeat("a", 129) + `"}`: http.StatusBadRequest,

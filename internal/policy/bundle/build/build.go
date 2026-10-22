@@ -420,6 +420,7 @@ func (s *Service) collect(ctx context.Context, now time.Time) (*bundle.Content, 
 	}
 	c := &bundle.Content{Providers: []bundle.Provider{}, Applications: []bundle.Application{}, Policies: []bundle.Policy{}}
 	usedProv := map[string]bool{}
+	appSlugs := map[string]string{}
 	pols := map[string]*bundle.Policy{}
 	checks := map[string]string{}
 	var excluded []Excluded
@@ -465,6 +466,7 @@ func (s *Service) collect(ctx context.Context, now time.Time) (*bundle.Content, 
 			}
 			nkeys += len(ba.Keys)
 			c.Applications = append(c.Applications, ba)
+			appSlugs[a.ID] = ba.ID
 			if !usedProv[p.ID] {
 				usedProv[p.ID] = true
 				c.Providers = append(c.Providers, provider(p))
@@ -480,6 +482,9 @@ func (s *Service) collect(ctx context.Context, now time.Time) (*bundle.Content, 
 		after = &apps.Cursor{CreatedAt: last.CreatedAt, ID: last.ID}
 	}
 	s.checks = checks
+	if err := s.addBudgets(ctx, c, byID, usedProv, appSlugs); err != nil {
+		return nil, nil, nil, err
+	}
 	slices.SortFunc(c.Applications, func(a, b bundle.Application) int { return strings.Compare(a.ID, b.ID) })
 	slices.SortFunc(c.Providers, func(a, b bundle.Provider) int { return strings.Compare(a.ID, b.ID) })
 	slices.SortFunc(c.Policies, func(a, b bundle.Policy) int { return strings.Compare(a.ID, b.ID) })
@@ -487,12 +492,52 @@ func (s *Service) collect(ctx context.Context, now time.Time) (*bundle.Content, 
 	slices.SortFunc(excluded, func(a, b Excluded) int { return strings.Compare(a.Application, b.Application) })
 	stats := map[string]any{"applications": len(c.Applications), "providers": len(c.Providers),
 		"policies": len(c.Policies), "app_keys": nkeys}
+	if c.Budgets != nil {
+		stats["prices"], stats["hard_budgets"] = len(c.Budgets.Prices), len(c.Budgets.Hard)
+	}
 
 	if len(excluded) > 0 {
 		stats["excluded_count"] = len(excluded)
 		stats["excluded"] = excluded[:min(len(excluded), maxExcludedListed)]
 	}
 	return c, stats, excluded, nil
+}
+
+// addBudgets добавляет раздел budgets (задача 3.18): цены моделей
+// провайдеров пакета и жёсткие бюджеты приложений пакета. Ни цен, ни
+// бюджетов — раздела нет (пакет прежних версий не меняется); есть хотя бы
+// мягкий бюджет — раздел есть, и шлюзы считают расход и запросы к моделям
+// без цены.
+func (s *Service) addBudgets(ctx context.Context, c *bundle.Content, provs map[string]apps.Provider, used map[string]bool,
+	appSlugs map[string]string) error {
+	sec, err := s.apps.BudgetSection(ctx)
+	if err != nil {
+		return err
+	}
+	b := &bundle.Budgets{Timezone: sec.Timezone, Prices: []bundle.ModelPrice{}, Hard: []bundle.HardBudget{}}
+	for _, p := range sec.Prices {
+		if !used[p.ProviderID] {
+			continue
+		}
+		b.Prices = append(b.Prices, bundle.ModelPrice{Provider: provs[p.ProviderID].Slug, Model: p.Model, Input: p.Input, Output: p.Output})
+	}
+	for _, h := range sec.Hard {
+		if slug, ok := appSlugs[h.AppID]; ok {
+			b.Hard = append(b.Hard, bundle.HardBudget{App: slug, Limit: bundle.KopecksToCost(h.Limit)})
+		}
+	}
+	if len(sec.Prices) == 0 && !sec.AnyBudget {
+		return nil
+	}
+	slices.SortFunc(b.Prices, func(x, y bundle.ModelPrice) int {
+		if d := strings.Compare(x.Provider, y.Provider); d != 0 {
+			return d
+		}
+		return strings.Compare(x.Model, y.Model)
+	})
+	slices.SortFunc(b.Hard, func(x, y bundle.HardBudget) int { return strings.Compare(x.App, y.App) })
+	c.Budgets = b
+	return nil
 }
 
 // keysByApp — действующие ключи всех приложений одним запросом (Н25, Н26).

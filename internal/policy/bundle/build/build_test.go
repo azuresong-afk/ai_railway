@@ -557,3 +557,46 @@ func TestDeliverReusesSealed(t *testing.T) {
 		t.Fatalf("новая версия — прежний пакет: %v", err)
 	}
 }
+
+// Раздел budgets (задача 3.18): нет цен и бюджетов — раздела нет; цены
+// провайдеров пакета и жёсткие бюджеты — по slug, бюджет в 1e-7 ₽; мягкий
+// бюджет в пакет не входит, но включает учёт расхода.
+func TestBuildBudgetsSection(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	content := func() *bundle.Content {
+		t.Helper()
+		r, err := e.svc.Current(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c, err := bundle.ParseContent(r.Content)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	if c := content(); c.Budgets != nil {
+		t.Fatalf("раздел без цен и бюджетов: %+v", c.Budgets)
+	}
+	e.apps.SetTimezone(func(context.Context) (string, error) { return "Europe/Moscow", nil })
+	if _, err := e.apps.SetBudget(ctx, e.appsBy, e.app.ID, apps.BudgetInput{Mode: apps.BudgetSoft, Limit: "100"}); err != nil {
+		t.Fatal(err)
+	}
+	if c := content(); c.Budgets == nil || c.Budgets.Timezone != "Europe/Moscow" || len(c.Budgets.Hard) != 0 || len(c.Budgets.Prices) != 0 {
+		t.Fatalf("мягкий бюджет: %+v", c.Budgets)
+	}
+	if _, err := e.apps.CreatePrice(ctx, e.appsBy, apps.PriceInput{ProviderID: e.provider.ID, Model: "gpt-4o", Input: "0.25", Output: "1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.apps.SetBudget(ctx, e.appsBy, e.app.ID, apps.BudgetInput{Mode: apps.BudgetHard, Limit: "15000.50"}); err != nil {
+		t.Fatal(err)
+	}
+	c := content()
+	want := bundle.Budgets{Timezone: "Europe/Moscow",
+		Prices: []bundle.ModelPrice{{Provider: "llm", Model: "gpt-4o", Input: 2_500, Output: 10_000}},
+		Hard:   []bundle.HardBudget{{App: "crm", Limit: 1_500_050 * bundle.CostUnitsPerKopeck}}}
+	if c.Budgets == nil || c.Budgets.Timezone != want.Timezone || !slices.Equal(c.Budgets.Prices, want.Prices) || !slices.Equal(c.Budgets.Hard, want.Hard) {
+		t.Fatalf("раздел: %+v", c.Budgets)
+	}
+}

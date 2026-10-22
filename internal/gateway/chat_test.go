@@ -97,6 +97,8 @@ type gwOpts struct {
 	events *eventLog
 	// unavailable — приложения, исключённые сервером из пакета.
 	unavailable []string
+	// budget — учёт расхода и жёсткие бюджеты (задача 3.18).
+	budget *Budget
 }
 
 // newGateway — шлюз с OpenAI-совместимым провайдером на upstream и одним
@@ -133,12 +135,12 @@ func newGateway(t testing.TB, upstream string, mod func(*gwOpts)) http.Handler {
 	}
 	ta := newTestAuth(t, o.limiter)
 	ch, err := NewChatHandler(ChatConfig{Router: rt, MaxBodyBytes: o.maxBody, Logger: o.logger, BodyReadTimeout: o.bodyTimeout,
-		Events: o.events, IDs: ta.cfg.IDs, Quotas: NewLimiter(apps), UserMAC: o.userMAC, DetectorTimeout: o.detTimeout})
+		Events: o.events, IDs: ta.cfg.IDs, Quotas: NewLimiter(apps), Budget: o.budget, UserMAC: o.userMAC, DetectorTimeout: o.detTimeout})
 	if err != nil {
 		t.Fatal(err)
 	}
 	hcfg := ChatConfig{Router: rt, MaxBodyBytes: o.maxBody, Logger: o.logger, BodyReadTimeout: o.bodyTimeout,
-		Events: o.events, IDs: ta.cfg.IDs, Quotas: ch.cfg.Quotas, UserMAC: o.userMAC, DetectorTimeout: o.detTimeout}
+		Events: o.events, IDs: ta.cfg.IDs, Quotas: ch.cfg.Quotas, Budget: o.budget, UserMAC: o.userMAC, DetectorTimeout: o.detTimeout}
 	eh, err := NewEmbeddingsHandler(hcfg)
 	if err != nil {
 		t.Fatal(err)

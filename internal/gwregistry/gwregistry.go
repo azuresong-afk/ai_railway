@@ -337,6 +337,9 @@ type Service struct {
 	// roots — корни УЦ после ротаций; nil — один корень ca.
 	roots      atomic.Pointer[RootSet]
 	anchorRoot string
+	// budgets — счётчики расхода из heartbeat (задача 3.18); nil — не
+	// сохраняются.
+	budgets BudgetSync
 
 	mu       sync.Mutex
 	lastHB   map[string]time.Time // ID шлюза → последний принятый heartbeat
@@ -660,6 +663,9 @@ type HeartbeatInput struct {
 	// прежней версии.
 	StartedAt time.Time
 	Stopping  bool
+	// Budget — счётчики расхода процесса шлюза (задача 3.18); nil — шлюз
+	// их не присылает (нет раздела budgets в пакете или прежняя версия).
+	Budget *BudgetReport
 }
 
 // Пределы итогов проверок в heartbeat.
@@ -727,6 +733,12 @@ func (in HeartbeatInput) Validate() error {
 	}
 	if in.Stopping && in.StartedAt.IsZero() {
 		return fmt.Errorf("%w: stopping — только вместе с started_at", ErrInvalidRequest)
+	}
+	if in.Budget != nil && in.StartedAt.IsZero() {
+		return fmt.Errorf("%w: budget — только вместе с started_at", ErrInvalidRequest)
+	}
+	if err := in.Budget.validate(); err != nil {
+		return err
 	}
 	if in.Version == "" || len(in.Version) > maxVersion {
 		return fmt.Errorf("%w: version — от 1 до %d символов", ErrInvalidRequest, maxVersion)
@@ -802,7 +814,8 @@ func (s *Service) Heartbeat(ctx context.Context, gatewayID string, in HeartbeatI
 	if err != nil {
 		return HeartbeatResult{}, err
 	}
-	out := HeartbeatResult{At: now, Reissue: s.needReissue(ch.CertCA, ch.CertNotAfter, now)}
+	out := HeartbeatResult{At: now, Reissue: s.needReissue(ch.CertCA, ch.CertNotAfter, now),
+		Budget: s.syncBudget(ctx, gatewayID, in)}
 	if !ch.VerifyDone {
 		out.VerifyRequestedAt = ch.VerifyRequested
 	}
@@ -855,6 +868,9 @@ type HeartbeatResult struct {
 	VerifyRequestedAt time.Time
 	// Reissue — шлюзу нужен новый сертификат (ADR-0018, п. 6.3).
 	Reissue bool
+	// Budget — расход остальных процессов по приложениям с жёстким
+	// бюджетом (задача 3.18); nil — счётчики не присланы или не сохранены.
+	Budget *BudgetState
 }
 
 // RequestVerify — проверка целостности всех активных шлюзов по команде

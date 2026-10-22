@@ -35,6 +35,9 @@ paths:
         которого нет в действующем заявлении о доверии или чьё перекрытие
         истекло, — тоже 401 (`ca_unknown`, `ca_expired` в записи; ADR-0018,
         п. 6). Признак `reissue` в ответе — шлюзу нужен новый сертификат.
+        Раздел `budget` (задача 3.18) — нарастающие счётчики расхода процесса
+        шлюза; в ответе — расход остальных процессов и шлюзов по приложениям
+        с жёстким бюджетом.
       requestBody:
         required: true
         content:
@@ -245,7 +248,7 @@ components:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }
     ProblemTooLarge:
-      description: Тело больше предела маршрута — heartbeat 4 КиБ, пакет событий 8 МиБ, отчёт о пакете 1 КиБ, перевыпуск сертификата 16 КиБ (`payload_too_large`)
+      description: Тело больше предела маршрута — heartbeat 1 МиБ, пакет событий 8 МиБ, отчёт о пакете 1 КиБ, перевыпуск сертификата 16 КиБ (`payload_too_large`)
       content:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }
@@ -390,6 +393,43 @@ components:
             Последний heartbeat при корректной остановке шлюза; только вместе с
             `started_at`. Совпадает с записанным запуском — сервер пишет
             `component.stop`. Свой предел частоты, отдельный от обычных heartbeat.
+        budget: { $ref: '#/components/schemas/BudgetReport' }
+    BudgetReport:
+      description: |
+        Нарастающие счётчики расхода процесса шлюза (`started_at`) с его
+        запуска (задача 3.18); только вместе с `started_at`. Месяцы — в часовом
+        поясе установки из пакета конфигурации, по возрастанию: текущий и,
+        после смены месяца, прошлый. Сервер хранит наибольшее значение каждого
+        счётчика по процессу, поэтому повтор heartbeat расход не удваивает.
+        Шлюз присылает раздел, только если в пакете есть раздел `budgets`.
+      type: object
+      required: [months]
+      additionalProperties: false
+      properties:
+        months:
+          type: array
+          minItems: 1
+          maxItems: 2
+          items:
+            type: object
+            required: [month, apps]
+            additionalProperties: false
+            properties:
+              month: { type: string, pattern: '^[0-9]{4}-(0[1-9]|1[0-2])$' }
+              apps:
+                type: array
+                maxItems: 2000
+                items:
+                  type: object
+                  required: [app]
+                  additionalProperties: false
+                  properties:
+                    app: { type: string, pattern: '^[a-z0-9][a-z0-9-]{0,62}$', description: ID (slug) приложения, без повторов в месяце }
+                    cost: { type: integer, format: int64, minimum: 0, maximum: 4611686018427387904, description: 'Расход в 1e-7 ₽ по запросам к моделям с известной ценой' }
+                    priced_tokens: { type: integer, format: int64, minimum: 0, maximum: 4611686018427387904 }
+                    unpriced_tokens: { type: integer, format: int64, minimum: 0, maximum: 4611686018427387904, description: Токены моделей без цены — стоимость не определена }
+                    requests: { type: integer, format: int64, minimum: 0, maximum: 4611686018427387904 }
+                    unpriced_requests: { type: integer, format: int64, minimum: 0, maximum: 4611686018427387904 }
     CheckReport:
       description: |
         Итог проверки шлюза: только результат и число провалов. Пути файлов,
@@ -427,6 +467,20 @@ components:
             Администратор запросил проверку целостности шлюза (Н38 ревью 2.r4).
             Шлюз выполняет её один раз на это значение и присылает итог со
             следующим heartbeat вместе с `verify_request`. Нет поля — запроса нет.
+        budget:
+          type: object
+          required: [month, others]
+          description: |
+            Ответ на раздел `budget` запроса (задача 3.18): расход в 1e-7 ₽ за
+            месяц `month` по приложениям с жёстким бюджетом у всех остальных
+            процессов и шлюзов. Шлюз складывает его со своим расходом и
+            отклоняет запросы приложения при исчерпании (429 `budget_exceeded`).
+            Нет поля — счётчики не присланы или не сохранены.
+          properties:
+            month: { type: string, pattern: '^[0-9]{4}-(0[1-9]|1[0-2])$' }
+            others:
+              type: object
+              additionalProperties: { type: integer, format: int64, minimum: 0 }
     EventBatch:
       type: object
       required: [events]

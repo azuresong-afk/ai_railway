@@ -61,7 +61,7 @@ func newBundleBuild(t *testing.T) *bundleBuild {
 	authBase := &gateway.AuthConfig{Limiter: auth.NewFailureLimiter(auth.LimiterConfig{}), Events: queue,
 		IDs: ids.NewGenerator(rnd), Logger: logger}
 	hb := &handlerBuilder{cfg: &config.Gateway{MaxBodyBytes: config.DefaultMaxBodyBytes}, logger: logger, hasher: h,
-		auth: authBase, events: queue, quotas: gateway.NewLimiter(nil)}
+		auth: authBase, events: queue, quotas: gateway.NewLimiter(nil), budget: gateway.NewBudget(nil)}
 	return &bundleBuild{fx: fx, hb: hb, tp: tp, rnd: rnd, ca: string(ca.CertPEM())}
 }
 

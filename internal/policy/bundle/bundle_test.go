@@ -323,6 +323,16 @@ func FuzzParseContent(f *testing.F) {
 	}
 	f.Add(good)
 	f.Add([]byte(`{"providers":null}`))
+	// Раздел budgets (задача 3.18).
+	withBudgets := fx.Content(f)
+	withBudgets.Budgets = &bundle.Budgets{Timezone: "Europe/Moscow",
+		Prices: []bundle.ModelPrice{{Provider: "llm", Model: "gpt-4o", Input: 1, Output: 2}}, Hard: []bundle.HardBudget{{App: "crm", Limit: 3}}}
+	wb, err := withBudgets.Marshal()
+	if err != nil {
+		f.Fatal(err)
+	}
+	f.Add(wb)
+	f.Add([]byte(`{"providers":[],"applications":[],"policies":[],"budgets":{"timezone":"Local","prices":null,"hard":[{"app":"x","limit":-1}]}}`))
 	f.Fuzz(func(t *testing.T, data []byte) {
 		c, err := bundle.ParseContent(data)
 		if err == nil {

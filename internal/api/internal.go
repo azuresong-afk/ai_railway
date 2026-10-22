@@ -22,8 +22,9 @@ import (
 // PermGatewayInternal — право зарегистрированного шлюза на внутренний API.
 const PermGatewayInternal = "gateway.internal"
 
-// heartbeatMaxBody — предел тела heartbeat.
-const heartbeatMaxBody = 4 << 10
+// heartbeatMaxBody — предел тела heartbeat: с разделом budget — счётчики
+// до 2 000 приложений за два месяца (задача 3.18).
+const heartbeatMaxBody = 1 << 20
 
 // InternalOptions — зависимости обработчика внутреннего порта.
 type InternalOptions struct {
@@ -181,6 +182,47 @@ type HeartbeatRequest struct {
 	// heartbeat при корректной остановке (В27 ревью 2.r5, РСБ.2).
 	StartedAt *time.Time `json:"started_at,omitempty"`
 	Stopping  bool       `json:"stopping,omitempty"`
+	// Budget — нарастающие счётчики расхода процесса шлюза (задача 3.18).
+	Budget *HeartbeatBudget `json:"budget,omitempty"`
+}
+
+// HeartbeatBudget — счётчики расхода процесса шлюза за текущий и, после
+// смены месяца, прошлый месяц.
+type HeartbeatBudget struct {
+	Months []HeartbeatBudgetMonth `json:"months"`
+}
+
+// HeartbeatBudgetMonth — счётчики за месяц «ГГГГ-ММ» в часовом поясе установки.
+type HeartbeatBudgetMonth struct {
+	Month string                 `json:"month"`
+	Apps  []HeartbeatBudgetUsage `json:"apps"`
+}
+
+// HeartbeatBudgetUsage — счётчики приложения: расход в 1e-7 ₽, токены и
+// запросы с известной и неизвестной ценой модели.
+type HeartbeatBudgetUsage struct {
+	App              string `json:"app"`
+	Cost             int64  `json:"cost"`
+	PricedTokens     int64  `json:"priced_tokens"`
+	UnpricedTokens   int64  `json:"unpriced_tokens"`
+	Requests         int64  `json:"requests"`
+	UnpricedRequests int64  `json:"unpriced_requests"`
+}
+
+func (b *HeartbeatBudget) report() *gwregistry.BudgetReport {
+	if b == nil {
+		return nil
+	}
+	out := &gwregistry.BudgetReport{Months: make([]gwregistry.BudgetMonth, 0, len(b.Months))}
+	for _, m := range b.Months {
+		bm := gwregistry.BudgetMonth{Month: m.Month, Apps: make([]gwregistry.BudgetUsage, 0, len(m.Apps))}
+		for _, a := range m.Apps {
+			bm.Apps = append(bm.Apps, gwregistry.BudgetUsage{App: a.App, Cost: a.Cost, PricedTokens: a.PricedTokens,
+				UnpricedTokens: a.UnpricedTokens, Requests: a.Requests, UnpricedRequests: a.UnpricedRequests})
+		}
+		out.Months = append(out.Months, bm)
+	}
+	return out
 }
 
 // HeartbeatReport — итог самотеста или контроля целостности шлюза: результат,
@@ -220,6 +262,15 @@ type HeartbeatResponse struct {
 	// Reissue — шлюзу нужен новый сертификат: прежний выпущен не действующим
 	// корнем УЦ или скоро истекает (ADR-0018, п. 6.3).
 	Reissue bool `json:"reissue,omitempty"`
+	// Budget — расход остальных процессов и шлюзов за месяц по приложениям
+	// с жёстким бюджетом (задача 3.18): шлюз складывает его со своим.
+	Budget *HeartbeatBudgetState `json:"budget,omitempty"`
+}
+
+// HeartbeatBudgetState — расход остальных процессов: приложение → 1e-7 ₽.
+type HeartbeatBudgetState struct {
+	Month  string           `json:"month"`
+	Others map[string]int64 `json:"others"`
 }
 
 func heartbeat(g *gwregistry.Service, logger *slog.Logger) http.HandlerFunc {
@@ -232,7 +283,7 @@ func heartbeat(g *gwregistry.Service, logger *slog.Logger) http.HandlerFunc {
 		}
 		in := gwregistry.HeartbeatInput{
 			Version: req.Version, BundleETag: req.BundleETag, Selftest: req.Selftest.report(), Integrity: req.Integrity.report(),
-			BundleKeys: req.BundleKeys, Stopping: req.Stopping,
+			BundleKeys: req.BundleKeys, Stopping: req.Stopping, Budget: req.Budget.report(),
 		}
 		if req.VerifyRequest != nil {
 			in.VerifyRequest = *req.VerifyRequest
@@ -241,7 +292,7 @@ func heartbeat(g *gwregistry.Service, logger *slog.Logger) http.HandlerFunc {
 			in.StartedAt = req.StartedAt.UTC()
 		}
 		if err := in.Validate(); err != nil {
-			WriteProblem(w, Invalid("Неверные поля heartbeat: version — 1–64 символа латиницы, цифр и «.+_-», bundle_etag — до 128 печатных символов ASCII, selftest и integrity — результат, время проверки и число провалов 0–1000, манифест — версия и время вместе, bundle_keys — до 2 идентификаторов ключей, stopping — только вместе с started_at."))
+			WriteProblem(w, Invalid("Неверные поля heartbeat: version — 1–64 символа латиницы, цифр и «.+_-», bundle_etag — до 128 печатных символов ASCII, selftest и integrity — результат, время проверки и число провалов 0–1000, манифест — версия и время вместе, bundle_keys — до 2 идентификаторов ключей, stopping и budget — только вместе с started_at, budget — 1–2 месяца ГГГГ-ММ по возрастанию, до 2 000 приложений, счётчики 0–2^62."))
 			return
 		}
 		ctx, cancel := contextTimeout(r, 5*time.Second)
@@ -269,6 +320,13 @@ func heartbeat(g *gwregistry.Service, logger *slog.Logger) http.HandlerFunc {
 		if !res.VerifyRequestedAt.IsZero() {
 			at := res.VerifyRequestedAt.UTC()
 			resp.VerifyRequestedAt = &at
+		}
+		if b := res.Budget; b != nil {
+			others := b.Others
+			if others == nil {
+				others = map[string]int64{}
+			}
+			resp.Budget = &HeartbeatBudgetState{Month: b.Month, Others: others}
 		}
 		WriteJSON(w, http.StatusOK, resp)
 	}
