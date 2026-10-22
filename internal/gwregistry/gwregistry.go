@@ -68,6 +68,9 @@ var (
 	// ErrRollbackViolated — откат не принимается при нарушенной целостности.
 	ErrRollbackViolated = errors.New("откат не принимается: последняя проверка целостности шлюза выявила нарушение")
 	ErrNoCA             = errors.New("внутренний УЦ не подключён: регистрация шлюзов недоступна")
+	// ErrReissueNotNeeded — сертификат шлюза выпущен действующим корнем и
+	// не истекает в ближайшие ReissueBefore: перевыпуск не нужен (3В4 ревью 3.r1).
+	ErrReissueNotNeeded = errors.New("перевыпуск сертификата не нужен")
 	ErrInvalidRequest   = errors.New("неверные данные")
 )
 
@@ -233,6 +236,8 @@ type Store interface {
 	// BySerial — шлюз, чей действующий или следующий сертификат имеет этот
 	// серийный номер.
 	BySerial(ctx context.Context, serial string) (Gateway, error)
+	// ByID — шлюз по ID (нет — ErrNotFound).
+	ByID(ctx context.Context, id string) (Gateway, error)
 	// SetNextCert сохраняет перевыпущенный сертификат активного шлюза как
 	// следующий (заменяет прежний следующий) вместе с rec.
 	SetNextCert(ctx context.Context, id string, next Issued, rec func(Gateway) audit.Entry) (Gateway, error)

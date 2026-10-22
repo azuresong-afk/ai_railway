@@ -164,12 +164,13 @@ func TestHeadMACPreviousKeyAnchor(t *testing.T) {
 	}
 }
 
-// macSource — версии ключа данных для HeadMACOptions.
+// macSource — версии ключа данных для HeadMACOptions: действующая — первая.
 type macSource struct {
 	ids  []string
 	macs map[string]HeadMAC
 }
 
+func (s macSource) KeyID() string    { return s.ids[0] }
 func (s macSource) KeyIDs() []string { return s.ids }
 
 func (s macSource) MACFor(id, purpose string) (crypto.MAC, error) {
@@ -208,5 +209,55 @@ func TestHeadMACOptions(t *testing.T) {
 	var n int
 	if err := env.owner.QueryRow(ctxT(t), "SELECT count(*) FROM audit_verifications WHERE mac_key_id = $1::uuid", cur.KeyID).Scan(&n); err != nil || n != 1 {
 		t.Fatalf("опора нового ключа: %d %v", n, err)
+	}
+}
+
+// rotatingSource — источник, у которого действующая версия меняется, как у
+// keyring.Box после keys rotate-data (Box.Watch).
+type rotatingSource struct{ cur *macSource }
+
+func (s rotatingSource) KeyID() string    { return s.cur.KeyID() }
+func (s rotatingSource) KeyIDs() []string { return s.cur.KeyIDs() }
+func (s rotatingSource) MACFor(id, purpose string) (crypto.MAC, error) {
+	return s.cur.MACFor(id, purpose)
+}
+
+// 3В2 ревью 3.r1: после ротации ключа данных без перезапуска сервера
+// проверка пишет опору действующей версией, а не выведенной.
+func TestHeadMACFollowsRotation(t *testing.T) {
+	env := setupDB(t)
+	record(t, env.log, 3)
+	old := testHeadMAC(t, 1)
+	cur := testHeadMAC(t, 3)
+	cur.KeyID = "0192f3a0-0000-7000-8000-00000000000b"
+	src := &macSource{ids: []string{old.KeyID}, macs: map[string]HeadMAC{old.KeyID: old, cur.KeyID: cur}}
+	opts, err := HeadMACOptions(rotatingSource{src})
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := NewVerifier(env.log, opts...)
+	if res := verify(t, v); !res.OK() {
+		t.Fatal(res.Break)
+	}
+	// Ротация: новая версия действующая, прежняя ещё известна.
+	src.ids = []string{cur.KeyID, old.KeyID}
+	record(t, env.log, 2)
+	if res := verify(t, v); !res.OK() {
+		t.Fatal(res.Break)
+	}
+	var keyID string
+	if err := env.owner.QueryRow(ctxT(t), "SELECT mac_key_id::text FROM audit_verifications ORDER BY last_seq DESC, ts DESC LIMIT 1").
+		Scan(&keyID); err != nil || keyID != cur.KeyID {
+		t.Fatalf("опора после ротации записана версией %q (%v), ожидалась %s", keyID, err, cur.KeyID)
+	}
+	// Новый процесс сверяет опору новой версии: переписывание журнала видно.
+	rewriteChain(t, env, 2, nil)
+	src.ids = []string{cur.KeyID}
+	opts, err = HeadMACOptions(rotatingSource{src})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res := verify(t, NewVerifier(env.log, opts...)); res.OK() || res.Break.Reason != ReasonRewritten {
+		t.Fatalf("итог %+v, ожидалось %s", res.Break, ReasonRewritten)
 	}
 }

@@ -314,7 +314,11 @@ release-dir: ## Каталог выпуска build/release: статическ�
 ifeq ($(filter 1,$(RELEASE)),1)
 	@test -n '$(MANIFEST_KEY)' || { echo "release-dir: для RELEASE=1 задайте MANIFEST_KEY — ключ производителя"; exit 1; }
 	@test -s web/dist/index.html || { echo "release-dir: нет web/dist/index.html — сначала make web-build (консоль встраивается в aisec-server)"; exit 1; }
-	@case '$(VERSION)' in *-dirty|dev) echo "release-dir: версия $(VERSION) — выпуск только из чистого дерева с тегом"; exit 1;; esac
+# Состояние дерева проверяется по git, а не по VERSION: её можно
+# переопределить (3Н3 ревью 3.r1). Неотслеживаемый файл тоже меняет сборку.
+	@test -z "$$(git status --porcelain)" || { echo "release-dir: в рабочем дереве есть изменения или неотслеживаемые файлы — выпуск только из чистого дерева"; exit 1; }
+	@tag=$$(git describe --exact-match --tags HEAD 2>/dev/null) || { echo "release-dir: на HEAD нет тега — выпуск только с тега"; exit 1; }; \
+		test "$$tag" = '$(VERSION)' || { echo "release-dir: VERSION=$(VERSION) не совпадает с тегом $$tag на HEAD"; exit 1; }
 endif
 	rm -rf $(RELEASE_DIR)
 	mkdir -p $(RELEASE_DIR)/bin

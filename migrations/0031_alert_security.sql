@@ -3,12 +3,13 @@
 
 -- Условия DM-44 по шлюзу ведутся в system_alert_state: шлюз отбрасывает
 -- события, недоступен, сертификат скоро истекает, итог контроля
--- целостности устарел (Н29).
+-- целостности устарел (Н29). Там же условие истечения корня внутреннего
+-- УЦ (ИАФ.10, 3В5 ревью 3.r1): ca_expiry и ca_expiry:critical.
 ALTER TABLE system_alert_state DROP CONSTRAINT system_alert_state_condition_check;
 ALTER TABLE system_alert_state ADD CONSTRAINT system_alert_state_condition_check
     CHECK (char_length(condition) <= 128 AND (
         condition IN ('time_sync', 'audit_storage', 'integrity', 'audit_chain', 'config_bundle', 'integrity:server',
-                      'test_build')
+                      'test_build', 'ca_expiry', 'ca_expiry:critical')
         OR condition ~ '^(integrity:gateway|config_bundle_lag|events_dropped|gateway_offline|cert_expiry|reports_stale):[0-9a-f-]{1,64}$'));
 
 -- Срок хранения закрытых оповещений, суток (решение волны B этапа 3):

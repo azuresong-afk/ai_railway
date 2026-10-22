@@ -81,17 +81,69 @@ type composeService struct {
 // наружу. Сервер публикует консоль, шлюз — порт приложений и ходит к
 // провайдерам LLM; PostgreSQL и aisec-cli — только во внутренних сетях.
 // Secrets — какие секреты сервису можно получить: пароль или passfile
-// роли БД видит только тот, кто под ней входит.
+// роли БД видит только тот, кто под ней входит. Volumes — точный список
+// томов сервиса «источник:цель:ro|rw» (DATA — ${AISEC_DATA_DIR}): каталог
+// ключей видят только сервер (только чтение) и aisec-cli, шлюз — только
+// свои reg/ и state/ (3В8 ревью 3.r1).
 var composeRules = map[string]struct {
 	Ports    []string
 	External bool
 	Product  bool
 	Secrets  []string
+	Volumes  []string
 }{
-	"aisec-server":  {Ports: []string{"8444"}, External: true, Product: true, Secrets: []string{"console-tls-cert", "console-tls-key", "db-server-pgpass"}},
-	"aisec-gateway": {Ports: []string{"8443"}, External: true, Product: true, Secrets: []string{"gateway-tls-cert", "gateway-tls-key", "console-ca", "bundle-signing-pub"}},
-	"aisec-cli":     {Product: true, Secrets: []string{"db-owner-pgpass"}},
-	"postgres":      {Secrets: []string{"db-postgres-password", "db-owner-password", "db-server-password"}},
+	"aisec-server": {Ports: []string{"8444"}, External: true, Product: true,
+		Secrets: []string{"console-tls-cert", "console-tls-key", "db-server-pgpass"},
+		Volumes: []string{"DATA/keys:/etc/aisec/keys:ro"}},
+	"aisec-gateway": {Ports: []string{"8443"}, External: true, Product: true,
+		Secrets: []string{"gateway-tls-cert", "gateway-tls-key", "console-ca", "gateway-bundle-anchor"},
+		Volumes: []string{"DATA/gateway/reg:/var/lib/aisec-gateway/reg:rw", "DATA/gateway/state:/var/lib/aisec-gateway/state:rw"}},
+	"aisec-cli": {Product: true, Secrets: []string{"db-owner-pgpass"},
+		Volumes: []string{"DATA/keys:/etc/aisec/keys:rw", "DATA/backups:/var/lib/aisec/backups:rw"}},
+	"postgres": {Secrets: []string{"db-postgres-password", "db-owner-password", "db-server-password"},
+		Volumes: []string{"DATA/pg:/var/lib/postgresql/data:rw", "./initdb:/docker-entrypoint-initdb.d:ro"}},
+}
+
+// secretFiles — файл каждого секрета (DATA — ${AISEC_DATA_DIR}). Якорь
+// проверки пакетов шлюза — своя копия в secrets/, не файл каталога ключей
+// сервера: её замена при компрометации не трогает якорь сервера (3В6, 3В8
+// ревью 3.r1).
+var secretFiles = map[string]string{
+	"console-tls-cert":      "DATA/secrets/console.crt",
+	"console-tls-key":       "DATA/secrets/console.key",
+	"console-ca":            "DATA/secrets/console-ca.crt",
+	"gateway-tls-cert":      "DATA/secrets/gateway.crt",
+	"gateway-tls-key":       "DATA/secrets/gateway.key",
+	"gateway-bundle-anchor": "DATA/secrets/gateway-bundle-anchor.pub",
+	"db-postgres-password":  "DATA/secrets/db-postgres-password",
+	"db-owner-password":     "DATA/secrets/db-owner-password",
+	"db-server-password":    "DATA/secrets/db-server-password",
+	"db-owner-pgpass":       "DATA/secrets/db-owner.pgpass",
+	"db-server-pgpass":      "DATA/secrets/db-server.pgpass",
+}
+
+// dataPath заменяет ведущее ${AISEC_DATA_DIR:?…} на DATA; ok = false — путь
+// не начинается с него.
+func dataPath(p string) (string, bool) {
+	if !strings.HasPrefix(p, dataDirRef) {
+		return p, false
+	}
+	i := strings.Index(p, "}")
+	if i < 0 {
+		return p, false
+	}
+	return "DATA" + p[i+1:], true
+}
+
+// normVolume — том в виде «источник:цель:ro|rw» с DATA вместо
+// ${AISEC_DATA_DIR:?…}; режим по умолчанию — rw.
+func normVolume(v string) string {
+	src, _ := dataPath(v)
+	parts := strings.Split(src, ":")
+	if len(parts) == 2 {
+		parts = append(parts, "rw")
+	}
+	return strings.Join(parts, ":")
 }
 
 var (
@@ -195,25 +247,20 @@ func checkCompose(c *composeFile) []string {
 			at("build запрещён: пилот ставится только из образов")
 		}
 		checkImageRef(name, s.Image, rule.Product, at)
+		var vols []string
 		for _, v := range s.Volumes {
-			src := v
-			if i := strings.Index(v, "}"); strings.HasPrefix(v, "${") && i > 0 {
-				src = v[:i+1] + strings.SplitN(v[i+1:], ":", 2)[0]
-			} else {
-				src = strings.SplitN(v, ":", 2)[0]
-			}
+			n := normVolume(v)
+			vols = append(vols, n)
 			switch {
-			case strings.Contains(src, ".."):
+			case strings.Contains(v, ".."):
 				at("том %q: «..» в пути", v)
-			case strings.HasPrefix(src, dataDirRef):
-				// Только подкаталог сервиса: не весь каталог данных и не secrets/.
-				sub := src[strings.Index(src, "}")+1:]
-				if !strings.HasPrefix(sub, "/") || len(sub) < 2 || strings.HasPrefix(sub, "/secrets") {
-					at("том %q: только подкаталог ${AISEC_DATA_DIR}, кроме secrets/", v)
-				}
-			case strings.HasPrefix(src, "./") && strings.HasSuffix(v, ":ro"):
-			default:
-				at("том %q: только каталоги ${AISEC_DATA_DIR} или ./… только для чтения", v)
+			case !slices.Contains(rule.Volumes, n):
+				at("том %q: не из списка сервиса %v (источник, цель и режим ro/rw)", v, rule.Volumes)
+			}
+		}
+		for _, want := range rule.Volumes {
+			if !slices.Contains(vols, want) {
+				at("нет тома %s", want)
 			}
 		}
 		for _, p := range s.Ports {
@@ -281,8 +328,15 @@ func checkCompose(c *composeFile) []string {
 		}
 	}
 	for name, s := range c.Secrets {
-		if s.Environment != "" || !strings.HasPrefix(s.File, dataDirRef) {
+		file, inData := dataPath(s.File)
+		want, known := secretFiles[name]
+		switch {
+		case s.Environment != "" || !inData:
 			add("секрет %s: только файл в ${AISEC_DATA_DIR}", name)
+		case !known:
+			add("секрет %s: неизвестный секрет", name)
+		case file != want:
+			add("секрет %s: файл %s, ожидается %s", name, file, want)
 		}
 	}
 	sort.Strings(problems)

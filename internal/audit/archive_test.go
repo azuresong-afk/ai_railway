@@ -67,7 +67,7 @@ func TestArchiveFileRoundTrip(t *testing.T) {
 	g := Anchor{Hash: genesis(h)}
 	rs := buildChain(t, h, g, 7)
 	data, want := writeArchive(t, h, s, g, rs)
-	cp, err := VerifyArchive(bytes.NewReader(data), h, v)
+	cp, err := VerifyArchive(bytes.NewReader(data), h, SingleKey(v))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +77,7 @@ func TestArchiveFileRoundTrip(t *testing.T) {
 	// Второй архив продолжает первую точку.
 	next := buildChain(t, h, cp.Anchor(), 3)
 	data2, cp2 := writeArchive(t, h, s, cp.Anchor(), next)
-	if _, err := VerifyArchive(bytes.NewReader(data2), h, v); err != nil {
+	if _, err := VerifyArchive(bytes.NewReader(data2), h, SingleKey(v)); err != nil {
 		t.Fatal(err)
 	}
 	if a, err := VerifyCheckpoints(h, SingleKey(v), []Checkpoint{*cp, *cp2}); err != nil || a.Seq != 10 {
@@ -125,11 +125,11 @@ func TestDM43_ArchiveTampered(t *testing.T) {
 		"лишнее поле в записи":           replaced(1, `{"v":1,`, `{"v":1,"x":1,`),
 	}
 	for name, d := range cases {
-		if _, err := VerifyArchive(bytes.NewReader(d), h, v); !errors.Is(err, ErrArchiveInvalid) {
+		if _, err := VerifyArchive(bytes.NewReader(d), h, SingleKey(v)); !errors.Is(err, ErrArchiveInvalid) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
-	if _, err := VerifyArchive(bytes.NewReader(data), h, other); !errors.Is(err, ErrArchiveInvalid) {
+	if _, err := VerifyArchive(bytes.NewReader(data), h, SingleKey(other)); !errors.Is(err, ErrArchiveInvalid) {
 		t.Errorf("чужой открытый ключ: %v", err)
 	}
 }
@@ -187,7 +187,7 @@ func FuzzVerifyArchive(f *testing.F) {
 	f.Add(data)
 	f.Add([]byte(`{"format":"aisec-audit-archive","v":1}` + "\n"))
 	f.Fuzz(func(t *testing.T, in []byte) {
-		cp, err := VerifyArchive(bytes.NewReader(in), h, v)
+		cp, err := VerifyArchive(bytes.NewReader(in), h, SingleKey(v))
 		if err != nil {
 			if !errors.Is(err, ErrArchiveInvalid) {
 				t.Fatalf("ошибка без ErrArchiveInvalid: %v", err)

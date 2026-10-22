@@ -409,6 +409,11 @@ func TestPGCertReissueAndBundleKey(t *testing.T) {
 	if reg.Gateway.CertCA != rootID(t, e.ca) || !aisecCrypto.Equal(reg.Gateway.BundleKey, k1) {
 		t.Fatalf("после регистрации: корень %q, ключ закреплён %v", reg.Gateway.CertCA, reg.Gateway.BundleKey != nil)
 	}
+	// 3В4 ревью 3.r1: свежему сертификату перевыпуск не нужен.
+	if _, _, err := e.srv.Reissue(ctx, id, mustCSR(t), testIP); !errors.Is(err, gwregistry.ErrReissueNotNeeded) {
+		t.Fatalf("перевыпуск свежего сертификата: %v", err)
+	}
+	e.clock.add(aisecCrypto.ClientCertValidity - gwregistry.ReissueBefore + time.Hour)
 	certPEM, info, err := e.srv.Reissue(ctx, id, mustCSR(t), testIP)
 	if err != nil {
 		t.Fatal(err)

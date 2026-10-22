@@ -66,6 +66,10 @@ type Verifier struct {
 	// prev — имитовставки прежних версий ключа данных, ещё не удалённых
 	// ротацией (ADR-0018, п. 3.4): их опоры тоже сверяются.
 	prev []HeadMAC
+	// src — источник версий ключа данных (keyring.Box): перед каждой
+	// проверкой mac и prev берутся заново, поэтому после keys rotate-data
+	// опора пишется действующей версией без перезапуска (3В2 ревью 3.r1).
+	src MACSource
 	// mu сериализует проверки и защищает known и last.
 	mu    sync.Mutex
 	known *Anchor
@@ -107,30 +111,58 @@ func WithPreviousHeadMACs(ms ...HeadMAC) VerifierOption {
 }
 
 // MACSource — версии ключа данных с выведением имитовставки
-// (keyring.Box): действующая первой.
+// (keyring.Box): KeyID — действующая версия, KeyIDs — все известные.
 type MACSource interface {
+	KeyID() string
 	KeyIDs() []string
 	MACFor(keyID, purpose string) (crypto.MAC, error)
 }
 
-// HeadMACOptions — имитовставка головы на действующей версии ключа данных и
-// опоры прежних версий (ADR-0018, п. 3.4).
-func HeadMACOptions(src MACSource) ([]VerifierOption, error) {
-	ids := src.KeyIDs()
-	var out []VerifierOption
+// headMACs — имитовставка действующей версии и прежних версий src.
+func headMACs(src MACSource) (*HeadMAC, []HeadMAC, error) {
+	active := src.KeyID()
+	var cur *HeadMAC
 	var prev []HeadMAC
-	for i, id := range ids {
+	for _, id := range src.KeyIDs() {
 		m, err := src.MACFor(id, HeadMACPurpose)
 		if err != nil {
-			return nil, fmt.Errorf("ключ имитовставки цепочки аудита: %w", err)
+			return nil, nil, fmt.Errorf("ключ имитовставки цепочки аудита: %w", err)
 		}
-		if i == 0 {
-			out = append(out, WithHeadMAC(HeadMAC{KeyID: id, MAC: m}))
+		if id == active {
+			cur = &HeadMAC{KeyID: id, MAC: m}
 			continue
 		}
 		prev = append(prev, HeadMAC{KeyID: id, MAC: m})
 	}
-	return append(out, WithPreviousHeadMACs(prev...)), nil
+	if cur == nil {
+		return nil, nil, fmt.Errorf("ключ имитовставки цепочки аудита: нет действующей версии %s", active)
+	}
+	return cur, prev, nil
+}
+
+// HeadMACOptions — имитовставка головы на действующей версии ключа данных и
+// опоры прежних версий (ADR-0018, п. 3.4). Версии берутся из src перед
+// каждой проверкой: смена действующей версии (keys rotate-data) видна
+// без перезапуска (3В2 ревью 3.r1). Ошибка — ключ не выводится уже сейчас.
+func HeadMACOptions(src MACSource) ([]VerifierOption, error) {
+	cur, prev, err := headMACs(src)
+	if err != nil {
+		return nil, err
+	}
+	return []VerifierOption{WithHeadMAC(*cur), WithPreviousHeadMACs(prev...), func(v *Verifier) { v.src = src }}, nil
+}
+
+// refreshMACs перечитывает версии ключа данных из src (под v.mu).
+func (v *Verifier) refreshMACs() error {
+	if v.src == nil {
+		return nil
+	}
+	cur, prev, err := headMACs(v.src)
+	if err != nil {
+		return err
+	}
+	v.mac, v.prev = cur, prev
+	return nil
 }
 
 // NewVerifier создаёт проверку для журнала l.
@@ -223,6 +255,9 @@ func (v *Verifier) verifyLogged(ctx context.Context, by Actor, ip netip.Addr) (V
 }
 
 func (v *Verifier) verify(ctx context.Context, by Actor, ip netip.Addr) (Verification, error) {
+	if err := v.refreshMACs(); err != nil {
+		return Verification{}, err
+	}
 	known, forged, err := v.lastKnown(ctx)
 	if err != nil {
 		return Verification{}, err

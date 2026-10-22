@@ -37,17 +37,22 @@ func (g asGateway) Authorize(_ *http.Request, perm string) (Principal, Decision)
 
 // newGatewayEnv — реестр в памяти с УЦ и одним зарегистрированным шлюзом.
 func newGatewayEnv(t testing.TB) (*gwregistry.Service, gwregistry.Gateway) {
+	return newGatewayEnvAt(t, time.Hour, time.Now)
+}
+
+// newGatewayEnvAt — то же с часами clock и УЦ на срок caValidity.
+func newGatewayEnvAt(t testing.TB, caValidity time.Duration, clock func() time.Time) (*gwregistry.Service, gwregistry.Gateway) {
 	t.Helper()
 	p, err := aisecCrypto.New(aisecCrypto.ProfileStandard)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ca, err := aisecCrypto.NewCA("AISec test CA", time.Hour, time.Now())
+	ca, err := aisecCrypto.NewCA("AISec test CA", caValidity, clock())
 	if err != nil {
 		t.Fatal(err)
 	}
 	svc, err := gwregistry.New(gwregistry.Options{Store: gwregistry.NewMemory(), Provider: p, CA: ca, Audit: nopAudit{}, Logger: quiet(),
-		HeartbeatMinInterval: time.Nanosecond})
+		HeartbeatMinInterval: time.Nanosecond, Clock: clock})
 	if err != nil {
 		t.Fatal(err)
 	}

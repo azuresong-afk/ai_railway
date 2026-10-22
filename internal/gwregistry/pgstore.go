@@ -253,6 +253,13 @@ func (s *PGStore) BySerial(ctx context.Context, serial string) (Gateway, error) 
 	return scanGateway(s.db.QueryRow(ctx, "SELECT "+gatewayCols+" FROM gateways WHERE cert_serial = $1 OR next_cert_serial = $1", serial))
 }
 
+// ByID — см. Store.
+func (s *PGStore) ByID(ctx context.Context, id string) (Gateway, error) {
+	ctx, cancel := pgCtx(ctx)
+	defer cancel()
+	return scanGateway(s.db.QueryRow(ctx, "SELECT "+gatewayCols+" FROM gateways WHERE id = $1", id))
+}
+
 // SetNextCert — см. Store.
 func (s *PGStore) SetNextCert(ctx context.Context, id string, next Issued, rec func(Gateway) audit.Entry) (Gateway, error) {
 	ctx, cancel := pgCtx(ctx)

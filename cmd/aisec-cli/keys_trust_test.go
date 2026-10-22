@@ -92,7 +92,7 @@ func TestKeysRotateTrustOnRealDB(t *testing.T) {
 	if fileMode(t, filepath.Join(in.keys, keyName)) != 0o400 || fileMode(t, filepath.Join(in.keys, pubName)) != 0o444 {
 		t.Fatal("права файлов нового ключа")
 	}
-	if got, _ := os.ReadFile(filepath.Join(in.keys, keyring.SigningPubFile)); !bytes.Equal(got, anchorPub) {
+	if got, _ := os.ReadFile(filepath.Join(in.keys, keyring.SigningPubFile)); !bytes.Equal(got, anchorPub) { //nolint:gosec // тест: ошибка чтения даёт пустой файл и провал сравнения
 		t.Fatal("файл-якорь изменён")
 	}
 	// Корень УЦ из ca.crt вошёл в первое заявление.
@@ -146,6 +146,10 @@ func TestKeysRotateTrustOnRealDB(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "ключ подписи пакетов "+chain.ActiveKeyID()) || !strings.Contains(out.String(), "корень УЦ "+rootID) {
 		t.Fatalf("status: %s", out.String())
+	}
+	// 3В5 ревью 3.r1: срок каждого корня.
+	if !strings.Contains(out.String(), "корень действует до ") || strings.Contains(out.String(), "не прочитан") {
+		t.Fatalf("status без срока корня: %s", out.String())
 	}
 	if n := in.count(t, "SELECT count(*) FROM audit_log WHERE action IN ('keys.signing_rotated', 'keys.ca_rotated')"); n != 3 {
 		t.Fatalf("записей аудита о ротации: %d", n)
@@ -285,6 +289,32 @@ func TestKeysRotateAuditOnRealDB(t *testing.T) {
 	}
 	if err := auditCmd([]string{"verify-archive", "-keys", onlyAnchor, file2}, "", &out, &errb); err == nil {
 		t.Fatal("архив нового ключа проверен одним якорем")
+	}
+	// Архив до смены проверяется прежним ключом по расписанию.
+	if err := auditCmd([]string{"verify-archive", "-keys", in.keys, filepath.Join(archDir, "audit-1.jsonl")}, "", &out, &errb); err != nil {
+		t.Fatalf("verify-archive архива до смены: %v", err)
+	}
+	// 3В3 ревью 3.r1: открытый ключ смены без подписанного файла смены не
+	// принимается — иначе подложенный ключ подписал бы любую точку.
+	h, err := p.Hasher()
+	if err != nil {
+		t.Fatal(err)
+	}
+	newID := audit.KeyID(h, s2.PublicKey())
+	_, newPub := keyring.AuditFiles(newID, audit.KeyID(h, anchor.PublicKey()))
+	rotFile := keyring.AuditRotationFile(newID)
+	if _, err := os.Stat(filepath.Join(in.keys, rotFile)); err != nil {
+		t.Fatalf("rotate-audit не записал файл смены: %v", err)
+	}
+	newPubData, err := os.ReadFile(filepath.Join(in.keys, newPub)) //nolint:gosec // G304: файл во временном каталоге теста
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(onlyAnchor, newPub), newPubData, 0o444); err != nil { //nolint:gosec // G703: путь во временном каталоге теста
+		t.Fatal(err)
+	}
+	if err := auditCmd([]string{"verify-archive", "-keys", onlyAnchor, file2}, "", &out, &errb); err == nil || !strings.Contains(err.Error(), rotFile) {
+		t.Fatalf("ключ без файла смены: %v", err)
 	}
 	// Смену ключа нельзя переписать.
 	if _, err := in.db.Pool().Exec(ctx, "DELETE FROM audit_key_rotations"); err == nil {

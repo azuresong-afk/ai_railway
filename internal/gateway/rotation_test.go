@@ -105,7 +105,7 @@ func TestDM42_BundleClientTrustRotation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("trust.json: %v", err)
 	}
-	if info, _ := os.Stat(filepath.Join(e.dir, gateway.TrustFile)); info.Mode().Perm() != 0o600 || len(data) == 0 {
+	if info, _ := os.Stat(filepath.Join(e.dir, gateway.TrustFile)); info.Mode().Perm() != 0o600 || len(data) == 0 { //nolint:gosec // тест: файл только что записан и прочитан выше
 		t.Fatalf("права trust.json: %v", info.Mode())
 	}
 
@@ -198,6 +198,8 @@ func TestBundleStateTrustFile(t *testing.T) {
 	if raws, err := st.LoadTrust(); err != nil || raws != nil {
 		t.Fatalf("без файла: %v %v", raws, err)
 	}
+	// 3Н1 ревью 3.r1: хранятся все заявления от №1 — цепочка проверяется
+	// от якоря, без первых шлюз после перезапуска откатился бы к нему.
 	var raws [][]byte
 	for i := range 70 {
 		raws = append(raws, []byte{byte(i)})
@@ -206,8 +208,15 @@ func TestBundleStateTrustFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := st.LoadTrust()
-	if err != nil || len(got) != 64 || got[0][0] != 6 || got[63][0] != 69 {
+	if err != nil || len(got) != 70 || got[0][0] != 0 || got[69][0] != 69 {
 		t.Fatalf("сохранено %d, %v", len(got), err)
+	}
+	// Сверх предела — отказ, прежний файл цел.
+	if err := st.SaveTrust(make([][]byte, gateway.MaxTrustStored+1)); err == nil {
+		t.Fatal("заявления сверх предела сохранены")
+	}
+	if got, err := st.LoadTrust(); err != nil || len(got) != 70 {
+		t.Fatalf("после отказа: %d, %v", len(got), err)
 	}
 	path := filepath.Join(dir, gateway.TrustFile)
 	for name, data := range map[string]string{
@@ -268,7 +277,7 @@ func TestReissueOverMTLS(t *testing.T) {
 	e := newMTLSEnv(t)
 	reg := e.registerGateway(t, "gw-1")
 	client, st, r := reissueEnv(t, e, reg, [][]byte{e.ca.CertDER()})
-	// УЦ теста действует сутки: heartbeat требует перевыпуск.
+	// Сертификат теста действует 12 часов: heartbeat требует перевыпуск.
 	calls := 0
 	gateway.RunHeartbeat(context.Background(), gateway.HeartbeatConfig{Client: client, Server: e.internal, Version: "2.0.0", Logger: quiet(),
 		Reissue: func(ctx context.Context) error {

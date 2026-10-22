@@ -24,6 +24,9 @@
 | `FuzzReadLayer` | `tools/imagecheck` | Разбор недоверенного слоя образа (tar и tar+gzip): без паники, в пределах `maxLayer` распакованных байт и `maxData` содержимого; слой с неверными хешами blob и diff_id никогда не принимается | 3.5 |
 | `FuzzLoadImage` | `tools/imagecheck` | Разбор архива `docker save` целиком (два прохода, лимиты записей и размеров): без паники; принятый архив всегда содержит имя образа и слои | 3.5 |
 | `FuzzCheckCompose` | `tools/imagecheck` | Разбор и проверка compose-файла: без паники, неполный compose (меньше четырёх сервисов пилота) никогда не проходит проверку | 3.5 |
+| `FuzzParseKeyRotation` | `internal/audit` | Файл смены ключа аудита `audit-signing.<id>.rotation` из каталога ключей (`aisec-cli audit verify-archive -keys`): любая ошибка — `ErrKeyRotationInvalid`, без паники; принятая запись записывается и разбирается обратно в ту же (подписанная форма совпадает) | 3.3, 3В3 ревью 3.r1 |
+| `FuzzParseTrust` | `internal/gateway` | `trust.json` из каталога состояния шлюза (каталог мог быть изменён): без паники; принятый файл — не больше 1024 заявлений, записывается и читается обратно в те же заявления | 3.3, 3Н4 ревью 3.r1 |
+| `FuzzParseClientPair` | `internal/gateway` | `client.pem` (перевыпущенный сертификат и ключ шлюза) из каталога состояния: без паники; принятая пара — ровно один блок `CERTIFICATE` и один `PRIVATE KEY` в пределах 16 КиБ | 3.3, 3Н4 ревью 3.r1 |
 | `FuzzParseMatrix` | `tools/dm-coverage` | Разбор матрицы 5.16 из ТЗ | 0.9 |
 | `FuzzParseGoTestJSON` | `tools/dm-coverage` | Разбор отчёта `go test -json` | 0.9 |
 | `FuzzParseJUnit` | `tools/dm-coverage` | Разбор отчёта JUnit XML | 0.9 |
