@@ -58,6 +58,8 @@
 | GET | `/api/v1/events/stats` | `events.read` | да | — | да | да | — | да |
 | GET | `/api/v1/events/{id}` | `events.read` | да | — | да | да | — | да |
 | POST | `/api/v1/events/{id}/content` | `events.content.read` | да | — | — | — | — | — |
+| GET | `/api/v1/events/{id}/exception-draft` | `events.read` | да | — | да | да | — | да |
+| PUT | `/api/v1/events/{id}/mark` | `events.mark` | да | — | да | — | — | да |
 | GET | `/api/v1/incident-categories` | `incidents.read` | да | — | да | да | — | да |
 | PUT | `/api/v1/incident-categories/{category}` | `incident_categories.manage` | да | — | — | — | — | — |
 | GET | `/api/v1/incidents` | `incidents.read` | да | — | да | да | — | да |
@@ -88,6 +90,10 @@
 | GET | `/api/v1/policies/{id}` | `policies.read` | да | да | да | да | — | да |
 | PUT | `/api/v1/policies/{id}` | `policies.manage` | да | — | — | — | — | — |
 | GET | `/api/v1/policies/{id}/diff` | `policies.read` | да | да | да | да | — | да |
+| GET | `/api/v1/policies/{id}/exceptions` | `policies.read` | да | да | да | да | — | да |
+| POST | `/api/v1/policies/{id}/exceptions` | `policies.manage` | да | — | — | — | — | — |
+| DELETE | `/api/v1/policies/{id}/exceptions/{exc}` | `policies.manage` | да | — | — | — | — | — |
+| POST | `/api/v1/policies/{id}/exceptions/{exc}/extend` | `policies.manage` | да | — | — | — | — | — |
 | GET | `/api/v1/policies/{id}/export` | `policies.read` | да | да | да | да | — | да |
 | POST | `/api/v1/policies/{id}/rollback` | `policies.manage` | да | — | — | — | — | — |
 | GET | `/api/v1/policies/{id}/versions` | `policies.read` | да | да | да | да | — | да |

@@ -2260,7 +2260,9 @@ export interface paths {
          *     (по умолчанию последние 24 часа). Язык фильтра — условия через `and`, например
          *     `app = "crm-bot" and severity in ("high", "critical") and stream = true`; поля:
          *     type, app, env, user, provider, model, source, policy_mode, action, rule, severity,
-         *     storage, gateway, threat, detector, stream, non_text_unchecked, has_content; операторы
+         *     storage, gateway, threat, detector, exception (находки, пропущенные по исключению с этим ID),
+         *     mark (`false_positive`, `confirmed` или `none` — без отметки), stream, non_text_unchecked,
+         *     has_content; операторы
          *     `=`, `!=`, `in (…)`, `not in (…)` (у логических полей — только `=`). Лимиты: 2048 байт,
          *     20 условий, 50 значений в списке, значение до 256 байт. Пишет `events.list`
          *     (отключаемое событие).
@@ -2415,6 +2417,130 @@ export interface paths {
                 503: components["responses"]["Unavailable"];
             };
         };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/events/{id}/mark": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Отметить событие «ложное срабатывание» или «подтверждено»
+         * @description Право `events.mark` (ТЗ 5.5, задача 3.22). Отметка хранится отдельно от события (событие
+         *     неизменяемо), одна на событие: новая заменяет прежнюю. Каждая смена пишет
+         *     `events.mark_set` (значение и прежнее значение, без текста комментария) той же
+         *     транзакцией. `mark: none` снимает отметку (`events.mark_removed`, ответ 204; у события без
+         *     отметки — 404). Для `false_positive` ответ содержит черновик исключения по событию
+         *     (`draft`) — как GET `/exception-draft`. Комментарий — до 1000 символов без управляющих
+         *     символов, кроме перевода строки.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID события (UUIDv7) */
+                    id: components["parameters"]["EventID"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["EventMarkRequest"];
+                };
+            };
+            responses: {
+                /** @description Отметка поставлена */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["EventMarkResult"];
+                    };
+                };
+                /** @description Отметка снята */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/events/{id}/exception-draft": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Черновик исключения по событию
+         * @description Право `events.read` (ТЗ 5.3, задача 3.22). Условия по находкам, давшим итоговое действие
+         *     (все находки, если итог — allow или log): детектор, категория, шаблон (правило
+         *     детектора), хеш фрагмента (HMAC на ключе шлюза) и приложение события; срок — 30 суток.
+         *     Содержимое запроса в черновик не копируется. `base_version` — текущая версия политики
+         *     события; `template: true` — политика события — шаблон, исключение добавляется в её копию.
+         *     Создаёт исключение только администратор безопасности: POST `/api/v1/policies/{id}/exceptions`.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description ID события (UUIDv7) */
+                    id: components["parameters"]["EventID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Черновик */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ExceptionDraft"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -4558,6 +4684,236 @@ export interface paths {
             };
         };
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/policies/{id}/exceptions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Исключения версии политики
+         * @description Право `policies.read` (ТЗ 5.3, задача 3.22). Исключения текущей версии (или `version`) с
+         *     состоянием: `expired` — срок истёк, шлюз исключение не применяет, хотя оно остаётся в
+         *     версии до удаления. У шаблона исключений нет.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description Номер версии; по умолчанию текущая */
+                    version?: number;
+                };
+                header?: never;
+                path: {
+                    /** @description ID политики или шаблона */
+                    id: components["parameters"]["PolicyID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Исключения */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PolicyExceptionList"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        /**
+         * Добавить исключение — новая версия политики
+         * @description Право `policies.manage` (только администратор безопасности, УПД.2). Исключение — часть
+         *     версии (ADR-0016): новая версия поверх `base_version` (409, если политику уже изменили).
+         *     Условие: детектор обязательно и хотя бы одно из `pattern`, `fragment`, `app`, `user`
+         *     (детектор целиком для всех приложений не отключается — 400); `category` и `source` —
+         *     дополнительные. Срок обязателен: `expires_in_days` 1–365 или `expires_at` не дальше 365
+         *     суток, по умолчанию 30 суток. Автора и время ставит сервер. Добавление — ослабление
+         *     защиты: текущий пароль или код TOTP в теле (без них — 403, неверные — 403
+         *     `reauthentication_failed`), запись `policy.exception_add` с `weakening` (DM-40).
+         *     Шаблон — 422: исключение добавляется в копию шаблона.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID политики или шаблона */
+                    id: components["parameters"]["PolicyID"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["NewPolicyException"];
+                };
+            };
+            responses: {
+                /** @description Новая версия с исключением */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PolicyExceptionChange"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/policies/{id}/exceptions/{exc}/extend": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Изменить срок исключения — новая версия политики
+         * @description Право `policies.manage`. Новый срок — от момента сохранения (`expires_in_days` 1–365 или
+         *     `expires_at`). Продление — ослабление защиты: пароль или код TOTP и `weakening` в записи
+         *     `policy.exception_extend` (DM-40); сокращение срока — нет.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID политики или шаблона */
+                    id: components["parameters"]["PolicyID"];
+                    /** @description ID исключения политики */
+                    exc: components["parameters"]["ExceptionID"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["PolicyExceptionExtend"];
+                };
+            };
+            responses: {
+                /** @description Новая версия */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PolicyExceptionChange"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/policies/{id}/exceptions/{exc}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Удалить исключение — новая версия политики
+         * @description Право `policies.manage`. Удаление усиливает защиту: повторная проверка не нужна. Пишет
+         *     `policy.exception_delete`. `base_version` обязателен.
+         */
+        delete: {
+            parameters: {
+                query: {
+                    base_version: number;
+                    comment?: string;
+                };
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID политики или шаблона */
+                    id: components["parameters"]["PolicyID"];
+                    /** @description ID исключения политики */
+                    exc: components["parameters"]["ExceptionID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Новая версия */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PolicyExceptionChange"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                409: components["responses"]["ProblemConflict"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
         options?: never;
         head?: never;
         patch?: never;
@@ -7014,6 +7370,7 @@ export interface components {
             stream: boolean;
             non_text_unchecked: boolean;
             has_content: boolean;
+            mark?: components["schemas"]["EventMark"];
             /** @description Только в карточке и выгрузке JSON — решение с трассировкой, находки, задержки, токены, проверка ответа */
             details?: {
                 /** @description Содержимое full обрезано сервером под предел хранения 256 КиБ (В10 ревью 2.r3a) */
@@ -7193,6 +7550,132 @@ export interface components {
             response_check?: "buffered" | "incremental" | "monitor";
             block_message?: string;
             rules: components["schemas"]["PolicyRule"][];
+            /** @description Исключения (задача 3.22). При сохранении: поле не передано — исключения текущей версии сохраняются; пустой список — удаляются. Автора и created_at новых и изменённых ставит сервер */
+            exceptions?: components["schemas"]["PolicyException"][];
+        };
+        /** @description Исключение (ТЗ 5.3, решение Р8 этапа 3); поля — как в YAML политики. Условия соединяются «и». */
+        PolicyException: {
+            id: string;
+            /** @description ID детектора */
+            detector: string;
+            /** @description Категория находки */
+            category?: string;
+            /** @description Правило детектора (шаблон) */
+            pattern?: string;
+            /** @description Хеш фрагмента (HMAC на ключе шлюза) из находки события */
+            fragment?: string;
+            app?: string;
+            /** @description Псевдоним пользователя из события */
+            user?: string;
+            /** @enum {string} */
+            source?: "user" | "rag" | "tool" | "output";
+            reason: string;
+            readonly author?: string;
+            /** Format: date-time */
+            readonly created_at?: string;
+            /**
+             * Format: date-time
+             * @description Не дальше 365 суток от сохранения; при сохранении без срока — 30 суток
+             */
+            expires_at?: string;
+            /**
+             * Format: uuid
+             * @description Событие
+             */
+            event_id?: string;
+        };
+        PolicyExceptionItem: components["schemas"]["PolicyException"] & {
+            /**
+             * @description expired — шлюз исключение не применяет
+             * @enum {string}
+             */
+            status: "active" | "expired";
+        };
+        PolicyExceptionList: {
+            policy: string;
+            version: number;
+            items: components["schemas"]["PolicyExceptionItem"][];
+        };
+        ExceptionCondition: {
+            detector: string;
+            category?: string;
+            pattern?: string;
+            fragment?: string;
+            app?: string;
+            user?: string;
+            /** @enum {string} */
+            source?: "user" | "rag" | "tool" | "output";
+            reason?: string;
+            expires_in_days?: number;
+            /** Format: date-time */
+            expires_at?: string;
+            /** Format: uuid */
+            event_id?: string;
+        };
+        NewPolicyException: components["schemas"]["ExceptionCondition"] & {
+            base_version: number;
+            comment?: string;
+            /**
+             * Format: password
+             * @description Текущий пароль (добавление — ослабление защиты)
+             */
+            password?: string;
+            /** @description Код из приложения-аутентификатора вместо пароля */
+            code?: string;
+        };
+        /** @description Ровно одно из `expires_in_days` и `expires_at`. */
+        PolicyExceptionExtend: {
+            base_version: number;
+            expires_in_days?: number;
+            /** Format: date-time */
+            expires_at?: string;
+            /** @description Новая причина; пусто — прежняя */
+            reason?: string;
+            comment?: string;
+            /** Format: password */
+            password?: string;
+            code?: string;
+        };
+        PolicyExceptionChange: {
+            policy: components["schemas"]["Policy"];
+            exception?: components["schemas"]["PolicyExceptionItem"];
+        };
+        ExceptionDraft: {
+            /** Format: uuid */
+            event_id: string;
+            /** @description Политика события */
+            policy?: string;
+            /** @description Версия политики в момент события */
+            policy_version?: number;
+            /** @description Текущая версия политики (base_version для создания) */
+            base_version?: number;
+            /** @description Политика события — шаблон */
+            template: boolean;
+            items: components["schemas"]["ExceptionCondition"][];
+        };
+        EventMark: {
+            /** @enum {string} */
+            mark: "false_positive" | "confirmed";
+            comment?: string;
+            /** Format: date-time */
+            marked_at: string;
+            /** @description Тип и ID субъекта: user:<id> или api_token:<id> */
+            marked_by: string;
+            marked_by_name?: string;
+        };
+        EventMarkRequest: {
+            /**
+             * @description none — снять отметку
+             * @enum {string}
+             */
+            mark: "false_positive" | "confirmed" | "none";
+            comment?: string;
+        };
+        EventMarkResult: {
+            /** Format: uuid */
+            event_id: string;
+            mark: components["schemas"]["EventMark"];
+            draft?: components["schemas"]["ExceptionDraft"];
         };
         PolicySummary: {
             id: string;
@@ -7299,8 +7782,17 @@ export interface components {
             weakening: boolean;
             weakening_reasons: {
                 /** @enum {string} */
-                kind: "mode_monitor" | "non_text_weakened" | "response_check_weakened" | "rule_removed" | "action_weakened" | "threshold_raised" | "scope_narrowed" | "detector_changed";
+                kind: "mode_monitor" | "non_text_weakened" | "response_check_weakened" | "rule_removed" | "action_weakened" | "threshold_raised" | "scope_narrowed" | "detector_changed" | "exception_added" | "exception_extended" | "exception_changed";
                 rule?: string;
+                exception?: string;
+            }[];
+            exceptions_added: components["schemas"]["PolicyException"][];
+            exceptions_removed: components["schemas"]["PolicyException"][];
+            exceptions_changed: {
+                id: string;
+                fields: string[];
+                before: components["schemas"]["PolicyException"];
+                after: components["schemas"]["PolicyException"];
             }[];
         };
         /** @description Ровно одно из `policy_id` и `spec`. */
@@ -8180,6 +8672,8 @@ export interface components {
         BudgetMonth: string;
         /** @description ID приложения (UUID) */
         ApplicationID: string;
+        /** @description ID исключения политики */
+        ExceptionID: string;
         /** @description ID политики или шаблона */
         PolicyID: string;
         /** @description ID ключа приложения (UUID) */

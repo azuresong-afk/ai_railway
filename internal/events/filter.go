@@ -60,8 +60,9 @@ const (
 	kindText    fieldKind = iota // текстовый столбец events
 	kindBool                     // логический столбец
 	kindThreats                  // массив threats (ID строк матрицы)
-	kindFinding                  // детектор в details.findings
+	kindFinding                  // поле находки в details.findings (fieldDef.key)
 	kindUUID                     // столбец uuid
+	kindMark                     // отметка аналитика (event_marks)
 )
 
 // fieldDef — поле фильтра: столбец таблицы events (константа кода, не ввод
@@ -70,6 +71,8 @@ type fieldDef struct {
 	column string
 	kind   fieldKind
 	valid  func(string) bool
+	// key — поле находки для kindFinding (константа кода).
+	key string
 }
 
 var (
@@ -105,10 +108,14 @@ var filterFields = map[string]fieldDef{
 	"storage":            {column: "storage", kind: kindText, valid: oneOf(StorageNone, StorageMasked, StorageFull)},
 	"gateway":            {column: "gateway_id", kind: kindUUID, valid: uuidValue},
 	"threat":             {column: "threats", kind: kindThreats, valid: threatValueRe.MatchString},
-	"detector":           {column: "details", kind: kindFinding, valid: detectorValueRe.MatchString},
+	"detector":           {column: "details", kind: kindFinding, valid: detectorValueRe.MatchString, key: "detector"},
 	"stream":             {column: "stream", kind: kindBool, valid: oneOf("true", "false")},
 	"non_text_unchecked": {column: "non_text_unchecked", kind: kindBool, valid: oneOf("true", "false")},
 	"has_content":        {column: "has_content", kind: kindBool, valid: oneOf("true", "false")},
+	// Задача 3.22: exception — находки, пропущенные по исключению с этим ID;
+	// mark — отметка аналитика (false_positive, confirmed, none — нет отметки).
+	"exception": {column: "details", kind: kindFinding, valid: exceptionRe.MatchString, key: "exception"},
+	"mark":      {column: "id", kind: kindMark, valid: oneOf(MarkFalsePositive, MarkConfirmed, MarkNone)},
 }
 
 // FilterFields — имена полей фильтра по алфавиту (документация, подсказки).
@@ -479,7 +486,15 @@ func (f Filter) appendSQL(b *strings.Builder, a *sqlArgs) {
 				b.WriteString("NOT ")
 			}
 			b.WriteString("EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(" + col +
-				"->'findings', '[]'::jsonb)) AS f WHERE f->>'detector' = ANY(" + ref + "))")
+				"->'findings', '[]'::jsonb)) AS f WHERE f->>'" + def.key + "' = ANY(" + ref + "))")
+		case kindMark:
+			// «none» — нет отметки: значение отметки события, либо none.
+			ref := a.add(c.Values) + "::text[]"
+			if negate {
+				b.WriteString("NOT ")
+			}
+			b.WriteString("(COALESCE((SELECT em.mark FROM event_marks em WHERE em.event_id = e.id AND em.event_ts = e.ts" +
+				" AND em.org_id = e.org_id), '" + MarkNone + "') = ANY(" + ref + "))")
 		}
 	}
 }
@@ -548,6 +563,21 @@ func (r *Record) filterValues(field string) []string {
 			}
 		}
 		return out
+	case "exception":
+		var out []string
+		if r.Details != nil {
+			for _, fd := range r.Details.Findings {
+				if fd.Exception != "" {
+					out = append(out, fd.Exception)
+				}
+			}
+		}
+		return out
+	case "mark":
+		if r.Mark == nil {
+			return []string{MarkNone}
+		}
+		return []string{r.Mark.Mark}
 	case "stream":
 		return []string{strconv.FormatBool(r.Stream)}
 	case "non_text_unchecked":

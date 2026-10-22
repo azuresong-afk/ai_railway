@@ -197,7 +197,7 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	rec.jsonMode = jsonResponseFormat(req.ResponseFormat)
 	checkStart := h.cfg.Now()
 	in, err := app.inspect(r.Context(), inspectRequest{
-		Endpoint: policy.EndpointChat, External: app.Provider.External(), Texts: texts, Media: policyMedia(req.Media()),
+		Endpoint: policy.EndpointChat, External: app.Provider.External(), Texts: texts, Media: policyMedia(req.Media()), User: user,
 		Mask: app.Storage == events.StorageMasked, Timeout: h.cfg.DetectorTimeout, Vault: rec.vault,
 	})
 	rec.ev.LatencyMS["input_check"] = h.cfg.Now().Sub(checkStart).Milliseconds()

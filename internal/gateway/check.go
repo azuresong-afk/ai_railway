@@ -204,7 +204,7 @@ func (c *CheckHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	checkStart := h.cfg.Now()
 	in, err := app.inspect(r.Context(), inspectRequest{
-		Endpoint: policy.EndpointCheck, Direction: dir, External: app.Provider.External(), Texts: texts,
+		Endpoint: policy.EndpointCheck, Direction: dir, External: app.Provider.External(), Texts: texts, User: user,
 		Mask: app.Storage == events.StorageMasked, Timeout: h.cfg.DetectorTimeout,
 	})
 	rec.ev.LatencyMS["input_check"] = h.cfg.Now().Sub(checkStart).Milliseconds()

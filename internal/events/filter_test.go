@@ -147,7 +147,7 @@ func TestBuildQueryShape(t *testing.T) {
 	}
 	q := Query{From: eventsT0, To: eventsT0.Add(MaxQueryRange), Filter: f, After: &Position{TS: eventsT0, ID: "id"}, Limit: 51}
 	sql, args := s.buildQuery(&q, 0)
-	for _, part := range []string{"FROM events e WHERE e.org_id = $1", "e.ts >= $2 AND e.ts < $3", "(e.ts, e.id) < ($4, $5::uuid)",
+	for _, part := range []string{"LEFT JOIN event_marks m ON m.event_id = e.id AND m.event_ts = e.ts AND m.org_id = e.org_id WHERE e.org_id = $1", "e.ts >= $2 AND e.ts < $3", "(e.ts, e.id) < ($4, $5::uuid)",
 		"e.app = ANY($6::text[])", "ORDER BY e.ts DESC, e.id DESC LIMIT $7"} {
 		if !strings.Contains(sql, part) {
 			t.Errorf("нет %q в %s", part, sql)

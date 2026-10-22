@@ -162,6 +162,7 @@ type Options struct {
 type Service struct {
 	store   Store
 	hasher  aisecCrypto.Hasher
+	rnd     aisecCrypto.Random
 	ids     *ids.Generator
 	catalog policy.Catalog
 	orgID   string
@@ -191,7 +192,7 @@ func New(o Options) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Service{store: o.Store, hasher: h, ids: ids.NewGenerator(r), catalog: o.Catalog, orgID: o.OrgID, clock: o.Clock}
+	s := &Service{store: o.Store, hasher: h, rnd: r, ids: ids.NewGenerator(r), catalog: o.Catalog, orgID: o.OrgID, clock: o.Clock}
 	if s.orgID == "" {
 		s.orgID = audit.DefaultOrgID
 	}
@@ -321,6 +322,10 @@ type Defaults struct {
 	// (решение 1.19); при импорте YAML — allow_unchecked, как в этапе 1:
 	// файл значит то же, что значил в шлюзе.
 	NonText policy.NonText
+	// KeepExceptions — список исключений не передан (nil): новая версия
+	// получает исключения текущей. Редактор правил в консоли не теряет
+	// исключения, которых не показывает.
+	KeepExceptions bool
 }
 
 // ConsoleDefaults — умолчания для политик из консоли и API (решение 1.19).
@@ -387,6 +392,10 @@ func (s *Service) Create(ctx context.Context, by By, spec *policy.Spec, source, 
 	if err := checkComment(comment); err != nil {
 		return Doc{}, err
 	}
+	stamped := s.now().Truncate(time.Second)
+	if err := stampExceptions(spec, nil, by, stamped, source, false); err != nil {
+		return Doc{}, err
+	}
 	y, err := s.prepare(spec, spec.ID, 1, d)
 	if err != nil {
 		return Doc{}, err
@@ -411,7 +420,8 @@ func (s *Service) Create(ctx context.Context, by By, spec *policy.Spec, source, 
 		action = "policy.import"
 	}
 	details := map[string]any{"slug": p.Slug, "version": 1, "source": source, "mode": p.Mode,
-		"non_text": string(spec.NonText), "rules": len(spec.Rules), "spec_hash": hex.EncodeToString(v.Hash)}
+		"non_text": string(spec.NonText), "rules": len(spec.Rules), "exceptions": len(spec.Exceptions),
+		"spec_hash": hex.EncodeToString(v.Hash)}
 	if err := s.store.CreatePolicy(ctx, p, v, by.entry(action, p.ID, details)); err != nil {
 		return Doc{}, err
 	}
@@ -455,12 +465,27 @@ func (s *Service) addVersion(ctx context.Context, by By, slug string, base int, 
 	if err := checkComment(comment); err != nil {
 		return Doc{}, err
 	}
-	// Проверка до блокировки: номер версии подставляется в YAML ниже.
-	if _, err := s.prepare(spec, slug, base+1, d); err != nil {
+	// Проверка до блокировки по текущей версии без блокировки: номер
+	// версии и исключения подставляются заново под блокировкой ниже.
+	stamped := s.now().Truncate(time.Second)
+	input := cloneSpec(spec)
+	cur, err := s.store.Version(ctx, s.orgID, slug, 0)
+	if err != nil {
+		return Doc{}, err
+	}
+	curSpec, err := cur.Spec()
+	if err != nil {
+		return Doc{}, fmt.Errorf("политики: текущая версия %s/%d не разбирается: %w", slug, cur.Version, err)
+	}
+	pre := cloneSpec(input)
+	if err := stampExceptions(pre, curSpec, by, stamped, source, d.KeepExceptions); err != nil {
+		return Doc{}, err
+	}
+	if _, err := s.prepare(pre, slug, base+1, d); err != nil {
 		return Doc{}, err
 	}
 	if s.bundleCheck != nil {
-		if err := s.bundleCheck(ctx, spec); err != nil {
+		if err := s.bundleCheck(ctx, pre); err != nil {
 			return Doc{}, err
 		}
 	}
@@ -471,6 +496,10 @@ func (s *Service) addVersion(ctx context.Context, by By, slug string, base int, 
 			return Version{}, audit.Entry{}, fmt.Errorf("политики: текущая версия %s/%d не разбирается: %w", slug, cur.Version, err)
 		}
 		n := cur.Version + 1
+		spec := cloneSpec(input)
+		if err := stampExceptions(spec, prev, by, stamped, source, d.KeepExceptions); err != nil {
+			return Version{}, audit.Entry{}, err
+		}
 		y, err := s.prepare(spec, slug, n, d)
 		if err != nil {
 			return Version{}, audit.Entry{}, err

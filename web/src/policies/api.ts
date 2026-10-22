@@ -69,6 +69,9 @@ export const weakeningText: Record<NonNullable<PolicyDiff["weakening_reasons"][n
   threshold_raised: "порог правила повышен",
   scope_narrowed: "правило применяется к меньшему числу случаев",
   detector_changed: "у правила заменён детектор",
+  exception_added: "добавлено исключение",
+  exception_extended: "продлён срок исключения",
+  exception_changed: "изменено условие исключения",
 };
 
 export const actionText: Record<PolicyRule["action"], string> = {
