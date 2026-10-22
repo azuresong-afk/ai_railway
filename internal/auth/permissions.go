@@ -84,6 +84,13 @@ const (
 	PermModelPricesManage = "model_prices.manage"
 	PermBudgetsRead       = "budgets.read"
 	PermBudgetsManage     = "budgets.manage"
+	// Инциденты (ТЗ 5.7, задача 3.16 этапа 3): разбор — работа аналитика,
+	// доступна и токену (SOAR, IRP); выгрузка карточки — отдельное право
+	// (data.export, DM-41); инструкции реагирования — функция безопасности.
+	PermIncidentsRead            = "incidents.read"
+	PermIncidentsManage          = "incidents.manage"
+	PermIncidentsExport          = "incidents.export"
+	PermIncidentCategoriesManage = "incident_categories.manage"
 )
 
 // Permission — разрешение из каталога.
@@ -152,6 +159,10 @@ var permissionCatalog = []Permission{
 	{Name: PermModelPricesManage, Title: "Задание, изменение и удаление цен моделей", Group: "Потребление"},
 	{Name: PermBudgetsRead, Title: "Просмотр бюджетов и расхода приложений", Group: "Потребление"},
 	{Name: PermBudgetsManage, Title: "Задание, изменение и снятие бюджетов приложений", Group: "Потребление"},
+	{Name: PermIncidentsRead, Title: "Просмотр инцидентов, хронологии, комментариев и инструкций реагирования", Group: "Инциденты"},
+	{Name: PermIncidentsManage, Title: "Создание инцидентов, смена статуса, назначение, комментарии, этапы реагирования", Group: "Инциденты"},
+	{Name: PermIncidentsExport, Title: "Выгрузка карточки инцидента в JSON (без содержимого событий)", Group: "Инциденты"},
+	{Name: PermIncidentCategoriesManage, Title: "Изменение инструкций реагирования по категориям инцидентов", Group: "Инциденты", Security: true},
 }
 
 // auditorExtra — разрешения аудитора сверх чтения: они ничего не меняют,
@@ -341,7 +352,8 @@ var builtinRoles = []RoleDef{
 	{ID: RoleAnalyst, DisplayName: "Аналитик", Builtin: true,
 		Description: "Разбор оповещений и инцидентов, поиск по событиям",
 		Grants: grantAll(PermSystemRead, PermEventsRead, PermEventsExport, PermApplicationsRead, PermProvidersRead,
-			PermPoliciesRead, PermPoliciesTest, PermAlertsRead, PermAlertsManage, PermAlertRulesRead, PermModelPricesRead, PermBudgetsRead)},
+			PermPoliciesRead, PermPoliciesTest, PermAlertsRead, PermAlertsManage, PermAlertRulesRead, PermModelPricesRead, PermBudgetsRead,
+			PermIncidentsRead, PermIncidentsManage, PermIncidentsExport)},
 	{ID: RoleAuditor, DisplayName: "Аудитор", Builtin: true,
 		Description: "Только просмотр: журнал аудита, отчёты, состояние соответствия. Ничего не меняет",
 		Grants:      auditorPermissions()},

@@ -5428,6 +5428,652 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/incidents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Инциденты
+         * @description Право `incidents.read` (ТЗ 5.7). От новых к старым, фильтры `status` (статус или `open` —
+         *     все незакрытые), `severity`, `category`, `assignee_id`, `source` — каждый не больше одного
+         *     раза. `overdue` — срок реакции истёк, а инцидент всё ещё новый.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description Размер страницы */
+                    limit?: components["parameters"]["Limit"];
+                    /** @description Непрозрачный курсор из `next_cursor` предыдущей страницы */
+                    cursor?: components["parameters"]["Cursor"];
+                    status?: "new" | "in_progress" | "contained" | "closed" | "open";
+                    severity?: components["schemas"]["AlertSeverity"];
+                    category?: components["schemas"]["IncidentCategoryID"];
+                    assignee_id?: string;
+                    source?: components["schemas"]["IncidentSource"];
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Страница списка */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["IncidentPage"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        /**
+         * Создать инцидент
+         * @description Право `incidents.manage`. Три способа:
+         *     - вручную — `title`, `severity`, `category` обязательны;
+         *     - из оповещения — `alert_id`; название, серьёзность и категория по умолчанию берутся из
+         *       оповещения и его правила, ссылки на события копируются, оповещение получает ссылку на
+         *       инцидент. Оповещение уже в инциденте — 200 и тот же инцидент, без записей;
+         *     - повторное открытие — `reopen_of` (только закрытый, иначе 409): новый инцидент со
+         *       ссылкой на прежний и его событиями. Уже открытый заново — 200 и тот же новый инцидент.
+         *     Номер сквозной по организации. Срок реакции — по серьёзности: критическая 1 ч, высокая
+         *     4 ч, средняя 24 ч, низкая 72 ч, информационная 7 суток. Содержимое запросов и ответов в
+         *     инцидент не копируется. Пишет `incident.create`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                    /** @description Ключ повторяемости создающего запроса, 1–64 символа `[A-Za-z0-9._-]` */
+                    "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["IncidentCreate"];
+                };
+            };
+            responses: {
+                /** @description Оповещение уже в инциденте или закрытый уже открыт заново */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Incident"];
+                    };
+                };
+                /** @description Инцидент создан */
+                201: {
+                    headers: {
+                        Location?: string;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Incident"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/incidents/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Карточка инцидента
+         * @description Право `incidents.read`. Этапы реагирования, хронология (автоматические и ручные записи),
+         *     комментарии со всеми версиями (`superseded` — есть исправленная), связанные оповещения,
+         *     ссылки на события (до 1000) и инструкция реагирования категории. Событие открывается
+         *     `GET /api/v1/events/{id}` с правом `events.read`.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description ID инцидента (UUIDv7) */
+                    id: components["parameters"]["IncidentID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Инцидент */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["IncidentCard"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/incidents/{id}/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Сменить статус инцидента
+         * @description Право `incidents.manage`. Переходы: `new → in_progress`, `new → closed`,
+         *     `in_progress → contained`, `in_progress → closed`, `contained → closed`; другой — 409.
+         *     Закрытие — только с резолюцией `resolved`, `false_positive` или `risk_accepted`;
+         *     незакрытые связанные оповещения закрываются вместе с инцидентом. Первый уход из статуса
+         *     «новый» отмечает реакцию, а без ответственного назначает им субъекта (у токена — его
+         *     владельца). Закрытый инцидент не меняется — 409. Пишет хронологию и
+         *     `incident.status_changed`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID инцидента (UUIDv7) */
+                    id: components["parameters"]["IncidentID"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["IncidentStatusUpdate"];
+                };
+            };
+            responses: {
+                /** @description Статус изменён */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Incident"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/incidents/{id}/assignee": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Назначить ответственного
+         * @description Право `incidents.manage`. `user_id` — активный пользователь (иначе 400) или пустая строка
+         *     (снять назначение). Без изменений — 200 без записи. Пишет хронологию и `incident.assigned`.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID инцидента (UUIDv7) */
+                    id: components["parameters"]["IncidentID"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["IncidentAssign"];
+                };
+            };
+            responses: {
+                /** @description Ответственный назначен */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Incident"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/incidents/{id}/comments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Добавить комментарий
+         * @description Право `incidents.manage`. Комментарии только добавляются (до 4000 символов, до 500 в
+         *     инциденте). Правка — новая запись с `replaces`: только своего комментария (иначе 403) и
+         *     только последней версии (иначе 409). Пишет хронологию и `incident.comment_added` (без
+         *     текста).
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                    /** @description Ключ повторяемости создающего запроса, 1–64 символа `[A-Za-z0-9._-]` */
+                    "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+                };
+                path: {
+                    /** @description ID инцидента (UUIDv7) */
+                    id: components["parameters"]["IncidentID"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["IncidentCommentInput"];
+                };
+            };
+            responses: {
+                /** @description Комментарий добавлен */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["IncidentComment"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/incidents/{id}/stages/{stage}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Отметить этап реагирования
+         * @description Право `incidents.manage`. Этапы шаблона ТЗ 5.7: `intake` (приём сообщения), `triage` (сбор
+         *     первичных сведений), `containment` (локализация), `investigation` (сбор сведений для
+         *     расследования). Отмеченный этап не снимается — 409. Пишет хронологию и
+         *     `incident.stage_completed`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID инцидента (UUIDv7) */
+                    id: components["parameters"]["IncidentID"];
+                    stage: "intake" | "triage" | "containment" | "investigation";
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["IncidentStageInput"];
+                };
+            };
+            responses: {
+                /** @description Этап отмечен */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Incident"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/incidents/{id}/alerts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Добавить оповещение в инцидент
+         * @description Право `incidents.manage` (ТЗ 6.3, п. 5). Оповещение получает ссылку на инцидент, его
+         *     ссылки на события копируются. Уже в этом инциденте — 200 без записей, в другом — 409,
+         *     инцидент закрыт — 409. Не больше 100 оповещений в инциденте. Пишет хронологию и
+         *     `incident.alert_linked`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID инцидента (UUIDv7) */
+                    id: components["parameters"]["IncidentID"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["IncidentAlertLink"];
+                };
+            };
+            responses: {
+                /** @description Оповещение в инциденте */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Incident"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/incidents/{id}/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Выгрузить карточку инцидента в JSON
+         * @description Право `incidents.export` (ТЗ 5.7). Карточка в формате `aisec-incident/1` для передачи в
+         *     SIEM или IRP заказчика (ГосСОПКА — через его сертифицированные системы, ТЗ 10.1): поля,
+         *     этапы, хронология, комментарии, оповещения и ссылки на события, без содержимого событий.
+         *     Файл `incident-<номер>.json`. Запись `data.export` пишется до выдачи данных.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description ID инцидента (UUIDv7) */
+                    id: components["parameters"]["IncidentID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Карточка */
+                200: {
+                    headers: {
+                        "Content-Disposition"?: string;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["IncidentDocument"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/incident-categories": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Категории инцидентов и инструкции реагирования
+         * @description Право `incidents.read`. Категории ТЗ 5.7 со строками матрицы обнаружения (ТЗ 5.16), из
+         *     которых они выводятся, и действующей инструкцией: `default` — текст по умолчанию.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Категории */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["IncidentCategoryList"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/incident-categories/{category}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Изменить инструкцию реагирования
+         * @description Право `incident_categories.manage` (признак `security`: только администратор безопасности,
+         *     не токену). Новая версия текста (до 8000 символов); прежние версии хранятся. `version` —
+         *     версия, открытая для правки (у текста по умолчанию — 1); устаревшая — 409. Без изменений —
+         *     200 без записи. Пишет `incident_category.update` (версии до и после).
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    category: components["schemas"]["IncidentCategoryID"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["IncidentInstructionsUpdate"];
+                };
+            };
+            responses: {
+                /** @description Инструкция сохранена */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["IncidentInstruction"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -7067,6 +7713,191 @@ export interface components {
         AlertRuleList: {
             items: components["schemas"]["AlertRule"][];
         };
+        /**
+         * @description Категория инцидента (ТЗ 5.7); справочник — GET /api/v1/incident-categories
+         * @enum {string}
+         */
+        IncidentCategoryID: "prompt_injection" | "pii_leak" | "system_prompt_leak" | "quota_abuse" | "anomalous_activity" | "agent_policy_violation" | "model_compromise" | "platform_access" | "other";
+        /**
+         * @description manual — вручную, alert — из оповещения, auto — правилом в приёме событий, reopen — повторное открытие
+         * @enum {string}
+         */
+        IncidentSource: "manual" | "alert" | "auto" | "reopen";
+        Incident: {
+            /** Format: uuid */
+            id: string;
+            /** @description Сквозной номер в организации */
+            number: number;
+            title: string;
+            severity: components["schemas"]["AlertSeverity"];
+            category: components["schemas"]["IncidentCategoryID"];
+            /** @enum {string} */
+            status: "new" | "in_progress" | "contained" | "closed";
+            /** @enum {string} */
+            resolution?: "resolved" | "false_positive" | "risk_accepted";
+            resolution_comment?: string;
+            source: components["schemas"]["IncidentSource"];
+            /** Format: uuid */
+            reopened_from?: string;
+            /** Format: uuid */
+            assignee_id?: string;
+            /**
+             * Format: date-time
+             * @description Срок реакции — создание плюс норматив по серьёзности
+             */
+            reaction_due_at: string;
+            /** @description Срок реакции истёк */
+            overdue: boolean;
+            /** Format: date-time */
+            reacted_at?: string;
+            /** Format: date-time */
+            contained_at?: string;
+            /** Format: date-time */
+            created_at: string;
+            created_by: string;
+            /** Format: date-time */
+            updated_at: string;
+            updated_by: string;
+            /** Format: date-time */
+            closed_at?: string;
+            closed_by?: string;
+            version: number;
+        };
+        IncidentPage: components["schemas"]["PageInfo"] & {
+            items: components["schemas"]["Incident"][];
+        };
+        IncidentComment: {
+            /** Format: uuid */
+            id: string;
+            /** Format: date-time */
+            at: string;
+            author: string;
+            author_name: string;
+            body: string;
+            /** Format: uuid */
+            replaces?: string;
+            /** @description Есть исправленная версия */
+            superseded: boolean;
+        };
+        IncidentInstruction: {
+            category: components["schemas"]["IncidentCategoryID"];
+            body: string;
+            /** @description 1 — текст по умолчанию */
+            version: number;
+            default: boolean;
+            /** Format: date-time */
+            updated_at?: string;
+            updated_by?: string;
+        };
+        IncidentCard: components["schemas"]["Incident"] & {
+            category_title: string;
+            stages: {
+                /** @enum {string} */
+                key: "intake" | "triage" | "containment" | "investigation";
+                title: string;
+                /** Format: date-time */
+                done_at?: string;
+                done_by?: string;
+                note?: string;
+            }[];
+            timeline: {
+                /** Format: date-time */
+                at: string;
+                actor: string;
+                /** @enum {string} */
+                kind: "created" | "status_changed" | "assigned" | "comment_added" | "stage_completed" | "alert_linked" | "alert_triggered" | "reopened";
+                /** @description Подробности без содержимого запросов */
+                details: {
+                    [key: string]: unknown;
+                };
+            }[];
+            comments: components["schemas"]["IncidentComment"][];
+            alerts: {
+                /** Format: uuid */
+                id: string;
+                /** Format: uuid */
+                rule_id: string;
+                rule_name: string;
+                title: string;
+                severity: components["schemas"]["AlertSeverity"];
+                /** @enum {string} */
+                status: "new" | "in_progress" | "closed";
+                count: number;
+                /** Format: date-time */
+                created_at: string;
+            }[];
+            events: {
+                /** Format: uuid */
+                id: string;
+                /** Format: date-time */
+                ts: string;
+            }[];
+            /** @description Ссылок столько */
+            events_truncated: boolean;
+            instruction: components["schemas"]["IncidentInstruction"];
+        };
+        IncidentDocument: {
+            /** @enum {string} */
+            format: "aisec-incident/1";
+            /** Format: date-time */
+            exported_at: string;
+        } & components["schemas"]["IncidentCard"];
+        IncidentCreate: {
+            title?: string;
+            severity?: components["schemas"]["AlertSeverity"];
+            category?: components["schemas"]["IncidentCategoryID"];
+            /**
+             * Format: uuid
+             * @description Создать из оповещения
+             */
+            alert_id?: string;
+            /**
+             * Format: uuid
+             * @description Открыть заново закрытый инцидент
+             */
+            reopen_of?: string;
+        };
+        IncidentStatusUpdate: {
+            /** @enum {string} */
+            status: "in_progress" | "contained" | "closed";
+            /**
+             * @description Обязательна при закрытии
+             * @enum {string}
+             */
+            resolution?: "resolved" | "false_positive" | "risk_accepted";
+            comment?: string;
+        };
+        IncidentAssign: {
+            /** @description ID активного пользователя или пустая строка */
+            user_id: string;
+        };
+        IncidentCommentInput: {
+            body: string;
+            /**
+             * Format: uuid
+             * @description Правка — ID своего комментария (последней версии)
+             */
+            replaces?: string;
+        };
+        IncidentStageInput: {
+            note?: string;
+        };
+        IncidentAlertLink: {
+            /** Format: uuid */
+            alert_id: string;
+        };
+        IncidentInstructionsUpdate: {
+            body: string;
+            version: number;
+        };
+        IncidentCategoryList: {
+            items: {
+                id: components["schemas"]["IncidentCategoryID"];
+                title: string;
+                rows: string[];
+                instruction: components["schemas"]["IncidentInstruction"];
+            }[];
+        };
         /** @description Поле конверта страницы списка; на последней странице отсутствует */
         PageInfo: {
             next_cursor?: string;
@@ -7361,6 +8192,8 @@ export interface components {
         AlertRuleID: string;
         /** @description ID канала уведомлений (UUIDv7) */
         NotifyChannelID: string;
+        /** @description ID инцидента (UUIDv7) */
+        IncidentID: string;
         /** @description Начало периода включительно (RFC 3339); по умолчанию to минус 24 часа */
         From: string;
         /** @description Конец периода, не включая (RFC 3339); по умолчанию — текущее время */
