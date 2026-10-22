@@ -344,6 +344,9 @@ type Service struct {
 	// ревью 2.r5); nil — ослаблением считается только переход на шаблон
 	// «Только мониторинг».
 	policyWeaker func(ctx context.Context, from, to string) (bool, error)
+	// defaultStorage — режим хранения новых приложений из настроек
+	// установки (Н42 ревью 2.r4, В26 ревью 2.r5); nil — DefaultStorage.
+	defaultStorage func(ctx context.Context) (string, error)
 }
 
 // SetBundleCheck задаёт проверку приложения сборкой пакета (ошибка — с
@@ -357,6 +360,20 @@ func (s *Service) SetBundleCheck(fn func(ctx context.Context, before *Applicatio
 // (versions.Service.Weaker). Вызывается до начала обслуживания запросов.
 func (s *Service) SetPolicyWeaker(fn func(ctx context.Context, from, to string) (bool, error)) {
 	s.policyWeaker = fn
+}
+
+// SetDefaultStorage задаёт чтение режима хранения по умолчанию из настроек
+// установки. Вызывается до начала обслуживания запросов.
+func (s *Service) SetDefaultStorage(fn func(ctx context.Context) (string, error)) {
+	s.defaultStorage = fn
+}
+
+// storageDefault — режим хранения нового приложения без явного выбора.
+func (s *Service) storageDefault(ctx context.Context) (string, error) {
+	if s.defaultStorage == nil {
+		return DefaultStorage, nil
+	}
+	return s.defaultStorage(ctx)
 }
 
 // weakerPolicy — смена политики from на to ослабляет защиту.

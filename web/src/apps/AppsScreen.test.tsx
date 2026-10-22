@@ -8,6 +8,7 @@ import { gatewayExample, slugPattern, splitList, suggestSlug } from "./api";
 const me = (permissions: string[]): Me => ({
   user: { id: "u-me", login: "owner", display_name: "Владелец", role: "app_owner", status: "active", locked: false, must_change_password: false, password_changed_at: "2026-10-01T00:00:00Z", created_at: "2026-10-01T00:00:00Z" },
   session_state: "active",
+  timezone: "Europe/Moscow",
   permissions,
 });
 

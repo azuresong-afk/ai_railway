@@ -130,6 +130,55 @@ paths:
         '403': { $ref: '#/components/responses/ProblemForbidden' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ProblemInternal' }
+  /api/v1/system/settings:
+    get:
+      summary: Настройки установки
+      description: |
+        Право `system.read`. Часовой пояс показа времени (ВРМ.2) и режим хранения содержимого по умолчанию
+        для новых приложений (ТЗ 5.5). Задаются при первичной настройке; это единственный источник часового
+        пояса (H-Р10, В26 ревью 2.r5). До первичной настройки — умолчания `Europe/Moscow` и `masked`.
+      x-permission: system.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      responses:
+        '200':
+          description: Настройки
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InstallSettings' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+    put:
+      summary: Изменить настройки установки
+      description: |
+        Право `settings.manage` (функция безопасности, только администратор безопасности). Пустое или
+        пропущенное поле оставляет прежнее значение. Пишет `setup.settings_changed` со значениями до и после.
+        Новый режим хранения по умолчанию `none` или `full` ослабляет защиту (DM-40): нужен текущий пароль
+        или код TOTP — без них 400 с полем `password`, неверные — 403 `reauthentication_failed`; запись — с
+        `weakening`. Действующие приложения не меняются: умолчание применяется к новым.
+      x-permission: settings.manage
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/InstallSettingsUpdate' }
+      responses:
+        '200':
+          description: Настройки сохранены
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InstallSettings' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
   /api/v1/system/status:
     get:
       summary: Состояние системы
@@ -139,7 +188,7 @@ paths:
         присланные шлюзом в heartbeat), итоги контроля целостности и
         самотестирования сервера, синхронизация времени ядром ОС (ВРМ.1, без
         обращений к NTP; на системах без `adjtimex` — `unknown`), часовой пояс
-        показа (ВРМ.2, настройка `-timezone`), отброшенные и отклонённые
+        показа (ВРМ.2, настройки установки, `GET /api/v1/system/settings`), отброшенные и отклонённые
         события (счётчики шлюзов с их последнего запуска), заполнение журнала
         аудита (РСБ.5; предел и порог — настройки), итог последней проверки
         цепочки журнала аудита (РСБ.4; сервер проверяет её при запуске и раз в
@@ -2796,6 +2845,19 @@ components:
         session_max_per_user: { type: integer, minimum: 1, maximum: 20, default: 5 }
         temp_password_hours: { type: integer, minimum: 1, maximum: 168, default: 72 }
         mfa_required_all: { type: boolean, default: false, description: 'Второй фактор обязателен для всех ролей (для security_admin и system_admin — всегда)' }
+    InstallSettings:
+      type: object
+      required: [timezone, retention_mode]
+      properties:
+        timezone: { type: string, maxLength: 64, description: 'Часовой пояс показа времени, имя IANA (ВРМ.2); хранение всегда в UTC', example: Europe/Moscow }
+        retention_mode: { type: string, enum: [none, masked, full], description: 'Режим хранения содержимого для новых приложений без явного выбора (ТЗ 5.5)' }
+    InstallSettingsUpdate:
+      allOf:
+        - type: object
+          properties:
+            timezone: { type: string, maxLength: 64, description: 'Имя IANA, например Europe/Moscow или UTC; пусто — без изменений' }
+            retention_mode: { type: string, enum: ['', none, masked, full], description: 'Пусто — без изменений' }
+        - $ref: '#/components/schemas/Reauth'
     AuthPolicyUpdate:
       allOf:
         - $ref: '#/components/schemas/AuthPolicy'
@@ -3199,7 +3261,7 @@ components:
               items: { $ref: '#/components/schemas/User' }
     Me:
       type: object
-      required: [user, session_state, permissions]
+      required: [user, session_state, permissions, timezone]
       properties:
         user: { $ref: '#/components/schemas/User' }
         session_state: { $ref: '#/components/schemas/SessionState' }
@@ -3215,6 +3277,7 @@ components:
           type: array
           items: { type: string }
           description: 'Разрешения, действующие в сессии, включая `session` и, после второго фактора, `self`. Консоль скрывает недоступное; права проверяет сервер'
+        timezone: { type: string, description: 'Часовой пояс показа времени из настроек установки (ВРМ.2): консоль показывает даты в нём' }
     SessionState:
       type: string
       enum: [active, password_change, mfa_pending, mfa_setup]

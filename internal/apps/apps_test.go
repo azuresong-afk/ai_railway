@@ -434,6 +434,35 @@ func TestSetProtectionWeakerPolicy(t *testing.T) {
 	}
 }
 
+// Н42 ревью 2.r4, В26 ревью 2.r5: новое приложение без явного режима
+// хранения получает умолчание установки; повторной проверки не нужно, но в
+// журнале full отмечается ослаблением. Явный full при умолчании masked —
+// по-прежнему с проверкой.
+func TestCreateApplicationInstallDefaultStorage(t *testing.T) {
+	e := newEnv(t, false)
+	ctx := context.Background()
+	p := e.provider(t, "main")
+	noConfirm := e.by
+	noConfirm.Confirm = nil
+	def := "full"
+	e.svc.SetDefaultStorage(func(context.Context) (string, error) { return def, nil })
+	a, err := e.svc.CreateApplication(ctx, noConfirm, appInput("crm", p.ID, ownerA), nil)
+	if err != nil || a.Storage != "full" {
+		t.Fatalf("умолчание установки: %+v %v", a.Protection, err)
+	}
+	if d := e.last(t, "application.create").Details.(map[string]any); d["weakening"] != true {
+		t.Fatalf("full из умолчания не отмечен в журнале: %v", d)
+	}
+	def = "masked"
+	if _, err := e.svc.CreateApplication(ctx, noConfirm, appInput("hr", p.ID, ownerA), &apps.ProtectionInput{Storage: "full"}); !errors.Is(err, apps.ErrConfirmRequired) {
+		t.Fatalf("явный full без проверки: %v", err)
+	}
+	e.svc.SetDefaultStorage(func(context.Context) (string, error) { return "", errors.New("сбой БД") })
+	if _, err := e.svc.CreateApplication(ctx, e.by, appInput("ops", p.ID, ownerA), nil); err == nil {
+		t.Fatal("сбой чтения умолчания проигнорирован")
+	}
+}
+
 func TestSetProtection(t *testing.T) {
 	e := newEnv(t, false)
 	ctx := context.Background()

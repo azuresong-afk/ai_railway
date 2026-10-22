@@ -243,6 +243,92 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/system/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Настройки установки
+         * @description Право `system.read`. Часовой пояс показа времени (ВРМ.2) и режим хранения содержимого по умолчанию
+         *     для новых приложений (ТЗ 5.5). Задаются при первичной настройке; это единственный источник часового
+         *     пояса (H-Р10, В26 ревью 2.r5). До первичной настройки — умолчания `Europe/Moscow` и `masked`.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Настройки */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["InstallSettings"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+            };
+        };
+        /**
+         * Изменить настройки установки
+         * @description Право `settings.manage` (функция безопасности, только администратор безопасности). Пустое или
+         *     пропущенное поле оставляет прежнее значение. Пишет `setup.settings_changed` со значениями до и после.
+         *     Новый режим хранения по умолчанию `none` или `full` ослабляет защиту (DM-40): нужен текущий пароль
+         *     или код TOTP — без них 400 с полем `password`, неверные — 403 `reauthentication_failed`; запись — с
+         *     `weakening`. Действующие приложения не меняются: умолчание применяется к новым.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["InstallSettingsUpdate"];
+                };
+            };
+            responses: {
+                /** @description Настройки сохранены */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["InstallSettings"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/system/status": {
         parameters: {
             query?: never;
@@ -257,7 +343,7 @@ export interface paths {
          *     присланные шлюзом в heartbeat), итоги контроля целостности и
          *     самотестирования сервера, синхронизация времени ядром ОС (ВРМ.1, без
          *     обращений к NTP; на системах без `adjtimex` — `unknown`), часовой пояс
-         *     показа (ВРМ.2, настройка `-timezone`), отброшенные и отклонённые
+         *     показа (ВРМ.2, настройки установки, `GET /api/v1/system/settings`), отброшенные и отклонённые
          *     события (счётчики шлюзов с их последнего запуска), заполнение журнала
          *     аудита (РСБ.5; предел и порог — настройки), итог последней проверки
          *     цепочки журнала аудита (РСБ.4; сервер проверяет её при запуске и раз в
@@ -4438,6 +4524,27 @@ export interface components {
              */
             mfa_required_all: boolean;
         };
+        InstallSettings: {
+            /**
+             * @description Часовой пояс показа времени, имя IANA (ВРМ.2); хранение всегда в UTC
+             * @example Europe/Moscow
+             */
+            timezone: string;
+            /**
+             * @description Режим хранения содержимого для новых приложений без явного выбора (ТЗ 5.5)
+             * @enum {string}
+             */
+            retention_mode: "none" | "masked" | "full";
+        };
+        InstallSettingsUpdate: {
+            /** @description Имя IANA, например Europe/Moscow или UTC; пусто — без изменений */
+            timezone?: string;
+            /**
+             * @description Пусто — без изменений
+             * @enum {string}
+             */
+            retention_mode?: "" | "none" | "masked" | "full";
+        } & components["schemas"]["Reauth"];
         AuthPolicyUpdate: components["schemas"]["AuthPolicy"] & components["schemas"]["Reauth"];
         /**
          * @description ID роли. Предустановленные: `security_admin`, `system_admin`, `analyst`, `auditor`,
@@ -4857,6 +4964,8 @@ export interface components {
             };
             /** @description Разрешения, действующие в сессии, включая `session` и, после второго фактора, `self`. Консоль скрывает недоступное; права проверяет сервер */
             permissions: string[];
+            /** @description Часовой пояс показа времени из настроек установки (ВРМ.2): консоль показывает даты в нём */
+            timezone: string;
         };
         /**
          * @description `active` — полный доступ; `password_change` — только смена пароля; `mfa_pending` —

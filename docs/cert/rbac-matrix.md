@@ -72,6 +72,8 @@
 | GET | `/api/v1/system/info` | `system.read` | да | да | да | да | — | да |
 | GET | `/api/v1/system/integrity` | `system.read` | да | да | да | да | — | да |
 | POST | `/api/v1/system/integrity/verify` | `integrity.verify` | да | — | — | — | — | — |
+| GET | `/api/v1/system/settings` | `system.read` | да | да | да | да | — | да |
+| PUT | `/api/v1/system/settings` | `settings.manage` | да | — | — | — | — | — |
 | GET | `/api/v1/system/status` | `system.read` | да | да | да | да | — | да |
 | GET | `/api/v1/users` | `users.read` | да | — | — | да | — | да |
 | POST | `/api/v1/users` | `users.manage` | да | — | — | — | — | — |

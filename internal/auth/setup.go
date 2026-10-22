@@ -54,7 +54,12 @@ var retentionModes = map[string]bool{"none": true, RetentionMasked: true, "full"
 
 // installSettings проверяет и дополняет умолчаниями выбор администратора.
 func installSettings(in SetupInput) (InstallSettings, error) {
-	cfg := InstallSettings{Timezone: in.Timezone, RetentionMode: in.RetentionMode}
+	return InstallSettings{Timezone: in.Timezone, RetentionMode: in.RetentionMode}.Normalize()
+}
+
+// Normalize проверяет настройки и дополняет пустые поля умолчаниями.
+// Неверное поле — InputError с именем поля API.
+func (cfg InstallSettings) Normalize() (InstallSettings, error) {
 	if cfg.Timezone == "" {
 		cfg.Timezone = DefaultTimezone
 	}

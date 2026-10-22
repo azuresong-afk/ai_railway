@@ -163,6 +163,27 @@ func TestStatusSectionsUnavailable(t *testing.T) {
 	}
 }
 
+// ВРМ.2, H-Р10: часовой пояс — из настроек установки; сбой чтения — раздел
+// timezone недоступен, остальное время на месте.
+func TestStatusTimezoneFromSettings(t *testing.T) {
+	e := newEnv()
+	o := e.opts()
+	tz, tzErr := "Asia/Yekaterinburg", error(nil)
+	o.Timezone = func(context.Context) (string, error) { return tz, tzErr }
+	s, err := sysstatus.New(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st := s.Status(context.Background()); st.Time.Timezone != "Asia/Yekaterinburg" {
+		t.Fatalf("пояс: %+v", st.Time)
+	}
+	tzErr = errors.New("db down")
+	st := s.Status(context.Background())
+	if !slices.Contains(st.Unavailable, "timezone") || st.Time.Sync != sysstatus.SyncSynchronized {
+		t.Fatalf("сбой чтения пояса: %+v %v", st.Time, st.Unavailable)
+	}
+}
+
 // РСБ.4 (замечание В1 ревью 2.r1): нарушение цепочки аудита поднимает
 // уведомление и пишет system.alert один раз; восстановление его снимает.
 func TestAuditChainNotification(t *testing.T) {

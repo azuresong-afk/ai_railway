@@ -8,6 +8,7 @@ import { tokenGrantable } from "./TokensTab";
 const me = (permissions: string[]): Me => ({
   user: { id: "u-me", login: "boss", display_name: "Босс", role: "security_admin", status: "active", locked: false, must_change_password: false, password_changed_at: "2026-10-01T00:00:00Z", created_at: "2026-10-01T00:00:00Z" },
   session_state: "active",
+  timezone: "Europe/Moscow",
   permissions,
 });
 
@@ -74,6 +75,13 @@ beforeEach(() => {
           return json({ code: "reauthentication_failed", detail: "Пароль или код не принят.", status: 403 }, 403);
         }
         return json({ metadata_days: b?.metadata_days ?? 365, content_days: b?.content_days ?? 90, updated_at: "2026-10-01T00:00:00Z" });
+      }
+      if (url === "/api/v1/system/settings") {
+        const b = body as { timezone?: string; retention_mode?: string; password?: string } | undefined;
+        if (init.method === "PUT" && b?.retention_mode === "full" && !b.password) {
+          return json({ code: "invalid_request", detail: "Проверьте введённые данные.", status: 400, errors: [{ field: "password", reason: "Введите пароль." }] }, 400);
+        }
+        return json({ timezone: b?.timezone ?? "Europe/Moscow", retention_mode: b?.retention_mode ?? "masked" });
       }
       return json({ code: "not_found", detail: "нет", status: 404 }, 404);
     }),
@@ -188,6 +196,30 @@ describe("сроки хранения", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     const puts = calls.filter((c) => c.method === "PUT");
     expect(puts.at(-1)?.body).toEqual({ metadata_days: 365, content_days: 30, password: "Correct-Horse-1" });
+  });
+});
+
+// В26 ревью 2.r5: часовой пояс и режим хранения по умолчанию; full — с паролем по ответу сервера.
+describe("настройки установки", () => {
+  it("смена пояса без проверки, full — с паролем", async () => {
+    renderScreen(["events.read", "system.read", "settings.manage"]);
+    const tz = await screen.findByLabelText("Часовой пояс показа времени");
+    fireEvent.change(tz, { target: { value: "Asia/Omsk" } });
+    fireEvent.click(screen.getByRole("button", { name: "Сохранить настройки" }));
+    await screen.findByText(/Настройки сохранены/);
+    expect(calls.find((c) => c.method === "PUT")?.body).toEqual({ timezone: "Asia/Omsk", retention_mode: "masked" });
+    fireEvent.change(screen.getByLabelText("Хранение содержимого для новых приложений"), { target: { value: "full" } });
+    fireEvent.click(screen.getByRole("button", { name: "Сохранить настройки" }));
+    fireEvent.change(await screen.findByLabelText("Текущий пароль"), { target: { value: "Correct-Horse-1" } });
+    fireEvent.click(screen.getByRole("button", { name: "Сохранить настройки" }));
+    await screen.findByText(/Настройки сохранены/);
+    expect(calls.filter((c) => c.method === "PUT").at(-1)?.body).toEqual({ timezone: "Asia/Omsk", retention_mode: "full", password: "Correct-Horse-1" });
+  });
+
+  it("без права settings.manage поля недоступны", async () => {
+    renderScreen(["events.read", "system.read"]);
+    expect(await screen.findByLabelText("Часовой пояс показа времени")).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Сохранить настройки" })).toBeNull();
   });
 });
 

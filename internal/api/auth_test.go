@@ -457,6 +457,36 @@ func TestPolicyViaAPI(t *testing.T) {
 	}
 }
 
+// В26 ревью 2.r5, H-Р10: настройки установки через API и часовой пояс в /me.
+// Отказ без права settings.manage проверяет TestRBACMatrixDenials.
+func TestInstallSettingsViaAPI(t *testing.T) {
+	e := newAuthEnv(t)
+	admin := e.mustLogin(t, "admin")
+	var v InstallSettingsView
+	w := e.call(admin, "GET", "/api/v1/system/settings", "", false)
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &v) != nil || v.Timezone != auth.DefaultTimezone || v.RetentionMode != "masked" {
+		t.Fatalf("%d %s", w.Code, w.Body)
+	}
+	mustProblem(t, e.call(admin, "PUT", "/api/v1/system/settings", `{"timezone":"Mars/Olympus"}`, true), 400, CodeInvalidRequest)
+	if w := e.call(admin, "PUT", "/api/v1/system/settings", `{"timezone":"Asia/Vladivostok"}`, true); w.Code != 200 {
+		t.Fatalf("смена пояса: %d %s", w.Code, w.Body)
+	}
+	var me MeResponse
+	if w := e.call(admin, "GET", "/api/v1/me", "", false); json.Unmarshal(w.Body.Bytes(), &me) != nil || me.Timezone != "Asia/Vladivostok" {
+		t.Fatalf("пояс в /me: %s", w.Body)
+	}
+	w = e.call(admin, "PUT", "/api/v1/system/settings", `{"retention_mode":"full"}`, true)
+	mustProblem(t, w, 400, CodeInvalidRequest)
+	if !strings.Contains(w.Body.String(), `"field":"password"`) {
+		t.Fatalf("full без пароля: %s", w.Body)
+	}
+	mustProblem(t, e.call(admin, "PUT", "/api/v1/system/settings", `{"retention_mode":"full","password":"неверный"}`, true), 403, CodeReauthFailed)
+	w = e.call(admin, "PUT", "/api/v1/system/settings", `{"retention_mode":"full","password":"`+tPhrase+`"}`, true)
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &v) != nil || v.Timezone != "Asia/Vladivostok" || v.RetentionMode != "full" {
+		t.Fatalf("full с паролем: %d %s", w.Code, w.Body)
+	}
+}
+
 // Сбой хранилища — 500 без подробностей; в технический журнал не попадают
 // пароль и токены.
 func TestAuthErrorsDoNotLeakSecrets(t *testing.T) {
@@ -534,7 +564,7 @@ func TestSetupViaAPI(t *testing.T) {
 		strings.Contains(w.Body.String(), "$fake$") {
 		t.Fatalf("настройка: %d %s", w.Code, w.Body)
 	}
-	if got := mem.InstallSettings(); got.Timezone != "Europe/Samara" || got.RetentionMode != "full" {
+	if got := mem.Install(); got.Timezone != "Europe/Samara" || got.RetentionMode != "full" {
 		t.Fatalf("настройки установки: %+v", got)
 	}
 	if status() {

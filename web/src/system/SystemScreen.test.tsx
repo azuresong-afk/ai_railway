@@ -8,6 +8,7 @@ import { SystemScreen } from "./SystemScreen";
 const me = (permissions: string[]): Me => ({
   user: { id: "u1", login: "a", display_name: "A", role: "security_admin", status: "active", locked: false, must_change_password: false, password_changed_at: "2026-10-01T00:00:00Z", created_at: "2026-10-01T00:00:00Z" },
   session_state: "active",
+  timezone: "Europe/Moscow",
   permissions,
 });
 

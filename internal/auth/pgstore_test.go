@@ -489,6 +489,18 @@ func TestPGSetupConcurrent(t *testing.T) {
 		tz != "Europe/Moscow" || mode != "masked" {
 		t.Fatalf("настройки установки: %q %q %v", tz, mode, err)
 	}
+	// Изменение в «Администрировании» под aisec_app (миграция 0024, В26 ревью 2.r5).
+	if err := e.store.SetInstallSettings(ctx, audit.DefaultOrgID, auth.InstallSettings{Timezone: "Asia/Omsk", RetentionMode: "none"},
+		e.clock.now(), audit.Entry{Actor: audit.Actor{Type: audit.ActorCLI, ID: "test"}, Action: "setup.settings_changed",
+			Object: audit.Object{Type: "install_settings", ID: audit.DefaultOrgID}, Result: audit.ResultSuccess}); err != nil {
+		t.Fatal(err)
+	}
+	if cfg, ok, err := e.store.InstallSettings(ctx, audit.DefaultOrgID); err != nil || !ok || cfg.Timezone != "Asia/Omsk" || cfg.RetentionMode != "none" {
+		t.Fatalf("после изменения: %+v %v %v", cfg, ok, err)
+	}
+	if got := auditCount(t, e, "setup.settings_changed"); got != 1 {
+		t.Fatalf("записей setup.settings_changed %d", got)
+	}
 }
 
 // Роль приложения меняет только «живые» столбцы: логин, роль, хеши токенов

@@ -985,3 +985,54 @@ func TestResetPasswordRequiresActive(t *testing.T) {
 		t.Fatal("сброс деактивированной записи прошёл")
 	}
 }
+
+// В26 ревью 2.r5, H-Р10: настройки установки меняются в «Администрировании»;
+// умолчание хранения none или full — ослабление с повторной проверкой.
+func TestSetInstallSettings(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	admin := e.adminCaller(t)
+	got, err := e.svc.InstallSettings(ctx)
+	if err != nil || got.Timezone != auth.DefaultTimezone || got.RetentionMode != auth.RetentionMasked {
+		t.Fatalf("умолчания до первичной настройки: %+v %v", got, err)
+	}
+	got, err = e.svc.SetInstallSettings(ctx, admin, auth.InstallSettings{Timezone: "Asia/Novosibirsk"}, "", "")
+	if err != nil || got.Timezone != "Asia/Novosibirsk" || got.RetentionMode != auth.RetentionMasked {
+		t.Fatalf("смена часового пояса: %+v %v", got, err)
+	}
+	if d := lastRecord(t, e.mem, "setup.settings_changed").Details.(map[string]any); d["weakening"] != false {
+		t.Fatalf("смена пояса отмечена ослаблением: %v", d)
+	}
+	var ie *auth.InputError
+	for name, in := range map[string]auth.InstallSettings{
+		"неизвестный пояс":  {Timezone: "Mars/Olympus"},
+		"локальный пояс":    {Timezone: "Local"},
+		"неизвестный режим": {RetentionMode: "off"},
+	} {
+		if _, err := e.svc.SetInstallSettings(ctx, admin, in, "", ""); !errors.As(err, &ie) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	for _, mode := range []string{"full", "none"} {
+		if _, err := e.svc.SetInstallSettings(ctx, admin, auth.InstallSettings{RetentionMode: mode}, "", ""); !errors.As(err, &ie) || ie.Field != "password" {
+			t.Fatalf("%s без пароля: %v", mode, err)
+		}
+		if _, err := e.svc.SetInstallSettings(ctx, admin, auth.InstallSettings{RetentionMode: mode}, wrongPhrase, ""); !errors.Is(err, auth.ErrReauthentication) {
+			t.Fatalf("%s с неверным паролем: %v", mode, err)
+		}
+	}
+	if got, _ := e.svc.InstallSettings(ctx); got.RetentionMode != auth.RetentionMasked {
+		t.Fatalf("режим изменился после отказа: %+v", got)
+	}
+	if _, err := e.svc.SetInstallSettings(ctx, admin, auth.InstallSettings{RetentionMode: "full"}, phrase, ""); err != nil {
+		t.Fatalf("full с паролем: %v", err)
+	}
+	d := lastRecord(t, e.mem, "setup.settings_changed").Details.(map[string]any)
+	if d["weakening"] != true || d["after"].(map[string]any)["retention_mode"] != "full" {
+		t.Fatalf("аудит ослабления: %v", d)
+	}
+	// Возврат к masked усиливает защиту: без повторной проверки.
+	if _, err := e.svc.SetInstallSettings(ctx, admin, auth.InstallSettings{RetentionMode: auth.RetentionMasked}, "", ""); err != nil {
+		t.Fatalf("возврат к masked: %v", err)
+	}
+}

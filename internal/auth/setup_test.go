@@ -182,7 +182,7 @@ func TestSetupInstallSettings(t *testing.T) {
 		if err := setup(e, token, "", ""); err != nil {
 			t.Fatal(err)
 		}
-		if got := e.mem.InstallSettings(); got.Timezone != "Europe/Moscow" || got.RetentionMode != "masked" {
+		if got := e.mem.Install(); got.Timezone != "Europe/Moscow" || got.RetentionMode != "masked" {
 			t.Fatalf("настройки: %+v", got)
 		}
 	})
@@ -191,7 +191,7 @@ func TestSetupInstallSettings(t *testing.T) {
 		if err := setup(e, token, "Asia/Yekaterinburg", "none"); err != nil {
 			t.Fatal(err)
 		}
-		if got := e.mem.InstallSettings(); got.Timezone != "Asia/Yekaterinburg" || got.RetentionMode != "none" {
+		if got := e.mem.Install(); got.Timezone != "Asia/Yekaterinburg" || got.RetentionMode != "none" {
 			t.Fatalf("настройки: %+v", got)
 		}
 		d, _ := lastRecord(t, e.mem, "setup.completed").Details.(map[string]any)

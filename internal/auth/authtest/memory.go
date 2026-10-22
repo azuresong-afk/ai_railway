@@ -214,11 +214,31 @@ func (m *Memory) AddUser(u auth.User) {
 	m.users[u.ID] = &u
 }
 
-// InstallSettings — настройки установки, сохранённые первичной настройкой.
-func (m *Memory) InstallSettings() auth.InstallSettings {
+// Install — настройки установки, сохранённые первичной настройкой.
+func (m *Memory) Install() auth.InstallSettings {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.install
+}
+
+func (m *Memory) InstallSettings(_ context.Context, orgID string) (auth.InstallSettings, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.Fail != nil {
+		return auth.InstallSettings{}, false, m.Fail
+	}
+	return m.install, m.install.Timezone != "", nil
+}
+
+func (m *Memory) SetInstallSettings(_ context.Context, _ string, cfg auth.InstallSettings, _ time.Time, rec audit.Entry) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.Fail != nil {
+		return m.Fail
+	}
+	m.install = cfg
+	m.records = append(m.records, rec)
+	return nil
 }
 
 // AddSetupToken кладёт токен первичной настройки (как aisec-cli init).

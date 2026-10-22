@@ -251,7 +251,11 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	// внутреннего УЦ; уведомления ВРМ.1, РСБ.5, ОЦЛ.5 пишутся в аудит при
 	// смене состояния, раз в минуту.
 	var bundleSvc atomic.Pointer[build.Service]
-	statusSvc, err := newStatus(ctx, cfg, db, auditLog, integritySvc, selftestRes, bundleHealth(&bundleSvc), logger)
+	timezone := func(ctx context.Context) (string, error) {
+		st, err := authSvc.InstallSettings(ctx)
+		return st.Timezone, err
+	}
+	statusSvc, err := newStatus(ctx, cfg, db, auditLog, integritySvc, selftestRes, bundleHealth(&bundleSvc), timezone, logger)
 	if err != nil {
 		return err
 	}
@@ -294,6 +298,10 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	}
 	// Смена политики приложения на более слабую требует подтверждения (В23 ревью 2.r5).
 	appsSvc.SetPolicyWeaker(policiesSvc.Weaker)
+	appsSvc.SetDefaultStorage(func(ctx context.Context) (string, error) {
+		st, err := authSvc.InstallSettings(ctx)
+		return st.RetentionMode, err
+	})
 
 	// Консоль отдаётся, только если она собрана (make web-build перед go build); иначе сервер — чистый API.
 	var console http.Handler
@@ -358,7 +366,8 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 // newStatus собирает «Состояние системы» и запускает фоновую проверку
 // условий уведомлений раздела 7.
 func newStatus(ctx context.Context, cfg *serverConfig, db *store.DB, auditLog *audit.Log, integritySvc integrity.Service,
-	selftestRes selftest.Result, bundle func(context.Context) (*sysstatus.BundleHealth, error), logger *slog.Logger) (*sysstatus.Service, error) {
+	selftestRes selftest.Result, bundle func(context.Context) (*sysstatus.BundleHealth, error),
+	timezone func(context.Context) (string, error), logger *slog.Logger) (*sysstatus.Service, error) {
 	gwStore, err := gwregistry.NewPGStore(db.Pool(), auditLog)
 	if err != nil {
 		return nil, err
@@ -376,7 +385,7 @@ func newStatus(ctx context.Context, cfg *serverConfig, db *store.DB, auditLog *a
 		Selftest:  &sysstatus.SelftestSummary{OK: selftestRes.OK(), At: selftestRes.At, Failed: failed},
 		Gateways:  sysstatus.GatewayLister{Store: gwStore},
 		Integrity: integritySvc.Store, Store: pg,
-		Timezone: cfg.Timezone, StorageLimit: cfg.AuditStorageLimit, WarnPercent: cfg.AuditStorageWarnPercent,
+		Timezone: timezone, StorageLimit: cfg.AuditStorageLimit, WarnPercent: cfg.AuditStorageWarnPercent,
 		Logger: logger, Bundle: bundle,
 	})
 	if err != nil {
