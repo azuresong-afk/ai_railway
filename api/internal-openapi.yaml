@@ -265,8 +265,23 @@ components:
         integrity:
           description: |
             Последний итог контроля целостности шлюза (ОЦЛ.2). `reason` — из
-            перечня; `ok: true` только при `reason: ok`.
+            перечня; `ok: true` только при `reason: ok`. Версия и время сборки
+            манифеста (вместе) — для обнаружения отката выпуска: сервер хранит
+            максимум по успешным проверкам и при меньшем времени поднимает ОЦЛ.5
+            по шлюзу (В20 ревью 2.r4). `test_signed` — сборка с тестовым ключом
+            манифеста (Н34).
           allOf: [{ $ref: '#/components/schemas/CheckReport' }]
+        bundle_keys:
+          type: array
+          maxItems: 2
+          uniqueItems: true
+          items: { type: string, pattern: '^[0-9a-f]{16}$' }
+          description: |
+            Идентификаторы (KeyID) ключей проверки пакетов конфигурации из
+            `-bundle-pub` (В19 ревью 2.r4). Сервер сверяет их со своим ключом
+            подписи и вторым ключом ротации: нет действующего или есть чужой —
+            нарушение целостности шлюза (ОЦЛ.5). Шлюз прежней версии поле не
+            присылает.
     CheckReport:
       description: |
         Итог проверки шлюза: только результат и число провалов. Пути файлов,
@@ -282,6 +297,9 @@ components:
           enum: [ok, manifest_missing, manifest_invalid, signature_invalid, files_mismatch]
           description: Только у integrity
         failed: { type: integer, minimum: 0, maximum: 1000, description: 'Число провалов; при `ok: true` — 0' }
+        manifest_version: { type: string, maxLength: 128, pattern: '^[ -~]+$', description: 'Только у integrity: версия из манифеста; задаётся вместе с manifest_created' }
+        manifest_created: { type: string, format: date-time, description: 'Только у integrity: время сборки манифеста (поле created)' }
+        test_signed: { type: boolean, description: 'Только у integrity: манифест проверен тестовым ключом — сборка не для поставки' }
     HeartbeatResponse:
       type: object
       required: [server_time, interval_seconds]

@@ -55,14 +55,90 @@ func dbCtx(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(ctx, pgTimeout)
 }
 
+// Baseline — самый поздний манифест успешных проверок компонента после
+// последнего принятого отката: с ним сравнивается новый итог (В20).
+type Baseline struct {
+	Version string
+	Created time.Time
+}
+
+// baselineSQL — максимум по успешным проверкам компонента. Принятый откат
+// (rollback_accepted) сбрасывает максимум для всех компонентов установки:
+// у них один манифест.
+const baselineSQL = `SELECT manifest_version, manifest_created FROM integrity_checks
+	WHERE org_id = $1 AND component = $2 AND ok AND manifest_created IS NOT NULL
+	AND ts >= COALESCE((SELECT max(ts) FROM integrity_checks WHERE org_id = $1 AND rollback_accepted), '-infinity')
+	ORDER BY manifest_created DESC, ts DESC LIMIT 1`
+
+// baseline читает Baseline компонента; ok = false — успешных проверок нет.
+func baseline(ctx context.Context, tx pgx.Tx, component string) (Baseline, bool, error) {
+	var b Baseline
+	err := tx.QueryRow(ctx, baselineSQL, audit.DefaultOrgID, component).Scan(&b.Version, &b.Created)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Baseline{}, false, nil
+	}
+	if err != nil {
+		return Baseline{}, false, fmt.Errorf("итоги контроля целостности: прежний манифест: %w", err)
+	}
+	return b, true, nil
+}
+
 // Record пишет итог и запись integrity.check одной транзакцией (РСБ.2), а
 // нарушение — ещё и в журнал технического состояния с классом integrity.
-func (s *PGStore) Record(ctx context.Context, res Result, by audit.Actor, ip netip.Addr) error {
+// Успешная проверка манифестом, собранным раньше Baseline, записывается
+// как ReasonManifestRollback (В20 ревью 2.r4, DM-42); итог с этой
+// причиной возвращается вызывающему для реакции.
+func (s *PGStore) Record(ctx context.Context, res Result, by audit.Actor, ip netip.Addr) (Result, error) {
+	return s.record(ctx, res, by, ip, false)
+}
+
+// ErrNoRollback — -accept-rollback без отката: принимать нечего.
+var ErrNoRollback = errors.New("откат не обнаружен: манифест не старше последней успешной проверки")
+
+// AcceptRollback — намеренный откат на более старый выпуск (aisec-cli
+// verify -accept-rollback): итог записывается успешным с отметкой
+// rollback_accepted, после неё максимум считается заново для всех
+// компонентов; запись integrity.rollback_accepted — с обеими версиями.
+// Проверка с нарушением файлов не принимается; отката нет — ErrNoRollback.
+func (s *PGStore) AcceptRollback(ctx context.Context, res Result, by audit.Actor) (Result, error) {
+	if !res.OK() {
+		return res, fmt.Errorf("откат не принимается: целостность нарушена (%s)", res.Reason)
+	}
+	return s.record(ctx, res, by, netip.Addr{}, true)
+}
+
+func (s *PGStore) record(ctx context.Context, res Result, by audit.Actor, ip netip.Addr, accept bool) (Result, error) {
 	ctx, cancel := dbCtx(ctx)
 	defer cancel()
 	id, err := store.NewUUIDv7(res.At, s.random)
 	if err != nil {
-		return err
+		return res, err
+	}
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return res, fmt.Errorf("итоги контроля целостности: %w", err)
+	}
+	defer func() {
+		rctx, rcancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer rcancel()
+		_ = tx.Rollback(rctx) //nolint:gosec // G104: откат после коммита безвреден
+	}()
+	var prev Baseline
+	rollback := false
+	if res.OK() && !res.ManifestCreated.IsZero() {
+		b, found, err := baseline(ctx, tx, res.Component)
+		if err != nil {
+			return res, err
+		}
+		if found && res.ManifestCreated.Before(b.Created) {
+			prev, rollback = b, true
+		}
+	}
+	switch {
+	case accept && !rollback:
+		return res, ErrNoRollback
+	case rollback && !accept:
+		res.Reason = ReasonManifestRollback
 	}
 	failures := res.Failures
 	if failures == nil {
@@ -70,23 +146,30 @@ func (s *PGStore) Record(ctx context.Context, res Result, by audit.Actor, ip net
 	}
 	fj, err := json.Marshal(failures)
 	if err != nil {
-		return err
+		return res, err
 	}
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("итоги контроля целостности: %w", err)
+	var created *time.Time
+	if !res.ManifestCreated.IsZero() {
+		created = &res.ManifestCreated
 	}
-	defer func() {
-		rctx, rcancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		defer rcancel()
-		_ = tx.Rollback(rctx) //nolint:gosec // G104: откат после коммита безвреден
-	}()
 	if _, err := tx.Exec(ctx, `INSERT INTO integrity_checks (id, org_id, ts, component, trigger_kind, ok, reason,
-		manifest_version, test_signed, checked, failures, omitted, actor_type, actor_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::json, $12, $13, $14)`,
+		manifest_version, manifest_created, test_signed, checked, failures, omitted, actor_type, actor_id, rollback_accepted)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::json, $13, $14, $15, $16)`,
 		string(id), audit.DefaultOrgID, res.At, res.Component, string(res.Trigger), res.OK(), string(res.Reason),
-		res.ManifestVersion, res.TestSigned, res.Checked, string(fj), res.Omitted, string(by.Type), by.ID); err != nil {
-		return fmt.Errorf("итоги контроля целостности: вставка: %w", err)
+		res.ManifestVersion, created, res.TestSigned, res.Checked, string(fj), res.Omitted, string(by.Type), by.ID, accept); err != nil {
+		return res, fmt.Errorf("итоги контроля целостности: вставка: %w", err)
+	}
+	details := auditDetails(res, string(id))
+	if rollback {
+		details["previous_version"], details["previous_created"] = prev.Version, prev.Created.UTC().Format(time.RFC3339)
+	}
+	if accept {
+		if err := s.log.RecordTx(ctx, tx, audit.Entry{
+			Actor: by, Action: "integrity.rollback_accepted",
+			Object: audit.Object{Type: "component", ID: res.Component}, Result: audit.ResultSuccess, Details: details,
+		}); err != nil {
+			return res, err
+		}
 	}
 	result := audit.ResultSuccess
 	if !res.OK() {
@@ -94,19 +177,19 @@ func (s *PGStore) Record(ctx context.Context, res Result, by audit.Actor, ip net
 	}
 	if err := s.log.RecordTx(ctx, tx, audit.Entry{
 		Actor: by, SourceIP: ip, Action: "integrity.check",
-		Object: audit.Object{Type: "component", ID: res.Component}, Result: result, Details: auditDetails(res, string(id)),
+		Object: audit.Object{Type: "component", ID: res.Component}, Result: result, Details: details,
 	}); err != nil {
-		return err
+		return res, err
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("итоги контроля целостности: %w", err)
+		return res, fmt.Errorf("итоги контроля целостности: %w", err)
 	}
 	if res.OK() {
-		return nil
+		return res, nil
 	}
-	return s.log.Tech(ctx, audit.TechEntry{
+	return res, s.log.Tech(ctx, audit.TechEntry{
 		Component: res.Component, Kind: audit.TechError, Level: audit.LevelCritical, Class: audit.ClassIntegrity,
-		Message: "нарушена целостность компонента: " + string(res.Reason), Details: auditDetails(res, string(id)),
+		Message: "нарушена целостность компонента: " + string(res.Reason), Details: details,
 	})
 }
 
@@ -123,9 +206,17 @@ func auditDetails(res Result, checkID string) map[string]any {
 	}
 	return map[string]any{
 		"check_id": checkID, "trigger": string(res.Trigger), "reason": string(res.Reason),
-		"manifest_version": res.ManifestVersion, "test_signed": res.TestSigned, "checked": res.Checked,
+		"manifest_version": res.ManifestVersion, "manifest_created": createdText(res.ManifestCreated), "test_signed": res.TestSigned, "checked": res.Checked,
 		"failures": list, "omitted": omitted,
 	}
+}
+
+// createdText — время манифеста для записи аудита; пусто — не прочитан.
+func createdText(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339)
 }
 
 // Latest — последняя проверка каждого компонента (экран «Состояние системы»).
@@ -133,7 +224,7 @@ func (s *PGStore) Latest(ctx context.Context) ([]Result, error) {
 	ctx, cancel := dbCtx(ctx)
 	defer cancel()
 	rows, err := s.db.Query(ctx, `SELECT DISTINCT ON (component) component, trigger_kind, ts, reason,
-		manifest_version, test_signed, checked, failures::text, omitted
+		manifest_version, manifest_created, test_signed, checked, failures::text, omitted
 		FROM integrity_checks WHERE org_id = $1 ORDER BY component, ts DESC, id DESC`, audit.DefaultOrgID)
 	if err != nil {
 		return nil, fmt.Errorf("итоги контроля целостности: чтение: %w", err)
@@ -146,12 +237,16 @@ func (s *PGStore) Latest(ctx context.Context) ([]Result, error) {
 			trig     string
 			reason   string
 			failures string
+			created  *time.Time
 		)
-		if err := rows.Scan(&r.Component, &trig, &r.At, &reason, &r.ManifestVersion, &r.TestSigned,
+		if err := rows.Scan(&r.Component, &trig, &r.At, &reason, &r.ManifestVersion, &created, &r.TestSigned,
 			&r.Checked, &failures, &r.Omitted); err != nil {
 			return nil, fmt.Errorf("итоги контроля целостности: разбор: %w", err)
 		}
 		r.Trigger, r.Reason, r.At = Trigger(trig), Reason(reason), r.At.UTC()
+		if created != nil {
+			r.ManifestCreated = created.UTC()
+		}
 		if err := json.Unmarshal([]byte(failures), &r.Failures); err != nil {
 			return nil, fmt.Errorf("итоги контроля целостности: разбор нарушений: %w", err)
 		}

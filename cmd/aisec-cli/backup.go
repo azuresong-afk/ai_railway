@@ -48,7 +48,7 @@ func backupCmd(args []string, dsn string, stdout, stderr io.Writer, now time.Tim
 	case "create":
 		return backupCreate(args[1:], dsn, stdout, stderr, now)
 	case "restore":
-		return backupRestore(args[1:], dsn, stdout, stderr)
+		return backupRestore(args[1:], dsn, stdout, stderr, now)
 	}
 	return fmt.Errorf("неизвестная подкоманда %q: ожидается create, restore", args[0])
 }
@@ -59,7 +59,8 @@ func backupCreate(args []string, dsn string, stdout, stderr io.Writer, now time.
 	fset.SetOutput(stderr)
 	keysDir := fset.String("keys", "", "каталог ключей установки (master.key): им расшифровываются секреты (обязательно)")
 	out := fset.String("out", "", "файл копии: создаётся с правами 0600, существующий не перезаписывается (обязательно)")
-	phraseFile := fset.String("passphrase-file", "", "файл с парольной фразой, права 0400; без него фраза вводится с терминала дважды")
+	phraseFile := fset.String("passphrase-file", "", "файл с парольной фразой, права 0400; без него фраза вводится с терминала дважды; "+
+		backup.PassphraseHint)
 	hmacKey := fset.String("user-hmac-key", "", "ключ псевдонимов пользователей шлюза (права 0600 или 0400) — входит в копию")
 	noHMAC := fset.Bool("no-user-hmac-key", false, "не включать ключ псевдонимов (после восстановления псевдонимы не совпадут со старыми событиями)")
 	if err := fset.Parse(args); err != nil {
@@ -110,6 +111,14 @@ func backupCreate(args []string, dsn string, stdout, stderr io.Writer, now time.
 	box, err := keyring.Load(ctx, db.Pool(), p, *keysDir, audit.DefaultOrgID)
 	if err != nil {
 		return fail(err)
+	}
+	// Фраза не совпадает с именем пользователя ОС и названием организации (Н41).
+	var orgName string
+	if err := db.Pool().QueryRow(ctx, "SELECT name FROM organizations WHERE id = $1", audit.DefaultOrgID).Scan(&orgName); err != nil {
+		return fail(err)
+	}
+	if err := backup.CheckNewPassphrase(phrase, actor.Name, orgName); err != nil {
+		return err
 	}
 	w, err := backup.NewWriter(ctx, p, phrase, now)
 	if err != nil {
@@ -172,8 +181,13 @@ func readSnapshot(ctx context.Context, db *store.DB, box *keyring.Box, w *backup
 	return snap, tx.Commit(ctx)
 }
 
+// maxCopyAge — копия старше восстанавливается только с -accept-old-copy:
+// всё, что отозвали, деактивировали и сменили после её даты, вернётся
+// (В21 ревью 2.r4).
+const maxCopyAge = 7 * 24 * time.Hour
+
 // backupRestore — восстановление копии в установку после init (H-Р3).
-func backupRestore(args []string, dsn string, stdout, stderr io.Writer) error {
+func backupRestore(args []string, dsn string, stdout, stderr io.Writer, now time.Time) error {
 	fset := flag.NewFlagSet("backup restore", flag.ContinueOnError)
 	fset.SetOutput(stderr)
 	keysDir := fset.String("keys", "", "каталог ключей новой установки (master.key): секреты шифруются её ключом данных (обязательно)")
@@ -181,6 +195,8 @@ func backupRestore(args []string, dsn string, stdout, stderr io.Writer) error {
 	phraseFile := fset.String("passphrase-file", "", "файл с парольной фразой, права 0400; без него фраза вводится с терминала")
 	hmacOut := fset.String("user-hmac-key-out", "", "куда записать ключ псевдонимов из копии (новый файл, права 0600); обязателен, если ключ в копии есть")
 	allowNonEmpty := fset.Bool("allow-nonempty", false, "восстанавливать в установку, где уже есть пользователи, приложения или политики (объекты копии добавляются, совпадения — отказ; настройки установки не меняются)")
+	keepTokens := fset.Bool("keep-api-tokens", false, "восстановить токены API как в копии; по умолчанию действующие токены восстанавливаются отозванными и выпускаются заново")
+	acceptOld := fset.Bool("accept-old-copy", false, "восстановить копию старше 7 суток")
 	if err := fset.Parse(args); err != nil {
 		return err
 	}
@@ -236,8 +252,14 @@ func backupRestore(args []string, dsn string, stdout, stderr io.Writer) error {
 		return fail(audit.ResultFailure, "error", err)
 	}
 	snap := arch.Snapshot
+	age := now.Sub(arch.CreatedAt)
+	ageHours := int64(max(age, 0) / time.Hour)
 	st, err := backup.Inspect(ctx, db.Pool(), audit.DefaultOrgID)
 	switch {
+	case age > maxCopyAge && !*acceptOld:
+		return fail(audit.ResultDenied, "old_copy", fmt.Errorf("копия от %s старше 7 суток (%d ч): всё, что отозвали, деактивировали "+
+			"и сменили после неё, вернётся в силу; восстановить всё равно — флаг -accept-old-copy",
+			arch.CreatedAt.UTC().Format("2006-01-02 15:04 UTC"), ageHours))
 	case snap.OrgID != audit.DefaultOrgID:
 		return fail(audit.ResultFailure, "invalid", fmt.Errorf("%w: копия организации %s, установка — %s", errBackupInvalid,
 			snap.OrgID, audit.DefaultOrgID))
@@ -264,10 +286,17 @@ func backupRestore(args []string, dsn string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return fail(audit.ResultFailure, "invalid", fmt.Errorf("%w: %w", errBackupInvalid, err))
 	}
+	// Объекты — правилами сервиса этого выпуска, до записи «до» (В22).
+	if err := checkSnapshot(snap); err != nil {
+		return fail(audit.ResultFailure, "invalid", fmt.Errorf("%w: %w", errBackupInvalid, err))
+	}
 	details := snap.Counts()
 	details["stage"] = "started"
 	details["allow_nonempty"] = *allowNonEmpty
 	details["copy_created_at"] = arch.CreatedAt.UTC().Format(time.RFC3339)
+	details["copy_age_hours"] = ageHours
+	details["keep_api_tokens"] = *keepTokens
+	details["accept_old_copy"] = *acceptOld
 	details["schema_version"] = snap.SchemaVersion
 	if err := l.Record(ctx, entry(audit.ResultSuccess, details)); err != nil {
 		return fmt.Errorf("запись аудита перед восстановлением: %w — восстановление не начато", err)
@@ -277,7 +306,9 @@ func backupRestore(args []string, dsn string, stdout, stderr io.Writer) error {
 			return fail(audit.ResultFailure, "hmac_out", err)
 		}
 	}
-	if err := restoreTx(ctx, db, l, prepared, snap, *allowNonEmpty, entry); err != nil {
+	opts := restoreOptions{allowNonEmpty: *allowNonEmpty, keepTokens: *keepTokens, now: now, ageHours: ageHours}
+	revoked, err := restoreTx(ctx, db, l, prepared, snap, opts, entry)
+	if err != nil {
 		var unknown *commitUnknownError
 		if errors.As(err, &unknown) {
 			return fmt.Errorf("%w — исход неизвестен: проверьте в журнале аудита запись backup.restore со stage=done "+
@@ -293,6 +324,9 @@ func backupRestore(args []string, dsn string, stdout, stderr io.Writer) error {
 		if errors.Is(err, errNotEmpty) {
 			return fail(audit.ResultDenied, "not_empty", err)
 		}
+		if errors.Is(err, errServerRunning) {
+			return fail(audit.ResultDenied, "server_running", err)
+		}
 		return fail(audit.ResultFailure, "error", err)
 	}
 	say(stdout, "Конфигурация восстановлена из %s (копия от %s).\n", *in, arch.CreatedAt.UTC().Format("2006-01-02 15:04 UTC"))
@@ -300,10 +334,31 @@ func backupRestore(args []string, dsn string, stdout, stderr io.Writer) error {
 	if *hmacOut != "" {
 		say(stdout, "Ключ псевдонимов пользователей записан в %s (0600): передайте его шлюзам (-user-hmac-key).\n", *hmacOut)
 	}
+	if revoked > 0 {
+		say(stdout, "Токены API (%d) восстановлены отозванными: владельцы выпускают их заново.\n", revoked)
+	}
 	say(stdout, "Дальше: зарегистрируйте шлюзы заново (aisec-cli gateway token): ключи шлюзов и УЦ не восстанавливаются. "+
 		"Пользователи входят заново со своими паролями и вторым фактором.\n")
+	say(stdout, "Обязательно: копия возвращает состояние на %s. По архиву журнала аудита за время после неё "+
+		"(aisec-cli audit export -out ФАЙЛ -from %s) повторите отзывы ключей приложений, деактивации, блокировки и сбросы паролей.\n",
+		arch.CreatedAt.UTC().Format("2006-01-02 15:04 UTC"), arch.CreatedAt.UTC().Format(time.DateOnly))
 	return nil
 }
+
+// restoreOptions — флаги восстановления для restoreTx.
+type restoreOptions struct {
+	allowNonEmpty bool
+	keepTokens    bool
+	now           time.Time
+	ageHours      int64
+}
+
+// liveSessionWindow — сессия с активностью в этом окне означает, что
+// сервер работает и в консоли есть пользователи.
+const liveSessionWindow = 5 * time.Minute
+
+// errServerRunning — в установке есть недавно активные сессии.
+var errServerRunning = errors.New("похоже, сервер работает: есть сессии консоли с недавней активностью; остановите сервер (ADR-0017) и повторите")
 
 // errNotEmpty — установка стала непустой между проверкой и восстановлением.
 var errNotEmpty = errors.New("установка не пустая: восстановление выполняется в новую установку после init (или с -allow-nonempty)")
@@ -319,47 +374,66 @@ func (e *commitUnknownError) Unwrap() error { return e.err }
 // restoreTx записывает копию одной транзакцией: проверка пустоты и
 // совпадений под блокировкой, вставка, запись аудита «после» — вместе.
 func restoreTx(ctx context.Context, db *store.DB, l *audit.Log, prepared *backup.Prepared, snap *backup.Snapshot,
-	allowNonEmpty bool, entry func(audit.Result, map[string]any) audit.Entry) error {
+	opts restoreOptions, entry func(audit.Result, map[string]any) audit.Entry) (int, error) {
 	tx, err := db.Pool().Begin(ctx)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer rollbackQuietly(ctx, tx)
-	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", restoreLockID); err != nil {
-		return err
+	// Блокировка первичной настройки — после своей, в одном порядке: иначе
+	// работающий сервер по токену init создал бы второго администратора
+	// между проверкой пустоты и вставкой (Н40 ревью 2.r4).
+	for _, key := range []int64{restoreLockID, setupLockKey} {
+		if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", key); err != nil {
+			return 0, err
+		}
+	}
+	// Сессия, активная за последние минуты, — признак работающего сервера:
+	// восстановление идёт при остановленном (ADR-0017).
+	var live int
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM sessions WHERE revoked_at IS NULL
+		AND last_seen_at > now() - make_interval(mins => $1)`, int(liveSessionWindow/time.Minute)).Scan(&live); err != nil {
+		return 0, err
+	}
+	if live > 0 {
+		return 0, fmt.Errorf("%w (активных сессий за %d мин: %d)", errServerRunning, int(liveSessionWindow/time.Minute), live)
 	}
 	st, err := backup.Inspect(ctx, tx, audit.DefaultOrgID)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	if !st.Empty() && !allowNonEmpty {
-		return errNotEmpty
+	if !st.Empty() && !opts.allowNonEmpty {
+		return 0, errNotEmpty
 	}
 	if err := backup.Conflicts(ctx, tx, snap); err != nil {
-		return err
+		return 0, err
 	}
 	// Настройки и название организации переносятся только в пустую
 	// установку; их новые значения — в записи аудита.
 	replaceSettings := st.Empty()
-	if err := backup.Restore(ctx, tx, prepared, replaceSettings); err != nil {
-		return err
+	revoked, err := backup.Restore(ctx, tx, prepared, backup.RestoreOptions{ReplaceSettings: replaceSettings,
+		KeepAPITokens: opts.keepTokens, Now: opts.now})
+	if err != nil {
+		return 0, err
 	}
 	details := snap.Counts()
 	details["stage"] = "done"
 	details["settings_restored"] = replaceSettings
+	details["copy_age_hours"] = opts.ageHours
+	details["api_tokens_revoked"] = revoked
 	if replaceSettings {
 		details["settings"] = snap.SettingsDetails()
 	}
 	if err := l.RecordTx(ctx, tx, entry(audit.ResultSuccess, details)); err != nil {
-		return err
+		return 0, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		if errors.Is(err, pgx.ErrTxCommitRollback) {
-			return err
+			return 0, err
 		}
-		return &commitUnknownError{err: err}
+		return 0, &commitUnknownError{err: err}
 	}
-	return nil
+	return revoked, nil
 }
 
 // writeUserHMACKey пишет ключ псевдонимов из копии в новый файл 0600.

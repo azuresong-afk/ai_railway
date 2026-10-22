@@ -87,9 +87,9 @@ func TestNewValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	st := s.Status(context.Background())
-	// Без источников: пустые массивы, UTC, умолчания, все восемь условий.
+	// Без источников: пустые массивы, UTC, умолчания, все девять условий.
 	if st.Time.Timezone != "UTC" || st.Storage.LimitBytes != sysstatus.DefaultStorageLimit || st.Storage.WarnPercent != 80 ||
-		len(st.Notifications) != 8 || st.Bundle != nil || st.Gateways == nil || st.Unavailable == nil || st.Server.Integrity == nil {
+		len(st.Notifications) != 9 || st.Bundle != nil || st.Gateways == nil || st.Unavailable == nil || st.Server.Integrity == nil {
 		t.Fatalf("%+v", st)
 	}
 }
@@ -483,6 +483,58 @@ func TestEvaluateBundle(t *testing.T) {
 	}
 	if len(e.mem.Records) != 3 {
 		t.Fatalf("сбой источника снял условие: %+v", e.mem.Records)
+	}
+}
+
+// DM-42, В19 и В20 ревью 2.r4: шлюз на выпуске старше проверенного (откат)
+// и шлюз с чужим ключом проверки пакетов — нарушение целостности этого
+// шлюза; Н34 — сборка с тестовым ключом манифеста видна отдельным условием.
+func TestDM42_GatewayRollbackAndBundleKeys(t *testing.T) {
+	e := newEnv()
+	s := e.svc(t)
+	ctx := context.Background()
+	newer, older := t0.Add(-24*time.Hour), t0.Add(-60*24*time.Hour)
+	no := false
+	e.gws.list = []gwregistry.Gateway{
+		{ID: "g1", Name: "a", Status: gwregistry.StatusActive, LastSeenAt: t0,
+			Integrity:          &gwregistry.CheckReport{OK: true, At: t0, ManifestVersion: "1.0.0", ManifestCreated: older},
+			ManifestMaxVersion: "1.1.0", ManifestMaxCreated: newer},
+		{ID: "g2", Name: "b", Status: gwregistry.StatusActive, LastSeenAt: t0, BundleKeysOK: &no,
+			Integrity:          &gwregistry.CheckReport{OK: true, At: t0, ManifestVersion: "1.1.0", ManifestCreated: newer, TestSigned: true},
+			ManifestMaxVersion: "1.1.0", ManifestMaxCreated: newer},
+	}
+	if err := s.Evaluate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	st := s.Status(ctx)
+	n := notif(st, sysstatus.ConditionIntegrity)
+	if !n.Active || !slices.Equal(n.Components, []string{"gateway:g1", "gateway:g2"}) {
+		t.Fatalf("ОЦЛ.5: %+v", n)
+	}
+	tb := notif(st, sysstatus.ConditionTestBuild)
+	if !tb.Active || !slices.Equal(tb.Components, []string{"gateway:g2"}) || tb.Requirement != "ОЦЛ.1" {
+		t.Fatalf("тестовый ключ: %+v", tb)
+	}
+	var sources []string
+	for _, r := range e.mem.Records {
+		d := r.Details.(map[string]any)
+		issues, _ := d["issues"].([]map[string]any)
+		for _, is := range issues {
+			sources = append(sources, fmt.Sprint(is["source"], "/", is["reason"]))
+		}
+		if err := validateEntry(r); err != nil {
+			t.Error(err)
+		}
+	}
+	if !slices.Contains(sources, "integrity/manifest_rollback") || !slices.Contains(sources, "bundle_keys/<nil>") {
+		t.Fatalf("подробности: %v", sources)
+	}
+	// Намеренный откат принят (максимум сброшен), ключи совпали — условие снято.
+	yes := true
+	e.gws.list[0].ManifestMaxVersion, e.gws.list[0].ManifestMaxCreated = "1.0.0", older
+	e.gws.list[1].BundleKeysOK = &yes
+	if n := notif(s.Status(ctx), sysstatus.ConditionIntegrity); n.Active {
+		t.Fatalf("после принятия отката: %+v", n)
 	}
 }
 

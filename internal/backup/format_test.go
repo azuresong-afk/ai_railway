@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/azuresong-afk/ai_railway/internal/crypto"
 )
@@ -279,6 +280,35 @@ func TestCheckPassphrase(t *testing.T) {
 	}
 	if _, err := NewWriter(context.Background(), provider(t), []byte("короткая"), testTime); err == nil {
 		t.Fatal("короткая фраза принята")
+	}
+}
+
+// Н41 ревью 2.r4: фраза новой копии — не только по длине.
+func TestCheckNewPassphrase(t *testing.T) {
+	for p, ok := range map[string]bool{
+		testPhrase: true,
+		"конь лампа ветер окно": true,
+		"aaaaaaaaaaaaaaaa":      false, // один символ
+		"abababababababab":      false, // два разных
+		"1234567890123456":      false, // последовательность с переходом 9→0
+		"6543210987654321":      false,
+		"abcdefghijklmnop":      false,
+		"qwerty12qwerty12":      false, // повтор фрагмента
+		"пароль1 пароль1 ":      false,
+		"пятнадцать симв":       false, // короче 16
+		"ООО Синтетика Плюс":    false, // название организации
+		"  synthetic-admin-01 ": false, // имя пользователя ОС
+	} {
+		err := CheckNewPassphrase([]byte(p), "synthetic-admin-01", "ооо синтетика плюс")
+		if (err == nil) != ok {
+			t.Errorf("%q: %v", p, err)
+		}
+		if err != nil && !ok && utf8.RuneCountInString(p) >= MinPassphraseChars && !strings.Contains(err.Error(), "случайных слов") {
+			t.Errorf("%q: нет подсказки: %v", p, err)
+		}
+	}
+	if _, err := NewWriter(context.Background(), provider(t), []byte("1234567890123456"), testTime); err == nil {
+		t.Fatal("последовательность принята для новой копии")
 	}
 }
 

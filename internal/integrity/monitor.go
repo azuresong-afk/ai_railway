@@ -41,9 +41,16 @@ const (
 // ErrViolation — компонент остановлен из-за нарушения целостности.
 var ErrViolation = errors.New("нарушена целостность компонента")
 
-// RecordFunc сохраняет итог проверки (integrity_checks и журнал аудита);
-// by — кто запустил проверку, ip — откуда (для ручной проверки из консоли).
-type RecordFunc func(ctx context.Context, res Result, by audit.Actor, ip netip.Addr) error
+// ErrNotRecorded — проверка по команде выполнена, но её итог не сохранён в
+// integrity_checks и журнале аудита (Н36 ревью 2.r4): действие
+// администратора без записи аудита не подтверждается.
+var ErrNotRecorded = errors.New("итог проверки целостности не сохранён")
+
+// RecordFunc сохраняет итог проверки (integrity_checks и журнал аудита) и
+// возвращает итоговый результат: хранилище с историей проверок меняет
+// причину на ReasonManifestRollback (В20 ревью 2.r4). by — кто запустил
+// проверку, ip — откуда (для ручной проверки из консоли).
+type RecordFunc func(ctx context.Context, res Result, by audit.Actor, ip netip.Addr) (Result, error)
 
 // MonitorConfig — параметры Monitor.
 type MonitorConfig struct {
@@ -107,13 +114,18 @@ func (m *Monitor) Startup(ctx context.Context) (Result, error) {
 }
 
 // CheckBy — проверка по команде администратора (ОЦЛ.2). Реакция та же, что
-// у периодической проверки.
+// у периодической проверки. Итог не сохранён — реакция применяется, а
+// ошибка ErrNotRecorded (Н36 ревью 2.r4).
 func (m *Monitor) CheckBy(ctx context.Context, by audit.Actor, ip netip.Addr) (Result, error) {
-	res, err := m.check(ctx, TriggerManual, by, ip)
-	if err == nil {
-		m.react(res)
+	res, recErr, err := m.checkRecorded(ctx, TriggerManual, by, ip)
+	if err != nil {
+		return res, err
 	}
-	return res, err
+	m.react(res)
+	if recErr != nil {
+		return res, fmt.Errorf("%w: %w", ErrNotRecorded, recErr)
+	}
+	return res, nil
 }
 
 // Run проверяет целостность каждые Interval, пока не отменён ctx. Первая
@@ -142,27 +154,37 @@ func (m *Monitor) react(res Result) {
 }
 
 func (m *Monitor) check(ctx context.Context, trig Trigger, by audit.Actor, ip netip.Addr) (Result, error) {
+	res, _, err := m.checkRecorded(ctx, trig, by, ip)
+	return res, err
+}
+
+// checkRecorded — проверка и сохранение итога; recErr — ошибка сохранения.
+func (m *Monitor) checkRecorded(ctx context.Context, trig Trigger, by audit.Actor, ip netip.Addr) (res Result, recErr, err error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	res, err := m.cfg.Checker.Check(ctx, trig)
+	res, err = m.cfg.Checker.Check(ctx, trig)
 	if err != nil {
-		return res, err
+		return res, nil, err
 	}
-	m.log(res)
 	if m.cfg.Record != nil {
-		if err := m.cfg.Record(ctx, res, by, ip); err != nil {
-			// Итог уже в техническом журнале; без записи в БД проверка всё
+		saved, err := m.cfg.Record(ctx, res, by, ip)
+		if err != nil {
+			// Итог уйдёт в технический журнал; без записи в БД проверка всё
 			// равно выполнена и реакция применяется.
 			m.cfg.Logger.Error("итог проверки целостности не сохранён", "class", "db", "error", err)
+			recErr = err
+		} else {
+			res = saved
 		}
 	}
-	return res, nil
+	m.log(res)
+	return res, recErr, nil
 }
 
 // log пишет итог в технический журнал: пути и виды нарушений, без содержимого.
 func (m *Monitor) log(res Result) {
 	attrs := []any{"class", "integrity", "trigger", string(res.Trigger), "reason", string(res.Reason),
-		"manifest_version", res.ManifestVersion, "checked", res.Checked, "test_signed", res.TestSigned}
+		"manifest_version", res.ManifestVersion, "manifest_created", res.ManifestCreated, "checked", res.Checked, "test_signed", res.TestSigned}
 	if res.OK() {
 		m.cfg.Logger.Info("целостность не нарушена", attrs...)
 		return

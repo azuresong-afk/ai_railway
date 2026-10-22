@@ -44,12 +44,16 @@ const usage = `aisec-cli — служебные операции AISec.
   user reset-password -login ЛОГИН
                                 выдать временный пароль; сессии завершаются, токены API отзываются
   user reset-mfa -login ЛОГИН    сбросить второй фактор; сессии завершаются
-  verify [-manifest ФАЙЛ]       проверить целостность установки по подписанному манифесту без сервера;
-                                с AISEC_DATABASE_URL итог пишется в журнал; 3 — целостность нарушена
+  verify [-manifest ФАЙЛ] [-accept-rollback [-gateway ИМЯ]]
+                                проверить целостность установки по подписанному манифесту без сервера;
+                                с AISEC_DATABASE_URL итог пишется в журнал; 3 — целостность нарушена;
+                                -accept-rollback — принять намеренный откат на старый выпуск (сервера или шлюза)
   backup create -keys КАТАЛОГ -out ФАЙЛ (-user-hmac-key ФАЙЛ | -no-user-hmac-key) [-passphrase-file ФАЙЛ]
                                 резервная копия конфигурации в зашифрованный файл (AISEC_DATABASE_URL)
   backup restore -keys КАТАЛОГ -in ФАЙЛ [-user-hmac-key-out ФАЙЛ] [-passphrase-file ФАЙЛ] [-allow-nonempty]
-                                восстановить конфигурацию в новую установку после init; 3 — копия недействительна
+               [-keep-api-tokens] [-accept-old-copy]
+                                восстановить конфигурацию в новую установку после init; 3 — копия недействительна;
+                                токены API восстанавливаются отозванными; копия старше 7 суток — с -accept-old-copy
   version                       версия
 `
 

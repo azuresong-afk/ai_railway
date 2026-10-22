@@ -216,6 +216,14 @@ func (s *Service) collect(ctx context.Context) collected {
 	}
 	c.conditions[integrityServer] = serverFailed
 	c.details[integrityServer] = map[string]any{"component": componentServer, "issues": serverIssues}
+	// Сборки с тестовым ключом манифеста (Н34 ревью 2.r4): контроль
+	// целостности такой сборки подписать может любой, у кого есть репозиторий.
+	var testBuild []string
+	for _, r := range c.st.Server.Integrity {
+		if r.TestSigned && !slices.Contains(testBuild, componentServer) {
+			testBuild = append(testBuild, componentServer)
+		}
+	}
 
 	// Шлюзы и счётчики событий.
 	var stats map[string]GatewayEvents
@@ -256,12 +264,27 @@ func (s *Service) collect(ctx context.Context) collected {
 				if gs.Integrity != nil && !gs.Integrity.OK {
 					issues = append(issues, map[string]any{"source": "integrity", "reason": gs.Integrity.Reason, "failed": gs.Integrity.Failed})
 				}
+				// Откат выпуска шлюза и чужой ключ проверки пакетов (В19, В20
+				// ревью 2.r4).
+				if g.Rollback() {
+					issues = append(issues, map[string]any{"source": "integrity", "reason": "manifest_rollback",
+						"manifest_version": g.Integrity.ManifestVersion, "previous_version": g.ManifestMaxVersion})
+				}
+				if g.BundleKeysOK != nil && !*g.BundleKeysOK {
+					issues = append(issues, map[string]any{"source": "bundle_keys"})
+				}
+				if g.Integrity != nil && g.Integrity.TestSigned {
+					testBuild = append(testBuild, componentGateway+g.ID)
+				}
 				c.conditions[code] = len(issues) > 0
 				c.details[code] = map[string]any{"component": componentGateway + g.ID, "gateway_name": g.Name, "issues": issues}
 			}
 			c.st.Gateways = append(c.st.Gateways, gs)
 		}
 	}
+
+	c.conditions[ConditionTestBuild] = len(testBuild) > 0
+	c.details[ConditionTestBuild] = map[string]any{"components": testBuild}
 
 	// Время (ВРМ.1–2).
 	clk := s.o.Sync()
@@ -382,6 +405,7 @@ var conditionInfo = []struct{ code, requirement, title string }{
 	{ConditionTime, "ВРМ.1", "Системное время не синхронизировано"},
 	{ConditionBundle, "ОЦЛ.3", "Пакет конфигурации шлюзов собран не полностью"},
 	{ConditionBundleLag, "ОЦЛ.3", "Шлюз работает на устаревшем пакете конфигурации"},
+	{ConditionTestBuild, "ОЦЛ.1", "Сборка не для поставки (тестовый ключ манифеста)"},
 }
 
 // family — условие раздела 7, к которому относится код (integrity:server —
@@ -457,6 +481,15 @@ func (s *Service) Status(ctx context.Context) Status {
 					since := st.Since.UTC()
 					n.Since = &since
 				}
+			}
+		case ConditionTestBuild:
+			n.Active = c.conditions[ci.code]
+			if list, _ := c.details[ci.code]["components"].([]string); n.Active {
+				n.Components = append(n.Components, list...)
+			}
+			if st, ok := states[ci.code]; ok && st.Active && n.Active {
+				since := st.Since.UTC()
+				n.Since = &since
 			}
 		default:
 			n.Active = c.conditions[ci.code]
@@ -562,7 +595,7 @@ func (s *Service) skip(c collected, fam string) bool {
 	switch fam {
 	case ConditionStorage:
 		return !c.st.Storage.Available
-	case ConditionIntegrity:
+	case ConditionIntegrity, ConditionTestBuild:
 		return missing("integrity", "gateways")
 	case ConditionBundle:
 		return missing("bundle") || c.st.Bundle == nil

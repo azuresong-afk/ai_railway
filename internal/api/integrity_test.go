@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/netip"
 	"testing"
@@ -95,6 +96,9 @@ func TestIntegrityUnavailable(t *testing.T) {
 	mustProblem(t, do(h, http.MethodGet, "/api/v1/system/integrity", ""), http.StatusServiceUnavailable, CodeUnavailable)
 	fi := &fakeIntegrity{err: integrity.ErrInterrupted}
 	h, _ = newHandler(t, Options{Integrity: fi, Authorizer: allowPerm{auth.PermSystemRead: true, PermIntegrityVerify: true}})
+	mustProblem(t, do(h, http.MethodPost, "/api/v1/system/integrity/verify", ""), http.StatusServiceUnavailable, CodeUnavailable)
+	// Н36 ревью 2.r4: итог не записан в журнал аудита — 503, не 200.
+	fi.err = fmt.Errorf("%w: %w", integrity.ErrNotRecorded, errTest)
 	mustProblem(t, do(h, http.MethodPost, "/api/v1/system/integrity/verify", ""), http.StatusServiceUnavailable, CodeUnavailable)
 	fi.err = errTest
 	w := do(h, http.MethodGet, "/api/v1/system/integrity", "")

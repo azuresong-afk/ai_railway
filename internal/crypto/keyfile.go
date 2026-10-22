@@ -154,12 +154,19 @@ func LoadVerifierFile(p Provider, path, kind string) (Verifier, error) {
 	if err != nil {
 		return nil, err
 	}
+	return ParseVerifierPEM(p, path, data, kind)
+}
+
+// ParseVerifierPEM — ключ проверки из уже прочитанного файла name: так
+// компонент работает с теми же байтами, хеш которых берёт под контроль
+// целостности (Н37 ревью 2.r4).
+func ParseVerifierPEM(p Provider, name string, data []byte, kind string) (Verifier, error) {
 	profile, pub, err := DecodeKeyPEM(data, kind)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
+		return nil, fmt.Errorf("%s: %w", name, err)
 	}
 	if profile != p.Name() {
-		return nil, fmt.Errorf("%s: ключ профиля %s, а установка — %s", path, profile, p.Name())
+		return nil, fmt.Errorf("%s: ключ профиля %s, а установка — %s", name, profile, p.Name())
 	}
 	return p.NewVerifier(pub)
 }

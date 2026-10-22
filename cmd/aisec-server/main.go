@@ -17,6 +17,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sync/atomic"
 	"time"
 
@@ -121,8 +122,12 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	// открытым ключом аудита; без ключа сервер запускается, только пока
 	// точек нет (новая установка).
 	var auditVerifier aisecCrypto.Verifier
+	var auditPubPEM []byte
 	if cfg.AuditSigningPub != "" {
-		if auditVerifier, err = aisecCrypto.LoadVerifierFile(p, cfg.AuditSigningPub, aisecCrypto.KeyKindAuditSigningPublic); err != nil {
+		if auditPubPEM, err = aisecCrypto.ReadPEMFile(cfg.AuditSigningPub); err != nil {
+			return fmt.Errorf("ключ проверки аудита: %w", err)
+		}
+		if auditVerifier, err = aisecCrypto.ParseVerifierPEM(p, cfg.AuditSigningPub, auditPubPEM, aisecCrypto.KeyKindAuditSigningPublic); err != nil {
 			return fmt.Errorf("ключ проверки аудита: %w", err)
 		}
 	}
@@ -185,7 +190,7 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	// контекст отменяется с причиной integrity.ErrViolation.
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
-	integritySvc, err := startIntegrity(ctx, cfg, p, db, auditLog, logger, cancel)
+	integritySvc, err := startIntegrity(ctx, cfg, p, db, auditLog, logger, cancel, auditPubPEM)
 	if err != nil {
 		return err
 	}
@@ -322,7 +327,7 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	if gateways != nil {
 		// Пакеты конфигурации (задача 2.13): без ключа подписи внутренний
 		// порт не открывается — шлюзы не получили бы конфигурацию.
-		bundleRoutes, bsvc, err := newBundleRoutes(cfg, p, db, auditLog, appsSvc, policiesSvc, logger)
+		bundleRoutes, bsvc, err := newBundleRoutes(cfg, p, db, auditLog, appsSvc, policiesSvc, gateways, logger)
 		if err != nil {
 			return err
 		}
@@ -424,10 +429,13 @@ func startAuditVerify(ctx context.Context, cfg *serverConfig, auditLog *audit.Lo
 }
 
 // startIntegrity проверяет целостность сервера при запуске и запускает
-// периодическую проверку. Сверяются исполняемый файл и встроенная статика
-// веб-консоли.
+// периодическую проверку. Сверяются исполняемый файл, встроенная статика
+// веб-консоли и корни доверия (В19 ревью 2.r4): ключ проверки аудита
+// (auditPubPEM — прочитанные при запуске байты), сертификат УЦ и открытые
+// ключи подписи пакетов. Сертификаты TLS не наблюдаются: их меняют при
+// продлении.
 func startIntegrity(ctx context.Context, cfg *serverConfig, p aisecCrypto.Provider, db *store.DB, auditLog *audit.Log,
-	logger *slog.Logger, stop context.CancelCauseFunc) (integrity.Service, error) {
+	logger *slog.Logger, stop context.CancelCauseFunc, auditPubPEM []byte) (integrity.Service, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		exe = "" // проверка отметит исполняемый файл как нечитаемый
@@ -440,10 +448,27 @@ func startIntegrity(ctx context.Context, cfg *serverConfig, p aisecCrypto.Provid
 	if err != nil {
 		return integrity.Service{}, err
 	}
+	var watch []integrity.WatchFile
+	if cfg.AuditSigningPub != "" {
+		watch = append(watch, integrity.WatchFile{Path: cfg.AuditSigningPub, Data: auditPubPEM})
+	}
+	if cfg.CACert != "" {
+		watch = append(watch, integrity.WatchFile{Path: cfg.CACert})
+	}
+	for _, name := range []string{bundleSigningPubFile, bundleSigningNextFile} {
+		path := filepath.Join(cfg.KeysDir, name)
+		if _, err := os.Stat(path); err == nil {
+			watch = append(watch, integrity.WatchFile{Path: path})
+		}
+	}
+	running := ""
+	if exe != "" {
+		running = integrity.RunningExecutable(exe)
+	}
 	checker, err := integrity.NewChecker(integrity.Config{
 		Component: "server", Provider: p, ManifestPath: manifest,
-		Executable: exe, BinaryName: "bin/aisec-server",
-		Embedded: map[string]fs.FS{"web/dist": dist},
+		Executable: running, BinaryName: "bin/aisec-server",
+		Embedded: map[string]fs.FS{"web/dist": dist}, Watch: watch,
 	})
 	if err != nil {
 		return integrity.Service{}, err

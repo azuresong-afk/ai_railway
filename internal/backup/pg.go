@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -583,43 +584,56 @@ func (s *Snapshot) SetUserHMACKey(keys *Keys, key []byte) error {
 	return nil
 }
 
+// RestoreOptions — режим восстановления.
+type RestoreOptions struct {
+	// ReplaceSettings — записать название организации и настройки копии
+	// (только пустая установка): в непустую объекты только добавляются.
+	ReplaceSettings bool
+	// KeepAPITokens — токены API как в копии. По умолчанию действующие
+	// токены восстанавливаются отозванными (backup_restore): токен,
+	// отозванный после даты копии, не возвращается в силу (В21 ревью 2.r4).
+	KeepAPITokens bool
+	// Now — время отзыва токенов.
+	Now time.Time
+}
+
 // Restore записывает копию в транзакции tx. Пустоту установки и
 // совпадения (Inspect, Conflicts) вызывающий проверяет в той же
-// транзакции. Название организации и настройки копии записываются только
-// при replaceSettings (пустая установка): в непустую установку объекты
-// только добавляются. Неиспользованный токен первичной настройки гасится:
-// учётные записи восстановлены.
-func Restore(ctx context.Context, tx pgx.Tx, p *Prepared, replaceSettings bool) error {
+// транзакции. Неиспользованный токен первичной настройки гасится:
+// учётные записи восстановлены. Возвращает число токенов API, отозванных
+// при восстановлении.
+func Restore(ctx context.Context, tx pgx.Tx, p *Prepared, opts RestoreOptions) (int, error) {
 	s := p.snap
+	revoked := 0
 	steps := []struct {
 		what string
 		fn   func() error
 	}{
 		{"организация и настройки", func() error {
-			if !replaceSettings {
+			if !opts.ReplaceSettings {
 				return nil
 			}
 			return writeSettings(ctx, tx, s)
 		}},
 		{"роли", func() error { return writeRoles(ctx, tx, s) }},
 		{"пользователи", func() error { return writeUsers(ctx, tx, p) }},
-		{"токены API", func() error { return writeAPITokens(ctx, tx, s) }},
+		{"токены API", func() (err error) { revoked, err = writeAPITokens(ctx, tx, s, opts); return err }},
 		{"провайдеры", func() error { return writeProviders(ctx, tx, p) }},
 		{"приложения", func() error { return writeApplications(ctx, tx, s) }},
 		{"политики", func() error { return writePolicies(ctx, tx, s) }},
 	}
 	for _, st := range steps {
 		if err := st.fn(); err != nil {
-			return fmt.Errorf("резервная копия: восстановление: %s: %w", st.what, err)
+			return 0, fmt.Errorf("резервная копия: восстановление: %s: %w", st.what, err)
 		}
 	}
 	if len(s.Users) > 0 {
 		if _, err := tx.Exec(ctx, "UPDATE setup_tokens SET used_at = greatest(now(), created_at) WHERE org_id = $1 AND used_at IS NULL",
 			s.OrgID); err != nil {
-			return fmt.Errorf("резервная копия: погашение токена первичной настройки: %w", err)
+			return 0, fmt.Errorf("резервная копия: погашение токена первичной настройки: %w", err)
 		}
 	}
-	return nil
+	return revoked, nil
 }
 
 func writeSettings(ctx context.Context, tx pgx.Tx, s *Snapshot) error {
@@ -721,17 +735,31 @@ func writeUsers(ctx context.Context, tx pgx.Tx, p *Prepared) error {
 	return nil
 }
 
-func writeAPITokens(ctx context.Context, tx pgx.Tx, s *Snapshot) error {
+// tokenRevokedByRestore — причина отзыва токена при восстановлении
+// (auth.APITokenRevokedByBackupRestore; пакет auth сюда не импортируется).
+const tokenRevokedByRestore = "backup_restore"
+
+func writeAPITokens(ctx context.Context, tx pgx.Tx, s *Snapshot, opts RestoreOptions) (int, error) {
+	revoked := 0
 	for _, t := range s.APITokens {
+		if t.RevokedAt == nil && !opts.KeepAPITokens {
+			// Отзыв не раньше выпуска (копия «из будущего» при сбитых часах).
+			at, reason := opts.Now.UTC(), tokenRevokedByRestore
+			if at.Before(t.CreatedAt) {
+				at = t.CreatedAt
+			}
+			t.RevokedAt, t.RevokedBy, t.RevokeReason = &at, nil, &reason
+			revoked++
+		}
 		if _, err := tx.Exec(ctx, `INSERT INTO api_tokens (id, org_id, user_id, name, prefix, token_hash, hash_alg,
 			permissions, expires_at, created_at, last_used_at, last_used_ip, revoked_at, revoked_by, revoke_reason)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::inet, $13, $14::uuid, $15)`,
 			t.ID, s.OrgID, t.UserID, t.Name, t.Prefix, t.TokenHash, t.HashAlg, t.Permissions, t.ExpiresAt, t.CreatedAt,
 			t.LastUsedAt, t.LastUsedIP, t.RevokedAt, t.RevokedBy, t.RevokeReason); err != nil {
-			return fmt.Errorf("%s: %w", t.Prefix, err)
+			return 0, fmt.Errorf("%s: %w", t.Prefix, err)
 		}
 	}
-	return nil
+	return revoked, nil
 }
 
 func writeProviders(ctx context.Context, tx pgx.Tx, p *Prepared) error {

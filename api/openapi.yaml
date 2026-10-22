@@ -191,7 +191,10 @@ paths:
         и встроенную статику веб-консоли с подписанным манифестом; итог пишется в
         `integrity_checks` и журнал аудита (`integrity.check`) от имени
         пользователя. Нарушение — `ok: false` с ответом 200; при
-        `-integrity-action stop` сервер после ответа останавливается.
+        `-integrity-action stop` сервер после ответа останавливается. Манифест
+        собран раньше манифеста последней успешной проверки — `manifest_rollback`
+        (откат на старый выпуск, В20 ревью 2.r4). Итог не удалось записать в
+        журнал аудита — 503 (Н36 ревью 2.r4), итог остаётся в техническом журнале.
       security: [{ sessionCookie: [] }]
       x-permission: integrity.verify
       parameters:
@@ -2603,12 +2606,12 @@ components:
             properties:
               condition:
                 type: string
-                enum: [account_lockout, access_denied, audit_chain, audit_storage, integrity, time_sync, config_bundle, config_bundle_lag]
+                enum: [account_lockout, access_denied, audit_chain, audit_storage, integrity, time_sync, config_bundle, config_bundle_lag, test_build]
               requirement: { type: string, enum: [ИАФ.4, УПД.6, РСБ.4, РСБ.5, ОЦЛ.3, ОЦЛ.5, ВРМ.1] }
               components:
                 type: array
                 items: { type: string }
-                description: 'Компоненты с активным условием (integrity — server или gateway:<ID>, config_bundle_lag — gateway:<ID>); каждое ведётся отдельно и пишется в system.alert (В18 ревью 2.r3b)'
+                description: 'Компоненты с активным условием (integrity — server или gateway:<ID>, config_bundle_lag — gateway:<ID>); каждое ведётся отдельно и пишется в system.alert (В18 ревью 2.r3b). test_build (ОЦЛ.1) — компоненты, собранные с тестовым ключом манифеста (Н34 ревью 2.r4); integrity шлюза поднимает и откат выпуска, и чужой ключ проверки пакетов (В19, В20 ревью 2.r4)'
               title: { type: string }
               active: { type: boolean }
               since: { type: [string, 'null'], format: date-time, description: 'Когда условие возникло; у ИАФ.4 и УПД.6 не задаётся' }
@@ -2679,7 +2682,7 @@ components:
     IntegrityCheck:
       type: object
       description: Итог проверки целостности компонента (ОЦЛ.2, ОЦЛ.5, DM-42)
-      required: [component, trigger, checked_at, ok, reason, manifest_version, test_signed, checked_files, failures, omitted]
+      required: [component, trigger, checked_at, ok, reason, manifest_version, manifest_created, test_signed, checked_files, failures, omitted]
       additionalProperties: false
       properties:
         component: { type: string, description: 'server, gateway или cli' }
@@ -2688,8 +2691,10 @@ components:
         ok: { type: boolean }
         reason:
           type: string
-          enum: [ok, manifest_missing, manifest_invalid, signature_invalid, files_mismatch]
+          enum: [ok, manifest_missing, manifest_invalid, signature_invalid, files_mismatch, manifest_rollback]
+          description: '`manifest_rollback` — манифест подписан верно, но собран раньше манифеста последней успешной проверки (откат выпуска)'
         manifest_version: { type: string, description: 'Версия продукта из манифеста; пусто, если манифест не принят' }
+        manifest_created: { type: [string, 'null'], format: date-time, description: 'Время сборки манифеста; null, если манифест не принят' }
         test_signed: { type: boolean, description: 'Сборка с тестовым ключом манифеста — не для поставки' }
         checked_files: { type: integer, minimum: 0 }
         failures:
@@ -2870,7 +2875,7 @@ components:
         last_used_at: { type: string, format: date-time }
         last_used_ip: { type: string }
         revoked_at: { type: string, format: date-time }
-        revoke_reason: { type: string, enum: [owner, admin, password_reset, sessions_revoked] }
+        revoke_reason: { type: string, enum: [owner, admin, password_reset, sessions_revoked, backup_restore] }
     APITokenPage:
       allOf:
         - $ref: '#/components/schemas/PageInfo'
