@@ -32,7 +32,7 @@ export const navItems: NavItem[] = [
   { path: "/alerts", title: "Оповещения", icon: Bell },
   { path: "/incidents", title: "Инциденты", icon: ShieldAlert },
   { path: "/apps", title: "Приложения", icon: AppWindow, anyOf: ["applications.read"] },
-  { path: "/policies", title: "Политики", icon: ScrollText },
+  { path: "/policies", title: "Политики", icon: ScrollText, anyOf: ["policies.read"] },
   { path: "/usage", title: "Потребление", icon: Gauge },
   { path: "/agents", title: "Агенты", icon: Bot, stage4: true },
   { path: "/shadow-ai", title: "Теневой ИИ", icon: EyeOff, stage4: true },
