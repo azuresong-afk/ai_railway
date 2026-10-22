@@ -234,7 +234,7 @@ func CheckLicense(c Component) error {
 	if (c.Scope == ScopeBuild || c.Scope == ScopeExternal) && strings.TrimSpace(c.LicenseDecision) != "" {
 		gplOnly := true
 		for _, id := range ids {
-			if classify(id) == Forbidden && !isGPLFamily(id) && !(c.Scope == ScopeExternal && externalLicenses[id]) {
+			if classify(id) == Forbidden && !isGPLFamily(id) && (c.Scope != ScopeExternal || !externalLicenses[id]) {
 				gplOnly = false
 			}
 		}

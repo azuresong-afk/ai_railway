@@ -130,8 +130,8 @@ func TestClientCertSwitch(t *testing.T) {
 		}
 		return c.Certificate[0]
 	}
-	d1, _ := CertDER(c1)
-	d2, _ := CertDER(c2)
+	d1, _ := CertDER(c1) //nolint:gosec // тест: сертификаты из tls.Certificate, сравниваются ниже
+	d2, _ := CertDER(c2) //nolint:gosec // тест: сертификаты из tls.Certificate, сравниваются ниже
 	if !bytes.Equal(leaf(), d1) {
 		t.Fatal("начальная пара")
 	}
