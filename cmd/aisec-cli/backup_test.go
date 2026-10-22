@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/azuresong-afk/ai_railway/internal/audit"
+	"github.com/azuresong-afk/ai_railway/internal/auth"
 	"github.com/azuresong-afk/ai_railway/internal/backup"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/internal/keyring"
@@ -185,6 +187,8 @@ const (
 var (
 	tTOTP       = bytes.Repeat([]byte{0x5a}, aisecCrypto.TOTPSecretSize)
 	tCredential = []byte("synthetic-provider-credential")
+	// tTokenRaw — синтетический токен API (секрет — 32 байта 0x11).
+	tTokenRaw = "aisec_pat_abcd1234_" + strings.Repeat("ERER", 10) + "ERE"
 )
 
 func populate(t *testing.T, in *installation) {
@@ -214,7 +218,7 @@ func populate(t *testing.T, in *installation) {
 	in.exec(t, "INSERT INTO recovery_codes (user_id, code_hash, created_at) VALUES ($1, $2, now())", tUser, h.Sum([]byte("rc-1")))
 	in.exec(t, `INSERT INTO api_tokens (id, org_id, user_id, name, prefix, token_hash, hash_alg, permissions, expires_at,
 		created_at, last_used_ip) VALUES ($1, $2, $3, 'ci', 'aisec_pat_abcd1234', $4, 'SHA-256', '{events.read:all}',
-		now() + interval '10 days', now(), '10.0.0.7')`, tToken, org, tUser, h.Sum([]byte("token")))
+		now() + interval '10 days', now(), '10.0.0.7')`, tToken, org, tUser, h.Sum([]byte(tTokenRaw)))
 	in.exec(t, `INSERT INTO api_tokens (id, org_id, user_id, name, prefix, token_hash, hash_alg, permissions, expires_at,
 		created_at, revoked_at, revoked_by, revoke_reason) VALUES ('0192a000-0000-7000-8000-000000000502', $1, $2, 'old',
 		'aisec_pat_zzzz9999', $3, 'SHA-256', '{events.read:all}', now() + interval '10 days', now() - interval '1 day', now(),
@@ -227,7 +231,7 @@ func populate(t *testing.T, in *installation) {
 	in.exec(t, `INSERT INTO applications (id, org_id, slug, name, owner_id, env, provider_id, models, aliases, policy,
 		policy_mode, storage, fail_mode, user_from, quotas, lists, exfil_allow_domains, created_at, created_by, updated_at, updated_by)
 		VALUES ($1, $2, 'support-bot', 'Синтетический бот', $3, 'test', $4, '{gpt-x}', '{"fast":"gpt-x"}', 'corp',
-		'monitor', 'masked', 'fail_open', 'header', '{"requests_per_minute": 60}', '[{"name":"stop"}]', '{example.test}',
+		'monitor', 'masked', 'fail_open', 'header', '{"requests_per_minute": 60}', '[{"id":"stop","category":"stop_words","words":["стоп-слово"]}]', '{example.test}',
 		now(), 'user:x', now(), 'user:x')`, tApp, org, tUser, tProvider)
 	in.exec(t, `INSERT INTO app_keys (id, org_id, app_id, name, prefix, key_hash, hash_alg, allowed_cidrs, expires_at,
 		created_at, created_by, revoked_at, revoked_by) VALUES ($1, $2, $3, 'первый', 'aisec_aaaa1111', $4, 'SHA-256',
@@ -236,7 +240,8 @@ func populate(t *testing.T, in *installation) {
 	in.exec(t, `INSERT INTO app_keys (id, org_id, app_id, name, prefix, key_hash, hash_alg, expires_at, created_at,
 		created_by, rotated_from) VALUES ($1, $2, $3, 'второй', 'aisec_bbbb2222', $4, 'SHA-256', now() + interval '30 days',
 		now(), 'user:x', $5)`, tKey2, org, tApp, h.Sum([]byte("k2")), tKey1)
-	v1, v2 := "id: corp\nname: Синтетическая\nmode: monitor\n", "id: corp\nname: Синтетическая\nmode: enforce\n"
+	v1, v2 := "id: corp\nversion: 1\nname: Синтетическая\nmode: monitor\n", "id: corp\nversion: 2\nname: Синтетическая\nmode: enforce\n"
+	v3 := "id: corp\nversion: 3\nname: Синтетическая\nmode: monitor\n"
 	ctx := context.Background()
 	tx, err := in.db.Pool().Begin(ctx)
 	if err != nil {
@@ -253,7 +258,7 @@ func populate(t *testing.T, in *installation) {
 		{`INSERT INTO policy_versions (policy_id, version, spec_yaml, spec_hash, hash_alg, source, comment, created_at, created_by)
 			VALUES ($1, 2, $2, $3, 'SHA-256', 'api', 'строже', now(), 'user:x')`, []any{tPolicy, v2, h.Sum([]byte(v2))}},
 		{`INSERT INTO policy_versions (policy_id, version, spec_yaml, spec_hash, hash_alg, source, rolled_back_from, created_at, created_by)
-			VALUES ($1, 3, $2, $3, 'SHA-256', 'rollback', 1, now(), 'user:x')`, []any{tPolicy, v1, h.Sum([]byte(v1))}},
+			VALUES ($1, 3, $2, $3, 'SHA-256', 'rollback', 1, now(), 'user:x')`, []any{tPolicy, v3, h.Sum([]byte(v3))}},
 	} {
 		if _, err := tx.Exec(ctx, q.sql, q.args...); err != nil {
 			t.Fatal(err)
@@ -287,6 +292,12 @@ func view(t *testing.T, in *installation, w *backup.Writer) string {
 		t.Fatal(err)
 	}
 	s.TakenAt = time.Time{}
+	// Отзыв при восстановлении (В21) сравнивается отдельно.
+	for i := range s.APITokens {
+		if r := s.APITokens[i].RevokeReason; r != nil && *r == auth.APITokenRevokedByBackupRestore {
+			s.APITokens[i].RevokedAt, s.APITokens[i].RevokedBy, s.APITokens[i].RevokeReason = nil, nil, nil
+		}
+	}
 	for i := range s.Users {
 		if m := s.Users[i].MFA; m != nil {
 			if m.Secret, err = w.Keys().OpenSecret(m.Secret, "user_mfa.secret", s.Users[i].ID); err != nil {
@@ -306,6 +317,31 @@ func view(t *testing.T, in *installation, w *backup.Writer) string {
 		t.Fatal(err)
 	}
 	return string(out)
+}
+
+// authToken предъявляет токен API сервису входа установки.
+func authToken(t *testing.T, in *installation, raw string) error {
+	t.Helper()
+	ctx := context.Background()
+	p := standardProvider(t)
+	l, err := openAuditLog(in.db, p, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := auth.NewPGStore(in.db.Pool(), l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokens, err := auth.NewPGAPITokens(in.db.Pool(), l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc, err := auth.NewService(ctx, st, l, p, auth.WithAPITokenStore(tokens))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = svc.AuthenticateAPIToken(ctx, raw, netip.MustParseAddr("10.0.0.9"))
+	return err
 }
 
 func auditCount(t *testing.T, in *installation, action, result, stage string) int {
@@ -381,6 +417,24 @@ func TestBackupRoundTripOnRealDB(t *testing.T) {
 	if a, b := view(t, src, w), view(t, dst, w); a != b {
 		t.Fatalf("данные после восстановления отличаются:\n--- исходная\n%s\n--- восстановленная\n%s", a, b)
 	}
+	// В21: действующий токен копии восстановлен отозванным и не принимается;
+	// отозванный до копии сохранил свою причину.
+	if err := authToken(t, src, tTokenRaw); err != nil {
+		t.Fatalf("токен в исходной установке: %v", err)
+	}
+	if err := authToken(t, dst, tTokenRaw); !errors.Is(err, auth.ErrUnauthenticated) {
+		t.Fatalf("токен из копии после восстановления: %v", err)
+	}
+	if n := dst.count(t, `SELECT count(*) FROM api_tokens WHERE id = $1 AND revoke_reason = 'backup_restore'
+		AND revoked_by IS NULL AND revoked_at IS NOT NULL`, tToken); n != 1 {
+		t.Fatal("токен не отозван при восстановлении")
+	}
+	if n := dst.count(t, "SELECT count(*) FROM api_tokens WHERE revoke_reason = 'admin'"); n != 1 {
+		t.Fatal("причина прежнего отзыва потеряна")
+	}
+	if !strings.Contains(out.String(), "восстановлены отозванными") || !strings.Contains(out.String(), "aisec-cli audit export") {
+		t.Fatalf("вывод без шагов после восстановления: %s", out.String())
+	}
 	// Секреты в новой установке — под её ключом данных.
 	var sealed []byte
 	var keyID string
@@ -406,6 +460,10 @@ func TestBackupRoundTripOnRealDB(t *testing.T) {
 	}
 	if auditCount(t, dst, "backup.restore", "success", "started") != 1 || auditCount(t, dst, "backup.restore", "success", "done") != 1 {
 		t.Fatal("нет записей аудита до и после восстановления")
+	}
+	if n := dst.count(t, `SELECT count(*) FROM audit_log WHERE action = 'backup.restore' AND details->>'stage' = 'done'
+		AND details->>'copy_age_hours' = '0' AND details->>'api_tokens_revoked' = '1'`); n != 1 {
+		t.Fatal("в записи «после» нет возраста копии и числа отозванных токенов")
 	}
 	if n := dst.count(t, `SELECT count(*) FROM audit_log WHERE action = 'backup.restore' AND details->>'stage' = 'done'
 		AND details->>'settings_restored' = 'true' AND details->'settings'->'events'->>'content_days' = '30'
@@ -504,6 +562,18 @@ func TestBackupRestoreNonEmptyOnRealDB(t *testing.T) {
 		!strings.Contains(err.Error(), "нет ключа псевдонимов") {
 		t.Fatalf("ключа HMAC нет в копии: %v", err)
 	}
+	// Н40: недавно активная сессия — признак работающего сервера, отказ.
+	dst.exec(t, `INSERT INTO sessions (id, user_id, token_hash, csrf_hash, state, created_at, last_seen_at, expires_at,
+		user_agent) VALUES ('0192a000-0000-7000-8000-00000000bbbb', '0192a000-0000-7000-8000-00000000aaaa', $1, $2,
+		'active', now(), now(), now() + interval '1 hour', 'test')`, bytes.Repeat([]byte{1}, 32), bytes.Repeat([]byte{2}, 32))
+	if err := backupCmd(append(args, "-allow-nonempty"), dst.dsn, &out, &errb, time.Now()); !errors.Is(err, errServerRunning) {
+		t.Fatalf("при работающем сервере: %v", err)
+	}
+	if n := dst.count(t, `SELECT count(*) FROM audit_log WHERE action = 'backup.restore' AND result = 'denied'
+		AND details->>'reason' LIKE 'server_running:%'`); n != 1 {
+		t.Fatalf("отказ из-за сессии в аудите: %d", n)
+	}
+	dst.exec(t, "UPDATE sessions SET last_seen_at = now() - interval '10 minutes'")
 	if err := backupCmd(append(args, "-allow-nonempty"), dst.dsn, &out, &errb, time.Now()); err != nil {
 		t.Fatalf("с флагом: %v %s", err, errb.String())
 	}
@@ -523,6 +593,132 @@ func TestBackupRestoreNonEmptyOnRealDB(t *testing.T) {
 	if n := dst.count(t, `SELECT count(*) FROM audit_log WHERE action = 'backup.restore' AND details->>'stage' = 'done'
 		AND details->>'settings_restored' = 'false'`); n != 1 {
 		t.Fatal("в записи «после» нет признака, что настройки не переносились")
+	}
+}
+
+// В21: копия старше 7 суток восстанавливается только с -accept-old-copy;
+// с -keep-api-tokens токены остаются как в копии и принимаются.
+func TestBackupRestoreOldCopyKeepTokensOnRealDB(t *testing.T) {
+	base := os.Getenv("AISEC_TEST_DATABASE_URL")
+	if base == "" {
+		t.Skip("AISEC_TEST_DATABASE_URL не задан")
+	}
+	admin, err := store.Open(context.Background(), base, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close()
+	src := newInstallation(t, admin, base, "cli_backup_src4")
+	dst := newInstallation(t, admin, base, "cli_backup_dst4")
+	populate(t, src)
+	dir := t.TempDir()
+	phrase := writePhraseFile(t, testBackupPhrase, 0o400)
+	file := filepath.Join(dir, "config.aisec-backup")
+	var out, errb bytes.Buffer
+	if err := backupCmd([]string{"create", "-keys", src.keys, "-out", file, "-passphrase-file", phrase, "-no-user-hmac-key"},
+		src.dsn, &out, &errb, time.Now()); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	later := time.Now().Add(8 * 24 * time.Hour)
+	args := []string{"restore", "-keys", dst.keys, "-in", file, "-passphrase-file", phrase, "-keep-api-tokens"}
+	if err := backupCmd(args, dst.dsn, &out, &errb, later); err == nil || !strings.Contains(err.Error(), "-accept-old-copy") {
+		t.Fatalf("старая копия без флага: %v", err)
+	}
+	if n := dst.count(t, `SELECT count(*) FROM audit_log WHERE action = 'backup.restore' AND result = 'denied'
+		AND details->>'reason' LIKE 'old_copy:%'`); n != 1 || dst.count(t, "SELECT count(*) FROM users") != 0 {
+		t.Fatalf("отказ по возрасту: записей %d", n)
+	}
+	out.Reset()
+	if err := backupCmd(append(args, "-accept-old-copy"), dst.dsn, &out, &errb, later); err != nil {
+		t.Fatalf("с флагами: %v %s", err, errb.String())
+	}
+	if err := authToken(t, dst, tTokenRaw); err != nil {
+		t.Fatalf("токен с -keep-api-tokens: %v", err)
+	}
+	if strings.Contains(out.String(), "восстановлены отозванными") {
+		t.Fatalf("вывод: %s", out.String())
+	}
+	if n := dst.count(t, `SELECT count(*) FROM audit_log WHERE action = 'backup.restore' AND details->>'stage' = 'started'
+		AND details->>'keep_api_tokens' = 'true' AND details->>'accept_old_copy' = 'true'
+		AND (details->>'copy_age_hours')::int >= 191`); n != 1 {
+		t.Fatal("в записи «до» нет флагов и возраста копии")
+	}
+}
+
+// В22: копия, объекты которой сервис этого выпуска не принял бы (правило
+// на категорию, которой нет в каталоге детекторов, — как после
+// переименования; токен с правом безопасности users.manage — правило 2.10;
+// словарь со старым полем),
+// отклоняется целиком до записи: код 3, stage=refused, reason=invalid,
+// в ошибке — перечень объектов, БД не меняется.
+func TestBackupRestoreInvalidObjectsOnRealDB(t *testing.T) {
+	base := os.Getenv("AISEC_TEST_DATABASE_URL")
+	if base == "" {
+		t.Skip("AISEC_TEST_DATABASE_URL не задан")
+	}
+	admin, err := store.Open(context.Background(), base, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close()
+	src := newInstallation(t, admin, base, "cli_backup_src5")
+	dst := newInstallation(t, admin, base, "cli_backup_dst5")
+	populate(t, src)
+	h, err := standardProvider(t).Hasher()
+	if err != nil {
+		t.Fatal(err)
+	}
+	org := audit.DefaultOrgID
+	legacy := "id: legacy\nversion: 1\nname: Старая\nmode: monitor\nrules:\n  - id: cards\n    detector: pii.ru\n" +
+		"    directions: [input]\n    categories: [pii.renamed_card]\n    action: block\n    severity: high\n"
+	const legacyID = "0192a000-0000-7000-8000-000000000402"
+	// Ссылка на текущую версию проверяется при фиксации: обе вставки — в одной транзакции.
+	src.exec(t, `WITH p AS (INSERT INTO policies (id, org_id, slug, name, mode, current_version, created_at, created_by,
+		updated_at, updated_by) VALUES ($1, $2, 'legacy', 'Старая', 'monitor', 1, now(), 'user:x', now(), 'user:x') RETURNING id)
+		INSERT INTO policy_versions (policy_id, version, spec_yaml, spec_hash, hash_alg, source, created_at, created_by)
+		SELECT id, 1, $3, $4, 'SHA-256', 'api', now(), 'user:x' FROM p`, legacyID, org, legacy, h.Sum([]byte(legacy)))
+	src.exec(t, `INSERT INTO api_tokens (id, org_id, user_id, name, prefix, token_hash, hash_alg, permissions, expires_at,
+		created_at) VALUES ('0192a000-0000-7000-8000-000000000503', $1, $2, 'verify', 'aisec_pat_vvvv7777', $3, 'SHA-256',
+		'{users.manage:all}', now() + interval '10 days', now())`, org, tUser, h.Sum([]byte("token-verify")))
+	src.exec(t, `UPDATE applications SET lists = '[{"name":"stop"}]' WHERE id = $1`, tApp)
+
+	dir := t.TempDir()
+	phrase := writePhraseFile(t, testBackupPhrase, 0o400)
+	file := filepath.Join(dir, "config.aisec-backup")
+	var out, errb bytes.Buffer
+	if err := backupCmd([]string{"create", "-keys", src.keys, "-out", file, "-passphrase-file", phrase, "-no-user-hmac-key"},
+		src.dsn, &out, &errb, time.Now()); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	err = backupCmd([]string{"restore", "-keys", dst.keys, "-in", file, "-passphrase-file", phrase}, dst.dsn, &out, &errb, time.Now())
+	var ie *invalidObjectsError
+	if !errors.Is(err, errBackupInvalid) || !errors.As(err, &ie) {
+		t.Fatalf("недопустимые объекты: %v", err)
+	}
+	for _, want := range []string{"политика legacy", "pii.renamed_card", "токен API aisec_pat_vvvv7777", "приложение support-bot"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("в ошибке нет %q: %v", want, err)
+		}
+	}
+	t.Setenv("AISEC_DATABASE_URL", dst.dsn)
+	if code := run([]string{"backup", "restore", "-keys", dst.keys, "-in", file, "-passphrase-file", phrase}, &out, &errb,
+		time.Now()); code != 3 {
+		t.Fatalf("код возврата %d", code)
+	}
+	if n := dst.count(t, `SELECT count(*) FROM audit_log WHERE action = 'backup.restore' AND result = 'failure'
+		AND details->>'stage' = 'refused' AND details->>'reason' LIKE 'invalid:%'`); n != 2 {
+		t.Fatalf("отказов в аудите: %d", n)
+	}
+	if n := auditCount(t, dst, "backup.restore", "success", "started"); n != 0 {
+		t.Fatalf("запись «до» при отказе: %d", n)
+	}
+	for _, table := range []string{"users", "api_tokens", "providers", "applications", "policies"} {
+		if n := dst.count(t, "SELECT count(*) FROM "+table); n != 0 {
+			t.Fatalf("отказ изменил %s: %d", table, n)
+		}
+	}
+	if n := dst.count(t, "SELECT count(*) FROM roles WHERE id = 'duty_analyst'"); n != 0 {
+		t.Fatal("отказ добавил свою роль")
 	}
 }
 
@@ -546,6 +742,14 @@ func TestBackupRestorePreconditionsOnRealDB(t *testing.T) {
 	if err := backupCmd([]string{"create", "-keys", src.keys, "-out", file, "-passphrase-file", phrase, "-no-user-hmac-key"},
 		src.dsn, &out, &errb, time.Now()); err != nil {
 		t.Fatalf("create: %v", err)
+	}
+	// Н41: фраза, равная названию организации, для новой копии не годится.
+	const orgPhrase = "ООО Синтетика Восток"
+	src.exec(t, "UPDATE organizations SET name = $2 WHERE id = $1", audit.DefaultOrgID, orgPhrase)
+	err = backupCmd([]string{"create", "-keys", src.keys, "-out", filepath.Join(t.TempDir(), "org.aisec-backup"),
+		"-passphrase-file", writePhraseFile(t, strings.ToLower(orgPhrase), 0o400), "-no-user-hmac-key"}, src.dsn, &out, &errb, time.Now())
+	if err == nil || !strings.Contains(err.Error(), "названием организации") {
+		t.Fatalf("фраза — название организации: %v", err)
 	}
 
 	// Только migrate, без init: ключа данных нет.

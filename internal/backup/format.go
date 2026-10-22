@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -29,6 +30,11 @@ const (
 	MaxFileSize = maxHeader + crypto.MaxAEADPlaintext + 64
 	// MinPassphraseChars — минимальная длина парольной фразы, символов (H-Р1).
 	MinPassphraseChars = 16
+	// MinPassphraseDistinct — минимум разных символов в фразе новой копии
+	// (Н41 ревью 2.r4).
+	MinPassphraseDistinct = 8
+	// PassphraseHint — как выбрать фразу.
+	PassphraseHint = "возьмите 4–5 случайных слов через пробел"
 )
 
 // Контексты выведения ключей копии из результата Argon2id: ключ содержимого
@@ -82,6 +88,65 @@ func CheckPassphrase(p []byte) error {
 		return fmt.Errorf("парольная фраза длиннее %d байт", crypto.MaxPasswordLen)
 	}
 	return nil
+}
+
+// CheckNewPassphrase проверяет фразу новой копии: CheckPassphrase и
+// стойкость (Н41 ревью 2.r4) — не меньше MinPassphraseDistinct разных
+// символов, не повтор короткого фрагмента, не последовательность
+// (abcd…, 1234…, в обе стороны) и не совпадает ни с одним из forbidden
+// (имя пользователя ОС, название организации) без учёта регистра и
+// пробелов по краям. Фраза открываемой копии так не проверяется: копия,
+// снятая до этих правил, должна восстанавливаться.
+func CheckNewPassphrase(p []byte, forbidden ...string) error {
+	if err := CheckPassphrase(p); err != nil {
+		return err
+	}
+	s := string(p)
+	rs := []rune(s)
+	distinct := map[rune]bool{}
+	for _, r := range rs {
+		distinct[r] = true
+	}
+	switch {
+	case len(distinct) < MinPassphraseDistinct:
+		return fmt.Errorf("в парольной фразе меньше %d разных символов: %s", MinPassphraseDistinct, PassphraseHint)
+	case periodic(rs):
+		return fmt.Errorf("парольная фраза — повтор одного фрагмента: %s", PassphraseHint)
+	case sequential(rs):
+		return fmt.Errorf("парольная фраза — последовательность символов: %s", PassphraseHint)
+	}
+	for _, f := range forbidden {
+		if f = strings.TrimSpace(f); f != "" && strings.EqualFold(strings.TrimSpace(s), f) {
+			return fmt.Errorf("парольная фраза совпадает с именем пользователя или названием организации: %s", PassphraseHint)
+		}
+	}
+	return nil
+}
+
+// periodic — строка из не меньше чем двух повторов фрагмента.
+func periodic(rs []rune) bool {
+	for k := 1; k <= len(rs)/2; k++ {
+		same := true
+		for i := k; i < len(rs) && same; i++ {
+			same = rs[i] == rs[i-k]
+		}
+		if same {
+			return true
+		}
+	}
+	return false
+}
+
+// sequential — каждый следующий символ на 1 больше (или меньше)
+// предыдущего; после 9 идёт 0.
+func sequential(rs []rune) bool {
+	up, down := true, true
+	for i := 1; i < len(rs); i++ {
+		a, b := rs[i-1], rs[i]
+		up = up && (b == a+1 || a == '9' && b == '0')
+		down = down && (b == a-1 || a == '0' && b == '9')
+	}
+	return up || down
 }
 
 // deriveKeys выводит ключи копии: Argon2id из фразы, затем HKDF.
@@ -150,7 +215,7 @@ type Writer struct {
 
 // NewWriter выводит ключи новой копии из фразы со свежей солью.
 func NewWriter(ctx context.Context, p crypto.Provider, passphrase []byte, now time.Time) (*Writer, error) {
-	if err := CheckPassphrase(passphrase); err != nil {
+	if err := CheckNewPassphrase(passphrase); err != nil {
 		return nil, err
 	}
 	kdf, err := p.PassphraseKDF()

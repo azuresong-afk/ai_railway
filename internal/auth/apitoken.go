@@ -42,6 +42,9 @@ const (
 	APITokenRevokedByPasswordReset = "password_reset"
 	// APITokenRevokedBySessions — администратор завершил сессии владельца с отзывом токенов.
 	APITokenRevokedBySessions = "sessions_revoked"
+	// APITokenRevokedByBackupRestore — токен восстановлен из резервной копии
+	// отозванным (В21 ревью 2.r4); автора отзыва нет.
+	APITokenRevokedByBackupRestore = "backup_restore"
 )
 
 // reasonOwnerInactive — владелец токена деактивирован (api_token.auth_failed).

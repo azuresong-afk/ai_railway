@@ -2875,7 +2875,7 @@ components:
         last_used_at: { type: string, format: date-time }
         last_used_ip: { type: string }
         revoked_at: { type: string, format: date-time }
-        revoke_reason: { type: string, enum: [owner, admin, password_reset, sessions_revoked] }
+        revoke_reason: { type: string, enum: [owner, admin, password_reset, sessions_revoked, backup_restore] }
     APITokenPage:
       allOf:
         - $ref: '#/components/schemas/PageInfo'

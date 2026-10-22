@@ -67,3 +67,12 @@ func (l listsCategories) Categories() []string {
 	}
 	return out
 }
+
+// Check проверяет спецификацию по реестру детекторов так же, как при
+// сохранении версии: категории lists.* — любые, остальные — строго. Нужна
+// для политик, попадающих в БД не через сервис, — из резервной копии
+// (В22 ревью 2.r4).
+func Check(spec *policy.Spec, c policy.Catalog) error {
+	_, err := policy.Compile(spec, specCatalog(c, spec))
+	return err
+}
