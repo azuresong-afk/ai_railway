@@ -39,11 +39,15 @@ func s2Problem(t *testing.T, r s2Resp) problemKey {
 	return p
 }
 
+// Сквозные тесты этапа 2 названы без ID строки матрицы (TestE2EStage2_…):
+// без PostgreSQL, как в CI, они пропускаются, а dm-coverage считает пропуск
+// провалом. Строки DM-39, DM-42 и DM-43 покрывают модульные тесты.
+
 // DM-39: перебор паролей в консоли. После порога неудач учётная запись
 // блокируется (даже верный пароль не пускает), отказ не выдаёт, есть ли такой
 // логин, события попадают в журнал аудита и «Состояние системы», а снимает
 // блокировку только аварийная команда aisec-cli. Частота попыток ограничена.
-func TestE2EDM39_ConsoleBruteForce(t *testing.T) {
+func TestE2EStage2_ConsoleBruteForce(t *testing.T) {
 	s := s2NewStand(t)
 	s.mustStart()
 	admin := s.setupAdmin()
@@ -166,7 +170,7 @@ func (s *s2Stand) integrityRow(component string) (ok bool, reason, failures stri
 // DM-42 (бинарник и статика): подмена исполняемого файла, встроенной статики
 // или манифеста обнаруживается при запуске и по команде; реакция — по настройке
 // (оповещение или остановка). Подмена пакета политик — часть 2 задачи (после 2.13).
-func TestE2EDM42_BinaryTampered(t *testing.T) {
+func TestE2EStage2_BinaryTampered(t *testing.T) {
 	cliEnv := func(s *s2Stand) []string { return []string{"AISEC_DATABASE_URL=" + s.suDSN} }
 
 	t.Run("чистая установка", func(t *testing.T) {
@@ -377,7 +381,7 @@ func (s *s2Stand) auditSeqs() (first, last int64) {
 // DM-43: правка или удаление записей аудита в обход продукта. Обнаруживает
 // проверка по команде, проверка при запуске сервера и периодическая; сервер при
 // этом не останавливается, нарушение видно в «Состоянии системы».
-func TestE2EDM43_AuditTampered(t *testing.T) {
+func TestE2EStage2_AuditTampered(t *testing.T) {
 	cases := []struct {
 		name    string
 		tamper  func(s *s2Stand, first, last int64)
