@@ -737,3 +737,70 @@ func TestProtectionWeakening(t *testing.T) {
 	}
 	checkRecords(t, e)
 }
+
+// В14 ревью 2.r3b: смена адресата провайдера (узел base_url или auth_url,
+// корневые сертификаты, тип) возвращает признак «внешний» и сбрасывает
+// учётные данные; имя, путь и таймауты — нет.
+func TestProviderRetarget(t *testing.T) {
+	e := newEnv(t, true)
+	ctx := context.Background()
+	other, err := aisecCrypto.NewCA("AISec test other CA", time.Hour, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := e.provider(t, "gigachat")
+	reset := func() {
+		t.Helper()
+		if _, err := e.svc.SetExternal(ctx, e.by, p.ID, false, "GigaChat в контуре заказчика"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := e.svc.SetCredential(ctx, e.by, p.ID, []byte("synthetic-credential")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, c := range []struct {
+		name   string
+		mod    func(*apps.ProviderInput)
+		target bool
+	}{
+		{"имя и таймауты", func(in *apps.ProviderInput) { in.Name, in.ResponseTimeout = "Другое имя", 120 }, false},
+		{"путь на том же узле", func(in *apps.ProviderInput) { in.BaseURL = "https://llm.example/v2" }, false},
+		{"явный порт 443", func(in *apps.ProviderInput) { in.BaseURL = "https://LLM.example:443/v1" }, false},
+		{"другой хост", func(in *apps.ProviderInput) { in.BaseURL = "https://llm.evil.example/v1" }, true},
+		{"другой порт", func(in *apps.ProviderInput) { in.BaseURL = "https://llm.example:8443/v1" }, true},
+		{"другой корневой сертификат", func(in *apps.ProviderInput) { in.CAPEM = string(other.CertPEM()) }, true},
+		{"другой тип", func(in *apps.ProviderInput) { in.Type, in.FolderID = "yandexgpt", "b1gsynthetic" }, true},
+	} {
+		reset()
+		in := e.providerInput("")
+		c.mod(&in)
+		got, err := e.svc.UpdateProvider(ctx, e.by, p.ID, in)
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		d := e.last(t, "provider.update").Details.(map[string]any)
+		if got.External != c.target || (got.Credential == nil) != c.target {
+			t.Errorf("%s: external=%v credential=%v", c.name, got.External, got.Credential != nil)
+		}
+		if c.target && (d["external_reset"] != true || d["credential_reset"] != true) {
+			t.Errorf("%s: в аудите нет сброса: %v", c.name, d)
+		}
+		if !c.target && d["external_reset"] != nil {
+			t.Errorf("%s: лишний сброс: %v", c.name, d)
+		}
+		if _, err := e.svc.UpdateProvider(ctx, e.by, p.ID, e.providerInput("")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Учётные данные после сброса не открываются.
+	reset()
+	in := e.providerInput("")
+	in.BaseURL = "https://llm.evil.example/v1"
+	if _, err := e.svc.UpdateProvider(ctx, e.by, p.ID, in); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.svc.OpenCredential(ctx, p.ID); !errors.Is(err, apps.ErrNoCredential) {
+		t.Fatalf("учётные данные после смены адреса: %v", err)
+	}
+	checkRecords(t, e, "synthetic-credential")
+}

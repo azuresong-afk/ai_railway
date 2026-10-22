@@ -1502,8 +1502,11 @@ paths:
       summary: Изменить провайдера
       description: |
         Право `providers.manage`. Меняются все поля, кроме `slug`, признака «внешний» и
-        учётных данных. Пишет `provider.update` (до и после, без учётных данных; сертификаты —
-        только размером).
+        учётных данных. Смена адресата — узла (схема, хост, порт) `base_url` или `auth_url`,
+        `ca_pem` или `type` — сбрасывает учётные данные и возвращает признак «внешний» (В14
+        ревью 2.r3b): их задают заново, снятие признака — снова через `PUT …/external`. Пишет
+        `provider.update` (до и после, без учётных данных; сертификаты — только размером; при
+        смене адресата — `credential_reset`, `external_reset`).
       x-permission: providers.manage
       security: [{ sessionCookie: [] }, { bearerToken: [] }]
       parameters:
