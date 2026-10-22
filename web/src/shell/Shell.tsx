@@ -90,6 +90,8 @@ function EventsRoute({ me }: { me: Me }) {
 }
 
 const AppsScreen = lazy(() => import("../apps/AppsScreen").then((m) => ({ default: m.AppsScreen })));
+const AlertsScreen = lazy(() => import("../alerts/AlertsScreen").then((m) => ({ default: m.AlertsScreen })));
+const ProvidersScreen = lazy(() => import("../providers/ProvidersScreen").then((m) => ({ default: m.ProvidersScreen })));
 const PoliciesScreen = lazy(() => import("../policies/PoliciesScreen").then((m) => ({ default: m.PoliciesScreen })));
 
 function GuardedRoute({ me, perm, title, children }: { me: Me; perm: string; title: string; children: React.ReactNode }) {
@@ -235,6 +237,8 @@ function Frame({ me, onLogout }: { me: Me; onLogout: () => void }) {
             <Routes>
               <Route path="/events" element={<EventsRoute me={me} />} />
               <Route path="/apps" element={<GuardedRoute me={me} perm="applications.read" title="приложения"><AppsScreen me={me} /></GuardedRoute>} />
+              <Route path="/alerts" element={<GuardedRoute me={me} perm="alerts.read" title="оповещения"><AlertsScreen me={me} /></GuardedRoute>} />
+              <Route path="/providers" element={<GuardedRoute me={me} perm="providers.read" title="провайдеры"><ProvidersScreen me={me} /></GuardedRoute>} />
               <Route path="/policies" element={<GuardedRoute me={me} perm="policies.read" title="политики"><PoliciesScreen me={me} /></GuardedRoute>} />
               <Route path="/admin" element={<AdminRoute me={me} />} />
               <Route path="/system" element={<SystemRoute me={me} />} />
