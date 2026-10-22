@@ -387,6 +387,18 @@ func TestCheckOnSave(t *testing.T) {
 	if err := e.svc.CheckPolicy(ctx, spec); !errors.Is(err, versions.ErrBreaksBundle) || !strings.Contains(err.Error(), "crm") {
 		t.Fatalf("политика со словарём, которого нет у приложения: %v", err)
 	}
+	// Приложение, которое не проходит и с текущей версией, новую версию
+	// не блокирует (самопроверка H4, С3): текущая версия уже со словарём,
+	// которого у crm нет, следующая ужесточает другое правило.
+	if _, err := e.policies.Update(ctx, e.polBy, "corp", 1, spec, versions.SourceAPI, "", versions.ConsoleDefaults); err != nil {
+		t.Fatal(err)
+	}
+	stricter := *spec
+	stricter.Rules = append(slices.Clone(spec.Rules), policy.RuleSpec{ID: "secret2", Detector: "lists", Categories: []string{"lists.codename"},
+		Action: policy.Block, Severity: policy.High})
+	if err := e.svc.CheckPolicy(ctx, &stricter); err != nil {
+		t.Fatalf("приложение сломано и текущей версией: %v", err)
+	}
 	spec.ID = "unused"
 	if err := e.svc.CheckPolicy(ctx, spec); err != nil {
 		t.Fatalf("политика без приложений: %v", err)

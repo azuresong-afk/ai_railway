@@ -1,6 +1,7 @@
 package audit
 
 import (
+	"context"
 	"errors"
 	"net/netip"
 	"testing"
@@ -204,5 +205,21 @@ func TestTryVerifyPostgres(t *testing.T) {
 	// Нарушение тоже отдаётся из кэша, а не прежний «цела».
 	if cached, err = v.TryVerifyBy(ctx, Actor{Type: ActorUser, ID: "u-1", Name: "auditor"}, netip.Addr{}); err != nil || !cached.Cached || cached.OK() {
 		t.Errorf("кэш после нарушения: %+v, %v", cached, err)
+	}
+	// Проверка не завершилась — по команде из API новая не запускается и
+	// прежний итог не отдаётся (самопроверка H4, С1).
+	dead, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := v.VerifyBy(dead, Actor{Type: ActorCLI, ID: "root", Name: "root"}); err == nil {
+		t.Fatal("проверка с отменённым контекстом завершилась")
+	}
+	if _, err := v.TryVerifyBy(ctx, Actor{Type: ActorUser, ID: "u-1", Name: "auditor"}, netip.Addr{}); !errors.Is(err, ErrVerifyFailedRecently) {
+		t.Errorf("после незавершённой проверки: %v", err)
+	}
+	if _, err := v.VerifyBy(ctx, Actor{Type: ActorCLI, ID: "root", Name: "root"}); err != nil {
+		t.Fatal(err)
+	}
+	if cached, err = v.TryVerifyBy(ctx, Actor{Type: ActorUser, ID: "u-1", Name: "auditor"}, netip.Addr{}); err != nil || !cached.Cached {
+		t.Errorf("после успешной проверки: %+v, %v", cached, err)
 	}
 }

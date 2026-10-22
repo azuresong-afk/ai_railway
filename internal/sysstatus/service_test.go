@@ -537,3 +537,44 @@ func TestDM42_GatewayRollbackAndBundleKeys(t *testing.T) {
 		t.Fatalf("после принятия отката: %+v", n)
 	}
 }
+
+// Потеря связи не снимает отставание пакета: снимается оно только у
+// отозванного шлюза (самопроверка H4, С2).
+func TestEvaluateBundleLagOffline(t *testing.T) {
+	e := newEnv()
+	h := &sysstatus.BundleHealth{Version: 5, ETag: `"5"`, BuiltAt: t0.Add(-time.Hour)}
+	o := e.opts()
+	o.Bundle = func(context.Context) (*sysstatus.BundleHealth, error) { return h, nil }
+	s, err := sysstatus.New(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	states := func() []string {
+		var got []string
+		for _, r := range e.mem.Records {
+			d := r.Details.(map[string]any)
+			got = append(got, d["condition"].(string)+":"+d["state"].(string))
+		}
+		return got
+	}
+	gw := gwregistry.Gateway{ID: "g2", Name: "b", Status: gwregistry.StatusActive, LastSeenAt: t0, BundleETag: `"4"`}
+	for _, step := range []struct {
+		lastSeen time.Time
+		status   string
+		want     []string
+	}{
+		{t0, gwregistry.StatusActive, []string{"config_bundle_lag:g2:raised"}},
+		{t0.Add(-time.Hour), gwregistry.StatusActive, []string{"config_bundle_lag:g2:raised"}},
+		{t0.Add(-time.Hour), gwregistry.StatusRevoked, []string{"config_bundle_lag:g2:raised", "config_bundle_lag:g2:cleared"}},
+	} {
+		gw.LastSeenAt, gw.Status = step.lastSeen, step.status
+		e.gws.list = []gwregistry.Gateway{gw}
+		if err := s.Evaluate(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if got := states(); !slices.Equal(got, step.want) {
+			t.Fatalf("%s, связь %v: %v", step.status, step.lastSeen, got)
+		}
+	}
+}

@@ -541,14 +541,22 @@ func (s *Service) Evaluate(ctx context.Context) error {
 	now := c.st.GeneratedAt
 	// Активные в хранилище условия компонентов, которых больше нет (шлюз
 	// отозван или удалён), и прежнее общее условие integrity снимаются.
+	// Шлюз, который есть в реестре, но не на связи, сохраняет прежнее
+	// состояние: потеря связи не снимает отставание пакета (самопроверка H4, С2).
 	sctx, cancel := s.dbCtx(ctx)
 	states, err := s.o.Store.AlertStates(sctx)
 	cancel()
 	if err != nil {
 		return fmt.Errorf("состояния уведомлений: %w", err)
 	}
+	known := map[string]bool{}
+	for _, g := range c.st.Gateways {
+		if g.State != GatewayRevoked {
+			known[componentGateway+g.ID] = true
+		}
+	}
 	for code, st := range states {
-		if _, ok := c.conditions[code]; !ok && st.Active && (code == ConditionIntegrity || component(code) != "") {
+		if _, ok := c.conditions[code]; !ok && st.Active && (code == ConditionIntegrity || component(code) != "" && !known[component(code)]) {
 			c.conditions[code] = false
 		}
 	}
