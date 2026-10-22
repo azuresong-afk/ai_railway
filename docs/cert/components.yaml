@@ -71,7 +71,7 @@ components:
     attack_surface: true
     security_function: true
     provided_by: The Go Authors (Google)
-    justification: Argon2id нет в стандартной библиотеке Go, а собственные реализации алгоритмов запрещены. Библиотеку называет ТЗ 11.2; сопровождает команда Go, выпуски ежемесячно. В vendor попадают только argon2 и blake2b; x/net и x/term нужны лишь для графа модулей и в сборку не входят. Граф x/crypto поднимает версии x/sync и x/text, которые вендорятся для pgx.
+    justification: Argon2id нет в стандартной библиотеке Go, а собственные реализации алгоритмов запрещены. Библиотеку называет ТЗ 11.2; сопровождает команда Go, выпуски ежемесячно. В vendor попадают только argon2 и blake2b; x/net нужен лишь для графа модулей и в сборку не входит (x/term подключён отдельно, см. ниже). Граф x/crypto поднимает версии x/sync и x/text, которые вендорятся для pgx.
     decision: ТЗ 11.2; ADR-0006; согласие владельца в потоке A2 этапа 2
     decided: 2026-10-20
     license_files:
@@ -81,15 +81,31 @@ components:
     version: v0.49.0
     type: go-module
     scope: product
-    purpose: Транзитивная зависимость golang.org/x/crypto — только пакет cpu (выбор ускоренной реализации BLAKE2b по возможностям процессора).
+    purpose: Транзитивная зависимость golang.org/x/crypto (пакет cpu — выбор ускоренной реализации BLAKE2b по возможностям процессора) и golang.org/x/term (пакеты unix, windows, plan9 — системные вызовы терминала).
     license: BSD-3-Clause
     repository: https://go.googlesource.com/sys
     attack_surface: false
     security_function: false
     provided_by: The Go Authors (Google)
-    justification: Требуется golang.org/x/crypto; в vendor попадает только golang.org/x/sys/cpu.
-    decision: ADR-0006; согласие владельца в потоке A2 этапа 2
+    justification: Требуется golang.org/x/crypto (cpu) и golang.org/x/term (unix; windows и plan9 вендорятся по тегам сборки, в сборку для Linux не входят). Версию не поднимает — x/term v0.47.0 требует ту же v0.49.0. unsafe внутри x/sys — системные вызовы ОС, в коде продукта unsafe по-прежнему запрещён (depguard).
+    decision: ADR-0006; согласие владельца в потоке A2 этапа 2; пакет unix — ADR-0017, согласие владельца 22.10.2026 (поток H1)
     decided: 2026-10-20
+    license_files:
+      LICENSE: 911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad
+
+  - name: golang.org/x/term
+    version: v0.47.0
+    type: go-module
+    scope: product
+    purpose: Ввод парольной фразы резервной копии с терминала без отображения (aisec-cli backup, ADR-0017); импорт — только в cmd/aisec-cli.
+    license: BSD-3-Clause
+    repository: https://go.googlesource.com/term
+    attack_surface: true
+    security_function: true
+    provided_by: The Go Authors (Google)
+    justification: В стандартной библиотеке нет выключения отображения ввода на терминале. Прежний способ — вызов stty из состава ОС через os/exec — требует внешнего процесса и не работает в образах без stty (distroless). Сопровождает команда Go, выпуски ежемесячно; единственная зависимость — golang.org/x/sys, уже входящая в граф x/crypto. Уже был в графе модулей x/crypto той же версии.
+    decision: ADR-0017, п. 8; согласие владельца 22.10.2026 (поток H1)
+    decided: 2026-10-22
     license_files:
       LICENSE: 911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad
 
