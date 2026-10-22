@@ -1,5 +1,6 @@
 import { request } from "../api/client";
 import type { components } from "../api/schema";
+import type { ReauthBody } from "./reauth";
 
 type S = components["schemas"];
 export type User = S["User"];
@@ -57,7 +58,8 @@ export const adminApi = {
   deleteRole: (rid: string) => request<void>("DELETE", `/api/v1/roles/${id(rid)}`),
 
   policy: (signal?: AbortSignal) => request<AuthPolicy>("GET", "/api/v1/auth/policy", undefined, signal),
-  savePolicy: (b: AuthPolicy) => request<AuthPolicy>("PUT", "/api/v1/auth/policy", b),
+  // Ослабление настроек входа — с паролем или кодом (В24 ревью 2.r5).
+  savePolicy: (b: AuthPolicy, re: ReauthBody = {}) => request<AuthPolicy>("PUT", "/api/v1/auth/policy", { ...b, ...re }),
 
   tokens: async (signal?: AbortSignal): Promise<APIToken[]> => {
     const p = await request<S["APITokenPage"]>("GET", "/api/v1/api-tokens?limit=200", undefined, signal);

@@ -443,6 +443,18 @@ func TestPolicyViaAPI(t *testing.T) {
 	if w := e.call(admin, "PUT", "/api/v1/auth/policy", mustJSON(t, p), true); w.Code != 200 {
 		t.Fatalf("%d %s", w.Code, w.Body)
 	}
+	// Ослабление (порог блокировки выше) — с текущим паролем (В24 ревью 2.r5).
+	p.LockoutThreshold = 20
+	body := func(extra string) string { j := mustJSON(t, p); return j[:len(j)-1] + extra + "}" }
+	w = e.call(admin, "PUT", "/api/v1/auth/policy", body(""), true)
+	mustProblem(t, w, 400, CodeInvalidRequest)
+	if !strings.Contains(w.Body.String(), `"field":"password"`) {
+		t.Fatalf("ослабление без пароля: %s", w.Body)
+	}
+	mustProblem(t, e.call(admin, "PUT", "/api/v1/auth/policy", body(`,"password":"неверный"`), true), 403, CodeReauthFailed)
+	if w := e.call(admin, "PUT", "/api/v1/auth/policy", body(`,"password":"`+tPhrase+`"`), true); w.Code != 200 {
+		t.Fatalf("ослабление с паролем: %d %s", w.Code, w.Body)
+	}
 }
 
 // Сбой хранилища — 500 без подробностей; в технический журнал не попадают

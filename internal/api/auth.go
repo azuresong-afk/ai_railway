@@ -261,6 +261,8 @@ type policyRequest struct {
 	SessionMaxPerUser  *int  `json:"session_max_per_user"`
 	TempPasswordHours  *int  `json:"temp_password_hours"`
 	MFARequiredAll     *bool `json:"mfa_required_all"`
+	// Повторная проверка, если изменение ослабляет вход (В24 ревью 2.r5).
+	reauthFields
 }
 
 func (d Deps) putPolicy(w http.ResponseWriter, r *http.Request) {
@@ -302,7 +304,7 @@ func (d Deps) putPolicy(w http.ResponseWriter, r *http.Request) {
 		WriteProblem(w, Invalid("Укажите все настройки входа.", missing...))
 		return
 	}
-	if err := d.Auth.SetPolicy(r.Context(), c, p); err != nil {
+	if err := d.Auth.SetPolicy(r.Context(), c, p, req.Password, req.Code); err != nil {
 		WriteProblem(w, authProblem(d.Logger, err))
 		return
 	}

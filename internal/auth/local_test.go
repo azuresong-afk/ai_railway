@@ -17,7 +17,7 @@ func (e *env) setPolicy(t *testing.T, admin auth.Caller, edit func(*auth.Policy)
 	t.Helper()
 	p := auth.DefaultPolicy()
 	edit(&p)
-	if err := e.svc.SetPolicy(context.Background(), admin, p); err != nil {
+	if err := e.svc.SetPolicy(context.Background(), admin, p, "", ""); err != nil {
 		t.Fatal(err)
 	}
 }

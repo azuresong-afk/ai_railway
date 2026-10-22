@@ -444,7 +444,12 @@ paths:
         '500': { $ref: '#/components/responses/ProblemInternal' }
     put:
       summary: Изменить парольную политику и настройки входа
-      description: Право `auth_policy.manage`. Все поля обязательны. Пишет `auth.policy_changed` со значениями до и после.
+      description: |
+        Право `auth_policy.manage`. Все поля обязательны. Пишет `auth.policy_changed` со значениями до и после.
+        Ослабление (длина, классы или история пароля меньше; срок пароля больше или бессрочный; порог блокировки
+        выше; блокировка короче или по времени вместо бессрочной; бездействие, сессии, срок временного пароля
+        больше; `mfa_required_all` снят) требует текущий пароль или код TOTP: без них — 400 с полем `password`,
+        неверные — 403 `reauthentication_failed`; запись — с `weakening` и списком `weakened` (В24 ревью 2.r5).
       x-permission: auth_policy.manage
       security: [{ sessionCookie: [] }]
       parameters:
@@ -453,7 +458,7 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/AuthPolicy' }
+            schema: { $ref: '#/components/schemas/AuthPolicyUpdate' }
       responses:
         '200':
           description: Настройки сохранены
@@ -2791,6 +2796,10 @@ components:
         session_max_per_user: { type: integer, minimum: 1, maximum: 20, default: 5 }
         temp_password_hours: { type: integer, minimum: 1, maximum: 168, default: 72 }
         mfa_required_all: { type: boolean, default: false, description: 'Второй фактор обязателен для всех ролей (для security_admin и system_admin — всегда)' }
+    AuthPolicyUpdate:
+      allOf:
+        - $ref: '#/components/schemas/AuthPolicy'
+        - $ref: '#/components/schemas/Reauth'
     Role:
       type: string
       pattern: '^[a-z][a-z0-9_]{2,47}$'

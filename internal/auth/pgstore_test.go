@@ -268,8 +268,8 @@ func TestPGFlow(t *testing.T) {
 		t.Fatalf("вторая страница: %v %v", page, err)
 	}
 	p := auth.DefaultPolicy()
-	p.SessionIdleMinutes = 30
-	if err := e.svc.SetPolicy(ctx, admin, p); err != nil {
+	p.SessionIdleMinutes = 10
+	if err := e.svc.SetPolicy(ctx, admin, p, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	if got, err := e.svc.Policy(ctx); err != nil || got != p {
@@ -529,7 +529,7 @@ func TestPGLastAdminLockoutCapped(t *testing.T) {
 	admin := e.mfa.complete(t, mustPGLogin(t, e, "admin"))
 	p := auth.DefaultPolicy()
 	p.LockoutMinutes = 0
-	if err := e.svc.SetPolicy(ctx, admin, p); err != nil {
+	if err := e.svc.SetPolicy(ctx, admin, p, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	for _, login := range []string{"admin", "ivanov"} {

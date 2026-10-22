@@ -816,6 +816,10 @@ export interface paths {
         /**
          * Изменить парольную политику и настройки входа
          * @description Право `auth_policy.manage`. Все поля обязательны. Пишет `auth.policy_changed` со значениями до и после.
+         *     Ослабление (длина, классы или история пароля меньше; срок пароля больше или бессрочный; порог блокировки
+         *     выше; блокировка короче или по времени вместо бессрочной; бездействие, сессии, срок временного пароля
+         *     больше; `mfa_required_all` снят) требует текущий пароль или код TOTP: без них — 400 с полем `password`,
+         *     неверные — 403 `reauthentication_failed`; запись — с `weakening` и списком `weakened` (В24 ревью 2.r5).
          */
         put: {
             parameters: {
@@ -829,7 +833,7 @@ export interface paths {
             };
             requestBody: {
                 content: {
-                    "application/json": components["schemas"]["AuthPolicy"];
+                    "application/json": components["schemas"]["AuthPolicyUpdate"];
                 };
             };
             responses: {
@@ -4434,6 +4438,7 @@ export interface components {
              */
             mfa_required_all: boolean;
         };
+        AuthPolicyUpdate: components["schemas"]["AuthPolicy"] & components["schemas"]["Reauth"];
         /**
          * @description ID роли. Предустановленные: `security_admin`, `system_admin`, `analyst`, `auditor`,
          *     `app_owner` (ТЗ 1.3); свои роли — латиница, цифры и «_» (УПД.1).
