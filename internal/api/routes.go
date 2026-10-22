@@ -27,6 +27,7 @@ func Routes(d Deps) []Route {
 	routes = append(routes, applicationRoutes(d)...)
 	routes = append(routes, auditLogRoutes(d)...)
 	routes = append(routes, policyRoutes(d)...)
+	routes = append(routes, alertRoutes(d)...)
 	return routes
 }
 

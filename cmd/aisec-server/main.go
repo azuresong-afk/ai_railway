@@ -24,6 +24,7 @@ import (
 	// пояс и на хосте без /usr/share/zoneinfo (Н43 ревью 2.r4).
 	_ "time/tzdata"
 
+	"github.com/azuresong-afk/ai_railway/internal/alerting"
 	"github.com/azuresong-afk/ai_railway/internal/api"
 	"github.com/azuresong-afk/ai_railway/internal/apps"
 	"github.com/azuresong-afk/ai_railway/internal/audit"
@@ -240,10 +241,41 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		return err
 	}
 	defer readDB.Close()
-	eventStore, err := events.NewPGStore(db.Pool(), box, auditLog, audit.DefaultOrgID, events.WithRandom(rnd),
-		events.WithReadDB(readDB.Pool()))
+	// Оповещения (ТЗ 5.6, задача 3.10, ADR-0020): правила «порог» и «новое»
+	// считаются в транзакции приёма событий; встроенные правила создаются
+	// при запуске.
+	alertStore, err := alerting.NewPGStore(db.Pool(), auditLog, rnd, audit.DefaultOrgID, logger)
 	if err != nil {
 		return err
+	}
+	eventStore, err := events.NewPGStore(db.Pool(), box, auditLog, audit.DefaultOrgID, events.WithRandom(rnd),
+		events.WithReadDB(readDB.Pool()), events.WithIngestHook(alertStore))
+	if err != nil {
+		return err
+	}
+	activeUser := func(ctx context.Context, id string) error {
+		u, err := authSvc.User(ctx, id)
+		if err != nil {
+			return err
+		}
+		if u.Status != auth.StatusActive {
+			return errors.New("учётная запись не активна")
+		}
+		return nil
+	}
+	alertsSvc, err := alerting.New(alerting.Options{Store: alertStore, Provider: p, OrgID: audit.DefaultOrgID,
+		UserCheck: activeUser,
+		RoleCheck: func(ctx context.Context, id string) error {
+			_, err := authSvc.RoleDef(ctx, auth.Role(id))
+			return err
+		}})
+	if err != nil {
+		return err
+	}
+	if n, err := alertsSvc.EnsureBuiltins(ctx); err != nil {
+		return fmt.Errorf("встроенные правила оповещений: %w", err)
+	} else if n > 0 {
+		logger.Info("созданы встроенные правила оповещений", "count", n)
 	}
 	if err := events.Maintain(ctx, eventStore, logger); err != nil {
 		return fmt.Errorf("секции событий: %w", err)
@@ -288,16 +320,7 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		return err
 	}
 	appsSvc, err := apps.New(apps.Options{Store: appStore, Provider: p, Box: box, Policies: policiesSvc,
-		OwnerCheck: func(ctx context.Context, id string) error {
-			u, err := authSvc.User(ctx, id)
-			if err != nil {
-				return err
-			}
-			if u.Status != auth.StatusActive {
-				return errors.New("учётная запись не активна")
-			}
-			return nil
-		}})
+		OwnerCheck: activeUser})
 	if err != nil {
 		return err
 	}
@@ -328,6 +351,7 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		Integrity: integritySvc,
 		Status:    statusSvc,
 		Events:    eventStore,
+		Alerts:    alertsSvc,
 		Audit:     auditLog,
 		Fallback:  console,
 

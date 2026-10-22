@@ -10,6 +10,13 @@
 
 | Метод | Путь | Разрешение | security_admin | system_admin | analyst | auditor | app_owner | токен API |
 |---|---|---|---|---|---|---|---|---|
+| GET | `/api/v1/alert-rules` | `alert_rules.read` | да | — | да | да | — | да |
+| POST | `/api/v1/alert-rules` | `alert_rules.manage` | да | — | — | — | — | — |
+| GET | `/api/v1/alert-rules/{id}` | `alert_rules.read` | да | — | да | да | — | да |
+| PUT | `/api/v1/alert-rules/{id}` | `alert_rules.manage` | да | — | — | — | — | — |
+| GET | `/api/v1/alerts` | `alerts.read` | да | — | да | да | — | да |
+| GET | `/api/v1/alerts/{id}` | `alerts.read` | да | — | да | да | — | да |
+| POST | `/api/v1/alerts/{id}/status` | `alerts.manage` | да | — | да | — | — | да |
 | GET | `/api/v1/api-tokens` | `api_tokens.read` | да | свои | — | да | — | — |
 | POST | `/api/v1/api-tokens` | `api_tokens.manage` | да | свои | — | — | — | — |
 | GET | `/api/v1/api-tokens/{id}` | `api_tokens.read` | да | свои | — | да | — | — |
