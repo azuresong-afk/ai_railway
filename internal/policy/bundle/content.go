@@ -47,6 +47,18 @@ type Content struct {
 	Providers    []Provider    `json:"providers"`
 	Applications []Application `json:"applications"`
 	Policies     []Policy      `json:"policies"`
+	// Unavailable — приложения, не прошедшие проверку при сборке (В16 ревью
+	// 2.r3b): шлюз принимает их действующие ключи и отвечает 503, остальные
+	// приложения пакета работают.
+	Unavailable []Unavailable `json:"unavailable,omitempty"`
+}
+
+// Unavailable — приложение, исключённое из пакета: только ID, контур и
+// действующие ключи (отозванный ключ в пакет не попадает и на шлюзе — 401).
+type Unavailable struct {
+	ID   string `json:"id"`
+	Env  string `json:"env"`
+	Keys []Key  `json:"keys"`
 }
 
 // Provider — провайдер модели без учётных данных. CredentialSetAt меняется
@@ -161,7 +173,7 @@ func decodeStrict(data []byte, v any) error {
 func (c *Content) Validate() error {
 	var errs []error
 	add := func(format string, a ...any) { errs = append(errs, fmt.Errorf(format, a...)) }
-	if len(c.Providers) > MaxProviders || len(c.Applications) > MaxApplications || len(c.Policies) > MaxPolicies {
+	if len(c.Providers) > MaxProviders || len(c.Applications)+len(c.Unavailable) > MaxApplications || len(c.Policies) > MaxPolicies {
 		return fmt.Errorf("содержимое: больше %d провайдеров, %d приложений или %d политик", MaxProviders, MaxApplications, MaxPolicies)
 	}
 	providers := map[string]bool{}
@@ -222,28 +234,47 @@ func (c *Content) Validate() error {
 			add("%s: больше %d моделей", at, MaxModels)
 		}
 		errs = append(errs, prefixed(at, a.params().Check())...)
-		if len(a.Keys) > MaxKeysPerApp {
-			add("%s: больше %d ключей", at, MaxKeysPerApp)
+		errs = append(errs, checkKeys(at, a.Keys, prefixes)...)
+	}
+	for i, u := range c.Unavailable {
+		at := fmt.Sprintf("unavailable[%d] (%s)", i, short(u.ID))
+		if !config.ValidID(u.ID) || apps[u.ID] {
+			add("%s: неверный или повторный id", at)
 		}
-		for j, k := range a.Keys {
-			kat := fmt.Sprintf("%s.keys[%d]", at, j)
-			if !prefixRe.MatchString(k.Prefix) || prefixes[k.Prefix] {
-				add("%s: неверный или повторный prefix", kat)
-			}
-			prefixes[k.Prefix] = true
-			if !sha256Re.MatchString(k.SHA256) {
-				add("%s: sha256 — 64 шестнадцатеричные цифры", kat)
-			}
-			if k.ExpiresAt.IsZero() {
-				add("%s: expires_at обязателен", kat)
-			}
-			if len(k.AllowedCIDRs) > MaxCIDRs {
-				add("%s: больше %d подсетей", kat, MaxCIDRs)
-			}
-			errs = append(errs, prefixed(kat, config.CheckCIDRs(k.AllowedCIDRs))...)
+		apps[u.ID] = true
+		if u.Env != "prod" && u.Env != "test" {
+			add("%s: env — prod или test", at)
 		}
+		errs = append(errs, checkKeys(at, u.Keys, prefixes)...)
 	}
 	return errors.Join(errs...)
+}
+
+// checkKeys проверяет ключи приложения; prefixes — уже встреченные префиксы.
+func checkKeys(at string, keys []Key, prefixes map[string]bool) []error {
+	var errs []error
+	add := func(format string, a ...any) { errs = append(errs, fmt.Errorf(format, a...)) }
+	if len(keys) > MaxKeysPerApp {
+		add("%s: больше %d ключей", at, MaxKeysPerApp)
+	}
+	for j, k := range keys {
+		kat := fmt.Sprintf("%s.keys[%d]", at, j)
+		if !prefixRe.MatchString(k.Prefix) || prefixes[k.Prefix] {
+			add("%s: неверный или повторный prefix", kat)
+		}
+		prefixes[k.Prefix] = true
+		if !sha256Re.MatchString(k.SHA256) {
+			add("%s: sha256 — 64 шестнадцатеричные цифры", kat)
+		}
+		if k.ExpiresAt.IsZero() {
+			add("%s: expires_at обязателен", kat)
+		}
+		if len(k.AllowedCIDRs) > MaxCIDRs {
+			add("%s: больше %d подсетей", kat, MaxCIDRs)
+		}
+		errs = append(errs, prefixed(kat, config.CheckCIDRs(k.AllowedCIDRs))...)
+	}
+	return errs
 }
 
 func (p Provider) params() config.ProviderParams {
@@ -310,12 +341,33 @@ func (c *Content) Specs() ([]policy.Spec, error) {
 	return out, nil
 }
 
-// KeyRecords — ключи приложений для аутентификации на шлюзе.
+// UnavailableIDs — ID приложений, исключённых из пакета.
+func (c *Content) UnavailableIDs() []string {
+	out := make([]string, 0, len(c.Unavailable))
+	for _, u := range c.Unavailable {
+		out = append(out, u.ID)
+	}
+	return out
+}
+
+// KeyRecords — ключи приложений для аутентификации на шлюзе, в том числе
+// исключённых из пакета (их запросы шлюз отклоняет с 503).
 func (c *Content) KeyRecords() ([]auth.KeyRecord, error) {
-	var out []auth.KeyRecord
+	type owner struct {
+		id, env string
+		keys    []Key
+	}
+	all := make([]owner, 0, len(c.Applications)+len(c.Unavailable))
 	for _, a := range c.Applications {
-		for _, k := range a.Keys {
-			rec := auth.KeyRecord{AppID: a.ID, Env: a.Env, Prefix: k.Prefix, SHA256: k.SHA256, Expires: k.ExpiresAt}
+		all = append(all, owner{a.ID, a.Env, a.Keys})
+	}
+	for _, u := range c.Unavailable {
+		all = append(all, owner{u.ID, u.Env, u.Keys})
+	}
+	var out []auth.KeyRecord
+	for _, a := range all {
+		for _, k := range a.keys {
+			rec := auth.KeyRecord{AppID: a.id, Env: a.env, Prefix: k.Prefix, SHA256: k.SHA256, Expires: k.ExpiresAt}
 			for _, s := range k.AllowedCIDRs {
 				p, err := netip.ParsePrefix(s)
 				if err != nil {

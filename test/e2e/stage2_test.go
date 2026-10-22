@@ -475,13 +475,16 @@ func TestE2EStage2_AuditTampered(t *testing.T) {
 
 			// По команде из консоли (задача 2.4a): аудитор проверяет цепочку
 			// через API; пока идёт фоновая проверка — 409, при исчерпании
-			// предела частоты — 429: ждём и повторяем, затем итог.
+			// предела частоты — 429: ждём и повторяем, затем итог. Проверка
+			// при запуске моложе 10 минут, поэтому ответ — её итог с cached
+			// (Н31 ревью 2.r3b).
 			ac := s.client("198.51.100.32")
 			ac.signIn(auditor)
 			var v struct {
 				OK        bool
 				Reason    string
 				BrokenSeq *int64 `json:"broken_seq"`
+				Cached    bool
 			}
 			done := s2WaitFor(90*time.Second, func() bool {
 				r := ac.do("POST", "/api/v1/audit/verify", nil)
@@ -495,18 +498,19 @@ func TestE2EStage2_AuditTampered(t *testing.T) {
 				r.json(t, &v)
 				return true
 			})
-			if !done || v.OK || v.BrokenSeq == nil || !slices.Contains(tc.reasons, v.Reason) {
+			if !done || v.OK || !v.Cached || v.BrokenSeq == nil || !slices.Contains(tc.reasons, v.Reason) {
 				t.Errorf("проверка через API: %+v, ожидалась одна из %v", v, tc.reasons)
 			}
 			if tc.seq != nil && v.BrokenSeq != nil && *v.BrokenSeq != tc.seq(first, last) {
 				t.Errorf("через API цепочка оборвана на записи %d, ожидалась %d", *v.BrokenSeq, tc.seq(first, last))
 			}
-			// Итог виден в журнале от имени аудитора с адресом.
-			r := ac.do("GET", "/api/v1/audit?action=audit.chain_broken&actor=e2e-auditor", nil)
+			// Итог — от проверки при запуске: в журнале от имени сервера,
+			// повтор аудитора новой записи не добавил.
+			r := ac.do("GET", "/api/v1/audit?action=audit.chain_broken", nil)
 			var page struct {
 				Items []struct {
-					SourceIP *string `json:"source_ip"`
-					Details  struct {
+					Actor   struct{ Type, Name string }
+					Details struct {
 						Reason string
 					}
 				}
@@ -515,8 +519,16 @@ func TestE2EStage2_AuditTampered(t *testing.T) {
 				t.Fatalf("/audit: %s", r)
 			}
 			r.json(t, &page)
-			if len(page.Items) == 0 || page.Items[0].SourceIP == nil || page.Items[0].Details.Reason != v.Reason {
-				t.Errorf("в журнале нет итога проверки аудитора: %s", r)
+			if len(page.Items) == 0 || page.Items[0].Actor.Type != "system" || page.Items[0].Details.Reason != v.Reason ||
+				slices.ContainsFunc(page.Items, func(it struct {
+					Actor   struct{ Type, Name string }
+					Details struct {
+						Reason string
+					}
+				}) bool {
+					return it.Actor.Name == "e2e-auditor"
+				}) {
+				t.Errorf("итог проверки в журнале: %s", r)
 			}
 		})
 	}

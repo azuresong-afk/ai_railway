@@ -66,6 +66,8 @@ func appsProblem(logger *slog.Logger, err error, notFound string) *Problem {
 	case errors.Is(err, apps.ErrPolicyRequired):
 		return NewProblem(http.StatusForbidden, CodeForbidden,
 			"Переход на провайдера без признака «внешний» выключает маскирование: его выполняет администратор безопасности.")
+	case errors.Is(err, apps.ErrBreaksBundle):
+		return NewProblem(http.StatusUnprocessableEntity, CodeUnprocessable, err.Error()+".")
 	case errors.Is(err, apps.ErrConfirmRequired):
 		return NewProblem(http.StatusForbidden, CodeForbidden,
 			"Изменение ослабляет защиту: выполните его в консоли с вводом текущего пароля или кода.")

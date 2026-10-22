@@ -136,7 +136,9 @@ func (s *Service) IssueKey(ctx context.Context, by By, appID, ownerID string, in
 }
 
 // RotateKey выпускает новый ключ вместо действующего с теми же именем и
-// подсетями; прежний действует ещё Overlap (срок только сокращается).
+// подсетями; прежний действует ещё Overlap (срок только сокращается). Новый
+// ключ считается в MaxActiveKeys, как при выпуске (Н24 ревью 2.r3b): иначе
+// повторные ротации набирали бы сколько угодно действующих ключей.
 // Возвращает новый ключ, его секрет и прежний ключ.
 func (s *Service) RotateKey(ctx context.Context, by By, keyID, ownerID string, in RotateInput) (Key, string, Key, error) {
 	overlap := DefaultOverlap
@@ -160,7 +162,7 @@ func (s *Service) RotateKey(ctx context.Context, by By, keyID, ownerID string, i
 	}
 	now := s.now()
 	var created Key
-	old, err := s.store.UpdateKey(ctx, s.orgID, keyID, func(k *Key, a Application) (*Key, audit.Entry, error) {
+	old, err := s.store.UpdateKey(ctx, s.orgID, keyID, now, func(k *Key, a Application, active int) (*Key, audit.Entry, error) {
 		if err := visible(a, ownerID); err != nil {
 			return nil, audit.Entry{}, err
 		}
@@ -169,6 +171,9 @@ func (s *Service) RotateKey(ctx context.Context, by By, keyID, ownerID string, i
 		}
 		if k.Status(now) != KeyActive {
 			return nil, audit.Entry{}, ErrKeyInactive
+		}
+		if active >= MaxActiveKeys {
+			return nil, audit.Entry{}, ErrTooManyKeys
 		}
 		created = Key{ID: id, OrgID: s.orgID, AppID: a.ID, Name: k.Name, Prefix: prefix, Hash: hash, HashAlg: s.hasher.Name(),
 			AllowedCIDRs: k.AllowedCIDRs, ExpiresAt: now.Add(ttl), CreatedAt: now, CreatedBy: by.ref(), RotatedFrom: k.ID}
@@ -190,7 +195,7 @@ func (s *Service) RotateKey(ctx context.Context, by By, keyID, ownerID string, i
 // RevokeKey отзывает ключ сразу (в шлюзе — с доставкой пакета, задача
 // 2.13). Отозванный ключ не оживает.
 func (s *Service) RevokeKey(ctx context.Context, by By, keyID, ownerID string) (Key, error) {
-	return s.store.UpdateKey(ctx, s.orgID, keyID, func(k *Key, a Application) (*Key, audit.Entry, error) {
+	return s.store.UpdateKey(ctx, s.orgID, keyID, s.now(), func(k *Key, a Application, _ int) (*Key, audit.Entry, error) {
 		if err := visible(a, ownerID); err != nil {
 			return nil, audit.Entry{}, err
 		}
@@ -202,7 +207,13 @@ func (s *Service) RevokeKey(ctx context.Context, by By, keyID, ownerID string) (
 	})
 }
 
-// Keys — ключи приложения без секретов; ownerID не пуст — только своего.
+// ActiveKeysAt — действующие на момент now ключи всех приложений (пакет
+// конфигурации, Н25 ревью 2.r3b): одним запросом и без предела выдачи.
+func (s *Service) ActiveKeysAt(ctx context.Context, now time.Time) ([]Key, error) {
+	return s.store.ActiveKeys(ctx, s.orgID, now)
+}
+
+// Keys — ключи приложения (новые первыми); ownerID не пуст — только своего.
 func (s *Service) Keys(ctx context.Context, appID, ownerID string) ([]Key, error) {
 	if _, err := s.Application(ctx, appID, ownerID); err != nil {
 		return nil, err

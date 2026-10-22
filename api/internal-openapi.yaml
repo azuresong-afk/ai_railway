@@ -101,9 +101,12 @@ paths:
         `secrets`, зашифрованном HPKE (DHKEM X25519, HKDF-SHA256, AES-256-GCM)
         для ключа из заголовка `AISec-Bundle-Key`: открытым текстом их нет ни
         в ответе, ни в журналах. Сервер собирает новую версию, когда меняются
-        данные (`bundle.build` в аудите); данные, которые шлюз отверг бы
+        данные (`bundle.build` в аудите). Приложение, которое шлюз отверг бы
         (например, политика ссылается на словарь, которого нет у приложения),
-        не собираются — выдаётся последняя корректная версия. Каждая выдача
+        в версию не входит: его ключи — в части `unavailable` содержимого,
+        шлюз отвечает по нему 503 `app_unavailable`, остальные приложения
+        получают версию (В16 ревью 2.r3b). Если не собирается всё содержимое
+        (размер), выдаётся последняя корректная версия. Каждая выдача
         200 пишется в аудит (`bundle.deliver`), 304 — нет. Предел частоты —
         общий для внутреннего порта (600 в минуту с адреса); шлюз опрашивает
         раз в 30 секунд.
@@ -219,9 +222,9 @@ components:
       description: |
         Конверт пакета (internal/policy/bundle). Части — стандартный base64:
         `header` — JSON {format, version, issued_at, gateway_id, content_hash,
-        hash_alg}; `content` — JSON {providers, applications, policies} без
-        учётных данных; `secrets` — шифротекст HPKE списка {provider,
-        credential}; `signature` — Ed25519 над
+        hash_alg}; `content` — JSON {providers, applications, policies,
+        unavailable} без учётных данных; `secrets` — шифротекст HPKE списка
+        {provider, credential}; `signature` — Ed25519 над
         `format || 0x00 || len(header) || header || len(content) || content || len(secrets) || secrets`
         (длины — 4 байта big-endian). Неизвестные поля на любом уровне — отказ
         на шлюзе.

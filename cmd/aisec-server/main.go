@@ -17,6 +17,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"sync/atomic"
 	"time"
 
 	"github.com/azuresong-afk/ai_railway/internal/api"
@@ -32,6 +33,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/integrity"
 	"github.com/azuresong-afk/ai_railway/internal/integrity/selftest"
 	"github.com/azuresong-afk/ai_railway/internal/keyring"
+	"github.com/azuresong-afk/ai_railway/internal/policy/bundle/build"
 	"github.com/azuresong-afk/ai_railway/internal/policy/versions"
 	"github.com/azuresong-afk/ai_railway/internal/store"
 	"github.com/azuresong-afk/ai_railway/internal/sysstatus"
@@ -53,6 +55,12 @@ const (
 	// eventsReadStatementTimeout — statement_timeout пула чтения: выгрузка
 	// (events.ExportTimeout) и запас.
 	eventsReadStatementTimeout = events.ExportTimeout + 10*time.Second
+	// auditReadPoolSize — пул выборок журнала аудита консолью, по пределу
+	// api.MaxAuditReadsTotal (В17 ревью 2.r3b).
+	auditReadPoolSize = api.MaxAuditReadsTotal
+	// auditReadStatementTimeout — statement_timeout пула выборок журнала:
+	// срок выборки (audit.QueryTimeout) и запас; раньше обрывает контекст.
+	auditReadStatementTimeout = audit.QueryTimeout + 2*time.Second
 )
 
 func main() {
@@ -125,7 +133,12 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	if err := requireAuditKey(ctx, checkpoints, auditVerifier != nil, logger); err != nil {
 		return err
 	}
-	auditLog, err := audit.New(db.Pool(), p, audit.WithCheckpoints(checkpoints))
+	auditReadDB, err := store.Open(ctx, cfg.DatabaseURL, auditReadPoolSize, store.WithStatementTimeout(auditReadStatementTimeout))
+	if err != nil {
+		return err
+	}
+	defer auditReadDB.Close()
+	auditLog, err := audit.New(db.Pool(), p, audit.WithCheckpoints(checkpoints), audit.WithReadDB(auditReadDB.Pool()))
 	if err != nil {
 		return err
 	}
@@ -225,7 +238,8 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	// «Состояние системы» (задача 2.20): шлюзы читаются из реестра и без
 	// внутреннего УЦ; уведомления ВРМ.1, РСБ.5, ОЦЛ.5 пишутся в аудит при
 	// смене состояния, раз в минуту.
-	statusSvc, err := newStatus(ctx, cfg, db, auditLog, integritySvc, selftestRes, logger)
+	var bundleSvc atomic.Pointer[build.Service]
+	statusSvc, err := newStatus(ctx, cfg, db, auditLog, integritySvc, selftestRes, bundleHealth(&bundleSvc), logger)
 	if err != nil {
 		return err
 	}
@@ -308,10 +322,11 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	if gateways != nil {
 		// Пакеты конфигурации (задача 2.13): без ключа подписи внутренний
 		// порт не открывается — шлюзы не получили бы конфигурацию.
-		bundleRoutes, err := newBundleRoutes(cfg, p, db, auditLog, appsSvc, policiesSvc, logger)
+		bundleRoutes, bsvc, err := newBundleRoutes(cfg, p, db, auditLog, appsSvc, policiesSvc, logger)
 		if err != nil {
 			return err
 		}
+		bundleSvc.Store(bsvc)
 		internal, err := newInternalServer(ctx, cfg, tp, hasher, gateways, eventStore, ca, certPEM, keyPEM, bundleRoutes, logger)
 		if err != nil {
 			return err
@@ -329,7 +344,7 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 // newStatus собирает «Состояние системы» и запускает фоновую проверку
 // условий уведомлений раздела 7.
 func newStatus(ctx context.Context, cfg *serverConfig, db *store.DB, auditLog *audit.Log, integritySvc integrity.Service,
-	selftestRes selftest.Result, logger *slog.Logger) (*sysstatus.Service, error) {
+	selftestRes selftest.Result, bundle func(context.Context) (*sysstatus.BundleHealth, error), logger *slog.Logger) (*sysstatus.Service, error) {
 	gwStore, err := gwregistry.NewPGStore(db.Pool(), auditLog)
 	if err != nil {
 		return nil, err
@@ -348,7 +363,7 @@ func newStatus(ctx context.Context, cfg *serverConfig, db *store.DB, auditLog *a
 		Gateways:  sysstatus.GatewayLister{Store: gwStore},
 		Integrity: integritySvc.Store, Store: pg,
 		Timezone: cfg.Timezone, StorageLimit: cfg.AuditStorageLimit, WarnPercent: cfg.AuditStorageWarnPercent,
-		Logger: logger,
+		Logger: logger, Bundle: bundle,
 	})
 	if err != nil {
 		return nil, err

@@ -553,7 +553,7 @@ func (s *PGStore) CreateKey(ctx context.Context, orgID, appID string, now time.T
 }
 
 // UpdateKey — см. Store.
-func (s *PGStore) UpdateKey(ctx context.Context, orgID, id string, fn func(*Key, Application) (*Key, audit.Entry, error)) (Key, error) {
+func (s *PGStore) UpdateKey(ctx context.Context, orgID, id string, now time.Time, fn func(*Key, Application, int) (*Key, audit.Entry, error)) (Key, error) {
 	var out Key
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
 		k, err := scanKey(tx.QueryRow(ctx, `SELECT `+keyCols+` FROM app_keys WHERE org_id = $1 AND id = $2`, orgID, id))
@@ -568,7 +568,12 @@ func (s *PGStore) UpdateKey(ctx context.Context, orgID, id string, fn func(*Key,
 		if k, err = scanKey(tx.QueryRow(ctx, `SELECT `+keyCols+` FROM app_keys WHERE org_id = $1 AND id = $2 FOR UPDATE`, orgID, id)); err != nil {
 			return err
 		}
-		created, rec, err := fn(&k, a)
+		var active int
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM app_keys WHERE app_id = $1 AND revoked_at IS NULL AND expires_at > $2`,
+			k.AppID, now).Scan(&active); err != nil {
+			return err
+		}
+		created, rec, err := fn(&k, a, active)
 		if err != nil {
 			return err
 		}
@@ -592,6 +597,27 @@ func (s *PGStore) Key(ctx context.Context, orgID, id string) (Key, error) {
 	ctx, cancel := pgCtx(ctx)
 	defer cancel()
 	return scanKey(s.db.QueryRow(ctx, `SELECT `+keyCols+` FROM app_keys WHERE org_id = $1 AND id = $2`, orgID, id))
+}
+
+// ActiveKeys — см. Store.
+func (s *PGStore) ActiveKeys(ctx context.Context, orgID string, now time.Time) ([]Key, error) {
+	ctx, cancel := pgCtx(ctx)
+	defer cancel()
+	rows, err := s.db.Query(ctx, `SELECT `+keyCols+` FROM app_keys WHERE org_id = $1 AND revoked_at IS NULL AND expires_at > $2
+		ORDER BY app_id, prefix`, orgID, now)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Key{}
+	for rows.Next() {
+		k, err := scanKey(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, k)
+	}
+	return out, rows.Err()
 }
 
 // Keys — см. Store.

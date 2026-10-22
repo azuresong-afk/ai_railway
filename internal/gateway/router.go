@@ -68,6 +68,30 @@ func (a *App) Models() []string {
 // Router — приложения шлюза по идентификатору.
 type Router struct {
 	apps map[string]*App
+	// unavailable — приложения, исключённые сервером из пакета конфигурации
+	// (В16 ревью 2.r3b): их ключи принимаются, запросы — 503.
+	unavailable map[string]bool
+}
+
+// SetUnavailable отмечает приложения, исключённые из пакета конфигурации.
+// Вызывается до начала обслуживания запросов.
+func (rt *Router) SetUnavailable(ids []string) {
+	rt.unavailable = make(map[string]bool, len(ids))
+	for _, id := range ids {
+		rt.unavailable[id] = true
+	}
+}
+
+// noApp отвечает на запрос приложения, которого нет в маршрутах: 503, если
+// сервер исключил его из пакета (конфигурация не прошла проверку, fail
+// closed), иначе 403.
+func (rt *Router) noApp(w http.ResponseWriter, r *http.Request) {
+	if id, ok := IdentityFrom(r.Context()); ok && rt.unavailable[id.AppID] {
+		WriteError(w, http.StatusServiceUnavailable, "конфигурация приложения не прошла проверку на сервере управления",
+			"service_unavailable", "app_unavailable")
+		return
+	}
+	WriteError(w, http.StatusForbidden, "приложение не настроено", "invalid_request_error", "app_not_configured")
 }
 
 // NewRouter строит маршруты из конфигурации; провайдеры уже созданы.
@@ -185,7 +209,7 @@ func (rt *Router) app(r *http.Request) (*App, bool) {
 func (rt *Router) models(w http.ResponseWriter, r *http.Request) {
 	a, ok := rt.app(r)
 	if !ok {
-		WriteError(w, http.StatusForbidden, "приложение не настроено", "invalid_request_error", "app_not_configured")
+		rt.noApp(w, r)
 		return
 	}
 	type model struct {
