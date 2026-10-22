@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"strings"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 

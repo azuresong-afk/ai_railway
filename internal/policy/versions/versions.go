@@ -171,7 +171,9 @@ type Service struct {
 // SetBundleCheck задаёт проверку новой версии сборкой пакета (ошибка —
 // с ErrBreaksBundle). Вызывается до начала обслуживания запросов: сборка
 // создаётся после сервиса политик.
-func (s *Service) SetBundleCheck(fn func(ctx context.Context, spec *policy.Spec) error) { s.bundleCheck = fn }
+func (s *Service) SetBundleCheck(fn func(ctx context.Context, spec *policy.Spec) error) {
+	s.bundleCheck = fn
+}
 
 // New создаёт сервис.
 func New(o Options) (*Service, error) {
