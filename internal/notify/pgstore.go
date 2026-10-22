@@ -29,7 +29,7 @@ type PGDB interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
-// PGStore — Store на PostgreSQL (миграция 0032_notify_channels).
+// PGStore — Store на PostgreSQL (миграция 0033_notify_channels).
 type PGStore struct {
 	db    PGDB
 	audit *audit.Log

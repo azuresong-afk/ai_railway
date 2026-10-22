@@ -128,4 +128,6 @@ type heartbeatBody struct {
 	// heartbeat при остановке (В27 ревью 2.r5).
 	StartedAt *time.Time `json:"started_at,omitempty"`
 	Stopping  bool       `json:"stopping,omitempty"`
+	// Budget — счётчики расхода процесса (задача 3.18).
+	Budget *budgetReport `json:"budget,omitempty"`
 }

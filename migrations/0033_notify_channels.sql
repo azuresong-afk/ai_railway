@@ -63,7 +63,7 @@ GRANT UPDATE (name, enabled, min_severity, settings, secret_fields, secret, secr
 GRANT UPDATE (status, attempts, next_at, error, updated_at, sent_at) ON alert_deliveries TO aisec_app;
 
 -- Доставки удаляются вместе с оповещением по сроку хранения (миграция
--- 0031), тестовые — по тому же сроку от создания.
+-- 0032), тестовые — по тому же сроку от создания.
 CREATE FUNCTION alert_deliveries_delete_guard() RETURNS trigger
     LANGUAGE plpgsql AS
 $$

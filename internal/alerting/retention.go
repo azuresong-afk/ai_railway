@@ -76,7 +76,7 @@ func (s *PGStore) SetRetentionDays(ctx context.Context, days int, fn func(old in
 	return old, err
 }
 
-// PurgeExpired — см. RetentionStore. Триггеры миграции 0031 повторяют
+// PurgeExpired — см. RetentionStore. Триггеры миграции 0032 повторяют
 // условие: роль сервера не удалит оповещение раньше срока даже прямым
 // запросом.
 func (s *PGStore) PurgeExpired(ctx context.Context) (int, error) {

@@ -365,6 +365,15 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		st, err := authSvc.InstallSettings(ctx)
 		return st.RetentionMode, err
 	})
+	// Месяц расхода и бюджетов — в часовом поясе установки; счётчики
+	// расхода приходят от шлюзов в heartbeat (задача 3.18).
+	appsSvc.SetTimezone(func(ctx context.Context) (string, error) {
+		st, err := authSvc.InstallSettings(ctx)
+		return st.Timezone, err
+	})
+	if gateways != nil {
+		gateways.SetBudgetSync(appsSvc)
+	}
 
 	// Консоль отдаётся, только если она собрана (make web-build перед go build); иначе сервер — чистый API.
 	var console http.Handler
