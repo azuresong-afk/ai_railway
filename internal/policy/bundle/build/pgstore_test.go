@@ -92,7 +92,10 @@ func sqlState(err error) string {
 	return ""
 }
 
-func TestPGConfigBundles(t *testing.T) {
+// migrated — схема теста с миграциями: пул владельца схемы и пул роли
+// сервера; без AISEC_TEST_DATABASE_URL тест пропускается.
+func migrated(t *testing.T) (aisecCrypto.Provider, *pgxpool.Pool, *pgxpool.Pool) {
+	t.Helper()
 	dsn := os.Getenv("AISEC_TEST_DATABASE_URL")
 	if dsn == "" {
 		t.Skip("AISEC_TEST_DATABASE_URL не задан")
@@ -133,7 +136,16 @@ func TestPGConfigBundles(t *testing.T) {
 	if _, err := owner.Exec(ctx, "GRANT USAGE ON SCHEMA "+pgx.Identifier{schema}.Sanitize()+" TO aisec_app"); err != nil {
 		t.Fatal(err)
 	}
-	app := newPool(t, dsn, schema, "aisec_app")
+	return p, owner, newPool(t, dsn, schema, "aisec_app")
+}
+
+func TestPGConfigBundles(t *testing.T) {
+	ctx := pgCtx(t)
+	p, owner, app := migrated(t)
+	h, err := p.Hasher()
+	if err != nil {
+		t.Fatal(err)
+	}
 	l, err := audit.New(app, p)
 	if err != nil {
 		t.Fatal(err)

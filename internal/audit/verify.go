@@ -63,6 +63,13 @@ func (v Verification) OK() bool { return v.Break == nil }
 type Verifier struct {
 	log *Log
 	mac *HeadMAC
+	// prev — имитовставки прежних версий ключа данных, ещё не удалённых
+	// ротацией (ADR-0018, п. 3.4): их опоры тоже сверяются.
+	prev []HeadMAC
+	// src — источник версий ключа данных (keyring.Box): перед каждой
+	// проверкой mac и prev берутся заново, поэтому после keys rotate-data
+	// опора пишется действующей версией без перезапуска (3В2 ревью 3.r1).
+	src MACSource
 	// mu сериализует проверки и защищает known и last.
 	mu    sync.Mutex
 	known *Anchor
@@ -89,6 +96,73 @@ func WithHeadMAC(m HeadMAC) VerifierOption {
 			v.mac = &m
 		}
 	}
+}
+
+// WithPreviousHeadMACs — имитовставки прежних версий ключа данных: опоры,
+// записанные до ротации, остаются опорами, пока версия не удалена.
+func WithPreviousHeadMACs(ms ...HeadMAC) VerifierOption {
+	return func(v *Verifier) {
+		for _, m := range ms {
+			if m.MAC != nil && m.KeyID != "" {
+				v.prev = append(v.prev, m)
+			}
+		}
+	}
+}
+
+// MACSource — версии ключа данных с выведением имитовставки
+// (keyring.Box): KeyID — действующая версия, KeyIDs — все известные.
+type MACSource interface {
+	KeyID() string
+	KeyIDs() []string
+	MACFor(keyID, purpose string) (crypto.MAC, error)
+}
+
+// headMACs — имитовставка действующей версии и прежних версий src.
+func headMACs(src MACSource) (*HeadMAC, []HeadMAC, error) {
+	active := src.KeyID()
+	var cur *HeadMAC
+	var prev []HeadMAC
+	for _, id := range src.KeyIDs() {
+		m, err := src.MACFor(id, HeadMACPurpose)
+		if err != nil {
+			return nil, nil, fmt.Errorf("ключ имитовставки цепочки аудита: %w", err)
+		}
+		if id == active {
+			cur = &HeadMAC{KeyID: id, MAC: m}
+			continue
+		}
+		prev = append(prev, HeadMAC{KeyID: id, MAC: m})
+	}
+	if cur == nil {
+		return nil, nil, fmt.Errorf("ключ имитовставки цепочки аудита: нет действующей версии %s", active)
+	}
+	return cur, prev, nil
+}
+
+// HeadMACOptions — имитовставка головы на действующей версии ключа данных и
+// опоры прежних версий (ADR-0018, п. 3.4). Версии берутся из src перед
+// каждой проверкой: смена действующей версии (keys rotate-data) видна
+// без перезапуска (3В2 ревью 3.r1). Ошибка — ключ не выводится уже сейчас.
+func HeadMACOptions(src MACSource) ([]VerifierOption, error) {
+	cur, prev, err := headMACs(src)
+	if err != nil {
+		return nil, err
+	}
+	return []VerifierOption{WithHeadMAC(*cur), WithPreviousHeadMACs(prev...), func(v *Verifier) { v.src = src }}, nil
+}
+
+// refreshMACs перечитывает версии ключа данных из src (под v.mu).
+func (v *Verifier) refreshMACs() error {
+	if v.src == nil {
+		return nil
+	}
+	cur, prev, err := headMACs(v.src)
+	if err != nil {
+		return err
+	}
+	v.mac, v.prev = cur, prev
+	return nil
 }
 
 // NewVerifier создаёт проверку для журнала l.
@@ -181,6 +255,9 @@ func (v *Verifier) verifyLogged(ctx context.Context, by Actor, ip netip.Addr) (V
 }
 
 func (v *Verifier) verify(ctx context.Context, by Actor, ip netip.Addr) (Verification, error) {
+	if err := v.refreshMACs(); err != nil {
+		return Verification{}, err
+	}
 	known, forged, err := v.lastKnown(ctx)
 	if err != nil {
 		return Verification{}, err
@@ -274,12 +351,14 @@ func (v *Verifier) lastKnown(ctx context.Context) ([]Anchor, *Break, error) {
 		out = append(out, *v.known)
 	}
 	if v.mac != nil {
-		a, brk, err := v.macAnchor(ctx)
-		if err != nil || brk != nil {
-			return nil, brk, err
-		}
-		if a != nil {
-			out = append(out, *a)
+		for _, m := range append([]HeadMAC{*v.mac}, v.prev...) {
+			a, brk, err := v.macAnchor(ctx, m)
+			if err != nil || brk != nil {
+				return nil, brk, err
+			}
+			if a != nil {
+				out = append(out, *a)
+			}
 		}
 		return out, nil, nil
 	}
@@ -296,21 +375,21 @@ func (v *Verifier) lastKnown(ctx context.Context) ([]Anchor, *Break, error) {
 	return out, nil, nil
 }
 
-// macAnchor — последняя проверка с имитовставкой действующего ключа данных.
-// Строки без имитовставки (aisec-cli без каталога ключей, проверки до
-// миграции 0015) и строки прежнего ключа данных опорой не служат.
-func (v *Verifier) macAnchor(ctx context.Context) (*Anchor, *Break, error) {
+// macAnchor — последняя проверка с имитовставкой ключа m. Строки без
+// имитовставки (aisec-cli без каталога ключей, проверки до миграции 0015) и
+// строки удалённых версий ключа данных опорой не служат.
+func (v *Verifier) macAnchor(ctx context.Context, m HeadMAC) (*Anchor, *Break, error) {
 	var a Anchor
 	var tag []byte
 	err := v.log.db.QueryRow(ctx, `SELECT last_seq, last_hash, head_mac FROM audit_verifications
 		WHERE ok AND last_hash IS NOT NULL AND head_mac IS NOT NULL AND mac_key_id = $1::uuid
-		ORDER BY last_seq DESC LIMIT 1`, v.mac.KeyID).Scan(&a.Seq, &a.Hash, &tag)
+		ORDER BY last_seq DESC LIMIT 1`, m.KeyID).Scan(&a.Seq, &a.Hash, &tag)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		return nil, nil, nil
 	case err != nil:
 		return nil, nil, fmt.Errorf("журнал аудита: прошлые проверки: %w", err)
-	case !v.mac.MAC.Verify(headMessage(a), tag):
+	case !m.MAC.Verify(headMessage(a), tag):
 		return nil, &Break{Seq: a.Seq, Reason: ReasonAnchorForged}, nil
 	}
 	return &a, nil, nil

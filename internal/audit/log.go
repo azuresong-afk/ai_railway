@@ -40,6 +40,7 @@ type Checkpoints interface {
 // Log — журнал аудита (РСБ.1–4) и журнал технического состояния (РСБ.7).
 type Log struct {
 	db          DB
+	provider    crypto.Provider
 	hasher      crypto.Hasher
 	random      crypto.Random
 	checkpoints Checkpoints
@@ -94,7 +95,7 @@ func New(db DB, p crypto.Provider, opts ...Option) (*Log, error) {
 	if err != nil {
 		return nil, fmt.Errorf("журнал аудита: источник случайности профиля: %w", err)
 	}
-	l := &Log{db: db, hasher: h, random: r, now: time.Now}
+	l := &Log{db: db, provider: p, hasher: h, random: r, now: time.Now}
 	for _, o := range opts {
 		o(l)
 	}

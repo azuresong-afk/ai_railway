@@ -113,10 +113,11 @@ func (c *Checkpoint) VerifySignature(v crypto.Verifier) bool {
 
 // VerifyCheckpoints проверяет последовательность точек, упорядоченную по
 // номеру: первая начинается с {0, нулевой хеш}, каждая следующая продолжает
-// предыдущую, число записей сходится, алгоритм — профиля. v = nil —
+// предыдущую, число записей сходится, алгоритм — профиля, подпись и
+// public_key — ключа по расписанию keys (ADR-0018, п. 5.2). keys = nil —
 // подписи не проверяются (у компонента нет открытого ключа аудита), только
 // связность. Возвращает начало хранимой цепочки.
-func VerifyCheckpoints(h crypto.Hasher, v crypto.Verifier, cps []Checkpoint) (Anchor, error) {
+func VerifyCheckpoints(h crypto.Hasher, keys CheckpointKeys, cps []Checkpoint) (Anchor, error) {
 	prev := Anchor{Seq: 0, Hash: genesis(h)}
 	for i := range cps {
 		c := &cps[i]
@@ -127,12 +128,17 @@ func VerifyCheckpoints(h crypto.Hasher, v crypto.Verifier, cps []Checkpoint) (An
 			return Anchor{}, fmt.Errorf("%w: точка %d: неверный диапазон", ErrCheckpointInvalid, c.Seq)
 		case c.HashAlg != h.Name() || len(c.Hash) != len(prev.Hash):
 			return Anchor{}, fmt.Errorf("%w: точка %d: чужой алгоритм хеша", ErrCheckpointInvalid, c.Seq)
-		case v != nil && !c.VerifySignature(v):
-			return Anchor{}, fmt.Errorf("%w: точка %d: подпись не проверяется", ErrCheckpointInvalid, c.Seq)
+		case keys != nil && !checkpointSigned(c, keys.CheckpointKey(c.Seq)):
+			return Anchor{}, fmt.Errorf("%w: точка %d: подпись не проверяется ключом по расписанию", ErrCheckpointInvalid, c.Seq)
 		}
 		prev = c.Anchor()
 	}
 	return prev, nil
+}
+
+// checkpointSigned — точка подписана ключом v и называет его в public_key.
+func checkpointSigned(c *Checkpoint, v crypto.Verifier) bool {
+	return crypto.Equal(c.PublicKey, v.PublicKey()) && c.VerifySignature(v)
 }
 
 // querier — чтение из пула или из транзакции.
@@ -171,12 +177,14 @@ func loadCheckpoints(ctx context.Context, q querier) ([]Checkpoint, error) {
 // WithCheckpoints).
 type PGCheckpoints struct {
 	db       DB
+	provider crypto.Provider
 	hasher   crypto.Hasher
 	verifier crypto.Verifier
 }
 
-// NewPGCheckpoints читает точки из БД. v — открытый ключ аудита
-// (audit-signing.pub); nil — проверяется только связность точек, подписи
+// NewPGCheckpoints читает точки из БД. v — открытый ключ-якорь аудита
+// (audit-signing.pub): от него по сменам из audit_key_rotations строится
+// расписание ключей; nil — проверяется только связность точек, подписи
 // проверяет aisec-cli audit verify -keys.
 func NewPGCheckpoints(db DB, p crypto.Provider, v crypto.Verifier) (*PGCheckpoints, error) {
 	if db == nil || p == nil {
@@ -186,7 +194,7 @@ func NewPGCheckpoints(db DB, p crypto.Provider, v crypto.Verifier) (*PGCheckpoin
 	if err != nil {
 		return nil, err
 	}
-	return &PGCheckpoints{db: db, hasher: h, verifier: v}, nil
+	return &PGCheckpoints{db: db, provider: p, hasher: h, verifier: v}, nil
 }
 
 // Latest проверяет всю последовательность точек и возвращает последнюю.
@@ -205,7 +213,15 @@ func (c *PGCheckpoints) LatestIn(ctx context.Context, q querier) (Anchor, bool, 
 	if len(cps) == 0 {
 		return Anchor{}, false, nil
 	}
-	a, err := VerifyCheckpoints(c.hasher, c.verifier, cps)
+	var keys CheckpointKeys
+	if c.verifier != nil {
+		ks, err := LoadKeySchedule(ctx, q, c.provider, c.verifier)
+		if err != nil {
+			return Anchor{}, false, err
+		}
+		keys = ks
+	}
+	a, err := VerifyCheckpoints(c.hasher, keys, cps)
 	if err != nil {
 		return Anchor{}, false, err
 	}

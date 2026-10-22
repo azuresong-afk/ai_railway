@@ -44,6 +44,9 @@ var catalog = []Event{
 	{"gateway.register", "Регистрация шлюза: выпуск сертификата по токену", true},
 	{"gateway.revoke", "Отзыв шлюза", true},
 	{"gateway.mtls_denied", "Отказ шлюзу во внутреннем API: сертификат отозван или неизвестен", true},
+	{"gateway.cert_reissue", "Перевыпуск сертификата шлюза при heartbeat (ротация корня УЦ или истечение срока)", true},
+	{"gateway.bundle_key_pinned", "Закрепление ключа получателя шлюза при первом запросе пакета", true},
+	{"gateway.bundle_key_mismatch", "Запрос пакета с ключом получателя, отличным от закреплённого", true},
 	// Роли и доступ (РСБ.1, УПД.1–2, 6).
 	{"role.create", "Создание своей роли", true},
 	{"role.update", "Изменение своей роли", true},
@@ -73,9 +76,14 @@ var catalog = []Event{
 	{"policy.update", "Новая версия политики", true},
 	{"policy.rollback", "Откат политики к прежней версии", true},
 	{"policy.import", "Импорт политики из YAML", true},
+	// Оповещения (ТЗ 5.6, DM-40; задача 3.10 этапа 3, ADR-0020).
+	{"alert_rule.create", "Создание правила оповещения", true},
+	{"alert_rule.update", "Изменение правила оповещения: условие, включение, получатели", true},
+	{"alert.status_changed", "Смена статуса оповещения: принято в работу или закрыто", true},
 	// Пакеты конфигурации для шлюзов (Р7, ОЦЛ.3, DM-42; задача 2.13).
 	{"bundle.build", "Сборка новой версии пакета конфигурации для шлюзов", true},
 	{"bundle.deliver", "Выдача пакета конфигурации шлюзу", true},
+	{"bundle.trust_rollback", "Шлюз знает заявление о доверии новее сервера: откат цепочки доверия (БД восстановлена из дампа до ротации ключей или подменена)", true},
 	{"bundle.applied", "Шлюз применил пакет конфигурации", true},
 	{"bundle.rejected", "Шлюз отклонил пакет конфигурации: подпись, версия или содержимое", true},
 	// Компоненты (РСБ.2).
@@ -84,6 +92,15 @@ var catalog = []Event{
 	{"system.error", "Ошибка или сбой", true},
 	{"system.init", "Создание ключей установки (aisec-cli init)", true},
 	{"system.audit_key", "Создание ключа подписи журнала аудита (aisec-cli init -add-audit-key)", true},
+	// Ротация ключей установки (ЗИ.1, ADR-0018; задачи 3.2, 3.3 этапа 3).
+	{"keys.master_rotated", "Ротация мастер-ключа (aisec-cli keys rotate-master)", true},
+	{"keys.master_recovered", "Восстановление после прерванной ротации мастер-ключа: завершено переименование файлов или удалён master.key.new несостоявшейся ротации", true},
+	{"keys.data_rotated", "Новая версия ключа данных (aisec-cli keys rotate-data)", true},
+	{"keys.data_rewrapped", "Перешифрование секретов и содержимого событий новой версией ключа данных", true},
+	{"keys.data_key_destroyed", "Удаление прежней версии ключа данных после перешифрования", true},
+	{"keys.signing_rotated", "Ротация ключа подписи пакетов конфигурации (aisec-cli keys rotate-signing)", true},
+	{"keys.audit_rotated", "Ротация ключа подписи контрольных точек аудита (aisec-cli keys rotate-audit)", true},
+	{"keys.ca_rotated", "Ротация корня внутреннего УЦ (aisec-cli keys rotate-ca)", true},
 	{"system.setup_token_reissued", "Повторный выпуск токена первичной настройки (aisec-cli init -reissue-setup-token)", true},
 	// Целостность и самотестирование (РСБ.2, ОЦЛ).
 	{"integrity.check", "Результат контроля целостности", true},

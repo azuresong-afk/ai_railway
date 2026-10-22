@@ -164,9 +164,11 @@ func strictUnmarshal(b []byte, v any) error {
 
 // VerifyArchive проверяет файл архива без БД: заголовок, непрерывную цепочку
 // записей от предыдущей точки, хеш тела, соответствие точки записям и
-// подпись точки ключом v. Вход недоверенный (файл с внешнего носителя),
-// разбор покрыт FuzzVerifyArchive.
-func VerifyArchive(r io.Reader, h crypto.Hasher, v crypto.Verifier) (*Checkpoint, error) {
+// подпись точки ключом по расписанию keys (после ротации ключа аудита —
+// ключом, действовавшим для номера точки: прежний ключ не подпишет точку
+// после смены, 3В3 ревью 3.r1; ADR-0018, п. 5.3). Вход недоверенный (файл
+// с внешнего носителя), разбор покрыт FuzzVerifyArchive.
+func VerifyArchive(r io.Reader, h crypto.Hasher, keys CheckpointKeys) (*Checkpoint, error) {
 	invalid := func(format string, a ...any) error {
 		return fmt.Errorf("%w: %s", ErrArchiveInvalid, fmt.Sprintf(format, a...))
 	}
@@ -237,8 +239,8 @@ func VerifyArchive(r io.Reader, h crypto.Hasher, v crypto.Verifier) (*Checkpoint
 		return nil, invalid("точка: алгоритм или организация")
 	case !crypto.Equal(cp.ArchiveHash, sum.Sum(nil)):
 		return nil, invalid("хеш тела архива не совпадает с точкой")
-	case !cp.VerifySignature(v):
-		return nil, invalid("подпись контрольной точки не проверяется")
+	case keys == nil || !checkpointSigned(cp, keys.CheckpointKey(cp.Seq)):
+		return nil, invalid("подпись контрольной точки не проверяется ключом, действовавшим для неё по расписанию")
 	}
 	return cp, nil
 }

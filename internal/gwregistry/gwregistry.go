@@ -68,6 +68,9 @@ var (
 	// ErrRollbackViolated — откат не принимается при нарушенной целостности.
 	ErrRollbackViolated = errors.New("откат не принимается: последняя проверка целостности шлюза выявила нарушение")
 	ErrNoCA             = errors.New("внутренний УЦ не подключён: регистрация шлюзов недоступна")
+	// ErrReissueNotNeeded — сертификат шлюза выпущен действующим корнем и
+	// не истекает в ближайшие ReissueBefore: перевыпуск не нужен (3В4 ревью 3.r1).
+	ErrReissueNotNeeded = errors.New("перевыпуск сертификата не нужен")
 	ErrInvalidRequest   = errors.New("неверные данные")
 )
 
@@ -105,6 +108,16 @@ type Gateway struct {
 	// StartedAt — время запуска процесса шлюза из heartbeat (В27 ревью
 	// 2.r5); нулевое — шлюз остановлен корректно или не сообщал.
 	StartedAt time.Time
+	// CertCA — корень УЦ действующего сертификата (ADR-0018, п. 6); пусто —
+	// корень из -ca-cert (сертификат выпущен до ротаций).
+	CertCA string
+	// NextCert* — перевыпущенный сертификат, которым шлюз ещё не пришёл;
+	// пустой серийный номер — его нет.
+	NextCertSerial   string
+	NextCertNotAfter time.Time
+	NextCertCA       string
+	// BundleKey — закреплённый ключ получателя HPKE (Н27); nil — не закреплён.
+	BundleKey []byte
 }
 
 // Rollback — шлюз работает на выпуске старше того, что уже проверялся
@@ -199,6 +212,10 @@ type TouchChange struct {
 	PrevStartedAt time.Time
 	// Stopped — шлюз сообщил о корректной остановке записанного запуска.
 	Stopped bool
+	// CertCA и CertNotAfter — действующий сертификат шлюза: по ним сервис
+	// решает, нужен ли перевыпуск.
+	CertCA       string
+	CertNotAfter time.Time
 }
 
 // Store — хранилище реестра (миграция 0007_gateways). Рабочая реализация —
@@ -212,10 +229,24 @@ type Store interface {
 	// шлюз отозван — ErrTokenInvalid), вызывает issue для выпуска
 	// сертификата и делает шлюз активным с новым серийным номером — всё
 	// одной транзакцией вместе с rec.
+	// Новая регистрация записывает корень УЦ и ключ получателя из Issued
+	// (nil — не закреплён) и снимает следующий сертификат.
 	Register(ctx context.Context, hashAlg string, hash []byte, now time.Time,
-		issue func(Gateway) (aisecCrypto.CertInfo, error), rec func(Gateway) audit.Entry) (Gateway, error)
-	// BySerial — шлюз, чей действующий сертификат имеет этот серийный номер.
+		issue func(Gateway) (Issued, error), rec func(Gateway) audit.Entry) (Gateway, error)
+	// BySerial — шлюз, чей действующий или следующий сертификат имеет этот
+	// серийный номер.
 	BySerial(ctx context.Context, serial string) (Gateway, error)
+	// ByID — шлюз по ID (нет — ErrNotFound).
+	ByID(ctx context.Context, id string) (Gateway, error)
+	// SetNextCert сохраняет перевыпущенный сертификат активного шлюза как
+	// следующий (заменяет прежний следующий) вместе с rec.
+	SetNextCert(ctx context.Context, id string, next Issued, rec func(Gateway) audit.Entry) (Gateway, error)
+	// PromoteNext делает следующий сертификат с серийным номером serial
+	// действующим вместе с rec; уже сделан — без изменений.
+	PromoteNext(ctx context.Context, id, serial string, rec func(Gateway) audit.Entry) (Gateway, error)
+	// PinBundleKey закрепляет ключ получателя, если он не закреплён (с rec),
+	// и возвращает шлюз с закреплённым ключом.
+	PinBundleKey(ctx context.Context, id string, key []byte, rec func(Gateway) audit.Entry) (Gateway, error)
 	// Touch отмечает heartbeat активного шлюза. Если шлюз прислал итог
 	// целостности на текущий запрос проверки, запрос снимается. Новый
 	// StartedAt запоминается, Stopping с тем же StartedAt его стирает.
@@ -252,20 +283,35 @@ type Options struct {
 	// HeartbeatMinInterval — ноль — DefaultHeartbeatMinInterval.
 	HeartbeatMinInterval time.Duration
 	Logger               *slog.Logger
+	// AnchorRoot — ID корня из -ca-cert (ca.crt init): им выпущены
+	// сертификаты без cert_ca. Пусто — корень CA.
+	AnchorRoot string
 }
 
 // BundleKeys — ключи подписи пакетов конфигурации сервера (KeyID, задача
 // 2.13): Current — действующий, Next — второй на время ротации (может быть
-// пустым).
+// пустым), Known — все ключи цепочки доверия после ротаций (ADR-0018, п. 4.5;
+// пусто — ротаций не было).
 type BundleKeys struct {
 	Current string
 	Next    string
+	Known   []string
 }
 
 // Match — ключи проверки шлюза совпадают с ключами сервера (В19 ревью
 // 2.r4): действующий ключ у шлюза есть, а других, кроме второго ключа
-// ротации, нет. Чужой ключ у шлюза — признак подмены -bundle-pub.
+// ротации, нет. После ротаций шлюз сообщает свои якоря -bundle-pub: они
+// должны быть в цепочке доверия. Чужой ключ у шлюза — признак подмены
+// -bundle-pub.
 func (k BundleKeys) Match(gateway []string) bool {
+	if len(k.Known) > 0 {
+		for _, id := range gateway {
+			if !slices.Contains(k.Known, id) && (k.Next == "" || id != k.Next) {
+				return false
+			}
+		}
+		return len(gateway) > 0
+	}
 	if !slices.Contains(gateway, k.Current) {
 		return false
 	}
@@ -293,10 +339,16 @@ type Service struct {
 	// bundleKeys — ключи подписи пакетов; nil — сверка не выполняется
 	// (сервер без ключа подписи).
 	bundleKeys atomic.Pointer[BundleKeys]
+	// roots — корни УЦ после ротаций; nil — один корень ca.
+	roots      atomic.Pointer[RootSet]
+	anchorRoot string
 
 	mu       sync.Mutex
 	lastHB   map[string]time.Time // ID шлюза → последний принятый heartbeat
 	lastDeny map[string]time.Time // серийный номер → последняя запись об отказе
+	// lastReissue и lastMismatch — по ID шлюза: перевыпуск и запись о
+	// чужом ключе получателя не чаще раза в минуту.
+	lastReissue, lastMismatch map[string]time.Time
 
 	// malformed — запросы регистрации с токеном неверного формата: они идут
 	// в технический журнал, а не в аудит (Н17 ревью 2.r3a, как В9).
@@ -323,6 +375,10 @@ func New(o Options) (*Service, error) {
 		store: o.Store, ca: o.CA, hasher: h, random: r, ids: ids.NewGenerator(r), audit: o.Audit,
 		orgID: o.OrgID, clock: o.Clock, validity: o.CertValidity, minHB: o.HeartbeatMinInterval, logger: o.Logger,
 		lastHB: map[string]time.Time{}, lastDeny: map[string]time.Time{},
+		lastReissue: map[string]time.Time{}, lastMismatch: map[string]time.Time{}, anchorRoot: o.AnchorRoot,
+	}
+	if s.anchorRoot == "" && s.ca != nil {
+		s.anchorRoot = RootID(h, s.ca.CertDER())
 	}
 	if s.orgID == "" {
 		s.orgID = audit.DefaultOrgID
@@ -437,6 +493,9 @@ type RegisterInput struct {
 	Token    string
 	CSR      []byte
 	SourceIP netip.Addr
+	// BundleKey — открытый ключ получателя HPKE шлюза (Н27): закрепляется
+	// при регистрации; nil — закрепится при первом запросе пакета.
+	BundleKey []byte
 }
 
 // Registration — итог регистрации для ответа шлюзу.
@@ -456,6 +515,9 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (Registration,
 	if err := aisecCrypto.CheckCSR(in.CSR); err != nil {
 		return Registration{}, fmt.Errorf("%w: %v", ErrInvalidRequest, err) //nolint:errorlint // причина CSR — только текстом
 	}
+	if in.BundleKey != nil && len(in.BundleKey) != aisecCrypto.RecipientPublicKeySize {
+		return Registration{}, fmt.Errorf("%w: ключ получателя — %d байт", ErrInvalidRequest, aisecCrypto.RecipientPublicKeySize)
+	}
 	now := s.clock().UTC()
 	raw, err := parseToken(in.Token)
 	if err != nil {
@@ -470,10 +532,10 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (Registration,
 	// токена; совпавший хеш дополнительно сверяется за постоянное время.
 	hash := s.hasher.Sum(raw)
 	var certPEM []byte
-	gw, err := s.store.Register(ctx, s.hasher.Name(), hash, now, func(gw Gateway) (aisecCrypto.CertInfo, error) {
+	gw, err := s.store.Register(ctx, s.hasher.Name(), hash, now, func(gw Gateway) (Issued, error) {
 		c, info, err := s.ca.IssueClient(in.CSR, gw.ID, s.validity, now)
 		certPEM = c
-		return info, err
+		return Issued{Info: info, CA: s.activeRoot(), BundleKey: in.BundleKey}, err
 	}, func(gw Gateway) audit.Entry {
 		return audit.Entry{
 			OrgID: s.orgID, Actor: audit.Actor{Type: audit.ActorGateway, ID: gw.ID, Name: gw.Name},
@@ -481,6 +543,7 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (Registration,
 			Result: audit.ResultSuccess,
 			Details: map[string]any{
 				"cert_serial": gw.CertSerial, "cert_not_after": gw.CertNotAfter.UTC().Format(time.RFC3339),
+				"root_id": gw.CertCA, "bundle_key_pinned": gw.BundleKey != nil,
 			},
 		}
 	})
@@ -506,11 +569,24 @@ func (s *Service) registerFailed(ctx context.Context, ip netip.Addr, reason stri
 }
 
 // Authenticate находит действующий шлюз по проверенному при рукопожатии
-// сертификату: серийный номер должен совпадать с текущим сертификатом
-// шлюза, имя — с ID шлюза. Отказ пишется в аудит не чаще раза в минуту на
-// сертификат.
+// сертификату: серийный номер должен совпадать с текущим или следующим
+// (перевыпущенным) сертификатом шлюза, имя — с ID шлюза, корень цепочки —
+// с корнем без истёкшего перекрытия (ADR-0018, п. 6.2). Первый запрос со
+// следующим сертификатом делает его действующим. Отказ пишется в аудит не
+// чаще раза в минуту на сертификат.
 func (s *Service) Authenticate(ctx context.Context, peer aisecCrypto.PeerIdentity, ip netip.Addr) (Gateway, error) {
 	gw, err := s.store.BySerial(ctx, peer.Serial)
+	if err == nil {
+		if reason := s.checkRoot(peer.RootDER, s.clock()); reason != "" {
+			return Gateway{}, s.denied(ctx, peer, ip, reason, ErrUnknownCert)
+		}
+	}
+	if err == nil && gw.Status == StatusActive && gw.ID == peer.CommonName && gw.NextCertSerial != "" &&
+		peer.Serial == gw.NextCertSerial && s.clock().Before(gw.NextCertNotAfter) {
+		if gw, err = s.promote(ctx, gw, ip); err != nil {
+			return Gateway{}, err
+		}
+	}
 	switch {
 	case errors.Is(err, ErrNotFound):
 		return Gateway{}, s.denied(ctx, peer, ip, "unknown_certificate", ErrUnknownCert)
@@ -731,7 +807,7 @@ func (s *Service) Heartbeat(ctx context.Context, gatewayID string, in HeartbeatI
 	if err != nil {
 		return HeartbeatResult{}, err
 	}
-	out := HeartbeatResult{At: now}
+	out := HeartbeatResult{At: now, Reissue: s.needReissue(ch.CertCA, ch.CertNotAfter, now)}
 	if !ch.VerifyDone {
 		out.VerifyRequestedAt = ch.VerifyRequested
 	}
@@ -782,6 +858,8 @@ func (s *Service) heartbeatEntries(gatewayID string, in HeartbeatInput, ip netip
 type HeartbeatResult struct {
 	At                time.Time
 	VerifyRequestedAt time.Time
+	// Reissue — шлюзу нужен новый сертификат (ADR-0018, п. 6.3).
+	Reissue bool
 }
 
 // RequestVerify — проверка целостности всех активных шлюзов по команде

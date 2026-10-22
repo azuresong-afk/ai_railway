@@ -35,6 +35,9 @@ const (
 	// BundleKeyHeader — открытый ключ получателя шлюза (base64url без
 	// дополнения): им сервер шифрует учётные данные провайдеров.
 	BundleKeyHeader = "AISec-Bundle-Key"
+	// TrustSeqHeader — номер последнего принятого заявления о доверии
+	// (ADR-0018, п. 4): сервер с более новым присылает пакет целиком.
+	TrustSeqHeader = "AISec-Trust-Seq"
 )
 
 // etagRe — ETag пакета от сервера: версия в кавычках.
@@ -82,6 +85,9 @@ type BundleClient struct {
 	pending, last *statusReport
 	etag          atomic.Value // string
 	key           string
+	// keyID — ключ подписи применённого пакета: тот же пакет, подписанный
+	// новым ключом после ротации, сохраняется на диск заново.
+	keyID string
 }
 
 // NewBundleClient проверяет параметры.
@@ -105,6 +111,14 @@ func NewBundleClient(c BundleConfig) (*BundleClient, error) {
 
 // ETag — ETag применённого пакета для heartbeat; пусто — пакета нет.
 func (b *BundleClient) ETag() string { return b.etag.Load().(string) }
+
+// TrustRoots — корни УЦ из принятых заявлений о доверии: по ним шлюз
+// проверяет перевыпущенный сертификат (ADR-0018, п. 6.3).
+func (b *BundleClient) TrustRoots() [][]byte {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.c.Opener.TrustRoots()
+}
 
 // Ready сообщает, применён ли хотя бы один пакет.
 func (b *BundleClient) Ready() bool { return b.ETag() != "" }
@@ -184,6 +198,7 @@ func (b *BundleClient) fetch(ctx context.Context) (data []byte, etag string, err
 	req.Header.Set("User-Agent", "aisec-gateway")
 	req.Header.Set(BundleKeyHeader, b.key)
 	b.mu.Lock()
+	req.Header.Set(TrustSeqHeader, strconv.FormatInt(b.c.Opener.TrustSeq(), 10))
 	inm := b.ETag()
 	if b.rejected != "" {
 		if inm != "" {
@@ -233,21 +248,40 @@ func (b *BundleClient) fetch(ctx context.Context) (data []byte, etag string, err
 func (b *BundleClient) accept(data []byte, etag, source string) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	seq := b.c.Opener.TrustSeq()
 	bd, err := b.c.Opener.Open(data, b.version)
+	// Принятые заявления о доверии сохраняются, даже если сам пакет
+	// отклонён: каждое проверено по цепочке.
+	if b.c.Opener.TrustSeq() != seq {
+		if serr := b.c.State.SaveTrust(b.c.Opener.TrustRaw()); serr != nil {
+			b.c.Logger.Error("заявления о доверии приняты, но не сохранены на диск", "error", serr)
+		} else {
+			b.c.Logger.Info("принято заявление о доверии: ключи подписи пакетов и корни УЦ обновлены", "trust_seq", b.c.Opener.TrustSeq())
+		}
+	}
 	if err != nil {
 		b.rejectLocked(err, etag, source)
 		return err
 	}
 	defer bd.Secrets.Clear()
 	if bd.Header.Version == b.version {
-		return nil // тот же пакет: применять нечего
+		// Тот же пакет; подписанный новым ключом — на диск, чтобы после
+		// перекрытия прежнего ключа шлюз запустился с ним.
+		if source != "file" && bd.KeyID != b.keyID {
+			if err := b.c.State.Save(bd.Raw); err != nil {
+				b.c.Logger.Error("пакет, подписанный новым ключом, не сохранён на диск", "error", err)
+			} else {
+				b.keyID = bd.KeyID
+			}
+		}
+		return nil
 	}
 	if err := b.c.Apply(bd); err != nil {
 		err = &bundle.RejectError{Reason: bundle.ReasonInvalidContent, Err: err}
 		b.rejectLocked(err, bd.ETag(), source)
 		return err
 	}
-	b.version, b.rejected = bd.Header.Version, ""
+	b.version, b.rejected, b.keyID = bd.Header.Version, "", bd.KeyID
 	b.etag.Store(bd.ETag())
 	if source != "file" {
 		if err := b.c.State.Save(bd.Raw); err != nil {

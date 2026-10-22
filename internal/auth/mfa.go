@@ -122,7 +122,9 @@ type MFAStep struct {
 type SecretBox interface {
 	KeyID() string
 	Alg() string
-	Seal(ctx context.Context, plaintext []byte, table, column, rowID string) ([]byte, error)
+	// SealKey возвращает и ID версии ключа данных, которой зашифровано
+	// (ротация, ADR-0018).
+	SealKey(ctx context.Context, plaintext []byte, table, column, rowID string) (string, []byte, error)
 	Open(keyID string, sealed []byte, table, column, rowID string) ([]byte, error)
 }
 
@@ -220,11 +222,11 @@ func (s *Service) StartMFA(ctx context.Context, c Caller, password string) (MFAE
 		return MFAEnrollment{}, err
 	}
 	defer clear(secret)
-	sealed, err := s.box.Seal(ctx, secret, mfaTable, mfaColumn, c.User.ID)
+	keyID, sealed, err := s.box.SealKey(ctx, secret, mfaTable, mfaColumn, c.User.ID)
 	if err != nil {
 		return MFAEnrollment{}, err
 	}
-	m := MFA{UserID: c.User.ID, State: MFAPending, Secret: sealed, KeyID: s.box.KeyID(), Alg: s.box.Alg(), CreatedAt: now}
+	m := MFA{UserID: c.User.ID, State: MFAPending, Secret: sealed, KeyID: keyID, Alg: s.box.Alg(), CreatedAt: now}
 	rec := s.entry(c.actor(), c.SourceIP, "auth.mfa_setup_started", userObject(c.User.ID), audit.ResultSuccess,
 		map[string]any{"state": string(c.Session.State)})
 	if err := s.store.SaveMFAPending(ctx, m, rec); err != nil {

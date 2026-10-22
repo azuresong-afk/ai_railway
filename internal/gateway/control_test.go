@@ -57,7 +57,7 @@ func newMTLSEnv(t *testing.T) *mtlsEnv {
 		t.Fatal(err)
 	}
 	now := time.Now()
-	ca, err := aisecCrypto.NewCA("AISec test CA", 24*time.Hour, now)
+	ca, err := aisecCrypto.NewCA("AISec test CA", 400*24*time.Hour, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +66,10 @@ func newMTLSEnv(t *testing.T) *mtlsEnv {
 		t.Fatal(err)
 	}
 	e := &mtlsEnv{tp: tp, ca: ca, mem: gwregistry.NewMemory(), events: events.NewMemory()}
-	e.svc, err = gwregistry.New(gwregistry.Options{Store: e.mem, Provider: p, CA: ca, Audit: nopAuditor{}, Logger: quiet()})
+	// Сертификат шлюза на 12 часов: heartbeat требует перевыпуск (истекает
+	// раньше 30 суток), а сертификат не истекает вместе с УЦ (3В5 ревью 3.r1).
+	e.svc, err = gwregistry.New(gwregistry.Options{Store: e.mem, Provider: p, CA: ca, Audit: nopAuditor{}, Logger: quiet(),
+		CertValidity: 12 * time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +125,7 @@ func (e *mtlsEnv) registerGateway(t *testing.T, name string) gateway.Registratio
 	if err != nil {
 		t.Fatal(err)
 	}
-	reg, err := gateway.Register(context.Background(), e.client(t, nil, nil), e.console, tok)
+	reg, err := gateway.Register(context.Background(), e.client(t, nil, nil), e.console, tok, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,7 +259,7 @@ func TestInternalAPIRejectsClients(t *testing.T) {
 func TestRegisterRejected(t *testing.T) {
 	e := newMTLSEnv(t)
 	bad := gwregistry.TokenPrefix + strings.Repeat("A", gwregistry.TokenLen-len(gwregistry.TokenPrefix))
-	_, err := gateway.Register(context.Background(), e.client(t, nil, nil), e.console, bad)
+	_, err := gateway.Register(context.Background(), e.client(t, nil, nil), e.console, bad, nil)
 	if err == nil || !strings.Contains(err.Error(), "403") {
 		t.Fatalf("неверный токен: %v", err)
 	}

@@ -87,9 +87,9 @@ func TestNewValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	st := s.Status(context.Background())
-	// Без источников: пустые массивы, UTC, умолчания, все девять условий.
+	// Без источников: пустые массивы, UTC, умолчания, все десять условий.
 	if st.Time.Timezone != "UTC" || st.Storage.LimitBytes != sysstatus.DefaultStorageLimit || st.Storage.WarnPercent != 80 ||
-		len(st.Notifications) != 9 || st.Bundle != nil || st.Gateways == nil || st.Unavailable == nil || st.Server.Integrity == nil {
+		len(st.Notifications) != 10 || st.Bundle != nil || st.Gateways == nil || st.Unavailable == nil || st.Server.Integrity == nil {
 		t.Fatalf("%+v", st)
 	}
 }
@@ -600,5 +600,62 @@ func TestEvaluateBundleLagOffline(t *testing.T) {
 		if got := states(); !slices.Equal(got, step.want) {
 			t.Fatalf("%s, связь %v: %v", step.status, step.lastSeen, got)
 		}
+	}
+}
+
+// DM-44, 3В5 ревью 3.r1, ИАФ.10: истечение корня внутреннего УЦ — условие
+// ca_expiry за 60 суток и ещё одна запись за 7 суток; без УЦ условия нет.
+func TestDM44_CAExpiry(t *testing.T) {
+	e := newEnv()
+	o := e.opts()
+	o.CANotAfter = t0.Add(90 * 24 * time.Hour)
+	s, err := sysstatus.New(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	eval := func() {
+		t.Helper()
+		if err := s.Evaluate(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	raised := func() []string {
+		var out []string
+		for _, r := range e.mem.Records {
+			if d := r.Details.(map[string]any); d["state"] == "raised" {
+				out = append(out, d["condition"].(string))
+			}
+		}
+		return out
+	}
+	eval()
+	if n := notif(s.Status(ctx), sysstatus.ConditionCAExpiry); n.Active || len(raised()) != 0 {
+		t.Fatalf("за 90 суток: %+v %v", n, raised())
+	}
+	e.clock = t0.Add(31 * 24 * time.Hour) // осталось 59 суток
+	eval()
+	eval()
+	n := notif(s.Status(ctx), sysstatus.ConditionCAExpiry)
+	if !n.Active || n.Requirement != "ИАФ.10" || len(raised()) != 1 || raised()[0] != sysstatus.ConditionCAExpiry {
+		t.Fatalf("за 59 суток: %+v %v", n, raised())
+	}
+	if d := e.mem.Records[0].Details.(map[string]any); d["days_left"] != 59 || d["root_not_after"] == nil {
+		t.Fatalf("подробности: %v", d)
+	}
+	e.clock = t0.Add(84 * 24 * time.Hour) // осталось 6 суток
+	eval()
+	eval()
+	if got := raised(); len(got) != 2 || got[1] != sysstatus.ConditionCAExpiry+":critical" {
+		t.Fatalf("за 6 суток: %v", got)
+	}
+	for _, r := range e.mem.Records {
+		if err := validateEntry(r); err != nil {
+			t.Error(err)
+		}
+	}
+	// Без УЦ условие неактивно.
+	if n := notif(newEnv().svc(t).Status(ctx), sysstatus.ConditionCAExpiry); n.Active {
+		t.Fatalf("без УЦ: %+v", n)
 	}
 }

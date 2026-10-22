@@ -148,10 +148,16 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 	}
 	// Сервер управления (ИАФ.10): heartbeat, события и пакеты конфигурации
 	// по mTLS. Без него — автономный режим этапа 1 с файлом событий JSONL.
-	var control *http.Client
-	gatewayID := ""
+	var control *controlClient
+	var state *gateway.BundleState
 	if cfg.Server != nil {
-		if control, gatewayID, err = newControlClient(cfg, tp, trust.serverCA, logger); err != nil {
+		// Каталог состояния открыт до остановки процесса: os.Root держит
+		// дескриптор. В нём ключ получателя, пакет, заявления о доверии и
+		// перевыпущенный сертификат.
+		if state, err = gateway.OpenBundleState(cfg.StateDir, rnd); err != nil {
+			return err
+		}
+		if control, err = newControlClient(cfg, tp, trust.serverCA, state, logger); err != nil {
 			return err
 		}
 	} else if err := file.CheckEventsSink(false); err != nil {
@@ -161,7 +167,7 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 	if err != nil {
 		return err
 	}
-	authBase, queue, closeEvents, err := newAuth(p, file, cfg, control, logger)
+	authBase, queue, closeEvents, err := newAuth(p, file, cfg, control.httpClient(), logger)
 	if err != nil {
 		return err
 	}
@@ -201,7 +207,7 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 	} else {
 		sw := gateway.NewSwitch(gateway.NewUnavailable(logger))
 		var keyIDs []string
-		if bundles, keyIDs, err = newBundleClient(cfg, p, tp, rnd, gatewayID, control, hb, sw, trust.bundlePubs, logger); err != nil {
+		if bundles, keyIDs, err = newBundleClient(cfg, p, tp, rnd, state, control, hb, sw, trust.bundlePubs, logger); err != nil {
 			return err
 		}
 		reports.SetBundleKeys(keyIDs)
@@ -223,7 +229,14 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 		// дольше stopHeartbeatTimeout). Отмена своя — сервер может
 		// завершиться с ошибкой и без отмены ctx.
 		hbCtx, hbCancel := context.WithCancel(ctx)
-		hbDone := startHeartbeat(hbCtx, cfg, control, logger, reports, bundles.ETag, verify, started)
+		reissue, err := gateway.NewReissuer(gateway.ReissueConfig{Client: control.client, Transport: control.transport,
+			Server: cfg.Server, GatewayID: control.gatewayID, Switch: control.cert, State: state, Roots: bundles.TrustRoots,
+			Logger: logger})
+		if err != nil {
+			hbCancel()
+			return err
+		}
+		hbDone := startHeartbeat(hbCtx, cfg, control.client, logger, reports, bundles.ETag, verify, started, reissue.Reissue)
 		defer func() {
 			hbCancel()
 			<-hbDone
@@ -388,38 +401,76 @@ func startIntegrity(ctx context.Context, cfg *config.Gateway, p aisecCrypto.Prov
 	return verify, nil
 }
 
-// newControlClient — HTTP-клиент к внутреннему API сервера по mTLS
-// (ИАФ.10): сертификат и ключ шлюза — от aisec-gateway register.
-// Возвращает и ID шлюза — CN сертификата: пакет конфигурации собирается
-// на этот ID.
-func newControlClient(cfg *config.Gateway, tp aisecCrypto.TLSProvider, rootsPEM []byte, logger *slog.Logger) (*http.Client, string, error) {
+// controlClient — связь с внутренним API сервера по mTLS (ИАФ.10):
+// клиент, его транспорт и переключатель сертификата для перевыпуска.
+type controlClient struct {
+	client    *http.Client
+	transport *http.Transport
+	cert      *aisecCrypto.ClientCertSwitch
+	// gatewayID — CN сертификата: пакет конфигурации собирается на этот ID.
+	gatewayID string
+}
+
+// httpClient — клиент или nil без сервера управления.
+func (c *controlClient) httpClient() *http.Client {
+	if c == nil {
+		return nil
+	}
+	return c.client
+}
+
+// newControlClient — HTTP-клиент к внутреннему API сервера по mTLS:
+// сертификат и ключ шлюза — от aisec-gateway register или перевыпущенные в
+// client.pem каталога состояния (ADR-0018, п. 6.3), если они новее.
+func newControlClient(cfg *config.Gateway, tp aisecCrypto.TLSProvider, rootsPEM []byte, state *gateway.BundleState,
+	logger *slog.Logger) (*controlClient, error) {
 	certPEM, err := aisecCrypto.ReadPEMFile(cfg.ClientCertFile)
 	if err != nil {
-		return nil, "", fmt.Errorf("сертификат шлюза для сервера: %w", err)
+		return nil, fmt.Errorf("сертификат шлюза для сервера: %w", err)
 	}
 	keyPEM, err := aisecCrypto.ReadKeyFile(cfg.ClientKeyFile)
 	if err != nil {
-		return nil, "", fmt.Errorf("ключ шлюза для сервера: %w", err)
+		return nil, fmt.Errorf("ключ шлюза для сервера: %w", err)
 	}
 	id, err := aisecCrypto.ParseCertInfo(certPEM)
 	if err != nil {
-		return nil, "", fmt.Errorf("сертификат шлюза для сервера: %w", err)
+		return nil, fmt.Errorf("сертификат шлюза для сервера: %w", err)
 	}
-	if time.Until(id.NotAfter) < 30*24*time.Hour {
-		logger.Warn("сертификат шлюза скоро истекает: нужна повторная регистрация", "not_after", id.NotAfter.UTC())
+	if pc, pk, perr := state.LoadClientPair(); perr != nil {
+		logger.Warn("перевыпущенный сертификат шлюза не прочитан; используется -client-cert", "file", gateway.ClientPairFile, "error", perr)
+	} else if pc != nil {
+		next, err := aisecCrypto.ParseCertInfo(pc)
+		switch {
+		case err != nil || aisecCrypto.VerifyClientCert(pc, pk, id.CommonName, nil, time.Now()) != nil:
+			logger.Warn("перевыпущенный сертификат шлюза не подходит; используется -client-cert", "file", gateway.ClientPairFile)
+		case next.NotAfter.After(id.NotAfter):
+			certPEM, keyPEM, id = pc, pk, next
+			logger.Info("используется перевыпущенный сертификат шлюза", "file", gateway.ClientPairFile, "not_after", next.NotAfter.UTC())
+		}
 	}
-	transport, err := gateway.ControlTransport(tp, rootsPEM, certPEM, keyPEM)
+	if time.Until(id.NotAfter) < gwReissueWarn {
+		logger.Warn("сертификат шлюза скоро истекает: сервер перевыпустит его при heartbeat, иначе нужна повторная регистрация",
+			"not_after", id.NotAfter.UTC())
+	}
+	sw, err := aisecCrypto.NewClientCertSwitch(certPEM, keyPEM)
 	if err != nil {
-		return nil, "", err
+		return nil, fmt.Errorf("сертификат шлюза для сервера: %w", err)
+	}
+	transport, err := gateway.ControlTransportSwitch(tp, rootsPEM, sw)
+	if err != nil {
+		return nil, err
 	}
 	logger.Info("связь с сервером управления по mTLS: heartbeat, события и пакеты конфигурации", "gateway_id", id.CommonName, "server", cfg.Server.Host)
-	return &http.Client{Transport: transport}, id.CommonName, nil
+	return &controlClient{client: &http.Client{Transport: transport}, transport: transport, cert: sw, gatewayID: id.CommonName}, nil
 }
+
+// gwReissueWarn — за сколько до истечения сертификата предупреждать.
+const gwReissueWarn = 30 * 24 * time.Hour
 
 // startHeartbeat запускает heartbeat на внутренний API сервера. Сервер
 // недоступен — шлюз всё равно работает (ТЗ, 4.2).
 func startHeartbeat(ctx context.Context, cfg *config.Gateway, client *http.Client, logger *slog.Logger, reports *gateway.Reports, etag func() string,
-	verify func(context.Context), started time.Time) <-chan struct{} {
+	verify func(context.Context), started time.Time, reissue func(context.Context) error) <-chan struct{} {
 	v := version
 	if !gateway.ValidVersion(v) {
 		v = "unknown"
@@ -429,7 +480,7 @@ func startHeartbeat(ctx context.Context, cfg *config.Gateway, client *http.Clien
 		defer close(done)
 		gateway.RunHeartbeat(ctx, gateway.HeartbeatConfig{
 			Client: client, Server: cfg.Server, Version: v, Logger: logger, Reports: reports, BundleETag: etag, Verify: verify,
-			StartedAt: started,
+			StartedAt: started, Reissue: reissue,
 		})
 	}()
 	return done

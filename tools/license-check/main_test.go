@@ -161,6 +161,20 @@ func TestCheckPins(t *testing.T) {
     justification: j
     decision: d
     decided: 2026-10-01
+  - name: postgres
+    version: 17.11-alpine@sha256:` + digest + `
+    type: image
+    scope: external
+    purpose: p
+    license: PostgreSQL AND GPL-2.0-only
+    license_decision: ADR-0019
+    repository: https://github.com/docker-library/postgres
+    attack_surface: true
+    security_function: false
+    provided_by: Docker
+    justification: j
+    decision: d
+    decided: 2026-10-22
   - name: golang
     version: 1.27.1-bookworm@sha256:` + digest + `
     type: image
@@ -178,9 +192,13 @@ func TestCheckPins(t *testing.T) {
 	const checkout = "  - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\n"
 	good := func() fstest.MapFS {
 		f := repo(reg, "# example.com/m v1.0.0\n")
+		f["docs/adr/0019-postavka-pilota.md"] = &fstest.MapFile{Data: []byte("# ADR-0019")}
 		f[".github/workflows/ci.yml"] = &fstest.MapFile{Data: []byte("steps:\n" + checkout + "  - uses: ./.github/actions/local\n")}
 		f["deploy/build/Dockerfile"] = &fstest.MapFile{Data: []byte("ARG GO_IMAGE=golang:1.27.1-bookworm@sha256:" + digest +
 			"\nFROM ${GO_IMAGE} AS build\nFROM build AS test\nFROM scratch\nCOPY --from=build /x /x\n")}
+		// Образ из compose (внешний, scope: external) и образы продукта.
+		f["deploy/compose/pilot/compose.yaml"] = &fstest.MapFile{Data: []byte("services:\n  db:\n    image: ${PG:-postgres}:17.11-alpine@sha256:" + digest +
+			"\n  srv:\n    image: ${AISEC_IMAGE_REPO:-aisec}/aisec-server:${AISEC_VERSION:?v}\n  dev:\n    image: aisec-dev/mock-llm\n")}
 		return f
 	}
 	problems, err := run(good())
@@ -207,6 +225,12 @@ func TestCheckPins(t *testing.T) {
 		"неизвестный аргумент":    {"deploy/x/Dockerfile", "FROM ${NOPE}\n", "не задано"},
 		"неиспользуемое действие": {".github/workflows/ci.yml", "steps: []\n", "не используется в .github"},
 		"неиспользуемый образ":    {"deploy/build/Dockerfile", "FROM scratch\n", "не используется ни в одном Dockerfile"},
+		"compose без digest":      {"deploy/compose/x/compose.yaml", "services:\n  db:\n    image: postgres:17\n", "не закреплён"},
+		"compose не в реестре":    {"deploy/compose/x/docker-compose.yml", "services:\n  db:\n    image: \"postgres:17@sha256:" + digest + "\"\n", "нет в реестре"},
+		"compose с переменной":    {"deploy/compose/x/compose.yaml", "services:\n  db:\n    image: ${PG:-postgres}:17\n", "${PG:-postgres}:17 не закреплён"},
+		"чужой образ aisec":       {"deploy/compose/x/compose.yaml", "services:\n  x:\n    image: aisec/foo:latest\n", "aisec/foo:latest не закреплён"},
+		"образ из переменной":     {"deploy/compose/x/compose.yaml", "services:\n  x:\n    image: ${X}\n", "переменная в имени"},
+		"сервис CI без digest":    {".github/workflows/ci.yml", checkout + "services:\n  pg:\n    image: postgres:17.6-alpine\n", "не закреплён"},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {

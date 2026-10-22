@@ -39,13 +39,16 @@ func main() {
 	check := flag.String("check", "", "только проверить готовый SBOM на обязательные поля и выйти")
 	goSum := flag.String("gosum", "go.sum", "go.sum модуля: хеши модулей для сборки с vendor/, где их нет в сведениях о сборке")
 	npmLock := flag.String("npm-lock", "", "package-lock.json веб-консоли: npm-пакеты поставки попадают в SBOM (пусто — без них)")
+	image := flag.String("image", "", "SBOM образа поставки «репозиторий:тег» вместо SBOM продукта (ADR-0019)")
+	var files fileList
+	flag.Var(&files, "file", "файл образа помимо бинарников (манифест, подпись); можно повторять, только с -image")
 	flag.Parse()
 
 	var err error
 	if *check != "" {
 		err = checkFile(*check)
 	} else {
-		err = run(*registry, *goSum, *npmLock, *out, *version, *timestamp, flag.Args())
+		err = run(*registry, *goSum, *npmLock, *out, *version, *timestamp, flag.Args(), imageSpec{Name: *image, Files: files})
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "sbom:", err)
@@ -53,9 +56,12 @@ func main() {
 	}
 }
 
-func run(registryPath, goSumPath, npmLockPath, out, version, timestamp string, binaries []string) error {
+func run(registryPath, goSumPath, npmLockPath, out, version, timestamp string, binaries []string, img imageSpec) error {
 	if len(binaries) == 0 {
 		return errors.New("не указаны бинарники")
+	}
+	if img.Name == "" && len(img.Files) > 0 {
+		return errors.New("-file — только вместе с -image")
 	}
 	ts := time.Unix(0, 0).UTC()
 	if timestamp != "" {
@@ -110,6 +116,19 @@ func run(registryPath, goSumPath, npmLockPath, out, version, timestamp string, b
 	bom, err := BuildWithNPM(reg, bins, lock, version, ts, hasher)
 	if err != nil {
 		return err
+	}
+	if img.Name != "" {
+		var files []ImageFile
+		for _, path := range img.Files {
+			f, err := readImageFile(path, hasher)
+			if err != nil {
+				return err
+			}
+			files = append(files, f)
+		}
+		if err := AsImage(bom, img.Name, files, hasher); err != nil {
+			return err
+		}
 	}
 	if err := Check(bom); err != nil {
 		return err

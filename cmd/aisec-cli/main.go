@@ -49,12 +49,23 @@ const usage = `aisec-cli — служебные операции AISec.
                                 проверить целостность установки по подписанному манифесту без сервера;
                                 с AISEC_DATABASE_URL итог пишется в журнал; 3 — целостность нарушена;
                                 -accept-rollback — принять намеренный откат на старый выпуск (сервера или шлюза)
+  verify -release КАТАЛОГ [-allow-older]
+                                проверить новый выпуск до обновления (ОБН.1): подпись — ключом этой версии,
+                                все файлы каталога; себя не сверяет, в журнал не пишет; выпуск старше
+                                установленного — только с -allow-older; 3 — выпуск не прошёл
   backup create -keys КАТАЛОГ -out ФАЙЛ (-user-hmac-key ФАЙЛ | -no-user-hmac-key) [-passphrase-file ФАЙЛ]
                                 резервная копия конфигурации в зашифрованный файл (AISEC_DATABASE_URL)
   backup restore -keys КАТАЛОГ -in ФАЙЛ [-user-hmac-key-out ФАЙЛ] [-passphrase-file ФАЙЛ] [-allow-nonempty]
                [-keep-api-tokens] [-accept-old-copy]
                                 восстановить конфигурацию в новую установку после init; 3 — копия недействительна;
                                 токены API восстанавливаются отозванными; копия старше 7 суток — с -accept-old-copy
+  keys status                   версии ключа данных и число строк под каждой (AISEC_DATABASE_URL)
+  keys rotate-data -dir КАТАЛОГ [-resume] [-batch 500] [-settle 2m]
+                                новая версия ключа данных, перешифрование TOTP, учётных данных провайдеров
+                                и содержимого событий, удаление прежней версии; прерванное — продолжить -resume
+  keys rotate-master -dir КАТАЛОГ
+                                новый мастер-ключ: перешифровать ключи данных, прежний файл сохраняется
+                                как master.key.<время>.retired; прерванное — повторить ту же команду
   version                       версия
 `
 
@@ -139,7 +150,7 @@ func run(args []string, stdout, stderr io.Writer, now time.Time) int {
 				return 0
 			}
 			say(stderr, "aisec-cli verify: %v\n", err)
-			if errors.Is(err, errIntegrityViolated) {
+			if errors.Is(err, errIntegrityViolated) || errors.Is(err, errReleaseRejected) {
 				return 3
 			}
 			return 1
@@ -152,6 +163,18 @@ func run(args []string, stdout, stderr io.Writer, now time.Time) int {
 			}
 			say(stderr, "aisec-cli backup: %v\n", err)
 			if errors.Is(err, errBackupInvalid) {
+				return 3
+			}
+			return 1
+		}
+		return 0
+	case "keys":
+		if err := keysCmd(args[1:], os.Getenv("AISEC_DATABASE_URL"), stdout, stderr, now); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return 0
+			}
+			say(stderr, "aisec-cli keys: %v\n", err)
+			if errors.Is(err, errChainBroken) {
 				return 3
 			}
 			return 1

@@ -538,3 +538,58 @@ func TestPGEventsReceivedAtFromDB(t *testing.T) {
 		t.Fatalf("received_at отстаёт от часов СУБД на %v", lag)
 	}
 }
+
+// hookFunc — IngestHook из функции.
+type hookFunc func(ctx context.Context, tx pgx.Tx, gatewayID string, accepted []*events.Event) error
+
+func (f hookFunc) OnIngest(ctx context.Context, tx pgx.Tx, gatewayID string, accepted []*events.Event) error {
+	return f(ctx, tx, gatewayID, accepted)
+}
+
+// Точка вызова движка оповещений (ADR-0020): в транзакцию приёма приходят
+// только впервые записанные события; ошибка движка откатывает весь пакет.
+func TestPGIngestHook(t *testing.T) {
+	e := setupPG(t)
+	ctx := pgCtx(t)
+	if _, err := e.st.EnsurePartitions(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	fail := false
+	errHook := errors.New("движок оповещений недоступен")
+	st, err := events.NewPGStore(e.app, e.box, e.log, "", events.WithIngestHook(hookFunc(
+		func(_ context.Context, _ pgx.Tx, gw string, acc []*events.Event) error {
+			if gw != testGateway {
+				t.Errorf("шлюз %s", gw)
+			}
+			if fail {
+				return errHook
+			}
+			for _, ev := range acc {
+				got = append(got, ev.ID)
+			}
+			return nil
+		})))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, b := e.event(t, events.StorageNone, nil), e.event(t, events.StorageNone, nil)
+	if _, err := st.Insert(ctx, events.Ingest{GatewayID: testGateway, ReceivedAt: time.Now(), Events: []events.Event{a}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Insert(ctx, events.Ingest{GatewayID: testGateway, ReceivedAt: time.Now(), Events: []events.Event{a, b}}); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(got, []string{a.ID, b.ID}) {
+		t.Fatalf("в движок переданы %v", got)
+	}
+	fail = true
+	c := e.event(t, events.StorageNone, nil)
+	if _, err := st.Insert(ctx, events.Ingest{GatewayID: testGateway, ReceivedAt: time.Now(), Events: []events.Event{c}}); !errors.Is(err, errHook) {
+		t.Fatalf("ошибка движка: %v", err)
+	}
+	var n int
+	if err := e.owner.QueryRow(ctx, "SELECT count(*) FROM events WHERE id = $1", c.ID).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("пакет не откатился: %d %v", n, err)
+	}
+}

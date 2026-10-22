@@ -17,13 +17,13 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"path/filepath"
 	"sync/atomic"
 	"time"
 	// База часовых поясов IANA в бинарнике: первичная настройка принимает
 	// пояс и на хосте без /usr/share/zoneinfo (Н43 ревью 2.r4).
 	_ "time/tzdata"
 
+	"github.com/azuresong-afk/ai_railway/internal/alerting"
 	"github.com/azuresong-afk/ai_railway/internal/api"
 	"github.com/azuresong-afk/ai_railway/internal/apps"
 	"github.com/azuresong-afk/ai_railway/internal/audit"
@@ -169,6 +169,11 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	// После ротации ключа данных (aisec-cli keys rotate-data) сервер
+	// переходит на новую версию без перезапуска (ADR-0018, п. 3.2).
+	go box.Watch(ctx, keyring.WatchInterval, func(err error) {
+		logger.Warn("опрос действующей версии ключа данных не выполнен", "class", "db", "error", err)
+	})
 	// Проверка цепочки журнала аудита (РСБ.4, DM-43): сразу и раз в
 	// -audit-verify-interval. Голова цепочки защищена имитовставкой на ключе
 	// из ключа данных (вне БД). Нарушение не останавливает сервер — оно
@@ -197,7 +202,13 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	// контекст отменяется с причиной integrity.ErrViolation.
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
-	integritySvc, err := startIntegrity(ctx, cfg, p, db, auditLog, logger, cancel, auditPubPEM)
+	// Цепочка доверия от якоря bundle-signing.pub (ADR-0018, п. 4): ключ
+	// подписи пакетов и корни УЦ после ротаций.
+	trust, err := loadServerTrust(ctx, p, db, cfg.KeysDir)
+	if err != nil {
+		return err
+	}
+	integritySvc, err := startIntegrity(ctx, cfg, p, db, auditLog, logger, cancel, auditPubPEM, trust)
 	if err != nil {
 		return err
 	}
@@ -205,9 +216,9 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	// Реестр шлюзов и внутренний УЦ (ИАФ.10, Р8): без -ca-cert
 	// регистрация отвечает 503, а внутренний порт не открывается.
 	var gateways *gwregistry.Service
-	var ca *aisecCrypto.CA
+	var ca *serverCA
 	if cfg.CACert != "" {
-		if ca, err = loadCA(cfg.CACert, cfg.CAKey); err != nil {
+		if ca, err = loadServerCA(cfg, p, trust); err != nil {
 			return err
 		}
 		gwStore, err := gwregistry.NewPGStore(db.Pool(), auditLog)
@@ -215,10 +226,11 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 			return err
 		}
 		if gateways, err = gwregistry.New(gwregistry.Options{
-			Store: gwStore, Provider: p, CA: ca, Audit: auditLog, Logger: logger,
+			Store: gwStore, Provider: p, CA: ca.ca, Audit: auditLog, Logger: logger, AnchorRoot: ca.anchorRoot,
 		}); err != nil {
 			return err
 		}
+		gateways.SetRoots(ca.roots)
 	} else {
 		logger.Warn("внутренний УЦ не задан (-ca-cert, -ca-key): регистрация шлюзов и внутренний API выключены")
 	}
@@ -235,10 +247,41 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		return err
 	}
 	defer readDB.Close()
-	eventStore, err := events.NewPGStore(db.Pool(), box, auditLog, audit.DefaultOrgID, events.WithRandom(rnd),
-		events.WithReadDB(readDB.Pool()))
+	// Оповещения (ТЗ 5.6, задача 3.10, ADR-0020): правила «порог» и «новое»
+	// считаются в транзакции приёма событий; встроенные правила создаются
+	// при запуске.
+	alertStore, err := alerting.NewPGStore(db.Pool(), auditLog, rnd, audit.DefaultOrgID, logger)
 	if err != nil {
 		return err
+	}
+	eventStore, err := events.NewPGStore(db.Pool(), box, auditLog, audit.DefaultOrgID, events.WithRandom(rnd),
+		events.WithReadDB(readDB.Pool()), events.WithIngestHook(alertStore))
+	if err != nil {
+		return err
+	}
+	activeUser := func(ctx context.Context, id string) error {
+		u, err := authSvc.User(ctx, id)
+		if err != nil {
+			return err
+		}
+		if u.Status != auth.StatusActive {
+			return errors.New("учётная запись не активна")
+		}
+		return nil
+	}
+	alertsSvc, err := alerting.New(alerting.Options{Store: alertStore, Provider: p, OrgID: audit.DefaultOrgID,
+		UserCheck: activeUser,
+		RoleCheck: func(ctx context.Context, id string) error {
+			_, err := authSvc.RoleDef(ctx, auth.Role(id))
+			return err
+		}})
+	if err != nil {
+		return err
+	}
+	if n, err := alertsSvc.EnsureBuiltins(ctx); err != nil {
+		return fmt.Errorf("встроенные правила оповещений: %w", err)
+	} else if n > 0 {
+		logger.Info("созданы встроенные правила оповещений", "count", n)
 	}
 	if err := events.Maintain(ctx, eventStore, logger); err != nil {
 		return fmt.Errorf("секции событий: %w", err)
@@ -255,7 +298,12 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		st, err := authSvc.InstallSettings(ctx)
 		return st.Timezone, err
 	}
-	statusSvc, err := newStatus(ctx, cfg, db, auditLog, integritySvc, selftestRes, bundleHealth(&bundleSvc), timezone, logger)
+	// Срок действующего корня УЦ — условие ca_expiry (3В5 ревью 3.r1).
+	var caNotAfter time.Time
+	if ca != nil {
+		caNotAfter = ca.ca.NotAfter()
+	}
+	statusSvc, err := newStatus(ctx, cfg, db, auditLog, integritySvc, selftestRes, bundleHealth(&bundleSvc), timezone, caNotAfter, logger)
 	if err != nil {
 		return err
 	}
@@ -283,16 +331,7 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		return err
 	}
 	appsSvc, err := apps.New(apps.Options{Store: appStore, Provider: p, Box: box, Policies: policiesSvc,
-		OwnerCheck: func(ctx context.Context, id string) error {
-			u, err := authSvc.User(ctx, id)
-			if err != nil {
-				return err
-			}
-			if u.Status != auth.StatusActive {
-				return errors.New("учётная запись не активна")
-			}
-			return nil
-		}})
+		OwnerCheck: activeUser})
 	if err != nil {
 		return err
 	}
@@ -323,6 +362,7 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		Integrity: integritySvc,
 		Status:    statusSvc,
 		Events:    eventStore,
+		Alerts:    alertsSvc,
 		Audit:     auditLog,
 		Fallback:  console,
 
@@ -344,7 +384,7 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	if gateways != nil {
 		// Пакеты конфигурации (задача 2.13): без ключа подписи внутренний
 		// порт не открывается — шлюзы не получили бы конфигурацию.
-		bundleRoutes, bsvc, err := newBundleRoutes(cfg, p, db, auditLog, appsSvc, policiesSvc, gateways, logger)
+		bundleRoutes, bsvc, err := newBundleRoutes(cfg, p, db, auditLog, appsSvc, policiesSvc, gateways, trust, logger)
 		if err != nil {
 			return err
 		}
@@ -369,7 +409,7 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 // условий уведомлений раздела 7.
 func newStatus(ctx context.Context, cfg *serverConfig, db *store.DB, auditLog *audit.Log, integritySvc integrity.Service,
 	selftestRes selftest.Result, bundle func(context.Context) (*sysstatus.BundleHealth, error),
-	timezone func(context.Context) (string, error), logger *slog.Logger) (*sysstatus.Service, error) {
+	timezone func(context.Context) (string, error), caNotAfter time.Time, logger *slog.Logger) (*sysstatus.Service, error) {
 	gwStore, err := gwregistry.NewPGStore(db.Pool(), auditLog)
 	if err != nil {
 		return nil, err
@@ -388,7 +428,7 @@ func newStatus(ctx context.Context, cfg *serverConfig, db *store.DB, auditLog *a
 		Gateways:  sysstatus.GatewayLister{Store: gwStore},
 		Integrity: integritySvc.Store, Store: pg,
 		Timezone: timezone, StorageLimit: cfg.AuditStorageLimit, WarnPercent: cfg.AuditStorageWarnPercent,
-		Logger: logger, Bundle: bundle,
+		Logger: logger, Bundle: bundle, CANotAfter: caNotAfter,
 	})
 	if err != nil {
 		return nil, err
@@ -424,11 +464,15 @@ func requireAuditKey(ctx context.Context, cps checkpointSource, haveKey bool, lo
 // startAuditVerify запускает фоновую проверку цепочки журнала аудита и
 // возвращает её Verifier для проверки по команде.
 func startAuditVerify(ctx context.Context, cfg *serverConfig, auditLog *audit.Log, box *keyring.Box, logger *slog.Logger) (*audit.Verifier, error) {
-	mac, err := box.MAC(audit.HeadMACPurpose)
+	// Опоры прежних версий ключа данных сверяются, пока версия не удалена
+	// ротацией (ADR-0018, п. 3.4). Версии берутся из box перед каждой
+	// проверкой: после keys rotate-data опора пишется новой версией без
+	// перезапуска (3В2 ревью 3.r1).
+	opts, err := audit.HeadMACOptions(box)
 	if err != nil {
-		return nil, fmt.Errorf("ключ имитовставки цепочки аудита: %w", err)
+		return nil, err
 	}
-	v := audit.NewVerifier(auditLog, audit.WithHeadMAC(audit.HeadMAC{KeyID: box.KeyID(), MAC: mac}))
+	v := audit.NewVerifier(auditLog, opts...)
 	go func() {
 		// Итог каждой проверки уже в аудите и audit_verifications; здесь —
 		// только техническое сообщение.
@@ -455,7 +499,7 @@ func startAuditVerify(ctx context.Context, cfg *serverConfig, auditLog *audit.Lo
 // ключи подписи пакетов. Сертификаты TLS не наблюдаются: их меняют при
 // продлении.
 func startIntegrity(ctx context.Context, cfg *serverConfig, p aisecCrypto.Provider, db *store.DB, auditLog *audit.Log,
-	logger *slog.Logger, stop context.CancelCauseFunc, auditPubPEM []byte) (integrity.Service, error) {
+	logger *slog.Logger, stop context.CancelCauseFunc, auditPubPEM []byte, trust *serverTrust) (integrity.Service, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		exe = "" // проверка отметит исполняемый файл как нечитаемый
@@ -475,11 +519,8 @@ func startIntegrity(ctx context.Context, cfg *serverConfig, p aisecCrypto.Provid
 	if cfg.CACert != "" {
 		watch = append(watch, integrity.WatchFile{Path: cfg.CACert})
 	}
-	for _, name := range []string{bundleSigningPubFile, bundleSigningNextFile} {
-		path := filepath.Join(cfg.KeysDir, name)
-		if _, err := os.Stat(path); err == nil {
-			watch = append(watch, integrity.WatchFile{Path: path})
-		}
+	if trust != nil {
+		watch = append(watch, trust.watch(cfg)...)
 	}
 	running := ""
 	if exe != "" {
@@ -531,7 +572,7 @@ func loadCA(certFile, keyFile string) (*aisecCrypto.CA, error) {
 // newInternalServer — внутренний API шлюзов на отдельном порту: TLS с
 // обязательным клиентским сертификатом внутреннего УЦ (mTLS, ИАФ.10).
 func newInternalServer(ctx context.Context, cfg *serverConfig, tp aisecCrypto.TLSProvider, hasher aisecCrypto.Hasher,
-	gateways *gwregistry.Service, eventStore events.Store, ca *aisecCrypto.CA, certPEM, keyPEM []byte,
+	gateways *gwregistry.Service, eventStore events.Store, ca *serverCA, certPEM, keyPEM []byte,
 	extra []api.Route, logger *slog.Logger) (*httpserver.Server, error) {
 	if cfg.InternalTLSCertFile != "" {
 		var err error
@@ -550,7 +591,7 @@ func newInternalServer(ctx context.Context, cfg *serverConfig, tp aisecCrypto.TL
 	}
 	return httpserver.New(ctx, httpserver.Config{
 		Addr: cfg.InternalListen, Handler: handler, TLS: tp, CertPEM: certPEM, KeyPEM: keyPEM,
-		ClientCAPEM: ca.CertPEM(), Logger: ilog,
+		ClientCAPEM: ca.clientCAs, Logger: ilog,
 	})
 }
 

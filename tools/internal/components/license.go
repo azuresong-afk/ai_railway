@@ -18,11 +18,16 @@ var (
 		"MPL-2.0": true, "LGPL-2.1-only": true, "LGPL-2.1-or-later": true,
 		"LGPL-3.0-only": true, "LGPL-3.0-or-later": true,
 	}
-	// gplLicenses допустимы только для инструментов сборочной среды (ADR-0003).
+	// gplLicenses допустимы только для инструментов сборочной среды (ADR-0003)
+	// и внешних образов (ADR-0019).
 	gplLicenses = map[string]bool{
 		"GPL-2.0-only": true, "GPL-2.0-or-later": true,
 		"GPL-3.0-only": true, "GPL-3.0-or-later": true,
 	}
+	// externalLicenses — разрешительные лицензии вне списка CLAUDE.md, которые
+	// допускаются только у внешних образов (scope: external) при
+	// license_decision: продукт эти компоненты не распространяет (ADR-0019).
+	externalLicenses = map[string]bool{"PostgreSQL": true, "Zlib": true}
 )
 
 // Всё остальное запрещено: GPL, AGPL, SSPL, BUSL, Commons Clause, код без
@@ -203,8 +208,9 @@ func (p *exprParser) parseAtom(depth int) (Verdict, error) {
 }
 
 // CheckLicense проверяет лицензию компонента по политике. Для scope: build
-// лицензии семейства GPL допустимы при заполненном license_decision
-// (ADR-0003); условные лицензии всегда требуют license_decision.
+// и external лицензии семейства GPL (для external — и externalLicenses)
+// допустимы при заполненном license_decision (ADR-0003, ADR-0019); условные
+// лицензии всегда требуют license_decision.
 func CheckLicense(c Component) error {
 	v, ids, err := EvalExpression(c.License)
 	if err != nil {
@@ -225,10 +231,11 @@ func CheckLicense(c Component) error {
 			return nil
 		}
 	}
-	if c.Scope == ScopeBuild && strings.TrimSpace(c.LicenseDecision) != "" {
+	if (c.Scope == ScopeBuild || c.Scope == ScopeExternal) && strings.TrimSpace(c.LicenseDecision) != "" {
 		gplOnly := true
 		for _, id := range ids {
-			if classify(id) == Forbidden && !isGPLFamily(id) {
+			externalOK := c.Scope == ScopeExternal && externalLicenses[id]
+			if classify(id) == Forbidden && !isGPLFamily(id) && !externalOK {
 				gplOnly = false
 			}
 		}

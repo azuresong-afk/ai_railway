@@ -10,7 +10,9 @@
 # internal/api сверяет маршруты внутреннего порта с этим файлом в обе стороны.
 # Приём событий (POST /internal/v1/events:batch) — задача 2.15; пакеты
 # конфигурации (GET /internal/v1/policies/bundle и отчёт о применении) —
-# задача 2.13.
+# задача 2.13. Перевыпуск сертификата (POST /internal/v1/certificate),
+# цепочка доверия в пакете и закрепление ключа получателя — задача 3.3,
+# ADR-0018.
 openapi: 3.1.0
 info:
   title: AISec internal API
@@ -29,7 +31,10 @@ paths:
         часов больше 30 секунд, ВРМ.1), рекомендуемый период и запрос проверки
         целостности из консоли (`verify_requested_at`, Н38). Отозванный шлюз,
         заменённый или неизвестный сертификат — 401 и запись `gateway.mtls_denied`
-        в аудит (не чаще раза в минуту на сертификат).
+        в аудит (не чаще раза в минуту на сертификат). Сертификат от корня УЦ,
+        которого нет в действующем заявлении о доверии или чьё перекрытие
+        истекло, — тоже 401 (`ca_unknown`, `ca_expired` в записи; ADR-0018,
+        п. 6). Признак `reissue` в ответе — шлюзу нужен новый сертификат.
       requestBody:
         required: true
         content:
@@ -48,6 +53,51 @@ paths:
         '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ProblemInternal' }
+  /internal/v1/certificate:
+    post:
+      summary: Перевыпуск сертификата шлюза (ИАФ.10, ADR-0018, п. 6.3)
+      description: |
+        Шлюз вызывает маршрут, когда heartbeat вернул `reissue: true`: его
+        сертификат выпущен не действующим корнем внутреннего УЦ (ротация
+        `aisec-cli keys rotate-ca`) или истекает через 30 суток и меньше.
+        Шлюз приходит с прежним сертификатом по mTLS и присылает CSR на новый
+        ключ ECDSA P-256; закрытый ключ сервер не видит. CN нового сертификата —
+        ID шлюза из прежнего, назначение — только `clientAuth`. Новый
+        сертификат сохраняется как следующий: прежний принимается, пока шлюз
+        не придёт с новым, после чего прежний перестаёт приниматься. Аудит —
+        `gateway.cert_reissue` со `stage: issued` при выпуске и
+        `stage: activated` при первом запросе с новым сертификатом. Сертификат
+        выпускается только тогда, когда heartbeat требует перевыпуск; иначе —
+        409 `reissue_not_needed` и запись `gateway.cert_reissue` с результатом
+        `denied` (`stage: denied`, `reason: not_needed`, не чаще раза в минуту
+        на шлюз): украденный ключ шлюза не продлевает доступ (3В4 ревью 3.r1).
+        Сертификат действующего корня, срок которого уже равен сроку корня,
+        не перевыпускается (3В5). Не чаще раза в минуту на шлюз (429 с
+        `Retry-After`). Тело до 16 КиБ. Без внутреннего УЦ на сервере — 503.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CertificateRequest' }
+      responses:
+        '200':
+          description: Сертификат выпущен
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CertificateResponse' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '409':
+          description: Перевыпуск не нужен (`reissue_not_needed`)
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/ProblemUnavailable' }
   /internal/v1/events:batch:
     post:
       summary: Пакет событий шлюза (ТЗ 5.5, решение Р9)
@@ -111,6 +161,16 @@ paths:
         200 пишется в аудит (`bundle.deliver`), 304 — нет. Предел частоты —
         общий для внутреннего порта (600 в минуту с адреса); шлюз опрашивает
         раз в 30 секунд.
+
+        Цепочка доверия (ADR-0018, п. 4): в поле `trust` конверта сервер
+        передаёт подписанные заявления о ключах подписи пакетов и корнях УЦ,
+        начиная со следующего за `AISec-Trust-Seq` шлюза. Если номер шлюза
+        меньше номера сервера, `If-None-Match` не учитывается: шлюз получает
+        пакет с недостающими заявлениями. Ключ получателя закрепляется за
+        шлюзом при регистрации или при первом запросе пакета
+        (`gateway.bundle_key_pinned`); другой ключ — 409 `bundle_key_mismatch`
+        и запись `gateway.bundle_key_mismatch` (не чаще раза в минуту на
+        шлюз): секреты для чужого ключа не шифруются.
       parameters:
         - name: AISec-Bundle-Key
           in: header
@@ -122,6 +182,11 @@ paths:
           required: false
           description: ETag применённой версии; совпал — 304 без тела
           schema: { type: string, maxLength: 128 }
+        - name: AISec-Trust-Seq
+          in: header
+          required: false
+          description: Номер последнего принятого шлюзом заявления о доверии; 0 — только ключи `-bundle-pub`. Нет заголовка — как у шлюза прежней версии
+          schema: { type: string, pattern: '^[0-9]{1,18}$' }
       responses:
         '200':
           description: Пакет (не больше 8 МиБ)
@@ -138,6 +203,11 @@ paths:
         '400': { $ref: '#/components/responses/ProblemInvalid' }
         '401': { $ref: '#/components/responses/ProblemUnauthorized' }
         '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '409':
+          description: Ключ получателя не совпадает с закреплённым за шлюзом (`bundle_key_mismatch`)
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ProblemInternal' }
         '503': { $ref: '#/components/responses/ProblemUnavailable' }
@@ -185,7 +255,7 @@ components:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }
     ProblemTooLarge:
-      description: Тело больше предела маршрута — heartbeat 4 КиБ, пакет событий 8 МиБ, отчёт о пакете 1 КиБ (`payload_too_large`)
+      description: Тело больше предела маршрута — heartbeat 4 КиБ, пакет событий 8 МиБ, отчёт о пакете 1 КиБ, перевыпуск сертификата 16 КиБ (`payload_too_large`)
       content:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }
@@ -228,7 +298,9 @@ components:
         {provider, credential}; `signature` — Ed25519 над
         `format || 0x00 || len(header) || header || len(content) || content || len(secrets) || secrets`
         (длины — 4 байта big-endian). Неизвестные поля на любом уровне — отказ
-        на шлюзе.
+        на шлюзе. `trust` подписью пакета не покрыт: каждое заявление подписано
+        само и проверяется по цепочке от ключей `-bundle-pub` до проверки
+        подписи пакета (ADR-0018, п. 4).
       type: object
       required: [format, key_id, header, content, secrets, signature]
       additionalProperties: false
@@ -239,6 +311,29 @@ components:
         content: { type: string }
         secrets: { type: string }
         signature: { type: string }
+        trust:
+          type: array
+          maxItems: 8
+          items: { type: string, maxLength: 21848 }
+          description: |
+            Заявления о доверии `aisec-trust/1` по порядку номеров, каждое —
+            стандартный base64 конверта {statement, key_id, signature} (до
+            16 КиБ). Заявление: номер, время, ключи подписи пакетов (до 4,
+            ровно один без `not_after` — действующий) и корни УЦ (до 4).
+            Подписано действующим ключом предыдущего заявления; номер — без
+            пропусков. Неверное заявление — отказ пакета с причиной `signature`.
+    CertificateRequest:
+      type: object
+      required: [csr]
+      additionalProperties: false
+      properties:
+        csr: { type: string, minLength: 1, maxLength: 16384, description: 'CSR (PKCS#10) в PEM на новый ключ ECDSA P-256' }
+    CertificateResponse:
+      type: object
+      required: [certificate, not_after]
+      properties:
+        certificate: { type: string, description: 'Новый клиентский сертификат шлюза в PEM' }
+        not_after: { type: string, format: date-time }
     BundleStatus:
       type: object
       required: [result, version]
@@ -329,6 +424,12 @@ components:
       properties:
         server_time: { type: string, format: date-time }
         interval_seconds: { type: integer, minimum: 1, description: Рекомендуемый период heartbeat }
+        reissue:
+          type: boolean
+          description: |
+            Шлюзу нужен новый сертификат (ADR-0018, п. 6.3): прежний выпущен не
+            действующим корнем УЦ или истекает через 30 суток и меньше. Шлюз
+            вызывает POST /internal/v1/certificate. Нет поля — не нужен.
         verify_requested_at:
           type: string
           format: date-time

@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sync"
 	"time"
 
@@ -45,29 +46,80 @@ type DB interface {
 }
 
 // Box шифрует секреты ключом данных. Безопасен для одновременного использования.
+//
+// Box знает все версии ключа данных, которые ещё не удалены (ADR-0018, п. 3):
+// действующей шифрует (Seal), любой расшифровывает (Open). Box из Load
+// перечитывает версии, когда действующую вывела ротация (aisec-cli keys
+// rotate-data): при отказе в резерве шифрований, при шифротексте неизвестной
+// версии и по Watch.
 type Box struct {
-	keyID string
-	aead  aisecCrypto.AEAD
-	// reserve резервирует n шифрований ключа; nil — без учёта (тесты).
-	reserve func(ctx context.Context, n int64) error
-	// Производные ключи (ADR-0007, п. 8): kdf хранит только состояние
-	// HKDF после извлечения; nil — выведение недоступно (NewStatic).
-	provider      aisecCrypto.Provider
-	kdf           aisecCrypto.KDF
-	reserveDerive func(ctx context.Context, purpose, day string, n int64) error
+	provider aisecCrypto.Provider
+	// src — откуда перечитывать версии; nil — версии постоянны (NewStatic).
+	src *source
+	// reserve резервирует n шифрований ключа keyID; nil — без учёта (тесты).
+	reserve func(ctx context.Context, keyID string, n int64) error
+	// reserveDerive — то же для производного ключа суток.
+	reserveDerive func(ctx context.Context, keyID, purpose, day string, n int64) error
 
-	mu      sync.Mutex
-	left    int64
-	derived map[string]*Derived
+	mu       sync.Mutex
+	active   *version
+	versions map[string]*version
+	left     int64
+	derived  map[string]*Derived
+	// reloadedAt — последнее перечитывание по шифротексту неизвестной версии.
+	reloadedAt time.Time
 }
 
-// Load читает мастер-ключ из dir, расшифровывает действующий ключ данных
+// version — одна версия ключа данных. Производные ключи (ADR-0007, п. 8):
+// kdf хранит только состояние HKDF после извлечения; nil — выведение
+// недоступно (NewStatic).
+type version struct {
+	id   string
+	num  int
+	aead aisecCrypto.AEAD
+	kdf  aisecCrypto.KDF
+}
+
+// source — каталог ключей и БД, из которых Box перечитывает версии.
+type source struct {
+	db    DB
+	dir   string
+	orgID string
+}
+
+// Querier — чтение нескольких строк; *pgxpool.Pool ему соответствует. Без
+// него Load берёт только действующую версию.
+type Querier interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
+
+// Load читает мастер-ключ из dir, расшифровывает версии ключа данных
 // организации orgID и возвращает Box. Открытые копии ключей затираются.
 func Load(ctx context.Context, db DB, p aisecCrypto.Provider, dir, orgID string) (*Box, error) {
 	if db == nil || p == nil {
 		return nil, errors.New("ключ данных: нет БД или криптопрофиля")
 	}
-	data, err := aisecCrypto.ReadKeyFile(filepath.Join(dir, MasterKeyFile))
+	b := &Box{provider: p, src: &source{db: db, dir: dir, orgID: orgID}}
+	active, all, err := b.src.load(ctx, p)
+	if err != nil {
+		return nil, err
+	}
+	b.active, b.versions = active, all
+	b.reserve = func(ctx context.Context, keyID string, n int64) error { return reserveDB(ctx, db, keyID, n) }
+	b.reserveDerive = func(ctx context.Context, keyID, purpose, day string, n int64) error {
+		return reserveDerivedDB(ctx, db, keyID, purpose, day, n)
+	}
+	return b, nil
+}
+
+// ReadMaster читает мастер-ключ из файла каталога ключей и проверяет
+// профиль. Вызывающий затирает результат.
+func ReadMaster(dir string, p aisecCrypto.Provider) ([]byte, error) {
+	return readMasterFile(filepath.Join(dir, MasterKeyFile), p)
+}
+
+func readMasterFile(path string, p aisecCrypto.Provider) ([]byte, error) {
+	data, err := aisecCrypto.ReadKeyFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("ключ данных: мастер-ключ: %w", err)
 	}
@@ -76,52 +128,93 @@ func Load(ctx context.Context, db DB, p aisecCrypto.Provider, dir, orgID string)
 	if err != nil {
 		return nil, fmt.Errorf("ключ данных: мастер-ключ: %w", err)
 	}
-	defer clear(master)
 	if profile != p.Name() {
+		clear(master)
 		return nil, fmt.Errorf("ключ данных: мастер-ключ профиля %q, сервер работает в профиле %q", profile, p.Name())
+	}
+	return master, nil
+}
+
+// load читает мастер-ключ и расшифровывает действующую версию и, если БД
+// умеет Query, все невыведенные из таблицы прежние.
+func (s *source) load(ctx context.Context, p aisecCrypto.Provider) (*version, map[string]*version, error) {
+	master, err := ReadMaster(s.dir, p)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer clear(master)
+	wrap, err := p.NewAEAD(master)
+	if err != nil {
+		return nil, nil, err
 	}
 	qctx, cancel := dbCtx(ctx)
 	defer cancel()
-	var (
-		id, keyProfile string
-		wrapped        []byte
-	)
-	err = db.QueryRow(qctx, `SELECT id::text, profile, wrapped FROM data_keys
-		WHERE org_id = $1 AND retired_at IS NULL`, orgID).Scan(&id, &keyProfile, &wrapped)
+	var r keyRow
+	err = s.db.QueryRow(qctx, `SELECT id::text, version, profile, wrapped FROM data_keys
+		WHERE org_id = $1 AND retired_at IS NULL`, s.orgID).Scan(&r.id, &r.num, &r.profile, &r.wrapped)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, ErrNoDataKey
+		return nil, nil, ErrNoDataKey
 	}
 	if err != nil {
-		return nil, fmt.Errorf("ключ данных: чтение: %w", err)
+		return nil, nil, fmt.Errorf("ключ данных: чтение: %w", err)
 	}
-	if keyProfile != p.Name() {
-		return nil, fmt.Errorf("ключ данных: ключ профиля %q, сервер работает в профиле %q", keyProfile, p.Name())
-	}
-	wrap, err := p.NewAEAD(master)
+	active, err := r.open(p, wrap)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	aad, err := aisecCrypto.StorageAAD("data_keys", "wrapped", id)
+	all := map[string]*version{active.id: active}
+	q, ok := s.db.(Querier)
+	if !ok {
+		return active, all, nil
+	}
+	rows, err := q.Query(qctx, `SELECT id::text, version, profile, wrapped FROM data_keys
+		WHERE org_id = $1 AND retired_at IS NOT NULL ORDER BY version`, s.orgID)
 	if err != nil {
-		return nil, err
+		return nil, nil, fmt.Errorf("ключ данных: чтение прежних версий: %w", err)
 	}
-	key, err := wrap.Open(wrapped, aad)
-	if err != nil {
-		return nil, fmt.Errorf("ключ данных: не расшифрован мастер-ключом: %w", err)
+	defer rows.Close()
+	for rows.Next() {
+		var r keyRow
+		if err := rows.Scan(&r.id, &r.num, &r.profile, &r.wrapped); err != nil {
+			return nil, nil, fmt.Errorf("ключ данных: чтение прежних версий: %w", err)
+		}
+		v, err := r.open(p, wrap)
+		if err != nil {
+			return nil, nil, err
+		}
+		all[v.id] = v
 	}
-	defer clear(key)
-	b, err := newBox(p, id, key)
-	if err != nil {
-		return nil, err
+	if err := rows.Err(); err != nil {
+		return nil, nil, fmt.Errorf("ключ данных: чтение прежних версий: %w", err)
 	}
-	b.reserve = func(ctx context.Context, n int64) error { return reserveDB(ctx, db, id, n) }
-	b.reserveDerive = func(ctx context.Context, purpose, day string, n int64) error {
-		return reserveDerivedDB(ctx, db, id, purpose, day, n)
-	}
-	return b, nil
+	return active, all, nil
 }
 
-func newBox(p aisecCrypto.Provider, keyID string, key []byte) (*Box, error) {
+// keyRow — строка data_keys.
+type keyRow struct {
+	id, profile string
+	num         int
+	wrapped     []byte
+}
+
+// open расшифровывает ключ строки мастер-ключом (AAD — место хранения).
+func (r keyRow) open(p aisecCrypto.Provider, wrap aisecCrypto.AEAD) (*version, error) {
+	if r.profile != p.Name() {
+		return nil, fmt.Errorf("ключ данных: ключ профиля %q, сервер работает в профиле %q", r.profile, p.Name())
+	}
+	aad, err := aisecCrypto.StorageAAD("data_keys", "wrapped", r.id)
+	if err != nil {
+		return nil, err
+	}
+	key, err := wrap.Open(r.wrapped, aad)
+	if err != nil {
+		return nil, fmt.Errorf("ключ данных: версия %d не расшифрована мастер-ключом: %w", r.num, err)
+	}
+	defer clear(key)
+	return newVersion(p, r.id, r.num, key)
+}
+
+func newVersion(p aisecCrypto.Provider, id string, num int, key []byte) (*version, error) {
 	aead, err := p.NewAEAD(key)
 	if err != nil {
 		return nil, err
@@ -130,19 +223,27 @@ func newBox(p aisecCrypto.Provider, keyID string, key []byte) (*Box, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Box{keyID: keyID, aead: aead, provider: p, kdf: kdf}, nil
+	return &version{id: id, num: num, aead: aead, kdf: kdf}, nil
+}
+
+func newBox(p aisecCrypto.Provider, v *version) *Box {
+	return &Box{provider: p, active: v, versions: map[string]*version{v.id: v}}
 }
 
 // NewStatic — Box без учёта шифрований в БД (тесты и хранилище в памяти).
 // Производных ключей у него нет.
 func NewStatic(keyID string, aead aisecCrypto.AEAD) *Box {
-	return &Box{keyID: keyID, aead: aead}
+	return newBox(nil, &version{id: keyID, num: 1, aead: aead})
 }
 
 // NewStaticKey — Box из открытого ключа данных без учёта шифрований в БД,
 // с производными ключами (тесты и хранилище в памяти).
 func NewStaticKey(p aisecCrypto.Provider, keyID string, key []byte) (*Box, error) {
-	return newBox(p, keyID, key)
+	v, err := newVersion(p, keyID, 1, key)
+	if err != nil {
+		return nil, err
+	}
+	return newBox(p, v), nil
 }
 
 func dbCtx(ctx context.Context) (context.Context, context.CancelFunc) {
@@ -152,8 +253,11 @@ func dbCtx(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(ctx, pgTimeout)
 }
 
+// errRetired — ключ выведен ротацией: резерв отклонён, нужна новая версия.
+var errRetired = errors.New("ключ данных: версия выведена ротацией")
+
 // reserveDB увеличивает счётчик шифрований ключа (ADR-0007, п. 8).
-// Нарушение CHECK — ключ исчерпан; выведенный ключ — тоже отказ.
+// Нарушение CHECK — ключ исчерпан; выведенный ключ — errRetired.
 func reserveDB(ctx context.Context, db DB, id string, n int64) error {
 	ctx, cancel := dbCtx(ctx)
 	defer cancel()
@@ -165,7 +269,7 @@ func reserveDB(ctx context.Context, db DB, id string, n int64) error {
 		return ErrExhausted
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
-		return ErrExhausted
+		return errRetired
 	}
 	if err != nil {
 		return fmt.Errorf("ключ данных: резерв шифрований: %w", err)
@@ -173,52 +277,209 @@ func reserveDB(ctx context.Context, db DB, id string, n int64) error {
 	return nil
 }
 
-// KeyID — ID действующего ключа данных (хранится рядом с шифротекстом).
-func (b *Box) KeyID() string { return b.keyID }
-
-// Alg — имя алгоритма шифрования.
-func (b *Box) Alg() string { return b.aead.Name() }
-
-// Seal шифрует plaintext ключом данных с AAD места хранения (таблица,
-// столбец, ID строки). Перед шифрованием резервирует его в счётчике ключа.
-func (b *Box) Seal(ctx context.Context, plaintext []byte, table, column, rowID string) ([]byte, error) {
-	aad, err := aisecCrypto.StorageAAD(table, column, rowID)
+// reloadLocked перечитывает версии из БД; сбой не отнимает известные.
+// Вызывается под b.mu. Смена действующей версии сбрасывает резерв и
+// производные ключи.
+func (b *Box) reloadLocked(ctx context.Context) error {
+	if b.src == nil {
+		return errors.New("ключ данных: версии не перечитываются")
+	}
+	active, all, err := b.src.load(ctx, b.provider)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	if err := b.take(ctx); err != nil {
-		return nil, err
+	if active.id != b.active.id {
+		b.left = 0
+		b.derived = nil
 	}
-	return b.aead.Seal(plaintext, aad)
+	// Версия, удалённая из таблицы, остаётся в памяти: строки, прочитанные
+	// до удаления, ещё могут прийти на расшифрование.
+	for id, v := range b.versions {
+		if _, ok := all[id]; !ok {
+			all[id] = v
+		}
+	}
+	b.active, b.versions = active, all
+	return nil
 }
 
-// take берёт одно шифрование из резерва, пополняя его пачкой.
-func (b *Box) take(ctx context.Context) error {
-	if b.reserve == nil {
-		return nil
+// Refresh перечитывает версии ключа данных (Watch и тесты).
+func (b *Box) Refresh(ctx context.Context) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.reloadLocked(ctx)
+}
+
+// WatchInterval — период опроса действующей версии сервером.
+const WatchInterval = 30 * time.Second
+
+// Watch раз в interval сверяет действующую версию с БД и перечитывает
+// версии после ротации, пока не отменён ctx. Так сервер перестаёт
+// шифровать выведенной версией из остатка резерва (ADR-0018, п. 3.5).
+// report получает ошибки опроса (может быть nil).
+func (b *Box) Watch(ctx context.Context, interval time.Duration, report func(error)) {
+	if b.src == nil || interval <= 0 {
+		return
+	}
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		if err := b.checkActive(ctx); err != nil && report != nil && ctx.Err() == nil {
+			report(err)
+		}
+	}
+}
+
+// checkActive перечитывает версии, если действующая в БД не та, что в памяти.
+func (b *Box) checkActive(ctx context.Context) error {
+	qctx, cancel := dbCtx(ctx)
+	defer cancel()
+	var id string
+	err := b.src.db.QueryRow(qctx, `SELECT id::text FROM data_keys WHERE org_id = $1 AND retired_at IS NULL`, b.src.orgID).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNoDataKey
+	}
+	if err != nil {
+		return fmt.Errorf("ключ данных: опрос действующей версии: %w", err)
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if id == b.active.id {
+		return nil
+	}
+	return b.reloadLocked(ctx)
+}
+
+// KeyID — ID действующего ключа данных. Для записи рядом с шифротекстом
+// берите ID из SealKey: между вызовами версия может смениться.
+func (b *Box) KeyID() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.active.id
+}
+
+// Version — номер действующей версии ключа данных.
+func (b *Box) Version() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.active.num
+}
+
+// KeyIDs — ID всех известных версий: действующая первой, затем прежние по
+// убыванию номера.
+func (b *Box) KeyIDs() []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	out := make([]string, 0, len(b.versions))
+	for _, v := range b.versions {
+		out = append(out, v.id)
+	}
+	slices.SortFunc(out, func(x, y string) int { return b.versions[y].num - b.versions[x].num })
+	return out
+}
+
+// Alg — имя алгоритма шифрования (одно у всех версий профиля).
+func (b *Box) Alg() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.active.aead.Name()
+}
+
+// Seal шифрует plaintext действующей версией ключа данных с AAD места
+// хранения (таблица, столбец, ID строки). Перед шифрованием резервирует его
+// в счётчике ключа. ID ключа для записи рядом с шифротекстом — SealKey.
+func (b *Box) Seal(ctx context.Context, plaintext []byte, table, column, rowID string) ([]byte, error) {
+	_, sealed, err := b.SealKey(ctx, plaintext, table, column, rowID)
+	return sealed, err
+}
+
+// SealKey — Seal, который возвращает и ID версии, которой зашифровано.
+func (b *Box) SealKey(ctx context.Context, plaintext []byte, table, column, rowID string) (string, []byte, error) {
+	aad, err := aisecCrypto.StorageAAD(table, column, rowID)
+	if err != nil {
+		return "", nil, err
+	}
+	v, err := b.take(ctx)
+	if err != nil {
+		return "", nil, err
+	}
+	sealed, err := v.aead.Seal(plaintext, aad)
+	return v.id, sealed, err
+}
+
+// take берёт одно шифрование действующей версии из резерва, пополняя его
+// пачкой. Если ротация вывела версию, Box перечитывает версии и берёт
+// резерв новой.
+func (b *Box) take(ctx context.Context) (*version, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.reserve == nil {
+		return b.active, nil
+	}
 	if b.left == 0 {
-		if err := b.reserve(ctx, reserveBatch); err != nil {
-			return err
+		err := b.reserve(ctx, b.active.id, reserveBatch)
+		if errors.Is(err, errRetired) && b.src != nil {
+			prev := b.active.id
+			if rerr := b.reloadLocked(ctx); rerr == nil && b.active.id != prev {
+				err = b.reserve(ctx, b.active.id, reserveBatch)
+			}
+		}
+		if errors.Is(err, errRetired) {
+			// Новой версии не нашлось: шифровать нечем.
+			return nil, ErrExhausted
+		}
+		if err != nil {
+			return nil, err
 		}
 		b.left = reserveBatch
 	}
 	b.left--
-	return nil
+	return b.active, nil
 }
 
-// Open расшифровывает шифротекст ключа keyID с AAD места хранения.
-func (b *Box) Open(keyID string, sealed []byte, table, column, rowID string) ([]byte, error) {
-	if keyID != b.keyID {
-		return nil, ErrUnknownKey
+// minUnknownReload — не чаще одного перечитывания за этот срок из-за
+// шифротекста неизвестной версии.
+const minUnknownReload = 5 * time.Second
+
+// lookup находит версию keyID; неизвестную пробует найти перечитыванием.
+func (b *Box) lookup(ctx context.Context, keyID string) (*version, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if v, ok := b.versions[keyID]; ok {
+		return v, nil
 	}
+	if b.src != nil && time.Since(b.reloadedAt) >= minUnknownReload {
+		b.reloadedAt = time.Now()
+		if err := b.reloadLocked(ctx); err == nil {
+			if v, ok := b.versions[keyID]; ok {
+				return v, nil
+			}
+		}
+	}
+	return nil, ErrUnknownKey
+}
+
+// Open расшифровывает шифротекст версии keyID с AAD места хранения.
+func (b *Box) Open(keyID string, sealed []byte, table, column, rowID string) ([]byte, error) {
+	return b.OpenContext(context.Background(), keyID, sealed, table, column, rowID)
+}
+
+// OpenContext — Open с контекстом для перечитывания версий.
+func (b *Box) OpenContext(ctx context.Context, keyID string, sealed []byte, table, column, rowID string) ([]byte, error) {
 	aad, err := aisecCrypto.StorageAAD(table, column, rowID)
 	if err != nil {
 		return nil, err
 	}
-	return b.aead.Open(sealed, aad)
+	v, err := b.lookup(ctx, keyID)
+	if err != nil {
+		return nil, err
+	}
+	return v.aead.Open(sealed, aad)
 }
 
 // Производные ключи суток (ADR-0007, п. 8): поток шифрований содержимого
@@ -256,7 +517,17 @@ func (d *Derived) Alg() string { return d.aead.Name() }
 
 // Seal шифрует plaintext производным ключом с AAD места хранения,
 // предварительно резервируя шифрование в счётчике производного ключа.
+// Если ротация вывела ключ данных — ошибка ErrExhausted; SealDerived в
+// этом случае переходит на новую версию сам.
 func (d *Derived) Seal(ctx context.Context, plaintext []byte, table, column, rowID string) ([]byte, error) {
+	sealed, err := d.seal(ctx, plaintext, table, column, rowID)
+	if errors.Is(err, errRetired) {
+		return nil, ErrExhausted
+	}
+	return sealed, err
+}
+
+func (d *Derived) seal(ctx context.Context, plaintext []byte, table, column, rowID string) ([]byte, error) {
 	aad, err := aisecCrypto.StorageAAD(table, column, rowID)
 	if err != nil {
 		return nil, err
@@ -287,29 +558,31 @@ func (d *Derived) take(ctx context.Context) error {
 func dayKey(t time.Time) string { return t.UTC().Format(time.DateOnly) }
 
 // Derive возвращает производный ключ суток day (UTC) для назначения
-// purpose. Ключ для одних суток и назначения в процессе один: счётчик
-// резерва общий.
+// purpose от действующей версии. Ключ для одних суток и назначения в
+// процессе один: счётчик резерва общий.
 func (b *Box) Derive(purpose string, day time.Time) (*Derived, error) {
-	if b.kdf == nil {
-		return nil, ErrNoDerive
-	}
 	if !purposeRe.MatchString(purpose) {
 		return nil, fmt.Errorf("ключ данных: неверное назначение производного ключа %q", purpose)
 	}
-	dk := dayKey(day)
-	name := purpose + "|" + dk
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.active.kdf == nil {
+		return nil, ErrNoDerive
+	}
+	dk := dayKey(day)
+	name := purpose + "|" + dk
 	if d, ok := b.derived[name]; ok {
 		return d, nil
 	}
-	aead, err := b.deriveAEAD(purpose, dk)
+	v := b.active
+	aead, err := b.deriveAEAD(v, purpose, dk)
 	if err != nil {
 		return nil, err
 	}
-	d := &Derived{keyID: b.keyID, purpose: purpose, day: dk, aead: aead}
+	d := &Derived{keyID: v.id, purpose: purpose, day: dk, aead: aead}
 	if b.reserveDerive != nil {
-		d.reserve = func(ctx context.Context, n int64) error { return b.reserveDerive(ctx, purpose, dk, n) }
+		reserve := b.reserveDerive
+		d.reserve = func(ctx context.Context, n int64) error { return reserve(ctx, v.id, purpose, dk, n) }
 	}
 	if b.derived == nil || len(b.derived) >= maxDerivedCached {
 		// Старые сутки больше не шифруются: их резерв просто теряется.
@@ -319,8 +592,39 @@ func (b *Box) Derive(purpose string, day time.Time) (*Derived, error) {
 	return d, nil
 }
 
-func (b *Box) deriveAEAD(purpose, day string) (aisecCrypto.AEAD, error) {
-	key, err := b.kdf.Derive([]byte("aisec-derived-v1|"+purpose+"|"+b.keyID+"|"+day), aisecCrypto.AEADKeySize)
+// SealDerived шифрует производным ключом суток day действующей версии и
+// возвращает ID версии и имя алгоритма для записи рядом с шифротекстом.
+// Если ротация вывела версию, Box перечитывает версии и шифрует новой.
+func (b *Box) SealDerived(ctx context.Context, purpose string, day time.Time, plaintext []byte,
+	table, column, rowID string) (keyID, alg string, sealed []byte, err error) {
+	for attempt := 0; attempt < 2; attempt++ {
+		var d *Derived
+		if d, err = b.Derive(purpose, day); err != nil {
+			return "", "", nil, err
+		}
+		sealed, err = d.seal(ctx, plaintext, table, column, rowID)
+		if err == nil {
+			return d.keyID, d.Alg(), sealed, nil
+		}
+		if !errors.Is(err, errRetired) || b.src == nil || attempt > 0 {
+			break
+		}
+		b.mu.Lock()
+		rerr := b.reloadLocked(ctx)
+		changed := b.active.id != d.keyID
+		b.mu.Unlock()
+		if rerr != nil || !changed {
+			break
+		}
+	}
+	if errors.Is(err, errRetired) {
+		err = ErrExhausted
+	}
+	return "", "", nil, err
+}
+
+func (b *Box) deriveAEAD(v *version, purpose, day string) (aisecCrypto.AEAD, error) {
+	key, err := v.kdf.Derive([]byte("aisec-derived-v1|"+purpose+"|"+v.id+"|"+day), aisecCrypto.AEADKeySize)
 	if err != nil {
 		return nil, err
 	}
@@ -334,13 +638,25 @@ func (b *Box) deriveAEAD(purpose, day string) (aisecCrypto.AEAD, error) {
 // не шифрует. Так ключ имитовставки хранится вне БД (под мастер-ключом), а
 // не рядом с данными, которые он защищает (опора цепочки аудита, ADR-0008).
 func (b *Box) MAC(purpose string) (aisecCrypto.MAC, error) {
-	if b.kdf == nil {
-		return nil, ErrNoDerive
-	}
+	return b.MACFor(b.KeyID(), purpose)
+}
+
+// MACFor — MAC на ключе, выведенном из версии keyID (опоры цепочки аудита,
+// сделанные до ротации, ADR-0018, п. 3.4).
+func (b *Box) MACFor(keyID, purpose string) (aisecCrypto.MAC, error) {
 	if !purposeRe.MatchString(purpose) {
 		return nil, fmt.Errorf("ключ данных: неверное назначение ключа имитовставки %q", purpose)
 	}
-	key, err := b.kdf.Derive([]byte("aisec-mac-v1|"+purpose+"|"+b.keyID), aisecCrypto.MinMACKeySize)
+	b.mu.Lock()
+	v, ok := b.versions[keyID]
+	b.mu.Unlock()
+	if !ok {
+		return nil, ErrUnknownKey
+	}
+	if v.kdf == nil {
+		return nil, ErrNoDerive
+	}
+	key, err := v.kdf.Derive([]byte("aisec-mac-v1|"+purpose+"|"+v.id), aisecCrypto.MinMACKeySize)
 	if err != nil {
 		return nil, err
 	}
@@ -349,14 +665,14 @@ func (b *Box) MAC(purpose string) (aisecCrypto.MAC, error) {
 }
 
 // OpenDerived расшифровывает шифротекст производного ключа суток day для
-// назначения purpose, выведенного из ключа данных keyID.
+// назначения purpose, выведенного из версии keyID.
 func (b *Box) OpenDerived(keyID, purpose string, day time.Time, sealed []byte, table, column, rowID string) ([]byte, error) {
-	if keyID != b.keyID {
-		return nil, ErrUnknownKey
-	}
-	if b.kdf == nil {
-		return nil, ErrNoDerive
-	}
+	return b.OpenDerivedContext(context.Background(), keyID, purpose, day, sealed, table, column, rowID)
+}
+
+// OpenDerivedContext — OpenDerived с контекстом для перечитывания версий.
+func (b *Box) OpenDerivedContext(ctx context.Context, keyID, purpose string, day time.Time, sealed []byte,
+	table, column, rowID string) ([]byte, error) {
 	if !purposeRe.MatchString(purpose) {
 		return nil, fmt.Errorf("ключ данных: неверное назначение производного ключа %q", purpose)
 	}
@@ -364,10 +680,17 @@ func (b *Box) OpenDerived(keyID, purpose string, day time.Time, sealed []byte, t
 	if err != nil {
 		return nil, err
 	}
+	v, err := b.lookup(ctx, keyID)
+	if err != nil {
+		return nil, err
+	}
+	if v.kdf == nil {
+		return nil, ErrNoDerive
+	}
 	// Ключ для чтения выводится заново, без кэша и резерва шифрований:
 	// просмотр содержимого за разные сутки не вытесняет из кэша ключ
 	// текущих суток и не растит счётчик derived_key_usage (Н23 ревью 2.r3a).
-	aead, err := b.deriveAEAD(purpose, dayKey(day))
+	aead, err := b.deriveAEAD(v, purpose, dayKey(day))
 	if err != nil {
 		return nil, err
 	}
@@ -375,7 +698,7 @@ func (b *Box) OpenDerived(keyID, purpose string, day time.Time, sealed []byte, t
 }
 
 // reserveDerivedDB увеличивает счётчик шифрований производного ключа.
-// Ключ данных выведен из употребления или предел исчерпан — ErrExhausted.
+// Предел исчерпан — ErrExhausted; ключ данных выведен — errRetired.
 func reserveDerivedDB(ctx context.Context, db DB, keyID, purpose, day string, n int64) error {
 	ctx, cancel := dbCtx(ctx)
 	defer cancel()
@@ -389,7 +712,7 @@ func reserveDerivedDB(ctx context.Context, db DB, keyID, purpose, day string, n 
 		return ErrExhausted
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
-		return ErrExhausted
+		return errRetired
 	}
 	if err != nil {
 		return fmt.Errorf("ключ данных: резерв шифрований производного ключа: %w", err)

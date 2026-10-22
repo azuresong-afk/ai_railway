@@ -108,6 +108,64 @@ func internalRoutes(g *gwregistry.Service, logger *slog.Logger) []Route {
 	return []Route{
 		{Method: http.MethodPost, Path: "/internal/v1/heartbeat", Permission: PermGatewayInternal, MaxBody: heartbeatMaxBody,
 			Handler: heartbeat(g, logger)},
+		{Method: http.MethodPost, Path: "/internal/v1/certificate", Permission: PermGatewayInternal, MaxBody: certificateMaxBody,
+			Handler: reissueCertificate(g, logger)},
+	}
+}
+
+// certificateMaxBody — предел тела перевыпуска (CSR в PEM, как при регистрации).
+const certificateMaxBody = 16 << 10
+
+// CertificateRequest — тело POST /internal/v1/certificate.
+type CertificateRequest struct {
+	CSR string `json:"csr"`
+}
+
+// CertificateResponse — перевыпущенный сертификат шлюза.
+type CertificateResponse struct {
+	Certificate string    `json:"certificate"`
+	NotAfter    time.Time `json:"not_after"`
+}
+
+// reissueCertificate — перевыпуск сертификата шлюза по признаку из
+// heartbeat (ADR-0018, п. 6.3): шлюз приходит с прежним сертификатом по
+// mTLS, новый действует вместе с прежним до первого запроса с ним.
+func reissueCertificate(g *gwregistry.Service, logger *slog.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		p, _ := PrincipalFrom(r.Context())
+		var req CertificateRequest
+		if prob := DecodeJSON(w, r, &req, certificateMaxBody); prob != nil {
+			WriteProblem(w, prob)
+			return
+		}
+		ctx, cancel := contextTimeout(r, 10*time.Second)
+		defer cancel()
+		certPEM, info, err := g.Reissue(ctx, p.ID, []byte(req.CSR), clientAddr(r))
+		switch {
+		case errors.Is(err, gwregistry.ErrInvalidRequest):
+			WriteProblem(w, Invalid("Неверный запрос на сертификат: нужен один CSR в PEM на ключ ECDSA P-256 с верной подписью.",
+				FieldError{Field: "csr", Detail: "неверный CSR"}))
+			return
+		case errors.Is(err, gwregistry.ErrTooFrequent):
+			w.Header().Set("Retry-After", "60")
+			WriteProblem(w, NewProblem(http.StatusTooManyRequests, CodeRateLimited, "Сертификат перевыпускается не чаще раза в минуту."))
+			return
+		case errors.Is(err, gwregistry.ErrReissueNotNeeded):
+			WriteProblem(w, NewProblem(http.StatusConflict, CodeReissueNotNeeded,
+				"Сертификат выпущен действующим корнем УЦ и не истекает в ближайшие 30 суток (или истекает вместе с корнем): перевыпуск не нужен."))
+			return
+		case errors.Is(err, gwregistry.ErrNoCA):
+			WriteProblem(w, NewProblem(http.StatusServiceUnavailable, CodeUnavailable, "Внутренний УЦ не подключён."))
+			return
+		case errors.Is(err, gwregistry.ErrNotFound):
+			WriteProblem(w, errUnauthorized())
+			return
+		case err != nil:
+			logger.Error("сертификат шлюза не перевыпущен", "gateway_id", p.ID, "error", err)
+			WriteProblem(w, errInternal())
+			return
+		}
+		WriteJSON(w, http.StatusOK, CertificateResponse{Certificate: string(certPEM), NotAfter: info.NotAfter.UTC()})
 	}
 }
 
@@ -163,6 +221,9 @@ type HeartbeatResponse struct {
 	// (Н38 ревью 2.r4): шлюз проверяет себя и присылает итог с этим временем
 	// в verify_request.
 	VerifyRequestedAt *time.Time `json:"verify_requested_at,omitempty"`
+	// Reissue — шлюзу нужен новый сертификат: прежний выпущен не действующим
+	// корнем УЦ или скоро истекает (ADR-0018, п. 6.3).
+	Reissue bool `json:"reissue,omitempty"`
 }
 
 func heartbeat(g *gwregistry.Service, logger *slog.Logger) http.HandlerFunc {
@@ -207,7 +268,8 @@ func heartbeat(g *gwregistry.Service, logger *slog.Logger) http.HandlerFunc {
 			WriteProblem(w, errInternal())
 			return
 		}
-		resp := HeartbeatResponse{ServerTime: res.At.UTC(), IntervalSeconds: int(gwregistry.DefaultHeartbeatInterval / time.Second)}
+		resp := HeartbeatResponse{ServerTime: res.At.UTC(), IntervalSeconds: int(gwregistry.DefaultHeartbeatInterval / time.Second),
+			Reissue: res.Reissue}
 		if !res.VerifyRequestedAt.IsZero() {
 			at := res.VerifyRequestedAt.UTC()
 			resp.VerifyRequestedAt = &at

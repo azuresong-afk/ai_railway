@@ -50,6 +50,8 @@ func (r fakeRow) Scan(dst ...any) error {
 			*d = bytes.Clone(r.vals[i].([]byte))
 		case *int64:
 			*d = r.vals[i].(int64)
+		case *int:
+			*d = r.vals[i].(int)
 		}
 	}
 	return nil
@@ -79,7 +81,10 @@ func (f *fakeDB) QueryRow(_ context.Context, sql string, args ...any) pgx.Row {
 		if f.none || args[0] != orgID {
 			return fakeRow{err: pgx.ErrNoRows}
 		}
-		return fakeRow{vals: []any{f.id, f.profile, f.wrapped}}
+		if strings.Contains(sql, "wrapped") {
+			return fakeRow{vals: []any{f.id, 1, f.profile, f.wrapped}}
+		}
+		return fakeRow{vals: []any{f.id}}
 	}
 	if f.retired {
 		return fakeRow{err: pgx.ErrNoRows}
@@ -485,5 +490,67 @@ func TestMAC(t *testing.T) {
 	}
 	if m3, err := b2.MAC("audit-head"); err != nil || m3.Verify(msg, m1.Sum(msg)) {
 		t.Fatalf("другой ID ключа данных — другой ключ: %v", err)
+	}
+}
+
+// SealKey возвращает ID версии, которой зашифровано; KeyIDs — действующая
+// первой; MACFor неизвестной версии — отказ (ADR-0018, п. 3.2).
+func TestSealKeyAndVersions(t *testing.T) {
+	p := provider(t)
+	b, err := keyring.NewStaticKey(p, keyID, bytes.Repeat([]byte{1}, aisecCrypto.AEADKeySize))
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, sealed, err := b.SealKey(context.Background(), []byte("секрет"), "user_mfa", "secret", "u1")
+	if err != nil || id != keyID {
+		t.Fatalf("SealKey: %s %v", id, err)
+	}
+	if plain, err := b.OpenContext(context.Background(), id, sealed, "user_mfa", "secret", "u1"); err != nil || string(plain) != "секрет" {
+		t.Fatalf("OpenContext: %v", err)
+	}
+	if _, err := b.Open("01900000-0000-7000-8000-0000000000ff", sealed, "user_mfa", "secret", "u1"); !errors.Is(err, keyring.ErrUnknownKey) {
+		t.Fatalf("чужая версия: %v", err)
+	}
+	if ids := b.KeyIDs(); len(ids) != 1 || ids[0] != keyID || b.Version() != 1 {
+		t.Fatalf("версии: %v %d", ids, b.Version())
+	}
+	if _, err := b.MACFor("01900000-0000-7000-8000-0000000000ff", "audit-head"); !errors.Is(err, keyring.ErrUnknownKey) {
+		t.Fatalf("MACFor чужой версии: %v", err)
+	}
+	m1, err := b.MAC("audit-head")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m2, err := b.MACFor(keyID, "audit-head")
+	if err != nil || !m2.Verify([]byte("x"), m1.Sum([]byte("x"))) {
+		t.Fatalf("MACFor действующей версии: %v", err)
+	}
+	if err := b.Refresh(context.Background()); err == nil {
+		t.Fatal("NewStaticKey перечитал версии")
+	}
+	k, alg, out, err := b.SealDerived(context.Background(), "event-content", time.Now(), []byte("{}"), "event_content", "sealed", "e1")
+	if err != nil || k != keyID || alg == "" {
+		t.Fatalf("SealDerived: %s %s %v", k, alg, err)
+	}
+	if plain, err := b.OpenDerivedContext(context.Background(), k, "event-content", time.Now(), out, "event_content", "sealed", "e1"); err != nil || string(plain) != "{}" {
+		t.Fatalf("OpenDerivedContext: %v", err)
+	}
+}
+
+// Ротация на фейковой БД: действующая версия выведена, а новой нет —
+// шифрование отказывает ErrExhausted, а не шифрует выведенной.
+func TestRetiredWithoutNewVersion(t *testing.T) {
+	p := provider(t)
+	dir, db := install(t, p)
+	b, err := keyring.Load(context.Background(), db, p, dir, orgID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.retired = true
+	if _, _, err := b.SealKey(context.Background(), []byte("x"), "t", "c", "r"); !errors.Is(err, keyring.ErrExhausted) {
+		t.Fatalf("SealKey: %v", err)
+	}
+	if _, _, _, err := b.SealDerived(context.Background(), "event-content", time.Now(), []byte("x"), "t", "c", "r"); !errors.Is(err, keyring.ErrExhausted) {
+		t.Fatalf("SealDerived: %v", err)
 	}
 }

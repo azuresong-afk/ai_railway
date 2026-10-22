@@ -192,7 +192,7 @@ func TestBuildVersionsOnlyOnChange(t *testing.T) {
 func TestDeliverEncryptsForGateway(t *testing.T) {
 	ctx := context.Background()
 	e := newEnv(t)
-	d, err := e.svc.Deliver(ctx, build.Gateway{ID: bundletest.GatewayID}, e.fx.Recipient.PublicKey(), "")
+	d, err := e.svc.Deliver(ctx, build.Gateway{ID: bundletest.GatewayID}, e.fx.Recipient.PublicKey(), "", -1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,7 +211,7 @@ func TestDeliverEncryptsForGateway(t *testing.T) {
 	}
 
 	// If-None-Match с этой версией — 304 без записи в аудит.
-	d2, err := e.svc.Deliver(ctx, build.Gateway{ID: bundletest.GatewayID}, e.fx.Recipient.PublicKey(), `W/"1", `+d.ETag)
+	d2, err := e.svc.Deliver(ctx, build.Gateway{ID: bundletest.GatewayID}, e.fx.Recipient.PublicKey(), `W/"1", `+d.ETag, -1)
 	if err != nil || !d2.NotModified || d2.Body != nil {
 		t.Fatalf("If-None-Match: %+v, %v", d2, err)
 	}
@@ -220,7 +220,7 @@ func TestDeliverEncryptsForGateway(t *testing.T) {
 	}
 
 	// Пакет другого шлюза этот шлюз не примет.
-	d3, err := e.svc.Deliver(ctx, build.Gateway{ID: "другой"}, e.fx.Recipient.PublicKey(), "")
+	d3, err := e.svc.Deliver(ctx, build.Gateway{ID: "другой"}, e.fx.Recipient.PublicKey(), "", -1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,8 +228,33 @@ func TestDeliverEncryptsForGateway(t *testing.T) {
 		t.Fatalf("пакет чужого шлюза: %v", err)
 	}
 
-	if _, err := e.svc.Deliver(ctx, build.Gateway{ID: bundletest.GatewayID}, []byte("short"), ""); !errors.Is(err, build.ErrNoRecipientKey) {
+	if _, err := e.svc.Deliver(ctx, build.Gateway{ID: bundletest.GatewayID}, []byte("short"), "", -1); !errors.Is(err, build.ErrNoRecipientKey) {
 		t.Fatalf("без ключа шлюза: %v", err)
+	}
+}
+
+// 3Н2 ревью 3.r1: шлюз знает заявление о доверии новее сервера (БД
+// восстановлена из дампа до ротации) — запись bundle.trust_rollback не
+// чаще раза в минуту на шлюз; пакет выдаётся как обычно.
+func TestDeliverTrustRollback(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	for range 2 {
+		if _, err := e.svc.Deliver(ctx, build.Gateway{ID: bundletest.GatewayID}, e.fx.Recipient.PublicKey(), "", 5); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := []string{"bundle.trust_rollback:failure", "bundle.deliver:success", "bundle.deliver:success"}
+	if got := e.audit.actions(); !slices.Equal(got, want) {
+		t.Fatalf("аудит: %v, ожидалось %v", got, want)
+	}
+	// Номер не больше серверного — без записи.
+	e.now = e.now.Add(2 * time.Minute)
+	if _, err := e.svc.Deliver(ctx, build.Gateway{ID: bundletest.GatewayID}, e.fx.Recipient.PublicKey(), "", 0); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.audit.actions(); len(got) != 4 || got[3] != "bundle.deliver:success" {
+		t.Fatalf("аудит: %v", got)
 	}
 }
 
@@ -356,7 +381,7 @@ func TestBuildTooLargeKeepsLastGood(t *testing.T) {
 	if _, err := fresh.Current(ctx); !errors.Is(err, build.ErrNoBundle) {
 		t.Fatalf("нет корректной версии: %v", err)
 	}
-	if _, err := fresh.Deliver(ctx, build.Gateway{ID: bundletest.GatewayID}, e.fx.Recipient.PublicKey(), ""); !errors.Is(err, build.ErrNoBundle) {
+	if _, err := fresh.Deliver(ctx, build.Gateway{ID: bundletest.GatewayID}, e.fx.Recipient.PublicKey(), "", -1); !errors.Is(err, build.ErrNoBundle) {
 		t.Fatalf("выдача: %v", err)
 	}
 }
@@ -442,5 +467,118 @@ func TestRecordReport(t *testing.T) {
 	}
 	if len(e.audit.actions()) != 3 {
 		t.Fatalf("повтор через минуту: %v", e.audit.actions())
+	}
+}
+
+// TestBuildOnlyOnRevisionChange — Н26, задача 3.34: N опросов без
+// изменений — одна выборка данных; данные выбираются заново только при
+// смене счётчика изменений конфигурации или после срока ближайшего ключа.
+func TestBuildOnlyOnRevisionChange(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	var rev int64 = 7
+	svc, err := build.New(build.Options{Apps: e.apps, Policies: e.policies, Store: e.store, Audit: e.audit,
+		Sealer: e.fx.Sealer, Provider: e.fx.Provider, Clock: e.clock,
+		Revision: func(context.Context) (int64, error) { return rev, nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gw := build.Gateway{ID: bundletest.GatewayID}
+	first, err := svc.Deliver(ctx, gw, e.fx.Recipient.PublicKey(), "", -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 20 {
+		d, err := svc.Deliver(ctx, gw, e.fx.Recipient.PublicKey(), first.ETag, -1)
+		if err != nil || !d.NotModified {
+			t.Fatalf("304: %+v, %v", d, err)
+		}
+	}
+	if n := svc.Builds(); n != 1 {
+		t.Fatalf("21 опрос без изменений: выборок %d, ожидалась одна", n)
+	}
+
+	// Изменение без смены счётчика (так в БД не бывает: счётчик растёт в
+	// той же транзакции) не видно — значит, сборку запускает именно счётчик.
+	if _, err := e.apps.RevokeKey(ctx, e.appsBy, e.key.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	if r, err := svc.Current(ctx); err != nil || r.Version != first.Version || svc.Builds() != 1 {
+		t.Fatalf("без смены счётчика: версия %d, выборок %d, %v", r.Version, svc.Builds(), err)
+	}
+	rev++
+	r, err := svc.Current(ctx)
+	if err != nil || r.Version == first.Version || svc.Builds() != 2 {
+		t.Fatalf("после смены счётчика: версия %d, выборок %d, %v", r.Version, svc.Builds(), err)
+	}
+	if _, err := svc.Current(ctx); err != nil || svc.Builds() != 2 {
+		t.Fatalf("повтор: выборок %d, %v", svc.Builds(), err)
+	}
+
+	// Ключ истекает без изменения в БД: после его срока — новая выборка.
+	k, _, err := e.apps.IssueKey(ctx, e.appsBy, e.app.ID, "", apps.KeyInput{Name: "k2", ExpiresInDays: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rev++
+	if r, err = svc.Current(ctx); err != nil || svc.Builds() != 3 {
+		t.Fatalf("новый ключ: выборок %d, %v", svc.Builds(), err)
+	}
+	if c, _ := bundle.ParseContent(r.Content); len(c.Applications[0].Keys) != 1 { //nolint:gosec // G104: содержимое сохранено сборкой, важен список ключей
+		t.Fatal("нового ключа нет в пакете")
+	}
+	e.now = k.ExpiresAt.Add(-time.Second)
+	if _, err := svc.Current(ctx); err != nil || svc.Builds() != 3 {
+		t.Fatalf("до срока ключа: выборок %d, %v", svc.Builds(), err)
+	}
+	e.now = k.ExpiresAt
+	if r, err = svc.Current(ctx); err != nil || svc.Builds() != 4 {
+		t.Fatalf("срок ключа: выборок %d, %v", svc.Builds(), err)
+	}
+	if c, _ := bundle.ParseContent(r.Content); len(c.Applications[0].Keys) != 0 { //nolint:gosec // G104: содержимое сохранено сборкой, важен список ключей
+		t.Fatal("истёкший ключ остался в пакете")
+	}
+}
+
+// TestDeliverReusesSealed — задача 3.34: та же версия тому же шлюзу с тем
+// же ключом получателя не подписывается заново; другая версия или другой
+// ключ — подписывается.
+func TestDeliverReusesSealed(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	gw := build.Gateway{ID: bundletest.GatewayID}
+	d1, err := e.svc.Deliver(ctx, gw, e.fx.Recipient.PublicKey(), "", -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.now = e.now.Add(time.Minute)
+	d2, err := e.svc.Deliver(ctx, gw, e.fx.Recipient.PublicKey(), "", -1)
+	if err != nil || !bytes.Equal(d1.Body, d2.Body) {
+		t.Fatalf("повторная выдача той же версии подписана заново: %v", err)
+	}
+	if _, err := e.fx.Opener(t).Open(d2.Body, 0); err != nil {
+		t.Fatal(err)
+	}
+	cached := 0
+	for _, en := range e.audit.entries {
+		if d, _ := en.Details.(map[string]any); en.Action == "bundle.deliver" && d["cached"] == true {
+			cached++
+		}
+	}
+	if cached != 1 || len(e.audit.actions()) != 2 {
+		t.Fatalf("выдача из памяти не записана в аудит: %v", e.audit.actions())
+	}
+	other := bytes.Clone(e.fx.Recipient.PublicKey())
+	other[0] ^= 1
+	d3, err := e.svc.Deliver(ctx, gw, other, "", -1)
+	if err != nil || bytes.Equal(d3.Body, d1.Body) {
+		t.Fatalf("другой ключ получателя — тот же пакет: %v", err)
+	}
+	if _, err := e.apps.RevokeKey(ctx, e.appsBy, e.key.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	d4, err := e.svc.Deliver(ctx, gw, e.fx.Recipient.PublicKey(), "", -1)
+	if err != nil || d4.Version == d1.Version || bytes.Equal(d4.Body, d1.Body) {
+		t.Fatalf("новая версия — прежний пакет: %v", err)
 	}
 }

@@ -101,6 +101,9 @@ type Options struct {
 	// Bundle — итог сборки пакета конфигурации шлюзов (В16 ревью 2.r3b);
 	// nil или ответ nil — сервер без внутреннего порта, раздела нет.
 	Bundle func(ctx context.Context) (*BundleHealth, error)
+	// CANotAfter — срок действующего корня внутреннего УЦ; нулевое время —
+	// УЦ не подключён, условия ca_expiry нет (3В5 ревью 3.r1).
+	CANotAfter time.Time
 }
 
 // Service собирает состояние системы и ведёт уведомления.
@@ -342,6 +345,13 @@ func (s *Service) collect(ctx context.Context) collected {
 
 	c.conditions[ConditionTime] = clk.Sync == SyncUnsynchronized
 	c.conditions[ConditionStorage] = c.st.Storage.WarnExceeded
+	if ca := s.o.CANotAfter; !ca.IsZero() {
+		left := ca.Sub(now)
+		d := map[string]any{"root_not_after": ca.UTC().Format(time.RFC3339), "days_left": max(int(left/(24*time.Hour)), 0)}
+		c.conditions[ConditionCAExpiry] = left <= CAExpiryWarn
+		c.conditions[caExpiryCritical] = left <= CAExpiryCritical
+		c.details[ConditionCAExpiry], c.details[caExpiryCritical] = d, d
+	}
 	sort.Strings(c.st.Unavailable)
 	return c
 }
@@ -415,6 +425,7 @@ var conditionInfo = []struct{ code, requirement, title string }{
 	{ConditionBundle, "ОЦЛ.3", "Пакет конфигурации шлюзов собран не полностью"},
 	{ConditionBundleLag, "ОЦЛ.3", "Шлюз работает на устаревшем пакете конфигурации"},
 	{ConditionTestBuild, "ОЦЛ.1", "Сборка не для поставки (тестовый ключ манифеста)"},
+	{ConditionCAExpiry, "ИАФ.10", "Истекает корень внутреннего УЦ: нужна ротация (aisec-cli keys rotate-ca)"},
 }
 
 // family — условие раздела 7, к которому относится код (integrity:server —

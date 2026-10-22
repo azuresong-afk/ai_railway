@@ -4,7 +4,10 @@
 // шифрование учётных данных для конкретного шлюза при выдаче.
 //
 // Сборка ленивая: при запросе шлюза содержимое собирается из текущих
-// данных и сравнивается по хешу с последней версией. Изменилось — новая
+// данных и сравнивается по хешу с последней версией. Собирается оно только
+// при смене счётчика изменений конфигурации (config_revisions, Н26, задача
+// 3.34) или по сроку ближайшего ключа; опрос без изменений данных
+// приложений не выбирает. Изменилось — новая
 // версия и запись bundle.build в аудит той же транзакцией. Каждое
 // приложение проверяется так же, как его проверит шлюз; не прошедшее
 // исключается (в пакете остаются его ID и ключи, шлюз отвечает 503), и
@@ -25,6 +28,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -69,9 +73,15 @@ type Options struct {
 	Clock    func() time.Time
 	Logger   *slog.Logger
 	// Reuse — сколько выдавать собранный результат без новой выборки
-	// данных (Н26 ревью 2.r3b): опросы десятков шлюзов в эти секунды не
-	// нагружают БД; 0 — собирать при каждом запросе.
+	// данных (Н26 ревью 2.r3b), если Revision не задан; 0 — собирать при
+	// каждом запросе.
 	Reuse time.Duration
+	// Revision — счётчик изменений конфигурации (Н26, задача 3.34): растёт
+	// в транзакции каждого изменения приложений, ключей, провайдеров,
+	// политик, цен, бюджетов и настроек установки. Пока он прежний и не
+	// наступил срок ближайшего ключа, выдаётся уже собранный результат.
+	// nil — повторное использование по Reuse.
+	Revision func(ctx context.Context) (int64, error)
 }
 
 // Excluded — приложение, не вошедшее в пакет, и причина (В16 ревью 2.r3b).
@@ -106,6 +116,9 @@ type Service struct {
 	clock    func() time.Time
 	logger   *slog.Logger
 	reuse    time.Duration
+	revision func(ctx context.Context) (int64, error)
+	// builds — число выборок данных для сборки (для тестов Н26).
+	builds atomic.Int64
 
 	// sem упорядочивает сборку: одна версия на изменение, даже если шлюзы
 	// пришли одновременно; ожидание прерывается ctx запроса (Н26).
@@ -122,6 +135,20 @@ type Service struct {
 	last    Record
 	lastErr error
 	lastAt  time.Time
+	// rev — счётчик изменений, при котором собран last (revOK — он есть);
+	// expiry — срок ближайшего ключа в last: после него ключ выпадает из
+	// пакета, хотя счётчик не менялся. collected — срок из последней
+	// выборки данных.
+	rev       int64
+	revOK     bool
+	expiry    time.Time
+	collected time.Time
+
+	// sealedMu защищает sealed — подписанные пакеты по шлюзам (задача
+	// 3.34): повторная выдача той же версии тому же шлюзу не расшифровывает
+	// учётные данные и не подписывает пакет заново.
+	sealedMu sync.Mutex
+	sealed   map[string]sealedBody
 
 	// mu защищает lastReport.
 	mu sync.Mutex
@@ -139,8 +166,8 @@ func New(o Options) (*Service, error) {
 		return nil, err
 	}
 	s := &Service{apps: o.Apps, policies: o.Policies, store: o.Store, audit: o.Audit, sealer: o.Sealer, hasher: h,
-		orgID: o.OrgID, clock: o.Clock, logger: o.Logger, reuse: o.Reuse, sem: make(chan struct{}, 1),
-		checks: map[string]string{}, lastReport: map[string]time.Time{}}
+		orgID: o.OrgID, clock: o.Clock, logger: o.Logger, reuse: o.Reuse, revision: o.Revision,
+		sem: make(chan struct{}, 1), checks: map[string]string{}, lastReport: map[string]time.Time{}, sealed: map[string]sealedBody{}}
 	if s.orgID == "" {
 		s.orgID = audit.DefaultOrgID
 	}
@@ -177,6 +204,9 @@ func (s *Service) Current(ctx context.Context) (Record, error) {
 
 func (s *Service) current(ctx context.Context) (Record, error) {
 	now := s.clock()
+	if s.revision != nil {
+		return s.currentByRevision(ctx, now)
+	}
 	if s.reuse > 0 && !s.lastAt.IsZero() && !now.Before(s.lastAt) && now.Sub(s.lastAt) < s.reuse {
 		return s.last, s.lastErr
 	}
@@ -186,6 +216,29 @@ func (s *Service) current(ctx context.Context) (Record, error) {
 	}
 	return rec, err
 }
+
+// currentByRevision — сборка только при смене счётчика изменений или после
+// срока ближайшего ключа (Н26, задача 3.34). Счётчик читается до выборки
+// данных: изменение, зафиксированное позже, даст ещё одну сборку, а не
+// пропуск.
+func (s *Service) currentByRevision(ctx context.Context, now time.Time) (Record, error) {
+	rev, err := s.revision(ctx)
+	if err != nil {
+		return Record{}, fmt.Errorf("пакеты: счётчик изменений конфигурации: %w", err)
+	}
+	if s.revOK && rev == s.rev && (s.expiry.IsZero() || now.Before(s.expiry)) {
+		return s.last, s.lastErr
+	}
+	rec, err := s.rebuild(ctx, now)
+	if err == nil || errors.Is(err, ErrNoBundle) {
+		s.last, s.lastErr, s.lastAt = rec, err, now
+		s.rev, s.revOK, s.expiry = rev, true, s.collected
+	}
+	return rec, err
+}
+
+// Builds — сколько раз данные выбирались для сборки (Н26).
+func (s *Service) Builds() int64 { return s.builds.Load() }
 
 // Health — итог сборки: сначала собирает версию по текущим данным.
 func (s *Service) Health(ctx context.Context) (Health, error) {
@@ -351,6 +404,8 @@ const maxExcludedListed = 50
 // ключи, шлюз отвечает на его запросы 503, а остальное доставляется (В16
 // ревью 2.r3b). Списки упорядочены по ID.
 func (s *Service) collect(ctx context.Context, now time.Time) (*bundle.Content, map[string]any, []Excluded, error) {
+	s.builds.Add(1)
+	s.collected = time.Time{}
 	provs, err := s.apps.Providers(ctx)
 	if err != nil {
 		return nil, nil, nil, err
@@ -381,6 +436,11 @@ func (s *Service) collect(ctx context.Context, now time.Time) (*bundle.Content, 
 			}
 			p, ok := byID[a.ProviderID]
 			ba := application(a, p.Slug, keys[a.ID])
+			for _, k := range ba.Keys {
+				if s.collected.IsZero() || k.ExpiresAt.Before(s.collected) {
+					s.collected = k.ExpiresAt
+				}
+			}
 			reason := ""
 			var pol *bundle.Policy
 			switch {
@@ -427,6 +487,7 @@ func (s *Service) collect(ctx context.Context, now time.Time) (*bundle.Content, 
 	slices.SortFunc(excluded, func(a, b Excluded) int { return strings.Compare(a.Application, b.Application) })
 	stats := map[string]any{"applications": len(c.Applications), "providers": len(c.Providers),
 		"policies": len(c.Policies), "app_keys": nkeys}
+
 	if len(excluded) > 0 {
 		stats["excluded_count"] = len(excluded)
 		stats["excluded"] = excluded[:min(len(excluded), maxExcludedListed)]
@@ -646,8 +707,11 @@ type Delivery struct {
 
 // Deliver выдаёт шлюзу последнюю корректную версию: подписывает её и
 // шифрует учётные данные провайдеров ключом шлюза recipientKey. Выдача
-// пакета пишется в аудит (bundle.deliver); ответ 304 — нет.
-func (s *Service) Deliver(ctx context.Context, gw Gateway, recipientKey []byte, ifNoneMatch string) (Delivery, error) {
+// пакета пишется в аудит (bundle.deliver); ответ 304 — нет. trustSeq —
+// последнее заявление о доверии, известное шлюзу (−1 — шлюз прежней
+// версии): шлюз, которому нужны новые заявления, получает пакет целиком
+// даже с той же версией (ADR-0018, п. 4).
+func (s *Service) Deliver(ctx context.Context, gw Gateway, recipientKey []byte, ifNoneMatch string, trustSeq int64) (Delivery, error) {
 	if len(recipientKey) != aisecCrypto.RecipientPublicKeySize {
 		return Delivery{}, ErrNoRecipientKey
 	}
@@ -656,32 +720,120 @@ func (s *Service) Deliver(ctx context.Context, gw Gateway, recipientKey []byte, 
 		return Delivery{}, err
 	}
 	d := Delivery{Version: rec.Version, ETag: bundle.ETag(rec.Version)}
-	if etagMatches(ifNoneMatch, d.ETag) {
+	seq := s.sealer.TrustSeq()
+	if trustSeq > seq {
+		// Шлюз знает заявление новее сервера: БД сервера восстановлена из
+		// дампа до ротации или подменена (3Н2 ревью 3.r1).
+		if err := s.trustRollback(ctx, gw, trustSeq); err != nil {
+			return Delivery{}, err
+		}
+	}
+	if etagMatches(ifNoneMatch, d.ETag) && (trustSeq < 0 || trustSeq >= seq) {
 		d.NotModified = true
 		return d, nil
 	}
-	content, err := bundle.ParseContent(rec.Content)
-	if err != nil {
-		return Delivery{}, fmt.Errorf("пакеты: сохранённая версия %d не разбирается: %w", rec.Version, err)
+	want := sealedBody{version: rec.Version, trustSeq: seq, keyID: s.sealer.KeyID(), recipient: string(recipientKey)}
+	body, providers, ok := s.cachedBody(gw.ID, want)
+	if !ok {
+		content, err := bundle.ParseContent(rec.Content)
+		if err != nil {
+			return Delivery{}, fmt.Errorf("пакеты: сохранённая версия %d не разбирается: %w", rec.Version, err)
+		}
+		secrets, err := s.secrets(ctx, content)
+		defer secrets.Clear()
+		if err != nil {
+			return Delivery{}, err
+		}
+		body, err = s.sealer.Seal(bundle.SealInput{Version: rec.Version, IssuedAt: s.clock(), GatewayID: gw.ID,
+			Content: rec.Content, Secrets: secrets, RecipientKey: recipientKey})
+		if err != nil {
+			return Delivery{}, err
+		}
+		providers = len(secrets)
+		want.body, want.providers = body, providers
+		s.cacheBody(gw.ID, want)
 	}
-	secrets, err := s.secrets(ctx, content)
-	defer secrets.Clear()
-	if err != nil {
-		return Delivery{}, err
-	}
-	d.Body, err = s.sealer.Seal(bundle.SealInput{Version: rec.Version, IssuedAt: s.clock(), GatewayID: gw.ID,
-		Content: rec.Content, Secrets: secrets, RecipientKey: recipientKey})
-	if err != nil {
-		return Delivery{}, err
-	}
+	d.Body = body
 	if err := s.audit.Record(ctx, audit.Entry{OrgID: s.orgID, Actor: audit.Actor{Type: audit.ActorGateway, ID: gw.ID},
 		SourceIP: gw.IP, Action: "bundle.deliver", Object: audit.Object{Type: "config_bundle", ID: strconv.FormatInt(rec.Version, 10)},
-		Result: audit.ResultSuccess, Details: map[string]any{"version": rec.Version, "encrypted_providers": len(secrets),
-			"signing_key_id": s.sealer.KeyID()}}); err != nil {
+		Result: audit.ResultSuccess, Details: map[string]any{"version": rec.Version, "encrypted_providers": providers,
+			"signing_key_id": want.keyID, "trust_seq": seq, "cached": ok}}); err != nil {
 		// Выдача без записи в аудит не выполняется (РСБ.2).
 		return Delivery{}, err
 	}
 	return d, nil
+}
+
+// trustRollback пишет bundle.trust_rollback не чаще reportEvery на шлюз:
+// номер заявления о доверии у шлюза больше, чем у сервера. Пакет выдаётся
+// как обычно — шлюз сам не примет заявление старее своего; запись нужна,
+// чтобы администратор увидел откат цепочки (правило безопасности по коду
+// аудита, ADR-0020).
+func (s *Service) trustRollback(ctx context.Context, gw Gateway, trustSeq int64) error {
+	now := s.clock()
+	key := gw.ID + "|trust_rollback"
+	s.mu.Lock()
+	if t, ok := s.lastReport[key]; ok && now.Sub(t) < reportEvery {
+		s.mu.Unlock()
+		return nil
+	}
+	s.lastReport[key] = now
+	s.mu.Unlock()
+	s.logger.Error("шлюз знает заявление о доверии новее сервера: БД сервера восстановлена из дампа до ротации ключей или подменена",
+		"gateway_id", gw.ID, "gateway_trust_seq", trustSeq, "server_trust_seq", s.sealer.TrustSeq(), "class", "integrity")
+	err := s.audit.Record(ctx, audit.Entry{OrgID: s.orgID, Actor: audit.Actor{Type: audit.ActorGateway, ID: gw.ID},
+		SourceIP: gw.IP, Action: "bundle.trust_rollback", Object: audit.Object{Type: "gateway", ID: gw.ID},
+		Result: audit.ResultFailure, Details: map[string]any{"gateway_trust_seq": trustSeq,
+			"server_trust_seq": s.sealer.TrustSeq(), "threat": "DM-42"}})
+	if err != nil {
+		s.mu.Lock()
+		delete(s.lastReport, key)
+		s.mu.Unlock()
+	}
+	return err
+}
+
+// maxSealedCached — подписанных пакетов в памяти (по одному на шлюз).
+const maxSealedCached = 256
+
+// sealedBody — подписанный пакет шлюза и то, для чего он подписан.
+type sealedBody struct {
+	version, trustSeq int64
+	keyID, recipient  string
+	body              []byte
+	providers         int
+}
+
+func (b sealedBody) same(o sealedBody) bool {
+	return b.version == o.version && b.trustSeq == o.trustSeq && b.keyID == o.keyID && b.recipient == o.recipient
+}
+
+// cachedBody — подписанный пакет шлюза для той же версии, заявлений,
+// ключа подписи и ключа получателя.
+func (s *Service) cachedBody(gatewayID string, want sealedBody) ([]byte, int, bool) {
+	s.sealedMu.Lock()
+	defer s.sealedMu.Unlock()
+	b, ok := s.sealed[gatewayID]
+	if !ok || !b.same(want) {
+		return nil, 0, false
+	}
+	return b.body, b.providers, true
+}
+
+// cacheBody запоминает подписанный пакет шлюза; пакеты прежних версий
+// забываются.
+func (s *Service) cacheBody(gatewayID string, b sealedBody) {
+	s.sealedMu.Lock()
+	defer s.sealedMu.Unlock()
+	for id, x := range s.sealed {
+		if x.version != b.version {
+			delete(s.sealed, id)
+		}
+	}
+	if _, ok := s.sealed[gatewayID]; !ok && len(s.sealed) >= maxSealedCached {
+		return
+	}
+	s.sealed[gatewayID] = b
 }
 
 // secrets расшифровывает учётные данные провайдеров пакета (ключ данных,

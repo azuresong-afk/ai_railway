@@ -1,0 +1,185 @@
+# Установка пилота в docker compose (ADR-0019, ТЗ 4.2): сервер управления с
+# веб-консолью, один шлюз, PostgreSQL и служебная aisec-cli.
+#
+# Порядок установки — README.md рядом и docs/user/install-pilot.md. Значения
+# переменных — в .env (образец .env.example, секретов в нём нет). Каталоги,
+# пользователи хоста и пароли БД создаёт prepare-host.sh.
+#
+# Защита (ЗИ.5): каждый сервис работает от своего непривилегированного
+# пользователя хоста (aisec — сервер и aisec-cli, aisec-gw — шлюз, aisec-db —
+# PostgreSQL), корневая файловая система только для чтения, все capabilities
+# сняты, повышение привилегий запрещено. Секреты и ключи — файлы через
+# secrets и тома, не переменные окружения. Ни одного внешнего адреса:
+# наружу ходит только шлюз — к провайдерам LLM, которые задал администратор.
+# Проверка этих правил — make images-verify (tools/imagecheck compose).
+name: aisec
+
+x-hardening: &hardening
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  restart: unless-stopped
+  pids_limit: 256
+  logging:
+    driver: local
+    options: {max-size: "20m", max-file: "5"}
+
+x-db-depends: &db-depends
+  postgres:
+    condition: service_healthy
+    # Своя СУБД заказчика: сервис postgres выключается профилем (README).
+    required: false
+
+services:
+  postgres:
+    <<: *hardening
+    # Официальный образ, закреплённый по digest (ТЗ 8.7); в поставку продукта
+    # не входит — заказчик берёт его из Docker Hub или своего реестра
+    # (AISEC_POSTGRES_IMAGE), digest от реестра не зависит.
+    image: ${AISEC_POSTGRES_IMAGE:-postgres}:17.11-alpine3.24@sha256:eee6c6e1b0894fa4fe0075eb054af9fd1cf39a35321c2d4110626cfe506411fb
+    profiles: [db]
+    user: "${AISEC_DB_UID:?запустите prepare-host.sh}:${AISEC_DB_GID:?запустите prepare-host.sh}"
+    networks: [db]
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD_FILE: /run/secrets/db-postgres-password
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256 --auth-local=scram-sha-256"
+      PGDATA: /var/lib/postgresql/data/pgdata
+    secrets: [db-postgres-password, db-owner-password, db-server-password]
+    volumes:
+      - ${AISEC_DATA_DIR:?задайте AISEC_DATA_DIR}/pg:/var/lib/postgresql/data
+      # Роли aisec_owner (миграции, aisec-cli) и aisec_server (сервер) и БД
+      # aisec — при первом запуске на пустом каталоге.
+      - ./initdb:/docker-entrypoint-initdb.d:ro
+    tmpfs: ["/tmp:size=64m", "/var/run/postgresql:size=1m"]
+    mem_limit: 1g
+    shm_size: 128m
+    healthcheck:
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "aisec_owner", "-d", "aisec"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  aisec-server:
+    <<: *hardening
+    image: ${AISEC_IMAGE_REPO:-aisec}/aisec-server:${AISEC_VERSION:?задайте AISEC_VERSION}
+    user: "${AISEC_UID:?запустите prepare-host.sh}:${AISEC_GID:?запустите prepare-host.sh}"
+    depends_on: *db-depends
+    networks:
+      db: {}
+      # Шлюз обращается к серверу по имени из сертификата консоли.
+      control:
+        aliases: ["${AISEC_CONSOLE_HOST:?задайте AISEC_CONSOLE_HOST — имя из сертификата консоли}"]
+      console: {}
+    environment:
+      # Пароль — в passfile (секрет), не в строке подключения и не в окружении.
+      AISEC_DATABASE_URL: ${AISEC_SERVER_DB_URL:-postgres://aisec_server@postgres:5432/aisec?sslmode=disable&passfile=/run/secrets/db-server-pgpass}
+      AISEC_SERVER_TRUSTED_PROXIES: ${AISEC_TRUSTED_PROXIES:-}
+      AISEC_SERVER_INTEGRITY_ACTION: ${AISEC_INTEGRITY_ACTION:-alert}
+    command:
+      - "-listen=0.0.0.0:8444"
+      - "-internal-listen=0.0.0.0:8445"
+      - "-tls-cert=/run/secrets/console-tls-cert"
+      - "-tls-key=/run/secrets/console-tls-key"
+      - "-keys-dir=/etc/aisec/keys"
+      - "-audit-signing-pub=/etc/aisec/keys/audit-signing.pub"
+      - "-ca-cert=/etc/aisec/keys/ca.crt"
+      - "-ca-key=/etc/aisec/keys/ca.key"
+    secrets: [console-tls-cert, console-tls-key, db-server-pgpass]
+    volumes:
+      - ${AISEC_DATA_DIR:?задайте AISEC_DATA_DIR}/keys:/etc/aisec/keys:ro
+    # Только консоль; внутренний порт 8445 наружу не публикуется — шлюз в той
+    # же установке ходит к нему по сети control.
+    ports: ["${AISEC_CONSOLE_BIND:-127.0.0.1}:${AISEC_CONSOLE_PORT:-8444}:8444"]
+    mem_limit: 1g
+    stop_grace_period: 30s
+
+  aisec-gateway:
+    <<: *hardening
+    image: ${AISEC_IMAGE_REPO:-aisec}/aisec-gateway:${AISEC_VERSION:?задайте AISEC_VERSION}
+    user: "${AISEC_GW_UID:?запустите prepare-host.sh}:${AISEC_GW_GID:?запустите prepare-host.sh}"
+    depends_on: [aisec-server]
+    # control — к серверу управления; gateway — приложения и провайдеры LLM.
+    networks: [control, gateway]
+    command:
+      - "-listen=0.0.0.0:8443"
+      - "-tls-cert=/run/secrets/gateway-tls-cert"
+      - "-tls-key=/run/secrets/gateway-tls-key"
+      - "-server=https://${AISEC_CONSOLE_HOST:?задайте AISEC_CONSOLE_HOST}:8445"
+      - "-server-ca=/run/secrets/console-ca"
+      - "-client-cert=/var/lib/aisec-gateway/reg/gateway.crt"
+      - "-client-key=/var/lib/aisec-gateway/reg/gateway.key"
+      - "-bundle-pub=/run/secrets/gateway-bundle-anchor"
+      - "-state-dir=/var/lib/aisec-gateway/state"
+    secrets: [gateway-tls-cert, gateway-tls-key, console-ca, gateway-bundle-anchor]
+    volumes:
+      # reg/ — сертификат и ключ шлюза (aisec-gateway register), state/ —
+      # ключ секретов пакета и последний пакет; оба каталога 0700. Каталог
+      # gateway/ над ними принадлежит root и не монтируется: шлюз не может
+      # подменить reg/ или state/ символьной ссылкой.
+      - ${AISEC_DATA_DIR:?задайте AISEC_DATA_DIR}/gateway/reg:/var/lib/aisec-gateway/reg
+      - ${AISEC_DATA_DIR:?задайте AISEC_DATA_DIR}/gateway/state:/var/lib/aisec-gateway/state
+    ports: ["${AISEC_GATEWAY_BIND:-127.0.0.1}:${AISEC_GATEWAY_PORT:-8443}:8443"]
+    mem_limit: 1g
+    stop_grace_period: 30s
+
+  # Служебные операции: docker compose run --rm aisec-cli <команда>.
+  # Не запускается командой up (профиль tools).
+  aisec-cli:
+    <<: *hardening
+    image: ${AISEC_IMAGE_REPO:-aisec}/aisec-cli:${AISEC_VERSION:?задайте AISEC_VERSION}
+    profiles: [tools]
+    restart: "no"
+    user: "${AISEC_UID:?запустите prepare-host.sh}:${AISEC_GID:?запустите prepare-host.sh}"
+    depends_on: *db-depends
+    networks: [db]
+    environment:
+      # Владелец схемы: миграции, init, аварийные команды, архивация аудита.
+      AISEC_DATABASE_URL: ${AISEC_OWNER_DB_URL:-postgres://aisec_owner@postgres:5432/aisec?sslmode=disable&passfile=/run/secrets/db-owner-pgpass}
+    secrets: [db-owner-pgpass]
+    volumes:
+      - ${AISEC_DATA_DIR:?задайте AISEC_DATA_DIR}/keys:/etc/aisec/keys
+      - ${AISEC_DATA_DIR:?задайте AISEC_DATA_DIR}/backups:/var/lib/aisec/backups
+    tmpfs: ["/tmp:size=16m"]
+    mem_limit: 512m
+
+# Секреты — файлы хоста в ${AISEC_DATA_DIR}/secrets (каталог 0700 root),
+# владелец каждого — пользователь сервиса, права 0600 (открытые — 0644).
+secrets:
+  console-tls-cert:
+    file: ${AISEC_DATA_DIR:?задайте AISEC_DATA_DIR}/secrets/console.crt
+  console-tls-key:
+    file: ${AISEC_DATA_DIR:?задайте AISEC_DATA_DIR}/secrets/console.key
+  console-ca:
+    file: ${AISEC_DATA_DIR:?задайте AISEC_DATA_DIR}/secrets/console-ca.crt
+  gateway-tls-cert:
+    file: ${AISEC_DATA_DIR:?задайте AISEC_DATA_DIR}/secrets/gateway.crt
+  gateway-tls-key:
+    file: ${AISEC_DATA_DIR:?задайте AISEC_DATA_DIR}/secrets/gateway.key
+  # Якорь проверки пакетов конфигурации шлюза — копия keys/bundle-signing.pub
+  # после aisec-cli init (install-pilot.md, шаг 3.4). Отдельный файл: при
+  # компрометации ключа подписи якорь шлюза меняется, а якорь сервера в
+  # keys/ остаётся (ADR-0018, п. 4.4; 3В6 ревью 3.r1).
+  gateway-bundle-anchor:
+    file: ${AISEC_DATA_DIR:?задайте AISEC_DATA_DIR}/secrets/gateway-bundle-anchor.pub
+  db-postgres-password:
+    file: ${AISEC_DATA_DIR:?задайте AISEC_DATA_DIR}/secrets/db-postgres-password
+  db-owner-password:
+    file: ${AISEC_DATA_DIR:?задайте AISEC_DATA_DIR}/secrets/db-owner-password
+  db-server-password:
+    file: ${AISEC_DATA_DIR:?задайте AISEC_DATA_DIR}/secrets/db-server-password
+  db-owner-pgpass:
+    file: ${AISEC_DATA_DIR:?задайте AISEC_DATA_DIR}/secrets/db-owner.pgpass
+  db-server-pgpass:
+    file: ${AISEC_DATA_DIR:?задайте AISEC_DATA_DIR}/secrets/db-server.pgpass
+
+networks:
+  # Без выхода наружу: PostgreSQL и связь шлюза с сервером.
+  db:
+    internal: true
+  control:
+    internal: true
+  # Публикация консоли.
+  console: {}
+  # Приложения и исходящие обращения шлюза к провайдерам LLM.
+  gateway: {}
