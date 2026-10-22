@@ -7,7 +7,7 @@ SHELL := /bin/bash
 
 # Текущий этап (ТЗ, раздел 14): строки матрицы 5.16 с этапом не выше этого
 # обязаны быть покрыты тестами.
-STAGE := 1
+STAGE := 2
 
 # Скрытые загрузки запрещены (ТЗ, 8.7): зависимости — только из vendor/,
 # прокси модулей выключен, toolchain должен быть уже установлен. Переменные
@@ -317,7 +317,7 @@ build-image: ## Собрать сборочный образ со всеми и�
 
 .PHONY: check-docker
 check-docker: build-image ## make check в сборочном образе — «чистая машина»
-	$(DOCKER_RUN) $(BUILD_IMAGE) make check BIN=/opt/aisec-tools/bin
+	$(DOCKER_RUN) $(if $(AISEC_TEST_DATABASE_URL),--network=host -e AISEC_TEST_DATABASE_URL) $(BUILD_IMAGE) make check BIN=/opt/aisec-tools/bin
 
 # Снимок базы уязвимостей Go для закрытого контура (ADR-0003): каталог в
 # формате базы (index/, ID/). Передаётся явно: VULNDB_DIR=/путь make check-offline.
