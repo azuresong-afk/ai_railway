@@ -659,6 +659,13 @@ func (s *Service) Deliver(ctx context.Context, gw Gateway, recipientKey []byte, 
 		return Delivery{}, err
 	}
 	d := Delivery{Version: rec.Version, ETag: bundle.ETag(rec.Version)}
+	if trustSeq > s.sealer.TrustSeq() {
+		// Шлюз знает заявление новее сервера: БД сервера восстановлена из
+		// дампа до ротации или подменена (3Н2 ревью 3.r1).
+		if err := s.trustRollback(ctx, gw, trustSeq); err != nil {
+			return Delivery{}, err
+		}
+	}
 	if etagMatches(ifNoneMatch, d.ETag) && (trustSeq < 0 || trustSeq >= s.sealer.TrustSeq()) {
 		d.NotModified = true
 		return d, nil
@@ -685,6 +692,35 @@ func (s *Service) Deliver(ctx context.Context, gw Gateway, recipientKey []byte, 
 		return Delivery{}, err
 	}
 	return d, nil
+}
+
+// trustRollback пишет bundle.trust_rollback не чаще reportEvery на шлюз:
+// номер заявления о доверии у шлюза больше, чем у сервера. Пакет выдаётся
+// как обычно — шлюз сам не примет заявление старее своего; запись нужна,
+// чтобы администратор увидел откат цепочки (правило безопасности по коду
+// аудита, ADR-0020).
+func (s *Service) trustRollback(ctx context.Context, gw Gateway, trustSeq int64) error {
+	now := s.clock()
+	key := gw.ID + "|trust_rollback"
+	s.mu.Lock()
+	if t, ok := s.lastReport[key]; ok && now.Sub(t) < reportEvery {
+		s.mu.Unlock()
+		return nil
+	}
+	s.lastReport[key] = now
+	s.mu.Unlock()
+	s.logger.Error("шлюз знает заявление о доверии новее сервера: БД сервера восстановлена из дампа до ротации ключей или подменена",
+		"gateway_id", gw.ID, "gateway_trust_seq", trustSeq, "server_trust_seq", s.sealer.TrustSeq(), "class", "integrity")
+	err := s.audit.Record(ctx, audit.Entry{OrgID: s.orgID, Actor: audit.Actor{Type: audit.ActorGateway, ID: gw.ID},
+		SourceIP: gw.IP, Action: "bundle.trust_rollback", Object: audit.Object{Type: "gateway", ID: gw.ID},
+		Result: audit.ResultFailure, Details: map[string]any{"gateway_trust_seq": trustSeq,
+			"server_trust_seq": s.sealer.TrustSeq(), "threat": "DM-42"}})
+	if err != nil {
+		s.mu.Lock()
+		delete(s.lastReport, key)
+		s.mu.Unlock()
+	}
+	return err
 }
 
 // secrets расшифровывает учётные данные провайдеров пакета (ключ данных,
