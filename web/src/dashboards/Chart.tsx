@@ -41,7 +41,10 @@ export function Chart({ option, label, height = 240, onPick }: ChartProps) {
   const host = useRef<HTMLDivElement>(null);
   const chart = useRef<echarts.ECharts | null>(null);
   const pick = useRef(onPick);
-  pick.current = onPick;
+
+  useEffect(() => {
+    pick.current = onPick;
+  }, [onPick]);
 
   useEffect(() => {
     const el = host.current;

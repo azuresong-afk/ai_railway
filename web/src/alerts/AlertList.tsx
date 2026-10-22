@@ -21,7 +21,7 @@ const periods = [
 const cols = "grid grid-cols-[9rem_8rem_minmax(12rem,1fr)_12rem_5rem_9rem]";
 
 // Список оповещений (ТЗ 6.4): фильтры по статусу, серьёзности, правилу и периоду; таблица виртуализирована.
-// Период в API оповещений не предусмотрен, он применяется к уже загруженным страницам (вопрос записан в stage-3.md).
+// Период (по времени последнего срабатывания) отбирает сервер: параметры from и to запроса.
 export function AlertList({ me }: { me: Me }) {
   const [status, setStatus] = useState("");
   const [severity, setSeverity] = useState("");
@@ -29,7 +29,11 @@ export function AlertList({ me }: { me: Me }) {
   const [period, setPeriod] = useState("all");
   const [selected, setSelected] = useState<string>();
   const canRules = me.permissions.includes("alert_rules.read");
-  const query = { status, severity, rule_id: ruleId };
+  // Момент отсчёта фиксируется при выборе периода, чтобы ключ запроса не менялся на каждой отрисовке.
+  const [anchor, setAnchor] = useState(() => Date.now());
+  const ms = periods.find((p) => p.id === period)?.ms ?? 0;
+  const from = useMemo(() => (ms > 0 ? new Date(anchor - ms).toISOString() : ""), [anchor, ms]);
+  const query = { status, severity, rule_id: ruleId, from };
 
   const rules = useQuery({ queryKey: ["alerts", "rules"], queryFn: ({ signal }) => alertsApi.rules(signal), enabled: canRules });
   const list = useInfiniteQuery({
@@ -38,10 +42,7 @@ export function AlertList({ me }: { me: Me }) {
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (p) => p.next_cursor || undefined,
   });
-  const [now] = useState(() => Date.now());
-  const ms = periods.find((p) => p.id === period)?.ms ?? 0;
-  const all = useMemo(() => list.data?.pages.flatMap((p) => p.items) ?? [], [list.data]);
-  const rows = useMemo(() => (ms === 0 ? all : all.filter((a) => now - Date.parse(a.last_triggered_at) <= ms)), [all, ms, now]);
+  const rows = useMemo(() => list.data?.pages.flatMap((p) => p.items) ?? [], [list.data]);
 
   const scroller = useRef<HTMLDivElement>(null);
   // Известное ограничение TanStack Virtual: результат хука нельзя мемоизировать; таблица рисует только видимые строки.
@@ -54,11 +55,6 @@ export function AlertList({ me }: { me: Me }) {
   useEffect(() => {
     if (last && last.index >= rows.length - 20 && hasNextPage && !isFetchingNextPage) loadMore();
   }, [last, rows.length, hasNextPage, isFetchingNextPage, loadMore]);
-  // Фильтр по загруженному мог скрыть всё, а страницы ещё есть: догружаем, чтобы не показать пустоту зря.
-  useEffect(() => {
-    if (rows.length === 0 && ms > 0 && hasNextPage && !isFetchingNextPage) loadMore();
-  }, [rows.length, ms, hasNextPage, isFetchingNextPage, loadMore]);
-
   const empty = list.isSuccess && rows.length === 0 && !hasNextPage;
   const filtered = status !== "" || severity !== "" || ruleId !== "" || ms > 0;
 
@@ -104,7 +100,14 @@ export function AlertList({ me }: { me: Me }) {
           )}
           <Field label="Период">
             {({ id }) => (
-              <Select id={id} value={period} onChange={(e) => setPeriod(e.target.value)}>
+              <Select
+                id={id}
+                value={period}
+                onChange={(e) => {
+                  setPeriod(e.target.value);
+                  setAnchor(Date.now());
+                }}
+              >
                 {periods.map((p) => (
                   <option key={p.id} value={p.id}>
                     {p.title}

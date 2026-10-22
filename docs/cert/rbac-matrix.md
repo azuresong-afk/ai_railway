@@ -48,6 +48,12 @@
 | GET | `/api/v1/auth/policy` | `auth_policy.read` | да | — | — | да | — | да |
 | PUT | `/api/v1/auth/policy` | `auth_policy.manage` | да | — | — | — | — | — |
 | GET | `/api/v1/budgets` | `budgets.read` | да | да | да | да | — | да |
+| GET | `/api/v1/dashboards/app/{id}` | `dashboards.read` | да | да | да | да | свои | да |
+| GET | `/api/v1/dashboards/consumption` | `dashboards.read` | да | да | да | да | свои | да |
+| GET | `/api/v1/dashboards/overview` | `dashboards.read` | да | да | да | да | свои | да |
+| GET | `/api/v1/dashboards/pii` | `dashboards.read` | да | да | да | да | свои | да |
+| GET | `/api/v1/dashboards/stream` | `dashboards.read` | да | да | да | да | свои | да |
+| GET | `/api/v1/dashboards/threats` | `dashboards.read` | да | да | да | да | свои | да |
 | GET | `/api/v1/events` | `events.read` | да | — | да | да | — | да |
 | POST | `/api/v1/events/export` | `events.export` | да | — | да | — | — | да |
 | GET | `/api/v1/events/filters` | `events.read` | да | — | да | да | — | да |

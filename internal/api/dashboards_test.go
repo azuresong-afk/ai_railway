@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -262,6 +263,9 @@ func TestDashboardStream(t *testing.T) {
 	}
 	resp, cancel := open(an, "?dashboard=overview&period=24h")
 	defer cancel()
+	defer func() {
+		_ = resp.Body.Close() //nolint:gosec // G104: закрытие тестового ответа
+	}()
 	if resp.StatusCode != 200 || !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
 		t.Fatalf("поток: %d %v", resp.StatusCode, resp.Header)
 	}
@@ -290,12 +294,17 @@ func TestDashboardStream(t *testing.T) {
 	for range dashStreamsPerSubject - 1 {
 		r, c := open(an, "?dashboard=threats")
 		open3 = append(open3, c)
-		if r.StatusCode != 200 {
-			t.Fatalf("поток в пределах лимита: %d", r.StatusCode)
+		code := r.StatusCode
+		_ = r.Body.Close() //nolint:gosec // G104: закрытие тестового ответа
+		if code != 200 {
+			t.Fatalf("поток в пределах лимита: %d", code)
 		}
 	}
 	r4, c4 := open(an, "?dashboard=pii")
 	defer c4()
+	defer func() {
+		_ = r4.Body.Close() //nolint:gosec // G104: закрытие тестового ответа
+	}()
 	if r4.StatusCode != http.StatusTooManyRequests || r4.Header.Get("Retry-After") == "" {
 		t.Fatalf("поток сверх предела: %d", r4.StatusCode)
 	}
@@ -306,8 +315,10 @@ func TestDashboardStream(t *testing.T) {
 	for _, q := range []string{"", "?dashboard=x", "?dashboard=app", "?dashboard=overview&app_id=" + "01900000-0000-7000-8000-000000000001", "?dashboard=overview&period=2h"} {
 		r, c := open(e.mustLogin(t, "auditor"), q)
 		c()
-		if r.StatusCode != http.StatusBadRequest {
-			t.Fatalf("%q: %d", q, r.StatusCode)
+		code := r.StatusCode
+		_ = r.Body.Close() //nolint:gosec // G104: закрытие тестового ответа
+		if code != http.StatusBadRequest {
+			t.Fatalf("%q: %d", q, code)
 		}
 	}
 	// Выход закрывает поток.
@@ -341,4 +352,29 @@ func TestDashboardCacheShared(t *testing.T) {
 	}
 	// Права проверяются до кэша: владелец снимок не получает.
 	mustProblem(t, e.call(e.mustLogin(t, "owner"), "GET", "/api/v1/dashboards/pii?period=24h", "", false), 403, CodeForbidden)
+}
+
+// FuzzParseDashParams — разбор периода дашбордов: любые параметры либо отвергаются, либо дают
+// корректный период (начало раньше конца, не длиннее 366 суток).
+func FuzzParseDashParams(f *testing.F) {
+	now := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
+	f.Add("24h", "", "", "")
+	f.Add("", "2026-10-01T00:00:00Z", "2026-10-02T00:00:00Z", "all")
+	f.Add("", "2026-10-02T00:00:00Z", "2026-10-01T00:00:00Z", "")
+	f.Add("x", "не время", "", "actions")
+	f.Fuzz(func(t *testing.T, period, from, to, feed string) {
+		q := url.Values{}
+		for k, v := range map[string]string{"period": period, "from": from, "to": to, "feed": feed} {
+			if v != "" {
+				q.Set(k, v)
+			}
+		}
+		p, prob := parseDashParams(q, now)
+		if prob != nil {
+			return
+		}
+		if !p.from.Before(p.to) || p.to.Sub(p.from) > events.DashMaxRange || p.to.After(now) {
+			t.Fatalf("период вне границ: %v — %v", p.from, p.to)
+		}
+	})
 }

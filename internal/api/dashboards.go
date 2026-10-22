@@ -3,10 +3,10 @@ package api
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"net/http"
 	"net/url"
 	"slices"
@@ -386,7 +386,7 @@ type dashCache struct {
 type dashEntry struct {
 	at   time.Time
 	body []byte
-	data [32]byte
+	data uint64
 }
 
 func newDashCache() *dashCache { return &dashCache{m: map[string]dashEntry{}} }
@@ -420,7 +420,7 @@ func (c *dashCache) put(key string, e dashEntry) {
 // dashSnapshot возвращает JSON дашборда и отпечаток данных без периода
 // (для потока: неизменный снимок не пересылается). Условия бюджетов
 // (budgetPerm) входят в ключ кэша: состав ответа зависит от прав.
-func (d Deps) dashSnapshot(ctx context.Context, name string, p dashParams, app DashAppRef, budgetPerm string, r *http.Request) ([]byte, [32]byte, error) {
+func (d Deps) dashSnapshot(ctx context.Context, name string, p dashParams, app DashAppRef, budgetPerm string, r *http.Request) ([]byte, uint64, error) {
 	pr, _ := PrincipalFrom(r.Context())
 	withBudgets := name == "consumption" && pr.Grants.Full(budgetPerm)
 	period := p.name
@@ -439,10 +439,10 @@ func (d Deps) dashSnapshot(ctx context.Context, name string, p dashParams, app D
 	}
 	cfg, err := d.Auth.InstallSettings(ctx)
 	if err != nil {
-		return nil, [32]byte{}, err
+		return nil, 0, err
 	}
 	if _, err := time.LoadLocation(cfg.Timezone); err != nil {
-		return nil, [32]byte{}, fmt.Errorf("часовой пояс установки: %w", err)
+		return nil, 0, fmt.Errorf("часовой пояс установки: %w", err)
 	}
 	q := events.DashQuery{From: p.from, To: p.to, App: app.Slug, TZ: cfg.Timezone}
 	// Скользящий период считается от текущего момента каждого снимка.
@@ -454,7 +454,7 @@ func (d Deps) dashSnapshot(ctx context.Context, name string, p dashParams, app D
 	}
 	ready, err := d.Dashboards.Ready(ctx)
 	if err != nil {
-		return nil, [32]byte{}, err
+		return nil, 0, err
 	}
 	norm := q.Normalize()
 	meta := dashPeriod{Name: p.name, From: norm.From, To: norm.To, Unit: norm.Unit(),
@@ -475,12 +475,12 @@ func (d Deps) dashSnapshot(ctx context.Context, name string, p dashParams, app D
 		err = fmt.Errorf("неизвестный дашборд %q", name)
 	}
 	if err != nil {
-		return nil, [32]byte{}, err
+		return nil, 0, err
 	}
 	*view.period() = meta
 	body, err := json.Marshal(view)
 	if err != nil {
-		return nil, [32]byte{}, err
+		return nil, 0, err
 	}
 	// Отпечаток данных — без периода: его конец меняется каждую секунду.
 	saved := *view.period()
@@ -488,9 +488,9 @@ func (d Deps) dashSnapshot(ctx context.Context, name string, p dashParams, app D
 	plain, err := json.Marshal(view)
 	*view.period() = saved
 	if err != nil {
-		return nil, [32]byte{}, err
+		return nil, 0, err
 	}
-	e := dashEntry{at: now, body: body, data: sha256.Sum256(plain)}
+	e := dashEntry{at: now, body: body, data: fingerprint(plain)}
 	if d.DashCache != nil {
 		d.DashCache.put(key, e)
 	}
@@ -767,7 +767,7 @@ func (d Deps) dashStream(w http.ResponseWriter, r *http.Request) {
 	if _, err := fmt.Fprint(w, "retry: 5000\n\n"); err != nil {
 		return
 	}
-	var last [32]byte
+	var last uint64
 	cur := r
 	t := time.NewTicker(dashStreamEvery)
 	defer t.Stop()
@@ -816,4 +816,12 @@ func (d Deps) dashStream(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+}
+
+// fingerprint — отпечаток данных снимка: нужен только чтобы отличить неизменный снимок
+// от изменившегося (пинг вместо повтора), к безопасности отношения не имеет.
+func fingerprint(b []byte) uint64 {
+	h := fnv.New64a()
+	_, _ = h.Write(b) //nolint:gosec // G104: запись в хеш не возвращает ошибок
+	return h.Sum64()
 }

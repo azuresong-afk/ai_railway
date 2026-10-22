@@ -2,6 +2,7 @@ package events
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -344,7 +345,7 @@ func (d *DashStore) BackfillStep(ctx context.Context) (done bool, err error) {
 	var isDone bool
 	if err := tx.QueryRow(ctx, `SELECT backfill_cursor, backfill_until, backfill_done FROM dash_state
 		WHERE org_id = $1 FOR UPDATE`, d.orgID).Scan(&cursor, &until, &isDone); err != nil {
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return true, nil
 		}
 		return false, dbError("отметка досчёта агрегатов дашбордов", err)
@@ -439,7 +440,7 @@ func (d *DashStore) Ready(ctx context.Context) (bool, error) {
 	defer cancel()
 	var done bool
 	err := d.rdb.QueryRow(ctx, "SELECT backfill_done FROM dash_state WHERE org_id = $1", d.orgID).Scan(&done)
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
 	if err != nil {

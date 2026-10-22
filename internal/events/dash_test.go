@@ -17,7 +17,7 @@ import (
 // uuidAt — UUIDv7 события с заданным временем (ключ секции) и номером.
 func uuidAt(t time.Time, n int) string {
 	ms := uint64(t.UnixMilli())
-	return fmt.Sprintf("%08x-%04x-7%03x-8%03x-%012x", ms>>16, ms&0xffff, n&0xfff, n&0xfff, uint64(n))
+	return fmt.Sprintf("%08x-%04x-7%03x-8%03x-%012x", ms>>16, ms&0xffff, n&0xfff, n&0xfff, uint64(n)) //nolint:gosec // G115: время теста положительно
 }
 
 func dashStoreFor(t *testing.T, e *pgEnv) (*events.DashStore, *events.PGStore) {
@@ -201,7 +201,7 @@ func TestPGDashboardAggregates(t *testing.T) {
 	if rows, err := ds.PIIBreakdown(ctx, hourly); err != nil || len(rows) != 2 || rows[0].Category != "pii.phone" || rows[0].Action != "redact" {
 		t.Fatalf("разбор ПДн: %+v %v", rows, err)
 	}
-	loc, _ := time.LoadLocation(tz)
+	loc, _ := time.LoadLocation(tz) //nolint:gosec // G104: имя пояса из теста
 	cells, err := ds.Heatmap(ctx, hourly)
 	if err != nil || len(cells) != 2 || cells[0].Findings != 3 || cells[1].Findings != 1 {
 		t.Fatalf("тепловая карта: %+v %v", cells, err)
