@@ -14,6 +14,7 @@
 | POST | `/api/v1/alert-rules` | `alert_rules.manage` | да | — | — | — | — | — |
 | GET | `/api/v1/alert-rules/{id}` | `alert_rules.read` | да | — | да | да | — | да |
 | PUT | `/api/v1/alert-rules/{id}` | `alert_rules.manage` | да | — | — | — | — | — |
+| GET | `/api/v1/alert-rules/{id}/state` | `alert_rules.read` | да | — | да | да | — | да |
 | GET | `/api/v1/alert-settings` | `alert_rules.read` | да | — | да | да | — | да |
 | PUT | `/api/v1/alert-settings` | `alert_rules.manage` | да | — | — | — | — | — |
 | GET | `/api/v1/alerts` | `alerts.read` | да | — | да | да | — | да |

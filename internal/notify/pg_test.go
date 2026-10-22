@@ -179,7 +179,7 @@ func TestPGNotifyChannels(t *testing.T) {
 	status.Store(http.StatusOK)
 	var hits atomic.Int32
 	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.Copy(io.Discard, r.Body)
+		_, _ = io.Copy(io.Discard, r.Body) //nolint:gosec // G104: тело запроса тестовому приёмнику не нужно
 		hits.Add(1)
 		w.WriteHeader(int(status.Load()))
 	}))
@@ -249,7 +249,7 @@ func TestPGNotifyChannels(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer func() { _ = tx.Rollback(ctx) }()
+		defer func() { _ = tx.Rollback(ctx) }() //nolint:gosec // G104: откат после фиксации безвреден
 		if k, err := st.EnqueueAlertTx(ctx, tx, id, "high"); err != nil || k != 1 {
 			t.Fatalf("в очередь: %d %v", k, err)
 		}
@@ -278,7 +278,7 @@ func TestPGNotifyChannels(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	list, _ = svc.Deliveries(ctx, c.ID, 1)
+	list, _ = svc.Deliveries(ctx, c.ID, 1) //nolint:gosec // G104: проверяется результат
 	if list[0].Status != notify.StatusFailed || list[0].Attempts != notify.MaxAttempts || list[0].Error != "http_502" {
 		t.Fatalf("итог: %+v", list[0])
 	}

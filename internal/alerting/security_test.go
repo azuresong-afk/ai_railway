@@ -3,6 +3,7 @@ package alerting
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/netip"
 	"strings"
@@ -67,7 +68,7 @@ func TestSecurityRulesLocked(t *testing.T) {
 		off := false
 		_, err := e.svc.UpdateRule(context.Background(), e.admin, r.ID, RuleInput{Enabled: &off, Version: r.Version,
 			Recipients: Recipients{Roles: []string{}, Users: []string{}}})
-		if err != ErrLocked {
+		if !errors.Is(err, ErrLocked) {
 			t.Fatalf("%s: отключение: %v", key, err)
 		}
 	}
@@ -373,7 +374,7 @@ func TestAuditRuleRequiresBuiltin(t *testing.T) {
 	m := NewMemory()
 	err := m.Audit(context.Background(), audit.Record{OrgID: audit.DefaultOrgID, TS: time.Now(), Action: "auth.locked",
 		Actor: tUser, Object: audit.Object{Type: "user", ID: tUser.ID}, Result: audit.ResultSuccess, Details: []byte("{}")})
-	if err != errNoBuiltin {
+	if !errors.Is(err, errNoBuiltin) {
 		t.Fatalf("ожидалась ошибка отсутствия правила: %v", err)
 	}
 	// Запись, не порождающая оповещений, проходит и без правил.
@@ -425,7 +426,7 @@ func TestRetentionSettings(t *testing.T) {
 	}
 	noConfirm := e.admin
 	noConfirm.Confirm = nil
-	if _, err := svc.SetRetention(ctx, noConfirm, 180); err != ErrConfirmRequired {
+	if _, err := svc.SetRetention(ctx, noConfirm, 180); !errors.Is(err, ErrConfirmRequired) {
 		t.Fatalf("сокращение без проверки: %v", err)
 	}
 	if _, err := svc.SetRetention(ctx, noConfirm, 730); err != nil {

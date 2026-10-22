@@ -2670,9 +2670,14 @@ paths:
         Право `alert_rules.manage` (признак `security`: только администратор безопасности, не
         токену). Через API создаются правила «порог» (`threshold`: фильтр событий языка
         `GET /api/v1/events` и/или наименьшая серьёзность, до 4 полей группировки) и «новое»
-        (`new`: поле `model`, `provider`, `user` или `app`, ключ — его значение). Окно подавления
-        после закрытия — `suppress_minutes` (по умолчанию 60, до 10 080). Не больше 200 правил —
-        иначе 422. Пишет `alert_rule.create`.
+        (`new`: поле `model`, `provider`, `user` или `app`, ключ — его значение). Фоновая задача
+        сервера раз в минуту считает «частоту» (`frequency`: условие как у «порога», `count`
+        событий за `window_minutes` по ключу группировки), «аномалию» (`anomaly`: метрика `metric`
+        последнего часа выше медианы того же часа недели за 2–8 недель в `factor` раз и не меньше
+        `min_volume`; группировка — нет или `app`; первые 14 суток данных молчит) и «бюджет»
+        (`budget`: `warn_percent` и 100 % месячного бюджета приложения, по одному оповещению на
+        порог в месяц; группировка — `app`). Окно подавления после закрытия — `suppress_minutes`
+        (по умолчанию 60, до 10 080). Не больше 200 правил — иначе 422. Пишет `alert_rule.create`.
       x-permission: alert_rules.manage
       security: [{ sessionCookie: [] }]
       parameters:
@@ -2757,6 +2762,34 @@ paths:
         '413': { $ref: '#/components/responses/ProblemTooLarge' }
         '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
         '422': { $ref: '#/components/responses/ProblemUnprocessable' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/alert-rules/{id}/state:
+    get:
+      summary: Состояние правила фоновой задачи
+      description: |
+        Право `alert_rules.read`. Что посчитала фоновая задача сервера (раз в минуту) по правилу
+        «частота», «аномалия» или «бюджет»: время вычисления, обучение базовой линии «аномалии»
+        (первые 14 суток данных ключа правило молчит, `learning: true` и `learning_until`), ключи
+        группировки с текущим объёмом, медианой базовой линии и числом недель в ней (не больше 50,
+        всего — `keys_total`); у «бюджета» — месяц и процент расхода; у «частоты» — ключи, сработавшие
+        в последнем проходе. Объёмы «аномалии» показываются только с правом `events.read`, расход
+        «бюджета» — с `budgets.read`, иначе `keys` пуст и `keys_hidden: true`. У остальных видов и
+        до первого вычисления — `evaluated: false`. Содержимого событий нет.
+      x-permission: alert_rules.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/AlertRuleID'
+      responses:
+        '200':
+          description: Состояние
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AlertRuleState' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ProblemInternal' }
         '503': { $ref: '#/components/responses/Unavailable' }
@@ -4533,7 +4566,7 @@ components:
       enum: [info, low, medium, high, critical]
     AlertKind:
       type: string
-      description: Вид правила (ТЗ 5.6); через API создаются threshold и new
+      description: Вид правила (ТЗ 5.6); через API создаются threshold, new, frequency, anomaly и budget
       enum: [threshold, new, frequency, anomaly, budget, system, security]
     Alert:
       type: object
@@ -4610,6 +4643,23 @@ components:
         filter: { type: string, maxLength: 2048, description: Фильтр событий (язык — в описании GET /api/v1/events) }
         min_severity: { $ref: '#/components/schemas/AlertSeverity' }
         field: { type: string, enum: [model, provider, user, app], description: Поле правила «новое» }
+        count: { type: integer, minimum: 2, maximum: 100000, description: 'Порог «частоты»: событий в окне по ключу группировки' }
+        window_minutes: { type: integer, minimum: 1, maximum: 1440, description: Окно «частоты», минут }
+        metric:
+          type: string
+          enum: [requests, tokens, completion_tokens]
+          description: Метрика «аномалии» (запросы, токены, токены ответа) по часовым агрегатам событий
+        factor:
+          type: number
+          minimum: 1.5
+          maximum: 100
+          description: 'Во сколько раз объём окна «аномалии» (последний час) выше медианы того же часа недели за 2–8 недель; по умолчанию 3'
+        min_volume:
+          type: integer
+          minimum: 1
+          maximum: 1000000000000
+          description: 'Наименьший объём окна «аномалии»; по умолчанию 100 запросов, 200 000 токенов, 100 000 токенов ответа'
+        warn_percent: { type: integer, minimum: 50, maximum: 99, description: 'Предупреждение «бюджета», % месячного бюджета (по умолчанию 80); второй порог — 100 %' }
     AlertRecipients:
       type: object
       additionalProperties: false
@@ -4622,7 +4672,7 @@ components:
       required: [kind, name, condition]
       additionalProperties: false
       properties:
-        kind: { type: string, enum: [threshold, new] }
+        kind: { type: string, enum: [threshold, new, frequency, anomaly, budget] }
         name: { type: string, minLength: 1, maxLength: 200 }
         description: { type: string, maxLength: 2000 }
         enabled: { type: boolean, default: true }
@@ -4787,6 +4837,33 @@ components:
         created_by: { type: string }
         updated_at: { type: string, format: date-time }
         updated_by: { type: string }
+    AlertRuleState:
+      type: object
+      required: [rule_id, kind, evaluated, learning, keys, keys_total, keys_hidden]
+      properties:
+        rule_id: { type: string, format: uuid }
+        kind: { $ref: '#/components/schemas/AlertKind' }
+        evaluated: { type: boolean, description: Фоновая задача уже считала правило }
+        evaluated_at: { type: string, format: date-time }
+        learning: { type: boolean, description: '«Аномалия» на обучении: ни у одного ключа нет 14 суток истории' }
+        learning_until: { type: string, format: date-time }
+        month: { type: string, pattern: '^[0-9]{4}-[0-9]{2}$', description: Месяц «бюджета» в часовом поясе установки }
+        keys:
+          type: array
+          maxItems: 50
+          items:
+            type: object
+            required: [group, learning, current, baseline, samples, triggered]
+            properties:
+              group: { type: object, additionalProperties: { type: string } }
+              learning: { type: boolean }
+              ready_at: { type: string, format: date-time }
+              current: { type: number, description: 'Объём окна («аномалия»), процент расхода («бюджет») или событий в окне у ключей «частоты», сработавших в последнем проходе' }
+              baseline: { type: number, description: Медиана базовой линии }
+              samples: { type: integer, description: Недель в базовой линии }
+              triggered: { type: boolean }
+        keys_total: { type: integer }
+        keys_hidden: { type: boolean, description: 'Ключи скрыты: у «аномалии» нужно право events.read, у «бюджета» — budgets.read' }
     AlertRuleList:
       type: object
       required: [items]

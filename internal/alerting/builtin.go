@@ -14,6 +14,15 @@ const (
 	BuiltinNewRiskyUser = "new.risky_user"
 	// BuiltinRecipientsChanged — изменение получателей правила (ТЗ 5.6).
 	BuiltinRecipientsChanged = "security.recipients_changed"
+	// Правила фоновой задачи (задача 3.12): серия срабатываний (DM-16),
+	// серия отказов по квотам и резкий рост запросов (DM-36), объём ответов
+	// модели (DM-17), бюджет 80 % и 100 % (DM-15). Их можно менять и
+	// отключать, как «порог» и «новое».
+	BuiltinProbingSeries    = "frequency.probing"
+	BuiltinQuotaExceeded    = "frequency.quota_exceeded"
+	BuiltinActivitySpike    = "anomaly.activity_spike"
+	BuiltinExtractionVolume = "anomaly.extraction_volume"
+	BuiltinBudget           = "budget.monthly"
 )
 
 // canonical — каноническая запись фильтра встроенного правила.
@@ -50,5 +59,41 @@ func builtinRules() []Rule {
 		{BuiltinKey: BuiltinRecipientsChanged, Kind: KindSecurity, Name: "Изменены получатели оповещений",
 			Description: "Изменение получателей правила оповещения (ТЗ 5.6). Изменения одного пользователя за 10 минут — одно оповещение.",
 			Enabled:     true, Severity: "high", GroupBy: []string{"actor"}, GroupMinutes: 10, Recipients: none},
-	}, securityRules()...)
+	}, append(periodicRules(), securityRules()...)...)
+}
+
+// periodicRules — встроенные правила «частота», «аномалия» и «бюджет»
+// задачи 3.12. Пороги обоснованы в ADR-0020, п. 14.
+func periodicRules() []Rule {
+	none := Recipients{Roles: []string{}, Users: []string{}}
+	return []Rule{
+		{BuiltinKey: BuiltinProbingSeries, Kind: KindFrequency, Name: "Серия срабатываний от одного пользователя",
+			Description: "DM-16: 10 и более событий серьёзности «средняя» и выше от одного пользователя приложения за 10 минут — " +
+				"признак подбора обхода защиты. Без идентификатора пользователя ключ — приложение (его ключ).",
+			Enabled: true, Severity: "high", Condition: Condition{MinSeverity: "medium", Count: 10, WindowMinutes: 10},
+			GroupBy: []string{"app", "user"}, SuppressMinutes: DefaultSuppressMinutes, Recipients: none},
+		{BuiltinKey: BuiltinQuotaExceeded, Kind: KindFrequency, Name: "Серия отказов по квотам",
+			Description: "DM-36: 20 и более запросов приложения за 10 минут отклонены квотами шлюза (quota_exceeded).",
+			Enabled:     true, Severity: "medium",
+			Condition: Condition{Filter: canonical(`threat = "DM-36" and action = "block"`), Count: 20, WindowMinutes: 10},
+			GroupBy:   []string{"app"}, SuppressMinutes: DefaultSuppressMinutes, Recipients: none},
+		{BuiltinKey: BuiltinActivitySpike, Kind: KindAnomaly, Name: "Резкий рост запросов приложения",
+			Description: "DM-36: запросов приложения за последний час втрое больше медианы того же часа недели за прошлые недели " +
+				"и не меньше 100. Первые 14 суток данных приложения — обучение, правило по нему молчит.",
+			Enabled: true, Severity: "medium",
+			Condition: Condition{Metric: MetricRequests, Factor: DefaultAnomalyFactor, MinVolume: metricMinVolume[MetricRequests]},
+			GroupBy:   []string{"app"}, SuppressMinutes: DefaultSuppressMinutes, Recipients: none},
+		{BuiltinKey: BuiltinExtractionVolume, Kind: KindAnomaly, Name: "Аномальный объём ответов модели",
+			Description: "DM-17: токенов ответов модели за последний час втрое больше медианы того же часа недели и не меньше 100 000 — " +
+				"возможное массовое извлечение знаний модели (дистилляция). Первые 14 суток данных — обучение.",
+			Enabled: true, Severity: "high",
+			Condition: Condition{Metric: MetricCompletionTokens, Factor: DefaultAnomalyFactor,
+				MinVolume: metricMinVolume[MetricCompletionTokens]},
+			GroupBy: []string{"app"}, SuppressMinutes: DefaultSuppressMinutes, Recipients: none},
+		{BuiltinKey: BuiltinBudget, Kind: KindBudget, Name: "Расход бюджета приложения",
+			Description: "DM-15: израсходовано 80 % и 100 % месячного бюджета приложения (мягкого и жёсткого). " +
+				"Одно оповещение на порог в месяц; месяц — в часовом поясе установки.",
+			Enabled: true, Severity: "high", Condition: Condition{WarnPercent: DefaultWarnPercent}, GroupBy: []string{"app"},
+			SuppressMinutes: DefaultSuppressMinutes, Recipients: none},
+	}
 }

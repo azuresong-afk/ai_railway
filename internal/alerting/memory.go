@@ -26,7 +26,14 @@ type Memory struct {
 	records []audit.Entry
 	// audited — записи журнала аудита, прошедшие через Audit (DM-39–DM-44).
 	audited []audit.Record
-	nextID  int
+	// counts, activity, states — счётчики «частоты», агрегаты событий и
+	// состояние правил фоновой задачи (задача 3.12); enqueued — оповещения,
+	// поставленные в очередь доставки (3.14).
+	counts   map[string]map[string]*countEntry
+	activity []Activity
+	states   map[string]RuleState
+	enqueued []string
+	nextID   int
 	// Clock — часы «СУБД» для окон подавления и группировки.
 	Clock func() time.Time
 	// Err — ошибка, которую вернёт следующий вызов (проверка отказа БД).
@@ -68,6 +75,9 @@ func (m *Memory) Ingest(ctx context.Context, gatewayID string, evs []*events.Eve
 		return err
 	}
 	if err := process(ctx, memOps{m}, gatewayID, evs, nil); err != nil {
+		return err
+	}
+	if err := countFrequency(ctx, memOps{m}, m.now(), gatewayID, evs, nil); err != nil {
 		return err
 	}
 	return processAuthFailures(ctx, memOps{m}, evs)
@@ -156,6 +166,7 @@ func (o memOps) raise(_ context.Context, r *Rule, t *Trigger) error {
 		Details: mergeDetails(nil, t.Details)}
 	m.alerts[a.ID] = a
 	m.addRefs(a.ID, 0, t.Events)
+	m.enqueued = append(m.enqueued, a.ID)
 	return nil
 }
 
@@ -259,6 +270,9 @@ func (m *Memory) UpdateRule(ctx context.Context, orgID, id string, fn func(*Rule
 	}
 	if err := raiseBuiltin(ctx, memOps{m}, raises); err != nil {
 		return Rule{}, err
+	}
+	if countsStale(cur, &next) {
+		delete(m.counts, id)
 	}
 	*cur = next.clone()
 	m.records = append(m.records, rec)

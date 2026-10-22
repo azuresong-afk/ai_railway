@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"strings"
 	"time"
@@ -32,6 +33,11 @@ func Kinds() []string {
 
 // Locked — правило этого вида нельзя отключить (ТЗ 5.6).
 func Locked(kind string) bool { return kind == KindSystem || kind == KindSecurity }
+
+// APIKind — правило этого вида создаётся и меняется через API.
+func APIKind(kind string) bool {
+	return kind == KindThreshold || kind == KindNew || kind == KindFrequency || kind == KindAnomaly || kind == KindBudget
+}
 
 // Серьёзность — шкала ТЗ 6.2, та же, что у правил политики.
 var severities = []string{"info", "low", "medium", "high", "critical"}
@@ -84,13 +90,58 @@ const (
 	maxConditionJSON = 8192
 )
 
-// Condition — условие правила «порог» или «новое». Filter — фильтр
-// событий языка ADR-0015 в канонической записи.
+// Пределы параметров правил «частота», «аномалия» и «бюджет» (задача 3.12).
+const (
+	MinFrequencyCount    = 2
+	MaxFrequencyCount    = 100_000
+	MaxWindowMinutes     = 24 * 60
+	MinAnomalyFactor     = 1.5
+	MaxAnomalyFactor     = 100
+	DefaultAnomalyFactor = 3
+	MaxMinVolume         = 1_000_000_000_000
+	MinWarnPercent       = 50
+	MaxWarnPercent       = 99
+	DefaultWarnPercent   = 80
+)
+
+// Метрики правила «аномалия»: по агрегатам событий без содержимого.
+const (
+	MetricRequests         = "requests"          // запросы через шлюз и Check API
+	MetricTokens           = "tokens"            // токены входа и выхода
+	MetricCompletionTokens = "completion_tokens" // токены ответов модели (DM-17)
+)
+
+// metricMinVolume — наименьший объём за час по умолчанию: ниже него рост
+// не считается аномалией (шум малых приложений).
+var metricMinVolume = map[string]int64{MetricRequests: 100, MetricTokens: 200_000, MetricCompletionTokens: 100_000}
+
+// Metrics — метрики правила «аномалия».
+func Metrics() []string { return []string{MetricRequests, MetricTokens, MetricCompletionTokens} }
+
+// anomalyGroupFields — поля группировки «аномалии»: измерение агрегатов.
+var anomalyGroupFields = []string{"app"}
+
+// Condition — условие правила. Filter — фильтр событий языка ADR-0015 в
+// канонической записи («порог», «новое», «частота»). Поля сравнимы через ==:
+// без срезов и отображений.
 type Condition struct {
 	Filter      string `json:"filter,omitempty"`
 	MinSeverity string `json:"min_severity,omitempty"`
 	// Field — поле правила «новое»: model, provider, user или app.
 	Field string `json:"field,omitempty"`
+	// Count и WindowMinutes — «частота»: Count подходящих событий за
+	// WindowMinutes минут по ключу group_by (задача 3.12).
+	Count         int `json:"count,omitempty"`
+	WindowMinutes int `json:"window_minutes,omitempty"`
+	// Metric, Factor и MinVolume — «аномалия»: объём за последний час не
+	// меньше MinVolume и не меньше Factor медиан базовой линии того же часа
+	// недели (задача 3.12).
+	Metric    string  `json:"metric,omitempty"`
+	Factor    float64 `json:"factor,omitempty"`
+	MinVolume int64   `json:"min_volume,omitempty"`
+	// WarnPercent — «бюджет»: порог предупреждения в процентах месячного
+	// бюджета; второй порог — 100 % (ТЗ 5.6).
+	WarnPercent int `json:"warn_percent,omitempty"`
 }
 
 // Recipients — получатели правила сверх обязательных (п. 8 ADR-0020).
@@ -280,8 +331,9 @@ func ParseRuleInput(in RuleInput, kind string) (Rule, error) {
 	switch {
 	case in.Kind != "" && in.Kind != kind:
 		errs = append(errs, errors.New("kind: вид правила не меняется"))
-	case kind != KindThreshold && kind != KindNew:
-		errs = append(errs, errors.New("kind: через API создаются правила «порог» (threshold) и «новое» (new)"))
+	case !APIKind(kind):
+		errs = append(errs, errors.New("kind: через API создаются правила threshold, new, frequency, anomaly и budget; "+
+			"системные правила и правила безопасности создаёт сервер"))
 	}
 	r := Rule{Kind: kind, Name: strings.TrimSpace(in.Name), Description: strings.TrimSpace(in.Description), Enabled: true,
 		Severity: in.Severity, SuppressMinutes: DefaultSuppressMinutes}
@@ -292,7 +344,7 @@ func ParseRuleInput(in RuleInput, kind string) (Rule, error) {
 	}
 	if r.Severity == "" {
 		r.Severity = "high"
-		if kind == KindNew {
+		if kind == KindNew || kind == KindAnomaly {
 			r.Severity = "medium"
 		}
 	}
@@ -335,29 +387,45 @@ func (r *Rule) parseCondition(c Condition, groupBy []string) []error {
 		}
 		r.Condition.MinSeverity = c.MinSeverity
 	}
+	if r.Kind != KindFrequency && (c.Count != 0 || c.WindowMinutes != 0) {
+		errs = append(errs, errors.New("condition.count: только у правила «частота»"))
+	}
+	if r.Kind != KindAnomaly && (c.Metric != "" || c.Factor != 0 || c.MinVolume != 0) {
+		errs = append(errs, errors.New("condition.metric: только у правила «аномалия»"))
+	}
+	if r.Kind != KindBudget && c.WarnPercent != 0 {
+		errs = append(errs, errors.New("condition.warn_percent: только у правила «бюджет»"))
+	}
+	if (r.Kind == KindAnomaly || r.Kind == KindBudget) && (c.Filter != "" || c.MinSeverity != "" || c.Field != "") {
+		errs = append(errs, errors.New("condition.filter: правила «аномалия» и «бюджет» считаются по агрегатам, фильтр событий к ним не применяется"))
+	}
 	switch r.Kind {
-	case KindThreshold:
+	case KindThreshold, KindFrequency:
 		if c.Field != "" {
 			errs = append(errs, errors.New("condition.field: только у правила «новое»"))
 		}
 		if c.Filter == "" && c.MinSeverity == "" {
 			errs = append(errs, errors.New("condition: задайте фильтр или наименьшую серьёзность — иначе оповещением станет каждое событие"))
 		}
-		if len(groupBy) > MaxGroupBy {
-			errs = append(errs, fmt.Errorf("group_by: не больше %d полей", MaxGroupBy))
-			break
+		if r.Kind == KindFrequency {
+			errs = append(errs, r.parseFrequency(c)...)
 		}
-		r.GroupBy = []string{}
-		for _, g := range groupBy {
-			switch {
-			case !slices.Contains(groupFields, g):
-				errs = append(errs, fmt.Errorf("group_by: поле %q не годится для группировки; допустимы: %s", short(g), strings.Join(groupFields, ", ")))
-			case slices.Contains(r.GroupBy, g):
-				errs = append(errs, fmt.Errorf("group_by: поле %s указано дважды", g))
-			default:
-				r.GroupBy = append(r.GroupBy, g)
-			}
+		errs = append(errs, r.parseGroupBy(groupBy, groupFields)...)
+	case KindAnomaly:
+		errs = append(errs, r.parseAnomaly(c)...)
+		errs = append(errs, r.parseGroupBy(groupBy, anomalyGroupFields)...)
+	case KindBudget:
+		if c.WarnPercent == 0 {
+			c.WarnPercent = DefaultWarnPercent
 		}
+		if c.WarnPercent < MinWarnPercent || c.WarnPercent > MaxWarnPercent {
+			errs = append(errs, fmt.Errorf("condition.warn_percent: от %d до %d", MinWarnPercent, MaxWarnPercent))
+		}
+		r.Condition.WarnPercent = c.WarnPercent
+		if len(groupBy) > 0 && !slices.Equal(groupBy, []string{"app"}) {
+			errs = append(errs, errors.New("group_by: бюджет задаётся на приложение — ключ всегда app"))
+		}
+		r.GroupBy = []string{"app"}
 	case KindNew:
 		if !slices.Contains(newFields, c.Field) {
 			errs = append(errs, fmt.Errorf("condition.field: одно из %s", strings.Join(newFields, ", ")))
@@ -368,6 +436,63 @@ func (r *Rule) parseCondition(c Condition, groupBy []string) []error {
 		}
 		r.GroupBy = []string{c.Field}
 	}
+	return errs
+}
+
+// parseGroupBy проверяет поля группировки по списку допустимых.
+func (r *Rule) parseGroupBy(groupBy, allowed []string) []error {
+	var errs []error
+	if len(groupBy) > MaxGroupBy {
+		return []error{fmt.Errorf("group_by: не больше %d полей", MaxGroupBy)}
+	}
+	r.GroupBy = []string{}
+	for _, g := range groupBy {
+		switch {
+		case !slices.Contains(allowed, g):
+			errs = append(errs, fmt.Errorf("group_by: поле %q не годится для группировки; допустимы: %s", short(g), strings.Join(allowed, ", ")))
+		case slices.Contains(r.GroupBy, g):
+			errs = append(errs, fmt.Errorf("group_by: поле %s указано дважды", g))
+		default:
+			r.GroupBy = append(r.GroupBy, g)
+		}
+	}
+	return errs
+}
+
+// parseFrequency проверяет порог и окно правила «частота».
+func (r *Rule) parseFrequency(c Condition) []error {
+	var errs []error
+	if c.Count < MinFrequencyCount || c.Count > MaxFrequencyCount {
+		errs = append(errs, fmt.Errorf("condition.count: от %d до %d событий", MinFrequencyCount, MaxFrequencyCount))
+	}
+	if c.WindowMinutes < 1 || c.WindowMinutes > MaxWindowMinutes {
+		errs = append(errs, fmt.Errorf("condition.window_minutes: от 1 до %d минут", MaxWindowMinutes))
+	}
+	r.Condition.Count, r.Condition.WindowMinutes = c.Count, c.WindowMinutes
+	return errs
+}
+
+// parseAnomaly проверяет метрику и порог правила «аномалия»; пустые
+// множитель и наименьший объём — умолчания метрики.
+func (r *Rule) parseAnomaly(c Condition) []error {
+	var errs []error
+	if !slices.Contains(Metrics(), c.Metric) {
+		return []error{fmt.Errorf("condition.metric: одно из %s", strings.Join(Metrics(), ", "))}
+	}
+	if c.Factor == 0 {
+		c.Factor = DefaultAnomalyFactor
+	}
+	if math.IsNaN(c.Factor) || c.Factor < MinAnomalyFactor || c.Factor > MaxAnomalyFactor {
+		errs = append(errs, fmt.Errorf("condition.factor: от %g до %d — во сколько раз объём выше медианы базовой линии",
+			MinAnomalyFactor, MaxAnomalyFactor))
+	}
+	if c.MinVolume == 0 {
+		c.MinVolume = metricMinVolume[c.Metric]
+	}
+	if c.MinVolume < 1 || c.MinVolume > MaxMinVolume {
+		errs = append(errs, fmt.Errorf("condition.min_volume: от 1 до %d за час", int64(MaxMinVolume)))
+	}
+	r.Condition.Metric, r.Condition.Factor, r.Condition.MinVolume = c.Metric, c.Factor, c.MinVolume
 	return errs
 }
 
@@ -432,6 +557,12 @@ const (
 	WeakSuppressIncreased = "suppress_increased"
 	WeakGroupIncreased    = "group_window_increased"
 	WeakRecipientRemoved  = "recipient_removed"
+	// Пороги правил «частота», «аномалия» и «бюджет» (задача 3.12).
+	WeakCountRaised     = "count_raised"
+	WeakWindowShortened = "window_shortened"
+	WeakFactorRaised    = "factor_raised"
+	WeakMinVolumeRaised = "min_volume_raised"
+	WeakWarnRaised      = "warn_percent_raised"
 )
 
 // Weakening — чем изменение правила before → after ослабляет оповещения.
@@ -444,8 +575,24 @@ func Weakening(before, after *Rule) []string {
 	if !after.Enabled {
 		out = append(out, WeakDisabled)
 	}
-	if before.Condition.Filter != after.Condition.Filter || before.Condition.Field != after.Condition.Field {
+	bc, ac := &before.Condition, &after.Condition
+	if bc.Filter != ac.Filter || bc.Field != ac.Field || bc.Metric != ac.Metric {
 		out = append(out, WeakConditionChanged)
+	}
+	if ac.Count > bc.Count {
+		out = append(out, WeakCountRaised)
+	}
+	if ac.WindowMinutes < bc.WindowMinutes {
+		out = append(out, WeakWindowShortened)
+	}
+	if ac.Factor > bc.Factor {
+		out = append(out, WeakFactorRaised)
+	}
+	if ac.MinVolume > bc.MinVolume {
+		out = append(out, WeakMinVolumeRaised)
+	}
+	if ac.WarnPercent > bc.WarnPercent {
+		out = append(out, WeakWarnRaised)
 	}
 	if severityRank(after.Condition.MinSeverity) > severityRank(before.Condition.MinSeverity) {
 		out = append(out, WeakMinSeverityRaised)
