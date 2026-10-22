@@ -1,0 +1,51 @@
+# Образы поставки пилота (ADR-0019): aisec-server, aisec-gateway, aisec-cli.
+#
+# Собирает make images (RELEASE=1, ключ производителя) или make images-test
+# (тестовый ключ, НЕ ДЛЯ ПОСТАВКИ). Контекст сборки — каталог выпуска
+# build/release: статические бинарники (CGO_ENABLED=0) и подписанный
+# манифест целостности. Бинарники собраны и манифест подписан до docker build,
+# поэтому закрытый ключ производителя в контекст сборки не попадает, а здесь
+# нет ни одной команды RUN и ни одного внешнего образа.
+#
+# В образе — только бинарник, манифест и его подпись: ни оболочки, ни пакетов
+# ОС, ни корневых сертификатов (корни провайдеров приходят в пакете
+# конфигурации, ca_pem). Раскладка повторяет установку: манифест лежит над
+# каталогом bin/, где его по умолчанию ищут сервер, шлюз и aisec-cli verify.
+# Файлы принадлежат root и недоступны на запись пользователю 65534.
+
+ARG VERSION=dev
+ARG BUILD_KIND=test
+
+FROM scratch AS base
+ARG VERSION
+ARG BUILD_KIND
+LABEL org.opencontainers.image.vendor="AISec" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.base.name="scratch" \
+      ru.aisec.build-kind="${BUILD_KIND}"
+COPY aisec-manifest.json aisec-manifest.json.sig /opt/aisec/
+USER 65534:65534
+
+FROM base AS aisec-server
+LABEL org.opencontainers.image.title="aisec-server" \
+      org.opencontainers.image.description="AISec: сервер управления и веб-консоль"
+COPY bin/aisec-server /opt/aisec/bin/aisec-server
+# 8444 — консоль и API, 8445 — внутренний API шлюзов (mTLS).
+EXPOSE 8444 8445
+ENTRYPOINT ["/opt/aisec/bin/aisec-server"]
+
+FROM base AS aisec-gateway
+LABEL org.opencontainers.image.title="aisec-gateway" \
+      org.opencontainers.image.description="AISec: шлюз между приложениями и LLM"
+COPY bin/aisec-gateway /opt/aisec/bin/aisec-gateway
+EXPOSE 8443
+ENTRYPOINT ["/opt/aisec/bin/aisec-gateway"]
+
+# aisec-cli — полный выпуск: aisec-cli verify сверяет все файлы манифеста,
+# поэтому в образе лежат все бинарники поставки. Запускается только командой
+# (docker compose run), портов нет.
+FROM base AS aisec-cli
+LABEL org.opencontainers.image.title="aisec-cli" \
+      org.opencontainers.image.description="AISec: служебные операции и проверка целостности выпуска"
+COPY bin/ /opt/aisec/bin/
+ENTRYPOINT ["/opt/aisec/bin/aisec-cli"]

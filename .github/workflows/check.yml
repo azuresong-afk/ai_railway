@@ -60,3 +60,33 @@ jobs:
             build/sbom/
             build/dm-coverage.md
             build/dm-coverage.json
+
+  # Образы поставки пилота (ADR-0019, ЗИ.5): сборка с тестовым ключом
+  # манифеста — НЕ ДЛЯ ПОСТАВКИ — и проверка tools/imagecheck: не root, нет
+  # оболочки и пакетов ОС, только свои порты, бинарники совпадают с
+  # подписанным выпуском; правила compose пилота. Поставочные образы
+  # (make images, RELEASE=1) собирает владелец ключа производителя.
+  images:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Получить код
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0 # git describe для версии образов
+
+      - name: Сборка и проверка образов
+        run: make images-test-docker
+
+      - name: SBOM и архивы образов
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pilot-images-test
+          if-no-files-found: warn
+          retention-days: 30
+          path: |
+            build/images/
+            build/release/aisec-manifest.json
+            build/release/aisec-manifest.json.sig
