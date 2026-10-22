@@ -730,8 +730,8 @@ func TestSetPolicyWeakeningNeedsReauth(t *testing.T) {
 	if err := e.svc.SetPolicy(ctx, admin, weaker, wrongPhrase, ""); !errors.Is(err, auth.ErrReauthentication) {
 		t.Fatalf("ослабление с неверным паролем: %v", err)
 	}
-	if got, _ := e.svc.Policy(ctx); got != stricter {
-		t.Fatalf("настройки изменились после отказа: %+v", got)
+	if got, err := e.svc.Policy(ctx); err != nil || got != stricter {
+		t.Fatalf("настройки изменились после отказа: %+v %v", got, err)
 	}
 	if err := e.svc.SetPolicy(ctx, admin, weaker, phrase, ""); err != nil {
 		t.Fatalf("ослабление с паролем: %v", err)
@@ -1021,8 +1021,8 @@ func TestSetInstallSettings(t *testing.T) {
 			t.Fatalf("%s с неверным паролем: %v", mode, err)
 		}
 	}
-	if got, _ := e.svc.InstallSettings(ctx); got.RetentionMode != auth.RetentionMasked {
-		t.Fatalf("режим изменился после отказа: %+v", got)
+	if got, err := e.svc.InstallSettings(ctx); err != nil || got.RetentionMode != auth.RetentionMasked {
+		t.Fatalf("режим изменился после отказа: %+v %v", got, err)
 	}
 	if _, err := e.svc.SetInstallSettings(ctx, admin, auth.InstallSettings{RetentionMode: "full"}, phrase, ""); err != nil {
 		t.Fatalf("full с паролем: %v", err)

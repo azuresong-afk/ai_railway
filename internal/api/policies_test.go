@@ -198,7 +198,10 @@ func TestPoliciesViaAPI(t *testing.T) {
 		t.Fatalf("загрузка с ослаблением без пароля: %s", w.Body)
 	}
 	wrap := func(pass string) string {
-		b, _ := json.Marshal(map[string]any{"document": weakYAML, "base_version": 4, "comment": "Обёртка", "password": pass})
+		b, err := json.Marshal(map[string]any{"document": weakYAML, "base_version": 4, "comment": "Обёртка", "password": pass})
+		if err != nil {
+			t.Fatal(err)
+		}
 		return string(b)
 	}
 	mustProblem(t, e.callYAML(admin, "/api/v1/policies/import", wrap("неверный"), "application/json"), 403, CodeReauthFailed)
