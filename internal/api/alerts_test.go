@@ -201,7 +201,7 @@ func TestAlertRulesViaAPI(t *testing.T) {
 	}
 	w := e.call(auditor, "GET", "/api/v1/alert-rules", "", false)
 	list := decode[AlertRuleList](t, w.Body.Bytes())
-	if w.Code != 200 || len(list.Items) != 5 {
+	if w.Code != 200 || len(list.Items) != 20 { // 5 встроенных задачи 3.10 и 15 задачи 3.11
 		t.Fatalf("правила: %d %s", w.Code, w.Body)
 	}
 	var sec AlertRuleView

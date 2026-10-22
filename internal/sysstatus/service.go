@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/azuresong-afk/ai_railway/internal/audit"
@@ -106,6 +108,42 @@ type Options struct {
 // Service собирает состояние системы и ведёт уведомления.
 type Service struct {
 	o Options
+	// dropped — последний виденный счётчик отброшенных событий шлюза и
+	// время его роста (DM-44). Хранится в памяти: после перезапуска сервера
+	// первое наблюдение — точка отсчёта.
+	mu      sync.Mutex
+	dropped map[string]droppedMark
+}
+
+type droppedMark struct {
+	startedAt time.Time
+	n         uint64
+	grewAt    time.Time
+}
+
+// observeDropped обновляет точки отсчёта и сообщает, вырос ли счётчик
+// отброшенных событий шлюза за последние DroppedWindow.
+func (s *Service) observeDropped(id string, ev GatewayEvents, now time.Time) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.dropped == nil {
+		s.dropped = map[string]droppedMark{}
+	}
+	m, ok := s.dropped[id]
+	switch {
+	case !ok:
+		m = droppedMark{startedAt: ev.StartedAt, n: ev.Dropped}
+	case !m.startedAt.Equal(ev.StartedAt):
+		// Новый запуск шлюза: счётчик начат заново, любое отброшенное — рост.
+		if ev.Dropped > 0 {
+			m.grewAt = now
+		}
+		m.startedAt, m.n = ev.StartedAt, ev.Dropped
+	case ev.Dropped > m.n:
+		m.n, m.grewAt = ev.Dropped, now
+	}
+	s.dropped[id] = m
+	return !m.grewAt.IsZero() && now.Sub(m.grewAt) <= DroppedWindow
 }
 
 // New проверяет настройки.
@@ -257,6 +295,7 @@ func (s *Service) collect(ctx context.Context) collected {
 				c.st.Events.Rejected += ev.Rejected
 			}
 			if g.Status == gwregistry.StatusActive {
+				s.blinding(&c, g, &gs, stats, now)
 				code := integrityGateway + g.ID
 				var issues []map[string]any
 				if gs.Selftest != nil && !gs.Selftest.OK {
@@ -346,6 +385,50 @@ func (s *Service) collect(ctx context.Context) collected {
 	return c
 }
 
+// blinding — условия DM-44 действующего шлюза: недоступен, отбрасывает
+// события, скоро истекает сертификат, итог контроля целостности устарел
+// или не приходит (Н29). Устаревший итог помечается Stale.
+func (s *Service) blinding(c *collected, g gwregistry.Gateway, gs *GatewayStatus, stats map[string]GatewayEvents, now time.Time) {
+	base := map[string]any{"component": componentGateway + g.ID, "gateway_name": g.Name}
+	with := func(extra map[string]any) map[string]any {
+		d := maps.Clone(base)
+		maps.Copy(d, extra)
+		return d
+	}
+	online := gs.State == GatewayOnline
+	c.conditions[ConditionOffline+":"+g.ID] = !online
+	c.details[ConditionOffline+":"+g.ID] = with(map[string]any{"last_seen_at": gs.LastSeenAt})
+	if ev, ok := stats[g.ID]; ok {
+		code := ConditionEventsDropped + ":" + g.ID
+		c.conditions[code] = s.observeDropped(g.ID, ev, now)
+		c.details[code] = with(map[string]any{"dropped": ev.Dropped, "started_at": ev.StartedAt})
+	}
+	if !g.CertNotAfter.IsZero() {
+		code := ConditionCertExpiry + ":" + g.ID
+		c.conditions[code] = g.CertNotAfter.Sub(now) < CertExpiryWarn
+		c.details[code] = with(map[string]any{"cert_not_after": g.CertNotAfter.UTC()})
+	}
+	// Шлюз без связи не проверяется на устаревание: это условие offline.
+	if online {
+		code := ConditionReportsStale + ":" + g.ID
+		stale := false
+		switch {
+		case gs.Integrity != nil:
+			stale = now.Sub(gs.Integrity.CheckedAt) > StaleAfter
+			gs.Integrity.Stale = stale
+		case !g.StartedAt.IsZero():
+			// Шлюз этой версии перестал присылать итог целостности.
+			stale = now.Sub(g.StartedAt) > StaleAfter
+		}
+		c.conditions[code] = stale
+		d := with(map[string]any{"stale_after_minutes": int(StaleAfter / time.Minute)})
+		if gs.Integrity != nil {
+			d["checked_at"] = gs.Integrity.CheckedAt
+		}
+		c.details[code] = d
+	}
+}
+
 // bundle заполняет раздел пакета и условия ОЦЛ.3: пакет собран не
 // полностью; действующий шлюз на связи дольше BundleLagAfter работает на
 // другой версии (защита от отката держится на файле шлюза — Н28).
@@ -415,6 +498,10 @@ var conditionInfo = []struct{ code, requirement, title string }{
 	{ConditionBundle, "ОЦЛ.3", "Пакет конфигурации шлюзов собран не полностью"},
 	{ConditionBundleLag, "ОЦЛ.3", "Шлюз работает на устаревшем пакете конфигурации"},
 	{ConditionTestBuild, "ОЦЛ.1", "Сборка не для поставки (тестовый ключ манифеста)"},
+	{ConditionOffline, "РСБ.7", "Шлюз не выходит на связь"},
+	{ConditionEventsDropped, "РСБ.7", "Шлюз отбрасывает события"},
+	{ConditionReportsStale, "ОЦЛ.5", "Нет свежего итога контроля целостности шлюза"},
+	{ConditionCertExpiry, "ИАФ.10", "Скоро истекает сертификат шлюза"},
 }
 
 // family — условие раздела 7, к которому относится код (integrity:server —
@@ -433,8 +520,11 @@ func component(code string) string {
 		return componentServer
 	case strings.HasPrefix(code, integrityGateway):
 		return componentGateway + strings.TrimPrefix(code, integrityGateway)
-	case strings.HasPrefix(code, bundleLagGateway):
-		return componentGateway + strings.TrimPrefix(code, bundleLagGateway)
+	}
+	for _, fam := range gatewayFamilies {
+		if strings.HasPrefix(code, fam+":") {
+			return componentGateway + strings.TrimPrefix(code, fam+":")
+		}
 	}
 	return ""
 }
@@ -478,7 +568,8 @@ func (s *Service) Status(ctx context.Context) Status {
 			n.Count, n.Active = locked, locked != nil && *locked > 0
 		case ConditionDenied:
 			n.Count, n.Active = denied, denied != nil && *denied > 0
-		case ConditionIntegrity, ConditionBundleLag:
+		case ConditionIntegrity, ConditionBundleLag, ConditionOffline, ConditionEventsDropped, ConditionReportsStale,
+			ConditionCertExpiry:
 			// Одна строка на все компоненты; «с» — самое раннее из активных.
 			for _, code := range sortedCodes(c.conditions) {
 				if family(code) != ci.code || !c.conditions[code] {
@@ -610,6 +701,10 @@ func (s *Service) skip(c collected, fam string) bool {
 		return missing("bundle") || c.st.Bundle == nil
 	case ConditionBundleLag:
 		return missing("bundle", "gateways") || c.st.Bundle == nil
+	case ConditionOffline, ConditionCertExpiry, ConditionReportsStale:
+		return missing("gateways")
+	case ConditionEventsDropped:
+		return missing("gateways", "events")
 	}
 	return false
 }

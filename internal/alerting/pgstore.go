@@ -89,9 +89,13 @@ func (s *PGStore) inTx(ctx context.Context, fn func(pgx.Tx) error) error {
 // OnIngest — events.IngestHook: правила «порог» и «новое» по впервые
 // записанным событиям в транзакции приёма.
 func (s *PGStore) OnIngest(ctx context.Context, tx pgx.Tx, gatewayID string, accepted []*events.Event) error {
-	return process(ctx, pgOps{s: s, tx: tx}, gatewayID, accepted, func(err error) {
+	ops := pgOps{s: s, tx: tx}
+	if err := process(ctx, ops, gatewayID, accepted, func(err error) {
 		s.logger.Error("оповещения: правило пропущено", "error", err)
-	})
+	}); err != nil {
+		return err
+	}
+	return processAuthFailures(ctx, ops, accepted)
 }
 
 // pgOps — txOps в транзакции tx.

@@ -2554,6 +2554,57 @@ paths:
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ProblemInternal' }
         '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/alert-settings:
+    get:
+      summary: Срок хранения оповещений
+      description: Право `alert_rules.read`. Срок хранения закрытых оповещений, суток (по умолчанию 365).
+      x-permission: alert_rules.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      responses:
+        '200':
+          description: Настройки
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AlertSettings' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    put:
+      summary: Изменить срок хранения оповещений
+      description: |
+        Право `alert_rules.manage`. Закрытые оповещения без инцидента старше срока удаляются фоновой
+        задачей раз в час вместе со ссылками на события, историей и доставками (`alert.retention` в
+        аудите); открытые и принятые в работу не удаляются никогда. Срок — от 90 до 1825 суток.
+        Сокращение необратимо и требует текущего пароля (`password`) или кода TOTP (`code`): без них
+        403, неверное значение — 403 `reauthentication_failed`; пишется с `weakening: true` и
+        порождает оповещение «Ослабление защиты» (DM-40). До первичной настройки — 409. Пишет
+        `alert.settings_changed` (до, после).
+      x-permission: alert_rules.manage
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AlertSettingsUpdate' }
+      responses:
+        '200':
+          description: Срок изменён
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AlertSettings' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '409': { $ref: '#/components/responses/ProblemConflict' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
 components:
   securitySchemes:
     appKey:
@@ -2892,12 +2943,13 @@ components:
             properties:
               condition:
                 type: string
-                enum: [account_lockout, access_denied, audit_chain, audit_storage, integrity, time_sync, config_bundle, config_bundle_lag, test_build]
-              requirement: { type: string, enum: [ИАФ.4, УПД.6, РСБ.4, РСБ.5, ОЦЛ.3, ОЦЛ.5, ВРМ.1] }
+                enum: [account_lockout, access_denied, audit_chain, audit_storage, integrity, time_sync, config_bundle, config_bundle_lag, test_build,
+                  gateway_offline, events_dropped, reports_stale, cert_expiry]
+              requirement: { type: string, enum: [ИАФ.4, ИАФ.10, УПД.6, РСБ.4, РСБ.5, РСБ.7, ОЦЛ.1, ОЦЛ.3, ОЦЛ.5, ВРМ.1] }
               components:
                 type: array
                 items: { type: string }
-                description: 'Компоненты с активным условием (integrity — server или gateway:<ID>, config_bundle_lag — gateway:<ID>); каждое ведётся отдельно и пишется в system.alert (В18 ревью 2.r3b). test_build (ОЦЛ.1) — компоненты, собранные с тестовым ключом манифеста (Н34 ревью 2.r4); integrity шлюза поднимает и откат выпуска, и чужой ключ проверки пакетов (В19, В20 ревью 2.r4)'
+                description: 'Компоненты с активным условием (integrity — server или gateway:<ID>, config_bundle_lag, gateway_offline, events_dropped, reports_stale, cert_expiry — gateway:<ID>); каждое ведётся отдельно и пишется в system.alert (В18 ревью 2.r3b), а возникшее условие порождает оповещение системного правила (задача 3.11 этапа 3, DM-42–DM-44). test_build (ОЦЛ.1) — компоненты, собранные с тестовым ключом манифеста (Н34 ревью 2.r4); integrity шлюза поднимает и откат выпуска, и чужой ключ проверки пакетов (В19, В20 ревью 2.r4). DM-44: gateway_offline — шлюз не на связи дольше трёх периодов heartbeat, events_dropped — счётчик отброшенных событий вырос за 15 минут, cert_expiry — сертификат истекает меньше чем через 14 суток, reports_stale — итог целостности старше двух часов или не приходит (Н29)'
               title: { type: string }
               active: { type: boolean }
               since: { type: [string, 'null'], format: date-time, description: 'Когда условие возникло; у ИАФ.4 и УПД.6 не задаётся' }
@@ -2914,6 +2966,7 @@ components:
         checked_at: { type: string, format: date-time }
         reason: { type: string, description: 'Причина итога целостности; у самотеста не задаётся' }
         failed: { type: integer, minimum: 0 }
+        stale: { type: boolean, description: 'Итог старше двух периодов проверки — «нет данных» (Н29); только у целостности шлюза' }
     StatusIntegrity:
       type: object
       required: [component, trigger, checked_at, ok, reason, manifest_version, test_signed, failed]
@@ -4121,6 +4174,20 @@ components:
         recipients: { $ref: '#/components/schemas/AlertRecipients' }
         version: { type: integer, minimum: 1, description: Версия, которую открыли для изменения }
         password: { type: string, maxLength: 1024, format: password, description: 'Текущий пароль, если изменение ослабляет оповещения' }
+        code: { type: string, maxLength: 64, description: 'Код из приложения-аутентификатора вместо пароля' }
+    AlertSettings:
+      type: object
+      required: [retention_days]
+      additionalProperties: false
+      properties:
+        retention_days: { type: integer, minimum: 90, maximum: 1825, description: 'Срок хранения закрытых оповещений, суток' }
+    AlertSettingsUpdate:
+      type: object
+      required: [retention_days]
+      additionalProperties: false
+      properties:
+        retention_days: { type: integer, minimum: 90, maximum: 1825 }
+        password: { type: string, maxLength: 1024, format: password, description: 'Текущий пароль, если срок сокращается' }
         code: { type: string, maxLength: 64, description: 'Код из приложения-аутентификатора вместо пароля' }
     AlertRule:
       type: object

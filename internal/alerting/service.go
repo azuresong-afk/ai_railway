@@ -67,6 +67,9 @@ type Options struct {
 	UserCheck func(ctx context.Context, id string) error
 	// RoleCheck — роль-получатель существует; nil — не проверяется.
 	RoleCheck func(ctx context.Context, id string) error
+	// Retention — срок хранения оповещений (PGStore); nil — по умолчанию,
+	// без изменения.
+	Retention RetentionStore
 }
 
 // Service — правила и оповещения для API консоли.
@@ -77,6 +80,7 @@ type Service struct {
 	ids       *ids.Generator
 	userCheck func(ctx context.Context, id string) error
 	roleCheck func(ctx context.Context, id string) error
+	retention RetentionStore
 }
 
 // New создаёт сервис.
@@ -95,7 +99,7 @@ func New(o Options) (*Service, error) {
 		o.Clock = time.Now
 	}
 	return &Service{store: o.Store, orgID: o.OrgID, clock: o.Clock, ids: ids.NewGenerator(r),
-		userCheck: o.UserCheck, roleCheck: o.RoleCheck}, nil
+		userCheck: o.UserCheck, roleCheck: o.RoleCheck, retention: o.Retention}, nil
 }
 
 // By — субъект действия.

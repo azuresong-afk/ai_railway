@@ -274,7 +274,8 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		RoleCheck: func(ctx context.Context, id string) error {
 			_, err := authSvc.RoleDef(ctx, auth.Role(id))
 			return err
-		}})
+		},
+		Retention: alertStore})
 	if err != nil {
 		return err
 	}
@@ -283,6 +284,11 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	} else if n > 0 {
 		logger.Info("созданы встроенные правила оповещений", "count", n)
 	}
+	// Системные правила и правила безопасности (задача 3.11, ADR-0020, п. 1)
+	// считаются в транзакции записи аудита — после создания встроенных
+	// правил; закрытые оповещения удаляются по сроку хранения.
+	auditLog.SetRecordHook(alertStore.OnAudit)
+	go alerting.RunRetention(ctx, alertStore, alerting.RetentionInterval, logger)
 	if err := events.Maintain(ctx, eventStore, logger); err != nil {
 		return fmt.Errorf("секции событий: %w", err)
 	}

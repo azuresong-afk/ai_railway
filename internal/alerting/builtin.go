@@ -25,11 +25,11 @@ func canonical(filter string) string {
 	return f.String()
 }
 
-// builtinRules — встроенные правила этапа 3 (задача 3.10). Системные
-// правила и правила безопасности DM-38–DM-44 добавляет задача 3.11.
+// builtinRules — встроенные правила этапа 3: задача 3.10 и системные
+// правила и правила безопасности DM-38–DM-44 задачи 3.11 (securityRules).
 func builtinRules() []Rule {
 	none := Recipients{Roles: []string{}, Users: []string{}}
-	return []Rule{
+	return append([]Rule{
 		{BuiltinKey: BuiltinInjectionBlocked, Kind: KindThreshold, Name: "Промпт-инъекция заблокирована",
 			Description: "DM-01: политика заблокировала запрос с инъекцией или джейлбрейком (в режиме monitor — заблокировала бы). " +
 				"Одно оповещение на приложение, пока оно не закрыто.",
@@ -50,5 +50,5 @@ func builtinRules() []Rule {
 		{BuiltinKey: BuiltinRecipientsChanged, Kind: KindSecurity, Name: "Изменены получатели оповещений",
 			Description: "Изменение получателей правила оповещения (ТЗ 5.6). Изменения одного пользователя за 10 минут — одно оповещение.",
 			Enabled:     true, Severity: "high", GroupBy: []string{"actor"}, GroupMinutes: 10, Recipients: none},
-	}
+	}, securityRules()...)
 }
