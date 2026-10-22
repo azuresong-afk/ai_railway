@@ -308,7 +308,7 @@ func (m *Memory) insertKey(k Key) error {
 }
 
 // UpdateKey — см. Store.
-func (m *Memory) UpdateKey(_ context.Context, orgID, id string, fn func(*Key, Application) (*Key, audit.Entry, error)) (Key, error) {
+func (m *Memory) UpdateKey(_ context.Context, orgID, id string, now time.Time, fn func(*Key, Application, int) (*Key, audit.Entry, error)) (Key, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	k, ok := m.keys[id]
@@ -321,7 +321,7 @@ func (m *Memory) UpdateKey(_ context.Context, orgID, id string, fn func(*Key, Ap
 	}
 	old := cloneKey(k)
 	k = cloneKey(k)
-	created, rec, err := fn(&k, a)
+	created, rec, err := fn(&k, a, len(m.activeKeys(k.AppID, now)))
 	if err != nil {
 		return Key{}, err
 	}
@@ -350,6 +350,25 @@ func (m *Memory) Key(_ context.Context, orgID, id string) (Key, error) {
 		return Key{}, ErrNotFound
 	}
 	return cloneKey(k), nil
+}
+
+// ActiveKeys — см. Store.
+func (m *Memory) ActiveKeys(_ context.Context, orgID string, now time.Time) ([]Key, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := []Key{}
+	for _, k := range m.keys {
+		if k.OrgID == orgID && k.RevokedAt.IsZero() && now.Before(k.ExpiresAt) {
+			out = append(out, cloneKey(k))
+		}
+	}
+	slices.SortFunc(out, func(a, b Key) int {
+		if c := strings.Compare(a.AppID, b.AppID); c != 0 {
+			return c
+		}
+		return strings.Compare(a.Prefix, b.Prefix)
+	})
+	return out, nil
 }
 
 // Keys — см. Store.

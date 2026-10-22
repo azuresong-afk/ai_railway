@@ -227,7 +227,7 @@ func (c HeartbeatConfig) beat(ctx context.Context, u string, interval, backoff *
 	}
 	sent := c.Clock()
 	body := heartbeatBody{Version: c.Version, BundleETag: etag}
-	body.Selftest, body.Integrity = c.Reports.snapshot()
+	body.Selftest, body.Integrity, body.BundleKeys = c.Reports.snapshot()
 	err := postControl(ctx, c.Client, u, body, &resp, http.StatusOK)
 	if ctx.Err() != nil {
 		return 0, false

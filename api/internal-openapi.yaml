@@ -101,9 +101,12 @@ paths:
         `secrets`, зашифрованном HPKE (DHKEM X25519, HKDF-SHA256, AES-256-GCM)
         для ключа из заголовка `AISec-Bundle-Key`: открытым текстом их нет ни
         в ответе, ни в журналах. Сервер собирает новую версию, когда меняются
-        данные (`bundle.build` в аудите); данные, которые шлюз отверг бы
+        данные (`bundle.build` в аудите). Приложение, которое шлюз отверг бы
         (например, политика ссылается на словарь, которого нет у приложения),
-        не собираются — выдаётся последняя корректная версия. Каждая выдача
+        в версию не входит: его ключи — в части `unavailable` содержимого,
+        шлюз отвечает по нему 503 `app_unavailable`, остальные приложения
+        получают версию (В16 ревью 2.r3b). Если не собирается всё содержимое
+        (размер), выдаётся последняя корректная версия. Каждая выдача
         200 пишется в аудит (`bundle.deliver`), 304 — нет. Предел частоты —
         общий для внутреннего порта (600 в минуту с адреса); шлюз опрашивает
         раз в 30 секунд.
@@ -219,9 +222,9 @@ components:
       description: |
         Конверт пакета (internal/policy/bundle). Части — стандартный base64:
         `header` — JSON {format, version, issued_at, gateway_id, content_hash,
-        hash_alg}; `content` — JSON {providers, applications, policies} без
-        учётных данных; `secrets` — шифротекст HPKE списка {provider,
-        credential}; `signature` — Ed25519 над
+        hash_alg}; `content` — JSON {providers, applications, policies,
+        unavailable} без учётных данных; `secrets` — шифротекст HPKE списка
+        {provider, credential}; `signature` — Ed25519 над
         `format || 0x00 || len(header) || header || len(content) || content || len(secrets) || secrets`
         (длины — 4 байта big-endian). Неизвестные поля на любом уровне — отказ
         на шлюзе.
@@ -262,8 +265,23 @@ components:
         integrity:
           description: |
             Последний итог контроля целостности шлюза (ОЦЛ.2). `reason` — из
-            перечня; `ok: true` только при `reason: ok`.
+            перечня; `ok: true` только при `reason: ok`. Версия и время сборки
+            манифеста (вместе) — для обнаружения отката выпуска: сервер хранит
+            максимум по успешным проверкам и при меньшем времени поднимает ОЦЛ.5
+            по шлюзу (В20 ревью 2.r4). `test_signed` — сборка с тестовым ключом
+            манифеста (Н34).
           allOf: [{ $ref: '#/components/schemas/CheckReport' }]
+        bundle_keys:
+          type: array
+          maxItems: 2
+          uniqueItems: true
+          items: { type: string, pattern: '^[0-9a-f]{16}$' }
+          description: |
+            Идентификаторы (KeyID) ключей проверки пакетов конфигурации из
+            `-bundle-pub` (В19 ревью 2.r4). Сервер сверяет их со своим ключом
+            подписи и вторым ключом ротации: нет действующего или есть чужой —
+            нарушение целостности шлюза (ОЦЛ.5). Шлюз прежней версии поле не
+            присылает.
     CheckReport:
       description: |
         Итог проверки шлюза: только результат и число провалов. Пути файлов,
@@ -279,6 +297,9 @@ components:
           enum: [ok, manifest_missing, manifest_invalid, signature_invalid, files_mismatch]
           description: Только у integrity
         failed: { type: integer, minimum: 0, maximum: 1000, description: 'Число провалов; при `ok: true` — 0' }
+        manifest_version: { type: string, maxLength: 128, pattern: '^[ -~]+$', description: 'Только у integrity: версия из манифеста; задаётся вместе с manifest_created' }
+        manifest_created: { type: string, format: date-time, description: 'Только у integrity: время сборки манифеста (поле created)' }
+        test_signed: { type: boolean, description: 'Только у integrity: манифест проверен тестовым ключом — сборка не для поставки' }
     HeartbeatResponse:
       type: object
       required: [server_time, interval_seconds]

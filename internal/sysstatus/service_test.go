@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -46,13 +47,17 @@ func newEnv() *testEnv {
 		self: &sysstatus.SelftestSummary{OK: true, At: t0}}
 }
 
-func (e *testEnv) svc(t *testing.T) *sysstatus.Service {
-	t.Helper()
-	s, err := sysstatus.New(sysstatus.Options{
+func (e *testEnv) opts() sysstatus.Options {
+	return sysstatus.Options{
 		Version: "1.0", StartedAt: t0, Selftest: e.self, Gateways: &e.gws, Integrity: &e.integ, Store: e.mem,
 		Clock: func() time.Time { return e.clock }, Sync: func() sysstatus.ClockState { return e.sync },
 		StorageLimit: 1000, WarnPercent: 80, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
-	})
+	}
+}
+
+func (e *testEnv) svc(t *testing.T) *sysstatus.Service {
+	t.Helper()
+	s, err := sysstatus.New(e.opts())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,9 +87,9 @@ func TestNewValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	st := s.Status(context.Background())
-	// Без источников: пустые массивы, UTC, умолчания, все шесть условий.
+	// Без источников: пустые массивы, UTC, умолчания, все девять условий.
 	if st.Time.Timezone != "UTC" || st.Storage.LimitBytes != sysstatus.DefaultStorageLimit || st.Storage.WarnPercent != 80 ||
-		len(st.Notifications) != 6 || st.Gateways == nil || st.Unavailable == nil || st.Server.Integrity == nil {
+		len(st.Notifications) != 9 || st.Bundle != nil || st.Gateways == nil || st.Unavailable == nil || st.Server.Integrity == nil {
 		t.Fatalf("%+v", st)
 	}
 }
@@ -295,7 +300,7 @@ func TestEvaluateStorageAndIntegrity(t *testing.T) {
 		d := r.Details.(map[string]any)
 		conds[d["condition"].(string)] += d["state"].(string)
 	}
-	if len(e.mem.Records) != 2 || conds[sysstatus.ConditionStorage] != "raised" || conds[sysstatus.ConditionIntegrity] != "raised" {
+	if len(e.mem.Records) != 2 || conds[sysstatus.ConditionStorage] != "raised" || conds["integrity:gateway:g1"] != "raised" {
 		t.Fatalf("%v", conds)
 	}
 	if d := e.mem.Records[0].Details.(map[string]any); d["condition"] == sysstatus.ConditionStorage && d["used_percent"] != 90 {
@@ -368,5 +373,211 @@ func TestEvaluateStoreError(t *testing.T) {
 	s2, err := sysstatus.New(sysstatus.Options{})
 	if err != nil || s2.Evaluate(context.Background()) != nil {
 		t.Fatal(err)
+	}
+}
+
+// В18 ревью 2.r3b: ОЦЛ.5 по компоненту — нарушение второго шлюза, пока
+// первый ещё нарушен, тоже записывается; восстановление первого — запись о
+// снятии только для него. В ответе — одна строка со списком компонентов.
+func TestEvaluateIntegrityPerComponent(t *testing.T) {
+	e := newEnv()
+	s := e.svc(t)
+	ctx := context.Background()
+	bad := func() *gwregistry.CheckReport {
+		return &gwregistry.CheckReport{OK: false, At: t0, Reason: "files_mismatch", Failed: 2}
+	}
+	e.gws.list = []gwregistry.Gateway{
+		{ID: "g1", Name: "a", Status: gwregistry.StatusActive, LastSeenAt: t0, Integrity: bad()},
+		{ID: "g2", Name: "b", Status: gwregistry.StatusActive, LastSeenAt: t0, Integrity: &gwregistry.CheckReport{OK: true, At: t0}},
+	}
+	alerts := func() []string {
+		var out []string
+		for _, r := range e.mem.Records {
+			d := r.Details.(map[string]any)
+			out = append(out, d["condition"].(string)+":"+d["state"].(string))
+		}
+		return out
+	}
+	eval := func() {
+		t.Helper()
+		if err := s.Evaluate(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	eval()
+	e.gws.list[1].Integrity = bad()
+	eval()
+	if got := alerts(); !slices.Equal(got, []string{"integrity:gateway:g1:raised", "integrity:gateway:g2:raised"}) {
+		t.Fatalf("второе нарушение: %v", got)
+	}
+	d := e.mem.Records[1].Details.(map[string]any)
+	if d["component"] != "gateway:g2" || d["requirement"] != "ОЦЛ.5" || d["violations"] != 1 {
+		t.Fatalf("подробности: %v", d)
+	}
+	n := notif(s.Status(ctx), sysstatus.ConditionIntegrity)
+	if !n.Active || !slices.Equal(n.Components, []string{"gateway:g1", "gateway:g2"}) {
+		t.Fatalf("строка ОЦЛ.5: %+v", n)
+	}
+	e.gws.list[0].Integrity = &gwregistry.CheckReport{OK: true, At: t0}
+	eval()
+	if got := alerts(); len(got) != 3 || got[2] != "integrity:gateway:g1:cleared" {
+		t.Fatalf("восстановление первого: %v", got)
+	}
+	// Отозванный шлюз: его условие снимается.
+	e.gws.list[1].Status = gwregistry.StatusRevoked
+	eval()
+	if got := alerts(); len(got) != 4 || got[3] != "integrity:gateway:g2:cleared" {
+		t.Fatalf("отзыв шлюза: %v", got)
+	}
+	for _, r := range e.mem.Records {
+		if err := validateEntry(r); err != nil {
+			t.Error(err)
+		}
+	}
+}
+
+// В16 и Н28 ревью 2.r3b: пакет собран не полностью; шлюз дольше 10 минут на
+// другой версии.
+func TestEvaluateBundle(t *testing.T) {
+	e := newEnv()
+	h := &sysstatus.BundleHealth{Version: 5, ETag: `"5"`, BuiltAt: t0.Add(-time.Hour)}
+	o := e.opts()
+	o.Bundle = func(context.Context) (*sysstatus.BundleHealth, error) { return h, nil }
+	s, err := sysstatus.New(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	e.gws.list = []gwregistry.Gateway{{ID: "g1", Name: "a", Status: gwregistry.StatusActive, LastSeenAt: t0, BundleETag: `"5"`},
+		{ID: "g2", Name: "b", Status: gwregistry.StatusActive, LastSeenAt: t0, BundleETag: `"4"`}}
+	if err := s.Evaluate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	st := s.Status(ctx)
+	if st.Bundle == nil || !st.Bundle.Complete || !slices.Equal(st.Bundle.Lagging, []string{"g2"}) ||
+		!notif(st, sysstatus.ConditionBundleLag).Active || notif(st, sysstatus.ConditionBundle).Active {
+		t.Fatalf("пакет: %+v", st.Bundle)
+	}
+	h.Excluded = []sysstatus.ExcludedApp{{Application: "crm", Reason: "нет словаря"}}
+	h.BuiltAt = t0.Add(-time.Minute) // новая версия: отставание пока не считается
+	h.Version, h.ETag = 6, `"6"`
+	if err := s.Evaluate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, r := range e.mem.Records {
+		d := r.Details.(map[string]any)
+		got = append(got, d["condition"].(string)+":"+d["state"].(string))
+	}
+	if !slices.Equal(got, []string{"config_bundle_lag:g2:raised", "config_bundle:raised", "config_bundle_lag:g2:cleared"}) {
+		t.Fatalf("записи: %v", got)
+	}
+	if st := s.Status(ctx); st.Bundle.Complete || len(st.Bundle.Excluded) != 1 || !notif(st, sysstatus.ConditionBundle).Active {
+		t.Fatalf("неполный пакет: %+v", st.Bundle)
+	}
+	// Сбой сборки — раздел недоступен, состояние не меняется.
+	o.Bundle = func(context.Context) (*sysstatus.BundleHealth, error) { return nil, errors.New("db") }
+	s2, err := sysstatus.New(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s2.Evaluate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(e.mem.Records) != 3 {
+		t.Fatalf("сбой источника снял условие: %+v", e.mem.Records)
+	}
+}
+
+// DM-42, В19 и В20 ревью 2.r4: шлюз на выпуске старше проверенного (откат)
+// и шлюз с чужим ключом проверки пакетов — нарушение целостности этого
+// шлюза; Н34 — сборка с тестовым ключом манифеста видна отдельным условием.
+func TestDM42_GatewayRollbackAndBundleKeys(t *testing.T) {
+	e := newEnv()
+	s := e.svc(t)
+	ctx := context.Background()
+	newer, older := t0.Add(-24*time.Hour), t0.Add(-60*24*time.Hour)
+	no := false
+	e.gws.list = []gwregistry.Gateway{
+		{ID: "g1", Name: "a", Status: gwregistry.StatusActive, LastSeenAt: t0,
+			Integrity:          &gwregistry.CheckReport{OK: true, At: t0, ManifestVersion: "1.0.0", ManifestCreated: older},
+			ManifestMaxVersion: "1.1.0", ManifestMaxCreated: newer},
+		{ID: "g2", Name: "b", Status: gwregistry.StatusActive, LastSeenAt: t0, BundleKeysOK: &no,
+			Integrity:          &gwregistry.CheckReport{OK: true, At: t0, ManifestVersion: "1.1.0", ManifestCreated: newer, TestSigned: true},
+			ManifestMaxVersion: "1.1.0", ManifestMaxCreated: newer},
+	}
+	if err := s.Evaluate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	st := s.Status(ctx)
+	n := notif(st, sysstatus.ConditionIntegrity)
+	if !n.Active || !slices.Equal(n.Components, []string{"gateway:g1", "gateway:g2"}) {
+		t.Fatalf("ОЦЛ.5: %+v", n)
+	}
+	tb := notif(st, sysstatus.ConditionTestBuild)
+	if !tb.Active || !slices.Equal(tb.Components, []string{"gateway:g2"}) || tb.Requirement != "ОЦЛ.1" {
+		t.Fatalf("тестовый ключ: %+v", tb)
+	}
+	var sources []string
+	for _, r := range e.mem.Records {
+		d := r.Details.(map[string]any)
+		issues, _ := d["issues"].([]map[string]any)
+		for _, is := range issues {
+			sources = append(sources, fmt.Sprint(is["source"], "/", is["reason"]))
+		}
+		if err := validateEntry(r); err != nil {
+			t.Error(err)
+		}
+	}
+	if !slices.Contains(sources, "integrity/manifest_rollback") || !slices.Contains(sources, "bundle_keys/<nil>") {
+		t.Fatalf("подробности: %v", sources)
+	}
+	// Намеренный откат принят (максимум сброшен), ключи совпали — условие снято.
+	yes := true
+	e.gws.list[0].ManifestMaxVersion, e.gws.list[0].ManifestMaxCreated = "1.0.0", older
+	e.gws.list[1].BundleKeysOK = &yes
+	if n := notif(s.Status(ctx), sysstatus.ConditionIntegrity); n.Active {
+		t.Fatalf("после принятия отката: %+v", n)
+	}
+}
+
+// Потеря связи не снимает отставание пакета: снимается оно только у
+// отозванного шлюза (самопроверка H4, С2).
+func TestEvaluateBundleLagOffline(t *testing.T) {
+	e := newEnv()
+	h := &sysstatus.BundleHealth{Version: 5, ETag: `"5"`, BuiltAt: t0.Add(-time.Hour)}
+	o := e.opts()
+	o.Bundle = func(context.Context) (*sysstatus.BundleHealth, error) { return h, nil }
+	s, err := sysstatus.New(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	states := func() []string {
+		var got []string
+		for _, r := range e.mem.Records {
+			d := r.Details.(map[string]any)
+			got = append(got, d["condition"].(string)+":"+d["state"].(string))
+		}
+		return got
+	}
+	gw := gwregistry.Gateway{ID: "g2", Name: "b", Status: gwregistry.StatusActive, LastSeenAt: t0, BundleETag: `"4"`}
+	for _, step := range []struct {
+		lastSeen time.Time
+		status   string
+		want     []string
+	}{
+		{t0, gwregistry.StatusActive, []string{"config_bundle_lag:g2:raised"}},
+		{t0.Add(-time.Hour), gwregistry.StatusActive, []string{"config_bundle_lag:g2:raised"}},
+		{t0.Add(-time.Hour), gwregistry.StatusRevoked, []string{"config_bundle_lag:g2:raised", "config_bundle_lag:g2:cleared"}},
+	} {
+		gw.LastSeenAt, gw.Status = step.lastSeen, step.status
+		e.gws.list = []gwregistry.Gateway{gw}
+		if err := s.Evaluate(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if got := states(); !slices.Equal(got, step.want) {
+			t.Fatalf("%s, связь %v: %v", step.status, step.lastSeen, got)
+		}
 	}
 }

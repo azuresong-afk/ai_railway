@@ -181,7 +181,8 @@ func TestProvidersViaAPI(t *testing.T) {
 	mustProblem(t, e.call(sys, "PUT", "/api/v1/providers/"+p.ID+"/external", `{"external":false,"reason":"Свой контур"}`, true), 403, CodeForbidden)
 	mustProblem(t, e.call(admin, "PUT", "/api/v1/providers/"+p.ID+"/external", `{"external":false}`, true), 400, CodeInvalidRequest)
 	mustProblem(t, e.call(admin, "PUT", "/api/v1/providers/"+p.ID+"/external", `{"reason":"Свой контур"}`, true), 400, CodeInvalidRequest)
-	w = e.call(admin, "PUT", "/api/v1/providers/"+p.ID+"/external", `{"external":false,"reason":"Модель развёрнута в контуре заказчика"}`, true)
+	mustProblem(t, e.call(admin, "PUT", "/api/v1/providers/"+p.ID+"/external", `{"external":false,"reason":"Свой контур"}`, true), 400, CodeInvalidRequest)
+	w = e.call(admin, "PUT", "/api/v1/providers/"+p.ID+"/external", `{"external":false,"reason":"Модель развёрнута в контуре заказчика","password":"`+tPhrase+`"}`, true)
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"external":false`) {
 		t.Fatalf("снятие признака: %d %s", w.Code, w.Body)
 	}
@@ -232,8 +233,11 @@ func TestApplicationProtectionViaAPI(t *testing.T) {
 	if _, n := e.appAction("application.protection_changed"); n != 1 {
 		t.Fatalf("аудит смены защиты: %d", n)
 	}
-	body = fmt.Sprintf(`{"slug":"bot","name":"Бот","owner_id":%q,"env":"prod","provider_id":%q,"models":["gpt-4o-mini"],"storage":"none"}`, tOwnerID, p.ID)
-	if w := e.call(admin, "POST", "/api/v1/applications", body, true); w.Code != http.StatusCreated || !strings.Contains(w.Body.String(), `"storage":"none"`) {
+	// Ослабление при создании — с текущим паролем (Н32 ревью 2.r3b).
+	body = fmt.Sprintf(`{"slug":"bot","name":"Бот","owner_id":%q,"env":"prod","provider_id":%q,"models":["gpt-4o-mini"],"storage":"none"%%s}`, tOwnerID, p.ID)
+	mustProblem(t, e.call(admin, "POST", "/api/v1/applications", fmt.Sprintf(body, ``), true), 400, CodeInvalidRequest)
+	mustProblem(t, e.call(admin, "POST", "/api/v1/applications", fmt.Sprintf(body, `,"password":"неверный"`), true), 403, CodeReauthFailed)
+	if w := e.call(admin, "POST", "/api/v1/applications", fmt.Sprintf(body, `,"password":"`+tPhrase+`"`), true); w.Code != http.StatusCreated || !strings.Contains(w.Body.String(), `"storage":"none"`) {
 		t.Fatalf("создание с защитой: %d %s", w.Code, w.Body)
 	}
 	// Изменение без полей защиты их не трогает; неизвестный владелец — 400.
@@ -247,6 +251,93 @@ func TestApplicationProtectionViaAPI(t *testing.T) {
 		t.Fatalf("архивация: %d %s", w.Code, w.Body)
 	}
 	mustProblem(t, e.call(sys, "PUT", "/api/v1/applications/"+a.ID, upd, true), 409, CodeConflict)
+}
+
+// В15 ревью 2.r3b: fail_mode, словари и домены-исключения DM-11 — поля
+// защиты; через PUT приложения их не изменить, ослабление через
+// /protection — с повторной проверкой и отметкой weakening (DM-40).
+func TestApplicationGuardFieldsViaAPI(t *testing.T) {
+	e := newAppsEnv(t)
+	sys := e.mustLogin(t, "sysadm")
+	admin := e.mustLogin(t, "admin")
+	p := e.provider(t, sys, "openai-main")
+	a := e.application(t, sys, "crm", p.ID, tOwnerID)
+	base := fmt.Sprintf(`{"slug":"x","name":"X","owner_id":%q,"env":"prod","provider_id":%q,"models":["m"]`, tOwnerID, p.ID)
+	for _, f := range []string{`"fail_mode":"fail_open"`, `"exfil_allow_domains":["evil.example"]`, `"lists":[]`} {
+		mustProblem(t, e.call(sys, "POST", "/api/v1/applications", base+","+f+"}", true), 422, CodeUnprocessable)
+		upd := fmt.Sprintf(`{"name":"CRM","owner_id":%q,"env":"prod","provider_id":%q,"models":["m"],%s}`, tOwnerID, p.ID, f)
+		mustProblem(t, e.call(sys, "PUT", "/api/v1/applications/"+a.ID, upd, true), 400, CodeInvalidRequest)
+		mustProblem(t, e.call(sys, "PUT", "/api/v1/applications/"+a.ID+"/protection", "{"+f+"}", true), 403, CodeForbidden)
+	}
+	// Усиление (новый словарь) — без пароля.
+	lists := `{"lists":[{"id":"codename","category":"codename","words":["Северное сияние","Зенит"]}]}`
+	w := e.call(admin, "PUT", "/api/v1/applications/"+a.ID+"/protection", lists, true)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"Зенит"`) {
+		t.Fatalf("словарь: %d %s", w.Code, w.Body)
+	}
+	rec, n := e.appAction("application.protection_changed")
+	if n != 1 || rec.Details.(map[string]any)["weakening"] != false {
+		t.Fatalf("усиление: %d %v", n, rec.Details)
+	}
+	// Ослабления: без пароля — 400, неверный — 403, с паролем — weakening.
+	for i, f := range []string{
+		`"lists":[{"id":"codename","category":"codename","words":["Северное сияние"]}]`,
+		`"fail_mode":"fail_open"`,
+		`"exfil_allow_domains":["files.example"]`,
+	} {
+		mustProblem(t, e.call(admin, "PUT", "/api/v1/applications/"+a.ID+"/protection", "{"+f+"}", true), 400, CodeInvalidRequest)
+		mustProblem(t, e.call(admin, "PUT", "/api/v1/applications/"+a.ID+"/protection", "{"+f+`,"password":"неверный"}`, true), 403, CodeReauthFailed)
+		if w := e.call(admin, "PUT", "/api/v1/applications/"+a.ID+"/protection", "{"+f+`,"password":"`+tPhrase+`"}`, true); w.Code != http.StatusOK {
+			t.Fatalf("%s: %d %s", f, w.Code, w.Body)
+		}
+		rec, n := e.appAction("application.protection_changed")
+		if n != i+2 || rec.Details.(map[string]any)["weakening"] != true {
+			t.Fatalf("%s: %d %v", f, n, rec.Details)
+		}
+		// После двух неудач в каждом шаге — новый вход, чтобы не упереться в блокировку.
+		admin = e.mustLogin(t, "admin")
+	}
+	got := e.call(sys, "GET", "/api/v1/applications/"+a.ID, "", false)
+	v := decode[ApplicationView](t, got.Body.Bytes())
+	if v.FailMode != "fail_open" || len(v.ExfilAllowDomains) != 1 || len(v.Lists) != 1 || len(v.Lists[0].Words) != 1 {
+		t.Fatalf("поля защиты: %+v", v)
+	}
+	// Изменение приложения поля защиты не сбрасывает.
+	upd := fmt.Sprintf(`{"name":"CRM 2","owner_id":%q,"env":"prod","provider_id":%q,"models":["m"]}`, tOwnerID, p.ID)
+	if w := e.call(sys, "PUT", "/api/v1/applications/"+a.ID, upd, true); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"fail_open"`) {
+		t.Fatalf("изменение: %d %s", w.Code, w.Body)
+	}
+}
+
+// В15 ревью 2.r3b: переход приложения на невнешнего провайдера выключает
+// маскирование в monitor — только администратор безопасности и с паролем.
+func TestApplicationInternalProviderViaAPI(t *testing.T) {
+	e := newAppsEnv(t)
+	sys := e.mustLogin(t, "sysadm")
+	admin := e.mustLogin(t, "admin")
+	ext := e.provider(t, sys, "openai-main")
+	in := e.provider(t, sys, "vllm")
+	if w := e.call(admin, "PUT", "/api/v1/providers/"+in.ID+"/external", `{"external":false,"reason":"vLLM в контуре","password":"`+tPhrase+`"}`, true); w.Code != http.StatusOK {
+		t.Fatalf("снятие признака: %d %s", w.Code, w.Body)
+	}
+	a := e.application(t, sys, "crm", ext.ID, tOwnerID)
+	upd := func(prov, extra string) string {
+		return fmt.Sprintf(`{"name":"CRM","owner_id":%q,"env":"prod","provider_id":%q,"models":["m"]%s}`, tOwnerID, prov, extra)
+	}
+	mustProblem(t, e.call(sys, "PUT", "/api/v1/applications/"+a.ID, upd(in.ID, ""), true), 403, CodeForbidden)
+	mustProblem(t, e.call(admin, "PUT", "/api/v1/applications/"+a.ID, upd(in.ID, `,"password":"неверный"`), true), 403, CodeReauthFailed)
+	admin = e.mustLogin(t, "admin")
+	if w := e.call(admin, "PUT", "/api/v1/applications/"+a.ID, upd(in.ID, `,"password":"`+tPhrase+`"`), true); w.Code != http.StatusOK {
+		t.Fatalf("смена провайдера: %d %s", w.Code, w.Body)
+	}
+	rec, _ := e.appAction("application.update")
+	if rec.Details.(map[string]any)["weakening"] != true {
+		t.Fatalf("смена провайдера без отметки: %v", rec.Details)
+	}
+	// Обратно на внешнего и другие правки на невнешнем — без права и пароля.
+	if w := e.call(sys, "PUT", "/api/v1/applications/"+a.ID, upd(ext.ID, ""), true); w.Code != http.StatusOK {
+		t.Fatalf("на внешнего: %d %s", w.Code, w.Body)
+	}
 }
 
 // ИАФ.8 и объектный уровень доступа: ключ показывается один раз, ответ не

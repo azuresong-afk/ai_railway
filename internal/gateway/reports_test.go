@@ -47,7 +47,8 @@ func TestHeartbeatSendsReports(t *testing.T) {
 			case 1: // после первого heartbeat итоги появляются
 				at := time.Date(2026, 10, 21, 10, 0, 0, 0, time.UTC)
 				reports.SetSelftest(false, at, 2)
-				reports.SetIntegrity(true, at, "ok", 0)
+				reports.SetIntegrity(true, at, "ok", 0, gateway.Manifest{Version: "1.2.0", Created: at.Add(-time.Hour), TestSigned: true})
+				reports.SetBundleKeys([]string{"0123456789abcdef"})
 				return true
 			}
 			return false
@@ -66,5 +67,11 @@ func TestHeartbeatSendsReports(t *testing.T) {
 	if st["ok"] != false || st["failed"] != float64(2) || st["checked_at"] != "2026-10-21T10:00:00Z" ||
 		in["ok"] != true || in["reason"] != "ok" || in["failed"] != float64(0) {
 		t.Fatalf("итоги: %v", bodies[1])
+	}
+	// В20, Н34, В19 ревью 2.r4: манифест, тестовый ключ и ключи пакетов.
+	keys, _ := bodies[1]["bundle_keys"].([]any)
+	if in["manifest_version"] != "1.2.0" || in["manifest_created"] != "2026-10-21T09:00:00Z" || in["test_signed"] != true ||
+		len(keys) != 1 || keys[0] != "0123456789abcdef" {
+		t.Fatalf("манифест и ключи: %v", bodies[1])
 	}
 }

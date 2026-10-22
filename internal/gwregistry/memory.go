@@ -125,8 +125,34 @@ func (m *Memory) Touch(_ context.Context, id string, hb Heartbeat) error {
 	if hb.Integrity != nil {
 		r := *hb.Integrity
 		g.Integrity = &r
+		if r.OK && !r.ManifestCreated.IsZero() && (g.ManifestMaxCreated.IsZero() || r.ManifestCreated.After(g.ManifestMaxCreated)) {
+			g.ManifestMaxVersion, g.ManifestMaxCreated = r.ManifestVersion, r.ManifestCreated
+		}
+	}
+	if hb.BundleKeysOK != nil {
+		ok := *hb.BundleKeysOK
+		g.BundleKeysOK = &ok
 	}
 	return nil
+}
+
+// AcceptRollback — см. Store.
+func (m *Memory) AcceptRollback(_ context.Context, orgID, name string, rec func(prev, cur Gateway) audit.Entry) (Gateway, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, g := range m.gateways {
+		if g.OrgID != orgID || g.Name != name {
+			continue
+		}
+		if err := checkAcceptRollback(*g); err != nil {
+			return Gateway{}, err
+		}
+		prev := *g
+		g.ManifestMaxVersion, g.ManifestMaxCreated = g.Integrity.ManifestVersion, g.Integrity.ManifestCreated
+		m.Records = append(m.Records, rec(prev, *g))
+		return *g, nil
+	}
+	return Gateway{}, ErrNotFound
 }
 
 // Revoke — см. Store.

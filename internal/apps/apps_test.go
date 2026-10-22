@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -52,7 +53,7 @@ func newEnv(t *testing.T, withBox bool) *env {
 		t.Fatal(err)
 	}
 	e := &env{mem: apps.NewMemory(), clock: &clock{t: time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)},
-		by: apps.By{Actor: audit.Actor{Type: audit.ActorUser, ID: ownerA, Name: "admin"}}}
+		by: apps.By{Actor: audit.Actor{Type: audit.ActorUser, ID: ownerA, Name: "admin"}, Policy: true, Confirm: confirmed}}
 	if withBox {
 		if e.box, err = keyring.NewStaticKey(p, "01900000-0000-7000-8000-0000000000d1", key); err != nil {
 			t.Fatal(err)
@@ -92,6 +93,9 @@ func (e *env) provider(t *testing.T, slug string) apps.Provider {
 	}
 	return p
 }
+
+// confirmed — повторная проверка пройдена (Н32).
+func confirmed(context.Context) error { return nil }
 
 func appInput(slug, providerID, owner string) apps.AppInput {
 	return apps.AppInput{Slug: slug, Name: "Приложение " + slug, OwnerID: owner, Env: "test", ProviderID: providerID,
@@ -363,19 +367,21 @@ func TestApplicationProtectionDefaults(t *testing.T) {
 	inputErr(t, err, "owner_id")
 	// Проверки — те же, что у файла шлюза.
 	for want, mod := range map[string]func(*apps.AppInput){
-		"DM-33":               func(in *apps.AppInput) { in.Models = nil },
-		"псевдоним":           func(in *apps.AppInput) { in.Aliases = map[string]string{"x": "not-allowed"} },
-		"env":                 func(in *apps.AppInput) { in.Env = "stage" },
-		"quotas.max_tokens":   func(in *apps.AppInput) { in.Quotas.MaxTokens = -1 },
-		"exfil_allow_domains": func(in *apps.AppInput) { in.ExfilAllowDomains = []string{"http://bad"} },
-		"name":                func(in *apps.AppInput) { in.Name = strings.Repeat("я", 201) },
-		"provider_id":         func(in *apps.AppInput) { in.ProviderID = "not-a-uuid" },
+		"DM-33":             func(in *apps.AppInput) { in.Models = nil },
+		"псевдоним":         func(in *apps.AppInput) { in.Aliases = map[string]string{"x": "not-allowed"} },
+		"env":               func(in *apps.AppInput) { in.Env = "stage" },
+		"quotas.max_tokens": func(in *apps.AppInput) { in.Quotas.MaxTokens = -1 },
+		"name":              func(in *apps.AppInput) { in.Name = strings.Repeat("я", 201) },
+		"provider_id":       func(in *apps.AppInput) { in.ProviderID = "not-a-uuid" },
 	} {
 		in := appInput("v-"+fmt.Sprint(len(want)), p.ID, ownerA)
 		mod(&in)
 		_, err := e.svc.CreateApplication(ctx, e.by, in, nil)
 		inputErr(t, err, want)
 	}
+	bad := []string{"http://bad"}
+	_, err = e.svc.CreateApplication(ctx, e.by, appInput("exfil", p.ID, ownerA), &apps.ProtectionInput{ExfilAllowDomains: &bad})
+	inputErr(t, err, "exfil_allow_domains")
 	// Граница длины названия.
 	in := appInput("long", p.ID, ownerA)
 	in.Name = strings.Repeat("я", 200)
@@ -482,6 +488,21 @@ func TestKeyIssue(t *testing.T) {
 	}
 	if _, _, err := e.svc.IssueKey(ctx, e.by, a.ID, "", apps.KeyInput{Name: "over"}); !errors.Is(err, apps.ErrTooManyKeys) {
 		t.Fatalf("лимит: %v", err)
+	}
+	// Ротация тоже упирается в лимит (Н24 ревью 2.r3b): прежний ключ
+	// действует до конца перекрытия, новый — ещё один действующий.
+	keys, err := e.svc.Keys(ctx, a.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := e.svc.RotateKey(ctx, e.by, keys[0].ID, "", apps.RotateInput{}); !errors.Is(err, apps.ErrTooManyKeys) {
+		t.Fatalf("ротация сверх лимита: %v", err)
+	}
+	if _, err := e.svc.RevokeKey(ctx, e.by, keys[1].ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := e.svc.RotateKey(ctx, e.by, keys[0].ID, "", apps.RotateInput{}); err != nil {
+		t.Fatalf("ротация в пределе: %v", err)
 	}
 	if _, _, err := e.svc.IssueKey(ctx, e.by, nobody, "", apps.KeyInput{Name: "x"}); !errors.Is(err, apps.ErrNotFound) {
 		t.Fatalf("нет приложения: %v", err)
@@ -640,4 +661,161 @@ func TestArchive(t *testing.T) {
 		t.Fatalf("поля защиты архивного: %v", err)
 	}
 	checkRecords(t, e)
+}
+
+// В15 и Н32 ревью 2.r3b: какие изменения полей защиты ослабляют её и что
+// без повторной проверки ослабление отклоняется.
+func TestProtectionWeakening(t *testing.T) {
+	e := newEnv(t, false)
+	ctx := context.Background()
+	p := e.provider(t, "main")
+	ls := []apps.List{{ID: "code", Category: "codename", Words: []string{"зенит", "орион"}, Regex: []string{`\bPRJ-\d+\b`}}}
+	a, err := e.svc.CreateApplication(ctx, e.by, appInput("crm", p.ID, ownerA),
+		&apps.ProtectionInput{Policy: "pii-strict", Lists: &ls})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := e.last(t, "application.create").Details.(map[string]any); d["weakening"] != false {
+		t.Fatalf("словарь при создании — не ослабление: %v", d)
+	}
+	list := func(mod func(*apps.List)) *[]apps.List {
+		l := ls[0]
+		l.Words, l.Regex = slices.Clone(l.Words), slices.Clone(l.Regex)
+		mod(&l)
+		return &[]apps.List{l}
+	}
+	dom := func(d ...string) *[]string { return &d }
+	for _, c := range []struct {
+		name string
+		in   apps.ProtectionInput
+		weak bool
+	}{
+		{"новое слово", apps.ProtectionInput{Lists: list(func(l *apps.List) { l.Words = append(l.Words, "вега") })}, false},
+		{"удалено слово", apps.ProtectionInput{Lists: list(func(l *apps.List) { l.Words = l.Words[:2] })}, true},
+		{"удалено выражение", apps.ProtectionInput{Lists: list(func(l *apps.List) { l.Regex = nil })}, true},
+		{"учёт регистра", apps.ProtectionInput{Lists: list(func(l *apps.List) { l.CaseSensitive = true })}, true},
+		{"словарь возвращён", apps.ProtectionInput{Lists: &ls}, false},
+		{"удалён словарь", apps.ProtectionInput{Lists: &[]apps.List{}}, true},
+		{"новый домен", apps.ProtectionInput{ExfilAllowDomains: dom("files.example")}, true},
+		{"тот же домен в другом регистре", apps.ProtectionInput{ExfilAllowDomains: dom("Files.Example")}, false},
+		{"домен убран", apps.ProtectionInput{ExfilAllowDomains: dom()}, false},
+		{"fail_open", apps.ProtectionInput{FailMode: "fail_open"}, true},
+		{"fail_closed", apps.ProtectionInput{FailMode: "fail_closed"}, false},
+	} {
+		if _, err := e.svc.SetProtection(ctx, e.by, a.ID, c.in); err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if d := e.last(t, "application.protection_changed").Details.(map[string]any); d["weakening"] != c.weak {
+			t.Errorf("%s: weakening = %v", c.name, d["weakening"])
+		}
+	}
+	// Без проверки ослабление отклоняется, усиление проходит.
+	noConfirm := apps.By{Actor: e.by.Actor, Policy: true}
+	if _, err := e.svc.SetProtection(ctx, noConfirm, a.ID, apps.ProtectionInput{FailMode: "fail_open"}); !errors.Is(err, apps.ErrConfirmRequired) {
+		t.Fatalf("ослабление без проверки: %v", err)
+	}
+	denied := errors.New("пароль не принят")
+	wrong := apps.By{Actor: e.by.Actor, Policy: true, Confirm: func(context.Context) error { return denied }}
+	if _, err := e.svc.SetProtection(ctx, wrong, a.ID, apps.ProtectionInput{Storage: "full"}); !errors.Is(err, denied) {
+		t.Fatalf("неверный пароль: %v", err)
+	}
+	if _, err := e.svc.CreateApplication(ctx, noConfirm, appInput("bi", p.ID, ownerA), &apps.ProtectionInput{Storage: "none"}); !errors.Is(err, apps.ErrConfirmRequired) {
+		t.Fatalf("создание с ослаблением без проверки: %v", err)
+	}
+	if _, err := e.svc.SetProtection(ctx, noConfirm, a.ID, apps.ProtectionInput{Lists: list(func(l *apps.List) { l.Words = append(l.Words, "вега", "лира") })}); err != nil {
+		t.Fatalf("усиление без проверки: %v", err)
+	}
+	if got, err := e.svc.Application(ctx, a.ID, ""); err != nil || got.FailMode != "fail_closed" || got.Storage != "masked" {
+		t.Fatalf("отклонённые изменения сохранены: %+v %v", got, err)
+	}
+	// Снятие признака «внешний» у провайдера — тоже с проверкой.
+	if _, err := e.svc.SetExternal(ctx, noConfirm, p.ID, false, "свой контур"); !errors.Is(err, apps.ErrConfirmRequired) {
+		t.Fatalf("снятие признака без проверки: %v", err)
+	}
+	// Переход на невнешнего провайдера — только с правом applications.policy.
+	in := e.provider(t, "vllm")
+	if _, err := e.svc.SetExternal(ctx, e.by, in.ID, false, "свой контур"); err != nil {
+		t.Fatal(err)
+	}
+	sys := apps.By{Actor: e.by.Actor, Confirm: confirmed}
+	if _, err := e.svc.UpdateApplication(ctx, sys, a.ID, appInput("", in.ID, ownerA)); !errors.Is(err, apps.ErrPolicyRequired) {
+		t.Fatalf("переход без права: %v", err)
+	}
+	if _, err := e.svc.UpdateApplication(ctx, e.by, a.ID, appInput("", in.ID, ownerA)); err != nil {
+		t.Fatal(err)
+	}
+	if d := e.last(t, "application.update").Details.(map[string]any); d["weakening"] != true {
+		t.Fatalf("переход на невнешнего: %v", d)
+	}
+	if _, err := e.svc.UpdateApplication(ctx, sys, a.ID, appInput("", in.ID, ownerB)); err != nil {
+		t.Fatalf("правка без смены провайдера: %v", err)
+	}
+	checkRecords(t, e)
+}
+
+// В14 ревью 2.r3b: смена адресата провайдера (узел base_url или auth_url,
+// корневые сертификаты, тип) возвращает признак «внешний» и сбрасывает
+// учётные данные; имя, путь и таймауты — нет.
+func TestProviderRetarget(t *testing.T) {
+	e := newEnv(t, true)
+	ctx := context.Background()
+	other, err := aisecCrypto.NewCA("AISec test other CA", time.Hour, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := e.provider(t, "gigachat")
+	reset := func() {
+		t.Helper()
+		if _, err := e.svc.SetExternal(ctx, e.by, p.ID, false, "GigaChat в контуре заказчика"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := e.svc.SetCredential(ctx, e.by, p.ID, []byte("synthetic-credential")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, c := range []struct {
+		name   string
+		mod    func(*apps.ProviderInput)
+		target bool
+	}{
+		{"имя и таймауты", func(in *apps.ProviderInput) { in.Name, in.ResponseTimeout = "Другое имя", 120 }, false},
+		{"путь на том же узле", func(in *apps.ProviderInput) { in.BaseURL = "https://llm.example/v2" }, false},
+		{"явный порт 443", func(in *apps.ProviderInput) { in.BaseURL = "https://LLM.example:443/v1" }, false},
+		{"другой хост", func(in *apps.ProviderInput) { in.BaseURL = "https://llm.evil.example/v1" }, true},
+		{"другой порт", func(in *apps.ProviderInput) { in.BaseURL = "https://llm.example:8443/v1" }, true},
+		{"другой корневой сертификат", func(in *apps.ProviderInput) { in.CAPEM = string(other.CertPEM()) }, true},
+		{"другой тип", func(in *apps.ProviderInput) { in.Type, in.FolderID = "yandexgpt", "b1gsynthetic" }, true},
+	} {
+		reset()
+		in := e.providerInput("")
+		c.mod(&in)
+		got, err := e.svc.UpdateProvider(ctx, e.by, p.ID, in)
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		d := e.last(t, "provider.update").Details.(map[string]any)
+		if got.External != c.target || (got.Credential == nil) != c.target {
+			t.Errorf("%s: external=%v credential=%v", c.name, got.External, got.Credential != nil)
+		}
+		if c.target && (d["external_reset"] != true || d["credential_reset"] != true) {
+			t.Errorf("%s: в аудите нет сброса: %v", c.name, d)
+		}
+		if !c.target && d["external_reset"] != nil {
+			t.Errorf("%s: лишний сброс: %v", c.name, d)
+		}
+		if _, err := e.svc.UpdateProvider(ctx, e.by, p.ID, e.providerInput("")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Учётные данные после сброса не открываются.
+	reset()
+	in := e.providerInput("")
+	in.BaseURL = "https://llm.evil.example/v1"
+	if _, err := e.svc.UpdateProvider(ctx, e.by, p.ID, in); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.svc.OpenCredential(ctx, p.ID); !errors.Is(err, apps.ErrNoCredential) {
+		t.Fatalf("учётные данные после смены адреса: %v", err)
+	}
+	checkRecords(t, e, "synthetic-credential")
 }

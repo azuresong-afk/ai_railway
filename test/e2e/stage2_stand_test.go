@@ -275,7 +275,8 @@ type s2Stand struct {
 }
 
 // s2NewStand готовит БД, ключи и токен первичной настройки, сервер не
-// запускает. Без AISEC_TEST_DATABASE_URL тест пропускается: в CI нет PostgreSQL.
+// запускает. Без AISEC_TEST_DATABASE_URL тест пропускается: локально и в облаке БД нет
+// всегда; в CI она поднимается сервисом (ADR-0002, дополнение).
 func s2NewStand(t *testing.T) *s2Stand {
 	t.Helper()
 	root := os.Getenv("AISEC_TEST_DATABASE_URL")

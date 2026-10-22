@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"time"
 
@@ -30,7 +31,7 @@ func applicationRoutes(d Deps) []Route {
 		{Method: http.MethodDelete, Path: "/api/v1/applications/{id}", Permission: auth.PermApplicationsManage,
 			Handler: needApps(d, d.archiveApplication)},
 		{Method: http.MethodPut, Path: "/api/v1/applications/{id}/protection", Permission: auth.PermApplicationsPolicy,
-			MaxBody: smallMaxBody, Handler: needApps(d, d.setProtection)},
+			MaxBody: appMaxBody, Handler: needApps(d, d.setProtection)},
 		{Method: http.MethodGet, Path: "/api/v1/applications/{id}/keys", Permission: auth.PermApplicationsRead, Scoped: true,
 			Handler: needApps(d, d.listAppKeys)},
 		{Method: http.MethodPost, Path: "/api/v1/applications/{id}/keys", Permission: auth.PermAppKeysManage, Scoped: true, SecretOnce: true,
@@ -114,39 +115,92 @@ func applicationView(a apps.Application) ApplicationView {
 
 // appFields — изменяемые поля приложения, кроме полей защиты.
 type appFields struct {
-	Name              string            `json:"name"`
-	Description       string            `json:"description"`
-	Department        string            `json:"department"`
-	OwnerID           string            `json:"owner_id"`
-	Env               string            `json:"env"`
-	ProviderID        string            `json:"provider_id"`
-	Models            []string          `json:"models"`
-	Aliases           map[string]string `json:"aliases"`
-	FailMode          string            `json:"fail_mode"`
-	UserFrom          string            `json:"user_from"`
-	Quotas            apps.Quotas       `json:"quotas"`
-	Lists             []apps.List       `json:"lists"`
-	ExfilAllowDomains []string          `json:"exfil_allow_domains"`
+	Name        string            `json:"name"`
+	Description string            `json:"description"`
+	Department  string            `json:"department"`
+	OwnerID     string            `json:"owner_id"`
+	Env         string            `json:"env"`
+	ProviderID  string            `json:"provider_id"`
+	Models      []string          `json:"models"`
+	Aliases     map[string]string `json:"aliases"`
+	UserFrom    string            `json:"user_from"`
+	Quotas      apps.Quotas       `json:"quotas"`
 }
 
 func (f appFields) input(slug string) apps.AppInput {
 	return apps.AppInput{Slug: slug, Name: f.Name, Description: f.Description, Department: f.Department, OwnerID: f.OwnerID,
-		Env: f.Env, ProviderID: f.ProviderID, Models: f.Models, Aliases: f.Aliases, FailMode: f.FailMode, UserFrom: f.UserFrom,
-		Quotas: f.Quotas, Lists: f.Lists, ExfilAllowDomains: f.ExfilAllowDomains}
+		Env: f.Env, ProviderID: f.ProviderID, Models: f.Models, Aliases: f.Aliases, UserFrom: f.UserFrom, Quotas: f.Quotas}
 }
 
+// protectionFields — поля защиты (право applications.policy, В15 ревью
+// 2.r3b): режим при сбое детекторов, словари и исключения DM-11 тоже
+// ослабляют защиту. Отсутствующее поле — прежнее значение.
 type protectionFields struct {
-	Policy     string `json:"policy"`
-	PolicyMode string `json:"policy_mode"`
-	Storage    string `json:"storage"`
+	Policy            string       `json:"policy"`
+	PolicyMode        string       `json:"policy_mode"`
+	Storage           string       `json:"storage"`
+	FailMode          string       `json:"fail_mode"`
+	Lists             *[]apps.List `json:"lists"`
+	ExfilAllowDomains *[]string    `json:"exfil_allow_domains"`
 }
 
-func (p protectionFields) empty() bool { return p == protectionFields{} }
+func (p protectionFields) empty() bool {
+	return p.Policy == "" && p.PolicyMode == "" && p.Storage == "" && p.FailMode == "" && p.Lists == nil && p.ExfilAllowDomains == nil
+}
+
+func (p protectionFields) input() apps.ProtectionInput {
+	return apps.ProtectionInput{Policy: p.Policy, PolicyMode: p.PolicyMode, Storage: p.Storage, FailMode: p.FailMode,
+		Lists: p.Lists, ExfilAllowDomains: p.ExfilAllowDomains}
+}
+
+// reauthFields — текущий пароль или код TOTP: нужны, только если изменение
+// ослабляет защиту (Н32 ревью 2.r3b).
+type reauthFields struct {
+	Password string `json:"password"`
+	Code     string `json:"code"`
+}
 
 type createApplicationRequest struct {
 	Slug string `json:"slug"`
 	appFields
 	protectionFields
+	reauthFields
+}
+
+type updateApplicationRequest struct {
+	appFields
+	reauthFields
+}
+
+type protectionRequest struct {
+	protectionFields
+	reauthFields
+}
+
+// reauthError — повторная проверка перед ослаблением не пройдена: ответ
+// строит authProblem.
+type reauthError struct{ err error }
+
+func (e *reauthError) Error() string { return e.err.Error() }
+func (e *reauthError) Unwrap() error { return e.err }
+
+// withConfirm дополняет субъекта правом applications.policy и повторной
+// проверкой паролем или кодом TOTP (Н32). Проверка возможна только в
+// сессии консоли: у токена нет пароля, права безопасности ему не выдаются.
+func (d Deps) withConfirm(r *http.Request, by apps.By, re reauthFields, action string) apps.By {
+	pr, _ := PrincipalFrom(r.Context())
+	by.Policy = pr.Grants.Allows(auth.PermApplicationsPolicy)
+	by.Confirm = func(ctx context.Context) error {
+		c, ok := callerFrom(r)
+		if !ok || c.Token != nil || d.Auth == nil {
+			return apps.ErrConfirmRequired
+		}
+		if err := d.Auth.Reauthenticate(ctx, c, re.Password, re.Code, action); err != nil {
+			return &reauthError{err}
+		}
+		return nil
+	}
+	return by
 }
 
 func (d Deps) listApplications(w http.ResponseWriter, r *http.Request) {
@@ -193,18 +247,20 @@ func (d Deps) createApplication(w http.ResponseWriter, r *http.Request) {
 		WriteProblem(w, p)
 		return
 	}
-	in := req.input(req.Slug)
+	in := req.appFields.input(req.Slug)
 	if in.OwnerID == "" {
 		in.OwnerID = pr.Caller.User.ID
 	}
 	// Поля защиты задаёт только администратор безопасности (УПД.2); без
 	// права — умолчания, а явно переданные значения отклоняются.
+	by = d.withConfirm(r, by, req.reauthFields, "application.create")
 	var prot *apps.ProtectionInput
-	if pr.Grants.Allows(auth.PermApplicationsPolicy) {
-		prot = &apps.ProtectionInput{Policy: req.Policy, PolicyMode: req.PolicyMode, Storage: req.Storage}
+	if by.Policy {
+		p := req.protectionFields.input()
+		prot = &p
 	} else if !req.empty() {
 		WriteProblem(w, NewProblem(http.StatusUnprocessableEntity, CodeUnprocessable,
-			"Политику, режим политики и режим хранения задаёт администратор безопасности: создайте приложение без них."))
+			"Политику, режимы, словари и домены-исключения задаёт администратор безопасности: создайте приложение без них."))
 		return
 	}
 	a, err := d.Apps.CreateApplication(r.Context(), by, in, prot)
@@ -244,11 +300,12 @@ func (d Deps) updateApplication(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	var req appFields
+	var req updateApplicationRequest
 	if p := DecodeJSON(w, r, &req, appMaxBody); p != nil {
 		WriteProblem(w, p)
 		return
 	}
+	by = d.withConfirm(r, by, req.reauthFields, "application.update")
 	a, err := d.Apps.UpdateApplication(r.Context(), by, id, req.input(""))
 	if err != nil {
 		WriteProblem(w, appsProblem(d.Logger, err, appNotFound))
@@ -285,12 +342,13 @@ func (d Deps) setProtection(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	var req protectionFields
-	if p := DecodeJSON(w, r, &req, smallMaxBody); p != nil {
+	var req protectionRequest
+	if p := DecodeJSON(w, r, &req, appMaxBody); p != nil {
 		WriteProblem(w, p)
 		return
 	}
-	a, err := d.Apps.SetProtection(r.Context(), by, id, apps.ProtectionInput(req))
+	by = d.withConfirm(r, by, req.reauthFields, "application.protection_changed")
+	a, err := d.Apps.SetProtection(r.Context(), by, id, req.input())
 	if err != nil {
 		WriteProblem(w, appsProblem(d.Logger, err, appNotFound))
 		return

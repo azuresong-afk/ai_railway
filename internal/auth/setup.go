@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net/netip"
 	"strings"
+	"time"
+	"unicode/utf8"
 
 	"github.com/azuresong-afk/ai_railway/internal/audit"
 	"github.com/azuresong-afk/ai_railway/internal/store"
@@ -21,8 +23,64 @@ type SetupInput struct {
 	Login       string
 	DisplayName string
 	Password    string
-	SourceIP    netip.Addr
+	// Timezone — часовой пояс показа времени (ВРМ.2), имя IANA; пусто —
+	// DefaultTimezone.
+	Timezone string
+	// RetentionMode — режим хранения содержимого по умолчанию для новых
+	// приложений (ТЗ 5.5): none, masked или full; пусто — DefaultRetentionMode.
+	RetentionMode string
+	SourceIP      netip.Addr
 }
+
+// Умолчания первичной настройки (ТЗ 6.4, решение H-Р4).
+const (
+	DefaultTimezone      = "Europe/Moscow"
+	DefaultRetentionMode = RetentionMasked
+	maxTimezoneLen       = 64
+)
+
+// InstallSettings — настройки установки, которые администратор выбирает при
+// первичной настройке; позже их меняют в «Администрировании».
+type InstallSettings struct {
+	Timezone      string
+	RetentionMode string
+}
+
+// retentionModes — допустимые режимы хранения содержимого (ТЗ 5.5).
+// RetentionMasked — режим хранения по умолчанию: содержимое с маскированием.
+const RetentionMasked = "masked"
+
+var retentionModes = map[string]bool{"none": true, RetentionMasked: true, "full": true}
+
+// installSettings проверяет и дополняет умолчаниями выбор администратора.
+func installSettings(in SetupInput) (InstallSettings, error) {
+	cfg := InstallSettings{Timezone: in.Timezone, RetentionMode: in.RetentionMode}
+	if cfg.Timezone == "" {
+		cfg.Timezone = DefaultTimezone
+	}
+	if cfg.RetentionMode == "" {
+		cfg.RetentionMode = DefaultRetentionMode
+	}
+	// «Local» и пустое имя LoadLocation принимает, но это не имя IANA; без
+	// «/» из базы IANA годится только UTC — posixrules, localtime, Factory
+	// и подобные отклоняются (Н43 ревью 2.r4).
+	if len(cfg.Timezone) > maxTimezoneLen || !utf8.ValidString(cfg.Timezone) ||
+		cfg.Timezone != "UTC" && !strings.Contains(cfg.Timezone, "/") {
+		return InstallSettings{}, &InputError{"timezone", timezoneRule}
+	}
+	if _, err := time.LoadLocation(cfg.Timezone); err != nil {
+		return InstallSettings{}, &InputError{"timezone", timezoneRule}
+	}
+	if !retentionModes[cfg.RetentionMode] {
+		return InstallSettings{}, &InputError{"retention_mode", retentionModeRule}
+	}
+	return cfg, nil
+}
+
+const (
+	timezoneRule      = "Укажите имя часового пояса IANA, например Europe/Moscow или UTC."
+	retentionModeRule = "Допустимы значения none, masked и full."
+)
 
 // SetupRequired — нужна ли первичная настройка (в организации нет учётных записей).
 func (s *Service) SetupRequired(ctx context.Context) (bool, error) {
@@ -47,6 +105,10 @@ func (s *Service) Setup(ctx context.Context, in SetupInput) (User, error) {
 	}
 	if has {
 		return User{}, s.setupFailed(ctx, system, in.SourceIP, "unavailable")
+	}
+	cfg, err := installSettings(in)
+	if err != nil {
+		return User{}, err
 	}
 	login, ok := NormalizeLogin(in.Login)
 	if !ok {
@@ -80,8 +142,12 @@ func (s *Service) Setup(ctx context.Context, in SetupInput) (User, error) {
 		Status: StatusActive, PasswordHash: h, PasswordChangedAt: now, CreatedAt: now, CreatedBy: system.ID,
 	}
 	rec := s.entry(system, in.SourceIP, "setup.completed", userObject(u.ID), audit.ResultSuccess,
-		map[string]any{"login": login, "role": string(RoleSecurityAdmin)})
-	err = s.store.SetupFirstUser(ctx, tokenHash, s.hasher.Name(), u, rec)
+		map[string]any{"login": login, "role": string(RoleSecurityAdmin),
+			"timezone": cfg.Timezone, "retention_mode": cfg.RetentionMode,
+			// Хранение содержимого целиком или отказ от хранения — ослабление
+			// относительно masked, как у приложений (Н42 ревью 2.r4, DM-40).
+			"weakening": cfg.RetentionMode != RetentionMasked})
+	err = s.store.SetupFirstUser(ctx, tokenHash, s.hasher.Name(), u, cfg, rec)
 	if errors.Is(err, ErrSetupUnavailable) {
 		return User{}, s.setupFailed(ctx, system, in.SourceIP, "unavailable")
 	}

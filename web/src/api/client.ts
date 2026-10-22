@@ -49,6 +49,11 @@ export async function request<T>(method: "GET" | "POST" | "PUT" | "DELETE", path
   if (resp.ok) {
     return (resp.status === 204 ? undefined : await resp.json()) as T;
   }
+  throw await problemError(resp, path);
+}
+
+// Ошибка из ответа не-2xx: Problem Details, а при другом теле — общий текст.
+async function problemError(resp: Response, path: string): Promise<ApiError> {
   let p: Partial<Problem> = {};
   try {
     p = (await resp.json()) as Partial<Problem>;
@@ -56,7 +61,23 @@ export async function request<T>(method: "GET" | "POST" | "PUT" | "DELETE", path
     // тело не Problem Details — остаётся общий текст
   }
   if (resp.status === 401 && !path.startsWith("/api/v1/auth/login")) onUnauthorized?.();
-  throw new ApiError(resp.status, p.code ?? "internal_error", p.detail ?? "Запрос не выполнен.", p.errors ?? []);
+  return new ApiError(resp.status, p.code ?? "internal_error", p.detail ?? "Запрос не выполнен.", p.errors ?? []);
+}
+
+// Запрос с телом или ответом не в JSON (YAML политик): тот же CSRF и тот же разбор ошибок.
+export async function requestText(
+  method: "GET" | "POST",
+  path: string,
+  o: { accept: string; body?: string; contentType?: string },
+): Promise<string> {
+  const headers: Record<string, string> = { Accept: o.accept };
+  if (o.body !== undefined && o.contentType) headers["Content-Type"] = o.contentType;
+  if (method !== "GET") headers["X-CSRF-Token"] = csrfToken();
+  const init: RequestInit = { method, headers, credentials: "same-origin", cache: "no-store" };
+  if (o.body !== undefined) init.body = o.body;
+  const resp = await fetch(path, init);
+  if (!resp.ok) throw await problemError(resp, path);
+  return resp.text();
 }
 
 export const api = {

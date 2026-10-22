@@ -191,7 +191,10 @@ paths:
         и встроенную статику веб-консоли с подписанным манифестом; итог пишется в
         `integrity_checks` и журнал аудита (`integrity.check`) от имени
         пользователя. Нарушение — `ok: false` с ответом 200; при
-        `-integrity-action stop` сервер после ответа останавливается.
+        `-integrity-action stop` сервер после ответа останавливается. Манифест
+        собран раньше манифеста последней успешной проверки — `manifest_rollback`
+        (откат на старый выпуск, В20 ревью 2.r4). Итог не удалось записать в
+        журнал аудита — 503 (Н36 ревью 2.r4), итог остаётся в техническом журнале.
       security: [{ sessionCookie: [] }]
       x-permission: integrity.verify
       parameters:
@@ -213,13 +216,18 @@ paths:
       description: |
         Право `audit.read` (ТЗ 6.3 п. 11, задача 2.4a): из предустановленных ролей — у аудитора и
         администратора безопасности. Только чтение: изменить или удалить запись через API
-        нельзя (УПД.2). Порядок — от новых к старым по номеру записи. Период — не длиннее
+        нельзя (УПД.2). Порядок — от новых к старым по времени и номеру записи; записи с
+        нечитаемым временем (подмена в обход продукта, `ts: null`) — в начале любой выборки.
+        Период — не длиннее
         31 суток (по умолчанию последние 7). Фильтры по белому списку: `action` (до 20 раз;
         точный код `auth.login` или группа `auth.*`), `actor_type`, `actor` (ID или имя
         субъекта, точное совпадение), `object_type`, `object_id`, `result`; неизвестный
         параметр — 400. Секреты в подробностях замаскированы при записи (`[скрыто]`),
         исходных значений в журнале нет. Пишет `audit.list` (отключаемое событие) после
-        чтения: в текущую страницу запись не попадает.
+        выборки и до ответа: в текущую страницу запись не попадает, а если записать её не
+        удалось — 503 без данных (Н30 ревью 2.r3b). Одновременно — не больше 2 выборок на
+        пользователя или токен и 4 на сервер, сверх этого — 429 с `Retry-After`; выборка идёт
+        в отдельном пуле соединений с пределом 10 с, дольше — 503 (В17 ревью 2.r3b).
       x-permission: audit.read
       security: [{ sessionCookie: [] }, { bearerToken: [] }]
       parameters:
@@ -278,7 +286,10 @@ paths:
         5 раз в минуту с адреса. Обрыв соединения проверку не прерывает; предел — 5 минут.
         Итог пишется в `audit_verifications` (раздел `audit_chain` «Состояния системы») и в
         журнал аудита (`audit.chain_verified` или `audit.chain_broken`) от имени субъекта с
-        адресом. Нарушение — `ok: false` с ответом 200. Тело не нужно.
+        адресом. Нарушение — `ok: false` с ответом 200. Тело не нужно. Если последняя проверка
+        сервера моложе 10 минут, новая не выполняется: ответ — её итог с `cached: true`, без
+        записи в журнал (Н31 ревью 2.r3b); немедленная проверка — `aisec-cli audit verify`. Если последняя проверка не завершилась (сбой, истёк срок) меньше 10 минут назад — 503 с
+        `Retry-After`, новая не запускается.
       x-permission: audit.verify
       security: [{ sessionCookie: [] }, { bearerToken: [] }]
       parameters:
@@ -1502,8 +1513,11 @@ paths:
       summary: Изменить провайдера
       description: |
         Право `providers.manage`. Меняются все поля, кроме `slug`, признака «внешний» и
-        учётных данных. Пишет `provider.update` (до и после, без учётных данных; сертификаты —
-        только размером).
+        учётных данных. Смена адресата — узла (схема, хост, порт) `base_url` или `auth_url`,
+        `ca_pem` или `type` — сбрасывает учётные данные и возвращает признак «внешний» (В14
+        ревью 2.r3b): их задают заново, снятие признака — снова через `PUT …/external`. Пишет
+        `provider.update` (до и после, без учётных данных; сертификаты — только размером; при
+        смене адресата — `credential_reset`, `external_reset`).
       x-permission: providers.manage
       security: [{ sessionCookie: [] }, { bearerToken: [] }]
       parameters:
@@ -1588,7 +1602,9 @@ paths:
       description: |
         Право `providers.external` (признак `security`: только администратор безопасности,
         токену API недоступно). Снятие признака — ослабление защиты (DM-40): в режиме `monitor`
-        данные к провайдеру больше не маскируются. Причина обязательна. Пишет
+        данные к провайдеру больше не маскируются. Причина обязательна. Снятие признака требует
+        повторной проверки (Н32 ревью 2.r3b): текущий пароль (`password`) или код TOTP (`code`),
+        ровно одно из двух, иначе 400; неверное значение — 403 `reauthentication_failed`. Пишет
         `provider.external_changed` с `weakening: true` при снятии; без изменения — 200 без записи.
       x-permission: providers.external
       security: [{ sessionCookie: [] }]
@@ -1642,12 +1658,17 @@ paths:
     post:
       summary: Создать приложение
       description: |
-        Право `applications.manage` (ТЗ 5.4). Поля защиты `policy`, `policy_mode`, `storage`
-        принимаются только при праве `applications.policy` (УПД.2); без него переданные
-        значения — 422, а приложение получает умолчания: политика `base`, режим — режим
-        выбранной политики, хранение `masked`. Владелец по умолчанию — создающий. `slug` —
+        Право `applications.manage` (ТЗ 5.4). Поля защиты (`policy`, `policy_mode`, `storage`,
+        `fail_mode`, `lists`, `exfil_allow_domains`) принимаются только при праве
+        `applications.policy` (УПД.2, В15 ревью 2.r3b); без него переданные значения — 422, а
+        приложение получает умолчания: политика `base`, режим — режим выбранной политики,
+        хранение `masked`, `fail_closed`, без словарей и доменов-исключений. Хранение `none` или
+        `full`, `fail_open` и домены-исключения — ослабление относительно умолчаний:
+        `weakening: true` и повторная проверка паролем или кодом TOTP (Н32; 400 без них,
+        403 `reauthentication_failed` при неверном). Владелец по умолчанию — создающий. `slug` —
         ID приложения в событиях и пакете для шлюзов, неизменяем. Проверки полей — те же, что у
         файла конфигурации шлюза. Пишет `application.create`.
+        Изменение, после которого пакет конфигурации шлюзов не соберётся (например, правило `lists.*` на словарь, которого нет у приложения), — 422 с причиной и ID приложений в `detail` (В16 ревью 2.r3b).
       x-permission: applications.manage
       security: [{ sessionCookie: [] }, { bearerToken: [] }]
       parameters:
@@ -1700,7 +1721,12 @@ paths:
       summary: Изменить приложение
       description: |
         Право `applications.manage`. Меняются все поля, кроме `slug` и полей защиты
-        (`PUT …/protection`). Архивное приложение не меняется (409). Пишет `application.update`.
+        (`PUT …/protection`; переданные здесь `fail_mode`, `lists`, `exfil_allow_domains` —
+        400). Переход с внешнего провайдера на невнешнего выключает маскирование в `monitor`
+        (В15 ревью 2.r3b): только при праве `applications.policy` (иначе 403), с повторной
+        проверкой паролем или кодом TOTP и с `weakening: true`. Архивное приложение не
+        меняется (409). Пишет `application.update`.
+        Изменение, после которого пакет конфигурации шлюзов не соберётся (например, правило `lists.*` на словарь, которого нет у приложения), — 422 с причиной и ID приложений в `detail` (В16 ревью 2.r3b).
       x-permission: applications.manage
       security: [{ sessionCookie: [] }, { bearerToken: [] }]
       parameters:
@@ -1710,7 +1736,7 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/ApplicationFields' }
+            schema: { $ref: '#/components/schemas/ApplicationUpdate' }
       responses:
         '200':
           description: Приложение изменено
@@ -1754,14 +1780,21 @@ paths:
         '503': { $ref: '#/components/responses/Unavailable' }
   /api/v1/applications/{id}/protection:
     put:
-      summary: Изменить политику, режим и режим хранения приложения
+      summary: Изменить поля защиты приложения
       description: |
         Право `applications.policy` (признак `security`: администратор системы политики
-        безопасности не меняет, УПД.2; токену API недоступно). Пустое поле — прежнее значение;
+        безопасности не меняет, УПД.2; токену API недоступно). Поля защиты: политика, режим,
+        режим хранения, режим при сбое детекторов, словари и домены-исключения DM-11 (В15
+        ревью 2.r3b). Отсутствующее поле — прежнее значение (`lists: []` удаляет все словари);
         при смене политики без `policy_mode` режим берётся из новой политики. Пишет
-        `application.protection_changed` (до, после); перевод в `monitor`, режим хранения
-        `none` или `full`, политика `monitor-only` — с `weakening: true` (DM-40). Без
-        изменений — 200 без записи.
+        `application.protection_changed` (до, после). Ослабление (DM-40) — перевод в
+        `monitor`, режим хранения `none` или `full`, политика `monitor-only`, `fail_open`,
+        новый домен-исключение, удалённый словарь, слово или выражение, изменённые категория,
+        угроза, балл или направление словаря, включённый учёт регистра — пишется с
+        `weakening: true` и требует повторной проверки (Н32): текущий пароль (`password`) или
+        код TOTP (`code`), ровно одно из двух, иначе 400; неверное значение — 403
+        `reauthentication_failed` и неудачная попытка ИАФ.4. Без изменений — 200 без записи.
+        Изменение, после которого пакет конфигурации шлюзов не соберётся (например, правило `lists.*` на словарь, которого нет у приложения), — 422 с причиной и ID приложений в `detail` (В16 ревью 2.r3b).
       x-permission: applications.policy
       security: [{ sessionCookie: [] }]
       parameters:
@@ -1771,7 +1804,7 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/ApplicationProtection' }
+            schema: { $ref: '#/components/schemas/ProtectionUpdate' }
       responses:
         '200':
           description: Поля защиты изменены
@@ -1786,6 +1819,7 @@ paths:
         '413': { $ref: '#/components/responses/ProblemTooLarge' }
         '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
         '429': { $ref: '#/components/responses/RateLimited' }
+        '422': { $ref: '#/components/responses/ProblemUnprocessable' }
         '500': { $ref: '#/components/responses/ProblemInternal' }
         '503': { $ref: '#/components/responses/Unavailable' }
   /api/v1/applications/{id}/keys:
@@ -1969,6 +2003,7 @@ paths:
         детектор — 400. Политики с таким `id` нет — создаётся (201); есть — новая версия поверх
         `base_version` (200), без него — 409. Пустой `non_text` при загрузке — `allow_unchecked`,
         как в шлюзе этапа 1. Пишет `policy.import` (сводка изменений и признак `weakening`).
+        Изменение, после которого пакет конфигурации шлюзов не соберётся (например, правило `lists.*` на словарь, которого нет у приложения), — 422 с причиной и ID приложений в `detail` (В16 ревью 2.r3b).
       x-permission: policies.manage
       security: [{ sessionCookie: [] }]
       parameters:
@@ -2071,6 +2106,7 @@ paths:
         `base_version + 1`. Если с `base_version` политику уже сохранили — 409, чужая правка не
         затирается. Шаблон не меняется — 422. Пишет `policy.update`: поля, правила
         добавленные, удалённые и изменённые, признак `weakening` и причины (DM-40).
+        Изменение, после которого пакет конфигурации шлюзов не соберётся (например, правило `lists.*` на словарь, которого нет у приложения), — 422 с причиной и ID приложений в `detail` (В16 ревью 2.r3b).
       x-permission: policies.manage
       security: [{ sessionCookie: [] }]
       parameters:
@@ -2187,6 +2223,7 @@ paths:
         Право `policies.manage`. Откат — новая версия с содержимым версии `version`
         (`rolled_back_from`); прежние версии остаются. Пишет `policy.rollback` со сводкой
         изменений и признаком `weakening`.
+        Изменение, после которого пакет конфигурации шлюзов не соберётся (например, правило `lists.*` на словарь, которого нет у приложения), — 422 с причиной и ID приложений в `detail` (В16 ревью 2.r3b).
       x-permission: policies.manage
       security: [{ sessionCookie: [] }]
       parameters:
@@ -2468,7 +2505,7 @@ components:
         version: { type: string }
     SystemStatus:
       type: object
-      required: [generated_at, server, gateways, events, time, storage, notifications, unavailable]
+      required: [generated_at, server, gateways, events, time, storage, audit_chain, bundle, notifications, unavailable]
       additionalProperties: false
       properties:
         generated_at: { type: string, format: date-time }
@@ -2533,6 +2570,33 @@ components:
                   enum: [ok, hash_mismatch, prev_mismatch, gap, head_missing, tail_truncated, rewritten, alg_mismatch,
                     invalid_record, checkpoint_invalid, anchor_forged]
                 broken_seq: { type: [integer, 'null'], minimum: 0, description: 'Запись, на которой цепочка нарушена' }
+        bundle:
+          description: 'Пакет конфигурации шлюзов (ОЦЛ.3; В16, Н28 ревью 2.r3b); null — сервер без внутреннего порта для шлюзов'
+          oneOf:
+            - type: 'null'
+            - type: object
+              required: [version, etag, built_at, complete, excluded, lagging]
+              additionalProperties: false
+              properties:
+                version: { type: integer, minimum: 0, description: 'Текущая корректная версия; 0 — её нет' }
+                etag: { type: string }
+                built_at: { type: [string, 'null'], format: date-time }
+                complete: { type: boolean, description: 'В версии все действующие приложения' }
+                reason: { type: string, description: 'Почему содержимое не собрано целиком (например, размер); шлюзам выдаётся прежняя версия' }
+                excluded:
+                  type: array
+                  description: 'Приложения, исключённые из пакета: шлюз принимает их ключи и отвечает 503 app_unavailable'
+                  items:
+                    type: object
+                    required: [application, reason]
+                    additionalProperties: false
+                    properties:
+                      application: { type: string }
+                      reason: { type: string }
+                lagging:
+                  type: array
+                  description: 'Шлюзы на связи, которые дольше 10 минут работают на другой версии'
+                  items: { type: string }
         notifications:
           type: array
           items:
@@ -2540,15 +2604,21 @@ components:
             required: [condition, requirement, title, active, since, count]
             additionalProperties: false
             properties:
-              condition: { type: string, enum: [account_lockout, access_denied, audit_chain, audit_storage, integrity, time_sync] }
-              requirement: { type: string, enum: [ИАФ.4, УПД.6, РСБ.4, РСБ.5, ОЦЛ.5, ВРМ.1] }
+              condition:
+                type: string
+                enum: [account_lockout, access_denied, audit_chain, audit_storage, integrity, time_sync, config_bundle, config_bundle_lag, test_build]
+              requirement: { type: string, enum: [ИАФ.4, УПД.6, РСБ.4, РСБ.5, ОЦЛ.3, ОЦЛ.5, ВРМ.1] }
+              components:
+                type: array
+                items: { type: string }
+                description: 'Компоненты с активным условием (integrity — server или gateway:<ID>, config_bundle_lag — gateway:<ID>); каждое ведётся отдельно и пишется в system.alert (В18 ревью 2.r3b). test_build (ОЦЛ.1) — компоненты, собранные с тестовым ключом манифеста (Н34 ревью 2.r4); integrity шлюза поднимает и откат выпуска, и чужой ключ проверки пакетов (В19, В20 ревью 2.r4)'
               title: { type: string }
               active: { type: boolean }
               since: { type: [string, 'null'], format: date-time, description: 'Когда условие возникло; у ИАФ.4 и УПД.6 не задаётся' }
               count: { type: [integer, 'null'], minimum: 0, description: 'Число событий за 24 часа (только ИАФ.4 и УПД.6)' }
         unavailable:
           type: array
-          items: { type: string, enum: [integrity, gateways, events, storage, audit_chain, notifications] }
+          items: { type: string, enum: [integrity, gateways, events, storage, audit_chain, bundle, notifications] }
     StatusReport:
       type: object
       required: [ok, checked_at, failed]
@@ -2612,7 +2682,7 @@ components:
     IntegrityCheck:
       type: object
       description: Итог проверки целостности компонента (ОЦЛ.2, ОЦЛ.5, DM-42)
-      required: [component, trigger, checked_at, ok, reason, manifest_version, test_signed, checked_files, failures, omitted]
+      required: [component, trigger, checked_at, ok, reason, manifest_version, manifest_created, test_signed, checked_files, failures, omitted]
       additionalProperties: false
       properties:
         component: { type: string, description: 'server, gateway или cli' }
@@ -2621,8 +2691,10 @@ components:
         ok: { type: boolean }
         reason:
           type: string
-          enum: [ok, manifest_missing, manifest_invalid, signature_invalid, files_mismatch]
+          enum: [ok, manifest_missing, manifest_invalid, signature_invalid, files_mismatch, manifest_rollback]
+          description: '`manifest_rollback` — манифест подписан верно, но собран раньше манифеста последней успешной проверки (откат выпуска)'
         manifest_version: { type: string, description: 'Версия продукта из манифеста; пусто, если манифест не принят' }
+        manifest_created: { type: [string, 'null'], format: date-time, description: 'Время сборки манифеста; null, если манифест не принят' }
         test_signed: { type: boolean, description: 'Сборка с тестовым ключом манифеста — не для поставки' }
         checked_files: { type: integer, minimum: 0 }
         failures:
@@ -2669,6 +2741,16 @@ components:
         login: { type: string, minLength: 1, maxLength: 256 }
         display_name: { type: string, minLength: 1, maxLength: 200 }
         password: { type: string, minLength: 1, maxLength: 1024, format: password }
+        timezone:
+          type: string
+          maxLength: 64
+          default: Europe/Moscow
+          description: 'Часовой пояс показа времени (ВРМ.2), имя IANA; «Local» не принимается. Хранение — всегда UTC'
+        retention_mode:
+          type: string
+          enum: [none, masked, full]
+          default: masked
+          description: 'Режим хранения содержимого по умолчанию для новых приложений (ТЗ 5.5)'
     LoginRequest:
       type: object
       required: [login, password]
@@ -2793,7 +2875,7 @@ components:
         last_used_at: { type: string, format: date-time }
         last_used_ip: { type: string }
         revoked_at: { type: string, format: date-time }
-        revoke_reason: { type: string, enum: [owner, admin, password_reset, sessions_revoked] }
+        revoke_reason: { type: string, enum: [owner, admin, password_reset, sessions_revoked, backup_restore] }
     APITokenPage:
       allOf:
         - $ref: '#/components/schemas/PageInfo'
@@ -2894,6 +2976,8 @@ components:
       properties:
         external: { type: boolean }
         reason: { type: string, minLength: 1, maxLength: 500 }
+        password: { type: string, maxLength: 1024, format: password, description: 'Текущий пароль при снятии признака (ровно одно из password и code)' }
+        code: { type: string, maxLength: 64, description: 'Код из приложения-аутентификатора при снятии признака' }
     AppQuotas:
       type: object
       additionalProperties: false
@@ -2934,23 +3018,38 @@ components:
         provider_id: { type: string, format: uuid }
         models: { type: array, minItems: 1, maxItems: 100, items: { type: string, pattern: '^[A-Za-z0-9._:/-]{1,128}$' } }
         aliases: { type: object, additionalProperties: { type: string }, description: Имя для приложения → разрешённая модель }
-        fail_mode: { type: string, enum: [fail_open, fail_closed], default: fail_closed }
         user_from: { type: string, enum: [header, field, none], default: none }
         quotas: { $ref: '#/components/schemas/AppQuotas' }
-        lists: { type: array, maxItems: 63, items: { $ref: '#/components/schemas/AppList' } }
-        exfil_allow_domains: { type: array, maxItems: 1000, items: { type: string } }
     ApplicationProtection:
       type: object
       additionalProperties: false
-      description: Поля защиты; меняет только обладатель права `applications.policy`
+      description: Поля защиты; меняет только обладатель права `applications.policy` (В15 ревью 2.r3b)
       properties:
         policy: { type: string, description: 'Шаблон (`base`, `pii-strict`, `external-no-pii`, `monitor-only`) или политика организации' }
         policy_mode: { type: string, enum: [monitor, enforce], description: По умолчанию — режим выбранной политики }
         storage: { type: string, enum: [none, masked, full], default: masked }
+        fail_mode: { type: string, enum: [fail_open, fail_closed], default: fail_closed }
+        lists: { type: array, maxItems: 63, items: { $ref: '#/components/schemas/AppList' } }
+        exfil_allow_domains: { type: array, maxItems: 1000, items: { type: string } }
+    Reauth:
+      type: object
+      description: Повторная проверка перед ослаблением защиты (Н32 ревью 2.r3b)
+      properties:
+        password: { type: string, maxLength: 1024, format: password, description: 'Текущий пароль (ровно одно из password и code)' }
+        code: { type: string, maxLength: 64, description: 'Код из приложения-аутентификатора' }
+    ApplicationUpdate:
+      allOf:
+        - $ref: '#/components/schemas/ApplicationFields'
+        - $ref: '#/components/schemas/Reauth'
+    ProtectionUpdate:
+      allOf:
+        - $ref: '#/components/schemas/ApplicationProtection'
+        - $ref: '#/components/schemas/Reauth'
     NewApplication:
       allOf:
         - $ref: '#/components/schemas/ApplicationFields'
         - $ref: '#/components/schemas/ApplicationProtection'
+        - $ref: '#/components/schemas/Reauth'
         - type: object
           required: [slug]
           properties:
@@ -3263,10 +3362,11 @@ components:
               items: { $ref: '#/components/schemas/AuditRecord' }
     AuditVerification:
       type: object
-      required: [checked_at, ok, checked, last_seq, reason, broken_seq]
+      required: [checked_at, ok, checked, last_seq, reason, broken_seq, cached]
       additionalProperties: false
       properties:
         checked_at: { type: string, format: date-time }
+        cached: { type: boolean, description: 'Итог прежней проверки не старше 10 минут, новая не выполнялась' }
         ok: { type: boolean }
         checked: { type: integer, minimum: 0, description: Проверено записей }
         last_seq: { type: integer, minimum: 0, description: Последняя проверенная запись }

@@ -19,6 +19,9 @@ type Status struct {
 	// AuditChain — последняя проверка цепочки журнала аудита (РСБ.4); nil —
 	// проверок ещё не было.
 	AuditChain *AuditChainStatus `json:"audit_chain"`
+	// Bundle — сборка пакета конфигурации шлюзов (В16, Н28 ревью 2.r3b);
+	// nil — сервер без внутреннего порта для шлюзов.
+	Bundle *BundleStatus `json:"bundle"`
 	// Notifications — по одной записи на каждое условие раздела 7.
 	Notifications []Notification `json:"notifications"`
 	// Unavailable — разделы, которые не удалось собрать (сбой БД и т. п.);
@@ -133,6 +136,43 @@ type AuditChainStatus struct {
 	BrokenSeq *int64 `json:"broken_seq"`
 }
 
+// BundleHealth — итог сборки пакета конфигурации (build.Service.Health).
+type BundleHealth struct {
+	Version int64
+	ETag    string
+	BuiltAt time.Time
+	// Failed — содержимое не собрано целиком (размер): шлюзы на прежней версии.
+	Failed   bool
+	Reason   string
+	Excluded []ExcludedApp
+}
+
+// ExcludedApp — приложение, исключённое из пакета, и причина.
+type ExcludedApp struct {
+	Application string `json:"application"`
+	Reason      string `json:"reason"`
+}
+
+// BundleStatus — пакет конфигурации шлюзов.
+type BundleStatus struct {
+	// Version и ETag — текущая корректная версия; 0 — её нет.
+	Version int64      `json:"version"`
+	ETag    string     `json:"etag"`
+	BuiltAt *time.Time `json:"built_at"`
+	// Complete — в версии все действующие приложения и данные собраны.
+	Complete bool `json:"complete"`
+	// Reason — почему не собрано содержимое целиком; пусто — собрано.
+	Reason   string        `json:"reason,omitempty"`
+	Excluded []ExcludedApp `json:"excluded"`
+	// Lagging — действующие шлюзы, которые дольше BundleLagAfter работают на
+	// другой версии (Н28 ревью 2.r3b).
+	Lagging []string `json:"lagging"`
+}
+
+// BundleLagAfter — через сколько после сборки версии шлюз на прежней
+// версии считается отставшим (опрос — раз в 30 с).
+const BundleLagAfter = 10 * time.Minute
+
 // Условия уведомлений раздела 7.
 const (
 	ConditionAccount   = "account_lockout" // ИАФ.4: блокировки учётных записей
@@ -141,6 +181,24 @@ const (
 	ConditionIntegrity = "integrity"       // ОЦЛ.5: нарушение целостности или провал самотеста
 	ConditionTime      = "time_sync"       // ВРМ.1: рассинхронизация времени
 	ConditionAuditLog  = "audit_chain"     // РСБ.4: нарушена цепочка журнала аудита
+	// ConditionBundle — ОЦЛ.3: пакет конфигурации собран не полностью (В16).
+	ConditionBundle = "config_bundle"
+	// ConditionBundleLag — ОЦЛ.3: шлюз работает на устаревшем пакете (Н28).
+	ConditionBundleLag = "config_bundle_lag"
+	// ConditionTestBuild — ОЦЛ.1: компонент собран с тестовым ключом
+	// манифеста, сборка не для поставки (Н34 ревью 2.r4).
+	ConditionTestBuild = "test_build"
+)
+
+// Коды условий по компоненту (В18 ревью 2.r3b): ОЦЛ.5 и отставание пакета
+// ведутся отдельно для сервера и каждого шлюза, чтобы второе нарушение
+// тоже попало в журнал. В ответе — одна строка со списком компонентов.
+const (
+	integrityServer  = ConditionIntegrity + ":server"
+	integrityGateway = ConditionIntegrity + ":gateway:"
+	bundleLagGateway = ConditionBundleLag + ":"
+	componentServer  = "server"
+	componentGateway = "gateway:"
 )
 
 // Notification — условие уведомления на этапе 2.
@@ -153,4 +211,7 @@ type Notification struct {
 	Since *time.Time `json:"since"`
 	// Count — число событий за сутки для ИАФ.4 и УПД.6; nil — не считается.
 	Count *int `json:"count"`
+	// Components — компоненты с активным условием (ОЦЛ.5: server или
+	// gateway:<ID>; отставание пакета — gateway:<ID>).
+	Components []string `json:"components,omitempty"`
 }

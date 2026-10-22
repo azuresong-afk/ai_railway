@@ -141,7 +141,7 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := h.cfg.Now()
 	app, ok := h.cfg.Router.app(r)
 	if !ok {
-		WriteError(w, http.StatusForbidden, "приложение не настроено", "invalid_request_error", "app_not_configured")
+		h.cfg.Router.noApp(w, r)
 		return
 	}
 	body, ok := h.readBody(w, r)

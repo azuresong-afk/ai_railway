@@ -76,13 +76,23 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 	// Без сервера — файл конфигурации этапа 1; с сервером — подписанный
 	// пакет (задача 2.13), файла нет.
 	var file *config.GatewayFile
+	var configData []byte
 	if cfg.ConfigFile != "" {
-		if file, err = config.LoadGatewayFile(cfg.ConfigFile); err != nil {
+		if file, configData, err = config.ReadGatewayFile(cfg.ConfigFile); err != nil {
 			return fmt.Errorf("файл конфигурации: %w", err)
 		}
 		for _, w := range file.Warnings() {
 			logger.Warn("опасная настройка", "detail", w)
 		}
+	}
+	// Корни доверия читаются один раз: шлюз работает с этими байтами, а
+	// эталон контроля целостности — их хеш (В19, Н37 ревью 2.r4).
+	trust, err := readTrustFiles(cfg, file)
+	if err != nil {
+		return err
+	}
+	if cfg.ConfigFile != "" {
+		trust.watch = append([]integrity.WatchFile{{Path: cfg.ConfigFile, Data: configData}}, trust.watch...)
 	}
 	p, err := aisecCrypto.New(aisecCrypto.ProfileStandard)
 	if err != nil {
@@ -108,7 +118,7 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 	// реакцией stop после запуска отменяет контекст с причиной ErrViolation.
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
-	if err := startIntegrity(ctx, cfg, p, logger, cancel, reports); err != nil {
+	if err := startIntegrity(ctx, cfg, p, logger, cancel, reports, trust.watch); err != nil {
 		return err
 	}
 	defer func() {
@@ -137,13 +147,13 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 	var control *http.Client
 	gatewayID := ""
 	if cfg.Server != nil {
-		if control, gatewayID, err = newControlClient(cfg, tp, logger); err != nil {
+		if control, gatewayID, err = newControlClient(cfg, tp, trust.serverCA, logger); err != nil {
 			return err
 		}
 	} else if err := file.CheckEventsSink(false); err != nil {
 		return fmt.Errorf("файл конфигурации: %w", err)
 	}
-	userMAC, err := newUserMAC(p, cfg, file)
+	userMAC, err := newUserMAC(p, trust.userHMACKey, file)
 	if err != nil {
 		return err
 	}
@@ -180,15 +190,17 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 		}
 		// Политики компилируются по детекторам приложения при запуске:
 		// незарегистрированный детектор в политике заказчика — отказ запуска.
-		if handler, err = hb.build(file.Applications, provs, file.Policies, recs); err != nil {
+		if handler, err = hb.build(file.Applications, provs, file.Policies, recs, nil); err != nil {
 			return err
 		}
 		logger.Info("конфигурация из файла", "applications", len(file.Applications), "providers", len(provs))
 	} else {
 		sw := gateway.NewSwitch(gateway.NewUnavailable(logger))
-		if bundles, err = newBundleClient(cfg, p, tp, rnd, gatewayID, control, hb, sw, logger); err != nil {
+		var keyIDs []string
+		if bundles, keyIDs, err = newBundleClient(cfg, p, tp, rnd, gatewayID, control, hb, sw, trust.bundlePubs, logger); err != nil {
 			return err
 		}
+		reports.SetBundleKeys(keyIDs)
 		handler = sw
 	}
 	srv, err := httpserver.New(ctx, httpserver.Config{
@@ -224,7 +236,7 @@ type handlerBuilder struct {
 }
 
 func (hb *handlerBuilder) build(apps []config.Application, provs map[string]providers.Provider, specs []policy.Spec,
-	recs []auth.KeyRecord) (http.Handler, error) {
+	recs []auth.KeyRecord, unavailable []string) (http.Handler, error) {
 	for _, a := range apps {
 		if hb.userMAC == nil && a.UserFrom != "" && a.UserFrom != "none" {
 			return nil, fmt.Errorf("приложение %s: user_from %s требует ключ псевдонимов пользователей (user-hmac-key)", a.ID, a.UserFrom)
@@ -234,6 +246,7 @@ func (hb *handlerBuilder) build(apps []config.Application, provs map[string]prov
 	if err != nil {
 		return nil, err
 	}
+	router.SetUnavailable(unavailable)
 	a, err := auth.NewAuthenticator(hb.hasher, recs)
 	if err != nil {
 		return nil, err
@@ -266,11 +279,55 @@ func (hb *handlerBuilder) build(apps []config.Application, provs map[string]prov
 	return h, nil
 }
 
+// trustFiles — файлы, от которых зависит доверие к конфигурации и серверу,
+// прочитанные при запуске, и они же под контролем целостности.
+type trustFiles struct {
+	serverCA    []byte
+	bundlePubs  [][]byte
+	userHMACKey []byte
+	watch       []integrity.WatchFile
+}
+
+// readTrustFiles читает корень доверия сервера (-server-ca), ключи проверки
+// пакетов (-bundle-pub) и ключ псевдонимов пользователей. Подмена
+// -bundle-pub после запуска — нарушение целостности (В19 ревью 2.r4).
+// Сертификаты и ключи TLS не наблюдаются: их меняют при продлении.
+func readTrustFiles(cfg *config.Gateway, file *config.GatewayFile) (trustFiles, error) {
+	var t trustFiles
+	var err error
+	if cfg.Server != nil {
+		if t.serverCA, err = aisecCrypto.ReadPEMFile(cfg.ServerCAFile); err != nil {
+			return t, fmt.Errorf("корневой сертификат сервера: %w", err)
+		}
+		t.watch = append(t.watch, integrity.WatchFile{Path: cfg.ServerCAFile, Data: t.serverCA})
+		for _, path := range cfg.BundlePubFiles {
+			data, err := aisecCrypto.ReadPEMFile(path)
+			if err != nil {
+				return t, fmt.Errorf("ключ проверки пакетов конфигурации: %w", err)
+			}
+			t.bundlePubs = append(t.bundlePubs, data)
+			t.watch = append(t.watch, integrity.WatchFile{Path: path, Data: data})
+		}
+	}
+	path := cfg.UserHMACKeyFile
+	if file != nil {
+		path = file.Gateway.UserHMACKeyFile
+	}
+	if path != "" {
+		if t.userHMACKey, err = aisecCrypto.ReadKeyFile(path); err != nil {
+			return t, fmt.Errorf("ключ псевдонимов пользователей: %w", err)
+		}
+		t.watch = append(t.watch, integrity.WatchFile{Path: path, Data: t.userHMACKey})
+	}
+	return t, nil
+}
+
 // startIntegrity проверяет целостность шлюза при запуске и запускает
-// периодическую проверку: исполняемый файл и файл конфигурации, изменённый
-// после запуска (ОЦЛ.3). Своей БД у шлюза нет — итоги идут в технический
-// журнал; передача на сервер — вместе с каналом шлюз — сервер (2.14, 2.20).
-func startIntegrity(ctx context.Context, cfg *config.Gateway, p aisecCrypto.Provider, logger *slog.Logger, stop context.CancelCauseFunc, reports *gateway.Reports) error {
+// периодическую проверку: исполняемый файл и файлы watch — конфигурация
+// без сервера, корни доверия с сервером (ОЦЛ.3, В19 ревью 2.r4). Своей БД
+// у шлюза нет — итоги идут в технический журнал и в heartbeat (2.20).
+func startIntegrity(ctx context.Context, cfg *config.Gateway, p aisecCrypto.Provider, logger *slog.Logger, stop context.CancelCauseFunc,
+	reports *gateway.Reports, watch []integrity.WatchFile) error {
 	exe, err := os.Executable()
 	if err != nil {
 		exe = "" // проверка отметит исполняемый файл как нечитаемый
@@ -279,15 +336,14 @@ func startIntegrity(ctx context.Context, cfg *config.Gateway, p aisecCrypto.Prov
 	if manifest == "" {
 		manifest = integrity.DefaultManifestPath(exe)
 	}
-	// Файл конфигурации — только без сервера; пакет с сервера защищён
-	// подписью и проверяется при каждой загрузке (ОЦЛ.3, задача 2.13).
-	var watch []string
-	if cfg.ConfigFile != "" {
-		watch = []string{cfg.ConfigFile}
+	// Сверяется образ запущенного процесса, а не файл по пути (Н37).
+	running := ""
+	if exe != "" {
+		running = integrity.RunningExecutable(exe)
 	}
 	checker, err := integrity.NewChecker(integrity.Config{
 		Component: "gateway", Provider: p, ManifestPath: manifest,
-		Executable: exe, BinaryName: "bin/aisec-gateway", Watch: watch,
+		Executable: running, BinaryName: "bin/aisec-gateway", Watch: watch,
 	})
 	if err != nil {
 		return err
@@ -295,10 +351,12 @@ func startIntegrity(ctx context.Context, cfg *config.Gateway, p aisecCrypto.Prov
 	mon, err := integrity.NewMonitor(integrity.MonitorConfig{
 		Checker: checker, Action: integrity.Action(cfg.IntegrityAction), Interval: cfg.IntegrityInterval,
 		Logger: logger, OnStop: stop,
-		// Итог каждой проверки — в heartbeat на сервер (2.20); БД у шлюза нет.
-		Record: func(_ context.Context, res integrity.Result, _ audit.Actor, _ netip.Addr) error {
-			reports.SetIntegrity(res.OK(), res.At, string(res.Reason), len(res.Failures)+res.Omitted)
-			return nil
+		// Итог каждой проверки — в heartbeat на сервер (2.20); БД у шлюза нет,
+		// откат выпуска определяет сервер по манифесту (В20 ревью 2.r4).
+		Record: func(_ context.Context, res integrity.Result, _ audit.Actor, _ netip.Addr) (integrity.Result, error) {
+			reports.SetIntegrity(res.OK(), res.At, string(res.Reason), len(res.Failures)+res.Omitted,
+				gateway.Manifest{Version: res.ManifestVersion, Created: res.ManifestCreated, TestSigned: res.TestSigned})
+			return res, nil
 		},
 	})
 	if err != nil {
@@ -315,11 +373,7 @@ func startIntegrity(ctx context.Context, cfg *config.Gateway, p aisecCrypto.Prov
 // (ИАФ.10): сертификат и ключ шлюза — от aisec-gateway register.
 // Возвращает и ID шлюза — CN сертификата: пакет конфигурации собирается
 // на этот ID.
-func newControlClient(cfg *config.Gateway, tp aisecCrypto.TLSProvider, logger *slog.Logger) (*http.Client, string, error) {
-	rootsPEM, err := aisecCrypto.ReadPEMFile(cfg.ServerCAFile)
-	if err != nil {
-		return nil, "", fmt.Errorf("корневой сертификат сервера: %w", err)
-	}
+func newControlClient(cfg *config.Gateway, tp aisecCrypto.TLSProvider, rootsPEM []byte, logger *slog.Logger) (*http.Client, string, error) {
 	certPEM, err := aisecCrypto.ReadPEMFile(cfg.ClientCertFile)
 	if err != nil {
 		return nil, "", fmt.Errorf("сертификат шлюза для сервера: %w", err)
@@ -358,26 +412,19 @@ func startHeartbeat(ctx context.Context, cfg *config.Gateway, client *http.Clien
 // newUserMAC — имитовставка для псевдонимов пользователей (ТЗ, 5.5). Ключ
 // нужен, если хотя бы одно приложение передаёт идентификатор пользователя:
 // исходный идентификатор в события не пишется. Без сервера ключ задаёт файл
-// конфигурации, с сервером — флаг -user-hmac-key; приложение с user_from
-// без ключа отклоняется при сборке обработчика.
-func newUserMAC(p aisecCrypto.Provider, cfg *config.Gateway, file *config.GatewayFile) (aisecCrypto.MAC, error) {
-	path := cfg.UserHMACKeyFile
-	if file != nil {
-		path = file.Gateway.UserHMACKeyFile
-		if path == "" {
-			for _, a := range file.Applications {
-				if a.UserFrom != "" && a.UserFrom != "none" {
-					return nil, fmt.Errorf("приложение %s: user_from %s требует gateway.user_hmac_key_file", a.ID, a.UserFrom)
-				}
+// конфигурации, с сервером — флаг -user-hmac-key; key — его содержимое,
+// прочитанное readTrustFiles. Приложение с user_from без ключа отклоняется
+// при сборке обработчика.
+func newUserMAC(p aisecCrypto.Provider, key []byte, file *config.GatewayFile) (aisecCrypto.MAC, error) {
+	if file != nil && key == nil {
+		for _, a := range file.Applications {
+			if a.UserFrom != "" && a.UserFrom != "none" {
+				return nil, fmt.Errorf("приложение %s: user_from %s требует gateway.user_hmac_key_file", a.ID, a.UserFrom)
 			}
 		}
 	}
-	if path == "" {
+	if key == nil {
 		return nil, nil
-	}
-	key, err := aisecCrypto.ReadKeyFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("ключ псевдонимов пользователей: %w", err)
 	}
 	return p.NewMAC(key)
 }

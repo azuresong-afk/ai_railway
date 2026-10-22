@@ -256,10 +256,15 @@ func (s *PGStore) CreateUser(ctx context.Context, u User, rec audit.Entry) error
 // две настройки с разными токенами не создадут двух первых администраторов.
 const setupLockKey = 0x61697365632d7375 // "aisec-su"
 
+// SetupLockKey — тот же ключ для восстановления из резервной копии: оно
+// берёт блокировку, чтобы первичная настройка не прошла между проверкой
+// пустоты и вставкой (Н40 ревью 2.r4).
+const SetupLockKey int64 = setupLockKey
+
 // SetupFirstUser гасит токен и создаёт первую учётную запись одной
 // транзакцией. Токен гасится условным UPDATE: из параллельных запросов с
 // одним токеном пройдёт ровно один.
-func (s *PGStore) SetupFirstUser(ctx context.Context, tokenHash []byte, hashAlg string, u User, rec audit.Entry) error {
+func (s *PGStore) SetupFirstUser(ctx context.Context, tokenHash []byte, hashAlg string, u User, cfg InstallSettings, rec audit.Entry) error {
 	ctx, cancel := pgCtx(ctx)
 	defer cancel()
 	return s.inTx(ctx, func(tx pgx.Tx) error {
@@ -290,6 +295,10 @@ func (s *PGStore) SetupFirstUser(ctx context.Context, tokenHash []byte, hashAlg 
 			u.ID, u.OrgID, u.Login, u.DisplayName, string(u.Role), string(u.Status), u.PasswordHash,
 			u.PasswordChangedAt, u.MustChangePassword, nullTime(u.TempPasswordExpires), u.CreatedAt, u.CreatedBy); err != nil {
 			return fmt.Errorf("первичная настройка: создание: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO install_settings (org_id, timezone, retention_mode, updated_at)
+			VALUES ($1, $2, $3, $4)`, u.OrgID, cfg.Timezone, cfg.RetentionMode, u.CreatedAt); err != nil {
+			return fmt.Errorf("первичная настройка: настройки установки: %w", err)
 		}
 		return s.record(ctx, tx, rec)
 	})

@@ -52,17 +52,23 @@ var TokenLen = len(TokenPrefix) + base64.RawURLEncoding.EncodedLen(tokenBytes)
 
 var nameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
 
+// keyIDRe — KeyID ключа подписи пакетов (bundle.KeyID): 8 байт в hex.
+var keyIDRe = regexp.MustCompile(`^[0-9a-f]{16}$`)
+
 // Ошибки. Тексты для журнала; клиенту внутреннего API причины отказа не
 // раскрываются.
 var (
-	ErrNotFound       = errors.New("шлюз не найден")
-	ErrNameTaken      = errors.New("шлюз с таким именем уже есть")
-	ErrRevoked        = errors.New("шлюз отозван")
-	ErrTokenInvalid   = errors.New("токен регистрации неверный, истёк или уже использован")
-	ErrUnknownCert    = errors.New("сертификат не принадлежит действующему шлюзу")
-	ErrTooFrequent    = errors.New("heartbeat слишком часто")
-	ErrNoCA           = errors.New("внутренний УЦ не подключён: регистрация шлюзов недоступна")
-	ErrInvalidRequest = errors.New("неверные данные")
+	ErrNotFound     = errors.New("шлюз не найден")
+	ErrNameTaken    = errors.New("шлюз с таким именем уже есть")
+	ErrRevoked      = errors.New("шлюз отозван")
+	ErrTokenInvalid = errors.New("токен регистрации неверный, истёк или уже использован")
+	ErrUnknownCert  = errors.New("сертификат не принадлежит действующему шлюзу")
+	ErrTooFrequent  = errors.New("heartbeat слишком часто")
+	ErrNoRollback   = errors.New("откат не обнаружен: шлюз работает на манифесте не старше проверенного")
+	// ErrRollbackViolated — откат не принимается при нарушенной целостности.
+	ErrRollbackViolated = errors.New("откат не принимается: последняя проверка целостности шлюза выявила нарушение")
+	ErrNoCA             = errors.New("внутренний УЦ не подключён: регистрация шлюзов недоступна")
+	ErrInvalidRequest   = errors.New("неверные данные")
 )
 
 // Gateway — шлюз в реестре.
@@ -85,6 +91,40 @@ type Gateway struct {
 	// (задача 2.20); nil — шлюз их не присылал (старая версия или ещё нет).
 	Selftest  *CheckReport
 	Integrity *CheckReport
+	// ManifestMaxVersion и ManifestMaxCreated — самый поздний манифест
+	// успешной проверки шлюза; текущий манифест (Integrity) старше — откат
+	// (В20 ревью 2.r4). Нулевое время — шлюз манифест не присылал.
+	ManifestMaxVersion string
+	ManifestMaxCreated time.Time
+	// BundleKeysOK — ключи проверки пакетов шлюза совпадают с ключом подписи
+	// сервера (В19 ревью 2.r4); nil — шлюз их не присылал.
+	BundleKeysOK *bool
+}
+
+// Rollback — шлюз работает на выпуске старше того, что уже проверялся
+// успешно (В20 ревью 2.r4, DM-42). Успешная проверка без сведений о
+// манифесте после выпуска, который их присылал, — тоже откат: на выпуск,
+// вышедший до этих сведений.
+func (g Gateway) Rollback() bool {
+	if g.Integrity == nil || g.ManifestMaxCreated.IsZero() {
+		return false
+	}
+	if g.Integrity.ManifestCreated.IsZero() {
+		return g.Integrity.OK
+	}
+	return g.Integrity.ManifestCreated.Before(g.ManifestMaxCreated)
+}
+
+// checkAcceptRollback — откат шлюза принимается, только если он есть и
+// последняя проверка целостности шлюза успешна (как у сервера).
+func checkAcceptRollback(g Gateway) error {
+	switch {
+	case !g.Rollback():
+		return ErrNoRollback
+	case !g.Integrity.OK:
+		return ErrRollbackViolated
+	}
+	return nil
 }
 
 // CheckReport — итог самотеста или контроля целостности шлюза: только
@@ -94,6 +134,11 @@ type CheckReport struct {
 	At     time.Time
 	Reason string // для целостности — причина из перечня; для самотеста пусто
 	Failed int
+	// Только у целостности (В20, Н34 ревью 2.r4): версия и время сборки
+	// манифеста (пусто — манифест не прочитан) и тестовый ключ манифеста.
+	ManifestVersion string
+	ManifestCreated time.Time
+	TestSigned      bool
 }
 
 // NewToken — выпуск токена регистрации (aisec-cli).
@@ -122,6 +167,8 @@ type Heartbeat struct {
 	// Selftest и Integrity — nil: итог не обновляется.
 	Selftest  *CheckReport
 	Integrity *CheckReport
+	// BundleKeysOK — итог сверки ключей проверки пакетов; nil — не обновляется.
+	BundleKeysOK *bool
 }
 
 // Store — хранилище реестра (миграция 0007_gateways). Рабочая реализация —
@@ -145,6 +192,9 @@ type Store interface {
 	Revoke(ctx context.Context, orgID, name string, now time.Time, rec func(Gateway) audit.Entry) (Gateway, error)
 	// List — все шлюзы организации по имени.
 	List(ctx context.Context, orgID string) ([]Gateway, error)
+	// AcceptRollback сбрасывает максимум манифеста шлюза до текущего
+	// (намеренный откат выпуска, В20 ревью 2.r4); отката нет — ErrNoRollback.
+	AcceptRollback(ctx context.Context, orgID, name string, rec func(prev, cur Gateway) audit.Entry) (Gateway, error)
 }
 
 // Auditor — журнал аудита для событий без изменения данных (отказы).
@@ -168,6 +218,29 @@ type Options struct {
 	Logger               *slog.Logger
 }
 
+// BundleKeys — ключи подписи пакетов конфигурации сервера (KeyID, задача
+// 2.13): Current — действующий, Next — второй на время ротации (может быть
+// пустым).
+type BundleKeys struct {
+	Current string
+	Next    string
+}
+
+// Match — ключи проверки шлюза совпадают с ключами сервера (В19 ревью
+// 2.r4): действующий ключ у шлюза есть, а других, кроме второго ключа
+// ротации, нет. Чужой ключ у шлюза — признак подмены -bundle-pub.
+func (k BundleKeys) Match(gateway []string) bool {
+	if !slices.Contains(gateway, k.Current) {
+		return false
+	}
+	for _, id := range gateway {
+		if id != k.Current && (k.Next == "" || id != k.Next) {
+			return false
+		}
+	}
+	return true
+}
+
 // Service — регистрация, проверка и учёт шлюзов.
 type Service struct {
 	store    Store
@@ -181,6 +254,9 @@ type Service struct {
 	validity time.Duration
 	minHB    time.Duration
 	logger   *slog.Logger
+	// bundleKeys — ключи подписи пакетов; nil — сверка не выполняется
+	// (сервер без ключа подписи).
+	bundleKeys atomic.Pointer[BundleKeys]
 
 	mu       sync.Mutex
 	lastHB   map[string]time.Time // ID шлюза → последний принятый heartbeat
@@ -228,6 +304,16 @@ func New(o Options) (*Service, error) {
 		s.logger = slog.Default()
 	}
 	return s, nil
+}
+
+// SetBundleKeys задаёт ключи подписи пакетов для сверки в heartbeat;
+// вызывается после загрузки ключа подписи.
+func (s *Service) SetBundleKeys(k BundleKeys) {
+	if k.Current == "" {
+		s.bundleKeys.Store(nil)
+		return
+	}
+	s.bundleKeys.Store(&k)
 }
 
 // ValidName — допустимое имя шлюза: как логин, латиница в нижнем регистре.
@@ -456,11 +542,18 @@ type HeartbeatInput struct {
 	// Selftest и Integrity — необязательные итоги проверок шлюза (задача 2.20).
 	Selftest  *CheckReport
 	Integrity *CheckReport
+	// BundleKeys — KeyID ключей проверки пакетов шлюза (-bundle-pub, В19
+	// ревью 2.r4); пусто — шлюз их не присылает (прежняя версия).
+	BundleKeys []string
 }
 
 // Пределы итогов проверок в heartbeat.
 const (
 	maxReportFailed = 1000
+	// maxBundleKeys — ключей проверки пакетов у шлюза (config.MaxBundlePubFiles).
+	maxBundleKeys = 2
+	// maxManifestVersion — длина версии манифеста (integrity.maxVersionLen).
+	maxManifestVersion = 128
 	// maxReportFuture — насколько время проверки может опережать часы сервера.
 	maxReportFuture = 5 * time.Minute
 )
@@ -471,6 +564,17 @@ var integrityReasons = []string{"ok", "manifest_missing", "manifest_invalid", "s
 func (r *CheckReport) validate(name string, integrity bool) error {
 	if r == nil {
 		return nil
+	}
+	if !integrity && (r.ManifestVersion != "" || !r.ManifestCreated.IsZero() || r.TestSigned) {
+		return fmt.Errorf("%w: %s: сведения о манифесте только у integrity", ErrInvalidRequest, name)
+	}
+	if (r.ManifestVersion == "") != r.ManifestCreated.IsZero() || len(r.ManifestVersion) > maxManifestVersion {
+		return fmt.Errorf("%w: %s: manifest_version (до %d символов) и manifest_created задаются вместе", ErrInvalidRequest, name, maxManifestVersion)
+	}
+	for i := 0; i < len(r.ManifestVersion); i++ {
+		if c := r.ManifestVersion[i]; c < 0x20 || c > 0x7e {
+			return fmt.Errorf("%w: %s.manifest_version — только печатные символы ASCII", ErrInvalidRequest, name)
+		}
 	}
 	if r.Failed < 0 || r.Failed > maxReportFailed {
 		return fmt.Errorf("%w: %s.failed — от 0 до %d", ErrInvalidRequest, name, maxReportFailed)
@@ -512,6 +616,14 @@ func (in HeartbeatInput) Validate() error {
 			return fmt.Errorf("%w: version — только латиница, цифры и «.+_-»", ErrInvalidRequest)
 		}
 	}
+	if len(in.BundleKeys) > maxBundleKeys {
+		return fmt.Errorf("%w: bundle_keys — не больше %d", ErrInvalidRequest, maxBundleKeys)
+	}
+	for i, id := range in.BundleKeys {
+		if !keyIDRe.MatchString(id) || slices.Contains(in.BundleKeys[:i], id) {
+			return fmt.Errorf("%w: bundle_keys — 16 строчных шестнадцатеричных цифр без повторов", ErrInvalidRequest)
+		}
+	}
 	if len(in.BundleETag) > maxETag {
 		return fmt.Errorf("%w: bundle_etag — до %d символов", ErrInvalidRequest, maxETag)
 	}
@@ -530,9 +642,15 @@ func (s *Service) Heartbeat(ctx context.Context, gatewayID string, in HeartbeatI
 	}
 	now := s.clock().UTC()
 	for _, r := range []*CheckReport{in.Selftest, in.Integrity} {
-		if r != nil && r.At.After(now.Add(maxReportFuture)) {
+		if r != nil && (r.At.After(now.Add(maxReportFuture)) || r.ManifestCreated.After(now.Add(maxReportFuture))) {
 			return time.Time{}, fmt.Errorf("%w: время проверки в будущем", ErrInvalidRequest)
 		}
+	}
+	// Сверка ключей проверки пакетов с ключом подписи сервера (В19).
+	var keysOK *bool
+	if k := s.bundleKeys.Load(); k != nil && len(in.BundleKeys) > 0 {
+		ok := k.Match(in.BundleKeys)
+		keysOK = &ok
 	}
 	s.mu.Lock()
 	if last, ok := s.lastHB[gatewayID]; ok && now.Sub(last) < s.minHB {
@@ -544,6 +662,7 @@ func (s *Service) Heartbeat(ctx context.Context, gatewayID string, in HeartbeatI
 	s.mu.Unlock()
 	if err := s.store.Touch(ctx, gatewayID, Heartbeat{
 		Version: in.Version, BundleETag: in.BundleETag, Addr: ip, At: now, Selftest: in.Selftest, Integrity: in.Integrity,
+		BundleKeysOK: keysOK,
 	}); err != nil {
 		return time.Time{}, err
 	}
@@ -565,6 +684,25 @@ func (s *Service) Revoke(ctx context.Context, name string, actor audit.Actor) (G
 			OrgID: s.orgID, Actor: actor, Action: "gateway.revoke",
 			Object: audit.Object{Type: "gateway", ID: gw.ID}, Result: audit.ResultSuccess,
 			Details: map[string]any{"name": gw.Name, "cert_serial": gw.CertSerial},
+		}
+	})
+}
+
+// AcceptRollback — намеренный откат шлюза на более старый выпуск (aisec-cli
+// verify -accept-rollback -gateway): максимум манифеста шлюза становится
+// текущим, запись integrity.rollback_accepted — с обеими версиями.
+func (s *Service) AcceptRollback(ctx context.Context, name string, actor audit.Actor) (Gateway, error) {
+	if !ValidName(name) {
+		return Gateway{}, fmt.Errorf("%w: неверное имя шлюза", ErrInvalidRequest)
+	}
+	return s.store.AcceptRollback(ctx, s.orgID, name, func(prev, cur Gateway) audit.Entry {
+		return audit.Entry{
+			OrgID: s.orgID, Actor: actor, Action: "integrity.rollback_accepted",
+			Object: audit.Object{Type: "component", ID: "gateway:" + cur.ID}, Result: audit.ResultSuccess,
+			Details: map[string]any{"name": cur.Name, "previous_version": prev.ManifestMaxVersion,
+				"previous_created": prev.ManifestMaxCreated.UTC().Format(time.RFC3339),
+				"manifest_version": cur.Integrity.ManifestVersion,
+				"manifest_created": cur.Integrity.ManifestCreated.UTC().Format(time.RFC3339)},
 		}
 	})
 }

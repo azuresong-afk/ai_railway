@@ -38,7 +38,16 @@ type Verification struct {
 	Checked int64  // проверено записей
 	Head    Anchor // последняя проверенная запись
 	Break   *Break // nil — цепочка цела
+	// Cached — итог прежней проверки не старше VerifyCacheFor, новая не
+	// выполнялась (только TryVerifyBy).
+	Cached bool
 }
+
+// VerifyCacheFor — сколько итог проверки отвечает на команду из API без
+// новой проверки (Н31 ревью 2.r3b): полный проход журнала (до 20 ГиБ) по
+// каждой команде держал бы СУБД занятой. Немедленная проверка — aisec-cli
+// audit verify.
+const VerifyCacheFor = 10 * time.Minute
 
 // OK — цепочка цела.
 func (v Verification) OK() bool { return v.Break == nil }
@@ -54,9 +63,13 @@ func (v Verification) OK() bool { return v.Break == nil }
 type Verifier struct {
 	log *Log
 	mac *HeadMAC
-	// mu сериализует проверки и защищает known.
+	// mu сериализует проверки и защищает known и last.
 	mu    sync.Mutex
 	known *Anchor
+	// last — итог последней выполненной проверки этого процесса; failedAt —
+	// когда проверка последний раз не завершилась (сбой, истёк срок).
+	last     *Verification
+	failedAt time.Time
 }
 
 // HeadMAC — имитовставка головы цепочки на ключе вне БД: KeyID — ID ключа
@@ -118,20 +131,42 @@ func (v *Verifier) VerifyBy(ctx context.Context, by Actor) (Verification, error)
 // команде); новая не запускается.
 var ErrVerifyBusy = errors.New("журнал аудита: проверка цепочки уже выполняется")
 
+// ErrVerifyFailedRecently — проверка не завершилась менее VerifyCacheFor
+// назад; новая по команде из API не запускается (самопроверка H4, С1: иначе
+// проход, который не укладывается в срок, повторялся бы непрерывно).
+var ErrVerifyFailedRecently = errors.New("журнал аудита: проверка цепочки недавно не завершилась")
+
 // TryVerifyBy — VerifyBy по команде из API (задача 2.4a): с адресом
 // субъекта (РСБ.1 «откуда») и без ожидания. Если проверка уже идёт —
 // ErrVerifyBusy: ждать на блокировке нельзя, она не учитывает срок запроса.
+// Если последняя проверка моложе VerifyCacheFor — её итог с Cached, без
+// новой проверки и без записи в журнал.
 func (v *Verifier) TryVerifyBy(ctx context.Context, by Actor, ip netip.Addr) (Verification, error) {
 	if !v.mu.TryLock() {
 		return Verification{}, ErrVerifyBusy
 	}
 	defer v.mu.Unlock()
+	now := v.log.now()
+	if l := v.last; l != nil && now.Sub(l.At) < VerifyCacheFor && !l.At.Before(v.failedAt) {
+		res := *l
+		res.Cached = true
+		return res, nil
+	}
+	if !v.failedAt.IsZero() && now.Sub(v.failedAt) < VerifyCacheFor {
+		return Verification{}, ErrVerifyFailedRecently
+	}
 	return v.verifyLogged(ctx, by, ip)
 }
 
 // verifyLogged — проверка под v.mu; сбой пишется в журнал технического состояния.
 func (v *Verifier) verifyLogged(ctx context.Context, by Actor, ip netip.Addr) (Verification, error) {
 	res, err := v.verify(ctx, by, ip)
+	if err == nil {
+		last := res
+		v.last = &last
+	} else {
+		v.failedAt = v.log.now()
+	}
 	if err != nil {
 		// Лучшее, что можно сделать: БД может быть недоступна и для этой записи.
 		// Свой срок: сбой по истёкшему сроку проверки тоже должен оставить след.

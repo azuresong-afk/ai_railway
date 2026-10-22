@@ -1,6 +1,7 @@
 package integrity
 
 import (
+	"errors"
 	"fmt"
 
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
@@ -17,6 +18,12 @@ func EmbeddedVerifier(p aisecCrypto.Provider) (v aisecCrypto.Verifier, testKey b
 	}
 	if profile != p.Name() {
 		return nil, false, fmt.Errorf("встроенный ключ проверки манифеста профиля %s, а компонент работает в профиле %s", profile, p.Name())
+	}
+	// Поставочная сборка с тестовым ключом (keys/manifest.pub скопирован с
+	// manifest-test.pub) приняла бы манифест, подписанный ключом из
+	// репозитория (Н35 ревью 2.r4).
+	if !embeddedTestKey && IsTestPublicKey(pub) {
+		return nil, false, errors.New("в поставочную сборку встроен тестовый ключ проверки манифеста")
 	}
 	v, err = p.NewVerifier(pub)
 	if err != nil {

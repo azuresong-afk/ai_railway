@@ -11,6 +11,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -38,6 +39,10 @@ const (
 	ReasonManifestInvalid  Reason = "manifest_invalid"
 	ReasonSignatureInvalid Reason = "signature_invalid"
 	ReasonFilesMismatch    Reason = "files_mismatch"
+	// ReasonManifestRollback — манифест подписан верно, но собран раньше
+	// манифеста последней успешной проверки: установлен более старый выпуск
+	// (В20 ревью 2.r4). Определяется по истории проверок в БД (PGStore).
+	ReasonManifestRollback Reason = "manifest_rollback"
 )
 
 // Problem — что не так с файлом.
@@ -71,6 +76,10 @@ type Result struct {
 	At              time.Time
 	Reason          Reason
 	ManifestVersion string
+	// ManifestCreated — время сборки манифеста (поле created): по нему
+	// упорядочены выпуски и обнаруживается откат. Нулевое — манифест не
+	// прочитан.
+	ManifestCreated time.Time
 	// TestSigned — проверка встроенным тестовым ключом: сборка не для поставки.
 	TestSigned bool
 	Checked    int       // проверено файлов
@@ -98,8 +107,8 @@ type Config struct {
 	// ManifestPath — файл манифеста; подпись — рядом (SignatureFile). Корень
 	// путей манифеста — каталог этого файла.
 	ManifestPath string
-	// Executable — запущенный исполняемый файл компонента (os.Executable),
-	// BinaryName — его путь в манифесте, например bin/aisec-server.
+	// Executable — запущенный исполняемый файл компонента
+	// (RunningExecutable), BinaryName — его путь в манифесте, например bin/aisec-server.
 	Executable string
 	BinaryName string
 	// Embedded — встроенные наборы файлов: префикс в манифесте (web/dist,
@@ -109,12 +118,22 @@ type Config struct {
 	// AllFiles — сверить с диском все невстроенные файлы манифеста
 	// (aisec-cli verify).
 	AllFiles bool
-	// Watch — файлы конфигурации: изменение после запуска — нарушение (ОЦЛ.3).
-	Watch []string
+	// Watch — файлы конфигурации и корни доверия: изменение после запуска —
+	// нарушение (ОЦЛ.3, В19 ревью 2.r4).
+	Watch []WatchFile
 	// Verifier и TestSigned заменяют встроенный ключ (тесты).
 	Verifier   aisecCrypto.Verifier
 	TestSigned bool
 	Now        func() time.Time
+}
+
+// WatchFile — файл под наблюдением. Data — байты, которые компонент
+// прочитал при запуске и с которыми работает: эталон — их хеш, поэтому
+// изменение между чтением и началом наблюдения тоже видно (Н37 ревью
+// 2.r4). nil — эталон снимается чтением файла в NewChecker.
+type WatchFile struct {
+	Path string
+	Data []byte
 }
 
 // Checker проверяет целостность компонента. Безопасен для одновременного
@@ -148,18 +167,39 @@ func NewChecker(cfg Config) (*Checker, error) {
 		}
 	}
 	c := &Checker{cfg: cfg, hasher: h, watched: map[string][]byte{}}
-	for _, p := range cfg.Watch {
-		sum, err := c.hashPath(p)
-		if err != nil {
-			return nil, fmt.Errorf("контроль целостности: файл конфигурации %s: %w", p, err)
+	for _, w := range cfg.Watch {
+		if _, dup := c.watched[w.Path]; dup || w.Path == "" {
+			return nil, fmt.Errorf("контроль целостности: файл конфигурации %q пустой или указан дважды", w.Path)
 		}
-		c.watched[p] = sum
+		var sum []byte
+		if w.Data != nil {
+			sum = c.hasher.Sum(w.Data)
+		} else if sum, err = c.hashPath(w.Path); err != nil {
+			return nil, fmt.Errorf("контроль целостности: файл конфигурации %s: %w", w.Path, err)
+		}
+		c.watched[w.Path] = sum
 	}
 	return c, nil
 }
 
 // Component — имя проверяемого компонента.
 func (c *Checker) Component() string { return c.cfg.Component }
+
+// selfExe — запущенный образ процесса в Linux: открывается тот файл, с
+// которым работает процесс, даже если путь os.Executable() уже указывает
+// на подменённый переименованием файл (Н37 ревью 2.r4).
+const selfExe = "/proc/self/exe"
+
+// RunningExecutable — что читать для сверки исполняемого файла: в Linux
+// /proc/self/exe, иначе путь path (os.Executable()).
+func RunningExecutable(path string) string {
+	if runtime.GOOS == "linux" {
+		if _, err := os.Stat(selfExe); err == nil {
+			return selfExe
+		}
+	}
+	return path
+}
 
 // DefaultManifestPath — манифест по умолчанию: в корне установки, над
 // каталогом bin/ с исполняемым файлом.
@@ -180,7 +220,7 @@ func (c *Checker) Check(ctx context.Context, trig Trigger) (Result, error) {
 		c.checkWatched(&res)
 		return res, nil
 	}
-	res.ManifestVersion = m.Version
+	res.ManifestVersion, res.ManifestCreated = m.Version, m.Created.UTC()
 	entries := make(map[string]Entry, len(m.Files))
 	for _, e := range m.Files {
 		entries[e.Path] = e
@@ -240,7 +280,7 @@ func (c *Checker) checkExecutable(ctx context.Context, res *Result, entries map[
 	if err := ctx.Err(); err != nil {
 		return ErrInterrupted
 	}
-	f, err := os.Open(c.cfg.Executable) //nolint:gosec // G304: путь — os.Executable() самого компонента, не ввод
+	f, err := os.Open(c.cfg.Executable) //nolint:gosec // G304: путь — /proc/self/exe или os.Executable() самого компонента, не ввод
 	if err != nil {
 		res.fail(c.cfg.BinaryName, ProblemUnreadable)
 		return nil

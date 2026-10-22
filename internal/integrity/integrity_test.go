@@ -433,7 +433,7 @@ func TestWatchedConfigChanged(t *testing.T) {
 	conf := filepath.Join(in.root, "gateway.yaml")
 	writeFile(t, conf, []byte("listen: 127.0.0.1:8443\n"))
 	cfg := in.config(t)
-	cfg.Watch = []string{conf}
+	cfg.Watch = []WatchFile{{Path: conf}}
 	c, err := NewChecker(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -451,6 +451,62 @@ func TestWatchedConfigChanged(t *testing.T) {
 	res, err = c.Check(context.Background(), TriggerPeriodic)
 	if err != nil || res.Reason != ReasonManifestMissing || !hasFailure(res, conf, ProblemChanged) {
 		t.Fatalf("%+v %v", res, err)
+	}
+}
+
+// Н37 ревью 2.r4: эталон — хеш байтов, которые компонент прочитал; файл,
+// изменённый между чтением и началом наблюдения, — нарушение с первой
+// проверки.
+func TestWatchedBaselineFromReadBytes(t *testing.T) {
+	in := newInstall(t)
+	conf := filepath.Join(in.root, "bundle-signing.pub")
+	read := []byte("ключ, прочитанный при запуске")
+	writeFile(t, conf, []byte("подменённый ключ"))
+	cfg := in.config(t)
+	cfg.Watch = []WatchFile{{Path: conf, Data: read}}
+	c, err := NewChecker(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := c.Check(context.Background(), TriggerStartup)
+	if err != nil || res.OK() || !hasFailure(res, conf, ProblemChanged) {
+		t.Fatalf("%+v %v", res, err)
+	}
+	writeFile(t, conf, read)
+	if res, err := c.Check(context.Background(), TriggerPeriodic); err != nil || !res.OK() {
+		t.Fatalf("%+v %v", res, err)
+	}
+	cfg.Watch = []WatchFile{{Path: conf, Data: read}, {Path: conf}}
+	if _, err := NewChecker(cfg); err == nil {
+		t.Fatal("файл под наблюдением дважды принят")
+	}
+}
+
+// DM-42, В20 ревью 2.r4: итог несёт время сборки манифеста — по нему
+// хранилище обнаруживает откат.
+func TestDM42_ResultHasManifestCreated(t *testing.T) {
+	in := newInstall(t)
+	res := check(t, in.config(t))
+	if !res.OK() || !res.ManifestCreated.Equal(time.Date(2026, 10, 21, 0, 0, 0, 0, time.UTC)) {
+		t.Fatalf("%+v", res)
+	}
+	removeFile(t, in.manifest)
+	if res := check(t, in.config(t)); !res.ManifestCreated.IsZero() {
+		t.Fatalf("время манифеста без манифеста: %+v", res)
+	}
+}
+
+// Linux: исполняемый файл читается через /proc/self/exe (Н37 ревью 2.r4).
+func TestRunningExecutable(t *testing.T) {
+	got := RunningExecutable("/opt/aisec/bin/aisec-gateway")
+	if _, err := os.Stat("/proc/self/exe"); err == nil {
+		if got != "/proc/self/exe" {
+			t.Fatal(got)
+		}
+		return
+	}
+	if got != "/opt/aisec/bin/aisec-gateway" {
+		t.Fatal(got)
 	}
 }
 
@@ -548,13 +604,63 @@ type recorded struct {
 	runs []Result
 	by   []audit.Actor
 	ip   []netip.Addr
+	// fail — ошибка сохранения; reason — подмена причины хранилищем.
+	fail   error
+	reason Reason
 }
 
-func (r *recorded) record(_ context.Context, res Result, by audit.Actor, ip netip.Addr) error {
+func (r *recorded) record(_ context.Context, res Result, by audit.Actor, ip netip.Addr) (Result, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.runs, r.by, r.ip = append(r.runs, res), append(r.by, by), append(r.ip, ip)
-	return nil
+	if r.fail != nil {
+		return res, r.fail
+	}
+	if r.reason != "" {
+		res.Reason = r.reason
+	}
+	return res, nil
+}
+
+// Н36 ревью 2.r4: проверка по команде, итог которой не сохранён, —
+// ErrNotRecorded (API отвечает 503); реакция всё равно применяется.
+func TestDM42_ManualCheckNotRecorded(t *testing.T) {
+	in := newInstall(t)
+	c, err := NewChecker(in.config(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := &recorded{fail: errors.New("БД недоступна")}
+	m, err := NewMonitor(MonitorConfig{Checker: c, Action: ActionAlert, Interval: time.Hour, Record: rec.record, Logger: discardLogger()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Startup(context.Background()); err != nil {
+		t.Fatalf("запуск без БД остановлен: %v", err)
+	}
+	res, err := m.CheckBy(context.Background(), audit.Actor{Type: audit.ActorUser, ID: "u1"}, netip.Addr{})
+	if !errors.Is(err, ErrNotRecorded) || !res.OK() {
+		t.Fatalf("%+v %v", res, err)
+	}
+}
+
+// DM-42, В20 ревью 2.r4: причина отката от хранилища применяется реакцией:
+// с stop компонент не запускается.
+func TestDM42_RollbackFromStoreStops(t *testing.T) {
+	in := newInstall(t)
+	c, err := NewChecker(in.config(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := &recorded{reason: ReasonManifestRollback}
+	m, err := NewMonitor(MonitorConfig{Checker: c, Action: ActionStop, Interval: time.Hour, Record: rec.record, Logger: discardLogger()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := m.Startup(context.Background())
+	if !errors.Is(err, ErrViolation) || res.Reason != ReasonManifestRollback {
+		t.Fatalf("%+v %v", res, err)
+	}
 }
 
 func TestMonitorReactions(t *testing.T) {
@@ -637,5 +743,22 @@ func TestMonitorRunPeriodic(t *testing.T) {
 	defer rec.mu.Unlock()
 	if len(rec.runs) == 0 || rec.runs[0].Trigger != TriggerPeriodic {
 		t.Fatalf("%+v", rec.runs)
+	}
+}
+
+// Н35 ревью 2.r4: тестовый ключ узнаётся в любой сборке.
+func TestIsTestPublicKey(t *testing.T) {
+	_, pub, err := aisecCrypto.DecodeKeyPEM(testKeyPEM, aisecCrypto.KeyKindManifestSigningPublic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !IsTestPublicKey(pub) {
+		t.Fatal("тестовый ключ не узнан")
+	}
+	if v, isTest, err := EmbeddedVerifier(provider(t)); err != nil || IsTestPublicKey(v.PublicKey()) != isTest {
+		t.Fatalf("встроенный ключ: тестовый %v, %v", isTest, err)
+	}
+	if IsTestPublicKey(make([]byte, len(pub))) || IsTestPublicKey(nil) {
+		t.Fatal("чужой ключ принят за тестовый")
 	}
 }

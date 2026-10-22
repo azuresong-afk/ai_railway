@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"slices"
 
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 )
@@ -43,6 +44,17 @@ func NewOpener(p aisecCrypto.Provider, verifiers []aisecCrypto.Verifier, recipie
 		o.verifiers[id] = v
 	}
 	return o, nil
+}
+
+// KeyIDs — идентификаторы ключей проверки по возрастанию: шлюз сообщает
+// их в heartbeat для сверки с ключом подписи сервера (В19 ревью 2.r4).
+func (o *Opener) KeyIDs() []string {
+	out := make([]string, 0, len(o.verifiers))
+	for id := range o.verifiers {
+		out = append(out, id)
+	}
+	slices.Sort(out)
+	return out
 }
 
 // Bundle — проверенный пакет.

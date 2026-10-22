@@ -53,12 +53,14 @@ type IntegrityFailure struct {
 
 // IntegrityCheck — итог проверки целостности компонента.
 type IntegrityCheck struct {
-	Component       string             `json:"component"`
-	Trigger         string             `json:"trigger"`
-	CheckedAt       time.Time          `json:"checked_at"`
-	OK              bool               `json:"ok"`
-	Reason          string             `json:"reason"`
-	ManifestVersion string             `json:"manifest_version"`
+	Component       string    `json:"component"`
+	Trigger         string    `json:"trigger"`
+	CheckedAt       time.Time `json:"checked_at"`
+	OK              bool      `json:"ok"`
+	Reason          string    `json:"reason"`
+	ManifestVersion string    `json:"manifest_version"`
+	// ManifestCreated — время сборки манифеста; nil — манифест не прочитан.
+	ManifestCreated *time.Time         `json:"manifest_created"`
 	TestSigned      bool               `json:"test_signed"`
 	CheckedFiles    int                `json:"checked_files"`
 	Failures        []IntegrityFailure `json:"failures"`
@@ -75,6 +77,10 @@ func integrityView(r integrity.Result) IntegrityCheck {
 		Component: r.Component, Trigger: string(r.Trigger), CheckedAt: r.At.UTC(), OK: r.OK(), Reason: string(r.Reason),
 		ManifestVersion: r.ManifestVersion, TestSigned: r.TestSigned, CheckedFiles: r.Checked,
 		Failures: make([]IntegrityFailure, 0, len(r.Failures)), Omitted: r.Omitted,
+	}
+	if !r.ManifestCreated.IsZero() {
+		c := r.ManifestCreated.UTC()
+		v.ManifestCreated = &c
 	}
 	for _, f := range r.Failures {
 		v.Failures = append(v.Failures, IntegrityFailure{Path: f.Path, Problem: string(f.Problem)})
@@ -115,6 +121,14 @@ func (d Deps) integrityVerify(w http.ResponseWriter, r *http.Request) {
 	res, err := d.Integrity.CheckBy(ctx, by, clientAddr(r))
 	if errors.Is(err, integrity.ErrInterrupted) {
 		WriteProblem(w, NewProblem(http.StatusServiceUnavailable, CodeUnavailable, "Проверка прервана: истёк срок или сервер останавливается."))
+		return
+	}
+	// Итог не записан в журнал аудита — действие не подтверждается (Н36
+	// ревью 2.r4): итог есть только в техническом журнале.
+	if errors.Is(err, integrity.ErrNotRecorded) {
+		d.Logger.Error("итог проверки целостности по команде не сохранён", "error", err)
+		WriteProblem(w, NewProblem(http.StatusServiceUnavailable, CodeUnavailable,
+			"Проверка выполнена, но её итог не записан в журнал аудита: база данных недоступна. Повторите позже."))
 		return
 	}
 	if err != nil {

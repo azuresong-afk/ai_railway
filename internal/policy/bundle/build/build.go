@@ -5,15 +5,18 @@
 //
 // Сборка ленивая: при запросе шлюза содержимое собирается из текущих
 // данных и сравнивается по хешу с последней версией. Изменилось — новая
-// версия и запись bundle.build в аудит той же транзакцией. Содержимое
-// проверяется так же, как его проверит шлюз; не прошло — шлюзам выдаётся
-// последняя корректная версия, неудача пишется в аудит один раз на
-// содержимое.
+// версия и запись bundle.build в аудит той же транзакцией. Каждое
+// приложение проверяется так же, как его проверит шлюз; не прошедшее
+// исключается (в пакете остаются его ID и ключи, шлюз отвечает 503), и
+// остальное, в том числе отзыв ключей, доставляется (В16 ревью 2.r3b).
+// Не прошло всё содержимое (размер) — шлюзам выдаётся последняя корректная
+// версия, неудача пишется в аудит один раз на содержимое.
 package build
 
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -23,6 +26,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/azuresong-afk/ai_railway/internal/apps"
 	"github.com/azuresong-afk/ai_railway/internal/audit"
@@ -64,6 +68,30 @@ type Options struct {
 	OrgID    string
 	Clock    func() time.Time
 	Logger   *slog.Logger
+	// Reuse — сколько выдавать собранный результат без новой выборки
+	// данных (Н26 ревью 2.r3b): опросы десятков шлюзов в эти секунды не
+	// нагружают БД; 0 — собирать при каждом запросе.
+	Reuse time.Duration
+}
+
+// Excluded — приложение, не вошедшее в пакет, и причина (В16 ревью 2.r3b).
+type Excluded struct {
+	Application string `json:"application"`
+	Reason      string `json:"reason"`
+}
+
+// Health — итог последней сборки для «Состояния системы».
+type Health struct {
+	// Failed — содержимое не собрано целиком (сбой уровня пакета, например
+	// размер): шлюзам выдаётся прежняя корректная версия.
+	Failed bool
+	// Reason — причина Failed.
+	Reason string
+	// Excluded — приложения, исключённые из выдаваемой версии.
+	Excluded []Excluded
+	// Version и BuiltAt — текущая корректная версия; 0 — её нет.
+	Version int64
+	BuiltAt time.Time
 }
 
 // Service — сборка и выдача пакетов.
@@ -77,12 +105,26 @@ type Service struct {
 	orgID    string
 	clock    func() time.Time
 	logger   *slog.Logger
+	reuse    time.Duration
 
-	// mu упорядочивает сборку: одна версия на изменение, даже если шлюзы
-	// пришли одновременно.
-	mu sync.Mutex
+	// sem упорядочивает сборку: одна версия на изменение, даже если шлюзы
+	// пришли одновременно; ожидание прерывается ctx запроса (Н26).
+	sem chan struct{}
+	// Поля ниже — под sem.
 	// failedHash — хеш содержимого, неудача которого уже записана в аудит.
 	failedHash []byte
+	failReason string
+	excluded   []Excluded
+	// checks — итоги проверки отдельных приложений по хешу их содержимого:
+	// неизменившееся приложение не проверяется заново.
+	checks map[string]string
+	// last, lastErr, lastAt — результат последней сборки для Reuse.
+	last    Record
+	lastErr error
+	lastAt  time.Time
+
+	// mu защищает lastReport.
+	mu sync.Mutex
 	// lastReport — шлюз|итог|причина → время последней записи отчёта.
 	lastReport map[string]time.Time
 }
@@ -97,7 +139,8 @@ func New(o Options) (*Service, error) {
 		return nil, err
 	}
 	s := &Service{apps: o.Apps, policies: o.Policies, store: o.Store, audit: o.Audit, sealer: o.Sealer, hasher: h,
-		orgID: o.OrgID, clock: o.Clock, logger: o.Logger, lastReport: map[string]time.Time{}}
+		orgID: o.OrgID, clock: o.Clock, logger: o.Logger, reuse: o.Reuse, sem: make(chan struct{}, 1),
+		checks: map[string]string{}, lastReport: map[string]time.Time{}}
 	if s.orgID == "" {
 		s.orgID = audit.DefaultOrgID
 	}
@@ -112,16 +155,63 @@ func New(o Options) (*Service, error) {
 
 var systemActor = audit.Actor{Type: audit.ActorSystem, ID: "bundle-builder", Name: "Сборка пакетов конфигурации"}
 
+func (s *Service) lock(ctx context.Context) error {
+	select {
+	case s.sem <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *Service) unlock() { <-s.sem }
+
 // Current — последняя корректная версия; при изменении данных собирает новую.
 func (s *Service) Current(ctx context.Context) (Record, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	if err := s.lock(ctx); err != nil {
+		return Record{}, err
+	}
+	defer s.unlock()
+	return s.current(ctx)
+}
+
+func (s *Service) current(ctx context.Context) (Record, error) {
+	now := s.clock()
+	if s.reuse > 0 && !s.lastAt.IsZero() && !now.Before(s.lastAt) && now.Sub(s.lastAt) < s.reuse {
+		return s.last, s.lastErr
+	}
+	rec, err := s.rebuild(ctx, now)
+	if err == nil || errors.Is(err, ErrNoBundle) {
+		s.last, s.lastErr, s.lastAt = rec, err, now
+	}
+	return rec, err
+}
+
+// Health — итог сборки: сначала собирает версию по текущим данным.
+func (s *Service) Health(ctx context.Context) (Health, error) {
+	if err := s.lock(ctx); err != nil {
+		return Health{}, err
+	}
+	defer s.unlock()
+	rec, err := s.current(ctx)
+	if err != nil && !errors.Is(err, ErrNoBundle) {
+		return Health{}, err
+	}
+	h := Health{Failed: s.failedHash != nil, Reason: s.failReason, Excluded: slices.Clone(s.excluded),
+		Version: rec.Version, BuiltAt: rec.CreatedAt}
+	if h.Excluded == nil {
+		h.Excluded = []Excluded{}
+	}
+	return h, nil
+}
+
+func (s *Service) rebuild(ctx context.Context, now time.Time) (Record, error) {
 	latest, err := s.store.Latest(ctx, s.orgID)
 	if err != nil && !errors.Is(err, ErrNotFound) {
 		return Record{}, err
 	}
 	have := err == nil
-	content, stats, cerr := s.collect(ctx)
+	content, stats, excluded, cerr := s.collect(ctx, now)
 	if cerr != nil && !isInvalid(cerr) {
 		return Record{}, cerr
 	}
@@ -132,6 +222,7 @@ func (s *Service) Current(ctx context.Context) (Record, error) {
 		}
 		hash = s.hasher.Sum(data)
 		if have && bytes.Equal(hash, latest.Hash) {
+			s.succeeded(excluded)
 			return latest, nil
 		}
 		if bytes.Equal(hash, s.failedHash) {
@@ -144,12 +235,12 @@ func (s *Service) Current(ctx context.Context) (Record, error) {
 		s.buildFailed(ctx, cerr, hash)
 		return s.fallback(latest, have)
 	}
-	now := s.clock().UTC().Truncate(time.Microsecond)
-	version := now.UnixMilli()
+	ts := now.UTC().Truncate(time.Microsecond)
+	version := ts.UnixMilli()
 	if have && version <= latest.Version {
 		version = latest.Version + 1
 	}
-	rec := Record{OrgID: s.orgID, Version: version, Content: data, Hash: hash, HashAlg: s.hasher.Name(), CreatedAt: now}
+	rec := Record{OrgID: s.orgID, Version: version, Content: data, Hash: hash, HashAlg: s.hasher.Name(), CreatedAt: ts}
 	stats["version"] = version
 	stats["content_hash"] = fmt.Sprintf("%x", hash)
 	entry := audit.Entry{OrgID: s.orgID, Actor: systemActor, Action: "bundle.build",
@@ -161,9 +252,17 @@ func (s *Service) Current(ctx context.Context) (Record, error) {
 		}
 		return Record{}, err
 	}
-	s.failedHash = nil
-	s.logger.Info("собрана новая версия пакета конфигурации", "version", version)
+	s.succeeded(excluded)
+	for _, x := range excluded {
+		s.logger.Warn("приложение исключено из пакета конфигурации: его запросы на шлюзах — 503", "application", x.Application,
+			"reason", x.Reason, "version", version)
+	}
+	s.logger.Info("собрана новая версия пакета конфигурации", "version", version, "excluded", len(excluded))
 	return rec, nil
+}
+
+func (s *Service) succeeded(excluded []Excluded) {
+	s.failedHash, s.failReason, s.excluded = nil, "", excluded
 }
 
 // fallback — последняя корректная версия, если она есть.
@@ -218,10 +317,7 @@ func (s *Service) buildFailed(ctx context.Context, cause error, hash []byte) {
 	}
 	// В тексте ошибки — ID приложений и политик и причина, без секретов:
 	// учётных данных в содержимом нет.
-	msg := cause.Error()
-	if len(msg) > 2000 {
-		msg = msg[:2000] + "…"
-	}
+	msg := clip(cause.Error(), 2000)
 	s.logger.Error("пакет конфигурации не собран: шлюзы остаются на последней корректной версии", "error", msg)
 	entry := audit.Entry{OrgID: s.orgID, Actor: systemActor, Action: "bundle.build",
 		Object: audit.Object{Type: "config_bundle", ID: "new"}, Result: audit.ResultFailure,
@@ -230,60 +326,91 @@ func (s *Service) buildFailed(ctx context.Context, cause error, hash []byte) {
 		s.logger.Error("запись аудита о неудачной сборке пакета", "error", err)
 		return
 	}
-	s.failedHash = sum
+	s.failedHash, s.failReason = sum, msg
 }
+
+func clip(msg string, n int) string {
+	if len(msg) <= n {
+		return msg
+	}
+	cut := n
+	for cut > 0 && !utf8.RuneStart(msg[cut]) {
+		cut--
+	}
+	return msg[:cut] + "…"
+}
+
+// maxExcludedListed — исключённых приложений в подробностях bundle.build.
+const maxExcludedListed = 50
 
 // collect собирает содержимое из текущих данных: действующие приложения и
 // их действующие ключи, провайдеры этих приложений, текущие версии политик
-// организации, на которые они ссылаются. Списки упорядочены по ID.
-func (s *Service) collect(ctx context.Context) (*bundle.Content, map[string]any, error) {
-	now := s.clock()
+// организации, на которые они ссылаются. Приложение, которое шлюз не смог
+// бы применить (нет провайдера или политики, политика ссылается на словарь,
+// которого у него нет, и т. п.), исключается: в пакет идут только его ID и
+// ключи, шлюз отвечает на его запросы 503, а остальное доставляется (В16
+// ревью 2.r3b). Списки упорядочены по ID.
+func (s *Service) collect(ctx context.Context, now time.Time) (*bundle.Content, map[string]any, []Excluded, error) {
 	provs, err := s.apps.Providers(ctx)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	byID := map[string]apps.Provider{}
 	for _, p := range provs {
 		byID[p.ID] = p
 	}
+	keys, err := s.keysByApp(ctx, now)
+	if err != nil {
+		return nil, nil, nil, err
+	}
 	c := &bundle.Content{Providers: []bundle.Provider{}, Applications: []bundle.Application{}, Policies: []bundle.Policy{}}
 	usedProv := map[string]bool{}
-	usedPol := map[string]bool{}
+	pols := map[string]*bundle.Policy{}
+	checks := map[string]string{}
+	var excluded []Excluded
 	var after *apps.Cursor
-	keys := 0
+	nkeys := 0
 	for {
 		page, err := s.apps.Applications(ctx, "", after, appsPage)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		for _, a := range page {
 			if a.Archived() {
 				continue
 			}
 			p, ok := byID[a.ProviderID]
-			if !ok {
-				return nil, nil, &invalidError{fmt.Errorf("приложение %s: провайдер не найден", a.Slug)}
+			ba := application(a, p.Slug, keys[a.ID])
+			reason := ""
+			var pol *bundle.Policy
+			switch {
+			case !ok:
+				reason = "провайдер не найден"
+			case !policy.IsTemplate(ba.Policy):
+				if pol, err = s.policyOf(ctx, pols, ba.Policy); err != nil {
+					return nil, nil, nil, err
+				}
+				if pol == nil {
+					reason = fmt.Sprintf("политика %s не найдена", ba.Policy)
+				}
 			}
-			ba, err := s.application(ctx, a, p.Slug, now)
-			if err != nil {
-				return nil, nil, err
+			if reason == "" {
+				reason = s.checkApp(s.checks, checks, ba, provider(p), pol)
 			}
-			keys += len(ba.Keys)
+			if reason != "" {
+				excluded = append(excluded, Excluded{Application: a.Slug, Reason: clip(reason, 500)})
+				c.Unavailable = append(c.Unavailable, bundle.Unavailable{ID: ba.ID, Env: ba.Env, Keys: ba.Keys})
+				nkeys += len(ba.Keys)
+				continue
+			}
+			nkeys += len(ba.Keys)
 			c.Applications = append(c.Applications, ba)
 			if !usedProv[p.ID] {
 				usedProv[p.ID] = true
 				c.Providers = append(c.Providers, provider(p))
 			}
-			if !policy.IsTemplate(ba.Policy) && !usedPol[ba.Policy] {
-				usedPol[ba.Policy] = true
-				doc, err := s.policies.Get(ctx, ba.Policy, 0)
-				if errors.Is(err, versions.ErrNotFound) {
-					return nil, nil, &invalidError{fmt.Errorf("приложение %s: политика %s не найдена", a.Slug, ba.Policy)}
-				}
-				if err != nil {
-					return nil, nil, err
-				}
-				c.Policies = append(c.Policies, bundle.Policy{ID: ba.Policy, Version: doc.Version.Version, YAML: string(doc.Version.YAML)})
+			if pol != nil && !slices.ContainsFunc(c.Policies, func(x bundle.Policy) bool { return x.ID == pol.ID }) {
+				c.Policies = append(c.Policies, *pol)
 			}
 		}
 		if len(page) < appsPage {
@@ -292,19 +419,81 @@ func (s *Service) collect(ctx context.Context) (*bundle.Content, map[string]any,
 		last := page[len(page)-1]
 		after = &apps.Cursor{CreatedAt: last.CreatedAt, ID: last.ID}
 	}
+	s.checks = checks
 	slices.SortFunc(c.Applications, func(a, b bundle.Application) int { return strings.Compare(a.ID, b.ID) })
 	slices.SortFunc(c.Providers, func(a, b bundle.Provider) int { return strings.Compare(a.ID, b.ID) })
 	slices.SortFunc(c.Policies, func(a, b bundle.Policy) int { return strings.Compare(a.ID, b.ID) })
+	slices.SortFunc(c.Unavailable, func(a, b bundle.Unavailable) int { return strings.Compare(a.ID, b.ID) })
+	slices.SortFunc(excluded, func(a, b Excluded) int { return strings.Compare(a.Application, b.Application) })
 	stats := map[string]any{"applications": len(c.Applications), "providers": len(c.Providers),
-		"policies": len(c.Policies), "app_keys": keys}
-	return c, stats, nil
+		"policies": len(c.Policies), "app_keys": nkeys}
+	if len(excluded) > 0 {
+		stats["excluded_count"] = len(excluded)
+		stats["excluded"] = excluded[:min(len(excluded), maxExcludedListed)]
+	}
+	return c, stats, excluded, nil
 }
 
-func (s *Service) application(ctx context.Context, a apps.Application, providerSlug string, now time.Time) (bundle.Application, error) {
-	ks, err := s.apps.Keys(ctx, a.ID, "")
+// keysByApp — действующие ключи всех приложений одним запросом (Н25, Н26).
+func (s *Service) keysByApp(ctx context.Context, now time.Time) (map[string][]bundle.Key, error) {
+	ks, err := s.apps.ActiveKeysAt(ctx, now)
 	if err != nil {
-		return bundle.Application{}, err
+		return nil, err
 	}
+	out := map[string][]bundle.Key{}
+	for _, k := range ks {
+		bk := bundle.Key{Prefix: k.Prefix, SHA256: fmt.Sprintf("%x", k.Hash), ExpiresAt: k.ExpiresAt.UTC()}
+		for _, c := range k.AllowedCIDRs {
+			bk.AllowedCIDRs = append(bk.AllowedCIDRs, c.String())
+		}
+		out[k.AppID] = append(out[k.AppID], bk)
+	}
+	return out, nil
+}
+
+// policyOf — текущая версия политики организации; nil — политики нет.
+func (s *Service) policyOf(ctx context.Context, cache map[string]*bundle.Policy, id string) (*bundle.Policy, error) {
+	if p, ok := cache[id]; ok {
+		return p, nil
+	}
+	doc, err := s.policies.Get(ctx, id, 0)
+	if errors.Is(err, versions.ErrNotFound) {
+		cache[id] = nil
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	p := &bundle.Policy{ID: id, Version: doc.Version.Version, YAML: string(doc.Version.YAML)}
+	cache[id] = p
+	return p, nil
+}
+
+// checkApp проверяет одно приложение с его провайдером и политикой так же,
+// как шлюз проверит пакет; пусто — годится. Итог берётся из prev и
+// запоминается в next по хешу содержимого приложения (prev — s.checks,
+// только под sem; nil — без памяти).
+func (s *Service) checkApp(prev, next map[string]string, ba bundle.Application, bp bundle.Provider, pol *bundle.Policy) string {
+	one := bundle.Content{Providers: []bundle.Provider{bp}, Applications: []bundle.Application{ba}, Policies: []bundle.Policy{}}
+	if pol != nil {
+		one.Policies = append(one.Policies, *pol)
+	}
+	data, err := one.Marshal()
+	if err != nil {
+		return err.Error()
+	}
+	h := string(s.hasher.Sum(data))
+	reason, ok := prev[h]
+	if !ok {
+		if err := s.check(data); err != nil {
+			reason = err.Error()
+		}
+	}
+	next[h] = reason
+	return reason
+}
+
+func application(a apps.Application, providerSlug string, keys []bundle.Key) bundle.Application {
 	ba := bundle.Application{ID: a.Slug, Env: a.Env, Provider: providerSlug, Models: slices.Clone(a.Models),
 		Aliases: a.Aliases, Policy: a.Policy, PolicyMode: a.PolicyMode, FailMode: a.FailMode, Storage: a.Storage,
 		UserFrom: a.UserFrom, Quotas: bundle.Quotas(a.Quotas), ExfilAllowDomains: a.ExfilAllowDomains, Keys: []bundle.Key{}}
@@ -317,20 +506,116 @@ func (s *Service) application(ctx context.Context, a apps.Application, providerS
 	for _, l := range a.Lists {
 		ba.Lists = append(ba.Lists, bundle.List(l))
 	}
-	for _, k := range ks {
-		// Только действующие ключи: отозванный или истёкший ключ на шлюзе
-		// не нужен, его отказ — «неизвестный ключ».
-		if k.Status(now) != apps.KeyActive {
-			continue
-		}
-		bk := bundle.Key{Prefix: k.Prefix, SHA256: fmt.Sprintf("%x", k.Hash), ExpiresAt: k.ExpiresAt.UTC()}
-		for _, c := range k.AllowedCIDRs {
-			bk.AllowedCIDRs = append(bk.AllowedCIDRs, c.String())
-		}
-		ba.Keys = append(ba.Keys, bk)
-	}
+	// Только действующие ключи: отозванный или истёкший ключ на шлюзе не
+	// нужен, его отказ — «неизвестный ключ».
+	ba.Keys = append(ba.Keys, keys...)
 	slices.SortFunc(ba.Keys, func(x, y bundle.Key) int { return strings.Compare(x.Prefix, y.Prefix) })
-	return ba, nil
+	return ba
+}
+
+// CheckApplication проверяет приложение после изменения так, как его
+// проверит сборка: провайдер, политика, словари, размер пакета (В16 ревью
+// 2.r3b; ошибка — с apps.ErrBreaksBundle). before — приложение до изменения
+// (nil при создании).
+func (s *Service) CheckApplication(ctx context.Context, before *apps.Application, after apps.Application) error {
+	p, err := s.apps.Provider(ctx, after.ProviderID)
+	if errors.Is(err, apps.ErrNotFound) {
+		return nil // отсутствующий провайдер отклоняет само хранилище
+	}
+	if err != nil {
+		return err
+	}
+	ba := application(after, p.Slug, nil)
+	var pol *bundle.Policy
+	if !policy.IsTemplate(ba.Policy) {
+		if pol, err = s.policyOf(ctx, map[string]*bundle.Policy{}, ba.Policy); err != nil || pol == nil {
+			return err
+		}
+	}
+	if reason := s.checkApp(nil, map[string]string{}, ba, provider(p), pol); reason != "" {
+		return fmt.Errorf("%w: %s", apps.ErrBreaksBundle, clip(reason, 500))
+	}
+	return s.checkSize(ctx, before, ba)
+}
+
+// checkSize — содержимое пакета после замены приложения не больше предела:
+// оценка по текущей версии (В16: словари пяти приложений по 1 МиБ иначе
+// остановили бы сборку целиком).
+func (s *Service) checkSize(ctx context.Context, before *apps.Application, ba bundle.Application) error {
+	latest, err := s.store.Latest(ctx, s.orgID)
+	if errors.Is(err, ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	size := len(latest.Content)
+	if b, err := json.Marshal(ba); err == nil {
+		size += len(b)
+	}
+	if before != nil {
+		if b, err := json.Marshal(application(*before, "", nil)); err == nil {
+			size -= len(b)
+		}
+	}
+	if size > bundle.MaxSize/2 {
+		return fmt.Errorf("%w: содержимое пакета превысило бы %d байт — сократите словари", apps.ErrBreaksBundle, bundle.MaxSize/2)
+	}
+	return nil
+}
+
+// CheckPolicy проверяет новую версию политики организации со всеми
+// действующими приложениями, которые на неё ссылаются (В16 ревью 2.r3b):
+// правило на словарь, которого нет у приложения, — versions.ErrBreaksBundle.
+// Приложение, которое не проходит и с текущей версией (уже исключено из
+// пакета), сохранение не блокирует: иначе нельзя было бы срочно ужесточить
+// общую политику, пока не исправлено чужое приложение (самопроверка H4, С3).
+func (s *Service) CheckPolicy(ctx context.Context, spec *policy.Spec) error {
+	var cur *policy.Spec
+	switch doc, err := s.policies.Get(ctx, spec.ID, 0); {
+	case errors.Is(err, versions.ErrNotFound):
+	case err != nil:
+		return err
+	default:
+		cur = doc.Spec
+	}
+	var failed []string
+	var after *apps.Cursor
+	for {
+		page, err := s.apps.Applications(ctx, "", after, appsPage)
+		if err != nil {
+			return err
+		}
+		var batch []bundle.Application
+		for _, a := range page {
+			if !a.Archived() && a.Policy == spec.ID {
+				batch = append(batch, application(a, "", nil))
+			}
+		}
+		for _, ba := range batch {
+			one := bundle.Content{Applications: []bundle.Application{ba}}
+			if err := gateway.CheckApplications(one.GatewayApplications(), []policy.Spec{*spec}); err == nil {
+				continue
+			}
+			if cur != nil && gateway.CheckApplications(one.GatewayApplications(), []policy.Spec{*cur}) != nil {
+				continue
+			}
+			failed = append(failed, ba.ID)
+		}
+		if len(page) < appsPage {
+			break
+		}
+		last := page[len(page)-1]
+		after = &apps.Cursor{CreatedAt: last.CreatedAt, ID: last.ID}
+	}
+	if len(failed) == 0 {
+		return nil
+	}
+	list := strings.Join(failed[:min(len(failed), 10)], ", ")
+	if len(failed) > 10 {
+		list += fmt.Sprintf(" и ещё %d", len(failed)-10)
+	}
+	return fmt.Errorf("%w: версия не применится к приложениям %s — проверьте словари приложений (lists)", versions.ErrBreaksBundle, list)
 }
 
 func provider(p apps.Provider) bundle.Provider {

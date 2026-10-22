@@ -73,7 +73,8 @@ func (s *PGStore) inTx(ctx context.Context, fn func(pgx.Tx) error) error {
 
 const gatewayCols = `id::text, org_id::text, name, status, created_at, created_by, registered_at, revoked_at,
 	cert_serial, cert_not_after, last_seen_at, host(last_addr), version, bundle_etag,
-	selftest_ok, selftest_at, selftest_failed, integrity_ok, integrity_at, integrity_reason, integrity_failed`
+	selftest_ok, selftest_at, selftest_failed, integrity_ok, integrity_at, integrity_reason, integrity_failed,
+	manifest_version, manifest_created, manifest_max_version, manifest_max_created, test_signed, bundle_keys_ok`
 
 func scanGateway(row pgx.Row) (Gateway, error) {
 	var g Gateway
@@ -82,9 +83,13 @@ func scanGateway(row pgx.Row) (Gateway, error) {
 	var stOK, inOK *bool
 	var stAt, inAt *time.Time
 	var stFailed, inFailed *int
+	var mVersion, mMaxVersion *string
+	var mCreated, mMaxCreated *time.Time
+	var testSigned *bool
 	if err := row.Scan(&g.ID, &g.OrgID, &g.Name, &g.Status, &g.CreatedAt, &g.CreatedBy, &registered, &revoked,
 		&serial, &notAfter, &seen, &addr, &version, &etag,
-		&stOK, &stAt, &stFailed, &inOK, &inAt, &integrityReason, &inFailed); err != nil {
+		&stOK, &stAt, &stFailed, &inOK, &inAt, &integrityReason, &inFailed,
+		&mVersion, &mCreated, &mMaxVersion, &mMaxCreated, &testSigned, &g.BundleKeysOK); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return Gateway{}, ErrNotFound
 		}
@@ -101,8 +106,10 @@ func scanGateway(row pgx.Row) (Gateway, error) {
 		g.Selftest = &CheckReport{OK: *stOK, At: *stAt, Failed: *stFailed}
 	}
 	if inOK != nil && inAt != nil && inFailed != nil && integrityReason != nil {
-		g.Integrity = &CheckReport{OK: *inOK, At: *inAt, Reason: *integrityReason, Failed: *inFailed}
+		g.Integrity = &CheckReport{OK: *inOK, At: *inAt, Reason: *integrityReason, Failed: *inFailed,
+			ManifestVersion: derefS(mVersion), ManifestCreated: deref(mCreated), TestSigned: testSigned != nil && *testSigned}
 	}
+	g.ManifestMaxVersion, g.ManifestMaxCreated = derefS(mMaxVersion), deref(mMaxCreated)
 	return g, nil
 }
 
@@ -243,20 +250,34 @@ func (s *PGStore) Touch(ctx context.Context, id string, hb Heartbeat) error {
 	var stOK, inOK *bool
 	var stAt, inAt *time.Time
 	var stFailed, inFailed *int
-	var inReason *string
+	var inReason, mVersion *string
+	var mCreated *time.Time
+	var testSigned *bool
 	if r := hb.Selftest; r != nil {
 		stOK, stAt, stFailed = &r.OK, &r.At, &r.Failed
 	}
 	if r := hb.Integrity; r != nil {
-		inOK, inAt, inFailed, inReason = &r.OK, &r.At, &r.Failed, &r.Reason
+		inOK, inAt, inFailed, inReason, testSigned = &r.OK, &r.At, &r.Failed, &r.Reason, &r.TestSigned
+		if !r.ManifestCreated.IsZero() {
+			mVersion, mCreated = &r.ManifestVersion, &r.ManifestCreated
+		}
 	}
+	// Максимум манифеста растёт только по успешным проверкам (В20): текущий
+	// манифест старше максимума — откат шлюза.
 	tag, err := s.db.Exec(ctx, `UPDATE gateways SET last_seen_at = $2, last_addr = $3::inet, version = $4, bundle_etag = $5,
 		selftest_ok = COALESCE($6, selftest_ok), selftest_at = COALESCE($7, selftest_at),
 		selftest_failed = COALESCE($8, selftest_failed),
 		integrity_ok = COALESCE($9, integrity_ok), integrity_at = COALESCE($10, integrity_at),
-		integrity_reason = COALESCE($11, integrity_reason), integrity_failed = COALESCE($12, integrity_failed)
+		integrity_reason = COALESCE($11, integrity_reason), integrity_failed = COALESCE($12, integrity_failed),
+		manifest_version = CASE WHEN $9::boolean IS NULL THEN manifest_version ELSE $13 END,
+		manifest_created = CASE WHEN $9::boolean IS NULL THEN manifest_created ELSE $14 END,
+		manifest_max_version = CASE WHEN $9 AND $14::timestamptz IS NOT NULL
+			AND (manifest_max_created IS NULL OR $14 > manifest_max_created) THEN $13 ELSE manifest_max_version END,
+		manifest_max_created = CASE WHEN $9 AND $14::timestamptz IS NOT NULL
+			AND (manifest_max_created IS NULL OR $14 > manifest_max_created) THEN $14 ELSE manifest_max_created END,
+		test_signed = COALESCE($15, test_signed), bundle_keys_ok = COALESCE($16, bundle_keys_ok)
 		WHERE id = $1 AND status = 'active'`, id, hb.At, addr, hb.Version, nullStr(hb.BundleETag),
-		stOK, stAt, stFailed, inOK, inAt, inReason, inFailed)
+		stOK, stAt, stFailed, inOK, inAt, inReason, inFailed, mVersion, mCreated, testSigned, hb.BundleKeysOK)
 	if err != nil {
 		return fmt.Errorf("реестр шлюзов: heartbeat: %w", err)
 	}
@@ -288,6 +309,30 @@ func (s *PGStore) Revoke(ctx context.Context, orgID, name string, now time.Time,
 			return fmt.Errorf("реестр шлюзов: отзыв: %w", err)
 		}
 		return s.record(ctx, tx, rec(gw))
+	})
+	return gw, err
+}
+
+// AcceptRollback — см. Store. Выполняется под логином владельца схемы
+// (aisec-cli).
+func (s *PGStore) AcceptRollback(ctx context.Context, orgID, name string, rec func(prev, cur Gateway) audit.Entry) (Gateway, error) {
+	ctx, cancel := pgCtx(ctx)
+	defer cancel()
+	var gw Gateway
+	err := s.inTx(ctx, func(tx pgx.Tx) error {
+		cur, err := scanGateway(tx.QueryRow(ctx, "SELECT "+gatewayCols+" FROM gateways WHERE org_id = $1 AND name = $2 FOR UPDATE", orgID, name))
+		if err != nil {
+			return err
+		}
+		if err := checkAcceptRollback(cur); err != nil {
+			return err
+		}
+		gw, err = scanGateway(tx.QueryRow(ctx, `UPDATE gateways SET manifest_max_version = manifest_version,
+			manifest_max_created = manifest_created WHERE id = $1 RETURNING `+gatewayCols, cur.ID))
+		if err != nil {
+			return fmt.Errorf("реестр шлюзов: откат: %w", err)
+		}
+		return s.record(ctx, tx, rec(cur, gw))
 	})
 	return gw, err
 }

@@ -363,7 +363,10 @@ export interface paths {
          *     и встроенную статику веб-консоли с подписанным манифестом; итог пишется в
          *     `integrity_checks` и журнал аудита (`integrity.check`) от имени
          *     пользователя. Нарушение — `ok: false` с ответом 200; при
-         *     `-integrity-action stop` сервер после ответа останавливается.
+         *     `-integrity-action stop` сервер после ответа останавливается. Манифест
+         *     собран раньше манифеста последней успешной проверки — `manifest_rollback`
+         *     (откат на старый выпуск, В20 ревью 2.r4). Итог не удалось записать в
+         *     журнал аудита — 503 (Н36 ревью 2.r4), итог остаётся в техническом журнале.
          */
         post: {
             parameters: {
@@ -410,13 +413,18 @@ export interface paths {
          * Записи журнала аудита за период по фильтру
          * @description Право `audit.read` (ТЗ 6.3 п. 11, задача 2.4a): из предустановленных ролей — у аудитора и
          *     администратора безопасности. Только чтение: изменить или удалить запись через API
-         *     нельзя (УПД.2). Порядок — от новых к старым по номеру записи. Период — не длиннее
+         *     нельзя (УПД.2). Порядок — от новых к старым по времени и номеру записи; записи с
+         *     нечитаемым временем (подмена в обход продукта, `ts: null`) — в начале любой выборки.
+         *     Период — не длиннее
          *     31 суток (по умолчанию последние 7). Фильтры по белому списку: `action` (до 20 раз;
          *     точный код `auth.login` или группа `auth.*`), `actor_type`, `actor` (ID или имя
          *     субъекта, точное совпадение), `object_type`, `object_id`, `result`; неизвестный
          *     параметр — 400. Секреты в подробностях замаскированы при записи (`[скрыто]`),
          *     исходных значений в журнале нет. Пишет `audit.list` (отключаемое событие) после
-         *     чтения: в текущую страницу запись не попадает.
+         *     выборки и до ответа: в текущую страницу запись не попадает, а если записать её не
+         *     удалось — 503 без данных (Н30 ревью 2.r3b). Одновременно — не больше 2 выборок на
+         *     пользователя или токен и 4 на сервер, сверх этого — 429 с `Retry-After`; выборка идёт
+         *     в отдельном пуле соединений с пределом 10 с, дольше — 503 (В17 ревью 2.r3b).
          */
         get: {
             parameters: {
@@ -487,7 +495,10 @@ export interface paths {
          *     5 раз в минуту с адреса. Обрыв соединения проверку не прерывает; предел — 5 минут.
          *     Итог пишется в `audit_verifications` (раздел `audit_chain` «Состояния системы») и в
          *     журнал аудита (`audit.chain_verified` или `audit.chain_broken`) от имени субъекта с
-         *     адресом. Нарушение — `ok: false` с ответом 200. Тело не нужно.
+         *     адресом. Нарушение — `ok: false` с ответом 200. Тело не нужно. Если последняя проверка
+         *     сервера моложе 10 минут, новая не выполняется: ответ — её итог с `cached: true`, без
+         *     записи в журнал (Н31 ревью 2.r3b); немедленная проверка — `aisec-cli audit verify`. Если последняя проверка не завершилась (сбой, истёк срок) меньше 10 минут назад — 503 с
+         *     `Retry-After`, новая не запускается.
          */
         post: {
             parameters: {
@@ -2797,8 +2808,11 @@ export interface paths {
         /**
          * Изменить провайдера
          * @description Право `providers.manage`. Меняются все поля, кроме `slug`, признака «внешний» и
-         *     учётных данных. Пишет `provider.update` (до и после, без учётных данных; сертификаты —
-         *     только размером).
+         *     учётных данных. Смена адресата — узла (схема, хост, порт) `base_url` или `auth_url`,
+         *     `ca_pem` или `type` — сбрасывает учётные данные и возвращает признак «внешний» (В14
+         *     ревью 2.r3b): их задают заново, снятие признака — снова через `PUT …/external`. Пишет
+         *     `provider.update` (до и после, без учётных данных; сертификаты — только размером; при
+         *     смене адресата — `credential_reset`, `external_reset`).
          */
         put: {
             parameters: {
@@ -2955,7 +2969,9 @@ export interface paths {
          * Изменить признак «внешний»
          * @description Право `providers.external` (признак `security`: только администратор безопасности,
          *     токену API недоступно). Снятие признака — ослабление защиты (DM-40): в режиме `monitor`
-         *     данные к провайдеру больше не маскируются. Причина обязательна. Пишет
+         *     данные к провайдеру больше не маскируются. Причина обязательна. Снятие признака требует
+         *     повторной проверки (Н32 ревью 2.r3b): текущий пароль (`password`) или код TOTP (`code`),
+         *     ровно одно из двух, иначе 400; неверное значение — 403 `reauthentication_failed`. Пишет
          *     `provider.external_changed` с `weakening: true` при снятии; без изменения — 200 без записи.
          */
         put: {
@@ -3051,12 +3067,17 @@ export interface paths {
         put?: never;
         /**
          * Создать приложение
-         * @description Право `applications.manage` (ТЗ 5.4). Поля защиты `policy`, `policy_mode`, `storage`
-         *     принимаются только при праве `applications.policy` (УПД.2); без него переданные
-         *     значения — 422, а приложение получает умолчания: политика `base`, режим — режим
-         *     выбранной политики, хранение `masked`. Владелец по умолчанию — создающий. `slug` —
+         * @description Право `applications.manage` (ТЗ 5.4). Поля защиты (`policy`, `policy_mode`, `storage`,
+         *     `fail_mode`, `lists`, `exfil_allow_domains`) принимаются только при праве
+         *     `applications.policy` (УПД.2, В15 ревью 2.r3b); без него переданные значения — 422, а
+         *     приложение получает умолчания: политика `base`, режим — режим выбранной политики,
+         *     хранение `masked`, `fail_closed`, без словарей и доменов-исключений. Хранение `none` или
+         *     `full`, `fail_open` и домены-исключения — ослабление относительно умолчаний:
+         *     `weakening: true` и повторная проверка паролем или кодом TOTP (Н32; 400 без них,
+         *     403 `reauthentication_failed` при неверном). Владелец по умолчанию — создающий. `slug` —
          *     ID приложения в событиях и пакете для шлюзов, неизменяем. Проверки полей — те же, что у
          *     файла конфигурации шлюза. Пишет `application.create`.
+         *     Изменение, после которого пакет конфигурации шлюзов не соберётся (например, правило `lists.*` на словарь, которого нет у приложения), — 422 с причиной и ID приложений в `detail` (В16 ревью 2.r3b).
          */
         post: {
             parameters: {
@@ -3147,7 +3168,12 @@ export interface paths {
         /**
          * Изменить приложение
          * @description Право `applications.manage`. Меняются все поля, кроме `slug` и полей защиты
-         *     (`PUT …/protection`). Архивное приложение не меняется (409). Пишет `application.update`.
+         *     (`PUT …/protection`; переданные здесь `fail_mode`, `lists`, `exfil_allow_domains` —
+         *     400). Переход с внешнего провайдера на невнешнего выключает маскирование в `monitor`
+         *     (В15 ревью 2.r3b): только при праве `applications.policy` (иначе 403), с повторной
+         *     проверкой паролем или кодом TOTP и с `weakening: true`. Архивное приложение не
+         *     меняется (409). Пишет `application.update`.
+         *     Изменение, после которого пакет конфигурации шлюзов не соберётся (например, правило `lists.*` на словарь, которого нет у приложения), — 422 с причиной и ID приложений в `detail` (В16 ревью 2.r3b).
          */
         put: {
             parameters: {
@@ -3164,7 +3190,7 @@ export interface paths {
             };
             requestBody: {
                 content: {
-                    "application/json": components["schemas"]["ApplicationFields"];
+                    "application/json": components["schemas"]["ApplicationUpdate"];
                 };
             };
             responses: {
@@ -3244,13 +3270,20 @@ export interface paths {
         };
         get?: never;
         /**
-         * Изменить политику, режим и режим хранения приложения
+         * Изменить поля защиты приложения
          * @description Право `applications.policy` (признак `security`: администратор системы политики
-         *     безопасности не меняет, УПД.2; токену API недоступно). Пустое поле — прежнее значение;
+         *     безопасности не меняет, УПД.2; токену API недоступно). Поля защиты: политика, режим,
+         *     режим хранения, режим при сбое детекторов, словари и домены-исключения DM-11 (В15
+         *     ревью 2.r3b). Отсутствующее поле — прежнее значение (`lists: []` удаляет все словари);
          *     при смене политики без `policy_mode` режим берётся из новой политики. Пишет
-         *     `application.protection_changed` (до, после); перевод в `monitor`, режим хранения
-         *     `none` или `full`, политика `monitor-only` — с `weakening: true` (DM-40). Без
-         *     изменений — 200 без записи.
+         *     `application.protection_changed` (до, после). Ослабление (DM-40) — перевод в
+         *     `monitor`, режим хранения `none` или `full`, политика `monitor-only`, `fail_open`,
+         *     новый домен-исключение, удалённый словарь, слово или выражение, изменённые категория,
+         *     угроза, балл или направление словаря, включённый учёт регистра — пишется с
+         *     `weakening: true` и требует повторной проверки (Н32): текущий пароль (`password`) или
+         *     код TOTP (`code`), ровно одно из двух, иначе 400; неверное значение — 403
+         *     `reauthentication_failed` и неудачная попытка ИАФ.4. Без изменений — 200 без записи.
+         *     Изменение, после которого пакет конфигурации шлюзов не соберётся (например, правило `lists.*` на словарь, которого нет у приложения), — 422 с причиной и ID приложений в `detail` (В16 ревью 2.r3b).
          */
         put: {
             parameters: {
@@ -3267,7 +3300,7 @@ export interface paths {
             };
             requestBody: {
                 content: {
-                    "application/json": components["schemas"]["ApplicationProtection"];
+                    "application/json": components["schemas"]["ProtectionUpdate"];
                 };
             };
             responses: {
@@ -3287,6 +3320,7 @@ export interface paths {
                 409: components["responses"]["ProblemConflict"];
                 413: components["responses"]["ProblemTooLarge"];
                 415: components["responses"]["ProblemUnsupportedMedia"];
+                422: components["responses"]["ProblemUnprocessable"];
                 429: components["responses"]["RateLimited"];
                 500: components["responses"]["ProblemInternal"];
                 503: components["responses"]["Unavailable"];
@@ -3621,6 +3655,7 @@ export interface paths {
          *     детектор — 400. Политики с таким `id` нет — создаётся (201); есть — новая версия поверх
          *     `base_version` (200), без него — 409. Пустой `non_text` при загрузке — `allow_unchecked`,
          *     как в шлюзе этапа 1. Пишет `policy.import` (сводка изменений и признак `weakening`).
+         *     Изменение, после которого пакет конфигурации шлюзов не соберётся (например, правило `lists.*` на словарь, которого нет у приложения), — 422 с причиной и ID приложений в `detail` (В16 ревью 2.r3b).
          */
         post: {
             parameters: {
@@ -3785,6 +3820,7 @@ export interface paths {
          *     `base_version + 1`. Если с `base_version` политику уже сохранили — 409, чужая правка не
          *     затирается. Шаблон не меняется — 422. Пишет `policy.update`: поля, правила
          *     добавленные, удалённые и изменённые, признак `weakening` и причины (DM-40).
+         *     Изменение, после которого пакет конфигурации шлюзов не соберётся (например, правило `lists.*` на словарь, которого нет у приложения), — 422 с причиной и ID приложений в `detail` (В16 ревью 2.r3b).
          */
         put: {
             parameters: {
@@ -4002,6 +4038,7 @@ export interface paths {
          * @description Право `policies.manage`. Откат — новая версия с содержимым версии `version`
          *     (`rolled_back_from`); прежние версии остаются. Пишет `policy.rollback` со сводкой
          *     изменений и признаком `weakening`.
+         *     Изменение, после которого пакет конфигурации шлюзов не соберётся (например, правило `lists.*` на словарь, которого нет у приложения), — 422 с причиной и ID приложений в `detail` (В16 ревью 2.r3b).
          */
         post: {
             parameters: {
@@ -4156,7 +4193,7 @@ export interface components {
                 warn_exceeded: boolean;
             };
             /** @description Последняя проверка цепочки журнала аудита — фоновая или aisec-cli audit verify (РСБ.4); null — проверок не было */
-            audit_chain?: null | {
+            audit_chain: null | {
                 /** Format: date-time */
                 checked_at: string;
                 ok: boolean;
@@ -4169,11 +4206,32 @@ export interface components {
                 /** @description Запись, на которой цепочка нарушена */
                 broken_seq: number | null;
             };
+            /** @description Пакет конфигурации шлюзов (ОЦЛ.3; В16, Н28 ревью 2.r3b); null — сервер без внутреннего порта для шлюзов */
+            bundle: null | {
+                /** @description Текущая корректная версия; 0 — её нет */
+                version: number;
+                etag: string;
+                /** Format: date-time */
+                built_at: string | null;
+                /** @description В версии все действующие приложения */
+                complete: boolean;
+                /** @description Почему содержимое не собрано целиком (например, размер); шлюзам выдаётся прежняя версия */
+                reason?: string;
+                /** @description Приложения, исключённые из пакета: шлюз принимает их ключи и отвечает 503 app_unavailable */
+                excluded: {
+                    application: string;
+                    reason: string;
+                }[];
+                /** @description Шлюзы на связи, которые дольше 10 минут работают на другой версии */
+                lagging: string[];
+            };
             notifications: {
                 /** @enum {string} */
-                condition: "account_lockout" | "access_denied" | "audit_chain" | "audit_storage" | "integrity" | "time_sync";
+                condition: "account_lockout" | "access_denied" | "audit_chain" | "audit_storage" | "integrity" | "time_sync" | "config_bundle" | "config_bundle_lag" | "test_build";
                 /** @enum {string} */
-                requirement: "ИАФ.4" | "УПД.6" | "РСБ.4" | "РСБ.5" | "ОЦЛ.5" | "ВРМ.1";
+                requirement: "ИАФ.4" | "УПД.6" | "РСБ.4" | "РСБ.5" | "ОЦЛ.3" | "ОЦЛ.5" | "ВРМ.1";
+                /** @description Компоненты с активным условием (integrity — server или gateway:<ID>, config_bundle_lag — gateway:<ID>); каждое ведётся отдельно и пишется в system.alert (В18 ревью 2.r3b). test_build (ОЦЛ.1) — компоненты, собранные с тестовым ключом манифеста (Н34 ревью 2.r4); integrity шлюза поднимает и откат выпуска, и чужой ключ проверки пакетов (В19, В20 ревью 2.r4) */
+                components?: string[];
                 title: string;
                 active: boolean;
                 /**
@@ -4184,7 +4242,7 @@ export interface components {
                 /** @description Число событий за 24 часа (только ИАФ.4 и УПД.6) */
                 count: number | null;
             }[];
-            unavailable: ("integrity" | "gateways" | "events" | "storage" | "audit_chain" | "notifications")[];
+            unavailable: ("integrity" | "gateways" | "events" | "storage" | "audit_chain" | "bundle" | "notifications")[];
         };
         StatusReport: {
             ok: boolean;
@@ -4247,10 +4305,18 @@ export interface components {
             /** Format: date-time */
             checked_at: string;
             ok: boolean;
-            /** @enum {string} */
-            reason: "ok" | "manifest_missing" | "manifest_invalid" | "signature_invalid" | "files_mismatch";
+            /**
+             * @description `manifest_rollback` — манифест подписан верно, но собран раньше манифеста последней успешной проверки (откат выпуска)
+             * @enum {string}
+             */
+            reason: "ok" | "manifest_missing" | "manifest_invalid" | "signature_invalid" | "files_mismatch" | "manifest_rollback";
             /** @description Версия продукта из манифеста; пусто, если манифест не принят */
             manifest_version: string;
+            /**
+             * Format: date-time
+             * @description Время сборки манифеста; null, если манифест не принят
+             */
+            manifest_created: string | null;
             /** @description Сборка с тестовым ключом манифеста — не для поставки */
             test_signed: boolean;
             checked_files: number;
@@ -4298,6 +4364,17 @@ export interface components {
             display_name: string;
             /** Format: password */
             password: string;
+            /**
+             * @description Часовой пояс показа времени (ВРМ.2), имя IANA; «Local» не принимается. Хранение — всегда UTC
+             * @default Europe/Moscow
+             */
+            timezone: string;
+            /**
+             * @description Режим хранения содержимого по умолчанию для новых приложений (ТЗ 5.5)
+             * @default masked
+             * @enum {string}
+             */
+            retention_mode: "none" | "masked" | "full";
         };
         LoginRequest: {
             /** @description Логин без учёта регистра: латиница, цифры, «.», «_», «-», до 64 символов */
@@ -4445,7 +4522,7 @@ export interface components {
             /** Format: date-time */
             revoked_at?: string;
             /** @enum {string} */
-            revoke_reason?: "owner" | "admin" | "password_reset" | "sessions_revoked";
+            revoke_reason?: "owner" | "admin" | "password_reset" | "sessions_revoked" | "backup_restore";
         };
         APITokenPage: components["schemas"]["PageInfo"] & {
             items: components["schemas"]["APIToken"][];
@@ -4532,6 +4609,13 @@ export interface components {
         ProviderExternal: {
             external: boolean;
             reason: string;
+            /**
+             * Format: password
+             * @description Текущий пароль при снятии признака (ровно одно из password и code)
+             */
+            password?: string;
+            /** @description Код из приложения-аутентификатора при снятии признака */
+            code?: string;
         };
         /** @description Лимиты (ТЗ 5.2); 0 — без лимита, не больше 10^9 */
         AppQuotas: {
@@ -4576,20 +4660,13 @@ export interface components {
                 [key: string]: string;
             };
             /**
-             * @default fail_closed
-             * @enum {string}
-             */
-            fail_mode: "fail_open" | "fail_closed";
-            /**
              * @default none
              * @enum {string}
              */
             user_from: "header" | "field" | "none";
             quotas?: components["schemas"]["AppQuotas"];
-            lists?: components["schemas"]["AppList"][];
-            exfil_allow_domains?: string[];
         };
-        /** @description Поля защиты; меняет только обладатель права `applications.policy` */
+        /** @description Поля защиты; меняет только обладатель права `applications.policy` (В15 ревью 2.r3b) */
         ApplicationProtection: {
             /** @description Шаблон (`base`, `pii-strict`, `external-no-pii`, `monitor-only`) или политика организации */
             policy?: string;
@@ -4603,8 +4680,27 @@ export interface components {
              * @enum {string}
              */
             storage: "none" | "masked" | "full";
+            /**
+             * @default fail_closed
+             * @enum {string}
+             */
+            fail_mode: "fail_open" | "fail_closed";
+            lists?: components["schemas"]["AppList"][];
+            exfil_allow_domains?: string[];
         };
-        NewApplication: components["schemas"]["ApplicationFields"] & components["schemas"]["ApplicationProtection"] & {
+        /** @description Повторная проверка перед ослаблением защиты (Н32 ревью 2.r3b) */
+        Reauth: {
+            /**
+             * Format: password
+             * @description Текущий пароль (ровно одно из password и code)
+             */
+            password?: string;
+            /** @description Код из приложения-аутентификатора */
+            code?: string;
+        };
+        ApplicationUpdate: components["schemas"]["ApplicationFields"] & components["schemas"]["Reauth"];
+        ProtectionUpdate: components["schemas"]["ApplicationProtection"] & components["schemas"]["Reauth"];
+        NewApplication: components["schemas"]["ApplicationFields"] & components["schemas"]["ApplicationProtection"] & components["schemas"]["Reauth"] & {
             slug: string;
         };
         Application: {
@@ -4907,6 +5003,8 @@ export interface components {
         AuditVerification: {
             /** Format: date-time */
             checked_at: string;
+            /** @description Итог прежней проверки не старше 10 минут, новая не выполнялась */
+            cached: boolean;
             ok: boolean;
             /** @description Проверено записей */
             checked: number;
