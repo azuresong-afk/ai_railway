@@ -196,6 +196,10 @@ func TestVerifyReleaseRejects(t *testing.T) {
 				t.Fatal(err)
 			}
 		},
+		// A2-В6: манифест и подпись по ссылке (например, на подписанный
+		// манифест установки) не читаются.
+		"манифест — ссылка": func(t *testing.T, dir string) { linkTo(t, dir, integrity.ManifestFile) },
+		"подпись — ссылка":  func(t *testing.T, dir string) { linkTo(t, dir, integrity.SignatureFile) },
 	} {
 		t.Run(name, func(t *testing.T) {
 			verifyInstall(t)
@@ -209,6 +213,46 @@ func TestVerifyReleaseRejects(t *testing.T) {
 	}
 }
 
+// linkTo заменяет файл каталога ссылкой на его копию рядом.
+func linkTo(t *testing.T, dir, name string) {
+	t.Helper()
+	p := filepath.Join(dir, name)
+	if err := os.Rename(p, p+".orig"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(name+".orig", p); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A2-В7: выпуск, собранный раньше установленного, — откат: отвергается, с
+// -allow-older принимается.
+func TestVerifyReleaseOlder(t *testing.T) {
+	verifyInstall(t)
+	old := signedRelease(t, time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC), "0.9", "синтетический aisec-cli версии 0.9")
+	var out, errOut strings.Builder
+	if code := run([]string{"verify", "-release", old}, &out, &errOut, now); code != 3 || !strings.Contains(out.String(), "откат") {
+		t.Fatalf("старый выпуск: код %d: %s", code, out.String())
+	}
+	out.Reset()
+	if code := run([]string{"verify", "-release", old, "-allow-older"}, &out, &errOut, now); code != 0 || !strings.Contains(out.String(), "Выпуск 0.9 проверен") {
+		t.Fatalf("-allow-older: код %d: %s %s", code, out.String(), errOut.String())
+	}
+}
+
+// Без подписанного манифеста установки откат не определить: ошибка, не «проверен».
+func TestVerifyReleaseNoInstalledManifest(t *testing.T) {
+	root := verifyInstall(t)
+	if err := os.Remove(filepath.Join(root, integrity.ManifestFile)); err != nil {
+		t.Fatal(err)
+	}
+	next := signedRelease(t, time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC), "2", "синтетический aisec-cli версии 2")
+	var out, errOut strings.Builder
+	if code := run([]string{"verify", "-release", next}, &out, &errOut, now); code != 1 || !strings.Contains(errOut.String(), "-allow-older") {
+		t.Fatalf("код %d: %s %s", code, out.String(), errOut.String())
+	}
+}
+
 func TestVerifyReleaseArgs(t *testing.T) {
 	root := verifyInstall(t)
 	var out, errOut strings.Builder
@@ -216,6 +260,7 @@ func TestVerifyReleaseArgs(t *testing.T) {
 		{"verify", "-release", root, "-manifest", filepath.Join(root, integrity.ManifestFile)},
 		{"verify", "-release", root, "-accept-rollback"},
 		{"verify", "-release", root, "-gateway", "gw-1"},
+		{"verify", "-allow-older"}, // только с -release
 	} {
 		if code := run(args, &out, &errOut, now); code != 1 {
 			t.Fatalf("%v: код %d", args, code)

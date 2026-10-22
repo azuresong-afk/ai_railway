@@ -49,8 +49,10 @@ const usage = `aisec-cli — служебные операции AISec.
                                 проверить целостность установки по подписанному манифесту без сервера;
                                 с AISEC_DATABASE_URL итог пишется в журнал; 3 — целостность нарушена;
                                 -accept-rollback — принять намеренный откат на старый выпуск (сервера или шлюза)
-  verify -release КАТАЛОГ        проверить новый выпуск до обновления (ОБН.1): подпись — ключом этой версии,
-                                все файлы каталога; себя не сверяет, в журнал не пишет; 3 — выпуск не прошёл
+  verify -release КАТАЛОГ [-allow-older]
+                                проверить новый выпуск до обновления (ОБН.1): подпись — ключом этой версии,
+                                все файлы каталога; себя не сверяет, в журнал не пишет; выпуск старше
+                                установленного — только с -allow-older; 3 — выпуск не прошёл
   backup create -keys КАТАЛОГ -out ФАЙЛ (-user-hmac-key ФАЙЛ | -no-user-hmac-key) [-passphrase-file ФАЙЛ]
                                 резервная копия конфигурации в зашифрованный файл (AISEC_DATABASE_URL)
   backup restore -keys КАТАЛОГ -in ФАЙЛ [-user-hmac-key-out ФАЙЛ] [-passphrase-file ФАЙЛ] [-allow-nonempty]
@@ -148,7 +150,7 @@ func run(args []string, stdout, stderr io.Writer, now time.Time) int {
 				return 0
 			}
 			say(stderr, "aisec-cli verify: %v\n", err)
-			if errors.Is(err, errIntegrityViolated) {
+			if errors.Is(err, errIntegrityViolated) || errors.Is(err, errReleaseRejected) {
 				return 3
 			}
 			return 1

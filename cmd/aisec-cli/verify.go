@@ -46,6 +46,7 @@ func verifyCmd(args []string, dsn string, stdout, stderr io.Writer) error {
 	accept := fl.Bool("accept-rollback", false, "принять намеренный откат на более старый выпуск (нужен AISEC_DATABASE_URL)")
 	gw := fl.String("gateway", "", "с -accept-rollback: принять откат шлюза с этим именем (файлы на этом хосте не проверяются)")
 	release := fl.String("release", "", "каталог нового выпуска: проверить подпись ключом этой версии и все его файлы (ОБН.1)")
+	allowOlder := fl.Bool("allow-older", false, "с -release: принять выпуск, собранный раньше установленного (намеренный откат)")
 	if err := fl.Parse(args); err != nil {
 		return err
 	}
@@ -56,7 +57,10 @@ func verifyCmd(args []string, dsn string, stdout, stderr io.Writer) error {
 		if *manifest != "" || *accept || *gw != "" {
 			return errors.New("release: не сочетается с -manifest, -accept-rollback и -gateway")
 		}
-		return verifyRelease(*release, stdout)
+		return verifyRelease(*release, *allowOlder, stdout)
+	}
+	if *allowOlder {
+		return errors.New("allow-older: задаётся только с -release")
 	}
 	if *accept && dsn == "" {
 		return errors.New("accept-rollback: нужен AISEC_DATABASE_URL — откат принимается по истории проверок в БД")
@@ -119,15 +123,21 @@ func verifyCmd(args []string, dsn string, stdout, stderr io.Writer) error {
 	return nil
 }
 
+// errReleaseRejected — новый выпуск не прошёл проверку (код возврата 3, как
+// у нарушения целостности).
+var errReleaseRejected = errors.New("выпуск не прошёл проверку")
+
 // verifyRelease проверяет каталог нового выпуска до обновления (ОБН.1,
 // ADR-0019): подпись манифеста — ключом, встроенным в этот, установленный
 // aisec-cli, и все невстроенные файлы манифеста на диске каталога (через
-// os.Root, ссылки не проходят). Сам aisec-cli и его встроенные миграции с
-// новым манифестом не сверяются: версия вшита в бинарник, и сверка себя
-// отвергала бы любой другой выпуск. Встроенные наборы нового выпуска входят в
-// его бинарники, а те сверяются целиком. Итог в БД не пишется: это не
-// проверка установки, и откат здесь не определяется.
-func verifyRelease(dir string, stdout io.Writer) error {
+// os.Root, ссылки не проходят). Манифест и подпись — только обычные файлы,
+// не ссылки. Сам aisec-cli и его встроенные миграции с новым манифестом не
+// сверяются: версия вшита в бинарник, и сверка себя отвергала бы любой другой
+// выпуск. Встроенные наборы нового выпуска входят в его бинарники, а те
+// сверяются целиком. Выпуск, собранный раньше установленного (откат),
+// отвергается без allowOlder. Итог в БД не пишется: это не проверка
+// установки.
+func verifyRelease(dir string, allowOlder bool, stdout io.Writer) error {
 	p, err := aisecCrypto.New(aisecCrypto.ProfileStandard)
 	if err != nil {
 		return err
@@ -136,6 +146,15 @@ func verifyRelease(dir string, stdout io.Writer) error {
 		return err
 	}
 	path := filepath.Join(dir, integrity.ManifestFile)
+	reject := func(format string, a ...any) error {
+		say(stdout, "Выпуск не прошёл проверку: "+format+"\n", a...)
+		return errReleaseRejected
+	}
+	for _, f := range []string{path, filepath.Join(dir, integrity.SignatureFile)} {
+		if info, err := os.Lstat(f); err == nil && !info.Mode().IsRegular() {
+			return reject("%s — не обычный файл (ссылка или каталог).", f)
+		}
+	}
 	checker, err := integrity.NewChecker(integrity.Config{
 		Component: "cli", Provider: p, ManifestPath: path, AllFiles: true,
 	})
@@ -159,10 +178,44 @@ func verifyRelease(dir string, stdout io.Writer) error {
 		if res.Omitted > 0 {
 			say(stdout, "  и ещё нарушений: %d\n", res.Omitted)
 		}
-		return errIntegrityViolated
+		return errReleaseRejected
+	}
+	if res.Checked == 0 {
+		return reject("в манифесте %s нет ни одного файла на диске.", path)
+	}
+	if !allowOlder {
+		installed, err := installedManifest(ctx, p)
+		if err != nil {
+			return fmt.Errorf("манифест установленной версии: %w; без него откат не определить (-allow-older — проверить без сравнения)", err)
+		}
+		if res.ManifestCreated.Before(installed.ManifestCreated) {
+			return reject("выпуск %s собран раньше установленного %s (откат). Намеренный откат — -allow-older.", res.ManifestVersion, installed.ManifestVersion)
+		}
 	}
 	say(stdout, "Выпуск %s проверен ключом установленной версии %s: подпись верна, файлов: %d.\n", res.ManifestVersion, version, res.Checked)
 	return nil
+}
+
+// installedManifest — подписанный манифест установки, в которой работает этот
+// aisec-cli (над каталогом bin/): по его времени сборки определяется откат.
+func installedManifest(ctx context.Context, p aisecCrypto.Provider) (integrity.Result, error) {
+	exe, err := executable()
+	if err != nil {
+		return integrity.Result{}, err
+	}
+	path := integrity.DefaultManifestPath(exe)
+	checker, err := integrity.NewChecker(integrity.Config{Component: "cli", Provider: p, ManifestPath: path})
+	if err != nil {
+		return integrity.Result{}, err
+	}
+	res, err := checker.Check(ctx, integrity.TriggerManual)
+	if err != nil {
+		return integrity.Result{}, err
+	}
+	if !res.OK() {
+		return integrity.Result{}, fmt.Errorf("%s: %s", path, reasonText(res.Reason))
+	}
+	return res, nil
 }
 
 func recordResult(ctx context.Context, dsn string, p aisecCrypto.Provider, res integrity.Result, accept bool) (integrity.Result, error) {
