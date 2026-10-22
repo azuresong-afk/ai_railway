@@ -207,7 +207,7 @@ func TestRolesAPI(t *testing.T) {
 	mustProblem(t, e.call(admin, "GET", "/api/v1/roles/..", "", false), 404, CodeNotFound)
 
 	// applications.read — чтобы роль покрывала права владельца приложения (задача 2.11).
-	w = e.call(admin, "PUT", "/api/v1/roles/soc_lead", `{"display_name":"SOC","permissions":[{"permission":"users.manage"},{"permission":"applications.read"}]}`, true)
+	w = e.call(admin, "PUT", "/api/v1/roles/soc_lead", `{"display_name":"SOC","permissions":[{"permission":"users.manage"},{"permission":"applications.read"},{"permission":"dashboards.read"}]}`, true)
 	if w.Code != 200 || !decode[RoleView](t, w.Body.Bytes()).MFARequired {
 		t.Fatalf("изменение: %d %s", w.Code, w.Body)
 	}
@@ -255,9 +255,9 @@ func TestRolesAPI(t *testing.T) {
 func TestMePermissions(t *testing.T) {
 	e := newAuthEnv(t)
 	for login, want := range map[string]string{
-		"analyst": `"permissions":["alert_rules.read","alerts.manage","alerts.read","applications.read","budgets.read","events.export","events.read","incidents.export","incidents.manage","incidents.read","model_prices.read","policies.read","policies.test","providers.read","self","session","system.read"]`,
+		"analyst": `"permissions":["alert_rules.read","alerts.manage","alerts.read","applications.read","budgets.read","dashboards.read","events.export","events.read","incidents.export","incidents.manage","incidents.read","model_prices.read","policies.read","policies.test","providers.read","self","session","system.read"]`,
 		// Без events.content.read: содержимое событий — только у администратора безопасности (ТЗ 1.3).
-		"auditor": `"permissions":["alert_rules.read","alerts.read","api_tokens.read","applications.read","audit.read","audit.verify","auth_policy.read","budgets.read","events.read","incidents.read","model_prices.read","notify_channels.read","policies.read","providers.read","roles.read","self","session","sessions.read","system.read","users.read"]`,
+		"auditor": `"permissions":["alert_rules.read","alerts.read","api_tokens.read","applications.read","audit.read","audit.verify","auth_policy.read","budgets.read","dashboards.read","events.read","incidents.read","model_prices.read","notify_channels.read","policies.read","providers.read","roles.read","self","session","sessions.read","system.read","users.read"]`,
 	} {
 		s := e.mustLogin(t, login)
 		if w := e.call(s, "GET", "/api/v1/me", "", false); !strings.Contains(w.Body.String(), want) {

@@ -32,6 +32,7 @@ func Routes(d Deps) []Route {
 	routes = append(routes, notifyChannelRoutes(d)...)
 	routes = append(routes, incidentRoutes(d)...)
 	routes = append(routes, budgetRoutes(d)...)
+	routes = append(routes, dashboardRoutes(d)...)
 	return routes
 }
 

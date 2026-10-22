@@ -39,12 +39,14 @@ type appsEnv struct {
 	pols  *versions.Memory
 	rec   *recAudit
 	caPEM string
+	// dash — подмена агрегатов дашбордов (dashboards_test.go).
+	dash *fakeDash
 }
 
 func newAppsEnv(t testing.TB) *appsEnv {
 	t.Helper()
 	e := &appsEnv{authEnv: &authEnv{mem: authtest.NewMemory(), log: &bytes.Buffer{}, clock: &testClock{t: time.Now()}, secrets: map[string][]byte{}},
-		apps: apps.NewMemory(), pols: versions.NewMemory(), rec: &recAudit{}}
+		apps: apps.NewMemory(), pols: versions.NewMemory(), rec: &recAudit{}, dash: &fakeDash{}}
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	ctx := context.Background()
 	// Своя роль: только свои приложения и их ключи (УПД.2, объектный уровень).
@@ -106,7 +108,7 @@ func newAppsEnv(t testing.TB) *appsEnv {
 	e.caPEM = string(ca.CertPEM())
 	logger := slog.New(slog.NewTextHandler(e.log, nil))
 	h, _, err := New(Options{Hasher: testHasher(t), Logger: logger, Auth: testAuth(t, e.mem, auth.WithClock(e.clock.now)), Apps: svc,
-		Policies: pols, Audit: e.rec,
+		Policies: pols, Audit: e.rec, Dashboards: e.dash,
 		RateLimit: RateConfig{Rules: []RateRule{{Prefix: "/", Max: 100000, Window: time.Minute}}}})
 	if err != nil {
 		t.Fatal(err)
