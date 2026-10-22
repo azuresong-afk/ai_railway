@@ -188,6 +188,21 @@ const (
 	// ConditionTestBuild — ОЦЛ.1: компонент собран с тестовым ключом
 	// манифеста, сборка не для поставки (Н34 ревью 2.r4).
 	ConditionTestBuild = "test_build"
+	// ConditionCAExpiry — ИАФ.10: действующему корню внутреннего УЦ осталось
+	// CAExpiryWarn и меньше; нужна ротация (aisec-cli keys rotate-ca). За
+	// CAExpiryCritical пишется ещё одно system.alert (код ca_expiry:critical).
+	// Сертификаты шлюзов после этого не продлеваются: их срок обрезан сроком
+	// корня (3В5 ревью 3.r1).
+	ConditionCAExpiry = "ca_expiry"
+)
+
+// Пороги условия ca_expiry (3В5 ревью 3.r1): за 60 суток — время на
+// ротацию с перекрытием 30 суток по умолчанию, за 7 — последнее
+// предупреждение.
+const (
+	CAExpiryWarn     = 60 * 24 * time.Hour
+	CAExpiryCritical = 7 * 24 * time.Hour
+	caExpiryCritical = ConditionCAExpiry + ":critical"
 )
 
 // Коды условий по компоненту (В18 ревью 2.r3b): ОЦЛ.5 и отставание пакета

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/azuresong-afk/ai_railway/internal/audit"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/internal/gwregistry"
 )
@@ -196,6 +197,83 @@ func TestReissueBeforeExpiry(t *testing.T) {
 	}
 }
 
+// 3В4 ревью 3.r1, ИАФ.10: сертификат, которому перевыпуск не нужен, не
+// перевыпускается по запросу шлюза — отказ ErrReissueNotNeeded с записью
+// аудита не чаще раза в минуту; за 30 суток до истечения — выпуск.
+func TestReissueNotNeeded(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	reg, _ := e.register(t, e.token(t, "gw-1", false))
+	for range 3 {
+		if _, _, err := e.svc.Reissue(ctx, reg.Gateway.ID, mustCSR(t), testIP); !errors.Is(err, gwregistry.ErrReissueNotNeeded) {
+			t.Fatalf("свежий сертификат: %v", err)
+		}
+	}
+	denied := 0
+	for _, r := range e.aud.all() {
+		if r.Action == "gateway.cert_reissue" && r.Result == audit.ResultDenied && r.Details.(map[string]any)["reason"] == "not_needed" {
+			denied++
+		}
+	}
+	if denied != 1 {
+		t.Fatalf("записей об отказе: %d, ожидается 1 (не чаще раза в минуту)", denied)
+	}
+	e.clock.add(aisecCrypto.ClientCertValidity - gwregistry.ReissueBefore + time.Hour)
+	if _, _, err := e.svc.Reissue(ctx, reg.Gateway.ID, mustCSR(t), testIP); err != nil {
+		t.Fatalf("за 30 суток до истечения: %v", err)
+	}
+}
+
+// 3В5 ревью 3.r1: когда сертификат уже истекает вместе с корнем УЦ,
+// перевыпуск ничего не даёт — heartbeat его не требует и сервер не
+// выпускает; без исправления шлюз перевыпускал бы раз в минуту до
+// истечения корня.
+func TestReissueCappedByCA(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	reg, _ := e.register(t, e.token(t, "gw-1", false))
+	gw := reg.Gateway
+	// Корню (400 суток) остаётся 50 суток, сертификату (365) — 15.
+	e.clock.add(350 * 24 * time.Hour)
+	hb, err := e.svc.Heartbeat(ctx, gw.ID, gwregistry.HeartbeatInput{Version: "1"}, testIP)
+	if err != nil || !hb.Reissue {
+		t.Fatalf("за 15 суток до истечения нужен перевыпуск: %+v %v", hb, err)
+	}
+	certPEM, info, err := e.svc.Reissue(ctx, gw.ID, mustCSR(t), testIP)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.NotAfter.Equal(e.ca.NotAfter()) {
+		t.Fatalf("срок нового сертификата %s, ожидался срок УЦ %s", info.NotAfter, e.ca.NotAfter())
+	}
+	if _, err := e.svc.Authenticate(ctx, peerFrom(t, certPEM, e.ca), testIP); err != nil {
+		t.Fatal(err)
+	}
+	// Дальше до истечения корня перевыпуск не требуется и не выполняется.
+	for _, step := range []time.Duration{time.Minute, 30 * 24 * time.Hour, 15 * 24 * time.Hour} {
+		e.clock.add(step)
+		hb, err := e.svc.Heartbeat(ctx, gw.ID, gwregistry.HeartbeatInput{Version: "1"}, testIP)
+		if err != nil || hb.Reissue {
+			t.Fatalf("через %s: сертификат истекает вместе с корнем, перевыпуск не нужен: %+v %v", step, hb, err)
+		}
+		if _, _, err := e.svc.Reissue(ctx, gw.ID, mustCSR(t), testIP); !errors.Is(err, gwregistry.ErrReissueNotNeeded) {
+			t.Fatalf("через %s: перевыпуск: %v", step, err)
+		}
+	}
+	issued := 0
+	for _, r := range e.mem.Records {
+		if r.Action == "gateway.cert_reissue" && r.Details.(map[string]any)["stage"] == "issued" {
+			issued++
+		}
+	}
+	if issued != 1 {
+		t.Fatalf("выпусков: %d, ожидается 1", issued)
+	}
+	if got := e.svc.CANotAfter(); !got.Equal(e.ca.NotAfter()) {
+		t.Fatalf("CANotAfter: %s", got)
+	}
+}
+
 func mustCSR(t *testing.T) []byte {
 	t.Helper()
 	_, csr, err := aisecCrypto.NewClientCSR("gw")
@@ -243,7 +321,7 @@ func TestBundleKeyPinning(t *testing.T) {
 		t.Fatalf("записей о чужом ключе за минуту: %d, ожидается 1", n)
 	}
 	e.clock.add(time.Minute)
-	_ = e.svc.CheckBundleKey(ctx, id, k2, testIP) //nolint:errcheck // проверяется запись аудита
+	_ = e.svc.CheckBundleKey(ctx, id, k2, testIP) //nolint:gosec // тест: проверяется запись аудита, не ошибка
 	if n := countAction(e.actions(), "gateway.bundle_key_mismatch"); n != 2 {
 		t.Fatalf("записей о чужом ключе через минуту: %d, ожидается 2", n)
 	}
