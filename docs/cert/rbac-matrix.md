@@ -57,6 +57,17 @@
 | GET | `/api/v1/events/stats` | `events.read` | да | — | да | да | — | да |
 | GET | `/api/v1/events/{id}` | `events.read` | да | — | да | да | — | да |
 | POST | `/api/v1/events/{id}/content` | `events.content.read` | да | — | — | — | — | — |
+| GET | `/api/v1/incident-categories` | `incidents.read` | да | — | да | да | — | да |
+| PUT | `/api/v1/incident-categories/{category}` | `incident_categories.manage` | да | — | — | — | — | — |
+| GET | `/api/v1/incidents` | `incidents.read` | да | — | да | да | — | да |
+| POST | `/api/v1/incidents` | `incidents.manage` | да | — | да | — | — | да |
+| GET | `/api/v1/incidents/{id}` | `incidents.read` | да | — | да | да | — | да |
+| POST | `/api/v1/incidents/{id}/alerts` | `incidents.manage` | да | — | да | — | — | да |
+| PUT | `/api/v1/incidents/{id}/assignee` | `incidents.manage` | да | — | да | — | — | да |
+| POST | `/api/v1/incidents/{id}/comments` | `incidents.manage` | да | — | да | — | — | да |
+| GET | `/api/v1/incidents/{id}/export` | `incidents.export` | да | — | да | — | — | да |
+| POST | `/api/v1/incidents/{id}/stages/{stage}` | `incidents.manage` | да | — | да | — | — | да |
+| POST | `/api/v1/incidents/{id}/status` | `incidents.manage` | да | — | да | — | — | да |
 | GET | `/api/v1/me` | `session` | да | да | да | да | да | — |
 | GET | `/api/v1/model-prices` | `model_prices.read` | да | да | да | да | — | да |
 | POST | `/api/v1/model-prices` | `model_prices.manage` | да | да | — | — | — | да |

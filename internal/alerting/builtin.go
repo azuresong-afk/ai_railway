@@ -25,8 +25,9 @@ func canonical(filter string) string {
 	return f.String()
 }
 
-// builtinRules — встроенные правила этапа 3: задача 3.10 и системные
-// правила и правила безопасности DM-38–DM-44 задачи 3.11 (securityRules).
+// builtinRules — встроенные правила этапа 3: задача 3.10, системные
+// правила и правила безопасности DM-38–DM-44 задачи 3.11 (securityRules) и
+// правила с признаком «инцидент» задачи 3.16 (incidentRules).
 func builtinRules() []Rule {
 	none := Recipients{Roles: []string{}, Users: []string{}}
 	return append([]Rule{
@@ -50,5 +51,5 @@ func builtinRules() []Rule {
 		{BuiltinKey: BuiltinRecipientsChanged, Kind: KindSecurity, Name: "Изменены получатели оповещений",
 			Description: "Изменение получателей правила оповещения (ТЗ 5.6). Изменения одного пользователя за 10 минут — одно оповещение.",
 			Enabled:     true, Severity: "high", GroupBy: []string{"actor"}, GroupMinutes: 10, Recipients: none},
-	}, securityRules()...)
+	}, append(securityRules(), incidentRules()...)...)
 }

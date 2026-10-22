@@ -34,6 +34,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/events"
 	"github.com/azuresong-afk/ai_railway/internal/gwregistry"
 	"github.com/azuresong-afk/ai_railway/internal/httpserver"
+	"github.com/azuresong-afk/ai_railway/internal/incidents"
 	"github.com/azuresong-afk/ai_railway/internal/integrity"
 	"github.com/azuresong-afk/ai_railway/internal/integrity/selftest"
 	"github.com/azuresong-afk/ai_railway/internal/keyring"
@@ -250,13 +251,18 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	defer readDB.Close()
 	// Оповещения (ТЗ 5.6, задача 3.10, ADR-0020): правила «порог» и «новое»
 	// считаются в транзакции приёма событий; встроенные правила создаются
-	// при запуске.
+	// при запуске. Инциденты по правилам с признаком «инцидент» (DM-08,
+	// задача 3.16) создаются в той же транзакции.
 	alertStore, err := alerting.NewPGStore(db.Pool(), auditLog, rnd, audit.DefaultOrgID, logger)
 	if err != nil {
 		return err
 	}
+	incidentStore, err := incidents.NewPGStore(db.Pool(), auditLog, alertStore, rnd)
+	if err != nil {
+		return err
+	}
 	eventStore, err := events.NewPGStore(db.Pool(), box, auditLog, audit.DefaultOrgID, events.WithRandom(rnd),
-		events.WithReadDB(readDB.Pool()), events.WithIngestHook(alertStore))
+		events.WithReadDB(readDB.Pool()), events.WithIngestHook(alertStore.WithIncidents(incidentStore)))
 	if err != nil {
 		return err
 	}
@@ -277,6 +283,28 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 			return err
 		},
 		Retention: alertStore})
+	if err != nil {
+		return err
+	}
+	incidentsSvc, err := incidents.New(incidents.Options{Store: incidentStore, Provider: p, Alerts: alertsSvc,
+		OrgID: audit.DefaultOrgID, UserCheck: func(ctx context.Context, id string) error {
+			// Ответственный — действующий пользователь, который видит инциденты.
+			u, err := authSvc.User(ctx, id)
+			if errors.Is(err, auth.ErrNotFound) {
+				return incidents.ErrUserInactive
+			}
+			if err != nil {
+				return err
+			}
+			g, err := authSvc.Grants(ctx, u.Role)
+			if err != nil {
+				return err
+			}
+			if u.Status != auth.StatusActive || !g.Allows(auth.PermIncidentsRead) {
+				return incidents.ErrUserInactive
+			}
+			return nil
+		}})
 	if err != nil {
 		return err
 	}
@@ -397,6 +425,7 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		Events:    eventStore,
 		Alerts:    alertsSvc,
 		Notify:    notifySvc,
+		Incidents: incidentsSvc,
 		Audit:     auditLog,
 		Fallback:  console,
 
