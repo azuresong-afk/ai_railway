@@ -4,13 +4,16 @@
 #   ./verify-release.sh КАТАЛОГ_ВЫПУСКА
 #
 # Каталог выпуска: aisec-manifest.json, aisec-manifest.json.sig, bin/ и
-# images/aisec-server.tar, aisec-gateway.tar, aisec-cli.tar. Каталог и файлы
-# должны быть доступны на чтение пользователю 65534: от него работает
-# проверяющий контейнер.
+# images/aisec-server.tar, aisec-gateway.tar, aisec-cli.tar. Запускается от
+# root (или группы docker с правом записи во временный каталог).
 #
+# 0. Выпуск копируется во временный каталог (владелец root, запись только
+#    владельцу), и дальше скрипт работает только с копией: файлы нельзя
+#    подменить между проверкой и загрузкой (3Н6 ревью 3.r1).
 # 1. Подпись манифеста и все файлы выпуска проверяет aisec-cli УСТАНОВЛЕННОЙ
 #    версии (AISEC_VERSION из .env): ключ производителя берётся из
-#    действующей установки, а не из нового выпуска.
+#    действующей установки, а не из нового выпуска. Выпуск, собранный раньше
+#    установленного, отвергается (откат — прежние образы, README.md).
 # 2. До загрузки в архиве каждого образа проверяется состав: ровно один образ
 #    с тегом новой версии, никаких других имён. Установленные образы этим
 #    тегом не перезаписываются: новая версия обязана отличаться.
@@ -35,9 +38,6 @@ die() {
 # Путь выпуска разбирается до перехода в каталог скрипта: относительный путь
 # считается от текущего каталога.
 release=$(cd "$1" && pwd)
-case "$release" in
-*,*) die "путь выпуска не должен содержать запятую: $release" ;;
-esac
 cd "$(dirname "$0")"
 
 [ -f .env ] || die "нет .env рядом с compose.yaml"
@@ -58,20 +58,6 @@ aisec-test) suffix=-test ;;
 *) die "AISEC_IMAGE_REPO: ожидается aisec или aisec-test, а не $repo" ;;
 esac
 
-echo "1. Подпись и файлы выпуска — aisec-cli $installed (установленная версия)."
-docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges:true \
-	--user 65534:65534 --mount "type=bind,source=$release,target=/release,readonly" \
-	"$repo/aisec-cli:$installed" verify -manifest /release/aisec-manifest.json ||
-	die "выпуск не прошёл проверку подписи и файлов — не устанавливайте его"
-
-# Манифест проверен: версия и список бинарников берутся из него.
-version=$(sed -n 's/^  "version": "\([A-Za-z0-9._-]*\)",$/\1/p' "$release/aisec-manifest.json")
-[ -n "$version" ] || die "в манифесте нет версии"
-tag="$version$suffix"
-[ "$tag" != "$installed" ] || die "выпуск $tag уже установлен — проверять нечего"
-bins=$(sed -n 's/^      "path": "bin\/\([a-z0-9-]*\)",$/\1/p' "$release/aisec-manifest.json" | sort)
-[ -n "$bins" ] || die "в манифесте нет бинарников"
-
 work=$(mktemp -d)
 loaded=
 cleanup() {
@@ -84,6 +70,42 @@ cleanup() {
 	fi
 }
 trap cleanup EXIT
+
+echo "0. Копия выпуска во временном каталоге."
+case "$work" in
+*,*) die "временный каталог не должен содержать запятую: $work (задайте TMPDIR)" ;;
+esac
+# Каталог проходим для 65534 (проверяющий контейнер), писать может только
+# владелец. Символьные ссылки копируются как ссылки: шаг 1 их отвергает.
+chmod 0755 "$work"
+rel="$work/release"
+mkdir -p "$rel/images"
+for f in aisec-manifest.json aisec-manifest.json.sig bin images/aisec-server.tar images/aisec-gateway.tar images/aisec-cli.tar; do
+	[ ! -L "$release/$f" ] || die "в выпуске $f — символьная ссылка"
+done
+cp -P "$release/aisec-manifest.json" "$release/aisec-manifest.json.sig" "$rel/"
+[ -d "$release/bin" ] || die "в выпуске нет bin/"
+cp -RP "$release/bin" "$rel/bin"
+for c in aisec-server aisec-gateway aisec-cli; do
+	[ -f "$release/images/$c.tar" ] || die "в выпуске нет images/$c.tar"
+	cp -P "$release/images/$c.tar" "$rel/images/"
+done
+chown -R "$(id -u):$(id -g)" "$rel"
+chmod -R u=rwX,go=rX "$rel"
+
+echo "1. Подпись и файлы выпуска — aisec-cli $installed (установленная версия)."
+docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges:true \
+	--user 65534:65534 --mount "type=bind,source=$rel,target=/release,readonly" \
+	"$repo/aisec-cli:$installed" verify -release /release ||
+	die "выпуск не прошёл проверку подписи и файлов — не устанавливайте его"
+
+# Манифест проверен: версия и список бинарников берутся из копии.
+version=$(sed -n 's/^  "version": "\([A-Za-z0-9._-]*\)",$/\1/p' "$rel/aisec-manifest.json")
+[ -n "$version" ] || die "в манифесте нет версии"
+tag="$version$suffix"
+[ "$tag" != "$installed" ] || die "выпуск $tag уже установлен — проверять нечего"
+bins=$(sed -n 's/^      "path": "bin\/\([a-z0-9-]*\)",$/\1/p' "$rel/aisec-manifest.json" | sort)
+[ -n "$bins" ] || die "в манифесте нет бинарников"
 
 # Состав архива docker save до загрузки: только метаданные OCI и блобы, одно
 # имя образа. Обратная косая черта запрещена, чтобы имя нельзя было спрятать
@@ -121,14 +143,17 @@ expected_files() {
 
 echo "2. Образы выпуска $tag совпадают с проверенными файлами."
 for c in aisec-server aisec-gateway aisec-cli; do
-	archive="$release/images/$c.tar"
+	archive="$rel/images/$c.tar"
 	image="$repo/$c:$tag"
-	[ -f "$archive" ] || die "в выпуске нет images/$c.tar"
 	case "$c" in
 	aisec-server) want_bins=aisec-server ports='{"8444/tcp":{},"8445/tcp":{}}' ;;
 	aisec-gateway) want_bins=aisec-gateway ports='{"8443/tcp":{}}' ;;
 	aisec-cli) want_bins=$bins ports=null ;;
 	esac
+	# Бинарник каждого образа обязан быть в проверенном манифесте.
+	for b in $want_bins; do
+		printf '%s\n' "$bins" | grep -qx "$b" || die "в проверенном манифесте нет bin/$b для $image"
+	done
 	check_archive "$archive" "$image"
 	! docker image inspect "$image" >/dev/null 2>&1 || die "$image уже загружен — удалите его (docker rmi) и повторите"
 	loaded="$loaded $image"
@@ -153,10 +178,10 @@ for c in aisec-server aisec-gateway aisec-cli; do
 		die "$image: не скопировать /opt/aisec"
 	}
 	docker rm "$id" >/dev/null
-	cmp -s "$work/$c/aisec-manifest.json" "$release/aisec-manifest.json" || die "$image: манифест отличается от проверенного"
-	cmp -s "$work/$c/aisec-manifest.json.sig" "$release/aisec-manifest.json.sig" || die "$image: подпись отличается от проверенной"
+	cmp -s "$work/$c/aisec-manifest.json" "$rel/aisec-manifest.json" || die "$image: манифест отличается от проверенного"
+	cmp -s "$work/$c/aisec-manifest.json.sig" "$rel/aisec-manifest.json.sig" || die "$image: подпись отличается от проверенной"
 	for b in $want_bins; do
-		cmp -s "$work/$c/bin/$b" "$release/bin/$b" || die "$image: bin/$b отличается от проверенного"
+		cmp -s "$work/$c/bin/$b" "$rel/bin/$b" || die "$image: bin/$b отличается от проверенного"
 	done
 	echo "   $image — совпадает ($(echo "$want_bins" | wc -w) бинарн.)"
 done

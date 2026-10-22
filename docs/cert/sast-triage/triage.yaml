@@ -51,8 +51,8 @@ entries:
     author: Claude Code (ИИ-ассистент); проверяет владелец при ревью
     date: 2026-10-21
   - rule: gosec/G703
-    file: cmd/aisec-server/main.go
-    snippet: 'if _, err := os.Stat(path); err == nil {'
+    file: cmd/aisec-server/bundle.go
+    snippet: 'if _, err := os.Stat(path); err == nil && !slices.ContainsFunc(out, func(w integrity.WatchFile) bool { return w.Path == path }) {'
     verdict: false_positive
     justification: Путь собирается из каталога ключей (флаг -keys-dir, задаёт администратор при запуске сервера) и констант bundleSigningPubFile и bundleSigningNextFile; из запросов к серверу путь не берётся. os.Stat только проверяет наличие файла, чтобы поставить его под контроль целостности.
     author: Claude Code (ИИ-ассистент); проверяет владелец при ревью
