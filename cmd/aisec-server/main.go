@@ -17,7 +17,6 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"path/filepath"
 	"sync/atomic"
 	"time"
 	// База часовых поясов IANA в бинарнике: первичная настройка принимает
@@ -202,7 +201,13 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	// контекст отменяется с причиной integrity.ErrViolation.
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
-	integritySvc, err := startIntegrity(ctx, cfg, p, db, auditLog, logger, cancel, auditPubPEM)
+	// Цепочка доверия от якоря bundle-signing.pub (ADR-0018, п. 4): ключ
+	// подписи пакетов и корни УЦ после ротаций.
+	trust, err := loadServerTrust(ctx, p, db, cfg.KeysDir)
+	if err != nil {
+		return err
+	}
+	integritySvc, err := startIntegrity(ctx, cfg, p, db, auditLog, logger, cancel, auditPubPEM, trust)
 	if err != nil {
 		return err
 	}
@@ -210,9 +215,9 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	// Реестр шлюзов и внутренний УЦ (ИАФ.10, Р8): без -ca-cert
 	// регистрация отвечает 503, а внутренний порт не открывается.
 	var gateways *gwregistry.Service
-	var ca *aisecCrypto.CA
+	var ca *serverCA
 	if cfg.CACert != "" {
-		if ca, err = loadCA(cfg.CACert, cfg.CAKey); err != nil {
+		if ca, err = loadServerCA(cfg, p, trust); err != nil {
 			return err
 		}
 		gwStore, err := gwregistry.NewPGStore(db.Pool(), auditLog)
@@ -220,10 +225,11 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 			return err
 		}
 		if gateways, err = gwregistry.New(gwregistry.Options{
-			Store: gwStore, Provider: p, CA: ca, Audit: auditLog, Logger: logger,
+			Store: gwStore, Provider: p, CA: ca.ca, Audit: auditLog, Logger: logger, AnchorRoot: ca.anchorRoot,
 		}); err != nil {
 			return err
 		}
+		gateways.SetRoots(ca.roots)
 	} else {
 		logger.Warn("внутренний УЦ не задан (-ca-cert, -ca-key): регистрация шлюзов и внутренний API выключены")
 	}
@@ -349,7 +355,7 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	if gateways != nil {
 		// Пакеты конфигурации (задача 2.13): без ключа подписи внутренний
 		// порт не открывается — шлюзы не получили бы конфигурацию.
-		bundleRoutes, bsvc, err := newBundleRoutes(cfg, p, db, auditLog, appsSvc, policiesSvc, gateways, logger)
+		bundleRoutes, bsvc, err := newBundleRoutes(cfg, p, db, auditLog, appsSvc, policiesSvc, gateways, trust, logger)
 		if err != nil {
 			return err
 		}
@@ -462,7 +468,7 @@ func startAuditVerify(ctx context.Context, cfg *serverConfig, auditLog *audit.Lo
 // ключи подписи пакетов. Сертификаты TLS не наблюдаются: их меняют при
 // продлении.
 func startIntegrity(ctx context.Context, cfg *serverConfig, p aisecCrypto.Provider, db *store.DB, auditLog *audit.Log,
-	logger *slog.Logger, stop context.CancelCauseFunc, auditPubPEM []byte) (integrity.Service, error) {
+	logger *slog.Logger, stop context.CancelCauseFunc, auditPubPEM []byte, trust *serverTrust) (integrity.Service, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		exe = "" // проверка отметит исполняемый файл как нечитаемый
@@ -482,11 +488,8 @@ func startIntegrity(ctx context.Context, cfg *serverConfig, p aisecCrypto.Provid
 	if cfg.CACert != "" {
 		watch = append(watch, integrity.WatchFile{Path: cfg.CACert})
 	}
-	for _, name := range []string{bundleSigningPubFile, bundleSigningNextFile} {
-		path := filepath.Join(cfg.KeysDir, name)
-		if _, err := os.Stat(path); err == nil {
-			watch = append(watch, integrity.WatchFile{Path: path})
-		}
+	if trust != nil {
+		watch = append(watch, trust.watch(cfg)...)
 	}
 	running := ""
 	if exe != "" {
@@ -538,7 +541,7 @@ func loadCA(certFile, keyFile string) (*aisecCrypto.CA, error) {
 // newInternalServer — внутренний API шлюзов на отдельном порту: TLS с
 // обязательным клиентским сертификатом внутреннего УЦ (mTLS, ИАФ.10).
 func newInternalServer(ctx context.Context, cfg *serverConfig, tp aisecCrypto.TLSProvider, hasher aisecCrypto.Hasher,
-	gateways *gwregistry.Service, eventStore events.Store, ca *aisecCrypto.CA, certPEM, keyPEM []byte,
+	gateways *gwregistry.Service, eventStore events.Store, ca *serverCA, certPEM, keyPEM []byte,
 	extra []api.Route, logger *slog.Logger) (*httpserver.Server, error) {
 	if cfg.InternalTLSCertFile != "" {
 		var err error
@@ -557,7 +560,7 @@ func newInternalServer(ctx context.Context, cfg *serverConfig, tp aisecCrypto.TL
 	}
 	return httpserver.New(ctx, httpserver.Config{
 		Addr: cfg.InternalListen, Handler: handler, TLS: tp, CertPEM: certPEM, KeyPEM: keyPEM,
-		ClientCAPEM: ca.CertPEM(), Logger: ilog,
+		ClientCAPEM: ca.clientCAs, Logger: ilog,
 	})
 }
 

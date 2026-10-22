@@ -11,6 +11,7 @@ import (
 	"io"
 	"math"
 	"net/netip"
+	"slices"
 	"time"
 
 	"github.com/azuresong-afk/ai_railway/internal/crypto"
@@ -164,9 +165,10 @@ func strictUnmarshal(b []byte, v any) error {
 
 // VerifyArchive проверяет файл архива без БД: заголовок, непрерывную цепочку
 // записей от предыдущей точки, хеш тела, соответствие точки записям и
-// подпись точки ключом v. Вход недоверенный (файл с внешнего носителя),
-// разбор покрыт FuzzVerifyArchive.
-func VerifyArchive(r io.Reader, h crypto.Hasher, v crypto.Verifier) (*Checkpoint, error) {
+// подпись точки одним из ключей keys (после ротации ключа аудита — любым
+// из открытых ключей каталога, ADR-0018, п. 5.3). Вход недоверенный (файл
+// с внешнего носителя), разбор покрыт FuzzVerifyArchive.
+func VerifyArchive(r io.Reader, h crypto.Hasher, keys ...crypto.Verifier) (*Checkpoint, error) {
 	invalid := func(format string, a ...any) error {
 		return fmt.Errorf("%w: %s", ErrArchiveInvalid, fmt.Sprintf(format, a...))
 	}
@@ -237,7 +239,9 @@ func VerifyArchive(r io.Reader, h crypto.Hasher, v crypto.Verifier) (*Checkpoint
 		return nil, invalid("точка: алгоритм или организация")
 	case !crypto.Equal(cp.ArchiveHash, sum.Sum(nil)):
 		return nil, invalid("хеш тела архива не совпадает с точкой")
-	case !cp.VerifySignature(v):
+	case !slices.ContainsFunc(keys, func(v crypto.Verifier) bool {
+		return crypto.Equal(cp.PublicKey, v.PublicKey()) && cp.VerifySignature(v)
+	}):
 		return nil, invalid("подпись контрольной точки не проверяется")
 	}
 	return cp, nil

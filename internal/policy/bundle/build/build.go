@@ -646,8 +646,11 @@ type Delivery struct {
 
 // Deliver выдаёт шлюзу последнюю корректную версию: подписывает её и
 // шифрует учётные данные провайдеров ключом шлюза recipientKey. Выдача
-// пакета пишется в аудит (bundle.deliver); ответ 304 — нет.
-func (s *Service) Deliver(ctx context.Context, gw Gateway, recipientKey []byte, ifNoneMatch string) (Delivery, error) {
+// пакета пишется в аудит (bundle.deliver); ответ 304 — нет. trustSeq —
+// последнее заявление о доверии, известное шлюзу (−1 — шлюз прежней
+// версии): шлюз, которому нужны новые заявления, получает пакет целиком
+// даже с той же версией (ADR-0018, п. 4).
+func (s *Service) Deliver(ctx context.Context, gw Gateway, recipientKey []byte, ifNoneMatch string, trustSeq int64) (Delivery, error) {
 	if len(recipientKey) != aisecCrypto.RecipientPublicKeySize {
 		return Delivery{}, ErrNoRecipientKey
 	}
@@ -656,7 +659,7 @@ func (s *Service) Deliver(ctx context.Context, gw Gateway, recipientKey []byte, 
 		return Delivery{}, err
 	}
 	d := Delivery{Version: rec.Version, ETag: bundle.ETag(rec.Version)}
-	if etagMatches(ifNoneMatch, d.ETag) {
+	if etagMatches(ifNoneMatch, d.ETag) && (trustSeq < 0 || trustSeq >= s.sealer.TrustSeq()) {
 		d.NotModified = true
 		return d, nil
 	}
@@ -677,7 +680,7 @@ func (s *Service) Deliver(ctx context.Context, gw Gateway, recipientKey []byte, 
 	if err := s.audit.Record(ctx, audit.Entry{OrgID: s.orgID, Actor: audit.Actor{Type: audit.ActorGateway, ID: gw.ID},
 		SourceIP: gw.IP, Action: "bundle.deliver", Object: audit.Object{Type: "config_bundle", ID: strconv.FormatInt(rec.Version, 10)},
 		Result: audit.ResultSuccess, Details: map[string]any{"version": rec.Version, "encrypted_providers": len(secrets),
-			"signing_key_id": s.sealer.KeyID()}}); err != nil {
+			"signing_key_id": s.sealer.KeyID(), "trust_seq": s.sealer.TrustSeq()}}); err != nil {
 		// Выдача без записи в аудит не выполняется (РСБ.2).
 		return Delivery{}, err
 	}

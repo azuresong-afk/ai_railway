@@ -5,9 +5,11 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
+	"github.com/azuresong-afk/ai_railway/internal/gwregistry"
 	"github.com/azuresong-afk/ai_railway/internal/policy/bundle/build"
 )
 
@@ -21,6 +23,11 @@ import (
 // дополнения): для него шифруются учётные данные провайдеров.
 const BundleKeyHeader = "AISec-Bundle-Key"
 
+// TrustSeqHeader — номер последнего заявления о доверии, известного шлюзу
+// (ADR-0018, п. 4): сервер с более новым заявлением отдаёт пакет целиком,
+// даже если версия у шлюза та же. Нет заголовка — шлюз прежней версии.
+const TrustSeqHeader = "AISec-Trust-Seq"
+
 // bundleStatusMaxBody — предел тела отчёта.
 const bundleStatusMaxBody = 1 << 10
 
@@ -28,19 +35,20 @@ const bundleStatusMaxBody = 1 << 10
 const bundleTimeout = 20 * time.Second
 
 // BundleRoutes — маршруты пакетов для InternalOptions.Extra.
-func BundleRoutes(svc *build.Service, logger *slog.Logger) []Route {
+// gateways сверяет ключ получателя с закреплённым (Н27).
+func BundleRoutes(svc *build.Service, gateways *gwregistry.Service, logger *slog.Logger) []Route {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	return []Route{
 		{Method: http.MethodGet, Path: "/internal/v1/policies/bundle", Permission: PermGatewayInternal,
-			Handler: getBundle(svc, logger)},
+			Handler: getBundle(svc, gateways, logger)},
 		{Method: http.MethodPost, Path: "/internal/v1/policies/bundle/status", Permission: PermGatewayInternal,
 			MaxBody: bundleStatusMaxBody, Handler: bundleStatus(svc, logger)},
 	}
 }
 
-func getBundle(svc *build.Service, logger *slog.Logger) http.HandlerFunc {
+func getBundle(svc *build.Service, gateways *gwregistry.Service, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		p, _ := PrincipalFrom(r.Context())
 		vals := r.Header.Values(BundleKeyHeader)
@@ -52,9 +60,35 @@ func getBundle(svc *build.Service, logger *slog.Logger) http.HandlerFunc {
 			WriteProblem(w, Invalid("Нужен заголовок "+BundleKeyHeader+": открытый ключ шлюза X25519, 32 байта в base64url без дополнения."))
 			return
 		}
+		trustSeq := int64(-1)
+		if vals := r.Header.Values(TrustSeqHeader); len(vals) > 0 {
+			n, err := strconv.ParseInt(vals[0], 10, 64)
+			if len(vals) > 1 || err != nil || n < 0 || len(vals[0]) > 19 {
+				WriteProblem(w, Invalid("Заголовок "+TrustSeqHeader+" — один, номер заявления о доверии, целое число от 0."))
+				return
+			}
+			trustSeq = n
+		}
 		ctx, cancel := contextTimeout(r, bundleTimeout)
 		defer cancel()
-		d, err := svc.Deliver(ctx, build.Gateway{ID: p.ID, IP: clientAddr(r)}, key, r.Header.Get("If-None-Match"))
+		// Секреты шифруются только для закреплённого ключа (Н27).
+		if gateways != nil {
+			err := gateways.CheckBundleKey(ctx, p.ID, key, clientAddr(r))
+			switch {
+			case errors.Is(err, gwregistry.ErrBundleKeyMismatch):
+				WriteProblem(w, NewProblem(http.StatusConflict, CodeBundleKeyMismatch,
+					"Ключ получателя шлюза не совпадает с закреплённым при регистрации. Сменить ключ можно только перерегистрацией шлюза."))
+				return
+			case errors.Is(err, gwregistry.ErrNotFound):
+				WriteProblem(w, errUnauthorized())
+				return
+			case err != nil:
+				logger.Error("ключ получателя шлюза не сверен", "gateway_id", p.ID, "error", err)
+				WriteProblem(w, errInternal())
+				return
+			}
+		}
+		d, err := svc.Deliver(ctx, build.Gateway{ID: p.ID, IP: clientAddr(r)}, key, r.Header.Get("If-None-Match"), trustSeq)
 		switch {
 		case errors.Is(err, build.ErrNoBundle):
 			w.Header().Set("Retry-After", "60")

@@ -80,7 +80,7 @@ func TestArchiveFileRoundTrip(t *testing.T) {
 	if _, err := VerifyArchive(bytes.NewReader(data2), h, v); err != nil {
 		t.Fatal(err)
 	}
-	if a, err := VerifyCheckpoints(h, v, []Checkpoint{*cp, *cp2}); err != nil || a.Seq != 10 {
+	if a, err := VerifyCheckpoints(h, SingleKey(v), []Checkpoint{*cp, *cp2}); err != nil || a.Seq != 10 {
 		t.Fatalf("последовательность точек: %v %v", a, err)
 	}
 }
@@ -142,7 +142,7 @@ func TestDM43_CheckpointForged(t *testing.T) {
 	g := Anchor{Hash: genesis(h)}
 	_, cp1 := writeArchive(t, h, s, g, buildChain(t, h, g, 4))
 	_, cp2 := writeArchive(t, h, s, cp1.Anchor(), buildChain(t, h, cp1.Anchor(), 2))
-	if a, err := VerifyCheckpoints(h, v, []Checkpoint{*cp1, *cp2}); err != nil || a.Seq != 6 {
+	if a, err := VerifyCheckpoints(h, SingleKey(v), []Checkpoint{*cp1, *cp2}); err != nil || a.Seq != 6 {
 		t.Fatalf("исходные точки: %v %v", a, err)
 	}
 	mod := func(f func(c *Checkpoint)) Checkpoint {
@@ -165,7 +165,7 @@ func TestDM43_CheckpointForged(t *testing.T) {
 		"чужой алгоритм":                  {*cp1, mod(func(c *Checkpoint) { c.HashAlg = "SHA-1" })},
 	}
 	for name, cps := range cases {
-		if _, err := VerifyCheckpoints(h, v, cps); !errors.Is(err, ErrCheckpointInvalid) {
+		if _, err := VerifyCheckpoints(h, SingleKey(v), cps); !errors.Is(err, ErrCheckpointInvalid) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}

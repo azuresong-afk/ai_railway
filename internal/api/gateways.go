@@ -1,10 +1,12 @@
 package api
 
 import (
+	"encoding/base64"
 	"errors"
 	"net/http"
 	"time"
 
+	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/internal/gwregistry"
 )
 
@@ -28,6 +30,9 @@ func gatewayRoutes(d Deps) []Route {
 type RegisterGatewayRequest struct {
 	Token string `json:"token"`
 	CSR   string `json:"csr"`
+	// BundleKey — открытый ключ получателя HPKE шлюза (base64url без
+	// дополнения): сервер закрепляет его (Н27, ADR-0018, п. 7).
+	BundleKey string `json:"bundle_key,omitempty"`
 }
 
 // RegisterGatewayResponse — сертификат шлюза и корень внутреннего УЦ.
@@ -49,9 +54,20 @@ func (d Deps) registerGateway(w http.ResponseWriter, r *http.Request) {
 		WriteProblem(w, p)
 		return
 	}
+	var bundleKey []byte
+	if req.BundleKey != "" {
+		key, err := base64.RawURLEncoding.Strict().DecodeString(req.BundleKey)
+		if err != nil || len(key) != aisecCrypto.RecipientPublicKeySize {
+			WriteProblem(w, Invalid("Ключ получателя шлюза — 32 байта X25519 в base64url без дополнения.",
+				FieldError{Field: "bundle_key", Detail: "неверный ключ"}))
+			return
+		}
+		bundleKey = key
+	}
 	ctx, cancel := contextTimeout(r, 10*time.Second)
 	defer cancel()
-	reg, err := d.Gateways.Register(ctx, gwregistry.RegisterInput{Token: req.Token, CSR: []byte(req.CSR), SourceIP: clientAddr(r)})
+	reg, err := d.Gateways.Register(ctx, gwregistry.RegisterInput{Token: req.Token, CSR: []byte(req.CSR), SourceIP: clientAddr(r),
+		BundleKey: bundleKey})
 	switch {
 	case errors.Is(err, gwregistry.ErrInvalidRequest):
 		WriteProblem(w, Invalid("Неверный запрос на сертификат: нужен один CSR в PEM на ключ ECDSA P-256 с верной подписью.",

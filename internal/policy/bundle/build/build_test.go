@@ -192,7 +192,7 @@ func TestBuildVersionsOnlyOnChange(t *testing.T) {
 func TestDeliverEncryptsForGateway(t *testing.T) {
 	ctx := context.Background()
 	e := newEnv(t)
-	d, err := e.svc.Deliver(ctx, build.Gateway{ID: bundletest.GatewayID}, e.fx.Recipient.PublicKey(), "")
+	d, err := e.svc.Deliver(ctx, build.Gateway{ID: bundletest.GatewayID}, e.fx.Recipient.PublicKey(), "", -1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,7 +211,7 @@ func TestDeliverEncryptsForGateway(t *testing.T) {
 	}
 
 	// If-None-Match с этой версией — 304 без записи в аудит.
-	d2, err := e.svc.Deliver(ctx, build.Gateway{ID: bundletest.GatewayID}, e.fx.Recipient.PublicKey(), `W/"1", `+d.ETag)
+	d2, err := e.svc.Deliver(ctx, build.Gateway{ID: bundletest.GatewayID}, e.fx.Recipient.PublicKey(), `W/"1", `+d.ETag, -1)
 	if err != nil || !d2.NotModified || d2.Body != nil {
 		t.Fatalf("If-None-Match: %+v, %v", d2, err)
 	}
@@ -220,7 +220,7 @@ func TestDeliverEncryptsForGateway(t *testing.T) {
 	}
 
 	// Пакет другого шлюза этот шлюз не примет.
-	d3, err := e.svc.Deliver(ctx, build.Gateway{ID: "другой"}, e.fx.Recipient.PublicKey(), "")
+	d3, err := e.svc.Deliver(ctx, build.Gateway{ID: "другой"}, e.fx.Recipient.PublicKey(), "", -1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,7 +228,7 @@ func TestDeliverEncryptsForGateway(t *testing.T) {
 		t.Fatalf("пакет чужого шлюза: %v", err)
 	}
 
-	if _, err := e.svc.Deliver(ctx, build.Gateway{ID: bundletest.GatewayID}, []byte("short"), ""); !errors.Is(err, build.ErrNoRecipientKey) {
+	if _, err := e.svc.Deliver(ctx, build.Gateway{ID: bundletest.GatewayID}, []byte("short"), "", -1); !errors.Is(err, build.ErrNoRecipientKey) {
 		t.Fatalf("без ключа шлюза: %v", err)
 	}
 }
@@ -356,7 +356,7 @@ func TestBuildTooLargeKeepsLastGood(t *testing.T) {
 	if _, err := fresh.Current(ctx); !errors.Is(err, build.ErrNoBundle) {
 		t.Fatalf("нет корректной версии: %v", err)
 	}
-	if _, err := fresh.Deliver(ctx, build.Gateway{ID: bundletest.GatewayID}, e.fx.Recipient.PublicKey(), ""); !errors.Is(err, build.ErrNoBundle) {
+	if _, err := fresh.Deliver(ctx, build.Gateway{ID: bundletest.GatewayID}, e.fx.Recipient.PublicKey(), "", -1); !errors.Is(err, build.ErrNoBundle) {
 		t.Fatalf("выдача: %v", err)
 	}
 }

@@ -910,7 +910,8 @@ paths:
         отозванного шлюза — 403 без уточнения причины. Токен гасится в одной транзакции с
         выпуском сертификата и записью `gateway.register`; отказы тоже пишутся в аудит (без
         токена). Повторная регистрация того же шлюза (новый токен с `-reregister`) заменяет
-        сертификат: прежний перестаёт приниматься внутренним API сразу. Без внутреннего УЦ
+        сертификат и закреплённый ключ получателя (`bundle_key`): прежний сертификат перестаёт
+        приниматься внутренним API сразу. Без внутреннего УЦ
         на сервере (`-ca-cert`) — 503. Предел частоты — 10 запросов в минуту с адреса.
         Без `Idempotency-Key`: ответ содержит выпущенный сертификат.
       security: []
@@ -2791,6 +2792,14 @@ components:
       properties:
         token: { type: string, minLength: 1, maxLength: 128, format: password, description: 'Токен из вывода aisec-cli gateway token' }
         csr: { type: string, minLength: 1, maxLength: 16384, description: 'CSR (PKCS#10) в PEM на ключ ECDSA P-256' }
+        bundle_key:
+          type: string
+          pattern: '^[A-Za-z0-9_-]{43}$'
+          description: |
+            Открытый ключ получателя секретов пакета конфигурации (X25519, 32 байта,
+            base64url без дополнения; ADR-0018, п. 7). Сервер закрепляет его за шлюзом:
+            пакет для другого ключа не выдаётся (409 `bundle_key_mismatch` на внутреннем
+            порту). Нет поля — ключ закрепляется при первом запросе пакета.
     GatewayRegistration:
       type: object
       required: [gateway_id, name, certificate, ca_certificate, not_after]
@@ -3357,7 +3366,7 @@ components:
           type: string
           enum: [invalid_request, unauthorized, forbidden, not_found, method_not_allowed, conflict,
                  payload_too_large, unsupported_media_type, unprocessable, rate_limited,
-                 internal_error, service_unavailable, reauthentication_failed]
+                 internal_error, service_unavailable, reauthentication_failed, bundle_key_mismatch]
         errors:
           type: array
           items:

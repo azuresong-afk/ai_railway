@@ -34,6 +34,7 @@ type bundleServer struct {
 	etag    string
 	inm     []string
 	keys    []string
+	seqs    []string
 	reports []map[string]any
 }
 
@@ -50,6 +51,7 @@ func (s *bundleServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "/internal/v1/policies/bundle":
 		s.inm = append(s.inm, r.Header.Get("If-None-Match"))
 		s.keys = append(s.keys, r.Header.Get(gateway.BundleKeyHeader))
+		s.seqs = append(s.seqs, r.Header.Get(gateway.TrustSeqHeader))
 		if s.body == nil {
 			w.Header().Set("Retry-After", "60")
 			w.WriteHeader(http.StatusServiceUnavailable)
@@ -127,6 +129,12 @@ func stateDir(t *testing.T) string {
 // client — новый шлюз над тем же каталогом состояния (как после перезапуска).
 func (e *bundleEnv) client(t *testing.T) *gateway.BundleClient {
 	t.Helper()
+	return e.clientWith(t, e.fx.Opener(t))
+}
+
+// clientWith — client с заданной проверкой пакетов (с цепочкой доверия).
+func (e *bundleEnv) clientWith(t *testing.T, o *bundle.Opener) *gateway.BundleClient {
+	t.Helper()
 	rnd, err := e.fx.Provider.Random()
 	if err != nil {
 		t.Fatal(err)
@@ -136,7 +144,7 @@ func (e *bundleEnv) client(t *testing.T) *gateway.BundleClient {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() }) //nolint:gosec // G104: закрытие хранилища в очистке теста
-	c, err := gateway.NewBundleClient(gateway.BundleConfig{Client: http.DefaultClient, Server: e.url, Opener: e.fx.Opener(t),
+	c, err := gateway.NewBundleClient(gateway.BundleConfig{Client: http.DefaultClient, Server: e.url, Opener: o,
 		RecipientKey: e.fx.Recipient.PublicKey(), State: st,
 		Apply: func(b *bundle.Bundle) error {
 			if b.Secrets["llm"] != bundletest.Credential {

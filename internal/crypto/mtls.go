@@ -35,6 +35,9 @@ type PeerIdentity struct {
 	CommonName string
 	Serial     string
 	NotAfter   time.Time
+	// RootDER — корень проверенной цепочки (только из PeerFromTLS): по нему
+	// сервер отказывает сертификатам корня с истёкшим перекрытием (ADR-0018).
+	RootDER []byte
 }
 
 // NewClientCSR создаёт ключ ECDSA P-256 и CSR с именем commonName. Ключ —
@@ -165,7 +168,10 @@ func PeerFromTLS(st *tls.ConnectionState) (PeerIdentity, bool) {
 	if st == nil || len(st.VerifiedChains) == 0 || len(st.VerifiedChains[0]) == 0 {
 		return PeerIdentity{}, false
 	}
-	return identity(st.VerifiedChains[0][0]), true
+	chain := st.VerifiedChains[0]
+	id := identity(chain[0])
+	id.RootDER = chain[len(chain)-1].Raw
+	return id, true
 }
 
 func identity(c *x509.Certificate) PeerIdentity {

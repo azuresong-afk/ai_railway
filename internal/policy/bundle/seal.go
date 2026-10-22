@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"sync/atomic"
 	"time"
 
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
@@ -31,6 +32,36 @@ type Sealer struct {
 	hasher   aisecCrypto.Hasher
 	signer   aisecCrypto.Signer
 	keyID    string
+	// trust — заявления о доверии для конверта; nil — ротаций не было.
+	trust atomic.Pointer[sealTrust]
+}
+
+// sealTrust — последние заявления цепочки в base64 и номер последнего.
+type sealTrust struct {
+	seq   int64
+	items []string
+}
+
+// SetTrust задаёт заявления о доверии, которые уходят шлюзам в каждом
+// пакете: последние MaxTrustInBundle из цепочки.
+func (s *Sealer) SetTrust(c *TrustChain) {
+	if c == nil || c.Seq() == 0 {
+		s.trust.Store(nil)
+		return
+	}
+	t := &sealTrust{seq: c.Seq()}
+	for _, raw := range c.Raw(c.Seq() - MaxTrustInBundle + 1) {
+		t.items = append(t.items, encodeB64(raw))
+	}
+	s.trust.Store(t)
+}
+
+// TrustSeq — номер последнего заявления о доверии; 0 — ротаций не было.
+func (s *Sealer) TrustSeq() int64 {
+	if t := s.trust.Load(); t != nil {
+		return t.seq
+	}
+	return 0
 }
 
 // NewSealer создаёт подписывающего пакеты.
@@ -79,8 +110,12 @@ func (s *Sealer) Seal(in SealInput) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	out, err := json.Marshal(envelope{Format: Format, KeyID: s.keyID, Header: encodeB64(header),
-		Content: encodeB64(in.Content), Secrets: encodeB64(sealed), Signature: encodeB64(sig)})
+	env := envelope{Format: Format, KeyID: s.keyID, Header: encodeB64(header),
+		Content: encodeB64(in.Content), Secrets: encodeB64(sealed), Signature: encodeB64(sig)}
+	if t := s.trust.Load(); t != nil {
+		env.Trust = t.items
+	}
+	out, err := json.Marshal(env)
 	if err != nil {
 		return nil, err
 	}

@@ -27,6 +27,7 @@ type pgEnv struct {
 	owner, app *pgxpool.Pool
 	cli, srv   *gwregistry.Service
 	clock      *clock
+	ca         *aisecCrypto.CA
 }
 
 func pgCtx(t *testing.T) context.Context {
@@ -137,7 +138,7 @@ func setupPG(t *testing.T) *pgEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e := &pgEnv{owner: owner, app: newPool(t, dsn, schema, "aisec_app"), clock: &clock{t: time.Now().UTC().Truncate(time.Microsecond)}}
+	e := &pgEnv{owner: owner, app: newPool(t, dsn, schema, "aisec_app"), clock: &clock{t: time.Now().UTC().Truncate(time.Microsecond)}, ca: ca}
 	mk := func(pool *pgxpool.Pool, withCA *aisecCrypto.CA) *gwregistry.Service {
 		l, err := audit.New(pool, p)
 		if err != nil {
@@ -389,5 +390,80 @@ func TestPGGatewayStartStop(t *testing.T) {
 	list, err := e.cli.List(ctx)
 	if err != nil || len(list) != 1 || !list[0].StartedAt.Equal(started.Add(time.Second).Truncate(time.Microsecond)) {
 		t.Fatalf("время запуска: %+v %v", list, err)
+	}
+}
+
+// ADR-0018, п. 6–7, на PostgreSQL под aisec_app: перевыпуск сохраняет
+// следующий сертификат, первый запрос с ним делает его действующим;
+// ключ получателя закрепляется при регистрации и при первом запросе пакета
+// и меняется только перерегистрацией.
+func TestPGCertReissueAndBundleKey(t *testing.T) {
+	e := setupPG(t)
+	ctx := pgCtx(t)
+	k1, k2 := recipientKey(t), recipientKey(t)
+	reg, err := e.srv.Register(ctx, gwregistry.RegisterInput{Token: e.issue(t, "gw-1", false), CSR: mustCSR(t), SourceIP: testIP, BundleKey: k1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := reg.Gateway.ID
+	if reg.Gateway.CertCA != rootID(t, e.ca) || !aisecCrypto.Equal(reg.Gateway.BundleKey, k1) {
+		t.Fatalf("после регистрации: корень %q, ключ закреплён %v", reg.Gateway.CertCA, reg.Gateway.BundleKey != nil)
+	}
+	certPEM, info, err := e.srv.Reissue(ctx, id, mustCSR(t), testIP)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := peerOf(t, reg.CertPEM)
+	if _, err := e.srv.Authenticate(ctx, old, testIP); err != nil {
+		t.Fatalf("прежний сертификат до перехода: %v", err)
+	}
+	got, err := e.srv.Authenticate(ctx, peerOf(t, certPEM), testIP)
+	if err != nil || got.CertSerial != info.Serial || got.NextCertSerial != "" {
+		t.Fatalf("переход: %+v %v", got, err)
+	}
+	if _, err := e.srv.Authenticate(ctx, old, testIP); !errors.Is(err, gwregistry.ErrUnknownCert) {
+		t.Fatalf("прежний сертификат после перехода: %v", err)
+	}
+
+	if err := e.srv.CheckBundleKey(ctx, id, k1, testIP); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.srv.CheckBundleKey(ctx, id, k2, testIP); !errors.Is(err, gwregistry.ErrBundleKeyMismatch) {
+		t.Fatalf("чужой ключ: %v", err)
+	}
+	reg2 := e.register(t, e.issue(t, "gw-2", false))
+	if err := e.srv.CheckBundleKey(ctx, reg2.Gateway.ID, k2, testIP); err != nil {
+		t.Fatalf("закрепление при первом запросе: %v", err)
+	}
+	if err := e.srv.CheckBundleKey(ctx, reg2.Gateway.ID, k1, testIP); !errors.Is(err, gwregistry.ErrBundleKeyMismatch) {
+		t.Fatalf("ключ после закрепления: %v", err)
+	}
+	// Триггер: закреплённый ключ не меняется без перерегистрации.
+	if _, err := e.app.Exec(ctx, "UPDATE gateways SET bundle_key = $1 WHERE id = $2", k2, id); err == nil {
+		t.Fatal("aisec_app сменил закреплённый ключ без перерегистрации")
+	}
+	e.clock.add(time.Second)
+	if _, err := e.srv.Register(ctx, gwregistry.RegisterInput{Token: e.issue(t, "gw-1", true), CSR: mustCSR(t), BundleKey: k2}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.srv.CheckBundleKey(ctx, id, k2, testIP); err != nil {
+		t.Fatalf("ключ после перерегистрации: %v", err)
+	}
+	// Заявления о доверии и смены ключа аудита пишет только владелец схемы.
+	for name, q := range map[string]string{
+		"вставка заявления":   "INSERT INTO trust_statements (org_id, seq, statement, signed_by, created_at, created_by) VALUES ('" + audit.DefaultOrgID + "', 1, '\\x00', '0011223344556677', now(), 'x')",
+		"вставка смены ключа": "INSERT INTO audit_key_rotations (org_id, seq, prev_key_id, key_id, public_key, checkpoint_seq, rotated_at, sig_alg, prev_signature, signature) VALUES ('" + audit.DefaultOrgID + "', 1, '0011223344556677', '1011223344556677', '\\x00112233445566778899aabbccddeeff', 0, now(), 'Ed25519', '\\x00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff', '\\x00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff')",
+	} {
+		if _, err := e.app.Exec(ctx, q); err == nil {
+			t.Errorf("aisec_app: %s выполнено", name)
+		}
+	}
+	acts := e.actions(t)
+	for k, n := range map[string]int{
+		"gateway.cert_reissue/success": 2, "gateway.bundle_key_pinned/success": 1, "gateway.bundle_key_mismatch/denied": 2,
+	} {
+		if acts[k] != n {
+			t.Errorf("аудит %s: %d, ожидается %d (все: %v)", k, acts[k], n, acts)
+		}
 	}
 }

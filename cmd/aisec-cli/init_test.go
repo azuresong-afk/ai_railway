@@ -16,6 +16,7 @@ import (
 
 	"github.com/azuresong-afk/ai_railway/internal/audit"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
+	"github.com/azuresong-afk/ai_railway/internal/keyring"
 	"github.com/azuresong-afk/ai_railway/internal/store"
 )
 
@@ -172,7 +173,12 @@ func TestInitCreatesKeys(t *testing.T) {
 	}
 
 	// Ключ аудита — отдельная пара, не совпадающая с ключом пакетов (ADR-0008).
-	auditSigner, _, err := loadAuditSigner(p, dir)
+	keyRoot, err := keyring.OpenKeyDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeQuietly(keyRoot)
+	auditSigner, err := keyring.ReadSigner(keyRoot, p, auditKeyFile, aisecCrypto.KeyKindAuditSigning)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -390,7 +396,12 @@ func TestInitAddAuditKey(t *testing.T) {
 	if err := runAddAuditKey(context.Background(), dir, p, st, cliActor(), &out); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := loadAuditSigner(p, dir); err != nil {
+	keyRoot, err := keyring.OpenKeyDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeQuietly(keyRoot)
+	if _, err := keyring.ReadSigner(keyRoot, p, auditKeyFile, aisecCrypto.KeyKindAuditSigning); err != nil {
 		t.Fatal(err)
 	}
 	if len(st.recorded) != 1 || st.recorded[0].Action != "system.audit_key" || st.saved != nil {
