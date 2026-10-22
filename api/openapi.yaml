@@ -1221,7 +1221,9 @@ paths:
         (по умолчанию последние 24 часа). Язык фильтра — условия через `and`, например
         `app = "crm-bot" and severity in ("high", "critical") and stream = true`; поля:
         type, app, env, user, provider, model, source, policy_mode, action, rule, severity,
-        storage, gateway, threat, detector, stream, non_text_unchecked, has_content; операторы
+        storage, gateway, threat, detector, exception (находки, пропущенные по исключению с этим ID),
+        mark (`false_positive`, `confirmed` или `none` — без отметки), stream, non_text_unchecked,
+        has_content; операторы
         `=`, `!=`, `in (…)`, `not in (…)` (у логических полей — только `=`). Лимиты: 2048 байт,
         20 условий, 50 значений в списке, значение до 256 байт. Пишет `events.list`
         (отключаемое событие).
@@ -1298,6 +1300,69 @@ paths:
         '404': { $ref: '#/components/responses/ProblemNotFound' }
         '413': { $ref: '#/components/responses/ProblemTooLarge' }
         '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/events/{id}/mark:
+    put:
+      summary: Отметить событие «ложное срабатывание» или «подтверждено»
+      description: |
+        Право `events.mark` (ТЗ 5.5, задача 3.22). Отметка хранится отдельно от события (событие
+        неизменяемо), одна на событие: новая заменяет прежнюю. Каждая смена пишет
+        `events.mark_set` (значение и прежнее значение, без текста комментария) той же
+        транзакцией. `mark: none` снимает отметку (`events.mark_removed`, ответ 204; у события без
+        отметки — 404). Для `false_positive` ответ содержит черновик исключения по событию
+        (`draft`) — как GET `/exception-draft`. Комментарий — до 1000 символов без управляющих
+        символов, кроме перевода строки.
+      x-permission: events.mark
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/EventID'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EventMarkRequest' }
+      responses:
+        '200':
+          description: Отметка поставлена
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EventMarkResult' }
+        '204': { description: Отметка снята }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/events/{id}/exception-draft:
+    get:
+      summary: Черновик исключения по событию
+      description: |
+        Право `events.read` (ТЗ 5.3, задача 3.22). Условия по находкам, давшим итоговое действие
+        (все находки, если итог — allow или log): детектор, категория, шаблон (правило
+        детектора), хеш фрагмента (HMAC на ключе шлюза) и приложение события; срок — 30 суток.
+        Содержимое запроса в черновик не копируется. `base_version` — текущая версия политики
+        события; `template: true` — политика события — шаблон, исключение добавляется в её копию.
+        Создаёт исключение только администратор безопасности: POST `/api/v1/policies/{id}/exceptions`.
+      x-permission: events.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/EventID'
+      responses:
+        '200':
+          description: Черновик
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExceptionDraft' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ProblemInternal' }
         '503': { $ref: '#/components/responses/Unavailable' }
@@ -2525,6 +2590,142 @@ paths:
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ProblemInternal' }
         '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/policies/{id}/exceptions:
+    get:
+      summary: Исключения версии политики
+      description: |
+        Право `policies.read` (ТЗ 5.3, задача 3.22). Исключения текущей версии (или `version`) с
+        состоянием: `expired` — срок истёк, шлюз исключение не применяет, хотя оно остаётся в
+        версии до удаления. У шаблона исключений нет.
+      x-permission: policies.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/PolicyID'
+        - name: version
+          in: query
+          description: Номер версии; по умолчанию текущая
+          schema: { type: integer, minimum: 1 }
+      responses:
+        '200':
+          description: Исключения
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PolicyExceptionList' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    post:
+      summary: Добавить исключение — новая версия политики
+      description: |
+        Право `policies.manage` (только администратор безопасности, УПД.2). Исключение — часть
+        версии (ADR-0016): новая версия поверх `base_version` (409, если политику уже изменили).
+        Условие: детектор обязательно и хотя бы одно из `pattern`, `fragment`, `app`, `user`
+        (детектор целиком для всех приложений не отключается — 400); `category` и `source` —
+        дополнительные. Срок обязателен: `expires_in_days` 1–365 или `expires_at` не дальше 365
+        суток, по умолчанию 30 суток. Автора и время ставит сервер. Добавление — ослабление
+        защиты: текущий пароль или код TOTP в теле (без них — 403, неверные — 403
+        `reauthentication_failed`), запись `policy.exception_add` с `weakening` (DM-40).
+        Шаблон — 422: исключение добавляется в копию шаблона.
+      x-permission: policies.manage
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/PolicyID'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NewPolicyException' }
+      responses:
+        '201':
+          description: Новая версия с исключением
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PolicyExceptionChange' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '409': { $ref: '#/components/responses/ProblemConflict' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '422': { $ref: '#/components/responses/ProblemUnprocessable' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/policies/{id}/exceptions/{exc}/extend:
+    post:
+      summary: Изменить срок исключения — новая версия политики
+      description: |
+        Право `policies.manage`. Новый срок — от момента сохранения (`expires_in_days` 1–365 или
+        `expires_at`). Продление — ослабление защиты: пароль или код TOTP и `weakening` в записи
+        `policy.exception_extend` (DM-40); сокращение срока — нет.
+      x-permission: policies.manage
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/PolicyID'
+        - $ref: '#/components/parameters/ExceptionID'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PolicyExceptionExtend' }
+      responses:
+        '200':
+          description: Новая версия
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PolicyExceptionChange' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '409': { $ref: '#/components/responses/ProblemConflict' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '422': { $ref: '#/components/responses/ProblemUnprocessable' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/policies/{id}/exceptions/{exc}:
+    delete:
+      summary: Удалить исключение — новая версия политики
+      description: |
+        Право `policies.manage`. Удаление усиливает защиту: повторная проверка не нужна. Пишет
+        `policy.exception_delete`. `base_version` обязателен.
+      x-permission: policies.manage
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/PolicyID'
+        - $ref: '#/components/parameters/ExceptionID'
+        - $ref: '#/components/parameters/CSRFToken'
+        - name: base_version
+          in: query
+          required: true
+          schema: { type: integer, minimum: 1 }
+        - name: comment
+          in: query
+          schema: { type: string, maxLength: 500 }
+      responses:
+        '200':
+          description: Новая версия
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PolicyExceptionChange' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '409': { $ref: '#/components/responses/ProblemConflict' }
+        '422': { $ref: '#/components/responses/ProblemUnprocessable' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
   /api/v1/policies/{id}/export:
     get:
       summary: Выгрузить политику в YAML
@@ -3661,6 +3862,12 @@ components:
       required: true
       description: ID приложения (UUID)
       schema: { type: string, format: uuid }
+    ExceptionID:
+      name: exc
+      in: path
+      required: true
+      description: ID исключения политики
+      schema: { type: string, pattern: '^[a-z0-9][a-z0-9-]{0,62}$' }
     PolicyID:
       name: id
       in: path
@@ -4944,6 +5151,7 @@ components:
         stream: { type: boolean }
         non_text_unchecked: { type: boolean }
         has_content: { type: boolean }
+        mark: { $ref: '#/components/schemas/EventMark' }
         details:
           type: object
           description: Только в карточке и выгрузке JSON — решение с трассировкой, находки, задержки, токены, проверка ответа
@@ -5133,6 +5341,121 @@ components:
         response_check: { type: string, enum: [buffered, incremental, monitor], description: 'Пусто при сохранении — incremental' }
         block_message: { type: string, maxLength: 300 }
         rules: { type: array, maxItems: 256, items: { $ref: '#/components/schemas/PolicyRule' } }
+        exceptions:
+          type: array
+          maxItems: 1000
+          description: 'Исключения (задача 3.22). При сохранении: поле не передано — исключения текущей версии сохраняются; пустой список — удаляются. Автора и created_at новых и изменённых ставит сервер'
+          items: { $ref: '#/components/schemas/PolicyException' }
+    PolicyException:
+      type: object
+      required: [id, detector, reason]
+      additionalProperties: false
+      description: Исключение (ТЗ 5.3, решение Р8 этапа 3); поля — как в YAML политики. Условия соединяются «и».
+      properties:
+        id: { type: string, pattern: '^[a-z0-9][a-z0-9-]{0,62}$' }
+        detector: { type: string, description: ID детектора }
+        category: { type: string, description: Категория находки, например pii.card }
+        pattern: { type: string, pattern: '^[\x21-\x7e]{1,128}$', description: Правило детектора (шаблон) }
+        fragment: { type: string, pattern: '^[0-9a-f]{32}$', description: Хеш фрагмента (HMAC на ключе шлюза) из находки события }
+        app: { type: string, pattern: '^[a-z0-9][a-z0-9-]{0,62}$' }
+        user: { type: string, pattern: '^[0-9a-f]{32}$', description: Псевдоним пользователя из события }
+        source: { type: string, enum: [user, rag, tool, output] }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+        author: { type: string, readOnly: true }
+        created_at: { type: string, format: date-time, readOnly: true }
+        expires_at: { type: string, format: date-time, description: 'Не дальше 365 суток от сохранения; при сохранении без срока — 30 суток' }
+        event_id: { type: string, format: uuid, description: Событие, по отметке которого создано исключение }
+    PolicyExceptionItem:
+      allOf:
+        - $ref: '#/components/schemas/PolicyException'
+        - type: object
+          required: [status]
+          properties:
+            status: { type: string, enum: [active, expired], description: 'expired — шлюз исключение не применяет' }
+    PolicyExceptionList:
+      type: object
+      required: [policy, version, items]
+      properties:
+        policy: { type: string }
+        version: { type: integer }
+        items: { type: array, items: { $ref: '#/components/schemas/PolicyExceptionItem' } }
+    ExceptionCondition:
+      type: object
+      required: [detector]
+      properties:
+        detector: { type: string }
+        category: { type: string }
+        pattern: { type: string, pattern: '^[\x21-\x7e]{1,128}$' }
+        fragment: { type: string, pattern: '^[0-9a-f]{32}$' }
+        app: { type: string, pattern: '^[a-z0-9][a-z0-9-]{0,62}$' }
+        user: { type: string, pattern: '^[0-9a-f]{32}$' }
+        source: { type: string, enum: [user, rag, tool, output] }
+        reason: { type: string, maxLength: 500 }
+        expires_in_days: { type: integer, minimum: 1, maximum: 365 }
+        expires_at: { type: string, format: date-time }
+        event_id: { type: string, format: uuid }
+    NewPolicyException:
+      allOf:
+        - $ref: '#/components/schemas/ExceptionCondition'
+        - type: object
+          required: [base_version, reason]
+          properties:
+            base_version: { type: integer, minimum: 1 }
+            comment: { type: string, maxLength: 500 }
+            password: { type: string, maxLength: 1024, format: password, description: Текущий пароль (добавление — ослабление защиты) }
+            code: { type: string, maxLength: 64, description: Код из приложения-аутентификатора вместо пароля }
+    PolicyExceptionExtend:
+      type: object
+      required: [base_version]
+      additionalProperties: false
+      description: Ровно одно из `expires_in_days` и `expires_at`.
+      properties:
+        base_version: { type: integer, minimum: 1 }
+        expires_in_days: { type: integer, minimum: 1, maximum: 365 }
+        expires_at: { type: string, format: date-time }
+        reason: { type: string, maxLength: 500, description: Новая причина; пусто — прежняя }
+        comment: { type: string, maxLength: 500 }
+        password: { type: string, maxLength: 1024, format: password }
+        code: { type: string, maxLength: 64 }
+    PolicyExceptionChange:
+      type: object
+      required: [policy]
+      properties:
+        policy: { $ref: '#/components/schemas/Policy' }
+        exception: { $ref: '#/components/schemas/PolicyExceptionItem' }
+    ExceptionDraft:
+      type: object
+      required: [event_id, template, items]
+      properties:
+        event_id: { type: string, format: uuid }
+        policy: { type: string, description: Политика события }
+        policy_version: { type: integer, description: Версия политики в момент события }
+        base_version: { type: integer, description: Текущая версия политики (base_version для создания) }
+        template: { type: boolean, description: Политика события — шаблон }
+        items: { type: array, maxItems: 16, items: { $ref: '#/components/schemas/ExceptionCondition' } }
+    EventMark:
+      type: object
+      required: [mark, marked_at, marked_by]
+      properties:
+        mark: { type: string, enum: [false_positive, confirmed] }
+        comment: { type: string, maxLength: 1000 }
+        marked_at: { type: string, format: date-time }
+        marked_by: { type: string, description: 'Тип и ID субъекта: user:<id> или api_token:<id>' }
+        marked_by_name: { type: string }
+    EventMarkRequest:
+      type: object
+      required: [mark]
+      additionalProperties: false
+      properties:
+        mark: { type: string, enum: [false_positive, confirmed, none], description: 'none — снять отметку' }
+        comment: { type: string, maxLength: 1000 }
+    EventMarkResult:
+      type: object
+      required: [event_id, mark]
+      properties:
+        event_id: { type: string, format: uuid }
+        mark: { $ref: '#/components/schemas/EventMark' }
+        draft: { $ref: '#/components/schemas/ExceptionDraft' }
     PolicySummary:
       type: object
       required: [id, name, mode, template]
@@ -5218,7 +5541,8 @@ components:
         code: { type: string, maxLength: 64 }
     PolicyDiff:
       type: object
-      required: [from, to, fields, rules_added, rules_removed, rules_changed, reordered, weakening, weakening_reasons]
+      required: [from, to, fields, rules_added, rules_removed, rules_changed, reordered, weakening, weakening_reasons,
+        exceptions_added, exceptions_removed, exceptions_changed]
       properties:
         from: { type: integer }
         to: { type: integer }
@@ -5254,8 +5578,21 @@ components:
               kind:
                 type: string
                 enum: [mode_monitor, non_text_weakened, response_check_weakened, rule_removed, action_weakened,
-                  threshold_raised, scope_narrowed, detector_changed]
+                  threshold_raised, scope_narrowed, detector_changed, exception_added, exception_extended, exception_changed]
               rule: { type: string }
+              exception: { type: string }
+        exceptions_added: { type: array, items: { $ref: '#/components/schemas/PolicyException' } }
+        exceptions_removed: { type: array, items: { $ref: '#/components/schemas/PolicyException' } }
+        exceptions_changed:
+          type: array
+          items:
+            type: object
+            required: [id, fields, before, after]
+            properties:
+              id: { type: string }
+              fields: { type: array, items: { type: string } }
+              before: { $ref: '#/components/schemas/PolicyException' }
+              after: { $ref: '#/components/schemas/PolicyException' }
     PolicyTestRequest:
       type: object
       required: [request]

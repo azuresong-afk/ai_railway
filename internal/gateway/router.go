@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"time"
 
 	"github.com/azuresong-afk/ai_railway/internal/chat"
 	"github.com/azuresong-afk/ai_railway/internal/config"
+	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/internal/detect"
 	"github.com/azuresong-afk/ai_railway/internal/detect/builtin"
 	"github.com/azuresong-afk/ai_railway/internal/detect/exfil"
@@ -39,6 +41,19 @@ type App struct {
 	Storage string
 	// UserFrom — откуда идентификатор пользователя: header, field, none.
 	UserFrom string
+	// fragmentMAC — ключ хешей фрагментов находок (Router.SetFragmentMAC);
+	// nil — хешей нет, исключения по фрагменту не совпадают.
+	fragmentMAC aisecCrypto.MAC
+	// clock — часы для сроков исключений; nil — time.Now.
+	clock func() time.Time
+}
+
+// now — время для сроков исключений.
+func (a *App) now() time.Time {
+	if a.clock != nil {
+		return a.clock()
+	}
+	return time.Now()
 }
 
 // Resolve возвращает модель провайдера для имени из запроса: разрешённую
@@ -79,6 +94,14 @@ func (rt *Router) SetUnavailable(ids []string) {
 	rt.unavailable = make(map[string]bool, len(ids))
 	for _, id := range ids {
 		rt.unavailable[id] = true
+	}
+}
+
+// SetFragmentMAC задаёт ключ хешей фрагментов находок (ключ псевдонимов
+// пользователей, fragmentHash). Вызывается до начала обслуживания запросов.
+func (rt *Router) SetFragmentMAC(mac aisecCrypto.MAC) {
+	for _, a := range rt.apps {
+		a.fragmentMAC = mac
 	}
 }
 

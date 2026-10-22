@@ -53,6 +53,7 @@ func (m *Memory) selectLocked(q *Query) []Record {
 	var out []Record
 	for _, s := range m.events {
 		r := record(&s)
+		r.Mark = m.markOf(s.Event.ID)
 		if r.TS.Before(q.From) || !r.TS.Before(q.To) {
 			continue
 		}
@@ -184,7 +185,9 @@ func (m *Memory) Card(_ context.Context, id string) (Record, error) {
 	if !ok {
 		return Record{}, ErrNotFound
 	}
-	return record(&s), nil
+	r := record(&s)
+	r.Mark = m.markOf(id)
+	return r, nil
 }
 
 // Content — см. Reader.

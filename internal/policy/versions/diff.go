@@ -35,12 +35,19 @@ const (
 	WeakThresholdRaised = "threshold_raised"        // порог выше
 	WeakScopeNarrowed   = "scope_narrowed"          // меньше направлений, источников или категорий
 	WeakDetectorChanged = "detector_changed"        // у правила с защитой сменился детектор
+	// Исключения (решение Р8 этапа 3): новое, продлённое или с изменённым
+	// условием исключение ослабляет защиту (ТЗ 5.16, DM-40).
+	WeakExceptionAdded    = "exception_added"
+	WeakExceptionExtended = "exception_extended"
+	WeakExceptionChanged  = "exception_changed"
 )
 
-// Weakening — ослабление защиты; Rule пуст для полей политики.
+// Weakening — ослабление защиты; Rule пуст для полей политики, Exception —
+// ID исключения для ослаблений исключениями.
 type Weakening struct {
-	Kind string
-	Rule string
+	Kind      string
+	Rule      string
+	Exception string
 }
 
 // Diff — различия двух версий: поля политики, правила добавленные,
@@ -52,12 +59,26 @@ type Diff struct {
 	Removed   []policy.RuleSpec
 	Changed   []RuleChange
 	Reordered bool
-	Weakening []Weakening
+	// Исключения: добавленные, удалённые и изменённые (по ID исключения).
+	ExceptionsAdded   []policy.ExceptionSpec
+	ExceptionsRemoved []policy.ExceptionSpec
+	ExceptionsChanged []ExceptionChange
+	Weakening         []Weakening
+}
+
+// ExceptionChange — исключение с тем же ID в обеих версиях, у которого
+// изменились поля Fields.
+type ExceptionChange struct {
+	ID     string
+	Before policy.ExceptionSpec
+	After  policy.ExceptionSpec
+	Fields []string
 }
 
 // Empty — версии не различаются.
 func (d Diff) Empty() bool {
-	return len(d.Fields) == 0 && len(d.Added) == 0 && len(d.Removed) == 0 && len(d.Changed) == 0 && !d.Reordered
+	return len(d.Fields) == 0 && len(d.Added) == 0 && len(d.Removed) == 0 && len(d.Changed) == 0 && !d.Reordered &&
+		len(d.ExceptionsAdded) == 0 && len(d.ExceptionsRemoved) == 0 && len(d.ExceptionsChanged) == 0
 }
 
 // Weakened — изменение ослабляет защиту.
@@ -124,7 +145,67 @@ func Compare(a, b *policy.Spec) Diff {
 		order = append(order, r.ID)
 	}
 	d.Reordered = !slices.Equal(common, order)
+	d.compareExceptions(a.Exceptions, b.Exceptions)
 	return d
+}
+
+// compareExceptions — различия исключений a (раньше) и b (позже).
+// Удаление и сокращение срока — усиление; добавление, продление и смена
+// условия — ослабление.
+func (d *Diff) compareExceptions(a, b []policy.ExceptionSpec) {
+	before := make(map[string]policy.ExceptionSpec, len(a))
+	for _, e := range a {
+		before[e.ID] = e
+	}
+	after := make(map[string]bool, len(b))
+	for _, e := range b {
+		after[e.ID] = true
+		old, ok := before[e.ID]
+		if !ok {
+			d.ExceptionsAdded = append(d.ExceptionsAdded, e)
+			d.Weakening = append(d.Weakening, Weakening{Kind: WeakExceptionAdded, Exception: e.ID})
+			continue
+		}
+		fs := exceptionFields(old, e)
+		if len(fs) == 0 {
+			continue
+		}
+		d.ExceptionsChanged = append(d.ExceptionsChanged, ExceptionChange{ID: e.ID, Before: old, After: e, Fields: fs})
+		if old.Condition() != e.Condition() {
+			d.Weakening = append(d.Weakening, Weakening{Kind: WeakExceptionChanged, Exception: e.ID})
+		}
+		if e.ExpiresAt.After(old.ExpiresAt) {
+			d.Weakening = append(d.Weakening, Weakening{Kind: WeakExceptionExtended, Exception: e.ID})
+		}
+	}
+	for _, e := range a {
+		if !after[e.ID] {
+			d.ExceptionsRemoved = append(d.ExceptionsRemoved, e)
+		}
+	}
+}
+
+// exceptionFields — имена изменённых полей исключения (как в YAML).
+func exceptionFields(a, b policy.ExceptionSpec) []string {
+	var fs []string
+	add := func(name string, changed bool) {
+		if changed {
+			fs = append(fs, name)
+		}
+	}
+	add("detector", a.Detector != b.Detector)
+	add("category", a.Category != b.Category)
+	add("pattern", a.Pattern != b.Pattern)
+	add("fragment", a.Fragment != b.Fragment)
+	add("app", a.App != b.App)
+	add("user", a.User != b.User)
+	add("source", a.Source != b.Source)
+	add("reason", a.Reason != b.Reason)
+	add("author", a.Author != b.Author)
+	add("created_at", !a.CreatedAt.Equal(b.CreatedAt))
+	add("expires_at", !a.ExpiresAt.Equal(b.ExpiresAt))
+	add("event", a.Event != b.Event)
+	return fs
 }
 
 // protective — правило защищает: блокирует или скрывает данные.
@@ -199,12 +280,33 @@ func (d Diff) details() map[string]any {
 		if w.Rule != "" {
 			m["rule"] = w.Rule
 		}
+		if w.Exception != "" {
+			m["exception"] = w.Exception
+		}
 		kinds = append(kinds, m)
 	}
 	return map[string]any{
 		"fields": fields, "rules_added": ruleIDs(d.Added), "rules_removed": ruleIDs(d.Removed), "rules_changed": changedIDs(d.Changed),
 		"reordered": d.Reordered, "weakening": d.Weakened(), "weakening_reasons": kinds,
+		"exceptions_added": exceptionIDs(d.ExceptionsAdded), "exceptions_removed": exceptionIDs(d.ExceptionsRemoved),
+		"exceptions_changed": changedExceptionIDs(d.ExceptionsChanged),
 	}
+}
+
+func exceptionIDs(es []policy.ExceptionSpec) []string {
+	out := make([]string, 0, len(es))
+	for _, e := range es {
+		out = append(out, e.ID)
+	}
+	return out
+}
+
+func changedExceptionIDs(cs []ExceptionChange) []string {
+	out := make([]string, 0, len(cs))
+	for _, c := range cs {
+		out = append(out, c.ID)
+	}
+	return out
 }
 
 func ruleIDs(rs []policy.RuleSpec) []string {

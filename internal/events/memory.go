@@ -24,6 +24,8 @@ type Memory struct {
 	auditFn   MemoryAudit
 	// ReadErr — ошибка, которую вернут методы чтения (проверка отказа БД).
 	ReadErr error
+	// marks — отметки событий (marks.go).
+	marks map[string]Mark
 }
 
 // Stored — событие в Memory и шлюз, от которого оно принято.

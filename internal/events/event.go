@@ -42,7 +42,18 @@ type Finding struct {
 	// Threat — ID строки матрицы обнаружения (DM-NN).
 	Threat string `json:"threat"`
 	Rule   string `json:"rule,omitempty"`
+	// Fragment — хеш текста находки (HMAC на ключе шлюза, 32 hex): условие
+	// исключения по фрагменту без самого текста (ТЗ 5.3, задача 3.22).
+	Fragment string `json:"fragment,omitempty"`
+	// Exception — ID исключения, по которому находка пропущена: в решении
+	// она не участвовала.
+	Exception string `json:"exception,omitempty"`
 }
+
+var (
+	fragmentRe  = regexp.MustCompile(`^[0-9a-f]{32}$`)
+	exceptionRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
+)
 
 // TraceStep — шаг трассировки решения: какое правило и почему сработало
 // (основа экрана «Почему принято решение», ТЗ, 4.3).
@@ -243,6 +254,12 @@ func (e *Event) Validate() error {
 	for _, f := range e.Findings {
 		if f.Threat != "" && !threatRe.MatchString(f.Threat) {
 			errs = append(errs, fmt.Errorf("находка %s: категория %q — не ID строки матрицы", f.Detector, f.Threat))
+		}
+		if f.Fragment != "" && !fragmentRe.MatchString(f.Fragment) {
+			errs = append(errs, fmt.Errorf("находка %s: fragment — 32 шестнадцатеричные цифры", f.Detector))
+		}
+		if f.Exception != "" && !exceptionRe.MatchString(f.Exception) {
+			errs = append(errs, fmt.Errorf("находка %s: exception — ID исключения", f.Detector))
 		}
 	}
 	return errors.Join(errs...)

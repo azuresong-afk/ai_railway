@@ -325,8 +325,19 @@ func (rec *record) decision(in *inspection) *events.Decision {
 	if d.Rule == policy.NonTextRule {
 		ed.Trace = append(ed.Trace, events.TraceStep{Rule: policy.NonTextRule, Matched: true, Action: string(policy.Block)})
 	}
+	for _, x := range d.Excepted {
+		if len(ed.Trace) >= maxEventFindings {
+			break
+		}
+		f := in.Findings[x.Hit]
+		ed.Trace = append(ed.Trace, events.TraceStep{Rule: ruleException, Detector: f.Detector, Matched: true,
+			Action: string(policy.Allow), Note: "находка пропущена по исключению " + x.Exception})
+	}
 	return ed
 }
+
+// ruleException — шаг трассировки находки, пропущенной по исключению.
+const ruleException = "exception"
 
 // findings добавляет находки в событие (всего не больше maxEventFindings)
 // и возвращает категории угроз решения.
@@ -335,17 +346,22 @@ func (rec *record) findings(in *inspection, texts []inspectText) map[string]bool
 	for _, m := range in.Decision.Matches {
 		threats[in.Findings[m.Hit].Threat] = true
 	}
-	for _, f := range in.Findings {
+	excepted := in.excepted()
+	for i, f := range in.Findings {
 		if len(rec.ev.Findings) >= maxEventFindings {
 			break
 		}
 		if f.Text >= len(texts) {
 			continue
 		}
-		rec.ev.Findings = append(rec.ev.Findings, events.Finding{
+		ef := events.Finding{
 			Detector: f.Detector, Version: f.Version, Category: f.Category, Score: f.Score, Start: f.Start, End: f.End,
-			Location: texts[f.Text].Location, Threat: f.Threat, Rule: f.Rule,
-		})
+			Location: texts[f.Text].Location, Threat: f.Threat, Rule: f.Rule, Exception: excepted[i],
+		}
+		if i < len(in.Fragments) {
+			ef.Fragment = in.Fragments[i]
+		}
+		rec.ev.Findings = append(rec.ev.Findings, ef)
 	}
 	return threats
 }

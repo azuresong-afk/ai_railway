@@ -276,6 +276,8 @@ func (hb *handlerBuilder) build(apps []config.Application, provs map[string]prov
 		return nil, err
 	}
 	router.SetUnavailable(unavailable)
+	// Хеши фрагментов находок для исключений — на ключе псевдонимов (задача 3.22).
+	router.SetFragmentMAC(hb.userMAC)
 	a, err := auth.NewAuthenticator(hb.hasher, recs)
 	if err != nil {
 		return nil, err
