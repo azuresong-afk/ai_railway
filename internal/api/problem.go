@@ -48,22 +48,26 @@ const (
 	CodeUnavailable      = "service_unavailable"
 	// CodeReauthFailed — неверный пароль или код повторной проверки (В8 ревью 2.r2).
 	CodeReauthFailed = "reauthentication_failed"
+	// CodeBundleKeyMismatch — ключ получателя шлюза не совпадает с
+	// закреплённым (Н27, ADR-0018, п. 7); только внутренний API.
+	CodeBundleKeyMismatch = "bundle_key_mismatch"
 )
 
 var problemTitles = map[string]string{
-	CodeInvalidRequest:   "Неверный запрос",
-	CodeUnauthorized:     "Требуется вход",
-	CodeForbidden:        "Доступ запрещён",
-	CodeReauthFailed:     "Повторная проверка не пройдена",
-	CodeNotFound:         "Не найдено",
-	CodeMethodNotAllowed: "Метод не поддерживается",
-	CodeConflict:         "Конфликт",
-	CodePayloadTooLarge:  "Запрос слишком большой",
-	CodeUnsupportedMedia: "Неподдерживаемый тип содержимого",
-	CodeUnprocessable:    "Запрос не может быть обработан",
-	CodeRateLimited:      "Слишком много запросов",
-	CodeInternal:         "Внутренняя ошибка",
-	CodeUnavailable:      "Сервис недоступен",
+	CodeInvalidRequest:    "Неверный запрос",
+	CodeUnauthorized:      "Требуется вход",
+	CodeForbidden:         "Доступ запрещён",
+	CodeReauthFailed:      "Повторная проверка не пройдена",
+	CodeNotFound:          "Не найдено",
+	CodeMethodNotAllowed:  "Метод не поддерживается",
+	CodeConflict:          "Конфликт",
+	CodePayloadTooLarge:   "Запрос слишком большой",
+	CodeUnsupportedMedia:  "Неподдерживаемый тип содержимого",
+	CodeUnprocessable:     "Запрос не может быть обработан",
+	CodeRateLimited:       "Слишком много запросов",
+	CodeInternal:          "Внутренняя ошибка",
+	CodeUnavailable:       "Сервис недоступен",
+	CodeBundleKeyMismatch: "Ключ получателя не совпадает с закреплённым",
 }
 
 // NewProblem собирает ошибку по коду; заголовок берётся из таблицы.

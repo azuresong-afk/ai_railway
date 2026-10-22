@@ -17,7 +17,7 @@ import (
 // состояния с ключом получателя и применение пакета заменой обработчика в
 // sw. Возвращает и KeyID ключей проверки для heartbeat (В19 ревью 2.r4).
 func newBundleClient(cfg *config.Gateway, p aisecCrypto.Provider, tp aisecCrypto.TLSProvider, rnd aisecCrypto.Random,
-	gatewayID string, control *http.Client, hb *handlerBuilder, sw *gateway.Switch, pubs [][]byte,
+	state *gateway.BundleState, control *controlClient, hb *handlerBuilder, sw *gateway.Switch, pubs [][]byte,
 	logger *slog.Logger) (*gateway.BundleClient, []string, error) {
 	var verifiers []aisecCrypto.Verifier
 	for i, data := range pubs {
@@ -27,19 +27,19 @@ func newBundleClient(cfg *config.Gateway, p aisecCrypto.Provider, tp aisecCrypto
 		}
 		verifiers = append(verifiers, v)
 	}
-	state, err := gateway.OpenBundleState(cfg.StateDir, rnd)
-	if err != nil {
-		return nil, nil, err
-	}
-	// Каталог открыт до остановки процесса: os.Root держит дескриптор.
 	recipient, err := state.Recipient(p)
 	if err != nil {
 		return nil, nil, err
 	}
-	opener, err := bundle.NewOpener(p, verifiers, recipient, gatewayID)
+	opener, err := bundle.NewOpener(p, verifiers, recipient, control.gatewayID)
 	if err != nil {
 		return nil, nil, err
 	}
+	chain, err := loadTrustChain(p, verifiers, state, logger)
+	if err != nil {
+		return nil, nil, err
+	}
+	opener.SetTrust(chain, nil)
 	apply := func(b *bundle.Bundle) error {
 		h, err := buildFromBundle(b, tp, rnd, hb, logger)
 		if err != nil {
@@ -48,9 +48,37 @@ func newBundleClient(cfg *config.Gateway, p aisecCrypto.Provider, tp aisecCrypto
 		sw.Store(h)
 		return nil
 	}
-	bc, err := gateway.NewBundleClient(gateway.BundleConfig{Client: control, Server: cfg.Server, Opener: opener,
+	bc, err := gateway.NewBundleClient(gateway.BundleConfig{Client: control.client, Server: cfg.Server, Opener: opener,
 		RecipientKey: recipient.PublicKey(), State: state, Apply: apply, Logger: logger})
 	return bc, opener.KeyIDs(), err
+}
+
+// loadTrustChain — цепочка доверия от -bundle-pub с заявлениями из
+// trust.json (ADR-0018, п. 4.4). Заявление, которое цепочка не принимает
+// (файл подменён или -bundle-pub заменён), и все следующие отбрасываются:
+// шлюз продолжает с проверенной частью и получит остальное с пакетом.
+func loadTrustChain(p aisecCrypto.Provider, verifiers []aisecCrypto.Verifier, state *gateway.BundleState,
+	logger *slog.Logger) (*bundle.TrustChain, error) {
+	chain, err := bundle.NewTrustChain(p, verifiers)
+	if err != nil {
+		return nil, err
+	}
+	raws, err := state.LoadTrust()
+	if err != nil {
+		logger.Error("заявления о доверии не прочитаны; шлюз доверяет только -bundle-pub", "file", gateway.TrustFile, "error", err)
+		return chain, nil
+	}
+	for i, raw := range raws {
+		if _, err := chain.Append(raw); err != nil {
+			logger.Error("сохранённое заявление о доверии не проверяется по цепочке от -bundle-pub; оно и следующие отброшены",
+				"file", gateway.TrustFile, "index", i, "error", err, "threat", "DM-42")
+			break
+		}
+	}
+	if chain.Seq() > 0 {
+		logger.Info("цепочка доверия восстановлена", "trust_seq", chain.Seq(), "signing_key_id", chain.ActiveKeyID())
+	}
+	return chain, nil
 }
 
 // buildFromBundle собирает обработчик по проверенному пакету: провайдеры с

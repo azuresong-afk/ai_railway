@@ -106,7 +106,7 @@ func (e *bundleEnv) handler(t testing.TB, authz Authorizer) http.Handler {
 	t.Helper()
 	svc, _ := newGatewayEnv(t)
 	h, _, err := NewInternal(InternalOptions{Logger: quiet(), Hasher: testHasher(t), Gateways: svc, Authorizer: authz,
-		RateLimit: RateConfig{Rules: []RateRule{{Prefix: "/", Max: 0}}}, Extra: BundleRoutes(e.svc, quiet())})
+		RateLimit: RateConfig{Rules: []RateRule{{Prefix: "/", Max: 0}}}, Extra: BundleRoutes(e.svc, nil, quiet())})
 	if err != nil {
 		t.Fatal(err)
 	}

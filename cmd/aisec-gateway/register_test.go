@@ -15,6 +15,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/api"
 	"github.com/azuresong-afk/ai_railway/internal/audit"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
+	"github.com/azuresong-afk/ai_railway/internal/gateway"
 	"github.com/azuresong-afk/ai_railway/internal/gwregistry"
 )
 
@@ -151,5 +152,41 @@ func TestRunRegister(t *testing.T) {
 	cfg.OutDir = fresh
 	if err := runRegister(context.Background(), cfg, io.Discard); err != nil {
 		t.Fatalf("регистрация после отказов: %v", err)
+	}
+	// С -state-dir ключ получателя создаётся в каталоге состояния и
+	// закрепляется при регистрации (ADR-0018, п. 7).
+	cfg.Token, _, err = svc.IssueToken(context.Background(), gwregistry.TokenInput{Name: "gw-1", Reregister: true, Actor: audit.Actor{Type: audit.ActorCLI, ID: "uid:0"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.OutDir, cfg.StateDir = filepath.Join(dir, "with-state"), filepath.Join(dir, "state")
+	for _, d := range []string{cfg.OutDir, cfg.StateDir} {
+		if err := os.Mkdir(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stdout.Reset()
+	if err := runRegister(context.Background(), cfg, &stdout); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout.String(), "-state-dir "+cfg.StateDir) {
+		t.Fatalf("вывод: %s", stdout.String())
+	}
+	rnd, err := p.Random()
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := gateway.OpenBundleState(cfg.StateDir, rnd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }() //nolint:gosec // G104: тест
+	rcpt, err := st.Recipient(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	list, err := svc.List(context.Background())
+	if err != nil || len(list) != 1 || !bytes.Equal(list[0].BundleKey, rcpt.PublicKey()) {
+		t.Fatalf("ключ получателя не закреплён при регистрации: %v", err)
 	}
 }

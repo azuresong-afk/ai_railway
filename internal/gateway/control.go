@@ -3,6 +3,7 @@ package gateway
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -48,16 +49,37 @@ func ControlTransport(tp aisecCrypto.TLSProvider, rootsPEM, certPEM, keyPEM []by
 	if err != nil {
 		return nil, fmt.Errorf("TLS к серверу управления: %w", err)
 	}
+	t := newControlTransport()
+	t.TLSClientConfig = cfg
+	return t, nil
+}
+
+// ControlTransportSwitch — транспорт к серверу управления с клиентским
+// сертификатом из переключателя: после перевыпуска (ADR-0018, п. 6.3) новые
+// соединения идут с новым сертификатом без перезапуска шлюза.
+func ControlTransportSwitch(tp aisecCrypto.TLSProvider, rootsPEM []byte, sw *aisecCrypto.ClientCertSwitch) (*http.Transport, error) {
+	cfg, err := aisecCrypto.SwitchClientConfig(tp, rootsPEM, sw)
+	if err != nil {
+		return nil, fmt.Errorf("TLS к серверу управления: %w", err)
+	}
+	t := newControlTransport()
+	t.TLSClientConfig = cfg
+	return t, nil
+}
+
+// newControlTransport — общие настройки транспорта без TLS: тип
+// *tls.Config не называется (crypto/* импортирует только internal/crypto),
+// поэтому настройки TLS присваиваются у вызывающего.
+func newControlTransport() *http.Transport {
 	return &http.Transport{
 		Proxy:                 nil,
 		DialContext:           (&net.Dialer{Timeout: controlTimeout, KeepAlive: 30 * time.Second}).DialContext,
-		TLSClientConfig:       cfg,
 		TLSHandshakeTimeout:   controlTimeout,
 		ResponseHeaderTimeout: controlTimeout,
 		MaxIdleConns:          2,
 		IdleConnTimeout:       90 * time.Second,
 		ForceAttemptHTTP2:     true,
-	}, nil
+	}
 }
 
 // controlError — ответ сервера с ошибкой: код и detail из Problem Details.
@@ -135,8 +157,10 @@ type Registration struct {
 }
 
 // Register создаёт ключ и CSR шлюза и получает сертификат по токену
-// (POST /api/v1/gateways/register на порту консоли). Токен в журнал не пишется.
-func Register(ctx context.Context, client *http.Client, console *url.URL, token string) (Registration, error) {
+// (POST /api/v1/gateways/register на порту консоли). Токен в журнал не
+// пишется. bundleKey — открытый ключ получателя HPKE для закрепления на
+// сервере (Н27); nil — закрепится при первом запросе пакета.
+func Register(ctx context.Context, client *http.Client, console *url.URL, token string, bundleKey []byte) (Registration, error) {
 	// Имя в CSR сервер не использует: CN сертификата — ID шлюза из реестра.
 	keyPEM, csrPEM, err := aisecCrypto.NewClientCSR("aisec-gateway")
 	if err != nil {
@@ -150,7 +174,11 @@ func Register(ctx context.Context, client *http.Client, console *url.URL, token 
 		NotAfter      time.Time `json:"not_after"`
 	}
 	u := console.JoinPath("/api/v1/gateways/register").String()
-	if err := postControl(ctx, client, u, map[string]string{"token": token, "csr": string(csrPEM)}, &resp, http.StatusCreated); err != nil {
+	req := map[string]string{"token": token, "csr": string(csrPEM)}
+	if bundleKey != nil {
+		req["bundle_key"] = base64.RawURLEncoding.EncodeToString(bundleKey)
+	}
+	if err := postControl(ctx, client, u, req, &resp, http.StatusCreated); err != nil {
 		return Registration{}, fmt.Errorf("регистрация шлюза: %w", err)
 	}
 	// Сертификат должен подходить к нашему ключу и нести выданный ID.
@@ -188,8 +216,11 @@ type HeartbeatConfig struct {
 	// и остановку в журнал аудита (В27 ревью 2.r5, РСБ.2). Нулевое — не
 	// передаётся, heartbeat остановки не отправляется.
 	StartedAt time.Time
-	Logger    *slog.Logger
-	Clock     func() time.Time
+	// Reissue — перевыпуск сертификата шлюза по признаку из ответа
+	// heartbeat (ADR-0018, п. 6.3); nil — не выполняется.
+	Reissue func(ctx context.Context) error
+	Logger  *slog.Logger
+	Clock   func() time.Time
 	// Sleep ждёт d или отмены ctx (тесты подменяют его).
 	Sleep func(ctx context.Context, d time.Duration) bool
 }
@@ -258,6 +289,8 @@ func (c HeartbeatConfig) beat(ctx context.Context, u string, interval, backoff *
 		IntervalSeconds int       `json:"interval_seconds"`
 		// VerifyRequestedAt — администратор запросил проверку шлюза.
 		VerifyRequestedAt *time.Time `json:"verify_requested_at"`
+		// Reissue — сертификат шлюза нужно перевыпустить.
+		Reissue bool `json:"reissue"`
 	}
 	sent := c.Clock()
 	body := heartbeatBody{Version: c.Version, BundleETag: etag}
@@ -293,6 +326,11 @@ func (c HeartbeatConfig) beat(ctx context.Context, u string, interval, backoff *
 	}
 	if skew := resp.ServerTime.Sub(sent); !resp.ServerTime.IsZero() && (skew > clockSkewWarn || skew < -clockSkewWarn) {
 		c.Logger.Warn("часы шлюза расходятся с сервером управления", "skew_seconds", int(skew/time.Second))
+	}
+	if resp.Reissue && c.Reissue != nil {
+		if err := c.Reissue(ctx); err != nil {
+			c.Logger.Warn("сертификат шлюза не перевыпущен; повтор при следующем heartbeat", "error", err)
+		}
 	}
 	// Проверка по запросу из консоли — один раз на запрос; итог уйдёт со
 	// следующим heartbeat вместе с временем запроса (Н38 ревью 2.r4).

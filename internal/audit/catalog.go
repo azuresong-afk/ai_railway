@@ -44,6 +44,9 @@ var catalog = []Event{
 	{"gateway.register", "Регистрация шлюза: выпуск сертификата по токену", true},
 	{"gateway.revoke", "Отзыв шлюза", true},
 	{"gateway.mtls_denied", "Отказ шлюзу во внутреннем API: сертификат отозван или неизвестен", true},
+	{"gateway.cert_reissue", "Перевыпуск сертификата шлюза при heartbeat (ротация корня УЦ или истечение срока)", true},
+	{"gateway.bundle_key_pinned", "Закрепление ключа получателя шлюза при первом запросе пакета", true},
+	{"gateway.bundle_key_mismatch", "Запрос пакета с ключом получателя, отличным от закреплённого", true},
 	// Роли и доступ (РСБ.1, УПД.1–2, 6).
 	{"role.create", "Создание своей роли", true},
 	{"role.update", "Изменение своей роли", true},
@@ -93,6 +96,9 @@ var catalog = []Event{
 	{"keys.data_rotated", "Новая версия ключа данных (aisec-cli keys rotate-data)", true},
 	{"keys.data_rewrapped", "Перешифрование секретов и содержимого событий новой версией ключа данных", true},
 	{"keys.data_key_destroyed", "Удаление прежней версии ключа данных после перешифрования", true},
+	{"keys.signing_rotated", "Ротация ключа подписи пакетов конфигурации (aisec-cli keys rotate-signing)", true},
+	{"keys.audit_rotated", "Ротация ключа подписи контрольных точек аудита (aisec-cli keys rotate-audit)", true},
+	{"keys.ca_rotated", "Ротация корня внутреннего УЦ (aisec-cli keys rotate-ca)", true},
 	{"system.setup_token_reissued", "Повторный выпуск токена первичной настройки (aisec-cli init -reissue-setup-token)", true},
 	// Целостность и самотестирование (РСБ.2, ОЦЛ).
 	{"integrity.check", "Результат контроля целостности", true},

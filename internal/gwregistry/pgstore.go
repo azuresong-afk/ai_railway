@@ -75,7 +75,7 @@ const gatewayCols = `id::text, org_id::text, name, status, created_at, created_b
 	cert_serial, cert_not_after, last_seen_at, host(last_addr), version, bundle_etag,
 	selftest_ok, selftest_at, selftest_failed, integrity_ok, integrity_at, integrity_reason, integrity_failed,
 	manifest_version, manifest_created, manifest_max_version, manifest_max_created, test_signed, bundle_keys_ok,
-	verify_requested_at, started_at`
+	verify_requested_at, started_at, cert_ca, next_cert_serial, next_cert_not_after, next_cert_ca, bundle_key`
 
 func scanGateway(row pgx.Row) (Gateway, error) {
 	var g Gateway
@@ -88,10 +88,13 @@ func scanGateway(row pgx.Row) (Gateway, error) {
 	var mCreated, mMaxCreated *time.Time
 	var testSigned *bool
 	var verifyReq, started *time.Time
+	var certCA, nextSerial, nextCA *string
+	var nextNotAfter *time.Time
 	if err := row.Scan(&g.ID, &g.OrgID, &g.Name, &g.Status, &g.CreatedAt, &g.CreatedBy, &registered, &revoked,
 		&serial, &notAfter, &seen, &addr, &version, &etag,
 		&stOK, &stAt, &stFailed, &inOK, &inAt, &integrityReason, &inFailed,
-		&mVersion, &mCreated, &mMaxVersion, &mMaxCreated, &testSigned, &g.BundleKeysOK, &verifyReq, &started); err != nil {
+		&mVersion, &mCreated, &mMaxVersion, &mMaxCreated, &testSigned, &g.BundleKeysOK, &verifyReq, &started,
+		&certCA, &nextSerial, &nextNotAfter, &nextCA, &g.BundleKey); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return Gateway{}, ErrNotFound
 		}
@@ -113,6 +116,7 @@ func scanGateway(row pgx.Row) (Gateway, error) {
 	}
 	g.ManifestMaxVersion, g.ManifestMaxCreated = derefS(mMaxVersion), deref(mMaxCreated)
 	g.VerifyRequestedAt, g.StartedAt = deref(verifyReq), deref(started)
+	g.CertCA, g.NextCertSerial, g.NextCertNotAfter, g.NextCertCA = derefS(certCA), derefS(nextSerial), deref(nextNotAfter), derefS(nextCA)
 	return g, nil
 }
 
@@ -196,7 +200,7 @@ func (s *PGStore) CreateToken(ctx context.Context, t NewToken, rec func(Gateway)
 // Register — см. Store. Токен блокируется строкой (FOR UPDATE): из
 // параллельных регистраций с одним токеном пройдёт ровно одна.
 func (s *PGStore) Register(ctx context.Context, hashAlg string, hash []byte, now time.Time,
-	issue func(Gateway) (aisecCrypto.CertInfo, error), rec func(Gateway) audit.Entry) (Gateway, error) {
+	issue func(Gateway) (Issued, error), rec func(Gateway) audit.Entry) (Gateway, error) {
 	ctx, cancel := pgCtx(ctx)
 	defer cancel()
 	var gw Gateway
@@ -224,13 +228,16 @@ func (s *PGStore) Register(ctx context.Context, hashAlg string, hash []byte, now
 		if err != nil {
 			return fmt.Errorf("реестр шлюзов: %w", err)
 		}
-		info, err := issue(cur)
+		iss, err := issue(cur)
 		if err != nil {
 			return err
 		}
+		// Новая регистрация закрепляет ключ получателя заново (Н27): триггер
+		// разрешает смену только вместе с registered_at.
 		gw, err = scanGateway(tx.QueryRow(ctx, `UPDATE gateways SET status = 'active', registered_at = $2,
-			cert_serial = $3, cert_not_after = $4 WHERE id = $1 RETURNING `+gatewayCols,
-			gatewayID, now, info.Serial, info.NotAfter))
+			cert_serial = $3, cert_not_after = $4, cert_ca = $5, bundle_key = $6,
+			next_cert_serial = NULL, next_cert_not_after = NULL, next_cert_ca = NULL WHERE id = $1 RETURNING `+gatewayCols,
+			gatewayID, now, iss.Info.Serial, iss.Info.NotAfter, nullStr(iss.CA), iss.BundleKey))
 		if err != nil {
 			return fmt.Errorf("реестр шлюзов: регистрация: %w", err)
 		}
@@ -243,7 +250,68 @@ func (s *PGStore) Register(ctx context.Context, hashAlg string, hash []byte, now
 func (s *PGStore) BySerial(ctx context.Context, serial string) (Gateway, error) {
 	ctx, cancel := pgCtx(ctx)
 	defer cancel()
-	return scanGateway(s.db.QueryRow(ctx, "SELECT "+gatewayCols+" FROM gateways WHERE cert_serial = $1", serial))
+	return scanGateway(s.db.QueryRow(ctx, "SELECT "+gatewayCols+" FROM gateways WHERE cert_serial = $1 OR next_cert_serial = $1", serial))
+}
+
+// SetNextCert — см. Store.
+func (s *PGStore) SetNextCert(ctx context.Context, id string, next Issued, rec func(Gateway) audit.Entry) (Gateway, error) {
+	ctx, cancel := pgCtx(ctx)
+	defer cancel()
+	var gw Gateway
+	err := s.inTx(ctx, func(tx pgx.Tx) error {
+		var err error
+		gw, err = scanGateway(tx.QueryRow(ctx, `UPDATE gateways SET next_cert_serial = $2, next_cert_not_after = $3, next_cert_ca = $4
+			WHERE id = $1 AND status = 'active' RETURNING `+gatewayCols, id, next.Info.Serial, next.Info.NotAfter, next.CA))
+		if err != nil {
+			return err
+		}
+		return s.record(ctx, tx, rec(gw))
+	})
+	return gw, err
+}
+
+// PromoteNext — см. Store.
+func (s *PGStore) PromoteNext(ctx context.Context, id, serial string, rec func(Gateway) audit.Entry) (Gateway, error) {
+	ctx, cancel := pgCtx(ctx)
+	defer cancel()
+	var gw Gateway
+	err := s.inTx(ctx, func(tx pgx.Tx) error {
+		var err error
+		gw, err = scanGateway(tx.QueryRow(ctx, `UPDATE gateways SET cert_serial = next_cert_serial, cert_not_after = next_cert_not_after,
+			cert_ca = next_cert_ca, next_cert_serial = NULL, next_cert_not_after = NULL, next_cert_ca = NULL
+			WHERE id = $1 AND status = 'active' AND next_cert_serial = $2 RETURNING `+gatewayCols, id, serial))
+		if errors.Is(err, ErrNotFound) {
+			// Параллельный запрос уже сделал сертификат действующим.
+			gw, err = scanGateway(tx.QueryRow(ctx, "SELECT "+gatewayCols+" FROM gateways WHERE id = $1 AND status = 'active'", id))
+			return err
+		}
+		if err != nil {
+			return err
+		}
+		return s.record(ctx, tx, rec(gw))
+	})
+	return gw, err
+}
+
+// PinBundleKey — см. Store.
+func (s *PGStore) PinBundleKey(ctx context.Context, id string, key []byte, rec func(Gateway) audit.Entry) (Gateway, error) {
+	ctx, cancel := pgCtx(ctx)
+	defer cancel()
+	var gw Gateway
+	err := s.inTx(ctx, func(tx pgx.Tx) error {
+		var err error
+		gw, err = scanGateway(tx.QueryRow(ctx, `UPDATE gateways SET bundle_key = $2
+			WHERE id = $1 AND status = 'active' AND bundle_key IS NULL RETURNING `+gatewayCols, id, key))
+		if errors.Is(err, ErrNotFound) {
+			gw, err = scanGateway(tx.QueryRow(ctx, "SELECT "+gatewayCols+" FROM gateways WHERE id = $1 AND status = 'active'", id))
+			return err
+		}
+		if err != nil {
+			return err
+		}
+		return s.record(ctx, tx, rec(gw))
+	})
+	return gw, err
 }
 
 // Touch — см. Store.
@@ -275,9 +343,10 @@ func (s *PGStore) Touch(ctx context.Context, id string, hb Heartbeat, audits fun
 	var ch TouchChange
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
 		ch = TouchChange{}
-		var requested, started *time.Time
-		err := tx.QueryRow(ctx, "SELECT verify_requested_at, started_at FROM gateways WHERE id = $1 AND status = 'active' FOR UPDATE",
-			id).Scan(&requested, &started)
+		var requested, started, notAfter *time.Time
+		var certCA *string
+		err := tx.QueryRow(ctx, `SELECT verify_requested_at, started_at, cert_ca, cert_not_after FROM gateways
+			WHERE id = $1 AND status = 'active' FOR UPDATE`, id).Scan(&requested, &started, &certCA, &notAfter)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrNotFound
 		}
@@ -285,7 +354,7 @@ func (s *PGStore) Touch(ctx context.Context, id string, hb Heartbeat, audits fun
 			return fmt.Errorf("реестр шлюзов: heartbeat: %w", err)
 		}
 		// Запрос выполнен, если шлюз прислал итог целостности именно на него.
-		ch.VerifyRequested = deref(requested)
+		ch.VerifyRequested, ch.CertCA, ch.CertNotAfter = deref(requested), derefS(certCA), deref(notAfter)
 		ch.VerifyDone = requested != nil && hb.Integrity != nil && hb.VerifyRequest.Equal(*requested)
 		next, setStarted := startChange(deref(started), hb, &ch)
 		// Максимум манифеста растёт только по успешным проверкам (В20): текущий

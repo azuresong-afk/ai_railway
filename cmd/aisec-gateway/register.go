@@ -31,6 +31,10 @@ type regConfig struct {
 	ConsoleCA string
 	OutDir    string
 	Token     string
+	// StateDir — каталог состояния шлюза (-state-dir): ключ получателя
+	// HPKE создаётся в нём и передаётся серверу при регистрации (Н27,
+	// ADR-0018, п. 7). Пусто — ключ закрепится при первом запросе пакета.
+	StateDir string
 }
 
 func loadRegConfig(args []string, getenv func(string) string, errOut io.Writer) (*regConfig, error) {
@@ -39,13 +43,14 @@ func loadRegConfig(args []string, getenv func(string) string, errOut io.Writer) 
 	console := fs.String("console", "", "адрес консоли сервера управления, https://хост:8444 (обязательный)")
 	consoleCA := fs.String("console-ca", "", "корневой сертификат для проверки консоли, PEM (обязательный)")
 	outDir := fs.String("out-dir", "", "существующий каталог 0700 для gateway.key, gateway.crt и ca.crt (обязательный)")
+	stateDir := fs.String("state-dir", "", "каталог состояния шлюза 0700: ключ получателя секретов пакета закрепляется при регистрации")
 	if err := fs.Parse(args); err != nil {
 		return nil, err
 	}
 	if fs.NArg() > 0 {
 		return nil, fmt.Errorf("лишние аргументы: %d", fs.NArg())
 	}
-	cfg := &regConfig{Console: *console, ConsoleCA: *consoleCA, OutDir: *outDir, Token: getenv(tokenEnv)}
+	cfg := &regConfig{Console: *console, ConsoleCA: *consoleCA, OutDir: *outDir, Token: getenv(tokenEnv), StateDir: *stateDir}
 	var errs []error
 	for name, v := range map[string]string{"console": cfg.Console, "console-ca": cfg.ConsoleCA, "out-dir": cfg.OutDir, tokenEnv: cfg.Token} {
 		if v == "" {
@@ -108,7 +113,11 @@ func runRegister(ctx context.Context, cfg *regConfig, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	reg, err := gateway.Register(ctx, &http.Client{Transport: transport}, console, cfg.Token)
+	bundleKey, err := regBundleKey(p, cfg.StateDir)
+	if err != nil {
+		return err
+	}
+	reg, err := gateway.Register(ctx, &http.Client{Transport: transport}, console, cfg.Token, bundleKey)
 	if err != nil {
 		return err
 	}
@@ -134,9 +143,38 @@ func runRegister(ctx context.Context, cfg *regConfig, out io.Writer) error {
 	}
 	_, err = fmt.Fprintf(out, "Шлюз %s зарегистрирован (ID %s), сертификат действует до %s.\n"+
 		"Запуск: aisec-gateway ... -server https://<сервер>:8445 -server-ca <корень сервера> -client-cert %s/%s -client-key %s/%s"+
-		" -bundle-pub <bundle-signing.pub> -state-dir <каталог 0700>\n",
-		reg.Name, reg.GatewayID, reg.NotAfter.UTC().Format("2006-01-02"), cfg.OutDir, regCertFile, cfg.OutDir, regKeyFile)
+		" -bundle-pub <bundle-signing.pub> -state-dir %s\n",
+		reg.Name, reg.GatewayID, reg.NotAfter.UTC().Format("2006-01-02"), cfg.OutDir, regCertFile, cfg.OutDir, regKeyFile, stateHint(cfg.StateDir))
 	return err
+}
+
+// regBundleKey — открытый ключ получателя из каталога состояния (создаётся
+// при первом обращении); без -state-dir — nil.
+func regBundleKey(p aisecCrypto.Provider, dir string) ([]byte, error) {
+	if dir == "" {
+		return nil, nil
+	}
+	rnd, err := p.Random()
+	if err != nil {
+		return nil, err
+	}
+	state, err := gateway.OpenBundleState(dir, rnd)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = state.Close() }() //nolint:gosec // G104: ключ записан и синхронизирован раньше
+	r, err := state.Recipient(p)
+	if err != nil {
+		return nil, err
+	}
+	return r.PublicKey(), nil
+}
+
+func stateHint(dir string) string {
+	if dir == "" {
+		return "<каталог 0700>"
+	}
+	return dir
 }
 
 func writeNew(root *os.Root, name string, data []byte, perm fs.FileMode) (err error) {

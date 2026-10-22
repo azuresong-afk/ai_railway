@@ -40,9 +40,11 @@ type ArchiveOptions struct {
 	Out    ArchiveSink
 	// ArchiveName — имя файла архива для точки и журнала.
 	ArchiveName string
-	// Signer — ключ подписи контрольных точек (audit-signing.key).
+	// Signer — ключ подписи контрольных точек: действующий по расписанию
+	// (audit-signing.key или ключ последней смены, ADR-0018, п. 5).
 	Signer crypto.Signer
-	// Verifier — его открытый ключ: им проверяются прежние точки.
+	// Verifier — открытый ключ-якорь audit-signing.pub: от него строится
+	// расписание, по которому проверяются прежние точки.
 	Verifier crypto.Verifier
 	By       Actor
 }
@@ -64,9 +66,6 @@ type ArchiveResult struct {
 func (l *Log) Archive(ctx context.Context, opt ArchiveOptions) (*ArchiveResult, error) {
 	if opt.Out == nil || opt.Signer == nil || opt.Verifier == nil || opt.ArchiveName == "" {
 		return nil, errors.New("архивация: нет файла, имени или ключей подписи")
-	}
-	if !crypto.Equal(opt.Signer.PublicKey(), opt.Verifier.PublicKey()) {
-		return nil, errors.New("архивация: ключ подписи и открытый ключ — не пара")
 	}
 	ctx, cancel := withTimeout(ctx, archiveTimeout)
 	defer cancel()
@@ -92,7 +91,14 @@ func (l *Log) archiveTx(ctx context.Context, tx pgx.Tx, opt *ArchiveOptions, res
 	if err != nil {
 		return err
 	}
-	anchor, err := VerifyCheckpoints(l.hasher, opt.Verifier, cps)
+	keys, err := LoadKeySchedule(ctx, tx, l.provider, opt.Verifier)
+	if err != nil {
+		return err
+	}
+	if !crypto.Equal(opt.Signer.PublicKey(), keys.Latest().PublicKey()) {
+		return errors.New("архивация: ключ подписи — не действующий ключ аудита по расписанию смен")
+	}
+	anchor, err := VerifyCheckpoints(l.hasher, keys, cps)
 	if err != nil {
 		return err
 	}

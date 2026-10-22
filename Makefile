@@ -52,6 +52,7 @@ DEV_CMDS     := mock-llm
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 # Время последнего коммита — для воспроизводимых артефактов (SBOM, фронтенд).
 SOURCE_DATE ?= $(shell git log -1 --format=%cI 2>/dev/null || echo 1970-01-01T00:00:00Z)
+SOURCE_EPOCH ?= $(shell git log -1 --format=%ct 2>/dev/null || echo 0)
 LDFLAGS := -s -w -buildid= -X main.version=$(VERSION)
 
 # Поставочная сборка (ADR-0012): RELEASE=1 встраивает открытый ключ
@@ -84,7 +85,10 @@ else
 WEB_CHECKS := web-check web-e2e
 endif
 
-check: fmt-check vet docs-check repocheck licenses vendor-check lint lint-selftest sast test build manifest e2e dm-coverage detector-quality sbom fuzz-smoke vuln $(WEB_CHECKS) ## Все проверки перед pull request
+# Поставочная сборка (RELEASE=1) проверяет и тесты с тегом aisec_release (Н35).
+RELEASE_CHECKS := $(if $(filter 1,$(RELEASE)),release-test,)
+
+check: fmt-check vet docs-check repocheck licenses vendor-check lint lint-selftest sast test $(RELEASE_CHECKS) build manifest e2e dm-coverage detector-quality sbom fuzz-smoke vuln $(WEB_CHECKS) ## Все проверки перед pull request
 	@if [ -n "$(strip $(PENDING_CHECKS))" ]; then \
 		echo "ВНИМАНИЕ: make check неполный, не выполнены: $(PENDING_CHECKS) (docs/plans/stage-0.md; для web-* нужен Node.js, web/README.md)"; fi
 
@@ -282,6 +286,103 @@ endif
 		-version '$(VERSION)' -created '$(SOURCE_DATE)' -bin $(BUILD)/bin -cmds '$(PRODUCT_CMDS)' \
 		-static web/dist -migrations migrations
 	$(BUILD)/bin/aisec-cli verify -manifest $(BUILD)/aisec-manifest.json
+
+.PHONY: release-test
+release-test: ## Тесты поставочной сборки (тег aisec_release, Н35): встроен ключ производителя, а не тестовый
+	@test -s internal/integrity/keys/manifest.pub || { echo "release-test: нет internal/integrity/keys/manifest.pub — открытого ключа производителя (ADR-0012)"; exit 1; }
+	go test -count=1 -tags aisec_release ./internal/integrity/
+
+# Образы поставки пилота (ADR-0019): scratch, статические бинарники, манифест
+# целостности внутри образа. Поставочные образы — только RELEASE=1 (Н34);
+# make images-test собирает те же образы с тестовым ключом под другим именем
+# и с меткой ru.aisec.build-kind=test — для CI и стендов, НЕ ДЛЯ ПОСТАВКИ.
+RELEASE_DIR := $(BUILD)/release
+IMAGES_DIR  := $(BUILD)/images
+IMAGE_CMDS  := aisec-server aisec-gateway aisec-cli
+IMAGE_KIND  := $(if $(filter 1,$(RELEASE)),release,test)
+IMAGE_REPO  ?= $(if $(filter 1,$(RELEASE)),aisec,aisec-test)
+IMAGE_TAG   := $(VERSION)$(if $(filter 1,$(RELEASE)),,-test)
+# Бинарники каждого образа: в aisec-cli — весь выпуск (aisec-cli verify).
+IMAGE_BINS_aisec-server  := aisec-server
+IMAGE_BINS_aisec-gateway := aisec-gateway
+IMAGE_BINS_aisec-cli     := $(PRODUCT_CMDS)
+PILOT_COMPOSE := deploy/compose/pilot/compose.yaml
+
+.PHONY: release-dir
+release-dir: ## Каталог выпуска build/release: статические бинарники и подписанный манифест (основа образов)
+ifeq ($(filter 1,$(RELEASE)),1)
+	@test -n '$(MANIFEST_KEY)' || { echo "release-dir: для RELEASE=1 задайте MANIFEST_KEY — ключ производителя"; exit 1; }
+	@test -s web/dist/index.html || { echo "release-dir: нет web/dist/index.html — сначала make web-build (консоль встраивается в aisec-server)"; exit 1; }
+	@case '$(VERSION)' in *-dirty|dev) echo "release-dir: версия $(VERSION) — выпуск только из чистого дерева с тегом"; exit 1;; esac
+endif
+	rm -rf $(RELEASE_DIR)
+	mkdir -p $(RELEASE_DIR)/bin
+	CGO_ENABLED=0 go build -trimpath -tags '$(BUILD_TAGS)' -ldflags '$(LDFLAGS)' -o $(RELEASE_DIR)/bin/ $(addprefix ./cmd/,$(PRODUCT_CMDS))
+	go run ./tools/manifest build -out $(RELEASE_DIR)/aisec-manifest.json \
+		$(if $(MANIFEST_KEY),-key '$(MANIFEST_KEY)',-test-key $(MANIFEST_TEST_KEY)) \
+		-version '$(VERSION)' -created '$(SOURCE_DATE)' -bin $(RELEASE_DIR)/bin -cmds '$(PRODUCT_CMDS)' \
+		-static web/dist -migrations migrations
+	$(RELEASE_DIR)/bin/aisec-cli verify -manifest $(RELEASE_DIR)/aisec-manifest.json
+
+.PHONY: images
+images: ## Образы поставки пилота — только RELEASE=1 и MANIFEST_KEY (Н34): сборка, SBOM, проверка (ЗИ.5)
+	@test '$(RELEASE)' = 1 || { echo "images: только RELEASE=1 с MANIFEST_KEY (Н34); образы с тестовым ключом, не для поставки — make images-test"; exit 1; }
+	$(MAKE) release-test
+	$(MAKE) images-all
+
+.PHONY: images-test
+images-test: ## Те же образы с тестовым ключом манифеста — НЕ ДЛЯ ПОСТАВКИ (aisec-test/…:ВЕРСИЯ-test)
+	@test '$(RELEASE)' != 1 || { echo "images-test: без RELEASE=1; поставочные образы — make images"; exit 1; }
+	$(MAKE) images-all
+
+.PHONY: images-all
+images-all:
+	$(MAKE) release-dir
+	$(MAKE) images-docker
+	$(MAKE) images-sbom
+	$(MAKE) images-verify
+
+.PHONY: images-docker
+images-docker: ## docker build и docker save образов из build/release (без сети и без RUN)
+	@test -s $(RELEASE_DIR)/aisec-manifest.json || { echo "images-docker: нет $(RELEASE_DIR) — make release-dir"; exit 1; }
+	mkdir -p $(IMAGES_DIR)
+	for c in $(IMAGE_CMDS); do \
+		docker build --pull=false --network=none --provenance=false --sbom=false \
+			-f deploy/build/Dockerfile.release --target $$c \
+			--build-arg VERSION='$(VERSION)' --build-arg BUILD_KIND=$(IMAGE_KIND) \
+			--build-arg SOURCE_DATE_EPOCH=$(SOURCE_EPOCH) \
+			-t $(IMAGE_REPO)/$$c:$(IMAGE_TAG) $(RELEASE_DIR); \
+		docker save -o $(IMAGES_DIR)/$$c.tar $(IMAGE_REPO)/$$c:$(IMAGE_TAG); \
+	done
+
+# $(call image-sbom,ОБРАЗ): SBOM образа — его бинарники, манифест и подпись;
+# npm-пакеты консоли — только у образов с aisec-server.
+define image-sbom
+	go run ./tools/sbom -registry docs/cert/components.yaml -gosum go.sum $(if $(filter aisec-gateway,$(1)),,-npm-lock web/package-lock.json) \
+		-out $(IMAGES_DIR)/$(1).cdx.json -version '$(VERSION)' -timestamp '$(SOURCE_DATE)' -image $(IMAGE_REPO)/$(1):$(IMAGE_TAG) \
+		-file $(RELEASE_DIR)/aisec-manifest.json -file $(RELEASE_DIR)/aisec-manifest.json.sig $(addprefix $(RELEASE_DIR)/bin/,$(IMAGE_BINS_$(1)))
+	$(BIN)/sbom-utility validate --quiet --input-file $(IMAGES_DIR)/$(1).cdx.json
+	go run ./tools/sbom -check $(IMAGES_DIR)/$(1).cdx.json
+
+endef
+
+.PHONY: images-sbom
+images-sbom: $(BIN)/sbom-utility ## SBOM каждого образа (CycloneDX 1.6): бинарники образа, манифест и подпись
+	$(foreach c,$(IMAGE_CMDS),$(call image-sbom,$(c)))
+
+.PHONY: images-verify
+images-verify: ## Проверка образов (ЗИ.5): не root, нет оболочки и пакетов ОС, только свои порты, бинарники = манифест выпуска; compose пилота
+	go run ./tools/imagecheck image -release $(RELEASE_DIR) -kind $(IMAGE_KIND) $(addprefix $(IMAGES_DIR)/,$(addsuffix .tar,$(IMAGE_CMDS)))
+	go run ./tools/imagecheck compose $(PILOT_COMPOSE)
+
+# CI: Go-шаги — в сборочном образе (точная версия Go и sbom-utility), docker
+# build — на хосте.
+.PHONY: images-test-docker
+images-test-docker: build-image ## make images-test, где Go-шаги идут в сборочном образе (CI)
+	@test '$(RELEASE)' != 1 || { echo "images-test-docker: без RELEASE=1"; exit 1; }
+	$(DOCKER_RUN) $(BUILD_IMAGE) make release-dir BIN=/opt/aisec-tools/bin
+	$(MAKE) images-docker
+	$(DOCKER_RUN) $(BUILD_IMAGE) make images-sbom images-verify BIN=/opt/aisec-tools/bin
 
 .PHONY: e2e
 e2e: manifest ## Сквозные тесты: шлюз и mock-llm по TLS (этап 1); сервер, CLI и PostgreSQL (этап 2, нужен AISEC_TEST_DATABASE_URL — иначе пропускаются)

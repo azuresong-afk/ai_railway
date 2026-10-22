@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"time"
 
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 )
@@ -16,6 +17,10 @@ type Opener struct {
 	verifiers map[string]aisecCrypto.Verifier
 	recipient aisecCrypto.Recipient
 	gatewayID string
+	// trust — цепочка заявлений о доверии от тех же ключей (ADR-0018,
+	// п. 4.4); nil — пакеты проверяются только ключами verifiers.
+	trust *TrustChain
+	clock func() time.Time
 }
 
 // MaxVerifiers — ключей проверки одновременно: действующий и новый на
@@ -35,7 +40,8 @@ func NewOpener(p aisecCrypto.Provider, verifiers []aisecCrypto.Verifier, recipie
 	if err != nil {
 		return nil, err
 	}
-	o := &Opener{hasher: h, verifiers: map[string]aisecCrypto.Verifier{}, recipient: recipient, gatewayID: gatewayID}
+	o := &Opener{hasher: h, verifiers: map[string]aisecCrypto.Verifier{}, recipient: recipient, gatewayID: gatewayID,
+		clock: time.Now}
 	for _, v := range verifiers {
 		id := KeyID(h, v.PublicKey())
 		if _, dup := o.verifiers[id]; dup {
@@ -44,6 +50,41 @@ func NewOpener(p aisecCrypto.Provider, verifiers []aisecCrypto.Verifier, recipie
 		o.verifiers[id] = v
 	}
 	return o, nil
+}
+
+// SetTrust подключает цепочку заявлений о доверии, построенную от тех же
+// ключей-якорей; clock — часы шлюза для сроков перекрытия (nil — time.Now).
+func (o *Opener) SetTrust(c *TrustChain, clock func() time.Time) {
+	o.trust = c
+	if clock != nil {
+		o.clock = clock
+	}
+}
+
+// TrustSeq — номер последнего принятого заявления о доверии.
+func (o *Opener) TrustSeq() int64 {
+	if o.trust == nil {
+		return 0
+	}
+	return o.trust.Seq()
+}
+
+// TrustRaw — все принятые заявления по порядку: их шлюз сохраняет в
+// trust.json.
+func (o *Opener) TrustRaw() [][]byte {
+	if o.trust == nil {
+		return nil
+	}
+	return o.trust.Raw(1)
+}
+
+// TrustRoots — корни УЦ с неистёкшим перекрытием: по ним шлюз проверяет
+// перевыпущенный сертификат (ADR-0018, п. 6.3).
+func (o *Opener) TrustRoots() [][]byte {
+	if o.trust == nil {
+		return nil
+	}
+	return o.trust.ValidRoots(o.clock())
 }
 
 // KeyIDs — идентификаторы ключей проверки по возрастанию: шлюз сообщает
@@ -87,9 +128,29 @@ func (o *Opener) Open(data []byte, minVersion int64) (*Bundle, error) {
 	if env.Format != Format {
 		return nil, reject(ReasonFormat, "неизвестный формат")
 	}
-	v, ok := o.verifiers[env.KeyID]
+	verifiers := o.verifiers
+	if o.trust != nil {
+		// Заявления принимаются до проверки подписи пакета: ими приходит
+		// новый ключ. Подменённое заявление — отказ всего пакета.
+		if len(env.Trust) > MaxTrustInBundle {
+			return nil, reject(ReasonFormat, "больше %d заявлений о доверии", MaxTrustInBundle)
+		}
+		for _, item := range env.Trust {
+			raw, err := decodeB64(item, MaxTrustStatement)
+			if err != nil {
+				return nil, reject(ReasonFormat, "заявление о доверии: %v", err)
+			}
+			if _, err := o.trust.Append(raw); err != nil {
+				return nil, reject(ReasonSignature, "%v", err)
+			}
+		}
+		verifiers = o.trust.Verifiers(o.clock())
+	} else if len(env.Trust) > 0 {
+		return nil, reject(ReasonFormat, "заявления о доверии не ожидаются")
+	}
+	v, ok := verifiers[env.KeyID]
 	if !ok {
-		return nil, reject(ReasonSignature, "пакет подписан неизвестным ключом")
+		return nil, reject(ReasonSignature, "пакет подписан неизвестным ключом или ключом с истёкшим перекрытием")
 	}
 	header, err := decodeB64(env.Header, maxHeader)
 	if err != nil {

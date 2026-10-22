@@ -13,6 +13,7 @@ import (
 
 	"github.com/azuresong-afk/ai_railway/internal/audit"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
+	"github.com/azuresong-afk/ai_railway/internal/keyring"
 	"github.com/azuresong-afk/ai_railway/internal/store"
 )
 
@@ -56,16 +57,16 @@ func auditArchive(args []string, dsn string, stdout, stderr io.Writer) error {
 	if err := aisecCrypto.SelfTest(p); err != nil {
 		return err
 	}
-	signer, verifier, err := loadAuditSigner(p, *keys)
-	if err != nil {
-		return err
-	}
 	ctx := context.Background()
 	db, err := store.Open(ctx, dsn, 2)
 	if err != nil {
 		return err
 	}
 	defer db.Close()
+	signer, verifier, err := loadAuditSigner(ctx, db, p, *keys)
+	if err != nil {
+		return err
+	}
 	l, err := openAuditLog(db, p, verifier)
 	if err != nil {
 		return err
@@ -221,7 +222,7 @@ func auditExport(args []string, dsn string, stdout, stderr io.Writer) error {
 func auditVerifyArchive(args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("audit verify-archive", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	keys := fs.String("keys", "", "каталог ключей с audit-signing.pub (обязательно)")
+	keys := fs.String("keys", "", "каталог ключей с audit-signing.pub и ключами смен audit-signing.<id>.pub (обязательно)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -235,7 +236,7 @@ func auditVerifyArchive(args []string, stdout, stderr io.Writer) error {
 	if err := aisecCrypto.SelfTest(p); err != nil {
 		return err
 	}
-	v, err := loadAuditVerifier(p, *keys)
+	keyset, err := loadAuditVerifiers(p, *keys)
 	if err != nil {
 		return err
 	}
@@ -255,7 +256,7 @@ func auditVerifyArchive(args []string, stdout, stderr io.Writer) error {
 	if !info.Mode().IsRegular() || info.Size() > maxArchiveFile {
 		return fmt.Errorf("%s: не обычный файл или больше %d ГиБ", fs.Arg(0), maxArchiveFile>>30)
 	}
-	cp, err := audit.VerifyArchive(io.LimitReader(f, maxArchiveFile), h, v)
+	cp, err := audit.VerifyArchive(io.LimitReader(f, maxArchiveFile), h, keyset...)
 	if err != nil {
 		return err
 	}
@@ -264,37 +265,63 @@ func auditVerifyArchive(args []string, stdout, stderr io.Writer) error {
 	return nil
 }
 
-// loadAuditVerifier читает открытый ключ аудита из каталога ключей.
+// loadAuditVerifier читает открытый ключ-якорь аудита из каталога ключей.
 func loadAuditVerifier(p aisecCrypto.Provider, dir string) (aisecCrypto.Verifier, error) {
 	return aisecCrypto.LoadVerifierFile(p, filepath.Join(dir, auditPubFile), aisecCrypto.KeyKindAuditSigningPublic)
 }
 
-// loadAuditSigner читает пару ключей аудита и проверяет, что это пара.
-func loadAuditSigner(p aisecCrypto.Provider, dir string) (aisecCrypto.Signer, aisecCrypto.Verifier, error) {
-	v, err := loadAuditVerifier(p, dir)
+// loadAuditVerifiers — все открытые ключи аудита каталога: якорь и ключи
+// смен (audit-signing.<id>.pub, ADR-0018, п. 5.3). verify-archive работает
+// без БД и принимает подпись любым из них.
+func loadAuditVerifiers(p aisecCrypto.Provider, dir string) ([]aisecCrypto.Verifier, error) {
+	anchor, err := loadAuditVerifier(p, dir)
+	if err != nil {
+		return nil, err
+	}
+	out := []aisecCrypto.Verifier{anchor}
+	names, err := filepath.Glob(filepath.Join(dir, "audit-signing.*.pub"))
+	if err != nil {
+		return nil, err
+	}
+	for _, name := range names {
+		v, err := aisecCrypto.LoadVerifierFile(p, name, aisecCrypto.KeyKindAuditSigningPublic)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, nil
+}
+
+// loadAuditSigner читает якорь и действующий по расписанию смен закрытый
+// ключ аудита (audit-signing.key или ключ последней смены) и проверяет пару.
+func loadAuditSigner(ctx context.Context, db *store.DB, p aisecCrypto.Provider, dir string) (aisecCrypto.Signer, aisecCrypto.Verifier, error) {
+	anchor, err := loadAuditVerifier(p, dir)
 	if err != nil {
 		return nil, nil, err
 	}
-	data, err := aisecCrypto.ReadKeyFile(filepath.Join(dir, auditKeyFile))
+	ks, err := audit.LoadKeySchedule(ctx, db.Pool(), p, anchor)
 	if err != nil {
 		return nil, nil, err
 	}
-	profile, seed, err := aisecCrypto.DecodeKeyPEM(data, aisecCrypto.KeyKindAuditSigning)
-	if err != nil {
-		return nil, nil, fmt.Errorf("%s: %w", auditKeyFile, err)
-	}
-	defer clear(seed)
-	if profile != p.Name() {
-		return nil, nil, fmt.Errorf("%s: ключ профиля %s, а установка — %s", auditKeyFile, profile, p.Name())
-	}
-	s, err := p.NewSigner(seed)
+	h, err := p.Hasher()
 	if err != nil {
 		return nil, nil, err
 	}
-	if !aisecCrypto.Equal(s.PublicKey(), v.PublicKey()) {
-		return nil, nil, fmt.Errorf("%s и %s — не пара", auditKeyFile, auditPubFile)
+	keyFile, _ := keyring.AuditFiles(ks.LatestID(), audit.KeyID(h, anchor.PublicKey()))
+	root, err := keyring.OpenKeyDir(dir)
+	if err != nil {
+		return nil, nil, err
 	}
-	return s, v, nil
+	defer closeQuietly(root)
+	s, err := keyring.ReadSigner(root, p, keyFile, aisecCrypto.KeyKindAuditSigning)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !aisecCrypto.Equal(s.PublicKey(), ks.Latest().PublicKey()) {
+		return nil, nil, fmt.Errorf("%s — не действующий ключ аудита %s", keyFile, ks.LatestID())
+	}
+	return s, anchor, nil
 }
 
 // syncParent сбрасывает на диск запись каталога с новым файлом.

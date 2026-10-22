@@ -122,7 +122,7 @@ func (e *mtlsEnv) registerGateway(t *testing.T, name string) gateway.Registratio
 	if err != nil {
 		t.Fatal(err)
 	}
-	reg, err := gateway.Register(context.Background(), e.client(t, nil, nil), e.console, tok)
+	reg, err := gateway.Register(context.Background(), e.client(t, nil, nil), e.console, tok, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,7 +256,7 @@ func TestInternalAPIRejectsClients(t *testing.T) {
 func TestRegisterRejected(t *testing.T) {
 	e := newMTLSEnv(t)
 	bad := gwregistry.TokenPrefix + strings.Repeat("A", gwregistry.TokenLen-len(gwregistry.TokenPrefix))
-	_, err := gateway.Register(context.Background(), e.client(t, nil, nil), e.console, bad)
+	_, err := gateway.Register(context.Background(), e.client(t, nil, nil), e.console, bad, nil)
 	if err == nil || !strings.Contains(err.Error(), "403") {
 		t.Fatalf("неверный токен: %v", err)
 	}

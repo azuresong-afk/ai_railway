@@ -69,7 +69,7 @@ func (m *Memory) CreateToken(_ context.Context, t NewToken, rec func(Gateway) au
 
 // Register — см. Store.
 func (m *Memory) Register(_ context.Context, hashAlg string, hash []byte, now time.Time,
-	issue func(Gateway) (aisecCrypto.CertInfo, error), rec func(Gateway) audit.Entry) (Gateway, error) {
+	issue func(Gateway) (Issued, error), rec func(Gateway) audit.Entry) (Gateway, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	idx := -1
@@ -85,12 +85,14 @@ func (m *Memory) Register(_ context.Context, hashAlg string, hash []byte, now ti
 	if g == nil || g.Status == StatusRevoked {
 		return Gateway{}, ErrTokenInvalid
 	}
-	info, err := issue(*g)
+	iss, err := issue(*g)
 	if err != nil {
 		return Gateway{}, err
 	}
 	next := *g
-	next.Status, next.RegisteredAt, next.CertSerial, next.CertNotAfter = StatusActive, now, info.Serial, info.NotAfter
+	next.Status, next.RegisteredAt, next.CertSerial, next.CertNotAfter = StatusActive, now, iss.Info.Serial, iss.Info.NotAfter
+	next.CertCA, next.BundleKey = iss.CA, slices.Clone(iss.BundleKey)
+	next.NextCertSerial, next.NextCertNotAfter, next.NextCertCA = "", time.Time{}, ""
 	m.tokens[idx].used = true
 	*g = next
 	m.Records = append(m.Records, rec(next))
@@ -102,7 +104,7 @@ func (m *Memory) BySerial(_ context.Context, serial string) (Gateway, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, g := range m.gateways {
-		if serial != "" && g.CertSerial == serial {
+		if serial != "" && (g.CertSerial == serial || g.NextCertSerial == serial) {
 			return *g, nil
 		}
 	}
@@ -117,7 +119,7 @@ func (m *Memory) Touch(_ context.Context, id string, hb Heartbeat, audits func(T
 	if g == nil || g.Status != StatusActive {
 		return TouchChange{}, ErrNotFound
 	}
-	ch := TouchChange{VerifyRequested: g.VerifyRequestedAt}
+	ch := TouchChange{VerifyRequested: g.VerifyRequestedAt, CertCA: g.CertCA, CertNotAfter: g.CertNotAfter}
 	if !ch.VerifyRequested.IsZero() && hb.Integrity != nil && hb.VerifyRequest.Equal(ch.VerifyRequested) {
 		g.VerifyRequestedAt, ch.VerifyDone = time.Time{}, true
 	}
@@ -211,4 +213,49 @@ func (m *Memory) List(_ context.Context, orgID string) ([]Gateway, error) {
 	}
 	slices.SortFunc(out, func(a, b Gateway) int { return strings.Compare(a.Name, b.Name) })
 	return out, nil
+}
+
+// SetNextCert — см. Store.
+func (m *Memory) SetNextCert(_ context.Context, id string, next Issued, rec func(Gateway) audit.Entry) (Gateway, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	g := m.gateways[id]
+	if g == nil || g.Status != StatusActive {
+		return Gateway{}, ErrNotFound
+	}
+	g.NextCertSerial, g.NextCertNotAfter, g.NextCertCA = next.Info.Serial, next.Info.NotAfter, next.CA
+	m.Records = append(m.Records, rec(*g))
+	return *g, nil
+}
+
+// PromoteNext — см. Store.
+func (m *Memory) PromoteNext(_ context.Context, id, serial string, rec func(Gateway) audit.Entry) (Gateway, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	g := m.gateways[id]
+	if g == nil || g.Status != StatusActive {
+		return Gateway{}, ErrNotFound
+	}
+	if serial == "" || g.NextCertSerial != serial {
+		return *g, nil
+	}
+	g.CertSerial, g.CertNotAfter, g.CertCA = g.NextCertSerial, g.NextCertNotAfter, g.NextCertCA
+	g.NextCertSerial, g.NextCertNotAfter, g.NextCertCA = "", time.Time{}, ""
+	m.Records = append(m.Records, rec(*g))
+	return *g, nil
+}
+
+// PinBundleKey — см. Store.
+func (m *Memory) PinBundleKey(_ context.Context, id string, key []byte, rec func(Gateway) audit.Entry) (Gateway, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	g := m.gateways[id]
+	if g == nil || g.Status != StatusActive {
+		return Gateway{}, ErrNotFound
+	}
+	if g.BundleKey == nil {
+		g.BundleKey = slices.Clone(key)
+		m.Records = append(m.Records, rec(*g))
+	}
+	return *g, nil
 }

@@ -226,10 +226,10 @@ func TestReadBinary(t *testing.T) {
 }
 
 func TestRunErrors(t *testing.T) {
-	if err := run("docs/cert/components.yaml", "go.sum", "", t.TempDir()+"/o.json", "1", "", nil); err == nil {
+	if err := run("docs/cert/components.yaml", "go.sum", "", t.TempDir()+"/o.json", "1", "", nil, imageSpec{}); err == nil {
 		t.Error("ожидалась ошибка без бинарников")
 	}
-	if err := run("нет.yaml", "go.sum", "", t.TempDir()+"/o.json", "1", "вчера", []string{"x"}); err == nil {
+	if err := run("нет.yaml", "go.sum", "", t.TempDir()+"/o.json", "1", "вчера", []string{"x"}, imageSpec{}); err == nil {
 		t.Error("ожидалась ошибка времени")
 	}
 }

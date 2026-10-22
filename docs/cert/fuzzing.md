@@ -20,6 +20,10 @@
 | `FuzzReadManifest`, `FuzzParseGoMod`, `FuzzParseModules`, `FuzzParseGoSum` | `tools/vendor-check` | Разбор манифеста `vendor/`, `go.mod`, `vendor/modules.txt`, `go.sum` | 1.28, ревью этапа 1 |
 | `FuzzParseTriage` | `tools/sast-triage` | Разбор файла разметки SAST | 0.5 |
 | `FuzzParseBOM` | `tools/sbom` | Разбор SBOM CycloneDX и проверка обязательных полей | 0.8 |
+| `FuzzParseDockerManifest` | `tools/imagecheck` | Разбор `manifest.json` архива `docker save` и настроек образа: принятый `manifest.json` — один образ с одним тегом и путями `blobs/sha256/<hex>`; образ без файлов никогда не проходит проверку | 3.5 |
+| `FuzzReadLayer` | `tools/imagecheck` | Разбор недоверенного слоя образа (tar и tar+gzip): без паники, в пределах `maxLayer` распакованных байт и `maxData` содержимого; слой с неверными хешами blob и diff_id никогда не принимается | 3.5 |
+| `FuzzLoadImage` | `tools/imagecheck` | Разбор архива `docker save` целиком (два прохода, лимиты записей и размеров): без паники; принятый архив всегда содержит имя образа и слои | 3.5 |
+| `FuzzCheckCompose` | `tools/imagecheck` | Разбор и проверка compose-файла: без паники, неполный compose (меньше четырёх сервисов пилота) никогда не проходит проверку | 3.5 |
 | `FuzzParseMatrix` | `tools/dm-coverage` | Разбор матрицы 5.16 из ТЗ | 0.9 |
 | `FuzzParseGoTestJSON` | `tools/dm-coverage` | Разбор отчёта `go test -json` | 0.9 |
 | `FuzzParseJUnit` | `tools/dm-coverage` | Разбор отчёта JUnit XML | 0.9 |

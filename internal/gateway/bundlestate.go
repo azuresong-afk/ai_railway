@@ -1,7 +1,11 @@
 package gateway
 
 import (
+	"bytes"
+	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -25,6 +29,20 @@ const (
 	BundleKeyFile = "bundle-enc.key"
 	// maxKeyFile — предел файла ключа: PEM 32 байт с заголовком.
 	maxKeyFile = 4 << 10
+	// TrustFile — принятые заявления о доверии (ADR-0018, п. 4.4): при
+	// запуске шлюз заново проверяет их по цепочке от -bundle-pub.
+	TrustFile = "trust.json"
+	// ClientPairFile — перевыпущенный сертификат шлюза и его ключ (ADR-0018,
+	// п. 6.3): при запуске предпочитается -client-cert, если новее.
+	ClientPairFile = "client.pem"
+	// trustFormat — формат trust.json.
+	trustFormat = "aisec-gateway-trust/1"
+	// maxTrustFile — предел trust.json: до 64 заявлений по 16 КиБ в base64.
+	maxTrustFile = 1408 << 10
+	// maxTrustStored — сколько последних заявлений хранится.
+	maxTrustStored = 64
+	// maxPairFile — предел client.pem.
+	maxPairFile = 16 << 10
 )
 
 // BundleState — каталог состояния шлюза.
@@ -114,21 +132,110 @@ func (s *BundleState) Load() ([]byte, error) {
 // Save записывает пакет атомарно: временный файл 0600 с O_EXCL, сброс на
 // диск, переименование поверх прежнего и сброс каталога. Сбой на любом шаге
 // оставляет прежний файл целым.
-func (s *BundleState) Save(data []byte) error {
+func (s *BundleState) Save(data []byte) error { return s.saveAtomic(BundleFile, data) }
+
+func (s *BundleState) saveAtomic(name string, data []byte) error {
 	b, err := aisecCrypto.RandomBytes(s.rnd, 8)
 	if err != nil {
 		return err
 	}
-	tmp := "." + BundleFile + "." + hex.EncodeToString(b) + ".tmp"
+	tmp := "." + name + "." + hex.EncodeToString(b) + ".tmp"
 	if err := writeSynced(s.root, tmp, data, os.O_EXCL); err != nil {
 		_ = s.root.Remove(tmp) //nolint:gosec // G104: уборка неудавшейся записи; важна исходная ошибка
-		return fmt.Errorf("%s: %w", BundleFile, err)
+		return fmt.Errorf("%s: %w", name, err)
 	}
-	if err := s.root.Rename(tmp, BundleFile); err != nil {
+	if err := s.root.Rename(tmp, name); err != nil {
 		_ = s.root.Remove(tmp) //nolint:gosec // G104: уборка неудавшейся записи; важна исходная ошибка
-		return fmt.Errorf("%s: %w", BundleFile, err)
+		return fmt.Errorf("%s: %w", name, err)
 	}
 	return s.syncDir()
+}
+
+// trustDoc — содержимое trust.json: заявления по порядку, каждое в base64.
+type trustDoc struct {
+	Format     string   `json:"format"`
+	Statements []string `json:"statements"`
+}
+
+// SaveTrust сохраняет принятые заявления о доверии (последние
+// maxTrustStored) атомарно.
+func (s *BundleState) SaveTrust(raws [][]byte) error {
+	doc := trustDoc{Format: trustFormat, Statements: []string{}}
+	for _, raw := range raws[max(0, len(raws)-maxTrustStored):] {
+		doc.Statements = append(doc.Statements, base64.StdEncoding.EncodeToString(raw))
+	}
+	data, err := json.Marshal(doc)
+	if err != nil {
+		return err
+	}
+	return s.saveAtomic(TrustFile, data)
+}
+
+// LoadTrust читает сохранённые заявления; нет файла — nil без ошибки.
+// Заявления не проверяются здесь: их проверяет цепочка от -bundle-pub.
+func (s *BundleState) LoadTrust() ([][]byte, error) {
+	data, err := s.read(TrustFile, maxTrustFile)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var doc trustDoc
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&doc); err != nil || doc.Format != trustFormat || len(doc.Statements) > maxTrustStored {
+		return nil, fmt.Errorf("%s: неверный формат", TrustFile)
+	}
+	out := make([][]byte, 0, len(doc.Statements))
+	for _, item := range doc.Statements {
+		raw, err := base64.StdEncoding.Strict().DecodeString(item)
+		if err != nil {
+			return nil, fmt.Errorf("%s: неверный формат", TrustFile)
+		}
+		out = append(out, raw)
+	}
+	return out, nil
+}
+
+// SaveClientPair сохраняет перевыпущенный сертификат и ключ шлюза в
+// client.pem (0600) атомарно.
+func (s *BundleState) SaveClientPair(certPEM, keyPEM []byte) error {
+	data := append(append(bytes.Clone(certPEM), '\n'), keyPEM...)
+	defer clear(data)
+	return s.saveAtomic(ClientPairFile, data)
+}
+
+// LoadClientPair читает client.pem: блок CERTIFICATE и блок PRIVATE KEY;
+// нет файла — nil без ошибки.
+func (s *BundleState) LoadClientPair() (certPEM, keyPEM []byte, err error) {
+	data, err := s.read(ClientPairFile, maxPairFile)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil, nil
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	defer clear(data)
+	rest := data
+	for len(bytes.TrimSpace(rest)) > 0 {
+		var block *pem.Block
+		block, rest = pem.Decode(rest)
+		switch {
+		case block == nil:
+			return nil, nil, fmt.Errorf("%s: неверный формат", ClientPairFile)
+		case block.Type == "CERTIFICATE" && certPEM == nil:
+			certPEM = pem.EncodeToMemory(block)
+		case block.Type == "PRIVATE KEY" && keyPEM == nil:
+			keyPEM = pem.EncodeToMemory(block)
+		default:
+			return nil, nil, fmt.Errorf("%s: лишний блок %s", ClientPairFile, block.Type)
+		}
+	}
+	if certPEM == nil || keyPEM == nil {
+		return nil, nil, fmt.Errorf("%s: нужны сертификат и ключ", ClientPairFile)
+	}
+	return certPEM, keyPEM, nil
 }
 
 // read читает обычный файл каталога не больше limit байт; файл, доступный

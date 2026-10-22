@@ -99,6 +99,10 @@ type envelope struct {
 	Content   string `json:"content"`
 	Secrets   string `json:"secrets"`
 	Signature string `json:"signature"`
+	// Trust — последние заявления о доверии (ADR-0018, п. 4.3), каждое в
+	// base64; подпись пакета их не покрывает: каждое подписано само. Поля
+	// нет, пока не было ни одной ротации.
+	Trust []string `json:"trust,omitempty"`
 }
 
 // ETag — значение заголовка ETag для версии пакета.

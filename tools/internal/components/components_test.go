@@ -43,6 +43,7 @@ func TestParseErrors(t *testing.T) {
 		{"пропуск булева", "schema_version: 1\ncomponents:" + strings.Replace(validEntry, "    attack_surface: false\n", "", 1), "attack_surface"},
 		{"тип", "schema_version: 1\ncomponents:" + strings.Replace(validEntry, "type: go-module", "type: npm", 1), "type"},
 		{"scope", "schema_version: 1\ncomponents:" + strings.Replace(validEntry, "scope: product", "scope: dev", 1), "scope"},
+		{"external не образ", "schema_version: 1\ncomponents:" + strings.Replace(validEntry, "scope: product", "scope: external", 1), "только для type: image"},
 		{"дата", "schema_version: 1\ncomponents:" + strings.Replace(validEntry, "2026-09-29", "29.09.2026", 1), "decided"},
 		{"репозиторий", "schema_version: 1\ncomponents:" + strings.Replace(validEntry, "https://example.com/m", "http://example.com/m", 1), "repository"},
 		{"дубликат", "schema_version: 1\ncomponents:" + validEntry + validEntry, "дважды"},

@@ -28,7 +28,7 @@ const defaultSettle = 2 * time.Minute
 
 func keysCmd(args []string, dsn string, stdout, stderr io.Writer, now time.Time) error {
 	if len(args) == 0 {
-		return errors.New("укажите подкоманду: status, rotate-data, rotate-master")
+		return errors.New("укажите подкоманду: status, rotate-data, rotate-master, rotate-signing, rotate-ca, rotate-audit")
 	}
 	if dsn == "" {
 		return errors.New("задайте AISEC_DATABASE_URL (postgres://пользователь@хост:порт/база)")
@@ -40,6 +40,10 @@ func keysCmd(args []string, dsn string, stdout, stderr io.Writer, now time.Time)
 		return keysRotateDataCmd(args[1:], dsn, stdout, stderr, now)
 	case "rotate-master":
 		return keysRotateMasterCmd(args[1:], dsn, stdout, stderr, now)
+	case "rotate-signing", "rotate-ca":
+		return keysRotateTrustCmd(args[0], args[1:], dsn, stdout, stderr, now)
+	case "rotate-audit":
+		return keysRotateAuditCmd(args[1:], dsn, stdout, stderr, now)
 	}
 	return fmt.Errorf("неизвестная подкоманда keys %q", args[0])
 }
@@ -116,7 +120,10 @@ func checkKeyDir(dir string) error {
 }
 
 func keysStatusCmd(args []string, dsn string, stdout, stderr io.Writer) error {
-	if err := keysFlags("status", args, stderr, func(*flag.FlagSet) {}); err != nil {
+	var dir *string
+	if err := keysFlags("status", args, stderr, func(f *flag.FlagSet) {
+		dir = f.String("dir", "", "каталог ключей: показать ключи подписи пакетов, корни УЦ и ключ аудита по цепочке от файлов-якорей")
+	}); err != nil {
 		return err
 	}
 	ctx := context.Background()
@@ -138,6 +145,124 @@ func keysStatusCmd(args []string, dsn string, stdout, stderr io.Writer) error {
 		say(stdout, "  версия %d (%s): %s; мастер-ключ №%d; шифрований %d; строк: TOTP %d, провайдеры %d, содержимое событий %d\n",
 			v.Version, v.ID, state, v.MasterVersion, v.Sealed, v.Rows.MFA, v.Rows.Providers, v.Rows.Content)
 	}
+	if *dir == "" {
+		return nil
+	}
+	return trustStatus(ctx, env, *dir, stdout)
+}
+
+// trustStatus выводит цепочку доверия и расписание ключа аудита,
+// проверенные от файлов-якорей каталога ключей.
+func trustStatus(ctx context.Context, env *keysEnv, dir string, stdout io.Writer) error {
+	root, err := keyring.OpenKeyDir(dir)
+	if err != nil {
+		return err
+	}
+	defer closeQuietly(root)
+	anchor, err := keyring.ReadVerifier(root, env.p, keyring.SigningPubFile, aisecCrypto.KeyKindSigningPublic)
+	if err != nil {
+		return err
+	}
+	chain, err := keyring.LoadTrust(ctx, env.db.Pool(), env.p, audit.DefaultOrgID, []aisecCrypto.Verifier{anchor})
+	if err != nil {
+		return err
+	}
+	until := func(t *time.Time) string {
+		if t == nil {
+			return "действующий"
+		}
+		return "перекрытие до " + t.UTC().Format(time.DateTime) + " UTC"
+	}
+	if st := chain.Latest(); st == nil {
+		say(stdout, "Ключ подписи пакетов: %s (файл-якорь), ротаций не было.\n", chain.ActiveKeyID())
+	} else {
+		say(stdout, "Заявление о доверии №%d от %s UTC:\n", st.Seq, st.IssuedAt.Format(time.DateTime))
+		for _, k := range st.Keys {
+			say(stdout, "  ключ подписи пакетов %s: %s\n", k.ID, until(k.NotAfter))
+		}
+		for _, r := range st.Roots {
+			say(stdout, "  корень УЦ %s: %s\n", r.ID, until(r.NotAfter))
+		}
+	}
+	auditAnchor, err := keyring.ReadVerifier(root, env.p, keyring.AuditPubFile, aisecCrypto.KeyKindAuditSigningPublic)
+	if err != nil {
+		return err
+	}
+	ks, err := audit.LoadKeySchedule(ctx, env.db.Pool(), env.p, auditAnchor)
+	if err != nil {
+		return err
+	}
+	say(stdout, "Ключ аудита: %s, смен ключа: %d.\n", ks.LatestID(), ks.Rotations())
+	return nil
+}
+
+func keysRotateTrustCmd(name string, args []string, dsn string, stdout, stderr io.Writer, now time.Time) error {
+	var dir *string
+	var overlap *time.Duration
+	err := keysFlags(name, args, stderr, func(f *flag.FlagSet) {
+		dir = f.String("dir", "", "каталог ключей установки (обязательно)")
+		overlap = f.Duration("overlap", keyring.DefaultOverlap,
+			"сколько ещё принимается прежний ключ или корень (0 — сразу перестаёт, при компрометации; до 2160h)")
+	})
+	if err != nil {
+		return err
+	}
+	if *overlap < 0 || *overlap > 90*24*time.Hour {
+		return errors.New("overlap — от 0 до 2160h (90 суток)")
+	}
+	if err := checkKeyDir(*dir); err != nil {
+		return err
+	}
+	ctx := context.Background()
+	env, err := openKeysEnv(ctx, dsn)
+	if err != nil {
+		return err
+	}
+	defer env.Close()
+	rotate, what := keyring.RotateSigning, "Ключ подписи пакетов"
+	if name == "rotate-ca" {
+		rotate, what = keyring.RotateCA, "Корень внутреннего УЦ"
+	}
+	r, err := rotate(ctx, env.db.Pool(), env.log, env.p, *dir, audit.DefaultOrgID, cliActor(), now, *overlap)
+	if err != nil {
+		return err
+	}
+	say(stdout, "%s заменён: %s → %s (заявление о доверии №%d). Новые файлы: %v.\n", what, r.OldID, r.NewID, r.Seq, r.Files)
+	say(stdout, "Прежний принимается шлюзами до %s UTC.\n", r.OverlapUntil.Format(time.DateTime))
+	if name == "rotate-ca" {
+		say(stdout, "Передайте новые файлы пользователю службы (chown) и перезапустите сервер: он выпускает сертификаты новым корнем,\n"+
+			"а шлюзы получают их при heartbeat. Прежний ca.key удалите после конца перекрытия.\n")
+	} else {
+		say(stdout, "Передайте новые файлы пользователю службы (chown) и перезапустите сервер: он подписывает пакеты новым ключом,\n"+
+			"а шлюзы узнают о нём из заявления в пакете. Прежний закрытый ключ удалите после перезапуска.\n")
+	}
+	return nil
+}
+
+func keysRotateAuditCmd(args []string, dsn string, stdout, stderr io.Writer, now time.Time) error {
+	var dir *string
+	err := keysFlags("rotate-audit", args, stderr, func(f *flag.FlagSet) {
+		dir = f.String("dir", "", "каталог ключей установки с audit-signing.pub (обязательно)")
+	})
+	if err != nil {
+		return err
+	}
+	if err := checkKeyDir(*dir); err != nil {
+		return err
+	}
+	ctx := context.Background()
+	env, err := openKeysEnv(ctx, dsn)
+	if err != nil {
+		return err
+	}
+	defer env.Close()
+	r, err := keyring.RotateAudit(ctx, env.db.Pool(), env.log, env.p, *dir, audit.DefaultOrgID, cliActor(), now)
+	if err != nil {
+		return err
+	}
+	say(stdout, "Ключ аудита заменён: %s → %s (смена №%d). Точки до записи %d проверяются прежним ключом, новые подписываются новым.\n"+
+		"Новые файлы: %v. Перезапустите сервер; прежний закрытый ключ больше не нужен, прежний открытый — нужен всегда.\n",
+		r.OldID, r.NewID, r.Seq, r.CheckpointSeq, r.Files)
 	return nil
 }
 
