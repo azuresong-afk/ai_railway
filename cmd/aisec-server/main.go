@@ -169,6 +169,11 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	// После ротации ключа данных (aisec-cli keys rotate-data) сервер
+	// переходит на новую версию без перезапуска (ADR-0018, п. 3.2).
+	go box.Watch(ctx, keyring.WatchInterval, func(err error) {
+		logger.Warn("опрос действующей версии ключа данных не выполнен", "class", "db", "error", err)
+	})
 	// Проверка цепочки журнала аудита (РСБ.4, DM-43): сразу и раз в
 	// -audit-verify-interval. Голова цепочки защищена имитовставкой на ключе
 	// из ключа данных (вне БД). Нарушение не останавливает сервер — оно
@@ -424,11 +429,13 @@ func requireAuditKey(ctx context.Context, cps checkpointSource, haveKey bool, lo
 // startAuditVerify запускает фоновую проверку цепочки журнала аудита и
 // возвращает её Verifier для проверки по команде.
 func startAuditVerify(ctx context.Context, cfg *serverConfig, auditLog *audit.Log, box *keyring.Box, logger *slog.Logger) (*audit.Verifier, error) {
-	mac, err := box.MAC(audit.HeadMACPurpose)
+	// Опоры прежних версий ключа данных сверяются, пока версия не удалена
+	// ротацией (ADR-0018, п. 3.4).
+	opts, err := audit.HeadMACOptions(box)
 	if err != nil {
-		return nil, fmt.Errorf("ключ имитовставки цепочки аудита: %w", err)
+		return nil, err
 	}
-	v := audit.NewVerifier(auditLog, audit.WithHeadMAC(audit.HeadMAC{KeyID: box.KeyID(), MAC: mac}))
+	v := audit.NewVerifier(auditLog, opts...)
 	go func() {
 		// Итог каждой проверки уже в аудите и audit_verifications; здесь —
 		// только техническое сообщение.

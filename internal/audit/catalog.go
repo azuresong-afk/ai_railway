@@ -84,6 +84,11 @@ var catalog = []Event{
 	{"system.error", "Ошибка или сбой", true},
 	{"system.init", "Создание ключей установки (aisec-cli init)", true},
 	{"system.audit_key", "Создание ключа подписи журнала аудита (aisec-cli init -add-audit-key)", true},
+	// Ротация ключей установки (ЗИ.1, ADR-0018; задачи 3.2, 3.3 этапа 3).
+	{"keys.master_rotated", "Ротация мастер-ключа (aisec-cli keys rotate-master)", true},
+	{"keys.data_rotated", "Новая версия ключа данных (aisec-cli keys rotate-data)", true},
+	{"keys.data_rewrapped", "Перешифрование секретов и содержимого событий новой версией ключа данных", true},
+	{"keys.data_key_destroyed", "Удаление прежней версии ключа данных после перешифрования", true},
 	{"system.setup_token_reissued", "Повторный выпуск токена первичной настройки (aisec-cli init -reissue-setup-token)", true},
 	// Целостность и самотестирование (РСБ.2, ОЦЛ).
 	{"integrity.check", "Результат контроля целостности", true},

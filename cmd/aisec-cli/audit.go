@@ -83,13 +83,11 @@ func auditVerify(args []string, dsn string, stdout, stderr io.Writer) error {
 	}
 	var opts []audit.VerifierOption
 	if *keys != "" {
-		m, err := headMAC(ctx, db, p, *keys)
+		m, err := headMACs(ctx, db, p, *keys)
 		if err != nil {
 			return err
 		}
-		if m != nil {
-			opts = append(opts, audit.WithHeadMAC(*m))
-		}
+		opts = append(opts, m...)
 	}
 	res, err := audit.NewVerifier(l, opts...).VerifyBy(ctx, cliActor())
 	if err != nil {
@@ -104,10 +102,11 @@ func auditVerify(args []string, dsn string, stdout, stderr io.Writer) error {
 	return nil
 }
 
-// headMAC — имитовставка головы цепочки на ключе из ключа данных, как у
-// сервера (назначение audit-head). Нет master.key в каталоге ключей — nil:
-// проверка идёт без опоры на прошлые проверки сервера.
-func headMAC(ctx context.Context, db *store.DB, p aisecCrypto.Provider, dir string) (*audit.HeadMAC, error) {
+// headMACs — имитовставка головы цепочки на ключе из ключа данных, как у
+// сервера (назначение audit-head), и опоры прежних версий ключа данных
+// (ADR-0018, п. 3.4). Нет master.key в каталоге ключей — nil: проверка идёт
+// без опоры на прошлые проверки сервера.
+func headMACs(ctx context.Context, db *store.DB, p aisecCrypto.Provider, dir string) ([]audit.VerifierOption, error) {
 	if _, err := os.Stat(filepath.Join(dir, keyring.MasterKeyFile)); errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
 	}
@@ -115,11 +114,7 @@ func headMAC(ctx context.Context, db *store.DB, p aisecCrypto.Provider, dir stri
 	if err != nil {
 		return nil, err
 	}
-	m, err := box.MAC(audit.HeadMACPurpose)
-	if err != nil {
-		return nil, err
-	}
-	return &audit.HeadMAC{KeyID: box.KeyID(), MAC: m}, nil
+	return audit.HeadMACOptions(box)
 }
 
 // openAuditLog — журнал с контрольными точками архивации (v = nil — без

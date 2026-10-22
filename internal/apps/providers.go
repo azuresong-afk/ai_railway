@@ -238,14 +238,14 @@ func (s *Service) SetCredential(ctx context.Context, by By, id string, credentia
 	if _, err := s.store.Provider(ctx, s.orgID, id); err != nil {
 		return Provider{}, err
 	}
-	sealed, err := s.box.Seal(ctx, credential, "providers", "credential", id)
+	keyID, sealed, err := s.box.SealKey(ctx, credential, "providers", "credential", id)
 	if err != nil {
 		return Provider{}, err
 	}
 	return s.store.UpdateProvider(ctx, s.orgID, id, func(p *Provider) (audit.Entry, error) {
 		now := s.now()
 		replaced := p.Credential != nil
-		p.Credential = &Sealed{Data: sealed, KeyID: s.box.KeyID(), Alg: s.box.Alg(), SetAt: now}
+		p.Credential = &Sealed{Data: sealed, KeyID: keyID, Alg: s.box.Alg(), SetAt: now}
 		p.UpdatedAt, p.UpdatedBy = now, by.ref()
 		return by.entry("provider.credentials_set", "provider", id, map[string]any{"slug": p.Slug, "replaced": replaced}), nil
 	})
@@ -264,7 +264,7 @@ func (s *Service) OpenCredential(ctx context.Context, id string) ([]byte, error)
 	if p.Credential == nil {
 		return nil, ErrNoCredential
 	}
-	return s.box.Open(p.Credential.KeyID, p.Credential.Data, "providers", "credential", p.ID)
+	return s.box.OpenContext(ctx, p.Credential.KeyID, p.Credential.Data, "providers", "credential", p.ID)
 }
 
 // SetExternal ставит или снимает признак «внешний» (ТЗ 5.4). Снятие —
