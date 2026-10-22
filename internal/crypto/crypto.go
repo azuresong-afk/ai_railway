@@ -53,6 +53,8 @@ type Provider interface {
 	TLS() (TLSProvider, error)
 	// PasswordHasher — хеширование паролей учётных записей.
 	PasswordHasher() (PasswordHasher, error)
+	// PassphraseKDF — ключ шифрования из парольной фразы (резервная копия, ADR-0017).
+	PassphraseKDF() (PassphraseKDF, error)
 	// NewAEAD — шифрование ключом длины AEADKeySize.
 	NewAEAD(key []byte) (AEAD, error)
 	// GenerateSigner создаёт новую пару ключей подписи из источника профиля.

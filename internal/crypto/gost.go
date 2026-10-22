@@ -12,6 +12,7 @@ func (gost) Random() (Random, error)    { return nil, ErrNotImplemented }
 func (gost) TLS() (TLSProvider, error)  { return nil, ErrNotImplemented }
 
 func (gost) PasswordHasher() (PasswordHasher, error) { return nil, ErrNotImplemented }
+func (gost) PassphraseKDF() (PassphraseKDF, error)   { return nil, ErrNotImplemented }
 func (gost) NewAEAD([]byte) (AEAD, error)            { return nil, ErrNotImplemented }
 func (gost) GenerateSigner() (Signer, error)         { return nil, ErrNotImplemented }
 func (gost) NewSigner([]byte) (Signer, error)        { return nil, ErrNotImplemented }
