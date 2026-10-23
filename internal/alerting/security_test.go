@@ -356,6 +356,20 @@ func TestDM44_SystemAlerts(t *testing.T) {
 	if got := e.alerts(t, BuiltinCertExpiry); len(got) != 3 || got[0].Title != "Скоро истекает сертификат — корень УЦ" {
 		t.Fatalf("корень УЦ: %+v", got)
 	}
+	// Сертификат заказчика для адреса шлюза (задача 3.27): за 30 и за 7
+	// суток — отдельные оповещения того же правила.
+	e.systemAlert(t, "customer_cert_expiry", "raised", map[string]any{"host": "aisec-gw.example.ru", "days_left": 29})
+	e.systemAlert(t, "customer_cert_expiry:critical", "raised", map[string]any{"host": "aisec-gw.example.ru", "days_left": 6})
+	got := e.alerts(t, BuiltinCertExpiry)
+	n := 0
+	for _, a := range got {
+		if a.Title == "Скоро истекает сертификат — адрес шлюза aisec-gw.example.ru" {
+			n++
+		}
+	}
+	if len(got) != 5 || n != 2 {
+		t.Fatalf("сертификат заказчика: %+v", got)
+	}
 	// Неизвестное условие оповещения не даёт.
 	e.systemAlert(t, "something_new", "raised", nil)
 	// Недоставленное уведомление — тоже DM-44.

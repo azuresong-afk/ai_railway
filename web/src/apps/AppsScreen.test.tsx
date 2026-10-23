@@ -21,10 +21,20 @@ const key = { id: "k-1", application_id: "a-1", name: "основной", prefix
 const SECRET = "aisec_abcd1234_SECRETSECRETSECRETSECRETSECRETSECRETSECRET1";
 
 const calls: { method: string; url: string; body: unknown }[] = [];
+// Сертификат заказчика (задача 3.27): синтетические PEM, сервер в тесте не разбирает их.
+const KEY_PEM = "-----BEGIN PRIVATE KEY-----\nU1lOVEhFVElDLUtFWS1GT1ItVEVTVA==\n-----END PRIVATE KEY-----\n";
+const CHAIN_PEM = "-----BEGIN CERTIFICATE-----\nU1lOVEhFVElD\n-----END CERTIFICATE-----\n";
+const issuedCert = {
+  configured: true, host: "aisec-gw.example.ru", subject: "CN=aisec-gw.example.ru", issuer: "CN=УЦ Пример", serial: "0a",
+  fingerprint: "ab".repeat(32), not_before: "2026-10-01T00:00:00Z", not_after: "2027-10-01T00:00:00Z", days_left: 343,
+  dns_names: ["aisec-gw.example.ru"], ip_addresses: [], key_alg: "ECDSA P-256", chain_len: 3, key_set: true, updated_at: "2026-10-22T00:00:00Z",
+};
+let gatewayCert: Record<string, unknown> = { configured: false, key_set: false };
 
 beforeEach(() => {
   vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
   calls.length = 0;
+  gatewayCert = { configured: false, key_set: false };
   vi.stubGlobal(
     "fetch",
     vi.fn((url: string, init: RequestInit) => {
@@ -39,6 +49,13 @@ beforeEach(() => {
       if (url === "/api/v1/app-keys/k-1/revoke") return json({ ...key, status: "revoked" });
       if (url === "/api/v1/app-keys/k-1/rotate") return json({ app_key: key, key: SECRET, previous: key }, 201);
       if (url === "/api/v1/providers") return json({ items: [{ id: "p-1", slug: "main", name: "Основной", type: "openai", base_url: "/llm", ca_pem: "", timeouts: {}, external: true, credential_set: true, created_at: "2026-10-01T00:00:00Z", updated_at: "2026-10-01T00:00:00Z" }] });
+      if (url === "/api/v1/gateway-certificate" && method === "GET") return json(gatewayCert);
+      if (url === "/api/v1/gateway-certificate" && method === "PUT") {
+        if (body.host !== "aisec-gw.example.ru")
+          return json({ code: "invalid_request", detail: "Проверьте введённые данные.", status: 400, errors: [{ field: "chain_pem", detail: "сертификат выдан не на имя другой.example.ru" }] }, 400);
+        gatewayCert = issuedCert;
+        return json(issuedCert);
+      }
       if (url === "/api/v1/policies") return json({ items: [{ id: "base", name: "Базовая защита", mode: "enforce", template: true }] });
       return json({ code: "not_found", detail: "нет", status: 404 }, 404);
     }),
@@ -136,6 +153,73 @@ describe("экран «Приложения»", () => {
     expect(calls.find((c) => c.url === "/api/v1/applications" && c.method === "POST")?.body).toMatchObject({ policy: "base", policy_mode: "monitor" });
     // Права на ключи нет: ключ не выпускался.
     expect(calls.some((c) => c.url.endsWith("/keys") && c.method === "POST")).toBe(false);
+  });
+});
+
+describe("мастер: адрес шлюза (задача 3.27)", () => {
+  const toGatewayStep = async (permissions: string[]) => {
+    renderScreen(["applications.read", "applications.manage", ...permissions]);
+    await screen.findByText("Бот поддержки");
+    fireEvent.click(screen.getByRole("button", { name: "Подключить приложение" }));
+    fireEvent.change(await screen.findByLabelText("Название"), { target: { value: "Тест" } });
+    fireEvent.click(screen.getByRole("button", { name: "Далее: провайдер и политика" }));
+    await screen.findByRole("option", { name: "Основной (внешний)" });
+    fireEvent.change(screen.getByLabelText("Провайдер"), { target: { value: "p-1" } });
+    fireEvent.change(screen.getByLabelText("Разрешённые модели"), { target: { value: "m1" } });
+    fireEvent.click(screen.getByRole("button", { name: "Далее: адрес шлюза" }));
+  };
+  const choose = (label: string, text: string, name: string) =>
+    fireEvent.change(screen.getByLabelText(label), { target: { files: [new File([text], name, { type: "application/x-pem-file" })] } });
+
+  it("загрузка: ошибки проверки по-русски, затем сведения о сертификате; ключ не остаётся в форме и на странице", async () => {
+    await toGatewayStep(["gateway_tls.read", "gateway_tls.manage"]);
+    await screen.findByText(/Сертификата заказчика нет/);
+    // Без файлов — подсказка, запрос не уходит.
+    fireEvent.change(screen.getByLabelText("Адрес шлюза"), { target: { value: "другой.example.ru" } });
+    fireEvent.click(screen.getByRole("button", { name: "Проверить и загрузить" }));
+    await screen.findByText("Выберите файл цепочки сертификатов и файл закрытого ключа.");
+    expect(calls.some((c) => c.method === "PUT")).toBe(false);
+    // Ошибка проверки сервера — списком.
+    choose("Цепочка сертификатов (PEM)", CHAIN_PEM, "chain.pem");
+    choose("Закрытый ключ (PEM, без пароля)", KEY_PEM, "key.pem");
+    fireEvent.click(screen.getByRole("button", { name: "Проверить и загрузить" }));
+    await screen.findByText("сертификат выдан не на имя другой.example.ru");
+    expect((screen.getByLabelText("Закрытый ключ (PEM, без пароля)") as HTMLInputElement).value).toBe("");
+    // Верное имя — сертификат принят.
+    fireEvent.change(screen.getByLabelText("Адрес шлюза"), { target: { value: "AISEC-GW.example.ru" } });
+    choose("Закрытый ключ (PEM, без пароля)", KEY_PEM, "key.pem");
+    fireEvent.click(screen.getByRole("button", { name: "Проверить и загрузить" }));
+    const info = await screen.findByRole("region", { name: "Сертификат заказчика" });
+    expect(info.textContent).toContain("CN=УЦ Пример");
+    expect(info.textContent).toContain("ECDSA P-256, задан");
+    const put = calls.filter((c) => c.method === "PUT").at(-1);
+    expect(put?.body).toEqual({ host: "aisec-gw.example.ru", chain_pem: CHAIN_PEM, key_pem: KEY_PEM });
+    expect(document.body.textContent).not.toContain("PRIVATE KEY");
+    // Пример запроса — с адресом шлюза.
+    fireEvent.click(screen.getByRole("button", { name: "Далее: ключ" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Создать приложение" }));
+    const example = await screen.findByRole("region", { name: "Пример запроса" });
+    expect(example.textContent).toContain("//aisec-gw.example.ru/v1/chat/completions");
+  });
+
+  it("без права gateway_tls.manage: только сведения, без формы; без gateway_tls.read шага нет", async () => {
+    gatewayCert = issuedCert;
+    await toGatewayStep(["gateway_tls.read"]);
+    await screen.findByRole("region", { name: "Сертификат заказчика" });
+    expect(screen.queryByRole("button", { name: "Заменить сертификат" })).toBeNull();
+    expect(screen.queryByLabelText("Закрытый ключ (PEM, без пароля)")).toBeNull();
+    expect(screen.getByText("Сертификат загружает системный администратор.")).toBeTruthy();
+  });
+
+  it("без права gateway_tls.read шага «Адрес шлюза» нет и сертификат не запрашивается", async () => {
+    renderScreen(["applications.read", "applications.manage"]);
+    await screen.findByText("Бот поддержки");
+    fireEvent.click(screen.getByRole("button", { name: "Подключить приложение" }));
+    fireEvent.change(await screen.findByLabelText("Название"), { target: { value: "Тест" } });
+    fireEvent.click(screen.getByRole("button", { name: "Далее: провайдер и политика" }));
+    await screen.findByRole("option", { name: "Основной (внешний)" });
+    expect(screen.getByRole("button", { name: "Далее: ключ" })).toBeTruthy();
+    expect(calls.some((c) => c.url === "/api/v1/gateway-certificate")).toBe(false);
   });
 });
 

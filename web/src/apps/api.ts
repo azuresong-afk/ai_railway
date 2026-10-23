@@ -11,6 +11,8 @@ export type AppKeyRotation = S["AppKeyRotation"];
 export type Provider = S["Provider"];
 export type PolicySummary = S["PolicySummary"];
 export type ProtectionUpdate = S["ProtectionUpdate"];
+export type GatewayCertificate = S["GatewayCertificate"];
+export type GatewayCertificateUpload = S["GatewayCertificateUpload"];
 
 const id = encodeURIComponent;
 
@@ -40,6 +42,9 @@ export const appsApi = {
   issueKey: (appId: string, b: NewAppKey) => request<CreatedAppKey>("POST", `/api/v1/applications/${id(appId)}/keys`, b),
   rotateKey: (keyId: string, b: AppKeyRotation) => request<CreatedAppKey>("POST", `/api/v1/app-keys/${id(keyId)}/rotate`, b),
   revokeKey: (keyId: string) => request<AppKey>("POST", `/api/v1/app-keys/${id(keyId)}/revoke`),
+  // Сертификат заказчика для адреса шлюза (задача 3.27): один на установку; ключ сервер не возвращает.
+  gatewayCert: (signal?: AbortSignal) => request<GatewayCertificate>("GET", "/api/v1/gateway-certificate", undefined, signal),
+  setGatewayCert: (b: GatewayCertificateUpload) => request<GatewayCertificate>("PUT", "/api/v1/gateway-certificate", b),
 };
 
 // Список из текстового поля: разделители — перевод строки, запятая, пробел; повторы убираются.
@@ -49,10 +54,10 @@ export function splitList(text: string): string[] {
 
 // Пример обращения к шлюзу (ТЗ 6.4). Ключ в пример не подставляется: его берут из переменной окружения,
 // чтобы он не попал в историю командной оболочки и в буфер обмена вместе с командой.
-export function gatewayExample(model: string): string {
+export function gatewayExample(model: string, host = "<адрес-шлюза>"): string {
   const body = JSON.stringify({ model, messages: [{ role: "user", content: "Привет" }] });
   return [
-    "curl https://<адрес-шлюза>/v1/chat/completions \\",
+    `curl https://${host}/v1/chat/completions \\`,
     '  -H "Authorization: Bearer $AISEC_KEY" \\',
     '  -H "Content-Type: application/json" \\',
     `  -d '${body}'`,

@@ -34,7 +34,11 @@ type Config struct {
 	// ClientCAPEM — если задан, сервер принимает только клиентов с
 	// сертификатом этого УЦ (mTLS, внутренний API сервера).
 	ClientCAPEM []byte
-	Logger      *slog.Logger
+	// CertSwitch — сертификат меняется без перезапуска (адрес приложений
+	// шлюза, сертификат заказчика — задача 3.27); CertPEM и KeyPEM — пара
+	// по умолчанию. Не сочетается с ClientCAPEM.
+	CertSwitch *aisecCrypto.ServerCertSwitch
+	Logger     *slog.Logger
 	// ReadTimeout — предел на чтение всего запроса. Ноль — без предела:
 	// потоковым ответам нужен долгий ответ, а тело ограничивают обработчики.
 	ReadTimeout time.Duration
@@ -57,9 +61,16 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 		return nil, errors.New("httpserver: не заданы сертификат и ключ TLS; работа без TLS не поддерживается")
 	}
 	// Тип *tls.Config не называется явно: crypto/* импортирует только internal/crypto.
+	if cfg.CertSwitch != nil && len(cfg.ClientCAPEM) > 0 {
+		return nil, errors.New("httpserver: переключение сертификата не сочетается с mTLS")
+	}
 	tlsCfg, err := cfg.TLS.ServerConfig(cfg.CertPEM, cfg.KeyPEM)
-	if err == nil && len(cfg.ClientCAPEM) > 0 {
+	switch {
+	case err != nil:
+	case len(cfg.ClientCAPEM) > 0:
 		tlsCfg, err = cfg.TLS.MutualServerConfig(cfg.CertPEM, cfg.KeyPEM, cfg.ClientCAPEM)
+	case cfg.CertSwitch != nil:
+		tlsCfg, err = aisecCrypto.SwitchServerConfig(cfg.TLS, cfg.CertPEM, cfg.KeyPEM, cfg.CertSwitch)
 	}
 	if err != nil {
 		return nil, err

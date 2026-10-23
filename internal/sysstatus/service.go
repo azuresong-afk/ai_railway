@@ -106,6 +106,10 @@ type Options struct {
 	// CANotAfter — срок действующего корня внутреннего УЦ; нулевое время —
 	// УЦ не подключён, условия ca_expiry нет (3В5 ревью 3.r1).
 	CANotAfter time.Time
+	// CustomerCert — сертификат заказчика для адреса шлюза (задача 3.27):
+	// имя адреса и срок цепочки; ok = false — сертификат не загружен. nil —
+	// условия customer_cert_expiry нет.
+	CustomerCert func(ctx context.Context) (host string, notAfter time.Time, ok bool, err error)
 }
 
 // Service собирает состояние системы и ведёт уведомления.
@@ -391,6 +395,25 @@ func (s *Service) collect(ctx context.Context) collected {
 		c.conditions[caExpiryCritical] = left <= CAExpiryCritical
 		c.details[ConditionCAExpiry], c.details[caExpiryCritical] = d, d
 	}
+	if s.o.CustomerCert != nil {
+		cctx, cancel := s.dbCtx(ctx)
+		host, notAfter, ok, err := s.o.CustomerCert(cctx)
+		cancel()
+		switch {
+		case err != nil:
+			s.unavailable(&c, "customer_cert", err)
+		case !ok:
+			// Сертификат удалён — условия снимаются.
+			c.conditions[ConditionCustomerCertExpiry], c.conditions[customerCertCritical] = false, false
+		default:
+			left := notAfter.Sub(now)
+			d := map[string]any{"host": host, "cert_not_after": notAfter.UTC().Format(time.RFC3339),
+				"days_left": max(int(left/(24*time.Hour)), 0)}
+			c.conditions[ConditionCustomerCertExpiry] = left <= CustomerCertExpiryWarn
+			c.conditions[customerCertCritical] = left <= CustomerCertExpiryCritical
+			c.details[ConditionCustomerCertExpiry], c.details[customerCertCritical] = d, d
+		}
+	}
 	sort.Strings(c.st.Unavailable)
 	return c
 }
@@ -513,6 +536,7 @@ var conditionInfo = []struct{ code, requirement, title string }{
 	{ConditionReportsStale, "ОЦЛ.5", "Нет свежего итога контроля целостности шлюза"},
 	{ConditionCertExpiry, "ИАФ.10", "Скоро истекает сертификат шлюза"},
 	{ConditionCAExpiry, "ИАФ.10", "Истекает корень внутреннего УЦ: нужна ротация (aisec-cli keys rotate-ca)"},
+	{ConditionCustomerCertExpiry, "ЗИ.4", "Скоро истекает сертификат заказчика для адреса шлюза: загрузите новый"},
 }
 
 // family — условие раздела 7, к которому относится код (integrity:server —
@@ -716,6 +740,8 @@ func (s *Service) skip(c collected, fam string) bool {
 		return missing("gateways")
 	case ConditionEventsDropped:
 		return missing("gateways", "events")
+	case ConditionCustomerCertExpiry:
+		return missing("customer_cert")
 	}
 	return false
 }

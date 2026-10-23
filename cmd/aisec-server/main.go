@@ -516,6 +516,22 @@ func newStatus(ctx context.Context, cfg *serverConfig, db *store.DB, auditLog *a
 	if err != nil {
 		return nil, err
 	}
+	// Сертификат заказчика для адреса шлюза — условие customer_cert_expiry
+	// (задача 3.27): читаются только имя адреса и срок, ключ не открывается.
+	appStore, err := apps.NewPGStore(db.Pool(), auditLog)
+	if err != nil {
+		return nil, err
+	}
+	customerCert := func(ctx context.Context) (string, time.Time, bool, error) {
+		t, err := appStore.GatewayTLS(ctx, audit.DefaultOrgID)
+		switch {
+		case errors.Is(err, apps.ErrNoGatewayTLS):
+			return "", time.Time{}, false, nil
+		case err != nil:
+			return "", time.Time{}, false, err
+		}
+		return t.Host, t.Cert.NotAfter, true, nil
+	}
 	failed := len(selftestRes.Failures)
 	if !selftestRes.CryptoOK {
 		failed++
@@ -526,7 +542,7 @@ func newStatus(ctx context.Context, cfg *serverConfig, db *store.DB, auditLog *a
 		Gateways:  sysstatus.GatewayLister{Store: gwStore},
 		Integrity: integritySvc.Store, Store: pg,
 		Timezone: timezone, StorageLimit: cfg.AuditStorageLimit, WarnPercent: cfg.AuditStorageWarnPercent,
-		Logger: logger, Bundle: bundle, CANotAfter: caNotAfter,
+		Logger: logger, Bundle: bundle, CANotAfter: caNotAfter, CustomerCert: customerCert,
 	})
 	if err != nil {
 		return nil, err

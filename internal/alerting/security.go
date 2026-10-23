@@ -109,7 +109,8 @@ func securityRules() []Rule {
 			"DM-44, РСБ.5: заполнение хранилища журнала аудита достигло порога предупреждения.", "high", []string{}),
 		rule(BuiltinCertExpiry, KindSystem, "Скоро истекает сертификат",
 			"DM-44, ИАФ.10: сертификат шлюза истекает меньше чем через 14 суток (автоматический перевыпуск не сработал) "+
-				"или корню внутреннего УЦ осталось 60 суток и меньше.",
+				"или корню внутреннего УЦ осталось 60 суток и меньше; ЗИ.4: сертификату заказчика для адреса шлюза "+
+				"осталось 30 суток и меньше (ещё одно оповещение — за 7 суток).",
 			"medium", []string{"certificate"}),
 		rule(BuiltinReportsStale, KindSystem, "Нет данных контроля целостности шлюза",
 			"DM-44, Н29: шлюз на связи, но итог контроля целостности старше двух периодов проверки или не приходит.",
@@ -393,7 +394,9 @@ var systemFamilies = map[string]string{
 	"gateway_offline":   BuiltinGatewayOffline,
 	"cert_expiry":       BuiltinCertExpiry,
 	"ca_expiry":         BuiltinCertExpiry,
-	"reports_stale":     BuiltinReportsStale,
+	// Сертификат заказчика для адреса шлюза (задача 3.27).
+	"customer_cert_expiry": BuiltinCertExpiry,
+	"reports_stale":        BuiltinReportsStale,
 }
 
 // systemRaise — оповещение по возникшему условию раздела 7 (запись
@@ -422,9 +425,14 @@ func systemRaise(r *audit.Record, d map[string]any) (Raise, bool) {
 	case BuiltinCertExpiry:
 		// Условие ca_expiry (корень внутреннего УЦ) ведёт sysstatus с задачи
 		// 3В5; ca_expiry:critical — второе условие за 7 суток.
-		values["certificate"] = "корень УЦ"
-		if fam == "cert_expiry" {
+		// customer_cert_expiry — сертификат заказчика (задача 3.27).
+		switch fam {
+		case "cert_expiry":
 			values["certificate"] = "шлюз " + str(d["gateway_name"], strings.TrimPrefix(code, fam+":"))
+		case "customer_cert_expiry":
+			values["certificate"] = "адрес шлюза " + str(d["host"], "")
+		default:
+			values["certificate"] = "корень УЦ"
 		}
 	}
 	det := map[string]any{"condition": code, "requirement": d["requirement"]}

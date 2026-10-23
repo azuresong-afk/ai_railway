@@ -2153,6 +2153,80 @@ paths:
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ProblemInternal' }
         '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/gateway-certificate:
+    get:
+      summary: Сертификат заказчика для адреса шлюза
+      description: |
+        Право `gateway_tls.read` (S1, ТЗ 5.4; задача 3.27 этапа 3). Сведения о проверенном
+        сертификате: кому и кем выдан, срок, имена, алгоритм ключа, отпечаток SHA-256. Закрытый
+        ключ не возвращается — только признак `key_set`. Сертификата нет — `configured: false`
+        (адрес шлюза обслуживает сертификат внутреннего УЦ).
+      x-permission: gateway_tls.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      responses:
+        '200':
+          description: Сведения о сертификате
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GatewayCertificate' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    put:
+      summary: Загрузить или заменить сертификат заказчика
+      description: |
+        Право `gateway_tls.manage` (администраторы системы и безопасности). Цепочка (лист,
+        промежуточные и корневой сертификаты, только блоки `CERTIFICATE`, до 64 КиБ и 10
+        сертификатов, порядок любой) и закрытый ключ (ровно один незашифрованный блок PKCS#8,
+        PKCS#1 или SEC 1, до 16 КиБ) в PEM. Проверяется: ключ RSA от 2048 бит или ECDSA
+        P-256/P-384 и подходит к сертификату; имя `host` есть в SAN; все сертификаты действуют
+        сейчас; цепочка строится до самоподписанного корня и годится для TLS-сервера
+        (`serverAuth`); лишних сертификатов нет. Ключ хранится зашифрованным ключом данных
+        (ЗИ.1) и уходит шлюзам в пакете конфигурации, зашифрованным для каждого шлюза (HPKE);
+        шлюзы переключают TLS на адресе приложений без перезапуска. Пишет `gateway_tls.set`
+        (без цепочки и ключа). Неверные данные — 400 с причиной по-русски в `errors[].detail`.
+      x-permission: gateway_tls.manage
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/GatewayCertificateUpload' }
+      responses:
+        '200':
+          description: Сертификат проверен и сохранён
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GatewayCertificate' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    delete:
+      summary: Удалить сертификат заказчика
+      description: |
+        Право `gateway_tls.manage`. Шлюзы с новым пакетом конфигурации возвращаются к своему
+        сертификату (`-tls-cert`). Пишет `gateway_tls.delete`. Сертификата нет — 404.
+      x-permission: gateway_tls.manage
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '204': { description: Сертификат удалён }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
   /api/v1/applications/{id}/keys:
     get:
       summary: Ключи приложения
@@ -4166,9 +4240,9 @@ components:
               condition:
                 type: string
                 enum: [account_lockout, access_denied, audit_chain, audit_storage, integrity, time_sync, config_bundle, config_bundle_lag, test_build,
-                  gateway_offline, events_dropped, reports_stale, cert_expiry, ca_expiry]
-                description: 'ca_expiry (ИАФ.10) — действующему корню внутреннего УЦ осталось 60 суток и меньше, нужна ротация `aisec-cli keys rotate-ca`; system.alert пишется за 60 суток (ca_expiry) и за 7 суток (ca_expiry:critical), 3В5 ревью 3.r1'
-              requirement: { type: string, enum: [ИАФ.4, ИАФ.10, УПД.6, РСБ.4, РСБ.5, РСБ.7, ОЦЛ.1, ОЦЛ.3, ОЦЛ.5, ВРМ.1] }
+                  gateway_offline, events_dropped, reports_stale, cert_expiry, ca_expiry, customer_cert_expiry]
+                description: 'ca_expiry (ИАФ.10) — действующему корню внутреннего УЦ осталось 60 суток и меньше, нужна ротация `aisec-cli keys rotate-ca`; system.alert пишется за 60 суток (ca_expiry) и за 7 суток (ca_expiry:critical), 3В5 ревью 3.r1. customer_cert_expiry (ЗИ.4) — сертификату заказчика для адреса шлюза осталось 30 суток и меньше; system.alert пишется за 30 суток (customer_cert_expiry) и за 7 суток (customer_cert_expiry:critical), задача 3.27'
+              requirement: { type: string, enum: [ИАФ.4, ИАФ.10, УПД.6, РСБ.4, РСБ.5, РСБ.7, ОЦЛ.1, ОЦЛ.3, ОЦЛ.5, ВРМ.1, ЗИ.4] }
               components:
                 type: array
                 items: { type: string }
@@ -4583,6 +4657,33 @@ components:
         items:
           type: array
           items: { $ref: '#/components/schemas/ModelPrice' }
+    GatewayCertificateUpload:
+      type: object
+      required: [host, chain_pem, key_pem]
+      additionalProperties: false
+      properties:
+        host: { type: string, maxLength: 253, description: 'Имя адреса шлюза для приложений: DNS-имя или IP-адрес из SAN' }
+        chain_pem: { type: string, maxLength: 65536, description: 'Цепочка в PEM: сертификат шлюза, промежуточные и корневой' }
+        key_pem: { type: string, maxLength: 16384, writeOnly: true, description: 'Закрытый ключ в PEM без пароля; в ответах не возвращается' }
+    GatewayCertificate:
+      type: object
+      required: [configured, key_set]
+      properties:
+        configured: { type: boolean, description: 'false — сертификата заказчика нет, остальных полей тоже' }
+        host: { type: string }
+        subject: { type: string, description: Кому выдан }
+        issuer: { type: string, description: Кем выдан }
+        serial: { type: string }
+        fingerprint: { type: string, description: SHA-256 сертификата шлюза в DER, hex }
+        not_before: { type: string, format: date-time }
+        not_after: { type: string, format: date-time, description: Самый ранний срок сертификатов цепочки }
+        days_left: { type: integer, minimum: 0 }
+        dns_names: { type: array, items: { type: string } }
+        ip_addresses: { type: array, items: { type: string } }
+        key_alg: { type: string, description: '«RSA 2048», «ECDSA P-256»…' }
+        chain_len: { type: integer }
+        key_set: { type: boolean, description: Закрытый ключ задан }
+        updated_at: { type: string, format: date-time }
     BudgetFields:
       type: object
       required: [mode, monthly_limit]

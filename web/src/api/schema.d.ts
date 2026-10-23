@@ -3928,6 +3928,131 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/gateway-certificate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Сертификат заказчика для адреса шлюза
+         * @description Право `gateway_tls.read` (S1, ТЗ 5.4; задача 3.27 этапа 3). Сведения о проверенном
+         *     сертификате: кому и кем выдан, срок, имена, алгоритм ключа, отпечаток SHA-256. Закрытый
+         *     ключ не возвращается — только признак `key_set`. Сертификата нет — `configured: false`
+         *     (адрес шлюза обслуживает сертификат внутреннего УЦ).
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Сведения о сертификате */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["GatewayCertificate"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        /**
+         * Загрузить или заменить сертификат заказчика
+         * @description Право `gateway_tls.manage` (администраторы системы и безопасности). Цепочка (лист,
+         *     промежуточные и корневой сертификаты, только блоки `CERTIFICATE`, до 64 КиБ и 10
+         *     сертификатов, порядок любой) и закрытый ключ (ровно один незашифрованный блок PKCS#8,
+         *     PKCS#1 или SEC 1, до 16 КиБ) в PEM. Проверяется: ключ RSA от 2048 бит или ECDSA
+         *     P-256/P-384 и подходит к сертификату; имя `host` есть в SAN; все сертификаты действуют
+         *     сейчас; цепочка строится до самоподписанного корня и годится для TLS-сервера
+         *     (`serverAuth`); лишних сертификатов нет. Ключ хранится зашифрованным ключом данных
+         *     (ЗИ.1) и уходит шлюзам в пакете конфигурации, зашифрованным для каждого шлюза (HPKE);
+         *     шлюзы переключают TLS на адресе приложений без перезапуска. Пишет `gateway_tls.set`
+         *     (без цепочки и ключа). Неверные данные — 400 с причиной по-русски в `errors[].detail`.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["GatewayCertificateUpload"];
+                };
+            };
+            responses: {
+                /** @description Сертификат проверен и сохранён */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["GatewayCertificate"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        post?: never;
+        /**
+         * Удалить сертификат заказчика
+         * @description Право `gateway_tls.manage`. Шлюзы с новым пакетом конфигурации возвращаются к своему
+         *     сертификату (`-tls-cert`). Пишет `gateway_tls.delete`. Сертификата нет — 404.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Сертификат удалён */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/applications/{id}/keys": {
         parameters: {
             query?: never;
@@ -6881,12 +7006,12 @@ export interface components {
             };
             notifications: {
                 /**
-                 * @description ca_expiry (ИАФ.10) — действующему корню внутреннего УЦ осталось 60 суток и меньше, нужна ротация `aisec-cli keys rotate-ca`; system.alert пишется за 60 суток (ca_expiry) и за 7 суток (ca_expiry:critical), 3В5 ревью 3.r1
+                 * @description ca_expiry (ИАФ.10) — действующему корню внутреннего УЦ осталось 60 суток и меньше, нужна ротация `aisec-cli keys rotate-ca`; system.alert пишется за 60 суток (ca_expiry) и за 7 суток (ca_expiry:critical), 3В5 ревью 3.r1. customer_cert_expiry (ЗИ.4) — сертификату заказчика для адреса шлюза осталось 30 суток и меньше; system.alert пишется за 30 суток (customer_cert_expiry) и за 7 суток (customer_cert_expiry:critical), задача 3.27
                  * @enum {string}
                  */
-                condition: "account_lockout" | "access_denied" | "audit_chain" | "audit_storage" | "integrity" | "time_sync" | "config_bundle" | "config_bundle_lag" | "test_build" | "gateway_offline" | "events_dropped" | "reports_stale" | "cert_expiry" | "ca_expiry";
+                condition: "account_lockout" | "access_denied" | "audit_chain" | "audit_storage" | "integrity" | "time_sync" | "config_bundle" | "config_bundle_lag" | "test_build" | "gateway_offline" | "events_dropped" | "reports_stale" | "cert_expiry" | "ca_expiry" | "customer_cert_expiry";
                 /** @enum {string} */
-                requirement: "ИАФ.4" | "ИАФ.10" | "УПД.6" | "РСБ.4" | "РСБ.5" | "РСБ.7" | "ОЦЛ.1" | "ОЦЛ.3" | "ОЦЛ.5" | "ВРМ.1";
+                requirement: "ИАФ.4" | "ИАФ.10" | "УПД.6" | "РСБ.4" | "РСБ.5" | "РСБ.7" | "ОЦЛ.1" | "ОЦЛ.3" | "ОЦЛ.5" | "ВРМ.1" | "ЗИ.4";
                 /** @description Компоненты с активным условием (integrity — server или gateway:<ID>, config_bundle_lag, gateway_offline, events_dropped, reports_stale, cert_expiry — gateway:<ID>); каждое ведётся отдельно и пишется в system.alert (В18 ревью 2.r3b), а возникшее условие порождает оповещение системного правила (задача 3.11 этапа 3, DM-42–DM-44). test_build (ОЦЛ.1) — компоненты, собранные с тестовым ключом манифеста (Н34 ревью 2.r4); integrity шлюза поднимает и откат выпуска, и чужой ключ проверки пакетов (В19, В20 ревью 2.r4). DM-44: gateway_offline — шлюз не на связи дольше трёх периодов heartbeat, events_dropped — счётчик отброшенных событий вырос за 15 минут, cert_expiry — сертификат истекает меньше чем через 14 суток, reports_stale — итог целостности старше двух часов или не приходит (Н29) */
                 components?: string[];
                 title: string;
@@ -7320,6 +7445,43 @@ export interface components {
         };
         ModelPriceList: {
             items: components["schemas"]["ModelPrice"][];
+        };
+        GatewayCertificateUpload: {
+            /** @description Имя адреса шлюза для приложений: DNS-имя или IP-адрес из SAN */
+            host: string;
+            /** @description Цепочка в PEM: сертификат шлюза, промежуточные и корневой */
+            chain_pem: string;
+            /** @description Закрытый ключ в PEM без пароля; в ответах не возвращается */
+            key_pem: string;
+        };
+        GatewayCertificate: {
+            /** @description false — сертификата заказчика нет, остальных полей тоже */
+            configured: boolean;
+            host?: string;
+            /** @description Кому выдан */
+            subject?: string;
+            /** @description Кем выдан */
+            issuer?: string;
+            serial?: string;
+            /** @description SHA-256 сертификата шлюза в DER */
+            fingerprint?: string;
+            /** Format: date-time */
+            not_before?: string;
+            /**
+             * Format: date-time
+             * @description Самый ранний срок сертификатов цепочки
+             */
+            not_after?: string;
+            days_left?: number;
+            dns_names?: string[];
+            ip_addresses?: string[];
+            /** @description «RSA 2048», «ECDSA P-256»… */
+            key_alg?: string;
+            chain_len?: number;
+            /** @description Закрытый ключ задан */
+            key_set: boolean;
+            /** Format: date-time */
+            updated_at?: string;
         };
         BudgetFields: {
             /**
