@@ -10,7 +10,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/audit"
 )
 
-// Сертификат заказчика в PostgreSQL (миграция 0038_gateway_tls).
+// Сертификат заказчика в PostgreSQL (миграция 0039_gateway_tls).
 
 const gatewayTLSCols = `org_id::text, host, chain_pem, chain_len, subject, issuer, serial, fingerprint, not_before, not_after,
 	dns_names, ip_addresses, cert_key_alg, key_sealed, key_key_id::text, key_alg, created_at, created_by, updated_at, updated_by`

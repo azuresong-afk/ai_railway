@@ -1,0 +1,30 @@
+# Наложение на deploy/compose/pilot/compose.yaml для DAST (задача 3.30 этапа 3,
+# решение Р10): OWASP ZAP baseline против консоли и шлюза работающей
+# установки. Только для CI и проверок, в поставку не входит; запускает его
+# TestE2EPilot_DAST (test/e2e/pilot_dast_test.go), цель make dast.
+#
+# ZAP подключается к сетям console и gateway установки; имена консоли и шлюза
+# заданы адресами, которые знает стенд. Образ ZAP закреплён по digest
+# (ТЗ 8.7), запись — в docs/cert/components.yaml. Наружу ZAP ходить не нужно:
+# сети стенда внутренние, проверка обновлений отключена ключами команды
+# (test/e2e/pilot_dast_test.go).
+name: aisec
+
+services:
+  zap:
+    image: zaproxy/zap-stable:20261016@sha256:5ccfff9a411743ab2615136a2edd7416bec9ce41572fa94e935df38c14adb2b6
+    profiles: [dast]
+    restart: "no"
+    # Пользователь образа (zap, 1000): каталог отчётов открывает тест.
+    user: "1000:1000"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 512
+    mem_limit: 2g
+    networks: [console, gateway]
+    extra_hosts:
+      - "${AISEC_CONSOLE_HOST:?}:${AISEC_DAST_CONSOLE_ADDR:?адрес консоли в сети console}"
+      - "${AISEC_DAST_GATEWAY_HOST:?}:${AISEC_DAST_GATEWAY_ADDR:?адрес шлюза в сети gateway}"
+    volumes:
+      # Правила и отчёты: ${AISEC_DAST_OUT} открыт на запись пользователю 1000.
+      - ${AISEC_DAST_OUT:?каталог отчётов DAST}:/zap/wrk:rw

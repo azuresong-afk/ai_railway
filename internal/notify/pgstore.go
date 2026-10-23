@@ -89,13 +89,13 @@ func dbErr(err error) error {
 }
 
 const channelCols = `id::text, org_id::text, name, type, enabled, min_severity, settings, secret_fields, secret,
-	COALESCE(secret_key_id::text, ''), version, created_at, created_by, updated_at, updated_by`
+	COALESCE(secret_key_id::text, ''), version, created_at, created_by, updated_at, updated_by, audit_stream`
 
 func scanChannel(row pgx.Row) (Channel, error) {
 	var c Channel
 	var settings []byte
 	if err := row.Scan(&c.ID, &c.OrgID, &c.Name, &c.Type, &c.Enabled, &c.MinSeverity, &settings, &c.SecretFields, &c.Secret,
-		&c.SecretKeyID, &c.Version, &c.CreatedAt, &c.CreatedBy, &c.UpdatedAt, &c.UpdatedBy); err != nil {
+		&c.SecretKeyID, &c.Version, &c.CreatedAt, &c.CreatedBy, &c.UpdatedAt, &c.UpdatedBy, &c.AuditStream); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return c, ErrNotFound
 		}
@@ -154,11 +154,16 @@ func (s *PGStore) CreateChannel(ctx context.Context, c Channel, rec audit.Entry)
 			return ErrTooMany
 		}
 		if _, err := tx.Exec(ctx, `INSERT INTO notify_channels (id, org_id, name, type, enabled, min_severity, settings,
-			secret_fields, secret, secret_key_id, version, created_at, created_by, updated_at, updated_by)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NULLIF($10, '')::uuid, $11, $12, $13, $14, $15)`,
+			secret_fields, secret, secret_key_id, version, created_at, created_by, updated_at, updated_by, audit_stream)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NULLIF($10, '')::uuid, $11, $12, $13, $14, $15, $16)`,
 			c.ID, s.orgID, c.Name, c.Type, c.Enabled, c.MinSeverity, settings, c.SecretFields, c.Secret, c.SecretKeyID,
-			c.Version, c.CreatedAt, c.CreatedBy, c.UpdatedAt, c.UpdatedBy); err != nil {
+			c.Version, c.CreatedAt, c.CreatedBy, c.UpdatedAt, c.UpdatedBy, c.AuditStream); err != nil {
 			return dbErr(err)
+		}
+		if c.AuditStream {
+			if err := s.resetCursorTx(ctx, tx, c.ID); err != nil {
+				return err
+			}
 		}
 		return s.audit.RecordTx(ctx, tx, rec)
 	})
@@ -182,10 +187,23 @@ func (s *PGStore) UpdateChannel(ctx context.Context, id string, fn func(old Chan
 			return err
 		}
 		if _, err := tx.Exec(ctx, `UPDATE notify_channels SET name = $3, enabled = $4, min_severity = $5, settings = $6,
-			secret_fields = $7, secret = $8, secret_key_id = NULLIF($9, '')::uuid, version = $10, updated_at = $11, updated_by = $12
+			secret_fields = $7, secret = $8, secret_key_id = NULLIF($9, '')::uuid, version = $10, updated_at = $11, updated_by = $12,
+			audit_stream = $13
 			WHERE org_id = $1 AND id = $2`, s.orgID, id, c.Name, c.Enabled, c.MinSeverity, settings, c.SecretFields, c.Secret,
-			c.SecretKeyID, c.Version, c.UpdatedAt, c.UpdatedBy); err != nil {
+			c.SecretKeyID, c.Version, c.UpdatedAt, c.UpdatedBy, c.AuditStream); err != nil {
 			return dbErr(err)
+		}
+		if r := lagReason(old, c); r != "" {
+			if err := s.clearLagTx(ctx, tx, c, r); err != nil {
+				return err
+			}
+		}
+		if c.AuditStream && !old.AuditStream {
+			// Повторная подписка — с конца журнала (пропущенное за время
+			// без подписки — выгрузкой журнала).
+			if err := s.resetCursorTx(ctx, tx, id); err != nil {
+				return err
+			}
 		}
 		out = c
 		return s.audit.RecordTx(ctx, tx, rec)

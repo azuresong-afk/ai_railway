@@ -5,6 +5,9 @@ export type Event = components["schemas"]["Event"];
 export type EventPage = components["schemas"]["EventPage"];
 export type EventContent = components["schemas"]["EventContent"];
 export type SavedFilter = components["schemas"]["SavedFilter"];
+export type EventMark = components["schemas"]["EventMark"];
+export type ExceptionDraft = components["schemas"]["ExceptionDraft"];
+export type ExceptionCondition = components["schemas"]["ExceptionCondition"];
 
 export const pageSize = 200;
 
@@ -28,6 +31,14 @@ export const eventsApi = {
   // Содержимое запрашивается только по кнопке и с причиной (УПД.7).
   content: (id: string, reason: string) =>
     request<EventContent>("POST", `/api/v1/events/${encodeURIComponent(id)}/content`, { reason }),
+  // Отметка хранится отдельно от события; none снимает её (ответ 204).
+  mark: (id: string, mark: "false_positive" | "confirmed" | "none", comment: string) =>
+    request<components["schemas"]["EventMarkResult"] | undefined>("PUT", `/api/v1/events/${encodeURIComponent(id)}/mark`, {
+      mark,
+      ...(comment ? { comment } : {}),
+    }),
+  exceptionDraft: (id: string, signal?: AbortSignal) =>
+    request<ExceptionDraft>("GET", `/api/v1/events/${encodeURIComponent(id)}/exception-draft`, undefined, signal),
   filters: (signal?: AbortSignal) =>
     request<{ items: SavedFilter[] }>("GET", "/api/v1/events/filters", undefined, signal),
   saveFilter: (name: string, filter: string) => request<SavedFilter>("POST", "/api/v1/events/filters", { name, filter }),

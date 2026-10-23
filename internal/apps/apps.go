@@ -335,7 +335,7 @@ type Store interface {
 	Usage(ctx context.Context, orgID, month string) (map[string]Usage, error)
 
 	// Сертификат заказчика для адреса шлюза (задача 3.27, миграция
-	// 0038_gateway_tls): один на организацию. SetGatewayTLS блокирует
+	// 0039_gateway_tls): один на организацию. SetGatewayTLS блокирует
 	// запись и сохраняет ту, что вернула fn (prev — прежняя, nil — не было).
 	SetGatewayTLS(ctx context.Context, orgID string, fn func(prev *GatewayTLS) (GatewayTLS, audit.Entry, error)) (GatewayTLS, error)
 	// GatewayTLS — ErrNoGatewayTLS, если сертификата нет.

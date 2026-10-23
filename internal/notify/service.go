@@ -90,6 +90,27 @@ type Store interface {
 	FinishDelivery(ctx context.Context, d Delivery, rec *audit.Entry) error
 	// AlertMessage — уведомление по оповещению (без содержимого запросов).
 	AlertMessage(ctx context.Context, alertID string) (Message, error)
+
+	// Передача журнала аудита в SIEM (задача 3.14). Курсор канала ставится
+	// на конец журнала в транзакции, где канал подписывается (создание или
+	// изменение с audit_stream: false → true).
+
+	// StreamChannels — включённые каналы с подпиской на журнал.
+	StreamChannels(ctx context.Context) ([]Channel, error)
+	// ClaimStream берёт курсор канала, если срок next_at наступил, и
+	// откладывает его на lease; false — не пора, занят или нет подписки.
+	ClaimStream(ctx context.Context, channelID string, lease time.Duration) (StreamCursor, bool, error)
+	// AuditAfter — до limit записей журнала с seq > after по порядку seq.
+	AuditAfter(ctx context.Context, after int64, limit int) ([]audit.Record, error)
+	// FinishStream сохраняет курсор c, если его last_seq всё ещё prevSeq,
+	// и записи аудита recs той же транзакцией.
+	FinishStream(ctx context.Context, prevSeq int64, c StreamCursor, recs []audit.Entry) error
+	// StreamLag передаёт fn курсор и не переданную часть журнала под
+	// блокировкой курсора; fn возвращает новое состояние отставания и
+	// запись аудита о его смене.
+	StreamLag(ctx context.Context, channelID string, fn func(StreamCursor, Backlog) (bool, *audit.Entry)) error
+	// StreamState — курсор и не переданная часть журнала канала.
+	StreamState(ctx context.Context, channelID string) (StreamCursor, Backlog, bool, error)
 }
 
 // Options — зависимости сервиса.
@@ -216,7 +237,7 @@ func view(c Channel) map[string]any {
 	st := c.Settings
 	st.CAPEM = ""
 	return map[string]any{"name": c.Name, "type": c.Type, "enabled": c.Enabled, "min_severity": c.MinSeverity,
-		"settings": st, "ca_pem_bytes": len(c.Settings.CAPEM), "protected_fields": c.SecretFields}
+		"settings": st, "ca_pem_bytes": len(c.Settings.CAPEM), "protected_fields": c.SecretFields, "audit_stream": c.AuditStream}
 }
 
 // CreateChannel создаёт канал (право notify_channels.manage). Создание
@@ -232,7 +253,7 @@ func (s *Service) CreateChannel(ctx context.Context, by By, in ChannelInput) (Ch
 	}
 	now := s.now().UTC()
 	c := Channel{ID: id.String(), OrgID: s.orgID, Name: in.Name, Type: in.Type, Enabled: *in.Enabled,
-		MinSeverity: in.MinSeverity, Settings: in.Settings, Version: 1, CreatedAt: now, CreatedBy: by.ref(),
+		MinSeverity: in.MinSeverity, Settings: in.Settings, AuditStream: *in.AuditStream, Version: 1, CreatedAt: now, CreatedBy: by.ref(),
 		UpdatedAt: now, UpdatedBy: by.ref()}
 	if err := s.seal(ctx, &c, sec); err != nil {
 		return Channel{}, err
@@ -246,7 +267,7 @@ func (s *Service) CreateChannel(ctx context.Context, by By, in ChannelInput) (Ch
 // weakening — причины, по которым изменение ослабляет доставку
 // уведомлений (DM-40, ADR-0020 п. 7): отключение, повышение порога
 // серьёзности, смена адреса или корневых сертификатов получателя, удаление
-// адресатов письма.
+// адресатов письма, снятие подписки на журнал аудита (РСБ.6).
 func weakening(old, cur Channel, oldSec, sec Secrets) []string {
 	var r []string
 	if old.Enabled && !cur.Enabled {
@@ -261,6 +282,9 @@ func weakening(old, cur Channel, oldSec, sec Secrets) []string {
 	}
 	if o.CAPEM != n.CAPEM {
 		r = append(r, "trust_changed")
+	}
+	if old.AuditStream && !cur.AuditStream {
+		r = append(r, "audit_stream_disabled")
 	}
 	for _, a := range o.To {
 		if !slices.Contains(n.To, a) {
@@ -290,12 +314,15 @@ func (s *Service) UpdateChannel(ctx context.Context, by By, id string, in Channe
 		if err != nil {
 			return Channel{}, audit.Entry{}, err
 		}
+		if in.AuditStream == nil {
+			in.AuditStream = &old.AuditStream
+		}
 		sec, err := normalize(&in, oldSec, s.tls)
 		if err != nil {
 			return Channel{}, audit.Entry{}, err
 		}
 		c := old
-		c.Name, c.Enabled, c.MinSeverity, c.Settings = in.Name, *in.Enabled, in.MinSeverity, in.Settings
+		c.Name, c.Enabled, c.MinSeverity, c.Settings, c.AuditStream = in.Name, *in.Enabled, in.MinSeverity, in.Settings, *in.AuditStream
 		c.Version, c.UpdatedAt, c.UpdatedBy = old.Version+1, s.now().UTC(), by.ref()
 		reasons := weakening(old, c, oldSec, sec)
 		if len(reasons) > 0 {

@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/azuresong-afk/ai_railway/internal/audit"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 )
 
@@ -234,11 +235,8 @@ func (c *limitedConn) Read(b []byte) (int, error) {
 // sendWebhook — POST по https с подписью тела. Ответ 2xx — доставлено;
 // перенаправление не выполняется и считается отказом.
 func (t *Transport) sendWebhook(ctx context.Context, ch Channel, sec Secrets, msg Message) error {
-	u, err := parseWebhookURL(sec.URL)
-	if err != nil {
-		return failed(ErrCodeConfig)
-	}
 	var body []byte
+	var err error
 	if ch.Settings.Format == FormatMattermost {
 		body, err = mattermostBody(msg)
 	} else {
@@ -246,6 +244,15 @@ func (t *Transport) sendWebhook(ctx context.Context, ch Channel, sec Secrets, ms
 	}
 	if err != nil {
 		return failed(ErrCodeInternal)
+	}
+	return t.postSigned(ctx, ch, sec, body)
+}
+
+// postSigned — POST тела body по адресу webhook с подписью AISec-Signature.
+func (t *Transport) postSigned(ctx context.Context, ch Channel, sec Secrets, body []byte) error {
+	u, err := parseWebhookURL(sec.URL)
+	if err != nil {
+		return failed(ErrCodeConfig)
 	}
 	mac, err := t.provider.NewMAC([]byte(sec.SigningKey))
 	if err != nil {
@@ -322,4 +329,55 @@ func (t *Transport) sendSyslog(ctx context.Context, ch Channel, msg Message) err
 		return netCode(err, ErrCodeWrite)
 	}
 	return nil
+}
+
+// SendAudit — одна попытка передачи пакета записей журнала в канал ch:
+// syslog — каждая запись отдельным сообщением по одному соединению TLS,
+// webhook — одним подписанным запросом не больше 1 МиБ. Возвращает число
+// переданных записей (webhook может взять не весь пакет).
+func (t *Transport) SendAudit(ctx context.Context, ch Channel, sec Secrets, recs []audit.Record) (int, error) {
+	if len(recs) == 0 {
+		return 0, nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, t.timeout)
+	defer cancel()
+	switch ch.Type {
+	case TypeSyslog:
+		var buf []byte
+		for i := range recs {
+			rec, err := auditSyslogRecord(&recs[i], ch.Settings, t.version)
+			if err != nil {
+				return 0, failed(ErrCodeInternal)
+			}
+			buf = append(buf, rec...)
+		}
+		tc, err := t.tlsDial(ctx, ch, ch.Settings.Host, ch.Settings.Port)
+		if err != nil {
+			return 0, err
+		}
+		// Закрытие отправляет close_notify: ошибка (приёмник оборвал
+		// соединение) — неудача попытки, пакет передаётся снова.
+		_, werr := tc.Write(buf)
+		cerr := tc.Close()
+		if werr != nil {
+			return 0, netCode(werr, ErrCodeWrite)
+		}
+		if cerr != nil {
+			return 0, netCode(cerr, ErrCodeWrite)
+		}
+		return len(recs), nil
+	case TypeWebhook:
+		if ch.Settings.Format != FormatGeneric {
+			return 0, failed(ErrCodeConfig)
+		}
+		body, n, err := auditBatch(recs, t.version)
+		if err != nil {
+			return 0, failed(ErrCodeInternal)
+		}
+		if err := t.postSigned(ctx, ch, sec, body); err != nil {
+			return 0, err
+		}
+		return n, nil
+	}
+	return 0, failed(ErrCodeConfig)
 }

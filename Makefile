@@ -115,6 +115,18 @@ dm-coverage: build ## Покрытие матрицы обнаружения 5.1
 detector-quality: ## Точность и полнота детекторов на корпусах против docs/detectors.md (ТЗ, 5.2)
 	go run ./tools/detector-quality -doc docs/detectors.md -corpus testdata/corpus -out $(BUILD)/detector-quality.md
 
+# Демо-данные для демо-стенда (задача 3.29, tools/demo-data/README.md): запросы
+# идут в Check API шлюза, оповещения и инциденты создают правила сервера.
+# Адрес по умолчанию — loopback; чужой стенд — только с DEMO_FLAGS=-allow-remote.
+DEMO_GATEWAY ?= https://127.0.0.1:8443
+DEMO_DAYS ?= 30
+DEMO_SEED ?= 1
+DEMO_FLAGS ?=
+.PHONY: demo-data
+demo-data: ## Наполнить демо-стенд синтетическими событиями (нужны DEMO_CA и DEMO_KEYS, см. tools/demo-data/README.md)
+	@test -n "$(DEMO_CA)" -a -n "$(DEMO_KEYS)" || { echo "задайте DEMO_CA (корень УЦ стенда) и DEMO_KEYS (файл «приложение=ключ», права 0600)"; exit 2; }
+	go run ./tools/demo-data -gateway $(DEMO_GATEWAY) -ca $(DEMO_CA) -keys $(DEMO_KEYS) -days $(DEMO_DAYS) -seed $(DEMO_SEED) $(DEMO_FLAGS)
+
 .PHONY: bench
 bench: ## Бенчмарки детекторов и реестра (задержка против целей ТЗ, 5.1)
 	go test -run '^$$' -bench . -benchmem ./internal/detect/...
@@ -420,6 +432,33 @@ e2e-pilot-run: ## e2e пилота на собранных образах и б�
 .PHONY: e2e-pilot
 e2e-pilot: e2e-pilot-bin ## e2e пилота: без интернета (3.7), копия и восстановление (3.8); сначала make images-test
 	$(MAKE) e2e-pilot-run
+
+# DAST пилота (задача 3.30, Р10): OWASP ZAP baseline против консоли и шлюза
+# установки в docker compose (deploy/compose/pilot/dast). Отчёты — build/dast/.
+# Находки сверяет tools/dast-triage с правилами zap-rules.conf и разметкой
+# docs/cert/sast-triage/dast.yaml. Сначала make images-test; ZAP в CI.
+DAST_OUT := $(BUILD)/dast
+
+.PHONY: dast-run
+dast-run: ## ZAP baseline по консоли и шлюзу собранного стенда (root или sudo -n, Docker); AISEC_POSTGRES_IMAGE — свой реестр
+	mkdir -p $(DAST_OUT)
+	cd test/e2e && $(PILOT_E2E_SUDO) env AISEC_E2E_PILOT=1 AISEC_E2E_DAST=1 AISEC_DAST_OUT='$(abspath $(DAST_OUT))' \
+		AISEC_VERSION='$(IMAGE_TAG)' AISEC_IMAGE_REPO='$(IMAGE_REPO)' AISEC_E2E_TOOLS='$(abspath $(PILOT_E2E))' \
+		$(if $(AISEC_POSTGRES_IMAGE),AISEC_POSTGRES_IMAGE='$(AISEC_POSTGRES_IMAGE)') \
+		'$(abspath $(PILOT_E2E))/e2e.test' -test.run '^TestE2EPilot_DAST$$' -test.v -test.count=1 -test.timeout 30m
+
+.PHONY: dast-triage
+dast-triage: ## Сверка отчётов ZAP (build/dast) с правилами и разметкой; выше порога без разметки — провал
+	go run ./tools/dast-triage -out $(DAST_OUT)/summary.md console=$(DAST_OUT)/console.json gateway=$(DAST_OUT)/gateway.json
+
+.PHONY: dast-triage-docker
+dast-triage-docker: build-image ## make dast-triage в сборочном образе (CI)
+	$(DOCKER_RUN) $(BUILD_IMAGE) make dast-triage
+
+.PHONY: dast
+dast: e2e-pilot-bin ## DAST пилота: ZAP baseline и сверка находок; сначала make images-test
+	$(MAKE) dast-run
+	$(MAKE) dast-triage
 
 COMPOSE_DEV := docker compose -f deploy/compose/dev/docker-compose.yml
 

@@ -17,6 +17,10 @@ type Memory struct {
 	messages   map[string]Message
 	audited    []audit.Entry
 	now        func() time.Time
+	// Журнал аудита и курсоры передачи в SIEM (stream_memory.go).
+	journal  []audit.Record
+	archived int64
+	cursors  map[string]*StreamCursor
 }
 
 // NewMemory создаёт пустое хранилище.
@@ -89,6 +93,9 @@ func (m *Memory) CreateChannel(_ context.Context, c Channel, rec audit.Entry) er
 	if slices.ContainsFunc(m.channels, func(x Channel) bool { return x.Name == c.Name }) {
 		return ErrNameTaken
 	}
+	if c.AuditStream {
+		m.resetCursor(c.ID)
+	}
 	m.channels = append(m.channels, c)
 	m.audited = append(m.audited, rec)
 	return nil
@@ -108,6 +115,15 @@ func (m *Memory) UpdateChannel(_ context.Context, id string, fn func(old Channel
 	}
 	if slices.ContainsFunc(m.channels, func(x Channel) bool { return x.ID != id && x.Name == c.Name }) {
 		return Channel{}, ErrNameTaken
+	}
+	if r := lagReason(m.channels[i], c); r != "" {
+		if cur, ok := m.cursors[c.ID]; ok && cur.LagRaised {
+			cur.LagRaised = false
+			m.audited = append(m.audited, lagCleared(c.OrgID, c, r))
+		}
+	}
+	if c.AuditStream && !m.channels[i].AuditStream {
+		m.resetCursor(c.ID)
 	}
 	m.channels[i] = c
 	m.audited = append(m.audited, rec)

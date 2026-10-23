@@ -133,6 +133,10 @@ type ChannelInput struct {
 	MinSeverity string       `json:"min_severity"`
 	Settings    Settings     `json:"settings"`
 	Secrets     SecretsInput `json:"secrets"`
+	// AuditStream — передавать журнал аудита в канал (РСБ.6, задача 3.14):
+	// только syslog и webhook общего формата. Не передано — при создании
+	// false, при изменении прежнее значение.
+	AuditStream *bool `json:"audit_stream"`
 	// Version — для изменения: версия, которую видел администратор.
 	Version int `json:"version"`
 }
@@ -146,6 +150,8 @@ type Channel struct {
 	Enabled     bool
 	MinSeverity string
 	Settings    Settings
+	// AuditStream — канал подписан на журнал аудита (передача в SIEM).
+	AuditStream bool
 	// SecretFields — какие секреты заданы (без значений).
 	SecretFields []string
 	// Secret и SecretKeyID — шифротекст секретов и версия ключа данных.
@@ -388,6 +394,13 @@ func normalize(in *ChannelInput, prev Secrets, tlsp aisecCrypto.TLSProvider) (Se
 		if _, err := tlsp.ClientConfig([]byte(s.CAPEM)); err != nil {
 			bad("ca_pem — не найдено ни одного корректного сертификата PEM")
 		}
+	}
+	if in.AuditStream == nil {
+		f := false
+		in.AuditStream = &f
+	}
+	if *in.AuditStream && in.Type != TypeSyslog && (in.Type != TypeWebhook || s.Format != FormatGeneric) {
+		bad("audit_stream — журнал аудита передаётся только в syslog и webhook формата generic")
 	}
 	if len(errs) > 0 {
 		return Secrets{}, &InputError{Errs: errs}

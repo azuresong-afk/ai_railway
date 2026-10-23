@@ -33,6 +33,9 @@ type env struct {
 	tr    *Transport
 	now   time.Time
 	by    By
+	// ids — счётчик идентификаторов записей журнала в тестах передачи.
+	ids      int
+	lastHash []byte
 }
 
 func newEnv(t *testing.T) *env {
@@ -650,6 +653,10 @@ func FuzzDecodeChannelInput(f *testing.F) {
 		`},"secrets":{"url":"https://h.example.ru/x","signing_key":"` + testSigningKey + `"}}`))
 	f.Add([]byte(`{"name":"S","type":"syslog","settings":{"host":"10.0.0.1","port":6514,"format":"cef","facility":4,"hostname":"gw","ca_pem":` +
 		string(caJSON) + `}}`))
+	f.Add([]byte(`{"name":"S","type":"syslog","audit_stream":true,"settings":{"host":"10.0.0.1","format":"json","ca_pem":` +
+		string(caJSON) + `}}`))
+	f.Add([]byte(`{"name":"H","type":"webhook","audit_stream":true,"settings":{"format":"generic","ca_pem":` + string(caJSON) +
+		`},"secrets":{"url":"https://h.example.ru/x","signing_key":"` + testSigningKey + `"}}`))
 	f.Add([]byte(`{"name":"x","type":"email","unknown":1}`))
 	f.Add([]byte(`{"settings":{"to":["a@b\r\nBcc: c@d"]}}`))
 	f.Fuzz(func(t *testing.T, data []byte) {
@@ -670,6 +677,9 @@ func FuzzDecodeChannelInput(f *testing.F) {
 			if strings.ContainsAny(v, "\r\n\x00") {
 				t.Fatalf("управляющий символ принят: %q", v)
 			}
+		}
+		if in.AuditStream == nil || (*in.AuditStream && in.Type != TypeSyslog && (in.Type != TypeWebhook || s.Format != FormatGeneric)) {
+			t.Fatalf("подписка на журнал: %+v", in)
 		}
 		if len(s.CAPEM) > MaxCAPEM || len(s.To) > MaxRecipients || SeverityRank(in.MinSeverity) == 0 {
 			t.Fatalf("пределы: %+v", in)

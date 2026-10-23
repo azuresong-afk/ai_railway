@@ -404,7 +404,9 @@ func (r *Rule) parseCondition(c Condition, groupBy []string) []error {
 		if c.Field != "" {
 			errs = append(errs, errors.New("condition.field: только у правила «новое»"))
 		}
-		if c.Filter == "" && c.MinSeverity == "" {
+		// Проверяется нормализованный фильтр: фильтр из одних пробелов
+		// разбирается в пустой и иначе дал бы оповещение на каждое событие.
+		if r.Condition.Filter == "" && c.MinSeverity == "" {
 			errs = append(errs, errors.New("condition: задайте фильтр или наименьшую серьёзность — иначе оповещением станет каждое событие"))
 		}
 		if r.Kind == KindFrequency {
