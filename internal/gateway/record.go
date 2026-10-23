@@ -153,6 +153,7 @@ func (h *ChatHandler) emit(rec *record) {
 	case rec.tokens == 0:
 		rec.res.Settle(0)
 	}
+	h.spend(rec)
 	if rec.skip {
 		return
 	}
@@ -164,6 +165,26 @@ func (h *ChatHandler) emit(rec *record) {
 	if err := h.cfg.Events.Enqueue(rec.ev); err != nil {
 		h.logger.Error("событие не принято", "type", rec.ev.Type, "event_id", rec.ev.ID, "error", err)
 	}
+}
+
+// spend учитывает расход запроса, ушедшего провайдеру (задача 3.18): по
+// usage провайдера, без него — по оценке размера входа и ответа (оценка
+// сверху: бюджет не занижается). Ответа нет и usage нет — провайдер
+// запрос не выполнил, расхода нет и запрос не считается.
+func (h *ChatHandler) spend(rec *record) {
+	if h.cfg.Budget == nil || !rec.sent || rec.ev.Type != events.TypeGatewayRequest {
+		return
+	}
+	var in, out int64
+	switch t := rec.ev.Tokens; {
+	case t != nil && t.Prompt+t.Completion > 0:
+		in, out = int64(t.Prompt), int64(t.Completion)
+	case rec.outBytes != nil:
+		in, out = int64(rec.inTokens), int64(estimateTokens(rec.outBytes()))
+	default:
+		return
+	}
+	h.cfg.Budget.Record(rec.app.ID, rec.ev.Provider, rec.ev.Model, in, out)
 }
 
 // fill переносит в событие решение, находки, трассировку и содержимое.
@@ -304,8 +325,19 @@ func (rec *record) decision(in *inspection) *events.Decision {
 	if d.Rule == policy.NonTextRule {
 		ed.Trace = append(ed.Trace, events.TraceStep{Rule: policy.NonTextRule, Matched: true, Action: string(policy.Block)})
 	}
+	for _, x := range d.Excepted {
+		if len(ed.Trace) >= maxEventFindings {
+			break
+		}
+		f := in.Findings[x.Hit]
+		ed.Trace = append(ed.Trace, events.TraceStep{Rule: ruleException, Detector: f.Detector, Matched: true,
+			Action: string(policy.Allow), Note: "находка пропущена по исключению " + x.Exception})
+	}
 	return ed
 }
+
+// ruleException — шаг трассировки находки, пропущенной по исключению.
+const ruleException = "exception"
 
 // findings добавляет находки в событие (всего не больше maxEventFindings)
 // и возвращает категории угроз решения.
@@ -314,17 +346,22 @@ func (rec *record) findings(in *inspection, texts []inspectText) map[string]bool
 	for _, m := range in.Decision.Matches {
 		threats[in.Findings[m.Hit].Threat] = true
 	}
-	for _, f := range in.Findings {
+	excepted := in.excepted()
+	for i, f := range in.Findings {
 		if len(rec.ev.Findings) >= maxEventFindings {
 			break
 		}
 		if f.Text >= len(texts) {
 			continue
 		}
-		rec.ev.Findings = append(rec.ev.Findings, events.Finding{
+		ef := events.Finding{
 			Detector: f.Detector, Version: f.Version, Category: f.Category, Score: f.Score, Start: f.Start, End: f.End,
-			Location: texts[f.Text].Location, Threat: f.Threat, Rule: f.Rule,
-		})
+			Location: texts[f.Text].Location, Threat: f.Threat, Rule: f.Rule, Exception: excepted[i],
+		}
+		if i < len(in.Fragments) {
+			ef.Fragment = in.Fragments[i]
+		}
+		rec.ev.Findings = append(rec.ev.Findings, ef)
 	}
 	return threats
 }

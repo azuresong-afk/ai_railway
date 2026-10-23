@@ -36,6 +36,7 @@ type pgEnv struct {
 	svc        *alerting.Service
 	ids        *ids.Generator
 	by         alerting.By
+	log        *audit.Log
 }
 
 func pgCtx(t *testing.T) context.Context {
@@ -179,7 +180,7 @@ func setupPG(t *testing.T) *pgEnv {
 	}
 	by := alerting.By{Actor: audit.Actor{Type: audit.ActorUser, ID: "01900000-0000-7000-8000-0000000000b1", Name: "admin"},
 		UserID: "01900000-0000-7000-8000-0000000000b1", Confirm: func(context.Context) error { return nil }}
-	return &pgEnv{owner: owner, app: app, events: ev, alerts: al, svc: svc, ids: ids.NewGenerator(r), by: by}
+	return &pgEnv{owner: owner, app: app, events: ev, alerts: al, svc: svc, ids: ids.NewGenerator(r), by: by, log: l}
 }
 
 func (e *pgEnv) event(t *testing.T, app, model, action string, threats ...string) events.Event {
@@ -311,6 +312,47 @@ func TestPGAlertsOnIngest(t *testing.T) {
 	if err := e.owner.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM alerts WHERE details::text LIKE '%промпт%' OR title LIKE '%промпт%')`).
 		Scan(&leaked); err != nil || leaked {
 		t.Fatalf("содержимое в оповещениях: %v %v", leaked, err)
+	}
+}
+
+// Период по времени последнего срабатывания на PostgreSQL: [from, to), границы по отдельности (задача 3.19).
+func TestPGAlertsPeriod(t *testing.T) {
+	e := setupPG(t)
+	ctx := pgCtx(t)
+	e.ingest(t, e.event(t, "old-bot", "gigachat", "allow"), e.event(t, "new-bot", "gigachat", "allow"))
+	all := e.list(t, alerting.BuiltinNewModel)
+	if len(all) == 0 {
+		t.Fatal("нет оповещений для проверки периода")
+	}
+	// Одно оповещение «старим» на сутки.
+	old := all[0].ID
+	if _, err := e.owner.Exec(ctx, `UPDATE alerts SET last_triggered_at = last_triggered_at - interval '1 day' WHERE id = $1`, old); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	ids := func(q alerting.AlertQuery) map[string]bool {
+		q.Limit = 100
+		got, err := e.svc.Alerts(ctx, q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		m := map[string]bool{}
+		for _, a := range got {
+			m[a.ID] = true
+		}
+		return m
+	}
+	if m := ids(alerting.AlertQuery{From: now.Add(-time.Hour)}); m[old] {
+		t.Fatalf("from исключает старое: %v", m)
+	}
+	if m := ids(alerting.AlertQuery{To: now.Add(-time.Hour)}); !m[old] || len(m) != 1 {
+		t.Fatalf("to оставляет только старое: %v", m)
+	}
+	if m := ids(alerting.AlertQuery{From: now.Add(-48 * time.Hour), To: now.Add(time.Hour)}); !m[old] {
+		t.Fatalf("широкий период: %v", m)
+	}
+	if m := ids(alerting.AlertQuery{From: now.Add(time.Hour)}); len(m) != 0 {
+		t.Fatalf("период в будущем: %v", m)
 	}
 }
 

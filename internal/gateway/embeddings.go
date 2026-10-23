@@ -85,7 +85,7 @@ func (e *EmbeddingsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	checkStart := h.cfg.Now()
 	in, err := app.inspect(r.Context(), inspectRequest{
-		Endpoint: policy.EndpointEmbeddings, External: app.Provider.External(), Texts: texts,
+		Endpoint: policy.EndpointEmbeddings, External: app.Provider.External(), Texts: texts, User: user,
 		Mask: app.Storage == events.StorageMasked, Timeout: h.cfg.DetectorTimeout,
 	})
 	rec.ev.LatencyMS["input_check"] = h.cfg.Now().Sub(checkStart).Milliseconds()
@@ -132,8 +132,13 @@ func (e *EmbeddingsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.providerError(w, r, err)
 		return
 	}
-	if resp.Usage != nil {
-		rec.usage(&chat.Usage{PromptTokens: resp.Usage.PromptTokens, TotalTokens: resp.Usage.TotalTokens})
+	if u := resp.Usage; u != nil && max(u.PromptTokens, u.TotalTokens) > 0 {
+		// Часть серверов заполняет только total_tokens: у эмбеддингов это вход.
+		rec.usage(&chat.Usage{PromptTokens: max(u.PromptTokens, u.TotalTokens), TotalTokens: u.TotalTokens})
+	} else {
+		// Без usage или с нулями расход оценивается по размеру входа (задача 3.18).
+		rec.inTokens = estimateTokens(size)
+		rec.outBytes = func() int { return 0 }
 	}
 	resp.Model = requested
 	writeJSON(w, http.StatusOK, resp)

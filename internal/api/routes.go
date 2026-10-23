@@ -23,11 +23,19 @@ func Routes(d Deps) []Route {
 	routes = append(routes, statusRoutes(d)...)
 	routes = append(routes, apiTokenRoutes(d)...)
 	routes = append(routes, eventsConsoleRoutes(d)...)
+	routes = append(routes, eventMarkRoutes(d)...)
 	routes = append(routes, providerRoutes(d)...)
 	routes = append(routes, applicationRoutes(d)...)
 	routes = append(routes, auditLogRoutes(d)...)
 	routes = append(routes, policyRoutes(d)...)
+	routes = append(routes, policyExceptionRoutes(d)...)
 	routes = append(routes, alertRoutes(d)...)
+	routes = append(routes, alertSettingsRoutes(d)...)
+	routes = append(routes, notifyChannelRoutes(d)...)
+	routes = append(routes, incidentRoutes(d)...)
+	routes = append(routes, budgetRoutes(d)...)
+	routes = append(routes, gatewayTLSRoutes(d)...)
+	routes = append(routes, dashboardRoutes(d)...)
 	return routes
 }
 

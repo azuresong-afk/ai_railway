@@ -27,6 +27,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/integrity"
 	"github.com/azuresong-afk/ai_railway/internal/integrity/selftest"
 	"github.com/azuresong-afk/ai_railway/internal/policy"
+	"github.com/azuresong-afk/ai_railway/internal/policy/bundle"
 	"github.com/azuresong-afk/ai_railway/internal/providers"
 )
 
@@ -142,6 +143,16 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 	if err != nil {
 		return fmt.Errorf("ключ шлюза: %w", err)
 	}
+	// Сертификат адреса приложений меняется без перезапуска: сертификат
+	// заказчика приходит в пакете конфигурации (задача 3.27).
+	certSw, err := aisecCrypto.NewServerCertSwitch(certPEM, keyPEM)
+	if err != nil {
+		return fmt.Errorf("сертификат шлюза: %w", err)
+	}
+	appTLS, err := gateway.NewTLSSwitch(certSw, logger)
+	if err != nil {
+		return err
+	}
 	rnd, err := p.Random()
 	if err != nil {
 		return err
@@ -186,7 +197,7 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 	}
 	// Квоты общие для всех маршрутов приложений и переживают смену пакета.
 	hb := &handlerBuilder{cfg: cfg, logger: logger, hasher: h, auth: authBase, events: queue,
-		quotas: gateway.NewLimiter(nil), userMAC: userMAC}
+		quotas: gateway.NewLimiter(nil), budget: gateway.NewBudget(nil), userMAC: userMAC}
 	var handler http.Handler
 	var bundles *gateway.BundleClient
 	if file != nil {
@@ -200,14 +211,14 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 		}
 		// Политики компилируются по детекторам приложения при запуске:
 		// незарегистрированный детектор в политике заказчика — отказ запуска.
-		if handler, err = hb.build(file.Applications, provs, file.Policies, recs, nil); err != nil {
+		if handler, err = hb.build(file.Applications, provs, file.Policies, recs, nil, nil); err != nil {
 			return err
 		}
 		logger.Info("конфигурация из файла", "applications", len(file.Applications), "providers", len(provs))
 	} else {
 		sw := gateway.NewSwitch(gateway.NewUnavailable(logger))
 		var keyIDs []string
-		if bundles, keyIDs, err = newBundleClient(cfg, p, tp, rnd, state, control, hb, sw, trust.bundlePubs, logger); err != nil {
+		if bundles, keyIDs, err = newBundleClient(cfg, p, tp, rnd, state, control, hb, sw, appTLS, trust.bundlePubs, logger); err != nil {
 			return err
 		}
 		reports.SetBundleKeys(keyIDs)
@@ -215,7 +226,7 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 	}
 	srv, err := httpserver.New(ctx, httpserver.Config{
 		Addr: cfg.Listen, Handler: handler,
-		TLS: tp, CertPEM: certPEM, KeyPEM: keyPEM, Logger: logger,
+		TLS: tp, CertPEM: certPEM, KeyPEM: keyPEM, CertSwitch: certSw, Logger: logger,
 	})
 	if err != nil {
 		return err
@@ -236,7 +247,7 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 			hbCancel()
 			return err
 		}
-		hbDone := startHeartbeat(hbCtx, cfg, control.client, logger, reports, bundles.ETag, verify, started, reissue.Reissue)
+		hbDone := startHeartbeat(hbCtx, cfg, control.client, logger, reports, bundles.ETag, verify, started, reissue.Reissue, hb.budget)
 		defer func() {
 			hbCancel()
 			<-hbDone
@@ -251,17 +262,20 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 // handlerBuilder собирает обработчик шлюза по набору приложений: из файла
 // при запуске или из каждого нового пакета конфигурации.
 type handlerBuilder struct {
-	cfg     *config.Gateway
-	logger  *slog.Logger
-	hasher  aisecCrypto.Hasher
-	auth    *gateway.AuthConfig
-	events  *events.Queue
-	quotas  *gateway.Limiter
+	cfg    *config.Gateway
+	logger *slog.Logger
+	hasher aisecCrypto.Hasher
+	auth   *gateway.AuthConfig
+	events *events.Queue
+	quotas *gateway.Limiter
+	// budget — счётчики расхода процесса (задача 3.18): переживают смену
+	// пакета.
+	budget  *gateway.Budget
 	userMAC aisecCrypto.MAC
 }
 
 func (hb *handlerBuilder) build(apps []config.Application, provs map[string]providers.Provider, specs []policy.Spec,
-	recs []auth.KeyRecord, unavailable []string) (http.Handler, error) {
+	recs []auth.KeyRecord, unavailable []string, budgets *bundle.Budgets) (http.Handler, error) {
 	for _, a := range apps {
 		if hb.userMAC == nil && a.UserFrom != "" && a.UserFrom != "none" {
 			return nil, fmt.Errorf("приложение %s: user_from %s требует ключ псевдонимов пользователей (user-hmac-key)", a.ID, a.UserFrom)
@@ -272,6 +286,8 @@ func (hb *handlerBuilder) build(apps []config.Application, provs map[string]prov
 		return nil, err
 	}
 	router.SetUnavailable(unavailable)
+	// Хеши фрагментов находок для исключений — на ключе псевдонимов (задача 3.22).
+	router.SetFragmentMAC(hb.userMAC)
 	a, err := auth.NewAuthenticator(hb.hasher, recs)
 	if err != nil {
 		return nil, err
@@ -280,7 +296,7 @@ func (hb *handlerBuilder) build(apps []config.Application, provs map[string]prov
 	authCfg.Authenticator = a
 	handlerCfg := gateway.ChatConfig{
 		Router: router, MaxBodyBytes: hb.cfg.MaxBodyBytes, Logger: hb.logger,
-		Events: hb.events, IDs: authCfg.IDs, Quotas: hb.quotas, UserMAC: hb.userMAC,
+		Events: hb.events, IDs: authCfg.IDs, Quotas: hb.quotas, Budget: hb.budget, UserMAC: hb.userMAC,
 	}
 	chatHandler, err := gateway.NewChatHandler(handlerCfg)
 	if err != nil {
@@ -299,7 +315,11 @@ func (hb *handlerBuilder) build(apps []config.Application, provs map[string]prov
 	if err != nil {
 		return nil, err
 	}
-	// Счётчики квот — последним шагом: сборка не удалась — квоты прежние.
+	// Бюджеты и счётчики квот — последним шагом: сборка не удалась — они
+	// прежние. Неверный раздел budgets (часовой пояс) — пакет отклоняется.
+	if err := hb.budget.Reconfigure(budgets); err != nil {
+		return nil, err
+	}
 	hb.quotas.Reconfigure(apps)
 	return h, nil
 }
@@ -470,7 +490,7 @@ const gwReissueWarn = 30 * 24 * time.Hour
 // startHeartbeat запускает heartbeat на внутренний API сервера. Сервер
 // недоступен — шлюз всё равно работает (ТЗ, 4.2).
 func startHeartbeat(ctx context.Context, cfg *config.Gateway, client *http.Client, logger *slog.Logger, reports *gateway.Reports, etag func() string,
-	verify func(context.Context), started time.Time, reissue func(context.Context) error) <-chan struct{} {
+	verify func(context.Context), started time.Time, reissue func(context.Context) error, budget *gateway.Budget) <-chan struct{} {
 	v := version
 	if !gateway.ValidVersion(v) {
 		v = "unknown"
@@ -480,7 +500,7 @@ func startHeartbeat(ctx context.Context, cfg *config.Gateway, client *http.Clien
 		defer close(done)
 		gateway.RunHeartbeat(ctx, gateway.HeartbeatConfig{
 			Client: client, Server: cfg.Server, Version: v, Logger: logger, Reports: reports, BundleETag: etag, Verify: verify,
-			StartedAt: started, Reissue: reissue,
+			StartedAt: started, Reissue: reissue, Budget: budget,
 		})
 	}()
 	return done

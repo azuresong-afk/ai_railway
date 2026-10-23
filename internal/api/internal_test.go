@@ -149,6 +149,13 @@ func TestHeartbeatHandler(t *testing.T) {
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"interval_seconds":30`) {
 		t.Fatalf("heartbeat: %d %s", w.Code, w.Body)
 	}
+	// Счётчики расхода (задача 3.18): ответ — расход остальных процессов.
+	svc.SetBudgetSync(othersSync{})
+	hb := `{"version":"1","started_at":"2026-10-21T10:00:00Z","budget":{"months":[{"month":"2026-10","apps":[{"app":"crm","cost":5,"requests":1}]}]}}`
+	w = do(h, http.MethodPost, "/internal/v1/heartbeat", hb, "Content-Type", "application/json")
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"budget":{"month":"2026-10","others":{"crm":7}}`) {
+		t.Fatalf("heartbeat со счётчиками: %d %s", w.Code, w.Body)
+	}
 	// stopping без started_at — 400 (В27 ревью 2.r5).
 	if w := do(h, http.MethodPost, "/internal/v1/heartbeat", `{"version":"1","stopping":true}`, "Content-Type", "application/json"); w.Code != http.StatusBadRequest {
 		t.Fatalf("stopping без started_at: %d %s", w.Code, w.Body)
@@ -166,6 +173,13 @@ func TestHeartbeatHandler(t *testing.T) {
 	}
 }
 
+// othersSync — хранилище счётчиков: расход остальных процессов постоянный.
+type othersSync struct{}
+
+func (othersSync) SyncBudget(_ context.Context, _ string, _ time.Time, rep gwregistry.BudgetReport) (gwregistry.BudgetState, error) {
+	return gwregistry.BudgetState{Month: rep.Months[len(rep.Months)-1].Month, Others: map[string]int64{"crm": 7}}, nil
+}
+
 // FuzzHeartbeatRequest: любое тело heartbeat — 200 или ошибка клиента в
 // формате Problem Details, без паники и 500.
 func FuzzHeartbeatRequest(f *testing.F) {
@@ -179,7 +193,9 @@ func FuzzHeartbeatRequest(f *testing.F) {
 		`{"version":"1","selftest":{"ok":true,"checked_at":"2026-10-21T10:00:00Z","failed":0}}`,
 		`{"version":"1","integrity":{"ok":false,"checked_at":"2026-10-21T10:00:00Z","reason":"files_mismatch","failed":2}}`,
 		`{"version":"1","selftest":{"ok":"да"}}`, `{"version":"1","integrity":null}`, `{"version":"1","selftest":[]}`,
-		`{"version":"1","started_at":"2026-10-21T10:00:00.123456789Z","stopping":true}`, `{"version":"1","stopping":true}`} {
+		`{"version":"1","started_at":"2026-10-21T10:00:00.123456789Z","stopping":true}`, `{"version":"1","stopping":true}`,
+		`{"version":"1","started_at":"2026-10-21T10:00:00Z","budget":{"months":[{"month":"2026-10","apps":[{"app":"crm","cost":5,"requests":1}]}]}}`,
+		`{"version":"1","budget":{"months":[{"month":"2026-13","apps":[]}]}}`} {
 		f.Add(s, "application/json")
 	}
 	f.Add(`{"version":"1"}`, "text/plain")

@@ -106,8 +106,8 @@ func queryInt(r *http.Request, name string, max int) (int, *Problem) {
 // maxVersion — предел номера версии в запросах (номер — integer в БД).
 const maxVersion = 1<<31 - 1
 
-// policyRuleRe — ошибка правила: «rules[N] (id): поле — …».
-var policyRuleRe = regexp.MustCompile(`^rules\[(\d+)\](?: \([^)]*\))?: (?:([a-z_]+) — )?`)
+// policyRuleRe — ошибка правила или исключения: «rules[N] (id): поле — …».
+var policyRuleRe = regexp.MustCompile(`^(rules|exceptions)\[(\d+)\](?: \([^)]*\))?: (?:([a-z_]+) — )?`)
 
 // policyField — поле ошибки проверки политики: rules[2].action, mode…
 // Префикс «политика ID: » из internal/policy снимается.
@@ -118,9 +118,9 @@ func policyField(msg string) (string, string) {
 		}
 	}
 	if m := policyRuleRe.FindStringSubmatch(msg); m != nil {
-		f := "rules[" + m[1] + "]"
-		if m[2] != "" {
-			f += "." + m[2]
+		f := m[1] + "[" + m[2] + "]"
+		if m[3] != "" {
+			f += "." + m[3]
 		}
 		return f, msg
 	}
@@ -161,6 +161,8 @@ func policiesProblem(logger *slog.Logger, err error) *Problem {
 		return NewProblem(http.StatusUnprocessableEntity, CodeUnprocessable, err.Error()+".")
 	case errors.Is(err, versions.ErrTooMany):
 		return NewProblem(http.StatusUnprocessableEntity, CodeUnprocessable, "Достигнут предел числа политик.")
+	case errors.Is(err, versions.ErrExceptionNotFound):
+		return NewProblem(http.StatusNotFound, CodeNotFound, "Исключение не найдено в текущей версии политики.")
 	}
 	logger.Error("политики: ошибка обработки запроса", "error", err)
 	return errInternal()
@@ -200,6 +202,45 @@ type PolicySpecJSON struct {
 	ResponseCheck string           `json:"response_check,omitempty"`
 	BlockMessage  string           `json:"block_message,omitempty"`
 	Rules         []PolicyRuleJSON `json:"rules"`
+	// Exceptions — исключения (задача 3.22). При сохранении: поле не
+	// передано — исключения текущей версии сохраняются; пустой список —
+	// удаляются. Автора и created_at ставит сервер.
+	Exceptions *[]PolicyExceptionJSON `json:"exceptions,omitempty"`
+}
+
+// PolicyExceptionJSON — исключение политики в API: поля как в YAML.
+type PolicyExceptionJSON struct {
+	ID        string     `json:"id"`
+	Detector  string     `json:"detector"`
+	Category  string     `json:"category,omitempty"`
+	Pattern   string     `json:"pattern,omitempty"`
+	Fragment  string     `json:"fragment,omitempty"`
+	App       string     `json:"app,omitempty"`
+	User      string     `json:"user,omitempty"`
+	Source    string     `json:"source,omitempty"`
+	Reason    string     `json:"reason"`
+	Author    string     `json:"author,omitempty"`
+	CreatedAt *time.Time `json:"created_at,omitempty"`
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	Event     string     `json:"event_id,omitempty"`
+}
+
+func (e PolicyExceptionJSON) spec() policy.ExceptionSpec {
+	out := policy.ExceptionSpec{ID: e.ID, Detector: e.Detector, Category: e.Category, Pattern: e.Pattern, Fragment: e.Fragment,
+		App: e.App, User: e.User, Source: detect.Source(e.Source), Reason: e.Reason, Author: e.Author, Event: e.Event}
+	if e.CreatedAt != nil {
+		out.CreatedAt = e.CreatedAt.UTC()
+	}
+	if e.ExpiresAt != nil {
+		out.ExpiresAt = e.ExpiresAt.UTC()
+	}
+	return out
+}
+
+func exceptionJSON(e policy.ExceptionSpec) PolicyExceptionJSON {
+	return PolicyExceptionJSON{ID: e.ID, Detector: e.Detector, Category: e.Category, Pattern: e.Pattern, Fragment: e.Fragment,
+		App: e.App, User: e.User, Source: string(e.Source), Reason: e.Reason, Author: e.Author,
+		CreatedAt: optTime(e.CreatedAt), ExpiresAt: optTime(e.ExpiresAt), Event: e.Event}
 }
 
 func convert[T, U ~string](in []T) []U {
@@ -222,6 +263,12 @@ func (s PolicySpecJSON) spec(id string) *policy.Spec {
 			Sources: convert[string, detect.Source](r.Sources), Threshold: r.Threshold, Action: policy.Action(r.Action),
 			Severity: policy.Severity(r.Severity), Message: r.Message})
 	}
+	if s.Exceptions != nil {
+		out.Exceptions = make([]policy.ExceptionSpec, 0, len(*s.Exceptions))
+		for _, e := range *s.Exceptions {
+			out.Exceptions = append(out.Exceptions, e.spec())
+		}
+	}
 	return out
 }
 
@@ -237,6 +284,11 @@ func specJSON(s *policy.Spec) PolicySpecJSON {
 	for _, r := range s.Rules {
 		out.Rules = append(out.Rules, ruleJSON(r))
 	}
+	ex := make([]PolicyExceptionJSON, 0, len(s.Exceptions))
+	for _, e := range s.Exceptions {
+		ex = append(ex, exceptionJSON(e))
+	}
+	out.Exceptions = &ex
 	return out
 }
 
@@ -394,8 +446,10 @@ func (d Deps) updatePolicy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	by = d.withPolicyConfirm(r, by, req.reauthFields, "policy.update")
+	defaults := versions.ConsoleDefaults
+	defaults.KeepExceptions = req.Spec.Exceptions == nil
 	doc, err := d.Policies.Update(r.Context(), by, slug, req.BaseVersion, req.Spec.spec(slug), versions.SourceAPI, req.Comment,
-		versions.ConsoleDefaults)
+		defaults)
 	if err != nil {
 		WriteProblem(w, policiesProblem(d.Logger, err))
 		return
@@ -473,10 +527,20 @@ type RuleChangeView struct {
 	After  PolicyRuleJSON `json:"after"`
 }
 
-// WeakeningView — ослабление защиты (DM-40); Rule пуст для полей политики.
+// WeakeningView — ослабление защиты (DM-40); Rule пуст для полей политики,
+// Exception — ID исключения для ослаблений исключениями.
 type WeakeningView struct {
-	Kind string `json:"kind"`
-	Rule string `json:"rule,omitempty"`
+	Kind      string `json:"kind"`
+	Rule      string `json:"rule,omitempty"`
+	Exception string `json:"exception,omitempty"`
+}
+
+// ExceptionChangeView — изменённое исключение: имена полей, до и после.
+type ExceptionChangeView struct {
+	ID     string              `json:"id"`
+	Fields []string            `json:"fields"`
+	Before PolicyExceptionJSON `json:"before"`
+	After  PolicyExceptionJSON `json:"after"`
 }
 
 // PolicyDiffView — сравнение двух версий.
@@ -490,11 +554,26 @@ type PolicyDiffView struct {
 	Reordered        bool              `json:"reordered"`
 	Weakening        bool              `json:"weakening"`
 	WeakeningReasons []WeakeningView   `json:"weakening_reasons"`
+	// Исключения (задача 3.22).
+	ExceptionsAdded   []PolicyExceptionJSON `json:"exceptions_added"`
+	ExceptionsRemoved []PolicyExceptionJSON `json:"exceptions_removed"`
+	ExceptionsChanged []ExceptionChangeView `json:"exceptions_changed"`
 }
 
 func diffView(df versions.Diff) PolicyDiffView {
 	v := PolicyDiffView{From: df.From, To: df.To, Fields: []FieldChangeView{}, Added: []PolicyRuleJSON{}, Removed: []PolicyRuleJSON{},
-		Changed: []RuleChangeView{}, Reordered: df.Reordered, Weakening: df.Weakened(), WeakeningReasons: []WeakeningView{}}
+		Changed: []RuleChangeView{}, Reordered: df.Reordered, Weakening: df.Weakened(), WeakeningReasons: []WeakeningView{},
+		ExceptionsAdded: []PolicyExceptionJSON{}, ExceptionsRemoved: []PolicyExceptionJSON{}, ExceptionsChanged: []ExceptionChangeView{}}
+	for _, e := range df.ExceptionsAdded {
+		v.ExceptionsAdded = append(v.ExceptionsAdded, exceptionJSON(e))
+	}
+	for _, e := range df.ExceptionsRemoved {
+		v.ExceptionsRemoved = append(v.ExceptionsRemoved, exceptionJSON(e))
+	}
+	for _, c := range df.ExceptionsChanged {
+		v.ExceptionsChanged = append(v.ExceptionsChanged, ExceptionChangeView{ID: c.ID, Fields: c.Fields,
+			Before: exceptionJSON(c.Before), After: exceptionJSON(c.After)})
+	}
 	for _, f := range df.Fields {
 		v.Fields = append(v.Fields, FieldChangeView(f))
 	}

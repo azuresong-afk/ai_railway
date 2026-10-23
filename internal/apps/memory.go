@@ -22,11 +22,25 @@ type Memory struct {
 	apps      map[string]Application
 	keys      map[string]Key
 	records   []audit.Entry
+	// Цены, бюджеты и расход (задача 3.18).
+	prices  map[string]Price
+	budgets map[string]Budget
+	usage   map[usageKey]Usage
+	// gatewayTLS — сертификат заказчика по организации (задача 3.27).
+	gatewayTLS map[string]GatewayTLS
+}
+
+// usageKey — строка budget_usage.
+type usageKey struct {
+	org, month, app, gateway string
+	started                  time.Time
 }
 
 // NewMemory создаёт пустое хранилище.
 func NewMemory() *Memory {
-	return &Memory{providers: map[string]Provider{}, apps: map[string]Application{}, keys: map[string]Key{}}
+	return &Memory{providers: map[string]Provider{}, apps: map[string]Application{}, keys: map[string]Key{},
+		prices: map[string]Price{}, budgets: map[string]Budget{}, usage: map[usageKey]Usage{},
+		gatewayTLS: map[string]GatewayTLS{}}
 }
 
 // Records — копия записей аудита.
@@ -110,6 +124,12 @@ func (m *Memory) DeleteProvider(_ context.Context, orgID, id string, fn func(Pro
 		return Provider{}, err
 	}
 	delete(m.providers, id)
+	// Цены удалённого провайдера удаляются вместе с ним (ON DELETE CASCADE).
+	for pid, pr := range m.prices {
+		if pr.ProviderID == id {
+			delete(m.prices, pid)
+		}
+	}
 	m.records = append(m.records, rec)
 	return p, nil
 }

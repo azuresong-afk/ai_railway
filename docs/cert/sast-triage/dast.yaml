@@ -1,0 +1,3 @@
+schema_version: 1
+# Разметка находок DAST (OWASP ZAP baseline, задача 3.30): формат и правила — README.md, раздел «DAST».
+entries: []

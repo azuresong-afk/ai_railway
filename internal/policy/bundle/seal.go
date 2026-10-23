@@ -24,6 +24,9 @@ type SealInput struct {
 	Secrets Secrets
 	// RecipientKey — открытый ключ шлюза из запроса (заголовок AISec-Bundle-Key).
 	RecipientKey []byte
+	// TLSKey — закрытый ключ сертификата заказчика в PEM (раздел
+	// gateway_tls, задача 3.27); шифруется вместе с учётными данными.
+	TLSKey KeyPEM
 }
 
 // Sealer подписывает пакеты ключом сервера (bundle-signing.key, ADR-0007).
@@ -97,7 +100,7 @@ func (s *Sealer) Seal(in SealInput) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	plain, err := marshalSecrets(in.Secrets)
+	plain, err := marshalSecrets(in.Secrets, in.TLSKey)
 	if err != nil {
 		return nil, err
 	}
@@ -125,12 +128,19 @@ func (s *Sealer) Seal(in SealInput) ([]byte, error) {
 	return out, nil
 }
 
-// marshalSecrets кодирует секреты в порядке ID провайдера.
-func marshalSecrets(s Secrets) ([]byte, error) {
-	type item struct {
-		Provider   string `json:"provider"`
-		Credential string `json:"credential"`
-	}
+// secretItem — элемент секретов: учётные данные провайдера или (без
+// провайдера) ключ сертификата заказчика.
+type secretItem struct {
+	Provider   string `json:"provider,omitempty"`
+	Credential string `json:"credential,omitempty"`
+	TLSKey     string `json:"tls_key,omitempty"`
+}
+
+// marshalSecrets кодирует секреты в порядке ID провайдера; ключ
+// сертификата заказчика — последним элементом. Без ключа формат прежний:
+// шлюзы прежних версий принимают такой пакет.
+func marshalSecrets(s Secrets, tlsKey KeyPEM) ([]byte, error) {
+	type item = secretItem
 	ids := make([]string, 0, len(s))
 	for id := range s {
 		ids = append(ids, id)
@@ -139,6 +149,9 @@ func marshalSecrets(s Secrets) ([]byte, error) {
 	items := make([]item, 0, len(ids))
 	for _, id := range ids {
 		items = append(items, item{Provider: id, Credential: s[id]})
+	}
+	if len(tlsKey) > 0 {
+		items = append(items, item{TLSKey: string(tlsKey)})
 	}
 	return json.Marshal(items)
 }

@@ -9,6 +9,7 @@ import { Table, Td, Th } from "../ui/Layout";
 import { describeError, type Event, type EventContent, eventsApi } from "./api";
 import { formatAbsolute, formatNumber } from "./format";
 import { fieldTitle, valueTitle } from "./filter";
+import { MarkPanel } from "./MarkPanel";
 
 // Состав details не закреплён схемой: читаем только известные поля и только как текст и числа.
 interface TraceStep {
@@ -333,7 +334,13 @@ function ContentBlock({ ev, canRead }: { ev: Event; canRead: boolean }) {
   );
 }
 
-export function EventCard({ id, canReadContent, onClose }: { id: string; canReadContent: boolean; onClose: () => void }) {
+export interface CardRights {
+  canMark?: boolean;
+  canException?: boolean;
+  mfa?: boolean;
+}
+
+export function EventCard({ id, canReadContent, onClose, rights = {} }: { id: string; canReadContent: boolean; onClose: () => void; rights?: CardRights }) {
   const q = useQuery({ queryKey: ["event", id], queryFn: ({ signal }) => eventsApi.get(id, signal) });
   return (
     <aside aria-label="Карточка события" className="flex w-[34rem] max-w-[50vw] shrink-0 flex-col gap-4 overflow-auto border-l border-line bg-surface p-4">
@@ -345,12 +352,12 @@ export function EventCard({ id, canReadContent, onClose }: { id: string; canRead
       </div>
       {q.isPending && <p className="text-sm text-muted">Загрузка…</p>}
       {q.isError && <Banner kind="error">{describeError(q.error, "list")}</Banner>}
-      {q.data && <Body key={q.data.id} ev={q.data} canReadContent={canReadContent} />}
+      {q.data && <Body key={q.data.id} ev={q.data} canReadContent={canReadContent} rights={rights} />}
     </aside>
   );
 }
 
-function Body({ ev, canReadContent }: { ev: Event; canReadContent: boolean }) {
+function Body({ ev, canReadContent, rights }: { ev: Event; canReadContent: boolean; rights: CardRights }) {
   const d = readDetails(ev.details);
   return (
     <>
@@ -378,6 +385,7 @@ function Body({ ev, canReadContent }: { ev: Event; canReadContent: boolean }) {
       )}
       <Why ev={ev} d={d} />
       <Findings d={d} threats={ev.threats} />
+      <MarkPanel ev={ev} canMark={rights.canMark === true} canException={rights.canException === true} mfa={rights.mfa === true} />
       <ContentBlock ev={ev} canRead={canReadContent} />
       {(d.latency.length > 0 || d.tokens) && (
         <section aria-labelledby="perf" className="flex flex-col gap-2">

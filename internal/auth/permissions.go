@@ -45,6 +45,10 @@ const (
 	PermEventsExport          = "events.export"
 	PermEventsContentRead     = "events.content.read"
 	PermEventsRetentionManage = "events.retention.manage"
+	// PermEventsMark — отметки «ложное срабатывание» и «подтверждено» (ТЗ
+	// 5.5, задача 3.22 этапа 3): работа аналитика; исключение по отметке
+	// создаёт только администратор безопасности (policies.manage).
+	PermEventsMark = "events.mark"
 	// Приложения, ключи и провайдеры (ТЗ 5.4, ИАФ.8; задача 2.11). Поля
 	// защиты приложения (политика, режим, режим хранения) и снятие
 	// признака «внешний» у провайдера — функции безопасности (УПД.2, DM-40).
@@ -72,6 +76,34 @@ const (
 	PermAlertsManage     = "alerts.manage"
 	PermAlertRulesRead   = "alert_rules.read"
 	PermAlertRulesManage = "alert_rules.manage"
+	// Каналы уведомлений (ТЗ 5.6, Р4; задача 3.13 этапа 3): изменение и
+	// тестовая отправка — функция безопасности (отключение и смена адреса —
+	// ослабление, DM-40); секреты каналов в ответах не показываются.
+	PermNotifyChannelsRead   = "notify_channels.read"
+	PermNotifyChannelsManage = "notify_channels.manage"
+	// Цены моделей и бюджеты приложений (ТЗ 5.8, задача 3.18 этапа 3).
+	// Снятие или повышение жёсткого бюджета — не ослабление защиты (не
+	// DM-40): права не относятся к безопасности, изменения пишутся в аудит.
+	PermModelPricesRead   = "model_prices.read"
+	PermModelPricesManage = "model_prices.manage"
+	PermBudgetsRead       = "budgets.read"
+	PermBudgetsManage     = "budgets.manage"
+	// Дашборды (ТЗ 5.8, задача 3.19 этапа 3): агрегаты без содержимого
+	// запросов. Со ScopeOwn (владелец приложения) — только дашборд «Приложение»
+	// своих приложений (УПД.8); остальные дашборды видят роли со ScopeAll.
+	PermDashboardsRead = "dashboards.read"
+	// Инциденты (ТЗ 5.7, задача 3.16 этапа 3): разбор — работа аналитика,
+	// доступна и токену (SOAR, IRP); выгрузка карточки — отдельное право
+	// (data.export, DM-41); инструкции реагирования — функция безопасности.
+	PermIncidentsRead            = "incidents.read"
+	PermIncidentsManage          = "incidents.manage"
+	PermIncidentsExport          = "incidents.export"
+	PermIncidentCategoriesManage = "incident_categories.manage"
+	// Сертификат заказчика для адреса шлюза (S1, ТЗ 5.4; задача 3.27 этапа
+	// 3): загрузка цепочки и закрытого ключа — у администраторов системы и
+	// безопасности (ТЗ 7: интеграции и TLS). Ключ в ответах не показывается.
+	PermGatewayTLSRead   = "gateway_tls.read"
+	PermGatewayTLSManage = "gateway_tls.manage"
 )
 
 // Permission — разрешение из каталога.
@@ -117,6 +149,7 @@ var permissionCatalog = []Permission{
 	{Name: PermEventsExport, Title: "Выгрузка событий в CSV и JSON (без содержимого)", Group: "События"},
 	{Name: PermEventsContentRead, Title: "Просмотр содержимого запросов и ответов с указанием причины", Group: "События", Security: true},
 	{Name: PermEventsRetentionManage, Title: "Изменение сроков хранения событий", Group: "События", Security: true},
+	{Name: PermEventsMark, Title: "Отметки «ложное срабатывание» и «подтверждено» в событиях", Group: "События"},
 	{Name: PermApplicationsRead, Title: "Просмотр приложений и их ключей (без секретов)", Group: "Приложения", Ownable: true},
 	{Name: PermApplicationsManage, Title: "Создание, изменение и архивация приложений", Group: "Приложения"},
 	{Name: PermApplicationsPolicy, Title: "Политика, режим политики и режим хранения приложения", Group: "Приложения", Security: true},
@@ -133,6 +166,20 @@ var permissionCatalog = []Permission{
 	{Name: PermAlertsManage, Title: "Принятие оповещений в работу и закрытие", Group: "Оповещения"},
 	{Name: PermAlertRulesRead, Title: "Просмотр правил оповещений и получателей", Group: "Оповещения"},
 	{Name: PermAlertRulesManage, Title: "Создание и изменение правил оповещений и получателей", Group: "Оповещения", Security: true},
+	{Name: PermNotifyChannelsRead, Title: "Просмотр каналов уведомлений (без секретов) и журнала доставки", Group: "Оповещения"},
+	{Name: PermNotifyChannelsManage, Title: "Создание, изменение и тестовая отправка каналов уведомлений", Group: "Оповещения",
+		Security: true},
+	{Name: PermDashboardsRead, Title: "Просмотр дашбордов: агрегаты без содержимого запросов", Group: "Дашборды", Ownable: true},
+	{Name: PermModelPricesRead, Title: "Просмотр цен моделей", Group: "Потребление"},
+	{Name: PermModelPricesManage, Title: "Задание, изменение и удаление цен моделей", Group: "Потребление"},
+	{Name: PermBudgetsRead, Title: "Просмотр бюджетов и расхода приложений", Group: "Потребление"},
+	{Name: PermBudgetsManage, Title: "Задание, изменение и снятие бюджетов приложений", Group: "Потребление"},
+	{Name: PermIncidentsRead, Title: "Просмотр инцидентов, хронологии, комментариев и инструкций реагирования", Group: "Инциденты"},
+	{Name: PermIncidentsManage, Title: "Создание инцидентов, смена статуса, назначение, комментарии, этапы реагирования", Group: "Инциденты"},
+	{Name: PermIncidentsExport, Title: "Выгрузка карточки инцидента в JSON (без содержимого событий)", Group: "Инциденты"},
+	{Name: PermIncidentCategoriesManage, Title: "Изменение инструкций реагирования по категориям инцидентов", Group: "Инциденты", Security: true},
+	{Name: PermGatewayTLSRead, Title: "Просмотр сертификата заказчика для адреса шлюза (без ключа)", Group: "Шлюзы"},
+	{Name: PermGatewayTLSManage, Title: "Загрузка, замена и удаление сертификата заказчика для адреса шлюза", Group: "Шлюзы"},
 }
 
 // auditorExtra — разрешения аудитора сверх чтения: они ничего не меняют,
@@ -317,17 +364,20 @@ var builtinRoles = []RoleDef{
 		Description: "Приложения, провайдеры, интеграции, обновления, резервное копирование. Политики безопасности не меняет",
 		Grants: Grants{PermSystemRead: ScopeAll, PermAPITokensRead: ScopeOwn, PermAPITokensManage: ScopeOwn,
 			PermApplicationsRead: ScopeAll, PermApplicationsManage: ScopeAll, PermAppKeysManage: ScopeAll,
-			PermProvidersRead: ScopeAll, PermProvidersManage: ScopeAll, PermPoliciesRead: ScopeAll, PermPoliciesTest: ScopeAll}},
+			PermProvidersRead: ScopeAll, PermProvidersManage: ScopeAll, PermPoliciesRead: ScopeAll, PermPoliciesTest: ScopeAll,
+			PermModelPricesRead: ScopeAll, PermModelPricesManage: ScopeAll, PermBudgetsRead: ScopeAll, PermBudgetsManage: ScopeAll,
+			PermDashboardsRead: ScopeAll, PermGatewayTLSRead: ScopeAll, PermGatewayTLSManage: ScopeAll}},
 	{ID: RoleAnalyst, DisplayName: "Аналитик", Builtin: true,
 		Description: "Разбор оповещений и инцидентов, поиск по событиям",
-		Grants: grantAll(PermSystemRead, PermEventsRead, PermEventsExport, PermApplicationsRead, PermProvidersRead,
-			PermPoliciesRead, PermPoliciesTest, PermAlertsRead, PermAlertsManage, PermAlertRulesRead)},
+		Grants: grantAll(PermSystemRead, PermEventsRead, PermEventsExport, PermEventsMark, PermApplicationsRead, PermProvidersRead,
+			PermPoliciesRead, PermPoliciesTest, PermAlertsRead, PermAlertsManage, PermAlertRulesRead, PermModelPricesRead, PermBudgetsRead,
+			PermDashboardsRead, PermIncidentsRead, PermIncidentsManage, PermIncidentsExport)},
 	{ID: RoleAuditor, DisplayName: "Аудитор", Builtin: true,
 		Description: "Только просмотр: журнал аудита, отчёты, состояние соответствия. Ничего не меняет",
 		Grants:      auditorPermissions()},
 	{ID: RoleAppOwner, DisplayName: "Владелец приложения", Builtin: true,
 		Description: "Статистика и события только своих приложений, без доступа к содержимому",
-		Grants:      Grants{PermApplicationsRead: ScopeOwn}},
+		Grants:      Grants{PermApplicationsRead: ScopeOwn, PermDashboardsRead: ScopeOwn}},
 }
 
 var builtinIndex = func() map[Role]RoleDef {

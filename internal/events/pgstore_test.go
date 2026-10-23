@@ -468,9 +468,26 @@ func TestPGEventsRetention(t *testing.T) {
 		day(-500).Format(time.RFC3339), day(-499).Format(time.RFC3339))); err != nil {
 		t.Fatal(err)
 	}
+	// Отметки удалённых событий удаляются вместе с секцией (задача 3.22);
+	// отметка свежего события без строки (событие ещё в пути) остаётся.
+	for i, d := range []int{-400, -2} {
+		if _, err := e.owner.Exec(ctx, `INSERT INTO event_marks (event_id, event_ts, org_id, mark, marked_at, marked_by)
+			VALUES ($1, $2, $3, 'confirmed', now(), 'user:test')`, fmt.Sprintf("01900000-0000-7000-8000-%012d", i+1),
+			day(d).Add(time.Hour), audit.DefaultOrgID); err != nil {
+			t.Fatal(err)
+		}
+	}
 	dropped, err := e.st.DropExpired(ctx)
 	if err != nil {
 		t.Fatal(err)
+	}
+	var marks int
+	if err := e.owner.QueryRow(ctx, "SELECT count(*) FROM event_marks WHERE event_ts > now() - interval '3 days'").Scan(&marks); err != nil {
+		t.Fatal(err)
+	}
+	var all int
+	if err := e.owner.QueryRow(ctx, "SELECT count(*) FROM event_marks").Scan(&all); err != nil || all != 1 || marks != 1 {
+		t.Fatalf("отметки после удаления секций: %d, свежих %d, %v", all, marks, err)
 	}
 	// По умолчанию: метаданные 365 суток, содержимое 90.
 	want := []string{

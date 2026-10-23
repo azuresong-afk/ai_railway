@@ -44,7 +44,7 @@ describe("консоль: вход", () => {
   it("успешный вход открывает каркас; разделы скрыты по правам", async () => {
     routes.set("GET /api/v1/me", json(401, { code: "unauthorized", detail: "x" }));
     routes.set("GET /api/v1/auth/setup", json(200, { setup_required: false }));
-    routes.set("POST /api/v1/auth/login", json(200, meOf("active", ["session", "system.read"])));
+    routes.set("POST /api/v1/auth/login", json(200, meOf("active", ["session", "system.read", "dashboards.read"])));
     renderApp();
     fireEvent.change(await Promise.resolve(await screen.findByLabelText("Логин")), { target: { value: "ivanov" } });
     fireEvent.change(await Promise.resolve(screen.getByLabelText("Пароль")), { target: { value: "secret" } });

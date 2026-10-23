@@ -1,0 +1,81 @@
+# Наложение на deploy/compose/pilot/compose.yaml для e2e пилота: «без
+# интернета» (задача 3.7, H-Р11) и резервное копирование с восстановлением
+# (3.8). Только для тестов, в поставку не входит. Запускает его тест
+# TestE2EPilot… (test/e2e/pilot_stand_test.go), цель make e2e-pilot.
+#
+# Что меняется против поставки:
+# - все четыре сети внутренние (internal: true): из контейнеров нет маршрута
+#   наружу, порты не публикуются — тест ходит на адреса контейнеров;
+# - провайдер LLM — mock-llm внутри сети gateway;
+# - ловушка netwatch (test/e2e/netwatch) во всех сетях и вышестоящий DNS
+#   всех сервисов: любое имя, кроме имён сервисов, и любая попытка соединения
+#   с ним видны в её журнале.
+# Адреса фиксированы: по ним сервисы находят ловушку, а тест — консоль и шлюз.
+services:
+  netwatch:
+    image: ${AISEC_IMAGE_REPO:?}/aisec-cli:${AISEC_VERSION:?}
+    entrypoint: ["/e2e/netwatch"]
+    # Порт 53 и AF_PACKET: только две возможности, корень ФС — только чтение.
+    user: "0:0"
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE, NET_RAW]
+    security_opt: ["no-new-privileges:true"]
+    volumes:
+      - ${AISEC_E2E_TOOLS:?каталог с netwatch и mock-llm (make e2e-pilot-bin)}/netwatch:/e2e/netwatch:ro
+    networks:
+      db: {ipv4_address: 10.231.11.53}
+      control: {ipv4_address: 10.231.12.53}
+      console: {ipv4_address: 10.231.13.53}
+      gateway: {ipv4_address: 10.231.14.53}
+
+  mock-llm:
+    image: ${AISEC_IMAGE_REPO:?}/aisec-cli:${AISEC_VERSION:?}
+    entrypoint: ["/e2e/mock-llm"]
+    command: ["-listen=0.0.0.0:9443", "-cert=/e2e/tls/mock.crt", "-key=/e2e/tls/mock.key"]
+    # Ключ TLS мока — файл root с правами 0600, его выпускает тест.
+    user: "0:0"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    depends_on: [netwatch]
+    dns: [10.231.14.53]
+    volumes:
+      - ${AISEC_E2E_TOOLS:?}/mock-llm:/e2e/mock-llm:ro
+      - ${AISEC_E2E_TLS:?каталог с mock.crt и mock.key}:/e2e/tls:ro
+    networks:
+      gateway: {ipv4_address: 10.231.14.30}
+
+  postgres:
+    depends_on: [netwatch]
+    dns: [10.231.11.53]
+
+  aisec-server:
+    depends_on: [netwatch]
+    dns: [10.231.11.53]
+    networks:
+      console: {ipv4_address: 10.231.13.10}
+    ports: !reset []
+
+  aisec-gateway:
+    depends_on: [netwatch, mock-llm]
+    dns: [10.231.14.53]
+    networks:
+      gateway: {ipv4_address: 10.231.14.20}
+    ports: !reset []
+
+  aisec-cli:
+    depends_on: [netwatch]
+    dns: [10.231.11.53]
+
+networks:
+  db:
+    ipam: {config: [{subnet: 10.231.11.0/24}]}
+  control:
+    ipam: {config: [{subnet: 10.231.12.0/24}]}
+  console:
+    internal: true
+    ipam: {config: [{subnet: 10.231.13.0/24}]}
+  gateway:
+    internal: true
+    ipam: {config: [{subnet: 10.231.14.0/24}]}
