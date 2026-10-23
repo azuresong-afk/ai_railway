@@ -43,6 +43,7 @@ func TestParseRuleInput(t *testing.T) {
 		"длинное имя":           {Kind: KindThreshold, Name: strings.Repeat("я", MaxName+1), Condition: Condition{MinSeverity: "high"}},
 		"управляющий символ":    {Kind: KindThreshold, Name: "a\x00b", Condition: Condition{MinSeverity: "high"}},
 		"порог без условия":     {Kind: KindThreshold, Name: "x"},
+		"фильтр из пробелов":    {Kind: KindThreshold, Name: "x", Condition: Condition{Filter: " \t\n"}},
 		"неверный фильтр":       {Kind: KindThreshold, Name: "x", Condition: Condition{Filter: `app ~ "x"`}},
 		"неизвестное поле":      {Kind: KindThreshold, Name: "x", Condition: Condition{Filter: `content = "x"`}},
 		"серьёзность":           {Kind: KindThreshold, Name: "x", Condition: Condition{MinSeverity: "urgent"}},

@@ -3128,7 +3128,7 @@ paths:
         Ослабление (DM-40) — отключение, смена условия или группировки, повышение
         `min_severity`, понижение серьёзности, увеличение окна, удаление получателя — пишется с
         `weakening: true` и требует текущего пароля (`password`) или кода TOTP (`code`): без них
-        403, неверное значение — 403 `reauthentication_failed`. Изменение получателей порождает
+        400 (поле `password`), неверное значение — 403 `reauthentication_failed`. Изменение получателей порождает
         оповещение «Изменены получатели оповещений» (ТЗ 5.6). Без изменений — 200 без записи.
         Пишет `alert_rule.update` (до, после).
       x-permission: alert_rules.manage
@@ -3322,7 +3322,8 @@ paths:
         для изменения (устаревшая — 409). Тип канала не меняется. Секрет, не переданный в `secrets`,
         остаётся прежним; пустая строка удаляет необязательный секрет. Каналы не удаляются —
         отключаются. Ослабление (DM-40) — отключение, повышение `min_severity`, смена узла, порта или
-        адреса webhook, смена корневых сертификатов, удаление адресата письма — пишется с
+        адреса webhook, смена корневых сертификатов, удаление адресата письма, снятие подписки на
+        журнал аудита (`audit_stream`) — пишется с
         `weakening: true` и требует текущего пароля (`password`) или кода TOTP (`code`): без них
         403, неверное значение — 403 `reauthentication_failed`. Пишет `notify_channel.update` (до,
         после, какие секреты изменены — без значений).
@@ -3775,6 +3776,36 @@ paths:
         '409': { $ref: '#/components/responses/ProblemConflict' }
         '413': { $ref: '#/components/responses/ProblemTooLarge' }
         '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/notify-channels/{id}/audit-stream:
+    get:
+      summary: Передача журнала аудита в SIEM
+      description: |
+        Право `notify_channels.read`. Состояние передачи журнала аудита в канал с подпиской
+        `audit_stream` (РСБ.6, задача 3.14 этапа 3, ADR-0020 п. 15): последняя переданная запись
+        (`last_seq`), конец журнала (`head_seq`), не передано записей (`pending`) и время самой
+        старой из них, неудачные попытки подряд и код последней ошибки. Записи передаются по порядку
+        `seq`, с момента подписки; при недоступности приёмника повторы бессрочны (задержка до 10
+        минут), записи не теряются — источник истины сам журнал. `lagging` — отставание выше порога
+        DM-44: не передано больше 10 000 записей или самая старая из них старше 15 минут; при
+        возникновении и снятии пишется `system.alert` (`audit_stream_lag:<ID канала>`), возникшее
+        условие поднимает оповещение встроенного правила `system.audit_stream_lag`. Без подписки —
+        `subscribed: false` и нули.
+      x-permission: notify_channels.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/NotifyChannelID'
+      responses:
+        '200':
+          description: Состояние передачи
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuditStreamState' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ProblemInternal' }
         '503': { $ref: '#/components/responses/Unavailable' }
@@ -5849,6 +5880,12 @@ components:
         type: { type: string, enum: [email, webhook, syslog] }
         enabled: { type: boolean, default: true }
         min_severity: { $ref: '#/components/schemas/AlertSeverity' }
+        audit_stream:
+          type: boolean
+          default: false
+          description: |
+            Передавать журнал аудита в SIEM (РСБ.6): только syslog или webhook с форматом generic.
+            Передача начинается с конца журнала на момент подписки; снятие подписки — ослабление (DM-40).
         settings: { $ref: '#/components/schemas/NotifyChannelSettings' }
         secrets: { $ref: '#/components/schemas/NotifyChannelSecrets' }
         version: { type: integer }
@@ -5861,6 +5898,7 @@ components:
         type: { type: string, enum: [email, webhook, syslog], description: Не меняется }
         enabled: { type: boolean }
         min_severity: { $ref: '#/components/schemas/AlertSeverity' }
+        audit_stream: { type: boolean, description: Не передано — прежнее значение }
         settings: { $ref: '#/components/schemas/NotifyChannelSettings' }
         secrets: { $ref: '#/components/schemas/NotifyChannelSecrets' }
         version: { type: integer, minimum: 1 }
@@ -5868,13 +5906,14 @@ components:
         code: { type: string, maxLength: 64, description: 'Код из приложения-аутентификатора вместо пароля' }
     NotifyChannel:
       type: object
-      required: [id, name, type, enabled, min_severity, settings, secrets_set, version, created_at, created_by, updated_at, updated_by]
+      required: [id, name, type, enabled, min_severity, audit_stream, settings, secrets_set, version, created_at, created_by, updated_at, updated_by]
       properties:
         id: { type: string, format: uuid }
         name: { type: string }
         type: { type: string, enum: [email, webhook, syslog] }
         enabled: { type: boolean }
         min_severity: { $ref: '#/components/schemas/AlertSeverity' }
+        audit_stream: { type: boolean, description: Канал передаёт журнал аудита в SIEM }
         settings: { $ref: '#/components/schemas/NotifyChannelSettings' }
         secrets_set: { type: array, items: { type: string, enum: [password, url, signing_key] } }
         version: { type: integer }
@@ -5911,6 +5950,23 @@ components:
       required: [items]
       properties:
         items: { type: array, items: { $ref: '#/components/schemas/NotifyDelivery' } }
+    AuditStreamState:
+      type: object
+      required: [subscribed, active, last_seq, head_seq, pending, lagging, attempts]
+      properties:
+        subscribed: { type: boolean, description: Канал подписан на журнал }
+        active: { type: boolean, description: Подписан и включён — передача идёт }
+        last_seq: { type: integer, format: int64, minimum: 0, description: Последняя переданная запись }
+        head_seq: { type: integer, format: int64, minimum: 0, description: Последняя запись журнала }
+        pending: { type: integer, format: int64, minimum: 0, description: Не передано записей }
+        oldest_pending_at: { type: string, format: date-time, description: Время самой старой не переданной записи }
+        lagging: { type: boolean, description: Отставание выше порога DM-44 }
+        attempts: { type: integer, minimum: 0, description: Неудачных попыток подряд }
+        next_at: { type: string, format: date-time, description: Следующая попытка (только active) }
+        error:
+          type: string
+          description: Код последней ошибки без текста ответа приёмника (как в журнале доставки)
+        last_sent_at: { type: string, format: date-time, description: Последняя успешная передача }
     AlertRule:
       type: object
       required: [id, kind, name, description, enabled, locked, severity, condition, group_by, suppress_minutes,

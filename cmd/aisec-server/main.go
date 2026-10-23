@@ -322,18 +322,22 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	} else if n > 0 {
 		logger.Info("созданы встроенные правила оповещений", "count", n)
 	}
+	// Каналы уведомлений (задача 3.13, Р4): адреса задаёт администратор,
+	// очередь доставки — в БД. Каждое новое оповещение ставится в очередь
+	// той же транзакцией, что его создаёт (задача 3.14): ошибка очереди
+	// откатывает и создание оповещения вместе с приёмом событий или записью
+	// аудита. Очередь подключается раньше правил аудита, чтобы ни одно
+	// оповещение раздела 7 не создалось без доставки.
+	notifyStore, err := notify.NewPGStore(db.Pool(), auditLog, rnd, audit.DefaultOrgID)
+	if err != nil {
+		return err
+	}
+	alertStore.SetEnqueue(notifyStore.EnqueueAlertTx)
 	// Системные правила и правила безопасности (задача 3.11, ADR-0020, п. 1)
 	// считаются в транзакции записи аудита — после создания встроенных
 	// правил; закрытые оповещения удаляются по сроку хранения.
 	auditLog.SetRecordHook(alertStore.OnAudit)
 	go alerting.RunRetention(ctx, alertStore, alerting.RetentionInterval, logger)
-	// Каналы уведомлений (задача 3.13, Р4): адреса задаёт администратор,
-	// очередь доставки — в БД. Постановку новых оповещений в очередь
-	// подключает задача 3.14.
-	notifyStore, err := notify.NewPGStore(db.Pool(), auditLog, rnd, audit.DefaultOrgID)
-	if err != nil {
-		return err
-	}
 	notifyTransport, err := notify.NewTransport(p, version, notify.DefaultSendTimeout)
 	if err != nil {
 		return err
@@ -344,6 +348,8 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		return err
 	}
 	go notifySvc.RunDispatcher(ctx, notify.DispatchInterval, logger)
+	// Передача журнала аудита в SIEM (РСБ.6, задача 3.14) каналами с подпиской.
+	go notifySvc.RunAuditStream(ctx, notify.StreamInterval, logger)
 	if err := events.Maintain(ctx, eventStore, logger); err != nil {
 		return fmt.Errorf("секции событий: %w", err)
 	}

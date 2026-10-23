@@ -33,6 +33,7 @@ const (
 	BuiltinReportsStale   = "system.reports_stale"        // DM-44, Н29
 	BuiltinConfigBundle   = "system.config_bundle"        // ОЦЛ.3
 	BuiltinNotifyFailed   = "system.notify_failed"        // DM-44: уведомление не доставлено
+	BuiltinAuditStream    = "system.audit_stream_lag"     // DM-44, РСБ.6: передача журнала в SIEM отстаёт
 )
 
 // Пороги правил безопасности (обоснование — ADR-0020, раздел «Пороги
@@ -118,6 +119,10 @@ func securityRules() []Rule {
 			"ОЦЛ.3: пакет собран не полностью или шлюз работает на устаревшем пакете.", "medium", []string{"component"}),
 		rule(BuiltinNotifyFailed, KindSystem, "Уведомление не доставлено",
 			"DM-44: канал уведомлений не доставил сообщение после всех повторов.", "high", []string{"channel"}),
+		rule(BuiltinAuditStream, KindSystem, "Передача журнала аудита в SIEM отстаёт",
+			"DM-44, РСБ.6: самая старая не переданная в SIEM запись журнала аудита старше 15 минут или не передано больше "+
+				"10 000 записей. Записи не теряются: после восстановления приёмника передача догоняет журнал.",
+			"high", []string{"channel"}),
 	}
 }
 
@@ -394,6 +399,7 @@ var systemFamilies = map[string]string{
 	"cert_expiry":       BuiltinCertExpiry,
 	"ca_expiry":         BuiltinCertExpiry,
 	"reports_stale":     BuiltinReportsStale,
+	"audit_stream_lag":  BuiltinAuditStream,
 }
 
 // systemRaise — оповещение по возникшему условию раздела 7 (запись
@@ -419,6 +425,8 @@ func systemRaise(r *audit.Record, d map[string]any) (Raise, bool) {
 		values["component"] = comp
 	case BuiltinEventsDropped, BuiltinGatewayOffline, BuiltinReportsStale:
 		values["gateway"] = str(d["gateway_name"], strings.TrimPrefix(code, fam+":"))
+	case BuiltinAuditStream:
+		values["channel"] = str(d["channel_name"], strings.TrimPrefix(code, fam+":"))
 	case BuiltinCertExpiry:
 		// Условие ca_expiry (корень внутреннего УЦ) ведёт sysstatus с задачи
 		// 3В5; ca_expiry:critical — второе условие за 7 суток.

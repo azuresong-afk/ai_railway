@@ -30,6 +30,8 @@ func notifyChannelRoutes(d Deps) []Route {
 			Handler: needNotify(d, d.testNotifyChannel)},
 		{Method: http.MethodGet, Path: "/api/v1/notify-channels/{id}/deliveries", Permission: auth.PermNotifyChannelsRead,
 			Handler: needNotify(d, d.listNotifyDeliveries)},
+		{Method: http.MethodGet, Path: "/api/v1/notify-channels/{id}/audit-stream", Permission: auth.PermNotifyChannelsRead,
+			Handler: needNotify(d, d.getAuditStream)},
 	}
 }
 
@@ -98,11 +100,13 @@ func notifyBy(r *http.Request) (notify.By, bool) {
 
 // NotifyChannelView — канал в ответах: секретов нет, только какие заданы.
 type NotifyChannelView struct {
-	ID          string          `json:"id"`
-	Name        string          `json:"name"`
-	Type        string          `json:"type"`
-	Enabled     bool            `json:"enabled"`
-	MinSeverity string          `json:"min_severity"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Type        string `json:"type"`
+	Enabled     bool   `json:"enabled"`
+	MinSeverity string `json:"min_severity"`
+	// AuditStream — канал подписан на передачу журнала аудита в SIEM.
+	AuditStream bool            `json:"audit_stream"`
 	Settings    notify.Settings `json:"settings"`
 	// SecretsSet — заданные секреты: password, url, signing_key.
 	SecretsSet []string  `json:"secrets_set"`
@@ -119,7 +123,7 @@ func notifyChannelView(c notify.Channel) NotifyChannelView {
 		s = []string{}
 	}
 	return NotifyChannelView{ID: c.ID, Name: c.Name, Type: c.Type, Enabled: c.Enabled, MinSeverity: c.MinSeverity,
-		Settings: c.Settings, SecretsSet: s, Version: c.Version, CreatedAt: c.CreatedAt.UTC(), CreatedBy: c.CreatedBy,
+		AuditStream: c.AuditStream, Settings: c.Settings, SecretsSet: s, Version: c.Version, CreatedAt: c.CreatedAt.UTC(), CreatedBy: c.CreatedBy,
 		UpdatedAt: c.UpdatedAt.UTC(), UpdatedBy: c.UpdatedBy}
 }
 
@@ -276,4 +280,42 @@ func (d Deps) listNotifyDeliveries(w http.ResponseWriter, r *http.Request) {
 		out.Items = append(out.Items, notifyDeliveryView(x))
 	}
 	WriteJSON(w, http.StatusOK, out)
+}
+
+// AuditStreamView — состояние передачи журнала аудита в SIEM (РСБ.6,
+// задача 3.14): курсор, не переданный остаток и отставание (DM-44). Ошибка —
+// код без текста ответа приёмника.
+type AuditStreamView struct {
+	Subscribed bool `json:"subscribed"`
+	Active     bool `json:"active"`
+	// LastSeq — последняя переданная запись журнала, HeadSeq — последняя
+	// запись журнала, Pending — не передано записей.
+	LastSeq         int64      `json:"last_seq"`
+	HeadSeq         int64      `json:"head_seq"`
+	Pending         int64      `json:"pending"`
+	OldestPendingAt *time.Time `json:"oldest_pending_at,omitempty"`
+	Lagging         bool       `json:"lagging"`
+	Attempts        int        `json:"attempts"`
+	NextAt          *time.Time `json:"next_at,omitempty"`
+	Error           string     `json:"error,omitempty"`
+	LastSentAt      *time.Time `json:"last_sent_at,omitempty"`
+}
+
+func (d Deps) getAuditStream(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r, channelNotFound)
+	if !ok {
+		return
+	}
+	st, err := d.Notify.StreamStatus(r.Context(), id)
+	if err != nil {
+		WriteProblem(w, notifyProblem(d.Logger, err))
+		return
+	}
+	v := AuditStreamView{Subscribed: st.Subscribed, Active: st.Active, LastSeq: st.Cursor.LastSeq, HeadSeq: st.Backlog.Head,
+		Pending: st.Backlog.Pending, OldestPendingAt: optTime(st.Backlog.Oldest), Lagging: st.Lagging,
+		Attempts: st.Cursor.Attempts, Error: st.Cursor.Error, LastSentAt: optTime(st.Cursor.SentAt)}
+	if st.Active {
+		v.NextAt = optTime(st.Cursor.NextAt)
+	}
+	WriteJSON(w, http.StatusOK, v)
 }
