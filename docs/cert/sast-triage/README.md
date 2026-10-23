@@ -38,3 +38,22 @@ entries:
 
 ## Снимки к релизам
 К каждому релизу `build/sast/gosec.sarif` и `build/sast/suppressed.md` копируются в `releases/<версия>/` этого каталога.
+
+## DAST (задача 3.30)
+OWASP ZAP baseline проверяет работающую установку пилота: консоль и шлюз (пассивный обход, без активных атак; `make dast`, workflow `dast`). Отчёты — артефакт CI `dast-reports`. `tools/dast-triage` сверяет находки с файлом правил ZAP `deploy/compose/pilot/dast/zap-rules.conf` и разметкой `dast.yaml`:
+- **выше порога** — риск Medium и выше или правило с действием `FAIL`: провал задания, пока нет записи `false_positive` с обоснованием, которое проверяется по коду или ответу сервера; истинная находка исправляется, а не размечается;
+- **ниже порога** — не проваливает задание и попадает в сводку; принятая осознанно размечается `accepted_risk` с обоснованием;
+- запись разметки без находки — предупреждение: запись устарела, её нужно удалить.
+
+```yaml
+schema_version: 1
+entries:
+  - target: console        # console или gateway
+    plugin_id: "10038"     # pluginid ZAP
+    alert: Content Security Policy (CSP) Header Not Set
+    verdict: false_positive   # false_positive или accepted_risk (только ниже порога)
+    justification: Почему это не уязвимость именно здесь.
+    author: Фамилия И. О.
+    date: 2026-10-22
+```
+Запись покрывает все находки правила на цели. Первый прогон в CI даёт исходный набор находок; их разметку и исправления делает владелец при разборе отчёта.
