@@ -1,6 +1,7 @@
 package main
 
 import (
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -28,5 +29,23 @@ func FuzzReadCorpusFile(f *testing.F) {
 			t.Skip()
 		}
 		_, _ = readCorpusFile(p) //nolint:gosec // G104: проверяется только отсутствие паники
+	})
+}
+
+// Без -allow-remote принимается только https и только localhost или loopback-литерал.
+func FuzzCheckGateway(f *testing.F) {
+	f.Add("https://127.0.0.1:8443")
+	f.Add("https://gw.example.ru")
+	f.Add("https://[::1]:1/%zz")
+	f.Fuzz(func(t *testing.T, raw string) {
+		u, err := checkGateway(raw, false)
+		if err != nil {
+			return
+		}
+		h := u.Hostname()
+		ip := net.ParseIP(h)
+		if u.Scheme != "https" || u.User != nil || (h != "localhost" && (ip == nil || !ip.IsLoopback())) {
+			t.Fatalf("принят адрес вне loopback: %q", raw)
+		}
 	})
 }

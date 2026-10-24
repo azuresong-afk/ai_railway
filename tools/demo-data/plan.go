@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -117,10 +118,10 @@ func readCorpusFile(path string) ([]corpusCase, error) {
 	if err != nil {
 		return nil, err
 	}
-	if st.Size() > maxCorpusFile {
-		return nil, fmt.Errorf("%s: файл больше %d байт", path, maxCorpusFile)
+	if !st.Mode().IsRegular() || st.Size() > maxCorpusFile {
+		return nil, fmt.Errorf("%s: нужен обычный файл не больше %d байт", path, maxCorpusFile)
 	}
-	sc := bufio.NewScanner(f)
+	sc := bufio.NewScanner(io.LimitReader(f, maxCorpusFile+1))
 	sc.Buffer(make([]byte, 0, 64<<10), maxCorpusLine)
 	var out []corpusCase
 	for sc.Scan() {

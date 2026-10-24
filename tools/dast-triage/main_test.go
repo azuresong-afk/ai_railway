@@ -32,7 +32,7 @@ func TestCompare(t *testing.T) {
 		t.Fatalf("%v", res.Problems)
 	}
 	fp := func(id string) Entry {
-		return Entry{Target: "console", PluginID: id, Alert: "x", Verdict: FalsePositive, Justification: "j", Author: "a", Date: "2026-10-22"}
+		return Entry{Target: "console", PluginID: id, Alert: map[string]string{"10038": "CSP Header Not Set", "10021": "X-Content-Type-Options Missing"}[id], MaxRisk: 3, Verdict: FalsePositive, Justification: "обоснование не короче двадцати символов", Author: "a", Date: "2026-10-22"}
 	}
 	res = Compare(alerts, ParseRules([]byte(rules)), []Entry{fp("10038"), fp("10021"), fp("99999")})
 	if len(res.Problems) != 0 || res.MarkedAbove != 2 || len(res.Stale) != 1 {
@@ -52,6 +52,36 @@ func TestCompare(t *testing.T) {
 	}
 }
 
+func TestEmptyReportFails(t *testing.T) {
+	for _, bad := range []string{`{}`, `{"site":[]}`} {
+		if _, err := ParseReport("t", []byte(bad)); err == nil {
+			t.Errorf("%s: пустой отчёт не должен проходить", bad)
+		}
+	}
+}
+
+func TestIgnoreDoesNotHideMedium(t *testing.T) {
+	alerts, _ := ParseReport("console", []byte(report))
+	res := Compare(alerts, map[string]string{"10038": "IGNORE", "10021": "FAIL"}, nil)
+	if len(res.Problems) != 2 || len(res.Ignored) != 0 {
+		t.Fatalf("Medium под IGNORE обязан требовать разметки: %+v", res)
+	}
+}
+
+func TestEntryScope(t *testing.T) {
+	alerts, _ := ParseReport("console", []byte(report))
+	e := Entry{Target: "console", PluginID: "10038", Alert: "CSP Header Not Set", MaxRisk: 1, Verdict: FalsePositive, Justification: "обоснование не короче двадцати символов", Author: "a", Date: "2026-10-22"}
+	res := Compare(alerts, map[string]string{}, []Entry{e})
+	if len(res.Problems) != 1 || !strings.Contains(res.Problems[0], "CSP") {
+		t.Fatalf("риск выше max_risk не покрывается: %+v", res.Problems)
+	}
+	e.MaxRisk = 2
+	e.Alert = "Другая находка"
+	if res = Compare(alerts, map[string]string{}, []Entry{e}); len(res.Problems) != 1 {
+		t.Fatalf("другое имя находки не покрывается: %+v", res.Problems)
+	}
+}
+
 func TestParseReportInvalid(t *testing.T) {
 	for _, bad := range []string{`{`, `{"site":[{"alerts":[{"pluginid":"1","alert":"x","riskcode":"9"}]}]}`, `{"site":[{"alerts":[{"alert":"x","riskcode":"1"}]}]}`} {
 		if _, err := ParseReport("t", []byte(bad)); err == nil {
@@ -61,16 +91,19 @@ func TestParseReportInvalid(t *testing.T) {
 }
 
 func TestParseTriageInvalid(t *testing.T) {
-	ok := "schema_version: 1\nentries:\n  - {target: console, plugin_id: '1', alert: a, verdict: false_positive, justification: j, author: a, date: 2026-10-22}\n"
+	ok := "schema_version: 1\nentries:\n  - {target: console, plugin_id: '1', alert: a, max_risk: 3, verdict: false_positive, justification: обоснование не короче двадцати символов, author: a, date: 2026-10-22}\n"
 	if _, err := ParseTriage([]byte(ok)); err != nil {
 		t.Fatal(err)
 	}
 	for name, bad := range map[string]string{
 		"версия":      "schema_version: 2\n",
 		"вердикт":     strings.Replace(ok, "false_positive", "ok", 1),
-		"обоснование": strings.Replace(ok, "justification: j", "justification: ''", 1),
+		"обоснование": strings.Replace(ok, "justification: обоснование не короче двадцати символов", "justification: коротко", 1),
 		"поле":        ok + "    extra: 1\n",
 		"повтор":      ok + strings.SplitN(ok, "\n", 3)[2],
+		"цель":        strings.Replace(ok, "target: console", "target: consol", 1),
+		"дата":        strings.Replace(ok, "date: 2026-10-22", "date: вчера", 1),
+		"max_risk":    strings.Replace(ok, "max_risk: 3", "max_risk: 7", 1),
 	} {
 		if _, err := ParseTriage([]byte(bad)); err == nil {
 			t.Errorf("%s: ожидалась ошибка", name)
@@ -94,8 +127,8 @@ func TestRun(t *testing.T) {
 		t.Fatal("ожидался провал: находки выше порога без разметки")
 	}
 	full := w("full.yaml", "schema_version: 1\nentries:\n"+
-		"  - {target: console, plugin_id: '10038', alert: CSP, verdict: false_positive, justification: j, author: a, date: 2026-10-22}\n"+
-		"  - {target: console, plugin_id: '10021', alert: XCTO, verdict: false_positive, justification: j, author: a, date: 2026-10-22}\n")
+		"  - {target: console, plugin_id: '10038', alert: CSP Header Not Set, max_risk: 3, verdict: false_positive, justification: обоснование не короче двадцати символов, author: a, date: 2026-10-22}\n"+
+		"  - {target: console, plugin_id: '10021', alert: X-Content-Type-Options Missing, max_risk: 3, verdict: false_positive, justification: обоснование не короче двадцати символов, author: a, date: 2026-10-22}\n")
 	if err := run(r, full, "", []string{"console=" + rep}, &out, &errb); err != nil {
 		t.Fatal(err)
 	}
