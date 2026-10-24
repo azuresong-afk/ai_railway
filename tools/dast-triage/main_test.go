@@ -61,7 +61,7 @@ func TestEmptyReportFails(t *testing.T) {
 }
 
 func TestIgnoreDoesNotHideMedium(t *testing.T) {
-	alerts, _ := ParseReport("console", []byte(report))
+	alerts, _ := ParseReport("console", []byte(report)) //nolint:gosec // G104: отчёт заведомо корректен
 	res := Compare(alerts, map[string]string{"10038": "IGNORE", "10021": "FAIL"}, nil)
 	if len(res.Problems) != 2 || len(res.Ignored) != 0 {
 		t.Fatalf("Medium под IGNORE обязан требовать разметки: %+v", res)
@@ -69,7 +69,7 @@ func TestIgnoreDoesNotHideMedium(t *testing.T) {
 }
 
 func TestEntryScope(t *testing.T) {
-	alerts, _ := ParseReport("console", []byte(report))
+	alerts, _ := ParseReport("console", []byte(report)) //nolint:gosec // G104: отчёт заведомо корректен
 	e := Entry{Target: "console", PluginID: "10038", Alert: "CSP Header Not Set", MaxRisk: 1, Verdict: FalsePositive, Justification: "обоснование не короче двадцати символов", Author: "a", Date: "2026-10-22"}
 	res := Compare(alerts, map[string]string{}, []Entry{e})
 	if len(res.Problems) != 1 || !strings.Contains(res.Problems[0], "CSP") {
