@@ -41,6 +41,7 @@ type PGStore struct {
 	orgID  string
 	ids    *ids.Generator
 	logger *slog.Logger
+	deps   periodicDeps
 }
 
 // NewPGStore создаёт хранилище; журнал должен работать через тот же пул.
@@ -86,12 +87,20 @@ func (s *PGStore) inTx(ctx context.Context, fn func(pgx.Tx) error) error {
 	return nil
 }
 
-// OnIngest — events.IngestHook: правила «порог» и «новое» по впервые
-// записанным событиям в транзакции приёма.
+// OnIngest — events.IngestHook: правила «порог» и «новое» и счётчики
+// «частоты» по впервые записанным событиям в транзакции приёма.
 func (s *PGStore) OnIngest(ctx context.Context, tx pgx.Tx, gatewayID string, accepted []*events.Event) error {
-	return process(ctx, pgOps{s: s, tx: tx}, gatewayID, accepted, func(err error) {
+	ops := pgOps{s: s, tx: tx}
+	skipped := func(err error) {
 		s.logger.Error("оповещения: правило пропущено", "error", err)
-	})
+	}
+	if err := process(ctx, ops, gatewayID, accepted, skipped); err != nil {
+		return err
+	}
+	if err := countFrequency(ctx, ops, time.Now(), gatewayID, accepted, skipped); err != nil {
+		return err
+	}
+	return processAuthFailures(ctx, ops, accepted)
 }
 
 // pgOps — txOps в транзакции tx.
@@ -229,7 +238,17 @@ func (o pgOps) raise(ctx context.Context, r *Rule, t *Trigger) error {
 			return err
 		}
 		if tag.RowsAffected() == 1 {
-			return o.addRefs(ctx, id, 0, t.Events)
+			if err := o.addRefs(ctx, id, 0, t.Events); err != nil {
+				return err
+			}
+			// Новое оповещение — в очередь доставки той же транзакцией
+			// (задача 3.14): сбой очереди откатывает и оповещение.
+			if enq := o.s.enqueueFn(); enq != nil {
+				if _, err := enq(ctx, o.tx, id, r.Severity); err != nil {
+					return err
+				}
+			}
+			return nil
 		}
 	}
 	return errors.New("оповещения: не удалось учесть срабатывание: открытое оповещение меняется параллельно")
@@ -351,6 +370,7 @@ func (s *PGStore) UpdateRule(ctx context.Context, orgID, id string, fn func(*Rul
 		if err != nil {
 			return err
 		}
+		old := r.clone()
 		rec, raises, err := fn(&r)
 		if err != nil {
 			return err
@@ -369,6 +389,11 @@ func (s *PGStore) UpdateRule(ctx context.Context, orgID, id string, fn func(*Rul
 			orgID, id, r.Name, r.Description, r.Enabled, r.Severity, cond, r.GroupBy, r.SuppressMinutes, r.GroupMinutes,
 			rcpt, r.Version, r.UpdatedAt, r.UpdatedBy); err != nil {
 			return err
+		}
+		if countsStale(&old, &r) {
+			if _, err := tx.Exec(ctx, `DELETE FROM alert_rule_counts WHERE rule_id = $1`, id); err != nil {
+				return err
+			}
 		}
 		if err := raiseBuiltin(ctx, pgOps{s: s, tx: tx}, raises); err != nil {
 			return err
@@ -434,8 +459,10 @@ func (s *PGStore) Alerts(ctx context.Context, orgID string, q AlertQuery) ([]Ale
 		WHERE a.org_id = $1 AND ($2 = '' OR a.status = $2) AND ($3 = '' OR a.severity = $3)
 			AND ($4 = '' OR a.rule_id::text = $4)
 			AND ($5::timestamptz IS NULL OR (a.created_at, a.id) < ($5, $6::uuid))
-		ORDER BY a.created_at DESC, a.id DESC LIMIT $7`,
-		orgID, q.Status, q.Severity, q.RuleID, afterAt, afterID, limit)
+			AND ($7::timestamptz IS NULL OR a.last_triggered_at >= $7)
+			AND ($8::timestamptz IS NULL OR a.last_triggered_at < $8)
+		ORDER BY a.created_at DESC, a.id DESC LIMIT $9`,
+		orgID, q.Status, q.Severity, q.RuleID, afterAt, afterID, nullTime(q.From), nullTime(q.To), limit)
 	if err != nil {
 		return nil, err
 	}

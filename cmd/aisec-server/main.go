@@ -34,9 +34,11 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/events"
 	"github.com/azuresong-afk/ai_railway/internal/gwregistry"
 	"github.com/azuresong-afk/ai_railway/internal/httpserver"
+	"github.com/azuresong-afk/ai_railway/internal/incidents"
 	"github.com/azuresong-afk/ai_railway/internal/integrity"
 	"github.com/azuresong-afk/ai_railway/internal/integrity/selftest"
 	"github.com/azuresong-afk/ai_railway/internal/keyring"
+	"github.com/azuresong-afk/ai_railway/internal/notify"
 	"github.com/azuresong-afk/ai_railway/internal/policy/bundle/build"
 	"github.com/azuresong-afk/ai_railway/internal/policy/versions"
 	"github.com/azuresong-afk/ai_railway/internal/store"
@@ -249,13 +251,27 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	defer readDB.Close()
 	// Оповещения (ТЗ 5.6, задача 3.10, ADR-0020): правила «порог» и «новое»
 	// считаются в транзакции приёма событий; встроенные правила создаются
-	// при запуске.
+	// при запуске. Инциденты по правилам с признаком «инцидент» (DM-08,
+	// задача 3.16) создаются в той же транзакции.
 	alertStore, err := alerting.NewPGStore(db.Pool(), auditLog, rnd, audit.DefaultOrgID, logger)
 	if err != nil {
 		return err
 	}
+	incidentStore, err := incidents.NewPGStore(db.Pool(), auditLog, alertStore, rnd)
+	if err != nil {
+		return err
+	}
+	// Агрегаты дашбордов (задача 3.19) прибавляются в той же транзакции приёма.
+	dashStore, err := events.NewDashStore(db.Pool(), readDB.Pool(), audit.DefaultOrgID, logger)
+	if err != nil {
+		return err
+	}
+	if err := dashStore.Init(ctx); err != nil {
+		return err
+	}
 	eventStore, err := events.NewPGStore(db.Pool(), box, auditLog, audit.DefaultOrgID, events.WithRandom(rnd),
-		events.WithReadDB(readDB.Pool()), events.WithIngestHook(alertStore))
+		events.WithReadDB(readDB.Pool()),
+		events.WithIngestHook(events.ChainHooks(alertStore.WithIncidents(incidentStore), dashStore.Hook())))
 	if err != nil {
 		return err
 	}
@@ -274,6 +290,29 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		RoleCheck: func(ctx context.Context, id string) error {
 			_, err := authSvc.RoleDef(ctx, auth.Role(id))
 			return err
+		},
+		Retention: alertStore})
+	if err != nil {
+		return err
+	}
+	incidentsSvc, err := incidents.New(incidents.Options{Store: incidentStore, Provider: p, Alerts: alertsSvc,
+		OrgID: audit.DefaultOrgID, UserCheck: func(ctx context.Context, id string) error {
+			// Ответственный — действующий пользователь, который видит инциденты.
+			u, err := authSvc.User(ctx, id)
+			if errors.Is(err, auth.ErrNotFound) {
+				return incidents.ErrUserInactive
+			}
+			if err != nil {
+				return err
+			}
+			g, err := authSvc.Grants(ctx, u.Role)
+			if err != nil {
+				return err
+			}
+			if u.Status != auth.StatusActive || !g.Allows(auth.PermIncidentsRead) {
+				return incidents.ErrUserInactive
+			}
+			return nil
 		}})
 	if err != nil {
 		return err
@@ -283,12 +322,41 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	} else if n > 0 {
 		logger.Info("созданы встроенные правила оповещений", "count", n)
 	}
+	// Каналы уведомлений (задача 3.13, Р4): адреса задаёт администратор,
+	// очередь доставки — в БД. Каждое новое оповещение ставится в очередь
+	// той же транзакцией, что его создаёт (задача 3.14): ошибка очереди
+	// откатывает и создание оповещения вместе с приёмом событий или записью
+	// аудита. Очередь подключается раньше правил аудита, чтобы ни одно
+	// оповещение раздела 7 не создалось без доставки.
+	notifyStore, err := notify.NewPGStore(db.Pool(), auditLog, rnd, audit.DefaultOrgID)
+	if err != nil {
+		return err
+	}
+	alertStore.SetEnqueue(notifyStore.EnqueueAlertTx)
+	// Системные правила и правила безопасности (задача 3.11, ADR-0020, п. 1)
+	// считаются в транзакции записи аудита — после создания встроенных
+	// правил; закрытые оповещения удаляются по сроку хранения.
+	auditLog.SetRecordHook(alertStore.OnAudit)
+	go alerting.RunRetention(ctx, alertStore, alerting.RetentionInterval, logger)
+	notifyTransport, err := notify.NewTransport(p, version, notify.DefaultSendTimeout)
+	if err != nil {
+		return err
+	}
+	notifySvc, err := notify.New(notify.Options{Store: notifyStore, Box: box, Provider: p, Transport: notifyTransport,
+		OrgID: audit.DefaultOrgID})
+	if err != nil {
+		return err
+	}
+	go notifySvc.RunDispatcher(ctx, notify.DispatchInterval, logger)
+	// Передача журнала аудита в SIEM (РСБ.6, задача 3.14) каналами с подпиской.
+	go notifySvc.RunAuditStream(ctx, notify.StreamInterval, logger)
 	if err := events.Maintain(ctx, eventStore, logger); err != nil {
 		return fmt.Errorf("секции событий: %w", err)
 	}
 	go events.RunMaintenance(ctx, eventStore, events.MaintainEvery, logger)
 	// Агрегаты для дашбордов (задача 2.16) — фоновым заданием раз в минуту.
 	go events.RunAggregates(ctx, eventStore, events.AggregateEvery, logger)
+	go dashStore.RunBackfill(ctx, events.DashBackfillEvery)
 
 	// «Состояние системы» (задача 2.20): шлюзы читаются из реестра и без
 	// внутреннего УЦ; уведомления ВРМ.1, РСБ.5, ОЦЛ.5 пишутся в аудит при
@@ -341,6 +409,19 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		st, err := authSvc.InstallSettings(ctx)
 		return st.RetentionMode, err
 	})
+	// Месяц расхода и бюджетов — в часовом поясе установки; счётчики
+	// расхода приходят от шлюзов в heartbeat (задача 3.18).
+	appsSvc.SetTimezone(func(ctx context.Context) (string, error) {
+		st, err := authSvc.InstallSettings(ctx)
+		return st.Timezone, err
+	})
+	if gateways != nil {
+		gateways.SetBudgetSync(appsSvc)
+	}
+	// Правила «частота», «аномалия» и «бюджет» (задача 3.12, Р3) — фоновой
+	// задачей раз в минуту; расход — приложений с заданным бюджетом.
+	alertStore.SetBudgetSource(budgetUsage(appsSvc))
+	go alerting.RunPeriodic(ctx, alertStore, alerting.PeriodicInterval, logger)
 
 	// Консоль отдаётся, только если она собрана (make web-build перед go build); иначе сервер — чистый API.
 	var console http.Handler
@@ -354,17 +435,20 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 
 	handler, _, err := api.New(api.Options{
 		Logger: logger, Version: version, Hasher: hasher,
-		Apps:      appsSvc,
-		Policies:  policiesSvc,
-		Ready:     db.Ping,
-		Auth:      authSvc,
-		Gateways:  gateways,
-		Integrity: integritySvc,
-		Status:    statusSvc,
-		Events:    eventStore,
-		Alerts:    alertsSvc,
-		Audit:     auditLog,
-		Fallback:  console,
+		Apps:       appsSvc,
+		Policies:   policiesSvc,
+		Ready:      db.Ping,
+		Auth:       authSvc,
+		Gateways:   gateways,
+		Integrity:  integritySvc,
+		Status:     statusSvc,
+		Events:     eventStore,
+		Alerts:     alertsSvc,
+		Notify:     notifySvc,
+		Incidents:  incidentsSvc,
+		Dashboards: dashStore,
+		Audit:      auditLog,
+		Fallback:   console,
 
 		AuditLog:      auditLog,
 		AuditVerifier: chainVerifier,
@@ -405,6 +489,26 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	return err
 }
 
+// budgetUsage — расход приложений с бюджетом за текущий месяц для правил
+// «бюджет» (задача 3.12).
+func budgetUsage(svc *apps.Service) alerting.BudgetSource {
+	return func(ctx context.Context) ([]alerting.BudgetUsage, error) {
+		st, _, err := svc.BudgetStatuses(ctx, "")
+		if err != nil {
+			return nil, err
+		}
+		var out []alerting.BudgetUsage
+		for i := range st {
+			if st[i].Budget == nil {
+				continue
+			}
+			out = append(out, alerting.BudgetUsage{AppID: st[i].App.ID, App: st[i].App.Slug, Month: st[i].Month,
+				Mode: st[i].Budget.Mode, Percent: st[i].Percent, Exhausted: st[i].Exhausted})
+		}
+		return out, nil
+	}
+}
+
 // newStatus собирает «Состояние системы» и запускает фоновую проверку
 // условий уведомлений раздела 7.
 func newStatus(ctx context.Context, cfg *serverConfig, db *store.DB, auditLog *audit.Log, integritySvc integrity.Service,
@@ -418,6 +522,22 @@ func newStatus(ctx context.Context, cfg *serverConfig, db *store.DB, auditLog *a
 	if err != nil {
 		return nil, err
 	}
+	// Сертификат заказчика для адреса шлюза — условие customer_cert_expiry
+	// (задача 3.27): читаются только имя адреса и срок, ключ не открывается.
+	appStore, err := apps.NewPGStore(db.Pool(), auditLog)
+	if err != nil {
+		return nil, err
+	}
+	customerCert := func(ctx context.Context) (string, time.Time, bool, error) {
+		t, err := appStore.GatewayTLS(ctx, audit.DefaultOrgID)
+		switch {
+		case errors.Is(err, apps.ErrNoGatewayTLS):
+			return "", time.Time{}, false, nil
+		case err != nil:
+			return "", time.Time{}, false, err
+		}
+		return t.Host, t.Cert.NotAfter, true, nil
+	}
 	failed := len(selftestRes.Failures)
 	if !selftestRes.CryptoOK {
 		failed++
@@ -428,7 +548,7 @@ func newStatus(ctx context.Context, cfg *serverConfig, db *store.DB, auditLog *a
 		Gateways:  sysstatus.GatewayLister{Store: gwStore},
 		Integrity: integritySvc.Store, Store: pg,
 		Timezone: timezone, StorageLimit: cfg.AuditStorageLimit, WarnPercent: cfg.AuditStorageWarnPercent,
-		Logger: logger, Bundle: bundle, CANotAfter: caNotAfter,
+		Logger: logger, Bundle: bundle, CANotAfter: caNotAfter, CustomerCert: customerCert,
 	})
 	if err != nil {
 		return nil, err

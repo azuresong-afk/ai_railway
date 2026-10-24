@@ -1,40 +1,62 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { type FormEvent, useState } from "react";
+import { type FormEvent, useRef, useState } from "react";
 import { ApiError } from "../api/client";
 import { ErrorBanner, FormDialog } from "../admin/common";
 import { ReauthPrompt, useReauth, visibleError } from "../admin/reauth";
 import { Button } from "../ui/Button";
 import { Field, Input, Select } from "../ui/Field";
 import { Banner, RawText } from "../ui/Layout";
-import { type Application, appsApi, gatewayExample, type NewApplication, slugPattern, splitList, suggestSlug } from "./api";
+import { formatAbsolute } from "../events/format";
+import {
+  type Application,
+  appsApi,
+  type GatewayCertificate,
+  gatewayExample,
+  type NewApplication,
+  slugPattern,
+  splitList,
+  suggestSlug,
+} from "./api";
 import { ShownKey } from "./ShownKey";
 
-type Step = "app" | "provider" | "key" | "done";
-const steps: [Step, string][] = [
+type Step = "app" | "provider" | "gateway" | "key" | "done";
+const allSteps: [Step, string][] = [
   ["app", "Приложение"],
   ["provider", "Провайдер и политика"],
+  ["gateway", "Адрес шлюза"],
   ["key", "Ключ"],
   ["done", "Готово"],
 ];
 
+// Пределы файлов сертификата заказчика — те же, что на сервере (internal/crypto, MaxServerChainPEM и MaxServerKeyPEM).
+const maxChainBytes = 64 << 10;
+const maxKeyBytes = 16 << 10;
+const certQueryKey = ["apps", "gateway-cert"];
+
 const modelPattern = /^[A-Za-z0-9._:/-]{1,128}$/;
 const cidrPattern = /^[0-9a-fA-F:.]+\/\d{1,3}$/;
 
-// Мастер подключения (ТЗ 6.4, п. 5): приложение, провайдер и политика, ключ, пример запроса. Приложение создаётся
-// в конце третьего шага вместе с ключом; если ключ выпустить не удалось, приложение остаётся и ключ выпускается повторно.
+// Мастер подключения (ТЗ 6.4, п. 5): приложение, провайдер и политика, адрес шлюза, ключ, пример запроса. Приложение
+// создаётся на шаге ключа вместе с ключом; если ключ выпустить не удалось, приложение остаётся и ключ выпускается повторно.
+// Шаг «Адрес шлюза» (задача 3.27) показывается при праве gateway_tls.read: сертификат заказчика один на установку.
 export function ConnectWizard({
   open,
   onClose,
   canPolicy,
   canKey,
+  canTLSRead,
+  canTLSManage,
   mfa,
 }: {
   open: boolean;
   onClose: () => void;
   canPolicy: boolean;
   canKey: boolean;
+  canTLSRead: boolean;
+  canTLSManage: boolean;
   mfa: boolean;
 }) {
+  const steps = canTLSRead ? allSteps : allSteps.filter(([s]) => s !== "gateway");
   const qc = useQueryClient();
   const [step, setStep] = useState<Step>("app");
   const [f, setF] = useState({
@@ -50,6 +72,8 @@ export function ConnectWizard({
 
   const providers = useQuery({ queryKey: ["apps", "providers"], queryFn: ({ signal }) => appsApi.providers(signal), enabled: open });
   const policies = useQuery({ queryKey: ["apps", "policies"], queryFn: ({ signal }) => appsApi.policies(signal), enabled: open && canPolicy });
+  const cert = useQuery({ queryKey: certQueryKey, queryFn: ({ signal }) => appsApi.gatewayCert(signal), enabled: open && canTLSRead });
+  const gwHost = cert.data?.configured ? cert.data.host : undefined;
 
   const models = splitList(f.models);
   const cidrs = splitList(f.cidrs);
@@ -187,7 +211,7 @@ export function ConnectWizard({
       )}
 
       {step === "provider" && (
-        <form onSubmit={next("key", Boolean(errs.provider || errs.models))} className="flex flex-col gap-3">
+        <form onSubmit={next(canTLSRead ? "gateway" : "key", Boolean(errs.provider || errs.models))} className="flex flex-col gap-3">
           <ErrorBanner error={providers.error} />
           <Field label="Провайдер" error={providers.isSuccess && providerList.length === 0 ? "Провайдеров нет. Провайдера пока добавляют через API (/api/v1/providers), см. руководство администратора, раздел 5." : undefined}>
             {({ id, describedBy, invalid }) => (
@@ -257,8 +281,17 @@ export function ConnectWizard({
           ) : (
             <Banner kind="info">Политика и режимы защиты назначаются администратором безопасности. Сейчас приложение получит «Базовую защиту».</Banner>
           )}
-          <Nav onCancel={close} onBack={() => setStep("app")} nextLabel="Далее: ключ" nextDisabled={Boolean(errs.provider || errs.models)} />
+          <Nav
+            onCancel={close}
+            onBack={() => setStep("app")}
+            nextLabel={canTLSRead ? "Далее: адрес шлюза" : "Далее: ключ"}
+            nextDisabled={Boolean(errs.provider || errs.models)}
+          />
         </form>
+      )}
+
+      {step === "gateway" && (
+        <GatewayStep cert={cert.data} loadError={cert.error} canManage={canTLSManage} onCancel={close} onBack={() => setStep("provider")} onNext={() => setStep("key")} />
       )}
 
       {step === "key" && (
@@ -296,7 +329,7 @@ export function ConnectWizard({
           )}
           <Nav
             onCancel={close}
-            onBack={() => setStep("provider")}
+            onBack={() => setStep(canTLSRead ? "gateway" : "provider")}
             nextLabel={canKey ? (created ? "Выпустить ключ" : "Создать приложение и выпустить ключ") : "Создать приложение"}
             nextDisabled={create.isPending || !re.ready || (canKey && Boolean(errs.keyName || errs.days || errs.cidrs))}
           />
@@ -317,13 +350,208 @@ export function ConnectWizard({
           )}
           <section aria-label="Пример запроса" className="flex flex-col gap-1">
             <h3 className="text-sm font-medium">Пример запроса к шлюзу</h3>
-            <p className="text-xs text-muted">Подставьте адрес шлюза и положите ключ в переменную окружения AISEC_KEY.</p>
-            <RawText>{gatewayExample(models[0] ?? "<модель>")}</RawText>
+            <p className="text-xs text-muted">
+              {gwHost ? "Положите ключ в переменную окружения AISEC_KEY." : "Подставьте адрес шлюза и положите ключ в переменную окружения AISEC_KEY."}
+            </p>
+            <RawText>{gatewayExample(models[0] ?? "<модель>", gwHost)}</RawText>
+            {!gwHost && (
+              <p className="text-xs text-muted">
+                Шлюз отвечает сертификатом внутреннего УЦ: добавьте корневой сертификат внутреннего УЦ в доверенные на стороне приложения
+                или загрузите сертификат заказчика на шаге «Адрес шлюза» (руководство администратора, раздел 7).
+              </p>
+            )}
           </section>
         </div>
       )}
     </FormDialog>
   );
+}
+
+// Шаг «Адрес шлюза»: сведения о сертификате заказчика и загрузка цепочки с ключом. Файлы читаются только при отправке:
+// содержимое ключа не попадает в состояние React и в кэш запросов, после отправки поле файла очищается.
+function GatewayStep({
+  cert,
+  loadError,
+  canManage,
+  onCancel,
+  onBack,
+  onNext,
+}: {
+  cert: GatewayCertificate | undefined;
+  loadError: unknown;
+  canManage: boolean;
+  onCancel: () => void;
+  onBack: () => void;
+  onNext: () => void;
+}) {
+  const qc = useQueryClient();
+  const chainRef = useRef<HTMLInputElement>(null);
+  const keyRef = useRef<HTMLInputElement>(null);
+  const [host, setHost] = useState("");
+  const [replace, setReplace] = useState(false);
+  const [localErr, setLocalErr] = useState<string>();
+  const configured = cert?.configured === true;
+  const showForm = canManage && (!configured || replace);
+  const hostValue = host !== "" ? host : configured && replace ? (cert?.host ?? "") : "";
+
+  const upload = useMutation({
+    mutationFn: async () => {
+      const chainFile = chainRef.current?.files?.[0];
+      const keyFile = keyRef.current?.files?.[0];
+      if (!chainFile || !keyFile) throw new Error("файлы не выбраны");
+      const chain_pem = await chainFile.text();
+      const key_pem = await keyFile.text();
+      try {
+        return await appsApi.setGatewayCert({ host: hostValue.trim().toLowerCase(), chain_pem, key_pem });
+      } finally {
+        // Ключ выбирается заново при каждой отправке.
+        if (keyRef.current) keyRef.current.value = "";
+      }
+    },
+    onSuccess: (c) => {
+      qc.setQueryData(certQueryKey, c);
+      if (chainRef.current) chainRef.current.value = "";
+      setReplace(false);
+      setHost("");
+    },
+  });
+
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    const chainFile = chainRef.current?.files?.[0];
+    const keyFile = keyRef.current?.files?.[0];
+    let err: string | undefined;
+    if (hostValue.trim() === "") err = "Введите имя адреса шлюза, по которому к нему обращаются приложения.";
+    else if (!chainFile || !keyFile) err = "Выберите файл цепочки сертификатов и файл закрытого ключа.";
+    else if (chainFile.size === 0 || chainFile.size > maxChainBytes) err = "Файл цепочки — от 1 байта до 64 КиБ.";
+    else if (keyFile.size === 0 || keyFile.size > maxKeyBytes) err = "Файл ключа — от 1 байта до 16 КиБ.";
+    setLocalErr(err);
+    if (!err) upload.mutate();
+  };
+
+  return (
+    <div className="flex flex-col gap-3">
+      <ErrorBanner error={loadError} />
+      {configured && cert ? (
+        <CertInfo cert={cert} />
+      ) : (
+        <Banner kind="info">
+          Сертификата заказчика нет: шлюз отвечает приложениям сертификатом внутреннего УЦ. Чтобы приложения доверяли шлюзу без
+          дополнительной настройки, загрузите сертификат, выпущенный УЦ вашей организации на имя адреса шлюза.
+        </Banner>
+      )}
+      {!canManage && <p className="text-sm text-muted">Сертификат загружает системный администратор.</p>}
+      {canManage && configured && !replace && (
+        <div>
+          <Button onClick={() => setReplace(true)}>Заменить сертификат</Button>
+        </div>
+      )}
+      {showForm && (
+        <form onSubmit={submit} className="flex flex-col gap-3" aria-label="Загрузка сертификата заказчика">
+          <Field label="Адрес шлюза" hint="DNS-имя или IP-адрес, по которому приложения обращаются к шлюзу; должно быть в сертификате.">
+            {({ id, describedBy }) => (
+              <Input id={id} aria-describedby={describedBy} value={hostValue} onChange={(e) => setHost(e.target.value)} maxLength={253} placeholder="aisec-gw.example.ru" />
+            )}
+          </Field>
+          <Field label="Цепочка сертификатов (PEM)" hint="Сертификат шлюза, промежуточные и корневой сертификаты УЦ, до 64 КиБ.">
+            {({ id, describedBy }) => <input id={id} aria-describedby={describedBy} ref={chainRef} type="file" accept=".pem,.crt,.cer" className="text-sm" />}
+          </Field>
+          <Field label="Закрытый ключ (PEM, без пароля)" hint="RSA от 2048 бит или ECDSA P-256/P-384, до 16 КиБ. Хранится на сервере зашифрованным, обратно не показывается.">
+            {({ id, describedBy }) => <input id={id} aria-describedby={describedBy} ref={keyRef} type="file" accept=".pem,.key" className="text-sm" />}
+          </Field>
+          {localErr && <Banner kind="error">{localErr}</Banner>}
+          <CertError error={upload.error} />
+          <div className="flex justify-end gap-2">
+            {replace && (
+              <Button
+                onClick={() => {
+                  setReplace(false);
+                  setHost("");
+                  setLocalErr(undefined);
+                  upload.reset();
+                }}
+              >
+                Не заменять
+              </Button>
+            )}
+            <Button type="submit" disabled={upload.isPending}>
+              {upload.isPending ? "Проверка…" : "Проверить и загрузить"}
+            </Button>
+          </div>
+        </form>
+      )}
+      {upload.isSuccess && <Banner kind="info">Сертификат проверен и сохранён. Шлюзы переключатся на него с новым пакетом конфигурации, без перезапуска.</Banner>}
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          onNext();
+        }}
+      >
+        <Nav onCancel={onCancel} onBack={onBack} nextLabel="Далее: ключ" nextDisabled={upload.isPending} />
+      </form>
+    </div>
+  );
+}
+
+// Сведения о проверенном сертификате: кому и кем выдан, срок, имена, ключ.
+function CertInfo({ cert }: { cert: GatewayCertificate }) {
+  const names = [...(cert.dns_names ?? []), ...(cert.ip_addresses ?? [])];
+  const days = cert.days_left ?? 0;
+  // days_left округлён вниз: «0» — меньше суток, истечение решает not_after (время — на момент показа).
+  const [now] = useState(() => Date.now());
+  const expired = cert.not_after !== undefined && Date.parse(cert.not_after) <= now;
+  return (
+    <section aria-label="Сертификат заказчика" className="flex flex-col gap-2">
+      {(expired || days <= 30) && (
+        <Banner kind="warning">
+          {expired
+            ? "Сертификат истёк: шлюзы отвечают своим сертификатом. Загрузите новый."
+            : days === 0
+              ? "Сертификат истекает менее чем через сутки. Загрузите новый."
+              : `Сертификат истекает через ${days} сут. Загрузите новый.`}
+        </Banner>
+      )}
+      <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
+        <dt className="text-muted">Адрес шлюза</dt>
+        <dd className="font-mono">{cert.host}</dd>
+        <dt className="text-muted">Кому выдан</dt>
+        <dd>{cert.subject}</dd>
+        <dt className="text-muted">Кем выдан</dt>
+        <dd>{cert.issuer}</dd>
+        <dt className="text-muted">Действует</dt>
+        <dd>
+          {cert.not_before && formatAbsolute(cert.not_before)} — {cert.not_after && formatAbsolute(cert.not_after)}
+        </dd>
+        <dt className="text-muted">Имена</dt>
+        <dd className="font-mono">{names.join(", ")}</dd>
+        <dt className="text-muted">Ключ</dt>
+        <dd>
+          {cert.key_alg}, {cert.key_set ? "задан" : "не задан"}
+        </dd>
+        <dt className="text-muted">Цепочка</dt>
+        <dd>{cert.chain_len} серт.</dd>
+        <dt className="text-muted">Отпечаток SHA-256</dt>
+        <dd className="font-mono text-xs break-all">{cert.fingerprint}</dd>
+      </dl>
+    </section>
+  );
+}
+
+// Ошибка загрузки: причины проверки сервера (поля errors[]) показываются списком.
+function CertError({ error }: { error: unknown }) {
+  if (error instanceof ApiError && error.status === 400 && error.fields.length > 0) {
+    return (
+      <Banner kind="error">
+        Сертификат не принят:
+        <ul className="list-disc pl-5">
+          {error.fields.map((f) => (
+            <li key={f.field + f.detail}>{f.detail}</li>
+          ))}
+        </ul>
+      </Banner>
+    );
+  }
+  return <ErrorBanner error={error} />;
 }
 
 function Nav({ onCancel, onBack, nextLabel, nextDisabled }: { onCancel: () => void; onBack?: () => void; nextLabel: string; nextDisabled: boolean }) {

@@ -50,6 +50,8 @@ type Spec struct {
 	// BlockMessage — сообщение о блокировке; пусто — DefaultBlockMessage.
 	BlockMessage string     `yaml:"block_message,omitempty"`
 	Rules        []RuleSpec `yaml:"rules"`
+	// Exceptions — исключения (решение Р8 этапа 3, exception.go).
+	Exceptions []ExceptionSpec `yaml:"exceptions,omitempty"`
 }
 
 // RuleSpec — правило: детектор, направления, условия, порог, действие,
@@ -127,6 +129,7 @@ func (s *Spec) Validate() error {
 		}
 		seen[r.ID] = true
 	}
+	s.validateExceptions(add)
 	return errors.Join(errs...)
 }
 
@@ -235,6 +238,7 @@ func Parse(r io.Reader) (*Spec, error) {
 		r := &s.Rules[i]
 		r.Directions, r.Categories, r.Sources = nilIfEmpty(r.Directions), nilIfEmpty(r.Categories), nilIfEmpty(r.Sources)
 	}
+	s.normalizeExceptions()
 	return &s, nil
 }
 

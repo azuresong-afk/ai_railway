@@ -179,9 +179,9 @@ func streamResponseMode(app *App) policy.ResponseCheck {
 // outputCheck — проверка текстов ответа по политике приложения.
 // Окна потока проверяются без детекторов маскирования для хранения
 // (forEvent = false): содержимое события берётся из итоговой проверки.
-func (h *ChatHandler) outputCheck(ctx context.Context, app *App, texts []inspectText, mode policy.Mode, detectOnly, forEvent bool) (*inspection, error) {
+func (h *ChatHandler) outputCheck(ctx context.Context, app *App, user string, texts []inspectText, mode policy.Mode, detectOnly, forEvent bool) (*inspection, error) {
 	return app.inspect(ctx, inspectRequest{
-		Endpoint: policy.EndpointChat, Direction: detect.Output, Mode: mode, External: app.Provider.External(), Texts: texts,
+		Endpoint: policy.EndpointChat, Direction: detect.Output, Mode: mode, External: app.Provider.External(), Texts: texts, User: user,
 		Mask: forEvent && app.Storage == events.StorageMasked, Timeout: h.cfg.DetectorTimeout, DetectOnly: detectOnly,
 	})
 }
@@ -193,7 +193,7 @@ func (h *ChatHandler) checkFull(w http.ResponseWriter, r *http.Request, app *App
 	rec.respMode = events.ResponseBuffered
 	texts, refs := responseTexts(resp)
 	start := h.cfg.Now()
-	in, err := h.outputCheck(r.Context(), app, texts, "", false, true)
+	in, err := h.outputCheck(r.Context(), app, rec.ev.User, texts, "", false, true)
 	rec.ev.LatencyMS["output_check"] = h.cfg.Now().Sub(start).Milliseconds()
 	switch {
 	case err != nil && r.Context().Err() != nil:
@@ -844,7 +844,7 @@ func (sp *streamProc) checkWindows() streamOut {
 		return streamGo
 	}
 	start := sp.h.cfg.Now()
-	in, err := sp.h.outputCheck(sp.r.Context(), sp.app, texts, "", true, false)
+	in, err := sp.h.outputCheck(sp.r.Context(), sp.app, sp.rec.ev.User, texts, "", true, false)
 	sp.rec.ev.LatencyMS["output_check"] += sp.h.cfg.Now().Sub(start).Milliseconds()
 	if err != nil {
 		return sp.checkError(err)
@@ -921,7 +921,7 @@ func (sp *streamProc) finish(out *chat.Chunk) streamOut {
 		resp := sp.asm.Response()
 		texts, refs := responseTexts(resp)
 		start := sp.h.cfg.Now()
-		in, err := sp.h.outputCheck(sp.r.Context(), sp.app, texts, "", true, true)
+		in, err := sp.h.outputCheck(sp.r.Context(), sp.app, sp.rec.ev.User, texts, "", true, true)
 		sp.rec.ev.LatencyMS["output_check"] += sp.h.cfg.Now().Sub(start).Milliseconds()
 		if err != nil {
 			return sp.checkError(err)
@@ -1124,7 +1124,7 @@ func (sp *streamProc) afterStream() {
 		mode = policy.Monitor
 	}
 	start := sp.h.cfg.Now()
-	in, err := sp.h.outputCheck(context.WithoutCancel(sp.r.Context()), sp.app, texts, mode, true, true)
+	in, err := sp.h.outputCheck(context.WithoutCancel(sp.r.Context()), sp.app, sp.rec.ev.User, texts, mode, true, true)
 	sp.rec.ev.LatencyMS["output_check"] += sp.h.cfg.Now().Sub(start).Milliseconds()
 	if err != nil {
 		sp.h.logger.Error("проверка ответа после передачи не выполнена", "app", sp.app.ID, "event_id", sp.rec.ev.ID, "error", err)

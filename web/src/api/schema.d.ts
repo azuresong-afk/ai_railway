@@ -1697,7 +1697,8 @@ export interface paths {
          *     отозванного шлюза — 403 без уточнения причины. Токен гасится в одной транзакции с
          *     выпуском сертификата и записью `gateway.register`; отказы тоже пишутся в аудит (без
          *     токена). Повторная регистрация того же шлюза (новый токен с `-reregister`) заменяет
-         *     сертификат: прежний перестаёт приниматься внутренним API сразу. Без внутреннего УЦ
+         *     сертификат и закреплённый ключ получателя (`bundle_key`): прежний сертификат перестаёт
+         *     приниматься внутренним API сразу. Без внутреннего УЦ
          *     на сервере (`-ca-cert`) — 503. Предел частоты — 10 запросов в минуту с адреса.
          *     Без `Idempotency-Key`: ответ содержит выпущенный сертификат.
          */
@@ -2259,7 +2260,9 @@ export interface paths {
          *     (по умолчанию последние 24 часа). Язык фильтра — условия через `and`, например
          *     `app = "crm-bot" and severity in ("high", "critical") and stream = true`; поля:
          *     type, app, env, user, provider, model, source, policy_mode, action, rule, severity,
-         *     storage, gateway, threat, detector, stream, non_text_unchecked, has_content; операторы
+         *     storage, gateway, threat, detector, exception (находки, пропущенные по исключению с этим ID),
+         *     mark (`false_positive`, `confirmed` или `none` — без отметки), stream, non_text_unchecked,
+         *     has_content; операторы
          *     `=`, `!=`, `in (…)`, `not in (…)` (у логических полей — только `=`). Лимиты: 2048 байт,
          *     20 условий, 50 значений в списке, значение до 256 байт. Пишет `events.list`
          *     (отключаемое событие).
@@ -2414,6 +2417,130 @@ export interface paths {
                 503: components["responses"]["Unavailable"];
             };
         };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/events/{id}/mark": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Отметить событие «ложное срабатывание» или «подтверждено»
+         * @description Право `events.mark` (ТЗ 5.5, задача 3.22). Отметка хранится отдельно от события (событие
+         *     неизменяемо), одна на событие: новая заменяет прежнюю. Каждая смена пишет
+         *     `events.mark_set` (значение и прежнее значение, без текста комментария) той же
+         *     транзакцией. `mark: none` снимает отметку (`events.mark_removed`, ответ 204; у события без
+         *     отметки — 404). Для `false_positive` ответ содержит черновик исключения по событию
+         *     (`draft`) — как GET `/exception-draft`. Комментарий — до 1000 символов без управляющих
+         *     символов, кроме перевода строки.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID события (UUIDv7) */
+                    id: components["parameters"]["EventID"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["EventMarkRequest"];
+                };
+            };
+            responses: {
+                /** @description Отметка поставлена */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["EventMarkResult"];
+                    };
+                };
+                /** @description Отметка снята */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/events/{id}/exception-draft": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Черновик исключения по событию
+         * @description Право `events.read` (ТЗ 5.3, задача 3.22). Условия по находкам, давшим итоговое действие
+         *     (все находки, если итог — allow или log): детектор, категория, шаблон (правило
+         *     детектора), хеш фрагмента (HMAC на ключе шлюза) и приложение события; срок — 30 суток.
+         *     Содержимое запроса в черновик не копируется. `base_version` — текущая версия политики
+         *     события; `template: true` — политика события — шаблон, исключение добавляется в её копию.
+         *     Создаёт исключение только администратор безопасности: POST `/api/v1/policies/{id}/exceptions`.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description ID события (UUIDv7) */
+                    id: components["parameters"]["EventID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Черновик */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ExceptionDraft"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -3115,6 +3242,243 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/model-prices": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Цены моделей
+         * @description Право `model_prices.read` (ТЗ 5.8, задача 3.18). Цены в рублях за 1 000 токенов
+         *     входа и выхода по провайдеру и модели (имя модели у провайдера, после псевдонимов),
+         *     не больше 10 000. Суммы — десятичные строки, без плавающей точки.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Список цен */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ModelPriceList"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        /**
+         * Задать цену модели
+         * @description Право `model_prices.manage`. Одна цена на модель провайдера (повтор — 409); провайдера
+         *     нет — 422. Цены входят в пакет конфигурации шлюзов (раздел `budgets`): шлюз считает
+         *     расход запросов. Запросы к модели без цены не отклоняются, их стоимость «не
+         *     определена». Пишет `model_price.create`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                    /** @description Ключ повторяемости создающего запроса, 1–64 символа `[A-Za-z0-9._-]` */
+                    "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["NewModelPrice"];
+                };
+            };
+            responses: {
+                /** @description Цена задана */
+                201: {
+                    headers: {
+                        Location?: string;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ModelPrice"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/model-prices/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Изменить цену модели
+         * @description Право `model_prices.manage`. Меняются цены входа и выхода; провайдер и модель
+         *     неизменны. Пишет `model_price.update` (до и после).
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID цены модели (UUID) */
+                    id: components["parameters"]["PriceID"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["ModelPriceFields"];
+                };
+            };
+            responses: {
+                /** @description Цена изменена */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ModelPrice"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        post?: never;
+        /**
+         * Удалить цену модели
+         * @description Право `model_prices.manage`. Стоимость запросов к модели становится «не определена».
+         *     Удаление провайдера удаляет и его цены. Пишет `model_price.delete`.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID цены модели (UUID) */
+                    id: components["parameters"]["PriceID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Цена удалена */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/budgets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Бюджеты и расход приложений за месяц
+         * @description Право `budgets.read` (ТЗ 5.8, задача 3.18). Приложения с бюджетом или с расходом за
+         *     месяц `month` (по умолчанию текущий) в часовом поясе установки, по `slug`. Расход —
+         *     сумма счётчиков, присланных шлюзами в heartbeat (задержка до периода heartbeat),
+         *     в рублях с копейками с округлением вверх. Запросы к моделям без цены в расход не
+         *     входят: их число — `unpriced_requests` («стоимость не определена»).
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description Месяц «ГГГГ-ММ» в часовом поясе установки; по умолчанию текущий */
+                    month?: components["parameters"]["BudgetMonth"];
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Бюджеты и расход */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BudgetStatusList"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/applications": {
         parameters: {
             query?: never;
@@ -3423,6 +3787,267 @@ export interface paths {
         };
         post?: never;
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/applications/{id}/budget": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Бюджет и расход приложения
+         * @description Право `budgets.read`. Бюджет (или `null`) и расход приложения за месяц `month`.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description Месяц «ГГГГ-ММ» в часовом поясе установки; по умолчанию текущий */
+                    month?: components["parameters"]["BudgetMonth"];
+                };
+                header?: never;
+                path: {
+                    /** @description ID приложения (UUID) */
+                    id: components["parameters"]["ApplicationID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Бюджет и расход */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BudgetStatus"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        /**
+         * Задать бюджет приложения
+         * @description Право `budgets.manage` (решение Р7 этапа 3). Месячный бюджет в рублях: `soft` — только
+         *     учёт и оповещения (80 % и 100 %, задача 3.12); `hard` — шлюз отклоняет запросы
+         *     приложения к модели (chat/completions, embeddings), когда расход месяца достиг бюджета
+         *     (ровно 100 % — исчерпан): 429 `budget_exceeded` с `Retry-After` до начала следующего
+         *     месяца. Check API бюджет не тратит. Жёсткий бюджет входит в пакет конфигурации
+         *     шлюзов. Архивному приложению — 409. Снятие или повышение жёсткого бюджета — не
+         *     ослабление защиты (не DM-40): без повторной проверки, но `budget.set` пишется с
+         *     `relaxed: true` (до и после).
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID приложения (UUID) */
+                    id: components["parameters"]["ApplicationID"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["BudgetFields"];
+                };
+            };
+            responses: {
+                /** @description Бюджет задан; расход за текущий месяц */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BudgetStatus"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        post?: never;
+        /**
+         * Снять бюджет приложения
+         * @description Право `budgets.manage`. Расход продолжает учитываться. Пишет `budget.delete`
+         *     (`relaxed: true`, если бюджет был жёстким). Бюджета нет — 404.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID приложения (UUID) */
+                    id: components["parameters"]["ApplicationID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Бюджет снят */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/gateway-certificate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Сертификат заказчика для адреса шлюза
+         * @description Право `gateway_tls.read` (S1, ТЗ 5.4; задача 3.27 этапа 3). Сведения о проверенном
+         *     сертификате: кому и кем выдан, срок, имена, алгоритм ключа, отпечаток SHA-256. Закрытый
+         *     ключ не возвращается — только признак `key_set`. Сертификата нет — `configured: false`
+         *     (адрес шлюза обслуживает сертификат внутреннего УЦ).
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Сведения о сертификате */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["GatewayCertificate"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        /**
+         * Загрузить или заменить сертификат заказчика
+         * @description Право `gateway_tls.manage` (администраторы системы и безопасности). Цепочка (лист,
+         *     промежуточные и корневой сертификаты, только блоки `CERTIFICATE`, до 64 КиБ и 10
+         *     сертификатов, порядок любой) и закрытый ключ (ровно один незашифрованный блок PKCS#8,
+         *     PKCS#1 или SEC 1, до 16 КиБ) в PEM. Проверяется: ключ RSA от 2048 бит или ECDSA
+         *     P-256/P-384 и подходит к сертификату; имя `host` есть в SAN; все сертификаты действуют
+         *     сейчас; цепочка строится до самоподписанного корня и годится для TLS-сервера
+         *     (`serverAuth`); лишних сертификатов нет. Ключ хранится зашифрованным ключом данных
+         *     (ЗИ.1) и уходит шлюзам в пакете конфигурации, зашифрованным для каждого шлюза (HPKE);
+         *     шлюзы переключают TLS на адресе приложений без перезапуска. Пишет `gateway_tls.set`
+         *     (без цепочки и ключа). Неверные данные — 400 с причиной по-русски в `errors[].detail`.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["GatewayCertificateUpload"];
+                };
+            };
+            responses: {
+                /** @description Сертификат проверен и сохранён */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["GatewayCertificate"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        post?: never;
+        /**
+         * Удалить сертификат заказчика
+         * @description Право `gateway_tls.manage`. Шлюзы с новым пакетом конфигурации возвращаются к своему
+         *     сертификату (`-tls-cert`). Пишет `gateway_tls.delete`. Сертификата нет — 404.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Сертификат удалён */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
         options?: never;
         head?: never;
         patch?: never;
@@ -4189,6 +4814,236 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/policies/{id}/exceptions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Исключения версии политики
+         * @description Право `policies.read` (ТЗ 5.3, задача 3.22). Исключения текущей версии (или `version`) с
+         *     состоянием: `expired` — срок истёк, шлюз исключение не применяет, хотя оно остаётся в
+         *     версии до удаления. У шаблона исключений нет.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description Номер версии; по умолчанию текущая */
+                    version?: number;
+                };
+                header?: never;
+                path: {
+                    /** @description ID политики или шаблона */
+                    id: components["parameters"]["PolicyID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Исключения */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PolicyExceptionList"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        /**
+         * Добавить исключение — новая версия политики
+         * @description Право `policies.manage` (только администратор безопасности, УПД.2). Исключение — часть
+         *     версии (ADR-0016): новая версия поверх `base_version` (409, если политику уже изменили).
+         *     Условие: детектор обязательно и хотя бы одно из `pattern`, `fragment`, `app`, `user`
+         *     (детектор целиком для всех приложений не отключается — 400); `category` и `source` —
+         *     дополнительные. Срок обязателен: `expires_in_days` 1–365 или `expires_at` не дальше 365
+         *     суток, по умолчанию 30 суток. Автора и время ставит сервер. Добавление — ослабление
+         *     защиты: текущий пароль или код TOTP в теле (без них — 403, неверные — 403
+         *     `reauthentication_failed`), запись `policy.exception_add` с `weakening` (DM-40).
+         *     Шаблон — 422: исключение добавляется в копию шаблона.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID политики или шаблона */
+                    id: components["parameters"]["PolicyID"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["NewPolicyException"];
+                };
+            };
+            responses: {
+                /** @description Новая версия с исключением */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PolicyExceptionChange"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/policies/{id}/exceptions/{exc}/extend": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Изменить срок исключения — новая версия политики
+         * @description Право `policies.manage`. Новый срок — от момента сохранения (`expires_in_days` 1–365 или
+         *     `expires_at`). Продление — ослабление защиты: пароль или код TOTP и `weakening` в записи
+         *     `policy.exception_extend` (DM-40); сокращение срока — нет.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID политики или шаблона */
+                    id: components["parameters"]["PolicyID"];
+                    /** @description ID исключения политики */
+                    exc: components["parameters"]["ExceptionID"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["PolicyExceptionExtend"];
+                };
+            };
+            responses: {
+                /** @description Новая версия */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PolicyExceptionChange"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/policies/{id}/exceptions/{exc}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Удалить исключение — новая версия политики
+         * @description Право `policies.manage`. Удаление усиливает защиту: повторная проверка не нужна. Пишет
+         *     `policy.exception_delete`. `base_version` обязателен.
+         */
+        delete: {
+            parameters: {
+                query: {
+                    base_version: number;
+                    comment?: string;
+                };
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID политики или шаблона */
+                    id: components["parameters"]["PolicyID"];
+                    /** @description ID исключения политики */
+                    exc: components["parameters"]["ExceptionID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Новая версия */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PolicyExceptionChange"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                409: components["responses"]["ProblemConflict"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/policies/{id}/export": {
         parameters: {
             query?: never;
@@ -4243,6 +5098,367 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/dashboards/overview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Дашборд «Обзор»
+         * @description Право `dashboards.read`. Агрегаты событий без содержимого запросов и ответов. Период — `period`
+         *     (15m, 1h, 24h, 7d, 30d; по умолчанию 24h) либо `from` и `to` (RFC 3339, не длиннее 366 суток).
+         *     До 2 часов данные читаются из событий поминутно, до 31 суток — по часам (начало округляется
+         *     до часа вниз), дольше — по суткам в часовом поясе установки.
+         *     Показатели, график запросов по решениям, топ детекторов, приложения по риску и «Лента решений»
+         *     (`feed=all` — все решения, по умолчанию только с действием).
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description Именованный период дашборда; не сочетается с from и to. По умолчанию 24h */
+                    period?: components["parameters"]["DashPeriod"];
+                    /** @description Начало произвольного периода (RFC 3339); вместе с to */
+                    from?: components["parameters"]["DashFrom"];
+                    /** @description Конец произвольного периода, не включая (RFC 3339); по умолчанию и в будущем — текущий момент */
+                    to?: components["parameters"]["DashTo"];
+                    /** @description «Лента решений»: all — все решения, actions — только с действием (по умолчанию) */
+                    feed?: components["parameters"]["DashFeed"];
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Снимок дашборда */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["DashboardOverview"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/dashboards/threats": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Дашборд «Угрозы»
+         * @description Право `dashboards.read`. Агрегаты событий без содержимого запросов и ответов. Период — `period`
+         *     (15m, 1h, 24h, 7d, 30d; по умолчанию 24h) либо `from` и `to` (RFC 3339, не длиннее 366 суток).
+         *     До 2 часов данные читаются из событий поминутно, до 31 суток — по часам (начало округляется
+         *     до часа вниз), дольше — по суткам в часовом поясе установки.
+         *     Находки по строкам матрицы обнаружения, категориям и детекторам во времени (ряды — для десяти самых частых
+         *     значений), тепловая карта день недели × час в поясе установки, доля непроверенного нетекстового содержимого.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description Именованный период дашборда; не сочетается с from и to. По умолчанию 24h */
+                    period?: components["parameters"]["DashPeriod"];
+                    /** @description Начало произвольного периода (RFC 3339); вместе с to */
+                    from?: components["parameters"]["DashFrom"];
+                    /** @description Конец произвольного периода, не включая (RFC 3339); по умолчанию и в будущем — текущий момент */
+                    to?: components["parameters"]["DashTo"];
+                    /** @description «Лента решений»: all — все решения, actions — только с действием (по умолчанию) */
+                    feed?: components["parameters"]["DashFeed"];
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Снимок дашборда */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["DashboardThreats"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/dashboards/pii": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Дашборд «ПДн»
+         * @description Право `dashboards.read`. Агрегаты событий без содержимого запросов и ответов. Период — `period`
+         *     (15m, 1h, 24h, 7d, 30d; по умолчанию 24h) либо `from` и `to` (RFC 3339, не длиннее 366 суток).
+         *     До 2 часов данные читаются из событий поминутно, до 31 суток — по часам (начало округляется
+         *     до часа вниз), дольше — по суткам в часовом поясе установки.
+         *     Типы ПДн (категории `pii.*`), приложения и действия.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description Именованный период дашборда; не сочетается с from и to. По умолчанию 24h */
+                    period?: components["parameters"]["DashPeriod"];
+                    /** @description Начало произвольного периода (RFC 3339); вместе с to */
+                    from?: components["parameters"]["DashFrom"];
+                    /** @description Конец произвольного периода, не включая (RFC 3339); по умолчанию и в будущем — текущий момент */
+                    to?: components["parameters"]["DashTo"];
+                    /** @description «Лента решений»: all — все решения, actions — только с действием (по умолчанию) */
+                    feed?: components["parameters"]["DashFeed"];
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Снимок дашборда */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["DashboardPII"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/dashboards/consumption": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Дашборд «Потребление»
+         * @description Право `dashboards.read`. Агрегаты событий без содержимого запросов и ответов. Период — `period`
+         *     (15m, 1h, 24h, 7d, 30d; по умолчанию 24h) либо `from` и `to` (RFC 3339, не длиннее 366 суток).
+         *     До 2 часов данные читаются из событий поминутно, до 31 суток — по часам (начало округляется
+         *     до часа вниз), дольше — по суткам в часовом поясе установки.
+         *     Токены, запросы и стоимость в рублях по приложениям, моделям, провайдерам, подразделениям и пользователям
+         *     (псевдонимам), прогноз до конца месяца и исполнение бюджетов (последнее — только с правом `budgets.read`).
+         *     Стоимость считается по ценам модели на момент приёма события; запросы к моделям без цены в стоимость
+         *     не входят и считаются отдельно (`unpriced_requests`).
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description Именованный период дашборда; не сочетается с from и to. По умолчанию 24h */
+                    period?: components["parameters"]["DashPeriod"];
+                    /** @description Начало произвольного периода (RFC 3339); вместе с to */
+                    from?: components["parameters"]["DashFrom"];
+                    /** @description Конец произвольного периода, не включая (RFC 3339); по умолчанию и в будущем — текущий момент */
+                    to?: components["parameters"]["DashTo"];
+                    /** @description «Лента решений»: all — все решения, actions — только с действием (по умолчанию) */
+                    feed?: components["parameters"]["DashFeed"];
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Снимок дашборда */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["DashboardConsumption"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/dashboards/app/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Дашборд «Приложение»
+         * @description Право `dashboards.read`. Агрегаты событий без содержимого запросов и ответов. Период — `period`
+         *     (15m, 1h, 24h, 7d, 30d; по умолчанию 24h) либо `from` и `to` (RFC 3339, не длиннее 366 суток).
+         *     До 2 часов данные читаются из событий поминутно, до 31 суток — по часам (начало округляется
+         *     до часа вниз), дольше — по суткам в часовом поясе установки.
+         *     Владелец приложения (область `own`) видит только свои приложения; чужое — 404 (УПД.8).
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description Именованный период дашборда; не сочетается с from и to. По умолчанию 24h */
+                    period?: components["parameters"]["DashPeriod"];
+                    /** @description Начало произвольного периода (RFC 3339); вместе с to */
+                    from?: components["parameters"]["DashFrom"];
+                    /** @description Конец произвольного периода, не включая (RFC 3339); по умолчанию и в будущем — текущий момент */
+                    to?: components["parameters"]["DashTo"];
+                    /** @description «Лента решений»: all — все решения, actions — только с действием (по умолчанию) */
+                    feed?: components["parameters"]["DashFeed"];
+                };
+                header?: never;
+                path: {
+                    /** @description ID приложения (UUID) */
+                    id: components["parameters"]["ApplicationID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Снимок дашборда */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["DashboardApp"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/dashboards/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Поток обновлений дашборда (SSE)
+         * @description Право `dashboards.read`. Режим реального времени (ТЗ 5.8): `text/event-stream`, событие `snapshot`
+         *     с тем же JSON, что у GET-дашборда, при подключении и после каждого изменения данных; задержка
+         *     не больше 5 с; пустой комментарий `: ping` вместо неизменного снимка. Права проверяются на каждом
+         *     шаге: выход, отзыв токена или потеря права закрывают поток. Не больше трёх потоков на пользователя
+         *     или токен (иначе 429). Для `dashboard=app` нужен `app_id`; владелец приложения (область `own`) —
+         *     только свои приложения.
+         */
+        get: {
+            parameters: {
+                query: {
+                    dashboard: "overview" | "threats" | "pii" | "consumption" | "app";
+                    app_id?: string;
+                    /** @description Именованный период дашборда; не сочетается с from и to. По умолчанию 24h */
+                    period?: components["parameters"]["DashPeriod"];
+                    /** @description Начало произвольного периода (RFC 3339); вместе с to */
+                    from?: components["parameters"]["DashFrom"];
+                    /** @description Конец произвольного периода, не включая (RFC 3339); по умолчанию и в будущем — текущий момент */
+                    to?: components["parameters"]["DashTo"];
+                    /** @description «Лента решений»: all — все решения, actions — только с действием (по умолчанию) */
+                    feed?: components["parameters"]["DashFeed"];
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Поток событий SSE */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/event-stream": string;
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/alerts": {
         parameters: {
             query?: never;
@@ -4253,7 +5469,7 @@ export interface paths {
         /**
          * Оповещения
          * @description Право `alerts.read` (ТЗ 5.6, ADR-0020). От новых к старым, фильтры `status`, `severity`,
-         *     `rule_id` (каждый не больше одного раза). Содержимого запросов и ответов в оповещениях нет:
+         *     `rule_id`, `from`, `to` (период по времени последнего срабатывания; каждый не больше одного раза). Содержимого запросов и ответов в оповещениях нет:
          *     значения группировки (`group`) — метаданные событий, пользователь — псевдоним.
          */
         get: {
@@ -4266,6 +5482,10 @@ export interface paths {
                     status?: "new" | "in_progress" | "closed";
                     severity?: components["schemas"]["AlertSeverity"];
                     rule_id?: string;
+                    /** @description Последнее срабатывание не раньше (RFC 3339, включительно); без параметра — без нижней границы */
+                    from?: string;
+                    /** @description Последнее срабатывание раньше (RFC 3339, не включая); без параметра — без верхней границы. from раньше to */
+                    to?: string;
                 };
                 header?: never;
                 path?: never;
@@ -4454,9 +5674,14 @@ export interface paths {
          * @description Право `alert_rules.manage` (признак `security`: только администратор безопасности, не
          *     токену). Через API создаются правила «порог» (`threshold`: фильтр событий языка
          *     `GET /api/v1/events` и/или наименьшая серьёзность, до 4 полей группировки) и «новое»
-         *     (`new`: поле `model`, `provider`, `user` или `app`, ключ — его значение). Окно подавления
-         *     после закрытия — `suppress_minutes` (по умолчанию 60, до 10 080). Не больше 200 правил —
-         *     иначе 422. Пишет `alert_rule.create`.
+         *     (`new`: поле `model`, `provider`, `user` или `app`, ключ — его значение). Фоновая задача
+         *     сервера раз в минуту считает «частоту» (`frequency`: условие как у «порога», `count`
+         *     событий за `window_minutes` по ключу группировки), «аномалию» (`anomaly`: метрика `metric`
+         *     последнего часа выше медианы того же часа недели за 2–8 недель в `factor` раз и не меньше
+         *     `min_volume`; группировка — нет или `app`; первые 14 суток данных молчит) и «бюджет»
+         *     (`budget`: `warn_percent` и 100 % месячного бюджета приложения, по одному оповещению на
+         *     порог в месяц; группировка — `app`). Окно подавления после закрытия — `suppress_minutes`
+         *     (по умолчанию 60, до 10 080). Не больше 200 правил — иначе 422. Пишет `alert_rule.create`.
          */
         post: {
             parameters: {
@@ -4552,7 +5777,7 @@ export interface paths {
          *     Ослабление (DM-40) — отключение, смена условия или группировки, повышение
          *     `min_severity`, понижение серьёзности, увеличение окна, удаление получателя — пишется с
          *     `weakening: true` и требует текущего пароля (`password`) или кода TOTP (`code`): без них
-         *     403, неверное значение — 403 `reauthentication_failed`. Изменение получателей порождает
+         *     400 (поле `password`), неверное значение — 403 `reauthentication_failed`. Изменение получателей порождает
          *     оповещение «Изменены получатели оповещений» (ТЗ 5.6). Без изменений — 200 без записи.
          *     Пишет `alert_rule.update` (до, после).
          */
@@ -4597,6 +5822,1155 @@ export interface paths {
                 503: components["responses"]["Unavailable"];
             };
         };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/alert-rules/{id}/state": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Состояние правила фоновой задачи
+         * @description Право `alert_rules.read`. Что посчитала фоновая задача сервера (раз в минуту) по правилу
+         *     «частота», «аномалия» или «бюджет»: время вычисления, обучение базовой линии «аномалии»
+         *     (первые 14 суток данных ключа правило молчит, `learning: true` и `learning_until`), ключи
+         *     группировки с текущим объёмом, медианой базовой линии и числом недель в ней (не больше 50,
+         *     всего — `keys_total`); у «бюджета» — месяц и процент расхода; у «частоты» — ключи, сработавшие
+         *     в последнем проходе. Объёмы «аномалии» показываются только с правом `events.read`, расход
+         *     «бюджета» — с `budgets.read`, иначе `keys` пуст и `keys_hidden: true`. У остальных видов и
+         *     до первого вычисления — `evaluated: false`. Содержимого событий нет.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description ID правила оповещения (UUIDv7) */
+                    id: components["parameters"]["AlertRuleID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Состояние */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["AlertRuleState"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/alert-settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Срок хранения оповещений
+         * @description Право `alert_rules.read`. Срок хранения закрытых оповещений, суток (по умолчанию 365).
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Настройки */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["AlertSettings"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        /**
+         * Изменить срок хранения оповещений
+         * @description Право `alert_rules.manage`. Закрытые оповещения без инцидента старше срока удаляются фоновой
+         *     задачей раз в час вместе со ссылками на события, историей и доставками (`alert.retention` в
+         *     аудите); открытые и принятые в работу не удаляются никогда. Срок — от 90 до 1825 суток.
+         *     Сокращение необратимо и требует текущего пароля (`password`) или кода TOTP (`code`): без них
+         *     403, неверное значение — 403 `reauthentication_failed`; пишется с `weakening: true` и
+         *     порождает оповещение «Ослабление защиты» (DM-40). До первичной настройки — 409. Пишет
+         *     `alert.settings_changed` (до, после).
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["AlertSettingsUpdate"];
+                };
+            };
+            responses: {
+                /** @description Срок изменён */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["AlertSettings"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/notify-channels": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Каналы уведомлений
+         * @description Право `notify_channels.read`. Все каналы организации (не больше 50). Секретов в ответе нет:
+         *     `secrets_set` перечисляет заданные (`password`, `url`, `signing_key`), у webhook вместо адреса —
+         *     `settings.url_origin` (схема, узел и порт).
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Каналы */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["NotifyChannelList"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        /**
+         * Создать канал уведомлений
+         * @description Право `notify_channels.manage` (признак `security`: только администратор безопасности, не
+         *     токену). Типы: `email` (SMTP с обязательным STARTTLS), `webhook` (только https, подпись
+         *     `AISec-Signature`), `syslog` (RFC 5424 по TLS, JSON или CEF). Для всех типов обязательны
+         *     корневые сертификаты получателя `settings.ca_pem` (системное хранилище не используется).
+         *     Секреты (`secrets.password`, `secrets.url`, `secrets.signing_key`) шифруются ключом данных и
+         *     больше не показываются. Не больше 50 каналов — иначе 422; повтор названия — 409. Пишет
+         *     `notify_channel.create` (без секретов).
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                    /** @description Ключ повторяемости создающего запроса, 1–64 символа `[A-Za-z0-9._-]` */
+                    "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["NotifyChannelInput"];
+                };
+            };
+            responses: {
+                /** @description Канал создан */
+                201: {
+                    headers: {
+                        Location?: string;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["NotifyChannel"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/notify-channels/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Канал уведомлений
+         * @description Право `notify_channels.read`. Без секретов.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description ID канала уведомлений (UUIDv7) */
+                    id: components["parameters"]["NotifyChannelID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Канал */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["NotifyChannel"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        /**
+         * Изменить канал уведомлений
+         * @description Право `notify_channels.manage`. Полная замена настроек; `version` — версия, которую открыли
+         *     для изменения (устаревшая — 409). Тип канала не меняется. Секрет, не переданный в `secrets`,
+         *     остаётся прежним; пустая строка удаляет необязательный секрет. Каналы не удаляются —
+         *     отключаются. Ослабление (DM-40) — отключение, повышение `min_severity`, смена узла, порта или
+         *     адреса webhook, смена корневых сертификатов, удаление адресата письма, снятие подписки на
+         *     журнал аудита (`audit_stream`) — пишется с
+         *     `weakening: true` и требует текущего пароля (`password`) или кода TOTP (`code`): без них
+         *     403, неверное значение — 403 `reauthentication_failed`. Пишет `notify_channel.update` (до,
+         *     после, какие секреты изменены — без значений).
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID канала уведомлений (UUIDv7) */
+                    id: components["parameters"]["NotifyChannelID"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["NotifyChannelUpdate"];
+                };
+            };
+            responses: {
+                /** @description Канал изменён */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["NotifyChannel"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/notify-channels/{id}/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Тестовая отправка в канал
+         * @description Право `notify_channels.manage`. Одна попытка отправки тестового уведомления (в том числе в
+         *     отключённый канал — до включения); итог — строка журнала доставки с `kind: test` и код
+         *     ошибки без текста ответа получателя. Не чаще 5 раз в минуту на канал — иначе 429. Пишет
+         *     `notify_channel.test` (итог, код ошибки).
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID канала уведомлений (UUIDv7) */
+                    id: components["parameters"]["NotifyChannelID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Итог отправки (status sent или failed) */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["NotifyDelivery"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/notify-channels/{id}/deliveries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Журнал доставки канала
+         * @description Право `notify_channels.read`. Последние строки журнала доставки, новые сначала (`limit` — от
+         *     1 до 200, по умолчанию 50). Без содержимого запросов и секретов. Повторы: 5 попыток с
+         *     задержкой 30 с, 2, 8 и 10 минут; после пятой — `failed` и оповещение «Уведомление не
+         *     доставлено» (DM-44).
+         */
+        get: {
+            parameters: {
+                query?: {
+                    limit?: number;
+                };
+                header?: never;
+                path: {
+                    /** @description ID канала уведомлений (UUIDv7) */
+                    id: components["parameters"]["NotifyChannelID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Журнал доставки */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["NotifyDeliveryList"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/incidents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Инциденты
+         * @description Право `incidents.read` (ТЗ 5.7). От новых к старым, фильтры `status` (статус или `open` —
+         *     все незакрытые), `severity`, `category`, `assignee_id`, `source` — каждый не больше одного
+         *     раза. `overdue` — срок реакции истёк, а инцидент всё ещё новый.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description Размер страницы */
+                    limit?: components["parameters"]["Limit"];
+                    /** @description Непрозрачный курсор из `next_cursor` предыдущей страницы */
+                    cursor?: components["parameters"]["Cursor"];
+                    status?: "new" | "in_progress" | "contained" | "closed" | "open";
+                    severity?: components["schemas"]["AlertSeverity"];
+                    category?: components["schemas"]["IncidentCategoryID"];
+                    assignee_id?: string;
+                    source?: components["schemas"]["IncidentSource"];
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Страница списка */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["IncidentPage"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        /**
+         * Создать инцидент
+         * @description Право `incidents.manage`. Три способа:
+         *     - вручную — `title`, `severity`, `category` обязательны;
+         *     - из оповещения — `alert_id`; название, серьёзность и категория по умолчанию берутся из
+         *       оповещения и его правила, ссылки на события копируются, оповещение получает ссылку на
+         *       инцидент. Оповещение уже в инциденте — 200 и тот же инцидент, без записей;
+         *     - повторное открытие — `reopen_of` (только закрытый, иначе 409): новый инцидент со
+         *       ссылкой на прежний и его событиями. Уже открытый заново — 200 и тот же новый инцидент.
+         *     Номер сквозной по организации. Срок реакции — по серьёзности: критическая 1 ч, высокая
+         *     4 ч, средняя 24 ч, низкая 72 ч, информационная 7 суток. Содержимое запросов и ответов в
+         *     инцидент не копируется. Пишет `incident.create`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                    /** @description Ключ повторяемости создающего запроса, 1–64 символа `[A-Za-z0-9._-]` */
+                    "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["IncidentCreate"];
+                };
+            };
+            responses: {
+                /** @description Оповещение уже в инциденте или закрытый уже открыт заново */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Incident"];
+                    };
+                };
+                /** @description Инцидент создан */
+                201: {
+                    headers: {
+                        Location?: string;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Incident"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/incidents/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Карточка инцидента
+         * @description Право `incidents.read`. Этапы реагирования, хронология (автоматические и ручные записи),
+         *     комментарии со всеми версиями (`superseded` — есть исправленная), связанные оповещения,
+         *     ссылки на события (до 1000) и инструкция реагирования категории. Событие открывается
+         *     `GET /api/v1/events/{id}` с правом `events.read`.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description ID инцидента (UUIDv7) */
+                    id: components["parameters"]["IncidentID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Инцидент */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["IncidentCard"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/incidents/{id}/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Сменить статус инцидента
+         * @description Право `incidents.manage`. Переходы: `new → in_progress`, `new → closed`,
+         *     `in_progress → contained`, `in_progress → closed`, `contained → closed`; другой — 409.
+         *     Закрытие — только с резолюцией `resolved`, `false_positive` или `risk_accepted`;
+         *     незакрытые связанные оповещения закрываются вместе с инцидентом. Первый уход из статуса
+         *     «новый» отмечает реакцию, а без ответственного назначает им субъекта (у токена — его
+         *     владельца). Закрытый инцидент не меняется — 409. Пишет хронологию и
+         *     `incident.status_changed`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID инцидента (UUIDv7) */
+                    id: components["parameters"]["IncidentID"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["IncidentStatusUpdate"];
+                };
+            };
+            responses: {
+                /** @description Статус изменён */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Incident"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/incidents/{id}/assignee": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Назначить ответственного
+         * @description Право `incidents.manage`. `user_id` — активный пользователь (иначе 400) или пустая строка
+         *     (снять назначение). Без изменений — 200 без записи. Пишет хронологию и `incident.assigned`.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID инцидента (UUIDv7) */
+                    id: components["parameters"]["IncidentID"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["IncidentAssign"];
+                };
+            };
+            responses: {
+                /** @description Ответственный назначен */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Incident"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/incidents/{id}/comments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Добавить комментарий
+         * @description Право `incidents.manage`. Комментарии только добавляются (до 4000 символов, до 500 в
+         *     инциденте). Правка — новая запись с `replaces`: только своего комментария (иначе 403) и
+         *     только последней версии (иначе 409). Пишет хронологию и `incident.comment_added` (без
+         *     текста).
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                    /** @description Ключ повторяемости создающего запроса, 1–64 символа `[A-Za-z0-9._-]` */
+                    "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+                };
+                path: {
+                    /** @description ID инцидента (UUIDv7) */
+                    id: components["parameters"]["IncidentID"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["IncidentCommentInput"];
+                };
+            };
+            responses: {
+                /** @description Комментарий добавлен */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["IncidentComment"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/incidents/{id}/stages/{stage}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Отметить этап реагирования
+         * @description Право `incidents.manage`. Этапы шаблона ТЗ 5.7: `intake` (приём сообщения), `triage` (сбор
+         *     первичных сведений), `containment` (локализация), `investigation` (сбор сведений для
+         *     расследования). Отмеченный этап не снимается — 409. Пишет хронологию и
+         *     `incident.stage_completed`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID инцидента (UUIDv7) */
+                    id: components["parameters"]["IncidentID"];
+                    stage: "intake" | "triage" | "containment" | "investigation";
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["IncidentStageInput"];
+                };
+            };
+            responses: {
+                /** @description Этап отмечен */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Incident"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/incidents/{id}/alerts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Добавить оповещение в инцидент
+         * @description Право `incidents.manage` (ТЗ 6.3, п. 5). Оповещение получает ссылку на инцидент, его
+         *     ссылки на события копируются. Уже в этом инциденте — 200 без записей, в другом — 409,
+         *     инцидент закрыт — 409. Не больше 100 оповещений в инциденте. Пишет хронологию и
+         *     `incident.alert_linked`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID инцидента (UUIDv7) */
+                    id: components["parameters"]["IncidentID"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["IncidentAlertLink"];
+                };
+            };
+            responses: {
+                /** @description Оповещение в инциденте */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Incident"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/incidents/{id}/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Выгрузить карточку инцидента в JSON
+         * @description Право `incidents.export` (ТЗ 5.7). Карточка в формате `aisec-incident/1` для передачи в
+         *     SIEM или IRP заказчика (ГосСОПКА — через его сертифицированные системы, ТЗ 10.1): поля,
+         *     этапы, хронология, комментарии, оповещения и ссылки на события, без содержимого событий.
+         *     Файл `incident-<номер>.json`. Запись `data.export` пишется до выдачи данных.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description ID инцидента (UUIDv7) */
+                    id: components["parameters"]["IncidentID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Карточка */
+                200: {
+                    headers: {
+                        "Content-Disposition"?: string;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["IncidentDocument"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/incident-categories": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Категории инцидентов и инструкции реагирования
+         * @description Право `incidents.read`. Категории ТЗ 5.7 со строками матрицы обнаружения (ТЗ 5.16), из
+         *     которых они выводятся, и действующей инструкцией: `default` — текст по умолчанию.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Категории */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["IncidentCategoryList"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/incident-categories/{category}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Изменить инструкцию реагирования
+         * @description Право `incident_categories.manage` (признак `security`: только администратор безопасности,
+         *     не токену). Новая версия текста (до 8000 символов); прежние версии хранятся. `version` —
+         *     версия, открытая для правки (у текста по умолчанию — 1); устаревшая — 409. Без изменений —
+         *     200 без записи. Пишет `incident_category.update` (версии до и после).
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    category: components["schemas"]["IncidentCategoryID"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["IncidentInstructionsUpdate"];
+                };
+            };
+            responses: {
+                /** @description Инструкция сохранена */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["IncidentInstruction"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/notify-channels/{id}/audit-stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Передача журнала аудита в SIEM
+         * @description Право `notify_channels.read`. Состояние передачи журнала аудита в канал с подпиской
+         *     `audit_stream` (РСБ.6, задача 3.14 этапа 3, ADR-0020 п. 15): последняя переданная запись
+         *     (`last_seq`), конец журнала (`head_seq`), не передано записей (`pending`) и время самой
+         *     старой из них, неудачные попытки подряд и код последней ошибки. Записи передаются по порядку
+         *     `seq`, с момента подписки; при недоступности приёмника повторы бессрочны (задержка до 10
+         *     минут), записи не теряются — источник истины сам журнал. `lagging` — отставание выше порога
+         *     DM-44: не передано больше 10 000 записей или самая старая из них старше 15 минут; при
+         *     возникновении и снятии пишется `system.alert` (`audit_stream_lag:<ID канала>`), возникшее
+         *     условие поднимает оповещение встроенного правила `system.audit_stream_lag`. Без подписки —
+         *     `subscribed: false` и нули.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description ID канала уведомлений (UUIDv7) */
+                    id: components["parameters"]["NotifyChannelID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Состояние передачи */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["AuditStreamState"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
         post?: never;
         delete?: never;
         options?: never;
@@ -4689,11 +7063,14 @@ export interface components {
                 lagging: string[];
             };
             notifications: {
+                /**
+                 * @description ca_expiry (ИАФ.10) — действующему корню внутреннего УЦ осталось 60 суток и меньше, нужна ротация `aisec-cli keys rotate-ca`; system.alert пишется за 60 суток (ca_expiry) и за 7 суток (ca_expiry:critical), 3В5 ревью 3.r1. customer_cert_expiry (ЗИ.4) — сертификату заказчика для адреса шлюза осталось 30 суток и меньше; system.alert пишется за 30 суток (customer_cert_expiry) и за 7 суток (customer_cert_expiry:critical), задача 3.27
+                 * @enum {string}
+                 */
+                condition: "account_lockout" | "access_denied" | "audit_chain" | "audit_storage" | "integrity" | "time_sync" | "config_bundle" | "config_bundle_lag" | "test_build" | "gateway_offline" | "events_dropped" | "reports_stale" | "cert_expiry" | "ca_expiry" | "customer_cert_expiry";
                 /** @enum {string} */
-                condition: "account_lockout" | "access_denied" | "audit_chain" | "audit_storage" | "integrity" | "time_sync" | "config_bundle" | "config_bundle_lag" | "test_build";
-                /** @enum {string} */
-                requirement: "ИАФ.4" | "УПД.6" | "РСБ.4" | "РСБ.5" | "ОЦЛ.3" | "ОЦЛ.5" | "ВРМ.1";
-                /** @description Компоненты с активным условием (integrity — server или gateway:<ID>, config_bundle_lag — gateway:<ID>); каждое ведётся отдельно и пишется в system.alert (В18 ревью 2.r3b). test_build (ОЦЛ.1) — компоненты, собранные с тестовым ключом манифеста (Н34 ревью 2.r4); integrity шлюза поднимает и откат выпуска, и чужой ключ проверки пакетов (В19, В20 ревью 2.r4) */
+                requirement: "ИАФ.4" | "ИАФ.10" | "УПД.6" | "РСБ.4" | "РСБ.5" | "РСБ.7" | "ОЦЛ.1" | "ОЦЛ.3" | "ОЦЛ.5" | "ВРМ.1" | "ЗИ.4";
+                /** @description Компоненты с активным условием (integrity — server или gateway:<ID>, config_bundle_lag, gateway_offline, events_dropped, reports_stale, cert_expiry — gateway:<ID>); каждое ведётся отдельно и пишется в system.alert (В18 ревью 2.r3b), а возникшее условие порождает оповещение системного правила (задача 3.11 этапа 3, DM-42–DM-44). test_build (ОЦЛ.1) — компоненты, собранные с тестовым ключом манифеста (Н34 ревью 2.r4); integrity шлюза поднимает и откат выпуска, и чужой ключ проверки пакетов (В19, В20 ревью 2.r4). DM-44: gateway_offline — шлюз не на связи дольше трёх периодов heartbeat, events_dropped — счётчик отброшенных событий вырос за 15 минут, cert_expiry — сертификат истекает меньше чем через 14 суток, reports_stale — итог целостности старше двух часов или не приходит (Н29) */
                 components?: string[];
                 title: string;
                 active: boolean;
@@ -4714,6 +7091,8 @@ export interface components {
             /** @description Причина итога целостности; у самотеста не задаётся */
             reason?: string;
             failed: number;
+            /** @description Итог старше двух периодов проверки — «нет данных» (Н29); только у целостности шлюза */
+            stale?: boolean;
         };
         StatusIntegrity: {
             component: string;
@@ -4804,6 +7183,13 @@ export interface components {
             token: string;
             /** @description CSR (PKCS#10) в PEM на ключ ECDSA P-256 */
             csr: string;
+            /**
+             * @description Открытый ключ получателя секретов пакета конфигурации (X25519, 32 байта,
+             *     base64url без дополнения; ADR-0018, п. 7). Сервер закрепляет его за шлюзом:
+             *     пакет для другого ключа не выдаётся (409 `bundle_key_mismatch` на внутреннем
+             *     порту). Нет поля — ключ закрепляется при первом запросе пакета.
+             */
+            bundle_key?: string;
         };
         GatewayRegistration: {
             /**
@@ -5085,6 +7471,334 @@ export interface components {
             created_at: string;
             /** Format: date-time */
             updated_at: string;
+        };
+        ModelPriceFields: {
+            input_price: components["schemas"]["PriceAmount"];
+            output_price: components["schemas"]["PriceAmount"];
+        };
+        NewModelPrice: {
+            /** Format: uuid */
+            provider_id: string;
+            /** @description Имя модели у провайдера (цель псевдонима), печатные символы */
+            model: string;
+            input_price: components["schemas"]["PriceAmount"];
+            output_price: components["schemas"]["PriceAmount"];
+        };
+        /** @description Рубли за 1 000 токенов, до 4 знаков после точки, от 0 до 1000000; например "0.1500" */
+        PriceAmount: string;
+        ModelPrice: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            provider_id: string;
+            model: string;
+            /** @description Рубли за 1 000 токенов входа */
+            input_price: string;
+            /** @description Рубли за 1 000 токенов выхода */
+            output_price: string;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        ModelPriceList: {
+            items: components["schemas"]["ModelPrice"][];
+        };
+        GatewayCertificateUpload: {
+            /** @description Имя адреса шлюза для приложений: DNS-имя или IP-адрес из SAN */
+            host: string;
+            /** @description Цепочка в PEM: сертификат шлюза, промежуточные и корневой */
+            chain_pem: string;
+            /** @description Закрытый ключ в PEM без пароля; в ответах не возвращается */
+            key_pem: string;
+        };
+        GatewayCertificate: {
+            /** @description false — сертификата заказчика нет, остальных полей тоже */
+            configured: boolean;
+            host?: string;
+            /** @description Кому выдан */
+            subject?: string;
+            /** @description Кем выдан */
+            issuer?: string;
+            serial?: string;
+            /** @description SHA-256 сертификата шлюза в DER */
+            fingerprint?: string;
+            /** Format: date-time */
+            not_before?: string;
+            /**
+             * Format: date-time
+             * @description Самый ранний срок сертификатов цепочки
+             */
+            not_after?: string;
+            days_left?: number;
+            dns_names?: string[];
+            ip_addresses?: string[];
+            /** @description «RSA 2048», «ECDSA P-256»… */
+            key_alg?: string;
+            chain_len?: number;
+            /** @description Закрытый ключ задан */
+            key_set: boolean;
+            /** Format: date-time */
+            updated_at?: string;
+        };
+        BudgetFields: {
+            /**
+             * @description `soft` — учёт и оповещения; `hard` — запросы сверх бюджета отклоняются
+             * @enum {string}
+             */
+            mode: "soft" | "hard";
+            /** @description Рубли в месяц, от 0.01 до 1000000000, до 2 знаков после точки */
+            monthly_limit: string;
+        };
+        Budget: {
+            /** @enum {string} */
+            mode: "soft" | "hard";
+            /** @description Рубли в месяц */
+            monthly_limit: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        BudgetStatus: {
+            /** Format: uuid */
+            application_id: string;
+            /** @description ID (slug) приложения */
+            application: string;
+            name: string;
+            month: string;
+            /** @description Бюджет; `null` — не задан */
+            budget: components["schemas"]["Budget"] | null;
+            /** @description Расход по моделям с ценой, рубли с копейками (округление вверх) */
+            spent: string;
+            /** Format: int64 */
+            priced_tokens: number;
+            /**
+             * Format: int64
+             * @description Токены моделей без цены
+             */
+            unpriced_tokens: number;
+            /**
+             * Format: int64
+             * @description Запросы
+             */
+            requests: number;
+            /**
+             * Format: int64
+             * @description Из них к моделям без цены: стоимость не определена
+             */
+            unpriced_requests: number;
+            /**
+             * Format: int64
+             * @description Доля расхода от бюджета
+             */
+            percent: number;
+            /** @description Расход достиг бюджета (≥ 100 %) */
+            exhausted: boolean;
+        };
+        DashPeriodInfo: {
+            /** @description Именованный период или custom */
+            name: string;
+            /**
+             * Format: date-time
+             * @description Начало; для часовых данных округлено до часа вниз
+             */
+            from: string;
+            /** Format: date-time */
+            to: string;
+            /**
+             * @description Шаг рядов
+             * @enum {string}
+             */
+            unit: "minute" | "hour" | "day";
+            /** @description Часовой пояс установки */
+            timezone: string;
+            /** @description Досчёт прошлых периодов закончен: цифры полные */
+            aggregates_ready: boolean;
+        };
+        DashTotals: {
+            /** Format: int64 */
+            requests: number;
+            /** Format: int64 */
+            with_findings: number;
+            /** Format: int64 */
+            non_text_unchecked: number;
+            /**
+             * Format: int64
+             * @description Заблокировано (режим enforce)
+             */
+            blocked: number;
+            /**
+             * Format: int64
+             * @description Заблокировало бы (режим monitor)
+             */
+            would_block: number;
+            /**
+             * Format: int64
+             * @description Замаскировано или псевдонимизировано
+             */
+            masked: number;
+            /** Format: int64 */
+            tokens_prompt: number;
+            /** Format: int64 */
+            tokens_completion: number;
+            /** @description Стоимость, рубли, 7 знаков после точки */
+            cost: string;
+            /**
+             * Format: int64
+             * @description Запросы моделей без цены
+             */
+            unpriced_requests: number;
+        };
+        DashLatency: {
+            /** @description Верхняя граница корзины p95 задержки шлюза, мс; 0 — данных нет */
+            p95_ms: number;
+            /** @description p95 больше последней границы (5 с) */
+            overflow: boolean;
+            /** Format: int64 */
+            requests: number;
+        };
+        DashPoint: {
+            /** Format: date-time */
+            bucket: string;
+            key: string;
+            /** Format: int64 */
+            value: number;
+        };
+        DashTop: {
+            key: string;
+            /** Format: int64 */
+            value: number;
+        };
+        DashRequestRow: {
+            /** @description Приложение, модель, провайдер, подразделение или псевдоним пользователя; пусто — не указано */
+            key: string;
+            /** Format: int64 */
+            requests: number;
+            /** Format: int64 */
+            with_findings: number;
+            /** Format: int64 */
+            blocked: number;
+            /** Format: int64 */
+            would_block: number;
+            /** Format: int64 */
+            masked: number;
+            /** Format: int64 */
+            tokens_prompt: number;
+            /** Format: int64 */
+            tokens_completion: number;
+            cost: string;
+            /** Format: int64 */
+            unpriced_requests: number;
+        };
+        /** @description Решение в ленте — метаданные события без содержимого; карточка — GET /api/v1/events/{id} */
+        DashFeedItem: {
+            /** Format: uuid */
+            id: string;
+            /** Format: date-time */
+            time: string;
+            app: string;
+            model: string;
+            action: string;
+            policy_mode: string;
+            severity: string;
+            rule: string;
+            threats: string[];
+        };
+        DashCell: {
+            /** @description 1 — понедельник */
+            weekday: number;
+            /** @description Час суток в поясе установки */
+            hour: number;
+            /** Format: int64 */
+            findings: number;
+        };
+        DashPIIRow: {
+            category: string;
+            app: string;
+            action: string;
+            /** Format: int64 */
+            findings: number;
+        };
+        DashboardOverview: {
+            period: components["schemas"]["DashPeriodInfo"];
+            totals: components["schemas"]["DashTotals"];
+            latency: components["schemas"]["DashLatency"];
+            /** @description Ключи: blocked, would_block, masked, allowed */
+            decisions: components["schemas"]["DashPoint"][];
+            top_detectors: components["schemas"]["DashTop"][];
+            apps: components["schemas"]["DashRequestRow"][];
+            feed: components["schemas"]["DashFeedItem"][];
+        };
+        DashboardThreats: {
+            period: components["schemas"]["DashPeriodInfo"];
+            totals: components["schemas"]["DashTotals"];
+            non_text_unchecked_share: number;
+            top_threats: components["schemas"]["DashTop"][];
+            top_categories: components["schemas"]["DashTop"][];
+            top_detectors: components["schemas"]["DashTop"][];
+            by_threat: components["schemas"]["DashPoint"][];
+            by_category: components["schemas"]["DashPoint"][];
+            by_detector: components["schemas"]["DashPoint"][];
+            heatmap: components["schemas"]["DashCell"][];
+        };
+        DashboardPII: {
+            period: components["schemas"]["DashPeriodInfo"];
+            /** Format: int64 */
+            findings: number;
+            types: components["schemas"]["DashTop"][];
+            rows: components["schemas"]["DashPIIRow"][];
+            series: components["schemas"]["DashPoint"][];
+        };
+        DashAppRef: {
+            /** Format: uuid */
+            id: string;
+            slug: string;
+            name: string;
+        };
+        DashboardApp: {
+            period: components["schemas"]["DashPeriodInfo"];
+            application: components["schemas"]["DashAppRef"];
+            totals: components["schemas"]["DashTotals"];
+            latency: components["schemas"]["DashLatency"];
+            decisions: components["schemas"]["DashPoint"][];
+            top_detectors: components["schemas"]["DashTop"][];
+            models: components["schemas"]["DashRequestRow"][];
+            feed: components["schemas"]["DashFeedItem"][];
+        };
+        DashUsagePoint: {
+            /** Format: date-time */
+            bucket: string;
+            /** Format: int64 */
+            requests: number;
+            /** Format: int64 */
+            tokens: number;
+            cost: string;
+        };
+        DashForecast: {
+            month: string;
+            /** @description Расход с начала месяца по цене на момент запросов */
+            spent: string;
+            /** @description Линейный прогноз до конца месяца */
+            projected: string;
+            /** @description Данных достаточно: прошли сутки месяца и есть расход */
+            enough: boolean;
+            month_elapsed: number;
+        };
+        DashboardConsumption: {
+            period: components["schemas"]["DashPeriodInfo"];
+            totals: components["schemas"]["DashTotals"];
+            series: components["schemas"]["DashUsagePoint"][];
+            by_app: components["schemas"]["DashRequestRow"][];
+            by_model: components["schemas"]["DashRequestRow"][];
+            by_provider: components["schemas"]["DashRequestRow"][];
+            by_department: components["schemas"]["DashRequestRow"][];
+            by_user: components["schemas"]["DashRequestRow"][];
+            forecast: components["schemas"]["DashForecast"];
+            /** @description Исполнение бюджетов текущего месяца; пусто без права budgets.read */
+            budgets: components["schemas"]["BudgetStatus"][];
+        };
+        BudgetStatusList: {
+            month: string;
+            items: components["schemas"]["BudgetStatus"][];
         };
         ProviderList: {
             items: components["schemas"]["Provider"][];
@@ -5404,7 +8118,7 @@ export interface components {
             status: number;
             detail: string;
             /** @enum {string} */
-            code: "invalid_request" | "unauthorized" | "forbidden" | "not_found" | "method_not_allowed" | "conflict" | "payload_too_large" | "unsupported_media_type" | "unprocessable" | "rate_limited" | "internal_error" | "service_unavailable" | "reauthentication_failed";
+            code: "invalid_request" | "unauthorized" | "forbidden" | "not_found" | "method_not_allowed" | "conflict" | "payload_too_large" | "unsupported_media_type" | "unprocessable" | "rate_limited" | "internal_error" | "service_unavailable" | "reauthentication_failed" | "bundle_key_mismatch" | "reissue_not_needed";
             errors?: {
                 field: string;
                 detail: string;
@@ -5443,6 +8157,7 @@ export interface components {
             stream: boolean;
             non_text_unchecked: boolean;
             has_content: boolean;
+            mark?: components["schemas"]["EventMark"];
             /** @description Только в карточке и выгрузке JSON — решение с трассировкой, находки, задержки, токены, проверка ответа */
             details?: {
                 /** @description Содержимое full обрезано сервером под предел хранения 256 КиБ (В10 ревью 2.r3a) */
@@ -5622,6 +8337,132 @@ export interface components {
             response_check?: "buffered" | "incremental" | "monitor";
             block_message?: string;
             rules: components["schemas"]["PolicyRule"][];
+            /** @description Исключения (задача 3.22). При сохранении: поле не передано — исключения текущей версии сохраняются; пустой список — удаляются. Автора и created_at новых и изменённых ставит сервер */
+            exceptions?: components["schemas"]["PolicyException"][];
+        };
+        /** @description Исключение (ТЗ 5.3, решение Р8 этапа 3); поля — как в YAML политики. Условия соединяются «и». */
+        PolicyException: {
+            id: string;
+            /** @description ID детектора */
+            detector: string;
+            /** @description Категория находки */
+            category?: string;
+            /** @description Правило детектора (шаблон) */
+            pattern?: string;
+            /** @description Хеш фрагмента (HMAC на ключе шлюза) из находки события */
+            fragment?: string;
+            app?: string;
+            /** @description Псевдоним пользователя из события */
+            user?: string;
+            /** @enum {string} */
+            source?: "user" | "rag" | "tool" | "output";
+            reason: string;
+            readonly author?: string;
+            /** Format: date-time */
+            readonly created_at?: string;
+            /**
+             * Format: date-time
+             * @description Не дальше 365 суток от сохранения; при сохранении без срока — 30 суток
+             */
+            expires_at?: string;
+            /**
+             * Format: uuid
+             * @description Событие
+             */
+            event_id?: string;
+        };
+        PolicyExceptionItem: components["schemas"]["PolicyException"] & {
+            /**
+             * @description expired — шлюз исключение не применяет
+             * @enum {string}
+             */
+            status: "active" | "expired";
+        };
+        PolicyExceptionList: {
+            policy: string;
+            version: number;
+            items: components["schemas"]["PolicyExceptionItem"][];
+        };
+        ExceptionCondition: {
+            detector: string;
+            category?: string;
+            pattern?: string;
+            fragment?: string;
+            app?: string;
+            user?: string;
+            /** @enum {string} */
+            source?: "user" | "rag" | "tool" | "output";
+            reason?: string;
+            expires_in_days?: number;
+            /** Format: date-time */
+            expires_at?: string;
+            /** Format: uuid */
+            event_id?: string;
+        };
+        NewPolicyException: components["schemas"]["ExceptionCondition"] & {
+            base_version: number;
+            comment?: string;
+            /**
+             * Format: password
+             * @description Текущий пароль (добавление — ослабление защиты)
+             */
+            password?: string;
+            /** @description Код из приложения-аутентификатора вместо пароля */
+            code?: string;
+        };
+        /** @description Ровно одно из `expires_in_days` и `expires_at`. */
+        PolicyExceptionExtend: {
+            base_version: number;
+            expires_in_days?: number;
+            /** Format: date-time */
+            expires_at?: string;
+            /** @description Новая причина; пусто — прежняя */
+            reason?: string;
+            comment?: string;
+            /** Format: password */
+            password?: string;
+            code?: string;
+        };
+        PolicyExceptionChange: {
+            policy: components["schemas"]["Policy"];
+            exception?: components["schemas"]["PolicyExceptionItem"];
+        };
+        ExceptionDraft: {
+            /** Format: uuid */
+            event_id: string;
+            /** @description Политика события */
+            policy?: string;
+            /** @description Версия политики в момент события */
+            policy_version?: number;
+            /** @description Текущая версия политики (base_version для создания) */
+            base_version?: number;
+            /** @description Политика события — шаблон */
+            template: boolean;
+            items: components["schemas"]["ExceptionCondition"][];
+        };
+        EventMark: {
+            /** @enum {string} */
+            mark: "false_positive" | "confirmed";
+            comment?: string;
+            /** Format: date-time */
+            marked_at: string;
+            /** @description Тип и ID субъекта: user:<id> или api_token:<id> */
+            marked_by: string;
+            marked_by_name?: string;
+        };
+        EventMarkRequest: {
+            /**
+             * @description none — снять отметку
+             * @enum {string}
+             */
+            mark: "false_positive" | "confirmed" | "none";
+            comment?: string;
+        };
+        EventMarkResult: {
+            /** Format: uuid */
+            event_id: string;
+            mark: components["schemas"]["EventMark"];
+            draft?: components["schemas"]["ExceptionDraft"];
         };
         PolicySummary: {
             id: string;
@@ -5728,8 +8569,17 @@ export interface components {
             weakening: boolean;
             weakening_reasons: {
                 /** @enum {string} */
-                kind: "mode_monitor" | "non_text_weakened" | "response_check_weakened" | "rule_removed" | "action_weakened" | "threshold_raised" | "scope_narrowed" | "detector_changed";
+                kind: "mode_monitor" | "non_text_weakened" | "response_check_weakened" | "rule_removed" | "action_weakened" | "threshold_raised" | "scope_narrowed" | "detector_changed" | "exception_added" | "exception_extended" | "exception_changed";
                 rule?: string;
+                exception?: string;
+            }[];
+            exceptions_added: components["schemas"]["PolicyException"][];
+            exceptions_removed: components["schemas"]["PolicyException"][];
+            exceptions_changed: {
+                id: string;
+                fields: string[];
+                before: components["schemas"]["PolicyException"];
+                after: components["schemas"]["PolicyException"];
             }[];
         };
         /** @description Ровно одно из `policy_id` и `spec`. */
@@ -5804,7 +8654,7 @@ export interface components {
         /** @enum {string} */
         AlertSeverity: "info" | "low" | "medium" | "high" | "critical";
         /**
-         * @description Вид правила (ТЗ 5.6); через API создаются threshold и new
+         * @description Вид правила (ТЗ 5.6); через API создаются threshold, new, frequency, anomaly и budget
          * @enum {string}
          */
         AlertKind: "threshold" | "new" | "frequency" | "anomaly" | "budget" | "system" | "security";
@@ -5885,6 +8735,21 @@ export interface components {
              * @enum {string}
              */
             field?: "model" | "provider" | "user" | "app";
+            /** @description Порог «частоты»: событий в окне по ключу группировки */
+            count?: number;
+            /** @description Окно «частоты» */
+            window_minutes?: number;
+            /**
+             * @description Метрика «аномалии» (запросы, токены, токены ответа) по часовым агрегатам событий
+             * @enum {string}
+             */
+            metric?: "requests" | "tokens" | "completion_tokens";
+            /** @description Во сколько раз объём окна «аномалии» (последний час) выше медианы того же часа недели за 2–8 недель; по умолчанию 3 */
+            factor?: number;
+            /** @description Наименьший объём окна «аномалии»; по умолчанию 100 запросов, 200 000 токенов, 100 000 токенов ответа */
+            min_volume?: number;
+            /** @description Предупреждение «бюджета», % месячного бюджета (по умолчанию 80); второй порог — 100 % */
+            warn_percent?: number;
         };
         /** @description Получатели сверх обязательных ролей security_admin и auditor */
         AlertRecipients: {
@@ -5893,7 +8758,7 @@ export interface components {
         };
         AlertRuleInput: {
             /** @enum {string} */
-            kind: "threshold" | "new";
+            kind: "threshold" | "new" | "frequency" | "anomaly" | "budget";
             name: string;
             description?: string;
             /** @default true */
@@ -5927,6 +8792,195 @@ export interface components {
             /** @description Код из приложения-аутентификатора вместо пароля */
             code?: string;
         };
+        AlertSettings: {
+            /** @description Срок хранения закрытых оповещений, суток */
+            retention_days: number;
+        };
+        AlertSettingsUpdate: {
+            retention_days: number;
+            /**
+             * Format: password
+             * @description Текущий пароль, если срок сокращается
+             */
+            password?: string;
+            /** @description Код из приложения-аутентификатора вместо пароля */
+            code?: string;
+        };
+        /**
+         * @description Настройки без секретов. Почта — host, port (587), username, from, to (1–20 адресов); webhook —
+         *     format (generic, mattermost); syslog — host, port (6514), format (json, cef), facility (0–23,
+         *     по умолчанию 10), hostname (по умолчанию aisec-server). Для всех — ca_pem.
+         */
+        NotifyChannelSettings: {
+            host?: string;
+            port?: number;
+            /** @description Корневые сертификаты получателя в PEM */
+            ca_pem?: string;
+            username?: string;
+            /** Format: email */
+            from?: string;
+            to?: string[];
+            /** @enum {string} */
+            format?: "generic" | "mattermost" | "json" | "cef";
+            facility?: number;
+            hostname?: string;
+            /** @description Схема */
+            readonly url_origin?: string;
+        };
+        /** @description Секреты канала; поле не передано — прежнее значение, пустая строка — удалить необязательный. */
+        NotifyChannelSecrets: {
+            /**
+             * Format: password
+             * @description Пароль SMTP
+             */
+            password?: string;
+            /**
+             * Format: password
+             * @description Адрес webhook https://
+             */
+            url?: string;
+            /**
+             * Format: password
+             * @description Ключ подписи webhook
+             */
+            signing_key?: string;
+        };
+        NotifyChannelInput: {
+            name: string;
+            /** @enum {string} */
+            type: "email" | "webhook" | "syslog";
+            /** @default true */
+            enabled: boolean;
+            min_severity?: components["schemas"]["AlertSeverity"];
+            /**
+             * @description Передавать журнал аудита в SIEM (РСБ.6): только syslog или webhook с форматом generic.
+             *     Передача начинается с конца журнала на момент подписки; снятие подписки — ослабление (DM-40).
+             * @default false
+             */
+            audit_stream: boolean;
+            settings: components["schemas"]["NotifyChannelSettings"];
+            secrets?: components["schemas"]["NotifyChannelSecrets"];
+            version?: number;
+        };
+        NotifyChannelUpdate: {
+            name: string;
+            /**
+             * @description Не меняется
+             * @enum {string}
+             */
+            type?: "email" | "webhook" | "syslog";
+            enabled?: boolean;
+            min_severity?: components["schemas"]["AlertSeverity"];
+            /** @description Не передано — прежнее значение */
+            audit_stream?: boolean;
+            settings: components["schemas"]["NotifyChannelSettings"];
+            secrets?: components["schemas"]["NotifyChannelSecrets"];
+            version: number;
+            /**
+             * Format: password
+             * @description Текущий пароль, если изменение ослабляет доставку
+             */
+            password?: string;
+            /** @description Код из приложения-аутентификатора вместо пароля */
+            code?: string;
+        };
+        NotifyChannel: {
+            /** Format: uuid */
+            id: string;
+            name: string;
+            /** @enum {string} */
+            type: "email" | "webhook" | "syslog";
+            enabled: boolean;
+            min_severity: components["schemas"]["AlertSeverity"];
+            /** @description Канал передаёт журнал аудита в SIEM */
+            audit_stream: boolean;
+            settings: components["schemas"]["NotifyChannelSettings"];
+            secrets_set: ("password" | "url" | "signing_key")[];
+            version: number;
+            /** Format: date-time */
+            created_at: string;
+            created_by: string;
+            /** Format: date-time */
+            updated_at: string;
+            updated_by: string;
+        };
+        NotifyChannelList: {
+            items: components["schemas"]["NotifyChannel"][];
+        };
+        NotifyDelivery: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            channel_id: string;
+            /** Format: uuid */
+            alert_id?: string;
+            /** @enum {string} */
+            kind: "alert" | "test";
+            /** @enum {string} */
+            status: "pending" | "sent" | "failed";
+            attempts: number;
+            /**
+             * Format: date-time
+             * @description Следующая попытка (только pending)
+             */
+            next_at?: string;
+            /**
+             * @description Код ошибки без текста ответа получателя: dial, tls, starttls_unsupported, auth, rejected,
+             *     timeout, write, config, channel_disabled, internal, http_NNN.
+             */
+            error?: string;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+            /** Format: date-time */
+            sent_at?: string;
+        };
+        NotifyDeliveryList: {
+            items: components["schemas"]["NotifyDelivery"][];
+        };
+        AuditStreamState: {
+            /** @description Канал подписан на журнал */
+            subscribed: boolean;
+            /** @description Подписан и включён — передача идёт */
+            active: boolean;
+            /**
+             * Format: int64
+             * @description Последняя переданная запись
+             */
+            last_seq: number;
+            /**
+             * Format: int64
+             * @description Последняя запись журнала
+             */
+            head_seq: number;
+            /**
+             * Format: int64
+             * @description Не передано записей
+             */
+            pending: number;
+            /**
+             * Format: date-time
+             * @description Время самой старой не переданной записи
+             */
+            oldest_pending_at?: string;
+            /** @description Отставание выше порога DM-44 */
+            lagging: boolean;
+            /** @description Неудачных попыток подряд */
+            attempts: number;
+            /**
+             * Format: date-time
+             * @description Следующая попытка (только active)
+             */
+            next_at?: string;
+            /** @description Код последней ошибки без текста ответа приёмника (как в журнале доставки) */
+            error?: string;
+            /**
+             * Format: date-time
+             * @description Последняя успешная передача
+             */
+            last_sent_at?: string;
+        };
         AlertRule: {
             /** Format: uuid */
             id: string;
@@ -5954,8 +9008,226 @@ export interface components {
             updated_at: string;
             updated_by: string;
         };
+        AlertRuleState: {
+            /** Format: uuid */
+            rule_id: string;
+            kind: components["schemas"]["AlertKind"];
+            /** @description Фоновая задача уже считала правило */
+            evaluated: boolean;
+            /** Format: date-time */
+            evaluated_at?: string;
+            /** @description «Аномалия» на обучении: ни у одного ключа нет 14 суток истории */
+            learning: boolean;
+            /** Format: date-time */
+            learning_until?: string;
+            /** @description Месяц «бюджета» в часовом поясе установки */
+            month?: string;
+            keys: {
+                group: {
+                    [key: string]: string;
+                };
+                learning: boolean;
+                /** Format: date-time */
+                ready_at?: string;
+                /** @description Объём окна («аномалия»), процент расхода («бюджет») или событий в окне у ключей «частоты», сработавших в последнем проходе */
+                current: number;
+                /** @description Медиана базовой линии */
+                baseline: number;
+                /** @description Недель в базовой линии */
+                samples: number;
+                triggered: boolean;
+            }[];
+            keys_total: number;
+            /** @description Ключи скрыты: у «аномалии» нужно право events.read, у «бюджета» — budgets.read */
+            keys_hidden: boolean;
+        };
         AlertRuleList: {
             items: components["schemas"]["AlertRule"][];
+        };
+        /**
+         * @description Категория инцидента (ТЗ 5.7); справочник — GET /api/v1/incident-categories
+         * @enum {string}
+         */
+        IncidentCategoryID: "prompt_injection" | "pii_leak" | "system_prompt_leak" | "quota_abuse" | "anomalous_activity" | "agent_policy_violation" | "model_compromise" | "platform_access" | "other";
+        /**
+         * @description manual — вручную, alert — из оповещения, auto — правилом в приёме событий, reopen — повторное открытие
+         * @enum {string}
+         */
+        IncidentSource: "manual" | "alert" | "auto" | "reopen";
+        Incident: {
+            /** Format: uuid */
+            id: string;
+            /** @description Сквозной номер в организации */
+            number: number;
+            title: string;
+            severity: components["schemas"]["AlertSeverity"];
+            category: components["schemas"]["IncidentCategoryID"];
+            /** @enum {string} */
+            status: "new" | "in_progress" | "contained" | "closed";
+            /** @enum {string} */
+            resolution?: "resolved" | "false_positive" | "risk_accepted";
+            resolution_comment?: string;
+            source: components["schemas"]["IncidentSource"];
+            /** Format: uuid */
+            reopened_from?: string;
+            /** Format: uuid */
+            assignee_id?: string;
+            /**
+             * Format: date-time
+             * @description Срок реакции — создание плюс норматив по серьёзности
+             */
+            reaction_due_at: string;
+            /** @description Срок реакции истёк */
+            overdue: boolean;
+            /** Format: date-time */
+            reacted_at?: string;
+            /** Format: date-time */
+            contained_at?: string;
+            /** Format: date-time */
+            created_at: string;
+            created_by: string;
+            /** Format: date-time */
+            updated_at: string;
+            updated_by: string;
+            /** Format: date-time */
+            closed_at?: string;
+            closed_by?: string;
+            version: number;
+        };
+        IncidentPage: components["schemas"]["PageInfo"] & {
+            items: components["schemas"]["Incident"][];
+        };
+        IncidentComment: {
+            /** Format: uuid */
+            id: string;
+            /** Format: date-time */
+            at: string;
+            author: string;
+            author_name: string;
+            body: string;
+            /** Format: uuid */
+            replaces?: string;
+            /** @description Есть исправленная версия */
+            superseded: boolean;
+        };
+        IncidentInstruction: {
+            category: components["schemas"]["IncidentCategoryID"];
+            body: string;
+            /** @description 1 — текст по умолчанию */
+            version: number;
+            default: boolean;
+            /** Format: date-time */
+            updated_at?: string;
+            updated_by?: string;
+        };
+        IncidentCard: components["schemas"]["Incident"] & {
+            category_title: string;
+            stages: {
+                /** @enum {string} */
+                key: "intake" | "triage" | "containment" | "investigation";
+                title: string;
+                /** Format: date-time */
+                done_at?: string;
+                done_by?: string;
+                note?: string;
+            }[];
+            timeline: {
+                /** Format: date-time */
+                at: string;
+                actor: string;
+                /** @enum {string} */
+                kind: "created" | "status_changed" | "assigned" | "comment_added" | "stage_completed" | "alert_linked" | "alert_triggered" | "reopened";
+                /** @description Подробности без содержимого запросов */
+                details: {
+                    [key: string]: unknown;
+                };
+            }[];
+            comments: components["schemas"]["IncidentComment"][];
+            alerts: {
+                /** Format: uuid */
+                id: string;
+                /** Format: uuid */
+                rule_id: string;
+                rule_name: string;
+                title: string;
+                severity: components["schemas"]["AlertSeverity"];
+                /** @enum {string} */
+                status: "new" | "in_progress" | "closed";
+                count: number;
+                /** Format: date-time */
+                created_at: string;
+            }[];
+            events: {
+                /** Format: uuid */
+                id: string;
+                /** Format: date-time */
+                ts: string;
+            }[];
+            /** @description Ссылок столько */
+            events_truncated: boolean;
+            instruction: components["schemas"]["IncidentInstruction"];
+        };
+        IncidentDocument: {
+            /** @enum {string} */
+            format: "aisec-incident/1";
+            /** Format: date-time */
+            exported_at: string;
+        } & components["schemas"]["IncidentCard"];
+        IncidentCreate: {
+            title?: string;
+            severity?: components["schemas"]["AlertSeverity"];
+            category?: components["schemas"]["IncidentCategoryID"];
+            /**
+             * Format: uuid
+             * @description Создать из оповещения
+             */
+            alert_id?: string;
+            /**
+             * Format: uuid
+             * @description Открыть заново закрытый инцидент
+             */
+            reopen_of?: string;
+        };
+        IncidentStatusUpdate: {
+            /** @enum {string} */
+            status: "in_progress" | "contained" | "closed";
+            /**
+             * @description Обязательна при закрытии
+             * @enum {string}
+             */
+            resolution?: "resolved" | "false_positive" | "risk_accepted";
+            comment?: string;
+        };
+        IncidentAssign: {
+            /** @description ID активного пользователя или пустая строка */
+            user_id: string;
+        };
+        IncidentCommentInput: {
+            body: string;
+            /**
+             * Format: uuid
+             * @description Правка — ID своего комментария (последней версии)
+             */
+            replaces?: string;
+        };
+        IncidentStageInput: {
+            note?: string;
+        };
+        IncidentAlertLink: {
+            /** Format: uuid */
+            alert_id: string;
+        };
+        IncidentInstructionsUpdate: {
+            body: string;
+            version: number;
+        };
+        IncidentCategoryList: {
+            items: {
+                id: components["schemas"]["IncidentCategoryID"];
+                title: string;
+                rows: string[];
+                instruction: components["schemas"]["IncidentInstruction"];
+            }[];
         };
         /** @description Поле конверта страницы списка; на последней странице отсутствует */
         PageInfo: {
@@ -6075,7 +9347,7 @@ export interface components {
                 "application/json": components["schemas"]["Error"];
             };
         };
-        /** @description Превышена квота приложения (`quota_exceeded`) или частота неудачных попыток аутентификации с адреса клиента (`auth_rate_limited`, тип `rate_limit_error`, DM-38) */
+        /** @description Превышена квота приложения (`quota_exceeded`), исчерпан жёсткий месячный бюджет приложения (`budget_exceeded`, `Retry-After` — до начала следующего месяца в часовом поясе установки; только chat/completions и embeddings, задача 3.18) или частота неудачных попыток аутентификации с адреса клиента (`auth_rate_limited`, тип `rate_limit_error`, DM-38) */
         QuotaExceeded: {
             headers: {
                 "Retry-After"?: number;
@@ -6233,8 +9505,14 @@ export interface components {
         EventID: string;
         /** @description ID провайдера (UUID) */
         ProviderID: string;
+        /** @description ID цены модели (UUID) */
+        PriceID: string;
+        /** @description Месяц «ГГГГ-ММ» в часовом поясе установки; по умолчанию текущий */
+        BudgetMonth: string;
         /** @description ID приложения (UUID) */
         ApplicationID: string;
+        /** @description ID исключения политики */
+        ExceptionID: string;
         /** @description ID политики или шаблона */
         PolicyID: string;
         /** @description ID ключа приложения (UUID) */
@@ -6245,10 +9523,22 @@ export interface components {
         AlertID: string;
         /** @description ID правила оповещения (UUIDv7) */
         AlertRuleID: string;
+        /** @description ID канала уведомлений (UUIDv7) */
+        NotifyChannelID: string;
+        /** @description ID инцидента (UUIDv7) */
+        IncidentID: string;
         /** @description Начало периода включительно (RFC 3339); по умолчанию to минус 24 часа */
         From: string;
         /** @description Конец периода, не включая (RFC 3339); по умолчанию — текущее время */
         To: string;
+        /** @description Именованный период дашборда; не сочетается с from и to. По умолчанию 24h */
+        DashPeriod: "15m" | "1h" | "24h" | "7d" | "30d";
+        /** @description Начало произвольного периода (RFC 3339); вместе с to */
+        DashFrom: string;
+        /** @description Конец произвольного периода, не включая (RFC 3339); по умолчанию и в будущем — текущий момент */
+        DashTo: string;
+        /** @description «Лента решений»: all — все решения, actions — только с действием (по умолчанию) */
+        DashFeed: "all" | "actions";
         /** @description Фильтр событий (язык — в описании GET /api/v1/events), до 2048 байт */
         EventFilter: string;
         /** @description Ключ повторяемости создающего запроса, 1–64 символа `[A-Za-z0-9._-]` */

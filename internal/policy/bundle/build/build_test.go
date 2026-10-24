@@ -14,6 +14,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/apps"
 	"github.com/azuresong-afk/ai_railway/internal/audit"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
+	"github.com/azuresong-afk/ai_railway/internal/crypto/cryptotest"
 	"github.com/azuresong-afk/ai_railway/internal/detect"
 	"github.com/azuresong-afk/ai_railway/internal/detect/builtin"
 	"github.com/azuresong-afk/ai_railway/internal/keyring"
@@ -580,5 +581,132 @@ func TestDeliverReusesSealed(t *testing.T) {
 	d4, err := e.svc.Deliver(ctx, gw, e.fx.Recipient.PublicKey(), "", -1)
 	if err != nil || d4.Version == d1.Version || bytes.Equal(d4.Body, d1.Body) {
 		t.Fatalf("новая версия — прежний пакет: %v", err)
+	}
+}
+
+// Раздел budgets (задача 3.18): нет цен и бюджетов — раздела нет; цены
+// провайдеров пакета и жёсткие бюджеты — по slug, бюджет в 1e-7 ₽; мягкий
+// бюджет в пакет не входит, но включает учёт расхода.
+func TestBuildBudgetsSection(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	content := func() *bundle.Content {
+		t.Helper()
+		r, err := e.svc.Current(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c, err := bundle.ParseContent(r.Content)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	if c := content(); c.Budgets != nil {
+		t.Fatalf("раздел без цен и бюджетов: %+v", c.Budgets)
+	}
+	e.apps.SetTimezone(func(context.Context) (string, error) { return "Europe/Moscow", nil })
+	if _, err := e.apps.SetBudget(ctx, e.appsBy, e.app.ID, apps.BudgetInput{Mode: apps.BudgetSoft, Limit: "100"}); err != nil {
+		t.Fatal(err)
+	}
+	if c := content(); c.Budgets == nil || c.Budgets.Timezone != "Europe/Moscow" || len(c.Budgets.Hard) != 0 || len(c.Budgets.Prices) != 0 {
+		t.Fatalf("мягкий бюджет: %+v", c.Budgets)
+	}
+	if _, err := e.apps.CreatePrice(ctx, e.appsBy, apps.PriceInput{ProviderID: e.provider.ID, Model: "gpt-4o", Input: "0.25", Output: "1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.apps.SetBudget(ctx, e.appsBy, e.app.ID, apps.BudgetInput{Mode: apps.BudgetHard, Limit: "15000.50"}); err != nil {
+		t.Fatal(err)
+	}
+	c := content()
+	want := bundle.Budgets{Timezone: "Europe/Moscow",
+		Prices: []bundle.ModelPrice{{Provider: "llm", Model: "gpt-4o", Input: 2_500, Output: 10_000}},
+		Hard:   []bundle.HardBudget{{App: "crm", Limit: 1_500_050 * bundle.CostUnitsPerKopeck}}}
+	if c.Budgets == nil || c.Budgets.Timezone != want.Timezone || !slices.Equal(c.Budgets.Prices, want.Prices) || !slices.Equal(c.Budgets.Hard, want.Hard) {
+		t.Fatalf("раздел: %+v", c.Budgets)
+	}
+}
+
+// Сертификат заказчика (задача 3.27): раздел gateway_tls и ключ в секретах
+// шлюза; срок сертификата — срок пересборки, истёкший в пакет не входит;
+// сертификат заменён после сборки версии — новая запечатка этой версии
+// отказывает.
+func TestBuildGatewayTLSSection(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	e.now = time.Now().UTC().Truncate(time.Second)
+	var rev int64 = 1
+	svc, err := build.New(build.Options{Apps: e.apps, Policies: e.policies, Store: e.store, Audit: e.audit,
+		Sealer: e.fx.Sealer, Provider: e.fx.Provider, Clock: e.clock,
+		Revision: func(context.Context) (int64, error) { return rev, nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const host = "aisec-gw.example.ru"
+	short, err := cryptotest.NewChain(cryptotest.ChainOptions{Hosts: []string{host}, NotAfter: e.now.Add(48 * time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, err := e.apps.SetGatewayTLS(ctx, e.appsBy, apps.GatewayTLSInput{Host: host, ChainPEM: short.Full(), KeyPEM: short.Key})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rev++
+	gw := build.Gateway{ID: bundletest.GatewayID}
+	d, err := svc.Deliver(ctx, gw, e.fx.Recipient.PublicKey(), "", -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(d.Body, []byte("PRIVATE KEY")) {
+		t.Fatal("ключ сертификата в пакете открытым текстом")
+	}
+	b, err := e.fx.Opener(t).Open(d.Body, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.Content.GatewayTLS == nil || b.Content.GatewayTLS.Fingerprint != cert.Cert.Fingerprint || !strings.Contains(string(b.TLSKey), "PRIVATE KEY") {
+		t.Fatalf("раздел gateway_tls: %+v", b.Content.GatewayTLS)
+	}
+	if _, _, err := aisecCrypto.ParseServerCert([]byte(b.Content.GatewayTLS.ChainPEM), b.TLSKey, host, e.now); err != nil {
+		t.Fatalf("шлюз не примет раздел: %v", err)
+	}
+	builds := svc.Builds()
+
+	// Срок сертификата — срок пересборки: до него сборок нет, после —
+	// пакет без раздела (шлюзы возвращаются к своему сертификату).
+	e.now = cert.Cert.NotAfter.Add(-time.Second)
+	if _, err := svc.Current(ctx); err != nil || svc.Builds() != builds {
+		t.Fatalf("до срока: выборок %d, %v", svc.Builds(), err)
+	}
+	e.now = cert.Cert.NotAfter
+	r, err := svc.Current(ctx)
+	if err != nil || svc.Builds() != builds+1 {
+		t.Fatalf("срок сертификата: выборок %d, %v", svc.Builds(), err)
+	}
+	if c, err := bundle.ParseContent(r.Content); err != nil || c.GatewayTLS != nil {
+		t.Fatalf("истёкший сертификат остался в пакете: %v", err)
+	}
+
+	// Новый сертификат: версия собрана; затем сертификат заменён без смены
+	// счётчика — выдача собранной версии отказывает (ключ не от неё).
+	e.now = time.Now().UTC().Truncate(time.Second)
+	next, err := cryptotest.NewChain(cryptotest.ChainOptions{Hosts: []string{host}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.apps.SetGatewayTLS(ctx, e.appsBy, apps.GatewayTLSInput{Host: host, ChainPEM: next.Full(), KeyPEM: next.Key}); err != nil {
+		t.Fatal(err)
+	}
+	rev++
+	if _, err := svc.Deliver(ctx, gw, e.fx.Recipient.PublicKey(), "", -1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.apps.SetGatewayTLS(ctx, e.appsBy, apps.GatewayTLSInput{Host: host, ChainPEM: short.Full(), KeyPEM: short.Key}); err != nil {
+		t.Fatal(err)
+	}
+	// Уже запечатанный для этого шлюза пакет выдаётся повторно (3.34), а
+	// новая запечатка — другому шлюзу — отказывает.
+	if _, err := svc.Deliver(ctx, build.Gateway{ID: "другой"}, e.fx.Recipient.PublicKey(), "", -1); err == nil || !strings.Contains(err.Error(), "заменён после сборки") {
+		t.Fatalf("выдача версии с заменённым сертификатом: %v", err)
 	}
 }

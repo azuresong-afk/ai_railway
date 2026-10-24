@@ -106,6 +106,9 @@ type Bundle struct {
 	// Secrets — расшифрованные учётные данные; вызывающий затирает их
 	// после создания провайдеров (Secrets.Clear).
 	Secrets Secrets
+	// TLSKey — закрытый ключ сертификата заказчика (раздел gateway_tls) в
+	// PEM; nil — раздела нет. Вызывающий затирает его после применения.
+	TLSKey KeyPEM
 	// Raw — пакет как получен: его шлюз сохраняет на диск.
 	Raw []byte
 }
@@ -194,42 +197,60 @@ func (o *Opener) Open(data []byte, minVersion int64) (*Bundle, error) {
 	if err != nil {
 		return nil, reject(ReasonDecrypt, "секреты не расшифрованы ключом этого шлюза")
 	}
-	secrets, err := parseSecrets(plain, c)
+	secrets, tlsKey, err := parseSecrets(plain, c)
 	clear(plain)
 	if err != nil {
 		return nil, reject(ReasonInvalidContent, "секреты: %v", err)
 	}
-	return &Bundle{Header: h, KeyID: env.KeyID, Content: c, Secrets: secrets, Raw: data}, nil
+	return &Bundle{Header: h, KeyID: env.KeyID, Content: c, Secrets: secrets, TLSKey: tlsKey, Raw: data}, nil
 }
 
 // parseSecrets — секреты только для провайдеров из содержимого, видимый
-// ASCII (уходят в заголовок Authorization), не длиннее MaxCredential.
-func parseSecrets(plain []byte, c *Content) (Secrets, error) {
-	var items []struct {
-		Provider   string `json:"provider"`
-		Credential string `json:"credential"`
-	}
+// ASCII (уходят в заголовок Authorization), не длиннее MaxCredential, и
+// ключ сертификата заказчика — ровно тогда, когда в содержимом есть
+// раздел gateway_tls.
+func parseSecrets(plain []byte, c *Content) (Secrets, KeyPEM, error) {
+	var items []secretItem
 	if err := decodeStrict(plain, &items); err != nil {
-		return nil, errors.New("неверный формат")
+		return nil, nil, errors.New("неверный формат")
 	}
 	known := map[string]bool{}
 	for _, p := range c.Providers {
 		known[p.ID] = true
 	}
 	out := Secrets{}
+	var tlsKey KeyPEM
 	for _, it := range items {
+		if it.TLSKey != "" {
+			switch {
+			case it.Provider != "" || it.Credential != "":
+				return nil, nil, errors.New("ключ сертификата вместе с учётными данными провайдера")
+			case tlsKey != nil:
+				return nil, nil, errors.New("ключ сертификата заказчика указан дважды")
+			case c.GatewayTLS == nil:
+				return nil, nil, errors.New("ключ сертификата без раздела gateway_tls")
+			}
+			if err := checkTLSKey(it.TLSKey); err != nil {
+				return nil, nil, err
+			}
+			tlsKey = KeyPEM(it.TLSKey)
+			continue
+		}
 		if !known[it.Provider] {
-			return nil, errors.New("секрет для провайдера, которого нет в пакете")
+			return nil, nil, errors.New("секрет для провайдера, которого нет в пакете")
 		}
 		if _, dup := out[it.Provider]; dup {
-			return nil, errors.New("секрет провайдера указан дважды")
+			return nil, nil, errors.New("секрет провайдера указан дважды")
 		}
 		if err := checkCredential(it.Credential); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		out[it.Provider] = it.Credential
 	}
-	return out, nil
+	if c.GatewayTLS != nil && tlsKey == nil {
+		return nil, nil, errors.New("раздел gateway_tls без ключа сертификата")
+	}
+	return out, tlsKey, nil
 }
 
 // checkCredential — те же правила, что при сохранении в сервере (2.11).

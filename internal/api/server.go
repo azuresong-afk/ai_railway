@@ -15,6 +15,8 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/auth"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/internal/gwregistry"
+	"github.com/azuresong-afk/ai_railway/internal/incidents"
+	"github.com/azuresong-afk/ai_railway/internal/notify"
 	"github.com/azuresong-afk/ai_railway/internal/policy/versions"
 )
 
@@ -54,6 +56,15 @@ type Options struct {
 	// Alerts — оповещения и правила (задача 3.10 этапа 3); nil — их
 	// эндпоинты отвечают 503.
 	Alerts *alerting.Service
+	// Notify — каналы уведомлений (задача 3.13 этапа 3); nil — их
+	// эндпоинты отвечают 503.
+	Notify *notify.Service
+	// Incidents — инциденты (задача 3.16 этапа 3); nil — их эндпоинты
+	// отвечают 503.
+	Incidents *incidents.Service
+	// Dashboards — агрегаты для дашбордов (задача 3.19 этапа 3); nil — их
+	// эндпоинты отвечают 503.
+	Dashboards DashboardReader
 	// OnDenied — вызывается при каждом отказе в доступе (УПД.6). По
 	// умолчанию, если задан Auth, отказ аутентифицированному субъекту
 	// пишется в журнал аудита (access.denied).
@@ -102,6 +113,18 @@ type Deps struct {
 	AuditVerifier AuditChainVerifier
 	// Alerts — nil, если оповещения не подключены: их эндпоинты отвечают 503.
 	Alerts *alerting.Service
+	// Notify — nil, если каналы уведомлений не подключены: их эндпоинты отвечают 503.
+	Notify *notify.Service
+	// Incidents — nil, если инциденты не подключены: их эндпоинты отвечают 503.
+	Incidents *incidents.Service
+	// Dashboards — nil, если агрегаты дашбордов не подключены: их эндпоинты отвечают 503.
+	Dashboards DashboardReader
+	// DashCache — общие снимки дашбордов на dashCacheTTL; DashStreams —
+	// ограничение одновременных потоков SSE; Reauthorize — повторная
+	// проверка прав запроса на каждом шаге потока.
+	DashCache   *dashCache
+	DashStreams *ExportGate
+	Reauthorize func(r *http.Request, permission string) (Principal, Decision)
 	// Exports — ограничение одновременных выгрузок событий (В11 ревью 2.r3a).
 	Exports *ExportGate
 	// AuditReads — ограничение одновременных выборок журнала аудита (В17
@@ -142,8 +165,10 @@ func New(o Options) (http.Handler, *Router, error) {
 	rt.mux.HandleFunc("/", rt.notFound)
 	deps := Deps{Logger: o.Logger, Version: o.Version, Ready: o.Ready, Auth: o.Auth, Gateways: o.Gateways, Integrity: o.Integrity,
 		Status: o.Status, Events: o.Events, Audit: o.Audit, Apps: o.Apps, Policies: o.Policies,
-		AuditLog: o.AuditLog, AuditVerifier: o.AuditVerifier, Alerts: o.Alerts,
-		Exports: NewExportGate(MaxExportsPerSubject, MaxExportsTotal), AuditReads: NewExportGate(MaxAuditReadsPerSubject, MaxAuditReadsTotal)}
+		AuditLog: o.AuditLog, AuditVerifier: o.AuditVerifier, Alerts: o.Alerts, Notify: o.Notify, Incidents: o.Incidents,
+		Dashboards: o.Dashboards, DashCache: newDashCache(), DashStreams: NewExportGate(dashStreamsPerSubject, dashStreamsTotal),
+		Reauthorize: o.Authorizer.Authorize,
+		Exports:     NewExportGate(MaxExportsPerSubject, MaxExportsTotal), AuditReads: NewExportGate(MaxAuditReadsPerSubject, MaxAuditReadsTotal)}
 	if err := rt.Add(append(Routes(deps), o.Extra...)...); err != nil {
 		return nil, nil, err
 	}

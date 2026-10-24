@@ -625,7 +625,7 @@ func TestE2EAuthz_RoleEndpointMatrix(t *testing.T) {
 	// с вошедшей ролью не вызываются; без входа проверяются как все.
 	sessionOnly := func(perm string) bool { return perm == "session" || perm == "self" }
 
-	ops, pairs, denials := 0, 0, 0
+	ops, pairs, denials, ownDenied := 0, 0, 0, 0
 	for path, methods := range spec.Paths {
 		for method, op := range methods {
 			if op.Permission == "" || strings.HasPrefix(path, "/internal/") {
@@ -664,6 +664,10 @@ func TestE2EAuthz_RoleEndpointMatrix(t *testing.T) {
 					if r.code == http.StatusUnauthorized || r.code >= 500 {
 						t.Errorf("%s %s, роль %s (область own): ответ %s", method, path, a.role, r)
 					}
+					// Маршруты, где область own допускает только часть запросов (дашборды), отвечают 403 и пишут отказ в аудит.
+					if r.code == http.StatusForbidden {
+						ownDenied++
+					}
 				}
 			}
 		}
@@ -672,8 +676,8 @@ func TestE2EAuthz_RoleEndpointMatrix(t *testing.T) {
 		t.Fatalf("матрица пуста: маршрутов %d, пар %d, отказов %d", ops, pairs, denials)
 	}
 	// Каждый отказ записан в аудит (УПД.6).
-	if got := s.auditCount("access.denied") - deniedBefore; got != denials {
-		t.Errorf("записей access.denied %d, отказов %d", got, denials)
+	if got := s.auditCount("access.denied") - deniedBefore; got != denials+ownDenied {
+		t.Errorf("записей access.denied %d, отказов %d (и %d в области own)", got, denials, ownDenied)
 	}
 	// Ни один вызов матрицы не завершил сессию роли.
 	for _, a := range actors {

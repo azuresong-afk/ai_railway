@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/azuresong-afk/ai_railway/internal/config"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
@@ -17,8 +18,8 @@ import (
 // состояния с ключом получателя и применение пакета заменой обработчика в
 // sw. Возвращает и KeyID ключей проверки для heartbeat (В19 ревью 2.r4).
 func newBundleClient(cfg *config.Gateway, p aisecCrypto.Provider, tp aisecCrypto.TLSProvider, rnd aisecCrypto.Random,
-	state *gateway.BundleState, control *controlClient, hb *handlerBuilder, sw *gateway.Switch, pubs [][]byte,
-	logger *slog.Logger) (*gateway.BundleClient, []string, error) {
+	state *gateway.BundleState, control *controlClient, hb *handlerBuilder, sw *gateway.Switch, appTLS *gateway.TLSSwitch,
+	pubs [][]byte, logger *slog.Logger) (*gateway.BundleClient, []string, error) {
 	var verifiers []aisecCrypto.Verifier
 	for i, data := range pubs {
 		v, err := aisecCrypto.ParseVerifierPEM(p, cfg.BundlePubFiles[i], data, aisecCrypto.KeyKindSigningPublic)
@@ -40,12 +41,22 @@ func newBundleClient(cfg *config.Gateway, p aisecCrypto.Provider, tp aisecCrypto
 		return nil, nil, err
 	}
 	opener.SetTrust(chain, nil)
+	// Сертификат заказчика проверяется до сборки обработчика: неверный
+	// раздел gateway_tls отклоняет пакет целиком, и шлюз остаётся на
+	// прежних обработчике и сертификате. Переключение TLS — после замены
+	// обработчика (задача 3.27).
 	apply := func(b *bundle.Bundle) error {
+		prepared, err := appTLS.Prepare(b.Content.GatewayTLS, b.TLSKey, time.Now())
+		clear(b.TLSKey)
+		if err != nil {
+			return err
+		}
 		h, err := buildFromBundle(b, tp, rnd, hb, logger)
 		if err != nil {
 			return err
 		}
 		sw.Store(h)
+		appTLS.Use(prepared)
 		return nil
 	}
 	bc, err := gateway.NewBundleClient(gateway.BundleConfig{Client: control.client, Server: cfg.Server, Opener: opener,
@@ -103,5 +114,5 @@ func buildFromBundle(b *bundle.Bundle, tp aisecCrypto.TLSProvider, rnd aisecCryp
 	if err != nil {
 		return nil, err
 	}
-	return hb.build(b.Content.GatewayApplications(), provs, specs, recs, b.Content.UnavailableIDs())
+	return hb.build(b.Content.GatewayApplications(), provs, specs, recs, b.Content.UnavailableIDs(), b.Content.Budgets)
 }

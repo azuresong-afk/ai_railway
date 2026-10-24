@@ -519,6 +519,9 @@ func (s *PGStore) DropExpired(ctx context.Context) ([]string, error) {
 		if len(dropped) == 0 {
 			return nil
 		}
+		if err := dropOrphanMarks(ctx, tx); err != nil {
+			return err
+		}
 		return s.audit.RecordTx(ctx, tx, audit.Entry{
 			OrgID: s.orgID, Actor: audit.Actor{Type: audit.ActorSystem, ID: "aisec-server", Name: "Сервер управления"},
 			Action: "events.retention", Object: audit.Object{Type: "events"}, Result: audit.ResultSuccess,

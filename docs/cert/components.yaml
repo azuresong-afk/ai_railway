@@ -993,3 +993,17 @@ components:
     decided: 2026-10-21
     license_files:
       OFL-JetBrainsMono.txt: 403581b69dac5cff4079205e01c6b467e56af449ecbd7247693ddb1baafa005b
+
+  - name: zaproxy/zap-stable
+    version: 20261016@sha256:5ccfff9a411743ab2615136a2edd7416bec9ce41572fa94e935df38c14adb2b6
+    type: image
+    scope: build
+    purpose: DAST пилота — OWASP ZAP baseline против консоли и шлюза в CI (deploy/compose/pilot/dast, .github/workflows/dast.yml, задача 3.30).
+    license: Apache-2.0
+    repository: https://github.com/zaproxy/zaproxy
+    attack_surface: false
+    security_function: false
+    provided_by: ZAP Dev Team (Software Security Project, Checkmarx)
+    justification: Динамический анализ работающей установки нужен для ЗИ и сертификации (ТЗ 8.4); собственного сканера писать не нужно. Только CI, не распространяется и не входит в SBOM. Образ закреплён по digest (ТЗ 8.7); тег — еженедельная сборка стабильного выпуска.
+    decision: решение владельца Р10 этапа 3 (22.10.2026)
+    decided: 2026-10-22

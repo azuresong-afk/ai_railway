@@ -19,6 +19,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/config"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/internal/detect/lists"
+	"github.com/azuresong-afk/ai_railway/internal/gwregistry"
 	"github.com/azuresong-afk/ai_railway/internal/ids"
 	"github.com/azuresong-afk/ai_railway/internal/keyring"
 	"github.com/azuresong-afk/ai_railway/internal/policy"
@@ -307,6 +308,40 @@ type Store interface {
 	// ActiveKeys — все неотозванные ключи организации со сроком позже now
 	// (пакет конфигурации, Н25 ревью 2.r3b), по приложению и префиксу.
 	ActiveKeys(ctx context.Context, orgID string, now time.Time) ([]Key, error)
+
+	// Цены моделей и бюджеты (задача 3.18, миграция 0031_budgets).
+	// CreatePrice — ErrPriceExists, ErrProviderNotFound.
+	CreatePrice(ctx context.Context, p Price, rec audit.Entry) error
+	UpdatePrice(ctx context.Context, orgID, id string, fn func(*Price) (audit.Entry, error)) (Price, error)
+	DeletePrice(ctx context.Context, orgID, id string, fn func(Price) (audit.Entry, error)) (Price, error)
+	// Prices — по ID провайдера и модели.
+	Prices(ctx context.Context, orgID string) ([]Price, error)
+	// SetBudget блокирует приложение и сохраняет бюджет, который вернула
+	// fn (prev — прежний, nil — не было).
+	SetBudget(ctx context.Context, orgID, appID string, fn func(a Application, prev *Budget) (Budget, audit.Entry, error)) (Budget, error)
+	// DeleteBudget — ErrNoBudget, если бюджета нет.
+	DeleteBudget(ctx context.Context, orgID, appID string, fn func(a Application, b Budget) (audit.Entry, error)) (Budget, error)
+	// Budget — ErrNoBudget, если бюджета нет.
+	Budget(ctx context.Context, orgID, appID string) (Budget, error)
+	Budgets(ctx context.Context, orgID string) ([]Budget, error)
+	// SaveUsage сохраняет счётчики процесса шлюза: по каждой строке —
+	// наибольшее из прежнего и нового (повтор heartbeat ничего не удваивает).
+	// Счётчики неизвестных приложений пропускаются.
+	SaveUsage(ctx context.Context, orgID, gatewayID string, startedAt time.Time, months []gwregistry.BudgetMonth, now time.Time) error
+	// HardUsageOthers — расход за month по slug приложений с жёстким
+	// бюджетом без процесса (gatewayID, startedAt).
+	HardUsageOthers(ctx context.Context, orgID, month, gatewayID string, startedAt time.Time) (map[string]int64, error)
+	// Usage — суммарный расход за month по slug приложений.
+	Usage(ctx context.Context, orgID, month string) (map[string]Usage, error)
+
+	// Сертификат заказчика для адреса шлюза (задача 3.27, миграция
+	// 0039_gateway_tls): один на организацию. SetGatewayTLS блокирует
+	// запись и сохраняет ту, что вернула fn (prev — прежняя, nil — не было).
+	SetGatewayTLS(ctx context.Context, orgID string, fn func(prev *GatewayTLS) (GatewayTLS, audit.Entry, error)) (GatewayTLS, error)
+	// GatewayTLS — ErrNoGatewayTLS, если сертификата нет.
+	GatewayTLS(ctx context.Context, orgID string) (GatewayTLS, error)
+	// DeleteGatewayTLS — ErrNoGatewayTLS, если сертификата нет.
+	DeleteGatewayTLS(ctx context.Context, orgID string, fn func(GatewayTLS) (audit.Entry, error)) (GatewayTLS, error)
 }
 
 // Options — зависимости Service.
@@ -347,6 +382,9 @@ type Service struct {
 	// defaultStorage — режим хранения новых приложений из настроек
 	// установки (Н42 ревью 2.r4, В26 ревью 2.r5); nil — DefaultStorage.
 	defaultStorage func(ctx context.Context) (string, error)
+	// timezone — часовой пояс установки для месяца расхода (задача 3.18);
+	// nil — UTC.
+	timezone func(ctx context.Context) (string, error)
 }
 
 // SetBundleCheck задаёт проверку приложения сборкой пакета (ошибка — с

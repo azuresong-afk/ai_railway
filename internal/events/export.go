@@ -42,7 +42,9 @@ type View struct {
 	Stream           bool      `json:"stream"`
 	NonTextUnchecked bool      `json:"non_text_unchecked"`
 	HasContent       bool      `json:"has_content"`
-	Details          *Details  `json:"details,omitempty"`
+	// Mark — отметка аналитика (задача 3.22); нет — поле отсутствует.
+	Mark    *Mark    `json:"mark,omitempty"`
+	Details *Details `json:"details,omitempty"`
 }
 
 // View — представление записи для API.
@@ -56,7 +58,7 @@ func (r *Record) View() View {
 		App: r.App, Env: r.Env, User: r.User, Provider: r.Provider, Model: r.Model, Source: r.Source,
 		PolicyMode: r.PolicyMode, Action: r.Action, Rule: r.Rule, Severity: r.Severity, Storage: r.Storage,
 		Threats: threats, Stream: r.Stream, NonTextUnchecked: r.NonTextUnchecked, HasContent: r.HasContent,
-		Details: r.Details,
+		Mark: r.Mark, Details: r.Details,
 	}
 }
 
