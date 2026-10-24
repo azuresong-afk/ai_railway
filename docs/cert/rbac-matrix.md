@@ -66,6 +66,9 @@
 | POST | `/api/v1/events/{id}/content` | `events.content.read` | да | — | — | — | — | — |
 | GET | `/api/v1/events/{id}/exception-draft` | `events.read` | да | — | да | да | — | да |
 | PUT | `/api/v1/events/{id}/mark` | `events.mark` | да | — | да | — | — | да |
+| GET | `/api/v1/gateway-certificate` | `gateway_tls.read` | да | да | — | да | — | да |
+| PUT | `/api/v1/gateway-certificate` | `gateway_tls.manage` | да | да | — | — | — | да |
+| DELETE | `/api/v1/gateway-certificate` | `gateway_tls.manage` | да | да | — | — | — | да |
 | GET | `/api/v1/incident-categories` | `incidents.read` | да | — | да | да | — | да |
 | PUT | `/api/v1/incident-categories/{category}` | `incident_categories.manage` | да | — | — | — | — | — |
 | GET | `/api/v1/incidents` | `incidents.read` | да | — | да | да | — | да |

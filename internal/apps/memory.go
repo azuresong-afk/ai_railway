@@ -26,6 +26,8 @@ type Memory struct {
 	prices  map[string]Price
 	budgets map[string]Budget
 	usage   map[usageKey]Usage
+	// gatewayTLS — сертификат заказчика по организации (задача 3.27).
+	gatewayTLS map[string]GatewayTLS
 }
 
 // usageKey — строка budget_usage.
@@ -37,7 +39,8 @@ type usageKey struct {
 // NewMemory создаёт пустое хранилище.
 func NewMemory() *Memory {
 	return &Memory{providers: map[string]Provider{}, apps: map[string]Application{}, keys: map[string]Key{},
-		prices: map[string]Price{}, budgets: map[string]Budget{}, usage: map[usageKey]Usage{}}
+		prices: map[string]Price{}, budgets: map[string]Budget{}, usage: map[usageKey]Usage{},
+		gatewayTLS: map[string]GatewayTLS{}}
 }
 
 // Records — копия записей аудита.

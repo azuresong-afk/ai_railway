@@ -197,17 +197,18 @@ func TestPGTransitionWritesAuditOnlyOnChange(t *testing.T) {
 		t.Fatalf("запись аудита осталась при откате: %d", n)
 	}
 	// Условия по компоненту (В18, Н28 ревью 2.r3b): коды с UUID шлюза;
-	// условия DM-44 по шлюзу (задача 3.11) и корня УЦ (3В5 ревью 3.r1).
+	// условия DM-44 по шлюзу (задача 3.11), корня УЦ (3В5 ревью 3.r1) и
+	// сертификата заказчика (задача 3.27).
 	gw := "0192a000-0000-7000-8000-000000000001"
 	for _, code := range []string{"integrity:server", "integrity:gateway:" + gw, "config_bundle", "config_bundle_lag:" + gw,
 		"events_dropped:" + gw, "gateway_offline:" + gw, "cert_expiry:" + gw, "reports_stale:" + gw,
-		"ca_expiry", "ca_expiry:critical"} {
+		"ca_expiry", "ca_expiry:critical", "customer_cert_expiry", "customer_cert_expiry:critical"} {
 		if _, err := e.store.Transition(ctx, code, true, now, rec); err != nil {
 			t.Fatalf("%s: %v", code, err)
 		}
 	}
 	for _, code := range []string{"integrity:gateway:", "integrity:gateway:G1'--", "integrity:other", "config_bundle_lag:x y",
-		"ca_expiry:other", "cert_expiry"} {
+		"ca_expiry:other", "cert_expiry", "customer_cert_expiry:warn"} {
 		if _, err := e.store.Transition(ctx, code, true, now, rec); err == nil {
 			t.Fatalf("неверный код %q принят", code)
 		}

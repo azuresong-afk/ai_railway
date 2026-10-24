@@ -203,6 +203,12 @@ const (
 	// Сертификаты шлюзов после этого не продлеваются: их срок обрезан сроком
 	// корня (3В5 ревью 3.r1).
 	ConditionCAExpiry = "ca_expiry"
+	// ConditionCustomerCertExpiry — ЗИ.4: сертификату заказчика для адреса
+	// шлюза (задача 3.27) осталось CustomerCertExpiryWarn и меньше; за
+	// CustomerCertExpiryCritical пишется ещё одно system.alert (код
+	// customer_cert_expiry:critical). Отдельное семейство, а не
+	// cert_expiry:<ID>: те коды относятся к шлюзам реестра.
+	ConditionCustomerCertExpiry = "customer_cert_expiry"
 )
 
 // Пороги условий DM-44 (обоснование — ADR-0020).
@@ -229,6 +235,14 @@ const (
 	CAExpiryWarn     = 60 * 24 * time.Hour
 	CAExpiryCritical = 7 * 24 * time.Hour
 	caExpiryCritical = ConditionCAExpiry + ":critical"
+)
+
+// Пороги условия customer_cert_expiry (задача 3.27): за 30 суток — время
+// заказать сертификат у УЦ заказчика, за 7 — последнее предупреждение.
+const (
+	CustomerCertExpiryWarn     = 30 * 24 * time.Hour
+	CustomerCertExpiryCritical = 7 * 24 * time.Hour
+	customerCertCritical       = ConditionCustomerCertExpiry + ":critical"
 )
 
 // Коды условий по компоненту (В18 ревью 2.r3b): ОЦЛ.5 и отставание пакета

@@ -126,6 +126,8 @@ export function AppsScreen({ me }: { me: Me }) {
         onClose={() => setWizard(false)}
         canPolicy={has("applications.policy")}
         canKey={has("app_keys.manage")}
+        canTLSRead={has("gateway_tls.read")}
+        canTLSManage={has("gateway_tls.manage")}
         mfa={mfa}
       />
       <ConfirmDialog

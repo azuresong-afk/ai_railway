@@ -341,3 +341,90 @@ func FuzzParseTrust(f *testing.F) {
 		}
 	})
 }
+
+// TestDM42_TrustReanchor — якорь шлюза на ключе не первого заявления (DM-42,
+// ОЦЛ.3; ADR-0018, п. 4.4; 3В9 ревью 3.r1): при компрометации ключа подписи
+// администратор переносит -bundle-pub на новый ключ. Заявления до него
+// пропускаются и доверия не дают, цепочка начинается с первого подписанного
+// якорем; прежний ключ и его «заявления» не принимаются. Сервер строг.
+func TestDM42_TrustReanchor(t *testing.T) {
+	x := newTrustFixture(t)
+	third := bundletest.New(t)
+	third.Recipient = x.f.Recipient
+	stmt1 := x.rotation(t, 0) // f → next, f сразу не действует
+	stmt2, err := bundle.SignTrust(x.f.Provider, x.next.Signer, bundle.TrustDraft{Seq: 2, IssuedAt: trustNow.Add(time.Minute),
+		Keys: []bundle.TrustKey{x.key(x.next.Signer, ptr(trustNow.Add(time.Minute))), x.key(third.Signer, nil)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := trustNow.Add(time.Hour)
+	reanchored := func(t *testing.T) (*bundle.Opener, *bundle.TrustChain) {
+		t.Helper()
+		o := x.next.Opener(t)
+		c, err := bundle.NewTrustChain(x.f.Provider, []aisecCrypto.Verifier{x.next.Verifier(t)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		c.AllowReanchor()
+		o.SetTrust(c, func() time.Time { return now })
+		return o, c
+	}
+
+	// Сервер после первой ротации: заявление №1 пропускается, пакет новым
+	// ключом-якорем принимается, шлюз сообщает номер 1 (сервер не шлёт пакет
+	// заново ради заявления).
+	o, c := reanchored(t)
+	if _, err := o.Open(x.seal(t, x.sealer(t, x.next.Signer, stmt1), 1), 0); err != nil {
+		t.Fatalf("якорь на ключе заявления 1: %v", err)
+	}
+	if o.TrustSeq() != 1 || len(o.TrustRaw()) != 0 || c.ActiveKeyID() != x.next.Sealer.KeyID() {
+		t.Fatalf("номер %d, сохраняемых %d", o.TrustSeq(), len(o.TrustRaw()))
+	}
+	// Следующая ротация: заявление №2 подписано якорем и начинает цепочку.
+	if _, err := o.Open(x.seal(t, x.sealer(t, third.Signer, stmt1, stmt2), 2), 0); err != nil {
+		t.Fatalf("заявление 2 от якоря: %v", err)
+	}
+	if raw := o.TrustRaw(); o.TrustSeq() != 2 || len(raw) != 1 || string(raw[0]) != string(stmt2) {
+		t.Fatalf("номер %d, сохраняемых %d", o.TrustSeq(), len(raw))
+	}
+	if _, err := o.Open(x.seal(t, x.sealer(t, third.Signer, stmt1, stmt2), 3), 0); err != nil {
+		t.Fatalf("повтор заявлений: %v", err)
+	}
+	// Скомпрометированный первый ключ не принимается ни пакетом, ни своим
+	// заявлением №2 с ключом нарушителя.
+	evil := bundletest.New(t)
+	branch, err := bundle.SignTrust(x.f.Provider, x.f.Signer, bundle.TrustDraft{Seq: 2, IssuedAt: trustNow.Add(time.Minute),
+		Keys: []bundle.TrustKey{x.key(x.f.Signer, ptr(trustNow.Add(48*time.Hour))), x.key(evil.Signer, nil)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fresh, _ := reanchored(t)
+	if _, err := fresh.Open(x.seal(t, x.sealer(t, x.f.Signer), 4), 0); bundle.Reason(err) != bundle.ReasonSignature {
+		t.Fatalf("пакет прежним ключом: %v", err)
+	}
+	bad := replaceTrust(t, x.seal(t, x.sealer(t, evil.Signer, stmt1), 5), branch)
+	if _, err := fresh.Open(bad, 0); bundle.Reason(err) != bundle.ReasonSignature || fresh.TrustSeq() != 2 {
+		t.Fatalf("ответвление прежним ключом: %v, номер %d", err, fresh.TrustSeq())
+	}
+
+	// Перезапуск шлюза: из trust.json приходит только заявление №2.
+	_, restart := reanchored(t)
+	if _, err := restart.Append(stmt2); err != nil || restart.Seq() != 2 || restart.ActiveKeyID() != third.Sealer.KeyID() {
+		t.Fatalf("восстановление: %v, номер %d", err, restart.Seq())
+	}
+	if added, err := restart.Append(stmt1); added || err != nil {
+		t.Fatalf("заявление до начала цепочки: %v %v", added, err)
+	}
+
+	// Без AllowReanchor (сервер) — прежняя строгость.
+	strict, err := bundle.NewTrustChain(x.f.Provider, []aisecCrypto.Verifier{x.next.Verifier(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := strict.Append(stmt1); err == nil || errors.Is(err, bundle.ErrTrustBeforeAnchor) {
+		t.Fatalf("строгая цепочка: %v", err)
+	}
+	if _, err := strict.Append(stmt2); !errors.Is(err, bundle.ErrTrustGap) {
+		t.Fatalf("строгая цепочка с №2: %v", err)
+	}
+}

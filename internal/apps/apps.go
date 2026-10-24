@@ -333,6 +333,15 @@ type Store interface {
 	HardUsageOthers(ctx context.Context, orgID, month, gatewayID string, startedAt time.Time) (map[string]int64, error)
 	// Usage — суммарный расход за month по slug приложений.
 	Usage(ctx context.Context, orgID, month string) (map[string]Usage, error)
+
+	// Сертификат заказчика для адреса шлюза (задача 3.27, миграция
+	// 0039_gateway_tls): один на организацию. SetGatewayTLS блокирует
+	// запись и сохраняет ту, что вернула fn (prev — прежняя, nil — не было).
+	SetGatewayTLS(ctx context.Context, orgID string, fn func(prev *GatewayTLS) (GatewayTLS, audit.Entry, error)) (GatewayTLS, error)
+	// GatewayTLS — ErrNoGatewayTLS, если сертификата нет.
+	GatewayTLS(ctx context.Context, orgID string) (GatewayTLS, error)
+	// DeleteGatewayTLS — ErrNoGatewayTLS, если сертификата нет.
+	DeleteGatewayTLS(ctx context.Context, orgID string, fn func(GatewayTLS) (audit.Entry, error)) (GatewayTLS, error)
 }
 
 // Options — зависимости Service.

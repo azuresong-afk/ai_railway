@@ -131,3 +131,19 @@ func (f *Fixture) Seal(t testing.TB, c *bundle.Content, version int64) []byte {
 	}
 	return out
 }
+
+// SealTLS — Seal с ключом сертификата заказчика среди секретов (раздел
+// gateway_tls, задача 3.27).
+func (f *Fixture) SealTLS(t testing.TB, c *bundle.Content, version int64, tlsKey []byte) []byte {
+	t.Helper()
+	b, err := c.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := f.Sealer.Seal(bundle.SealInput{Version: version, IssuedAt: time.Now(), GatewayID: GatewayID,
+		Content: b, Secrets: bundle.Secrets{"llm": Credential}, RecipientKey: f.Recipient.PublicKey(), TLSKey: tlsKey})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}

@@ -143,6 +143,16 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 	if err != nil {
 		return fmt.Errorf("ключ шлюза: %w", err)
 	}
+	// Сертификат адреса приложений меняется без перезапуска: сертификат
+	// заказчика приходит в пакете конфигурации (задача 3.27).
+	certSw, err := aisecCrypto.NewServerCertSwitch(certPEM, keyPEM)
+	if err != nil {
+		return fmt.Errorf("сертификат шлюза: %w", err)
+	}
+	appTLS, err := gateway.NewTLSSwitch(certSw, logger)
+	if err != nil {
+		return err
+	}
 	rnd, err := p.Random()
 	if err != nil {
 		return err
@@ -208,7 +218,7 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 	} else {
 		sw := gateway.NewSwitch(gateway.NewUnavailable(logger))
 		var keyIDs []string
-		if bundles, keyIDs, err = newBundleClient(cfg, p, tp, rnd, state, control, hb, sw, trust.bundlePubs, logger); err != nil {
+		if bundles, keyIDs, err = newBundleClient(cfg, p, tp, rnd, state, control, hb, sw, appTLS, trust.bundlePubs, logger); err != nil {
 			return err
 		}
 		reports.SetBundleKeys(keyIDs)
@@ -216,7 +226,7 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 	}
 	srv, err := httpserver.New(ctx, httpserver.Config{
 		Addr: cfg.Listen, Handler: handler,
-		TLS: tp, CertPEM: certPEM, KeyPEM: keyPEM, Logger: logger,
+		TLS: tp, CertPEM: certPEM, KeyPEM: keyPEM, CertSwitch: certSw, Logger: logger,
 	})
 	if err != nil {
 		return err

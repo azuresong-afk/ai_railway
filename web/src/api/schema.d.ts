@@ -3928,6 +3928,131 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/gateway-certificate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Сертификат заказчика для адреса шлюза
+         * @description Право `gateway_tls.read` (S1, ТЗ 5.4; задача 3.27 этапа 3). Сведения о проверенном
+         *     сертификате: кому и кем выдан, срок, имена, алгоритм ключа, отпечаток SHA-256. Закрытый
+         *     ключ не возвращается — только признак `key_set`. Сертификата нет — `configured: false`
+         *     (адрес шлюза обслуживает сертификат внутреннего УЦ).
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Сведения о сертификате */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["GatewayCertificate"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        /**
+         * Загрузить или заменить сертификат заказчика
+         * @description Право `gateway_tls.manage` (администраторы системы и безопасности). Цепочка (лист,
+         *     промежуточные и корневой сертификаты, только блоки `CERTIFICATE`, до 64 КиБ и 10
+         *     сертификатов, порядок любой) и закрытый ключ (ровно один незашифрованный блок PKCS#8,
+         *     PKCS#1 или SEC 1, до 16 КиБ) в PEM. Проверяется: ключ RSA от 2048 бит или ECDSA
+         *     P-256/P-384 и подходит к сертификату; имя `host` есть в SAN; все сертификаты действуют
+         *     сейчас; цепочка строится до самоподписанного корня и годится для TLS-сервера
+         *     (`serverAuth`); лишних сертификатов нет. Ключ хранится зашифрованным ключом данных
+         *     (ЗИ.1) и уходит шлюзам в пакете конфигурации, зашифрованным для каждого шлюза (HPKE);
+         *     шлюзы переключают TLS на адресе приложений без перезапуска. Пишет `gateway_tls.set`
+         *     (без цепочки и ключа). Неверные данные — 400 с причиной по-русски в `errors[].detail`.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["GatewayCertificateUpload"];
+                };
+            };
+            responses: {
+                /** @description Сертификат проверен и сохранён */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["GatewayCertificate"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        post?: never;
+        /**
+         * Удалить сертификат заказчика
+         * @description Право `gateway_tls.manage`. Шлюзы с новым пакетом конфигурации возвращаются к своему
+         *     сертификату (`-tls-cert`). Пишет `gateway_tls.delete`. Сертификата нет — 404.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Сертификат удалён */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/applications/{id}/keys": {
         parameters: {
             query?: never;
@@ -5652,7 +5777,7 @@ export interface paths {
          *     Ослабление (DM-40) — отключение, смена условия или группировки, повышение
          *     `min_severity`, понижение серьёзности, увеличение окна, удаление получателя — пишется с
          *     `weakening: true` и требует текущего пароля (`password`) или кода TOTP (`code`): без них
-         *     403, неверное значение — 403 `reauthentication_failed`. Изменение получателей порождает
+         *     400 (поле `password`), неверное значение — 403 `reauthentication_failed`. Изменение получателей порождает
          *     оповещение «Изменены получатели оповещений» (ТЗ 5.6). Без изменений — 200 без записи.
          *     Пишет `alert_rule.update` (до, после).
          */
@@ -5989,7 +6114,8 @@ export interface paths {
          *     для изменения (устаревшая — 409). Тип канала не меняется. Секрет, не переданный в `secrets`,
          *     остаётся прежним; пустая строка удаляет необязательный секрет. Каналы не удаляются —
          *     отключаются. Ослабление (DM-40) — отключение, повышение `min_severity`, смена узла, порта или
-         *     адреса webhook, смена корневых сертификатов, удаление адресата письма — пишется с
+         *     адреса webhook, смена корневых сертификатов, удаление адресата письма, снятие подписки на
+         *     журнал аудита (`audit_stream`) — пишется с
          *     `weakening: true` и требует текущего пароля (`password`) или кода TOTP (`code`): без них
          *     403, неверное значение — 403 `reauthentication_failed`. Пишет `notify_channel.update` (до,
          *     после, какие секреты изменены — без значений).
@@ -6795,6 +6921,63 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/notify-channels/{id}/audit-stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Передача журнала аудита в SIEM
+         * @description Право `notify_channels.read`. Состояние передачи журнала аудита в канал с подпиской
+         *     `audit_stream` (РСБ.6, задача 3.14 этапа 3, ADR-0020 п. 15): последняя переданная запись
+         *     (`last_seq`), конец журнала (`head_seq`), не передано записей (`pending`) и время самой
+         *     старой из них, неудачные попытки подряд и код последней ошибки. Записи передаются по порядку
+         *     `seq`, с момента подписки; при недоступности приёмника повторы бессрочны (задержка до 10
+         *     минут), записи не теряются — источник истины сам журнал. `lagging` — отставание выше порога
+         *     DM-44: не передано больше 10 000 записей или самая старая из них старше 15 минут; при
+         *     возникновении и снятии пишется `system.alert` (`audit_stream_lag:<ID канала>`), возникшее
+         *     условие поднимает оповещение встроенного правила `system.audit_stream_lag`. Без подписки —
+         *     `subscribed: false` и нули.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description ID канала уведомлений (UUIDv7) */
+                    id: components["parameters"]["NotifyChannelID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Состояние передачи */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["AuditStreamState"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -6881,12 +7064,12 @@ export interface components {
             };
             notifications: {
                 /**
-                 * @description ca_expiry (ИАФ.10) — действующему корню внутреннего УЦ осталось 60 суток и меньше, нужна ротация `aisec-cli keys rotate-ca`; system.alert пишется за 60 суток (ca_expiry) и за 7 суток (ca_expiry:critical), 3В5 ревью 3.r1
+                 * @description ca_expiry (ИАФ.10) — действующему корню внутреннего УЦ осталось 60 суток и меньше, нужна ротация `aisec-cli keys rotate-ca`; system.alert пишется за 60 суток (ca_expiry) и за 7 суток (ca_expiry:critical), 3В5 ревью 3.r1. customer_cert_expiry (ЗИ.4) — сертификату заказчика для адреса шлюза осталось 30 суток и меньше; system.alert пишется за 30 суток (customer_cert_expiry) и за 7 суток (customer_cert_expiry:critical), задача 3.27
                  * @enum {string}
                  */
-                condition: "account_lockout" | "access_denied" | "audit_chain" | "audit_storage" | "integrity" | "time_sync" | "config_bundle" | "config_bundle_lag" | "test_build" | "gateway_offline" | "events_dropped" | "reports_stale" | "cert_expiry" | "ca_expiry";
+                condition: "account_lockout" | "access_denied" | "audit_chain" | "audit_storage" | "integrity" | "time_sync" | "config_bundle" | "config_bundle_lag" | "test_build" | "gateway_offline" | "events_dropped" | "reports_stale" | "cert_expiry" | "ca_expiry" | "customer_cert_expiry";
                 /** @enum {string} */
-                requirement: "ИАФ.4" | "ИАФ.10" | "УПД.6" | "РСБ.4" | "РСБ.5" | "РСБ.7" | "ОЦЛ.1" | "ОЦЛ.3" | "ОЦЛ.5" | "ВРМ.1";
+                requirement: "ИАФ.4" | "ИАФ.10" | "УПД.6" | "РСБ.4" | "РСБ.5" | "РСБ.7" | "ОЦЛ.1" | "ОЦЛ.3" | "ОЦЛ.5" | "ВРМ.1" | "ЗИ.4";
                 /** @description Компоненты с активным условием (integrity — server или gateway:<ID>, config_bundle_lag, gateway_offline, events_dropped, reports_stale, cert_expiry — gateway:<ID>); каждое ведётся отдельно и пишется в system.alert (В18 ревью 2.r3b), а возникшее условие порождает оповещение системного правила (задача 3.11 этапа 3, DM-42–DM-44). test_build (ОЦЛ.1) — компоненты, собранные с тестовым ключом манифеста (Н34 ревью 2.r4); integrity шлюза поднимает и откат выпуска, и чужой ключ проверки пакетов (В19, В20 ревью 2.r4). DM-44: gateway_offline — шлюз не на связи дольше трёх периодов heartbeat, events_dropped — счётчик отброшенных событий вырос за 15 минут, cert_expiry — сертификат истекает меньше чем через 14 суток, reports_stale — итог целостности старше двух часов или не приходит (Н29) */
                 components?: string[];
                 title: string;
@@ -7320,6 +7503,43 @@ export interface components {
         };
         ModelPriceList: {
             items: components["schemas"]["ModelPrice"][];
+        };
+        GatewayCertificateUpload: {
+            /** @description Имя адреса шлюза для приложений: DNS-имя или IP-адрес из SAN */
+            host: string;
+            /** @description Цепочка в PEM: сертификат шлюза, промежуточные и корневой */
+            chain_pem: string;
+            /** @description Закрытый ключ в PEM без пароля; в ответах не возвращается */
+            key_pem: string;
+        };
+        GatewayCertificate: {
+            /** @description false — сертификата заказчика нет, остальных полей тоже */
+            configured: boolean;
+            host?: string;
+            /** @description Кому выдан */
+            subject?: string;
+            /** @description Кем выдан */
+            issuer?: string;
+            serial?: string;
+            /** @description SHA-256 сертификата шлюза в DER */
+            fingerprint?: string;
+            /** Format: date-time */
+            not_before?: string;
+            /**
+             * Format: date-time
+             * @description Самый ранний срок сертификатов цепочки
+             */
+            not_after?: string;
+            days_left?: number;
+            dns_names?: string[];
+            ip_addresses?: string[];
+            /** @description «RSA 2048», «ECDSA P-256»… */
+            key_alg?: string;
+            chain_len?: number;
+            /** @description Закрытый ключ задан */
+            key_set: boolean;
+            /** Format: date-time */
+            updated_at?: string;
         };
         BudgetFields: {
             /**
@@ -8632,6 +8852,12 @@ export interface components {
             /** @default true */
             enabled: boolean;
             min_severity?: components["schemas"]["AlertSeverity"];
+            /**
+             * @description Передавать журнал аудита в SIEM (РСБ.6): только syslog или webhook с форматом generic.
+             *     Передача начинается с конца журнала на момент подписки; снятие подписки — ослабление (DM-40).
+             * @default false
+             */
+            audit_stream: boolean;
             settings: components["schemas"]["NotifyChannelSettings"];
             secrets?: components["schemas"]["NotifyChannelSecrets"];
             version?: number;
@@ -8645,6 +8871,8 @@ export interface components {
             type?: "email" | "webhook" | "syslog";
             enabled?: boolean;
             min_severity?: components["schemas"]["AlertSeverity"];
+            /** @description Не передано — прежнее значение */
+            audit_stream?: boolean;
             settings: components["schemas"]["NotifyChannelSettings"];
             secrets?: components["schemas"]["NotifyChannelSecrets"];
             version: number;
@@ -8664,6 +8892,8 @@ export interface components {
             type: "email" | "webhook" | "syslog";
             enabled: boolean;
             min_severity: components["schemas"]["AlertSeverity"];
+            /** @description Канал передаёт журнал аудита в SIEM */
+            audit_stream: boolean;
             settings: components["schemas"]["NotifyChannelSettings"];
             secrets_set: ("password" | "url" | "signing_key")[];
             version: number;
@@ -8708,6 +8938,48 @@ export interface components {
         };
         NotifyDeliveryList: {
             items: components["schemas"]["NotifyDelivery"][];
+        };
+        AuditStreamState: {
+            /** @description Канал подписан на журнал */
+            subscribed: boolean;
+            /** @description Подписан и включён — передача идёт */
+            active: boolean;
+            /**
+             * Format: int64
+             * @description Последняя переданная запись
+             */
+            last_seq: number;
+            /**
+             * Format: int64
+             * @description Последняя запись журнала
+             */
+            head_seq: number;
+            /**
+             * Format: int64
+             * @description Не передано записей
+             */
+            pending: number;
+            /**
+             * Format: date-time
+             * @description Время самой старой не переданной записи
+             */
+            oldest_pending_at?: string;
+            /** @description Отставание выше порога DM-44 */
+            lagging: boolean;
+            /** @description Неудачных попыток подряд */
+            attempts: number;
+            /**
+             * Format: date-time
+             * @description Следующая попытка (только active)
+             */
+            next_at?: string;
+            /** @description Код последней ошибки без текста ответа приёмника (как в журнале доставки) */
+            error?: string;
+            /**
+             * Format: date-time
+             * @description Последняя успешная передача
+             */
+            last_sent_at?: string;
         };
         AlertRule: {
             /** Format: uuid */

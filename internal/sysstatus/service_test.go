@@ -87,9 +87,9 @@ func TestNewValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	st := s.Status(context.Background())
-	// Без источников: пустые массивы, UTC, умолчания, все четырнадцать условий.
+	// Без источников: пустые массивы, UTC, умолчания, все пятнадцать условий.
 	if st.Time.Timezone != "UTC" || st.Storage.LimitBytes != sysstatus.DefaultStorageLimit || st.Storage.WarnPercent != 80 ||
-		len(st.Notifications) != 14 || st.Bundle != nil || st.Gateways == nil || st.Unavailable == nil || st.Server.Integrity == nil {
+		len(st.Notifications) != 15 || st.Bundle != nil || st.Gateways == nil || st.Unavailable == nil || st.Server.Integrity == nil {
 		t.Fatalf("%+v", st)
 	}
 }
@@ -758,5 +758,75 @@ func TestDM44_CAExpiry(t *testing.T) {
 	// Без УЦ условие неактивно.
 	if n := notif(newEnv().svc(t).Status(ctx), sysstatus.ConditionCAExpiry); n.Active {
 		t.Fatalf("без УЦ: %+v", n)
+	}
+}
+
+// DM-44, задача 3.27, ЗИ.4: истечение сертификата заказчика для адреса
+// шлюза — условие customer_cert_expiry за 30 суток и ещё одна запись за 7
+// суток; удаление сертификата снимает условие; сбой чтения не меняет
+// состояние.
+func TestDM44_CustomerCertExpiry(t *testing.T) {
+	e := newEnv()
+	o := e.opts()
+	notAfter, have := t0.Add(40*24*time.Hour), true
+	var readErr error
+	o.CustomerCert = func(context.Context) (string, time.Time, bool, error) {
+		return "aisec-gw.example.ru", notAfter, have, readErr
+	}
+	s, err := sysstatus.New(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	eval := func() {
+		t.Helper()
+		if err := s.Evaluate(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	states := func() []string {
+		var out []string
+		for _, r := range e.mem.Records {
+			d := r.Details.(map[string]any)
+			out = append(out, d["condition"].(string)+"="+d["state"].(string))
+		}
+		return out
+	}
+	eval()
+	if n := notif(s.Status(ctx), sysstatus.ConditionCustomerCertExpiry); n.Active || len(states()) != 0 {
+		t.Fatalf("за 40 суток: %+v %v", n, states())
+	}
+	e.clock = t0.Add(11 * 24 * time.Hour) // осталось 29 суток
+	eval()
+	eval()
+	n := notif(s.Status(ctx), sysstatus.ConditionCustomerCertExpiry)
+	if !n.Active || n.Requirement != "ЗИ.4" || len(states()) != 1 || states()[0] != "customer_cert_expiry=raised" {
+		t.Fatalf("за 29 суток: %+v %v", n, states())
+	}
+	if d := e.mem.Records[0].Details.(map[string]any); d["days_left"] != 29 || d["host"] != "aisec-gw.example.ru" || d["cert_not_after"] == nil {
+		t.Fatalf("подробности: %v", d)
+	}
+	e.clock = t0.Add(34 * 24 * time.Hour) // осталось 6 суток
+	eval()
+	eval()
+	if got := states(); len(got) != 2 || got[1] != "customer_cert_expiry:critical=raised" {
+		t.Fatalf("за 6 суток: %v", got)
+	}
+	// Сбой чтения — состояние не меняется.
+	readErr = errors.New("нет связи с БД")
+	eval()
+	if got := states(); len(got) != 2 {
+		t.Fatalf("сбой чтения снял условие: %v", got)
+	}
+	// Новый сертификат или удаление — условия сняты.
+	readErr, have = nil, false
+	eval()
+	if got := states(); len(got) != 4 || got[2] != "customer_cert_expiry=cleared" || got[3] != "customer_cert_expiry:critical=cleared" {
+		t.Fatalf("удаление: %v", got)
+	}
+	for _, r := range e.mem.Records {
+		if err := validateEntry(r); err != nil {
+			t.Error(err)
+		}
 	}
 }

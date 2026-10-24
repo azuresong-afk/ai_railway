@@ -99,6 +99,11 @@ const (
 	PermIncidentsManage          = "incidents.manage"
 	PermIncidentsExport          = "incidents.export"
 	PermIncidentCategoriesManage = "incident_categories.manage"
+	// Сертификат заказчика для адреса шлюза (S1, ТЗ 5.4; задача 3.27 этапа
+	// 3): загрузка цепочки и закрытого ключа — у администраторов системы и
+	// безопасности (ТЗ 7: интеграции и TLS). Ключ в ответах не показывается.
+	PermGatewayTLSRead   = "gateway_tls.read"
+	PermGatewayTLSManage = "gateway_tls.manage"
 )
 
 // Permission — разрешение из каталога.
@@ -173,6 +178,8 @@ var permissionCatalog = []Permission{
 	{Name: PermIncidentsManage, Title: "Создание инцидентов, смена статуса, назначение, комментарии, этапы реагирования", Group: "Инциденты"},
 	{Name: PermIncidentsExport, Title: "Выгрузка карточки инцидента в JSON (без содержимого событий)", Group: "Инциденты"},
 	{Name: PermIncidentCategoriesManage, Title: "Изменение инструкций реагирования по категориям инцидентов", Group: "Инциденты", Security: true},
+	{Name: PermGatewayTLSRead, Title: "Просмотр сертификата заказчика для адреса шлюза (без ключа)", Group: "Шлюзы"},
+	{Name: PermGatewayTLSManage, Title: "Загрузка, замена и удаление сертификата заказчика для адреса шлюза", Group: "Шлюзы"},
 }
 
 // auditorExtra — разрешения аудитора сверх чтения: они ничего не меняют,
@@ -359,7 +366,7 @@ var builtinRoles = []RoleDef{
 			PermApplicationsRead: ScopeAll, PermApplicationsManage: ScopeAll, PermAppKeysManage: ScopeAll,
 			PermProvidersRead: ScopeAll, PermProvidersManage: ScopeAll, PermPoliciesRead: ScopeAll, PermPoliciesTest: ScopeAll,
 			PermModelPricesRead: ScopeAll, PermModelPricesManage: ScopeAll, PermBudgetsRead: ScopeAll, PermBudgetsManage: ScopeAll,
-			PermDashboardsRead: ScopeAll}},
+			PermDashboardsRead: ScopeAll, PermGatewayTLSRead: ScopeAll, PermGatewayTLSManage: ScopeAll}},
 	{ID: RoleAnalyst, DisplayName: "Аналитик", Builtin: true,
 		Description: "Разбор оповещений и инцидентов, поиск по событиям",
 		Grants: grantAll(PermSystemRead, PermEventsRead, PermEventsExport, PermEventsMark, PermApplicationsRead, PermProvidersRead,

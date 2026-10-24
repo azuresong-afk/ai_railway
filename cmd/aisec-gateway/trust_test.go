@@ -2,15 +2,20 @@ package main
 
 import (
 	"context"
+	"log/slog"
 	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/azuresong-afk/ai_railway/internal/config"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
+	"github.com/azuresong-afk/ai_railway/internal/gateway"
 	"github.com/azuresong-afk/ai_railway/internal/integrity"
+	"github.com/azuresong-afk/ai_railway/internal/policy/bundle"
+	"github.com/azuresong-afk/ai_railway/internal/policy/bundle/bundletest"
 )
 
 // В19 ревью 2.r4: у шлюза с сервером под контролем целостности корни
@@ -73,5 +78,72 @@ func TestTrustFilesWatched(t *testing.T) {
 	tf, err = readTrustFiles(&config.Gateway{}, file)
 	if err != nil || len(tf.watch) != 1 || tf.watch[0].Path != hmac {
 		t.Fatalf("%+v %v", tf.watch, err)
+	}
+}
+
+// 3В9 ревью 3.r1, DM-42: -bundle-pub перенесён на ключ заявления №1
+// (компрометация первого ключа подписи). При запуске заявления до якоря из
+// trust.json пропускаются, цепочка восстанавливается с первого подписанного
+// якорем; подложенное прежним ключом заявление доверия не даёт.
+func TestLoadTrustChainReanchor(t *testing.T) {
+	first, second, third := bundletest.New(t), bundletest.New(t), bundletest.New(t)
+	p := first.Provider
+	now := time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC)
+	key := func(s aisecCrypto.Signer, notAfter *time.Time) bundle.TrustKey {
+		return bundle.TrustKey{PublicKey: s.PublicKey(), NotAfter: notAfter}
+	}
+	stmt1, err := bundle.SignTrust(p, first.Signer, bundle.TrustDraft{Seq: 1, IssuedAt: now,
+		Keys: []bundle.TrustKey{key(first.Signer, &now), key(second.Signer, nil)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stmt2, err := bundle.SignTrust(p, second.Signer, bundle.TrustDraft{Seq: 2, IssuedAt: now,
+		Keys: []bundle.TrustKey{key(second.Signer, &now), key(third.Signer, nil)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rnd, err := p.Random()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(t.TempDir(), "state")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	st, err := gateway.OpenBundleState(dir, rnd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }() //nolint:gosec // G104: тест
+	if err := st.SaveTrust([][]byte{stmt1, stmt2}); err != nil {
+		t.Fatal(err)
+	}
+	logger := slog.New(slog.DiscardHandler)
+	chain, err := loadTrustChain(p, []aisecCrypto.Verifier{second.Verifier(t)}, st, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if chain.Seq() != 2 || chain.ActiveKeyID() != third.Sealer.KeyID() {
+		t.Fatalf("номер %d, ключ %s", chain.Seq(), chain.ActiveKeyID())
+	}
+	// Якорь на первом ключе: та же цепочка, как раньше.
+	chain, err = loadTrustChain(p, []aisecCrypto.Verifier{first.Verifier(t)}, st, logger)
+	if err != nil || chain.Seq() != 2 {
+		t.Fatalf("исходный якорь: %v, номер %d", err, chain.Seq())
+	}
+	// Подложенное первым (скомпрометированным) ключом заявление №1 с ключом
+	// нарушителя при якоре на втором ключе пропускается.
+	evil := bundletest.New(t)
+	forged, err := bundle.SignTrust(p, first.Signer, bundle.TrustDraft{Seq: 1, IssuedAt: now,
+		Keys: []bundle.TrustKey{key(first.Signer, &now), key(evil.Signer, nil)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveTrust([][]byte{forged}); err != nil {
+		t.Fatal(err)
+	}
+	chain, err = loadTrustChain(p, []aisecCrypto.Verifier{second.Verifier(t)}, st, logger)
+	if err != nil || chain.Latest() != nil || chain.ActiveKeyID() != second.Sealer.KeyID() {
+		t.Fatalf("подложенное заявление: %v, ключ %s", err, chain.ActiveKeyID())
 	}
 }

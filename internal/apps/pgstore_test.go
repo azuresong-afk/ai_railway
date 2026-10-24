@@ -34,6 +34,8 @@ type pgEnv struct {
 	clock      *clock
 	caPEM      string
 	by         apps.By
+	// dir — каталог ключей установки (ротация ключа данных).
+	dir string
 }
 
 func pgCtx(t *testing.T) context.Context {
@@ -154,6 +156,7 @@ func setupPG(t *testing.T) *pgEnv {
 		by:    apps.By{Actor: audit.Actor{Type: audit.ActorUser, ID: ownerA, Name: "admin"}, Policy: true, Confirm: confirmed}}
 	var dir string
 	dir, e.keyID = keyringtest.Install(t, ctx, owner, p, audit.DefaultOrgID)
+	e.dir = dir
 	if e.box, err = keyring.Load(ctx, e.app, p, dir, audit.DefaultOrgID); err != nil {
 		t.Fatal(err)
 	}
