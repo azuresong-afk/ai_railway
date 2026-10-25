@@ -22,6 +22,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"go.yaml.in/yaml/v3"
 )
@@ -47,6 +48,7 @@ type Entry struct {
 	Target        string `yaml:"target"`
 	PluginID      string `yaml:"plugin_id"`
 	Alert         string `yaml:"alert"`
+	MaxRisk       int    `yaml:"max_risk"` // наибольший риск ZAP (0–3), который запись покрывает
 	Verdict       string `yaml:"verdict"`
 	Justification string `yaml:"justification"`
 	Author        string `yaml:"author"`
@@ -127,8 +129,8 @@ func run(rulesPath, triagePath, outPath string, reports []string, stdout, stderr
 			return err
 		}
 	}
-	_, _ = fmt.Fprintf(stdout, "dast-triage: находок %d (групп по правилам), выше порога %d, не размечено ниже порога %d, размечено %d\n",
-		len(alerts), len(res.Problems)+res.MarkedAbove, len(res.Unmarked), res.MarkedAbove+res.MarkedBelow)
+	_, _ = fmt.Fprintf(stdout, "dast-triage: находок %d (групп по правилам), выше порога без разметки %d, размечено выше порога %d, ниже порога без разметки %d, размечено ниже порога %d, пропущено правилом IGNORE %d\n",
+		len(alerts), len(res.Problems), res.MarkedAbove, len(res.Unmarked), res.MarkedBelow, len(res.Ignored))
 	if len(res.Problems) > 0 {
 		return errors.New("не пройдено:\n" + strings.Join(res.Problems, "\n"))
 	}
@@ -188,16 +190,27 @@ func ParseTriage(data []byte) (Triage, error) {
 		switch {
 		case e.Target == "" || e.PluginID == "" || e.Alert == "":
 			return t, fmt.Errorf("запись %d: нужны target, plugin_id и alert", i+1)
+		case e.Target != "console" && e.Target != "gateway":
+			return t, fmt.Errorf("запись %d: target — console или gateway", i+1)
+		case e.MaxRisk < 0 || e.MaxRisk > 3:
+			return t, fmt.Errorf("запись %d: max_risk — от 0 до 3", i+1)
 		case e.Verdict != FalsePositive && e.Verdict != AcceptedRisk:
 			return t, fmt.Errorf("запись %d: verdict — false_positive или accepted_risk", i+1)
-		case strings.TrimSpace(e.Justification) == "" || e.Author == "" || e.Date == "":
-			return t, fmt.Errorf("запись %d: нужны justification, author и date", i+1)
+		case len([]rune(strings.TrimSpace(e.Justification))) < 20 || e.Author == "":
+			return t, fmt.Errorf("запись %d: нужны justification (не короче 20 символов) и author", i+1)
+		case !validDate(e.Date):
+			return t, fmt.Errorf("запись %d: date — ГГГГ-ММ-ДД", i+1)
 		case seen[e.Target+"|"+e.PluginID]:
 			return t, fmt.Errorf("запись %d: %s/%s повторяется", i+1, e.Target, e.PluginID)
 		}
 		seen[e.Target+"|"+e.PluginID] = true
 	}
 	return t, nil
+}
+
+func validDate(s string) bool {
+	_, err := time.Parse("2006-01-02", s)
+	return err == nil
 }
 
 // ParseReport разбирает отчёт ZAP (traditional-json, ключ -J).
@@ -214,6 +227,9 @@ func ParseReport(target string, data []byte) ([]Alert, error) {
 	}
 	if err := json.Unmarshal(data, &rep); err != nil {
 		return nil, err
+	}
+	if len(rep.Site) == 0 {
+		return nil, errors.New("в отчёте нет ни одного сайта: обход не состоялся")
 	}
 	var out []Alert
 	for _, s := range rep.Site {
@@ -234,6 +250,7 @@ type Result struct {
 	Problems    []string
 	Unmarked    []Alert // ниже порога, без разметки
 	Stale       []string
+	Ignored     []Alert // правило IGNORE, риск ниже Medium
 	MarkedAbove int
 	MarkedBelow int
 }
@@ -248,12 +265,19 @@ func Compare(alerts []Alert, rules map[string]string, entries []Entry) Result {
 		idx[entries[i].Target+"|"+entries[i].PluginID] = &entries[i]
 	}
 	for _, a := range alerts {
-		if rules[a.PluginID] == "IGNORE" || rules[a.PluginID] == "OUTOFSCOPE" {
+		// IGNORE не скрывает находки Medium и выше: их закрывает только разметка.
+		if (rules[a.PluginID] == "IGNORE" || rules[a.PluginID] == "OUTOFSCOPE") && a.Risk < medium {
+			res.Ignored = append(res.Ignored, a)
 			continue
 		}
 		key := a.Target + "|" + a.PluginID
 		e := idx[key]
 		used[key] = true
+		if e != nil && (a.Risk > e.MaxRisk || a.Name != e.Alert) {
+			// Запись не покрывает ни более высокий риск, ни другую находку того же правила.
+			res.Problems = append(res.Problems, fmt.Sprintf("%s: %s (%s, риск %d) не покрыта записью разметки (alert %q, max_risk %d)", a.Target, a.Name, a.PluginID, a.Risk, e.Alert, e.MaxRisk))
+			continue
+		}
 		switch {
 		case a.Above(rules) && (e == nil || e.Verdict != FalsePositive):
 			why := "нет разметки false_positive"
@@ -292,6 +316,12 @@ func (r Result) Markdown(total int) string {
 	if len(r.Unmarked) > 0 {
 		b.WriteString("\n## Ниже порога, без разметки\n\n")
 		for _, a := range r.Unmarked {
+			fmt.Fprintf(&b, "- %s: %s (%s, риск %d)\n", a.Target, a.Name, a.PluginID, a.Risk)
+		}
+	}
+	if len(r.Ignored) > 0 {
+		b.WriteString("\n## Пропущено правилом IGNORE\n\n")
+		for _, a := range r.Ignored {
 			fmt.Fprintf(&b, "- %s: %s (%s, риск %d)\n", a.Target, a.Name, a.PluginID, a.Risk)
 		}
 	}

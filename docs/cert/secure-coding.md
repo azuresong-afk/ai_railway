@@ -59,7 +59,7 @@
 | Проверки безопасности | gosec в режиме аудита — только в `make sast` (срабатывания размечаются в `docs/cert/sast-triage/`); `make sast` входит в `make check` |
 | Каждое подавление — с линтером и обоснованием | nolintlint (`require-specific`, `require-explanation`) |
 | Срабатывания SAST размечены | `make sast`: gosec в SARIF, сверка с `docs/cert/sast-triage/triage.yaml`, перечень подавлений `//nolint:gosec` (формат — `docs/cert/sast-triage/README.md`) |
-| Находки DAST размечены | `make dast`: ZAP baseline по консоли и шлюзу работающего пилота, сверка `tools/dast-triage` с `deploy/compose/pilot/dast/zap-rules.conf` и `docs/cert/sast-triage/dast.yaml` (Medium и выше и правила FAIL — провал без разметки `false_positive`; формат — `docs/cert/sast-triage/README.md`) |
+| Находки DAST размечены | `make dast`: ZAP baseline по консоли и шлюзу работающего пилота, сверка `tools/dast-triage` с `deploy/compose/pilot/dast/zap-rules.conf` и `docs/cert/sast-triage/dast.yaml` (Medium и выше и правила FAIL — провал без разметки `false_positive`, `IGNORE` их не скрывает, пустой отчёт — провал; формат — `docs/cert/sast-triage/README.md`) |
 | Форматирование | gofmt (`make fmt-check` и форматтер в golangci-lint) |
 
 Самопроверка сверяет только размеченные строки: неразмеченные замечания в образце не считаются ошибкой. Образец собирается без сети (`GOPROXY=off`, `-mod=readonly`), а `golang.org/x/crypto` в нём подменён локальной заглушкой.

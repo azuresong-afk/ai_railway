@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -65,26 +66,37 @@ func newBundleClient(cfg *config.Gateway, p aisecCrypto.Provider, tp aisecCrypto
 }
 
 // loadTrustChain — цепочка доверия от -bundle-pub с заявлениями из
-// trust.json (ADR-0018, п. 4.4). Заявление, которое цепочка не принимает
-// (файл подменён или -bundle-pub заменён), и все следующие отбрасываются:
-// шлюз продолжает с проверенной частью и получит остальное с пакетом.
+// trust.json (ADR-0018, п. 4.4). Якорь может быть ключом не первого
+// заявления (3В9 ревью 3.r1): заявления до него пропускаются. Заявление,
+// которое цепочка не принимает (файл подменён), и все следующие
+// отбрасываются: шлюз продолжает с проверенной частью и получит остальное
+// с пакетом.
 func loadTrustChain(p aisecCrypto.Provider, verifiers []aisecCrypto.Verifier, state *gateway.BundleState,
 	logger *slog.Logger) (*bundle.TrustChain, error) {
 	chain, err := bundle.NewTrustChain(p, verifiers)
 	if err != nil {
 		return nil, err
 	}
+	chain.AllowReanchor()
 	raws, err := state.LoadTrust()
 	if err != nil {
 		logger.Error("заявления о доверии не прочитаны; шлюз доверяет только -bundle-pub", "file", gateway.TrustFile, "error", err)
 		return chain, nil
 	}
+	skipped := 0
 	for i, raw := range raws {
-		if _, err := chain.Append(raw); err != nil {
+		if _, err := chain.Append(raw); errors.Is(err, bundle.ErrTrustBeforeAnchor) {
+			skipped++
+			continue
+		} else if err != nil {
 			logger.Error("сохранённое заявление о доверии не проверяется по цепочке от -bundle-pub; оно и следующие отброшены",
 				"file", gateway.TrustFile, "index", i, "error", err, "threat", "DM-42")
 			break
 		}
+	}
+	if skipped > 0 {
+		logger.Warn("заявления о доверии до ключа -bundle-pub пропущены: якорь шлюза — более поздний ключ подписи",
+			"file", gateway.TrustFile, "skipped", skipped)
 	}
 	if chain.Seq() > 0 {
 		logger.Info("цепочка доверия восстановлена", "trust_seq", chain.Seq(), "signing_key_id", chain.ActiveKeyID())

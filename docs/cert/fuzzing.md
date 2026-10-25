@@ -28,7 +28,7 @@
 | `FuzzParseTrust` | `internal/gateway` | `trust.json` из каталога состояния шлюза (каталог мог быть изменён): без паники; принятый файл — не больше 1024 заявлений, записывается и читается обратно в те же заявления | 3.3, 3Н4 ревью 3.r1 |
 | `FuzzParseQuestion`, `FuzzAttempt` | `test/e2e/netwatch` | Ловушка сети e2e пилота (вне поставки): запрос DNS от контейнеров — без паники, вопрос в границах сообщения, ответ строится; пакет IPv4 из AF_PACKET — без паники, запись только с видом и протоколом | 3.7 |
 | `FuzzParseClientPair` | `internal/gateway` | `client.pem` (перевыпущенный сертификат и ключ шлюза) из каталога состояния: без паники; принятая пара — ровно один блок `CERTIFICATE` и один `PRIVATE KEY` в пределах 16 КиБ | 3.3, 3Н4 ревью 3.r1 |
-| `FuzzReadKeys`, `FuzzReadCorpusFile` | `tools/demo-data` | Файл ключей демо-стенда (строки «приложение=ключ», права 0600) и корпус атак JSONL: без паники | 3.29 |
+| `FuzzReadKeys`, `FuzzReadCorpusFile`, `FuzzCheckGateway` | `tools/demo-data` | Файл ключей демо-стенда (строки «приложение=ключ», права 0600), корпус атак JSONL и проверка адреса шлюза: без паники; без `-allow-remote` принят только https и localhost или loopback-литерал | 3.29 |
 | `FuzzParseReport`, `FuzzParseTriage`, `FuzzParseRules` | `tools/dast-triage` | Отчёт ZAP baseline (JSON), разметка находок DAST и файл правил ZAP: без паники; неверный `riskcode` или `pluginid`, повтор записи разметки и вердикт вне списка — ошибка | 3.30 |
 | `FuzzParseMatrix` | `tools/dm-coverage` | Разбор матрицы 5.16 из ТЗ | 0.9 |
 | `FuzzParseGoTestJSON` | `tools/dm-coverage` | Разбор отчёта `go test -json` | 0.9 |

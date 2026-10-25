@@ -143,7 +143,10 @@ func (o *Opener) Open(data []byte, minVersion int64) (*Bundle, error) {
 			if err != nil {
 				return nil, reject(ReasonFormat, "заявление о доверии: %v", err)
 			}
-			if _, err := o.trust.Append(raw); err != nil {
+			if _, err := o.trust.Append(raw); errors.Is(err, ErrTrustBeforeAnchor) {
+				// Заявление до якоря шлюза: доверия не даёт, пропускается.
+				continue
+			} else if err != nil {
 				return nil, reject(ReasonSignature, "%v", err)
 			}
 		}

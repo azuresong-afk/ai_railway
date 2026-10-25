@@ -10,7 +10,7 @@ on:
   push:
     branches: [main]
   schedule:
-    - cron: "17 3 * * 1" # по понедельникам: образ ZAP и правила обновляются
+    - cron: "17 3 * * 1" # по понедельникам: регулярный прогон без изменений кода
   workflow_dispatch:
 
 permissions:

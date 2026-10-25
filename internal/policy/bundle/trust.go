@@ -275,6 +275,14 @@ type TrustChain struct {
 	hasher   aisecCrypto.Hasher
 	anchors  []TrustKey
 	stmts    []*TrustStatement
+	// base — номер заявления перед первым в stmts: у сервера всегда 0, у
+	// шлюза с якорем на более позднем ключе — номер, с которого начат его
+	// отсчёт (AllowReanchor).
+	base int64
+	// reanchor — режим шлюза (AllowReanchor); skipped — наибольший номер
+	// заявления, пропущенного до якоря, пока stmts пусто.
+	reanchor bool
+	skipped  int64
 }
 
 // NewTrustChain — цепочка от якорей (ключей файлов bundle-signing.pub или
@@ -301,6 +309,19 @@ func NewTrustChain(p aisecCrypto.Provider, anchors []aisecCrypto.Verifier) (*Tru
 // ErrTrustGap — заявление не продолжает цепочку: пропущены промежуточные.
 var ErrTrustGap = errors.New("заявление о доверии не продолжает известную цепочку: пропущены промежуточные заявления")
 
+// ErrTrustBeforeAnchor — заявление выпущено до ключа-якоря шлюза (якорь
+// перенесён на более поздний ключ, AllowReanchor): оно не проверяется и не
+// даёт доверия, его пропускают.
+var ErrTrustBeforeAnchor = errors.New("заявление о доверии выпущено до ключа-якоря шлюза и пропущено")
+
+// AllowReanchor — режим шлюза (ADR-0018, п. 4.4; 3В9 ревью 3.r1): якорь
+// (-bundle-pub) может быть ключом, введённым не первым заявлением, — так
+// администратор отсекает у шлюза скомпрометированный ключ подписи. Пока
+// принятых заявлений нет, заявление, подписанное не якорем, пропускается
+// (ErrTrustBeforeAnchor), а первое подписанное якорем начинает цепочку с
+// любого номера. Сервер режим не включает: его цепочка — строго от №1.
+func (c *TrustChain) AllowReanchor() { c.reanchor = true }
+
 // Append проверяет и добавляет заявление. Уже известное (тот же номер и те
 // же байты) пропускается: added = false. Правила (ADR-0018, п. 4.4):
 // номер — следующий за последним; подписано действующим ключом последнего
@@ -311,21 +332,34 @@ func (c *TrustChain) Append(raw []byte) (added bool, err error) {
 	if err != nil {
 		return false, err
 	}
-	last := c.Seq()
-	if st.Seq <= last {
-		if string(c.stmts[st.Seq-1].Raw) == string(raw) {
+	base := c.base
+	var signers []TrustKey
+	if len(c.stmts) == 0 && c.reanchor {
+		if !slices.ContainsFunc(c.anchors, func(k TrustKey) bool { return k.ID == st.SignedBy }) {
+			c.skipped = max(c.skipped, st.Seq)
+			return false, ErrTrustBeforeAnchor
+		}
+		base, signers = st.Seq-1, c.anchors
+	} else {
+		last := c.Seq()
+		if st.Seq <= base {
+			// До начала цепочки шлюза: такие заявления ему не нужны.
 			return false, nil
 		}
-		return false, fmt.Errorf("заявление о доверии %d отличается от уже принятого", st.Seq)
-	}
-	if st.Seq != last+1 {
-		return false, ErrTrustGap
-	}
-	var signers []TrustKey
-	if last == 0 {
-		signers = c.anchors
-	} else {
-		signers = []TrustKey{c.stmts[last-1].ActiveKey()}
+		if st.Seq <= last {
+			if string(c.stmts[st.Seq-base-1].Raw) == string(raw) {
+				return false, nil
+			}
+			return false, fmt.Errorf("заявление о доверии %d отличается от уже принятого", st.Seq)
+		}
+		if st.Seq != last+1 {
+			return false, ErrTrustGap
+		}
+		if prev := c.Latest(); prev == nil {
+			signers = c.anchors
+		} else {
+			signers = []TrustKey{prev.ActiveKey()}
+		}
 	}
 	i := slices.IndexFunc(signers, func(k TrustKey) bool { return k.ID == st.SignedBy })
 	if i < 0 {
@@ -345,15 +379,24 @@ func (c *TrustChain) Append(raw []byte) (added bool, err error) {
 	if !slices.ContainsFunc(st.Keys, func(k TrustKey) bool { return k.ID == st.SignedBy }) {
 		return false, errors.New("заявление о доверии убирает ключ, которым подписано")
 	}
-	if last > 0 && st.IssuedAt.Before(c.stmts[last-1].IssuedAt) {
+	if prev := c.Latest(); prev != nil && st.IssuedAt.Before(prev.IssuedAt) {
 		return false, errors.New("заявление о доверии выпущено раньше предыдущего")
 	}
+	c.base = base
 	c.stmts = append(c.stmts, st)
 	return true, nil
 }
 
-// Seq — номер последнего заявления; 0 — заявлений нет.
-func (c *TrustChain) Seq() int64 { return int64(len(c.stmts)) }
+// Seq — номер последнего заявления; 0 — заявлений нет. У шлюза с якорем на
+// более позднем ключе, пока своих заявлений нет, — номер последнего
+// пропущенного: всё до него шлюзу не нужно, и сервер не присылает пакет
+// заново ради этих заявлений.
+func (c *TrustChain) Seq() int64 {
+	if len(c.stmts) == 0 {
+		return c.skipped
+	}
+	return c.base + int64(len(c.stmts))
+}
 
 // Latest — последнее заявление; nil — заявлений нет.
 func (c *TrustChain) Latest() *TrustStatement {
@@ -363,9 +406,10 @@ func (c *TrustChain) Latest() *TrustStatement {
 	return c.stmts[len(c.stmts)-1]
 }
 
-// Raw — подписанные заявления начиная с номера from (с 1), по порядку.
+// Raw — подписанные заявления начиная с номера from (с 1), по порядку;
+// у шлюза с якорем на более позднем ключе — только принятые им.
 func (c *TrustChain) Raw(from int64) [][]byte {
-	from = max(from, 1)
+	from = max(from-c.base, 1)
 	var out [][]byte
 	for _, st := range c.stmts[min(int(from-1), len(c.stmts)):] {
 		out = append(out, st.Raw)

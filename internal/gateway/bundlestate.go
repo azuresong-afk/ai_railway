@@ -40,8 +40,8 @@ const (
 	// MaxTrustStored — сколько заявлений хранит trust.json. Хранятся все от
 	// №1: цепочка проверяется от -bundle-pub, и без первых заявлений шлюз
 	// после перезапуска откатился бы к якорю (3Н1 ревью 3.r1). Тысяча
-	// ротаций ключа подписи и УЦ — века эксплуатации; сверх — отказ записи,
-	// прежний файл остаётся.
+	// ротаций ключа подписи и УЦ — века эксплуатации; сверх — отказ записи
+	// с подсказкой перенести -bundle-pub на действующий ключ (3В9).
 	MaxTrustStored = 1024
 	// maxTrustFile — предел trust.json: MaxTrustStored заявлений по 16 КиБ
 	// в base64 с запасом на разметку.
@@ -166,7 +166,8 @@ type trustDoc struct {
 // Больше MaxTrustStored — ошибка без записи: прежний файл остаётся.
 func (s *BundleState) SaveTrust(raws [][]byte) error {
 	if len(raws) > MaxTrustStored {
-		return fmt.Errorf("%s: заявлений о доверии больше %d — файл не обновлён", TrustFile, MaxTrustStored)
+		return fmt.Errorf("%s: заявлений о доверии больше %d — файл не обновлён; перенесите -bundle-pub шлюза на действующий ключ подписи (bundle-signing.<id>.pub) и удалите %s",
+			TrustFile, MaxTrustStored, TrustFile)
 	}
 	doc := trustDoc{Format: trustFormat, Statements: []string{}}
 	for _, raw := range raws {
