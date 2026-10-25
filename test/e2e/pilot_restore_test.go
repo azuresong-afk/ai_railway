@@ -18,7 +18,8 @@ const pilotPassphrase = "lunar-Copper-meadow-91-quietly" //nolint:gosec // G101:
 // (backup.sh: файлы и pg_dump), потеря установки, восстановление
 // restore.sh в пустую установку на другом каталоге данных. После
 // восстановления: вход прежним паролем и вторым фактором, события до копии на
-// месте, изменений после копии нет, цепочка журнала аудита сходится, шлюз
+// месте, изменений после копии нет, сессии и токены API копии завершены с
+// записью system.restored, цепочка журнала аудита сходится, шлюз
 // принимает пакет восстановленного сервера и пропускает запросы. Обе
 // установки работают без выхода наружу (ловушка 3.7).
 func TestE2EPilot_BackupRestore(t *testing.T) {
@@ -33,6 +34,15 @@ func TestE2EPilot_BackupRestore(t *testing.T) {
 		t.Fatal("событие запроса не появилось в консоли за 60 с")
 	}
 	before := eventCount(t, admin, app.slug)
+	// Токен API, действующий на момент копии: после восстановления он
+	// отозван (aisec-cli restore-finish, В2 ревью B1).
+	r := admin.do("POST", "/api/v1/api-tokens", map[string]any{"name": "e2e-copy", "password": s2AdminPass,
+		"permissions": []map[string]string{{"permission": "events.read"}}})
+	if r.code != http.StatusCreated {
+		t.Fatalf("выпуск токена API: %s", r)
+	}
+	var tok struct{ Token string }
+	r.json(t, &tok)
 
 	// Копия конфигурации aisec-cli backup в compose (руководство
 	// администратора, раздел 12): фраза — файл 0400 пользователя aisec.
@@ -94,6 +104,32 @@ func TestE2EPilot_BackupRestore(t *testing.T) {
 	c := sb.client("198.51.100.10")
 	if me := c.signIn(s.admin); me.User.Login != s2AdminLogin {
 		t.Fatalf("вход после восстановления: %+v", me)
+	}
+	// Сессии и токены копии завершены одной записью system.restored от
+	// aisec-cli (restore.sh, шаг restore-finish).
+	bearer := sb.client("198.51.100.11")
+	bearer.bearer = tok.Token
+	if r := bearer.do("GET", "/api/v1/events", nil); r.code != http.StatusUnauthorized {
+		t.Fatalf("токен API из копии принят после восстановления: %s", r)
+	}
+	r = c.do("GET", "/api/v1/audit?action=system.restored", nil)
+	var restored struct {
+		Items []struct {
+			Actor   struct{ Type string }
+			Details struct {
+				RevokedSessions  int  `json:"revoked_sessions"`
+				RevokedAPITokens int  `json:"revoked_api_tokens"`
+				StaleCopy        bool `json:"stale_copy"`
+			}
+		}
+	}
+	if r.code != http.StatusOK {
+		t.Fatalf("/audit: %s", r)
+	}
+	r.json(t, &restored)
+	if len(restored.Items) != 1 || restored.Items[0].Actor.Type != "cli" || restored.Items[0].Details.RevokedSessions < 1 ||
+		restored.Items[0].Details.RevokedAPITokens != 1 || restored.Items[0].Details.StaleCopy {
+		t.Fatalf("записи system.restored: %s", r)
 	}
 	// События до копии на месте; приложения после копии нет.
 	if n := eventCount(t, c, app.slug); n < before {

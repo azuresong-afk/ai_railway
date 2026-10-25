@@ -258,7 +258,7 @@ func TestCatalog(t *testing.T) {
 	for _, a := range []string{
 		"auth.login", "auth.logout", "auth.login_failed", "gateway.auth_failed",
 		"component.start", "component.stop", "integrity.check", "system.error",
-		"update.install", "backup.create", "backup.restore", "data.export", "events.content_read",
+		"update.install", "backup.create", "backup.restore", "system.restored", "data.export", "events.content_read",
 	} {
 		ev, ok := Lookup(a)
 		if !ok || !ev.Mandatory {

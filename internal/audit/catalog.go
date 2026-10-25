@@ -144,6 +144,7 @@ var catalog = []Event{
 	{"update.install", "Обновление компонента", true},
 	{"backup.create", "Резервное копирование", true},
 	{"backup.restore", "Восстановление из резервной копии", true},
+	{"system.restored", "Завершение восстановления полной копии: сессии консоли и токены API отозваны (aisec-cli restore-finish)", true},
 	{"data.export", "Выгрузка данных", true},
 	{"events.content_read", "Доступ к содержимому события", true},
 	{"events.retention", "Удаление событий по сроку хранения", true},

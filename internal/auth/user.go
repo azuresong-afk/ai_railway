@@ -149,6 +149,9 @@ const (
 	RevokeMFAPassed = "mfa_passed"
 	// RevokeMFARequired — полной сессии без второго фактора он стал обязателен.
 	RevokeMFARequired = "mfa_required"
+	// RevokeBackupRestore — сессия из восстановленной полной копии
+	// (aisec-cli restore-finish).
+	RevokeBackupRestore = "backup_restore"
 )
 
 // Session — сессия консоли (решение Р6). Токен и CSRF-токен хранятся только хешами.
