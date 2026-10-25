@@ -59,6 +59,9 @@ const usage = `aisec-cli — служебные операции AISec.
                [-keep-api-tokens] [-accept-old-copy]
                                 восстановить конфигурацию в новую установку после init; 3 — копия недействительна;
                                 токены API восстанавливаются отозванными; копия старше 7 суток — с -accept-old-copy
+  restore-finish [-copy-dir ИМЯ]
+                                после восстановления полной копии (restore.sh): завершить все сессии консоли,
+                                отозвать все токены API, записать system.restored; копия старше 7 суток — предупреждение
   keys status                   версии ключа данных и число строк под каждой (AISEC_DATABASE_URL)
   keys rotate-data -dir КАТАЛОГ [-resume] [-batch 500] [-settle 2m]
                                 новая версия ключа данных, перешифрование TOTP, учётных данных провайдеров
@@ -165,6 +168,15 @@ func run(args []string, stdout, stderr io.Writer, now time.Time) int {
 			if errors.Is(err, errBackupInvalid) {
 				return 3
 			}
+			return 1
+		}
+		return 0
+	case "restore-finish":
+		if err := restoreFinish(args[1:], os.Getenv("AISEC_DATABASE_URL"), stdout, stderr, now); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return 0
+			}
+			say(stderr, "aisec-cli restore-finish: %v\n", err)
 			return 1
 		}
 		return 0
