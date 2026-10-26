@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/netip"
+	"strconv"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -212,5 +213,30 @@ func TestPGSecurityAlertNotSuppressed(t *testing.T) {
 	var pe *pgconn.PgError
 	if !errors.As(err, &pe) || pe.Code != "23514" {
 		t.Fatalf("окно подавления правилу безопасности: %v", err)
+	}
+}
+
+// 3В16 ревью 3.r2 на PostgreSQL: серия крупных ослаблений одного субъекта
+// за окно группировки сохраняется — подробности DM-40 не нарушают CHECK
+// столбца details, запись аудита и действие не откатываются.
+func TestPGWeakeningDetailsWithinColumnLimit(t *testing.T) {
+	e := setupPG(t)
+	ctx := pgCtx(t)
+	e.log.SetRecordHook(e.alerts.OnAudit)
+	user := audit.Actor{Type: audit.ActorUser, ID: "01900000-0000-7000-8000-0000000000c1", Name: "petrov"}
+	reasons := make([]string, 200)
+	for i := range reasons {
+		reasons[i] = "rule_disabled:rule-with-a-rather-long-identifier-" + strconv.Itoa(i)
+	}
+	for i := range 50 {
+		if err := e.log.Record(ctx, audit.Entry{Actor: user, Action: "policy.update", Object: audit.Object{Type: "policy", ID: strconv.Itoa(i)},
+			Result: audit.ResultSuccess, Details: map[string]any{"weakening": true, "weakening_reasons": reasons}}); err != nil {
+			t.Fatalf("ослабление %d: %v", i, err)
+		}
+	}
+	var n, size int
+	if err := e.owner.QueryRow(ctx, `SELECT count, octet_length(details::text) FROM alerts WHERE kind = 'security'`).
+		Scan(&n, &size); err != nil || n != 50 || size > 16384 {
+		t.Fatalf("оповещение: %d срабатываний, %d байт, %v", n, size, err)
 	}
 }

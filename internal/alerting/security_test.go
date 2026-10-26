@@ -577,3 +577,35 @@ func TestDM44_AuditStreamGap(t *testing.T) {
 		t.Fatalf("повтор после закрытия: %+v", got)
 	}
 }
+
+// DM-40 (3В16 ревью 3.r2): серия крупных ослаблений одного субъекта за
+// окно группировки не упирается в предел столбца details (16 КиБ): в
+// элементе — не больше MaxItemReasons причин и их общее число, список
+// элементов обрезается по размеру с признаком items_truncated.
+func TestDM40_LargeWeakeningDetailsBounded(t *testing.T) {
+	e := newEnv(t)
+	reasons := make([]string, 200)
+	for i := range reasons {
+		reasons[i] = fmt.Sprintf("rule_disabled:rule-%03d-with-a-long-identifier", i)
+	}
+	for i := range 50 {
+		e.audit(t, e.rec(t, tUser, "192.0.2.1", "policy.update", audit.Object{Type: "policy", ID: fmt.Sprint("p-", i)},
+			audit.ResultSuccess, map[string]any{"weakening": true, "weakening_reasons": reasons}))
+	}
+	got := e.alerts(t, BuiltinWeakening)
+	if len(got) != 1 || got[0].Count != 50 {
+		t.Fatalf("оповещения: %+v", got)
+	}
+	raw, err := json.Marshal(got[0].Details)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) > MaxDetailsBytes || got[0].Details["items_truncated"] != true {
+		t.Fatalf("подробности %d байт, обрезка %v", len(raw), got[0].Details["items_truncated"])
+	}
+	items, _ := got[0].Details["items"].([]any)
+	it, _ := items[0].(map[string]any)
+	if rs, _ := it["reasons"].([]any); len(rs) != MaxItemReasons || fmt.Sprint(it["reasons_total"]) != "200" {
+		t.Fatalf("элемент: %d причин, всего %v", len(rs), it["reasons_total"])
+	}
+}

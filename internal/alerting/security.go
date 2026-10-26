@@ -320,9 +320,15 @@ func classifyAudit(ctx context.Context, ops secOps, r *audit.Record) ([]Raise, e
 			map[string]any{"items": []any{item(r, map[string]any{"error": details()["error"], "attempts": details()["attempts"]})}}))
 	}
 	if reasons, ok := weakening(r, details); ok {
+		// Причины — по одной на правило и исключение политики (до сотен):
+		// в элементе первые MaxItemReasons и общее число (3В16 ревью 3.r2).
+		extra := map[string]any{"reasons": reasons}
+		if len(reasons) > MaxItemReasons {
+			extra["reasons"], extra["reasons_total"] = reasons[:MaxItemReasons], len(reasons)
+		}
 		raises = append(raises, raiseOf(BuiltinWeakening, map[string]string{"actor": actorKey(r.Actor)},
 			map[string]string{"actor": actorName(r.Actor)}, 1,
-			map[string]any{"items": []any{item(r, map[string]any{"reasons": reasons})}}))
+			map[string]any{"items": []any{item(r, extra)}}))
 	}
 	return raises, nil
 }
