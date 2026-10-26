@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -366,5 +367,47 @@ func TestCompareExceptions(t *testing.T) {
 	c.Exceptions = []policy.ExceptionSpec{wide}
 	if d := versions.Compare(b, c); !d.Weakened() || !hasKind(d, "exception_changed") {
 		t.Fatalf("изменение условия: %+v", d)
+	}
+}
+
+// 3В26 ревью 3.r3: версию с сотнями исключений (ID по 63 символа) можно
+// сохранить и откатить — подробности аудита не больше 16 КиБ: списки ID
+// ограничены, рядом — их число, причины ослабления исключениями — одна
+// каждого вида.
+func TestVersionManyExceptionsAudit(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	e.createStrict(t)
+	s := spec("p", policy.Enforce, ruleInjection, rulePII)
+	for i := range policy.MaxExceptions {
+		id := fmt.Sprintf("exc-%059d", i)
+		s.Exceptions = append(s.Exceptions, policy.ExceptionSpec{ID: id, Detector: "injection.heuristic", Pattern: "persona_removal",
+			App: fmt.Sprintf("app-%058d", i), Reason: excInput.Reason, Author: "user:" + e.by.Actor.ID,
+			CreatedAt: e.now, ExpiresAt: e.now.Add(policy.DefaultExceptionTTL)})
+	}
+	if len(s.Exceptions[0].ID) != 63 {
+		t.Fatalf("длина ID: %d", len(s.Exceptions[0].ID))
+	}
+	d, err := e.svc.Update(ctx, e.confirmed(), "p", 1, s, versions.SourceAPI, "", versions.ConsoleDefaults)
+	if err != nil {
+		t.Fatalf("версия с %d исключениями: %v", policy.MaxExceptions, err)
+	}
+	det := e.last(t, "policy.update").Details.(map[string]any)
+	if det["exceptions_added_count"] != policy.MaxExceptions || len(det["exceptions_added"].([]string)) != 50 || det["weakening"] != true {
+		t.Fatalf("подробности: added %v, count %v", len(det["exceptions_added"].([]string)), det["exceptions_added_count"])
+	}
+	// Откат к версии без исключений: снять все разом.
+	if _, err := e.svc.Rollback(ctx, e.by, "p", 1, d.Version.Version, "снять исключения"); err != nil {
+		t.Fatalf("откат: %v", err)
+	}
+	det = e.last(t, "policy.rollback").Details.(map[string]any)
+	if det["exceptions_removed_count"] != policy.MaxExceptions {
+		t.Fatalf("откат: %v", det["exceptions_removed_count"])
+	}
+	for _, a := range []string{"policy.update", "policy.rollback"} {
+		raw, err := json.Marshal(e.last(t, a).Details)
+		if err != nil || len(raw) > 16<<10 {
+			t.Fatalf("%s: %d байт %v", a, len(raw), err)
+		}
 	}
 }
