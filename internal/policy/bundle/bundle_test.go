@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/azuresong-afk/ai_railway/internal/auth"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/internal/policy/bundle"
 	"github.com/azuresong-afk/ai_railway/internal/policy/bundle/bundletest"
@@ -262,6 +264,13 @@ func TestBundleContentRejected(t *testing.T) {
 		"неверный YAML":      clone(func(c *bundle.Content) { c.Policies[0].YAML = "rules: [" }),
 		"отрицательный тайм": clone(func(c *bundle.Content) { c.Providers[0].ConnectTimeout = -1 }),
 		"неверный словарь":   clone(func(c *bundle.Content) { c.Applications[0].Lists[0].Category = "Плохо" }),
+		"много отозванных": clone(func(c *bundle.Content) {
+			k := c.Applications[0].Keys[0]
+			for i := range bundle.MaxRevokedKeysPerApp + 1 {
+				k.Prefix, k.Revoked = fmt.Sprintf("aisec_r%07d", i), true
+				c.Applications[0].Keys = append(c.Applications[0].Keys, k)
+			}
+		}),
 	}
 	for name, content := range cases {
 		if _, err := o.Open(sealRaw(t, f, content, bundle.Secrets{}), 0); bundle.Reason(err) != bundle.ReasonInvalidContent {
@@ -276,6 +285,45 @@ func TestBundleContentRejected(t *testing.T) {
 		if _, err := o.Open(sealRaw(t, f, enc(good), s), 0); bundle.Reason(err) != bundle.ReasonInvalidContent {
 			t.Errorf("%s: %v", name, err)
 		}
+	}
+}
+
+// TestDM38_RevokedKeyFromBundle — отозванный ключ из пакета: шлюз отвечает
+// причиной revoked (по ней DM-38 поднимает оповещение), а не invalid;
+// чужой секрет с тем же префиксом — invalid, отзыв по префиксу не узнать
+// (Д-E2E-1). Покрывает: DM-38.
+func TestDM38_RevokedKeyFromBundle(t *testing.T) {
+	f := bundletest.New(t)
+	c := f.Content(t)
+	c.Applications[0].Keys[0].Revoked = true
+	b, err := f.Opener(t).Open(f.Seal(t, c, 1), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recs, err := b.Content.KeyRecords()
+	if err != nil || len(recs) != 1 || !recs[0].Revoked {
+		t.Fatalf("KeyRecords: %+v, %v", recs, err)
+	}
+	h, err := f.Provider.Hasher()
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := auth.NewAuthenticator(h, recs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote := netip.MustParseAddr("192.0.2.10")
+	if id, fail := a.Authenticate(bundletest.Key, remote, time.Now()); id != nil || fail.Reason != auth.ReasonRevoked || fail.AppID != "crm" {
+		t.Fatalf("отозванный ключ: %+v %+v", id, fail)
+	}
+	forged := bundletest.KeyPrefix + "_" + strings.Repeat("A", 43)
+	if id, fail := a.Authenticate(forged, remote, time.Now()); id != nil || fail.Reason != auth.ReasonInvalid {
+		t.Fatalf("чужой секрет: %+v %+v", id, fail)
+	}
+	// Без отозванных ключей байты содержимого прежние: поля revoked нет.
+	raw, err := f.Content(t).Marshal()
+	if err != nil || bytes.Contains(raw, []byte(`"revoked"`)) {
+		t.Fatalf("revoked в пакете без отзыва: %s, %v", raw, err)
 	}
 }
 

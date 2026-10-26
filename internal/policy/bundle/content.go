@@ -23,12 +23,20 @@ const (
 	MaxProviders    = 1000
 	MaxApplications = 2000
 	MaxPolicies     = 1000
-	// MaxKeysPerApp — ключей приложения в пакете: только действующие на
-	// момент сборки (не больше 20) с запасом на перекрытие при ротации.
+	// MaxKeysPerApp — ключей приложения в пакете: действующие на момент
+	// сборки (не больше 20) и недавно отозванные (не больше
+	// MaxRevokedKeysPerApp), с запасом.
 	MaxKeysPerApp = 64
-	MaxCIDRs      = 64
-	MaxModels     = 100
-	MaxCAPEM      = 256 << 10
+	// MaxRevokedKeysPerApp — отозванных ключей приложения в пакете: самые
+	// поздние по времени отзыва (Д-E2E-1).
+	MaxRevokedKeysPerApp = 32
+	// RevokedKeyRetention — сколько отозванный ключ остаётся в пакете
+	// (не дольше срока действия): шлюз отвечает на него причиной revoked,
+	// и DM-38 поднимает оповещение; позже отказ — «неизвестный ключ».
+	RevokedKeyRetention = 30 * 24 * time.Hour
+	MaxCIDRs            = 64
+	MaxModels           = 100
+	MaxCAPEM            = 256 << 10
 	// MaxCredential — учётные данные одного провайдера.
 	MaxCredential = 16 << 10
 	// MaxTimeoutSeconds — таймаут провайдера.
@@ -129,11 +137,15 @@ type List struct {
 }
 
 // Key — ключ приложения: префикс и SHA-256 профиля (ИАФ.8), без секрета.
+// Revoked — ключ отозван: шлюз его не принимает, но отказ отличает от
+// неизвестного ключа (DM-38, Д-E2E-1). Без отозванных ключей байты пакета
+// прежние (omitempty).
 type Key struct {
 	Prefix       string    `json:"prefix"`
 	SHA256       string    `json:"sha256"`
 	ExpiresAt    time.Time `json:"expires_at"`
 	AllowedCIDRs []string  `json:"allowed_cidrs,omitempty"`
+	Revoked      bool      `json:"revoked,omitempty"`
 }
 
 // Policy — текущая версия политики организации: каноничный YAML (ADR-0016).
@@ -266,6 +278,9 @@ func checkKeys(at string, keys []Key, prefixes map[string]bool) []error {
 	if len(keys) > MaxKeysPerApp {
 		add("%s: больше %d ключей", at, MaxKeysPerApp)
 	}
+	if n := countRevoked(keys); n > MaxRevokedKeysPerApp {
+		add("%s: больше %d отозванных ключей", at, MaxRevokedKeysPerApp)
+	}
 	for j, k := range keys {
 		kat := fmt.Sprintf("%s.keys[%d]", at, j)
 		if !prefixRe.MatchString(k.Prefix) || prefixes[k.Prefix] {
@@ -284,6 +299,16 @@ func checkKeys(at string, keys []Key, prefixes map[string]bool) []error {
 		errs = append(errs, prefixed(kat, config.CheckCIDRs(k.AllowedCIDRs))...)
 	}
 	return errs
+}
+
+func countRevoked(keys []Key) int {
+	n := 0
+	for _, k := range keys {
+		if k.Revoked {
+			n++
+		}
+	}
+	return n
 }
 
 func (p Provider) params() config.ProviderParams {
@@ -376,7 +401,7 @@ func (c *Content) KeyRecords() ([]auth.KeyRecord, error) {
 	var out []auth.KeyRecord
 	for _, a := range all {
 		for _, k := range a.keys {
-			rec := auth.KeyRecord{AppID: a.id, Env: a.env, Prefix: k.Prefix, SHA256: k.SHA256, Expires: k.ExpiresAt}
+			rec := auth.KeyRecord{AppID: a.id, Env: a.env, Prefix: k.Prefix, SHA256: k.SHA256, Expires: k.ExpiresAt, Revoked: k.Revoked}
 			for _, s := range k.AllowedCIDRs {
 				p, err := netip.ParsePrefix(s)
 				if err != nil {

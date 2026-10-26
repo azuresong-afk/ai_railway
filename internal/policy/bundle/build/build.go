@@ -414,7 +414,7 @@ func (s *Service) collect(ctx context.Context, now time.Time) (*bundle.Content, 
 	for _, p := range provs {
 		byID[p.ID] = p
 	}
-	keys, err := s.keysByApp(ctx, now)
+	keys, drop, err := s.keysByApp(ctx, now)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -438,8 +438,12 @@ func (s *Service) collect(ctx context.Context, now time.Time) (*bundle.Content, 
 			p, ok := byID[a.ProviderID]
 			ba := application(a, p.Slug, keys[a.ID])
 			for _, k := range ba.Keys {
-				if s.collected.IsZero() || k.ExpiresAt.Before(s.collected) {
-					s.collected = k.ExpiresAt
+				until := k.ExpiresAt
+				if d, ok := drop[k.Prefix]; ok {
+					until = d
+				}
+				if s.collected.IsZero() || until.Before(s.collected) {
+					s.collected = until
 				}
 			}
 			reason := ""
@@ -461,10 +465,10 @@ func (s *Service) collect(ctx context.Context, now time.Time) (*bundle.Content, 
 			if reason != "" {
 				excluded = append(excluded, Excluded{Application: a.Slug, Reason: clip(reason, 500)})
 				c.Unavailable = append(c.Unavailable, bundle.Unavailable{ID: ba.ID, Env: ba.Env, Keys: ba.Keys})
-				nkeys += len(ba.Keys)
+				nkeys += activeKeys(ba.Keys)
 				continue
 			}
-			nkeys += len(ba.Keys)
+			nkeys += activeKeys(ba.Keys)
 			c.Applications = append(c.Applications, ba)
 			appSlugs[a.ID] = ba.ID
 			if !usedProv[p.ID] {
@@ -592,21 +596,48 @@ func (s *Service) tlsKey(ctx context.Context, c *bundle.Content) (bundle.KeyPEM,
 	return bundle.KeyPEM(key), nil
 }
 
-// keysByApp — действующие ключи всех приложений одним запросом (Н25, Н26).
-func (s *Service) keysByApp(ctx context.Context, now time.Time) (map[string][]bundle.Key, error) {
-	ks, err := s.apps.ActiveKeysAt(ctx, now)
+// keysByApp — ключи всех приложений для пакета одним запросом (Н25, Н26):
+// действующие и отозванные не раньше bundle.RevokedKeyRetention назад, не
+// больше bundle.MaxRevokedKeysPerApp последних отозванных на приложение
+// (Д-E2E-1). drop — момент, когда отозванный ключ выпадет из пакета раньше
+// своего срока: к нему пакет собирается заново.
+func (s *Service) keysByApp(ctx context.Context, now time.Time) (keys map[string][]bundle.Key, drop map[string]time.Time, err error) {
+	ks, err := s.apps.BundleKeysAt(ctx, now, now.Add(-bundle.RevokedKeyRetention))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	out := map[string][]bundle.Key{}
+	// Поздние отзывы первыми: предел отсекает самые давние.
+	slices.SortStableFunc(ks, func(a, b apps.Key) int { return b.RevokedAt.Compare(a.RevokedAt) })
+	keys, drop = map[string][]bundle.Key{}, map[string]time.Time{}
+	revoked := map[string]int{}
 	for _, k := range ks {
-		bk := bundle.Key{Prefix: k.Prefix, SHA256: fmt.Sprintf("%x", k.Hash), ExpiresAt: k.ExpiresAt.UTC()}
+		if !k.RevokedAt.IsZero() {
+			if revoked[k.AppID] >= bundle.MaxRevokedKeysPerApp {
+				continue
+			}
+			revoked[k.AppID]++
+			if until := k.RevokedAt.Add(bundle.RevokedKeyRetention).UTC(); until.Before(k.ExpiresAt) {
+				drop[k.Prefix] = until
+			}
+		}
+		bk := bundle.Key{Prefix: k.Prefix, SHA256: fmt.Sprintf("%x", k.Hash), ExpiresAt: k.ExpiresAt.UTC(), Revoked: !k.RevokedAt.IsZero()}
 		for _, c := range k.AllowedCIDRs {
 			bk.AllowedCIDRs = append(bk.AllowedCIDRs, c.String())
 		}
-		out[k.AppID] = append(out[k.AppID], bk)
+		keys[k.AppID] = append(keys[k.AppID], bk)
 	}
-	return out, nil
+	return keys, drop, nil
+}
+
+// activeKeys — число неотозванных ключей (счётчик app_keys в аудите сборки).
+func activeKeys(keys []bundle.Key) int {
+	n := 0
+	for _, k := range keys {
+		if !k.Revoked {
+			n++
+		}
+	}
+	return n
 }
 
 // policyOf — текущая версия политики организации; nil — политики нет.
@@ -692,8 +723,8 @@ func application(a apps.Application, providerSlug string, keys []bundle.Key) bun
 	for _, l := range a.Lists {
 		ba.Lists = append(ba.Lists, bundle.List(l))
 	}
-	// Только действующие ключи: отозванный или истёкший ключ на шлюзе не
-	// нужен, его отказ — «неизвестный ключ».
+	// Действующие и недавно отозванные ключи (keysByApp); истёкший ключ на
+	// шлюзе не нужен, его отказ — «неизвестный ключ».
 	ba.Keys = append(ba.Keys, keys...)
 	slices.SortFunc(ba.Keys, func(x, y bundle.Key) int { return strings.Compare(x.Prefix, y.Prefix) })
 	return ba

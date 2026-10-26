@@ -13,6 +13,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -129,12 +131,10 @@ func TestE2EStage3_SecurityAlertsDelivered(t *testing.T) {
 		}
 	})
 
-	// Отозванный ключ: шлюз отказывает, но оповещения нет — дефект Д-E2E-1
-	// (docs/plans/stage-3.md, «Дефекты, найденные e2e 3.32»): пакет несёт
-	// только действующие ключи, шлюз видит отозванный ключ как неизвестный
-	// (reason invalid), а DM-38 ждёт reason revoked. Отказ проверяется, шаг
-	// с оповещением пропускается до исправления кода (ТЗ 5.16: «отозванный
-	// ключ — всегда оповещение»).
+	// Отозванный ключ: пакет несёт недавно отозванные ключи с отметкой
+	// отзыва, шлюз отказывает с причиной revoked, DM-38 поднимает отдельное
+	// оповещение по префиксу ключа (ТЗ 5.16: «отозванный ключ — всегда
+	// оповещение»; дефект Д-E2E-1 исправлен).
 	t.Run("DM-38 отозванный ключ", func(t *testing.T) {
 		applied := strings.Count(st.gw.log(), "пакет конфигурации применён")
 		r := st.admin.do("GET", "/api/v1/applications/"+app.id+"/keys", nil)
@@ -158,7 +158,43 @@ func TestE2EStage3_SecurityAlertsDelivered(t *testing.T) {
 		if code, _ := st.chat(app.key, "Запрос с отозванным ключом."); code != http.StatusUnauthorized {
 			t.Fatalf("шлюз принимает отозванный ключ: %d", code)
 		}
-		t.Skip("Д-E2E-1: оповещение DM-38 по отозванному ключу не поднимается (в пакете нет отозванных ключей); отказ шлюза проверен")
+		prefix, err := auth.ParseAppKey(app.key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		id := st.ruleID(alerting.BuiltinGatewayAuth)
+		var al s3AlertItem
+		if !s2WaitFor(30*time.Second, func() bool {
+			r := st.admin.do("GET", "/api/v1/alerts?limit=50&rule_id="+url.QueryEscape(id), nil)
+			var page struct{ Items []s3AlertItem }
+			r.json(t, &page)
+			for _, it := range page.Items {
+				if it.Group["key_prefix"] == prefix {
+					al = it
+					return true
+				}
+			}
+			return false
+		}) {
+			t.Fatalf("нет оповещения DM-38 по отозванному ключу %s", prefix)
+		}
+		card := st.alertCard(al.ID)
+		if reasons, _ := card.Details["reasons"].([]any); !slices.Contains(reasons, any("revoked")) || al.Severity != "high" {
+			t.Fatalf("оповещение об отозванном ключе: %+v %+v", al, card.Details)
+		}
+		if strings.Contains(fmt.Sprint(card.Details), app.key) || strings.Contains(al.Title, app.key) {
+			t.Fatalf("в оповещении ключ целиком: %+v", al)
+		}
+		if !s2WaitFor(60*time.Second, func() bool {
+			for _, a := range st.sys.alerts() {
+				if a.ID == al.ID && !strings.Contains(a.Raw, app.key) {
+					return true
+				}
+			}
+			return false
+		}) {
+			t.Fatalf("оповещение об отозванном ключе не пришло в syslog")
+		}
 	})
 
 	t.Run("DM-38 перебор ключей", func(t *testing.T) {

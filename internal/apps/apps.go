@@ -305,9 +305,10 @@ type Store interface {
 	Key(ctx context.Context, orgID, id string) (Key, error)
 	// Keys — ключи приложения, новые первыми, не больше MaxKeysListed.
 	Keys(ctx context.Context, orgID, appID string) ([]Key, error)
-	// ActiveKeys — все неотозванные ключи организации со сроком позже now
-	// (пакет конфигурации, Н25 ревью 2.r3b), по приложению и префиксу.
-	ActiveKeys(ctx context.Context, orgID string, now time.Time) ([]Key, error)
+	// BundleKeys — ключи организации со сроком позже now для пакета
+	// конфигурации (Н25 ревью 2.r3b): неотозванные и отозванные позже
+	// revokedSince (Д-E2E-1), по приложению и префиксу.
+	BundleKeys(ctx context.Context, orgID string, now, revokedSince time.Time) ([]Key, error)
 
 	// Цены моделей и бюджеты (задача 3.18, миграция 0031_budgets).
 	// CreatePrice — ErrPriceExists, ErrProviderNotFound.

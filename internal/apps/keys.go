@@ -207,10 +207,12 @@ func (s *Service) RevokeKey(ctx context.Context, by By, keyID, ownerID string) (
 	})
 }
 
-// ActiveKeysAt — действующие на момент now ключи всех приложений (пакет
-// конфигурации, Н25 ревью 2.r3b): одним запросом и без предела выдачи.
-func (s *Service) ActiveKeysAt(ctx context.Context, now time.Time) ([]Key, error) {
-	return s.store.ActiveKeys(ctx, s.orgID, now)
+// BundleKeysAt — ключи всех приложений для пакета конфигурации на момент
+// now (Н25 ревью 2.r3b): одним запросом и без предела выдачи. Кроме
+// действующих — неистёкшие ключи, отозванные позже revokedSince: шлюз
+// отличает отозванный ключ от неизвестного (DM-38, Д-E2E-1).
+func (s *Service) BundleKeysAt(ctx context.Context, now, revokedSince time.Time) ([]Key, error) {
+	return s.store.BundleKeys(ctx, s.orgID, now, revokedSince)
 }
 
 // Keys — ключи приложения (новые первыми); ownerID не пуст — только своего.
