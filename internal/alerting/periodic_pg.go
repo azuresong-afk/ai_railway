@@ -94,7 +94,10 @@ func (s *PGStore) Periodic(ctx context.Context) (PeriodicResult, error) {
 			s.orgID).Scan(&now, &last); err != nil {
 			return err
 		}
-		if last != nil && now.Sub(*last) < periodicMinGap {
+		// Пропуск — только если проход был в последние periodicMinGap: при
+		// шаге часов СУБД назад отметка оказывается в будущем, и задача не
+		// должна молчать до неё (3Н36 ревью 3.r2).
+		if last != nil && now.Sub(*last) >= 0 && now.Sub(*last) < periodicMinGap {
 			res.Skipped = true
 			return nil
 		}

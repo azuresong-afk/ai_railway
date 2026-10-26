@@ -252,3 +252,26 @@ func TestPGPeriodicRules(t *testing.T) {
 		t.Fatalf("удаление состояния: %v", err)
 	}
 }
+
+// 3Н36 ревью 3.r2: отметка прохода в будущем (часы СУБД шагнули назад) не
+// останавливает задачу; неверный пояс установки — предупреждение в
+// состоянии правил «аномалия» и «бюджет», расчёт по UTC.
+func TestPGPeriodicClockStepBack(t *testing.T) {
+	e := setupPG(t)
+	ctx := pgCtx(t)
+	if _, err := e.owner.Exec(ctx, `INSERT INTO install_settings (org_id, timezone, retention_mode, updated_at)
+		VALUES ($1, 'Mars/Olympus', 'masked', now())`, audit.DefaultOrgID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.owner.Exec(ctx, `INSERT INTO alert_job_runs (org_id, job, ran_at) VALUES ($1, 'periodic', now() + interval '1 hour')`,
+		audit.DefaultOrgID); err != nil {
+		t.Fatal(err)
+	}
+	if res := e.periodic(t); res.Skipped || res.Rules == 0 {
+		t.Fatalf("проход после шага часов назад: %+v", res)
+	}
+	_, st, ok, err := e.svc.RuleState(ctx, e.ruleID(t, alerting.BuiltinActivitySpike))
+	if err != nil || !ok || st.Warning != alerting.WarnTimezoneInvalid {
+		t.Fatalf("предупреждение о поясе: %+v %v %v", st, ok, err)
+	}
+}
