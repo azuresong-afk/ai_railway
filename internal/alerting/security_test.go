@@ -547,3 +547,31 @@ func TestDM43_TokenCannotClose(t *testing.T) {
 		t.Fatalf("закрытие «порога» токеном: %v", err)
 	}
 }
+
+// DM-44, РСБ.6 (3В19 ревью 3.r2): разрыв передачи журнала аудита в SIEM —
+// записи удалены архивацией до передачи или курсор потерян — поднимает
+// оповещение system.audit_stream_lag отдельно от условия отставания.
+func TestDM44_AuditStreamGap(t *testing.T) {
+	e := newEnv(t)
+	sys := audit.Actor{Type: audit.ActorSystem, ID: "aisec-server"}
+	ch := audit.Object{Type: "notify_channel", ID: "01900000-0000-7000-8000-0000000000e1"}
+	e.audit(t, e.rec(t, sys, "", "notify.audit_stream_gap", ch, audit.ResultFailure,
+		map[string]any{"channel_name": "SIEM", "reason": "archived", "from_seq": 101, "to_seq": 250}))
+	got := e.alerts(t, BuiltinAuditStream)
+	if len(got) != 1 || got[0].Values["channel"] != "SIEM" || got[0].Severity != "high" {
+		t.Fatalf("оповещение о разрыве: %+v", got)
+	}
+	items, _ := got[0].Details["items"].([]any)
+	it, _ := items[0].(map[string]any)
+	if it["reason"] != "archived" || fmt.Sprint(it["from_seq"]) != "101" || fmt.Sprint(it["to_seq"]) != "250" {
+		t.Fatalf("подробности: %+v", got[0].Details)
+	}
+	if _, err := e.svc.SetStatus(context.Background(), e.admin, got[0].ID, StatusClosed, ""); err != nil {
+		t.Fatal(err)
+	}
+	e.audit(t, e.rec(t, sys, "", "notify.audit_stream_gap", ch, audit.ResultFailure,
+		map[string]any{"channel_name": "SIEM", "reason": "cursor_lost", "to_seq": 900}))
+	if got := e.alerts(t, BuiltinAuditStream); len(got) != 2 {
+		t.Fatalf("повтор после закрытия: %+v", got)
+	}
+}

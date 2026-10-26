@@ -124,7 +124,8 @@ func securityRules() []Rule {
 			"DM-44: канал уведомлений не доставил сообщение после всех повторов.", "high", []string{"channel"}),
 		rule(BuiltinAuditStream, KindSystem, "Передача журнала аудита в SIEM отстаёт",
 			"DM-44, РСБ.6: самая старая не переданная в SIEM запись журнала аудита старше 15 минут или не передано больше "+
-				"10 000 записей. Записи не теряются: после восстановления приёмника передача догоняет журнал.",
+				"10 000 записей. Записи не теряются: после восстановления приёмника передача догоняет журнал. "+
+				"Разрыв передачи (записи удалены архивацией до передачи, курсор канала потерян) — отдельное оповещение.",
 			"high", []string{"channel"}),
 	}
 }
@@ -301,6 +302,13 @@ func classifyAudit(ctx context.Context, ops secOps, r *audit.Record) ([]Raise, e
 		}
 		raises = append(raises, raiseOf(BuiltinIntegrity, map[string]string{"component": comp},
 			map[string]string{"component": comp}, 1, map[string]any{"items": []any{item(r, map[string]any{"reason": details()["reason"]})}}))
+	case "notify.audit_stream_gap":
+		// РСБ.6, DM-44 (3В19 ревью 3.r2): записи журнала не переданы в SIEM —
+		// удалены архивацией раньше передачи или курсор канала потерян.
+		dd := details()
+		raises = append(raises, raiseOf(BuiltinAuditStream, map[string]string{"channel": r.Object.ID},
+			map[string]string{"channel": str(dd["channel_name"], r.Object.ID)}, 1,
+			map[string]any{"items": []any{item(r, map[string]any{"reason": dd["reason"], "from_seq": dd["from_seq"], "to_seq": dd["to_seq"]})}}))
 	case "notify.delivery_failed":
 		raises = append(raises, raiseOf(BuiltinNotifyFailed, map[string]string{"channel": r.Object.ID},
 			map[string]string{"channel": str(details()["channel_name"], r.Object.ID)}, 1,
