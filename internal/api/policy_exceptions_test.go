@@ -98,6 +98,13 @@ func TestEventMarkAndExceptionViaAPI(t *testing.T) {
 			t.Fatalf("комментарий в журнале аудита: %s", c)
 		}
 	}
+	// Токен с одним events.mark черновика (находки, приложение, политика)
+	// не получает (3Н51 ревью 3.r4).
+	tok := e.issueToken(t, admin, "events.mark")
+	if w := e.call(session{bearer: tok.Token}, "PUT", markURL, fp, true); w.Code != http.StatusOK ||
+		decode[MarkResult](t, w.Body.Bytes()).Draft != nil || strings.Contains(w.Body.String(), "support") {
+		t.Fatalf("отметка токеном без events.read: %d %s", w.Code, w.Body)
+	}
 	// Отметка видна в карточке и в фильтрах.
 	if w := e.call(analyst, "GET", "/api/v1/events/"+id, "", false); !strings.Contains(w.Body.String(), `"mark":"false_positive"`) {
 		t.Fatalf("карточка: %s", w.Body)

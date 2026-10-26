@@ -148,6 +148,8 @@ func TestDashboardsViaAPI(t *testing.T) {
 		t.Fatalf("владелец, своё приложение: %d %s %+v", w.Code, w.Body, e.dash.lastQuery())
 	}
 	mustProblem(t, e.call(owner, "GET", "/api/v1/dashboards/app/"+other.ID, "", false), 404, CodeNotFound)
+	// Поток дашборда чужого приложения — тот же отказ (3Н52 ревью 3.r4).
+	mustProblem(t, e.call(owner, "GET", "/api/v1/dashboards/stream?dashboard=app&app_id="+other.ID, "", false), 404, CodeNotFound)
 	mustProblem(t, e.call(owner, "GET", "/api/v1/dashboards/app/not-a-uuid", "", false), 404, CodeNotFound)
 	// Роль без права: 403 везде; без входа — 401.
 	keymgr := e.mustLogin(t, "keymgr")
