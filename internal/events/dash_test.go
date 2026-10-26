@@ -352,3 +352,78 @@ func TestPGDashboardHugeValues(t *testing.T) {
 		t.Fatalf("задержка: %+v %v", lat, err)
 	}
 }
+
+// 3В25 ревью 3.r3: пересчёт часа (исключительная блокировка часа у досчёта)
+// не задерживает приём событий: пакет за этот час принимается сразу, час
+// помечается к досчёту, после досчёта агрегаты равны полному пересчёту;
+// пересчёт старого часа не мешает приросту текущего.
+func TestPGDashIngestNotBlockedByBackfill(t *testing.T) {
+	e := setupPG(t)
+	ctx := pgCtx(t)
+	if _, err := e.st.EnsurePartitions(ctx); err != nil {
+		t.Fatal(err)
+	}
+	ds, st := dashStoreFor(t, e)
+	if err := ds.Init(ctx); err != nil {
+		t.Fatal(err)
+	}
+	hour := time.Now().UTC().Truncate(time.Hour).Add(-2 * time.Hour)
+	ev := func(at time.Time, n int) events.Event {
+		return dashEvent{at: at, n: n, typ: events.TypeGatewayRequest, app: "a", provider: "mock", model: "m1", action: "block", mode: "enforce",
+			tokens: [2]int{3, 4}, findings: []events.Finding{finding("pii.inn", "pii", "DM-31")}}.build()
+	}
+	// «Досчёт» держит исключительную блокировку часа hour.
+	lock, err := e.owner.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Rollback(ctx) //nolint:errcheck // откат после теста
+	if _, err := lock.Exec(ctx, "SELECT pg_advisory_xact_lock($1, $2)", int32(0x6173_6461), int32(hour.Unix()/3600)); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	if res, err := st.Insert(ctx, events.Ingest{GatewayID: testGateway, ReceivedAt: time.Now(),
+		Events: []events.Event{ev(hour.Add(10*time.Minute), 1), ev(hour.Add(20*time.Minute), 2)}}); err != nil || res.Accepted != 2 {
+		t.Fatalf("приём при пересчёте часа: %+v %v", res, err)
+	}
+	if d := time.Since(start); d > time.Second {
+		t.Fatalf("приём ждал блокировку: %v", d)
+	}
+	// Соседний час не заблокирован: прирост идёт сразу.
+	if res, err := st.Insert(ctx, events.Ingest{GatewayID: testGateway, ReceivedAt: time.Now(),
+		Events: []events.Event{ev(hour.Add(70*time.Minute), 3)}}); err != nil || res.Accepted != 1 {
+		t.Fatalf("приём в соседний час: %+v %v", res, err)
+	}
+	var dirty int
+	if err := e.owner.QueryRow(ctx, "SELECT count(DISTINCT bucket) FROM dash_dirty_hours").Scan(&dirty); err != nil || dirty != 1 {
+		t.Fatalf("помеченных часов: %d %v", dirty, err)
+	}
+	if ready, err := ds.Ready(ctx); err != nil || ready {
+		t.Fatalf("с помеченным часом агрегаты не полные: %v %v", ready, err)
+	}
+	if err := lock.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for range 64 {
+		done, err := ds.BackfillStep(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if done {
+			break
+		}
+	}
+	if ready, err := ds.Ready(ctx); err != nil || !ready {
+		t.Fatalf("после досчёта: %v %v", ready, err)
+	}
+	got := dashDump(t, e)
+	if err := ds.Recompute(ctx, hour.Add(-time.Hour), hour.Add(3*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if want := dashDump(t, e); got != want {
+		t.Fatalf("после досчёта помеченного часа:\n--- было\n%s\n--- пересчёт\n%s", got, want)
+	}
+	if got, err := ds.Totals(ctx, events.DashQuery{From: hour, To: hour.Add(2 * time.Hour), TZ: "UTC"}); err != nil || got.Requests != 3 {
+		t.Fatalf("итоги: %+v %v", got, err)
+	}
+}
