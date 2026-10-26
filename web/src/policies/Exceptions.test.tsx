@@ -4,7 +4,7 @@ import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Me } from "../api/client";
 import type { PolicyRule, PolicySpec } from "./api";
-import { localDiff, specFromJson } from "./localDiff";
+import { localDiff } from "./localDiff";
 import { PoliciesScreen } from "./PoliciesScreen";
 
 const me = (permissions: string[], mfa = false): Me =>
@@ -209,28 +209,49 @@ describe("редактор правил (Н46)", () => {
   });
 });
 
-describe("загрузка YAML: различия до отправки (Н46)", () => {
-  it("документ JSON сравнивается с текущей версией в браузере", async () => {
+describe("загрузка YAML: различия до отправки (Н46, задача 3.35)", () => {
+  const openImport = async () => {
     renderScreen(manage);
     await screen.findByText("Моя политика");
     fireEvent.click(screen.getByRole("button", { name: "Открыть политику Моя политика" }));
     fireEvent.click(await screen.findByRole("button", { name: "Загрузить новую версию из YAML" }));
-    const dlg = await screen.findByRole("dialog");
-    const next = { ...spec, mode: "monitor" };
-    fireEvent.change(within(dlg).getByLabelText("Или вставьте текст"), { target: { value: JSON.stringify(next) } });
+    return screen.findByRole("dialog");
+  };
+  const emptyDiff = { from: 2, to: 3, fields: [], rules_added: [], rules_removed: [], rules_changed: [], reordered: false, weakening: false,
+    weakening_reasons: [], exceptions_added: [], exceptions_removed: [], exceptions_changed: [] };
+
+  it("любой YAML: различия и ослабление считает сервер без сохранения", async () => {
+    handler = (c) =>
+      c.url === "/api/v1/policies/import?dry_run=true"
+        ? json({ dry_run: true, policy: "mine", created: false, current_version: 2,
+            diff: { ...emptyDiff, fields: [{ field: "mode", before: "enforce", after: "monitor" }], weakening: true, weakening_reasons: [{ kind: "mode_monitor" }] } })
+        : undefined;
+    const dlg = await openImport();
+    const yaml = "id: mine\nname: Моя политика\nversion: 2\nmode: monitor\nrules: []\n";
+    fireEvent.change(within(dlg).getByLabelText("Или вставьте текст"), { target: { value: yaml } });
     const diff = await within(dlg).findByRole("region", { name: "Различия с текущей версией" });
     expect(diff).toHaveTextContent(/политика переведена в режим мониторинга/);
+    expect(diff).toHaveTextContent(/понадобится пароль или код/);
+    const dry = calls.filter((c) => c.url === "/api/v1/policies/import?dry_run=true");
+    expect(dry.at(-1)?.body).toEqual({ document: yaml, base_version: 2 });
+    // Проверка ничего не загружает: запроса без dry_run нет.
     expect(calls.some((c) => c.url === "/api/v1/policies/import")).toBe(false);
   });
 
-  it("обычный YAML: сообщение, что различия покажет сервер", async () => {
-    renderScreen(manage);
-    await screen.findByText("Моя политика");
-    fireEvent.click(screen.getByRole("button", { name: "Открыть политику Моя политика" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Загрузить новую версию из YAML" }));
-    const dlg = await screen.findByRole("dialog");
-    fireEvent.change(within(dlg).getByLabelText("Или вставьте текст"), { target: { value: "name: x\nmode: monitor\nrules: []\n" } });
-    await within(dlg).findByText(/Различия с текущей версией в браузере показываются для документа в формате JSON/);
+  it("ошибка разбора видна до отправки, документ другой политики — предупреждение", async () => {
+    let bad = true;
+    handler = (c) => {
+      if (c.url !== "/api/v1/policies/import?dry_run=true") return undefined;
+      return bad
+        ? problem(400, "invalid_request", "Файл политики не прошёл проверку: неизвестное поле extra.")
+        : json({ dry_run: true, policy: "other", created: false, current_version: 5, diff: emptyDiff });
+    };
+    const dlg = await openImport();
+    fireEvent.change(within(dlg).getByLabelText("Или вставьте текст"), { target: { value: "id: mine\nextra: 1\n" } });
+    expect(await within(dlg).findByText(/неизвестное поле extra/)).toBeInTheDocument();
+    bad = false;
+    fireEvent.change(within(dlg).getByLabelText("Или вставьте текст"), { target: { value: "id: other\nname: x\n" } });
+    expect(await within(dlg).findByText(/Документ относится к другой политике: «other»/)).toBeInTheDocument();
   });
 });
 
@@ -258,9 +279,5 @@ describe("сравнение в браузере", () => {
   });
   it("порядок правил", () => {
     expect(localDiff(base, { ...base, rules: [injection, rule] }).reordered).toBe(true);
-  });
-  it("specFromJson принимает только политику", () => {
-    expect(specFromJson(JSON.stringify(base))).not.toBeNull();
-    for (const bad of ["", "name: x", "[]", "null", '{"name":1}', '{"name":"a","mode":"x","rules":[]}', "{"]) expect(specFromJson(bad)).toBeNull();
   });
 });

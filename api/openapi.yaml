@@ -2416,7 +2416,13 @@ paths:
         Изменение, после которого пакет конфигурации шлюзов не соберётся (например, правило `lists.*` на словарь, которого нет у приложения), — 422 с причиной и ID приложений в `detail` (В16 ревью 2.r3b).
         Версия, ослабляющая защиту (`weakening`), принимается только в обёртке JSON (`PolicyImport`) с текущим паролем
         или кодом TOTP: без них — 400 с полем `password`, неверные — 403 `reauthentication_failed` (В23 ревью 2.r5).
-        В обёртке `base_version` и `comment` берутся из тела, параметры запроса не читаются.
+        В обёртке `base_version` и `comment` берутся из тела, параметры запроса, кроме `dry_run`, не читаются.
+        `dry_run=true` (задача 3.35) — проверка без сохранения: тот же разбор и те же пределы и
+        проверки (400, 409 при устаревшем `base_version`, 413, 415, 422), ответ 200 —
+        `PolicyImportPreview`: различия с текущей версией (для новой политики — с пустой) и
+        признак ослабления с причинами. Версия не создаётся, запись аудита не пишется, пароль
+        или код не нужны. Право то же — `policies.manage`: проверка — шаг загрузки, а
+        `policies.test` (песочница аналитика и администратора системы) загрузить не позволяет.
       x-permission: policies.manage
       security: [{ sessionCookie: [] }]
       parameters:
@@ -2429,6 +2435,10 @@ paths:
           in: query
           description: Комментарий к версии
           schema: { type: string, maxLength: 500 }
+        - name: dry_run
+          in: query
+          description: true — только проверка и различия, без сохранения (задача 3.35)
+          schema: { type: boolean, default: false }
       requestBody:
         required: true
         content:
@@ -2438,10 +2448,13 @@ paths:
             schema: { $ref: '#/components/schemas/PolicyImport' }
       responses:
         '200':
-          description: Новая версия политики
+          description: Новая версия политики; с `dry_run=true` — итог проверки без сохранения
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Policy' }
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/Policy'
+                  - $ref: '#/components/schemas/PolicyImportPreview'
         '201':
           description: Политика создана
           headers:
@@ -5951,6 +5964,17 @@ components:
         comment: { type: string, maxLength: 500 }
         password: { type: string, maxLength: 1024, format: password }
         code: { type: string, maxLength: 64 }
+    PolicyImportPreview:
+      type: object
+      required: [dry_run, policy, created, current_version, diff]
+      additionalProperties: false
+      description: Итог проверки загрузки без сохранения (задача 3.35). Ничего не сохранено.
+      properties:
+        dry_run: { type: boolean, enum: [true] }
+        policy: { type: string, description: ID политики из документа }
+        created: { type: boolean, description: 'Политики нет: загрузка создаст её версией 1' }
+        current_version: { type: integer, minimum: 0, description: Текущая версия, с которой сравнивается документ; 0 — новая политика }
+        diff: { $ref: '#/components/schemas/PolicyDiff' }
     PolicyDiff:
       type: object
       required: [from, to, fields, rules_added, rules_removed, rules_changed, reordered, weakening, weakening_reasons,

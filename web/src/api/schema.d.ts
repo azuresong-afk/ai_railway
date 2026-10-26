@@ -4383,7 +4383,13 @@ export interface paths {
          *     Изменение, после которого пакет конфигурации шлюзов не соберётся (например, правило `lists.*` на словарь, которого нет у приложения), — 422 с причиной и ID приложений в `detail` (В16 ревью 2.r3b).
          *     Версия, ослабляющая защиту (`weakening`), принимается только в обёртке JSON (`PolicyImport`) с текущим паролем
          *     или кодом TOTP: без них — 400 с полем `password`, неверные — 403 `reauthentication_failed` (В23 ревью 2.r5).
-         *     В обёртке `base_version` и `comment` берутся из тела, параметры запроса не читаются.
+         *     В обёртке `base_version` и `comment` берутся из тела, параметры запроса, кроме `dry_run`, не читаются.
+         *     `dry_run=true` (задача 3.35) — проверка без сохранения: тот же разбор и те же пределы и
+         *     проверки (400, 409 при устаревшем `base_version`, 413, 415, 422), ответ 200 —
+         *     `PolicyImportPreview`: различия с текущей версией (для новой политики — с пустой) и
+         *     признак ослабления с причинами. Версия не создаётся, запись аудита не пишется, пароль
+         *     или код не нужны. Право то же — `policies.manage`: проверка — шаг загрузки, а
+         *     `policies.test` (песочница аналитика и администратора системы) загрузить не позволяет.
          */
         post: {
             parameters: {
@@ -4392,6 +4398,8 @@ export interface paths {
                     base_version?: number;
                     /** @description Комментарий к версии */
                     comment?: string;
+                    /** @description true — только проверка и различия, без сохранения (задача 3.35) */
+                    dry_run?: boolean;
                 };
                 header: {
                     /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
@@ -4407,13 +4415,13 @@ export interface paths {
                 };
             };
             responses: {
-                /** @description Новая версия политики */
+                /** @description Новая версия политики; с `dry_run=true` — итог проверки без сохранения */
                 200: {
                     headers: {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["Policy"];
+                        "application/json": components["schemas"]["Policy"] | components["schemas"]["PolicyImportPreview"];
                     };
                 };
                 /** @description Политика создана */
@@ -8994,6 +9002,18 @@ export interface components {
             /** Format: password */
             password?: string;
             code?: string;
+        };
+        /** @description Итог проверки загрузки без сохранения (задача 3.35). Ничего не сохранено. */
+        PolicyImportPreview: {
+            /** @enum {boolean} */
+            dry_run: true;
+            /** @description ID политики из документа */
+            policy: string;
+            /** @description Политики нет: загрузка создаст её версией 1 */
+            created: boolean;
+            /** @description Текущая версия */
+            current_version: number;
+            diff: components["schemas"]["PolicyDiff"];
         };
         PolicyDiff: {
             from: number;

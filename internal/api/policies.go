@@ -726,14 +726,38 @@ type importPolicyRequest struct {
 	reauthFields
 }
 
+// PolicyImportPreviewView — проверка загрузки без сохранения (задача 3.35).
+type PolicyImportPreviewView struct {
+	DryRun         bool           `json:"dry_run"`
+	Policy         string         `json:"policy"`
+	Created        bool           `json:"created"`
+	CurrentVersion int            `json:"current_version"`
+	Diff           PolicyDiffView `json:"diff"`
+}
+
 // importPolicy — POST /api/v1/policies/import: тело — YAML политики по
 // строгой схеме этапа 1 или обёртка JSON с тем же документом. Новой
 // политики нет — создаётся (201), есть — новая версия поверх base_version
 // (200). Версия, ослабляющая защиту, — только из обёртки с паролем или кодом.
+// С dry_run=true — тот же разбор и те же пределы, но только различия с
+// текущей версией и признак ослабления: ни версии, ни записи аудита, пароль
+// или код не нужны (задача 3.35). Право то же — policies.manage: просмотр
+// различий — шаг загрузки, а проверка сборки пакета называет приложения,
+// которым изменение помешает; policies.test (песочница аналитика) для
+// этого не годится — загрузить по итогу проверки он всё равно не может.
 func (d Deps) importPolicy(w http.ResponseWriter, r *http.Request) {
 	by, ok := policyActor(r)
 	if !ok {
 		WriteProblem(w, errForbidden())
+		return
+	}
+	var dryRun bool
+	switch r.URL.Query().Get("dry_run") {
+	case "", "false":
+	case "true":
+		dryRun = true
+	default:
+		WriteProblem(w, Invalid("Проверьте параметры запроса.", FieldError{"dry_run", "true или false."}))
 		return
 	}
 	mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
@@ -771,6 +795,16 @@ func (d Deps) importPolicy(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		req = importPolicyRequest{Document: string(body), BaseVersion: base, Comment: r.URL.Query().Get("comment")}
+	}
+	if dryRun {
+		pv, err := d.Policies.PreviewImport(r.Context(), by, strings.NewReader(req.Document), req.BaseVersion)
+		if err != nil {
+			WriteProblem(w, policiesProblem(d.Logger, err))
+			return
+		}
+		WriteJSON(w, http.StatusOK, PolicyImportPreviewView{DryRun: true, Policy: pv.Slug, Created: pv.Created,
+			CurrentVersion: pv.Current, Diff: diffView(pv.Diff)})
+		return
 	}
 	by = d.withPolicyConfirm(r, by, req.reauthFields, "policy.import")
 	doc, created, err := d.Policies.Import(r.Context(), by, strings.NewReader(req.Document), req.BaseVersion, req.Comment)

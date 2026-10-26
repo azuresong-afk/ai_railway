@@ -389,3 +389,107 @@ func FuzzPolicyTestRequest(f *testing.F) {
 		}
 	})
 }
+
+// Задача 3.35: POST /policies/import?dry_run=true — тот же разбор, что у
+// загрузки, различия с текущей версией и признак ослабления; ни версии,
+// ни записи аудита, пароль не нужен. Право — policies.manage: аналитик и
+// администратор системы (у обоих policies.test) получают отказ.
+func TestPolicyImportDryRun(t *testing.T) {
+	e := newAppsEnv(t)
+	admin := e.mustLogin(t, "admin")
+	sys := e.mustLogin(t, "sysadm")
+	analyst := e.mustLogin(t, "analyst")
+	if w := e.call(admin, "POST", "/api/v1/policies", `{"id":"support","spec":`+tPolicySpec+`}`, true); w.Code != http.StatusCreated {
+		t.Fatalf("политика: %d %s", w.Code, w.Body)
+	}
+	cur := e.call(admin, "GET", "/api/v1/policies/support/export", "", false).Body.String()
+	weak := strings.Replace(cur, "action: block", "action: log", 1)
+	if weak == cur {
+		t.Fatalf("в выгрузке нет block: %s", cur)
+	}
+	records := len(e.pols.Records())
+	const dry = "/api/v1/policies/import?dry_run=true"
+
+	// Отказ в доступе без policies.manage.
+	for _, s := range []session{analyst, sys} {
+		mustProblem(t, e.callYAML(s, dry, weak, "application/yaml"), 403, CodeForbidden)
+	}
+	// Ослабление: признак и причина, без пароля, без новой версии.
+	w := e.callYAML(admin, dry, weak, "application/yaml")
+	if w.Code != http.StatusOK {
+		t.Fatalf("проверка: %d %s", w.Code, w.Body)
+	}
+	pv := decode[PolicyImportPreviewView](t, w.Body.Bytes())
+	if !pv.DryRun || pv.Policy != "support" || pv.Created || pv.CurrentVersion != 1 || pv.Diff.From != 1 || pv.Diff.To != 2 ||
+		!pv.Diff.Weakening || len(pv.Diff.Changed) != 1 || pv.Diff.Changed[0].ID != "injection" {
+		t.Fatalf("различия: %s", w.Body)
+	}
+	if len(pv.Diff.WeakeningReasons) == 0 || pv.Diff.WeakeningReasons[0].Kind != "action_weakened" {
+		t.Fatalf("причины ослабления: %s", w.Body)
+	}
+	// Без изменений — пустые различия; обёртка JSON с base_version — тоже.
+	w = e.callYAML(admin, dry, cur, "application/yaml")
+	if pv := decode[PolicyImportPreviewView](t, w.Body.Bytes()); w.Code != 200 || pv.Diff.Weakening || len(pv.Diff.Fields)+len(pv.Diff.Changed) != 0 {
+		t.Fatalf("без изменений: %d %s", w.Code, w.Body)
+	}
+	body, _ := json.Marshal(map[string]any{"document": weak, "base_version": 1})
+	if w := e.callYAML(admin, dry, string(body), "application/json"); w.Code != 200 || !strings.Contains(w.Body.String(), `"weakening":true`) {
+		t.Fatalf("обёртка JSON: %d %s", w.Code, w.Body)
+	}
+	// Новая политика: created, сравнение с пустой.
+	fresh := strings.Replace(cur, "id: support", "id: support-copy", 1)
+	w = e.callYAML(admin, dry, fresh, "application/yaml")
+	if pv := decode[PolicyImportPreviewView](t, w.Body.Bytes()); w.Code != 200 || !pv.Created || pv.CurrentVersion != 0 || len(pv.Diff.Added) != 2 || pv.Diff.Weakening {
+		t.Fatalf("новая политика: %d %s", w.Code, w.Body)
+	}
+	// Те же проверки, что у загрузки.
+	mustProblem(t, e.callYAML(admin, dry+"&base_version=7", weak, "application/yaml"), 409, CodeConflict)
+	mustProblem(t, e.callYAML(admin, dry, weak+"extra_field: 1\n", "application/yaml"), 400, CodeInvalidRequest)
+	mustProblem(t, e.callYAML(admin, dry, weak, "text/plain"), 415, CodeUnsupportedMedia)
+	mustProblem(t, e.callYAML(admin, dry, strings.Repeat("#", importMaxBody+1), "application/yaml"), 413, CodePayloadTooLarge)
+	mustProblem(t, e.callYAML(admin, "/api/v1/policies/import?dry_run=yes", weak, "application/yaml"), 400, CodeInvalidRequest)
+
+	// Ничего не сохранено: ни версии, ни записи аудита изменения.
+	if n := len(e.pols.Records()); n != records {
+		t.Fatalf("записи аудита политик: было %d, стало %d", records, n)
+	}
+	vs := e.call(admin, "GET", "/api/v1/policies/support/versions", "", false)
+	if !strings.Contains(vs.Body.String(), `"version":1`) || strings.Contains(vs.Body.String(), `"version":2`) {
+		t.Fatalf("версии после проверки: %s", vs.Body)
+	}
+	mustProblem(t, e.call(admin, "GET", "/api/v1/policies/support-copy", "", false), 404, CodeNotFound)
+}
+
+// FuzzImportPolicyDryRun (задача 3.35): проверка загрузки на том же разборе —
+// только 2xx или 4xx, ничего не сохраняет; принятый проверкой документ новой
+// политики принимает и загрузка.
+func FuzzImportPolicyDryRun(f *testing.F) {
+	e, s, _ := fuzzSession(f)
+	f.Add("id: p\nname: P\nversion: 1\nmode: enforce\nnon_text: block\nrules:\n  - id: a\n    detector: pii.ru\n    action: block\n    severity: high\n")
+	f.Add("id: q\nname: Q\nversion: 3\nmode: monitor\nrules:\n  - id: a\n    detector: injection.heuristic\n    directions: [input]\n    threshold: 0.7\n    action: log\n    severity: low\n    message: \"x\"\n")
+	f.Add("id: r\nname: R\nversion: 1\nmode: enforce\nrules: []\n---\nid: r\n")
+	f.Add("id: base\nname: B\nversion: 1\nmode: enforce\nrules: []\n")
+	f.Add("{[")
+	f.Fuzz(func(t *testing.T, body string) {
+		records := len(e.pols.Records())
+		w := e.callYAML(s, "/api/v1/policies/import?dry_run=true", body, "application/yaml")
+		if w.Code >= 500 {
+			t.Fatalf("%d %s", w.Code, w.Body)
+		}
+		if n := len(e.pols.Records()); n != records {
+			t.Fatalf("проверка записала аудит: %d → %d", records, n)
+		}
+		if w.Code != http.StatusOK {
+			return
+		}
+		pv := decode[PolicyImportPreviewView](t, w.Body.Bytes())
+		if g := e.call(s, "GET", "/api/v1/policies/"+pv.Policy, "", false); pv.Created != (g.Code == http.StatusNotFound) {
+			t.Fatalf("created %v, политика: %d", pv.Created, g.Code)
+		}
+		if pv.Created {
+			if w := e.callYAML(s, "/api/v1/policies/import", body, "application/yaml"); w.Code != http.StatusCreated {
+				t.Fatalf("проверка приняла, загрузка — нет: %d %s", w.Code, w.Body)
+			}
+		}
+	})
+}
