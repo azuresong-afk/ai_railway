@@ -28,6 +28,21 @@ export function palette(): string[] {
   ];
 }
 
+// Общие настройки поверх опций графика. Подсказка — только текстом внутри SVG (renderMode: "richText"):
+// по умолчанию ECharts строит её как HTML через innerHTML с атрибутами style, а это и нарушение
+// строгого CSP (ТЗ 6.9), и точка внедрения для будущего formatter с данными (3Н45 ревью 3.r3).
+// Режим ставится последним, чтобы опции графика не могли вернуть HTML.
+export function chartOption(option: EChartsOption): EChartsOption {
+  const tooltip = option.tooltip as Record<string, unknown> | undefined;
+  return {
+    animation: false,
+    textStyle: { color: token("--c-text"), fontFamily: token("--ff-sans") },
+    color: palette(),
+    ...option,
+    tooltip: { ...tooltip, renderMode: "richText" },
+  };
+}
+
 export interface ChartProps {
   option: EChartsOption;
   // Подпись для экранных дикторов; обязательна: у картинки нет другого текста.
@@ -62,10 +77,7 @@ export function Chart({ option, label, height = 240, onPick }: ChartProps) {
   }, []);
 
   useEffect(() => {
-    chart.current?.setOption(
-      { animation: false, textStyle: { color: token("--c-text"), fontFamily: token("--ff-sans") }, color: palette(), ...option },
-      true,
-    );
+    chart.current?.setOption(chartOption(option), true);
   }, [option]);
 
   return <div ref={host} role="img" aria-label={label} style={{ height }} />;
