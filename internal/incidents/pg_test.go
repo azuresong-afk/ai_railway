@@ -432,8 +432,41 @@ func TestPGIncidentsAppendOnly(t *testing.T) {
 	if n := e.count(t, `SELECT count(*) FROM incidents WHERE source = 'auto' AND status = 'new'`); n != 1 {
 		t.Errorf("новых автоматических инцидентов после закрытия: %d", n)
 	}
-	// Внешний ключ оповещения на инцидент.
-	if _, err := e.app.Exec(ctx, `UPDATE alerts SET incident_id = $1`, "01900000-0000-7000-8000-0000000fffff"); sqlState(err) != "23503" {
+	// 3Н35 ревью 3.r2: связь оповещения с инцидентом и автомат статусов
+	// защищены и от прямых запросов роли сервера.
+	if _, err := e.app.Exec(ctx, `UPDATE alerts SET incident_id = NULL WHERE incident_id = $1`, inc.ID); sqlState(err) != "23514" {
+		t.Errorf("оповещение отвязано от инцидента: %v", err)
+	}
+	e.ingest(t, e.event(t, "hr-bot", false))
+	if _, err := e.app.Exec(ctx, `UPDATE alerts SET incident_id = $1 WHERE incident_id IS NULL`, inc.ID); sqlState(err) != "23514" {
+		t.Errorf("оповещение связано с закрытым инцидентом: %v", err)
+	}
+	if _, err := e.app.Exec(ctx, `INSERT INTO incident_timeline (id, incident_id, at, actor, kind, details)
+		VALUES (gen_random_uuid(), $1, now(), 'x', 'reopened', '{}')`, inc.ID); sqlState(err) != "23514" {
+		t.Errorf("запись «открыт заново» без повторного открытия: %v", err)
+	}
+	open, err := e.svc.List(ctx, incidents.Query{Status: incidents.StatusOpen})
+	if err != nil || len(open) != 1 {
+		t.Fatalf("открытый инцидент: %d %v", len(open), err)
+	}
+	if _, err := e.svc.SetStatus(ctx, e.by, open[0].ID, incidents.StatusInput{Status: "in_progress"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, sql := range []string{
+		`UPDATE incidents SET status = 'new' WHERE id = $1`,
+		`UPDATE incidents SET reacted_at = reacted_at + interval '1 day' WHERE id = $1`,
+		`UPDATE incidents SET status = 'closed', resolution = 'resolved', closed_at = now(), closed_by = 'x' WHERE id = $1`,
+	} {
+		if _, err := e.app.Exec(ctx, sql, open[0].ID); sqlState(err) != "23514" {
+			t.Errorf("%s: %v", sql, err)
+		}
+	}
+	// Внешний ключ оповещения на инцидент: связанное оповещение не
+	// перепривязывается вовсе (3Н35).
+	if _, err := e.app.Exec(ctx, `UPDATE alerts SET incident_id = $1 WHERE incident_id IS NOT NULL`, "01900000-0000-7000-8000-0000000fffff"); sqlState(err) != "23514" {
+		t.Errorf("ссылка на другой инцидент: %v", err)
+	}
+	if _, err := e.app.Exec(ctx, `UPDATE alerts SET incident_id = $1 WHERE incident_id IS NULL`, "01900000-0000-7000-8000-0000000fffff"); sqlState(err) != "23503" {
 		t.Errorf("ссылка на несуществующий инцидент: %v", err)
 	}
 }
