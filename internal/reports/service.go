@@ -37,6 +37,10 @@ const (
 	ErrCodeDisabled = "schedule_disabled"
 	ErrCodeChannel  = "channel_unavailable"
 	ErrCodePeriod   = "bad_period"
+	// ErrCodeAudit — запись data.export не сделана: письмо не отправлено.
+	ErrCodeAudit = "audit_failed"
+	// ErrCodeExhausted — попытки израсходованы прерванными отправками.
+	ErrCodeExhausted = "attempts_exhausted"
 )
 
 // Параметры планировщика.
@@ -92,10 +96,14 @@ type Store interface {
 	// next_run_at <= now: для каждого вызывает plan; он возвращает запуск
 	// и новое next_run_at. Возвращает число поставленных.
 	EnqueueDue(ctx context.Context, now time.Time, limit int, plan func(Schedule) (Run, time.Time, error)) (int, error)
-	// ClaimRun берёт запуск, срок которого наступил, и откладывает его на lease.
+	// ClaimRun берёт запуск, срок которого наступил, откладывает его на lease
+	// и засчитывает попытку (3В32 ревью 3.r4: падение сервера во время
+	// отправки тоже расходует попытку, повторы конечны).
+	// Record пишет запись аудита отдельной транзакцией.
 	ClaimRun(ctx context.Context, now time.Time, lease time.Duration) (Run, Schedule, bool, error)
 	// FinishRun сохраняет итог попытки; rec — запись аудита той же транзакции.
 	FinishRun(ctx context.Context, r Run, rec *audit.Entry) error
+	Record(ctx context.Context, rec audit.Entry) error
 }
 
 // Mailer — отправка письма с отчётом (*notify.Service).
@@ -377,24 +385,26 @@ func (s *Service) deliver(ctx context.Context, r Run, sc Schedule, loc *time.Loc
 		r.Status, r.Error, r.UpdatedAt = RunFailed, ErrCodeDisabled, s.now()
 		return s.o.Store.FinishRun(ctx, r, nil)
 	}
-	code, rows := s.send(ctx, r, sc, loc)
-	if ctx.Err() != nil {
-		// Остановка сервера: попытка не засчитывается, повтор после lease.
-		return ctx.Err()
+	actor := systemActor(sc.ID)
+	code := ""
+	if r.Error == ErrCodeExhausted {
+		// Попытки израсходованы прерванными отправками (падение сервера).
+		code = ErrCodeExhausted
+	} else {
+		code = s.send(ctx, r, sc, loc)
+		if ctx.Err() != nil {
+			// Остановка сервера: повтор после lease, попытка уже засчитана.
+			return ctx.Err()
+		}
 	}
 	now := s.now()
-	r.Attempts++
 	r.UpdatedAt = now
-	actor := systemActor(sc.ID)
 	if code == "" {
 		r.Status, r.Error, r.SentAt = RunSent, "", now
-		rec := audit.Entry{OrgID: s.o.OrgID, Actor: actor, Action: "data.export", Object: audit.Object{Type: "report_schedule", ID: sc.ID},
-			Result: audit.ResultSuccess, Details: map[string]any{"report": sc.Report, "format": sc.Format, "from": r.PeriodFirst,
-				"to": r.PeriodLast, "rows": rows, "channel_id": sc.ChannelID, "run_id": r.ID, "scheduled": true}}
-		return s.o.Store.FinishRun(ctx, r, &rec)
+		return s.o.Store.FinishRun(ctx, r, nil)
 	}
 	r.Error = code
-	if r.Attempts < MaxAttempts && code != ErrCodePeriod {
+	if r.Attempts < MaxAttempts && code != ErrCodePeriod && code != ErrCodeRender {
 		r.NextAt = now.Add(notify.Backoff(r.Attempts))
 		return s.o.Store.FinishRun(ctx, r, nil)
 	}
@@ -405,26 +415,36 @@ func (s *Service) deliver(ctx context.Context, r Run, sc Schedule, loc *time.Loc
 	return s.o.Store.FinishRun(ctx, r, &rec)
 }
 
-// send строит отчёт и отправляет письмо; возвращает код ошибки (пусто — отправлено)
-// и число строк отчёта.
-func (s *Service) send(ctx context.Context, r Run, sc Schedule, loc *time.Location) (string, int) {
+// send строит отчёт, пишет data.export и отправляет письмо; возвращает код
+// ошибки (пусто — отправлено). Запись аудита — до отправки и отдельной
+// транзакцией (3В32 ревью 3.r4): без записи письмо не уходит, как и
+// выгрузка по запросу.
+func (s *Service) send(ctx context.Context, r Run, sc Schedule, loc *time.Location) string {
 	per, err := NewPeriod(r.PeriodFirst, r.PeriodLast, loc, s.now())
 	if err != nil {
-		return ErrCodePeriod, 0
+		return ErrCodePeriod
 	}
 	bctx, cancel := context.WithTimeout(ctx, buildTimeout)
 	defer cancel()
 	doc, err := s.o.Builder.Build(bctx, Params{Kind: sc.Report, Format: sc.Format, Period: per}, sc.Scope)
 	if err != nil {
 		s.o.Logger.Error("рассылка отчётов: отчёт не построен", "class", "reports", "schedule", sc.ID, "error", err)
-		return ErrCodeBuild, 0
+		return ErrCodeBuild
 	}
 	var buf bytes.Buffer
 	if err := Render(&buf, doc, sc.Format); err != nil || buf.Len() > notify.MaxReportAttachment {
-		return ErrCodeRender, 0
+		return ErrCodeRender
 	}
 	if s.o.Mailer == nil {
-		return ErrCodeChannel, 0
+		return ErrCodeChannel
+	}
+	rec := audit.Entry{OrgID: s.o.OrgID, Actor: systemActor(sc.ID), Action: "data.export", Object: audit.Object{Type: "report_schedule", ID: sc.ID},
+		Result: audit.ResultSuccess, Details: map[string]any{"report": sc.Report, "format": sc.Format, "from": r.PeriodFirst,
+			"to": r.PeriodLast, "rows": doc.Rows(), "channel_id": sc.ChannelID, "run_id": r.ID, "attempt": r.Attempts, "scheduled": true}}
+	if err := s.o.Store.Record(ctx, rec); err != nil {
+		s.o.Logger.Error("рассылка отчётов: выгрузка не записана в журнал аудита, письмо не отправлено", "class", "reports",
+			"schedule", sc.ID, "error", err)
+		return ErrCodeAudit
 	}
 	mail := notify.ReportMail{ID: r.ID, Subject: "[AISec] " + Title(sc.Report) + ": " + per.Label(),
 		Body: fmt.Sprintf("%s за период %s.\n\nОтчёт во вложении. Расписание: %s.\nСформирован платформой AISec; содержимого запросов и ответов в отчёте нет.",
@@ -432,13 +452,13 @@ func (s *Service) send(ctx context.Context, r Run, sc Schedule, loc *time.Locati
 		Filename: fmt.Sprintf("aisec-%s-%s_%s.%s", sc.Report, per.First, per.Last, sc.Format), ContentType: ContentType(sc.Format), Data: buf.Bytes()}
 	if err := s.o.Mailer.SendReport(ctx, sc.ChannelID, mail); err != nil {
 		if errors.Is(err, notify.ErrNotFound) {
-			return ErrCodeChannel, 0
+			return ErrCodeChannel
 		}
 		code := notify.ErrorCode(err)
 		if len(code) > 40 || code == "" {
 			code = notify.ErrCodeInternal
 		}
-		return code, 0
+		return code
 	}
-	return "", doc.Rows()
+	return ""
 }

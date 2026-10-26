@@ -290,9 +290,12 @@ func (s *PGStore) ClaimRun(ctx context.Context, now time.Time, lease time.Durati
 	found := false
 	err := s.inTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		r, err = scanRun(tx.QueryRow(ctx, `UPDATE report_runs SET next_at = $3 WHERE id = (
+		// Попытка засчитывается при взятии; взятый в последний раз и не
+		// завершённый запуск помечается attempts_exhausted.
+		r, err = scanRun(tx.QueryRow(ctx, `UPDATE report_runs SET next_at = $3, attempts = LEAST(attempts + 1, $4),
+			error = CASE WHEN attempts >= $4 THEN '`+ErrCodeExhausted+`' ELSE error END WHERE id = (
 			SELECT id FROM report_runs WHERE org_id = $1 AND status = 'pending' AND next_at <= $2
-			ORDER BY next_at, id LIMIT 1 FOR UPDATE SKIP LOCKED) RETURNING `+runCols, s.orgID, now, now.Add(lease)))
+			ORDER BY next_at, id LIMIT 1 FOR UPDATE SKIP LOCKED) RETURNING `+runCols, s.orgID, now, now.Add(lease), MaxAttempts))
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
@@ -307,6 +310,11 @@ func (s *PGStore) ClaimRun(ctx context.Context, now time.Time, lease time.Durati
 		return nil
 	})
 	return r, sc, found, err
+}
+
+// Record — см. Store.
+func (s *PGStore) Record(ctx context.Context, rec audit.Entry) error {
+	return s.inTx(ctx, func(ctx context.Context, tx pgx.Tx) error { return s.audit.RecordTx(ctx, tx, rec) })
 }
 
 // FinishRun — см. Store.

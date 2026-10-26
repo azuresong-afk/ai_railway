@@ -215,12 +215,17 @@ type fakeMailer struct {
 	calls int
 	fail  int
 	err   error
+	// cancel — вызывается при отправке: остановка сервера посреди письма.
+	cancel func()
 }
 
 func (f *fakeMailer) SendReport(_ context.Context, _ string, m notify.ReportMail) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
+	if f.cancel != nil {
+		f.cancel()
+	}
 	if f.calls <= f.fail {
 		if f.err != nil {
 			return f.err
@@ -487,7 +492,8 @@ func TestTickRetriesThenFails(t *testing.T) {
 		at[3].Sub(at[2]) != 10*time.Minute {
 		t.Errorf("задержки: %v", at)
 	}
-	if !strings.Contains(strings.Join(e.actions(), " "), "report.delivery_failed") || strings.Contains(strings.Join(e.actions(), " "), "data.export") {
+	// data.export пишется до каждой отправки (3В32 ревью 3.r4).
+	if acts := strings.Join(e.actions(), " "); !strings.Contains(acts, "report.delivery_failed") || strings.Count(acts, "data.export") != MaxAttempts {
 		t.Errorf("аудит: %v", e.actions())
 	}
 	// Окончательный отказ не мешает следующему запуску по расписанию.
@@ -556,5 +562,56 @@ func TestBuildScopeWithoutIncidents(t *testing.T) {
 	}
 	if txt := docText(doc); strings.Contains(txt, "Не закрыто инцидентов") || !strings.Contains(txt, "у автора отчёта нет права") {
 		t.Errorf("итоги пилота без права на инциденты:\n%s", txt)
+	}
+}
+
+// 3В32 ревью 3.r4: без записи data.export письмо не уходит, повторы
+// конечны; запуск, взятый в работу и не завершённый (падение сервера во
+// время отправки), расходует попытку и после пятой — failed без письма.
+func TestTickAuditFailureAndInterruptedRuns(t *testing.T) {
+	e := newSvc(t)
+	ctx := context.Background()
+	sch, err := e.svc.CreateSchedule(ctx, by, daily())
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.mem.RecordErr = errors.New("база аудита недоступна")
+	e.clock.t = utc(2026, 10, 26, 5, 1)
+	for i := 0; i < 8; i++ {
+		if err := e.svc.Tick(ctx); err != nil {
+			t.Fatal(err)
+		}
+		e.clock.t = e.clock.t.Add(time.Hour)
+	}
+	if e.mail.calls != 0 {
+		t.Fatalf("письма без записи аудита: %d", e.mail.calls)
+	}
+	runs, _ := e.svc.Runs(ctx, sch.ID, 10) //nolint:gosec // G104: ошибка проверена ниже по содержимому
+	if len(runs) == 0 || runs[len(runs)-1].Status != RunFailed || runs[len(runs)-1].Error != ErrCodeAudit {
+		t.Fatalf("запуск при сбое аудита: %+v", runs)
+	}
+
+	// Прерванные отправки: сервер останавливается посреди письма, запуск
+	// остаётся pending, но каждая попытка засчитана.
+	e.mem.RecordErr = nil
+	e.clock.t = utc(2026, 10, 28, 5, 1)
+	for i := 0; i < MaxAttempts; i++ {
+		cctx, cancel := context.WithCancel(ctx)
+		e.mail.cancel = cancel
+		if err := e.svc.Tick(cctx); !errors.Is(err, context.Canceled) {
+			t.Fatalf("прерывание %d: %v", i, err)
+		}
+		e.clock.t = e.clock.t.Add(runLease)
+	}
+	e.mail.cancel = nil
+	calls := e.mail.calls
+	if err := e.svc.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if e.mail.calls != calls {
+		t.Fatal("письмо после исчерпанных попыток")
+	}
+	if !strings.Contains(strings.Join(e.actions(), " "), "report.delivery_failed") {
+		t.Errorf("нет report.delivery_failed: %v", e.actions())
 	}
 }
