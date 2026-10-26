@@ -1,6 +1,7 @@
 package versions
 
 import (
+	"encoding/json"
 	"slices"
 
 	"github.com/azuresong-afk/ai_railway/internal/detect"
@@ -268,26 +269,64 @@ func ruleWeakening(a, b policy.RuleSpec) []Weakening {
 	return out
 }
 
-// auditListMax — не больше ID в каждом списке подробностей записи аудита:
-// запись ограничена 16 КиБ (audit.maxDetailsSize), а в версии до 1000
-// исключений и 256 правил с ID до 63 символов. Полный состав — в
-// неизменяемой версии (spec_hash), счётчики — рядом со списками (3В26
-// ревью 3.r3).
-const auditListMax = 50
+// auditListMax — не больше ID в каждом списке подробностей записи аудита,
+// auditDetailsBudget — предел сводки целиком: запись ограничена 16 КиБ
+// (audit.maxDetailsSize), а списков семь (шесть списков ID и причины) и в
+// версии до 1000 исключений и 256 правил с ID до 63 символов. Если сводка
+// не укладывается, списки урезаются все вместе и ставится truncated; полный
+// состав — в неизменяемой версии (spec_hash), счётчики остаются полными
+// (3В26 ревью 3.r3). Остаток 4 КиБ — под slug, номера версий, хеш и ID
+// исключения, которые добавляет вызывающий.
+const (
+	auditListMax       = 50
+	auditDetailsBudget = 12 << 10
+)
 
 // details — сводка для журнала аудита: без содержимого правил и сообщений.
 func (d Diff) details() map[string]any {
+	for _, limit := range []int{auditListMax, 25, 10, 5, 1, 0} {
+		m, cut := d.detailsCapped(limit)
+		if limit == 0 {
+			m["truncated"] = true
+			return m
+		}
+		raw, err := json.Marshal(m)
+		if err == nil && len(raw) <= auditDetailsBudget {
+			if cut {
+				m["truncated"] = true
+			}
+			return m
+		}
+	}
+	return nil // недостижимо: последний шаг возвращает сводку
+}
+
+// detailsCapped — сводка с не более чем limit элементами в каждом списке;
+// cut — какой-то список урезан.
+func (d Diff) detailsCapped(limit int) (map[string]any, bool) {
 	fields := make([]string, 0, len(d.Fields))
 	for _, f := range d.Fields {
 		fields = append(fields, f.Field)
 	}
-	// Причины ослабления: по правилам — каждая (до auditListMax), по
-	// исключениям — одна каждого вида с первым ID; число — по видам.
-	kinds := make([]map[string]string, 0, min(len(d.Weakening), auditListMax))
+	cut := false
+	capped := func(ids []string) []string {
+		if len(ids) > limit {
+			cut = true
+			return ids[:limit]
+		}
+		return ids
+	}
+	// Причины ослабления: по правилам — каждая (до limit), по исключениям —
+	// одна каждого вида с первым ID; число — по видам.
+	kinds := make([]map[string]string, 0, min(len(d.Weakening), limit))
 	counts := map[string]int{}
 	for _, w := range d.Weakening {
 		counts[w.Kind]++
-		if len(kinds) >= auditListMax || w.Exception != "" && seenKind(kinds, w.Kind, true) {
+		if w.Exception != "" && seenKind(kinds, w.Kind, true) {
+			continue
+		}
+		if len(kinds) >= limit {
+			cut = true
 			continue
 		}
 		m := map[string]string{"kind": w.Kind}
@@ -302,12 +341,12 @@ func (d Diff) details() map[string]any {
 	added, removed, changed := exceptionIDs(d.ExceptionsAdded), exceptionIDs(d.ExceptionsRemoved), changedExceptionIDs(d.ExceptionsChanged)
 	rAdded, rRemoved, rChanged := ruleIDs(d.Added), ruleIDs(d.Removed), changedIDs(d.Changed)
 	return map[string]any{
-		"fields": fields, "rules_added": capList(rAdded), "rules_removed": capList(rRemoved), "rules_changed": capList(rChanged),
+		"fields": fields, "rules_added": capped(rAdded), "rules_removed": capped(rRemoved), "rules_changed": capped(rChanged),
 		"rules_added_count": len(rAdded), "rules_removed_count": len(rRemoved), "rules_changed_count": len(rChanged),
 		"reordered": d.Reordered, "weakening": d.Weakened(), "weakening_reasons": kinds, "weakening_counts": counts,
-		"exceptions_added": capList(added), "exceptions_removed": capList(removed), "exceptions_changed": capList(changed),
+		"exceptions_added": capped(added), "exceptions_removed": capped(removed), "exceptions_changed": capped(changed),
 		"exceptions_added_count": len(added), "exceptions_removed_count": len(removed), "exceptions_changed_count": len(changed),
-	}
+	}, cut
 }
 
 // seenKind — среди причин уже есть причина вида kind (по исключению, если exc).
@@ -317,9 +356,6 @@ func seenKind(kinds []map[string]string, kind string, exc bool) bool {
 		return m["kind"] == kind && isExc == exc
 	})
 }
-
-// capList — первые auditListMax элементов.
-func capList(ids []string) []string { return ids[:min(len(ids), auditListMax)] }
 
 func exceptionIDs(es []policy.ExceptionSpec) []string {
 	out := make([]string, 0, len(es))
