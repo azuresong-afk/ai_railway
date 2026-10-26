@@ -18,6 +18,7 @@ type Memory struct {
 	denied int
 	states map[string]AlertState
 	chain  *AuditChainStatus
+	job    *time.Time
 	// Records — записи аудита об изменении состояния.
 	Records []audit.Entry
 	// Err — ошибка, которую вернут все методы (проверка отказа БД).
@@ -44,6 +45,24 @@ func (m *Memory) SetCounts(locked, denied int) {
 	m.mu.Lock()
 	m.locked, m.denied = locked, denied
 	m.mu.Unlock()
+}
+
+// SetAlertJob задаёт последний проход фоновой задачи правил оповещений;
+// нулевое время — проходов не было. До вызова отметка не ведётся.
+func (m *Memory) SetAlertJob(at time.Time) { m.mu.Lock(); m.job = &at; m.mu.Unlock() }
+
+// AlertJob — см. Store.
+func (m *Memory) AlertJob(_ context.Context, now time.Time) (AlertJobRun, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.Err != nil || m.job == nil {
+		return AlertJobRun{}, m.Err
+	}
+	r := AlertJobRun{Tracked: true, LastRunAt: *m.job}
+	if !m.job.IsZero() {
+		r.Age = now.Sub(*m.job)
+	}
+	return r, nil
 }
 
 // SetAuditChain задаёт итог последней проверки цепочки аудита.

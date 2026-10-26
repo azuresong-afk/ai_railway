@@ -4275,8 +4275,8 @@ components:
               condition:
                 type: string
                 enum: [account_lockout, access_denied, audit_chain, audit_storage, integrity, time_sync, config_bundle, config_bundle_lag, test_build,
-                  gateway_offline, events_dropped, reports_stale, cert_expiry, ca_expiry, customer_cert_expiry]
-                description: 'ca_expiry (ИАФ.10) — действующему корню внутреннего УЦ осталось 60 суток и меньше, нужна ротация `aisec-cli keys rotate-ca`; system.alert пишется за 60 суток (ca_expiry) и за 7 суток (ca_expiry:critical), 3В5 ревью 3.r1. customer_cert_expiry (ЗИ.4) — сертификату заказчика для адреса шлюза осталось 30 суток и меньше; system.alert пишется за 30 суток (customer_cert_expiry) и за 7 суток (customer_cert_expiry:critical), задача 3.27'
+                  gateway_offline, events_dropped, reports_stale, cert_expiry, ca_expiry, customer_cert_expiry, alert_job_stale]
+                description: 'alert_job_stale (РСБ.7, DM-44) — фоновая задача правил «частота», «аномалия» и «бюджет» не отмечала проход дольше 5 минут при работающем сервере, 3В17 ревью 3.r2. ca_expiry (ИАФ.10) — действующему корню внутреннего УЦ осталось 60 суток и меньше, нужна ротация `aisec-cli keys rotate-ca`; system.alert пишется за 60 суток (ca_expiry) и за 7 суток (ca_expiry:critical), 3В5 ревью 3.r1. customer_cert_expiry (ЗИ.4) — сертификату заказчика для адреса шлюза осталось 30 суток и меньше; system.alert пишется за 30 суток (customer_cert_expiry) и за 7 суток (customer_cert_expiry:critical), задача 3.27'
               requirement: { type: string, enum: [ИАФ.4, ИАФ.10, УПД.6, РСБ.4, РСБ.5, РСБ.7, ОЦЛ.1, ОЦЛ.3, ОЦЛ.5, ВРМ.1, ЗИ.4] }
               components:
                 type: array
@@ -6123,6 +6123,10 @@ components:
               triggered: { type: boolean }
         keys_total: { type: integer }
         keys_hidden: { type: boolean, description: 'Ключи скрыты: у «аномалии» нужно право events.read, у «бюджета» — budgets.read' }
+        warning:
+          type: string
+          enum: [evaluation_failed, timezone_invalid]
+          description: 'Предупреждение последнего прохода: evaluation_failed — вычисление правила упало и откатано отдельно от остальных (причина — в техническом журнале), timezone_invalid — часовой пояс установки не распознан, расчёт по UTC (3В17, 3Н36 ревью 3.r2)'
     AlertRuleList:
       type: object
       required: [items]

@@ -34,6 +34,7 @@ const (
 	BuiltinConfigBundle   = "system.config_bundle"        // ОЦЛ.3
 	BuiltinNotifyFailed   = "system.notify_failed"        // DM-44: уведомление не доставлено
 	BuiltinAuditStream    = "system.audit_stream_lag"     // DM-44, РСБ.6: передача журнала в SIEM отстаёт
+	BuiltinAlertJob       = "system.alert_job"            // DM-44: фоновая задача правил остановлена (3В17 ревью 3.r2)
 )
 
 // Пороги правил безопасности (обоснование — ADR-0020, раздел «Пороги
@@ -127,6 +128,10 @@ func securityRules() []Rule {
 				"10 000 записей. Записи не теряются: после восстановления приёмника передача догоняет журнал. "+
 				"Разрыв передачи (записи удалены архивацией до передачи, курсор канала потерян) — отдельное оповещение.",
 			"high", []string{"channel"}),
+		rule(BuiltinAlertJob, KindSystem, "Фоновая задача правил оповещений не выполняется",
+			"DM-44: фоновая задача правил «частота», «аномалия» и «бюджет» (DM-15, DM-16, DM-17, DM-36) не завершала проход "+
+				"дольше 5 минут при работающем сервере — эти правила не срабатывают. Причина — в техническом журнале сервера.",
+			"high", []string{}),
 	}
 }
 
@@ -411,6 +416,7 @@ var systemFamilies = map[string]string{
 	"ca_expiry":         BuiltinCertExpiry,
 	"reports_stale":     BuiltinReportsStale,
 	"audit_stream_lag":  BuiltinAuditStream,
+	"alert_job_stale":   BuiltinAlertJob,
 	// Сертификат заказчика для адреса шлюза (задача 3.27).
 	"customer_cert_expiry": BuiltinCertExpiry,
 }

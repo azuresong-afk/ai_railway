@@ -446,3 +446,61 @@ func TestNewAlertsEnqueued(t *testing.T) {
 		}
 	}
 }
+
+// failingOps — действия фоновой задачи, у которых срабатывание правила
+// failRule падает (3В17 ревью 3.r2).
+type failingOps struct {
+	memOps
+	failRule string
+}
+
+func (o failingOps) raise(ctx context.Context, r *Rule, t *Trigger) error {
+	if r.ID == o.failRule {
+		return errors.New("сбой правила")
+	}
+	return o.memOps.raise(ctx, r, t)
+}
+
+// 3В17 ревью 3.r2: сбой вычисления одного правила не останавливает
+// проход — остальные правила срабатывают, у упавшего в состоянии
+// предупреждение evaluation_failed, ошибка уходит в skipped.
+func TestPeriodicRuleFailureIsolated(t *testing.T) {
+	e := newEnv(t)
+	for range 10 {
+		e.ingest(t, e.detection(t, "crm-bot", "u-1", "high"))
+	}
+	e.ingest(t, repeat(20, func() *events.Event { return e.quotaReject(t, "crm-bot") })...)
+	probe := e.rule(t, BuiltinProbingSeries)
+	var logged []error
+	e.mem.mu.Lock()
+	res, err := runPeriodic(context.Background(), failingOps{memOps: memOps{e.mem}, failRule: probe.ID}, e.clock.t, time.UTC, false, nil,
+		errors.New("нет расхода"), func(err error) { logged = append(logged, err) })
+	e.mem.mu.Unlock()
+	if err != nil {
+		t.Fatalf("сбой одного правила прервал проход: %v", err)
+	}
+	if got := e.alerts(t, BuiltinQuotaExceeded); len(got) != 1 || res.Triggers != 1 {
+		t.Fatalf("другое правило не сработало: %+v %+v", got, res)
+	}
+	if got := e.alerts(t, BuiltinProbingSeries); len(got) != 0 {
+		t.Fatalf("упавшее правило: %+v", got)
+	}
+	_, st, ok, err := e.svc.RuleState(context.Background(), probe.ID)
+	if err != nil || !ok || st.Warning != WarnEvaluationFailed {
+		t.Fatalf("состояние упавшего правила: %+v %v %v", st, ok, err)
+	}
+	if len(logged) == 0 {
+		t.Fatal("сбой правила не передан в журнал")
+	}
+	// Сбой при истёкшем контексте (тайм-аут прохода) прерывает проход целиком.
+	e.ingest(t, e.quotaReject(t, "crm-bot"))
+	quota := e.rule(t, BuiltinQuotaExceeded)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	e.mem.mu.Lock()
+	_, err = runPeriodic(ctx, failingOps{memOps: memOps{e.mem}, failRule: quota.ID}, e.clock.t, time.UTC, false, nil, nil, nil)
+	e.mem.mu.Unlock()
+	if err == nil {
+		t.Fatal("тайм-аут прохода не прервал его")
+	}
+}

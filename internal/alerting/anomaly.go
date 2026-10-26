@@ -69,6 +69,9 @@ type RuleState struct {
 	Keys  []KeyState `json:"keys"`
 	// KeysTotal — ключей всего, если их больше maxStateKeys.
 	KeysTotal int `json:"keys_total"`
+	// Warning — предупреждение последнего прохода: WarnEvaluationFailed,
+	// WarnTimezoneInvalid; пусто — нет.
+	Warning string `json:"warning,omitempty"`
 }
 
 // median — медиана выборки (не пустой).

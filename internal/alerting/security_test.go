@@ -60,7 +60,7 @@ func TestSecurityRulesLocked(t *testing.T) {
 	e := newEnv(t)
 	for _, key := range []string{BuiltinGatewayAuth, BuiltinConsoleBrute, BuiltinAccessDenied, BuiltinWeakening, BuiltinContentAccess,
 		BuiltinIntegrity, BuiltinAuditChain, BuiltinEventsDropped, BuiltinGatewayOffline, BuiltinTimeSync, BuiltinAuditStorage,
-		BuiltinCertExpiry, BuiltinReportsStale, BuiltinConfigBundle, BuiltinNotifyFailed} {
+		BuiltinCertExpiry, BuiltinReportsStale, BuiltinConfigBundle, BuiltinNotifyFailed, BuiltinAuditStream, BuiltinAlertJob} {
 		r := e.rule(t, key)
 		if !Locked(r.Kind) || !r.Enabled || r.Severity == "" {
 			t.Fatalf("%s: %+v", key, r)
@@ -333,6 +333,8 @@ func TestDM44_SystemAlerts(t *testing.T) {
 		{"time_sync", BuiltinTimeSync, "Время не синхронизировано"},
 		{"audit_storage", BuiltinAuditStorage, "Журнал аудита приближается к пределу хранилища"},
 		{"config_bundle_lag:" + testGateway, BuiltinConfigBundle, "Пакет конфигурации шлюзов не применён — gateway:" + testGateway + " (gw-1)"},
+		// 3В17 ревью 3.r2: остановка фоновой задачи правил.
+		{"alert_job_stale", BuiltinAlertJob, "Фоновая задача правил оповещений не выполняется"},
 	}
 	for _, c := range cases {
 		e.systemAlert(t, c.code, "cleared", gw)

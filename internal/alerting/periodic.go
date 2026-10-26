@@ -2,8 +2,11 @@ package alerting
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -11,9 +14,12 @@ import (
 // решение Р3; задача 3.12): раз в минуту внутри сервера, без cron. Проход —
 // одна транзакция: срабатывания, отметка учтённых событий «частоты»,
 // пороги бюджета, состояние правил и отметка прохода (alert_job_runs)
-// фиксируются вместе. Сбой откатывает всё, следующий проход повторяет
-// вычисление; повтор не удваивает оповещения — ключ дедупликации движка
-// (open_key) и отметки в alert_seen.
+// фиксируются вместе. Каждое правило — в своей точке сохранения: сбой
+// правила откатывает только его вычисление (3В17 ревью 3.r2), сбой прохода
+// (тайм-аут, состояние) — всё; следующий проход повторяет вычисление;
+// повтор не удваивает оповещения — ключ дедупликации движка (open_key) и
+// отметки в alert_seen. Остановку задачи видно по условию alert_job_stale
+// «Состояния системы» (DM-44).
 
 const (
 	// PeriodicInterval — период задачи.
@@ -39,6 +45,9 @@ type periodicOps interface {
 	saveState(ctx context.Context, ruleID string, st RuleState) error
 	// pruneCounts удаляет счётчики «частоты» старше before.
 	pruneCounts(ctx context.Context, before time.Time) error
+	// isolate выполняет fn в точке сохранения: ошибка fn откатывает только
+	// её изменения, транзакция прохода остаётся рабочей (3В17 ревью 3.r2).
+	isolate(ctx context.Context, fn func() error) error
 }
 
 // PeriodicResult — итог прохода.
@@ -60,10 +69,30 @@ func cmpBool(a, b bool) int {
 	return -1
 }
 
+// Предупреждения в состоянии правила (RuleState.Warning).
+const (
+	// WarnEvaluationFailed — вычисление правила в последнем проходе упало
+	// и откатано отдельно от остальных правил (3В17 ревью 3.r2); причина —
+	// в техническом журнале сервера.
+	WarnEvaluationFailed = "evaluation_failed"
+	// WarnTimezoneInvalid — часовой пояс установки не распознан, «аномалия»
+	// и «бюджет» считаются по UTC (3Н36 ревью 3.r2).
+	WarnTimezoneInvalid = "timezone_invalid"
+)
+
+// errRuleSkipped — правило пропущено до следующего прохода без
+// сохранения состояния (неверное условие, расход бюджетов недоступен).
+var errRuleSkipped = errors.New("оповещения: правило пропущено")
+
 // runPeriodic вычисляет включённые правила «частота», «аномалия» и
 // «бюджет». usage — расход приложений (budgetErr — его не удалось
-// прочитать: правила «бюджет» пропускаются до следующего прохода).
-func runPeriodic(ctx context.Context, ops periodicOps, now time.Time, loc *time.Location, usage []BudgetUsage,
+// прочитать: правила «бюджет» пропускаются до следующего прохода);
+// tzInvalid — пояс установки не распознан, loc — UTC. Каждое правило
+// считается в своей точке сохранения (3В17 ревью 3.r2): сбой одного правила
+// откатывает только его срабатывания и отмечается в его состоянии, а
+// остальные правила и отметка прохода фиксируются. Истечение
+// PeriodicTimeout прерывает проход целиком.
+func runPeriodic(ctx context.Context, ops periodicOps, now time.Time, loc *time.Location, tzInvalid bool, usage []BudgetUsage,
 	budgetErr error, skipped func(error)) (PeriodicResult, error) {
 	var res PeriodicResult
 	rules, err := ops.activeRules(ctx, KindFrequency, KindAnomaly, KindBudget)
@@ -77,70 +106,86 @@ func runPeriodic(ctx context.Context, ops periodicOps, now time.Time, loc *time.
 	})
 	for i := range rules {
 		r := &rules[i]
-		st := RuleState{EvaluatedAt: now.UTC(), Keys: []KeyState{}}
-		switch r.Kind {
-		case KindFrequency:
-			if _, err := compile(*r); err != nil {
-				if skipped != nil {
-					skipped(err)
-				}
-				continue
+		var st RuleState
+		var n int
+		err := ops.isolate(ctx, func() error {
+			var err error
+			st, n, err = evaluateRule(ctx, ops, r, now, loc, usage, budgetErr)
+			return err
+		})
+		switch {
+		case errors.Is(err, errRuleSkipped):
+			if skipped != nil {
+				skipped(err)
 			}
-			due, err := ops.frequencyDue(ctx, r, frequencySince(r, now))
-			if err != nil {
-				return res, err
+			continue
+		case err != nil && ctx.Err() != nil:
+			return res, err
+		case err != nil:
+			if skipped != nil {
+				skipped(err)
 			}
-			for _, d := range due {
-				t := frequencyTrigger(r, d)
-				if err := ops.raise(ctx, r, &t); err != nil {
-					return res, err
-				}
-				st.Keys = append(st.Keys, KeyState{Group: d.Values, Current: float64(d.InWindow), Triggered: true})
-			}
-			res.Triggers += len(due)
-			trimState(&st)
-		case KindAnomaly:
-			a, err := evaluateAnomaly(ctx, ops, r, now, loc)
-			if err != nil {
-				return res, err
-			}
-			slices.SortFunc(a.Triggers, func(x, y Trigger) int {
-				if x.Key < y.Key {
-					return -1
-				}
-				if x.Key > y.Key {
-					return 1
-				}
-				return 0
-			})
-			for i := range a.Triggers {
-				if err := ops.raise(ctx, r, &a.Triggers[i]); err != nil {
-					return res, err
-				}
-			}
-			res.Triggers += len(a.Triggers)
-			st = a.State
-		case KindBudget:
-			if budgetErr != nil {
-				if skipped != nil {
-					skipped(budgetErr)
-				}
-				continue
-			}
-			var n int
-			if st, n, err = evaluateBudget(ctx, ops, r, slices.Clone(usage)); err != nil {
-				return res, err
-			}
-			res.Triggers += n
-			st.EvaluatedAt = now.UTC()
-			st.Learning = false
+			st, n = RuleState{EvaluatedAt: now.UTC(), Keys: []KeyState{}, Warning: WarnEvaluationFailed}, 0
+		}
+		if tzInvalid && st.Warning == "" && r.Kind != KindFrequency {
+			st.Warning = WarnTimezoneInvalid
 		}
 		if err := ops.saveState(ctx, r.ID, st); err != nil {
 			return res, err
 		}
+		res.Triggers += n
 		res.Rules++
 	}
 	return res, ops.pruneCounts(ctx, now.Add(-countRetention))
+}
+
+// evaluateRule — вычисление одного правила: состояние и число срабатываний.
+func evaluateRule(ctx context.Context, ops periodicOps, r *Rule, now time.Time, loc *time.Location, usage []BudgetUsage,
+	budgetErr error) (RuleState, int, error) {
+	st := RuleState{EvaluatedAt: now.UTC(), Keys: []KeyState{}}
+	switch r.Kind {
+	case KindFrequency:
+		if _, err := compile(*r); err != nil {
+			return st, 0, fmt.Errorf("%w: %w", errRuleSkipped, err)
+		}
+		due, err := ops.frequencyDue(ctx, r, frequencySince(r, now))
+		if err != nil {
+			return st, 0, err
+		}
+		for _, d := range due {
+			t := frequencyTrigger(r, d)
+			if err := ops.raise(ctx, r, &t); err != nil {
+				return st, 0, err
+			}
+			st.Keys = append(st.Keys, KeyState{Group: d.Values, Current: float64(d.InWindow), Triggered: true})
+		}
+		trimState(&st)
+		return st, len(due), nil
+	case KindAnomaly:
+		a, err := evaluateAnomaly(ctx, ops, r, now, loc)
+		if err != nil {
+			return st, 0, err
+		}
+		slices.SortFunc(a.Triggers, func(x, y Trigger) int { return strings.Compare(x.Key, y.Key) })
+		for i := range a.Triggers {
+			if err := ops.raise(ctx, r, &a.Triggers[i]); err != nil {
+				return st, 0, err
+			}
+		}
+		return a.State, len(a.Triggers), nil
+	case KindBudget:
+		if budgetErr != nil {
+			return st, 0, fmt.Errorf("%w: %w", errRuleSkipped, budgetErr)
+		}
+		st, n, err := evaluateBudget(ctx, ops, r, slices.Clone(usage))
+		if err != nil {
+			return st, 0, err
+		}
+		st.EvaluatedAt = now.UTC()
+		st.Learning = false
+		return st, n, nil
+	}
+	return st, 0, nil
 }
 
 // Periodic — фоновая задача хранилища (PGStore).
