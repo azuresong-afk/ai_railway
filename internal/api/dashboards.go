@@ -47,6 +47,16 @@ const (
 // dashStreamEvery — период снимков потока: задержка не больше 5 с.
 var dashStreamEvery = 3 * time.Second
 
+// dashStreamWriteTimeout — предел записи одного сообщения потока: клиент,
+// переставший читать, не держит горутину и место в пределе потоков
+// бесконечно; dashStreamMaxAge — предельный срок потока, после него клиент
+// переподключается (EventSource, retry 5 с) с новой проверкой прав и
+// заново занимает место (3Н44 ревью 3.r3).
+var (
+	dashStreamWriteTimeout = 10 * time.Second
+	dashStreamMaxAge       = time.Hour
+)
+
 // errDashBusy — все вычисления снимков заняты.
 var errDashBusy = errors.New("дашборды: все вычисления заняты")
 
@@ -880,22 +890,39 @@ func (d Deps) dashStream(w http.ResponseWriter, r *http.Request) {
 		defer d.DashStreams.Release(subject)
 	}
 	rc := http.NewResponseController(w)
+	// send пишет сообщение со сроком записи dashStreamWriteTimeout; срок
+	// не поддерживается только у тестовых ResponseWriter.
+	send := func(b []byte) bool {
+		if err := rc.SetWriteDeadline(time.Now().Add(dashStreamWriteTimeout)); err != nil && !errors.Is(err, http.ErrNotSupported) {
+			return false
+		}
+		if _, err := w.Write(b); err != nil {
+			return false
+		}
+		return rc.Flush() == nil
+	}
 	h := w.Header()
 	h.Set("Content-Type", "text/event-stream")
 	h.Set("Cache-Control", "no-store")
 	h.Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
-	if _, err := fmt.Fprint(w, "retry: 5000\n\n"); err != nil {
+	if !send([]byte("retry: 5000\n\n")) {
 		return
 	}
 	var last uint64
 	cur := r
 	t := time.NewTicker(dashTick(params))
 	defer t.Stop()
+	maxAge := time.NewTimer(dashStreamMaxAge)
+	defer maxAge.Stop()
 	for first := true; ; first = false {
 		if !first {
 			select {
 			case <-r.Context().Done():
+				return
+			case <-d.Stopping:
+				return
+			case <-maxAge.C:
 				return
 			case <-t.C:
 			}
@@ -930,10 +957,7 @@ func (d Deps) dashStream(w http.ResponseWriter, r *http.Request) {
 			out.Write(body)
 			out.WriteString("\n\n")
 		}
-		if _, err := w.Write(out.Bytes()); err != nil {
-			return
-		}
-		if err := rc.Flush(); err != nil {
+		if !send(out.Bytes()) {
 			return
 		}
 	}

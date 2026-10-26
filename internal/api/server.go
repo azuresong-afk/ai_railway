@@ -89,6 +89,10 @@ type Options struct {
 	Fallback http.Handler
 	// Extra — дополнительные маршруты (тесты); рабочие регистрируются в routes.go.
 	Extra []Route
+	// Stopping закрывается в начале остановки сервера: длинные потоки SSE
+	// завершаются сразу, а не держат остановку до ShutdownTimeout (3Н44
+	// ревью 3.r3). nil — потоки ограничены только сроком жизни.
+	Stopping <-chan struct{}
 }
 
 // Deps — зависимости обработчиков, которые видят файлы с маршрутами.
@@ -131,6 +135,8 @@ type Deps struct {
 	DashCache   *dashCache
 	DashStreams *ExportGate
 	Reauthorize func(r *http.Request, permission string) (Principal, Decision)
+	// Stopping — Options.Stopping.
+	Stopping <-chan struct{}
 	// Exports — ограничение одновременных выгрузок событий (В11 ревью 2.r3a).
 	Exports *ExportGate
 	// AuditReads — ограничение одновременных выборок журнала аудита (В17
@@ -173,7 +179,7 @@ func New(o Options) (http.Handler, *Router, error) {
 		Status: o.Status, Events: o.Events, Audit: o.Audit, Apps: o.Apps, Policies: o.Policies,
 		AuditLog: o.AuditLog, AuditVerifier: o.AuditVerifier, Alerts: o.Alerts, Notify: o.Notify, Incidents: o.Incidents,
 		Dashboards: o.Dashboards, Reports: o.Reports, DashCache: newDashCache(), DashStreams: NewExportGate(dashStreamsPerSubject, dashStreamsTotal),
-		Reauthorize: o.Authorizer.Authorize,
+		Reauthorize: o.Authorizer.Authorize, Stopping: o.Stopping,
 		Exports:     NewExportGate(MaxExportsPerSubject, MaxExportsTotal), AuditReads: NewExportGate(MaxAuditReadsPerSubject, MaxAuditReadsTotal)}
 	if err := rt.Add(append(Routes(deps), o.Extra...)...); err != nil {
 		return nil, nil, err

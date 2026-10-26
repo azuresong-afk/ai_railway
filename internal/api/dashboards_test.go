@@ -4,9 +4,11 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -512,5 +514,119 @@ func TestDashTick(t *testing.T) {
 		if got := dashTick(dashParams{from: now.Add(-tc.d), to: now}); got != tc.want {
 			t.Errorf("%v: %v, ожидается %v", tc.d, got, tc.want)
 		}
+	}
+}
+
+// stalledWriter — клиент потока, переставший читать: первая запись проходит,
+// следующие ждут срока записи (SetWriteDeadline) и завершаются ошибкой, без
+// срока — висят до release.
+type stalledWriter struct {
+	hdr      http.Header
+	mu       sync.Mutex
+	deadline time.Time
+	writes   int
+	release  chan struct{}
+}
+
+func (s *stalledWriter) Header() http.Header { return s.hdr }
+func (s *stalledWriter) WriteHeader(int)      {}
+func (s *stalledWriter) FlushError() error    { return nil }
+
+func (s *stalledWriter) SetWriteDeadline(t time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.deadline = t
+	return nil
+}
+
+func (s *stalledWriter) Write(b []byte) (int, error) {
+	s.mu.Lock()
+	s.writes++
+	n, dl := s.writes, s.deadline
+	s.mu.Unlock()
+	if n == 1 {
+		return len(b), nil
+	}
+	if dl.IsZero() {
+		<-s.release
+		return 0, os.ErrClosed
+	}
+	select {
+	case <-time.After(time.Until(dl)):
+	case <-s.release:
+	}
+	return 0, os.ErrDeadlineExceeded
+}
+
+// 3Н44 ревью 3.r3: поток SSE не держит место в пределе потоков вечно —
+// у записи есть срок, у потока — предельный срок жизни, остановка сервера
+// закрывает потоки сразу.
+func TestDashboardStreamBounded(t *testing.T) {
+	oldEvery, oldWrite, oldAge := dashStreamEvery, dashStreamWriteTimeout, dashStreamMaxAge
+	dashStreamEvery, dashStreamWriteTimeout = 20*time.Millisecond, 100*time.Millisecond
+	t.Cleanup(func() { dashStreamEvery, dashStreamWriteTimeout, dashStreamMaxAge = oldEvery, oldWrite, oldAge })
+	e := newAppsEnv(t)
+	an := e.mustLogin(t, "analyst")
+
+	// Клиент перестал читать: обработчик выходит по сроку записи.
+	sw := &stalledWriter{hdr: http.Header{}, release: make(chan struct{})}
+	t.Cleanup(func() { close(sw.release) })
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/dashboards/stream?dashboard=overview&period=24h", nil)
+	for _, c := range an.cookies {
+		req.AddCookie(c)
+	}
+	done := make(chan struct{})
+	go func() {
+		e.h.ServeHTTP(sw, req)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("поток с непрочитанными данными не закрыт по сроку записи")
+	}
+
+	srv := httptest.NewServer(e.h)
+	t.Cleanup(srv.Close)
+	// waitEOF открывает поток по настоящему TCP и ждёт, пока сервер его закроет.
+	waitEOF := func(after func()) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/api/v1/dashboards/stream?dashboard=overview&period=24h", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range an.cookies {
+			req.AddCookie(c)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			_ = resp.Body.Close() //nolint:gosec // G104: закрытие тестового ответа
+		}()
+		if resp.StatusCode != 200 {
+			t.Fatalf("поток: %d", resp.StatusCode)
+		}
+		if after != nil {
+			after()
+		}
+		if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+			t.Fatalf("поток не закрыт сервером: %v", err)
+		}
+	}
+	// Предельный срок жизни.
+	dashStreamMaxAge = 200 * time.Millisecond
+	waitEOF(nil)
+	// Остановка сервера.
+	dashStreamMaxAge = time.Hour
+	waitEOF(func() { close(e.stopping) })
+
+	// Все места возвращены: пользователь снова открывает три потока (после
+	// остановки каждый тут же закрывается, но место занимает и отдаёт).
+	for range dashStreamsPerSubject {
+		waitEOF(nil)
 	}
 }

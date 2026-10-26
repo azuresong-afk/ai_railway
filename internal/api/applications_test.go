@@ -43,12 +43,14 @@ type appsEnv struct {
 	caPEM string
 	// dash — подмена агрегатов дашбордов (dashboards_test.go).
 	dash *fakeDash
+	// stopping — Options.Stopping: закрытие — остановка сервера.
+	stopping chan struct{}
 }
 
 func newAppsEnv(t testing.TB) *appsEnv {
 	t.Helper()
 	e := &appsEnv{authEnv: &authEnv{mem: authtest.NewMemory(), log: &bytes.Buffer{}, clock: &testClock{t: time.Now()}, secrets: map[string][]byte{}},
-		apps: apps.NewMemory(), pols: versions.NewMemory(), ev: events.NewMemory(), rec: &recAudit{}, dash: &fakeDash{}}
+		apps: apps.NewMemory(), pols: versions.NewMemory(), ev: events.NewMemory(), rec: &recAudit{}, dash: &fakeDash{}, stopping: make(chan struct{})}
 	e.ev.SetRetentionAudit(func(a audit.Entry) error { return e.rec.Record(context.Background(), a) })
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	ctx := context.Background()
@@ -112,7 +114,7 @@ func newAppsEnv(t testing.TB) *appsEnv {
 	logger := slog.New(slog.NewTextHandler(e.log, nil))
 	h, _, err := New(Options{Hasher: testHasher(t), Logger: logger, Auth: testAuth(t, e.mem, auth.WithClock(e.clock.now)), Apps: svc,
 		Policies: pols, Events: e.ev, Audit: e.rec, Dashboards: e.dash, Reports: newTestReports(t, e.dash),
-		RateLimit: RateConfig{Rules: []RateRule{{Prefix: "/", Max: 100000, Window: time.Minute}}}})
+		RateLimit: RateConfig{Rules: []RateRule{{Prefix: "/", Max: 100000, Window: time.Minute}}}, Stopping: e.stopping})
 	if err != nil {
 		t.Fatal(err)
 	}

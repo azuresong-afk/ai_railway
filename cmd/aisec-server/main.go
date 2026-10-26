@@ -499,6 +499,8 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		AuditVerifier: chainVerifier,
 
 		TrustedProxies: cfg.TrustedProxies,
+		// Потоки SSE дашбордов закрываются в начале остановки (3Н44).
+		Stopping: ctx.Done(),
 	})
 	if err != nil {
 		return err
