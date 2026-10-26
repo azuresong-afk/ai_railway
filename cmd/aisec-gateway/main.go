@@ -198,6 +198,7 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 	// Квоты общие для всех маршрутов приложений и переживают смену пакета.
 	hb := &handlerBuilder{cfg: cfg, logger: logger, hasher: h, auth: authBase, events: queue,
 		quotas: gateway.NewLimiter(nil), budget: gateway.NewBudget(nil), userMAC: userMAC}
+	hb.budget.SetLogger(logger)
 	var handler http.Handler
 	var bundles *gateway.BundleClient
 	if file != nil {
@@ -317,7 +318,11 @@ func (hb *handlerBuilder) build(apps []config.Application, provs map[string]prov
 	}
 	// Бюджеты и счётчики квот — последним шагом: сборка не удалась — они
 	// прежние. Неверный раздел budgets (часовой пояс) — пакет отклоняется.
-	if err := hb.budget.Reconfigure(budgets); err != nil {
+	ids := make([]string, 0, len(apps))
+	for _, a := range apps {
+		ids = append(ids, a.ID)
+	}
+	if err := hb.budget.Reconfigure(budgets, ids...); err != nil {
 		return nil, err
 	}
 	hb.quotas.Reconfigure(apps)

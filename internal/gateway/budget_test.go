@@ -409,3 +409,85 @@ func TestDM15_CanceledRequestCharged(t *testing.T) {
 		})
 	}
 }
+
+// 3В23 ревью 3.r3: часы шлюза назад через границу месяца не стирают счётчик
+// текущего месяца — расход «будущего» месяца переносится в текущий, отчёт
+// заканчивается текущим, apply его не удаляет; бюджет срабатывает.
+//
+// Покрывает: DM-15
+func TestBudgetClockBackAcrossMonth(t *testing.T) {
+	// 1 ноября 01:00 по Москве: часы шлюза ушли вперёд.
+	clock := &budgetClock{t: time.Date(2026, 10, 31, 22, 0, 0, 0, time.UTC)}
+	b := newTestBudget(t, clock, bundle.HardBudget{App: "app", Limit: 300_000})
+	b.Record("app", "up", "m", 1, 1) // 100 000
+	rep := b.report()
+	b.apply(rep, &budgetState{Month: rep.Months[len(rep.Months)-1].Month})
+	// NTP вернул часы: 31 октября 23:00 по Москве.
+	clock.set(time.Date(2026, 10, 31, 20, 0, 0, 0, time.UTC))
+	b.Record("app", "up", "m", 1, 1)
+	for range 2 {
+		rep := b.report()
+		if last := rep.Months[len(rep.Months)-1].Month; last != "2026-10" {
+			t.Fatalf("последний месяц отчёта: %s, %+v", last, rep.Months)
+		}
+		// Сервер отвечает последним месяцем отчёта.
+		b.apply(rep, &budgetState{Month: rep.Months[len(rep.Months)-1].Month})
+	}
+	rep = b.report()
+	if len(rep.Months) != 1 || rep.Months[0].Month != "2026-10" || rep.Months[0].Apps[0].Cost != 200_000 || rep.Months[0].Apps[0].Requests != 2 {
+		t.Fatalf("счётчики после переноса: %+v", rep.Months)
+	}
+	b.Record("app", "up", "m", 1, 1)
+	if out, _ := b.Exhausted("app"); !out {
+		t.Fatal("бюджет не сработал после возврата часов")
+	}
+	// Сервер ответил «будущим» месяцем (его часы впереди): текущий месяц
+	// шлюза всё равно не удаляется.
+	b.apply(b.report(), &budgetState{Month: "2026-11"})
+	if out, _ := b.Exhausted("app"); !out {
+		t.Fatal("ответ сервера будущим месяцем стёр текущий")
+	}
+}
+
+// Смена пояса установки у границы месяца: Москва → UTC 1 ноября в 01:00 по
+// Москве (31 октября по UTC) — ноябрьский расход переходит в октябрь UTC.
+//
+// Покрывает: DM-15
+func TestBudgetTimezoneChangeAcrossMonth(t *testing.T) {
+	clock := &budgetClock{t: time.Date(2026, 10, 31, 22, 0, 0, 0, time.UTC)}
+	b := newTestBudget(t, clock, bundle.HardBudget{App: "app", Limit: 200_000})
+	b.Record("app", "up", "m", 1, 1)
+	if err := b.Reconfigure(&bundle.Budgets{Timezone: "UTC",
+		Prices: []bundle.ModelPrice{{Provider: "up", Model: "m", Input: 50_000, Output: 50_000}},
+		Hard:   []bundle.HardBudget{{App: "app", Limit: 200_000}}}); err != nil {
+		t.Fatal(err)
+	}
+	b.Record("app", "up", "m", 1, 1)
+	rep := b.report()
+	b.apply(rep, &budgetState{Month: rep.Months[len(rep.Months)-1].Month})
+	if out, _ := b.Exhausted("app"); !out {
+		t.Fatalf("расход до смены пояса потерян: %+v", b.report().Months)
+	}
+}
+
+// При переполнении месяца вытесняются счётчики приложений вне пакета, а не
+// расход нового приложения.
+func TestBudgetEvictsAppsOutsideBundle(t *testing.T) {
+	clock := &budgetClock{t: time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)}
+	b := newTestBudget(t, clock)
+	for i := range maxBudgetApps {
+		b.Record("old-"+strconv.Itoa(i), "up", "m", 1, 0)
+	}
+	b.Record("new", "up", "m", 1, 0)
+	if rep := b.report(); slices.ContainsFunc(rep.Months[0].Apps, func(u budgetUsage) bool { return u.App == "new" }) {
+		t.Fatal("пакет неизвестен — вытеснено чужое приложение")
+	}
+	if err := b.Reconfigure(&bundle.Budgets{Timezone: "Europe/Moscow"}, "new"); err != nil {
+		t.Fatal(err)
+	}
+	b.Record("new", "up", "m", 1, 0)
+	rep := b.report()
+	if len(rep.Months[0].Apps) != maxBudgetApps || !slices.ContainsFunc(rep.Months[0].Apps, func(u budgetUsage) bool { return u.App == "new" }) {
+		t.Fatalf("приложение пакета не учтено: %d", len(rep.Months[0].Apps))
+	}
+}
