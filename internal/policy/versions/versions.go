@@ -561,6 +561,80 @@ func (s *Service) Import(ctx context.Context, by By, r io.Reader, base int, comm
 	return d, false, err
 }
 
+// ImportPreview — итог проверки загрузки без сохранения (задача 3.35).
+type ImportPreview struct {
+	// Slug — ID политики из документа.
+	Slug string
+	// Created — политики нет: загрузка создаст её версией 1.
+	Created bool
+	// Current — текущая версия, с которой сравнивается документ; 0 — новая
+	// политика.
+	Current int
+	// Diff — различия с текущей версией и признаки ослабления, как их
+	// посчитает загрузка: исключения проштампованы, умолчания загрузки
+	// подставлены.
+	Diff Diff
+}
+
+// PreviewImport разбирает и проверяет YAML так же, как Import (строгая
+// схема, реестр детекторов, проверка сборки пакета шлюзов), и возвращает
+// различия с текущей версией, ничего не сохраняя: ни версии, ни записи
+// аудита (задача 3.35, вопрос Н46). base — необязательная версия, поверх
+// которой будет загрузка: если она уже не текущая — ErrConflict, как у
+// Import. Новая политика сравнивается с пустой; ослабления у неё нет —
+// Import создаёт её без повторной проверки.
+func (s *Service) PreviewImport(ctx context.Context, by By, r io.Reader, base int) (ImportPreview, error) {
+	spec, err := policy.Parse(r)
+	if err != nil {
+		return ImportPreview{}, invalid(err)
+	}
+	if err := checkSlug(spec.ID); err != nil {
+		return ImportPreview{}, err
+	}
+	slug := spec.ID
+	stamped := s.now().Truncate(time.Second)
+	_, err = s.store.Policy(ctx, s.orgID, slug)
+	switch {
+	case errors.Is(err, ErrNotFound):
+		if err := stampExceptions(spec, nil, by, stamped, SourceImport, false); err != nil {
+			return ImportPreview{}, err
+		}
+		if _, err := s.prepare(spec, slug, 1, ImportDefaults); err != nil {
+			return ImportPreview{}, err
+		}
+		d := Compare(&policy.Spec{}, spec)
+		d.To, d.Weakening = 1, nil
+		return ImportPreview{Slug: slug, Created: true, Diff: d}, nil
+	case err != nil:
+		return ImportPreview{}, err
+	}
+	cur, err := s.store.Version(ctx, s.orgID, slug, 0)
+	if err != nil {
+		return ImportPreview{}, err
+	}
+	if base > 0 && base != cur.Version {
+		return ImportPreview{}, fmt.Errorf("%w: текущая версия политики %s — %d", ErrConflict, slug, cur.Version)
+	}
+	curSpec, err := cur.Spec()
+	if err != nil {
+		return ImportPreview{}, fmt.Errorf("политики: текущая версия %s/%d не разбирается: %w", slug, cur.Version, err)
+	}
+	if err := stampExceptions(spec, curSpec, by, stamped, SourceImport, ImportDefaults.KeepExceptions); err != nil {
+		return ImportPreview{}, err
+	}
+	if _, err := s.prepare(spec, slug, cur.Version+1, ImportDefaults); err != nil {
+		return ImportPreview{}, err
+	}
+	if s.bundleCheck != nil {
+		if err := s.bundleCheck(ctx, spec); err != nil {
+			return ImportPreview{}, err
+		}
+	}
+	d := Compare(curSpec, spec)
+	d.From, d.To = cur.Version, cur.Version+1
+	return ImportPreview{Slug: slug, Current: cur.Version, Diff: d}, nil
+}
+
 // Export — YAML версии n (0 — текущая) политики или шаблона.
 func (s *Service) Export(ctx context.Context, slug string, n int) ([]byte, Doc, error) {
 	d, err := s.Get(ctx, slug, n)

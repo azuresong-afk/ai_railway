@@ -1252,7 +1252,9 @@ paths:
       summary: Карточка события без содержимого
       description: |
         Право `events.read`. Решение с трассировкой, находки, задержки, токены (`details`);
-        `has_content` — есть ли сохранённое содержимое. Пишет `events.view` (отключаемое).
+        `has_content` — есть ли сохранённое содержимое. Хеш фрагмента находки (`fragment`) —
+        только субъекту с `events.content.read` или `policies.manage` (3Н41), источник текста
+        находки — `source`. Пишет `events.view` (отключаемое).
       x-permission: events.read
       security: [{ sessionCookie: [] }, { bearerToken: [] }]
       parameters:
@@ -1346,7 +1348,9 @@ paths:
       description: |
         Право `events.read` (ТЗ 5.3, задача 3.22). Условия по находкам, давшим итоговое действие
         (все находки, если итог — allow или log): детектор, категория, шаблон (правило
-        детектора), хеш фрагмента (HMAC на ключе шлюза) и приложение события; срок — 30 суток.
+        детектора), хеш фрагмента (HMAC на ключе шлюза с ID приложения; только субъекту с
+        `events.content.read` или `policies.manage`), источник текста находки и приложение
+        события; срок — 30 суток.
         Содержимое запроса в черновик не копируется. `base_version` — текущая версия политики
         события; `template: true` — политика события — шаблон, исключение добавляется в её копию.
         Создаёт исключение только администратор безопасности: POST `/api/v1/policies/{id}/exceptions`.
@@ -1370,7 +1374,8 @@ paths:
     post:
       summary: Выгрузка событий в CSV или JSON
       description: |
-        Право `events.export` (ТЗ 5.5). Только метаданные, без содержимого. Тот же фильтр и
+        Право `events.export` (ТЗ 5.5). Только метаданные, без содержимого; хеши фрагментов
+        находок в JSON — только с `events.content.read` или `policies.manage` (3Н41). Тот же фильтр и
         период, что у списка; не больше 100 000 строк (иначе 422). Подсчёт и выгрузка — по
         одному снимку базы (транзакция REPEATABLE READ): число строк в заголовке и в аудите
         совпадает с переданным. До передачи данных пишет `data.export` с форматом, фильтром,
@@ -2411,7 +2416,13 @@ paths:
         Изменение, после которого пакет конфигурации шлюзов не соберётся (например, правило `lists.*` на словарь, которого нет у приложения), — 422 с причиной и ID приложений в `detail` (В16 ревью 2.r3b).
         Версия, ослабляющая защиту (`weakening`), принимается только в обёртке JSON (`PolicyImport`) с текущим паролем
         или кодом TOTP: без них — 400 с полем `password`, неверные — 403 `reauthentication_failed` (В23 ревью 2.r5).
-        В обёртке `base_version` и `comment` берутся из тела, параметры запроса не читаются.
+        В обёртке `base_version` и `comment` берутся из тела, параметры запроса, кроме `dry_run`, не читаются.
+        `dry_run=true` (задача 3.35) — проверка без сохранения: тот же разбор и те же пределы и
+        проверки (400, 409 при устаревшем `base_version`, 413, 415, 422), ответ 200 —
+        `PolicyImportPreview`: различия с текущей версией (для новой политики — с пустой) и
+        признак ослабления с причинами. Версия не создаётся, запись аудита не пишется, пароль
+        или код не нужны. Право то же — `policies.manage`: проверка — шаг загрузки, а
+        `policies.test` (песочница аналитика и администратора системы) загрузить не позволяет.
       x-permission: policies.manage
       security: [{ sessionCookie: [] }]
       parameters:
@@ -2424,6 +2435,10 @@ paths:
           in: query
           description: Комментарий к версии
           schema: { type: string, maxLength: 500 }
+        - name: dry_run
+          in: query
+          description: true — только проверка и различия, без сохранения (задача 3.35)
+          schema: { type: boolean, default: false }
       requestBody:
         required: true
         content:
@@ -2433,10 +2448,13 @@ paths:
             schema: { $ref: '#/components/schemas/PolicyImport' }
       responses:
         '200':
-          description: Новая версия политики
+          description: Новая версия политики; с `dry_run=true` — итог проверки без сохранения
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Policy' }
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/Policy'
+                  - $ref: '#/components/schemas/PolicyImportPreview'
         '201':
           description: Политика создана
           headers:
@@ -2698,8 +2716,8 @@ paths:
         Право `policies.manage` (только администратор безопасности, УПД.2). Исключение — часть
         версии (ADR-0016): новая версия поверх `base_version` (409, если политику уже изменили).
         Условие: детектор обязательно и хотя бы одно из `pattern`, `fragment`, `app`, `user`
-        (детектор целиком для всех приложений не отключается — 400); `category` и `source` —
-        дополнительные. Срок обязателен: `expires_in_days` 1–365 или `expires_at` не дальше 365
+        (детектор целиком для всех приложений не отключается — 400; исключение для `canary` —
+        только с `fragment`, иначе 400, 3Н42); `category` и `source` — дополнительные. Срок обязателен: `expires_in_days` 1–365 или `expires_at` не дальше 365
         суток, по умолчанию 30 суток. Автора и время ставит сервер. Добавление — ослабление
         защиты: текущий пароль или код TOTP в теле (без них — 403, неверные — 403
         `reauthentication_failed`), запись `policy.exception_add` с `weakening` (DM-40).
@@ -2838,7 +2856,7 @@ paths:
         До 2 часов данные читаются из событий поминутно, до 31 суток — по часам (начало округляется
         до часа вниз), дольше — по суткам в часовом поясе установки.
         Показатели, график запросов по решениям, топ детекторов, приложения по риску и «Лента решений»
-        (`feed=all` — все решения, по умолчанию только с действием).
+        (`feed=all` — все решения, по умолчанию только с действием). Лента — только с `events.read` на все объекты, иначе пустая и `feed_hidden: true`.
       x-permission: dashboards.read
       security: [{ sessionCookie: [] }, { bearerToken: [] }]
       parameters:
@@ -5113,7 +5131,7 @@ components:
         findings: { type: integer, format: int64 }
     DashboardOverview:
       type: object
-      required: [period, totals, latency, decisions, top_detectors, apps, feed]
+      required: [period, totals, latency, decisions, top_detectors, apps, feed, feed_hidden]
       properties:
         period: { $ref: '#/components/schemas/DashPeriodInfo' }
         totals: { $ref: '#/components/schemas/DashTotals' }
@@ -5122,6 +5140,7 @@ components:
         top_detectors: { type: array, items: { $ref: '#/components/schemas/DashTop' } }
         apps: { type: array, items: { $ref: '#/components/schemas/DashRequestRow' } }
         feed: { type: array, items: { $ref: '#/components/schemas/DashFeedItem' } }
+        feed_hidden: { type: boolean, description: 'Ленты нет: у субъекта нет events.read на все объекты (лента — метаданные каждого события, УПД.2); feed пустой' }
     DashboardThreats:
       type: object
       required: [period, totals, non_text_unchecked_share, top_threats, top_categories, top_detectors, by_threat, by_category, by_detector, heatmap]
@@ -5154,7 +5173,7 @@ components:
         name: { type: string }
     DashboardApp:
       type: object
-      required: [period, application, totals, latency, decisions, top_detectors, models, feed]
+      required: [period, application, totals, latency, decisions, top_detectors, models, feed, feed_hidden]
       properties:
         period: { $ref: '#/components/schemas/DashPeriodInfo' }
         application: { $ref: '#/components/schemas/DashAppRef' }
@@ -5164,6 +5183,7 @@ components:
         top_detectors: { type: array, items: { $ref: '#/components/schemas/DashTop' } }
         models: { type: array, items: { $ref: '#/components/schemas/DashRequestRow' } }
         feed: { type: array, items: { $ref: '#/components/schemas/DashFeedItem' } }
+        feed_hidden: { type: boolean, description: 'Ленты нет: у субъекта нет events.read на все объекты (лента — метаданные каждого события, УПД.2); feed пустой' }
     DashUsagePoint:
       type: object
       required: [bucket, requests, tokens, cost]
@@ -5944,6 +5964,17 @@ components:
         comment: { type: string, maxLength: 500 }
         password: { type: string, maxLength: 1024, format: password }
         code: { type: string, maxLength: 64 }
+    PolicyImportPreview:
+      type: object
+      required: [dry_run, policy, created, current_version, diff]
+      additionalProperties: false
+      description: Итог проверки загрузки без сохранения (задача 3.35). Ничего не сохранено.
+      properties:
+        dry_run: { type: boolean, enum: [true] }
+        policy: { type: string, description: ID политики из документа }
+        created: { type: boolean, description: 'Политики нет: загрузка создаст её версией 1' }
+        current_version: { type: integer, minimum: 0, description: Текущая версия, с которой сравнивается документ; 0 — новая политика }
+        diff: { $ref: '#/components/schemas/PolicyDiff' }
     PolicyDiff:
       type: object
       required: [from, to, fields, rules_added, rules_removed, rules_changed, reordered, weakening, weakening_reasons,

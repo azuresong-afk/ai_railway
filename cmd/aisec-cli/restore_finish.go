@@ -14,10 +14,11 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/audit"
 	"github.com/azuresong-afk/ai_railway/internal/auth"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
+	"github.com/azuresong-afk/ai_railway/internal/gwregistry"
 	"github.com/azuresong-afk/ai_railway/internal/store"
 )
 
-// restoreFinishTimeout — предел шага целиком: две правки и одна запись.
+// restoreFinishTimeout — предел шага целиком: четыре правки и одна запись.
 const restoreFinishTimeout = 2 * time.Minute
 
 // copyDirRe — имя каталога копии backup.sh (aisec-20261022T101500Z) или
@@ -26,9 +27,10 @@ var copyDirRe = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
 
 // restoreFinish — aisec-cli restore-finish: шаг после восстановления
 // полной копии пилота (restore.sh; В2 ревью B1 этапа 3, РВ.2). Копия
-// возвращает сессии консоли и токены API в состояние на момент копии, в
-// том числе отозванные позже, поэтому одной транзакцией все они
-// завершаются и пишется запись system.restored. Давность копии — по
+// возвращает сессии консоли, токены API, токены регистрации шлюзов и токен
+// первичной настройки в состояние на момент копии, в том числе отозванные и
+// погашенные позже, поэтому одной транзакцией все они завершаются (3В21
+// ревью 3.r3) и пишется запись system.restored. Давность копии — по
 // последней записи журнала аудита восстановленной БД: её не подделать, не
 // нарушив цепочку (restore.sh проверяет её следом); свои прежние записи
 // system.restored не в счёт, иначе повтор обнулил бы давность. Шаг выполняется до
@@ -75,22 +77,29 @@ func restoreFinish(args []string, dsn string, stdout, stderr io.Writer, now time
 	if err != nil {
 		return err
 	}
-	say(stdout, "Восстановление завершено: сессий консоли завершено %d, токенов API отозвано %d. Запись system.restored в журнале аудита.\n",
-		res.revoked.Sessions, res.revoked.APITokens)
+	say(stdout, "Восстановление завершено: сессий консоли завершено %d, токенов API отозвано %d, токенов регистрации шлюзов погашено %d, "+
+		"токенов первичной настройки погашено %d. Запись system.restored в журнале аудита.\n",
+		res.revoked.Sessions, res.revoked.APITokens, res.gatewayTokens, res.setupTokens)
+	if res.gatewayTokens > 0 {
+		say(stdout, "Шлюзы, зарегистрированные после копии, и шлюзы с невыданным токеном зарегистрируйте заново новым токеном "+
+			"(aisec-cli gateway token, для зарегистрированных — с -reregister).\n")
+	}
 	say(stdout, "Последняя запись журнала аудита копии — %s (%d ч назад).\n", res.lastAudit.UTC().Format("2006-01-02 15:04 UTC"), res.ageHours)
 	if res.stale {
 		say(stderr, "ВНИМАНИЕ: копия старше 7 суток. Всё, что отозвали, деактивировали и сменили после %s, снова в силе: "+
-			"ключи приложений, учётные записи, блокировки, пароли, регистрации шлюзов. Сверьте с журналом аудита прежней установки "+
+			"ключи приложений, учётные записи, блокировки, пароли, сбросы второго фактора и коды восстановления, регистрации шлюзов. Сверьте с журналом аудита прежней установки "+
 			"(руководство администратора, раздел 12.2, шаг 6).\n", res.lastAudit.UTC().Format("2006-01-02 15:04 UTC"))
 	}
 	return nil
 }
 
 type restoreFinishResult struct {
-	revoked   auth.RestoreRevoked
-	lastAudit time.Time
-	ageHours  int64
-	stale     bool
+	revoked       auth.RestoreRevoked
+	gatewayTokens int64
+	setupTokens   int64
+	lastAudit     time.Time
+	ageHours      int64
+	stale         bool
 }
 
 // restoreFinishTx — отзыв и запись аудита одной транзакцией под
@@ -121,12 +130,25 @@ func restoreFinishTx(ctx context.Context, db *store.DB, l *audit.Log, actor audi
 	if res.revoked, err = auth.RevokeAllForRestoreTx(ctx, tx, audit.DefaultOrgID, now); err != nil {
 		return res, err
 	}
+	if res.gatewayTokens, err = gwregistry.ExpireTokensForRestoreTx(ctx, tx, audit.DefaultOrgID, now); err != nil {
+		return res, err
+	}
+	// Токен первичной настройки: копия, снятая до init, возвращает его
+	// непогашенным. Триггер setup_tokens_guard разрешает только погашение.
+	tag, err := tx.Exec(ctx, "UPDATE setup_tokens SET used_at = greatest($2::timestamptz, created_at) WHERE org_id = $1 AND used_at IS NULL",
+		audit.DefaultOrgID, now)
+	if err != nil {
+		return res, fmt.Errorf("токен первичной настройки: погашение: %w", err)
+	}
+	res.setupTokens = tag.RowsAffected()
 	details := map[string]any{
-		"last_audit_at":      res.lastAudit.UTC().Format(time.RFC3339),
-		"copy_age_hours":     res.ageHours,
-		"stale_copy":         res.stale,
-		"revoked_sessions":   res.revoked.Sessions,
-		"revoked_api_tokens": res.revoked.APITokens,
+		"last_audit_at":          res.lastAudit.UTC().Format(time.RFC3339),
+		"copy_age_hours":         res.ageHours,
+		"stale_copy":             res.stale,
+		"revoked_sessions":       res.revoked.Sessions,
+		"revoked_api_tokens":     res.revoked.APITokens,
+		"expired_gateway_tokens": res.gatewayTokens,
+		"expired_setup_tokens":   res.setupTokens,
 	}
 	if copyDir != "" {
 		details["copy_dir"] = copyDir

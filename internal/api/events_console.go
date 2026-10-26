@@ -262,7 +262,19 @@ func (d Deps) getEvent(w http.ResponseWriter, r *http.Request) {
 		Actor: eventsActor(p), SourceIP: clientAddr(r), Action: "events.view",
 		Object: audit.Object{Type: "event", ID: id}, Result: audit.ResultSuccess,
 	})
+	if !seesFragments(p) {
+		rec.Details = rec.Details.WithoutFragments()
+	}
 	WriteJSON(w, http.StatusOK, rec.View())
+}
+
+// seesFragments — субъекту показываются хеши фрагментов находок: только с
+// правом на содержимое событий или на изменение политик (исключения по
+// фрагменту). Хеш — HMAC текста находки: остальным с events.read (аналитик,
+// аудитор, токен API) он позволил бы проверять, встречалось ли значение в
+// запросах приложения (3Н41 ревью 3.r3).
+func seesFragments(p Principal) bool {
+	return p.Grants.Full(auth.PermEventsContentRead) || p.Grants.Full(auth.PermPoliciesManage)
 }
 
 type contentRequest struct {
@@ -462,7 +474,13 @@ func (d Deps) exportEvents(w http.ResponseWriter, r *http.Request) {
 		ex, err = events.NewExporter(w, req.Format)
 		return err
 	}
-	err := d.Events.Export(ctx, q, start, func(rec *events.Record) error { return ex.Write(rec) })
+	hide := !seesFragments(p)
+	err := d.Events.Export(ctx, q, start, func(rec *events.Record) error {
+		if hide {
+			rec.Details = rec.Details.WithoutFragments()
+		}
+		return ex.Write(rec)
+	})
 	if err == nil {
 		err = ex.Close()
 	}

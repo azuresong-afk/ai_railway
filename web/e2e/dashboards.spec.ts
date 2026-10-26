@@ -51,7 +51,14 @@ test("обзор: график рисуется при строгом CSP, да�
   await page.goto("/#/");
   await expect(page.getByText("1 200", { exact: true })).toBeVisible();
   // ECharts в режиме SVG кладёт в контейнер элемент svg.
-  await expect(page.getByRole("img", { name: /запросы по решениям политики/ }).locator("svg").first()).toBeVisible();
+  const chart = page.getByRole("img", { name: /запросы по решениям политики/ });
+  await expect(chart.locator("svg").first()).toBeVisible();
+  // Подсказка при наведении (3Н45 ревью 3.r3): в режиме HTML ECharts пишет style через innerHTML,
+  // и watch() ловит нарушение CSP; в режиме richText подсказка — текст внутри SVG.
+  await chart.hover();
+  await page.mouse.move(0, 0);
+  await chart.hover({ position: { x: 120, y: 120 } });
+  await page.waitForTimeout(300);
   await page.getByRole("button", { name: "Показать данные таблицей" }).first().click();
   await expect(page.getByRole("table", { name: "Данные: Запросы по решениям" })).toBeVisible();
   await expect(page.getByRole("table", { name: "Лента решений" }).getByText("R-1")).toBeVisible();

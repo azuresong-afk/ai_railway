@@ -230,8 +230,11 @@ type HeartbeatConfig struct {
 	// Budget — счётчики расхода для сервера и расход остальных процессов из
 	// ответа (задача 3.18); nil — не передаются. Только вместе с StartedAt.
 	Budget *Budget
-	Logger *slog.Logger
-	Clock  func() time.Time
+	// ServerTime — часы сроков исключений по времени сервера из ответа
+	// (3Н40 ревью 3.r3); nil — не ведутся.
+	ServerTime *ServerClock
+	Logger     *slog.Logger
+	Clock      func() time.Time
 	// Sleep ждёт d или отмены ctx (тесты подменяют его).
 	Sleep func(ctx context.Context, d time.Duration) bool
 }
@@ -347,6 +350,7 @@ func (c HeartbeatConfig) beat(ctx context.Context, u string, interval, backoff *
 	if resp.IntervalSeconds > 0 {
 		*interval = min(max(time.Duration(resp.IntervalSeconds)*time.Second, minHeartbeatInterval), maxHeartbeatInterval)
 	}
+	c.ServerTime.Observe(resp.ServerTime, time.Now())
 	if skew := resp.ServerTime.Sub(sent); !resp.ServerTime.IsZero() && (skew > clockSkewWarn || skew < -clockSkewWarn) {
 		c.Logger.Warn("часы шлюза расходятся с сервером управления", "skew_seconds", int(skew/time.Second))
 	}

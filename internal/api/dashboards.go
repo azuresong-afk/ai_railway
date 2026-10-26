@@ -32,14 +32,52 @@ const (
 	// пользователя или токен и на сервер.
 	dashStreamsPerSubject = 3
 	dashStreamsTotal      = 100
-	// dashCacheTTL — снимок общий для запросов с одинаковыми условиями.
+	// dashCacheTTL — снимок общий для запросов с одинаковыми условиями (не
+	// меньше шага потока, dashTick).
 	dashCacheTTL     = 2 * time.Second
 	dashCacheEntries = 256
 	dashTopN         = 10
+	// MaxDashComputes — одновременных вычислений снимков на сервер, сверх —
+	// 503 с Retry-After (3В28 ревью 3.r3); по нему — размер пула дашбордов.
+	MaxDashComputes = 2
+	// dashBusyRetry — Retry-After при занятых вычислениях, с.
+	dashBusyRetry = "5"
 )
 
 // dashStreamEvery — период снимков потока: задержка не больше 5 с.
 var dashStreamEvery = 3 * time.Second
+
+// dashStreamWriteTimeout — предел записи одного сообщения потока: клиент,
+// переставший читать, не держит горутину и место в пределе потоков
+// бесконечно; dashStreamMaxAge — предельный срок потока, после него клиент
+// переподключается (EventSource, retry 5 с) с новой проверкой прав и
+// заново занимает место (3Н44 ревью 3.r3).
+var (
+	dashStreamWriteTimeout = 10 * time.Second
+	dashStreamMaxAge       = time.Hour
+)
+
+// errDashBusy — все вычисления снимков заняты.
+var errDashBusy = errors.New("дашборды: все вычисления заняты")
+
+// dashTick — шаг потока и срок снимка в кэше. Именованные периоды ТЗ 5.8
+// (15m–30d) — всегда dashStreamEvery: задержка реального времени не больше
+// 5 с, нагрузку держат singleflight и предел вычислений. Реже — только
+// произвольный период (3В28 ревью 3.r3): до 31 суток — в 20 раз (1 мин),
+// дольше — в 100 раз (5 мин); такой период почти всегда в прошлом и
+// меняется только досчётом.
+func dashTick(p dashParams) time.Duration {
+	if p.name != "custom" {
+		return dashStreamEvery
+	}
+	switch l := p.to.Sub(p.from); {
+	case l > 31*24*time.Hour:
+		return 100 * dashStreamEvery
+	case l > 24*time.Hour:
+		return 20 * dashStreamEvery
+	}
+	return dashStreamEvery
+}
 
 // Именованные периоды ТЗ 5.8.
 var dashPeriods = map[string]time.Duration{
@@ -51,7 +89,7 @@ type DashboardReader interface {
 	Totals(ctx context.Context, q events.DashQuery) (events.DashTotals, error)
 	Latency(ctx context.Context, q events.DashQuery) (events.DashLatency, error)
 	DecisionSeries(ctx context.Context, q events.DashQuery) ([]events.DashPoint, error)
-	FindingSeries(ctx context.Context, q events.DashQuery, dim, prefix string) ([]events.DashPoint, error)
+	FindingSeries(ctx context.Context, q events.DashQuery, dim, prefix string, keys []string) ([]events.DashPoint, error)
 	TopFindings(ctx context.Context, q events.DashQuery, dim, prefix string, limit int) ([]events.DashTop, error)
 	PIIBreakdown(ctx context.Context, q events.DashQuery) ([]events.DashPIIRow, error)
 	Heatmap(ctx context.Context, q events.DashQuery) ([]events.DashCell, error)
@@ -153,6 +191,9 @@ type OverviewView struct {
 	TopDetectors []events.DashTop      `json:"top_detectors"`
 	Apps         []DashRequestRowView  `json:"apps"`
 	Feed         []events.DashFeedItem `json:"feed"`
+	// FeedHidden — ленты нет: у субъекта нет events.read на все объекты
+	// (3В27 ревью 3.r3, УПД.2).
+	FeedHidden bool `json:"feed_hidden"`
 }
 
 // ThreatsView — дашборд «Угрозы»: находки по строкам матрицы обнаружения,
@@ -190,6 +231,7 @@ type AppDashboardView struct {
 	TopDetectors []events.DashTop      `json:"top_detectors"`
 	Models       []DashRequestRowView  `json:"models"`
 	Feed         []events.DashFeedItem `json:"feed"`
+	FeedHidden   bool                  `json:"feed_hidden"`
 }
 
 // DashAppRef — приложение дашборда.
@@ -354,6 +396,9 @@ func (d Deps) dashHandler(name string) http.HandlerFunc {
 		defer cancel()
 		body, _, err := d.dashSnapshot(ctx, name, params, app, auth.PermBudgetsRead, r)
 		if err != nil {
+			if errors.Is(err, errDashBusy) {
+				w.Header().Set("Retry-After", dashBusyRetry)
+			}
 			WriteProblem(w, d.dashProblem(err))
 			return
 		}
@@ -372,30 +417,77 @@ func (d Deps) dashProblem(err error) *Problem {
 		return Invalid("Слишком много данных за период: сузьте период.")
 	case errors.Is(err, context.DeadlineExceeded):
 		return NewProblem(http.StatusServiceUnavailable, CodeUnavailable, "Дашборд не успел посчитаться: сузьте период или повторите позже.")
+	case errors.Is(err, errDashBusy):
+		return NewProblem(http.StatusServiceUnavailable, CodeUnavailable, "Сервер занят расчётом других дашбордов: повторите через несколько секунд.")
 	}
 	d.Logger.Error("дашборд: ошибка чтения агрегатов", "class", "db", "error", err)
 	return errInternal()
 }
 
-// dashCache — снимки дашбордов с одинаковыми условиями, TTL dashCacheTTL.
+// dashCache — снимки дашбордов с одинаковыми условиями (срок — у снимка),
+// одно вычисление на ключ (остальные запросы ждут его итог) и предел
+// одновременных вычислений на сервер (3В28 ревью 3.r3).
 type dashCache struct {
-	mu sync.Mutex
-	m  map[string]dashEntry
+	mu       sync.Mutex
+	m        map[string]dashEntry
+	inflight map[string]*dashCall
+	slots    chan struct{}
 }
 
 type dashEntry struct {
 	at   time.Time
+	ttl  time.Duration
 	body []byte
 	data uint64
 }
 
-func newDashCache() *dashCache { return &dashCache{m: map[string]dashEntry{}} }
+// dashCall — вычисление снимка по ключу; done закрывается по готовности.
+type dashCall struct {
+	done chan struct{}
+	e    dashEntry
+	err  error
+}
+
+func newDashCache() *dashCache {
+	return &dashCache{m: map[string]dashEntry{}, inflight: map[string]*dashCall{}, slots: make(chan struct{}, MaxDashComputes)}
+}
+
+// join — вычисление по ключу: leader — вычислять самому, иначе ждать c.done.
+func (c *dashCache) join(key string) (call *dashCall, leader bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if cl, ok := c.inflight[key]; ok {
+		return cl, false
+	}
+	cl := &dashCall{done: make(chan struct{})}
+	c.inflight[key] = cl
+	return cl, true
+}
+
+func (c *dashCache) finish(key string, cl *dashCall) {
+	c.mu.Lock()
+	delete(c.inflight, key)
+	c.mu.Unlock()
+	close(cl.done)
+}
+
+// acquire занимает место вычисления без ожидания.
+func (c *dashCache) acquire() bool {
+	select {
+	case c.slots <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func (c *dashCache) release() { <-c.slots }
 
 func (c *dashCache) get(key string, now time.Time) (dashEntry, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	e, ok := c.m[key]
-	if !ok || now.Sub(e.at) >= dashCacheTTL {
+	if !ok || now.Sub(e.at) >= e.ttl {
 		return dashEntry{}, false
 	}
 	return e, true
@@ -406,7 +498,7 @@ func (c *dashCache) put(key string, e dashEntry) {
 	defer c.mu.Unlock()
 	if len(c.m) >= dashCacheEntries {
 		for k, v := range c.m {
-			if e.at.Sub(v.at) >= dashCacheTTL {
+			if e.at.Sub(v.at) >= v.ttl {
 				delete(c.m, k)
 			}
 		}
@@ -419,30 +511,70 @@ func (c *dashCache) put(key string, e dashEntry) {
 
 // dashSnapshot возвращает JSON дашборда и отпечаток данных без периода
 // (для потока: неизменный снимок не пересылается). Условия бюджетов
-// (budgetPerm) входят в ключ кэша: состав ответа зависит от прав.
+// (budgetPerm) и ленты решений входят в ключ кэша: состав ответа зависит
+// от прав. Лента — метаданные каждого события, то есть просмотр событий:
+// только с events.read на все объекты (3В27 ревью 3.r3, решение владельца
+// 26.10.2026); остальное на дашбордах агрегировано.
 func (d Deps) dashSnapshot(ctx context.Context, name string, p dashParams, app DashAppRef, budgetPerm string, r *http.Request) ([]byte, uint64, error) {
 	pr, _ := PrincipalFrom(r.Context())
 	withBudgets := name == "consumption" && pr.Grants.Full(budgetPerm)
+	withFeed := (name == "overview" || name == "app") && pr.Grants.Full(auth.PermEventsRead)
+	// Произвольный период — в ключе до минуты: запросы, различающиеся
+	// секундами, делят снимок (данные — с шагом не меньше минуты).
 	period := p.name
 	if p.name == "custom" {
-		period = fmt.Sprintf("custom-%d-%v", p.from.Unix(), p.rolling)
+		period = fmt.Sprintf("custom-%d-%v", p.from.Unix()/60, p.rolling)
 		if !p.rolling {
-			period = fmt.Sprintf("custom-%d-%d", p.from.Unix(), p.to.Unix())
+			period = fmt.Sprintf("custom-%d-%d", p.from.Unix()/60, p.to.Unix()/60)
 		}
 	}
-	key := fmt.Sprintf("%s|%s|%s|%v|%v", name, app.Slug, period, p.feedAll, withBudgets)
+	key := fmt.Sprintf("%s|%s|%s|%v|%v|%v", name, app.Slug, period, p.feedAll, withBudgets, withFeed)
 	now := time.Now()
-	if d.DashCache != nil {
-		if e, ok := d.DashCache.get(key, now); ok {
-			return e.body, e.data, nil
+	c := d.DashCache
+	if c == nil {
+		e, err := d.dashCompute(ctx, name, p, app, withBudgets, withFeed, now)
+		return e.body, e.data, err
+	}
+	if e, ok := c.get(key, now); ok {
+		return e.body, e.data, nil
+	}
+	call, leader := c.join(key)
+	if !leader {
+		select {
+		case <-call.done:
+			return call.e.body, call.e.data, call.err
+		case <-ctx.Done():
+			return nil, 0, ctx.Err()
 		}
 	}
+	defer c.finish(key, call)
+	if !c.acquire() {
+		call.err = errDashBusy
+		return nil, 0, call.err
+	}
+	defer c.release()
+	// Снимок общий: ведущий считает его не на своём контексте, иначе уход
+	// его клиента (закрытая вкладка, оборванный поток) отдал бы ошибку всем
+	// ожидающим. Срок — тот же dashReadTimeout.
+	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), dashReadTimeout)
+	defer cancel()
+	call.e, call.err = d.dashCompute(cctx, name, p, app, withBudgets, withFeed, now)
+	if call.err != nil {
+		return nil, 0, call.err
+	}
+	c.put(key, call.e)
+	return call.e.body, call.e.data, nil
+}
+
+// dashCompute считает снимок дашборда по агрегатам.
+func (d Deps) dashCompute(ctx context.Context, name string, p dashParams, app DashAppRef, withBudgets, withFeed bool,
+	now time.Time) (dashEntry, error) {
 	cfg, err := d.Auth.InstallSettings(ctx)
 	if err != nil {
-		return nil, 0, err
+		return dashEntry{}, err
 	}
 	if _, err := time.LoadLocation(cfg.Timezone); err != nil {
-		return nil, 0, fmt.Errorf("часовой пояс установки: %w", err)
+		return dashEntry{}, fmt.Errorf("часовой пояс установки: %w", err)
 	}
 	q := events.DashQuery{From: p.from, To: p.to, App: app.Slug, TZ: cfg.Timezone}
 	// Скользящий период считается от текущего момента каждого снимка.
@@ -454,7 +586,7 @@ func (d Deps) dashSnapshot(ctx context.Context, name string, p dashParams, app D
 	}
 	ready, err := d.Dashboards.Ready(ctx)
 	if err != nil {
-		return nil, 0, err
+		return dashEntry{}, err
 	}
 	norm := q.Normalize()
 	meta := dashPeriod{Name: p.name, From: norm.From, To: norm.To, Unit: norm.Unit(),
@@ -462,25 +594,25 @@ func (d Deps) dashSnapshot(ctx context.Context, name string, p dashParams, app D
 	var view dashView
 	switch name {
 	case "overview":
-		view, err = d.buildOverview(ctx, q, p.feedAll)
+		view, err = d.buildOverview(ctx, q, withFeed, p.feedAll)
 	case "threats":
 		view, err = d.buildThreats(ctx, q)
 	case "pii":
 		view, err = d.buildPII(ctx, q)
 	case "app":
-		view, err = d.buildApp(ctx, q, app, p.feedAll)
+		view, err = d.buildApp(ctx, q, app, withFeed, p.feedAll)
 	case "consumption":
 		view, err = d.buildConsumption(ctx, q, withBudgets)
 	default:
 		err = fmt.Errorf("неизвестный дашборд %q", name)
 	}
 	if err != nil {
-		return nil, 0, err
+		return dashEntry{}, err
 	}
 	*view.period() = meta
 	body, err := json.Marshal(view)
 	if err != nil {
-		return nil, 0, err
+		return dashEntry{}, err
 	}
 	// Отпечаток данных — без периода: его конец меняется каждую секунду.
 	saved := *view.period()
@@ -488,13 +620,9 @@ func (d Deps) dashSnapshot(ctx context.Context, name string, p dashParams, app D
 	plain, err := json.Marshal(view)
 	*view.period() = saved
 	if err != nil {
-		return nil, 0, err
+		return dashEntry{}, err
 	}
-	e := dashEntry{at: now, body: body, data: fingerprint(plain)}
-	if d.DashCache != nil {
-		d.DashCache.put(key, e)
-	}
-	return body, e.data, nil
+	return dashEntry{at: now, ttl: max(dashCacheTTL, dashTick(p)), body: body, data: fingerprint(plain)}, nil
 }
 
 func nz[T any](s []T) []T {
@@ -504,7 +632,7 @@ func nz[T any](s []T) []T {
 	return s
 }
 
-func (d Deps) buildOverview(ctx context.Context, q events.DashQuery, feedAll bool) (dashView, error) {
+func (d Deps) buildOverview(ctx context.Context, q events.DashQuery, withFeed, feedAll bool) (dashView, error) {
 	var v OverviewView
 	var err error
 	t, err := d.Dashboards.Totals(ctx, q)
@@ -525,12 +653,23 @@ func (d Deps) buildOverview(ctx context.Context, q events.DashQuery, feedAll boo
 	if err != nil {
 		return nil, err
 	}
-	if v.Feed, err = d.Dashboards.Feed(ctx, q.To, "", feedAll, 30); err != nil {
-		return nil, err
+	if v.FeedHidden = !withFeed; withFeed {
+		if v.Feed, err = d.Dashboards.Feed(ctx, q.To, "", feedAll, 30); err != nil {
+			return nil, err
+		}
 	}
 	v.Totals, v.Latency, v.Apps = totalsView(t), latencyView(lat), rowsView(byApp)
 	v.Decisions, v.TopDetectors, v.Feed = nz(v.Decisions), nz(v.TopDetectors), nz(v.Feed)
 	return &v, nil
+}
+
+// topKeys — ключи строк «топ» (непустой срез: пустой топ — пустой ряд).
+func topKeys(top []events.DashTop) []string {
+	keys := make([]string, 0, len(top))
+	for _, t := range top {
+		keys = append(keys, t.Key)
+	}
+	return keys
 }
 
 // onlyKeys оставляет точки ряда с ключами из top: ряд ограничен самыми
@@ -569,7 +708,7 @@ func (d Deps) buildThreats(ctx context.Context, q events.DashQuery) (dashView, e
 		if *x.top, err = d.Dashboards.TopFindings(ctx, q, x.name, "", dashTopN); err != nil {
 			return nil, err
 		}
-		series, err := d.Dashboards.FindingSeries(ctx, q, x.name, "")
+		series, err := d.Dashboards.FindingSeries(ctx, q, x.name, "", topKeys(*x.top))
 		if err != nil {
 			return nil, err
 		}
@@ -592,7 +731,7 @@ func (d Deps) buildPII(ctx context.Context, q events.DashQuery) (dashView, error
 	if v.Rows, err = d.Dashboards.PIIBreakdown(ctx, q); err != nil {
 		return nil, err
 	}
-	series, err := d.Dashboards.FindingSeries(ctx, q, events.DimCategory, "pii.")
+	series, err := d.Dashboards.FindingSeries(ctx, q, events.DimCategory, "pii.", topKeys(v.Types))
 	if err != nil {
 		return nil, err
 	}
@@ -604,7 +743,7 @@ func (d Deps) buildPII(ctx context.Context, q events.DashQuery) (dashView, error
 	return &v, nil
 }
 
-func (d Deps) buildApp(ctx context.Context, q events.DashQuery, app DashAppRef, feedAll bool) (dashView, error) {
+func (d Deps) buildApp(ctx context.Context, q events.DashQuery, app DashAppRef, withFeed, feedAll bool) (dashView, error) {
 	v := AppDashboardView{Application: app}
 	t, err := d.Dashboards.Totals(ctx, q)
 	if err != nil {
@@ -624,8 +763,10 @@ func (d Deps) buildApp(ctx context.Context, q events.DashQuery, app DashAppRef, 
 	if err != nil {
 		return nil, err
 	}
-	if v.Feed, err = d.Dashboards.Feed(ctx, q.To, app.Slug, feedAll, 30); err != nil {
-		return nil, err
+	if v.FeedHidden = !withFeed; withFeed {
+		if v.Feed, err = d.Dashboards.Feed(ctx, q.To, app.Slug, feedAll, 30); err != nil {
+			return nil, err
+		}
 	}
 	v.Totals, v.Latency, v.Models = totalsView(t), latencyView(lat), rowsView(models)
 	v.Decisions, v.TopDetectors, v.Feed = nz(v.Decisions), nz(v.TopDetectors), nz(v.Feed)
@@ -759,22 +900,39 @@ func (d Deps) dashStream(w http.ResponseWriter, r *http.Request) {
 		defer d.DashStreams.Release(subject)
 	}
 	rc := http.NewResponseController(w)
+	// send пишет сообщение со сроком записи dashStreamWriteTimeout; срок
+	// не поддерживается только у тестовых ResponseWriter.
+	send := func(b []byte) bool {
+		if err := rc.SetWriteDeadline(time.Now().Add(dashStreamWriteTimeout)); err != nil && !errors.Is(err, http.ErrNotSupported) {
+			return false
+		}
+		if _, err := w.Write(b); err != nil {
+			return false
+		}
+		return rc.Flush() == nil
+	}
 	h := w.Header()
 	h.Set("Content-Type", "text/event-stream")
 	h.Set("Cache-Control", "no-store")
 	h.Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
-	if _, err := fmt.Fprint(w, "retry: 5000\n\n"); err != nil {
+	if !send([]byte("retry: 5000\n\n")) {
 		return
 	}
 	var last uint64
 	cur := r
-	t := time.NewTicker(dashStreamEvery)
+	t := time.NewTicker(dashTick(params))
 	defer t.Stop()
+	maxAge := time.NewTimer(dashStreamMaxAge)
+	defer maxAge.Stop()
 	for first := true; ; first = false {
 		if !first {
 			select {
 			case <-r.Context().Done():
+				return
+			case <-d.Stopping:
+				return
+			case <-maxAge.C:
 				return
 			case <-t.C:
 			}
@@ -809,10 +967,7 @@ func (d Deps) dashStream(w http.ResponseWriter, r *http.Request) {
 			out.Write(body)
 			out.WriteString("\n\n")
 		}
-		if _, err := w.Write(out.Bytes()); err != nil {
-			return
-		}
-		if err := rc.Flush(); err != nil {
+		if !send(out.Bytes()) {
 			return
 		}
 	}

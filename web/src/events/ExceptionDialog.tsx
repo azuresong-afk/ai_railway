@@ -38,8 +38,14 @@ function valueOf(c: ExceptionCondition, k: Key): string {
   }
 }
 
-const shown = (k: Key, v: string) => (k === "fragment" ? `…${v.slice(-8)}` : v);
-const label = (c: ExceptionCondition) => [c.detector, c.category, c.pattern].filter(Boolean).join(" / ");
+const sourceText = new Map<string, string>([
+  ["user", "запрос пользователя"],
+  ["rag", "данные RAG"],
+  ["tool", "результат инструмента"],
+  ["output", "ответ модели"],
+]);
+const shown = (k: Key, v: string) => (k === "fragment" ? `…${v.slice(-8)}` : k === "source" ? (sourceText.get(v) ?? v) : v);
+const label = (c: ExceptionCondition) => [c.detector, c.category, c.pattern, c.source ? sourceText.get(c.source) ?? c.source : ""].filter(Boolean).join(" / ");
 
 // «Создать исключение» по черновику события (ТЗ 5.3, задача 3.22): условия выбирает человек, срок 30 суток по умолчанию,
 // не больше 365; добавление ослабляет защиту, поэтому нужен пароль или код. Исключение — новая версия политики.
@@ -157,6 +163,12 @@ export function ExceptionDialog({ eventId, mfa, defaultReason, onClose }: { even
                   ))}
               </fieldset>
               {!scoped && <Banner kind="warning">Оставьте хотя бы одно из условий: правило, фрагмент, приложение или пользователь. Детектор целиком для всех приложений отключить нельзя.</Banner>}
+              {cond.source && off.has("source") && (
+                <Banner kind="warning">
+                  Без условия «Источник текста» исключение действует на все тексты: запрос пользователя, данные RAG и инструментов и ответ модели. Ложное срабатывание в одном
+                  источнике обычно не повод отключать проверку в остальных.
+                </Banner>
+              )}
               {scoped && !picked.some((k) => k === "app" || k === "fragment" || k === "user") && (
                 <Banner kind="warning">Исключение только по правилу действует во всех приложениях этой политики. Добавьте приложение или фрагмент, если нужно уже.</Banner>
               )}
@@ -165,7 +177,9 @@ export function ExceptionDialog({ eventId, mfa, defaultReason, onClose }: { even
                   <Input id={id} aria-describedby={describedBy} aria-invalid={invalid} inputMode="numeric" value={days} onChange={(e) => setDays(e.target.value)} />
                 )}
               </Field>
-              <Field label="Причина">{({ id }) => <Input id={id} maxLength={500} value={reason} onChange={(e) => setReason(e.target.value)} />}</Field>
+              <Field label="Причина" hint="До 500 знаков. Причина попадёт в политику, историю её версий и на все шлюзы: не вставляйте содержимое запроса.">
+                {({ id, describedBy }) => <Input id={id} aria-describedby={describedBy} maxLength={500} value={reason} onChange={(e) => setReason(e.target.value)} />}
+              </Field>
               <Banner kind="warning">
                 Исключение ослабляет защиту. Подтвердите, что это вы: введите {mfa ? "код из приложения-аутентификатора" : "текущий пароль"}. Действие запишется в журнал аудита как ослабление.
               </Banner>

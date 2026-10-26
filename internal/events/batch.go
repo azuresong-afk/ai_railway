@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"slices"
 	"time"
 
 	"github.com/azuresong-afk/ai_railway/internal/ids"
@@ -186,6 +187,22 @@ type Details struct {
 	// ContentTruncated — содержимое full обрезано сервером под предел
 	// шифротекста (FitContent); ставит только сервер при записи.
 	ContentTruncated bool `json:"content_truncated,omitempty"`
+}
+
+// WithoutFragments — копия без хешей фрагментов находок: хеш — HMAC текста
+// находки, и по нему держатель ключа приложения проверяет, встречалось ли
+// значение в запросах (3Н41 ревью 3.r3). Видят его только субъекты с
+// правом на содержимое или на изменение политик.
+func (d *Details) WithoutFragments() *Details {
+	if d == nil || !slices.ContainsFunc(d.Findings, func(f Finding) bool { return f.Fragment != "" }) {
+		return d
+	}
+	out := *d
+	out.Findings = slices.Clone(d.Findings)
+	for i := range out.Findings {
+		out.Findings[i].Fragment = ""
+	}
+	return &out
 }
 
 // Details возвращает метаданные события для хранения.

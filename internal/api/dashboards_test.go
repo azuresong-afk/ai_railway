@@ -4,9 +4,11 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -25,6 +27,10 @@ type fakeDash struct {
 	total events.DashTotals
 	err   error
 	reads int
+	// block — Totals ждёт закрытия канала; cur и peak — текущие и наибольшие
+	// одновременные вычисления (3В28).
+	block     chan struct{}
+	cur, peak int
 }
 
 func (f *fakeDash) note(q events.DashQuery) {
@@ -42,6 +48,17 @@ func (f *fakeDash) lastQuery() events.DashQuery {
 
 func (f *fakeDash) Totals(_ context.Context, q events.DashQuery) (events.DashTotals, error) {
 	f.note(q)
+	f.mu.Lock()
+	block := f.block
+	f.cur++
+	f.peak = max(f.peak, f.cur)
+	f.mu.Unlock()
+	if block != nil {
+		<-block
+	}
+	f.mu.Lock()
+	f.cur--
+	f.mu.Unlock()
 	return f.total, f.err
 }
 
@@ -55,7 +72,7 @@ func (f *fakeDash) DecisionSeries(_ context.Context, q events.DashQuery) ([]even
 	return []events.DashPoint{{Bucket: q.From, Key: "blocked", Value: 2}}, nil
 }
 
-func (f *fakeDash) FindingSeries(_ context.Context, q events.DashQuery, _, _ string) ([]events.DashPoint, error) {
+func (f *fakeDash) FindingSeries(_ context.Context, q events.DashQuery, _, _ string, _ []string) ([]events.DashPoint, error) {
 	f.note(q)
 	return []events.DashPoint{{Bucket: q.From, Key: "DM-01", Value: 2}, {Bucket: q.From, Key: "DM-99", Value: 5}}, nil
 }
@@ -377,4 +394,245 @@ func FuzzParseDashParams(f *testing.F) {
 			t.Fatalf("период вне границ: %v — %v", p.from, p.to)
 		}
 	})
+}
+
+// 3В27 ревью 3.r3 (УПД.2, решение владельца 26.10.2026): «Лента решений» —
+// метаданные каждого события — только с events.read на все объекты.
+// Администратор системы получает «Обзор» с пустой лентой и feed_hidden,
+// аналитик — с лентой; кэш не переносит ленту между ними; владелец
+// приложения на «Приложении» ленты не видит.
+func TestDashboardFeedRequiresEventsRead(t *testing.T) {
+	e := newAppsEnv(t)
+	sys := e.mustLogin(t, "sysadm")
+	prov := e.provider(t, sys, "openai-main")
+	mine := e.application(t, sys, "mine", prov.ID, tOwnerID)
+	type view struct {
+		Feed       []events.DashFeedItem `json:"feed"`
+		FeedHidden bool                  `json:"feed_hidden"`
+	}
+	get := func(s session, path string) view {
+		t.Helper()
+		w := e.call(s, "GET", path, "", false)
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s: %d %s", path, w.Code, w.Body)
+		}
+		var v view
+		if err := json.Unmarshal(w.Body.Bytes(), &v); err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	an := e.mustLogin(t, "analyst")
+	// Аналитик первым: снимок с лентой в кэше не должен достаться администратору системы.
+	for _, path := range []string{"/api/v1/dashboards/overview", "/api/v1/dashboards/app/" + mine.ID} {
+		if v := get(an, path); len(v.Feed) == 0 || v.FeedHidden {
+			t.Fatalf("аналитик %s: %+v", path, v)
+		}
+		if v := get(sys, path); len(v.Feed) != 0 || !v.FeedHidden {
+			t.Fatalf("администратор системы %s: %+v", path, v)
+		}
+	}
+	if v := get(e.mustLogin(t, "owner"), "/api/v1/dashboards/app/"+mine.ID); len(v.Feed) != 0 || !v.FeedHidden {
+		t.Fatalf("владелец приложения: %+v", v)
+	}
+}
+
+// 3В28 ревью 3.r3: вычисления снимков ограничены MaxDashComputes на сервер,
+// сверх — 503 с Retry-After; одинаковые запросы ждут одно вычисление.
+func TestDashboardComputeLimit(t *testing.T) {
+	e := newAppsEnv(t)
+	an := e.mustLogin(t, "analyst")
+	block := make(chan struct{})
+	e.dash.mu.Lock()
+	e.dash.block = block
+	e.dash.mu.Unlock()
+	now := time.Now().UTC()
+	type res struct {
+		code  int
+		retry string
+	}
+	out := make(chan res, 16)
+	var wg sync.WaitGroup
+	get := func(days int) {
+		wg.Go(func() {
+			from := now.Add(-time.Duration(days) * 24 * time.Hour).Format(time.RFC3339)
+			w := e.call(an, "GET", "/api/v1/dashboards/threats?from="+url.QueryEscape(from), "", false)
+			out <- res{w.Code, w.Header().Get("Retry-After")}
+		})
+	}
+	running := func() int {
+		e.dash.mu.Lock()
+		defer e.dash.mu.Unlock()
+		return e.dash.cur
+	}
+	// Заняты все места вычислений.
+	for i := range MaxDashComputes {
+		get(i + 2)
+	}
+	for deadline := time.Now().Add(5 * time.Second); running() < MaxDashComputes; {
+		if time.Now().After(deadline) {
+			t.Fatalf("вычислений: %d", running())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	// Другие периоды — 503 с Retry-After сразу.
+	for i := range 4 {
+		get(i + 10)
+	}
+	for range 4 {
+		if r := <-out; r.code != http.StatusServiceUnavailable || r.retry == "" {
+			t.Fatalf("сверх предела: %d, Retry-After %q", r.code, r.retry)
+		}
+	}
+	// Тот же запрос, что уже считается, не занимает новое место: ждёт итог.
+	get(2)
+	time.Sleep(50 * time.Millisecond)
+	close(block)
+	wg.Wait()
+	close(out)
+	ok := 0
+	for r := range out {
+		if r.code == http.StatusOK {
+			ok++
+		}
+	}
+	e.dash.mu.Lock()
+	peak := e.dash.peak
+	e.dash.mu.Unlock()
+	if peak > MaxDashComputes || ok != MaxDashComputes+1 {
+		t.Fatalf("одновременных вычислений: %d, успешных ответов: %d", peak, ok)
+	}
+}
+
+// Шаг потока и срок снимка растут с длиной периода.
+func TestDashTick(t *testing.T) {
+	now := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name string
+		d    time.Duration
+		want time.Duration
+	}{
+		// Именованные периоды ТЗ 5.8 — задержка не больше 5 с.
+		{"24h", 24 * time.Hour, dashStreamEvery}, {"7d", 7 * 24 * time.Hour, dashStreamEvery}, {"30d", 30 * 24 * time.Hour, dashStreamEvery},
+		{"custom", 24 * time.Hour, dashStreamEvery}, {"custom", 7 * 24 * time.Hour, 20 * dashStreamEvery},
+		{"custom", 90 * 24 * time.Hour, 100 * dashStreamEvery},
+	} {
+		if got := dashTick(dashParams{name: tc.name, from: now.Add(-tc.d), to: now}); got != tc.want {
+			t.Errorf("%s %v: %v, ожидается %v", tc.name, tc.d, got, tc.want)
+		}
+	}
+}
+
+// stalledWriter — клиент потока, переставший читать: первая запись проходит,
+// следующие ждут срока записи (SetWriteDeadline) и завершаются ошибкой, без
+// срока — висят до release.
+type stalledWriter struct {
+	hdr      http.Header
+	mu       sync.Mutex
+	deadline time.Time
+	writes   int
+	release  chan struct{}
+}
+
+func (s *stalledWriter) Header() http.Header { return s.hdr }
+func (s *stalledWriter) WriteHeader(int)     {}
+func (s *stalledWriter) FlushError() error   { return nil }
+
+func (s *stalledWriter) SetWriteDeadline(t time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.deadline = t
+	return nil
+}
+
+func (s *stalledWriter) Write(b []byte) (int, error) {
+	s.mu.Lock()
+	s.writes++
+	n, dl := s.writes, s.deadline
+	s.mu.Unlock()
+	if n == 1 {
+		return len(b), nil
+	}
+	if dl.IsZero() {
+		<-s.release
+		return 0, os.ErrClosed
+	}
+	select {
+	case <-time.After(time.Until(dl)):
+	case <-s.release:
+	}
+	return 0, os.ErrDeadlineExceeded
+}
+
+// 3Н44 ревью 3.r3: поток SSE не держит место в пределе потоков вечно —
+// у записи есть срок, у потока — предельный срок жизни, остановка сервера
+// закрывает потоки сразу.
+func TestDashboardStreamBounded(t *testing.T) {
+	oldEvery, oldWrite, oldAge := dashStreamEvery, dashStreamWriteTimeout, dashStreamMaxAge
+	dashStreamEvery, dashStreamWriteTimeout = 20*time.Millisecond, 100*time.Millisecond
+	t.Cleanup(func() { dashStreamEvery, dashStreamWriteTimeout, dashStreamMaxAge = oldEvery, oldWrite, oldAge })
+	e := newAppsEnv(t)
+	an := e.mustLogin(t, "analyst")
+
+	// Клиент перестал читать: обработчик выходит по сроку записи.
+	sw := &stalledWriter{hdr: http.Header{}, release: make(chan struct{})}
+	t.Cleanup(func() { close(sw.release) })
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/v1/dashboards/stream?dashboard=overview&period=24h", nil)
+	for _, c := range an.cookies {
+		req.AddCookie(c)
+	}
+	done := make(chan struct{})
+	go func() {
+		e.h.ServeHTTP(sw, req)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("поток с непрочитанными данными не закрыт по сроку записи")
+	}
+
+	srv := httptest.NewServer(e.h)
+	t.Cleanup(srv.Close)
+	// waitEOF открывает поток по настоящему TCP и ждёт, пока сервер его закроет.
+	waitEOF := func(after func()) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/api/v1/dashboards/stream?dashboard=overview&period=24h", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range an.cookies {
+			req.AddCookie(c)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			_ = resp.Body.Close() //nolint:gosec // G104: закрытие тестового ответа
+		}()
+		if resp.StatusCode != 200 {
+			t.Fatalf("поток: %d", resp.StatusCode)
+		}
+		if after != nil {
+			after()
+		}
+		if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+			t.Fatalf("поток не закрыт сервером: %v", err)
+		}
+	}
+	// Предельный срок жизни.
+	dashStreamMaxAge = 200 * time.Millisecond
+	waitEOF(nil)
+	// Остановка сервера.
+	dashStreamMaxAge = time.Hour
+	waitEOF(func() { close(e.stopping) })
+
+	// Все места возвращены: пользователь снова открывает три потока (после
+	// остановки каждый тут же закрывается, но место занимает и отдаёт).
+	for range dashStreamsPerSubject {
+		waitEOF(nil)
+	}
 }

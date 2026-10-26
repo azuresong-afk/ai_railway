@@ -31,6 +31,12 @@ type record struct {
 	tokens   int
 	inTokens int
 	outBytes func() int
+	// maxOut — предел ответа запроса (max_tokens или подставленный квотой),
+	// 0 — не задан. unknown — исход запроса, ушедшего провайдеру,
+	// неизвестен (клиент прервал запрос, таймаут, обрыв связи до ответа):
+	// провайдер вход, как правило, уже обработал (3В22 ревью 3.r3).
+	maxOut  int
+	unknown bool
 	// skip — событие не отправляется: клиент ушёл до решения.
 	skip bool
 	// output — проверялся текст ответа: содержимое в событии пишется в
@@ -150,7 +156,13 @@ func (h *ChatHandler) emit(rec *record) {
 		// вход (или возвращался бы целиком), и ответ любой длины не
 		// учитывался бы в tokens_per_minute и tokens_per_day (DM-36).
 		rec.res.SettleAtLeast(rec.inTokens + estimateTokens(rec.outBytes()))
-	case rec.tokens == 0:
+	case rec.unknown:
+		// Исход неизвестен — оценка сверху: вход и предел ответа. Иначе
+		// разрыв соединения после отправки обходил бы квоту токенов (DM-36).
+		rec.res.SettleAtLeast(rec.inTokens + rec.maxOut)
+	default:
+		// Явный отказ провайдера (статус, учётные данные) или usage с нулями
+		// без ответа — расхода нет.
 		rec.res.Settle(0)
 	}
 	h.spend(rec)
@@ -169,8 +181,9 @@ func (h *ChatHandler) emit(rec *record) {
 
 // spend учитывает расход запроса, ушедшего провайдеру (задача 3.18): по
 // usage провайдера, без него — по оценке размера входа и ответа (оценка
-// сверху: бюджет не занижается). Ответа нет и usage нет — провайдер
-// запрос не выполнил, расхода нет и запрос не считается.
+// сверху: бюджет не занижается). Исход неизвестен (разрыв клиента,
+// таймаут, обрыв до ответа) — вход и предел ответа запроса (3В22 ревью
+// 3.r3). Явный отказ провайдера — расхода нет и запрос не считается.
 func (h *ChatHandler) spend(rec *record) {
 	if h.cfg.Budget == nil || !rec.sent || rec.ev.Type != events.TypeGatewayRequest {
 		return
@@ -181,6 +194,8 @@ func (h *ChatHandler) spend(rec *record) {
 		in, out = int64(t.Prompt), int64(t.Completion)
 	case rec.outBytes != nil:
 		in, out = int64(rec.inTokens), int64(estimateTokens(rec.outBytes()))
+	case rec.unknown:
+		in, out = int64(rec.inTokens), int64(rec.maxOut)
 	default:
 		return
 	}
@@ -356,7 +371,7 @@ func (rec *record) findings(in *inspection, texts []inspectText) map[string]bool
 		}
 		ef := events.Finding{
 			Detector: f.Detector, Version: f.Version, Category: f.Category, Score: f.Score, Start: f.Start, End: f.End,
-			Location: texts[f.Text].Location, Threat: f.Threat, Rule: f.Rule, Exception: excepted[i],
+			Location: texts[f.Text].Location, Threat: f.Threat, Rule: f.Rule, Exception: excepted[i], Source: string(texts[f.Text].Source),
 		}
 		if i < len(in.Fragments) {
 			ef.Fragment = in.Fragments[i]

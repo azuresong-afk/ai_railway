@@ -710,3 +710,48 @@ func TestBuildGatewayTLSSection(t *testing.T) {
 		t.Fatalf("выдача версии с заменённым сертификатом: %v", err)
 	}
 }
+
+// 3Н40 ревью 3.r3: истёкшее исключение в пакет не попадает, и к его сроку
+// пакет собирается заново: срок не держится только на часах шлюза.
+func TestBuildDropsExpiredExceptions(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	var rev int64 = 1
+	svc, err := build.New(build.Options{Apps: e.apps, Policies: e.policies, Store: e.store, Audit: e.audit,
+		Sealer: e.fx.Sealer, Provider: e.fx.Provider, Clock: e.clock,
+		Revision: func(context.Context) (int64, error) { return rev, nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, exc, err := e.policies.AddException(ctx, e.polBy, "corp", 1, versions.ExceptionInput{Detector: "injection.heuristic", App: "crm",
+		Reason: "ложное срабатывание на скрипте поддержки", ExpiresInDays: 1}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	policyYAML := func(r build.Record) string {
+		t.Helper()
+		c, err := bundle.ParseContent(r.Content)
+		if err != nil || len(c.Policies) != 1 {
+			t.Fatalf("политики пакета: %v", err)
+		}
+		if c.Policies[0].Version != doc.Version.Version {
+			t.Fatalf("версия политики в пакете: %d", c.Policies[0].Version)
+		}
+		return c.Policies[0].YAML
+	}
+	r, err := svc.Current(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(policyYAML(r), exc.ID) {
+		t.Fatal("действующего исключения нет в пакете")
+	}
+	builds := svc.Builds()
+	e.now = exc.ExpiresAt
+	if r, err = svc.Current(ctx); err != nil || svc.Builds() != builds+1 {
+		t.Fatalf("срок исключения: выборок %d, %v", svc.Builds(), err)
+	}
+	if y := policyYAML(r); strings.Contains(y, exc.ID) || strings.Contains(y, "exceptions") {
+		t.Fatalf("истёкшее исключение в пакете: %s", y)
+	}
+}

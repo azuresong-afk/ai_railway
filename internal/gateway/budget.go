@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"errors"
+	"log/slog"
 	"slices"
 	"strings"
 	"sync"
@@ -36,7 +37,8 @@ const (
 // Budget — счётчики расхода процесса шлюза и жёсткие бюджеты. Безопасен
 // для одновременного использования.
 type Budget struct {
-	now func() time.Time
+	now    func() time.Time
+	logger *slog.Logger
 
 	mu sync.Mutex
 	// on — в пакете есть раздел budgets: расход считается и уходит в
@@ -45,6 +47,9 @@ type Budget struct {
 	loc    *time.Location
 	prices map[priceKey]bundle.ModelPrice
 	hard   map[string]int64
+	// known — приложения текущего пакета (nil — неизвестны): при
+	// переполнении месяца вытесняются счётчики приложений вне пакета.
+	known map[string]bool
 	// months — месяц «ГГГГ-ММ» → приложение → счётчики процесса.
 	months map[string]map[string]*budgetUsage
 	// others — расход остальных процессов за месяц othersMonth.
@@ -86,13 +91,31 @@ func NewBudget(now func() time.Time) *Budget {
 	if now == nil {
 		now = time.Now
 	}
-	return &Budget{now: now, months: map[string]map[string]*budgetUsage{}}
+	return &Budget{now: now, logger: slog.Default(), months: map[string]map[string]*budgetUsage{}}
+}
+
+// SetLogger задаёт технический журнал; вызывается до начала работы.
+func (b *Budget) SetLogger(l *slog.Logger) {
+	if l != nil {
+		b.logger = l
+	}
 }
 
 // Reconfigure применяет раздел budgets нового пакета; nil — раздела нет:
 // расход не считается, бюджеты не применяются. Счётчики процесса
-// сохраняются: они нарастающие с запуска.
-func (b *Budget) Reconfigure(sec *bundle.Budgets) error {
+// сохраняются: они нарастающие с запуска. apps — ID приложений пакета: их
+// счётчики не вытесняются при переполнении месяца (3В23 ревью 3.r3).
+func (b *Budget) Reconfigure(sec *bundle.Budgets, apps ...string) error {
+	var known map[string]bool
+	if len(apps) > 0 {
+		known = make(map[string]bool, len(apps))
+		for _, a := range apps {
+			known[a] = true
+		}
+	}
+	b.mu.Lock()
+	b.known = known
+	b.mu.Unlock()
 	if sec == nil {
 		b.mu.Lock()
 		b.on, b.prices, b.hard = false, nil, nil
@@ -129,6 +152,7 @@ func (b *Budget) Exhausted(app string) (bool, time.Duration) {
 	}
 	now := b.now()
 	month := bundle.Month(now, b.loc)
+	b.roll(month)
 	spent := int64(0)
 	if u := b.months[month][app]; u != nil {
 		spent = u.Cost
@@ -153,15 +177,11 @@ func (b *Budget) Record(app, provider, model string, input, output int64) {
 		return
 	}
 	month := bundle.Month(b.now(), b.loc)
+	b.roll(month)
 	m := b.months[month]
-	if m == nil {
-		m = map[string]*budgetUsage{}
-		b.months[month] = m
-		b.prune(month)
-	}
 	u := m[app]
 	if u == nil {
-		if len(m) >= maxBudgetApps {
+		if len(m) >= maxBudgetApps && !b.evict(m, app) {
 			return
 		}
 		u = &budgetUsage{App: app}
@@ -179,33 +199,80 @@ func (b *Budget) Record(app, provider, model string, input, output int64) {
 	u.Cost = bundle.AddCost(u.Cost, bundle.Cost(p, input, output))
 }
 
-// prune оставляет счётчики текущего месяца и предыдущего (он уходит на
-// сервер, пока сервер не подтвердит его приём).
-func (b *Budget) prune(current string) {
+// evict освобождает место в переполненном месяце m для приложения app:
+// вытесняет счётчики приложения, которого нет в текущем пакете (удалено с
+// сервера). Такого нет или пакет неизвестен — расход app не учитывается;
+// и то и другое — в технический журнал.
+func (b *Budget) evict(m map[string]*budgetUsage, app string) bool {
+	if b.known != nil {
+		for id := range m {
+			if !b.known[id] {
+				delete(m, id)
+				b.logger.Warn("бюджеты: счётчики приложения вне пакета вытеснены — переполнен месяц", "app", id, "limit", maxBudgetApps)
+				return true
+			}
+		}
+	}
+	b.logger.Warn("бюджеты: расход приложения не учтён — переполнен месяц", "app", app, "limit", maxBudgetApps)
+	return false
+}
+
+// roll готовит счётчики к месяцу current: заводит его, переносит в него
+// счётчики «будущих» месяцев (часы или пояс установки сдвинулись назад
+// через границу месяца: расход в них сделан сейчас, а не в будущем) и
+// оставляет кроме текущего только предыдущий (он уходит на сервер, пока
+// сервер не подтвердит его приём). Без переноса текущий месяц не был бы
+// последним в отчёте, сервер ответил бы «будущим» месяцем, и apply стирал
+// бы счётчик, в который шлюз продолжает писать (3В23 ревью 3.r3).
+func (b *Budget) roll(current string) {
+	cur := b.months[current]
+	if cur == nil {
+		cur = map[string]*budgetUsage{}
+		b.months[current] = cur
+	}
 	months := make([]string, 0, len(b.months))
 	for m := range b.months {
 		months = append(months, m)
 	}
 	slices.Sort(months)
-	for len(months) > 2 || len(months) > 0 && months[0] > current {
+	for _, m := range months {
+		if m <= current {
+			continue
+		}
+		for app, u := range b.months[m] {
+			c := cur[app]
+			if c == nil {
+				if len(cur) >= maxBudgetApps && !b.evict(cur, app) {
+					continue
+				}
+				c = &budgetUsage{App: app}
+				cur[app] = c
+			}
+			c.Cost = bundle.AddCost(c.Cost, u.Cost)
+			c.PricedTokens = bundle.AddCost(c.PricedTokens, u.PricedTokens)
+			c.UnpricedTokens = bundle.AddCost(c.UnpricedTokens, u.UnpricedTokens)
+			c.Requests = bundle.AddCost(c.Requests, u.Requests)
+			c.UnpricedRequests = bundle.AddCost(c.UnpricedRequests, u.UnpricedRequests)
+		}
+		delete(b.months, m)
+	}
+	months = slices.DeleteFunc(months, func(m string) bool { return m > current })
+	for len(months) > 2 {
 		delete(b.months, months[0])
 		months = months[1:]
 	}
 }
 
 // report — счётчики для heartbeat: месяцы по возрастанию, последний —
-// текущий (может быть без приложений). nil — раздела budgets нет.
+// текущий (может быть без приложений), будущих нет. nil — раздела budgets
+// нет.
 func (b *Budget) report() *budgetReport {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if !b.on {
 		return nil
 	}
-	current := bundle.Month(b.now(), b.loc)
-	if b.months[current] == nil {
-		b.months[current] = map[string]*budgetUsage{}
-		b.prune(current)
-	}
+	b.roll(bundle.Month(b.now(), b.loc))
 	months := make([]string, 0, len(b.months))
 	for m := range b.months {
 		months = append(months, m)
@@ -230,6 +297,7 @@ func (b *Budget) report() *budgetReport {
 // apply принимает ответ сервера на heartbeat с отчётом rep: расход
 // остальных процессов за месяц ответа. Месяцы отчёта раньше месяца ответа
 // сервер сохранил — их счётчики больше не меняются и не отправляются.
+// Текущий месяц шлюза не удаляется никогда: в него пишется расход.
 func (b *Budget) apply(rep *budgetReport, st *budgetState) {
 	if rep == nil || st == nil || !bundle.ValidMonth(st.Month) {
 		return
@@ -241,8 +309,12 @@ func (b *Budget) apply(rep *budgetReport, st *budgetState) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.others, b.othersMonth = others, st.Month
+	current := ""
+	if b.on {
+		current = bundle.Month(b.now(), b.loc)
+	}
 	for _, m := range rep.Months {
-		if m.Month < st.Month {
+		if m.Month < st.Month && m.Month != current {
 			delete(b.months, m.Month)
 		}
 	}

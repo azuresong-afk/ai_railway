@@ -253,3 +253,33 @@ func TestBudgets(t *testing.T) {
 		t.Fatalf("нет приложения: %v", err)
 	}
 }
+
+// 3В23 ревью 3.r3: месяц отчёта шлюза сверяется с месяцем сервера в поясе
+// установки с допуском в сутки; расходящийся отчёт не сохраняется.
+func TestSyncBudgetMonthSkew(t *testing.T) {
+	e := newEnv(t, false)
+	ctx := context.Background()
+	e.svc.SetTimezone(func(context.Context) (string, error) { return "Europe/Moscow", nil })
+	e.clock.t = time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
+	started := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	rep := func(months ...string) gwregistry.BudgetReport {
+		var r gwregistry.BudgetReport
+		for _, m := range months {
+			r.Months = append(r.Months, gwregistry.BudgetMonth{Month: m, Apps: []gwregistry.BudgetUsage{{App: "crm", Cost: 5, Requests: 1}}})
+		}
+		return r
+	}
+	for _, months := range [][]string{{"2026-10", "2026-11"}, {"2026-09"}, {"2027-10"}} {
+		if _, err := e.svc.SyncBudget(ctx, "gw1", started, rep(months...)); err == nil || !strings.Contains(err.Error(), "часы шлюза") {
+			t.Fatalf("%v: %v", months, err)
+		}
+	}
+	if st, err := e.svc.SyncBudget(ctx, "gw1", started, rep("2026-09", "2026-10")); err != nil || st.Month != "2026-10" {
+		t.Fatalf("свой месяц: %+v %v", st, err)
+	}
+	// 31 октября 23:30 по Москве: ноябрь шлюза — в пределах суток.
+	e.clock.t = time.Date(2026, 10, 31, 20, 30, 0, 0, time.UTC)
+	if st, err := e.svc.SyncBudget(ctx, "gw2", started, rep("2026-11")); err != nil || st.Month != "2026-11" {
+		t.Fatalf("ноябрь в пределах допуска: %+v %v", st, err)
+	}
+}

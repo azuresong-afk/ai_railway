@@ -74,7 +74,7 @@ export function MarkPanel({ ev, canMark, canException, mfa }: { ev: Event; canMa
         title={target ? `Отметить: ${(markText.get(target) ?? "").toLowerCase()}` : ""}
         description="Отметка хранится отдельно от события, событие не меняется. Смена отметки пишется в журнал аудита."
       >
-        <Field label="Комментарий" hint="Необязательно, до 1000 знаков.">
+        <Field label="Комментарий" hint="Необязательно, до 1000 знаков. Не вставляйте содержимое запроса: комментарий видят все, кто читает события.">
           {({ id, describedBy }) => (
             <textarea
               id={id}
@@ -95,7 +95,8 @@ export function MarkPanel({ ev, canMark, canException, mfa }: { ev: Event; canMa
           </Button>
         </div>
       </FormDialog>
-      {exc && <ExceptionDialog eventId={ev.id} mfa={mfa} defaultReason={cur?.mark === "false_positive" && cur.comment ? cur.comment : "Ложное срабатывание"} onClose={() => setExc(false)} />}
+      {/* Комментарий отметки в причину не подставляется: причина уходит в политику и на шлюзы мимо режима хранения содержимого (3В29). */}
+      {exc && <ExceptionDialog eventId={ev.id} mfa={mfa} defaultReason={`Ложное срабатывание (событие ${ev.id})`} onClose={() => setExc(false)} />}
     </section>
   );
 }

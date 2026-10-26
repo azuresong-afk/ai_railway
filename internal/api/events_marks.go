@@ -182,8 +182,12 @@ func (d Deps) exceptionDraft(r *http.Request, rec *events.Record) (ExceptionDraf
 			out.BaseVersion = doc.Version.Version
 		}
 	}
+	p, _ := PrincipalFrom(r.Context())
+	if !seesFragments(p) {
+		det = det.WithoutFragments()
+	}
 	deciding := decidingDetectors(det.Decision)
-	type key struct{ detector, category, pattern, fragment string }
+	type key struct{ detector, category, pattern, fragment, source string }
 	seen := map[key]bool{}
 	for _, f := range det.Findings {
 		if len(out.Items) >= maxDraftItems {
@@ -197,10 +201,16 @@ func (d Deps) exceptionDraft(r *http.Request, rec *events.Record) (ExceptionDraf
 		if f.Rule != "" && policy.ValidPattern(f.Rule) {
 			in.Pattern = f.Rule
 		}
-		if rec.Type == events.TypeCheck && rec.Source != "" {
+		// Источник — всегда, если известен: исключение для ложного
+		// срабатывания в ответе модели не должно действовать на вход, RAG и
+		// инструменты (3В24 ревью 3.r3, ТЗ 5.3).
+		switch {
+		case f.Source != "":
+			in.Source = f.Source
+		case rec.Type == events.TypeCheck && rec.Source != "":
 			in.Source = rec.Source
 		}
-		k := key{in.Detector, in.Category, in.Pattern, in.Fragment}
+		k := key{in.Detector, in.Category, in.Pattern, in.Fragment, in.Source}
 		if seen[k] {
 			continue
 		}

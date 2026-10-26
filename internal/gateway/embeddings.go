@@ -80,6 +80,7 @@ func (e *EmbeddingsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		texts[i] = inspectText{Text: s, Source: detect.SourceUser, Location: fmt.Sprintf("input[%d]", i)}
 		size += len(s)
 	}
+	rec.inTokens = estimateTokens(size)
 	if !h.admitSize(w, r, rec, user, size, estimateTokens(size)) {
 		return
 	}
@@ -126,9 +127,11 @@ func (e *EmbeddingsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	rec.sent = true
 	providerStart := h.cfg.Now()
 	defer func() { rec.ev.LatencyMS["provider"] = h.cfg.Now().Sub(providerStart).Milliseconds() }()
-	resp, meta, err := emb.Embeddings(r.Context(), req)
+	pctx, sent := withSendTrace(r.Context())
+	resp, meta, err := emb.Embeddings(pctx, req)
 	copyMeta(w, meta)
 	if err != nil {
+		rec.unknown = outcomeUnknown(r, err, sent)
 		h.providerError(w, r, err)
 		return
 	}
@@ -137,7 +140,6 @@ func (e *EmbeddingsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		rec.usage(&chat.Usage{PromptTokens: max(u.PromptTokens, u.TotalTokens), TotalTokens: u.TotalTokens})
 	} else {
 		// Без usage или с нулями расход оценивается по размеру входа (задача 3.18).
-		rec.inTokens = estimateTokens(size)
 		rec.outBytes = func() int { return 0 }
 	}
 	resp.Model = requested

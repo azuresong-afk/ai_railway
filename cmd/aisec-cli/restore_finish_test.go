@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/azuresong-afk/ai_railway/internal/audit"
+	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
+	"github.com/azuresong-afk/ai_railway/internal/gwregistry"
 	"github.com/azuresong-afk/ai_railway/internal/store"
 )
 
@@ -127,14 +130,77 @@ func TestRestoreFinishOnRealDB(t *testing.T) {
 		$3, 'SHA-256', '{events.read:all}', now() + interval '10 days', now() - interval '1 day', now() - interval '1 day', $2, 'owner')`,
 		audit.DefaultOrgID, user, bytes.Repeat([]byte{8}, 32))
 
+	// 3В21 ревью 3.r3: токены регистрации шлюзов (новый и -reregister,
+	// который гасит прежний токен gw-1) и непогашенный токен первичной
+	// настройки — в копии они действуют.
+	for _, args := range [][]string{{"token", "-name", "gw-1"}, {"token", "-name", "gw-1", "-reregister"}, {"token", "-name", "gw-2"}} {
+		if err := gatewayCmd(args, sdsn, &out, &errb); err != nil {
+			t.Fatalf("%v: %v", args, err)
+		}
+	}
+	exec(`INSERT INTO setup_tokens (id, org_id, hash_alg, token_hash, created_at, expires_at)
+		VALUES ('01900000-0000-7000-8000-0000000f0001', $1, 'SHA-256', $2, now(), now() + interval '1 day')`,
+		audit.DefaultOrgID, bytes.Repeat([]byte{9}, 32))
+	type gwToken struct {
+		alg  string
+		hash []byte
+	}
+	var live []gwToken
+	rows, err := admin.Pool().Query(ctx, "SELECT hash_alg, token_hash FROM "+schema+".gateway_tokens WHERE used_at IS NULL")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var tk gwToken
+		if err := rows.Scan(&tk.alg, &tk.hash); err != nil {
+			t.Fatal(err)
+		}
+		live = append(live, tk)
+	}
+	rows.Close()
+	if len(live) != 2 {
+		t.Fatalf("действующих токенов регистрации до restore-finish: %d", len(live))
+	}
+
 	// Свежая копия: всё действующее завершено, завершённое не тронуто.
 	out.Reset()
 	errb.Reset()
 	if err := restoreFinish([]string{"-copy-dir", "aisec-20261022T101500Z"}, sdsn, &out, &errb, time.Now()); err != nil {
 		t.Fatalf("%v\n%s", err, errb.String())
 	}
-	if !strings.Contains(out.String(), "сессий консоли завершено 2, токенов API отозвано 1") || strings.Contains(errb.String(), "ВНИМАНИЕ") {
+	if !strings.Contains(out.String(), "сессий консоли завершено 2, токенов API отозвано 1, токенов регистрации шлюзов погашено 2, "+
+		"токенов первичной настройки погашено 1") || !strings.Contains(out.String(), "-reregister") || strings.Contains(errb.String(), "ВНИМАНИЕ") {
 		t.Fatalf("вывод:\n%s\n%s", out.String(), errb.String())
+	}
+	// Регистрация по токену из копии отвергается тем же запросом, что у сервера.
+	gdb, err := store.Open(ctx, sdsn, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer gdb.Close()
+	gp, err := aisecCrypto.New(aisecCrypto.ProfileStandard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gl, err := openAuditLog(gdb, gp, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gst, err := gwregistry.NewPGStore(gdb.Pool(), gl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tk := range live {
+		_, err := gst.Register(ctx, tk.alg, tk.hash, time.Now(), func(gwregistry.Gateway) (gwregistry.Issued, error) {
+			t.Fatal("сертификат выпущен по погашенному токену")
+			return gwregistry.Issued{}, nil
+		}, func(gwregistry.Gateway) audit.Entry { return audit.Entry{} })
+		if !errors.Is(err, gwregistry.ErrTokenInvalid) {
+			t.Fatalf("регистрация по токену копии: %v", err)
+		}
+	}
+	if n := count("SELECT count(*) FROM " + schema + ".setup_tokens WHERE used_at IS NULL"); n != 0 {
+		t.Fatalf("непогашенных токенов первичной настройки: %d", n)
 	}
 	if n := count("SELECT count(*) FROM " + schema + ".sessions WHERE revoked_at IS NULL"); n != 0 {
 		t.Fatalf("действующих сессий: %d", n)
@@ -181,7 +247,8 @@ func TestRestoreFinishOnRealDB(t *testing.T) {
 	rs := records()
 	if len(rs) != 1 || rs[0].actorType != string(audit.ActorCLI) || rs[0].details["revoked_sessions"] != float64(2) ||
 		rs[0].details["revoked_api_tokens"] != float64(1) || rs[0].details["stale_copy"] != false ||
-		rs[0].details["copy_dir"] != "aisec-20261022T101500Z" || rs[0].details["copy_age_hours"] != float64(0) {
+		rs[0].details["copy_dir"] != "aisec-20261022T101500Z" || rs[0].details["copy_age_hours"] != float64(0) ||
+		rs[0].details["expired_gateway_tokens"] != float64(2) || rs[0].details["expired_setup_tokens"] != float64(1) {
 		t.Fatalf("записи system.restored: %+v", rs)
 	}
 

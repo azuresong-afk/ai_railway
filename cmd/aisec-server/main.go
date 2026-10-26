@@ -63,6 +63,13 @@ const (
 	// eventsReadStatementTimeout — statement_timeout пула чтения: выгрузка
 	// (events.ExportTimeout) и запас.
 	eventsReadStatementTimeout = events.ExportTimeout + 10*time.Second
+	// dashReadPoolSize — свой пул чтения агрегатов дашбордов по пределу
+	// одновременных вычислений снимков: тяжёлые дашборды за год не занимают
+	// соединения поиска и выгрузки событий (3В28 ревью 3.r3).
+	dashReadPoolSize = api.MaxDashComputes
+	// dashReadStatementTimeout — statement_timeout пула дашбордов: срок
+	// снимка (15 с) и запас; раньше обрывает контекст.
+	dashReadStatementTimeout = 20 * time.Second
 	// auditReadPoolSize — пул выборок журнала аудита консолью, по пределу
 	// api.MaxAuditReadsTotal (В17 ревью 2.r3b).
 	auditReadPoolSize = api.MaxAuditReadsTotal
@@ -264,11 +271,23 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		return err
 	}
 	// Агрегаты дашбордов (задача 3.19) прибавляются в той же транзакции приёма.
-	dashStore, err := events.NewDashStore(db.Pool(), readDB.Pool(), audit.DefaultOrgID, logger)
+	dashDB, err := store.Open(ctx, cfg.DatabaseURL, dashReadPoolSize, store.WithStatementTimeout(dashReadStatementTimeout))
+	if err != nil {
+		return err
+	}
+	defer dashDB.Close()
+	dashStore, err := events.NewDashStore(db.Pool(), dashDB.Pool(), audit.DefaultOrgID, logger)
 	if err != nil {
 		return err
 	}
 	if err := dashStore.Init(ctx); err != nil {
+		return err
+	}
+	// Отчёты читают агрегаты через пул чтения событий: отчёт за год не
+	// занимает соединения дашбордов, которых ровно по пределу вычислений
+	// снимков (3В28 ревью 3.r3).
+	reportsDash, err := events.NewDashStore(db.Pool(), readDB.Pool(), audit.DefaultOrgID, logger)
+	if err != nil {
 		return err
 	}
 	eventStore, err := events.NewPGStore(db.Pool(), box, auditLog, audit.DefaultOrgID, events.WithRandom(rnd),
@@ -438,7 +457,7 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	}
 	reportsSvc, err := reports.New(reports.Options{
 		Store: reportStore,
-		Builder: &reports.Builder{Dash: dashStore, Incidents: incidentsSvc, Alerts: alertsSvc,
+		Builder: &reports.Builder{Dash: reportsDash, Incidents: incidentsSvc, Alerts: alertsSvc,
 			Facts: &reports.PGFacts{DB: readDB.Pool(), OrgID: audit.DefaultOrgID, Apps: appsSvc, Policies: policiesSvc, Gateways: gateways}},
 		Mailer: notifySvc, Channels: notifySvc,
 		Location: func(ctx context.Context) (*time.Location, error) {
@@ -487,6 +506,8 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		AuditVerifier: chainVerifier,
 
 		TrustedProxies: cfg.TrustedProxies,
+		// Потоки SSE дашбордов закрываются в начале остановки (3Н44).
+		Stopping: ctx.Done(),
 	})
 	if err != nil {
 		return err

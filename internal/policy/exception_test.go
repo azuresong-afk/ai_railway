@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/azuresong-afk/ai_railway/internal/detect"
+	"github.com/azuresong-afk/ai_railway/internal/detect/canary"
 )
 
 // Исключения в политике (задача 3.22 этапа 3).
@@ -236,5 +237,22 @@ func TestExceptionRoundTrip(t *testing.T) {
 func TestValidPattern(t *testing.T) {
 	if !ValidPattern("list.words-1.word") || ValidPattern("") || ValidPattern("a b") || ValidPattern("шаблон") {
 		t.Fatal("ValidPattern")
+	}
+}
+
+// 3Н42 ревью 3.r3: исключение для канарейки — только с хешем фрагмента;
+// по правилу и приложению DM-08 для приложения не выключается.
+func TestExceptionCanaryRequiresFragment(t *testing.T) {
+	for _, e := range []ExceptionSpec{
+		exceptionSpec(ExceptionSpec{Detector: canary.ID, App: "support-bot"}),
+		exceptionSpec(ExceptionSpec{Detector: canary.ID, App: "support-bot", Pattern: "marker"}),
+	} {
+		err := blockingSpec(e).Validate()
+		if err == nil || !strings.Contains(err.Error(), ErrExceptionCanaryFragment.Error()) {
+			t.Fatalf("исключение канарейки без фрагмента %+v: %v", e, err)
+		}
+	}
+	if err := blockingSpec(exceptionSpec(ExceptionSpec{Detector: canary.ID, App: "support-bot", Fragment: excFrag})).Validate(); err != nil {
+		t.Fatalf("исключение канарейки с фрагментом: %v", err)
 	}
 }

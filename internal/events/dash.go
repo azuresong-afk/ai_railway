@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -24,15 +26,22 @@ import (
 const (
 	// DashBackfillEvery — период задачи досчёта.
 	DashBackfillEvery = 30 * time.Second
-	// dashChunk — часов за один шаг пересчёта: короткая эксклюзивная
-	// блокировка, приём событий ждёт не дольше шага.
+	// dashChunk — наибольшая часть одного шага досчёта. После таймаута часть
+	// делится пополам (не меньше часа), после успеха растёт обратно.
 	dashChunk = 6 * time.Hour
+	// dashChunkEvents — не больше событий в части досчёта (кроме части в
+	// один час): время шага зависит от числа событий, а не от часов.
+	dashChunkEvents = 100_000
+	// dashDirtyHours — сколько помеченных хуком часов пересчитывается за шаг.
+	dashDirtyHours = 6
 	// dashMax — предел сумм токенов и стоимости в строке (защита от
 	// переполнения bigint при сложении).
 	dashMax = "4e18"
-	// dashLockID — ключ advisory-блокировки: хук берёт общую, пересчёт —
-	// исключительную, поэтому пересчёт часа не смешивается с приростом хука.
-	dashLockID int64 = 0x6169_7365_6364_6173 // «aisecdas»
+	// dashLockClass — первый ключ advisory-блокировки часа (второй — номер
+	// часа от начала эпохи): хук пробует общую без ожидания, пересчёт берёт
+	// исключительную, поэтому пересчёт часа не смешивается с приростом хука,
+	// а досчёт старых часов не мешает приёму текущих (3В25 ревью 3.r3).
+	dashLockClass int32 = 0x6173_6461 // «asda»
 	// DashLatencyOverflow — корзина гистограммы «больше последней границы».
 	DashLatencyOverflow = 2147483647
 )
@@ -162,6 +171,9 @@ type DashStore struct {
 	rdb    PGDB
 	orgID  string
 	logger *slog.Logger
+	// chunk — текущая наибольшая часть досчёта (dashChunk, после таймаута
+	// меньше).
+	chunk atomic.Int64
 }
 
 // NewDashStore создаёт хранилище; rdb — пул чтения (nil — как db).
@@ -172,7 +184,17 @@ func NewDashStore(db DashDB, rdb PGDB, orgID string, logger *slog.Logger) (*Dash
 	if rdb == nil {
 		rdb = db
 	}
-	return &DashStore{db: db, rdb: rdb, orgID: orgID, logger: logger}, nil
+	d := &DashStore{db: db, rdb: rdb, orgID: orgID, logger: logger}
+	d.chunk.Store(int64(dashChunk))
+	return d, nil
+}
+
+// errDashBusy — час агрегатов сейчас пересчитывается: хук не ждёт.
+var errDashBusy = errors.New("агрегаты дашбордов: час пересчитывается")
+
+// dashHour — номер часа от начала эпохи (второй ключ блокировки часа).
+func dashHour(t time.Time) int32 {
+	return int32(t.UTC().Unix() / 3600) //nolint:gosec // G115: номер часа до 2^31 — год 246 000
 }
 
 // Hook — хук приёма событий (WithIngestHook).
@@ -181,12 +203,14 @@ func (d *DashStore) Hook() IngestHook { return dashHook{d} }
 type dashHook struct{ d *DashStore }
 
 // OnIngest прибавляет новые события к почасовым агрегатам. Сбой
-// агрегатов не должен отбрасывать пакет событий: прирост идёт в точке
-// сохранения, при ошибке она откатывается, часы помечаются к досчёту.
+// агрегатов не должен отбрасывать и задерживать пакет событий: прирост идёт
+// в точке сохранения; час пересчитывается (блокировка часа занята) или
+// прирост не удался — точка откатывается, часы пакета помечаются к досчёту
+// (dash_dirty_hours) без ожидания и без строки dash_state (3В25 ревью 3.r3).
 func (h dashHook) OnIngest(ctx context.Context, tx pgx.Tx, _ string, accepted []*Event) error {
 	var evIDs []string
 	var evTS []time.Time
-	var minTS, maxTS time.Time
+	var hours []int32
 	for _, e := range accepted {
 		if e.Type != TypeGatewayRequest && e.Type != TypeCheck {
 			continue
@@ -196,35 +220,33 @@ func (h dashHook) OnIngest(ctx context.Context, tx pgx.Tx, _ string, accepted []
 			continue
 		}
 		evIDs, evTS = append(evIDs, e.ID), append(evTS, ts)
-		if minTS.IsZero() || ts.Before(minTS) {
-			minTS = ts
-		}
-		if ts.After(maxTS) {
-			maxTS = ts
+		if hr := dashHour(ts); !slices.Contains(hours, hr) {
+			hours = append(hours, hr)
 		}
 	}
 	if len(evIDs) == 0 {
 		return nil
 	}
-	err := h.d.addInSavepoint(ctx, tx, evIDs, evTS)
+	err := h.d.addInSavepoint(ctx, tx, evIDs, evTS, hours)
 	if err == nil {
 		return nil
 	}
 	if ctx.Err() != nil {
 		return err
 	}
-	h.d.logger.Error("агрегаты дашбордов не обновлены, часы будут досчитаны", "class", "db", "error", err)
-	hours := func(t time.Time) time.Time { return t.UTC().Truncate(time.Hour) }
-	_, mErr := tx.Exec(ctx, `UPDATE dash_state SET backfill_done = false, updated_at = clock_timestamp(),
-		backfill_cursor = LEAST(COALESCE(backfill_cursor, $2), $2), backfill_until = GREATEST(backfill_until, $3)
-		WHERE org_id = $1`, h.d.orgID, hours(minTS), hours(maxTS).Add(time.Hour))
-	if mErr != nil {
+	if errors.Is(err, errDashBusy) {
+		h.d.logger.Debug("час агрегатов дашбордов пересчитывается, часы будут досчитаны", "hours", len(hours))
+	} else {
+		h.d.logger.Error("агрегаты дашбордов не обновлены, часы будут досчитаны", "class", "db", "error", err)
+	}
+	if _, mErr := tx.Exec(ctx, `INSERT INTO dash_dirty_hours (org_id, bucket, marked_at)
+		SELECT $1, to_timestamp(h::bigint * 3600), clock_timestamp() FROM unnest($2::int[]) AS h`, h.d.orgID, hours); mErr != nil {
 		return dbError("метка досчёта агрегатов", mErr)
 	}
 	return nil
 }
 
-func (d *DashStore) addInSavepoint(ctx context.Context, tx pgx.Tx, ids []string, ts []time.Time) error {
+func (d *DashStore) addInSavepoint(ctx context.Context, tx pgx.Tx, ids []string, ts []time.Time, hours []int32) error {
 	sp, err := tx.Begin(ctx)
 	if err != nil {
 		return err
@@ -233,8 +255,15 @@ func (d *DashStore) addInSavepoint(ctx context.Context, tx pgx.Tx, ids []string,
 		_ = sp.Rollback(context.WithoutCancel(ctx)) //nolint:gosec // G104: откат точки сохранения, исходная ошибка важнее
 		return err
 	}
-	if _, err := sp.Exec(ctx, "SELECT pg_advisory_xact_lock_shared($1)", dashLockID); err != nil {
+	// Общие блокировки часов пакета без ожидания: досчёт держит
+	// исключительную на время пересчёта части.
+	var locked bool
+	if err := sp.QueryRow(ctx, "SELECT bool_and(pg_try_advisory_xact_lock_shared($1, h)) FROM unnest($2::int[]) AS h",
+		dashLockClass, hours).Scan(&locked); err != nil {
 		return fail(err)
+	}
+	if !locked {
+		return fail(errDashBusy)
 	}
 	for _, q := range dashAddSQL {
 		if _, err := sp.Exec(ctx, "WITH "+dashEv(dashScopeIDs, "'hour'")+" "+q, d.orgID, ids, ts); err != nil {
@@ -295,7 +324,10 @@ func (d *DashStore) Recompute(ctx context.Context, from, to time.Time) error {
 }
 
 func (d *DashStore) recomputeTx(ctx context.Context, tx pgx.Tx, from, to time.Time) error {
-	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", dashLockID); err != nil {
+	// Исключительные блокировки пересчитываемых часов по возрастанию: хук,
+	// которому час нужен, не ждёт, а помечает его к досчёту.
+	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1, h) FROM generate_series($2::int, $3::int - 1) AS h ORDER BY h",
+		dashLockClass, dashHour(from), dashHour(to)); err != nil {
 		return dbError("блокировка агрегатов дашбордов", err)
 	}
 	for _, t := range []string{"dash_req_hour", "dash_find_hour", "dash_user_hour", "dash_latency_hour"} {
@@ -325,10 +357,18 @@ func (d *DashStore) Init(ctx context.Context) error {
 	return nil
 }
 
-// BackfillStep пересчитывает следующую часть интервала досчёта; done — всё
-// досчитано. Часть — не больше dashChunk часов, под блокировкой строки
+// BackfillStep пересчитывает часы, помеченные хуком, а когда их нет —
+// следующую часть интервала досчёта; done — всё досчитано. Часть — не
+// больше dashChunk часов и dashChunkEvents событий, под блокировкой строки
 // отметки: два сервера не пересчитывают один интервал.
 func (d *DashStore) BackfillStep(ctx context.Context) (done bool, err error) {
+	return d.backfillStep(ctx, time.Now())
+}
+
+// backfillStep — шаг досчёта; помеченные часы — только отмеченные раньше
+// before: часы, помеченные во время пересчёта, ждут следующего прохода, а
+// не зацикливают его.
+func (d *DashStore) backfillStep(ctx context.Context, before time.Time) (done bool, err error) {
 	ctx, cancel := context.WithTimeout(ctx, AggregateTimeout)
 	defer cancel()
 	tx, err := d.db.Begin(ctx)
@@ -350,6 +390,16 @@ func (d *DashStore) BackfillStep(ctx context.Context) (done bool, err error) {
 		}
 		return false, dbError("отметка досчёта агрегатов дашбордов", err)
 	}
+	dirty, err := d.recomputeDirty(ctx, tx, before)
+	if err != nil {
+		return false, err
+	}
+	if dirty {
+		if err := tx.Commit(ctx); err != nil {
+			return false, dbError("досчёт агрегатов дашбордов", err)
+		}
+		return false, nil
+	}
 	if isDone {
 		return true, nil
 	}
@@ -367,14 +417,36 @@ func (d *DashStore) BackfillStep(ctx context.Context) (done bool, err error) {
 			from = first.UTC().Truncate(time.Hour)
 		}
 	}
-	next := from.Add(dashChunk)
+	next := from.Add(time.Duration(d.chunk.Load()))
 	if next.After(until) {
 		next = until
 	}
+	if from.Add(time.Hour).Before(next) {
+		// Часть — не больше dashChunkEvents событий: граница — час события
+		// с этим номером, но не меньше одного часа.
+		var nth *time.Time
+		err := tx.QueryRow(ctx, `SELECT ts FROM events WHERE org_id = $1 AND ts >= $2 AND ts < $3 ORDER BY ts OFFSET $4 LIMIT 1`,
+			d.orgID, from, next, dashChunkEvents).Scan(&nth)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return false, dbError("досчёт агрегатов дашбордов", err)
+		}
+		if nth != nil {
+			next = nth.UTC().Truncate(time.Hour)
+			if !next.After(from) {
+				next = from.Add(time.Hour)
+			}
+		}
+	}
 	if from.Before(next) {
 		if err := d.recomputeTx(ctx, tx, from, next); err != nil {
+			if ctx.Err() != nil {
+				// Часть не уложилась в срок: следующая попытка — с вдвое
+				// меньшей частью после паузы прохода (RunBackfill).
+				d.chunk.Store(max(d.chunk.Load()/2, int64(time.Hour)))
+			}
 			return false, err
 		}
+		d.chunk.Store(min(d.chunk.Load()*2, int64(dashChunk)))
 	}
 	finished := !next.Before(until)
 	if _, err := tx.Exec(ctx, `UPDATE dash_state SET backfill_cursor = $2, backfill_done = $3, updated_at = clock_timestamp()
@@ -394,8 +466,9 @@ func (d *DashStore) RunBackfill(ctx context.Context, every time.Duration) {
 	t := time.NewTicker(every)
 	defer t.Stop()
 	for {
+		start := time.Now()
 		for range 128 {
-			done, err := d.BackfillStep(ctx)
+			done, err := d.backfillStep(ctx, start)
 			if err != nil {
 				if ctx.Err() == nil {
 					d.logger.Error("агрегаты дашбордов не досчитаны", "class", "db", "error", err)
@@ -415,6 +488,42 @@ func (d *DashStore) RunBackfill(ctx context.Context, every time.Duration) {
 		case <-t.C:
 		}
 	}
+}
+
+// recomputeDirty пересчитывает до dashDirtyHours часов, помеченных хуком до
+// before, и снимает их метки; false — пересчитывать нечего. Метки снимаются
+// до пересчёта: пересчёт видит все события, чьи транзакции успели
+// зафиксировать снятые метки, а метка, вставленная позже, остаётся.
+func (d *DashStore) recomputeDirty(ctx context.Context, tx pgx.Tx, before time.Time) (bool, error) {
+	rows, err := tx.Query(ctx, `WITH pick AS (
+			SELECT DISTINCT bucket FROM dash_dirty_hours WHERE org_id = $1 AND marked_at < $2 ORDER BY bucket LIMIT $3)
+		DELETE FROM dash_dirty_hours d USING pick WHERE d.org_id = $1 AND d.bucket = pick.bucket AND d.marked_at < $2
+		RETURNING d.bucket`, d.orgID, before, dashDirtyHours)
+	if err != nil {
+		return false, dbError("метки досчёта агрегатов дашбордов", err)
+	}
+	var hours []time.Time
+	for rows.Next() {
+		var b time.Time
+		if err := rows.Scan(&b); err != nil {
+			rows.Close()
+			return false, dbError("метки досчёта агрегатов дашбордов", err)
+		}
+		if !slices.ContainsFunc(hours, b.Equal) {
+			hours = append(hours, b)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return false, dbError("метки досчёта агрегатов дашбордов", err)
+	}
+	slices.SortFunc(hours, time.Time.Compare)
+	for _, h := range hours {
+		if err := d.recomputeTx(ctx, tx, h, h.Add(time.Hour)); err != nil {
+			return false, err
+		}
+	}
+	return len(hours) > 0, nil
 }
 
 // Trim удаляет агрегаты старше срока хранения метаданных событий.
@@ -439,7 +548,8 @@ func (d *DashStore) Ready(ctx context.Context) (bool, error) {
 	ctx, cancel := pgCtx(ctx)
 	defer cancel()
 	var done bool
-	err := d.rdb.QueryRow(ctx, "SELECT backfill_done FROM dash_state WHERE org_id = $1", d.orgID).Scan(&done)
+	err := d.rdb.QueryRow(ctx, `SELECT backfill_done AND NOT EXISTS (SELECT 1 FROM dash_dirty_hours WHERE org_id = $1)
+		FROM dash_state WHERE org_id = $1`, d.orgID).Scan(&done)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}

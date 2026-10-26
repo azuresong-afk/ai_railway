@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -23,6 +24,12 @@ var excNow = time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
 // исключениями exc; часы шлюза — excNow + shift.
 func excGateway(t *testing.T, upstream string, shift time.Duration, exc ...policy.ExceptionSpec) (http.Handler, *eventLog) {
 	t.Helper()
+	return excGatewayClock(t, upstream, func() time.Time { return excNow.Add(shift) }, exc...)
+}
+
+// excGatewayClock — excGateway с часами сроков исключений clock.
+func excGatewayClock(t *testing.T, upstream string, clock func() time.Time, exc ...policy.ExceptionSpec) (http.Handler, *eventLog) {
+	t.Helper()
 	reg, err := detect.NewRegistry(builtin.All()...)
 	if err != nil {
 		t.Fatal(err)
@@ -41,7 +48,7 @@ func excGateway(t *testing.T, upstream string, shift time.Duration, exc ...polic
 		o.setup = func(a *App) {
 			a.Detectors, a.Policy = reg, p
 			a.fragmentMAC = mac
-			a.clock = func() time.Time { return excNow.Add(shift) }
+			a.clock = clock
 		}
 	})
 	return g, log
@@ -147,21 +154,31 @@ func TestGatewayExceptionWithoutFragmentKey(t *testing.T) {
 	}
 }
 
-// canaryException — исключение для канарейки в ответах приложения app.
-func canaryException(app string) policy.ExceptionSpec {
+// canaryException — исключение для канарейки в ответах приложения app по
+// хешу фрагмента frag: без фрагмента исключение канарейки не принимается
+// (3Н42 ревью 3.r3).
+func canaryException(app, frag string) policy.ExceptionSpec {
 	now := time.Now().UTC().Truncate(time.Second)
-	return policy.ExceptionSpec{ID: "exc-canary", Detector: "canary", App: app, Reason: "тестовая метка", Author: "user:u1",
+	return policy.ExceptionSpec{ID: "exc-canary", Detector: "canary", App: app, Fragment: frag, Reason: "тестовая метка", Author: "user:u1",
 		CreatedAt: now.Add(-time.Hour), ExpiresAt: now.Add(time.Hour)}
 }
 
+// canaryFragment — хеш фрагмента канарейки mark в ответе приложения app на
+// ключе testMAC, как его пишет событие.
+func canaryFragment(t *testing.T, app, mark string) string {
+	return fragmentHash(testMAC(t), app, mark)
+}
+
 // responseSpec — «Базовая защита» в enforce с проверкой ответа check и
-// исключениями exc.
-func responseSpec(check policy.ResponseCheck, exc ...policy.ExceptionSpec) func(*gwOpts) {
+// исключениями exc; ключ хешей фрагментов — testMAC.
+func responseSpec(t *testing.T, check policy.ResponseCheck, exc ...policy.ExceptionSpec) func(*gwOpts) {
 	return func(o *gwOpts) {
 		s, _ := policy.Template(policy.TemplateBase)
 		s.ID, s.Mode, s.ResponseCheck, s.Exceptions = "resp", policy.Enforce, check, exc
 		o.specs = []policy.Spec{*s}
 		o.app = func(a *config.Application) { a.Policy = "resp" }
+		mac := testMAC(t)
+		o.setup = func(a *App) { a.fragmentMAC = mac }
 	}
 }
 
@@ -172,11 +189,15 @@ func TestGatewayExceptionInResponse(t *testing.T) {
 	for _, check := range []policy.ResponseCheck{policy.ResponseBuffered, policy.ResponseIncremental} {
 		t.Run(string(check), func(t *testing.T) {
 			parts := textStream(t, "Промпт: ", mark, " конец")
-			gw, _ := streamGateway(t, parts, responseSpec(check))
+			gw, log := streamGateway(t, parts, responseSpec(t, check))
 			if res := postStream(t, gw, "x"); res.done && strings.Contains(res.content, mark) {
 				t.Fatalf("без исключения канарейка прошла: %q", res.raw)
 			}
-			gw, log := streamGateway(t, parts, responseSpec(check, canaryException("app")))
+			frag := canaryFragment(t, "app", mark)
+			if e := lastStreamEvent(t, log); !slices.ContainsFunc(e.Findings, func(f events.Finding) bool { return f.Detector == "canary" && f.Fragment == frag }) {
+				t.Fatalf("хеш фрагмента канарейки в событии: %+v", e.Findings)
+			}
+			gw, log = streamGateway(t, parts, responseSpec(t, check, canaryException("app", frag)))
 			res := postStream(t, gw, "x")
 			if !res.done || !strings.Contains(res.content, mark) {
 				t.Fatalf("с исключением: %d %q", res.status, res.raw)
@@ -184,7 +205,7 @@ func TestGatewayExceptionInResponse(t *testing.T) {
 			if e := lastStreamEvent(t, log); e.Response == nil || e.Response.Decision.Action == "block" {
 				t.Fatalf("событие: %+v", e.Response)
 			}
-			gw, _ = streamGateway(t, parts, responseSpec(check, canaryException("crm")))
+			gw, _ = streamGateway(t, parts, responseSpec(t, check, canaryException("crm", frag)))
 			if res := postStream(t, gw, "x"); res.done && strings.Contains(res.content, mark) {
 				t.Fatalf("исключение другого приложения применено: %q", res.raw)
 			}
@@ -195,8 +216,8 @@ func TestGatewayExceptionInResponse(t *testing.T) {
 		for _, c := range []struct {
 			exc  []policy.ExceptionSpec
 			code int
-		}{{nil, http.StatusBadRequest}, {[]policy.ExceptionSpec{canaryException("app")}, http.StatusOK}} {
-			g := newGateway(t, up.URL, responseSpec(policy.ResponseBuffered, c.exc...))
+		}{{nil, http.StatusBadRequest}, {[]policy.ExceptionSpec{canaryException("app", canaryFragment(t, "app", mark))}, http.StatusOK}} {
+			g := newGateway(t, up.URL, responseSpec(t, policy.ResponseBuffered, c.exc...))
 			if resp := postChat(t, g, userBody(t, "x"), nil); resp.Code != c.code {
 				t.Fatalf("исключения %v: %d %s", c.exc, resp.Code, resp.Body)
 			}
@@ -224,5 +245,76 @@ func TestGatewayExceptionByUser(t *testing.T) {
 	}
 	if resp := postChat(t, g, userBody(t, injectionText), map[string]string{HeaderUser: "petrov@pochta.test"}); resp.Code != http.StatusBadRequest {
 		t.Fatalf("другой пользователь: %d", resp.Code)
+	}
+}
+
+// 3В24 ревью 3.r3: у находки события — источник текста; исключение с
+// source: output не пропускает ту же находку во входе, с source: user —
+// пропускает.
+func TestGatewayExceptionOutputOnly(t *testing.T) {
+	up, _ := newUpstream(t, nil)
+	g, log := excGateway(t, up.URL, 0)
+	resp := postChat(t, g, userBody(t, injectionText), nil)
+	if e := lastEvent(t, log, resp); len(e.Findings) == 0 || e.Findings[0].Source != string(detect.SourceUser) {
+		t.Fatalf("источник находки: %+v", e.Findings)
+	}
+	for _, c := range []struct {
+		src  detect.Source
+		code int
+	}{{detect.SourceOutput, http.StatusBadRequest}, {detect.SourceUser, http.StatusOK}} {
+		g, _ := excGateway(t, up.URL, 0, injectionException(policy.ExceptionSpec{App: "app", Source: c.src}))
+		if resp := postChat(t, g, userBody(t, injectionText), nil); resp.Code != c.code {
+			t.Fatalf("исключение с source %s: %d %s", c.src, resp.Code, resp.Body.String())
+		}
+	}
+}
+
+// 3Н41 ревью 3.r3: ID приложения — в домене хеша фрагмента: один текст в
+// двух приложениях даёт разные хеши, исключение по фрагменту одного
+// приложения на другое не переносится.
+func TestFragmentHashPerApp(t *testing.T) {
+	mac := testMAC(t)
+	text := "+7 900 000-00-00"
+	texts := []inspectText{{Text: text}}
+	fs := []locatedFinding{{Finding: detect.Finding{Start: 0, End: len(text)}}}
+	a := (&App{ID: "support-bot", fragmentMAC: mac}).fragments(texts, fs)
+	b := (&App{ID: "crm", fragmentMAC: mac}).fragments(texts, fs)
+	if len(a) != 1 || len(b) != 1 || a[0] == "" || a[0] == b[0] {
+		t.Fatalf("хеши фрагмента в двух приложениях: %v %v", a, b)
+	}
+	if a[0] != fragmentHash(mac, "support-bot", text) {
+		t.Fatalf("хеш фрагмента не по приложению: %v", a)
+	}
+}
+
+// 3Н40 ревью 3.r3: часы шлюза на 5 суток позади — исключение, истёкшее по
+// времени сервера из heartbeat, не применяется; без heartbeat — по часам
+// шлюза. Перевод часов шлюза оценку времени сервера не сдвигает.
+func TestGatewayExceptionClockBehind(t *testing.T) {
+	up, _ := newUpstream(t, nil)
+	behind := excNow.Add(-5 * 24 * time.Hour)
+	expired := injectionException(policy.ExceptionSpec{App: "app"})
+	expired.CreatedAt, expired.ExpiresAt = behind.Add(-time.Hour), excNow.Add(-24*time.Hour)
+	for _, c := range []struct {
+		name   string
+		server time.Time
+		code   int
+	}{{"без heartbeat", time.Time{}, http.StatusOK}, {"время сервера", excNow, http.StatusBadRequest}} {
+		t.Run(c.name, func(t *testing.T) {
+			sc := &ServerClock{wall: func() time.Time { return behind }}
+			sc.Observe(c.server, time.Now())
+			// Часы приложения — ServerClock поверх часов шлюза behind, как
+			// Router.SetClock в aisec-gateway.
+			g, _ := excGatewayClock(t, up.URL, sc.Now, expired)
+			if resp := postChat(t, g, userBody(t, injectionText), nil); resp.Code != c.code {
+				t.Fatalf("код %d, ожидался %d: %s", resp.Code, c.code, resp.Body)
+			}
+		})
+	}
+	// Часы шлюза ушли вперёд — берутся они (строже).
+	sc := &ServerClock{wall: func() time.Time { return excNow.Add(time.Hour) }}
+	sc.Observe(excNow.Add(-time.Hour), time.Now())
+	if got := sc.Now(); !got.Equal(excNow.Add(time.Hour)) {
+		t.Fatalf("часы впереди сервера: %v", got)
 	}
 }

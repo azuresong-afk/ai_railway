@@ -197,6 +197,25 @@ func (s *PGStore) CreateToken(ctx context.Context, t NewToken, rec func(Gateway)
 	return gw, err
 }
 
+// ExpireTokensForRestoreTx гасит все непогашенные токены регистрации
+// шлюзов организации в транзакции tx (3В21 ревью 3.r3, РВ.2). Полная копия
+// возвращает токены в состояние на момент копии, в том числе погашенные
+// позже регистрацией: без этого токен, выпущенный до копии, снова годен до
+// своего срока, и тот, кто видел его при передаче, регистрирует свой шлюз
+// или перехватывает личность действующего (-reregister). Шлюзы,
+// зарегистрированные после копии, регистрируются заново новым токеном.
+// Триггер gateway_tokens_guard разрешает только отметку о погашении; время
+// не раньше выпуска (CHECK used_at >= created_at). Возвращает число
+// погашенных; запись аудита пишет вызывающий в той же транзакции.
+func ExpireTokensForRestoreTx(ctx context.Context, tx pgx.Tx, orgID string, now time.Time) (int64, error) {
+	tag, err := tx.Exec(ctx, `UPDATE gateway_tokens t SET used_at = greatest($2::timestamptz, t.created_at)
+		FROM gateways g WHERE g.id = t.gateway_id AND g.org_id = $1 AND t.used_at IS NULL`, orgID, now)
+	if err != nil {
+		return 0, fmt.Errorf("реестр шлюзов: погашение токенов регистрации: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
 // Register — см. Store. Токен блокируется строкой (FOR UPDATE): из
 // параллельных регистраций с одним токеном пройдёт ровно одна.
 func (s *PGStore) Register(ctx context.Context, hashAlg string, hash []byte, now time.Time,

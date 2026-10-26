@@ -415,6 +415,10 @@ func (s *Service) BudgetSection(ctx context.Context) (BudgetSection, error) {
 	return sec, nil
 }
 
+// monthSkew — допуск расхождения часов шлюза и сервера при сверке месяца
+// отчёта о расходе.
+const monthSkew = 24 * time.Hour
+
 // SyncBudget сохраняет счётчики процесса шлюза из heartbeat и возвращает
 // расход остальных процессов за текущий месяц шлюза по приложениям с
 // жёстким бюджетом (gwregistry.BudgetSync). Отчёт уже проверен
@@ -423,10 +427,24 @@ func (s *Service) SyncBudget(ctx context.Context, gatewayID string, startedAt ti
 	if len(rep.Months) == 0 {
 		return gwregistry.BudgetState{}, errors.New("бюджеты: пустой отчёт шлюза")
 	}
+	// Текущий месяц шлюза (последний в отчёте) сверяется со своим в поясе
+	// установки с допуском в сутки: иначе шлюз с часами в будущем месяце
+	// получил бы ответ «будущим» месяцем и стёр бы счётчик текущего (3В23
+	// ревью 3.r3). Отчёт не сохраняется, причина — в технический журнал
+	// (gwregistry.syncBudget); счётчики шлюза сохраняются у него.
+	_, loc, err := s.location(ctx)
+	if err != nil {
+		return gwregistry.BudgetState{}, err
+	}
+	now := s.now()
+	month := rep.Months[len(rep.Months)-1].Month
+	if lo, hi := bundle.Month(now.Add(-monthSkew), loc), bundle.Month(now.Add(monthSkew), loc); month < lo || month > hi {
+		return gwregistry.BudgetState{}, fmt.Errorf("бюджеты: месяц шлюза %s расходится с месяцем сервера %s — проверьте часы шлюза (отчёт не сохранён)",
+			month, bundle.Month(now, loc))
+	}
 	if err := s.store.SaveUsage(ctx, s.orgID, gatewayID, startedAt.UTC(), rep.Months, s.now()); err != nil {
 		return gwregistry.BudgetState{}, err
 	}
-	month := rep.Months[len(rep.Months)-1].Month
 	others, err := s.store.HardUsageOthers(ctx, s.orgID, month, gatewayID, startedAt.UTC())
 	if err != nil {
 		return gwregistry.BudgetState{}, err

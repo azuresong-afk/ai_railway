@@ -352,3 +352,122 @@ func TestPGDashboardHugeValues(t *testing.T) {
 		t.Fatalf("задержка: %+v %v", lat, err)
 	}
 }
+
+// 3В25 ревью 3.r3: пересчёт часа (исключительная блокировка часа у досчёта)
+// не задерживает приём событий: пакет за этот час принимается сразу, час
+// помечается к досчёту, после досчёта агрегаты равны полному пересчёту;
+// пересчёт старого часа не мешает приросту текущего.
+func TestPGDashIngestNotBlockedByBackfill(t *testing.T) {
+	e := setupPG(t)
+	ctx := pgCtx(t)
+	if _, err := e.st.EnsurePartitions(ctx); err != nil {
+		t.Fatal(err)
+	}
+	ds, st := dashStoreFor(t, e)
+	if err := ds.Init(ctx); err != nil {
+		t.Fatal(err)
+	}
+	hour := time.Now().UTC().Truncate(time.Hour).Add(-2 * time.Hour)
+	ev := func(at time.Time, n int) events.Event {
+		return dashEvent{at: at, n: n, typ: events.TypeGatewayRequest, app: "a", provider: "mock", model: "m1", action: "block", mode: "enforce",
+			tokens: [2]int{3, 4}, findings: []events.Finding{finding("pii.inn", "pii", "DM-31")}}.build()
+	}
+	// «Досчёт» держит исключительную блокировку часа hour.
+	lock, err := e.owner.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Rollback(ctx)             //nolint:errcheck // откат после теста
+	hourKey := int32(hour.Unix() / 3600) //nolint:gosec // G115: номер часа с 1970 года укладывается в int32
+	if _, err := lock.Exec(ctx, "SELECT pg_advisory_xact_lock($1, $2)", int32(0x6173_6461), hourKey); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	if res, err := st.Insert(ctx, events.Ingest{GatewayID: testGateway, ReceivedAt: time.Now(),
+		Events: []events.Event{ev(hour.Add(10*time.Minute), 1), ev(hour.Add(20*time.Minute), 2)}}); err != nil || res.Accepted != 2 {
+		t.Fatalf("приём при пересчёте часа: %+v %v", res, err)
+	}
+	if d := time.Since(start); d > time.Second {
+		t.Fatalf("приём ждал блокировку: %v", d)
+	}
+	// Соседний час не заблокирован: прирост идёт сразу.
+	if res, err := st.Insert(ctx, events.Ingest{GatewayID: testGateway, ReceivedAt: time.Now(),
+		Events: []events.Event{ev(hour.Add(70*time.Minute), 3)}}); err != nil || res.Accepted != 1 {
+		t.Fatalf("приём в соседний час: %+v %v", res, err)
+	}
+	var dirty int
+	if err := e.owner.QueryRow(ctx, "SELECT count(DISTINCT bucket) FROM dash_dirty_hours").Scan(&dirty); err != nil || dirty != 1 {
+		t.Fatalf("помеченных часов: %d %v", dirty, err)
+	}
+	if ready, err := ds.Ready(ctx); err != nil || ready {
+		t.Fatalf("с помеченным часом агрегаты не полные: %v %v", ready, err)
+	}
+	if err := lock.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for range 64 {
+		done, err := ds.BackfillStep(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if done {
+			break
+		}
+	}
+	if ready, err := ds.Ready(ctx); err != nil || !ready {
+		t.Fatalf("после досчёта: %v %v", ready, err)
+	}
+	got := dashDump(t, e)
+	if err := ds.Recompute(ctx, hour.Add(-time.Hour), hour.Add(3*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if want := dashDump(t, e); got != want {
+		t.Fatalf("после досчёта помеченного часа:\n--- было\n%s\n--- пересчёт\n%s", got, want)
+	}
+	if got, err := ds.Totals(ctx, events.DashQuery{From: hour, To: hour.Add(2 * time.Hour), TZ: "UTC"}); err != nil || got.Requests != 3 {
+		t.Fatalf("итоги: %+v %v", got, err)
+	}
+}
+
+// 3В28 ревью 3.r3: сумма строк агрегатов, каждая у предела 4e18, при чтении
+// не переполняет bigint — все чтения отвечают, значение ограничено пределом.
+func TestPGDashboardSumNoOverflow(t *testing.T) {
+	e := setupPG(t)
+	ctx := pgCtx(t)
+	ds, _ := dashStoreFor(t, e)
+	day := time.Now().UTC().Truncate(24*time.Hour).AddDate(0, 0, -1)
+	for i, app := range []string{"a", "b", "c"} {
+		if _, err := e.owner.Exec(ctx, `INSERT INTO dash_req_hour (org_id, bucket, app, provider, model, action, mode, requests, with_findings,
+			non_text_unchecked, tokens_prompt, tokens_completion, cost, unpriced_requests) VALUES ($1, $2, $3, 'p', 'm', 'allow', 'enforce',
+			4e18, 4e18, 0, 4e18, 4e18, 4e18, 0)`, audit.DefaultOrgID, day.Add(time.Duration(i)*time.Hour), app); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := e.owner.Exec(ctx, `INSERT INTO dash_find_hour (org_id, bucket, app, detector, category, threat, action, findings)
+			VALUES ($1, $2, $3, 'pii', 'pii.inn', 'DM-31', 'allow', 4e18)`, audit.DefaultOrgID, day.Add(time.Duration(i)*time.Hour), app); err != nil {
+			t.Fatal(err)
+		}
+	}
+	q := events.DashQuery{From: day, To: day.Add(24 * time.Hour), TZ: "UTC"}
+	if got, err := ds.Totals(ctx, q); err != nil || got.Requests != 4e18 || got.Cost != 4e18 {
+		t.Fatalf("итоги: %+v %v", got, err)
+	}
+	if _, err := ds.RequestsBy(ctx, q, events.DimProvider, 10); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ds.UsageSeries(ctx, events.DashQuery{From: day, To: day.Add(24 * time.Hour), TZ: "UTC"}); err != nil {
+		t.Fatal(err)
+	}
+	if top, err := ds.TopFindings(ctx, q, events.DimDetector, "", 10); err != nil || len(top) != 1 || top[0].Value != 4e18 {
+		t.Fatalf("топ: %+v %v", top, err)
+	}
+	if _, err := ds.Heatmap(ctx, q); err != nil {
+		t.Fatal(err)
+	}
+	// Ряд — только по ключам топа.
+	if pts, err := ds.FindingSeries(ctx, q, events.DimApp, "", []string{"b"}); err != nil || len(pts) != 1 || pts[0].Key != "b" {
+		t.Fatalf("ряд по ключам: %+v %v", pts, err)
+	}
+	if pts, err := ds.FindingSeries(ctx, q, events.DimApp, "", []string{}); err != nil || len(pts) != 0 {
+		t.Fatalf("ряд по пустому топу: %+v %v", pts, err)
+	}
+}

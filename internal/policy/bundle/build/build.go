@@ -448,7 +448,7 @@ func (s *Service) collect(ctx context.Context, now time.Time) (*bundle.Content, 
 			case !ok:
 				reason = "провайдер не найден"
 			case !policy.IsTemplate(ba.Policy):
-				if pol, err = s.policyOf(ctx, pols, ba.Policy); err != nil {
+				if pol, err = s.policyOf(ctx, pols, ba.Policy, now); err != nil {
 					return nil, nil, nil, err
 				}
 				if pol == nil {
@@ -610,7 +610,12 @@ func (s *Service) keysByApp(ctx context.Context, now time.Time) (map[string][]bu
 }
 
 // policyOf — текущая версия политики организации; nil — политики нет.
-func (s *Service) policyOf(ctx context.Context, cache map[string]*bundle.Policy, id string) (*bundle.Policy, error) {
+// С ненулевым now (сборка пакета) истёкшие к now исключения в пакет не
+// попадают, а срок ближайшего действующего — в s.collected, чтобы пакет
+// собрался заново к его истечению: срок исключения не держится только на
+// часах шлюза (3Н40 ревью 3.r3). Версия политики та же, YAML — каноничный
+// без истёкших исключений.
+func (s *Service) policyOf(ctx context.Context, cache map[string]*bundle.Policy, id string, now time.Time) (*bundle.Policy, error) {
 	if p, ok := cache[id]; ok {
 		return p, nil
 	}
@@ -623,6 +628,29 @@ func (s *Service) policyOf(ctx context.Context, cache map[string]*bundle.Policy,
 		return nil, err
 	}
 	p := &bundle.Policy{ID: id, Version: doc.Version.Version, YAML: string(doc.Version.YAML)}
+	if !now.IsZero() && doc.Spec != nil && len(doc.Spec.Exceptions) > 0 {
+		spec := *doc.Spec
+		spec.Exceptions = make([]policy.ExceptionSpec, 0, len(doc.Spec.Exceptions))
+		for _, e := range doc.Spec.Exceptions {
+			if !e.Active(now) {
+				continue
+			}
+			spec.Exceptions = append(spec.Exceptions, e)
+			if s.collected.IsZero() || e.ExpiresAt.Before(s.collected) {
+				s.collected = e.ExpiresAt
+			}
+		}
+		if len(spec.Exceptions) < len(doc.Spec.Exceptions) {
+			if len(spec.Exceptions) == 0 {
+				spec.Exceptions = nil
+			}
+			b, err := policy.Marshal(&spec)
+			if err != nil {
+				return nil, fmt.Errorf("политика %s: без истёкших исключений: %w", id, err)
+			}
+			p.YAML = string(b)
+		}
+	}
 	cache[id] = p
 	return p, nil
 }
@@ -686,7 +714,7 @@ func (s *Service) CheckApplication(ctx context.Context, before *apps.Application
 	ba := application(after, p.Slug, nil)
 	var pol *bundle.Policy
 	if !policy.IsTemplate(ba.Policy) {
-		if pol, err = s.policyOf(ctx, map[string]*bundle.Policy{}, ba.Policy); err != nil || pol == nil {
+		if pol, err = s.policyOf(ctx, map[string]*bundle.Policy{}, ba.Policy, time.Time{}); err != nil || pol == nil {
 			return err
 		}
 	}

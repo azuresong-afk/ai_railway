@@ -161,15 +161,20 @@ func (in *inspection) excepted() map[int]string {
 
 // fragmentDomain — разделитель назначения имитовставки: псевдоним
 // пользователя — HMAC идентификатора без управляющих символов, поэтому
-// хеш фрагмента с префиксом из U+0000 с ним не совпадает.
-const fragmentDomain = "\x00aisec-fragment/1\x00"
+// хеш фрагмента с префиксом из U+0000 с ним не совпадает. Версия 2 —
+// с ID приложения (3Н41 ревью 3.r3).
+const fragmentDomain = "\x00aisec-fragment/2\x00"
 
 // fragmentHash — хеш текста находки для исключений по фрагменту (ТЗ 5.3,
 // решение Р8 этапа 3): HMAC на ключе псевдонимов шлюза, 16 байт в hex, как
 // псевдоним пользователя. Простой хеш не годится: ПДн из находки (номер
-// карты, телефон) перебираются по словарю.
-func fragmentHash(mac aisecCrypto.MAC, text string) string {
-	return hex.EncodeToString(mac.Sum([]byte(fragmentDomain + text))[:16])
+// карты, телефон) перебираются по словарю. ID приложения входит в домен
+// (3Н41 ревью 3.r3): у одного текста в разных приложениях разные хеши, и
+// держатель ключа одного приложения через /v1/check не узнает, встречалось
+// ли значение в запросах другого. ID приложения — без U+0000 (формат ID),
+// поэтому граница между ним и текстом однозначна.
+func fragmentHash(mac aisecCrypto.MAC, app, text string) string {
+	return hex.EncodeToString(mac.Sum([]byte(fragmentDomain + app + "\x00" + text))[:16])
 }
 
 // fragments — хеши текста находок; nil без ключа.
@@ -183,7 +188,7 @@ func (a *App) fragments(texts []inspectText, fs []locatedFinding) []string {
 		if f.Start < 0 || f.End > len(t) || f.Start >= f.End {
 			continue // позиции проверены ValidateFinding; защита от ошибки кода
 		}
-		out[i] = fragmentHash(a.fragmentMAC, t[f.Start:f.End])
+		out[i] = fragmentHash(a.fragmentMAC, a.ID, t[f.Start:f.End])
 	}
 	return out
 }
@@ -281,8 +286,9 @@ func (a *App) inspect(ctx context.Context, req inspectRequest) (*inspection, err
 	if mode == "" {
 		mode = a.Mode
 	}
-	// Исключения применяются после детекторов и до решения политики, по
-	// часам шлюза: истёкшее исключение не действует без нового пакета.
+	// Исключения применяются после детекторов и до решения политики; срок —
+	// по a.now (не раньше времени сервера, 3Н40): истёкшее исключение не
+	// действует без нового пакета.
 	in.Decision = a.Policy.Evaluate(policy.Request{
 		Endpoint: req.Endpoint, Direction: req.Direction, Mode: mode, External: req.External, Hits: hits, Media: req.Media,
 		App: a.ID, User: req.User, Now: a.now(),

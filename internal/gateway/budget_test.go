@@ -4,15 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"math"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/azuresong-afk/ai_railway/internal/config"
 	"github.com/azuresong-afk/ai_railway/internal/policy/bundle"
 )
 
@@ -314,5 +317,190 @@ func TestBudgetEmbeddingsAndProviderError(t *testing.T) {
 	}
 	if u := budget.report().Months[0].Apps[0]; u.Requests != 1 {
 		t.Fatalf("неудачный запрос посчитан: %+v", u)
+	}
+}
+
+// 3В22 ревью 3.r3: запрос, ушедший провайдеру, с неизвестным исходом
+// (клиент прервал запрос, таймаут провайдера, обрыв потока до заголовков)
+// списывает оценку сверху — вход и max_tokens — и в бюджет, и в квоту
+// токенов; явный отказ провайдера со статусом — без списания.
+//
+// Покрывает: DM-15, DM-36
+func TestDM15_CanceledRequestCharged(t *testing.T) {
+	const maxOut = 300
+	text := strings.Repeat("а", 300) // 600 байт — 200 токенов по оценке
+	in := int64(estimateTokens(len(text)))
+	body := func(stream bool) string {
+		return `{"model":"m","max_tokens":` + strconv.Itoa(maxOut) + `,"stream":` + strconv.FormatBool(stream) +
+			`,"messages":[{"role":"user","content":"` + text + `"}]}`
+	}
+	for _, tc := range []struct {
+		name    string
+		stream  bool
+		cancel  bool // клиент рвёт соединение, когда провайдер получил запрос
+		refuse  bool // провайдер отвечает 400
+		down    bool // отказ в соединении: запрос к провайдеру не ушёл
+		charged bool
+	}{
+		{name: "отказ в соединении", down: true},
+		{name: "отказ в соединении, поток", stream: true, down: true},
+		{name: "клиент прервал запрос", cancel: true, charged: true},
+		{name: "клиент прервал поток до заголовков", stream: true, cancel: true, charged: true},
+		{name: "таймаут провайдера", charged: true},
+		{name: "таймаут потока до заголовков", stream: true, charged: true},
+		{name: "явный отказ провайдера", refuse: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clock := &budgetClock{t: time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)}
+			budget := newTestBudget(t, clock, bundle.HardBudget{App: "app", Limit: 1 << 40})
+			got := make(chan struct{}, 1)
+			release := make(chan struct{})
+			defer close(release)
+			up, _ := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+				select {
+				case got <- struct{}{}:
+				default:
+				}
+				if tc.refuse {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusBadRequest)
+					w.Write([]byte(`{"error":{"message":"bad","type":"invalid_request_error","code":"bad_request"}}`)) //nolint:errcheck,gosec // G104: ответ тестового провайдера
+					return
+				}
+				select {
+				case <-r.Context().Done():
+				case <-release:
+				}
+			})
+			upURL := up.URL
+			if tc.down {
+				l, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
+				if err != nil {
+					t.Fatal(err)
+				}
+				upURL = "http://" + l.Addr().String()
+				_ = l.Close() //nolint:gosec // G104: порт нужен закрытым
+			}
+			g := newGateway(t, upURL, func(o *gwOpts) {
+				o.budget = budget
+				o.quotas = config.Quotas{TokensPerMinute: int(in) + maxOut + 10}
+				o.transport = &http.Transport{Proxy: nil, ResponseHeaderTimeout: 200 * time.Millisecond}
+			})
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if tc.cancel {
+				go func() {
+					<-got
+					cancel()
+				}()
+			}
+			req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/v1/chat/completions", strings.NewReader(body(tc.stream)))
+			req.Header.Set("Content-Type", "application/json")
+			g.ServeHTTP(httptest.NewRecorder(), req)
+			rep := budget.report()
+			var u budgetUsage
+			if len(rep.Months) == 1 && len(rep.Months[0].Apps) == 1 {
+				u = rep.Months[0].Apps[0]
+			}
+			// Второй запрос: при списанном резерве квота токенов исчерпана.
+			second := postChat(t, g, `{"model":"m","max_tokens":10,"messages":[{"role":"user","content":"x"}]}`, nil)
+			if !tc.charged {
+				if u.Requests != 0 || u.Cost != 0 {
+					t.Fatalf("известный исход без выполнения списан: %+v", u)
+				}
+				if second.Code == http.StatusTooManyRequests {
+					t.Fatalf("после известного исхода квота не возвращена: %s", second.Body.String())
+				}
+				return
+			}
+			if want := (in + maxOut) * 50_000; u.Requests != 1 || u.Cost < want {
+				t.Fatalf("расход: %+v, ожидается Requests 1 и Cost >= %d", u, want)
+			}
+			if second.Code != http.StatusTooManyRequests || errCode(t, second) != "quota_exceeded" {
+				t.Fatalf("резерв квоты возвращён: %d %s", second.Code, second.Body.String())
+			}
+		})
+	}
+}
+
+// 3В23 ревью 3.r3: часы шлюза назад через границу месяца не стирают счётчик
+// текущего месяца — расход «будущего» месяца переносится в текущий, отчёт
+// заканчивается текущим, apply его не удаляет; бюджет срабатывает.
+//
+// Покрывает: DM-15
+func TestBudgetClockBackAcrossMonth(t *testing.T) {
+	// 1 ноября 01:00 по Москве: часы шлюза ушли вперёд.
+	clock := &budgetClock{t: time.Date(2026, 10, 31, 22, 0, 0, 0, time.UTC)}
+	b := newTestBudget(t, clock, bundle.HardBudget{App: "app", Limit: 300_000})
+	b.Record("app", "up", "m", 1, 1) // 100 000
+	rep := b.report()
+	b.apply(rep, &budgetState{Month: rep.Months[len(rep.Months)-1].Month})
+	// NTP вернул часы: 31 октября 23:00 по Москве.
+	clock.set(time.Date(2026, 10, 31, 20, 0, 0, 0, time.UTC))
+	b.Record("app", "up", "m", 1, 1)
+	for range 2 {
+		rep := b.report()
+		if last := rep.Months[len(rep.Months)-1].Month; last != "2026-10" {
+			t.Fatalf("последний месяц отчёта: %s, %+v", last, rep.Months)
+		}
+		// Сервер отвечает последним месяцем отчёта.
+		b.apply(rep, &budgetState{Month: rep.Months[len(rep.Months)-1].Month})
+	}
+	rep = b.report()
+	if len(rep.Months) != 1 || rep.Months[0].Month != "2026-10" || rep.Months[0].Apps[0].Cost != 200_000 || rep.Months[0].Apps[0].Requests != 2 {
+		t.Fatalf("счётчики после переноса: %+v", rep.Months)
+	}
+	b.Record("app", "up", "m", 1, 1)
+	if out, _ := b.Exhausted("app"); !out {
+		t.Fatal("бюджет не сработал после возврата часов")
+	}
+	// Сервер ответил «будущим» месяцем (его часы впереди): текущий месяц
+	// шлюза всё равно не удаляется.
+	b.apply(b.report(), &budgetState{Month: "2026-11"})
+	if out, _ := b.Exhausted("app"); !out {
+		t.Fatal("ответ сервера будущим месяцем стёр текущий")
+	}
+}
+
+// Смена пояса установки у границы месяца: Москва → UTC 1 ноября в 01:00 по
+// Москве (31 октября по UTC) — ноябрьский расход переходит в октябрь UTC.
+//
+// Покрывает: DM-15
+func TestBudgetTimezoneChangeAcrossMonth(t *testing.T) {
+	clock := &budgetClock{t: time.Date(2026, 10, 31, 22, 0, 0, 0, time.UTC)}
+	b := newTestBudget(t, clock, bundle.HardBudget{App: "app", Limit: 200_000})
+	b.Record("app", "up", "m", 1, 1)
+	if err := b.Reconfigure(&bundle.Budgets{Timezone: "UTC",
+		Prices: []bundle.ModelPrice{{Provider: "up", Model: "m", Input: 50_000, Output: 50_000}},
+		Hard:   []bundle.HardBudget{{App: "app", Limit: 200_000}}}); err != nil {
+		t.Fatal(err)
+	}
+	b.Record("app", "up", "m", 1, 1)
+	rep := b.report()
+	b.apply(rep, &budgetState{Month: rep.Months[len(rep.Months)-1].Month})
+	if out, _ := b.Exhausted("app"); !out {
+		t.Fatalf("расход до смены пояса потерян: %+v", b.report().Months)
+	}
+}
+
+// При переполнении месяца вытесняются счётчики приложений вне пакета, а не
+// расход нового приложения.
+func TestBudgetEvictsAppsOutsideBundle(t *testing.T) {
+	clock := &budgetClock{t: time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)}
+	b := newTestBudget(t, clock)
+	for i := range maxBudgetApps {
+		b.Record("old-"+strconv.Itoa(i), "up", "m", 1, 0)
+	}
+	b.Record("new", "up", "m", 1, 0)
+	if rep := b.report(); slices.ContainsFunc(rep.Months[0].Apps, func(u budgetUsage) bool { return u.App == "new" }) {
+		t.Fatal("пакет неизвестен — вытеснено чужое приложение")
+	}
+	if err := b.Reconfigure(&bundle.Budgets{Timezone: "Europe/Moscow"}, "new"); err != nil {
+		t.Fatal(err)
+	}
+	b.Record("new", "up", "m", 1, 0)
+	rep := b.report()
+	if len(rep.Months[0].Apps) != maxBudgetApps || !slices.ContainsFunc(rep.Months[0].Apps, func(u budgetUsage) bool { return u.App == "new" }) {
+		t.Fatalf("приложение пакета не учтено: %d", len(rep.Months[0].Apps))
 	}
 }

@@ -10,6 +10,7 @@ export type PolicySpec = S["PolicySpec"];
 export type PolicyRule = S["PolicyRule"];
 export type PolicyVersion = S["PolicyVersion"];
 export type PolicyDiff = S["PolicyDiff"];
+export type PolicyImportPreview = S["PolicyImportPreview"];
 export type PolicyTestRequest = S["PolicyTestRequest"];
 export type PolicyTestResult = S["PolicyTestResult"];
 export type NewPolicy = S["NewPolicy"];
@@ -60,6 +61,10 @@ export const policiesApi = {
     });
     return JSON.parse(text) as Policy;
   },
+  // Проверка загрузки без сохранения (задача 3.35): тот же разбор на сервере, различия и признак ослабления.
+  // Документ — в обёртке JSON: так запрос отменяется вместе с запросом данных (signal).
+  previewYaml: (yaml: string, baseVersion: number | undefined, signal?: AbortSignal) =>
+    request<PolicyImportPreview>("POST", "/api/v1/policies/import?dry_run=true", { document: yaml, ...(baseVersion ? { base_version: baseVersion } : {}) }, signal),
   // Исключения версии (ТЗ 5.3, задача 3.22): добавление и продление — ослабление защиты, нужны пароль или код.
   exceptions: (pid: string, signal?: AbortSignal) =>
     request<S["PolicyExceptionList"]>("GET", `/api/v1/policies/${id(pid)}/exceptions`, undefined, signal),

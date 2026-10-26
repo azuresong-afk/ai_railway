@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { type ChangeEvent, type FormEvent, useMemo, useState } from "react";
+import { type ChangeEvent, type FormEvent, useEffect, useState } from "react";
 import { ErrorBanner, FormDialog } from "../admin/common";
 import { ReauthPrompt, useReauth, visibleError } from "../admin/reauth";
 import { Button } from "../ui/Button";
@@ -7,7 +7,6 @@ import { Field, Input, Select } from "../ui/Field";
 import { Banner } from "../ui/Layout";
 import { DiffView } from "./DiffView";
 import { type Policy, policiesApi, type PolicySummary } from "./api";
-import { localDiff, specFromJson } from "./localDiff";
 
 const idPattern = /^[a-z0-9][a-z0-9-]{0,62}$/;
 const templates: [string, string][] = [
@@ -90,18 +89,22 @@ export function ImportDialog({
   const [fileErr, setFileErr] = useState<string>();
   const re = useReauth(mfa);
   const baseVersion = current && !current.template ? current.current_version : undefined;
-  // Различия до отправки (Н46): сервер сравнения без сохранения не даёт, поэтому документ в виде JSON (он же допустимый YAML)
-  // сравнивается с текущей версией в браузере; для остального YAML о ней скажет сервер, потребовав пароль или код.
-  const cur = useQuery({
-    queryKey: ["policies", current?.id, "get"],
-    queryFn: ({ signal }) => policiesApi.get(current!.id, signal),
-    enabled: open && asVersion && baseVersion !== undefined && current !== undefined,
+  const base = asVersion ? baseVersion : undefined;
+  // Различия до отправки для любого YAML (Н46, задача 3.35): сервер разбирает документ так же, как при загрузке, и ничего
+  // не сохраняет. Запрос — после паузы в наборе текста, чтобы не проверять каждый символ.
+  const [checked, setChecked] = useState("");
+  useEffect(() => {
+    const t = setTimeout(() => setChecked(yaml), 400);
+    return () => clearTimeout(t);
+  }, [yaml]);
+  const tooBig = new TextEncoder().encode(yaml).length > maxYaml;
+  const preview = useQuery({
+    queryKey: ["policies", "import-preview", base, checked],
+    queryFn: ({ signal }) => policiesApi.previewYaml(checked, base, signal),
+    enabled: open && checked.trim() !== "" && checked === yaml && !tooBig,
+    retry: false,
+    staleTime: Infinity,
   });
-  const preview = useMemo(() => {
-    if (!cur.data || yaml.trim() === "" || !asVersion) return null;
-    const next = specFromJson(yaml);
-    return next ? localDiff(cur.data.spec, next) : null;
-  }, [cur.data, yaml, asVersion]);
   const m = useMutation({
     mutationFn: () => policiesApi.importYaml(yaml, asVersion ? baseVersion : undefined, comment.trim(), re.body()),
     onSuccess: async (p) => {
@@ -128,7 +131,6 @@ export function ImportDialog({
     }
     setYaml(await f.text());
   };
-  const tooBig = new TextEncoder().encode(yaml).length > maxYaml;
   const submit = (e: FormEvent) => {
     e.preventDefault();
     if (yaml.trim() !== "" && !tooBig && re.ready) m.mutate();
@@ -158,11 +160,21 @@ export function ImportDialog({
             Сохранить как новую версию политики «{current.name}» (поверх версии {baseVersion})
           </label>
         )}
-        {preview && <DiffView diff={preview} preview />}
-        {yaml.trim() !== "" && asVersion && baseVersion !== undefined && !preview && (
-          <p className="text-sm text-muted">
-            Различия с текущей версией в браузере показываются для документа в формате JSON. Для остальных документов их покажет история версий после загрузки; если загрузка ослабляет защиту, сервер попросит пароль или код до сохранения.
-          </p>
+        {preview.isFetching && <p className="text-sm text-muted">Проверяем документ…</p>}
+        {preview.data && !preview.isFetching && (
+          <>
+            {preview.data.created ? (
+              <p className="text-sm">Будет создана новая политика «{preview.data.policy}».</p>
+            ) : (
+              current?.id !== undefined && preview.data.policy !== current.id && (
+                <Banner kind="warning">Документ относится к другой политике: «{preview.data.policy}», её версия {preview.data.current_version}.</Banner>
+              )
+            )}
+            <DiffView diff={preview.data.diff} preview />
+          </>
+        )}
+        {preview.error && !preview.isFetching && (
+          <ErrorBanner error={preview.error} />
         )}
         <Field label="Комментарий к версии (необязательно)">{({ id }) => <Input id={id} value={comment} onChange={(e) => setComment(e.target.value)} maxLength={500} />}</Field>
         <ReauthPrompt r={re} />

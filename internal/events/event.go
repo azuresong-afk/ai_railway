@@ -48,6 +48,10 @@ type Finding struct {
 	// Exception — ID исключения, по которому находка пропущена: в решении
 	// она не участвовала.
 	Exception string `json:"exception,omitempty"`
+	// Source — источник текста находки: user, rag, tool, output. Черновик
+	// исключения берёт его в условие (3В24 ревью 3.r3, ТЗ 5.3); у событий
+	// прежних версий пусто.
+	Source string `json:"source,omitempty"`
 }
 
 var (
@@ -260,6 +264,11 @@ func (e *Event) Validate() error {
 		}
 		if f.Exception != "" && !exceptionRe.MatchString(f.Exception) {
 			errs = append(errs, fmt.Errorf("находка %s: exception — ID исключения", f.Detector))
+		}
+		switch f.Source {
+		case "", "user", "rag", "tool", "output":
+		default:
+			errs = append(errs, fmt.Errorf("находка %s: source — user, rag, tool или output", f.Detector))
 		}
 	}
 	return errors.Join(errs...)

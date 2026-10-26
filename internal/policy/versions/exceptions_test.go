@@ -5,11 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/azuresong-afk/ai_railway/internal/detect"
 	"github.com/azuresong-afk/ai_railway/internal/policy"
 	"github.com/azuresong-afk/ai_railway/internal/policy/versions"
 )
@@ -366,5 +368,103 @@ func TestCompareExceptions(t *testing.T) {
 	c.Exceptions = []policy.ExceptionSpec{wide}
 	if d := versions.Compare(b, c); !d.Weakened() || !hasKind(d, "exception_changed") {
 		t.Fatalf("изменение условия: %+v", d)
+	}
+}
+
+// 3В26 ревью 3.r3: версию с сотнями исключений (ID по 63 символа) можно
+// сохранить и откатить — подробности аудита не больше 16 КиБ: списки ID
+// ограничены, рядом — их число, причины ослабления исключениями — одна
+// каждого вида.
+func TestVersionManyExceptionsAudit(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	e.createStrict(t)
+	s := spec("p", policy.Enforce, ruleInjection, rulePII)
+	for i := range policy.MaxExceptions {
+		id := fmt.Sprintf("exc-%059d", i)
+		s.Exceptions = append(s.Exceptions, policy.ExceptionSpec{ID: id, Detector: "injection.heuristic", Pattern: "persona_removal",
+			App: fmt.Sprintf("app-%058d", i), Reason: excInput.Reason, Author: "user:" + e.by.Actor.ID,
+			CreatedAt: e.now, ExpiresAt: e.now.Add(policy.DefaultExceptionTTL)})
+	}
+	if len(s.Exceptions[0].ID) != 63 {
+		t.Fatalf("длина ID: %d", len(s.Exceptions[0].ID))
+	}
+	d, err := e.svc.Update(ctx, e.confirmed(), "p", 1, s, versions.SourceAPI, "", versions.ConsoleDefaults)
+	if err != nil {
+		t.Fatalf("версия с %d исключениями: %v", policy.MaxExceptions, err)
+	}
+	det := e.last(t, "policy.update").Details.(map[string]any)
+	if det["exceptions_added_count"] != policy.MaxExceptions || len(det["exceptions_added"].([]string)) != 50 || det["weakening"] != true {
+		t.Fatalf("подробности: added %v, count %v", len(det["exceptions_added"].([]string)), det["exceptions_added_count"])
+	}
+	// Откат к версии без исключений: снять все разом.
+	if _, err := e.svc.Rollback(ctx, e.by, "p", 1, d.Version.Version, "снять исключения"); err != nil {
+		t.Fatalf("откат: %v", err)
+	}
+	det = e.last(t, "policy.rollback").Details.(map[string]any)
+	if det["exceptions_removed_count"] != policy.MaxExceptions {
+		t.Fatalf("откат: %v", det["exceptions_removed_count"])
+	}
+	for _, a := range []string{"policy.update", "policy.rollback"} {
+		raw, err := json.Marshal(e.last(t, a).Details)
+		if err != nil || len(raw) > 16<<10 {
+			t.Fatalf("%s: %d байт %v", a, len(raw), err)
+		}
+	}
+}
+
+// Все шесть списков и причины с ID по 63 символа: сводка урезается целиком
+// и укладывается в запись журнала, счётчики полные (3В26 ревью 3.r3).
+func TestVersionAuditDetailsBudget(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	rule := func(prefix string, i int, a policy.Action) policy.RuleSpec {
+		return policy.RuleSpec{ID: fmt.Sprintf("%s-%060d", prefix, i), Detector: "injection.heuristic",
+			Directions: []detect.Direction{detect.Input}, Action: a, Severity: policy.High}
+	}
+	exc := func(prefix string, i int, ttl time.Duration) policy.ExceptionSpec {
+		return policy.ExceptionSpec{ID: fmt.Sprintf("%s-%060d", prefix, i), Detector: "injection.heuristic", Pattern: "persona_removal",
+			App: fmt.Sprintf("app-%058d", i), Reason: excInput.Reason, Author: "user:" + e.by.Actor.ID,
+			CreatedAt: e.now, ExpiresAt: e.now.Add(ttl)}
+	}
+	const rules, excs = 80, 300
+	before, after := spec("p", policy.Enforce), spec("p", policy.Enforce)
+	for i := range rules {
+		before.Rules = append(before.Rules, rule("rr", i, policy.Block), rule("rc", i, policy.Block))
+		after.Rules = append(after.Rules, rule("rc", i, policy.Log), rule("ra", i, policy.Block))
+	}
+	for i := range excs {
+		before.Exceptions = append(before.Exceptions, exc("er", i, time.Hour), exc("ec", i, time.Hour))
+		after.Exceptions = append(after.Exceptions, exc("ec", i, 2*time.Hour), exc("ea", i, time.Hour))
+	}
+	if len(before.Rules[0].ID) != 63 || len(before.Exceptions[0].ID) != 63 {
+		t.Fatalf("длина ID: %d, %d", len(before.Rules[0].ID), len(before.Exceptions[0].ID))
+	}
+	if _, err := e.svc.Create(ctx, e.by, before, versions.SourceAPI, "", versions.ConsoleDefaults); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.svc.Update(ctx, e.confirmed(), "p", 1, after, versions.SourceAPI, "", versions.ConsoleDefaults); err != nil {
+		t.Fatalf("версия со всеми видами изменений: %v", err)
+	}
+	det := e.last(t, "policy.update").Details.(map[string]any)
+	for k, want := range map[string]int{"rules_added_count": rules, "rules_removed_count": rules, "rules_changed_count": rules,
+		"exceptions_added_count": excs, "exceptions_removed_count": excs, "exceptions_changed_count": excs} {
+		if det[k] != want {
+			t.Errorf("%s = %v, нужно %d", k, det[k], want)
+		}
+	}
+	if det["truncated"] != true || det["weakening"] != true || len(det["rules_changed"].([]string)) == 0 {
+		t.Fatalf("подробности: truncated %v, weakening %v, rules_changed %d", det["truncated"], det["weakening"],
+			len(det["rules_changed"].([]string)))
+	}
+	if raw, err := json.Marshal(det); err != nil || len(raw) > 16<<10 {
+		t.Fatalf("%d байт %v", len(raw), err)
+	}
+	// Откат: те же списки в обратную сторону.
+	if _, err := e.svc.Rollback(ctx, e.confirmed(), "p", 1, 2, "вернуть"); err != nil {
+		t.Fatalf("откат: %v", err)
+	}
+	if det := e.last(t, "policy.rollback").Details.(map[string]any); det["truncated"] != true {
+		t.Fatalf("откат: truncated %v", det["truncated"])
 	}
 }

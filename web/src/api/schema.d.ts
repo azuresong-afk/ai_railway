@@ -2322,7 +2322,9 @@ export interface paths {
         /**
          * Карточка события без содержимого
          * @description Право `events.read`. Решение с трассировкой, находки, задержки, токены (`details`);
-         *     `has_content` — есть ли сохранённое содержимое. Пишет `events.view` (отключаемое).
+         *     `has_content` — есть ли сохранённое содержимое. Хеш фрагмента находки (`fragment`) —
+         *     только субъекту с `events.content.read` или `policies.manage` (3Н41), источник текста
+         *     находки — `source`. Пишет `events.view` (отключаемое).
          */
         get: {
             parameters: {
@@ -2505,7 +2507,9 @@ export interface paths {
          * Черновик исключения по событию
          * @description Право `events.read` (ТЗ 5.3, задача 3.22). Условия по находкам, давшим итоговое действие
          *     (все находки, если итог — allow или log): детектор, категория, шаблон (правило
-         *     детектора), хеш фрагмента (HMAC на ключе шлюза) и приложение события; срок — 30 суток.
+         *     детектора), хеш фрагмента (HMAC на ключе шлюза с ID приложения; только субъекту с
+         *     `events.content.read` или `policies.manage`), источник текста находки и приложение
+         *     события; срок — 30 суток.
          *     Содержимое запроса в черновик не копируется. `base_version` — текущая версия политики
          *     события; `template: true` — политика события — шаблон, исключение добавляется в её копию.
          *     Создаёт исключение только администратор безопасности: POST `/api/v1/policies/{id}/exceptions`.
@@ -2558,7 +2562,8 @@ export interface paths {
         put?: never;
         /**
          * Выгрузка событий в CSV или JSON
-         * @description Право `events.export` (ТЗ 5.5). Только метаданные, без содержимого. Тот же фильтр и
+         * @description Право `events.export` (ТЗ 5.5). Только метаданные, без содержимого; хеши фрагментов
+         *     находок в JSON — только с `events.content.read` или `policies.manage` (3Н41). Тот же фильтр и
          *     период, что у списка; не больше 100 000 строк (иначе 422). Подсчёт и выгрузка — по
          *     одному снимку базы (транзакция REPEATABLE READ): число строк в заголовке и в аудите
          *     совпадает с переданным. До передачи данных пишет `data.export` с форматом, фильтром,
@@ -4378,7 +4383,13 @@ export interface paths {
          *     Изменение, после которого пакет конфигурации шлюзов не соберётся (например, правило `lists.*` на словарь, которого нет у приложения), — 422 с причиной и ID приложений в `detail` (В16 ревью 2.r3b).
          *     Версия, ослабляющая защиту (`weakening`), принимается только в обёртке JSON (`PolicyImport`) с текущим паролем
          *     или кодом TOTP: без них — 400 с полем `password`, неверные — 403 `reauthentication_failed` (В23 ревью 2.r5).
-         *     В обёртке `base_version` и `comment` берутся из тела, параметры запроса не читаются.
+         *     В обёртке `base_version` и `comment` берутся из тела, параметры запроса, кроме `dry_run`, не читаются.
+         *     `dry_run=true` (задача 3.35) — проверка без сохранения: тот же разбор и те же пределы и
+         *     проверки (400, 409 при устаревшем `base_version`, 413, 415, 422), ответ 200 —
+         *     `PolicyImportPreview`: различия с текущей версией (для новой политики — с пустой) и
+         *     признак ослабления с причинами. Версия не создаётся, запись аудита не пишется, пароль
+         *     или код не нужны. Право то же — `policies.manage`: проверка — шаг загрузки, а
+         *     `policies.test` (песочница аналитика и администратора системы) загрузить не позволяет.
          */
         post: {
             parameters: {
@@ -4387,6 +4398,8 @@ export interface paths {
                     base_version?: number;
                     /** @description Комментарий к версии */
                     comment?: string;
+                    /** @description true — только проверка и различия, без сохранения (задача 3.35) */
+                    dry_run?: boolean;
                 };
                 header: {
                     /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
@@ -4402,13 +4415,13 @@ export interface paths {
                 };
             };
             responses: {
-                /** @description Новая версия политики */
+                /** @description Новая версия политики; с `dry_run=true` — итог проверки без сохранения */
                 200: {
                     headers: {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["Policy"];
+                        "application/json": components["schemas"]["Policy"] | components["schemas"]["PolicyImportPreview"];
                     };
                 };
                 /** @description Политика создана */
@@ -4866,8 +4879,8 @@ export interface paths {
          * @description Право `policies.manage` (только администратор безопасности, УПД.2). Исключение — часть
          *     версии (ADR-0016): новая версия поверх `base_version` (409, если политику уже изменили).
          *     Условие: детектор обязательно и хотя бы одно из `pattern`, `fragment`, `app`, `user`
-         *     (детектор целиком для всех приложений не отключается — 400); `category` и `source` —
-         *     дополнительные. Срок обязателен: `expires_in_days` 1–365 или `expires_at` не дальше 365
+         *     (детектор целиком для всех приложений не отключается — 400; исключение для `canary` —
+         *     только с `fragment`, иначе 400, 3Н42); `category` и `source` — дополнительные. Срок обязателен: `expires_in_days` 1–365 или `expires_at` не дальше 365
          *     суток, по умолчанию 30 суток. Автора и время ставит сервер. Добавление — ослабление
          *     защиты: текущий пароль или код TOTP в теле (без них — 403, неверные — 403
          *     `reauthentication_failed`), запись `policy.exception_add` с `weakening` (DM-40).
@@ -5112,7 +5125,7 @@ export interface paths {
          *     До 2 часов данные читаются из событий поминутно, до 31 суток — по часам (начало округляется
          *     до часа вниз), дольше — по суткам в часовом поясе установки.
          *     Показатели, график запросов по решениям, топ детекторов, приложения по риску и «Лента решений»
-         *     (`feed=all` — все решения, по умолчанию только с действием).
+         *     (`feed=all` — все решения, по умолчанию только с действием). Лента — только с `events.read` на все объекты, иначе пустая и `feed_hidden: true`.
          */
         get: {
             parameters: {
@@ -8166,6 +8179,8 @@ export interface components {
             top_detectors: components["schemas"]["DashTop"][];
             apps: components["schemas"]["DashRequestRow"][];
             feed: components["schemas"]["DashFeedItem"][];
+            /** @description Ленты нет: у субъекта нет events.read на все объекты (лента — метаданные каждого события, УПД.2); feed пустой */
+            feed_hidden: boolean;
         };
         DashboardThreats: {
             period: components["schemas"]["DashPeriodInfo"];
@@ -8202,6 +8217,8 @@ export interface components {
             top_detectors: components["schemas"]["DashTop"][];
             models: components["schemas"]["DashRequestRow"][];
             feed: components["schemas"]["DashFeedItem"][];
+            /** @description Ленты нет: у субъекта нет events.read на все объекты (лента — метаданные каждого события, УПД.2); feed пустой */
+            feed_hidden: boolean;
         };
         DashUsagePoint: {
             /** Format: date-time */
@@ -8985,6 +9002,18 @@ export interface components {
             /** Format: password */
             password?: string;
             code?: string;
+        };
+        /** @description Итог проверки загрузки без сохранения (задача 3.35). Ничего не сохранено. */
+        PolicyImportPreview: {
+            /** @enum {boolean} */
+            dry_run: true;
+            /** @description ID политики из документа */
+            policy: string;
+            /** @description Политики нет: загрузка создаст её версией 1 */
+            created: boolean;
+            /** @description Текущая версия */
+            current_version: number;
+            diff: components["schemas"]["PolicyDiff"];
         };
         PolicyDiff: {
             from: number;

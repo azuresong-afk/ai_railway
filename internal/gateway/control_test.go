@@ -481,3 +481,29 @@ func TestHeartbeatStartedAndStopping(t *testing.T) {
 		t.Fatalf("без времени запуска: %v", bodies)
 	}
 }
+
+// 3Н40 ревью 3.r3: время сервера из ответа heartbeat — в часах сроков
+// исключений.
+func TestHeartbeatObservesServerTime(t *testing.T) {
+	ahead := time.Now().Add(5 * 24 * time.Hour)
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"server_time": ahead, "interval_seconds": 60}) //nolint:gosec // G104: ответ тестового сервера
+	}))
+	defer srv.Close()
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sc := &gateway.ServerClock{}
+	if d := time.Until(sc.Now()); d > time.Minute {
+		t.Fatalf("без heartbeat: %v", d)
+	}
+	gateway.RunHeartbeat(context.Background(), gateway.HeartbeatConfig{
+		Client: srv.Client(), Server: u, Version: "1", Logger: quiet(), ServerTime: sc,
+		Sleep: func(context.Context, time.Duration) bool { return false },
+	})
+	if got := sc.Now(); got.Before(ahead) || got.After(ahead.Add(time.Minute)) {
+		t.Fatalf("часы сроков исключений: %v, сервер %v", got, ahead)
+	}
+}

@@ -63,16 +63,3 @@ export function localDiff(before: PolicySpec, after: PolicySpec): PolicyDiff {
     exceptions_changed: [],
   };
 }
-
-// Содержимое политики из текста JSON (YAML — надмножество JSON). null — документ не JSON: сравнить его в браузере нельзя.
-export function specFromJson(text: string): PolicySpec | null {
-  try {
-    const v: unknown = JSON.parse(text);
-    if (!v || typeof v !== "object" || Array.isArray(v)) return null;
-    const o = v as Record<string, unknown>;
-    if (typeof o.name !== "string" || (o.mode !== "monitor" && o.mode !== "enforce") || !Array.isArray(o.rules)) return null;
-    return v as PolicySpec;
-  } catch {
-    return null;
-  }
-}
