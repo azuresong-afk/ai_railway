@@ -219,6 +219,22 @@ describe("правила", () => {
     }));
   });
 
+  it("без прав на роли, пользователей и события — названия прав, не коды (3Н39 ревью 3.r2)", async () => {
+    const { unmount } = renderScreen(["alerts.read", "alerts.manage", "alert_rules.read", "alert_rules.manage"]);
+    tab("Правила");
+    fireEvent.click(await screen.findByRole("button", { name: "Изменить правило Всплеск блокировок" }));
+    const dlg = await screen.findByRole("dialog");
+    expect(within(dlg).getByText(/нужно право «Просмотр ролей и разрешений»/)).toBeTruthy();
+    expect(within(dlg).getByText(/нужно право «Просмотр учётных записей»/)).toBeTruthy();
+    expect(dlg.textContent).not.toMatch(/«[a-z_]+\.[a-z_.]+»/);
+    unmount();
+    renderScreen(["alerts.read"]);
+    fireEvent.click(await screen.findByRole("button", { name: "Открыть оповещение: Много блокировок инъекций" }));
+    const aside = await screen.findByRole("complementary", { name: "Карточка оповещения" });
+    await within(aside).findByText(/нужно право «Просмотр событий»/);
+    expect(aside.textContent).not.toMatch(/«[a-z_]+\.[a-z_.]+»/);
+  });
+
   it("ослабление: сервер просит пароль, поле появляется, запрос повторяется с паролем", async () => {
     handler = (c) =>
       c.method === "PUT" && c.url.startsWith("/api/v1/alert-rules/") && !c.body.password

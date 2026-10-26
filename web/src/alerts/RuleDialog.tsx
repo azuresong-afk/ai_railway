@@ -230,7 +230,7 @@ export function RuleDialog({ rule, mfa, canUsers, canRoles, onClose }: { rule: A
                 ))}
             </div>
           ) : (
-            <p className="text-xs text-muted">Роли: {f.roles.join(", ") || "не заданы"}. Для выбора ролей нужно право «roles.read».</p>
+            <p className="text-xs text-muted">Роли: {f.roles.join(", ") || "не заданы"}. Для выбора ролей нужно право «Просмотр ролей и разрешений».</p>
           )}
           {canUsers ? (
             <div className="flex max-h-32 flex-wrap gap-x-4 gap-y-1 overflow-auto" role="group" aria-label="Пользователи-получатели">
@@ -244,7 +244,7 @@ export function RuleDialog({ rule, mfa, canUsers, canRoles, onClose }: { rule: A
               ))}
             </div>
           ) : (
-            <p className="text-xs text-muted">Пользователей-получателей: {f.users.length}. Для выбора нужно право «users.read».</p>
+            <p className="text-xs text-muted">Пользователей-получателей: {f.users.length}. Для выбора нужно право «Просмотр учётных записей».</p>
           )}
         </fieldset>
         <ErrorBanner error={roles.error ?? users.error} />
