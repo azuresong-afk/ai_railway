@@ -87,9 +87,15 @@ func TestParseParams(t *testing.T) {
 		}
 		return v
 	}
-	p, err := ParseParams(KindPilot, q("from=2026-10-01&to=2026-10-10&format=xlsx&app=crm-bot"), msk, now2026)
-	if err != nil || p.Format != FormatXLSX || p.App != "crm-bot" || p.Kind != KindPilot {
+	p, err := ParseParams(KindSummary, q("from=2026-10-01&to=2026-10-10&format=xlsx&app=crm-bot"), msk, now2026)
+	if err != nil || p.Format != FormatXLSX || p.App != "crm-bot" || p.Kind != KindSummary {
 		t.Fatalf("%+v %v", p, err)
+	}
+	// Приложение — только у сводного (3Н47 ревью 3.r4).
+	for _, k := range []string{KindPilot, KindIncidents} {
+		if _, err := ParseParams(k, q("from=2026-10-01&to=2026-10-10&app=crm-bot"), msk, now2026); err == nil {
+			t.Errorf("%s с приложением принят", k)
+		}
 	}
 	if p, err = ParseParams(KindSummary, q("from=2026-10-01&to=2026-10-10"), msk, now2026); err != nil || p.Format != FormatHTML {
 		t.Fatalf("формат по умолчанию: %+v %v", p, err)

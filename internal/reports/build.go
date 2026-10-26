@@ -72,10 +72,28 @@ type Facts interface {
 	Budgets(ctx context.Context, month string) ([]BudgetLine, error)
 }
 
-// Scope — что вызывающему можно увидеть в отчёте.
+// Scope — что вызывающему можно увидеть в отчёте (УПД.2, 3В31 ревью 3.r4):
+// разделы инцидентов, оповещений и бюджетов — только с правом их чтения на
+// все объекты.
 type Scope struct {
 	// Budgets — разрешено читать бюджеты (budgets.read на все объекты).
 	Budgets bool
+	// Incidents — разрешено читать инциденты (incidents.read).
+	Incidents bool
+	// Alerts — разрешено читать оповещения (alerts.read).
+	Alerts bool
+}
+
+// ErrScope — вид отчёта целиком требует права, которого у вызывающего нет.
+var ErrScope = errors.New("отчёты: нет права на данные отчёта")
+
+// Allows — вид отчёта доступен с этими правами: «По инцидентам» — только с
+// правом чтения инцидентов.
+func (sc Scope) Allows(kind string) bool { return kind != KindIncidents || sc.Incidents }
+
+// noAccess — раздел, скрытый по правам.
+func noAccess(title string) Section {
+	return Section{Title: title, Note: "Раздел не приводится: у автора отчёта нет права на эти данные."}
 }
 
 // Builder собирает отчёты из источников.
@@ -108,9 +126,12 @@ func (b *Builder) Build(ctx context.Context, p Params, sc Scope) (Doc, error) {
 	case KindSummary:
 		return b.summary(ctx, p, sc, meta)
 	case KindIncidents:
+		if !sc.Allows(KindIncidents) {
+			return Doc{}, ErrScope
+		}
 		return b.incidentsReport(ctx, p, meta)
 	case KindPilot:
-		return b.pilot(ctx, p, meta)
+		return b.pilot(ctx, p, sc, meta)
 	}
 	return Doc{}, errors.New("отчёты: неизвестный вид отчёта")
 }
@@ -255,16 +276,24 @@ func (b *Builder) summary(ctx context.Context, p Params, sc Scope, meta [][2]str
 			Note: "Отчёт по одному приложению: инциденты, оповещения и бюджеты в нём не приводятся, они относятся ко всей установке."})
 		return d, nil
 	}
-	inc, err := b.incidentStats(ctx, p.Period)
-	if err != nil {
-		return Doc{}, err
+	if sc.Incidents {
+		inc, err := b.incidentStats(ctx, p.Period)
+		if err != nil {
+			return Doc{}, err
+		}
+		d.Sections = append(d.Sections, inc.section())
+	} else {
+		d.Sections = append(d.Sections, noAccess("Инциденты"))
 	}
-	d.Sections = append(d.Sections, inc.section())
-	al, err := b.alertSection(ctx, p.Period)
-	if err != nil {
-		return Doc{}, err
+	if sc.Alerts {
+		al, err := b.alertSection(ctx, p.Period)
+		if err != nil {
+			return Doc{}, err
+		}
+		d.Sections = append(d.Sections, al)
+	} else {
+		d.Sections = append(d.Sections, noAccess("Оповещения"))
 	}
-	d.Sections = append(d.Sections, al)
 	if sc.Budgets {
 		bl, err := b.Facts.Budgets(ctx, monthOf(p.Period))
 		if err != nil {
@@ -475,7 +504,7 @@ func (b *Builder) alertSection(ctx context.Context, per Period) (Section, error)
 // pilot — «Итоги пилота» (сценарий S10): что подключено, сколько проверено,
 // что найдено, ложные срабатывания и исключения, инциденты, стоимость,
 // рекомендации по шаблону.
-func (b *Builder) pilot(ctx context.Context, p Params, meta [][2]string) (Doc, error) {
+func (b *Builder) pilot(ctx context.Context, p Params, sc Scope, meta [][2]string) (Doc, error) {
 	q := p.query()
 	ag, err := b.aggregates(ctx, q)
 	if err != nil {
@@ -542,13 +571,18 @@ func (b *Builder) pilot(ctx context.Context, p Params, meta [][2]string) (Doc, e
 		d.Sections = append(d.Sections, Section{Title: "Ложные срабатывания по строкам матрицы", Header: []string{"Строка матрицы", "Событий"}, Rows: tops(mk.FalseByThreat)})
 	}
 
-	st, err := b.scanIncidents(ctx, p.Period)
-	if err != nil {
-		return Doc{}, err
+	var st incidentStats
+	if sc.Incidents {
+		st, err = b.scanIncidents(ctx, p.Period)
+		if err != nil {
+			return Doc{}, err
+		}
+		sec := st.section()
+		sec.Title = "Инциденты"
+		d.Sections = append(d.Sections, sec)
+	} else {
+		d.Sections = append(d.Sections, noAccess("Инциденты"))
 	}
-	sec := st.section()
-	sec.Title = "Инциденты"
-	d.Sections = append(d.Sections, sec)
 
 	byModel, err := b.Dash.RequestsBy(ctx, q, events.DimModel, TopRows)
 	if err != nil {

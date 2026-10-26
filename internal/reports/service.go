@@ -171,6 +171,8 @@ func Render(w *bytes.Buffer, d Doc, format string) error {
 type By struct {
 	Actor audit.Actor
 	IP    netip.Addr
+	// Scope — права субъекта на разделы отчёта; расписание получает их снимок.
+	Scope Scope
 }
 
 func (b By) ref() string {
@@ -188,7 +190,8 @@ func (s *Service) entry(b By, action, id string, details any) audit.Entry {
 
 func view(sc Schedule) map[string]any {
 	return map[string]any{"name": sc.Name, "report": sc.Report, "frequency": sc.Frequency, "weekday": sc.Weekday, "day": sc.Day,
-		"at": sc.At, "format": sc.Format, "channel_id": sc.ChannelID, "enabled": sc.Enabled}
+		"at": sc.At, "format": sc.Format, "channel_id": sc.ChannelID, "enabled": sc.Enabled,
+		"scope": map[string]bool{"incidents": sc.Scope.Incidents, "alerts": sc.Scope.Alerts, "budgets": sc.Scope.Budgets}}
 }
 
 // Schedules — все расписания.
@@ -234,6 +237,10 @@ func (s *Service) CreateSchedule(ctx context.Context, by By, in ScheduleInput) (
 	if err != nil {
 		return Schedule{}, err
 	}
+	if !by.Scope.Allows(sc.Report) {
+		return Schedule{}, ErrScope
+	}
+	sc.Scope = by.Scope
 	if err := s.checkChannel(ctx, sc.ChannelID); err != nil {
 		return Schedule{}, err
 	}
@@ -263,6 +270,9 @@ func (s *Service) UpdateSchedule(ctx context.Context, by By, id string, in Sched
 	if err != nil {
 		return Schedule{}, err
 	}
+	if !by.Scope.Allows(sc.Report) {
+		return Schedule{}, ErrScope
+	}
 	if err := s.checkChannel(ctx, sc.ChannelID); err != nil {
 		return Schedule{}, err
 	}
@@ -276,7 +286,7 @@ func (s *Service) UpdateSchedule(ctx context.Context, by By, id string, in Sched
 		}
 		n := old
 		n.Name, n.Report, n.Frequency, n.Weekday, n.Day, n.At = sc.Name, sc.Report, sc.Frequency, sc.Weekday, sc.Day, sc.At
-		n.Format, n.ChannelID, n.Enabled = sc.Format, sc.ChannelID, sc.Enabled
+		n.Format, n.ChannelID, n.Enabled, n.Scope = sc.Format, sc.ChannelID, sc.Enabled, by.Scope
 		n.Version, n.UpdatedAt, n.UpdatedBy = old.Version+1, s.now(), by.ref()
 		next, err := n.Next(s.now(), loc)
 		if err != nil {
@@ -404,7 +414,7 @@ func (s *Service) send(ctx context.Context, r Run, sc Schedule, loc *time.Locati
 	}
 	bctx, cancel := context.WithTimeout(ctx, buildTimeout)
 	defer cancel()
-	doc, err := s.o.Builder.Build(bctx, Params{Kind: sc.Report, Format: sc.Format, Period: per}, Scope{Budgets: true})
+	doc, err := s.o.Builder.Build(bctx, Params{Kind: sc.Report, Format: sc.Format, Period: per}, sc.Scope)
 	if err != nil {
 		s.o.Logger.Error("рассылка отчётов: отчёт не построен", "class", "reports", "schedule", sc.ID, "error", err)
 		return ErrCodeBuild, 0

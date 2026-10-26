@@ -105,7 +105,7 @@ func docText(d Doc) string {
 	var b strings.Builder
 	b.WriteString(d.Title + "\n")
 	for _, s := range d.Sections {
-		b.WriteString(s.Title + "\n")
+		b.WriteString(s.Title + "\n" + s.Note + "\n")
 		for _, r := range s.Rows {
 			for _, c := range r {
 				b.WriteString(c.Text + "|")
@@ -116,9 +116,12 @@ func docText(d Doc) string {
 	return b.String()
 }
 
+// full — права на все разделы отчёта.
+var full = Scope{Budgets: true, Incidents: true, Alerts: true}
+
 func TestBuildSummary(t *testing.T) {
 	b, dash, _ := newBuilder(now2026)
-	doc, err := b.Build(context.Background(), params(t, KindSummary, ""), Scope{Budgets: true})
+	doc, err := b.Build(context.Background(), params(t, KindSummary, ""), full)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,10 +131,12 @@ func TestBuildSummary(t *testing.T) {
 			t.Errorf("нет %q в:\n%s", want, txt)
 		}
 	}
-	// Без бюджетов — раздела нет (нет права budgets.read).
+	// Без прав на бюджеты, инциденты и оповещения — этих разделов нет
+	// (budgets.read, incidents.read, alerts.read; 3В31 ревью 3.r4).
 	doc, _ = b.Build(context.Background(), params(t, KindSummary, ""), Scope{}) //nolint:gosec // G104: ошибка проверена выше или не важна для проверки
-	if strings.Contains(docText(doc), "Исполнение бюджетов") {
-		t.Error("бюджеты без права")
+	if txt := docText(doc); strings.Contains(txt, "Исполнение бюджетов") || strings.Contains(txt, "Инциденты за период") ||
+		strings.Contains(txt, "Оповещения за период") || !strings.Contains(txt, "у автора отчёта нет права") {
+		t.Errorf("разделы без права:\n%s", txt)
 	}
 	// По приложению: условие передаётся в агрегаты, инцидентов и бюджетов нет.
 	dash.apps = nil
@@ -159,7 +164,7 @@ func TestBuildIncidentsReport(t *testing.T) {
 	// Вне периода: позже и раньше.
 	inc.list = append([]incidents.Incident{{ID: "late", Number: 9, CreatedAt: time.Date(2026, 10, 24, 0, 0, 0, 0, time.UTC)}}, inc.list...)
 	inc.list = append(inc.list, incidents.Incident{ID: "old", Number: 0, CreatedAt: time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)})
-	doc, err := b.Build(context.Background(), params(t, KindIncidents, ""), Scope{})
+	doc, err := b.Build(context.Background(), params(t, KindIncidents, ""), full)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +185,7 @@ func TestBuildIncidentsReport(t *testing.T) {
 func TestBuildPilot(t *testing.T) {
 	b, _, inc := newBuilder(now2026)
 	inc.list = []incidents.Incident{{ID: "i1", Number: 1, Status: incidents.StatusNew, Severity: "low", CreatedAt: time.Date(2026, 10, 10, 9, 0, 0, 0, time.UTC)}}
-	doc, err := b.Build(context.Background(), params(t, KindPilot, ""), Scope{})
+	doc, err := b.Build(context.Background(), params(t, KindPilot, ""), full)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -535,5 +540,21 @@ func TestRenderFormats(t *testing.T) {
 	}
 	if err := Render(&b, sampleDoc(), "pdf"); err == nil {
 		t.Error("pdf принят")
+	}
+}
+
+// УПД.2 (3В31 ревью 3.r4): «По инцидентам» без права на инциденты не
+// строится, «Итоги пилота» — без списка и счётчиков инцидентов.
+func TestBuildScopeWithoutIncidents(t *testing.T) {
+	b, _, _ := newBuilder(now2026)
+	if _, err := b.Build(context.Background(), params(t, KindIncidents, ""), Scope{Budgets: true, Alerts: true}); !errors.Is(err, ErrScope) {
+		t.Fatalf("отчёт по инцидентам без права: %v", err)
+	}
+	doc, err := b.Build(context.Background(), params(t, KindPilot, ""), Scope{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if txt := docText(doc); strings.Contains(txt, "Не закрыто инцидентов") || !strings.Contains(txt, "у автора отчёта нет права") {
+		t.Errorf("итоги пилота без права на инциденты:\n%s", txt)
 	}
 }

@@ -22,6 +22,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/events"
 	"github.com/azuresong-afk/ai_railway/internal/keyring"
 	"github.com/azuresong-afk/ai_railway/internal/policy/versions"
+	"github.com/azuresong-afk/ai_railway/internal/reports"
 )
 
 // Синтетические учётные записи для приложений.
@@ -45,6 +46,8 @@ type appsEnv struct {
 	dash *fakeDash
 	// stopping — Options.Stopping: закрытие — остановка сервера.
 	stopping chan struct{}
+	// reports — сервис отчётов (reports_test.go).
+	reports *reports.Service
 }
 
 func newAppsEnv(t testing.TB) *appsEnv {
@@ -112,8 +115,9 @@ func newAppsEnv(t testing.TB) *appsEnv {
 	}
 	e.caPEM = string(ca.CertPEM())
 	logger := slog.New(slog.NewTextHandler(e.log, nil))
+	e.reports = newTestReports(t, e.dash)
 	h, _, err := New(Options{Hasher: testHasher(t), Logger: logger, Auth: testAuth(t, e.mem, auth.WithClock(e.clock.now)), Apps: svc,
-		Policies: pols, Events: e.ev, Audit: e.rec, Dashboards: e.dash, Reports: newTestReports(t, e.dash),
+		Policies: pols, Events: e.ev, Audit: e.rec, Dashboards: e.dash, Reports: e.reports,
 		RateLimit: RateConfig{Rules: []RateRule{{Prefix: "/", Max: 100000, Window: time.Minute}}}, Stopping: e.stopping})
 	if err != nil {
 		t.Fatal(err)
