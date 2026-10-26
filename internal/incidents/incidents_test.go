@@ -648,3 +648,37 @@ func TestIncidentListFilters(t *testing.T) {
 		t.Fatal("срок реакции высокой серьёзности — 4 часа")
 	}
 }
+
+// DM-08 (3В18 ревью 3.r2): длинная утечка канарейки заполняет хронологию
+// автоматическими записями только до MaxAutoTimeline — у разбора остаётся
+// запас на ручные действия, а закрытие проходит всегда; запись о закрытии
+// видна в карточке.
+func TestDM08_CloseAtTimelineLimit(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	for range incidents.MaxTimeline + 10 {
+		e.ingest(t, e.canary(t, "crm-bot"))
+	}
+	l := e.list(t, incidents.Query{})
+	if len(l) != 1 {
+		t.Fatalf("инцидентов: %d", len(l))
+	}
+	id := l[0].ID
+	if n := len(e.card(t, id).Related.Timeline); n != incidents.MaxAutoTimeline {
+		t.Fatalf("автоматических записей %d, ожидалось %d", n, incidents.MaxAutoTimeline)
+	}
+	if _, err := e.svc.AddComment(ctx, e.by, id, incidents.CommentInput{Body: "Канарейка утекает, меняем промпт"}); err != nil {
+		t.Fatalf("комментарий у предела: %v", err)
+	}
+	to := otherID
+	if _, err := e.svc.Assign(ctx, e.by, id, incidents.AssignInput{UserID: &to}); err != nil {
+		t.Fatalf("назначение у предела: %v", err)
+	}
+	if _, err := e.svc.SetStatus(ctx, e.by, id, incidents.StatusInput{Status: "closed", Resolution: "resolved",
+		Comment: "Канарейка сменена"}); err != nil {
+		t.Fatalf("закрытие у предела: %v", err)
+	}
+	if k := kinds(e.card(t, id)); k[len(k)-1] != incidents.KindStatusChanged {
+		t.Fatalf("закрытие не видно в хронологии: %v", k[len(k)-3:])
+	}
+}

@@ -201,8 +201,9 @@ func TestAlertRulesViaAPI(t *testing.T) {
 	}
 	w := e.call(auditor, "GET", "/api/v1/alert-rules", "", false)
 	list := decode[AlertRuleList](t, w.Body.Bytes())
-	// 5 встроенных задачи 3.10, 15 задачи 3.11, 5 задачи 3.12, правило DM-08 с инцидентом задачи 3.16 и 1 задачи 3.14.
-	if w.Code != 200 || len(list.Items) != 27 {
+	// 5 встроенных задачи 3.10, 15 задачи 3.11, 5 задачи 3.12, правило DM-08 с инцидентом задачи 3.16, 1 задачи 3.14
+	// и system.alert_job (3В17 ревью 3.r2).
+	if w.Code != 200 || len(list.Items) != 28 {
 		t.Fatalf("правила: %d %s", w.Code, w.Body)
 	}
 	var sec AlertRuleView
@@ -412,5 +413,34 @@ func TestAlertsPeriodViaAPI(t *testing.T) {
 	for _, q := range []string{"from=вчера", "to=2026-13-01", "from=" + f(at) + "&from=" + f(at), "from=" + f(at) + "&to=" + f(at),
 		"from=" + f(at.Add(time.Hour)) + "&to=" + f(at)} {
 		mustProblem(t, e.call(analyst, "GET", "/api/v1/alerts?"+q, "", false), 400, CodeInvalidRequest)
+	}
+}
+
+// 3В15 ревью 3.r2: оповещение DM-40 о действиях администратора он сам не
+// закрывает (409 self_review), его токен — тоже (403); закрывает аналитик.
+func TestAlertSelfCloseViaAPI(t *testing.T) {
+	e := newAlertsEnv(t)
+	admin := e.mustLogin(t, "admin")
+	analyst := e.mustLogin(t, "analyst")
+	u, err := e.ids.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.alerts.Audit(context.Background(), audit.Record{ID: u.String(), OrgID: audit.DefaultOrgID, TS: time.Now(),
+		Actor: audit.Actor{Type: audit.ActorUser, ID: tAdminID, Name: "admin"}, Action: "auth.mfa_reset",
+		Object: audit.Object{Type: "user", ID: tAnalystID}, Result: audit.ResultSuccess, Details: []byte("{}")}); err != nil {
+		t.Fatal(err)
+	}
+	w := e.call(admin, "GET", "/api/v1/alerts?kind=security", "", false)
+	p := decode[PageResponse[AlertView]](t, w.Body.Bytes())
+	if w.Code != 200 || len(p.Items) != 1 {
+		t.Fatalf("оповещения: %d %s", w.Code, w.Body)
+	}
+	path := "/api/v1/alerts/" + p.Items[0].ID + "/status"
+	mustProblem(t, e.call(admin, "POST", path, `{"status":"closed"}`, true), http.StatusConflict, CodeSelfReview)
+	created := e.issueToken(t, admin, auth.PermAlertsRead, auth.PermAlertsManage)
+	mustProblem(t, e.call(session{bearer: created.Token}, "POST", path, `{"status":"closed"}`, false), http.StatusForbidden, CodeForbidden)
+	if w := e.call(analyst, "POST", path, `{"status":"closed","comment":"проверено"}`, true); w.Code != http.StatusOK {
+		t.Fatalf("закрытие аналитиком: %d %s", w.Code, w.Body)
 	}
 }

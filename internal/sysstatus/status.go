@@ -209,7 +209,26 @@ const (
 	// customer_cert_expiry:critical). Отдельное семейство, а не
 	// cert_expiry:<ID>: те коды относятся к шлюзам реестра.
 	ConditionCustomerCertExpiry = "customer_cert_expiry"
+	// ConditionAlertJob — DM-44 (3В17 ревью 3.r2): фоновая задача правил
+	// «частота», «аномалия» и «бюджет» не отмечала проход дольше
+	// AlertJobStaleAfter при работающем сервере — правила молчат.
+	ConditionAlertJob = "alert_job_stale"
 )
+
+// AlertJobStaleAfter — возраст последнего прохода фоновой задачи правил
+// (период — минута), после которого она считается остановленной: пять
+// пропущенных проходов подряд.
+const AlertJobStaleAfter = 5 * time.Minute
+
+// AlertJobRun — последний проход фоновой задачи правил оповещений.
+type AlertJobRun struct {
+	// Tracked — хранилище ведёт отметку прохода; false — условия нет.
+	Tracked bool
+	// LastRunAt — время последнего прохода; нулевое — проходов не было.
+	LastRunAt time.Time
+	// Age — сколько прошло с последнего прохода по часам хранилища.
+	Age time.Duration
+}
 
 // Пороги условий DM-44 (обоснование — ADR-0020).
 const (

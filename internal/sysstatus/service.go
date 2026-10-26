@@ -72,6 +72,9 @@ type Store interface {
 	// Первое наблюдение неактивного условия записи не создаёт.
 	Transition(ctx context.Context, condition string, active bool, now time.Time,
 		rec func(active bool) audit.Entry) (changed bool, err error)
+	// AlertJob — последний проход фоновой задачи правил оповещений
+	// (alert_job_runs, 3В17 ревью 3.r2); now — часы сервиса.
+	AlertJob(ctx context.Context, now time.Time) (AlertJobRun, error)
 }
 
 // SelftestSummary — итог самотеста сервера при запуске.
@@ -414,8 +417,36 @@ func (s *Service) collect(ctx context.Context) collected {
 			c.details[ConditionCustomerCertExpiry], c.details[customerCertCritical] = d, d
 		}
 	}
+	if s.o.Store != nil {
+		s.alertJob(ctx, &c, now)
+	}
 	sort.Strings(c.st.Unavailable)
 	return c
+}
+
+// alertJob — условие alert_job_stale (DM-44, 3В17 ревью 3.r2): фоновая
+// задача правил не отмечала проход дольше AlertJobStaleAfter, а сервер
+// работает дольше этого срока. Условие поднимается вне транзакции прохода,
+// поэтому видно и тогда, когда каждый проход откатывается.
+func (s *Service) alertJob(ctx context.Context, c *collected, now time.Time) {
+	jctx, cancel := s.dbCtx(ctx)
+	job, err := s.o.Store.AlertJob(jctx, now)
+	cancel()
+	switch {
+	case err != nil:
+		s.unavailable(c, "alert_job", err)
+		return
+	case !job.Tracked:
+		return
+	}
+	stale := now.Sub(s.o.StartedAt) > AlertJobStaleAfter && (job.LastRunAt.IsZero() || job.Age > AlertJobStaleAfter)
+	d := map[string]any{"stale_after_minutes": int(AlertJobStaleAfter / time.Minute)}
+	if !job.LastRunAt.IsZero() {
+		d["last_run_at"] = job.LastRunAt.UTC().Format(time.RFC3339)
+		d["age_seconds"] = int64(job.Age / time.Second)
+	}
+	c.conditions[ConditionAlertJob] = stale
+	c.details[ConditionAlertJob] = d
 }
 
 // blinding — условия DM-44 действующего шлюза: недоступен, отбрасывает
@@ -537,6 +568,7 @@ var conditionInfo = []struct{ code, requirement, title string }{
 	{ConditionCertExpiry, "ИАФ.10", "Скоро истекает сертификат шлюза"},
 	{ConditionCAExpiry, "ИАФ.10", "Истекает корень внутреннего УЦ: нужна ротация (aisec-cli keys rotate-ca)"},
 	{ConditionCustomerCertExpiry, "ЗИ.4", "Скоро истекает сертификат заказчика для адреса шлюза: загрузите новый"},
+	{ConditionAlertJob, "РСБ.7", "Фоновая задача правил оповещений не выполняется: правила частоты, аномалий и бюджетов молчат"},
 }
 
 // family — условие раздела 7, к которому относится код (integrity:server —

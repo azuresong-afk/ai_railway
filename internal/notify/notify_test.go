@@ -8,6 +8,7 @@ import (
 	"errors"
 	"mime"
 	"net/http"
+	"net/netip"
 	"slices"
 	"strconv"
 	"strings"
@@ -46,6 +47,8 @@ func newEnv(t *testing.T) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Приёмники тестов слушают loopback: сеть разрешена явно (3Н31 ревью 3.r2).
+	tr.AllowNetworks(loopbackNets)
 	e := &env{p: p, tp: tp, caPEM: caPEM, cert: cert, key: key, mem: NewMemory(), tr: tr,
 		now: time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)}
 	e.mem.SetNow(func() time.Time { return e.now })
@@ -288,7 +291,7 @@ func TestSyslogDelivery(t *testing.T) {
 			}
 		case FormatCEF:
 			if !strings.HasPrefix(msg, "CEF:0|AISec|AISec|1.2.3|security.console_bruteforce|Перебор паролей консоли — 192.0.2.10|8|rt=") ||
-				!strings.Contains(msg, `account: admin\r\nBcc: evil@example.org @channel; source_ip: 192.0.2.10`) {
+				!strings.Contains(msg, `account: admin  Bcc: evil@example.org @channel; source_ip: 192.0.2.10`) {
 				t.Fatalf("CEF: %q", msg)
 			}
 		}
@@ -307,6 +310,16 @@ func TestCEFEscaping(t *testing.T) {
 	want := `CEF:0|AISec|AISec|1\|0|a\|b\\c|x\|y z|8|`
 	if !strings.HasPrefix(got, want) || !strings.Contains(got, `cs1=k\=v\\w`) {
 		t.Fatalf("CEF: %q", got)
+	}
+	// 3Н32 ревью 3.r2: управляющие символы и разделители строк Unicode в
+	// значениях расширения не обрезают и не разбивают запись в SIEM.
+	m.RuleName = "a\x00b\u0085c\u2028d\re"
+	m.Group = map[string]string{"account": "x\u2029y"}
+	got = string(cefBody(m, "1"))
+	for _, bad := range []string{"\x00", "\u0085", "\u2028", "\u2029", "\r"} {
+		if strings.Contains(got, bad) {
+			t.Fatalf("CEF с управляющим символом %q: %q", bad, got)
+		}
 	}
 }
 
@@ -694,4 +707,97 @@ func FuzzDecodeChannelInput(f *testing.F) {
 			}
 		}
 	})
+}
+
+// loopbackNets — сети приёмников тестов (3Н31 ревью 3.r2).
+var loopbackNets = []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8"), netip.MustParsePrefix("::1/128")}
+
+// 3Н33 ревью 3.r2: адреса из значений группировки не становятся ссылками
+// в Mattermost и Rocket.Chat — в «://» и «www.» вставляется U+200B.
+func TestMattermostNoAutolinks(t *testing.T) {
+	m := sampleAlert()
+	m.Group = map[string]string{"account": "https://evil.example/login www.evil.example"}
+	raw, err := mattermostBody(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body map[string]string
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(body["text"], "://") || strings.Contains(body["text"], "www.") {
+		t.Fatalf("ссылка в тексте: %q", body["text"])
+	}
+	if !strings.Contains(body["text"], "https:\u200b//evil.example/login") {
+		t.Fatalf("адрес искажён: %q", body["text"])
+	}
+}
+
+// 3Н34 ревью 3.r2: смена ключа подписи webhook и формата syslog —
+// ослабление (повторная проверка, weakening); в аудите — отпечатки корневых
+// сертификатов канала, а не только их длина.
+func TestChannelUpdateWeakeningSigningAndFormat(t *testing.T) {
+	e := newEnv(t)
+	ctx := testCtx(t)
+	noConfirm := e.by
+	noConfirm.Confirm = nil
+	wh, err := e.svc.CreateChannel(ctx, e.by, ChannelInput{Name: "Webhook", Type: TypeWebhook,
+		Settings: Settings{Format: FormatGeneric, CAPEM: e.caPEM},
+		Secrets:  SecretsInput{URL: ptr("https://soar.example/hook"), SigningKey: ptr(testSigningKey)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sys, err := e.svc.CreateChannel(ctx, e.by, ChannelInput{Name: "SIEM", Type: TypeSyslog, AuditStream: ptr(true),
+		Settings: Settings{Host: "siem.example", Port: 6514, Format: FormatJSON, CAPEM: e.caPEM}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mail, err := e.svc.CreateChannel(ctx, e.by, ChannelInput{Name: "Почта", Type: TypeEmail,
+		Settings: Settings{Host: "smtp.example", Username: "aisec", From: "aisec@example.ru", To: []string{"soc@example.ru"}, CAPEM: e.caPEM},
+		Secrets:  SecretsInput{Password: ptr("синтетический-пароль")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		reason string
+		c      Channel
+		edit   func(*ChannelInput)
+	}{
+		{"signing_key_changed", wh, func(in *ChannelInput) { in.Secrets.SigningKey = ptr(strings.Repeat("n", 40)) }},
+		{"format_changed", sys, func(in *ChannelInput) { in.Settings.Format = FormatCEF }},
+		// Удаление пароля SMTP вместе с логином из консоли (3Н38 ревью
+		// 3.r2) — тоже с повторной проверкой. Ключ подписи webhook
+		// обязателен: он только заменяется.
+		{"password_removed", mail, func(in *ChannelInput) { in.Settings.Username, in.Secrets.Password = "", ptr("") }},
+	}
+	for _, c := range cases {
+		upd := func(by By) error {
+			cur, err := e.svc.Channel(ctx, c.c.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			in := ChannelInput{Name: cur.Name, Enabled: ptr(cur.Enabled), MinSeverity: cur.MinSeverity, Settings: cur.Settings,
+				Version: cur.Version}
+			c.edit(&in)
+			_, err = e.svc.UpdateChannel(ctx, by, c.c.ID, in)
+			return err
+		}
+		if err := upd(noConfirm); !errors.Is(err, ErrConfirmRequired) {
+			t.Fatalf("%s без проверки: %v", c.reason, err)
+		}
+		if err := upd(e.by); err != nil {
+			t.Fatalf("%s: %v", c.reason, err)
+		}
+		d := e.mem.Audited()[len(e.mem.Audited())-1].Details.(map[string]any)
+		if d["weakening"] != true || !slices.Contains(d["weakening_reasons"].([]string), c.reason) {
+			t.Fatalf("%s: аудит %+v", c.reason, d)
+		}
+		after := d["after"].(map[string]any)
+		if fp, _ := after["ca_fingerprints"].([]string); len(fp) != 1 || len(fp[0]) != 64 {
+			t.Fatalf("%s: отпечатки корней %v", c.reason, after["ca_fingerprints"])
+		}
+	}
+	if cur, err := e.svc.Channel(ctx, mail.ID); err != nil || slices.Contains(cur.SecretFields, SecretPassword) {
+		t.Fatalf("пароль не удалён: %+v %v", cur.SecretFields, err)
+	}
 }

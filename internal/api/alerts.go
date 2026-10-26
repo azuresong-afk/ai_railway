@@ -73,6 +73,12 @@ func alertsProblem(logger *slog.Logger, err error, notFound string) *Problem {
 	case errors.Is(err, alerting.ErrTransition):
 		return NewProblem(http.StatusConflict, CodeConflict,
 			"Статус уже изменён: принять в работу можно новое оповещение, закрыть — новое или принятое в работу.")
+	case errors.Is(err, alerting.ErrSelfReview):
+		return NewProblem(http.StatusConflict, CodeSelfReview,
+			"Оповещение безопасности о ваших собственных действиях закрывает другой пользователь с правом разбора оповещений.")
+	case errors.Is(err, alerting.ErrTokenClose):
+		return NewProblem(http.StatusForbidden, CodeForbidden,
+			"Системное оповещение и оповещение безопасности закрывает пользователь в консоли, а не токен API. Принять в работу токеном можно.")
 	case errors.Is(err, alerting.ErrLocked):
 		return NewProblem(http.StatusUnprocessableEntity, CodeUnprocessable,
 			"Системное правило и правило безопасности не отключаются и не меняются: можно изменить только получателей.")
@@ -439,6 +445,9 @@ type AlertRuleStateView struct {
 	// KeysHidden — ключи скрыты: объёмы «аномалии» видны с правом
 	// events.read, расход «бюджета» — с budgets.read (3Н13 ревью 3.12).
 	KeysHidden bool `json:"keys_hidden"`
+	// Warning — предупреждение последнего прохода (evaluation_failed,
+	// timezone_invalid); пусто — нет (3В17, 3Н36 ревью 3.r2).
+	Warning string `json:"warning,omitempty"`
 }
 
 // stateKeysPermission — право, без которого ключи состояния правила вида
@@ -464,7 +473,7 @@ func (d Deps) getAlertRuleState(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	v := AlertRuleStateView{RuleID: rule.ID, Kind: rule.Kind, Evaluated: evaluated, Learning: st.Learning,
-		LearningUntil: st.LearningUntil, Month: st.Month, Keys: st.Keys, KeysTotal: st.KeysTotal}
+		LearningUntil: st.LearningUntil, Month: st.Month, Keys: st.Keys, KeysTotal: st.KeysTotal, Warning: st.Warning}
 	if evaluated {
 		v.EvaluatedAt = optTime(st.EvaluatedAt)
 	}

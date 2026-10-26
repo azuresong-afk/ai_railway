@@ -159,7 +159,7 @@ export function AlertCardPanel({ id, me, onClose }: { id: string; me: Me; onClos
                   {a.events_truncated && <p className="text-xs text-muted">Показаны первые {a.events.length} событий: срабатываний больше.</p>}
                 </>
               ) : (
-                <p className="text-sm text-muted">Для просмотра событий нужно право «events.read».</p>
+                <p className="text-sm text-muted">Для просмотра событий нужно право «Просмотр событий».</p>
               )}
             </section>
 

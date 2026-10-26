@@ -34,6 +34,7 @@ const (
 	BuiltinConfigBundle   = "system.config_bundle"        // ОЦЛ.3
 	BuiltinNotifyFailed   = "system.notify_failed"        // DM-44: уведомление не доставлено
 	BuiltinAuditStream    = "system.audit_stream_lag"     // DM-44, РСБ.6: передача журнала в SIEM отстаёт
+	BuiltinAlertJob       = "system.alert_job"            // DM-44: фоновая задача правил остановлена (3В17 ревью 3.r2)
 )
 
 // Пороги правил безопасности (обоснование — ADR-0020, раздел «Пороги
@@ -67,12 +68,14 @@ const (
 	maxSystemDetails = 4096
 )
 
-// securityRules — встроенные правила задачи 3.11.
+// securityRules — встроенные правила задачи 3.11. Окна подавления после
+// закрытия у них нет (3В15 ревью 3.r2): повтор после закрытия — новое
+// оповещение и новые уведомления; шум DM-40 снимает окно группировки.
 func securityRules() []Rule {
 	none := Recipients{Roles: []string{}, Users: []string{}}
 	rule := func(key, kind, name, desc, sev string, group []string) Rule {
 		return Rule{BuiltinKey: key, Kind: kind, Name: name, Description: desc, Enabled: true, Severity: sev,
-			GroupBy: group, SuppressMinutes: DefaultSuppressMinutes, Recipients: none}
+			GroupBy: group, SuppressMinutes: 0, Recipients: none}
 	}
 	weak := rule(BuiltinWeakening, KindSecurity, "Ослабление защиты",
 		"DM-40: перевод политики в monitor, отключение или ослабление правила, понижение действия, режим хранения none или full, "+
@@ -122,8 +125,13 @@ func securityRules() []Rule {
 			"DM-44: канал уведомлений не доставил сообщение после всех повторов.", "high", []string{"channel"}),
 		rule(BuiltinAuditStream, KindSystem, "Передача журнала аудита в SIEM отстаёт",
 			"DM-44, РСБ.6: самая старая не переданная в SIEM запись журнала аудита старше 15 минут или не передано больше "+
-				"10 000 записей. Записи не теряются: после восстановления приёмника передача догоняет журнал.",
+				"10 000 записей. Записи не теряются: после восстановления приёмника передача догоняет журнал. "+
+				"Разрыв передачи (записи удалены архивацией до передачи, курсор канала потерян) — отдельное оповещение.",
 			"high", []string{"channel"}),
+		rule(BuiltinAlertJob, KindSystem, "Фоновая задача правил оповещений не выполняется",
+			"DM-44: фоновая задача правил «частота», «аномалия» и «бюджет» (DM-15, DM-16, DM-17, DM-36) не завершала проход "+
+				"дольше 5 минут при работающем сервере — эти правила не срабатывают. Причина — в техническом журнале сервера.",
+			"high", []string{}),
 	}
 }
 
@@ -299,15 +307,28 @@ func classifyAudit(ctx context.Context, ops secOps, r *audit.Record) ([]Raise, e
 		}
 		raises = append(raises, raiseOf(BuiltinIntegrity, map[string]string{"component": comp},
 			map[string]string{"component": comp}, 1, map[string]any{"items": []any{item(r, map[string]any{"reason": details()["reason"]})}}))
+	case "notify.audit_stream_gap":
+		// РСБ.6, DM-44 (3В19 ревью 3.r2): записи журнала не переданы в SIEM —
+		// удалены архивацией раньше передачи или курсор канала потерян.
+		dd := details()
+		raises = append(raises, raiseOf(BuiltinAuditStream, map[string]string{"channel": r.Object.ID},
+			map[string]string{"channel": str(dd["channel_name"], r.Object.ID)}, 1,
+			map[string]any{"items": []any{item(r, map[string]any{"reason": dd["reason"], "from_seq": dd["from_seq"], "to_seq": dd["to_seq"]})}}))
 	case "notify.delivery_failed":
 		raises = append(raises, raiseOf(BuiltinNotifyFailed, map[string]string{"channel": r.Object.ID},
 			map[string]string{"channel": str(details()["channel_name"], r.Object.ID)}, 1,
 			map[string]any{"items": []any{item(r, map[string]any{"error": details()["error"], "attempts": details()["attempts"]})}}))
 	}
 	if reasons, ok := weakening(r, details); ok {
+		// Причины — по одной на правило и исключение политики (до сотен):
+		// в элементе первые MaxItemReasons и общее число (3В16 ревью 3.r2).
+		extra := map[string]any{"reasons": reasons}
+		if len(reasons) > MaxItemReasons {
+			extra["reasons"], extra["reasons_total"] = reasons[:MaxItemReasons], len(reasons)
+		}
 		raises = append(raises, raiseOf(BuiltinWeakening, map[string]string{"actor": actorKey(r.Actor)},
 			map[string]string{"actor": actorName(r.Actor)}, 1,
-			map[string]any{"items": []any{item(r, map[string]any{"reasons": reasons})}}))
+			map[string]any{"items": []any{item(r, extra)}}))
 	}
 	return raises, nil
 }
@@ -401,6 +422,7 @@ var systemFamilies = map[string]string{
 	"ca_expiry":         BuiltinCertExpiry,
 	"reports_stale":     BuiltinReportsStale,
 	"audit_stream_lag":  BuiltinAuditStream,
+	"alert_job_stale":   BuiltinAlertJob,
 	// Сертификат заказчика для адреса шлюза (задача 3.27).
 	"customer_cert_expiry": BuiltinCertExpiry,
 }

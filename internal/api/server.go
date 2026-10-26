@@ -18,6 +18,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/incidents"
 	"github.com/azuresong-afk/ai_railway/internal/notify"
 	"github.com/azuresong-afk/ai_railway/internal/policy/versions"
+	"github.com/azuresong-afk/ai_railway/internal/reports"
 )
 
 // Options — зависимости каркаса. Последующие задачи добавляют сюда свои
@@ -65,6 +66,9 @@ type Options struct {
 	// Dashboards — агрегаты для дашбордов (задача 3.19 этапа 3); nil — их
 	// эндпоинты отвечают 503.
 	Dashboards DashboardReader
+	// Reports — отчёты и расписания рассылки (задачи 3.24, 3.25 этапа 3);
+	// nil — их эндпоинты отвечают 503.
+	Reports *reports.Service
 	// OnDenied — вызывается при каждом отказе в доступе (УПД.6). По
 	// умолчанию, если задан Auth, отказ аутентифицированному субъекту
 	// пишется в журнал аудита (access.denied).
@@ -119,6 +123,8 @@ type Deps struct {
 	Incidents *incidents.Service
 	// Dashboards — nil, если агрегаты дашбордов не подключены: их эндпоинты отвечают 503.
 	Dashboards DashboardReader
+	// Reports — nil, если отчёты не подключены: их эндпоинты отвечают 503.
+	Reports *reports.Service
 	// DashCache — общие снимки дашбордов на dashCacheTTL; DashStreams —
 	// ограничение одновременных потоков SSE; Reauthorize — повторная
 	// проверка прав запроса на каждом шаге потока.
@@ -166,7 +172,7 @@ func New(o Options) (http.Handler, *Router, error) {
 	deps := Deps{Logger: o.Logger, Version: o.Version, Ready: o.Ready, Auth: o.Auth, Gateways: o.Gateways, Integrity: o.Integrity,
 		Status: o.Status, Events: o.Events, Audit: o.Audit, Apps: o.Apps, Policies: o.Policies,
 		AuditLog: o.AuditLog, AuditVerifier: o.AuditVerifier, Alerts: o.Alerts, Notify: o.Notify, Incidents: o.Incidents,
-		Dashboards: o.Dashboards, DashCache: newDashCache(), DashStreams: NewExportGate(dashStreamsPerSubject, dashStreamsTotal),
+		Dashboards: o.Dashboards, Reports: o.Reports, DashCache: newDashCache(), DashStreams: NewExportGate(dashStreamsPerSubject, dashStreamsTotal),
 		Reauthorize: o.Authorizer.Authorize,
 		Exports:     NewExportGate(MaxExportsPerSubject, MaxExportsTotal), AuditReads: NewExportGate(MaxAuditReadsPerSubject, MaxAuditReadsTotal)}
 	if err := rt.Add(append(Routes(deps), o.Extra...)...); err != nil {

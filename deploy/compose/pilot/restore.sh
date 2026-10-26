@@ -13,12 +13,14 @@
 #   2. разворачивает ключи, секреты и каталоги шлюза;
 #   3. запускает postgres (роли и пустая БД создаются с паролями из копии) и
 #      восстанавливает БД одной транзакцией;
-#   4. применяет миграции и проверяет цепочку журнала аудита.
+#   4. применяет миграции, завершает все сессии консоли и отзывает токены API
+#      копии (aisec-cli restore-finish, запись system.restored), проверяет
+#      цепочку журнала аудита.
 # После него: docker compose up -d (руководство администратора, раздел 12).
 #
 # Своя СУБД заказчика: шаги 3 и 4 выполняются вручную — восстановите БД
-# средствами СУБД, затем docker compose run --rm aisec-cli migrate и
-# audit verify.
+# средствами СУБД, затем docker compose run --rm aisec-cli migrate,
+# restore-finish и audit verify.
 set -eu
 umask 077
 cd "$(dirname "$0")"
@@ -44,6 +46,12 @@ esac
 for f in files.tar env SHA256SUMS; do
 	[ -f "$src/$f" ] && [ ! -L "$src/$f" ] || die "в $src нет обычного файла $f — это не копия backup.sh"
 done
+
+# Имя каталога копии — только для записи system.restored: необычное имя
+# (пробелы, кириллица) не передаётся и не прерывает восстановление.
+copy_name=$(basename "$src")
+printf '%s\n' "$copy_name" | LC_ALL=C grep -Eqx '[A-Za-z0-9._-]{1,128}' || copy_name=
+finish_args=${copy_name:+-copy-dir $copy_name}
 
 data_dir=$(env_value .env AISEC_DATA_DIR)
 [ -n "$data_dir" ] || data_dir=/srv/aisec
@@ -127,6 +135,7 @@ if [ "$own_db" -eq 1 ]; then
 	done_ok=1
 	echo "Своя СУБД: восстановите БД aisec средствами СУБД, затем:"
 	echo "  docker compose run --rm aisec-cli migrate"
+	echo "  docker compose run --rm aisec-cli restore-finish $finish_args"
 	echo "  docker compose run --rm aisec-cli audit verify -keys /etc/aisec/keys"
 	echo "  docker compose up -d"
 	exit 0
@@ -142,10 +151,15 @@ PGPASSFILE=$f pg_restore --no-password -h 127.0.0.1 -U aisec_owner -d aisec --ex
 	die "pg_restore не выполнен"
 echo "БД восстановлена."
 
-# 4. Миграции (если версия новее копии) и цепочка журнала аудита.
+# 4. Миграции (если версия новее копии), отзыв сессий и токенов копии и
+# цепочка журнала аудита. restore-finish — до audit verify и до запуска
+# сервера: давность копии он считает по последней записи журнала.
 docker compose run --rm aisec-cli migrate || die "миграции не применены"
+# shellcheck disable=SC2086 # finish_args — пусто или «-copy-dir ИМЯ» из проверенных символов
+docker compose run --rm aisec-cli restore-finish $finish_args ||
+	die "сессии и токены API копии не отозваны (aisec-cli restore-finish)"
 docker compose run --rm aisec-cli audit verify -keys /etc/aisec/keys ||
 	die "цепочка журнала аудита не сходится (код 3 — нарушение): копия БД неполная или изменена"
 done_ok=1
 echo "Установка восстановлена. Запустите: docker compose up -d"
-echo "Затем завершите сессии и отзовите токены API, выданные после даты копии (руководство администратора, раздел 12.2)."
+echo "Пользователи входят заново, владельцы токенов API выпускают их заново. Изменения после даты копии повторите по журналу аудита (руководство администратора, раздел 12.2)."

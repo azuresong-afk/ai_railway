@@ -60,7 +60,7 @@ func TestSecurityRulesLocked(t *testing.T) {
 	e := newEnv(t)
 	for _, key := range []string{BuiltinGatewayAuth, BuiltinConsoleBrute, BuiltinAccessDenied, BuiltinWeakening, BuiltinContentAccess,
 		BuiltinIntegrity, BuiltinAuditChain, BuiltinEventsDropped, BuiltinGatewayOffline, BuiltinTimeSync, BuiltinAuditStorage,
-		BuiltinCertExpiry, BuiltinReportsStale, BuiltinConfigBundle, BuiltinNotifyFailed} {
+		BuiltinCertExpiry, BuiltinReportsStale, BuiltinConfigBundle, BuiltinNotifyFailed, BuiltinAuditStream, BuiltinAlertJob} {
 		r := e.rule(t, key)
 		if !Locked(r.Kind) || !r.Enabled || r.Severity == "" {
 			t.Fatalf("%s: %+v", key, r)
@@ -333,6 +333,8 @@ func TestDM44_SystemAlerts(t *testing.T) {
 		{"time_sync", BuiltinTimeSync, "Время не синхронизировано"},
 		{"audit_storage", BuiltinAuditStorage, "Журнал аудита приближается к пределу хранилища"},
 		{"config_bundle_lag:" + testGateway, BuiltinConfigBundle, "Пакет конфигурации шлюзов не применён — gateway:" + testGateway + " (gw-1)"},
+		// 3В17 ревью 3.r2: остановка фоновой задачи правил.
+		{"alert_job_stale", BuiltinAlertJob, "Фоновая задача правил оповещений не выполняется"},
 	}
 	for _, c := range cases {
 		e.systemAlert(t, c.code, "cleared", gw)
@@ -456,5 +458,154 @@ func TestRetentionSettings(t *testing.T) {
 	d, _ := st.recs[1].Details.(map[string]any)
 	if st.recs[1].Action != "alert.settings_changed" || d["weakening"] != true || st.recs[0].Details.(map[string]any)["weakening"] != false {
 		t.Fatalf("аудит: %+v", st.recs)
+	}
+}
+
+// byActor — субъект действия с оповещением: пользователь или его токен API.
+func byActor(a audit.Actor, userID string) By { return By{Actor: a, UserID: userID} }
+
+// DM-40 (3В15 ревью 3.r2): после закрытия оповещения об ослаблении повтор
+// даёт новое оповещение — окна подавления у правил безопасности нет.
+func TestDM40_SelfCloseDoesNotSuppress(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	weak := func() {
+		e.audit(t, e.rec(t, tUser, "192.0.2.1", "policy.update", audit.Object{Type: "policy", ID: "org-default"}, audit.ResultSuccess,
+			map[string]any{"weakening": true, "weakening_reasons": []string{"mode_monitor"}}))
+	}
+	weak()
+	got := e.alerts(t, BuiltinWeakening)
+	if len(got) != 1 {
+		t.Fatalf("оповещения: %+v", got)
+	}
+	if _, err := e.svc.SetStatus(ctx, byActor(tOther, tOther.ID), got[0].ID, StatusClosed, "разобрано"); err != nil {
+		t.Fatal(err)
+	}
+	e.tick(time.Minute)
+	weak()
+	got = e.alerts(t, BuiltinWeakening)
+	if len(got) != 2 || got[0].Status != StatusNew || got[1].Suppressed != 0 {
+		t.Fatalf("повтор после закрытия подавлен: %+v", got)
+	}
+	for _, r := range securityRules() {
+		if r.SuppressMinutes != 0 {
+			t.Fatalf("%s: окно подавления %d", r.BuiltinKey, r.SuppressMinutes)
+		}
+	}
+}
+
+// DM-40 (3В15 ревью 3.r2): субъект оповещения безопасности не закрывает
+// его сам — ни из консоли, ни своим токеном; принять в работу может,
+// закрывает другой пользователь.
+func TestDM40_SubjectCannotClose(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	e.audit(t, e.rec(t, tUser, "192.0.2.1", "auth.mfa_reset", audit.Object{Type: "user", ID: tOther.ID}, audit.ResultSuccess, nil))
+	got := e.alerts(t, BuiltinWeakening)
+	if len(got) != 1 {
+		t.Fatalf("оповещения: %+v", got)
+	}
+	id := got[0].ID
+	if _, err := e.svc.SetStatus(ctx, byActor(tUser, tUser.ID), id, StatusClosed, ""); !errors.Is(err, ErrSelfReview) {
+		t.Fatalf("самозакрытие: %v", err)
+	}
+	token := audit.Actor{Type: audit.ActorAPIToken, ID: "01900000-0000-7000-8000-0000000000d1", Name: "petrov (at_x)"}
+	if _, err := e.svc.SetStatus(ctx, byActor(token, tUser.ID), id, StatusClosed, ""); !errors.Is(err, ErrTokenClose) {
+		t.Fatalf("закрытие токеном субъекта: %v", err)
+	}
+	if _, err := e.svc.SetStatus(ctx, byActor(tUser, tUser.ID), id, StatusInProgress, ""); err != nil {
+		t.Fatalf("принять в работу: %v", err)
+	}
+	if a, err := e.svc.SetStatus(ctx, byActor(tOther, tOther.ID), id, StatusClosed, ""); err != nil || a.Status != StatusClosed {
+		t.Fatalf("закрытие другим: %+v %v", a, err)
+	}
+}
+
+// DM-43 (3В15 ревью 3.r2): системное оповещение и оповещение безопасности
+// токен API (SOAR) не закрывает — только принимает в работу.
+func TestDM43_TokenCannotClose(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	e.audit(t, e.rec(t, audit.Actor{Type: audit.ActorSystem, ID: "aisec-server"}, "", "audit.chain_broken",
+		audit.Object{Type: "audit_log"}, audit.ResultFailure, map[string]any{"reason": "hash_mismatch", "broken_seq": 7}))
+	got := e.alerts(t, BuiltinAuditChain)
+	if len(got) != 1 {
+		t.Fatalf("оповещения: %+v", got)
+	}
+	token := audit.Actor{Type: audit.ActorAPIToken, ID: "01900000-0000-7000-8000-0000000000d2", Name: "soar (at_y)"}
+	if _, err := e.svc.SetStatus(ctx, byActor(token, tOther.ID), got[0].ID, StatusInProgress, ""); err != nil {
+		t.Fatalf("принять в работу токеном: %v", err)
+	}
+	if _, err := e.svc.SetStatus(ctx, byActor(token, tOther.ID), got[0].ID, StatusClosed, ""); !errors.Is(err, ErrTokenClose) {
+		t.Fatalf("закрытие токеном: %v", err)
+	}
+	if _, err := e.svc.SetStatus(ctx, byActor(tOther, tOther.ID), got[0].ID, StatusClosed, ""); err != nil {
+		t.Fatalf("закрытие пользователем: %v", err)
+	}
+	// Оповещение «порог» токен закрывает, как раньше.
+	e.ingest(t, e.event(t, "crm-bot", "gigachat", "block", "DM-01"))
+	thr := e.alerts(t, BuiltinInjectionBlocked)
+	if _, err := e.svc.SetStatus(ctx, byActor(token, tOther.ID), thr[0].ID, StatusClosed, ""); err != nil {
+		t.Fatalf("закрытие «порога» токеном: %v", err)
+	}
+}
+
+// DM-44, РСБ.6 (3В19 ревью 3.r2): разрыв передачи журнала аудита в SIEM —
+// записи удалены архивацией до передачи или курсор потерян — поднимает
+// оповещение system.audit_stream_lag отдельно от условия отставания.
+func TestDM44_AuditStreamGap(t *testing.T) {
+	e := newEnv(t)
+	sys := audit.Actor{Type: audit.ActorSystem, ID: "aisec-server"}
+	ch := audit.Object{Type: "notify_channel", ID: "01900000-0000-7000-8000-0000000000e1"}
+	e.audit(t, e.rec(t, sys, "", "notify.audit_stream_gap", ch, audit.ResultFailure,
+		map[string]any{"channel_name": "SIEM", "reason": "archived", "from_seq": 101, "to_seq": 250}))
+	got := e.alerts(t, BuiltinAuditStream)
+	if len(got) != 1 || got[0].Values["channel"] != "SIEM" || got[0].Severity != "high" {
+		t.Fatalf("оповещение о разрыве: %+v", got)
+	}
+	items, _ := got[0].Details["items"].([]any)
+	it, _ := items[0].(map[string]any)
+	if it["reason"] != "archived" || fmt.Sprint(it["from_seq"]) != "101" || fmt.Sprint(it["to_seq"]) != "250" {
+		t.Fatalf("подробности: %+v", got[0].Details)
+	}
+	if _, err := e.svc.SetStatus(context.Background(), e.admin, got[0].ID, StatusClosed, ""); err != nil {
+		t.Fatal(err)
+	}
+	e.audit(t, e.rec(t, sys, "", "notify.audit_stream_gap", ch, audit.ResultFailure,
+		map[string]any{"channel_name": "SIEM", "reason": "cursor_lost", "to_seq": 900}))
+	if got := e.alerts(t, BuiltinAuditStream); len(got) != 2 {
+		t.Fatalf("повтор после закрытия: %+v", got)
+	}
+}
+
+// DM-40 (3В16 ревью 3.r2): серия крупных ослаблений одного субъекта за
+// окно группировки не упирается в предел столбца details (16 КиБ): в
+// элементе — не больше MaxItemReasons причин и их общее число, список
+// элементов обрезается по размеру с признаком items_truncated.
+func TestDM40_LargeWeakeningDetailsBounded(t *testing.T) {
+	e := newEnv(t)
+	reasons := make([]string, 200)
+	for i := range reasons {
+		reasons[i] = fmt.Sprintf("rule_disabled:rule-%03d-with-a-long-identifier", i)
+	}
+	for i := range 50 {
+		e.audit(t, e.rec(t, tUser, "192.0.2.1", "policy.update", audit.Object{Type: "policy", ID: fmt.Sprint("p-", i)},
+			audit.ResultSuccess, map[string]any{"weakening": true, "weakening_reasons": reasons}))
+	}
+	got := e.alerts(t, BuiltinWeakening)
+	if len(got) != 1 || got[0].Count != 50 {
+		t.Fatalf("оповещения: %+v", got)
+	}
+	raw, err := json.Marshal(got[0].Details)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) > MaxDetailsBytes || got[0].Details["items_truncated"] != true {
+		t.Fatalf("подробности %d байт, обрезка %v", len(raw), got[0].Details["items_truncated"])
+	}
+	items, _ := got[0].Details["items"].([]any)
+	it, _ := items[0].(map[string]any)
+	if rs, _ := it["reasons"].([]any); len(rs) != MaxItemReasons || fmt.Sprint(it["reasons_total"]) != "200" {
+		t.Fatalf("элемент: %d причин, всего %v", len(rs), it["reasons_total"])
 	}
 }

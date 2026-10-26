@@ -1,6 +1,7 @@
 package alerting
 
 import (
+	"encoding/json"
 	"maps"
 	"strings"
 	"time"
@@ -124,8 +125,11 @@ func (t *Trigger) add(ref EventRef, at time.Time) {
 }
 
 // mergeDetails дополняет подробности открытого оповещения подробностями
-// нового срабатывания: список items склеивается до MaxDetailItems, прочие
-// поля берутся из нового срабатывания.
+// нового срабатывания: список items склеивается до MaxDetailItems и
+// MaxDetailsBytes, прочие поля берутся из нового срабатывания. Элемент
+// сверх предела не добавляется, ставится items_truncated: вставка не
+// нарушает предел столбца, и действие с записью аудита не откатывается
+// (3В16 ревью 3.r2).
 func mergeDetails(cur, add map[string]any) map[string]any {
 	out := cloneDetails(cur)
 	for k, v := range add {
@@ -138,15 +142,27 @@ func mergeDetails(cur, add map[string]any) map[string]any {
 		return out
 	}
 	items, _ := out["items"].([]any)
+	size := detailsSize(out)
 	for _, it := range newItems {
-		if len(items) >= MaxDetailItems {
+		n := detailsSize(it) + 1
+		if len(items) >= MaxDetailItems || size+n > MaxDetailsBytes {
 			out["items_truncated"] = true
 			break
 		}
 		items = append(items, it)
+		size += n
 	}
 	out["items"] = items
 	return out
+}
+
+// detailsSize — размер значения в JSON; неразборное — сверх предела.
+func detailsSize(v any) int {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return MaxDetailsBytes + 1
+	}
+	return len(raw)
 }
 
 // title — заголовок оповещения: название правила и значения группировки.

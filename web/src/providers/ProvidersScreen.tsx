@@ -47,7 +47,7 @@ function CredentialDialog({ provider, onClose }: { provider: Provider; onClose: 
       <form onSubmit={submit} className="flex flex-col gap-3">
         <Field label="Ключ API или авторизационные данные" error={value === "" ? undefined : bad}>
           {({ id, describedBy, invalid }) => (
-            <Input id={id} aria-describedby={describedBy} aria-invalid={invalid} type="password" autoComplete="off" maxLength={16384} value={value} onChange={(e) => setValue(e.target.value)} />
+            <Input id={id} name="provider-credential" aria-describedby={describedBy} aria-invalid={invalid} type="password" autoComplete="new-password" maxLength={16384} value={value} onChange={(e) => setValue(e.target.value)} />
           )}
         </Field>
         <ErrorBanner error={m.error} />

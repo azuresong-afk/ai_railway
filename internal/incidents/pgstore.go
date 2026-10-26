@@ -253,7 +253,7 @@ func relatedTx(ctx context.Context, tx pgx.Tx, alerts *alerting.PGStore, orgID, 
 	}
 	r.Incident = inc
 	rows, err := tx.Query(ctx, `SELECT id::text, incident_id::text, at, actor, kind, details FROM incident_timeline
-		WHERE incident_id = $1 ORDER BY at, id LIMIT $2`, id, MaxTimeline)
+		WHERE incident_id = $1 ORDER BY at, id LIMIT $2`, id, MaxTimeline+1)
 	if err != nil {
 		return Related{}, err
 	}
@@ -711,14 +711,14 @@ func (s *PGStore) OpenFromAlert(ctx context.Context, tx pgx.Tx, a alerting.Alert
 }
 
 // NoteAlert — alerting.IncidentOpener: строка инцидента не блокируется,
-// добавляются только хронология (до MaxTimeline) и ссылки.
+// добавляются только хронология (до MaxAutoTimeline) и ссылки.
 func (s *PGStore) NoteAlert(ctx context.Context, tx pgx.Tx, incidentID string, a alerting.Alert, refs []EventRef) error {
 	var n int
 	if err := tx.QueryRow(ctx, `SELECT count(*) FROM incident_timeline WHERE incident_id = $1`, incidentID).Scan(&n); err != nil {
 		return err
 	}
 	ch := Change{Events: refs}
-	if n < MaxTimeline {
+	if n < MaxAutoTimeline {
 		e, err := triggeredEntry(s.ids, incidentID, s.now(), &a, len(refs))
 		if err != nil {
 			return err

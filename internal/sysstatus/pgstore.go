@@ -106,6 +106,23 @@ func (s *PGStore) AuditChain(ctx context.Context) (*AuditChainStatus, error) {
 	return &ch, nil
 }
 
+// AlertJob — см. Store. Возраст прохода считает PostgreSQL: отметку
+// alert_job_runs пишет фоновая задача по его часам.
+func (s *PGStore) AlertJob(ctx context.Context, _ time.Time) (AlertJobRun, error) {
+	r := AlertJobRun{Tracked: true}
+	var age time.Duration
+	err := s.db.QueryRow(ctx, `SELECT ran_at, now() - ran_at FROM alert_job_runs WHERE org_id = $1 AND job = 'periodic'`,
+		s.orgID).Scan(&r.LastRunAt, &age)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return r, nil
+	}
+	if err != nil {
+		return AlertJobRun{}, fmt.Errorf("проход фоновой задачи правил: %w", err)
+	}
+	r.LastRunAt, r.Age = r.LastRunAt.UTC(), age
+	return r, nil
+}
+
 // AlertStates — см. Store.
 func (s *PGStore) AlertStates(ctx context.Context) (map[string]AlertState, error) {
 	rows, err := s.db.Query(ctx, "SELECT condition, active, since FROM system_alert_state WHERE org_id = $1", s.orgID)

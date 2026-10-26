@@ -32,11 +32,13 @@ const isHttps = (v: string): boolean => {
 };
 
 // Секрет канала: значение только вводится. Если секрет уже задан, поле пустое, и пустое значение оставляет прежний.
+// autoComplete="new-password": браузер не подставляет сохранённый пароль консоли (autoComplete="off" у поля пароля
+// он не соблюдает) и не уводит его как секрет канала (3В20 ревью 3.r2).
 function SecretField({ name, set, value, onChange, hint }: { name: SecretName; set: boolean; value: string; onChange: (v: string) => void; hint?: string }) {
   return (
     <Field label={secretTitle.get(name)!} hint={set ? `Задан. Оставьте пустым, чтобы не менять. ${hint ?? ""}` : hint}>
       {({ id, describedBy }) => (
-        <Input id={id} aria-describedby={describedBy} type="password" autoComplete="off" value={value} onChange={(e) => onChange(e.target.value)} placeholder={set ? "••••••••" : ""} />
+        <Input id={id} name={`channel-secret-${name}`} aria-describedby={describedBy} type="password" autoComplete="new-password" value={value} onChange={(e) => onChange(e.target.value)} placeholder={set ? "••••••••" : ""} />
       )}
     </Field>
   );
@@ -63,6 +65,9 @@ export function ChannelDialog({ channel, mfa, onClose }: { channel: NotifyChanne
     ca_pem: s?.ca_pem ?? "",
   });
   const [sec, setSec] = useState({ password: "", url: "", signing_key: "" });
+  // Удалить пароль SMTP вместе с логином (3Н38 ревью 3.r2): пустое поле значит «не менять», поэтому удаление — отдельный
+  // флажок. Сервер считает удаление ослаблением и просит пароль или код. Ключ подписи webhook обязателен: он только заменяется.
+  const [dropPassword, setDropPassword] = useState(false);
   const re = useReauth(mfa);
   const set = (k: keyof typeof f) => (e: { target: { value: string } }) => setF((p) => ({ ...p, [k]: e.target.value }));
   const isSet = (k: SecretName) => channel?.secrets_set.includes(k) === true;
@@ -79,7 +84,7 @@ export function ChannelDialog({ channel, mfa, onClose }: { channel: NotifyChanne
 
   const settings = () => {
     const port = f.port === "" ? {} : { port: Number(f.port) };
-    if (f.type === "email") return { host: f.host.trim(), ...port, username: f.username, from: f.from.trim(), to: splitList(f.to), ca_pem: f.ca_pem };
+    if (f.type === "email") return { host: f.host.trim(), ...port, username: dropPassword ? "" : f.username, from: f.from.trim(), to: splitList(f.to), ca_pem: f.ca_pem };
     if (f.type === "webhook") return { format: (f.format || "generic") as "generic", ca_pem: f.ca_pem };
     return {
       host: f.host.trim(),
@@ -90,9 +95,10 @@ export function ChannelDialog({ channel, mfa, onClose }: { channel: NotifyChanne
       ca_pem: f.ca_pem,
     };
   };
-  // Передаются только введённые секреты: пустой — «не менять».
+  // Передаются только введённые секреты: пустой — «не менять», пустая строка уходит только при удалении флажком.
   const secrets = () => ({
-    ...(f.type === "email" && sec.password !== "" ? { password: sec.password } : {}),
+    ...(f.type === "email" && dropPassword ? { password: "" } : {}),
+    ...(f.type === "email" && !dropPassword && sec.password !== "" ? { password: sec.password } : {}),
     ...(f.type === "webhook" && sec.url !== "" ? { url: sec.url } : {}),
     ...(f.type === "webhook" && sec.signing_key !== "" ? { signing_key: sec.signing_key } : {}),
   });
@@ -100,7 +106,9 @@ export function ChannelDialog({ channel, mfa, onClose }: { channel: NotifyChanne
   const m = useMutation({
     mutationFn: () => {
       const base = { name: f.name.trim(), enabled: f.enabled, min_severity: f.min_severity, settings: settings(), secrets: secrets() };
-      if (channel === null) return alertsApi.createChannel({ ...base, type: f.type, min_severity: f.min_severity as "medium" });
+      // Подписка на журнал аудита (audit_stream, задача 3.14) в консоли не задаётся: новый канал — без неё, правка не
+      // передаёт поле, и сервер оставляет прежнее значение.
+      if (channel === null) return alertsApi.createChannel({ ...base, type: f.type, min_severity: f.min_severity as "medium", audit_stream: false });
       return alertsApi.updateChannel(channel.id, { ...base, min_severity: f.min_severity as "medium", version: channel.version, ...re.body() });
     },
     onSuccess: async () => {
@@ -173,8 +181,21 @@ export function ChannelDialog({ channel, mfa, onClose }: { channel: NotifyChanne
         )}
         {f.type === "email" && (
           <>
-            <Field label="Логин SMTP">{({ id }) => <Input id={id} autoComplete="off" value={f.username} onChange={set("username")} />}</Field>
-            <SecretField name="password" set={isSet("password")} value={sec.password} onChange={(v) => setSec((p) => ({ ...p, password: v }))} />
+            <Field label="Логин SMTP">
+              {({ id }) => <Input id={id} name="smtp-account" autoComplete="off" disabled={dropPassword} value={dropPassword ? "" : f.username} onChange={set("username")} />}
+            </Field>
+            {!dropPassword && <SecretField name="password" set={isSet("password")} value={sec.password} onChange={(v) => setSec((p) => ({ ...p, password: v }))} />}
+            {isSet("password") && (
+              <Check
+                label="Удалить пароль и логин SMTP"
+                checked={dropPassword}
+                onCheckedChange={(v) => {
+                  setDropPassword(v);
+                  setSec((p) => ({ ...p, password: "" }));
+                }}
+              />
+            )}
+            {dropPassword && <p className="text-xs text-muted">Письма пойдут без проверки подлинности. Удаление ослабляет доставку: понадобится пароль или код.</p>}
             <Field label="Отправитель (From)">{({ id }) => <Input id={id} type="email" value={f.from} onChange={set("from")} />}</Field>
             <Field label="Адресаты" hint="По одному на строку, не больше 20. Удаление адресата — ослабление.">
               {({ id, describedBy }) => <textarea id={id} aria-describedby={describedBy} rows={3} value={f.to} onChange={set("to")} className={area} />}

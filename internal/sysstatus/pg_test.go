@@ -257,3 +257,29 @@ func TestPGProbes(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// 3В17 ревью 3.r2: отметка прохода фоновой задачи правил читается ролью
+// сервера, возраст считает PostgreSQL; условие alert_job_stale проходит
+// CHECK таблицы состояний.
+func TestPGAlertJob(t *testing.T) {
+	e, ctx := setupPG(t)
+	job, err := e.store.AlertJob(ctx, time.Now())
+	if err != nil || !job.Tracked || !job.LastRunAt.IsZero() {
+		t.Fatalf("без проходов: %+v %v", job, err)
+	}
+	if _, err := e.owner.Exec(ctx, `INSERT INTO alert_job_runs (org_id, job, ran_at) VALUES ($1, 'periodic', now() - interval '7 minutes')`,
+		audit.DefaultOrgID); err != nil {
+		t.Fatal(err)
+	}
+	job, err = e.store.AlertJob(ctx, time.Now())
+	if err != nil || job.LastRunAt.IsZero() || job.Age < 6*time.Minute || job.Age > 8*time.Minute {
+		t.Fatalf("проход 7 минут назад: %+v %v", job, err)
+	}
+	if _, err := e.store.Transition(ctx, sysstatus.ConditionAlertJob, true, time.Now(), func(bool) audit.Entry {
+		return audit.Entry{Actor: audit.Actor{Type: audit.ActorSystem, ID: "system-status"}, Action: "system.alert",
+			Object: audit.Object{Type: "system", ID: sysstatus.ConditionAlertJob}, Result: audit.ResultFailure,
+			Details: map[string]any{"condition": sysstatus.ConditionAlertJob, "state": "raised"}}
+	}); err != nil {
+		t.Fatal(err)
+	}
+}

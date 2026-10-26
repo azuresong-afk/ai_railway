@@ -125,6 +125,9 @@ type Options struct {
 	// UserCheck — ответственный существует, активен и видит инциденты;
 	// иначе — ErrUserInactive, прочие ошибки — сбой. nil — не проверяется.
 	UserCheck func(ctx context.Context, id string) error
+	// Retention — срок хранения закрытых инцидентов (PGStore); nil — по
+	// умолчанию, изменение недоступно (3Н37 ревью 3.r2).
+	Retention RetentionStore
 }
 
 // Service — инциденты для API консоли.
@@ -135,6 +138,7 @@ type Service struct {
 	clock     func() time.Time
 	ids       *ids.Generator
 	userCheck func(ctx context.Context, id string) error
+	retention RetentionStore
 }
 
 // New создаёт сервис.
@@ -153,7 +157,7 @@ func New(o Options) (*Service, error) {
 		o.Clock = time.Now
 	}
 	return &Service{store: o.Store, alerts: o.Alerts, orgID: o.OrgID, clock: o.Clock, ids: ids.NewGenerator(r),
-		userCheck: o.UserCheck}, nil
+		userCheck: o.UserCheck, retention: o.Retention}, nil
 }
 
 // By — субъект действия.
@@ -162,6 +166,10 @@ type By struct {
 	IP    netip.Addr
 	// UserID — пользователь субъекта (у токена — его владелец).
 	UserID string
+	// Confirm — повторная проверка паролем или кодом TOTP перед
+	// сокращением срока хранения (DM-40); nil — сокращение отклоняется с
+	// ErrConfirmRequired.
+	Confirm func(ctx context.Context) error
 }
 
 // ref — субъект в полях created_by, хронологии и комментариях.
@@ -380,7 +388,8 @@ func (s *Service) SetStatus(ctx context.Context, by By, id string, in StatusInpu
 		if !transitionAllowed(from, in.Status) {
 			return Change{}, ErrTransition
 		}
-		if c.Timeline >= MaxTimeline {
+		// Закрытие проходит при любой длине хронологии (3В18 ревью 3.r2).
+		if in.Status != StatusClosed && c.Timeline >= MaxTimeline {
 			return Change{}, ErrLimit
 		}
 		now := s.now()

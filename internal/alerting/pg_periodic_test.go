@@ -104,29 +104,37 @@ func TestPGPeriodicRules(t *testing.T) {
 		Mode: "soft", Percent: 85}}
 	mu.Unlock()
 
-	// Сбой посреди прохода (очередь доставки на втором оповещении): проход
-	// откатывается целиком, следующий создаёт по одному оповещению.
+	// Сбой посреди прохода (очередь доставки на втором оповещении): правило
+	// со сбоем откатывается в своей точке сохранения, остальные правила и
+	// отметка прохода фиксируются (3В17 ревью 3.r2); следующий проход
+	// досчитывает упавшее правило.
+	var before int
+	if err := e.owner.QueryRow(ctx, `SELECT count(*) FROM alerts`).Scan(&before); err != nil {
+		t.Fatal(err)
+	}
 	mu.Lock()
 	base := len(enqueued) // оповещения приёма событий уже в очереди
 	failAt = base + 2
 	mu.Unlock()
-	if _, err := e.alerts.Periodic(ctx); err == nil {
-		t.Fatal("сбой очереди не прервал проход")
+	res, err := e.alerts.Periodic(ctx)
+	if err != nil || res.Rules == 0 || res.Triggers != 2 {
+		t.Fatalf("сбой одного правила прервал проход: %+v %v", res, err)
 	}
-	var alertsN, runs, marks int
+	var alertsN, runs, failed int
 	if err := e.owner.QueryRow(ctx, `SELECT (SELECT count(*) FROM alerts), (SELECT count(*) FROM alert_job_runs),
-		(SELECT count(*) FROM alert_seen WHERE value LIKE 'budget:%'), (SELECT sum(pending) FROM alert_rule_counts)`).
-		Scan(&alertsN, &runs, &marks, &pending); err != nil || runs != 0 || marks != 0 || pending != 10 {
-		t.Fatalf("после сбоя: оповещений %d, отметок %d, порогов %d, pending %d, %v", alertsN, runs, marks, pending, err)
+		(SELECT count(*) FROM alert_rule_state WHERE state->>'warning' = 'evaluation_failed')`).
+		Scan(&alertsN, &runs, &failed); err != nil || alertsN != before+2 || runs != 1 || failed != 1 {
+		t.Fatalf("после сбоя правила: оповещений %d из %d, отметок %d, упавших %d, %v", alertsN, before, runs, failed, err)
 	}
-	before := alertsN
 	mu.Lock()
-	failAt, enqueued = 0, enqueued[:base] // постановка отката не пережила
+	failAt = 0
+	enqueued = append(enqueued[:base+1], enqueued[base+2:]...) // постановка отката не пережила
 	mu.Unlock()
-
-	res := e.periodic(t)
-	if res.Skipped || res.Triggers != 3 {
-		t.Fatalf("проход: %+v", res)
+	e.rewindJob(t)
+	e.periodic(t)
+	if err := e.owner.QueryRow(ctx, `SELECT count(*) FROM alert_rule_state WHERE state->>'warning' = 'evaluation_failed'`).
+		Scan(&failed); err != nil || failed != 0 {
+		t.Fatalf("предупреждение после успешного прохода: %d %v", failed, err)
 	}
 	probe := e.list(t, alerting.BuiltinProbingSeries)
 	if len(probe) != 1 || probe[0].Count != 10 || probe[0].Values["app"] != "crm-bot" {
@@ -242,5 +250,28 @@ func TestPGPeriodicRules(t *testing.T) {
 	}
 	if _, err := e.app.Exec(ctx, `DELETE FROM alert_rule_state`); sqlState(err) != "42501" {
 		t.Fatalf("удаление состояния: %v", err)
+	}
+}
+
+// 3Н36 ревью 3.r2: отметка прохода в будущем (часы СУБД шагнули назад) не
+// останавливает задачу; неверный пояс установки — предупреждение в
+// состоянии правил «аномалия» и «бюджет», расчёт по UTC.
+func TestPGPeriodicClockStepBack(t *testing.T) {
+	e := setupPG(t)
+	ctx := pgCtx(t)
+	if _, err := e.owner.Exec(ctx, `INSERT INTO install_settings (org_id, timezone, retention_mode, updated_at)
+		VALUES ($1, 'Mars/Olympus', 'masked', now())`, audit.DefaultOrgID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.owner.Exec(ctx, `INSERT INTO alert_job_runs (org_id, job, ran_at) VALUES ($1, 'periodic', now() + interval '1 hour')`,
+		audit.DefaultOrgID); err != nil {
+		t.Fatal(err)
+	}
+	if res := e.periodic(t); res.Skipped || res.Rules == 0 {
+		t.Fatalf("проход после шага часов назад: %+v", res)
+	}
+	_, st, ok, err := e.svc.RuleState(ctx, e.ruleID(t, alerting.BuiltinActivitySpike))
+	if err != nil || !ok || st.Warning != alerting.WarnTimezoneInvalid {
+		t.Fatalf("предупреждение о поясе: %+v %v %v", st, ok, err)
 	}
 }

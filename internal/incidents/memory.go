@@ -332,7 +332,7 @@ func (m *Memory) NoteAlert(_ context.Context, _ pgx.Tx, incidentID string, a ale
 		return ErrNotFound
 	}
 	ch := Change{Events: refs}
-	if len(m.timeline[incidentID]) < MaxTimeline {
+	if len(m.timeline[incidentID]) < MaxAutoTimeline {
 		e, err := triggeredEntry(m.ids, incidentID, m.Clock().UTC().Truncate(time.Microsecond), &a, len(refs))
 		if err != nil {
 			return err

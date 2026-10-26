@@ -99,12 +99,29 @@ describe("экран «Провайдеры»", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 
+  it("предупреждение о сбросе учётных данных — только при смене узла, как у сервера (3Н38 ревью 3.r2)", async () => {
+    renderScreen(all);
+    fireEvent.click(await screen.findByRole("button", { name: "Изменить провайдера Основной" }));
+    const dlg = await screen.findByRole("dialog");
+    const addr = within(dlg).getByLabelText("Адрес API");
+    for (const same of [`https://llm.corp.example/v2`, `https://LLM.corp.example:443/v1`, `https://llm.corp.example./v1/`]) {
+      fireEvent.change(addr, { target: { value: same } });
+      expect(within(dlg).queryByText(/сбрасывает учётные данные/)).toBeNull();
+    }
+    for (const other of [`https://llm2.corp.example/v1`, `https://llm.corp.example:8443/v1`]) {
+      fireEvent.change(addr, { target: { value: other } });
+      expect(within(dlg).getByText(/сбрасывает учётные данные/)).toBeTruthy();
+    }
+  });
+
   it("учётные данные: ввод скрыт, уходят один раз, значение не остаётся на экране", async () => {
     renderScreen(all);
     fireEvent.click(await screen.findByRole("button", { name: "Учётные данные Основной" }));
     const dlg = await screen.findByRole("dialog");
     const input = within(dlg).getByLabelText("Ключ API или авторизационные данные") as HTMLInputElement;
     expect(input.type).toBe("password");
+    // Браузер не подставляет и не предлагает сохранить пароль консоли (3В20 ревью 3.r2).
+    expect(input.autocomplete).toBe("new-password");
     fireEvent.change(input, { target: { value: "кириллица" } });
     expect((within(dlg).getByRole("button", { name: "Сохранить учётные данные" }) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.change(input, { target: { value: ASCII_KEY } });

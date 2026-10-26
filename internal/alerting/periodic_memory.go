@@ -55,8 +55,12 @@ func (m *Memory) Periodic(ctx context.Context, loc *time.Location, usage []Budge
 	if loc == nil {
 		loc = time.UTC
 	}
-	return runPeriodic(ctx, memOps{m}, m.now(), loc, usage, nil, nil)
+	return runPeriodic(ctx, memOps{m}, m.now(), loc, false, usage, nil, nil)
 }
+
+// isolate — см. periodicOps. В Memory откатывать нечего: тесты сбоев
+// правила подменяют действия (TestPeriodicRuleFailureIsolated).
+func (o memOps) isolate(_ context.Context, fn func() error) error { return fn() }
 
 // RuleState — см. Store.
 func (m *Memory) RuleState(_ context.Context, orgID, ruleID string) (RuleState, bool, error) {

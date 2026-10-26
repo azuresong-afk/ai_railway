@@ -29,7 +29,7 @@ const rule = (o: Partial<AlertRule> = {}): AlertRule => ({
 const channel = (o: Partial<NotifyChannel> = {}): NotifyChannel => ({
   id: "c-1", name: "Почта SOC", type: "email", enabled: true, min_severity: "medium",
   settings: { host: "smtp.corp.example", port: 587, username: "aisec", from: "aisec@corp.example", to: ["soc@corp.example"], ca_pem: "-----BEGIN CERTIFICATE-----\nAAA\n-----END CERTIFICATE-----" },
-  secrets_set: ["password"], version: 2, created_at: NOW, created_by: "sec", updated_at: NOW, updated_by: "sec", ...o,
+  secrets_set: ["password"], audit_stream: false, version: 2, created_at: NOW, created_by: "sec", updated_at: NOW, updated_by: "sec", ...o,
 });
 const card = (a: Alert) => ({ ...a, events: [{ id: "ev-1", ts: NOW }], events_truncated: false, history: [], details: {} });
 
@@ -219,6 +219,22 @@ describe("правила", () => {
     }));
   });
 
+  it("без прав на роли, пользователей и события — названия прав, не коды (3Н39 ревью 3.r2)", async () => {
+    const { unmount } = renderScreen(["alerts.read", "alerts.manage", "alert_rules.read", "alert_rules.manage"]);
+    tab("Правила");
+    fireEvent.click(await screen.findByRole("button", { name: "Изменить правило Всплеск блокировок" }));
+    const dlg = await screen.findByRole("dialog");
+    expect(within(dlg).getByText(/нужно право «Просмотр ролей и разрешений»/)).toBeTruthy();
+    expect(within(dlg).getByText(/нужно право «Просмотр учётных записей»/)).toBeTruthy();
+    expect(dlg.textContent).not.toMatch(/«[a-z_]+\.[a-z_.]+»/);
+    unmount();
+    renderScreen(["alerts.read"]);
+    fireEvent.click(await screen.findByRole("button", { name: "Открыть оповещение: Много блокировок инъекций" }));
+    const aside = await screen.findByRole("complementary", { name: "Карточка оповещения" });
+    await within(aside).findByText(/нужно право «Просмотр событий»/);
+    expect(aside.textContent).not.toMatch(/«[a-z_]+\.[a-z_.]+»/);
+  });
+
   it("ослабление: сервер просит пароль, поле появляется, запрос повторяется с паролем", async () => {
     handler = (c) =>
       c.method === "PUT" && c.url.startsWith("/api/v1/alert-rules/") && !c.body.password
@@ -282,6 +298,46 @@ describe("каналы", () => {
     expect(body.secrets).toEqual({});
     expect(body.version).toBe(2);
     expect(body.type).toBeUndefined();
+  });
+
+  it("удаление пароля SMTP — флажком, с логином и повторной проверкой (3Н38 ревью 3.r2)", async () => {
+    handler = (c) =>
+      c.method === "PUT" && c.url === "/api/v1/notify-channels/c-1" && !c.body.password
+        ? problem(400, "invalid_request", "Проверьте введённые данные.", [{ field: "password", detail: "Введите текущий пароль." }])
+        : undefined;
+    renderScreen(allPerms);
+    tab("Каналы");
+    fireEvent.click(await screen.findByRole("button", { name: "Изменить канал Почта SOC" }));
+    const dlg = await screen.findByRole("dialog");
+    fireEvent.click(within(dlg).getByRole("checkbox", { name: "Удалить пароль и логин SMTP" }));
+    expect(within(dlg).queryByLabelText("Пароль SMTP")).toBeNull();
+    expect((within(dlg).getByLabelText("Логин SMTP") as HTMLInputElement).disabled).toBe(true);
+    fireEvent.click(within(dlg).getByRole("button", { name: "Сохранить канал" }));
+    await within(dlg).findByText(/Подтвердите, что это вы/);
+    fireEvent.change(within(dlg).getByLabelText("Текущий пароль"), { target: { value: "Пароль-для-проверки-1" } });
+    fireEvent.click(within(dlg).getByRole("button", { name: "Сохранить канал" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    const puts = calls.filter((c) => c.method === "PUT").map((c) => c.body);
+    expect(puts[1]).toMatchObject({ secrets: { password: "" }, settings: { username: "" }, password: "Пароль-для-проверки-1" });
+  });
+
+  it("поля секретов не принимают сохранённый пароль консоли (3В20 ревью 3.r2)", async () => {
+    renderScreen(allPerms);
+    tab("Каналы");
+    fireEvent.click(await screen.findByRole("button", { name: "Изменить канал Почта SOC" }));
+    const dlg = await screen.findByRole("dialog");
+    const pw = within(dlg).getByLabelText("Пароль SMTP") as HTMLInputElement;
+    expect(pw.autocomplete).toBe("new-password");
+    const login = within(dlg).getByLabelText("Логин SMTP") as HTMLInputElement;
+    expect(login.autocomplete).toBe("off");
+    expect(login.name).not.toMatch(/user|login|email/i);
+    fireEvent.click(within(dlg).getByRole("button", { name: "Отменить" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Создать канал" }));
+    const created = await screen.findByRole("dialog", { name: "Новый канал уведомлений" });
+    fireEvent.change(within(created).getByLabelText("Тип канала"), { target: { value: "webhook" } });
+    for (const label of ["Адрес webhook", "Ключ подписи"]) {
+      expect((within(created).getByLabelText(label) as HTMLInputElement).autocomplete).toBe("new-password");
+    }
   });
 
   it("создание webhook: адрес и ключ подписи уходят секретами, адрес проверяется", async () => {

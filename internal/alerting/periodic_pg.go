@@ -94,7 +94,10 @@ func (s *PGStore) Periodic(ctx context.Context) (PeriodicResult, error) {
 			s.orgID).Scan(&now, &last); err != nil {
 			return err
 		}
-		if last != nil && now.Sub(*last) < periodicMinGap {
+		// Пропуск — только если проход был в последние periodicMinGap: при
+		// шаге часов СУБД назад отметка оказывается в будущем, и задача не
+		// должна молчать до неё (3Н36 ревью 3.r2).
+		if last != nil && now.Sub(*last) >= 0 && now.Sub(*last) < periodicMinGap {
 			res.Skipped = true
 			return nil
 		}
@@ -104,10 +107,11 @@ func (s *PGStore) Periodic(ctx context.Context) (PeriodicResult, error) {
 			return err
 		}
 		loc, err := bundle.LoadLocation(tz)
-		if err != nil {
+		tzInvalid := err != nil
+		if tzInvalid {
 			loc = time.UTC
 		}
-		r, err := runPeriodic(ctx, pgOps{s: s, tx: tx}, now, loc, usage, budgetErr, func(err error) {
+		r, err := runPeriodic(ctx, pgOps{s: s, tx: tx}, now, loc, tzInvalid, usage, budgetErr, func(err error) {
 			s.logger.Warn("оповещения: правило пропущено фоновой задачей", "class", "alerting", "error", err)
 		})
 		if err != nil {
@@ -122,6 +126,22 @@ func (s *PGStore) Periodic(ctx context.Context) (PeriodicResult, error) {
 		return PeriodicResult{}, fmt.Errorf("оповещения: фоновая задача: %w", dbErr(err))
 	}
 	return res, nil
+}
+
+// isolate — см. periodicOps: SAVEPOINT на правило; при ошибке — откат к
+// нему, транзакция прохода продолжается.
+func (o pgOps) isolate(ctx context.Context, fn func() error) error {
+	if _, err := o.tx.Exec(ctx, "SAVEPOINT alert_rule"); err != nil {
+		return err
+	}
+	if err := fn(); err != nil {
+		if _, rbErr := o.tx.Exec(ctx, "ROLLBACK TO SAVEPOINT alert_rule"); rbErr != nil {
+			return errors.Join(err, rbErr)
+		}
+		return err
+	}
+	_, err := o.tx.Exec(ctx, "RELEASE SAVEPOINT alert_rule")
+	return err
 }
 
 // addCounts — см. freqOps. Ссылки на события — не больше maxCountRefs на

@@ -87,9 +87,9 @@ func TestNewValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	st := s.Status(context.Background())
-	// Без источников: пустые массивы, UTC, умолчания, все пятнадцать условий.
+	// Без источников: пустые массивы, UTC, умолчания, все шестнадцать условий.
 	if st.Time.Timezone != "UTC" || st.Storage.LimitBytes != sysstatus.DefaultStorageLimit || st.Storage.WarnPercent != 80 ||
-		len(st.Notifications) != 15 || st.Bundle != nil || st.Gateways == nil || st.Unavailable == nil || st.Server.Integrity == nil {
+		len(st.Notifications) != 16 || st.Bundle != nil || st.Gateways == nil || st.Unavailable == nil || st.Server.Integrity == nil {
 		t.Fatalf("%+v", st)
 	}
 }
@@ -151,7 +151,7 @@ func TestStatusSectionsUnavailable(t *testing.T) {
 	e.integ.err = errors.New("db down")
 	st := e.svc(t).Status(context.Background())
 	got := strings.Join(st.Unavailable, ",")
-	if got != "audit_chain,events,gateways,integrity,notifications,storage" {
+	if got != "alert_job,audit_chain,events,gateways,integrity,notifications,storage" {
 		t.Fatalf("недоступные разделы: %s", got)
 	}
 	if st.Storage.Available || st.Time.Sync != sysstatus.SyncSynchronized || st.Server.Version != "1.0" {
@@ -827,6 +827,52 @@ func TestDM44_CustomerCertExpiry(t *testing.T) {
 	for _, r := range e.mem.Records {
 		if err := validateEntry(r); err != nil {
 			t.Error(err)
+		}
+	}
+}
+
+// DM-44 (3В17 ревью 3.r2): фоновая задача правил оповещений не отмечала
+// проход дольше AlertJobStaleAfter при работающем сервере — условие
+// alert_job_stale; после свежего прохода снимается. Сразу после запуска
+// сервера отсутствие прохода условием не считается.
+func TestDM44_PeriodicJobStale(t *testing.T) {
+	e := newEnv()
+	s := e.svc(t)
+	ctx := context.Background()
+	eval := func() {
+		t.Helper()
+		if err := s.Evaluate(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e.mem.SetAlertJob(time.Time{})
+	eval()
+	if n := notif(s.Status(ctx), sysstatus.ConditionAlertJob); n.Active {
+		t.Fatalf("сразу после запуска: %+v", n)
+	}
+	e.mem.SetAlertJob(t0.Add(time.Minute))
+	e.clock = t0.Add(4 * time.Minute)
+	eval()
+	if n := notif(s.Status(ctx), sysstatus.ConditionAlertJob); n.Active {
+		t.Fatalf("проход 3 минуты назад: %+v", n)
+	}
+	e.clock = t0.Add(7 * time.Minute)
+	eval()
+	n := notif(s.Status(ctx), sysstatus.ConditionAlertJob)
+	if !n.Active || n.Requirement != "РСБ.7" || len(e.mem.Records) != 1 {
+		t.Fatalf("проход 6 минут назад: %+v %+v", n, e.mem.Records)
+	}
+	if d := e.mem.Records[0].Details.(map[string]any); d["condition"] != sysstatus.ConditionAlertJob || d["last_run_at"] == nil {
+		t.Fatalf("подробности: %v", d)
+	}
+	e.mem.SetAlertJob(t0.Add(7 * time.Minute))
+	eval()
+	if n := notif(s.Status(ctx), sysstatus.ConditionAlertJob); n.Active || len(e.mem.Records) != 2 {
+		t.Fatalf("после прохода: %+v", n)
+	}
+	for _, r := range e.mem.Records {
+		if err := validateEntry(r); err != nil {
+			t.Fatal(err)
 		}
 	}
 }

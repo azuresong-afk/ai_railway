@@ -39,7 +39,7 @@ export const navItems: NavItem[] = [
   { path: "/agents", title: "Агенты", icon: Bot, stage4: true },
   { path: "/shadow-ai", title: "Теневой ИИ", icon: EyeOff, stage4: true },
   { path: "/compliance", title: "Соответствие", icon: BadgeCheck, stage4: true },
-  { path: "/reports", title: "Отчёты", icon: FileText },
+  { path: "/reports", title: "Отчёты", icon: FileText, anyOf: ["reports.read"] },
   {
     path: "/admin",
     title: "Администрирование",
