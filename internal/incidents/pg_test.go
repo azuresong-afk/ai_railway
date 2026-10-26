@@ -738,3 +738,32 @@ func TestPGIncidentRetention(t *testing.T) {
 		t.Fatalf("срок 100 суток: %v", err)
 	}
 }
+
+// 3В30 ревью 3.r4 (PostgreSQL): субъект оповещения безопасности не закрывает
+// инцидент с ним — транзакция откатывается целиком, инцидент и оповещение
+// остаются открытыми.
+func TestPGIncidentCloseRespectsSelfReview(t *testing.T) {
+	e := setupPG(t)
+	ctx := pgCtx(t)
+	e.ingest(t, e.event(t, "crm-bot", true))
+	list, err := e.svc.List(ctx, incidents.Query{})
+	if err != nil || len(list) != 1 {
+		t.Fatalf("инцидент: %d %v", len(list), err)
+	}
+	id := list[0].ID
+	// Оповещение инцидента — как оповещение безопасности о действиях e.by.
+	if _, err := e.owner.Exec(ctx, `UPDATE alerts SET kind = 'security', dedup_key = $2, open_key = CASE WHEN open_key IS NULL THEN NULL ELSE $2 END WHERE incident_id = $1`,
+		id, "actor=user:"+e.by.UserID); err != nil {
+		t.Fatal(err)
+	}
+	closeIn := incidents.StatusInput{Status: "closed", Resolution: "resolved", Comment: "Проверено"}
+	if _, err := e.svc.SetStatus(ctx, e.by, id, closeIn); !errors.Is(err, alerting.ErrSelfReview) {
+		t.Fatalf("субъект закрыл инцидент: %v", err)
+	}
+	if n := e.count(t, `SELECT count(*) FROM incidents WHERE id = '`+id+`' AND status = 'closed'`); n != 0 {
+		t.Fatal("инцидент закрыт отказом")
+	}
+	if n := e.count(t, `SELECT count(*) FROM alerts WHERE incident_id = '`+id+`' AND status = 'closed'`); n != 0 {
+		t.Fatal("оповещение закрыто отказом")
+	}
+}

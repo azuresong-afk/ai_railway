@@ -213,21 +213,28 @@ const MaxIncidentAlerts = 100
 // CloseForIncidentTx закрывает незакрытые оповещения инцидента вместе с
 // ним: история, alert.status_changed в аудит. Открытое оповещение
 // закрытого инцидента иначе дополняло бы инцидент, который уже не меняется.
-// Возвращает ID закрытых оповещений.
+// Ограничения closeAllowed действуют и здесь (3В30 ревью 3.r4): субъект
+// оповещения безопасности и токен API не закрывают его через инцидент —
+// закрытие инцидента отклоняется целиком. Возвращает ID закрытых оповещений.
 func (s *PGStore) CloseForIncidentTx(ctx context.Context, tx pgx.Tx, orgID, incidentID string, by By, comment string) ([]string, error) {
-	rows, err := tx.Query(ctx, `SELECT a.id::text, a.status, a.rule_id::text, a.severity FROM alerts a
+	rows, err := tx.Query(ctx, `SELECT a.id::text, a.status, a.rule_id::text, a.severity, a.kind, a.dedup_key FROM alerts a
 		WHERE a.org_id = $1 AND a.incident_id = $2 AND a.status <> 'closed' ORDER BY a.id FOR UPDATE`, orgID, incidentID)
 	if err != nil {
 		return nil, err
 	}
-	type open struct{ id, status, rule, severity string }
+	type open struct{ id, status, rule, severity, kind, key string }
 	list, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (open, error) {
 		var o open
-		err := r.Scan(&o.id, &o.status, &o.rule, &o.severity)
+		err := r.Scan(&o.id, &o.status, &o.rule, &o.severity, &o.kind, &o.key)
 		return o, err
 	})
 	if err != nil {
 		return nil, err
+	}
+	for _, a := range list {
+		if err := closeAllowed(&Alert{Kind: a.kind, DedupKey: a.key}, by, StatusClosed); err != nil {
+			return nil, err
+		}
 	}
 	var closed []string
 	for _, a := range list {
@@ -361,8 +368,27 @@ func (m *Memory) IncidentAlerts(_ context.Context, orgID, incidentID string) ([]
 	return out, nil
 }
 
+// CanCloseForIncident — проверка closeAllowed по незакрытым оповещениям
+// инцидента до его закрытия (Memory: хранилище инцидентов в памяти не
+// транзакционно и проверяет заранее).
+func (m *Memory) CanCloseForIncident(orgID, incidentID string, by By) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, a := range m.alerts {
+		if a.OrgID == orgID && a.IncidentID == incidentID && a.Status != StatusClosed {
+			if err := closeAllowed(a, by, StatusClosed); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 // CloseForIncident — см. CloseForIncidentTx (Memory).
 func (m *Memory) CloseForIncident(orgID, incidentID string, by By, comment string) ([]string, error) {
+	if err := m.CanCloseForIncident(orgID, incidentID, by); err != nil {
+		return nil, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var closed []string

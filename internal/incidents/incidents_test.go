@@ -175,8 +175,8 @@ func kinds(c incidents.Card) []string {
 // инцидент «утечка системного промпта»; повтор по тому же приложению
 // дополняет тот же инцидент (open_key оповещения), другое приложение —
 // новый инцидент; DM-08 на входе (эвристика инъекций) инцидента не создаёт.
-// Закрытие инцидента закрывает оповещение: повтор в окне подавления
-// инцидента не создаёт, после окна — новый оповещение и инцидент.
+// Закрытие инцидента закрывает оповещение; окна подавления у DM-08 нет:
+// повтор сразу после закрытия — новое оповещение и новый инцидент.
 // Покрывает: DM-08 (инцидент)
 func TestDM08_CanaryCreatesIncident(t *testing.T) {
 	e := newEnv(t)
@@ -681,5 +681,48 @@ func TestDM08_CloseAtTimelineLimit(t *testing.T) {
 	}
 	if k := kinds(e.card(t, id)); k[len(k)-1] != incidents.KindStatusChanged {
 		t.Fatalf("закрытие не видно в хронологии: %v", k[len(k)-3:])
+	}
+}
+
+// DM-40 (3В30 ревью 3.r4): ограничения 3В15 действуют и при закрытии
+// инцидента — субъект оповещения безопасности и токен API не закрывают
+// инцидент с ним, закрывает другой пользователь.
+func TestIncidentCloseRespectsSelfReview(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	subject := audit.Actor{Type: audit.ActorUser, ID: analystID, Name: "analyst"}
+	u, err := e.ids.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := audit.Record{ID: u.String(), OrgID: audit.DefaultOrgID, TS: e.clock.now(), Actor: subject, Action: "auth.mfa_reset",
+		Object: audit.Object{Type: "user", ID: otherID}, Result: audit.ResultSuccess, Details: []byte("{}")}
+	if err := e.alerts.Audit(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+	all, err := e.alerts.Alerts(ctx, audit.DefaultOrgID, alerting.AlertQuery{Limit: 10})
+	if err != nil || len(all) != 1 || all[0].Kind != alerting.KindSecurity {
+		t.Fatalf("оповещение DM-40: %+v %v", all, err)
+	}
+	inc, created, err := e.svc.Create(ctx, e.by, incidents.CreateInput{AlertID: all[0].ID})
+	if err != nil || !created {
+		t.Fatalf("инцидент из оповещения: %v %v", created, err)
+	}
+	closeIn := incidents.StatusInput{Status: "closed", Resolution: "resolved", Comment: "Проверено"}
+	if _, err := e.svc.SetStatus(ctx, e.by, inc.ID, closeIn); !errors.Is(err, alerting.ErrSelfReview) {
+		t.Fatalf("субъект закрыл инцидент со своим оповещением: %v", err)
+	}
+	token := incidents.By{Actor: audit.Actor{Type: audit.ActorAPIToken, ID: "01900000-0000-7000-8000-0000000000d1", Name: "soar"},
+		UserID: otherID}
+	if _, err := e.svc.SetStatus(ctx, token, inc.ID, closeIn); !errors.Is(err, alerting.ErrTokenClose) {
+		t.Fatalf("токен закрыл инцидент с оповещением безопасности: %v", err)
+	}
+	a, err := e.alertsSvc.Alert(ctx, all[0].ID)
+	if err != nil || a.Alert.Status == alerting.StatusClosed {
+		t.Fatalf("оповещение закрыто отказом: %+v %v", a.Alert, err)
+	}
+	other := incidents.By{Actor: audit.Actor{Type: audit.ActorUser, ID: otherID, Name: "other"}, UserID: otherID}
+	if got, err := e.svc.SetStatus(ctx, other, inc.ID, closeIn); err != nil || got.Status != incidents.StatusClosed {
+		t.Fatalf("закрытие другим: %+v %v", got, err)
 	}
 }
