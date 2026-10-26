@@ -95,7 +95,7 @@ func newConsoleEnv(t *testing.T) *consoleEnv {
 			ID: liveEventID(ts, i+1), Time: ts, Type: events.TypeGatewayRequest, App: "support-bot", Env: "prod",
 			PolicyMode: events.ModeMonitor, Storage: events.StorageMasked, Threats: []string{"DM-05"},
 			Decision: &events.Decision{Action: "allow", Applied: []string{}, Trace: []events.TraceStep{{Rule: "r1", Detector: "pii.inn", Matched: true, Action: "allow"}}},
-			Findings: []events.Finding{{Detector: "pii.inn", Category: "pii", Threat: "DM-05", Location: "messages[0]"}},
+			Findings: []events.Finding{{Detector: "pii.inn", Category: "pii", Threat: "DM-05", Location: "messages[0]", Fragment: consoleFragment}},
 			Tokens:   &events.Tokens{Prompt: 10, Completion: 5},
 			Content:  &events.Content{Request: promptMarker},
 		}
@@ -348,6 +348,9 @@ func TestEventsExportCSV(t *testing.T) {
 	}
 }
 
+// consoleFragment — хеш фрагмента находки в событиях consoleEnv.
+const consoleFragment = "fedcba9876543210fedcba9876543210"
+
 func TestEventsExportJSONAndRejects(t *testing.T) {
 	env := newConsoleEnv(t)
 	h := env.handler(t, auth.PermEventsExport)
@@ -359,6 +362,14 @@ func TestEventsExportJSONAndRejects(t *testing.T) {
 	if strings.Contains(w.Body.String(), promptMarker) {
 		t.Fatal("содержимое в выгрузке")
 	}
+	// Хеш фрагмента — только с правом на содержимое (3Н41 ревью 3.r3).
+	if strings.Contains(w.Body.String(), consoleFragment) {
+		t.Fatal("хеш фрагмента в выгрузке без events.content.read")
+	}
+	full := do(env.handler(t, auth.PermEventsExport, auth.PermEventsContentRead), "POST", "/api/v1/events/export", `{"format":"json"}`, jsonCT()...)
+	if full.Code != 200 || !strings.Contains(full.Body.String(), consoleFragment) {
+		t.Fatalf("выгрузка с events.content.read: %d %s", full.Code, full.Body)
+	}
 	for _, b := range []string{`{}`, `{"format":"xml"}`, `{"format":"csv","filter":"app ="}`,
 		`{"format":"csv","from":"2026-01-01T00:00:00Z","to":"2026-03-01T00:00:00Z"}`, `{"format":"csv","content":true}`} {
 		mustProblem(t, do(h, "POST", "/api/v1/events/export", b, jsonCT()...), 400, CodeInvalidRequest)
@@ -366,7 +377,7 @@ func TestEventsExportJSONAndRejects(t *testing.T) {
 	// Больше предела строк — отказ без записи в аудит.
 	big := env.handlerWith(t, bigCount{env.mem}, auth.PermEventsExport)
 	mustProblem(t, do(big, "POST", "/api/v1/events/export", `{"format":"csv"}`, jsonCT()...), 422, CodeUnprocessable)
-	if n := len(env.audit.find("data.export")); n != 1 {
+	if n := len(env.audit.find("data.export")); n != 2 { // две выгрузки JSON выше
 		t.Fatalf("data.export: %d", n)
 	}
 	// Журнал недоступен — выгрузки нет.

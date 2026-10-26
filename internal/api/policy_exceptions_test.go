@@ -81,7 +81,9 @@ func TestEventMarkAndExceptionViaAPI(t *testing.T) {
 		t.Fatalf("черновик: %s", w.Body)
 	}
 	it := dr.Items[0]
-	if it.Detector != "injection.heuristic" || it.Pattern != "ignore_previous" || it.Fragment != tFragment || it.App != "support-bot" ||
+	// Хеш фрагмента аналитику не показывается (3Н41 ревью 3.r3): только с
+	// events.content.read или policies.manage.
+	if it.Detector != "injection.heuristic" || it.Pattern != "ignore_previous" || it.Fragment != "" || it.App != "support-bot" ||
 		it.ExpiresInDays != 30 || it.EventID != id {
 		t.Fatalf("условие черновика: %+v", it)
 	}
@@ -106,10 +108,25 @@ func TestEventMarkAndExceptionViaAPI(t *testing.T) {
 			t.Fatalf("фильтр %s: %d %s", f, w.Code, w.Body)
 		}
 	}
-	// Черновик отдельно — по events.read.
+	// Черновик отдельно — по events.read; хеш фрагмента — только
+	// администратору безопасности, в карточке события — так же (3Н41).
 	if w := e.call(auditor, "GET", "/api/v1/events/"+id+"/exception-draft", "", false); w.Code != 200 ||
+		strings.Contains(w.Body.String(), tFragment) || !strings.Contains(w.Body.String(), "ignore_previous") {
+		t.Fatalf("черновик аудитора: %d %s", w.Code, w.Body)
+	}
+	if w := e.call(admin, "GET", "/api/v1/events/"+id+"/exception-draft", "", false); w.Code != 200 ||
 		!strings.Contains(w.Body.String(), tFragment) {
-		t.Fatalf("черновик: %d %s", w.Code, w.Body)
+		t.Fatalf("черновик администратора безопасности: %d %s", w.Code, w.Body)
+	}
+	for _, c := range []struct {
+		s    session
+		want bool
+	}{{analyst, false}, {auditor, false}, {admin, true}} {
+		want := c.want
+		w := e.call(c.s, "GET", "/api/v1/events/"+id, "", false)
+		if w.Code != 200 || strings.Contains(w.Body.String(), tFragment) != want || !strings.Contains(w.Body.String(), "ignore_previous") {
+			t.Fatalf("хеш фрагмента в карточке (виден: %v): %d %s", want, w.Code, w.Body)
+		}
 	}
 	mustProblem(t, e.call(owner, "GET", "/api/v1/events/"+id+"/exception-draft", "", false), 403, CodeForbidden)
 

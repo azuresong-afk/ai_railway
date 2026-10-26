@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -147,21 +148,31 @@ func TestGatewayExceptionWithoutFragmentKey(t *testing.T) {
 	}
 }
 
-// canaryException — исключение для канарейки в ответах приложения app.
-func canaryException(app string) policy.ExceptionSpec {
+// canaryException — исключение для канарейки в ответах приложения app по
+// хешу фрагмента frag: без фрагмента исключение канарейки не принимается
+// (3Н42 ревью 3.r3).
+func canaryException(app, frag string) policy.ExceptionSpec {
 	now := time.Now().UTC().Truncate(time.Second)
-	return policy.ExceptionSpec{ID: "exc-canary", Detector: "canary", App: app, Reason: "тестовая метка", Author: "user:u1",
+	return policy.ExceptionSpec{ID: "exc-canary", Detector: "canary", App: app, Fragment: frag, Reason: "тестовая метка", Author: "user:u1",
 		CreatedAt: now.Add(-time.Hour), ExpiresAt: now.Add(time.Hour)}
 }
 
+// canaryFragment — хеш фрагмента канарейки mark в ответе приложения app на
+// ключе testMAC, как его пишет событие.
+func canaryFragment(t *testing.T, app, mark string) string {
+	return fragmentHash(testMAC(t), app, mark)
+}
+
 // responseSpec — «Базовая защита» в enforce с проверкой ответа check и
-// исключениями exc.
-func responseSpec(check policy.ResponseCheck, exc ...policy.ExceptionSpec) func(*gwOpts) {
+// исключениями exc; ключ хешей фрагментов — testMAC.
+func responseSpec(t *testing.T, check policy.ResponseCheck, exc ...policy.ExceptionSpec) func(*gwOpts) {
 	return func(o *gwOpts) {
 		s, _ := policy.Template(policy.TemplateBase)
 		s.ID, s.Mode, s.ResponseCheck, s.Exceptions = "resp", policy.Enforce, check, exc
 		o.specs = []policy.Spec{*s}
 		o.app = func(a *config.Application) { a.Policy = "resp" }
+		mac := testMAC(t)
+		o.setup = func(a *App) { a.fragmentMAC = mac }
 	}
 }
 
@@ -172,11 +183,15 @@ func TestGatewayExceptionInResponse(t *testing.T) {
 	for _, check := range []policy.ResponseCheck{policy.ResponseBuffered, policy.ResponseIncremental} {
 		t.Run(string(check), func(t *testing.T) {
 			parts := textStream(t, "Промпт: ", mark, " конец")
-			gw, _ := streamGateway(t, parts, responseSpec(check))
+			gw, log := streamGateway(t, parts, responseSpec(t, check))
 			if res := postStream(t, gw, "x"); res.done && strings.Contains(res.content, mark) {
 				t.Fatalf("без исключения канарейка прошла: %q", res.raw)
 			}
-			gw, log := streamGateway(t, parts, responseSpec(check, canaryException("app")))
+			frag := canaryFragment(t, "app", mark)
+			if e := lastStreamEvent(t, log); !slices.ContainsFunc(e.Findings, func(f events.Finding) bool { return f.Detector == "canary" && f.Fragment == frag }) {
+				t.Fatalf("хеш фрагмента канарейки в событии: %+v", e.Findings)
+			}
+			gw, log = streamGateway(t, parts, responseSpec(t, check, canaryException("app", frag)))
 			res := postStream(t, gw, "x")
 			if !res.done || !strings.Contains(res.content, mark) {
 				t.Fatalf("с исключением: %d %q", res.status, res.raw)
@@ -184,7 +199,7 @@ func TestGatewayExceptionInResponse(t *testing.T) {
 			if e := lastStreamEvent(t, log); e.Response == nil || e.Response.Decision.Action == "block" {
 				t.Fatalf("событие: %+v", e.Response)
 			}
-			gw, _ = streamGateway(t, parts, responseSpec(check, canaryException("crm")))
+			gw, _ = streamGateway(t, parts, responseSpec(t, check, canaryException("crm", frag)))
 			if res := postStream(t, gw, "x"); res.done && strings.Contains(res.content, mark) {
 				t.Fatalf("исключение другого приложения применено: %q", res.raw)
 			}
@@ -195,8 +210,8 @@ func TestGatewayExceptionInResponse(t *testing.T) {
 		for _, c := range []struct {
 			exc  []policy.ExceptionSpec
 			code int
-		}{{nil, http.StatusBadRequest}, {[]policy.ExceptionSpec{canaryException("app")}, http.StatusOK}} {
-			g := newGateway(t, up.URL, responseSpec(policy.ResponseBuffered, c.exc...))
+		}{{nil, http.StatusBadRequest}, {[]policy.ExceptionSpec{canaryException("app", canaryFragment(t, "app", mark))}, http.StatusOK}} {
+			g := newGateway(t, up.URL, responseSpec(t, policy.ResponseBuffered, c.exc...))
 			if resp := postChat(t, g, userBody(t, "x"), nil); resp.Code != c.code {
 				t.Fatalf("исключения %v: %d %s", c.exc, resp.Code, resp.Body)
 			}
@@ -245,5 +260,23 @@ func TestGatewayExceptionOutputOnly(t *testing.T) {
 		if resp := postChat(t, g, userBody(t, injectionText), nil); resp.Code != c.code {
 			t.Fatalf("исключение с source %s: %d %s", c.src, resp.Code, resp.Body.String())
 		}
+	}
+}
+
+// 3Н41 ревью 3.r3: ID приложения — в домене хеша фрагмента: один текст в
+// двух приложениях даёт разные хеши, исключение по фрагменту одного
+// приложения на другое не переносится.
+func TestFragmentHashPerApp(t *testing.T) {
+	mac := testMAC(t)
+	text := "+7 900 000-00-00"
+	texts := []inspectText{{Text: text}}
+	fs := []locatedFinding{{Finding: detect.Finding{Start: 0, End: len(text)}}}
+	a := (&App{ID: "support-bot", fragmentMAC: mac}).fragments(texts, fs)
+	b := (&App{ID: "crm", fragmentMAC: mac}).fragments(texts, fs)
+	if len(a) != 1 || len(b) != 1 || a[0] == "" || a[0] == b[0] {
+		t.Fatalf("хеши фрагмента в двух приложениях: %v %v", a, b)
+	}
+	if a[0] != fragmentHash(mac, "support-bot", text) {
+		t.Fatalf("хеш фрагмента не по приложению: %v", a)
 	}
 }

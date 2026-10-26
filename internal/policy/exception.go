@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/azuresong-afk/ai_railway/internal/detect"
+	"github.com/azuresong-afk/ai_railway/internal/detect/canary"
 )
 
 // Исключения (ТЗ 5.3; решение Р8 этапа 3, задача 3.22) — часть версии
@@ -51,6 +52,14 @@ var (
 // детектор для всех приложений.
 var ErrExceptionTooBroad = errors.New("слишком широкое исключение: укажите шаблон, хеш фрагмента, приложение или пользователя — " +
 	"детектор целиком для всех приложений не отключается")
+
+// ErrExceptionCanaryFragment — исключение для канарейки без хеша фрагмента.
+// У канарейки два-три правила и постоянный маркер приложения: исключение по
+// правилу и приложению выключило бы обнаружение утечки системного промпта
+// (DM-08) для приложения целиком, а ложное срабатывание бывает только на
+// конкретном тексте (3Н42 ревью 3.r3).
+var ErrExceptionCanaryFragment = errors.New("исключение для канарейки — только с хешем фрагмента из события: " +
+	"по правилу или приложению обнаружение утечки системного промпта не отключается")
 
 // ExceptionSpec — исключение в YAML политики. Условия соединяются «и»;
 // пустое условие — любое значение.
@@ -128,6 +137,9 @@ func (e *ExceptionSpec) validate() []error {
 	}
 	if !e.Narrowed() {
 		add("%v", ErrExceptionTooBroad)
+	}
+	if e.Detector == canary.ID && e.Fragment == "" {
+		add("%v", ErrExceptionCanaryFragment)
 	}
 	if err := checkText(e.Reason, MaxExceptionReason); err != nil || strings.TrimSpace(e.Reason) == "" {
 		add("reason — обязательная причина до %d символов без управляющих символов", MaxExceptionReason)

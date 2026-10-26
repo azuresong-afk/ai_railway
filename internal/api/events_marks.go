@@ -182,6 +182,10 @@ func (d Deps) exceptionDraft(r *http.Request, rec *events.Record) (ExceptionDraf
 			out.BaseVersion = doc.Version.Version
 		}
 	}
+	p, _ := PrincipalFrom(r.Context())
+	if !seesFragments(p) {
+		det = det.WithoutFragments()
+	}
 	deciding := decidingDetectors(det.Decision)
 	type key struct{ detector, category, pattern, fragment, source string }
 	seen := map[key]bool{}
