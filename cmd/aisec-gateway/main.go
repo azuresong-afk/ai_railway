@@ -197,7 +197,7 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 	}
 	// Квоты общие для всех маршрутов приложений и переживают смену пакета.
 	hb := &handlerBuilder{cfg: cfg, logger: logger, hasher: h, auth: authBase, events: queue,
-		quotas: gateway.NewLimiter(nil), budget: gateway.NewBudget(nil), userMAC: userMAC}
+		quotas: gateway.NewLimiter(nil), budget: gateway.NewBudget(nil), userMAC: userMAC, clock: &gateway.ServerClock{}}
 	hb.budget.SetLogger(logger)
 	var handler http.Handler
 	var bundles *gateway.BundleClient
@@ -248,7 +248,7 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 			hbCancel()
 			return err
 		}
-		hbDone := startHeartbeat(hbCtx, cfg, control.client, logger, reports, bundles.ETag, verify, started, reissue.Reissue, hb.budget)
+		hbDone := startHeartbeat(hbCtx, cfg, control.client, logger, reports, bundles.ETag, verify, started, reissue.Reissue, hb.budget, hb.clock)
 		defer func() {
 			hbCancel()
 			<-hbDone
@@ -273,6 +273,8 @@ type handlerBuilder struct {
 	// пакета.
 	budget  *gateway.Budget
 	userMAC aisecCrypto.MAC
+	// clock — сроки исключений не раньше времени сервера управления (3Н40).
+	clock *gateway.ServerClock
 }
 
 func (hb *handlerBuilder) build(apps []config.Application, provs map[string]providers.Provider, specs []policy.Spec,
@@ -289,6 +291,7 @@ func (hb *handlerBuilder) build(apps []config.Application, provs map[string]prov
 	router.SetUnavailable(unavailable)
 	// Хеши фрагментов находок для исключений — на ключе псевдонимов (задача 3.22).
 	router.SetFragmentMAC(hb.userMAC)
+	router.SetClock(hb.clock.Now)
 	a, err := auth.NewAuthenticator(hb.hasher, recs)
 	if err != nil {
 		return nil, err
@@ -495,7 +498,8 @@ const gwReissueWarn = 30 * 24 * time.Hour
 // startHeartbeat запускает heartbeat на внутренний API сервера. Сервер
 // недоступен — шлюз всё равно работает (ТЗ, 4.2).
 func startHeartbeat(ctx context.Context, cfg *config.Gateway, client *http.Client, logger *slog.Logger, reports *gateway.Reports, etag func() string,
-	verify func(context.Context), started time.Time, reissue func(context.Context) error, budget *gateway.Budget) <-chan struct{} {
+	verify func(context.Context), started time.Time, reissue func(context.Context) error, budget *gateway.Budget,
+	clock *gateway.ServerClock) <-chan struct{} {
 	v := version
 	if !gateway.ValidVersion(v) {
 		v = "unknown"
@@ -505,7 +509,7 @@ func startHeartbeat(ctx context.Context, cfg *config.Gateway, client *http.Clien
 		defer close(done)
 		gateway.RunHeartbeat(ctx, gateway.HeartbeatConfig{
 			Client: client, Server: cfg.Server, Version: v, Logger: logger, Reports: reports, BundleETag: etag, Verify: verify,
-			StartedAt: started, Reissue: reissue, Budget: budget,
+			StartedAt: started, Reissue: reissue, Budget: budget, ServerTime: clock,
 		})
 	}()
 	return done

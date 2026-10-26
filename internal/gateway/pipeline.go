@@ -286,8 +286,9 @@ func (a *App) inspect(ctx context.Context, req inspectRequest) (*inspection, err
 	if mode == "" {
 		mode = a.Mode
 	}
-	// Исключения применяются после детекторов и до решения политики, по
-	// часам шлюза: истёкшее исключение не действует без нового пакета.
+	// Исключения применяются после детекторов и до решения политики; срок —
+	// по a.now (не раньше времени сервера, 3Н40): истёкшее исключение не
+	// действует без нового пакета.
 	in.Decision = a.Policy.Evaluate(policy.Request{
 		Endpoint: req.Endpoint, Direction: req.Direction, Mode: mode, External: req.External, Hits: hits, Media: req.Media,
 		App: a.ID, User: req.User, Now: a.now(),

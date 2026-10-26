@@ -24,6 +24,12 @@ var excNow = time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
 // исключениями exc; часы шлюза — excNow + shift.
 func excGateway(t *testing.T, upstream string, shift time.Duration, exc ...policy.ExceptionSpec) (http.Handler, *eventLog) {
 	t.Helper()
+	return excGatewayClock(t, upstream, func() time.Time { return excNow.Add(shift) }, exc...)
+}
+
+// excGatewayClock — excGateway с часами сроков исключений clock.
+func excGatewayClock(t *testing.T, upstream string, clock func() time.Time, exc ...policy.ExceptionSpec) (http.Handler, *eventLog) {
+	t.Helper()
 	reg, err := detect.NewRegistry(builtin.All()...)
 	if err != nil {
 		t.Fatal(err)
@@ -42,7 +48,7 @@ func excGateway(t *testing.T, upstream string, shift time.Duration, exc ...polic
 		o.setup = func(a *App) {
 			a.Detectors, a.Policy = reg, p
 			a.fragmentMAC = mac
-			a.clock = func() time.Time { return excNow.Add(shift) }
+			a.clock = clock
 		}
 	})
 	return g, log
@@ -278,5 +284,37 @@ func TestFragmentHashPerApp(t *testing.T) {
 	}
 	if a[0] != fragmentHash(mac, "support-bot", text) {
 		t.Fatalf("хеш фрагмента не по приложению: %v", a)
+	}
+}
+
+// 3Н40 ревью 3.r3: часы шлюза на 5 суток позади — исключение, истёкшее по
+// времени сервера из heartbeat, не применяется; без heartbeat — по часам
+// шлюза. Перевод часов шлюза оценку времени сервера не сдвигает.
+func TestGatewayExceptionClockBehind(t *testing.T) {
+	up, _ := newUpstream(t, nil)
+	behind := excNow.Add(-5 * 24 * time.Hour)
+	expired := injectionException(policy.ExceptionSpec{App: "app"})
+	expired.CreatedAt, expired.ExpiresAt = behind.Add(-time.Hour), excNow.Add(-24*time.Hour)
+	for _, c := range []struct {
+		name   string
+		server time.Time
+		code   int
+	}{{"без heartbeat", time.Time{}, http.StatusOK}, {"время сервера", excNow, http.StatusBadRequest}} {
+		t.Run(c.name, func(t *testing.T) {
+			sc := &ServerClock{wall: func() time.Time { return behind }}
+			sc.Observe(c.server, time.Now())
+			// Часы приложения — ServerClock поверх часов шлюза behind, как
+			// Router.SetClock в aisec-gateway.
+			g, _ := excGatewayClock(t, up.URL, sc.Now, expired)
+			if resp := postChat(t, g, userBody(t, injectionText), nil); resp.Code != c.code {
+				t.Fatalf("код %d, ожидался %d: %s", resp.Code, c.code, resp.Body)
+			}
+		})
+	}
+	// Часы шлюза ушли вперёд — берутся они (строже).
+	sc := &ServerClock{wall: func() time.Time { return excNow.Add(time.Hour) }}
+	sc.Observe(excNow.Add(-time.Hour), time.Now())
+	if got := sc.Now(); !got.Equal(excNow.Add(time.Hour)) {
+		t.Fatalf("часы впереди сервера: %v", got)
 	}
 }

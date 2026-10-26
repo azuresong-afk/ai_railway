@@ -44,7 +44,7 @@ type App struct {
 	// fragmentMAC — ключ хешей фрагментов находок (Router.SetFragmentMAC);
 	// nil — хешей нет, исключения по фрагменту не совпадают.
 	fragmentMAC aisecCrypto.MAC
-	// clock — часы для сроков исключений; nil — time.Now.
+	// clock — часы для сроков исключений (Router.SetClock); nil — time.Now.
 	clock func() time.Time
 }
 
@@ -94,6 +94,15 @@ func (rt *Router) SetUnavailable(ids []string) {
 	rt.unavailable = make(map[string]bool, len(ids))
 	for _, id := range ids {
 		rt.unavailable[id] = true
+	}
+}
+
+// SetClock задаёт часы сроков исключений всех приложений (ServerClock.Now,
+// 3Н40 ревью 3.r3); nil — часы шлюза. Вызывается до начала обслуживания
+// запросов.
+func (rt *Router) SetClock(now func() time.Time) {
+	for _, a := range rt.apps {
+		a.clock = now
 	}
 }
 
