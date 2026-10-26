@@ -102,9 +102,11 @@ func clean(s string) string {
 }
 
 // mdEscaper — разметка Markdown Mattermost/Rocket.Chat: значения выводятся
-// как текст, упоминания @channel и @all не срабатывают.
+// как текст, упоминания @channel и @all не срабатывают, адреса не
+// становятся ссылками — U+200B в «://» и «www.» (3Н33 ревью 3.r2).
 var mdEscaper = strings.NewReplacer(`\`, `\\`, "*", `\*`, "_", `\_`, "`", "\\`", "~", `\~`, "[", `\[`, "]", `\]`,
-	"(", `\(`, ")", `\)`, "<", `\<`, ">", `\>`, "#", `\#`, "|", `\|`, "!", `\!`, "@", "@\u200b")
+	"(", `\(`, ")", `\)`, "<", `\<`, ">", `\>`, "#", `\#`, "|", `\|`, "!", `\!`, "@", "@\u200b",
+	"://", ":\u200b//", "www.", "www\u200b.")
 
 func mattermostBody(m Message) ([]byte, error) {
 	ls := lines(m)
@@ -159,7 +161,9 @@ var cefValue = strings.NewReplacer(`\`, `\\`, "=", `\=`, "\r", `\r`, "\n", `\n`)
 // cefBody — запись CEF 0 (ArcSight Common Event Format, ревизия 25).
 func cefBody(m Message, version string) []byte {
 	h := func(s string) string { return cefHeader.Replace(clean(s)) }
-	v := func(s string) string { return cefValue.Replace(s) }
+	// Значения расширения — без управляющих символов и разделителей строк
+	// Unicode, как в потоке журнала (3Н32 ревью 3.r2).
+	v := func(s string) string { return cefValue.Replace(clean(s)) }
 	ext := []string{
 		"rt=" + strconv.FormatInt(m.CreatedAt.UnixMilli(), 10),
 		"cat=" + v(m.AlertKind),

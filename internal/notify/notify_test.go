@@ -291,7 +291,7 @@ func TestSyslogDelivery(t *testing.T) {
 			}
 		case FormatCEF:
 			if !strings.HasPrefix(msg, "CEF:0|AISec|AISec|1.2.3|security.console_bruteforce|Перебор паролей консоли — 192.0.2.10|8|rt=") ||
-				!strings.Contains(msg, `account: admin\r\nBcc: evil@example.org @channel; source_ip: 192.0.2.10`) {
+				!strings.Contains(msg, `account: admin  Bcc: evil@example.org @channel; source_ip: 192.0.2.10`) {
 				t.Fatalf("CEF: %q", msg)
 			}
 		}
@@ -310,6 +310,16 @@ func TestCEFEscaping(t *testing.T) {
 	want := `CEF:0|AISec|AISec|1\|0|a\|b\\c|x\|y z|8|`
 	if !strings.HasPrefix(got, want) || !strings.Contains(got, `cs1=k\=v\\w`) {
 		t.Fatalf("CEF: %q", got)
+	}
+	// 3Н32 ревью 3.r2: управляющие символы и разделители строк Unicode в
+	// значениях расширения не обрезают и не разбивают запись в SIEM.
+	m.RuleName = "a\x00b\u0085c\u2028d\re"
+	m.Group = map[string]string{"account": "x\u2029y"}
+	got = string(cefBody(m, "1"))
+	for _, bad := range []string{"\x00", "\u0085", "\u2028", "\u2029", "\r"} {
+		if strings.Contains(got, bad) {
+			t.Fatalf("CEF с управляющим символом %q: %q", bad, got)
+		}
 	}
 }
 
@@ -701,3 +711,24 @@ func FuzzDecodeChannelInput(f *testing.F) {
 
 // loopbackNets — сети приёмников тестов (3Н31 ревью 3.r2).
 var loopbackNets = []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8"), netip.MustParsePrefix("::1/128")}
+
+// 3Н33 ревью 3.r2: адреса из значений группировки не становятся ссылками
+// в Mattermost и Rocket.Chat — в «://» и «www.» вставляется U+200B.
+func TestMattermostNoAutolinks(t *testing.T) {
+	m := sampleAlert()
+	m.Group = map[string]string{"account": "https://evil.example/login www.evil.example"}
+	raw, err := mattermostBody(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body map[string]string
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(body["text"], "://") || strings.Contains(body["text"], "www.") {
+		t.Fatalf("ссылка в тексте: %q", body["text"])
+	}
+	if !strings.Contains(body["text"], "https:​//evil.example/login") {
+		t.Fatalf("адрес искажён: %q", body["text"])
+	}
+}
