@@ -105,9 +105,39 @@ describe("отметка и исключение в карточке событ�
     expect(submit).toBeEnabled();
     fireEvent.click(submit);
     await waitFor(() => expect(calls.find((c) => c.method === "POST")?.body).toEqual({
-      detector: "pii.snils", pattern: "snils-rule", app: "crm-bot", reason: "Ложное срабатывание", expires_in_days: 14, event_id: ev.id, base_version: 2, password: "Correct-Horse-1",
+      detector: "pii.snils", pattern: "snils-rule", app: "crm-bot", reason: `Ложное срабатывание (событие ${ev.id})`, expires_in_days: 14, event_id: ev.id, base_version: 2, password: "Correct-Horse-1",
     }));
     await within(dlg).findByText(/версия 3 политики «Моя политика»/);
+  });
+
+  it("комментарий отметки не становится причиной исключения (3В29)", async () => {
+    const comment = "Скрипт оператора: " + "x".repeat(600) + "\nвторая строка";
+    event = { ...ev, mark: { mark: "false_positive", comment, marked_at: "2026-10-22T10:00:00Z", marked_by: "user:u1" } };
+    renderCard({ canException: true });
+    fireEvent.click(await screen.findByRole("button", { name: "Создать исключение" }));
+    const dlg = await screen.findByRole("dialog", { name: "Создать исключение" });
+    const reason = await within(dlg).findByLabelText("Причина");
+    expect(reason).toHaveValue(`Ложное срабатывание (событие ${ev.id})`);
+    expect(reason).not.toHaveValue(comment);
+    expect(within(dlg).getByText(/не вставляйте содержимое запроса/)).toBeInTheDocument();
+    fireEvent.change(within(dlg).getByLabelText("Текущий пароль"), { target: { value: "Correct-Horse-1" } });
+    fireEvent.click(within(dlg).getByRole("button", { name: "Добавить исключение" }));
+    await waitFor(() => expect(calls.find((c) => c.method === "POST")?.body).toMatchObject({ reason: `Ложное срабатывание (событие ${ev.id})` }));
+  });
+
+  it("источник текста — в условиях; снятие флажка — предупреждение (3В24)", async () => {
+    draft = { ...baseDraft, items: [{ ...baseDraft.items[0], source: "output" }] };
+    renderCard({ canException: true });
+    fireEvent.click(await screen.findByRole("button", { name: "Создать исключение" }));
+    const dlg = await screen.findByRole("dialog", { name: "Создать исключение" });
+    const src = await within(dlg).findByRole("checkbox", { name: "Источник текста: ответ модели" });
+    expect(within(dlg).queryByText(/действует на все тексты/)).toBeNull();
+    fireEvent.click(src);
+    expect(within(dlg).getByText(/действует на все тексты/)).toBeInTheDocument();
+    fireEvent.click(src);
+    fireEvent.change(within(dlg).getByLabelText("Текущий пароль"), { target: { value: "Correct-Horse-1" } });
+    fireEvent.click(within(dlg).getByRole("button", { name: "Добавить исключение" }));
+    await waitFor(() => expect(calls.find((c) => c.method === "POST")?.body).toMatchObject({ source: "output" }));
   });
 
   it("с подключённым TOTP вместо пароля отправляется код", async () => {

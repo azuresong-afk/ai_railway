@@ -228,3 +228,32 @@ func FuzzExceptionRequest(f *testing.F) {
 		}
 	})
 }
+
+// 3В24 ревью 3.r3: черновик исключения берёт источник из находки события:
+// находка в ответе модели — source: output, во входе — source: user;
+// одинаковые находки из разных источников — разные пункты черновика.
+func TestExceptionDraftHasSource(t *testing.T) {
+	e := newAppsEnv(t)
+	analyst := e.mustLogin(t, "analyst")
+	ts := time.Now().UTC().Add(-time.Minute)
+	ev := events.Event{
+		ID: liveEventID(ts, 8), Time: ts, Type: events.TypeGatewayRequest, App: "support-bot", Env: "prod",
+		PolicyMode: events.ModeEnforce, Storage: events.StorageNone,
+		Decision: &events.Decision{Action: "allow", Applied: []string{"allow"}, Policy: "support", PolicyVersion: 1},
+		Findings: []events.Finding{
+			{Detector: "secrets.generic", Category: "secret.key", Score: 0.9, Location: "choices[0].message.content", Rule: "api_key", Source: "output"},
+			{Detector: "secrets.generic", Category: "secret.key", Score: 0.9, Location: "messages[0].content", Rule: "api_key", Source: "user"},
+		},
+	}
+	if _, err := e.ev.Insert(context.Background(), events.Ingest{GatewayID: testGatewayID, ReceivedAt: time.Now(), Events: []events.Event{ev}}); err != nil {
+		t.Fatal(err)
+	}
+	w := e.call(analyst, "GET", "/api/v1/events/"+ev.ID+"/exception-draft", "", false)
+	if w.Code != 200 {
+		t.Fatalf("черновик: %d %s", w.Code, w.Body)
+	}
+	dr := decode[ExceptionDraftView](t, w.Body.Bytes())
+	if len(dr.Items) != 2 || dr.Items[0].Source != "output" || dr.Items[1].Source != "user" {
+		t.Fatalf("источники черновика: %+v", dr.Items)
+	}
+}

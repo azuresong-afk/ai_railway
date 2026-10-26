@@ -226,3 +226,24 @@ func TestGatewayExceptionByUser(t *testing.T) {
 		t.Fatalf("другой пользователь: %d", resp.Code)
 	}
 }
+
+// 3В24 ревью 3.r3: у находки события — источник текста; исключение с
+// source: output не пропускает ту же находку во входе, с source: user —
+// пропускает.
+func TestGatewayExceptionOutputOnly(t *testing.T) {
+	up, _ := newUpstream(t, nil)
+	g, log := excGateway(t, up.URL, 0)
+	resp := postChat(t, g, userBody(t, injectionText), nil)
+	if e := lastEvent(t, log, resp); len(e.Findings) == 0 || e.Findings[0].Source != string(detect.SourceUser) {
+		t.Fatalf("источник находки: %+v", e.Findings)
+	}
+	for _, c := range []struct {
+		src  detect.Source
+		code int
+	}{{detect.SourceOutput, http.StatusBadRequest}, {detect.SourceUser, http.StatusOK}} {
+		g, _ := excGateway(t, up.URL, 0, injectionException(policy.ExceptionSpec{App: "app", Source: c.src}))
+		if resp := postChat(t, g, userBody(t, injectionText), nil); resp.Code != c.code {
+			t.Fatalf("исключение с source %s: %d %s", c.src, resp.Code, resp.Body.String())
+		}
+	}
+}

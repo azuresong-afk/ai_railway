@@ -371,7 +371,7 @@ func (rec *record) findings(in *inspection, texts []inspectText) map[string]bool
 		}
 		ef := events.Finding{
 			Detector: f.Detector, Version: f.Version, Category: f.Category, Score: f.Score, Start: f.Start, End: f.End,
-			Location: texts[f.Text].Location, Threat: f.Threat, Rule: f.Rule, Exception: excepted[i],
+			Location: texts[f.Text].Location, Threat: f.Threat, Rule: f.Rule, Exception: excepted[i], Source: string(texts[f.Text].Source),
 		}
 		if i < len(in.Fragments) {
 			ef.Fragment = in.Fragments[i]
