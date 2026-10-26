@@ -41,6 +41,9 @@ type TLSSwitch struct {
 	// сертификат поверх нового. retry — таймер повторной проверки.
 	gen   uint64
 	retry *time.Timer
+	// waiting — раздел, который ждёт начала действия (его копия ключа
+	// стирается, когда раздел включён или заменён).
+	waiting *PreparedTLS
 }
 
 // NewTLSSwitch — переключатель над парой по умолчанию из файлов шлюза.
@@ -98,6 +101,17 @@ func (s *TLSSwitch) prepare(sec *bundle.GatewayTLS, key bundle.KeyPEM, now time.
 					"адрес приложений обслуживается сертификатом шлюза, затем переключится без перезапуска",
 					"host", sec.Host, "fingerprint", sec.Fingerprint, "error", err)
 			}
+			// Пару, имя и отпечаток сверяем сразу — на конце срока цепочки,
+			// когда все её сертификаты действуют: неверный раздел отклоняет
+			// пакет до ответа applied, а не при повторе.
+			vsc, vcanon, verr := aisecCrypto.ParseServerCert([]byte(sec.ChainPEM), key, sec.Host, sec.NotAfter.Add(-time.Second))
+			clear(vcanon)
+			switch {
+			case verr != nil && !errors.Is(verr, aisecCrypto.ErrCertNotValidNow):
+				return nil, fmt.Errorf("раздел gateway_tls: %w", verr)
+			case verr == nil && vsc.Fingerprint != sec.Fingerprint:
+				return nil, errors.New("раздел gateway_tls: отпечаток сертификата не совпадает с цепочкой")
+			}
 			cp := *sec
 			return &PreparedTLS{host: sec.Host, pending: &cp, key: bytes.Clone(key)}, nil
 		}
@@ -131,7 +145,13 @@ func (s *TLSSwitch) Use(p *PreparedTLS) {
 		s.retry.Stop()
 		s.retry = nil
 	}
+	// Копия ключа ожидавшего раздела больше не нужна.
+	if s.waiting != nil {
+		clear(s.waiting.key)
+		s.waiting = nil
+	}
 	if p != nil && p.pending != nil {
+		s.waiting = p
 		s.armRetry(p, s.gen)
 	}
 	s.use(p)
@@ -173,9 +193,11 @@ func (s *TLSSwitch) armRetry(p *PreparedTLS, gen uint64) {
 		case err != nil:
 			s.logger.Error("сертификат заказчика из пакета конфигурации не включён при повторной проверке", "host", p.host, "error", err)
 		case q.pending != nil:
+			clear(q.key)
 			s.armRetry(p, gen)
 		default:
 			clear(p.key)
+			s.waiting = nil
 			s.use(q)
 		}
 	})

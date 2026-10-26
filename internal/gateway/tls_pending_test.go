@@ -3,6 +3,7 @@ package gateway
 import (
 	"io"
 	"log/slog"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -93,6 +94,13 @@ func TestTLSSwitchNotYetValid(t *testing.T) {
 			t.Fatal("сертификат не включён, когда начал действовать")
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+
+	// Неверный ещё не действующий раздел отклоняется сразу, а не при повторе.
+	bad := *sec
+	bad.Fingerprint = strings.Repeat("0", 64)
+	if _, err := newTestTLSSwitch(t).Prepare(&bad, key, now); err == nil {
+		t.Fatal("отпечаток ещё не действующего раздела не сверен")
 	}
 
 	// Новый пакет без раздела отменяет ожидание прежнего.
