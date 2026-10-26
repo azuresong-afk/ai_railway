@@ -132,6 +132,7 @@ func TestDM16_ProbingSeriesAlert(t *testing.T) {
 
 // DM-36: серия отказов по квотам — правило «частота» по угрозе DM-36 с
 // действием block (20 за 10 минут на приложение).
+// Покрывает: DM-36 (бюджеты, аномалии и оповещение)
 func TestDM36_QuotaAlert(t *testing.T) {
 	e := newEnv(t)
 	q := func() *events.Event { return e.quotaReject(t, "crm-bot") }
@@ -369,6 +370,7 @@ func TestFrequencyWindowBoundary(t *testing.T) {
 // DM-15: бюджет — оповещение при 80 % и 100 % месячного бюджета, одно на
 // порог в месяц: повтор, закрытие и окно подавления нового не дают; в
 // новом месяце (по поясу установки) пороги отсчитываются заново.
+// Покрывает: DM-15 (бюджеты, аномалии и оповещение)
 func TestDM15_BudgetAlerts(t *testing.T) {
 	e := newEnv(t)
 	ctx := context.Background()
