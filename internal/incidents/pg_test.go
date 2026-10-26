@@ -410,8 +410,21 @@ func TestPGIncidentsAppendOnly(t *testing.T) {
 	if _, err := e.app.Exec(ctx, `UPDATE incident_stages SET note = 'подмена' WHERE key = 'triage'`); sqlState(err) != "23514" {
 		t.Errorf("отмеченный этап изменён: %v", err)
 	}
+	// 3В33 ревью 3.r4: закрытие задним числом прямым запросом роли сервера
+	// (обход срока хранения) отклоняется.
+	if _, err := e.app.Exec(ctx, `UPDATE alerts SET status = 'closed', open_key = NULL, closed_at = now() - interval '2000 days',
+		closed_by = 'user:x' WHERE incident_id = $1`, inc.ID); sqlState(err) != "23514" {
+		t.Errorf("оповещение закрыто задним числом: %v", err)
+	}
+	if _, err := e.app.Exec(ctx, `UPDATE incidents SET status = 'closed', resolution = 'resolved', closed_at = now() - interval '2000 days',
+		closed_by = 'user:x' WHERE id = $1`, inc.ID); sqlState(err) != "23514" {
+		t.Errorf("инцидент закрыт задним числом: %v", err)
+	}
 	if _, err := e.svc.SetStatus(ctx, e.by, inc.ID, incidents.StatusInput{Status: "closed", Resolution: "false_positive"}); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := e.app.Exec(ctx, `UPDATE incidents SET closed_at = now() - interval '2000 days' WHERE id = $1`, inc.ID); sqlState(err) != "23514" {
+		t.Errorf("время закрытия закрытого инцидента изменено: %v", err)
 	}
 	if _, err := e.app.Exec(ctx, `UPDATE incidents SET status = 'in_progress', resolution = NULL, closed_at = NULL, closed_by = NULL
 		WHERE id = $1`, inc.ID); sqlState(err) != "23514" {
