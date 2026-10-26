@@ -599,12 +599,12 @@ func (s *PGStore) Key(ctx context.Context, orgID, id string) (Key, error) {
 	return scanKey(s.db.QueryRow(ctx, `SELECT `+keyCols+` FROM app_keys WHERE org_id = $1 AND id = $2`, orgID, id))
 }
 
-// ActiveKeys — см. Store.
-func (s *PGStore) ActiveKeys(ctx context.Context, orgID string, now time.Time) ([]Key, error) {
+// BundleKeys — см. Store.
+func (s *PGStore) BundleKeys(ctx context.Context, orgID string, now, revokedSince time.Time) ([]Key, error) {
 	ctx, cancel := pgCtx(ctx)
 	defer cancel()
-	rows, err := s.db.Query(ctx, `SELECT `+keyCols+` FROM app_keys WHERE org_id = $1 AND revoked_at IS NULL AND expires_at > $2
-		ORDER BY app_id, prefix`, orgID, now)
+	rows, err := s.db.Query(ctx, `SELECT `+keyCols+` FROM app_keys WHERE org_id = $1 AND expires_at > $2
+		AND (revoked_at IS NULL OR revoked_at > $3) ORDER BY app_id, prefix`, orgID, now, revokedSince)
 	if err != nil {
 		return nil, err
 	}

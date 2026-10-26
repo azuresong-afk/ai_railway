@@ -372,13 +372,13 @@ func (m *Memory) Key(_ context.Context, orgID, id string) (Key, error) {
 	return cloneKey(k), nil
 }
 
-// ActiveKeys — см. Store.
-func (m *Memory) ActiveKeys(_ context.Context, orgID string, now time.Time) ([]Key, error) {
+// BundleKeys — см. Store.
+func (m *Memory) BundleKeys(_ context.Context, orgID string, now, revokedSince time.Time) ([]Key, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	out := []Key{}
 	for _, k := range m.keys {
-		if k.OrgID == orgID && k.RevokedAt.IsZero() && now.Before(k.ExpiresAt) {
+		if k.OrgID == orgID && (k.RevokedAt.IsZero() || k.RevokedAt.After(revokedSince)) && now.Before(k.ExpiresAt) {
 			out = append(out, cloneKey(k))
 		}
 	}
