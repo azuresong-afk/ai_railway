@@ -4,6 +4,8 @@
 
 Термины — по [словарю](../glossary.md): шлюз, приложение, провайдер, политика, событие, оповещение.
 
+Установка пилота на ВМ в docker compose шаг за шагом — [install-pilot.md](install-pilot.md); чек-лист пилота и проверки владельца — [docs/pilot/checklist.md](../pilot/checklist.md), [docs/pilot/manual-checks.md](../pilot/manual-checks.md).
+
 ## 1. Что нужно для установки
 - Linux-хост для сервера управления и хост (или тот же) для шлюза. Комплект поставки — четыре программы: `aisec-server`, `aisec-gateway`, `aisec-cli`, `aisec-media` (анализ изображений и аудио появится на этапе 5), файл `aisec-manifest.json` с подписью `aisec-manifest.json.sig` рядом с ними.
 - PostgreSQL 15 или новее. Сервер подключается к нему не владельцем таблиц; учётная запись для сервера и учётная запись для `aisec-cli migrate` разные.
