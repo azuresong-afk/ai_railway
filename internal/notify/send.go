@@ -131,6 +131,10 @@ func (t *Transport) permitted(ip netip.Addr) bool {
 }
 
 // testCode — обобщённый код тестовой отправки (3Н31 ревью 3.r2).
+// PublicCode — код ошибки соединения для ответов API вне журнала доставки:
+// без различения dial, timeout и tls (3Н50 ревью 3.r4, 3Н31).
+func PublicCode(code string) string { return testCode(code) }
+
 func testCode(code string) string {
 	switch code {
 	case ErrCodeDial, ErrCodeTimeout, ErrCodeTLS, ErrCodeNoSTARTTLS, ErrCodeWrite:

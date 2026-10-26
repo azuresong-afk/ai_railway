@@ -328,7 +328,9 @@ func weakening(old, cur Channel, oldSec, sec Secrets) []string {
 	if oldSec.Password != "" && sec.Password == "" {
 		r = append(r, "password_removed")
 	}
-	if cur.Type == TypeSyslog && o.Format != n.Format {
+	// Формат webhook (generic ↔ mattermost) тоже ломает разбор у приёмника
+	// (3Н50 ревью 3.r4).
+	if o.Format != n.Format {
 		r = append(r, "format_changed")
 	}
 	for _, a := range o.To {

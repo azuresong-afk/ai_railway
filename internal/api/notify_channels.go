@@ -313,7 +313,7 @@ func (d Deps) getAuditStream(w http.ResponseWriter, r *http.Request) {
 	}
 	v := AuditStreamView{Subscribed: st.Subscribed, Active: st.Active, LastSeq: st.Cursor.LastSeq, HeadSeq: st.Backlog.Head,
 		Pending: st.Backlog.Pending, OldestPendingAt: optTime(st.Backlog.Oldest), Lagging: st.Lagging,
-		Attempts: st.Cursor.Attempts, Error: st.Cursor.Error, LastSentAt: optTime(st.Cursor.SentAt)}
+		Attempts: st.Cursor.Attempts, Error: notify.PublicCode(st.Cursor.Error), LastSentAt: optTime(st.Cursor.SentAt)}
 	if st.Active {
 		v.NextAt = optTime(st.Cursor.NextAt)
 	}
