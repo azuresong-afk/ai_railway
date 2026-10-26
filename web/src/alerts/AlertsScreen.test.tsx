@@ -284,6 +284,27 @@ describe("каналы", () => {
     expect(body.type).toBeUndefined();
   });
 
+  it("удаление пароля SMTP — флажком, с логином и повторной проверкой (3Н38 ревью 3.r2)", async () => {
+    handler = (c) =>
+      c.method === "PUT" && c.url === "/api/v1/notify-channels/c-1" && !c.body.password
+        ? problem(400, "invalid_request", "Проверьте введённые данные.", [{ field: "password", detail: "Введите текущий пароль." }])
+        : undefined;
+    renderScreen(allPerms);
+    tab("Каналы");
+    fireEvent.click(await screen.findByRole("button", { name: "Изменить канал Почта SOC" }));
+    const dlg = await screen.findByRole("dialog");
+    fireEvent.click(within(dlg).getByRole("checkbox", { name: "Удалить пароль и логин SMTP" }));
+    expect(within(dlg).queryByLabelText("Пароль SMTP")).toBeNull();
+    expect((within(dlg).getByLabelText("Логин SMTP") as HTMLInputElement).disabled).toBe(true);
+    fireEvent.click(within(dlg).getByRole("button", { name: "Сохранить канал" }));
+    await within(dlg).findByText(/Подтвердите, что это вы/);
+    fireEvent.change(within(dlg).getByLabelText("Текущий пароль"), { target: { value: "Пароль-для-проверки-1" } });
+    fireEvent.click(within(dlg).getByRole("button", { name: "Сохранить канал" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    const puts = calls.filter((c) => c.method === "PUT").map((c) => c.body);
+    expect(puts[1]).toMatchObject({ secrets: { password: "" }, settings: { username: "" }, password: "Пароль-для-проверки-1" });
+  });
+
   it("поля секретов не принимают сохранённый пароль консоли (3В20 ревью 3.r2)", async () => {
     renderScreen(allPerms);
     tab("Каналы");

@@ -23,6 +23,19 @@ const isHttps = (v: string): boolean => {
   }
 };
 
+// Узел адреса как у сервера (internal/apps/providers.go, origin): схема, хост без точки в конце и порт (у https по
+// умолчанию 443). Неразбираемый адрес сравнивается как есть.
+export const originOf = (v: string): string => {
+  if (v === "") return "";
+  try {
+    const u = new URL(v);
+    const port = u.port !== "" ? u.port : u.protocol === "https:" ? "443" : "";
+    return `${u.protocol}//${u.hostname.replace(/\.$/, "")}:${port}`;
+  } catch {
+    return v;
+  }
+};
+
 // Создание и правка провайдера. Новый провайдер всегда «внешний»; учётные данные задаются отдельным действием.
 // Смена узла, корневых сертификатов или типа сбрасывает учётные данные и признак «внешний» (В14 ревью 2.r3b) — сервер,
 // а консоль предупреждает об этом.
@@ -56,10 +69,14 @@ export function ProviderDialog({ provider, onClose }: { provider: Provider | nul
     timeouts: [f.connect, f.header, f.response, f.stream_idle].every(secOk) ? undefined : "Таймауты — целые секунды от 0 до 600; 0 — значение шлюза.",
   };
   const invalid = Object.values(errs).some(Boolean);
-  // Смена адресата сбрасывает учётные данные и признак «внешний».
+  // Смена адресата сбрасывает учётные данные и признак «внешний»: сервер сравнивает тип, сертификаты и узел адресов
+  // (схему, хост и порт), а не строку целиком (3Н38 ревью 3.r2).
   const resets =
     provider !== null &&
-    (f.base_url !== provider.base_url || f.ca_pem !== provider.ca_pem || f.type !== provider.type || f.auth_url !== (provider.auth_url ?? ""));
+    (originOf(f.base_url) !== originOf(provider.base_url) ||
+      f.ca_pem !== provider.ca_pem ||
+      f.type !== provider.type ||
+      originOf(f.auth_url) !== originOf(provider.auth_url ?? ""));
 
   const fields = (): ProviderFields => ({
     name: f.name.trim(),

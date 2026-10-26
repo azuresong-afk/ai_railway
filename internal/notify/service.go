@@ -297,7 +297,7 @@ func (s *Service) CreateChannel(ctx context.Context, by By, in ChannelInput) (Ch
 // уведомлений (DM-40, ADR-0020 п. 7): отключение, повышение порога
 // серьёзности, смена адреса или корневых сертификатов получателя, удаление
 // адресатов письма, снятие подписки на журнал аудита (РСБ.6), смена ключа
-// подписи webhook и формата syslog.
+// подписи webhook и формата syslog, удаление пароля SMTP.
 func weakening(old, cur Channel, oldSec, sec Secrets) []string {
 	var r []string
 	if old.Enabled && !cur.Enabled {
@@ -322,6 +322,11 @@ func weakening(old, cur Channel, oldSec, sec Secrets) []string {
 	// ревью 3.r2).
 	if oldSec.SigningKey != "" && oldSec.SigningKey != sec.SigningKey {
 		r = append(r, "signing_key_changed")
+	}
+	// Удаление пароля SMTP: сервер почты с проверкой подлинности
+	// перестаёт принимать письма (3Н38 ревью 3.r2).
+	if oldSec.Password != "" && sec.Password == "" {
+		r = append(r, "password_removed")
 	}
 	if cur.Type == TypeSyslog && o.Format != n.Format {
 		r = append(r, "format_changed")

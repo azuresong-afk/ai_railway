@@ -65,6 +65,9 @@ export function ChannelDialog({ channel, mfa, onClose }: { channel: NotifyChanne
     ca_pem: s?.ca_pem ?? "",
   });
   const [sec, setSec] = useState({ password: "", url: "", signing_key: "" });
+  // Удалить пароль SMTP вместе с логином (3Н38 ревью 3.r2): пустое поле значит «не менять», поэтому удаление — отдельный
+  // флажок. Сервер считает удаление ослаблением и просит пароль или код. Ключ подписи webhook обязателен: он только заменяется.
+  const [dropPassword, setDropPassword] = useState(false);
   const re = useReauth(mfa);
   const set = (k: keyof typeof f) => (e: { target: { value: string } }) => setF((p) => ({ ...p, [k]: e.target.value }));
   const isSet = (k: SecretName) => channel?.secrets_set.includes(k) === true;
@@ -81,7 +84,7 @@ export function ChannelDialog({ channel, mfa, onClose }: { channel: NotifyChanne
 
   const settings = () => {
     const port = f.port === "" ? {} : { port: Number(f.port) };
-    if (f.type === "email") return { host: f.host.trim(), ...port, username: f.username, from: f.from.trim(), to: splitList(f.to), ca_pem: f.ca_pem };
+    if (f.type === "email") return { host: f.host.trim(), ...port, username: dropPassword ? "" : f.username, from: f.from.trim(), to: splitList(f.to), ca_pem: f.ca_pem };
     if (f.type === "webhook") return { format: (f.format || "generic") as "generic", ca_pem: f.ca_pem };
     return {
       host: f.host.trim(),
@@ -92,9 +95,10 @@ export function ChannelDialog({ channel, mfa, onClose }: { channel: NotifyChanne
       ca_pem: f.ca_pem,
     };
   };
-  // Передаются только введённые секреты: пустой — «не менять».
+  // Передаются только введённые секреты: пустой — «не менять», пустая строка уходит только при удалении флажком.
   const secrets = () => ({
-    ...(f.type === "email" && sec.password !== "" ? { password: sec.password } : {}),
+    ...(f.type === "email" && dropPassword ? { password: "" } : {}),
+    ...(f.type === "email" && !dropPassword && sec.password !== "" ? { password: sec.password } : {}),
     ...(f.type === "webhook" && sec.url !== "" ? { url: sec.url } : {}),
     ...(f.type === "webhook" && sec.signing_key !== "" ? { signing_key: sec.signing_key } : {}),
   });
@@ -175,8 +179,21 @@ export function ChannelDialog({ channel, mfa, onClose }: { channel: NotifyChanne
         )}
         {f.type === "email" && (
           <>
-            <Field label="Логин SMTP">{({ id }) => <Input id={id} name="smtp-account" autoComplete="off" value={f.username} onChange={set("username")} />}</Field>
-            <SecretField name="password" set={isSet("password")} value={sec.password} onChange={(v) => setSec((p) => ({ ...p, password: v }))} />
+            <Field label="Логин SMTP">
+              {({ id }) => <Input id={id} name="smtp-account" autoComplete="off" disabled={dropPassword} value={dropPassword ? "" : f.username} onChange={set("username")} />}
+            </Field>
+            {!dropPassword && <SecretField name="password" set={isSet("password")} value={sec.password} onChange={(v) => setSec((p) => ({ ...p, password: v }))} />}
+            {isSet("password") && (
+              <Check
+                label="Удалить пароль и логин SMTP"
+                checked={dropPassword}
+                onCheckedChange={(v) => {
+                  setDropPassword(v);
+                  setSec((p) => ({ ...p, password: "" }));
+                }}
+              />
+            )}
+            {dropPassword && <p className="text-xs text-muted">Письма пойдут без проверки подлинности. Удаление ослабляет доставку: понадобится пароль или код.</p>}
             <Field label="Отправитель (From)">{({ id }) => <Input id={id} type="email" value={f.from} onChange={set("from")} />}</Field>
             <Field label="Адресаты" hint="По одному на строку, не больше 20. Удаление адресата — ослабление.">
               {({ id, describedBy }) => <textarea id={id} aria-describedby={describedBy} rows={3} value={f.to} onChange={set("to")} className={area} />}

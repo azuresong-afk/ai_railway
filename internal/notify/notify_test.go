@@ -752,6 +752,12 @@ func TestChannelUpdateWeakeningSigningAndFormat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	mail, err := e.svc.CreateChannel(ctx, e.by, ChannelInput{Name: "Почта", Type: TypeEmail,
+		Settings: Settings{Host: "smtp.example", Username: "aisec", From: "aisec@example.ru", To: []string{"soc@example.ru"}, CAPEM: e.caPEM},
+		Secrets:  SecretsInput{Password: ptr("синтетический-пароль")}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	cases := []struct {
 		reason string
 		c      Channel
@@ -759,6 +765,10 @@ func TestChannelUpdateWeakeningSigningAndFormat(t *testing.T) {
 	}{
 		{"signing_key_changed", wh, func(in *ChannelInput) { in.Secrets.SigningKey = ptr(strings.Repeat("n", 40)) }},
 		{"format_changed", sys, func(in *ChannelInput) { in.Settings.Format = FormatCEF }},
+		// Удаление пароля SMTP вместе с логином из консоли (3Н38 ревью
+		// 3.r2) — тоже с повторной проверкой. Ключ подписи webhook
+		// обязателен: он только заменяется.
+		{"password_removed", mail, func(in *ChannelInput) { in.Settings.Username, in.Secrets.Password = "", ptr("") }},
 	}
 	for _, c := range cases {
 		upd := func(by By) error {
@@ -786,5 +796,8 @@ func TestChannelUpdateWeakeningSigningAndFormat(t *testing.T) {
 		if fp, _ := after["ca_fingerprints"].([]string); len(fp) != 1 || len(fp[0]) != 64 {
 			t.Fatalf("%s: отпечатки корней %v", c.reason, after["ca_fingerprints"])
 		}
+	}
+	if cur, err := e.svc.Channel(ctx, mail.ID); err != nil || slices.Contains(cur.SecretFields, SecretPassword) {
+		t.Fatalf("пароль не удалён: %+v %v", cur.SecretFields, err)
 	}
 }
