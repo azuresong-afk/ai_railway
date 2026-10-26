@@ -732,3 +732,59 @@ func TestMattermostNoAutolinks(t *testing.T) {
 		t.Fatalf("адрес искажён: %q", body["text"])
 	}
 }
+
+// 3Н34 ревью 3.r2: смена ключа подписи webhook и формата syslog —
+// ослабление (повторная проверка, weakening); в аудите — отпечатки корневых
+// сертификатов канала, а не только их длина.
+func TestChannelUpdateWeakeningSigningAndFormat(t *testing.T) {
+	e := newEnv(t)
+	ctx := testCtx(t)
+	noConfirm := e.by
+	noConfirm.Confirm = nil
+	wh, err := e.svc.CreateChannel(ctx, e.by, ChannelInput{Name: "Webhook", Type: TypeWebhook,
+		Settings: Settings{Format: FormatGeneric, CAPEM: e.caPEM},
+		Secrets:  SecretsInput{URL: ptr("https://soar.example/hook"), SigningKey: ptr(testSigningKey)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sys, err := e.svc.CreateChannel(ctx, e.by, ChannelInput{Name: "SIEM", Type: TypeSyslog, AuditStream: ptr(true),
+		Settings: Settings{Host: "siem.example", Port: 6514, Format: FormatJSON, CAPEM: e.caPEM}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		reason string
+		c      Channel
+		edit   func(*ChannelInput)
+	}{
+		{"signing_key_changed", wh, func(in *ChannelInput) { in.Secrets.SigningKey = ptr(strings.Repeat("n", 40)) }},
+		{"format_changed", sys, func(in *ChannelInput) { in.Settings.Format = FormatCEF }},
+	}
+	for _, c := range cases {
+		upd := func(by By) error {
+			cur, err := e.svc.Channel(ctx, c.c.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			in := ChannelInput{Name: cur.Name, Enabled: ptr(cur.Enabled), MinSeverity: cur.MinSeverity, Settings: cur.Settings,
+				Version: cur.Version}
+			c.edit(&in)
+			_, err = e.svc.UpdateChannel(ctx, by, c.c.ID, in)
+			return err
+		}
+		if err := upd(noConfirm); !errors.Is(err, ErrConfirmRequired) {
+			t.Fatalf("%s без проверки: %v", c.reason, err)
+		}
+		if err := upd(e.by); err != nil {
+			t.Fatalf("%s: %v", c.reason, err)
+		}
+		d := e.mem.Audited()[len(e.mem.Audited())-1].Details.(map[string]any)
+		if d["weakening"] != true || !slices.Contains(d["weakening_reasons"].([]string), c.reason) {
+			t.Fatalf("%s: аудит %+v", c.reason, d)
+		}
+		after := d["after"].(map[string]any)
+		if fp, _ := after["ca_fingerprints"].([]string); len(fp) != 1 || len(fp[0]) != 64 {
+			t.Fatalf("%s: отпечатки корней %v", c.reason, after["ca_fingerprints"])
+		}
+	}
+}

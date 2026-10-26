@@ -2,7 +2,9 @@ package notify
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -128,6 +130,7 @@ type Service struct {
 	store     Store
 	box       Sealer
 	tls       aisecCrypto.TLSProvider
+	hasher    aisecCrypto.Hasher
 	transport *Transport
 	ids       *ids.Generator
 	orgID     string
@@ -150,13 +153,17 @@ func New(o Options) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
+	h, err := o.Provider.Hasher()
+	if err != nil {
+		return nil, err
+	}
 	if o.OrgID == "" {
 		o.OrgID = audit.DefaultOrgID
 	}
 	if o.Now == nil {
 		o.Now = time.Now
 	}
-	return &Service{store: o.Store, box: o.Box, tls: t, transport: o.Transport, ids: ids.NewGenerator(rnd), orgID: o.OrgID,
+	return &Service{store: o.Store, box: o.Box, tls: t, hasher: h, transport: o.Transport, ids: ids.NewGenerator(rnd), orgID: o.OrgID,
 		now: o.Now, tests: map[string][]time.Time{}}, nil
 }
 
@@ -232,12 +239,34 @@ func (s *Service) secrets(ctx context.Context, c Channel) (Secrets, error) {
 	return sec, nil
 }
 
-// view — канал для аудита: без секретов и корневых сертификатов (размер).
-func view(c Channel) map[string]any {
+// view — канал для аудита: без секретов; корневые сертификаты — их
+// отпечатки (хеш DER криптопрофиля, 3Н34 ревью 3.r2), а не текст (размер).
+func (s *Service) view(c Channel) map[string]any {
 	st := c.Settings
 	st.CAPEM = ""
 	return map[string]any{"name": c.Name, "type": c.Type, "enabled": c.Enabled, "min_severity": c.MinSeverity,
-		"settings": st, "ca_pem_bytes": len(c.Settings.CAPEM), "protected_fields": c.SecretFields, "audit_stream": c.AuditStream}
+		"settings": st, "ca_pem_bytes": len(c.Settings.CAPEM), "ca_fingerprints": s.fingerprints(c.Settings.CAPEM),
+		"protected_fields": c.SecretFields, "audit_stream": c.AuditStream}
+}
+
+// maxFingerprints — отпечатков корневых сертификатов в записи аудита.
+const maxFingerprints = 20
+
+// fingerprints — хеши DER блоков CERTIFICATE из PEM (проверен при
+// сохранении канала), hex.
+func (s *Service) fingerprints(pemText string) []string {
+	out := []string{}
+	rest := []byte(pemText)
+	for len(out) < maxFingerprints {
+		var b *pem.Block
+		if b, rest = pem.Decode(rest); b == nil {
+			break
+		}
+		if b.Type == "CERTIFICATE" {
+			out = append(out, hex.EncodeToString(s.hasher.Sum(b.Bytes)))
+		}
+	}
+	return out
 }
 
 // CreateChannel создаёт канал (право notify_channels.manage). Создание
@@ -258,7 +287,7 @@ func (s *Service) CreateChannel(ctx context.Context, by By, in ChannelInput) (Ch
 	if err := s.seal(ctx, &c, sec); err != nil {
 		return Channel{}, err
 	}
-	if err := s.store.CreateChannel(ctx, c, s.entry(by, "notify_channel.create", c.ID, audit.ResultSuccess, view(c))); err != nil {
+	if err := s.store.CreateChannel(ctx, c, s.entry(by, "notify_channel.create", c.ID, audit.ResultSuccess, s.view(c))); err != nil {
 		return Channel{}, err
 	}
 	return c, nil
@@ -267,7 +296,8 @@ func (s *Service) CreateChannel(ctx context.Context, by By, in ChannelInput) (Ch
 // weakening — причины, по которым изменение ослабляет доставку
 // уведомлений (DM-40, ADR-0020 п. 7): отключение, повышение порога
 // серьёзности, смена адреса или корневых сертификатов получателя, удаление
-// адресатов письма, снятие подписки на журнал аудита (РСБ.6).
+// адресатов письма, снятие подписки на журнал аудита (РСБ.6), смена ключа
+// подписи webhook и формата syslog.
 func weakening(old, cur Channel, oldSec, sec Secrets) []string {
 	var r []string
 	if old.Enabled && !cur.Enabled {
@@ -285,6 +315,16 @@ func weakening(old, cur Channel, oldSec, sec Secrets) []string {
 	}
 	if old.AuditStream && !cur.AuditStream {
 		r = append(r, "audit_stream_disabled")
+	}
+	// Новый ключ подписи webhook: приёмник, сверяющий подпись, отвергает
+	// уведомления до своей перенастройки; смена формата syslog ломает
+	// разбор в SIEM (cef — без канонической записи и хеша журнала) (3Н34
+	// ревью 3.r2).
+	if oldSec.SigningKey != "" && oldSec.SigningKey != sec.SigningKey {
+		r = append(r, "signing_key_changed")
+	}
+	if cur.Type == TypeSyslog && o.Format != n.Format {
+		r = append(r, "format_changed")
 	}
 	for _, a := range o.To {
 		if !slices.Contains(n.To, a) {
@@ -352,7 +392,7 @@ func (s *Service) UpdateChannel(ctx context.Context, by By, id string, in Channe
 			changed = []string{}
 		}
 		return c, s.entry(by, "notify_channel.update", c.ID, audit.ResultSuccess, map[string]any{
-			"before": view(old), "after": view(c), "protected_changed": changed,
+			"before": s.view(old), "after": s.view(c), "protected_changed": changed,
 			"weakening": len(reasons) > 0, "weakening_reasons": reasons}), nil
 	})
 }
