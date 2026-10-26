@@ -432,7 +432,7 @@ func TestPolicyImportDryRun(t *testing.T) {
 	if pv := decode[PolicyImportPreviewView](t, w.Body.Bytes()); w.Code != 200 || pv.Diff.Weakening || len(pv.Diff.Fields)+len(pv.Diff.Changed) != 0 {
 		t.Fatalf("без изменений: %d %s", w.Code, w.Body)
 	}
-	body, _ := json.Marshal(map[string]any{"document": weak, "base_version": 1})
+	body, _ := json.Marshal(map[string]any{"document": weak, "base_version": 1}) //nolint:gosec // G104: карта из строк сериализуется без ошибок
 	if w := e.callYAML(admin, dry, string(body), "application/json"); w.Code != 200 || !strings.Contains(w.Body.String(), `"weakening":true`) {
 		t.Fatalf("обёртка JSON: %d %s", w.Code, w.Body)
 	}

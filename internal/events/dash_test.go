@@ -378,7 +378,7 @@ func TestPGDashIngestNotBlockedByBackfill(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer lock.Rollback(ctx) //nolint:errcheck // откат после теста
-	if _, err := lock.Exec(ctx, "SELECT pg_advisory_xact_lock($1, $2)", int32(0x6173_6461), int32(hour.Unix()/3600)); err != nil {
+	if _, err := lock.Exec(ctx, "SELECT pg_advisory_xact_lock($1, $2)", int32(0x6173_6461), int32(hour.Unix()/3600)); err != nil { //nolint:gosec // G115: номер часа с 1970 года укладывается в int32
 		t.Fatal(err)
 	}
 	start := time.Now()
