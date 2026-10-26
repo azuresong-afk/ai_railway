@@ -60,11 +60,16 @@ var (
 // errDashBusy — все вычисления снимков заняты.
 var errDashBusy = errors.New("дашборды: все вычисления заняты")
 
-// dashTick — шаг потока и срок снимка в кэше по длине периода: длинный
-// период меняется медленно, а считается дорого (3В28 ревью 3.r3). До суток —
-// dashStreamEvery, до 31 суток (часовой шаг) — в 20 раз реже (1 мин),
-// дольше (суточный шаг) — в 100 раз (5 мин).
+// dashTick — шаг потока и срок снимка в кэше. Именованные периоды ТЗ 5.8
+// (15m–30d) — всегда dashStreamEvery: задержка реального времени не больше
+// 5 с, нагрузку держат singleflight и предел вычислений. Реже — только
+// произвольный период (3В28 ревью 3.r3): до 31 суток — в 20 раз (1 мин),
+// дольше — в 100 раз (5 мин); такой период почти всегда в прошлом и
+// меняется только досчётом.
 func dashTick(p dashParams) time.Duration {
+	if p.name != "custom" {
+		return dashStreamEvery
+	}
 	switch l := p.to.Sub(p.from); {
 	case l > 31*24*time.Hour:
 		return 100 * dashStreamEvery
@@ -548,7 +553,12 @@ func (d Deps) dashSnapshot(ctx context.Context, name string, p dashParams, app D
 		return nil, 0, call.err
 	}
 	defer c.release()
-	call.e, call.err = d.dashCompute(ctx, name, p, app, withBudgets, withFeed, now)
+	// Снимок общий: ведущий считает его не на своём контексте, иначе уход
+	// его клиента (закрытая вкладка, оборванный поток) отдал бы ошибку всем
+	// ожидающим. Срок — тот же dashReadTimeout.
+	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), dashReadTimeout)
+	defer cancel()
+	call.e, call.err = d.dashCompute(cctx, name, p, app, withBudgets, withFeed, now)
 	if call.err != nil {
 		return nil, 0, call.err
 	}

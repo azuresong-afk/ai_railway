@@ -283,6 +283,13 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	if err := dashStore.Init(ctx); err != nil {
 		return err
 	}
+	// Отчёты читают агрегаты через пул чтения событий: отчёт за год не
+	// занимает соединения дашбордов, которых ровно по пределу вычислений
+	// снимков (3В28 ревью 3.r3).
+	reportsDash, err := events.NewDashStore(db.Pool(), readDB.Pool(), audit.DefaultOrgID, logger)
+	if err != nil {
+		return err
+	}
 	eventStore, err := events.NewPGStore(db.Pool(), box, auditLog, audit.DefaultOrgID, events.WithRandom(rnd),
 		events.WithReadDB(readDB.Pool()),
 		events.WithIngestHook(events.ChainHooks(alertStore.WithIncidents(incidentStore), dashStore.Hook())))
@@ -450,7 +457,7 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	}
 	reportsSvc, err := reports.New(reports.Options{
 		Store: reportStore,
-		Builder: &reports.Builder{Dash: dashStore, Incidents: incidentsSvc, Alerts: alertsSvc,
+		Builder: &reports.Builder{Dash: reportsDash, Incidents: incidentsSvc, Alerts: alertsSvc,
 			Facts: &reports.PGFacts{DB: readDB.Pool(), OrgID: audit.DefaultOrgID, Apps: appsSvc, Policies: policiesSvc, Gateways: gateways}},
 		Mailer: notifySvc, Channels: notifySvc,
 		Location: func(ctx context.Context) (*time.Location, error) {

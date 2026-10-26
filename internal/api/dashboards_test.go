@@ -508,11 +508,17 @@ func TestDashboardComputeLimit(t *testing.T) {
 func TestDashTick(t *testing.T) {
 	now := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
 	for _, tc := range []struct {
+		name string
 		d    time.Duration
 		want time.Duration
-	}{{24 * time.Hour, dashStreamEvery}, {7 * 24 * time.Hour, 20 * dashStreamEvery}, {90 * 24 * time.Hour, 100 * dashStreamEvery}} {
-		if got := dashTick(dashParams{from: now.Add(-tc.d), to: now}); got != tc.want {
-			t.Errorf("%v: %v, ожидается %v", tc.d, got, tc.want)
+	}{
+		// Именованные периоды ТЗ 5.8 — задержка не больше 5 с.
+		{"24h", 24 * time.Hour, dashStreamEvery}, {"7d", 7 * 24 * time.Hour, dashStreamEvery}, {"30d", 30 * 24 * time.Hour, dashStreamEvery},
+		{"custom", 24 * time.Hour, dashStreamEvery}, {"custom", 7 * 24 * time.Hour, 20 * dashStreamEvery},
+		{"custom", 90 * 24 * time.Hour, 100 * dashStreamEvery},
+	} {
+		if got := dashTick(dashParams{name: tc.name, from: now.Add(-tc.d), to: now}); got != tc.want {
+			t.Errorf("%s %v: %v, ожидается %v", tc.name, tc.d, got, tc.want)
 		}
 	}
 }
