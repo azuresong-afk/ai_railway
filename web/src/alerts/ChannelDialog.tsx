@@ -106,7 +106,9 @@ export function ChannelDialog({ channel, mfa, onClose }: { channel: NotifyChanne
   const m = useMutation({
     mutationFn: () => {
       const base = { name: f.name.trim(), enabled: f.enabled, min_severity: f.min_severity, settings: settings(), secrets: secrets() };
-      if (channel === null) return alertsApi.createChannel({ ...base, type: f.type, min_severity: f.min_severity as "medium" });
+      // Подписка на журнал аудита (audit_stream, задача 3.14) в консоли не задаётся: новый канал — без неё, правка не
+      // передаёт поле, и сервер оставляет прежнее значение.
+      if (channel === null) return alertsApi.createChannel({ ...base, type: f.type, min_severity: f.min_severity as "medium", audit_stream: false });
       return alertsApi.updateChannel(channel.id, { ...base, min_severity: f.min_severity as "medium", version: channel.version, ...re.body() });
     },
     onSuccess: async () => {

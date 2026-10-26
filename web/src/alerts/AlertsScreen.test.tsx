@@ -29,7 +29,7 @@ const rule = (o: Partial<AlertRule> = {}): AlertRule => ({
 const channel = (o: Partial<NotifyChannel> = {}): NotifyChannel => ({
   id: "c-1", name: "Почта SOC", type: "email", enabled: true, min_severity: "medium",
   settings: { host: "smtp.corp.example", port: 587, username: "aisec", from: "aisec@corp.example", to: ["soc@corp.example"], ca_pem: "-----BEGIN CERTIFICATE-----\nAAA\n-----END CERTIFICATE-----" },
-  secrets_set: ["password"], version: 2, created_at: NOW, created_by: "sec", updated_at: NOW, updated_by: "sec", ...o,
+  secrets_set: ["password"], audit_stream: false, version: 2, created_at: NOW, created_by: "sec", updated_at: NOW, updated_by: "sec", ...o,
 });
 const card = (a: Alert) => ({ ...a, events: [{ id: "ev-1", ts: NOW }], events_truncated: false, history: [], details: {} });
 

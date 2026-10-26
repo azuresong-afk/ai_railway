@@ -104,11 +104,11 @@ describe("экран «Провайдеры»", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Изменить провайдера Основной" }));
     const dlg = await screen.findByRole("dialog");
     const addr = within(dlg).getByLabelText("Адрес API");
-    for (const same of ["https://llm.corp.example/v2", "https://LLM.corp.example:443/v1", "https://llm.corp.example./v1/"]) {
+    for (const same of [`https://llm.corp.example/v2`, `https://LLM.corp.example:443/v1`, `https://llm.corp.example./v1/`]) {
       fireEvent.change(addr, { target: { value: same } });
       expect(within(dlg).queryByText(/сбрасывает учётные данные/)).toBeNull();
     }
-    for (const other of ["https://llm2.corp.example/v1", "https://llm.corp.example:8443/v1"]) {
+    for (const other of [`https://llm2.corp.example/v1`, `https://llm.corp.example:8443/v1`]) {
       fireEvent.change(addr, { target: { value: other } });
       expect(within(dlg).getByText(/сбрасывает учётные данные/)).toBeTruthy();
     }
