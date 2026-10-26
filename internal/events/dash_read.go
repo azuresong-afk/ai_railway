@@ -364,10 +364,10 @@ func (d *DashStore) RequestsBy(ctx context.Context, q DashQuery, dim string, lim
 			&v.TokensCompletion, &v.Cost, &v.UnpricedRequests)
 		return
 	}
-	sums := `LEAST(sum(requests), `+dashMax+`)::bigint AS n, LEAST(sum(with_findings), `+dashMax+`)::bigint,
-		LEAST(COALESCE(sum(requests) FILTER (WHERE ` + dashBlocked + `), 0), `+dashMax+`)::bigint, LEAST(COALESCE(sum(requests) FILTER (WHERE ` + dashWouldBlock + `), 0), `+dashMax+`)::bigint,
-		LEAST(COALESCE(sum(requests) FILTER (WHERE ` + dashMasked + `), 0), `+dashMax+`)::bigint, LEAST(sum(tokens_prompt), `+dashMax+`)::bigint, LEAST(sum(tokens_completion), `+dashMax+`)::bigint,
-		LEAST(sum(cost), `+dashMax+`)::bigint, LEAST(sum(unpriced_requests), `+dashMax+`)::bigint`
+	sums := `LEAST(sum(requests), ` + dashMax + `)::bigint AS n, LEAST(sum(with_findings), ` + dashMax + `)::bigint,
+		LEAST(COALESCE(sum(requests) FILTER (WHERE ` + dashBlocked + `), 0), ` + dashMax + `)::bigint, LEAST(COALESCE(sum(requests) FILTER (WHERE ` + dashWouldBlock + `), 0), ` + dashMax + `)::bigint,
+		LEAST(COALESCE(sum(requests) FILTER (WHERE ` + dashMasked + `), 0), ` + dashMax + `)::bigint, LEAST(sum(tokens_prompt), ` + dashMax + `)::bigint, LEAST(sum(tokens_completion), ` + dashMax + `)::bigint,
+		LEAST(sum(cost), ` + dashMax + `)::bigint, LEAST(sum(unpriced_requests), ` + dashMax + `)::bigint`
 	switch dim {
 	case DimApp, DimModel, DimProvider:
 		return collect(ctx, d, q, `SELECT `+dim+`, `+sums+` FROM req GROUP BY 1 ORDER BY n DESC, 1 LIMIT $6`, scan, clampTop(limit))

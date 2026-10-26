@@ -529,8 +529,8 @@ type stalledWriter struct {
 }
 
 func (s *stalledWriter) Header() http.Header { return s.hdr }
-func (s *stalledWriter) WriteHeader(int)      {}
-func (s *stalledWriter) FlushError() error    { return nil }
+func (s *stalledWriter) WriteHeader(int)     {}
+func (s *stalledWriter) FlushError() error   { return nil }
 
 func (s *stalledWriter) SetWriteDeadline(t time.Time) error {
 	s.mu.Lock()

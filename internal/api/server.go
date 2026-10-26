@@ -180,7 +180,7 @@ func New(o Options) (http.Handler, *Router, error) {
 		AuditLog: o.AuditLog, AuditVerifier: o.AuditVerifier, Alerts: o.Alerts, Notify: o.Notify, Incidents: o.Incidents,
 		Dashboards: o.Dashboards, Reports: o.Reports, DashCache: newDashCache(), DashStreams: NewExportGate(dashStreamsPerSubject, dashStreamsTotal),
 		Reauthorize: o.Authorizer.Authorize, Stopping: o.Stopping,
-		Exports:     NewExportGate(MaxExportsPerSubject, MaxExportsTotal), AuditReads: NewExportGate(MaxAuditReadsPerSubject, MaxAuditReadsTotal)}
+		Exports: NewExportGate(MaxExportsPerSubject, MaxExportsTotal), AuditReads: NewExportGate(MaxAuditReadsPerSubject, MaxAuditReadsTotal)}
 	if err := rt.Add(append(Routes(deps), o.Extra...)...); err != nil {
 		return nil, nil, err
 	}
