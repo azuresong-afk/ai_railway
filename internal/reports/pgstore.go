@@ -24,7 +24,7 @@ type PGDB interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
-// PGStore — Store на PostgreSQL (миграция 0040_report_schedules).
+// PGStore — Store на PostgreSQL (миграция 0041_report_schedules).
 type PGStore struct {
 	db    PGDB
 	audit *audit.Log
