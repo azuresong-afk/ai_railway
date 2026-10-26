@@ -57,7 +57,13 @@ const incidentNotFound = "Инцидент не найден."
 // incidentsProblem переводит ошибки сервиса инцидентов в ответы API.
 func incidentsProblem(logger *slog.Logger, err error) *Problem {
 	var ie *incidents.InputError
+	var re *reauthError
 	switch {
+	case errors.As(err, &re):
+		return authProblem(logger, re.err)
+	case errors.Is(err, incidents.ErrConfirmRequired):
+		return NewProblem(http.StatusForbidden, CodeForbidden,
+			"Сокращение срока хранения удаляет инциденты: выполните его в консоли с вводом текущего пароля или кода.")
 	case errors.As(err, &ie):
 		return Invalid("Проверьте введённые данные.", inputFields(ie.Errs)...)
 	case errors.Is(err, incidents.ErrNotFound):

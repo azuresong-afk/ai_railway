@@ -71,6 +71,8 @@
 | DELETE | `/api/v1/gateway-certificate` | `gateway_tls.manage` | да | да | — | — | — | да |
 | GET | `/api/v1/incident-categories` | `incidents.read` | да | — | да | да | — | да |
 | PUT | `/api/v1/incident-categories/{category}` | `incident_categories.manage` | да | — | — | — | — | — |
+| GET | `/api/v1/incident-settings` | `incidents.read` | да | — | да | да | — | да |
+| PUT | `/api/v1/incident-settings` | `incident_categories.manage` | да | — | — | — | — | — |
 | GET | `/api/v1/incidents` | `incidents.read` | да | — | да | да | — | да |
 | POST | `/api/v1/incidents` | `incidents.manage` | да | — | да | — | — | да |
 | GET | `/api/v1/incidents/{id}` | `incidents.read` | да | — | да | да | — | да |

@@ -313,7 +313,8 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 				return incidents.ErrUserInactive
 			}
 			return nil
-		}})
+		},
+		Retention: incidentStore})
 	if err != nil {
 		return err
 	}
@@ -338,6 +339,7 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	// правил; закрытые оповещения удаляются по сроку хранения.
 	auditLog.SetRecordHook(alertStore.OnAudit)
 	go alerting.RunRetention(ctx, alertStore, alerting.RetentionInterval, logger)
+	go incidents.RunRetention(ctx, incidentStore, audit.DefaultOrgID, incidents.RetentionInterval, logger)
 	notifyTransport, err := notify.NewTransport(p, version, notify.DefaultSendTimeout)
 	if err != nil {
 		return err

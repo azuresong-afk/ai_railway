@@ -177,7 +177,7 @@ var permissionCatalog = []Permission{
 	{Name: PermIncidentsRead, Title: "Просмотр инцидентов, хронологии, комментариев и инструкций реагирования", Group: "Инциденты"},
 	{Name: PermIncidentsManage, Title: "Создание инцидентов, смена статуса, назначение, комментарии, этапы реагирования", Group: "Инциденты"},
 	{Name: PermIncidentsExport, Title: "Выгрузка карточки инцидента в JSON (без содержимого событий)", Group: "Инциденты"},
-	{Name: PermIncidentCategoriesManage, Title: "Изменение инструкций реагирования по категориям инцидентов", Group: "Инциденты", Security: true},
+	{Name: PermIncidentCategoriesManage, Title: "Изменение инструкций реагирования по категориям инцидентов и срока хранения закрытых инцидентов", Group: "Инциденты", Security: true},
 	{Name: PermGatewayTLSRead, Title: "Просмотр сертификата заказчика для адреса шлюза (без ключа)", Group: "Шлюзы"},
 	{Name: PermGatewayTLSManage, Title: "Загрузка, замена и удаление сертификата заказчика для адреса шлюза", Group: "Шлюзы"},
 }

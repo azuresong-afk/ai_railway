@@ -33,6 +33,7 @@ type pgEnv struct {
 	owner, app *pgxpool.Pool
 	events     *events.PGStore
 	alertsSvc  *alerting.Service
+	store      *incidents.PGStore
 	svc        *incidents.Service
 	ids        *ids.Generator
 	by         incidents.By
@@ -183,7 +184,7 @@ func setupPG(t *testing.T) *pgEnv {
 		t.Fatal(err)
 	}
 	by := incidents.By{Actor: audit.Actor{Type: audit.ActorUser, ID: analystID, Name: "analyst"}, UserID: analystID}
-	return &pgEnv{owner: owner, app: app, events: ev, alertsSvc: asvc, svc: svc, ids: ids.NewGenerator(r), by: by}
+	return &pgEnv{owner: owner, app: app, events: ev, alertsSvc: asvc, store: is, svc: svc, ids: ids.NewGenerator(r), by: by}
 }
 
 func (e *pgEnv) event(t *testing.T, app string, canary bool) events.Event {
@@ -586,5 +587,154 @@ func TestPGIncidentCloseAtTimelineLimit(t *testing.T) {
 	c, err := e.svc.Card(ctx, id)
 	if err != nil || c.Related.Timeline[len(c.Related.Timeline)-1].Kind != incidents.KindStatusChanged {
 		t.Fatalf("закрытие в карточке: %v", err)
+	}
+}
+
+// 3Н37 ревью 3.r2: закрытый инцидент старше срока (по умолчанию 3 года)
+// удаляется вместе с хронологией, комментариями, ссылками, этапами и
+// оповещениями; незакрытый — никогда; открытый заново — после следующего;
+// раньше срока роль сервера не удалит ничего даже прямым запросом;
+// сокращение срока — с повторной проверкой и weakening в аудите.
+func TestPGIncidentRetention(t *testing.T) {
+	e := setupPG(t)
+	ctx := pgCtx(t)
+	if _, err := e.owner.Exec(ctx, `INSERT INTO install_settings (org_id, timezone, retention_mode, updated_at)
+		VALUES ($1, 'Europe/Moscow', 'masked', now())`, audit.DefaultOrgID); err != nil {
+		t.Fatal(err)
+	}
+	p, err := aisecCrypto.New(aisecCrypto.ProfileStandard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc, err := incidents.New(incidents.Options{Store: e.store, Provider: p, Alerts: e.alertsSvc, Retention: e.store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := svc.Retention(ctx); err != nil || incidents.DefaultRetentionDays != 1095 || got.RetentionDays != 1095 {
+		t.Fatalf("срок по умолчанию: %+v %v", got, err)
+	}
+	// Автоматический инцидент DM-08 с оповещением и комментарием; ручной,
+	// закрытый и открытый заново; незакрытый.
+	e.ingest(t, e.event(t, "crm-bot", true))
+	list, err := e.svc.List(ctx, incidents.Query{})
+	if err != nil || len(list) != 1 {
+		t.Fatalf("инциденты: %d %v", len(list), err)
+	}
+	auto := list[0]
+	if _, err := e.svc.AddComment(ctx, e.by, auto.ID, incidents.CommentInput{Body: "Разобрано"}); err != nil {
+		t.Fatal(err)
+	}
+	closeInc := func(id string) {
+		t.Helper()
+		if _, err := e.svc.SetStatus(ctx, e.by, id, incidents.StatusInput{Status: "closed", Resolution: "resolved"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	closeInc(auto.ID)
+	first, _, err := e.svc.Create(ctx, e.by, incidents.CreateInput{Title: "Ручной", Severity: "low", Category: incidents.CategoryPromptInjection})
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeInc(first.ID)
+	again, _, err := e.svc.Create(ctx, e.by, incidents.CreateInput{ReopenOf: first.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeInc(again.ID)
+	open, _, err := e.svc.Create(ctx, e.by, incidents.CreateInput{Title: "Открытый", Severity: "low", Category: incidents.CategoryPromptInjection})
+	if err != nil {
+		t.Fatal(err)
+	}
+	alertID := ""
+	if err := e.owner.QueryRow(ctx, `SELECT id::text FROM alerts WHERE incident_id = $1`, auto.ID).Scan(&alertID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Раньше срока роль сервера не удаляет ни записи инцидента, ни его оповещения.
+	for _, q := range []string{
+		`DELETE FROM incident_comments WHERE incident_id = $1`,
+		`DELETE FROM incident_timeline WHERE incident_id = $1`,
+		`DELETE FROM alert_history WHERE alert_id IN (SELECT id FROM alerts WHERE incident_id = $1)`,
+	} {
+		if _, err := e.app.Exec(ctx, q, auto.ID); sqlState(err) != "42501" {
+			t.Fatalf("%s раньше срока: %v", q, err)
+		}
+	}
+	if n, err := e.store.PurgeExpired(ctx, audit.DefaultOrgID); err != nil || n != 0 {
+		t.Fatalf("очистка раньше срока: %d %v", n, err)
+	}
+
+	// Закрыты 1200 суток назад; незакрытый создан тогда же.
+	if _, err := e.owner.Exec(ctx, `ALTER TABLE incidents DISABLE TRIGGER USER`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.owner.Exec(ctx, `UPDATE incidents SET closed_at = now() - interval '1200 days' WHERE status = 'closed'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.owner.Exec(ctx, `UPDATE incidents SET created_at = now() - interval '1300 days' WHERE id = $1`, open.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.owner.Exec(ctx, `ALTER TABLE incidents ENABLE TRIGGER USER`); err != nil {
+		t.Fatal(err)
+	}
+	// Первый проход: автоматический и открытый заново; прежний держит ссылка.
+	if n, err := e.store.PurgeExpired(ctx, audit.DefaultOrgID); err != nil || n != 2 {
+		t.Fatalf("первая пачка: %d %v", n, err)
+	}
+	if _, err := e.svc.Card(ctx, first.ID); err != nil {
+		t.Fatalf("прежний удалён раньше следующего: %v", err)
+	}
+	if n, err := e.store.PurgeExpired(ctx, audit.DefaultOrgID); err != nil || n != 1 {
+		t.Fatalf("вторая пачка: %d %v", n, err)
+	}
+	if n, err := e.store.PurgeExpired(ctx, audit.DefaultOrgID); err != nil || n != 0 {
+		t.Fatalf("третья пачка: %d %v", n, err)
+	}
+	for _, id := range []string{auto.ID, first.ID, again.ID} {
+		if _, err := e.svc.Card(ctx, id); !errors.Is(err, incidents.ErrNotFound) {
+			t.Fatalf("инцидент %s не удалён: %v", id, err)
+		}
+	}
+	if _, err := e.svc.Card(ctx, open.ID); err != nil {
+		t.Fatalf("незакрытый удалён: %v", err)
+	}
+	for _, q := range []string{`SELECT count(*) FROM alerts WHERE id = $1`, `SELECT count(*) FROM alert_events WHERE alert_id = $1`,
+		`SELECT count(*) FROM alert_history WHERE alert_id = $1`} {
+		if n := e.count(t, q, alertID); n != 0 {
+			t.Fatalf("%s: %d", q, n)
+		}
+	}
+	gone := []string{auto.ID, first.ID, again.ID}
+	for _, tbl := range []string{"incident_timeline", "incident_comments", "incident_events", "incident_stages"} {
+		if n := e.count(t, `SELECT count(*) FROM `+tbl+` WHERE incident_id = ANY($1::uuid[])`, gone); n != 0 {
+			t.Fatalf("%s: осталось %d", tbl, n)
+		}
+	}
+	if n := e.count(t, `SELECT count(*) FROM incident_stages WHERE incident_id = $1`, open.ID); n == 0 {
+		t.Fatal("этапы незакрытого удалены")
+	}
+	if n := e.count(t, `SELECT count(*) FROM audit_log WHERE action = 'incident.retention'`); n != 2 {
+		t.Fatalf("incident.retention: %d", n)
+	}
+
+	// Сокращение срока — с повторной проверкой и weakening (DM-40).
+	if _, err := svc.SetRetention(ctx, e.by, 400); !errors.Is(err, incidents.ErrConfirmRequired) {
+		t.Fatalf("сокращение без проверки: %v", err)
+	}
+	by := e.by
+	by.Confirm = func(context.Context) error { return nil }
+	if _, err := svc.SetRetention(ctx, by, 400); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := svc.Retention(ctx); err != nil || got.RetentionDays != 400 {
+		t.Fatalf("срок: %+v %v", got, err)
+	}
+	if n := e.count(t, `SELECT count(*) FROM audit_log WHERE action = 'incident.settings_changed'
+		AND (details::jsonb ->> 'weakening')::boolean`); n != 1 {
+		t.Fatalf("аудит сокращения: %d", n)
+	}
+	// Ограничение столбца: меньше года не сохраняется даже напрямую.
+	if _, err := e.app.Exec(ctx, `UPDATE install_settings SET incident_retention_days = 100`); sqlState(err) != "23514" {
+		t.Fatalf("срок 100 суток: %v", err)
 	}
 }

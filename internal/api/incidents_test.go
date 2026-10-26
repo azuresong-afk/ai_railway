@@ -24,6 +24,9 @@ import (
 type incidentsEnv struct {
 	*alertsEnv
 	store *incidents.Memory
+	// incRetention, alertRetention — сроки хранения в памяти (3Н37 ревью 3.r2).
+	incRetention   *memIncidentRetention
+	alertRetention *memAlertRetention
 }
 
 func newIncidentsEnv(t *testing.T) *incidentsEnv {
@@ -33,12 +36,14 @@ func newIncidentsEnv(t *testing.T) *incidentsEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	alertsSvc, err := alerting.New(alerting.Options{Store: ae.alerts, Provider: p})
+	e := &incidentsEnv{alertsEnv: ae, store: incidents.NewMemory(ae.alerts, ae.ids),
+		incRetention:   &memIncidentRetention{days: incidents.DefaultRetentionDays},
+		alertRetention: &memAlertRetention{days: alerting.DefaultRetentionDays}}
+	alertsSvc, err := alerting.New(alerting.Options{Store: ae.alerts, Provider: p, Retention: e.alertRetention})
 	if err != nil {
 		t.Fatal(err)
 	}
-	e := &incidentsEnv{alertsEnv: ae, store: incidents.NewMemory(ae.alerts, ae.ids)}
-	svc, err := incidents.New(incidents.Options{Store: e.store, Provider: p, Alerts: alertsSvc,
+	svc, err := incidents.New(incidents.Options{Store: e.store, Provider: p, Alerts: alertsSvc, Retention: e.incRetention,
 		UserCheck: func(ctx context.Context, id string) error {
 			u, err := e.mem.UserByID(ctx, audit.DefaultOrgID, id)
 			if errors.Is(err, auth.ErrNotFound) {

@@ -3288,7 +3288,7 @@ paths:
         задачей раз в час вместе со ссылками на события, историей и доставками (`alert.retention` в
         аудите); открытые и принятые в работу не удаляются никогда. Срок — от 90 до 1825 суток.
         Сокращение необратимо и требует текущего пароля (`password`) или кода TOTP (`code`): без них
-        403, неверное значение — 403 `reauthentication_failed`; пишется с `weakening: true` и
+        400 с полем `password`, неверное значение — 403 `reauthentication_failed`; пишется с `weakening: true` и
         порождает оповещение «Ослабление защиты» (DM-40). До первичной настройки — 409. Пишет
         `alert.settings_changed` (до, после).
       x-permission: alert_rules.manage
@@ -3306,6 +3306,58 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AlertSettings' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '409': { $ref: '#/components/responses/ProblemConflict' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/incident-settings:
+    get:
+      summary: Срок хранения инцидентов
+      description: Право `incidents.read`. Срок хранения закрытых инцидентов, суток (по умолчанию 1095 — 3 года).
+      x-permission: incidents.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      responses:
+        '200':
+          description: Настройки
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IncidentSettings' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    put:
+      summary: Изменить срок хранения инцидентов
+      description: |
+        Право `incident_categories.manage`. Закрытые инциденты старше срока (от закрытия) удаляются
+        фоновой задачей раз в час вместе с хронологией, комментариями, ссылками на события, этапами и
+        связанными оповещениями (`incident.retention` в аудите); незакрытые не удаляются никогда,
+        инцидент, открытый заново, — только после следующего. Срок — от 365 до 1825 суток.
+        Сокращение необратимо и требует текущего пароля (`password`) или кода TOTP (`code`): без них
+        400 с полем `password`, неверное значение — 403 `reauthentication_failed`; пишется с
+        `weakening: true` и порождает оповещение «Ослабление защиты» (DM-40). До первичной настройки —
+        409. Пишет `incident.settings_changed` (до, после).
+      x-permission: incident_categories.manage
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/IncidentSettingsUpdate' }
+      responses:
+        '200':
+          description: Срок изменён
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IncidentSettings' }
         '400': { $ref: '#/components/responses/ProblemInvalid' }
         '401': { $ref: '#/components/responses/ProblemUnauthorized' }
         '403': { $ref: '#/components/responses/ProblemForbidden' }
@@ -3403,7 +3455,7 @@ paths:
         адреса webhook, смена корневых сертификатов, удаление адресата письма, снятие подписки на
         журнал аудита (`audit_stream`) — пишется с
         `weakening: true` и требует текущего пароля (`password`) или кода TOTP (`code`): без них
-        403, неверное значение — 403 `reauthentication_failed`. Пишет `notify_channel.update` (до,
+        400 с полем `password`, неверное значение — 403 `reauthentication_failed`. Пишет `notify_channel.update` (до,
         после, какие секреты изменены — без значений).
       x-permission: notify_channels.manage
       security: [{ sessionCookie: [] }]
@@ -5951,6 +6003,20 @@ components:
       additionalProperties: false
       properties:
         retention_days: { type: integer, minimum: 90, maximum: 1825 }
+        password: { type: string, maxLength: 1024, format: password, description: 'Текущий пароль, если срок сокращается' }
+        code: { type: string, maxLength: 64, description: 'Код из приложения-аутентификатора вместо пароля' }
+    IncidentSettings:
+      type: object
+      required: [retention_days]
+      additionalProperties: false
+      properties:
+        retention_days: { type: integer, minimum: 365, maximum: 1825, description: 'Срок хранения закрытых инцидентов, суток' }
+    IncidentSettingsUpdate:
+      type: object
+      required: [retention_days]
+      additionalProperties: false
+      properties:
+        retention_days: { type: integer, minimum: 365, maximum: 1825 }
         password: { type: string, maxLength: 1024, format: password, description: 'Текущий пароль, если срок сокращается' }
         code: { type: string, maxLength: 64, description: 'Код из приложения-аутентификатора вместо пароля' }
     NotifyChannelSettings:
