@@ -105,6 +105,8 @@ describe("экран «Провайдеры»", () => {
     const dlg = await screen.findByRole("dialog");
     const input = within(dlg).getByLabelText("Ключ API или авторизационные данные") as HTMLInputElement;
     expect(input.type).toBe("password");
+    // Браузер не подставляет и не предлагает сохранить пароль консоли (3В20 ревью 3.r2).
+    expect(input.autocomplete).toBe("new-password");
     fireEvent.change(input, { target: { value: "кириллица" } });
     expect((within(dlg).getByRole("button", { name: "Сохранить учётные данные" }) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.change(input, { target: { value: ASCII_KEY } });

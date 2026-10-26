@@ -284,6 +284,25 @@ describe("каналы", () => {
     expect(body.type).toBeUndefined();
   });
 
+  it("поля секретов не принимают сохранённый пароль консоли (3В20 ревью 3.r2)", async () => {
+    renderScreen(allPerms);
+    tab("Каналы");
+    fireEvent.click(await screen.findByRole("button", { name: "Изменить канал Почта SOC" }));
+    const dlg = await screen.findByRole("dialog");
+    const pw = within(dlg).getByLabelText("Пароль SMTP") as HTMLInputElement;
+    expect(pw.autocomplete).toBe("new-password");
+    const login = within(dlg).getByLabelText("Логин SMTP") as HTMLInputElement;
+    expect(login.autocomplete).toBe("off");
+    expect(login.name).not.toMatch(/user|login|email/i);
+    fireEvent.click(within(dlg).getByRole("button", { name: "Отменить" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Создать канал" }));
+    const created = await screen.findByRole("dialog", { name: "Новый канал уведомлений" });
+    fireEvent.change(within(created).getByLabelText("Тип канала"), { target: { value: "webhook" } });
+    for (const label of ["Адрес webhook", "Ключ подписи"]) {
+      expect((within(created).getByLabelText(label) as HTMLInputElement).autocomplete).toBe("new-password");
+    }
+  });
+
   it("создание webhook: адрес и ключ подписи уходят секретами, адрес проверяется", async () => {
     renderScreen(allPerms);
     tab("Каналы");

@@ -32,11 +32,13 @@ const isHttps = (v: string): boolean => {
 };
 
 // Секрет канала: значение только вводится. Если секрет уже задан, поле пустое, и пустое значение оставляет прежний.
+// autoComplete="new-password": браузер не подставляет сохранённый пароль консоли (autoComplete="off" у поля пароля
+// он не соблюдает) и не уводит его как секрет канала (3В20 ревью 3.r2).
 function SecretField({ name, set, value, onChange, hint }: { name: SecretName; set: boolean; value: string; onChange: (v: string) => void; hint?: string }) {
   return (
     <Field label={secretTitle.get(name)!} hint={set ? `Задан. Оставьте пустым, чтобы не менять. ${hint ?? ""}` : hint}>
       {({ id, describedBy }) => (
-        <Input id={id} aria-describedby={describedBy} type="password" autoComplete="off" value={value} onChange={(e) => onChange(e.target.value)} placeholder={set ? "••••••••" : ""} />
+        <Input id={id} name={`channel-secret-${name}`} aria-describedby={describedBy} type="password" autoComplete="new-password" value={value} onChange={(e) => onChange(e.target.value)} placeholder={set ? "••••••••" : ""} />
       )}
     </Field>
   );
@@ -173,7 +175,7 @@ export function ChannelDialog({ channel, mfa, onClose }: { channel: NotifyChanne
         )}
         {f.type === "email" && (
           <>
-            <Field label="Логин SMTP">{({ id }) => <Input id={id} autoComplete="off" value={f.username} onChange={set("username")} />}</Field>
+            <Field label="Логин SMTP">{({ id }) => <Input id={id} name="smtp-account" autoComplete="off" value={f.username} onChange={set("username")} />}</Field>
             <SecretField name="password" set={isSet("password")} value={sec.password} onChange={(v) => setSec((p) => ({ ...p, password: v }))} />
             <Field label="Отправитель (From)">{({ id }) => <Input id={id} type="email" value={f.from} onChange={set("from")} />}</Field>
             <Field label="Адресаты" hint="По одному на строку, не больше 20. Удаление адресата — ослабление.">
