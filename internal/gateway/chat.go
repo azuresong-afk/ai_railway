@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"bytes"
+	"context"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -11,8 +12,10 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -256,10 +259,11 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.stream(w, r, app, req, requested, rec)
 		return
 	}
-	resp, meta, err := app.Provider.Chat(r.Context(), req)
+	pctx, sent := withSendTrace(r.Context())
+	resp, meta, err := app.Provider.Chat(pctx, req)
 	copyMeta(w, meta)
 	if err != nil {
-		rec.unknown = outcomeUnknown(r, err)
+		rec.unknown = outcomeUnknown(r, err, sent)
 		h.providerError(w, r, err)
 		return
 	}
@@ -464,11 +468,31 @@ func copyMeta(w http.ResponseWriter, m providers.Meta) {
 	}
 }
 
-// outcomeUnknown — исход запроса, ушедшего провайдеру, неизвестен: клиент
-// прервал запрос, таймаут, обрыв связи или неразобранный ответ. Явный отказ
-// провайдера (ответ со статусом, отказ в учётных данных) — исход известен,
-// модель запрос не выполняла (3В22 ревью 3.r3).
-func outcomeUnknown(r *http.Request, err error) bool {
+// sendTrace — запрос к провайдеру записан в соединение целиком (httptrace
+// WroteRequest): только тогда модель могла его выполнить.
+type sendTrace struct{ wrote atomic.Bool }
+
+// withSendTrace — контекст вызова провайдера с учётом отправки.
+func withSendTrace(ctx context.Context) (context.Context, *sendTrace) {
+	st := &sendTrace{}
+	return httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{WroteRequest: func(i httptrace.WroteRequestInfo) {
+		if i.Err == nil {
+			st.wrote.Store(true)
+		}
+	}}), st
+}
+
+// outcomeUnknown — исход запроса, ушедшего провайдеру, неизвестен: запрос
+// записан в соединение, а затем клиент прервал запрос, истёк таймаут,
+// оборвалась связь или ответ не разобран. Не ушедший запрос (отказ в
+// соединении, DNS, TLS) и явный отказ провайдера (ответ со статусом, отказ
+// в учётных данных) — исход известен, модель запрос не выполняла (3В22
+// ревью 3.r3). Остаток: у GigaChat записанный запрос токена, на который
+// сервер авторизации ответил не 200, считается ушедшим.
+func outcomeUnknown(r *http.Request, err error, st *sendTrace) bool {
+	if st == nil || !st.wrote.Load() {
+		return false
+	}
 	var pe *providers.Error
 	if r.Context().Err() != nil {
 		return true
@@ -499,10 +523,11 @@ func (h *ChatHandler) providerError(w http.ResponseWriter, r *http.Request, err 
 // заново, неизвестные поля провайдера приложению не уходят. Ответ
 // проверяется в режиме streamResponseMode (response.go).
 func (h *ChatHandler) stream(w http.ResponseWriter, r *http.Request, app *App, req *chat.Request, requested string, rec *record) {
-	st, meta, err := app.Provider.Stream(r.Context(), req)
+	pctx, sent := withSendTrace(r.Context())
+	st, meta, err := app.Provider.Stream(pctx, req)
 	copyMeta(w, meta)
 	if err != nil {
-		rec.unknown = outcomeUnknown(r, err)
+		rec.unknown = outcomeUnknown(r, err, sent)
 		h.providerError(w, r, err)
 		return
 	}

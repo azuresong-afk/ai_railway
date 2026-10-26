@@ -127,10 +127,11 @@ func (e *EmbeddingsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	rec.sent = true
 	providerStart := h.cfg.Now()
 	defer func() { rec.ev.LatencyMS["provider"] = h.cfg.Now().Sub(providerStart).Milliseconds() }()
-	resp, meta, err := emb.Embeddings(r.Context(), req)
+	pctx, sent := withSendTrace(r.Context())
+	resp, meta, err := emb.Embeddings(pctx, req)
 	copyMeta(w, meta)
 	if err != nil {
-		rec.unknown = outcomeUnknown(r, err)
+		rec.unknown = outcomeUnknown(r, err, sent)
 		h.providerError(w, r, err)
 		return
 	}

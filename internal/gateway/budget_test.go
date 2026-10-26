@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"math"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -338,8 +339,11 @@ func TestDM15_CanceledRequestCharged(t *testing.T) {
 		stream  bool
 		cancel  bool // клиент рвёт соединение, когда провайдер получил запрос
 		refuse  bool // провайдер отвечает 400
+		down    bool // отказ в соединении: запрос к провайдеру не ушёл
 		charged bool
 	}{
+		{name: "отказ в соединении", down: true},
+		{name: "отказ в соединении, поток", stream: true, down: true},
 		{name: "клиент прервал запрос", cancel: true, charged: true},
 		{name: "клиент прервал поток до заголовков", stream: true, cancel: true, charged: true},
 		{name: "таймаут провайдера", charged: true},
@@ -368,7 +372,16 @@ func TestDM15_CanceledRequestCharged(t *testing.T) {
 				case <-release:
 				}
 			})
-			g := newGateway(t, up.URL, func(o *gwOpts) {
+			upURL := up.URL
+			if tc.down {
+				l, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
+				if err != nil {
+					t.Fatal(err)
+				}
+				upURL = "http://" + l.Addr().String()
+				_ = l.Close() //nolint:gosec // G104: порт нужен закрытым
+			}
+			g := newGateway(t, upURL, func(o *gwOpts) {
 				o.budget = budget
 				o.quotas = config.Quotas{TokensPerMinute: int(in) + maxOut + 10}
 				o.transport = &http.Transport{Proxy: nil, ResponseHeaderTimeout: 200 * time.Millisecond}
@@ -393,10 +406,10 @@ func TestDM15_CanceledRequestCharged(t *testing.T) {
 			second := postChat(t, g, `{"model":"m","max_tokens":10,"messages":[{"role":"user","content":"x"}]}`, nil)
 			if !tc.charged {
 				if u.Requests != 0 || u.Cost != 0 {
-					t.Fatalf("явный отказ списан: %+v", u)
+					t.Fatalf("известный исход без выполнения списан: %+v", u)
 				}
 				if second.Code == http.StatusTooManyRequests {
-					t.Fatalf("после явного отказа квота не возвращена: %s", second.Body.String())
+					t.Fatalf("после известного исхода квота не возвращена: %s", second.Body.String())
 				}
 				return
 			}
