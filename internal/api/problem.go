@@ -54,6 +54,9 @@ const (
 	// CodeReissueNotNeeded — перевыпуск сертификата шлюза не нужен (3В4
 	// ревью 3.r1); только внутренний API.
 	CodeReissueNotNeeded = "reissue_not_needed"
+	// CodeSelfReview — оповещение безопасности о собственных действиях
+	// закрывает другой пользователь (3В15 ревью 3.r2).
+	CodeSelfReview = "self_review"
 )
 
 var problemTitles = map[string]string{
@@ -72,6 +75,7 @@ var problemTitles = map[string]string{
 	CodeUnavailable:       "Сервис недоступен",
 	CodeBundleKeyMismatch: "Ключ получателя не совпадает с закреплённым",
 	CodeReissueNotNeeded:  "Перевыпуск сертификата не нужен",
+	CodeSelfReview:        "Нужна проверка другим пользователем",
 }
 
 // NewProblem собирает ошибку по коду; заголовок берётся из таблицы.

@@ -67,12 +67,14 @@ const (
 	maxSystemDetails = 4096
 )
 
-// securityRules — встроенные правила задачи 3.11.
+// securityRules — встроенные правила задачи 3.11. Окна подавления после
+// закрытия у них нет (3В15 ревью 3.r2): повтор после закрытия — новое
+// оповещение и новые уведомления; шум DM-40 снимает окно группировки.
 func securityRules() []Rule {
 	none := Recipients{Roles: []string{}, Users: []string{}}
 	rule := func(key, kind, name, desc, sev string, group []string) Rule {
 		return Rule{BuiltinKey: key, Kind: kind, Name: name, Description: desc, Enabled: true, Severity: sev,
-			GroupBy: group, SuppressMinutes: DefaultSuppressMinutes, Recipients: none}
+			GroupBy: group, SuppressMinutes: 0, Recipients: none}
 	}
 	weak := rule(BuiltinWeakening, KindSecurity, "Ослабление защиты",
 		"DM-40: перевод политики в monitor, отключение или ослабление правила, понижение действия, режим хранения none или full, "+

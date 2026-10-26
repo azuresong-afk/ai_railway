@@ -3084,7 +3084,11 @@ paths:
         Право `alerts.manage` (ТЗ 5.6). Переходы: `new → in_progress`, `new → closed`,
         `in_progress → closed`; другой переход — 409. Принявший в работу становится
         исполнителем (у токена — его владелец). Закрытое не открывается: повтор после окна
-        подавления — новое оповещение. Пишет историю и `alert.status_changed`.
+        подавления — новое оповещение (у системных правил и правил безопасности окна нет).
+        Системное оповещение и оповещение безопасности токен API не закрывает — 403;
+        оповещение безопасности о собственных действиях (ключ `actor` или `account` — сам
+        субъект или его токен) закрывает другой пользователь — 409 с кодом `self_review`
+        (3В15 ревью 3.r2). Пишет историю и `alert.status_changed`.
       x-permission: alerts.manage
       security: [{ sessionCookie: [] }, { bearerToken: [] }]
       parameters:
@@ -5247,7 +5251,7 @@ components:
           enum: [invalid_request, unauthorized, forbidden, not_found, method_not_allowed, conflict,
                  payload_too_large, unsupported_media_type, unprocessable, rate_limited,
                  internal_error, service_unavailable, reauthentication_failed, bundle_key_mismatch,
-                 reissue_not_needed]
+                 reissue_not_needed, self_review]
         errors:
           type: array
           items:

@@ -414,3 +414,32 @@ func TestAlertsPeriodViaAPI(t *testing.T) {
 		mustProblem(t, e.call(analyst, "GET", "/api/v1/alerts?"+q, "", false), 400, CodeInvalidRequest)
 	}
 }
+
+// 3В15 ревью 3.r2: оповещение DM-40 о действиях администратора он сам не
+// закрывает (409 self_review), его токен — тоже (403); закрывает аналитик.
+func TestAlertSelfCloseViaAPI(t *testing.T) {
+	e := newAlertsEnv(t)
+	admin := e.mustLogin(t, "admin")
+	analyst := e.mustLogin(t, "analyst")
+	u, err := e.ids.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.alerts.Audit(context.Background(), audit.Record{ID: u.String(), OrgID: audit.DefaultOrgID, TS: time.Now(),
+		Actor: audit.Actor{Type: audit.ActorUser, ID: tAdminID, Name: "admin"}, Action: "auth.mfa_reset",
+		Object: audit.Object{Type: "user", ID: tAnalystID}, Result: audit.ResultSuccess, Details: []byte("{}")}); err != nil {
+		t.Fatal(err)
+	}
+	w := e.call(admin, "GET", "/api/v1/alerts?kind=security", "", false)
+	p := decode[PageResponse[AlertView]](t, w.Body.Bytes())
+	if w.Code != 200 || len(p.Items) != 1 {
+		t.Fatalf("оповещения: %d %s", w.Code, w.Body)
+	}
+	path := "/api/v1/alerts/" + p.Items[0].ID + "/status"
+	mustProblem(t, e.call(admin, "POST", path, `{"status":"closed"}`, true), http.StatusConflict, CodeSelfReview)
+	created := e.issueToken(t, admin, auth.PermAlertsRead, auth.PermAlertsManage)
+	mustProblem(t, e.call(session{bearer: created.Token}, "POST", path, `{"status":"closed"}`, false), http.StatusForbidden, CodeForbidden)
+	if w := e.call(analyst, "POST", path, `{"status":"closed","comment":"проверено"}`, true); w.Code != http.StatusOK {
+		t.Fatalf("закрытие аналитиком: %d %s", w.Code, w.Body)
+	}
+}

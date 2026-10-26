@@ -458,3 +458,92 @@ func TestRetentionSettings(t *testing.T) {
 		t.Fatalf("аудит: %+v", st.recs)
 	}
 }
+
+// byActor — субъект действия с оповещением: пользователь или его токен API.
+func byActor(a audit.Actor, userID string) By { return By{Actor: a, UserID: userID} }
+
+// DM-40 (3В15 ревью 3.r2): после закрытия оповещения об ослаблении повтор
+// даёт новое оповещение — окна подавления у правил безопасности нет.
+func TestDM40_SelfCloseDoesNotSuppress(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	weak := func() {
+		e.audit(t, e.rec(t, tUser, "192.0.2.1", "policy.update", audit.Object{Type: "policy", ID: "org-default"}, audit.ResultSuccess,
+			map[string]any{"weakening": true, "weakening_reasons": []string{"mode_monitor"}}))
+	}
+	weak()
+	got := e.alerts(t, BuiltinWeakening)
+	if len(got) != 1 {
+		t.Fatalf("оповещения: %+v", got)
+	}
+	if _, err := e.svc.SetStatus(ctx, byActor(tOther, tOther.ID), got[0].ID, StatusClosed, "разобрано"); err != nil {
+		t.Fatal(err)
+	}
+	e.tick(time.Minute)
+	weak()
+	got = e.alerts(t, BuiltinWeakening)
+	if len(got) != 2 || got[0].Status != StatusNew || got[1].Suppressed != 0 {
+		t.Fatalf("повтор после закрытия подавлен: %+v", got)
+	}
+	for _, r := range securityRules() {
+		if r.SuppressMinutes != 0 {
+			t.Fatalf("%s: окно подавления %d", r.BuiltinKey, r.SuppressMinutes)
+		}
+	}
+}
+
+// DM-40 (3В15 ревью 3.r2): субъект оповещения безопасности не закрывает
+// его сам — ни из консоли, ни своим токеном; принять в работу может,
+// закрывает другой пользователь.
+func TestDM40_SubjectCannotClose(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	e.audit(t, e.rec(t, tUser, "192.0.2.1", "auth.mfa_reset", audit.Object{Type: "user", ID: tOther.ID}, audit.ResultSuccess, nil))
+	got := e.alerts(t, BuiltinWeakening)
+	if len(got) != 1 {
+		t.Fatalf("оповещения: %+v", got)
+	}
+	id := got[0].ID
+	if _, err := e.svc.SetStatus(ctx, byActor(tUser, tUser.ID), id, StatusClosed, ""); !errors.Is(err, ErrSelfReview) {
+		t.Fatalf("самозакрытие: %v", err)
+	}
+	token := audit.Actor{Type: audit.ActorAPIToken, ID: "01900000-0000-7000-8000-0000000000d1", Name: "petrov (at_x)"}
+	if _, err := e.svc.SetStatus(ctx, byActor(token, tUser.ID), id, StatusClosed, ""); !errors.Is(err, ErrTokenClose) {
+		t.Fatalf("закрытие токеном субъекта: %v", err)
+	}
+	if _, err := e.svc.SetStatus(ctx, byActor(tUser, tUser.ID), id, StatusInProgress, ""); err != nil {
+		t.Fatalf("принять в работу: %v", err)
+	}
+	if a, err := e.svc.SetStatus(ctx, byActor(tOther, tOther.ID), id, StatusClosed, ""); err != nil || a.Status != StatusClosed {
+		t.Fatalf("закрытие другим: %+v %v", a, err)
+	}
+}
+
+// DM-43 (3В15 ревью 3.r2): системное оповещение и оповещение безопасности
+// токен API (SOAR) не закрывает — только принимает в работу.
+func TestDM43_TokenCannotClose(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	e.audit(t, e.rec(t, audit.Actor{Type: audit.ActorSystem, ID: "aisec-server"}, "", "audit.chain_broken",
+		audit.Object{Type: "audit_log"}, audit.ResultFailure, map[string]any{"reason": "hash_mismatch", "broken_seq": 7}))
+	got := e.alerts(t, BuiltinAuditChain)
+	if len(got) != 1 {
+		t.Fatalf("оповещения: %+v", got)
+	}
+	token := audit.Actor{Type: audit.ActorAPIToken, ID: "01900000-0000-7000-8000-0000000000d2", Name: "soar (at_y)"}
+	if _, err := e.svc.SetStatus(ctx, byActor(token, tOther.ID), got[0].ID, StatusInProgress, ""); err != nil {
+		t.Fatalf("принять в работу токеном: %v", err)
+	}
+	if _, err := e.svc.SetStatus(ctx, byActor(token, tOther.ID), got[0].ID, StatusClosed, ""); !errors.Is(err, ErrTokenClose) {
+		t.Fatalf("закрытие токеном: %v", err)
+	}
+	if _, err := e.svc.SetStatus(ctx, byActor(tOther, tOther.ID), got[0].ID, StatusClosed, ""); err != nil {
+		t.Fatalf("закрытие пользователем: %v", err)
+	}
+	// Оповещение «порог» токен закрывает, как раньше.
+	e.ingest(t, e.event(t, "crm-bot", "gigachat", "block", "DM-01"))
+	thr := e.alerts(t, BuiltinInjectionBlocked)
+	if _, err := e.svc.SetStatus(ctx, byActor(token, tOther.ID), thr[0].ID, StatusClosed, ""); err != nil {
+		t.Fatalf("закрытие «порога» токеном: %v", err)
+	}
+}

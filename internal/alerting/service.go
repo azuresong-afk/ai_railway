@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/netip"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/azuresong-afk/ai_railway/internal/audit"
@@ -29,6 +30,12 @@ var (
 	ErrTooMany = errors.New("достигнут предел числа правил")
 	// ErrConfirmRequired — ослабление без повторной проверки субъекта.
 	ErrConfirmRequired = errors.New("ослабление правила требует повторной проверки")
+	// ErrSelfReview — субъект оповещения безопасности закрывает его сам
+	// (3В15 ревью 3.r2): закрывает другой пользователь.
+	ErrSelfReview = errors.New("оповещение о собственных действиях закрывает другой пользователь")
+	// ErrTokenClose — токен API закрывает системное оповещение или
+	// оповещение безопасности (3В15 ревью 3.r2): закрывает человек в консоли.
+	ErrTokenClose = errors.New("системное оповещение и оповещение безопасности токен API не закрывает")
 	// errNoBuiltin — встроенного правила нет (сервер не создал встроенные).
 	errNoBuiltin = errors.New("оповещения: встроенное правило не создано")
 	// errUnchanged — изменение ничего не меняет: записи нет.
@@ -375,6 +382,9 @@ func (s *Service) SetStatus(ctx context.Context, by By, id, to, comment string) 
 		if !transitionAllowed(from, to) {
 			return History{}, audit.Entry{}, ErrTransition
 		}
+		if err := closeAllowed(a, by, to); err != nil {
+			return History{}, audit.Entry{}, err
+		}
 		now := s.now()
 		a.Status, a.UpdatedAt = to, now
 		switch to {
@@ -388,6 +398,43 @@ func (s *Service) SetStatus(ctx context.Context, by By, id, to, comment string) 
 			"rule_id": a.RuleID, "severity": a.Severity, "comment": comment != ""})
 		return h, rec, nil
 	})
+}
+
+// closeAllowed — ограничения закрытия системных оповещений и оповещений
+// безопасности (3В15 ревью 3.r2, ADR-0020, п. 5): токен API их не
+// закрывает, а оповещение безопасности о действиях субъекта (ключ actor
+// или заблокированная учётная запись account) закрывает не он сам.
+// Принять в работу можно.
+func closeAllowed(a *Alert, by By, to string) error {
+	if to != StatusClosed || !Locked(a.Kind) {
+		return nil
+	}
+	if by.Actor.Type == audit.ActorAPIToken {
+		return ErrTokenClose
+	}
+	if a.Kind == KindSecurity && subjectOf(a.DedupKey, by) {
+		return ErrSelfReview
+	}
+	return nil
+}
+
+// subjectOf — ключ дедупликации называет субъекта by: его самого, его
+// учётную запись или токен его владельца.
+func subjectOf(key string, by By) bool {
+	for part := range strings.SplitSeq(key, keySep) {
+		f, v, _ := strings.Cut(part, "=")
+		switch f {
+		case "actor":
+			if v == actorKey(by.Actor) || (by.UserID != "" && v == string(audit.ActorUser)+":"+by.UserID) {
+				return true
+			}
+		case "account":
+			if by.UserID != "" && v == by.UserID {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // systemBy — субъект действий сервера (встроенные правила).

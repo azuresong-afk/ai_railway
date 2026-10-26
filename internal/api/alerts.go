@@ -73,6 +73,12 @@ func alertsProblem(logger *slog.Logger, err error, notFound string) *Problem {
 	case errors.Is(err, alerting.ErrTransition):
 		return NewProblem(http.StatusConflict, CodeConflict,
 			"Статус уже изменён: принять в работу можно новое оповещение, закрыть — новое или принятое в работу.")
+	case errors.Is(err, alerting.ErrSelfReview):
+		return NewProblem(http.StatusConflict, CodeSelfReview,
+			"Оповещение безопасности о ваших собственных действиях закрывает другой пользователь с правом разбора оповещений.")
+	case errors.Is(err, alerting.ErrTokenClose):
+		return NewProblem(http.StatusForbidden, CodeForbidden,
+			"Системное оповещение и оповещение безопасности закрывает пользователь в консоли, а не токен API. Принять в работу токеном можно.")
 	case errors.Is(err, alerting.ErrLocked):
 		return NewProblem(http.StatusUnprocessableEntity, CodeUnprocessable,
 			"Системное правило и правило безопасности не отключаются и не меняются: можно изменить только получателей.")

@@ -171,3 +171,46 @@ func providerPG(t *testing.T) aisecCrypto.Provider {
 	}
 	return p
 }
+
+// 3В15 ревью 3.r2 на PostgreSQL: после закрытия оповещения DM-40 другим
+// пользователем повтор даёт новое оповещение; субъект и токен не
+// закрывают; окно подавления правилу безопасности не вернуть даже прямым
+// запросом владельца схемы (CHECK миграции 0041).
+func TestPGSecurityAlertNotSuppressed(t *testing.T) {
+	e := setupPG(t)
+	ctx := pgCtx(t)
+	e.log.SetRecordHook(e.alerts.OnAudit)
+	user := audit.Actor{Type: audit.ActorUser, ID: "01900000-0000-7000-8000-0000000000c1", Name: "petrov"}
+	weak := func() {
+		if err := e.log.Record(ctx, audit.Entry{Actor: user, Action: "policy.update", Object: audit.Object{Type: "policy", ID: "p"},
+			Result: audit.ResultSuccess, Details: map[string]any{"weakening": true, "weakening_reasons": []string{"mode_monitor"}}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	weak()
+	list := e.list(t, alerting.BuiltinWeakening)
+	if len(list) != 1 {
+		t.Fatalf("оповещения: %+v", list)
+	}
+	self := alerting.By{Actor: user, UserID: user.ID}
+	if _, err := e.svc.SetStatus(ctx, self, list[0].ID, alerting.StatusClosed, ""); !errors.Is(err, alerting.ErrSelfReview) {
+		t.Fatalf("самозакрытие: %v", err)
+	}
+	token := alerting.By{Actor: audit.Actor{Type: audit.ActorAPIToken, ID: "01900000-0000-7000-8000-0000000000d1"}, UserID: e.by.UserID}
+	if _, err := e.svc.SetStatus(ctx, token, list[0].ID, alerting.StatusClosed, ""); !errors.Is(err, alerting.ErrTokenClose) {
+		t.Fatalf("закрытие токеном: %v", err)
+	}
+	if _, err := e.svc.SetStatus(ctx, e.by, list[0].ID, alerting.StatusClosed, "разобрано"); err != nil {
+		t.Fatal(err)
+	}
+	weak()
+	list = e.list(t, alerting.BuiltinWeakening)
+	if len(list) != 2 || list[0].Status != alerting.StatusNew {
+		t.Fatalf("повтор после закрытия подавлен: %+v", list)
+	}
+	_, err := e.owner.Exec(ctx, `UPDATE alert_rules SET suppress_minutes = 60 WHERE kind = 'security'`)
+	var pe *pgconn.PgError
+	if !errors.As(err, &pe) || pe.Code != "23514" {
+		t.Fatalf("окно подавления правилу безопасности: %v", err)
+	}
+}
