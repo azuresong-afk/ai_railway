@@ -14,7 +14,6 @@ import (
 	"slices"
 	"strconv"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"github.com/azuresong-afk/ai_railway/internal/audit"
@@ -82,7 +81,7 @@ func netCode(err error, fallback string) error {
 // в канале (ЗИ.3): прокси из окружения и перенаправления не используются.
 // Соединение с loopback, link-local (в том числе 169.254.169.254),
 // групповыми, неуказанными адресами и адресами метаданных облака
-// отклоняется по уже разрешённому адресу (закрывает и DNS rebinding) с
+// отклоняется по адресу после разрешения имени (закрывает и DNS rebinding) с
 // кодом config, если сеть не разрешена явно (AllowNetworks; 3Н31 ревью 3.r2).
 // Частные сети (10/8, 172.16/12, 192.168/16, fc00::/7) разрешены: SIEM и
 // почта заказчика обычно в них.
@@ -129,16 +128,6 @@ func (t *Transport) permitted(ip netip.Addr) bool {
 		}
 	}
 	return !blockedAddr(ip)
-}
-
-// checkAddr — net.Dialer.Control: проверка адреса, к которому идёт
-// соединение после разрешения имени.
-func (t *Transport) checkAddr(_, address string, _ syscall.RawConn) error {
-	ap, err := netip.ParseAddrPort(address)
-	if err != nil || !t.permitted(ap.Addr().WithZone("")) {
-		return errBlockedAddr
-	}
-	return nil
 }
 
 // testCode — обобщённый код тестовой отправки (3Н31 ревью 3.r2).
@@ -202,17 +191,48 @@ func (t *Transport) tlsDial(ctx context.Context, ch Channel, host string, port i
 	return tc, nil
 }
 
-// dial — TCP-соединение со сроком из ctx.
+// resolve — адреса узла host, все разрешённые (3Н31 ревью 3.r2): имя
+// разрешается здесь, и соединение идёт на уже проверенный адрес, поэтому
+// повторное разрешение (DNS rebinding) проверку не обходит. Хотя бы один
+// запрещённый адрес среди ответов — отказ.
+func (t *Transport) resolve(ctx context.Context, host string) ([]netip.Addr, error) {
+	if ip, err := netip.ParseAddr(host); err == nil {
+		if !t.permitted(ip.WithZone("")) {
+			return nil, errBlockedAddr
+		}
+		return []netip.Addr{ip.WithZone("")}, nil
+	}
+	ips, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
+	if err != nil {
+		return nil, err
+	}
+	for i, ip := range ips {
+		ips[i] = ip.WithZone("")
+		if !t.permitted(ips[i]) {
+			return nil, errBlockedAddr
+		}
+	}
+	return ips, nil
+}
+
+// dial — TCP-соединение со сроком из ctx на проверенный адрес узла host.
 func (t *Transport) dial(ctx context.Context, host string, port int) (net.Conn, error) {
-	// Адрес-литерал проверяется до соединения: семейство адресов может
-	// быть недоступно, и Control тогда не вызывается.
-	if ip, err := netip.ParseAddr(host); err == nil && !t.permitted(ip.WithZone("")) {
+	if port < 1 || port > 65535 {
 		return nil, failed(ErrCodeConfig)
 	}
-	d := net.Dialer{Timeout: t.timeout, KeepAlive: -1, Control: t.checkAddr}
-	conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(host, strconv.Itoa(port)))
+	ips, err := t.resolve(ctx, host)
 	if errors.Is(err, errBlockedAddr) {
 		return nil, failed(ErrCodeConfig)
+	}
+	if err != nil {
+		return nil, netCode(err, ErrCodeDial)
+	}
+	d := net.Dialer{Timeout: t.timeout, KeepAlive: -1}
+	var conn net.Conn
+	for _, ip := range ips {
+		if conn, err = d.DialContext(ctx, "tcp", netip.AddrPortFrom(ip, uint16(port)).String()); err == nil { //nolint:gosec // G115: порт проверен выше (1–65535)
+			break
+		}
 	}
 	if err != nil {
 		return nil, netCode(err, ErrCodeDial)

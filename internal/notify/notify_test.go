@@ -728,7 +728,7 @@ func TestMattermostNoAutolinks(t *testing.T) {
 	if strings.Contains(body["text"], "://") || strings.Contains(body["text"], "www.") {
 		t.Fatalf("ссылка в тексте: %q", body["text"])
 	}
-	if !strings.Contains(body["text"], "https:​//evil.example/login") {
+	if !strings.Contains(body["text"], "https:\u200b//evil.example/login") {
 		t.Fatalf("адрес искажён: %q", body["text"])
 	}
 }
