@@ -521,3 +521,37 @@ func TestPGIncidentsConcurrent(t *testing.T) {
 		}
 	}
 }
+
+// 3В18 ревью 3.r2 на PostgreSQL: сверх предела автоматических записей приём
+// событий хронологию не дополняет; на полной хронологии комментарий
+// отклоняется, а закрытие проходит, и запись о нём попадает в карточку.
+func TestPGIncidentCloseAtTimelineLimit(t *testing.T) {
+	e := setupPG(t)
+	ctx := pgCtx(t)
+	e.ingest(t, e.event(t, "crm-bot", true))
+	list, err := e.svc.List(ctx, incidents.Query{})
+	if err != nil || len(list) != 1 {
+		t.Fatalf("инцидент: %d %v", len(list), err)
+	}
+	id := list[0].ID
+	if _, err := e.owner.Exec(ctx, `INSERT INTO incident_timeline (id, incident_id, at, actor, kind, details)
+		SELECT gen_random_uuid(), $1, now() - interval '1 hour' + make_interval(secs => g), 'system:aisec-server', 'alert_triggered', '{}'
+		FROM generate_series(1, $2) AS g`, id, incidents.MaxTimeline-2); err != nil {
+		t.Fatal(err)
+	}
+	e.ingest(t, e.event(t, "crm-bot", true))
+	if n := e.count(t, `SELECT count(*) FROM incident_timeline WHERE incident_id = '`+id+`'`); n != incidents.MaxTimeline {
+		t.Fatalf("записей после приёма у предела: %d", n)
+	}
+	if _, err := e.svc.AddComment(ctx, e.by, id, incidents.CommentInput{Body: "Сверх предела"}); !errors.Is(err, incidents.ErrLimit) {
+		t.Fatalf("комментарий сверх предела: %v", err)
+	}
+	if _, err := e.svc.SetStatus(ctx, e.by, id, incidents.StatusInput{Status: "closed", Resolution: "resolved",
+		Comment: "Канарейка сменена"}); err != nil {
+		t.Fatalf("закрытие у предела: %v", err)
+	}
+	c, err := e.svc.Card(ctx, id)
+	if err != nil || c.Related.Timeline[len(c.Related.Timeline)-1].Kind != incidents.KindStatusChanged {
+		t.Fatalf("закрытие в карточке: %v", err)
+	}
+}

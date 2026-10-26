@@ -380,7 +380,8 @@ func (s *Service) SetStatus(ctx context.Context, by By, id string, in StatusInpu
 		if !transitionAllowed(from, in.Status) {
 			return Change{}, ErrTransition
 		}
-		if c.Timeline >= MaxTimeline {
+		// Закрытие проходит при любой длине хронологии (3В18 ревью 3.r2).
+		if in.Status != StatusClosed && c.Timeline >= MaxTimeline {
 			return Change{}, ErrLimit
 		}
 		now := s.now()
