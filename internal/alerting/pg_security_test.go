@@ -176,7 +176,7 @@ func providerPG(t *testing.T) aisecCrypto.Provider {
 // 3В15 ревью 3.r2 на PostgreSQL: после закрытия оповещения DM-40 другим
 // пользователем повтор даёт новое оповещение; субъект и токен не
 // закрывают; окно подавления правилу безопасности не вернуть даже прямым
-// запросом владельца схемы (CHECK миграции 0041).
+// запросом владельца схемы (CHECK миграции 0042).
 func TestPGSecurityAlertNotSuppressed(t *testing.T) {
 	e := setupPG(t)
 	ctx := pgCtx(t)

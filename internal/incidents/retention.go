@@ -81,11 +81,11 @@ func (s *PGStore) SetRetentionDays(ctx context.Context, orgID string, days int, 
 	return old, err
 }
 
-// PurgeExpired — см. RetentionStore. Триггеры миграции 0044 повторяют
+// PurgeExpired — см. RetentionStore. Триггеры миграции 0045 повторяют
 // условие: роль сервера не удалит инцидент раньше срока даже прямым
 // запросом. Инцидент, открытый заново, удаляется после следующего (его
 // держит внешний ключ reopened_from), поэтому цепочка уходит за несколько
-// пачек; инцидент с незакрытым оповещением (данные до миграции 0043)
+// пачек; инцидент с незакрытым оповещением (данные до миграции 0044)
 // пропускается.
 func (s *PGStore) PurgeExpired(ctx context.Context, orgID string) (int, error) {
 	var n int
