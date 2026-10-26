@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/netip"
 	"slices"
 	"strings"
 	"testing"
@@ -55,6 +56,8 @@ func newNotifyEnv(t *testing.T) *notifyEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Приёмники тестов слушают loopback: сеть разрешена явно (3Н31 ревью 3.r2).
+	tr.AllowNetworks(loopbackNets)
 	svc, err := notify.New(notify.Options{Store: e.store, Box: box, Provider: p, Transport: tr})
 	if err != nil {
 		t.Fatal(err)
@@ -152,13 +155,13 @@ func TestNotifyChannelsAPI(t *testing.T) {
 		t.Fatalf("аудит: изменений %d, ослаблений %d", changed, weak)
 	}
 
-	// Тестовая отправка: адрес недоступен — 200 с кодом ошибки; предел — 429.
+	// Тестовая отправка: адрес недоступен — 200 с обобщённым кодом ошибки (3Н31 ревью 3.r2); предел — 429.
 	test := url + "/test"
 	mustProblem(t, e.call(auditor, "POST", test, "", true), 403, CodeForbidden)
 	for i := range notify.TestBurst {
 		w := e.call(admin, "POST", test, "", true)
 		d := decode[NotifyDeliveryView](t, w.Body.Bytes())
-		if w.Code != 200 || d.Status != notify.StatusFailed || d.Error != notify.ErrCodeDial || d.Kind != notify.KindTest {
+		if w.Code != 200 || d.Status != notify.StatusFailed || d.Error != notify.ErrCodeUnreachable || d.Kind != notify.KindTest {
 			t.Fatalf("тест %d: %d %s", i+1, w.Code, w.Body)
 		}
 	}
@@ -248,3 +251,6 @@ func TestAuditStreamAPI(t *testing.T) {
 		t.Fatal("снятие подписки не записано ослаблением")
 	}
 }
+
+// loopbackNets — сети приёмников тестов (3Н31 ревью 3.r2).
+var loopbackNets = []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8"), netip.MustParsePrefix("::1/128")}

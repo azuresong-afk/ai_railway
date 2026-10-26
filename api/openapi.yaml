@@ -3437,8 +3437,11 @@ paths:
       description: |
         Право `notify_channels.manage`. Одна попытка отправки тестового уведомления (в том числе в
         отключённый канал — до включения); итог — строка журнала доставки с `kind: test` и код
-        ошибки без текста ответа получателя. Не чаще 5 раз в минуту на канал — иначе 429. Пишет
-        `notify_channel.test` (итог, код ошибки).
+        ошибки без текста ответа получателя. Код теста обобщён: `dial`, `timeout`, `tls`,
+        `starttls_unsupported`, `write` → `unreachable`, чтобы тест не служил сканером портов в
+        сетях сервера; адрес loopback, link-local, метаданных облака — `config`, если сеть не
+        разрешена параметром сервера `-notify-allowed-networks` (3Н31 ревью 3.r2). Не чаще 5 раз
+        в минуту на канал — иначе 429. Пишет `notify_channel.test` (итог, код ошибки).
       x-permission: notify_channels.manage
       security: [{ sessionCookie: [] }]
       parameters:
@@ -6046,7 +6049,8 @@ components:
           type: string
           description: |
             Код ошибки без текста ответа получателя: dial, tls, starttls_unsupported, auth, rejected,
-            timeout, write, config, channel_disabled, internal, http_NNN.
+            timeout, write, config (в том числе запрещённый адрес получателя), channel_disabled,
+            internal, http_NNN; у тестовой отправки вместо сетевых кодов — unreachable.
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
         sent_at: { type: string, format: date-time }

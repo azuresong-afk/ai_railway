@@ -342,6 +342,7 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	notifyTransport.AllowNetworks(cfg.NotifyAllowedNetworks)
 	notifySvc, err := notify.New(notify.Options{Store: notifyStore, Box: box, Provider: p, Transport: notifyTransport,
 		OrgID: audit.DefaultOrgID})
 	if err != nil {

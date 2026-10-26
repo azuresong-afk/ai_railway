@@ -8,6 +8,7 @@ import (
 	"errors"
 	"mime"
 	"net/http"
+	"net/netip"
 	"slices"
 	"strconv"
 	"strings"
@@ -46,6 +47,8 @@ func newEnv(t *testing.T) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Приёмники тестов слушают loopback: сеть разрешена явно (3Н31 ревью 3.r2).
+	tr.AllowNetworks(loopbackNets)
 	e := &env{p: p, tp: tp, caPEM: caPEM, cert: cert, key: key, mem: NewMemory(), tr: tr,
 		now: time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)}
 	e.mem.SetNow(func() time.Time { return e.now })
@@ -695,3 +698,6 @@ func FuzzDecodeChannelInput(f *testing.F) {
 		}
 	})
 }
+
+// loopbackNets — сети приёмников тестов (3Н31 ревью 3.r2).
+var loopbackNets = []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8"), netip.MustParsePrefix("::1/128")}

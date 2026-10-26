@@ -8,10 +8,13 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/smtp"
 	"os"
+	"slices"
 	"strconv"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/azuresong-afk/ai_railway/internal/audit"
@@ -21,16 +24,20 @@ import (
 // Коды ошибок доставки: в журнал доставки и аудит пишется только код, без
 // текста ответа получателя и адресов (в адресе webhook бывает токен).
 const (
-	ErrCodeDial        = "dial"
-	ErrCodeTLS         = "tls"
-	ErrCodeNoSTARTTLS  = "starttls_unsupported"
-	ErrCodeAuth        = "auth"
-	ErrCodeRejected    = "rejected"
-	ErrCodeTimeout     = "timeout"
-	ErrCodeWrite       = "write"
-	ErrCodeConfig      = "config"
-	ErrCodeDisabled    = "channel_disabled"
-	ErrCodeInternal    = "internal"
+	ErrCodeDial       = "dial"
+	ErrCodeTLS        = "tls"
+	ErrCodeNoSTARTTLS = "starttls_unsupported"
+	ErrCodeAuth       = "auth"
+	ErrCodeRejected   = "rejected"
+	ErrCodeTimeout    = "timeout"
+	ErrCodeWrite      = "write"
+	ErrCodeConfig     = "config"
+	ErrCodeDisabled   = "channel_disabled"
+	ErrCodeInternal   = "internal"
+	// ErrCodeUnreachable — обобщённый код тестовой отправки вместо dial,
+	// timeout, tls, starttls_unsupported и write: тест не служит
+	// сканером портов в сетях сервера (3Н31 ревью 3.r2).
+	ErrCodeUnreachable = "unreachable"
 	errCodeHTTPPrefix  = "http_"
 	maxResponseBody    = 64 << 10
 	maxResponseHeaders = 64 << 10
@@ -73,12 +80,74 @@ func netCode(err error, fallback string) error {
 
 // Transport отправляет уведомления по адресам, заданным администратором
 // в канале (ЗИ.3): прокси из окружения и перенаправления не используются.
+// Соединение с loopback, link-local (в том числе 169.254.169.254),
+// групповыми, неуказанными адресами и адресами метаданных облака
+// отклоняется по уже разрешённому адресу (закрывает и DNS rebinding) с
+// кодом config, если сеть не разрешена явно (AllowNetworks; 3Н31 ревью 3.r2).
+// Частные сети (10/8, 172.16/12, 192.168/16, fc00::/7) разрешены: SIEM и
+// почта заказчика обычно в них.
 type Transport struct {
 	tls      aisecCrypto.TLSProvider
 	provider aisecCrypto.Provider
 	version  string
 	now      func() time.Time
 	timeout  time.Duration
+	allowed  []netip.Prefix
+}
+
+// errBlockedAddr — адрес получателя запрещён (3Н31 ревью 3.r2).
+var errBlockedAddr = errors.New("уведомления: адрес получателя запрещён")
+
+// metadataAddrs — адреса служб метаданных облака вне link-local: AWS
+// IPv6 и Alibaba Cloud (169.254.169.254 — link-local).
+var metadataAddrs = []netip.Addr{netip.MustParseAddr("fd00:ec2::254"), netip.MustParseAddr("100.100.100.200")}
+
+// nat64 — префикс NAT64 (RFC 6052): адрес IPv4 в нём проверяется тоже.
+var nat64 = netip.MustParsePrefix("64:ff9b::/96")
+
+// AllowNetworks разрешает сети, которые иначе запрещены (например,
+// приёмник syslog на 127.0.0.1): явный список администратора, параметр
+// сервера -notify-allowed-networks. Вызывается до начала отправки.
+func (t *Transport) AllowNetworks(nets []netip.Prefix) { t.allowed = slices.Clone(nets) }
+
+// blockedAddr — адрес запрещён по умолчанию.
+func blockedAddr(ip netip.Addr) bool {
+	ip = ip.Unmap()
+	if nat64.Contains(ip) {
+		b := ip.As16()
+		ip = netip.AddrFrom4([4]byte(b[12:]))
+	}
+	return ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsInterfaceLocalMulticast() ||
+		ip.IsMulticast() || ip.IsUnspecified() || slices.Contains(metadataAddrs, ip)
+}
+
+// permitted — соединение с ip разрешено.
+func (t *Transport) permitted(ip netip.Addr) bool {
+	for _, p := range t.allowed {
+		if p.Contains(ip.Unmap()) || p.Contains(ip) {
+			return true
+		}
+	}
+	return !blockedAddr(ip)
+}
+
+// checkAddr — net.Dialer.Control: проверка адреса, к которому идёт
+// соединение после разрешения имени.
+func (t *Transport) checkAddr(_, address string, _ syscall.RawConn) error {
+	ap, err := netip.ParseAddrPort(address)
+	if err != nil || !t.permitted(ap.Addr().WithZone("")) {
+		return errBlockedAddr
+	}
+	return nil
+}
+
+// testCode — обобщённый код тестовой отправки (3Н31 ревью 3.r2).
+func testCode(code string) string {
+	switch code {
+	case ErrCodeDial, ErrCodeTimeout, ErrCodeTLS, ErrCodeNoSTARTTLS, ErrCodeWrite:
+		return ErrCodeUnreachable
+	}
+	return code
 }
 
 // NewTransport создаёт отправитель на криптопрофиле p.
@@ -135,8 +204,16 @@ func (t *Transport) tlsDial(ctx context.Context, ch Channel, host string, port i
 
 // dial — TCP-соединение со сроком из ctx.
 func (t *Transport) dial(ctx context.Context, host string, port int) (net.Conn, error) {
-	d := net.Dialer{Timeout: t.timeout, KeepAlive: -1}
+	// Адрес-литерал проверяется до соединения: семейство адресов может
+	// быть недоступно, и Control тогда не вызывается.
+	if ip, err := netip.ParseAddr(host); err == nil && !t.permitted(ip.WithZone("")) {
+		return nil, failed(ErrCodeConfig)
+	}
+	d := net.Dialer{Timeout: t.timeout, KeepAlive: -1, Control: t.checkAddr}
 	conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(host, strconv.Itoa(port)))
+	if errors.Is(err, errBlockedAddr) {
+		return nil, failed(ErrCodeConfig)
+	}
 	if err != nil {
 		return nil, netCode(err, ErrCodeDial)
 	}
@@ -151,7 +228,14 @@ func (t *Transport) dial(ctx context.Context, host string, port int) (net.Conn, 
 
 // sendEmail — net/smtp: STARTTLS обязателен; сервер без STARTTLS — отказ
 // до передачи пароля и письма.
-func (t *Transport) sendEmail(ctx context.Context, ch Channel, sec Secrets, msg Message) error {
+func (t *Transport) sendEmail(ctx context.Context, ch Channel, sec Secrets, msg Message) (err error) {
+	defer func() {
+		// Обмен прерван закрытием соединения по сроку ctx — это тайм-аут,
+		// а не отказ соединения (3Н31 ревью 3.r2).
+		if err != nil && ErrorCode(err) != ErrCodeConfig && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			err = failed(ErrCodeTimeout)
+		}
+	}()
 	s := ch.Settings
 	cfg, err := t.tls.ClientConfig([]byte(s.CAPEM))
 	if err != nil {

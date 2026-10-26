@@ -149,7 +149,11 @@ func TestLoadConfigAuditVerifyAndProxies(t *testing.T) {
 	}
 	base["AISEC_SERVER_AUDIT_VERIFY_INTERVAL"] = "10m"
 	base["AISEC_SERVER_TRUSTED_PROXIES"] = "10.0.0.5, 192.0.2.0/24,2001:db8::/48"
+	base["AISEC_SERVER_NOTIFY_ALLOWED_NETWORKS"] = "127.0.0.1"
 	cfg, err = loadConfig(nil, env(base), io.Discard)
+	if err != nil || len(cfg.NotifyAllowedNetworks) != 1 || cfg.NotifyAllowedNetworks[0].String() != "127.0.0.1/32" {
+		t.Fatalf("сети уведомлений (3Н31 ревью 3.r2): %+v %v", cfg, err)
+	}
 	if err != nil || cfg.AuditVerifyInterval != 10*time.Minute || len(cfg.TrustedProxies) != 3 ||
 		cfg.TrustedProxies[0].String() != "10.0.0.5/32" || cfg.TrustedProxies[2].String() != "2001:db8::/48" {
 		t.Fatalf("из окружения: %+v %v", cfg, err)
@@ -158,6 +162,7 @@ func TestLoadConfigAuditVerifyAndProxies(t *testing.T) {
 		{"-audit-verify-interval", "30s"}, {"-audit-verify-interval", "час"},
 		{"-trusted-proxies", "0.0.0.0/0"}, {"-trusted-proxies", "::/0"}, {"-trusted-proxies", "прокси"},
 		{"-trusted-proxies", "10.0.0.1,"}, {"-trusted-proxies", "fe80::1%eth0"}, {"-trusted-proxies", "::ffff:10.0.0.0/104"},
+		{"-notify-allowed-networks", "0.0.0.0/0"}, {"-notify-allowed-networks", "сеть"},
 	} {
 		if _, err := loadConfig(args, env(base), io.Discard); err == nil {
 			t.Errorf("%v: принято", args)

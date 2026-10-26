@@ -228,6 +228,8 @@ func TestPGAuditStreamSIEM(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Приёмники тестов слушают loopback: сеть разрешена явно (3Н31 ревью 3.r2).
+	tr.AllowNetworks(loopbackNets)
 	svc, err := notify.New(notify.Options{Store: st, Box: box, Provider: p, Transport: tr})
 	if err != nil {
 		t.Fatal(err)

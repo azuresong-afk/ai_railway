@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
@@ -291,4 +292,108 @@ func testCtx(t *testing.T) context.Context {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	t.Cleanup(cancel)
 	return ctx
+}
+
+// 3Н31 ревью 3.r2: соединение с loopback, link-local (метаданные облака
+// 169.254.169.254), адресами метаданных вне link-local, IPv4-mapped и
+// NAT64-формами запрещённых адресов отклоняется с кодом config до
+// соединения; явно разрешённая сеть проходит; частная сеть не запрещена.
+func TestChannelAddressRestricted(t *testing.T) {
+	p := testProvider(t)
+	caPEM, tp, cert, key := newPKI(t, p)
+	tr, err := NewTransport(p, "test", 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := newSyslogServer(t, tp, cert, key)
+	h, port := hostPortStr(srv.addr)
+	ch := func(host string, port int) Channel {
+		return Channel{ID: "c", Type: TypeSyslog, Enabled: true, Settings: Settings{Host: host, Port: port, Format: FormatJSON, CAPEM: caPEM}}
+	}
+	for _, host := range []string{h, "localhost", "::1", "::ffff:127.0.0.1", "169.254.169.254", "fe80::1", "fd00:ec2::254",
+		"100.100.100.200", "64:ff9b::a9fe:a9fe", "0.0.0.0", "224.0.0.1"} {
+		if err := tr.Send(testCtx(t), ch(host, port), Secrets{}, sampleAlert()); ErrorCode(err) != ErrCodeConfig {
+			t.Fatalf("%s: %v", host, err)
+		}
+	}
+	for _, ip := range []string{"10.1.2.3", "172.16.0.10", "192.168.1.5", "fc00::5", "203.0.113.7"} {
+		if blockedAddr(netip.MustParseAddr(ip)) {
+			t.Fatalf("%s запрещён", ip)
+		}
+	}
+	tr.AllowNetworks([]netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")})
+	if err := tr.Send(testCtx(t), ch(h, port), Secrets{}, sampleAlert()); err != nil {
+		t.Fatalf("разрешённая сеть: %v", err)
+	}
+	srv.next(t)
+	if err := tr.Send(testCtx(t), ch("169.254.169.254", 80), Secrets{}, sampleAlert()); ErrorCode(err) != ErrCodeConfig {
+		t.Fatalf("метаданные при разрешённом loopback: %v", err)
+	}
+}
+
+// 3Н31 ревью 3.r2: сертификат приёмника на чужое имя — tls, молчащий
+// приёмник — timeout для всех трёх типов каналов; код тестовой отправки —
+// обобщённый unreachable.
+func TestReceiverNegatives(t *testing.T) {
+	p := testProvider(t)
+	_, tp, _, _ := newPKI(t, p)
+	now := time.Now()
+	ca, err := aisecCrypto.NewCA("AISec other CA", time.Hour, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, key, err := ca.IssueServer([]string{"siem.example"}, time.Hour, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr, err := NewTransport(p, "test", 300*time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr.AllowNetworks(loopbackNets)
+	other := newSyslogServer(t, tp, cert, key)
+	h, port := hostPortStr(other.addr)
+	sys := Channel{ID: "c", Type: TypeSyslog, Enabled: true, Settings: Settings{Host: h, Port: port, Format: FormatJSON,
+		CAPEM: string(ca.CertPEM())}}
+	if err := tr.Send(testCtx(t), sys, Secrets{}, sampleAlert()); ErrorCode(err) != ErrCodeTLS {
+		t.Fatalf("чужое имя: %v", err)
+	}
+	// Молчащий приёмник: принимает соединение и ничего не отвечает.
+	l, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = l.Close() }) //nolint:gosec // G104: закрытие тестового приёмника
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			t.Cleanup(func() { _ = c.Close() }) //nolint:gosec // G104: закрытие тестового соединения
+		}
+	}()
+	sh, sp := hostPortStr(l.Addr().String())
+	silent := []Channel{
+		{ID: "e", Type: TypeEmail, Enabled: true, Settings: Settings{Host: sh, Port: sp, From: "aisec@example.org",
+			To: []string{"soc@example.org"}, CAPEM: string(ca.CertPEM())}},
+		{ID: "w", Type: TypeWebhook, Enabled: true, Settings: Settings{Format: FormatGeneric, CAPEM: string(ca.CertPEM())}},
+		{ID: "s", Type: TypeSyslog, Enabled: true, Settings: Settings{Host: sh, Port: sp, Format: FormatJSON, CAPEM: string(ca.CertPEM())}},
+	}
+	sec := Secrets{URL: "https://" + l.Addr().String() + "/hook", SigningKey: testSigningKey}
+	for _, c := range silent {
+		if err := tr.Send(testCtx(t), c, sec, sampleAlert()); ErrorCode(err) != ErrCodeTimeout {
+			t.Fatalf("%s: молчащий приёмник: %v", c.Type, err)
+		}
+	}
+	for _, code := range []string{ErrCodeDial, ErrCodeTimeout, ErrCodeTLS, ErrCodeNoSTARTTLS, ErrCodeWrite} {
+		if testCode(code) != ErrCodeUnreachable {
+			t.Fatalf("код теста %s не обобщён", code)
+		}
+	}
+	for _, code := range []string{ErrCodeConfig, ErrCodeAuth, "http_500"} {
+		if testCode(code) != code {
+			t.Fatalf("код теста %s изменён", code)
+		}
+	}
 }

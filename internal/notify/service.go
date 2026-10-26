@@ -398,7 +398,9 @@ func (s *Service) TestChannel(ctx context.Context, by By, id string) (Delivery, 
 	result := audit.ResultSuccess
 	d.UpdatedAt = s.now().UTC()
 	if err != nil {
-		d.Status, d.Error, result = StatusFailed, ErrorCode(err), audit.ResultFailure
+		// Код теста — обобщённый (3Н31 ревью 3.r2): точный код доставки
+		// виден в журнале по оповещениям.
+		d.Status, d.Error, result = StatusFailed, testCode(ErrorCode(err)), audit.ResultFailure
 	} else {
 		d.Status, d.SentAt = StatusSent, d.UpdatedAt
 	}

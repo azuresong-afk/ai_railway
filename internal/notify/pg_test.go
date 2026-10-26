@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"strings"
 	"sync/atomic"
@@ -195,6 +196,8 @@ func TestPGNotifyChannels(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Приёмники тестов слушают loopback: сеть разрешена явно (3Н31 ревью 3.r2).
+	tr.AllowNetworks(loopbackNets)
 	svc, err := notify.New(notify.Options{Store: st, Box: box, Provider: p, Transport: tr})
 	if err != nil {
 		t.Fatal(err)
@@ -337,3 +340,6 @@ func builtinID(t *testing.T, s *alerting.Service, key string) string {
 	t.Fatalf("нет правила %s", key)
 	return ""
 }
+
+// loopbackNets — сети приёмников тестов (3Н31 ревью 3.r2).
+var loopbackNets = []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8"), netip.MustParsePrefix("::1/128")}

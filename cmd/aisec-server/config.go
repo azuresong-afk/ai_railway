@@ -37,6 +37,10 @@ type serverConfig struct {
 	// TrustedProxies — сети обратных прокси (TLS-шлюз ГОСТ и т. п., ТЗ 10.3),
 	// от которых принимается X-Forwarded-For; пусто — заголовку не доверяем.
 	TrustedProxies []netip.Prefix
+	// NotifyAllowedNetworks — сети, в которые разрешена доставка
+	// уведомлений, хотя по умолчанию они запрещены: loopback, link-local и
+	// т. п. (3Н31 ревью 3.r2); пусто — только умолчания.
+	NotifyAllowedNetworks []netip.Prefix
 	// KeysDir — каталог ключей aisec-cli init (master.key, ADR-0007): мастер-ключ
 	// расшифровывает ключ данных для секретов в БД (TOTP, ИАФ.5).
 	KeysDir string
@@ -89,6 +93,7 @@ func loadConfig(args []string, getenv func(string) string, errOut io.Writer) (*s
 	storageWarn := fs.String("audit-storage-warn-percent", strconv.Itoa(sysstatus.DefaultWarnPercent), "порог предупреждения о заполнении журнала аудита, 1–100 процентов (AISEC_SERVER_AUDIT_STORAGE_WARN_PERCENT)")
 	verifyInterval := fs.String("audit-verify-interval", audit.DefaultVerifyInterval.String(), "период проверки цепочки журнала аудита, не меньше 1m (AISEC_SERVER_AUDIT_VERIFY_INTERVAL)")
 	proxies := fs.String("trusted-proxies", "", "сети доверенных обратных прокси через запятую, например 10.0.0.5/32; от них принимается X-Forwarded-For (AISEC_SERVER_TRUSTED_PROXIES)")
+	notifyNets := fs.String("notify-allowed-networks", "", "сети через запятую, куда разрешены каналы уведомлений, хотя по умолчанию запрещены (loopback, link-local), например 127.0.0.1/32 для локального приёмника syslog (AISEC_SERVER_NOTIFY_ALLOWED_NETWORKS)")
 	if err := fs.Parse(args); err != nil {
 		return nil, err
 	}
@@ -101,7 +106,7 @@ func loadConfig(args []string, getenv func(string) string, errOut io.Writer) (*s
 		"manifest": manifest, "integrity-action": action, "integrity-interval": interval,
 		"ca-cert": caCert, "ca-key": caKey, "internal-listen": internalListen, "internal-tls-cert": internalCert, "internal-tls-key": internalKey,
 		"audit-storage-limit": storageLimit, "audit-storage-warn-percent": storageWarn,
-		"audit-verify-interval": verifyInterval, "trusted-proxies": proxies} {
+		"audit-verify-interval": verifyInterval, "trusted-proxies": proxies, "notify-allowed-networks": notifyNets} {
 		if set[name] {
 			continue
 		}
@@ -125,6 +130,9 @@ func loadConfig(args []string, getenv func(string) string, errOut io.Writer) (*s
 	}
 	if cfg.TrustedProxies, err = parsePrefixes(*proxies); err != nil {
 		errs = append(errs, fmt.Errorf("trusted-proxies: %w", err))
+	}
+	if cfg.NotifyAllowedNetworks, err = parsePrefixes(*notifyNets); err != nil {
+		errs = append(errs, fmt.Errorf("notify-allowed-networks: %w", err))
 	}
 	if cfg.IntegrityAction, err = integrity.ParseAction(*action); err != nil {
 		errs = append(errs, fmt.Errorf("integrity-action: %w", err))
