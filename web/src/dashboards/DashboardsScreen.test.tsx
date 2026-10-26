@@ -32,12 +32,15 @@ const overview = {
   top_detectors: [{ key: "pii.regex", value: 40 }],
   apps: [{ key: "support-bot", requests: 900, with_findings: 200, blocked: 15, would_block: 0, masked: 50, tokens_prompt: 1, tokens_completion: 1, cost: "1", unpriced_requests: 0 }],
   feed: [{ id: "6f1c0000-0000-4000-8000-000000000001", time: "2026-10-22T09:30:00Z", app: "support-bot", model: "gpt-x", action: "block", policy_mode: "enforce", severity: "high", rule: "R-1", threats: ["DM-01"] }],
+  feed_hidden: false,
 };
+let overviewBody: object = overview;
 
 const calls: string[] = [];
 let streams: { url: string; closed: boolean }[];
 beforeEach(() => {
   calls.length = 0;
+  overviewBody = overview;
   streams = [];
   vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
   vi.stubGlobal(
@@ -63,12 +66,12 @@ beforeEach(() => {
     vi.fn((url: string) => {
       calls.push(url);
       const ok = (b: unknown) => Promise.resolve(new Response(JSON.stringify(b), { status: 200 }));
-      if (url.startsWith("/api/v1/dashboards/overview")) return ok(overview);
+      if (url.startsWith("/api/v1/dashboards/overview")) return ok(overviewBody);
       if (url.startsWith("/api/v1/alerts")) return ok({ items: [{ id: "a1", title: "Всплеск блокировок" }], next_cursor: "" });
       if (url.startsWith("/api/v1/incidents")) return ok({ items: [], next_cursor: "" });
       if (url.startsWith("/api/v1/system/status")) return ok({ gateways: [{ id: "g1", name: "gw-1", state: "offline" }] });
       if (url.startsWith("/api/v1/applications")) return ok({ items: [{ id: "app-1", name: "Бот поддержки", slug: "support-bot", status: "active" }], next_cursor: "" });
-      if (url.startsWith("/api/v1/dashboards/app/app-1")) return ok({ period, application: { id: "app-1", slug: "support-bot", name: "Бот поддержки" }, totals, latency: { p95_ms: 0, overflow: false, requests: 0 }, decisions: [], top_detectors: [], models: [], feed: [] });
+      if (url.startsWith("/api/v1/dashboards/app/app-1")) return ok({ period, application: { id: "app-1", slug: "support-bot", name: "Бот поддержки" }, totals, latency: { p95_ms: 0, overflow: false, requests: 0 }, decisions: [], top_detectors: [], models: [], feed: [], feed_hidden: true });
       return Promise.resolve(new Response(JSON.stringify({ status: 403, code: "forbidden", detail: "Нет прав." }), { status: 403 }));
     }),
   );
@@ -96,6 +99,13 @@ describe("экран «Обзор»", () => {
     expect(await screen.findByText(/Шлюз «gw-1» не в сети/)).toBeTruthy();
     // Права, которых нет, не запрашиваются: инциденты не читаются.
     expect(calls.some((u) => u.startsWith("/api/v1/incidents"))).toBe(false);
+  });
+
+  it("без events.read сервер скрывает ленту — блока нет (3В27)", async () => {
+    overviewBody = { ...overview, feed: [], feed_hidden: true };
+    renderScreen(["dashboards.read", "system.read"]);
+    await screen.findByText("1 200");
+    expect(screen.queryByText("Лента решений")).toBeNull();
   });
 
   it("график доступен таблицей данных", async () => {

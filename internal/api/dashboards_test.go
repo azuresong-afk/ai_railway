@@ -378,3 +378,44 @@ func FuzzParseDashParams(f *testing.F) {
 		}
 	})
 }
+
+// 3В27 ревью 3.r3 (УПД.2, решение владельца 26.10.2026): «Лента решений» —
+// метаданные каждого события — только с events.read на все объекты.
+// Администратор системы получает «Обзор» с пустой лентой и feed_hidden,
+// аналитик — с лентой; кэш не переносит ленту между ними; владелец
+// приложения на «Приложении» ленты не видит.
+func TestDashboardFeedRequiresEventsRead(t *testing.T) {
+	e := newAppsEnv(t)
+	sys := e.mustLogin(t, "sysadm")
+	prov := e.provider(t, sys, "openai-main")
+	mine := e.application(t, sys, "mine", prov.ID, tOwnerID)
+	type view struct {
+		Feed       []events.DashFeedItem `json:"feed"`
+		FeedHidden bool                  `json:"feed_hidden"`
+	}
+	get := func(s session, path string) view {
+		t.Helper()
+		w := e.call(s, "GET", path, "", false)
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s: %d %s", path, w.Code, w.Body)
+		}
+		var v view
+		if err := json.Unmarshal(w.Body.Bytes(), &v); err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	an := e.mustLogin(t, "analyst")
+	// Аналитик первым: снимок с лентой в кэше не должен достаться администратору системы.
+	for _, path := range []string{"/api/v1/dashboards/overview", "/api/v1/dashboards/app/" + mine.ID} {
+		if v := get(an, path); len(v.Feed) == 0 || v.FeedHidden {
+			t.Fatalf("аналитик %s: %+v", path, v)
+		}
+		if v := get(sys, path); len(v.Feed) != 0 || !v.FeedHidden {
+			t.Fatalf("администратор системы %s: %+v", path, v)
+		}
+	}
+	if v := get(e.mustLogin(t, "owner"), "/api/v1/dashboards/app/"+mine.ID); len(v.Feed) != 0 || !v.FeedHidden {
+		t.Fatalf("владелец приложения: %+v", v)
+	}
+}

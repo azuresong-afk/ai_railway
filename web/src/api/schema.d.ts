@@ -5112,7 +5112,7 @@ export interface paths {
          *     До 2 часов данные читаются из событий поминутно, до 31 суток — по часам (начало округляется
          *     до часа вниз), дольше — по суткам в часовом поясе установки.
          *     Показатели, график запросов по решениям, топ детекторов, приложения по риску и «Лента решений»
-         *     (`feed=all` — все решения, по умолчанию только с действием).
+         *     (`feed=all` — все решения, по умолчанию только с действием). Лента — только с `events.read` на все объекты, иначе пустая и `feed_hidden: true`.
          */
         get: {
             parameters: {
@@ -8166,6 +8166,8 @@ export interface components {
             top_detectors: components["schemas"]["DashTop"][];
             apps: components["schemas"]["DashRequestRow"][];
             feed: components["schemas"]["DashFeedItem"][];
+            /** @description Ленты нет: у субъекта нет events.read на все объекты (лента — метаданные каждого события, УПД.2); feed пустой */
+            feed_hidden: boolean;
         };
         DashboardThreats: {
             period: components["schemas"]["DashPeriodInfo"];
@@ -8202,6 +8204,8 @@ export interface components {
             top_detectors: components["schemas"]["DashTop"][];
             models: components["schemas"]["DashRequestRow"][];
             feed: components["schemas"]["DashFeedItem"][];
+            /** @description Ленты нет: у субъекта нет events.read на все объекты (лента — метаданные каждого события, УПД.2); feed пустой */
+            feed_hidden: boolean;
         };
         DashUsagePoint: {
             /** Format: date-time */

@@ -153,6 +153,9 @@ type OverviewView struct {
 	TopDetectors []events.DashTop      `json:"top_detectors"`
 	Apps         []DashRequestRowView  `json:"apps"`
 	Feed         []events.DashFeedItem `json:"feed"`
+	// FeedHidden — ленты нет: у субъекта нет events.read на все объекты
+	// (3В27 ревью 3.r3, УПД.2).
+	FeedHidden bool `json:"feed_hidden"`
 }
 
 // ThreatsView — дашборд «Угрозы»: находки по строкам матрицы обнаружения,
@@ -190,6 +193,7 @@ type AppDashboardView struct {
 	TopDetectors []events.DashTop      `json:"top_detectors"`
 	Models       []DashRequestRowView  `json:"models"`
 	Feed         []events.DashFeedItem `json:"feed"`
+	FeedHidden   bool                  `json:"feed_hidden"`
 }
 
 // DashAppRef — приложение дашборда.
@@ -419,10 +423,14 @@ func (c *dashCache) put(key string, e dashEntry) {
 
 // dashSnapshot возвращает JSON дашборда и отпечаток данных без периода
 // (для потока: неизменный снимок не пересылается). Условия бюджетов
-// (budgetPerm) входят в ключ кэша: состав ответа зависит от прав.
+// (budgetPerm) и ленты решений входят в ключ кэша: состав ответа зависит
+// от прав. Лента — метаданные каждого события, то есть просмотр событий:
+// только с events.read на все объекты (3В27 ревью 3.r3, решение владельца
+// 26.10.2026); остальное на дашбордах агрегировано.
 func (d Deps) dashSnapshot(ctx context.Context, name string, p dashParams, app DashAppRef, budgetPerm string, r *http.Request) ([]byte, uint64, error) {
 	pr, _ := PrincipalFrom(r.Context())
 	withBudgets := name == "consumption" && pr.Grants.Full(budgetPerm)
+	withFeed := (name == "overview" || name == "app") && pr.Grants.Full(auth.PermEventsRead)
 	period := p.name
 	if p.name == "custom" {
 		period = fmt.Sprintf("custom-%d-%v", p.from.Unix(), p.rolling)
@@ -430,7 +438,7 @@ func (d Deps) dashSnapshot(ctx context.Context, name string, p dashParams, app D
 			period = fmt.Sprintf("custom-%d-%d", p.from.Unix(), p.to.Unix())
 		}
 	}
-	key := fmt.Sprintf("%s|%s|%s|%v|%v", name, app.Slug, period, p.feedAll, withBudgets)
+	key := fmt.Sprintf("%s|%s|%s|%v|%v|%v", name, app.Slug, period, p.feedAll, withBudgets, withFeed)
 	now := time.Now()
 	if d.DashCache != nil {
 		if e, ok := d.DashCache.get(key, now); ok {
@@ -462,13 +470,13 @@ func (d Deps) dashSnapshot(ctx context.Context, name string, p dashParams, app D
 	var view dashView
 	switch name {
 	case "overview":
-		view, err = d.buildOverview(ctx, q, p.feedAll)
+		view, err = d.buildOverview(ctx, q, withFeed, p.feedAll)
 	case "threats":
 		view, err = d.buildThreats(ctx, q)
 	case "pii":
 		view, err = d.buildPII(ctx, q)
 	case "app":
-		view, err = d.buildApp(ctx, q, app, p.feedAll)
+		view, err = d.buildApp(ctx, q, app, withFeed, p.feedAll)
 	case "consumption":
 		view, err = d.buildConsumption(ctx, q, withBudgets)
 	default:
@@ -504,7 +512,7 @@ func nz[T any](s []T) []T {
 	return s
 }
 
-func (d Deps) buildOverview(ctx context.Context, q events.DashQuery, feedAll bool) (dashView, error) {
+func (d Deps) buildOverview(ctx context.Context, q events.DashQuery, withFeed, feedAll bool) (dashView, error) {
 	var v OverviewView
 	var err error
 	t, err := d.Dashboards.Totals(ctx, q)
@@ -525,8 +533,10 @@ func (d Deps) buildOverview(ctx context.Context, q events.DashQuery, feedAll boo
 	if err != nil {
 		return nil, err
 	}
-	if v.Feed, err = d.Dashboards.Feed(ctx, q.To, "", feedAll, 30); err != nil {
-		return nil, err
+	if v.FeedHidden = !withFeed; withFeed {
+		if v.Feed, err = d.Dashboards.Feed(ctx, q.To, "", feedAll, 30); err != nil {
+			return nil, err
+		}
 	}
 	v.Totals, v.Latency, v.Apps = totalsView(t), latencyView(lat), rowsView(byApp)
 	v.Decisions, v.TopDetectors, v.Feed = nz(v.Decisions), nz(v.TopDetectors), nz(v.Feed)
@@ -604,7 +614,7 @@ func (d Deps) buildPII(ctx context.Context, q events.DashQuery) (dashView, error
 	return &v, nil
 }
 
-func (d Deps) buildApp(ctx context.Context, q events.DashQuery, app DashAppRef, feedAll bool) (dashView, error) {
+func (d Deps) buildApp(ctx context.Context, q events.DashQuery, app DashAppRef, withFeed, feedAll bool) (dashView, error) {
 	v := AppDashboardView{Application: app}
 	t, err := d.Dashboards.Totals(ctx, q)
 	if err != nil {
@@ -624,8 +634,10 @@ func (d Deps) buildApp(ctx context.Context, q events.DashQuery, app DashAppRef, 
 	if err != nil {
 		return nil, err
 	}
-	if v.Feed, err = d.Dashboards.Feed(ctx, q.To, app.Slug, feedAll, 30); err != nil {
-		return nil, err
+	if v.FeedHidden = !withFeed; withFeed {
+		if v.Feed, err = d.Dashboards.Feed(ctx, q.To, app.Slug, feedAll, 30); err != nil {
+			return nil, err
+		}
 	}
 	v.Totals, v.Latency, v.Models = totalsView(t), latencyView(lat), rowsView(models)
 	v.Decisions, v.TopDetectors, v.Feed = nz(v.Decisions), nz(v.TopDetectors), nz(v.Feed)

@@ -219,10 +219,13 @@ export function OverviewScreen({ me }: { me: Me }) {
               </Table>
             )}
           </Panel>
-          <Panel className="flex flex-col gap-2">
-            <h3 className="text-md font-semibold">Лента решений</h3>
-            <Feed items={d.feed} period={s.period.name} />
-          </Panel>
+          {/* Лента — метаданные каждого события: только с events.read на все объекты (УПД.2). */}
+          {!d.feed_hidden && (
+            <Panel className="flex flex-col gap-2">
+              <h3 className="text-md font-semibold">Лента решений</h3>
+              <Feed items={d.feed} period={s.period.name} />
+            </Panel>
+          )}
         </>
       )}
     </div>
@@ -465,10 +468,12 @@ export function AppScreen() {
                   </Table>
                 )}
               </Panel>
-              <Panel className="flex flex-col gap-2">
-                <h3 className="text-md font-semibold">Лента решений</h3>
-                <Feed items={d.feed} period={s.period.name} />
-              </Panel>
+              {!d.feed_hidden && (
+                <Panel className="flex flex-col gap-2">
+                  <h3 className="text-md font-semibold">Лента решений</h3>
+                  <Feed items={d.feed} period={s.period.name} />
+                </Panel>
+              )}
             </>
           )}
         </>

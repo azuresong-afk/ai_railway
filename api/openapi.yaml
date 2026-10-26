@@ -2838,7 +2838,7 @@ paths:
         До 2 часов данные читаются из событий поминутно, до 31 суток — по часам (начало округляется
         до часа вниз), дольше — по суткам в часовом поясе установки.
         Показатели, график запросов по решениям, топ детекторов, приложения по риску и «Лента решений»
-        (`feed=all` — все решения, по умолчанию только с действием).
+        (`feed=all` — все решения, по умолчанию только с действием). Лента — только с `events.read` на все объекты, иначе пустая и `feed_hidden: true`.
       x-permission: dashboards.read
       security: [{ sessionCookie: [] }, { bearerToken: [] }]
       parameters:
@@ -5113,7 +5113,7 @@ components:
         findings: { type: integer, format: int64 }
     DashboardOverview:
       type: object
-      required: [period, totals, latency, decisions, top_detectors, apps, feed]
+      required: [period, totals, latency, decisions, top_detectors, apps, feed, feed_hidden]
       properties:
         period: { $ref: '#/components/schemas/DashPeriodInfo' }
         totals: { $ref: '#/components/schemas/DashTotals' }
@@ -5122,6 +5122,7 @@ components:
         top_detectors: { type: array, items: { $ref: '#/components/schemas/DashTop' } }
         apps: { type: array, items: { $ref: '#/components/schemas/DashRequestRow' } }
         feed: { type: array, items: { $ref: '#/components/schemas/DashFeedItem' } }
+        feed_hidden: { type: boolean, description: 'Ленты нет: у субъекта нет events.read на все объекты (лента — метаданные каждого события, УПД.2); feed пустой' }
     DashboardThreats:
       type: object
       required: [period, totals, non_text_unchecked_share, top_threats, top_categories, top_detectors, by_threat, by_category, by_detector, heatmap]
@@ -5154,7 +5155,7 @@ components:
         name: { type: string }
     DashboardApp:
       type: object
-      required: [period, application, totals, latency, decisions, top_detectors, models, feed]
+      required: [period, application, totals, latency, decisions, top_detectors, models, feed, feed_hidden]
       properties:
         period: { $ref: '#/components/schemas/DashPeriodInfo' }
         application: { $ref: '#/components/schemas/DashAppRef' }
@@ -5164,6 +5165,7 @@ components:
         top_detectors: { type: array, items: { $ref: '#/components/schemas/DashTop' } }
         models: { type: array, items: { $ref: '#/components/schemas/DashRequestRow' } }
         feed: { type: array, items: { $ref: '#/components/schemas/DashFeedItem' } }
+        feed_hidden: { type: boolean, description: 'Ленты нет: у субъекта нет events.read на все объекты (лента — метаданные каждого события, УПД.2); feed пустой' }
     DashUsagePoint:
       type: object
       required: [bucket, requests, tokens, cost]
