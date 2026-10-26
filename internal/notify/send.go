@@ -228,7 +228,24 @@ func (t *Transport) dial(ctx context.Context, host string, port int) (net.Conn, 
 
 // sendEmail — net/smtp: STARTTLS обязателен; сервер без STARTTLS — отказ
 // до передачи пароля и письма.
-func (t *Transport) sendEmail(ctx context.Context, ch Channel, sec Secrets, msg Message) (err error) {
+func (t *Transport) sendEmail(ctx context.Context, ch Channel, sec Secrets, msg Message) error {
+	return t.smtpSend(ctx, ch, sec, emailMessage(msg, ch.Settings.From, ch.Settings.To, msg.ID, t.now()))
+}
+
+// SendRaw отправляет готовое письмо (RFC 5322) получателям почтового канала
+// ch: так уходят отчёты по расписанию (задача 3.25). Условия те же, что у
+// уведомлений: STARTTLS обязателен, срок попытки — DefaultSendTimeout.
+func (t *Transport) SendRaw(ctx context.Context, ch Channel, sec Secrets, raw []byte) error {
+	if ch.Type != TypeEmail {
+		return failed(ErrCodeConfig)
+	}
+	ctx, cancel := context.WithTimeout(ctx, t.timeout)
+	defer cancel()
+	return t.smtpSend(ctx, ch, sec, raw)
+}
+
+// smtpSend передаёт письмо raw: STARTTLS, при заданном имени — вход.
+func (t *Transport) smtpSend(ctx context.Context, ch Channel, sec Secrets, raw []byte) (err error) {
 	defer func() {
 		// Обмен прерван закрытием соединения по сроку ctx — это тайм-аут,
 		// а не отказ соединения (3Н31 ревью 3.r2).
@@ -285,7 +302,7 @@ func (t *Transport) sendEmail(ctx context.Context, ch Channel, sec Secrets, msg 
 	if err != nil {
 		return netCode(err, ErrCodeRejected)
 	}
-	if _, err := w.Write(emailMessage(msg, s.From, s.To, msg.ID, t.now())); err != nil {
+	if _, err := w.Write(raw); err != nil {
 		return netCode(err, ErrCodeWrite)
 	}
 	if err := w.Close(); err != nil {

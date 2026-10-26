@@ -3943,6 +3943,213 @@ paths:
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ProblemInternal' }
         '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/reports/{kind}:
+    get:
+      summary: Отчёт за период
+      description: |
+        Право `reports.read` (владелец приложения — на своих приложениях). Виды: `summary` (сводный),
+        `incidents` (по инцидентам), `pilot` («Итоги пилота», сценарий S10). Данные — только агрегаты
+        дашбордов, инциденты, оповещения, бюджеты и отметки аналитиков: содержимого запросов и ответов
+        и значений находок в отчёте нет. Период — `from` и `to`, дни `ГГГГ-ММ-ДД` часового пояса
+        установки, оба включительно; начало не в будущем, конец позже сегодняшнего урезается до
+        сегодняшнего дня, не больше 366 суток. `format`: `html` (по умолчанию; страница для просмотра
+        и печати в PDF средствами браузера, без скриптов, со своей политикой CSP и допустимой рамкой
+        консоли того же адреса), `csv` (UTF-8 с BOM, защита от формул), `xlsx` (один лист, без формул
+        и макросов). `app` — slug приложения: отчёт только по нему (инциденты, оповещения и бюджеты в
+        сводный отчёт по приложению не входят). Владельцу приложения доступен только `summary` с `app`
+        своего приложения; чужое приложение — 404, другой вид — 403. Каждая выгрузка пишет
+        `data.export` до выдачи данных (DM-41); без записи отчёт не выдаётся (503). Одновременно — одна
+        выгрузка на пользователя, сверх предела 429.
+      x-permission: reports.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - name: kind
+          in: path
+          required: true
+          description: Вид отчёта
+          schema: { type: string, enum: [summary, incidents, pilot] }
+        - name: from
+          in: query
+          required: true
+          description: Первый день периода, ГГГГ-ММ-ДД
+          schema: { type: string, pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' }
+        - name: to
+          in: query
+          required: true
+          description: Последний день периода включительно, ГГГГ-ММ-ДД
+          schema: { type: string, pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' }
+        - name: format
+          in: query
+          required: false
+          schema: { type: string, enum: [html, csv, xlsx], default: html }
+        - name: app
+          in: query
+          required: false
+          description: Slug приложения
+          schema: { type: string, pattern: '^[a-z0-9][a-z0-9-]{0,63}$' }
+      responses:
+        '200':
+          description: Отчёт; `X-Export-Rows` — число строк данных
+          headers:
+            X-Export-Rows: { schema: { type: integer } }
+          content:
+            text/html: { schema: { type: string } }
+            text/csv: { schema: { type: string } }
+            application/vnd.openxmlformats-officedocument.spreadsheetml.sheet: { schema: { type: string, format: binary } }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '422': { $ref: '#/components/responses/ProblemUnprocessable' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/report-schedules:
+    get:
+      summary: Расписания рассылки отчётов
+      description: Право `reports.schedules.read`. Все расписания установки (не больше 50).
+      x-permission: reports.schedules.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      responses:
+        '200':
+          description: Расписания
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReportScheduleList' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    post:
+      summary: Создать расписание рассылки отчёта
+      description: |
+        Право `reports.schedules.manage`. Периодичность: `daily`, `weekly` (с `weekday`, 1 —
+        понедельник … 7 — воскресенье), `monthly` (с `day`, 1–28). Время `at` (ЧЧ:ММ) — в часовом
+        поясе установки. Отчёт за предыдущие полные сутки, неделю (понедельник–воскресенье) или
+        календарный месяц; во вложении HTML или XLSX. Получатели и сервер SMTP — почтовый канал
+        уведомлений (`channel_id`, включённый, с получателями). Пропущенный после простоя запуск
+        отправляется один раз. Не больше 50 расписаний — иначе 422; повтор названия — 400. Пишет
+        `report_schedule.create`.
+      x-permission: reports.schedules.manage
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReportScheduleInput' }
+      responses:
+        '201':
+          description: Расписание создано
+          headers:
+            Location: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReportSchedule' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '422': { $ref: '#/components/responses/ProblemUnprocessable' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/report-schedules/{id}:
+    get:
+      summary: Расписание рассылки отчёта
+      description: Право `reports.schedules.read`.
+      x-permission: reports.schedules.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ReportScheduleID'
+      responses:
+        '200':
+          description: Расписание
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReportSchedule' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    put:
+      summary: Изменить расписание рассылки отчёта
+      description: |
+        Право `reports.schedules.manage`. Полная замена настроек; `version` — версия, которую открыли
+        для изменения (устаревшая — 409). Ближайший запуск пересчитывается от текущего момента. Пишет
+        `report_schedule.update` (до и после).
+      x-permission: reports.schedules.manage
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ReportScheduleID'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReportScheduleInput' }
+      responses:
+        '200':
+          description: Расписание изменено
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReportSchedule' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '409': { $ref: '#/components/responses/ProblemConflict' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    delete:
+      summary: Удалить расписание рассылки отчёта
+      description: Право `reports.schedules.manage`. Удаляет расписание вместе с его журналом рассылки. Пишет `report_schedule.delete`.
+      x-permission: reports.schedules.manage
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ReportScheduleID'
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '204':
+          description: Расписание удалено
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/report-schedules/{id}/runs:
+    get:
+      summary: Журнал рассылки расписания
+      description: |
+        Право `reports.schedules.read`. Последние 100 запусков, новые сначала: период отчёта, число
+        попыток (не больше 5, задержки 30 с, 2 мин, 8 мин, 10 мин), статус и код ошибки без текста
+        ответа почтового сервера.
+      x-permission: reports.schedules.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ReportScheduleID'
+      responses:
+        '200':
+          description: Журнал
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReportRunList' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
 components:
   securitySchemes:
     appKey:
@@ -4062,6 +4269,12 @@ components:
       in: path
       required: true
       description: ID правила оповещения (UUIDv7)
+      schema: { type: string, format: uuid }
+    ReportScheduleID:
+      name: id
+      in: path
+      required: true
+      description: ID расписания рассылки отчёта (UUIDv7)
       schema: { type: string, format: uuid }
     NotifyChannelID:
       name: id
@@ -6096,6 +6309,65 @@ components:
         created_by: { type: string }
         updated_at: { type: string, format: date-time }
         updated_by: { type: string }
+    ReportScheduleInput:
+      type: object
+      required: [name, report, frequency, at, format, channel_id]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 200 }
+        report: { type: string, enum: [summary, incidents, pilot] }
+        frequency: { type: string, enum: [daily, weekly, monthly] }
+        weekday: { type: integer, minimum: 1, maximum: 7, description: Для weekly; 1 — понедельник }
+        day: { type: integer, minimum: 1, maximum: 28, description: Для monthly }
+        at: { type: string, pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$', description: Время в часовом поясе установки }
+        format: { type: string, enum: [html, xlsx] }
+        channel_id: { type: string, format: uuid }
+        enabled: { type: boolean, default: true }
+        version: { type: integer, minimum: 1, description: Для изменения }
+    ReportSchedule:
+      type: object
+      required: [id, name, report, frequency, at, format, channel_id, enabled, next_run_at, version, created_at, created_by, updated_at, updated_by]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        report: { type: string, enum: [summary, incidents, pilot] }
+        frequency: { type: string, enum: [daily, weekly, monthly] }
+        weekday: { type: integer }
+        day: { type: integer }
+        at: { type: string }
+        format: { type: string, enum: [html, xlsx] }
+        channel_id: { type: string, format: uuid }
+        enabled: { type: boolean }
+        next_run_at: { type: string, format: date-time }
+        last_run_at: { type: string, format: date-time }
+        version: { type: integer }
+        created_at: { type: string, format: date-time }
+        created_by: { type: string }
+        updated_at: { type: string, format: date-time }
+        updated_by: { type: string }
+    ReportScheduleList:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/ReportSchedule' } }
+    ReportRun:
+      type: object
+      required: [id, due_at, period_first, period_last, status, attempts, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        due_at: { type: string, format: date-time }
+        period_first: { type: string, format: date }
+        period_last: { type: string, format: date }
+        status: { type: string, enum: [pending, sent, failed] }
+        attempts: { type: integer }
+        next_at: { type: string, format: date-time }
+        error: { type: string, description: Код ошибки без текста ответа сервера }
+        created_at: { type: string, format: date-time }
+        sent_at: { type: string, format: date-time }
+    ReportRunList:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/ReportRun' } }
     NotifyChannelList:
       type: object
       required: [items]

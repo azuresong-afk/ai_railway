@@ -111,7 +111,7 @@ func newAppsEnv(t testing.TB) *appsEnv {
 	e.caPEM = string(ca.CertPEM())
 	logger := slog.New(slog.NewTextHandler(e.log, nil))
 	h, _, err := New(Options{Hasher: testHasher(t), Logger: logger, Auth: testAuth(t, e.mem, auth.WithClock(e.clock.now)), Apps: svc,
-		Policies: pols, Events: e.ev, Audit: e.rec, Dashboards: e.dash,
+		Policies: pols, Events: e.ev, Audit: e.rec, Dashboards: e.dash, Reports: newTestReports(t, e.dash),
 		RateLimit: RateConfig{Rules: []RateRule{{Prefix: "/", Max: 100000, Window: time.Minute}}}})
 	if err != nil {
 		t.Fatal(err)

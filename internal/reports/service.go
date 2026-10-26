@@ -1,0 +1,434 @@
+package reports
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net/netip"
+	"time"
+
+	"github.com/azuresong-afk/ai_railway/internal/audit"
+	"github.com/azuresong-afk/ai_railway/internal/ids"
+	"github.com/azuresong-afk/ai_railway/internal/notify"
+)
+
+// Ошибки сервиса.
+var (
+	ErrNotFound        = errors.New("отчёты: расписание не найдено")
+	ErrVersionConflict = errors.New("отчёты: расписание изменено другим пользователем")
+	ErrTooMany         = errors.New("отчёты: достигнут предел числа расписаний")
+	ErrChannel         = errors.New("отчёты: канал не найден, не почтовый или отключён")
+	ErrNoRecipients    = errors.New("отчёты: у почтового канала нет получателей")
+)
+
+// Статусы запуска рассылки.
+const (
+	RunPending = "pending"
+	RunSent    = "sent"
+	RunFailed  = "failed"
+)
+
+// Коды ошибок запуска (без текстов получателей и адресов).
+const (
+	ErrCodeBuild    = "build_failed"
+	ErrCodeRender   = "render_failed"
+	ErrCodeDisabled = "schedule_disabled"
+	ErrCodeChannel  = "channel_unavailable"
+	ErrCodePeriod   = "bad_period"
+)
+
+// Параметры планировщика.
+const (
+	// MaxAttempts — попыток отправки одного запуска (задержки — notify.Backoff).
+	MaxAttempts = 5
+	// TickInterval — период опроса расписаний и очереди.
+	TickInterval = 30 * time.Second
+	// runLease — срок, на который запуск откладывается при выборке: больше
+	// предела построения и отправки; повтор — если сервер остановился.
+	runLease = 10 * time.Minute
+	// enqueueBatch — расписаний за один опрос.
+	enqueueBatch = 20
+	// MaxRunsPage — запусков в журнале расписания.
+	MaxRunsPage = 100
+	// buildTimeout — предел построения отчёта.
+	buildTimeout = 2 * time.Minute
+)
+
+// Run — запуск рассылки: строка журнала доставки и очередь повторов.
+type Run struct {
+	ID         string
+	OrgID      string
+	ScheduleID string
+	// DueAt — запуск расписания, который породил рассылку.
+	DueAt time.Time
+	// PeriodFirst и PeriodLast — дни отчёта, YYYY-MM-DD.
+	PeriodFirst, PeriodLast string
+	Status                  string
+	Attempts                int
+	NextAt                  time.Time
+	Error                   string
+	CreatedAt               time.Time
+	UpdatedAt               time.Time
+	SentAt                  time.Time
+}
+
+// Store — хранилище расписаний и журнала рассылки.
+type Store interface {
+	Schedules(ctx context.Context) ([]Schedule, error)
+	Schedule(ctx context.Context, id string) (Schedule, error)
+	// CreateSchedule сохраняет расписание и запись аудита одной транзакцией.
+	CreateSchedule(ctx context.Context, s Schedule, rec audit.Entry) error
+	// UpdateSchedule меняет расписание под блокировкой строки: fn получает
+	// прежнее и возвращает новое и запись аудита той же транзакции.
+	UpdateSchedule(ctx context.Context, id string, fn func(old Schedule) (Schedule, audit.Entry, error)) (Schedule, error)
+	// DeleteSchedule удаляет расписание и его журнал; rec строит запись
+	// аудита по удаляемому расписанию.
+	DeleteSchedule(ctx context.Context, id string, rec func(old Schedule) audit.Entry) error
+	// Runs — журнал рассылки расписания, новые сначала.
+	Runs(ctx context.Context, scheduleID string, limit int) ([]Run, error)
+	// EnqueueDue ставит в очередь рассылки включённых расписаний со сроком
+	// next_run_at <= now: для каждого вызывает plan; он возвращает запуск
+	// и новое next_run_at. Возвращает число поставленных.
+	EnqueueDue(ctx context.Context, now time.Time, limit int, plan func(Schedule) (Run, time.Time, error)) (int, error)
+	// ClaimRun берёт запуск, срок которого наступил, и откладывает его на lease.
+	ClaimRun(ctx context.Context, now time.Time, lease time.Duration) (Run, Schedule, bool, error)
+	// FinishRun сохраняет итог попытки; rec — запись аудита той же транзакции.
+	FinishRun(ctx context.Context, r Run, rec *audit.Entry) error
+}
+
+// Mailer — отправка письма с отчётом (*notify.Service).
+type Mailer interface {
+	SendReport(ctx context.Context, channelID string, m notify.ReportMail) error
+}
+
+// ChannelReader — чтение каналов уведомлений (*notify.Service).
+type ChannelReader interface {
+	Channel(ctx context.Context, id string) (notify.Channel, error)
+}
+
+// Options — зависимости сервиса.
+type Options struct {
+	Store    Store
+	Builder  *Builder
+	Mailer   Mailer
+	Channels ChannelReader
+	// Location — часовой пояс установки (install_settings).
+	Location func(ctx context.Context) (*time.Location, error)
+	IDs      *ids.Generator
+	OrgID    string
+	Logger   *slog.Logger
+	Now      func() time.Time
+}
+
+// Service — построение отчётов и расписания рассылки.
+type Service struct {
+	o Options
+}
+
+// New создаёт сервис.
+func New(o Options) (*Service, error) {
+	if o.Store == nil || o.Builder == nil || o.Location == nil || o.IDs == nil {
+		return nil, errors.New("отчёты: нет хранилища, сборщика, часового пояса или источника идентификаторов")
+	}
+	if o.OrgID == "" {
+		o.OrgID = audit.DefaultOrgID
+	}
+	if o.Now == nil {
+		o.Now = time.Now
+	}
+	if o.Logger == nil {
+		o.Logger = slog.Default()
+	}
+	return &Service{o: o}, nil
+}
+
+func (s *Service) now() time.Time { return s.o.Now().UTC().Truncate(time.Microsecond) }
+
+// Location — часовой пояс установки.
+func (s *Service) Location(ctx context.Context) (*time.Location, error) { return s.o.Location(ctx) }
+
+// Build строит отчёт.
+func (s *Service) Build(ctx context.Context, p Params, sc Scope) (Doc, error) {
+	return s.o.Builder.Build(ctx, p, sc)
+}
+
+// Render пишет документ в формате format.
+func Render(w *bytes.Buffer, d Doc, format string) error {
+	switch format {
+	case FormatCSV:
+		return WriteCSV(w, d)
+	case FormatXLSX:
+		return WriteXLSX(w, d)
+	case FormatHTML:
+		return WriteHTML(w, d)
+	}
+	return errors.New("отчёты: формат")
+}
+
+// By — субъект изменения.
+type By struct {
+	Actor audit.Actor
+	IP    netip.Addr
+}
+
+func (b By) ref() string {
+	r := string(b.Actor.Type) + ":" + b.Actor.ID
+	if len(r) > 128 {
+		r = r[:128]
+	}
+	return r
+}
+
+func (s *Service) entry(b By, action, id string, details any) audit.Entry {
+	return audit.Entry{OrgID: s.o.OrgID, Actor: b.Actor, SourceIP: b.IP, Action: action,
+		Object: audit.Object{Type: "report_schedule", ID: id}, Result: audit.ResultSuccess, Details: details}
+}
+
+func view(sc Schedule) map[string]any {
+	return map[string]any{"name": sc.Name, "report": sc.Report, "frequency": sc.Frequency, "weekday": sc.Weekday, "day": sc.Day,
+		"at": sc.At, "format": sc.Format, "channel_id": sc.ChannelID, "enabled": sc.Enabled}
+}
+
+// Schedules — все расписания.
+func (s *Service) Schedules(ctx context.Context) ([]Schedule, error) { return s.o.Store.Schedules(ctx) }
+
+// Schedule — расписание по ID.
+func (s *Service) Schedule(ctx context.Context, id string) (Schedule, error) {
+	return s.o.Store.Schedule(ctx, id)
+}
+
+// Runs — журнал рассылки расписания.
+func (s *Service) Runs(ctx context.Context, id string, limit int) ([]Run, error) {
+	if _, err := s.o.Store.Schedule(ctx, id); err != nil {
+		return nil, err
+	}
+	return s.o.Store.Runs(ctx, id, min(max(limit, 1), MaxRunsPage))
+}
+
+// checkChannel проверяет, что канал почтовый, включён и имеет получателей.
+func (s *Service) checkChannel(ctx context.Context, id string) error {
+	if s.o.Channels == nil {
+		return ErrChannel
+	}
+	c, err := s.o.Channels.Channel(ctx, id)
+	if err != nil {
+		if errors.Is(err, notify.ErrNotFound) {
+			return ErrChannel
+		}
+		return err
+	}
+	if c.Type != notify.TypeEmail || !c.Enabled {
+		return ErrChannel
+	}
+	if len(c.Settings.To) == 0 {
+		return ErrNoRecipients
+	}
+	return nil
+}
+
+// CreateSchedule создаёт расписание (право reports.schedules.manage).
+func (s *Service) CreateSchedule(ctx context.Context, by By, in ScheduleInput) (Schedule, error) {
+	sc, err := in.Validate()
+	if err != nil {
+		return Schedule{}, err
+	}
+	if err := s.checkChannel(ctx, sc.ChannelID); err != nil {
+		return Schedule{}, err
+	}
+	loc, err := s.o.Location(ctx)
+	if err != nil {
+		return Schedule{}, err
+	}
+	id, err := s.o.IDs.New()
+	if err != nil {
+		return Schedule{}, err
+	}
+	now := s.now()
+	sc.ID, sc.OrgID, sc.Version = id.String(), s.o.OrgID, 1
+	sc.CreatedAt, sc.CreatedBy, sc.UpdatedAt, sc.UpdatedBy = now, by.ref(), now, by.ref()
+	if sc.NextRunAt, err = sc.Next(now, loc); err != nil {
+		return Schedule{}, err
+	}
+	if err := s.o.Store.CreateSchedule(ctx, sc, s.entry(by, "report_schedule.create", sc.ID, view(sc))); err != nil {
+		return Schedule{}, err
+	}
+	return sc, nil
+}
+
+// UpdateSchedule заменяет настройки расписания; ближайший запуск пересчитывается.
+func (s *Service) UpdateSchedule(ctx context.Context, by By, id string, in ScheduleInput) (Schedule, error) {
+	sc, err := in.Validate()
+	if err != nil {
+		return Schedule{}, err
+	}
+	if err := s.checkChannel(ctx, sc.ChannelID); err != nil {
+		return Schedule{}, err
+	}
+	loc, err := s.o.Location(ctx)
+	if err != nil {
+		return Schedule{}, err
+	}
+	return s.o.Store.UpdateSchedule(ctx, id, func(old Schedule) (Schedule, audit.Entry, error) {
+		if in.Version != old.Version {
+			return Schedule{}, audit.Entry{}, ErrVersionConflict
+		}
+		n := old
+		n.Name, n.Report, n.Frequency, n.Weekday, n.Day, n.At = sc.Name, sc.Report, sc.Frequency, sc.Weekday, sc.Day, sc.At
+		n.Format, n.ChannelID, n.Enabled = sc.Format, sc.ChannelID, sc.Enabled
+		n.Version, n.UpdatedAt, n.UpdatedBy = old.Version+1, s.now(), by.ref()
+		next, err := n.Next(s.now(), loc)
+		if err != nil {
+			return Schedule{}, audit.Entry{}, err
+		}
+		n.NextRunAt = next
+		return n, s.entry(by, "report_schedule.update", id, map[string]any{"before": view(old), "after": view(n)}), nil
+	})
+}
+
+// DeleteSchedule удаляет расписание вместе с журналом рассылки.
+func (s *Service) DeleteSchedule(ctx context.Context, by By, id string) error {
+	return s.o.Store.DeleteSchedule(ctx, id, func(old Schedule) audit.Entry {
+		return s.entry(by, "report_schedule.delete", id, view(old))
+	})
+}
+
+// systemActor — субъект записей рассылки: свой на каждое расписание, чтобы
+// правило DM-41 считало выгрузки по расписаниям отдельно.
+func systemActor(scheduleID string) audit.Actor {
+	return audit.Actor{Type: audit.ActorSystem, ID: "report-schedule:" + scheduleID, Name: "report-schedule"}
+}
+
+// Tick ставит в очередь рассылки расписаний, срок которых наступил, и
+// выполняет запуски, срок которых наступил. Пропущенные после простоя
+// запуски сводятся к одному догоняющему.
+func (s *Service) Tick(ctx context.Context) error {
+	loc, err := s.o.Location(ctx)
+	if err != nil {
+		return err
+	}
+	now := s.now()
+	if _, err := s.o.Store.EnqueueDue(ctx, now, enqueueBatch, func(sc Schedule) (Run, time.Time, error) {
+		due, err := sc.Latest(sc.NextRunAt, now, loc)
+		if err != nil {
+			return Run{}, time.Time{}, err
+		}
+		next, err := sc.Next(now, loc)
+		if err != nil {
+			return Run{}, time.Time{}, err
+		}
+		id, err := s.o.IDs.New()
+		if err != nil {
+			return Run{}, time.Time{}, err
+		}
+		first, last := sc.PeriodDays(due, loc)
+		return Run{ID: id.String(), OrgID: s.o.OrgID, ScheduleID: sc.ID, DueAt: due, PeriodFirst: first, PeriodLast: last,
+			Status: RunPending, NextAt: now, CreatedAt: now, UpdatedAt: now}, next, nil
+	}); err != nil {
+		return err
+	}
+	for n := 0; n < enqueueBatch; n++ {
+		r, sc, ok, err := s.o.Store.ClaimRun(ctx, s.now(), runLease)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return nil
+		}
+		if err := s.deliver(ctx, r, sc, loc); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Run выполняет Tick каждые interval до отмены ctx.
+func (s *Service) Run(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		interval = TickInterval
+	}
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		if err := s.Tick(ctx); err != nil && ctx.Err() == nil {
+			s.o.Logger.Error("рассылка отчётов: сбой опроса", "class", "reports", "error", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
+}
+
+func (s *Service) deliver(ctx context.Context, r Run, sc Schedule, loc *time.Location) error {
+	if !sc.Enabled {
+		r.Status, r.Error, r.UpdatedAt = RunFailed, ErrCodeDisabled, s.now()
+		return s.o.Store.FinishRun(ctx, r, nil)
+	}
+	code, rows := s.send(ctx, r, sc, loc)
+	if ctx.Err() != nil {
+		// Остановка сервера: попытка не засчитывается, повтор после lease.
+		return ctx.Err()
+	}
+	now := s.now()
+	r.Attempts++
+	r.UpdatedAt = now
+	actor := systemActor(sc.ID)
+	if code == "" {
+		r.Status, r.Error, r.SentAt = RunSent, "", now
+		rec := audit.Entry{OrgID: s.o.OrgID, Actor: actor, Action: "data.export", Object: audit.Object{Type: "report_schedule", ID: sc.ID},
+			Result: audit.ResultSuccess, Details: map[string]any{"report": sc.Report, "format": sc.Format, "from": r.PeriodFirst,
+				"to": r.PeriodLast, "rows": rows, "channel_id": sc.ChannelID, "run_id": r.ID, "scheduled": true}}
+		return s.o.Store.FinishRun(ctx, r, &rec)
+	}
+	r.Error = code
+	if r.Attempts < MaxAttempts && code != ErrCodePeriod {
+		r.NextAt = now.Add(notify.Backoff(r.Attempts))
+		return s.o.Store.FinishRun(ctx, r, nil)
+	}
+	r.Status = RunFailed
+	rec := audit.Entry{OrgID: s.o.OrgID, Actor: actor, Action: "report.delivery_failed", Object: audit.Object{Type: "report_schedule", ID: sc.ID},
+		Result: audit.ResultFailure, Details: map[string]any{"schedule_name": sc.Name, "report": sc.Report, "channel_id": sc.ChannelID,
+			"run_id": r.ID, "attempts": r.Attempts, "error": code}}
+	return s.o.Store.FinishRun(ctx, r, &rec)
+}
+
+// send строит отчёт и отправляет письмо; возвращает код ошибки (пусто — отправлено)
+// и число строк отчёта.
+func (s *Service) send(ctx context.Context, r Run, sc Schedule, loc *time.Location) (string, int) {
+	per, err := NewPeriod(r.PeriodFirst, r.PeriodLast, loc, s.now())
+	if err != nil {
+		return ErrCodePeriod, 0
+	}
+	bctx, cancel := context.WithTimeout(ctx, buildTimeout)
+	defer cancel()
+	doc, err := s.o.Builder.Build(bctx, Params{Kind: sc.Report, Format: sc.Format, Period: per}, Scope{Budgets: true})
+	if err != nil {
+		s.o.Logger.Error("рассылка отчётов: отчёт не построен", "class", "reports", "schedule", sc.ID, "error", err)
+		return ErrCodeBuild, 0
+	}
+	var buf bytes.Buffer
+	if err := Render(&buf, doc, sc.Format); err != nil || buf.Len() > notify.MaxReportAttachment {
+		return ErrCodeRender, 0
+	}
+	if s.o.Mailer == nil {
+		return ErrCodeChannel, 0
+	}
+	mail := notify.ReportMail{ID: r.ID, Subject: "[AISec] " + Title(sc.Report) + ": " + per.Label(),
+		Body: fmt.Sprintf("%s за период %s.\n\nОтчёт во вложении. Расписание: %s.\nСформирован платформой AISec; содержимого запросов и ответов в отчёте нет.",
+			Title(sc.Report), per.Label(), sc.Name),
+		Filename: fmt.Sprintf("aisec-%s-%s_%s.%s", sc.Report, per.First, per.Last, sc.Format), ContentType: ContentType(sc.Format), Data: buf.Bytes()}
+	if err := s.o.Mailer.SendReport(ctx, sc.ChannelID, mail); err != nil {
+		if errors.Is(err, notify.ErrNotFound) {
+			return ErrCodeChannel, 0
+		}
+		code := notify.ErrorCode(err)
+		if len(code) > 40 || code == "" {
+			code = notify.ErrCodeInternal
+		}
+		return code, 0
+	}
+	return "", doc.Rows()
+}

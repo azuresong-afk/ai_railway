@@ -105,6 +105,7 @@ function GuardedRoute({ me, perm, title, children }: { me: Me; perm: string; tit
 const DashboardsScreen = lazy(() => import("../dashboards/DashboardsScreen").then((m) => ({ default: m.DashboardsScreen })));
 const UsageScreen = lazy(() => import("../consumption/UsageScreen").then((m) => ({ default: m.UsageScreen })));
 
+const ReportsScreen = lazy(() => import("../reports/ReportsScreen").then((m) => ({ default: m.ReportsScreen })));
 const AdminScreen = lazy(() => import("../admin/AdminScreen").then((m) => ({ default: m.AdminScreen })));
 const SystemScreen = lazy(() => import("../system/SystemScreen").then((m) => ({ default: m.SystemScreen })));
 
@@ -247,6 +248,7 @@ function Frame({ me, onLogout }: { me: Me; onLogout: () => void }) {
               <Route path="/incidents" element={<GuardedRoute me={me} perm="incidents.read" title="инциденты"><IncidentsScreen me={me} /></GuardedRoute>} />
               <Route path="/providers" element={<GuardedRoute me={me} perm="providers.read" title="провайдеры"><ProvidersScreen me={me} /></GuardedRoute>} />
               <Route path="/policies" element={<GuardedRoute me={me} perm="policies.read" title="политики"><PoliciesScreen me={me} /></GuardedRoute>} />
+              <Route path="/reports" element={<GuardedRoute me={me} perm="reports.read" title="отчёты"><ReportsScreen me={me} /></GuardedRoute>} />
               <Route path="/admin" element={<AdminRoute me={me} />} />
               <Route path="/system" element={<SystemRoute me={me} />} />
               <Route path="*" element={<Stub />} />

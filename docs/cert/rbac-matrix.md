@@ -117,6 +117,13 @@
 | DELETE | `/api/v1/providers/{id}` | `providers.manage` | да | да | — | — | — | да |
 | PUT | `/api/v1/providers/{id}/credentials` | `providers.manage` | да | да | — | — | — | да |
 | PUT | `/api/v1/providers/{id}/external` | `providers.external` | да | — | — | — | — | — |
+| GET | `/api/v1/report-schedules` | `reports.schedules.read` | да | да | — | да | — | да |
+| POST | `/api/v1/report-schedules` | `reports.schedules.manage` | да | да | — | — | — | да |
+| GET | `/api/v1/report-schedules/{id}` | `reports.schedules.read` | да | да | — | да | — | да |
+| PUT | `/api/v1/report-schedules/{id}` | `reports.schedules.manage` | да | да | — | — | — | да |
+| DELETE | `/api/v1/report-schedules/{id}` | `reports.schedules.manage` | да | да | — | — | — | да |
+| GET | `/api/v1/report-schedules/{id}/runs` | `reports.schedules.read` | да | да | — | да | — | да |
+| GET | `/api/v1/reports/{kind}` | `reports.read` | да | да | да | да | свои | да |
 | GET | `/api/v1/roles` | `roles.read` | да | — | — | да | — | да |
 | POST | `/api/v1/roles` | `roles.manage` | да | — | — | — | — | — |
 | GET | `/api/v1/roles/{id}` | `roles.read` | да | — | — | да | — | да |

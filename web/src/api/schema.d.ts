@@ -5582,7 +5582,11 @@ export interface paths {
          * @description Право `alerts.manage` (ТЗ 5.6). Переходы: `new → in_progress`, `new → closed`,
          *     `in_progress → closed`; другой переход — 409. Принявший в работу становится
          *     исполнителем (у токена — его владелец). Закрытое не открывается: повтор после окна
-         *     подавления — новое оповещение. Пишет историю и `alert.status_changed`.
+         *     подавления — новое оповещение (у системных правил и правил безопасности окна нет).
+         *     Системное оповещение и оповещение безопасности токен API не закрывает — 403;
+         *     оповещение безопасности о собственных действиях (ключ `actor` или `account` — сам
+         *     субъект или его токен) закрывает другой пользователь — 409 с кодом `self_review`
+         *     (3В15 ревью 3.r2). Пишет историю и `alert.status_changed`.
          */
         post: {
             parameters: {
@@ -5926,7 +5930,7 @@ export interface paths {
          *     задачей раз в час вместе со ссылками на события, историей и доставками (`alert.retention` в
          *     аудите); открытые и принятые в работу не удаляются никогда. Срок — от 90 до 1825 суток.
          *     Сокращение необратимо и требует текущего пароля (`password`) или кода TOTP (`code`): без них
-         *     403, неверное значение — 403 `reauthentication_failed`; пишется с `weakening: true` и
+         *     400 с полем `password`, неверное значение — 403 `reauthentication_failed`; пишется с `weakening: true` и
          *     порождает оповещение «Ослабление защиты» (DM-40). До первичной настройки — 409. Пишет
          *     `alert.settings_changed` (до, после).
          */
@@ -5953,6 +5957,96 @@ export interface paths {
                     };
                     content: {
                         "application/json": components["schemas"]["AlertSettings"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/incident-settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Срок хранения инцидентов
+         * @description Право `incidents.read`. Срок хранения закрытых инцидентов, суток (по умолчанию 1095 — 3 года).
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Настройки */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["IncidentSettings"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        /**
+         * Изменить срок хранения инцидентов
+         * @description Право `incident_categories.manage`. Закрытые инциденты старше срока (от закрытия) удаляются
+         *     фоновой задачей раз в час вместе с хронологией, комментариями, ссылками на события, этапами и
+         *     связанными оповещениями (`incident.retention` в аудите); незакрытые не удаляются никогда,
+         *     инцидент, открытый заново, — только после следующего. Срок — от 365 до 1825 суток.
+         *     Сокращение необратимо и требует текущего пароля (`password`) или кода TOTP (`code`): без них
+         *     400 с полем `password`, неверное значение — 403 `reauthentication_failed`; пишется с
+         *     `weakening: true` и порождает оповещение «Ослабление защиты» (DM-40). До первичной настройки —
+         *     409. Пишет `incident.settings_changed` (до, после).
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["IncidentSettingsUpdate"];
+                };
+            };
+            responses: {
+                /** @description Срок изменён */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["IncidentSettings"];
                     };
                 };
                 400: components["responses"]["ProblemInvalid"];
@@ -6115,9 +6209,10 @@ export interface paths {
          *     остаётся прежним; пустая строка удаляет необязательный секрет. Каналы не удаляются —
          *     отключаются. Ослабление (DM-40) — отключение, повышение `min_severity`, смена узла, порта или
          *     адреса webhook, смена корневых сертификатов, удаление адресата письма, снятие подписки на
-         *     журнал аудита (`audit_stream`) — пишется с
+         *     журнал аудита (`audit_stream`), смена ключа подписи webhook или формата syslog, удаление
+         *     пароля SMTP (вместе с логином) — пишется с
          *     `weakening: true` и требует текущего пароля (`password`) или кода TOTP (`code`): без них
-         *     403, неверное значение — 403 `reauthentication_failed`. Пишет `notify_channel.update` (до,
+         *     400 с полем `password`, неверное значение — 403 `reauthentication_failed`. Пишет `notify_channel.update` (до,
          *     после, какие секреты изменены — без значений).
          */
         put: {
@@ -6180,8 +6275,11 @@ export interface paths {
          * Тестовая отправка в канал
          * @description Право `notify_channels.manage`. Одна попытка отправки тестового уведомления (в том числе в
          *     отключённый канал — до включения); итог — строка журнала доставки с `kind: test` и код
-         *     ошибки без текста ответа получателя. Не чаще 5 раз в минуту на канал — иначе 429. Пишет
-         *     `notify_channel.test` (итог, код ошибки).
+         *     ошибки без текста ответа получателя. Код теста обобщён: `dial`, `timeout`, `tls`,
+         *     `starttls_unsupported`, `write` → `unreachable`, чтобы тест не служил сканером портов в
+         *     сетях сервера; адрес loopback, link-local, метаданных облака — `config`, если сеть не
+         *     разрешена параметром сервера `-notify-allowed-networks` (3Н31 ревью 3.r2). Не чаще 5 раз
+         *     в минуту на канал — иначе 429. Пишет `notify_channel.test` (итог, код ошибки).
          */
         post: {
             parameters: {
@@ -6978,6 +7076,347 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/reports/{kind}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Отчёт за период
+         * @description Право `reports.read` (владелец приложения — на своих приложениях). Виды: `summary` (сводный),
+         *     `incidents` (по инцидентам), `pilot` («Итоги пилота», сценарий S10). Данные — только агрегаты
+         *     дашбордов, инциденты, оповещения, бюджеты и отметки аналитиков: содержимого запросов и ответов
+         *     и значений находок в отчёте нет. Период — `from` и `to`, дни `ГГГГ-ММ-ДД` часового пояса
+         *     установки, оба включительно; начало не в будущем, конец позже сегодняшнего урезается до
+         *     сегодняшнего дня, не больше 366 суток. `format`: `html` (по умолчанию; страница для просмотра
+         *     и печати в PDF средствами браузера, без скриптов, со своей политикой CSP и допустимой рамкой
+         *     консоли того же адреса), `csv` (UTF-8 с BOM, защита от формул), `xlsx` (один лист, без формул
+         *     и макросов). `app` — slug приложения: отчёт только по нему (инциденты, оповещения и бюджеты в
+         *     сводный отчёт по приложению не входят). Владельцу приложения доступен только `summary` с `app`
+         *     своего приложения; чужое приложение — 404, другой вид — 403. Каждая выгрузка пишет
+         *     `data.export` до выдачи данных (DM-41); без записи отчёт не выдаётся (503). Одновременно — одна
+         *     выгрузка на пользователя, сверх предела 429.
+         */
+        get: {
+            parameters: {
+                query: {
+                    /** @description Первый день периода, ГГГГ-ММ-ДД */
+                    from: string;
+                    /** @description Последний день периода включительно, ГГГГ-ММ-ДД */
+                    to: string;
+                    format?: "html" | "csv" | "xlsx";
+                    /** @description Slug приложения */
+                    app?: string;
+                };
+                header?: never;
+                path: {
+                    /** @description Вид отчёта */
+                    kind: "summary" | "incidents" | "pilot";
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Отчёт; `X-Export-Rows` — число строк данных */
+                200: {
+                    headers: {
+                        "X-Export-Rows"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/html": string;
+                        "text/csv": string;
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": string;
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/report-schedules": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Расписания рассылки отчётов
+         * @description Право `reports.schedules.read`. Все расписания установки (не больше 50).
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Расписания */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ReportScheduleList"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        /**
+         * Создать расписание рассылки отчёта
+         * @description Право `reports.schedules.manage`. Периодичность: `daily`, `weekly` (с `weekday`, 1 —
+         *     понедельник … 7 — воскресенье), `monthly` (с `day`, 1–28). Время `at` (ЧЧ:ММ) — в часовом
+         *     поясе установки. Отчёт за предыдущие полные сутки, неделю (понедельник–воскресенье) или
+         *     календарный месяц; во вложении HTML или XLSX. Получатели и сервер SMTP — почтовый канал
+         *     уведомлений (`channel_id`, включённый, с получателями). Пропущенный после простоя запуск
+         *     отправляется один раз. Не больше 50 расписаний — иначе 422; повтор названия — 400. Пишет
+         *     `report_schedule.create`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                    /** @description Ключ повторяемости создающего запроса, 1–64 символа `[A-Za-z0-9._-]` */
+                    "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["ReportScheduleInput"];
+                };
+            };
+            responses: {
+                /** @description Расписание создано */
+                201: {
+                    headers: {
+                        Location?: string;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ReportSchedule"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/report-schedules/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Расписание рассылки отчёта
+         * @description Право `reports.schedules.read`.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description ID расписания рассылки отчёта (UUIDv7) */
+                    id: components["parameters"]["ReportScheduleID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Расписание */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ReportSchedule"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        /**
+         * Изменить расписание рассылки отчёта
+         * @description Право `reports.schedules.manage`. Полная замена настроек; `version` — версия, которую открыли
+         *     для изменения (устаревшая — 409). Ближайший запуск пересчитывается от текущего момента. Пишет
+         *     `report_schedule.update` (до и после).
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID расписания рассылки отчёта (UUIDv7) */
+                    id: components["parameters"]["ReportScheduleID"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["ReportScheduleInput"];
+                };
+            };
+            responses: {
+                /** @description Расписание изменено */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ReportSchedule"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        post?: never;
+        /**
+         * Удалить расписание рассылки отчёта
+         * @description Право `reports.schedules.manage`. Удаляет расписание вместе с его журналом рассылки. Пишет `report_schedule.delete`.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID расписания рассылки отчёта (UUIDv7) */
+                    id: components["parameters"]["ReportScheduleID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Расписание удалено */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/report-schedules/{id}/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Журнал рассылки расписания
+         * @description Право `reports.schedules.read`. Последние 100 запусков, новые сначала: период отчёта, число
+         *     попыток (не больше 5, задержки 30 с, 2 мин, 8 мин, 10 мин), статус и код ошибки без текста
+         *     ответа почтового сервера.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description ID расписания рассылки отчёта (UUIDv7) */
+                    id: components["parameters"]["ReportScheduleID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Журнал */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ReportRunList"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -7064,10 +7503,10 @@ export interface components {
             };
             notifications: {
                 /**
-                 * @description ca_expiry (ИАФ.10) — действующему корню внутреннего УЦ осталось 60 суток и меньше, нужна ротация `aisec-cli keys rotate-ca`; system.alert пишется за 60 суток (ca_expiry) и за 7 суток (ca_expiry:critical), 3В5 ревью 3.r1. customer_cert_expiry (ЗИ.4) — сертификату заказчика для адреса шлюза осталось 30 суток и меньше; system.alert пишется за 30 суток (customer_cert_expiry) и за 7 суток (customer_cert_expiry:critical), задача 3.27
+                 * @description alert_job_stale (РСБ.7, DM-44) — фоновая задача правил «частота», «аномалия» и «бюджет» не отмечала проход дольше 5 минут при работающем сервере, 3В17 ревью 3.r2. ca_expiry (ИАФ.10) — действующему корню внутреннего УЦ осталось 60 суток и меньше, нужна ротация `aisec-cli keys rotate-ca`; system.alert пишется за 60 суток (ca_expiry) и за 7 суток (ca_expiry:critical), 3В5 ревью 3.r1. customer_cert_expiry (ЗИ.4) — сертификату заказчика для адреса шлюза осталось 30 суток и меньше; system.alert пишется за 30 суток (customer_cert_expiry) и за 7 суток (customer_cert_expiry:critical), задача 3.27
                  * @enum {string}
                  */
-                condition: "account_lockout" | "access_denied" | "audit_chain" | "audit_storage" | "integrity" | "time_sync" | "config_bundle" | "config_bundle_lag" | "test_build" | "gateway_offline" | "events_dropped" | "reports_stale" | "cert_expiry" | "ca_expiry" | "customer_cert_expiry";
+                condition: "account_lockout" | "access_denied" | "audit_chain" | "audit_storage" | "integrity" | "time_sync" | "config_bundle" | "config_bundle_lag" | "test_build" | "gateway_offline" | "events_dropped" | "reports_stale" | "cert_expiry" | "ca_expiry" | "customer_cert_expiry" | "alert_job_stale";
                 /** @enum {string} */
                 requirement: "ИАФ.4" | "ИАФ.10" | "УПД.6" | "РСБ.4" | "РСБ.5" | "РСБ.7" | "ОЦЛ.1" | "ОЦЛ.3" | "ОЦЛ.5" | "ВРМ.1" | "ЗИ.4";
                 /** @description Компоненты с активным условием (integrity — server или gateway:<ID>, config_bundle_lag, gateway_offline, events_dropped, reports_stale, cert_expiry — gateway:<ID>); каждое ведётся отдельно и пишется в system.alert (В18 ревью 2.r3b), а возникшее условие порождает оповещение системного правила (задача 3.11 этапа 3, DM-42–DM-44). test_build (ОЦЛ.1) — компоненты, собранные с тестовым ключом манифеста (Н34 ревью 2.r4); integrity шлюза поднимает и откат выпуска, и чужой ключ проверки пакетов (В19, В20 ревью 2.r4). DM-44: gateway_offline — шлюз не на связи дольше трёх периодов heartbeat, events_dropped — счётчик отброшенных событий вырос за 15 минут, cert_expiry — сертификат истекает меньше чем через 14 суток, reports_stale — итог целостности старше двух часов или не приходит (Н29) */
@@ -8118,7 +8557,7 @@ export interface components {
             status: number;
             detail: string;
             /** @enum {string} */
-            code: "invalid_request" | "unauthorized" | "forbidden" | "not_found" | "method_not_allowed" | "conflict" | "payload_too_large" | "unsupported_media_type" | "unprocessable" | "rate_limited" | "internal_error" | "service_unavailable" | "reauthentication_failed" | "bundle_key_mismatch" | "reissue_not_needed";
+            code: "invalid_request" | "unauthorized" | "forbidden" | "not_found" | "method_not_allowed" | "conflict" | "payload_too_large" | "unsupported_media_type" | "unprocessable" | "rate_limited" | "internal_error" | "service_unavailable" | "reauthentication_failed" | "bundle_key_mismatch" | "reissue_not_needed" | "self_review";
             errors?: {
                 field: string;
                 detail: string;
@@ -8806,6 +9245,20 @@ export interface components {
             /** @description Код из приложения-аутентификатора вместо пароля */
             code?: string;
         };
+        IncidentSettings: {
+            /** @description Срок хранения закрытых инцидентов, суток */
+            retention_days: number;
+        };
+        IncidentSettingsUpdate: {
+            retention_days: number;
+            /**
+             * Format: password
+             * @description Текущий пароль, если срок сокращается
+             */
+            password?: string;
+            /** @description Код из приложения-аутентификатора вместо пароля */
+            code?: string;
+        };
         /**
          * @description Настройки без секретов. Почта — host, port (587), username, from, to (1–20 адресов); webhook —
          *     format (generic, mattermost); syslog — host, port (6514), format (json, cef), facility (0–23,
@@ -8904,6 +9357,82 @@ export interface components {
             updated_at: string;
             updated_by: string;
         };
+        ReportScheduleInput: {
+            name: string;
+            /** @enum {string} */
+            report: "summary" | "incidents" | "pilot";
+            /** @enum {string} */
+            frequency: "daily" | "weekly" | "monthly";
+            /** @description Для weekly; 1 — понедельник */
+            weekday?: number;
+            /** @description Для monthly */
+            day?: number;
+            /** @description Время в часовом поясе установки */
+            at: string;
+            /** @enum {string} */
+            format: "html" | "xlsx";
+            /** Format: uuid */
+            channel_id: string;
+            /** @default true */
+            enabled: boolean;
+            /** @description Для изменения */
+            version?: number;
+        };
+        ReportSchedule: {
+            /** Format: uuid */
+            id: string;
+            name: string;
+            /** @enum {string} */
+            report: "summary" | "incidents" | "pilot";
+            /** @enum {string} */
+            frequency: "daily" | "weekly" | "monthly";
+            weekday?: number;
+            day?: number;
+            at: string;
+            /** @enum {string} */
+            format: "html" | "xlsx";
+            /** Format: uuid */
+            channel_id: string;
+            enabled: boolean;
+            /** Format: date-time */
+            next_run_at: string;
+            /** Format: date-time */
+            last_run_at?: string;
+            version: number;
+            /** Format: date-time */
+            created_at: string;
+            created_by: string;
+            /** Format: date-time */
+            updated_at: string;
+            updated_by: string;
+        };
+        ReportScheduleList: {
+            items: components["schemas"]["ReportSchedule"][];
+        };
+        ReportRun: {
+            /** Format: uuid */
+            id: string;
+            /** Format: date-time */
+            due_at: string;
+            /** Format: date */
+            period_first: string;
+            /** Format: date */
+            period_last: string;
+            /** @enum {string} */
+            status: "pending" | "sent" | "failed";
+            attempts: number;
+            /** Format: date-time */
+            next_at?: string;
+            /** @description Код ошибки без текста ответа сервера */
+            error?: string;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            sent_at?: string;
+        };
+        ReportRunList: {
+            items: components["schemas"]["ReportRun"][];
+        };
         NotifyChannelList: {
             items: components["schemas"]["NotifyChannel"][];
         };
@@ -8926,7 +9455,8 @@ export interface components {
             next_at?: string;
             /**
              * @description Код ошибки без текста ответа получателя: dial, tls, starttls_unsupported, auth, rejected,
-             *     timeout, write, config, channel_disabled, internal, http_NNN.
+             *     timeout, write, config (в том числе запрещённый адрес получателя), channel_disabled,
+             *     internal, http_NNN; у тестовой отправки вместо сетевых кодов — unreachable.
              */
             error?: string;
             /** Format: date-time */
@@ -9040,6 +9570,11 @@ export interface components {
             keys_total: number;
             /** @description Ключи скрыты: у «аномалии» нужно право events.read, у «бюджета» — budgets.read */
             keys_hidden: boolean;
+            /**
+             * @description Предупреждение последнего прохода: evaluation_failed — вычисление правила упало и откатано отдельно от остальных (причина — в техническом журнале), timezone_invalid — часовой пояс установки не распознан, расчёт по UTC (3В17, 3Н36 ревью 3.r2)
+             * @enum {string}
+             */
+            warning?: "evaluation_failed" | "timezone_invalid";
         };
         AlertRuleList: {
             items: components["schemas"]["AlertRule"][];
@@ -9523,6 +10058,8 @@ export interface components {
         AlertID: string;
         /** @description ID правила оповещения (UUIDv7) */
         AlertRuleID: string;
+        /** @description ID расписания рассылки отчёта (UUIDv7) */
+        ReportScheduleID: string;
         /** @description ID канала уведомлений (UUIDv7) */
         NotifyChannelID: string;
         /** @description ID инцидента (UUIDv7) */
