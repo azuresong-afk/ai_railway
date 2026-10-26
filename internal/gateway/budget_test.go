@@ -52,7 +52,9 @@ func newTestBudget(t *testing.T, clock *budgetClock, hard ...bundle.HardBudget) 
 	return b
 }
 
-// Покрывает: DM-15
+// Жёсткий бюджет — отказ budget_exceeded (часть «бюджеты» строки DM-15, 3В36
+// ревью 3.r4).
+// Покрывает: DM-15, DM-15 (бюджеты, аномалии и оповещение)
 func TestDM15_HardBudgetBlocks(t *testing.T) {
 	clock := &budgetClock{t: time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)}
 	// Ответ провайдера — 1 токен входа и 1 выхода: 100 000 единиц, 1 копейка.
