@@ -34,6 +34,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/events"
 	"github.com/azuresong-afk/ai_railway/internal/gwregistry"
 	"github.com/azuresong-afk/ai_railway/internal/httpserver"
+	"github.com/azuresong-afk/ai_railway/internal/ids"
 	"github.com/azuresong-afk/ai_railway/internal/incidents"
 	"github.com/azuresong-afk/ai_railway/internal/integrity"
 	"github.com/azuresong-afk/ai_railway/internal/integrity/selftest"
@@ -41,6 +42,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/notify"
 	"github.com/azuresong-afk/ai_railway/internal/policy/bundle/build"
 	"github.com/azuresong-afk/ai_railway/internal/policy/versions"
+	"github.com/azuresong-afk/ai_railway/internal/reports"
 	"github.com/azuresong-afk/ai_railway/internal/store"
 	"github.com/azuresong-afk/ai_railway/internal/sysstatus"
 	"github.com/azuresong-afk/ai_railway/web"
@@ -423,6 +425,33 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	alertStore.SetBudgetSource(budgetUsage(appsSvc))
 	go alerting.RunPeriodic(ctx, alertStore, alerting.PeriodicInterval, logger)
 
+	// Отчёты (ТЗ 5.8, S10; задача 3.24) строятся из агрегатов дашбордов,
+	// инцидентов, оповещений и бюджетов; рассылка по расписанию (задача
+	// 3.25) идёт через почтовый канал уведомлений. Время расписаний — в
+	// часовом поясе установки.
+	reportStore, err := reports.NewPGStore(db.Pool(), auditLog, audit.DefaultOrgID)
+	if err != nil {
+		return err
+	}
+	reportsSvc, err := reports.New(reports.Options{
+		Store: reportStore,
+		Builder: &reports.Builder{Dash: dashStore, Incidents: incidentsSvc, Alerts: alertsSvc,
+			Facts: &reports.PGFacts{DB: readDB.Pool(), OrgID: audit.DefaultOrgID, Apps: appsSvc, Policies: policiesSvc, Gateways: gateways}},
+		Mailer: notifySvc, Channels: notifySvc,
+		Location: func(ctx context.Context) (*time.Location, error) {
+			tz, err := timezone(ctx)
+			if err != nil {
+				return nil, err
+			}
+			return time.LoadLocation(tz)
+		},
+		IDs: ids.NewGenerator(rnd), OrgID: audit.DefaultOrgID, Logger: logger,
+	})
+	if err != nil {
+		return err
+	}
+	go reportsSvc.Run(ctx, reports.TickInterval)
+
 	// Консоль отдаётся, только если она собрана (make web-build перед go build); иначе сервер — чистый API.
 	var console http.Handler
 	if dist, err := fs.Sub(web.Dist, "dist"); err == nil {
@@ -447,6 +476,7 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		Notify:     notifySvc,
 		Incidents:  incidentsSvc,
 		Dashboards: dashStore,
+		Reports:    reportsSvc,
 		Audit:      auditLog,
 		Fallback:   console,
 

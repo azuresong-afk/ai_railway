@@ -92,6 +92,14 @@ const (
 	// запросов. Со ScopeOwn (владелец приложения) — только дашборд «Приложение»
 	// своих приложений (УПД.8); остальные дашборды видят роли со ScopeAll.
 	PermDashboardsRead = "dashboards.read"
+	// Отчёты (ТЗ 5.8, задача 3.24 этапа 3): сводный, по инцидентам, «Итоги
+	// пилота» в HTML, CSV и XLSX из агрегатов, без содержимого запросов.
+	// Каждая выгрузка пишет data.export (DM-41). Со ScopeOwn (владелец
+	// приложения) — только сводный отчёт по своему приложению (УПД.8).
+	// Расписания рассылки на почту (задача 3.25) ведут администраторы.
+	PermReportsRead           = "reports.read"
+	PermReportSchedulesRead   = "reports.schedules.read"
+	PermReportSchedulesManage = "reports.schedules.manage"
 	// Инциденты (ТЗ 5.7, задача 3.16 этапа 3): разбор — работа аналитика,
 	// доступна и токену (SOAR, IRP); выгрузка карточки — отдельное право
 	// (data.export, DM-41); инструкции реагирования — функция безопасности.
@@ -174,6 +182,9 @@ var permissionCatalog = []Permission{
 	{Name: PermModelPricesManage, Title: "Задание, изменение и удаление цен моделей", Group: "Потребление"},
 	{Name: PermBudgetsRead, Title: "Просмотр бюджетов и расхода приложений", Group: "Потребление"},
 	{Name: PermBudgetsManage, Title: "Задание, изменение и снятие бюджетов приложений", Group: "Потребление"},
+	{Name: PermReportsRead, Title: "Построение и выгрузка отчётов: сводный, по инцидентам, «Итоги пилота»", Group: "Отчёты", Ownable: true},
+	{Name: PermReportSchedulesRead, Title: "Просмотр расписаний рассылки отчётов и журнала рассылки", Group: "Отчёты"},
+	{Name: PermReportSchedulesManage, Title: "Создание, изменение и удаление расписаний рассылки отчётов", Group: "Отчёты"},
 	{Name: PermIncidentsRead, Title: "Просмотр инцидентов, хронологии, комментариев и инструкций реагирования", Group: "Инциденты"},
 	{Name: PermIncidentsManage, Title: "Создание инцидентов, смена статуса, назначение, комментарии, этапы реагирования", Group: "Инциденты"},
 	{Name: PermIncidentsExport, Title: "Выгрузка карточки инцидента в JSON (без содержимого событий)", Group: "Инциденты"},
@@ -366,18 +377,19 @@ var builtinRoles = []RoleDef{
 			PermApplicationsRead: ScopeAll, PermApplicationsManage: ScopeAll, PermAppKeysManage: ScopeAll,
 			PermProvidersRead: ScopeAll, PermProvidersManage: ScopeAll, PermPoliciesRead: ScopeAll, PermPoliciesTest: ScopeAll,
 			PermModelPricesRead: ScopeAll, PermModelPricesManage: ScopeAll, PermBudgetsRead: ScopeAll, PermBudgetsManage: ScopeAll,
-			PermDashboardsRead: ScopeAll, PermGatewayTLSRead: ScopeAll, PermGatewayTLSManage: ScopeAll}},
+			PermDashboardsRead: ScopeAll, PermGatewayTLSRead: ScopeAll, PermGatewayTLSManage: ScopeAll,
+			PermReportsRead: ScopeAll, PermReportSchedulesRead: ScopeAll, PermReportSchedulesManage: ScopeAll}},
 	{ID: RoleAnalyst, DisplayName: "Аналитик", Builtin: true,
 		Description: "Разбор оповещений и инцидентов, поиск по событиям",
 		Grants: grantAll(PermSystemRead, PermEventsRead, PermEventsExport, PermEventsMark, PermApplicationsRead, PermProvidersRead,
 			PermPoliciesRead, PermPoliciesTest, PermAlertsRead, PermAlertsManage, PermAlertRulesRead, PermModelPricesRead, PermBudgetsRead,
-			PermDashboardsRead, PermIncidentsRead, PermIncidentsManage, PermIncidentsExport)},
+			PermDashboardsRead, PermIncidentsRead, PermIncidentsManage, PermIncidentsExport, PermReportsRead)},
 	{ID: RoleAuditor, DisplayName: "Аудитор", Builtin: true,
 		Description: "Только просмотр: журнал аудита, отчёты, состояние соответствия. Ничего не меняет",
 		Grants:      auditorPermissions()},
 	{ID: RoleAppOwner, DisplayName: "Владелец приложения", Builtin: true,
 		Description: "Статистика и события только своих приложений, без доступа к содержимому",
-		Grants:      Grants{PermApplicationsRead: ScopeOwn, PermDashboardsRead: ScopeOwn}},
+		Grants:      Grants{PermApplicationsRead: ScopeOwn, PermDashboardsRead: ScopeOwn, PermReportsRead: ScopeOwn}},
 }
 
 var builtinIndex = func() map[Role]RoleDef {

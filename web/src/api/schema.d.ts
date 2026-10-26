@@ -6978,6 +6978,347 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/reports/{kind}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Отчёт за период
+         * @description Право `reports.read` (владелец приложения — на своих приложениях). Виды: `summary` (сводный),
+         *     `incidents` (по инцидентам), `pilot` («Итоги пилота», сценарий S10). Данные — только агрегаты
+         *     дашбордов, инциденты, оповещения, бюджеты и отметки аналитиков: содержимого запросов и ответов
+         *     и значений находок в отчёте нет. Период — `from` и `to`, дни `ГГГГ-ММ-ДД` часового пояса
+         *     установки, оба включительно; начало не в будущем, конец позже сегодняшнего урезается до
+         *     сегодняшнего дня, не больше 366 суток. `format`: `html` (по умолчанию; страница для просмотра
+         *     и печати в PDF средствами браузера, без скриптов, со своей политикой CSP и допустимой рамкой
+         *     консоли того же адреса), `csv` (UTF-8 с BOM, защита от формул), `xlsx` (один лист, без формул
+         *     и макросов). `app` — slug приложения: отчёт только по нему (инциденты, оповещения и бюджеты в
+         *     сводный отчёт по приложению не входят). Владельцу приложения доступен только `summary` с `app`
+         *     своего приложения; чужое приложение — 404, другой вид — 403. Каждая выгрузка пишет
+         *     `data.export` до выдачи данных (DM-41); без записи отчёт не выдаётся (503). Одновременно — одна
+         *     выгрузка на пользователя, сверх предела 429.
+         */
+        get: {
+            parameters: {
+                query: {
+                    /** @description Первый день периода, ГГГГ-ММ-ДД */
+                    from: string;
+                    /** @description Последний день периода включительно, ГГГГ-ММ-ДД */
+                    to: string;
+                    format?: "html" | "csv" | "xlsx";
+                    /** @description Slug приложения */
+                    app?: string;
+                };
+                header?: never;
+                path: {
+                    /** @description Вид отчёта */
+                    kind: "summary" | "incidents" | "pilot";
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Отчёт; `X-Export-Rows` — число строк данных */
+                200: {
+                    headers: {
+                        "X-Export-Rows"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/html": string;
+                        "text/csv": string;
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": string;
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/report-schedules": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Расписания рассылки отчётов
+         * @description Право `reports.schedules.read`. Все расписания установки (не больше 50).
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Расписания */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ReportScheduleList"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        /**
+         * Создать расписание рассылки отчёта
+         * @description Право `reports.schedules.manage`. Периодичность: `daily`, `weekly` (с `weekday`, 1 —
+         *     понедельник … 7 — воскресенье), `monthly` (с `day`, 1–28). Время `at` (ЧЧ:ММ) — в часовом
+         *     поясе установки. Отчёт за предыдущие полные сутки, неделю (понедельник–воскресенье) или
+         *     календарный месяц; во вложении HTML или XLSX. Получатели и сервер SMTP — почтовый канал
+         *     уведомлений (`channel_id`, включённый, с получателями). Пропущенный после простоя запуск
+         *     отправляется один раз. Не больше 50 расписаний — иначе 422; повтор названия — 400. Пишет
+         *     `report_schedule.create`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                    /** @description Ключ повторяемости создающего запроса, 1–64 символа `[A-Za-z0-9._-]` */
+                    "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["ReportScheduleInput"];
+                };
+            };
+            responses: {
+                /** @description Расписание создано */
+                201: {
+                    headers: {
+                        Location?: string;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ReportSchedule"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/report-schedules/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Расписание рассылки отчёта
+         * @description Право `reports.schedules.read`.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description ID расписания рассылки отчёта (UUIDv7) */
+                    id: components["parameters"]["ReportScheduleID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Расписание */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ReportSchedule"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        /**
+         * Изменить расписание рассылки отчёта
+         * @description Право `reports.schedules.manage`. Полная замена настроек; `version` — версия, которую открыли
+         *     для изменения (устаревшая — 409). Ближайший запуск пересчитывается от текущего момента. Пишет
+         *     `report_schedule.update` (до и после).
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID расписания рассылки отчёта (UUIDv7) */
+                    id: components["parameters"]["ReportScheduleID"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["ReportScheduleInput"];
+                };
+            };
+            responses: {
+                /** @description Расписание изменено */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ReportSchedule"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        post?: never;
+        /**
+         * Удалить расписание рассылки отчёта
+         * @description Право `reports.schedules.manage`. Удаляет расписание вместе с его журналом рассылки. Пишет `report_schedule.delete`.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID расписания рассылки отчёта (UUIDv7) */
+                    id: components["parameters"]["ReportScheduleID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Расписание удалено */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/report-schedules/{id}/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Журнал рассылки расписания
+         * @description Право `reports.schedules.read`. Последние 100 запусков, новые сначала: период отчёта, число
+         *     попыток (не больше 5, задержки 30 с, 2 мин, 8 мин, 10 мин), статус и код ошибки без текста
+         *     ответа почтового сервера.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description ID расписания рассылки отчёта (UUIDv7) */
+                    id: components["parameters"]["ReportScheduleID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Журнал */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ReportRunList"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -8904,6 +9245,82 @@ export interface components {
             updated_at: string;
             updated_by: string;
         };
+        ReportScheduleInput: {
+            name: string;
+            /** @enum {string} */
+            report: "summary" | "incidents" | "pilot";
+            /** @enum {string} */
+            frequency: "daily" | "weekly" | "monthly";
+            /** @description Для weekly; 1 — понедельник */
+            weekday?: number;
+            /** @description Для monthly */
+            day?: number;
+            /** @description Время в часовом поясе установки */
+            at: string;
+            /** @enum {string} */
+            format: "html" | "xlsx";
+            /** Format: uuid */
+            channel_id: string;
+            /** @default true */
+            enabled: boolean;
+            /** @description Для изменения */
+            version?: number;
+        };
+        ReportSchedule: {
+            /** Format: uuid */
+            id: string;
+            name: string;
+            /** @enum {string} */
+            report: "summary" | "incidents" | "pilot";
+            /** @enum {string} */
+            frequency: "daily" | "weekly" | "monthly";
+            weekday?: number;
+            day?: number;
+            at: string;
+            /** @enum {string} */
+            format: "html" | "xlsx";
+            /** Format: uuid */
+            channel_id: string;
+            enabled: boolean;
+            /** Format: date-time */
+            next_run_at: string;
+            /** Format: date-time */
+            last_run_at?: string;
+            version: number;
+            /** Format: date-time */
+            created_at: string;
+            created_by: string;
+            /** Format: date-time */
+            updated_at: string;
+            updated_by: string;
+        };
+        ReportScheduleList: {
+            items: components["schemas"]["ReportSchedule"][];
+        };
+        ReportRun: {
+            /** Format: uuid */
+            id: string;
+            /** Format: date-time */
+            due_at: string;
+            /** Format: date */
+            period_first: string;
+            /** Format: date */
+            period_last: string;
+            /** @enum {string} */
+            status: "pending" | "sent" | "failed";
+            attempts: number;
+            /** Format: date-time */
+            next_at?: string;
+            /** @description Код ошибки без текста ответа сервера */
+            error?: string;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            sent_at?: string;
+        };
+        ReportRunList: {
+            items: components["schemas"]["ReportRun"][];
+        };
         NotifyChannelList: {
             items: components["schemas"]["NotifyChannel"][];
         };
@@ -9523,6 +9940,8 @@ export interface components {
         AlertID: string;
         /** @description ID правила оповещения (UUIDv7) */
         AlertRuleID: string;
+        /** @description ID расписания рассылки отчёта (UUIDv7) */
+        ReportScheduleID: string;
         /** @description ID канала уведомлений (UUIDv7) */
         NotifyChannelID: string;
         /** @description ID инцидента (UUIDv7) */
