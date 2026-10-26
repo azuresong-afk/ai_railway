@@ -14,7 +14,9 @@ type memIncidentRetention struct {
 	recs []audit.Entry
 }
 
-func (m *memIncidentRetention) RetentionDays(context.Context, string) (int, error) { return m.days, nil }
+func (m *memIncidentRetention) RetentionDays(context.Context, string) (int, error) {
+	return m.days, nil
+}
 
 func (m *memIncidentRetention) SetRetentionDays(_ context.Context, _ string, days int, fn func(int) (audit.Entry, error)) (int, error) {
 	rec, err := fn(m.days)
