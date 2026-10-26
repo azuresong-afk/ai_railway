@@ -163,13 +163,13 @@ const (
 
 // Totals — итоги периода.
 func (d *DashStore) Totals(ctx context.Context, q DashQuery) (DashTotals, error) {
-	rows, err := collect(ctx, d, q, `SELECT COALESCE(sum(requests), 0)::bigint, COALESCE(sum(with_findings), 0)::bigint,
-		COALESCE(sum(non_text_unchecked), 0)::bigint,
-		COALESCE(sum(requests) FILTER (WHERE `+dashBlocked+`), 0)::bigint,
-		COALESCE(sum(requests) FILTER (WHERE `+dashWouldBlock+`), 0)::bigint,
-		COALESCE(sum(requests) FILTER (WHERE `+dashMasked+`), 0)::bigint,
-		COALESCE(sum(tokens_prompt), 0)::bigint, COALESCE(sum(tokens_completion), 0)::bigint,
-		COALESCE(sum(cost), 0)::bigint, COALESCE(sum(unpriced_requests), 0)::bigint FROM req`,
+	rows, err := collect(ctx, d, q, `SELECT LEAST(COALESCE(sum(requests), 0), `+dashMax+`)::bigint, LEAST(COALESCE(sum(with_findings), 0), `+dashMax+`)::bigint,
+		LEAST(COALESCE(sum(non_text_unchecked), 0), `+dashMax+`)::bigint,
+		LEAST(COALESCE(sum(requests) FILTER (WHERE `+dashBlocked+`), 0), `+dashMax+`)::bigint,
+		LEAST(COALESCE(sum(requests) FILTER (WHERE `+dashWouldBlock+`), 0), `+dashMax+`)::bigint,
+		LEAST(COALESCE(sum(requests) FILTER (WHERE `+dashMasked+`), 0), `+dashMax+`)::bigint,
+		LEAST(COALESCE(sum(tokens_prompt), 0), `+dashMax+`)::bigint, LEAST(COALESCE(sum(tokens_completion), 0), `+dashMax+`)::bigint,
+		LEAST(COALESCE(sum(cost), 0), `+dashMax+`)::bigint, LEAST(COALESCE(sum(unpriced_requests), 0), `+dashMax+`)::bigint FROM req`,
 		func(r pgx.Rows) (t DashTotals, err error) {
 			err = r.Scan(&t.Requests, &t.WithFindings, &t.NonTextUnchecked, &t.Blocked, &t.WouldBlock, &t.Masked,
 				&t.TokensPrompt, &t.TokensCompletion, &t.Cost, &t.UnpricedRequests)
@@ -199,7 +199,7 @@ func (d *DashStore) Latency(ctx context.Context, q DashQuery) (DashLatency, erro
 		le int
 		n  int64
 	}
-	rows, err := collect(ctx, d, q, `SELECT le, sum(n)::bigint FROM lat GROUP BY le ORDER BY le`,
+	rows, err := collect(ctx, d, q, `SELECT le, LEAST(sum(n), `+dashMax+`)::bigint FROM lat GROUP BY le ORDER BY le`,
 		func(r pgx.Rows) (v row, err error) { err = r.Scan(&v.le, &v.n); return })
 	if err != nil {
 		return DashLatency{}, err
@@ -240,7 +240,7 @@ const dashBucket = "date_trunc($7::text, bucket, $6::text)"
 // masked, allowed.
 func (d *DashStore) DecisionSeries(ctx context.Context, q DashQuery) ([]DashPoint, error) {
 	return collect(ctx, d, q, `SELECT `+dashBucket+` AS b, CASE WHEN `+dashWouldBlock+` THEN 'would_block'
-		WHEN `+dashBlocked+` THEN 'blocked' WHEN `+dashMasked+` THEN 'masked' ELSE 'allowed' END AS k, sum(requests)::bigint
+		WHEN `+dashBlocked+` THEN 'blocked' WHEN `+dashMasked+` THEN 'masked' ELSE 'allowed' END AS k, LEAST(sum(requests), `+dashMax+`)::bigint
 		FROM req GROUP BY 1, 2 ORDER BY 1, 2`, scanPoint, q.TZ, q.Unit())
 }
 
@@ -267,14 +267,17 @@ func findDim(dim string) (string, error) {
 }
 
 // FindingSeries — находки по измерению во времени; prefix отбирает
-// категории («pii.» — только ПДн), пусто — все находки.
-func (d *DashStore) FindingSeries(ctx context.Context, q DashQuery, dim, prefix string) ([]DashPoint, error) {
+// категории («pii.» — только ПДн), пусто — все находки; keys — только эти
+// значения измерения (топ), nil — все. Отбор — в SQL: предел строк ряда
+// относится к показываемым ключам, а не ко всем (3В28 ревью 3.r3).
+func (d *DashStore) FindingSeries(ctx context.Context, q DashQuery, dim, prefix string, keys []string) ([]DashPoint, error) {
 	col, err := findDim(dim)
 	if err != nil {
 		return nil, err
 	}
-	return collect(ctx, d, q, `SELECT `+dashBucket+` AS b, `+col+` AS k, sum(findings)::bigint FROM fnd
-		WHERE $8::text = '' OR category LIKE $8::text || '%' GROUP BY 1, 2 ORDER BY 1, 2`, scanPoint, q.TZ, q.Unit(), prefix)
+	return collect(ctx, d, q, `SELECT `+dashBucket+` AS b, `+col+` AS k, LEAST(sum(findings), `+dashMax+`)::bigint FROM fnd
+		WHERE ($8::text = '' OR category LIKE $8::text || '%') AND ($9::text[] IS NULL OR `+col+` = ANY($9::text[]))
+		GROUP BY 1, 2 ORDER BY 1, 2`, scanPoint, q.TZ, q.Unit(), prefix, keys)
 }
 
 // DashTop — строка «топ»: ключ и находки.
@@ -289,7 +292,7 @@ func (d *DashStore) TopFindings(ctx context.Context, q DashQuery, dim, prefix st
 	if err != nil {
 		return nil, err
 	}
-	return collect(ctx, d, q, `SELECT `+col+`, sum(findings)::bigint AS n FROM fnd
+	return collect(ctx, d, q, `SELECT `+col+`, LEAST(sum(findings), `+dashMax+`)::bigint AS n FROM fnd
 		WHERE $6::text = '' OR category LIKE $6::text || '%' GROUP BY 1 ORDER BY n DESC, 1 LIMIT $7`,
 		func(r pgx.Rows) (t DashTop, err error) { err = r.Scan(&t.Key, &t.Value); return }, prefix, clampTop(limit))
 }
@@ -308,7 +311,7 @@ type DashPIIRow struct {
 
 // PIIBreakdown — находки ПДн по типам, приложениям и действиям.
 func (d *DashStore) PIIBreakdown(ctx context.Context, q DashQuery) ([]DashPIIRow, error) {
-	return collect(ctx, d, q, `SELECT category, app, action, sum(findings)::bigint AS n FROM fnd
+	return collect(ctx, d, q, `SELECT category, app, action, LEAST(sum(findings), `+dashMax+`)::bigint AS n FROM fnd
 		WHERE category LIKE 'pii.%' GROUP BY 1, 2, 3 ORDER BY n DESC, 1, 2, 3 LIMIT 1000`,
 		func(r pgx.Rows) (v DashPIIRow, err error) {
 			err = r.Scan(&v.Category, &v.App, &v.Action, &v.Findings)
@@ -327,7 +330,7 @@ type DashCell struct {
 // Heatmap — находки по дням недели и часам суток.
 func (d *DashStore) Heatmap(ctx context.Context, q DashQuery) ([]DashCell, error) {
 	return collect(ctx, d, q, `SELECT extract(isodow FROM bucket AT TIME ZONE $6::text)::int AS wd,
-		extract(hour FROM bucket AT TIME ZONE $6::text)::int AS h, sum(findings)::bigint FROM fnd GROUP BY 1, 2 ORDER BY 1, 2`,
+		extract(hour FROM bucket AT TIME ZONE $6::text)::int AS h, LEAST(sum(findings), `+dashMax+`)::bigint FROM fnd GROUP BY 1, 2 ORDER BY 1, 2`,
 		func(r pgx.Rows) (c DashCell, err error) { err = r.Scan(&c.Weekday, &c.Hour, &c.Findings); return }, q.TZ)
 }
 
@@ -361,10 +364,10 @@ func (d *DashStore) RequestsBy(ctx context.Context, q DashQuery, dim string, lim
 			&v.TokensCompletion, &v.Cost, &v.UnpricedRequests)
 		return
 	}
-	sums := `sum(requests)::bigint AS n, sum(with_findings)::bigint,
-		COALESCE(sum(requests) FILTER (WHERE ` + dashBlocked + `), 0)::bigint, COALESCE(sum(requests) FILTER (WHERE ` + dashWouldBlock + `), 0)::bigint,
-		COALESCE(sum(requests) FILTER (WHERE ` + dashMasked + `), 0)::bigint, sum(tokens_prompt)::bigint, sum(tokens_completion)::bigint,
-		sum(cost)::bigint, sum(unpriced_requests)::bigint`
+	sums := `LEAST(sum(requests), `+dashMax+`)::bigint AS n, LEAST(sum(with_findings), `+dashMax+`)::bigint,
+		LEAST(COALESCE(sum(requests) FILTER (WHERE ` + dashBlocked + `), 0), `+dashMax+`)::bigint, LEAST(COALESCE(sum(requests) FILTER (WHERE ` + dashWouldBlock + `), 0), `+dashMax+`)::bigint,
+		LEAST(COALESCE(sum(requests) FILTER (WHERE ` + dashMasked + `), 0), `+dashMax+`)::bigint, LEAST(sum(tokens_prompt), `+dashMax+`)::bigint, LEAST(sum(tokens_completion), `+dashMax+`)::bigint,
+		LEAST(sum(cost), `+dashMax+`)::bigint, LEAST(sum(unpriced_requests), `+dashMax+`)::bigint`
 	switch dim {
 	case DimApp, DimModel, DimProvider:
 		return collect(ctx, d, q, `SELECT `+dim+`, `+sums+` FROM req GROUP BY 1 ORDER BY n DESC, 1 LIMIT $6`, scan, clampTop(limit))
@@ -372,8 +375,8 @@ func (d *DashStore) RequestsBy(ctx context.Context, q DashQuery, dim string, lim
 		return collect(ctx, d, q, `SELECT COALESCE(a.department, ''), `+sums+` FROM req
 			LEFT JOIN applications a ON a.org_id = $1 AND a.slug = req.app GROUP BY 1 ORDER BY n DESC, 1 LIMIT $6`, scan, clampTop(limit))
 	case DimUser:
-		return collect(ctx, d, q, `SELECT user_alias, sum(requests)::bigint AS n, 0::bigint, 0::bigint, 0::bigint, 0::bigint,
-			sum(tokens_prompt)::bigint, sum(tokens_completion)::bigint, sum(cost)::bigint, 0::bigint FROM usr
+		return collect(ctx, d, q, `SELECT user_alias, LEAST(sum(requests), `+dashMax+`)::bigint AS n, 0::bigint, 0::bigint, 0::bigint, 0::bigint,
+			LEAST(sum(tokens_prompt), `+dashMax+`)::bigint, LEAST(sum(tokens_completion), `+dashMax+`)::bigint, LEAST(sum(cost), `+dashMax+`)::bigint, 0::bigint FROM usr
 			GROUP BY 1 ORDER BY n DESC, 1 LIMIT $6`, scan, clampTop(limit))
 	}
 	return nil, fmt.Errorf("измерение запросов: %q", dim)
@@ -389,8 +392,8 @@ type DashUsagePoint struct {
 
 // UsageSeries — запросы, токены и стоимость во времени.
 func (d *DashStore) UsageSeries(ctx context.Context, q DashQuery) ([]DashUsagePoint, error) {
-	return collect(ctx, d, q, `SELECT `+dashBucket+` AS b, sum(requests)::bigint, (sum(tokens_prompt) + sum(tokens_completion))::bigint,
-		sum(cost)::bigint FROM req GROUP BY 1 ORDER BY 1`,
+	return collect(ctx, d, q, `SELECT `+dashBucket+` AS b, LEAST(sum(requests), `+dashMax+`)::bigint, LEAST(sum(tokens_prompt) + sum(tokens_completion), `+dashMax+`)::bigint,
+		LEAST(sum(cost), `+dashMax+`)::bigint FROM req GROUP BY 1 ORDER BY 1`,
 		func(r pgx.Rows) (p DashUsagePoint, err error) {
 			err = r.Scan(&p.Bucket, &p.Requests, &p.Tokens, &p.Cost)
 			p.Bucket = p.Bucket.UTC()

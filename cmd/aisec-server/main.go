@@ -63,6 +63,13 @@ const (
 	// eventsReadStatementTimeout — statement_timeout пула чтения: выгрузка
 	// (events.ExportTimeout) и запас.
 	eventsReadStatementTimeout = events.ExportTimeout + 10*time.Second
+	// dashReadPoolSize — свой пул чтения агрегатов дашбордов по пределу
+	// одновременных вычислений снимков: тяжёлые дашборды за год не занимают
+	// соединения поиска и выгрузки событий (3В28 ревью 3.r3).
+	dashReadPoolSize = api.MaxDashComputes
+	// dashReadStatementTimeout — statement_timeout пула дашбордов: срок
+	// снимка (15 с) и запас; раньше обрывает контекст.
+	dashReadStatementTimeout = 20 * time.Second
 	// auditReadPoolSize — пул выборок журнала аудита консолью, по пределу
 	// api.MaxAuditReadsTotal (В17 ревью 2.r3b).
 	auditReadPoolSize = api.MaxAuditReadsTotal
@@ -264,7 +271,12 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		return err
 	}
 	// Агрегаты дашбордов (задача 3.19) прибавляются в той же транзакции приёма.
-	dashStore, err := events.NewDashStore(db.Pool(), readDB.Pool(), audit.DefaultOrgID, logger)
+	dashDB, err := store.Open(ctx, cfg.DatabaseURL, dashReadPoolSize, store.WithStatementTimeout(dashReadStatementTimeout))
+	if err != nil {
+		return err
+	}
+	defer dashDB.Close()
+	dashStore, err := events.NewDashStore(db.Pool(), dashDB.Pool(), audit.DefaultOrgID, logger)
 	if err != nil {
 		return err
 	}

@@ -25,6 +25,10 @@ type fakeDash struct {
 	total events.DashTotals
 	err   error
 	reads int
+	// block — Totals ждёт закрытия канала; cur и peak — текущие и наибольшие
+	// одновременные вычисления (3В28).
+	block     chan struct{}
+	cur, peak int
 }
 
 func (f *fakeDash) note(q events.DashQuery) {
@@ -42,6 +46,17 @@ func (f *fakeDash) lastQuery() events.DashQuery {
 
 func (f *fakeDash) Totals(_ context.Context, q events.DashQuery) (events.DashTotals, error) {
 	f.note(q)
+	f.mu.Lock()
+	block := f.block
+	f.cur++
+	f.peak = max(f.peak, f.cur)
+	f.mu.Unlock()
+	if block != nil {
+		<-block
+	}
+	f.mu.Lock()
+	f.cur--
+	f.mu.Unlock()
 	return f.total, f.err
 }
 
@@ -55,7 +70,7 @@ func (f *fakeDash) DecisionSeries(_ context.Context, q events.DashQuery) ([]even
 	return []events.DashPoint{{Bucket: q.From, Key: "blocked", Value: 2}}, nil
 }
 
-func (f *fakeDash) FindingSeries(_ context.Context, q events.DashQuery, _, _ string) ([]events.DashPoint, error) {
+func (f *fakeDash) FindingSeries(_ context.Context, q events.DashQuery, _, _ string, _ []string) ([]events.DashPoint, error) {
 	f.note(q)
 	return []events.DashPoint{{Bucket: q.From, Key: "DM-01", Value: 2}, {Bucket: q.From, Key: "DM-99", Value: 5}}, nil
 }
@@ -417,5 +432,85 @@ func TestDashboardFeedRequiresEventsRead(t *testing.T) {
 	}
 	if v := get(e.mustLogin(t, "owner"), "/api/v1/dashboards/app/"+mine.ID); len(v.Feed) != 0 || !v.FeedHidden {
 		t.Fatalf("владелец приложения: %+v", v)
+	}
+}
+
+// 3В28 ревью 3.r3: вычисления снимков ограничены MaxDashComputes на сервер,
+// сверх — 503 с Retry-After; одинаковые запросы ждут одно вычисление.
+func TestDashboardComputeLimit(t *testing.T) {
+	e := newAppsEnv(t)
+	an := e.mustLogin(t, "analyst")
+	block := make(chan struct{})
+	e.dash.mu.Lock()
+	e.dash.block = block
+	e.dash.mu.Unlock()
+	now := time.Now().UTC()
+	type res struct {
+		code  int
+		retry string
+	}
+	out := make(chan res, 16)
+	var wg sync.WaitGroup
+	get := func(days int) {
+		wg.Go(func() {
+			from := now.Add(-time.Duration(days) * 24 * time.Hour).Format(time.RFC3339)
+			w := e.call(an, "GET", "/api/v1/dashboards/threats?from="+url.QueryEscape(from), "", false)
+			out <- res{w.Code, w.Header().Get("Retry-After")}
+		})
+	}
+	running := func() int {
+		e.dash.mu.Lock()
+		defer e.dash.mu.Unlock()
+		return e.dash.cur
+	}
+	// Заняты все места вычислений.
+	for i := range MaxDashComputes {
+		get(i + 2)
+	}
+	for deadline := time.Now().Add(5 * time.Second); running() < MaxDashComputes; {
+		if time.Now().After(deadline) {
+			t.Fatalf("вычислений: %d", running())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	// Другие периоды — 503 с Retry-After сразу.
+	for i := range 4 {
+		get(i + 10)
+	}
+	for range 4 {
+		if r := <-out; r.code != http.StatusServiceUnavailable || r.retry == "" {
+			t.Fatalf("сверх предела: %d, Retry-After %q", r.code, r.retry)
+		}
+	}
+	// Тот же запрос, что уже считается, не занимает новое место: ждёт итог.
+	get(2)
+	time.Sleep(50 * time.Millisecond)
+	close(block)
+	wg.Wait()
+	close(out)
+	ok := 0
+	for r := range out {
+		if r.code == http.StatusOK {
+			ok++
+		}
+	}
+	e.dash.mu.Lock()
+	peak := e.dash.peak
+	e.dash.mu.Unlock()
+	if peak > MaxDashComputes || ok != MaxDashComputes+1 {
+		t.Fatalf("одновременных вычислений: %d, успешных ответов: %d", peak, ok)
+	}
+}
+
+// Шаг потока и срок снимка растут с длиной периода.
+func TestDashTick(t *testing.T) {
+	now := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		d    time.Duration
+		want time.Duration
+	}{{24 * time.Hour, dashStreamEvery}, {7 * 24 * time.Hour, 20 * dashStreamEvery}, {90 * 24 * time.Hour, 100 * dashStreamEvery}} {
+		if got := dashTick(dashParams{from: now.Add(-tc.d), to: now}); got != tc.want {
+			t.Errorf("%v: %v, ожидается %v", tc.d, got, tc.want)
+		}
 	}
 }

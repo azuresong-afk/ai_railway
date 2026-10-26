@@ -427,3 +427,46 @@ func TestPGDashIngestNotBlockedByBackfill(t *testing.T) {
 		t.Fatalf("итоги: %+v %v", got, err)
 	}
 }
+
+// 3В28 ревью 3.r3: сумма строк агрегатов, каждая у предела 4e18, при чтении
+// не переполняет bigint — все чтения отвечают, значение ограничено пределом.
+func TestPGDashboardSumNoOverflow(t *testing.T) {
+	e := setupPG(t)
+	ctx := pgCtx(t)
+	ds, _ := dashStoreFor(t, e)
+	day := time.Now().UTC().Truncate(24*time.Hour).AddDate(0, 0, -1)
+	for i, app := range []string{"a", "b", "c"} {
+		if _, err := e.owner.Exec(ctx, `INSERT INTO dash_req_hour (org_id, bucket, app, provider, model, action, mode, requests, with_findings,
+			non_text_unchecked, tokens_prompt, tokens_completion, cost, unpriced_requests) VALUES ($1, $2, $3, 'p', 'm', 'allow', 'enforce',
+			4e18, 4e18, 0, 4e18, 4e18, 4e18, 0)`, audit.DefaultOrgID, day.Add(time.Duration(i)*time.Hour), app); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := e.owner.Exec(ctx, `INSERT INTO dash_find_hour (org_id, bucket, app, detector, category, threat, action, findings)
+			VALUES ($1, $2, $3, 'pii', 'pii.inn', 'DM-31', 'allow', 4e18)`, audit.DefaultOrgID, day.Add(time.Duration(i)*time.Hour), app); err != nil {
+			t.Fatal(err)
+		}
+	}
+	q := events.DashQuery{From: day, To: day.Add(24 * time.Hour), TZ: "UTC"}
+	if got, err := ds.Totals(ctx, q); err != nil || got.Requests != 4e18 || got.Cost != 4e18 {
+		t.Fatalf("итоги: %+v %v", got, err)
+	}
+	if _, err := ds.RequestsBy(ctx, q, events.DimProvider, 10); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ds.UsageSeries(ctx, events.DashQuery{From: day, To: day.Add(24 * time.Hour), TZ: "UTC"}); err != nil {
+		t.Fatal(err)
+	}
+	if top, err := ds.TopFindings(ctx, q, events.DimDetector, "", 10); err != nil || len(top) != 1 || top[0].Value != 4e18 {
+		t.Fatalf("топ: %+v %v", top, err)
+	}
+	if _, err := ds.Heatmap(ctx, q); err != nil {
+		t.Fatal(err)
+	}
+	// Ряд — только по ключам топа.
+	if pts, err := ds.FindingSeries(ctx, q, events.DimApp, "", []string{"b"}); err != nil || len(pts) != 1 || pts[0].Key != "b" {
+		t.Fatalf("ряд по ключам: %+v %v", pts, err)
+	}
+	if pts, err := ds.FindingSeries(ctx, q, events.DimApp, "", []string{}); err != nil || len(pts) != 0 {
+		t.Fatalf("ряд по пустому топу: %+v %v", pts, err)
+	}
+}
