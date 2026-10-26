@@ -571,7 +571,7 @@ func TestDashboardStreamBounded(t *testing.T) {
 	// Клиент перестал читать: обработчик выходит по сроку записи.
 	sw := &stalledWriter{hdr: http.Header{}, release: make(chan struct{})}
 	t.Cleanup(func() { close(sw.release) })
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/dashboards/stream?dashboard=overview&period=24h", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/v1/dashboards/stream?dashboard=overview&period=24h", nil)
 	for _, c := range an.cookies {
 		req.AddCookie(c)
 	}

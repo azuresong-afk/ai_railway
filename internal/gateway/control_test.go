@@ -496,7 +496,7 @@ func TestHeartbeatObservesServerTime(t *testing.T) {
 		t.Fatal(err)
 	}
 	sc := &gateway.ServerClock{}
-	if d := sc.Now().Sub(time.Now()); d > time.Minute {
+	if d := time.Until(sc.Now()); d > time.Minute {
 		t.Fatalf("без heartbeat: %v", d)
 	}
 	gateway.RunHeartbeat(context.Background(), gateway.HeartbeatConfig{
