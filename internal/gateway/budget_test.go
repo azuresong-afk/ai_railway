@@ -9,10 +9,12 @@ import (
 	"net/url"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/azuresong-afk/ai_railway/internal/config"
 	"github.com/azuresong-afk/ai_railway/internal/policy/bundle"
 )
 
@@ -314,5 +316,96 @@ func TestBudgetEmbeddingsAndProviderError(t *testing.T) {
 	}
 	if u := budget.report().Months[0].Apps[0]; u.Requests != 1 {
 		t.Fatalf("неудачный запрос посчитан: %+v", u)
+	}
+}
+
+// 3В22 ревью 3.r3: запрос, ушедший провайдеру, с неизвестным исходом
+// (клиент прервал запрос, таймаут провайдера, обрыв потока до заголовков)
+// списывает оценку сверху — вход и max_tokens — и в бюджет, и в квоту
+// токенов; явный отказ провайдера со статусом — без списания.
+//
+// Покрывает: DM-15, DM-36
+func TestDM15_CanceledRequestCharged(t *testing.T) {
+	const maxOut = 300
+	text := strings.Repeat("а", 300) // 600 байт — 200 токенов по оценке
+	in := int64(estimateTokens(len(text)))
+	body := func(stream bool) string {
+		return `{"model":"m","max_tokens":` + strconv.Itoa(maxOut) + `,"stream":` + strconv.FormatBool(stream) +
+			`,"messages":[{"role":"user","content":"` + text + `"}]}`
+	}
+	for _, tc := range []struct {
+		name    string
+		stream  bool
+		cancel  bool // клиент рвёт соединение, когда провайдер получил запрос
+		refuse  bool // провайдер отвечает 400
+		charged bool
+	}{
+		{name: "клиент прервал запрос", cancel: true, charged: true},
+		{name: "клиент прервал поток до заголовков", stream: true, cancel: true, charged: true},
+		{name: "таймаут провайдера", charged: true},
+		{name: "таймаут потока до заголовков", stream: true, charged: true},
+		{name: "явный отказ провайдера", refuse: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clock := &budgetClock{t: time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)}
+			budget := newTestBudget(t, clock, bundle.HardBudget{App: "app", Limit: 1 << 40})
+			got := make(chan struct{}, 1)
+			release := make(chan struct{})
+			defer close(release)
+			up, _ := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+				select {
+				case got <- struct{}{}:
+				default:
+				}
+				if tc.refuse {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusBadRequest)
+					w.Write([]byte(`{"error":{"message":"bad","type":"invalid_request_error","code":"bad_request"}}`)) //nolint:errcheck,gosec // G104: ответ тестового провайдера
+					return
+				}
+				select {
+				case <-r.Context().Done():
+				case <-release:
+				}
+			})
+			g := newGateway(t, up.URL, func(o *gwOpts) {
+				o.budget = budget
+				o.quotas = config.Quotas{TokensPerMinute: int(in) + maxOut + 10}
+				o.transport = &http.Transport{Proxy: nil, ResponseHeaderTimeout: 200 * time.Millisecond}
+			})
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if tc.cancel {
+				go func() {
+					<-got
+					cancel()
+				}()
+			}
+			req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/v1/chat/completions", strings.NewReader(body(tc.stream)))
+			req.Header.Set("Content-Type", "application/json")
+			g.ServeHTTP(httptest.NewRecorder(), req)
+			rep := budget.report()
+			var u budgetUsage
+			if len(rep.Months) == 1 && len(rep.Months[0].Apps) == 1 {
+				u = rep.Months[0].Apps[0]
+			}
+			// Второй запрос: при списанном резерве квота токенов исчерпана.
+			second := postChat(t, g, `{"model":"m","max_tokens":10,"messages":[{"role":"user","content":"x"}]}`, nil)
+			if !tc.charged {
+				if u.Requests != 0 || u.Cost != 0 {
+					t.Fatalf("явный отказ списан: %+v", u)
+				}
+				if second.Code == http.StatusTooManyRequests {
+					t.Fatalf("после явного отказа квота не возвращена: %s", second.Body.String())
+				}
+				return
+			}
+			if want := (in + maxOut) * 50_000; u.Requests != 1 || u.Cost < want {
+				t.Fatalf("расход: %+v, ожидается Requests 1 и Cost >= %d", u, want)
+			}
+			if second.Code != http.StatusTooManyRequests || errCode(t, second) != "quota_exceeded" {
+				t.Fatalf("резерв квоты возвращён: %d %s", second.Code, second.Body.String())
+			}
+		})
 	}
 }

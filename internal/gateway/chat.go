@@ -259,6 +259,7 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	resp, meta, err := app.Provider.Chat(r.Context(), req)
 	copyMeta(w, meta)
 	if err != nil {
+		rec.unknown = outcomeUnknown(r, err)
 		h.providerError(w, r, err)
 		return
 	}
@@ -318,6 +319,7 @@ func (h *ChatHandler) admit(w http.ResponseWriter, r *http.Request, rec *record,
 	}
 	maxOut, _ := req.EffectiveMaxTokens()
 	rec.inTokens = estimateTokens(size)
+	rec.maxOut = max(maxOut, 0)
 	return h.admitSize(w, r, rec, user, size, estimateTokens(size)+max(maxOut, 0))
 }
 
@@ -462,6 +464,18 @@ func copyMeta(w http.ResponseWriter, m providers.Meta) {
 	}
 }
 
+// outcomeUnknown — исход запроса, ушедшего провайдеру, неизвестен: клиент
+// прервал запрос, таймаут, обрыв связи или неразобранный ответ. Явный отказ
+// провайдера (ответ со статусом, отказ в учётных данных) — исход известен,
+// модель запрос не выполняла (3В22 ревью 3.r3).
+func outcomeUnknown(r *http.Request, err error) bool {
+	var pe *providers.Error
+	if r.Context().Err() != nil {
+		return true
+	}
+	return !errors.As(err, &pe) && !errors.Is(err, providers.ErrAuth)
+}
+
 // providerError отвечает приложению по классу ошибки провайдера.
 func (h *ChatHandler) providerError(w http.ResponseWriter, r *http.Request, err error) {
 	var pe *providers.Error
@@ -488,6 +502,7 @@ func (h *ChatHandler) stream(w http.ResponseWriter, r *http.Request, app *App, r
 	st, meta, err := app.Provider.Stream(r.Context(), req)
 	copyMeta(w, meta)
 	if err != nil {
+		rec.unknown = outcomeUnknown(r, err)
 		h.providerError(w, r, err)
 		return
 	}
