@@ -63,7 +63,7 @@ func main() {
 type deps struct {
 	provider    aisecCrypto.Provider
 	verifier    aisecCrypto.Verifier
-	newExecutor func() (ml.Executor, error)
+	newExecutor func(*config, aisecCrypto.Provider) (ml.Executor, error)
 	logger      *slog.Logger
 	// ready вызывается, когда сокет готов (для тестов).
 	ready func()
@@ -77,7 +77,7 @@ func run(ctx context.Context, cfg *config, d deps) error {
 	if err != nil {
 		return fmt.Errorf("пакет моделей отвергнут: %w", err)
 	}
-	exec, err := d.newExecutor()
+	exec, err := d.newExecutor(cfg, d.provider)
 	if err != nil {
 		return err
 	}

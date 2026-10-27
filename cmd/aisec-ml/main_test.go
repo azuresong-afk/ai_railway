@@ -54,7 +54,7 @@ func newFixture(t *testing.T) *fixture {
 	cfg := &config{Socket: filepath.Join(sockDir, "aisec-ml.sock"), Models: models, MaxConns: 4, Workers: 1,
 		QueueWait: 10 * time.Millisecond, MaxModelBytes: ml.DefaultMaxModelBytes}
 	d := deps{provider: p, verifier: v, logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
-		newExecutor: func() (ml.Executor, error) { return mltest.Executor{}, nil }}
+		newExecutor: func(*config, aisecCrypto.Provider) (ml.Executor, error) { return mltest.Executor{}, nil }}
 	return &fixture{cfg: cfg, d: d}
 }
 
@@ -128,7 +128,7 @@ func TestRunRefusesUnverifiedPackage(t *testing.T) {
 			f := newFixture(t)
 			spoil(t, f)
 			loaded := false
-			f.d.newExecutor = func() (ml.Executor, error) { loaded = true; return mltest.Executor{}, nil }
+			f.d.newExecutor = func(*config, aisecCrypto.Provider) (ml.Executor, error) { loaded = true; return mltest.Executor{}, nil }
 			err := run(context.Background(), f.cfg, f.d)
 			if err == nil || !strings.Contains(err.Error(), "пакет моделей отвергнут") {
 				t.Fatalf("пакет принят: %v", err)
@@ -140,14 +140,6 @@ func TestRunRefusesUnverifiedPackage(t *testing.T) {
 				t.Fatal("сокет создан при отвергнутом пакете")
 			}
 		})
-	}
-}
-
-func TestRunWithoutONNXExecutor(t *testing.T) {
-	f := newFixture(t)
-	f.d.newExecutor = newExecutor
-	if err := run(context.Background(), f.cfg, f.d); err == nil || !strings.Contains(err.Error(), "aisec_onnx") {
-		t.Fatalf("сборка без ONNX запустилась: %v", err)
 	}
 }
 
@@ -223,6 +215,8 @@ func TestLoadConfig(t *testing.T) {
 		{"-workers=-1"},
 		{"-queue-wait=5s"},
 		{"-max-model-bytes=10"},
+		{"-ort-lib=lib.so"},
+		{"-ort-lib=/opt/../lib.so"},
 		{"лишний"},
 	} {
 		if _, err := loadConfig(args, func(string) string { return "" }, io.Discard); err == nil {

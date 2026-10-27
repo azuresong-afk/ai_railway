@@ -17,6 +17,8 @@ import (
 const (
 	DefaultSocket = "/run/aisec-ml/aisec-ml.sock"
 	DefaultModels = "/opt/aisec/models"
+	// DefaultORTLib — библиотека ONNX Runtime в образе aisec-ml (ADR-0024, раздел 8).
+	DefaultORTLib = "/opt/aisec/lib/libonnxruntime.so.1.31.0"
 	maxSocketPath = 100 // предел sun_path (108 байт) с запасом
 	maxWorkers    = 256
 	maxConnsLimit = 1024
@@ -30,6 +32,7 @@ type config struct {
 	Workers       int
 	QueueWait     time.Duration
 	MaxModelBytes int64
+	ORTLib        string
 }
 
 func envName(flagName string) string {
@@ -46,6 +49,7 @@ func loadConfig(args []string, getenv func(string) string, errOut io.Writer) (*c
 	maxConns := fs.String("max-conns", strconv.Itoa(ml.DefaultMaxConns), "предел соединений (AISEC_ML_MAX_CONNS)")
 	workers := fs.String("workers", "0", "предел одновременных выводов; 0 — число процессоров (AISEC_ML_WORKERS)")
 	queueWait := fs.String("queue-wait", ml.DefaultQueueWait.String(), "ожидание свободного исполнителя, затем overloaded (AISEC_ML_QUEUE_WAIT)")
+	ortLib := fs.String("ort-lib", DefaultORTLib, "библиотека ONNX Runtime; хеш сверяется со встроенным при сборке (AISEC_ML_ORT_LIB)")
 	maxModel := fs.String("max-model-bytes", strconv.Itoa(ml.DefaultMaxModelBytes), "предел суммарного размера моделей в памяти, байт (AISEC_ML_MAX_MODEL_BYTES)")
 	if err := fs.Parse(args); err != nil {
 		return nil, err
@@ -57,7 +61,7 @@ func loadConfig(args []string, getenv func(string) string, errOut io.Writer) (*c
 	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
 	for name, dst := range map[string]*string{
 		"socket": socket, "models": models, "max-conns": maxConns, "workers": workers,
-		"queue-wait": queueWait, "max-model-bytes": maxModel,
+		"queue-wait": queueWait, "max-model-bytes": maxModel, "ort-lib": ortLib,
 	} {
 		if !set[name] {
 			if v := getenv(envName(name)); v != "" {
@@ -65,13 +69,16 @@ func loadConfig(args []string, getenv func(string) string, errOut io.Writer) (*c
 			}
 		}
 	}
-	cfg := &config{Socket: *socket, Models: *models}
+	cfg := &config{Socket: *socket, Models: *models, ORTLib: *ortLib}
 	var errs []error
 	if !filepath.IsAbs(cfg.Socket) || filepath.Clean(cfg.Socket) != cfg.Socket || len(cfg.Socket) > maxSocketPath {
 		errs = append(errs, fmt.Errorf("socket: абсолютный путь без «..» не длиннее %d байт", maxSocketPath))
 	}
 	if !filepath.IsAbs(cfg.Models) {
 		errs = append(errs, errors.New("models: абсолютный путь"))
+	}
+	if !filepath.IsAbs(cfg.ORTLib) || filepath.Clean(cfg.ORTLib) != cfg.ORTLib {
+		errs = append(errs, errors.New("ort-lib: абсолютный путь без «..»"))
 	}
 	var err error
 	if cfg.MaxConns, err = strconv.Atoi(*maxConns); err != nil || cfg.MaxConns < 1 || cfg.MaxConns > maxConnsLimit {
