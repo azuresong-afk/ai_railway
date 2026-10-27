@@ -936,8 +936,9 @@ func (d Deps) dashStream(w http.ResponseWriter, r *http.Request) {
 				return
 			case <-t.C:
 			}
-			// Выход, отзыв токена, деактивация и потеря права закрывают поток.
-			p2, dec := d.Reauthorize(r, auth.PermDashboardsRead)
+			// Выход, отзыв токена, деактивация, потеря права и простой сессии
+			// закрывают поток; тик активностью сессии не считается.
+			p2, dec := d.Reauthorize(r.WithContext(auth.WithoutActivity(r.Context())), auth.PermDashboardsRead)
 			if dec != Allow {
 				return
 			}

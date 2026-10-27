@@ -83,6 +83,24 @@ type Categorizer interface {
 	Categories() []string
 }
 
+// RequestLevel — необязательный интерфейс детектора уровня запроса или
+// сессии (session.risk, prompt.integrity, history.integrity; этап 4):
+// отдельный текст он не проверяет, и Registry.Run его не запускает.
+// Находку даёт конвейер шлюза по состоянию сессии и эталону приложения или
+// сервер при приёме событий; в реестре он нужен, чтобы политика могла
+// назвать его в правиле.
+type RequestLevel interface {
+	RequestLevel() bool
+}
+
+// ActionLimiter — необязательный интерфейс: действия, допустимые в
+// правилах с детектором (имена действий политики). Находку без позиций в
+// тексте нельзя замаскировать, а находку, которая появляется после ответа
+// приложению, нельзя заблокировать: такое правило молча не срабатывало бы.
+type ActionLimiter interface {
+	Actions() []string
+}
+
 var (
 	idRe       = regexp.MustCompile(`^[a-z][a-z0-9]*(\.[a-z][a-z0-9]*)*$`)
 	versionRe  = regexp.MustCompile(`^\d+\.\d+\.\d+$`)
@@ -195,7 +213,7 @@ func (r *Registry) Run(ctx context.Context, ids []string, t Text, timeout time.D
 		if !ok {
 			return nil, nil, fmt.Errorf("неизвестный детектор %q", id)
 		}
-		if !slices.Contains(d.Directions(), t.Direction) {
+		if !slices.Contains(d.Directions(), t.Direction) || requestLevel(d) {
 			continue
 		}
 		wg.Add(1)
@@ -216,6 +234,12 @@ func (r *Registry) Run(ctx context.Context, ids []string, t Text, timeout time.D
 		all = append(all, res.fs...)
 	}
 	return all, errs, nil
+}
+
+// requestLevel — детектор уровня запроса или сессии (RequestLevel).
+func requestLevel(d Detector) bool {
+	rl, ok := d.(RequestLevel)
+	return ok && rl.RequestLevel()
 }
 
 // runOne выполняет детектор со сроком. Детектор, который не реагирует на

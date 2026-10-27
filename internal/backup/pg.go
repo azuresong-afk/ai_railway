@@ -164,7 +164,7 @@ func readRoles(ctx context.Context, tx pgx.Tx, s *Snapshot) error {
 func readUsers(ctx context.Context, tx pgx.Tx, s *Snapshot, box SecretOpener, keys *Keys) error {
 	rows, err := tx.Query(ctx, `SELECT id::text, login, display_name, role, status, password_hash, password_changed_at,
 		must_change_password, temp_password_expires_at, failed_attempts, locked_at, locked_until, created_at, created_by,
-		deactivated_at, last_login_at FROM users WHERE org_id = $1 ORDER BY created_at, id`, s.OrgID)
+		deactivated_at, last_login_at, auth_source, idp_issuer, idp_subject FROM users WHERE org_id = $1 ORDER BY created_at, id`, s.OrgID)
 	if err != nil {
 		return err
 	}
@@ -172,7 +172,7 @@ func readUsers(ctx context.Context, tx pgx.Tx, s *Snapshot, box SecretOpener, ke
 		var u User
 		err := r.Scan(&u.ID, &u.Login, &u.DisplayName, &u.Role, &u.Status, &u.PasswordHash, &u.PasswordChangedAt,
 			&u.MustChangePassword, &u.TempPasswordExpiresAt, &u.FailedAttempts, &u.LockedAt, &u.LockedUntil,
-			&u.CreatedAt, &u.CreatedBy, &u.DeactivatedAt, &u.LastLoginAt)
+			&u.CreatedAt, &u.CreatedBy, &u.DeactivatedAt, &u.LastLoginAt, &u.AuthSource, &u.IdPIssuer, &u.IdPSubject)
 		return u, err
 	})
 	if err != nil {
@@ -712,11 +712,11 @@ func writeUsers(ctx context.Context, tx pgx.Tx, p *Prepared) error {
 	for _, u := range s.Users {
 		if _, err := tx.Exec(ctx, `INSERT INTO users (id, org_id, login, display_name, role, status, password_hash,
 			password_changed_at, must_change_password, temp_password_expires_at, failed_attempts, locked_at, locked_until,
-			created_at, created_by, deactivated_at, last_login_at)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
+			created_at, created_by, deactivated_at, last_login_at, auth_source, idp_issuer, idp_subject)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)`,
 			u.ID, s.OrgID, u.Login, u.DisplayName, u.Role, u.Status, u.PasswordHash, u.PasswordChangedAt,
 			u.MustChangePassword, u.TempPasswordExpiresAt, u.FailedAttempts, u.LockedAt, u.LockedUntil, u.CreatedAt,
-			u.CreatedBy, u.DeactivatedAt, u.LastLoginAt); err != nil {
+			u.CreatedBy, u.DeactivatedAt, u.LastLoginAt, u.source(), u.IdPIssuer, u.IdPSubject); err != nil {
 			return fmt.Errorf("%s: %w", u.Login, err)
 		}
 		for _, h := range u.PasswordHistory {

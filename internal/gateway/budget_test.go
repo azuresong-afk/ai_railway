@@ -332,8 +332,12 @@ func TestDM15_CanceledRequestCharged(t *testing.T) {
 	const maxOut = 300
 	text := strings.Repeat("а", 300) // 600 байт — 200 токенов по оценке
 	in := int64(estimateTokens(len(text)))
-	body := func(stream bool) string {
-		return `{"model":"m","max_tokens":` + strconv.Itoa(maxOut) + `,"stream":` + strconv.FormatBool(stream) +
+	body := func(stream, noMax bool) string {
+		limit := `"max_tokens":` + strconv.Itoa(maxOut) + `,`
+		if noMax {
+			limit = ""
+		}
+		return `{"model":"m",` + limit + `"stream":` + strconv.FormatBool(stream) +
 			`,"messages":[{"role":"user","content":"` + text + `"}]}`
 	}
 	for _, tc := range []struct {
@@ -342,6 +346,7 @@ func TestDM15_CanceledRequestCharged(t *testing.T) {
 		cancel  bool // клиент рвёт соединение, когда провайдер получил запрос
 		refuse  bool // провайдер отвечает 400
 		down    bool // отказ в соединении: запрос к провайдеру не ушёл
+		noMax   bool // запрос без max_tokens
 		charged bool
 	}{
 		{name: "отказ в соединении", down: true},
@@ -351,6 +356,10 @@ func TestDM15_CanceledRequestCharged(t *testing.T) {
 		{name: "таймаут провайдера", charged: true},
 		{name: "таймаут потока до заголовков", stream: true, charged: true},
 		{name: "явный отказ провайдера", refuse: true},
+		// Остаток 3В22 (перенесено в этап 4): без max_tokens списывается
+		// вход и оценка ответа unknownOutTokens, а не только вход.
+		{name: "клиент прервал запрос без max_tokens", cancel: true, noMax: true, charged: true},
+		{name: "таймаут потока без max_tokens", stream: true, noMax: true, charged: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			clock := &budgetClock{t: time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)}
@@ -396,7 +405,7 @@ func TestDM15_CanceledRequestCharged(t *testing.T) {
 					cancel()
 				}()
 			}
-			req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/v1/chat/completions", strings.NewReader(body(tc.stream)))
+			req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/v1/chat/completions", strings.NewReader(body(tc.stream, tc.noMax)))
 			req.Header.Set("Content-Type", "application/json")
 			g.ServeHTTP(httptest.NewRecorder(), req)
 			rep := budget.report()
@@ -415,13 +424,34 @@ func TestDM15_CanceledRequestCharged(t *testing.T) {
 				}
 				return
 			}
-			if want := (in + maxOut) * 50_000; u.Requests != 1 || u.Cost < want {
+			out := int64(maxOut)
+			if tc.noMax {
+				out = unknownOutTokens
+			}
+			if want := (in + out) * 50_000; u.Requests != 1 || u.Cost < want {
 				t.Fatalf("расход: %+v, ожидается Requests 1 и Cost >= %d", u, want)
 			}
 			if second.Code != http.StatusTooManyRequests || errCode(t, second) != "quota_exceeded" {
 				t.Fatalf("резерв квоты возвращён: %d %s", second.Code, second.Body.String())
 			}
 		})
+	}
+}
+
+// Остаток 3В22 (перенесено в этап 4): оценка ответа при неизвестном исходе —
+// предел запроса, без него unknownOutTokens; у эмбеддингов ответа нет.
+func TestUnknownOutEstimate(t *testing.T) {
+	for _, c := range []struct {
+		rec  record
+		want int
+	}{
+		{record{maxOut: 300}, 300},
+		{record{}, unknownOutTokens},
+		{record{noOutput: true}, 0},
+	} {
+		if got := c.rec.unknownOut(); got != c.want {
+			t.Errorf("%+v: %d, ожидается %d", c.rec.maxOut, got, c.want)
+		}
 	}
 }
 

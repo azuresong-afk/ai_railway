@@ -11,6 +11,13 @@ export type ExceptionCondition = components["schemas"]["ExceptionCondition"];
 
 export const pageSize = 200;
 
+// Разделитель CSV: «;» по умолчанию — Excel с русской локалью делит по нему на столбцы.
+export type CsvDelimiter = "semicolon" | "comma";
+export const delimiterTitles: [CsvDelimiter, string][] = [
+  ["semicolon", "Точка с запятой (Excel, русская локаль)"],
+  ["comma", "Запятая"],
+];
+
 export interface Query {
   from: string;
   to: string;
@@ -45,8 +52,9 @@ export const eventsApi = {
   deleteFilter: (id: string) => request<void>("DELETE", `/api/v1/events/filters/${encodeURIComponent(id)}`),
 
   // Выгрузка: файл приходит ответом сервера, консоль только сохраняет его (Blob без интерпретации).
-  async export(q: Query, format: "csv" | "json"): Promise<{ blob: Blob; rows: number | null; name: string }> {
+  async export(q: Query, format: "csv" | "json", delimiter: CsvDelimiter = "semicolon"): Promise<{ blob: Blob; rows: number | null; name: string }> {
     const body: Record<string, string> = { format, from: q.from, to: q.to };
+    if (format === "csv") body.delimiter = delimiter;
     if (q.filter) body.filter = q.filter;
     const resp = await fetch("/api/v1/events/export", {
       method: "POST",

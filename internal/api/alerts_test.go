@@ -202,8 +202,9 @@ func TestAlertRulesViaAPI(t *testing.T) {
 	w := e.call(auditor, "GET", "/api/v1/alert-rules", "", false)
 	list := decode[AlertRuleList](t, w.Body.Bytes())
 	// 5 встроенных задачи 3.10, 15 задачи 3.11, 5 задачи 3.12, правило DM-08 с инцидентом задачи 3.16, 1 задачи 3.14
-	// и system.alert_job (3В17 ревью 3.r2).
-	if w.Code != 200 || len(list.Items) != 28 {
+	// и system.alert_job (3В17 ревью 3.r2), 3 правила DM-03, DM-06, DM-26 задач 4.13 и 4.14,
+	// agents.tool_new и agents.tool_changed задачи 4.8, agents.approval_requested и agents.approval_queue_full задачи 4.10.
+	if w.Code != 200 || len(list.Items) != 35 {
 		t.Fatalf("правила: %d %s", w.Code, w.Body)
 	}
 	var sec AlertRuleView
@@ -211,7 +212,11 @@ func TestAlertRulesViaAPI(t *testing.T) {
 		if r.Builtin == alerting.BuiltinRecipientsChanged {
 			sec = r
 		}
-		if strings.Join(r.EffectiveRoles, ",") != "auditor,security_admin" {
+		want := "auditor,security_admin"
+		if r.Builtin == alerting.BuiltinApprovalRequested || r.Builtin == alerting.BuiltinApprovalQueueFull {
+			want = "analyst,auditor,security_admin" // дежурные-аналитики (ADR-0023, раздел 5)
+		}
+		if strings.Join(r.EffectiveRoles, ",") != want {
 			t.Fatalf("обязательные получатели: %+v", r)
 		}
 	}
@@ -442,5 +447,28 @@ func TestAlertSelfCloseViaAPI(t *testing.T) {
 	mustProblem(t, e.call(session{bearer: created.Token}, "POST", path, `{"status":"closed"}`, false), http.StatusForbidden, CodeForbidden)
 	if w := e.call(analyst, "POST", path, `{"status":"closed","comment":"проверено"}`, true); w.Code != http.StatusOK {
 		t.Fatalf("закрытие аналитиком: %d %s", w.Code, w.Body)
+	}
+
+	// 3Н48 ревью 3.r4: оповещение о действиях токена его владелец в консоли
+	// не закрывает; другой пользователь закрывает.
+	u, err = e.ids.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.alerts.Audit(context.Background(), audit.Record{ID: u.String(), OrgID: audit.DefaultOrgID, TS: time.Now(),
+		Actor:  audit.Actor{Type: audit.ActorAPIToken, ID: created.APIToken.ID, Name: "admin (" + created.APIToken.Prefix + ")"},
+		Action: "auth.mfa_reset", Object: audit.Object{Type: "user", ID: tAnalystID}, Result: audit.ResultSuccess,
+		Details: []byte("{}")}); err != nil {
+		t.Fatal(err)
+	}
+	w = e.call(admin, "GET", "/api/v1/alerts?kind=security&status=new", "", false)
+	p = decode[PageResponse[AlertView]](t, w.Body.Bytes())
+	if w.Code != 200 || len(p.Items) != 1 {
+		t.Fatalf("оповещение о действиях токена: %d %s", w.Code, w.Body)
+	}
+	path = "/api/v1/alerts/" + p.Items[0].ID + "/status"
+	mustProblem(t, e.call(admin, "POST", path, `{"status":"closed"}`, true), http.StatusConflict, CodeSelfReview)
+	if w := e.call(analyst, "POST", path, `{"status":"closed","comment":"проверено"}`, true); w.Code != http.StatusOK {
+		t.Fatalf("закрытие аналитиком оповещения о чужом токене: %d %s", w.Code, w.Body)
 	}
 }

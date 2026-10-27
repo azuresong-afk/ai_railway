@@ -25,6 +25,12 @@ const (
 	MaxExceptions = 1000
 	// MaxExceptionTTL — наибольший срок действия от created_at.
 	MaxExceptionTTL = 365 * 24 * time.Hour
+	// MaxCanaryExceptionTTL — наибольший срок нового или продлённого
+	// исключения для канарейки (3Н49 ревью 3.r4): маркер постоянный, и
+	// исключение по хешу фрагмента почти отключает DM-08 в приложении.
+	// Проверяется при сохранении сервером, а не при разборе: сохранённые
+	// версии с прежними сроками остаются действительными до истечения.
+	MaxCanaryExceptionTTL = 7 * 24 * time.Hour
 	// DefaultExceptionTTL — срок по умолчанию при создании.
 	DefaultExceptionTTL = 30 * 24 * time.Hour
 	// MaxExceptionReason — символов в причине.
@@ -163,6 +169,15 @@ func (e *ExceptionSpec) validate() []error {
 		add("event — ID события")
 	}
 	return errs
+}
+
+// ExceptionTTLLimit — наибольший срок нового или продлённого исключения
+// для детектора.
+func ExceptionTTLLimit(detector string) time.Duration {
+	if detector == canary.ID {
+		return MaxCanaryExceptionTTL
+	}
+	return MaxExceptionTTL
 }
 
 // validateExceptions — ошибки раздела exceptions спецификации.

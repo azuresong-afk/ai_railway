@@ -197,6 +197,14 @@ const (
 	ConditionOffline       = "gateway_offline" // шлюз не выходит на связь
 	ConditionCertExpiry    = "cert_expiry"     // сертификат шлюза скоро истекает
 	ConditionReportsStale  = "reports_stale"   // итог целостности шлюза устарел (Н29)
+	// ConditionGatewayClock — ВРМ.1 (3Н40 ревью 3.r3): часы шлюза расходятся
+	// с часами сервера больше GatewayClockSkewWarn — сроки исключений и
+	// время событий шлюза ненадёжны.
+	ConditionGatewayClock = "gateway_clock"
+	// ConditionGatewayTLS — ЗИ.4 (3Н43 ревью 3.r3): шлюз на текущем пакете
+	// дольше BundleLagAfter отвечает приложениям не тем сертификатом, что
+	// загружен в консоли (по часам шлюза он ещё не действует или истёк).
+	ConditionGatewayTLS = "gateway_tls"
 	// ConditionCAExpiry — ИАФ.10: действующему корню внутреннего УЦ осталось
 	// CAExpiryWarn и меньше; нужна ротация (aisec-cli keys rotate-ca). За
 	// CAExpiryCritical пишется ещё одно system.alert (код ca_expiry:critical).
@@ -211,7 +219,9 @@ const (
 	ConditionCustomerCertExpiry = "customer_cert_expiry"
 	// ConditionAlertJob — DM-44 (3В17 ревью 3.r2): фоновая задача правил
 	// «частота», «аномалия» и «бюджет» не отмечала проход дольше
-	// AlertJobStaleAfter при работающем сервере — правила молчат.
+	// AlertJobStaleAfter при работающем сервере — правила молчат; то же,
+	// если вычисление правила падает на каждом проходе дольше этого срока
+	// (3Н48 ревью 3.r4).
 	ConditionAlertJob = "alert_job_stale"
 )
 
@@ -228,6 +238,11 @@ type AlertJobRun struct {
 	LastRunAt time.Time
 	// Age — сколько прошло с последнего прохода по часам хранилища.
 	Age time.Duration
+	// FailingRules — включённых правил, вычисление которых падает на каждом
+	// проходе дольше AlertJobStaleAfter (3Н48 ревью 3.r4): проход идёт, а
+	// правило молчит. FailingSince — начало самой давней такой серии.
+	FailingRules int
+	FailingSince time.Time
 }
 
 // Пороги условий DM-44 (обоснование — ADR-0020).
@@ -277,7 +292,12 @@ const (
 
 // gatewayFamilies — семейства условий с кодом «семейство:ID шлюза».
 var gatewayFamilies = []string{ConditionBundleLag, ConditionEventsDropped, ConditionOffline, ConditionCertExpiry,
-	ConditionReportsStale}
+	ConditionReportsStale, ConditionGatewayClock, ConditionGatewayTLS}
+
+// GatewayClockSkewWarn — расхождение часов шлюза с сервером, после которого
+// поднимается условие gateway_clock (шлюз пишет предупреждение в свой
+// журнал уже с 30 с).
+const GatewayClockSkewWarn = time.Minute
 
 // Notification — условие уведомления на этапе 2.
 type Notification struct {

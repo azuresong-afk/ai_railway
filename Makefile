@@ -30,8 +30,11 @@ CGO_ALLOWED :=
 # Пути, где разрешены сетевые клиенты (ЗИ.2, H-Р11): шлюз (регистрация, пакет,
 # heartbeat, отправка событий), провайдеры LLM и каналы уведомлений
 # internal/notify — SMTP, webhook, syslog только по адресам администратора
-# (Р4, задача 3.13; обоснование — docs/cert/attack-surface.md).
-NET_CLIENT_ALLOWED := cmd/aisec-gateway,internal/gateway,internal/providers,internal/notify
+# (Р4, задача 3.13; обоснование — docs/cert/attack-surface.md);
+# internal/auth/oidc — discovery, JWKS и обмен кода только с издателем из
+# настроек IdP (ADR-0025, задача 4.17); internal/auth/ldap — поиск и bind
+# только в каталоге из настроек LDAP, LDAPS или StartTLS (ADR-0025, задача 4.16).
+NET_CLIENT_ALLOWED := cmd/aisec-gateway,internal/gateway,internal/providers,internal/notify,internal/auth/oidc,internal/auth/ldap
 
 # Версии инструментов разработки (ТЗ, 8.2). Меняются только вместе с
 # docs/cert/components.yaml (scope: build) и сборочным образом.
@@ -56,14 +59,18 @@ SOURCE_DATE ?= $(shell git log -1 --format=%cI 2>/dev/null || echo 1970-01-01T00
 SOURCE_EPOCH ?= $(shell git log -1 --format=%ct 2>/dev/null || echo 0)
 LDFLAGS := -s -w -buildid= -X main.version=$(VERSION)
 
-# Поставочная сборка (ADR-0012): RELEASE=1 встраивает открытый ключ
-# производителя internal/integrity/keys/manifest.pub вместо тестового, а
-# make manifest требует MANIFEST_KEY — закрытый ключ производителя вне
+# Поставочная сборка (ADR-0012, ADR-0022): RELEASE=1 встраивает открытый
+# ключ производителя internal/integrity/keys/manifest.pub вместо тестового.
+# Манифест поставки собирается без подписи (make release-dir RELEASE=1) и
+# подписывается отдельным шагом на машине без сети: make release-sign
+# MANIFEST_KEY=… или собранный make release-signer инструмент. MANIFEST_KEY —
+# путь к закрытому ключу производителя на отдельном носителе, вне
 # репозитория. Без RELEASE сборка и манифест — с тестовым ключом «не для
 # поставки» (testdata/integrity/).
 RELEASE ?=
 BUILD_TAGS := $(if $(filter 1,$(RELEASE)),aisec_release,)
 MANIFEST_KEY ?=
+MANIFEST_SHA256 ?=
 MANIFEST_TEST_KEY := testdata/integrity/manifest-test.signkey
 
 .PHONY: help
@@ -86,16 +93,15 @@ else
 WEB_CHECKS := web-check web-e2e
 endif
 
-# Поставочная сборка (RELEASE=1) проверяет и тесты с тегом aisec_release (Н35).
-RELEASE_CHECKS := $(if $(filter 1,$(RELEASE)),release-test,)
-
-check: fmt-check vet docs-check repocheck licenses vendor-check lint lint-selftest sast test $(RELEASE_CHECKS) build manifest e2e dm-coverage detector-quality sbom fuzz-smoke vuln $(WEB_CHECKS) ## Все проверки перед pull request
+# Тесты поставочной сборки (тег aisec_release, Н35) входят в каждую проверку:
+# без RELEASE=1 — с имитацией ключа производителя (ADR-0022).
+check: fmt-check vet docs-check repocheck licenses vendor-check lint lint-selftest sast test release-test build manifest e2e dm-coverage detector-quality sbom fuzz-smoke vuln $(WEB_CHECKS) ## Все проверки перед pull request
 	@if [ -n "$(strip $(PENDING_CHECKS))" ]; then \
 		echo "ВНИМАНИЕ: make check неполный, не выполнены: $(PENDING_CHECKS) (docs/plans/stage-0.md; для web-* нужен Node.js, web/README.md)"; fi
 
 .PHONY: fmt-check
-fmt-check: ## Форматирование Go-кода (gofmt)
-	@out="$$(gofmt -l $$(git ls-files '*.go'))"; \
+fmt-check: ## Форматирование Go-кода (gofmt); vendor/ — чужой код, его неизменность проверяет vendor-check
+	@out="$$(gofmt -l $$(git ls-files '*.go' ':!vendor/'))"; \
 	if [ -n "$$out" ]; then echo "Не отформатированы (gofmt -w):"; echo "$$out"; exit 1; fi
 
 .PHONY: vet
@@ -181,6 +187,8 @@ build: ## Сборка бинарников в build/bin
 .PHONY: lint
 lint: lint-version ## Линтеры, в том числе depguard (.golangci.yml); с cgo, чтобы проверялись все файлы
 	CGO_ENABLED=1 $(BIN)/golangci-lint run ./...
+	# Исполнитель ONNX Runtime в aisec-ml собирается только с тегом aisec_onnx (ADR-0024).
+	CGO_ENABLED=1 $(BIN)/golangci-lint run --build-tags e2e,aisec_onnx ./cmd/aisec-ml/...
 
 .PHONY: sast
 sast: lint-version ## Статический анализ (gosec) в SARIF и сверка с разметкой docs/cert/sast-triage/
@@ -290,20 +298,35 @@ tools: ## Установить инструменты разработки в bi
 NOT_YET = @echo "$@: не реализовано — задача $(1) плана этапа 0 (docs/plans/stage-0.md)"; exit 1
 
 .PHONY: manifest
-manifest: build ## Подписанный манифест целостности build/aisec-manifest.json (ОЦЛ.1) и его проверка aisec-cli verify
+manifest: build ## Подписанный тестовым ключом манифест build/aisec-manifest.json (ОЦЛ.1) и его проверка aisec-cli verify
 ifeq ($(filter 1,$(RELEASE)),1)
-	@test -n '$(MANIFEST_KEY)' || { echo "manifest: для RELEASE=1 задайте MANIFEST_KEY — ключ производителя"; exit 1; }
+	@echo "manifest: манифест поставки подписывается на машине без сети — make release-dir RELEASE=1, release-sign, images RELEASE=1 (ADR-0022)"; exit 1
 endif
-	go run ./tools/manifest build -out $(BUILD)/aisec-manifest.json \
-		$(if $(MANIFEST_KEY),-key '$(MANIFEST_KEY)',-test-key $(MANIFEST_TEST_KEY)) \
+	go run ./tools/manifest build -out $(BUILD)/aisec-manifest.json -test-key $(MANIFEST_TEST_KEY) \
 		-version '$(VERSION)' -created '$(SOURCE_DATE)' -bin $(BUILD)/bin -cmds '$(PRODUCT_CMDS)' \
 		-static web/dist -migrations migrations
 	$(BUILD)/bin/aisec-cli verify -manifest $(BUILD)/aisec-manifest.json
 
+# Без RELEASE=1 вместо keys/manifest.pub встраивается имитация ключа
+# производителя (go test -overlay): тесты проверяют приём подписи ключом
+# производителя и отказы. С RELEASE=1 — настоящий открытый ключ производителя.
+RELEASE_CI_OVERLAY := $(BUILD)/release-ci-overlay.json
+
 .PHONY: release-test
-release-test: ## Тесты поставочной сборки (тег aisec_release, Н35): встроен ключ производителя, а не тестовый
-	@test -s internal/integrity/keys/manifest.pub || { echo "release-test: нет internal/integrity/keys/manifest.pub — открытого ключа производителя (ADR-0012)"; exit 1; }
+release-test: ## Тесты поставочной сборки (тег aisec_release, Н35, ADR-0022): принят только ключ производителя
+ifeq ($(filter 1,$(RELEASE)),1)
+	@test -s internal/integrity/keys/manifest.pub || { echo "release-test: нет internal/integrity/keys/manifest.pub — открытого ключа производителя (ADR-0022)"; exit 1; }
 	go test -count=1 -tags aisec_release ./internal/integrity/
+else
+	@mkdir -p $(BUILD)
+	@printf '{"Replace":{"%s/internal/integrity/keys/manifest.pub":"%s/internal/integrity/keys/manifest-release-ci.pub"}}\n' '$(CURDIR)' '$(CURDIR)' >$(RELEASE_CI_OVERLAY)
+	go test -count=1 -tags aisec_release -overlay $(RELEASE_CI_OVERLAY) ./internal/integrity/
+endif
+
+.PHONY: release-fingerprint
+release-fingerprint: ## Отпечаток открытого ключа производителя — для руководства установки и README поставки (ADR-0022)
+	@test -s internal/integrity/keys/manifest.pub || { echo "release-fingerprint: нет internal/integrity/keys/manifest.pub"; exit 1; }
+	@go run ./tools/manifest fingerprint -pub internal/integrity/keys/manifest.pub
 
 # Образы поставки пилота (ADR-0019): scratch, статические бинарники, манифест
 # целостности внутри образа. Поставочные образы — только RELEASE=1 (Н34);
@@ -321,31 +344,58 @@ IMAGE_BINS_aisec-gateway := aisec-gateway
 IMAGE_BINS_aisec-cli     := $(PRODUCT_CMDS)
 PILOT_COMPOSE := deploy/compose/pilot/compose.yaml
 
+# Проверки дерева выпуска (RELEASE=1): консоль собрана, дерево чистое, на
+# HEAD тег VERSION. Состояние дерева проверяется по git, а не по VERSION: её
+# можно переопределить (3Н3 ревью 3.r1). Неотслеживаемый файл тоже меняет
+# сборку.
+define release-tree-check
+	@test -s web/dist/index.html || { echo "выпуск: нет web/dist/index.html — сначала make web-build (консоль встраивается в aisec-server)"; exit 1; }
+	@test -z "$$(git status --porcelain)" || { echo "выпуск: в рабочем дереве есть изменения или неотслеживаемые файлы — выпуск только из чистого дерева"; exit 1; }
+	@tag=$$(git describe --exact-match --tags HEAD 2>/dev/null) || { echo "выпуск: на HEAD нет тега — выпуск только с тега"; exit 1; }; \
+		test "$$tag" = '$(VERSION)' || { echo "выпуск: VERSION=$(VERSION) не совпадает с тегом $$tag на HEAD"; exit 1; }
+endef
+
 .PHONY: release-dir
-release-dir: ## Каталог выпуска build/release: статические бинарники и подписанный манифест (основа образов)
+release-dir: ## Каталог выпуска build/release: статические бинарники и манифест (с RELEASE=1 — без подписи, ADR-0022)
 ifeq ($(filter 1,$(RELEASE)),1)
-	@test -n '$(MANIFEST_KEY)' || { echo "release-dir: для RELEASE=1 задайте MANIFEST_KEY — ключ производителя"; exit 1; }
-	@test -s web/dist/index.html || { echo "release-dir: нет web/dist/index.html — сначала make web-build (консоль встраивается в aisec-server)"; exit 1; }
-# Состояние дерева проверяется по git, а не по VERSION: её можно
-# переопределить (3Н3 ревью 3.r1). Неотслеживаемый файл тоже меняет сборку.
-	@test -z "$$(git status --porcelain)" || { echo "release-dir: в рабочем дереве есть изменения или неотслеживаемые файлы — выпуск только из чистого дерева"; exit 1; }
-	@tag=$$(git describe --exact-match --tags HEAD 2>/dev/null) || { echo "release-dir: на HEAD нет тега — выпуск только с тега"; exit 1; }; \
-		test "$$tag" = '$(VERSION)' || { echo "release-dir: VERSION=$(VERSION) не совпадает с тегом $$tag на HEAD"; exit 1; }
+	$(release-tree-check)
 endif
 	rm -rf $(RELEASE_DIR)
 	mkdir -p $(RELEASE_DIR)/bin
 	CGO_ENABLED=0 go build -trimpath -tags '$(BUILD_TAGS)' -ldflags '$(LDFLAGS)' -o $(RELEASE_DIR)/bin/ $(addprefix ./cmd/,$(PRODUCT_CMDS))
 	go run ./tools/manifest build -out $(RELEASE_DIR)/aisec-manifest.json \
-		$(if $(MANIFEST_KEY),-key '$(MANIFEST_KEY)',-test-key $(MANIFEST_TEST_KEY)) \
+		$(if $(filter 1,$(RELEASE)),-unsigned,-test-key $(MANIFEST_TEST_KEY)) \
 		-version '$(VERSION)' -created '$(SOURCE_DATE)' -bin $(RELEASE_DIR)/bin -cmds '$(PRODUCT_CMDS)' \
 		-static web/dist -migrations migrations
+ifneq ($(filter 1,$(RELEASE)),1)
 	$(RELEASE_DIR)/bin/aisec-cli verify -manifest $(RELEASE_DIR)/aisec-manifest.json
+endif
+
+# Подпись манифеста поставки — на машине без сети с ключом на отдельном
+# носителе (ADR-0022). Инструмент подписи — статический tools/manifest:
+# make release-signer собирает его один раз, он переносится на машину
+# подписи вместе с build/release/aisec-manifest.json.
+SIGNER := $(BUILD)/signer/aisec-manifest-sign
+
+.PHONY: release-signer
+release-signer: ## Статический инструмент подписи манифеста для машины без сети (ADR-0022)
+	CGO_ENABLED=0 go build -trimpath -ldflags '-s -w -buildid=' -o $(SIGNER) ./tools/manifest
+
+.PHONY: release-sign
+release-sign: ## Подписать манифест поставки ключом производителя: MANIFEST_KEY=… [MANIFEST_SHA256=…], только без сети
+	@test -n '$(MANIFEST_KEY)' || { echo "release-sign: задайте MANIFEST_KEY — путь к ключу производителя на отдельном носителе"; exit 1; }
+	go run ./tools/manifest sign -key '$(MANIFEST_KEY)' -manifest $(RELEASE_DIR)/aisec-manifest.json \
+		$(if $(MANIFEST_SHA256),-expect-sha256 '$(MANIFEST_SHA256)')
 
 .PHONY: images
-images: ## Образы поставки пилота — только RELEASE=1 и MANIFEST_KEY (Н34): сборка, SBOM, проверка (ЗИ.5)
-	@test '$(RELEASE)' = 1 || { echo "images: только RELEASE=1 с MANIFEST_KEY (Н34); образы с тестовым ключом, не для поставки — make images-test"; exit 1; }
+images: ## Образы поставки пилота из подписанного каталога выпуска — только RELEASE=1 (Н34, ADR-0022): сборка, SBOM, проверка (ЗИ.5)
+	@test '$(RELEASE)' = 1 || { echo "images: только RELEASE=1 (Н34); образы с тестовым ключом, не для поставки — make images-test"; exit 1; }
+	$(release-tree-check)
+	@test -s $(RELEASE_DIR)/aisec-manifest.json.sig || { echo "images: нет $(RELEASE_DIR)/aisec-manifest.json.sig — make release-dir RELEASE=1, затем подпись на машине без сети (make release-sign)"; exit 1; }
 	$(MAKE) release-test
-	$(MAKE) images-all
+	$(RELEASE_DIR)/bin/aisec-cli verify -manifest $(RELEASE_DIR)/aisec-manifest.json
+	$(MAKE) --no-print-directory release-fingerprint
+	$(MAKE) images-build
 
 .PHONY: images-test
 images-test: ## Те же образы с тестовым ключом манифеста — НЕ ДЛЯ ПОСТАВКИ (aisec-test/…:ВЕРСИЯ-test)
@@ -355,6 +405,10 @@ images-test: ## Те же образы с тестовым ключом мани
 .PHONY: images-all
 images-all:
 	$(MAKE) release-dir
+	$(MAKE) images-build
+
+.PHONY: images-build
+images-build:
 	$(MAKE) images-docker
 	$(MAKE) images-sbom
 	$(MAKE) images-verify

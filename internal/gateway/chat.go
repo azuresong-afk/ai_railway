@@ -23,6 +23,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/chat"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/internal/detect"
+	"github.com/azuresong-afk/ai_railway/internal/detect/session"
 	"github.com/azuresong-afk/ai_railway/internal/events"
 	"github.com/azuresong-afk/ai_railway/internal/ids"
 	"github.com/azuresong-afk/ai_railway/internal/policy"
@@ -50,11 +51,22 @@ type ChatConfig struct {
 	// UserMAC — имитовставка для псевдонима пользователя в событиях и
 	// квотах (ТЗ, 5.5); nil — пользователь не учитывается.
 	UserMAC aisecCrypto.MAC
+	// Sessions — сессии чата (задачи 4.13, 4.14): псевдоним сессии в
+	// событиях, session.risk, хеши реплик для history.integrity; nil — без
+	// сессий (заголовок X-AISec-Session всё равно проверяется).
+	Sessions *Sessions
 	// DetectorTimeout — срок детектора на короткий текст; ноль —
 	// DefaultDetectorTimeout. Срок растёт с длиной текста (pipeline.go).
 	DetectorTimeout time.Duration
 	// Now — часы для задержек в событии; по умолчанию time.Now.
 	Now func() time.Time
+	// Hasher — хеши аргументов и описаний функций для политики вызовов и
+	// очереди подтверждений (задача 4.10); nil — вызовы с require_approval
+	// отклоняются.
+	Hasher aisecCrypto.Hasher
+	// ToolRate — счётчики лимитов политики вызовов (общие с MCP-прокси);
+	// nil — лимиты не считаются.
+	ToolRate policy.RateCounter
 }
 
 // Заголовки шлюза (ТЗ, 5.1 и 4.3).
@@ -163,7 +175,16 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusBadRequest, ce.Message, "invalid_request_error", ce.Code)
 		return
 	}
-	user, ok := h.user(w, r, app, req.User)
+	eu, ok := h.user(w, r, app, req.User)
+	if !ok {
+		return
+	}
+	user := eu.ID
+	agent, ok := h.agent(w, r, app)
+	if !ok {
+		return
+	}
+	sess, ok := h.session(w, r, app, req, user)
 	if !ok {
 		return
 	}
@@ -172,6 +193,11 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer h.emit(rec)
+	rec.agent, rec.tools = agent, req.Tools
+	if sess != nil {
+		rec.sess = sess
+		rec.ev.Session = sess.ev
+	}
 	requested := req.Model
 	model, ok := app.Resolve(requested)
 	if !ok {
@@ -179,6 +205,11 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		rec.reject(ruleModel, "DM-33")
 		w.Header().Set(HeaderDecision, string(policy.Block))
 		WriteError(w, http.StatusNotFound, "модель недоступна для приложения", "invalid_request_error", "model_not_found")
+		return
+	}
+	if !app.modelAllowed(requested, model, eu) {
+		rec.ev.Model = model
+		denyModelGroup(w, rec)
 		return
 	}
 	req.Model = model
@@ -202,6 +233,7 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	in, err := app.inspect(r.Context(), inspectRequest{
 		Endpoint: policy.EndpointChat, External: app.Provider.External(), Texts: texts, Media: policyMedia(req.Media()), User: user,
 		Mask: app.Storage == events.StorageMasked, Timeout: h.cfg.DetectorTimeout, Vault: rec.vault,
+		Extra: app.promptFinding(req), Session: sess,
 	})
 	rec.ev.LatencyMS["input_check"] = h.cfg.Now().Sub(checkStart).Milliseconds()
 	switch {
@@ -276,13 +308,49 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !h.checkFull(w, r, app, rec, resp) {
 		return
 	}
+	rec.issue(resp)
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// user — псевдоним конечного пользователя (ТЗ, 4.3, шаг 2; 5.5): HMAC
-// идентификатора на ключе установки. Исходный идентификатор нигде не
-// сохраняется. При ошибке ответ уже записан.
-func (h *ChatHandler) user(w http.ResponseWriter, r *http.Request, app *App, reqUser string) (string, bool) {
+// session — сессия запроса чата (задача 4.13): X-AISec-Session или
+// отпечаток начала диалога; для history.integrity — хеши реплик
+// ассистента из истории, если в политике приложения есть его правило.
+// Неверный заголовок — 400 без эха значения. При ошибке ответ уже записан.
+func (h *ChatHandler) session(w http.ResponseWriter, r *http.Request, app *App, req *chat.Request, user string) (*reqSession, bool) {
+	vals := r.Header.Values(HeaderSession)
+	if h.cfg.Sessions == nil {
+		if _, err := parseSessionHeader(vals); err != nil {
+			WriteError(w, http.StatusBadRequest, err.Error(), "invalid_request_error", "invalid_session")
+			return nil, false
+		}
+		return nil, true
+	}
+	s, err := h.cfg.Sessions.identify(app.ID, user, vals, req)
+	if err != nil {
+		WriteError(w, http.StatusBadRequest, err.Error(), "invalid_request_error", "invalid_session")
+		return nil, false
+	}
+	if rule, action, sev, ok := app.Policy.RuleFor(session.HistoryID, detect.Input); ok {
+		s.ev.History, s.ev.HistoryRule, s.ev.HistoryAction, s.ev.HistorySeverity = h.cfg.Sessions.history(req), rule, string(action), string(sev)
+	}
+	return s, true
+}
+
+// user — конечный пользователь (ТЗ, 4.3, шаг 2; 5.5): из проверенного JWT
+// (usertoken.go) или по user_from; псевдоним — HMAC идентификатора на
+// ключе установки. Исходный идентификатор нигде не сохраняется. При ошибке
+// ответ уже записан.
+func (h *ChatHandler) user(w http.ResponseWriter, r *http.Request, app *App, reqUser string) (endUser, bool) {
+	if u, handled, ok := h.userFromToken(w, r, app); handled || !ok {
+		return u, ok
+	}
+	id, ok := h.userID(w, r, app, reqUser)
+	return endUser{ID: id}, ok
+}
+
+// userID — псевдоним пользователя по user_from (X-AISec-User или поле
+// user). При ошибке ответ уже записан.
+func (h *ChatHandler) userID(w http.ResponseWriter, r *http.Request, app *App, reqUser string) (string, bool) {
 	var id string
 	switch app.UserFrom {
 	case userFromHeader:
@@ -419,7 +487,7 @@ func requestTexts(req *chat.Request) ([]inspectText, []textRef) {
 		if s.Kind == chat.SegContent || s.Kind == chat.SegRefusal {
 			parts[s.Message] = append(parts[s.Message], len(texts))
 		}
-		texts = append(texts, inspectText{Text: s.Text, Source: src, Location: s.Location()})
+		texts = append(texts, inspectText{Text: s.Text, Source: src, Location: s.Location(), Message: s.Message})
 		refs = append(refs, textRef{seg: s, tool: -1})
 	}
 	for m := range req.Messages {
@@ -436,7 +504,7 @@ func requestTexts(req *chat.Request) ([]inspectText, []textRef) {
 				b.WriteString(texts[p].Text)
 			}
 			texts = append(texts, inspectText{Text: b.String(), Source: texts[ps[0]].Source,
-				Location: fmt.Sprintf("messages[%d].content", m), Parts: ps, Sep: sep})
+				Location: fmt.Sprintf("messages[%d].content", m), Parts: ps, Sep: sep, Message: m})
 			refs = append(refs, textRef{tool: -1})
 		}
 	}
@@ -445,7 +513,7 @@ func requestTexts(req *chat.Request) ([]inspectText, []textRef) {
 			continue
 		}
 		texts = append(texts, inspectText{Text: tl.Function.Description, Source: detect.SourceUser,
-			Location: fmt.Sprintf("tools[%d].function.description", i)})
+			Location: fmt.Sprintf("tools[%d].function.description", i), Message: -1})
 		refs = append(refs, textRef{tool: i})
 	}
 	return texts, refs
@@ -552,9 +620,19 @@ func (h *ChatHandler) stream(w http.ResponseWriter, r *http.Request, app *App, r
 		return rc.Flush() == nil
 	}
 	sp := h.newStreamProc(r, app, rec, requested, mode == policy.ResponseIncremental, send)
+	if hd, ok := st.(providers.Holder); ok {
+		sp.hold = hd.Hold
+	}
+	sp.comment = func(text string) bool {
+		if err := sse.WriteComment(w, text); err != nil {
+			return false
+		}
+		return rc.Flush() == nil
+	}
 	defer func() {
 		rec.respMasked = sp.content.masked || sp.refusal.masked
 		rec.respFailures = sp.failures
+		sp.issue()
 		sp.afterStream()
 	}()
 	for {

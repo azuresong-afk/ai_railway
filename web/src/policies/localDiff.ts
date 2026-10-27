@@ -10,7 +10,7 @@ const sorted = (r: PolicyRule): [string, unknown][] => Object.entries(r).sort(([
 
 // Сравнение двух содержимых политики в браузере (Н46): правила, режим и общие поля. Признак ослабления — предварительная
 // оценка консоли по тем же причинам, что у сервера; окончательное решение за сервером, он потребует пароль или код.
-// Исключения здесь не сравниваются: их меняет отдельный экран.
+// Исключения и раздел tools здесь не сравниваются: их меняют не в этом редакторе.
 export function localDiff(before: PolicySpec, after: PolicySpec): PolicyDiff {
   const fields: PolicyDiff["fields"] = [];
   const text = (s: PolicySpec) =>
@@ -61,5 +61,10 @@ export function localDiff(before: PolicySpec, after: PolicySpec): PolicyDiff {
     exceptions_added: [],
     exceptions_removed: [],
     exceptions_changed: [],
+    // Раздел tools редактор правил не меняет: различия и ослабление по нему считает сервер.
+    tools_fields: [],
+    tool_rules_added: [],
+    tool_rules_removed: [],
+    tool_rules_changed: [],
   };
 }

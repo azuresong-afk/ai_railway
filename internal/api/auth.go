@@ -90,6 +90,9 @@ func authProblem(logger *slog.Logger, err error) *Problem {
 	case errors.Is(err, auth.ErrRoleChanged):
 		return NewProblem(http.StatusConflict, CodeConflict,
 			"Роль пользователя изменилась во время запроса: обновите страницу и повторите.")
+	case errors.Is(err, auth.ErrExternalUser):
+		return NewProblem(http.StatusForbidden, CodeForbidden,
+			"Действие недоступно учётной записи внешнего IdP: пароль, второй фактор и роль задаются в IdP.")
 	case errors.Is(err, auth.ErrEscalation):
 		return NewProblem(http.StatusForbidden, CodeForbidden,
 			"Недостаточно прав: у учётной записи или роли есть разрешения, которых нет у вас.")
@@ -124,6 +127,10 @@ type MeResponse struct {
 	// Permissions — разрешения, действующие в сессии (консоль скрывает
 	// недоступные действия; права всё равно проверяет сервер).
 	Permissions []string `json:"permissions"`
+	// OwnScope — разрешения из Permissions с областью own, только на свои
+	// объекты (УПД.8): консоль по ним сужает экраны (3Н46 ревью 3.r4 —
+	// отчёты владельца приложения).
+	OwnScope []string `json:"own_scope"`
 	// Timezone — часовой пояс показа времени из настроек установки (ВРМ.2,
 	// В26 ревью 2.r5): консоль показывает все даты в нём.
 	Timezone string `json:"timezone"`
@@ -175,6 +182,12 @@ func (d Deps) writeMe(w http.ResponseWriter, r *http.Request, c auth.Caller) {
 		return
 	}
 	resp.Permissions = g.Names()
+	resp.OwnScope = []string{}
+	for _, n := range resp.Permissions {
+		if g.Scope(n) == auth.ScopeOwn {
+			resp.OwnScope = append(resp.OwnScope, n)
+		}
+	}
 	left, warn, err := d.Auth.PasswordExpiresIn(r.Context(), c.User)
 	if err != nil {
 		WriteProblem(w, authProblem(d.Logger, err))

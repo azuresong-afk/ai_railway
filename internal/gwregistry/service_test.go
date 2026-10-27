@@ -353,16 +353,18 @@ func TestHeartbeatValidationAndRate(t *testing.T) {
 	reg, _ := e.register(t, e.token(t, "gw-1", false))
 	id := reg.Gateway.ID
 	for name, in := range map[string]gwregistry.HeartbeatInput{
-		"пустая версия":     {},
-		"длинная версия":    {Version: strings.Repeat("1", 65)},
-		"пробел в версии":   {Version: "1 0"},
-		"кириллица":         {Version: "версия"},
-		"длинный ETag":      {Version: "1", BundleETag: strings.Repeat("a", 129)},
-		"управляющий ETag":  {Version: "1", BundleETag: "a\nb"},
-		"пробел в ETag":     {Version: "1", BundleETag: "a b"},
-		"не-ASCII в ETag":   {Version: "1", BundleETag: "é"},
-		"перевод в версии":  {Version: "1\n"},
-		"нулевой байт ETag": {Version: "1", BundleETag: "\x00"},
+		"пустая версия":       {},
+		"длинная версия":      {Version: strings.Repeat("1", 65)},
+		"пробел в версии":     {Version: "1 0"},
+		"кириллица":           {Version: "версия"},
+		"длинный ETag":        {Version: "1", BundleETag: strings.Repeat("a", 129)},
+		"управляющий ETag":    {Version: "1", BundleETag: "a\nb"},
+		"пробел в ETag":       {Version: "1", BundleETag: "a b"},
+		"не-ASCII в ETag":     {Version: "1", BundleETag: "é"},
+		"перевод в версии":    {Version: "1\n"},
+		"нулевой байт ETag":   {Version: "1", BundleETag: "\x00"},
+		"короткий отпечаток":  {Version: "1", TLSFingerprint: ptr("ab")},
+		"прописной отпечаток": {Version: "1", TLSFingerprint: ptr(strings.Repeat("AB", 32))},
 	} {
 		if _, err := e.svc.Heartbeat(ctx, id, in, testIP); !errors.Is(err, gwregistry.ErrInvalidRequest) {
 			t.Errorf("%s: %v", name, err)
@@ -422,5 +424,52 @@ func TestRegisterWithoutCA(t *testing.T) {
 	}
 	if _, err := gwregistry.New(gwregistry.Options{Provider: p}); err == nil {
 		t.Fatal("сервис без хранилища")
+	}
+}
+
+func ptr[T any](v T) *T { return &v }
+
+// 3Н40, 3Н43 ревью 3.r3: сервер хранит расхождение часов шлюза с собой
+// (ограниченное) и отпечаток действующего сертификата адреса приложений из
+// последнего heartbeat; heartbeat без них (прежняя версия шлюза) их стирает.
+func TestHeartbeatClockSkewAndTLS(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	reg, _ := e.register(t, e.token(t, "gw-1", false))
+	id := reg.Gateway.ID
+	fp := strings.Repeat("ab", 32)
+	get := func() gwregistry.Gateway {
+		t.Helper()
+		list, err := e.svc.List(ctx)
+		if err != nil || len(list) != 1 {
+			t.Fatalf("%+v %v", list, err)
+		}
+		return list[0]
+	}
+	for _, c := range []struct {
+		ahead time.Duration
+		fp    *string
+		skew  time.Duration
+	}{
+		{-5 * 24 * time.Hour, ptr(""), -5 * 24 * time.Hour},
+		{90 * time.Second, &fp, 90 * time.Second},
+		// Часы «в другом веке» — расхождение ограничено десятью годами.
+		{200 * 365 * 24 * time.Hour, &fp, 10 * 365 * 24 * time.Hour},
+	} {
+		at := e.clock.now().Add(c.ahead)
+		if _, err := e.svc.Heartbeat(ctx, id, gwregistry.HeartbeatInput{Version: "1", Time: at, TLSFingerprint: c.fp}, testIP); err != nil {
+			t.Fatal(err)
+		}
+		g := get()
+		if g.ClockSkew == nil || *g.ClockSkew != c.skew || g.TLSFingerprint == nil || *g.TLSFingerprint != *c.fp {
+			t.Fatalf("после heartbeat %v: %+v", c.ahead, g)
+		}
+		e.clock.add(gwregistry.DefaultHeartbeatMinInterval)
+	}
+	if _, err := e.svc.Heartbeat(ctx, id, gwregistry.HeartbeatInput{Version: "1"}, testIP); err != nil {
+		t.Fatal(err)
+	}
+	if g := get(); g.ClockSkew != nil || g.TLSFingerprint != nil {
+		t.Fatalf("heartbeat прежней версии: %+v", g)
 	}
 }

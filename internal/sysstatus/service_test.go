@@ -87,9 +87,9 @@ func TestNewValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	st := s.Status(context.Background())
-	// Без источников: пустые массивы, UTC, умолчания, все шестнадцать условий.
+	// Без источников: пустые массивы, UTC, умолчания, все восемнадцать условий.
 	if st.Time.Timezone != "UTC" || st.Storage.LimitBytes != sysstatus.DefaultStorageLimit || st.Storage.WarnPercent != 80 ||
-		len(st.Notifications) != 16 || st.Bundle != nil || st.Gateways == nil || st.Unavailable == nil || st.Server.Integrity == nil {
+		len(st.Notifications) != 18 || st.Bundle != nil || st.Gateways == nil || st.Unavailable == nil || st.Server.Integrity == nil {
 		t.Fatalf("%+v", st)
 	}
 }
@@ -770,8 +770,8 @@ func TestDM44_CustomerCertExpiry(t *testing.T) {
 	o := e.opts()
 	notAfter, have := t0.Add(40*24*time.Hour), true
 	var readErr error
-	o.CustomerCert = func(context.Context) (string, time.Time, bool, error) {
-		return "aisec-gw.example.ru", notAfter, have, readErr
+	o.CustomerCert = func(context.Context) (sysstatus.CustomerCert, bool, error) {
+		return sysstatus.CustomerCert{Host: "aisec-gw.example.ru", NotAfter: notAfter}, have, readErr
 	}
 	s, err := sysstatus.New(o)
 	if err != nil {
@@ -874,5 +874,137 @@ func TestDM44_PeriodicJobStale(t *testing.T) {
 		if err := validateEntry(r); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+// DM-44 (3Н48 ревью 3.r4): проходы идут, но вычисление правила падает на
+// каждом из них дольше AlertJobStaleAfter — то же условие alert_job_stale с
+// числом таких правил; серия прервалась — условие снимается.
+func TestDM44_RuleFailingEveryPass(t *testing.T) {
+	e := newEnv()
+	s := e.svc(t)
+	ctx := context.Background()
+	eval := func() {
+		t.Helper()
+		if err := s.Evaluate(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e.clock = t0.Add(10 * time.Minute)
+	e.mem.SetAlertJob(e.clock.Add(-time.Minute))
+	e.mem.SetFailingRule(e.clock.Add(-3 * time.Minute))
+	eval()
+	if n := notif(s.Status(ctx), sysstatus.ConditionAlertJob); n.Active {
+		t.Fatalf("сбои 3 минуты: %+v", n)
+	}
+	e.clock = e.clock.Add(3 * time.Minute)
+	e.mem.SetAlertJob(e.clock.Add(-time.Minute))
+	eval()
+	n := notif(s.Status(ctx), sysstatus.ConditionAlertJob)
+	if !n.Active || len(e.mem.Records) != 1 {
+		t.Fatalf("сбои 6 минут: %+v %+v", n, e.mem.Records)
+	}
+	if d := e.mem.Records[0].Details.(map[string]any); d["failing_rules"] != 1 || d["failing_since"] == nil {
+		t.Fatalf("подробности: %v", d)
+	}
+	e.mem.SetFailingRule(time.Time{})
+	eval()
+	if n := notif(s.Status(ctx), sysstatus.ConditionAlertJob); n.Active || len(e.mem.Records) != 2 {
+		t.Fatalf("после успешного прохода: %+v", n)
+	}
+}
+
+// DM-44, ВРМ.1, ЗИ.4, 3Н40 и 3Н43 ревью 3.r3: часы шлюза расходятся с
+// сервером больше минуты — условие gateway_clock; шлюз на текущем пакете
+// дольше 10 минут после сборки отвечает не тем сертификатом, что загружен
+// в консоли (ещё не действует по его часам), — условие gateway_tls. Шлюз
+// на другой версии пакета и шлюз прежней версии (без полей) не проверяются.
+func TestDM44_GatewayClockAndTLS(t *testing.T) {
+	e := newEnv()
+	h := &sysstatus.BundleHealth{Version: 5, ETag: `"5"`, BuiltAt: t0.Add(-time.Minute)}
+	o := e.opts()
+	o.Bundle = func(context.Context) (*sysstatus.BundleHealth, error) { return h, nil }
+	fp := strings.Repeat("ab", 32)
+	o.CustomerCert = func(context.Context) (sysstatus.CustomerCert, bool, error) {
+		return sysstatus.CustomerCert{Host: "aisec-gw.example.ru", NotAfter: t0.Add(90 * 24 * time.Hour), Fingerprint: fp}, true, nil
+	}
+	s, err := sysstatus.New(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	states := func() []string {
+		var got []string
+		for _, r := range e.mem.Records {
+			d := r.Details.(map[string]any)
+			c := d["condition"].(string)
+			if strings.HasPrefix(c, sysstatus.ConditionGatewayClock) || strings.HasPrefix(c, sysstatus.ConditionGatewayTLS) {
+				got = append(got, c+":"+d["state"].(string))
+			}
+			if err := validateEntry(r); err != nil {
+				t.Error(err)
+			}
+		}
+		return got
+	}
+	eval := func() {
+		t.Helper()
+		if err := s.Evaluate(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	behind, own, small := -5*24*time.Hour, "", 20*time.Second
+	e.gws.list = []gwregistry.Gateway{
+		// Часы на 5 суток позади, сертификат заказчика ещё не действует.
+		{ID: "g1", Name: "a", Status: gwregistry.StatusActive, LastSeenAt: t0, BundleETag: `"5"`, ClockSkew: &behind, TLSFingerprint: &own},
+		// Часы в пределах порога, сертификат включён.
+		{ID: "g2", Name: "b", Status: gwregistry.StatusActive, LastSeenAt: t0, BundleETag: `"5"`, ClockSkew: &small, TLSFingerprint: &fp},
+		// На другой версии пакета — это config_bundle_lag, не gateway_tls.
+		{ID: "g3", Name: "c", Status: gwregistry.StatusActive, LastSeenAt: t0, BundleETag: `"4"`, TLSFingerprint: &own},
+		// Шлюз прежней версии полей не присылает.
+		{ID: "g4", Name: "d", Status: gwregistry.StatusActive, LastSeenAt: t0, BundleETag: `"5"`},
+	}
+	eval()
+	// Сразу после сборки пакета шлюз ещё мог не переключиться.
+	if got := states(); !slices.Equal(got, []string{"gateway_clock:g1:raised"}) {
+		t.Fatalf("сразу после сборки: %v", got)
+	}
+	n := notif(s.Status(ctx), sysstatus.ConditionGatewayClock)
+	if !n.Active || n.Requirement != "ВРМ.1" || !slices.Equal(n.Components, []string{"gateway:g1"}) {
+		t.Fatalf("строка ВРМ.1: %+v", n)
+	}
+	if d := e.mem.Records[0].Details.(map[string]any); d["skew_seconds"] != int64(-5*24*3600) || d["gateway_name"] != "a" {
+		t.Fatalf("подробности часов: %v", d)
+	}
+	h.BuiltAt = t0.Add(-sysstatus.BundleLagAfter - time.Second)
+	eval()
+	if got := states(); !slices.Equal(got, []string{"gateway_clock:g1:raised", "gateway_tls:g1:raised"}) {
+		t.Fatalf("через 10 минут: %v", got)
+	}
+	n = notif(s.Status(ctx), sysstatus.ConditionGatewayTLS)
+	if !n.Active || n.Requirement != "ЗИ.4" || !slices.Equal(n.Components, []string{"gateway:g1"}) {
+		t.Fatalf("строка ЗИ.4: %+v", n)
+	}
+	// Часы поправили, сертификат включился — условия сняты.
+	fixed := time.Second
+	e.gws.list[0].ClockSkew, e.gws.list[0].TLSFingerprint = &fixed, &fp
+	eval()
+	if got := states(); !slices.Equal(got, []string{"gateway_clock:g1:raised", "gateway_tls:g1:raised",
+		"gateway_clock:g1:cleared", "gateway_tls:g1:cleared"}) {
+		t.Fatalf("после исправления: %v", got)
+	}
+	// Сертификат удалён из консоли, а шлюз отвечает прежним — тоже условие.
+	o.CustomerCert = func(context.Context) (sysstatus.CustomerCert, bool, error) {
+		return sysstatus.CustomerCert{}, false, nil
+	}
+	s2, err := sysstatus.New(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s2.Evaluate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := states(); len(got) != 6 || got[4] != "gateway_tls:g1:raised" || got[5] != "gateway_tls:g2:raised" {
+		t.Fatalf("сертификат удалён: %v", got)
 	}
 }

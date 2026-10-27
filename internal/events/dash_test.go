@@ -255,22 +255,6 @@ func TestPGDashboardAggregates(t *testing.T) {
 		t.Fatalf("расход по суткам: %+v %v", us, err)
 	}
 
-	// Сбой хука не теряет событие: часы помечаются к досчёту.
-	if _, err := e.owner.Exec(ctx, "ALTER TABLE dash_find_hour RENAME TO dash_find_hour_x"); err != nil {
-		t.Fatal(err)
-	}
-	late := dashEvent{at: at(13, 0, 0), n: 7, typ: events.TypeGatewayRequest, app: "a", provider: "mock", model: "m1", user: "a1b2c3", action: "block",
-		mode: "enforce", tokens: [2]int{1, 1}, findings: []events.Finding{finding("pii.inn", "pii", "DM-31")}}
-	res, err := st.Insert(ctx, events.Ingest{GatewayID: testGateway, ReceivedAt: time.Now(), Events: []events.Event{late.build()}})
-	if err != nil || res.Accepted != 1 {
-		t.Fatalf("приём при сбое агрегатов: %+v %v", res, err)
-	}
-	if ready, err := ds.Ready(ctx); err != nil || ready {
-		t.Fatalf("после сбоя агрегаты не должны быть полными: %v %v", ready, err)
-	}
-	if _, err := e.owner.Exec(ctx, "ALTER TABLE dash_find_hour_x RENAME TO dash_find_hour"); err != nil {
-		t.Fatal(err)
-	}
 	stepAll := func() {
 		t.Helper()
 		for range 64 {
@@ -283,6 +267,29 @@ func TestPGDashboardAggregates(t *testing.T) {
 			}
 		}
 		t.Fatal("досчёт не закончился")
+	}
+	stepAll()
+	// Сбой хука не теряет событие: часы помечаются к досчёту.
+	if _, err := e.owner.Exec(ctx, "ALTER TABLE dash_find_hour RENAME TO dash_find_hour_x"); err != nil {
+		t.Fatal(err)
+	}
+	late := dashEvent{at: at(13, 0, 0), n: 7, typ: events.TypeGatewayRequest, app: "a", provider: "mock", model: "m1", user: "a1b2c3", action: "block",
+		mode: "enforce", tokens: [2]int{1, 1}, findings: []events.Finding{finding("pii.inn", "pii", "DM-31")}}
+	res, err := st.Insert(ctx, events.Ingest{GatewayID: testGateway, ReceivedAt: time.Now(), Events: []events.Event{late.build()}})
+	if err != nil || res.Accepted != 1 {
+		t.Fatalf("приём при сбое агрегатов: %+v %v", res, err)
+	}
+	// Свежая метка готовность не снимает (её снимет следующий проход),
+	// старше трёх периодов досчёта — снимает (перенесено из этапа 3).
+	if ready, err := ds.Ready(ctx); err != nil || !ready {
+		t.Fatalf("свежая метка сняла готовность: %v %v", ready, err)
+	}
+	ageDashMarks(t, e)
+	if ready, err := ds.Ready(ctx); err != nil || ready {
+		t.Fatalf("после сбоя агрегаты не должны быть полными: %v %v", ready, err)
+	}
+	if _, err := e.owner.Exec(ctx, "ALTER TABLE dash_find_hour_x RENAME TO dash_find_hour"); err != nil {
+		t.Fatal(err)
 	}
 	stepAll()
 	if ready, err := ds.Ready(ctx); err != nil || !ready {
@@ -399,6 +406,7 @@ func TestPGDashIngestNotBlockedByBackfill(t *testing.T) {
 	if err := e.owner.QueryRow(ctx, "SELECT count(DISTINCT bucket) FROM dash_dirty_hours").Scan(&dirty); err != nil || dirty != 1 {
 		t.Fatalf("помеченных часов: %d %v", dirty, err)
 	}
+	ageDashMarks(t, e)
 	if ready, err := ds.Ready(ctx); err != nil || ready {
 		t.Fatalf("с помеченным часом агрегаты не полные: %v %v", ready, err)
 	}
@@ -469,5 +477,13 @@ func TestPGDashboardSumNoOverflow(t *testing.T) {
 	}
 	if pts, err := ds.FindingSeries(ctx, q, events.DimApp, "", []string{}); err != nil || len(pts) != 0 {
 		t.Fatalf("ряд по пустому топу: %+v %v", pts, err)
+	}
+}
+
+// ageDashMarks старит метки досчёта часов на 5 минут: досчёт отстаёт.
+func ageDashMarks(t *testing.T, e *pgEnv) {
+	t.Helper()
+	if _, err := e.owner.Exec(pgCtx(t), "UPDATE dash_dirty_hours SET marked_at = marked_at - interval '5 minutes'"); err != nil {
+		t.Fatal(err)
 	}
 }

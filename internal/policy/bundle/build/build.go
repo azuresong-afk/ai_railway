@@ -32,6 +32,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/azuresong-afk/ai_railway/internal/agents"
 	"github.com/azuresong-afk/ai_railway/internal/apps"
 	"github.com/azuresong-afk/ai_railway/internal/audit"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
@@ -65,6 +66,9 @@ const (
 type Options struct {
 	Apps     *apps.Service
 	Policies *versions.Service
+	// Agents — реестр агентов, MCP-серверов и инструментов (задача 4.8);
+	// nil — разделов агентов в пакете нет.
+	Agents   *agents.Service
 	Store    Store
 	Audit    Auditor
 	Sealer   *bundle.Sealer
@@ -82,7 +86,24 @@ type Options struct {
 	// наступил срок ближайшего ключа, выдаётся уже собранный результат.
 	// nil — повторное использование по Reuse.
 	Revision func(ctx context.Context) (int64, error)
+	// IdPKeys — издатель настроенного IdP и его ключи подписи для раздела
+	// user_token_keys (задача 4.21, ADR-0025, 4.1); пустой издатель без
+	// ошибки — IdP не настроен. nil — ключей в пакете нет, и шлюзы
+	// отклоняют JWT пользователей.
+	IdPKeys func(ctx context.Context) (issuer string, keys *aisecCrypto.JWKS, err error)
 }
+
+// UserTokenKeysRefresh — как часто пакет собирается заново, пока у
+// приложений включена проверка JWT: так смена ключей у IdP доходит до
+// шлюзов за минуты (ADR-0025, 4.4). Новая версия — только если ключи
+// изменились.
+const UserTokenKeysRefresh = 5 * time.Minute
+
+// MaxStaleUserTokenKeys — сколько пакет держит ключи IdP прежней версии,
+// пока IdP недоступен: дольше ключ, отозванный у IdP, принимался бы
+// шлюзами без срока. Отсчёт — от последнего успешного получения ключей или
+// от запуска сервера; после него ключей в пакете нет, и шлюзы отклоняют JWT.
+const MaxStaleUserTokenKeys = 24 * time.Hour
 
 // Excluded — приложение, не вошедшее в пакет, и причина (В16 ревью 2.r3b).
 type Excluded struct {
@@ -107,6 +128,7 @@ type Health struct {
 // Service — сборка и выдача пакетов.
 type Service struct {
 	apps     *apps.Service
+	agents   *agents.Service
 	policies *versions.Service
 	store    Store
 	audit    Auditor
@@ -117,6 +139,9 @@ type Service struct {
 	logger   *slog.Logger
 	reuse    time.Duration
 	revision func(ctx context.Context) (int64, error)
+	idpKeys  func(ctx context.Context) (string, *aisecCrypto.JWKS, error)
+	// jwt — кодирование JWKS для пакета; nil — профиль без проверки JWT.
+	jwt aisecCrypto.JWTVerifier
 	// builds — число выборок данных для сборки (для тестов Н26).
 	builds atomic.Int64
 
@@ -143,6 +168,8 @@ type Service struct {
 	revOK     bool
 	expiry    time.Time
 	collected time.Time
+	// keysAt — последнее успешное получение ключей IdP (сначала — запуск).
+	keysAt time.Time
 
 	// sealedMu защищает sealed — подписанные пакеты по шлюзам (задача
 	// 3.34): повторная выдача той же версии тому же шлюзу не расшифровывает
@@ -165,9 +192,14 @@ func New(o Options) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Service{apps: o.Apps, policies: o.Policies, store: o.Store, audit: o.Audit, sealer: o.Sealer, hasher: h,
+	s := &Service{apps: o.Apps, agents: o.Agents, policies: o.Policies, store: o.Store, audit: o.Audit, sealer: o.Sealer, hasher: h,
 		orgID: o.OrgID, clock: o.Clock, logger: o.Logger, reuse: o.Reuse, revision: o.Revision,
-		sem: make(chan struct{}, 1), checks: map[string]string{}, lastReport: map[string]time.Time{}, sealed: map[string]sealedBody{}}
+		sem: make(chan struct{}, 1), checks: map[string]string{}, lastReport: map[string]time.Time{}, sealed: map[string]sealedBody{},
+		idpKeys: o.IdPKeys}
+	// Профиль без проверки JWT (gost до этапа 6): ключей IdP в пакете нет.
+	if j, err := o.Provider.JWT(); err == nil {
+		s.jwt = j
+	}
 	if s.orgID == "" {
 		s.orgID = audit.DefaultOrgID
 	}
@@ -177,6 +209,7 @@ func New(o Options) (*Service, error) {
 	if s.logger == nil {
 		s.logger = slog.Default()
 	}
+	s.keysAt = s.clock()
 	return s, nil
 }
 
@@ -464,7 +497,7 @@ func (s *Service) collect(ctx context.Context, now time.Time) (*bundle.Content, 
 			}
 			if reason != "" {
 				excluded = append(excluded, Excluded{Application: a.Slug, Reason: clip(reason, 500)})
-				c.Unavailable = append(c.Unavailable, bundle.Unavailable{ID: ba.ID, Env: ba.Env, Keys: ba.Keys})
+				c.Unavailable = append(c.Unavailable, bundle.Unavailable{ID: ba.ID, Env: ba.Env, Keys: withoutAgent(ba.Keys)})
 				nkeys += activeKeys(ba.Keys)
 				continue
 			}
@@ -492,6 +525,15 @@ func (s *Service) collect(ctx context.Context, now time.Time) (*bundle.Content, 
 	if err := s.addGatewayTLS(ctx, c, now); err != nil {
 		return nil, nil, nil, err
 	}
+	if err := s.addPromptBaselines(ctx, c, appSlugs); err != nil {
+		return nil, nil, nil, err
+	}
+	if err := s.addAgents(ctx, c, appSlugs); err != nil {
+		return nil, nil, nil, err
+	}
+	if err := s.addUserTokens(ctx, c, appSlugs, now); err != nil {
+		return nil, nil, nil, err
+	}
 	slices.SortFunc(c.Applications, func(a, b bundle.Application) int { return strings.Compare(a.ID, b.ID) })
 	slices.SortFunc(c.Providers, func(a, b bundle.Provider) int { return strings.Compare(a.ID, b.ID) })
 	slices.SortFunc(c.Policies, func(a, b bundle.Policy) int { return strings.Compare(a.ID, b.ID) })
@@ -504,6 +546,15 @@ func (s *Service) collect(ctx context.Context, now time.Time) (*bundle.Content, 
 	}
 	if c.GatewayTLS != nil {
 		stats["gateway_tls"] = c.GatewayTLS.Fingerprint
+	}
+	if len(c.PromptBaselines) > 0 {
+		stats["prompt_baselines"] = len(c.PromptBaselines)
+	}
+	if len(c.UserTokens) > 0 {
+		stats["user_tokens"], stats["user_token_keys"] = len(c.UserTokens), len(c.UserTokenKeys)
+	}
+	if len(c.Agents) > 0 || len(c.MCPServers) > 0 {
+		stats["agents"], stats["mcp_servers"], stats["agent_tools"] = len(c.Agents), len(c.MCPServers), len(c.AgentTools)
 	}
 
 	if len(excluded) > 0 {
@@ -547,6 +598,25 @@ func (s *Service) addBudgets(ctx context.Context, c *bundle.Content, provs map[s
 	})
 	slices.SortFunc(b.Hard, func(x, y bundle.HardBudget) int { return strings.Compare(x.App, y.App) })
 	c.Budgets = b
+	return nil
+}
+
+// addPromptBaselines добавляет раздел prompt_baselines (задача 4.14):
+// хеш и режим эталонов системного промпта приложений пакета; режим off и
+// исключённые приложения в раздел не входят, текст эталона — никогда.
+func (s *Service) addPromptBaselines(ctx context.Context, c *bundle.Content, appSlugs map[string]string) error {
+	bs, err := s.apps.PromptBaselines(ctx)
+	if err != nil {
+		return err
+	}
+	for _, b := range bs {
+		slug, ok := appSlugs[b.AppID]
+		if !ok || b.Mode == apps.PromptOff {
+			continue
+		}
+		c.PromptBaselines = append(c.PromptBaselines, bundle.PromptBaseline{App: slug, Hash: b.Hash, Mode: b.Mode})
+	}
+	slices.SortFunc(c.PromptBaselines, func(a, b bundle.PromptBaseline) int { return strings.Compare(a.App, b.App) })
 	return nil
 }
 
@@ -620,7 +690,8 @@ func (s *Service) keysByApp(ctx context.Context, now time.Time) (keys map[string
 				drop[k.Prefix] = until
 			}
 		}
-		bk := bundle.Key{Prefix: k.Prefix, SHA256: fmt.Sprintf("%x", k.Hash), ExpiresAt: k.ExpiresAt.UTC(), Revoked: !k.RevokedAt.IsZero()}
+		bk := bundle.Key{Prefix: k.Prefix, SHA256: fmt.Sprintf("%x", k.Hash), ExpiresAt: k.ExpiresAt.UTC(), Revoked: !k.RevokedAt.IsZero(),
+			Agent: k.AgentID}
 		for _, c := range k.AllowedCIDRs {
 			bk.AllowedCIDRs = append(bk.AllowedCIDRs, c.String())
 		}
@@ -691,6 +762,9 @@ func (s *Service) policyOf(ctx context.Context, cache map[string]*bundle.Policy,
 // запоминается в next по хешу содержимого приложения (prev — s.checks,
 // только под sem; nil — без памяти).
 func (s *Service) checkApp(prev, next map[string]string, ba bundle.Application, bp bundle.Provider, pol *bundle.Policy) string {
+	// Агентов в проверке одного приложения нет: привязку ключей к агентам
+	// сверяет проверка всего пакета (разделы агентов собирает сервер).
+	ba.Keys = withoutAgent(ba.Keys)
 	one := bundle.Content{Providers: []bundle.Provider{bp}, Applications: []bundle.Application{ba}, Policies: []bundle.Policy{}}
 	if pol != nil {
 		one.Policies = append(one.Policies, *pol)
@@ -905,8 +979,13 @@ func (s *Service) Deliver(ctx context.Context, gw Gateway, recipientKey []byte, 
 		if err != nil {
 			return Delivery{}, err
 		}
+		mcp, err := s.mcpSecrets(ctx, content)
+		defer mcp.Clear()
+		if err != nil {
+			return Delivery{}, err
+		}
 		body, err = s.sealer.Seal(bundle.SealInput{Version: rec.Version, IssuedAt: s.clock(), GatewayID: gw.ID,
-			Content: rec.Content, Secrets: secrets, RecipientKey: recipientKey, TLSKey: tlsKey})
+			Content: rec.Content, Secrets: secrets, RecipientKey: recipientKey, TLSKey: tlsKey, MCPSecrets: mcp})
 		if err != nil {
 			return Delivery{}, err
 		}

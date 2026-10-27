@@ -51,7 +51,7 @@ done
 # (пробелы, кириллица) не передаётся и не прерывает восстановление.
 copy_name=$(basename "$src")
 printf '%s\n' "$copy_name" | LC_ALL=C grep -Eqx '[A-Za-z0-9._-]{1,128}' || copy_name=
-finish_args=${copy_name:+-copy-dir $copy_name}
+finish_args="-confirm${copy_name:+ -copy-dir $copy_name}"
 
 data_dir=$(env_value .env AISEC_DATA_DIR)
 [ -n "$data_dir" ] || data_dir=/srv/aisec
@@ -155,7 +155,7 @@ echo "БД восстановлена."
 # цепочка журнала аудита. restore-finish — до audit verify и до запуска
 # сервера: давность копии он считает по последней записи журнала.
 docker compose run --rm aisec-cli migrate || die "миграции не применены"
-# shellcheck disable=SC2086 # finish_args — пусто или «-copy-dir ИМЯ» из проверенных символов
+# shellcheck disable=SC2086 # finish_args — «-confirm» и, может быть, «-copy-dir ИМЯ» из проверенных символов
 docker compose run --rm aisec-cli restore-finish $finish_args ||
 	die "сессии и токены API копии не отозваны (aisec-cli restore-finish)"
 docker compose run --rm aisec-cli audit verify -keys /etc/aisec/keys ||

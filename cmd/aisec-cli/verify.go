@@ -192,7 +192,14 @@ func verifyRelease(dir string, allowOlder bool, stdout io.Writer) error {
 			return reject("выпуск %s собран раньше установленного %s (откат). Намеренный откат — -allow-older.", res.ManifestVersion, installed.ManifestVersion)
 		}
 	}
+	// Отпечаток ключа, которым проверена подпись: verify-release.sh сверяет
+	// его с AISEC_VENDOR_FINGERPRINT из руководства (ADR-0022).
+	fp, _, err := integrity.EmbeddedFingerprint(p)
+	if err != nil {
+		return err
+	}
 	say(stdout, "Выпуск %s проверен ключом установленной версии %s: подпись верна, файлов: %d.\n", res.ManifestVersion, version, res.Checked)
+	say(stdout, "Отпечаток ключа производителя: %s\n", fp)
 	return nil
 }
 

@@ -122,6 +122,11 @@ type By struct {
 	// Confirm — повторная проверка паролем или кодом TOTP перед ослаблением
 	// правила (DM-40); nil — ослабление отклоняется с ErrConfirmRequired.
 	Confirm func(ctx context.Context) error
+	// OwnsToken — токен API с этим ID принадлежит пользователю UserID
+	// (3Н48 ревью 3.r4): оповещение о действиях своего токена он не
+	// закрывает. Ошибку проверки реализация считает владением. nil — без
+	// проверки (действия сервера и тесты).
+	OwnsToken func(tokenID string) bool
 }
 
 func (b By) entry(action, objType, objID string, details any) audit.Entry {
@@ -240,6 +245,11 @@ func (s *Service) UpdateRule(ctx context.Context, by By, id string, in RuleInput
 		next.Recipients = rc
 	} else if next, err = ParseRuleInput(in, cur.Kind); err != nil {
 		return Rule{}, err
+	} else if (cur.Condition.Field == ToolField) != (next.Condition.Field == ToolField) {
+		// Поле tool — только у встроенного правила agents.tool_new: его
+		// срабатывания идут из аудита по ключу правила, не по событиям.
+		return Rule{}, &InputError{Errs: []error{errors.New(
+			"condition.field: tool — только у встроенного правила «Новый инструмент агента», и у него поле не меняется")}}
 	}
 	if err := s.checkRecipients(ctx, next.Recipients); err != nil {
 		return Rule{}, err
@@ -421,11 +431,15 @@ func closeAllowed(a *Alert, by By, to string) error {
 // subjectOf — ключ дедупликации называет субъекта by: его самого, его
 // учётную запись или токен его владельца.
 func subjectOf(key string, by By) bool {
+	tokenPrefix := string(audit.ActorAPIToken) + ":"
 	for part := range strings.SplitSeq(key, keySep) {
 		f, v, _ := strings.Cut(part, "=")
 		switch f {
 		case "actor":
 			if v == actorKey(by.Actor) || (by.UserID != "" && v == string(audit.ActorUser)+":"+by.UserID) {
+				return true
+			}
+			if id, ok := strings.CutPrefix(v, tokenPrefix); ok && by.OwnsToken != nil && by.OwnsToken(id) {
 				return true
 			}
 		case "account":

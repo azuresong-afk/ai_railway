@@ -11,6 +11,7 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
+	"github.com/azuresong-afk/ai_railway/internal/agents"
 	"github.com/azuresong-afk/ai_railway/internal/audit"
 	"github.com/azuresong-afk/ai_railway/internal/auth"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
@@ -72,12 +73,35 @@ func newGatewayEnvAt(t testing.TB, caValidity time.Duration, clock func() time.T
 	return svc, reg.Gateway
 }
 
+// noApps — приложений нет: маршруты агентов без реестра приложений.
+type noApps struct{}
+
+func (noApps) App(context.Context, string) (agents.AppInfo, error) {
+	return agents.AppInfo{}, agents.ErrNoApp
+}
+func (noApps) Owned(context.Context, string) ([]string, error) { return nil, nil }
+
+// newAgentsService — реестр агентов в памяти без приложений.
+func newAgentsService(t testing.TB) *agents.Service {
+	t.Helper()
+	p, err := aisecCrypto.New(aisecCrypto.ProfileStandard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc, err := agents.New(agents.Options{Store: agents.NewMemory(), Provider: p, Apps: noApps{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return svc
+}
+
 func newInternalHandler(t testing.TB, authz Authorizer) (http.Handler, *Router) {
 	t.Helper()
 	svc, _ := newGatewayEnv(t)
 	h, rt, err := NewInternal(InternalOptions{Logger: quiet(), Hasher: testHasher(t), Gateways: svc, Authorizer: authz,
 		Events: events.NewMemory(), RateLimit: RateConfig{Rules: []RateRule{{Prefix: "/", Max: 0}}},
-		Extra: BundleRoutes(newBundleEnv(t, true).svc, nil, quiet())})
+		Extra: append(BundleRoutes(newBundleEnv(t, true).svc, nil, quiet()), append(AgentsInternalRoutes(newAgentsService(t), quiet()),
+			ApprovalsInternalRoutes(newApprovalsService(t, time.Now), quiet())...)...)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +170,7 @@ func TestHeartbeatHandler(t *testing.T) {
 		t.Fatal(err)
 	}
 	w := do(h, http.MethodPost, "/internal/v1/heartbeat", `{"version":"2.0.0","bundle_etag":"\"abc\""}`, "Content-Type", "application/json")
-	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"interval_seconds":30`) {
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"interval_seconds":30`) || !strings.Contains(w.Body.String(), `"clock_tls":true`) {
 		t.Fatalf("heartbeat: %d %s", w.Code, w.Body)
 	}
 	// Счётчики расхода (задача 3.18): ответ — расход остальных процессов.
@@ -159,6 +183,18 @@ func TestHeartbeatHandler(t *testing.T) {
 	// stopping без started_at — 400 (В27 ревью 2.r5).
 	if w := do(h, http.MethodPost, "/internal/v1/heartbeat", `{"version":"1","stopping":true}`, "Content-Type", "application/json"); w.Code != http.StatusBadRequest {
 		t.Fatalf("stopping без started_at: %d %s", w.Code, w.Body)
+	}
+	// Часы и отпечаток сертификата адреса приложений (3Н40, 3Н43 ревью 3.r3):
+	// отпечаток — пусто или 64 строчные шестнадцатеричные цифры.
+	fp := strings.Repeat("ab", 32)
+	for body, want := range map[string]int{
+		`{"version":"1","time":"2026-10-21T10:00:00Z","tls_fingerprint":"` + fp + `"}`: http.StatusOK,
+		`{"version":"1","tls_fingerprint":"` + strings.ToUpper(fp) + `"}`:              http.StatusBadRequest,
+		`{"version":"1","tls_fingerprint":"ab"}`:                                       http.StatusBadRequest,
+	} {
+		if w := do(h, http.MethodPost, "/internal/v1/heartbeat", body, "Content-Type", "application/json"); w.Code != want {
+			t.Fatalf("%s: %d %s", body, w.Code, w.Body)
+		}
 	}
 	// Шлюз, которого нет в реестре (отозван между проверками), — 401.
 	h2, _, err := NewInternal(InternalOptions{Logger: quiet(), Hasher: testHasher(t), Gateways: svc, Authorizer: asGateway("nope")})
@@ -195,7 +231,8 @@ func FuzzHeartbeatRequest(f *testing.F) {
 		`{"version":"1","selftest":{"ok":"да"}}`, `{"version":"1","integrity":null}`, `{"version":"1","selftest":[]}`,
 		`{"version":"1","started_at":"2026-10-21T10:00:00.123456789Z","stopping":true}`, `{"version":"1","stopping":true}`,
 		`{"version":"1","started_at":"2026-10-21T10:00:00Z","budget":{"months":[{"month":"2026-10","apps":[{"app":"crm","cost":5,"requests":1}]}]}}`,
-		`{"version":"1","budget":{"months":[{"month":"2026-13","apps":[]}]}}`} {
+		`{"version":"1","budget":{"months":[{"month":"2026-13","apps":[]}]}}`,
+		`{"version":"1","time":"2026-10-21T10:00:00Z","tls_fingerprint":""}`, `{"version":"1","tls_fingerprint":"zz"}`} {
 		f.Add(s, "application/json")
 	}
 	f.Add(`{"version":"1"}`, "text/plain")

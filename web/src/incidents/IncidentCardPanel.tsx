@@ -43,6 +43,8 @@ export function IncidentCardPanel({ id, me, onClose, onOpen }: { id: string; me:
   const canManage = has("incidents.manage");
   const q = useQuery({ queryKey: ["incidents", "card", id], queryFn: ({ signal }) => incidentsApi.card(id, signal) });
   const users = useQuery({ queryKey: ["incidents", "users"], queryFn: ({ signal }) => adminApi.users(signal), enabled: has("users.read") });
+  // Срок хранения событий: ссылка на событие старше срока ведёт в пустоту — вместо неё пишем, что событие удалено.
+  const retention = useQuery({ queryKey: ["incidents", "event-retention"], queryFn: ({ signal }) => adminApi.retention(signal), enabled: has("events.read") });
   const refresh = () => qc.invalidateQueries({ queryKey: ["incidents"] });
 
   const [target, setTarget] = useState<Target>();
@@ -52,6 +54,8 @@ export function IncidentCardPanel({ id, me, onClose, onOpen }: { id: string; me:
   const [note, setNote] = useState("");
   const [text, setText] = useState("");
   const [now] = useState(() => Date.now());
+  const metadataDays = retention.data?.metadata_days;
+  const expired = (ts: string) => metadataDays !== undefined && Date.parse(ts) < now - metadataDays * 86_400_000;
 
   const closeDialogs = () => {
     setTarget(undefined);
@@ -268,16 +272,20 @@ export function IncidentCardPanel({ id, me, onClose, onOpen }: { id: string; me:
             <section aria-label="События инцидента" className="flex flex-col gap-1">
               <h3 className="text-sm font-medium">События</h3>
               {!has("events.read") ? (
-                <p className="text-sm text-muted">Для просмотра событий нужно право «events.read».</p>
+                <p className="text-sm text-muted">Для просмотра событий нужно право «Просмотр событий».</p>
               ) : c.events.length === 0 ? (
                 <p className="text-sm text-muted">Ссылок на события нет.</p>
               ) : (
                 <ul className="max-h-40 overflow-auto text-sm">
                   {c.events.map((e) => (
                     <li key={e.id}>
-                      <Link className="underline" to={`/events?${new URLSearchParams({ r: "30d", event: e.id })}`}>
-                        Событие от {formatAbsolute(e.ts)}
-                      </Link>
+                      {expired(e.ts) ? (
+                        <span className="text-muted">Событие от {formatAbsolute(e.ts)} — удалено по сроку хранения</span>
+                      ) : (
+                        <Link className="underline" to={`/events?${new URLSearchParams({ r: "30d", event: e.id })}`}>
+                          Событие от {formatAbsolute(e.ts)}
+                        </Link>
+                      )}
                     </li>
                   ))}
                 </ul>

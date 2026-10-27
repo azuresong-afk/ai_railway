@@ -233,8 +233,15 @@ type HeartbeatConfig struct {
 	// ServerTime — часы сроков исключений по времени сервера из ответа
 	// (3Н40 ревью 3.r3); nil — не ведутся.
 	ServerTime *ServerClock
-	Logger     *slog.Logger
-	Clock      func() time.Time
+	// TLSFingerprint — отпечаток действующего сертификата адреса приложений
+	// (TLSSwitch.Current); nil — не передаётся.
+	TLSFingerprint func() string
+	// PendingApprovals — ID ожидающих подтверждения запросов
+	// (ApprovalClient.Pending, задача 4.10): по списку сервер закрывает
+	// запросы, которых шлюз уже не ждёт; nil — не передаётся.
+	PendingApprovals func() []string
+	Logger           *slog.Logger
+	Clock            func() time.Time
 	// Sleep ждёт d или отмены ctx (тесты подменяют его).
 	Sleep func(ctx context.Context, d time.Duration) bool
 }
@@ -259,8 +266,15 @@ func RunHeartbeat(ctx context.Context, c HeartbeatConfig) {
 	u := c.Server.JoinPath("/internal/v1/heartbeat").String()
 	defer c.stopping(ctx, u)
 	interval, backoff := minHeartbeatInterval*3, time.Duration(0)
+	// clockTLS — сервер принимает поля time и tls_fingerprint (сообщил в
+	// ответе): шлюз обновляют раньше сервера, а сервер прежней версии
+	// отклоняет неизвестные поля heartbeat.
+	clockTLS := false
+	// approvals — сервер ведёт очередь подтверждений и принимает поле
+	// approvals_pending (сообщил в ответе).
+	approvals := false
 	for {
-		wait, ok := c.beat(ctx, u, &interval, &backoff)
+		wait, ok := c.beat(ctx, u, &interval, &backoff, &clockTLS, &approvals)
 		if !ok {
 			return
 		}
@@ -294,7 +308,7 @@ func (c HeartbeatConfig) stopping(ctx context.Context, u string) {
 }
 
 // beat отправляет один heartbeat и возвращает паузу до следующего.
-func (c HeartbeatConfig) beat(ctx context.Context, u string, interval, backoff *time.Duration) (time.Duration, bool) {
+func (c HeartbeatConfig) beat(ctx context.Context, u string, interval, backoff *time.Duration, clockTLS, approvals *bool) (time.Duration, bool) {
 	if ctx.Err() != nil {
 		return 0, false
 	}
@@ -311,12 +325,27 @@ func (c HeartbeatConfig) beat(ctx context.Context, u string, interval, backoff *
 		Reissue bool `json:"reissue"`
 		// Budget — расход остальных процессов (задача 3.18).
 		Budget *budgetState `json:"budget"`
+		// ClockTLS — сервер принимает time и tls_fingerprint (3Н40, 3Н43).
+		ClockTLS bool `json:"clock_tls"`
+		// Approvals — сервер принимает approvals_pending (задача 4.10).
+		Approvals bool `json:"approvals"`
 	}
 	sent := c.Clock()
 	body := heartbeatBody{Version: c.Version, BundleETag: etag}
+	if *clockTLS {
+		body.Time = &sent
+		if c.TLSFingerprint != nil {
+			fp := c.TLSFingerprint()
+			body.TLSFingerprint = &fp
+		}
+	}
 	if !c.StartedAt.IsZero() {
 		at := c.StartedAt
 		body.StartedAt = &at
+	}
+	if *approvals && c.PendingApprovals != nil {
+		pending := c.PendingApprovals()
+		body.ApprovalsPending = &pending
 	}
 	body.Selftest, body.Integrity, body.BundleKeys, body.VerifyRequest = c.Reports.snapshot()
 	if c.Budget != nil && body.StartedAt != nil {
@@ -344,6 +373,7 @@ func (c HeartbeatConfig) beat(ctx context.Context, u string, interval, backoff *
 		return wait, true
 	}
 	*backoff = 0
+	*clockTLS, *approvals = resp.ClockTLS, resp.Approvals
 	if c.Budget != nil {
 		c.Budget.apply(body.Budget, resp.Budget)
 	}

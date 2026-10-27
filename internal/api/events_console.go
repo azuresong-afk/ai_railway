@@ -372,17 +372,23 @@ func (d Deps) eventContent(w http.ResponseWriter, r *http.Request) {
 }
 
 type exportRequest struct {
-	Format string     `json:"format"`
-	From   *time.Time `json:"from"`
-	To     *time.Time `json:"to"`
-	Filter string     `json:"filter"`
+	Format string `json:"format"`
+	// Delimiter — разделитель CSV: semicolon (по умолчанию) или comma.
+	Delimiter string     `json:"delimiter"`
+	From      *time.Time `json:"from"`
+	To        *time.Time `json:"to"`
+	Filter    string     `json:"filter"`
 }
 
 // parseExport проверяет тело выгрузки.
-func parseExport(req *exportRequest, now time.Time) (events.Query, *Problem) {
+func parseExport(req *exportRequest, now time.Time) (events.Query, rune, *Problem) {
 	var bad []FieldError
 	if req.Format != events.FormatCSV && req.Format != events.FormatJSON {
 		bad = append(bad, FieldError{"format", "Укажите csv или json."})
+	}
+	delim, okd := events.ParseDelimiter(req.Delimiter)
+	if !okd {
+		bad = append(bad, FieldError{"delimiter", "Укажите semicolon (точка с запятой) или comma (запятая)."})
 	}
 	to := now
 	if req.To != nil {
@@ -397,14 +403,14 @@ func parseExport(req *exportRequest, now time.Time) (events.Query, *Problem) {
 		bad = append(bad, filterProblem("filter", err).Errors...)
 	}
 	if len(bad) > 0 {
-		return events.Query{}, Invalid("Параметры выгрузки заданы неверно.", bad...)
+		return events.Query{}, 0, Invalid("Параметры выгрузки заданы неверно.", bad...)
 	}
 	q := events.Query{From: from, To: to, Filter: f, ReceivedBefore: now, Limit: events.MaxExportRows, WithDetails: req.Format == events.FormatJSON}
 	if err := q.Validate(); err != nil {
-		return events.Query{}, Invalid(fmt.Sprintf("Период задан неверно: from раньше to, не длиннее %d суток.",
+		return events.Query{}, 0, Invalid(fmt.Sprintf("Период задан неверно: from раньше to, не длиннее %d суток.",
 			int(events.MaxQueryRange.Hours()/24)))
 	}
-	return q, nil
+	return q, delim, nil
 }
 
 // errExportAudit — запись data.export не удалась: выгрузка отменена.
@@ -429,7 +435,7 @@ func (d Deps) exportEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := time.Now().UTC()
-	q, prob := parseExport(&req, now)
+	q, delim, prob := parseExport(&req, now)
 	if prob != nil {
 		WriteProblem(w, prob)
 		return
@@ -455,7 +461,7 @@ func (d Deps) exportEvents(w http.ResponseWriter, r *http.Request) {
 		if err := d.Audit.Record(actx, audit.Entry{
 			Actor: eventsActor(p), SourceIP: clientAddr(r), Action: "data.export", Object: audit.Object{Type: "events"},
 			Result: audit.ResultSuccess, Details: map[string]any{
-				"format": req.Format, "filter": q.Filter.String(), "from": q.From, "to": q.To, "snapshot": now, "rows": n,
+				"format": req.Format, "delimiter": delimName(delim, req.Format), "filter": q.Filter.String(), "from": q.From, "to": q.To, "snapshot": now, "rows": n,
 			},
 		}); err != nil {
 			return fmt.Errorf("%w: %w", errExportAudit, err)
@@ -471,7 +477,7 @@ func (d Deps) exportEvents(w http.ResponseWriter, r *http.Request) {
 		started = true
 		w.WriteHeader(http.StatusOK)
 		var err error
-		ex, err = events.NewExporter(w, req.Format)
+		ex, err = events.NewExporter(w, req.Format, delim)
 		return err
 	}
 	hide := !seesFragments(p)

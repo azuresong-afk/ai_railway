@@ -29,3 +29,8 @@ func (gost) NewKDF([]byte) (KDF, error) { return nil, ErrNotImplemented }
 func (gost) GenerateRecipient() (Recipient, error)  { return nil, ErrNotImplemented }
 func (gost) NewRecipient([]byte) (Recipient, error) { return nil, ErrNotImplemented }
 func (gost) SealTo(_, _, _ []byte) ([]byte, error)  { return nil, ErrNotImplemented }
+
+// JWT: ID-токены IdP подписаны алгоритмами IdP (RSA, ECDSA, Ed25519), а не
+// профиля; в профиле gost вход через OIDC недоступен до выбора СКЗИ
+// (этап 6, ADR-0025).
+func (gost) JWT() (JWTVerifier, error) { return nil, ErrNotImplemented }

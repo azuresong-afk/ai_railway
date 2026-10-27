@@ -953,6 +953,405 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/auth/oidc": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Вход через внешний IdP на экране входа
+         * @description ИАФ.7, ADR-0025. Открытый: показывает, есть ли кнопка «Войти через …» и её название.
+         *     Ничего, кроме признака и названия, не раскрывает.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Способ входа */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["OIDCOption"];
+                    };
+                };
+                429: components["responses"]["RateLimited"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/oidc/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Начать вход через внешний IdP
+         * @description ИАФ.7, ADR-0025, 3.3. Переход браузера (не XHR). Создаёт одноразовый вход на 10 минут:
+         *     в БД — только хеш случайного значения, само значение — в cookie `__Host-aisec_oidc`
+         *     (HttpOnly, Secure, SameSite=Lax, Max-Age 600). Из него выводятся `state`, `nonce` и
+         *     `code_verifier` (PKCE S256). Ответ — 303 на `authorization_endpoint` IdP. Если вход
+         *     через IdP не настроен, отключён или IdP недоступен — 303 на `/?oidc=unavailable`.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Переход к IdP или на экран входа с кодом отказа */
+                303: {
+                    headers: {
+                        Location?: string;
+                        /** @description `__Host-aisec_oidc` */
+                        "Set-Cookie"?: string;
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                429: components["responses"]["RateLimited"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/oidc/callback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Возврат от внешнего IdP
+         * @description ИАФ.7, ADR-0025, 3.4–3.8. Адрес возврата (`redirect_uri`), который регистрируется в IdP:
+         *     `<console_url>/api/v1/auth/oidc/callback`. Вход одноразовый: cookie `__Host-aisec_oidc`
+         *     удаляется в любом случае. Проверяются `state` (за постоянное время), обмен кода с
+         *     `code_verifier`, подпись и утверждения ID-токена (`iss`, `aud`, `azp`, `exp`, `iat`, `nonce`),
+         *     роль по группам (конфликт групп — отказ) и второй фактор по `acr`/`amr`. Успех — cookie
+         *     сессии и 303 на `/`. Отказ — 303 на `/?oidc=denied|failed|unavailable`; причина пишется в
+         *     `auth.login_failed` (`method: oidc`) и наружу не выдаётся.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    state?: string;
+                    code?: string;
+                    error?: string;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Переход в консоль или на экран входа с кодом отказа */
+                303: {
+                    headers: {
+                        Location?: string;
+                        /** @description `__Host-aisec_session`, `__Host-aisec_csrf`; удаление `__Host-aisec_oidc` */
+                        "Set-Cookie"?: string;
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                429: components["responses"]["RateLimited"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/idp": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Настройки входа через внешний IdP
+         * @description Право `auth_idp.read` (ИАФ.7, ADR-0025). Секрет клиента не возвращается никогда.
+         *     Если вход не настроен — `configured: false` и пустые поля.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Настройки */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["IdPSettings"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        /**
+         * Сохранить настройки входа через внешний IdP
+         * @description Право `auth_idp.manage` (только администратор безопасности), ADR-0025, 1.6. Всегда нужна
+         *     повторная проверка паролем или кодом TOTP локальной учётной записи: внешней — 403.
+         *     Пустой `client_secret` оставляет прежний (при первом сохранении обязателен). Если
+         *     `enabled`, сервер проверяет IdP: discovery (issuer совпадает, конечные точки — https на том
+         *     же узле, адрес не loopback/link-local/метаданные), JWKS; неудача — 400 с полем `issuer`.
+         *     Сессии внешних пользователей завершаются. Пишет `auth.idp_changed` со значениями до и
+         *     после (без секрета) и признаком `weakening` при расширении доступа (DM-40).
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["IdPSettingsUpdate"];
+                };
+            };
+            responses: {
+                /** @description Настройки сохранены */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["IdPSettings"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        post?: never;
+        /**
+         * Отключить вход через внешний IdP и удалить настройки
+         * @description Право `auth_idp.manage`, повторная проверка паролем или кодом TOTP локальной учётной записи.
+         *     Сессии внешних пользователей завершаются; их учётные записи и журнал аудита остаются.
+         *     Пишет `auth.idp_disabled`. Не настроен — 404.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["Reauth"];
+                };
+            };
+            responses: {
+                /** @description Настройки удалены */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/ldap": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Настройки входа через каталог LDAP
+         * @description Право `auth_idp.read` (ИАФ.7, ADR-0025, раздел 2). Пароль сервисной учётной записи не
+         *     возвращается никогда. Если вход не настроен — `configured: false` и пустые поля. Сам вход
+         *     пользователя каталога — `POST /api/v1/auth/login`: если локальной учётной записи с таким
+         *     логином нет, пароль проверяется в каталоге.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Настройки */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["LDAPSettings"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        /**
+         * Сохранить настройки входа через каталог LDAP
+         * @description Право `auth_idp.manage` (только администратор безопасности), ADR-0025, 1.6. Всегда нужна
+         *     повторная проверка паролем или кодом TOTP локальной учётной записи: внешней — 403.
+         *     Пустой `bind_password` оставляет прежний (при первом сохранении обязателен). Если
+         *     `enabled`, сервер проверяет каталог: TLS (LDAPS или StartTLS с корнями из `ca_pem`), адрес
+         *     не loopback/link-local/метаданные, вход сервисной учётной записи, наличие веток
+         *     пользователей и групп; неудача — 400 с полем `url`. Сессии пользователей каталога
+         *     завершаются. Пишет `auth.ldap_changed` со значениями до и после (без пароля) и признаком
+         *     `weakening` при расширении доступа (DM-40).
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["LDAPSettingsUpdate"];
+                };
+            };
+            responses: {
+                /** @description Настройки сохранены */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["LDAPSettings"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        post?: never;
+        /**
+         * Отключить вход через каталог LDAP и удалить настройки
+         * @description Право `auth_idp.manage`, повторная проверка паролем или кодом TOTP локальной учётной записи.
+         *     Сессии пользователей каталога завершаются; их учётные записи и журнал аудита остаются.
+         *     Пишет `auth.ldap_disabled`. Не настроен — 404.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["Reauth"];
+                };
+            };
+            responses: {
+                /** @description Настройки удалены */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/mfa/setup": {
         parameters: {
             query?: never;
@@ -1240,6 +1639,60 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/me/email": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Задать или убрать свой e-mail
+         * @description Право `self`: меняется только запись самого пользователя (идентификатор берётся из сессии).
+         *     Правила и журнал — как у `PUT /api/v1/users/{id}/email`. Токеном API не вызывается.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["EmailInput"];
+                };
+            };
+            responses: {
+                /** @description Учётная запись */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["User"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/users": {
         parameters: {
             query?: never;
@@ -1477,6 +1930,66 @@ export interface paths {
                 500: components["responses"]["ProblemInternal"];
             };
         };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/users/{id}/email": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Задать или убрать e-mail учётной записи
+         * @description Право `users.manage`; роль записи не сильнее роли вызывающего (УПД.2). E-mail необязателен
+         *     и нужен для рассылки отчётов: до 254 символов, простая проверка формата, без письма-подтверждения.
+         *     Пустая строка убирает адрес. Адрес — персональные данные: в журнал аудита пишется только факт
+         *     изменения (`user.email_set`: `self`, `cleared`, `changed`), в технические журналы адрес не попадает.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID учётной записи (UUID) */
+                    id: components["parameters"]["UserID"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["EmailInput"];
+                };
+            };
+            responses: {
+                /** @description Учётная запись */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["User"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+            };
+        };
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -3933,6 +4446,266 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/applications/{id}/user-access": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Пользователь приложения по JWT и доступ к моделям по группам
+         * @description Право `applications.read`; владелец приложения — только своих (задача 4.21 этапа 4, ADR-0025, раздел 4; УПД.9, DM-33).
+         *     Режим пользователя приложения, ожидаемые издатель и аудитория JWT, имя утверждения с
+         *     группами, допуск часов и группы, которым доступны модели. Настройки нет —
+         *     `{"configured": false, "mode": "off", …}` со значениями по умолчанию.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description ID приложения (UUID) */
+                    id: components["parameters"]["ApplicationID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Настройка */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["UserAccess"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        /**
+         * Задать режим пользователя по JWT и доступ к моделям по группам
+         * @description Право `applications.policy` (признак `security`; токену API недоступно). Настройка
+         *     целиком. `mode`: `off` — только `X-AISec-User` (поле `user`) по `user_from`, как раньше;
+         *     `optional` — JWT из заголовка `X-AISec-User-Token`, если он есть, иначе `X-AISec-User`;
+         *     `required` — без действительного JWT шлюз отвечает 401 до провайдера. Для `optional` и
+         *     `required` обязательны `issuer` (https, как `iss` токена побайтно) и `audience` (одно
+         *     из значений `aud`). Ключи подписи шлюзы получают в пакете конфигурации: сервер берёт
+         *     JWKS у настроенного IdP (`/api/v1/auth/idp`), поэтому `issuer` должен совпадать с
+         *     издателем IdP, иначе шлюзы отклоняют все JWT. `groups_claim` — утверждение со списком
+         *     групп (по умолчанию `groups`), `leeway` — допуск часов для `exp`, `nbf` и `iat` от 0 до
+         *     300 секунд (по умолчанию 60). `model_groups` — модель или псевдоним приложения →
+         *     от 1 до 64 групп: модель из списка доступна только пользователю с одной из этих групп
+         *     в JWT (иначе 403 `model_access_denied`, DM-33), остальные модели — всем; только с
+         *     режимом `optional` или `required`, всего не больше 500 пар. Пишет
+         *     `application.user_access_set` (до и после). Смягчение режима, смена издателя,
+         *     аудитории или утверждения с группами, рост допуска и расширение доступа к модели —
+         *     ослабление (DM-40): `weakening: true` с причинами и повторная проверка (`password` или
+         *     `code`; без них 400, неверные — 403 `reauthentication_failed`). Без изменений — 200 без
+         *     записи. Архивному приложению — 409.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID приложения (UUID) */
+                    id: components["parameters"]["ApplicationID"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["UserAccessUpdate"];
+                };
+            };
+            responses: {
+                /** @description Настройка сохранена */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["UserAccess"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/applications/{id}/prompt-baseline": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Эталон системного промпта приложения
+         * @description Право `applications.policy` (признак `security`; токену API недоступно; задача 4.14
+         *     этапа 4, DM-26). Текст эталона, режим контроля и хеш нормализованного текста (он же —
+         *     в разделе `prompt_baselines` пакета конфигурации шлюзов). Эталона нет —
+         *     `{"configured": false}`. Текст хранится зашифрованным ключом данных; без ключа данных —
+         *     503.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description ID приложения (UUID) */
+                    id: components["parameters"]["ApplicationID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Эталон */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PromptBaseline"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        /**
+         * Задать эталон системного промпта или режим контроля
+         * @description Право `applications.policy`. `text` — эталон: UTF-8 до 131072 байт, без управляющих
+         *     символов, кроме табуляции и перевода строки; без `text` — прежний текст (смена режима;
+         *     у приложения без эталона — 400). `mode`: `off` — не сверять, `alert` — находка
+         *     `prompt.integrity` (DM-26) и оповещение, `block` — запрос с другим системным промптом
+         *     блокируется (в режиме политики `monitor` — только журналируется). Сравнение —
+         *     по хешу после нормализации пробельных символов: края обрезаются, последовательность
+         *     пробелов, табуляций и переводов строки — один пробел. Пишет
+         *     `application.prompt_baseline_set` (до и после: режим, хеш, размер; без текста).
+         *     Понижение режима (`block` → `alert` → `off`) — ослабление (DM-40): `weakening: true`
+         *     и повторная проверка (`password` или `code`; без них 400, неверные — 403
+         *     `reauthentication_failed`). Без изменений — 200 без записи. Архивному приложению — 409.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID приложения (UUID) */
+                    id: components["parameters"]["ApplicationID"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["PromptBaselineUpdate"];
+                };
+            };
+            responses: {
+                /** @description Эталон задан */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PromptBaseline"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        post?: never;
+        /**
+         * Снять эталон системного промпта
+         * @description Право `applications.policy`. Удаляет текст эталона; шлюзы перестают сверять системный
+         *     промпт приложения с новым пакетом конфигурации. Снятие эталона в режиме `alert` или
+         *     `block` — ослабление (DM-40): тело `{"password": …}` или `{"code": …}` (без них 400,
+         *     неверные — 403 `reauthentication_failed`), запись `application.prompt_baseline_removed`
+         *     с `weakening: true`. Эталона нет — 404.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID приложения (UUID) */
+                    id: components["parameters"]["ApplicationID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": components["schemas"]["Reauth"];
+                };
+            };
+            responses: {
+                /** @description Эталон снят */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/gateway-certificate": {
         parameters: {
             query?: never;
@@ -4880,7 +5653,7 @@ export interface paths {
          *     версии (ADR-0016): новая версия поверх `base_version` (409, если политику уже изменили).
          *     Условие: детектор обязательно и хотя бы одно из `pattern`, `fragment`, `app`, `user`
          *     (детектор целиком для всех приложений не отключается — 400; исключение для `canary` —
-         *     только с `fragment`, иначе 400, 3Н42); `category` и `source` — дополнительные. Срок обязателен: `expires_in_days` 1–365 или `expires_at` не дальше 365
+         *     только с `fragment`, иначе 400, 3Н42); `category` и `source` — дополнительные; у `canary` срок не больше 7 суток (3Н49). Срок обязателен: `expires_in_days` 1–365 или `expires_at` не дальше 365
          *     суток, по умолчанию 30 суток. Автора и время ставит сервер. Добавление — ослабление
          *     защиты: текущий пароль или код TOTP в теле (без них — 403, неверные — 403
          *     `reauthentication_failed`), запись `policy.exception_add` с `weakening` (DM-40).
@@ -4945,7 +5718,7 @@ export interface paths {
         /**
          * Изменить срок исключения — новая версия политики
          * @description Право `policies.manage`. Новый срок — от момента сохранения (`expires_in_days` 1–365 или
-         *     `expires_at`). Продление — ослабление защиты: пароль или код TOTP и `weakening` в записи
+         *     `expires_at`; у `canary` — не больше 7 суток, 3Н49). Продление — ослабление защиты: пароль или код TOTP и `weakening` в записи
          *     `policy.exception_extend` (DM-40); сокращение срока — нет.
          */
         post: {
@@ -7105,21 +7878,24 @@ export interface paths {
          *     установки, оба включительно; начало не в будущем, конец позже сегодняшнего урезается до
          *     сегодняшнего дня, не больше 366 суток. `format`: `html` (по умолчанию; страница для просмотра
          *     и печати в PDF средствами браузера, без скриптов, со своей политикой CSP и допустимой рамкой
-         *     консоли того же адреса), `csv` (UTF-8 с BOM, защита от формул), `xlsx` (один лист, без формул
+         *     консоли того же адреса), `csv` (UTF-8 с BOM, защита от формул, разделитель — `delimiter`), `xlsx` (один лист, без формул
          *     и макросов). `app` — slug приложения: отчёт только по нему (инциденты, оповещения и бюджеты в
          *     сводный отчёт по приложению не входят). Владельцу приложения доступен только `summary` с `app`
          *     своего приложения; чужое приложение — 404, другой вид — 403. Каждая выгрузка пишет
          *     `data.export` до выдачи данных (DM-41); без записи отчёт не выдаётся (503). Одновременно — одна
-         *     выгрузка на пользователя, сверх предела 429.
+         *     выгрузка на пользователя, сверх предела 429. Без `from` и `to` — последние 30 суток по сегодняшний
+         *     день; одна дата без другой — 400.
          */
         get: {
             parameters: {
-                query: {
-                    /** @description Первый день периода, ГГГГ-ММ-ДД */
-                    from: string;
-                    /** @description Последний день периода включительно, ГГГГ-ММ-ДД */
-                    to: string;
+                query?: {
+                    /** @description Первый день периода, ГГГГ-ММ-ДД; вместе с `to` */
+                    from?: string;
+                    /** @description Последний день периода включительно, ГГГГ-ММ-ДД; вместе с `from` */
+                    to?: string;
                     format?: "html" | "csv" | "xlsx";
+                    /** @description Разделитель полей CSV; только с `format=csv`, по умолчанию `semicolon` («;») */
+                    delimiter?: "semicolon" | "comma";
                     /** @description Slug приложения */
                     app?: string;
                 };
@@ -7430,6 +8206,1183 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/report-channels": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Почтовые каналы для рассылки отчётов
+         * @description Право `reports.schedules.manage`. Включённые почтовые каналы уведомлений с получателями —
+         *     только ID и название, без адресов и настроек сервера: тот, кто ведёт расписания, выбирает
+         *     канал без права `notify_channels.read`.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Каналы */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ReportChannelList"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/report-recipients": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Пользователи для выбора получателей рассылки отчётов
+         * @description Право `reports.schedules.manage`. Активные пользователи, которым вызывающий вправе слать отчёты:
+         *     есть `reports.read` на все объекты и права на те же разделы отчёта, что у вызывающего (УПД.2).
+         *     Выдаются ID, логин, имя и признак `has_email` — адрес не выдаётся: расписания ведёт тот, у кого нет
+         *     права `users.read`. Пользователь без адреса в расписании допустим, при отправке он пропускается,
+         *     число пропущенных — в журнале рассылки (`skipped_no_email`).
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Пользователи */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ReportRecipientList"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/agents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Агенты
+         * @description Право `agents.read` (ТЗ 5.10, задача 4.8, ADR-0023). Со `ScopeOwn` (владелец приложения) — только
+         *     агенты своих приложений (УПД.8). `application_id` — агенты одного приложения. Не больше 256.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description Только агенты этого приложения */
+                    application_id?: components["parameters"]["AgentApplicationFilter"];
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Агенты */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["AgentList"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        /**
+         * Создать агента
+         * @description Право `agents.manage`. Агент принадлежит приложению (не в архиве — иначе 409); `slug` уникален в
+         *     приложении (`[a-z0-9-]{1,64}`, повтор — 409). `mcp_servers` — ID MCP-серверов, к которым агенту можно
+         *     обращаться; непустой список — ослабление защиты (DM-40): нужна повторная проверка `password` или `code`
+         *     (без неё — 400 с полем `password`, токеном API — 403), запись с `weakening`. Не больше 256 агентов — иначе
+         *     422. Пишет `agent.create`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                    /** @description Ключ повторяемости создающего запроса, 1–64 символа `[A-Za-z0-9._-]` */
+                    "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["AgentInput"];
+                };
+            };
+            responses: {
+                /** @description Агент создан */
+                201: {
+                    headers: {
+                        Location?: string;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Agent"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/agents/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Агент
+         * @description Право `agents.read`; со `ScopeOwn` — только агент своего приложения, иначе 404.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description ID агента (UUIDv7) */
+                    id: components["parameters"]["AgentID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Агент */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Agent"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        /**
+         * Изменить агента
+         * @description Право `agents.manage`. Полная замена полей, кроме `application_id` и `slug`. Расширение списка
+         *     `mcp_servers` — ослабление защиты (ADR-0023, раздел 1; DM-40): требует текущего пароля (`password`)
+         *     или кода TOTP (`code`), иначе 403; пишется с `weakening: true` и причиной `agent_servers_widened`.
+         *     Пишет `agent.update`.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID агента (UUIDv7) */
+                    id: components["parameters"]["AgentID"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["AgentInput"];
+                };
+            };
+            responses: {
+                /** @description Агент изменён */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Agent"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        post?: never;
+        /**
+         * Удалить агента
+         * @description Право `agents.manage`. Агента с привязанными ключами приложения удалить нельзя — 409. Функции агента
+         *     удаляются из реестра вместе с ним. Пишет `agent.delete`.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID агента (UUIDv7) */
+                    id: components["parameters"]["AgentID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Агент удалён */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                409: components["responses"]["ProblemConflict"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/mcp-servers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * MCP-серверы
+         * @description Право `agents.read`. Со `ScopeOwn` — только серверы из списков агентов своих приложений. Учётных
+         *     данных в ответе нет: `credential_set` и время установки. Не больше 64.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description MCP-серверы */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["MCPServerList"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        /**
+         * Зарегистрировать MCP-сервер
+         * @description Право `agents.manage`. `url` — только `https://`, без имени пользователя, запроса и фрагмента; узел не
+         *     должен быть loopback, link-local, multicast или адресом службы метаданных (проверяется и при каждом
+         *     подключении шлюза). `ca_pem` — корневые сертификаты сервера (обязательны, системное хранилище не
+         *     используется). Новый сервер — внешний (`external: true`). `slug` `function` занят. Не больше 64
+         *     серверов — иначе 422. Пишет `mcp_server.create`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                    /** @description Ключ повторяемости создающего запроса, 1–64 символа `[A-Za-z0-9._-]` */
+                    "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["MCPServerInput"];
+                };
+            };
+            responses: {
+                /** @description MCP-сервер зарегистрирован */
+                201: {
+                    headers: {
+                        Location?: string;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["MCPServer"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/mcp-servers/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * MCP-сервер
+         * @description Право `agents.read`; со `ScopeOwn` — только сервер агентов своих приложений, иначе 404.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description ID MCP-сервера (UUIDv7) */
+                    id: components["parameters"]["MCPServerID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description MCP-сервер */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["MCPServer"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        /**
+         * Изменить MCP-сервер
+         * @description Право `agents.manage`. Полная замена полей, кроме `slug`, признаков и учётных данных. Смена схемы,
+         *     узла или порта адреса либо корневых сертификатов сбрасывает учётные данные и возвращает
+         *     `external: true`. Адрес `http://` у сервера с `insecure_http` меняет только обладатель
+         *     `agents.tools.approve` с повторной проверкой. Пишет `mcp_server.update`.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID MCP-сервера (UUIDv7) */
+                    id: components["parameters"]["MCPServerID"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["MCPServerInput"];
+                };
+            };
+            responses: {
+                /** @description MCP-сервер изменён */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["MCPServer"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        post?: never;
+        /**
+         * Удалить MCP-сервер
+         * @description Право `agents.manage`. Сервер из списка агента удалить нельзя — 409. Инструменты сервера удаляются
+         *     из реестра вместе с ним. Пишет `mcp_server.delete`.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID MCP-сервера (UUIDv7) */
+                    id: components["parameters"]["MCPServerID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description MCP-сервер удалён */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                409: components["responses"]["ProblemConflict"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/mcp-servers/{id}/credentials": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Задать учётные данные MCP-сервера
+         * @description Право `agents.manage` (ЗИ.1). Значение заголовка `Authorization` (или `auth_header`), до 16 КиБ видимых
+         *     символов ASCII, шифруется ключом данных с AAD `mcp_servers|credential|<id>`, в ответах и журналах не
+         *     появляется; шлюзу уходит в зашифрованной части пакета (HPKE). Без ключа данных — 503. Пишет
+         *     `mcp_server.credentials_set` (только признак замены).
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID MCP-сервера (UUIDv7) */
+                    id: components["parameters"]["MCPServerID"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["MCPServerCredential"];
+                };
+            };
+            responses: {
+                /** @description Учётные данные сохранены */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["MCPServer"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/mcp-servers/{id}/security": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Изменить признаки «внешний» и http:// у MCP-сервера
+         * @description Право `agents.tools.approve` (признак `security`: только администратор безопасности, токену
+         *     недоступно). Снятие `external` и разрешение `insecure_http` — ослабление защиты (DM-40): текущий пароль
+         *     (`password`) или код TOTP (`code`), иначе 403; причина обязательна. `insecure_http` не снимается,
+         *     пока адрес — `http://`. Пишет `mcp_server.security_changed`; без изменения — 200 без записи.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID MCP-сервера (UUIDv7) */
+                    id: components["parameters"]["MCPServerID"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["MCPServerSecurity"];
+                };
+            };
+            responses: {
+                /** @description Признаки изменены */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["MCPServer"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/agent-tools": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Инструменты агентов
+         * @description Право `agents.read`. Реестр инструментов MCP-серверов и функций агентов (ADR-0023, раздел 1): состояние
+         *     (`new`, `approved`, `changed` — описание изменилось после одобрения, DM-25; `suspicious` — внедрённые
+         *     инструкции, DM-24; `revoked`), риск и хеши описаний. Со `ScopeOwn` — только инструменты агентов своих
+         *     приложений и их MCP-серверов. Не больше 2 000.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description Только инструменты этого MCP-сервера */
+                    mcp_server_id?: components["parameters"]["AgentToolServerFilter"];
+                    /** @description Только функции этого агента */
+                    agent_id?: components["parameters"]["AgentToolAgentFilter"];
+                    status?: components["parameters"]["AgentToolStatusFilter"];
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Инструменты */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["AgentToolList"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/agent-tools/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Инструмент агента
+         * @description Право `agents.read`. С увиденным и одобренным описаниями в канонической форме: консоль показывает
+         *     разницу перед повторным одобрением. Описание пришло от MCP-сервера и показывается только как текст.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description ID инструмента в реестре (UUIDv7) */
+                    id: components["parameters"]["AgentToolID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Инструмент */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["AgentToolDetail"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/agent-tools/{id}/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Одобрить инструмент
+         * @description Право `agents.tools.approve` (признак `security`). Одобряет текущее описание с уровнем риска; `hash` —
+         *     хеш описания, которое видел администратор (изменилось — 409). Каждое одобрение требует текущего пароля
+         *     или кода TOTP (иначе 403). Одобрение из `changed` и `suspicious` и понижение риска — ослабление (DM-40,
+         *     `weakening: true`). Пишет `agent_tool.approve`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID инструмента в реестре (UUIDv7) */
+                    id: components["parameters"]["AgentToolID"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["AgentToolApprove"];
+                };
+            };
+            responses: {
+                /** @description Инструмент одобрен */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["AgentTool"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/agent-tools/{id}/revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Снять одобрение инструмента
+         * @description Право `agents.tools.approve`. Вызовы инструмента получают действие `unapproved` политики вызовов.
+         *     Усиление защиты: без повторной проверки. Пишет `agent_tool.revoke`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID инструмента в реестре (UUIDv7) */
+                    id: components["parameters"]["AgentToolID"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["AgentToolRevoke"];
+                };
+            };
+            responses: {
+                /** @description Одобрение снято */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["AgentTool"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/agent-tools/{id}/risk": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Изменить уровень риска инструмента
+         * @description Право `agents.tools.approve`. Понижение уровня — ослабление защиты (правила политики по риску): текущий
+         *     пароль или код TOTP, иначе 403. Пишет `agent_tool.risk`.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID инструмента в реестре (UUIDv7) */
+                    id: components["parameters"]["AgentToolID"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["AgentToolRisk"];
+                };
+            };
+            responses: {
+                /** @description Риск изменён */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["AgentTool"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/approvals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Очередь подтверждений вызовов
+         * @description Право `approvals.read`. Вызовы инструментов агентов, которые политика вызовов отправила на подтверждение
+         *     человеком (`require_approval`, DM-22; ADR-0023, раздел 5), новые первыми. Состояния: `pending` — ждёт
+         *     решения; `approved`, `denied` — решение пользователя консоли; `timeout` — срок `approval_timeout` истёк;
+         *     `cancelled` — агент закрыл поток; `interrupted` — шлюз перезапустился. Аргументы в списке не показываются.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description Размер страницы */
+                    limit?: components["parameters"]["Limit"];
+                    /** @description Непрозрачный курсор из `next_cursor` предыдущей страницы */
+                    cursor?: components["parameters"]["Cursor"];
+                    state?: "pending" | "approved" | "denied" | "timeout" | "cancelled" | "interrupted";
+                    /** @description Slug приложения */
+                    application?: string;
+                    /** @description Slug агента */
+                    agent?: string;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Запросы подтверждения */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ApprovalList"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/approvals/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Запрос подтверждения
+         * @description Право `approvals.read`. Маскированные шлюзом аргументы вызова (ПДн и секреты заменены категорией, до
+         *     16 КиБ) — в поле `args` только у пользователя с `approvals.decide` и только 30 суток после закрытия.
+         *     Аргументы пришли от модели или агента и показываются только как текст.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description ID запроса подтверждения (UUIDv7) */
+                    id: components["parameters"]["ApprovalID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Запрос подтверждения */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Approval"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/approvals/{id}/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Одобрить вызов
+         * @description Право `approvals.decide` (признак `security`: не выдаётся администратору системы и токенам API —
+         *     подтверждает человек). `args_hash` — хеш аргументов показанного запроса (не совпал — 409). Вызов с
+         *     риском `critical` одобряется с текущим паролем или кодом TOTP (иначе 403). После срока — 409, запрос
+         *     уже закрыт как `timeout`. Шлюз передаёт дальше ровно проверенные аргументы. Пишет `agent.approval.approve`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID запроса подтверждения (UUIDv7) */
+                    id: components["parameters"]["ApprovalID"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["ApprovalApprove"];
+                };
+            };
+            responses: {
+                /** @description Вызов одобрен */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Approval"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/approvals/{id}/deny": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Отклонить вызов
+         * @description Право `approvals.decide`. Комментарий виден в событии вызова, агенту не передаётся: агент получает
+         *     сообщение правила или «Вызов отклонён». После срока или повторное решение — 409. Пишет `agent.approval.deny`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID запроса подтверждения (UUIDv7) */
+                    id: components["parameters"]["ApprovalID"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["ApprovalDeny"];
+                };
+            };
+            responses: {
+                /** @description Вызов отклонён */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Approval"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -7516,10 +9469,10 @@ export interface components {
             };
             notifications: {
                 /**
-                 * @description alert_job_stale (РСБ.7, DM-44) — фоновая задача правил «частота», «аномалия» и «бюджет» не отмечала проход дольше 5 минут при работающем сервере, 3В17 ревью 3.r2. ca_expiry (ИАФ.10) — действующему корню внутреннего УЦ осталось 60 суток и меньше, нужна ротация `aisec-cli keys rotate-ca`; system.alert пишется за 60 суток (ca_expiry) и за 7 суток (ca_expiry:critical), 3В5 ревью 3.r1. customer_cert_expiry (ЗИ.4) — сертификату заказчика для адреса шлюза осталось 30 суток и меньше; system.alert пишется за 30 суток (customer_cert_expiry) и за 7 суток (customer_cert_expiry:critical), задача 3.27
+                 * @description gateway_clock (ВРМ.1) — часы шлюза на связи в последнем heartbeat расходятся с часами сервера больше чем на минуту, 3Н40 ревью 3.r3. gateway_tls (ЗИ.4) — шлюз на текущем пакете конфигурации дольше 10 минут после его сборки отвечает приложениям не тем сертификатом, что загружен в консоли (по часам шлюза он ещё не действует или истёк; без сертификата заказчика — не своим), 3Н43 ревью 3.r3. alert_job_stale (РСБ.7, DM-44) — фоновая задача правил «частота», «аномалия» и «бюджет» не отмечала проход дольше 5 минут при работающем сервере, 3В17 ревью 3.r2. ca_expiry (ИАФ.10) — действующему корню внутреннего УЦ осталось 60 суток и меньше, нужна ротация `aisec-cli keys rotate-ca`; system.alert пишется за 60 суток (ca_expiry) и за 7 суток (ca_expiry:critical), 3В5 ревью 3.r1. customer_cert_expiry (ЗИ.4) — сертификату заказчика для адреса шлюза осталось 30 суток и меньше; system.alert пишется за 30 суток (customer_cert_expiry) и за 7 суток (customer_cert_expiry:critical), задача 3.27
                  * @enum {string}
                  */
-                condition: "account_lockout" | "access_denied" | "audit_chain" | "audit_storage" | "integrity" | "time_sync" | "config_bundle" | "config_bundle_lag" | "test_build" | "gateway_offline" | "events_dropped" | "reports_stale" | "cert_expiry" | "ca_expiry" | "customer_cert_expiry" | "alert_job_stale";
+                condition: "account_lockout" | "access_denied" | "audit_chain" | "audit_storage" | "integrity" | "time_sync" | "config_bundle" | "config_bundle_lag" | "test_build" | "gateway_offline" | "events_dropped" | "reports_stale" | "cert_expiry" | "gateway_clock" | "gateway_tls" | "ca_expiry" | "customer_cert_expiry" | "alert_job_stale";
                 /** @enum {string} */
                 requirement: "ИАФ.4" | "ИАФ.10" | "УПД.6" | "РСБ.4" | "РСБ.5" | "РСБ.7" | "ОЦЛ.1" | "ОЦЛ.3" | "ОЦЛ.5" | "ВРМ.1" | "ЗИ.4";
                 /** @description Компоненты с активным условием (integrity — server или gateway:<ID>, config_bundle_lag, gateway_offline, events_dropped, reports_stale, cert_expiry — gateway:<ID>); каждое ведётся отдельно и пишется в system.alert (В18 ревью 2.r3b), а возникшее условие порождает оповещение системного правила (задача 3.11 этапа 3, DM-42–DM-44). test_build (ОЦЛ.1) — компоненты, собранные с тестовым ключом манифеста (Н34 ревью 2.r4); integrity шлюза поднимает и откат выпуска, и чужой ключ проверки пакетов (В19, В20 ревью 2.r4). DM-44: gateway_offline — шлюз не на связи дольше трёх периодов heartbeat, events_dropped — счётчик отброшенных событий вырос за 15 минут, cert_expiry — сертификат истекает меньше чем через 14 суток, reports_stale — итог целостности старше двух часов или не приходит (Н29) */
@@ -7751,6 +9704,86 @@ export interface components {
              */
             retention_mode?: "" | "none" | "masked" | "full";
         } & components["schemas"]["Reauth"];
+        OIDCOption: {
+            enabled: boolean;
+            /** @description Название для кнопки «Войти через …» */
+            display_name?: string;
+        };
+        IdPGroupRole: {
+            group: string;
+            role: components["schemas"]["Role"];
+        };
+        IdPSettingsFields: {
+            enabled?: boolean;
+            display_name?: string;
+            /** @description https-адрес издателя; совпадает с issuer в discovery */
+            issuer?: string;
+            client_id?: string;
+            /** @description https-адрес консоли без пути: из него строится redirect_uri */
+            console_url?: string;
+            /** @description Корневые сертификаты IdP в PEM (системные корни не используются) */
+            ca_pem?: string;
+            scopes?: string[];
+            /** @description Утверждение с группами, по умолчанию `groups` */
+            groups_claim?: string;
+            required_acr?: string[];
+            required_amr?: string[];
+            group_roles?: components["schemas"]["IdPGroupRole"][];
+        };
+        IdPSettings: components["schemas"]["IdPSettingsFields"] & {
+            configured: boolean;
+            /** @description Адрес возврата для регистрации клиента в IdP */
+            redirect_uri?: string;
+            version?: number;
+            /** Format: date-time */
+            updated_at?: string;
+        };
+        IdPSettingsUpdate: components["schemas"]["IdPSettingsFields"] & components["schemas"]["Reauth"] & {
+            /**
+             * Format: password
+             * @description Секрет клиента; пустой — оставить прежний (при смене issuer или ca_pem — 400, нужен заново). Хранится шифротекстом под ключом данных
+             */
+            client_secret?: string;
+        };
+        LDAPGroupRole: {
+            /** @description Полный DN группы; сравнение без учёта регистра */
+            group: string;
+            role: components["schemas"]["Role"];
+        };
+        LDAPSettingsFields: {
+            enabled?: boolean;
+            /** @description ldaps://узел[:порт] или ldap://узел[:порт] (тогда обязательно StartTLS) */
+            url?: string;
+            /** @description Корневые сертификаты каталога в PEM (системные корни не используются) */
+            ca_pem?: string;
+            /** @description DN сервисной учётной записи для поиска */
+            bind_dn?: string;
+            user_base_dn?: string;
+            /** @description Фильтр поиска пользователя с `{login}` в значении; логин экранируется по RFC 4515 */
+            user_filter?: string;
+            /** @enum {string} */
+            id_attribute?: "entryUUID" | "ipaUniqueID" | "nsUniqueId" | "objectGUID";
+            /** @description По умолчанию `displayName` */
+            display_attribute?: string;
+            /** @enum {string} */
+            group_mode?: "member_of" | "member" | "ad_nested";
+            /** @description Ветка групп; не нужна для `member_of` */
+            group_base_dn?: string;
+            group_roles?: components["schemas"]["LDAPGroupRole"][];
+        };
+        LDAPSettings: components["schemas"]["LDAPSettingsFields"] & {
+            configured: boolean;
+            version?: number;
+            /** Format: date-time */
+            updated_at?: string;
+        };
+        LDAPSettingsUpdate: components["schemas"]["LDAPSettingsFields"] & components["schemas"]["Reauth"] & {
+            /**
+             * Format: password
+             * @description Пароль сервисной учётной записи; пустой — оставить прежний (при смене url, ca_pem или bind_dn — 400, нужен заново). Хранится шифротекстом под ключом данных
+             */
+            bind_password?: string;
+        };
         AuthPolicyUpdate: components["schemas"]["AuthPolicy"] & components["schemas"]["Reauth"];
         /**
          * @description ID роли. Предустановленные: `security_admin`, `system_admin`, `analyst`, `auditor`,
@@ -8325,7 +10358,7 @@ export interface components {
         };
         /** @description Поля защиты; меняет только обладатель права `applications.policy` (В15 ревью 2.r3b). Смена политики на ту, что по сравнению версий (`GET /policies/{id}/diff`) слабее текущей, — ослабление с повторной проверкой (В23 ревью 2.r5) */
         ApplicationProtection: {
-            /** @description Шаблон (`base`, `pii-strict`, `external-no-pii`, `monitor-only`) или политика организации */
+            /** @description Шаблон (`base`, `pii-strict`, `external-no-pii`, `monitor-only`, `agent-base`) или политика организации */
             policy?: string;
             /**
              * @description По умолчанию — режим выбранной политики
@@ -8356,6 +10389,51 @@ export interface components {
             code?: string;
         };
         ApplicationUpdate: components["schemas"]["ApplicationFields"] & components["schemas"]["Reauth"];
+        UserAccessUpdate: components["schemas"]["Reauth"] & {
+            /** @enum {string} */
+            mode: "off" | "optional" | "required";
+            /** @description https://…, как iss токена */
+            issuer?: string;
+            audience?: string;
+            /** @description Пусто — groups */
+            groups_claim?: string;
+            /** @description Секунды; без поля — 60 */
+            leeway?: number;
+            model_groups?: {
+                [key: string]: string[];
+            };
+        };
+        UserAccess: {
+            configured: boolean;
+            /** @enum {string} */
+            mode: "off" | "optional" | "required";
+            issuer: string;
+            audience: string;
+            groups_claim: string;
+            leeway: number;
+            model_groups: {
+                [key: string]: string[];
+            };
+            /** Format: date-time */
+            updated_at?: string;
+        };
+        PromptBaselineUpdate: components["schemas"]["Reauth"] & {
+            /** @description Текст эталона; без поля — прежний */
+            text?: string;
+            /** @enum {string} */
+            mode: "off" | "alert" | "block";
+        };
+        PromptBaseline: {
+            configured: boolean;
+            /** @enum {string} */
+            mode?: "off" | "alert" | "block";
+            /** @description Хеш нормализованного текста (хеш криптопрофиля) */
+            hash?: string;
+            bytes?: number;
+            text?: string;
+            /** Format: date-time */
+            updated_at?: string;
+        };
         ProtectionUpdate: components["schemas"]["ApplicationProtection"] & components["schemas"]["Reauth"];
         NewApplication: components["schemas"]["ApplicationFields"] & components["schemas"]["ApplicationProtection"] & components["schemas"]["Reauth"] & {
             slug: string;
@@ -8421,6 +10499,264 @@ export interface components {
             /** Format: date-time */
             revoked_at?: string;
         };
+        Agent: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            application_id: string;
+            slug: string;
+            name: string;
+            description: string;
+            /** @description Ответственный за агента */
+            owner: string;
+            /** @description MCP-серверы, к которым агенту можно обращаться */
+            mcp_servers: string[];
+            /** @enum {string} */
+            status: "active" | "disabled";
+            /** Format: date-time */
+            created_at: string;
+            created_by: string;
+            /** Format: date-time */
+            updated_at: string;
+            updated_by: string;
+        };
+        AgentList: {
+            items: components["schemas"]["Agent"][];
+        };
+        AgentInput: {
+            /**
+             * Format: uuid
+             * @description Только при создании
+             */
+            application_id?: string;
+            /** @description Только при создании */
+            slug?: string;
+            name: string;
+            description?: string;
+            owner?: string;
+            mcp_servers?: string[];
+            /**
+             * @default active
+             * @enum {string}
+             */
+            status: "active" | "disabled";
+            /**
+             * Format: password
+             * @description Текущий пароль при ослаблении (ровно одно из password и code)
+             */
+            password?: string;
+            /** @description Код из приложения-аутентификатора при ослаблении */
+            code?: string;
+        };
+        MCPServer: {
+            /** Format: uuid */
+            id: string;
+            slug: string;
+            name: string;
+            url: string;
+            ca_pem: string;
+            /** @description Заголовок учётных данных; пусто — Authorization */
+            auth_header: string;
+            /** @description Сервер вне контура заказчика */
+            external: boolean;
+            /** @description Разрешён адрес http:// (ослабление, DM-40) */
+            insecure_http: boolean;
+            /** @description Срок tools/call, секунды */
+            call_timeout: number;
+            versions: ("2025-11-25" | "2026-07-28")[];
+            credential_set: boolean;
+            /** Format: date-time */
+            credential_set_at?: string;
+            /** Format: date-time */
+            created_at: string;
+            created_by: string;
+            /** Format: date-time */
+            updated_at: string;
+            updated_by: string;
+        };
+        MCPServerList: {
+            items: components["schemas"]["MCPServer"][];
+        };
+        MCPServerInput: {
+            /** @description Только при создании; function занят */
+            slug?: string;
+            name: string;
+            /** @description https://; http:// — только с insecure_http */
+            url: string;
+            ca_pem: string;
+            /** @description Без заголовков транспорта, MCP и AISec */
+            auth_header?: string;
+            /** @description 0 — 120 секунд */
+            call_timeout?: number;
+            versions: ("2025-11-25" | "2026-07-28")[];
+            /**
+             * Format: password
+             * @description Текущий пароль при ослаблении (ровно одно из password и code)
+             */
+            password?: string;
+            /** @description Код из приложения-аутентификатора при ослаблении */
+            code?: string;
+        };
+        MCPServerCredential: {
+            /** @description Значение заголовка: только видимые символы ASCII и пробел */
+            credential: string;
+        };
+        MCPServerSecurity: {
+            external?: boolean;
+            insecure_http?: boolean;
+            reason: string;
+            /**
+             * Format: password
+             * @description Текущий пароль при ослаблении (ровно одно из password и code)
+             */
+            password?: string;
+            /** @description Код из приложения-аутентификатора при ослаблении */
+            code?: string;
+        };
+        AgentTool: {
+            /** Format: uuid */
+            id: string;
+            /**
+             * Format: uuid
+             * @description MCP-сервер; у функций агента нет
+             */
+            mcp_server_id?: string;
+            /**
+             * Format: uuid
+             * @description Агент функции
+             */
+            agent_id?: string;
+            name: string;
+            /** @enum {string} */
+            status: "new" | "approved" | "changed" | "suspicious" | "revoked";
+            /** @enum {string} */
+            risk: "low" | "medium" | "high" | "critical";
+            /** @description Хеш последнего увиденного описания (hex) */
+            hash: string;
+            /** @description Хеш одобренного описания (hex) */
+            approved_hash?: string;
+            /** @description Алгоритм хеша криптопрофиля */
+            hash_alg: string;
+            /** Format: date-time */
+            first_seen: string;
+            /** Format: date-time */
+            last_seen: string;
+            decided_by?: string;
+            /** Format: date-time */
+            decided_at?: string;
+            comment?: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        AgentToolDetail: components["schemas"]["AgentTool"] & {
+            /** @description Последнее увиденное описание (каноническая форма, без icons и _meta) */
+            descriptor: {
+                [key: string]: unknown;
+            };
+            /** @description Одобренное описание */
+            approved_descriptor?: {
+                [key: string]: unknown;
+            };
+        };
+        Approval: {
+            /** Format: uuid */
+            id: string;
+            /** @enum {string} */
+            state: "pending" | "approved" | "denied" | "timeout" | "cancelled" | "interrupted";
+            /** @enum {string} */
+            path: "mcp" | "chat";
+            /** @description Slug приложения */
+            application: string;
+            /** @description Slug агента; нет — путь chat без агента */
+            agent?: string;
+            /** @description Псевдоним пользователя */
+            user?: string;
+            session?: string;
+            /** @description Slug MCP-сервера или function (функции пути chat) */
+            server: string;
+            tool: string;
+            /** @description Хеш одобренного описания инструмента (hex) */
+            approved_hash?: string;
+            /** @enum {string} */
+            risk: "low" | "medium" | "high" | "critical";
+            /** @description Правило раздела tools политики, потребовавшее подтверждения */
+            rule: string;
+            message?: string;
+            /** @enum {string} */
+            severity: "info" | "low" | "medium" | "high" | "critical";
+            /** @description Хеш аргументов */
+            args_hash: string;
+            /** @description Маскированные аргументы; только с approvals.decide, 30 суток после закрытия */
+            args?: string;
+            /** @description Аргументы удалены по сроку */
+            args_deleted?: boolean;
+            /** Format: uuid */
+            gateway_id: string;
+            /** Format: uuid */
+            request_event_id?: string;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            deadline: string;
+            /** Format: date-time */
+            closed_at?: string;
+            /** @description Логин пользователя консоли */
+            decided_by?: string;
+            comment?: string;
+            /** Format: int64 */
+            waited_ms: number;
+        };
+        ApprovalList: {
+            items: components["schemas"]["Approval"][];
+            next_cursor?: string;
+        };
+        ApprovalApprove: {
+            /** @description Хеш аргументов показанного запроса (hex) */
+            args_hash: string;
+            comment?: string;
+            /**
+             * Format: password
+             * @description Текущий пароль для риска critical (ровно одно из password и code)
+             */
+            password?: string;
+            /** @description Код из приложения-аутентификатора для риска critical */
+            code?: string;
+        };
+        ApprovalDeny: {
+            comment?: string;
+        };
+        AgentToolList: {
+            items: components["schemas"]["AgentTool"][];
+        };
+        AgentToolApprove: {
+            /** @enum {string} */
+            risk: "low" | "medium" | "high" | "critical";
+            /** @description Хеш описания */
+            hash: string;
+            comment?: string;
+            /**
+             * Format: password
+             * @description Текущий пароль при ослаблении (ровно одно из password и code)
+             */
+            password?: string;
+            /** @description Код из приложения-аутентификатора при ослаблении */
+            code?: string;
+        };
+        AgentToolRevoke: {
+            comment?: string;
+        };
+        AgentToolRisk: {
+            /** @enum {string} */
+            risk: "low" | "medium" | "high" | "critical";
+            comment?: string;
+            /**
+             * Format: password
+             * @description Текущий пароль при ослаблении (ровно одно из password и code)
+             */
+            password?: string;
+            /** @description Код из приложения-аутентификатора при ослаблении */
+            code?: string;
+        };
         AppKeyList: {
             items: components["schemas"]["AppKey"][];
         };
@@ -8430,6 +10766,11 @@ export interface components {
             expires_in_days: number;
             /** @description Подсети в каноническом виде (`10.0.0.0/8`); пусто — с любых адресов */
             allowed_cidrs?: string[];
+            /**
+             * Format: uuid
+             * @description Привязка к агенту этого приложения: только с правом `agents.manage` (иначе 403); не меняется, ротация её сохраняет
+             */
+            agent_id?: string;
         };
         AppKeyRotation: {
             /** @default 24 */
@@ -8453,6 +10794,8 @@ export interface components {
             id: string;
             login: string;
             display_name: string;
+            /** @description E-mail для рассылки отчётов; пустая строка — адреса нет */
+            email: string;
             role: components["schemas"]["Role"];
             /** @enum {string} */
             status: "active" | "deactivated";
@@ -8472,6 +10815,10 @@ export interface components {
             last_login_at?: string;
             /** Format: date-time */
             deactivated_at?: string;
+        };
+        EmailInput: {
+            /** @description Адрес вида user@example.ru; пустая строка убирает адрес */
+            email: string;
         };
         NewUser: {
             login: string;
@@ -8502,6 +10849,8 @@ export interface components {
             };
             /** @description Разрешения, действующие в сессии, включая `session` и, после второго фактора, `self`. Консоль скрывает недоступное; права проверяет сервер */
             permissions: string[];
+            /** @description Разрешения из `permissions` с областью `own` — только на свои объекты (УПД.8), например `reports.read` владельца приложения */
+            own_scope?: string[];
             /** @description Часовой пояс показа времени из настроек установки (ВРМ.2): консоль показывает даты в нём */
             timezone: string;
         };
@@ -8574,7 +10923,7 @@ export interface components {
             status: number;
             detail: string;
             /** @enum {string} */
-            code: "invalid_request" | "unauthorized" | "forbidden" | "not_found" | "method_not_allowed" | "conflict" | "payload_too_large" | "unsupported_media_type" | "unprocessable" | "rate_limited" | "internal_error" | "service_unavailable" | "reauthentication_failed" | "bundle_key_mismatch" | "reissue_not_needed" | "self_review";
+            code: "invalid_request" | "unauthorized" | "forbidden" | "not_found" | "method_not_allowed" | "conflict" | "payload_too_large" | "unsupported_media_type" | "unprocessable" | "rate_limited" | "internal_error" | "service_unavailable" | "reauthentication_failed" | "bundle_key_mismatch" | "reissue_not_needed" | "self_review" | "approval_queue_full";
             errors?: {
                 field: string;
                 detail: string;
@@ -8695,6 +11044,12 @@ export interface components {
         EventExportRequest: {
             /** @enum {string} */
             format: "csv" | "json";
+            /**
+             * @description Разделитель полей CSV; по умолчанию «;» (Excel с русской локалью), для json не используется
+             * @default semicolon
+             * @enum {string}
+             */
+            delimiter: "semicolon" | "comma";
             /** Format: date-time */
             from?: string;
             /** Format: date-time */
@@ -8795,6 +11150,53 @@ export interface components {
             rules: components["schemas"]["PolicyRule"][];
             /** @description Исключения (задача 3.22). При сохранении: поле не передано — исключения текущей версии сохраняются; пустой список — удаляются. Автора и created_at новых и изменённых ставит сервер */
             exceptions?: components["schemas"]["PolicyException"][];
+            tools?: components["schemas"]["PolicyTools"];
+        };
+        /** @description Политика вызовов инструментов агентами (ADR-0023, раздел 2; DM-20–DM-23). При сохранении: поле не передано — раздел текущей версии сохраняется, у новой политики — unapproved: block, default: block. В ответе поля нет — версия без раздела: неодобренные инструменты только журналируются, остальное разрешено (совместимость). */
+        PolicyTools: {
+            /**
+             * @description Инструмент не одобрен, подменён, отравлен или отозван
+             * @enum {string}
+             */
+            unapproved: "block" | "log";
+            /**
+             * @description Инструмент одобрен, но ни одно правило не подошло (DM-20)
+             * @enum {string}
+             */
+            default: "block" | "log";
+            /** @description Срок ожидания подтверждения (DM-22), 1m–60m; пусто — 10m */
+            approval_timeout?: string;
+            /** @description Лимиты вызовов (DM-23); 0 — без предела */
+            limits?: {
+                agent_per_minute?: number;
+                /** @description Вызовов агента в сессии за 24 ч */
+                session_calls?: number;
+                /** @description Одинаковых вызовов (инструмент и хеш аргументов) в сессии за repeat_window */
+                repeat?: number;
+                /** @description 1m–24h; обязателен вместе с repeat */
+                repeat_window?: string;
+            };
+            rules?: components["schemas"]["PolicyToolRule"][];
+        };
+        /** @description Правило политики вызовов; поля — как в YAML (ADR-0023, раздел 2). */
+        PolicyToolRule: {
+            id: string;
+            /** @description Пусто — все агенты приложения и вызовы без агента */
+            agents?: string[];
+            /** @description Сервер/имя (function/имя — вызовы функций в ответах модели); «*» только в конце имени; пусто — любой */
+            tool?: string;
+            risk?: ("low" | "medium" | "high" | "critical")[];
+            /** @enum {string} */
+            action: "allow" | "log" | "require_approval" | "block";
+            /** @description Ограничения аргументов (DM-21): подмножество JSON Schema — type, properties, required, additionalProperties (true или false), items, minItems, maxItems, enum, const, minimum, maximum, exclusiveMinimum, exclusiveMaximum, minLength, maxLength, pattern (RE2), x-aisec-path-prefix, x-aisec-domains. Незнакомое ключевое слово — ошибка. До 16 КиБ, вложенность до 8, до 256 узлов. */
+            args?: Record<string, never>;
+            rate?: {
+                per_minute?: number;
+                per_hour?: number;
+            };
+            /** @enum {string} */
+            severity: "info" | "low" | "medium" | "high" | "critical";
+            message?: string;
         };
         /** @description Исключение (ТЗ 5.3, решение Р8 этапа 3); поля — как в YAML политики. Условия соединяются «и». */
         PolicyException: {
@@ -8962,7 +11364,7 @@ export interface components {
             id: string;
             spec?: components["schemas"]["PolicySpec"];
             /** @enum {string} */
-            from_template?: "base" | "pii-strict" | "external-no-pii" | "monitor-only";
+            from_template?: "base" | "pii-strict" | "external-no-pii" | "monitor-only" | "agent-base";
             /** @description Название копии шаблона */
             name?: string;
             comment?: string;
@@ -9037,9 +11439,11 @@ export interface components {
             weakening: boolean;
             weakening_reasons: {
                 /** @enum {string} */
-                kind: "mode_monitor" | "non_text_weakened" | "response_check_weakened" | "rule_removed" | "action_weakened" | "threshold_raised" | "scope_narrowed" | "detector_changed" | "exception_added" | "exception_extended" | "exception_changed";
+                kind: "mode_monitor" | "non_text_weakened" | "response_check_weakened" | "rule_removed" | "action_weakened" | "threshold_raised" | "scope_narrowed" | "detector_changed" | "exception_added" | "exception_extended" | "exception_changed" | "tools_unapproved_weakened" | "tool_rule_added" | "tool_action_weakened" | "tool_scope_widened" | "tool_scope_narrowed" | "tool_args_relaxed" | "tool_rate_raised" | "approval_timeout_raised" | "tool_rule_removed";
                 rule?: string;
                 exception?: string;
+                /** @description ID правила раздела tools */
+                tool_rule?: string;
             }[];
             exceptions_added: components["schemas"]["PolicyException"][];
             exceptions_removed: components["schemas"]["PolicyException"][];
@@ -9048,6 +11452,20 @@ export interface components {
                 fields: string[];
                 before: components["schemas"]["PolicyException"];
                 after: components["schemas"]["PolicyException"];
+            }[];
+            /** @description Изменённые поля раздела tools (tools, tools.unapproved, tools.default, tools.approval_timeout, tools.limits.*) */
+            tools_fields: {
+                field: string;
+                before: string;
+                after: string;
+            }[];
+            tool_rules_added: components["schemas"]["PolicyToolRule"][];
+            tool_rules_removed: components["schemas"]["PolicyToolRule"][];
+            tool_rules_changed: {
+                id: string;
+                fields: string[];
+                before: components["schemas"]["PolicyToolRule"];
+                after: components["schemas"]["PolicyToolRule"];
             }[];
         };
         /** @description Ровно одно из `policy_id` и `spec`. */
@@ -9199,10 +11617,10 @@ export interface components {
             filter?: string;
             min_severity?: components["schemas"]["AlertSeverity"];
             /**
-             * @description Поле правила «новое»
+             * @description Поле правила «новое»; tool — только у встроенного agents.tool_new
              * @enum {string}
              */
-            field?: "model" | "provider" | "user" | "app";
+            field?: "model" | "provider" | "user" | "app" | "tool";
             /** @description Порог «частоты»: событий в окне по ключу группировки */
             count?: number;
             /** @description Окно «частоты» */
@@ -9404,6 +11822,12 @@ export interface components {
             channel_id: string;
             /** @default true */
             enabled: boolean;
+            /**
+             * @description Получатели-пользователи консоли (необязательно): адрес берётся из учётной записи при отправке, в
+             *     дополнение к адресам почтового канала. Пользователь — активный, с `reports.read` на все объекты и
+             *     с правом на те разделы отчёта, что входят в расписание (иначе 400).
+             */
+            recipient_user_ids?: string[];
             /** @description Для изменения */
             version?: number;
         };
@@ -9423,6 +11847,7 @@ export interface components {
             /** Format: uuid */
             channel_id: string;
             enabled: boolean;
+            recipient_user_ids: string[];
             /** Format: date-time */
             next_run_at: string;
             /** Format: date-time */
@@ -9458,6 +11883,28 @@ export interface components {
             created_at: string;
             /** Format: date-time */
             sent_at?: string;
+            /**
+             * @description Получателей-пользователей пропущено в последней попытке: нет e-mail, учётная запись деактивирована
+             *     или у роли нет права на отчёт. Адреса в журнал доставки не пишутся.
+             */
+            skipped_no_email: number;
+        };
+        ReportRecipientList: {
+            items: {
+                /** Format: uuid */
+                id: string;
+                login: string;
+                display_name: string;
+                /** @description Задан ли e-mail; сам адрес не выдаётся */
+                has_email: boolean;
+            }[];
+        };
+        ReportChannelList: {
+            items: {
+                /** Format: uuid */
+                id: string;
+                name: string;
+            }[];
         };
         ReportRunList: {
             items: components["schemas"]["ReportRun"][];
@@ -10089,6 +12536,21 @@ export interface components {
         AlertRuleID: string;
         /** @description ID расписания рассылки отчёта (UUIDv7) */
         ReportScheduleID: string;
+        /** @description ID агента (UUIDv7) */
+        AgentID: string;
+        /** @description ID MCP-сервера (UUIDv7) */
+        MCPServerID: string;
+        /** @description ID инструмента в реестре (UUIDv7) */
+        AgentToolID: string;
+        /** @description ID запроса подтверждения (UUIDv7) */
+        ApprovalID: string;
+        /** @description Только агенты этого приложения */
+        AgentApplicationFilter: string;
+        /** @description Только инструменты этого MCP-сервера */
+        AgentToolServerFilter: string;
+        /** @description Только функции этого агента */
+        AgentToolAgentFilter: string;
+        AgentToolStatusFilter: "new" | "approved" | "changed" | "suspicious" | "revoked";
         /** @description ID канала уведомлений (UUIDv7) */
         NotifyChannelID: string;
         /** @description ID инцидента (UUIDv7) */

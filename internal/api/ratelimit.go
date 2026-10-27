@@ -37,11 +37,16 @@ func DefaultRateRules() []RateRule {
 		{Prefix: "/api/v1/auth/login", Method: http.MethodPost, Max: 10, Window: time.Minute},
 		{Prefix: "/api/v1/auth/setup", Method: http.MethodPost, Max: 10, Window: time.Minute},
 		{Prefix: "/api/v1/auth/mfa/", Method: http.MethodPost, Max: 10, Window: time.Minute},
+		// Начало и возврат входа через IdP: открытые, пишут в БД и ходят к IdP.
+		{Prefix: "/api/v1/auth/oidc/", Method: http.MethodGet, Max: 20, Window: time.Minute},
 		{Prefix: "/api/v1/auth/password", Method: http.MethodPost, Max: 10, Window: time.Minute},
 		{Prefix: "/api/v1/gateways/register", Max: 10, Window: time.Minute},
 		// Проверка цепочки аудита читает весь журнал (задача 2.4a).
 		{Prefix: "/api/v1/audit/verify", Method: http.MethodPost, Max: 5, Window: time.Minute},
 		{Prefix: "/internal/", Max: 600, Window: time.Minute},
+		// Долгий опрос очереди подтверждений (задача 4.10): до 256 ожидающих
+		// вызовов на шлюз, каждый — опрос раз в 25 с, плюс создание и отмена.
+		{Prefix: "/internal/v1/approvals", Max: 2400, Window: time.Minute},
 		{Prefix: "/healthz", Max: 60, Window: time.Minute},
 		{Prefix: "/readyz", Max: 60, Window: time.Minute},
 	}

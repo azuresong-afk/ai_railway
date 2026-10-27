@@ -211,7 +211,10 @@ func TestPGRegistryLifecycle(t *testing.T) {
 	if _, err := e.srv.Authenticate(ctx, peer, testIP); err != nil {
 		t.Fatalf("Authenticate: %v", err)
 	}
-	if _, err := e.srv.Heartbeat(ctx, reg.Gateway.ID, gwregistry.HeartbeatInput{Version: "2.0.0", BundleETag: `"e1"`}, testIP); err != nil {
+	// Часы шлюза на 5 суток позади, сертификат шлюза (3Н40, 3Н43 ревью 3.r3).
+	own := ""
+	if _, err := e.srv.Heartbeat(ctx, reg.Gateway.ID, gwregistry.HeartbeatInput{Version: "2.0.0", BundleETag: `"e1"`,
+		Time: time.Now().Add(-5 * 24 * time.Hour), TLSFingerprint: &own}, testIP); err != nil {
 		t.Fatal(err)
 	}
 	list, err := e.cli.List(ctx)
@@ -222,6 +225,10 @@ func TestPGRegistryLifecycle(t *testing.T) {
 	if g.Status != gwregistry.StatusActive || g.Version != "2.0.0" || g.BundleETag != `"e1"` || g.LastAddr != testIP ||
 		g.LastSeenAt.IsZero() || g.CertSerial != peer.Serial {
 		t.Fatalf("строка шлюза: %+v", g)
+	}
+	if g.ClockSkew == nil || *g.ClockSkew > -5*24*time.Hour+time.Minute || *g.ClockSkew < -5*24*time.Hour-time.Minute ||
+		g.TLSFingerprint == nil || *g.TLSFingerprint != "" {
+		t.Fatalf("часы и сертификат шлюза: %v %v", g.ClockSkew, g.TLSFingerprint)
 	}
 	// Повторная регистрация заменяет сертификат: прежний не принимается.
 	reg2 := e.register(t, e.issue(t, "gw-1", true))

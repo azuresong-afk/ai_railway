@@ -376,12 +376,14 @@ type AppKeyView struct {
 	CreatedAt    time.Time  `json:"created_at"`
 	RotatedFrom  string     `json:"rotated_from,omitempty"`
 	RevokedAt    *time.Time `json:"revoked_at,omitempty"`
+	// AgentID — агент, к которому привязан ключ (задача 4.8).
+	AgentID string `json:"agent_id,omitempty"`
 }
 
 func appKeyView(k apps.Key, now time.Time) AppKeyView {
 	v := AppKeyView{ID: k.ID, ApplicationID: k.AppID, Name: k.Name, Prefix: k.Prefix, Status: k.Status(now),
 		AllowedCIDRs: []string{}, ExpiresAt: k.ExpiresAt.UTC(), CreatedAt: k.CreatedAt.UTC(), RotatedFrom: k.RotatedFrom,
-		RevokedAt: optTime(k.RevokedAt)}
+		RevokedAt: optTime(k.RevokedAt), AgentID: k.AgentID}
 	for _, c := range k.AllowedCIDRs {
 		v.AllowedCIDRs = append(v.AllowedCIDRs, c.String())
 	}
@@ -417,6 +419,9 @@ type issueKeyRequest struct {
 	Name          string   `json:"name"`
 	ExpiresInDays int      `json:"expires_in_days"`
 	AllowedCIDRs  []string `json:"allowed_cidrs"`
+	// AgentID — привязка к агенту приложения: только с правом
+	// agents.manage (ADR-0023, раздел 9).
+	AgentID string `json:"agent_id"`
 }
 
 // CreatedAppKey — ответ на выпуск и ротацию: ключ показывается один раз.
@@ -450,7 +455,12 @@ func (d Deps) issueAppKey(w http.ResponseWriter, r *http.Request) {
 		WriteProblem(w, p)
 		return
 	}
-	k, raw, err := d.Apps.IssueKey(r.Context(), by, id, owner, apps.KeyInput{Name: req.Name, ExpiresInDays: req.ExpiresInDays, AllowedCIDRs: req.AllowedCIDRs})
+	if pr, _ := PrincipalFrom(r.Context()); req.AgentID != "" && !pr.Grants.Full(auth.PermAgentsManage) {
+		WriteProblem(w, NewProblem(http.StatusForbidden, CodeForbidden, "Привязать ключ к агенту может только обладатель права agents.manage."))
+		return
+	}
+	k, raw, err := d.Apps.IssueKey(r.Context(), by, id, owner, apps.KeyInput{Name: req.Name, ExpiresInDays: req.ExpiresInDays,
+		AllowedCIDRs: req.AllowedCIDRs, AgentID: req.AgentID})
 	if err != nil {
 		WriteProblem(w, appsProblem(d.Logger, err, appNotFound))
 		return

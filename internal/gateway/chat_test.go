@@ -99,6 +99,23 @@ type gwOpts struct {
 	unavailable []string
 	// budget — учёт расхода и жёсткие бюджеты (задача 3.18).
 	budget *Budget
+	// sessions — сессии чата, baselines — эталоны системного промпта
+	// (задачи 4.13, 4.14 этапа 4).
+	sessions  *Sessions
+	baselines map[string]PromptBaseline
+	// agents и approver — реестр агентов и очередь подтверждений (задача
+	// 4.10).
+	agents   *Agents
+	approver Approver
+	// now — часы обработчика чата; streamIdle — срок простоя потока
+	// провайдера (ноль — по умолчанию).
+	now        func() time.Time
+	streamIdle time.Duration
+	// tokens — JWT пользователей и группы моделей (задача 4.21): ключи
+	// издателей и настройки приложений; jwt — проверка JWT.
+	tokenKeys map[string][]byte
+	tokens    map[string]UserToken
+	jwt       aisecCrypto.JWTVerifier
 }
 
 // newGateway — шлюз с OpenAI-совместимым провайдером на upstream и одним
@@ -115,7 +132,8 @@ func newGateway(t testing.TB, upstream string, mod func(*gwOpts)) http.Handler {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := providers.NewOpenAI(providers.OpenAIConfig{BaseConfig: providers.BaseConfig{ID: "up", External: !o.internal, Transport: o.transport, Logger: o.logger}, BaseURL: u, Key: o.key})
+	p, err := providers.NewOpenAI(providers.OpenAIConfig{BaseConfig: providers.BaseConfig{ID: "up", External: !o.internal, Transport: o.transport, Logger: o.logger,
+		StreamIdleTimeout: o.streamIdle}, BaseURL: u, Key: o.key})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,17 +148,30 @@ func newGateway(t testing.TB, upstream string, mod func(*gwOpts)) http.Handler {
 		t.Fatal(err)
 	}
 	rt.SetUnavailable(o.unavailable)
+	if o.baselines != nil {
+		if err := rt.SetPromptBaselines(testHasher(t), o.baselines); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if o.setup != nil {
 		o.setup(rt.apps["app"])
 	}
+	if o.tokens != nil {
+		if err := rt.SetUserTokens(o.jwt, o.tokenKeys, o.tokens); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rt.SetAgents(o.agents)
+	rt.SetApprover(o.approver)
 	ta := newTestAuth(t, o.limiter)
 	ch, err := NewChatHandler(ChatConfig{Router: rt, MaxBodyBytes: o.maxBody, Logger: o.logger, BodyReadTimeout: o.bodyTimeout,
-		Events: o.events, IDs: ta.cfg.IDs, Quotas: NewLimiter(apps), Budget: o.budget, UserMAC: o.userMAC, DetectorTimeout: o.detTimeout})
+		Events: o.events, IDs: ta.cfg.IDs, Quotas: NewLimiter(apps), Budget: o.budget, UserMAC: o.userMAC, DetectorTimeout: o.detTimeout, Sessions: o.sessions,
+		Hasher: testHasher(t), Now: o.now})
 	if err != nil {
 		t.Fatal(err)
 	}
 	hcfg := ChatConfig{Router: rt, MaxBodyBytes: o.maxBody, Logger: o.logger, BodyReadTimeout: o.bodyTimeout,
-		Events: o.events, IDs: ta.cfg.IDs, Quotas: ch.cfg.Quotas, Budget: o.budget, UserMAC: o.userMAC, DetectorTimeout: o.detTimeout}
+		Events: o.events, IDs: ta.cfg.IDs, Quotas: ch.cfg.Quotas, Budget: o.budget, UserMAC: o.userMAC, DetectorTimeout: o.detTimeout, Sessions: o.sessions}
 	eh, err := NewEmbeddingsHandler(hcfg)
 	if err != nil {
 		t.Fatal(err)

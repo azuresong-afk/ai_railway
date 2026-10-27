@@ -8,6 +8,8 @@ import { EmptyState, Panel, Table, Td, Th } from "../ui/Layout";
 import { type Application, appsApi } from "./api";
 import { ConnectWizard } from "./ConnectWizard";
 import { KeysPanel } from "./KeysPanel";
+import { PromptBaselineDialog } from "./PromptBaselineDialog";
+import { UserAccessDialog } from "./UserAccessDialog";
 import { ProtectionDialog } from "./ProtectionDialog";
 
 const envText = { prod: "Промышленная", test: "Тестовая" } as const;
@@ -24,6 +26,8 @@ export function AppsScreen({ me }: { me: Me }) {
   const [selected, setSelected] = useState<string>();
   const [archive, setArchive] = useState<Application>();
   const [protect, setProtect] = useState<Application>();
+  const [baseline, setBaseline] = useState<Application>();
+  const [access, setAccess] = useState<Application>();
   const mfa = me.mfa?.enabled === true;
   const archiveM = useMutation({
     mutationFn: (a: Application) => appsApi.archive(a.id),
@@ -98,6 +102,16 @@ export function AppsScreen({ me }: { me: Me }) {
                           Защита
                         </Button>
                       )}
+                      {has("applications.policy") && a.status === "active" && (
+                        <Button onClick={() => setBaseline(a)} aria-label={`Эталон системного промпта ${a.name}`}>
+                          Эталон промпта
+                        </Button>
+                      )}
+                      {has("applications.policy") && a.status === "active" && (
+                        <Button onClick={() => setAccess(a)} aria-label={`Пользователи и группы ${a.name}`}>
+                          Группы
+                        </Button>
+                      )}
                       {has("applications.manage") && a.status === "active" && (
                         <Button
                           variant="danger"
@@ -121,6 +135,8 @@ export function AppsScreen({ me }: { me: Me }) {
       {current && <KeysPanel key={current.id} app={current} canKey={has("app_keys.manage")} />}
 
       {protect && <ProtectionDialog key={protect.id} app={protect} mfa={mfa} onClose={() => setProtect(undefined)} />}
+      {baseline && <PromptBaselineDialog key={baseline.id} app={baseline} mfa={mfa} onClose={() => setBaseline(undefined)} />}
+      {access && <UserAccessDialog key={access.id} app={access} mfa={mfa} onClose={() => setAccess(undefined)} />}
       <ConnectWizard
         open={wizard}
         onClose={() => setWizard(false)}

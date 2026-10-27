@@ -32,6 +32,11 @@ type Memory struct {
 	roles map[string]map[auth.Role]auth.RoleDef
 	// tokens — токены API по ID (apitokens.go).
 	tokens map[string]*auth.APIToken
+	// idp и logins — настройки IdP и незавершённые входы (idp.go).
+	idp    map[string]auth.IdPSettings
+	logins []oidcLogin
+	// ldap — настройки каталога LDAP (ldap.go).
+	ldap map[string]auth.LDAPSettings
 	// Fail — если не nil, возвращается из каждого метода (сбой хранилища).
 	Fail error
 }
@@ -54,6 +59,7 @@ func NewMemory() *Memory {
 		policy: map[string]auth.Policy{}, users: map[string]*auth.User{},
 		history: map[string][]string{}, sessions: map[string]*auth.Session{},
 		mfa: map[string]*auth.MFA{}, codes: map[string][]*recoveryCode{},
+		idp: map[string]auth.IdPSettings{}, ldap: map[string]auth.LDAPSettings{},
 	}
 }
 
@@ -395,6 +401,22 @@ func (m *Memory) SetStatus(_ context.Context, orgID, userID string, st auth.Stat
 		u.Status, u.DeactivatedAt = st, time.Time{}
 		u.FailedAttempts, u.LockedAt, u.LockedUntil = 0, time.Time{}, time.Time{}
 	}
+	m.records = append(m.records, rec)
+	return nil
+}
+
+func (m *Memory) SetEmail(_ context.Context, orgID, userID, email string, rec audit.Entry) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.Fail != nil {
+		return m.Fail
+	}
+	u, ok := m.users[userID]
+	if !ok || u.OrgID != orgID {
+		return auth.ErrNotFound
+	}
+	auth.AddDetail(&rec, "changed", u.Email != email)
+	u.Email = email
 	m.records = append(m.records, rec)
 	return nil
 }

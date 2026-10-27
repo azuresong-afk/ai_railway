@@ -37,6 +37,9 @@ type record struct {
 	// провайдер вход, как правило, уже обработал (3В22 ревью 3.r3).
 	maxOut  int
 	unknown bool
+	// noOutput — ответ без генерации токенов (эмбеддинги): при неизвестном
+	// исходе списывается только вход.
+	noOutput bool
 	// skip — событие не отправляется: клиент ушёл до решения.
 	skip bool
 	// output — проверялся текст ответа: содержимое в событии пишется в
@@ -46,6 +49,10 @@ type record struct {
 	// JSON (response_format).
 	vault    *pseudonym.Vault
 	jsonMode bool
+	// agent — агент запроса (nil — без агента); tools — описания функций
+	// запроса: по ним политика вызовов сверяет одобренный хеш (задача 4.10).
+	agent *Agent
+	tools []chat.Tool
 	// resp и respTexts — проверка ответа модели (задача 1.23); respMode —
 	// режим проверки; respCut — поток оборван (respCutRule — правило),
 	// respMasked — в потоке что-то замаскировано; respFailures — сбои
@@ -64,6 +71,28 @@ type record struct {
 	respCheckFailed bool
 	respFailures    []events.DetectorFailure
 	withheld        int
+	// sess — сессия запроса чата (задача 4.13); nil — без сессии.
+	sess *reqSession
+}
+
+// issue запоминает хеши ответов, выданных приложению (history.integrity,
+// задача 4.14): текст content каждого варианта в том виде, в каком его
+// получило приложение, — после маскирования и обратной подстановки.
+func (rec *record) issue(resp *chat.Response) {
+	if !rec.sess.replies() {
+		return
+	}
+	for _, c := range resp.Choices {
+		if len(rec.sess.ev.Issued) >= events.MaxIssuedReplies {
+			break
+		}
+		if c.Message.Content == nil {
+			continue
+		}
+		if h := rec.sess.tracker.replyHash(*c.Message.Content); h != "" {
+			rec.sess.ev.Issued = append(rec.sess.ev.Issued, h)
+		}
+	}
 }
 
 // newRecord заводит событие и сообщает его ID приложению заголовком
@@ -159,7 +188,7 @@ func (h *ChatHandler) emit(rec *record) {
 	case rec.unknown:
 		// Исход неизвестен — оценка сверху: вход и предел ответа. Иначе
 		// разрыв соединения после отправки обходил бы квоту токенов (DM-36).
-		rec.res.SettleAtLeast(rec.inTokens + rec.maxOut)
+		rec.res.SettleAtLeast(rec.inTokens + rec.unknownOut())
 	default:
 		// Явный отказ провайдера (статус, учётные данные) или usage с нулями
 		// без ответа — расхода нет.
@@ -195,11 +224,30 @@ func (h *ChatHandler) spend(rec *record) {
 	case rec.outBytes != nil:
 		in, out = int64(rec.inTokens), int64(estimateTokens(rec.outBytes()))
 	case rec.unknown:
-		in, out = int64(rec.inTokens), int64(rec.maxOut)
+		in, out = int64(rec.inTokens), int64(rec.unknownOut())
 	default:
 		return
 	}
 	h.cfg.Budget.Record(rec.app.ID, rec.ev.Provider, rec.ev.Model, in, out)
+}
+
+// unknownOutTokens — оценка ответа запроса без max_tokens, исход которого
+// неизвестен (3В22 ревью 3.r3, перенесено в этап 4): предела модели в
+// пакете нет, а списать только вход значило бы дать обход бюджета и квоты
+// разрывом запроса без max_tokens. 4096 — частый предел ответа по
+// умолчанию у провайдеров; оценка сверху для обычных ответов.
+const unknownOutTokens = 4096
+
+// unknownOut — оценка ответа при неизвестном исходе: предел запроса или,
+// без него, unknownOutTokens.
+func (rec *record) unknownOut() int {
+	if rec.noOutput {
+		return 0
+	}
+	if rec.maxOut > 0 {
+		return rec.maxOut
+	}
+	return unknownOutTokens
 }
 
 // fill переносит в событие решение, находки, трассировку и содержимое.
@@ -313,7 +361,7 @@ func (rec *record) decision(in *inspection) *events.Decision {
 	d := in.Decision
 	ed := &events.Decision{
 		Action: string(d.Action), Applied: []string{}, Rule: d.Rule, Severity: string(d.Severity),
-		Policy: d.PolicyID, PolicyVersion: d.Version, Failures: in.Failures,
+		Policy: d.PolicyID, PolicyVersion: d.Version, Failures: in.Failures, MLUnavailable: in.MLUnavailable,
 	}
 	for _, a := range d.Applied() {
 		ed.Applied = append(ed.Applied, string(a))
@@ -369,9 +417,10 @@ func (rec *record) findings(in *inspection, texts []inspectText) map[string]bool
 		if f.Text >= len(texts) {
 			continue
 		}
+		loc, src := f.place(texts)
 		ef := events.Finding{
 			Detector: f.Detector, Version: f.Version, Category: f.Category, Score: f.Score, Start: f.Start, End: f.End,
-			Location: texts[f.Text].Location, Threat: f.Threat, Rule: f.Rule, Exception: excepted[i], Source: string(texts[f.Text].Source),
+			Location: loc, Threat: f.Threat, Rule: f.Rule, Exception: excepted[i], Source: string(src),
 		}
 		if i < len(in.Fragments) {
 			ef.Fragment = in.Fragments[i]

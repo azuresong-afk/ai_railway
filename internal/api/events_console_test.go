@@ -331,7 +331,9 @@ func TestEventsExportCSV(t *testing.T) {
 	if !ok {
 		t.Fatal("нет BOM UTF-8")
 	}
-	rows, err := csv.NewReader(strings.NewReader(body)).ReadAll()
+	cr := csv.NewReader(strings.NewReader(body))
+	cr.Comma = ';' // по умолчанию — «;» (русская локаль Excel, задача 4.6)
+	rows, err := cr.ReadAll()
 	if err != nil || len(rows) != 4 {
 		t.Fatalf("CSV: %v %v", err, rows)
 	}
@@ -345,6 +347,25 @@ func TestEventsExportCSV(t *testing.T) {
 	d, _ := got[0].Details.(map[string]any)
 	if d["rows"] != 3 || d["filter"] != `app != "none"` || d["format"] != "csv" {
 		t.Fatalf("подробности выгрузки: %+v", d)
+	}
+}
+
+// Выгрузка событий: разделитель «comma» по запросу, чужой — отказ 400.
+func TestEventsExportDelimiter(t *testing.T) {
+	env := newConsoleEnv(t)
+	h := env.handler(t, auth.PermEventsExport)
+	w := do(h, "POST", "/api/v1/events/export", `{"format":"csv","delimiter":"comma"}`, jsonCT()...)
+	if w.Code != 200 {
+		t.Fatalf("comma: %d %s", w.Code, w.Body)
+	}
+	body := strings.TrimPrefix(w.Body.String(), "\ufeff")
+	if !strings.HasPrefix(body, `"id","time",`) {
+		t.Fatalf("заголовок: %.60s", body)
+	}
+	for _, b := range []string{`{"format":"csv","delimiter":"tab"}`, `{"format":"csv","delimiter":";"}`} {
+		if w := do(h, "POST", "/api/v1/events/export", b, jsonCT()...); w.Code != 400 {
+			t.Errorf("%s: %d", b, w.Code)
+		}
 	}
 }
 

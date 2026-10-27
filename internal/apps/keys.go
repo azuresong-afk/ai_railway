@@ -10,6 +10,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/audit"
 	"github.com/azuresong-afk/ai_railway/internal/auth"
 	"github.com/azuresong-afk/ai_railway/internal/config"
+	"github.com/azuresong-afk/ai_railway/internal/ids"
 )
 
 // KeyInput — выпуск ключа приложения.
@@ -19,6 +20,9 @@ type KeyInput struct {
 	ExpiresInDays int
 	// AllowedCIDRs — привязка к подсетям (ИАФ.8); пусто — с любых адресов.
 	AllowedCIDRs []string
+	// AgentID — привязка к агенту приложения (задача 4.8); пусто — без
+	// привязки. Право agents.manage проверяет API.
+	AgentID string
 }
 
 // RotateInput — ротация ключа.
@@ -81,8 +85,12 @@ func (s *Service) newKey() (raw, prefix string, hash []byte, err error) {
 }
 
 func keyDetails(a Application, k Key) map[string]any {
-	return map[string]any{"application": a.Slug, "prefix": k.Prefix, "name": k.Name,
+	d := map[string]any{"application": a.Slug, "prefix": k.Prefix, "name": k.Name,
 		"expires_at": k.ExpiresAt.Format(time.RFC3339), "allowed_cidrs": cidrStrings(k.AllowedCIDRs)}
+	if k.AgentID != "" {
+		d["agent_id"] = k.AgentID
+	}
+	return d
 }
 
 // IssueKey выпускает ключ приложения. ownerID не пуст — только для своего
@@ -102,6 +110,11 @@ func (s *Service) IssueKey(ctx context.Context, by By, appID, ownerID string, in
 	cidrs, err := parseCIDRs(in.AllowedCIDRs)
 	if err != nil {
 		errs = append(errs, err)
+	}
+	if in.AgentID != "" {
+		if _, err := ids.Parse(in.AgentID); err != nil {
+			errs = append(errs, errors.New("agent_id — ID агента этого приложения"))
+		}
 	}
 	if len(errs) > 0 {
 		return Key{}, "", flatten(errs)
@@ -126,7 +139,7 @@ func (s *Service) IssueKey(ctx context.Context, by By, appID, ownerID string, in
 			return Key{}, audit.Entry{}, ErrTooManyKeys
 		}
 		k := Key{ID: id, OrgID: s.orgID, AppID: a.ID, Name: in.Name, Prefix: prefix, Hash: hash, HashAlg: s.hasher.Name(),
-			AllowedCIDRs: cidrs, ExpiresAt: now.Add(ttl), CreatedAt: now, CreatedBy: by.ref()}
+			AllowedCIDRs: cidrs, ExpiresAt: now.Add(ttl), CreatedAt: now, CreatedBy: by.ref(), AgentID: in.AgentID}
 		return k, by.entry("app_key.issue", "app_key", id, keyDetails(a, k)), nil
 	})
 	if err != nil {
@@ -176,7 +189,8 @@ func (s *Service) RotateKey(ctx context.Context, by By, keyID, ownerID string, i
 			return nil, audit.Entry{}, ErrTooManyKeys
 		}
 		created = Key{ID: id, OrgID: s.orgID, AppID: a.ID, Name: k.Name, Prefix: prefix, Hash: hash, HashAlg: s.hasher.Name(),
-			AllowedCIDRs: k.AllowedCIDRs, ExpiresAt: now.Add(ttl), CreatedAt: now, CreatedBy: by.ref(), RotatedFrom: k.ID}
+			AllowedCIDRs: k.AllowedCIDRs, ExpiresAt: now.Add(ttl), CreatedAt: now, CreatedBy: by.ref(), RotatedFrom: k.ID,
+			AgentID: k.AgentID}
 		if until := now.Add(overlap); until.Before(k.ExpiresAt) {
 			k.ExpiresAt = until
 		}

@@ -355,6 +355,24 @@ func TestDM44_SystemAlerts(t *testing.T) {
 			t.Fatalf("%s: подробности %+v", c.code, got[0].Details)
 		}
 	}
+	// 3Н40, 3Н43 ревью 3.r3: часы шлюза — правило времени, сертификат,
+	// которым шлюз отвечает приложениям, — правило пакета; у каждого
+	// условия своё оповещение.
+	for _, c := range []struct{ code, rule, title string }{
+		{"gateway_clock:" + testGateway, BuiltinTimeSync, "Время не синхронизировано"},
+		{"gateway_tls:" + testGateway, BuiltinConfigBundle, "Пакет конфигурации шлюзов не применён — gateway:" + testGateway + " (gw-1)"},
+	} {
+		e.systemAlert(t, c.code, "raised", gw)
+		var hit int
+		for _, a := range e.alerts(t, c.rule) {
+			if a.Details["condition"] == c.code && a.Title == c.title {
+				hit++
+			}
+		}
+		if hit != 1 {
+			t.Fatalf("%s: %+v", c.code, e.alerts(t, c.rule))
+		}
+	}
 	// Корень внутреннего УЦ (условие 3В5): то же правило, отдельное
 	// оповещение; условие за 7 суток — ещё одно, чтобы не потерялось в закрытом.
 	e.systemAlert(t, "ca_expiry", "raised", nil)

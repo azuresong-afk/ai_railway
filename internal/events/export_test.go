@@ -54,7 +54,7 @@ func exportRecord() *Record {
 
 func TestExportCSV(t *testing.T) {
 	var buf bytes.Buffer
-	ex, err := NewExporter(&buf, FormatCSV)
+	ex, err := NewExporter(&buf, FormatCSV, DelimSemicolon)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +68,9 @@ func TestExportCSV(t *testing.T) {
 	if !ok {
 		t.Fatal("нет BOM UTF-8")
 	}
-	rows, err := csv.NewReader(strings.NewReader(body)).ReadAll()
+	cr := csv.NewReader(strings.NewReader(body))
+	cr.Comma = DelimSemicolon
+	rows, err := cr.ReadAll()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +118,7 @@ func TestExportCSVRussianLocale(t *testing.T) {
 		r := exportRecord()
 		r.App, r.Env, r.Model, r.Rule = a, a, a, a
 		var buf bytes.Buffer
-		ex, err := NewExporter(&buf, FormatCSV)
+		ex, err := NewExporter(&buf, FormatCSV, DelimSemicolon)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -133,7 +135,9 @@ func TestExportCSVRussianLocale(t *testing.T) {
 		}
 		// Разбор по RFC 4180 возвращает значение с апострофами, без потерь
 		// (encoding/csv заменяет \r\n внутри поля на \n).
-		rows, err := csv.NewReader(strings.NewReader(strings.TrimPrefix(buf.String(), utf8BOM))).ReadAll()
+		cr := csv.NewReader(strings.NewReader(strings.TrimPrefix(buf.String(), utf8BOM)))
+		cr.Comma = DelimSemicolon
+		rows, err := cr.ReadAll()
 		if err != nil || len(rows) != 2 || rows[1][5] != strings.ReplaceAll(CSVCell(a), "\r\n", "\n") {
 			t.Fatalf("%q: разбор %v %v", a, rows, err)
 		}
@@ -160,7 +164,7 @@ func FuzzCSVCell(f *testing.F) {
 func TestExportJSON(t *testing.T) {
 	for _, n := range []int{0, 1, 3} {
 		var buf bytes.Buffer
-		ex, err := NewExporter(&buf, FormatJSON)
+		ex, err := NewExporter(&buf, FormatJSON, DelimSemicolon)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -188,7 +192,7 @@ func TestExportJSON(t *testing.T) {
 			}
 		}
 	}
-	if _, err := NewExporter(&bytes.Buffer{}, "xml"); err == nil {
+	if _, err := NewExporter(&bytes.Buffer{}, "xml", DelimSemicolon); err == nil {
 		t.Fatal("неизвестный формат принят")
 	}
 }
@@ -198,7 +202,7 @@ type failWriter struct{}
 func (failWriter) Write([]byte) (int, error) { return 0, errors.New("клиент ушёл") }
 
 func TestExportWriteError(t *testing.T) {
-	ex, err := NewExporter(failWriter{}, FormatCSV)
+	ex, err := NewExporter(failWriter{}, FormatCSV, DelimSemicolon)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -271,6 +275,52 @@ func TestStatsQueryValidate(t *testing.T) {
 	} {
 		if err := q.Validate(); err == nil {
 			t.Errorf("%+v принят", q)
+		}
+	}
+}
+
+// Разделитель CSV: «;» по умолчанию, «,» по запросу; значения с «;» и «,»
+// не ломают столбцы при обоих разделителях (задача 4.6).
+func TestExportCSVDelimiter(t *testing.T) {
+	for _, delim := range []rune{DelimSemicolon, DelimComma} {
+		var buf bytes.Buffer
+		ex, err := NewExporter(&buf, FormatCSV, delim)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r := exportRecord()
+		r.Model = "a;b,c"
+		if err := ex.Write(r); err != nil {
+			t.Fatal(err)
+		}
+		if err := ex.Close(); err != nil {
+			t.Fatal(err)
+		}
+		cr := csv.NewReader(strings.NewReader(strings.TrimPrefix(buf.String(), utf8BOM)))
+		cr.Comma = delim
+		rows, err := cr.ReadAll()
+		if err != nil || len(rows) != 2 || len(rows[1]) != len(csvHeader) || rows[1][9] != "a;b,c" {
+			t.Fatalf("разделитель %q: %v %v", delim, rows, err)
+		}
+		first := strings.SplitN(strings.TrimPrefix(buf.String(), utf8BOM), "\r\n", 2)[0]
+		if !strings.HasPrefix(first, `"id"`+string(delim)+`"time"`) {
+			t.Fatalf("разделитель %q: заголовок %q", delim, first)
+		}
+	}
+	if _, err := NewExporter(&bytes.Buffer{}, FormatCSV, '|'); err == nil {
+		t.Fatal("чужой разделитель принят")
+	}
+}
+
+func TestParseDelimiter(t *testing.T) {
+	for in, want := range map[string]rune{"": DelimSemicolon, "semicolon": DelimSemicolon, "comma": DelimComma} {
+		if got, ok := ParseDelimiter(in); !ok || got != want {
+			t.Errorf("%q: %q %v", in, got, ok)
+		}
+	}
+	for _, in := range []string{";", ",", "tab", "Comma", "semicolon "} {
+		if _, ok := ParseDelimiter(in); ok {
+			t.Errorf("%q принят", in)
 		}
 	}
 }

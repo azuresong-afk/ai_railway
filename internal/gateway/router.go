@@ -46,6 +46,12 @@ type App struct {
 	fragmentMAC aisecCrypto.MAC
 	// clock — часы для сроков исключений (Router.SetClock); nil — time.Now.
 	clock func() time.Time
+	// prompt — эталон системного промпта (Router.SetPromptBaselines,
+	// integrity.go); nil — эталона нет или контроль выключен.
+	prompt *promptCheck
+	// userToken — проверка JWT пользователя и группы моделей
+	// (Router.SetUserTokens, usertoken.go); nil — пользователь по user_from.
+	userToken *userTokenCheck
 }
 
 // now — время для сроков исключений.
@@ -86,6 +92,31 @@ type Router struct {
 	// unavailable — приложения, исключённые сервером из пакета конфигурации
 	// (В16 ревью 2.r3b): их ключи принимаются, запросы — 503.
 	unavailable map[string]bool
+	// agents — реестр агентов и инструментов пакета (задачи 4.10, 4.11);
+	// nil — агентов нет (локальная конфигурация).
+	agents *Agents
+	// approver — очередь подтверждений (require_approval, задача 4.10);
+	// nil — NoApprover.
+	approver Approver
+}
+
+// SetAgents задаёт реестр агентов. Вызывается до начала обслуживания
+// запросов.
+func (rt *Router) SetAgents(a *Agents) { rt.agents = a }
+
+// Agents — реестр агентов; nil — пуст (методы Agents допускают nil).
+func (rt *Router) Agents() *Agents { return rt.agents }
+
+// SetApprover задаёт очередь подтверждений. Вызывается до начала
+// обслуживания запросов.
+func (rt *Router) SetApprover(a Approver) { rt.approver = a }
+
+// Approver — очередь подтверждений; без сервера управления — NoApprover.
+func (rt *Router) Approver() Approver {
+	if rt.approver == nil {
+		return NoApprover
+	}
+	return rt.approver
 }
 
 // SetUnavailable отмечает приложения, исключённые из пакета конфигурации.
@@ -183,7 +214,7 @@ const (
 // appDetectors — встроенные детекторы с настройками приложения: lists — со
 // списками заказчика вдобавок к встроенному, output.exfil — с allowlist.
 func appDetectors(a config.Application) (*detect.Registry, error) {
-	ds := builtin.All()
+	ds := builtin.Catalog()
 	for i, d := range ds {
 		switch d.ID() {
 		case lists.ID:

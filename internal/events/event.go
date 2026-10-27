@@ -88,6 +88,10 @@ type Decision struct {
 	// детекторы, которые не дали результата.
 	FailMode string            `json:"fail_mode,omitempty"`
 	Failures []DetectorFailure `json:"failures,omitempty"`
+	// MLUnavailable — ML-детекторы политики не дали результата: aisec-ml
+	// недоступен, перегружен или проверил не весь текст. Решение принято по
+	// остальным детекторам (fail-open для ML, ADR-0024).
+	MLUnavailable bool `json:"ml_unavailable,omitempty"`
 }
 
 // Причины сбоя детектора.
@@ -184,6 +188,8 @@ type Event struct {
 	Response         *Response        `json:"response,omitempty"`
 	Pseudonyms       *Pseudonyms      `json:"pseudonyms,omitempty"`
 	AuthFailure      *AuthFailure     `json:"auth_failure,omitempty"`
+	// Session — сессия запроса чата (задачи 4.13, 4.14 этапа 4).
+	Session *Session `json:"session,omitempty"`
 }
 
 var threatRe = regexp.MustCompile(`^DM-\d{2}$`)
@@ -226,12 +232,27 @@ func (e *Event) Validate() error {
 		if e.PolicyMode != ModeMonitor && e.PolicyMode != ModeEnforce {
 			errs = append(errs, fmt.Errorf("%s: неизвестный режим политики %q", e.Type, e.PolicyMode))
 		}
+		if e.Session != nil {
+			if e.Type != TypeGatewayRequest {
+				errs = append(errs, fmt.Errorf("%s: сессия бывает только у запроса чата", e.Type))
+			}
+			// Хеши сессии сервер пишет в session_history по ID приложения:
+			// неверный ID не должен доходить до ограничения СУБД (повтор
+			// пакета шлюзом без конца).
+			if !exceptionRe.MatchString(e.App) {
+				errs = append(errs, fmt.Errorf("%s: у события с сессией ID приложения — строчные латинские буквы, цифры и «-», до 63 символов", e.Type))
+			}
+			errs = append(errs, e.Session.validate()...)
+		}
 	case TypeAuthFailure:
 		if e.AuthFailure == nil || e.AuthFailure.Reason == "" {
 			errs = append(errs, errors.New("auth_failure: нужна причина"))
 		}
 		if e.Content != nil {
 			errs = append(errs, errors.New("auth_failure: событие не содержит содержимого запроса"))
+		}
+		if e.Session != nil {
+			errs = append(errs, errors.New("auth_failure: у события нет сессии"))
 		}
 		// Столбец policy_mode принимает только monitor и enforce: чужое значение
 		// не должно доходить до СУБД (В10 ревью 2.r3a).

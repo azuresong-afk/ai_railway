@@ -32,6 +32,8 @@ const (
 	PermSessionsManage   = "sessions.manage"
 	PermAuthPolicyRead   = "auth_policy.read"
 	PermAuthPolicyManage = "auth_policy.manage"
+	PermAuthIdPRead      = "auth_idp.read"
+	PermAuthIdPManage    = "auth_idp.manage"
 	PermRolesRead        = "roles.read"
 	PermRolesManage      = "roles.manage"
 	// PermAPITokensRead и PermAPITokensManage — токены API (ИАФ.9, задача
@@ -51,7 +53,8 @@ const (
 	PermEventsMark = "events.mark"
 	// Приложения, ключи и провайдеры (ТЗ 5.4, ИАФ.8; задача 2.11). Поля
 	// защиты приложения (политика, режим, режим хранения) и снятие
-	// признака «внешний» у провайдера — функции безопасности (УПД.2, DM-40).
+	// признака «внешний» у провайдера, эталон системного промпта (DM-26) —
+	// функции безопасности (УПД.2, DM-40).
 	PermApplicationsRead   = "applications.read"
 	PermApplicationsManage = "applications.manage"
 	PermApplicationsPolicy = "applications.policy"
@@ -112,6 +115,17 @@ const (
 	// безопасности (ТЗ 7: интеграции и TLS). Ключ в ответах не показывается.
 	PermGatewayTLSRead   = "gateway_tls.read"
 	PermGatewayTLSManage = "gateway_tls.manage"
+	// Агенты, MCP-серверы и инструменты (ТЗ 5.10; задача 4.8 этапа 4,
+	// ADR-0023, раздел 9). Со ScopeOwn (владелец приложения) — только агенты
+	// своих приложений и их MCP-серверы и инструменты (УПД.8). Одобрение,
+	// снятие одобрения и риск инструмента, признаки external и insecure_http
+	// MCP-сервера — функция безопасности (DM-25, DM-40).
+	PermAgentsRead         = "agents.read"
+	PermAgentsManage       = "agents.manage"
+	PermAgentsToolsApprove = "agents.tools.approve"
+	// Очередь подтверждений вызовов (задача 4.10, ADR-0023, раздел 9).
+	PermApprovalsRead   = "approvals.read"
+	PermApprovalsDecide = "approvals.decide"
 )
 
 // Permission — разрешение из каталога.
@@ -149,6 +163,8 @@ var permissionCatalog = []Permission{
 	{Name: PermSessionsManage, Title: "Принудительное завершение сессий", Group: "Пользователи", Security: true},
 	{Name: PermAuthPolicyRead, Title: "Просмотр парольной политики и настроек входа", Group: "Вход"},
 	{Name: PermAuthPolicyManage, Title: "Изменение парольной политики и настроек входа", Group: "Вход", Security: true},
+	{Name: PermAuthIdPRead, Title: "Просмотр настроек входа через внешний IdP", Group: "Вход"},
+	{Name: PermAuthIdPManage, Title: "Изменение и отключение входа через внешний IdP", Group: "Вход", Security: true},
 	{Name: PermRolesRead, Title: "Просмотр ролей и разрешений", Group: "Роли"},
 	{Name: PermRolesManage, Title: "Создание, изменение и удаление ролей, назначение ролей", Group: "Роли", Security: true},
 	{Name: PermAPITokensRead, Title: "Просмотр токенов API", Group: "Токены API", Ownable: true},
@@ -160,7 +176,7 @@ var permissionCatalog = []Permission{
 	{Name: PermEventsMark, Title: "Отметки «ложное срабатывание» и «подтверждено» в событиях", Group: "События"},
 	{Name: PermApplicationsRead, Title: "Просмотр приложений и их ключей (без секретов)", Group: "Приложения", Ownable: true},
 	{Name: PermApplicationsManage, Title: "Создание, изменение и архивация приложений", Group: "Приложения"},
-	{Name: PermApplicationsPolicy, Title: "Политика, режим политики и режим хранения приложения", Group: "Приложения", Security: true},
+	{Name: PermApplicationsPolicy, Title: "Политика, режим политики, режим хранения, эталон системного промпта, JWT пользователя и доступ к моделям по группам", Group: "Приложения", Security: true},
 	{Name: PermAppKeysManage, Title: "Выпуск, ротация и отзыв ключей приложений", Group: "Приложения", Ownable: true},
 	{Name: PermProvidersRead, Title: "Просмотр провайдеров (без учётных данных)", Group: "Провайдеры"},
 	{Name: PermProvidersManage, Title: "Создание, изменение и удаление провайдеров, учётные данные", Group: "Провайдеры"},
@@ -191,6 +207,15 @@ var permissionCatalog = []Permission{
 	{Name: PermIncidentCategoriesManage, Title: "Изменение инструкций реагирования по категориям инцидентов и срока хранения закрытых инцидентов", Group: "Инциденты", Security: true},
 	{Name: PermGatewayTLSRead, Title: "Просмотр сертификата заказчика для адреса шлюза (без ключа)", Group: "Шлюзы"},
 	{Name: PermGatewayTLSManage, Title: "Загрузка, замена и удаление сертификата заказчика для адреса шлюза", Group: "Шлюзы"},
+	{Name: PermAgentsRead, Title: "Просмотр агентов, MCP-серверов (без учётных данных) и инструментов", Group: "Агенты", Ownable: true},
+	{Name: PermAgentsManage, Title: "Создание, изменение и удаление агентов и MCP-серверов, привязка ключей к агентам", Group: "Агенты"},
+	{Name: PermAgentsToolsApprove, Title: "Одобрение и снятие одобрения инструментов, уровень риска, признаки «внешний» и http:// у MCP-сервера",
+		Group: "Агенты", Security: true},
+	{Name: PermApprovalsRead, Title: "Просмотр очереди подтверждений вызовов инструментов агентов", Group: "Агенты"},
+	// Безопасность: не выдаётся администратору системы и токенам API, не
+	// входит в чтение аудитора — подтверждает вызов человек (ADR-0023, раздел 9).
+	{Name: PermApprovalsDecide, Title: "Одобрение и отклонение вызовов инструментов агентов из очереди подтверждений",
+		Group: "Агенты", Security: true},
 }
 
 // auditorExtra — разрешения аудитора сверх чтения: они ничего не меняют,
@@ -378,18 +403,21 @@ var builtinRoles = []RoleDef{
 			PermProvidersRead: ScopeAll, PermProvidersManage: ScopeAll, PermPoliciesRead: ScopeAll, PermPoliciesTest: ScopeAll,
 			PermModelPricesRead: ScopeAll, PermModelPricesManage: ScopeAll, PermBudgetsRead: ScopeAll, PermBudgetsManage: ScopeAll,
 			PermDashboardsRead: ScopeAll, PermGatewayTLSRead: ScopeAll, PermGatewayTLSManage: ScopeAll,
-			PermReportsRead: ScopeAll, PermReportSchedulesRead: ScopeAll, PermReportSchedulesManage: ScopeAll}},
+			PermReportsRead: ScopeAll, PermReportSchedulesRead: ScopeAll, PermReportSchedulesManage: ScopeAll,
+			PermAgentsRead: ScopeAll, PermAgentsManage: ScopeAll}},
 	{ID: RoleAnalyst, DisplayName: "Аналитик", Builtin: true,
 		Description: "Разбор оповещений и инцидентов, поиск по событиям",
 		Grants: grantAll(PermSystemRead, PermEventsRead, PermEventsExport, PermEventsMark, PermApplicationsRead, PermProvidersRead,
 			PermPoliciesRead, PermPoliciesTest, PermAlertsRead, PermAlertsManage, PermAlertRulesRead, PermModelPricesRead, PermBudgetsRead,
-			PermDashboardsRead, PermIncidentsRead, PermIncidentsManage, PermIncidentsExport, PermReportsRead)},
+			PermDashboardsRead, PermIncidentsRead, PermIncidentsManage, PermIncidentsExport, PermReportsRead, PermAgentsRead,
+			PermApprovalsRead, PermApprovalsDecide)},
 	{ID: RoleAuditor, DisplayName: "Аудитор", Builtin: true,
 		Description: "Только просмотр: журнал аудита, отчёты, состояние соответствия. Ничего не меняет",
 		Grants:      auditorPermissions()},
 	{ID: RoleAppOwner, DisplayName: "Владелец приложения", Builtin: true,
 		Description: "Статистика и события только своих приложений, без доступа к содержимому",
-		Grants:      Grants{PermApplicationsRead: ScopeOwn, PermDashboardsRead: ScopeOwn, PermReportsRead: ScopeOwn}},
+		Grants: Grants{PermApplicationsRead: ScopeOwn, PermDashboardsRead: ScopeOwn, PermReportsRead: ScopeOwn,
+			PermAgentsRead: ScopeOwn}},
 }
 
 var builtinIndex = func() map[Role]RoleDef {

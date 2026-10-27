@@ -179,6 +179,7 @@ func (in *installation) count(t *testing.T, q string, args ...any) int {
 const (
 	tUser     = "0192a000-0000-7000-8000-000000000001"
 	tUser2    = "0192a000-0000-7000-8000-000000000002"
+	tUserExt  = "0192a000-0000-7000-8000-000000000003"
 	tProvider = "0192a000-0000-7000-8000-000000000101"
 	tApp      = "0192a000-0000-7000-8000-000000000201"
 	tKey1     = "0192a000-0000-7000-8000-000000000301"
@@ -373,6 +374,11 @@ func TestBackupRoundTripOnRealDB(t *testing.T) {
 	src := newInstallation(t, admin, base, "cli_backup_src")
 	dst := newInstallation(t, admin, base, "cli_backup_dst")
 	populate(t, src)
+	// Внешняя учётная запись IdP (ADR-0025): без пароля, привязана к издателю и sub.
+	src.exec(t, `INSERT INTO users (id, org_id, login, display_name, role, status, password_hash, password_changed_at,
+		must_change_password, created_at, created_by, auth_source, idp_issuer, idp_subject) VALUES
+		($1, $2, 'ivanov.ext', 'Синтетический внешний', 'analyst', 'active', '!external', now(), false, now(), 'oidc',
+		'oidc', 'https://idp.example.test/realms/aisec', 'idp-user-1')`, tUserExt, audit.DefaultOrgID)
 
 	dir := t.TempDir()
 	phrase := writePhraseFile(t, testBackupPhrase, 0o400)
@@ -419,6 +425,10 @@ func TestBackupRoundTripOnRealDB(t *testing.T) {
 	}
 	if a, b := view(t, src, w), view(t, dst, w); a != b {
 		t.Fatalf("данные после восстановления отличаются:\n--- исходная\n%s\n--- восстановленная\n%s", a, b)
+	}
+	if n := dst.count(t, `SELECT count(*) FROM users WHERE id = $1 AND auth_source = 'oidc' AND idp_subject = 'idp-user-1'
+		AND password_hash = '!external'`, tUserExt); n != 1 {
+		t.Fatal("внешняя учётная запись не восстановлена")
 	}
 	// В21: действующий токен копии восстановлен отозванным и не принимается;
 	// отозванный до копии сохранил свою причину.

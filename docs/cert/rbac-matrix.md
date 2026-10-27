@@ -10,6 +10,16 @@
 
 | Метод | Путь | Разрешение | security_admin | system_admin | analyst | auditor | app_owner | токен API |
 |---|---|---|---|---|---|---|---|---|
+| GET | `/api/v1/agent-tools` | `agents.read` | да | да | да | да | свои | да |
+| GET | `/api/v1/agent-tools/{id}` | `agents.read` | да | да | да | да | свои | да |
+| POST | `/api/v1/agent-tools/{id}/approve` | `agents.tools.approve` | да | — | — | — | — | — |
+| POST | `/api/v1/agent-tools/{id}/revoke` | `agents.tools.approve` | да | — | — | — | — | — |
+| PUT | `/api/v1/agent-tools/{id}/risk` | `agents.tools.approve` | да | — | — | — | — | — |
+| GET | `/api/v1/agents` | `agents.read` | да | да | да | да | свои | да |
+| POST | `/api/v1/agents` | `agents.manage` | да | да | — | — | — | да |
+| GET | `/api/v1/agents/{id}` | `agents.read` | да | да | да | да | свои | да |
+| PUT | `/api/v1/agents/{id}` | `agents.manage` | да | да | — | — | — | да |
+| DELETE | `/api/v1/agents/{id}` | `agents.manage` | да | да | — | — | — | да |
 | GET | `/api/v1/alert-rules` | `alert_rules.read` | да | — | да | да | — | да |
 | POST | `/api/v1/alert-rules` | `alert_rules.manage` | да | — | — | — | — | — |
 | GET | `/api/v1/alert-rules/{id}` | `alert_rules.read` | да | — | да | да | — | да |
@@ -36,9 +46,24 @@
 | DELETE | `/api/v1/applications/{id}/budget` | `budgets.manage` | да | да | — | — | — | да |
 | GET | `/api/v1/applications/{id}/keys` | `applications.read` | да | да | да | да | свои | да |
 | POST | `/api/v1/applications/{id}/keys` | `app_keys.manage` | да | да | — | — | — | да |
+| GET | `/api/v1/applications/{id}/prompt-baseline` | `applications.policy` | да | — | — | — | — | — |
+| PUT | `/api/v1/applications/{id}/prompt-baseline` | `applications.policy` | да | — | — | — | — | — |
+| DELETE | `/api/v1/applications/{id}/prompt-baseline` | `applications.policy` | да | — | — | — | — | — |
 | PUT | `/api/v1/applications/{id}/protection` | `applications.policy` | да | — | — | — | — | — |
+| GET | `/api/v1/applications/{id}/user-access` | `applications.read` | да | да | да | да | свои | да |
+| PUT | `/api/v1/applications/{id}/user-access` | `applications.policy` | да | — | — | — | — | — |
+| GET | `/api/v1/approvals` | `approvals.read` | да | — | да | да | — | да |
+| GET | `/api/v1/approvals/{id}` | `approvals.read` | да | — | да | да | — | да |
+| POST | `/api/v1/approvals/{id}/approve` | `approvals.decide` | да | — | да | — | — | — |
+| POST | `/api/v1/approvals/{id}/deny` | `approvals.decide` | да | — | да | — | — | — |
 | GET | `/api/v1/audit` | `audit.read` | да | — | — | да | — | да |
 | POST | `/api/v1/audit/verify` | `audit.verify` | да | — | — | да | — | да |
+| GET | `/api/v1/auth/idp` | `auth_idp.read` | да | — | — | да | — | да |
+| PUT | `/api/v1/auth/idp` | `auth_idp.manage` | да | — | — | — | — | — |
+| DELETE | `/api/v1/auth/idp` | `auth_idp.manage` | да | — | — | — | — | — |
+| GET | `/api/v1/auth/ldap` | `auth_idp.read` | да | — | — | да | — | да |
+| PUT | `/api/v1/auth/ldap` | `auth_idp.manage` | да | — | — | — | — | — |
+| DELETE | `/api/v1/auth/ldap` | `auth_idp.manage` | да | — | — | — | — | — |
 | POST | `/api/v1/auth/logout` | `session` | да | да | да | да | да | — |
 | POST | `/api/v1/auth/mfa/recovery-codes` | `session` | да | да | да | да | да | — |
 | POST | `/api/v1/auth/mfa/setup` | `session` | да | да | да | да | да | — |
@@ -82,7 +107,15 @@
 | GET | `/api/v1/incidents/{id}/export` | `incidents.export` | да | — | да | — | — | да |
 | POST | `/api/v1/incidents/{id}/stages/{stage}` | `incidents.manage` | да | — | да | — | — | да |
 | POST | `/api/v1/incidents/{id}/status` | `incidents.manage` | да | — | да | — | — | да |
+| GET | `/api/v1/mcp-servers` | `agents.read` | да | да | да | да | свои | да |
+| POST | `/api/v1/mcp-servers` | `agents.manage` | да | да | — | — | — | да |
+| GET | `/api/v1/mcp-servers/{id}` | `agents.read` | да | да | да | да | свои | да |
+| PUT | `/api/v1/mcp-servers/{id}` | `agents.manage` | да | да | — | — | — | да |
+| DELETE | `/api/v1/mcp-servers/{id}` | `agents.manage` | да | да | — | — | — | да |
+| PUT | `/api/v1/mcp-servers/{id}/credentials` | `agents.manage` | да | да | — | — | — | да |
+| PUT | `/api/v1/mcp-servers/{id}/security` | `agents.tools.approve` | да | — | — | — | — | — |
 | GET | `/api/v1/me` | `session` | да | да | да | да | да | — |
+| PUT | `/api/v1/me/email` | `self` | да | да | да | да | да | — |
 | GET | `/api/v1/model-prices` | `model_prices.read` | да | да | да | да | — | да |
 | POST | `/api/v1/model-prices` | `model_prices.manage` | да | да | — | — | — | да |
 | PUT | `/api/v1/model-prices/{id}` | `model_prices.manage` | да | да | — | — | — | да |
@@ -117,6 +150,8 @@
 | DELETE | `/api/v1/providers/{id}` | `providers.manage` | да | да | — | — | — | да |
 | PUT | `/api/v1/providers/{id}/credentials` | `providers.manage` | да | да | — | — | — | да |
 | PUT | `/api/v1/providers/{id}/external` | `providers.external` | да | — | — | — | — | — |
+| GET | `/api/v1/report-channels` | `reports.schedules.manage` | да | да | — | — | — | да |
+| GET | `/api/v1/report-recipients` | `reports.schedules.manage` | да | да | — | — | — | да |
 | GET | `/api/v1/report-schedules` | `reports.schedules.read` | да | да | — | да | — | да |
 | POST | `/api/v1/report-schedules` | `reports.schedules.manage` | да | да | — | — | — | да |
 | GET | `/api/v1/report-schedules/{id}` | `reports.schedules.read` | да | да | — | да | — | да |
@@ -140,6 +175,7 @@
 | GET | `/api/v1/users/{id}` | `users.read` | да | — | — | да | — | да |
 | POST | `/api/v1/users/{id}/activate` | `users.manage` | да | — | — | — | — | — |
 | POST | `/api/v1/users/{id}/deactivate` | `users.manage` | да | — | — | — | — | — |
+| PUT | `/api/v1/users/{id}/email` | `users.manage` | да | — | — | — | — | — |
 | POST | `/api/v1/users/{id}/mfa/reset` | `users.manage` | да | — | — | — | — | — |
 | POST | `/api/v1/users/{id}/password-reset` | `users.manage` | да | — | — | — | — | — |
 | PUT | `/api/v1/users/{id}/role` | `roles.manage` | да | — | — | — | — | — |
@@ -149,6 +185,9 @@
 ## Открытые эндпоинты (без аутентификации)
 
 - POST `/api/v1/auth/login`
+- GET `/api/v1/auth/oidc`
+- GET `/api/v1/auth/oidc/callback`
+- GET `/api/v1/auth/oidc/start`
 - GET `/api/v1/auth/setup`
 - POST `/api/v1/auth/setup`
 - POST `/api/v1/gateways/register`

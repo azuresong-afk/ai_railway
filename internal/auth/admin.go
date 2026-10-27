@@ -37,6 +37,12 @@ const (
 // CreateUser создаёт учётную запись с временным паролем (ИАФ.1, ИАФ.3).
 // Временный пароль возвращается один раз и нигде не хранится открыто.
 func (s *Service) CreateUser(ctx context.Context, by Caller, nu NewUser) (User, string, error) {
+	// Учётная запись IdP не заводит локальные записи с паролем: иначе
+	// IdP получил бы локальный вход и через него — свои же настройки
+	// (ADR-0025, 1.6).
+	if err := requireLocal(by); err != nil {
+		return User{}, "", err
+	}
 	login, ok := NormalizeLogin(nu.Login)
 	if !ok {
 		return User{}, "", &InputError{"login", loginRule}
@@ -118,6 +124,41 @@ func (s *Service) SetStatus(ctx context.Context, by Caller, userID string, st St
 	return s.store.SetStatus(ctx, s.orgID, userID, st, s.clock(), rec)
 }
 
+// SetEmail задаёт или убирает (пустой) e-mail учётной записи: администратор —
+// чужой записи, чья роль не сильнее его (УПД.2), пользователь — своей через
+// SetOwnEmail. В журнал аудита адрес не пишется, только факт изменения.
+func (s *Service) SetEmail(ctx context.Context, by Caller, userID, email string) error {
+	if err := requireLocal(by); err != nil {
+		return err
+	}
+	addr, ok := NormalizeEmail(email)
+	if !ok {
+		return &InputError{"email", emailRule}
+	}
+	u, err := s.store.UserByID(ctx, s.orgID, userID)
+	if err != nil {
+		return err
+	}
+	if err := s.canManage(ctx, by, u.Role, "user.email_set", userObject(userID)); err != nil {
+		return err
+	}
+	rec := s.entry(by.actor(), by.SourceIP, "user.email_set", userObject(userID), audit.ResultSuccess,
+		map[string]any{"self": by.User.ID == userID, "cleared": addr == ""})
+	return s.store.SetEmail(ctx, s.orgID, userID, addr, rec)
+}
+
+// SetOwnEmail — пользователь задаёт или убирает свой e-mail в профиле.
+// Сессия и право self проверены на маршруте; запись своя, поэтому canManage не нужен.
+func (s *Service) SetOwnEmail(ctx context.Context, by Caller, email string) error {
+	addr, ok := NormalizeEmail(email)
+	if !ok {
+		return &InputError{"email", emailRule}
+	}
+	rec := s.entry(by.actor(), by.SourceIP, "user.email_set", userObject(by.User.ID), audit.ResultSuccess,
+		map[string]any{"self": true, "cleared": addr == ""})
+	return s.store.SetEmail(ctx, s.orgID, by.User.ID, addr, rec)
+}
+
 // ResetPassword выдаёт новый временный пароль (ИАФ.3), снимает блокировку,
 // завершает сессии и отзывает токены API пользователя (решение владельца
 // по В8 ревью 2.r2: сброс — реакция на компрометацию). Свой пароль
@@ -125,6 +166,10 @@ func (s *Service) SetStatus(ctx context.Context, by Caller, userID string, st St
 func (s *Service) ResetPassword(ctx context.Context, by Caller, userID string) (string, error) {
 	if by.User.ID == userID {
 		return "", ErrSelf
+	}
+	// Временный пароль локальной записи учётной записи IdP не выдаётся (ADR-0025, 1.6).
+	if err := requireLocal(by); err != nil {
+		return "", err
 	}
 	u, err := s.store.UserByID(ctx, s.orgID, userID)
 	if err != nil {
@@ -140,6 +185,9 @@ func (s *Service) ResetPassword(ctx context.Context, by Caller, userID string) (
 // revokedBy — ID администратора консоли, пусто — aisec-cli.
 func (s *Service) resetPassword(ctx context.Context, actor audit.Actor, ip netip.Addr, u User, revokedBy string) (string, error) {
 	userID := u.ID
+	if u.External() {
+		return "", ErrExternalUser
+	}
 	if u.Status != StatusActive {
 		return "", errResetDeactivated
 	}

@@ -65,6 +65,9 @@ const (
 
 var severityRank = map[Severity]int{Info: 1, Low: 2, Medium: 3, High: 4, Critical: 5}
 
+// SeverityAbove — серьёзность a выше b (неизвестная — ниже любой).
+func SeverityAbove(a, b Severity) bool { return severityRank[a] > severityRank[b] }
+
 // NonText — обработка нетекстовых частей запроса (ТЗ, 5.1 и 5.3; DM-14).
 type NonText string
 

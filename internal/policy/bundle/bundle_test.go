@@ -380,6 +380,12 @@ func FuzzParseContent(f *testing.F) {
 		f.Fatal(err)
 	}
 	f.Add(wb)
+	// Разделы агентов (задача 4.8).
+	wa, err := withAgents(f, fx).Marshal()
+	if err != nil {
+		f.Fatal(err)
+	}
+	f.Add(wa)
 	f.Add([]byte(`{"providers":[],"applications":[],"policies":[],"budgets":{"timezone":"Local","prices":null,"hard":[{"app":"x","limit":-1}]}}`))
 	f.Fuzz(func(t *testing.T, data []byte) {
 		c, err := bundle.ParseContent(data)
@@ -392,4 +398,54 @@ func FuzzParseContent(f *testing.F) {
 			}
 		}
 	})
+}
+
+// Раздел tools версии политики идёт в пакете внутри YAML (ADR-0023,
+// раздел 2): шлюз получает правила вызовов и ограничения аргументов,
+// а схема с незнакомым ключевым словом или нелинейным выражением
+// отклоняет весь пакет. Покрывает: DM-20, DM-21.
+func TestBundlePolicyToolsSection(t *testing.T) {
+	f := bundletest.New(t)
+	o := f.Opener(t)
+	withTools := func(args string) []byte {
+		c := f.Content(t)
+		c.Policies[0].YAML += `tools:
+  unapproved: block
+  default: block
+  approval_timeout: 10m
+  limits: {agent_per_minute: 120, session_calls: 500, repeat: 5, repeat_window: 10m}
+  rules:
+    - id: read
+      tool: files/read_*
+      action: allow
+      severity: medium
+      args: ` + args + `
+`
+		b, err := c.Marshal()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	good := withTools(`{type: object, properties: {path: {type: string, x-aisec-path-prefix: [/data/]}}}`)
+	b, err := o.Open(sealRaw(t, f, good, bundle.Secrets{"llm": bundletest.Credential}), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	specs, err := b.Content.Specs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if specs[0].Tools == nil || len(specs[0].Tools.Rules) != 1 || specs[0].Tools.Rules[0].Args == nil {
+		t.Fatalf("раздел tools потерян: %+v", specs[0].Tools)
+	}
+	for name, args := range map[string]string{
+		"незнакомое слово": `{type: object, $ref: "#/x"}`,
+		"обратная ссылка":  `{type: string, pattern: "(a)\\1"}`,
+		"префикс у числа":  `{type: integer, x-aisec-path-prefix: [/data/]}`,
+	} {
+		if _, err := o.Open(sealRaw(t, f, withTools(args), bundle.Secrets{"llm": bundletest.Credential}), 0); bundle.Reason(err) != bundle.ReasonInvalidContent {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
 }

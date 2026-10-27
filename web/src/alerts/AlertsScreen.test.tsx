@@ -219,6 +219,23 @@ describe("правила", () => {
     }));
   });
 
+  it("«Новый инструмент агента»: поле не меняется, при создании правила его нет (задача 4.8)", async () => {
+    store.rules = [rule({ id: "r-3", name: "Новый инструмент агента", kind: "new", builtin: "agents.tool_new", condition: { field: "tool" }, group_by: ["tool"] })];
+    renderScreen(allPerms);
+    tab("Правила");
+    fireEvent.click(await screen.findByRole("button", { name: "Изменить правило Новый инструмент агента" }));
+    const dlg = await screen.findByRole("dialog", { name: "Правило «Новый инструмент агента»" });
+    const field = within(dlg).getByLabelText("За чем следить") as HTMLSelectElement;
+    expect(field.disabled).toBe(true);
+    expect(field.value).toBe("tool");
+    fireEvent.click(within(dlg).getByRole("button", { name: "Сохранить правило" }));
+    await waitFor(() => expect(calls.find((c) => c.url === "/api/v1/alert-rules/r-3" && c.method === "PUT")?.body).toMatchObject({ condition: { field: "tool" } }));
+    fireEvent.click(await screen.findByRole("button", { name: "Создать правило" }));
+    const create = await screen.findByRole("dialog", { name: "Новое правило оповещения" });
+    fireEvent.change(within(create).getByLabelText("Вид правила"), { target: { value: "new" } });
+    expect(within(create).queryByRole("option", { name: "Новый инструмент агента" })).toBeNull();
+  });
+
   it("без прав на роли, пользователей и события — названия прав, не коды (3Н39 ревью 3.r2)", async () => {
     const { unmount } = renderScreen(["alerts.read", "alerts.manage", "alert_rules.read", "alert_rules.manage"]);
     tab("Правила");

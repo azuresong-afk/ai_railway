@@ -49,8 +49,10 @@ func Severities() []string { return slices.Clone(severities) }
 func severityRank(s string) int { return slices.Index(severities, s) + 1 }
 
 // Поля условия «новое» (ТЗ 5.6: модель, провайдер, пользователь; приложение
-// — для установок с самостоятельной регистрацией приложений).
-var newFields = []string{"model", "provider", "user", "app"}
+// — для установок с самостоятельной регистрацией приложений). tool — только
+// у встроенного правила agents.tool_new (задача 4.8): его поднимает сервер
+// по записи аудита agent_tool.discovered, в событиях поля нет.
+var newFields = []string{"model", "provider", "user", "app", "tool"}
 
 // groupFields — поля группировки правила «порог»: однозначные столбцы
 // событий. Многозначные (угрозы, детекторы) ключом не годятся.
@@ -333,6 +335,7 @@ func textField(errs *[]error, field, v string, lo, hi int) {
 // из запроса). Существование ролей и пользователей проверяет сервис.
 func ParseRuleInput(in RuleInput, kind string) (Rule, error) {
 	var errs []error
+	creating := kind == ""
 	if kind == "" {
 		kind = in.Kind
 	}
@@ -366,6 +369,9 @@ func ParseRuleInput(in RuleInput, kind string) (Rule, error) {
 		errs = append(errs, fmt.Errorf("suppress_minutes: от 0 до %d", MaxSuppressMinutes))
 	}
 	errs = append(errs, r.parseCondition(in.Condition, in.GroupBy)...)
+	if creating && kind == KindNew && in.Condition.Field == ToolField {
+		errs = append(errs, errors.New("condition.field: tool — только у встроенного правила «Новый инструмент агента»"))
+	}
 	if b, err := json.Marshal(r.Condition); err != nil || len(b) > maxConditionJSON {
 		errs = append(errs, fmt.Errorf("condition: больше %d байт в JSON", maxConditionJSON))
 	}

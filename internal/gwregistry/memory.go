@@ -137,6 +137,15 @@ func (m *Memory) Touch(_ context.Context, id string, hb Heartbeat, audits func(T
 		g.StartedAt = next
 	}
 	g.LastSeenAt, g.LastAddr, g.Version, g.BundleETag = hb.At, hb.Addr, hb.Version, hb.BundleETag
+	g.ClockSkew, g.TLSFingerprint = nil, nil
+	if hb.ClockSkew != nil {
+		d := *hb.ClockSkew
+		g.ClockSkew = &d
+	}
+	if hb.TLSFingerprint != nil {
+		fp := *hb.TLSFingerprint
+		g.TLSFingerprint = &fp
+	}
 	if hb.Selftest != nil {
 		r := *hb.Selftest
 		g.Selftest = &r

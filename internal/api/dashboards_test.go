@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/azuresong-afk/ai_railway/internal/auth"
 	"github.com/azuresong-afk/ai_railway/internal/events"
 )
 
@@ -354,6 +355,61 @@ func TestDashboardStream(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("поток не закрылся после выхода")
+	}
+}
+
+// Перенесено из этапа 3 (задача 4.5): тики потока не продлевают сессию —
+// по простою сессия завершается и поток закрывается, хотя вкладка открыта.
+func TestDashboardStreamIdleSession(t *testing.T) {
+	old := dashStreamEvery
+	dashStreamEvery = 30 * time.Millisecond
+	t.Cleanup(func() { dashStreamEvery = old })
+	e := newAppsEnv(t)
+	an := e.mustLogin(t, "analyst")
+	srv := httptest.NewServer(e.h)
+	t.Cleanup(srv.Close)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/api/v1/dashboards/stream?dashboard=overview&period=24h", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range an.cookies {
+		req.AddCookie(c)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = resp.Body.Close() //nolint:gosec // G104: закрытие тестового ответа
+	}()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("поток: %d", resp.StatusCode)
+	}
+	sc := bufio.NewScanner(resp.Body)
+	sc.Buffer(make([]byte, 0, 1<<16), 1<<22)
+	// Каждый пинг — тик с проверкой сессии; между тиками проходит 2 минуты.
+	idle := time.Duration(auth.DefaultPolicy().SessionIdleMinutes) * time.Minute
+	var passed time.Duration
+	for sc.Scan() {
+		if sc.Text() != ": ping" {
+			continue
+		}
+		if passed > idle+4*time.Minute {
+			t.Fatalf("поток открыт через %v без действий пользователя", passed)
+		}
+		e.clock.mu.Lock()
+		e.clock.t = e.clock.t.Add(2 * time.Minute)
+		e.clock.mu.Unlock()
+		passed += 2 * time.Minute
+	}
+	if passed < idle-2*time.Minute {
+		t.Fatalf("поток закрыт раньше простоя: %v", passed)
+	}
+	// Сессия завершена по простою.
+	if w := e.call(an, "GET", "/api/v1/me", "", false); w.Code != http.StatusUnauthorized {
+		t.Fatalf("сессия после простоя: %d", w.Code)
 	}
 }
 

@@ -65,6 +65,21 @@ type Content struct {
 	// GatewayTLS — сертификат заказчика для адреса шлюза (задача 3.27 этапа
 	// 3); ключ — в секретах. Нет раздела — шлюз на своём сертификате.
 	GatewayTLS *GatewayTLS `json:"gateway_tls,omitempty"`
+	// Agents, MCPServers и AgentTools — реестр агентов, MCP-серверов и
+	// инструментов (задача 4.8, ADR-0023); учётные данные MCP-серверов — в
+	// секретах. Пустые разделы не выводятся: без агентов байты пакета
+	// прежние.
+	Agents     []Agent     `json:"agents,omitempty"`
+	MCPServers []MCPServer `json:"mcp_servers,omitempty"`
+	AgentTools []AgentTool `json:"agent_tools,omitempty"`
+	// PromptBaselines — эталоны системного промпта приложений (задача 4.14
+	// этапа 4, baselines.go): хеш и режим контроля, без текста.
+	PromptBaselines []PromptBaseline `json:"prompt_baselines,omitempty"`
+	// UserTokenKeys и UserTokens — ключи издателя и проверка JWT
+	// пользователя приложений, доступ к моделям по группам (задача 4.21
+	// этапа 4, usertokens.go).
+	UserTokenKeys []IssuerKeys `json:"user_token_keys,omitempty"`
+	UserTokens    []UserToken  `json:"user_tokens,omitempty"`
 }
 
 // Unavailable — приложение, исключённое из пакета: только ID, контур и
@@ -146,6 +161,9 @@ type Key struct {
 	ExpiresAt    time.Time `json:"expires_at"`
 	AllowedCIDRs []string  `json:"allowed_cidrs,omitempty"`
 	Revoked      bool      `json:"revoked,omitempty"`
+	// Agent — ID агента, к которому привязан ключ (задача 4.8): заголовок
+	// X-AISec-Agent с другим агентом — отказ agent_mismatch.
+	Agent string `json:"agent,omitempty"`
 }
 
 // Policy — текущая версия политики организации: каноничный YAML (ADR-0016).
@@ -231,6 +249,7 @@ func (c *Content) Validate() error {
 		}
 	}
 	apps := map[string]bool{}
+	byApp := map[string]Application{}
 	prefixes := map[string]bool{}
 	for i, a := range c.Applications {
 		at := fmt.Sprintf("applications[%d] (%s)", i, short(a.ID))
@@ -238,6 +257,7 @@ func (c *Content) Validate() error {
 			add("%s: неверный или повторный id", at)
 		}
 		apps[a.ID] = true
+		byApp[a.ID] = a
 		if !providers[a.Provider] {
 			add("%s: провайдер %q не описан в пакете", at, short(a.Provider))
 		}
@@ -254,6 +274,8 @@ func (c *Content) Validate() error {
 		errs = append(errs, prefixed(at, a.params().Check())...)
 		errs = append(errs, checkKeys(at, a.Keys, prefixes)...)
 	}
+	errs = append(errs, validateBaselines(c.PromptBaselines, apps)...)
+	errs = append(errs, c.validateUserTokens(byApp)...)
 	for i, u := range c.Unavailable {
 		at := fmt.Sprintf("unavailable[%d] (%s)", i, short(u.ID))
 		if !config.ValidID(u.ID) || apps[u.ID] {
@@ -268,6 +290,7 @@ func (c *Content) Validate() error {
 	provIDs, appIDs := c.budgetIDs()
 	errs = append(errs, c.Budgets.validate(provIDs, appIDs)...)
 	errs = append(errs, c.GatewayTLS.validate()...)
+	errs = append(errs, c.validateAgents()...)
 	return errors.Join(errs...)
 }
 

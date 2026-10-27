@@ -5,6 +5,7 @@ export type SessionState = components["schemas"]["SessionState"];
 export type MFASetup = components["schemas"]["MFASetup"];
 export type RecoveryCodes = components["schemas"]["RecoveryCodes"];
 export type SetupStatus = components["schemas"]["SetupStatus"];
+export type OIDCOption = components["schemas"]["OIDCOption"];
 export type SetupRequest = components["schemas"]["SetupRequest"];
 export type Problem = components["schemas"]["Problem"];
 
@@ -93,6 +94,8 @@ export const api = {
   setupStatus: (signal?: AbortSignal) => request<SetupStatus>("GET", "/api/v1/auth/setup", undefined, signal),
   setup: (b: SetupRequest) => request<unknown>("POST", "/api/v1/auth/setup", b),
   login: (login: string, password: string) => request<Me>("POST", "/api/v1/auth/login", { login, password }),
+  // Кнопка «Войти через …»: сам вход — переход браузера на /api/v1/auth/oidc/start (ADR-0025).
+  oidcOption: (signal?: AbortSignal) => request<OIDCOption>("GET", "/api/v1/auth/oidc", undefined, signal),
   logout: () => request<void>("POST", "/api/v1/auth/logout"),
   changePassword: (current_password: string, new_password: string) =>
     request<void>("POST", "/api/v1/auth/password", { current_password, new_password }),

@@ -108,7 +108,8 @@ func securityRules() []Rule {
 		rule(BuiltinGatewayOffline, KindSystem, "Шлюз недоступен",
 			"DM-44: действующий шлюз не выходил на связь дольше трёх периодов heartbeat.", "high", []string{"gateway"}),
 		rule(BuiltinTimeSync, KindSystem, "Время не синхронизировано",
-			"DM-44, ВРМ.1: часы сервера не синхронизированы — время событий и аудита ненадёжно.", "medium", []string{}),
+			"DM-44, ВРМ.1: часы сервера не синхронизированы или часы шлюза расходятся с сервером больше чем на минуту — "+
+				"время событий и аудита и сроки исключений ненадёжны.", "medium", []string{}),
 		rule(BuiltinAuditStorage, KindSystem, "Журнал аудита приближается к пределу хранилища",
 			"DM-44, РСБ.5: заполнение хранилища журнала аудита достигло порога предупреждения.", "high", []string{}),
 		rule(BuiltinCertExpiry, KindSystem, "Скоро истекает сертификат",
@@ -120,7 +121,9 @@ func securityRules() []Rule {
 			"DM-44, Н29: шлюз на связи, но итог контроля целостности старше двух периодов проверки или не приходит.",
 			"high", []string{"gateway"}),
 		rule(BuiltinConfigBundle, KindSystem, "Пакет конфигурации шлюзов не применён",
-			"ОЦЛ.3: пакет собран не полностью или шлюз работает на устаревшем пакете.", "medium", []string{"component"}),
+			"ОЦЛ.3: пакет собран не полностью или шлюз работает на устаревшем пакете; ЗИ.4: шлюз применил пакет, но отвечает "+
+				"приложениям не тем сертификатом, что загружен в консоли (по часам шлюза он ещё не действует или истёк).",
+			"medium", []string{"component"}),
 		rule(BuiltinNotifyFailed, KindSystem, "Уведомление не доставлено",
 			"DM-44: канал уведомлений не доставил сообщение после всех повторов.", "high", []string{"channel"}),
 		rule(BuiltinAuditStream, KindSystem, "Передача журнала аудита в SIEM отстаёт",
@@ -130,7 +133,8 @@ func securityRules() []Rule {
 			"high", []string{"channel"}),
 		rule(BuiltinAlertJob, KindSystem, "Фоновая задача правил оповещений не выполняется",
 			"DM-44: фоновая задача правил «частота», «аномалия» и «бюджет» (DM-15, DM-16, DM-17, DM-36) не завершала проход "+
-				"дольше 5 минут при работающем сервере — эти правила не срабатывают. Причина — в техническом журнале сервера.",
+				"дольше 5 минут при работающем сервере или вычисление правила падает на каждом проходе дольше 5 минут — "+
+				"эти правила не срабатывают. Причина — в техническом журнале сервера.",
 			"high", []string{}),
 	}
 }
@@ -314,6 +318,16 @@ func classifyAudit(ctx context.Context, ops secOps, r *audit.Record) ([]Raise, e
 		raises = append(raises, raiseOf(BuiltinAuditStream, map[string]string{"channel": r.Object.ID},
 			map[string]string{"channel": str(dd["channel_name"], r.Object.ID)}, 1,
 			map[string]any{"items": []any{item(r, map[string]any{"reason": dd["reason"], "from_seq": dd["from_seq"], "to_seq": dd["to_seq"]})}}))
+	case "agent_tool.discovered", "agent_tool.changed":
+		if x, ok := agentToolRaise(r, details()); ok {
+			raises = append(raises, x)
+		}
+	case "agent.approval.requested", "agent.approval.queue_full":
+		x, err := approvalRaise(ctx, ops, r, details())
+		if err != nil {
+			return nil, err
+		}
+		raises = append(raises, x...)
 	case "notify.delivery_failed":
 		raises = append(raises, raiseOf(BuiltinNotifyFailed, map[string]string{"channel": r.Object.ID},
 			map[string]string{"channel": str(details()["channel_name"], r.Object.ID)}, 1,
@@ -425,6 +439,10 @@ var systemFamilies = map[string]string{
 	"alert_job_stale":   BuiltinAlertJob,
 	// Сертификат заказчика для адреса шлюза (задача 3.27).
 	"customer_cert_expiry": BuiltinCertExpiry,
+	// Часы шлюза и сертификат, которым он отвечает приложениям (3Н40, 3Н43
+	// ревью 3.r3).
+	"gateway_clock": BuiltinTimeSync,
+	"gateway_tls":   BuiltinConfigBundle,
 }
 
 // systemRaise — оповещение по возникшему условию раздела 7 (запись

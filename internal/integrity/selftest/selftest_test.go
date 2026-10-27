@@ -18,6 +18,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/detect/builtin"
 	"github.com/azuresong-afk/ai_railway/internal/detect/corpus"
 	"github.com/azuresong-afk/ai_railway/internal/integrity"
+	"github.com/azuresong-afk/ai_railway/internal/policy"
 )
 
 var fixedNow = func() time.Time { return time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC) }
@@ -95,11 +96,77 @@ func TestRunBuiltinOK(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !res.OK() || res.Detectors != len(builtin.All()) || res.Vectors != len(vectors) {
+	if !res.OK() || res.Detectors != len(builtin.All()) || res.Vectors != len(vectors) || res.Tools != len(toolVectors)+1+len(descriptorVectors) {
 		t.Fatalf("итог %+v", res)
 	}
 	if !res.At.Equal(fixedNow()) || res.Profile != aisecCrypto.ProfileStandard {
 		t.Fatalf("время или профиль: %+v", res)
+	}
+}
+
+// TestDM20_ToolVectorsCoverThreats — эталоны политики вызовов покрывают
+// неодобренный инструмент и инструмент вне разрешённых (DM-20), аргументы
+// вне ограничений (DM-21), подтверждение (DM-22), изменённое описание
+// (DM-25), зацикливание (DM-23) и разрешённый вызов; расхождение решения
+// с эталоном — провал. Покрывает: DM-20, DM-21, DM-22, DM-23, DM-25.
+func TestDM20_ToolVectorsCoverThreats(t *testing.T) {
+	seen := map[string]bool{}
+	for _, v := range toolVectors {
+		seen[strings.SplitN(v.ID, "-", 2)[0]] = true
+	}
+	for _, k := range []string{"dm20", "dm21", "dm22", "dm25", "allow"} {
+		if !seen[k] {
+			t.Errorf("нет эталона %s", k)
+		}
+	}
+	saved := toolVectors
+	t.Cleanup(func() { toolVectors = saved })
+	toolVectors = slices.Clone(saved)
+	toolVectors[0].Expect = policy.Allow
+	res, err := Run(context.Background(), Config{Component: "gateway", Provider: standard(t), Detectors: builtin.All()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.OK() || len(res.Failures) != 1 || res.Failures[0] != (Failure{Detector: ToolsCheck, Vector: toolVectors[0].ID,
+		Problem: ProblemDecision, Category: string(policy.Block)}) {
+		t.Fatalf("провал решения не найден: %+v", res.Failures)
+	}
+}
+
+// TestDM25_DescriptorVectors — эталоны хеша описания: равенство при
+// эквивалентной записи, различие при подмене описания, отказ при повторе
+// ключа; неверный эталон — провал hash. Покрывает: DM-25.
+func TestDM25_DescriptorVectors(t *testing.T) {
+	var same, diff, invalid bool
+	for _, v := range descriptorVectors {
+		same = same || v.Same
+		diff = diff || !v.Same && !v.Invalid
+		invalid = invalid || v.Invalid
+	}
+	if !same || !diff || !invalid {
+		t.Fatal("эталоны хеша описания неполны")
+	}
+	var n int
+	if f := runDescriptors(standard(t), &n); len(f) != 0 || n != len(descriptorVectors) {
+		t.Fatalf("эталоны: %+v", f)
+	}
+	// Профиль без хеш-функции (заглушка ГОСТ) — провал, а не пропуск.
+	gost, err := aisecCrypto.New(aisecCrypto.ProfileGOST)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f := runDescriptors(gost, &n); len(f) != 1 || f[0].Problem != ProblemError {
+		t.Fatalf("профиль без хеша: %+v", f)
+	}
+	saved := descriptorVectors
+	t.Cleanup(func() { descriptorVectors = saved })
+	descriptorVectors = slices.Clone(saved)
+	descriptorVectors[1].Same = true
+	descriptorVectors[0].SHA256 = strings.Repeat("0", 64)
+	if f := runDescriptors(standard(t), &n); len(f) != 2 || f[0] != (Failure{Detector: DescriptorCheck,
+		Vector: descriptorVectors[0].ID, Problem: ProblemHash}) || f[1] != (Failure{Detector: DescriptorCheck,
+		Vector: descriptorVectors[1].ID, Problem: ProblemHash}) {
+		t.Fatalf("провал хеша не найден: %+v", f)
 	}
 }
 

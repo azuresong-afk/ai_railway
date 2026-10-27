@@ -28,6 +28,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/integrity/selftest"
 	"github.com/azuresong-afk/ai_railway/internal/policy"
 	"github.com/azuresong-afk/ai_railway/internal/policy/bundle"
+	"github.com/azuresong-afk/ai_railway/internal/policy/toolrate"
 	"github.com/azuresong-afk/ai_railway/internal/providers"
 )
 
@@ -178,6 +179,12 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 	if err != nil {
 		return err
 	}
+	// Сессии чата (задачи 4.13, 4.14 этапа 4): на ключе псевдонимов, без
+	// него — на случайном ключе процесса; переживают смену пакета.
+	sessions, err := gateway.NewSessions(gateway.SessionConfig{Provider: p, MAC: userMAC})
+	if err != nil {
+		return err
+	}
 	authBase, queue, closeEvents, err := newAuth(p, file, cfg, control.httpClient(), logger)
 	if err != nil {
 		return err
@@ -197,8 +204,22 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 	}
 	// Квоты общие для всех маршрутов приложений и переживают смену пакета.
 	hb := &handlerBuilder{cfg: cfg, logger: logger, hasher: h, auth: authBase, events: queue,
-		quotas: gateway.NewLimiter(nil), budget: gateway.NewBudget(nil), userMAC: userMAC, clock: &gateway.ServerClock{}}
+		quotas: gateway.NewLimiter(nil), budget: gateway.NewBudget(nil), userMAC: userMAC, clock: &gateway.ServerClock{},
+		sessions: sessions, toolRate: toolrate.New(0)}
 	hb.budget.SetLogger(logger)
+	// Проверка JWT пользователей приложений (задача 4.21); в профиле без
+	// неё (gost до этапа 6) JWT отклоняются.
+	if j, err := p.JWT(); err == nil {
+		hb.jwt = j
+	}
+	// Очередь подтверждений вызовов (require_approval, задача 4.10) — только
+	// с сервером управления; без него такие вызовы отклоняются.
+	if control != nil {
+		if hb.approvals, err = gateway.NewApprovalClient(gateway.ApprovalClientConfig{Client: control.client, Server: cfg.Server,
+			Hasher: h, Logger: logger}); err != nil {
+			return err
+		}
+	}
 	var handler http.Handler
 	var bundles *gateway.BundleClient
 	if file != nil {
@@ -212,7 +233,7 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 		}
 		// Политики компилируются по детекторам приложения при запуске:
 		// незарегистрированный детектор в политике заказчика — отказ запуска.
-		if handler, err = hb.build(file.Applications, provs, file.Policies, recs, nil, nil); err != nil {
+		if handler, err = hb.build(file.Applications, provs, file.Policies, recs, nil, nil, nil, nil, userTokens{}); err != nil {
 			return err
 		}
 		logger.Info("конфигурация из файла", "applications", len(file.Applications), "providers", len(provs))
@@ -248,7 +269,8 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 			hbCancel()
 			return err
 		}
-		hbDone := startHeartbeat(hbCtx, cfg, control.client, logger, reports, bundles.ETag, verify, started, reissue.Reissue, hb.budget, hb.clock)
+		hbDone := startHeartbeat(hbCtx, cfg, control.client, logger, reports, bundles.ETag, verify, started, reissue.Reissue, hb.budget, hb.clock, appTLS.Current,
+			hb.approvals.Pending)
 		defer func() {
 			hbCancel()
 			<-hbDone
@@ -275,13 +297,31 @@ type handlerBuilder struct {
 	userMAC aisecCrypto.MAC
 	// clock — сроки исключений не раньше времени сервера управления (3Н40).
 	clock *gateway.ServerClock
+	// sessions — сессии чата и session.risk (задача 4.13): переживают
+	// смену пакета.
+	sessions *gateway.Sessions
+	// approvals — очередь подтверждений на сервере управления (задача
+	// 4.10); nil — без сервера.
+	approvals *gateway.ApprovalClient
+	// toolRate — счётчики лимитов политики вызовов (chat и MCP-прокси):
+	// переживают смену пакета.
+	toolRate *toolrate.Counters
+	// jwt — проверка JWT пользователей приложений (задача 4.21); nil —
+	// криптопрофиль без неё.
+	jwt aisecCrypto.JWTVerifier
 }
 
 func (hb *handlerBuilder) build(apps []config.Application, provs map[string]providers.Provider, specs []policy.Spec,
-	recs []auth.KeyRecord, unavailable []string, budgets *bundle.Budgets) (http.Handler, error) {
+	recs []auth.KeyRecord, unavailable []string, budgets *bundle.Budgets, baselines []bundle.PromptBaseline,
+	agents *gateway.Agents, userTokens userTokens) (http.Handler, error) {
 	for _, a := range apps {
 		if hb.userMAC == nil && a.UserFrom != "" && a.UserFrom != "none" {
 			return nil, fmt.Errorf("приложение %s: user_from %s требует ключ псевдонимов пользователей (user-hmac-key)", a.ID, a.UserFrom)
+		}
+	}
+	for id := range userTokens.apps {
+		if hb.userMAC == nil {
+			return nil, fmt.Errorf("приложение %s: JWT пользователя требует ключ псевдонимов пользователей (user-hmac-key)", id)
 		}
 	}
 	router, err := gateway.NewRouter(apps, provs, specs)
@@ -292,6 +332,25 @@ func (hb *handlerBuilder) build(apps []config.Application, provs map[string]prov
 	// Хеши фрагментов находок для исключений — на ключе псевдонимов (задача 3.22).
 	router.SetFragmentMAC(hb.userMAC)
 	router.SetClock(hb.clock.Now)
+	// Реестр агентов и очередь подтверждений (задачи 4.10, 4.11).
+	router.SetAgents(agents)
+	if hb.approvals != nil {
+		router.SetApprover(hb.approvals)
+	}
+	// Эталоны системного промпта (задача 4.14): неверный раздел — пакет
+	// отклоняется.
+	bl := make(map[string]gateway.PromptBaseline, len(baselines))
+	for _, b := range baselines {
+		bl[b.App] = gateway.PromptBaseline{Hash: b.Hash, Mode: b.Mode}
+	}
+	if err := router.SetPromptBaselines(hb.hasher, bl); err != nil {
+		return nil, err
+	}
+	// JWT пользователей и доступ к моделям по группам (задача 4.21):
+	// неверный JWKS или настройка — пакет отклоняется.
+	if err := router.SetUserTokens(hb.jwt, userTokens.keys, userTokens.apps); err != nil {
+		return nil, err
+	}
 	a, err := auth.NewAuthenticator(hb.hasher, recs)
 	if err != nil {
 		return nil, err
@@ -301,6 +360,7 @@ func (hb *handlerBuilder) build(apps []config.Application, provs map[string]prov
 	handlerCfg := gateway.ChatConfig{
 		Router: router, MaxBodyBytes: hb.cfg.MaxBodyBytes, Logger: hb.logger,
 		Events: hb.events, IDs: authCfg.IDs, Quotas: hb.quotas, Budget: hb.budget, UserMAC: hb.userMAC,
+		Sessions: hb.sessions, Hasher: hb.hasher, ToolRate: hb.toolRate,
 	}
 	chatHandler, err := gateway.NewChatHandler(handlerCfg)
 	if err != nil {
@@ -499,7 +559,7 @@ const gwReissueWarn = 30 * 24 * time.Hour
 // недоступен — шлюз всё равно работает (ТЗ, 4.2).
 func startHeartbeat(ctx context.Context, cfg *config.Gateway, client *http.Client, logger *slog.Logger, reports *gateway.Reports, etag func() string,
 	verify func(context.Context), started time.Time, reissue func(context.Context) error, budget *gateway.Budget,
-	clock *gateway.ServerClock) <-chan struct{} {
+	clock *gateway.ServerClock, tlsFingerprint func() string, pendingApprovals func() []string) <-chan struct{} {
 	v := version
 	if !gateway.ValidVersion(v) {
 		v = "unknown"
@@ -509,7 +569,8 @@ func startHeartbeat(ctx context.Context, cfg *config.Gateway, client *http.Clien
 		defer close(done)
 		gateway.RunHeartbeat(ctx, gateway.HeartbeatConfig{
 			Client: client, Server: cfg.Server, Version: v, Logger: logger, Reports: reports, BundleETag: etag, Verify: verify,
-			StartedAt: started, Reissue: reissue, Budget: budget, ServerTime: clock,
+			StartedAt: started, Reissue: reissue, Budget: budget, ServerTime: clock, TLSFingerprint: tlsFingerprint,
+			PendingApprovals: pendingApprovals,
 		})
 	}()
 	return done

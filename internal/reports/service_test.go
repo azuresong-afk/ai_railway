@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -174,7 +175,7 @@ func TestBuildIncidentsReport(t *testing.T) {
 	}
 	// Название с формулой в CSV защищено.
 	var buf bytes.Buffer
-	if err := WriteCSV(&buf, doc); err != nil {
+	if err := WriteCSV(&buf, doc, events.DelimSemicolon); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(buf.String(), `"'=cmd|calc"`) {
@@ -191,7 +192,7 @@ func TestBuildPilot(t *testing.T) {
 	}
 	txt := docText(doc)
 	for _, want := range []string{"Что подключено", "Приложений|3|", "prod — 2, test — 1", "Запросов проверено|100|", "pii.snils|8|3|",
-		"25 %", "режиме мониторинга 6 запросов", "Не закрыто инцидентов: 1", "без цены", "истёкшим сроком", "Стоимость по моделям", "Рекомендации"} {
+		"25 %", "режиме мониторинга 6 запросов", "Критерии успеха пилота (значения по умолчанию)", "не более 2 %", "не более 30 мс", "Не закрыто инцидентов: 1", "без цены", "истёкшим сроком", "Стоимость по моделям", "Рекомендации"} {
 		if !strings.Contains(txt, want) {
 			t.Errorf("нет %q в:\n%s", want, txt)
 		}
@@ -222,6 +223,11 @@ type fakeMailer struct {
 func (f *fakeMailer) SendReport(_ context.Context, _ string, m notify.ReportMail) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if m.Before != nil {
+		if err := m.Before([]string{"soc@example.ru", "ciso@example.ru"}); err != nil {
+			return err
+		}
+	}
 	f.calls++
 	if f.cancel != nil {
 		f.cancel()
@@ -238,6 +244,14 @@ func (f *fakeMailer) SendReport(_ context.Context, _ string, m notify.ReportMail
 
 type fakeChannels struct{ ch map[string]notify.Channel }
 
+func (f fakeChannels) Channels(context.Context) ([]notify.Channel, error) {
+	out := make([]notify.Channel, 0, len(f.ch))
+	for _, c := range f.ch {
+		out = append(out, c)
+	}
+	return out, nil
+}
+
 func (f fakeChannels) Channel(_ context.Context, id string) (notify.Channel, error) {
 	if c, ok := f.ch[id]; ok {
 		return c, nil
@@ -249,7 +263,46 @@ type clock struct{ t time.Time }
 
 func (c *clock) now() time.Time { return c.t }
 
+// fakeDirectory — справочник получателей: пользователи по ID.
+type fakeDirectory struct {
+	mu    sync.Mutex
+	users map[string]Recipient
+	err   error
+}
+
+func (f *fakeDirectory) Recipient(_ context.Context, id string) (Recipient, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err != nil {
+		return Recipient{}, f.err
+	}
+	if r, ok := f.users[id]; ok {
+		return r, nil
+	}
+	return Recipient{}, ErrRecipientNotFound
+}
+
+const (
+	uWithMail  = "01900000-0000-7000-8000-0000000000a1"
+	uWithMail2 = "01900000-0000-7000-8000-0000000000a2"
+	uNoMail    = "01900000-0000-7000-8000-0000000000a3"
+	uInactive  = "01900000-0000-7000-8000-0000000000a4"
+	uNoRead    = "01900000-0000-7000-8000-0000000000a5"
+)
+
+func newDirectory() *fakeDirectory {
+	all := Scope{Incidents: true, Alerts: true, Budgets: true}
+	return &fakeDirectory{users: map[string]Recipient{
+		uWithMail:  {Email: "ivanov@example.ru", Active: true, CanRead: true, Scope: all},
+		uWithMail2: {Email: "petrov@example.ru", Active: true, CanRead: true, Scope: all},
+		uNoMail:    {Active: true, CanRead: true, Scope: all},
+		uInactive:  {Email: "off@example.ru", CanRead: true, Scope: all},
+		uNoRead:    {Email: "noread@example.ru", Active: true},
+	}}
+}
+
 type svcEnv struct {
+	dir   *fakeDirectory
 	svc   *Service
 	mem   *Memory
 	mail  *fakeMailer
@@ -270,9 +323,9 @@ func newSvc(t *testing.T) *svcEnv {
 	clk := &clock{t: time.Date(2026, 10, 25, 9, 0, 0, 0, time.UTC)}
 	b, _, inc := newBuilder(clk.t)
 	b.Now = clk.now
-	e := &svcEnv{mem: NewMemory(), mail: &fakeMailer{}, clock: clk, inc: inc}
+	e := &svcEnv{mem: NewMemory(), mail: &fakeMailer{}, clock: clk, inc: inc, dir: newDirectory()}
 	loc := mustLoc(t, "Europe/Moscow")
-	e.svc, err = New(Options{Store: e.mem, Builder: b, Mailer: e.mail, IDs: ids.NewGenerator(r), Now: clk.now,
+	e.svc, err = New(Options{Store: e.mem, Builder: b, Mailer: e.mail, IDs: ids.NewGenerator(r), Now: clk.now, Directory: e.dir,
 		Channels: fakeChannels{ch: map[string]notify.Channel{
 			testChannel:                            {ID: testChannel, Type: notify.TypeEmail, Enabled: true, Settings: notify.Settings{To: []string{"a@example.org"}}},
 			"01900000-0000-7000-8000-0000000000ab": {ID: "01900000-0000-7000-8000-0000000000ab", Type: notify.TypeWebhook, Enabled: true},
@@ -428,6 +481,10 @@ func TestTickSendsOnce(t *testing.T) {
 	if export == nil || export.Actor.Type != audit.ActorSystem || !strings.HasPrefix(export.Actor.ID, "report-schedule:") {
 		t.Fatalf("data.export: %+v", export)
 	}
+	// 3Н47 ревью 3.r4: в записи — адреса получателей этой отправки.
+	if to, _ := export.Details.(map[string]any)["recipients"].([]string); !slices.Equal(to, []string{"soc@example.ru", "ciso@example.ru"}) {
+		t.Fatalf("получатели в data.export: %v", export.Details)
+	}
 }
 
 // После простоя несколько пропущенных запусков дают одну рассылку — за
@@ -502,6 +559,17 @@ func TestTickRetriesThenFails(t *testing.T) {
 	if err := e.svc.Tick(ctx); err != nil || len(e.mail.mails) != 1 {
 		t.Fatalf("следующий запуск: %v %d", err, len(e.mail.mails))
 	}
+	// 3Н47 ревью 3.r4: завершённые запуски старше RunRetention удаляются,
+	// новые остаются.
+	e.mail.fail = 100
+	e.clock.t = utc(2026, 10, 26, 5, 1).Add(RunRetention + 23*time.Hour)
+	if err := e.svc.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	runs, _ = e.svc.Runs(ctx, s.ID, 10) //nolint:gosec // G104: ошибка проверена ниже по содержимому
+	if len(runs) != 2 || runs[1].Status != RunSent || runs[0].Status != RunPending {
+		t.Fatalf("журнал после очистки: %+v", runs)
+	}
 }
 
 func TestTickRecovers(t *testing.T) {
@@ -540,11 +608,11 @@ func TestRenderFormats(t *testing.T) {
 	var b bytes.Buffer
 	for _, f := range []string{FormatHTML, FormatCSV, FormatXLSX} {
 		b.Reset()
-		if err := Render(&b, sampleDoc(), f); err != nil || b.Len() == 0 {
+		if err := Render(&b, sampleDoc(), f, events.DelimSemicolon); err != nil || b.Len() == 0 {
 			t.Errorf("%s: %v", f, err)
 		}
 	}
-	if err := Render(&b, sampleDoc(), "pdf"); err == nil {
+	if err := Render(&b, sampleDoc(), "pdf", events.DelimSemicolon); err == nil {
 		t.Error("pdf принят")
 	}
 }
@@ -613,5 +681,177 @@ func TestTickAuditFailureAndInterruptedRuns(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(e.actions(), " "), "report.delivery_failed") {
 		t.Errorf("нет report.delivery_failed: %v", e.actions())
+	}
+}
+
+// Задача 4.6: получатели — пользователи консоли. Адрес берётся из учётной
+// записи при отправке и добавляется к адресам канала; пользователь без
+// адреса, деактивированный или без права на отчёт пропускается, число
+// пропущенных остаётся в журнале рассылки, адресов в журнале нет.
+func TestTickUserRecipients(t *testing.T) {
+	e := newSvc(t)
+	ctx := context.Background()
+	in := daily()
+	in.RecipientUserIDs = []string{uWithMail, uNoMail, uWithMail2}
+	s, err := e.svc.CreateSchedule(ctx, by, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(s.RecipientUserIDs, in.RecipientUserIDs) {
+		t.Fatalf("получатели расписания: %v", s.RecipientUserIDs)
+	}
+	e.clock.t = utc(2026, 10, 26, 5, 1)
+	// После сохранения расписания пользователь потерял адрес, а другой — активность.
+	e.dir.mu.Lock()
+	r := e.dir.users[uWithMail2]
+	r.Active = false
+	e.dir.users[uWithMail2] = r
+	e.dir.mu.Unlock()
+	if err := e.svc.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(e.mail.mails) != 1 || !slices.Equal(e.mail.mails[0].ExtraTo, []string{"ivanov@example.ru"}) {
+		t.Fatalf("получатели-пользователи: %+v", e.mail.mails)
+	}
+	runs, _ := e.svc.Runs(ctx, s.ID, 10) //nolint:gosec // G104: ошибка не важна для проверки
+	if len(runs) != 1 || runs[0].Status != RunSent || runs[0].SkippedNoEmail != 2 {
+		t.Fatalf("журнал: %+v", runs)
+	}
+	var export map[string]any
+	for _, a := range e.mem.Audited() {
+		if a.Action == "data.export" {
+			export, _ = a.Details.(map[string]any)
+		}
+	}
+	if export["user_recipients"] != 1 {
+		t.Fatalf("data.export: %v", export)
+	}
+	if sk, _ := export["skipped_users"].([]string); !slices.Equal(sk, []string{uNoMail, uWithMail2}) {
+		t.Fatalf("пропущенные в data.export: %v", export["skipped_users"])
+	}
+	// В журнале рассылки и в записях расписания адресов пользователей нет.
+	for _, a := range e.mem.Audited() {
+		if a.Action != "data.export" && strings.Contains(fmt.Sprintf("%+v", a), "example.ru") {
+			t.Errorf("адрес пользователя в записи %s", a.Action)
+		}
+	}
+	if strings.Contains(fmt.Sprintf("%+v", runs), "example.ru") {
+		t.Errorf("адрес в журнале рассылки: %+v", runs)
+	}
+}
+
+func TestScheduleRecipientChecks(t *testing.T) {
+	e := newSvc(t)
+	ctx := context.Background()
+	for name, ids := range map[string][]string{
+		"неизвестный":     {"01900000-0000-7000-8000-0000000000ff"},
+		"деактивирован":   {uInactive},
+		"нет права":       {uNoRead},
+		"не UUID":         {"ivanov"},
+		"повтор":          {uWithMail, uWithMail},
+		"слишком много":   make([]string, MaxUserRecipients+1),
+		"заглавные буквы": {"01900000-0000-7000-8000-0000000000A1"},
+	} {
+		in := daily()
+		in.Name = name
+		in.RecipientUserIDs = ids
+		var ie *InputError
+		if _, err := e.svc.CreateSchedule(ctx, by, in); !errors.As(err, &ie) || ie.Fields["recipient_user_ids"] == "" {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	// Пользователь без адреса допустим; права на разделы не уже, чем у автора.
+	in := daily()
+	in.RecipientUserIDs = []string{uNoMail}
+	if _, err := e.svc.CreateSchedule(ctx, by, in); err != nil {
+		t.Fatalf("пользователь без адреса: %v", err)
+	}
+	narrow := by
+	narrow.Scope = Scope{Incidents: true}
+	e.dir.mu.Lock()
+	e.dir.users[uWithMail] = Recipient{Email: "ivanov@example.ru", Active: true, CanRead: true}
+	e.dir.mu.Unlock()
+	in = daily()
+	in.Name = "С инцидентами"
+	in.Report = KindIncidents
+	in.RecipientUserIDs = []string{uWithMail}
+	var ie *InputError
+	if _, err := e.svc.CreateSchedule(ctx, narrow, in); !errors.As(err, &ie) {
+		t.Fatalf("получатель без права на инциденты: %v", err)
+	}
+	// Без справочника получатели-пользователи не сохраняются; справочник
+	// недоступен — ошибка, а не «пропущен».
+	e.dir.err = errors.New("сбой")
+	in = daily()
+	in.Name = "Сбой"
+	in.RecipientUserIDs = []string{uWithMail2}
+	if _, err := e.svc.CreateSchedule(ctx, by, in); err == nil || errors.As(err, &ie) {
+		t.Fatalf("сбой справочника: %v", err)
+	}
+}
+
+// Сбой справочника при отправке — повтор, а не «письмо без получателей-пользователей».
+func TestTickDirectoryFailureRetries(t *testing.T) {
+	e := newSvc(t)
+	ctx := context.Background()
+	in := daily()
+	in.RecipientUserIDs = []string{uWithMail}
+	s, err := e.svc.CreateSchedule(ctx, by, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.clock.t = utc(2026, 10, 26, 5, 1)
+	e.dir.err = errors.New("сбой")
+	if err := e.svc.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	runs, _ := e.svc.Runs(ctx, s.ID, 10) //nolint:gosec // G104: ошибка не важна для проверки
+	if len(e.mail.mails) != 0 || len(runs) != 1 || runs[0].Status != RunPending || runs[0].Error != notify.ErrCodeInternal {
+		t.Fatalf("после сбоя: писем %d, журнал %+v", len(e.mail.mails), runs)
+	}
+	e.dir.err = nil
+	e.clock.t = e.clock.t.Add(time.Hour)
+	if err := e.svc.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	runs, _ = e.svc.Runs(ctx, s.ID, 10) //nolint:gosec // G104: ошибка не важна для проверки
+	if len(e.mail.mails) != 1 || runs[0].Status != RunSent {
+		t.Fatalf("после восстановления: писем %d, журнал %+v", len(e.mail.mails), runs)
+	}
+}
+
+// Критерии успеха пилота по умолчанию (задача 4.6): границы 2 % и 30 мс.
+func TestPilotCriteria(t *testing.T) {
+	row := func(s Section, i int) []string {
+		var out []string
+		for _, c := range s.Rows[i] {
+			out = append(out, c.Text)
+		}
+		return out
+	}
+	mk := func(fp, blocked int64, p95 int, total int64) (aggregates, MarkStats) {
+		return aggregates{totals: events.DashTotals{Blocked: blocked}, latency: events.DashLatency{P95: p95, Total: total}}, MarkStats{FalsePositive: fp}
+	}
+	for _, tc := range []struct {
+		name          string
+		fp, blocked   int64
+		p95           int
+		total         int64
+		wantFP, wantL string
+	}{
+		{"ровно 2 %", 2, 100, 30, 10, "выполняется", "выполняется"},
+		{"3 %", 3, 100, 50, 10, "не выполняется", "не выполняется"},
+		{"нет блокировок и задержки", 0, 0, 0, 0, "нет данных", "нет данных"},
+		{"больше предела корзин", 0, 10, events.DashLatencyOverflow, 10, "выполняется", "не выполняется"},
+		{"отметок больше блокировок", 50, 10, 25, 10, "не выполняется", "выполняется"},
+	} {
+		ag, m := mk(tc.fp, tc.blocked, tc.p95, tc.total)
+		s := pilotCriteria(ag, m)
+		if got := row(s, 0)[3]; got != tc.wantFP {
+			t.Errorf("%s: ложные срабатывания %q, ждали %q", tc.name, got, tc.wantFP)
+		}
+		if got := row(s, 1)[3]; got != tc.wantL {
+			t.Errorf("%s: задержка %q, ждали %q", tc.name, got, tc.wantL)
+		}
 	}
 }

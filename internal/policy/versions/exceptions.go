@@ -64,8 +64,8 @@ func (in ExceptionInput) Check() error {
 	if in.ExpiresInDays != 0 && in.ExpiresAt != nil {
 		return invalidf("expires_in_days — не вместе с expires_at")
 	}
-	if in.ExpiresInDays < 0 || in.ExpiresInDays > int(policy.MaxExceptionTTL.Hours()/24) {
-		return invalidf("expires_in_days — от 1 до %d суток", int(policy.MaxExceptionTTL.Hours()/24))
+	if limit := limitDays(in.Detector); in.ExpiresInDays < 0 || in.ExpiresInDays > limit {
+		return invalidf("expires_in_days — от 1 до %d суток", limit)
 	}
 	// Срок от текущего времени проверяется при сохранении; здесь — условие
 	// и причина тем же Validate, что у YAML политики.
@@ -82,7 +82,7 @@ func (in ExceptionInput) Check() error {
 
 // spec — исключение id с автором author, созданное в момент now.
 func (in ExceptionInput) spec(id, author string, now time.Time) (policy.ExceptionSpec, error) {
-	exp, err := expiry(in.ExpiresInDays, in.ExpiresAt, now)
+	exp, err := expiry(in.ExpiresInDays, in.ExpiresAt, now, in.Detector)
 	if err != nil {
 		return policy.ExceptionSpec{}, err
 	}
@@ -91,22 +91,27 @@ func (in ExceptionInput) spec(id, author string, now time.Time) (policy.Exceptio
 		Author: author, CreatedAt: now, ExpiresAt: exp, Event: in.EventID}, nil
 }
 
+// limitDays — наибольший срок исключения детектора в сутках.
+func limitDays(detector string) int { return int(policy.ExceptionTTLLimit(detector).Hours() / 24) }
+
 // expiry — конец действия: days суток от now или at; ни того ни другого —
-// policy.DefaultExceptionTTL. Срок — от 1 секунды до policy.MaxExceptionTTL.
-func expiry(days int, at *time.Time, now time.Time) (time.Time, error) {
+// policy.DefaultExceptionTTL, но не дальше предела детектора. Срок — от 1
+// секунды до policy.ExceptionTTLLimit (у канарейки — 7 суток, 3Н49 ревью 3.r4).
+func expiry(days int, at *time.Time, now time.Time, detector string) (time.Time, error) {
+	limit := policy.ExceptionTTLLimit(detector)
 	switch {
 	case days != 0 && at != nil:
 		return time.Time{}, invalidf("expires_in_days — не вместе с expires_at")
-	case days < 0 || days > int(policy.MaxExceptionTTL.Hours()/24):
-		return time.Time{}, invalidf("expires_in_days — от 1 до %d суток", int(policy.MaxExceptionTTL.Hours()/24))
+	case days < 0 || days > limitDays(detector):
+		return time.Time{}, invalidf("expires_in_days — от 1 до %d суток", limitDays(detector))
 	case days > 0:
 		return now.Add(time.Duration(days) * 24 * time.Hour), nil
 	case at == nil:
-		return now.Add(policy.DefaultExceptionTTL), nil
+		return now.Add(min(policy.DefaultExceptionTTL, limit)), nil
 	}
 	exp := at.UTC().Truncate(time.Second)
-	if !exp.After(now) || exp.Sub(now) > policy.MaxExceptionTTL {
-		return time.Time{}, invalidf("expires_at — в будущем, не дальше %d суток от сохранения", int(policy.MaxExceptionTTL.Hours()/24))
+	if !exp.After(now) || exp.Sub(now) > limit {
+		return time.Time{}, invalidf("expires_at — в будущем, не дальше %d суток от сохранения", limitDays(detector))
 	}
 	return exp, nil
 }
@@ -137,7 +142,7 @@ func stampExceptions(spec, prev *policy.Spec, by By, now time.Time, source strin
 		if !exp.IsZero() {
 			at = &exp
 		}
-		end, err := expiry(0, at, now)
+		end, err := expiry(0, at, now, e.Detector)
 		if err != nil {
 			return &InputError{Errs: []error{fmt.Errorf("exceptions[%d] (%s): %w", i, e.ID, err)}}
 		}
@@ -158,6 +163,7 @@ func cloneSpec(s *policy.Spec) *policy.Spec {
 	c := *s
 	c.Rules = slices.Clone(s.Rules)
 	c.Exceptions = slices.Clone(s.Exceptions)
+	c.Tools = s.Tools.Clone()
 	return &c
 }
 
@@ -227,11 +233,11 @@ func (s *Service) ExtendException(ctx context.Context, by By, slug string, base 
 		if i < 0 {
 			return ErrExceptionNotFound
 		}
-		exp, err := expiry(days, at, now)
+		e := &sp.Exceptions[i]
+		exp, err := expiry(days, at, now, e.Detector)
 		if err != nil {
 			return err
 		}
-		e := &sp.Exceptions[i]
 		e.ExpiresAt, e.CreatedAt, e.Author = exp, now, by.ref()
 		if reason != "" {
 			e.Reason = reason

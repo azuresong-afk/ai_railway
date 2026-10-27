@@ -119,6 +119,19 @@ describe("экран исключений политики", () => {
     await within(dlg).findByText(/Неверный пароль/);
   });
 
+  it("продление исключения для канарейки — не больше 7 суток (3Н49 ревью 3.r4)", async () => {
+    exceptions = [exc({ detector: "canary", pattern: undefined, fragment: "0123456789abcdef0123456789abcdef" })];
+    renderScreen(manage);
+    await openTab("Исключения");
+    fireEvent.click(await screen.findByRole("button", { name: "Продлить исключение exc-1" }));
+    const dlg = await screen.findByRole("dialog");
+    expect((within(dlg).getByLabelText("Срок, суток") as HTMLInputElement).value).toBe("7");
+    fireEvent.change(within(dlg).getByLabelText("Срок, суток"), { target: { value: "8" } });
+    fireEvent.change(within(dlg).getByLabelText("Текущий пароль"), { target: { value: "Correct-Horse-1" } });
+    expect(within(dlg).getByRole("button", { name: "Продлить исключение" })).toBeDisabled();
+    expect(within(dlg).getByText("Введите целое число от 1 до 7.")).toBeTruthy();
+  });
+
   it("удаление не просит пароль и шлёт base_version запросом", async () => {
     renderScreen(manage);
     await openTab("Исключения");
@@ -218,7 +231,8 @@ describe("загрузка YAML: различия до отправки (Н46, �
     return screen.findByRole("dialog");
   };
   const emptyDiff = { from: 2, to: 3, fields: [], rules_added: [], rules_removed: [], rules_changed: [], reordered: false, weakening: false,
-    weakening_reasons: [], exceptions_added: [], exceptions_removed: [], exceptions_changed: [] };
+    weakening_reasons: [], exceptions_added: [], exceptions_removed: [], exceptions_changed: [],
+    tools_fields: [], tool_rules_added: [], tool_rules_removed: [], tool_rules_changed: [] };
 
   it("любой YAML: различия и ослабление считает сервер без сохранения", async () => {
     handler = (c) =>

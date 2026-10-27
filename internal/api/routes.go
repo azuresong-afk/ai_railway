@@ -15,6 +15,8 @@ func Routes(d Deps) []Route {
 	var routes []Route
 	routes = append(routes, systemRoutes(d)...)
 	routes = append(routes, authRoutes(d)...)
+	routes = append(routes, oidcRoutes(d)...)
+	routes = append(routes, ldapRoutes(d)...)
 	routes = append(routes, mfaRoutes(d)...)
 	routes = append(routes, userRoutes(d)...)
 	routes = append(routes, gatewayRoutes(d)...)
@@ -36,8 +38,12 @@ func Routes(d Deps) []Route {
 	routes = append(routes, incidentSettingsRoutes(d)...)
 	routes = append(routes, budgetRoutes(d)...)
 	routes = append(routes, gatewayTLSRoutes(d)...)
+	routes = append(routes, promptBaselineRoutes(d)...)
+	routes = append(routes, userAccessRoutes(d)...)
 	routes = append(routes, dashboardRoutes(d)...)
 	routes = append(routes, reportRoutes(d)...)
+	routes = append(routes, agentRoutes(d)...)
+	routes = append(routes, approvalRoutes(d)...)
 	return routes
 }
 

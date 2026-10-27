@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/azuresong-afk/ai_railway/internal/apps"
+	"github.com/azuresong-afk/ai_railway/internal/audit"
 	"github.com/azuresong-afk/ai_railway/internal/gwregistry"
 )
 
@@ -121,5 +122,21 @@ func TestPGBudgetsAndUsage(t *testing.T) {
 	}
 	if acts["budget.set"] != 2 {
 		t.Errorf("budget.set: %d", acts["budget.set"])
+	}
+	// Срок хранения расхода (задача 4.5): месяцы старше 14 прошлых удаляются
+	// при синхронизации под ролью приложения.
+	if _, err := e.owner.Exec(ctx, `INSERT INTO budget_usage (org_id, gateway_id, started_at, app_slug, month, cost, priced_tokens,
+		unpriced_tokens, requests, unpriced_requests, updated_at) VALUES ($1, $2, $3, 'helpdesk', '2025-07', 1, 0, 0, 1, 0, $3)`,
+		audit.DefaultOrgID, gw1, s1); err != nil {
+		t.Fatal(err)
+	}
+	e.clock.t = e.clock.t.Add(2 * time.Hour)
+	if _, err := e.svc.SyncBudget(ctx, gw1, s2, rep(300_000_000, 1, month)); err != nil {
+		t.Fatal(err)
+	}
+	var old, kept int
+	if err := e.owner.QueryRow(ctx, "SELECT count(*) FILTER (WHERE month = '2025-07'), count(*) FILTER (WHERE month = '2026-09') FROM budget_usage").
+		Scan(&old, &kept); err != nil || old != 0 || kept == 0 {
+		t.Fatalf("срок хранения расхода: старых %d, сентябрь %d, %v", old, kept, err)
 	}
 }

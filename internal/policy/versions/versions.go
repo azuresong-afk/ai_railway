@@ -326,10 +326,18 @@ type Defaults struct {
 	// получает исключения текущей. Редактор правил в консоли не теряет
 	// исключения, которых не показывает.
 	KeepExceptions bool
+	// Tools — раздел tools новой политики, если он не передан (ADR-0023,
+	// «Совместимость»): из консоли — блокировать неодобренное и не
+	// разрешённое правилом; nil — версия без раздела (импорт YAML).
+	Tools func() *policy.ToolsSpec
+	// KeepTools — раздел tools не передан (nil): новая версия получает раздел
+	// текущей. Редактор правил в консоли не теряет политику вызовов.
+	KeepTools bool
 }
 
-// ConsoleDefaults — умолчания для политик из консоли и API (решение 1.19).
-var ConsoleDefaults = Defaults{NonText: policy.NonTextAllowInline}
+// ConsoleDefaults — умолчания для политик из консоли и API (решение 1.19;
+// раздел tools — ADR-0023).
+var ConsoleDefaults = Defaults{NonText: policy.NonTextAllowInline, Tools: policy.ConsoleTools, KeepTools: true}
 
 // ImportDefaults — умолчания для импорта YAML: смысл этапа 1.
 var ImportDefaults = Defaults{NonText: policy.NonTextAllowUnchecked}
@@ -395,6 +403,9 @@ func (s *Service) Create(ctx context.Context, by By, spec *policy.Spec, source, 
 	stamped := s.now().Truncate(time.Second)
 	if err := stampExceptions(spec, nil, by, stamped, source, false); err != nil {
 		return Doc{}, err
+	}
+	if spec.Tools == nil && d.Tools != nil {
+		spec.Tools = d.Tools()
 	}
 	y, err := s.prepare(spec, spec.ID, 1, d)
 	if err != nil {
@@ -481,6 +492,7 @@ func (s *Service) addVersion(ctx context.Context, by By, slug string, base int, 
 	if err := stampExceptions(pre, curSpec, by, stamped, source, d.KeepExceptions); err != nil {
 		return Doc{}, err
 	}
+	keepTools(pre, curSpec, d)
 	if _, err := s.prepare(pre, slug, base+1, d); err != nil {
 		return Doc{}, err
 	}
@@ -500,6 +512,7 @@ func (s *Service) addVersion(ctx context.Context, by By, slug string, base int, 
 		if err := stampExceptions(spec, prev, by, stamped, source, d.KeepExceptions); err != nil {
 			return Version{}, audit.Entry{}, err
 		}
+		keepTools(spec, prev, d)
 		y, err := s.prepare(spec, slug, n, d)
 		if err != nil {
 			return Version{}, audit.Entry{}, err
@@ -534,6 +547,14 @@ func (s *Service) addVersion(ctx context.Context, by By, slug string, base int, 
 	}
 	out.Policy, out.Version = p, v
 	return out, nil
+}
+
+// keepTools — раздел tools текущей версии cur, если он не передан и
+// d.KeepTools.
+func keepTools(spec, cur *policy.Spec, d Defaults) {
+	if spec.Tools == nil && d.KeepTools && cur != nil {
+		spec.Tools = cur.Tools.Clone()
+	}
 }
 
 // Import разбирает YAML (строгая схема этапа 1) и создаёт политику или,

@@ -1,6 +1,8 @@
 import type { Me } from "../api/client";
 import { EmptyState, TabBar } from "../ui/Layout";
 import { AuditTab } from "./AuditTab";
+import { IdPTab } from "./IdPTab";
+import { LDAPTab } from "./LDAPTab";
 import { PolicyTab } from "./PolicyTab";
 import { RetentionTab } from "./RetentionTab";
 import { RolesTab } from "./RolesTab";
@@ -14,6 +16,8 @@ export function AdminScreen({ me }: { me: Me }) {
     has("users.read") && { value: "users", title: "Пользователи", content: <UsersTab me={me} /> },
     has("roles.read") && { value: "roles", title: "Роли и разрешения", content: <RolesTab me={me} /> },
     has("auth_policy.read") && { value: "policy", title: "Вход и сессии", content: <PolicyTab me={me} /> },
+    has("auth_idp.read") && { value: "idp", title: "Вход через IdP", content: <IdPTab me={me} /> },
+    has("auth_idp.read") && { value: "ldap", title: "Вход через LDAP", content: <LDAPTab me={me} /> },
     has("api_tokens.read") && { value: "tokens", title: "Токены API", content: <TokensTab me={me} /> },
     has("events.read") && { value: "retention", title: "Время и хранение", content: <RetentionTab me={me} /> },
     has("audit.read") && { value: "audit", title: "Журнал аудита", content: <AuditTab me={me} /> },

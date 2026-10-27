@@ -163,3 +163,14 @@ func Write(w io.Writer, e Event) error {
 	_, err := io.WriteString(w, b.String())
 	return err
 }
+
+// WriteComment записывает комментарий «: text» — им держат поток открытым
+// (keep-alive); приложение его не получает как событие. Текст — одна
+// строка.
+func WriteComment(w io.Writer, text string) error {
+	if strings.ContainsAny(text, "\r\n") {
+		return errors.New("sse: перевод строки в комментарии")
+	}
+	_, err := io.WriteString(w, ": "+text+"\n\n")
+	return err
+}

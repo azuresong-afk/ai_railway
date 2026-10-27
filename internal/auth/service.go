@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/azuresong-afk/ai_railway/internal/audit"
+	"github.com/azuresong-afk/ai_railway/internal/auth/ldap"
+	"github.com/azuresong-afk/ai_railway/internal/auth/oidc"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/internal/store"
 )
@@ -36,6 +38,8 @@ const (
 	// reasonChanged — запись деактивирована или пароль сменён во время проверки.
 	reasonChanged  = "changed_during_login"
 	reasonBadInput = "bad_input"
+	// reasonExternal — вход паролем во внешнюю запись (IdP, ADR-0025).
+	reasonExternal = "external_user"
 )
 
 // Caller — аутентифицированная сессия консоли и её пользователь.
@@ -77,6 +81,14 @@ type Service struct {
 	roles RoleStore
 	// tokens — токены API (задача 2.10); nil — токены не принимаются.
 	tokens APITokenStore
+	// idp и oidc — вход через внешний IdP (задача 4.17, ADR-0025); nil —
+	// не подключён.
+	idp  IdPStore
+	oidc *oidc.Client
+	// ldapStore и ldap — вход через каталог LDAP (задача 4.16, ADR-0025);
+	// nil — не подключён.
+	ldapStore LDAPStore
+	ldap      *ldap.Client
 }
 
 // Option настраивает Service.
@@ -174,10 +186,31 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (LoginResult, error)
 			return LoginResult{}, err
 		}
 	}
+	// Логин без локальной записи или запись каталога — проверка в каталоге
+	// LDAP, если вход через него включён (ADR-0025, 2). Локальная запись с
+	// тем же логином каталогом не перекрывается: её проверяет только пароль
+	// консоли.
+	if valid && (!found || u.External()) {
+		st, secret, ok, err := s.activeLDAP(ctx)
+		if err != nil {
+			return LoginResult{}, err
+		}
+		if ok {
+			// Фиктивная проверка пароля, как у неизвестного логина: путь
+			// каталога не быстрее локального, и по времени ответа не
+			// отличить логин локальной записи (аварийного администратора).
+			if n := len(in.Password); n >= aisecCrypto.MinPasswordLen && n <= aisecCrypto.MaxPasswordLen {
+				if _, _, err := s.pw.Verify(ctx, []byte(in.Password), s.dummy); err != nil {
+					return LoginResult{}, fmt.Errorf("проверка пароля: %w", err)
+				}
+			}
+			return s.ldapLogin(ctx, in, login, st, secret, pol, now)
+		}
+	}
 	// Пароль проверяется всегда — с хешем записи или с фиктивным, — чтобы
 	// время ответа не зависело от того, есть ли запись и в каком она состоянии.
 	hash := s.dummy
-	if found && u.Status == StatusActive {
+	if found && u.Status == StatusActive && !u.External() {
 		hash = u.PasswordHash
 	}
 	pwOK, needsRehash := false, false
@@ -191,6 +224,10 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (LoginResult, error)
 	case reason != "":
 	case !found:
 		reason = reasonUnknownLogin
+	case u.External():
+		// У внешней записи нет пароля консоли: вход — только через IdP или
+		// каталог (здесь — когда вход через каталог отключён).
+		reason = reasonExternal
 	case u.Status != StatusActive:
 		reason = reasonDeactivated
 	case u.Locked(now):
@@ -351,9 +388,22 @@ func (s *Service) openSession(ctx context.Context, u User, state SessionState, i
 	return LoginResult{Caller: c, Token: token, CSRF: csrf}, nil
 }
 
+// passiveKey — ключ контекста проверки сессии без отметки активности.
+type passiveKey struct{}
+
+// WithoutActivity — контекст повторной проверки сессии, которая не
+// считается действием пользователя: тики открытого потока обновления
+// дашборда (перенесено из этапа 3, задача 4.5). Срок и бездействие
+// проверяются как обычно, активность не отмечается — открытая вкладка не
+// продлевает сессию, по простою поток закрывается вместе с ней.
+func WithoutActivity(ctx context.Context) context.Context {
+	return context.WithValue(ctx, passiveKey{}, true)
+}
+
 // Authenticate находит сессию по токену из cookie (УПД.4): завершает
-// истёкшую по абсолютному сроку или бездействию, отмечает активность.
-// Пароль, истёкший во время сессии, переводит её в SessionPasswordChange.
+// истёкшую по абсолютному сроку или бездействию, отмечает активность (кроме
+// контекста WithoutActivity). Пароль, истёкший во время сессии, переводит
+// её в SessionPasswordChange.
 func (s *Service) Authenticate(ctx context.Context, token string, ip netip.Addr) (Caller, error) {
 	h, err := hashToken(s.hasher, token)
 	if err != nil {
@@ -380,7 +430,7 @@ func (s *Service) Authenticate(ctx context.Context, token string, ip netip.Addr)
 	if now.Sub(sess.LastSeenAt) >= time.Duration(pol.SessionIdleMinutes)*time.Minute {
 		return Caller{}, s.expire(ctx, u, sess, RevokeIdle, ip, now)
 	}
-	if now.Sub(sess.LastSeenAt) >= touchInterval {
+	if passive, _ := ctx.Value(passiveKey{}).(bool); !passive && now.Sub(sess.LastSeenAt) >= touchInterval {
 		if err := s.store.TouchSession(ctx, sess.ID, now); err != nil {
 			return Caller{}, err
 		}
@@ -442,6 +492,9 @@ func (s *Service) Logout(ctx context.Context, c Caller) error {
 // заблокирована, пароль не меняется и текущий не проверяется (ErrLocked):
 // иначе держатель чужой сессии перебирал бы пароль и во время блокировки.
 func (s *Service) ChangePassword(ctx context.Context, c Caller, current, next string) error {
+	if c.User.External() {
+		return ErrExternalUser
+	}
 	now := s.clock()
 	pol, err := s.store.Policy(ctx, s.orgID)
 	if err != nil {
@@ -561,6 +614,10 @@ func (s *Service) Reauthenticate(ctx context.Context, c Caller, password, code, 
 // счётчиком (на пороге — блокировка и завершение сессий), ответ —
 // ErrReauthentication.
 func (s *Service) reauthenticate(ctx context.Context, c Caller, password, code, action string) error {
+	// У внешней записи нет пароля и TOTP консоли (ADR-0025, 3.10).
+	if c.User.External() {
+		return ErrExternalUser
+	}
 	if (password == "") == (code == "") {
 		return &InputError{"password", "Введите текущий пароль или код из приложения-аутентификатора."}
 	}

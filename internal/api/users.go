@@ -19,6 +19,8 @@ func userRoutes(d Deps) []Route {
 		{Method: http.MethodGet, Path: "/api/v1/users", Permission: auth.PermUsersRead, Handler: needAuth(d, d.listUsers)},
 		{Method: http.MethodPost, Path: "/api/v1/users", Permission: auth.PermUsersManage, SecretOnce: true, MaxBody: authMaxBody, Handler: needAuth(d, d.createUser)},
 		{Method: http.MethodGet, Path: "/api/v1/users/{id}", Permission: auth.PermUsersRead, Handler: needAuth(d, d.getUser)},
+		{Method: http.MethodPut, Path: "/api/v1/users/{id}/email", Permission: auth.PermUsersManage, MaxBody: authMaxBody, Handler: needAuth(d, d.setUserEmail)},
+		{Method: http.MethodPut, Path: "/api/v1/me/email", Permission: auth.PermSelf, MaxBody: authMaxBody, Handler: needAuth(d, d.setOwnEmail)},
 		{Method: http.MethodPost, Path: "/api/v1/users/{id}/deactivate", Permission: auth.PermUsersManage, Handler: needAuth(d, d.setStatus(auth.StatusDeactivated))},
 		{Method: http.MethodPost, Path: "/api/v1/users/{id}/activate", Permission: auth.PermUsersManage, Handler: needAuth(d, d.setStatus(auth.StatusActive))},
 		{Method: http.MethodPost, Path: "/api/v1/users/{id}/password-reset", Permission: auth.PermUsersManage, SecretOnce: true, Handler: needAuth(d, d.resetPassword)},
@@ -29,9 +31,11 @@ func userRoutes(d Deps) []Route {
 
 // UserView — учётная запись в ответах API. Хеш пароля не выдаётся.
 type UserView struct {
-	ID                 string     `json:"id"`
-	Login              string     `json:"login"`
-	DisplayName        string     `json:"display_name"`
+	ID          string `json:"id"`
+	Login       string `json:"login"`
+	DisplayName string `json:"display_name"`
+	// Email — адрес для рассылки отчётов; пустая строка — адреса нет.
+	Email              string     `json:"email"`
 	Role               string     `json:"role"`
 	Status             string     `json:"status"`
 	Locked             bool       `json:"locked"`
@@ -53,7 +57,7 @@ func optTime(t time.Time) *time.Time {
 
 func userView(u auth.User, now time.Time) UserView {
 	v := UserView{
-		ID: u.ID, Login: u.Login, DisplayName: u.DisplayName, Role: string(u.Role), Status: string(u.Status),
+		ID: u.ID, Login: u.Login, DisplayName: u.DisplayName, Email: u.Email, Role: string(u.Role), Status: string(u.Status),
 		Locked: u.Locked(now), MustChangePassword: u.MustChangePassword,
 		PasswordChangedAt: u.PasswordChangedAt.UTC(), CreatedAt: u.CreatedAt.UTC(),
 		LastLoginAt: optTime(u.LastLoginAt), DeactivatedAt: optTime(u.DeactivatedAt),
@@ -141,6 +145,71 @@ func (d Deps) getUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u, err := d.Auth.User(r.Context(), id)
+	if err != nil {
+		WriteProblem(w, authProblem(d.Logger, err))
+		return
+	}
+	WriteJSON(w, http.StatusOK, userView(u, time.Now()))
+}
+
+// emailRequest — тело PUT .../email: пустая строка убирает адрес.
+type emailRequest struct {
+	Email *string `json:"email"`
+}
+
+func (d Deps) setUserEmail(w http.ResponseWriter, r *http.Request) {
+	c, ok := callerFrom(r)
+	if !ok {
+		WriteProblem(w, errForbidden())
+		return
+	}
+	id, ok := pathUserID(w, r)
+	if !ok {
+		return
+	}
+	var req emailRequest
+	if p := DecodeJSON(w, r, &req, authMaxBody); p != nil {
+		WriteProblem(w, p)
+		return
+	}
+	if req.Email == nil {
+		WriteProblem(w, Invalid("Укажите поле email; пустая строка убирает адрес."))
+		return
+	}
+	if err := d.Auth.SetEmail(r.Context(), c, id, *req.Email); err != nil {
+		WriteProblem(w, authProblem(d.Logger, err))
+		return
+	}
+	u, err := d.Auth.User(r.Context(), id)
+	if err != nil {
+		WriteProblem(w, authProblem(d.Logger, err))
+		return
+	}
+	WriteJSON(w, http.StatusOK, userView(u, time.Now()))
+}
+
+// setOwnEmail — e-mail в своём профиле. Чужую запись этот маршрут не меняет:
+// идентификатор берётся из сессии, а не из запроса.
+func (d Deps) setOwnEmail(w http.ResponseWriter, r *http.Request) {
+	c, ok := callerFrom(r)
+	if !ok || c.Token != nil {
+		WriteProblem(w, errForbidden())
+		return
+	}
+	var req emailRequest
+	if p := DecodeJSON(w, r, &req, authMaxBody); p != nil {
+		WriteProblem(w, p)
+		return
+	}
+	if req.Email == nil {
+		WriteProblem(w, Invalid("Укажите поле email; пустая строка убирает адрес."))
+		return
+	}
+	if err := d.Auth.SetOwnEmail(r.Context(), c, *req.Email); err != nil {
+		WriteProblem(w, authProblem(d.Logger, err))
+		return
+	}
+	u, err := d.Auth.User(r.Context(), c.User.ID)
 	if err != nil {
 		WriteProblem(w, authProblem(d.Logger, err))
 		return

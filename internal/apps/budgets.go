@@ -419,6 +419,35 @@ func (s *Service) BudgetSection(ctx context.Context) (BudgetSection, error) {
 // отчёта о расходе.
 const monthSkew = 24 * time.Hour
 
+// UsageRetentionMonths — сколько прошлых месяцев хранятся счётчики расхода
+// (budget_usage): строка на месяц, приложение и запуск процесса шлюза
+// копится с каждым перезапуском. Отчёт за наибольший период (366 суток)
+// захватывает не больше 13 календарных месяцев, хранится на месяц больше
+// (перенесено из этапа 3, задача 4.5).
+const UsageRetentionMonths = 14
+
+// usagePruneEvery — период очистки budget_usage.
+const usagePruneEvery = time.Hour
+
+// pruneUsage раз в usagePruneEvery удаляет счётчики месяцев старше
+// UsageRetentionMonths прошлых в поясе установки.
+func (s *Service) pruneUsage(ctx context.Context, now time.Time, loc *time.Location) error {
+	last := s.usagePrunedAt.Load()
+	if last != 0 && now.Unix()-last < int64(usagePruneEvery/time.Second) {
+		return nil
+	}
+	if !s.usagePrunedAt.CompareAndSwap(last, now.Unix()) {
+		return nil // очистку уже начал параллельный heartbeat
+	}
+	t := now.In(loc)
+	before := time.Date(t.Year(), t.Month()-UsageRetentionMonths, 1, 0, 0, 0, 0, loc).Format("2006-01")
+	if _, err := s.store.PruneUsage(ctx, s.orgID, before); err != nil {
+		s.usagePrunedAt.Store(last) // повтор со следующим heartbeat
+		return err
+	}
+	return nil
+}
+
 // SyncBudget сохраняет счётчики процесса шлюза из heartbeat и возвращает
 // расход остальных процессов за текущий месяц шлюза по приложениям с
 // жёстким бюджетом (gwregistry.BudgetSync). Отчёт уже проверен
@@ -443,6 +472,9 @@ func (s *Service) SyncBudget(ctx context.Context, gatewayID string, startedAt ti
 			month, bundle.Month(now, loc))
 	}
 	if err := s.store.SaveUsage(ctx, s.orgID, gatewayID, startedAt.UTC(), rep.Months, s.now()); err != nil {
+		return gwregistry.BudgetState{}, err
+	}
+	if err := s.pruneUsage(ctx, now, loc); err != nil {
 		return gwregistry.BudgetState{}, err
 	}
 	others, err := s.store.HardUsageOthers(ctx, s.orgID, month, gatewayID, startedAt.UTC())

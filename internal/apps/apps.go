@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"sync/atomic"
 	"time"
 
 	"github.com/azuresong-afk/ai_railway/internal/audit"
@@ -77,10 +78,12 @@ var (
 	ErrProviderInUse    = errors.New("провайдер используется приложениями")
 	ErrArchived         = errors.New("приложение в архиве")
 	ErrKeyInactive      = errors.New("ключ отозван или истёк")
-	ErrTooManyKeys      = errors.New("слишком много действующих ключей")
-	ErrTooMany          = errors.New("достигнут предел числа объектов")
-	ErrNoDataKey        = errors.New("ключ данных не подключён: учётные данные провайдеров недоступны")
-	ErrNoCredential     = errors.New("учётные данные провайдера не заданы")
+	// ErrAgentNotFound — агента для привязки ключа нет в этом приложении.
+	ErrAgentNotFound = errors.New("агент не найден в приложении")
+	ErrTooManyKeys   = errors.New("слишком много действующих ключей")
+	ErrTooMany       = errors.New("достигнут предел числа объектов")
+	ErrNoDataKey     = errors.New("ключ данных не подключён: учётные данные провайдеров недоступны")
+	ErrNoCredential  = errors.New("учётные данные провайдера не заданы")
 	// ErrPolicyRequired — изменение ослабляет защиту и требует права
 	// applications.policy (В15 ревью 2.r3b).
 	ErrPolicyRequired = errors.New("нужно право applications.policy")
@@ -226,6 +229,9 @@ type Key struct {
 	RotatedFrom  string
 	RevokedAt    time.Time
 	RevokedBy    string
+	// AgentID — агент, к которому привязан ключ (задача 4.8, ADR-0023):
+	// задаётся при выпуске и не меняется, ротация его сохраняет.
+	AgentID string
 }
 
 // Состояния ключа.
@@ -334,6 +340,9 @@ type Store interface {
 	HardUsageOthers(ctx context.Context, orgID, month, gatewayID string, startedAt time.Time) (map[string]int64, error)
 	// Usage — суммарный расход за month по slug приложений.
 	Usage(ctx context.Context, orgID, month string) (map[string]Usage, error)
+	// PruneUsage удаляет счётчики месяцев раньше before (ГГГГ-ММ) и
+	// возвращает число удалённых строк.
+	PruneUsage(ctx context.Context, orgID, before string) (int64, error)
 
 	// Сертификат заказчика для адреса шлюза (задача 3.27, миграция
 	// 0039_gateway_tls): один на организацию. SetGatewayTLS блокирует
@@ -343,6 +352,29 @@ type Store interface {
 	GatewayTLS(ctx context.Context, orgID string) (GatewayTLS, error)
 	// DeleteGatewayTLS — ErrNoGatewayTLS, если сертификата нет.
 	DeleteGatewayTLS(ctx context.Context, orgID string, fn func(GatewayTLS) (audit.Entry, error)) (GatewayTLS, error)
+
+	// Эталон системного промпта (задача 4.14, миграция
+	// 0052_prompt_baselines): один на приложение. SetPromptBaseline
+	// блокирует приложение и сохраняет эталон, который вернула fn (prev —
+	// прежний, nil — не было).
+	SetPromptBaseline(ctx context.Context, orgID, appID string, fn func(a Application, prev *PromptBaseline) (PromptBaseline, audit.Entry, error)) (PromptBaseline, error)
+	// DeletePromptBaseline — ErrNoPromptBaseline, если эталона нет.
+	DeletePromptBaseline(ctx context.Context, orgID, appID string, fn func(a Application, b PromptBaseline) (audit.Entry, error)) (PromptBaseline, error)
+	// PromptBaseline — ErrNotFound (нет приложения), ErrNoPromptBaseline.
+	PromptBaseline(ctx context.Context, orgID, appID string) (PromptBaseline, error)
+	// PromptBaselines — эталоны организации по ID приложения.
+	PromptBaselines(ctx context.Context, orgID string) ([]PromptBaseline, error)
+
+	// Пользователь приложения по JWT и доступ к моделям по группам (задача
+	// 4.21, миграция 0059_app_user_access): одна запись на приложение.
+	// SetUserAccess блокирует приложение и сохраняет запись, которую
+	// вернула fn (prev — прежняя или DefaultUserAccess); errUnchanged из fn —
+	// без записи и аудита.
+	SetUserAccess(ctx context.Context, orgID, appID string, fn func(a Application, prev UserAccess) (UserAccess, audit.Entry, error)) (UserAccess, error)
+	// UserAccess — ErrNotFound (нет приложения); нет записи — DefaultUserAccess.
+	UserAccess(ctx context.Context, orgID, appID string) (UserAccess, error)
+	// UserAccessList — записи организации по ID приложения.
+	UserAccessList(ctx context.Context, orgID string) ([]UserAccess, error)
 }
 
 // Options — зависимости Service.
@@ -386,6 +418,9 @@ type Service struct {
 	// timezone — часовой пояс установки для месяца расхода (задача 3.18);
 	// nil — UTC.
 	timezone func(ctx context.Context) (string, error)
+	// usagePrunedAt — время последней очистки budget_usage по сроку
+	// хранения (unix, с); очистка — не чаще раза в час.
+	usagePrunedAt atomic.Int64
 }
 
 // SetBundleCheck задаёт проверку приложения сборкой пакета (ошибка — с

@@ -3,6 +3,7 @@ package reports
 import (
 	"errors"
 	"fmt"
+	"github.com/azuresong-afk/ai_railway/internal/events"
 	"regexp"
 	"strconv"
 	"strings"
@@ -225,7 +226,9 @@ func ValidSlug(s string) bool { return slugRe.MatchString(s) }
 type Params struct {
 	Kind   string
 	Format string
-	Period Period
+	// Delimiter — разделитель CSV; для других форматов не используется.
+	Delimiter rune
+	Period    Period
 	// App — slug приложения; пусто — все приложения.
 	App string
 }
@@ -251,7 +254,7 @@ func ParseParams(kind string, q map[string][]string, loc *time.Location, now tim
 	}
 	for k := range q {
 		switch k {
-		case "format", "from", "to", "app":
+		case "format", "delimiter", "from", "to", "app":
 		default:
 			return Params{}, fmt.Errorf("отчёты: неизвестный параметр %q", truncate(k, 32))
 		}
@@ -267,6 +270,17 @@ func ParseParams(kind string, q map[string][]string, loc *time.Location, now tim
 	}
 	if !ValidFormat(p.Format) {
 		return p, errors.New("отчёты: формат — html, csv или xlsx")
+	}
+	ds, err := get("delimiter")
+	if err != nil {
+		return p, err
+	}
+	var okd bool
+	if p.Delimiter, okd = events.ParseDelimiter(ds); !okd {
+		return p, errors.New("отчёты: разделитель — semicolon или comma")
+	}
+	if ds != "" && p.Format != FormatCSV {
+		return p, errors.New("отчёты: разделитель задаётся только для csv")
 	}
 	from, err := get("from")
 	if err != nil {
@@ -287,6 +301,12 @@ func ParseParams(kind string, q map[string][]string, loc *time.Location, now tim
 	if p.App != "" && p.Kind != KindSummary {
 		return p, errors.New("отчёты: приложение задаётся только для сводного отчёта")
 	}
+	// Без обеих дат — последние 30 суток по сегодняшний день (3Н46 ревью
+	// 3.r4: так обещает консоль); одна дата без другой — ошибка.
+	if from == "" && to == "" {
+		today := now.In(loc)
+		from, to = today.AddDate(0, 0, -(DefaultPeriodDays-1)).Format(dateLayout), today.Format(dateLayout)
+	}
 	if from == "" || to == "" {
 		return p, fmt.Errorf("%w: нужны from и to", ErrPeriod)
 	}
@@ -301,6 +321,9 @@ func truncate(s string, n int) string {
 	r := []rune(strings.ToValidUTF8(s, "?"))
 	return string(r[:n])
 }
+
+// DefaultPeriodDays — период отчёта без дат: последние 30 суток.
+const DefaultPeriodDays = 30
 
 // ErrTooLarge — отчёт не помещается в формат.
 var ErrTooLarge = errors.New("отчёты: отчёт слишком велик для формата")

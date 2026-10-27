@@ -65,6 +65,8 @@ func (standard) SealTo(publicKey, info, plaintext []byte) ([]byte, error) {
 	return hpkeSealTo(publicKey, info, plaintext)
 }
 
+func (standard) JWT() (JWTVerifier, error) { return standardJWT{}, nil }
+
 type sha256Hasher struct{}
 
 func (sha256Hasher) Name() string   { return "SHA-256" }

@@ -10,7 +10,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/azuresong-afk/ai_railway/internal/agents"
 	"github.com/azuresong-afk/ai_railway/internal/alerting"
+	"github.com/azuresong-afk/ai_railway/internal/approvals"
 	"github.com/azuresong-afk/ai_railway/internal/apps"
 	"github.com/azuresong-afk/ai_railway/internal/auth"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
@@ -60,6 +62,12 @@ type Options struct {
 	// Notify — каналы уведомлений (задача 3.13 этапа 3); nil — их
 	// эндпоинты отвечают 503.
 	Notify *notify.Service
+	// Agents — агенты, MCP-серверы и инструменты (задача 4.8); nil — их
+	// эндпоинты отвечают 503.
+	Agents *agents.Service
+	// Approvals — очередь подтверждений вызовов (задача 4.10); nil — её
+	// эндпоинты отвечают 503.
+	Approvals *approvals.Service
 	// Incidents — инциденты (задача 3.16 этапа 3); nil — их эндпоинты
 	// отвечают 503.
 	Incidents *incidents.Service
@@ -123,6 +131,10 @@ type Deps struct {
 	Alerts *alerting.Service
 	// Notify — nil, если каналы уведомлений не подключены: их эндпоинты отвечают 503.
 	Notify *notify.Service
+	// Agents — nil, если реестр агентов не подключён: его эндпоинты отвечают 503.
+	Agents *agents.Service
+	// Approvals — nil, если очередь подтверждений не подключена: её эндпоинты отвечают 503.
+	Approvals *approvals.Service
 	// Incidents — nil, если инциденты не подключены: их эндпоинты отвечают 503.
 	Incidents *incidents.Service
 	// Dashboards — nil, если агрегаты дашбордов не подключены: их эндпоинты отвечают 503.
@@ -177,7 +189,8 @@ func New(o Options) (http.Handler, *Router, error) {
 	rt.mux.HandleFunc("/", rt.notFound)
 	deps := Deps{Logger: o.Logger, Version: o.Version, Ready: o.Ready, Auth: o.Auth, Gateways: o.Gateways, Integrity: o.Integrity,
 		Status: o.Status, Events: o.Events, Audit: o.Audit, Apps: o.Apps, Policies: o.Policies,
-		AuditLog: o.AuditLog, AuditVerifier: o.AuditVerifier, Alerts: o.Alerts, Notify: o.Notify, Incidents: o.Incidents,
+		AuditLog: o.AuditLog, AuditVerifier: o.AuditVerifier, Alerts: o.Alerts, Notify: o.Notify, Agents: o.Agents, Approvals: o.Approvals,
+		Incidents:  o.Incidents,
 		Dashboards: o.Dashboards, Reports: o.Reports, DashCache: newDashCache(), DashStreams: NewExportGate(dashStreamsPerSubject, dashStreamsTotal),
 		Reauthorize: o.Authorizer.Authorize, Stopping: o.Stopping,
 		Exports: NewExportGate(MaxExportsPerSubject, MaxExportsTotal), AuditReads: NewExportGate(MaxAuditReadsPerSubject, MaxAuditReadsTotal)}

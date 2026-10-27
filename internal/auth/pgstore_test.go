@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
@@ -18,6 +19,8 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/audit"
 	"github.com/azuresong-afk/ai_railway/internal/auth"
 	"github.com/azuresong-afk/ai_railway/internal/auth/authtest"
+	"github.com/azuresong-afk/ai_railway/internal/auth/ldap"
+	"github.com/azuresong-afk/ai_railway/internal/auth/oidc"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/internal/keyring"
 	"github.com/azuresong-afk/ai_railway/internal/keyring/keyringtest"
@@ -40,6 +43,15 @@ type pgEnv struct {
 	mfa   *mfaKeys
 	// keyID — ID ключа данных установки (data_keys).
 	keyID string
+	// oidc — клиент IdP сервиса (вход через IdP, ADR-0025): loopback
+	// разрешён для синтетического IdP на 127.0.0.1.
+	oidc *oidc.Client
+	// ldap — клиент каталога сервиса (вход через LDAP, ADR-0025, 2):
+	// loopback разрешён для синтетического каталога на 127.0.0.1.
+	ldap *ldap.Client
+	// dir и box — каталог ключей установки и ключ данных сервиса (ротация).
+	dir string
+	box *keyring.Box
 }
 
 func pgCtx(t *testing.T) context.Context {
@@ -156,7 +168,7 @@ func setupPG(t *testing.T) *pgEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e.keyID = keyID
+	e.keyID, e.dir, e.box = keyID, dir, box
 	roles, err := auth.NewPGRoles(e.app, e.log)
 	if err != nil {
 		t.Fatal(err)
@@ -165,8 +177,17 @@ func setupPG(t *testing.T) *pgEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if e.oidc, err = oidc.New(p); err != nil {
+		t.Fatal(err)
+	}
+	e.oidc.AllowNetworks([]netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")})
+	if e.ldap, err = ldap.New(p); err != nil {
+		t.Fatal(err)
+	}
+	e.ldap.AllowNetworks([]netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")})
 	if e.svc, err = auth.NewService(ctx, e.store, e.log, p, auth.WithClock(e.clock.now), auth.WithPasswordHasher(&authtest.Hasher{}),
-		auth.WithSecretBox(box), auth.WithRoleStore(roles), auth.WithAPITokenStore(tokens)); err != nil {
+		auth.WithSecretBox(box), auth.WithRoleStore(roles), auth.WithAPITokenStore(tokens), auth.WithOIDC(e.store, e.oidc),
+		auth.WithLDAP(e.store, e.ldap)); err != nil {
 		t.Fatal(err)
 	}
 	e.mfa = newMFAKeys(e.svc, e.store, e.clock)
@@ -563,5 +584,55 @@ func TestPGLastAdminLockoutCapped(t *testing.T) {
 	}
 	if err := e.owner.QueryRow(ctx, "SELECT locked_until FROM users WHERE id = $1 AND locked_at IS NOT NULL", userID).Scan(&until); err != nil || until != nil {
 		t.Fatalf("бессрочная блокировка пользователя: %v %v", until, err)
+	}
+}
+
+// Задача 4.6: e-mail в PostgreSQL — значение сохраняется и убирается, запись
+// аудита в той же транзакции без самого адреса, неизвестная запись — ErrNotFound.
+func TestPGEmail(t *testing.T) {
+	e := setupPG(t)
+	ctx := pgCtx(t)
+	e.addUser(t, adminID, "admin", auth.RoleSecurityAdmin)
+	res, err := e.login(t, "admin", phrase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin := e.mfa.complete(t, res)
+	u, _, err := e.svc.CreateUser(ctx, admin, auth.NewUser{Login: "ivanov", DisplayName: "Иванов", Role: auth.RoleAnalyst})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.Email != "" {
+		t.Fatalf("новая запись с адресом: %q", u.Email)
+	}
+	if err := e.svc.SetEmail(ctx, admin, u.ID, "ivanov@example.ru"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := e.svc.User(ctx, u.ID)
+	if err != nil || got.Email != "ivanov@example.ru" {
+		t.Fatalf("после задания: %+v %v", got, err)
+	}
+	list, err := e.svc.Users(ctx, nil, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, x := range list {
+		found = found || (x.ID == u.ID && x.Email == "ivanov@example.ru")
+	}
+	if !found {
+		t.Fatal("адрес не виден в списке")
+	}
+	if err := e.svc.SetEmail(ctx, admin, u.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ = e.svc.User(ctx, u.ID); got.Email != "" { //nolint:gosec // тест: ошибка чтения проверяется по полю адреса
+		t.Fatalf("адрес не убран: %q", got.Email)
+	}
+	if err := e.svc.SetEmail(ctx, admin, "01900000-0000-7000-8000-0000000000ff", "a@example.ru"); !errors.Is(err, auth.ErrNotFound) {
+		t.Fatalf("несуществующая запись: %v", err)
+	}
+	if err := e.store.SetEmail(ctx, audit.DefaultOrgID, u.ID, strings.Repeat("a", 255), audit.Entry{}); err == nil {
+		t.Fatal("адрес длиннее 254 принят базой")
 	}
 }

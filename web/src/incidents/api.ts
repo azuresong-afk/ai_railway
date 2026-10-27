@@ -40,4 +40,6 @@ export const incidentsApi = {
   categories: (signal?: AbortSignal) => request<S["IncidentCategoryList"]>("GET", "/api/v1/incident-categories", undefined, signal),
   setInstruction: (category: IncidentCategoryID, body: string, version: number) =>
     request<S["IncidentInstruction"]>("PUT", `/api/v1/incident-categories/${id(category)}`, { body, version }),
+  settings: (signal?: AbortSignal) => request<S["IncidentSettings"]>("GET", "/api/v1/incident-settings", undefined, signal),
+  setSettings: (b: S["IncidentSettingsUpdate"]) => request<S["IncidentSettings"]>("PUT", "/api/v1/incident-settings", b),
 };

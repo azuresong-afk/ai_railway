@@ -196,3 +196,58 @@ func TestResponseDeadlines(t *testing.T) {
 		t.Fatalf("простой потока: %v за %s", err, time.Since(start))
 	}
 }
+
+// TestStreamHoldPausesIdle: пока шлюз держит ответ (ожидание подтверждения
+// вызова, задача 4.10), срок простоя потока не идёт; после resume — снова
+// действует.
+func TestStreamHoldPausesIdle(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, `data: {"choices":[{"index":0,"delta":{"content":"a"}}]}`+"\n\n") //nolint:errcheck,gosec // тестовый провайдер
+		w.(http.Flusher).Flush()
+		select {
+		case <-release:
+		case <-r.Context().Done():
+			return
+		}
+		io.WriteString(w, `data: {"choices":[{"index":0,"delta":{"content":"b"}}]}`+"\n\n") //nolint:errcheck,gosec // тестовый провайдер
+		w.(http.Flusher).Flush()
+		select {
+		case <-r.Context().Done():
+		case <-time.After(5 * time.Second):
+		}
+	}))
+	defer srv.Close()
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := NewOpenAI(OpenAIConfig{BaseConfig: BaseConfig{ID: "p", Transport: &http.Transport{Proxy: nil}, StreamIdleTimeout: 200 * time.Millisecond}, BaseURL: u})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, _, err := p.Stream(context.Background(), &chat.Request{Model: "m"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close() //nolint:errcheck // тест
+	if _, err := st.Next(); err != nil {
+		t.Fatal(err)
+	}
+	h, ok := st.(Holder)
+	if !ok {
+		t.Fatal("поток без Hold")
+	}
+	resume := h.Hold()
+	time.Sleep(600 * time.Millisecond) // втрое дольше срока простоя
+	resume()
+	close(release)
+	if c, err := st.Next(); err != nil || c.Choices[0].Delta.Content == nil || *c.Choices[0].Delta.Content != "b" {
+		t.Fatalf("после удержания: %+v %v", c, err)
+	}
+	start := time.Now()
+	if _, err := st.Next(); !errors.Is(err, ErrTimeout) || time.Since(start) > 2*time.Second {
+		t.Fatalf("простой после resume: %v за %s", err, time.Since(start))
+	}
+}

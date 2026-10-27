@@ -181,6 +181,20 @@ func (m *Memory) SaveUsage(_ context.Context, orgID, gatewayID string, startedAt
 	return nil
 }
 
+// PruneUsage — см. Store.
+func (m *Memory) PruneUsage(_ context.Context, orgID, before string) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var n int64
+	for k := range m.usage {
+		if k.org == orgID && k.month < before {
+			delete(m.usage, k)
+			n++
+		}
+	}
+	return n, nil
+}
+
 // HardUsageOthers — см. Store.
 func (m *Memory) HardUsageOthers(_ context.Context, orgID, month, gatewayID string, startedAt time.Time) (map[string]int64, error) {
 	m.mu.Lock()

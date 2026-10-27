@@ -71,7 +71,7 @@ components:
     attack_surface: true
     security_function: true
     provided_by: The Go Authors (Google)
-    justification: Argon2id нет в стандартной библиотеке Go, а собственные реализации алгоритмов запрещены. Библиотеку называет ТЗ 11.2; сопровождает команда Go, выпуски ежемесячно. В vendor попадают только argon2 и blake2b; x/net нужен лишь для графа модулей и в сборку не входит (x/term подключён отдельно, см. ниже). Граф x/crypto поднимает версии x/sync и x/text, которые вендорятся для pgx.
+    justification: Argon2id нет в стандартной библиотеке Go, а собственные реализации алгоритмов запрещены. Библиотеку называет ТЗ 11.2; сопровождает команда Go, выпуски ежемесячно. В vendor попадают argon2, blake2b и md4; md4 импортирует go-ldap/ldap/v3 для bind NTLM, который в продукте запрещён (forbidigo, ADR-0025, 2.2), — код продукта его не вызывает. x/net нужен лишь для графа модулей и в сборку не входит (x/term подключён отдельно, см. ниже). Граф x/crypto поднимает версии x/sync и x/text, которые вендорятся для pgx.
     decision: ТЗ 11.2; ADR-0006; согласие владельца в потоке A2 этапа 2
     decided: 2026-10-20
     license_files:
@@ -978,6 +978,70 @@ components:
     license_files:
       LICENSE: 911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad
 
+  - name: github.com/go-ldap/ldap/v3
+    version: v3.4.15
+    type: go-module
+    scope: product
+    purpose: Протокол LDAP для входа в консоль по учётной записи каталога (ТЗ 5.14, ИАФ.7; ADR-0025, раздел 2; задача 4.16) — simple bind, поиск, StartTLS, разбор DN и экранирование фильтров. Импорт — только в internal/auth/ldap (depguard).
+    license: MIT
+    repository: https://github.com/go-ldap/ldap
+    attack_surface: true
+    security_function: true
+    provided_by: go-ldap Authors (github.com/go-ldap)
+    justification: В стандартной библиотеке Go нет LDAP и нет кодека BER (encoding/asn1 — только DER, без потокового чтения сообщений); собственный разборщик BER недоверенных ответов каталога — больший риск, чем проверенная библиотека с fuzz-тестом разбора пакетов. Выпуски v3.4.x регулярно (v3.4.15 — 07.10.2026), используется в Grafana и Gitea. Соединение устанавливает internal/auth/ldap сам (проверка адреса, LDAPS через internal/crypto; для StartTLS рукопожатие выполняет библиотека (crypto/tls) с *tls.Config из криптопрофиля internal/crypto — в профиле gost это нужно будет заменить; предел ответа 1 МиБ); NTLM, DIGEST-MD5, SASL/GSSAPI, анонимный bind, собственные функции соединения библиотеки и её отладочный журнал запрещены forbidigo. Подпакет gssapi и его зависимости (jcmturner/gokrb5, alexbrainman/sspi) в vendor и сборку не попадают; testify — только тесты библиотеки.
+    decision: ADR-0025, раздел 2, п. 7; согласие владельца 27.10.2026 (поток 4-B3)
+    decided: 2026-10-27
+    license_files:
+      LICENSE: 35f64977248ea3fd59074171ad76e883fe4a576a7b1c58bba85c8e5c880bb269
+
+  - name: github.com/go-asn1-ber/asn1-ber
+    version: v1.5.8
+    type: go-module
+    scope: product
+    purpose: Кодек ASN.1 BER для go-ldap (транзитивная); internal/auth/ldap задаёт предел пакета MaxPacketLengthBytes.
+    license: MIT
+    repository: https://github.com/go-asn1-ber/asn1-ber
+    attack_surface: true
+    security_function: false
+    provided_by: go-asn1-ber Authors (github.com/go-asn1-ber)
+    justification: Транзитивная зависимость go-ldap/ldap/v3, сопровождается той же группой; собственных зависимостей нет, есть fuzz-тест разбора. Импорт — только в internal/auth/ldap (depguard).
+    decision: ADR-0025, раздел 2, п. 7; согласие владельца 27.10.2026 (поток 4-B3)
+    decided: 2026-10-27
+    license_files:
+      LICENSE: ec62b7caba679339176c55c4030ac6770c37d422128054e4ecd802aea536f193
+
+  - name: github.com/Azure/go-ntlmssp
+    version: v0.1.1
+    type: go-module
+    scope: product
+    purpose: Протокол NTLM для go-ldap (транзитивная); в продукте не вызывается — bind NTLM запрещён forbidigo (ADR-0025, 2.2).
+    license: MIT
+    repository: https://github.com/Azure/go-ntlmssp
+    attack_surface: false
+    security_function: false
+    provided_by: Microsoft (github.com/Azure)
+    justification: Импортируется корневым пакетом go-ldap/ldap/v3 безусловно, исключить без форка библиотеки нельзя. Собственных зависимостей нет (MD4 — своя внутренняя копия internal/md4).
+    decision: ADR-0025, раздел 2, п. 7; согласие владельца 27.10.2026 (поток 4-B3)
+    decided: 2026-10-27
+    license_files:
+      LICENSE: 7b7c80bf1253f5dabfe692633bd7908b6a44d1caba1ab2a776911b224e93f0fd
+
+  - name: github.com/google/uuid
+    version: v1.6.0
+    type: go-module
+    scope: product
+    purpose: UUID в элементах управления синхронизацией go-ldap (транзитивная); в продукте не вызывается.
+    license: BSD-3-Clause
+    repository: https://github.com/google/uuid
+    attack_surface: false
+    security_function: false
+    provided_by: Google (github.com/google/uuid)
+    justification: Импортируется корневым пакетом go-ldap/ldap/v3 (control.go), исключить без форка нельзя. Собственных зависимостей нет. Идентификаторы продукта по-прежнему — store.NewUUIDv7 на Random из internal/crypto; прямой импорт запрещён depguard (правило transitive-only).
+    decision: ADR-0025, раздел 2, п. 7; согласие владельца 27.10.2026 (поток 4-B3)
+    decided: 2026-10-27
+    license_files:
+      LICENSE: 0a8d61ed3cbfd5312326e8126c31ce9c627a283adc99131b56896d29ada04b2d
+
   - name: Onest
     version: fontsource-variable-5.3.1
     type: font
@@ -1023,3 +1087,19 @@ components:
     justification: Динамический анализ работающей установки нужен для ЗИ и сертификации (ТЗ 8.4); собственного сканера писать не нужно. Только CI, не распространяется и не входит в SBOM. Образ закреплён по digest (ТЗ 8.7); тег — еженедельная сборка стабильного выпуска.
     decision: решение владельца Р10 этапа 3 (22.10.2026)
     decided: 2026-10-22
+
+  - name: github.com/yalue/onnxruntime_go
+    version: v1.38.0
+    type: go-module
+    scope: product
+    purpose: Вызов C API ONNX Runtime 1.31.0 (C API 31) из процесса ML-детекторов aisec-ml (ADR-0024, задача 4.18) — сеанс из байтов проверенной модели, тензоры, запуск и прерывание вывода. Импорт — только в cmd/aisec-ml (depguard), сборка — только с тегом aisec_onnx и CGO_ENABLED=1; шлюз и сервер без cgo.
+    license: MIT
+    repository: https://github.com/yalue/onnxruntime_go
+    attack_surface: true
+    security_function: false
+    provided_by: Nathan Otterness (github.com/yalue)
+    justification: В Go нет движка вывода нейросетей, а C API ONNX Runtime — таблица указателей на функции, доступная из Go только через cgo с прослойкой на C. Go-зависимостей нет; системная — только -ldl. Библиотеку ORT обвязка загружает dlopen по пути, который передаёт aisec-ml, — по дескриптору файла, хеш которого сверен со встроенным при сборке. В модуль входят заголовки C API ONNX Runtime 1.31.0 (MIT, Microsoft). Каталог test_data модуля (готовые библиотеки ORT для других ОС) в vendor не попадает. Выпуски часто (v1.30.0 — 05.2026, v1.38.0 — 10.2026), один основной сопровождающий — риск снижается вендорингом и небольшим объёмом кода. Сама библиотека ONNX Runtime — своя сборка из исходников без телеметрии, компонент добавляется вместе со сборкой (ADR-0024, раздел 8).
+    decision: ADR-0024, раздел «Зависимости»; согласие владельца 27.10.2026 (поток 4-C3)
+    decided: 2026-10-27
+    license_files:
+      LICENSE: b7177fa196f86e5102a5d2702c1b28ea62eb02fd2d633a37f2dbd6ffc0ba8b4f

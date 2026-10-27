@@ -5,7 +5,7 @@ import type { Me } from "../api/client";
 import { PoliciesScreen } from "./PoliciesScreen";
 
 const me = (permissions: string[]): Me => ({
-  user: { id: "u-me", login: "boss", display_name: "Босс", role: "security_admin", status: "active", locked: false, must_change_password: false, password_changed_at: "2026-10-01T00:00:00Z", created_at: "2026-10-01T00:00:00Z" },
+  user: { id: "u-me", login: "boss", display_name: "Босс", email: "", role: "security_admin", status: "active", locked: false, must_change_password: false, password_changed_at: "2026-10-01T00:00:00Z", created_at: "2026-10-01T00:00:00Z" },
   session_state: "active",
   timezone: "Europe/Moscow",
   permissions,
@@ -25,6 +25,7 @@ const diff = {
   from: 2, to: 1, fields: [{ field: "mode", before: "enforce", after: "monitor" }], rules_added: [], rules_removed: [rule], rules_changed: [],
   reordered: false, weakening: true, weakening_reasons: [{ kind: "rule_removed", rule: "pii-ru" }],
   exceptions_added: [], exceptions_removed: [], exceptions_changed: [],
+  tools_fields: [], tool_rules_added: [], tool_rules_removed: [], tool_rules_changed: [],
 };
 
 const calls: { method: string; url: string; body: unknown }[] = [];

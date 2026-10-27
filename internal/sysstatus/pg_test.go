@@ -3,6 +3,7 @@ package sysstatus_test
 import (
 	"context"
 	"encoding/hex"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -274,6 +275,32 @@ func TestPGAlertJob(t *testing.T) {
 	job, err = e.store.AlertJob(ctx, time.Now())
 	if err != nil || job.LastRunAt.IsZero() || job.Age < 6*time.Minute || job.Age > 8*time.Minute {
 		t.Fatalf("проход 7 минут назад: %+v %v", job, err)
+	}
+	if job.FailingRules != 0 {
+		t.Fatalf("правил со сбоем без состояний: %+v", job)
+	}
+	// 3Н48 ревью 3.r4: правило, падающее дольше AlertJobStaleAfter, считается;
+	// свежая серия сбоев и отключённое правило — нет.
+	for i, r := range []struct {
+		enabled bool
+		ago     string
+	}{{true, "7 minutes"}, {true, "1 minute"}, {false, "9 minutes"}} {
+		id := fmt.Sprintf("01900000-0000-7000-8000-0000000004%02d", i)
+		if _, err := e.owner.Exec(ctx, `INSERT INTO alert_rules (id, org_id, kind, name, description, enabled, severity, condition,
+				group_by, suppress_minutes, group_minutes, recipients, version, created_at, created_by, updated_at, updated_by)
+			VALUES ($1, $2, 'anomaly', $4, '', $3, 'high', '{}', '{}', 0, 0, '{}', 1, now(), 'test', now(), 'test')`,
+			id, audit.DefaultOrgID, r.enabled, "правило "+r.ago); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := e.owner.Exec(ctx, `INSERT INTO alert_rule_state (rule_id, evaluated_at, state)
+			VALUES ($1, now(), jsonb_build_object('warning', 'evaluation_failed', 'failing_since', now() - $2::interval))`,
+			id, r.ago); err != nil {
+			t.Fatal(err)
+		}
+	}
+	job, err = e.store.AlertJob(ctx, time.Now())
+	if err != nil || job.FailingRules != 1 || time.Since(job.FailingSince) < 6*time.Minute || time.Since(job.FailingSince) > 8*time.Minute {
+		t.Fatalf("правила со сбоем: %+v %v", job, err)
 	}
 	if _, err := e.store.Transition(ctx, sysstatus.ConditionAlertJob, true, time.Now(), func(bool) audit.Entry {
 		return audit.Entry{Actor: audit.Actor{Type: audit.ActorSystem, ID: "system-status"}, Action: "system.alert",

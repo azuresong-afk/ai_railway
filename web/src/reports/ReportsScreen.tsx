@@ -1,7 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { ApiError, type Me } from "../api/client";
-import { alertsApi } from "../alerts/api";
 import { appsApi } from "../apps/api";
 import { Button } from "../ui/Button";
 import { Field, Input, Select } from "../ui/Field";
@@ -41,11 +40,17 @@ function ReportsTab({ me }: { me: Me }) {
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [app, setApp] = useState("");
+  const [delimiter, setDelimiter] = useState<"semicolon" | "comma">("semicolon");
   const [preview, setPreview] = useState("");
-  const full = me.permissions.includes("applications.read");
-  const apps = useQuery({ queryKey: ["reports-apps"], queryFn: ({ signal }) => appsApi.applications(signal), enabled: full });
-  // Владелец приложения без права на все объекты получает только сводный отчёт по своему приложению.
-  const bad = from !== "" && to !== "" && from > to ? "Начало периода не может быть позже конца." : undefined;
+  // Владелец приложения (reports.read только на свои объекты) получает только сводный отчёт по своему приложению.
+  const full = !(me.own_scope ?? []).includes("reports.read");
+  const apps = useQuery({ queryKey: ["reports-apps"], queryFn: ({ signal }) => appsApi.applications(signal), enabled: me.permissions.includes("applications.read") });
+  const bad =
+    (from === "") !== (to === "")
+      ? "Укажите обе даты или оставьте обе пустыми."
+      : from !== "" && from > to
+        ? "Начало периода не может быть позже конца."
+        : undefined;
   const blocked = Boolean(bad) || (!full && app === "");
   const appArg = kind === "summary" ? app : "";
   const kinds = full ? reportKinds : reportKinds.filter(([k]) => k === "summary");
@@ -71,6 +76,14 @@ function ReportsTab({ me }: { me: Me }) {
         <Field label="По дату">
           {({ id }) => <Input id={id} type="date" value={to} onChange={(e) => setTo(e.target.value)} />}
         </Field>
+        <Field label="Разделитель CSV" hint="Для Excel с русской локалью — точка с запятой">
+          {({ id }) => (
+            <Select id={id} value={delimiter} onChange={(e) => setDelimiter(e.target.value as "semicolon" | "comma")}>
+              <option value="semicolon">Точка с запятой</option>
+              <option value="comma">Запятая</option>
+            </Select>
+          )}
+        </Field>
         <Field label="Приложение" hint={kind === "summary" ? undefined : "Только для сводного отчёта"}>
           {({ id }) => (
             <Select id={id} value={app} disabled={kind !== "summary"} onChange={(e) => setApp(e.target.value)}>
@@ -88,7 +101,7 @@ function ReportsTab({ me }: { me: Me }) {
         <Button variant="primary" disabled={blocked} onClick={() => setPreview(reportUrl(kind, "html", from, to, appArg))}>
           Показать отчёт
         </Button>
-        <DownloadLink disabled={blocked} href={reportUrl(kind, "csv", from, to, appArg)}>
+        <DownloadLink disabled={blocked} href={reportUrl(kind, "csv", from, to, appArg, delimiter)}>
           Скачать CSV
         </DownloadLink>
         <DownloadLink disabled={blocked} href={reportUrl(kind, "xlsx", from, to, appArg)}>
@@ -113,17 +126,23 @@ function ReportsTab({ me }: { me: Me }) {
 }
 
 function toInput(s: ReportSchedule): ReportScheduleInput {
-  return { name: s.name, report: s.report, frequency: s.frequency, weekday: s.weekday ?? 1, day: s.day ?? 1, at: s.at, format: s.format, channel_id: s.channel_id, enabled: s.enabled };
+  return { name: s.name, report: s.report, frequency: s.frequency, weekday: s.weekday ?? 1, day: s.day ?? 1, at: s.at, format: s.format, channel_id: s.channel_id, enabled: s.enabled, recipient_user_ids: s.recipient_user_ids };
 }
 
-const emptyForm: ReportScheduleInput = { name: "", report: "summary", frequency: "weekly", weekday: 1, at: "09:00", format: "xlsx", channel_id: "", enabled: true };
+const emptyForm: ReportScheduleInput = { name: "", report: "summary", frequency: "weekly", weekday: 1, at: "09:00", format: "xlsx", channel_id: "", enabled: true, recipient_user_ids: [] };
 
 function ScheduleForm({ initial, onDone, onCancel }: { initial?: ReportSchedule; onDone: () => void; onCancel: () => void }) {
   const qc = useQueryClient();
   const [f, setF] = useState<ReportScheduleInput>(initial ? toInput(initial) : emptyForm);
   const [err, setErr] = useState("");
-  const channels = useQuery({ queryKey: ["reports-channels"], queryFn: ({ signal }) => alertsApi.channels(signal) });
-  const email = (channels.data?.items ?? []).filter((c) => c.type === "email" && c.enabled);
+  const channels = useQuery({ queryKey: ["reports-channels"], queryFn: ({ signal }) => reportsApi.channels(signal) });
+  const email = channels.data?.items ?? [];
+  const recipients = useQuery({ queryKey: ["reports-recipients"], queryFn: ({ signal }) => reportsApi.recipients(signal) });
+  const users = recipients.data?.items ?? [];
+  const chosen = f.recipient_user_ids ?? [];
+  // Выбранные получатели без адреса, а также те, кого в списке уже нет (деактивированы, потеряли право).
+  const noEmail = chosen.filter((uid) => users.find((u) => u.id === uid)?.has_email !== true);
+  const toggle = (uid: string, on: boolean) => setF({ ...f, recipient_user_ids: on ? [...chosen, uid] : chosen.filter((x) => x !== uid) });
   const save = useMutation({
     mutationFn: () => {
       // Лишние для периодичности поля не отправляются.
@@ -210,7 +229,28 @@ function ScheduleForm({ initial, onDone, onCancel }: { initial?: ReportSchedule;
           )}
         </Field>
       </div>
-      {channels.isSuccess && email.length === 0 && <Banner kind="warning">Нет включённых почтовых каналов: добавьте канал в разделе «Оповещения».</Banner>}
+      <fieldset className="flex flex-col gap-1">
+        <legend className="text-sm font-medium">Получатели — пользователи консоли</legend>
+        <p className="text-sm text-muted">
+          Адрес берётся из учётной записи (карточка пользователя или «Профиль») и добавляется к адресам почтового канала. Пользователь без адреса
+          пропускается.
+        </p>
+        {recipients.isError && <Banner kind="error">{errText(recipients.error)}</Banner>}
+        {recipients.isSuccess && users.length === 0 && <p className="text-sm text-muted">Нет пользователей, которым можно слать отчёты.</p>}
+        {users.map((u) => (
+          <label key={u.id} className="flex items-center gap-2 text-base">
+            <input type="checkbox" checked={chosen.includes(u.id)} onChange={(e) => toggle(u.id, e.target.checked)} />
+            {u.display_name} ({u.login}){u.has_email ? "" : " — нет e-mail"}
+          </label>
+        ))}
+        {noEmail.length > 0 && recipients.isSuccess && (
+          <Banner kind="warning">
+            У выбранных получателей без адреса ({noEmail.length}) отчёт не уйдёт. Задайте e-mail в карточке пользователя или попросите сделать это в профиле.
+          </Banner>
+        )}
+      </fieldset>
+      {channels.isError && <Banner kind="error">{errText(channels.error)}</Banner>}
+      {channels.isSuccess && email.length === 0 && <Banner kind="warning">Нет включённых почтовых каналов с получателями: добавьте канал в разделе «Оповещения».</Banner>}
       <label className="flex items-center gap-2 text-base">
         <input type="checkbox" checked={f.enabled ?? true} onChange={(e) => set({ enabled: e.target.checked })} />
         Рассылка включена
@@ -307,6 +347,7 @@ function SchedulesTab({ me }: { me: Me }) {
               <Th>Период отчёта</Th>
               <Th>Результат</Th>
               <Th>Попыток</Th>
+              <Th>Без e-mail</Th>
               <Th>Ошибка</Th>
             </tr>
           </thead>
@@ -319,6 +360,7 @@ function SchedulesTab({ me }: { me: Me }) {
                 </Td>
                 <Td>{runStatus.get(r.status) ?? r.status}</Td>
                 <Td>{r.attempts}</Td>
+                <Td>{r.skipped_no_email > 0 ? `пропущено ${r.skipped_no_email}: задайте e-mail пользователям` : "—"}</Td>
                 <Td>{r.error ?? "—"}</Td>
               </tr>
             ))}

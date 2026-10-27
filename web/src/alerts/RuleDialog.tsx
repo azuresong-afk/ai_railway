@@ -14,6 +14,8 @@ const groupTitle = new Map<string, string>(Object.entries({
   gateway: "Шлюз", action: "Действие", rule: "Правило обнаружения", severity: "Серьёзность", policy_mode: "Режим политики",
 }));
 const newFields: [string, string][] = [["model", "Новая модель"], ["provider", "Новый провайдер"], ["user", "Новый пользователь"], ["app", "Новое приложение"]];
+// Поле tool — только у встроенного правила «Новый инструмент агента»: создать его или сменить поле нельзя (сервер ответит 400).
+const toolFields: [string, string][] = [["tool", "Новый инструмент агента"]];
 type GroupBy = NonNullable<AlertRuleInput["group_by"]>;
 const editable = new Set(["threshold", "new"]);
 
@@ -179,8 +181,8 @@ export function RuleDialog({ rule, mfa, canUsers, canRoles, onClose }: { rule: A
         {(creating || kind === "new") && !locked && f.kind === "new" && (
           <Field label="За чем следить">
             {({ id }) => (
-              <Select id={id} value={f.field} onChange={(e) => setF((p) => ({ ...p, field: e.target.value as typeof p.field }))}>
-                {newFields.map(([v, t]) => (
+              <Select id={id} value={f.field} disabled={f.field === "tool"} onChange={(e) => setF((p) => ({ ...p, field: e.target.value as typeof p.field }))}>
+                {(f.field === "tool" ? toolFields : newFields).map(([v, t]) => (
                   <option key={v} value={v}>
                     {t}
                   </option>

@@ -48,6 +48,10 @@ func reportRoutes(d Deps) []Route {
 			Handler: needReports(d, d.deleteReportSchedule)},
 		{Method: http.MethodGet, Path: "/api/v1/report-schedules/{id}/runs", Permission: auth.PermReportSchedulesRead,
 			Handler: needReports(d, d.listReportRuns)},
+		{Method: http.MethodGet, Path: "/api/v1/report-channels", Permission: auth.PermReportSchedulesManage,
+			Handler: needReports(d, d.listReportChannels)},
+		{Method: http.MethodGet, Path: "/api/v1/report-recipients", Permission: auth.PermReportSchedulesManage,
+			Handler: needReports(d, d.listReportRecipients)},
 	}
 }
 
@@ -198,7 +202,7 @@ func (d Deps) getReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var buf bytes.Buffer
-	if err := reports.Render(&buf, doc, params.Format); err != nil {
+	if err := reports.Render(&buf, doc, params.Format, params.Delimiter); err != nil {
 		WriteProblem(w, d.reportProblem(err))
 		return
 	}
@@ -207,7 +211,7 @@ func (d Deps) getReport(w http.ResponseWriter, r *http.Request) {
 	defer acancel()
 	if err := d.Audit.Record(actx, audit.Entry{Actor: eventsActor(p), SourceIP: clientAddr(r), Action: "data.export",
 		Object: audit.Object{Type: "report", ID: kind}, Result: audit.ResultSuccess, Details: map[string]any{
-			"report": kind, "format": params.Format, "from": params.Period.First, "to": params.Period.Last, "app": params.App,
+			"report": kind, "format": params.Format, "delimiter": delimName(params.Delimiter, params.Format), "from": params.Period.First, "to": params.Period.Last, "app": params.App,
 			"rows": doc.Rows(),
 		}}); err != nil {
 		d.Logger.Error("выгрузка отчёта не записана в журнал аудита: выгрузка отменена", "class", "reports", "error", err)
@@ -253,28 +257,30 @@ func reportsBy(r *http.Request) (reports.By, bool) {
 
 // ReportScheduleView — расписание в ответах.
 type ReportScheduleView struct {
-	ID        string     `json:"id"`
-	Name      string     `json:"name"`
-	Report    string     `json:"report"`
-	Frequency string     `json:"frequency"`
-	Weekday   int        `json:"weekday,omitempty"`
-	Day       int        `json:"day,omitempty"`
-	At        string     `json:"at"`
-	Format    string     `json:"format"`
-	ChannelID string     `json:"channel_id"`
-	Enabled   bool       `json:"enabled"`
-	NextRunAt time.Time  `json:"next_run_at"`
-	LastRunAt *time.Time `json:"last_run_at,omitempty"`
-	Version   int        `json:"version"`
-	CreatedAt time.Time  `json:"created_at"`
-	CreatedBy string     `json:"created_by"`
-	UpdatedAt time.Time  `json:"updated_at"`
-	UpdatedBy string     `json:"updated_by"`
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Report    string `json:"report"`
+	Frequency string `json:"frequency"`
+	Weekday   int    `json:"weekday,omitempty"`
+	Day       int    `json:"day,omitempty"`
+	At        string `json:"at"`
+	Format    string `json:"format"`
+	ChannelID string `json:"channel_id"`
+	Enabled   bool   `json:"enabled"`
+	// RecipientUserIDs — получатели-пользователи: адрес берётся из учётной записи.
+	RecipientUserIDs []string   `json:"recipient_user_ids"`
+	NextRunAt        time.Time  `json:"next_run_at"`
+	LastRunAt        *time.Time `json:"last_run_at,omitempty"`
+	Version          int        `json:"version"`
+	CreatedAt        time.Time  `json:"created_at"`
+	CreatedBy        string     `json:"created_by"`
+	UpdatedAt        time.Time  `json:"updated_at"`
+	UpdatedBy        string     `json:"updated_by"`
 }
 
 func reportScheduleView(s reports.Schedule) ReportScheduleView {
 	return ReportScheduleView{ID: s.ID, Name: s.Name, Report: s.Report, Frequency: s.Frequency, Weekday: s.Weekday, Day: s.Day,
-		At: s.At, Format: s.Format, ChannelID: s.ChannelID, Enabled: s.Enabled, NextRunAt: s.NextRunAt.UTC(), LastRunAt: optTime(s.LastRunAt),
+		At: s.At, Format: s.Format, ChannelID: s.ChannelID, Enabled: s.Enabled, RecipientUserIDs: nonNilIDs(s.RecipientUserIDs), NextRunAt: s.NextRunAt.UTC(), LastRunAt: optTime(s.LastRunAt),
 		Version: s.Version, CreatedAt: s.CreatedAt.UTC(), CreatedBy: s.CreatedBy, UpdatedAt: s.UpdatedAt.UTC(), UpdatedBy: s.UpdatedBy}
 }
 
@@ -381,6 +387,9 @@ type ReportRunView struct {
 	Error       string     `json:"error,omitempty"`
 	CreatedAt   time.Time  `json:"created_at"`
 	SentAt      *time.Time `json:"sent_at,omitempty"`
+	// SkippedNoEmail — получателей-пользователей пропущено в последней попытке
+	// (нет адреса, деактивирован или нет права на отчёт).
+	SkippedNoEmail int `json:"skipped_no_email"`
 }
 
 // ReportRunList — последние запуски расписания.
@@ -401,11 +410,102 @@ func (d Deps) listReportRuns(w http.ResponseWriter, r *http.Request) {
 	out := ReportRunList{Items: make([]ReportRunView, 0, len(runs))}
 	for _, x := range runs {
 		v := ReportRunView{ID: x.ID, DueAt: x.DueAt.UTC(), PeriodFirst: x.PeriodFirst, PeriodLast: x.PeriodLast, Status: x.Status,
-			Attempts: x.Attempts, Error: x.Error, CreatedAt: x.CreatedAt.UTC(), SentAt: optTime(x.SentAt)}
+			Attempts: x.Attempts, Error: x.Error, CreatedAt: x.CreatedAt.UTC(), SentAt: optTime(x.SentAt), SkippedNoEmail: x.SkippedNoEmail}
 		if x.Status == reports.RunPending {
 			v.NextAt = optTime(x.NextAt)
 		}
 		out.Items = append(out.Items, v)
+	}
+	WriteJSON(w, http.StatusOK, out)
+}
+
+// ReportChannelView — почтовый канал для расписания: только ID и название,
+// без адресов и сервера (3Н46 ревью 3.r4: администратор системы выбирает
+// канал без права на каналы уведомлений).
+type ReportChannelView struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// ReportChannelList — включённые почтовые каналы с получателями.
+type ReportChannelList struct {
+	Items []ReportChannelView `json:"items"`
+}
+
+func (d Deps) listReportChannels(w http.ResponseWriter, r *http.Request) {
+	list, err := d.Reports.MailChannels(r.Context())
+	if err != nil {
+		WriteProblem(w, d.reportProblem(err))
+		return
+	}
+	out := ReportChannelList{Items: make([]ReportChannelView, 0, len(list))}
+	for _, c := range list {
+		out.Items = append(out.Items, ReportChannelView{ID: c.ID, Name: c.Name})
+	}
+	WriteJSON(w, http.StatusOK, out)
+}
+
+func nonNilIDs(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
+}
+
+// ReportRecipientView — пользователь, которому можно слать отчёты: без адреса,
+// только признак, задан ли он.
+type ReportRecipientView struct {
+	ID          string `json:"id"`
+	Login       string `json:"login"`
+	DisplayName string `json:"display_name"`
+	HasEmail    bool   `json:"has_email"`
+}
+
+// ReportRecipientList — пользователи для выбора получателей расписания.
+type ReportRecipientList struct {
+	Items []ReportRecipientView `json:"items"`
+}
+
+// maxReportRecipientUsers — сколько пользователей просматривается для выбора.
+const maxReportRecipientUsers = 1000
+
+// listReportRecipients — активные пользователи с правом на отчёты (reports.read
+// на все объекты и разделы не уже, чем у вызывающего): тот, кто ведёт
+// расписания, выбирает получателей без права users.read. Адреса не
+// выдаются — только признак «задан».
+func (d Deps) listReportRecipients(w http.ResponseWriter, r *http.Request) {
+	p, ok := PrincipalFrom(r.Context())
+	if !ok || p.Caller == nil {
+		WriteProblem(w, errForbidden())
+		return
+	}
+	scope := reportScope(p, p.Grants.Full(auth.PermReportsRead))
+	dir := ReportDirectory{Auth: d.Auth}
+	out := ReportRecipientList{Items: []ReportRecipientView{}}
+	grants := map[auth.Role]auth.Grants{}
+	var after *auth.UserCursor
+	for seen := 0; seen < maxReportRecipientUsers; {
+		page, err := d.Auth.Users(r.Context(), after, 200)
+		if err != nil {
+			WriteProblem(w, authProblem(d.Logger, err))
+			return
+		}
+		for _, u := range page {
+			rc, err := dir.of(r.Context(), u, grants)
+			if err != nil {
+				WriteProblem(w, authProblem(d.Logger, err))
+				return
+			}
+			if rc.Eligible(scope) {
+				out.Items = append(out.Items, ReportRecipientView{ID: u.ID, Login: u.Login, DisplayName: u.DisplayName, HasEmail: rc.Email != ""})
+			}
+		}
+		seen += len(page)
+		if len(page) < 200 {
+			break
+		}
+		last := page[len(page)-1]
+		after = &auth.UserCursor{CreatedAt: last.CreatedAt, ID: last.ID}
 	}
 	WriteJSON(w, http.StatusOK, out)
 }

@@ -66,6 +66,7 @@ async function mockS8(page: Page): Promise<Seen> {
     }
     if (p === "/api/v1/events") return json(route, { items: [event] });
     if (p === "/api/v1/events/filters") return json(route, { items: [] });
+    if (p === "/api/v1/events/settings") return json(route, { metadata_days: 90, content_days: 30, updated_at: NOW });
     if (p === `/api/v1/events/${EVENT_ID}`) return json(route, { ...event, details: {} });
     return json(route, { code: "not_found", detail: "Нет такого маршрута." }, 404);
   });

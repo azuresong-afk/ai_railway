@@ -74,6 +74,8 @@ type Provider interface {
 	// SealTo шифрует plaintext для владельца открытого ключа; info
 	// привязывает шифротекст к месту, Open с другим info не расшифрует.
 	SealTo(publicKey, info, plaintext []byte) ([]byte, error)
+	// JWT — проверка ID-токенов внешнего IdP по его JWKS (OIDC, ADR-0025).
+	JWT() (JWTVerifier, error)
 }
 
 // New возвращает криптопрофиль по имени.

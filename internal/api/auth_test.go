@@ -64,7 +64,13 @@ func (c *testClock) next() time.Time {
 
 func newAuthEnv(t *testing.T) *authEnv {
 	t.Helper()
-	e := &authEnv{mem: authtest.NewMemory(), log: &bytes.Buffer{}, clock: &testClock{t: time.Now()}, secrets: map[string][]byte{}}
+	return newAuthEnvMem(t, authtest.NewMemory())
+}
+
+// newAuthEnvMem — окружение на хранилище mem с дополнительными настройками сервиса входа.
+func newAuthEnvMem(t *testing.T, mem *authtest.Memory, opts ...auth.Option) *authEnv {
+	t.Helper()
+	e := &authEnv{mem: mem, log: &bytes.Buffer{}, clock: &testClock{t: time.Now()}, secrets: map[string][]byte{}}
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	for _, u := range []struct {
 		id, login string
@@ -74,7 +80,7 @@ func newAuthEnv(t *testing.T) *authEnv {
 			Status: auth.StatusActive, PasswordHash: authtest.HashOf(tPhrase), PasswordChangedAt: now, CreatedAt: now, CreatedBy: "test"})
 	}
 	logger := slog.New(slog.NewTextHandler(e.log, nil))
-	h, _, err := New(Options{Hasher: testHasher(t), Logger: logger, Auth: testAuth(t, e.mem, auth.WithClock(e.clock.now)),
+	h, _, err := New(Options{Hasher: testHasher(t), Logger: logger, Auth: testAuth(t, e.mem, append([]auth.Option{auth.WithClock(e.clock.now)}, opts...)...),
 		RateLimit: RateConfig{Rules: []RateRule{{Prefix: "/", Max: 10000, Window: time.Minute}}}})
 	if err != nil {
 		t.Fatal(err)
@@ -596,5 +602,74 @@ func TestAuthProblemUnauthenticated(t *testing.T) {
 	p := authProblem(slog.New(slog.NewTextHandler(&buf, nil)), fmt.Errorf("смена пароля: %w", auth.ErrUnauthenticated))
 	if p.Status != http.StatusUnauthorized || buf.Len() != 0 {
 		t.Fatalf("%d, журнал %q", p.Status, buf.String())
+	}
+}
+
+// Задача 4.6: e-mail учётной записи. Задаёт держатель users.manage (чужую
+// запись) или сам пользователь (свою); чужую запись без права менять нельзя;
+// в журнале аудита адреса нет.
+func TestUserEmail(t *testing.T) {
+	e := newAuthEnv(t)
+	admin := e.mustLogin(t, "admin")
+	analyst := e.mustLogin(t, "analyst")
+	auditor := e.mustLogin(t, "auditor")
+	path := "/api/v1/users/" + tAnalystID + "/email"
+
+	w := e.call(admin, "PUT", path, `{"email":" analyst@example.ru "}`, true)
+	var v UserView
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &v) != nil || v.Email != "analyst@example.ru" {
+		t.Fatalf("задание администратором: %d %s", w.Code, w.Body)
+	}
+	if w := e.call(admin, "GET", "/api/v1/users/"+tAnalystID, "", false); !strings.Contains(w.Body.String(), `"email":"analyst@example.ru"`) {
+		t.Fatalf("карточка: %s", w.Body)
+	}
+	if w := e.call(analyst, "GET", "/api/v1/me", "", false); !strings.Contains(w.Body.String(), `"email":"analyst@example.ru"`) {
+		t.Fatalf("/me: %s", w.Body)
+	}
+
+	// Чужой профиль: без users.manage — 403 и адрес не меняется.
+	mustProblem(t, e.call(analyst, "PUT", "/api/v1/users/"+tAuditorID+"/email", `{"email":"x@example.ru"}`, true), 403, CodeForbidden)
+	mustProblem(t, e.call(auditor, "PUT", path, `{"email":"x@example.ru"}`, true), 403, CodeForbidden)
+	if w := e.call(admin, "GET", "/api/v1/users/"+tAuditorID, "", false); !strings.Contains(w.Body.String(), `"email":""`) {
+		t.Fatalf("адрес аудитора изменился: %s", w.Body)
+	}
+	// Маршрут профиля меняет только свою запись.
+	if w := e.call(auditor, "PUT", "/api/v1/me/email", `{"email":"auditor@example.ru"}`, true); w.Code != 200 || !strings.Contains(w.Body.String(), `"email":"auditor@example.ru"`) {
+		t.Fatalf("свой адрес: %d %s", w.Code, w.Body)
+	}
+	if w := e.call(admin, "GET", "/api/v1/users/"+tAnalystID, "", false); !strings.Contains(w.Body.String(), `"email":"analyst@example.ru"`) {
+		t.Fatalf("адрес аналитика изменился через профиль аудитора: %s", w.Body)
+	}
+	// Убрать адрес.
+	if w := e.call(analyst, "PUT", "/api/v1/me/email", `{"email":""}`, true); w.Code != 200 || !strings.Contains(w.Body.String(), `"email":""`) {
+		t.Fatalf("очистка: %d %s", w.Code, w.Body)
+	}
+	// Неверный ввод.
+	for _, b := range []string{`{}`, `{"email":"не адрес"}`, `{"email":"a@b@c"}`, `{"email":"a@example.ru\r\nBcc: b@example.ru"}`,
+		`{"email":"` + strings.Repeat("a", 250) + `@example.ru"}`, `{"email":"a@example.ru","x":1}`, `{"email":null}`} {
+		mustProblem(t, e.call(admin, "PUT", path, b, true), 400, CodeInvalidRequest)
+		mustProblem(t, e.call(analyst, "PUT", "/api/v1/me/email", b, true), 400, CodeInvalidRequest)
+	}
+	mustProblem(t, e.call(admin, "PUT", "/api/v1/users/not-a-uuid/email", `{"email":""}`, true), 404, CodeNotFound)
+	mustProblem(t, e.call(admin, "PUT", "/api/v1/users/01900000-0000-7000-8000-0000000000ee/email", `{"email":""}`, true), 404, CodeNotFound)
+	// Без сессии.
+	mustProblem(t, do(e.h, "PUT", "/api/v1/me/email", `{"email":"a@example.ru"}`, "Content-Type", "application/json"), 401, CodeUnauthorized)
+
+	// Аудит: запись есть, адреса в ней нет; в техническом журнале адреса нет.
+	n := 0
+	for _, r := range e.mem.Records() {
+		if r.Action != "user.email_set" {
+			continue
+		}
+		n++
+		if strings.Contains(fmt.Sprintf("%+v", r), "example.ru") {
+			t.Errorf("адрес в журнале аудита: %+v", r)
+		}
+	}
+	if n != 3 {
+		t.Errorf("записей user.email_set: %d, ждали 3", n)
+	}
+	if strings.Contains(e.log.String(), "example.ru") {
+		t.Errorf("адрес в техническом журнале: %s", e.log)
 	}
 }

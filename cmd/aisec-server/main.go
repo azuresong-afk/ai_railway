@@ -23,11 +23,15 @@ import (
 	// пояс и на хосте без /usr/share/zoneinfo (Н43 ревью 2.r4).
 	_ "time/tzdata"
 
+	"github.com/azuresong-afk/ai_railway/internal/agents"
 	"github.com/azuresong-afk/ai_railway/internal/alerting"
 	"github.com/azuresong-afk/ai_railway/internal/api"
+	"github.com/azuresong-afk/ai_railway/internal/approvals"
 	"github.com/azuresong-afk/ai_railway/internal/apps"
 	"github.com/azuresong-afk/ai_railway/internal/audit"
 	"github.com/azuresong-afk/ai_railway/internal/auth"
+	"github.com/azuresong-afk/ai_railway/internal/auth/ldap"
+	"github.com/azuresong-afk/ai_railway/internal/auth/oidc"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/internal/detect"
 	"github.com/azuresong-afk/ai_railway/internal/detect/builtin"
@@ -203,8 +207,27 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	authSvc, err := auth.NewService(ctx, users, auditLog, p, auth.WithSecretBox(box), auth.WithRoleStore(roles),
-		auth.WithAPITokenStore(tokens))
+	authOpts := []auth.Option{auth.WithSecretBox(box), auth.WithRoleStore(roles), auth.WithAPITokenStore(tokens)}
+	// Вход через внешний IdP (ADR-0025): в профиле без проверки JWT
+	// (gost, пока нет реализации) недоступен, локальный вход работает.
+	switch idp, err := oidc.New(p); {
+	case err == nil:
+		authOpts = append(authOpts, auth.WithOIDC(users, idp))
+	case errors.Is(err, aisecCrypto.ErrNotImplemented):
+		logger.Warn("вход через внешний IdP недоступен в криптопрофиле")
+	default:
+		return err
+	}
+	// Вход через каталог LDAP (ADR-0025, 2): без TLS в профиле недоступен.
+	switch dir, err := ldap.New(p); {
+	case err == nil:
+		authOpts = append(authOpts, auth.WithLDAP(users, dir))
+	case errors.Is(err, aisecCrypto.ErrNotImplemented):
+		logger.Warn("вход через каталог LDAP недоступен в криптопрофиле")
+	default:
+		return err
+	}
+	authSvc, err := auth.NewService(ctx, users, auditLog, p, authOpts...)
 	if err != nil {
 		return err
 	}
@@ -401,8 +424,8 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	}
 
 	// Политики и их версии (ТЗ 5.3, задача 2.12): проверяются строго по
-	// встроенным детекторам — тем же, что у шлюза.
-	detectors, err := detect.NewRegistry(builtin.All()...)
+	// встроенным детекторам и детекторам уровня сессии — тем же, что у шлюза.
+	detectors, err := detect.NewRegistry(builtin.Catalog()...)
 	if err != nil {
 		return err
 	}
@@ -442,6 +465,34 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	if gateways != nil {
 		gateways.SetBudgetSync(appsSvc)
 	}
+	// Агенты, MCP-серверы и инструменты (ТЗ 5.10, задача 4.8): учётные
+	// данные MCP-серверов — под ключом данных (ЗИ.1); оповещения
+	// agents.tool_new и agents.tool_changed (DM-25) — по записям аудита.
+	agentStore, err := agents.NewPGStore(db.Pool(), auditLog)
+	if err != nil {
+		return err
+	}
+	agentsSvc, err := agents.New(agents.Options{Store: agentStore, Provider: p, Box: box, Apps: agents.AppsOf(appsSvc),
+		OrgID: audit.DefaultOrgID})
+	if err != nil {
+		return err
+	}
+	// Очередь подтверждений вызовов инструментов (DM-22, задача 4.10):
+	// аргументы — под ключом данных (ЗИ.1), удаляются через 30 суток после
+	// закрытия, запросы — по сроку метаданных событий.
+	approvalStore, err := approvals.NewPGStore(db.Pool(), auditLog)
+	if err != nil {
+		return err
+	}
+	approvalsSvc, err := approvals.New(approvals.Options{Store: approvalStore, Provider: p, Box: box, OrgID: audit.DefaultOrgID,
+		MetadataDays: func(ctx context.Context) (int, error) {
+			r, err := eventStore.Retention(ctx)
+			return r.MetadataDays, err
+		}, Logger: logger.With("component", "approvals")})
+	if err != nil {
+		return err
+	}
+	go approvalsSvc.Run(ctx, approvals.RunInterval)
 	// Правила «частота», «аномалия» и «бюджет» (задача 3.12, Р3) — фоновой
 	// задачей раз в минуту; расход — приложений с заданным бюджетом.
 	alertStore.SetBudgetSource(budgetUsage(appsSvc))
@@ -459,7 +510,7 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		Store: reportStore,
 		Builder: &reports.Builder{Dash: reportsDash, Incidents: incidentsSvc, Alerts: alertsSvc,
 			Facts: &reports.PGFacts{DB: readDB.Pool(), OrgID: audit.DefaultOrgID, Apps: appsSvc, Policies: policiesSvc, Gateways: gateways}},
-		Mailer: notifySvc, Channels: notifySvc,
+		Mailer: notifySvc, Channels: notifySvc, Directory: api.ReportDirectory{Auth: authSvc},
 		Location: func(ctx context.Context) (*time.Location, error) {
 			tz, err := timezone(ctx)
 			if err != nil {
@@ -496,6 +547,8 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		Events:     eventStore,
 		Alerts:     alertsSvc,
 		Notify:     notifySvc,
+		Agents:     agentsSvc,
+		Approvals:  approvalsSvc,
 		Incidents:  incidentsSvc,
 		Dashboards: dashStore,
 		Reports:    reportsSvc,
@@ -522,12 +575,15 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	if gateways != nil {
 		// Пакеты конфигурации (задача 2.13): без ключа подписи внутренний
 		// порт не открывается — шлюзы не получили бы конфигурацию.
-		bundleRoutes, bsvc, err := newBundleRoutes(cfg, p, db, auditLog, appsSvc, policiesSvc, gateways, trust, logger)
+		bundleRoutes, bsvc, err := newBundleRoutes(cfg, p, db, auditLog, appsSvc, policiesSvc, agentsSvc, gateways, trust, authSvc.IdPKeys, logger)
 		if err != nil {
 			return err
 		}
+		bundleRoutes = append(bundleRoutes, api.AgentsInternalRoutes(agentsSvc, logger.With("listener", "internal"))...)
+		bundleRoutes = append(bundleRoutes, api.ApprovalsInternalRoutes(approvalsSvc, logger.With("listener", "internal"))...)
 		bundleSvc.Store(bsvc)
-		internal, err := newInternalServer(ctx, cfg, tp, hasher, gateways, eventStore, ca, certPEM, keyPEM, bundleRoutes, logger)
+		internal, err := newInternalServer(ctx, cfg, tp, hasher, gateways, eventStore, approvalsSvc, ca, certPEM, keyPEM, bundleRoutes,
+			logger)
 		if err != nil {
 			return err
 		}
@@ -582,15 +638,15 @@ func newStatus(ctx context.Context, cfg *serverConfig, db *store.DB, auditLog *a
 	if err != nil {
 		return nil, err
 	}
-	customerCert := func(ctx context.Context) (string, time.Time, bool, error) {
+	customerCert := func(ctx context.Context) (sysstatus.CustomerCert, bool, error) {
 		t, err := appStore.GatewayTLS(ctx, audit.DefaultOrgID)
 		switch {
 		case errors.Is(err, apps.ErrNoGatewayTLS):
-			return "", time.Time{}, false, nil
+			return sysstatus.CustomerCert{}, false, nil
 		case err != nil:
-			return "", time.Time{}, false, err
+			return sysstatus.CustomerCert{}, false, err
 		}
-		return t.Host, t.Cert.NotAfter, true, nil
+		return sysstatus.CustomerCert{Host: t.Host, NotAfter: t.Cert.NotAfter, Fingerprint: t.Cert.Fingerprint}, true, nil
 	}
 	failed := len(selftestRes.Failures)
 	if !selftestRes.CryptoOK {
@@ -746,7 +802,7 @@ func loadCA(certFile, keyFile string) (*aisecCrypto.CA, error) {
 // newInternalServer — внутренний API шлюзов на отдельном порту: TLS с
 // обязательным клиентским сертификатом внутреннего УЦ (mTLS, ИАФ.10).
 func newInternalServer(ctx context.Context, cfg *serverConfig, tp aisecCrypto.TLSProvider, hasher aisecCrypto.Hasher,
-	gateways *gwregistry.Service, eventStore events.Store, ca *serverCA, certPEM, keyPEM []byte,
+	gateways *gwregistry.Service, eventStore events.Store, approvalsSvc *approvals.Service, ca *serverCA, certPEM, keyPEM []byte,
 	extra []api.Route, logger *slog.Logger) (*httpserver.Server, error) {
 	if cfg.InternalTLSCertFile != "" {
 		var err error
@@ -759,7 +815,7 @@ func newInternalServer(ctx context.Context, cfg *serverConfig, tp aisecCrypto.TL
 	}
 	ilog := logger.With("listener", "internal")
 	handler, _, err := api.NewInternal(api.InternalOptions{Logger: ilog, Hasher: hasher, Gateways: gateways, Events: eventStore,
-		Extra: extra})
+		Approvals: approvalsSvc, Extra: extra})
 	if err != nil {
 		return nil, err
 	}

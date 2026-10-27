@@ -236,7 +236,151 @@ paths:
         '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ProblemInternal' }
+  /internal/v1/agents/tools:observe:
+    post:
+      summary: Увиденные инструменты MCP-сервера или функции агента (задача 4.8, ADR-0023, раздел 1)
+      description: |
+        Шлюз сообщает описания из `tools/list` MCP-сервера (`server` — slug из
+        раздела `mcp_servers` пакета) или функции из запроса к модели
+        (`server: function` и `agent_id`). До 256 описаний без повторов имени и
+        хеша, каждое до 64 КиБ; тело до 8 МиБ. Описание разбирается строго
+        (повтор ключа, неверный UTF-8, вложенность больше 64 — 400), хеш —
+        `aisec-tool-descriptor-v1` над канонической формой без `icons` и
+        `_meta` на криптопрофиле сервера. Новый инструмент попадает в реестр в
+        состоянии `new` (аудит `agent_tool.discovered`, оповещение
+        `agents.tool_new`); описание одобренного, отличное от одобренного, —
+        `changed` (DM-25, `agent_tool.changed`, оповещение
+        `agents.tool_changed`); `suspicious: true` — детекторы шлюза нашли
+        внедрённые инструкции (DM-24, `agent_tool.suspicious`). Сверх пределов
+        реестра (2 000 на установку, 256 на сервер или агента) новые
+        инструменты не принимаются (`skipped`). Не чаще раза в 10 секунд на
+        сервер или агента — иначе 429 с `Retry-After`; неизвестный сервер или
+        агент — 404.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ObserveTools' }
+      responses:
+        '200':
+          description: Описания приняты
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ObserveToolsResult' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404':
+          description: MCP-сервер или агент не найден в реестре (`not_found`)
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+  /internal/v1/approvals:
+    post:
+      summary: Запрос подтверждения вызова инструмента (задача 4.10, ADR-0023, раздел 5)
+      description: |
+        Политика вызовов потребовала подтверждения человеком (`require_approval`,
+        DM-22, режим `enforce`). Шлюз передаёт маскированные аргументы (ПДн и
+        секреты заменены категорией, до 16 КиБ) и хеш тех, что передаст дальше
+        после одобрения; сервер шифрует аргументы ключом данных и удаляет их
+        через 30 суток после закрытия. Срок `timeout_seconds` — 60–3600 (на
+        пути `chat` шлюз ограничивает его 300). Запись аудита
+        `agent.approval.requested`, оповещение `agents.approval_requested` (без
+        аргументов). 256 ожидающих запросов на шлюз и 16 на агента — сверх них
+        429 `approval_queue_full` (аудит `agent.approval.queue_full`, оповещение).
+        Сервер недоступен или отказал — шлюз отклоняет вызов (fail-closed).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApprovalCreate' }
+      responses:
+        '201':
+          description: Запрос в очереди (`pending`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApprovalStatus' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '429':
+          description: |
+            Очередь переполнена (`approval_queue_full`) или общий предел частоты (`rate_limited`)
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/ProblemUnavailable' }
+  /internal/v1/approvals/{id}:
+    get:
+      summary: Долгий опрос решения по запросу подтверждения
+      description: |
+        Ответ приходит, как только запрос закрыт, или через `wait` (целые
+        секунды `0s`–`25s`; нет — сразу). У шлюза для этой точки свой клиент с
+        таймаутом 35 с. Запрос со сроком в прошлом закрывается как `timeout`.
+        Решение связано с ID, `args_hash` и `approved_hash`: шлюз сверяет их с
+        отправленными и передаёт дальше ровно проверенные аргументы. Чужой или
+        неизвестный ID — 404.
+      parameters:
+        - $ref: '#/components/parameters/ApprovalID'
+        - name: wait
+          in: query
+          required: false
+          schema: { type: string, pattern: '^[0-9]{1,2}s$' }
+      responses:
+        '200':
+          description: Состояние запроса
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApprovalStatus' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404':
+          description: Запрос не найден или создан другим шлюзом (`not_found`)
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+  /internal/v1/approvals/{id}/cancel:
+    post:
+      summary: Отмена запроса подтверждения
+      description: |
+        Клиент закрыл поток или вызов прерван: ожидающий запрос закрывается как
+        `cancelled` (после срока — `timeout`). Закрытый запрос возвращается без
+        изменений. Тело не нужно.
+      parameters:
+        - $ref: '#/components/parameters/ApprovalID'
+      responses:
+        '200':
+          description: Состояние запроса после отмены
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApprovalStatus' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404':
+          description: Запрос не найден или создан другим шлюзом (`not_found`)
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
 components:
+  parameters:
+    ApprovalID:
+      name: id
+      in: path
+      required: true
+      description: ID запроса подтверждения (UUIDv7)
+      schema: { type: string, format: uuid }
   securitySchemes:
     gatewayCert:
       type: mutualTLS
@@ -258,7 +402,7 @@ components:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }
     ProblemTooLarge:
-      description: Тело больше предела маршрута — heartbeat 1 МиБ, пакет событий 8 МиБ, отчёт о пакете 1 КиБ, перевыпуск сертификата 16 КиБ (`payload_too_large`)
+      description: Тело больше предела маршрута — heartbeat 1 МиБ, пакет событий и описания инструментов 8 МиБ, отчёт о пакете 1 КиБ, перевыпуск сертификата 16 КиБ (`payload_too_large`)
       content:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }
@@ -297,8 +441,10 @@ components:
         Конверт пакета (internal/policy/bundle). Части — стандартный base64:
         `header` — JSON {format, version, issued_at, gateway_id, content_hash,
         hash_alg}; `content` — JSON {providers, applications, policies,
-        unavailable} без учётных данных; `secrets` — шифротекст HPKE списка
-        {provider, credential}; `signature` — Ed25519 над
+        unavailable, budgets, gateway_tls, agents, mcp_servers, agent_tools}
+        без учётных данных (пустые разделы не выводятся); `secrets` —
+        шифротекст HPKE списка {provider, credential}, {mcp, credential} и
+        {tls_key}; `signature` — Ed25519 над
         `format || 0x00 || len(header) || header || len(content) || content || len(secrets) || secrets`
         (длины — 4 байта big-endian). Неизвестные поля на любом уровне — отказ
         на шлюзе. `trust` подписью пакета не покрыт: каждое заявление подписано
@@ -325,6 +471,34 @@ components:
             ровно один без `not_after` — действующий) и корни УЦ (до 4).
             Подписано действующим ключом предыдущего заявления; номер — без
             пропусков. Неверное заявление — отказ пакета с причиной `signature`.
+    ObserveTools:
+      type: object
+      required: [server, tools]
+      additionalProperties: false
+      properties:
+        server: { type: string, pattern: '^[a-z0-9-]{1,64}$', description: 'slug MCP-сервера или function' }
+        agent_id: { type: string, format: uuid, description: 'Агент функций (только для server: function)' }
+        tools:
+          type: array
+          minItems: 1
+          maxItems: 256
+          items:
+            type: object
+            required: [descriptor]
+            additionalProperties: false
+            properties:
+              descriptor: { type: object, additionalProperties: true, description: 'Описание из tools/list как прислал сервер' }
+              suspicious: { type: boolean }
+    ObserveToolsResult:
+      type: object
+      required: [new, changed, restored, suspicious, unchanged, skipped]
+      properties:
+        new: { type: integer }
+        changed: { type: integer }
+        restored: { type: integer }
+        suspicious: { type: integer }
+        unchanged: { type: integer }
+        skipped: { type: integer }
     CertificateRequest:
       type: object
       required: [csr]
@@ -403,7 +577,34 @@ components:
             Последний heartbeat при корректной остановке шлюза; только вместе с
             `started_at`. Совпадает с записанным запуском — сервер пишет
             `component.stop`. Свой предел частоты, отдельный от обычных heartbeat.
+        time:
+          type: string
+          format: date-time
+          description: |
+            Часы шлюза при отправке heartbeat (только после ответа с `clock_tls: true`). Сервер хранит расхождение с
+            собой (не больше 10 лет по модулю) и ведёт условие «Состояния
+            системы» `gateway_clock` — больше минуты (3Н40 ревью 3.r3). Шлюз
+            прежней версии поле не присылает.
+        tls_fingerprint:
+          type: string
+          pattern: '^([0-9a-f]{64})?$'
+          description: |
+            SHA-256 листового сертификата, которым шлюз сейчас отвечает
+            приложениям, hex; пусто — сертификат шлюза (`-tls-cert`). Расхождение
+            с сертификатом заказчика из консоли у шлюза на текущем пакете —
+            условие `gateway_tls` (3Н43 ревью 3.r3).
         budget: { $ref: '#/components/schemas/BudgetReport' }
+        approvals_pending:
+          type: array
+          maxItems: 256
+          uniqueItems: true
+          items: { type: string, format: uuid }
+          description: |
+            ID запросов подтверждения, которые шлюз сейчас ждёт (задача 4.10);
+            только после ответа с `approvals: true`. Ожидающие запросы шлюза,
+            которых нет в списке и которые созданы больше минуты назад,
+            закрываются как `interrupted` (шлюз перезапустился). С `stopping` —
+            закрываются все ожидающие запросы шлюза. Нет поля — сверки нет.
     BudgetReport:
       description: |
         Нарастающие счётчики расхода процесса шлюза (`started_at`) с его
@@ -464,6 +665,17 @@ components:
       properties:
         server_time: { type: string, format: date-time }
         interval_seconds: { type: integer, minimum: 1, description: Рекомендуемый период heartbeat }
+        clock_tls:
+          type: boolean
+          description: |
+            Сервер принимает поля `time` и `tls_fingerprint` (3Н40, 3Н43 ревью 3.r3): шлюз
+            присылает их только после такого ответа — шлюзы обновляют раньше сервера, а
+            сервер прежней версии отклоняет неизвестные поля.
+        approvals:
+          type: boolean
+          description: |
+            Сервер ведёт очередь подтверждений и принимает `approvals_pending`
+            (задача 4.10): шлюз присылает список только после такого ответа.
         reissue:
           type: boolean
           description: |
@@ -491,6 +703,40 @@ components:
             others:
               type: object
               additionalProperties: { type: integer, format: int64, minimum: 0 }
+    ApprovalCreate:
+      type: object
+      additionalProperties: false
+      required: [path, app, server, tool, risk, rule, severity, args_hash, args, timeout_seconds]
+      properties:
+        path: { type: string, enum: [mcp, chat] }
+        app: { type: string, pattern: '^[a-z0-9][a-z0-9-]{0,63}$' }
+        agent: { type: string, pattern: '^[a-z0-9-]{1,64}$', description: 'Slug агента; обязателен для mcp' }
+        user: { type: string, maxLength: 256, description: Псевдоним пользователя }
+        session: { type: string, maxLength: 256 }
+        server: { type: string, pattern: '^[a-z0-9-]{1,64}$', description: 'Slug MCP-сервера; function — путь chat' }
+        tool: { type: string, pattern: '^[A-Za-z0-9_.-]{1,128}$' }
+        approved_hash: { type: string, pattern: '^([0-9a-f]{64})?$' }
+        risk: { type: string, enum: [low, medium, high, critical] }
+        rule: { type: string, minLength: 1, maxLength: 128 }
+        message: { type: string, maxLength: 500 }
+        severity: { type: string, enum: [info, low, medium, high, critical] }
+        args_hash: { type: string, pattern: '^[0-9a-f]{64}$' }
+        args: { type: string, maxLength: 16384, description: 'Маскированные аргументы, до 16 КиБ в UTF-8' }
+        timeout_seconds: { type: integer, minimum: 60, maximum: 3600 }
+        request_event_id: { type: string, format: uuid }
+    ApprovalStatus:
+      type: object
+      required: [id, state, args_hash, approved_hash, deadline, waited_ms]
+      properties:
+        id: { type: string, format: uuid }
+        state: { type: string, enum: [pending, approved, denied, timeout, cancelled, interrupted] }
+        args_hash: { type: string }
+        approved_hash: { type: string }
+        deadline: { type: string, format: date-time }
+        closed_at: { type: string, format: date-time }
+        decided_by: { type: string, description: Логин пользователя консоли }
+        comment: { type: string, description: 'Комментарий к отклонению: в событие, не агенту' }
+        waited_ms: { type: integer, format: int64 }
     EventBatch:
       type: object
       required: [events]

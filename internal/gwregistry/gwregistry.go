@@ -55,6 +55,9 @@ var nameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
 // keyIDRe — KeyID ключа подписи пакетов (bundle.KeyID): 8 байт в hex.
 var keyIDRe = regexp.MustCompile(`^[0-9a-f]{16}$`)
 
+// fingerprintRe — отпечаток SHA-256 сертификата (как gateway_tls.fingerprint).
+var fingerprintRe = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
 // Ошибки. Тексты для журнала; клиенту внутреннего API причины отказа не
 // раскрываются.
 var (
@@ -118,6 +121,12 @@ type Gateway struct {
 	NextCertCA       string
 	// BundleKey — закреплённый ключ получателя HPKE (Н27); nil — не закреплён.
 	BundleKey []byte
+	// ClockSkew — насколько часы шлюза в последнем heartbeat опережали часы
+	// сервера (отрицательное — отставали); TLSFingerprint — отпечаток
+	// действующего сертификата адреса приложений, пусто — сертификат шлюза
+	// (3Н40, 3Н43 ревью 3.r3). nil — шлюз не сообщал.
+	ClockSkew      *time.Duration
+	TLSFingerprint *string
 }
 
 // Rollback — шлюз работает на выпуске старше того, что уже проверялся
@@ -196,6 +205,9 @@ type Heartbeat struct {
 	StartedAt time.Time
 	// Stopping — последний heartbeat при корректной остановке шлюза.
 	Stopping bool
+	// ClockSkew и TLSFingerprint — см. Gateway; nil — шлюз не сообщил.
+	ClockSkew      *time.Duration
+	TLSFingerprint *string
 }
 
 // TouchChange — что heartbeat изменил в строке шлюза; по нему сервис
@@ -671,6 +683,11 @@ type HeartbeatInput struct {
 	// Budget — счётчики расхода процесса шлюза (задача 3.18); nil — шлюз
 	// их не присылает (нет раздела budgets в пакете или прежняя версия).
 	Budget *BudgetReport
+	// Time — часы шлюза при отправке heartbeat, TLSFingerprint — отпечаток
+	// действующего сертификата адреса приложений (пусто — сертификат шлюза);
+	// нулевое и nil — шлюз прежней версии (3Н40, 3Н43 ревью 3.r3).
+	Time           time.Time
+	TLSFingerprint *string
 }
 
 // Пределы итогов проверок в heartbeat.
@@ -682,6 +699,8 @@ const (
 	maxManifestVersion = 128
 	// maxReportFuture — насколько время проверки может опережать часы сервера.
 	maxReportFuture = 5 * time.Minute
+	// maxClockSkew — предел хранимого расхождения часов шлюза с сервером.
+	maxClockSkew = 10 * 365 * 24 * time.Hour
 )
 
 // integrityReasons — причины итога целостности (миграция 0008_integrity).
@@ -765,6 +784,9 @@ func (in HeartbeatInput) Validate() error {
 	if len(in.BundleETag) > maxETag {
 		return fmt.Errorf("%w: bundle_etag — до %d символов", ErrInvalidRequest, maxETag)
 	}
+	if fp := in.TLSFingerprint; fp != nil && *fp != "" && !fingerprintRe.MatchString(*fp) {
+		return fmt.Errorf("%w: tls_fingerprint — пусто или 64 строчные шестнадцатеричные цифры", ErrInvalidRequest)
+	}
 	for i := 0; i < len(in.BundleETag); i++ {
 		if c := in.BundleETag[i]; c < 0x21 || c > 0x7e {
 			return fmt.Errorf("%w: bundle_etag — только печатные символы ASCII", ErrInvalidRequest)
@@ -810,10 +832,18 @@ func (s *Service) Heartbeat(ctx context.Context, gatewayID string, in HeartbeatI
 	prune(s.lastHB, now, s.minHB)
 	s.lastHB[key] = now
 	s.mu.Unlock()
-	ch, err := s.store.Touch(ctx, gatewayID, Heartbeat{
+	hb := Heartbeat{
 		Version: in.Version, BundleETag: in.BundleETag, Addr: ip, At: now, Selftest: in.Selftest, Integrity: in.Integrity,
 		BundleKeysOK: keysOK, VerifyRequest: in.VerifyRequest, StartedAt: in.StartedAt, Stopping: in.Stopping,
-	}, func(ch TouchChange) []audit.Entry {
+		TLSFingerprint: in.TLSFingerprint,
+	}
+	if !in.Time.IsZero() {
+		// Задержка сети — доли секунды при пороге в минуту; расхождение
+		// ограничено, чтобы шлюз с часами «в другом веке» не ломал запись.
+		skew := min(max(in.Time.Sub(now).Truncate(time.Millisecond), -maxClockSkew), maxClockSkew)
+		hb.ClockSkew = &skew
+	}
+	ch, err := s.store.Touch(ctx, gatewayID, hb, func(ch TouchChange) []audit.Entry {
 		return s.heartbeatEntries(gatewayID, in, ip, ch)
 	})
 	if err != nil {

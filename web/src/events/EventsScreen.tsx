@@ -4,9 +4,10 @@ import { useCallback, useMemo, useState } from "react";
 import { useSearchParams } from "react-router";
 import type { Me } from "../api/client";
 import { Button } from "../ui/Button";
+import { Select } from "../ui/Field";
 import { Banner, EmptyState } from "../ui/Layout";
 import { Toaster } from "../ui/Toaster";
-import { describeError, eventsApi, type Query } from "./api";
+import { type CsvDelimiter, delimiterTitles, describeError, eventsApi, type Query } from "./api";
 import { EventCard } from "./EventCard";
 import { EventTable } from "./EventTable";
 import { buildFilter, parseFilter } from "./filter";
@@ -32,6 +33,7 @@ export function EventsScreen({ me }: { me: Me }) {
   const [toast, setToast] = useState<{ title: string; text: string } | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
+  const [delimiter, setDelimiter] = useState<CsvDelimiter>("semicolon");
 
   const canExport = me.permissions.includes("events.export");
   const canReadContent = me.permissions.includes("events.content.read");
@@ -75,7 +77,7 @@ export function EventsScreen({ me }: { me: Me }) {
     setExporting(true);
     setExportError(null);
     try {
-      const r = await eventsApi.export(query, format);
+      const r = await eventsApi.export(query, format, delimiter);
       save(r.blob, r.name);
       setToast({
         title: "Выгружено",
@@ -102,6 +104,17 @@ export function EventsScreen({ me }: { me: Me }) {
             </Button>
             {canExport && (
               <>
+                <Select
+                  aria-label="Разделитель CSV"
+                  value={delimiter}
+                  onChange={(e) => setDelimiter(e.target.value as CsvDelimiter)}
+                >
+                  {delimiterTitles.map(([v, t]) => (
+                    <option key={v} value={v}>
+                      {t}
+                    </option>
+                  ))}
+                </Select>
                 <Button disabled={exporting} onClick={() => void doExport("csv")}>
                   <Download size={16} aria-hidden="true" />
                   Выгрузить CSV

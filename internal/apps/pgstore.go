@@ -87,6 +87,8 @@ func pgErr(err error) error {
 			return ErrSlugTaken
 		case pe.Code == "23503" && pe.ConstraintName == "applications_provider_id_fkey":
 			return ErrProviderNotFound
+		case pe.Code == "23503" && pe.ConstraintName == "app_keys_agent_fkey":
+			return ErrAgentNotFound
 		}
 	}
 	return err
@@ -492,15 +494,15 @@ func (s *PGStore) Applications(ctx context.Context, orgID, ownerID string, after
 // --- Ключи ---
 
 const keyCols = `id::text, org_id::text, app_id::text, name, prefix, key_hash, hash_alg, allowed_cidrs, expires_at,
-	created_at, created_by, rotated_from::text, revoked_at, revoked_by`
+	created_at, created_by, rotated_from::text, revoked_at, revoked_by, agent_id::text`
 
 func scanKey(row pgx.Row) (Key, error) {
 	var k Key
-	var rotated, revokedBy *string
+	var rotated, revokedBy, agent *string
 	var revoked *time.Time
 	var cidrs []netip.Prefix
 	if err := row.Scan(&k.ID, &k.OrgID, &k.AppID, &k.Name, &k.Prefix, &k.Hash, &k.HashAlg, &cidrs, &k.ExpiresAt,
-		&k.CreatedAt, &k.CreatedBy, &rotated, &revoked, &revokedBy); err != nil {
+		&k.CreatedAt, &k.CreatedBy, &rotated, &revoked, &revokedBy, &agent); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return Key{}, ErrNotFound
 		}
@@ -510,7 +512,7 @@ func scanKey(row pgx.Row) (Key, error) {
 	if k.AllowedCIDRs == nil {
 		k.AllowedCIDRs = []netip.Prefix{}
 	}
-	k.RotatedFrom, k.RevokedBy, k.RevokedAt = derefS(rotated), derefS(revokedBy), derefT(revoked)
+	k.RotatedFrom, k.RevokedBy, k.RevokedAt, k.AgentID = derefS(rotated), derefS(revokedBy), derefT(revoked), derefS(agent)
 	k.ExpiresAt, k.CreatedAt = k.ExpiresAt.UTC(), k.CreatedAt.UTC()
 	return k, nil
 }
@@ -521,8 +523,9 @@ func insertKey(ctx context.Context, tx pgx.Tx, k Key) error {
 		cidrs = []netip.Prefix{}
 	}
 	_, err := tx.Exec(ctx, `INSERT INTO app_keys (id, org_id, app_id, name, prefix, key_hash, hash_alg, allowed_cidrs,
-		expires_at, created_at, created_by, rotated_from) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
-		k.ID, k.OrgID, k.AppID, k.Name, k.Prefix, k.Hash, k.HashAlg, cidrs, k.ExpiresAt, k.CreatedAt, k.CreatedBy, nullStr(k.RotatedFrom))
+		expires_at, created_at, created_by, rotated_from, agent_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+		k.ID, k.OrgID, k.AppID, k.Name, k.Prefix, k.Hash, k.HashAlg, cidrs, k.ExpiresAt, k.CreatedAt, k.CreatedBy, nullStr(k.RotatedFrom),
+		nullStr(k.AgentID))
 	return pgErr(err)
 }
 

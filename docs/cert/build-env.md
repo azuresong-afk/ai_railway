@@ -49,8 +49,15 @@
 
 Манифест целостности (ОЦЛ.1, ADR-0012) создаёт `make manifest` (входит в `make check`): `build/aisec-manifest.json` и подпись `.sig` по бинарникам поставки, `web/dist` и `migrations/`, затем проверка готового манифеста через `build/bin/aisec-cli verify`.
 - По умолчанию манифест подписывается тестовым ключом `testdata/integrity/manifest-test.signkey` («не для поставки»), а бинарники встраивают его открытую пару.
-- Поставочная сборка — `make manifest RELEASE=1 MANIFEST_KEY=<ключ производителя вне репозитория>`. `RELEASE=1` собирает с тегом `aisec_release`, и бинарники встраивают открытый ключ производителя `internal/integrity/keys/manifest.pub`.
-- Без `MANIFEST_KEY` поставочный манифест не создаётся, а без файла открытого ключа поставочная сборка не компилируется. Инструменты разработки ставятся `make tools` в `bin/` по версиям из переменных в начале `Makefile`.
+- Поставочная сборка (ADR-0022) — три шага, закрытый ключ производителя на сборочную машину не попадает:
+  1. `make release-dir RELEASE=1` на теге `VERSION` из чистого дерева: бинарники с тегом `aisec_release` (встраивают открытый ключ производителя `internal/integrity/keys/manifest.pub`) и манифест **без подписи** в `build/release`, на экране — его SHA-256.
+  2. На отдельной машине без сети: `tools/manifest sign -key <ключ на отдельном носителе> -manifest aisec-manifest.json -expect-sha256 <хеш шага 1>` (статический инструмент — `make release-signer`; при Go и репозитории на машине подписи — `make release-sign MANIFEST_KEY=… MANIFEST_SHA256=…`). Инструмент отказывает при работающем сетевом интерфейсе, ключе из репозитория, файле ключа с открытыми правами и несовпадении хеша.
+  3. `make images RELEASE=1`: проверка подписи поставочным `aisec-cli verify`, `release-test` с настоящим ключом, отпечаток ключа (`make release-fingerprint`), образы, SBOM, `images-verify`.
+- `make manifest RELEASE=1` и `make check RELEASE=1` отказывают: проверки идут без `RELEASE`. Без файла открытого ключа поставочная сборка не компилируется.
+- `make release-test` входит в `make check`: тесты с тегом `aisec_release`, где вместо `keys/manifest.pub` через `go test -overlay` встроена имитация ключа производителя (`internal/integrity/keys/manifest-release-ci.pub`, закрытая пара — `testdata/integrity/`, поставочная сборка её не принимает).
+- Переменные сборки: `RELEASE` (`1` — поставочная сборка), `MANIFEST_KEY` (путь к закрытому ключу производителя, только `release-sign` на машине без сети), `MANIFEST_SHA256` (ожидаемый хеш манифеста для `release-sign`), `VERSION`.
+
+Инструменты разработки ставятся `make tools` в `bin/` по версиям из переменных в начале `Makefile`.
 
 ## CI
 GitHub Actions — тонкая обёртка над `make` (ADR-0002):
@@ -80,6 +87,13 @@ GitHub Actions — тонкая обёртка над `make` (ADR-0002):
 - База уязвимостей: `make vuln` использует `GOVULNDB`, по умолчанию `https://vuln.go.dev`; в закрытом контуре — `make vuln GOVULNDB=file:///<каталог снимка>`. Без доступа к базе `make vuln` падает, проверка молча не пропускается.
 - В облачной среде разработки ИИ-ассистента сетевая политика на 29.09.2026 запрещает `vuln.go.dev` (ответ 403), поэтому там `make vuln` не проходит; проверка уязвимостей выполняется в CI.
 - npm: до этапа 6 — публичный реестр строго по lock-файлу, затем внутреннее зеркало.
+
+## Сборка ONNX Runtime для `aisec-ml` (ADR-0024, раздел 8)
+Статус на 27.10.2026: решение принято в ADR-0024, библиотека ждёт согласия владельца; до него `aisec-ml` собирается без cgo и без исполнителя ONNX (`CGO_ALLOWED` пуст).
+- Версия — ONNX Runtime 1.31.0 (C API 31, коммит `402979ac1bef89dcd55add41eaa7277c407599eb`), ровно та, под которую собрана Go-обвязка.
+- Рекомендуемый вариант — сборка из исходников с `--no_telemetry`, библиотека общего пользования, только исполнитель CPU. В официальной сборке Microsoft для Linux телеметрия включена по умолчанию (клиент 1DS со статическими curl, mbedTLS, SQLite; SHA-256 архива `onnxruntime-linux-x64-1.31.0.tgz` — `cc5c72baf5ae5c8238a6841f0897227be2d02826b9cf98eaf02fdefaeeb03a57`).
+- Исходники ORT и архивы зависимостей из `cmake/deps.txt` скачиваются отдельным шагом с сетью (`make ort-fetch`) и сверяются с SHA-256 из `deploy/build/onnxruntime/deps.lock`; сборка (`make ort-build`) — в контейнере `--network none` с `FETCHCONTENT_FULLY_DISCONNECTED=ON`.
+- SHA-256 собранной библиотеки фиксируется в `deploy/build/onnxruntime/ort.sha256` и встраивается в `aisec-ml`; `aisec-ml` сверяет хеш файла до `dlopen`. Библиотека входит в манифест целостности (вид `library`) и в SBOM со списком статически встроенных компонентов.
 
 ## Управление изменениями и подпись
 Решение — ADR-0002.
