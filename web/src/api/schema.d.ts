@@ -1639,6 +1639,60 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/me/email": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Задать или убрать свой e-mail
+         * @description Право `self`: меняется только запись самого пользователя (идентификатор берётся из сессии).
+         *     Правила и журнал — как у `PUT /api/v1/users/{id}/email`. Токеном API не вызывается.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["EmailInput"];
+                };
+            };
+            responses: {
+                /** @description Учётная запись */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["User"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/users": {
         parameters: {
             query?: never;
@@ -1876,6 +1930,66 @@ export interface paths {
                 500: components["responses"]["ProblemInternal"];
             };
         };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/users/{id}/email": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Задать или убрать e-mail учётной записи
+         * @description Право `users.manage`; роль записи не сильнее роли вызывающего (УПД.2). E-mail необязателен
+         *     и нужен для рассылки отчётов: до 254 символов, простая проверка формата, без письма-подтверждения.
+         *     Пустая строка убирает адрес. Адрес — персональные данные: в журнал аудита пишется только факт
+         *     изменения (`user.email_set`: `self`, `cleared`, `changed`), в технические журналы адрес не попадает.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID учётной записи (UUID) */
+                    id: components["parameters"]["UserID"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["EmailInput"];
+                };
+            };
+            responses: {
+                /** @description Учётная запись */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["User"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+            };
+        };
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -7654,7 +7768,7 @@ export interface paths {
          *     установки, оба включительно; начало не в будущем, конец позже сегодняшнего урезается до
          *     сегодняшнего дня, не больше 366 суток. `format`: `html` (по умолчанию; страница для просмотра
          *     и печати в PDF средствами браузера, без скриптов, со своей политикой CSP и допустимой рамкой
-         *     консоли того же адреса), `csv` (UTF-8 с BOM, защита от формул), `xlsx` (один лист, без формул
+         *     консоли того же адреса), `csv` (UTF-8 с BOM, защита от формул, разделитель — `delimiter`), `xlsx` (один лист, без формул
          *     и макросов). `app` — slug приложения: отчёт только по нему (инциденты, оповещения и бюджеты в
          *     сводный отчёт по приложению не входят). Владельцу приложения доступен только `summary` с `app`
          *     своего приложения; чужое приложение — 404, другой вид — 403. Каждая выгрузка пишет
@@ -7670,6 +7784,8 @@ export interface paths {
                     /** @description Последний день периода включительно, ГГГГ-ММ-ДД; вместе с `from` */
                     to?: string;
                     format?: "html" | "csv" | "xlsx";
+                    /** @description Разделитель полей CSV; только с `format=csv`, по умолчанию `semicolon` («;») */
+                    delimiter?: "semicolon" | "comma";
                     /** @description Slug приложения */
                     app?: string;
                 };
@@ -8009,6 +8125,54 @@ export interface paths {
                     };
                     content: {
                         "application/json": components["schemas"]["ReportChannelList"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/report-recipients": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Пользователи для выбора получателей рассылки отчётов
+         * @description Право `reports.schedules.manage`. Активные пользователи, которым вызывающий вправе слать отчёты:
+         *     есть `reports.read` на все объекты и права на те же разделы отчёта, что у вызывающего (УПД.2).
+         *     Выдаются ID, логин, имя и признак `has_email` — адрес не выдаётся: расписания ведёт тот, у кого нет
+         *     права `users.read`. Пользователь без адреса в расписании допустим, при отправке он пропускается,
+         *     число пропущенных — в журнале рассылки (`skipped_no_email`).
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Пользователи */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ReportRecipientList"];
                     };
                 };
                 401: components["responses"]["ProblemUnauthorized"];
@@ -10492,6 +10656,8 @@ export interface components {
             id: string;
             login: string;
             display_name: string;
+            /** @description E-mail для рассылки отчётов; пустая строка — адреса нет */
+            email: string;
             role: components["schemas"]["Role"];
             /** @enum {string} */
             status: "active" | "deactivated";
@@ -10511,6 +10677,10 @@ export interface components {
             last_login_at?: string;
             /** Format: date-time */
             deactivated_at?: string;
+        };
+        EmailInput: {
+            /** @description Адрес вида user@example.ru; пустая строка убирает адрес */
+            email: string;
         };
         NewUser: {
             login: string;
@@ -10781,6 +10951,12 @@ export interface components {
         EventExportRequest: {
             /** @enum {string} */
             format: "csv" | "json";
+            /**
+             * @description Разделитель полей CSV; по умолчанию «;» (Excel с русской локалью), для json не используется
+             * @default semicolon
+             * @enum {string}
+             */
+            delimiter: "semicolon" | "comma";
             /** Format: date-time */
             from?: string;
             /** Format: date-time */
@@ -11553,6 +11729,12 @@ export interface components {
             channel_id: string;
             /** @default true */
             enabled: boolean;
+            /**
+             * @description Получатели-пользователи консоли (необязательно): адрес берётся из учётной записи при отправке, в
+             *     дополнение к адресам почтового канала. Пользователь — активный, с `reports.read` на все объекты и
+             *     с правом на те разделы отчёта, что входят в расписание (иначе 400).
+             */
+            recipient_user_ids?: string[];
             /** @description Для изменения */
             version?: number;
         };
@@ -11572,6 +11754,7 @@ export interface components {
             /** Format: uuid */
             channel_id: string;
             enabled: boolean;
+            recipient_user_ids: string[];
             /** Format: date-time */
             next_run_at: string;
             /** Format: date-time */
@@ -11607,6 +11790,21 @@ export interface components {
             created_at: string;
             /** Format: date-time */
             sent_at?: string;
+            /**
+             * @description Получателей-пользователей пропущено в последней попытке: нет e-mail, учётная запись деактивирована
+             *     или у роли нет права на отчёт. Адреса в журнал доставки не пишутся.
+             */
+            skipped_no_email: number;
+        };
+        ReportRecipientList: {
+            items: {
+                /** Format: uuid */
+                id: string;
+                login: string;
+                display_name: string;
+                /** @description Задан ли e-mail; сам адрес не выдаётся */
+                has_email: boolean;
+            }[];
         };
         ReportChannelList: {
             items: {

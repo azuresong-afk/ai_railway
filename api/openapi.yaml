@@ -899,6 +899,34 @@ paths:
         '403': { $ref: '#/components/responses/ProblemForbidden' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ProblemInternal' }
+  /api/v1/me/email:
+    put:
+      summary: Задать или убрать свой e-mail
+      description: |
+        Право `self`: меняется только запись самого пользователя (идентификатор берётся из сессии).
+        Правила и журнал — как у `PUT /api/v1/users/{id}/email`. Токеном API не вызывается.
+      x-permission: self
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EmailInput' }
+      responses:
+        '200':
+          description: Учётная запись
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
   /api/v1/users:
     get:
       summary: Список учётных записей
@@ -1014,6 +1042,38 @@ paths:
         '403': { $ref: '#/components/responses/ProblemForbidden' }
         '404': { $ref: '#/components/responses/ProblemNotFound' }
         '422': { $ref: '#/components/responses/ProblemUnprocessable' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+  /api/v1/users/{id}/email:
+    put:
+      summary: Задать или убрать e-mail учётной записи
+      description: |
+        Право `users.manage`; роль записи не сильнее роли вызывающего (УПД.2). E-mail необязателен
+        и нужен для рассылки отчётов: до 254 символов, простая проверка формата, без письма-подтверждения.
+        Пустая строка убирает адрес. Адрес — персональные данные: в журнал аудита пишется только факт
+        изменения (`user.email_set`: `self`, `cleared`, `changed`), в технические журналы адрес не попадает.
+      x-permission: users.manage
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/UserID'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EmailInput' }
+      responses:
+        '200':
+          description: Учётная запись
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ProblemInternal' }
   /api/v1/users/{id}/password-reset:
@@ -4284,7 +4344,7 @@ paths:
         установки, оба включительно; начало не в будущем, конец позже сегодняшнего урезается до
         сегодняшнего дня, не больше 366 суток. `format`: `html` (по умолчанию; страница для просмотра
         и печати в PDF средствами браузера, без скриптов, со своей политикой CSP и допустимой рамкой
-        консоли того же адреса), `csv` (UTF-8 с BOM, защита от формул), `xlsx` (один лист, без формул
+        консоли того же адреса), `csv` (UTF-8 с BOM, защита от формул, разделитель — `delimiter`), `xlsx` (один лист, без формул
         и макросов). `app` — slug приложения: отчёт только по нему (инциденты, оповещения и бюджеты в
         сводный отчёт по приложению не входят). Владельцу приложения доступен только `summary` с `app`
         своего приложения; чужое приложение — 404, другой вид — 403. Каждая выгрузка пишет
@@ -4313,6 +4373,11 @@ paths:
           in: query
           required: false
           schema: { type: string, enum: [html, csv, xlsx], default: html }
+        - name: delimiter
+          in: query
+          required: false
+          description: Разделитель полей CSV; только с `format=csv`, по умолчанию `semicolon` («;»)
+          schema: { type: string, enum: [semicolon, comma], default: semicolon }
         - name: app
           in: query
           required: false
@@ -4496,6 +4561,28 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ReportChannelList' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/report-recipients:
+    get:
+      summary: Пользователи для выбора получателей рассылки отчётов
+      description: |
+        Право `reports.schedules.manage`. Активные пользователи, которым вызывающий вправе слать отчёты:
+        есть `reports.read` на все объекты и права на те же разделы отчёта, что у вызывающего (УПД.2).
+        Выдаются ID, логин, имя и признак `has_email` — адрес не выдаётся: расписания ведёт тот, у кого нет
+        права `users.read`. Пользователь без адреса в расписании допустим, при отправке он пропускается,
+        число пропущенных — в журнале рассылки (`skipped_no_email`).
+      x-permission: reports.schedules.manage
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      responses:
+        '200':
+          description: Пользователи
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReportRecipientList' }
         '401': { $ref: '#/components/responses/ProblemUnauthorized' }
         '403': { $ref: '#/components/responses/ProblemForbidden' }
         '429': { $ref: '#/components/responses/RateLimited' }
@@ -6697,11 +6784,12 @@ components:
         revoked_sessions: { type: integer, description: Сколько сессий пользователя завершено }
     User:
       type: object
-      required: [id, login, display_name, role, status, locked, must_change_password, password_changed_at, created_at]
+      required: [id, login, display_name, email, role, status, locked, must_change_password, password_changed_at, created_at]
       properties:
         id: { type: string, format: uuid }
         login: { type: string }
         display_name: { type: string }
+        email: { type: string, maxLength: 254, description: 'E-mail для рассылки отчётов; пустая строка — адреса нет' }
         role: { $ref: '#/components/schemas/Role' }
         status: { type: string, enum: [active, deactivated] }
         locked: { type: boolean, description: 'Заблокирована после неудачных попыток (ИАФ.4)' }
@@ -6711,6 +6799,12 @@ components:
         created_at: { type: string, format: date-time }
         last_login_at: { type: string, format: date-time }
         deactivated_at: { type: string, format: date-time }
+    EmailInput:
+      type: object
+      required: [email]
+      additionalProperties: false
+      properties:
+        email: { type: string, maxLength: 254, description: 'Адрес вида user@example.ru; пустая строка убирает адрес' }
     NewUser:
       type: object
       required: [login, display_name, role]
@@ -6999,6 +7093,11 @@ components:
       additionalProperties: false
       properties:
         format: { type: string, enum: [csv, json] }
+        delimiter:
+          type: string
+          enum: [semicolon, comma]
+          default: semicolon
+          description: Разделитель полей CSV; по умолчанию «;» (Excel с русской локалью), для json не используется
         from: { type: string, format: date-time }
         to: { type: string, format: date-time }
         filter: { type: string, maxLength: 2048 }
@@ -7757,10 +7856,19 @@ components:
         format: { type: string, enum: [html, xlsx] }
         channel_id: { type: string, format: uuid }
         enabled: { type: boolean, default: true }
+        recipient_user_ids:
+          type: array
+          maxItems: 20
+          uniqueItems: true
+          items: { type: string, format: uuid }
+          description: |
+            Получатели-пользователи консоли (необязательно): адрес берётся из учётной записи при отправке, в
+            дополнение к адресам почтового канала. Пользователь — активный, с `reports.read` на все объекты и
+            с правом на те разделы отчёта, что входят в расписание (иначе 400).
         version: { type: integer, minimum: 1, description: Для изменения }
     ReportSchedule:
       type: object
-      required: [id, name, report, frequency, at, format, channel_id, enabled, next_run_at, version, created_at, created_by, updated_at, updated_by]
+      required: [id, name, report, frequency, at, format, channel_id, enabled, recipient_user_ids, next_run_at, version, created_at, created_by, updated_at, updated_by]
       properties:
         id: { type: string, format: uuid }
         name: { type: string }
@@ -7772,6 +7880,7 @@ components:
         format: { type: string, enum: [html, xlsx] }
         channel_id: { type: string, format: uuid }
         enabled: { type: boolean }
+        recipient_user_ids: { type: array, items: { type: string, format: uuid } }
         next_run_at: { type: string, format: date-time }
         last_run_at: { type: string, format: date-time }
         version: { type: integer }
@@ -7786,7 +7895,7 @@ components:
         items: { type: array, items: { $ref: '#/components/schemas/ReportSchedule' } }
     ReportRun:
       type: object
-      required: [id, due_at, period_first, period_last, status, attempts, created_at]
+      required: [id, due_at, period_first, period_last, status, attempts, created_at, skipped_no_email]
       properties:
         id: { type: string, format: uuid }
         due_at: { type: string, format: date-time }
@@ -7798,6 +7907,25 @@ components:
         error: { type: string, description: Код ошибки без текста ответа сервера }
         created_at: { type: string, format: date-time }
         sent_at: { type: string, format: date-time }
+        skipped_no_email:
+          type: integer
+          description: |
+            Получателей-пользователей пропущено в последней попытке: нет e-mail, учётная запись деактивирована
+            или у роли нет права на отчёт. Адреса в журнал доставки не пишутся.
+    ReportRecipientList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            required: [id, login, display_name, has_email]
+            properties:
+              id: { type: string, format: uuid }
+              login: { type: string }
+              display_name: { type: string }
+              has_email: { type: boolean, description: 'Задан ли e-mail; сам адрес не выдаётся' }
     ReportChannelList:
       type: object
       required: [items]

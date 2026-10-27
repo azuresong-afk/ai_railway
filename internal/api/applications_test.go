@@ -125,7 +125,8 @@ func newAppsEnv(t testing.TB) *appsEnv {
 	}
 	e.caPEM = string(ca.CertPEM())
 	logger := slog.New(slog.NewTextHandler(e.log, nil))
-	e.reports = newTestReports(t, e.dash)
+	authSvc := testAuth(t, e.mem, auth.WithClock(e.clock.now))
+	e.reports = newTestReports(t, e.dash, ReportDirectory{Auth: authSvc})
 	e.agents = agents.NewMemory()
 	if e.agentsSvc, err = agents.New(agents.Options{Store: e.agents, Provider: p, Box: box, Apps: agents.AppsOf(svc),
 		Clock: e.clock.now}); err != nil {
@@ -135,7 +136,7 @@ func newAppsEnv(t testing.TB) *appsEnv {
 	if e.approvalsSvc, err = approvals.New(approvals.Options{Store: e.approvals, Provider: p, Box: box, Clock: e.aclock.now}); err != nil {
 		t.Fatal(err)
 	}
-	h, _, err := New(Options{Hasher: testHasher(t), Logger: logger, Auth: testAuth(t, e.mem, auth.WithClock(e.clock.now)), Apps: svc,
+	h, _, err := New(Options{Hasher: testHasher(t), Logger: logger, Auth: authSvc, Apps: svc,
 		Policies: pols, Events: e.ev, Audit: e.rec, Dashboards: e.dash, Reports: e.reports, Agents: e.agentsSvc, Approvals: e.approvalsSvc,
 		RateLimit: RateConfig{Rules: []RateRule{{Prefix: "/", Max: 100000, Window: time.Minute}}}, Stopping: e.stopping})
 	if err != nil {

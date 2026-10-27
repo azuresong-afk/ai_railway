@@ -6,7 +6,7 @@ import { AdminScreen } from "./AdminScreen";
 import { tokenGrantable } from "./TokensTab";
 
 const me = (permissions: string[]): Me => ({
-  user: { id: "u-me", login: "boss", display_name: "Босс", role: "security_admin", status: "active", locked: false, must_change_password: false, password_changed_at: "2026-10-01T00:00:00Z", created_at: "2026-10-01T00:00:00Z" },
+  user: { id: "u-me", login: "boss", display_name: "Босс", email: "", role: "security_admin", status: "active", locked: false, must_change_password: false, password_changed_at: "2026-10-01T00:00:00Z", created_at: "2026-10-01T00:00:00Z" },
   session_state: "active",
   timezone: "Europe/Moscow",
   permissions,
@@ -16,6 +16,7 @@ const user = (id: string, login: string) => ({
   id,
   login,
   display_name: `Имя ${login}`,
+  email: "",
   role: "analyst",
   status: "active",
   locked: false,
@@ -48,6 +49,11 @@ beforeEach(() => {
       calls.push({ method: init.method ?? "GET", url, body });
       const json = (b: unknown, status = 200) => Promise.resolve(new Response(JSON.stringify(b), { status }));
       if (url.startsWith("/api/v1/users?")) return json({ items: [user("u-me", "boss"), user("u-2", "petrov")] });
+      if (url.endsWith("/email")) {
+        return init.method === "PUT" && (body as { email: string }).email === "плохой"
+          ? json({ code: "invalid_request", detail: "E-mail: вида user@example.ru.", status: 400 }, 400)
+          : json({ ...user("u-2", "petrov"), email: (body as { email: string }).email });
+      }
       if (url.endsWith("/role")) {
         return roleStatus === 200
           ? json({ user: user("u-2", "petrov"), revoked_sessions: 1 })
@@ -123,6 +129,27 @@ describe("администрирование", () => {
     expect(screen.getByRole("button", { name: "Сбросить пароль: boss" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Деактивировать: boss" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Сменить роль: petrov" })).toBeEnabled();
+  });
+
+  it("e-mail пользователя задаёт держатель users.manage; без права кнопки нет", async () => {
+    renderScreen(["users.read"]);
+    await screen.findByText("petrov");
+    expect(screen.queryByRole("button", { name: /E-mail:/ })).toBeNull();
+    expect(screen.getAllByText("не задан").length).toBeGreaterThan(0);
+  });
+
+  it("диалог e-mail: пробелы по краям убираются, пустое значение допустимо, ошибка сервера остаётся в диалоге", async () => {
+    renderScreen(["users.read", "users.manage"]);
+    await screen.findByText("petrov");
+    fireEvent.click(screen.getByRole("button", { name: "E-mail: petrov" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.change(within(dialog).getByLabelText("E-mail"), { target: { value: "плохой" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Сохранить" }));
+    expect(await within(dialog).findByText(/вида user@example.ru/)).toBeInTheDocument();
+    fireEvent.change(within(dialog).getByLabelText("E-mail"), { target: { value: " petrov@example.ru " } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Сохранить" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(calls.filter((c) => c.method === "PUT").map((c) => c.body)).toEqual([{ email: "плохой" }, { email: "petrov@example.ru" }]);
   });
 
   it("смена роли идёт через диалог, отказ сервера показывается", async () => {

@@ -5,7 +5,7 @@ import type { Me } from "../api/client";
 import { PoliciesScreen } from "./PoliciesScreen";
 
 const me = (permissions: string[]): Me => ({
-  user: { id: "u-me", login: "boss", display_name: "Босс", role: "security_admin", status: "active", locked: false, must_change_password: false, password_changed_at: "2026-10-01T00:00:00Z", created_at: "2026-10-01T00:00:00Z" },
+  user: { id: "u-me", login: "boss", display_name: "Босс", email: "", role: "security_admin", status: "active", locked: false, must_change_password: false, password_changed_at: "2026-10-01T00:00:00Z", created_at: "2026-10-01T00:00:00Z" },
   session_state: "active",
   timezone: "Europe/Moscow",
   permissions,

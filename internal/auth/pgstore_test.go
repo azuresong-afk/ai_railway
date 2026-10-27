@@ -586,3 +586,53 @@ func TestPGLastAdminLockoutCapped(t *testing.T) {
 		t.Fatalf("бессрочная блокировка пользователя: %v %v", until, err)
 	}
 }
+
+// Задача 4.6: e-mail в PostgreSQL — значение сохраняется и убирается, запись
+// аудита в той же транзакции без самого адреса, неизвестная запись — ErrNotFound.
+func TestPGEmail(t *testing.T) {
+	e := setupPG(t)
+	ctx := pgCtx(t)
+	e.addUser(t, adminID, "admin", auth.RoleSecurityAdmin)
+	res, err := e.login(t, "admin", phrase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin := e.mfa.complete(t, res)
+	u, _, err := e.svc.CreateUser(ctx, admin, auth.NewUser{Login: "ivanov", DisplayName: "Иванов", Role: auth.RoleAnalyst})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.Email != "" {
+		t.Fatalf("новая запись с адресом: %q", u.Email)
+	}
+	if err := e.svc.SetEmail(ctx, admin, u.ID, "ivanov@example.ru"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := e.svc.User(ctx, u.ID)
+	if err != nil || got.Email != "ivanov@example.ru" {
+		t.Fatalf("после задания: %+v %v", got, err)
+	}
+	list, err := e.svc.Users(ctx, nil, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, x := range list {
+		found = found || (x.ID == u.ID && x.Email == "ivanov@example.ru")
+	}
+	if !found {
+		t.Fatal("адрес не виден в списке")
+	}
+	if err := e.svc.SetEmail(ctx, admin, u.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ = e.svc.User(ctx, u.ID); got.Email != "" { //nolint:gosec // тест: ошибка чтения проверяется по полю адреса
+		t.Fatalf("адрес не убран: %q", got.Email)
+	}
+	if err := e.svc.SetEmail(ctx, admin, "01900000-0000-7000-8000-0000000000ff", "a@example.ru"); !errors.Is(err, auth.ErrNotFound) {
+		t.Fatalf("несуществующая запись: %v", err)
+	}
+	if err := e.store.SetEmail(ctx, audit.DefaultOrgID, u.ID, strings.Repeat("a", 255), audit.Entry{}); err == nil {
+		t.Fatal("адрес длиннее 254 принят базой")
+	}
+}

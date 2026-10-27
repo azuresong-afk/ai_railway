@@ -592,8 +592,58 @@ func (b *Builder) pilot(ctx context.Context, p Params, sc Scope, meta [][2]strin
 		Note:   "Оценка по ценам моделей, которые заполнил администратор; запросы моделей без цены не оценены.",
 		Header: with(requestHeader, "Модель"), Rows: requestRows(byModel)})
 
+	d.Sections = append(d.Sections, pilotCriteria(ag, mk))
 	d.Sections = append(d.Sections, Section{Title: "Рекомендации", Rows: recommendations(ag.totals, mk, inv, st)})
 	return d, nil
+}
+
+// Значения критериев успеха пилота по умолчанию (docs/pilot/checklist.md,
+// раздел 6; решение владельца 22.10.2026, задача 4.6): заказчик и владелец
+// могут изменить их при согласовании пилота.
+const (
+	// PilotMaxFalsePositivePercent — доля блокировок, отмеченных как
+	// ложные срабатывания, не больше, %.
+	PilotMaxFalsePositivePercent = 2
+	// PilotMaxLatencyP95Ms — накладная задержка шлюза, 95-й процентиль, не
+	// больше, мс (ТЗ 5.1, промпт до 8 КБ).
+	PilotMaxLatencyP95Ms = 30
+)
+
+// pilotCriteria — критерии успеха, которые отчёт может проверить по цифрам
+// периода. Остальные (время установки, ручные сценарии, решение заказчика)
+// заполняются на итоговой встрече по таблице чек-листа.
+func pilotCriteria(ag aggregates, mk MarkStats) Section {
+	s := Section{Title: "Критерии успеха пилота (значения по умолчанию)",
+		Note: "Значения по умолчанию из чек-листа пилота; заказчик и владелец могут изменить их при согласовании. " +
+			"Остальные критерии (установка, сценарии показа, решение о продолжении) заполняются на итоговой встрече.",
+		Header: []string{"Критерий", "По умолчанию", "Факт", "Итог"}}
+	fpFact, fpVerdict := "нет данных", "нет данных"
+	if blocks := ag.totals.Blocked + ag.totals.WouldBlock; blocks > 0 {
+		// Отмеченных событий не больше, чем блокировок в расчёте: отметка могла
+		// быть и у запроса, который не блокировался.
+		pct := min(mk.FalsePositive, blocks) * 100 / blocks
+		fpFact = fmt.Sprintf("%d %% (%d из %d)", pct, min(mk.FalsePositive, blocks), blocks)
+		fpVerdict = verdict(pct <= PilotMaxFalsePositivePercent)
+	}
+	latVerdict := "нет данных"
+	if ag.latency.Total > 0 {
+		// Верхняя граница корзины 95-го процентиля: «больше предела» — не выполнено.
+		latVerdict = verdict(ag.latency.P95 != events.DashLatencyOverflow && ag.latency.P95 <= PilotMaxLatencyP95Ms)
+	}
+	s.Rows = [][]Cell{
+		{T("Мало ложных срабатываний: блокировки, отмеченные как ложные, к общему числу блокировок (с режимом мониторинга)"),
+			T(fmt.Sprintf("не более %d %%", PilotMaxFalsePositivePercent)), T(fpFact), T(fpVerdict)},
+		{T("Нет влияния на работу: задержка шлюза, 95-й процентиль"),
+			T(fmt.Sprintf("не более %d мс", PilotMaxLatencyP95Ms)), T(p95(ag.latency)), T(latVerdict)},
+	}
+	return s
+}
+
+func verdict(ok bool) string {
+	if ok {
+		return "выполняется"
+	}
+	return "не выполняется"
 }
 
 func sortedKeys(m map[string]int) []string {

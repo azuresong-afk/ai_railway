@@ -11,17 +11,20 @@ import (
 	"time"
 
 	"github.com/azuresong-afk/ai_railway/internal/audit"
+	"github.com/azuresong-afk/ai_railway/internal/events"
 	"github.com/azuresong-afk/ai_railway/internal/ids"
 	"github.com/azuresong-afk/ai_railway/internal/notify"
 )
 
 // Ошибки сервиса.
 var (
-	ErrNotFound        = errors.New("отчёты: расписание не найдено")
-	ErrVersionConflict = errors.New("отчёты: расписание изменено другим пользователем")
-	ErrTooMany         = errors.New("отчёты: достигнут предел числа расписаний")
-	ErrChannel         = errors.New("отчёты: канал не найден, не почтовый или отключён")
-	ErrNoRecipients    = errors.New("отчёты: у почтового канала нет получателей")
+	ErrNotFound = errors.New("отчёты: расписание не найдено")
+	// ErrRecipientNotFound — справочник не знает пользователя.
+	ErrRecipientNotFound = errors.New("отчёты: получатель не найден")
+	ErrVersionConflict   = errors.New("отчёты: расписание изменено другим пользователем")
+	ErrTooMany           = errors.New("отчёты: достигнут предел числа расписаний")
+	ErrChannel           = errors.New("отчёты: канал не найден, не почтовый или отключён")
+	ErrNoRecipients      = errors.New("отчёты: у почтового канала нет получателей")
 )
 
 // Статусы запуска рассылки.
@@ -83,6 +86,10 @@ type Run struct {
 	CreatedAt               time.Time
 	UpdatedAt               time.Time
 	SentAt                  time.Time
+	// SkippedNoEmail — сколько получателей-пользователей пропущено в последней
+	// попытке: нет адреса, учётная запись деактивирована или без права
+	// reports.read. Адреса в журнал доставки не пишутся.
+	SkippedNoEmail int
 }
 
 // Store — хранилище расписаний и журнала рассылки.
@@ -119,6 +126,30 @@ type Store interface {
 // Mailer — отправка письма с отчётом (*notify.Service).
 type Mailer interface {
 	SendReport(ctx context.Context, channelID string, m notify.ReportMail) error
+}
+
+// Recipient — пользователь консоли как получатель отчётов.
+type Recipient struct {
+	// Email — адрес из учётной записи; пусто — адреса нет.
+	Email string
+	// Active — учётная запись активна; CanRead — у роли есть reports.read на все объекты.
+	Active, CanRead bool
+	// Scope — разделы отчёта, которые роль вправе читать (как у вызывающего
+	// GET /reports/{kind}): получатель не получает больше, чем может прочитать.
+	Scope Scope
+}
+
+// Eligible — получателю можно слать отчёт расписания sc: учётная запись
+// активна, есть reports.read, а права на разделы покрывают разделы расписания.
+func (r Recipient) Eligible(sc Scope) bool {
+	return r.Active && r.CanRead && (!sc.Incidents || r.Scope.Incidents) && (!sc.Alerts || r.Scope.Alerts) && (!sc.Budgets || r.Scope.Budgets)
+}
+
+// Directory — справочник пользователей (*auth.Service через api): адрес и
+// право на отчёты проверяются при сохранении расписания и при каждой отправке.
+// Неизвестный пользователь — ErrRecipientNotFound.
+type Directory interface {
+	Recipient(ctx context.Context, userID string) (Recipient, error)
 }
 
 // ChannelReader — чтение каналов уведомлений (*notify.Service).
@@ -159,6 +190,9 @@ type Options struct {
 	Builder  *Builder
 	Mailer   Mailer
 	Channels ChannelReader
+	// Directory — справочник получателей-пользователей; без него расписания
+	// с получателями-пользователями не сохраняются.
+	Directory Directory
 	// Location — часовой пояс установки (install_settings).
 	Location func(ctx context.Context) (*time.Location, error)
 	IDs      *ids.Generator
@@ -203,10 +237,10 @@ func (s *Service) Build(ctx context.Context, p Params, sc Scope) (Doc, error) {
 }
 
 // Render пишет документ в формате format.
-func Render(w *bytes.Buffer, d Doc, format string) error {
+func Render(w *bytes.Buffer, d Doc, format string, delim rune) error {
 	switch format {
 	case FormatCSV:
-		return WriteCSV(w, d)
+		return WriteCSV(w, d, delim)
 	case FormatXLSX:
 		return WriteXLSX(w, d)
 	case FormatHTML:
@@ -239,7 +273,8 @@ func (s *Service) entry(b By, action, id string, details any) audit.Entry {
 func view(sc Schedule) map[string]any {
 	return map[string]any{"name": sc.Name, "report": sc.Report, "frequency": sc.Frequency, "weekday": sc.Weekday, "day": sc.Day,
 		"at": sc.At, "format": sc.Format, "channel_id": sc.ChannelID, "enabled": sc.Enabled,
-		"scope": map[string]bool{"incidents": sc.Scope.Incidents, "alerts": sc.Scope.Alerts, "budgets": sc.Scope.Budgets}}
+		"recipient_user_ids": sc.RecipientUserIDs,
+		"scope":              map[string]bool{"incidents": sc.Scope.Incidents, "alerts": sc.Scope.Alerts, "budgets": sc.Scope.Budgets}}
 }
 
 // Schedules — все расписания.
@@ -279,6 +314,28 @@ func (s *Service) checkChannel(ctx context.Context, id string) error {
 	return nil
 }
 
+// checkRecipients проверяет получателей-пользователей: учётная запись есть,
+// активна и может читать отчёты. Отсутствие адреса не ошибка: такой
+// получатель пропускается при отправке, консоль подсказывает об этом.
+func (s *Service) checkRecipients(ctx context.Context, ids []string, sc Scope) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	if s.o.Directory == nil {
+		return &InputError{Fields: map[string]string{"recipient_user_ids": "Получатели-пользователи недоступны."}}
+	}
+	for _, id := range ids {
+		r, err := s.o.Directory.Recipient(ctx, id)
+		if errors.Is(err, ErrRecipientNotFound) || (err == nil && !r.Eligible(sc)) {
+			return &InputError{Fields: map[string]string{"recipient_user_ids": "Получатель не найден, деактивирован или не имеет права на отчёты."}}
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // CreateSchedule создаёт расписание (право reports.schedules.manage).
 func (s *Service) CreateSchedule(ctx context.Context, by By, in ScheduleInput) (Schedule, error) {
 	sc, err := in.Validate()
@@ -290,6 +347,9 @@ func (s *Service) CreateSchedule(ctx context.Context, by By, in ScheduleInput) (
 	}
 	sc.Scope = by.Scope
 	if err := s.checkChannel(ctx, sc.ChannelID); err != nil {
+		return Schedule{}, err
+	}
+	if err := s.checkRecipients(ctx, sc.RecipientUserIDs, by.Scope); err != nil {
 		return Schedule{}, err
 	}
 	loc, err := s.o.Location(ctx)
@@ -324,6 +384,9 @@ func (s *Service) UpdateSchedule(ctx context.Context, by By, id string, in Sched
 	if err := s.checkChannel(ctx, sc.ChannelID); err != nil {
 		return Schedule{}, err
 	}
+	if err := s.checkRecipients(ctx, sc.RecipientUserIDs, by.Scope); err != nil {
+		return Schedule{}, err
+	}
 	loc, err := s.o.Location(ctx)
 	if err != nil {
 		return Schedule{}, err
@@ -335,6 +398,7 @@ func (s *Service) UpdateSchedule(ctx context.Context, by By, id string, in Sched
 		n := old
 		n.Name, n.Report, n.Frequency, n.Weekday, n.Day, n.At = sc.Name, sc.Report, sc.Frequency, sc.Weekday, sc.Day, sc.At
 		n.Format, n.ChannelID, n.Enabled, n.Scope = sc.Format, sc.ChannelID, sc.Enabled, by.Scope
+		n.RecipientUserIDs = sc.RecipientUserIDs
 		n.Version, n.UpdatedAt, n.UpdatedBy = old.Version+1, s.now(), by.ref()
 		next, err := n.Next(s.now(), loc)
 		if err != nil {
@@ -450,7 +514,7 @@ func (s *Service) deliver(ctx context.Context, r Run, sc Schedule, loc *time.Loc
 		// Попытки израсходованы прерванными отправками (падение сервера).
 		code = ErrCodeExhausted
 	} else {
-		code = s.send(ctx, r, sc, loc)
+		code = s.send(ctx, &r, sc, loc)
 		if ctx.Err() != nil {
 			// Остановка сервера: повтор после lease, попытка уже засчитана.
 			return ctx.Err()
@@ -474,12 +538,40 @@ func (s *Service) deliver(ctx context.Context, r Run, sc Schedule, loc *time.Loc
 	return s.o.Store.FinishRun(ctx, r, &rec)
 }
 
+// userRecipients возвращает адреса получателей-пользователей расписания и
+// идентификаторы пропущенных: без адреса, деактивированных и без права на
+// отчёты (роль могла измениться после сохранения расписания). Адреса в
+// журналы не попадают: возвращаются только отправке письма.
+func (s *Service) userRecipients(ctx context.Context, sc Schedule) (emails, skipped []string, err error) {
+	skipped = []string{}
+	if len(sc.RecipientUserIDs) == 0 {
+		return nil, skipped, nil
+	}
+	if s.o.Directory == nil {
+		return nil, append(skipped, sc.RecipientUserIDs...), nil
+	}
+	for _, id := range sc.RecipientUserIDs {
+		r, err := s.o.Directory.Recipient(ctx, id)
+		switch {
+		case errors.Is(err, ErrRecipientNotFound):
+			skipped = append(skipped, id)
+		case err != nil:
+			return nil, nil, err
+		case !r.Eligible(sc.Scope) || r.Email == "":
+			skipped = append(skipped, id)
+		default:
+			emails = append(emails, r.Email)
+		}
+	}
+	return emails, skipped, nil
+}
+
 // send строит отчёт, пишет data.export и отправляет письмо; возвращает код
 // ошибки (пусто — отправлено). Запись аудита — до отправки и отдельной
 // транзакцией (3В32 ревью 3.r4): без записи письмо не уходит, как и
 // выгрузка по запросу. Адреса получателей в записи — те, по которым уходит
 // именно это письмо (3Н47 ревью 3.r4): запись делается из ReportMail.Before.
-func (s *Service) send(ctx context.Context, r Run, sc Schedule, loc *time.Location) string {
+func (s *Service) send(ctx context.Context, r *Run, sc Schedule, loc *time.Location) string {
 	per, err := NewPeriod(r.PeriodFirst, r.PeriodLast, loc, s.now())
 	if err != nil {
 		return ErrCodePeriod
@@ -492,14 +584,21 @@ func (s *Service) send(ctx context.Context, r Run, sc Schedule, loc *time.Locati
 		return ErrCodeBuild
 	}
 	var buf bytes.Buffer
-	if err := Render(&buf, doc, sc.Format); err != nil || buf.Len() > notify.MaxReportAttachment {
+	if err := Render(&buf, doc, sc.Format, events.DelimSemicolon); err != nil || buf.Len() > notify.MaxReportAttachment {
 		return ErrCodeRender
 	}
 	if s.o.Mailer == nil {
 		return ErrCodeChannel
 	}
+	extra, skipped, err := s.userRecipients(ctx, sc)
+	if err != nil {
+		s.o.Logger.Error("рассылка отчётов: справочник получателей недоступен", "class", "reports", "schedule", sc.ID, "error", err)
+		return notify.ErrCodeInternal
+	}
+	r.SkippedNoEmail = len(skipped)
 	details := map[string]any{"report": sc.Report, "format": sc.Format, "from": r.PeriodFirst,
-		"to": r.PeriodLast, "rows": doc.Rows(), "channel_id": sc.ChannelID, "run_id": r.ID, "attempt": r.Attempts, "scheduled": true}
+		"to": r.PeriodLast, "rows": doc.Rows(), "channel_id": sc.ChannelID, "run_id": r.ID, "attempt": r.Attempts, "scheduled": true,
+		"user_recipients": len(extra), "skipped_users": skipped}
 	rec := audit.Entry{OrgID: s.o.OrgID, Actor: systemActor(sc.ID), Action: "data.export", Object: audit.Object{Type: "report_schedule", ID: sc.ID},
 		Result: audit.ResultSuccess, Details: details}
 	var auditErr error
@@ -507,6 +606,7 @@ func (s *Service) send(ctx context.Context, r Run, sc Schedule, loc *time.Locati
 		Body: fmt.Sprintf("%s за период %s.\n\nОтчёт во вложении. Расписание: %s.\nСформирован платформой AISec; содержимого запросов и ответов в отчёте нет.",
 			Title(sc.Report), per.Label(), sc.Name),
 		Filename: fmt.Sprintf("aisec-%s-%s_%s.%s", sc.Report, per.First, per.Last, sc.Format), ContentType: ContentType(sc.Format), Data: buf.Bytes(),
+		ExtraTo: extra,
 		Before: func(to []string) error {
 			details["recipients"] = to
 			auditErr = s.o.Store.Record(ctx, rec)

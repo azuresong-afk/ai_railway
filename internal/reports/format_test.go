@@ -6,10 +6,12 @@ import (
 	"encoding/csv"
 	"encoding/xml"
 	"errors"
+	"github.com/azuresong-afk/ai_railway/internal/events"
 	"io"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 func sampleDoc() Doc {
@@ -28,7 +30,7 @@ func TestCSVFormulaInjection(t *testing.T) {
 	for _, p := range []string{"=", "+", "-", "@", "\t", "\r"} {
 		d := Doc{Title: "t", Sections: []Section{{Title: "s", Header: []string{"h"}, Rows: [][]Cell{{T(p + "cmd|' /C calc'!A0")}}}}}
 		var b bytes.Buffer
-		if err := WriteCSV(&b, d); err != nil {
+		if err := WriteCSV(&b, d, events.DelimSemicolon); err != nil {
 			t.Fatal(err)
 		}
 		out := strings.TrimPrefix(b.String(), utf8BOM)
@@ -42,7 +44,7 @@ func TestCSVFormulaInjection(t *testing.T) {
 	// После «;» внутри значения — Excel в русской локали делит по «;».
 	d := Doc{Title: "t", Sections: []Section{{Title: "s", Rows: [][]Cell{{T("a;=1+1")}}}}}
 	var b bytes.Buffer
-	if err := WriteCSV(&b, d); err != nil {
+	if err := WriteCSV(&b, d, events.DelimSemicolon); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(b.String(), `a;'=1+1`) {
@@ -52,7 +54,7 @@ func TestCSVFormulaInjection(t *testing.T) {
 
 func TestCSVLayout(t *testing.T) {
 	var b bytes.Buffer
-	if err := WriteCSV(&b, sampleDoc()); err != nil {
+	if err := WriteCSV(&b, sampleDoc(), events.DelimSemicolon); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.HasPrefix(b.String(), "\xef\xbb\xbf") {
@@ -63,6 +65,7 @@ func TestCSVLayout(t *testing.T) {
 	}
 	// Разный состав строк (разделы разной ширины): читаем без проверки ширины.
 	r := csv.NewReader(strings.NewReader(strings.TrimPrefix(b.String(), "\xef\xbb\xbf")))
+	r.Comma = events.DelimSemicolon
 	r.FieldsPerRecord = -1
 	rows, err := r.ReadAll()
 	if err != nil {
@@ -207,7 +210,7 @@ func FuzzWriteXLSX(f *testing.F) {
 		}
 		wellFormed(t, "sheet", unzipAll(t, buf.Bytes())["xl/worksheets/sheet1.xml"])
 		var c bytes.Buffer
-		if err := WriteCSV(&c, d); err != nil {
+		if err := WriteCSV(&c, d, events.DelimSemicolon); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -243,5 +246,57 @@ func TestHTMLSafe(t *testing.T) {
 	}
 	if !strings.Contains(out, `<html lang="ru">`) || !strings.Contains(out, "@media print") || !strings.Contains(out, "Нет данных за период.") {
 		t.Error("вёрстка для печати или пустой раздел")
+	}
+}
+
+// Разделитель CSV отчёта: «;» и «,»; значения с обоими знаками — в кавычках,
+// столбцы не смещаются; защита от формул действует при обоих (задача 4.6).
+func TestCSVDelimiter(t *testing.T) {
+	d := Doc{Title: "t", Sections: []Section{{Title: "s", Header: []string{"h1", "h2"},
+		Rows: [][]Cell{{T("a;b,c"), T("x;=1+1")}}}}}
+	for _, delim := range []rune{events.DelimSemicolon, events.DelimComma} {
+		var b bytes.Buffer
+		if err := WriteCSV(&b, d, delim); err != nil {
+			t.Fatal(err)
+		}
+		r := csv.NewReader(strings.NewReader(strings.TrimPrefix(b.String(), "\xef\xbb\xbf")))
+		r.Comma = delim
+		r.FieldsPerRecord = -1
+		rows, err := r.ReadAll()
+		if err != nil {
+			t.Fatalf("%q: %v", delim, err)
+		}
+		var data []string
+		for _, row := range rows {
+			if len(row) == 2 && row[0] == "a;b,c" {
+				data = row
+			}
+		}
+		if data == nil || data[1] != "x;'=1+1" {
+			t.Errorf("%q: строки %v", delim, rows)
+		}
+	}
+}
+
+func TestParseParamsDelimiter(t *testing.T) {
+	loc := time.UTC
+	now := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+	p, err := ParseParams(KindSummary, map[string][]string{"format": {"csv"}}, loc, now)
+	if err != nil || p.Delimiter != events.DelimSemicolon {
+		t.Fatalf("по умолчанию: %v %q", err, p.Delimiter)
+	}
+	p, err = ParseParams(KindSummary, map[string][]string{"format": {"csv"}, "delimiter": {"comma"}}, loc, now)
+	if err != nil || p.Delimiter != events.DelimComma {
+		t.Fatalf("comma: %v %q", err, p.Delimiter)
+	}
+	for _, q := range []map[string][]string{
+		{"format": {"csv"}, "delimiter": {"tab"}},
+		{"format": {"xlsx"}, "delimiter": {"comma"}},
+		{"delimiter": {"comma"}},
+		{"format": {"csv"}, "delimiter": {"comma", "semicolon"}},
+	} {
+		if _, err := ParseParams(KindSummary, q, loc, now); err == nil {
+			t.Errorf("%v принят", q)
+		}
 	}
 }

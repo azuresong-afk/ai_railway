@@ -11,12 +11,12 @@ import (
 // utf8BOM — метка порядка байтов: без неё Excel открывает кириллицу в Windows-1251.
 const utf8BOM = "\xef\xbb\xbf"
 
-// WriteCSV пишет отчёт в CSV (RFC 4180, UTF-8 с BOM): каждое поле в
+// WriteCSV пишет отчёт в CSV (RFC 4180, UTF-8 с BOM; delim — «;» или «,»): каждое поле в
 // кавычках, конец строки CRLF. Текст проходит events.CSVCell — защита от
 // исполнения формул в Excel (префикс ' перед = + - @ и табуляцией в начале
 // значения и после «,», «;»). Числа префикса не получают: «-5» остаётся числом.
 // Разделы идут друг за другом, между ними пустая строка.
-func WriteCSV(w io.Writer, d Doc) error {
+func WriteCSV(w io.Writer, d Doc, delim rune) error {
 	bw := bufio.NewWriterSize(w, 32<<10)
 	if _, err := bw.WriteString(utf8BOM); err != nil {
 		return err
@@ -24,7 +24,7 @@ func WriteCSV(w io.Writer, d Doc) error {
 	row := func(cells ...Cell) error {
 		for i, c := range cells {
 			if i > 0 {
-				if err := bw.WriteByte(','); err != nil {
+				if err := bw.WriteByte(byte(delim)); err != nil { //nolint:gosec // разделитель из белого списка ParseDelimiter (ASCII)
 					return err
 				}
 			}
