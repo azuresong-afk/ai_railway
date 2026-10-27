@@ -142,8 +142,8 @@ func keysStatusCmd(args []string, dsn string, stdout, stderr io.Writer) error {
 		if v.RetiredAt != nil {
 			state = "выведена " + v.RetiredAt.UTC().Format(time.DateTime) + " UTC"
 		}
-		say(stdout, "  версия %d (%s): %s; мастер-ключ №%d; шифрований %d; строк: TOTP %d, провайдеры %d, содержимое событий %d, каналы уведомлений %d, сертификат шлюза %d\n",
-			v.Version, v.ID, state, v.MasterVersion, v.Sealed, v.Rows.MFA, v.Rows.Providers, v.Rows.Content, v.Rows.Channels, v.Rows.GatewayTLS)
+		say(stdout, "  версия %d (%s): %s; мастер-ключ №%d; шифрований %d; строк: TOTP %d, провайдеры %d, содержимое событий %d, каналы уведомлений %d, сертификат шлюза %d, эталоны промптов %d\n",
+			v.Version, v.ID, state, v.MasterVersion, v.Sealed, v.Rows.MFA, v.Rows.Providers, v.Rows.Content, v.Rows.Channels, v.Rows.GatewayTLS, v.Rows.Prompts)
 	}
 	if *dir == "" {
 		return nil

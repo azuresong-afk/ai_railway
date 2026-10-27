@@ -3933,6 +3933,155 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/applications/{id}/prompt-baseline": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Эталон системного промпта приложения
+         * @description Право `applications.policy` (признак `security`; токену API недоступно; задача 4.14
+         *     этапа 4, DM-26). Текст эталона, режим контроля и хеш нормализованного текста (он же —
+         *     в разделе `prompt_baselines` пакета конфигурации шлюзов). Эталона нет —
+         *     `{"configured": false}`. Текст хранится зашифрованным ключом данных; без ключа данных —
+         *     503.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description ID приложения (UUID) */
+                    id: components["parameters"]["ApplicationID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Эталон */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PromptBaseline"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        /**
+         * Задать эталон системного промпта или режим контроля
+         * @description Право `applications.policy`. `text` — эталон: UTF-8 до 131072 байт, без управляющих
+         *     символов, кроме табуляции и перевода строки; без `text` — прежний текст (смена режима;
+         *     у приложения без эталона — 400). `mode`: `off` — не сверять, `alert` — находка
+         *     `prompt.integrity` (DM-26) и оповещение, `block` — запрос с другим системным промптом
+         *     блокируется (в режиме политики `monitor` — только журналируется). Сравнение —
+         *     по хешу после нормализации пробельных символов: края обрезаются, последовательность
+         *     пробелов, табуляций и переводов строки — один пробел. Пишет
+         *     `application.prompt_baseline_set` (до и после: режим, хеш, размер; без текста).
+         *     Понижение режима (`block` → `alert` → `off`) — ослабление (DM-40): `weakening: true`
+         *     и повторная проверка (`password` или `code`; без них 400, неверные — 403
+         *     `reauthentication_failed`). Без изменений — 200 без записи. Архивному приложению — 409.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID приложения (UUID) */
+                    id: components["parameters"]["ApplicationID"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["PromptBaselineUpdate"];
+                };
+            };
+            responses: {
+                /** @description Эталон задан */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PromptBaseline"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        post?: never;
+        /**
+         * Снять эталон системного промпта
+         * @description Право `applications.policy`. Удаляет текст эталона; шлюзы перестают сверять системный
+         *     промпт приложения с новым пакетом конфигурации. Снятие эталона в режиме `alert` или
+         *     `block` — ослабление (DM-40): тело `{"password": …}` или `{"code": …}` (без них 400,
+         *     неверные — 403 `reauthentication_failed`), запись `application.prompt_baseline_removed`
+         *     с `weakening: true`. Эталона нет — 404.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID приложения (UUID) */
+                    id: components["parameters"]["ApplicationID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": components["schemas"]["Reauth"];
+                };
+            };
+            responses: {
+                /** @description Эталон снят */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/gateway-certificate": {
         parameters: {
             query?: never;
@@ -8403,6 +8552,23 @@ export interface components {
             code?: string;
         };
         ApplicationUpdate: components["schemas"]["ApplicationFields"] & components["schemas"]["Reauth"];
+        PromptBaselineUpdate: components["schemas"]["Reauth"] & {
+            /** @description Текст эталона; без поля — прежний */
+            text?: string;
+            /** @enum {string} */
+            mode: "off" | "alert" | "block";
+        };
+        PromptBaseline: {
+            configured: boolean;
+            /** @enum {string} */
+            mode?: "off" | "alert" | "block";
+            /** @description Хеш нормализованного текста (хеш криптопрофиля) */
+            hash?: string;
+            bytes?: number;
+            text?: string;
+            /** Format: date-time */
+            updated_at?: string;
+        };
         ProtectionUpdate: components["schemas"]["ApplicationProtection"] & components["schemas"]["Reauth"];
         NewApplication: components["schemas"]["ApplicationFields"] & components["schemas"]["ApplicationProtection"] & components["schemas"]["Reauth"] & {
             slug: string;

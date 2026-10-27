@@ -36,6 +36,9 @@
 | DELETE | `/api/v1/applications/{id}/budget` | `budgets.manage` | да | да | — | — | — | да |
 | GET | `/api/v1/applications/{id}/keys` | `applications.read` | да | да | да | да | свои | да |
 | POST | `/api/v1/applications/{id}/keys` | `app_keys.manage` | да | да | — | — | — | да |
+| GET | `/api/v1/applications/{id}/prompt-baseline` | `applications.policy` | да | — | — | — | — | — |
+| PUT | `/api/v1/applications/{id}/prompt-baseline` | `applications.policy` | да | — | — | — | — | — |
+| DELETE | `/api/v1/applications/{id}/prompt-baseline` | `applications.policy` | да | — | — | — | — | — |
 | PUT | `/api/v1/applications/{id}/protection` | `applications.policy` | да | — | — | — | — | — |
 | GET | `/api/v1/audit` | `audit.read` | да | — | — | да | — | да |
 | POST | `/api/v1/audit/verify` | `audit.verify` | да | — | — | да | — | да |

@@ -51,7 +51,8 @@ const (
 	PermEventsMark = "events.mark"
 	// Приложения, ключи и провайдеры (ТЗ 5.4, ИАФ.8; задача 2.11). Поля
 	// защиты приложения (политика, режим, режим хранения) и снятие
-	// признака «внешний» у провайдера — функции безопасности (УПД.2, DM-40).
+	// признака «внешний» у провайдера, эталон системного промпта (DM-26) —
+	// функции безопасности (УПД.2, DM-40).
 	PermApplicationsRead   = "applications.read"
 	PermApplicationsManage = "applications.manage"
 	PermApplicationsPolicy = "applications.policy"
@@ -160,7 +161,7 @@ var permissionCatalog = []Permission{
 	{Name: PermEventsMark, Title: "Отметки «ложное срабатывание» и «подтверждено» в событиях", Group: "События"},
 	{Name: PermApplicationsRead, Title: "Просмотр приложений и их ключей (без секретов)", Group: "Приложения", Ownable: true},
 	{Name: PermApplicationsManage, Title: "Создание, изменение и архивация приложений", Group: "Приложения"},
-	{Name: PermApplicationsPolicy, Title: "Политика, режим политики и режим хранения приложения", Group: "Приложения", Security: true},
+	{Name: PermApplicationsPolicy, Title: "Политика, режим политики, режим хранения и эталон системного промпта приложения", Group: "Приложения", Security: true},
 	{Name: PermAppKeysManage, Title: "Выпуск, ротация и отзыв ключей приложений", Group: "Приложения", Ownable: true},
 	{Name: PermProvidersRead, Title: "Просмотр провайдеров (без учётных данных)", Group: "Провайдеры"},
 	{Name: PermProvidersManage, Title: "Создание, изменение и удаление провайдеров, учётные данные", Group: "Провайдеры"},
