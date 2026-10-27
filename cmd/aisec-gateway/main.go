@@ -28,6 +28,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/integrity/selftest"
 	"github.com/azuresong-afk/ai_railway/internal/policy"
 	"github.com/azuresong-afk/ai_railway/internal/policy/bundle"
+	"github.com/azuresong-afk/ai_railway/internal/policy/toolrate"
 	"github.com/azuresong-afk/ai_railway/internal/providers"
 )
 
@@ -204,7 +205,7 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 	// Квоты общие для всех маршрутов приложений и переживают смену пакета.
 	hb := &handlerBuilder{cfg: cfg, logger: logger, hasher: h, auth: authBase, events: queue,
 		quotas: gateway.NewLimiter(nil), budget: gateway.NewBudget(nil), userMAC: userMAC, clock: &gateway.ServerClock{},
-		sessions: sessions}
+		sessions: sessions, toolRate: toolrate.New(0)}
 	hb.budget.SetLogger(logger)
 	// Очередь подтверждений вызовов (require_approval, задача 4.10) — только
 	// с сервером управления; без него такие вызовы отклоняются.
@@ -297,6 +298,9 @@ type handlerBuilder struct {
 	// approvals — очередь подтверждений на сервере управления (задача
 	// 4.10); nil — без сервера.
 	approvals *gateway.ApprovalClient
+	// toolRate — счётчики лимитов политики вызовов (chat и MCP-прокси):
+	// переживают смену пакета.
+	toolRate *toolrate.Counters
 }
 
 func (hb *handlerBuilder) build(apps []config.Application, provs map[string]providers.Provider, specs []policy.Spec,
@@ -338,7 +342,7 @@ func (hb *handlerBuilder) build(apps []config.Application, provs map[string]prov
 	handlerCfg := gateway.ChatConfig{
 		Router: router, MaxBodyBytes: hb.cfg.MaxBodyBytes, Logger: hb.logger,
 		Events: hb.events, IDs: authCfg.IDs, Quotas: hb.quotas, Budget: hb.budget, UserMAC: hb.userMAC,
-		Sessions: hb.sessions,
+		Sessions: hb.sessions, Hasher: hb.hasher, ToolRate: hb.toolRate,
 	}
 	chatHandler, err := gateway.NewChatHandler(handlerCfg)
 	if err != nil {

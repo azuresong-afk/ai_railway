@@ -60,6 +60,13 @@ type ChatConfig struct {
 	DetectorTimeout time.Duration
 	// Now — часы для задержек в событии; по умолчанию time.Now.
 	Now func() time.Time
+	// Hasher — хеши аргументов и описаний функций для политики вызовов и
+	// очереди подтверждений (задача 4.10); nil — вызовы с require_approval
+	// отклоняются.
+	Hasher aisecCrypto.Hasher
+	// ToolRate — счётчики лимитов политики вызовов (общие с MCP-прокси);
+	// nil — лимиты не считаются.
+	ToolRate policy.RateCounter
 }
 
 // Заголовки шлюза (ТЗ, 5.1 и 4.3).
@@ -172,6 +179,10 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	agent, ok := h.agent(w, r, app)
+	if !ok {
+		return
+	}
 	sess, ok := h.session(w, r, app, req, user)
 	if !ok {
 		return
@@ -181,6 +192,7 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer h.emit(rec)
+	rec.agent, rec.tools = agent, req.Tools
 	if sess != nil {
 		rec.sess = sess
 		rec.ev.Session = sess.ev
@@ -591,6 +603,12 @@ func (h *ChatHandler) stream(w http.ResponseWriter, r *http.Request, app *App, r
 		return rc.Flush() == nil
 	}
 	sp := h.newStreamProc(r, app, rec, requested, mode == policy.ResponseIncremental, send)
+	sp.comment = func(text string) bool {
+		if err := sse.WriteComment(w, text); err != nil {
+			return false
+		}
+		return rc.Flush() == nil
+	}
 	defer func() {
 		rec.respMasked = sp.content.masked || sp.refusal.masked
 		rec.respFailures = sp.failures

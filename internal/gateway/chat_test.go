@@ -103,6 +103,10 @@ type gwOpts struct {
 	// (задачи 4.13, 4.14 этапа 4).
 	sessions  *Sessions
 	baselines map[string]PromptBaseline
+	// agents и approver — реестр агентов и очередь подтверждений (задача
+	// 4.10).
+	agents   *Agents
+	approver Approver
 }
 
 // newGateway — шлюз с OpenAI-совместимым провайдером на upstream и одним
@@ -142,9 +146,12 @@ func newGateway(t testing.TB, upstream string, mod func(*gwOpts)) http.Handler {
 	if o.setup != nil {
 		o.setup(rt.apps["app"])
 	}
+	rt.SetAgents(o.agents)
+	rt.SetApprover(o.approver)
 	ta := newTestAuth(t, o.limiter)
 	ch, err := NewChatHandler(ChatConfig{Router: rt, MaxBodyBytes: o.maxBody, Logger: o.logger, BodyReadTimeout: o.bodyTimeout,
-		Events: o.events, IDs: ta.cfg.IDs, Quotas: NewLimiter(apps), Budget: o.budget, UserMAC: o.userMAC, DetectorTimeout: o.detTimeout, Sessions: o.sessions})
+		Events: o.events, IDs: ta.cfg.IDs, Quotas: NewLimiter(apps), Budget: o.budget, UserMAC: o.userMAC, DetectorTimeout: o.detTimeout, Sessions: o.sessions,
+		Hasher: testHasher(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
