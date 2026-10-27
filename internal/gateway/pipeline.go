@@ -162,6 +162,10 @@ type inspection struct {
 	// MaskFailed — сбой детектора маскирования: содержимое в событие не
 	// пишется, раз его нельзя замаскировать.
 	MaskFailed bool
+	// MLUnavailable — ML-детектор политики не дал результата (aisec-ml
+	// недоступен, перегружен или проверил часть текста): в Failures не
+	// попадает и fail_closed не включает (ADR-0024, раздел 4).
+	MLUnavailable bool
 	// Texts — фрагменты после маскирования; Changed[i] — фрагмент изменён.
 	Texts   []string
 	Changed []bool
@@ -264,7 +268,7 @@ func (a *App) inspect(ctx context.Context, req inspectRequest) (*inspection, err
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}
-			in.overall(policyIDs, t.Location)
+			in.overall(in.withoutML(a.Detectors, policyIDs), t.Location)
 			break
 		}
 		fs, rerrs, err := a.Detectors.Run(total, ids, detect.Text{Text: t.Text, Direction: req.Direction, Source: t.Source, NoCode: t.NoCode},
@@ -288,15 +292,21 @@ func (a *App) inspect(ctx context.Context, req inspectRequest) (*inspection, err
 			in.Findings = append(in.Findings, lf)
 		}
 		for _, re := range rerrs {
+			// Сбой детектора маскирования (в том числе ML) — содержимое в
+			// событие не сохраняется.
+			if slices.Contains(maskDetectors, re.Detector) {
+				in.MaskFailed = true
+			}
+			if mlBacked(a.Detectors, re.Detector) {
+				in.MLUnavailable = true
+				continue
+			}
 			reason := events.FailureError
 			if errors.Is(re.Err, detect.ErrDetectorTimeout) || errors.Is(re.Err, context.DeadlineExceeded) {
 				reason = events.FailureTimeout
 			}
 			if slices.Contains(policyIDs, re.Detector) {
 				in.Failures = append(in.Failures, events.DetectorFailure{Detector: re.Detector, Location: t.Location, Reason: reason})
-			}
-			if slices.Contains(maskDetectors, re.Detector) {
-				in.MaskFailed = true
 			}
 		}
 	}

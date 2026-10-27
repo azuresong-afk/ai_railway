@@ -357,7 +357,7 @@ func (rec *record) decision(in *inspection) *events.Decision {
 	d := in.Decision
 	ed := &events.Decision{
 		Action: string(d.Action), Applied: []string{}, Rule: d.Rule, Severity: string(d.Severity),
-		Policy: d.PolicyID, PolicyVersion: d.Version, Failures: in.Failures,
+		Policy: d.PolicyID, PolicyVersion: d.Version, Failures: in.Failures, MLUnavailable: in.MLUnavailable,
 	}
 	for _, a := range d.Applied() {
 		ed.Applied = append(ed.Applied, string(a))
