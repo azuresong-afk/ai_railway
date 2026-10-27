@@ -92,6 +92,8 @@ func appsProblem(logger *slog.Logger, err error, notFound string) *Problem {
 			"Провайдер указан в приложениях, в том числе архивных: сначала выберите им другого провайдера.")
 	case errors.Is(err, apps.ErrArchived):
 		return NewProblem(http.StatusConflict, CodeConflict, "Приложение в архиве: изменить его или выпустить ключ нельзя.")
+	case errors.Is(err, apps.ErrAgentNotFound):
+		return Invalid("Проверьте введённые данные.", FieldError{Field: "agent_id", Detail: "Агент не найден в этом приложении."})
 	case errors.Is(err, apps.ErrKeyInactive):
 		return NewProblem(http.StatusConflict, CodeConflict, "Ключ уже отозван или истёк: выпустите новый ключ.")
 	case errors.Is(err, apps.ErrTooManyKeys):

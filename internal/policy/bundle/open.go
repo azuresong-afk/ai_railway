@@ -109,6 +109,9 @@ type Bundle struct {
 	// TLSKey — закрытый ключ сертификата заказчика (раздел gateway_tls) в
 	// PEM; nil — раздела нет. Вызывающий затирает его после применения.
 	TLSKey KeyPEM
+	// MCPSecrets — учётные данные MCP-серверов по slug (задача 4.8);
+	// затираются так же, как Secrets.
+	MCPSecrets Secrets
 	// Raw — пакет как получен: его шлюз сохраняет на диск.
 	Raw []byte
 }
@@ -200,60 +203,71 @@ func (o *Opener) Open(data []byte, minVersion int64) (*Bundle, error) {
 	if err != nil {
 		return nil, reject(ReasonDecrypt, "секреты не расшифрованы ключом этого шлюза")
 	}
-	secrets, tlsKey, err := parseSecrets(plain, c)
+	secrets, mcp, tlsKey, err := parseSecrets(plain, c)
 	clear(plain)
 	if err != nil {
 		return nil, reject(ReasonInvalidContent, "секреты: %v", err)
 	}
-	return &Bundle{Header: h, KeyID: env.KeyID, Content: c, Secrets: secrets, TLSKey: tlsKey, Raw: data}, nil
+	return &Bundle{Header: h, KeyID: env.KeyID, Content: c, Secrets: secrets, MCPSecrets: mcp, TLSKey: tlsKey,
+		Raw: data}, nil
 }
 
-// parseSecrets — секреты только для провайдеров из содержимого, видимый
-// ASCII (уходят в заголовок Authorization), не длиннее MaxCredential, и
-// ключ сертификата заказчика — ровно тогда, когда в содержимом есть
-// раздел gateway_tls.
-func parseSecrets(plain []byte, c *Content) (Secrets, KeyPEM, error) {
+// parseSecrets — секреты только для провайдеров и MCP-серверов из
+// содержимого, видимый ASCII (уходят в заголовок запроса), не длиннее
+// MaxCredential, и ключ сертификата заказчика — ровно тогда, когда в
+// содержимом есть раздел gateway_tls.
+func parseSecrets(plain []byte, c *Content) (Secrets, Secrets, KeyPEM, error) {
 	var items []secretItem
 	if err := decodeStrict(plain, &items); err != nil {
-		return nil, nil, errors.New("неверный формат")
+		return nil, nil, nil, errors.New("неверный формат")
 	}
 	known := map[string]bool{}
 	for _, p := range c.Providers {
 		known[p.ID] = true
 	}
-	out := Secrets{}
+	mcpKnown := c.mcpIDs()
+	out, mcp := Secrets{}, Secrets{}
 	var tlsKey KeyPEM
 	for _, it := range items {
 		if it.TLSKey != "" {
 			switch {
-			case it.Provider != "" || it.Credential != "":
-				return nil, nil, errors.New("ключ сертификата вместе с учётными данными провайдера")
+			case it.Provider != "" || it.MCP != "" || it.Credential != "":
+				return nil, nil, nil, errors.New("ключ сертификата вместе с учётными данными")
 			case tlsKey != nil:
-				return nil, nil, errors.New("ключ сертификата заказчика указан дважды")
+				return nil, nil, nil, errors.New("ключ сертификата заказчика указан дважды")
 			case c.GatewayTLS == nil:
-				return nil, nil, errors.New("ключ сертификата без раздела gateway_tls")
+				return nil, nil, nil, errors.New("ключ сертификата без раздела gateway_tls")
 			}
 			if err := checkTLSKey(it.TLSKey); err != nil {
-				return nil, nil, err
+				return nil, nil, nil, err
 			}
 			tlsKey = KeyPEM(it.TLSKey)
 			continue
 		}
-		if !known[it.Provider] {
-			return nil, nil, errors.New("секрет для провайдера, которого нет в пакете")
+		dst, id := out, it.Provider
+		switch {
+		case it.MCP != "" && it.Provider != "":
+			return nil, nil, nil, errors.New("секрет одновременно провайдера и MCP-сервера")
+		case it.MCP != "":
+			if !mcpKnown[it.MCP] {
+				return nil, nil, nil, errors.New("секрет для MCP-сервера, которого нет в пакете")
+			}
+			dst, id = mcp, it.MCP
+		case !known[it.Provider]:
+			return nil, nil, nil, errors.New("секрет для провайдера, которого нет в пакете")
 		}
-		if _, dup := out[it.Provider]; dup {
-			return nil, nil, errors.New("секрет провайдера указан дважды")
+		if _, dup := dst[id]; dup {
+			return nil, nil, nil, errors.New("секрет провайдера или MCP-сервера указан дважды")
 		}
 		if err := checkCredential(it.Credential); err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
-		out[it.Provider] = it.Credential
+		dst[id] = it.Credential
 	}
 	if c.GatewayTLS != nil && tlsKey == nil {
-		return nil, nil, errors.New("раздел gateway_tls без ключа сертификата")
+		return nil, nil, nil, errors.New("раздел gateway_tls без ключа сертификата")
 	}
-	return out, tlsKey, nil
+	return out, mcp, tlsKey, nil
 }
 
 // checkCredential — те же правила, что при сохранении в сервере (2.11).

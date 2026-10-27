@@ -114,6 +114,14 @@ const (
 	// безопасности (ТЗ 7: интеграции и TLS). Ключ в ответах не показывается.
 	PermGatewayTLSRead   = "gateway_tls.read"
 	PermGatewayTLSManage = "gateway_tls.manage"
+	// Агенты, MCP-серверы и инструменты (ТЗ 5.10; задача 4.8 этапа 4,
+	// ADR-0023, раздел 9). Со ScopeOwn (владелец приложения) — только агенты
+	// своих приложений и их MCP-серверы и инструменты (УПД.8). Одобрение,
+	// снятие одобрения и риск инструмента, признаки external и insecure_http
+	// MCP-сервера — функция безопасности (DM-25, DM-40).
+	PermAgentsRead         = "agents.read"
+	PermAgentsManage       = "agents.manage"
+	PermAgentsToolsApprove = "agents.tools.approve"
 )
 
 // Permission — разрешение из каталога.
@@ -195,6 +203,10 @@ var permissionCatalog = []Permission{
 	{Name: PermIncidentCategoriesManage, Title: "Изменение инструкций реагирования по категориям инцидентов и срока хранения закрытых инцидентов", Group: "Инциденты", Security: true},
 	{Name: PermGatewayTLSRead, Title: "Просмотр сертификата заказчика для адреса шлюза (без ключа)", Group: "Шлюзы"},
 	{Name: PermGatewayTLSManage, Title: "Загрузка, замена и удаление сертификата заказчика для адреса шлюза", Group: "Шлюзы"},
+	{Name: PermAgentsRead, Title: "Просмотр агентов, MCP-серверов (без учётных данных) и инструментов", Group: "Агенты", Ownable: true},
+	{Name: PermAgentsManage, Title: "Создание, изменение и удаление агентов и MCP-серверов, привязка ключей к агентам", Group: "Агенты"},
+	{Name: PermAgentsToolsApprove, Title: "Одобрение и снятие одобрения инструментов, уровень риска, признаки «внешний» и http:// у MCP-сервера",
+		Group: "Агенты", Security: true},
 }
 
 // auditorExtra — разрешения аудитора сверх чтения: они ничего не меняют,
@@ -382,18 +394,20 @@ var builtinRoles = []RoleDef{
 			PermProvidersRead: ScopeAll, PermProvidersManage: ScopeAll, PermPoliciesRead: ScopeAll, PermPoliciesTest: ScopeAll,
 			PermModelPricesRead: ScopeAll, PermModelPricesManage: ScopeAll, PermBudgetsRead: ScopeAll, PermBudgetsManage: ScopeAll,
 			PermDashboardsRead: ScopeAll, PermGatewayTLSRead: ScopeAll, PermGatewayTLSManage: ScopeAll,
-			PermReportsRead: ScopeAll, PermReportSchedulesRead: ScopeAll, PermReportSchedulesManage: ScopeAll}},
+			PermReportsRead: ScopeAll, PermReportSchedulesRead: ScopeAll, PermReportSchedulesManage: ScopeAll,
+			PermAgentsRead: ScopeAll, PermAgentsManage: ScopeAll}},
 	{ID: RoleAnalyst, DisplayName: "Аналитик", Builtin: true,
 		Description: "Разбор оповещений и инцидентов, поиск по событиям",
 		Grants: grantAll(PermSystemRead, PermEventsRead, PermEventsExport, PermEventsMark, PermApplicationsRead, PermProvidersRead,
 			PermPoliciesRead, PermPoliciesTest, PermAlertsRead, PermAlertsManage, PermAlertRulesRead, PermModelPricesRead, PermBudgetsRead,
-			PermDashboardsRead, PermIncidentsRead, PermIncidentsManage, PermIncidentsExport, PermReportsRead)},
+			PermDashboardsRead, PermIncidentsRead, PermIncidentsManage, PermIncidentsExport, PermReportsRead, PermAgentsRead)},
 	{ID: RoleAuditor, DisplayName: "Аудитор", Builtin: true,
 		Description: "Только просмотр: журнал аудита, отчёты, состояние соответствия. Ничего не меняет",
 		Grants:      auditorPermissions()},
 	{ID: RoleAppOwner, DisplayName: "Владелец приложения", Builtin: true,
 		Description: "Статистика и события только своих приложений, без доступа к содержимому",
-		Grants:      Grants{PermApplicationsRead: ScopeOwn, PermDashboardsRead: ScopeOwn, PermReportsRead: ScopeOwn}},
+		Grants: Grants{PermApplicationsRead: ScopeOwn, PermDashboardsRead: ScopeOwn, PermReportsRead: ScopeOwn,
+			PermAgentsRead: ScopeOwn}},
 }
 
 var builtinIndex = func() map[Role]RoleDef {

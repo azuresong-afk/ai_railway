@@ -32,6 +32,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/azuresong-afk/ai_railway/internal/agents"
 	"github.com/azuresong-afk/ai_railway/internal/apps"
 	"github.com/azuresong-afk/ai_railway/internal/audit"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
@@ -65,6 +66,9 @@ const (
 type Options struct {
 	Apps     *apps.Service
 	Policies *versions.Service
+	// Agents — реестр агентов, MCP-серверов и инструментов (задача 4.8);
+	// nil — разделов агентов в пакете нет.
+	Agents   *agents.Service
 	Store    Store
 	Audit    Auditor
 	Sealer   *bundle.Sealer
@@ -107,6 +111,7 @@ type Health struct {
 // Service — сборка и выдача пакетов.
 type Service struct {
 	apps     *apps.Service
+	agents   *agents.Service
 	policies *versions.Service
 	store    Store
 	audit    Auditor
@@ -165,7 +170,7 @@ func New(o Options) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Service{apps: o.Apps, policies: o.Policies, store: o.Store, audit: o.Audit, sealer: o.Sealer, hasher: h,
+	s := &Service{apps: o.Apps, agents: o.Agents, policies: o.Policies, store: o.Store, audit: o.Audit, sealer: o.Sealer, hasher: h,
 		orgID: o.OrgID, clock: o.Clock, logger: o.Logger, reuse: o.Reuse, revision: o.Revision,
 		sem: make(chan struct{}, 1), checks: map[string]string{}, lastReport: map[string]time.Time{}, sealed: map[string]sealedBody{}}
 	if s.orgID == "" {
@@ -464,7 +469,7 @@ func (s *Service) collect(ctx context.Context, now time.Time) (*bundle.Content, 
 			}
 			if reason != "" {
 				excluded = append(excluded, Excluded{Application: a.Slug, Reason: clip(reason, 500)})
-				c.Unavailable = append(c.Unavailable, bundle.Unavailable{ID: ba.ID, Env: ba.Env, Keys: ba.Keys})
+				c.Unavailable = append(c.Unavailable, bundle.Unavailable{ID: ba.ID, Env: ba.Env, Keys: withoutAgent(ba.Keys)})
 				nkeys += activeKeys(ba.Keys)
 				continue
 			}
@@ -492,6 +497,9 @@ func (s *Service) collect(ctx context.Context, now time.Time) (*bundle.Content, 
 	if err := s.addGatewayTLS(ctx, c, now); err != nil {
 		return nil, nil, nil, err
 	}
+	if err := s.addAgents(ctx, c, appSlugs); err != nil {
+		return nil, nil, nil, err
+	}
 	slices.SortFunc(c.Applications, func(a, b bundle.Application) int { return strings.Compare(a.ID, b.ID) })
 	slices.SortFunc(c.Providers, func(a, b bundle.Provider) int { return strings.Compare(a.ID, b.ID) })
 	slices.SortFunc(c.Policies, func(a, b bundle.Policy) int { return strings.Compare(a.ID, b.ID) })
@@ -504,6 +512,9 @@ func (s *Service) collect(ctx context.Context, now time.Time) (*bundle.Content, 
 	}
 	if c.GatewayTLS != nil {
 		stats["gateway_tls"] = c.GatewayTLS.Fingerprint
+	}
+	if len(c.Agents) > 0 || len(c.MCPServers) > 0 {
+		stats["agents"], stats["mcp_servers"], stats["agent_tools"] = len(c.Agents), len(c.MCPServers), len(c.AgentTools)
 	}
 
 	if len(excluded) > 0 {
@@ -620,7 +631,8 @@ func (s *Service) keysByApp(ctx context.Context, now time.Time) (keys map[string
 				drop[k.Prefix] = until
 			}
 		}
-		bk := bundle.Key{Prefix: k.Prefix, SHA256: fmt.Sprintf("%x", k.Hash), ExpiresAt: k.ExpiresAt.UTC(), Revoked: !k.RevokedAt.IsZero()}
+		bk := bundle.Key{Prefix: k.Prefix, SHA256: fmt.Sprintf("%x", k.Hash), ExpiresAt: k.ExpiresAt.UTC(), Revoked: !k.RevokedAt.IsZero(),
+			Agent: k.AgentID}
 		for _, c := range k.AllowedCIDRs {
 			bk.AllowedCIDRs = append(bk.AllowedCIDRs, c.String())
 		}
@@ -691,6 +703,9 @@ func (s *Service) policyOf(ctx context.Context, cache map[string]*bundle.Policy,
 // запоминается в next по хешу содержимого приложения (prev — s.checks,
 // только под sem; nil — без памяти).
 func (s *Service) checkApp(prev, next map[string]string, ba bundle.Application, bp bundle.Provider, pol *bundle.Policy) string {
+	// Агентов в проверке одного приложения нет: привязку ключей к агентам
+	// сверяет проверка всего пакета (разделы агентов собирает сервер).
+	ba.Keys = withoutAgent(ba.Keys)
 	one := bundle.Content{Providers: []bundle.Provider{bp}, Applications: []bundle.Application{ba}, Policies: []bundle.Policy{}}
 	if pol != nil {
 		one.Policies = append(one.Policies, *pol)
@@ -905,8 +920,13 @@ func (s *Service) Deliver(ctx context.Context, gw Gateway, recipientKey []byte, 
 		if err != nil {
 			return Delivery{}, err
 		}
+		mcp, err := s.mcpSecrets(ctx, content)
+		defer mcp.Clear()
+		if err != nil {
+			return Delivery{}, err
+		}
 		body, err = s.sealer.Seal(bundle.SealInput{Version: rec.Version, IssuedAt: s.clock(), GatewayID: gw.ID,
-			Content: rec.Content, Secrets: secrets, RecipientKey: recipientKey, TLSKey: tlsKey})
+			Content: rec.Content, Secrets: secrets, RecipientKey: recipientKey, TLSKey: tlsKey, MCPSecrets: mcp})
 		if err != nil {
 			return Delivery{}, err
 		}

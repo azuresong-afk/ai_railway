@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/azuresong-afk/ai_railway/internal/agents"
 	"github.com/azuresong-afk/ai_railway/internal/apps"
 	"github.com/azuresong-afk/ai_railway/internal/audit"
 	"github.com/azuresong-afk/ai_railway/internal/auth"
@@ -48,6 +49,9 @@ type appsEnv struct {
 	stopping chan struct{}
 	// reports — сервис отчётов (reports_test.go).
 	reports *reports.Service
+	// agents и agentsSvc — реестр агентов (agents_test.go).
+	agents    *agents.Memory
+	agentsSvc *agents.Service
 }
 
 func newAppsEnv(t testing.TB) *appsEnv {
@@ -116,8 +120,13 @@ func newAppsEnv(t testing.TB) *appsEnv {
 	e.caPEM = string(ca.CertPEM())
 	logger := slog.New(slog.NewTextHandler(e.log, nil))
 	e.reports = newTestReports(t, e.dash)
+	e.agents = agents.NewMemory()
+	if e.agentsSvc, err = agents.New(agents.Options{Store: e.agents, Provider: p, Box: box, Apps: agents.AppsOf(svc),
+		Clock: e.clock.now}); err != nil {
+		t.Fatal(err)
+	}
 	h, _, err := New(Options{Hasher: testHasher(t), Logger: logger, Auth: testAuth(t, e.mem, auth.WithClock(e.clock.now)), Apps: svc,
-		Policies: pols, Events: e.ev, Audit: e.rec, Dashboards: e.dash, Reports: e.reports,
+		Policies: pols, Events: e.ev, Audit: e.rec, Dashboards: e.dash, Reports: e.reports, Agents: e.agentsSvc,
 		RateLimit: RateConfig{Rules: []RateRule{{Prefix: "/", Max: 100000, Window: time.Minute}}}, Stopping: e.stopping})
 	if err != nil {
 		t.Fatal(err)

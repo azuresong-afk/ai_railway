@@ -28,6 +28,8 @@ type Memory struct {
 	usage   map[usageKey]Usage
 	// gatewayTLS — сертификат заказчика по организации (задача 3.27).
 	gatewayTLS map[string]GatewayTLS
+	// agents — агент → приложение для привязки ключей (BindAgent).
+	agents map[string]string
 }
 
 // usageKey — строка budget_usage.
@@ -40,7 +42,15 @@ type usageKey struct {
 func NewMemory() *Memory {
 	return &Memory{providers: map[string]Provider{}, apps: map[string]Application{}, keys: map[string]Key{},
 		prices: map[string]Price{}, budgets: map[string]Budget{}, usage: map[usageKey]Usage{},
-		gatewayTLS: map[string]GatewayTLS{}}
+		gatewayTLS: map[string]GatewayTLS{}, agents: map[string]string{}}
+}
+
+// BindAgent регистрирует агента приложения appID: ключ можно привязать
+// только к нему (внешний ключ app_keys_agent_fkey).
+func (m *Memory) BindAgent(agentID, appID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.agents[agentID] = appID
 }
 
 // Records — копия записей аудита.
@@ -323,6 +333,9 @@ func (m *Memory) insertKey(k Key) error {
 	if k.ExpiresAt.Before(k.CreatedAt) || k.ExpiresAt.After(k.CreatedAt.Add(MaxKeyDays*24*time.Hour)) {
 		return errImmutable
 	}
+	if app, ok := m.agents[k.AgentID]; k.AgentID != "" && (!ok || app != k.AppID) {
+		return ErrAgentNotFound
+	}
 	m.keys[k.ID] = cloneKey(k)
 	return nil
 }
@@ -348,7 +361,7 @@ func (m *Memory) UpdateKey(_ context.Context, orgID, id string, now time.Time, f
 	// Триггер app_keys_guard: отозванный не меняется, срок не продлевается,
 	// остальные поля неизменны.
 	if !old.RevokedAt.IsZero() || k.ExpiresAt.After(old.ExpiresAt) || k.Prefix != old.Prefix ||
-		!bytes.Equal(k.Hash, old.Hash) || k.AppID != old.AppID || !slices.Equal(k.AllowedCIDRs, old.AllowedCIDRs) {
+		!bytes.Equal(k.Hash, old.Hash) || k.AppID != old.AppID || k.AgentID != old.AgentID || !slices.Equal(k.AllowedCIDRs, old.AllowedCIDRs) {
 		return Key{}, errImmutable
 	}
 	if created != nil {

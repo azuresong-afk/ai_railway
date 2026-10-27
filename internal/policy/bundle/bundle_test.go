@@ -380,6 +380,12 @@ func FuzzParseContent(f *testing.F) {
 		f.Fatal(err)
 	}
 	f.Add(wb)
+	// Разделы агентов (задача 4.8).
+	wa, err := withAgents(f, fx).Marshal()
+	if err != nil {
+		f.Fatal(err)
+	}
+	f.Add(wa)
 	f.Add([]byte(`{"providers":[],"applications":[],"policies":[],"budgets":{"timezone":"Local","prices":null,"hard":[{"app":"x","limit":-1}]}}`))
 	f.Fuzz(func(t *testing.T, data []byte) {
 		c, err := bundle.ParseContent(data)

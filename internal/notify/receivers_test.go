@@ -17,6 +17,7 @@ import (
 
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/internal/keyring"
+	"github.com/azuresong-afk/ai_railway/internal/netguard"
 )
 
 // Локальные приёмники для тестов каналов: SMTP со STARTTLS, HTTPS и
@@ -317,7 +318,7 @@ func TestChannelAddressRestricted(t *testing.T) {
 		}
 	}
 	for _, ip := range []string{"10.1.2.3", "172.16.0.10", "192.168.1.5", "fc00::5", "203.0.113.7"} {
-		if blockedAddr(netip.MustParseAddr(ip)) {
+		if netguard.Blocked(netip.MustParseAddr(ip)) {
 			t.Fatalf("%s запрещён", ip)
 		}
 	}

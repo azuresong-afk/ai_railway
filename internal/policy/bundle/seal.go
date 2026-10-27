@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"sync/atomic"
 	"time"
@@ -27,6 +28,9 @@ type SealInput struct {
 	// TLSKey — закрытый ключ сертификата заказчика в PEM (раздел
 	// gateway_tls, задача 3.27); шифруется вместе с учётными данными.
 	TLSKey KeyPEM
+	// MCPSecrets — учётные данные MCP-серверов по slug (раздел
+	// mcp_servers, задача 4.8); шифруются вместе с остальными.
+	MCPSecrets Secrets
 }
 
 // Sealer подписывает пакеты ключом сервера (bundle-signing.key, ADR-0007).
@@ -100,7 +104,7 @@ func (s *Sealer) Seal(in SealInput) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	plain, err := marshalSecrets(in.Secrets, in.TLSKey)
+	plain, err := marshalSecrets(in.Secrets, in.MCPSecrets, in.TLSKey)
 	if err != nil {
 		return nil, err
 	}
@@ -128,27 +132,27 @@ func (s *Sealer) Seal(in SealInput) ([]byte, error) {
 	return out, nil
 }
 
-// secretItem — элемент секретов: учётные данные провайдера или (без
-// провайдера) ключ сертификата заказчика.
+// secretItem — элемент секретов: учётные данные провайдера, учётные
+// данные MCP-сервера (MCP) или ключ сертификата заказчика.
 type secretItem struct {
 	Provider   string `json:"provider,omitempty"`
+	MCP        string `json:"mcp,omitempty"`
 	Credential string `json:"credential,omitempty"`
 	TLSKey     string `json:"tls_key,omitempty"`
 }
 
-// marshalSecrets кодирует секреты в порядке ID провайдера; ключ
-// сертификата заказчика — последним элементом. Без ключа формат прежний:
-// шлюзы прежних версий принимают такой пакет.
-func marshalSecrets(s Secrets, tlsKey KeyPEM) ([]byte, error) {
+// marshalSecrets кодирует секреты в порядке ID провайдера, затем учётные
+// данные MCP-серверов в порядке slug; ключ сертификата заказчика —
+// последним элементом. Без ключа и MCP-серверов формат прежний: шлюзы
+// прежних версий принимают такой пакет.
+func marshalSecrets(s, mcp Secrets, tlsKey KeyPEM) ([]byte, error) {
 	type item = secretItem
-	ids := make([]string, 0, len(s))
-	for id := range s {
-		ids = append(ids, id)
-	}
-	slices.Sort(ids)
-	items := make([]item, 0, len(ids))
-	for _, id := range ids {
+	items := make([]item, 0, len(s)+len(mcp)+1)
+	for _, id := range slices.Sorted(maps.Keys(s)) {
 		items = append(items, item{Provider: id, Credential: s[id]})
+	}
+	for _, id := range slices.Sorted(maps.Keys(mcp)) {
+		items = append(items, item{MCP: id, Credential: mcp[id]})
 	}
 	if len(tlsKey) > 0 {
 		items = append(items, item{TLSKey: string(tlsKey)})

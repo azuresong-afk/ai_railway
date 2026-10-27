@@ -318,6 +318,10 @@ func classifyAudit(ctx context.Context, ops secOps, r *audit.Record) ([]Raise, e
 		raises = append(raises, raiseOf(BuiltinAuditStream, map[string]string{"channel": r.Object.ID},
 			map[string]string{"channel": str(dd["channel_name"], r.Object.ID)}, 1,
 			map[string]any{"items": []any{item(r, map[string]any{"reason": dd["reason"], "from_seq": dd["from_seq"], "to_seq": dd["to_seq"]})}}))
+	case "agent_tool.discovered", "agent_tool.changed":
+		if x, ok := agentToolRaise(r, details()); ok {
+			raises = append(raises, x)
+		}
 	case "notify.delivery_failed":
 		raises = append(raises, raiseOf(BuiltinNotifyFailed, map[string]string{"channel": r.Object.ID},
 			map[string]string{"channel": str(details()["channel_name"], r.Object.ID)}, 1,

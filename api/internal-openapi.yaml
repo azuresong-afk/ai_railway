@@ -236,6 +236,49 @@ paths:
         '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ProblemInternal' }
+  /internal/v1/agents/tools:observe:
+    post:
+      summary: Увиденные инструменты MCP-сервера или функции агента (задача 4.8, ADR-0023, раздел 1)
+      description: |
+        Шлюз сообщает описания из `tools/list` MCP-сервера (`server` — slug из
+        раздела `mcp_servers` пакета) или функции из запроса к модели
+        (`server: function` и `agent_id`). До 256 описаний без повторов имени и
+        хеша, каждое до 64 КиБ; тело до 8 МиБ. Описание разбирается строго
+        (повтор ключа, неверный UTF-8, вложенность больше 64 — 400), хеш —
+        `aisec-tool-descriptor-v1` над канонической формой без `icons` и
+        `_meta` на криптопрофиле сервера. Новый инструмент попадает в реестр в
+        состоянии `new` (аудит `agent_tool.discovered`, оповещение
+        `agents.tool_new`); описание одобренного, отличное от одобренного, —
+        `changed` (DM-25, `agent_tool.changed`, оповещение
+        `agents.tool_changed`); `suspicious: true` — детекторы шлюза нашли
+        внедрённые инструкции (DM-24, `agent_tool.suspicious`). Сверх пределов
+        реестра (2 000 на установку, 256 на сервер или агента) новые
+        инструменты не принимаются (`skipped`). Не чаще раза в 10 секунд на
+        сервер или агента — иначе 429 с `Retry-After`; неизвестный сервер или
+        агент — 404.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ObserveTools' }
+      responses:
+        '200':
+          description: Описания приняты
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ObserveToolsResult' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404':
+          description: MCP-сервер или агент не найден в реестре (`not_found`)
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
 components:
   securitySchemes:
     gatewayCert:
@@ -258,7 +301,7 @@ components:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }
     ProblemTooLarge:
-      description: Тело больше предела маршрута — heartbeat 1 МиБ, пакет событий 8 МиБ, отчёт о пакете 1 КиБ, перевыпуск сертификата 16 КиБ (`payload_too_large`)
+      description: Тело больше предела маршрута — heartbeat 1 МиБ, пакет событий и описания инструментов 8 МиБ, отчёт о пакете 1 КиБ, перевыпуск сертификата 16 КиБ (`payload_too_large`)
       content:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }
@@ -297,8 +340,10 @@ components:
         Конверт пакета (internal/policy/bundle). Части — стандартный base64:
         `header` — JSON {format, version, issued_at, gateway_id, content_hash,
         hash_alg}; `content` — JSON {providers, applications, policies,
-        unavailable} без учётных данных; `secrets` — шифротекст HPKE списка
-        {provider, credential}; `signature` — Ed25519 над
+        unavailable, budgets, gateway_tls, agents, mcp_servers, agent_tools}
+        без учётных данных (пустые разделы не выводятся); `secrets` —
+        шифротекст HPKE списка {provider, credential}, {mcp, credential} и
+        {tls_key}; `signature` — Ed25519 над
         `format || 0x00 || len(header) || header || len(content) || content || len(secrets) || secrets`
         (длины — 4 байта big-endian). Неизвестные поля на любом уровне — отказ
         на шлюзе. `trust` подписью пакета не покрыт: каждое заявление подписано
@@ -325,6 +370,34 @@ components:
             ровно один без `not_after` — действующий) и корни УЦ (до 4).
             Подписано действующим ключом предыдущего заявления; номер — без
             пропусков. Неверное заявление — отказ пакета с причиной `signature`.
+    ObserveTools:
+      type: object
+      required: [server, tools]
+      additionalProperties: false
+      properties:
+        server: { type: string, pattern: '^[a-z0-9-]{1,64}$', description: 'slug MCP-сервера или function' }
+        agent_id: { type: string, format: uuid, description: 'Агент функций (только для server: function)' }
+        tools:
+          type: array
+          minItems: 1
+          maxItems: 256
+          items:
+            type: object
+            required: [descriptor]
+            additionalProperties: false
+            properties:
+              descriptor: { type: object, additionalProperties: true, description: 'Описание из tools/list как прислал сервер' }
+              suspicious: { type: boolean }
+    ObserveToolsResult:
+      type: object
+      required: [new, changed, restored, suspicious, unchanged, skipped]
+      properties:
+        new: { type: integer }
+        changed: { type: integer }
+        restored: { type: integer }
+        suspicious: { type: integer }
+        unchanged: { type: integer }
+        skipped: { type: integer }
     CertificateRequest:
       type: object
       required: [csr]

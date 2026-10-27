@@ -142,9 +142,9 @@ func keysStatusCmd(args []string, dsn string, stdout, stderr io.Writer) error {
 		if v.RetiredAt != nil {
 			state = "выведена " + v.RetiredAt.UTC().Format(time.DateTime) + " UTC"
 		}
-		say(stdout, "  версия %d (%s): %s; мастер-ключ №%d; шифрований %d; строк: TOTP %d, провайдеры %d, содержимое событий %d, каналы уведомлений %d, сертификат шлюза %d, секрет IdP %d\n",
+		say(stdout, "  версия %d (%s): %s; мастер-ключ №%d; шифрований %d; строк: TOTP %d, провайдеры %d, содержимое событий %d, каналы уведомлений %d, сертификат шлюза %d, секрет IdP %d, MCP-серверы %d\n",
 			v.Version, v.ID, state, v.MasterVersion, v.Sealed, v.Rows.MFA, v.Rows.Providers, v.Rows.Content, v.Rows.Channels, v.Rows.GatewayTLS,
-			v.Rows.OIDC)
+			v.Rows.OIDC, v.Rows.MCPServers)
 	}
 	if *dir == "" {
 		return nil
@@ -358,7 +358,7 @@ func runRotateData(ctx context.Context, env *keysEnv, dir string, o rotateDataOp
 				OrgID: audit.DefaultOrgID, Actor: actor, Action: "keys.data_rewrapped",
 				Object: audit.Object{Type: "data_key", ID: box.KeyID()}, Result: audit.ResultSuccess,
 				Details: map[string]any{"version": box.Version(), "mfa": n.MFA, "providers": n.Providers, "content": n.Content,
-					"channels": n.Channels, "gateway_tls": n.GatewayTLS, "oidc": n.OIDC, "complete": err == nil},
+					"channels": n.Channels, "gateway_tls": n.GatewayTLS, "oidc": n.OIDC, "mcp_servers": n.MCPServers, "complete": err == nil},
 			})
 			err = errors.Join(err, rerr)
 		}
@@ -368,8 +368,8 @@ func runRotateData(ctx context.Context, env *keysEnv, dir string, o rotateDataOp
 	if err != nil {
 		return fmt.Errorf("перешифрование прервано (%w); перешифровано строк: %d — продолжите keys rotate-data -resume", err, n.Total())
 	}
-	say(stdout, "Перешифровано строк: TOTP %d, учётные данные провайдеров %d, содержимое событий %d, каналы уведомлений %d, ключ сертификата шлюза %d, секрет клиента IdP %d.\n",
-		n.MFA, n.Providers, n.Content, n.Channels, n.GatewayTLS, n.OIDC)
+	say(stdout, "Перешифровано строк: TOTP %d, учётные данные провайдеров %d, содержимое событий %d, каналы уведомлений %d, ключ сертификата шлюза %d, секрет клиента IdP %d, учётные данные MCP-серверов %d.\n",
+		n.MFA, n.Providers, n.Content, n.Channels, n.GatewayTLS, n.OIDC, n.MCPServers)
 	// Опора цепочки аудита новым ключом (ADR-0018, п. 3.4): проверка
 	// сверяет и опоры прежних версий, затем пишет опору действующей.
 	l, err := openAuditLog(env.db, env.p, nil)
@@ -413,8 +413,8 @@ func runRotateData(ctx context.Context, env *keysEnv, dir string, o rotateDataOp
 	}
 	if len(d.Remaining) > 0 {
 		for id, c := range d.Remaining {
-			say(stdout, "Версия %s ещё нужна: строк TOTP %d, провайдеров %d, содержимого событий %d, каналов уведомлений %d, сертификата шлюза %d, секрета IdP %d.\n",
-				id, c.MFA, c.Providers, c.Content, c.Channels, c.GatewayTLS, c.OIDC)
+			say(stdout, "Версия %s ещё нужна: строк TOTP %d, провайдеров %d, содержимого событий %d, каналов уведомлений %d, сертификата шлюза %d, секрета IdP %d, MCP-серверов %d.\n",
+				id, c.MFA, c.Providers, c.Content, c.Channels, c.GatewayTLS, c.OIDC, c.MCPServers)
 		}
 		say(stdout, "Повторите keys rotate-data -resume, когда сервер перейдёт на новую версию (до %s).\n", keyring.WatchInterval)
 	}

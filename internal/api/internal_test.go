@@ -11,6 +11,7 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
+	"github.com/azuresong-afk/ai_railway/internal/agents"
 	"github.com/azuresong-afk/ai_railway/internal/audit"
 	"github.com/azuresong-afk/ai_railway/internal/auth"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
@@ -72,12 +73,34 @@ func newGatewayEnvAt(t testing.TB, caValidity time.Duration, clock func() time.T
 	return svc, reg.Gateway
 }
 
+// noApps — приложений нет: маршруты агентов без реестра приложений.
+type noApps struct{}
+
+func (noApps) App(context.Context, string) (agents.AppInfo, error) {
+	return agents.AppInfo{}, agents.ErrNoApp
+}
+func (noApps) Owned(context.Context, string) ([]string, error) { return nil, nil }
+
+// newAgentsService — реестр агентов в памяти без приложений.
+func newAgentsService(t testing.TB) *agents.Service {
+	t.Helper()
+	p, err := aisecCrypto.New(aisecCrypto.ProfileStandard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc, err := agents.New(agents.Options{Store: agents.NewMemory(), Provider: p, Apps: noApps{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return svc
+}
+
 func newInternalHandler(t testing.TB, authz Authorizer) (http.Handler, *Router) {
 	t.Helper()
 	svc, _ := newGatewayEnv(t)
 	h, rt, err := NewInternal(InternalOptions{Logger: quiet(), Hasher: testHasher(t), Gateways: svc, Authorizer: authz,
 		Events: events.NewMemory(), RateLimit: RateConfig{Rules: []RateRule{{Prefix: "/", Max: 0}}},
-		Extra: BundleRoutes(newBundleEnv(t, true).svc, nil, quiet())})
+		Extra: append(BundleRoutes(newBundleEnv(t, true).svc, nil, quiet()), AgentsInternalRoutes(newAgentsService(t), quiet())...)})
 	if err != nil {
 		t.Fatal(err)
 	}

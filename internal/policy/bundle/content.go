@@ -65,6 +65,13 @@ type Content struct {
 	// GatewayTLS — сертификат заказчика для адреса шлюза (задача 3.27 этапа
 	// 3); ключ — в секретах. Нет раздела — шлюз на своём сертификате.
 	GatewayTLS *GatewayTLS `json:"gateway_tls,omitempty"`
+	// Agents, MCPServers и AgentTools — реестр агентов, MCP-серверов и
+	// инструментов (задача 4.8, ADR-0023); учётные данные MCP-серверов — в
+	// секретах. Пустые разделы не выводятся: без агентов байты пакета
+	// прежние.
+	Agents     []Agent     `json:"agents,omitempty"`
+	MCPServers []MCPServer `json:"mcp_servers,omitempty"`
+	AgentTools []AgentTool `json:"agent_tools,omitempty"`
 }
 
 // Unavailable — приложение, исключённое из пакета: только ID, контур и
@@ -146,6 +153,9 @@ type Key struct {
 	ExpiresAt    time.Time `json:"expires_at"`
 	AllowedCIDRs []string  `json:"allowed_cidrs,omitempty"`
 	Revoked      bool      `json:"revoked,omitempty"`
+	// Agent — ID агента, к которому привязан ключ (задача 4.8): заголовок
+	// X-AISec-Agent с другим агентом — отказ agent_mismatch.
+	Agent string `json:"agent,omitempty"`
 }
 
 // Policy — текущая версия политики организации: каноничный YAML (ADR-0016).
@@ -268,6 +278,7 @@ func (c *Content) Validate() error {
 	provIDs, appIDs := c.budgetIDs()
 	errs = append(errs, c.Budgets.validate(provIDs, appIDs)...)
 	errs = append(errs, c.GatewayTLS.validate()...)
+	errs = append(errs, c.validateAgents()...)
 	return errors.Join(errs...)
 }
 

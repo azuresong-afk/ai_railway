@@ -159,11 +159,13 @@ type RewrapCounts struct {
 	GatewayTLS int64 `json:"gateway_tls"`
 	// OIDC — секрет клиента внешнего IdP (задача 4.17 этапа 4).
 	OIDC int64 `json:"oidc"`
+	// MCPServers — учётные данные MCP-серверов (задача 4.8 этапа 4).
+	MCPServers int64 `json:"mcp_servers"`
 }
 
 // Total — всего строк.
 func (c RewrapCounts) Total() int64 {
-	return c.MFA + c.Providers + c.Content + c.Channels + c.GatewayTLS + c.OIDC
+	return c.MFA + c.Providers + c.Content + c.Channels + c.GatewayTLS + c.OIDC + c.MCPServers
 }
 
 // RewrapOptions — параметры перешифрования.
@@ -186,7 +188,8 @@ const DefaultRewrapBatch = 500
 // Места хранения шифротекстов ключа данных: те же AAD, что у internal/auth
 // (TOTP), internal/apps (учётные данные провайдеров и ключ сертификата
 // заказчика), internal/events (содержимое full), internal/notify
-// (секреты каналов) и internal/auth (секрет клиента IdP).
+// (секреты каналов), internal/auth (секрет клиента IdP) и internal/agents
+// (учётные данные MCP-серверов).
 const (
 	mfaTable, mfaColumn             = "user_mfa", "secret"
 	providersTable, providersColumn = "providers", "credential"
@@ -194,12 +197,13 @@ const (
 	channelsTable, channelsColumn   = "notify_channels", "secret"
 	gwTLSTable, gwTLSColumn         = "gateway_tls", "key"
 	oidcTable, oidcColumn           = "oidc_settings", "client_secret"
+	mcpTable, mcpColumn             = "mcp_servers", "credential"
 )
 
 // Rewrap перешифровывает действующей версией box все строки прежних версий:
 // секреты TOTP, учётные данные провайдеров, содержимое событий full,
-// секреты каналов уведомлений, ключ сертификата заказчика и секрет
-// клиента IdP.
+// секреты каналов уведомлений, ключ сертификата заказчика, секрет
+// клиента IdP и учётные данные MCP-серверов.
 // Каждая пачка — своя транзакция; строка обновляется, только если её ключ
 // не сменился (сервер мог заменить её параллельно). Прерванное
 // перешифрование продолжается повторным вызовом. box — из Load под
@@ -233,6 +237,9 @@ func Rewrap(ctx context.Context, db Owner, box *Box, o RewrapOptions) (RewrapCou
 		}},
 		{&total.OIDC, func(ctx context.Context, tx pgx.Tx, active string) (int, error) {
 			return rewrapOIDC(ctx, tx, box, active, o.Batch)
+		}},
+		{&total.MCPServers, func(ctx context.Context, tx pgx.Tx, active string) (int, error) {
+			return rewrapMCPServers(ctx, tx, box, active, o.Batch)
 		}},
 	}
 	for _, st := range steps {
@@ -388,6 +395,35 @@ func rewrapGatewayTLS(ctx context.Context, tx pgx.Tx, box *Box, active string, b
 	return len(rows), nil
 }
 
+// rewrapMCPServers — пачка учётных данных MCP-серверов (internal/agents,
+// задача 4.8): AAD mcp_servers|credential|<id>.
+func rewrapMCPServers(ctx context.Context, tx pgx.Tx, box *Box, active string, batch int) (int, error) {
+	type row struct {
+		id, keyID string
+		sealed    []byte
+	}
+	rows, err := collect(ctx, tx, `SELECT id::text, credential_key_id::text, credential FROM mcp_servers
+		WHERE credential_key_id <> $1 ORDER BY id LIMIT $2 FOR UPDATE`, []any{active, batch},
+		func(r pgx.Rows) (row, error) {
+			var x row
+			return x, r.Scan(&x.id, &x.keyID, &x.sealed)
+		})
+	if err != nil {
+		return 0, fmt.Errorf("перешифрование учётных данных MCP-серверов: %w", err)
+	}
+	for _, x := range rows {
+		keyID, sealed, err := reseal(ctx, box, active, x.keyID, x.sealed, mcpTable, mcpColumn, x.id)
+		if err != nil {
+			return 0, fmt.Errorf("перешифрование учётных данных MCP-сервера %s: %w", x.id, err)
+		}
+		if _, err := tx.Exec(ctx, `UPDATE mcp_servers SET credential = $1, credential_key_id = $2 WHERE id = $3 AND credential_key_id = $4`,
+			sealed, keyID, x.id, x.keyID); err != nil {
+			return 0, fmt.Errorf("перешифрование учётных данных MCP-сервера %s: %w", x.id, err)
+		}
+	}
+	return len(rows), nil
+}
+
 // rewrapContent — пачка содержимого событий full: производный ключ тех же
 // суток от новой версии (ADR-0007, п. 8).
 func rewrapContent(ctx context.Context, tx pgx.Tx, box *Box, active, purpose string, batch int) (int, error) {
@@ -512,7 +548,8 @@ func Status(ctx context.Context, db Owner, orgID string) ([]VersionStatus, error
 		(SELECT count(*) FROM event_content WHERE key_id = k.id),
 		(SELECT count(*) FROM notify_channels WHERE secret_key_id = k.id),
 		(SELECT count(*) FROM gateway_tls WHERE key_key_id = k.id),
-		(SELECT count(*) FROM oidc_settings WHERE client_secret_key_id = k.id)
+		(SELECT count(*) FROM oidc_settings WHERE client_secret_key_id = k.id),
+		(SELECT count(*) FROM mcp_servers WHERE credential_key_id = k.id)
 		FROM data_keys k WHERE k.org_id = $1 ORDER BY k.version`, orgID)
 	if err != nil {
 		return nil, fmt.Errorf("ключ данных: состояние: %w", err)
@@ -522,7 +559,8 @@ func Status(ctx context.Context, db Owner, orgID string) ([]VersionStatus, error
 	for rows.Next() {
 		var v VersionStatus
 		if err := rows.Scan(&v.ID, &v.Version, &v.MasterVersion, &v.Sealed, &v.CreatedAt, &v.RetiredAt,
-			&v.Rows.MFA, &v.Rows.Providers, &v.Rows.Content, &v.Rows.Channels, &v.Rows.GatewayTLS, &v.Rows.OIDC); err != nil {
+			&v.Rows.MFA, &v.Rows.Providers, &v.Rows.Content, &v.Rows.Channels, &v.Rows.GatewayTLS, &v.Rows.OIDC,
+			&v.Rows.MCPServers); err != nil {
 			return nil, err
 		}
 		out = append(out, v)
@@ -558,8 +596,9 @@ func DestroyRetired(ctx context.Context, db Owner, rec Recorder, orgID string, a
 				(SELECT count(*) FROM event_content WHERE key_id = $1),
 				(SELECT count(*) FROM notify_channels WHERE secret_key_id = $1),
 				(SELECT count(*) FROM gateway_tls WHERE key_key_id = $1),
-				(SELECT count(*) FROM oidc_settings WHERE client_secret_key_id = $1)`, v.ID).
-				Scan(&left.MFA, &left.Providers, &left.Content, &left.Channels, &left.GatewayTLS, &left.OIDC); err != nil {
+				(SELECT count(*) FROM oidc_settings WHERE client_secret_key_id = $1),
+				(SELECT count(*) FROM mcp_servers WHERE credential_key_id = $1)`, v.ID).
+				Scan(&left.MFA, &left.Providers, &left.Content, &left.Channels, &left.GatewayTLS, &left.OIDC, &left.MCPServers); err != nil {
 				return err
 			}
 			if left.Total() > 0 {

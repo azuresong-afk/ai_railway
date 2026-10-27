@@ -18,6 +18,7 @@ import (
 
 	"github.com/azuresong-afk/ai_railway/internal/audit"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
+	"github.com/azuresong-afk/ai_railway/internal/netguard"
 )
 
 // Коды ошибок доставки: в журнал доставки и аудит пишется только код, без
@@ -97,38 +98,14 @@ type Transport struct {
 // errBlockedAddr — адрес получателя запрещён (3Н31 ревью 3.r2).
 var errBlockedAddr = errors.New("уведомления: адрес получателя запрещён")
 
-// metadataAddrs — адреса служб метаданных облака вне link-local: AWS
-// IPv6 и Alibaba Cloud (169.254.169.254 — link-local).
-var metadataAddrs = []netip.Addr{netip.MustParseAddr("fd00:ec2::254"), netip.MustParseAddr("100.100.100.200")}
-
-// nat64 — префикс NAT64 (RFC 6052): адрес IPv4 в нём проверяется тоже.
-var nat64 = netip.MustParsePrefix("64:ff9b::/96")
-
 // AllowNetworks разрешает сети, которые иначе запрещены (например,
 // приёмник syslog на 127.0.0.1): явный список администратора, параметр
 // сервера -notify-allowed-networks. Вызывается до начала отправки.
 func (t *Transport) AllowNetworks(nets []netip.Prefix) { t.allowed = slices.Clone(nets) }
 
-// blockedAddr — адрес запрещён по умолчанию.
-func blockedAddr(ip netip.Addr) bool {
-	ip = ip.Unmap()
-	if nat64.Contains(ip) {
-		b := ip.As16()
-		ip = netip.AddrFrom4([4]byte(b[12:]))
-	}
-	return ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsInterfaceLocalMulticast() ||
-		ip.IsMulticast() || ip.IsUnspecified() || slices.Contains(metadataAddrs, ip)
-}
-
-// permitted — соединение с ip разрешено.
-func (t *Transport) permitted(ip netip.Addr) bool {
-	for _, p := range t.allowed {
-		if p.Contains(ip.Unmap()) || p.Contains(ip) {
-			return true
-		}
-	}
-	return !blockedAddr(ip)
-}
+// permitted — соединение с ip разрешено (общее правило адресов с
+// MCP-серверами, internal/netguard).
+func (t *Transport) permitted(ip netip.Addr) bool { return netguard.Permitted(ip, t.allowed) }
 
 // testCode — обобщённый код тестовой отправки (3Н31 ревью 3.r2).
 // PublicCode — код ошибки соединения для ответов API вне журнала доставки:

@@ -78,10 +78,12 @@ var (
 	ErrProviderInUse    = errors.New("провайдер используется приложениями")
 	ErrArchived         = errors.New("приложение в архиве")
 	ErrKeyInactive      = errors.New("ключ отозван или истёк")
-	ErrTooManyKeys      = errors.New("слишком много действующих ключей")
-	ErrTooMany          = errors.New("достигнут предел числа объектов")
-	ErrNoDataKey        = errors.New("ключ данных не подключён: учётные данные провайдеров недоступны")
-	ErrNoCredential     = errors.New("учётные данные провайдера не заданы")
+	// ErrAgentNotFound — агента для привязки ключа нет в этом приложении.
+	ErrAgentNotFound = errors.New("агент не найден в приложении")
+	ErrTooManyKeys   = errors.New("слишком много действующих ключей")
+	ErrTooMany       = errors.New("достигнут предел числа объектов")
+	ErrNoDataKey     = errors.New("ключ данных не подключён: учётные данные провайдеров недоступны")
+	ErrNoCredential  = errors.New("учётные данные провайдера не заданы")
 	// ErrPolicyRequired — изменение ослабляет защиту и требует права
 	// applications.policy (В15 ревью 2.r3b).
 	ErrPolicyRequired = errors.New("нужно право applications.policy")
@@ -227,6 +229,9 @@ type Key struct {
 	RotatedFrom  string
 	RevokedAt    time.Time
 	RevokedBy    string
+	// AgentID — агент, к которому привязан ключ (задача 4.8, ADR-0023):
+	// задаётся при выпуске и не меняется, ротация его сохраняет.
+	AgentID string
 }
 
 // Состояния ключа.

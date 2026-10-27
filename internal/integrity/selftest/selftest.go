@@ -13,7 +13,9 @@
 package selftest
 
 import (
+	"bytes"
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -27,6 +29,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/detect"
 	"github.com/azuresong-afk/ai_railway/internal/integrity"
 	"github.com/azuresong-afk/ai_railway/internal/policy"
+	"github.com/azuresong-afk/ai_railway/internal/policy/tooldesc"
 	"github.com/azuresong-afk/ai_railway/internal/policy/toolrate"
 )
 
@@ -41,11 +44,12 @@ const (
 	ProblemMissed     Problem = "missed"     // ожидаемая категория не найдена
 	ProblemUnexpected Problem = "unexpected" // находка, которой не должно быть
 	ProblemDecision   Problem = "decision"   // решение политики вызовов не совпало с эталоном
+	ProblemHash       Problem = "hash"       // хеш описания инструмента не совпал с эталоном
 )
 
 // Failure — провал одного эталона. Текста эталона и находок не содержит.
 type Failure struct {
-	Detector string // пусто — криптопрофиль; ToolsCheck — политика вызовов
+	Detector string // пусто — криптопрофиль; ToolsCheck — политика вызовов; DescriptorCheck — хеш описаний
 	Vector   string // ID эталона (ID примера корпуса)
 	Problem  Problem
 	Category string // для missed и unexpected
@@ -59,7 +63,7 @@ type Result struct {
 	CryptoOK  bool
 	Detectors int // проверено детекторов
 	Vectors   int // прогнано эталонов детекторов
-	Tools     int // прогнано эталонов политики вызовов
+	Tools     int // прогнано эталонов политики вызовов и хеша описаний
 	Failures  []Failure
 	// cryptoErr — причина провала криптопрофиля для журнала.
 	cryptoErr error
@@ -110,6 +114,7 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 		return res, nil
 	}
 	res.Failures = append(res.Failures, runTools(cfg.Now(), &res.Tools)...)
+	res.Failures = append(res.Failures, runDescriptors(cfg.Provider, &res.Tools)...)
 	reg, err := detect.NewRegistry(cfg.Detectors...)
 	if err != nil {
 		return res, fmt.Errorf("самотест: %w", err)
@@ -167,6 +172,39 @@ func runTools(now time.Time, n *int) []Failure {
 	}
 	if d.Action != policy.Block {
 		out = append(out, Failure{Detector: ToolsCheck, Vector: toolRepeatVector, Problem: ProblemDecision, Category: string(d.Action)})
+	}
+	return out
+}
+
+// runDescriptors прогоняет эталоны хеша описаний инструментов
+// (descriptorVectors) на криптопрофиле компонента: шлюз и сервер обязаны
+// считать хеш одинаково, иначе одобренный инструмент выглядит изменённым
+// или изменённый — одобренным (DM-25).
+func runDescriptors(p aisecCrypto.Provider, n *int) []Failure {
+	h, err := p.Hasher()
+	if err != nil {
+		return []Failure{{Detector: DescriptorCheck, Problem: ProblemError}}
+	}
+	var out []Failure
+	for _, v := range descriptorVectors {
+		*n++
+		a, err := tooldesc.Parse([]byte(v.A))
+		if v.Invalid {
+			if err == nil {
+				out = append(out, Failure{Detector: DescriptorCheck, Vector: v.ID, Problem: ProblemHash})
+			}
+			continue
+		}
+		b, errB := tooldesc.Parse([]byte(v.B))
+		if err != nil || errB != nil {
+			out = append(out, Failure{Detector: DescriptorCheck, Vector: v.ID, Problem: ProblemError})
+			continue
+		}
+		ha := tooldesc.Hash(h, a)
+		if bytes.Equal(ha, tooldesc.Hash(h, b)) != v.Same ||
+			v.SHA256 != "" && h.Name() == "SHA-256" && hex.EncodeToString(ha) != v.SHA256 {
+			out = append(out, Failure{Detector: DescriptorCheck, Vector: v.ID, Problem: ProblemHash})
+		}
 	}
 	return out
 }

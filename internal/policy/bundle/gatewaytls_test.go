@@ -32,13 +32,13 @@ func TestParseSecretsGatewayTLS(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			_, _, err := parseSecrets([]byte(c.plain), c.c)
+			_, _, _, err := parseSecrets([]byte(c.plain), c.c)
 			if err == nil || !strings.Contains(err.Error(), c.want) {
 				t.Fatalf("ожидалась ошибка %q: %v", c.want, err)
 			}
 		})
 	}
-	sec2, key, err := parseSecrets([]byte(`[{"provider":"llm","credential":"k"},{"tls_key":"`+strings.ReplaceAll(tlsKeyPEM, "\n", `\n`)+`"}]`), with)
+	sec2, _, key, err := parseSecrets([]byte(`[{"provider":"llm","credential":"k"},{"tls_key":"`+strings.ReplaceAll(tlsKeyPEM, "\n", `\n`)+`"}]`), with)
 	if err != nil || string(key) != tlsKeyPEM || sec2["llm"] != "k" {
 		t.Fatalf("верные секреты: %v %v", sec2, err)
 	}

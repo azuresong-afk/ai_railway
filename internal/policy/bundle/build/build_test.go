@@ -56,6 +56,8 @@ type env struct {
 	fx       *bundletest.Fixture
 	now      time.Time
 	apps     *apps.Service
+	appsMem  *apps.Memory
+	box      *keyring.Box
 	policies *versions.Service
 	store    *build.Memory
 	audit    *recorder
@@ -97,7 +99,8 @@ func newEnv(t *testing.T) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if e.apps, err = apps.New(apps.Options{Store: apps.NewMemory(), Provider: fx.Provider, Box: box, Clock: e.clock,
+	e.appsMem, e.box = apps.NewMemory(), box
+	if e.apps, err = apps.New(apps.Options{Store: e.appsMem, Provider: fx.Provider, Box: box, Clock: e.clock,
 		Policies: e.policies, OwnerCheck: func(context.Context, string) error { return nil }}); err != nil {
 		t.Fatal(err)
 	}

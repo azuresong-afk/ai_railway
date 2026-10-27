@@ -245,6 +245,11 @@ func (s *Service) UpdateRule(ctx context.Context, by By, id string, in RuleInput
 		next.Recipients = rc
 	} else if next, err = ParseRuleInput(in, cur.Kind); err != nil {
 		return Rule{}, err
+	} else if (cur.Condition.Field == ToolField) != (next.Condition.Field == ToolField) {
+		// Поле tool — только у встроенного правила agents.tool_new: его
+		// срабатывания идут из аудита по ключу правила, не по событиям.
+		return Rule{}, &InputError{Errs: []error{errors.New(
+			"condition.field: tool — только у встроенного правила «Новый инструмент агента», и у него поле не меняется")}}
 	}
 	if err := s.checkRecipients(ctx, next.Recipients); err != nil {
 		return Rule{}, err

@@ -23,6 +23,7 @@ import (
 	// пояс и на хосте без /usr/share/zoneinfo (Н43 ревью 2.r4).
 	_ "time/tzdata"
 
+	"github.com/azuresong-afk/ai_railway/internal/agents"
 	"github.com/azuresong-afk/ai_railway/internal/alerting"
 	"github.com/azuresong-afk/ai_railway/internal/api"
 	"github.com/azuresong-afk/ai_railway/internal/apps"
@@ -453,6 +454,18 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	if gateways != nil {
 		gateways.SetBudgetSync(appsSvc)
 	}
+	// Агенты, MCP-серверы и инструменты (ТЗ 5.10, задача 4.8): учётные
+	// данные MCP-серверов — под ключом данных (ЗИ.1); оповещения
+	// agents.tool_new и agents.tool_changed (DM-25) — по записям аудита.
+	agentStore, err := agents.NewPGStore(db.Pool(), auditLog)
+	if err != nil {
+		return err
+	}
+	agentsSvc, err := agents.New(agents.Options{Store: agentStore, Provider: p, Box: box, Apps: agents.AppsOf(appsSvc),
+		OrgID: audit.DefaultOrgID})
+	if err != nil {
+		return err
+	}
 	// Правила «частота», «аномалия» и «бюджет» (задача 3.12, Р3) — фоновой
 	// задачей раз в минуту; расход — приложений с заданным бюджетом.
 	alertStore.SetBudgetSource(budgetUsage(appsSvc))
@@ -507,6 +520,7 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		Events:     eventStore,
 		Alerts:     alertsSvc,
 		Notify:     notifySvc,
+		Agents:     agentsSvc,
 		Incidents:  incidentsSvc,
 		Dashboards: dashStore,
 		Reports:    reportsSvc,
@@ -533,10 +547,11 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	if gateways != nil {
 		// Пакеты конфигурации (задача 2.13): без ключа подписи внутренний
 		// порт не открывается — шлюзы не получили бы конфигурацию.
-		bundleRoutes, bsvc, err := newBundleRoutes(cfg, p, db, auditLog, appsSvc, policiesSvc, gateways, trust, logger)
+		bundleRoutes, bsvc, err := newBundleRoutes(cfg, p, db, auditLog, appsSvc, policiesSvc, agentsSvc, gateways, trust, logger)
 		if err != nil {
 			return err
 		}
+		bundleRoutes = append(bundleRoutes, api.AgentsInternalRoutes(agentsSvc, logger.With("listener", "internal"))...)
 		bundleSvc.Store(bsvc)
 		internal, err := newInternalServer(ctx, cfg, tp, hasher, gateways, eventStore, ca, certPEM, keyPEM, bundleRoutes, logger)
 		if err != nil {

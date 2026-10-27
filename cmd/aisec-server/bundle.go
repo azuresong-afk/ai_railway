@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/azuresong-afk/ai_railway/internal/agents"
 	"github.com/azuresong-afk/ai_railway/internal/api"
 	"github.com/azuresong-afk/ai_railway/internal/apps"
 	"github.com/azuresong-afk/ai_railway/internal/audit"
@@ -219,7 +220,7 @@ func loadServerCA(cfg *serverConfig, p aisecCrypto.Provider, t *serverTrust) (*s
 // 2.13): маршруты внутреннего порта. Изменения приложений и политик
 // проверяются сборкой при сохранении (В16 ревью 2.r3b).
 func newBundleRoutes(cfg *serverConfig, p aisecCrypto.Provider, db *store.DB, auditLog *audit.Log,
-	appsSvc *apps.Service, policiesSvc *versions.Service, gateways *gwregistry.Service, trust *serverTrust,
+	appsSvc *apps.Service, policiesSvc *versions.Service, agentsSvc *agents.Service, gateways *gwregistry.Service, trust *serverTrust,
 	logger *slog.Logger) ([]api.Route, *build.Service, error) {
 	signer, err := loadBundleSigner(p, cfg.KeysDir, trust)
 	if err != nil {
@@ -242,7 +243,7 @@ func newBundleRoutes(cfg *serverConfig, p aisecCrypto.Provider, db *store.DB, au
 	}
 	// Пакет собирается заново только при смене счётчика изменений
 	// конфигурации (Н26, задача 3.34).
-	svc, err := build.New(build.Options{Apps: appsSvc, Policies: policiesSvc, Store: st, Audit: auditLog,
+	svc, err := build.New(build.Options{Apps: appsSvc, Policies: policiesSvc, Agents: agentsSvc, Store: st, Audit: auditLog,
 		Sealer: sealer, Provider: p, Logger: logger,
 		Revision: func(ctx context.Context) (int64, error) { return st.Revision(ctx, audit.DefaultOrgID) }})
 	if err != nil {

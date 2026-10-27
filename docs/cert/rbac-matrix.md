@@ -10,6 +10,16 @@
 
 | Метод | Путь | Разрешение | security_admin | system_admin | analyst | auditor | app_owner | токен API |
 |---|---|---|---|---|---|---|---|---|
+| GET | `/api/v1/agent-tools` | `agents.read` | да | да | да | да | свои | да |
+| GET | `/api/v1/agent-tools/{id}` | `agents.read` | да | да | да | да | свои | да |
+| POST | `/api/v1/agent-tools/{id}/approve` | `agents.tools.approve` | да | — | — | — | — | — |
+| POST | `/api/v1/agent-tools/{id}/revoke` | `agents.tools.approve` | да | — | — | — | — | — |
+| PUT | `/api/v1/agent-tools/{id}/risk` | `agents.tools.approve` | да | — | — | — | — | — |
+| GET | `/api/v1/agents` | `agents.read` | да | да | да | да | свои | да |
+| POST | `/api/v1/agents` | `agents.manage` | да | да | — | — | — | да |
+| GET | `/api/v1/agents/{id}` | `agents.read` | да | да | да | да | свои | да |
+| PUT | `/api/v1/agents/{id}` | `agents.manage` | да | да | — | — | — | да |
+| DELETE | `/api/v1/agents/{id}` | `agents.manage` | да | да | — | — | — | да |
 | GET | `/api/v1/alert-rules` | `alert_rules.read` | да | — | да | да | — | да |
 | POST | `/api/v1/alert-rules` | `alert_rules.manage` | да | — | — | — | — | — |
 | GET | `/api/v1/alert-rules/{id}` | `alert_rules.read` | да | — | да | да | — | да |
@@ -85,6 +95,13 @@
 | GET | `/api/v1/incidents/{id}/export` | `incidents.export` | да | — | да | — | — | да |
 | POST | `/api/v1/incidents/{id}/stages/{stage}` | `incidents.manage` | да | — | да | — | — | да |
 | POST | `/api/v1/incidents/{id}/status` | `incidents.manage` | да | — | да | — | — | да |
+| GET | `/api/v1/mcp-servers` | `agents.read` | да | да | да | да | свои | да |
+| POST | `/api/v1/mcp-servers` | `agents.manage` | да | да | — | — | — | да |
+| GET | `/api/v1/mcp-servers/{id}` | `agents.read` | да | да | да | да | свои | да |
+| PUT | `/api/v1/mcp-servers/{id}` | `agents.manage` | да | да | — | — | — | да |
+| DELETE | `/api/v1/mcp-servers/{id}` | `agents.manage` | да | да | — | — | — | да |
+| PUT | `/api/v1/mcp-servers/{id}/credentials` | `agents.manage` | да | да | — | — | — | да |
+| PUT | `/api/v1/mcp-servers/{id}/security` | `agents.tools.approve` | да | — | — | — | — | — |
 | GET | `/api/v1/me` | `session` | да | да | да | да | да | — |
 | GET | `/api/v1/model-prices` | `model_prices.read` | да | да | да | да | — | да |
 | POST | `/api/v1/model-prices` | `model_prices.manage` | да | да | — | — | — | да |

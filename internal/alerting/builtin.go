@@ -65,7 +65,7 @@ func builtinRules() []Rule {
 		{BuiltinKey: BuiltinRecipientsChanged, Kind: KindSecurity, Name: "Изменены получатели оповещений",
 			Description: "Изменение получателей правила оповещения (ТЗ 5.6). Изменения одного пользователя за 10 минут — одно оповещение.",
 			Enabled:     true, Severity: "high", GroupBy: []string{"actor"}, GroupMinutes: 10, Recipients: none},
-	}, slices.Concat(periodicRules(), securityRules(), incidentRules())...)
+	}, slices.Concat(periodicRules(), securityRules(), incidentRules(), agentRules())...)
 }
 
 // periodicRules — встроенные правила «частота», «аномалия» и «бюджет»
