@@ -211,6 +211,16 @@
 - **Оповещения.** Встроенные `threshold.session_risk`, `threshold.prompt_integrity`, `threshold.history_integrity` (серьёзность `high`).
 - **Тесты.** `TestDM06_*`, `TestDM26_*`, `TestDM03_*`, `TestSessionHeaderValidation`, `TestSessionFingerprint`, `TestPromptBaselineValidation`, `TestPGPromptBaselineStorage`, `TestPGSessionHistoryCheck`, `TestPromptBaselinesSectionValidate`, `TestCompileChecksAllowedActions`, `FuzzSessionHeader`, `FuzzNormalize`.
 
+## ML-детекторы и процесс `aisec-ml` (ТЗ 4.1, 5.2, 8.12; задача 4.18 этапа 4, ADR-0024)
+Основа ML-детекторов `injection.ml`, `toxicity.ml`, `pii.ner` (сами детекторы — задачи 4.19, 4.20). Код: `internal/ml` (протокол, сервер, пакет моделей), `cmd/aisec-ml`, `internal/gateway/mlclient.go`, признак `ml_unavailable` в `internal/events`.
+
+- **Изоляция.** Модели выполняются в отдельном процессе `aisec-ml`; ONNX Runtime подключается через cgo только в нём и только с тегом `aisec_onnx`. Контейнер без сети, ФС только для чтения, без capabilities, с лимитами памяти и процессов; связь со шлюзом — Unix-сокет 0660 в каталоге без прав для остальных.
+- **Целостность моделей (ОЦЛ).** Пакет моделей подписан ключом производителя; `aisec-ml` проверяет подпись, состав, размеры и хеши всех файлов и ML-BOM до загрузки и отказывается запускаться при любом несовпадении; исполнитель получает проверенные байты из памяти.
+- **ML-BOM (ТЗ 8.12).** У каждой модели — CycloneDX 1.6 или 1.7 с компонентом `machine-learning-model` (ID и версия модели), проверяется при загрузке.
+- **Fail-open для ML.** Недоступность, зависание, перегрузка `aisec-ml` или нарушение протокола не блокируют запрос и не включают `fail_closed`: решение принимается по остальным детекторам, событие получает `decision.ml_unavailable: true`. Модель, проверившая часть текста и ничего не нашедшая, тоже даёт `ml_unavailable`.
+- **Протокол.** Свой двоичный протокол с пределами по типу кадра, проверкой заголовка до чтения тела, строгим JSON и проверкой находок (метки модели, позиции на границах символов); fuzz-тесты обеих сторон.
+- **Тесты.** `TestReadFrameTooLargeDoesNotReadBody`, `TestServerRejectsOversizeFrame`, `TestServerOverloaded`, `TestServerExecutorPanicAndBadFindings`, `TestLoadModelsRejectsForeignSignature`, `TestLoadModelsRejectsTamperedWeights`, `TestRunRefusesUnverifiedPackage`, `TestListenSocketDirectoryChecks`, `TestMLClientRefusesForeignPermissions`, `TestMLClientBackoff`, `TestMLClientInflightLimit`, `TestMLUnavailableDoesNotBlockGateway`, `TestMLDetectorTimeoutIsMLUnavailable`, `TestMLUnavailableWithOtherFailureFailsClosed`, `TestMLClientTimeoutsAndBackoff`, `TestMLClientRetriesClosedIdleConn`, `TestMLClientDropsStaleIdleConn`, `TestMLDetectorChecksModel`, `FuzzServerReadFrame`, `FuzzClientReadFrame`, `FuzzParseModelsManifest`.
+
 ## Политики в сервере управления (ТЗ, 5.3; задача 2.12)
 `internal/policy/versions` (`Service`, `Compare`, `Memory`, `PGStore`), `internal/gateway/sandbox.go` (`Sandbox`), `internal/api/policies.go`, миграция `0017_policies`, ADR-0016.
 
