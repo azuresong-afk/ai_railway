@@ -119,6 +119,19 @@ describe("экран исключений политики", () => {
     await within(dlg).findByText(/Неверный пароль/);
   });
 
+  it("продление исключения для канарейки — не больше 7 суток (3Н49 ревью 3.r4)", async () => {
+    exceptions = [exc({ detector: "canary", pattern: undefined, fragment: "0123456789abcdef0123456789abcdef" })];
+    renderScreen(manage);
+    await openTab("Исключения");
+    fireEvent.click(await screen.findByRole("button", { name: "Продлить исключение exc-1" }));
+    const dlg = await screen.findByRole("dialog");
+    expect((within(dlg).getByLabelText("Срок, суток") as HTMLInputElement).value).toBe("7");
+    fireEvent.change(within(dlg).getByLabelText("Срок, суток"), { target: { value: "8" } });
+    fireEvent.change(within(dlg).getByLabelText("Текущий пароль"), { target: { value: "Correct-Horse-1" } });
+    expect(within(dlg).getByRole("button", { name: "Продлить исключение" })).toBeDisabled();
+    expect(within(dlg).getByText("Введите целое число от 1 до 7.")).toBeTruthy();
+  });
+
   it("удаление не просит пароль и шлёт base_version запросом", async () => {
     renderScreen(manage);
     await openTab("Исключения");

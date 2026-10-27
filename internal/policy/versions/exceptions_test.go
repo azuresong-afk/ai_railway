@@ -468,3 +468,45 @@ func TestVersionAuditDetailsBudget(t *testing.T) {
 		t.Fatalf("откат: truncated %v", det["truncated"])
 	}
 }
+
+// 3Н49 ревью 3.r4: новое и продлённое исключение для канарейки — не больше
+// 7 суток (по умолчанию тоже 7); полная спецификация с новым долгим
+// исключением отклоняется, а сохранённая версия с прежним сроком
+// разбирается и переносится без изменений.
+func TestExceptionCanaryShortTTL(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	e.createStrict(t)
+	by := e.confirmed()
+	in := versions.ExceptionInput{Detector: "canary", Fragment: strings.Repeat("ab", 16), App: "support", Reason: "маркер в шаблоне письма"}
+	long := in
+	long.ExpiresInDays = 30
+	_, _, err := e.svc.AddException(ctx, by, "p", 1, long, "")
+	inputErr(t, err, "7 суток")
+	if err := long.Check(); err == nil {
+		t.Fatal("Check принял 30 суток для канарейки")
+	}
+	d, exc, err := e.svc.AddException(ctx, by, "p", 1, in, "")
+	if err != nil || !exc.ExpiresAt.Equal(e.now.Add(policy.MaxCanaryExceptionTTL)) {
+		t.Fatalf("срок по умолчанию: %+v %v", exc, err)
+	}
+	_, _, err = e.svc.ExtendException(ctx, by, "p", d.Version.Version, exc.ID, 8, nil, "", "")
+	inputErr(t, err, "7 суток")
+	if _, ext, err := e.svc.ExtendException(ctx, by, "p", d.Version.Version, exc.ID, 7, nil, "", ""); err != nil ||
+		!ext.ExpiresAt.Equal(e.now.Add(7*24*time.Hour)) {
+		t.Fatalf("продление на 7 суток: %+v %v", ext, err)
+	}
+	s := spec("p", policy.Enforce, ruleInjection, rulePII)
+	at := e.now.Add(30 * 24 * time.Hour)
+	s.Exceptions = []policy.ExceptionSpec{{ID: "exc-yaml", Detector: "canary", Fragment: in.Fragment, Reason: "из YAML", ExpiresAt: at}}
+	_, err = e.svc.Update(ctx, by, "p", 3, s, versions.SourceAPI, "", versions.ConsoleDefaults)
+	inputErr(t, err, "7 суток")
+	// Версия, сохранённая до ограничения (срок 365 суток), остаётся действительной.
+	old := spec("p", policy.Enforce, ruleInjection, rulePII)
+	old.Version = 1
+	old.Exceptions = []policy.ExceptionSpec{{ID: "exc-old", Detector: "canary", Fragment: in.Fragment, Reason: "до 3Н49",
+		Author: "user:x", CreatedAt: e.now, ExpiresAt: e.now.Add(policy.MaxExceptionTTL)}}
+	if err := old.Validate(); err != nil {
+		t.Fatalf("сохранённая версия с долгим исключением канарейки: %v", err)
+	}
+}

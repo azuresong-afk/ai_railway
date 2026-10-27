@@ -19,6 +19,9 @@ export type PolicyExceptionItem = S["PolicyExceptionItem"];
 export type NewPolicyException = S["NewPolicyException"];
 export type PolicyExceptionExtend = S["PolicyExceptionExtend"];
 
+// Наибольший срок нового или продлённого исключения, суток: у канарейки — 7 (3Н49 ревью 3.r4), у остальных — 365.
+export const exceptionMaxDays = (detector: string | undefined) => (detector === "canary" ? 7 : 365);
+
 const id = encodeURIComponent;
 
 export const policiesApi = {

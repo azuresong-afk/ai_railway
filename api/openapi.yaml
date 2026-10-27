@@ -2717,7 +2717,7 @@ paths:
         версии (ADR-0016): новая версия поверх `base_version` (409, если политику уже изменили).
         Условие: детектор обязательно и хотя бы одно из `pattern`, `fragment`, `app`, `user`
         (детектор целиком для всех приложений не отключается — 400; исключение для `canary` —
-        только с `fragment`, иначе 400, 3Н42); `category` и `source` — дополнительные. Срок обязателен: `expires_in_days` 1–365 или `expires_at` не дальше 365
+        только с `fragment`, иначе 400, 3Н42); `category` и `source` — дополнительные; у `canary` срок не больше 7 суток (3Н49). Срок обязателен: `expires_in_days` 1–365 или `expires_at` не дальше 365
         суток, по умолчанию 30 суток. Автора и время ставит сервер. Добавление — ослабление
         защиты: текущий пароль или код TOTP в теле (без них — 403, неверные — 403
         `reauthentication_failed`), запись `policy.exception_add` с `weakening` (DM-40).
@@ -2754,7 +2754,7 @@ paths:
       summary: Изменить срок исключения — новая версия политики
       description: |
         Право `policies.manage`. Новый срок — от момента сохранения (`expires_in_days` 1–365 или
-        `expires_at`). Продление — ослабление защиты: пароль или код TOTP и `weakening` в записи
+        `expires_at`; у `canary` — не больше 7 суток, 3Н49). Продление — ослабление защиты: пароль или код TOTP и `weakening` в записи
         `policy.exception_extend` (DM-40); сокращение срока — нет.
       x-permission: policies.manage
       security: [{ sessionCookie: [] }]

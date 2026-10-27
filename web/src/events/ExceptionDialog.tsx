@@ -4,7 +4,7 @@ import { ErrorBanner, FormDialog } from "../admin/common";
 import { Button } from "../ui/Button";
 import { Check, Field, Input } from "../ui/Field";
 import { Banner } from "../ui/Layout";
-import { policiesApi } from "../policies/api";
+import { exceptionMaxDays, policiesApi } from "../policies/api";
 import { type ExceptionCondition, eventsApi } from "./api";
 
 type Key = "category" | "pattern" | "fragment" | "app" | "user" | "source";
@@ -54,7 +54,8 @@ export function ExceptionDialog({ eventId, mfa, defaultReason, onClose }: { even
   const draft = useQuery({ queryKey: ["event", eventId, "exception-draft"], queryFn: ({ signal }) => eventsApi.exceptionDraft(eventId, signal) });
   const [item, setItem] = useState(0);
   const [off, setOff] = useState<Set<Key>>(new Set());
-  const [days, setDays] = useState("30");
+  // undefined — срок по умолчанию: 30 суток, но не больше предела детектора.
+  const [daysIn, setDays] = useState<string>();
   const [reason, setReason] = useState(defaultReason);
   const [secret, setSecret] = useState("");
   const [done, setDone] = useState<string>();
@@ -62,8 +63,10 @@ export function ExceptionDialog({ eventId, mfa, defaultReason, onClose }: { even
   const d = draft.data;
   const cond = d?.items.at(item);
   const picked = cond ? keys.filter((k) => valueOf(cond, k) !== "" && !off.has(k)) : [];
+  const maxDays = exceptionMaxDays(cond?.detector);
+  const days = daysIn ?? String(Math.min(30, maxDays));
   const daysN = Number(days);
-  const daysOk = Number.isInteger(daysN) && daysN >= 1 && daysN <= 365;
+  const daysOk = Number.isInteger(daysN) && daysN >= 1 && daysN <= maxDays;
   const scoped = picked.some((k) => scoping.includes(k));
   const blocked = !d?.policy ? "У события нет политики, в которую можно добавить исключение." : d.template ? "template" : d.items.length === 0 ? "none" : undefined;
 
@@ -172,7 +175,11 @@ export function ExceptionDialog({ eventId, mfa, defaultReason, onClose }: { even
               {scoped && !picked.some((k) => k === "app" || k === "fragment" || k === "user") && (
                 <Banner kind="warning">Исключение только по правилу действует во всех приложениях этой политики. Добавьте приложение или фрагмент, если нужно уже.</Banner>
               )}
-              <Field label="Срок, суток" hint="От 1 до 365, по умолчанию 30." {...(!daysOk ? { error: "Введите целое число от 1 до 365." } : {})}>
+              <Field
+                label="Срок, суток"
+                hint={maxDays < 365 ? `От 1 до ${maxDays}: исключение для канарейки почти отключает защиту системного промпта.` : "От 1 до 365, по умолчанию 30."}
+                {...(!daysOk ? { error: `Введите целое число от 1 до ${maxDays}.` } : {})}
+              >
                 {({ id, describedBy, invalid }) => (
                   <Input id={id} aria-describedby={describedBy} aria-invalid={invalid} inputMode="numeric" value={days} onChange={(e) => setDays(e.target.value)} />
                 )}
