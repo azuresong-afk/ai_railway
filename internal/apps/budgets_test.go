@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/azuresong-afk/ai_railway/internal/apps"
+	"github.com/azuresong-afk/ai_railway/internal/audit"
 	"github.com/azuresong-afk/ai_railway/internal/gwregistry"
 )
 
@@ -281,5 +282,55 @@ func TestSyncBudgetMonthSkew(t *testing.T) {
 	e.clock.t = time.Date(2026, 10, 31, 20, 30, 0, 0, time.UTC)
 	if st, err := e.svc.SyncBudget(ctx, "gw2", started, rep("2026-11")); err != nil || st.Month != "2026-11" {
 		t.Fatalf("ноябрь в пределах допуска: %+v %v", st, err)
+	}
+}
+
+// Перенесено из этапа 3 (задача 4.5): счётчики месяцев старше 14 прошлых
+// удаляются при синхронизации, не чаще раза в час.
+func TestSyncBudgetPrunesOldUsage(t *testing.T) {
+	e := newEnv(t, false)
+	ctx := context.Background()
+	p := e.provider(t, "llm")
+	e.app(t, "crm", p.ID, ownerA)
+	e.svc.SetTimezone(func(context.Context) (string, error) { return "Europe/Moscow", nil })
+	started := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	month := func(m string) []gwregistry.BudgetMonth {
+		return []gwregistry.BudgetMonth{{Month: m, Apps: []gwregistry.BudgetUsage{{App: "crm", Cost: 5, Requests: 1}}}}
+	}
+	for _, m := range []string{"2025-07", "2025-08"} {
+		if err := e.mem.SaveUsage(ctx, audit.DefaultOrgID, "gw-old", started, month(m), started); err != nil {
+			t.Fatal(err)
+		}
+	}
+	used := func(m string) bool {
+		t.Helper()
+		u, err := e.mem.Usage(ctx, audit.DefaultOrgID, m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return u["crm"].Requests > 0
+	}
+	e.clock.t = time.Date(2026, 9, 30, 20, 45, 0, 0, time.UTC) // 23:45 по Москве
+	if _, err := e.svc.SyncBudget(ctx, "gw1", started, gwregistry.BudgetReport{Months: month("2026-09")}); err != nil {
+		t.Fatal(err)
+	}
+	// Сентябрь 2026: хранятся месяцы с июля 2025.
+	if !used("2025-07") || !used("2025-08") {
+		t.Fatal("удалён месяц в пределах срока")
+	}
+	// Октябрь, но с прошлой очистки меньше часа — очистки нет.
+	e.clock.t = time.Date(2026, 9, 30, 21, 15, 0, 0, time.UTC) // 1 октября 00:15 по Москве
+	if _, err := e.svc.SyncBudget(ctx, "gw1", started, gwregistry.BudgetReport{Months: month("2026-10")}); err != nil {
+		t.Fatal(err)
+	}
+	if !used("2025-07") {
+		t.Fatal("очистка чаще раза в час")
+	}
+	e.clock.t = e.clock.t.Add(time.Hour)
+	if _, err := e.svc.SyncBudget(ctx, "gw1", started, gwregistry.BudgetReport{Months: month("2026-10")}); err != nil {
+		t.Fatal(err)
+	}
+	if used("2025-07") || !used("2025-08") || !used("2026-10") {
+		t.Fatal("срок хранения: июль 2025 должен быть удалён, август 2025 и октябрь 2026 — нет")
 	}
 }
