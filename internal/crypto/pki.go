@@ -5,8 +5,10 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/hex"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -155,6 +157,23 @@ func (ca *CA) NotAfter() time.Time { return ca.cert.NotAfter }
 // CertPEM — сертификат УЦ в PEM (для списка доверенных корневых).
 func (ca *CA) CertPEM() []byte {
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: ca.der})
+}
+
+// Fingerprint — отпечаток SHA-256 сертификата УЦ в том виде, в каком его
+// показывают браузеры и certutil: шестнадцатеричные байты в верхнем
+// регистре через двоеточие. По нему администратор сверяет корень, который
+// добавляет в доверенные.
+func (ca *CA) Fingerprint() string {
+	sum := sha256.Sum256(ca.der)
+	h := strings.ToUpper(hex.EncodeToString(sum[:]))
+	var b strings.Builder
+	for i := 0; i < len(h); i += 2 {
+		if i > 0 {
+			b.WriteByte(':')
+		}
+		b.WriteString(h[i : i+2])
+	}
+	return b.String()
 }
 
 // IssueServer выпускает серверный сертификат для указанных имён и адресов.

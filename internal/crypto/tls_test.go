@@ -2,6 +2,7 @@ package crypto
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
@@ -335,5 +336,32 @@ func TestPKIValidity(t *testing.T) {
 	srv, cli := configs(t, oldCA.CertPEM(), certPEM, keyPEM)
 	if _, err := handshake(t, srv, cli); err == nil {
 		t.Fatal("клиент принял истёкший сертификат")
+	}
+}
+
+func TestCAFingerprint(t *testing.T) {
+	ca, err := NewCA("fp CA", time.Hour, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fp := ca.Fingerprint()
+	sum := sha256.Sum256(ca.CertDER())
+	want := make([]string, len(sum))
+	for i, b := range sum {
+		want[i] = fmt.Sprintf("%02X", b)
+	}
+	if fp != strings.Join(want, ":") {
+		t.Fatalf("отпечаток %q, ожидался %q", fp, strings.Join(want, ":"))
+	}
+	// Граница: 32 байта — 64 знака и 31 двоеточие.
+	if len(fp) != 95 || strings.Count(fp, ":") != 31 || fp != strings.ToUpper(fp) {
+		t.Errorf("формат отпечатка: %q", fp)
+	}
+	other, err := NewCA("fp CA", time.Hour, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if other.Fingerprint() == fp {
+		t.Error("у разных УЦ одинаковый отпечаток")
 	}
 }
