@@ -410,8 +410,21 @@ func TestPGIncidentsAppendOnly(t *testing.T) {
 	if _, err := e.app.Exec(ctx, `UPDATE incident_stages SET note = 'подмена' WHERE key = 'triage'`); sqlState(err) != "23514" {
 		t.Errorf("отмеченный этап изменён: %v", err)
 	}
+	// 3В33 ревью 3.r4: закрытие задним числом прямым запросом роли сервера
+	// (обход срока хранения) отклоняется.
+	if _, err := e.app.Exec(ctx, `UPDATE alerts SET status = 'closed', open_key = NULL, closed_at = now() - interval '2000 days',
+		closed_by = 'user:x' WHERE incident_id = $1`, inc.ID); sqlState(err) != "23514" {
+		t.Errorf("оповещение закрыто задним числом: %v", err)
+	}
+	if _, err := e.app.Exec(ctx, `UPDATE incidents SET status = 'closed', resolution = 'resolved', closed_at = now() - interval '2000 days',
+		closed_by = 'user:x' WHERE id = $1`, inc.ID); sqlState(err) != "23514" {
+		t.Errorf("инцидент закрыт задним числом: %v", err)
+	}
 	if _, err := e.svc.SetStatus(ctx, e.by, inc.ID, incidents.StatusInput{Status: "closed", Resolution: "false_positive"}); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := e.app.Exec(ctx, `UPDATE incidents SET closed_at = now() - interval '2000 days' WHERE id = $1`, inc.ID); sqlState(err) != "23514" {
+		t.Errorf("время закрытия закрытого инцидента изменено: %v", err)
 	}
 	if _, err := e.app.Exec(ctx, `UPDATE incidents SET status = 'in_progress', resolution = NULL, closed_at = NULL, closed_by = NULL
 		WHERE id = $1`, inc.ID); sqlState(err) != "23514" {
@@ -736,5 +749,34 @@ func TestPGIncidentRetention(t *testing.T) {
 	// Ограничение столбца: меньше года не сохраняется даже напрямую.
 	if _, err := e.app.Exec(ctx, `UPDATE install_settings SET incident_retention_days = 100`); sqlState(err) != "23514" {
 		t.Fatalf("срок 100 суток: %v", err)
+	}
+}
+
+// 3В30 ревью 3.r4 (PostgreSQL): субъект оповещения безопасности не закрывает
+// инцидент с ним — транзакция откатывается целиком, инцидент и оповещение
+// остаются открытыми.
+func TestPGIncidentCloseRespectsSelfReview(t *testing.T) {
+	e := setupPG(t)
+	ctx := pgCtx(t)
+	e.ingest(t, e.event(t, "crm-bot", true))
+	list, err := e.svc.List(ctx, incidents.Query{})
+	if err != nil || len(list) != 1 {
+		t.Fatalf("инцидент: %d %v", len(list), err)
+	}
+	id := list[0].ID
+	// Оповещение инцидента — как оповещение безопасности о действиях e.by.
+	if _, err := e.owner.Exec(ctx, `UPDATE alerts SET kind = 'security', dedup_key = $2, open_key = CASE WHEN open_key IS NULL THEN NULL ELSE $2 END WHERE incident_id = $1`,
+		id, "actor=user:"+e.by.UserID); err != nil {
+		t.Fatal(err)
+	}
+	closeIn := incidents.StatusInput{Status: "closed", Resolution: "resolved", Comment: "Проверено"}
+	if _, err := e.svc.SetStatus(ctx, e.by, id, closeIn); !errors.Is(err, alerting.ErrSelfReview) {
+		t.Fatalf("субъект закрыл инцидент: %v", err)
+	}
+	if n := e.count(t, `SELECT count(*) FROM incidents WHERE id = '`+id+`' AND status = 'closed'`); n != 0 {
+		t.Fatal("инцидент закрыт отказом")
+	}
+	if n := e.count(t, `SELECT count(*) FROM alerts WHERE incident_id = '`+id+`' AND status = 'closed'`); n != 0 {
+		t.Fatal("оповещение закрыто отказом")
 	}
 }

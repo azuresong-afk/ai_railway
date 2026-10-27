@@ -17,7 +17,9 @@
 3. В контуре: `docker load`, сверка digest с актом, `make check-offline VULNDB_DIR=<снимок>`.
 - `make fuzz-long-docker` — ночной длительный фаззинг.
 
-Закреплённые версии сверяет `make licenses`: каждый образ `golang:` в `deploy/**/Dockerfile` — по digest и с той же версией, что в `components.yaml`; каждое действие в `.github/workflows/` — по SHA коммита и с тем же SHA, что в реестре.
+**Лабораторная сборка** (`deploy/build/Dockerfile.lab`, задача 4.32 этапа 4, ADR-0019, дополнение 27.10.2026) — для `deploy/compose/pilot/lab-install.sh`, когда на хосте только Docker. Стадия консоли — `node:22.22.0-bookworm-slim` по digest: `npm ci --ignore-scripts` строго по `web/package-lock.json` (сеть нужна только этой команде, `npm run build` — под `RUN --network=none`; корень прокси с проверкой TLS — секретом сборки `build-ca`, в образы не попадает); стадия Go — тот же образ golang, `make release-dir` под `RUN --network=none` с тестовым ключом манифеста. Контекст сборки ограничен `Dockerfile.lab.dockerignore` (без `.git`, `bin/`, `build/`, `web/node_modules`, `web/dist`). Результат — каталог выпуска и образы `aisec-test`, не для поставки.
+
+Закреплённые версии сверяет `make licenses`: каждый образ в `FROM` файлов `deploy/**/Dockerfile*` (golang, node) — по digest и с той же версией, что в `components.yaml`; каждое действие в `.github/workflows/` — по SHA коммита и с тем же SHA, что в реестре.
 
 ## Инструменты
 Инструменты разработки не входят в поставку и не попадают в SBOM продукта; они учитываются в `docs/cert/components.yaml` с `scope: build` (решение Д5 плана этапа 0). `make licenses` (`tools/license-check`) сверяет реестр с `vendor/modules.txt`, версией toolchain в `go.mod` и версиями инструментов в `Makefile` и проверяет лицензии по политике `CLAUDE.md`: GPL допускается только для `scope: build` с `license_decision` (ADR-0003), MPL-2.0 и LGPL — только с `license_decision`, неизвестный идентификатор считается запрещённым. Версии зафиксированы в начале `Makefile`, установка — `make tools` в `bin/`.

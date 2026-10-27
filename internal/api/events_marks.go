@@ -96,6 +96,12 @@ func (d Deps) putEventMark(w http.ResponseWriter, r *http.Request) {
 	// черновика не превращает ответ в ошибку (повтор дал бы лишнюю запись) —
 	// черновик доступен отдельно, GET /events/{id}/exception-draft.
 	res := MarkResult{EventID: id, Mark: events.Mark{Mark: mark, Comment: comment}}
+	// Черновик раскрывает находки, приложение и политику события — только с
+	// events.read на все объекты (3Н51 ревью 3.r4).
+	if !p.Grants.Full(auth.PermEventsRead) {
+		WriteJSON(w, http.StatusOK, res)
+		return
+	}
 	rec, err := d.Events.Card(ctx, id)
 	if err != nil {
 		d.Logger.Warn("отметка сохранена, карточка события не прочитана", "event_id", id, "error", err)

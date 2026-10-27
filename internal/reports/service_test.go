@@ -105,7 +105,7 @@ func docText(d Doc) string {
 	var b strings.Builder
 	b.WriteString(d.Title + "\n")
 	for _, s := range d.Sections {
-		b.WriteString(s.Title + "\n")
+		b.WriteString(s.Title + "\n" + s.Note + "\n")
 		for _, r := range s.Rows {
 			for _, c := range r {
 				b.WriteString(c.Text + "|")
@@ -116,9 +116,12 @@ func docText(d Doc) string {
 	return b.String()
 }
 
+// full — права на все разделы отчёта.
+var full = Scope{Budgets: true, Incidents: true, Alerts: true}
+
 func TestBuildSummary(t *testing.T) {
 	b, dash, _ := newBuilder(now2026)
-	doc, err := b.Build(context.Background(), params(t, KindSummary, ""), Scope{Budgets: true})
+	doc, err := b.Build(context.Background(), params(t, KindSummary, ""), full)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,10 +131,12 @@ func TestBuildSummary(t *testing.T) {
 			t.Errorf("нет %q в:\n%s", want, txt)
 		}
 	}
-	// Без бюджетов — раздела нет (нет права budgets.read).
+	// Без прав на бюджеты, инциденты и оповещения — этих разделов нет
+	// (budgets.read, incidents.read, alerts.read; 3В31 ревью 3.r4).
 	doc, _ = b.Build(context.Background(), params(t, KindSummary, ""), Scope{}) //nolint:gosec // G104: ошибка проверена выше или не важна для проверки
-	if strings.Contains(docText(doc), "Исполнение бюджетов") {
-		t.Error("бюджеты без права")
+	if txt := docText(doc); strings.Contains(txt, "Исполнение бюджетов") || strings.Contains(txt, "Инциденты за период") ||
+		strings.Contains(txt, "Оповещения за период") || !strings.Contains(txt, "у автора отчёта нет права") {
+		t.Errorf("разделы без права:\n%s", txt)
 	}
 	// По приложению: условие передаётся в агрегаты, инцидентов и бюджетов нет.
 	dash.apps = nil
@@ -159,7 +164,7 @@ func TestBuildIncidentsReport(t *testing.T) {
 	// Вне периода: позже и раньше.
 	inc.list = append([]incidents.Incident{{ID: "late", Number: 9, CreatedAt: time.Date(2026, 10, 24, 0, 0, 0, 0, time.UTC)}}, inc.list...)
 	inc.list = append(inc.list, incidents.Incident{ID: "old", Number: 0, CreatedAt: time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)})
-	doc, err := b.Build(context.Background(), params(t, KindIncidents, ""), Scope{})
+	doc, err := b.Build(context.Background(), params(t, KindIncidents, ""), full)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +185,7 @@ func TestBuildIncidentsReport(t *testing.T) {
 func TestBuildPilot(t *testing.T) {
 	b, _, inc := newBuilder(now2026)
 	inc.list = []incidents.Incident{{ID: "i1", Number: 1, Status: incidents.StatusNew, Severity: "low", CreatedAt: time.Date(2026, 10, 10, 9, 0, 0, 0, time.UTC)}}
-	doc, err := b.Build(context.Background(), params(t, KindPilot, ""), Scope{})
+	doc, err := b.Build(context.Background(), params(t, KindPilot, ""), full)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,12 +215,17 @@ type fakeMailer struct {
 	calls int
 	fail  int
 	err   error
+	// cancel — вызывается при отправке: остановка сервера посреди письма.
+	cancel func()
 }
 
 func (f *fakeMailer) SendReport(_ context.Context, _ string, m notify.ReportMail) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
+	if f.cancel != nil {
+		f.cancel()
+	}
 	if f.calls <= f.fail {
 		if f.err != nil {
 			return f.err
@@ -482,7 +492,8 @@ func TestTickRetriesThenFails(t *testing.T) {
 		at[3].Sub(at[2]) != 10*time.Minute {
 		t.Errorf("задержки: %v", at)
 	}
-	if !strings.Contains(strings.Join(e.actions(), " "), "report.delivery_failed") || strings.Contains(strings.Join(e.actions(), " "), "data.export") {
+	// data.export пишется до каждой отправки (3В32 ревью 3.r4).
+	if acts := strings.Join(e.actions(), " "); !strings.Contains(acts, "report.delivery_failed") || strings.Count(acts, "data.export") != MaxAttempts {
 		t.Errorf("аудит: %v", e.actions())
 	}
 	// Окончательный отказ не мешает следующему запуску по расписанию.
@@ -535,5 +546,72 @@ func TestRenderFormats(t *testing.T) {
 	}
 	if err := Render(&b, sampleDoc(), "pdf"); err == nil {
 		t.Error("pdf принят")
+	}
+}
+
+// УПД.2 (3В31 ревью 3.r4): «По инцидентам» без права на инциденты не
+// строится, «Итоги пилота» — без списка и счётчиков инцидентов.
+func TestBuildScopeWithoutIncidents(t *testing.T) {
+	b, _, _ := newBuilder(now2026)
+	if _, err := b.Build(context.Background(), params(t, KindIncidents, ""), Scope{Budgets: true, Alerts: true}); !errors.Is(err, ErrScope) {
+		t.Fatalf("отчёт по инцидентам без права: %v", err)
+	}
+	doc, err := b.Build(context.Background(), params(t, KindPilot, ""), Scope{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if txt := docText(doc); strings.Contains(txt, "Не закрыто инцидентов") || !strings.Contains(txt, "у автора отчёта нет права") {
+		t.Errorf("итоги пилота без права на инциденты:\n%s", txt)
+	}
+}
+
+// 3В32 ревью 3.r4: без записи data.export письмо не уходит, повторы
+// конечны; запуск, взятый в работу и не завершённый (падение сервера во
+// время отправки), расходует попытку и после пятой — failed без письма.
+func TestTickAuditFailureAndInterruptedRuns(t *testing.T) {
+	e := newSvc(t)
+	ctx := context.Background()
+	sch, err := e.svc.CreateSchedule(ctx, by, daily())
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.mem.RecordErr = errors.New("база аудита недоступна")
+	e.clock.t = utc(2026, 10, 26, 5, 1)
+	for i := 0; i < 8; i++ {
+		if err := e.svc.Tick(ctx); err != nil {
+			t.Fatal(err)
+		}
+		e.clock.t = e.clock.t.Add(time.Hour)
+	}
+	if e.mail.calls != 0 {
+		t.Fatalf("письма без записи аудита: %d", e.mail.calls)
+	}
+	runs, _ := e.svc.Runs(ctx, sch.ID, 10) //nolint:gosec // G104: ошибка проверена ниже по содержимому
+	if len(runs) == 0 || runs[len(runs)-1].Status != RunFailed || runs[len(runs)-1].Error != ErrCodeAudit {
+		t.Fatalf("запуск при сбое аудита: %+v", runs)
+	}
+
+	// Прерванные отправки: сервер останавливается посреди письма, запуск
+	// остаётся pending, но каждая попытка засчитана.
+	e.mem.RecordErr = nil
+	e.clock.t = utc(2026, 10, 28, 5, 1)
+	for i := 0; i < MaxAttempts; i++ {
+		cctx, cancel := context.WithCancel(ctx)
+		e.mail.cancel = cancel
+		if err := e.svc.Tick(cctx); !errors.Is(err, context.Canceled) {
+			t.Fatalf("прерывание %d: %v", i, err)
+		}
+		e.clock.t = e.clock.t.Add(runLease)
+	}
+	e.mail.cancel = nil
+	calls := e.mail.calls
+	if err := e.svc.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if e.mail.calls != calls {
+		t.Fatal("письмо после исчерпанных попыток")
+	}
+	if !strings.Contains(strings.Join(e.actions(), " "), "report.delivery_failed") {
+		t.Errorf("нет report.delivery_failed: %v", e.actions())
 	}
 }

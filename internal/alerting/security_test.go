@@ -77,6 +77,7 @@ func TestSecurityRulesLocked(t *testing.T) {
 // DM-38 (оповещение, этап 3): адрес, заблокированный ограничителем шлюза
 // после серии неудач, и запрос с отозванным ключом дают оповещение;
 // одиночный неверный ключ — нет. Ключ в оповещении — только префикс.
+// Покрывает: DM-38 (оповещение)
 func TestDM38_KeyBruteForceAlert(t *testing.T) {
 	e := newEnv(t)
 	fail := func(addr, prefix, reason string) *events.Event {
@@ -120,6 +121,7 @@ func TestDM38_KeyBruteForceAlert(t *testing.T) {
 // DM-39 (оповещение, этап 3), ИАФ.4: блокировка учётной записи даёт
 // оповещение сразу; перебор по многим записям с одного адреса — при
 // достижении порога за окно; ниже порога и вне окна — без оповещения.
+// Покрывает: DM-39 (оповещение)
 func TestDM39_ConsoleBruteForceAlert(t *testing.T) {
 	e := newEnv(t)
 	for i := range ConsoleFailThreshold - 1 {
@@ -275,6 +277,7 @@ func (e *env) systemAlert(t *testing.T, code, state string, extra map[string]any
 // DM-42 (оповещение, этап 3), ОЦЛ.5: нарушение целостности сервера или
 // шлюза и отклонённый шлюзом пакет дают критическое оповещение по
 // компоненту; снятие условия оповещение не закрывает.
+// Покрывает: DM-42 (оповещение)
 func TestDM42_IntegrityAlert(t *testing.T) {
 	e := newEnv(t)
 	e.systemAlert(t, "integrity:server", "raised", map[string]any{"requirement": "ОЦЛ.5", "component": "server",
@@ -302,6 +305,7 @@ func TestDM42_IntegrityAlert(t *testing.T) {
 // DM-43 (оповещение, этап 3), РСБ.4: нарушение цепочки журнала аудита —
 // запись audit.chain_broken проверки и условие audit_chain состояния
 // системы — одно критическое оповещение.
+// Покрывает: DM-43 (оповещение)
 func TestDM43_ChainBrokenAlert(t *testing.T) {
 	e := newEnv(t)
 	e.audit(t, e.rec(t, audit.Actor{Type: audit.ActorSystem, ID: "aisec-server"}, "", "audit.chain_verified",

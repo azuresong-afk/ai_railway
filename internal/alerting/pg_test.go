@@ -291,8 +291,15 @@ func TestPGAlertsOnIngest(t *testing.T) {
 			}
 		}
 	}
-	// Окно истекло — новое оповещение.
+	// Окно истекло — новое оповещение (время закрытия задним числом ставит
+	// только владелец схемы с выключенными триггерами, миграция 0047).
+	if _, err := e.owner.Exec(ctx, `ALTER TABLE alerts DISABLE TRIGGER alerts_closed_at_guard`); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := e.owner.Exec(ctx, `UPDATE alerts SET closed_at = closed_at - interval '2 hours' WHERE id = $1`, inj[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.owner.Exec(ctx, `ALTER TABLE alerts ENABLE TRIGGER alerts_closed_at_guard`); err != nil {
 		t.Fatal(err)
 	}
 	e.ingest(t, e.event(t, "crm-bot", "gigachat", "block", "DM-01"))

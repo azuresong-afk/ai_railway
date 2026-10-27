@@ -167,7 +167,9 @@ func TestBuildVersionsOnlyOnChange(t *testing.T) {
 		t.Fatalf("повтор: %d, %v", r2.Version, err)
 	}
 
-	// Отзыв ключа — новая версия без ключа; часы не сдвинулись — версия +1.
+	// Отзыв ключа — новая версия, ключ в пакете с отметкой отзыва (шлюз
+	// отвечает причиной revoked, DM-38, Д-E2E-1); часы не сдвинулись —
+	// версия +1.
 	if _, err := e.apps.RevokeKey(ctx, e.appsBy, e.key.ID, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -175,8 +177,31 @@ func TestBuildVersionsOnlyOnChange(t *testing.T) {
 	if err != nil || r3.Version != r1.Version+1 {
 		t.Fatalf("после отзыва: %d, %v", r3.Version, err)
 	}
+	c3, err := bundle.ParseContent(r3.Content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ks := c3.Applications[0].Keys; len(ks) != 1 || ks[0].Prefix != e.key.Prefix || !ks[0].Revoked {
+		t.Fatalf("отозванный ключ в пакете: %+v", ks)
+	}
+	recs, err := c3.KeyRecords()
+	if err != nil || len(recs) != 1 || !recs[0].Revoked {
+		t.Fatalf("запись шлюза без отметки отзыва: %+v, %v", recs, err)
+	}
+
+	// Через RevokedKeyRetention отозванный ключ выпадает из пакета без
+	// изменений в БД.
+	e.now = e.now.Add(bundle.RevokedKeyRetention - time.Second)
+	if r, err := e.svc.Current(ctx); err != nil || r.Version != r3.Version {
+		t.Fatalf("до конца хранения отзыва: %d, %v", r.Version, err)
+	}
+	e.now = e.now.Add(time.Second)
+	r3, err = e.svc.Current(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if c, _ := bundle.ParseContent(r3.Content); len(c.Applications[0].Keys) != 0 { //nolint:gosec // G104: содержимое уже разобрано выше без ошибки, важен список ключей
-		t.Fatal("отозванный ключ в пакете")
+		t.Fatal("давно отозванный ключ в пакете")
 	}
 
 	// Новые учётные данные провайдера — новая версия.
@@ -314,8 +339,8 @@ func TestBuildExcludesInvalidApp(t *testing.T) {
 	if err != nil || r2.Version == r.Version {
 		t.Fatalf("после отзыва: %d %v", r2.Version, err)
 	}
-	if c, _ := bundle.ParseContent(r2.Content); len(c.Unavailable[0].Keys) != 1 || c.Unavailable[0].Keys[0].Prefix != e.key.Prefix { //nolint:gosec // G104: содержимое уже проверено сборкой, важен список ключей
-		t.Fatalf("отозванный ключ исключённого приложения в пакете: %+v", c.Unavailable)
+	if c, _ := bundle.ParseContent(r2.Content); len(c.Unavailable[0].Keys) != 2 || !slices.ContainsFunc(c.Unavailable[0].Keys, func(k bundle.Key) bool { return k.Prefix == k2.Prefix && k.Revoked }) { //nolint:gosec // G104: содержимое уже проверено сборкой, важен список ключей
+		t.Fatalf("отзыв ключа исключённого приложения не дошёл: %+v", c.Unavailable)
 	}
 	// Архив — приложение пропадает из пакета вместе с ключами.
 	if _, err := e.apps.ArchiveApplication(ctx, e.appsBy, e.app.ID); err != nil {
@@ -525,7 +550,7 @@ func TestBuildOnlyOnRevisionChange(t *testing.T) {
 	if r, err = svc.Current(ctx); err != nil || svc.Builds() != 3 {
 		t.Fatalf("новый ключ: выборок %d, %v", svc.Builds(), err)
 	}
-	if c, _ := bundle.ParseContent(r.Content); len(c.Applications[0].Keys) != 1 { //nolint:gosec // G104: содержимое сохранено сборкой, важен список ключей
+	if c, _ := bundle.ParseContent(r.Content); len(c.Applications[0].Keys) != 2 { //nolint:gosec // G104: содержимое сохранено сборкой, важен список ключей
 		t.Fatal("нового ключа нет в пакете")
 	}
 	e.now = k.ExpiresAt.Add(-time.Second)
@@ -536,7 +561,7 @@ func TestBuildOnlyOnRevisionChange(t *testing.T) {
 	if r, err = svc.Current(ctx); err != nil || svc.Builds() != 4 {
 		t.Fatalf("срок ключа: выборок %d, %v", svc.Builds(), err)
 	}
-	if c, _ := bundle.ParseContent(r.Content); len(c.Applications[0].Keys) != 0 { //nolint:gosec // G104: содержимое сохранено сборкой, важен список ключей
+	if c, _ := bundle.ParseContent(r.Content); len(c.Applications[0].Keys) != 1 || c.Applications[0].Keys[0].Prefix == k.Prefix { //nolint:gosec // G104: содержимое сохранено сборкой, важен список ключей
 		t.Fatal("истёкший ключ остался в пакете")
 	}
 }
@@ -753,5 +778,39 @@ func TestBuildDropsExpiredExceptions(t *testing.T) {
 	}
 	if y := policyYAML(r); strings.Contains(y, exc.ID) || strings.Contains(y, "exceptions") {
 		t.Fatalf("истёкшее исключение в пакете: %s", y)
+	}
+}
+
+// TestBuildKeepsLatestRevokedKeys — в пакет попадают не больше
+// MaxRevokedKeysPerApp отозванных ключей приложения, самые поздние по
+// времени отзыва (Д-E2E-1): частый выпуск и отзыв не ломают сборку.
+func TestBuildKeepsLatestRevokedKeys(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	first := e.key.Prefix
+	if _, err := e.apps.RevokeKey(ctx, e.appsBy, e.key.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	for i := range bundle.MaxRevokedKeysPerApp {
+		e.now = e.now.Add(time.Minute)
+		k, _, err := e.apps.IssueKey(ctx, e.appsBy, e.app.ID, "", apps.KeyInput{Name: fmt.Sprintf("k%d", i+2)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := e.apps.RevokeKey(ctx, e.appsBy, k.ID, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r, err := e.svc.Current(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := bundle.ParseContent(r.Content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ks := c.Applications[0].Keys
+	if len(ks) != bundle.MaxRevokedKeysPerApp || slices.ContainsFunc(ks, func(k bundle.Key) bool { return k.Prefix == first || !k.Revoked }) {
+		t.Fatalf("отозванные ключи в пакете: %d, первый отозванный %s", len(ks), first)
 	}
 }

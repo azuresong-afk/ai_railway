@@ -83,13 +83,15 @@ func dbErr(err error) error {
 }
 
 const scheduleCols = `id::text, org_id::text, name, report, frequency, COALESCE(weekday, 0)::int, COALESCE(day, 0)::int, at_time,
-	format, channel_id::text, enabled, next_run_at, last_run_at, version, created_at, created_by, updated_at, updated_by`
+	format, channel_id::text, enabled, next_run_at, last_run_at, version, created_at, created_by, updated_at, updated_by,
+	scope_incidents, scope_alerts, scope_budgets`
 
 func scanSchedule(row pgx.Row) (Schedule, error) {
 	var s Schedule
 	var last *time.Time
 	err := row.Scan(&s.ID, &s.OrgID, &s.Name, &s.Report, &s.Frequency, &s.Weekday, &s.Day, &s.At, &s.Format, &s.ChannelID,
-		&s.Enabled, &s.NextRunAt, &last, &s.Version, &s.CreatedAt, &s.CreatedBy, &s.UpdatedAt, &s.UpdatedBy)
+		&s.Enabled, &s.NextRunAt, &last, &s.Version, &s.CreatedAt, &s.CreatedBy, &s.UpdatedAt, &s.UpdatedBy,
+		&s.Scope.Incidents, &s.Scope.Alerts, &s.Scope.Budgets)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Schedule{}, ErrNotFound
 	}
@@ -151,10 +153,11 @@ func (s *PGStore) CreateSchedule(ctx context.Context, sc Schedule, rec audit.Ent
 			return ErrTooMany
 		}
 		if _, err := tx.Exec(ctx, `INSERT INTO report_schedules (id, org_id, name, report, frequency, weekday, day, at_time, format,
-			channel_id, enabled, next_run_at, version, created_at, created_by, updated_at, updated_by)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
+			channel_id, enabled, next_run_at, version, created_at, created_by, updated_at, updated_by, scope_incidents, scope_alerts, scope_budgets)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)`,
 			sc.ID, s.orgID, sc.Name, sc.Report, sc.Frequency, nullable(sc.Weekday), nullable(sc.Day), sc.At, sc.Format, sc.ChannelID,
-			sc.Enabled, sc.NextRunAt, sc.Version, sc.CreatedAt, sc.CreatedBy, sc.UpdatedAt, sc.UpdatedBy); err != nil {
+			sc.Enabled, sc.NextRunAt, sc.Version, sc.CreatedAt, sc.CreatedBy, sc.UpdatedAt, sc.UpdatedBy,
+			sc.Scope.Incidents, sc.Scope.Alerts, sc.Scope.Budgets); err != nil {
 			return dbErr(err)
 		}
 		return s.audit.RecordTx(ctx, tx, rec)
@@ -174,9 +177,10 @@ func (s *PGStore) UpdateSchedule(ctx context.Context, id string, fn func(old Sch
 			return err
 		}
 		if _, err := tx.Exec(ctx, `UPDATE report_schedules SET name = $3, report = $4, frequency = $5, weekday = $6, day = $7, at_time = $8,
-			format = $9, channel_id = $10, enabled = $11, next_run_at = $12, version = $13, updated_at = $14, updated_by = $15
+			format = $9, channel_id = $10, enabled = $11, next_run_at = $12, version = $13, updated_at = $14, updated_by = $15,
+			scope_incidents = $16, scope_alerts = $17, scope_budgets = $18
 			WHERE org_id = $1 AND id = $2`, s.orgID, id, n.Name, n.Report, n.Frequency, nullable(n.Weekday), nullable(n.Day), n.At, n.Format,
-			n.ChannelID, n.Enabled, n.NextRunAt, n.Version, n.UpdatedAt, n.UpdatedBy); err != nil {
+			n.ChannelID, n.Enabled, n.NextRunAt, n.Version, n.UpdatedAt, n.UpdatedBy, n.Scope.Incidents, n.Scope.Alerts, n.Scope.Budgets); err != nil {
 			return dbErr(err)
 		}
 		out = n
@@ -286,9 +290,12 @@ func (s *PGStore) ClaimRun(ctx context.Context, now time.Time, lease time.Durati
 	found := false
 	err := s.inTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		r, err = scanRun(tx.QueryRow(ctx, `UPDATE report_runs SET next_at = $3 WHERE id = (
+		// Попытка засчитывается при взятии; взятый в последний раз и не
+		// завершённый запуск помечается attempts_exhausted.
+		r, err = scanRun(tx.QueryRow(ctx, `UPDATE report_runs SET next_at = $3, attempts = LEAST(attempts + 1, $4),
+			error = CASE WHEN attempts >= $4 THEN '`+ErrCodeExhausted+`' ELSE error END WHERE id = (
 			SELECT id FROM report_runs WHERE org_id = $1 AND status = 'pending' AND next_at <= $2
-			ORDER BY next_at, id LIMIT 1 FOR UPDATE SKIP LOCKED) RETURNING `+runCols, s.orgID, now, now.Add(lease)))
+			ORDER BY next_at, id LIMIT 1 FOR UPDATE SKIP LOCKED) RETURNING `+runCols, s.orgID, now, now.Add(lease), MaxAttempts))
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
@@ -303,6 +310,11 @@ func (s *PGStore) ClaimRun(ctx context.Context, now time.Time, lease time.Durati
 		return nil
 	})
 	return r, sc, found, err
+}
+
+// Record — см. Store.
+func (s *PGStore) Record(ctx context.Context, rec audit.Entry) error {
+	return s.inTx(ctx, func(ctx context.Context, tx pgx.Tx) error { return s.audit.RecordTx(ctx, tx, rec) })
 }
 
 // FinishRun — см. Store.

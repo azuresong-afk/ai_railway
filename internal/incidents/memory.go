@@ -185,6 +185,20 @@ func (m *Memory) Update(_ context.Context, orgID, id string, fn func(*Incident, 
 		m.mu.Unlock()
 		return Incident{}, err
 	}
+	if ch.CloseAlerts != nil {
+		// Проверка закрытия оповещений (3В30) — до изменения инцидента; блокировка
+		// оповещений берётся без m.mu (приём событий идёт в обратном порядке).
+		ver := cur.Version
+		m.mu.Unlock()
+		if err := m.alerts.CanCloseForIncident(orgID, id, ch.CloseAlerts.By); err != nil {
+			return Incident{}, err
+		}
+		m.mu.Lock()
+		if cur.Version != ver {
+			m.mu.Unlock()
+			return Incident{}, ErrVersionConflict
+		}
+	}
 	next.Version++
 	*cur = next.clone()
 	m.apply(&next, &ch)

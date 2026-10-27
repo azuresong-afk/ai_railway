@@ -85,6 +85,19 @@ func restoreFinish(args []string, dsn string, stdout, stderr io.Writer, now time
 			"(aisec-cli gateway token, для зарегистрированных — с -reregister).\n")
 	}
 	say(stdout, "Последняя запись журнала аудита копии — %s (%d ч назад).\n", res.lastAudit.UTC().Format("2006-01-02 15:04 UTC"), res.ageHours)
+	// Напоминание о сверке — при любой давности (3В34 ревью 3.r4): шлюз,
+	// отозванный или перерегистрированный после копии, снова действует со
+	// старым сертификатом и получает пакеты с учётными данными провайдеров.
+	say(stdout, "Действующих шлюзов в копии: %d.", res.activeGateways)
+	for _, g := range res.gateways {
+		say(stdout, " %s (зарегистрирован %s);", g.name, g.registeredAt.UTC().Format("2006-01-02 15:04 UTC"))
+	}
+	if int64(len(res.gateways)) < res.activeGateways {
+		say(stdout, " …")
+	}
+	say(stdout, "\nСверьте с журналом аудита прежней установки (руководство администратора, раздел 12.2, шаг 6): шлюз, отозванный "+
+		"или перерегистрированный после %s, отзовите снова (aisec-cli gateway revoke) или зарегистрируйте заново с -reregister; "+
+		"деактивацию пользователей, отзыв ключей приложений и сброс второго фактора повторите.\n", res.lastAudit.UTC().Format("2006-01-02 15:04 UTC"))
 	if res.stale {
 		say(stderr, "ВНИМАНИЕ: копия старше 7 суток. Всё, что отозвали, деактивировали и сменили после %s, снова в силе: "+
 			"ключи приложений, учётные записи, блокировки, пароли, сбросы второго фактора и коды восстановления, регистрации шлюзов. Сверьте с журналом аудита прежней установки "+
@@ -100,7 +113,19 @@ type restoreFinishResult struct {
 	lastAudit     time.Time
 	ageHours      int64
 	stale         bool
+	// activeGateways — действующих шлюзов в копии; gateways — первые из них.
+	activeGateways int64
+	gateways       []restoredGateway
 }
+
+// restoredGateway — действующий шлюз восстановленной копии.
+type restoredGateway struct {
+	name         string
+	registeredAt time.Time
+}
+
+// maxListedGateways — шлюзов в выводе restore-finish.
+const maxListedGateways = 20
 
 // restoreFinishTx — отзыв и запись аудита одной транзакцией под
 // блокировкой восстановления.
@@ -141,6 +166,23 @@ func restoreFinishTx(ctx context.Context, db *store.DB, l *audit.Log, actor audi
 		return res, fmt.Errorf("токен первичной настройки: погашение: %w", err)
 	}
 	res.setupTokens = tag.RowsAffected()
+	if err := tx.QueryRow(ctx, "SELECT count(*) FROM gateways WHERE org_id = $1 AND status = 'active'",
+		audit.DefaultOrgID).Scan(&res.activeGateways); err != nil {
+		return res, err
+	}
+	rows, err := tx.Query(ctx, "SELECT name, registered_at FROM gateways WHERE org_id = $1 AND status = 'active' ORDER BY name LIMIT $2",
+		audit.DefaultOrgID, maxListedGateways)
+	if err != nil {
+		return res, err
+	}
+	res.gateways, err = pgx.CollectRows(rows, func(r pgx.CollectableRow) (restoredGateway, error) {
+		var g restoredGateway
+		err := r.Scan(&g.name, &g.registeredAt)
+		return g, err
+	})
+	if err != nil {
+		return res, err
+	}
 	details := map[string]any{
 		"last_audit_at":          res.lastAudit.UTC().Format(time.RFC3339),
 		"copy_age_hours":         res.ageHours,
@@ -149,6 +191,7 @@ func restoreFinishTx(ctx context.Context, db *store.DB, l *audit.Log, actor audi
 		"revoked_api_tokens":     res.revoked.APITokens,
 		"expired_gateway_tokens": res.gatewayTokens,
 		"expired_setup_tokens":   res.setupTokens,
+		"active_gateways":        res.activeGateways,
 	}
 	if copyDir != "" {
 		details["copy_dir"] = copyDir

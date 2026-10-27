@@ -765,6 +765,8 @@ func TestChannelUpdateWeakeningSigningAndFormat(t *testing.T) {
 	}{
 		{"signing_key_changed", wh, func(in *ChannelInput) { in.Secrets.SigningKey = ptr(strings.Repeat("n", 40)) }},
 		{"format_changed", sys, func(in *ChannelInput) { in.Settings.Format = FormatCEF }},
+		// Формат webhook — тоже ослабление (3Н50 ревью 3.r4).
+		{"format_changed", wh, func(in *ChannelInput) { in.Settings.Format = FormatMattermost }},
 		// Удаление пароля SMTP вместе с логином из консоли (3Н38 ревью
 		// 3.r2) — тоже с повторной проверкой. Ключ подписи webhook
 		// обязателен: он только заменяется.

@@ -78,6 +78,8 @@ func (d Deps) reportProblem(err error) *Problem {
 		return Invalid("Проверьте введённые данные.", fields...)
 	case errors.Is(err, reports.ErrPeriod):
 		return Invalid("Период задан неверно.", FieldError{Field: "from", Detail: "Укажите дни в формате ГГГГ-ММ-ДД; начало не в будущем, период не длиннее 366 суток."})
+	case errors.Is(err, reports.ErrScope):
+		return NewProblem(http.StatusForbidden, CodeForbidden, "Отчёт «По инцидентам» доступен только с правом просмотра инцидентов.")
 	case errors.Is(err, reports.ErrNotFound):
 		return NewProblem(http.StatusNotFound, CodeNotFound, reportScheduleNotFound)
 	case errors.Is(err, reports.ErrVersionConflict):
@@ -190,7 +192,7 @@ func (d Deps) getReport(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := contextTimeout(r, reportBuildTimeout)
 	defer cancel()
-	doc, err := d.Reports.Build(ctx, params, reports.Scope{Budgets: full && p.Grants.Full(auth.PermBudgetsRead)})
+	doc, err := d.Reports.Build(ctx, params, reportScope(p, full))
 	if err != nil {
 		WriteProblem(w, d.reportProblem(err))
 		return
@@ -232,13 +234,21 @@ func (d Deps) getReport(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(buf.Bytes()) //nolint:gosec // G104: клиент мог закрыть соединение, запись data.export уже сделана
 }
 
+// reportScope — разделы отчёта по правам вызывающего (УПД.2, 3В31 ревью
+// 3.r4): инциденты, оповещения и бюджеты — только с правом их чтения на все
+// объекты; без права на все отчёты (владелец приложения) — ни одного.
+func reportScope(p Principal, full bool) reports.Scope {
+	return reports.Scope{Budgets: full && p.Grants.Full(auth.PermBudgetsRead),
+		Incidents: full && p.Grants.Full(auth.PermIncidentsRead), Alerts: full && p.Grants.Full(auth.PermAlertsRead)}
+}
+
 // reportsBy — субъект запроса.
 func reportsBy(r *http.Request) (reports.By, bool) {
 	p, ok := PrincipalFrom(r.Context())
 	if !ok || p.Caller == nil {
 		return reports.By{}, false
 	}
-	return reports.By{Actor: eventsActor(p), IP: clientAddr(r)}, true
+	return reports.By{Actor: eventsActor(p), IP: clientAddr(r), Scope: reportScope(p, p.Grants.Full(auth.PermReportsRead))}, true
 }
 
 // ReportScheduleView — расписание в ответах.

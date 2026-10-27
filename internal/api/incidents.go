@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/azuresong-afk/ai_railway/internal/alerting"
 	"github.com/azuresong-afk/ai_railway/internal/auth"
 	"github.com/azuresong-afk/ai_railway/internal/incidents"
 	"github.com/azuresong-afk/ai_railway/internal/store"
@@ -66,6 +67,12 @@ func incidentsProblem(logger *slog.Logger, err error) *Problem {
 			"Сокращение срока хранения удаляет инциденты: выполните его в консоли с вводом текущего пароля или кода.")
 	case errors.As(err, &ie):
 		return Invalid("Проверьте введённые данные.", inputFields(ie.Errs)...)
+	case errors.Is(err, alerting.ErrSelfReview):
+		return NewProblem(http.StatusConflict, CodeSelfReview,
+			"Инцидент связан с оповещением безопасности о ваших собственных действиях: закрывает другой пользователь с правом разбора инцидентов.")
+	case errors.Is(err, alerting.ErrTokenClose):
+		return NewProblem(http.StatusForbidden, CodeForbidden,
+			"Инцидент с системным оповещением или оповещением безопасности закрывает пользователь в консоли, а не токен API.")
 	case errors.Is(err, incidents.ErrNotFound):
 		return NewProblem(http.StatusNotFound, CodeNotFound, incidentNotFound)
 	case errors.Is(err, incidents.ErrAlertNotFound):

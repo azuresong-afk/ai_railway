@@ -268,3 +268,11 @@ func FuzzParseCovers(f *testing.F) {
 		}
 	})
 }
+
+// Запятая внутри скобок — часть названия, а не разделитель перечня.
+func TestParseCoversCommaInPart(t *testing.T) {
+	covs, bad := ParseCovers("Покрывает: DM-15 (бюджеты, аномалии и оповещение), DM-40\n")
+	if len(bad) != 0 || len(covs) != 2 || covs[0].Part != "бюджеты, аномалии и оповещение" || covs[1].ID != "DM-40" {
+		t.Fatalf("%+v %v", covs, bad)
+	}
+}

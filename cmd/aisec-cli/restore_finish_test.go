@@ -169,7 +169,9 @@ func TestRestoreFinishOnRealDB(t *testing.T) {
 		t.Fatalf("%v\n%s", err, errb.String())
 	}
 	if !strings.Contains(out.String(), "сессий консоли завершено 2, токенов API отозвано 1, токенов регистрации шлюзов погашено 2, "+
-		"токенов первичной настройки погашено 1") || !strings.Contains(out.String(), "-reregister") || strings.Contains(errb.String(), "ВНИМАНИЕ") {
+		"токенов первичной настройки погашено 1") || !strings.Contains(out.String(), "-reregister") || strings.Contains(errb.String(), "ВНИМАНИЕ") ||
+		// 3В34 ревью 3.r4: напоминание о сверке шлюзов — и для свежей копии.
+		!strings.Contains(out.String(), "Действующих шлюзов в копии: 0.") || !strings.Contains(out.String(), "aisec-cli gateway revoke") {
 		t.Fatalf("вывод:\n%s\n%s", out.String(), errb.String())
 	}
 	// Регистрация по токену из копии отвергается тем же запросом, что у сервера.

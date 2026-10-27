@@ -282,6 +282,11 @@ func ParseParams(kind string, q map[string][]string, loc *time.Location, now tim
 	if p.App != "" && !ValidSlug(p.App) {
 		return p, errors.New("отчёты: приложение задано неверно")
 	}
+	// По одному приложению строится только сводный: «Итоги пилота» и «По
+	// инцидентам» считаются по всей установке (3Н47 ревью 3.r4).
+	if p.App != "" && p.Kind != KindSummary {
+		return p, errors.New("отчёты: приложение задаётся только для сводного отчёта")
+	}
 	if from == "" || to == "" {
 		return p, fmt.Errorf("%w: нужны from и to", ErrPeriod)
 	}

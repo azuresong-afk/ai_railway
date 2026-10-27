@@ -15,6 +15,8 @@ type Memory struct {
 	schedules []Schedule
 	runs      []Run
 	audited   []audit.Entry
+	// RecordErr — ошибка записи аудита Record (тесты 3В32).
+	RecordErr error
 }
 
 // NewMemory создаёт пустое хранилище.
@@ -137,12 +139,28 @@ func (m *Memory) ClaimRun(_ context.Context, now time.Time, lease time.Duration)
 	for i := range m.runs {
 		r := &m.runs[i]
 		if r.Status == RunPending && !r.NextAt.After(now) {
-			out := *r
 			r.NextAt = now.Add(lease)
+			if r.Attempts >= MaxAttempts {
+				r.Error = ErrCodeExhausted
+			} else {
+				r.Attempts++
+			}
+			out := *r
 			return out, m.schedules[m.find(r.ScheduleID)], true, nil
 		}
 	}
 	return Run{}, Schedule{}, false, nil
+}
+
+// Record — см. Store.
+func (m *Memory) Record(_ context.Context, rec audit.Entry) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.RecordErr != nil {
+		return m.RecordErr
+	}
+	m.audited = append(m.audited, rec)
+	return nil
 }
 
 // FinishRun — см. Store.

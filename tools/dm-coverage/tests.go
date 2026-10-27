@@ -197,7 +197,7 @@ func ParseCovers(doc string) ([]Coverage, []string) {
 		if m == nil {
 			continue
 		}
-		for _, item := range strings.Split(m[1], ",") {
+		for _, item := range splitCovers(m[1]) {
 			item = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(item), "."))
 			im := coversItemRe.FindStringSubmatch(item)
 			if im == nil {
@@ -208,4 +208,25 @@ func ParseCovers(doc string) ([]Coverage, []string) {
 		}
 	}
 	return out, bad
+}
+
+// splitCovers делит перечень по запятым вне скобок: часть строки матрицы
+// («бюджеты, аномалии и оповещение») сама содержит запятые.
+func splitCovers(list string) []string {
+	var out []string
+	depth, start := 0, 0
+	for i, r := range list {
+		switch r {
+		case '(':
+			depth++
+		case ')':
+			depth = max(depth-1, 0)
+		case ',':
+			if depth == 0 {
+				out = append(out, list[start:i])
+				start = i + 1
+			}
+		}
+	}
+	return append(out, list[start:])
 }

@@ -101,6 +101,11 @@ func TestReportsViaAPI(t *testing.T) {
 		s := e.mustLogin(t, login)
 		for _, kind := range reports.Kinds() {
 			w := e.call(s, "GET", reportPath(kind, "", ""), "", false)
+			if login == "sysadm" && kind == reports.KindIncidents {
+				// Нет incidents.read — отчёта по инцидентам нет (3В31 ревью 3.r4).
+				mustProblem(t, w, 403, CodeForbidden)
+				continue
+			}
 			if w.Code != http.StatusOK || !strings.HasPrefix(w.Header().Get("Content-Type"), "text/html") {
 				t.Fatalf("%s %s: %d %s", login, kind, w.Code, w.Body)
 			}
@@ -130,7 +135,7 @@ func TestReportsViaAPI(t *testing.T) {
 		t.Fatalf("XLSX: %d %v", w.Code, w.Header())
 	}
 	exports := e.rec.find("data.export")
-	if len(exports) != 4*3+2 {
+	if len(exports) != 4*3-1+2 { // без отчёта по инцидентам у sysadm
 		t.Fatalf("записей data.export %d", len(exports))
 	}
 	last := exports[len(exports)-1]
@@ -156,7 +161,7 @@ func TestReportsOwnerScope(t *testing.T) {
 	owner := e.mustLogin(t, "owner")
 	for _, kind := range []string{"incidents", "pilot"} {
 		mustProblem(t, e.call(owner, "GET", reportPath(kind, "", ""), "", false), 403, CodeForbidden)
-		mustProblem(t, e.call(owner, "GET", reportPath(kind, "", "mine"), "", false), 403, CodeForbidden)
+		mustProblem(t, e.call(owner, "GET", reportPath(kind, "", "mine"), "", false), 400, CodeInvalidRequest)
 	}
 	mustProblem(t, e.call(owner, "GET", reportPath("summary", "", ""), "", false), 403, CodeForbidden)
 	mustProblem(t, e.call(owner, "GET", reportPath("summary", "", "other"), "", false), 404, CodeNotFound)
@@ -249,9 +254,33 @@ func TestReportSchedulesViaAPI(t *testing.T) {
 	for _, login := range []string{"analyst", "owner", "keymgr"} {
 		s := e.mustLogin(t, login)
 		mustProblem(t, e.call(s, "GET", "/api/v1/report-schedules", "", false), 403, CodeForbidden)
+		mustProblem(t, e.call(s, "GET", "/api/v1/report-schedules/"+sch.ID, "", false), 403, CodeForbidden)
 		mustProblem(t, e.call(s, "GET", "/api/v1/report-schedules/"+sch.ID+"/runs", "", false), 403, CodeForbidden)
 	}
 	mustProblem(t, e.call(session{}, "GET", "/api/v1/report-schedules", "", false), 401, CodeUnauthorized)
+
+	// Рассылка не шире прав автора (3В31 ревью 3.r4): администратор системы
+	// без incidents.read не рассылает отчёт по инцидентам, а в его сводном —
+	// только бюджеты из трёх разделов по правам.
+	sysadm := e.mustLogin(t, "sysadm")
+	incBody := strings.Replace(scheduleBody("Инциденты"), `"report":"summary"`, `"report":"incidents"`, 1)
+	mustProblem(t, e.call(sysadm, "POST", "/api/v1/report-schedules", incBody, true), 403, CodeForbidden)
+	if w := e.call(sysadm, "POST", "/api/v1/report-schedules", scheduleBody("Сводный sysadm"), true); w.Code != http.StatusCreated {
+		t.Fatalf("сводный от sysadm: %d %s", w.Code, w.Body)
+	}
+	list, err := e.reports.Schedules(context.Background())
+	if err != nil || len(list) != 2 {
+		t.Fatalf("расписания: %+v %v", list, err)
+	}
+	for _, x := range list {
+		want := reports.Scope{Budgets: true, Incidents: true, Alerts: true}
+		if x.Name == "Сводный sysadm" {
+			want = reports.Scope{Budgets: true}
+		}
+		if x.Scope != want {
+			t.Errorf("разделы расписания %q: %+v", x.Name, x.Scope)
+		}
+	}
 
 	// Изменение с версией, конфликт, ошибки ввода.
 	upd := strings.Replace(scheduleBody("Недельный 2"), `"channel_id"`, `"version":1,"channel_id"`, 1)
