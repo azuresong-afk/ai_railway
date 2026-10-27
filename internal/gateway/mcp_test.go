@@ -394,7 +394,7 @@ func isErrorResult(m *mcp.Message) bool {
 	return ok && v.Bool
 }
 
-// Покрывает: DM-07
+// Покрывает: DM-07 (MCP)
 // Результат инструмента с косвенной инъекцией блокируется: агент получает
 // isError, событие — находку с источником tool.
 func TestDM07_MCPToolResultInjection(t *testing.T) {

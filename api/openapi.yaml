@@ -2,8 +2,9 @@
 # Здесь — интерфейсы шлюза для приложений и API управления (aisec-server,
 # префикс /api/v1), которые добавляются по мере реализации. Ошибки API
 # управления — Problem Details (RFC 9457), ошибки шлюза — формат OpenAI.
-# OpenAI-совместимые /v1/chat/completions и /v1/models пока описаны только в
-# docs/cert/attack-surface.md. Контрактный тест internal/api сверяет маршруты
+# OpenAI-совместимые /v1/chat/completions и /v1/models, а также MCP-прокси
+# POST /mcp/v1/{server} (JSON-RPC по Streamable HTTP, задача 4.11) пока
+# описаны только в docs/cert/attack-surface.md. Контрактный тест internal/api сверяет маршруты
 # сервера с этим файлом в обе стороны.
 # У каждой защищённой операции API управления есть расширение x-permission —
 # имя разрешения из internal/auth/permissions.go (УПД.3). Из него строится
