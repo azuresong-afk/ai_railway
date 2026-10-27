@@ -168,6 +168,9 @@ func (o memOps) saveState(_ context.Context, ruleID string, st RuleState) error 
 	if o.m.states == nil {
 		o.m.states = map[string]RuleState{}
 	}
+	if prev, ok := o.m.states[ruleID]; ok && st.FailingSince != nil && prev.FailingSince != nil {
+		st.FailingSince = prev.FailingSince
+	}
 	o.m.states[ruleID] = st
 	return nil
 }

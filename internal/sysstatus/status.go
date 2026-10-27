@@ -211,7 +211,9 @@ const (
 	ConditionCustomerCertExpiry = "customer_cert_expiry"
 	// ConditionAlertJob — DM-44 (3В17 ревью 3.r2): фоновая задача правил
 	// «частота», «аномалия» и «бюджет» не отмечала проход дольше
-	// AlertJobStaleAfter при работающем сервере — правила молчат.
+	// AlertJobStaleAfter при работающем сервере — правила молчат; то же,
+	// если вычисление правила падает на каждом проходе дольше этого срока
+	// (3Н48 ревью 3.r4).
 	ConditionAlertJob = "alert_job_stale"
 )
 
@@ -228,6 +230,11 @@ type AlertJobRun struct {
 	LastRunAt time.Time
 	// Age — сколько прошло с последнего прохода по часам хранилища.
 	Age time.Duration
+	// FailingRules — включённых правил, вычисление которых падает на каждом
+	// проходе дольше AlertJobStaleAfter (3Н48 ревью 3.r4): проход идёт, а
+	// правило молчит. FailingSince — начало самой давней такой серии.
+	FailingRules int
+	FailingSince time.Time
 }
 
 // Пороги условий DM-44 (обоснование — ADR-0020).

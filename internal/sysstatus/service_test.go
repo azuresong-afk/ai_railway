@@ -876,3 +876,40 @@ func TestDM44_PeriodicJobStale(t *testing.T) {
 		}
 	}
 }
+
+// DM-44 (3Н48 ревью 3.r4): проходы идут, но вычисление правила падает на
+// каждом из них дольше AlertJobStaleAfter — то же условие alert_job_stale с
+// числом таких правил; серия прервалась — условие снимается.
+func TestDM44_RuleFailingEveryPass(t *testing.T) {
+	e := newEnv()
+	s := e.svc(t)
+	ctx := context.Background()
+	eval := func() {
+		t.Helper()
+		if err := s.Evaluate(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e.clock = t0.Add(10 * time.Minute)
+	e.mem.SetAlertJob(e.clock.Add(-time.Minute))
+	e.mem.SetFailingRule(e.clock.Add(-3 * time.Minute))
+	eval()
+	if n := notif(s.Status(ctx), sysstatus.ConditionAlertJob); n.Active {
+		t.Fatalf("сбои 3 минуты: %+v", n)
+	}
+	e.clock = e.clock.Add(3 * time.Minute)
+	e.mem.SetAlertJob(e.clock.Add(-time.Minute))
+	eval()
+	n := notif(s.Status(ctx), sysstatus.ConditionAlertJob)
+	if !n.Active || len(e.mem.Records) != 1 {
+		t.Fatalf("сбои 6 минут: %+v %+v", n, e.mem.Records)
+	}
+	if d := e.mem.Records[0].Details.(map[string]any); d["failing_rules"] != 1 || d["failing_since"] == nil {
+		t.Fatalf("подробности: %v", d)
+	}
+	e.mem.SetFailingRule(time.Time{})
+	eval()
+	if n := notif(s.Status(ctx), sysstatus.ConditionAlertJob); n.Active || len(e.mem.Records) != 2 {
+		t.Fatalf("после успешного прохода: %+v", n)
+	}
+}

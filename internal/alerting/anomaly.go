@@ -72,6 +72,10 @@ type RuleState struct {
 	// Warning — предупреждение последнего прохода: WarnEvaluationFailed,
 	// WarnTimezoneInvalid; пусто — нет.
 	Warning string `json:"warning,omitempty"`
+	// FailingSince — начало серии проходов подряд, в которых вычисление
+	// правила падает (3Н48 ревью 3.r4): хранилище сохраняет прежнее значение,
+	// пока серия не прервётся; по нему «Состояние системы» поднимает DM-44.
+	FailingSince *time.Time `json:"failing_since,omitempty"`
 }
 
 // median — медиана выборки (не пустой).

@@ -445,7 +445,12 @@ func (s *Service) alertJob(ctx context.Context, c *collected, now time.Time) {
 		d["last_run_at"] = job.LastRunAt.UTC().Format(time.RFC3339)
 		d["age_seconds"] = int64(job.Age / time.Second)
 	}
-	c.conditions[ConditionAlertJob] = stale
+	// 3Н48 ревью 3.r4: проход идёт, но правило падает на каждом проходе.
+	if job.FailingRules > 0 {
+		d["failing_rules"] = job.FailingRules
+		d["failing_since"] = job.FailingSince.UTC().Format(time.RFC3339)
+	}
+	c.conditions[ConditionAlertJob] = stale || job.FailingRules > 0
 	c.details[ConditionAlertJob] = d
 }
 
@@ -568,7 +573,7 @@ var conditionInfo = []struct{ code, requirement, title string }{
 	{ConditionCertExpiry, "ИАФ.10", "Скоро истекает сертификат шлюза"},
 	{ConditionCAExpiry, "ИАФ.10", "Истекает корень внутреннего УЦ: нужна ротация (aisec-cli keys rotate-ca)"},
 	{ConditionCustomerCertExpiry, "ЗИ.4", "Скоро истекает сертификат заказчика для адреса шлюза: загрузите новый"},
-	{ConditionAlertJob, "РСБ.7", "Фоновая задача правил оповещений не выполняется: правила частоты, аномалий и бюджетов молчат"},
+	{ConditionAlertJob, "РСБ.7", "Фоновая задача правил оповещений не выполняется или правило падает на каждом проходе: правила частоты, аномалий и бюджетов молчат"},
 }
 
 // family — условие раздела 7, к которому относится код (integrity:server —

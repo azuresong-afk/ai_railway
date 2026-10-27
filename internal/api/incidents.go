@@ -122,12 +122,12 @@ func inputFields(errs []error) []FieldError {
 }
 
 // incidentsBy — субъект запроса: для токена исполнитель — его владелец.
-func incidentsBy(r *http.Request) (incidents.By, bool) {
-	a, ok := alertsBy(r)
+func (d Deps) incidentsBy(r *http.Request) (incidents.By, bool) {
+	a, ok := d.alertsBy(r)
 	if !ok {
 		return incidents.By{}, false
 	}
-	return incidents.By{Actor: a.Actor, IP: a.IP, UserID: a.UserID}, true
+	return incidents.By{Actor: a.Actor, IP: a.IP, UserID: a.UserID, OwnsToken: a.OwnsToken}, true
 }
 
 // IncidentPage — страница списка инцидентов.
@@ -176,7 +176,7 @@ func (d Deps) listIncidents(w http.ResponseWriter, r *http.Request) {
 }
 
 func (d Deps) createIncident(w http.ResponseWriter, r *http.Request) {
-	by, ok := incidentsBy(r)
+	by, ok := d.incidentsBy(r)
 	if !ok {
 		WriteProblem(w, errForbidden())
 		return
@@ -213,7 +213,7 @@ func (d Deps) getIncident(w http.ResponseWriter, r *http.Request) {
 }
 
 func (d Deps) setIncidentStatus(w http.ResponseWriter, r *http.Request) {
-	by, ok := incidentsBy(r)
+	by, ok := d.incidentsBy(r)
 	if !ok {
 		WriteProblem(w, errForbidden())
 		return
@@ -236,7 +236,7 @@ func (d Deps) setIncidentStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (d Deps) assignIncident(w http.ResponseWriter, r *http.Request) {
-	by, ok := incidentsBy(r)
+	by, ok := d.incidentsBy(r)
 	if !ok {
 		WriteProblem(w, errForbidden())
 		return
@@ -259,7 +259,7 @@ func (d Deps) assignIncident(w http.ResponseWriter, r *http.Request) {
 }
 
 func (d Deps) addIncidentComment(w http.ResponseWriter, r *http.Request) {
-	by, ok := incidentsBy(r)
+	by, ok := d.incidentsBy(r)
 	if !ok {
 		WriteProblem(w, errForbidden())
 		return
@@ -283,7 +283,7 @@ func (d Deps) addIncidentComment(w http.ResponseWriter, r *http.Request) {
 }
 
 func (d Deps) completeIncidentStage(w http.ResponseWriter, r *http.Request) {
-	by, ok := incidentsBy(r)
+	by, ok := d.incidentsBy(r)
 	if !ok {
 		WriteProblem(w, errForbidden())
 		return
@@ -306,7 +306,7 @@ func (d Deps) completeIncidentStage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (d Deps) linkIncidentAlert(w http.ResponseWriter, r *http.Request) {
-	by, ok := incidentsBy(r)
+	by, ok := d.incidentsBy(r)
 	if !ok {
 		WriteProblem(w, errForbidden())
 		return
@@ -331,7 +331,7 @@ func (d Deps) linkIncidentAlert(w http.ResponseWriter, r *http.Request) {
 // exportIncident — карточка в JSON для SIEM/IRP заказчика (ТЗ 5.7, 10.1):
 // без содержимого событий, запись data.export до выдачи.
 func (d Deps) exportIncident(w http.ResponseWriter, r *http.Request) {
-	by, ok := incidentsBy(r)
+	by, ok := d.incidentsBy(r)
 	if !ok {
 		WriteProblem(w, errForbidden())
 		return
@@ -385,7 +385,7 @@ func (d Deps) listIncidentCategories(w http.ResponseWriter, r *http.Request) {
 }
 
 func (d Deps) setIncidentInstructions(w http.ResponseWriter, r *http.Request) {
-	by, ok := incidentsBy(r)
+	by, ok := d.incidentsBy(r)
 	if !ok {
 		WriteProblem(w, errForbidden())
 		return

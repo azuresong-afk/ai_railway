@@ -19,6 +19,8 @@ type Memory struct {
 	states map[string]AlertState
 	chain  *AuditChainStatus
 	job    *time.Time
+	// failingSince — начало серии сбоев правила (SetFailingRule).
+	failingSince time.Time
 	// Records — записи аудита об изменении состояния.
 	Records []audit.Entry
 	// Err — ошибка, которую вернут все методы (проверка отказа БД).
@@ -62,8 +64,15 @@ func (m *Memory) AlertJob(_ context.Context, now time.Time) (AlertJobRun, error)
 	if !m.job.IsZero() {
 		r.Age = now.Sub(*m.job)
 	}
+	if !m.failingSince.IsZero() && now.Sub(m.failingSince) >= AlertJobStaleAfter {
+		r.FailingRules, r.FailingSince = 1, m.failingSince
+	}
 	return r, nil
 }
+
+// SetFailingRule задаёт начало серии сбоев вычисления одного правила;
+// нулевое время — правила без сбоев.
+func (m *Memory) SetFailingRule(since time.Time) { m.mu.Lock(); m.failingSince = since; m.mu.Unlock() }
 
 // SetAuditChain задаёт итог последней проверки цепочки аудита.
 func (m *Memory) SetAuditChain(ch *AuditChainStatus) { m.mu.Lock(); m.chain = ch; m.mu.Unlock() }

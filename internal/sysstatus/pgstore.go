@@ -120,6 +120,19 @@ func (s *PGStore) AlertJob(ctx context.Context, _ time.Time) (AlertJobRun, error
 		return AlertJobRun{}, fmt.Errorf("проход фоновой задачи правил: %w", err)
 	}
 	r.LastRunAt, r.Age = r.LastRunAt.UTC(), age
+	// 3Н48 ревью 3.r4: включённые правила, вычисление которых падает дольше
+	// AlertJobStaleAfter (начало серии — failing_since состояния правила).
+	var since *time.Time
+	if err := s.db.QueryRow(ctx, `SELECT count(*), min((st.state->>'failing_since')::timestamptz)
+		FROM alert_rule_state st JOIN alert_rules r ON r.id = st.rule_id
+		WHERE r.org_id = $1 AND r.enabled AND st.state->>'warning' = 'evaluation_failed' AND st.state ? 'failing_since'
+			AND (st.state->>'failing_since')::timestamptz <= now() - make_interval(secs => $2)`,
+		s.orgID, AlertJobStaleAfter.Seconds()).Scan(&r.FailingRules, &since); err != nil {
+		return AlertJobRun{}, fmt.Errorf("правила с ошибкой вычисления: %w", err)
+	}
+	if since != nil {
+		r.FailingSince = since.UTC()
+	}
 	return r, nil
 }
 

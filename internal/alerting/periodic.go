@@ -125,7 +125,8 @@ func runPeriodic(ctx context.Context, ops periodicOps, now time.Time, loc *time.
 			if skipped != nil {
 				skipped(err)
 			}
-			st, n = RuleState{EvaluatedAt: now.UTC(), Keys: []KeyState{}, Warning: WarnEvaluationFailed}, 0
+			since := now.UTC()
+			st, n = RuleState{EvaluatedAt: since, Keys: []KeyState{}, Warning: WarnEvaluationFailed, FailingSince: &since}, 0
 		}
 		if tzInvalid && st.Warning == "" && r.Kind != KindFrequency {
 			st.Warning = WarnTimezoneInvalid
