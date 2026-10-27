@@ -127,5 +127,24 @@ func buildFromBundle(b *bundle.Bundle, tp aisecCrypto.TLSProvider, rnd aisecCryp
 		return nil, err
 	}
 	return hb.build(b.Content.GatewayApplications(), provs, specs, recs, b.Content.UnavailableIDs(), b.Content.Budgets,
-		b.Content.PromptBaselines, gateway.NewAgents(b.Content))
+		b.Content.PromptBaselines, gateway.NewAgents(b.Content), userTokensOf(b.Content))
+}
+
+// userTokens — ключи издателей и проверка JWT пользователей приложений из
+// пакета (задача 4.21).
+type userTokens struct {
+	keys map[string][]byte
+	apps map[string]gateway.UserToken
+}
+
+func userTokensOf(c *bundle.Content) userTokens {
+	out := userTokens{keys: map[string][]byte{}, apps: map[string]gateway.UserToken{}}
+	for _, k := range c.UserTokenKeys {
+		out.keys[k.Issuer] = k.JWKS
+	}
+	for _, u := range c.UserTokens {
+		out.apps[u.App] = gateway.UserToken{Mode: u.Mode, Issuer: u.Issuer, Audience: u.Audience, GroupsClaim: u.GroupsClaim,
+			Leeway: time.Duration(u.Leeway) * time.Second, ModelGroups: u.ModelGroups}
+	}
+	return out
 }

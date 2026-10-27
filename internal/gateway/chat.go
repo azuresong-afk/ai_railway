@@ -175,10 +175,11 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusBadRequest, ce.Message, "invalid_request_error", ce.Code)
 		return
 	}
-	user, ok := h.user(w, r, app, req.User)
+	eu, ok := h.user(w, r, app, req.User)
 	if !ok {
 		return
 	}
+	user := eu.ID
 	agent, ok := h.agent(w, r, app)
 	if !ok {
 		return
@@ -204,6 +205,11 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		rec.reject(ruleModel, "DM-33")
 		w.Header().Set(HeaderDecision, string(policy.Block))
 		WriteError(w, http.StatusNotFound, "модель недоступна для приложения", "invalid_request_error", "model_not_found")
+		return
+	}
+	if !app.modelAllowed(requested, model, eu) {
+		rec.ev.Model = model
+		denyModelGroup(w, rec)
 		return
 	}
 	req.Model = model
@@ -330,10 +336,21 @@ func (h *ChatHandler) session(w http.ResponseWriter, r *http.Request, app *App, 
 	return s, true
 }
 
-// user — псевдоним конечного пользователя (ТЗ, 4.3, шаг 2; 5.5): HMAC
-// идентификатора на ключе установки. Исходный идентификатор нигде не
-// сохраняется. При ошибке ответ уже записан.
-func (h *ChatHandler) user(w http.ResponseWriter, r *http.Request, app *App, reqUser string) (string, bool) {
+// user — конечный пользователь (ТЗ, 4.3, шаг 2; 5.5): из проверенного JWT
+// (usertoken.go) или по user_from; псевдоним — HMAC идентификатора на
+// ключе установки. Исходный идентификатор нигде не сохраняется. При ошибке
+// ответ уже записан.
+func (h *ChatHandler) user(w http.ResponseWriter, r *http.Request, app *App, reqUser string) (endUser, bool) {
+	if u, handled, ok := h.userFromToken(w, r, app); handled || !ok {
+		return u, ok
+	}
+	id, ok := h.userID(w, r, app, reqUser)
+	return endUser{ID: id}, ok
+}
+
+// userID — псевдоним пользователя по user_from (X-AISec-User или поле
+// user). При ошибке ответ уже записан.
+func (h *ChatHandler) userID(w http.ResponseWriter, r *http.Request, app *App, reqUser string) (string, bool) {
 	var id string
 	switch app.UserFrom {
 	case userFromHeader:

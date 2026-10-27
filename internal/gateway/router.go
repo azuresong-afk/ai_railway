@@ -49,6 +49,9 @@ type App struct {
 	// prompt — эталон системного промпта (Router.SetPromptBaselines,
 	// integrity.go); nil — эталона нет или контроль выключен.
 	prompt *promptCheck
+	// userToken — проверка JWT пользователя и группы моделей
+	// (Router.SetUserTokens, usertoken.go); nil — пользователь по user_from.
+	userToken *userTokenCheck
 }
 
 // now — время для сроков исключений.

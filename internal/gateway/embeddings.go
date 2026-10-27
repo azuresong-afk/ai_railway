@@ -55,10 +55,11 @@ func (e *EmbeddingsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusNotImplemented, "провайдер приложения не поддерживает эмбеддинги", "invalid_request_error", "embeddings_not_supported")
 		return
 	}
-	user, ok := h.user(w, r, app, req.User)
+	eu, ok := h.user(w, r, app, req.User)
 	if !ok {
 		return
 	}
+	user := eu.ID
 	requested := req.Model
 	model, allowed := app.Resolve(requested)
 	rec, ok := h.newEventRecord(w, app, events.TypeGatewayRequest, model, false, user, start)
@@ -71,6 +72,11 @@ func (e *EmbeddingsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		rec.reject(ruleModel, "DM-33")
 		w.Header().Set(HeaderDecision, string(policy.Block))
 		WriteError(w, http.StatusNotFound, "модель недоступна для приложения", "invalid_request_error", "model_not_found")
+		return
+	}
+	if !app.modelAllowed(requested, model, eu) {
+		rec.ev.Model = model
+		denyModelGroup(w, rec)
 		return
 	}
 	req.Model = model
