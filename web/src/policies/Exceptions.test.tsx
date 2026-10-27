@@ -231,7 +231,8 @@ describe("загрузка YAML: различия до отправки (Н46, �
     return screen.findByRole("dialog");
   };
   const emptyDiff = { from: 2, to: 3, fields: [], rules_added: [], rules_removed: [], rules_changed: [], reordered: false, weakening: false,
-    weakening_reasons: [], exceptions_added: [], exceptions_removed: [], exceptions_changed: [] };
+    weakening_reasons: [], exceptions_added: [], exceptions_removed: [], exceptions_changed: [],
+    tools_fields: [], tool_rules_added: [], tool_rules_removed: [], tool_rules_changed: [] };
 
   it("любой YAML: различия и ослабление считает сервер без сохранения", async () => {
     handler = (c) =>

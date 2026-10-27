@@ -5313,7 +5313,7 @@ components:
       additionalProperties: false
       description: Поля защиты; меняет только обладатель права `applications.policy` (В15 ревью 2.r3b). Смена политики на ту, что по сравнению версий (`GET /policies/{id}/diff`) слабее текущей, — ослабление с повторной проверкой (В23 ревью 2.r5)
       properties:
-        policy: { type: string, description: 'Шаблон (`base`, `pii-strict`, `external-no-pii`, `monitor-only`) или политика организации' }
+        policy: { type: string, description: 'Шаблон (`base`, `pii-strict`, `external-no-pii`, `monitor-only`, `agent-base`) или политика организации' }
         policy_mode: { type: string, enum: [monitor, enforce], description: По умолчанию — режим выбранной политики }
         storage: { type: string, enum: [none, masked, full], default: masked }
         fail_mode: { type: string, enum: [fail_open, fail_closed], default: fail_closed }
@@ -5796,6 +5796,55 @@ components:
           maxItems: 1000
           description: 'Исключения (задача 3.22). При сохранении: поле не передано — исключения текущей версии сохраняются; пустой список — удаляются. Автора и created_at новых и изменённых ставит сервер'
           items: { $ref: '#/components/schemas/PolicyException' }
+        tools: { $ref: '#/components/schemas/PolicyTools' }
+    PolicyTools:
+      type: object
+      required: [unapproved, default]
+      additionalProperties: false
+      description: >-
+        Политика вызовов инструментов агентами (ADR-0023, раздел 2; DM-20–DM-23). При сохранении: поле не передано —
+        раздел текущей версии сохраняется, у новой политики — unapproved: block, default: block. В ответе поля нет —
+        версия без раздела: неодобренные инструменты только журналируются, остальное разрешено (совместимость).
+      properties:
+        unapproved: { type: string, enum: [block, log], description: 'Инструмент не одобрен, подменён, отравлен или отозван' }
+        default: { type: string, enum: [block, log], description: 'Инструмент одобрен, но ни одно правило не подошло (DM-20)' }
+        approval_timeout: { type: string, maxLength: 16, description: 'Срок ожидания подтверждения (DM-22), 1m–60m; пусто — 10m' }
+        limits:
+          type: object
+          additionalProperties: false
+          description: Лимиты вызовов (DM-23); 0 — без предела
+          properties:
+            agent_per_minute: { type: integer, minimum: 0, maximum: 100000 }
+            session_calls: { type: integer, minimum: 0, maximum: 1000000, description: Вызовов агента в сессии за 24 ч }
+            repeat: { type: integer, minimum: 0, maximum: 1000, description: 'Одинаковых вызовов (инструмент и хеш аргументов) в сессии за repeat_window' }
+            repeat_window: { type: string, maxLength: 16, description: '1m–24h; обязателен вместе с repeat' }
+        rules: { type: array, maxItems: 256, items: { $ref: '#/components/schemas/PolicyToolRule' } }
+    PolicyToolRule:
+      type: object
+      required: [id, action, severity]
+      additionalProperties: false
+      description: Правило политики вызовов; поля — как в YAML (ADR-0023, раздел 2).
+      properties:
+        id: { type: string, pattern: '^[a-z0-9][a-z0-9-]{0,62}$' }
+        agents: { type: array, maxItems: 64, items: { type: string, pattern: '^[a-z0-9-]{1,64}$' }, description: 'Пусто — все агенты приложения и вызовы без агента' }
+        tool: { type: string, maxLength: 195, description: 'Сервер/имя (function/имя — вызовы функций в ответах модели); «*» только в конце имени; пусто — любой' }
+        risk: { type: array, items: { type: string, enum: [low, medium, high, critical] } }
+        action: { type: string, enum: [allow, log, require_approval, block] }
+        args:
+          type: object
+          description: >-
+            Ограничения аргументов (DM-21): подмножество JSON Schema — type, properties, required, additionalProperties
+            (true или false), items, minItems, maxItems, enum, const, minimum, maximum, exclusiveMinimum, exclusiveMaximum,
+            minLength, maxLength, pattern (RE2), x-aisec-path-prefix, x-aisec-domains. Незнакомое ключевое слово — ошибка.
+            До 16 КиБ, вложенность до 8, до 256 узлов.
+        rate:
+          type: object
+          additionalProperties: false
+          properties:
+            per_minute: { type: integer, minimum: 0, maximum: 100000 }
+            per_hour: { type: integer, minimum: 0, maximum: 1000000 }
+        severity: { type: string, enum: [info, low, medium, high, critical] }
+        message: { type: string, maxLength: 300 }
     PolicyException:
       type: object
       required: [id, detector, reason]
@@ -5955,7 +6004,7 @@ components:
       properties:
         id: { type: string, pattern: '^[a-z0-9][a-z0-9-]{0,62}$', description: 'ID политики; ID шаблонов заняты' }
         spec: { $ref: '#/components/schemas/PolicySpec' }
-        from_template: { type: string, enum: [base, pii-strict, external-no-pii, monitor-only] }
+        from_template: { type: string, enum: [base, pii-strict, external-no-pii, monitor-only, agent-base] }
         name: { type: string, maxLength: 128, description: Название копии шаблона }
         comment: { type: string, maxLength: 500 }
     PolicyUpdate:
@@ -6003,7 +6052,7 @@ components:
     PolicyDiff:
       type: object
       required: [from, to, fields, rules_added, rules_removed, rules_changed, reordered, weakening, weakening_reasons,
-        exceptions_added, exceptions_removed, exceptions_changed]
+        exceptions_added, exceptions_removed, exceptions_changed, tools_fields, tool_rules_added, tool_rules_removed, tool_rules_changed]
       properties:
         from: { type: integer }
         to: { type: integer }
@@ -6039,9 +6088,12 @@ components:
               kind:
                 type: string
                 enum: [mode_monitor, non_text_weakened, response_check_weakened, rule_removed, action_weakened,
-                  threshold_raised, scope_narrowed, detector_changed, exception_added, exception_extended, exception_changed]
+                  threshold_raised, scope_narrowed, detector_changed, exception_added, exception_extended, exception_changed,
+                  tools_unapproved_weakened, tool_rule_added, tool_action_weakened, tool_scope_widened, tool_scope_narrowed,
+                  tool_args_relaxed, tool_rate_raised, approval_timeout_raised, tool_rule_removed]
               rule: { type: string }
               exception: { type: string }
+              tool_rule: { type: string, description: ID правила раздела tools }
         exceptions_added: { type: array, items: { $ref: '#/components/schemas/PolicyException' } }
         exceptions_removed: { type: array, items: { $ref: '#/components/schemas/PolicyException' } }
         exceptions_changed:
@@ -6054,6 +6106,28 @@ components:
               fields: { type: array, items: { type: string } }
               before: { $ref: '#/components/schemas/PolicyException' }
               after: { $ref: '#/components/schemas/PolicyException' }
+        tools_fields:
+          type: array
+          description: Изменённые поля раздела tools (tools, tools.unapproved, tools.default, tools.approval_timeout, tools.limits.*)
+          items:
+            type: object
+            required: [field, before, after]
+            properties:
+              field: { type: string }
+              before: { type: string }
+              after: { type: string }
+        tool_rules_added: { type: array, items: { $ref: '#/components/schemas/PolicyToolRule' } }
+        tool_rules_removed: { type: array, items: { $ref: '#/components/schemas/PolicyToolRule' } }
+        tool_rules_changed:
+          type: array
+          items:
+            type: object
+            required: [id, fields, before, after]
+            properties:
+              id: { type: string }
+              fields: { type: array, items: { type: string } }
+              before: { $ref: '#/components/schemas/PolicyToolRule' }
+              after: { $ref: '#/components/schemas/PolicyToolRule' }
     PolicyTestRequest:
       type: object
       required: [request]
