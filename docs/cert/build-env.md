@@ -47,8 +47,15 @@
 
 Манифест целостности (ОЦЛ.1, ADR-0012) создаёт `make manifest` (входит в `make check`): `build/aisec-manifest.json` и подпись `.sig` по бинарникам поставки, `web/dist` и `migrations/`, затем проверка готового манифеста через `build/bin/aisec-cli verify`.
 - По умолчанию манифест подписывается тестовым ключом `testdata/integrity/manifest-test.signkey` («не для поставки»), а бинарники встраивают его открытую пару.
-- Поставочная сборка — `make manifest RELEASE=1 MANIFEST_KEY=<ключ производителя вне репозитория>`. `RELEASE=1` собирает с тегом `aisec_release`, и бинарники встраивают открытый ключ производителя `internal/integrity/keys/manifest.pub`.
-- Без `MANIFEST_KEY` поставочный манифест не создаётся, а без файла открытого ключа поставочная сборка не компилируется. Инструменты разработки ставятся `make tools` в `bin/` по версиям из переменных в начале `Makefile`.
+- Поставочная сборка (ADR-0022) — три шага, закрытый ключ производителя на сборочную машину не попадает:
+  1. `make release-dir RELEASE=1` на теге `VERSION` из чистого дерева: бинарники с тегом `aisec_release` (встраивают открытый ключ производителя `internal/integrity/keys/manifest.pub`) и манифест **без подписи** в `build/release`, на экране — его SHA-256.
+  2. На отдельной машине без сети: `tools/manifest sign -key <ключ на отдельном носителе> -manifest aisec-manifest.json -expect-sha256 <хеш шага 1>` (статический инструмент — `make release-signer`; при Go и репозитории на машине подписи — `make release-sign MANIFEST_KEY=… MANIFEST_SHA256=…`). Инструмент отказывает при работающем сетевом интерфейсе, ключе из репозитория, файле ключа с открытыми правами и несовпадении хеша.
+  3. `make images RELEASE=1`: проверка подписи поставочным `aisec-cli verify`, `release-test` с настоящим ключом, отпечаток ключа (`make release-fingerprint`), образы, SBOM, `images-verify`.
+- `make manifest RELEASE=1` и `make check RELEASE=1` отказывают: проверки идут без `RELEASE`. Без файла открытого ключа поставочная сборка не компилируется.
+- `make release-test` входит в `make check`: тесты с тегом `aisec_release`, где вместо `keys/manifest.pub` через `go test -overlay` встроена имитация ключа производителя (`internal/integrity/keys/manifest-release-ci.pub`, закрытая пара — `testdata/integrity/`, поставочная сборка её не принимает).
+- Переменные сборки: `RELEASE` (`1` — поставочная сборка), `MANIFEST_KEY` (путь к закрытому ключу производителя, только `release-sign` на машине без сети), `MANIFEST_SHA256` (ожидаемый хеш манифеста для `release-sign`), `VERSION`.
+
+Инструменты разработки ставятся `make tools` в `bin/` по версиям из переменных в начале `Makefile`.
 
 ## CI
 GitHub Actions — тонкая обёртка над `make` (ADR-0002):
