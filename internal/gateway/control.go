@@ -233,8 +233,11 @@ type HeartbeatConfig struct {
 	// ServerTime — часы сроков исключений по времени сервера из ответа
 	// (3Н40 ревью 3.r3); nil — не ведутся.
 	ServerTime *ServerClock
-	Logger     *slog.Logger
-	Clock      func() time.Time
+	// TLSFingerprint — отпечаток действующего сертификата адреса приложений
+	// (TLSSwitch.Current); nil — не передаётся.
+	TLSFingerprint func() string
+	Logger         *slog.Logger
+	Clock          func() time.Time
 	// Sleep ждёт d или отмены ctx (тесты подменяют его).
 	Sleep func(ctx context.Context, d time.Duration) bool
 }
@@ -313,7 +316,11 @@ func (c HeartbeatConfig) beat(ctx context.Context, u string, interval, backoff *
 		Budget *budgetState `json:"budget"`
 	}
 	sent := c.Clock()
-	body := heartbeatBody{Version: c.Version, BundleETag: etag}
+	body := heartbeatBody{Version: c.Version, BundleETag: etag, Time: &sent}
+	if c.TLSFingerprint != nil {
+		fp := c.TLSFingerprint()
+		body.TLSFingerprint = &fp
+	}
 	if !c.StartedAt.IsZero() {
 		at := c.StartedAt
 		body.StartedAt = &at

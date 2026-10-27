@@ -108,7 +108,8 @@ func securityRules() []Rule {
 		rule(BuiltinGatewayOffline, KindSystem, "Шлюз недоступен",
 			"DM-44: действующий шлюз не выходил на связь дольше трёх периодов heartbeat.", "high", []string{"gateway"}),
 		rule(BuiltinTimeSync, KindSystem, "Время не синхронизировано",
-			"DM-44, ВРМ.1: часы сервера не синхронизированы — время событий и аудита ненадёжно.", "medium", []string{}),
+			"DM-44, ВРМ.1: часы сервера не синхронизированы или часы шлюза расходятся с сервером больше чем на минуту — "+
+				"время событий и аудита и сроки исключений ненадёжны.", "medium", []string{}),
 		rule(BuiltinAuditStorage, KindSystem, "Журнал аудита приближается к пределу хранилища",
 			"DM-44, РСБ.5: заполнение хранилища журнала аудита достигло порога предупреждения.", "high", []string{}),
 		rule(BuiltinCertExpiry, KindSystem, "Скоро истекает сертификат",
@@ -120,7 +121,9 @@ func securityRules() []Rule {
 			"DM-44, Н29: шлюз на связи, но итог контроля целостности старше двух периодов проверки или не приходит.",
 			"high", []string{"gateway"}),
 		rule(BuiltinConfigBundle, KindSystem, "Пакет конфигурации шлюзов не применён",
-			"ОЦЛ.3: пакет собран не полностью или шлюз работает на устаревшем пакете.", "medium", []string{"component"}),
+			"ОЦЛ.3: пакет собран не полностью или шлюз работает на устаревшем пакете; ЗИ.4: шлюз применил пакет, но отвечает "+
+				"приложениям не тем сертификатом, что загружен в консоли (по часам шлюза он ещё не действует или истёк).",
+			"medium", []string{"component"}),
 		rule(BuiltinNotifyFailed, KindSystem, "Уведомление не доставлено",
 			"DM-44: канал уведомлений не доставил сообщение после всех повторов.", "high", []string{"channel"}),
 		rule(BuiltinAuditStream, KindSystem, "Передача журнала аудита в SIEM отстаёт",
@@ -426,6 +429,10 @@ var systemFamilies = map[string]string{
 	"alert_job_stale":   BuiltinAlertJob,
 	// Сертификат заказчика для адреса шлюза (задача 3.27).
 	"customer_cert_expiry": BuiltinCertExpiry,
+	// Часы шлюза и сертификат, которым он отвечает приложениям (3Н40, 3Н43
+	// ревью 3.r3).
+	"gateway_clock": BuiltinTimeSync,
+	"gateway_tls":   BuiltinConfigBundle,
 }
 
 // systemRaise — оповещение по возникшему условию раздела 7 (запись

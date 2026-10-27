@@ -197,6 +197,14 @@ const (
 	ConditionOffline       = "gateway_offline" // шлюз не выходит на связь
 	ConditionCertExpiry    = "cert_expiry"     // сертификат шлюза скоро истекает
 	ConditionReportsStale  = "reports_stale"   // итог целостности шлюза устарел (Н29)
+	// ConditionGatewayClock — ВРМ.1 (3Н40 ревью 3.r3): часы шлюза расходятся
+	// с часами сервера больше GatewayClockSkewWarn — сроки исключений и
+	// время событий шлюза ненадёжны.
+	ConditionGatewayClock = "gateway_clock"
+	// ConditionGatewayTLS — ЗИ.4 (3Н43 ревью 3.r3): шлюз на текущем пакете
+	// дольше BundleLagAfter отвечает приложениям не тем сертификатом, что
+	// загружен в консоли (по часам шлюза он ещё не действует или истёк).
+	ConditionGatewayTLS = "gateway_tls"
 	// ConditionCAExpiry — ИАФ.10: действующему корню внутреннего УЦ осталось
 	// CAExpiryWarn и меньше; нужна ротация (aisec-cli keys rotate-ca). За
 	// CAExpiryCritical пишется ещё одно system.alert (код ca_expiry:critical).
@@ -284,7 +292,12 @@ const (
 
 // gatewayFamilies — семейства условий с кодом «семейство:ID шлюза».
 var gatewayFamilies = []string{ConditionBundleLag, ConditionEventsDropped, ConditionOffline, ConditionCertExpiry,
-	ConditionReportsStale}
+	ConditionReportsStale, ConditionGatewayClock, ConditionGatewayTLS}
+
+// GatewayClockSkewWarn — расхождение часов шлюза с сервером, после которого
+// поднимается условие gateway_clock (шлюз пишет предупреждение в свой
+// журнал уже с 30 с).
+const GatewayClockSkewWarn = time.Minute
 
 // Notification — условие уведомления на этапе 2.
 type Notification struct {

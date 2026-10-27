@@ -75,7 +75,8 @@ const gatewayCols = `id::text, org_id::text, name, status, created_at, created_b
 	cert_serial, cert_not_after, last_seen_at, host(last_addr), version, bundle_etag,
 	selftest_ok, selftest_at, selftest_failed, integrity_ok, integrity_at, integrity_reason, integrity_failed,
 	manifest_version, manifest_created, manifest_max_version, manifest_max_created, test_signed, bundle_keys_ok,
-	verify_requested_at, started_at, cert_ca, next_cert_serial, next_cert_not_after, next_cert_ca, bundle_key`
+	verify_requested_at, started_at, cert_ca, next_cert_serial, next_cert_not_after, next_cert_ca, bundle_key,
+	clock_skew_ms, tls_fingerprint`
 
 func scanGateway(row pgx.Row) (Gateway, error) {
 	var g Gateway
@@ -90,17 +91,22 @@ func scanGateway(row pgx.Row) (Gateway, error) {
 	var verifyReq, started *time.Time
 	var certCA, nextSerial, nextCA *string
 	var nextNotAfter *time.Time
+	var skewMs *int64
 	if err := row.Scan(&g.ID, &g.OrgID, &g.Name, &g.Status, &g.CreatedAt, &g.CreatedBy, &registered, &revoked,
 		&serial, &notAfter, &seen, &addr, &version, &etag,
 		&stOK, &stAt, &stFailed, &inOK, &inAt, &integrityReason, &inFailed,
 		&mVersion, &mCreated, &mMaxVersion, &mMaxCreated, &testSigned, &g.BundleKeysOK, &verifyReq, &started,
-		&certCA, &nextSerial, &nextNotAfter, &nextCA, &g.BundleKey); err != nil {
+		&certCA, &nextSerial, &nextNotAfter, &nextCA, &g.BundleKey, &skewMs, &g.TLSFingerprint); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return Gateway{}, ErrNotFound
 		}
 		return Gateway{}, err
 	}
 	g.RegisteredAt, g.RevokedAt, g.CertNotAfter, g.LastSeenAt = deref(registered), deref(revoked), deref(notAfter), deref(seen)
+	if skewMs != nil {
+		d := time.Duration(*skewMs) * time.Millisecond
+		g.ClockSkew = &d
+	}
 	g.CertSerial, g.Version, g.BundleETag = derefS(serial), derefS(version), derefS(etag)
 	if addr != nil {
 		if a, err := netip.ParseAddr(*addr); err == nil {
@@ -366,6 +372,13 @@ func (s *PGStore) Touch(ctx context.Context, id string, hb Heartbeat, audits fun
 			mVersion, mCreated = &r.ManifestVersion, &r.ManifestCreated
 		}
 	}
+	// Последний heartbeat сообщает часы и сертификат заново: без них —
+	// шлюз прежней версии или heartbeat остановки, значения стираются.
+	var skewMs *int64
+	if hb.ClockSkew != nil {
+		ms := hb.ClockSkew.Milliseconds()
+		skewMs = &ms
+	}
 	var ch TouchChange
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
 		ch = TouchChange{}
@@ -398,10 +411,11 @@ func (s *PGStore) Touch(ctx context.Context, id string, hb Heartbeat, audits fun
 				AND (manifest_max_created IS NULL OR $14 > manifest_max_created) THEN $14 ELSE manifest_max_created END,
 			test_signed = COALESCE($15, test_signed), bundle_keys_ok = COALESCE($16, bundle_keys_ok),
 			verify_requested_at = CASE WHEN $17 THEN NULL ELSE verify_requested_at END,
-			started_at = CASE WHEN $18 THEN $19 ELSE started_at END
+			started_at = CASE WHEN $18 THEN $19 ELSE started_at END,
+			clock_skew_ms = $20, tls_fingerprint = $21
 			WHERE id = $1 AND status = 'active'`, id, hb.At, addr, hb.Version, nullStr(hb.BundleETag),
 			stOK, stAt, stFailed, inOK, inAt, inReason, inFailed, mVersion, mCreated, testSigned, hb.BundleKeysOK, ch.VerifyDone,
-			setStarted, nullTime(next))
+			setStarted, nullTime(next), skewMs, hb.TLSFingerprint)
 		if err != nil {
 			return fmt.Errorf("реестр шлюзов: heartbeat: %w", err)
 		}

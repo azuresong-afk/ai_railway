@@ -130,4 +130,9 @@ type heartbeatBody struct {
 	Stopping  bool       `json:"stopping,omitempty"`
 	// Budget — счётчики расхода процесса (задача 3.18).
 	Budget *budgetReport `json:"budget,omitempty"`
+	// Time — часы шлюза при отправке, TLSFingerprint — отпечаток действующего
+	// сертификата адреса приложений (пусто — сертификат шлюза): по ним сервер
+	// ведёт условия «Состояния системы» (3Н40, 3Н43 ревью 3.r3).
+	Time           *time.Time `json:"time,omitempty"`
+	TLSFingerprint *string    `json:"tls_fingerprint,omitempty"`
 }
