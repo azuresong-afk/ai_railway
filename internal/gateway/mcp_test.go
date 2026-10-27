@@ -118,8 +118,14 @@ func newMCPEnv(t *testing.T, mod func(*mcpOpts)) *mcpEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rnd, _ := p.Random()
-	h, _ := p.Hasher()
+	rnd, err := p.Random()
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := p.Hasher()
+	if err != nil {
+		t.Fatal(err)
+	}
 	tp, err := p.TLS()
 	if err != nil {
 		t.Fatal(err)
@@ -170,7 +176,10 @@ func newMCPEnv(t *testing.T, mod func(*mcpOpts)) *mcpEnv {
 
 	spec, _ := policy.Template(policy.TemplateBase)
 	spec.ID, spec.Mode, spec.Tools = "mcp", o.mode, o.tools
-	u, _ := url.Parse("https://127.0.0.1:1/v1")
+	u, err := url.Parse("https://127.0.0.1:1/v1")
+	if err != nil {
+		t.Fatal(err)
+	}
 	prov, err := providers.NewOpenAI(providers.OpenAIConfig{BaseConfig: providers.BaseConfig{ID: "up", External: true, Transport: &http.Transport{}, Logger: quiet()}, BaseURL: u})
 	if err != nil {
 		t.Fatal(err)
@@ -308,7 +317,7 @@ func (e *mcpEnv) lastUpstream() (http.Header, string) {
 	if err != nil {
 		e.t.Fatal(err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() { _ = resp.Body.Close() }() //nolint:gosec // G104: тело прочитано ниже, ошибка закрытия тесту не важна
 	var last struct {
 		Headers http.Header
 		Body    string
@@ -688,7 +697,10 @@ func TestMCPUpstreamRedirectAndBlockedAddress(t *testing.T) {
 	if ev := e.lastEvent(); ev.Agent.Violation != violationUpstream || ev.Agent.Upstream != http.StatusFound {
 		t.Fatalf("событие: %+v", ev.Agent)
 	}
-	tp, _ := testProvider(t).TLS()
+	tp, err := testProvider(t).TLS()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := newMCPUpstream(bundle.MCPServer{ID: "files", URL: "https://127.0.0.1:1/mcp", External: true}, "", tp, nil); err == nil {
 		t.Fatal("loopback принят в реестре")
 	}

@@ -53,7 +53,11 @@ func FuzzParseSSE(f *testing.F) {
 		f.Add([]byte(s))
 	}
 	f.Fuzz(func(t *testing.T, data []byte) {
-		msgs, _ := ParseSSE(bytes.NewReader(data))
+		// Частичный разбор при ошибке проверяется так же, как полный.
+		msgs, err := ParseSSE(bytes.NewReader(data))
+		if err != nil && len(msgs) == 0 {
+			return
+		}
 		if len(msgs) > MaxEvents {
 			t.Fatalf("событий %d больше предела", len(msgs))
 		}

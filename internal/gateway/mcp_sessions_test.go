@@ -51,7 +51,9 @@ func TestMCPSessionsOwnerAndTTL(t *testing.T) {
 	if _, ok := s.get(id, own); ok || s.Len() != 0 {
 		t.Fatalf("истёкшая сессия: %d", s.Len())
 	}
-	id, _ = s.create(own, "")
+	if id, err = s.create(own, ""); err != nil {
+		t.Fatal(err)
+	}
 	s.drop(id)
 	if _, ok := s.get(id, own); ok {
 		t.Fatal("закрытая сессия")
@@ -64,8 +66,14 @@ func TestMCPSessionsPerOwnerLimit(t *testing.T) {
 	now := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
 	s := testMCPSessions(t, &now)
 	own, other := mcpOwner("app", "k1", "a", "files"), mcpOwner("app", "k2", "a", "files")
-	keep, _ := s.create(other, "")
-	first, _ := s.create(own, "")
+	keep, err := s.create(other, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := s.create(own, "")
+	if err != nil {
+		t.Fatal(err)
+	}
 	for range MaxMCPSessionsPerOwner {
 		now = now.Add(time.Second)
 		if _, err := s.create(own, ""); err != nil {

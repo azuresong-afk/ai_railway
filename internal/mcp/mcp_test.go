@@ -96,8 +96,14 @@ func TestEncodeRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(out, &b); err != nil {
 		t.Fatalf("собранное не читается: %v: %s", err, out)
 	}
-	ja, _ := json.Marshal(a)
-	jb, _ := json.Marshal(b)
+	ja, err := json.Marshal(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jb, err := json.Marshal(b)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if string(ja) != string(jb) {
 		t.Errorf("смысл изменился:\n%s\n%s", ja, jb)
 	}
@@ -142,7 +148,7 @@ func TestHeaderValueEncoding(t *testing.T) {
 
 func headers(kv ...string) http.Header {
 	h := http.Header{}
-	for i := 0; i < len(kv); i += 2 {
+	for i := 0; i+1 < len(kv); i += 2 {
 		h.Add(kv[i], kv[i+1])
 	}
 	return h
@@ -204,7 +210,7 @@ func TestParamHeaders(t *testing.T) {
 	if h.Get("Mcp-Param-Region") != EncodeHeaderValue("Москва") || h.Get("Mcp-Param-N") != "42" || h.Get("Mcp-Param-B") != "true" {
 		t.Errorf("заголовки: %v", h)
 	}
-	if h, _ := BuildParamHeaders(hs, schema(`{"region":null}`)); len(h) != 0 {
+	if h, err := BuildParamHeaders(hs, schema(`{"region":null}`)); err != nil || len(h) != 0 {
 		t.Errorf("null и отсутствие — без заголовков: %v", h)
 	}
 	if _, err := BuildParamHeaders(hs, schema(`{"region":1}`)); err == nil {

@@ -283,7 +283,7 @@ func (u *mcpUpstream) send(ctx context.Context, out mcpOutgoing) (*mcpReply, err
 	if resp.StatusCode == http.StatusAccepted && out.Msg.Kind == mcp.KindNotification {
 		return r, nil
 	}
-	ct, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+	ct, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type")) //nolint:gosec // G104: неверный Content-Type даёт пустой тип, ответ отклоняется веткой default
 	switch {
 	case resp.StatusCode >= 300 && resp.StatusCode < 400:
 		r.Close()

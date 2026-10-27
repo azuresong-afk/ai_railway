@@ -86,7 +86,10 @@ func TestAgentEventFilter(t *testing.T) {
 			t.Errorf("%s принят", q)
 		}
 	}
-	f, _ := events.ParseFilter(`tool = "read_file"`)
+	f, err := events.ParseFilter(`tool = "read_file"`)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var b bytes.Buffer
 	b.WriteString(f.String())
 	if !strings.Contains(b.String(), "read_file") {
@@ -122,7 +125,10 @@ func TestPGAgentEvents(t *testing.T) {
 			t.Fatalf("%s: %d %v", q, len(recs), err)
 		}
 	}
-	f, _ := events.ParseFilter(`tool != "read_file"`)
+	f, err := events.ParseFilter(`tool != "read_file"`)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if recs, err := e.st.List(ctx, events.Query{From: time.Now().Add(-time.Hour), To: time.Now().Add(time.Hour), Filter: f, Limit: 10}); err != nil || len(recs) != 0 {
 		t.Fatalf("отрицание: %d %v", len(recs), err)
 	}

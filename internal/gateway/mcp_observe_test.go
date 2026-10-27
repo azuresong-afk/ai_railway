@@ -35,10 +35,13 @@ func TestToolObserverBatching(t *testing.T) {
 			w.Header().Set("Retry-After", "30")
 		}
 		w.WriteHeader(status)
-		_, _ = w.Write([]byte(`{}`))
+		_, _ = w.Write([]byte(`{}`)) //nolint:gosec // G104: клиент теста ушёл — писать некуда
 	}))
 	defer srv.Close()
-	u, _ := url.Parse(srv.URL)
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
 	o := NewToolObserver(srv.Client(), u, quiet())
 	now := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
 	o.now = func() time.Time { return now }
@@ -98,7 +101,10 @@ func TestToolObserverBatching(t *testing.T) {
 
 // Предел ждущих описаний на сервер — MaxObserveBatch.
 func TestToolObserverPendingLimit(t *testing.T) {
-	u, _ := url.Parse("https://127.0.0.1:1")
+	u, err := url.Parse("https://127.0.0.1:1")
+	if err != nil {
+		t.Fatal(err)
+	}
 	o := NewToolObserver(http.DefaultClient, u, quiet())
 	tools := make([]ObservedTool, MaxObserveBatch+10)
 	for i := range tools {
