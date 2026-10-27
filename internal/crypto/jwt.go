@@ -14,6 +14,7 @@ import (
 	"io"
 	"math"
 	"math/big"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -109,6 +110,26 @@ type JWTVerifier interface {
 	// VerifyIDToken проверяет подпись и утверждения ID-токена. Ошибка —
 	// *JWTError с причиной; JWTReasonUnknownKey — повод обновить JWKS.
 	VerifyIDToken(token string, keys *JWKS, want IDTokenExpect) (IDTokenClaims, error)
+	// VerifyUserToken проверяет JWT пользователя приложения на шлюзе по
+	// JWKS из пакета конфигурации, без сети (задача 4.21). Ошибка —
+	// *JWTError с причиной.
+	VerifyUserToken(token string, keys *JWKS, want UserTokenExpect) (IDTokenClaims, error)
+	// MarshalJWKS кодирует набор ключей в каноничный JWKS для пакета
+	// конфигурации шлюзов: только ключи подписи поддерживаемых типов,
+	// по возрастанию kid. Одинаковые ключи дают одинаковые байты.
+	MarshalJWKS(keys *JWKS) ([]byte, error)
+}
+
+// MaxUserTokenLeeway — наибольший допуск часов для JWT пользователя.
+const MaxUserTokenLeeway = 5 * time.Minute
+
+// UserTokenExpect — ожидаемые значения JWT пользователя приложения.
+type UserTokenExpect struct {
+	Issuer   string
+	Audience string
+	Now      time.Time
+	// Leeway — допуск часов для exp, nbf и iat: от 0 до MaxUserTokenLeeway.
+	Leeway time.Duration
 }
 
 // IDTokenExpect — ожидаемые значения утверждений.
@@ -380,72 +401,188 @@ func parseP256Key(x64, y64 string) (*ecdsa.PublicKey, error) {
 	return pub, nil
 }
 
+// jwkJSON — ключ каноничного JWKS пакета.
+type jwkJSON struct {
+	Kty string `json:"kty"`
+	Use string `json:"use"`
+	Alg string `json:"alg,omitempty"`
+	Kid string `json:"kid,omitempty"`
+	N   string `json:"n,omitempty"`
+	E   string `json:"e,omitempty"`
+	Crv string `json:"crv,omitempty"`
+	X   string `json:"x,omitempty"`
+	Y   string `json:"y,omitempty"`
+}
+
+func (standardJWT) MarshalJWKS(keys *JWKS) ([]byte, error) {
+	if keys.Len() == 0 {
+		return nil, errors.Join(ErrJWKS, errors.New("нет ключей подписи"))
+	}
+	out := make([]jwkJSON, 0, len(keys.keys))
+	for _, k := range keys.keys {
+		j := jwkJSON{Use: "sig", Alg: k.alg, Kid: k.kid}
+		switch {
+		case k.rsa != nil:
+			j.Kty, j.N = "RSA", b64.EncodeToString(k.rsa.N.Bytes())
+			j.E = b64.EncodeToString(big.NewInt(int64(k.rsa.E)).Bytes())
+		case k.ec != nil:
+			pt, err := k.ec.Bytes()
+			if err != nil || len(pt) != 65 {
+				return nil, errors.Join(ErrJWKS, errors.New("ключ P-256 не кодируется"))
+			}
+			j.Kty, j.Crv, j.X, j.Y = "EC", "P-256", b64.EncodeToString(pt[1:33]), b64.EncodeToString(pt[33:])
+		case k.ed != nil:
+			j.Kty, j.Crv, j.X = "OKP", "Ed25519", b64.EncodeToString(k.ed)
+		default:
+			return nil, ErrJWKS
+		}
+		out = append(out, j)
+	}
+	slices.SortStableFunc(out, func(a, b jwkJSON) int {
+		if c := strings.Compare(a.Kid, b.Kid); c != 0 {
+			return c
+		}
+		return strings.Compare(a.Kty, b.Kty)
+	})
+	return json.Marshal(struct {
+		Keys []jwkJSON `json:"keys"`
+	}{out})
+}
+
 func (standardJWT) VerifyIDToken(token string, keys *JWKS, want IDTokenExpect) (IDTokenClaims, error) {
 	if want.Issuer == "" || want.Audience == "" || want.Now.IsZero() {
 		return IDTokenClaims{}, errors.New("JWT: не заданы издатель, клиент или время проверки")
 	}
+	// Токен доступа (typ at+jwt) за ID-токен не принимается.
+	claims, err := verifyCompact(token, keys, func(t string) bool { return strings.EqualFold(t, "JWT") })
+	if err != nil {
+		return IDTokenClaims{}, err
+	}
+	return checkClaims(claims, want)
+}
+
+// verifyCompact разбирает JWS в компактной форме, проверяет заголовок и
+// подпись ключом из keys и только затем разбирает утверждения. typOK —
+// допустимые значения typ заголовка (нет typ — допустимо).
+func verifyCompact(token string, keys *JWKS, typOK func(string) bool) (map[string]json.RawMessage, error) {
 	if len(token) > MaxJWTSize || strings.Count(token, ".") != 2 {
-		return IDTokenClaims{}, jwtErr(JWTReasonMalformed, "не компактная форма JWS")
+		return nil, jwtErr(JWTReasonMalformed, "не компактная форма JWS")
 	}
 	h64, rest, _ := strings.Cut(token, ".")
 	p64, s64, _ := strings.Cut(rest, ".")
 	if h64 == "" || p64 == "" || s64 == "" || len(h64) > b64.EncodedLen(maxJWTPart) ||
 		len(p64) > b64.EncodedLen(maxJWTPart) || len(s64) > b64.EncodedLen(maxJWTSig) {
-		return IDTokenClaims{}, jwtErr(JWTReasonMalformed, "пустая или слишком длинная часть")
+		return nil, jwtErr(JWTReasonMalformed, "пустая или слишком длинная часть")
 	}
 	hdrJSON, err := b64.DecodeString(h64)
 	if err != nil {
-		return IDTokenClaims{}, jwtErr(JWTReasonMalformed, "заголовок не base64url")
+		return nil, jwtErr(JWTReasonMalformed, "заголовок не base64url")
 	}
 	hdr, err := jsonObject(hdrJSON)
 	if err != nil {
-		return IDTokenClaims{}, jwtErr(JWTReasonMalformed, "заголовок: "+err.Error())
+		return nil, jwtErr(JWTReasonMalformed, "заголовок: "+err.Error())
 	}
 	alg, ok := rawString(hdr, "alg")
 	if !ok {
-		return IDTokenClaims{}, jwtErr(JWTReasonAlg, "нет alg")
+		return nil, jwtErr(JWTReasonAlg, "нет alg")
 	}
 	if alg != JWTAlgRS256 && alg != JWTAlgES256 && alg != JWTAlgEdDSA {
-		return IDTokenClaims{}, jwtErr(JWTReasonAlg, "алгоритм не допускается")
+		return nil, jwtErr(JWTReasonAlg, "алгоритм не допускается")
 	}
 	// Расширения, которые надо понимать (RFC 7515, 4.1.11), не поддерживаются.
 	if _, ok := hdr["crit"]; ok {
-		return IDTokenClaims{}, jwtErr(JWTReasonMalformed, "заголовок crit")
+		return nil, jwtErr(JWTReasonMalformed, "заголовок crit")
 	}
 	if typ, ok := hdr["typ"]; ok {
-		// Токен доступа (typ at+jwt) за ID-токен не принимается.
 		var t string
-		if json.Unmarshal(typ, &t) != nil || !strings.EqualFold(t, "JWT") {
-			return IDTokenClaims{}, jwtErr(JWTReasonMalformed, "typ не JWT")
+		if json.Unmarshal(typ, &t) != nil || !typOK(t) {
+			return nil, jwtErr(JWTReasonMalformed, "недопустимый typ")
 		}
 	}
 	kid := ""
 	if raw, ok := hdr["kid"]; ok {
 		if json.Unmarshal(raw, &kid) != nil || len(kid) > maxKIDLen {
-			return IDTokenClaims{}, jwtErr(JWTReasonMalformed, "неверный kid")
+			return nil, jwtErr(JWTReasonMalformed, "неверный kid")
 		}
 	}
 	key, err := pickKey(keys, kid, alg)
 	if err != nil {
-		return IDTokenClaims{}, err
+		return nil, err
 	}
 	sig, err := b64.DecodeString(s64)
 	if err != nil {
-		return IDTokenClaims{}, jwtErr(JWTReasonMalformed, "подпись не base64url")
+		return nil, jwtErr(JWTReasonMalformed, "подпись не base64url")
 	}
 	signed := token[:len(h64)+1+len(p64)]
 	if !verifyJWS(key, alg, []byte(signed), sig) {
-		return IDTokenClaims{}, jwtErr(JWTReasonSignature, "")
+		return nil, jwtErr(JWTReasonSignature, "")
 	}
 	payload, err := b64.DecodeString(p64)
 	if err != nil {
-		return IDTokenClaims{}, jwtErr(JWTReasonMalformed, "утверждения не base64url")
+		return nil, jwtErr(JWTReasonMalformed, "утверждения не base64url")
 	}
 	claims, err := jsonObject(payload)
 	if err != nil {
-		return IDTokenClaims{}, jwtErr(JWTReasonMalformed, "утверждения: "+err.Error())
+		return nil, jwtErr(JWTReasonMalformed, "утверждения: "+err.Error())
 	}
-	return checkClaims(claims, want)
+	return claims, nil
+}
+
+// VerifyUserToken — JWT пользователя приложения на шлюзе (задача 4.21).
+// Подпись и заголовок — как у ID-токена; typ — JWT или at+jwt (RFC 9068);
+// iss — побайтно, aud содержит Audience (azp не проверяется: у токена
+// доступа это клиент, получивший токен, а не шлюз); exp обязателен, nbf и
+// iat — если есть, с допуском Leeway; возраст iat не ограничен — срок
+// задаёт exp.
+func (standardJWT) VerifyUserToken(token string, keys *JWKS, want UserTokenExpect) (IDTokenClaims, error) {
+	if want.Issuer == "" || want.Audience == "" || want.Now.IsZero() || want.Leeway < 0 || want.Leeway > MaxUserTokenLeeway {
+		return IDTokenClaims{}, errors.New("JWT: не заданы издатель, аудитория, время проверки или допуск вне предела")
+	}
+	claims, err := verifyCompact(token, keys, func(t string) bool {
+		return strings.EqualFold(t, "JWT") || strings.EqualFold(t, "at+jwt") || strings.EqualFold(t, "application/at+jwt")
+	})
+	if err != nil {
+		return IDTokenClaims{}, err
+	}
+	out := IDTokenClaims{raw: claims}
+	iss, ok := rawString(claims, "iss")
+	if !ok || iss != want.Issuer {
+		return IDTokenClaims{}, jwtErr(JWTReasonIssuer, "")
+	}
+	out.Issuer = iss
+	sub, ok := rawString(claims, "sub")
+	if !ok || sub == "" || len(sub) > maxSubjectLen || !utf8.ValidString(sub) || hasControlRune(sub) {
+		return IDTokenClaims{}, jwtErr(JWTReasonSubject, "")
+	}
+	out.Subject = sub
+	aud, err := audiences(claims["aud"])
+	if err != nil || !containsString(aud, want.Audience) {
+		return IDTokenClaims{}, jwtErr(JWTReasonAudience, "")
+	}
+	out.Audience = aud
+	now := want.Now
+	exp, ok := numericDate(claims, "exp")
+	if !ok {
+		return IDTokenClaims{}, jwtErr(JWTReasonExpired, "нет exp")
+	}
+	if !now.Before(exp.Add(want.Leeway)) {
+		return IDTokenClaims{}, jwtErr(JWTReasonExpired, "")
+	}
+	out.ExpiresAt = exp
+	if _, present := claims["nbf"]; present {
+		nbf, ok := numericDate(claims, "nbf")
+		if !ok || nbf.After(now.Add(want.Leeway)) {
+			return IDTokenClaims{}, jwtErr(JWTReasonNotBefore, "")
+		}
+	}
+	if _, present := claims["iat"]; present {
+		iat, ok := numericDate(claims, "iat")
+		if !ok || iat.After(now.Add(want.Leeway)) {
+			return IDTokenClaims{}, jwtErr(JWTReasonIssuedAt, "")
+		}
+		out.IssuedAt = iat
+	}
+	return out, nil
 }
 
 // pickKey — ключ по kid; без kid — единственный ключ нужного типа.
