@@ -167,7 +167,7 @@ func (c *MLClient) Detect(ctx context.Context, model, text string) (*mlResult, e
 			return res, nil
 		case keep:
 			return nil, fmt.Errorf("%w: %w", ErrMLUnavailable, err)
-		case reused && attempt == 0 && ctx.Err() == nil && !errors.Is(err, ml.ErrProtocol):
+		case reused && attempt == 0 && ctx.Err() == nil && !errors.Is(err, ml.ErrProtocol) && !errors.Is(err, os.ErrDeadlineExceeded):
 			// Свободное соединение мог закрыть aisec-ml (простой, перезапуск):
 			// одна попытка на новом соединении.
 			continue
@@ -396,7 +396,9 @@ func (c *MLClient) failed(parent, ctx context.Context, err error) {
 	if parent.Err() != nil {
 		return
 	}
-	if ctx.Err() != nil {
+	// Срок соединения равен сроку ctx, и чтение может прерваться раньше,
+	// чем сработает таймер контекста: это тоже истечение срока.
+	if ctx.Err() != nil || errors.Is(err, os.ErrDeadlineExceeded) {
 		c.mu.Lock()
 		c.timeouts++
 		n := c.timeouts
