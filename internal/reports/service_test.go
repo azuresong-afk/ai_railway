@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -222,6 +223,11 @@ type fakeMailer struct {
 func (f *fakeMailer) SendReport(_ context.Context, _ string, m notify.ReportMail) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if m.Before != nil {
+		if err := m.Before([]string{"soc@example.ru", "ciso@example.ru"}); err != nil {
+			return err
+		}
+	}
 	f.calls++
 	if f.cancel != nil {
 		f.cancel()
@@ -428,6 +434,10 @@ func TestTickSendsOnce(t *testing.T) {
 	if export == nil || export.Actor.Type != audit.ActorSystem || !strings.HasPrefix(export.Actor.ID, "report-schedule:") {
 		t.Fatalf("data.export: %+v", export)
 	}
+	// 3Н47 ревью 3.r4: в записи — адреса получателей этой отправки.
+	if to, _ := export.Details.(map[string]any)["recipients"].([]string); !slices.Equal(to, []string{"soc@example.ru", "ciso@example.ru"}) {
+		t.Fatalf("получатели в data.export: %v", export.Details)
+	}
 }
 
 // После простоя несколько пропущенных запусков дают одну рассылку — за
@@ -501,6 +511,17 @@ func TestTickRetriesThenFails(t *testing.T) {
 	e.clock.t = utc(2026, 10, 27, 5, 1)
 	if err := e.svc.Tick(ctx); err != nil || len(e.mail.mails) != 1 {
 		t.Fatalf("следующий запуск: %v %d", err, len(e.mail.mails))
+	}
+	// 3Н47 ревью 3.r4: завершённые запуски старше RunRetention удаляются,
+	// новые остаются.
+	e.mail.fail = 100
+	e.clock.t = utc(2026, 10, 26, 5, 1).Add(RunRetention + 23*time.Hour)
+	if err := e.svc.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	runs, _ = e.svc.Runs(ctx, s.ID, 10) //nolint:gosec // G104: ошибка проверена ниже по содержимому
+	if len(runs) != 2 || runs[1].Status != RunSent || runs[0].Status != RunPending {
+		t.Fatalf("журнал после очистки: %+v", runs)
 	}
 }
 

@@ -317,6 +317,21 @@ func (s *PGStore) Record(ctx context.Context, rec audit.Entry) error {
 	return s.inTx(ctx, func(ctx context.Context, tx pgx.Tx) error { return s.audit.RecordTx(ctx, tx, rec) })
 }
 
+// PruneRuns — см. Store.
+func (s *PGStore) PruneRuns(ctx context.Context, before time.Time) (int64, error) {
+	var n int64
+	err := s.inTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `DELETE FROM report_runs WHERE org_id = $1 AND status IN ('sent', 'failed') AND updated_at < $2`,
+			s.orgID, before)
+		if err != nil {
+			return dbErr(err)
+		}
+		n = tag.RowsAffected()
+		return nil
+	})
+	return n, err
+}
+
 // FinishRun — см. Store.
 func (s *PGStore) FinishRun(ctx context.Context, r Run, rec *audit.Entry) error {
 	return s.inTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
