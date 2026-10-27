@@ -86,7 +86,24 @@ type Options struct {
 	// наступил срок ближайшего ключа, выдаётся уже собранный результат.
 	// nil — повторное использование по Reuse.
 	Revision func(ctx context.Context) (int64, error)
+	// IdPKeys — издатель настроенного IdP и его ключи подписи для раздела
+	// user_token_keys (задача 4.21, ADR-0025, 4.1); пустой издатель без
+	// ошибки — IdP не настроен. nil — ключей в пакете нет, и шлюзы
+	// отклоняют JWT пользователей.
+	IdPKeys func(ctx context.Context) (issuer string, keys *aisecCrypto.JWKS, err error)
 }
+
+// UserTokenKeysRefresh — как часто пакет собирается заново, пока у
+// приложений включена проверка JWT: так смена ключей у IdP доходит до
+// шлюзов за минуты (ADR-0025, 4.4). Новая версия — только если ключи
+// изменились.
+const UserTokenKeysRefresh = 5 * time.Minute
+
+// MaxStaleUserTokenKeys — сколько пакет держит ключи IdP прежней версии,
+// пока IdP недоступен: дольше ключ, отозванный у IdP, принимался бы
+// шлюзами без срока. Отсчёт — от последнего успешного получения ключей или
+// от запуска сервера; после него ключей в пакете нет, и шлюзы отклоняют JWT.
+const MaxStaleUserTokenKeys = 24 * time.Hour
 
 // Excluded — приложение, не вошедшее в пакет, и причина (В16 ревью 2.r3b).
 type Excluded struct {
@@ -122,6 +139,9 @@ type Service struct {
 	logger   *slog.Logger
 	reuse    time.Duration
 	revision func(ctx context.Context) (int64, error)
+	idpKeys  func(ctx context.Context) (string, *aisecCrypto.JWKS, error)
+	// jwt — кодирование JWKS для пакета; nil — профиль без проверки JWT.
+	jwt aisecCrypto.JWTVerifier
 	// builds — число выборок данных для сборки (для тестов Н26).
 	builds atomic.Int64
 
@@ -148,6 +168,8 @@ type Service struct {
 	revOK     bool
 	expiry    time.Time
 	collected time.Time
+	// keysAt — последнее успешное получение ключей IdP (сначала — запуск).
+	keysAt time.Time
 
 	// sealedMu защищает sealed — подписанные пакеты по шлюзам (задача
 	// 3.34): повторная выдача той же версии тому же шлюзу не расшифровывает
@@ -172,7 +194,12 @@ func New(o Options) (*Service, error) {
 	}
 	s := &Service{apps: o.Apps, agents: o.Agents, policies: o.Policies, store: o.Store, audit: o.Audit, sealer: o.Sealer, hasher: h,
 		orgID: o.OrgID, clock: o.Clock, logger: o.Logger, reuse: o.Reuse, revision: o.Revision,
-		sem: make(chan struct{}, 1), checks: map[string]string{}, lastReport: map[string]time.Time{}, sealed: map[string]sealedBody{}}
+		sem: make(chan struct{}, 1), checks: map[string]string{}, lastReport: map[string]time.Time{}, sealed: map[string]sealedBody{},
+		idpKeys: o.IdPKeys}
+	// Профиль без проверки JWT (gost до этапа 6): ключей IdP в пакете нет.
+	if j, err := o.Provider.JWT(); err == nil {
+		s.jwt = j
+	}
 	if s.orgID == "" {
 		s.orgID = audit.DefaultOrgID
 	}
@@ -182,6 +209,7 @@ func New(o Options) (*Service, error) {
 	if s.logger == nil {
 		s.logger = slog.Default()
 	}
+	s.keysAt = s.clock()
 	return s, nil
 }
 
@@ -503,6 +531,9 @@ func (s *Service) collect(ctx context.Context, now time.Time) (*bundle.Content, 
 	if err := s.addAgents(ctx, c, appSlugs); err != nil {
 		return nil, nil, nil, err
 	}
+	if err := s.addUserTokens(ctx, c, appSlugs, now); err != nil {
+		return nil, nil, nil, err
+	}
 	slices.SortFunc(c.Applications, func(a, b bundle.Application) int { return strings.Compare(a.ID, b.ID) })
 	slices.SortFunc(c.Providers, func(a, b bundle.Provider) int { return strings.Compare(a.ID, b.ID) })
 	slices.SortFunc(c.Policies, func(a, b bundle.Policy) int { return strings.Compare(a.ID, b.ID) })
@@ -518,6 +549,9 @@ func (s *Service) collect(ctx context.Context, now time.Time) (*bundle.Content, 
 	}
 	if len(c.PromptBaselines) > 0 {
 		stats["prompt_baselines"] = len(c.PromptBaselines)
+	}
+	if len(c.UserTokens) > 0 {
+		stats["user_tokens"], stats["user_token_keys"] = len(c.UserTokens), len(c.UserTokenKeys)
 	}
 	if len(c.Agents) > 0 || len(c.MCPServers) > 0 {
 		stats["agents"], stats["mcp_servers"], stats["agent_tools"] = len(c.Agents), len(c.MCPServers), len(c.AgentTools)

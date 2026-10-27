@@ -75,6 +75,11 @@ type Content struct {
 	// PromptBaselines — эталоны системного промпта приложений (задача 4.14
 	// этапа 4, baselines.go): хеш и режим контроля, без текста.
 	PromptBaselines []PromptBaseline `json:"prompt_baselines,omitempty"`
+	// UserTokenKeys и UserTokens — ключи издателя и проверка JWT
+	// пользователя приложений, доступ к моделям по группам (задача 4.21
+	// этапа 4, usertokens.go).
+	UserTokenKeys []IssuerKeys `json:"user_token_keys,omitempty"`
+	UserTokens    []UserToken  `json:"user_tokens,omitempty"`
 }
 
 // Unavailable — приложение, исключённое из пакета: только ID, контур и
@@ -244,6 +249,7 @@ func (c *Content) Validate() error {
 		}
 	}
 	apps := map[string]bool{}
+	byApp := map[string]Application{}
 	prefixes := map[string]bool{}
 	for i, a := range c.Applications {
 		at := fmt.Sprintf("applications[%d] (%s)", i, short(a.ID))
@@ -251,6 +257,7 @@ func (c *Content) Validate() error {
 			add("%s: неверный или повторный id", at)
 		}
 		apps[a.ID] = true
+		byApp[a.ID] = a
 		if !providers[a.Provider] {
 			add("%s: провайдер %q не описан в пакете", at, short(a.Provider))
 		}
@@ -268,6 +275,7 @@ func (c *Content) Validate() error {
 		errs = append(errs, checkKeys(at, a.Keys, prefixes)...)
 	}
 	errs = append(errs, validateBaselines(c.PromptBaselines, apps)...)
+	errs = append(errs, c.validateUserTokens(byApp)...)
 	for i, u := range c.Unavailable {
 		at := fmt.Sprintf("unavailable[%d] (%s)", i, short(u.ID))
 		if !config.ValidID(u.ID) || apps[u.ID] {
