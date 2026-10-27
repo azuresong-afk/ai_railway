@@ -408,6 +408,7 @@ func (h *ChatHandler) streamBuffered(w http.ResponseWriter, r *http.Request, app
 	if !h.checkFull(w, r, app, rec, resp) {
 		return
 	}
+	rec.issue(resp)
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.WriteHeader(http.StatusOK)
 	rc := http.NewResponseController(w)
@@ -726,6 +727,9 @@ type streamProc struct {
 	finished  bool
 	// failures — сбои детекторов на окнах (в событие).
 	failures []events.DetectorFailure
+	// reply — хеш content, отданного приложению (history.integrity); nil —
+	// без сессии.
+	reply *reply
 }
 
 func (h *ChatHandler) newStreamProc(r *http.Request, app *App, rec *record, requested string, incremental bool, send func([]byte) bool) *streamProc {
@@ -751,7 +755,28 @@ func (h *ChatHandler) newStreamProc(r *http.Request, app *App, rec *record, requ
 	}
 	sp.content, sp.refusal = newStreamText(cr, grew), newStreamText(rr, grew)
 	sp.holdTools = sp.holdTools || incremental
+	if rec.sess.replies() {
+		sp.reply = rec.sess.tracker.newReply()
+	}
 	return sp
+}
+
+// sent учитывает content, отданный приложению, в хеше выданного ответа.
+func (sp *streamProc) sent(piece string) {
+	if sp.reply != nil {
+		sp.reply.WriteString(piece)
+	}
+}
+
+// issue — хеш выданного ответа в событие: то, что приложение получило,
+// даже если поток оборван (приложение могло сохранить начало ответа).
+func (sp *streamProc) issue() {
+	if sp.reply == nil {
+		return
+	}
+	if h := sp.reply.Sum(); h != "" {
+		sp.rec.sess.ev.Issued = append(sp.rec.sess.ev.Issued, h)
+	}
 }
 
 // streamOut — исход обработки части.
@@ -908,6 +933,7 @@ func (sp *streamProc) releaseInto(out *chat.Chunk, final, checked bool) streamOu
 			d.Refusal = &piece
 		} else {
 			d.Content = &piece
+			sp.sent(piece)
 		}
 	}
 	return streamGo
@@ -1093,6 +1119,7 @@ func (sp *streamProc) cut(byPolicy bool, rule, msg string) streamOut {
 				out.Choices[0].Delta.Refusal = &piece
 			} else {
 				out.Choices[0].Delta.Content = &piece
+				sp.sent(piece)
 			}
 		}
 	}

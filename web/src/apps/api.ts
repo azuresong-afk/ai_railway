@@ -13,6 +13,9 @@ export type PolicySummary = S["PolicySummary"];
 export type ProtectionUpdate = S["ProtectionUpdate"];
 export type GatewayCertificate = S["GatewayCertificate"];
 export type GatewayCertificateUpload = S["GatewayCertificateUpload"];
+export type PromptBaseline = S["PromptBaseline"];
+export type PromptBaselineUpdate = S["PromptBaselineUpdate"];
+export type Reauth = S["Reauth"];
 
 const id = encodeURIComponent;
 
@@ -45,6 +48,12 @@ export const appsApi = {
   // Сертификат заказчика для адреса шлюза (задача 3.27): один на установку; ключ сервер не возвращает.
   gatewayCert: (signal?: AbortSignal) => request<GatewayCertificate>("GET", "/api/v1/gateway-certificate", undefined, signal),
   setGatewayCert: (b: GatewayCertificateUpload) => request<GatewayCertificate>("PUT", "/api/v1/gateway-certificate", b),
+  // Эталон системного промпта (задача 4.14, DM-26): текст видит и меняет только обладатель applications.policy.
+  promptBaseline: (appId: string, signal?: AbortSignal) =>
+    request<PromptBaseline>("GET", `/api/v1/applications/${id(appId)}/prompt-baseline`, undefined, signal),
+  setPromptBaseline: (appId: string, b: PromptBaselineUpdate) =>
+    request<PromptBaseline>("PUT", `/api/v1/applications/${id(appId)}/prompt-baseline`, b),
+  deletePromptBaseline: (appId: string, b: Reauth) => request<void>("DELETE", `/api/v1/applications/${id(appId)}/prompt-baseline`, b),
 };
 
 // Список из текстового поля: разделители — перевод строки, запятая, пробел; повторы убираются.

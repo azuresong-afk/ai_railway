@@ -30,6 +30,8 @@ type Memory struct {
 	gatewayTLS map[string]GatewayTLS
 	// agents — агент → приложение для привязки ключей (BindAgent).
 	agents map[string]string
+	// prompts — эталоны системного промпта по приложению (задача 4.14).
+	prompts map[string]PromptBaseline
 }
 
 // usageKey — строка budget_usage.
@@ -42,7 +44,7 @@ type usageKey struct {
 func NewMemory() *Memory {
 	return &Memory{providers: map[string]Provider{}, apps: map[string]Application{}, keys: map[string]Key{},
 		prices: map[string]Price{}, budgets: map[string]Budget{}, usage: map[usageKey]Usage{},
-		gatewayTLS: map[string]GatewayTLS{}, agents: map[string]string{}}
+		gatewayTLS: map[string]GatewayTLS{}, agents: map[string]string{}, prompts: map[string]PromptBaseline{}}
 }
 
 // BindAgent регистрирует агента приложения appID: ключ можно привязать

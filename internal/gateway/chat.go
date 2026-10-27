@@ -23,6 +23,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/chat"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/internal/detect"
+	"github.com/azuresong-afk/ai_railway/internal/detect/session"
 	"github.com/azuresong-afk/ai_railway/internal/events"
 	"github.com/azuresong-afk/ai_railway/internal/ids"
 	"github.com/azuresong-afk/ai_railway/internal/policy"
@@ -50,6 +51,10 @@ type ChatConfig struct {
 	// UserMAC — имитовставка для псевдонима пользователя в событиях и
 	// квотах (ТЗ, 5.5); nil — пользователь не учитывается.
 	UserMAC aisecCrypto.MAC
+	// Sessions — сессии чата (задачи 4.13, 4.14): псевдоним сессии в
+	// событиях, session.risk, хеши реплик для history.integrity; nil — без
+	// сессий (заголовок X-AISec-Session всё равно проверяется).
+	Sessions *Sessions
 	// DetectorTimeout — срок детектора на короткий текст; ноль —
 	// DefaultDetectorTimeout. Срок растёт с длиной текста (pipeline.go).
 	DetectorTimeout time.Duration
@@ -167,11 +172,19 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	sess, ok := h.session(w, r, app, req, user)
+	if !ok {
+		return
+	}
 	rec, ok := h.newRecord(w, app, req, user, start)
 	if !ok {
 		return
 	}
 	defer h.emit(rec)
+	if sess != nil {
+		rec.sess = sess
+		rec.ev.Session = sess.ev
+	}
 	requested := req.Model
 	model, ok := app.Resolve(requested)
 	if !ok {
@@ -202,6 +215,7 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	in, err := app.inspect(r.Context(), inspectRequest{
 		Endpoint: policy.EndpointChat, External: app.Provider.External(), Texts: texts, Media: policyMedia(req.Media()), User: user,
 		Mask: app.Storage == events.StorageMasked, Timeout: h.cfg.DetectorTimeout, Vault: rec.vault,
+		Extra: app.promptFinding(req), Session: sess,
 	})
 	rec.ev.LatencyMS["input_check"] = h.cfg.Now().Sub(checkStart).Milliseconds()
 	switch {
@@ -276,7 +290,32 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !h.checkFull(w, r, app, rec, resp) {
 		return
 	}
+	rec.issue(resp)
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// session — сессия запроса чата (задача 4.13): X-AISec-Session или
+// отпечаток начала диалога; для history.integrity — хеши реплик
+// ассистента из истории, если в политике приложения есть его правило.
+// Неверный заголовок — 400 без эха значения. При ошибке ответ уже записан.
+func (h *ChatHandler) session(w http.ResponseWriter, r *http.Request, app *App, req *chat.Request, user string) (*reqSession, bool) {
+	vals := r.Header.Values(HeaderSession)
+	if h.cfg.Sessions == nil {
+		if _, err := parseSessionHeader(vals); err != nil {
+			WriteError(w, http.StatusBadRequest, err.Error(), "invalid_request_error", "invalid_session")
+			return nil, false
+		}
+		return nil, true
+	}
+	s, err := h.cfg.Sessions.identify(app.ID, user, vals, req)
+	if err != nil {
+		WriteError(w, http.StatusBadRequest, err.Error(), "invalid_request_error", "invalid_session")
+		return nil, false
+	}
+	if rule, action, sev, ok := app.Policy.RuleFor(session.HistoryID, detect.Input); ok {
+		s.ev.History, s.ev.HistoryRule, s.ev.HistoryAction, s.ev.HistorySeverity = h.cfg.Sessions.history(req), rule, string(action), string(sev)
+	}
+	return s, true
 }
 
 // user — псевдоним конечного пользователя (ТЗ, 4.3, шаг 2; 5.5): HMAC
@@ -419,7 +458,7 @@ func requestTexts(req *chat.Request) ([]inspectText, []textRef) {
 		if s.Kind == chat.SegContent || s.Kind == chat.SegRefusal {
 			parts[s.Message] = append(parts[s.Message], len(texts))
 		}
-		texts = append(texts, inspectText{Text: s.Text, Source: src, Location: s.Location()})
+		texts = append(texts, inspectText{Text: s.Text, Source: src, Location: s.Location(), Message: s.Message})
 		refs = append(refs, textRef{seg: s, tool: -1})
 	}
 	for m := range req.Messages {
@@ -436,7 +475,7 @@ func requestTexts(req *chat.Request) ([]inspectText, []textRef) {
 				b.WriteString(texts[p].Text)
 			}
 			texts = append(texts, inspectText{Text: b.String(), Source: texts[ps[0]].Source,
-				Location: fmt.Sprintf("messages[%d].content", m), Parts: ps, Sep: sep})
+				Location: fmt.Sprintf("messages[%d].content", m), Parts: ps, Sep: sep, Message: m})
 			refs = append(refs, textRef{tool: -1})
 		}
 	}
@@ -445,7 +484,7 @@ func requestTexts(req *chat.Request) ([]inspectText, []textRef) {
 			continue
 		}
 		texts = append(texts, inspectText{Text: tl.Function.Description, Source: detect.SourceUser,
-			Location: fmt.Sprintf("tools[%d].function.description", i)})
+			Location: fmt.Sprintf("tools[%d].function.description", i), Message: -1})
 		refs = append(refs, textRef{tool: i})
 	}
 	return texts, refs
@@ -555,6 +594,7 @@ func (h *ChatHandler) stream(w http.ResponseWriter, r *http.Request, app *App, r
 	defer func() {
 		rec.respMasked = sp.content.masked || sp.refusal.masked
 		rec.respFailures = sp.failures
+		sp.issue()
 		sp.afterStream()
 	}()
 	for {

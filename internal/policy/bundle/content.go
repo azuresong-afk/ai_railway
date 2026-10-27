@@ -72,6 +72,9 @@ type Content struct {
 	Agents     []Agent     `json:"agents,omitempty"`
 	MCPServers []MCPServer `json:"mcp_servers,omitempty"`
 	AgentTools []AgentTool `json:"agent_tools,omitempty"`
+	// PromptBaselines — эталоны системного промпта приложений (задача 4.14
+	// этапа 4, baselines.go): хеш и режим контроля, без текста.
+	PromptBaselines []PromptBaseline `json:"prompt_baselines,omitempty"`
 }
 
 // Unavailable — приложение, исключённое из пакета: только ID, контур и
@@ -264,6 +267,7 @@ func (c *Content) Validate() error {
 		errs = append(errs, prefixed(at, a.params().Check())...)
 		errs = append(errs, checkKeys(at, a.Keys, prefixes)...)
 	}
+	errs = append(errs, validateBaselines(c.PromptBaselines, apps)...)
 	for i, u := range c.Unavailable {
 		at := fmt.Sprintf("unavailable[%d] (%s)", i, short(u.ID))
 		if !config.ValidID(u.ID) || apps[u.ID] {

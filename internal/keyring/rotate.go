@@ -159,13 +159,15 @@ type RewrapCounts struct {
 	GatewayTLS int64 `json:"gateway_tls"`
 	// OIDC — секрет клиента внешнего IdP (задача 4.17 этапа 4).
 	OIDC int64 `json:"oidc"`
+	// Prompts — тексты эталонов системного промпта (задача 4.14 этапа 4).
+	Prompts int64 `json:"prompt_baselines"`
 	// MCPServers — учётные данные MCP-серверов (задача 4.8 этапа 4).
 	MCPServers int64 `json:"mcp_servers"`
 }
 
 // Total — всего строк.
 func (c RewrapCounts) Total() int64 {
-	return c.MFA + c.Providers + c.Content + c.Channels + c.GatewayTLS + c.OIDC + c.MCPServers
+	return c.MFA + c.Providers + c.Content + c.Channels + c.GatewayTLS + c.OIDC + c.Prompts + c.MCPServers
 }
 
 // RewrapOptions — параметры перешифрования.
@@ -197,13 +199,15 @@ const (
 	channelsTable, channelsColumn   = "notify_channels", "secret"
 	gwTLSTable, gwTLSColumn         = "gateway_tls", "key"
 	oidcTable, oidcColumn           = "oidc_settings", "client_secret"
+	promptTable, promptColumn       = "prompt_baselines", "text"
 	mcpTable, mcpColumn             = "mcp_servers", "credential"
 )
 
 // Rewrap перешифровывает действующей версией box все строки прежних версий:
 // секреты TOTP, учётные данные провайдеров, содержимое событий full,
 // секреты каналов уведомлений, ключ сертификата заказчика, секрет
-// клиента IdP и учётные данные MCP-серверов.
+// клиента IdP, тексты эталонов системного промпта и учётные данные
+// MCP-серверов.
 // Каждая пачка — своя транзакция; строка обновляется, только если её ключ
 // не сменился (сервер мог заменить её параллельно). Прерванное
 // перешифрование продолжается повторным вызовом. box — из Load под
@@ -237,6 +241,9 @@ func Rewrap(ctx context.Context, db Owner, box *Box, o RewrapOptions) (RewrapCou
 		}},
 		{&total.OIDC, func(ctx context.Context, tx pgx.Tx, active string) (int, error) {
 			return rewrapOIDC(ctx, tx, box, active, o.Batch)
+		}},
+		{&total.Prompts, func(ctx context.Context, tx pgx.Tx, active string) (int, error) {
+			return rewrapPrompts(ctx, tx, box, active, o.Batch)
 		}},
 		{&total.MCPServers, func(ctx context.Context, tx pgx.Tx, active string) (int, error) {
 			return rewrapMCPServers(ctx, tx, box, active, o.Batch)
@@ -390,6 +397,36 @@ func rewrapGatewayTLS(ctx context.Context, tx pgx.Tx, box *Box, active string, b
 		if _, err := tx.Exec(ctx, `UPDATE gateway_tls SET key_sealed = $1, key_key_id = $2 WHERE org_id = $3 AND key_key_id = $4`,
 			sealed, keyID, x.id, x.keyID); err != nil {
 			return 0, fmt.Errorf("перешифрование ключа сертификата заказчика: %w", err)
+		}
+	}
+	return len(rows), nil
+}
+
+// rewrapPrompts — тексты эталонов системного промпта (internal/apps,
+// задача 4.14): AAD prompt_baselines|text|<app_id>. Хеш и режим не
+// меняются, поэтому пакет конфигурации шлюзов не пересобирается.
+func rewrapPrompts(ctx context.Context, tx pgx.Tx, box *Box, active string, batch int) (int, error) {
+	type row struct {
+		id, keyID string
+		sealed    []byte
+	}
+	rows, err := collect(ctx, tx, `SELECT app_id::text, text_key_id::text, text_sealed FROM prompt_baselines
+		WHERE text_key_id <> $1 ORDER BY app_id LIMIT $2 FOR UPDATE`, []any{active, batch},
+		func(r pgx.Rows) (row, error) {
+			var x row
+			return x, r.Scan(&x.id, &x.keyID, &x.sealed)
+		})
+	if err != nil {
+		return 0, fmt.Errorf("перешифрование эталонов системного промпта: %w", err)
+	}
+	for _, x := range rows {
+		keyID, sealed, err := reseal(ctx, box, active, x.keyID, x.sealed, promptTable, promptColumn, x.id)
+		if err != nil {
+			return 0, fmt.Errorf("перешифрование эталонов системного промпта: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `UPDATE prompt_baselines SET text_sealed = $1, text_key_id = $2 WHERE app_id = $3 AND text_key_id = $4`,
+			sealed, keyID, x.id, x.keyID); err != nil {
+			return 0, fmt.Errorf("перешифрование эталонов системного промпта: %w", err)
 		}
 	}
 	return len(rows), nil
@@ -549,6 +586,7 @@ func Status(ctx context.Context, db Owner, orgID string) ([]VersionStatus, error
 		(SELECT count(*) FROM notify_channels WHERE secret_key_id = k.id),
 		(SELECT count(*) FROM gateway_tls WHERE key_key_id = k.id),
 		(SELECT count(*) FROM oidc_settings WHERE client_secret_key_id = k.id),
+		(SELECT count(*) FROM prompt_baselines WHERE text_key_id = k.id),
 		(SELECT count(*) FROM mcp_servers WHERE credential_key_id = k.id)
 		FROM data_keys k WHERE k.org_id = $1 ORDER BY k.version`, orgID)
 	if err != nil {
@@ -559,7 +597,7 @@ func Status(ctx context.Context, db Owner, orgID string) ([]VersionStatus, error
 	for rows.Next() {
 		var v VersionStatus
 		if err := rows.Scan(&v.ID, &v.Version, &v.MasterVersion, &v.Sealed, &v.CreatedAt, &v.RetiredAt,
-			&v.Rows.MFA, &v.Rows.Providers, &v.Rows.Content, &v.Rows.Channels, &v.Rows.GatewayTLS, &v.Rows.OIDC,
+			&v.Rows.MFA, &v.Rows.Providers, &v.Rows.Content, &v.Rows.Channels, &v.Rows.GatewayTLS, &v.Rows.OIDC, &v.Rows.Prompts,
 			&v.Rows.MCPServers); err != nil {
 			return nil, err
 		}
@@ -597,8 +635,10 @@ func DestroyRetired(ctx context.Context, db Owner, rec Recorder, orgID string, a
 				(SELECT count(*) FROM notify_channels WHERE secret_key_id = $1),
 				(SELECT count(*) FROM gateway_tls WHERE key_key_id = $1),
 				(SELECT count(*) FROM oidc_settings WHERE client_secret_key_id = $1),
+				(SELECT count(*) FROM prompt_baselines WHERE text_key_id = $1),
 				(SELECT count(*) FROM mcp_servers WHERE credential_key_id = $1)`, v.ID).
-				Scan(&left.MFA, &left.Providers, &left.Content, &left.Channels, &left.GatewayTLS, &left.OIDC, &left.MCPServers); err != nil {
+				Scan(&left.MFA, &left.Providers, &left.Content, &left.Channels, &left.GatewayTLS, &left.OIDC, &left.Prompts,
+					&left.MCPServers); err != nil {
 				return err
 			}
 			if left.Total() > 0 {

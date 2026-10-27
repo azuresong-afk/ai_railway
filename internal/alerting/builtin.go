@@ -12,6 +12,12 @@ import (
 const (
 	// BuiltinInjectionBlocked — блокировка промпт-инъекции (DM-01).
 	BuiltinInjectionBlocked = "threshold.injection_blocked"
+	// Сессии и целостность промпта (задачи 4.13, 4.14 этапа 4):
+	// эскалация в сессии (DM-06), подмена системного промпта (DM-26) и
+	// истории диалога (DM-03).
+	BuiltinSessionRisk      = "threshold.session_risk"
+	BuiltinPromptIntegrity  = "threshold.prompt_integrity"
+	BuiltinHistoryIntegrity = "threshold.history_integrity"
 	// BuiltinNewModel, BuiltinNewProvider, BuiltinNewRiskyUser — DM-34.
 	BuiltinNewModel     = "new.model"
 	BuiltinNewProvider  = "new.provider"
@@ -49,6 +55,21 @@ func builtinRules() []Rule {
 			Description: "DM-01: политика заблокировала запрос с инъекцией или джейлбрейком (в режиме monitor — заблокировала бы). " +
 				"Одно оповещение на приложение, пока оно не закрыто.",
 			Enabled: true, Severity: "high", Condition: Condition{Filter: canonical(`threat = "DM-01" and action = "block"`)},
+			GroupBy: []string{"app"}, SuppressMinutes: DefaultSuppressMinutes, Recipients: none},
+		{BuiltinKey: BuiltinSessionRisk, Kind: KindThreshold, Name: "Эскалация атаки в сессии",
+			Description: "DM-06: накопленная оценка находок сессии (session.risk) достигла порога правила политики — серия попыток " +
+				"обхода защиты в одном диалоге. Одно оповещение на приложение, пока оно не закрыто.",
+			Enabled: true, Severity: "high", Condition: Condition{Filter: canonical(`threat = "DM-06"`)},
+			GroupBy: []string{"app"}, SuppressMinutes: DefaultSuppressMinutes, Recipients: none},
+		{BuiltinKey: BuiltinPromptIntegrity, Kind: KindThreshold, Name: "Системный промпт отличается от эталона",
+			Description: "DM-26: системный промпт запроса не совпал с эталоном приложения или отсутствует (prompt.integrity). " +
+				"Одно оповещение на приложение, пока оно не закрыто.",
+			Enabled: true, Severity: "high", Condition: Condition{Filter: canonical(`threat = "DM-26"`)},
+			GroupBy: []string{"app"}, SuppressMinutes: DefaultSuppressMinutes, Recipients: none},
+		{BuiltinKey: BuiltinHistoryIntegrity, Kind: KindThreshold, Name: "Подмена истории диалога",
+			Description: "DM-03: в истории запроса — реплика ассистента, которой шлюз в этой сессии не выдавал (history.integrity, " +
+				"проверка на сервере после ответа). Одно оповещение на приложение, пока оно не закрыто.",
+			Enabled: true, Severity: "high", Condition: Condition{Filter: canonical(`threat = "DM-03"`)},
 			GroupBy: []string{"app"}, SuppressMinutes: DefaultSuppressMinutes, Recipients: none},
 		{BuiltinKey: BuiltinNewModel, Kind: KindNew, Name: "Новая модель",
 			Description: "DM-34: к модели обратились впервые с создания правила.",

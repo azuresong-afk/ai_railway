@@ -70,6 +70,8 @@ var catalog = []Event{
 	{"application.update", "Изменение приложения", true},
 	{"application.protection_changed", "Изменение политики, режима или режима хранения приложения", true},
 	{"application.archive", "Архивация приложения", true},
+	{"application.prompt_baseline_set", "Задание эталона системного промпта приложения или режима его контроля", true},
+	{"application.prompt_baseline_removed", "Снятие эталона системного промпта приложения", true},
 	{"app_key.issue", "Выпуск ключа приложения", true},
 	{"app_key.rotate", "Ротация ключа приложения", true},
 	{"app_key.revoke", "Отзыв ключа приложения", true},

@@ -63,6 +63,7 @@ const (
 	kindFinding                  // поле находки в details.findings (fieldDef.key)
 	kindUUID                     // столбец uuid
 	kindMark                     // отметка аналитика (event_marks)
+	kindSession                  // псевдоним сессии details.session.id (задача 4.13)
 )
 
 // fieldDef — поле фильтра: столбец таблицы events (константа кода, не ввод
@@ -116,6 +117,8 @@ var filterFields = map[string]fieldDef{
 	// mark — отметка аналитика (false_positive, confirmed, none — нет отметки).
 	"exception": {column: "details", kind: kindFinding, valid: exceptionRe.MatchString, key: "exception"},
 	"mark":      {column: "id", kind: kindMark, valid: oneOf(MarkFalsePositive, MarkConfirmed, MarkNone)},
+	// Задача 4.13 этапа 4: события одной сессии (псевдоним из карточки события).
+	"session": {column: "details", kind: kindSession, valid: sessionIDRe.MatchString},
 }
 
 // FilterFields — имена полей фильтра по алфавиту (документация, подсказки).
@@ -487,6 +490,14 @@ func (f Filter) appendSQL(b *strings.Builder, a *sqlArgs) {
 			}
 			b.WriteString("EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(" + col +
 				"->'findings', '[]'::jsonb)) AS f WHERE f->>'" + def.key + "' = ANY(" + ref + "))")
+		case kindSession:
+			ref := a.add(c.Values) + "::text[]"
+			sid := "(" + col + "->'session'->>'id')"
+			if negate {
+				b.WriteString("(" + sid + " IS NULL OR " + sid + " <> ALL(" + ref + "))")
+			} else {
+				b.WriteString(sid + " = ANY(" + ref + ")")
+			}
 		case kindMark:
 			// «none» — нет отметки: значение отметки события, либо none.
 			ref := a.add(c.Values) + "::text[]"
@@ -573,6 +584,11 @@ func (r *Record) filterValues(field string) []string {
 			}
 		}
 		return out
+	case "session":
+		if r.Details != nil && r.Details.Session != nil {
+			return one(r.Details.Session.ID)
+		}
+		return nil
 	case "mark":
 		if r.Mark == nil {
 			return []string{MarkNone}

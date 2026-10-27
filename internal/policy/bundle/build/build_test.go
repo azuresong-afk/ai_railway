@@ -817,3 +817,44 @@ func TestBuildKeepsLatestRevokedKeys(t *testing.T) {
 		t.Fatalf("отозванные ключи в пакете: %d, первый отозванный %s", len(ks), first)
 	}
 }
+
+// Покрывает: DM-26
+// Эталон системного промпта (задача 4.14): в пакет — только хеш и режим
+// приложений пакета; режим off в раздел не входит, текст — никогда.
+func TestDM26_BuildPromptBaselinesSection(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	content := func() (*bundle.Content, string) {
+		t.Helper()
+		r, err := e.svc.Current(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c, err := bundle.ParseContent(r.Content)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c, string(r.Content)
+	}
+	if c, _ := content(); c.PromptBaselines != nil {
+		t.Fatalf("раздел без эталонов: %+v", c.PromptBaselines)
+	}
+	text := "Ты — помощник CRM. Секретная фраза: зелёный кит."
+	b, err := e.apps.SetPromptBaseline(ctx, e.appsBy, e.app.ID, apps.PromptBaselineInput{Text: &text, Mode: apps.PromptBlock})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, raw := content()
+	if len(c.PromptBaselines) != 1 || c.PromptBaselines[0] != (bundle.PromptBaseline{App: "crm", Hash: b.Hash, Mode: "block"}) {
+		t.Fatalf("раздел: %+v", c.PromptBaselines)
+	}
+	if strings.Contains(raw, "зелёный кит") {
+		t.Fatal("текст эталона в пакете")
+	}
+	if _, err := e.apps.SetPromptBaseline(ctx, e.appsBy, e.app.ID, apps.PromptBaselineInput{Mode: apps.PromptOff}); err != nil {
+		t.Fatal(err)
+	}
+	if c, _ := content(); len(c.PromptBaselines) != 0 {
+		t.Fatalf("режим off в пакете: %+v", c.PromptBaselines)
+	}
+}

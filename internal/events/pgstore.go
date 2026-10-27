@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -119,6 +120,8 @@ type PGStore struct {
 	box   *keyring.Box
 	audit *audit.Log
 	orgID string
+	// historyPrunedAt — последняя очистка хешей сессий (unix, с; history.go).
+	historyPrunedAt atomic.Int64
 	// ids — UUIDv7 сохранённых фильтров (задача 2.16); nil — сохранение
 	// фильтров недоступно.
 	ids *ids.Generator
@@ -226,6 +229,10 @@ const insertContent = `INSERT INTO event_content (event_id, ts, org_id, storage,
 func (s *PGStore) Insert(ctx context.Context, in Ingest) (InsertResult, error) {
 	ctx, cancel := pgCtx(ctx)
 	defer cancel()
+	// history.integrity (DM-03) — до записи: находки входят в событие.
+	if err := s.checkHistory(ctx, in); err != nil {
+		return InsertResult{}, err
+	}
 	rows := make([]eventRow, 0, len(in.Events))
 	defer func() {
 		for _, r := range rows {

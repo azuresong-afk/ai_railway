@@ -184,6 +184,9 @@ type Details struct {
 	Response    *Response        `json:"response,omitempty"`
 	Pseudonyms  *Pseudonyms      `json:"pseudonyms,omitempty"`
 	AuthFailure *AuthFailure     `json:"auth_failure,omitempty"`
+	// Session — псевдоним сессии, источник и session.risk; хешей реплик
+	// здесь нет (Session.stored).
+	Session *Session `json:"session,omitempty"`
 	// ContentTruncated — содержимое full обрезано сервером под предел
 	// шифротекста (FitContent); ставит только сервер при записи.
 	ContentTruncated bool `json:"content_truncated,omitempty"`
@@ -209,7 +212,7 @@ func (d *Details) WithoutFragments() *Details {
 func (e *Event) Details() Details {
 	return Details{
 		Decision: e.Decision, Findings: e.Findings, LatencyMS: e.LatencyMS, Tokens: e.Tokens,
-		Response: e.Response, Pseudonyms: e.Pseudonyms, AuthFailure: e.AuthFailure,
+		Response: e.Response, Pseudonyms: e.Pseudonyms, AuthFailure: e.AuthFailure, Session: e.Session.stored(),
 	}
 }
 
@@ -243,6 +246,9 @@ func withinLimits(e *Event) bool {
 		return false
 	}
 	if a := e.AuthFailure; a != nil && !short(a.RemoteAddr, a.KeyPrefix, a.Reason) {
+		return false
+	}
+	if s := e.Session; s != nil && !short(s.HistoryRule, s.HistoryAction, s.HistorySeverity) {
 		return false
 	}
 	if c := e.Content; c != nil {

@@ -2293,6 +2293,100 @@ paths:
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ProblemInternal' }
         '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/applications/{id}/prompt-baseline:
+    get:
+      summary: Эталон системного промпта приложения
+      description: |
+        Право `applications.policy` (признак `security`; токену API недоступно; задача 4.14
+        этапа 4, DM-26). Текст эталона, режим контроля и хеш нормализованного текста (он же —
+        в разделе `prompt_baselines` пакета конфигурации шлюзов). Эталона нет —
+        `{"configured": false}`. Текст хранится зашифрованным ключом данных; без ключа данных —
+        503.
+      x-permission: applications.policy
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ApplicationID'
+      responses:
+        '200':
+          description: Эталон
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PromptBaseline' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    put:
+      summary: Задать эталон системного промпта или режим контроля
+      description: |
+        Право `applications.policy`. `text` — эталон: UTF-8 до 131072 байт, без управляющих
+        символов, кроме табуляции и перевода строки; без `text` — прежний текст (смена режима;
+        у приложения без эталона — 400). `mode`: `off` — не сверять, `alert` — находка
+        `prompt.integrity` (DM-26) и оповещение, `block` — запрос с другим системным промптом
+        блокируется (в режиме политики `monitor` — только журналируется). Сравнение —
+        по хешу после нормализации пробельных символов: края обрезаются, последовательность
+        пробелов, табуляций и переводов строки — один пробел. Пишет
+        `application.prompt_baseline_set` (до и после: режим, хеш, размер; без текста).
+        Понижение режима (`block` → `alert` → `off`) — ослабление (DM-40): `weakening: true`
+        и повторная проверка (`password` или `code`; без них 400, неверные — 403
+        `reauthentication_failed`). Без изменений — 200 без записи. Архивному приложению — 409.
+      x-permission: applications.policy
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ApplicationID'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PromptBaselineUpdate' }
+      responses:
+        '200':
+          description: Эталон задан
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PromptBaseline' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '409': { $ref: '#/components/responses/ProblemConflict' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    delete:
+      summary: Снять эталон системного промпта
+      description: |
+        Право `applications.policy`. Удаляет текст эталона; шлюзы перестают сверять системный
+        промпт приложения с новым пакетом конфигурации. Снятие эталона в режиме `alert` или
+        `block` — ослабление (DM-40): тело `{"password": …}` или `{"code": …}` (без них 400,
+        неверные — 403 `reauthentication_failed`), запись `application.prompt_baseline_removed`
+        с `weakening: true`. Эталона нет — 404.
+      x-permission: applications.policy
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ApplicationID'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Reauth' }
+      responses:
+        '204': { description: Эталон снят }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
   /api/v1/gateway-certificate:
     get:
       summary: Сертификат заказчика для адреса шлюза
@@ -6026,6 +6120,24 @@ components:
       allOf:
         - $ref: '#/components/schemas/ApplicationFields'
         - $ref: '#/components/schemas/Reauth'
+    PromptBaselineUpdate:
+      allOf:
+        - $ref: '#/components/schemas/Reauth'
+        - type: object
+          required: [mode]
+          properties:
+            text: { type: string, minLength: 1, maxLength: 131072, description: 'Текст эталона; без поля — прежний' }
+            mode: { type: string, enum: ['off', alert, block] }
+    PromptBaseline:
+      type: object
+      required: [configured]
+      properties:
+        configured: { type: boolean }
+        mode: { type: string, enum: ['off', alert, block] }
+        hash: { type: string, pattern: '^[0-9a-f]{64}$', description: Хеш нормализованного текста (хеш криптопрофиля) }
+        bytes: { type: integer, minimum: 1, maximum: 131072 }
+        text: { type: string }
+        updated_at: { type: string, format: date-time }
     ProtectionUpdate:
       allOf:
         - $ref: '#/components/schemas/ApplicationProtection'

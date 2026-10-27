@@ -26,6 +26,8 @@ type Memory struct {
 	ReadErr error
 	// marks — отметки событий (marks.go).
 	marks map[string]Mark
+	// history — хеши сессий для history.integrity (history.go).
+	history *memHistory
 }
 
 // Stored — событие в Memory и шлюз, от которого оно принято.
@@ -40,15 +42,19 @@ func NewMemory() *Memory {
 	return &Memory{
 		events: map[string]Stored{}, stats: map[string]SenderStats{},
 		retention: Retention{MetadataDays: 365, ContentDays: 90}, filters: map[string][]SavedFilter{},
+		history: newMemHistory(),
 	}
 }
 
 // Insert — см. Store.
-func (m *Memory) Insert(_ context.Context, in Ingest) (InsertResult, error) {
+func (m *Memory) Insert(ctx context.Context, in Ingest) (InsertResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.Err != nil {
 		return InsertResult{}, m.Err
+	}
+	if err := checkHistory(ctx, m.history, in.Events, in.ReceivedAt); err != nil {
+		return InsertResult{}, err
 	}
 	var res InsertResult
 	for i, e := range in.Events {

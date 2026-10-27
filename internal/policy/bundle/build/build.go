@@ -497,6 +497,9 @@ func (s *Service) collect(ctx context.Context, now time.Time) (*bundle.Content, 
 	if err := s.addGatewayTLS(ctx, c, now); err != nil {
 		return nil, nil, nil, err
 	}
+	if err := s.addPromptBaselines(ctx, c, appSlugs); err != nil {
+		return nil, nil, nil, err
+	}
 	if err := s.addAgents(ctx, c, appSlugs); err != nil {
 		return nil, nil, nil, err
 	}
@@ -512,6 +515,9 @@ func (s *Service) collect(ctx context.Context, now time.Time) (*bundle.Content, 
 	}
 	if c.GatewayTLS != nil {
 		stats["gateway_tls"] = c.GatewayTLS.Fingerprint
+	}
+	if len(c.PromptBaselines) > 0 {
+		stats["prompt_baselines"] = len(c.PromptBaselines)
 	}
 	if len(c.Agents) > 0 || len(c.MCPServers) > 0 {
 		stats["agents"], stats["mcp_servers"], stats["agent_tools"] = len(c.Agents), len(c.MCPServers), len(c.AgentTools)
@@ -558,6 +564,25 @@ func (s *Service) addBudgets(ctx context.Context, c *bundle.Content, provs map[s
 	})
 	slices.SortFunc(b.Hard, func(x, y bundle.HardBudget) int { return strings.Compare(x.App, y.App) })
 	c.Budgets = b
+	return nil
+}
+
+// addPromptBaselines добавляет раздел prompt_baselines (задача 4.14):
+// хеш и режим эталонов системного промпта приложений пакета; режим off и
+// исключённые приложения в раздел не входят, текст эталона — никогда.
+func (s *Service) addPromptBaselines(ctx context.Context, c *bundle.Content, appSlugs map[string]string) error {
+	bs, err := s.apps.PromptBaselines(ctx)
+	if err != nil {
+		return err
+	}
+	for _, b := range bs {
+		slug, ok := appSlugs[b.AppID]
+		if !ok || b.Mode == apps.PromptOff {
+			continue
+		}
+		c.PromptBaselines = append(c.PromptBaselines, bundle.PromptBaseline{App: slug, Hash: b.Hash, Mode: b.Mode})
+	}
+	slices.SortFunc(c.PromptBaselines, func(a, b bundle.PromptBaseline) int { return strings.Compare(a.App, b.App) })
 	return nil
 }
 

@@ -178,6 +178,12 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 	if err != nil {
 		return err
 	}
+	// Сессии чата (задачи 4.13, 4.14 этапа 4): на ключе псевдонимов, без
+	// него — на случайном ключе процесса; переживают смену пакета.
+	sessions, err := gateway.NewSessions(gateway.SessionConfig{Provider: p, MAC: userMAC})
+	if err != nil {
+		return err
+	}
 	authBase, queue, closeEvents, err := newAuth(p, file, cfg, control.httpClient(), logger)
 	if err != nil {
 		return err
@@ -197,7 +203,8 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 	}
 	// Квоты общие для всех маршрутов приложений и переживают смену пакета.
 	hb := &handlerBuilder{cfg: cfg, logger: logger, hasher: h, auth: authBase, events: queue,
-		quotas: gateway.NewLimiter(nil), budget: gateway.NewBudget(nil), userMAC: userMAC, clock: &gateway.ServerClock{}}
+		quotas: gateway.NewLimiter(nil), budget: gateway.NewBudget(nil), userMAC: userMAC, clock: &gateway.ServerClock{},
+		sessions: sessions}
 	hb.budget.SetLogger(logger)
 	var handler http.Handler
 	var bundles *gateway.BundleClient
@@ -212,7 +219,7 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 		}
 		// Политики компилируются по детекторам приложения при запуске:
 		// незарегистрированный детектор в политике заказчика — отказ запуска.
-		if handler, err = hb.build(file.Applications, provs, file.Policies, recs, nil, nil); err != nil {
+		if handler, err = hb.build(file.Applications, provs, file.Policies, recs, nil, nil, nil); err != nil {
 			return err
 		}
 		logger.Info("конфигурация из файла", "applications", len(file.Applications), "providers", len(provs))
@@ -275,10 +282,13 @@ type handlerBuilder struct {
 	userMAC aisecCrypto.MAC
 	// clock — сроки исключений не раньше времени сервера управления (3Н40).
 	clock *gateway.ServerClock
+	// sessions — сессии чата и session.risk (задача 4.13): переживают
+	// смену пакета.
+	sessions *gateway.Sessions
 }
 
 func (hb *handlerBuilder) build(apps []config.Application, provs map[string]providers.Provider, specs []policy.Spec,
-	recs []auth.KeyRecord, unavailable []string, budgets *bundle.Budgets) (http.Handler, error) {
+	recs []auth.KeyRecord, unavailable []string, budgets *bundle.Budgets, baselines []bundle.PromptBaseline) (http.Handler, error) {
 	for _, a := range apps {
 		if hb.userMAC == nil && a.UserFrom != "" && a.UserFrom != "none" {
 			return nil, fmt.Errorf("приложение %s: user_from %s требует ключ псевдонимов пользователей (user-hmac-key)", a.ID, a.UserFrom)
@@ -292,6 +302,15 @@ func (hb *handlerBuilder) build(apps []config.Application, provs map[string]prov
 	// Хеши фрагментов находок для исключений — на ключе псевдонимов (задача 3.22).
 	router.SetFragmentMAC(hb.userMAC)
 	router.SetClock(hb.clock.Now)
+	// Эталоны системного промпта (задача 4.14): неверный раздел — пакет
+	// отклоняется.
+	bl := make(map[string]gateway.PromptBaseline, len(baselines))
+	for _, b := range baselines {
+		bl[b.App] = gateway.PromptBaseline{Hash: b.Hash, Mode: b.Mode}
+	}
+	if err := router.SetPromptBaselines(hb.hasher, bl); err != nil {
+		return nil, err
+	}
 	a, err := auth.NewAuthenticator(hb.hasher, recs)
 	if err != nil {
 		return nil, err
@@ -301,6 +320,7 @@ func (hb *handlerBuilder) build(apps []config.Application, provs map[string]prov
 	handlerCfg := gateway.ChatConfig{
 		Router: router, MaxBodyBytes: hb.cfg.MaxBodyBytes, Logger: hb.logger,
 		Events: hb.events, IDs: authCfg.IDs, Quotas: hb.quotas, Budget: hb.budget, UserMAC: hb.userMAC,
+		Sessions: hb.sessions,
 	}
 	chatHandler, err := gateway.NewChatHandler(handlerCfg)
 	if err != nil {
