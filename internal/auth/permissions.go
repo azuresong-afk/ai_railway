@@ -123,6 +123,9 @@ const (
 	PermAgentsRead         = "agents.read"
 	PermAgentsManage       = "agents.manage"
 	PermAgentsToolsApprove = "agents.tools.approve"
+	// Очередь подтверждений вызовов (задача 4.10, ADR-0023, раздел 9).
+	PermApprovalsRead   = "approvals.read"
+	PermApprovalsDecide = "approvals.decide"
 )
 
 // Permission — разрешение из каталога.
@@ -207,6 +210,11 @@ var permissionCatalog = []Permission{
 	{Name: PermAgentsRead, Title: "Просмотр агентов, MCP-серверов (без учётных данных) и инструментов", Group: "Агенты", Ownable: true},
 	{Name: PermAgentsManage, Title: "Создание, изменение и удаление агентов и MCP-серверов, привязка ключей к агентам", Group: "Агенты"},
 	{Name: PermAgentsToolsApprove, Title: "Одобрение и снятие одобрения инструментов, уровень риска, признаки «внешний» и http:// у MCP-сервера",
+		Group: "Агенты", Security: true},
+	{Name: PermApprovalsRead, Title: "Просмотр очереди подтверждений вызовов инструментов агентов", Group: "Агенты"},
+	// Безопасность: не выдаётся администратору системы и токенам API, не
+	// входит в чтение аудитора — подтверждает вызов человек (ADR-0023, раздел 9).
+	{Name: PermApprovalsDecide, Title: "Одобрение и отклонение вызовов инструментов агентов из очереди подтверждений",
 		Group: "Агенты", Security: true},
 }
 
@@ -401,7 +409,8 @@ var builtinRoles = []RoleDef{
 		Description: "Разбор оповещений и инцидентов, поиск по событиям",
 		Grants: grantAll(PermSystemRead, PermEventsRead, PermEventsExport, PermEventsMark, PermApplicationsRead, PermProvidersRead,
 			PermPoliciesRead, PermPoliciesTest, PermAlertsRead, PermAlertsManage, PermAlertRulesRead, PermModelPricesRead, PermBudgetsRead,
-			PermDashboardsRead, PermIncidentsRead, PermIncidentsManage, PermIncidentsExport, PermReportsRead, PermAgentsRead)},
+			PermDashboardsRead, PermIncidentsRead, PermIncidentsManage, PermIncidentsExport, PermReportsRead, PermAgentsRead,
+			PermApprovalsRead, PermApprovalsDecide)},
 	{ID: RoleAuditor, DisplayName: "Аудитор", Builtin: true,
 		Description: "Только просмотр: журнал аудита, отчёты, состояние соответствия. Ничего не меняет",
 		Grants:      auditorPermissions()},

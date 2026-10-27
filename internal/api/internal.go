@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/azuresong-afk/ai_railway/internal/approvals"
 	"github.com/azuresong-afk/ai_railway/internal/auth"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/internal/events"
@@ -40,6 +41,9 @@ type InternalOptions struct {
 	Events events.Store
 	// Now — часы для окна приёма событий; по умолчанию time.Now.
 	Now func() time.Time
+	// Approvals — очередь подтверждений (задача 4.10): по списку ожидающих
+	// из heartbeat пропавшие запросы закрываются как interrupted; nil — нет.
+	Approvals *approvals.Service
 	// Extra — дополнительные маршруты (тесты и следующие задачи: пакеты 2.13).
 	Extra []Route
 }
@@ -91,7 +95,7 @@ func NewInternal(o InternalOptions) (http.Handler, *Router, error) {
 	if o.Now == nil {
 		o.Now = time.Now
 	}
-	routes := internalRoutes(o.Gateways, o.Logger)
+	routes := internalRoutes(o.Gateways, o.Approvals, o.Logger)
 	if o.Events != nil {
 		routes = append(routes, eventsRoutes(o.Events, o.Now, o.Logger)...)
 	}
@@ -105,10 +109,10 @@ func NewInternal(o InternalOptions) (http.Handler, *Router, error) {
 	return h, rt, nil
 }
 
-func internalRoutes(g *gwregistry.Service, logger *slog.Logger) []Route {
+func internalRoutes(g *gwregistry.Service, a *approvals.Service, logger *slog.Logger) []Route {
 	return []Route{
 		{Method: http.MethodPost, Path: "/internal/v1/heartbeat", Permission: PermGatewayInternal, MaxBody: heartbeatMaxBody,
-			Handler: heartbeat(g, logger)},
+			Handler: heartbeat(g, a, logger)},
 		{Method: http.MethodPost, Path: "/internal/v1/certificate", Permission: PermGatewayInternal, MaxBody: certificateMaxBody,
 			Handler: reissueCertificate(g, logger)},
 	}
@@ -193,6 +197,10 @@ type HeartbeatRequest struct {
 	// (3Н40, 3Н43 ревью 3.r3).
 	Time           *time.Time `json:"time,omitempty"`
 	TLSFingerprint *string    `json:"tls_fingerprint,omitempty"`
+	// ApprovalsPending — ID запросов подтверждения, которые шлюз ждёт
+	// (задача 4.10); шлюз присылает его только после ответа с approvals.
+	// Пропавшие из списка запросы закрываются как interrupted.
+	ApprovalsPending *[]string `json:"approvals_pending,omitempty"`
 }
 
 // HeartbeatBudget — счётчики расхода процесса шлюза за текущий и, после
@@ -278,6 +286,9 @@ type HeartbeatResponse struct {
 	// ревью 3.r3): шлюз присылает их только после такого ответа, чтобы
 	// новый шлюз работал с сервером прежней версии.
 	ClockTLS bool `json:"clock_tls"`
+	// Approvals — сервер ведёт очередь подтверждений и принимает поле
+	// approvals_pending (задача 4.10).
+	Approvals bool `json:"approvals,omitempty"`
 }
 
 // HeartbeatBudgetState — расход остальных процессов: приложение → 1e-7 ₽.
@@ -286,7 +297,7 @@ type HeartbeatBudgetState struct {
 	Others map[string]int64 `json:"others"`
 }
 
-func heartbeat(g *gwregistry.Service, logger *slog.Logger) http.HandlerFunc {
+func heartbeat(g *gwregistry.Service, a *approvals.Service, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		p, _ := PrincipalFrom(r.Context())
 		var req HeartbeatRequest
@@ -307,8 +318,8 @@ func heartbeat(g *gwregistry.Service, logger *slog.Logger) http.HandlerFunc {
 		if req.StartedAt != nil {
 			in.StartedAt = req.StartedAt.UTC()
 		}
-		if err := in.Validate(); err != nil {
-			WriteProblem(w, Invalid("Неверные поля heartbeat: version — 1–64 символа латиницы, цифр и «.+_-», bundle_etag — до 128 печатных символов ASCII, selftest и integrity — результат, время проверки и число провалов 0–1000, манифест — версия и время вместе, bundle_keys — до 2 идентификаторов ключей, stopping и budget — только вместе с started_at, budget — 1–2 месяца ГГГГ-ММ по возрастанию, до 2 000 приложений, счётчики 0–2^62, tls_fingerprint — пусто или 64 строчные шестнадцатеричные цифры."))
+		if err := in.Validate(); err != nil || !validPending(req.ApprovalsPending) {
+			WriteProblem(w, Invalid("Неверные поля heartbeat: version — 1–64 символа латиницы, цифр и «.+_-», bundle_etag — до 128 печатных символов ASCII, selftest и integrity — результат, время проверки и число провалов 0–1000, манифест — версия и время вместе, bundle_keys — до 2 идентификаторов ключей, stopping и budget — только вместе с started_at, budget — 1–2 месяца ГГГГ-ММ по возрастанию, до 2 000 приложений, счётчики 0–2^62, tls_fingerprint — пусто или 64 строчные шестнадцатеричные цифры, approvals_pending — до 256 разных UUID."))
 			return
 		}
 		ctx, cancel := contextTimeout(r, 5*time.Second)
@@ -332,7 +343,17 @@ func heartbeat(g *gwregistry.Service, logger *slog.Logger) http.HandlerFunc {
 			return
 		}
 		resp := HeartbeatResponse{ServerTime: res.At.UTC(), ClockTLS: true, IntervalSeconds: int(gwregistry.DefaultHeartbeatInterval / time.Second),
-			Reissue: res.Reissue}
+			Reissue: res.Reissue, Approvals: a != nil}
+		if a != nil && (req.ApprovalsPending != nil || req.Stopping) {
+			var pending []string
+			if req.ApprovalsPending != nil {
+				pending = *req.ApprovalsPending
+			}
+			if err := a.Sync(ctx, p.ID, pending, req.Stopping); err != nil {
+				// heartbeat не отклоняется: запросы закроются по сроку.
+				logger.Error("подтверждения: сверка ожидающих запросов шлюза", "gateway_id", p.ID, "error", err)
+			}
+		}
 		if !res.VerifyRequestedAt.IsZero() {
 			at := res.VerifyRequestedAt.UTC()
 			resp.VerifyRequestedAt = &at
@@ -346,6 +367,24 @@ func heartbeat(g *gwregistry.Service, logger *slog.Logger) http.HandlerFunc {
 		}
 		WriteJSON(w, http.StatusOK, resp)
 	}
+}
+
+// validPending — список ожидающих подтверждений: до MaxPending разных UUID.
+func validPending(p *[]string) bool {
+	if p == nil {
+		return true
+	}
+	if len(*p) > approvals.MaxPending {
+		return false
+	}
+	seen := make(map[string]bool, len(*p))
+	for _, id := range *p {
+		if !approvals.ValidID(id) || seen[id] {
+			return false
+		}
+		seen[id] = true
+	}
+	return true
 }
 
 func retryAfterSeconds(d time.Duration) string {

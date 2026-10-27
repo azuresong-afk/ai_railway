@@ -127,5 +127,5 @@ func buildFromBundle(b *bundle.Bundle, tp aisecCrypto.TLSProvider, rnd aisecCryp
 		return nil, err
 	}
 	return hb.build(b.Content.GatewayApplications(), provs, specs, recs, b.Content.UnavailableIDs(), b.Content.Budgets,
-		b.Content.PromptBaselines)
+		b.Content.PromptBaselines, gateway.NewAgents(b.Content))
 }

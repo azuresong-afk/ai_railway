@@ -322,6 +322,12 @@ func classifyAudit(ctx context.Context, ops secOps, r *audit.Record) ([]Raise, e
 		if x, ok := agentToolRaise(r, details()); ok {
 			raises = append(raises, x)
 		}
+	case "agent.approval.requested", "agent.approval.queue_full":
+		x, err := approvalRaise(ctx, ops, r, details())
+		if err != nil {
+			return nil, err
+		}
+		raises = append(raises, x...)
 	case "notify.delivery_failed":
 		raises = append(raises, raiseOf(BuiltinNotifyFailed, map[string]string{"channel": r.Object.ID},
 			map[string]string{"channel": str(details()["channel_name"], r.Object.ID)}, 1,
