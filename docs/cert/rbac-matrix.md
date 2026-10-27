@@ -50,6 +50,8 @@
 | PUT | `/api/v1/applications/{id}/prompt-baseline` | `applications.policy` | да | — | — | — | — | — |
 | DELETE | `/api/v1/applications/{id}/prompt-baseline` | `applications.policy` | да | — | — | — | — | — |
 | PUT | `/api/v1/applications/{id}/protection` | `applications.policy` | да | — | — | — | — | — |
+| GET | `/api/v1/applications/{id}/user-access` | `applications.read` | да | да | да | да | свои | да |
+| PUT | `/api/v1/applications/{id}/user-access` | `applications.policy` | да | — | — | — | — | — |
 | GET | `/api/v1/approvals` | `approvals.read` | да | — | да | да | — | да |
 | GET | `/api/v1/approvals/{id}` | `approvals.read` | да | — | да | да | — | да |
 | POST | `/api/v1/approvals/{id}/approve` | `approvals.decide` | да | — | да | — | — | — |
