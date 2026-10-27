@@ -15,7 +15,7 @@ const me = (permissions: string[], own_scope: string[] = []): Me =>
 
 const schedule = {
   id: "s-1", name: "Недельная сводка", report: "summary", frequency: "weekly", weekday: 1, at: "09:00", format: "xlsx",
-  channel_id: "c-1", enabled: true, next_run_at: "2026-10-26T06:00:00Z", version: 3,
+  channel_id: "c-1", enabled: true, recipient_user_ids: ["u-2"], next_run_at: "2026-10-26T06:00:00Z", version: 3,
   created_at: "2026-10-01T00:00:00Z", created_by: "a", updated_at: "2026-10-01T00:00:00Z", updated_by: "a",
 };
 
@@ -33,10 +33,16 @@ beforeEach(() => {
       if (url === "/api/v1/report-schedules" && method === "GET") return ok({ items: [schedule] });
       if (url === "/api/v1/report-schedules" && method === "POST") return ok({ ...schedule, id: "s-2" }, 201);
       if (url === "/api/v1/report-schedules/s-1" && method === "PUT") return ok(schedule);
-      if (url === "/api/v1/report-schedules/s-1/runs") return ok({ items: [{ id: "r-1", due_at: "2026-10-19T06:00:00Z", period_first: "2026-10-12", period_last: "2026-10-18", status: "failed", attempts: 5, error: "smtp", created_at: "2026-10-19T06:00:00Z" }] });
+      if (url === "/api/v1/report-schedules/s-1/runs") return ok({ items: [{ id: "r-1", due_at: "2026-10-19T06:00:00Z", period_first: "2026-10-12", period_last: "2026-10-18", status: "failed", attempts: 5, error: "smtp", skipped_no_email: 2, created_at: "2026-10-19T06:00:00Z" }] });
       if (url.startsWith("/api/v1/applications?")) return ok({ items: [{ id: "app-1", slug: "bot", name: "Бот", status: "active" }], next_cursor: "" });
       // Администратор системы без права на каналы уведомлений (3Н46 ревью 3.r4): каналы для расписания — отдельным списком.
       if (url === "/api/v1/notify-channels") return ok({ status: 403, code: "forbidden", detail: "Недостаточно прав." }, 403);
+      if (url === "/api/v1/report-recipients") {
+        return ok({ items: [
+          { id: "u-1", login: "ivanov", display_name: "Иванов", has_email: true },
+          { id: "u-2", login: "petrov", display_name: "Петров", has_email: false },
+        ] });
+      }
       if (url === "/api/v1/report-channels") return ok({ items: [{ id: "c-1", name: "Почта SOC" }] });
       return ok({ status: 404, code: "not_found", detail: "нет" }, 404);
     }),
@@ -108,6 +114,7 @@ describe("экран «Отчёты»", () => {
     fireEvent.click(screen.getByRole("button", { name: "Журнал отправок" }));
     const t = await screen.findByRole("table", { name: "Журнал отправок" });
     expect(within(t).getByText("не доставлено")).toBeTruthy();
+    expect(within(t).getByText(/пропущено 2: задайте e-mail/)).toBeTruthy();
   });
 
   it("новое расписание отправляется только с почтовым каналом", async () => {
@@ -122,7 +129,24 @@ describe("экран «Отчёты»", () => {
     fireEvent.change(screen.getByLabelText("Название"), { target: { value: "Сводка" } });
     fireEvent.change(screen.getByLabelText("Почтовый канал"), { target: { value: "c-1" } });
     fireEvent.click(create);
-    await waitFor(() => expect(calls.find((c) => c.method === "POST")?.body).toEqual({ name: "Сводка", report: "summary", frequency: "weekly", weekday: 1, at: "09:00", format: "xlsx", channel_id: "c-1", enabled: true }));
+    await waitFor(() => expect(calls.find((c) => c.method === "POST")?.body).toEqual({ name: "Сводка", report: "summary", frequency: "weekly", weekday: 1, at: "09:00", format: "xlsx", channel_id: "c-1", enabled: true, recipient_user_ids: [] }));
+  });
+
+  it("получатели-пользователи: выбор, подсказка о пользователе без адреса, идентификаторы уходят в запрос", async () => {
+    renderScreen(all);
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "Рассылка" }), { button: 0 });
+    await screen.findByText("Недельная сводка");
+    fireEvent.click(screen.getByRole("button", { name: "Добавить расписание" }));
+    await screen.findByLabelText(/Петров \(petrov\) — нет e-mail/);
+    expect(screen.queryByText(/отчёт не уйдёт/)).toBeNull();
+    fireEvent.click(screen.getByLabelText(/Иванов \(ivanov\)/));
+    expect(screen.queryByText(/отчёт не уйдёт/)).toBeNull();
+    fireEvent.click(screen.getByLabelText(/Петров \(petrov\)/));
+    expect(screen.getByText(/отчёт не уйдёт/)).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Название"), { target: { value: "Сводка" } });
+    fireEvent.change(screen.getByLabelText("Почтовый канал"), { target: { value: "c-1" } });
+    fireEvent.click(screen.getByRole("button", { name: "Создать расписание" }));
+    await waitFor(() => expect((calls.find((c) => c.method === "POST")?.body as { recipient_user_ids: string[] }).recipient_user_ids).toEqual(["u-1", "u-2"]));
   });
 
   it("изменение передаёт версию расписания", async () => {
