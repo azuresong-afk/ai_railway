@@ -57,6 +57,9 @@ const (
 	// CodeSelfReview — оповещение безопасности о собственных действиях
 	// закрывает другой пользователь (3В15 ревью 3.r2).
 	CodeSelfReview = "self_review"
+	// CodeApprovalQueueFull — очередь подтверждений шлюза или агента
+	// переполнена (DM-22, задача 4.10); только внутренний API.
+	CodeApprovalQueueFull = "approval_queue_full"
 )
 
 var problemTitles = map[string]string{
@@ -76,6 +79,7 @@ var problemTitles = map[string]string{
 	CodeBundleKeyMismatch: "Ключ получателя не совпадает с закреплённым",
 	CodeReissueNotNeeded:  "Перевыпуск сертификата не нужен",
 	CodeSelfReview:        "Нужна проверка другим пользователем",
+	CodeApprovalQueueFull: "Очередь подтверждений переполнена",
 }
 
 // NewProblem собирает ошибку по коду; заголовок берётся из таблицы.

@@ -50,6 +50,10 @@
 | PUT | `/api/v1/applications/{id}/prompt-baseline` | `applications.policy` | да | — | — | — | — | — |
 | DELETE | `/api/v1/applications/{id}/prompt-baseline` | `applications.policy` | да | — | — | — | — | — |
 | PUT | `/api/v1/applications/{id}/protection` | `applications.policy` | да | — | — | — | — | — |
+| GET | `/api/v1/approvals` | `approvals.read` | да | — | да | да | — | да |
+| GET | `/api/v1/approvals/{id}` | `approvals.read` | да | — | да | да | — | да |
+| POST | `/api/v1/approvals/{id}/approve` | `approvals.decide` | да | — | да | — | — | — |
+| POST | `/api/v1/approvals/{id}/deny` | `approvals.decide` | да | — | да | — | — | — |
 | GET | `/api/v1/audit` | `audit.read` | да | — | — | да | — | да |
 | POST | `/api/v1/audit/verify` | `audit.verify` | да | — | — | да | — | да |
 | GET | `/api/v1/auth/idp` | `auth_idp.read` | да | — | — | да | — | да |

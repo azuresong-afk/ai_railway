@@ -203,8 +203,8 @@ func TestAlertRulesViaAPI(t *testing.T) {
 	list := decode[AlertRuleList](t, w.Body.Bytes())
 	// 5 встроенных задачи 3.10, 15 задачи 3.11, 5 задачи 3.12, правило DM-08 с инцидентом задачи 3.16, 1 задачи 3.14
 	// и system.alert_job (3В17 ревью 3.r2), 3 правила DM-03, DM-06, DM-26 задач 4.13 и 4.14,
-	// agents.tool_new и agents.tool_changed задачи 4.8.
-	if w.Code != 200 || len(list.Items) != 33 {
+	// agents.tool_new и agents.tool_changed задачи 4.8, agents.approval_requested и agents.approval_queue_full задачи 4.10.
+	if w.Code != 200 || len(list.Items) != 35 {
 		t.Fatalf("правила: %d %s", w.Code, w.Body)
 	}
 	var sec AlertRuleView
@@ -212,7 +212,11 @@ func TestAlertRulesViaAPI(t *testing.T) {
 		if r.Builtin == alerting.BuiltinRecipientsChanged {
 			sec = r
 		}
-		if strings.Join(r.EffectiveRoles, ",") != "auditor,security_admin" {
+		want := "auditor,security_admin"
+		if r.Builtin == alerting.BuiltinApprovalRequested || r.Builtin == alerting.BuiltinApprovalQueueFull {
+			want = "analyst,auditor,security_admin" // дежурные-аналитики (ADR-0023, раздел 5)
+		}
+		if strings.Join(r.EffectiveRoles, ",") != want {
 			t.Fatalf("обязательные получатели: %+v", r)
 		}
 	}

@@ -4972,6 +4972,134 @@ paths:
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ProblemInternal' }
         '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/approvals:
+    get:
+      summary: Очередь подтверждений вызовов
+      description: |
+        Право `approvals.read`. Вызовы инструментов агентов, которые политика вызовов отправила на подтверждение
+        человеком (`require_approval`, DM-22; ADR-0023, раздел 5), новые первыми. Состояния: `pending` — ждёт
+        решения; `approved`, `denied` — решение пользователя консоли; `timeout` — срок `approval_timeout` истёк;
+        `cancelled` — агент закрыл поток; `interrupted` — шлюз перезапустился. Аргументы в списке не показываются.
+      x-permission: approvals.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - name: state
+          in: query
+          required: false
+          schema: { type: string, enum: [pending, approved, denied, timeout, cancelled, interrupted] }
+        - name: application
+          in: query
+          required: false
+          description: Slug приложения
+          schema: { type: string, pattern: '^[a-z0-9][a-z0-9-]{0,63}$' }
+        - name: agent
+          in: query
+          required: false
+          description: Slug агента
+          schema: { type: string, pattern: '^[a-z0-9][a-z0-9-]{0,63}$' }
+      responses:
+        '200':
+          description: Запросы подтверждения
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApprovalList' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/approvals/{id}:
+    get:
+      summary: Запрос подтверждения
+      description: |
+        Право `approvals.read`. Маскированные шлюзом аргументы вызова (ПДн и секреты заменены категорией, до
+        16 КиБ) — в поле `args` только у пользователя с `approvals.decide` и только 30 суток после закрытия.
+        Аргументы пришли от модели или агента и показываются только как текст.
+      x-permission: approvals.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ApprovalID'
+      responses:
+        '200':
+          description: Запрос подтверждения
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Approval' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/approvals/{id}/approve:
+    post:
+      summary: Одобрить вызов
+      description: |
+        Право `approvals.decide` (признак `security`: не выдаётся администратору системы и токенам API —
+        подтверждает человек). `args_hash` — хеш аргументов показанного запроса (не совпал — 409). Вызов с
+        риском `critical` одобряется с текущим паролем или кодом TOTP (иначе 403). После срока — 409, запрос
+        уже закрыт как `timeout`. Шлюз передаёт дальше ровно проверенные аргументы. Пишет `agent.approval.approve`.
+      x-permission: approvals.decide
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ApprovalID'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApprovalApprove' }
+      responses:
+        '200':
+          description: Вызов одобрен
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Approval' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '409': { $ref: '#/components/responses/ProblemConflict' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/approvals/{id}/deny:
+    post:
+      summary: Отклонить вызов
+      description: |
+        Право `approvals.decide`. Комментарий виден в событии вызова, агенту не передаётся: агент получает
+        сообщение правила или «Вызов отклонён». После срока или повторное решение — 409. Пишет `agent.approval.deny`.
+      x-permission: approvals.decide
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ApprovalID'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApprovalDeny' }
+      responses:
+        '200':
+          description: Вызов отклонён
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Approval' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '409': { $ref: '#/components/responses/ProblemConflict' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
 components:
   securitySchemes:
     appKey:
@@ -5115,6 +5243,12 @@ components:
       in: path
       required: true
       description: ID инструмента в реестре (UUIDv7)
+      schema: { type: string, format: uuid }
+    ApprovalID:
+      name: id
+      in: path
+      required: true
+      description: ID запроса подтверждения (UUIDv7)
       schema: { type: string, format: uuid }
     AgentApplicationFilter:
       name: application_id
@@ -6440,6 +6574,58 @@ components:
           properties:
             descriptor: { type: object, additionalProperties: true, description: 'Последнее увиденное описание (каноническая форма, без icons и _meta)' }
             approved_descriptor: { type: object, additionalProperties: true, description: Одобренное описание }
+    Approval:
+      type: object
+      required: [id, state, path, application, server, tool, risk, rule, severity, args_hash, gateway_id, created_at,
+                 deadline, waited_ms]
+      properties:
+        id: { type: string, format: uuid }
+        state: { type: string, enum: [pending, approved, denied, timeout, cancelled, interrupted] }
+        path: { type: string, enum: [mcp, chat] }
+        application: { type: string, description: Slug приложения }
+        agent: { type: string, description: 'Slug агента; нет — путь chat без агента' }
+        user: { type: string, description: Псевдоним пользователя }
+        session: { type: string }
+        server: { type: string, description: 'Slug MCP-сервера или function (функции пути chat)' }
+        tool: { type: string }
+        approved_hash: { type: string, description: Хеш одобренного описания инструмента (hex) }
+        risk: { type: string, enum: [low, medium, high, critical] }
+        rule: { type: string, description: 'Правило раздела tools политики, потребовавшее подтверждения' }
+        message: { type: string }
+        severity: { type: string, enum: [info, low, medium, high, critical] }
+        args_hash: { type: string, description: Хеш аргументов, которые шлюз передаст после одобрения (hex) }
+        args: { type: string, description: 'Маскированные аргументы; только с approvals.decide, 30 суток после закрытия' }
+        args_deleted: { type: boolean, description: Аргументы удалены по сроку }
+        gateway_id: { type: string, format: uuid }
+        request_event_id: { type: string, format: uuid }
+        created_at: { type: string, format: date-time }
+        deadline: { type: string, format: date-time }
+        closed_at: { type: string, format: date-time }
+        decided_by: { type: string, description: Логин пользователя консоли }
+        comment: { type: string }
+        waited_ms: { type: integer, format: int64 }
+    ApprovalList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/Approval' }
+        next_cursor: { type: string }
+    ApprovalApprove:
+      type: object
+      required: [args_hash]
+      additionalProperties: false
+      properties:
+        args_hash: { type: string, maxLength: 64, description: Хеш аргументов показанного запроса (hex) }
+        comment: { type: string, maxLength: 500 }
+        password: { type: string, maxLength: 1024, format: password, description: 'Текущий пароль для риска critical (ровно одно из password и code)' }
+        code: { type: string, maxLength: 64, description: 'Код из приложения-аутентификатора для риска critical' }
+    ApprovalDeny:
+      type: object
+      additionalProperties: false
+      properties:
+        comment: { type: string, maxLength: 500 }
     AgentToolList:
       type: object
       required: [items]
@@ -6643,7 +6829,7 @@ components:
           enum: [invalid_request, unauthorized, forbidden, not_found, method_not_allowed, conflict,
                  payload_too_large, unsupported_media_type, unprocessable, rate_limited,
                  internal_error, service_unavailable, reauthentication_failed, bundle_key_mismatch,
-                 reissue_not_needed, self_review]
+                 reissue_not_needed, self_review, approval_queue_full]
         errors:
           type: array
           items:

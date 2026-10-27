@@ -165,11 +165,14 @@ type RewrapCounts struct {
 	MCPServers int64 `json:"mcp_servers"`
 	// LDAP — пароль сервисной учётной записи каталога (задача 4.16 этапа 4).
 	LDAP int64 `json:"ldap"`
+	// Approvals — аргументы вызовов в очереди подтверждений (задача 4.10 этапа 4).
+	Approvals int64 `json:"approvals"`
 }
 
 // Total — всего строк.
 func (c RewrapCounts) Total() int64 {
-	return c.MFA + c.Providers + c.Content + c.Channels + c.GatewayTLS + c.OIDC + c.Prompts + c.MCPServers + c.LDAP
+	return c.MFA + c.Providers + c.Content + c.Channels + c.GatewayTLS + c.OIDC + c.Prompts + c.MCPServers + c.LDAP +
+		c.Approvals
 }
 
 // RewrapOptions — параметры перешифрования.
@@ -204,6 +207,7 @@ const (
 	promptTable, promptColumn       = "prompt_baselines", "text"
 	mcpTable, mcpColumn             = "mcp_servers", "credential"
 	ldapTable, ldapColumn           = "ldap_settings", "bind_password"
+	approvalTable, approvalColumn   = "approval_requests", "args"
 )
 
 // Rewrap перешифровывает действующей версией box все строки прежних версий:
@@ -253,6 +257,9 @@ func Rewrap(ctx context.Context, db Owner, box *Box, o RewrapOptions) (RewrapCou
 		}},
 		{&total.LDAP, func(ctx context.Context, tx pgx.Tx, active string) (int, error) {
 			return rewrapLDAP(ctx, tx, box, active, o.Batch)
+		}},
+		{&total.Approvals, func(ctx context.Context, tx pgx.Tx, active string) (int, error) {
+			return rewrapApprovals(ctx, tx, box, active, o.Batch)
 		}},
 	}
 	for _, st := range steps {
@@ -467,6 +474,35 @@ func rewrapMCPServers(ctx context.Context, tx pgx.Tx, box *Box, active string, b
 	return len(rows), nil
 }
 
+// rewrapApprovals — пачка аргументов вызовов в очереди подтверждений
+// (internal/approvals, задача 4.10): AAD approval_requests|args|<id>.
+func rewrapApprovals(ctx context.Context, tx pgx.Tx, box *Box, active string, batch int) (int, error) {
+	type row struct {
+		id, keyID string
+		sealed    []byte
+	}
+	rows, err := collect(ctx, tx, `SELECT id::text, args_key_id::text, args FROM approval_requests
+		WHERE args_key_id <> $1 ORDER BY id LIMIT $2 FOR UPDATE`, []any{active, batch},
+		func(r pgx.Rows) (row, error) {
+			var x row
+			return x, r.Scan(&x.id, &x.keyID, &x.sealed)
+		})
+	if err != nil {
+		return 0, fmt.Errorf("перешифрование аргументов подтверждений: %w", err)
+	}
+	for _, x := range rows {
+		keyID, sealed, err := reseal(ctx, box, active, x.keyID, x.sealed, approvalTable, approvalColumn, x.id)
+		if err != nil {
+			return 0, fmt.Errorf("перешифрование аргументов подтверждения %s: %w", x.id, err)
+		}
+		if _, err := tx.Exec(ctx, `UPDATE approval_requests SET args = $1, args_key_id = $2 WHERE id = $3 AND args_key_id = $4`,
+			sealed, keyID, x.id, x.keyID); err != nil {
+			return 0, fmt.Errorf("перешифрование аргументов подтверждения %s: %w", x.id, err)
+		}
+	}
+	return len(rows), nil
+}
+
 // rewrapContent — пачка содержимого событий full: производный ключ тех же
 // суток от новой версии (ADR-0007, п. 8).
 func rewrapContent(ctx context.Context, tx pgx.Tx, box *Box, active, purpose string, batch int) (int, error) {
@@ -623,7 +659,8 @@ func Status(ctx context.Context, db Owner, orgID string) ([]VersionStatus, error
 		(SELECT count(*) FROM oidc_settings WHERE client_secret_key_id = k.id),
 		(SELECT count(*) FROM prompt_baselines WHERE text_key_id = k.id),
 		(SELECT count(*) FROM mcp_servers WHERE credential_key_id = k.id),
-		(SELECT count(*) FROM ldap_settings WHERE bind_password_key_id = k.id)
+		(SELECT count(*) FROM ldap_settings WHERE bind_password_key_id = k.id),
+		(SELECT count(*) FROM approval_requests WHERE args_key_id = k.id)
 		FROM data_keys k WHERE k.org_id = $1 ORDER BY k.version`, orgID)
 	if err != nil {
 		return nil, fmt.Errorf("ключ данных: состояние: %w", err)
@@ -634,7 +671,7 @@ func Status(ctx context.Context, db Owner, orgID string) ([]VersionStatus, error
 		var v VersionStatus
 		if err := rows.Scan(&v.ID, &v.Version, &v.MasterVersion, &v.Sealed, &v.CreatedAt, &v.RetiredAt,
 			&v.Rows.MFA, &v.Rows.Providers, &v.Rows.Content, &v.Rows.Channels, &v.Rows.GatewayTLS, &v.Rows.OIDC, &v.Rows.Prompts,
-			&v.Rows.MCPServers, &v.Rows.LDAP); err != nil {
+			&v.Rows.MCPServers, &v.Rows.LDAP, &v.Rows.Approvals); err != nil {
 			return nil, err
 		}
 		out = append(out, v)
@@ -673,9 +710,10 @@ func DestroyRetired(ctx context.Context, db Owner, rec Recorder, orgID string, a
 				(SELECT count(*) FROM oidc_settings WHERE client_secret_key_id = $1),
 				(SELECT count(*) FROM prompt_baselines WHERE text_key_id = $1),
 				(SELECT count(*) FROM mcp_servers WHERE credential_key_id = $1),
-				(SELECT count(*) FROM ldap_settings WHERE bind_password_key_id = $1)`, v.ID).
+				(SELECT count(*) FROM ldap_settings WHERE bind_password_key_id = $1),
+				(SELECT count(*) FROM approval_requests WHERE args_key_id = $1)`, v.ID).
 				Scan(&left.MFA, &left.Providers, &left.Content, &left.Channels, &left.GatewayTLS, &left.OIDC, &left.Prompts,
-					&left.MCPServers, &left.LDAP); err != nil {
+					&left.MCPServers, &left.LDAP, &left.Approvals); err != nil {
 				return err
 			}
 			if left.Total() > 0 {

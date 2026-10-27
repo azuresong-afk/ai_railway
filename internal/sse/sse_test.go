@@ -182,3 +182,17 @@ func FuzzReader(f *testing.F) {
 		}
 	})
 }
+
+// TestWriteComment: комментарий keep-alive не становится событием, перевод
+// строки в тексте отклоняется.
+func TestWriteComment(t *testing.T) {
+	var b strings.Builder
+	if err := WriteComment(&b, "aisec-approval-pending"); err != nil || b.String() != ": aisec-approval-pending\n\n" {
+		t.Fatalf("%q %v", b.String(), err)
+	}
+	for _, bad := range []string{"a\nb", "a\rb", "\n"} {
+		if err := WriteComment(io.Discard, bad); err == nil {
+			t.Fatalf("%q принят", bad)
+		}
+	}
+}

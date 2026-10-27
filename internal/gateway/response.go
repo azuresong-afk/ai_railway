@@ -238,8 +238,32 @@ func (h *ChatHandler) checkFull(w http.ResponseWriter, r *http.Request, app *App
 		return false
 	}
 	h.restoreFull(r.Context(), app, rec, resp)
+	// Политика вызовов — по аргументам, которые получит приложение: их же
+	// видит дежурный при подтверждении (задача 4.10). Ответ без потока
+	// удерживается целиком, keep-alive нет.
+	if toolsCheck(app, resp) {
+		if b := h.decideTools(r.Context(), app, rec, resp.Choices[0].Message.ToolCalls, nil); b != nil {
+			if r.Context().Err() != nil {
+				return false
+			}
+			in.blockTools(app, b)
+			w.Header().Set(HeaderDecision, string(policy.Block))
+			WriteError(w, http.StatusBadRequest, in.Decision.Message, "invalid_request_error", "policy_violation")
+			return false
+		}
+	}
 	w.Header().Set(HeaderDecision, rec.headerDecision())
 	return true
+}
+
+// blockTools — блокировка ответа политикой вызовов: решение в событие
+// (правило вызова) и сообщение для приложения.
+func (in *inspection) blockTools(app *App, b *toolBlock) {
+	in.Decision.Block, in.Decision.Action, in.Decision.Rule = true, policy.Block, b.rule
+	in.Decision.Message = b.message
+	if in.Decision.Message == "" {
+		in.Decision.Message = app.Policy.BlockMessage
+	}
 }
 
 // blockResponse блокирует ответ служебным правилом (только enforce: в
@@ -730,6 +754,12 @@ type streamProc struct {
 	// reply — хеш content, отданного приложению (history.integrity); nil —
 	// без сессии.
 	reply *reply
+	// comment — комментарий SSE (keep-alive ожидания подтверждения); nil —
+	// не пишется.
+	comment func(text string) bool
+	// hold приостанавливает срок простоя потока провайдера на время
+	// ожидания подтверждения; nil — поток этого не умеет.
+	hold func() (resume func())
 }
 
 func (h *ChatHandler) newStreamProc(r *http.Request, app *App, rec *record, requested string, incremental bool, send func([]byte) bool) *streamProc {
@@ -754,7 +784,9 @@ func (h *ChatHandler) newStreamProc(r *http.Request, app *App, rec *record, requ
 		return false
 	}
 	sp.content, sp.refusal = newStreamText(cr, grew), newStreamText(rr, grew)
-	sp.holdTools = sp.holdTools || incremental
+	// Политика вызовов решает по вызову целиком (задача 4.10): с разделом
+	// tools вызовы отдаются только в конце, после решения.
+	sp.holdTools = sp.holdTools || incremental || app.Policy.ToolsDeclared()
 	if rec.sess.replies() {
 		sp.reply = rec.sess.tracker.newReply()
 	}
@@ -1028,6 +1060,27 @@ func (sp *streamProc) finishTools(in *inspection, texts []inspectText, refs []re
 			for j := range calls {
 				calls[j].Function.Arguments = restored[j]
 			}
+		}
+	}
+	if toolsCheck(sp.app, resp) {
+		keepAlive := func() {
+			if sp.comment != nil {
+				sp.comment(ApprovalPendingComment)
+			}
+		}
+		// Пока ждём решения, поток провайдера не читается: его срок простоя
+		// не должен оборвать уже одобренный ответ.
+		resume := func() {}
+		if sp.hold != nil {
+			resume = sp.hold()
+		}
+		b := sp.h.decideTools(sp.r.Context(), sp.app, sp.rec, calls, keepAlive)
+		resume()
+		if b != nil {
+			if sp.r.Context().Err() != nil {
+				return streamStop
+			}
+			return sp.cut(true, b.rule, b.message)
 		}
 	}
 	if len(out.Choices) == 0 {

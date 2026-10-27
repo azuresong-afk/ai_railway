@@ -336,9 +336,11 @@ func (p *Policy) DecideTool(c ToolCall, rc RateCounter) ToolDecision {
 func (p *Policy) finishTool(d ToolDecision) ToolDecision {
 	d.Block = d.Mode == Enforce && d.Action == Block
 	d.Approval = d.Mode == Enforce && d.Action == RequireApproval
-	if !d.Block {
+	// Сообщение правила require_approval нужно для ответа агенту при
+	// отказе дежурного.
+	if !d.Block && !d.Approval {
 		d.Message = ""
-	} else if d.Message == "" {
+	} else if d.Block && d.Message == "" {
 		d.Message = DefaultToolBlockMessage
 	}
 	return d

@@ -135,4 +135,7 @@ type heartbeatBody struct {
 	// ведёт условия «Состояния системы» (3Н40, 3Н43 ревью 3.r3).
 	Time           *time.Time `json:"time,omitempty"`
 	TLSFingerprint *string    `json:"tls_fingerprint,omitempty"`
+	// ApprovalsPending — ID ожидающих подтверждения запросов (задача 4.10):
+	// только серверу, который сообщил о поддержке.
+	ApprovalsPending *[]string `json:"approvals_pending,omitempty"`
 }
