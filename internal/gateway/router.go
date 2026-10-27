@@ -89,6 +89,31 @@ type Router struct {
 	// unavailable — приложения, исключённые сервером из пакета конфигурации
 	// (В16 ревью 2.r3b): их ключи принимаются, запросы — 503.
 	unavailable map[string]bool
+	// agents — реестр агентов и инструментов пакета (задачи 4.10, 4.11);
+	// nil — агентов нет (локальная конфигурация).
+	agents *Agents
+	// approver — очередь подтверждений (require_approval, задача 4.10);
+	// nil — NoApprover.
+	approver Approver
+}
+
+// SetAgents задаёт реестр агентов. Вызывается до начала обслуживания
+// запросов.
+func (rt *Router) SetAgents(a *Agents) { rt.agents = a }
+
+// Agents — реестр агентов; nil — пуст (методы Agents допускают nil).
+func (rt *Router) Agents() *Agents { return rt.agents }
+
+// SetApprover задаёт очередь подтверждений. Вызывается до начала
+// обслуживания запросов.
+func (rt *Router) SetApprover(a Approver) { rt.approver = a }
+
+// Approver — очередь подтверждений; без сервера управления — NoApprover.
+func (rt *Router) Approver() Approver {
+	if rt.approver == nil {
+		return NoApprover
+	}
+	return rt.approver
 }
 
 // SetUnavailable отмечает приложения, исключённые из пакета конфигурации.
