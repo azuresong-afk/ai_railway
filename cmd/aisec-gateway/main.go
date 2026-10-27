@@ -207,6 +207,11 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 		quotas: gateway.NewLimiter(nil), budget: gateway.NewBudget(nil), userMAC: userMAC, clock: &gateway.ServerClock{},
 		sessions: sessions, toolRate: toolrate.New(0), mcpSessions: gateway.NewMCPSessions(rnd, nil)}
 	hb.budget.SetLogger(logger)
+	// Проверка JWT пользователей приложений (задача 4.21); в профиле без
+	// неё (gost до этапа 6) JWT отклоняются.
+	if j, err := p.JWT(); err == nil {
+		hb.jwt = j
+	}
 	// Очередь подтверждений вызовов (require_approval, задача 4.10) — только
 	// с сервером управления; без него такие вызовы отклоняются.
 	if control != nil {
@@ -230,7 +235,7 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 		}
 		// Политики компилируются по детекторам приложения при запуске:
 		// незарегистрированный детектор в политике заказчика — отказ запуска.
-		if handler, err = hb.build(file.Applications, provs, file.Policies, recs, nil, nil, nil, nil, nil); err != nil {
+		if handler, err = hb.build(file.Applications, provs, file.Policies, recs, nil, nil, nil, nil, userTokens{}, nil); err != nil {
 			return err
 		}
 		logger.Info("конфигурация из файла", "applications", len(file.Applications), "providers", len(provs))
@@ -308,14 +313,22 @@ type handlerBuilder struct {
 	// без сервера.
 	mcpSessions *gateway.MCPSessions
 	mcpObserver *gateway.ToolObserver
+	// jwt — проверка JWT пользователей приложений (задача 4.21); nil —
+	// криптопрофиль без неё.
+	jwt aisecCrypto.JWTVerifier
 }
 
 func (hb *handlerBuilder) build(apps []config.Application, provs map[string]providers.Provider, specs []policy.Spec,
 	recs []auth.KeyRecord, unavailable []string, budgets *bundle.Budgets, baselines []bundle.PromptBaseline,
-	agents *gateway.Agents, mcpServers gateway.MCPServers) (http.Handler, error) {
+	agents *gateway.Agents, userTokens userTokens, mcpServers gateway.MCPServers) (http.Handler, error) {
 	for _, a := range apps {
 		if hb.userMAC == nil && a.UserFrom != "" && a.UserFrom != "none" {
 			return nil, fmt.Errorf("приложение %s: user_from %s требует ключ псевдонимов пользователей (user-hmac-key)", a.ID, a.UserFrom)
+		}
+	}
+	for id := range userTokens.apps {
+		if hb.userMAC == nil {
+			return nil, fmt.Errorf("приложение %s: JWT пользователя требует ключ псевдонимов пользователей (user-hmac-key)", id)
 		}
 	}
 	router, err := gateway.NewRouter(apps, provs, specs)
@@ -338,6 +351,11 @@ func (hb *handlerBuilder) build(apps []config.Application, provs map[string]prov
 		bl[b.App] = gateway.PromptBaseline{Hash: b.Hash, Mode: b.Mode}
 	}
 	if err := router.SetPromptBaselines(hb.hasher, bl); err != nil {
+		return nil, err
+	}
+	// JWT пользователей и доступ к моделям по группам (задача 4.21):
+	// неверный JWKS или настройка — пакет отклоняется.
+	if err := router.SetUserTokens(hb.jwt, userTokens.keys, userTokens.apps); err != nil {
 		return nil, err
 	}
 	a, err := auth.NewAuthenticator(hb.hasher, recs)

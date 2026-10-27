@@ -111,6 +111,11 @@ type gwOpts struct {
 	// провайдера (ноль — по умолчанию).
 	now        func() time.Time
 	streamIdle time.Duration
+	// tokens — JWT пользователей и группы моделей (задача 4.21): ключи
+	// издателей и настройки приложений; jwt — проверка JWT.
+	tokenKeys map[string][]byte
+	tokens    map[string]UserToken
+	jwt       aisecCrypto.JWTVerifier
 }
 
 // newGateway — шлюз с OpenAI-совместимым провайдером на upstream и одним
@@ -150,6 +155,11 @@ func newGateway(t testing.TB, upstream string, mod func(*gwOpts)) http.Handler {
 	}
 	if o.setup != nil {
 		o.setup(rt.apps["app"])
+	}
+	if o.tokens != nil {
+		if err := rt.SetUserTokens(o.jwt, o.tokenKeys, o.tokens); err != nil {
+			t.Fatal(err)
+		}
 	}
 	rt.SetAgents(o.agents)
 	rt.SetApprover(o.approver)

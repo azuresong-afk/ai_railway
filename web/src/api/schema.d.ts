@@ -4447,6 +4447,117 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/applications/{id}/user-access": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Пользователь приложения по JWT и доступ к моделям по группам
+         * @description Право `applications.read`; владелец приложения — только своих (задача 4.21 этапа 4, ADR-0025, раздел 4; УПД.9, DM-33).
+         *     Режим пользователя приложения, ожидаемые издатель и аудитория JWT, имя утверждения с
+         *     группами, допуск часов и группы, которым доступны модели. Настройки нет —
+         *     `{"configured": false, "mode": "off", …}` со значениями по умолчанию.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description ID приложения (UUID) */
+                    id: components["parameters"]["ApplicationID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Настройка */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["UserAccess"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        /**
+         * Задать режим пользователя по JWT и доступ к моделям по группам
+         * @description Право `applications.policy` (признак `security`; токену API недоступно). Настройка
+         *     целиком. `mode`: `off` — только `X-AISec-User` (поле `user`) по `user_from`, как раньше;
+         *     `optional` — JWT из заголовка `X-AISec-User-Token`, если он есть, иначе `X-AISec-User`;
+         *     `required` — без действительного JWT шлюз отвечает 401 до провайдера. Для `optional` и
+         *     `required` обязательны `issuer` (https, как `iss` токена побайтно) и `audience` (одно
+         *     из значений `aud`). Ключи подписи шлюзы получают в пакете конфигурации: сервер берёт
+         *     JWKS у настроенного IdP (`/api/v1/auth/idp`), поэтому `issuer` должен совпадать с
+         *     издателем IdP, иначе шлюзы отклоняют все JWT. `groups_claim` — утверждение со списком
+         *     групп (по умолчанию `groups`), `leeway` — допуск часов для `exp`, `nbf` и `iat` от 0 до
+         *     300 секунд (по умолчанию 60). `model_groups` — модель или псевдоним приложения →
+         *     от 1 до 64 групп: модель из списка доступна только пользователю с одной из этих групп
+         *     в JWT (иначе 403 `model_access_denied`, DM-33), остальные модели — всем; только с
+         *     режимом `optional` или `required`, всего не больше 500 пар. Пишет
+         *     `application.user_access_set` (до и после). Смягчение режима, смена издателя,
+         *     аудитории или утверждения с группами, рост допуска и расширение доступа к модели —
+         *     ослабление (DM-40): `weakening: true` с причинами и повторная проверка (`password` или
+         *     `code`; без них 400, неверные — 403 `reauthentication_failed`). Без изменений — 200 без
+         *     записи. Архивному приложению — 409.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID приложения (UUID) */
+                    id: components["parameters"]["ApplicationID"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["UserAccessUpdate"];
+                };
+            };
+            responses: {
+                /** @description Настройка сохранена */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["UserAccess"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/applications/{id}/prompt-baseline": {
         parameters: {
             query?: never;
@@ -10279,6 +10390,34 @@ export interface components {
             code?: string;
         };
         ApplicationUpdate: components["schemas"]["ApplicationFields"] & components["schemas"]["Reauth"];
+        UserAccessUpdate: components["schemas"]["Reauth"] & {
+            /** @enum {string} */
+            mode: "off" | "optional" | "required";
+            /** @description https://…, как iss токена */
+            issuer?: string;
+            audience?: string;
+            /** @description Пусто — groups */
+            groups_claim?: string;
+            /** @description Секунды; без поля — 60 */
+            leeway?: number;
+            model_groups?: {
+                [key: string]: string[];
+            };
+        };
+        UserAccess: {
+            configured: boolean;
+            /** @enum {string} */
+            mode: "off" | "optional" | "required";
+            issuer: string;
+            audience: string;
+            groups_claim: string;
+            leeway: number;
+            model_groups: {
+                [key: string]: string[];
+            };
+            /** Format: date-time */
+            updated_at?: string;
+        };
         PromptBaselineUpdate: components["schemas"]["Reauth"] & {
             /** @description Текст эталона; без поля — прежний */
             text?: string;

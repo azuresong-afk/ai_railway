@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/azuresong-afk/ai_railway/internal/config"
 	"github.com/azuresong-afk/ai_railway/internal/detect/session"
@@ -113,6 +114,9 @@ func TestDM26_LongPrompt(t *testing.T) {
 	up, _ := newUpstream(t, nil)
 	g := newGateway(t, up.URL, func(o *gwOpts) {
 		o.maxBody = 1 << 20
+		// Тест о сравнении хеша, а не о сроках: на медленной машине CI под
+		// -race детекторы на 96 КиБ не укладываются в срок по умолчанию (503).
+		o.detTimeout = 2 * time.Second
 		o.baselines = map[string]PromptBaseline{"app": {Hash: session.PromptHash(testHasher(t), long), Mode: PromptModeAlert}}
 		log = o.events
 	})

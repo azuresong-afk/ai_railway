@@ -2436,6 +2436,77 @@ paths:
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ProblemInternal' }
         '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/applications/{id}/user-access:
+    get:
+      summary: Пользователь приложения по JWT и доступ к моделям по группам
+      description: |
+        Право `applications.read`; владелец приложения — только своих (задача 4.21 этапа 4, ADR-0025, раздел 4; УПД.9, DM-33).
+        Режим пользователя приложения, ожидаемые издатель и аудитория JWT, имя утверждения с
+        группами, допуск часов и группы, которым доступны модели. Настройки нет —
+        `{"configured": false, "mode": "off", …}` со значениями по умолчанию.
+      x-permission: applications.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ApplicationID'
+      responses:
+        '200':
+          description: Настройка
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserAccess' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    put:
+      summary: Задать режим пользователя по JWT и доступ к моделям по группам
+      description: |
+        Право `applications.policy` (признак `security`; токену API недоступно). Настройка
+        целиком. `mode`: `off` — только `X-AISec-User` (поле `user`) по `user_from`, как раньше;
+        `optional` — JWT из заголовка `X-AISec-User-Token`, если он есть, иначе `X-AISec-User`;
+        `required` — без действительного JWT шлюз отвечает 401 до провайдера. Для `optional` и
+        `required` обязательны `issuer` (https, как `iss` токена побайтно) и `audience` (одно
+        из значений `aud`). Ключи подписи шлюзы получают в пакете конфигурации: сервер берёт
+        JWKS у настроенного IdP (`/api/v1/auth/idp`), поэтому `issuer` должен совпадать с
+        издателем IdP, иначе шлюзы отклоняют все JWT. `groups_claim` — утверждение со списком
+        групп (по умолчанию `groups`), `leeway` — допуск часов для `exp`, `nbf` и `iat` от 0 до
+        300 секунд (по умолчанию 60). `model_groups` — модель или псевдоним приложения →
+        от 1 до 64 групп: модель из списка доступна только пользователю с одной из этих групп
+        в JWT (иначе 403 `model_access_denied`, DM-33), остальные модели — всем; только с
+        режимом `optional` или `required`, всего не больше 500 пар. Пишет
+        `application.user_access_set` (до и после). Смягчение режима, смена издателя,
+        аудитории или утверждения с группами, рост допуска и расширение доступа к модели —
+        ослабление (DM-40): `weakening: true` с причинами и повторная проверка (`password` или
+        `code`; без них 400, неверные — 403 `reauthentication_failed`). Без изменений — 200 без
+        записи. Архивному приложению — 409.
+      x-permission: applications.policy
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ApplicationID'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UserAccessUpdate' }
+      responses:
+        '200':
+          description: Настройка сохранена
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserAccess' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '409': { $ref: '#/components/responses/ProblemConflict' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
   /api/v1/applications/{id}/prompt-baseline:
     get:
       summary: Эталон системного промпта приложения
@@ -6465,6 +6536,41 @@ components:
       allOf:
         - $ref: '#/components/schemas/ApplicationFields'
         - $ref: '#/components/schemas/Reauth'
+    UserAccessUpdate:
+      allOf:
+        - $ref: '#/components/schemas/Reauth'
+        - type: object
+          required: [mode]
+          properties:
+            mode: { type: string, enum: ['off', optional, required] }
+            issuer: { type: string, maxLength: 512, description: 'https://…, как iss токена' }
+            audience: { type: string, maxLength: 256 }
+            groups_claim: { type: string, maxLength: 64, pattern: '^[A-Za-z0-9_.:/-]*$', description: 'Пусто — groups' }
+            leeway: { type: integer, minimum: 0, maximum: 300, description: 'Секунды; без поля — 60' }
+            model_groups:
+              type: object
+              maxProperties: 200
+              additionalProperties:
+                type: array
+                minItems: 1
+                maxItems: 64
+                items: { type: string, minLength: 1, maxLength: 256 }
+    UserAccess:
+      type: object
+      required: [configured, mode, issuer, audience, groups_claim, leeway, model_groups]
+      properties:
+        configured: { type: boolean }
+        mode: { type: string, enum: ['off', optional, required] }
+        issuer: { type: string }
+        audience: { type: string }
+        groups_claim: { type: string }
+        leeway: { type: integer, minimum: 0, maximum: 300 }
+        model_groups:
+          type: object
+          additionalProperties:
+            type: array
+            items: { type: string }
+        updated_at: { type: string, format: date-time }
     PromptBaselineUpdate:
       allOf:
         - $ref: '#/components/schemas/Reauth'

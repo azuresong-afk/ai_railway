@@ -222,10 +222,11 @@ func (m *MCPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		m.rpcError(q, http.StatusBadRequest, nil, mcp.CodeInvalidRequest, "шлюз не передаёт серверу ответы клиента", nil, violationNotRequest)
 		return
 	}
-	user, ok := h.user(w, r, app, "")
+	eu, ok := h.user(w, r, app, "")
 	if !ok {
 		return
 	}
+	user := eu.ID
 	q.user, rec.ev.User = user, user
 	if !m.version(q) || !m.allowed(q) || !m.bindSession(q) {
 		return

@@ -364,6 +364,17 @@ type Store interface {
 	PromptBaseline(ctx context.Context, orgID, appID string) (PromptBaseline, error)
 	// PromptBaselines — эталоны организации по ID приложения.
 	PromptBaselines(ctx context.Context, orgID string) ([]PromptBaseline, error)
+
+	// Пользователь приложения по JWT и доступ к моделям по группам (задача
+	// 4.21, миграция 0059_app_user_access): одна запись на приложение.
+	// SetUserAccess блокирует приложение и сохраняет запись, которую
+	// вернула fn (prev — прежняя или DefaultUserAccess); errUnchanged из fn —
+	// без записи и аудита.
+	SetUserAccess(ctx context.Context, orgID, appID string, fn func(a Application, prev UserAccess) (UserAccess, audit.Entry, error)) (UserAccess, error)
+	// UserAccess — ErrNotFound (нет приложения); нет записи — DefaultUserAccess.
+	UserAccess(ctx context.Context, orgID, appID string) (UserAccess, error)
+	// UserAccessList — записи организации по ID приложения.
+	UserAccessList(ctx context.Context, orgID string) ([]UserAccess, error)
 }
 
 // Options — зависимости Service.

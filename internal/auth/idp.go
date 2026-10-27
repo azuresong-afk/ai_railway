@@ -13,6 +13,7 @@ import (
 
 	"github.com/azuresong-afk/ai_railway/internal/audit"
 	"github.com/azuresong-afk/ai_railway/internal/auth/oidc"
+	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 )
 
 // Настройки входа через внешний IdP по OpenID Connect (ТЗ 5.14, ИАФ.7;
@@ -533,4 +534,27 @@ func subset(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// IdPKeys — издатель настроенного IdP и его ключи подписи для пакета
+// конфигурации шлюзов (задача 4.21, ADR-0025, 4.1): шлюз проверяет JWT
+// пользователей приложений по ним и в IdP не ходит. Ключи нужны шлюзам и
+// при выключенном входе в консоль через IdP; нет настроек или вход через
+// IdP не подключён на сервере — пустой издатель без ошибки.
+func (s *Service) IdPKeys(ctx context.Context) (string, *aisecCrypto.JWKS, error) {
+	if !s.IdPConfigured() {
+		return "", nil, nil
+	}
+	st, err := s.idp.IdPSettings(ctx, s.orgID)
+	if errors.Is(err, ErrIdPNotConfigured) {
+		return "", nil, nil
+	}
+	if err != nil {
+		return "", nil, err
+	}
+	keys, err := s.oidc.KeysForBundle(ctx, s.oidcConfig(st, ""))
+	if err != nil {
+		return "", nil, err
+	}
+	return st.Issuer, keys, nil
 }

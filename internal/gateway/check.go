@@ -176,10 +176,11 @@ func (c *CheckHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusBadRequest, cerr.Message, "invalid_request_error", cerr.Code)
 		return
 	}
-	user, ok := h.user(w, r, app, req.User)
+	eu, ok := h.user(w, r, app, req.User)
 	if !ok {
 		return
 	}
+	user := eu.ID
 	rec, ok := h.newEventRecord(w, app, events.TypeCheck, "", false, user, start)
 	if !ok {
 		return
