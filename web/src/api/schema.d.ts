@@ -8681,7 +8681,7 @@ export interface components {
         };
         /** @description Поля защиты; меняет только обладатель права `applications.policy` (В15 ревью 2.r3b). Смена политики на ту, что по сравнению версий (`GET /policies/{id}/diff`) слабее текущей, — ослабление с повторной проверкой (В23 ревью 2.r5) */
         ApplicationProtection: {
-            /** @description Шаблон (`base`, `pii-strict`, `external-no-pii`, `monitor-only`) или политика организации */
+            /** @description Шаблон (`base`, `pii-strict`, `external-no-pii`, `monitor-only`, `agent-base`) или политика организации */
             policy?: string;
             /**
              * @description По умолчанию — режим выбранной политики
@@ -9153,6 +9153,53 @@ export interface components {
             rules: components["schemas"]["PolicyRule"][];
             /** @description Исключения (задача 3.22). При сохранении: поле не передано — исключения текущей версии сохраняются; пустой список — удаляются. Автора и created_at новых и изменённых ставит сервер */
             exceptions?: components["schemas"]["PolicyException"][];
+            tools?: components["schemas"]["PolicyTools"];
+        };
+        /** @description Политика вызовов инструментов агентами (ADR-0023, раздел 2; DM-20–DM-23). При сохранении: поле не передано — раздел текущей версии сохраняется, у новой политики — unapproved: block, default: block. В ответе поля нет — версия без раздела: неодобренные инструменты только журналируются, остальное разрешено (совместимость). */
+        PolicyTools: {
+            /**
+             * @description Инструмент не одобрен, подменён, отравлен или отозван
+             * @enum {string}
+             */
+            unapproved: "block" | "log";
+            /**
+             * @description Инструмент одобрен, но ни одно правило не подошло (DM-20)
+             * @enum {string}
+             */
+            default: "block" | "log";
+            /** @description Срок ожидания подтверждения (DM-22), 1m–60m; пусто — 10m */
+            approval_timeout?: string;
+            /** @description Лимиты вызовов (DM-23); 0 — без предела */
+            limits?: {
+                agent_per_minute?: number;
+                /** @description Вызовов агента в сессии за 24 ч */
+                session_calls?: number;
+                /** @description Одинаковых вызовов (инструмент и хеш аргументов) в сессии за repeat_window */
+                repeat?: number;
+                /** @description 1m–24h; обязателен вместе с repeat */
+                repeat_window?: string;
+            };
+            rules?: components["schemas"]["PolicyToolRule"][];
+        };
+        /** @description Правило политики вызовов; поля — как в YAML (ADR-0023, раздел 2). */
+        PolicyToolRule: {
+            id: string;
+            /** @description Пусто — все агенты приложения и вызовы без агента */
+            agents?: string[];
+            /** @description Сервер/имя (function/имя — вызовы функций в ответах модели); «*» только в конце имени; пусто — любой */
+            tool?: string;
+            risk?: ("low" | "medium" | "high" | "critical")[];
+            /** @enum {string} */
+            action: "allow" | "log" | "require_approval" | "block";
+            /** @description Ограничения аргументов (DM-21): подмножество JSON Schema — type, properties, required, additionalProperties (true или false), items, minItems, maxItems, enum, const, minimum, maximum, exclusiveMinimum, exclusiveMaximum, minLength, maxLength, pattern (RE2), x-aisec-path-prefix, x-aisec-domains. Незнакомое ключевое слово — ошибка. До 16 КиБ, вложенность до 8, до 256 узлов. */
+            args?: Record<string, never>;
+            rate?: {
+                per_minute?: number;
+                per_hour?: number;
+            };
+            /** @enum {string} */
+            severity: "info" | "low" | "medium" | "high" | "critical";
+            message?: string;
         };
         /** @description Исключение (ТЗ 5.3, решение Р8 этапа 3); поля — как в YAML политики. Условия соединяются «и». */
         PolicyException: {
@@ -9320,7 +9367,7 @@ export interface components {
             id: string;
             spec?: components["schemas"]["PolicySpec"];
             /** @enum {string} */
-            from_template?: "base" | "pii-strict" | "external-no-pii" | "monitor-only";
+            from_template?: "base" | "pii-strict" | "external-no-pii" | "monitor-only" | "agent-base";
             /** @description Название копии шаблона */
             name?: string;
             comment?: string;
@@ -9395,9 +9442,11 @@ export interface components {
             weakening: boolean;
             weakening_reasons: {
                 /** @enum {string} */
-                kind: "mode_monitor" | "non_text_weakened" | "response_check_weakened" | "rule_removed" | "action_weakened" | "threshold_raised" | "scope_narrowed" | "detector_changed" | "exception_added" | "exception_extended" | "exception_changed";
+                kind: "mode_monitor" | "non_text_weakened" | "response_check_weakened" | "rule_removed" | "action_weakened" | "threshold_raised" | "scope_narrowed" | "detector_changed" | "exception_added" | "exception_extended" | "exception_changed" | "tools_unapproved_weakened" | "tool_rule_added" | "tool_action_weakened" | "tool_scope_widened" | "tool_scope_narrowed" | "tool_args_relaxed" | "tool_rate_raised" | "approval_timeout_raised" | "tool_rule_removed";
                 rule?: string;
                 exception?: string;
+                /** @description ID правила раздела tools */
+                tool_rule?: string;
             }[];
             exceptions_added: components["schemas"]["PolicyException"][];
             exceptions_removed: components["schemas"]["PolicyException"][];
@@ -9406,6 +9455,20 @@ export interface components {
                 fields: string[];
                 before: components["schemas"]["PolicyException"];
                 after: components["schemas"]["PolicyException"];
+            }[];
+            /** @description Изменённые поля раздела tools (tools, tools.unapproved, tools.default, tools.approval_timeout, tools.limits.*) */
+            tools_fields: {
+                field: string;
+                before: string;
+                after: string;
+            }[];
+            tool_rules_added: components["schemas"]["PolicyToolRule"][];
+            tool_rules_removed: components["schemas"]["PolicyToolRule"][];
+            tool_rules_changed: {
+                id: string;
+                fields: string[];
+                before: components["schemas"]["PolicyToolRule"];
+                after: components["schemas"]["PolicyToolRule"];
             }[];
         };
         /** @description Ровно одно из `policy_id` и `spec`. */

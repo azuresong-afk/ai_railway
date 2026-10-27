@@ -2,11 +2,14 @@
 // криптопрофиль на эталонных значениях (internal/crypto.SelfTest) и каждый
 // детектор шлюза на эталонных входах — положительном (детектор обязан дать
 // находку ожидаемой категории) и отрицательном (без находок). Эталоны —
-// синтетические примеры корпуса testdata/corpus (vectors.go).
+// синтетические примеры корпуса testdata/corpus (vectors.go). Вместе с
+// детекторами проверяется политика вызовов инструментов агентами
+// (ADR-0023): эталонные вызовы обязаны получить ожидаемое решение.
 //
 // Провал криптопрофиля всегда останавливает запуск: без исправной
-// криптографии компонент не работает. Провал детекторов — по реакции
-// -selftest-action: alert (журнал) или stop (отказ запуска).
+// криптографии компонент не работает. Провал детекторов и политики
+// вызовов — по реакции -selftest-action: alert (журнал) или stop (отказ
+// запуска).
 package selftest
 
 import (
@@ -16,12 +19,15 @@ import (
 	"log/slog"
 	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/azuresong-afk/ai_railway/internal/audit"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/internal/detect"
 	"github.com/azuresong-afk/ai_railway/internal/integrity"
+	"github.com/azuresong-afk/ai_railway/internal/policy"
+	"github.com/azuresong-afk/ai_railway/internal/policy/toolrate"
 )
 
 // Problem — вид провала.
@@ -34,11 +40,12 @@ const (
 	ProblemError      Problem = "error"      // сбой, превышение срока, паника или некорректная находка
 	ProblemMissed     Problem = "missed"     // ожидаемая категория не найдена
 	ProblemUnexpected Problem = "unexpected" // находка, которой не должно быть
+	ProblemDecision   Problem = "decision"   // решение политики вызовов не совпало с эталоном
 )
 
 // Failure — провал одного эталона. Текста эталона и находок не содержит.
 type Failure struct {
-	Detector string // пусто — криптопрофиль
+	Detector string // пусто — криптопрофиль; ToolsCheck — политика вызовов
 	Vector   string // ID эталона (ID примера корпуса)
 	Problem  Problem
 	Category string // для missed и unexpected
@@ -51,7 +58,8 @@ type Result struct {
 	Profile   string
 	CryptoOK  bool
 	Detectors int // проверено детекторов
-	Vectors   int // прогнано эталонов
+	Vectors   int // прогнано эталонов детекторов
+	Tools     int // прогнано эталонов политики вызовов
 	Failures  []Failure
 	// cryptoErr — причина провала криптопрофиля для журнала.
 	cryptoErr error
@@ -101,6 +109,7 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 	if len(cfg.Detectors) == 0 {
 		return res, nil
 	}
+	res.Failures = append(res.Failures, runTools(cfg.Now(), &res.Tools)...)
 	reg, err := detect.NewRegistry(cfg.Detectors...)
 	if err != nil {
 		return res, fmt.Errorf("самотест: %w", err)
@@ -124,6 +133,42 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 		}
 	}
 	return res, nil
+}
+
+// runTools прогоняет эталоны политики вызовов (toolVectors); n — счётчик
+// прогнанных. Проверка идёт вместе с детекторами: у компонента без
+// детекторов нет и решений по вызовам.
+func runTools(now time.Time, n *int) []Failure {
+	spec, err := policy.Parse(strings.NewReader(toolVectorPolicy))
+	var p *policy.Policy
+	if err == nil {
+		p, err = policy.Compile(spec, nil)
+	}
+	if err != nil {
+		return []Failure{{Detector: ToolsCheck, Problem: ProblemError}}
+	}
+	var out []Failure
+	for _, v := range toolVectors {
+		*n++
+		d := p.DecideTool(policy.ToolCall{App: "selftest", Agent: "selftest", Server: v.Server, Name: v.Name,
+			Status: v.Status, HashMatch: v.HashMatch, Risk: v.Risk, Args: []byte(v.Args), Now: now}, nil)
+		if d.Action != v.Expect {
+			out = append(out, Failure{Detector: ToolsCheck, Vector: v.ID, Problem: ProblemDecision, Category: string(d.Action)})
+		}
+	}
+	// Лимиты (DM-23): счётчики в памяти, повтор одного вызова в сессии.
+	*n++
+	rc := toolrate.New(16)
+	var d policy.ToolDecision
+	for range 3 {
+		d = p.DecideTool(policy.ToolCall{App: "selftest", Agent: "selftest", Session: "selftest", Server: "files", Name: "read_text",
+			Status: policy.ToolApproved, HashMatch: true, Risk: policy.RiskLow, Args: []byte(`{"path":"/data/a.txt"}`),
+			ArgsHash: "selftest", Now: now}, rc)
+	}
+	if d.Action != policy.Block {
+		out = append(out, Failure{Detector: ToolsCheck, Vector: toolRepeatVector, Problem: ProblemDecision, Category: string(d.Action)})
+	}
+	return out
 }
 
 func hasBoth(vs []Vector) bool {
@@ -188,7 +233,7 @@ func Startup(ctx context.Context, cfg StartupConfig) (Result, error) {
 		return res, err
 	}
 	attrs := []any{"class", "selftest", "profile", res.Profile, "crypto_ok", res.CryptoOK,
-		"detectors", res.Detectors, "vectors", res.Vectors}
+		"detectors", res.Detectors, "vectors", res.Vectors, "tool_vectors", res.Tools}
 	if res.OK() {
 		cfg.Logger.Info("самотестирование пройдено", attrs...)
 		return res, nil

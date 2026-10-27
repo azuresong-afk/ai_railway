@@ -52,6 +52,9 @@ type Spec struct {
 	Rules        []RuleSpec `yaml:"rules"`
 	// Exceptions — исключения (решение Р8 этапа 3, exception.go).
 	Exceptions []ExceptionSpec `yaml:"exceptions,omitempty"`
+	// Tools — политика вызовов инструментов агентами (ADR-0023, tools.go);
+	// nil — умолчания совместимости (CompatTools).
+	Tools *ToolsSpec `yaml:"tools,omitempty"`
 }
 
 // RuleSpec — правило: детектор, направления, условия, порог, действие,
@@ -130,6 +133,11 @@ func (s *Spec) Validate() error {
 		seen[r.ID] = true
 	}
 	s.validateExceptions(add)
+	if s.Tools != nil {
+		for _, err := range s.Tools.validate() {
+			add("%v", err)
+		}
+	}
 	return errors.Join(errs...)
 }
 
@@ -239,6 +247,9 @@ func Parse(r io.Reader) (*Spec, error) {
 		r.Directions, r.Categories, r.Sources = nilIfEmpty(r.Directions), nilIfEmpty(r.Categories), nilIfEmpty(r.Sources)
 	}
 	s.normalizeExceptions()
+	if s.Tools != nil {
+		s.Tools.normalize()
+	}
 	return &s, nil
 }
 

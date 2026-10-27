@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -156,7 +157,7 @@ func TestPoliciesViaAPI(t *testing.T) {
 	mustProblem(t, e.call(auditor, "GET", "/api/v1/policies/Bad_ID", "", false), 404, CodeNotFound)
 	w = e.call(auditor, "GET", "/api/v1/policies", "", false)
 	list := decode[struct{ Items []PolicySummaryView }](t, w.Body.Bytes())
-	if w.Code != http.StatusOK || len(list.Items) != 6 || !list.Items[0].Template || list.Items[5].ID != "support" || list.Items[5].CurrentVersion != 3 {
+	if w.Code != http.StatusOK || len(list.Items) != 7 || !list.Items[0].Template || list.Items[6].ID != "support" || list.Items[6].CurrentVersion != 3 {
 		t.Fatalf("список: %d %s", w.Code, w.Body)
 	}
 	if w := e.call(auditor, "GET", "/api/v1/policies/base", "", false); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"template":true`) {
@@ -492,4 +493,73 @@ func FuzzImportPolicyDryRun(f *testing.F) {
 			}
 		}
 	})
+}
+
+// Раздел tools через API (задача 4.9, ADR-0023, раздел 2): создание,
+// чтение и сохранение без изменений; строгий разбор args (повтор ключа,
+// незнакомое ключевое слово, неточное число) — 400 без значения в ответе;
+// ослабление раздела — только с паролем, в аудите weakening и ID правила;
+// сравнение возвращает изменения правил вызовов. Покрывает: DM-21, DM-40.
+func TestPolicyToolsViaAPI(t *testing.T) {
+	e := newAppsEnv(t)
+	admin := e.mustLogin(t, "admin")
+	tools := func(args, action string) string {
+		return `"tools":{"unapproved":"block","default":"block","approval_timeout":"10m",` +
+			`"limits":{"agent_per_minute":120,"session_calls":500,"repeat":5,"repeat_window":"10m"},` +
+			`"rules":[{"id":"read","tool":"files/read_*","action":"` + action + `","severity":"medium","args":` + args + `}]}`
+	}
+	spec := func(t string) string { return strings.TrimSuffix(tPolicySpec, "}") + `,` + t + `}` }
+	good := `{"type":"object","properties":{"path":{"type":"string","x-aisec-path-prefix":["/data/"]},"limit":{"type":"number","maximum":100.05}}}`
+	w := e.call(admin, "POST", "/api/v1/policies", `{"id":"agents","spec":`+spec(tools(good, "allow"))+`}`, true)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("создание: %d %s", w.Code, w.Body)
+	}
+	p := decode[PolicyView](t, w.Body.Bytes())
+	if p.Spec.Tools == nil || len(p.Spec.Tools.Rules) != 1 || !strings.Contains(string(p.Spec.Tools.Rules[0].Args), `100.05`) {
+		t.Fatalf("раздел tools: %s", w.Body)
+	}
+	// Повтор того же раздела — без новой версии ослабления и без пароля.
+	w = e.call(admin, "GET", "/api/v1/policies/agents", "", false)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"approval_timeout":"10m0s"`) && !strings.Contains(w.Body.String(), `"approval_timeout":"10m"`) {
+		t.Fatalf("чтение: %d %s", w.Code, w.Body)
+	}
+
+	for name, args := range map[string]string{
+		"повтор ключа":       `{"type":"object","type":"string"}`,
+		"незнакомое слово":   `{"type":"object","$ref":"#/secret-value-42"}`,
+		"неточное число":     `{"type":"number","maximum":0.10000000000000000001}`,
+		"обратная ссылка":    `{"type":"string","pattern":"(a)\\1"}`,
+		"префикс без string": `{"x-aisec-path-prefix":["/data/"]}`,
+	} {
+		w := e.call(admin, "POST", "/api/v1/policies", `{"id":"bad","spec":`+spec(tools(args, "allow"))+`}`, true)
+		mustProblem(t, w, 400, CodeInvalidRequest)
+		if strings.Contains(w.Body.String(), "secret-value-42") {
+			t.Errorf("%s: значение в ответе: %s", name, w.Body)
+		}
+	}
+
+	// Ослабление: block → allow у правила и снятие ограничений аргументов.
+	weak := spec(tools(`{"type":"object"}`, "allow"))
+	w = e.call(admin, "PUT", "/api/v1/policies/agents", `{"base_version":1,"spec":`+weak+`}`, true)
+	mustProblem(t, w, 400, CodeInvalidRequest)
+	w = e.call(admin, "PUT", "/api/v1/policies/agents", `{"base_version":1,"spec":`+weak+`,"password":"`+tPhrase+`"}`, true)
+	if w.Code != http.StatusOK {
+		t.Fatalf("версия 2: %d %s", w.Code, w.Body)
+	}
+	rec, _ := e.polAction("policy.update")
+	d, _ := rec.Details.(map[string]any)
+	if d["weakening"] != true || !strings.Contains(fmt.Sprint(d), "tool_args_relaxed") || !strings.Contains(fmt.Sprint(d), "read") {
+		t.Fatalf("аудит ослабления: %+v", d)
+	}
+	// Версия без раздела tools в запросе сохраняет прежний раздел.
+	w = e.call(admin, "PUT", "/api/v1/policies/agents", `{"base_version":2,"spec":`+tPolicySpec+`}`, true)
+	if w.Code != http.StatusOK || decode[PolicyView](t, w.Body.Bytes()).Spec.Tools == nil {
+		t.Fatalf("версия без tools: %d %s", w.Code, w.Body)
+	}
+
+	w = e.call(admin, "GET", "/api/v1/policies/agents/diff?from=1&to=2", "", false)
+	df := decode[PolicyDiffView](t, w.Body.Bytes())
+	if w.Code != http.StatusOK || len(df.ToolRulesChanged) != 1 || df.ToolRulesChanged[0].ID != "read" || !df.Weakening {
+		t.Fatalf("сравнение: %d %s", w.Code, w.Body)
+	}
 }

@@ -163,6 +163,7 @@ func cloneSpec(s *policy.Spec) *policy.Spec {
 	c := *s
 	c.Rules = slices.Clone(s.Rules)
 	c.Exceptions = slices.Clone(s.Exceptions)
+	c.Tools = s.Tools.Clone()
 	return &c
 }
 
