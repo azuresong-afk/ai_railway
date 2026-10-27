@@ -1221,6 +1221,137 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/auth/ldap": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Настройки входа через каталог LDAP
+         * @description Право `auth_idp.read` (ИАФ.7, ADR-0025, раздел 2). Пароль сервисной учётной записи не
+         *     возвращается никогда. Если вход не настроен — `configured: false` и пустые поля. Сам вход
+         *     пользователя каталога — `POST /api/v1/auth/login`: если локальной учётной записи с таким
+         *     логином нет, пароль проверяется в каталоге.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Настройки */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["LDAPSettings"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        /**
+         * Сохранить настройки входа через каталог LDAP
+         * @description Право `auth_idp.manage` (только администратор безопасности), ADR-0025, 1.6. Всегда нужна
+         *     повторная проверка паролем или кодом TOTP локальной учётной записи: внешней — 403.
+         *     Пустой `bind_password` оставляет прежний (при первом сохранении обязателен). Если
+         *     `enabled`, сервер проверяет каталог: TLS (LDAPS или StartTLS с корнями из `ca_pem`), адрес
+         *     не loopback/link-local/метаданные, вход сервисной учётной записи, наличие веток
+         *     пользователей и групп; неудача — 400 с полем `url`. Сессии пользователей каталога
+         *     завершаются. Пишет `auth.ldap_changed` со значениями до и после (без пароля) и признаком
+         *     `weakening` при расширении доступа (DM-40).
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["LDAPSettingsUpdate"];
+                };
+            };
+            responses: {
+                /** @description Настройки сохранены */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["LDAPSettings"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        post?: never;
+        /**
+         * Отключить вход через каталог LDAP и удалить настройки
+         * @description Право `auth_idp.manage`, повторная проверка паролем или кодом TOTP локальной учётной записи.
+         *     Сессии пользователей каталога завершаются; их учётные записи и журнал аудита остаются.
+         *     Пишет `auth.ldap_disabled`. Не настроен — 404.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["Reauth"];
+                };
+            };
+            responses: {
+                /** @description Настройки удалены */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/mfa/setup": {
         parameters: {
             query?: never;
@@ -9108,6 +9239,45 @@ export interface components {
              * @description Секрет клиента; пустой — оставить прежний. Хранится шифротекстом под ключом данных
              */
             client_secret?: string;
+        };
+        LDAPGroupRole: {
+            /** @description Полный DN группы; сравнение без учёта регистра */
+            group: string;
+            role: components["schemas"]["Role"];
+        };
+        LDAPSettingsFields: {
+            enabled?: boolean;
+            /** @description ldaps://узел[:порт] или ldap://узел[:порт] (тогда обязательно StartTLS) */
+            url?: string;
+            /** @description Корневые сертификаты каталога в PEM (системные корни не используются) */
+            ca_pem?: string;
+            /** @description DN сервисной учётной записи для поиска */
+            bind_dn?: string;
+            user_base_dn?: string;
+            /** @description Фильтр поиска пользователя с `{login}` в значении; логин экранируется по RFC 4515 */
+            user_filter?: string;
+            /** @enum {string} */
+            id_attribute?: "entryUUID" | "ipaUniqueID" | "nsUniqueId" | "objectGUID";
+            /** @description По умолчанию `displayName` */
+            display_attribute?: string;
+            /** @enum {string} */
+            group_mode?: "member_of" | "member" | "ad_nested";
+            /** @description Ветка групп; не нужна для `member_of` */
+            group_base_dn?: string;
+            group_roles?: components["schemas"]["LDAPGroupRole"][];
+        };
+        LDAPSettings: components["schemas"]["LDAPSettingsFields"] & {
+            configured: boolean;
+            version?: number;
+            /** Format: date-time */
+            updated_at?: string;
+        };
+        LDAPSettingsUpdate: components["schemas"]["LDAPSettingsFields"] & components["schemas"]["Reauth"] & {
+            /**
+             * Format: password
+             * @description Пароль сервисной учётной записи; пустой — оставить прежний. Хранится шифротекстом под ключом данных
+             */
+            bind_password?: string;
         };
         AuthPolicyUpdate: components["schemas"]["AuthPolicy"] & components["schemas"]["Reauth"];
         /**

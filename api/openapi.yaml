@@ -661,6 +661,87 @@ paths:
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ProblemInternal' }
         '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/auth/ldap:
+    get:
+      summary: Настройки входа через каталог LDAP
+      description: |
+        Право `auth_idp.read` (ИАФ.7, ADR-0025, раздел 2). Пароль сервисной учётной записи не
+        возвращается никогда. Если вход не настроен — `configured: false` и пустые поля. Сам вход
+        пользователя каталога — `POST /api/v1/auth/login`: если локальной учётной записи с таким
+        логином нет, пароль проверяется в каталоге.
+      x-permission: auth_idp.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      responses:
+        '200':
+          description: Настройки
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LDAPSettings' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    put:
+      summary: Сохранить настройки входа через каталог LDAP
+      description: |
+        Право `auth_idp.manage` (только администратор безопасности), ADR-0025, 1.6. Всегда нужна
+        повторная проверка паролем или кодом TOTP локальной учётной записи: внешней — 403.
+        Пустой `bind_password` оставляет прежний (при первом сохранении обязателен). Если
+        `enabled`, сервер проверяет каталог: TLS (LDAPS или StartTLS с корнями из `ca_pem`), адрес
+        не loopback/link-local/метаданные, вход сервисной учётной записи, наличие веток
+        пользователей и групп; неудача — 400 с полем `url`. Сессии пользователей каталога
+        завершаются. Пишет `auth.ldap_changed` со значениями до и после (без пароля) и признаком
+        `weakening` при расширении доступа (DM-40).
+      x-permission: auth_idp.manage
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LDAPSettingsUpdate' }
+      responses:
+        '200':
+          description: Настройки сохранены
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LDAPSettings' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    delete:
+      summary: Отключить вход через каталог LDAP и удалить настройки
+      description: |
+        Право `auth_idp.manage`, повторная проверка паролем или кодом TOTP локальной учётной записи.
+        Сессии пользователей каталога завершаются; их учётные записи и журнал аудита остаются.
+        Пишет `auth.ldap_disabled`. Не настроен — 404.
+      x-permission: auth_idp.manage
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Reauth' }
+      responses:
+        '204': { description: Настройки удалены }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
   /api/v1/auth/mfa/setup:
     post:
       summary: Выдать секрет TOTP для подключения второго фактора
@@ -5575,6 +5656,47 @@ components:
               maxLength: 1024
               format: password
               description: 'Секрет клиента; пустой — оставить прежний. Хранится шифротекстом под ключом данных'
+    LDAPGroupRole:
+      type: object
+      required: [group, role]
+      properties:
+        group: { type: string, minLength: 1, maxLength: 1024, description: 'Полный DN группы; сравнение без учёта регистра' }
+        role: { $ref: '#/components/schemas/Role' }
+    LDAPSettingsFields:
+      type: object
+      properties:
+        enabled: { type: boolean }
+        url: { type: string, maxLength: 512, pattern: '^ldaps?://', description: 'ldaps://узел[:порт] или ldap://узел[:порт] (тогда обязательно StartTLS)' }
+        ca_pem: { type: string, maxLength: 65536, description: 'Корневые сертификаты каталога в PEM (системные корни не используются)' }
+        bind_dn: { type: string, maxLength: 1024, description: 'DN сервисной учётной записи для поиска' }
+        user_base_dn: { type: string, maxLength: 1024 }
+        user_filter: { type: string, maxLength: 512, description: 'Фильтр поиска пользователя с `{login}` в значении; логин экранируется по RFC 4515' }
+        id_attribute: { type: string, enum: [entryUUID, ipaUniqueID, nsUniqueId, objectGUID] }
+        display_attribute: { type: string, maxLength: 64, description: 'По умолчанию `displayName`' }
+        group_mode: { type: string, enum: [member_of, member, ad_nested] }
+        group_base_dn: { type: string, maxLength: 1024, description: 'Ветка групп; не нужна для `member_of`' }
+        group_roles: { type: array, maxItems: 200, items: { $ref: '#/components/schemas/LDAPGroupRole' } }
+    LDAPSettings:
+      allOf:
+        - $ref: '#/components/schemas/LDAPSettingsFields'
+        - type: object
+          required: [configured, enabled, group_roles]
+          properties:
+            configured: { type: boolean }
+            version: { type: integer }
+            updated_at: { type: string, format: date-time }
+    LDAPSettingsUpdate:
+      allOf:
+        - $ref: '#/components/schemas/LDAPSettingsFields'
+        - $ref: '#/components/schemas/Reauth'
+        - type: object
+          required: [enabled, url, ca_pem, bind_dn, user_base_dn, user_filter, id_attribute, group_mode, group_roles]
+          properties:
+            bind_password:
+              type: string
+              maxLength: 1024
+              format: password
+              description: 'Пароль сервисной учётной записи; пустой — оставить прежний. Хранится шифротекстом под ключом данных'
     AuthPolicyUpdate:
       allOf:
         - $ref: '#/components/schemas/AuthPolicy'

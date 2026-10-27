@@ -55,6 +55,9 @@
 | GET | `/api/v1/auth/idp` | `auth_idp.read` | да | — | — | да | — | да |
 | PUT | `/api/v1/auth/idp` | `auth_idp.manage` | да | — | — | — | — | — |
 | DELETE | `/api/v1/auth/idp` | `auth_idp.manage` | да | — | — | — | — | — |
+| GET | `/api/v1/auth/ldap` | `auth_idp.read` | да | — | — | да | — | да |
+| PUT | `/api/v1/auth/ldap` | `auth_idp.manage` | да | — | — | — | — | — |
+| DELETE | `/api/v1/auth/ldap` | `auth_idp.manage` | да | — | — | — | — | — |
 | POST | `/api/v1/auth/logout` | `session` | да | да | да | да | да | — |
 | POST | `/api/v1/auth/mfa/recovery-codes` | `session` | да | да | да | да | да | — |
 | POST | `/api/v1/auth/mfa/setup` | `session` | да | да | да | да | да | — |
