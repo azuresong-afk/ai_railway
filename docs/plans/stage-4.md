@@ -57,7 +57,7 @@ npm-библиотек не добавляется: экраны агентов,
 | 4.4 | Перенесено (Н34, Н35): ADR-0022 ключ производителя (Р1), выпускная сборка с подписью манифеста ключом производителя, отпечаток в руководстве, проверка в `verify-release.sh` | 1 | решение Р1 | Opus | готова (27.10.2026, поток A1; ADR-0022) |
 | 4.5 | Перенесено: остаток замечаний этапа 3 (раздел «Перенесено в этап 4» в `stage-3.md`): 3Н46–3Н49, остаток 3Н47, 3Н52, 3Н53 ревью 3.r4; срок хранения `budget_usage`; тики SSE и простой сессии; условия «Состояния системы» по часам шлюза и отпечатку TLS (3Н40, 3Н43); 3В22 без `max_tokens`; `Ready` дашбордов при помеченном часе | 1 | — | Opus | готова (27.10.2026, поток A2) |
 | 4.6 | Перенесено: решения владельца по пилоту — разделитель CSV для русской локали, e-mail в профиле пользователя для рассылки, пороги критериев успеха пилота; правки по решениям | 0,5 | ответы владельца | Sonnet | не начата |
-| 4.7 | ADR-0023 агенты и MCP (Р2): реестр, политика вызовов, `require_approval`, очередь, MCP-прокси (версия спецификации и Streamable HTTP сверить при реализации), события агентов | 0,5 | — | Opus | в работе (27.10.2026, поток A3) |
+| 4.7 | ADR-0023 агенты и MCP (Р2): реестр, политика вызовов, `require_approval`, очередь, MCP-прокси (версия спецификации и Streamable HTTP сверить при реализации), события агентов | 0,5 | — | Opus | готова (27.10.2026, поток A3; ADR-0023) |
 | 4.8 | Реестр агентов и инструментов: API, хеш описания при одобрении, оповещение и блокировка при подмене (DM-25); аудит | 1 | 4.7 | Opus | не начата |
 | 4.9 | Политика вызовов в версии политики: allowlist (DM-20), ограничения аргументов — своё подмножество JSON Schema с fuzz-тестом (DM-21), лимиты частоты и цепочек (DM-23) | 1 | 4.7 | Opus | не начата |
 | 4.10 | `require_approval` и очередь подтверждений (DM-22): ожидание в шлюзе, решение в консоли с аудитом, таймаут — отказ, уведомления о новых запросах через каналы этапа 3 | 1 | 4.8, 4.9 | Opus | не начата |
@@ -130,6 +130,110 @@ npm-библиотек не добавляется: экраны агентов,
 - LDAP в разных каталогах (ALD Pro, FreeIPA, Samba AD, AD) отличается схемой групп — тестовые стенды в docker, проверка на реальном каталоге — с пилотом.
 - Объём этапа (4–6 недель по ТЗ) больше этапа 3; при нехватке времени первыми переносятся Р11 и 4.23.
 
+## Уточнения задач 4.8–4.12 (по ADR-0023, поток A3, 27.10.2026)
+Номера миграций — с 0051, у влившегося первым (сверить с интеграционной веткой). Имена тестов с ID строки — только для тестов без БД и без e2e.
+
+**4.8 — реестр агентов и инструментов (DM-25).**
+- Код:
+  - `internal/agents/`: `agent.go`, `mcpserver.go`, `tool.go` (состояния `new`/`approved`/`changed`/`suspicious`/`revoked`), `descriptor.go` (`DescriptorHash`, каноничный JSON), `service.go`, `store.go`, `pgstore.go`.
+  - Миграции: таблицы агентов, MCP-серверов, инструментов и ревизий дескрипторов (для показа разницы); `app_keys.agent_id`.
+  - `internal/apps` — привязка ключа к агенту при создании.
+  - `internal/api/agents.go`, `mcp_servers.go`, `agent_tools.go`; `api/openapi.yaml`; права `agents.read`, `agents.manage`, `agents.tools.approve` в `internal/auth/permissions.go`, `make rbac-matrix`; коды аудита в `internal/audit/catalog.go`.
+  - Внутренняя точка `POST /internal/v1/agents/tools:observe` (`api/internal-openapi.yaml`, обработчик сервера).
+  - Разделы пакета `agents`, `mcp_servers` (секреты в HPKE), `agent_tools` в `internal/policy/bundle`.
+  - Правила `agents.tool_new` и `agents.tool_changed` отдельным файлом в `internal/alerting/`.
+  - Проверка адреса MCP-сервера — общей функцией с каналами `internal/notify` (вынести, не копировать).
+- Тесты:
+  - `TestDM25_DescriptorChangeRequiresReapproval` — переходы состояний в памяти;
+  - `FuzzDescriptorHash`;
+  - устойчивость хеша: порядок ключей, пробелы, `icons` и `_meta` не влияют;
+  - отказ в доступе на каждый эндпоинт;
+  - одобрение без повторной проверки — 403;
+  - одобрение `changed` и `suspicious` даёт `weakening`;
+  - запрещённые адреса MCP-сервера, `insecure_http` только у `security_admin`;
+  - `agent_mismatch`.
+
+**4.9 — политика вызовов (DM-20, DM-21, DM-23).**
+- Код:
+  - `internal/policy/tools.go` — раздел `tools`, проверка при сохранении, умолчания без раздела;
+  - `internal/policy/toolcall.go` — решение по шагам ADR-0023, раздел 2;
+  - `internal/policy/argschema/` — `parse.go`, `validate.go`, `path.go`, `domains.go`, лимиты;
+  - `internal/policy/toolrate/` — счётчики в памяти с вытеснением;
+  - `internal/policy/versions/diff.go` — новые причины ослабления;
+  - шаблон «Агент: базовая защита» в `templates.go`.
+- Шлюз в 4.9 не трогается.
+- Тесты:
+  - `TestDM20_ToolNotInAllowlistBlocked`, `TestDM21_ArgsOutsideConstraintsBlocked` (пути с `..`, `%2e`, `\`, границей каталога; домены; диапазоны; `enum`), `TestDM23_RepeatedCallLoopBlocked`, `TestDM23_AgentRateLimit`;
+  - таблица приоритетов решения по `tools`;
+  - `monitor` только журналирует;
+  - незнакомое ключевое слово схемы — ошибка;
+  - повторяющиеся ключи и неверный UTF-8 в аргументах — отказ;
+  - `FuzzParseArgSchema`, `FuzzValidateArgs`;
+  - каждая причина ослабления;
+  - старая версия без `tools` читается с умолчаниями совместимости.
+
+**4.10 — `require_approval` и очередь (DM-22).**
+- Код:
+  - `internal/approvals/` — состояния, сроки, хранение аргументов под ключом данных, очистка через 30 суток;
+  - миграция таблицы запросов;
+  - внутренние точки `POST /internal/v1/approvals`, `GET /internal/v1/approvals/{id}?wait=`, `POST /internal/v1/approvals/{id}:cancel`, поле ожидающих ID в heartbeat;
+  - `internal/api/approvals.go`; права `approvals.read`, `approvals.decide` (при необходимости признак «только человеку»);
+  - аудит `agent.approval.approve|deny`;
+  - правила `agents.approval_requested`, `agents.approval_queue_full`.
+- Шлюз:
+  - первым коммитом — интерфейс `gateway.Approver`, его использует 4.11;
+  - `internal/gateway/approval.go` — клиент долгого опроса со своим таймаутом 35 с, пределы 256/16, keep-alive;
+  - удержание `tool_calls` на пути `chat` в `response.go`.
+- Тесты:
+  - `TestDM22_ApprovalTimeoutDenies`, `TestDM22_ApprovedCallForwardedWithSameArgs`;
+  - отказ при недоступном сервере;
+  - `queue_full`;
+  - отмена при закрытии потока клиентом;
+  - решение после срока — 409;
+  - `interrupted` по heartbeat;
+  - `critical` требует повторной проверки;
+  - уведомление без аргументов;
+  - отказ в доступе: `system_admin` и токен;
+  - `monitor` не создаёт запрос.
+
+**4.11 — MCP-прокси (DM-07 MCP, DM-24).**
+- Код:
+  - `internal/mcp/`: `jsonrpc.go` (строгий разбор и сборка), `headers.go` (сверка `MCP-Protocol-Version`, `Mcp-Method`, `Mcp-Name`, base64-обёртка, построение `Mcp-Param-*`), `sse.go` (чтение с лимитами), `messages.go` (`tools/list`, `tools/call`, результаты, `initialize`, `server/discover`), `capabilities.go` (вырезание возможностей);
+  - `internal/gateway/mcp.go` — обработчик и маршрут `POST /mcp/v1/{server}`, 405 для `GET`/`DELETE`;
+  - `mcp_upstream.go` — клиент, TLS из `internal/crypto`, лимиты и таймауты;
+  - `mcp_sessions.go` — привязка `Mcp-Session-Id` для 2025-11-25;
+  - `mcp_tools.go` — фильтр `tools/list`, встроенная проверка описаний, `tools:observe`;
+  - новое значение `detect.Source` — `tool_args`;
+  - типы событий `agent_tool_call`, `agent_mcp` в `internal/events` с миграцией ограничения типов;
+  - правила `agents.tool_blocked`, `agents.tool_poisoning`;
+  - тестовый MCP-сервер для `make dev` и e2e — `internal/mockmcp` (обе ревизии, подмена описания, отравленное описание, результат с инъекцией).
+- Тесты:
+  - `TestDM24_PoisonedDescriptionHidden`, `TestDM07_MCPToolResultInjection`, `TestDM25_ChangedToolCallBlocked`;
+  - `FuzzParseJSONRPC`, `FuzzParseSSE`, `FuzzToolsListResult`, `FuzzCallToolResult`;
+  - несовпадение заголовков — `-32020`;
+  - неизвестная версия;
+  - пакет JSON-RPC отвергнут;
+  - запрещённые методы — `-32601`;
+  - `Authorization` клиента не уходит наружу;
+  - тело к серверу собрано из проверенного документа;
+  - запрос сервера к клиенту и `input_required` не доходят до клиента;
+  - чужой `Mcp-Session-Id` — 404;
+  - `Origin` — 403;
+  - лимиты размеров и числа событий SSE;
+  - перенаправление не выполняется.
+- Документы задач 4.8–4.11: `attack-surface.md` и `security-functions.md` — по разделу 10 ADR, `threat-model.md` (подмена описания, отравление, обход через несовпадение разбора, удержание соединений).
+
+**4.12 — экраны.**
+- Реестр:
+  - агенты, MCP-серверы, инструменты с состоянием и риском;
+  - разница дескрипторов при повторном одобрении;
+  - находки DM-24.
+- Очередь подтверждений:
+  - что, с какими аргументами (маскированными), риск, правило, оставшееся время;
+  - хронология сессии;
+  - обновление опросом раз в 5 с.
+- Хронология сессии агента по событиям четырёх типов. Тексты — по ТЗ 6.7.
+
 ## Журнал
 | Дата | Задача | Что сделано | Итог |
 |---|---|---|---|
@@ -142,6 +246,7 @@ npm-библиотек не добавляется: экраны агентов,
 | 27.10.2026 | 4.32 (поток F2b) | `deploy/build/Dockerfile.lab` (консоль в образе node, Go без сети, тестовый ключ), `aisec-cli tls init` (собственный УЦ установки, ключ не сохраняется), `deploy/compose/pilot/lab-install.sh`; руководство «Лаборатория», шаг 3.4 без УЦ; ADR-0019 — дополнение; `TestE2EPilot_LabInstall`; в облаке установка с нуля — 1 мин 45 с (сборка из кеша) | готова |
 | 27.10.2026 | 4.15, 4.17 (поток B3) | Захват задач: ADR-0025 внешние каталоги и IdP, вход через OIDC | в работе |
 | 27.10.2026 | 4.7 (поток A3) | Захват задачи: ADR-0023 агенты и MCP | в работе |
+| 27.10.2026 | 4.7 (поток A3) | ADR-0023 «Агенты и MCP». MCP сверен с ревизией 2026-07-28 (текущая): прокси понимает 2026-07-28 и 2025-11-25, только Streamable HTTP, `POST /mcp/v1/{server}`. Решения: — реестр: агент внутри приложения (ключ привязан к агенту или `X-AISec-Agent`), MCP-сервер по образцу провайдера, инструмент с каноничным хешем дескриптора; одобрение привязано к хешу, `changed` и `suspicious` — повторное одобрение как ослабление; раздел `tools` в версии политики: `unapproved`, `default`, правила с `args`, `rate`, `limits`; новые причины ослабления; своё подмножество JSON Schema с `x-aisec-path-prefix` и `x-aisec-domains`, строгий разбор аргументов; `require_approval`: ожидание в шлюзе (SSE с keep-alive, в `chat` до 5 мин), долгий опрос сервера, 10 мин по умолчанию, `approvals.decide` у `security_admin` и `analyst`; capabilities `sampling`, `elicitation`, `roots`, `tasks` вырезаются; события `agent_tool_call` и `agent_mcp` Задачи 4.8–4.12 разбиты на файлы и тесты (раздел «Уточнения задач 4.8–4.12») | готова |
 | 27.10.2026 | 4.13, 4.14 (поток B2) | Захват задач: сессии и `session.risk` (DM-06), эталон системного промпта и `prompt.integrity` (DM-26), `history.integrity` (DM-03) | в работе |
 
 ## Открытые вопросы
