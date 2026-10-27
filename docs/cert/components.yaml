@@ -988,7 +988,7 @@ components:
     attack_surface: true
     security_function: true
     provided_by: go-ldap Authors (github.com/go-ldap)
-    justification: В стандартной библиотеке Go нет LDAP и нет кодека BER (encoding/asn1 — только DER, без потокового чтения сообщений); собственный разборщик BER недоверенных ответов каталога — больший риск, чем проверенная библиотека с fuzz-тестом разбора пакетов. Выпуски v3.4.x регулярно (v3.4.15 — 07.10.2026), используется в Grafana и Gitea. Соединение устанавливает internal/auth/ldap сам (проверка адреса, LDAPS или StartTLS через internal/crypto, предел ответа 1 МиБ); NTLM, DIGEST-MD5, SASL/GSSAPI, анонимный bind, собственные функции соединения библиотеки и её отладочный журнал запрещены forbidigo. Подпакет gssapi и его зависимости (jcmturner/gokrb5, alexbrainman/sspi) в vendor и сборку не попадают; testify — только тесты библиотеки.
+    justification: В стандартной библиотеке Go нет LDAP и нет кодека BER (encoding/asn1 — только DER, без потокового чтения сообщений); собственный разборщик BER недоверенных ответов каталога — больший риск, чем проверенная библиотека с fuzz-тестом разбора пакетов. Выпуски v3.4.x регулярно (v3.4.15 — 07.10.2026), используется в Grafana и Gitea. Соединение устанавливает internal/auth/ldap сам (проверка адреса, LDAPS через internal/crypto; для StartTLS рукопожатие выполняет библиотека (crypto/tls) с *tls.Config из криптопрофиля internal/crypto — в профиле gost это нужно будет заменить; предел ответа 1 МиБ); NTLM, DIGEST-MD5, SASL/GSSAPI, анонимный bind, собственные функции соединения библиотеки и её отладочный журнал запрещены forbidigo. Подпакет gssapi и его зависимости (jcmturner/gokrb5, alexbrainman/sspi) в vendor и сборку не попадают; testify — только тесты библиотеки.
     decision: ADR-0025, раздел 2, п. 7; согласие владельца 27.10.2026 (поток 4-B3)
     decided: 2026-10-27
     license_files:
@@ -1036,7 +1036,7 @@ components:
     attack_surface: false
     security_function: false
     provided_by: Google (github.com/google/uuid)
-    justification: Импортируется корневым пакетом go-ldap/ldap/v3 (control.go), исключить без форка нельзя. Собственных зависимостей нет. Идентификаторы продукта по-прежнему — store.NewUUIDv7 на Random из internal/crypto.
+    justification: Импортируется корневым пакетом go-ldap/ldap/v3 (control.go), исключить без форка нельзя. Собственных зависимостей нет. Идентификаторы продукта по-прежнему — store.NewUUIDv7 на Random из internal/crypto; прямой импорт запрещён depguard (правило transitive-only).
     decision: ADR-0025, раздел 2, п. 7; согласие владельца 27.10.2026 (поток 4-B3)
     decided: 2026-10-27
     license_files:
