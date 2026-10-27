@@ -1,9 +1,9 @@
 # Этап 4, волна A: промпты
 
-Составлены 26.10.2026 (поток F2b) по `docs/plans/stage-4.md`. **Черновик, ждёт подтверждения владельца вместе с планом.** Потоки A1 и A2 берут только перенесённое из этапа 3 и могут стартовать сразу после подтверждения плана; A3 пишет только ADR.
+Составлены 26.10.2026 (поток F2b) по `docs/plans/stage-4.md`. **План подтверждён владельцем 27.10.2026** — волну можно запускать. Потоки A1 и A2 берут только перенесённое из этапа 3 и могут стартовать сразу после подтверждения плана; A3 пишет только ADR.
 
 Общие правила для всех потоков:
-- Интеграционная ветка `claude/stage-4-integration` от `main` после слияния этапа 3 (создаёт первый запущенный поток: `git push origin origin/main:refs/heads/claude/stage-4-integration`, если её ещё нет). Push в неё — только через merge: без rebase, amend и force-push. PR не открывать.
+- Интеграционная ветка `claude/stage-4-integration` — от `claude/stage-3-integration` (этап 3 в `main` ещё не влит; PR в `main` открывает владелец, после этого `main` вливается в интеграционную ветку обычным merge). Создаёт первый запущенный поток: `git push origin origin/claude/stage-3-integration:refs/heads/claude/stage-4-integration`, если её ещё нет. Push в неё — только через merge: без rebase, amend и force-push. PR не открывать.
 - Go 1.27.3 (иначе `GOTOOLCHAIN=go1.27.3`). Инструменты в облаке: `GOTOOLCHAIN=go1.27.3 make tools`, после этого `make lint` и `make sast` работают; govulncheck в облаке может получить 403 — это не провал задачи, проверяется в CI. Перед `make check` или `make sast` удалить `web/node_modules`. PostgreSQL для тестов: `pg_ctlcluster 16 main start`, `AISEC_TEST_DATABASE_URL`.
 - Номера: ADR закреплены в плане (4.4 — 0022, 4.7 — 0023, 4.15 — 0025, 4.18 — 0024, 4.22 — 0027, 4.26 — 0026); миграции — с 0047 у влившегося первым, перед коммитом сверить с интеграционной веткой.
 - RBAC: `x-permission` у каждой новой операции в `api/openapi.yaml`, право в `internal/auth/permissions.go`, `make rbac-matrix`; у каждого эндпоинта — тест на отказ; у каждого действия администратора — код аудита в `internal/audit/catalog.go`.
