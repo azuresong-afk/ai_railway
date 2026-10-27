@@ -26,6 +26,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/agents"
 	"github.com/azuresong-afk/ai_railway/internal/alerting"
 	"github.com/azuresong-afk/ai_railway/internal/api"
+	"github.com/azuresong-afk/ai_railway/internal/approvals"
 	"github.com/azuresong-afk/ai_railway/internal/apps"
 	"github.com/azuresong-afk/ai_railway/internal/audit"
 	"github.com/azuresong-afk/ai_railway/internal/auth"
@@ -476,6 +477,22 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	// Очередь подтверждений вызовов инструментов (DM-22, задача 4.10):
+	// аргументы — под ключом данных (ЗИ.1), удаляются через 30 суток после
+	// закрытия, запросы — по сроку метаданных событий.
+	approvalStore, err := approvals.NewPGStore(db.Pool(), auditLog)
+	if err != nil {
+		return err
+	}
+	approvalsSvc, err := approvals.New(approvals.Options{Store: approvalStore, Provider: p, Box: box, OrgID: audit.DefaultOrgID,
+		MetadataDays: func(ctx context.Context) (int, error) {
+			r, err := eventStore.Retention(ctx)
+			return r.MetadataDays, err
+		}, Logger: logger.With("component", "approvals")})
+	if err != nil {
+		return err
+	}
+	go approvalsSvc.Run(ctx, approvals.RunInterval)
 	// Правила «частота», «аномалия» и «бюджет» (задача 3.12, Р3) — фоновой
 	// задачей раз в минуту; расход — приложений с заданным бюджетом.
 	alertStore.SetBudgetSource(budgetUsage(appsSvc))
@@ -531,6 +548,7 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		Alerts:     alertsSvc,
 		Notify:     notifySvc,
 		Agents:     agentsSvc,
+		Approvals:  approvalsSvc,
 		Incidents:  incidentsSvc,
 		Dashboards: dashStore,
 		Reports:    reportsSvc,
@@ -562,8 +580,10 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 			return err
 		}
 		bundleRoutes = append(bundleRoutes, api.AgentsInternalRoutes(agentsSvc, logger.With("listener", "internal"))...)
+		bundleRoutes = append(bundleRoutes, api.ApprovalsInternalRoutes(approvalsSvc, logger.With("listener", "internal"))...)
 		bundleSvc.Store(bsvc)
-		internal, err := newInternalServer(ctx, cfg, tp, hasher, gateways, eventStore, ca, certPEM, keyPEM, bundleRoutes, logger)
+		internal, err := newInternalServer(ctx, cfg, tp, hasher, gateways, eventStore, approvalsSvc, ca, certPEM, keyPEM, bundleRoutes,
+			logger)
 		if err != nil {
 			return err
 		}
@@ -782,7 +802,7 @@ func loadCA(certFile, keyFile string) (*aisecCrypto.CA, error) {
 // newInternalServer — внутренний API шлюзов на отдельном порту: TLS с
 // обязательным клиентским сертификатом внутреннего УЦ (mTLS, ИАФ.10).
 func newInternalServer(ctx context.Context, cfg *serverConfig, tp aisecCrypto.TLSProvider, hasher aisecCrypto.Hasher,
-	gateways *gwregistry.Service, eventStore events.Store, ca *serverCA, certPEM, keyPEM []byte,
+	gateways *gwregistry.Service, eventStore events.Store, approvalsSvc *approvals.Service, ca *serverCA, certPEM, keyPEM []byte,
 	extra []api.Route, logger *slog.Logger) (*httpserver.Server, error) {
 	if cfg.InternalTLSCertFile != "" {
 		var err error
@@ -795,7 +815,7 @@ func newInternalServer(ctx context.Context, cfg *serverConfig, tp aisecCrypto.TL
 	}
 	ilog := logger.With("listener", "internal")
 	handler, _, err := api.NewInternal(api.InternalOptions{Logger: ilog, Hasher: hasher, Gateways: gateways, Events: eventStore,
-		Extra: extra})
+		Approvals: approvalsSvc, Extra: extra})
 	if err != nil {
 		return nil, err
 	}

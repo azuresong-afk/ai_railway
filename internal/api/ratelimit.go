@@ -44,6 +44,9 @@ func DefaultRateRules() []RateRule {
 		// Проверка цепочки аудита читает весь журнал (задача 2.4a).
 		{Prefix: "/api/v1/audit/verify", Method: http.MethodPost, Max: 5, Window: time.Minute},
 		{Prefix: "/internal/", Max: 600, Window: time.Minute},
+		// Долгий опрос очереди подтверждений (задача 4.10): до 256 ожидающих
+		// вызовов на шлюз, каждый — опрос раз в 25 с, плюс создание и отмена.
+		{Prefix: "/internal/v1/approvals", Max: 2400, Window: time.Minute},
 		{Prefix: "/healthz", Max: 60, Window: time.Minute},
 		{Prefix: "/readyz", Max: 60, Window: time.Minute},
 	}
