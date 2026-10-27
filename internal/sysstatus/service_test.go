@@ -994,7 +994,9 @@ func TestDM44_GatewayClockAndTLS(t *testing.T) {
 		t.Fatalf("после исправления: %v", got)
 	}
 	// Сертификат удалён из консоли, а шлюз отвечает прежним — тоже условие.
-	o.CustomerCert = func(context.Context) (sysstatus.CustomerCert, bool, error) { return sysstatus.CustomerCert{}, false, nil }
+	o.CustomerCert = func(context.Context) (sysstatus.CustomerCert, bool, error) {
+		return sysstatus.CustomerCert{}, false, nil
+	}
 	s2, err := sysstatus.New(o)
 	if err != nil {
 		t.Fatal(err)
