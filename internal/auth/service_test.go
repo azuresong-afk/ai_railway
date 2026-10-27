@@ -506,6 +506,25 @@ func TestSessionIdleAndLifetime(t *testing.T) {
 	}
 }
 
+// УПД.4, перенесено из этапа 3 (задача 4.5): проверка в контексте
+// WithoutActivity (тики потока дашборда) не продлевает сессию — по простою
+// она завершается, хотя её проверяют каждую минуту.
+func TestSessionPassiveCheckDoesNotExtend(t *testing.T) {
+	e := newEnv(t)
+	res := e.mustLogin(t, "ivanov", phrase)
+	passive := auth.WithoutActivity(context.Background())
+	for range 14 {
+		e.clock.add(time.Minute)
+		if _, err := e.svc.Authenticate(passive, res.Token, testIP); err != nil {
+			t.Fatalf("сессия завершена раньше срока простоя: %v", err)
+		}
+	}
+	e.clock.add(time.Minute)
+	if _, err := e.svc.Authenticate(passive, res.Token, testIP); !errors.Is(err, auth.ErrUnauthenticated) {
+		t.Fatalf("тики продлили сессию: %v", err)
+	}
+}
+
 // УПД.4: лимит одновременных сессий — новая вытесняет самую старую.
 func TestSessionLimit(t *testing.T) {
 	e := newEnv(t)

@@ -351,9 +351,22 @@ func (s *Service) openSession(ctx context.Context, u User, state SessionState, i
 	return LoginResult{Caller: c, Token: token, CSRF: csrf}, nil
 }
 
+// passiveKey — ключ контекста проверки сессии без отметки активности.
+type passiveKey struct{}
+
+// WithoutActivity — контекст повторной проверки сессии, которая не
+// считается действием пользователя: тики открытого потока обновления
+// дашборда (перенесено из этапа 3, задача 4.5). Срок и бездействие
+// проверяются как обычно, активность не отмечается — открытая вкладка не
+// продлевает сессию, по простою поток закрывается вместе с ней.
+func WithoutActivity(ctx context.Context) context.Context {
+	return context.WithValue(ctx, passiveKey{}, true)
+}
+
 // Authenticate находит сессию по токену из cookie (УПД.4): завершает
-// истёкшую по абсолютному сроку или бездействию, отмечает активность.
-// Пароль, истёкший во время сессии, переводит её в SessionPasswordChange.
+// истёкшую по абсолютному сроку или бездействию, отмечает активность (кроме
+// контекста WithoutActivity). Пароль, истёкший во время сессии, переводит
+// её в SessionPasswordChange.
 func (s *Service) Authenticate(ctx context.Context, token string, ip netip.Addr) (Caller, error) {
 	h, err := hashToken(s.hasher, token)
 	if err != nil {
@@ -380,7 +393,7 @@ func (s *Service) Authenticate(ctx context.Context, token string, ip netip.Addr)
 	if now.Sub(sess.LastSeenAt) >= time.Duration(pol.SessionIdleMinutes)*time.Minute {
 		return Caller{}, s.expire(ctx, u, sess, RevokeIdle, ip, now)
 	}
-	if now.Sub(sess.LastSeenAt) >= touchInterval {
+	if passive, _ := ctx.Value(passiveKey{}).(bool); !passive && now.Sub(sess.LastSeenAt) >= touchInterval {
 		if err := s.store.TouchSession(ctx, sess.ID, now); err != nil {
 			return Caller{}, err
 		}
