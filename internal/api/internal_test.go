@@ -146,7 +146,7 @@ func TestHeartbeatHandler(t *testing.T) {
 		t.Fatal(err)
 	}
 	w := do(h, http.MethodPost, "/internal/v1/heartbeat", `{"version":"2.0.0","bundle_etag":"\"abc\""}`, "Content-Type", "application/json")
-	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"interval_seconds":30`) {
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"interval_seconds":30`) || !strings.Contains(w.Body.String(), `"clock_tls":true`) {
 		t.Fatalf("heartbeat: %d %s", w.Code, w.Body)
 	}
 	// Счётчики расхода (задача 3.18): ответ — расход остальных процессов.

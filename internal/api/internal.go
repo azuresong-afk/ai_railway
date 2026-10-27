@@ -274,6 +274,10 @@ type HeartbeatResponse struct {
 	// Budget — расход остальных процессов и шлюзов за месяц по приложениям
 	// с жёстким бюджетом (задача 3.18): шлюз складывает его со своим.
 	Budget *HeartbeatBudgetState `json:"budget,omitempty"`
+	// ClockTLS — сервер принимает поля time и tls_fingerprint (3Н40, 3Н43
+	// ревью 3.r3): шлюз присылает их только после такого ответа, чтобы
+	// новый шлюз работал с сервером прежней версии.
+	ClockTLS bool `json:"clock_tls"`
 }
 
 // HeartbeatBudgetState — расход остальных процессов: приложение → 1e-7 ₽.
@@ -327,7 +331,7 @@ func heartbeat(g *gwregistry.Service, logger *slog.Logger) http.HandlerFunc {
 			WriteProblem(w, errInternal())
 			return
 		}
-		resp := HeartbeatResponse{ServerTime: res.At.UTC(), IntervalSeconds: int(gwregistry.DefaultHeartbeatInterval / time.Second),
+		resp := HeartbeatResponse{ServerTime: res.At.UTC(), ClockTLS: true, IntervalSeconds: int(gwregistry.DefaultHeartbeatInterval / time.Second),
 			Reissue: res.Reissue}
 		if !res.VerifyRequestedAt.IsZero() {
 			at := res.VerifyRequestedAt.UTC()

@@ -407,7 +407,7 @@ components:
           type: string
           format: date-time
           description: |
-            Часы шлюза при отправке heartbeat. Сервер хранит расхождение с
+            Часы шлюза при отправке heartbeat (только после ответа с `clock_tls: true`). Сервер хранит расхождение с
             собой (не больше 10 лет по модулю) и ведёт условие «Состояния
             системы» `gateway_clock` — больше минуты (3Н40 ревью 3.r3). Шлюз
             прежней версии поле не присылает.
@@ -480,6 +480,12 @@ components:
       properties:
         server_time: { type: string, format: date-time }
         interval_seconds: { type: integer, minimum: 1, description: Рекомендуемый период heartbeat }
+        clock_tls:
+          type: boolean
+          description: |
+            Сервер принимает поля `time` и `tls_fingerprint` (3Н40, 3Н43 ревью 3.r3): шлюз
+            присылает их только после такого ответа — шлюзы обновляют раньше сервера, а
+            сервер прежней версии отклоняет неизвестные поля.
         reissue:
           type: boolean
           description: |
