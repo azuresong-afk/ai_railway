@@ -210,7 +210,7 @@ npm-библиотек не добавляется: экраны агентов,
   - тестовый MCP-сервер для `make dev` и e2e — `internal/mockmcp` (обе ревизии, подмена описания, отравленное описание, результат с инъекцией).
 - Тесты:
   - `TestDM24_PoisonedDescriptionHidden`, `TestDM07_MCPToolResultInjection`, `TestDM25_ChangedToolCallBlocked`;
-  - `FuzzParseJSONRPC`, `FuzzParseSSE`, `FuzzToolsListResult`, `FuzzCallToolResult`;
+  - `FuzzParseJSONRPC`, `FuzzParseSSE`, `FuzzToolsListResult`, `FuzzCallToolResult`, `FuzzCheckHeaders`;
   - несовпадение заголовков — `-32020`;
   - неизвестная версия;
   - пакет JSON-RPC отвергнут;
@@ -271,7 +271,7 @@ npm-библиотек не добавляется: экраны агентов,
 | 27.10.2026 | 4.10 (поток C1) | Захват задачи: `require_approval` и очередь подтверждений (DM-22) | в работе |
 | 27.10.2026 | 4.18 (поток C3) | Захват задачи: ADR-0024 ML-детекторы и процесс `aisec-ml` | в работе |
 | 27.10.2026 | 4.11 (поток C2) | Захват задачи: MCP-прокси в шлюзе (DM-07 MCP, DM-24) | в работе |
-| 27.10.2026 | 4.11 (поток C2) | MCP-прокси `POST /mcp/v1/{server}` (Streamable HTTP, 2026-07-28 и 2025-11-25): разбор `internal/mcp` с пределами и fuzz-целями `FuzzParseJSONRPC`, `FuzzParseSSE`, `FuzzToolsListResult`, `FuzzCallToolResult`; доступ по ключу агента, `Origin` — 403; тело к серверу собирается заново, возможности клиента вырезаются, `Authorization` клиента не уходит, учётные данные — из `Bundle.MCPSecrets`; адрес — `internal/netguard` после разрешения имени, без перенаправлений. `tools/list`: встроенная проверка описаний (DM-24, эталоны `tooldesc-01`, `tooldesc-neg-01`), хеш против реестра (DM-25), показ по `Policy.ToolListed`, `tools:observe`; `tools/call`: политика вызовов, `tool_args`, подтверждение через очередь 4.10 (DM-22), результат — DM-07. События `agent_mcp`, `agent_tool_call` (миграция 0057), правила `agents.tool_blocked`, `agents.tool_poisoning`; `mock-mcp` в `make dev` и e2e (`TestE2EStage4_MCPProxy`). Уточнения — ADR-0023, дополнение 3 | готова |
+| 27.10.2026 | 4.11 (поток C2) | MCP-прокси `POST /mcp/v1/{server}` (Streamable HTTP, 2026-07-28 и 2025-11-25): разбор `internal/mcp` с пределами и fuzz-целями `FuzzParseJSONRPC`, `FuzzParseSSE`, `FuzzToolsListResult`, `FuzzCallToolResult`, `FuzzCheckHeaders`; доступ по ключу агента, `Origin` — 403; тело к серверу собирается заново, возможности клиента вырезаются, `Authorization` клиента не уходит, учётные данные — из `Bundle.MCPSecrets`; адрес — `internal/netguard` после разрешения имени, без перенаправлений. `tools/list`: встроенная проверка описаний (DM-24, эталоны `tooldesc-01`, `tooldesc-neg-01`), хеш против реестра (DM-25), показ по `Policy.ToolListed`, `tools:observe`; `tools/call`: политика вызовов, `tool_args`, подтверждение через очередь 4.10 (DM-22), результат — DM-07. События `agent_mcp`, `agent_tool_call` (миграция 0057), правила `agents.tool_blocked`, `agents.tool_poisoning`; `mock-mcp` в `make dev` и e2e (`TestE2EStage4_MCPProxy`). Уточнения — ADR-0023, дополнение 3 | готова |
 
 ## Открытые вопросы
 ### Ждут решения владельца
