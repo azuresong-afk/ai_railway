@@ -384,3 +384,28 @@ func TestNetworkFailureBackoff(t *testing.T) {
 		t.Fatalf("после паузы: %v", err)
 	}
 }
+
+// Ключи для пакета шлюзов (задача 4.21): из кэша не старше BundleKeysTTL,
+// затем — новый запрос JWKS; смена ключа у IdP видна после срока.
+func TestKeysForBundle(t *testing.T) {
+	now := time.Now()
+	e := newEnv(t, oidc.WithClock(func() time.Time { return now }))
+	ctx := context.Background()
+	k1, err := e.c.KeysForBundle(ctx, e.cfg)
+	if err != nil || k1.Len() != 1 || e.idp.JWKSHits() != 1 {
+		t.Fatalf("первый запрос: %v, ключей %d, запросов %d", err, k1.Len(), e.idp.JWKSHits())
+	}
+	next, err := cryptotest.NewJWTSigner("ES256", "k2", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.idp.SetSigner(next)
+	now = now.Add(oidc.BundleKeysTTL - time.Second)
+	if k, err := e.c.KeysForBundle(ctx, e.cfg); err != nil || k.Has("k2") || e.idp.JWKSHits() != 1 {
+		t.Fatalf("до срока — кэш: %v, запросов %d", err, e.idp.JWKSHits())
+	}
+	now = now.Add(2 * time.Second)
+	if k, err := e.c.KeysForBundle(ctx, e.cfg); err != nil || !k.Has("k2") || e.idp.JWKSHits() != 2 {
+		t.Fatalf("после срока — новый набор: %v, запросов %d", err, e.idp.JWKSHits())
+	}
+}

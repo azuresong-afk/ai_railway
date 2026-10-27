@@ -37,6 +37,10 @@ const (
 	// RefreshInterval — не чаще этого JWKS обновляется вне очереди
 	// (неизвестный kid).
 	RefreshInterval = time.Minute
+	// BundleKeysTTL — насколько старым может быть JWKS, который сервер
+	// кладёт в пакет конфигурации шлюзов (задача 4.21): смена ключей IdP
+	// доходит до шлюзов за минуты, а не за MetadataTTL.
+	BundleKeysTTL = 5 * time.Minute
 	// maxURL — длина адресов в discovery.
 	maxURL = 512
 	// maxCode — длина кода авторизации из адреса возврата.
@@ -277,9 +281,26 @@ func (c *Client) Check(ctx context.Context, cfg Config) error {
 	return err
 }
 
+// KeysForBundle — ключи подписи издателя для пакета конфигурации шлюзов
+// (задача 4.21, ADR-0025, 4.1): из кэша, если они не старше BundleKeysTTL,
+// иначе JWKS запрашивается заново тем же клиентом (очередь, срок, предел
+// ответа). Шлюзы в IdP не ходят.
+func (c *Client) KeysForBundle(ctx context.Context, cfg Config) (*aisecCrypto.JWKS, error) {
+	e, err := c.entryTTL(ctx, cfg, false, BundleKeysTTL)
+	if err != nil {
+		return nil, err
+	}
+	return e.keys, nil
+}
+
 // entry — кэш для cfg; force — обновить JWKS вне очереди (не чаще
 // RefreshInterval).
 func (c *Client) entry(ctx context.Context, cfg Config, force bool) (cacheEntry, error) {
+	return c.entryTTL(ctx, cfg, force, MetadataTTL)
+}
+
+// entryTTL — entry, где JWKS старше keysTTL запрашивается заново.
+func (c *Client) entryTTL(ctx context.Context, cfg Config, force bool, keysTTL time.Duration) (cacheEntry, error) {
 	if err := c.lockFetch(ctx); err != nil {
 		return cacheEntry{}, err
 	}
@@ -297,7 +318,7 @@ func (c *Client) entry(ctx context.Context, cfg Config, force bool) (cacheEntry,
 	if failed && (needMeta || e.keys == nil) {
 		return cacheEntry{}, lastErr
 	}
-	e, err := c.refreshEntry(ctx, cfg, e, now, force)
+	e, err := c.refreshEntry(ctx, cfg, e, now, force, keysTTL)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err != nil {
@@ -312,7 +333,8 @@ func (c *Client) entry(ctx context.Context, cfg Config, force bool) (cacheEntry,
 }
 
 // refreshEntry обновляет устаревшие метаданные и JWKS записи e.
-func (c *Client) refreshEntry(ctx context.Context, cfg Config, e cacheEntry, now time.Time, force bool) (cacheEntry, error) {
+func (c *Client) refreshEntry(ctx context.Context, cfg Config, e cacheEntry, now time.Time, force bool,
+	keysTTL time.Duration) (cacheEntry, error) {
 	if e.key == "" || now.Sub(e.metaAt) >= MetadataTTL {
 		meta, err := c.fetchMetadata(ctx, cfg)
 		if err != nil {
@@ -320,7 +342,7 @@ func (c *Client) refreshEntry(ctx context.Context, cfg Config, e cacheEntry, now
 		}
 		e = cacheEntry{key: cfg.key(), meta: meta, metaAt: now}
 	}
-	refresh := e.keys == nil || now.Sub(e.keysAt) >= MetadataTTL
+	refresh := e.keys == nil || now.Sub(e.keysAt) >= keysTTL
 	if force && !refresh && now.Sub(e.refreshAt) >= RefreshInterval {
 		refresh = true
 		e.refreshAt = now
