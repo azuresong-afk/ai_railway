@@ -4564,6 +4564,28 @@ paths:
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ProblemInternal' }
         '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/report-recipients:
+    get:
+      summary: Пользователи для выбора получателей рассылки отчётов
+      description: |
+        Право `reports.schedules.manage`. Активные пользователи, которым вызывающий вправе слать отчёты:
+        есть `reports.read` на все объекты и права на те же разделы отчёта, что у вызывающего (УПД.2).
+        Выдаются ID, логин, имя и признак `has_email` — адрес не выдаётся: расписания ведёт тот, у кого нет
+        права `users.read`. Пользователь без адреса в расписании допустим, при отправке он пропускается,
+        число пропущенных — в журнале рассылки (`skipped_no_email`).
+      x-permission: reports.schedules.manage
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      responses:
+        '200':
+          description: Пользователи
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReportRecipientList' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
   /api/v1/agents:
     get:
       summary: Агенты
@@ -7793,10 +7815,19 @@ components:
         format: { type: string, enum: [html, xlsx] }
         channel_id: { type: string, format: uuid }
         enabled: { type: boolean, default: true }
+        recipient_user_ids:
+          type: array
+          maxItems: 20
+          uniqueItems: true
+          items: { type: string, format: uuid }
+          description: |
+            Получатели-пользователи консоли (необязательно): адрес берётся из учётной записи при отправке, в
+            дополнение к адресам почтового канала. Пользователь — активный, с `reports.read` на все объекты и
+            с правом на те разделы отчёта, что входят в расписание (иначе 400).
         version: { type: integer, minimum: 1, description: Для изменения }
     ReportSchedule:
       type: object
-      required: [id, name, report, frequency, at, format, channel_id, enabled, next_run_at, version, created_at, created_by, updated_at, updated_by]
+      required: [id, name, report, frequency, at, format, channel_id, enabled, recipient_user_ids, next_run_at, version, created_at, created_by, updated_at, updated_by]
       properties:
         id: { type: string, format: uuid }
         name: { type: string }
@@ -7808,6 +7839,7 @@ components:
         format: { type: string, enum: [html, xlsx] }
         channel_id: { type: string, format: uuid }
         enabled: { type: boolean }
+        recipient_user_ids: { type: array, items: { type: string, format: uuid } }
         next_run_at: { type: string, format: date-time }
         last_run_at: { type: string, format: date-time }
         version: { type: integer }
@@ -7822,7 +7854,7 @@ components:
         items: { type: array, items: { $ref: '#/components/schemas/ReportSchedule' } }
     ReportRun:
       type: object
-      required: [id, due_at, period_first, period_last, status, attempts, created_at]
+      required: [id, due_at, period_first, period_last, status, attempts, created_at, skipped_no_email]
       properties:
         id: { type: string, format: uuid }
         due_at: { type: string, format: date-time }
@@ -7834,6 +7866,25 @@ components:
         error: { type: string, description: Код ошибки без текста ответа сервера }
         created_at: { type: string, format: date-time }
         sent_at: { type: string, format: date-time }
+        skipped_no_email:
+          type: integer
+          description: |
+            Получателей-пользователей пропущено в последней попытке: нет e-mail, учётная запись деактивирована
+            или у роли нет права на отчёт. Адреса в журнал доставки не пишутся.
+    ReportRecipientList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            required: [id, login, display_name, has_email]
+            properties:
+              id: { type: string, format: uuid }
+              login: { type: string }
+              display_name: { type: string }
+              has_email: { type: boolean, description: 'Задан ли e-mail; сам адрес не выдаётся' }
     ReportChannelList:
       type: object
       required: [items]

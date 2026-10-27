@@ -263,7 +263,46 @@ type clock struct{ t time.Time }
 
 func (c *clock) now() time.Time { return c.t }
 
+// fakeDirectory — справочник получателей: пользователи по ID.
+type fakeDirectory struct {
+	mu    sync.Mutex
+	users map[string]Recipient
+	err   error
+}
+
+func (f *fakeDirectory) Recipient(_ context.Context, id string) (Recipient, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err != nil {
+		return Recipient{}, f.err
+	}
+	if r, ok := f.users[id]; ok {
+		return r, nil
+	}
+	return Recipient{}, ErrRecipientNotFound
+}
+
+const (
+	uWithMail  = "01900000-0000-7000-8000-0000000000a1"
+	uWithMail2 = "01900000-0000-7000-8000-0000000000a2"
+	uNoMail    = "01900000-0000-7000-8000-0000000000a3"
+	uInactive  = "01900000-0000-7000-8000-0000000000a4"
+	uNoRead    = "01900000-0000-7000-8000-0000000000a5"
+)
+
+func newDirectory() *fakeDirectory {
+	all := Scope{Incidents: true, Alerts: true, Budgets: true}
+	return &fakeDirectory{users: map[string]Recipient{
+		uWithMail:  {Email: "ivanov@example.ru", Active: true, CanRead: true, Scope: all},
+		uWithMail2: {Email: "petrov@example.ru", Active: true, CanRead: true, Scope: all},
+		uNoMail:    {Active: true, CanRead: true, Scope: all},
+		uInactive:  {Email: "off@example.ru", CanRead: true, Scope: all},
+		uNoRead:    {Email: "noread@example.ru", Active: true},
+	}}
+}
+
 type svcEnv struct {
+	dir   *fakeDirectory
 	svc   *Service
 	mem   *Memory
 	mail  *fakeMailer
@@ -284,9 +323,9 @@ func newSvc(t *testing.T) *svcEnv {
 	clk := &clock{t: time.Date(2026, 10, 25, 9, 0, 0, 0, time.UTC)}
 	b, _, inc := newBuilder(clk.t)
 	b.Now = clk.now
-	e := &svcEnv{mem: NewMemory(), mail: &fakeMailer{}, clock: clk, inc: inc}
+	e := &svcEnv{mem: NewMemory(), mail: &fakeMailer{}, clock: clk, inc: inc, dir: newDirectory()}
 	loc := mustLoc(t, "Europe/Moscow")
-	e.svc, err = New(Options{Store: e.mem, Builder: b, Mailer: e.mail, IDs: ids.NewGenerator(r), Now: clk.now,
+	e.svc, err = New(Options{Store: e.mem, Builder: b, Mailer: e.mail, IDs: ids.NewGenerator(r), Now: clk.now, Directory: e.dir,
 		Channels: fakeChannels{ch: map[string]notify.Channel{
 			testChannel:                            {ID: testChannel, Type: notify.TypeEmail, Enabled: true, Settings: notify.Settings{To: []string{"a@example.org"}}},
 			"01900000-0000-7000-8000-0000000000ab": {ID: "01900000-0000-7000-8000-0000000000ab", Type: notify.TypeWebhook, Enabled: true},
@@ -642,5 +681,141 @@ func TestTickAuditFailureAndInterruptedRuns(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(e.actions(), " "), "report.delivery_failed") {
 		t.Errorf("нет report.delivery_failed: %v", e.actions())
+	}
+}
+
+// Задача 4.6: получатели — пользователи консоли. Адрес берётся из учётной
+// записи при отправке и добавляется к адресам канала; пользователь без
+// адреса, деактивированный или без права на отчёт пропускается, число
+// пропущенных остаётся в журнале рассылки, адресов в журнале нет.
+func TestTickUserRecipients(t *testing.T) {
+	e := newSvc(t)
+	ctx := context.Background()
+	in := daily()
+	in.RecipientUserIDs = []string{uWithMail, uNoMail, uWithMail2}
+	s, err := e.svc.CreateSchedule(ctx, by, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(s.RecipientUserIDs, in.RecipientUserIDs) {
+		t.Fatalf("получатели расписания: %v", s.RecipientUserIDs)
+	}
+	e.clock.t = utc(2026, 10, 26, 5, 1)
+	// После сохранения расписания пользователь потерял адрес, а другой — активность.
+	e.dir.mu.Lock()
+	r := e.dir.users[uWithMail2]
+	r.Active = false
+	e.dir.users[uWithMail2] = r
+	e.dir.mu.Unlock()
+	if err := e.svc.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(e.mail.mails) != 1 || !slices.Equal(e.mail.mails[0].ExtraTo, []string{"ivanov@example.ru"}) {
+		t.Fatalf("получатели-пользователи: %+v", e.mail.mails)
+	}
+	runs, _ := e.svc.Runs(ctx, s.ID, 10) //nolint:gosec // G104: ошибка не важна для проверки
+	if len(runs) != 1 || runs[0].Status != RunSent || runs[0].SkippedNoEmail != 2 {
+		t.Fatalf("журнал: %+v", runs)
+	}
+	var export map[string]any
+	for _, a := range e.mem.Audited() {
+		if a.Action == "data.export" {
+			export, _ = a.Details.(map[string]any)
+		}
+	}
+	if export["user_recipients"] != 1 {
+		t.Fatalf("data.export: %v", export)
+	}
+	if sk, _ := export["skipped_users"].([]string); !slices.Equal(sk, []string{uNoMail, uWithMail2}) {
+		t.Fatalf("пропущенные в data.export: %v", export["skipped_users"])
+	}
+	// В журнале рассылки и в записях расписания адресов пользователей нет.
+	for _, a := range e.mem.Audited() {
+		if a.Action != "data.export" && strings.Contains(fmt.Sprintf("%+v", a), "example.ru") {
+			t.Errorf("адрес пользователя в записи %s", a.Action)
+		}
+	}
+	if strings.Contains(fmt.Sprintf("%+v", runs), "example.ru") {
+		t.Errorf("адрес в журнале рассылки: %+v", runs)
+	}
+}
+
+func TestScheduleRecipientChecks(t *testing.T) {
+	e := newSvc(t)
+	ctx := context.Background()
+	for name, ids := range map[string][]string{
+		"неизвестный":     {"01900000-0000-7000-8000-0000000000ff"},
+		"деактивирован":   {uInactive},
+		"нет права":       {uNoRead},
+		"не UUID":         {"ivanov"},
+		"повтор":          {uWithMail, uWithMail},
+		"слишком много":   make([]string, MaxUserRecipients+1),
+		"заглавные буквы": {"01900000-0000-7000-8000-0000000000A1"},
+	} {
+		in := daily()
+		in.Name = name
+		in.RecipientUserIDs = ids
+		var ie *InputError
+		if _, err := e.svc.CreateSchedule(ctx, by, in); !errors.As(err, &ie) || ie.Fields["recipient_user_ids"] == "" {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	// Пользователь без адреса допустим; права на разделы не уже, чем у автора.
+	in := daily()
+	in.RecipientUserIDs = []string{uNoMail}
+	if _, err := e.svc.CreateSchedule(ctx, by, in); err != nil {
+		t.Fatalf("пользователь без адреса: %v", err)
+	}
+	narrow := by
+	narrow.Scope = Scope{Incidents: true}
+	e.dir.mu.Lock()
+	e.dir.users[uWithMail] = Recipient{Email: "ivanov@example.ru", Active: true, CanRead: true}
+	e.dir.mu.Unlock()
+	in = daily()
+	in.Name = "С инцидентами"
+	in.Report = KindIncidents
+	in.RecipientUserIDs = []string{uWithMail}
+	var ie *InputError
+	if _, err := e.svc.CreateSchedule(ctx, narrow, in); !errors.As(err, &ie) {
+		t.Fatalf("получатель без права на инциденты: %v", err)
+	}
+	// Без справочника получатели-пользователи не сохраняются; справочник
+	// недоступен — ошибка, а не «пропущен».
+	e.dir.err = errors.New("сбой")
+	in = daily()
+	in.Name = "Сбой"
+	in.RecipientUserIDs = []string{uWithMail2}
+	if _, err := e.svc.CreateSchedule(ctx, by, in); err == nil || errors.As(err, &ie) {
+		t.Fatalf("сбой справочника: %v", err)
+	}
+}
+
+// Сбой справочника при отправке — повтор, а не «письмо без получателей-пользователей».
+func TestTickDirectoryFailureRetries(t *testing.T) {
+	e := newSvc(t)
+	ctx := context.Background()
+	in := daily()
+	in.RecipientUserIDs = []string{uWithMail}
+	s, err := e.svc.CreateSchedule(ctx, by, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.clock.t = utc(2026, 10, 26, 5, 1)
+	e.dir.err = errors.New("сбой")
+	if err := e.svc.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	runs, _ := e.svc.Runs(ctx, s.ID, 10) //nolint:gosec // G104: ошибка не важна для проверки
+	if len(e.mail.mails) != 0 || len(runs) != 1 || runs[0].Status != RunPending || runs[0].Error != notify.ErrCodeInternal {
+		t.Fatalf("после сбоя: писем %d, журнал %+v", len(e.mail.mails), runs)
+	}
+	e.dir.err = nil
+	e.clock.t = e.clock.t.Add(time.Hour)
+	if err := e.svc.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	runs, _ = e.svc.Runs(ctx, s.ID, 10) //nolint:gosec // G104: ошибка не важна для проверки
+	if len(e.mail.mails) != 1 || runs[0].Status != RunSent {
+		t.Fatalf("после восстановления: писем %d, журнал %+v", len(e.mail.mails), runs)
 	}
 }

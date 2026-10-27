@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -68,7 +69,7 @@ func (f fakeReportChannels) Channels(ctx context.Context) ([]notify.Channel, err
 }
 
 // newTestReports собирает сервис отчётов на подменах источников.
-func newTestReports(t testing.TB, d reports.Dash) *reports.Service {
+func newTestReports(t testing.TB, d reports.Dash, dir reports.Directory) *reports.Service {
 	t.Helper()
 	p, err := aisecCrypto.New(aisecCrypto.ProfileStandard)
 	if err != nil {
@@ -80,7 +81,7 @@ func newTestReports(t testing.TB, d reports.Dash) *reports.Service {
 	}
 	svc, err := reports.New(reports.Options{Store: reports.NewMemory(),
 		Builder:  &reports.Builder{Dash: d, Incidents: fakeReportIncidents{}, Alerts: fakeReportAlerts{}, Facts: fakeReportFacts{}},
-		Channels: fakeReportChannels{}, IDs: ids.NewGenerator(r),
+		Channels: fakeReportChannels{}, Directory: dir, IDs: ids.NewGenerator(r),
 		Location: func(context.Context) (*time.Location, error) { return time.UTC, nil },
 		Logger:   slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))})
 	if err != nil {
@@ -346,5 +347,68 @@ func TestReportSchedulesViaAPI(t *testing.T) {
 	// Без CSRF-токена изменение отклоняется.
 	if w := e.call(admin, "POST", "/api/v1/report-schedules", scheduleBody("Без CSRF"), false); w.Code != http.StatusForbidden {
 		t.Errorf("без CSRF: %d", w.Code)
+	}
+}
+
+// Задача 4.6: получатели рассылки — пользователи консоли. Список для выбора
+// без адресов, только с reports.schedules.manage; в расписание попадают
+// активные пользователи с правом на отчёты (не владелец приложения).
+func TestReportRecipientsViaAPI(t *testing.T) {
+	e := newAppsEnv(t)
+	admin := e.mustLogin(t, "admin")
+	if w := e.call(admin, "PUT", "/api/v1/users/"+tAuditorID+"/email", `{"email":"auditor@example.ru"}`, true); w.Code != 200 {
+		t.Fatalf("e-mail аудитора: %d %s", w.Code, w.Body)
+	}
+	w := e.call(admin, "GET", "/api/v1/report-recipients", "", false)
+	if w.Code != 200 || strings.Contains(w.Body.String(), "@") {
+		t.Fatalf("список: %d %s", w.Code, w.Body)
+	}
+	var list ReportRecipientList
+	if err := json.Unmarshal(w.Body.Bytes(), &list); err != nil {
+		t.Fatal(err)
+	}
+	has := map[string]bool{}
+	for _, it := range list.Items {
+		has[it.ID] = it.HasEmail
+	}
+	if !has[tAuditorID] || has[tAnalystID] || len(has) == 0 {
+		t.Fatalf("признак адреса: %v", has)
+	}
+	if _, ok := has[tOwnerID]; ok {
+		t.Fatalf("владелец приложения (reports.read со ScopeOwn) в списке получателей: %v", has)
+	}
+	for _, login := range []string{"auditor", "analyst", "owner", "keymgr"} {
+		mustProblem(t, e.call(e.mustLogin(t, login), "GET", "/api/v1/report-recipients", "", false), 403, CodeForbidden)
+	}
+	mustProblem(t, e.call(session{}, "GET", "/api/v1/report-recipients", "", false), 401, CodeUnauthorized)
+
+	body := func(name string, ids ...string) string {
+		b, _ := json.Marshal(ids)
+		return strings.Replace(scheduleBody(name), `"channel_id"`, `"recipient_user_ids":`+string(b)+`,"channel_id"`, 1)
+	}
+	mustProblem(t, e.call(admin, "POST", "/api/v1/report-schedules", body("С владельцем", tOwnerID), true), 400, CodeInvalidRequest)
+	mustProblem(t, e.call(admin, "POST", "/api/v1/report-schedules", body("Неизвестный", "01900000-0000-7000-8000-0000000000ff"), true), 400, CodeInvalidRequest)
+	mustProblem(t, e.call(admin, "POST", "/api/v1/report-schedules", body("Не UUID", "ivanov"), true), 400, CodeInvalidRequest)
+	w = e.call(admin, "POST", "/api/v1/report-schedules", body("С получателями", tAuditorID, tAnalystID), true)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("создание: %d %s", w.Code, w.Body)
+	}
+	sch := decode[ReportScheduleView](t, w.Body.Bytes())
+	if !slices.Equal(sch.RecipientUserIDs, []string{tAuditorID, tAnalystID}) {
+		t.Fatalf("получатели: %+v", sch.RecipientUserIDs)
+	}
+	// Без получателей-пользователей поле — пустой список, не null.
+	w = e.call(admin, "POST", "/api/v1/report-schedules", scheduleBody("Без получателей"), true)
+	if w.Code != http.StatusCreated || !strings.Contains(w.Body.String(), `"recipient_user_ids":[]`) {
+		t.Fatalf("без получателей: %d %s", w.Code, w.Body)
+	}
+	// Деактивированный получатель при следующем изменении расписания — отказ.
+	if w := e.call(admin, "POST", "/api/v1/users/"+tAnalystID+"/deactivate", "", true); w.Code != 200 {
+		t.Fatalf("деактивация: %d %s", w.Code, w.Body)
+	}
+	upd := strings.Replace(body("С получателями", tAuditorID, tAnalystID), `"channel_id"`, `"version":1,"channel_id"`, 1)
+	mustProblem(t, e.call(admin, "PUT", "/api/v1/report-schedules/"+sch.ID, upd, true), 400, CodeInvalidRequest)
+	if w := e.call(admin, "GET", "/api/v1/report-schedules/"+sch.ID+"/runs", "", false); w.Code != 200 {
+		t.Fatalf("журнал: %d", w.Code)
 	}
 }

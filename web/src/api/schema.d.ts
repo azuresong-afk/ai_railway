@@ -8141,6 +8141,54 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/report-recipients": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Пользователи для выбора получателей рассылки отчётов
+         * @description Право `reports.schedules.manage`. Активные пользователи, которым вызывающий вправе слать отчёты:
+         *     есть `reports.read` на все объекты и права на те же разделы отчёта, что у вызывающего (УПД.2).
+         *     Выдаются ID, логин, имя и признак `has_email` — адрес не выдаётся: расписания ведёт тот, у кого нет
+         *     права `users.read`. Пользователь без адреса в расписании допустим, при отправке он пропускается,
+         *     число пропущенных — в журнале рассылки (`skipped_no_email`).
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Пользователи */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ReportRecipientList"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/agents": {
         parameters: {
             query?: never;
@@ -11635,6 +11683,12 @@ export interface components {
             channel_id: string;
             /** @default true */
             enabled: boolean;
+            /**
+             * @description Получатели-пользователи консоли (необязательно): адрес берётся из учётной записи при отправке, в
+             *     дополнение к адресам почтового канала. Пользователь — активный, с `reports.read` на все объекты и
+             *     с правом на те разделы отчёта, что входят в расписание (иначе 400).
+             */
+            recipient_user_ids?: string[];
             /** @description Для изменения */
             version?: number;
         };
@@ -11654,6 +11708,7 @@ export interface components {
             /** Format: uuid */
             channel_id: string;
             enabled: boolean;
+            recipient_user_ids: string[];
             /** Format: date-time */
             next_run_at: string;
             /** Format: date-time */
@@ -11689,6 +11744,21 @@ export interface components {
             created_at: string;
             /** Format: date-time */
             sent_at?: string;
+            /**
+             * @description Получателей-пользователей пропущено в последней попытке: нет e-mail, учётная запись деактивирована
+             *     или у роли нет права на отчёт. Адреса в журнал доставки не пишутся.
+             */
+            skipped_no_email: number;
+        };
+        ReportRecipientList: {
+            items: {
+                /** Format: uuid */
+                id: string;
+                login: string;
+                display_name: string;
+                /** @description Задан ли e-mail; сам адрес не выдаётся */
+                has_email: boolean;
+            }[];
         };
         ReportChannelList: {
             items: {

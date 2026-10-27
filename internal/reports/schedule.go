@@ -26,6 +26,8 @@ const (
 	MaxSchedules = 50
 	// MaxMonthDay — наибольший день месяца: 29–31 есть не в каждом месяце.
 	MaxMonthDay = 28
+	// MaxUserRecipients — получателей-пользователей у одного расписания.
+	MaxUserRecipients = 20
 )
 
 // Schedule — расписание рассылки отчёта.
@@ -58,6 +60,9 @@ type Schedule struct {
 	// ревью 3.r4): получатели канала — адреса, а не пользователи с правами,
 	// поэтому рассылка не шире прав того, кто её настроил.
 	Scope Scope
+	// RecipientUserIDs — получатели-пользователи консоли: адрес берётся из
+	// учётной записи при отправке, в дополнение к адресам канала (задача 4.6).
+	RecipientUserIDs []string
 }
 
 // ScheduleInput — расписание из запроса API (создание и полная замена).
@@ -71,6 +76,9 @@ type ScheduleInput struct {
 	Format    string `json:"format"`
 	ChannelID string `json:"channel_id"`
 	Enabled   *bool  `json:"enabled"`
+	// RecipientUserIDs — пользователи консоли, которым уходит отчёт
+	// (необязательно, до MaxUserRecipients).
+	RecipientUserIDs []string `json:"recipient_user_ids"`
 	// Version — для изменения: версия, которую видел администратор.
 	Version int `json:"version"`
 }
@@ -125,6 +133,23 @@ func (in ScheduleInput) Validate() (Schedule, error) {
 		bad["channel_id"] = "Укажите почтовый канал."
 	}
 	s.Enabled = in.Enabled == nil || *in.Enabled
+	if len(in.RecipientUserIDs) > MaxUserRecipients {
+		bad["recipient_user_ids"] = fmt.Sprintf("Получателей-пользователей не больше %d.", MaxUserRecipients)
+	} else {
+		seen := map[string]bool{}
+		s.RecipientUserIDs = []string{}
+		for _, id := range in.RecipientUserIDs {
+			switch {
+			case !validUUID(id):
+				bad["recipient_user_ids"] = "Получатель — идентификатор пользователя (UUID)."
+			case seen[id]:
+				bad["recipient_user_ids"] = "Получатели не должны повторяться."
+			default:
+				seen[id] = true
+				s.RecipientUserIDs = append(s.RecipientUserIDs, id)
+			}
+		}
+	}
 	if len(bad) > 0 {
 		return s, &InputError{Fields: bad}
 	}

@@ -510,7 +510,7 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		Store: reportStore,
 		Builder: &reports.Builder{Dash: reportsDash, Incidents: incidentsSvc, Alerts: alertsSvc,
 			Facts: &reports.PGFacts{DB: readDB.Pool(), OrgID: audit.DefaultOrgID, Apps: appsSvc, Policies: policiesSvc, Gateways: gateways}},
-		Mailer: notifySvc, Channels: notifySvc,
+		Mailer: notifySvc, Channels: notifySvc, Directory: api.ReportDirectory{Auth: authSvc},
 		Location: func(ctx context.Context) (*time.Location, error) {
 			tz, err := timezone(ctx)
 			if err != nil {
