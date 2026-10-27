@@ -57,12 +57,20 @@ describe("экран «Отчёты»", () => {
     renderScreen(all);
     fireEvent.change(screen.getByLabelText("С даты"), { target: { value: "2026-10-01" } });
     fireEvent.change(screen.getByLabelText("По дату"), { target: { value: "2026-10-07" } });
-    expect(screen.getByRole("link", { name: "Скачать CSV" }).getAttribute("href")).toBe("/api/v1/reports/summary?format=csv&from=2026-10-01&to=2026-10-07");
+    expect(screen.getByRole("link", { name: "Скачать CSV" }).getAttribute("href")).toBe("/api/v1/reports/summary?format=csv&delimiter=semicolon&from=2026-10-01&to=2026-10-07");
     expect(screen.getByRole("link", { name: "Скачать XLSX" }).getAttribute("href")).toContain("format=xlsx");
     fireEvent.click(screen.getByRole("button", { name: "Показать отчёт" }));
     const frame = screen.getByTitle("Предпросмотр отчёта");
     expect(frame.getAttribute("sandbox")).toBe("");
     expect(frame.getAttribute("src")).toContain("format=html");
+  });
+
+  it("разделитель CSV: по умолчанию «;», запятая — по выбору; на XLSX и HTML не влияет", () => {
+    renderScreen(all);
+    expect(screen.getByRole("link", { name: "Скачать CSV" }).getAttribute("href")).toContain("delimiter=semicolon");
+    fireEvent.change(screen.getByLabelText("Разделитель CSV"), { target: { value: "comma" } });
+    expect(screen.getByRole("link", { name: "Скачать CSV" }).getAttribute("href")).toContain("delimiter=comma");
+    expect(screen.getByRole("link", { name: "Скачать XLSX" }).getAttribute("href")).not.toContain("delimiter");
   });
 
   it("начало позже конца блокирует показ и скачивание", () => {
@@ -76,7 +84,7 @@ describe("экран «Отчёты»", () => {
 
   it("без дат — последние 30 суток; одна дата без другой блокирует выгрузку", () => {
     renderScreen(all);
-    expect(screen.getByRole("link", { name: "Скачать CSV" }).getAttribute("href")).toBe("/api/v1/reports/summary?format=csv");
+    expect(screen.getByRole("link", { name: "Скачать CSV" }).getAttribute("href")).toBe("/api/v1/reports/summary?format=csv&delimiter=semicolon");
     fireEvent.change(screen.getByLabelText("С даты"), { target: { value: "2026-10-01" } });
     expect(screen.getByText("Укажите обе даты или оставьте обе пустыми.")).toBeTruthy();
     expect(screen.queryByRole("link", { name: "Скачать CSV" })).toBeNull();

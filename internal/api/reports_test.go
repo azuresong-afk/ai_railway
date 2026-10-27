@@ -206,6 +206,12 @@ func TestReportsInvalidParams(t *testing.T) {
 			t.Errorf("%q: %d %s", q, w.Code, w.Body)
 		}
 	}
+	for _, q := range []string{"&format=csv&delimiter=tab", "&format=html&delimiter=comma"} {
+		w := e.call(s, "GET", "/api/v1/reports/summary?from="+day+"&to="+day+q, "", false)
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("%q: %d %s", q, w.Code, w.Body)
+		}
+	}
 	mustProblem(t, e.call(s, "GET", "/api/v1/reports/unknown?from="+day+"&to="+day, "", false), 404, CodeNotFound)
 	if n := len(e.rec.find("data.export")); n != 0 {
 		t.Errorf("отказы записаны как выгрузки: %d", n)

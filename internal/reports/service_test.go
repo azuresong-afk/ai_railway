@@ -175,7 +175,7 @@ func TestBuildIncidentsReport(t *testing.T) {
 	}
 	// Название с формулой в CSV защищено.
 	var buf bytes.Buffer
-	if err := WriteCSV(&buf, doc); err != nil {
+	if err := WriteCSV(&buf, doc, events.DelimSemicolon); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(buf.String(), `"'=cmd|calc"`) {
@@ -569,11 +569,11 @@ func TestRenderFormats(t *testing.T) {
 	var b bytes.Buffer
 	for _, f := range []string{FormatHTML, FormatCSV, FormatXLSX} {
 		b.Reset()
-		if err := Render(&b, sampleDoc(), f); err != nil || b.Len() == 0 {
+		if err := Render(&b, sampleDoc(), f, events.DelimSemicolon); err != nil || b.Len() == 0 {
 			t.Errorf("%s: %v", f, err)
 		}
 	}
-	if err := Render(&b, sampleDoc(), "pdf"); err == nil {
+	if err := Render(&b, sampleDoc(), "pdf", events.DelimSemicolon); err == nil {
 		t.Error("pdf принят")
 	}
 }

@@ -7653,7 +7653,7 @@ export interface paths {
          *     установки, оба включительно; начало не в будущем, конец позже сегодняшнего урезается до
          *     сегодняшнего дня, не больше 366 суток. `format`: `html` (по умолчанию; страница для просмотра
          *     и печати в PDF средствами браузера, без скриптов, со своей политикой CSP и допустимой рамкой
-         *     консоли того же адреса), `csv` (UTF-8 с BOM, защита от формул), `xlsx` (один лист, без формул
+         *     консоли того же адреса), `csv` (UTF-8 с BOM, защита от формул, разделитель — `delimiter`), `xlsx` (один лист, без формул
          *     и макросов). `app` — slug приложения: отчёт только по нему (инциденты, оповещения и бюджеты в
          *     сводный отчёт по приложению не входят). Владельцу приложения доступен только `summary` с `app`
          *     своего приложения; чужое приложение — 404, другой вид — 403. Каждая выгрузка пишет
@@ -7669,6 +7669,8 @@ export interface paths {
                     /** @description Последний день периода включительно, ГГГГ-ММ-ДД; вместе с `from` */
                     to?: string;
                     format?: "html" | "csv" | "xlsx";
+                    /** @description Разделитель полей CSV; только с `format=csv`, по умолчанию `semicolon` («;») */
+                    delimiter?: "semicolon" | "comma";
                     /** @description Slug приложения */
                     app?: string;
                 };
@@ -10438,6 +10440,12 @@ export interface components {
         EventExportRequest: {
             /** @enum {string} */
             format: "csv" | "json";
+            /**
+             * @description Разделитель полей CSV; по умолчанию «;» (Excel с русской локалью), для json не используется
+             * @default semicolon
+             * @enum {string}
+             */
+            delimiter: "semicolon" | "comma";
             /** Format: date-time */
             from?: string;
             /** Format: date-time */

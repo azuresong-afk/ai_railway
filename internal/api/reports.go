@@ -200,7 +200,7 @@ func (d Deps) getReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var buf bytes.Buffer
-	if err := reports.Render(&buf, doc, params.Format); err != nil {
+	if err := reports.Render(&buf, doc, params.Format, params.Delimiter); err != nil {
 		WriteProblem(w, d.reportProblem(err))
 		return
 	}
@@ -209,7 +209,7 @@ func (d Deps) getReport(w http.ResponseWriter, r *http.Request) {
 	defer acancel()
 	if err := d.Audit.Record(actx, audit.Entry{Actor: eventsActor(p), SourceIP: clientAddr(r), Action: "data.export",
 		Object: audit.Object{Type: "report", ID: kind}, Result: audit.ResultSuccess, Details: map[string]any{
-			"report": kind, "format": params.Format, "from": params.Period.First, "to": params.Period.Last, "app": params.App,
+			"report": kind, "format": params.Format, "delimiter": delimName(params.Delimiter, params.Format), "from": params.Period.First, "to": params.Period.Last, "app": params.App,
 			"rows": doc.Rows(),
 		}}); err != nil {
 		d.Logger.Error("выгрузка отчёта не записана в журнал аудита: выгрузка отменена", "class", "reports", "error", err)

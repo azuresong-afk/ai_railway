@@ -40,6 +40,7 @@ function ReportsTab({ me }: { me: Me }) {
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [app, setApp] = useState("");
+  const [delimiter, setDelimiter] = useState<"semicolon" | "comma">("semicolon");
   const [preview, setPreview] = useState("");
   // Владелец приложения (reports.read только на свои объекты) получает только сводный отчёт по своему приложению.
   const full = !(me.own_scope ?? []).includes("reports.read");
@@ -75,6 +76,14 @@ function ReportsTab({ me }: { me: Me }) {
         <Field label="По дату">
           {({ id }) => <Input id={id} type="date" value={to} onChange={(e) => setTo(e.target.value)} />}
         </Field>
+        <Field label="Разделитель CSV" hint="Для Excel с русской локалью — точка с запятой">
+          {({ id }) => (
+            <Select id={id} value={delimiter} onChange={(e) => setDelimiter(e.target.value as "semicolon" | "comma")}>
+              <option value="semicolon">Точка с запятой</option>
+              <option value="comma">Запятая</option>
+            </Select>
+          )}
+        </Field>
         <Field label="Приложение" hint={kind === "summary" ? undefined : "Только для сводного отчёта"}>
           {({ id }) => (
             <Select id={id} value={app} disabled={kind !== "summary"} onChange={(e) => setApp(e.target.value)}>
@@ -92,7 +101,7 @@ function ReportsTab({ me }: { me: Me }) {
         <Button variant="primary" disabled={blocked} onClick={() => setPreview(reportUrl(kind, "html", from, to, appArg))}>
           Показать отчёт
         </Button>
-        <DownloadLink disabled={blocked} href={reportUrl(kind, "csv", from, to, appArg)}>
+        <DownloadLink disabled={blocked} href={reportUrl(kind, "csv", from, to, appArg, delimiter)}>
           Скачать CSV
         </DownloadLink>
         <DownloadLink disabled={blocked} href={reportUrl(kind, "xlsx", from, to, appArg)}>

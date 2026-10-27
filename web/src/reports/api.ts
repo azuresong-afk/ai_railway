@@ -24,8 +24,16 @@ export const frequencyTitles = new Map<string, string>([
 export const weekdayTitles = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"];
 
 // Ссылка на отчёт: файл отдаёт сервер, он же пишет выгрузку в журнал аудита до выдачи.
-export function reportUrl(kind: ReportKind, format: "html" | "csv" | "xlsx", from: string, to: string, app: string): string {
+export function reportUrl(
+  kind: ReportKind,
+  format: "html" | "csv" | "xlsx",
+  from: string,
+  to: string,
+  app: string,
+  delimiter: "semicolon" | "comma" = "semicolon",
+): string {
   const q = new URLSearchParams({ format });
+  if (format === "csv") q.set("delimiter", delimiter);
   if (from) q.set("from", from);
   if (to) q.set("to", to);
   if (app) q.set("app", app);

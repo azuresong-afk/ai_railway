@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/azuresong-afk/ai_railway/internal/audit"
+	"github.com/azuresong-afk/ai_railway/internal/events"
 	"github.com/azuresong-afk/ai_railway/internal/ids"
 	"github.com/azuresong-afk/ai_railway/internal/notify"
 )
@@ -203,10 +204,10 @@ func (s *Service) Build(ctx context.Context, p Params, sc Scope) (Doc, error) {
 }
 
 // Render пишет документ в формате format.
-func Render(w *bytes.Buffer, d Doc, format string) error {
+func Render(w *bytes.Buffer, d Doc, format string, delim rune) error {
 	switch format {
 	case FormatCSV:
-		return WriteCSV(w, d)
+		return WriteCSV(w, d, delim)
 	case FormatXLSX:
 		return WriteXLSX(w, d)
 	case FormatHTML:
@@ -492,7 +493,7 @@ func (s *Service) send(ctx context.Context, r Run, sc Schedule, loc *time.Locati
 		return ErrCodeBuild
 	}
 	var buf bytes.Buffer
-	if err := Render(&buf, doc, sc.Format); err != nil || buf.Len() > notify.MaxReportAttachment {
+	if err := Render(&buf, doc, sc.Format, events.DelimSemicolon); err != nil || buf.Len() > notify.MaxReportAttachment {
 		return ErrCodeRender
 	}
 	if s.o.Mailer == nil {
