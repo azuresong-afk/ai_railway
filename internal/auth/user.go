@@ -78,8 +78,11 @@ type User struct {
 	OrgID       string
 	Login       string
 	DisplayName string
-	Role        Role
-	Status      Status
+	// Email — необязательный адрес для рассылки отчётов (задача 4.6); пусто —
+	// адреса нет. Персональные данные: в технические журналы не пишется.
+	Email  string
+	Role   Role
+	Status Status
 	// PasswordHash — хеш PHC из PasswordHasher профиля; наружу не выдаётся.
 	PasswordHash      string
 	PasswordChangedAt time.Time

@@ -67,6 +67,7 @@ linters:
             - "**/cmd/aisec-gateway/**"
             - "**/cmd/aisec-server/**"
             - "**/cmd/aisec-media/**"
+            - "**/cmd/aisec-ml/**"
             - "**/internal/**"
           deny:
             - pkg: "os/exec"
@@ -86,6 +87,7 @@ linters:
             - "!**/internal/crypto/cryptotest/**"
             - "!**/internal/policy/bundle/bundletest/**"
             - "!**/internal/auth/ldap/ldaptest/**"
+            - "!**/internal/ml/mltest/**"
           deny:
             - pkg: "github.com/azuresong-afk/ai_railway/internal/auth/authtest"
               desc: "подмены для тестов — только в *_test.go (Н14 ревью 2.r2)"
@@ -97,6 +99,8 @@ linters:
               desc: "ключи и пакеты для тестов — только в *_test.go (задача 2.13)"
             - pkg: "github.com/azuresong-afk/ai_railway/internal/auth/ldap/ldaptest"
               desc: "синтетический каталог LDAP — только в *_test.go (задача 4.16)"
+            - pkg: "github.com/azuresong-afk/ai_railway/internal/ml/mltest"
+              desc: "тестовый исполнитель моделей без проверки весов — только в *_test.go (ADR-0024)"
         ldap-library:
           # Библиотека LDAP — только в клиенте каталога (ADR-0025, 2.7):
           # остальной код получает проверенный результат входа.
@@ -109,6 +113,16 @@ linters:
               desc: "библиотека LDAP — только в internal/auth/ldap (ADR-0025, 2.7)"
             - pkg: "github.com/go-asn1-ber/asn1-ber"
               desc: "разбор BER — только в internal/auth/ldap (ADR-0025, 2.7)"
+        onnx-binding:
+          # Обвязка ONNX Runtime (cgo) — только в изолированном процессе
+          # aisec-ml (ADR-0024): шлюз и сервер остаются без cgo.
+          list-mode: lax
+          files:
+            - "$all"
+            - "!**/cmd/aisec-ml/**"
+          deny:
+            - pkg: "github.com/yalue/onnxruntime_go"
+              desc: "ONNX Runtime — только в cmd/aisec-ml (ADR-0024)"
         transitive-only:
           # Модули, которые в vendor только как зависимости go-ldap: свой UUID
           # продукта — в internal/crypto (ADR-0001), NTLM и MD4 не используются
@@ -128,6 +142,7 @@ linters:
             - "**/cmd/aisec-gateway/**"
             - "**/cmd/aisec-server/**"
             - "**/cmd/aisec-media/**"
+            - "**/cmd/aisec-ml/**"
             - "**/internal/**"
             - "!$test"
           deny:

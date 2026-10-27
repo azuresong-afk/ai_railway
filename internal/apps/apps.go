@@ -366,7 +366,7 @@ type Store interface {
 	PromptBaselines(ctx context.Context, orgID string) ([]PromptBaseline, error)
 
 	// Пользователь приложения по JWT и доступ к моделям по группам (задача
-	// 4.21, миграция 0057_app_user_access): одна запись на приложение.
+	// 4.21, миграция 0059_app_user_access): одна запись на приложение.
 	// SetUserAccess блокирует приложение и сохраняет запись, которую
 	// вернула fn (prev — прежняя или DefaultUserAccess); errUnchanged из fn —
 	// без записи и аудита.

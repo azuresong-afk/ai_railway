@@ -11,7 +11,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/audit"
 )
 
-// Пользователь приложения по JWT в PostgreSQL (миграция 0057_app_user_access).
+// Пользователь приложения по JWT в PostgreSQL (миграция 0059_app_user_access).
 
 const userAccessCols = `app_id::text, org_id::text, mode, issuer, audience, groups_claim, leeway_seconds, model_groups::text,
 	updated_at, updated_by`

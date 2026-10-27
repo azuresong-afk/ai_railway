@@ -114,3 +114,45 @@ func TestSendReportBefore(t *testing.T) {
 		t.Fatalf("получатели %v, писем %d", got, len(srv.data))
 	}
 }
+
+// Задача 4.6: адреса пользователей идут получателями вместе с адресами
+// канала; повторы и неверные адреса отбрасываются, Before видит итоговый список.
+func TestSendReportUserRecipients(t *testing.T) {
+	e := newEnv(t)
+	srv := newSMTPServer(t, e.tp, e.cert, e.key, true)
+	c, err := e.svc.CreateChannel(testCtx(t), e.by, e.emailInput(srv.addr, ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := ReportMail{ID: "01900000-0000-7000-8000-000000000003", Subject: "Отчёт", Body: "Во вложении.", Filename: "r.csv",
+		ContentType: "text/csv", Data: []byte("a,b\r\n"),
+		ExtraTo: []string{"Ivanov@example.ru", "SOC@example.ru", "плохой", "ivanov@example.ru", "a@b@c", "x\r\nBcc: evil@example.ru"}}
+	var got []string
+	m.Before = func(to []string) error { got = to; return nil }
+	if err := e.svc.SendReport(testCtx(t), c.ID, m); err != nil {
+		t.Fatal(err)
+	}
+	want := "soc@example.ru,duty@example.ru,Ivanov@example.ru"
+	srv.mu.Lock()
+	defer srv.mu.Unlock()
+	if strings.Join(got, ",") != want || len(srv.rcpt) != 3 {
+		t.Fatalf("получатели %v, RCPT %v", got, srv.rcpt)
+	}
+	if strings.Contains(srv.data[0], "evil@example.ru") {
+		t.Fatal("в письмо попал введённый заголовок")
+	}
+}
+
+func TestMergeRecipients(t *testing.T) {
+	var many []string
+	for i := range 60 {
+		many = append(many, "u"+strings.Repeat("a", i)+"@example.ru")
+	}
+	got := MergeRecipients([]string{"a@example.ru"}, many)
+	if len(got) != MaxReportRecipients || got[0] != "a@example.ru" {
+		t.Fatalf("предел: %d", len(got))
+	}
+	if got := MergeRecipients(nil, nil); len(got) != 0 {
+		t.Fatalf("пусто: %v", got)
+	}
+}

@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/netip"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -283,6 +285,68 @@ func TestPGReportSchedules(t *testing.T) {
 	}
 	if e.auditCount(t, ctx, "report_schedule.delete") != 1 {
 		t.Error("нет записи аудита удаления")
+	}
+}
+
+// Задача 4.6: получатели-пользователи хранятся как uuid[] (пустой список —
+// не NULL), число пропущенных получателей — в журнале рассылки.
+func TestPGReportUserRecipients(t *testing.T) {
+	ctx, e := setupPG(t)
+	s := e.schedule(t, "С получателями")
+	s.RecipientUserIDs = []string{"01900000-0000-7000-8000-0000000000a1", "01900000-0000-7000-8000-0000000000a2"}
+	if err := e.store.CreateSchedule(ctx, s, entry("report_schedule.create", s.ID)); err != nil {
+		t.Fatal(err)
+	}
+	got, err := e.store.Schedule(ctx, s.ID)
+	if err != nil || !slices.Equal(got.RecipientUserIDs, s.RecipientUserIDs) {
+		t.Fatalf("чтение: %+v %v", got, err)
+	}
+	empty := e.schedule(t, "Без получателей")
+	if err := e.store.CreateSchedule(ctx, empty, entry("report_schedule.create", empty.ID)); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := e.store.Schedule(ctx, empty.ID); err != nil || len(got.RecipientUserIDs) != 0 {
+		t.Fatalf("без получателей: %+v %v", got, err)
+	}
+	upd, err := e.store.UpdateSchedule(ctx, s.ID, func(old reports.Schedule) (reports.Schedule, audit.Entry, error) {
+		old.RecipientUserIDs, old.Version = nil, old.Version+1
+		return old, entry("report_schedule.update", s.ID), nil
+	})
+	if err != nil || len(upd.RecipientUserIDs) != 0 {
+		t.Fatalf("очистка получателей: %+v %v", upd, err)
+	}
+	// Больше 20 получателей схема не принимает.
+	many := e.schedule(t, "Много")
+	for i := range 21 {
+		many.RecipientUserIDs = append(many.RecipientUserIDs, fmt.Sprintf("01900000-0000-7000-8000-%012x", i))
+	}
+	if err := e.store.CreateSchedule(ctx, many, entry("report_schedule.create", many.ID)); err == nil {
+		t.Fatal("21 получатель принят схемой")
+	}
+	// Журнал рассылки хранит число пропущенных.
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	plan := func(sc reports.Schedule) (reports.Run, time.Time, error) {
+		u, err := e.ids.New()
+		if err != nil {
+			return reports.Run{}, time.Time{}, err
+		}
+		return reports.Run{ID: u.String(), DueAt: sc.NextRunAt, PeriodFirst: "2026-09-01", PeriodLast: "2026-09-30", Status: reports.RunPending,
+			NextAt: now, CreatedAt: now, UpdatedAt: now}, now.Add(24 * time.Hour), nil
+	}
+	if _, err := e.store.EnqueueDue(ctx, now, 10, plan); err != nil {
+		t.Fatal(err)
+	}
+	r, _, ok, err := e.store.ClaimRun(ctx, now, 10*time.Minute)
+	if err != nil || !ok {
+		t.Fatalf("выборка: %v %v", ok, err)
+	}
+	r.Status, r.SentAt, r.UpdatedAt, r.SkippedNoEmail = reports.RunSent, now, now, 3
+	if err := e.store.FinishRun(ctx, r, nil); err != nil {
+		t.Fatal(err)
+	}
+	runs, err := e.store.Runs(ctx, r.ScheduleID, 10)
+	if err != nil || len(runs) != 1 || runs[0].SkippedNoEmail != 3 {
+		t.Fatalf("журнал: %+v %v", runs, err)
 	}
 }
 

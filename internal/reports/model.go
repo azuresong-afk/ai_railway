@@ -3,6 +3,7 @@ package reports
 import (
 	"errors"
 	"fmt"
+	"github.com/azuresong-afk/ai_railway/internal/events"
 	"regexp"
 	"strconv"
 	"strings"
@@ -225,7 +226,9 @@ func ValidSlug(s string) bool { return slugRe.MatchString(s) }
 type Params struct {
 	Kind   string
 	Format string
-	Period Period
+	// Delimiter — разделитель CSV; для других форматов не используется.
+	Delimiter rune
+	Period    Period
 	// App — slug приложения; пусто — все приложения.
 	App string
 }
@@ -251,7 +254,7 @@ func ParseParams(kind string, q map[string][]string, loc *time.Location, now tim
 	}
 	for k := range q {
 		switch k {
-		case "format", "from", "to", "app":
+		case "format", "delimiter", "from", "to", "app":
 		default:
 			return Params{}, fmt.Errorf("отчёты: неизвестный параметр %q", truncate(k, 32))
 		}
@@ -267,6 +270,17 @@ func ParseParams(kind string, q map[string][]string, loc *time.Location, now tim
 	}
 	if !ValidFormat(p.Format) {
 		return p, errors.New("отчёты: формат — html, csv или xlsx")
+	}
+	ds, err := get("delimiter")
+	if err != nil {
+		return p, err
+	}
+	var okd bool
+	if p.Delimiter, okd = events.ParseDelimiter(ds); !okd {
+		return p, errors.New("отчёты: разделитель — semicolon или comma")
+	}
+	if ds != "" && p.Format != FormatCSV {
+		return p, errors.New("отчёты: разделитель задаётся только для csv")
 	}
 	from, err := get("from")
 	if err != nil {

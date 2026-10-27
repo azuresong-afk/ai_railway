@@ -62,6 +62,26 @@ func (r *Record) View() View {
 	}
 }
 
+// Разделители полей CSV. По умолчанию «;»: Excel с русской локалью делит по
+// нему на столбцы, запятая в такой локали оставляла строку в одном столбце
+// (решение владельца по пилоту, задача 4.6).
+const (
+	DelimSemicolon = ';'
+	DelimComma     = ','
+)
+
+// ParseDelimiter разбирает параметр delimiter: semicolon (по умолчанию, если
+// пусто) или comma.
+func ParseDelimiter(s string) (rune, bool) {
+	switch s {
+	case "", "semicolon":
+		return DelimSemicolon, true
+	case "comma":
+		return DelimComma, true
+	}
+	return 0, false
+}
+
 // csvHeader — столбцы CSV; порядок совпадает с csvRow.
 var csvHeader = []string{"id", "time", "received_at", "gateway_id", "type", "app", "env", "user", "provider",
 	"model", "source", "policy_mode", "action", "rule", "severity", "storage", "threats", "stream",
@@ -112,10 +132,10 @@ const utf8BOM = "\ufeff"
 // внутри удваиваются, значения проходят CSVCell, конец строки — CRLF.
 // encoding/csv берёт в кавычки не каждое поле, и «;» оставался бы вне
 // кавычек (В12 ревью 2.r3a).
-func writeCSVRow(w *bufio.Writer, row []string) error {
+func writeCSVRow(w *bufio.Writer, row []string, delim rune) error {
 	for i, f := range row {
 		if i > 0 {
-			if err := w.WriteByte(','); err != nil {
+			if err := w.WriteByte(byte(delim)); err != nil { //nolint:gosec // разделитель из белого списка ParseDelimiter (ASCII)
 				return err
 			}
 		}
@@ -136,19 +156,24 @@ func writeCSVRow(w *bufio.Writer, row []string) error {
 // Exporter пишет выгрузку в w: Write — по записи, Close — завершение.
 type Exporter struct {
 	format string
+	delim  rune
 	bw     *bufio.Writer
 	rows   int
 }
 
-// NewExporter начинает выгрузку в формате format (FormatCSV, FormatJSON).
-func NewExporter(w io.Writer, format string) (*Exporter, error) {
-	e := &Exporter{format: format, bw: bufio.NewWriterSize(w, 64<<10)}
+// NewExporter начинает выгрузку в формате format (FormatCSV, FormatJSON);
+// delim — разделитель CSV (DelimSemicolon или DelimComma), для JSON не нужен.
+func NewExporter(w io.Writer, format string, delim rune) (*Exporter, error) {
+	if delim != DelimSemicolon && delim != DelimComma {
+		return nil, strconv.ErrSyntax
+	}
+	e := &Exporter{format: format, delim: delim, bw: bufio.NewWriterSize(w, 64<<10)}
 	switch format {
 	case FormatCSV:
 		if _, err := e.bw.WriteString(utf8BOM); err != nil {
 			return nil, err
 		}
-		if err := writeCSVRow(e.bw, csvHeader); err != nil {
+		if err := writeCSVRow(e.bw, csvHeader, delim); err != nil {
 			return nil, err
 		}
 	case FormatJSON:
@@ -165,7 +190,7 @@ func NewExporter(w io.Writer, format string) (*Exporter, error) {
 func (e *Exporter) Write(r *Record) error {
 	e.rows++
 	if e.format == FormatCSV {
-		return writeCSVRow(e.bw, csvRow(r))
+		return writeCSVRow(e.bw, csvRow(r), e.delim)
 	}
 	b, err := json.Marshal(r.View())
 	if err != nil {

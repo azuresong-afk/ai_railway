@@ -44,6 +44,9 @@ type Store interface {
 	// активного администратора безопасности; активация снимает блокировку.
 	// В подробности rec добавляется прежнее состояние (previous_status).
 	SetStatus(ctx context.Context, orgID, userID string, s Status, now time.Time, rec audit.Entry) error
+	// SetEmail сохраняет e-mail записи (пустой — убирает) и запись аудита одной
+	// транзакцией. Нет записи — ErrNotFound.
+	SetEmail(ctx context.Context, orgID, userID, email string, rec audit.Entry) error
 	// Unlock снимает блокировку и сбрасывает счётчик неудач активной записи
 	// (аварийная команда aisec-cli, В7 ревью 2.r2). Деактивированная запись
 	// — ErrDeactivated. В подробности rec добавляется was_locked.

@@ -91,6 +91,9 @@ var composeRules = map[string]struct {
 	Product  bool
 	Secrets  []string
 	Volumes  []string
+	// Isolated — сервис без сети вовсе (network_mode: none, ADR-0024):
+	// ни одной сети, ни одного порта, связь только через том с сокетом.
+	Isolated bool
 }{
 	"aisec-server": {Ports: []string{"8444"}, External: true, Product: true,
 		Secrets: []string{"console-tls-cert", "console-tls-key", "db-server-pgpass"},
@@ -100,6 +103,9 @@ var composeRules = map[string]struct {
 		Volumes: []string{"DATA/gateway/reg:/var/lib/aisec-gateway/reg:rw", "DATA/gateway/state:/var/lib/aisec-gateway/state:rw"}},
 	"aisec-cli": {Product: true, Secrets: []string{"db-owner-pgpass"},
 		Volumes: []string{"DATA/keys:/etc/aisec/keys:rw", "DATA/backups:/var/lib/aisec/backups:rw"}},
+	// Процесс ML-детекторов (ADR-0024): только сокет в общем со шлюзом
+	// каталоге, модели — внутри образа.
+	"aisec-ml": {Product: true, Isolated: true, Volumes: []string{"DATA/ml/run:/run/aisec-ml:rw"}},
 	"postgres": {Secrets: []string{"db-postgres-password", "db-owner-password", "db-server-password"},
 		Volumes: []string{"DATA/pg:/var/lib/postgresql/data:rw", "./initdb:/docker-entrypoint-initdb.d:ro"}},
 }
@@ -237,8 +243,12 @@ func checkCompose(c *composeFile) []string {
 		if !userRe.MatchString(s.User) {
 			at("user %q — нужен «${UID:?…}:${GID:?…}» отдельного пользователя хоста", s.User)
 		}
-		if s.Privileged || s.NetworkMode != "" || s.Pid != "" || s.Ipc != "" || s.UsernsMode != "" || len(s.Devices) > 0 {
+		isolatedOK := rule.Isolated && s.NetworkMode == "none"
+		if s.Privileged || (s.NetworkMode != "" && !isolatedOK) || s.Pid != "" || s.Ipc != "" || s.UsernsMode != "" || len(s.Devices) > 0 {
 			at("privileged, network_mode, pid, ipc, userns_mode и devices запрещены")
+		}
+		if rule.Isolated && !isolatedOK {
+			at("нужен network_mode: none: сервису сеть не нужна")
 		}
 		if s.PidsLimit <= 0 || s.MemLimit == "" {
 			at("нужны pids_limit и mem_limit")
@@ -306,7 +316,10 @@ func checkCompose(c *composeFile) []string {
 		if err != nil {
 			at("%v", err)
 		}
-		if len(nets) == 0 {
+		switch {
+		case rule.Isolated && len(nets) > 0:
+			at("сети запрещены: сервис работает без сети (network_mode: none)")
+		case !rule.Isolated && len(nets) == 0:
 			at("нужны явные сети (сеть по умолчанию имеет выход наружу)")
 		}
 		external := 0

@@ -10,7 +10,7 @@ import { ConfirmDialog, ErrorBanner, FormDialog, SecretDialog } from "./common";
 import { assignable } from "./matrix";
 
 type Action =
-  | { kind: "role" | "password" | "mfa" | "sessions" | "deactivate" | "activate" | "list"; user: User }
+  | { kind: "role" | "email" | "password" | "mfa" | "sessions" | "deactivate" | "activate" | "list"; user: User }
   | { kind: "create" };
 
 const roleName = (roles: RoleDetails[] | undefined, id: string) => roles?.find((r) => r.id === id)?.display_name ?? id;
@@ -58,6 +58,7 @@ export function UsersTab({ me }: { me: Me }) {
             <tr>
               <Th>Логин</Th>
               <Th>Имя</Th>
+              <Th>E-mail</Th>
               <Th>Роль</Th>
               <Th>Состояние</Th>
               <Th>Последний вход</Th>
@@ -76,6 +77,7 @@ export function UsersTab({ me }: { me: Me }) {
                     {self ? " (вы)" : ""}
                   </Td>
                   <Td>{u.display_name}</Td>
+                  <Td>{u.email || <span className="text-muted">не задан</span>}</Td>
                   <Td>{roleName(roleList, u.role)}</Td>
                   <Td>{statusText(u)}</Td>
                   <Td>{u.last_login_at ? formatAbsolute(u.last_login_at) : "не входил"}</Td>
@@ -99,6 +101,9 @@ export function UsersTab({ me }: { me: Me }) {
                       )}
                       {canManage && (
                         <>
+                          <Button variant="ghost" onClick={() => setAction({ kind: "email", user: u })} aria-label={`E-mail: ${u.login}`}>
+                            E-mail
+                          </Button>
                           <Button
                             variant="ghost"
                             disabled={self}
@@ -162,6 +167,16 @@ export function UsersTab({ me }: { me: Me }) {
           user={action.user}
           roles={roleList ?? []}
           mine={perms}
+          onClose={close}
+          onDone={() => {
+            close();
+            refresh();
+          }}
+        />
+      )}
+      {action?.kind === "email" && (
+        <EditEmail
+          user={action.user}
           onClose={close}
           onDone={() => {
             close();
@@ -305,6 +320,39 @@ function ChangeRole({
           Назначить роль и завершить сессии
         </Button>
       </div>
+    </FormDialog>
+  );
+}
+
+// E-mail нужен для рассылки отчётов; проверку формата делает сервер, без письма-подтверждения.
+function EditEmail({ user, onClose, onDone }: { user: User; onClose: () => void; onDone: () => void }) {
+  const [email, setEmail] = useState(user.email);
+  const m = useMutation({ mutationFn: () => adminApi.setEmail(user.id, email.trim()), onSuccess: onDone });
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    m.mutate();
+  };
+  return (
+    <FormDialog
+      open
+      onOpenChange={(v) => !v && onClose()}
+      title={`E-mail: ${user.login}`}
+      description="Адрес нужен для рассылки отчётов по расписанию. Проверочное письмо не отправляется. Пустое поле убирает адрес."
+    >
+      <form noValidate onSubmit={submit} className="flex flex-col gap-3">
+        <Field label="E-mail" hint="Вида user@example.ru, до 254 символов.">
+          {({ id, describedBy }) => (
+            <Input id={id} type="email" autoComplete="off" aria-describedby={describedBy} value={email} onChange={(e) => setEmail(e.target.value)} />
+          )}
+        </Field>
+        <ErrorBanner error={m.error} />
+        <div className="flex justify-end gap-2">
+          <Button onClick={onClose}>Отменить</Button>
+          <Button type="submit" variant="primary" disabled={m.isPending || email.trim() === user.email}>
+            Сохранить
+          </Button>
+        </div>
+      </form>
     </FormDialog>
   );
 }
