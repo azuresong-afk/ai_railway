@@ -66,7 +66,7 @@ type MCPConfig struct {
 	// пользователей, квоты и сроки детекторов — общие.
 	Chat *ChatHandler
 	// Servers — вышестоящие серверы из пакета по slug.
-	Servers map[string]*mcpUpstream
+	Servers MCPServers
 	// Hasher — хеш описаний (tooldesc.Hash) и аргументов на криптопрофиле
 	// шлюза.
 	Hasher aisecCrypto.Hasher

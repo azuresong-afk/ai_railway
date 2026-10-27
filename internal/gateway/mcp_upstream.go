@@ -63,8 +63,27 @@ type mcpUpstream struct {
 	sem         chan struct{}
 }
 
-// newMCPUpstream готовит клиента сервера s. allowed — сети, разрешённые
-// администратором шлюза сверх правила адресов (-mcp-allowed-networks).
+// MCPServers — клиенты MCP-серверов пакета по slug.
+type MCPServers map[string]*mcpUpstream
+
+// NewMCPServers готовит клиентов серверов раздела mcp_servers пакета:
+// учётные данные — из Bundle.MCPSecrets по slug. Неверный адрес, корневой
+// сертификат или учётные данные — ошибка, и пакет отклоняется.
+func NewMCPServers(servers []bundle.MCPServer, secrets bundle.Secrets, tp aisecCrypto.TLSProvider) (MCPServers, error) {
+	out := make(MCPServers, len(servers))
+	for _, s := range servers {
+		up, err := newMCPUpstream(s, secrets[s.ID], tp, nil)
+		if err != nil {
+			return nil, err
+		}
+		out[s.ID] = up
+	}
+	return out, nil
+}
+
+// newMCPUpstream готовит клиента сервера s. allowed — сети сверх правила
+// адресов: шлюз передаёт nil (то же правило, что у реестра на сервере),
+// тесты — loopback для httptest.
 func newMCPUpstream(s bundle.MCPServer, cred string, tp aisecCrypto.TLSProvider, allowed []netip.Prefix) (*mcpUpstream, error) {
 	u, err := url.Parse(s.URL)
 	if err != nil || u.Host == "" || (u.Scheme != "https" && (u.Scheme != "http" || !s.InsecureHTTP)) {
