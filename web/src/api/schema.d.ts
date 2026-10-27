@@ -4332,6 +4332,117 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/applications/{id}/user-access": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Пользователь приложения по JWT и доступ к моделям по группам
+         * @description Право `applications.read` (задача 4.21 этапа 4, ADR-0025, раздел 4; УПД.9, DM-33).
+         *     Режим пользователя приложения, ожидаемые издатель и аудитория JWT, имя утверждения с
+         *     группами, допуск часов и группы, которым доступны модели. Настройки нет —
+         *     `{"configured": false, "mode": "off", …}` со значениями по умолчанию.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description ID приложения (UUID) */
+                    id: components["parameters"]["ApplicationID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Настройка */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["UserAccess"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        /**
+         * Задать режим пользователя по JWT и доступ к моделям по группам
+         * @description Право `applications.policy` (признак `security`; токену API недоступно). Настройка
+         *     целиком. `mode`: `off` — только `X-AISec-User` (поле `user`) по `user_from`, как раньше;
+         *     `optional` — JWT из заголовка `X-AISec-User-Token`, если он есть, иначе `X-AISec-User`;
+         *     `required` — без действительного JWT шлюз отвечает 401 до провайдера. Для `optional` и
+         *     `required` обязательны `issuer` (https, как `iss` токена побайтно) и `audience` (одно
+         *     из значений `aud`). Ключи подписи шлюзы получают в пакете конфигурации: сервер берёт
+         *     JWKS у настроенного IdP (`/api/v1/auth/idp`), поэтому `issuer` должен совпадать с
+         *     издателем IdP, иначе шлюзы отклоняют все JWT. `groups_claim` — утверждение со списком
+         *     групп (по умолчанию `groups`), `leeway` — допуск часов для `exp`, `nbf` и `iat` от 0 до
+         *     300 секунд (по умолчанию 60). `model_groups` — модель или псевдоним приложения →
+         *     от 1 до 64 групп: модель из списка доступна только пользователю с одной из этих групп
+         *     в JWT (иначе 403 `model_access_denied`, DM-33), остальные модели — всем; только с
+         *     режимом `optional` или `required`, всего не больше 500 пар. Пишет
+         *     `application.user_access_set` (до и после). Смягчение режима, смена издателя,
+         *     аудитории или утверждения с группами, рост допуска и расширение доступа к модели —
+         *     ослабление (DM-40): `weakening: true` с причинами и повторная проверка (`password` или
+         *     `code`; без них 400, неверные — 403 `reauthentication_failed`). Без изменений — 200 без
+         *     записи. Архивному приложению — 409.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID приложения (UUID) */
+                    id: components["parameters"]["ApplicationID"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["UserAccessUpdate"];
+                };
+            };
+            responses: {
+                /** @description Настройка сохранена */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["UserAccess"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/applications/{id}/prompt-baseline": {
         parameters: {
             query?: never;
@@ -8878,6 +8989,236 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/approvals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Очередь подтверждений вызовов
+         * @description Право `approvals.read`. Вызовы инструментов агентов, которые политика вызовов отправила на подтверждение
+         *     человеком (`require_approval`, DM-22; ADR-0023, раздел 5), новые первыми. Состояния: `pending` — ждёт
+         *     решения; `approved`, `denied` — решение пользователя консоли; `timeout` — срок `approval_timeout` истёк;
+         *     `cancelled` — агент закрыл поток; `interrupted` — шлюз перезапустился. Аргументы в списке не показываются.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description Размер страницы */
+                    limit?: components["parameters"]["Limit"];
+                    /** @description Непрозрачный курсор из `next_cursor` предыдущей страницы */
+                    cursor?: components["parameters"]["Cursor"];
+                    state?: "pending" | "approved" | "denied" | "timeout" | "cancelled" | "interrupted";
+                    /** @description Slug приложения */
+                    application?: string;
+                    /** @description Slug агента */
+                    agent?: string;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Запросы подтверждения */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ApprovalList"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/approvals/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Запрос подтверждения
+         * @description Право `approvals.read`. Маскированные шлюзом аргументы вызова (ПДн и секреты заменены категорией, до
+         *     16 КиБ) — в поле `args` только у пользователя с `approvals.decide` и только 30 суток после закрытия.
+         *     Аргументы пришли от модели или агента и показываются только как текст.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description ID запроса подтверждения (UUIDv7) */
+                    id: components["parameters"]["ApprovalID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Запрос подтверждения */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Approval"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/approvals/{id}/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Одобрить вызов
+         * @description Право `approvals.decide` (признак `security`: не выдаётся администратору системы и токенам API —
+         *     подтверждает человек). `args_hash` — хеш аргументов показанного запроса (не совпал — 409). Вызов с
+         *     риском `critical` одобряется с текущим паролем или кодом TOTP (иначе 403). После срока — 409, запрос
+         *     уже закрыт как `timeout`. Шлюз передаёт дальше ровно проверенные аргументы. Пишет `agent.approval.approve`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID запроса подтверждения (UUIDv7) */
+                    id: components["parameters"]["ApprovalID"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["ApprovalApprove"];
+                };
+            };
+            responses: {
+                /** @description Вызов одобрен */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Approval"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/approvals/{id}/deny": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Отклонить вызов
+         * @description Право `approvals.decide`. Комментарий виден в событии вызова, агенту не передаётся: агент получает
+         *     сообщение правила или «Вызов отклонён». После срока или повторное решение — 409. Пишет `agent.approval.deny`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID запроса подтверждения (UUIDv7) */
+                    id: components["parameters"]["ApprovalID"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["ApprovalDeny"];
+                };
+            };
+            responses: {
+                /** @description Вызов отклонён */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Approval"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -9884,6 +10225,34 @@ export interface components {
             code?: string;
         };
         ApplicationUpdate: components["schemas"]["ApplicationFields"] & components["schemas"]["Reauth"];
+        UserAccessUpdate: components["schemas"]["Reauth"] & {
+            /** @enum {string} */
+            mode: "off" | "optional" | "required";
+            /** @description https://…, как iss токена */
+            issuer?: string;
+            audience?: string;
+            /** @description Пусто — groups */
+            groups_claim?: string;
+            /** @description Секунды; без поля — 60 */
+            leeway?: number;
+            model_groups?: {
+                [key: string]: string[];
+            };
+        };
+        UserAccess: {
+            configured: boolean;
+            /** @enum {string} */
+            mode: "off" | "optional" | "required";
+            issuer: string;
+            audience: string;
+            groups_claim: string;
+            leeway: number;
+            model_groups: {
+                [key: string]: string[];
+            };
+            /** Format: date-time */
+            updated_at?: string;
+        };
         PromptBaselineUpdate: components["schemas"]["Reauth"] & {
             /** @description Текст эталона; без поля — прежний */
             text?: string;
@@ -10125,6 +10494,73 @@ export interface components {
                 [key: string]: unknown;
             };
         };
+        Approval: {
+            /** Format: uuid */
+            id: string;
+            /** @enum {string} */
+            state: "pending" | "approved" | "denied" | "timeout" | "cancelled" | "interrupted";
+            /** @enum {string} */
+            path: "mcp" | "chat";
+            /** @description Slug приложения */
+            application: string;
+            /** @description Slug агента; нет — путь chat без агента */
+            agent?: string;
+            /** @description Псевдоним пользователя */
+            user?: string;
+            session?: string;
+            /** @description Slug MCP-сервера или function (функции пути chat) */
+            server: string;
+            tool: string;
+            /** @description Хеш одобренного описания инструмента (hex) */
+            approved_hash?: string;
+            /** @enum {string} */
+            risk: "low" | "medium" | "high" | "critical";
+            /** @description Правило раздела tools политики, потребовавшее подтверждения */
+            rule: string;
+            message?: string;
+            /** @enum {string} */
+            severity: "info" | "low" | "medium" | "high" | "critical";
+            /** @description Хеш аргументов */
+            args_hash: string;
+            /** @description Маскированные аргументы; только с approvals.decide, 30 суток после закрытия */
+            args?: string;
+            /** @description Аргументы удалены по сроку */
+            args_deleted?: boolean;
+            /** Format: uuid */
+            gateway_id: string;
+            /** Format: uuid */
+            request_event_id?: string;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            deadline: string;
+            /** Format: date-time */
+            closed_at?: string;
+            /** @description Логин пользователя консоли */
+            decided_by?: string;
+            comment?: string;
+            /** Format: int64 */
+            waited_ms: number;
+        };
+        ApprovalList: {
+            items: components["schemas"]["Approval"][];
+            next_cursor?: string;
+        };
+        ApprovalApprove: {
+            /** @description Хеш аргументов показанного запроса (hex) */
+            args_hash: string;
+            comment?: string;
+            /**
+             * Format: password
+             * @description Текущий пароль для риска critical (ровно одно из password и code)
+             */
+            password?: string;
+            /** @description Код из приложения-аутентификатора для риска critical */
+            code?: string;
+        };
+        ApprovalDeny: {
+            comment?: string;
+        };
         AgentToolList: {
             items: components["schemas"]["AgentTool"][];
         };
@@ -10317,7 +10753,7 @@ export interface components {
             status: number;
             detail: string;
             /** @enum {string} */
-            code: "invalid_request" | "unauthorized" | "forbidden" | "not_found" | "method_not_allowed" | "conflict" | "payload_too_large" | "unsupported_media_type" | "unprocessable" | "rate_limited" | "internal_error" | "service_unavailable" | "reauthentication_failed" | "bundle_key_mismatch" | "reissue_not_needed" | "self_review";
+            code: "invalid_request" | "unauthorized" | "forbidden" | "not_found" | "method_not_allowed" | "conflict" | "payload_too_large" | "unsupported_media_type" | "unprocessable" | "rate_limited" | "internal_error" | "service_unavailable" | "reauthentication_failed" | "bundle_key_mismatch" | "reissue_not_needed" | "self_review" | "approval_queue_full";
             errors?: {
                 field: string;
                 detail: string;
@@ -11908,6 +12344,8 @@ export interface components {
         MCPServerID: string;
         /** @description ID инструмента в реестре (UUIDv7) */
         AgentToolID: string;
+        /** @description ID запроса подтверждения (UUIDv7) */
+        ApprovalID: string;
         /** @description Только агенты этого приложения */
         AgentApplicationFilter: string;
         /** @description Только инструменты этого MCP-сервера */
