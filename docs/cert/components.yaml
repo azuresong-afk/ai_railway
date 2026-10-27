@@ -1087,3 +1087,19 @@ components:
     justification: Динамический анализ работающей установки нужен для ЗИ и сертификации (ТЗ 8.4); собственного сканера писать не нужно. Только CI, не распространяется и не входит в SBOM. Образ закреплён по digest (ТЗ 8.7); тег — еженедельная сборка стабильного выпуска.
     decision: решение владельца Р10 этапа 3 (22.10.2026)
     decided: 2026-10-22
+
+  - name: github.com/yalue/onnxruntime_go
+    version: v1.38.0
+    type: go-module
+    scope: product
+    purpose: Вызов C API ONNX Runtime 1.31.0 (C API 31) из процесса ML-детекторов aisec-ml (ADR-0024, задача 4.18) — сеанс из байтов проверенной модели, тензоры, запуск и прерывание вывода. Импорт — только в cmd/aisec-ml (depguard), сборка — только с тегом aisec_onnx и CGO_ENABLED=1; шлюз и сервер без cgo.
+    license: MIT
+    repository: https://github.com/yalue/onnxruntime_go
+    attack_surface: true
+    security_function: false
+    provided_by: Nathan Otterness (github.com/yalue)
+    justification: В Go нет движка вывода нейросетей, а C API ONNX Runtime — таблица указателей на функции, доступная из Go только через cgo с прослойкой на C. Go-зависимостей нет; системная — только -ldl. Библиотеку ORT обвязка загружает dlopen по пути, который передаёт aisec-ml, — по дескриптору файла, хеш которого сверен со встроенным при сборке. В модуль входят заголовки C API ONNX Runtime 1.31.0 (MIT, Microsoft). Каталог test_data модуля (готовые библиотеки ORT для других ОС) в vendor не попадает. Выпуски часто (v1.30.0 — 05.2026, v1.38.0 — 10.2026), один основной сопровождающий — риск снижается вендорингом и небольшим объёмом кода. Сама библиотека ONNX Runtime — своя сборка из исходников без телеметрии, компонент добавляется вместе со сборкой (ADR-0024, раздел 8).
+    decision: ADR-0024, раздел «Зависимости»; согласие владельца 27.10.2026 (поток 4-C3)
+    decided: 2026-10-27
+    license_files:
+      LICENSE: b7177fa196f86e5102a5d2702c1b28ea62eb02fd2d633a37f2dbd6ffc0ba8b4f

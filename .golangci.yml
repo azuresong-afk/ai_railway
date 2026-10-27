@@ -113,6 +113,16 @@ linters:
               desc: "библиотека LDAP — только в internal/auth/ldap (ADR-0025, 2.7)"
             - pkg: "github.com/go-asn1-ber/asn1-ber"
               desc: "разбор BER — только в internal/auth/ldap (ADR-0025, 2.7)"
+        onnx-binding:
+          # Обвязка ONNX Runtime (cgo) — только в изолированном процессе
+          # aisec-ml (ADR-0024): шлюз и сервер остаются без cgo.
+          list-mode: lax
+          files:
+            - "$all"
+            - "!**/cmd/aisec-ml/**"
+          deny:
+            - pkg: "github.com/yalue/onnxruntime_go"
+              desc: "ONNX Runtime — только в cmd/aisec-ml (ADR-0024)"
         transitive-only:
           # Модули, которые в vendor только как зависимости go-ldap: свой UUID
           # продукта — в internal/crypto (ADR-0001), NTLM и MD4 не используются
