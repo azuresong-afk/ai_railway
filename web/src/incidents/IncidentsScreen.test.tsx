@@ -68,6 +68,9 @@ beforeEach(() => {
       if (/^\/api\/v1\/incidents\/inc-1\/stages\//.test(url)) return r(json(items[0]));
       if (url === "/api/v1/incident-categories")
         return r(json({ items: [{ id: "system_prompt_leak", title: "Утечка системного промпта", rows: ["DM-08"], instruction: { category: "system_prompt_leak", body: "Текст по умолчанию", version: 1, default: true } }, { id: "other", title: "Прочее", rows: [], instruction: { category: "other", body: "", version: 1, default: true } }] }));
+      if (url === "/api/v1/events/settings") return r(json({ metadata_days: 90, content_days: 30, updated_at: NOW }));
+      if (url === "/api/v1/incident-settings" && method === "GET") return r(json({ retention_days: 1095 }));
+      if (url === "/api/v1/incident-settings" && method === "PUT") return r(json({ retention_days: c.body.retention_days }));
       if (url === "/api/v1/incident-categories/system_prompt_leak" && method === "PUT") return r(json({ category: "system_prompt_leak", body: c.body.body, version: 2, default: false }));
       return r(problem(404, "not_found", "нет"));
     }),
@@ -251,6 +254,54 @@ describe("карточка инцидента", () => {
     fireEvent.change(within(dlg).getByLabelText("Категория"), { target: { value: "other" } });
     fireEvent.click(submit);
     await waitFor(() => expect(calls.find((c) => c.method === "POST" && c.url === "/api/v1/incidents")?.body).toEqual({ title: "Подозрительная активность", severity: "medium", category: "other" }));
+  });
+});
+
+describe("перенесено из этапа 3 (задача 4.5)", () => {
+  it("событие старше срока хранения событий — без ссылки, с пометкой; без права — его название", async () => {
+    handler = (c) =>
+      /^\/api\/v1\/incidents\/inc-1$/.test(c.url)
+        ? json({ ...card(items[0]!), events: [{ id: "ev-old", ts: "2025-01-10T10:00:00Z" }, { id: "ev-1", ts: new Date().toISOString() }] })
+        : undefined;
+    const { unmount } = renderScreen(read);
+    const aside = await openCard();
+    const events = within(aside).getByRole("region", { name: "События инцидента" });
+    await within(events).findByText(/удалено по сроку хранения/);
+    expect(within(events).getAllByRole("link", { name: /Событие от/ })).toHaveLength(1);
+    expect(within(events).getByRole("link", { name: /Событие от/ }).getAttribute("href")).toContain("event=ev-1");
+    unmount();
+    calls.length = 0;
+    renderScreen(["incidents.read"]);
+    const aside2 = await openCard();
+    expect(within(aside2).getByText("Для просмотра событий нужно право «Просмотр событий».")).toBeInTheDocument();
+    expect(calls.some((c) => c.url === "/api/v1/events/settings")).toBe(false);
+  });
+
+  it("срок хранения инцидентов: просмотр по incidents.read, изменение по incident_categories.manage с паролем при сокращении", async () => {
+    handler = (c) =>
+      c.method === "PUT" && c.url === "/api/v1/incident-settings" && c.body.retention_days < 1095 && !c.body.password
+        ? new Response(JSON.stringify({ status: 400, code: "invalid_request", detail: "Проверьте введённые данные.", errors: [{ field: "password", detail: "Введите текущий пароль." }] }), { status: 400 })
+        : undefined;
+    const { unmount } = renderScreen(read);
+    tab("Срок хранения");
+    const ro = (await screen.findByLabelText("Срок хранения закрытых инцидентов, суток")) as HTMLInputElement;
+    await waitFor(() => expect(ro.value).toBe("1095"));
+    expect(ro.disabled).toBe(true);
+    expect(screen.queryByRole("button", { name: "Сохранить срок" })).toBeNull();
+    unmount();
+    renderScreen([...read, "incident_categories.manage"]);
+    tab("Срок хранения");
+    const input = (await screen.findByLabelText("Срок хранения закрытых инцидентов, суток")) as HTMLInputElement;
+    await waitFor(() => expect(input.value).toBe("1095"));
+    fireEvent.change(input, { target: { value: "100" } });
+    await screen.findByText("Целое число суток от 365 до 1825.");
+    fireEvent.change(input, { target: { value: "730" } });
+    await screen.findByText(/Сокращение срока необратимо/);
+    fireEvent.click(screen.getByRole("button", { name: "Сохранить срок" }));
+    await screen.findByText(/Подтвердите, что это вы/);
+    fireEvent.change(screen.getByLabelText("Текущий пароль"), { target: { value: "Пароль-для-проверки-1" } });
+    fireEvent.click(screen.getByRole("button", { name: "Сохранить срок" }));
+    await waitFor(() => expect(calls.filter((c) => c.method === "PUT").at(-1)?.body).toEqual({ retention_days: 730, password: "Пароль-для-проверки-1" }));
   });
 });
 
