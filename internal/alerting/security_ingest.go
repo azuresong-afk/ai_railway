@@ -22,6 +22,10 @@ func gatewayAuthAlert(reason string) bool {
 // транзакции приёма: одно оповещение на адрес (перебор) или префикс ключа
 // (отозванный или чужой адрес), ссылки на события — в оповещении.
 func processAuthFailures(ctx context.Context, ops txOps, evs []*events.Event) error {
+	// DM-24 (agents.tool_poisoning) — в той же транзакции приёма.
+	if err := processToolPoisoning(ctx, ops, evs); err != nil {
+		return err
+	}
 	g := group{by: map[string]*Trigger{}}
 	for _, e := range evs {
 		if e.Type != events.TypeAuthFailure || e.AuthFailure == nil || !gatewayAuthAlert(e.AuthFailure.Reason) {

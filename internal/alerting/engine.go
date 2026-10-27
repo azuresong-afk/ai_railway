@@ -55,6 +55,11 @@ func process(ctx context.Context, ops txOps, gatewayID string, evs []*events.Eve
 		recs[i] = events.RecordOf(gatewayID, e)
 	}
 	for _, r := range rules {
+		if r.Kind == KindNew && r.Condition.Field == ToolField {
+			// agents.tool_new поднимает сервер по tools:observe (agents.go):
+			// имя инструмента в событии без сервера ключом не годится.
+			continue
+		}
 		c, err := compile(r)
 		if err != nil {
 			if skipped != nil {

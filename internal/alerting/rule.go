@@ -57,7 +57,7 @@ var newFields = []string{"model", "provider", "user", "app", "tool"}
 // groupFields — поля группировки правила «порог»: однозначные столбцы
 // событий. Многозначные (угрозы, детекторы) ключом не годятся.
 var groupFields = []string{"type", "app", "env", "user", "provider", "model", "source", "gateway", "action", "rule",
-	"severity", "policy_mode"}
+	"severity", "policy_mode", agentField, serverField, ToolField}
 
 // GroupFields — допустимые поля группировки правила «порог».
 func GroupFields() []string { return slices.Clone(groupFields) }
@@ -276,6 +276,8 @@ func fieldValue(rec *events.Record, field string) string {
 		return rec.Severity
 	case "policy_mode":
 		return rec.PolicyMode
+	case agentField, serverField, ToolField:
+		return agentFieldValue(rec, field)
 	}
 	return ""
 }
