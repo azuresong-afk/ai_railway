@@ -953,6 +953,274 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/auth/oidc": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Вход через внешний IdP на экране входа
+         * @description ИАФ.7, ADR-0025. Открытый: показывает, есть ли кнопка «Войти через …» и её название.
+         *     Ничего, кроме признака и названия, не раскрывает.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Способ входа */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["OIDCOption"];
+                    };
+                };
+                429: components["responses"]["RateLimited"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/oidc/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Начать вход через внешний IdP
+         * @description ИАФ.7, ADR-0025, 3.3. Переход браузера (не XHR). Создаёт одноразовый вход на 10 минут:
+         *     в БД — только хеш случайного значения, само значение — в cookie `__Host-aisec_oidc`
+         *     (HttpOnly, Secure, SameSite=Lax, Max-Age 600). Из него выводятся `state`, `nonce` и
+         *     `code_verifier` (PKCE S256). Ответ — 303 на `authorization_endpoint` IdP. Если вход
+         *     через IdP не настроен, отключён или IdP недоступен — 303 на `/?oidc=unavailable`.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Переход к IdP или на экран входа с кодом отказа */
+                303: {
+                    headers: {
+                        Location?: string;
+                        /** @description `__Host-aisec_oidc` */
+                        "Set-Cookie"?: string;
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                429: components["responses"]["RateLimited"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/oidc/callback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Возврат от внешнего IdP
+         * @description ИАФ.7, ADR-0025, 3.4–3.8. Адрес возврата (`redirect_uri`), который регистрируется в IdP:
+         *     `<console_url>/api/v1/auth/oidc/callback`. Вход одноразовый: cookie `__Host-aisec_oidc`
+         *     удаляется в любом случае. Проверяются `state` (за постоянное время), обмен кода с
+         *     `code_verifier`, подпись и утверждения ID-токена (`iss`, `aud`, `azp`, `exp`, `iat`, `nonce`),
+         *     роль по группам (конфликт групп — отказ) и второй фактор по `acr`/`amr`. Успех — cookie
+         *     сессии и 303 на `/`. Отказ — 303 на `/?oidc=denied|failed|unavailable`; причина пишется в
+         *     `auth.login_failed` (`method: oidc`) и наружу не выдаётся.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    state?: string;
+                    code?: string;
+                    error?: string;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Переход в консоль или на экран входа с кодом отказа */
+                303: {
+                    headers: {
+                        Location?: string;
+                        /** @description `__Host-aisec_session`, `__Host-aisec_csrf`; удаление `__Host-aisec_oidc` */
+                        "Set-Cookie"?: string;
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                429: components["responses"]["RateLimited"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/idp": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Настройки входа через внешний IdP
+         * @description Право `auth_idp.read` (ИАФ.7, ADR-0025). Секрет клиента не возвращается никогда.
+         *     Если вход не настроен — `configured: false` и пустые поля.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Настройки */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["IdPSettings"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        /**
+         * Сохранить настройки входа через внешний IdP
+         * @description Право `auth_idp.manage` (только администратор безопасности), ADR-0025, 1.6. Всегда нужна
+         *     повторная проверка паролем или кодом TOTP локальной учётной записи: внешней — 403.
+         *     Пустой `client_secret` оставляет прежний (при первом сохранении обязателен). Если
+         *     `enabled`, сервер проверяет IdP: discovery (issuer совпадает, конечные точки — https на том
+         *     же узле, адрес не loopback/link-local/метаданные), JWKS; неудача — 400 с полем `issuer`.
+         *     Сессии внешних пользователей завершаются. Пишет `auth.idp_changed` со значениями до и
+         *     после (без секрета) и признаком `weakening` при расширении доступа (DM-40).
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["IdPSettingsUpdate"];
+                };
+            };
+            responses: {
+                /** @description Настройки сохранены */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["IdPSettings"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        post?: never;
+        /**
+         * Отключить вход через внешний IdP и удалить настройки
+         * @description Право `auth_idp.manage`, повторная проверка паролем или кодом TOTP локальной учётной записи.
+         *     Сессии внешних пользователей завершаются; их учётные записи и журнал аудита остаются.
+         *     Пишет `auth.idp_disabled`. Не настроен — 404.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["Reauth"];
+                };
+            };
+            responses: {
+                /** @description Настройки удалены */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/mfa/setup": {
         parameters: {
             query?: never;
@@ -7798,6 +8066,47 @@ export interface components {
              */
             retention_mode?: "" | "none" | "masked" | "full";
         } & components["schemas"]["Reauth"];
+        OIDCOption: {
+            enabled: boolean;
+            /** @description Название для кнопки «Войти через …» */
+            display_name?: string;
+        };
+        IdPGroupRole: {
+            group: string;
+            role: components["schemas"]["Role"];
+        };
+        IdPSettingsFields: {
+            enabled?: boolean;
+            display_name?: string;
+            /** @description https-адрес издателя; совпадает с issuer в discovery */
+            issuer?: string;
+            client_id?: string;
+            /** @description https-адрес консоли без пути: из него строится redirect_uri */
+            console_url?: string;
+            /** @description Корневые сертификаты IdP в PEM (системные корни не используются) */
+            ca_pem?: string;
+            scopes?: string[];
+            /** @description Утверждение с группами, по умолчанию `groups` */
+            groups_claim?: string;
+            required_acr?: string[];
+            required_amr?: string[];
+            group_roles?: components["schemas"]["IdPGroupRole"][];
+        };
+        IdPSettings: components["schemas"]["IdPSettingsFields"] & {
+            configured: boolean;
+            /** @description Адрес возврата для регистрации клиента в IdP */
+            redirect_uri?: string;
+            version?: number;
+            /** Format: date-time */
+            updated_at?: string;
+        };
+        IdPSettingsUpdate: components["schemas"]["IdPSettingsFields"] & components["schemas"]["Reauth"] & {
+            /**
+             * Format: password
+             * @description Секрет клиента; пустой — оставить прежний. Хранится шифротекстом под ключом данных
+             */
+            client_secret?: string;
+        };
         AuthPolicyUpdate: components["schemas"]["AuthPolicy"] & components["schemas"]["Reauth"];
         /**
          * @description ID роли. Предустановленные: `security_admin`, `system_admin`, `analyst`, `auditor`,

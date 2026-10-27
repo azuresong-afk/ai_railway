@@ -64,7 +64,13 @@ func (c *testClock) next() time.Time {
 
 func newAuthEnv(t *testing.T) *authEnv {
 	t.Helper()
-	e := &authEnv{mem: authtest.NewMemory(), log: &bytes.Buffer{}, clock: &testClock{t: time.Now()}, secrets: map[string][]byte{}}
+	return newAuthEnvMem(t, authtest.NewMemory())
+}
+
+// newAuthEnvMem — окружение на хранилище mem с дополнительными настройками сервиса входа.
+func newAuthEnvMem(t *testing.T, mem *authtest.Memory, opts ...auth.Option) *authEnv {
+	t.Helper()
+	e := &authEnv{mem: mem, log: &bytes.Buffer{}, clock: &testClock{t: time.Now()}, secrets: map[string][]byte{}}
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	for _, u := range []struct {
 		id, login string
@@ -74,7 +80,7 @@ func newAuthEnv(t *testing.T) *authEnv {
 			Status: auth.StatusActive, PasswordHash: authtest.HashOf(tPhrase), PasswordChangedAt: now, CreatedAt: now, CreatedBy: "test"})
 	}
 	logger := slog.New(slog.NewTextHandler(e.log, nil))
-	h, _, err := New(Options{Hasher: testHasher(t), Logger: logger, Auth: testAuth(t, e.mem, auth.WithClock(e.clock.now)),
+	h, _, err := New(Options{Hasher: testHasher(t), Logger: logger, Auth: testAuth(t, e.mem, append([]auth.Option{auth.WithClock(e.clock.now)}, opts...)...),
 		RateLimit: RateConfig{Rules: []RateRule{{Prefix: "/", Max: 10000, Window: time.Minute}}}})
 	if err != nil {
 		t.Fatal(err)

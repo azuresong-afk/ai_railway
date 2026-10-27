@@ -526,6 +526,141 @@ paths:
         '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ProblemInternal' }
+  /api/v1/auth/oidc:
+    get:
+      summary: Вход через внешний IdP на экране входа
+      description: |
+        ИАФ.7, ADR-0025. Открытый: показывает, есть ли кнопка «Войти через …» и её название.
+        Ничего, кроме признака и названия, не раскрывает.
+      security: []
+      responses:
+        '200':
+          description: Способ входа
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OIDCOption' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/auth/oidc/start:
+    get:
+      summary: Начать вход через внешний IdP
+      description: |
+        ИАФ.7, ADR-0025, 3.3. Переход браузера (не XHR). Создаёт одноразовый вход на 10 минут:
+        в БД — только хеш случайного значения, само значение — в cookie `__Host-aisec_oidc`
+        (HttpOnly, Secure, SameSite=Lax, Max-Age 600). Из него выводятся `state`, `nonce` и
+        `code_verifier` (PKCE S256). Ответ — 303 на `authorization_endpoint` IdP. Если вход
+        через IdP не настроен, отключён или IdP недоступен — 303 на `/?oidc=unavailable`.
+      security: []
+      responses:
+        '303':
+          description: Переход к IdP или на экран входа с кодом отказа
+          headers:
+            Location: { schema: { type: string } }
+            Set-Cookie: { description: '`__Host-aisec_oidc`', schema: { type: string } }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/auth/oidc/callback:
+    get:
+      summary: Возврат от внешнего IdP
+      description: |
+        ИАФ.7, ADR-0025, 3.4–3.8. Адрес возврата (`redirect_uri`), который регистрируется в IdP:
+        `<console_url>/api/v1/auth/oidc/callback`. Вход одноразовый: cookie `__Host-aisec_oidc`
+        удаляется в любом случае. Проверяются `state` (за постоянное время), обмен кода с
+        `code_verifier`, подпись и утверждения ID-токена (`iss`, `aud`, `azp`, `exp`, `iat`, `nonce`),
+        роль по группам (конфликт групп — отказ) и второй фактор по `acr`/`amr`. Успех — cookie
+        сессии и 303 на `/`. Отказ — 303 на `/?oidc=denied|failed|unavailable`; причина пишется в
+        `auth.login_failed` (`method: oidc`) и наружу не выдаётся.
+      security: []
+      parameters:
+        - { name: state, in: query, schema: { type: string, maxLength: 128 } }
+        - { name: code, in: query, schema: { type: string, maxLength: 2048 } }
+        - { name: error, in: query, schema: { type: string, maxLength: 128 } }
+      responses:
+        '303':
+          description: Переход в консоль или на экран входа с кодом отказа
+          headers:
+            Location: { schema: { type: string } }
+            Set-Cookie: { description: '`__Host-aisec_session`, `__Host-aisec_csrf`; удаление `__Host-aisec_oidc`', schema: { type: string } }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/auth/idp:
+    get:
+      summary: Настройки входа через внешний IdP
+      description: |
+        Право `auth_idp.read` (ИАФ.7, ADR-0025). Секрет клиента не возвращается никогда.
+        Если вход не настроен — `configured: false` и пустые поля.
+      x-permission: auth_idp.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      responses:
+        '200':
+          description: Настройки
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IdPSettings' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    put:
+      summary: Сохранить настройки входа через внешний IdP
+      description: |
+        Право `auth_idp.manage` (только администратор безопасности), ADR-0025, 1.6. Всегда нужна
+        повторная проверка паролем или кодом TOTP локальной учётной записи: внешней — 403.
+        Пустой `client_secret` оставляет прежний (при первом сохранении обязателен). Если
+        `enabled`, сервер проверяет IdP: discovery (issuer совпадает, конечные точки — https на том
+        же узле, адрес не loopback/link-local/метаданные), JWKS; неудача — 400 с полем `issuer`.
+        Сессии внешних пользователей завершаются. Пишет `auth.idp_changed` со значениями до и
+        после (без секрета) и признаком `weakening` при расширении доступа (DM-40).
+      x-permission: auth_idp.manage
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/IdPSettingsUpdate' }
+      responses:
+        '200':
+          description: Настройки сохранены
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IdPSettings' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    delete:
+      summary: Отключить вход через внешний IdP и удалить настройки
+      description: |
+        Право `auth_idp.manage`, повторная проверка паролем или кодом TOTP локальной учётной записи.
+        Сессии внешних пользователей завершаются; их учётные записи и журнал аудита остаются.
+        Пишет `auth.idp_disabled`. Не настроен — 404.
+      x-permission: auth_idp.manage
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Reauth' }
+      responses:
+        '204': { description: Настройки удалены }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
   /api/v1/auth/mfa/setup:
     post:
       summary: Выдать секрет TOTP для подключения второго фактора
@@ -4784,6 +4919,54 @@ components:
             timezone: { type: string, maxLength: 64, description: 'Имя IANA, например Europe/Moscow или UTC; пусто — без изменений' }
             retention_mode: { type: string, enum: ['', none, masked, full], description: 'Пусто — без изменений' }
         - $ref: '#/components/schemas/Reauth'
+    OIDCOption:
+      type: object
+      required: [enabled]
+      properties:
+        enabled: { type: boolean }
+        display_name: { type: string, maxLength: 64, description: 'Название для кнопки «Войти через …»' }
+    IdPGroupRole:
+      type: object
+      required: [group, role]
+      properties:
+        group: { type: string, minLength: 1, maxLength: 256 }
+        role: { $ref: '#/components/schemas/Role' }
+    IdPSettingsFields:
+      type: object
+      properties:
+        enabled: { type: boolean }
+        display_name: { type: string, minLength: 1, maxLength: 64 }
+        issuer: { type: string, maxLength: 512, description: 'https-адрес издателя; совпадает с issuer в discovery' }
+        client_id: { type: string, minLength: 1, maxLength: 256 }
+        console_url: { type: string, maxLength: 512, description: 'https-адрес консоли без пути: из него строится redirect_uri' }
+        ca_pem: { type: string, maxLength: 65536, description: 'Корневые сертификаты IdP в PEM (системные корни не используются)' }
+        scopes: { type: array, maxItems: 16, items: { type: string, maxLength: 64 } }
+        groups_claim: { type: string, maxLength: 64, description: 'Утверждение с группами, по умолчанию `groups`' }
+        required_acr: { type: array, maxItems: 16, items: { type: string, maxLength: 256 } }
+        required_amr: { type: array, maxItems: 16, items: { type: string, maxLength: 256 } }
+        group_roles: { type: array, maxItems: 200, items: { $ref: '#/components/schemas/IdPGroupRole' } }
+    IdPSettings:
+      allOf:
+        - $ref: '#/components/schemas/IdPSettingsFields'
+        - type: object
+          required: [configured, enabled, scopes, required_acr, required_amr, group_roles]
+          properties:
+            configured: { type: boolean }
+            redirect_uri: { type: string, description: 'Адрес возврата для регистрации клиента в IdP' }
+            version: { type: integer }
+            updated_at: { type: string, format: date-time }
+    IdPSettingsUpdate:
+      allOf:
+        - $ref: '#/components/schemas/IdPSettingsFields'
+        - $ref: '#/components/schemas/Reauth'
+        - type: object
+          required: [enabled, display_name, issuer, client_id, console_url, ca_pem, group_roles]
+          properties:
+            client_secret:
+              type: string
+              maxLength: 1024
+              format: password
+              description: 'Секрет клиента; пустой — оставить прежний. Хранится шифротекстом под ключом данных'
     AuthPolicyUpdate:
       allOf:
         - $ref: '#/components/schemas/AuthPolicy'
