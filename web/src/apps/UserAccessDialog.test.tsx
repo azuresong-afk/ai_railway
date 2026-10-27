@@ -10,7 +10,7 @@ const app = {
   user_from: "header", quotas: {}, lists: [], exfil_allow_domains: [], status: "active", created_at: "2026-10-01T10:00:00Z",
   updated_at: "2026-10-01T10:00:00Z",
 } as Application;
-const ISS = "https://idp.example.test/realms/aisec";
+const ISS = `https://idp.example.test/realms/aisec`;
 const defaults = { configured: false, mode: "off", issuer: "", audience: "", groups_claim: "groups", leeway: 60, model_groups: {} };
 
 const calls: { method: string; body: Record<string, unknown> | undefined }[] = [];
