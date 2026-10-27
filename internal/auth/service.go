@@ -196,6 +196,14 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (LoginResult, error)
 			return LoginResult{}, err
 		}
 		if ok {
+			// Фиктивная проверка пароля, как у неизвестного логина: путь
+			// каталога не быстрее локального, и по времени ответа не
+			// отличить логин локальной записи (аварийного администратора).
+			if n := len(in.Password); n >= aisecCrypto.MinPasswordLen && n <= aisecCrypto.MaxPasswordLen {
+				if _, _, err := s.pw.Verify(ctx, []byte(in.Password), s.dummy); err != nil {
+					return LoginResult{}, fmt.Errorf("проверка пароля: %w", err)
+				}
+			}
 			return s.ldapLogin(ctx, in, login, st, secret, pol, now)
 		}
 	}

@@ -144,6 +144,12 @@ func (s *Service) SetLDAP(ctx context.Context, by Caller, in LDAPInput, password
 	if in.BindPassword == "" && !exists {
 		return LDAPSettings{}, &InputError{"bind_password", "Укажите пароль сервисной учётной записи каталога."}
 	}
+	// Сохранённый пароль не уходит на другой узел или от имени другой
+	// записи: при смене адреса, корней доверия или DN его нужно ввести заново
+	// (ревью 4.16, замечание 2).
+	if in.BindPassword == "" && (before.URL != next.URL || before.CAPEM != next.CAPEM || !ldap.SameDN(before.BindDN, next.BindDN)) {
+		return LDAPSettings{}, &InputError{"bind_password", "Адрес каталога, корневые сертификаты или DN сервисной учётной записи изменились: введите её пароль заново."}
+	}
 	if err := s.reauthenticate(ctx, by, password, code, "auth.ldap_changed"); err != nil {
 		return LDAPSettings{}, err
 	}

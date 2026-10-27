@@ -392,6 +392,12 @@ func TestIdPTrustChangeAudited(t *testing.T) {
 	in.ClientSecret, in.Enabled = "", false
 	in.CAPEM = string(other.RootPEM)
 	in.GroupsClaim = "roles"
+	// Сохранённый секрет не уходит к другим корням доверия: его вводят заново.
+	var ie *auth.InputError
+	if _, err := e.svc.SetIdP(ctx, e.admin, in, phrase, ""); !errors.As(err, &ie) || ie.Field != "client_secret" {
+		t.Fatalf("смена корней без секрета: %v", err)
+	}
+	in.ClientSecret = idpClientSecret
 	if _, err := e.svc.SetIdP(ctx, e.admin, in, phrase, ""); err != nil {
 		t.Fatal(err)
 	}

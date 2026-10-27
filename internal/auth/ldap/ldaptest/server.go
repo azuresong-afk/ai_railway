@@ -68,7 +68,12 @@ type Directory struct {
 
 // New запускает каталог: ldaps — LDAPS, иначе StartTLS на ldap://.
 func New(ldaps bool) (*Directory, error) {
-	chain, err := cryptotest.NewChain(cryptotest.ChainOptions{Hosts: []string{"127.0.0.1", "localhost"}})
+	return NewForHosts(ldaps, []string{"127.0.0.1", "localhost"})
+}
+
+// NewForHosts — каталог с сертификатом на имена hosts (несовпадение имени узла).
+func NewForHosts(ldaps bool, hosts []string) (*Directory, error) {
+	chain, err := cryptotest.NewChain(cryptotest.ChainOptions{Hosts: hosts})
 	if err != nil {
 		return nil, err
 	}
@@ -102,7 +107,7 @@ func New(ldaps bool) (*Directory, error) {
 
 // Close останавливает каталог.
 func (d *Directory) Close() {
-	_ = d.ln.Close()
+	_ = d.ln.Close() //nolint:gosec // тестовый каталог: ошибка закрытия и срока не важна
 	d.wg.Wait()
 }
 
@@ -181,8 +186,8 @@ func (d *Directory) handle(c net.Conn) {
 	if d.ldaps {
 		c = d.wrap(c)
 	}
-	defer func() { _ = c.Close() }()
-	_ = c.SetDeadline(time.Now().Add(30 * time.Second))
+	defer func() { _ = c.Close() }()                    //nolint:gosec // тестовый каталог: ошибка закрытия и срока не важна
+	_ = c.SetDeadline(time.Now().Add(30 * time.Second)) //nolint:gosec // тестовый каталог: ошибка закрытия и срока не важна
 	r := bufio.NewReader(c)
 	for {
 		p, err := ber.ReadPacket(r)

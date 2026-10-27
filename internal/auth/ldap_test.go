@@ -167,6 +167,24 @@ func TestLDAPLocalLoginWins(t *testing.T) {
 	}
 }
 
+// Путь каталога проверяет пароль и с фиктивным хешем: по времени ответа не
+// отличить логин локальной записи от логина каталога (ADR-0025, 2.8).
+func TestLDAPLoginVerifiesDummyHash(t *testing.T) {
+	e := newLDAPEnv(t)
+	e.save(t, e.input())
+	before := len(e.hash.Verified())
+	e.mustLogin(t, "petrova", dirPass)
+	verified := e.hash.Verified()[before:]
+	if len(verified) != 1 || !strings.HasPrefix(verified[0], "$fake$") {
+		t.Fatalf("фиктивная проверка пароля: %q", verified)
+	}
+	before = len(verified) + before
+	e.fail(t, "nobody", dirPass)
+	if n := len(e.hash.Verified()) - before; n != 1 {
+		t.Fatalf("неизвестный логин: Verify вызван %d раз", n)
+	}
+}
+
 // Роль администратора по группе: TOTP консоли обязателен (ИАФ.5,
 // ADR-0025, 2.5) — подключается сразу после входа, дальше вход с кодом.
 func TestLDAPAdminRequiresConsoleTOTP(t *testing.T) {
@@ -363,6 +381,39 @@ func TestLDAPSettingsValidation(t *testing.T) {
 
 // Расширение доступа отмечается weakening (DM-40); пароль сервисной
 // учётной записи не попадает в аудит и ответы.
+// Сохранённый пароль сервисной учётной записи не уходит на другой адрес,
+// к другим корням или от имени другой записи: его вводят заново (ревью 4.16).
+func TestLDAPBindPasswordNotReusedForNewEndpoint(t *testing.T) {
+	e := newLDAPEnv(t)
+	ctx := context.Background()
+	e.save(t, e.input())
+	other, err := ldaptest.New(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	for name, change := range map[string]func(*auth.LDAPInput){
+		"адрес":  func(in *auth.LDAPInput) { in.URL = other.URL },
+		"корни":  func(in *auth.LDAPInput) { in.CAPEM = string(other.RootPEM) },
+		"запись": func(in *auth.LDAPInput) { in.BindDN = "uid=other,cn=sysaccounts,dc=example,dc=test" },
+	} {
+		in := e.input()
+		in.BindPassword, in.Enabled = "", false
+		change(&in)
+		var ie *auth.InputError
+		if _, err := e.svc.SetLDAP(ctx, e.admin, in, phrase, ""); !errors.As(err, &ie) || ie.Field != "bind_password" {
+			t.Fatalf("%s без пароля: %v", name, err)
+		}
+	}
+	// Регистр DN записи — та же запись.
+	in := e.input()
+	in.BindPassword, in.BindDN = "", strings.ToUpper(dirSvcDN)
+	e.save(t, in)
+	if n := len(e.dir.Binds()); n == 0 {
+		t.Fatal("каталог не проверен")
+	}
+}
+
 func TestLDAPWeakeningFlags(t *testing.T) {
 	e := newLDAPEnv(t)
 	ctx := context.Background()

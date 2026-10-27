@@ -9236,7 +9236,7 @@ export interface components {
         IdPSettingsUpdate: components["schemas"]["IdPSettingsFields"] & components["schemas"]["Reauth"] & {
             /**
              * Format: password
-             * @description Секрет клиента; пустой — оставить прежний. Хранится шифротекстом под ключом данных
+             * @description Секрет клиента; пустой — оставить прежний (при смене issuer или ca_pem — 400, нужен заново). Хранится шифротекстом под ключом данных
              */
             client_secret?: string;
         };
@@ -9275,7 +9275,7 @@ export interface components {
         LDAPSettingsUpdate: components["schemas"]["LDAPSettingsFields"] & components["schemas"]["Reauth"] & {
             /**
              * Format: password
-             * @description Пароль сервисной учётной записи; пустой — оставить прежний. Хранится шифротекстом под ключом данных
+             * @description Пароль сервисной учётной записи; пустой — оставить прежний (при смене url, ca_pem или bind_dn — 400, нужен заново). Хранится шифротекстом под ключом данных
              */
             bind_password?: string;
         };

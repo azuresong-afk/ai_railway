@@ -236,6 +236,11 @@ func (s *Service) SetIdP(ctx context.Context, by Caller, in IdPInput, password, 
 	if in.ClientSecret == "" && !exists {
 		return IdPSettings{}, &InputError{"client_secret", "Укажите секрет клиента, выданный IdP."}
 	}
+	// Сохранённый секрет не уходит на другой узел: при смене издателя или
+	// корней доверия его нужно ввести заново (ревью 4.16, замечание 2).
+	if in.ClientSecret == "" && (before.Issuer != next.Issuer || before.CAPEM != next.CAPEM) {
+		return IdPSettings{}, &InputError{"client_secret", "Издатель или корневые сертификаты изменились: введите секрет клиента заново."}
+	}
 	if err := s.reauthenticate(ctx, by, password, code, "auth.idp_changed"); err != nil {
 		return IdPSettings{}, err
 	}

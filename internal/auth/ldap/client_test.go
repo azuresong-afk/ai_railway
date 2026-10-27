@@ -187,6 +187,26 @@ func TestAuthenticateTLSRejected(t *testing.T) {
 	}
 }
 
+// Корень доверенный, но сертификат выдан на другое имя: TLS не
+// устанавливается, bind не выполняется (ADR-0025, 2.1).
+func TestAuthenticateHostnameMismatch(t *testing.T) {
+	for _, ldaps := range []bool{true, false} {
+		e := newEnv(t, ldaps)
+		dir, err := ldaptest.NewForHosts(ldaps, []string{"ldap.example.test"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(dir.Close)
+		dir.Add(svcDN, nil, svcPass)
+		e.cfg.URL, e.cfg.RootsPEM = dir.URL, dir.RootPEM
+		_, err = e.c.Authenticate(context.Background(), e.cfg, "ivanov", ivanPass)
+		code(t, err, ldap.CodeTLS)
+		if b := dir.Binds(); len(b) != 0 {
+			t.Fatalf("bind при чужом имени в сертификате: %v", b)
+		}
+	}
+}
+
 func TestAuthenticateStartTLSRefused(t *testing.T) {
 	e := newEnv(t, false)
 	e.dir.RefuseStartTLS()
