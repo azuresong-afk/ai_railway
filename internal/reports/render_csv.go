@@ -24,7 +24,7 @@ func WriteCSV(w io.Writer, d Doc, delim rune) error {
 	row := func(cells ...Cell) error {
 		for i, c := range cells {
 			if i > 0 {
-				if err := bw.WriteByte(byte(delim)); err != nil {
+				if err := bw.WriteByte(byte(delim)); err != nil { //nolint:gosec // разделитель из белого списка ParseDelimiter (ASCII)
 					return err
 				}
 			}

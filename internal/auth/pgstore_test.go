@@ -626,7 +626,7 @@ func TestPGEmail(t *testing.T) {
 	if err := e.svc.SetEmail(ctx, admin, u.ID, ""); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ = e.svc.User(ctx, u.ID); got.Email != "" {
+	if got, _ = e.svc.User(ctx, u.ID); got.Email != "" { //nolint:gosec // тест: ошибка чтения проверяется по полю адреса
 		t.Fatalf("адрес не убран: %q", got.Email)
 	}
 	if err := e.svc.SetEmail(ctx, admin, "01900000-0000-7000-8000-0000000000ff", "a@example.ru"); !errors.Is(err, auth.ErrNotFound) {

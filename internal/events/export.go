@@ -135,7 +135,7 @@ const utf8BOM = "\ufeff"
 func writeCSVRow(w *bufio.Writer, row []string, delim rune) error {
 	for i, f := range row {
 		if i > 0 {
-			if err := w.WriteByte(byte(delim)); err != nil {
+			if err := w.WriteByte(byte(delim)); err != nil { //nolint:gosec // разделитель из белого списка ParseDelimiter (ASCII)
 				return err
 			}
 		}

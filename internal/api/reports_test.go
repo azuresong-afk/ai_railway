@@ -383,7 +383,7 @@ func TestReportRecipientsViaAPI(t *testing.T) {
 	mustProblem(t, e.call(session{}, "GET", "/api/v1/report-recipients", "", false), 401, CodeUnauthorized)
 
 	body := func(name string, ids ...string) string {
-		b, _ := json.Marshal(ids)
+		b, _ := json.Marshal(ids) //nolint:gosec // тест: ошибка маршалинга среза строк невозможна
 		return strings.Replace(scheduleBody(name), `"channel_id"`, `"recipient_user_ids":`+string(b)+`,"channel_id"`, 1)
 	}
 	mustProblem(t, e.call(admin, "POST", "/api/v1/report-schedules", body("С владельцем", tOwnerID), true), 400, CodeInvalidRequest)

@@ -148,6 +148,7 @@ func (s *Service) SetEmail(ctx context.Context, by Caller, userID, email string)
 }
 
 // SetOwnEmail — пользователь задаёт или убирает свой e-mail в профиле.
+// Сессия и право self проверены на маршруте; запись своя, поэтому canManage не нужен.
 func (s *Service) SetOwnEmail(ctx context.Context, by Caller, email string) error {
 	addr, ok := NormalizeEmail(email)
 	if !ok {

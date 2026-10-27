@@ -90,7 +90,7 @@ func TestSetEmail(t *testing.T) {
 	if err := e.svc.SetOwnEmail(ctx, self, ""); err != nil {
 		t.Fatal(err)
 	}
-	if u, _ := e.svc.User(ctx, userID); u.Email != "" {
+	if u, _ := e.svc.User(ctx, userID); u.Email != "" { //nolint:gosec // тест: ошибка чтения проверяется по полю адреса
 		t.Fatalf("адрес не убран: %q", u.Email)
 	}
 	d, _ = lastRecord(t, e.mem, "user.email_set").Details.(map[string]any)
@@ -119,7 +119,7 @@ func TestSetEmailEscalation(t *testing.T) {
 	if err := e.svc.SetEmail(context.Background(), analyst, adminID, "evil@example.ru"); !errors.Is(err, auth.ErrEscalation) {
 		t.Fatalf("аналитик сменил адрес администратора безопасности: %v", err)
 	}
-	if u, _ := e.svc.User(context.Background(), adminID); u.Email != "" {
+	if u, _ := e.svc.User(context.Background(), adminID); u.Email != "" { //nolint:gosec // тест: ошибка чтения проверяется по полю адреса
 		t.Fatalf("адрес изменён: %q", u.Email)
 	}
 }
