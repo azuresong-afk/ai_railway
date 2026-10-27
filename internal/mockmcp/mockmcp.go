@@ -30,6 +30,7 @@ import (
 	"sync"
 	"time"
 
+	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/internal/mcp"
 	"github.com/azuresong-afk/ai_railway/internal/policy/argschema"
 )
@@ -130,7 +131,7 @@ func (m *Mock) serve(w http.ResponseWriter, r *http.Request) {
 	m.mu.Lock()
 	m.last = lastRequest{Headers: r.Header.Clone(), Body: string(body)}
 	m.mu.Unlock()
-	if m.opts.Token != "" && r.Header.Get("Authorization") != "Bearer "+m.opts.Token {
+	if m.opts.Token != "" && !aisecCrypto.Equal([]byte(r.Header.Get("Authorization")), []byte("Bearer "+m.opts.Token)) {
 		http.Error(w, "нет учётных данных", http.StatusUnauthorized)
 		return
 	}

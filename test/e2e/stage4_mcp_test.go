@@ -34,7 +34,8 @@ const s4MCPToken = "e2e-mcp-token-7f3a" //nolint:gosec // G101: синтетич
 
 // s4HostIP — адрес узла вне loopback: правило адресов (internal/netguard)
 // не пускает шлюз и реестр к loopback, поэтому mock-mcp слушает внешний
-// интерфейс. Без такого адреса тест пропускается.
+// интерфейс. Без такого адреса тест пропускается, а в CI (переменная CI
+// задана) — падает: проверка не должна молча выпасть из сборки.
 func s4HostIP(t *testing.T) string {
 	t.Helper()
 	addrs, err := net.InterfaceAddrs()
@@ -46,6 +47,9 @@ func s4HostIP(t *testing.T) string {
 		if ok && n.IP.To4() != nil && !n.IP.IsLoopback() && !n.IP.IsLinkLocalUnicast() {
 			return n.IP.String()
 		}
+	}
+	if os.Getenv("CI") != "" {
+		t.Fatal("нет адреса IPv4 вне loopback для mock-mcp")
 	}
 	t.Skip("нет адреса IPv4 вне loopback для mock-mcp")
 	return ""

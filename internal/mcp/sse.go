@@ -12,8 +12,8 @@ import (
 const (
 	// MaxEvents — событий SSE на один запрос.
 	MaxEvents = 1024
-	// MaxStream — байт потока ответа на запрос (кроме subscriptions/listen,
-	// у которого предел — время).
+	// MaxStream — байт потока ответа на запрос (и потока
+	// subscriptions/listen: у него ещё и предел времени).
 	MaxStream = 16 << 20
 )
 
@@ -25,7 +25,8 @@ var ErrStreamTooLarge = errors.New("поток SSE больше предела")
 
 // SSEReader читает сообщения JSON-RPC из потока SSE вышестоящего сервера:
 // событие — до MaxMessage байт, событий — до maxEvents, всего — до
-// maxBytes (0 — без предела байт, для subscriptions/listen). Событие с
+// maxBytes (0 — без предела байт). Событие без данных пропускается, но
+// считается в пределе событий. Событие с
 // типом, отличным от message, — ошибка: в MCP других типов нет.
 type SSEReader struct {
 	r         *sse.Reader
@@ -43,21 +44,28 @@ func NewSSEReader(r io.Reader, maxEvents int, maxBytes int64) *SSEReader {
 
 // Next — следующее сообщение потока; конец потока — io.EOF.
 func (s *SSEReader) Next() (*Message, error) {
-	ev, err := s.r.Next()
-	if err != nil {
-		if s.count.over {
-			return nil, ErrStreamTooLarge
+	for {
+		ev, err := s.r.Next()
+		if err != nil {
+			if s.count.over {
+				return nil, ErrStreamTooLarge
+			}
+			return nil, err
 		}
-		return nil, err
+		s.events++
+		if s.events > s.maxEvents {
+			return nil, ErrTooManyEvents
+		}
+		if ev.Event != "" && ev.Event != "message" {
+			return nil, invalid("событие SSE неизвестного типа")
+		}
+		if ev.Data == "" {
+			// Событие без данных (priming-событие 2025-11-25 с одним id для
+			// возобновления потока) — не сообщение; в предел событий входит.
+			continue
+		}
+		return Parse([]byte(ev.Data), Limits(MaxMessage))
 	}
-	s.events++
-	if s.events > s.maxEvents {
-		return nil, ErrTooManyEvents
-	}
-	if ev.Event != "" && ev.Event != "message" {
-		return nil, invalid("событие SSE неизвестного типа")
-	}
-	return Parse([]byte(ev.Data), Limits(MaxMessage))
 }
 
 // Events — прочитано событий.

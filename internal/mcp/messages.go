@@ -336,6 +336,9 @@ var ErrInputRequired = errors.New("результат input_required: запро
 // ParseContentResult разбирает результат метода с содержимым (копию
 // result). resultType, кроме complete, — ErrInputRequired или ошибка;
 // неизвестный тип блока content — ошибка: такой результат не проверить.
+// В результате остаются только поля спецификации (на уровне результата,
+// блоков, ресурсов и сообщений): клиенту не уходит ничего, что не видели
+// детекторы. Ключи объектов structuredContent детекторам не передаются.
 func ParseContentResult(method string, result *argschema.Value) (*ContentResult, error) {
 	cr := &ContentResult{Result: Clone(*result)}
 	r := &cr.Result
@@ -354,6 +357,7 @@ func ParseContentResult(method string, result *argschema.Value) (*ContentResult,
 	Delete(r, "_meta")
 	switch method {
 	case "tools/call":
+		Keep(r, "resultType", "content", "structuredContent", "isError")
 		if e, ok := r.Get("isError"); ok {
 			if e.Kind != argschema.Bool {
 				return nil, &ProtocolError{Code: CodeInternalError, Msg: "isError — логическое"}
@@ -374,6 +378,7 @@ func ParseContentResult(method string, result *argschema.Value) (*ContentResult,
 			cr.collect(s, "structuredContent")
 		}
 	case "resources/read":
+		Keep(r, "resultType", "contents")
 		c, ok := r.Get("contents")
 		if !ok || c.Kind != argschema.Array || len(c.Arr) > MaxContentBlocks {
 			return nil, &ProtocolError{Code: CodeInternalError, Msg: "contents — массив"}
@@ -384,6 +389,7 @@ func ParseContentResult(method string, result *argschema.Value) (*ContentResult,
 			}
 		}
 	case "prompts/get":
+		Keep(r, "resultType", "description", "messages")
 		if d, ok := r.Get("description"); ok && d.Kind == argschema.String {
 			cr.Texts = append(cr.Texts, Text{Path: "description", Ref: d})
 		}
@@ -393,6 +399,13 @@ func ParseContentResult(method string, result *argschema.Value) (*ContentResult,
 		}
 		for i := range msgs.Arr {
 			at := "messages[" + strconv.Itoa(i) + "].content"
+			if msgs.Arr[i].Kind != argschema.Object {
+				return nil, &ProtocolError{Code: CodeInternalError, Msg: "messages[" + strconv.Itoa(i) + "] — объект"}
+			}
+			Keep(&msgs.Arr[i], "role", "content")
+			if role, _ := GetString(&msgs.Arr[i], "role"); role != "user" && role != "assistant" {
+				return nil, &ProtocolError{Code: CodeInternalError, Msg: "messages[" + strconv.Itoa(i) + "].role — user или assistant"}
+			}
 			c, ok := GetObject(&msgs.Arr[i], "content")
 			if !ok {
 				return nil, &ProtocolError{Code: CodeInternalError, Msg: at + " — объект"}
@@ -413,24 +426,24 @@ func (cr *ContentResult) block(b *argschema.Value, at string) error {
 	if b.Kind != argschema.Object || !ok {
 		return &ProtocolError{Code: CodeInternalError, Msg: at + ": блок без type"}
 	}
-	Delete(b, "_meta")
 	switch typ {
 	case "text":
+		Keep(b, "type", "text")
 		t, ok := b.Get("text")
 		if !ok || t.Kind != argschema.String {
 			return &ProtocolError{Code: CodeInternalError, Msg: at + ".text — строка"}
 		}
 		cr.Texts = append(cr.Texts, Text{Path: at + ".text", Ref: t})
 	case "image", "audio":
+		Keep(b, "type", "data", "mimeType")
 		cr.Media = append(cr.Media, typ)
+		cr.strings(b, at, "mimeType")
 	case "resource_link":
+		Keep(b, "type", "uri", "name", "title", "description", "mimeType", "size")
 		cr.Links++
-		for _, k := range []string{"uri", "name", "title", "description"} {
-			if s, ok := b.Get(k); ok && s.Kind == argschema.String {
-				cr.Texts = append(cr.Texts, Text{Path: at + "." + k, Ref: s})
-			}
-		}
+		cr.strings(b, at, "uri", "name", "title", "description", "mimeType")
 	case "resource":
+		Keep(b, "type", "resource")
 		res, ok := GetObject(b, "resource")
 		if !ok {
 			return &ProtocolError{Code: CodeInternalError, Msg: at + ".resource — объект"}
@@ -447,10 +460,8 @@ func (cr *ContentResult) resource(res *argschema.Value, at string) error {
 	if res.Kind != argschema.Object {
 		return &ProtocolError{Code: CodeInternalError, Msg: at + " — объект"}
 	}
-	Delete(res, "_meta")
-	if u, ok := res.Get("uri"); ok && u.Kind == argschema.String {
-		cr.Texts = append(cr.Texts, Text{Path: at + ".uri", Ref: u})
-	}
+	Keep(res, "uri", "mimeType", "text", "blob")
+	cr.strings(res, at, "uri", "mimeType")
 	t, hasText := res.Get("text")
 	_, hasBlob := res.Get("blob")
 	switch {
@@ -462,6 +473,15 @@ func (cr *ContentResult) resource(res *argschema.Value, at string) error {
 		return &ProtocolError{Code: CodeInternalError, Msg: at + ": ровно одно из text и blob"}
 	}
 	return nil
+}
+
+// strings — строковые поля keys объекта obj для детекторов.
+func (cr *ContentResult) strings(obj *argschema.Value, at string, keys ...string) {
+	for _, k := range keys {
+		if v, ok := obj.Get(k); ok && v.Kind == argschema.String {
+			cr.Texts = append(cr.Texts, Text{Path: at + "." + k, Ref: v})
+		}
+	}
 }
 
 // collect — строковые значения structuredContent с путями.

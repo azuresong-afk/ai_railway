@@ -3,7 +3,9 @@ package mcp
 import (
 	"bytes"
 	"encoding/json"
+	"net/http"
 	"testing"
+	"unicode/utf8"
 )
 
 // FuzzParseJSONRPC — строгий разбор сообщения JSON-RPC от клиента и
@@ -49,6 +51,7 @@ func FuzzParseSSE(f *testing.F) {
 		": aisec\r\nevent: message\r\ndata: {\"jsonrpc\":\"2.0\",\r\ndata: \"method\":\"notifications/progress\"}\r\n\r\n",
 		"data: x\n\ndata: {}\n\n",
 		"\xEF\xBB\xBFdata: {\"jsonrpc\":\"2.0\",\"method\":\"a\"}\n\n",
+		"id: s1-0\ndata:\n\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n\n",
 	} {
 		f.Add([]byte(s))
 	}
@@ -149,6 +152,48 @@ func FuzzCallToolResult(f *testing.F) {
 		for _, x := range again.Texts {
 			if x.Ref.Str != "\x00mask\x00" {
 				t.Fatalf("строка %s не замаскирована", x.Path)
+			}
+		}
+	})
+}
+
+// FuzzCheckHeaders — сверка заголовков ревизии 2026-07-28 с телом и
+// раскрытие значения Mcp-Name: без паники; принятые заголовки совпадают с
+// телом, а запись значения (EncodeHeaderValue) раскрывается обратно без
+// потерь.
+func FuzzCheckHeaders(f *testing.F) {
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read_file","_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}`
+	f.Add(Version20260728, "tools/call", "read_file", []byte(body))
+	f.Add(Version20260728, "tools/call", "=?base64?cmVhZF9maWxl?=", []byte(body))
+	f.Add(Version20260728, "tools/list", "", []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+	f.Add("2026-07-28 ", "tools/call", " read_file", []byte(body))
+	f.Fuzz(func(t *testing.T, ver, method, name string, data []byte) {
+		if s, err := DecodeHeaderValue(EncodeHeaderValue(name)); utf8.ValidString(name) && len(name) < MaxHeaderValue/2 && (err != nil || s != name) {
+			t.Fatalf("запись %q раскрыта как %q: %v", name, s, err)
+		}
+		m, err := Parse(data, Limits(1<<20))
+		if err != nil {
+			return
+		}
+		h := http.Header{}
+		for k, v := range map[string]string{HeaderProtocolVersion: ver, HeaderMethod: method, HeaderName: name} {
+			if v != "" {
+				h.Set(k, v)
+			}
+		}
+		if CheckHeaders(h, m) != nil {
+			return
+		}
+		if method != m.Method || MetaVersion(m) != ver {
+			t.Fatalf("принято при расхождении: %q/%q %q/%q", method, m.Method, ver, MetaVersion(m))
+		}
+		if field := NameField(m.Method); field != "" {
+			got, err := DecodeHeaderValue(name)
+			if err != nil {
+				t.Fatalf("принят неверный Mcp-Name %q: %v", name, err)
+			}
+			if body, _ := GetString(m.Params, field); body != got {
+				t.Fatalf("Mcp-Name %q не совпадает с телом %q", got, body)
 			}
 		}
 	})

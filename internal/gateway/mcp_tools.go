@@ -55,11 +55,13 @@ func (m *MCPHandler) dropServer(q *mcpReq) func(*mcp.Message) bool {
 }
 
 // checkDescriptions — встроенная проверка строк описаний: признак находки
-// по каждому фрагменту и находки (строка DM-24). Сбой детектора — как
-// находка: описание, которое не удалось проверить, агенту не показывается
-// (fail-closed), если приложение не настроено на fail_open.
-func (m *MCPHandler) checkDescriptions(ctx context.Context, app *App, texts []inspectText) ([]bool, *inspection, error) {
+// (строка DM-24) и признак сбоя по каждому фрагменту, находки и сбои.
+// Сбой детектора — не находка: описание, которое не удалось проверить,
+// агенту не показывается (fail-closed, если приложение не fail_open), но
+// отравленным не считается — ни в событии, ни в реестре.
+func (m *MCPHandler) checkDescriptions(ctx context.Context, app *App, texts []inspectText) ([]bool, []bool, *inspection, error) {
 	flagged := make([]bool, len(texts))
+	failed := make([]bool, len(texts))
 	in := &inspection{}
 	var ids []string
 	for _, id := range descriptionDetectors {
@@ -67,14 +69,18 @@ func (m *MCPHandler) checkDescriptions(ctx context.Context, app *App, texts []in
 			ids = append(ids, id)
 		}
 	}
+	base := m.h.cfg.DetectorTimeout
+	if base <= 0 {
+		base = DefaultDetectorTimeout
+	}
 	for i, t := range texts {
 		if t.Text == "" {
 			continue
 		}
 		fs, rerrs, err := app.Detectors.Run(ctx, ids, detect.Text{Text: t.Text, Direction: detect.Input, Source: detect.SourceTool},
-			detectorTimeout(m.h.cfg.DetectorTimeout, len(t.Text)))
+			detectorTimeout(base, len(t.Text)))
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		for _, f := range fs {
 			if f.Score < descriptionMinScore {
@@ -86,12 +92,10 @@ func (m *MCPHandler) checkDescriptions(ctx context.Context, app *App, texts []in
 		}
 		for _, re := range rerrs {
 			in.Failures = append(in.Failures, events.DetectorFailure{Detector: re.Detector, Location: t.Location, Reason: events.FailureError})
-			if !app.FailOpen {
-				flagged[i] = true
-			}
+			failed[i] = true
 		}
 	}
-	return flagged, in, ctx.Err()
+	return flagged, failed, in, ctx.Err()
 }
 
 // policyBlocked — фрагменты, по находкам которых правило политики
@@ -125,36 +129,38 @@ func listTexts(l *mcp.List) []inspectText {
 }
 
 // inspectDescriptions — встроенная проверка и входные правила политики по
-// описаниям (только находки, тексты не меняются).
-func (m *MCPHandler) inspectDescriptions(q *mcpReq, texts []inspectText) ([]bool, []bool, bool) {
-	flagged, builtin, err := m.checkDescriptions(q.r.Context(), q.app, texts)
+// описаниям (только находки, тексты не меняются): отравленные, скрытые и
+// непроверенные (сбой в fail_closed) фрагменты.
+func (m *MCPHandler) inspectDescriptions(q *mcpReq, texts []inspectText) ([]bool, []bool, []bool, bool) {
+	flagged, failed, builtin, err := m.checkDescriptions(q.r.Context(), q.app, texts)
 	if err != nil {
 		m.inspectFailed(q, err)
-		return nil, nil, false
+		return nil, nil, nil, false
 	}
 	in, err := q.app.inspect(q.r.Context(), inspectRequest{Endpoint: policy.EndpointCheck, Direction: detect.Input,
 		External: q.up.srv.External, Texts: texts, DetectOnly: true, User: q.user, Timeout: m.h.cfg.DetectorTimeout})
 	if err != nil {
 		m.inspectFailed(q, err)
-		return nil, nil, false
+		return nil, nil, nil, false
 	}
 	q.rec.addThreats(q.rec.findings(builtin, texts))
 	q.rec.addThreats(q.rec.findings(in, texts))
 	blocked := policyBlocked(in, len(texts))
-	if len(in.Failures) > 0 && !q.app.FailOpen {
+	q.failures = append(append(q.failures, builtin.Failures...), in.Failures...)
+	unchecked := make([]bool, len(texts))
+	for i := range failed {
 		// Правила политики не проверены: показываются только описания,
 		// которые проверка признала бы чистыми — то есть никакие.
-		for i := range blocked {
-			blocked[i] = true
-		}
+		unchecked[i] = (failed[i] || len(in.Failures) > 0) && !q.app.FailOpen
+		blocked[i] = blocked[i] || unchecked[i]
 	}
-	return flagged, blocked, true
+	return flagged, blocked, unchecked, true
 }
 
 // inspectFailed — проверка не выполнена: клиент ушёл или сбой конвейера.
 func (m *MCPHandler) inspectFailed(q *mcpReq, err error) {
 	if q.r.Context().Err() != nil {
-		q.rec.skip = true
+		m.clientGone(q)
 		return
 	}
 	m.h.logger.Error("проверка MCP не выполнена", "app", q.app.ID, "event_id", q.rec.ev.ID, "error", err)
@@ -193,7 +199,7 @@ func (m *MCPHandler) toolsList(q *mcpReq) {
 // событии.
 func (m *MCPHandler) reviewTools(q *mcpReq, l *mcp.List) ([]bool, bool) {
 	texts := listTexts(l)
-	flagged, blocked, ok := m.inspectDescriptions(q, texts)
+	flagged, blocked, unchecked, ok := m.inspectDescriptions(q, texts)
 	if !ok {
 		return nil, false
 	}
@@ -226,12 +232,12 @@ func (m *MCPHandler) reviewTools(q *mcpReq, l *mcp.List) ([]bool, bool) {
 			threats[policy.ThreatToolChanged] = true
 		}
 		listed := q.app.Policy.ToolListed(policy.ToolCall{Mode: q.app.Mode, App: q.app.ID, Agent: q.agent.Slug, Server: slug, Name: name,
-			Status: status, HashMatch: match, Risk: reg.Risk}) && !poisoned && !blocked[i]
+			Status: status, HashMatch: match, Risk: reg.Risk}) && !poisoned && !changed && !blocked[i]
 		keep[i] = !enforce || listed
 		if !listed && len(q.ev.Hidden) < events.MaxAgentNames {
 			q.ev.Hidden = append(q.ev.Hidden, name)
 		}
-		seen[name] = &seenTool{hash: hash, headers: it.Headers, poisoned: poisoned}
+		seen[name] = &seenTool{hash: hash, headers: it.Headers, poisoned: poisoned, unchecked: unchecked[i]}
 		if !inReg || reg.ApprovedHash != hash || poisoned && status != policy.ToolSuspicious {
 			observed = append(observed, ObservedTool{Descriptor: it.Raw, Hash: hash, Suspicious: poisoned})
 		}
@@ -255,6 +261,13 @@ func (m *MCPHandler) listDecision(q *mcpReq, threats map[string]bool, enforce bo
 	}
 	m.decide(q, a, ruleMCPDescriptions)
 	q.rec.ev.Decision.Severity = sev
+	if len(q.failures) > 0 {
+		ed := q.rec.ev.Decision
+		ed.Failures, ed.FailMode = q.failures, "fail_closed"
+		if q.app.FailOpen {
+			ed.FailMode = failOpen
+		}
+	}
 	if !enforce || len(q.ev.Hidden) == 0 {
 		q.rec.ev.Decision.Applied = []string{}
 	}
@@ -284,34 +297,61 @@ func (m *MCPHandler) lookupSeen(server, name string) (*seenTool, bool) {
 }
 
 // fetchTools — tools/list у сервера перед первым вызовом (ADR-0023,
-// раздел 6, tools/call, п. 1): первая страница, без ответа клиенту.
-func (m *MCPHandler) fetchTools(q *mcpReq) error {
+// раздел 6, tools/call, п. 1), без ответа клиенту: страницы по порядку,
+// пока не встретится инструмент name, не больше mcpFetchPages.
+func (m *MCPHandler) fetchTools(q *mcpReq, name string) error {
+	cursor := ""
+	for page := 0; page < mcpFetchPages; page++ {
+		next, found, err := m.fetchPage(q, cursor, page, name)
+		if err != nil || found || next == "" {
+			return err
+		}
+		cursor = next
+	}
+	return nil
+}
+
+// mcpFetchPages — страниц tools/list, которые шлюз читает сам; mcpMaxCursor
+// — предел nextCursor.
+const (
+	mcpFetchPages = 8
+	mcpMaxCursor  = 1024
+)
+
+// fetchPage — одна страница tools/list: следующий курсор и признак, что
+// инструмент name на ней есть.
+func (m *MCPHandler) fetchPage(q *mcpReq, cursor string, page int, name string) (string, bool, error) {
 	p := mcp.Object()
+	if cursor != "" {
+		mcp.Set(&p, "cursor", mcp.String(cursor))
+	}
 	if q.version == mcp.Version20260728 {
 		meta := mcp.Object()
 		mcp.Set(&meta, mcp.MetaProtocolVersion, mcp.String(q.version))
 		mcp.Set(&p, "_meta", meta)
 	}
-	req := &mcp.Message{Kind: mcp.KindRequest, ID: mcp.String("aisec-tools-list-" + q.rec.ev.ID), HasID: true, Method: "tools/list",
-		Params: &p}
+	req := &mcp.Message{Kind: mcp.KindRequest, ID: mcp.String("aisec-tools-list-" + q.rec.ev.ID + "-" + strconv.Itoa(page)), HasID: true,
+		Method: "tools/list", Params: &p}
 	resp, _, err := m.call(q, req, mcpListTimeout, nil, func(*mcp.Message) bool { return true })
 	if err != nil {
-		return err
+		return "", false, err
 	}
 	if resp.Kind == mcp.KindError {
-		return &mcpUpstreamError{Status: q.ev.Upstream, Msg: "MCP-сервер не вернул список инструментов"}
+		return "", false, &mcpUpstreamError{Status: q.ev.Upstream, Msg: "MCP-сервер не вернул список инструментов"}
 	}
 	l, err := mcp.ParseList("tools/list", resp.Result)
 	if err != nil {
-		return &mcpUpstreamError{Status: q.ev.Upstream, Msg: "MCP-сервер: " + err.Error()}
+		return "", false, &mcpUpstreamError{Status: q.ev.Upstream, Msg: "MCP-сервер: " + err.Error()}
 	}
 	// Статус в событии — статус самого вызова, а не служебного tools/list.
 	q.ev.Upstream = 0
 	seen := map[string]*seenTool{}
-	flagged, _, err := m.checkDescriptions(q.r.Context(), q.app, listTexts(l))
+	flagged, failed, builtin, err := m.checkDescriptions(q.r.Context(), q.app, listTexts(l))
 	if err != nil {
-		return err
+		return "", false, err
 	}
+	q.failures = append(q.failures, builtin.Failures...)
+	found := false
 	var observed []ObservedTool
 	agents := m.h.cfg.Router.Agents()
 	for i, it := range l.Items {
@@ -319,14 +359,19 @@ func (m *MCPHandler) fetchTools(q *mcpReq) error {
 		reg, inReg := agents.Tool(q.up.srv.ID, it.Tool.Name)
 		match := inReg && reg.ApprovedHash == hash && reg.HashAlg == m.cfg.Hasher.Name()
 		poisoned := flagged[i] && (reg.Status != policy.ToolApproved || !match)
-		seen[it.Tool.Name] = &seenTool{hash: hash, headers: it.Headers, poisoned: poisoned}
+		seen[it.Tool.Name] = &seenTool{hash: hash, headers: it.Headers, poisoned: poisoned, unchecked: failed[i] && !q.app.FailOpen}
+		found = found || it.Tool.Name == name
 		if !inReg || reg.ApprovedHash != hash {
 			observed = append(observed, ObservedTool{Descriptor: it.Raw, Hash: hash, Suspicious: poisoned})
 		}
 	}
 	m.remember(q.up.srv.ID, seen)
 	m.cfg.Observer.Observe(q.up.srv.ID, observed)
-	return nil
+	next, _ := mcp.GetString(&l.Result, "nextCursor")
+	if len(next) > mcpMaxCursor {
+		next = ""
+	}
+	return next, found, nil
 }
 
 // toolsCall — tools/call (DM-20–DM-23, DM-07): реестр и хеш, политика
@@ -341,11 +386,14 @@ func (m *MCPHandler) toolsCall(q *mcpReq) {
 		m.rpcError(q, http.StatusOK, idOf(q.msg), mcp.CodeOf(err), err.Error(), nil, violationInvalid)
 		return
 	}
+	// Вызов назван верно: событие — agent_tool_call (неверный вызов
+	// остаётся agent_mcp с нарушением).
+	q.rec.ev.Type, q.ev.Path = events.TypeAgentToolCall, events.AgentPathMCP
 	slug, name := q.up.srv.ID, cp.Name
 	q.ev.Tool = name
 	seen, ok := m.lookupSeen(slug, name)
 	if !ok {
-		if err := m.fetchTools(q); err != nil {
+		if err := m.fetchTools(q, name); err != nil {
 			m.upstreamFailed(q, err)
 			return
 		}
@@ -389,7 +437,29 @@ func (m *MCPHandler) toolsCall(q *mcpReq) {
 	}
 	m.toolDecision(q, d, argIn)
 	m.storeContent(q, argIn, argTexts, true)
-	if d.Block || argIn.Blocked() {
+	// Описание с внедрёнными инструкциями (DM-24) или не проверенное из-за
+	// сбоя (fail_closed), скрытое из tools/list, не вызывается и тогда,
+	// когда политика пропускает неодобренные.
+	poisonedBlock := ok && (seen.poisoned || seen.unchecked) && effectiveMode(q.app) == policy.Enforce
+	if ok && seen.poisoned {
+		q.rec.addThreats(map[string]bool{threatPoisoned: true})
+		q.ev.Poisoned = []string{name}
+	}
+	if len(q.failures) > 0 || ok && seen.unchecked {
+		ed := q.rec.ev.Decision
+		ed.Failures = append(ed.Failures, q.failures...)
+		if ed.FailMode = "fail_closed"; q.app.FailOpen {
+			ed.FailMode = failOpen
+		}
+	}
+	if poisonedBlock && !d.Block && !argIn.Blocked() {
+		ed := q.rec.ev.Decision
+		ed.Action, ed.Rule, ed.Severity = string(policy.Block), ruleMCPDescriptions, string(policy.High)
+		if !slices.Contains(ed.Applied, string(policy.Block)) {
+			ed.Applied = append([]string{string(policy.Block)}, ed.Applied...)
+		}
+	}
+	if d.Block || argIn.Blocked() || poisonedBlock {
 		msg := d.Message
 		if msg == "" {
 			msg = argIn.Decision.Message
@@ -662,7 +732,7 @@ func (m *MCPHandler) otherList(q *mcpReq) {
 		return
 	}
 	texts := listTexts(l)
-	flagged, blocked, ok := m.inspectDescriptions(q, texts)
+	flagged, blocked, _, ok := m.inspectDescriptions(q, texts)
 	if !ok {
 		return
 	}
@@ -733,7 +803,7 @@ func (m *MCPHandler) handshake(q *mcpReq) {
 	}
 	if ins, ok := mcp.Instructions(&result); ok {
 		texts := []inspectText{{Text: ins.Str, Source: detect.SourceTool, Location: "instructions", Threat: threatPoisoned, Message: -1}}
-		flagged, blocked, ok := m.inspectDescriptions(q, texts)
+		flagged, blocked, _, ok := m.inspectDescriptions(q, texts)
 		if !ok {
 			return
 		}

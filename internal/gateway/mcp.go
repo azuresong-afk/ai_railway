@@ -58,6 +58,7 @@ const (
 	violationNotRequest  = "not_request"
 	violationMediaType   = "media_type"
 	violationResultCheck = "result_check"
+	violationClientGone  = "client_gone"
 )
 
 // MCPConfig — зависимости MCP-прокси.
@@ -96,6 +97,9 @@ type seenTool struct {
 	hash     string
 	headers  []mcp.ParamHeader
 	poisoned bool
+	// unchecked — проверка описания не выполнена (сбой детектора в
+	// fail_closed): инструмент скрыт и не вызывается, но не отравлен.
+	unchecked bool
 }
 
 // maxSeenTools — запомненных описаний на сервер (несколько страниц).
@@ -122,19 +126,23 @@ func (m *MCPHandler) Close() {
 // mcpReq — запрос в работе: приложение, агент, сервер, сообщение и
 // событие.
 type mcpReq struct {
-	w        http.ResponseWriter
-	r        *http.Request
-	app      *App
-	agent    *Agent
-	up       *mcpUpstream
-	msg      *mcp.Message
-	version  string
-	user     string
-	rec      *record
-	ev       *events.Agent
-	session  string // Mcp-Session-Id клиента (2025-11-25)
-	upSess   string // Mcp-Session-Id сервера (2025-11-25)
-	alias    string // сессия для политики и событий
+	w       http.ResponseWriter
+	r       *http.Request
+	app     *App
+	agent   *Agent
+	up      *mcpUpstream
+	msg     *mcp.Message
+	version string
+	user    string
+	rec     *record
+	ev      *events.Agent
+	session string // Mcp-Session-Id клиента (2025-11-25)
+	upSess  string // Mcp-Session-Id сервера (2025-11-25)
+	alias   string // сессия для политики и событий
+	// failures — сбои детекторов проверки описаний (в решение события).
+	failures []events.DetectorFailure
+	// sent — запрос ушёл серверу: событие пишется и при уходе клиента.
+	sent     bool
 	sse      *mcpStream
 	accepted bool // клиент принимает text/event-stream
 }
@@ -227,8 +235,6 @@ func (m *MCPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	switch msg2.Method {
 	case "tools/call":
-		rec.ev.Type = events.TypeAgentToolCall
-		q.ev.Path = events.AgentPathMCP
 		m.toolsCall(q)
 	case "tools/list":
 		m.toolsList(q)
@@ -384,6 +390,7 @@ func (m *MCPHandler) call(q *mcpReq, msg *mcp.Message, d time.Duration, params m
 		return nil, "", err
 	}
 	defer reply.Close()
+	q.sent = true
 	q.ev.Upstream = reply.Status
 	if reply.Status == http.StatusNotFound && q.session != "" {
 		// Сервер забыл сессию: клиент по спецификации начнёт новую.
@@ -406,7 +413,7 @@ func (m *MCPHandler) upstreamFailed(q *mcpReq, err error) {
 		m.rpcError(q, http.StatusNotFound, idOf(q.msg), mcp.CodeInvalidRequest, "сессия не найдена", nil, violationSession)
 		return
 	case q.r.Context().Err() != nil:
-		q.rec.skip = true
+		m.clientGone(q)
 		return
 	case errors.Is(err, errMCPBusy):
 		q.w.Header().Set("Retry-After", "1")
@@ -422,6 +429,20 @@ func (m *MCPHandler) upstreamFailed(q *mcpReq, err error) {
 		"error", err)
 	m.rpcError(q, http.StatusBadGateway, idOf(q.msg), mcp.CodeInternalError, "MCP-сервер недоступен или ответил не по протоколу",
 		mcpData(mcpCodeUnavailable), violationUpstream)
+}
+
+// clientGone — клиент закрыл соединение. До отправки серверу событие не
+// пишется (как у чата); после — пишется с нарушением client_gone: вызов
+// мог выполниться, и в журнале он должен остаться.
+func (m *MCPHandler) clientGone(q *mcpReq) {
+	if !q.sent {
+		q.rec.skip = true
+		return
+	}
+	q.ev.Violation = violationClientGone
+	if q.rec.ev.Decision == nil {
+		m.decide(q, policy.Allow, "")
+	}
 }
 
 // upstreamError — ответ сервера с ошибкой JSON-RPC: клиенту — только код,

@@ -213,14 +213,18 @@ func rateKey(parts ...string) string {
 // ToolListed — инструмент показывается агенту в tools/list в режиме
 // enforce (ADR-0023, раздел 6, tools/list, п. 4; задача 4.11): вызов не
 // был бы заблокирован по состоянию в реестре и по правилам — шаги 1 и 2
-// DecideTool. Подменённое описание (хеш не совпал с одобренным) не
-// показывается никогда. Аргументы, частота и лимиты не учитываются: их
+// DecideTool. Подменённое описание (хеш не совпал с одобренным, состояние
+// changed), отравленное (suspicious) и отозванное не показываются никогда. Аргументы, частота и лимиты не учитываются: их
 // проверяет tools/call. Находки встроенной проверки описаний (DM-24)
 // учитывает вызывающий.
 func (p *Policy) ToolListed(c ToolCall) bool {
 	tp := &p.tools
 	switch {
 	case c.Status == ToolApproved && !c.HashMatch:
+		return false
+	case c.Status == ToolChanged, c.Status == ToolSuspicious, c.Status == ToolRevoked:
+		// Подменённое, отравленное или отозванное описание не показывается
+		// и при мягком unapproved: до решения человека в реестре.
 		return false
 	case c.Status != ToolApproved:
 		return tp.unapproved != Block

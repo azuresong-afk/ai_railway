@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -18,6 +19,9 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/auth"
 	"github.com/azuresong-afk/ai_railway/internal/config"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
+	"github.com/azuresong-afk/ai_railway/internal/detect"
+	"github.com/azuresong-afk/ai_railway/internal/detect/builtin"
+	"github.com/azuresong-afk/ai_railway/internal/detect/injection"
 	"github.com/azuresong-afk/ai_railway/internal/events"
 	"github.com/azuresong-afk/ai_railway/internal/ids"
 	"github.com/azuresong-afk/ai_railway/internal/mcp"
@@ -45,6 +49,11 @@ type mcpOpts struct {
 	// (имя → риск); new — инструменты в реестре со статусом new.
 	approve map[string]policy.ToolRisk
 	newTool []string
+	// changed — инструменты в реестре в состоянии changed (одобрено другое
+	// описание).
+	changed []string
+	// setup — правка приложения после сборки маршрутизатора.
+	setup   func(*App)
 	storage string
 	// approver — очередь подтверждений; nil — NoApprover.
 	approver Approver
@@ -169,6 +178,10 @@ func newMCPEnv(t *testing.T, mod func(*mcpOpts)) *mcpEnv {
 		content.AgentTools = append(content.AgentTools, bundle.AgentTool{Server: "files", Name: name, ApprovedHash: hashes[name],
 			HashAlg: h.Name(), Risk: risk, Status: policy.ToolApproved})
 	}
+	for _, name := range o.changed {
+		content.AgentTools = append(content.AgentTools, bundle.AgentTool{Server: "files", Name: name, ApprovedHash: strings.Repeat("0", 64),
+			HashAlg: h.Name(), Risk: policy.RiskLow, Status: policy.ToolChanged})
+	}
 	for _, name := range o.newTool {
 		content.AgentTools = append(content.AgentTools, bundle.AgentTool{Server: "files", Name: name, HashAlg: h.Name(),
 			Risk: policy.RiskLow, Status: policy.ToolNew})
@@ -190,6 +203,9 @@ func newMCPEnv(t *testing.T, mod func(*mcpOpts)) *mcpEnv {
 		t.Fatal(err)
 	}
 	rt.SetAgents(NewAgents(content))
+	if o.setup != nil {
+		o.setup(rt.apps["app"])
+	}
 	ch, err := NewChatHandler(ChatConfig{Router: rt, MaxBodyBytes: 1 << 20, Logger: quiet(), Events: e.log, IDs: gen,
 		Sessions: testSessions(t, 0, nil)})
 	if err != nil {
@@ -728,5 +744,116 @@ func TestMCPContentByStorage(t *testing.T) {
 	}
 	if strings.Contains(ev.Agent.Tool, "/") || ev.Agent.ResultBytes == 0 {
 		t.Fatalf("событие: %+v", ev.Agent)
+	}
+}
+
+// Покрывает: DM-25
+// Инструмент в состоянии changed (реестр уже отметил подмену) не
+// показывается и при мягком unapproved: после нового пакета подменённое
+// описание к модели не возвращается.
+func TestDM25_ChangedStatusHiddenWithSoftUnapproved(t *testing.T) {
+	for _, a := range []policy.Action{policy.Log} {
+		tools := defaultTools()
+		tools.Unapproved = a
+		e := newMCPEnv(t, func(o *mcpOpts) {
+			o.tools, o.changed = tools, []string{"read_file"}
+			delete(o.approve, "read_file")
+		})
+		names := toolNames(t, mreply(t, e.call26(e.bound, "tools/list", "", "", nil)))
+		if slices.Contains(names, "read_file") || !slices.Contains(names, "fetch_page") {
+			t.Fatalf("%s: список %v", a, names)
+		}
+		if ev := e.lastEvent(); !slices.Contains(ev.Agent.Changed, "read_file") || !slices.Contains(ev.Threats, "DM-25") {
+			t.Fatalf("%s: событие %+v", a, ev.Agent)
+		}
+	}
+}
+
+// Покрывает: DM-24
+// Неодобренный инструмент с отравленным описанием, скрытый из tools/list,
+// не вызывается и при unapproved: log; событие называет DM-24.
+func TestDM24_PoisonedUnapprovedNotCallable(t *testing.T) {
+	tools := defaultTools()
+	tools.Unapproved = policy.Log
+	tools.Rules = append(tools.Rules, policy.ToolRuleSpec{ID: "numbers", Tool: "files/add_numbers", Action: policy.Allow, Severity: policy.Low})
+	e := newMCPEnv(t, func(o *mcpOpts) { o.poisoned, o.tools, o.newTool = true, tools, []string{"add_numbers"} })
+	m := mreply(t, e.call26(e.bound, "tools/call", "add_numbers", `"name":"add_numbers","arguments":{"a":1,"b":2}`, nil))
+	if !isErrorResult(m) {
+		t.Fatalf("вызов отравленного: %s", m.Encode())
+	}
+	ev := e.lastEvent()
+	if ev.Type != events.TypeAgentToolCall || ev.Decision.Action != "block" || !slices.Contains(ev.Threats, "DM-24") || ev.Agent.Upstream != 0 {
+		t.Fatalf("событие: %+v %+v", ev.Decision, ev.Agent)
+	}
+	if _, body := e.lastUpstream(); strings.Contains(body, `"tools/call"`) {
+		t.Fatalf("вызов дошёл до сервера: %s", body)
+	}
+}
+
+// Сбой детекторов проверки описаний — не отравление: в enforce
+// непроверенные описания скрыты и не вызываются (и после tools/list, и
+// при списке, который шлюз запросил сам), но в событии нет DM-24 и
+// отравленных, а сбои записаны с fail_mode.
+func TestMCPDescriptionCheckFailureIsNotPoisoning(t *testing.T) {
+	broken := fakeDetector{id: injection.ID, run: func(context.Context, detect.Text) ([]detect.Finding, error) {
+		return nil, errors.New("сбой")
+	}}
+	env := func() *mcpEnv {
+		return newMCPEnv(t, func(o *mcpOpts) {
+			o.setup = func(a *App) {
+				var ds []detect.Detector
+				for _, d := range builtin.All() {
+					if d.ID() != injection.ID {
+						ds = append(ds, d)
+					}
+				}
+				reg, err := detect.NewRegistry(append(ds, broken)...)
+				if err != nil {
+					t.Fatal(err)
+				}
+				a.Detectors = reg
+			}
+		})
+	}
+	notPoisoned := func(e *mcpEnv, what string) {
+		t.Helper()
+		ev := e.lastEvent()
+		if len(ev.Agent.Poisoned) != 0 || slices.Contains(ev.Threats, "DM-24") || len(ev.Decision.Failures) == 0 || ev.Decision.FailMode != "fail_closed" {
+			t.Fatalf("%s: событие %+v %+v", what, ev.Decision, ev.Agent)
+		}
+	}
+	call := `"name":"read_file","arguments":{"path":"/data/a.txt"}`
+	e := env()
+	if names := toolNames(t, mreply(t, e.call26(e.bound, "tools/list", "", "", nil))); len(names) != 0 {
+		t.Fatalf("непроверенные описания показаны: %v", names)
+	}
+	notPoisoned(e, "tools/list")
+	if m := mreply(t, e.call26(e.bound, "tools/call", "read_file", call, nil)); !isErrorResult(m) {
+		t.Fatalf("вызов непроверенного после списка: %s", m.Encode())
+	}
+	if ev := e.lastEvent(); ev.Decision.Action != "block" || ev.Decision.FailMode != "fail_closed" || slices.Contains(ev.Threats, "DM-24") {
+		t.Fatalf("вызов после списка: %+v", ev.Decision)
+	}
+	// Без tools/list клиента: список запрашивает шлюз, проверка не удалась.
+	e = env()
+	if m := mreply(t, e.call26(e.bound, "tools/call", "read_file", call, nil)); !isErrorResult(m) {
+		t.Fatalf("вызов непроверенного: %s", m.Encode())
+	}
+	notPoisoned(e, "tools/call")
+	if _, body := e.lastUpstream(); strings.Contains(body, `"tools/call"`) {
+		t.Fatalf("вызов дошёл до сервера: %s", body)
+	}
+}
+
+// Неверный tools/call (имя не по шаблону) — событие agent_mcp с
+// нарушением, а не потерянное agent_tool_call без инструмента.
+func TestMCPInvalidToolCallEvent(t *testing.T) {
+	e := newMCPEnv(t, nil)
+	m := mreply(t, e.call26(e.bound, "tools/call", "bad name", `"name":"bad name","arguments":{}`, nil))
+	if m.Kind != mcp.KindError {
+		t.Fatalf("ответ: %s", m.Encode())
+	}
+	if ev := e.lastEvent(); ev.Type != events.TypeAgentMCP || ev.Agent.Violation != violationInvalid {
+		t.Fatalf("событие: %s %+v", ev.Type, ev.Agent)
 	}
 }
