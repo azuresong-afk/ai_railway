@@ -245,7 +245,7 @@ var (
 	// productImageRe — только точные имена образов продукта и стенда
 	// разработки (PRODUCT_CMDS, DEV_CMDS Makefile), тег — версия выпуска.
 	// imageRe обрывает строку на пробеле, поэтому «}» может не попасть.
-	productImageRe   = regexp.MustCompile(`^aisec(-dev|-test)?/(aisec-gateway|aisec-server|aisec-cli|aisec-media|mock-llm)(:\$\{AISEC_VERSION(:\?[^}]*)?\}?)?$`)
+	productImageRe   = regexp.MustCompile(`^aisec(-dev|-test)?/(aisec-gateway|aisec-server|aisec-cli|aisec-media|mock-llm|mock-mcp)(:\$\{AISEC_VERSION(:\?[^}]*)?\}?)?$`)
 	leadingDefaultRe = regexp.MustCompile(`^\$\{[A-Za-z_][A-Za-z0-9_]*:-([^}]*)\}`)
 )
 
