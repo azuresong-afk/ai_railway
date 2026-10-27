@@ -31,6 +31,16 @@ export function describeError(e: unknown): string {
   }
 }
 
+// Поле PEM и других многострочных значений во вкладках входа.
+export const area = "w-full rounded-control border border-line-strong bg-surface px-2 py-1 font-mono text-sm";
+// Предустановленные роли — если списка ролей нет (нет права roles.read).
+export const builtinRoles = ["security_admin", "system_admin", "analyst", "auditor", "app_owner"];
+
+// Ошибка поля из ответа сервера (400 с fields).
+export function fieldError(e: unknown, field: string): string | undefined {
+  return e instanceof ApiError ? e.fields.find((f) => f.field === field)?.detail : undefined;
+}
+
 export function ErrorBanner({ error }: { error: unknown }) {
   if (!error) return null;
   return <Banner kind="error">{describeError(error)}</Banner>;

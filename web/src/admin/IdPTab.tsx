@@ -5,15 +5,11 @@ import { Button } from "../ui/Button";
 import { Check, Field, Input, Select } from "../ui/Field";
 import { Banner, RawText } from "../ui/Layout";
 import { type IdPSettings, adminApi } from "./api";
-import { ConfirmDialog, ErrorBanner } from "./common";
+import { ConfirmDialog, ErrorBanner, area, builtinRoles, fieldError } from "./common";
 import type { ReauthBody } from "./reauth";
 
 // Вход через внешний IdP по OpenID Connect (ИАФ.7, ADR-0025): настройки видит право auth_idp.read,
 // меняет и удаляет — auth_idp.manage с повторной проверкой паролем или кодом локальной учётной записи.
-
-const area = "w-full rounded-control border border-line-strong bg-surface px-2 py-1 font-mono text-sm";
-// Предустановленные роли — если списка ролей нет (нет права roles.read).
-const builtinRoles = ["security_admin", "system_admin", "analyst", "auditor", "app_owner"];
 
 type Row = { group: string; role: string };
 type Draft = {
@@ -48,11 +44,6 @@ function toDraft(s: IdPSettings): Draft {
     required_amr: (s.required_amr ?? []).join(" "),
     group_roles: (s.group_roles ?? []).map((g) => ({ group: g.group, role: g.role })),
   };
-}
-
-// Ошибка поля из ответа сервера (400 с fields).
-function fieldError(e: unknown, field: string): string | undefined {
-  return e instanceof ApiError ? e.fields.find((f) => f.field === field)?.detail : undefined;
 }
 
 export function IdPTab({ me }: { me: Me }) {

@@ -10,6 +10,8 @@ export type Permission = S["Permission"];
 export type AuthPolicy = S["AuthPolicy"];
 export type IdPSettings = S["IdPSettings"];
 export type IdPSettingsUpdate = S["IdPSettingsUpdate"];
+export type LDAPSettings = S["LDAPSettings"];
+export type LDAPSettingsUpdate = S["LDAPSettingsUpdate"];
 export type APIToken = S["APIToken"];
 export type CreatedAPIToken = S["CreatedAPIToken"];
 export type NewAPIToken = S["NewAPIToken"];
@@ -67,6 +69,10 @@ export const adminApi = {
   idp: (signal?: AbortSignal) => request<IdPSettings>("GET", "/api/v1/auth/idp", undefined, signal),
   saveIdP: (b: IdPSettingsUpdate) => request<IdPSettings>("PUT", "/api/v1/auth/idp", b),
   deleteIdP: (re: ReauthBody) => request<void>("DELETE", "/api/v1/auth/idp", re),
+  // Вход через каталог LDAP (ADR-0025, раздел 2): так же, с повторной проверкой.
+  ldap: (signal?: AbortSignal) => request<LDAPSettings>("GET", "/api/v1/auth/ldap", undefined, signal),
+  saveLDAP: (b: LDAPSettingsUpdate) => request<LDAPSettings>("PUT", "/api/v1/auth/ldap", b),
+  deleteLDAP: (re: ReauthBody) => request<void>("DELETE", "/api/v1/auth/ldap", re),
 
   tokens: async (signal?: AbortSignal): Promise<APIToken[]> => {
     const p = await request<S["APITokenPage"]>("GET", "/api/v1/api-tokens?limit=200", undefined, signal);
