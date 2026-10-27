@@ -187,6 +187,22 @@ components:
     decision: план этапа 0, Д4; ADR-0003; 1.27.3 — вместе с toolchain (исправления уязвимостей стандартной библиотеки)
     decided: 2026-10-10
 
+  - name: node
+    version: 22.22.0-bookworm-slim@sha256:dd9d21971ec4395903fa6143c2b9267d048ae01ca6d3ea96f16cb30df6187d94
+    type: image
+    scope: build
+    purpose: Стадия сборки веб-консоли в лабораторной сборке deploy/build/Dockerfile.lab (lab-install.sh, задача 4.32 этапа 4) — без Node.js на хосте.
+    # Node.js и npm — MIT (и пакеты npm под разрешёнными лицензиями); пакеты Debian в образе — в том числе GPL и LGPL.
+    license: MIT AND GPL-2.0-or-later AND GPL-3.0-or-later AND LGPL-2.1-or-later
+    license_decision: ADR-0003 — образ сборочной среды, в поставку не входит; в продукт попадает только собранная статика web/dist (зависимости — по web/package-lock.json, ADR-0011)
+    repository: https://github.com/nodejs/docker-node
+    attack_surface: false
+    security_function: false
+    provided_by: Docker Official Images (Docker, Inc.); Node.js — OpenJS Foundation
+    justification: Официальный образ Node.js закреплён по digest (ТЗ, 8.7); та же ветка Node.js 22, что требует web/package.json (engines >=22.12.0). Нужен, чтобы лабораторная установка собиралась только Docker'ом.
+    decision: задача 4.32 этапа 4, запрос владельца 27.10.2026 — установка только с Docker
+    decided: 2026-10-27
+
   - name: postgres
     version: 17.11-alpine3.24@sha256:eee6c6e1b0894fa4fe0075eb054af9fd1cf39a35321c2d4110626cfe506411fb
     type: image

@@ -1,0 +1,14 @@
+# Контекст сборки Dockerfile.lab — только то, что нужно make release-dir.
+*
+!Makefile
+!go.mod
+!go.sum
+!vendor/
+!cmd/
+!internal/
+!tools/
+!migrations/
+!web/
+web/node_modules/
+web/dist/
+!testdata/integrity/manifest-test.signkey

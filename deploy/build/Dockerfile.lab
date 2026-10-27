@@ -1,0 +1,45 @@
+# Каталог выпуска с тестовым ключом манифеста, собранный целиком в Docker
+# (задача 4.32 этапа 4): на машине нужен только Docker, без Go и Node.js.
+# Им пользуется deploy/compose/pilot/lab-install.sh для стенда и лаборатории.
+# Поставка заказчику — только make images (RELEASE=1, ключ производителя).
+#
+#   docker build -f deploy/build/Dockerfile.lab --target release \
+#     --build-arg VERSION=… --build-arg SOURCE_DATE=… --build-arg SOURCE_EPOCH=… \
+#     -o type=local,dest=КАТАЛОГ .
+#
+# Результат — то же, что make release-dir: bin/ и подписанный тестовым ключом
+# манифест. Образы из него собирает deploy/build/Dockerfile.release, как в
+# make images-docker.
+#
+# Базовые образы закреплены по digest (ТЗ, 8.7). Для зеркала Docker Hub
+# lab-install.sh --mirror передаёт NODE_IMAGE и GO_IMAGE с именем реестра
+# перед значением по умолчанию: digest от реестра не зависит. В сеть ходит только стадия web:
+# npm ci строго по package-lock.json с проверкой integrity и без скриптов
+# установки (ADR-0011). Стадия Go собирает без сети: зависимости — из vendor/.
+# Если доступ в интернет идёт через прокси с проверкой TLS, его корневой
+# сертификат передаётся секретом сборки build-ca (--secret id=build-ca,src=…):
+# он нужен только npm и в образы не попадает.
+ARG NODE_IMAGE=node:22.22.0-bookworm-slim@sha256:dd9d21971ec4395903fa6143c2b9267d048ae01ca6d3ea96f16cb30df6187d94
+ARG GO_IMAGE=golang:1.27.3-bookworm@sha256:21ade014faf952365b9ecbd8dbdb87176fbacb82fac9fb132d9f2a7b8cc3f132
+
+FROM ${NODE_IMAGE} AS web
+WORKDIR /src/web
+COPY web/package.json web/package-lock.json web/.npmrc ./
+RUN --mount=type=secret,id=build-ca,required=false \
+    NODE_EXTRA_CA_CERTS=/run/secrets/build-ca npm ci --ignore-scripts
+COPY web/ ./
+RUN npm run build
+
+FROM ${GO_IMAGE} AS go
+ARG VERSION
+ARG SOURCE_DATE
+ARG SOURCE_EPOCH
+WORKDIR /src
+ENV GOTOOLCHAIN=local HOME=/tmp GOCACHE=/tmp/go-cache
+COPY . .
+COPY --from=web /src/web/dist ./web/dist
+RUN --network=none test -n "$VERSION" && test -n "$SOURCE_DATE" && test -n "$SOURCE_EPOCH" \
+ && make release-dir VERSION="$VERSION" SOURCE_DATE="$SOURCE_DATE" SOURCE_EPOCH="$SOURCE_EPOCH"
+
+FROM scratch AS release
+COPY --from=go /src/build/release/ /
