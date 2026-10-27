@@ -32,6 +32,9 @@ type Memory struct {
 	roles map[string]map[auth.Role]auth.RoleDef
 	// tokens — токены API по ID (apitokens.go).
 	tokens map[string]*auth.APIToken
+	// idp и logins — настройки IdP и незавершённые входы (idp.go).
+	idp    map[string]auth.IdPSettings
+	logins []oidcLogin
 	// Fail — если не nil, возвращается из каждого метода (сбой хранилища).
 	Fail error
 }
@@ -54,6 +57,7 @@ func NewMemory() *Memory {
 		policy: map[string]auth.Policy{}, users: map[string]*auth.User{},
 		history: map[string][]string{}, sessions: map[string]*auth.Session{},
 		mfa: map[string]*auth.MFA{}, codes: map[string][]*recoveryCode{},
+		idp: map[string]auth.IdPSettings{},
 	}
 }
 

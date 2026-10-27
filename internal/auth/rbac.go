@@ -476,6 +476,10 @@ func (s *Service) AssignRole(ctx context.Context, by Caller, userID string, role
 	var deny error
 	n, err := s.roles.AssignRole(ctx, s.orgID, by.User.ID, userID, role, s.clock(),
 		func(a Actor, u User, cur, next RoleDef) (audit.Entry, error) {
+			// Роль внешней записи задают группы IdP при каждом входе (ADR-0025, 1.4).
+			if u.External() {
+				return audit.Entry{}, ErrExternalUser
+			}
 			mine, ok := actorGrants(by, a)
 			if !ok || !mine.Covers(cur.Grants) || !mine.Covers(next.Grants) {
 				deny = ErrEscalation

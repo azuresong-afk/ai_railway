@@ -30,8 +30,10 @@ CGO_ALLOWED :=
 # Пути, где разрешены сетевые клиенты (ЗИ.2, H-Р11): шлюз (регистрация, пакет,
 # heartbeat, отправка событий), провайдеры LLM и каналы уведомлений
 # internal/notify — SMTP, webhook, syslog только по адресам администратора
-# (Р4, задача 3.13; обоснование — docs/cert/attack-surface.md).
-NET_CLIENT_ALLOWED := cmd/aisec-gateway,internal/gateway,internal/providers,internal/notify
+# (Р4, задача 3.13; обоснование — docs/cert/attack-surface.md);
+# internal/auth/oidc — discovery, JWKS и обмен кода только с издателем из
+# настроек IdP (ADR-0025, задача 4.17).
+NET_CLIENT_ALLOWED := cmd/aisec-gateway,internal/gateway,internal/providers,internal/notify,internal/auth/oidc
 
 # Версии инструментов разработки (ТЗ, 8.2). Меняются только вместе с
 # docs/cert/components.yaml (scope: build) и сборочным образом.

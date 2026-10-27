@@ -97,7 +97,24 @@ type User struct {
 	CreatedBy     string
 	DeactivatedAt time.Time
 	LastLoginAt   time.Time
+	// Source — источник учётной записи (ADR-0025): local или oidc. У
+	// внешней записи нет пароля, она привязана к (IdPIssuer, IdPSubject).
+	Source     AuthSource
+	IdPIssuer  string
+	IdPSubject string
 }
+
+// AuthSource — источник учётной записи.
+type AuthSource string
+
+// Источники учётных записей. Пустое значение — local (записи до 4.17).
+const (
+	SourceLocal AuthSource = "local"
+	SourceOIDC  AuthSource = "oidc"
+)
+
+// External — внешняя учётная запись (IdP): пароля и TOTP консоли у неё нет.
+func (u *User) External() bool { return u.Source != "" && u.Source != SourceLocal }
 
 // Locked — запись заблокирована на момент now.
 func (u *User) Locked(now time.Time) bool {
@@ -109,7 +126,7 @@ func (u *User) Locked(now time.Time) bool {
 
 // PasswordExpires — момент истечения пароля по политике; нулевое — бессрочный.
 func (u *User) PasswordExpires(p Policy) time.Time {
-	if p.PasswordMaxAgeDays == 0 {
+	if p.PasswordMaxAgeDays == 0 || u.External() {
 		return time.Time{}
 	}
 	return u.PasswordChangedAt.AddDate(0, 0, p.PasswordMaxAgeDays)
@@ -152,6 +169,12 @@ const (
 	// RevokeBackupRestore — сессия из восстановленной полной копии
 	// (aisec-cli restore-finish).
 	RevokeBackupRestore = "backup_restore"
+	// RevokeIdPChanged — изменены или отключены настройки IdP: роли
+	// внешних пользователей пересчитываются при следующем входе (ADR-0025).
+	RevokeIdPChanged = "idp_changed"
+	// RevokeIdPRoleChanged — роль внешнего пользователя по группам IdP
+	// изменилась при входе: прежние сессии с прежней ролью завершаются.
+	RevokeIdPRoleChanged = "idp_role_changed"
 )
 
 // Session — сессия консоли (решение Р6). Токен и CSRF-токен хранятся только хешами.

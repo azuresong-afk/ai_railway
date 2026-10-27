@@ -37,6 +37,12 @@ const (
 // CreateUser создаёт учётную запись с временным паролем (ИАФ.1, ИАФ.3).
 // Временный пароль возвращается один раз и нигде не хранится открыто.
 func (s *Service) CreateUser(ctx context.Context, by Caller, nu NewUser) (User, string, error) {
+	// Учётная запись IdP не заводит локальные записи с паролем: иначе
+	// IdP получил бы локальный вход и через него — свои же настройки
+	// (ADR-0025, 1.6).
+	if err := requireLocal(by); err != nil {
+		return User{}, "", err
+	}
 	login, ok := NormalizeLogin(nu.Login)
 	if !ok {
 		return User{}, "", &InputError{"login", loginRule}
@@ -126,6 +132,10 @@ func (s *Service) ResetPassword(ctx context.Context, by Caller, userID string) (
 	if by.User.ID == userID {
 		return "", ErrSelf
 	}
+	// Временный пароль локальной записи учётной записи IdP не выдаётся (ADR-0025, 1.6).
+	if err := requireLocal(by); err != nil {
+		return "", err
+	}
 	u, err := s.store.UserByID(ctx, s.orgID, userID)
 	if err != nil {
 		return "", err
@@ -140,6 +150,9 @@ func (s *Service) ResetPassword(ctx context.Context, by Caller, userID string) (
 // revokedBy — ID администратора консоли, пусто — aisec-cli.
 func (s *Service) resetPassword(ctx context.Context, actor audit.Actor, ip netip.Addr, u User, revokedBy string) (string, error) {
 	userID := u.ID
+	if u.External() {
+		return "", ErrExternalUser
+	}
 	if u.Status != StatusActive {
 		return "", errResetDeactivated
 	}
