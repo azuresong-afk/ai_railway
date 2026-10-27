@@ -140,7 +140,7 @@ func (s *PGStore) HasUsers(ctx context.Context, orgID string) (bool, error) {
 const userCols = `u.id::text, u.org_id::text, u.login, u.display_name, u.role, u.status, u.password_hash,
 	u.password_changed_at, u.must_change_password, u.temp_password_expires_at, u.failed_attempts,
 	u.locked_at, u.locked_until, u.created_at, u.created_by, u.deactivated_at, u.last_login_at,
-	u.auth_source, u.idp_issuer, u.idp_subject`
+	u.auth_source, u.idp_issuer, u.idp_subject, u.email`
 
 func scanUser(row pgx.Row, extra ...any) (User, error) {
 	var (
@@ -153,7 +153,7 @@ func scanUser(row pgx.Row, extra ...any) (User, error) {
 	)
 	dst := []any{&u.ID, &u.OrgID, &u.Login, &u.DisplayName, &role, &status, &u.PasswordHash,
 		&u.PasswordChangedAt, &u.MustChangePassword, &temp, &u.FailedAttempts,
-		&lockedAt, &lockedUntil, &u.CreatedAt, &u.CreatedBy, &deact, &lastLogin, &source, &issuer, &subject}
+		&lockedAt, &lockedUntil, &u.CreatedAt, &u.CreatedBy, &deact, &lastLogin, &source, &issuer, &subject, &u.Email}
 	if err := row.Scan(append(dst, extra...)...); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return User{}, ErrNotFound
@@ -473,6 +473,31 @@ func (s *PGStore) SetPassword(ctx context.Context, ch PasswordChange, rec audit.
 				*keep, string(SessionActive)); err != nil {
 				return fmt.Errorf("смена пароля: сессия: %w", err)
 			}
+		}
+		return s.record(ctx, tx, rec)
+	})
+}
+
+// SetEmail сохраняет e-mail записи вместе с записью аудита.
+func (s *PGStore) SetEmail(ctx context.Context, orgID, userID, email string, rec audit.Entry) error {
+	if _, err := store.ParseUUID(userID); err != nil {
+		return ErrNotFound
+	}
+	ctx, cancel := pgCtx(ctx)
+	defer cancel()
+	return s.inTx(ctx, func(tx pgx.Tx) error {
+		var prev string
+		err := tx.QueryRow(ctx, "SELECT email FROM users WHERE org_id = $1 AND id = $2 FOR UPDATE", orgID, userID).Scan(&prev)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("учётные записи: %w", err)
+		}
+		// В журнале — только факт: изменился ли адрес и убран ли он, без значения.
+		AddDetail(&rec, "changed", prev != email)
+		if _, err := tx.Exec(ctx, "UPDATE users SET email = $2 WHERE id = $1", userID, email); err != nil {
+			return fmt.Errorf("учётные записи: e-mail: %w", err)
 		}
 		return s.record(ctx, tx, rec)
 	})

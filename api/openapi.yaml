@@ -898,6 +898,34 @@ paths:
         '403': { $ref: '#/components/responses/ProblemForbidden' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ProblemInternal' }
+  /api/v1/me/email:
+    put:
+      summary: Задать или убрать свой e-mail
+      description: |
+        Право `self`: меняется только запись самого пользователя (идентификатор берётся из сессии).
+        Правила и журнал — как у `PUT /api/v1/users/{id}/email`. Токеном API не вызывается.
+      x-permission: self
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EmailInput' }
+      responses:
+        '200':
+          description: Учётная запись
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
   /api/v1/users:
     get:
       summary: Список учётных записей
@@ -1013,6 +1041,38 @@ paths:
         '403': { $ref: '#/components/responses/ProblemForbidden' }
         '404': { $ref: '#/components/responses/ProblemNotFound' }
         '422': { $ref: '#/components/responses/ProblemUnprocessable' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+  /api/v1/users/{id}/email:
+    put:
+      summary: Задать или убрать e-mail учётной записи
+      description: |
+        Право `users.manage`; роль записи не сильнее роли вызывающего (УПД.2). E-mail необязателен
+        и нужен для рассылки отчётов: до 254 символов, простая проверка формата, без письма-подтверждения.
+        Пустая строка убирает адрес. Адрес — персональные данные: в журнал аудита пишется только факт
+        изменения (`user.email_set`: `self`, `cleared`, `changed`), в технические журналы адрес не попадает.
+      x-permission: users.manage
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/UserID'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EmailInput' }
+      responses:
+        '200':
+          description: Учётная запись
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ProblemInternal' }
   /api/v1/users/{id}/password-reset:
@@ -6700,11 +6760,12 @@ components:
         revoked_sessions: { type: integer, description: Сколько сессий пользователя завершено }
     User:
       type: object
-      required: [id, login, display_name, role, status, locked, must_change_password, password_changed_at, created_at]
+      required: [id, login, display_name, email, role, status, locked, must_change_password, password_changed_at, created_at]
       properties:
         id: { type: string, format: uuid }
         login: { type: string }
         display_name: { type: string }
+        email: { type: string, maxLength: 254, description: 'E-mail для рассылки отчётов; пустая строка — адреса нет' }
         role: { $ref: '#/components/schemas/Role' }
         status: { type: string, enum: [active, deactivated] }
         locked: { type: boolean, description: 'Заблокирована после неудачных попыток (ИАФ.4)' }
@@ -6714,6 +6775,12 @@ components:
         created_at: { type: string, format: date-time }
         last_login_at: { type: string, format: date-time }
         deactivated_at: { type: string, format: date-time }
+    EmailInput:
+      type: object
+      required: [email]
+      additionalProperties: false
+      properties:
+        email: { type: string, maxLength: 254, description: 'Адрес вида user@example.ru; пустая строка убирает адрес' }
     NewUser:
       type: object
       required: [login, display_name, role]

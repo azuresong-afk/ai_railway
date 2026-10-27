@@ -405,6 +405,22 @@ func (m *Memory) SetStatus(_ context.Context, orgID, userID string, st auth.Stat
 	return nil
 }
 
+func (m *Memory) SetEmail(_ context.Context, orgID, userID, email string, rec audit.Entry) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.Fail != nil {
+		return m.Fail
+	}
+	u, ok := m.users[userID]
+	if !ok || u.OrgID != orgID {
+		return auth.ErrNotFound
+	}
+	auth.AddDetail(&rec, "changed", u.Email != email)
+	u.Email = email
+	m.records = append(m.records, rec)
+	return nil
+}
+
 func (m *Memory) Unlock(_ context.Context, orgID, userID string, now time.Time, rec audit.Entry) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
