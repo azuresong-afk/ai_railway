@@ -18,12 +18,17 @@ import (
 // вызовы функций в ответе модели (tool_calls) проверяются по разделу tools
 // политики приложения как инструменты (агент, function/<имя>). Блокировка
 // оформляется как блокировка ответа (policy_violation); require_approval
-// удерживает ответ до решения дежурного, не дольше MaxChatApprovalWait.
+// удерживает ответ до решения дежурного, все вызовы ответа вместе — не
+// дольше MaxChatApprovalWait (и запаса на ответ сервера).
 // Без раздела tools в версии политики вызовы не проверяются, как раньше.
 
 // ApprovalPendingComment — комментарий SSE, которым шлюз держит поток,
 // пока вызов ждёт подтверждения.
 const ApprovalPendingComment = "aisec-approval-pending"
+
+// minApprovalWait — наименьший срок запроса подтверждения (как у сервера):
+// если от общего срока ответа осталось меньше, вызов отклоняется по сроку.
+const minApprovalWait = time.Minute
 
 // toolsCheck — по ответу нужно решение политики вызовов.
 func toolsCheck(app *App, resp *chat.Response) bool {
@@ -92,6 +97,10 @@ func (h *ChatHandler) decideTools(ctx context.Context, app *App, rec *record, ca
 	if rec.sess != nil {
 		session = rec.sess.ev.ID
 	}
+	// until — общий срок ожидания подтверждений ответа: несколько вызовов
+	// с require_approval ждут по очереди, но вместе не дольше
+	// MaxChatApprovalWait.
+	var until time.Time
 	for i := range calls {
 		name, args := calls[i].Function.Name, []byte(calls[i].Function.Arguments)
 		c := policy.ToolCall{Mode: app.Mode, App: app.ID, Session: session, Server: policy.FunctionServer, Name: name,
@@ -117,6 +126,20 @@ func (h *ChatHandler) decideTools(ctx context.Context, app *App, rec *record, ca
 		case !d.Approval:
 			continue
 		}
+		now := h.cfg.Now()
+		if until.IsZero() {
+			until = now.Add(MaxChatApprovalWait)
+		}
+		left := until.Sub(now)
+		if left < minApprovalWait {
+			h.logger.Info("подтверждение вызова функции: общий срок ожидания ответа исчерпан", "app", app.ID, "agent", c.Agent,
+				"tool", policy.FunctionServer+"/"+name, "rule", d.Rule, "event_id", rec.ev.ID)
+			return &toolBlock{rule: d.Rule, message: approvalTimeoutMessage}
+		}
+		if d.ApprovalTimeout <= 0 {
+			d.ApprovalTimeout = policy.DefaultApprovalTimeout
+		}
+		d.ApprovalTimeout = min(d.ApprovalTimeout, left)
 		res := h.approve(ctx, app, rec, c, approved, d, wait)
 		h.logger.Info("подтверждение вызова функции", "app", app.ID, "agent", c.Agent, "tool", policy.FunctionServer+"/"+name,
 			"rule", d.Rule, "approval_id", res.ID, "state", string(res.State), "waited_ms", res.Waited.Milliseconds(),
@@ -159,8 +182,9 @@ func risk(r policy.ToolRisk) policy.ToolRisk {
 
 // ApprovalArgs — аргументы вызова для дежурного (ADR-0023, раздел 5): ПДн
 // и секреты замаскированы категорией находки независимо от режима
-// хранения приложения, не длиннее MaxApprovalArgs. false — замаскировать
-// не удалось (сбой детектора): показывать такие аргументы нельзя.
+// хранения приложения. false — замаскировать не удалось (сбой детектора)
+// или маскированные аргументы длиннее MaxApprovalArgs: показывать такие
+// аргументы нельзя, вызов не подтверждается.
 func (a *App) ApprovalArgs(ctx context.Context, args []byte, timeout time.Duration) (string, bool) {
 	if timeout <= 0 {
 		timeout = DefaultDetectorTimeout
@@ -185,5 +209,10 @@ func (a *App) ApprovalArgs(ctx context.Context, args []byte, timeout time.Durati
 		spans = append(spans, span{f.Start, f.End, "[" + f.Category + "]"})
 	}
 	out := rewrite(text, spans)
-	return out[:prefixLen(out, MaxApprovalArgs)], true
+	if len(out) > MaxApprovalArgs {
+		// Обрезанные аргументы показывать нельзя: дежурный одобрил бы то,
+		// чего не видел, а дальше ушли бы аргументы целиком.
+		return "", false
+	}
+	return out, true
 }

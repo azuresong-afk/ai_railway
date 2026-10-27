@@ -89,6 +89,10 @@ type Decision struct {
 	// детекторы, которые не дали результата.
 	FailMode string            `json:"fail_mode,omitempty"`
 	Failures []DetectorFailure `json:"failures,omitempty"`
+	// MLUnavailable — ML-детекторы политики не дали результата: aisec-ml
+	// недоступен, перегружен или проверил не весь текст. Решение принято по
+	// остальным детекторам (fail-open для ML, ADR-0024).
+	MLUnavailable bool `json:"ml_unavailable,omitempty"`
 }
 
 // Причины сбоя детектора.

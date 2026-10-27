@@ -8,6 +8,7 @@ require (
 	github.com/go-asn1-ber/asn1-ber v1.5.8
 	github.com/go-ldap/ldap/v3 v3.4.15
 	github.com/jackc/pgx/v5 v5.11.0
+	github.com/yalue/onnxruntime_go v1.38.0
 	go.yaml.in/yaml/v3 v3.0.5
 	golang.org/x/crypto v0.58.0
 	golang.org/x/term v0.47.0

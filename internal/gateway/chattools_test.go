@@ -3,10 +3,13 @@ package gateway
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/azuresong-afk/ai_railway/internal/chat"
 	"github.com/azuresong-afk/ai_railway/internal/config"
@@ -53,6 +56,10 @@ type recApprover struct {
 	reqs  []ApprovalRequest
 	state ApprovalState
 	ticks int
+	// delay — сколько ждать решения; advance — сдвиг часов теста за
+	// ожидание.
+	delay   time.Duration
+	advance func()
 }
 
 func (a *recApprover) Await(_ context.Context, req ApprovalRequest, wait func()) ApprovalResult {
@@ -63,6 +70,10 @@ func (a *recApprover) Await(_ context.Context, req ApprovalRequest, wait func())
 		if wait != nil {
 			wait()
 		}
+	}
+	time.Sleep(a.delay)
+	if a.advance != nil {
+		a.advance()
 	}
 	return ApprovalResult{ID: "01900000-0000-7000-8000-0000000000aa", State: a.state}
 }
@@ -293,7 +304,8 @@ func TestDM22_ChatStreamApproval(t *testing.T) {
 	}
 }
 
-// Аргументы для дежурного: ПДн и секреты замаскированы, длина ограничена.
+// Аргументы для дежурного: ПДн и секреты замаскированы; длиннее предела —
+// отказ, а не усечение.
 func TestApprovalArgsMasked(t *testing.T) {
 	up, _ := newUpstream(t, nil)
 	var app *App
@@ -302,9 +314,77 @@ func TestApprovalArgsMasked(t *testing.T) {
 	if !ok || strings.Contains(shown, piiEmail) || !strings.Contains(shown, `"note":"ok"`) {
 		t.Fatalf("маскирование: %q %v", shown, ok)
 	}
-	long := strings.Repeat("я", MaxApprovalArgs)
-	if shown, ok := app.ApprovalArgs(context.Background(), []byte(long), 0); !ok || len(shown) > MaxApprovalArgs ||
-		!strings.HasPrefix(long, shown) {
-		t.Fatalf("длина: %d %v", len(shown), ok)
+	// Граница: ровно MaxApprovalArgs — показывается целиком, на байт
+	// больше — отказ (обрезанное дежурному не показывается).
+	full := strings.Repeat("a", MaxApprovalArgs)
+	if shown, ok := app.ApprovalArgs(context.Background(), []byte(full), 0); !ok || shown != full {
+		t.Fatalf("длина на границе: %d %v", len(shown), ok)
+	}
+	if shown, ok := app.ApprovalArgs(context.Background(), []byte(full+"b"), 0); ok || shown != "" {
+		t.Fatalf("длинные аргументы: %d %v", len(shown), ok)
+	}
+}
+
+// Ожидание подтверждения в потоке дольше срока простоя провайдера не рвёт
+// одобренный ответ: [DONE] после паузы доходит до клиента.
+func TestDM22_ChatStreamApprovalOutlivesIdle(t *testing.T) {
+	parts := []string{
+		sseData(t, map[string]any{"tool_calls": []map[string]any{{"index": 0, "id": "call_1", "type": "function",
+			"function": map[string]any{"name": "send_mail", "arguments": mailArgs}}}}, ""),
+		sseData(t, map[string]any{}, "tool_calls"),
+	}
+	up, _ := newUpstream(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fl := w.(http.Flusher) //nolint:forcetypeassert // тестовый провайдер
+		for _, p := range parts {
+			fmt.Fprint(w, p) //nolint:errcheck // тестовый провайдер
+			fl.Flush()
+		}
+		time.Sleep(50 * time.Millisecond)
+		fmt.Fprint(w, "data: [DONE]\n\n") //nolint:errcheck // тестовый провайдер
+		fl.Flush()
+	})
+	appr := &recApprover{state: ApprovalApproved, delay: 600 * time.Millisecond}
+	gw := httptest.NewServer(newGateway(t, up.URL, toolsOpts(t, appr, "enforce", func(o *gwOpts) { o.streamIdle = 200 * time.Millisecond })))
+	t.Cleanup(gw.Close)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, gw.URL+"/v1/chat/completions",
+		strings.NewReader(toolsBody(t, true, mailTool)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(HeaderAgent, "support-bot")
+	resp, err := gw.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res := readStream(t, resp); !res.done || res.errCode != "" || len(res.tools) != 1 {
+		t.Fatalf("одобренный ответ оборван: %q", res.raw)
+	}
+}
+
+// Несколько вызовов с require_approval в одном ответе ждут вместе не
+// дольше MaxChatApprovalWait: следующему остаётся остаток срока, без
+// остатка — отказ по сроку.
+func TestDM22_ChatApprovalsShareDeadline(t *testing.T) {
+	calls := make([]map[string]any, 3)
+	for i := range calls {
+		calls[i] = map[string]any{"id": fmt.Sprintf("call_%d", i), "type": "function",
+			"function": map[string]any{"name": "send_mail", "arguments": mailArgs}}
+	}
+	up, _ := newUpstream(t, replyMessage(t, map[string]any{"role": "assistant", "content": nil, "tool_calls": calls}))
+	var mu sync.Mutex
+	now := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+	clock := func() time.Time { mu.Lock(); defer mu.Unlock(); return now }
+	appr := &recApprover{state: ApprovalApproved, advance: func() { mu.Lock(); now = now.Add(3 * time.Minute); mu.Unlock() }}
+	g := newGateway(t, up.URL, toolsOpts(t, appr, "enforce", func(o *gwOpts) { o.now = clock }))
+	resp := postChat(t, g, toolsBody(t, false, mailTool), agentHeader)
+	if resp.Code != http.StatusBadRequest || errCode(t, resp) != "policy_violation" ||
+		!strings.Contains(resp.Body.String(), approvalTimeoutMessage) {
+		t.Fatalf("%d %s", resp.Code, resp.Body)
+	}
+	reqs := appr.requests()
+	if len(reqs) != 2 || reqs[0].Timeout != MaxChatApprovalWait || reqs[1].Timeout != 2*time.Minute {
+		t.Fatalf("запросы: %d %+v", len(reqs), reqs)
 	}
 }

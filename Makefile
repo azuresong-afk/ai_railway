@@ -187,6 +187,8 @@ build: ## Сборка бинарников в build/bin
 .PHONY: lint
 lint: lint-version ## Линтеры, в том числе depguard (.golangci.yml); с cgo, чтобы проверялись все файлы
 	CGO_ENABLED=1 $(BIN)/golangci-lint run ./...
+	# Исполнитель ONNX Runtime в aisec-ml собирается только с тегом aisec_onnx (ADR-0024).
+	CGO_ENABLED=1 $(BIN)/golangci-lint run --build-tags e2e,aisec_onnx ./cmd/aisec-ml/...
 
 .PHONY: sast
 sast: lint-version ## Статический анализ (gosec) в SARIF и сверка с разметкой docs/cert/sast-triage/

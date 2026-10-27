@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/azuresong-afk/ai_railway/internal/audit"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
@@ -340,8 +341,10 @@ func (s *Service) Decide(ctx context.Context, by By, id string, in DecideInput) 
 		r.ClosedAt, r.DecidedBy, r.DecidedByName, r.Comment = now, by.Actor.ID, by.Actor.Name, in.Comment
 		d := requestDetails(r)
 		d["waited_ms"] = r.Waited(now).Milliseconds()
+		// Текст комментария в неизменяемый журнал не пишется (в нём могут
+		// оказаться аргументы вызова) — только длина, как у отметок событий.
 		if in.Comment != "" {
-			d["comment"] = in.Comment
+			d["comment_len"] = utf8.RuneCountInString(in.Comment)
 		}
 		return &audit.Entry{OrgID: s.orgID, Actor: by.Actor, SourceIP: by.IP, Action: action,
 			Object: audit.Object{Type: "approval", ID: r.ID}, Result: audit.ResultSuccess, Details: d}, nil

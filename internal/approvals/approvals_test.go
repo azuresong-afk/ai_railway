@@ -275,7 +275,7 @@ func TestDM22_DecideApprove(t *testing.T) {
 	}
 	recs := actions(e.mem, "agent.approval.approve")
 	if len(recs) != 1 || recs[0].Actor.ID != userID || details(recs[0])["waited_ms"] != int64(90000) ||
-		details(recs[0])["comment"] != "проверено" {
+		details(recs[0])["comment_len"] != 9 || details(recs[0])["comment"] != nil {
 		t.Fatalf("аудит: %+v", recs)
 	}
 	// Повторное решение — запрос уже закрыт.

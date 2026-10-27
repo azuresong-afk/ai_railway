@@ -603,6 +603,9 @@ func (h *ChatHandler) stream(w http.ResponseWriter, r *http.Request, app *App, r
 		return rc.Flush() == nil
 	}
 	sp := h.newStreamProc(r, app, rec, requested, mode == policy.ResponseIncremental, send)
+	if hd, ok := st.(providers.Holder); ok {
+		sp.hold = hd.Hold
+	}
 	sp.comment = func(text string) bool {
 		if err := sse.WriteComment(w, text); err != nil {
 			return false

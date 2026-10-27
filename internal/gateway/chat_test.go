@@ -107,6 +107,10 @@ type gwOpts struct {
 	// 4.10).
 	agents   *Agents
 	approver Approver
+	// now — часы обработчика чата; streamIdle — срок простоя потока
+	// провайдера (ноль — по умолчанию).
+	now        func() time.Time
+	streamIdle time.Duration
 }
 
 // newGateway — шлюз с OpenAI-совместимым провайдером на upstream и одним
@@ -123,7 +127,8 @@ func newGateway(t testing.TB, upstream string, mod func(*gwOpts)) http.Handler {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := providers.NewOpenAI(providers.OpenAIConfig{BaseConfig: providers.BaseConfig{ID: "up", External: !o.internal, Transport: o.transport, Logger: o.logger}, BaseURL: u, Key: o.key})
+	p, err := providers.NewOpenAI(providers.OpenAIConfig{BaseConfig: providers.BaseConfig{ID: "up", External: !o.internal, Transport: o.transport, Logger: o.logger,
+		StreamIdleTimeout: o.streamIdle}, BaseURL: u, Key: o.key})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +156,7 @@ func newGateway(t testing.TB, upstream string, mod func(*gwOpts)) http.Handler {
 	ta := newTestAuth(t, o.limiter)
 	ch, err := NewChatHandler(ChatConfig{Router: rt, MaxBodyBytes: o.maxBody, Logger: o.logger, BodyReadTimeout: o.bodyTimeout,
 		Events: o.events, IDs: ta.cfg.IDs, Quotas: NewLimiter(apps), Budget: o.budget, UserMAC: o.userMAC, DetectorTimeout: o.detTimeout, Sessions: o.sessions,
-		Hasher: testHasher(t)})
+		Hasher: testHasher(t), Now: o.now})
 	if err != nil {
 		t.Fatal(err)
 	}
