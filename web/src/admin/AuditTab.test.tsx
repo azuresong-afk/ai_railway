@@ -6,7 +6,7 @@ import { AdminScreen } from "./AdminScreen";
 import { parseActions } from "./AuditTab";
 
 const me = (permissions: string[]): Me => ({
-  user: { id: "u-me", login: "auditor", display_name: "Аудитор", role: "auditor", status: "active", locked: false, must_change_password: false, password_changed_at: "2026-10-01T00:00:00Z", created_at: "2026-10-01T00:00:00Z" },
+  user: { id: "u-me", login: "auditor", display_name: "Аудитор", email: "", role: "auditor", status: "active", locked: false, must_change_password: false, password_changed_at: "2026-10-01T00:00:00Z", created_at: "2026-10-01T00:00:00Z" },
   session_state: "active",
   timezone: "Europe/Moscow",
   permissions,

@@ -54,6 +54,7 @@ export const adminApi = {
     request<SessionList>("GET", `/api/v1/users/${id(uid)}/sessions`, undefined, signal),
   revokeSessions: (uid: string, revokeTokens: boolean) =>
     request<unknown>("DELETE", `/api/v1/users/${id(uid)}/sessions?revoke_api_tokens=${revokeTokens}`),
+  setEmail: (uid: string, email: string) => request<User>("PUT", `/api/v1/users/${id(uid)}/email`, { email }),
   setRole: (uid: string, role: string) => request<S["RoleAssigned"]>("PUT", `/api/v1/users/${id(uid)}/role`, { role }),
 
   permissions: (signal?: AbortSignal) => request<S["PermissionList"]>("GET", "/api/v1/permissions", undefined, signal),

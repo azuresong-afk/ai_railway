@@ -108,6 +108,7 @@ const UsageScreen = lazy(() => import("../consumption/UsageScreen").then((m) => 
 const ReportsScreen = lazy(() => import("../reports/ReportsScreen").then((m) => ({ default: m.ReportsScreen })));
 const AdminScreen = lazy(() => import("../admin/AdminScreen").then((m) => ({ default: m.AdminScreen })));
 const SystemScreen = lazy(() => import("../system/SystemScreen").then((m) => ({ default: m.SystemScreen })));
+const ProfileScreen = lazy(() => import("../profile/ProfileScreen").then((m) => ({ default: m.ProfileScreen })));
 
 function SystemRoute({ me }: { me: Me }) {
   if (!me.permissions.includes("system.read")) {
@@ -228,9 +229,9 @@ function Frame({ me, onLogout }: { me: Me; onLogout: () => void }) {
                 <option value="dark">Тёмная</option>
               </Select>
             </label>
-            <span className="text-sm" aria-label="Профиль">
+            <NavLink to="/profile" className="text-sm underline" aria-label="Профиль">
               {me.user.display_name}
-            </span>
+            </NavLink>
             <Button variant="ghost" onClick={onLogout}>
               <LogOut size={16} aria-hidden="true" />
               Выйти
@@ -249,6 +250,7 @@ function Frame({ me, onLogout }: { me: Me; onLogout: () => void }) {
               <Route path="/providers" element={<GuardedRoute me={me} perm="providers.read" title="провайдеры"><ProvidersScreen me={me} /></GuardedRoute>} />
               <Route path="/policies" element={<GuardedRoute me={me} perm="policies.read" title="политики"><PoliciesScreen me={me} /></GuardedRoute>} />
               <Route path="/reports" element={<GuardedRoute me={me} perm="reports.read" title="отчёты"><ReportsScreen me={me} /></GuardedRoute>} />
+              <Route path="/profile" element={<ProfileScreen me={me} />} />
               <Route path="/admin" element={<AdminRoute me={me} />} />
               <Route path="/system" element={<SystemRoute me={me} />} />
               <Route path="*" element={<Stub />} />
