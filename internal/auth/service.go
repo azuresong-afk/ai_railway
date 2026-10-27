@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/azuresong-afk/ai_railway/internal/audit"
+	"github.com/azuresong-afk/ai_railway/internal/auth/ldap"
 	"github.com/azuresong-afk/ai_railway/internal/auth/oidc"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/internal/store"
@@ -84,6 +85,10 @@ type Service struct {
 	// не подключён.
 	idp  IdPStore
 	oidc *oidc.Client
+	// ldapStore и ldap — вход через каталог LDAP (задача 4.16, ADR-0025);
+	// nil — не подключён.
+	ldapStore LDAPStore
+	ldap      *ldap.Client
 }
 
 // Option настраивает Service.
@@ -181,6 +186,19 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (LoginResult, error)
 			return LoginResult{}, err
 		}
 	}
+	// Логин без локальной записи или запись каталога — проверка в каталоге
+	// LDAP, если вход через него включён (ADR-0025, 2). Локальная запись с
+	// тем же логином каталогом не перекрывается: её проверяет только пароль
+	// консоли.
+	if valid && (!found || u.External()) {
+		st, secret, ok, err := s.activeLDAP(ctx)
+		if err != nil {
+			return LoginResult{}, err
+		}
+		if ok {
+			return s.ldapLogin(ctx, in, login, st, secret, pol, now)
+		}
+	}
 	// Пароль проверяется всегда — с хешем записи или с фиктивным, — чтобы
 	// время ответа не зависело от того, есть ли запись и в каком она состоянии.
 	hash := s.dummy
@@ -199,7 +217,8 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (LoginResult, error)
 	case !found:
 		reason = reasonUnknownLogin
 	case u.External():
-		// У внешней записи нет пароля консоли: вход — только через IdP.
+		// У внешней записи нет пароля консоли: вход — только через IdP или
+		// каталог (здесь — когда вход через каталог отключён).
 		reason = reasonExternal
 	case u.Status != StatusActive:
 		reason = reasonDeactivated

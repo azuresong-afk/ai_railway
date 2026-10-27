@@ -97,8 +97,10 @@ type User struct {
 	CreatedBy     string
 	DeactivatedAt time.Time
 	LastLoginAt   time.Time
-	// Source — источник учётной записи (ADR-0025): local или oidc. У
-	// внешней записи нет пароля, она привязана к (IdPIssuer, IdPSubject).
+	// Source — источник учётной записи (ADR-0025): local, oidc или ldap. У
+	// внешней записи нет пароля консоли, она привязана к (IdPIssuer,
+	// IdPSubject); у ldap IdPIssuer — LDAPIssuer, IdPSubject — неизменяемый
+	// идентификатор записи каталога.
 	Source     AuthSource
 	IdPIssuer  string
 	IdPSubject string
@@ -111,10 +113,17 @@ type AuthSource string
 const (
 	SourceLocal AuthSource = "local"
 	SourceOIDC  AuthSource = "oidc"
+	SourceLDAP  AuthSource = "ldap"
 )
 
-// External — внешняя учётная запись (IdP): пароля и TOTP консоли у неё нет.
+// External — внешняя учётная запись (IdP или каталог): пароля консоли у
+// неё нет, повторная проверка паролем или кодом недоступна (ADR-0025, 1.6).
 func (u *User) External() bool { return u.Source != "" && u.Source != SourceLocal }
+
+// ConsoleMFA — у записи свой TOTP консоли: локальная и запись каталога
+// LDAP (каталог второй фактор не проверяет, ADR-0025, 2.5); у OIDC второй
+// фактор подтверждает IdP.
+func (u *User) ConsoleMFA() bool { return !u.External() || u.Source == SourceLDAP }
 
 // Locked — запись заблокирована на момент now.
 func (u *User) Locked(now time.Time) bool {
@@ -175,6 +184,9 @@ const (
 	// RevokeIdPRoleChanged — роль внешнего пользователя по группам IdP
 	// изменилась при входе: прежние сессии с прежней ролью завершаются.
 	RevokeIdPRoleChanged = "idp_role_changed"
+	// RevokeLDAPChanged — изменены или отключены настройки каталога LDAP:
+	// роли пользователей каталога пересчитываются при следующем входе.
+	RevokeLDAPChanged = "ldap_changed"
 )
 
 // Session — сессия консоли (решение Р6). Токен и CSRF-токен хранятся только хешами.

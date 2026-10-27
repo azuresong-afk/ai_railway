@@ -57,7 +57,7 @@ func (m *Memory) SaveIdPSettings(_ context.Context, orgID string, st auth.IdPSet
 	st.UpdatedAt = now
 	slices.SortFunc(st.GroupRoles, func(a, b auth.GroupRole) int { return compareStr(a.Group, b.Group) })
 	m.idp[orgID] = st
-	m.revokeExternal(orgID, now, &rec)
+	m.revokeExternal(orgID, auth.SourceOIDC, now, &rec)
 	m.records = append(m.records, rec)
 	return nil
 }
@@ -72,17 +72,17 @@ func (m *Memory) DeleteIdPSettings(_ context.Context, orgID string, now time.Tim
 		return auth.ErrIdPNotConfigured
 	}
 	delete(m.idp, orgID)
-	m.revokeExternal(orgID, now, &rec)
+	m.revokeExternal(orgID, auth.SourceOIDC, now, &rec)
 	m.records = append(m.records, rec)
 	return nil
 }
 
-// revokeExternal завершает сессии внешних пользователей организации.
-func (m *Memory) revokeExternal(orgID string, now time.Time, rec *audit.Entry) {
+// revokeExternal завершает сессии внешних пользователей организации с источником source.
+func (m *Memory) revokeExternal(orgID string, source auth.AuthSource, now time.Time, rec *audit.Entry) {
 	n := 0
 	for _, s := range m.sessions {
 		u, ok := m.users[s.UserID]
-		if ok && u.OrgID == orgID && u.External() && s.RevokedAt.IsZero() {
+		if ok && u.OrgID == orgID && u.Source == source && s.RevokedAt.IsZero() {
 			s.RevokedAt = now
 			n++
 		}
@@ -163,7 +163,11 @@ func (m *Memory) ExternalLogin(_ context.Context, in auth.ExternalLoginTx) (auth
 	if m.Fail != nil {
 		return auth.User{}, m.Fail
 	}
-	if st, ok := m.idp[in.OrgID]; !ok || !st.Enabled || st.Version != in.SettingsVersion {
+	if in.Source == auth.SourceLDAP {
+		if st, ok := m.ldap[in.OrgID]; !ok || !st.Enabled || st.Version != in.SettingsVersion {
+			return auth.User{}, auth.ErrIdPChanged
+		}
+	} else if st, ok := m.idp[in.OrgID]; !ok || !st.Enabled || st.Version != in.SettingsVersion {
 		return auth.User{}, auth.ErrIdPChanged
 	}
 	if _, ok := m.lookupRole(in.OrgID, in.Role); !ok {
@@ -182,7 +186,7 @@ func (m *Memory) ExternalLogin(_ context.Context, in auth.ExternalLoginTx) (auth
 		}
 		u = &auth.User{ID: in.NewUserID, OrgID: in.OrgID, Login: login, DisplayName: in.DisplayName, Role: in.Role,
 			Status: auth.StatusActive, PasswordHash: "!external", PasswordChangedAt: in.Now, CreatedAt: in.Now,
-			CreatedBy: "oidc", Source: in.Source, IdPIssuer: in.Issuer, IdPSubject: in.Subject}
+			CreatedBy: string(in.Source), Source: in.Source, IdPIssuer: in.Issuer, IdPSubject: in.Subject}
 		m.users[u.ID] = u
 		created = true
 	} else {

@@ -29,6 +29,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/apps"
 	"github.com/azuresong-afk/ai_railway/internal/audit"
 	"github.com/azuresong-afk/ai_railway/internal/auth"
+	"github.com/azuresong-afk/ai_railway/internal/auth/ldap"
 	"github.com/azuresong-afk/ai_railway/internal/auth/oidc"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/internal/detect"
@@ -213,6 +214,15 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		authOpts = append(authOpts, auth.WithOIDC(users, idp))
 	case errors.Is(err, aisecCrypto.ErrNotImplemented):
 		logger.Warn("вход через внешний IdP недоступен в криптопрофиле")
+	default:
+		return err
+	}
+	// Вход через каталог LDAP (ADR-0025, 2): без TLS в профиле недоступен.
+	switch dir, err := ldap.New(p); {
+	case err == nil:
+		authOpts = append(authOpts, auth.WithLDAP(users, dir))
+	case errors.Is(err, aisecCrypto.ErrNotImplemented):
+		logger.Warn("вход через каталог LDAP недоступен в криптопрофиле")
 	default:
 		return err
 	}

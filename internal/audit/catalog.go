@@ -33,6 +33,8 @@ var catalog = []Event{
 	{"auth.policy_changed", "Изменение парольной политики и настроек входа", true},
 	{"auth.idp_changed", "Изменение настроек входа через внешний IdP", true},
 	{"auth.idp_disabled", "Удаление настроек входа через внешний IdP", true},
+	{"auth.ldap_changed", "Изменение настроек входа через каталог LDAP", true},
+	{"auth.ldap_disabled", "Удаление настроек входа через каталог LDAP", true},
 	{"gateway.auth_failed", "Неудачная аутентификация на шлюзе", true},
 	// Учётные записи (РСБ.2, УПД.5, ЗИ.4).
 	{"setup.completed", "Первичная настройка: создан первый администратор", true},

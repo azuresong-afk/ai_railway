@@ -32,8 +32,9 @@ CGO_ALLOWED :=
 # internal/notify — SMTP, webhook, syslog только по адресам администратора
 # (Р4, задача 3.13; обоснование — docs/cert/attack-surface.md);
 # internal/auth/oidc — discovery, JWKS и обмен кода только с издателем из
-# настроек IdP (ADR-0025, задача 4.17).
-NET_CLIENT_ALLOWED := cmd/aisec-gateway,internal/gateway,internal/providers,internal/notify,internal/auth/oidc
+# настроек IdP (ADR-0025, задача 4.17); internal/auth/ldap — поиск и bind
+# только в каталоге из настроек LDAP, LDAPS или StartTLS (ADR-0025, задача 4.16).
+NET_CLIENT_ALLOWED := cmd/aisec-gateway,internal/gateway,internal/providers,internal/notify,internal/auth/oidc,internal/auth/ldap
 
 # Версии инструментов разработки (ТЗ, 8.2). Меняются только вместе с
 # docs/cert/components.yaml (scope: build) и сборочным образом.

@@ -163,11 +163,13 @@ type RewrapCounts struct {
 	Prompts int64 `json:"prompt_baselines"`
 	// MCPServers — учётные данные MCP-серверов (задача 4.8 этапа 4).
 	MCPServers int64 `json:"mcp_servers"`
+	// LDAP — пароль сервисной учётной записи каталога (задача 4.16 этапа 4).
+	LDAP int64 `json:"ldap"`
 }
 
 // Total — всего строк.
 func (c RewrapCounts) Total() int64 {
-	return c.MFA + c.Providers + c.Content + c.Channels + c.GatewayTLS + c.OIDC + c.Prompts + c.MCPServers
+	return c.MFA + c.Providers + c.Content + c.Channels + c.GatewayTLS + c.OIDC + c.Prompts + c.MCPServers + c.LDAP
 }
 
 // RewrapOptions — параметры перешифрования.
@@ -201,6 +203,7 @@ const (
 	oidcTable, oidcColumn           = "oidc_settings", "client_secret"
 	promptTable, promptColumn       = "prompt_baselines", "text"
 	mcpTable, mcpColumn             = "mcp_servers", "credential"
+	ldapTable, ldapColumn           = "ldap_settings", "bind_password"
 )
 
 // Rewrap перешифровывает действующей версией box все строки прежних версий:
@@ -247,6 +250,9 @@ func Rewrap(ctx context.Context, db Owner, box *Box, o RewrapOptions) (RewrapCou
 		}},
 		{&total.MCPServers, func(ctx context.Context, tx pgx.Tx, active string) (int, error) {
 			return rewrapMCPServers(ctx, tx, box, active, o.Batch)
+		}},
+		{&total.LDAP, func(ctx context.Context, tx pgx.Tx, active string) (int, error) {
+			return rewrapLDAP(ctx, tx, box, active, o.Batch)
 		}},
 	}
 	for _, st := range steps {
@@ -546,6 +552,35 @@ func rewrapOIDC(ctx context.Context, tx pgx.Tx, box *Box, active string, batch i
 	return len(rows), nil
 }
 
+// rewrapLDAP — пароль сервисной учётной записи каталога LDAP (internal/auth,
+// задача 4.16): AAD ldap_settings|bind_password|<org_id>.
+func rewrapLDAP(ctx context.Context, tx pgx.Tx, box *Box, active string, batch int) (int, error) {
+	type row struct {
+		id, keyID string
+		sealed    []byte
+	}
+	rows, err := collect(ctx, tx, `SELECT org_id::text, bind_password_key_id::text, bind_password FROM ldap_settings
+		WHERE bind_password_key_id <> $1 ORDER BY org_id LIMIT $2 FOR UPDATE`, []any{active, batch},
+		func(r pgx.Rows) (row, error) {
+			var x row
+			return x, r.Scan(&x.id, &x.keyID, &x.sealed)
+		})
+	if err != nil {
+		return 0, fmt.Errorf("перешифрование пароля каталога LDAP: %w", err)
+	}
+	for _, x := range rows {
+		keyID, sealed, err := reseal(ctx, box, active, x.keyID, x.sealed, ldapTable, ldapColumn, x.id)
+		if err != nil {
+			return 0, fmt.Errorf("перешифрование пароля каталога LDAP: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `UPDATE ldap_settings SET bind_password = $1, bind_password_key_id = $2
+			WHERE org_id = $3 AND bind_password_key_id = $4`, sealed, keyID, x.id, x.keyID); err != nil {
+			return 0, fmt.Errorf("перешифрование пароля каталога LDAP: %w", err)
+		}
+	}
+	return len(rows), nil
+}
+
 // collect читает все строки запроса.
 func collect[T any](ctx context.Context, tx pgx.Tx, sql string, args []any, scan func(pgx.Rows) (T, error)) ([]T, error) {
 	rows, err := tx.Query(ctx, sql, args...)
@@ -587,7 +622,8 @@ func Status(ctx context.Context, db Owner, orgID string) ([]VersionStatus, error
 		(SELECT count(*) FROM gateway_tls WHERE key_key_id = k.id),
 		(SELECT count(*) FROM oidc_settings WHERE client_secret_key_id = k.id),
 		(SELECT count(*) FROM prompt_baselines WHERE text_key_id = k.id),
-		(SELECT count(*) FROM mcp_servers WHERE credential_key_id = k.id)
+		(SELECT count(*) FROM mcp_servers WHERE credential_key_id = k.id),
+		(SELECT count(*) FROM ldap_settings WHERE bind_password_key_id = k.id)
 		FROM data_keys k WHERE k.org_id = $1 ORDER BY k.version`, orgID)
 	if err != nil {
 		return nil, fmt.Errorf("ключ данных: состояние: %w", err)
@@ -598,7 +634,7 @@ func Status(ctx context.Context, db Owner, orgID string) ([]VersionStatus, error
 		var v VersionStatus
 		if err := rows.Scan(&v.ID, &v.Version, &v.MasterVersion, &v.Sealed, &v.CreatedAt, &v.RetiredAt,
 			&v.Rows.MFA, &v.Rows.Providers, &v.Rows.Content, &v.Rows.Channels, &v.Rows.GatewayTLS, &v.Rows.OIDC, &v.Rows.Prompts,
-			&v.Rows.MCPServers); err != nil {
+			&v.Rows.MCPServers, &v.Rows.LDAP); err != nil {
 			return nil, err
 		}
 		out = append(out, v)
@@ -636,9 +672,10 @@ func DestroyRetired(ctx context.Context, db Owner, rec Recorder, orgID string, a
 				(SELECT count(*) FROM gateway_tls WHERE key_key_id = $1),
 				(SELECT count(*) FROM oidc_settings WHERE client_secret_key_id = $1),
 				(SELECT count(*) FROM prompt_baselines WHERE text_key_id = $1),
-				(SELECT count(*) FROM mcp_servers WHERE credential_key_id = $1)`, v.ID).
+				(SELECT count(*) FROM mcp_servers WHERE credential_key_id = $1),
+				(SELECT count(*) FROM ldap_settings WHERE bind_password_key_id = $1)`, v.ID).
 				Scan(&left.MFA, &left.Providers, &left.Content, &left.Channels, &left.GatewayTLS, &left.OIDC, &left.Prompts,
-					&left.MCPServers); err != nil {
+					&left.MCPServers, &left.LDAP); err != nil {
 				return err
 			}
 			if left.Total() > 0 {

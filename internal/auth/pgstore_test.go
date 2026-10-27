@@ -19,6 +19,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/audit"
 	"github.com/azuresong-afk/ai_railway/internal/auth"
 	"github.com/azuresong-afk/ai_railway/internal/auth/authtest"
+	"github.com/azuresong-afk/ai_railway/internal/auth/ldap"
 	"github.com/azuresong-afk/ai_railway/internal/auth/oidc"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/internal/keyring"
@@ -45,6 +46,9 @@ type pgEnv struct {
 	// oidc — клиент IdP сервиса (вход через IdP, ADR-0025): loopback
 	// разрешён для синтетического IdP на 127.0.0.1.
 	oidc *oidc.Client
+	// ldap — клиент каталога сервиса (вход через LDAP, ADR-0025, 2):
+	// loopback разрешён для синтетического каталога на 127.0.0.1.
+	ldap *ldap.Client
 	// dir и box — каталог ключей установки и ключ данных сервиса (ротация).
 	dir string
 	box *keyring.Box
@@ -177,8 +181,13 @@ func setupPG(t *testing.T) *pgEnv {
 		t.Fatal(err)
 	}
 	e.oidc.AllowNetworks([]netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")})
+	if e.ldap, err = ldap.New(p); err != nil {
+		t.Fatal(err)
+	}
+	e.ldap.AllowNetworks([]netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")})
 	if e.svc, err = auth.NewService(ctx, e.store, e.log, p, auth.WithClock(e.clock.now), auth.WithPasswordHasher(&authtest.Hasher{}),
-		auth.WithSecretBox(box), auth.WithRoleStore(roles), auth.WithAPITokenStore(tokens), auth.WithOIDC(e.store, e.oidc)); err != nil {
+		auth.WithSecretBox(box), auth.WithRoleStore(roles), auth.WithAPITokenStore(tokens), auth.WithOIDC(e.store, e.oidc),
+		auth.WithLDAP(e.store, e.ldap)); err != nil {
 		t.Fatal(err)
 	}
 	e.mfa = newMFAKeys(e.svc, e.store, e.clock)

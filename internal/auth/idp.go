@@ -486,12 +486,7 @@ func (s *Service) idpDetails(st IdPSettings) map[string]any {
 // idpRolesCovered — каждая роль таблицы групп не шире прав вызывающего
 // (УПД.2); иначе отказ с записью в аудит.
 func (s *Service) idpRolesCovered(ctx context.Context, by Caller, groups []GroupRole) error {
-	for _, g := range groups {
-		if err := s.canManage(ctx, by, g.Role, "auth.idp_changed", audit.Object{Type: "idp", ID: s.orgID}); err != nil {
-			return err
-		}
-	}
-	return nil
+	return s.groupRolesCovered(ctx, by, groups, "auth.idp_changed", "idp")
 }
 
 // idpWeakened — изменения, расширяющие доступ (DM-40): вход через IdP

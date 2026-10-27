@@ -188,8 +188,9 @@ func afterMFA(u User, pol Policy, now time.Time) SessionState {
 // иначе укравший сессию подключил бы свой фактор и закрыл вход владельцу.
 // Неверный пароль — неудачная попытка (ИАФ.4), как при смене пароля.
 func (s *Service) StartMFA(ctx context.Context, c Caller, password string) (MFAEnrollment, error) {
-	// Второй фактор внешней записи проверяет IdP (ADR-0025, 3.7).
-	if c.User.External() {
+	// Второй фактор записи OIDC проверяет IdP (ADR-0025, 3.7); у записи
+	// каталога LDAP — свой TOTP консоли (2.5).
+	if !c.User.ConsoleMFA() {
 		return MFAEnrollment{}, ErrExternalUser
 	}
 	if c.Session.State != SessionActive && c.Session.State != SessionMFASetup {
@@ -212,6 +213,11 @@ func (s *Service) StartMFA(ctx context.Context, c Caller, password string) (MFAE
 		}
 		if c.User.Locked(now) {
 			return MFAEnrollment{}, ErrLocked
+		}
+		// Пароль записи каталога знает только каталог: в полной сессии фактор
+		// не подключается, только в сессии подключения сразу после входа.
+		if c.User.External() {
+			return MFAEnrollment{}, ErrExternalUser
 		}
 		ok, err := s.verify(ctx, password, c.User.PasswordHash)
 		if err != nil {

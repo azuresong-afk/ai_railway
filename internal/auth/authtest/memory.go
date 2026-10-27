@@ -35,6 +35,8 @@ type Memory struct {
 	// idp и logins — настройки IdP и незавершённые входы (idp.go).
 	idp    map[string]auth.IdPSettings
 	logins []oidcLogin
+	// ldap — настройки каталога LDAP (ldap.go).
+	ldap map[string]auth.LDAPSettings
 	// Fail — если не nil, возвращается из каждого метода (сбой хранилища).
 	Fail error
 }
@@ -57,7 +59,7 @@ func NewMemory() *Memory {
 		policy: map[string]auth.Policy{}, users: map[string]*auth.User{},
 		history: map[string][]string{}, sessions: map[string]*auth.Session{},
 		mfa: map[string]*auth.MFA{}, codes: map[string][]*recoveryCode{},
-		idp: map[string]auth.IdPSettings{},
+		idp: map[string]auth.IdPSettings{}, ldap: map[string]auth.LDAPSettings{},
 	}
 }
 

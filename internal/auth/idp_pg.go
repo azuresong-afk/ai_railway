@@ -11,7 +11,8 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/audit"
 )
 
-// IdPStore на PostgreSQL (миграция 0051_oidc).
+// IdPStore на PostgreSQL (миграция 0051_oidc); ExternalLogin — и для
+// каталога LDAP (0055_ldap).
 
 const (
 	idpCols = `enabled, display_name, issuer, client_id, client_secret, client_secret_key_id::text, console_url,
@@ -89,7 +90,7 @@ func (s *PGStore) SaveIdPSettings(ctx context.Context, orgID string, st IdPSetti
 				return fmt.Errorf("настройки IdP: группы: %w", err)
 			}
 		}
-		if err := revokeExternalSessions(ctx, tx, orgID, now, &rec); err != nil {
+		if err := revokeExternalSessions(ctx, tx, orgID, SourceOIDC, RevokeIdPChanged, now, &rec); err != nil {
 			return err
 		}
 		return s.record(ctx, tx, rec)
@@ -109,7 +110,7 @@ func (s *PGStore) DeleteIdPSettings(ctx context.Context, orgID string, now time.
 		if tag.RowsAffected() == 0 {
 			return ErrIdPNotConfigured
 		}
-		if err := revokeExternalSessions(ctx, tx, orgID, now, &rec); err != nil {
+		if err := revokeExternalSessions(ctx, tx, orgID, SourceOIDC, RevokeIdPChanged, now, &rec); err != nil {
 			return err
 		}
 		return s.record(ctx, tx, rec)
@@ -117,13 +118,15 @@ func (s *PGStore) DeleteIdPSettings(ctx context.Context, orgID string, now time.
 }
 
 // revokeExternalSessions завершает сессии внешних пользователей
-// организации (RevokeIdPChanged); их число — revoked_sessions в rec.
-func revokeExternalSessions(ctx context.Context, tx pgx.Tx, orgID string, now time.Time, rec *audit.Entry) error {
+// организации с источником source (причина reason); их число —
+// revoked_sessions в rec.
+func revokeExternalSessions(ctx context.Context, tx pgx.Tx, orgID string, source AuthSource, reason string,
+	now time.Time, rec *audit.Entry) error {
 	tag, err := tx.Exec(ctx, `UPDATE sessions SET revoked_at = $2, revoke_reason = $3
-		WHERE revoked_at IS NULL AND user_id IN (SELECT id FROM users WHERE org_id = $1 AND auth_source <> 'local')`,
-		orgID, now, RevokeIdPChanged)
+		WHERE revoked_at IS NULL AND user_id IN (SELECT id FROM users WHERE org_id = $1 AND auth_source = $4)`,
+		orgID, now, reason, string(source))
 	if err != nil {
-		return fmt.Errorf("настройки IdP: завершение сессий: %w", err)
+		return fmt.Errorf("настройки входа: завершение сессий: %w", err)
 	}
 	AddDetail(rec, "revoked_sessions", tag.RowsAffected())
 	return nil
@@ -180,8 +183,8 @@ func (s *PGStore) UserByIdentity(ctx context.Context, orgID, issuer, subject str
 		WHERE u.org_id = $1 AND u.idp_issuer = $2 AND u.idp_subject = $3`, orgID, issuer, subject))
 }
 
-// ExternalLogin — учётная запись и сессия внешнего пользователя одной
-// транзакцией (ExternalLoginTx).
+// ExternalLogin — учётная запись и сессия внешнего пользователя (IdP или
+// каталог — по in.Source) одной транзакцией (ExternalLoginTx).
 func (s *PGStore) ExternalLogin(ctx context.Context, in ExternalLoginTx) (User, error) {
 	ctx, cancel := pgCtx(ctx)
 	defer cancel()
@@ -192,8 +195,11 @@ func (s *PGStore) ExternalLogin(ctx context.Context, in ExternalLoginTx) (User, 
 		// них видит другую версию и отклоняется.
 		var version int
 		var enabled bool
-		err := tx.QueryRow(ctx, "SELECT version, enabled FROM oidc_settings WHERE org_id = $1 FOR SHARE", in.OrgID).
-			Scan(&version, &enabled)
+		q := "SELECT version, enabled FROM oidc_settings WHERE org_id = $1 FOR SHARE"
+		if in.Source == SourceLDAP {
+			q = "SELECT version, enabled FROM ldap_settings WHERE org_id = $1 FOR SHARE"
+		}
+		err := tx.QueryRow(ctx, q, in.OrgID).Scan(&version, &enabled)
 		if errors.Is(err, pgx.ErrNoRows) || (err == nil && (version != in.SettingsVersion || !enabled)) {
 			return ErrIdPChanged
 		}
@@ -289,7 +295,7 @@ func createExternal(ctx context.Context, tx pgx.Tx, in ExternalLoginTx) (User, e
 	}
 	u := User{ID: in.NewUserID, OrgID: in.OrgID, Login: login, DisplayName: in.DisplayName, Role: in.Role,
 		Status: StatusActive, PasswordHash: externalPassword, PasswordChangedAt: in.Now, CreatedAt: in.Now,
-		CreatedBy: oidcActorID, Source: in.Source, IdPIssuer: in.Issuer, IdPSubject: in.Subject}
+		CreatedBy: string(in.Source), Source: in.Source, IdPIssuer: in.Issuer, IdPSubject: in.Subject}
 	_, err := tx.Exec(ctx, `INSERT INTO users (id, org_id, login, display_name, role, status, password_hash,
 		password_changed_at, must_change_password, created_at, created_by, auth_source, idp_issuer, idp_subject)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, false, $9, $10, $11, $12, $13)`,

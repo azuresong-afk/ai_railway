@@ -362,9 +362,15 @@ func claimGroups(c aisecCrypto.IDTokenClaims, name string) ([]string, bool) {
 // resolveRole — роль по группам: matched — группы из таблицы, roles —
 // разные роли совпавших групп по порядку таблицы. Роль одна — role.
 func resolveRole(groups []string, table []GroupRole) (role Role, matched, roles []string) {
+	return resolveRoleFunc(groups, table, func(a, b string) bool { return a == b })
+}
+
+// resolveRoleFunc — resolveRole со сравнением групп same (DN каталога —
+// без учёта регистра, ADR-0025, 2.4).
+func resolveRoleFunc(groups []string, table []GroupRole, same func(a, b string) bool) (role Role, matched, roles []string) {
 	matched, roles = []string{}, []string{}
 	for _, gr := range table {
-		if !slices.Contains(groups, gr.Group) {
+		if !slices.ContainsFunc(groups, func(g string) bool { return same(g, gr.Group) }) {
 			continue
 		}
 		matched = append(matched, gr.Group)

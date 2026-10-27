@@ -85,6 +85,7 @@ linters:
             - "!**/internal/keyring/keyringtest/**"
             - "!**/internal/crypto/cryptotest/**"
             - "!**/internal/policy/bundle/bundletest/**"
+            - "!**/internal/auth/ldap/ldaptest/**"
           deny:
             - pkg: "github.com/azuresong-afk/ai_railway/internal/auth/authtest"
               desc: "подмены для тестов — только в *_test.go (Н14 ревью 2.r2)"
@@ -94,6 +95,20 @@ linters:
               desc: "подмены для тестов — только в *_test.go (Н14 ревью 2.r2)"
             - pkg: "github.com/azuresong-afk/ai_railway/internal/policy/bundle/bundletest"
               desc: "ключи и пакеты для тестов — только в *_test.go (задача 2.13)"
+            - pkg: "github.com/azuresong-afk/ai_railway/internal/auth/ldap/ldaptest"
+              desc: "синтетический каталог LDAP — только в *_test.go (задача 4.16)"
+        ldap-library:
+          # Библиотека LDAP — только в клиенте каталога (ADR-0025, 2.7):
+          # остальной код получает проверенный результат входа.
+          list-mode: lax
+          files:
+            - "$all"
+            - "!**/internal/auth/ldap/**"
+          deny:
+            - pkg: "github.com/go-ldap/ldap/v3"
+              desc: "библиотека LDAP — только в internal/auth/ldap (ADR-0025, 2.7)"
+            - pkg: "github.com/go-asn1-ber/asn1-ber"
+              desc: "разбор BER — только в internal/auth/ldap (ADR-0025, 2.7)"
         product-reflect:
           # Без reflect в коде продукта; исключение — //nolint:depguard с обоснованием.
           list-mode: lax
@@ -125,6 +140,18 @@ linters:
         - pattern: ^syscall\.(Exec|ForkExec|StartProcess)$
           pkg: "^syscall$"
           msg: "запуск процессов в обход запрета os/exec"
+        # LDAP (ADR-0025, 2.2, 2.7): только simple bind поверх TLS, соединение
+        # устанавливает internal/auth/ldap сам (проверка адреса, предел ответа);
+        # NTLM, DIGEST-MD5, SASL/GSSAPI, EXTERNAL и анонимный bind не используются.
+        - pattern: ^ldap\.(Dial|DialTLS|DialURL|DialWithDialer|DialWithTLSConfig|DialWithTLSDialer)$
+          pkg: "^github.com/go-ldap/ldap/v3$"
+          msg: "соединение с каталогом — только через internal/auth/ldap.connect (проверка адреса и TLS)"
+        - pattern: ^ldap\.Conn\.(NTLM.*|MD5Bind|DigestMD5Bind|UnauthenticatedBind|GSSAPI.*|ExternalBind)$
+          pkg: "^github.com/go-ldap/ldap/v3$"
+          msg: "в каталоге — только simple bind поверх TLS (ADR-0025, 2.2)"
+        - pattern: ^ldap\.(Logger|Conn\.Debug)$
+          pkg: "^github.com/go-ldap/ldap/v3$"
+          msg: "отладочный журнал библиотеки LDAP пишет пакеты bind с паролем (ADR-0025, 2.7)"
         # Из syscall разрешён только SIGTERM для корректного завершения (ADR-0004).
         - pattern: ^syscall\.([^S].*|S[^I].*|SI[^G].*|SIG[^T].*|SIGT[^E].*|SIGTE[^R].*|SIGTER[^M].*|SIGTERM.+|S|SI|SIG|SIGT|SIGTE|SIGTER)$
           pkg: "^syscall$"
