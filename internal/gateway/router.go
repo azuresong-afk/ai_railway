@@ -46,6 +46,9 @@ type App struct {
 	fragmentMAC aisecCrypto.MAC
 	// clock — часы для сроков исключений (Router.SetClock); nil — time.Now.
 	clock func() time.Time
+	// prompt — эталон системного промпта (Router.SetPromptBaselines,
+	// integrity.go); nil — эталона нет или контроль выключен.
+	prompt *promptCheck
 }
 
 // now — время для сроков исключений.
@@ -183,7 +186,7 @@ const (
 // appDetectors — встроенные детекторы с настройками приложения: lists — со
 // списками заказчика вдобавок к встроенному, output.exfil — с allowlist.
 func appDetectors(a config.Application) (*detect.Registry, error) {
-	ds := builtin.All()
+	ds := builtin.Catalog()
 	for i, d := range ds {
 		switch d.ID() {
 		case lists.ID:

@@ -3,7 +3,9 @@ package policy
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/azuresong-afk/ai_railway/internal/detect"
@@ -78,6 +80,9 @@ func Compile(s *Spec, c Catalog) (*Policy, error) {
 			}
 		}
 		errs = append(errs, checkCategories(s.ID, i, r, d)...)
+		if err := checkAction(r, d); err != nil {
+			errs = append(errs, fmt.Errorf("политика %s: rules[%d] (%s): %w", s.ID, i, r.ID, err))
+		}
 		p.rules = append(p.rules, rule{
 			id: r.ID, detector: r.Detector, directions: dirs,
 			categories: slices.Clone(r.Categories), sources: slices.Clone(r.Sources),
@@ -116,6 +121,83 @@ func checkCategories(policyID string, i int, r RuleSpec, d detect.Detector) []er
 		}
 	}
 	return errs
+}
+
+// checkAction — действие правила допустимо для детектора
+// (detect.ActionLimiter): находку без позиций в тексте нельзя
+// замаскировать, а находку после ответа приложению — заблокировать.
+func checkAction(r RuleSpec, d detect.Detector) error {
+	al, ok := d.(detect.ActionLimiter)
+	if !ok || slices.Contains(al.Actions(), string(r.Action)) {
+		return nil
+	}
+	return fmt.Errorf("детектор %s допускает действия %s", r.Detector, strings.Join(al.Actions(), ", "))
+}
+
+// WithRule — копия политики с правилом, добавленным в конец списка.
+// Правило задаёт не политика, а приложение: эталон системного промпта и
+// режим его контроля из карточки приложения (ТЗ 5.4, DM-26). Поэтому ID
+// правила — служебный (с точкой, как quota.*): в спецификации политики
+// такого ID быть не может, и правила не путаются. Детектор, направления,
+// действие и серьёзность проверяются как в Compile.
+func (p *Policy) WithRule(c Catalog, r RuleSpec) (*Policy, error) {
+	// Остальные поля проверяются как у правила спецификации.
+	spec := r
+	spec.ID = "service"
+	valid := spec.validate()
+	if !serviceRuleRe.MatchString(r.ID) {
+		valid = append(valid, errors.New("id служебного правила — вида app.prompt_integrity"))
+	}
+	d, ok := c.Get(r.Detector)
+	if !ok {
+		valid = append(valid, fmt.Errorf("детектор %q не зарегистрирован", r.Detector))
+	} else {
+		if err := checkAction(r, d); err != nil {
+			valid = append(valid, err)
+		}
+		for _, dir := range r.Directions {
+			if !slices.Contains(d.Directions(), dir) {
+				valid = append(valid, fmt.Errorf("детектор %s не проверяет направление %s", r.Detector, dir))
+			}
+		}
+	}
+	if p.ruleByID(r.ID) != nil {
+		valid = append(valid, fmt.Errorf("правило %s уже есть", r.ID))
+	}
+	if err := errors.Join(valid...); err != nil {
+		return nil, fmt.Errorf("политика %s: правило %s: %w", p.ID, r.ID, err)
+	}
+	dirs := slices.Clone(r.Directions)
+	if len(dirs) == 0 {
+		dirs = slices.Clone(d.Directions())
+	}
+	out := *p
+	out.rules = append(slices.Clone(p.rules), rule{
+		id: r.ID, detector: r.Detector, directions: dirs,
+		categories: slices.Clone(r.Categories), sources: slices.Clone(r.Sources),
+		threshold: r.threshold(), action: r.Action, severity: r.Severity, message: r.Message,
+	})
+	return &out, nil
+}
+
+// serviceRuleRe — ID служебного правила (WithRule).
+var serviceRuleRe = regexp.MustCompile(`^[a-z]+\.[a-z_]{1,62}$`)
+
+// RuleFor — правило политики с детектором id для направления dir с самым
+// сильным действием (при равенстве — первое по порядку): по нему шлюз
+// решает, нужна ли проверка, которую выполняет сервер (history.integrity),
+// и с какими правилом и серьёзностью её отметить. ok = false — правила нет.
+func (p *Policy) RuleFor(id string, dir detect.Direction) (rule string, action Action, severity Severity, ok bool) {
+	for i := range p.rules {
+		r := &p.rules[i]
+		if r.detector != id || !slices.Contains(r.directions, dir) {
+			continue
+		}
+		if !ok || Stronger(r.action, action) {
+			rule, action, severity, ok = r.id, r.action, r.severity, true
+		}
+	}
+	return rule, action, severity, ok
 }
 
 // Detectors — детекторы, которые нужны политике для направления, в порядке

@@ -11,6 +11,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/detect/lists"
 	"github.com/azuresong-afk/ai_railway/internal/detect/pii"
 	"github.com/azuresong-afk/ai_railway/internal/detect/secretscan"
+	"github.com/azuresong-afk/ai_railway/internal/detect/session"
 	"github.com/azuresong-afk/ai_railway/internal/detect/unihidden"
 )
 
@@ -20,4 +21,12 @@ func All() []detect.Detector {
 		unihidden.New(), pii.New(), secretscan.New(), injection.New(), lists.New(),
 		canary.New(), exfil.New(),
 	}
+}
+
+// Catalog — детекторы, которые может назвать политика: All и детекторы
+// уровня запроса и сессии (internal/detect/session: session.risk,
+// prompt.integrity, history.integrity). Текст проверяют только детекторы
+// All, поэтому корпуса, метрики качества и эталоны самотеста — у них.
+func Catalog() []detect.Detector {
+	return append(All(), session.All()...)
 }

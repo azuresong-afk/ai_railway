@@ -99,6 +99,10 @@ type gwOpts struct {
 	unavailable []string
 	// budget — учёт расхода и жёсткие бюджеты (задача 3.18).
 	budget *Budget
+	// sessions — сессии чата, baselines — эталоны системного промпта
+	// (задачи 4.13, 4.14 этапа 4).
+	sessions  *Sessions
+	baselines map[string]PromptBaseline
 }
 
 // newGateway — шлюз с OpenAI-совместимым провайдером на upstream и одним
@@ -130,17 +134,22 @@ func newGateway(t testing.TB, upstream string, mod func(*gwOpts)) http.Handler {
 		t.Fatal(err)
 	}
 	rt.SetUnavailable(o.unavailable)
+	if o.baselines != nil {
+		if err := rt.SetPromptBaselines(testHasher(t), o.baselines); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if o.setup != nil {
 		o.setup(rt.apps["app"])
 	}
 	ta := newTestAuth(t, o.limiter)
 	ch, err := NewChatHandler(ChatConfig{Router: rt, MaxBodyBytes: o.maxBody, Logger: o.logger, BodyReadTimeout: o.bodyTimeout,
-		Events: o.events, IDs: ta.cfg.IDs, Quotas: NewLimiter(apps), Budget: o.budget, UserMAC: o.userMAC, DetectorTimeout: o.detTimeout})
+		Events: o.events, IDs: ta.cfg.IDs, Quotas: NewLimiter(apps), Budget: o.budget, UserMAC: o.userMAC, DetectorTimeout: o.detTimeout, Sessions: o.sessions})
 	if err != nil {
 		t.Fatal(err)
 	}
 	hcfg := ChatConfig{Router: rt, MaxBodyBytes: o.maxBody, Logger: o.logger, BodyReadTimeout: o.bodyTimeout,
-		Events: o.events, IDs: ta.cfg.IDs, Quotas: ch.cfg.Quotas, Budget: o.budget, UserMAC: o.userMAC, DetectorTimeout: o.detTimeout}
+		Events: o.events, IDs: ta.cfg.IDs, Quotas: ch.cfg.Quotas, Budget: o.budget, UserMAC: o.userMAC, DetectorTimeout: o.detTimeout, Sessions: o.sessions}
 	eh, err := NewEmbeddingsHandler(hcfg)
 	if err != nil {
 		t.Fatal(err)

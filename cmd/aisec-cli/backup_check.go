@@ -48,7 +48,7 @@ func (e *invalidObjectsError) Error() string {
 // те, что останутся действующими (keepTokens): отозванный токен прав не
 // даёт, а неизвестное новому выпуску право в нём не повод отклонять копию.
 func checkSnapshot(s *backup.Snapshot, keepTokens bool) error {
-	reg, err := detect.NewRegistry(builtin.All()...)
+	reg, err := detect.NewRegistry(builtin.Catalog()...)
 	if err != nil {
 		return err
 	}

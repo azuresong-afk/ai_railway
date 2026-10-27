@@ -15,6 +15,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/detect"
 	"github.com/azuresong-afk/ai_railway/internal/detect/pii"
 	"github.com/azuresong-afk/ai_railway/internal/detect/secretscan"
+	"github.com/azuresong-afk/ai_railway/internal/detect/session"
 	"github.com/azuresong-afk/ai_railway/internal/detect/unihidden"
 	"github.com/azuresong-afk/ai_railway/internal/events"
 	"github.com/azuresong-afk/ai_railway/internal/policy"
@@ -89,6 +90,10 @@ type inspectText struct {
 	// Threat — строка матрицы для всех находок фрагмента вместо строки
 	// детектора: аргументы tool_calls в ответе — DM-13 (ТЗ, 5.16).
 	Threat string
+	// Message — номер сообщения запроса чата, к которому относится
+	// фрагмент; -1 — не сообщение (описание инструмента, ответ модели,
+	// Check API). По нему session.risk отбирает находки нового хода.
+	Message int
 }
 
 // joinedDetector — детектор проверяет и склейку частей сообщения.
@@ -119,12 +124,30 @@ type inspectRequest struct {
 	DetectOnly bool
 	// User — псевдоним пользователя запроса (условие исключений).
 	User string
+	// Extra — находки детекторов уровня запроса, найденные до проверки
+	// (prompt.integrity): они участвуют в решении наравне с остальными.
+	Extra []locatedFinding
+	// Session — сессия запроса чата для session.risk; nil — без сессии.
+	Session *reqSession
 }
 
 // locatedFinding — находка и номер фрагмента, в котором она найдена.
+// Находка детектора уровня запроса или сессии (prompt.integrity,
+// session.risk) к фрагменту не относится: Text = -1, место и источник —
+// в Location и Src, позиций в тексте нет.
 type locatedFinding struct {
 	detect.Finding
-	Text int
+	Text     int
+	Location string
+	Src      detect.Source
+}
+
+// place — место и источник находки для события и решения.
+func (f locatedFinding) place(texts []inspectText) (string, detect.Source) {
+	if f.Text < 0 || f.Text >= len(texts) {
+		return f.Location, f.Src
+	}
+	return texts[f.Text].Location, texts[f.Text].Source
 }
 
 // inspection — результат проверки.
@@ -184,6 +207,9 @@ func (a *App) fragments(texts []inspectText, fs []locatedFinding) []string {
 	}
 	out := make([]string, len(fs))
 	for i, f := range fs {
+		if f.Text < 0 || f.Text >= len(texts) {
+			continue // находка уровня запроса: текста нет
+		}
 		t := texts[f.Text].Text
 		if f.Start < 0 || f.End > len(t) || f.Start >= f.End {
 			continue // позиции проверены ValidateFinding; защита от ошибки кода
@@ -274,25 +300,16 @@ func (a *App) inspect(ctx context.Context, req inspectRequest) (*inspection, err
 			}
 		}
 	}
-	in.Fragments = a.fragments(req.Texts, in.Findings)
-	hits := make([]policy.Hit, len(in.Findings))
-	for i, f := range in.Findings {
-		hits[i] = policy.Hit{Finding: f.Finding, Source: req.Texts[f.Text].Source}
-		if in.Fragments != nil {
-			hits[i].Fragment = in.Fragments[i]
+	in.Findings = append(in.Findings, req.Extra...)
+	a.evaluate(in, req)
+	// session.risk — после решения по остальным находкам: находки под
+	// исключением (ложные срабатывания) в оценку сессии не входят.
+	if req.Session != nil && slices.Contains(policyIDs, session.RiskID) {
+		if f, ok := in.sessionRisk(req); ok {
+			in.Findings = append(in.Findings, f)
+			a.evaluate(in, req)
 		}
 	}
-	mode := req.Mode
-	if mode == "" {
-		mode = a.Mode
-	}
-	// Исключения применяются после детекторов и до решения политики; срок —
-	// по a.now (не раньше времени сервера, 3Н40): истёкшее исключение не
-	// действует без нового пакета.
-	in.Decision = a.Policy.Evaluate(policy.Request{
-		Endpoint: req.Endpoint, Direction: req.Direction, Mode: mode, External: req.External, Hits: hits, Media: req.Media,
-		App: a.ID, User: req.User, Now: a.now(),
-	})
 	// Режим при сбое (ТЗ, 4.4) действует и в monitor: проверка, которая не
 	// состоялась, не может подтвердить, что защита данных не нужна. Ответу
 	// модели в monitor не применяется ничего (ТЗ, 5.3), поэтому сбой его
@@ -312,6 +329,61 @@ func (a *App) inspect(ctx context.Context, req inspectRequest) (*inspection, err
 	return in, nil
 }
 
+// evaluate — хеши фрагментов находок и решение политики по ним.
+func (a *App) evaluate(in *inspection, req inspectRequest) {
+	in.Fragments = a.fragments(req.Texts, in.Findings)
+	hits := make([]policy.Hit, len(in.Findings))
+	for i, f := range in.Findings {
+		_, src := f.place(req.Texts)
+		hits[i] = policy.Hit{Finding: f.Finding, Source: src}
+		if in.Fragments != nil {
+			hits[i].Fragment = in.Fragments[i]
+		}
+	}
+	mode := req.Mode
+	if mode == "" {
+		mode = a.Mode
+	}
+	// Исключения применяются после детекторов и до решения политики; срок —
+	// по a.now (не раньше времени сервера, 3Н40): истёкшее исключение не
+	// действует без нового пакета.
+	in.Decision = a.Policy.Evaluate(policy.Request{
+		Endpoint: req.Endpoint, Direction: req.Direction, Mode: mode, External: req.External, Hits: hits, Media: req.Media,
+		App: a.ID, User: req.User, Now: a.now(),
+	})
+}
+
+// sessionRisk обновляет session.risk сессии вкладом этого хода —
+// наибольшей оценкой находок детекторов атак в новых сообщениях, кроме
+// пропущенных по исключению, — и возвращает находку session.risk, если
+// оценка сессии не ниже minRiskFinding. Ход учитывается один раз: проверка
+// входа чата — одна на запрос. Общий отпечаток без пользователя (shared)
+// оценку не копит.
+func (in *inspection) sessionRisk(req inspectRequest) (locatedFinding, bool) {
+	s := req.Session
+	excepted := in.excepted()
+	turn := 0.0
+	for i, f := range in.Findings {
+		if _, skip := excepted[i]; skip || f.Text < 0 || f.Text >= len(req.Texts) || !riskDetector(f.Detector) {
+			continue
+		}
+		if req.Texts[f.Text].Message >= s.newFrom {
+			turn = max(turn, f.Score)
+		}
+	}
+	if s.shared {
+		return locatedFinding{}, false
+	}
+	risk, turns := s.tracker.observe(s.key, turn)
+	s.ev.Risk, s.ev.Turns = risk, turns
+	if risk < minRiskFinding {
+		return locatedFinding{}, false
+	}
+	return locatedFinding{Finding: detect.Finding{Detector: session.RiskID, Version: session.RiskVersion,
+		Category: session.CatEscalation, Threat: session.ThreatRisk, Score: risk},
+		Text: -1, Location: riskLocation, Src: detect.SourceUser}, true
+}
+
 // located — участок фрагмента.
 type located struct {
 	text       int
@@ -322,6 +394,9 @@ type located struct {
 // для склейки, в каждой из частей, которые она задевает. Части склеены через
 // Sep, границы частей — границы символов UTF-8; разделитель не маскируется.
 func partSpans(texts []inspectText, f locatedFinding) []located {
+	if f.Text < 0 || f.Text >= len(texts) {
+		return nil // находка уровня запроса: позиций в тексте нет
+	}
 	t := texts[f.Text]
 	if t.Parts == nil {
 		return []located{{f.Text, f.Start, f.End}}

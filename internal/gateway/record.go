@@ -67,6 +67,28 @@ type record struct {
 	respCheckFailed bool
 	respFailures    []events.DetectorFailure
 	withheld        int
+	// sess — сессия запроса чата (задача 4.13); nil — без сессии.
+	sess *reqSession
+}
+
+// issue запоминает хеши ответов, выданных приложению (history.integrity,
+// задача 4.14): текст content каждого варианта в том виде, в каком его
+// получило приложение, — после маскирования и обратной подстановки.
+func (rec *record) issue(resp *chat.Response) {
+	if !rec.sess.replies() {
+		return
+	}
+	for _, c := range resp.Choices {
+		if len(rec.sess.ev.Issued) >= events.MaxIssuedReplies {
+			break
+		}
+		if c.Message.Content == nil {
+			continue
+		}
+		if h := rec.sess.tracker.replyHash(*c.Message.Content); h != "" {
+			rec.sess.ev.Issued = append(rec.sess.ev.Issued, h)
+		}
+	}
 }
 
 // newRecord заводит событие и сообщает его ID приложению заголовком
@@ -391,9 +413,10 @@ func (rec *record) findings(in *inspection, texts []inspectText) map[string]bool
 		if f.Text >= len(texts) {
 			continue
 		}
+		loc, src := f.place(texts)
 		ef := events.Finding{
 			Detector: f.Detector, Version: f.Version, Category: f.Category, Score: f.Score, Start: f.Start, End: f.End,
-			Location: texts[f.Text].Location, Threat: f.Threat, Rule: f.Rule, Exception: excepted[i], Source: string(texts[f.Text].Source),
+			Location: loc, Threat: f.Threat, Rule: f.Rule, Exception: excepted[i], Source: string(src),
 		}
 		if i < len(in.Fragments) {
 			ef.Fragment = in.Fragments[i]

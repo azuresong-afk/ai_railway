@@ -401,8 +401,8 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	}
 
 	// Политики и их версии (ТЗ 5.3, задача 2.12): проверяются строго по
-	// встроенным детекторам — тем же, что у шлюза.
-	detectors, err := detect.NewRegistry(builtin.All()...)
+	// встроенным детекторам и детекторам уровня сессии — тем же, что у шлюза.
+	detectors, err := detect.NewRegistry(builtin.Catalog()...)
 	if err != nil {
 		return err
 	}
