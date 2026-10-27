@@ -54,11 +54,13 @@ func tlsCmd(args []string, stdout, stderr io.Writer, now time.Time) error {
 	if err != nil {
 		return err
 	}
-	validity := time.Duration(*days) * 24 * time.Hour
-	if *days < 1 || validity > aisecCrypto.MaxCertValidity {
-		return fmt.Errorf("days: от 1 до %d", int(aisecCrypto.MaxCertValidity/(24*time.Hour)))
+	// Предел проверяется до умножения: иначе большое -days переполнит
+	// time.Duration и пройдёт проверку отрицательным сроком.
+	maxDays := int(aisecCrypto.MaxCertValidity / (24 * time.Hour))
+	if *days < 1 || *days > maxDays {
+		return fmt.Errorf("days: от 1 до %d", maxDays)
 	}
-	return runTLSInit(*out, hosts, validity, now, stdout)
+	return runTLSInit(*out, hosts, time.Duration(*days)*24*time.Hour, now, stdout)
 }
 
 // parseTLSHosts разбирает список имён и адресов: пробелы вокруг элементов
@@ -76,9 +78,10 @@ func parseTLSHosts(s string) ([]string, error) {
 		if part == "" {
 			continue
 		}
+		// Текст ошибки NormalizeHost — про адрес шлюза в консоли, здесь свой.
 		h, err := aisecCrypto.NormalizeHost(part)
 		if err != nil {
-			return nil, fmt.Errorf("hosts: %q: %w", part, err)
+			return nil, fmt.Errorf("hosts: %q — нужно DNS-имя (латиница, цифры, «-», без «*») или IP-адрес без зоны", part)
 		}
 		if !seen[h] {
 			seen[h] = true

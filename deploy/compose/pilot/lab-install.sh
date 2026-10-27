@@ -11,7 +11,10 @@
 #
 # Запускается от root в каталоге deploy/compose/pilot репозитория. Повторный
 # запуск безопасен: готовые шаги (сертификаты, ключи, регистрация шлюза)
-# пропускаются, образы пересобираются из текущих исходников.
+# пропускаются, образы пересобираются из текущих исходников. Имена в
+# сертификатах задаются при первом выпуске: сменить имя консоли повторным
+# запуском нельзя (скрипт откажет), адрес интерфейса без --bind остаётся
+# прежним из .env.
 set -eu
 umask 077
 cd "$(dirname "$0")"
@@ -25,7 +28,7 @@ usage() {
   --console-name ИМЯ   имя консоли внутри установки (AISEC_CONSOLE_HOST); по
                        умолчанию — первое имя из --host, без имён — aisec-console
   --bind АДРЕС         адрес интерфейса для портов 8444 и 8443 (по умолчанию
-                       0.0.0.0 — все интерфейсы)
+                       0.0.0.0 — все интерфейсы; при повторном запуске — как в .env)
   --mirror РЕЕСТР      зеркало Docker Hub для базовых образов и PostgreSQL,
                        например mirror.gcr.io/library (digest не меняется)
   --build-ca ФАЙЛ      корневой сертификат прокси с проверкой TLS — нужен npm
@@ -45,7 +48,7 @@ step() {
 	echo "==> $*"
 }
 
-hosts= console_name= bind=0.0.0.0 mirror= build_ca= build=1
+hosts= console_name= bind= mirror= build_ca= build=1
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--host)
@@ -87,6 +90,11 @@ done
 case "$console_name$bind$mirror" in
 *[!A-Za-z0-9.:/_-]*) die "недопустимые символы в --console-name, --bind или --mirror" ;;
 esac
+# Полная проверка имён — в aisec-cli tls init; здесь — набор символов, чтобы
+# ошибка в --host не всплыла только после сборки.
+case "$hosts" in
+*[!A-Za-z0-9.:,\ -]*) die "--host: IP-адрес или DNS-имя из латиницы, цифр, «.» и «-»: $hosts" ;;
+esac
 
 # Имя консоли: первое имя из --host (не IP-адрес), иначе aisec-console. Это
 # имя должно быть DNS-именем: по нему шлюз находит сервер в сети Docker.
@@ -94,6 +102,7 @@ if [ -z "$console_name" ]; then
 	console_name=aisec-console
 	old_ifs=$IFS
 	IFS=,
+	set -f
 	for h in $hosts; do
 		h=$(printf '%s' "$h" | tr -d ' ')
 		case "$h" in
@@ -106,6 +115,7 @@ if [ -z "$console_name" ]; then
 		console_name=$h
 		break
 	done
+	set +f
 	IFS=$old_ifs
 fi
 console_name=$(printf '%s' "$console_name" | tr 'A-Z' 'a-z')
@@ -114,7 +124,9 @@ case "$console_name" in
 *) die "--console-name: нужно DNS-имя, а не IP-адрес: $console_name" ;;
 esac
 case "$console_name" in
-*[!a-z0-9.-]*) die "--console-name: DNS-имя из латиницы, цифр, «.» и «-»: $console_name" ;;
+*[!a-z0-9.-]* | .* | *. | *..* | -* | *- | *.-* | *-.*)
+	die "--console-name: DNS-имя из латиницы, цифр, «.» и «-», метки не пустые и не начинаются и не кончаются на «-»: $console_name"
+	;;
 esac
 first_host=$(printf '%s' "$hosts" | cut -d, -f1 | tr -d ' ')
 
@@ -142,6 +154,10 @@ set_env() {
 	fi
 }
 
+env_get() {
+	sed -n "s/^$1=//p" .env | tail -n 1
+}
+
 repo=$(cd ../../.. && pwd)
 if [ -n "$build" ]; then
 	step "2/8 Сборка образов в Docker (первый раз — 5–15 минут)"
@@ -159,9 +175,11 @@ if [ -n "$build" ]; then
 	fi
 	tag=$version-test
 	image_repo=aisec-test
-	release="$repo/build/lab-release"
-	rm -rf "$release"
-	mkdir -p "$release"
+	# Каталог выпуска — вне репозитория: при umask 077 он принадлежал бы root
+	# и мешал сборке от имени разработчика. Удаляется при любом выходе.
+	release=$(mktemp -d "${TMPDIR:-/var/tmp}/aisec-lab-release.XXXXXX")
+	trap 'rm -rf "$release"' EXIT
+	trap 'exit 130' INT TERM
 	set -- --build-arg VERSION="$version" --build-arg SOURCE_DATE="$source_date" --build-arg SOURCE_EPOCH="$source_epoch"
 	if [ -n "$mirror" ]; then
 		# Зеркало — перед образами по умолчанию из Dockerfile.lab (digest тот же).
@@ -183,36 +201,52 @@ if [ -n "$build" ]; then
 	done
 	# Целостность собранного выпуска — по подписанному манифесту в образе.
 	docker run --rm --network none "aisec-test/aisec-cli:$tag" verify
+	rm -rf "$release"
+	trap - EXIT
 else
 	step "2/8 Сборка пропущена (--no-build)"
 	[ -f .env ] || die "нет .env: без сборки возьмите AISEC_VERSION собранных образов из прошлого запуска"
-	tag=$(sed -n 's/^AISEC_VERSION=//p' .env | tail -n 1)
-	image_repo=$(sed -n 's/^AISEC_IMAGE_REPO=//p' .env | tail -n 1)
+	tag=$(env_get AISEC_VERSION)
+	image_repo=$(env_get AISEC_IMAGE_REPO)
 	for c in aisec-server aisec-gateway aisec-cli; do
 		docker image inspect "$image_repo/$c:$tag" >/dev/null 2>&1 || die "нет образа $image_repo/$c:$tag"
 	done
 fi
 
 step "3/8 Подготовка хоста"
+env_existed=
+[ ! -f .env ] || env_existed=1
 ./prepare-host.sh >/dev/null
+data_dir=$(env_get AISEC_DATA_DIR)
+[ -n "$data_dir" ] || data_dir=/srv/aisec
+secrets="$data_dir/secrets"
+tls_files="console.crt console.key console-ca.crt gateway.crt gateway.key"
+have=0
+for f in $tls_files; do
+	[ ! -s "$secrets/$f" ] || have=$((have + 1))
+done
+# Готовые сертификаты выпущены на прежнее имя консоли: с другим именем шлюз
+# не прошёл бы проверку сертификата консоли. Проверка — до записи в .env.
+old_name=$(env_get AISEC_CONSOLE_HOST)
+if [ "$have" -eq 5 ] && [ -n "$old_name" ] && [ "$old_name" != "$console_name" ]; then
+	die "сертификаты в $secrets выпущены для имени консоли $old_name, а сейчас имя $console_name. Запустите с --console-name $old_name или удалите пять файлов ($tls_files) из $secrets и запустите снова — сертификаты и корень УЦ будут выпущены заново"
+fi
 set_env AISEC_IMAGE_REPO "$image_repo"
 set_env AISEC_VERSION "$tag"
 set_env AISEC_CONSOLE_HOST "$console_name"
-set_env AISEC_CONSOLE_BIND "$bind"
-set_env AISEC_GATEWAY_BIND "$bind"
+# Без --bind адрес интерфейса меняется только в новом .env (в образце —
+# 127.0.0.1, для лаборатории — все интерфейсы); прежний .env не трогается.
+if [ -n "$bind" ] || [ -z "$env_existed" ]; then
+	set_env AISEC_CONSOLE_BIND "${bind:-0.0.0.0}"
+	set_env AISEC_GATEWAY_BIND "${bind:-0.0.0.0}"
+fi
 [ -z "$mirror" ] || set_env AISEC_POSTGRES_IMAGE "$mirror/postgres"
-data_dir=$(sed -n 's/^AISEC_DATA_DIR=//p' .env | tail -n 1)
-[ -n "$data_dir" ] || data_dir=/srv/aisec
-secrets="$data_dir/secrets"
 echo "Хост подготовлен: $data_dir, .env заполнен."
 
 step "4/8 Сертификаты TLS без корпоративного УЦ"
-have=0
-for f in console.crt console.key console-ca.crt gateway.crt gateway.key; do
-	[ ! -s "$secrets/$f" ] || have=$((have + 1))
-done
+fingerprint=
 if [ "$have" -eq 5 ]; then
-	echo "Сертификаты уже есть в $secrets — не меняю."
+	echo "Сертификаты уже есть в $secrets — не меняю (имена и адреса в них — с первого выпуска)."
 elif [ "$have" -ne 0 ]; then
 	die "в $secrets есть только часть сертификатов: положите недостающие сами (install-pilot.md, шаг 3.4) или удалите все пять и запустите снова"
 else
@@ -222,7 +256,18 @@ else
 	trap 'exit 130' INT TERM
 	chown aisec:aisec "$tmp"
 	chmod 0700 "$tmp"
-	docker compose run --rm --no-deps -T -v "$tmp:/out" aisec-cli tls init -out /out -hosts "$console_name,$hosts"
+	out=$(docker compose run --rm --no-deps -T -v "$tmp:/out" aisec-cli tls init -out /out -hosts "$console_name,$hosts") ||
+		die "aisec-cli tls init: ${out:-нет вывода}"
+	printf '%s\n' "$out"
+	fingerprint=$(printf '%s\n' "$out" | grep -o '[0-9A-F][0-9A-F]\(:[0-9A-F][0-9A-F]\)\{31\}' | head -n 1)
+	out=
+	# Команда закончилась: каталог снова у root, подменить файлы пользователь
+	# aisec уже не может, и root копирует из него только обычные файлы без
+	# символьных и жёстких ссылок — не чужой файл под видом ключа.
+	chown root:root "$tmp"
+	for f in console.crt console.key ca.crt gateway.key gateway.crt; do
+		[ "$(find "$tmp/$f" -prune -type f -links 1)" = "$tmp/$f" ] || die "$f: aisec-cli tls init не создал обычный файл"
+	done
 	install -o aisec -g aisec -m 0644 "$tmp/console.crt" "$secrets/console.crt"
 	install -o aisec -g aisec -m 0600 "$tmp/console.key" "$secrets/console.key"
 	install -o root -g root -m 0644 "$tmp/ca.crt" "$secrets/console-ca.crt"
@@ -283,13 +328,19 @@ fi
 
 step "8/8 Запуск"
 docker compose up -d
-console_port=$(sed -n 's/^AISEC_CONSOLE_PORT=//p' .env | tail -n 1)
-gateway_port=$(sed -n 's/^AISEC_GATEWAY_PORT=//p' .env | tail -n 1)
+console_port=$(env_get AISEC_CONSOLE_PORT)
+gateway_port=$(env_get AISEC_GATEWAY_PORT)
 echo
 echo "Готово. Это тестовая сборка (aisec-test, тестовый ключ манифеста) — НЕ ДЛЯ ПОСТАВКИ заказчику."
 echo "  Консоль: https://$first_host:${console_port:-8444}"
 echo "  Шлюз:    https://$first_host:${gateway_port:-8443}/v1 (OpenAI-совместимый API)"
 echo "  Корень УЦ установки: $data_dir/ca.crt — добавьте его в доверенные в браузере и у приложений"
+if [ -n "$fingerprint" ]; then
+	echo "  Отпечаток SHA-256 корня (сверьте при импорте): $fingerprint"
+else
+	echo "  Отпечаток корня: openssl x509 -noout -fingerprint -sha256 -in $data_dir/ca.crt"
+fi
+echo "  Адрес интерфейса: консоль — $(env_get AISEC_CONSOLE_BIND), шлюз — $(env_get AISEC_GATEWAY_BIND) (параметр --bind)"
 if [ -n "$setup_token" ]; then
 	echo "  Токен первичной настройки (24 часа, показан один раз): $setup_token"
 fi

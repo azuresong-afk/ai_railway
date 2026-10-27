@@ -143,21 +143,23 @@ func TestTLSInitRejectsBadInput(t *testing.T) {
 		many[i] = fmt.Sprintf("h%d", i)
 	}
 	for name, args := range map[string][]string{
-		"без подкоманды":      {},
-		"неизвестная":         {"issue"},
-		"без -out":            {"init", "-hosts", "a"},
-		"без -hosts":          {"init", "-out", dir},
-		"только запятые":      {"init", "-out", dir, "-hosts", " , ,"},
-		"шаблон":              {"init", "-out", dir, "-hosts", "*.example.ru"},
-		"подчёркивание":       {"init", "-out", dir, "-hosts", "aisec_console"},
-		"IPv6 с зоной":        {"init", "-out", dir, "-hosts", "fe80::1%eth0"},
-		"срок 0":              {"init", "-out", dir, "-hosts", "a", "-days", "0"},
-		"срок 826":            {"init", "-out", dir, "-hosts", "a", "-days", "826"},
-		"33 имени":            {"init", "-out", dir, "-hosts", strings.Join(many, ",")},
-		"каталог открыт":      {"init", "-out", open, "-hosts", "a"},
-		"каталога нет":        {"init", "-out", filepath.Join(dir, "нет"), "-hosts", "a"},
-		"лишний аргумент":     {"init", "-out", dir, "-hosts", "a", "лишнее"},
-		"длинный список имён": {"init", "-out", dir, "-hosts", strings.Repeat("a,", tlsMaxHostsArg)},
+		"без подкоманды":       {},
+		"неизвестная":          {"issue"},
+		"без -out":             {"init", "-hosts", "a"},
+		"без -hosts":           {"init", "-out", dir},
+		"только запятые":       {"init", "-out", dir, "-hosts", " , ,"},
+		"шаблон":               {"init", "-out", dir, "-hosts", "*.example.ru"},
+		"подчёркивание":        {"init", "-out", dir, "-hosts", "aisec_console"},
+		"IPv6 с зоной":         {"init", "-out", dir, "-hosts", "fe80::1%eth0"},
+		"срок 0":               {"init", "-out", dir, "-hosts", "a", "-days", "0"},
+		"срок 826":             {"init", "-out", dir, "-hosts", "a", "-days", "826"},
+		"срок с переполнением": {"init", "-out", dir, "-hosts", "a", "-days", "281474976710657"},
+		"отрицательный срок":   {"init", "-out", dir, "-hosts", "a", "-days", "-1"},
+		"33 имени":             {"init", "-out", dir, "-hosts", strings.Join(many, ",")},
+		"каталог открыт":       {"init", "-out", open, "-hosts", "a"},
+		"каталога нет":         {"init", "-out", filepath.Join(dir, "нет"), "-hosts", "a"},
+		"лишний аргумент":      {"init", "-out", dir, "-hosts", "a", "лишнее"},
+		"длинный список имён":  {"init", "-out", dir, "-hosts", strings.Repeat("a,", tlsMaxHostsArg)},
 	} {
 		if code, _, _ := runTLS(t, now, args...); code == 0 {
 			t.Errorf("%s: принято", name)

@@ -22,8 +22,9 @@ func TestE2EPilot_LabInstall(t *testing.T) {
 	p := newPilotInstall(t, cfg, newPilotTLS(t), "lab")
 	s2Copy(t, filepath.Join("..", "..", "deploy", "compose", "pilot", "lab-install.sh"), filepath.Join(p.dir, "lab-install.sh"), 0o755)
 
-	out := p.sh("lab-install.sh", "--no-build", "--host", pilotConsoleAddr, "--host", pilotConsoleHost+","+pilotGatewayHost)
-	for _, want := range []string{"отпечаток SHA-256", "aisec_setup_", "Шлюз gw-1 зарегистрирован", "НЕ ДЛЯ ПОСТАВКИ"} {
+	// Порты наложение e2e не публикует: --bind проверяется только по .env.
+	out := p.sh("lab-install.sh", "--no-build", "--bind", "127.0.0.2", "--host", pilotConsoleAddr, "--host", pilotConsoleHost+","+pilotGatewayHost)
+	for _, want := range []string{"отпечаток SHA-256", "сверьте при импорте", "aisec_setup_", "Шлюз gw-1 зарегистрирован", "НЕ ДЛЯ ПОСТАВКИ"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("в выводе нет %q:\n%s", want, out)
 		}
@@ -72,7 +73,19 @@ func TestE2EPilot_LabInstall(t *testing.T) {
 		}
 	}
 
-	// Повторный запуск: сертификаты, ключи и регистрация не меняются.
+	// Повторный запуск с другим именем консоли — отказ до изменения .env:
+	// сертификаты выпущены на прежнее имя.
+	envBefore := mustRead(t, filepath.Join(p.dir, ".env"))
+	out, code := p.run(nil, nil, filepath.Join(p.dir, "lab-install.sh"), "--no-build", "--host", "other.test")
+	if code == 0 || !strings.Contains(out, "--console-name "+pilotConsoleHost) {
+		t.Errorf("повторный запуск с другим именем консоли: код %d\n%s", code, out)
+	}
+	if !bytes.Equal(envBefore, mustRead(t, filepath.Join(p.dir, ".env"))) {
+		t.Error("отказ изменил .env")
+	}
+
+	// Повторный запуск: сертификаты, ключи, регистрация и адрес интерфейса
+	// (без --bind) не меняются.
 	out = p.sh("lab-install.sh", "--no-build", "--host", pilotConsoleHost)
 	if n := strings.Count(out, "не меняю"); n != 3 {
 		t.Errorf("повторный запуск: «не меняю» %d раз вместо 3:\n%s", n, out)
@@ -82,6 +95,12 @@ func TestE2EPilot_LabInstall(t *testing.T) {
 	}
 	if !bytes.Equal(ca, mustRead(t, filepath.Join(p.data, "ca.crt"))) {
 		t.Error("повторный запуск заменил корень установки")
+	}
+	env = string(mustRead(t, filepath.Join(p.dir, ".env")))
+	for _, want := range []string{"\nAISEC_CONSOLE_BIND=127.0.0.2\n", "\nAISEC_GATEWAY_BIND=127.0.0.2\n"} {
+		if !strings.Contains(env, want) {
+			t.Errorf("после повторного запуска в .env нет %q:\n%s", strings.TrimSpace(want), env)
+		}
 	}
 	p.waitGatewayReady(s)
 }

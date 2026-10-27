@@ -175,7 +175,7 @@ components:
     version: 1.27.3-bookworm@sha256:21ade014faf952365b9ecbd8dbdb87176fbacb82fac9fb132d9f2a7b8cc3f132
     type: image
     scope: build
-    purpose: Основа сборочного образа (deploy/build/Dockerfile) и стадии сборки образов стенда разработки.
+    purpose: Основа сборочного образа (deploy/build/Dockerfile), стадии сборки образов стенда разработки и стадии go лабораторной сборки (deploy/build/Dockerfile.lab, задача 4.32).
     # Go — BSD-3-Clause; пакеты Debian в образе (gcc, make, bash, git и др.) — в том числе GPL и LGPL.
     license: BSD-3-Clause AND GPL-2.0-or-later AND GPL-3.0-or-later AND LGPL-2.1-or-later
     license_decision: ADR-0003 — образ сборочной среды, в поставку не входит; образы поставки собираются в scratch
