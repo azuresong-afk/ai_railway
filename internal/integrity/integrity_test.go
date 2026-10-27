@@ -537,6 +537,9 @@ func TestFailuresLimited(t *testing.T) {
 // соответствует встроенному открытому, и сборка без aisec_release помечает
 // это (Р10, «не для поставки»).
 func TestEmbeddedTestKeyPair(t *testing.T) {
+	if !embeddedTestKey {
+		t.Skip("сборка aisec_release: встроен ключ производителя (key_release_test.go)")
+	}
 	p := provider(t)
 	v, testKey, err := EmbeddedVerifier(p)
 	if err != nil || !testKey {
@@ -755,10 +758,49 @@ func TestIsTestPublicKey(t *testing.T) {
 	if !IsTestPublicKey(pub) {
 		t.Fatal("тестовый ключ не узнан")
 	}
-	if v, isTest, err := EmbeddedVerifier(provider(t)); err != nil || IsTestPublicKey(v.PublicKey()) != isTest {
+	if v, isTest, err := EmbeddedVerifier(provider(t)); err != nil || (embeddedTestKey && IsTestPublicKey(v.PublicKey()) != isTest) {
 		t.Fatalf("встроенный ключ: тестовый %v, %v", isTest, err)
 	}
 	if IsTestPublicKey(make([]byte, len(pub))) || IsTestPublicKey(nil) {
 		t.Fatal("чужой ключ принят за тестовый")
+	}
+}
+
+// ADR-0022: имитация ключа производителя из репозитория — тоже «тестовый»
+// ключ; отпечаток — хеш профиля по группам из четырёх знаков.
+func TestReleaseCIKeyAndFingerprint(t *testing.T) {
+	p := provider(t)
+	_, ci, err := aisecCrypto.DecodeKeyPEM(releaseCIKeyPEM, aisecCrypto.KeyKindManifestSigningPublic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !IsTestPublicKey(ci) || !isReleaseCIKey(ci) {
+		t.Fatal("имитация ключа производителя не узнана")
+	}
+	fp, err := Fingerprint(p, make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// SHA-256 от 32 нулевых байт.
+	if want := "6668:7aad:f862:bd77:6c8f:c18b:8e9f:8e20:0897:1485:6ee2:33b3:902a:591d:0d5f:2925"; fp != want {
+		t.Fatalf("отпечаток %s, ожидается %s", fp, want)
+	}
+	if _, err := Fingerprint(p, nil); err == nil {
+		t.Fatal("отпечаток пустого ключа")
+	}
+	if !embeddedTestKey {
+		return // встроенный ключ поставочной сборки проверяет key_release_test.go
+	}
+	got, testKey, err := EmbeddedFingerprint(p)
+	if err != nil || !testKey {
+		t.Fatalf("%q %v %v", got, testKey, err)
+	}
+	_, pub, err := aisecCrypto.DecodeKeyPEM(testKeyPEM, aisecCrypto.KeyKindManifestSigningPublic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := Fingerprint(p, pub)
+	if err != nil || got != want {
+		t.Fatalf("отпечаток встроенного ключа %s, ожидается %s (%v)", got, want, err)
 	}
 }

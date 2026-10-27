@@ -99,13 +99,6 @@ entries:
     justification: Путь — filepath.Join от t.TempDir() и константного имени файла; внешнего ввода в тесте нет.
     author: Claude Code (ИИ-ассистент); проверяет владелец при ревью
     date: 2026-10-22
-  - rule: gosec/G703
-    file: tools/manifest/main_test.go
-    snippet: 'if err := os.WriteFile(asVendor, testSign, 0o400); err != nil {'
-    verdict: false_positive
-    justification: Путь — filepath.Join от t.TempDir() и константного имени файла; внешнего ввода в тесте нет.
-    author: Claude Code (ИИ-ассистент); проверяет владелец при ревью
-    date: 2026-10-22
   - rule: gosec/G704
     file: test/e2e/stage2_bundle_test.go
     snippet: 'req, err := http.NewRequestWithContext(r.Context(), r.Method, p.upstream+r.URL.RequestURI(), bytes.NewReader(body))'

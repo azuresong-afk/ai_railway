@@ -158,6 +158,14 @@ func TestVerifyReleaseOtherVersion(t *testing.T) {
 	if code := run([]string{"verify", "-release", next}, &out, &errOut, now); code != 0 || !strings.Contains(out.String(), "Выпуск 2 проверен") {
 		t.Fatalf("-release: код %d: %s %s", code, out.String(), errOut.String())
 	}
+	// Отпечаток ключа проверки — для сверки в verify-release.sh (ADR-0022).
+	fp, _, err := integrity.EmbeddedFingerprint(standardProvider(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "\nОтпечаток ключа производителя: "+fp+"\n") {
+		t.Fatalf("нет отпечатка %s: %s", fp, out.String())
+	}
 }
 
 func TestVerifyReleaseRejects(t *testing.T) {
