@@ -318,8 +318,10 @@ func TestE2EStage3_S1_ConnectWithCustomerCertificate(t *testing.T) {
 	if code, err := st.post(customer, app.key, "Здравствуйте, где мой заказ?"); err != nil || code != http.StatusOK {
 		t.Fatalf("запрос по сертификату заказчика: %d %v", code, err)
 	}
-	if _, err := st.post(st.customerClient(roots), app.key, "Здравствуйте"); err == nil {
-		t.Fatal("адрес шлюза всё ещё обслуживается сертификатом внутреннего УЦ")
+	// Отказ — именно проверка сертификата, а не любой сбой соединения (3Н52).
+	if _, err := st.post(st.customerClient(roots), app.key, "Здравствуйте"); err == nil ||
+		!strings.Contains(err.Error(), "certificate signed by unknown authority") {
+		t.Fatalf("адрес шлюза всё ещё обслуживается сертификатом внутреннего УЦ или отказ не по сертификату: %v", err)
 	}
 	if strings.Contains(st.gw.log(), "PRIVATE KEY") || strings.Contains(st.s.srv.log(), "PRIVATE KEY") {
 		t.Fatal("закрытый ключ заказчика в техническом журнале")
@@ -415,10 +417,21 @@ func TestE2EStage3_S9_HardBudget(t *testing.T) {
 	}) {
 		t.Fatalf("оповещения о бюджете: %v", got)
 	}
-	// Доставка в SIEM: оба порога.
-	rec := st.sys.waitAlert(t, alerting.BuiltinBudget, 60*time.Second)
-	if rec.Group["app"] != "support-bot" || rec.Severity != "high" {
-		t.Fatalf("запись syslog: %s", rec.Raw)
+	// Доставка в SIEM: оба порога (3Н52 — каждый своей записью).
+	sent := map[string]bool{}
+	if !s2WaitFor(60*time.Second, func() bool {
+		for _, rec := range st.sys.alerts() {
+			if rec.Rule != alerting.BuiltinBudget {
+				continue
+			}
+			if rec.Group["app"] != "support-bot" || rec.Severity != "high" {
+				t.Fatalf("запись syslog: %s", rec.Raw)
+			}
+			sent[rec.Group["threshold"]] = true
+		}
+		return sent["80 %"] && sent["100 %"]
+	}) {
+		t.Fatalf("в SIEM пришли пороги бюджета: %v", sent)
 	}
 	// Снятие бюджета возвращает доступ (после нового пакета).
 	if r := st.admin.do("DELETE", "/api/v1/applications/"+app.id+"/budget", nil); r.code != http.StatusNoContent {
@@ -548,8 +561,27 @@ func TestE2EStage3_S10_PilotReport(t *testing.T) {
 	if !strings.Contains(sheet, "DM-01") || strings.Contains(sheet, "<f>") || strings.Contains(sheet, phone) {
 		t.Fatalf("содержимое XLSX: формулы, ПДн или нет данных:\n%.600s", sheet)
 	}
-	// Каждая выгрузка пишет data.export (DM-41): HTML (опрос и проверка CSP), CSV, XLSX.
+	// Каждая выгрузка пишет data.export (DM-41): HTML (опрос и проверка CSP), CSV, XLSX —
+	// по записи на каждый формат (3Н52).
 	if n := st.s.auditCount("data.export") - exports; n < 3 {
 		t.Fatalf("записей data.export за выгрузки отчётов: %d", n)
+	}
+	formats := map[string]bool{}
+	rows, err := st.s.pg().Query(context.Background(),
+		`SELECT details->>'format' FROM audit_log WHERE action = 'data.export' AND details->>'report' IS NOT NULL`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var f *string
+		if err := rows.Scan(&f); err != nil {
+			t.Fatal(err)
+		}
+		if f != nil {
+			formats[*f] = true
+		}
+	}
+	if rows.Close(); rows.Err() != nil || !formats["html"] || !formats["csv"] || !formats["xlsx"] {
+		t.Fatalf("форматы в data.export отчётов: %v %v", formats, rows.Err())
 	}
 }
