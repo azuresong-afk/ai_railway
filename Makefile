@@ -100,8 +100,8 @@ check: fmt-check vet docs-check repocheck licenses vendor-check lint lint-selfte
 		echo "ВНИМАНИЕ: make check неполный, не выполнены: $(PENDING_CHECKS) (docs/plans/stage-0.md; для web-* нужен Node.js, web/README.md)"; fi
 
 .PHONY: fmt-check
-fmt-check: ## Форматирование Go-кода (gofmt)
-	@out="$$(gofmt -l $$(git ls-files '*.go'))"; \
+fmt-check: ## Форматирование Go-кода (gofmt); vendor/ — чужой код, его неизменность проверяет vendor-check
+	@out="$$(gofmt -l $$(git ls-files '*.go' ':!vendor/'))"; \
 	if [ -n "$$out" ]; then echo "Не отформатированы (gofmt -w):"; echo "$$out"; exit 1; fi
 
 .PHONY: vet
