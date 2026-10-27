@@ -192,7 +192,7 @@ func TestBuildPilot(t *testing.T) {
 	}
 	txt := docText(doc)
 	for _, want := range []string{"Что подключено", "Приложений|3|", "prod — 2, test — 1", "Запросов проверено|100|", "pii.snils|8|3|",
-		"25 %", "режиме мониторинга 6 запросов", "Не закрыто инцидентов: 1", "без цены", "истёкшим сроком", "Стоимость по моделям", "Рекомендации"} {
+		"25 %", "режиме мониторинга 6 запросов", "Критерии успеха пилота (значения по умолчанию)", "не более 2 %", "не более 30 мс", "Не закрыто инцидентов: 1", "без цены", "истёкшим сроком", "Стоимость по моделям", "Рекомендации"} {
 		if !strings.Contains(txt, want) {
 			t.Errorf("нет %q в:\n%s", want, txt)
 		}
@@ -817,5 +817,41 @@ func TestTickDirectoryFailureRetries(t *testing.T) {
 	runs, _ = e.svc.Runs(ctx, s.ID, 10) //nolint:gosec // G104: ошибка не важна для проверки
 	if len(e.mail.mails) != 1 || runs[0].Status != RunSent {
 		t.Fatalf("после восстановления: писем %d, журнал %+v", len(e.mail.mails), runs)
+	}
+}
+
+// Критерии успеха пилота по умолчанию (задача 4.6): границы 2 % и 30 мс.
+func TestPilotCriteria(t *testing.T) {
+	row := func(s Section, i int) []string {
+		var out []string
+		for _, c := range s.Rows[i] {
+			out = append(out, c.Text)
+		}
+		return out
+	}
+	mk := func(fp, blocked int64, p95 int, total int64) (aggregates, MarkStats) {
+		return aggregates{totals: events.DashTotals{Blocked: blocked}, latency: events.DashLatency{P95: p95, Total: total}}, MarkStats{FalsePositive: fp}
+	}
+	for _, tc := range []struct {
+		name          string
+		fp, blocked   int64
+		p95           int
+		total         int64
+		wantFP, wantL string
+	}{
+		{"ровно 2 %", 2, 100, 30, 10, "выполняется", "выполняется"},
+		{"3 %", 3, 100, 50, 10, "не выполняется", "не выполняется"},
+		{"нет блокировок и задержки", 0, 0, 0, 0, "нет данных", "нет данных"},
+		{"больше предела корзин", 0, 10, events.DashLatencyOverflow, 10, "выполняется", "не выполняется"},
+		{"отметок больше блокировок", 50, 10, 25, 10, "не выполняется", "выполняется"},
+	} {
+		ag, m := mk(tc.fp, tc.blocked, tc.p95, tc.total)
+		s := pilotCriteria(ag, m)
+		if got := row(s, 0)[3]; got != tc.wantFP {
+			t.Errorf("%s: ложные срабатывания %q, ждали %q", tc.name, got, tc.wantFP)
+		}
+		if got := row(s, 1)[3]; got != tc.wantL {
+			t.Errorf("%s: задержка %q, ждали %q", tc.name, got, tc.wantL)
+		}
 	}
 }

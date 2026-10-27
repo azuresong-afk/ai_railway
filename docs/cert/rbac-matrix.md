@@ -113,6 +113,7 @@
 | PUT | `/api/v1/mcp-servers/{id}/credentials` | `agents.manage` | да | да | — | — | — | да |
 | PUT | `/api/v1/mcp-servers/{id}/security` | `agents.tools.approve` | да | — | — | — | — | — |
 | GET | `/api/v1/me` | `session` | да | да | да | да | да | — |
+| PUT | `/api/v1/me/email` | `self` | да | да | да | да | да | — |
 | GET | `/api/v1/model-prices` | `model_prices.read` | да | да | да | да | — | да |
 | POST | `/api/v1/model-prices` | `model_prices.manage` | да | да | — | — | — | да |
 | PUT | `/api/v1/model-prices/{id}` | `model_prices.manage` | да | да | — | — | — | да |
@@ -148,6 +149,7 @@
 | PUT | `/api/v1/providers/{id}/credentials` | `providers.manage` | да | да | — | — | — | да |
 | PUT | `/api/v1/providers/{id}/external` | `providers.external` | да | — | — | — | — | — |
 | GET | `/api/v1/report-channels` | `reports.schedules.manage` | да | да | — | — | — | да |
+| GET | `/api/v1/report-recipients` | `reports.schedules.manage` | да | да | — | — | — | да |
 | GET | `/api/v1/report-schedules` | `reports.schedules.read` | да | да | — | да | — | да |
 | POST | `/api/v1/report-schedules` | `reports.schedules.manage` | да | да | — | — | — | да |
 | GET | `/api/v1/report-schedules/{id}` | `reports.schedules.read` | да | да | — | да | — | да |
@@ -171,6 +173,7 @@
 | GET | `/api/v1/users/{id}` | `users.read` | да | — | — | да | — | да |
 | POST | `/api/v1/users/{id}/activate` | `users.manage` | да | — | — | — | — | — |
 | POST | `/api/v1/users/{id}/deactivate` | `users.manage` | да | — | — | — | — | — |
+| PUT | `/api/v1/users/{id}/email` | `users.manage` | да | — | — | — | — | — |
 | POST | `/api/v1/users/{id}/mfa/reset` | `users.manage` | да | — | — | — | — | — |
 | POST | `/api/v1/users/{id}/password-reset` | `users.manage` | да | — | — | — | — | — |
 | PUT | `/api/v1/users/{id}/role` | `roles.manage` | да | — | — | — | — | — |
