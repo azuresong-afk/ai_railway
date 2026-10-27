@@ -1,7 +1,9 @@
 #!/bin/sh
-# Проверка нового выпуска перед обновлением (ОБН.1 в части MVP, ADR-0019).
+# Проверка поставки и нового выпуска перед обновлением (ОБН.1 в части MVP,
+# ADR-0019, ADR-0022).
 #
-#   ./verify-release.sh КАТАЛОГ_ВЫПУСКА
+#   ./verify-release.sh КАТАЛОГ_ВЫПУСКА           обновление
+#   ./verify-release.sh -first КАТАЛОГ_ВЫПУСКА    первая установка
 #
 # Каталог выпуска: aisec-manifest.json, aisec-manifest.json.sig, bin/ и
 # images/aisec-server.tar, aisec-gateway.tar, aisec-cli.tar. Запускается от
@@ -14,6 +16,12 @@
 #    версии (AISEC_VERSION из .env): ключ производителя берётся из
 #    действующей установки, а не из нового выпуска. Выпуск, собранный раньше
 #    установленного, отвергается (откат — прежние образы, README.md).
+#    Отпечаток ключа, которым проверена подпись, сверяется с
+#    AISEC_VENDOR_FINGERPRINT из .env — отпечатком из руководства установки
+#    (ADR-0022). При первой установке (-first) установленной версии нет:
+#    образ aisec-cli нового выпуска загружается после проверки архива и
+#    проверяет выпуск сам; доверие держится на отпечатке, полученном по
+#    другому каналу (руководство, письмо производителя), а не из поставки.
 # 2. До загрузки в архиве каждого образа проверяется состав: ровно один образ
 #    с тегом новой версии, никаких других имён. Установленные образы этим
 #    тегом не перезаписываются: новая версия обязана отличаться.
@@ -33,7 +41,12 @@ die() {
 	exit 1
 }
 
-[ $# -eq 1 ] || die "укажите каталог выпуска"
+first=
+if [ $# -eq 2 ] && [ "$1" = -first ]; then
+	first=1
+	shift
+fi
+[ $# -eq 1 ] || die "укажите каталог выпуска: verify-release.sh [-first] КАТАЛОГ"
 [ -d "$1" ] || die "нет каталога $1"
 # Путь выпуска разбирается до перехода в каталог скрипта: относительный путь
 # считается от текущего каталога.
@@ -51,11 +64,17 @@ env_value() {
 installed=$(env_value AISEC_VERSION)
 repo=$(env_value AISEC_IMAGE_REPO)
 [ -n "$repo" ] || repo=aisec
-[ -n "$installed" ] || die "в .env нет AISEC_VERSION — версии установленного aisec-cli"
+# Отпечаток ключа производителя из руководства установки (ADR-0022).
+vendor_fp=$(env_value AISEC_VENDOR_FINGERPRINT | tr 'A-F' 'a-f')
+[ -n "$first" ] || [ -n "$installed" ] || die "в .env нет AISEC_VERSION — версии установленного aisec-cli (первая установка — с -first)"
 case "$repo" in
 aisec) suffix= ;;
 aisec-test) suffix=-test ;;
 *) die "AISEC_IMAGE_REPO: ожидается aisec или aisec-test, а не $repo" ;;
+esac
+case "$vendor_fp" in
+'') [ "$repo" = aisec-test ] || die "в .env нет AISEC_VENDOR_FINGERPRINT — отпечатка ключа производителя из руководства установки" ;;
+*[!0-9a-f:]*) die "AISEC_VENDOR_FINGERPRINT: ожидаются группы шестнадцатеричных цифр через двоеточие" ;;
 esac
 
 work=$(mktemp -d)
@@ -93,20 +112,6 @@ done
 chown -R "$(id -u):$(id -g)" "$rel"
 chmod -R u=rwX,go=rX "$rel"
 
-echo "1. Подпись и файлы выпуска — aisec-cli $installed (установленная версия)."
-docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges:true \
-	--user 65534:65534 --mount "type=bind,source=$rel,target=/release,readonly" \
-	"$repo/aisec-cli:$installed" verify -release /release ||
-	die "выпуск не прошёл проверку подписи и файлов — не устанавливайте его"
-
-# Манифест проверен: версия и список бинарников берутся из копии.
-version=$(sed -n 's/^  "version": "\([A-Za-z0-9._-]*\)",$/\1/p' "$rel/aisec-manifest.json")
-[ -n "$version" ] || die "в манифесте нет версии"
-tag="$version$suffix"
-[ "$tag" != "$installed" ] || die "выпуск $tag уже установлен — проверять нечего"
-bins=$(sed -n 's/^      "path": "bin\/\([a-z0-9-]*\)",$/\1/p' "$rel/aisec-manifest.json" | sort)
-[ -n "$bins" ] || die "в манифесте нет бинарников"
-
 # Состав архива docker save до загрузки: только метаданные OCI и блобы, одно
 # имя образа. Обратная косая черта запрещена, чтобы имя нельзя было спрятать
 # экранированием JSON.
@@ -128,6 +133,57 @@ check_archive() {
 	grep -q "\"org.opencontainers.image.ref.name\":\"${image##*:}\"" "$work/index.json" ||
 		die "$archive: в index.json другой тег"
 }
+
+manifest_version() {
+	sed -n 's/^  "version": "\([A-Za-z0-9._-]*\)",$/\1/p' "$rel/aisec-manifest.json"
+}
+
+if [ -n "$first" ]; then
+	# Первая установка: версия из ещё не проверенного манифеста задаёт только
+	# имя образа aisec-cli; его архив проверяется до загрузки, затем этот
+	# aisec-cli проверяет выпуск, и версия читается заново.
+	version=$(manifest_version)
+	[ -n "$version" ] || die "в манифесте нет версии"
+	checker="$repo/aisec-cli:$version$suffix"
+	check_archive "$rel/images/aisec-cli.tar" "$checker"
+	! docker image inspect "$checker" >/dev/null 2>&1 || die "$checker уже загружен — это не первая установка: проверяйте без -first"
+	loaded="$checker"
+	docker load -q -i "$rel/images/aisec-cli.tar" >/dev/null || die "images/aisec-cli.tar: не загрузить"
+	echo "1. Подпись и файлы выпуска — aisec-cli из поставки (первая установка), отпечаток ключа сверяется с AISEC_VENDOR_FINGERPRINT."
+	verify_flags=-allow-older
+else
+	checker="$repo/aisec-cli:$installed"
+	echo "1. Подпись и файлы выпуска — aisec-cli $installed (установленная версия)."
+	verify_flags=
+fi
+# shellcheck disable=SC2086 # флаг без пробелов
+docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges:true \
+	--user 65534:65534 --mount "type=bind,source=$rel,target=/release,readonly" \
+	"$checker" verify -release /release $verify_flags >"$work/verify.out" || {
+	cat "$work/verify.out"
+	die "выпуск не прошёл проверку подписи и файлов — не устанавливайте его"
+}
+cat "$work/verify.out"
+
+# Отпечаток ключа, которым проверена подпись (ADR-0022).
+got_fp=$(sed -n 's/^Отпечаток ключа производителя: \([0-9a-f:]*\)$/\1/p' "$work/verify.out" | tail -n 1)
+if [ -n "$vendor_fp" ]; then
+	[ -n "$got_fp" ] || die "aisec-cli не сообщил отпечаток ключа — сверить его с AISEC_VENDOR_FINGERPRINT нельзя"
+	[ "$got_fp" = "$vendor_fp" ] ||
+		die "подпись проверена ключом с отпечатком $got_fp, а в руководстве (AISEC_VENDOR_FINGERPRINT) — $vendor_fp: это не ключ производителя, не устанавливайте выпуск"
+	echo "   Отпечаток ключа производителя совпадает с AISEC_VENDOR_FINGERPRINT."
+else
+	echo "   ВНИМАНИЕ: AISEC_VENDOR_FINGERPRINT не задан, отпечаток не сверен (сборка aisec-test, НЕ ДЛЯ ПОСТАВКИ)." >&2
+fi
+
+# Манифест проверен: версия и список бинарников берутся из копии.
+version=$(manifest_version)
+[ -n "$version" ] || die "в манифесте нет версии"
+tag="$version$suffix"
+[ -z "$first" ] || [ "$checker" = "$repo/aisec-cli:$tag" ] || die "версия манифеста изменилась во время проверки"
+[ -n "$first" ] || [ "$tag" != "$installed" ] || die "выпуск $tag уже установлен — проверять нечего"
+bins=$(sed -n 's/^      "path": "bin\/\([a-z0-9-]*\)",$/\1/p' "$rel/aisec-manifest.json" | sort)
+[ -n "$bins" ] || die "в манифесте нет бинарников"
 
 # Ожидаемые файлы образа (tar -tv без размеров и дат). Файлы, которые Docker
 # сам создаёт в контейнере (/dev, /proc, /sys, /etc/hosts и т. п.), не
@@ -154,10 +210,13 @@ for c in aisec-server aisec-gateway aisec-cli; do
 	for b in $want_bins; do
 		printf '%s\n' "$bins" | grep -qx "$b" || die "в проверенном манифесте нет bin/$b для $image"
 	done
-	check_archive "$archive" "$image"
-	! docker image inspect "$image" >/dev/null 2>&1 || die "$image уже загружен — удалите его (docker rmi) и повторите"
-	loaded="$loaded $image"
-	docker load -q -i "$archive" >/dev/null || die "$archive: не загрузить"
+	# При первой установке aisec-cli уже проверен и загружен на шаге 1.
+	if [ "$image" != "$checker" ] || [ -z "$first" ]; then
+		check_archive "$archive" "$image"
+		! docker image inspect "$image" >/dev/null 2>&1 || die "$image уже загружен — удалите его (docker rmi) и повторите"
+		loaded="$loaded $image"
+		docker load -q -i "$archive" >/dev/null || die "$archive: не загрузить"
+	fi
 
 	got=$(docker image inspect --format '{{.Os}}/{{.Architecture}} {{.Config.User}} {{json .Config.Entrypoint}} {{json .Config.Cmd}} {{json .Config.Env}} {{json .Config.Volumes}} {{json .Config.ExposedPorts}} {{json .Config.Healthcheck}} {{json .Config.OnBuild}} {{json .Config.Shell}}' "$image")
 	want="linux/amd64 65534:65534 [\"/opt/aisec/bin/$c\"] null [\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"] null $ports null null null"
@@ -186,4 +245,8 @@ for c in aisec-server aisec-gateway aisec-cli; do
 	echo "   $image — совпадает ($(echo "$want_bins" | wc -w) бинарн.)"
 done
 loaded=
-echo "Выпуск проверен. Теперь: AISEC_VERSION=$tag в .env и docker compose up -d."
+if [ -n "$first" ]; then
+	echo "Выпуск проверен. Теперь: AISEC_VERSION=$tag в .env и шаги установки (docs/user/install-pilot.md)."
+else
+	echo "Выпуск проверен. Теперь: AISEC_VERSION=$tag в .env и docker compose up -d."
+fi
