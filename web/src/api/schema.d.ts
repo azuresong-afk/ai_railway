@@ -2661,7 +2661,8 @@ export interface paths {
          *     type, app, env, user, provider, model, source, policy_mode, action, rule, severity,
          *     storage, gateway, threat, detector, exception (находки, пропущенные по исключению с этим ID),
          *     mark (`false_positive`, `confirmed` или `none` — без отметки), stream, non_text_unchecked,
-         *     has_content; операторы
+         *     has_content, session (псевдоним сессии запроса чата или агента), agent, mcp_server, tool
+         *     (события агентов); операторы
          *     `=`, `!=`, `in (…)`, `not in (…)` (у логических полей — только `=`). Лимиты: 2048 байт,
          *     20 условий, 50 значений в списке, значение до 256 байт. Пишет `events.list`
          *     (отключаемое событие).
@@ -8878,6 +8879,236 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/approvals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Очередь подтверждений вызовов
+         * @description Право `approvals.read`. Вызовы инструментов агентов, которые политика вызовов отправила на подтверждение
+         *     человеком (`require_approval`, DM-22; ADR-0023, раздел 5), новые первыми. Состояния: `pending` — ждёт
+         *     решения; `approved`, `denied` — решение пользователя консоли; `timeout` — срок `approval_timeout` истёк;
+         *     `cancelled` — агент закрыл поток; `interrupted` — шлюз перезапустился. Аргументы в списке не показываются.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description Размер страницы */
+                    limit?: components["parameters"]["Limit"];
+                    /** @description Непрозрачный курсор из `next_cursor` предыдущей страницы */
+                    cursor?: components["parameters"]["Cursor"];
+                    state?: "pending" | "approved" | "denied" | "timeout" | "cancelled" | "interrupted";
+                    /** @description Slug приложения */
+                    application?: string;
+                    /** @description Slug агента */
+                    agent?: string;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Запросы подтверждения */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ApprovalList"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/approvals/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Запрос подтверждения
+         * @description Право `approvals.read`. Маскированные шлюзом аргументы вызова (ПДн и секреты заменены категорией, до
+         *     16 КиБ) — в поле `args` только у пользователя с `approvals.decide` и только 30 суток после закрытия.
+         *     Аргументы пришли от модели или агента и показываются только как текст.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description ID запроса подтверждения (UUIDv7) */
+                    id: components["parameters"]["ApprovalID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Запрос подтверждения */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Approval"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/approvals/{id}/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Одобрить вызов
+         * @description Право `approvals.decide` (признак `security`: не выдаётся администратору системы и токенам API —
+         *     подтверждает человек). `args_hash` — хеш аргументов показанного запроса (не совпал — 409). Вызов с
+         *     риском `critical` одобряется с текущим паролем или кодом TOTP (иначе 403). После срока — 409, запрос
+         *     уже закрыт как `timeout`. Шлюз передаёт дальше ровно проверенные аргументы. Пишет `agent.approval.approve`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID запроса подтверждения (UUIDv7) */
+                    id: components["parameters"]["ApprovalID"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["ApprovalApprove"];
+                };
+            };
+            responses: {
+                /** @description Вызов одобрен */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Approval"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/approvals/{id}/deny": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Отклонить вызов
+         * @description Право `approvals.decide`. Комментарий виден в событии вызова, агенту не передаётся: агент получает
+         *     сообщение правила или «Вызов отклонён». После срока или повторное решение — 409. Пишет `agent.approval.deny`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID запроса подтверждения (UUIDv7) */
+                    id: components["parameters"]["ApprovalID"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["ApprovalDeny"];
+                };
+            };
+            responses: {
+                /** @description Вызов отклонён */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Approval"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -10125,6 +10356,73 @@ export interface components {
                 [key: string]: unknown;
             };
         };
+        Approval: {
+            /** Format: uuid */
+            id: string;
+            /** @enum {string} */
+            state: "pending" | "approved" | "denied" | "timeout" | "cancelled" | "interrupted";
+            /** @enum {string} */
+            path: "mcp" | "chat";
+            /** @description Slug приложения */
+            application: string;
+            /** @description Slug агента; нет — путь chat без агента */
+            agent?: string;
+            /** @description Псевдоним пользователя */
+            user?: string;
+            session?: string;
+            /** @description Slug MCP-сервера или function (функции пути chat) */
+            server: string;
+            tool: string;
+            /** @description Хеш одобренного описания инструмента (hex) */
+            approved_hash?: string;
+            /** @enum {string} */
+            risk: "low" | "medium" | "high" | "critical";
+            /** @description Правило раздела tools политики, потребовавшее подтверждения */
+            rule: string;
+            message?: string;
+            /** @enum {string} */
+            severity: "info" | "low" | "medium" | "high" | "critical";
+            /** @description Хеш аргументов */
+            args_hash: string;
+            /** @description Маскированные аргументы; только с approvals.decide, 30 суток после закрытия */
+            args?: string;
+            /** @description Аргументы удалены по сроку */
+            args_deleted?: boolean;
+            /** Format: uuid */
+            gateway_id: string;
+            /** Format: uuid */
+            request_event_id?: string;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            deadline: string;
+            /** Format: date-time */
+            closed_at?: string;
+            /** @description Логин пользователя консоли */
+            decided_by?: string;
+            comment?: string;
+            /** Format: int64 */
+            waited_ms: number;
+        };
+        ApprovalList: {
+            items: components["schemas"]["Approval"][];
+            next_cursor?: string;
+        };
+        ApprovalApprove: {
+            /** @description Хеш аргументов показанного запроса (hex) */
+            args_hash: string;
+            comment?: string;
+            /**
+             * Format: password
+             * @description Текущий пароль для риска critical (ровно одно из password и code)
+             */
+            password?: string;
+            /** @description Код из приложения-аутентификатора для риска critical */
+            code?: string;
+        };
+        ApprovalDeny: {
+            comment?: string;
+        };
         AgentToolList: {
             items: components["schemas"]["AgentTool"][];
         };
@@ -10317,7 +10615,7 @@ export interface components {
             status: number;
             detail: string;
             /** @enum {string} */
-            code: "invalid_request" | "unauthorized" | "forbidden" | "not_found" | "method_not_allowed" | "conflict" | "payload_too_large" | "unsupported_media_type" | "unprocessable" | "rate_limited" | "internal_error" | "service_unavailable" | "reauthentication_failed" | "bundle_key_mismatch" | "reissue_not_needed" | "self_review";
+            code: "invalid_request" | "unauthorized" | "forbidden" | "not_found" | "method_not_allowed" | "conflict" | "payload_too_large" | "unsupported_media_type" | "unprocessable" | "rate_limited" | "internal_error" | "service_unavailable" | "reauthentication_failed" | "bundle_key_mismatch" | "reissue_not_needed" | "self_review" | "approval_queue_full";
             errors?: {
                 field: string;
                 detail: string;
@@ -10337,7 +10635,7 @@ export interface components {
             /** Format: uuid */
             gateway_id: string;
             /** @enum {string} */
-            type: "gateway_request" | "check" | "auth_failure";
+            type: "gateway_request" | "check" | "auth_failure" | "agent_tool_call" | "agent_mcp";
             app?: string;
             env?: string;
             /** @description Псевдоним пользователя (HMAC) */
@@ -10361,9 +10659,54 @@ export interface components {
             details?: {
                 /** @description Содержимое full обрезано сервером под предел хранения 256 КиБ (В10 ревью 2.r3a) */
                 content_truncated?: boolean;
+                agent?: components["schemas"]["EventAgent"];
             } & {
                 [key: string]: unknown;
             };
+        };
+        /** @description События агентов agent_tool_call и agent_mcp (задача 4.11, ADR-0023, раздел 7): служебные имена, хеши и счётчики без содержимого; аргументы и результат — в содержимом события по режиму хранения. */
+        EventAgent: {
+            /** @enum {string} */
+            path?: "mcp" | "chat";
+            /** Format: uuid */
+            request_event_id?: string;
+            /** @description Slug агента */
+            agent?: string;
+            /** @description Slug MCP-сервера (function — путь chat) */
+            server?: string;
+            /** @description Метод MCP */
+            method?: string;
+            /** @enum {string} */
+            protocol?: "2025-11-25" | "2026-07-28";
+            tool?: string;
+            tool_hash?: string;
+            /** @enum {string} */
+            risk?: "low" | "medium" | "high" | "critical";
+            /** @enum {string} */
+            tool_status?: "new" | "approved" | "changed" | "suspicious" | "revoked" | "unknown";
+            session?: string;
+            approval?: {
+                /** Format: uuid */
+                id?: string;
+                /** @enum {string} */
+                state: "approved" | "denied" | "timeout" | "cancelled" | "interrupted" | "queue_full" | "unavailable";
+                decided_by?: string;
+                waited_ms: number;
+                comment?: string;
+            };
+            upstream_status?: number;
+            result_bytes?: number;
+            is_error?: boolean;
+            /** @description По аргументам сработали redact или pseudonymize */
+            args_unmasked?: boolean;
+            items?: number;
+            hidden?: string[];
+            poisoned?: string[];
+            changed?: string[];
+            invalid?: number;
+            stripped?: string[];
+            dropped?: number;
+            violation?: string;
         };
         EventPage: components["schemas"]["PageInfo"] & {
             items: components["schemas"]["Event"][];
@@ -10511,7 +10854,7 @@ export interface components {
             detector: string;
             directions?: ("input" | "output")[];
             categories?: string[];
-            sources?: ("user" | "rag" | "tool" | "output")[];
+            sources?: ("user" | "rag" | "tool" | "tool_args" | "output")[];
             threshold?: number;
             /** @enum {string} */
             action: "allow" | "log" | "redact" | "pseudonymize" | "block";
@@ -10601,7 +10944,7 @@ export interface components {
             /** @description Псевдоним пользователя из события */
             user?: string;
             /** @enum {string} */
-            source?: "user" | "rag" | "tool" | "output";
+            source?: "user" | "rag" | "tool" | "tool_args" | "output";
             reason: string;
             readonly author?: string;
             /** Format: date-time */
@@ -10637,7 +10980,7 @@ export interface components {
             app?: string;
             user?: string;
             /** @enum {string} */
-            source?: "user" | "rag" | "tool" | "output";
+            source?: "user" | "rag" | "tool" | "tool_args" | "output";
             reason?: string;
             expires_in_days?: number;
             /** Format: date-time */
@@ -11908,6 +12251,8 @@ export interface components {
         MCPServerID: string;
         /** @description ID инструмента в реестре (UUIDv7) */
         AgentToolID: string;
+        /** @description ID запроса подтверждения (UUIDv7) */
+        ApprovalID: string;
         /** @description Только агенты этого приложения */
         AgentApplicationFilter: string;
         /** @description Только инструменты этого MCP-сервера */
