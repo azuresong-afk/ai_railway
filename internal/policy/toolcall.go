@@ -210,6 +210,35 @@ func rateKey(parts ...string) string {
 	return strings.Join(parts, keySep)
 }
 
+// ToolListed — инструмент показывается агенту в tools/list в режиме
+// enforce (ADR-0023, раздел 6, tools/list, п. 4; задача 4.11): вызов не
+// был бы заблокирован по состоянию в реестре и по правилам — шаги 1 и 2
+// DecideTool. Подменённое описание (хеш не совпал с одобренным) не
+// показывается никогда. Аргументы, частота и лимиты не учитываются: их
+// проверяет tools/call. Находки встроенной проверки описаний (DM-24)
+// учитывает вызывающий.
+func (p *Policy) ToolListed(c ToolCall) bool {
+	tp := &p.tools
+	switch {
+	case c.Status == ToolApproved && !c.HashMatch:
+		return false
+	case c.Status != ToolApproved:
+		return tp.unapproved != Block
+	}
+	tool := c.Server + "/" + c.Name
+	matched := false
+	for i := range tp.rules {
+		if !tp.rules[i].matches(&c, tool) {
+			continue
+		}
+		if tp.rules[i].action == Block {
+			return false
+		}
+		matched = true
+	}
+	return matched || tp.def != Block
+}
+
 // DecideTool вычисляет решение по вызову инструмента. rc — счётчики
 // лимитов; nil — лимиты не считаются.
 func (p *Policy) DecideTool(c ToolCall, rc RateCounter) ToolDecision {

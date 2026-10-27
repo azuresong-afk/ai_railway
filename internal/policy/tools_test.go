@@ -435,3 +435,50 @@ func TestAgentBaseTemplate(t *testing.T) {
 		t.Error("изменение копии изменило шаблон")
 	}
 }
+
+// DM-24, DM-25 (tools/list): в enforce агенту показываются только
+// инструменты, вызов которых не был бы заблокирован по состоянию и
+// правилам; подменённое описание — никогда.
+func TestDM20_ToolListed(t *testing.T) {
+	p := mustTools(t, toolsYAML)
+	cases := []struct {
+		c    ToolCall
+		want bool
+	}{
+		{approved("files", "read_report", RiskLow, ""), true},
+		{approved("files", "delete_all", RiskLow, ""), false}, // block-правило
+		{approved("db", "query", RiskLow, ""), false},         // default: block
+		{approved("db", "query", RiskHigh, ""), true},         // require_approval
+	}
+	for _, st := range []ToolStatus{ToolNew, ToolRevoked, ToolUnknown, ToolSuspicious, ToolChanged} {
+		c := approved("files", "read_report", RiskLow, "")
+		c.Status = st
+		cases = append(cases, struct {
+			c    ToolCall
+			want bool
+		}{c, false})
+	}
+	changed := approved("files", "read_report", RiskLow, "")
+	changed.HashMatch = false
+	cases = append(cases, struct {
+		c    ToolCall
+		want bool
+	}{changed, false})
+	for i, tc := range cases {
+		if got := p.ToolListed(tc.c); got != tc.want {
+			t.Errorf("случай %d (%s/%s, %q): %v", i, tc.c.Server, tc.c.Name, tc.c.Status, got)
+		}
+	}
+	// Без раздела tools (совместимость: unapproved log, default allow) —
+	// неодобренный показывается, подменённый — нет.
+	compat := mustTools(t, "id: c\nname: C\nversion: 1\nmode: enforce\nrules: []\n")
+	c := approved("files", "read_report", RiskLow, "")
+	c.Status = ToolNew
+	if !compat.ToolListed(c) {
+		t.Error("совместимость: неодобренный скрыт")
+	}
+	c.Status, c.HashMatch = ToolApproved, false
+	if compat.ToolListed(c) {
+		t.Error("совместимость: подменённый показан")
+	}
+}
