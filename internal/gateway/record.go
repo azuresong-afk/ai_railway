@@ -37,6 +37,9 @@ type record struct {
 	// провайдер вход, как правило, уже обработал (3В22 ревью 3.r3).
 	maxOut  int
 	unknown bool
+	// noOutput — ответ без генерации токенов (эмбеддинги): при неизвестном
+	// исходе списывается только вход.
+	noOutput bool
 	// skip — событие не отправляется: клиент ушёл до решения.
 	skip bool
 	// output — проверялся текст ответа: содержимое в событии пишется в
@@ -159,7 +162,7 @@ func (h *ChatHandler) emit(rec *record) {
 	case rec.unknown:
 		// Исход неизвестен — оценка сверху: вход и предел ответа. Иначе
 		// разрыв соединения после отправки обходил бы квоту токенов (DM-36).
-		rec.res.SettleAtLeast(rec.inTokens + rec.maxOut)
+		rec.res.SettleAtLeast(rec.inTokens + rec.unknownOut())
 	default:
 		// Явный отказ провайдера (статус, учётные данные) или usage с нулями
 		// без ответа — расхода нет.
@@ -195,11 +198,30 @@ func (h *ChatHandler) spend(rec *record) {
 	case rec.outBytes != nil:
 		in, out = int64(rec.inTokens), int64(estimateTokens(rec.outBytes()))
 	case rec.unknown:
-		in, out = int64(rec.inTokens), int64(rec.maxOut)
+		in, out = int64(rec.inTokens), int64(rec.unknownOut())
 	default:
 		return
 	}
 	h.cfg.Budget.Record(rec.app.ID, rec.ev.Provider, rec.ev.Model, in, out)
+}
+
+// unknownOutTokens — оценка ответа запроса без max_tokens, исход которого
+// неизвестен (3В22 ревью 3.r3, перенесено в этап 4): предела модели в
+// пакете нет, а списать только вход значило бы дать обход бюджета и квоты
+// разрывом запроса без max_tokens. 4096 — частый предел ответа по
+// умолчанию у провайдеров; оценка сверху для обычных ответов.
+const unknownOutTokens = 4096
+
+// unknownOut — оценка ответа при неизвестном исходе: предел запроса или,
+// без него, unknownOutTokens.
+func (rec *record) unknownOut() int {
+	if rec.noOutput {
+		return 0
+	}
+	if rec.maxOut > 0 {
+		return rec.maxOut
+	}
+	return unknownOutTokens
 }
 
 // fill переносит в событие решение, находки, трассировку и содержимое.
