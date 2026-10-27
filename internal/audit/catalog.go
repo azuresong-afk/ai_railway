@@ -74,6 +74,7 @@ var catalog = []Event{
 	{"application.archive", "Архивация приложения", true},
 	{"application.prompt_baseline_set", "Задание эталона системного промпта приложения или режима его контроля", true},
 	{"application.prompt_baseline_removed", "Снятие эталона системного промпта приложения", true},
+	{"application.user_access_set", "Изменение проверки JWT пользователя приложения и доступа к моделям по группам", true},
 	{"app_key.issue", "Выпуск ключа приложения", true},
 	{"app_key.rotate", "Ротация ключа приложения", true},
 	{"app_key.revoke", "Отзыв ключа приложения", true},
