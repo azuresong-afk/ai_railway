@@ -49,9 +49,9 @@ TOOLS_GOPROXY ?= https://proxy.golang.org
 BIN   ?= $(CURDIR)/bin
 BUILD := $(CURDIR)/build
 
-# Компоненты в поставке. mock-llm в поставку не входит.
+# Компоненты в поставке. mock-llm и mock-mcp в поставку не входят.
 PRODUCT_CMDS := aisec-gateway aisec-server aisec-cli aisec-media
-DEV_CMDS     := mock-llm
+DEV_CMDS     := mock-llm mock-mcp
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 # Время последнего коммита — для воспроизводимых артефактов (SBOM, фронтенд).
