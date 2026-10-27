@@ -757,6 +757,9 @@ type streamProc struct {
 	// comment — комментарий SSE (keep-alive ожидания подтверждения); nil —
 	// не пишется.
 	comment func(text string) bool
+	// hold приостанавливает срок простоя потока провайдера на время
+	// ожидания подтверждения; nil — поток этого не умеет.
+	hold func() (resume func())
 }
 
 func (h *ChatHandler) newStreamProc(r *http.Request, app *App, rec *record, requested string, incremental bool, send func([]byte) bool) *streamProc {
@@ -1065,7 +1068,15 @@ func (sp *streamProc) finishTools(in *inspection, texts []inspectText, refs []re
 				sp.comment(ApprovalPendingComment)
 			}
 		}
-		if b := sp.h.decideTools(sp.r.Context(), sp.app, sp.rec, calls, keepAlive); b != nil {
+		// Пока ждём решения, поток провайдера не читается: его срок простоя
+		// не должен оборвать уже одобренный ответ.
+		resume := func() {}
+		if sp.hold != nil {
+			resume = sp.hold()
+		}
+		b := sp.h.decideTools(sp.r.Context(), sp.app, sp.rec, calls, keepAlive)
+		resume()
+		if b != nil {
 			if sp.r.Context().Err() != nil {
 				return streamStop
 			}

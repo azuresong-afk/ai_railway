@@ -459,6 +459,17 @@ func (s *frameStream) Next() (*chat.Chunk, error) {
 	}
 }
 
+// Hold — см. Holder: срок простоя останавливается до resume и затем
+// отсчитывается заново. Истёкший до Hold срок не отменяется.
+func (s *frameStream) Hold() (resume func()) {
+	s.idle.Stop()
+	return func() {
+		if !s.idleExpired.Load() {
+			s.idle.Reset(s.b.cfg.StreamIdleTimeout)
+		}
+	}
+}
+
 func (s *frameStream) Close() error {
 	s.idle.Stop()
 	s.cancel()

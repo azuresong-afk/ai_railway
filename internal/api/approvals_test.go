@@ -489,3 +489,61 @@ func mustApproval(t testing.TB, svc *approvals.Service, id string) approvals.Req
 	}
 	return r
 }
+
+// FuzzApprovalCreate: тело запроса подтверждения от шлюза — без паники и
+// 500; принятый запрос ждёт решения, хеш аргументов в ответе — сохранённый.
+func FuzzApprovalCreate(f *testing.F) {
+	f.Add(createBody(f, "support-bot", 600))
+	f.Add(createBody(f, "", 600))
+	f.Add(createBody(f, "support-bot", 3601))
+	f.Add(`{"path":"chat","app":"crm","server":"function","tool":"x","risk":"critical","rule":"r","severity":"high","args_hash":"` +
+		tArgsHash + `","args":"{}","timeout_seconds":60}`)
+	f.Add(`{"path":"mcp","path":"chat"}`)
+	f.Add(`[]`)
+	f.Add("\xff")
+	svc := newApprovalsService(f, nil)
+	h := internalApprovals(f, svc, tApprovalGW)
+	f.Fuzz(func(t *testing.T, body string) {
+		w := do(h, "POST", "/internal/v1/approvals", body, "Content-Type", "application/json")
+		switch w.Code {
+		case http.StatusCreated:
+			st := decode[ApprovalStatus](t, w.Body.Bytes())
+			r := mustApproval(t, svc, st.ID)
+			if r.State != approvals.Pending || st.ArgsHash != r.ArgsHash {
+				t.Fatalf("%q: %+v %+v", body, st, r)
+			}
+			// Не копим ожидающие: иначе предел агента закроет приём.
+			if _, err := svc.Cancel(context.Background(), tApprovalGW, st.ID); err != nil {
+				t.Fatal(err)
+			}
+		case http.StatusBadRequest, http.StatusRequestEntityTooLarge, http.StatusUnsupportedMediaType, http.StatusTooManyRequests:
+		default:
+			t.Fatalf("%q: %d %s", body, w.Code, w.Body)
+		}
+	})
+}
+
+// FuzzApprovalsPending: список ожидающих из heartbeat — принят только
+// список до MaxPending разных ID запросов.
+func FuzzApprovalsPending(f *testing.F) {
+	f.Add("01900000-0000-7000-8000-0000000000aa,01900000-0000-7000-8000-0000000000ab")
+	f.Add("01900000-0000-7000-8000-0000000000aa,01900000-0000-7000-8000-0000000000aa")
+	f.Add("")
+	f.Add("x")
+	f.Fuzz(func(t *testing.T, s string) {
+		list := strings.Split(s, ",")
+		if !validPending(&list) {
+			return
+		}
+		seen := map[string]bool{}
+		for _, id := range list {
+			if !approvals.ValidID(id) || seen[id] {
+				t.Fatalf("%q принят", s)
+			}
+			seen[id] = true
+		}
+		if len(list) > approvals.MaxPending {
+			t.Fatalf("%d принято", len(list))
+		}
+	})
+}
