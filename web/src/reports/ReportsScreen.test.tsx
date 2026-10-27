@@ -4,12 +4,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Me } from "../api/client";
 import { ReportsScreen } from "./ReportsScreen";
 
-const me = (permissions: string[]): Me =>
+const me = (permissions: string[], own_scope: string[] = []): Me =>
   ({
     user: { id: "u1", login: "a", display_name: "Админ", role: "system_admin", status: "active", locked: false, must_change_password: false, password_changed_at: "2026-10-01T00:00:00Z", created_at: "2026-10-01T00:00:00Z" },
     session_state: "active",
     timezone: "Europe/Moscow",
     permissions,
+    own_scope,
   }) as Me;
 
 const schedule = {
@@ -34,17 +35,19 @@ beforeEach(() => {
       if (url === "/api/v1/report-schedules/s-1" && method === "PUT") return ok(schedule);
       if (url === "/api/v1/report-schedules/s-1/runs") return ok({ items: [{ id: "r-1", due_at: "2026-10-19T06:00:00Z", period_first: "2026-10-12", period_last: "2026-10-18", status: "failed", attempts: 5, error: "smtp", created_at: "2026-10-19T06:00:00Z" }] });
       if (url.startsWith("/api/v1/applications?")) return ok({ items: [{ id: "app-1", slug: "bot", name: "Бот", status: "active" }], next_cursor: "" });
-      if (url === "/api/v1/notify-channels") return ok({ items: [{ id: "c-1", name: "Почта SOC", type: "email", enabled: true }, { id: "c-2", name: "Хук", type: "webhook", enabled: true }] });
+      // Администратор системы без права на каналы уведомлений (3Н46 ревью 3.r4): каналы для расписания — отдельным списком.
+      if (url === "/api/v1/notify-channels") return ok({ status: 403, code: "forbidden", detail: "Недостаточно прав." }, 403);
+      if (url === "/api/v1/report-channels") return ok({ items: [{ id: "c-1", name: "Почта SOC" }] });
       return ok({ status: 404, code: "not_found", detail: "нет" }, 404);
     }),
   );
 });
 afterEach(() => vi.unstubAllGlobals());
 
-const renderScreen = (permissions: string[]) =>
+const renderScreen = (permissions: string[], ownScope: string[] = []) =>
   render(
     <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-      <ReportsScreen me={me(permissions)} />
+      <ReportsScreen me={me(permissions, ownScope)} />
     </QueryClientProvider>,
   );
 const all = ["reports.read", "applications.read", "reports.schedules.read", "reports.schedules.manage"];
@@ -71,8 +74,17 @@ describe("экран «Отчёты»", () => {
     expect(screen.queryByRole("link", { name: "Скачать CSV" })).toBeNull();
   });
 
+  it("без дат — последние 30 суток; одна дата без другой блокирует выгрузку", () => {
+    renderScreen(all);
+    expect(screen.getByRole("link", { name: "Скачать CSV" }).getAttribute("href")).toBe("/api/v1/reports/summary?format=csv");
+    fireEvent.change(screen.getByLabelText("С даты"), { target: { value: "2026-10-01" } });
+    expect(screen.getByText("Укажите обе даты или оставьте обе пустыми.")).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "Скачать CSV" })).toBeNull();
+  });
+
   it("владелец приложения видит только сводный отчёт и без вкладки рассылки", () => {
-    renderScreen(["reports.read"]);
+    // reports.read и applications.read у него только на свои объекты (own_scope), 3Н46 ревью 3.r4.
+    renderScreen(["reports.read", "applications.read"], ["applications.read", "reports.read"]);
     expect(screen.queryByRole("tab", { name: "Рассылка" })).toBeNull();
     const sel = screen.getByLabelText("Отчёт") as HTMLSelectElement;
     expect([...sel.options].map((o) => o.value)).toEqual(["summary"]);

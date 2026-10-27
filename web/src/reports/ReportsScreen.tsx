@@ -1,7 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { ApiError, type Me } from "../api/client";
-import { alertsApi } from "../alerts/api";
 import { appsApi } from "../apps/api";
 import { Button } from "../ui/Button";
 import { Field, Input, Select } from "../ui/Field";
@@ -42,10 +41,15 @@ function ReportsTab({ me }: { me: Me }) {
   const [to, setTo] = useState("");
   const [app, setApp] = useState("");
   const [preview, setPreview] = useState("");
-  const full = me.permissions.includes("applications.read");
-  const apps = useQuery({ queryKey: ["reports-apps"], queryFn: ({ signal }) => appsApi.applications(signal), enabled: full });
-  // Владелец приложения без права на все объекты получает только сводный отчёт по своему приложению.
-  const bad = from !== "" && to !== "" && from > to ? "Начало периода не может быть позже конца." : undefined;
+  // Владелец приложения (reports.read только на свои объекты) получает только сводный отчёт по своему приложению.
+  const full = !(me.own_scope ?? []).includes("reports.read");
+  const apps = useQuery({ queryKey: ["reports-apps"], queryFn: ({ signal }) => appsApi.applications(signal), enabled: me.permissions.includes("applications.read") });
+  const bad =
+    (from === "") !== (to === "")
+      ? "Укажите обе даты или оставьте обе пустыми."
+      : from !== "" && from > to
+        ? "Начало периода не может быть позже конца."
+        : undefined;
   const blocked = Boolean(bad) || (!full && app === "");
   const appArg = kind === "summary" ? app : "";
   const kinds = full ? reportKinds : reportKinds.filter(([k]) => k === "summary");
@@ -122,8 +126,8 @@ function ScheduleForm({ initial, onDone, onCancel }: { initial?: ReportSchedule;
   const qc = useQueryClient();
   const [f, setF] = useState<ReportScheduleInput>(initial ? toInput(initial) : emptyForm);
   const [err, setErr] = useState("");
-  const channels = useQuery({ queryKey: ["reports-channels"], queryFn: ({ signal }) => alertsApi.channels(signal) });
-  const email = (channels.data?.items ?? []).filter((c) => c.type === "email" && c.enabled);
+  const channels = useQuery({ queryKey: ["reports-channels"], queryFn: ({ signal }) => reportsApi.channels(signal) });
+  const email = channels.data?.items ?? [];
   const save = useMutation({
     mutationFn: () => {
       // Лишние для периодичности поля не отправляются.
@@ -210,7 +214,8 @@ function ScheduleForm({ initial, onDone, onCancel }: { initial?: ReportSchedule;
           )}
         </Field>
       </div>
-      {channels.isSuccess && email.length === 0 && <Banner kind="warning">Нет включённых почтовых каналов: добавьте канал в разделе «Оповещения».</Banner>}
+      {channels.isError && <Banner kind="error">{errText(channels.error)}</Banner>}
+      {channels.isSuccess && email.length === 0 && <Banner kind="warning">Нет включённых почтовых каналов с получателями: добавьте канал в разделе «Оповещения».</Banner>}
       <label className="flex items-center gap-2 text-base">
         <input type="checkbox" checked={f.enabled ?? true} onChange={(e) => set({ enabled: e.target.checked })} />
         Рассылка включена

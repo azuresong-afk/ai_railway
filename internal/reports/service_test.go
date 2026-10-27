@@ -244,6 +244,14 @@ func (f *fakeMailer) SendReport(_ context.Context, _ string, m notify.ReportMail
 
 type fakeChannels struct{ ch map[string]notify.Channel }
 
+func (f fakeChannels) Channels(context.Context) ([]notify.Channel, error) {
+	out := make([]notify.Channel, 0, len(f.ch))
+	for _, c := range f.ch {
+		out = append(out, c)
+	}
+	return out, nil
+}
+
 func (f fakeChannels) Channel(_ context.Context, id string) (notify.Channel, error) {
 	if c, ok := f.ch[id]; ok {
 		return c, nil

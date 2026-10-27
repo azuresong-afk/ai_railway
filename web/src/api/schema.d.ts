@@ -7110,15 +7110,16 @@ export interface paths {
          *     сводный отчёт по приложению не входят). Владельцу приложения доступен только `summary` с `app`
          *     своего приложения; чужое приложение — 404, другой вид — 403. Каждая выгрузка пишет
          *     `data.export` до выдачи данных (DM-41); без записи отчёт не выдаётся (503). Одновременно — одна
-         *     выгрузка на пользователя, сверх предела 429.
+         *     выгрузка на пользователя, сверх предела 429. Без `from` и `to` — последние 30 суток по сегодняшний
+         *     день; одна дата без другой — 400.
          */
         get: {
             parameters: {
-                query: {
-                    /** @description Первый день периода, ГГГГ-ММ-ДД */
-                    from: string;
-                    /** @description Последний день периода включительно, ГГГГ-ММ-ДД */
-                    to: string;
+                query?: {
+                    /** @description Первый день периода, ГГГГ-ММ-ДД; вместе с `to` */
+                    from?: string;
+                    /** @description Последний день периода включительно, ГГГГ-ММ-ДД; вместе с `from` */
+                    to?: string;
                     format?: "html" | "csv" | "xlsx";
                     /** @description Slug приложения */
                     app?: string;
@@ -7417,6 +7418,52 @@ export interface paths {
                 401: components["responses"]["ProblemUnauthorized"];
                 403: components["responses"]["ProblemForbidden"];
                 404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/report-channels": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Почтовые каналы для рассылки отчётов
+         * @description Право `reports.schedules.manage`. Включённые почтовые каналы уведомлений с получателями —
+         *     только ID и название, без адресов и настроек сервера: тот, кто ведёт расписания, выбирает
+         *     канал без права `notify_channels.read`.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Каналы */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ReportChannelList"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
                 429: components["responses"]["RateLimited"];
                 500: components["responses"]["ProblemInternal"];
                 503: components["responses"]["Unavailable"];
@@ -8502,6 +8549,8 @@ export interface components {
             };
             /** @description Разрешения, действующие в сессии, включая `session` и, после второго фактора, `self`. Консоль скрывает недоступное; права проверяет сервер */
             permissions: string[];
+            /** @description Разрешения из `permissions` с областью `own` — только на свои объекты (УПД.8), например `reports.read` владельца приложения */
+            own_scope?: string[];
             /** @description Часовой пояс показа времени из настроек установки (ВРМ.2): консоль показывает даты в нём */
             timezone: string;
         };
@@ -9458,6 +9507,13 @@ export interface components {
             created_at: string;
             /** Format: date-time */
             sent_at?: string;
+        };
+        ReportChannelList: {
+            items: {
+                /** Format: uuid */
+                id: string;
+                name: string;
+            }[];
         };
         ReportRunList: {
             items: components["schemas"]["ReportRun"][];

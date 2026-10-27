@@ -100,8 +100,12 @@ func TestParseParams(t *testing.T) {
 	if p, err = ParseParams(KindSummary, q("from=2026-10-01&to=2026-10-10"), msk, now2026); err != nil || p.Format != FormatHTML {
 		t.Fatalf("формат по умолчанию: %+v %v", p, err)
 	}
+	// 3Н46 ревью 3.r4: без дат — последние 30 суток по сегодня (пояс установки).
+	if p, err = ParseParams(KindSummary, q(""), msk, now2026); err != nil || p.Period.First != "2026-09-26" || p.Period.Last != "2026-10-25" {
+		t.Fatalf("период по умолчанию: %+v %v", p.Period, err)
+	}
 	for _, bad := range []string{
-		"", "from=2026-10-01", "to=2026-10-01", "from=2026-10-01&to=2026-10-02&format=pdf", "from=2026-10-01&to=2026-10-02&x=1",
+		"from=2026-10-01", "to=2026-10-01", "from=2026-10-01&to=2026-10-02&format=pdf", "from=2026-10-01&to=2026-10-02&x=1",
 		"from=2026-10-01&from=2026-10-02&to=2026-10-03", "from=2026-10-01&to=2026-10-02&app=CRM", "from=2026-10-01&to=2026-10-02&app=" + strings.Repeat("a", 65),
 		"from=2026-10-01&to=2026-10-02&app=a/b", "from=2026-10-01&to=2026-10-02&format=" + strings.Repeat("x", 200),
 	} {

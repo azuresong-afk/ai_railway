@@ -124,6 +124,33 @@ type Mailer interface {
 // ChannelReader — чтение каналов уведомлений (*notify.Service).
 type ChannelReader interface {
 	Channel(ctx context.Context, id string) (notify.Channel, error)
+	Channels(ctx context.Context) ([]notify.Channel, error)
+}
+
+// ChannelRef — почтовый канал для выбора в расписании: без адресов и
+// настроек сервера (3Н46 ревью 3.r4).
+type ChannelRef struct {
+	ID   string
+	Name string
+}
+
+// MailChannels — включённые почтовые каналы с получателями, к которым можно
+// привязать расписание.
+func (s *Service) MailChannels(ctx context.Context) ([]ChannelRef, error) {
+	out := []ChannelRef{}
+	if s.o.Channels == nil {
+		return out, nil
+	}
+	list, err := s.o.Channels.Channels(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, c := range list {
+		if c.Type == notify.TypeEmail && c.Enabled && len(c.Settings.To) > 0 {
+			out = append(out, ChannelRef{ID: c.ID, Name: c.Name})
+		}
+	}
+	return out, nil
 }
 
 // Options — зависимости сервиса.

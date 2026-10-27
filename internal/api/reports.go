@@ -48,6 +48,8 @@ func reportRoutes(d Deps) []Route {
 			Handler: needReports(d, d.deleteReportSchedule)},
 		{Method: http.MethodGet, Path: "/api/v1/report-schedules/{id}/runs", Permission: auth.PermReportSchedulesRead,
 			Handler: needReports(d, d.listReportRuns)},
+		{Method: http.MethodGet, Path: "/api/v1/report-channels", Permission: auth.PermReportSchedulesManage,
+			Handler: needReports(d, d.listReportChannels)},
 	}
 }
 
@@ -406,6 +408,32 @@ func (d Deps) listReportRuns(w http.ResponseWriter, r *http.Request) {
 			v.NextAt = optTime(x.NextAt)
 		}
 		out.Items = append(out.Items, v)
+	}
+	WriteJSON(w, http.StatusOK, out)
+}
+
+// ReportChannelView — почтовый канал для расписания: только ID и название,
+// без адресов и сервера (3Н46 ревью 3.r4: администратор системы выбирает
+// канал без права на каналы уведомлений).
+type ReportChannelView struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// ReportChannelList — включённые почтовые каналы с получателями.
+type ReportChannelList struct {
+	Items []ReportChannelView `json:"items"`
+}
+
+func (d Deps) listReportChannels(w http.ResponseWriter, r *http.Request) {
+	list, err := d.Reports.MailChannels(r.Context())
+	if err != nil {
+		WriteProblem(w, d.reportProblem(err))
+		return
+	}
+	out := ReportChannelList{Items: make([]ReportChannelView, 0, len(list))}
+	for _, c := range list {
+		out.Items = append(out.Items, ReportChannelView{ID: c.ID, Name: c.Name})
 	}
 	WriteJSON(w, http.StatusOK, out)
 }

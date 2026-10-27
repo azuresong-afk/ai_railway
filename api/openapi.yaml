@@ -3977,7 +3977,8 @@ paths:
         сводный отчёт по приложению не входят). Владельцу приложения доступен только `summary` с `app`
         своего приложения; чужое приложение — 404, другой вид — 403. Каждая выгрузка пишет
         `data.export` до выдачи данных (DM-41); без записи отчёт не выдаётся (503). Одновременно — одна
-        выгрузка на пользователя, сверх предела 429.
+        выгрузка на пользователя, сверх предела 429. Без `from` и `to` — последние 30 суток по сегодняшний
+        день; одна дата без другой — 400.
       x-permission: reports.read
       security: [{ sessionCookie: [] }, { bearerToken: [] }]
       parameters:
@@ -3988,13 +3989,13 @@ paths:
           schema: { type: string, enum: [summary, incidents, pilot] }
         - name: from
           in: query
-          required: true
-          description: Первый день периода, ГГГГ-ММ-ДД
+          required: false
+          description: Первый день периода, ГГГГ-ММ-ДД; вместе с `to`
           schema: { type: string, pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' }
         - name: to
           in: query
-          required: true
-          description: Последний день периода включительно, ГГГГ-ММ-ДД
+          required: false
+          description: Последний день периода включительно, ГГГГ-ММ-ДД; вместе с `from`
           schema: { type: string, pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' }
         - name: format
           in: query
@@ -4165,6 +4166,26 @@ paths:
         '401': { $ref: '#/components/responses/ProblemUnauthorized' }
         '403': { $ref: '#/components/responses/ProblemForbidden' }
         '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/report-channels:
+    get:
+      summary: Почтовые каналы для рассылки отчётов
+      description: |
+        Право `reports.schedules.manage`. Включённые почтовые каналы уведомлений с получателями —
+        только ID и название, без адресов и настроек сервера: тот, кто ведёт расписания, выбирает
+        канал без права `notify_channels.read`.
+      x-permission: reports.schedules.manage
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      responses:
+        '200':
+          description: Каналы
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReportChannelList' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ProblemInternal' }
         '503': { $ref: '#/components/responses/Unavailable' }
@@ -5465,6 +5486,10 @@ components:
           type: array
           items: { type: string }
           description: 'Разрешения, действующие в сессии, включая `session` и, после второго фактора, `self`. Консоль скрывает недоступное; права проверяет сервер'
+        own_scope:
+          type: array
+          items: { type: string }
+          description: 'Разрешения из `permissions` с областью `own` — только на свои объекты (УПД.8), например `reports.read` владельца приложения'
         timezone: { type: string, description: 'Часовой пояс показа времени из настроек установки (ВРМ.2): консоль показывает даты в нём' }
     SessionState:
       type: string
@@ -6394,6 +6419,18 @@ components:
         error: { type: string, description: Код ошибки без текста ответа сервера }
         created_at: { type: string, format: date-time }
         sent_at: { type: string, format: date-time }
+    ReportChannelList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            required: [id, name]
+            properties:
+              id: { type: string, format: uuid }
+              name: { type: string }
     ReportRunList:
       type: object
       required: [items]
