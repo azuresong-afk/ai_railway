@@ -3,6 +3,7 @@ package crypto
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"net"
 )
@@ -38,4 +39,20 @@ func ServerTLS(conn net.Conn, cfg *tls.Config) net.Conn {
 // TLSListener — приём соединений TLS поверх l с настройками cfg.
 func TLSListener(l net.Listener, cfg *tls.Config) net.Listener {
 	return tls.NewListener(l, cfg)
+}
+
+// IsTLSError — ошибка рукопожатия TLS или проверки сертификата сервера:
+// пакетам без crypto/tls (OIDC, ADR-0025) — чтобы отличить отказ TLS от
+// отказа сети в журнале.
+func IsTLSError(err error) bool {
+	var (
+		cv *tls.CertificateVerificationError
+		ae tls.AlertError
+		rh tls.RecordHeaderError
+		ua x509.UnknownAuthorityError
+		he x509.HostnameError
+		ci x509.CertificateInvalidError
+	)
+	return errors.As(err, &cv) || errors.As(err, &ae) || errors.As(err, &rh) ||
+		errors.As(err, &ua) || errors.As(err, &he) || errors.As(err, &ci)
 }

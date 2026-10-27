@@ -42,6 +42,9 @@
 | PUT | `/api/v1/applications/{id}/protection` | `applications.policy` | да | — | — | — | — | — |
 | GET | `/api/v1/audit` | `audit.read` | да | — | — | да | — | да |
 | POST | `/api/v1/audit/verify` | `audit.verify` | да | — | — | да | — | да |
+| GET | `/api/v1/auth/idp` | `auth_idp.read` | да | — | — | да | — | да |
+| PUT | `/api/v1/auth/idp` | `auth_idp.manage` | да | — | — | — | — | — |
+| DELETE | `/api/v1/auth/idp` | `auth_idp.manage` | да | — | — | — | — | — |
 | POST | `/api/v1/auth/logout` | `session` | да | да | да | да | да | — |
 | POST | `/api/v1/auth/mfa/recovery-codes` | `session` | да | да | да | да | да | — |
 | POST | `/api/v1/auth/mfa/setup` | `session` | да | да | да | да | да | — |
@@ -153,6 +156,9 @@
 ## Открытые эндпоинты (без аутентификации)
 
 - POST `/api/v1/auth/login`
+- GET `/api/v1/auth/oidc`
+- GET `/api/v1/auth/oidc/callback`
+- GET `/api/v1/auth/oidc/start`
 - GET `/api/v1/auth/setup`
 - POST `/api/v1/auth/setup`
 - POST `/api/v1/gateways/register`

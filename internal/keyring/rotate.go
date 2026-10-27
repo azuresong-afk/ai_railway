@@ -157,13 +157,15 @@ type RewrapCounts struct {
 	Channels int64 `json:"channels"`
 	// GatewayTLS — ключ сертификата заказчика для адреса шлюза (задача 3.27).
 	GatewayTLS int64 `json:"gateway_tls"`
+	// OIDC — секрет клиента внешнего IdP (задача 4.17 этапа 4).
+	OIDC int64 `json:"oidc"`
 	// Prompts — тексты эталонов системного промпта (задача 4.14 этапа 4).
 	Prompts int64 `json:"prompt_baselines"`
 }
 
 // Total — всего строк.
 func (c RewrapCounts) Total() int64 {
-	return c.MFA + c.Providers + c.Content + c.Channels + c.GatewayTLS + c.Prompts
+	return c.MFA + c.Providers + c.Content + c.Channels + c.GatewayTLS + c.OIDC + c.Prompts
 }
 
 // RewrapOptions — параметры перешифрования.
@@ -185,24 +187,26 @@ const DefaultRewrapBatch = 500
 
 // Места хранения шифротекстов ключа данных: те же AAD, что у internal/auth
 // (TOTP), internal/apps (учётные данные провайдеров и ключ сертификата
-// заказчика), internal/events (содержимое full) и internal/notify
-// (секреты каналов).
+// заказчика), internal/events (содержимое full), internal/notify
+// (секреты каналов) и internal/auth (секрет клиента IdP).
 const (
 	mfaTable, mfaColumn             = "user_mfa", "secret"
 	providersTable, providersColumn = "providers", "credential"
 	contentTable, contentColumn     = "event_content", "sealed"
 	channelsTable, channelsColumn   = "notify_channels", "secret"
 	gwTLSTable, gwTLSColumn         = "gateway_tls", "key"
+	oidcTable, oidcColumn           = "oidc_settings", "client_secret"
 	promptTable, promptColumn       = "prompt_baselines", "text"
 )
 
 // Rewrap перешифровывает действующей версией box все строки прежних версий:
 // секреты TOTP, учётные данные провайдеров, содержимое событий full,
-// секреты каналов уведомлений, ключ сертификата заказчика и тексты
-// эталонов системного промпта. Каждая пачка — своя транзакция; строка
-// обновляется, только если её ключ не сменился (сервер мог заменить её
-// параллельно). Прерванное перешифрование продолжается повторным вызовом.
-// box — из Load под логином владельца: знает все невыведенные версии.
+// секреты каналов уведомлений, ключ сертификата заказчика, секрет
+// клиента IdP и тексты эталонов системного промпта.
+// Каждая пачка — своя транзакция; строка обновляется, только если её ключ
+// не сменился (сервер мог заменить её параллельно). Прерванное
+// перешифрование продолжается повторным вызовом. box — из Load под
+// логином владельца: знает все невыведенные версии.
 func Rewrap(ctx context.Context, db Owner, box *Box, o RewrapOptions) (RewrapCounts, error) {
 	if o.Batch <= 0 {
 		o.Batch = DefaultRewrapBatch
@@ -229,6 +233,9 @@ func Rewrap(ctx context.Context, db Owner, box *Box, o RewrapOptions) (RewrapCou
 		}},
 		{&total.GatewayTLS, func(ctx context.Context, tx pgx.Tx, active string) (int, error) {
 			return rewrapGatewayTLS(ctx, tx, box, active, o.Batch)
+		}},
+		{&total.OIDC, func(ctx context.Context, tx pgx.Tx, active string) (int, error) {
+			return rewrapOIDC(ctx, tx, box, active, o.Batch)
 		}},
 		{&total.Prompts, func(ctx context.Context, tx pgx.Tx, active string) (int, error) {
 			return rewrapPrompts(ctx, tx, box, active, o.Batch)
@@ -473,6 +480,35 @@ func reseal(ctx context.Context, box *Box, active, keyID string, sealed []byte, 
 	return newID, out, nil
 }
 
+// rewrapOIDC — секрет клиента внешнего IdP (internal/auth, задача 4.17):
+// AAD oidc_settings|client_secret|<org_id>.
+func rewrapOIDC(ctx context.Context, tx pgx.Tx, box *Box, active string, batch int) (int, error) {
+	type row struct {
+		id, keyID string
+		sealed    []byte
+	}
+	rows, err := collect(ctx, tx, `SELECT org_id::text, client_secret_key_id::text, client_secret FROM oidc_settings
+		WHERE client_secret_key_id <> $1 ORDER BY org_id LIMIT $2 FOR UPDATE`, []any{active, batch},
+		func(r pgx.Rows) (row, error) {
+			var x row
+			return x, r.Scan(&x.id, &x.keyID, &x.sealed)
+		})
+	if err != nil {
+		return 0, fmt.Errorf("перешифрование секрета клиента IdP: %w", err)
+	}
+	for _, x := range rows {
+		keyID, sealed, err := reseal(ctx, box, active, x.keyID, x.sealed, oidcTable, oidcColumn, x.id)
+		if err != nil {
+			return 0, fmt.Errorf("перешифрование секрета клиента IdP: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `UPDATE oidc_settings SET client_secret = $1, client_secret_key_id = $2
+			WHERE org_id = $3 AND client_secret_key_id = $4`, sealed, keyID, x.id, x.keyID); err != nil {
+			return 0, fmt.Errorf("перешифрование секрета клиента IdP: %w", err)
+		}
+	}
+	return len(rows), nil
+}
+
 // collect читает все строки запроса.
 func collect[T any](ctx context.Context, tx pgx.Tx, sql string, args []any, scan func(pgx.Rows) (T, error)) ([]T, error) {
 	rows, err := tx.Query(ctx, sql, args...)
@@ -512,6 +548,7 @@ func Status(ctx context.Context, db Owner, orgID string) ([]VersionStatus, error
 		(SELECT count(*) FROM event_content WHERE key_id = k.id),
 		(SELECT count(*) FROM notify_channels WHERE secret_key_id = k.id),
 		(SELECT count(*) FROM gateway_tls WHERE key_key_id = k.id),
+		(SELECT count(*) FROM oidc_settings WHERE client_secret_key_id = k.id),
 		(SELECT count(*) FROM prompt_baselines WHERE text_key_id = k.id)
 		FROM data_keys k WHERE k.org_id = $1 ORDER BY k.version`, orgID)
 	if err != nil {
@@ -522,7 +559,7 @@ func Status(ctx context.Context, db Owner, orgID string) ([]VersionStatus, error
 	for rows.Next() {
 		var v VersionStatus
 		if err := rows.Scan(&v.ID, &v.Version, &v.MasterVersion, &v.Sealed, &v.CreatedAt, &v.RetiredAt,
-			&v.Rows.MFA, &v.Rows.Providers, &v.Rows.Content, &v.Rows.Channels, &v.Rows.GatewayTLS, &v.Rows.Prompts); err != nil {
+			&v.Rows.MFA, &v.Rows.Providers, &v.Rows.Content, &v.Rows.Channels, &v.Rows.GatewayTLS, &v.Rows.OIDC, &v.Rows.Prompts); err != nil {
 			return nil, err
 		}
 		out = append(out, v)
@@ -558,8 +595,9 @@ func DestroyRetired(ctx context.Context, db Owner, rec Recorder, orgID string, a
 				(SELECT count(*) FROM event_content WHERE key_id = $1),
 				(SELECT count(*) FROM notify_channels WHERE secret_key_id = $1),
 				(SELECT count(*) FROM gateway_tls WHERE key_key_id = $1),
+				(SELECT count(*) FROM oidc_settings WHERE client_secret_key_id = $1),
 				(SELECT count(*) FROM prompt_baselines WHERE text_key_id = $1)`, v.ID).
-				Scan(&left.MFA, &left.Providers, &left.Content, &left.Channels, &left.GatewayTLS, &left.Prompts); err != nil {
+				Scan(&left.MFA, &left.Providers, &left.Content, &left.Channels, &left.GatewayTLS, &left.OIDC, &left.Prompts); err != nil {
 				return err
 			}
 			if left.Total() > 0 {

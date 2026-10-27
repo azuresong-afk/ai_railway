@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
@@ -18,6 +19,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/audit"
 	"github.com/azuresong-afk/ai_railway/internal/auth"
 	"github.com/azuresong-afk/ai_railway/internal/auth/authtest"
+	"github.com/azuresong-afk/ai_railway/internal/auth/oidc"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/internal/keyring"
 	"github.com/azuresong-afk/ai_railway/internal/keyring/keyringtest"
@@ -40,6 +42,12 @@ type pgEnv struct {
 	mfa   *mfaKeys
 	// keyID — ID ключа данных установки (data_keys).
 	keyID string
+	// oidc — клиент IdP сервиса (вход через IdP, ADR-0025): loopback
+	// разрешён для синтетического IdP на 127.0.0.1.
+	oidc *oidc.Client
+	// dir и box — каталог ключей установки и ключ данных сервиса (ротация).
+	dir string
+	box *keyring.Box
 }
 
 func pgCtx(t *testing.T) context.Context {
@@ -156,7 +164,7 @@ func setupPG(t *testing.T) *pgEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e.keyID = keyID
+	e.keyID, e.dir, e.box = keyID, dir, box
 	roles, err := auth.NewPGRoles(e.app, e.log)
 	if err != nil {
 		t.Fatal(err)
@@ -165,8 +173,12 @@ func setupPG(t *testing.T) *pgEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if e.oidc, err = oidc.New(p); err != nil {
+		t.Fatal(err)
+	}
+	e.oidc.AllowNetworks([]netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")})
 	if e.svc, err = auth.NewService(ctx, e.store, e.log, p, auth.WithClock(e.clock.now), auth.WithPasswordHasher(&authtest.Hasher{}),
-		auth.WithSecretBox(box), auth.WithRoleStore(roles), auth.WithAPITokenStore(tokens)); err != nil {
+		auth.WithSecretBox(box), auth.WithRoleStore(roles), auth.WithAPITokenStore(tokens), auth.WithOIDC(e.store, e.oidc)); err != nil {
 		t.Fatal(err)
 	}
 	e.mfa = newMFAKeys(e.svc, e.store, e.clock)

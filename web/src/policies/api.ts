@@ -97,6 +97,15 @@ export const weakeningText: Record<NonNullable<PolicyDiff["weakening_reasons"][n
   exception_added: "добавлено исключение",
   exception_extended: "продлён срок исключения",
   exception_changed: "изменено условие исключения",
+  tools_unapproved_weakened: "смягчено действие для неодобренных инструментов или по умолчанию",
+  tool_rule_added: "добавлено разрешающее правило вызовов",
+  tool_action_weakened: "действие правила вызовов смягчено",
+  tool_scope_widened: "правило вызовов применяется к большему числу случаев",
+  tool_scope_narrowed: "ограничивающее правило вызовов применяется к меньшему числу случаев",
+  tool_args_relaxed: "ослаблены ограничения аргументов",
+  tool_rate_raised: "повышены лимиты вызовов",
+  approval_timeout_raised: "увеличен срок ожидания подтверждения",
+  tool_rule_removed: "правило вызовов удалено",
 };
 
 export const actionText: Record<PolicyRule["action"], string> = {

@@ -28,6 +28,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/apps"
 	"github.com/azuresong-afk/ai_railway/internal/audit"
 	"github.com/azuresong-afk/ai_railway/internal/auth"
+	"github.com/azuresong-afk/ai_railway/internal/auth/oidc"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/internal/detect"
 	"github.com/azuresong-afk/ai_railway/internal/detect/builtin"
@@ -203,8 +204,18 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	authSvc, err := auth.NewService(ctx, users, auditLog, p, auth.WithSecretBox(box), auth.WithRoleStore(roles),
-		auth.WithAPITokenStore(tokens))
+	authOpts := []auth.Option{auth.WithSecretBox(box), auth.WithRoleStore(roles), auth.WithAPITokenStore(tokens)}
+	// Вход через внешний IdP (ADR-0025): в профиле без проверки JWT
+	// (gost, пока нет реализации) недоступен, локальный вход работает.
+	switch idp, err := oidc.New(p); {
+	case err == nil:
+		authOpts = append(authOpts, auth.WithOIDC(users, idp))
+	case errors.Is(err, aisecCrypto.ErrNotImplemented):
+		logger.Warn("вход через внешний IdP недоступен в криптопрофиле")
+	default:
+		return err
+	}
+	authSvc, err := auth.NewService(ctx, users, auditLog, p, authOpts...)
 	if err != nil {
 		return err
 	}

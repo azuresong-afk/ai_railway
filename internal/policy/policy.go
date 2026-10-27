@@ -29,6 +29,8 @@ type Policy struct {
 	rules         []rule
 	// exceptions — исключения версии (exception.go), в порядке спецификации.
 	exceptions []ExceptionSpec
+	// tools — политика вызовов инструментов (toolcall.go).
+	tools toolPolicy
 }
 
 type rule struct {
@@ -94,10 +96,14 @@ func Compile(s *Spec, c Catalog) (*Policy, error) {
 			errs = append(errs, fmt.Errorf("политика %s: exceptions[%d] (%s): детектор %q не зарегистрирован", s.ID, i, e.ID, e.Detector))
 		}
 	}
-	if err := errors.Join(errs...); err != nil {
+	err := errors.Join(errs...)
+	if err != nil {
 		return nil, err
 	}
 	p.exceptions = slices.Clone(s.Exceptions)
+	if p.tools, err = compileTools(s.Tools); err != nil {
+		return nil, fmt.Errorf("политика %s: %w", s.ID, err)
+	}
 	return p, nil
 }
 

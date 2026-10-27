@@ -3,6 +3,7 @@ package policy
 import (
 	"fmt"
 	"slices"
+	"time"
 
 	"github.com/azuresong-afk/ai_railway/internal/detect"
 )
@@ -19,6 +20,9 @@ const (
 	TemplatePIIStrict   = "pii-strict"      // «ПДн — строго»
 	TemplateExternalPII = "external-no-pii" // «Внешний провайдер: ПДн не передавать»
 	TemplateMonitorOnly = "monitor-only"    // «Только мониторинг»
+	// TemplateAgentBase — «Агент: базовая защита» (ADR-0023, задача 4.9):
+	// правила «Базовой защиты» и политика вызовов инструментов.
+	TemplateAgentBase = "agent-base"
 	// DefaultTemplate — политика приложения по умолчанию (решение Р7):
 	// «Базовая защита» в режиме monitor.
 	DefaultTemplate = TemplateBase
@@ -43,7 +47,7 @@ var (
 
 // TemplateIDs — шаблоны в порядке показа.
 func TemplateIDs() []string {
-	return []string{TemplateBase, TemplatePIIStrict, TemplateExternalPII, TemplateMonitorOnly}
+	return []string{TemplateBase, TemplatePIIStrict, TemplateExternalPII, TemplateMonitorOnly, TemplateAgentBase}
 }
 
 // IsTemplate — id — шаблон.
@@ -102,6 +106,21 @@ func Template(id string) (*Spec, bool) {
 		for _, det := range []string{detUnicode, detInjection, detPII, detSecrets, detCanary, detExfil, detLists} {
 			s.Rules = append(s.Rules, RuleSpec{ID: "log-" + slug(det), Detector: det, Action: Log, Severity: Info})
 		}
+	case TemplateAgentBase:
+		// Неодобренный инструмент и вызов вне правил блокируются (DM-20,
+		// DM-25); вызов инструмента высокого и критического риска ждёт
+		// подтверждения человеком (DM-22); одобренные инструменты низкого и
+		// среднего риска разрешены; лимиты — значения ADR-0023 (DM-23).
+		// Режим enforce: шаблон выбирают для защиты агента, а не наблюдения.
+		base, _ := Template(TemplateBase)
+		s = &Spec{Name: "Агент: базовая защита", Mode: Enforce, NonText: NonTextAllowUnchecked, Rules: base.Rules,
+			Tools: &ToolsSpec{Unapproved: Block, Default: Block, ApprovalTimeout: Duration(DefaultApprovalTimeout),
+				Limits: ToolLimits{AgentPerMinute: 120, SessionCalls: 500, Repeat: 5, RepeatWindow: Duration(10 * time.Minute)},
+				Rules: []ToolRuleSpec{
+					{ID: "high-risk-approval", Risk: []ToolRisk{RiskHigh, RiskCritical}, Action: RequireApproval, Severity: High,
+						Message: "Вызов инструмента высокого риска требует подтверждения."},
+					{ID: "approved-low-risk", Risk: []ToolRisk{RiskLow, RiskMedium}, Action: Allow, Severity: Info},
+				}}}
 	default:
 		return nil, false
 	}

@@ -15,6 +15,7 @@ func Routes(d Deps) []Route {
 	var routes []Route
 	routes = append(routes, systemRoutes(d)...)
 	routes = append(routes, authRoutes(d)...)
+	routes = append(routes, oidcRoutes(d)...)
 	routes = append(routes, mfaRoutes(d)...)
 	routes = append(routes, userRoutes(d)...)
 	routes = append(routes, gatewayRoutes(d)...)

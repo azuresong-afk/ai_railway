@@ -10,7 +10,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/audit"
 )
 
-// Эталоны системного промпта в PostgreSQL (миграция 0051_prompt_baselines).
+// Эталоны системного промпта в PostgreSQL (миграция 0052_prompt_baselines).
 
 const promptCols = `app_id::text, org_id::text, mode, hash, text_bytes, text_sealed, text_key_id::text, text_alg,
 	created_at, created_by, updated_at, updated_by`

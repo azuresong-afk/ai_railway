@@ -44,11 +44,13 @@ const (
 )
 
 // Weakening — ослабление защиты; Rule пуст для полей политики, Exception —
-// ID исключения для ослаблений исключениями.
+// ID исключения для ослаблений исключениями, ToolRule — ID правила раздела
+// tools (политика вызовов, ADR-0023).
 type Weakening struct {
 	Kind      string
 	Rule      string
 	Exception string
+	ToolRule  string
 }
 
 // Diff — различия двух версий: поля политики, правила добавленные,
@@ -64,7 +66,13 @@ type Diff struct {
 	ExceptionsAdded   []policy.ExceptionSpec
 	ExceptionsRemoved []policy.ExceptionSpec
 	ExceptionsChanged []ExceptionChange
-	Weakening         []Weakening
+	// Раздел tools (ADR-0023): поля раздела, правила добавленные, удалённые
+	// и изменённые (по ID правила).
+	ToolsFields      []FieldChange
+	ToolRulesAdded   []policy.ToolRuleSpec
+	ToolRulesRemoved []policy.ToolRuleSpec
+	ToolRulesChanged []ToolRuleChange
+	Weakening        []Weakening
 }
 
 // ExceptionChange — исключение с тем же ID в обеих версиях, у которого
@@ -79,7 +87,8 @@ type ExceptionChange struct {
 // Empty — версии не различаются.
 func (d Diff) Empty() bool {
 	return len(d.Fields) == 0 && len(d.Added) == 0 && len(d.Removed) == 0 && len(d.Changed) == 0 && !d.Reordered &&
-		len(d.ExceptionsAdded) == 0 && len(d.ExceptionsRemoved) == 0 && len(d.ExceptionsChanged) == 0
+		len(d.ExceptionsAdded) == 0 && len(d.ExceptionsRemoved) == 0 && len(d.ExceptionsChanged) == 0 &&
+		len(d.ToolsFields) == 0 && len(d.ToolRulesAdded) == 0 && len(d.ToolRulesRemoved) == 0 && len(d.ToolRulesChanged) == 0
 }
 
 // Weakened — изменение ослабляет защиту.
@@ -147,6 +156,7 @@ func Compare(a, b *policy.Spec) Diff {
 	}
 	d.Reordered = !slices.Equal(common, order)
 	d.compareExceptions(a.Exceptions, b.Exceptions)
+	d.compareTools(a.Tools, b.Tools)
 	return d
 }
 
@@ -271,7 +281,7 @@ func ruleWeakening(a, b policy.RuleSpec) []Weakening {
 
 // auditListMax — не больше ID в каждом списке подробностей записи аудита,
 // auditDetailsBudget — предел сводки целиком: запись ограничена 16 КиБ
-// (audit.maxDetailsSize), а списков семь (шесть списков ID и причины) и в
+// (audit.maxDetailsSize), а списков десять (девять списков ID и причины) и в
 // версии до 1000 исключений и 256 правил с ID до 63 символов. Если сводка
 // не укладывается, списки урезаются все вместе и ставится truncated; полный
 // состав — в неизменяемой версии (spec_hash), счётчики остаются полными
@@ -336,16 +346,25 @@ func (d Diff) detailsCapped(limit int) (map[string]any, bool) {
 		if w.Exception != "" {
 			m["exception"] = w.Exception
 		}
+		if w.ToolRule != "" {
+			m["tool_rule"] = w.ToolRule
+		}
 		kinds = append(kinds, m)
 	}
 	added, removed, changed := exceptionIDs(d.ExceptionsAdded), exceptionIDs(d.ExceptionsRemoved), changedExceptionIDs(d.ExceptionsChanged)
 	rAdded, rRemoved, rChanged := ruleIDs(d.Added), ruleIDs(d.Removed), changedIDs(d.Changed)
+	tAdded, tRemoved, tChanged := toolRuleIDs(d.ToolRulesAdded), toolRuleIDs(d.ToolRulesRemoved), changedToolRuleIDs(d.ToolRulesChanged)
+	for _, f := range d.ToolsFields {
+		fields = append(fields, f.Field)
+	}
 	return map[string]any{
 		"fields": fields, "rules_added": capped(rAdded), "rules_removed": capped(rRemoved), "rules_changed": capped(rChanged),
 		"rules_added_count": len(rAdded), "rules_removed_count": len(rRemoved), "rules_changed_count": len(rChanged),
 		"reordered": d.Reordered, "weakening": d.Weakened(), "weakening_reasons": kinds, "weakening_counts": counts,
 		"exceptions_added": capped(added), "exceptions_removed": capped(removed), "exceptions_changed": capped(changed),
 		"exceptions_added_count": len(added), "exceptions_removed_count": len(removed), "exceptions_changed_count": len(changed),
+		"tool_rules_added": capped(tAdded), "tool_rules_removed": capped(tRemoved), "tool_rules_changed": capped(tChanged),
+		"tool_rules_added_count": len(tAdded), "tool_rules_removed_count": len(tRemoved), "tool_rules_changed_count": len(tChanged),
 	}, cut
 }
 

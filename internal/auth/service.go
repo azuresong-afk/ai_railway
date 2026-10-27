@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/azuresong-afk/ai_railway/internal/audit"
+	"github.com/azuresong-afk/ai_railway/internal/auth/oidc"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/internal/store"
 )
@@ -36,6 +37,8 @@ const (
 	// reasonChanged — запись деактивирована или пароль сменён во время проверки.
 	reasonChanged  = "changed_during_login"
 	reasonBadInput = "bad_input"
+	// reasonExternal — вход паролем во внешнюю запись (IdP, ADR-0025).
+	reasonExternal = "external_user"
 )
 
 // Caller — аутентифицированная сессия консоли и её пользователь.
@@ -77,6 +80,10 @@ type Service struct {
 	roles RoleStore
 	// tokens — токены API (задача 2.10); nil — токены не принимаются.
 	tokens APITokenStore
+	// idp и oidc — вход через внешний IdP (задача 4.17, ADR-0025); nil —
+	// не подключён.
+	idp  IdPStore
+	oidc *oidc.Client
 }
 
 // Option настраивает Service.
@@ -177,7 +184,7 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (LoginResult, error)
 	// Пароль проверяется всегда — с хешем записи или с фиктивным, — чтобы
 	// время ответа не зависело от того, есть ли запись и в каком она состоянии.
 	hash := s.dummy
-	if found && u.Status == StatusActive {
+	if found && u.Status == StatusActive && !u.External() {
 		hash = u.PasswordHash
 	}
 	pwOK, needsRehash := false, false
@@ -191,6 +198,9 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (LoginResult, error)
 	case reason != "":
 	case !found:
 		reason = reasonUnknownLogin
+	case u.External():
+		// У внешней записи нет пароля консоли: вход — только через IdP.
+		reason = reasonExternal
 	case u.Status != StatusActive:
 		reason = reasonDeactivated
 	case u.Locked(now):
@@ -455,6 +465,9 @@ func (s *Service) Logout(ctx context.Context, c Caller) error {
 // заблокирована, пароль не меняется и текущий не проверяется (ErrLocked):
 // иначе держатель чужой сессии перебирал бы пароль и во время блокировки.
 func (s *Service) ChangePassword(ctx context.Context, c Caller, current, next string) error {
+	if c.User.External() {
+		return ErrExternalUser
+	}
 	now := s.clock()
 	pol, err := s.store.Policy(ctx, s.orgID)
 	if err != nil {
@@ -574,6 +587,10 @@ func (s *Service) Reauthenticate(ctx context.Context, c Caller, password, code, 
 // счётчиком (на пороге — блокировка и завершение сессий), ответ —
 // ErrReauthentication.
 func (s *Service) reauthenticate(ctx context.Context, c Caller, password, code, action string) error {
+	// У внешней записи нет пароля и TOTP консоли (ADR-0025, 3.10).
+	if c.User.External() {
+		return ErrExternalUser
+	}
 	if (password == "") == (code == "") {
 		return &InputError{"password", "Введите текущий пароль или код из приложения-аутентификатора."}
 	}

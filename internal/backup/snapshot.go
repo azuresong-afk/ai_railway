@@ -108,25 +108,39 @@ type RolePermission struct {
 
 // User — учётная запись консоли.
 type User struct {
-	ID                    string            `json:"id"`
-	Login                 string            `json:"login"`
-	DisplayName           string            `json:"display_name"`
-	Role                  string            `json:"role"`
-	Status                string            `json:"status"`
-	PasswordHash          string            `json:"password_hash"`
-	PasswordChangedAt     time.Time         `json:"password_changed_at"`
-	MustChangePassword    bool              `json:"must_change_password"`
-	TempPasswordExpiresAt *time.Time        `json:"temp_password_expires_at"`
-	FailedAttempts        int               `json:"failed_attempts"`
-	LockedAt              *time.Time        `json:"locked_at"`
-	LockedUntil           *time.Time        `json:"locked_until"`
-	CreatedAt             time.Time         `json:"created_at"`
-	CreatedBy             string            `json:"created_by"`
-	DeactivatedAt         *time.Time        `json:"deactivated_at"`
-	LastLoginAt           *time.Time        `json:"last_login_at"`
-	PasswordHistory       []PasswordHistory `json:"password_history"`
-	MFA                   *MFA              `json:"mfa"`
-	RecoveryCodes         []RecoveryCode    `json:"recovery_codes"`
+	ID                    string     `json:"id"`
+	Login                 string     `json:"login"`
+	DisplayName           string     `json:"display_name"`
+	Role                  string     `json:"role"`
+	Status                string     `json:"status"`
+	PasswordHash          string     `json:"password_hash"`
+	PasswordChangedAt     time.Time  `json:"password_changed_at"`
+	MustChangePassword    bool       `json:"must_change_password"`
+	TempPasswordExpiresAt *time.Time `json:"temp_password_expires_at"`
+	FailedAttempts        int        `json:"failed_attempts"`
+	LockedAt              *time.Time `json:"locked_at"`
+	LockedUntil           *time.Time `json:"locked_until"`
+	CreatedAt             time.Time  `json:"created_at"`
+	CreatedBy             string     `json:"created_by"`
+	DeactivatedAt         *time.Time `json:"deactivated_at"`
+	LastLoginAt           *time.Time `json:"last_login_at"`
+	// AuthSource, IdPIssuer, IdPSubject — источник учётной записи (ADR-0025):
+	// у внешней записи нет пароля, она привязана к издателю и sub. В копиях
+	// до задачи 4.17 полей нет — запись локальная.
+	AuthSource      string            `json:"auth_source,omitempty"`
+	IdPIssuer       *string           `json:"idp_issuer,omitempty"`
+	IdPSubject      *string           `json:"idp_subject,omitempty"`
+	PasswordHistory []PasswordHistory `json:"password_history"`
+	MFA             *MFA              `json:"mfa"`
+	RecoveryCodes   []RecoveryCode    `json:"recovery_codes"`
+}
+
+// source — источник учётной записи; пустой (копия до задачи 4.17) — local.
+func (u User) source() string {
+	if u.AuthSource == "" {
+		return "local"
+	}
+	return u.AuthSource
 }
 
 // PasswordHistory — прежний хеш пароля (ИАФ.2).

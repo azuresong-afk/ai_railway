@@ -90,6 +90,9 @@ func authProblem(logger *slog.Logger, err error) *Problem {
 	case errors.Is(err, auth.ErrRoleChanged):
 		return NewProblem(http.StatusConflict, CodeConflict,
 			"Роль пользователя изменилась во время запроса: обновите страницу и повторите.")
+	case errors.Is(err, auth.ErrExternalUser):
+		return NewProblem(http.StatusForbidden, CodeForbidden,
+			"Действие недоступно учётной записи внешнего IdP: пароль, второй фактор и роль задаются в IdP.")
 	case errors.Is(err, auth.ErrEscalation):
 		return NewProblem(http.StatusForbidden, CodeForbidden,
 			"Недостаточно прав: у учётной записи или роли есть разрешения, которых нет у вас.")

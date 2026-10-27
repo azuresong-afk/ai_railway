@@ -139,7 +139,8 @@ func (s *PGStore) HasUsers(ctx context.Context, orgID string) (bool, error) {
 
 const userCols = `u.id::text, u.org_id::text, u.login, u.display_name, u.role, u.status, u.password_hash,
 	u.password_changed_at, u.must_change_password, u.temp_password_expires_at, u.failed_attempts,
-	u.locked_at, u.locked_until, u.created_at, u.created_by, u.deactivated_at, u.last_login_at`
+	u.locked_at, u.locked_until, u.created_at, u.created_by, u.deactivated_at, u.last_login_at,
+	u.auth_source, u.idp_issuer, u.idp_subject`
 
 func scanUser(row pgx.Row, extra ...any) (User, error) {
 	var (
@@ -147,10 +148,12 @@ func scanUser(row pgx.Row, extra ...any) (User, error) {
 		role, status                       string
 		temp, lockedAt, lockedUntil, deact *time.Time
 		lastLogin                          *time.Time
+		source                             string
+		issuer, subject                    *string
 	)
 	dst := []any{&u.ID, &u.OrgID, &u.Login, &u.DisplayName, &role, &status, &u.PasswordHash,
 		&u.PasswordChangedAt, &u.MustChangePassword, &temp, &u.FailedAttempts,
-		&lockedAt, &lockedUntil, &u.CreatedAt, &u.CreatedBy, &deact, &lastLogin}
+		&lockedAt, &lockedUntil, &u.CreatedAt, &u.CreatedBy, &deact, &lastLogin, &source, &issuer, &subject}
 	if err := row.Scan(append(dst, extra...)...); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return User{}, ErrNotFound
@@ -161,6 +164,10 @@ func scanUser(row pgx.Row, extra ...any) (User, error) {
 	u.TempPasswordExpires = deref(temp)
 	u.LockedAt, u.LockedUntil = deref(lockedAt), deref(lockedUntil)
 	u.DeactivatedAt, u.LastLoginAt = deref(deact), deref(lastLogin)
+	u.Source = AuthSource(source)
+	if issuer != nil && subject != nil {
+		u.IdPIssuer, u.IdPSubject = *issuer, *subject
+	}
 	return u, nil
 }
 

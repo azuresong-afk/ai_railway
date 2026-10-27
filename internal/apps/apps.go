@@ -349,7 +349,7 @@ type Store interface {
 	DeleteGatewayTLS(ctx context.Context, orgID string, fn func(GatewayTLS) (audit.Entry, error)) (GatewayTLS, error)
 
 	// Эталон системного промпта (задача 4.14, миграция
-	// 0051_prompt_baselines): один на приложение. SetPromptBaseline
+	// 0052_prompt_baselines): один на приложение. SetPromptBaseline
 	// блокирует приложение и сохраняет эталон, который вернула fn (prev —
 	// прежний, nil — не было).
 	SetPromptBaseline(ctx context.Context, orgID, appID string, fn func(a Application, prev *PromptBaseline) (PromptBaseline, audit.Entry, error)) (PromptBaseline, error)

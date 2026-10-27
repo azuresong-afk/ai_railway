@@ -32,6 +32,8 @@ const (
 	PermSessionsManage   = "sessions.manage"
 	PermAuthPolicyRead   = "auth_policy.read"
 	PermAuthPolicyManage = "auth_policy.manage"
+	PermAuthIdPRead      = "auth_idp.read"
+	PermAuthIdPManage    = "auth_idp.manage"
 	PermRolesRead        = "roles.read"
 	PermRolesManage      = "roles.manage"
 	// PermAPITokensRead и PermAPITokensManage — токены API (ИАФ.9, задача
@@ -150,6 +152,8 @@ var permissionCatalog = []Permission{
 	{Name: PermSessionsManage, Title: "Принудительное завершение сессий", Group: "Пользователи", Security: true},
 	{Name: PermAuthPolicyRead, Title: "Просмотр парольной политики и настроек входа", Group: "Вход"},
 	{Name: PermAuthPolicyManage, Title: "Изменение парольной политики и настроек входа", Group: "Вход", Security: true},
+	{Name: PermAuthIdPRead, Title: "Просмотр настроек входа через внешний IdP", Group: "Вход"},
+	{Name: PermAuthIdPManage, Title: "Изменение и отключение входа через внешний IdP", Group: "Вход", Security: true},
 	{Name: PermRolesRead, Title: "Просмотр ролей и разрешений", Group: "Роли"},
 	{Name: PermRolesManage, Title: "Создание, изменение и удаление ролей, назначение ролей", Group: "Роли", Security: true},
 	{Name: PermAPITokensRead, Title: "Просмотр токенов API", Group: "Токены API", Ownable: true},

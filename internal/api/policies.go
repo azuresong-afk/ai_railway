@@ -206,6 +206,10 @@ type PolicySpecJSON struct {
 	// передано — исключения текущей версии сохраняются; пустой список —
 	// удаляются. Автора и created_at ставит сервер.
 	Exceptions *[]PolicyExceptionJSON `json:"exceptions,omitempty"`
+	// Tools — политика вызовов инструментов агентами (ADR-0023). При
+	// сохранении: поле не передано — раздел текущей версии сохраняется, у
+	// новой политики — блокировать неодобренное и не разрешённое правилом.
+	Tools *PolicyToolsJSON `json:"tools,omitempty"`
 }
 
 // PolicyExceptionJSON — исключение политики в API: поля как в YAML.
@@ -254,7 +258,7 @@ func convert[T, U ~string](in []T) []U {
 	return out
 }
 
-func (s PolicySpecJSON) spec(id string) *policy.Spec {
+func (s PolicySpecJSON) spec(id string) (*policy.Spec, error) {
 	out := &policy.Spec{ID: id, Name: s.Name, Mode: policy.Mode(s.Mode), NonText: policy.NonText(s.NonText),
 		ResponseCheck: policy.ResponseCheck(s.ResponseCheck), BlockMessage: s.BlockMessage}
 	for _, r := range s.Rules {
@@ -269,7 +273,12 @@ func (s PolicySpecJSON) spec(id string) *policy.Spec {
 			out.Exceptions = append(out.Exceptions, e.spec())
 		}
 	}
-	return out
+	tools, err := s.Tools.toolsSpec()
+	if err != nil {
+		return nil, &versions.InputError{Errs: []error{err}}
+	}
+	out.Tools = tools
+	return out, nil
 }
 
 func ruleJSON(r policy.RuleSpec) PolicyRuleJSON {
@@ -289,6 +298,7 @@ func specJSON(s *policy.Spec) PolicySpecJSON {
 		ex = append(ex, exceptionJSON(e))
 	}
 	out.Exceptions = &ex
+	out.Tools = toolsJSON(s.Tools)
 	return out
 }
 
@@ -392,7 +402,11 @@ func (d Deps) createPolicy(w http.ResponseWriter, r *http.Request) {
 			WriteProblem(w, Invalid("Проверьте введённые данные.", FieldError{"name", "Название задаётся в spec.name."}))
 			return
 		}
-		spec = req.Spec.spec(req.ID)
+		var err error
+		if spec, err = req.Spec.spec(req.ID); err != nil {
+			WriteProblem(w, policiesProblem(d.Logger, err))
+			return
+		}
 	default:
 		var err error
 		if spec, err = d.Policies.FromTemplate(req.FromTemplate, req.ID, req.Name); err != nil {
@@ -448,8 +462,13 @@ func (d Deps) updatePolicy(w http.ResponseWriter, r *http.Request) {
 	by = d.withPolicyConfirm(r, by, req.reauthFields, "policy.update")
 	defaults := versions.ConsoleDefaults
 	defaults.KeepExceptions = req.Spec.Exceptions == nil
-	doc, err := d.Policies.Update(r.Context(), by, slug, req.BaseVersion, req.Spec.spec(slug), versions.SourceAPI, req.Comment,
-		defaults)
+	defaults.KeepTools = req.Spec.Tools == nil
+	spec, err := req.Spec.spec(slug)
+	if err != nil {
+		WriteProblem(w, policiesProblem(d.Logger, err))
+		return
+	}
+	doc, err := d.Policies.Update(r.Context(), by, slug, req.BaseVersion, spec, versions.SourceAPI, req.Comment, defaults)
 	if err != nil {
 		WriteProblem(w, policiesProblem(d.Logger, err))
 		return
@@ -533,6 +552,7 @@ type WeakeningView struct {
 	Kind      string `json:"kind"`
 	Rule      string `json:"rule,omitempty"`
 	Exception string `json:"exception,omitempty"`
+	ToolRule  string `json:"tool_rule,omitempty"`
 }
 
 // ExceptionChangeView — изменённое исключение: имена полей, до и после.
@@ -558,12 +578,32 @@ type PolicyDiffView struct {
 	ExceptionsAdded   []PolicyExceptionJSON `json:"exceptions_added"`
 	ExceptionsRemoved []PolicyExceptionJSON `json:"exceptions_removed"`
 	ExceptionsChanged []ExceptionChangeView `json:"exceptions_changed"`
+	// Политика вызовов (ADR-0023): поля раздела tools и его правила.
+	ToolsFields      []FieldChangeView    `json:"tools_fields"`
+	ToolRulesAdded   []PolicyToolRuleJSON `json:"tool_rules_added"`
+	ToolRulesRemoved []PolicyToolRuleJSON `json:"tool_rules_removed"`
+	ToolRulesChanged []ToolRuleChangeView `json:"tool_rules_changed"`
 }
 
 func diffView(df versions.Diff) PolicyDiffView {
 	v := PolicyDiffView{From: df.From, To: df.To, Fields: []FieldChangeView{}, Added: []PolicyRuleJSON{}, Removed: []PolicyRuleJSON{},
 		Changed: []RuleChangeView{}, Reordered: df.Reordered, Weakening: df.Weakened(), WeakeningReasons: []WeakeningView{},
-		ExceptionsAdded: []PolicyExceptionJSON{}, ExceptionsRemoved: []PolicyExceptionJSON{}, ExceptionsChanged: []ExceptionChangeView{}}
+		ExceptionsAdded: []PolicyExceptionJSON{}, ExceptionsRemoved: []PolicyExceptionJSON{}, ExceptionsChanged: []ExceptionChangeView{},
+		ToolsFields: []FieldChangeView{}, ToolRulesAdded: []PolicyToolRuleJSON{}, ToolRulesRemoved: []PolicyToolRuleJSON{},
+		ToolRulesChanged: []ToolRuleChangeView{}}
+	for _, f := range df.ToolsFields {
+		v.ToolsFields = append(v.ToolsFields, FieldChangeView(f))
+	}
+	for _, r := range df.ToolRulesAdded {
+		v.ToolRulesAdded = append(v.ToolRulesAdded, toolRuleJSON(r))
+	}
+	for _, r := range df.ToolRulesRemoved {
+		v.ToolRulesRemoved = append(v.ToolRulesRemoved, toolRuleJSON(r))
+	}
+	for _, c := range df.ToolRulesChanged {
+		v.ToolRulesChanged = append(v.ToolRulesChanged, ToolRuleChangeView{ID: c.ID, Fields: c.Fields,
+			Before: toolRuleJSON(c.Before), After: toolRuleJSON(c.After)})
+	}
 	for _, e := range df.ExceptionsAdded {
 		v.ExceptionsAdded = append(v.ExceptionsAdded, exceptionJSON(e))
 	}
@@ -948,7 +988,11 @@ func (d Deps) testPolicy(w http.ResponseWriter, r *http.Request) {
 			WriteProblem(w, Invalid("Проверьте введённые данные.", FieldError{"version", "Версия указывается только с policy_id."}))
 			return
 		}
-		spec = req.Spec.spec("draft")
+		var err error
+		if spec, err = req.Spec.spec("draft"); err != nil {
+			WriteProblem(w, policiesProblem(d.Logger, err))
+			return
+		}
 		spec.Version = 1
 		if err := spec.Validate(); err != nil {
 			WriteProblem(w, policiesProblem(d.Logger, &versions.InputError{Errs: unjoin(err)}))

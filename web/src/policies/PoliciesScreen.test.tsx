@@ -25,6 +25,7 @@ const diff = {
   from: 2, to: 1, fields: [{ field: "mode", before: "enforce", after: "monitor" }], rules_added: [], rules_removed: [rule], rules_changed: [],
   reordered: false, weakening: true, weakening_reasons: [{ kind: "rule_removed", rule: "pii-ru" }],
   exceptions_added: [], exceptions_removed: [], exceptions_changed: [],
+  tools_fields: [], tool_rules_added: [], tool_rules_removed: [], tool_rules_changed: [],
 };
 
 const calls: { method: string; url: string; body: unknown }[] = [];
