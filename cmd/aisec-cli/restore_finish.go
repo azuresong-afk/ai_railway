@@ -38,16 +38,23 @@ var copyDirRe = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
 // остановлен» по свежим сессиям нет: копию, снятую минуты назад, она
 // отвергла бы, а отзыв безопасен и при работающем сервере. Копия старше 7 суток —
 // только предупреждение: БД уже восстановлена, отказ оставил бы сессии в
-// силе (решение владельца 25.10.2026).
+// силе (решение владельца 25.10.2026). Без -confirm команда ничего не
+// делает (3Н53 ревью 3.r4): на работающей установке случайный запуск
+// завершил бы все сессии, отозвал токены и записал ложное system.restored.
 func restoreFinish(args []string, dsn string, stdout, stderr io.Writer, now time.Time) error {
 	fset := flag.NewFlagSet("restore-finish", flag.ContinueOnError)
 	fset.SetOutput(stderr)
 	copyDir := fset.String("copy-dir", "", "имя каталога копии для записи аудита (только для сверки, на расчёт не влияет)")
+	confirm := fset.Bool("confirm", false, "подтверждение: БД только что восстановлена из копии, сервер не запущен")
 	if err := fset.Parse(args); err != nil {
 		return err
 	}
 	if fset.NArg() > 0 {
 		return fmt.Errorf("лишние аргументы: %d", fset.NArg())
+	}
+	if !*confirm {
+		return errors.New("команда завершает все сессии консоли и отзывает все токены API; выполняйте её только после " +
+			"восстановления копии и до запуска сервера, с флагом -confirm (restore.sh передаёт его сам)")
 	}
 	if *copyDir != "" && !copyDirRe.MatchString(*copyDir) {
 		return errors.New("-copy-dir: имя каталога без пути, до 128 символов A–Z, a–z, 0–9, «.», «_», «-»")

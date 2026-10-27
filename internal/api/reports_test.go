@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -56,6 +57,14 @@ func (fakeReportChannels) Channel(_ context.Context, id string) (notify.Channel,
 		return notify.Channel{ID: id, Type: notify.TypeEmail, Enabled: true, Settings: notify.Settings{To: []string{"soc@example.org"}}}, nil
 	}
 	return notify.Channel{}, notify.ErrNotFound
+}
+
+func (f fakeReportChannels) Channels(ctx context.Context) ([]notify.Channel, error) {
+	c, err := f.Channel(ctx, testReportChannel)
+	c.Name = "Почта SOC"
+	return []notify.Channel{c, {ID: "01900000-0000-7000-8000-0000000000c2", Name: "Вебхук", Type: notify.TypeWebhook, Enabled: true},
+		{ID: "01900000-0000-7000-8000-0000000000c3", Name: "Выключенная почта", Type: notify.TypeEmail,
+			Settings: notify.Settings{To: []string{"x@example.org"}}}}, err
 }
 
 // newTestReports собирает сервис отчётов на подменах источников.
@@ -188,7 +197,7 @@ func TestReportsInvalidParams(t *testing.T) {
 	day := time.Now().UTC().Format("2006-01-02")
 	future := time.Now().UTC().Add(72 * time.Hour).Format("2006-01-02")
 	for _, q := range []string{
-		"", "from=" + day, "from=" + day + "&to=" + day + "&format=pdf", "from=" + day + "&to=" + day + "&x=1",
+		"from=" + day, "to=" + day, "from=" + day + "&to=" + day + "&format=pdf", "from=" + day + "&to=" + day + "&x=1",
 		"from=2024-01-01&to=2026-01-01", "from=" + future + "&to=" + future, "from=2026-02-30&to=" + day,
 		"from=" + day + "&to=" + day + "&app=A%2FB", "from=" + day + "&from=" + day + "&to=" + day,
 	} {
@@ -258,6 +267,25 @@ func TestReportSchedulesViaAPI(t *testing.T) {
 		mustProblem(t, e.call(s, "GET", "/api/v1/report-schedules/"+sch.ID+"/runs", "", false), 403, CodeForbidden)
 	}
 	mustProblem(t, e.call(session{}, "GET", "/api/v1/report-schedules", "", false), 401, CodeUnauthorized)
+
+	// 3Н46 ревью 3.r4: каналы для расписания — без права на каналы
+	// уведомлений, только ID и название включённых почтовых.
+	for _, login := range []string{"admin", "sysadm"} {
+		w := e.call(e.mustLogin(t, login), "GET", "/api/v1/report-channels", "", false)
+		if w.Code != 200 || w.Body.String() != `{"items":[{"id":"`+testReportChannel+`","name":"Почта SOC"}]}`+"\n" {
+			t.Errorf("%s: каналы %d %s", login, w.Code, w.Body)
+		}
+	}
+	for _, login := range []string{"auditor", "analyst", "owner"} {
+		mustProblem(t, e.call(e.mustLogin(t, login), "GET", "/api/v1/report-channels", "", false), 403, CodeForbidden)
+	}
+	// Консоль отличает владельца приложения по own_scope, а не по applications.read.
+	for login, own := range map[string]bool{"owner": true, "sysadm": false, "analyst": false} {
+		me := decode[MeResponse](t, e.call(e.mustLogin(t, login), "GET", "/api/v1/me", "", false).Body.Bytes())
+		if me.OwnScope == nil || slices.Contains(me.OwnScope, "reports.read") != own || !slices.Contains(me.Permissions, "reports.read") {
+			t.Errorf("%s: own_scope %v, permissions %v", login, me.OwnScope, me.Permissions)
+		}
+	}
 
 	// Рассылка не шире прав автора (3В31 ревью 3.r4): администратор системы
 	// без incidents.read не рассылает отчёт по инцидентам, а в его сводном —

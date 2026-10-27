@@ -281,7 +281,8 @@ func (o pgOps) pruneCounts(ctx context.Context, before time.Time) error {
 	return err
 }
 
-// saveState — см. periodicOps.
+// saveState — см. periodicOps. Начало серии сбоев (failing_since) берётся
+// из прежнего состояния, если серия продолжается.
 func (o pgOps) saveState(ctx context.Context, ruleID string, st RuleState) error {
 	b, err := json.Marshal(st)
 	for err == nil && len(b) > maxStateJSON && len(st.Keys) > 0 {
@@ -292,7 +293,10 @@ func (o pgOps) saveState(ctx context.Context, ruleID string, st RuleState) error
 		return err
 	}
 	_, err = o.tx.Exec(ctx, `INSERT INTO alert_rule_state (rule_id, evaluated_at, state) VALUES ($1, $2, $3)
-		ON CONFLICT (rule_id) DO UPDATE SET evaluated_at = EXCLUDED.evaluated_at, state = EXCLUDED.state`,
+		ON CONFLICT (rule_id) DO UPDATE SET evaluated_at = EXCLUDED.evaluated_at,
+			state = CASE WHEN EXCLUDED.state ? 'failing_since' AND alert_rule_state.state ? 'failing_since'
+				THEN jsonb_set(EXCLUDED.state, '{failing_since}', alert_rule_state.state->'failing_since')
+				ELSE EXCLUDED.state END`,
 		ruleID, st.EvaluatedAt, b)
 	return err
 }

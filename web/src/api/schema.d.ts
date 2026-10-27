@@ -4880,7 +4880,7 @@ export interface paths {
          *     версии (ADR-0016): новая версия поверх `base_version` (409, если политику уже изменили).
          *     Условие: детектор обязательно и хотя бы одно из `pattern`, `fragment`, `app`, `user`
          *     (детектор целиком для всех приложений не отключается — 400; исключение для `canary` —
-         *     только с `fragment`, иначе 400, 3Н42); `category` и `source` — дополнительные. Срок обязателен: `expires_in_days` 1–365 или `expires_at` не дальше 365
+         *     только с `fragment`, иначе 400, 3Н42); `category` и `source` — дополнительные; у `canary` срок не больше 7 суток (3Н49). Срок обязателен: `expires_in_days` 1–365 или `expires_at` не дальше 365
          *     суток, по умолчанию 30 суток. Автора и время ставит сервер. Добавление — ослабление
          *     защиты: текущий пароль или код TOTP в теле (без них — 403, неверные — 403
          *     `reauthentication_failed`), запись `policy.exception_add` с `weakening` (DM-40).
@@ -4945,7 +4945,7 @@ export interface paths {
         /**
          * Изменить срок исключения — новая версия политики
          * @description Право `policies.manage`. Новый срок — от момента сохранения (`expires_in_days` 1–365 или
-         *     `expires_at`). Продление — ослабление защиты: пароль или код TOTP и `weakening` в записи
+         *     `expires_at`; у `canary` — не больше 7 суток, 3Н49). Продление — ослабление защиты: пароль или код TOTP и `weakening` в записи
          *     `policy.exception_extend` (DM-40); сокращение срока — нет.
          */
         post: {
@@ -7110,15 +7110,16 @@ export interface paths {
          *     сводный отчёт по приложению не входят). Владельцу приложения доступен только `summary` с `app`
          *     своего приложения; чужое приложение — 404, другой вид — 403. Каждая выгрузка пишет
          *     `data.export` до выдачи данных (DM-41); без записи отчёт не выдаётся (503). Одновременно — одна
-         *     выгрузка на пользователя, сверх предела 429.
+         *     выгрузка на пользователя, сверх предела 429. Без `from` и `to` — последние 30 суток по сегодняшний
+         *     день; одна дата без другой — 400.
          */
         get: {
             parameters: {
-                query: {
-                    /** @description Первый день периода, ГГГГ-ММ-ДД */
-                    from: string;
-                    /** @description Последний день периода включительно, ГГГГ-ММ-ДД */
-                    to: string;
+                query?: {
+                    /** @description Первый день периода, ГГГГ-ММ-ДД; вместе с `to` */
+                    from?: string;
+                    /** @description Последний день периода включительно, ГГГГ-ММ-ДД; вместе с `from` */
+                    to?: string;
                     format?: "html" | "csv" | "xlsx";
                     /** @description Slug приложения */
                     app?: string;
@@ -7430,6 +7431,52 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/report-channels": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Почтовые каналы для рассылки отчётов
+         * @description Право `reports.schedules.manage`. Включённые почтовые каналы уведомлений с получателями —
+         *     только ID и название, без адресов и настроек сервера: тот, кто ведёт расписания, выбирает
+         *     канал без права `notify_channels.read`.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Каналы */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ReportChannelList"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -7516,10 +7563,10 @@ export interface components {
             };
             notifications: {
                 /**
-                 * @description alert_job_stale (РСБ.7, DM-44) — фоновая задача правил «частота», «аномалия» и «бюджет» не отмечала проход дольше 5 минут при работающем сервере, 3В17 ревью 3.r2. ca_expiry (ИАФ.10) — действующему корню внутреннего УЦ осталось 60 суток и меньше, нужна ротация `aisec-cli keys rotate-ca`; system.alert пишется за 60 суток (ca_expiry) и за 7 суток (ca_expiry:critical), 3В5 ревью 3.r1. customer_cert_expiry (ЗИ.4) — сертификату заказчика для адреса шлюза осталось 30 суток и меньше; system.alert пишется за 30 суток (customer_cert_expiry) и за 7 суток (customer_cert_expiry:critical), задача 3.27
+                 * @description gateway_clock (ВРМ.1) — часы шлюза на связи в последнем heartbeat расходятся с часами сервера больше чем на минуту, 3Н40 ревью 3.r3. gateway_tls (ЗИ.4) — шлюз на текущем пакете конфигурации дольше 10 минут после его сборки отвечает приложениям не тем сертификатом, что загружен в консоли (по часам шлюза он ещё не действует или истёк; без сертификата заказчика — не своим), 3Н43 ревью 3.r3. alert_job_stale (РСБ.7, DM-44) — фоновая задача правил «частота», «аномалия» и «бюджет» не отмечала проход дольше 5 минут при работающем сервере, 3В17 ревью 3.r2. ca_expiry (ИАФ.10) — действующему корню внутреннего УЦ осталось 60 суток и меньше, нужна ротация `aisec-cli keys rotate-ca`; system.alert пишется за 60 суток (ca_expiry) и за 7 суток (ca_expiry:critical), 3В5 ревью 3.r1. customer_cert_expiry (ЗИ.4) — сертификату заказчика для адреса шлюза осталось 30 суток и меньше; system.alert пишется за 30 суток (customer_cert_expiry) и за 7 суток (customer_cert_expiry:critical), задача 3.27
                  * @enum {string}
                  */
-                condition: "account_lockout" | "access_denied" | "audit_chain" | "audit_storage" | "integrity" | "time_sync" | "config_bundle" | "config_bundle_lag" | "test_build" | "gateway_offline" | "events_dropped" | "reports_stale" | "cert_expiry" | "ca_expiry" | "customer_cert_expiry" | "alert_job_stale";
+                condition: "account_lockout" | "access_denied" | "audit_chain" | "audit_storage" | "integrity" | "time_sync" | "config_bundle" | "config_bundle_lag" | "test_build" | "gateway_offline" | "events_dropped" | "reports_stale" | "cert_expiry" | "gateway_clock" | "gateway_tls" | "ca_expiry" | "customer_cert_expiry" | "alert_job_stale";
                 /** @enum {string} */
                 requirement: "ИАФ.4" | "ИАФ.10" | "УПД.6" | "РСБ.4" | "РСБ.5" | "РСБ.7" | "ОЦЛ.1" | "ОЦЛ.3" | "ОЦЛ.5" | "ВРМ.1" | "ЗИ.4";
                 /** @description Компоненты с активным условием (integrity — server или gateway:<ID>, config_bundle_lag, gateway_offline, events_dropped, reports_stale, cert_expiry — gateway:<ID>); каждое ведётся отдельно и пишется в system.alert (В18 ревью 2.r3b), а возникшее условие порождает оповещение системного правила (задача 3.11 этапа 3, DM-42–DM-44). test_build (ОЦЛ.1) — компоненты, собранные с тестовым ключом манифеста (Н34 ревью 2.r4); integrity шлюза поднимает и откат выпуска, и чужой ключ проверки пакетов (В19, В20 ревью 2.r4). DM-44: gateway_offline — шлюз не на связи дольше трёх периодов heartbeat, events_dropped — счётчик отброшенных событий вырос за 15 минут, cert_expiry — сертификат истекает меньше чем через 14 суток, reports_stale — итог целостности старше двух часов или не приходит (Н29) */
@@ -8502,6 +8549,8 @@ export interface components {
             };
             /** @description Разрешения, действующие в сессии, включая `session` и, после второго фактора, `self`. Консоль скрывает недоступное; права проверяет сервер */
             permissions: string[];
+            /** @description Разрешения из `permissions` с областью `own` — только на свои объекты (УПД.8), например `reports.read` владельца приложения */
+            own_scope?: string[];
             /** @description Часовой пояс показа времени из настроек установки (ВРМ.2): консоль показывает даты в нём */
             timezone: string;
         };
@@ -9458,6 +9507,13 @@ export interface components {
             created_at: string;
             /** Format: date-time */
             sent_at?: string;
+        };
+        ReportChannelList: {
+            items: {
+                /** Format: uuid */
+                id: string;
+                name: string;
+            }[];
         };
         ReportRunList: {
             items: components["schemas"]["ReportRun"][];

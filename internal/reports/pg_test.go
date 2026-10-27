@@ -267,6 +267,13 @@ func TestPGReportSchedules(t *testing.T) {
 	if err := e.store.FinishRun(ctx, r, nil); err == nil {
 		t.Error("текст ошибки принят в журнал")
 	}
+	// 3Н47 ревью 3.r4: роль сервера удаляет завершённые запуски старше срока.
+	if n, err := e.store.PruneRuns(ctx, now); err != nil || n != 0 {
+		t.Fatalf("очистка свежего журнала: %d %v", n, err)
+	}
+	if n, err := e.store.PruneRuns(ctx, now.Add(time.Second)); err != nil || n != 1 {
+		t.Fatalf("очистка старого запуска: %d %v", n, err)
+	}
 	// Приложение не удаляет журнал доставки напрямую, только вместе с расписанием.
 	if err := e.store.DeleteSchedule(ctx, s.ID, func(old reports.Schedule) audit.Entry { return entry("report_schedule.delete", old.ID) }); err != nil {
 		t.Fatal(err)

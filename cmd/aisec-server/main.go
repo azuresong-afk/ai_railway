@@ -582,15 +582,15 @@ func newStatus(ctx context.Context, cfg *serverConfig, db *store.DB, auditLog *a
 	if err != nil {
 		return nil, err
 	}
-	customerCert := func(ctx context.Context) (string, time.Time, bool, error) {
+	customerCert := func(ctx context.Context) (sysstatus.CustomerCert, bool, error) {
 		t, err := appStore.GatewayTLS(ctx, audit.DefaultOrgID)
 		switch {
 		case errors.Is(err, apps.ErrNoGatewayTLS):
-			return "", time.Time{}, false, nil
+			return sysstatus.CustomerCert{}, false, nil
 		case err != nil:
-			return "", time.Time{}, false, err
+			return sysstatus.CustomerCert{}, false, err
 		}
-		return t.Host, t.Cert.NotAfter, true, nil
+		return sysstatus.CustomerCert{Host: t.Host, NotAfter: t.Cert.NotAfter, Fingerprint: t.Cert.Fingerprint}, true, nil
 	}
 	failed := len(selftestRes.Failures)
 	if !selftestRes.CryptoOK {

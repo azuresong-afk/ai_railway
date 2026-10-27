@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/netip"
+	"sync"
 	"time"
 
 	"github.com/azuresong-afk/ai_railway/internal/audit"
@@ -58,6 +59,12 @@ const (
 	MaxRunsPage = 100
 	// buildTimeout — предел построения отчёта.
 	buildTimeout = 2 * time.Minute
+	// RunRetention — срок хранения завершённых запусков журнала рассылки
+	// (3Н47 ревью 3.r4): как у закрытых оповещений по умолчанию. Факт
+	// выгрузки остаётся в журнале аудита (data.export).
+	RunRetention = 365 * 24 * time.Hour
+	// pruneEvery — как часто опрос удаляет запуски старше RunRetention.
+	pruneEvery = time.Hour
 )
 
 // Run — запуск рассылки: строка журнала доставки и очередь повторов.
@@ -104,6 +111,9 @@ type Store interface {
 	// FinishRun сохраняет итог попытки; rec — запись аудита той же транзакции.
 	FinishRun(ctx context.Context, r Run, rec *audit.Entry) error
 	Record(ctx context.Context, rec audit.Entry) error
+	// PruneRuns удаляет завершённые (sent, failed) запуски, обновлённые
+	// раньше before; возвращает число удалённых.
+	PruneRuns(ctx context.Context, before time.Time) (int64, error)
 }
 
 // Mailer — отправка письма с отчётом (*notify.Service).
@@ -114,6 +124,33 @@ type Mailer interface {
 // ChannelReader — чтение каналов уведомлений (*notify.Service).
 type ChannelReader interface {
 	Channel(ctx context.Context, id string) (notify.Channel, error)
+	Channels(ctx context.Context) ([]notify.Channel, error)
+}
+
+// ChannelRef — почтовый канал для выбора в расписании: без адресов и
+// настроек сервера (3Н46 ревью 3.r4).
+type ChannelRef struct {
+	ID   string
+	Name string
+}
+
+// MailChannels — включённые почтовые каналы с получателями, к которым можно
+// привязать расписание.
+func (s *Service) MailChannels(ctx context.Context) ([]ChannelRef, error) {
+	out := []ChannelRef{}
+	if s.o.Channels == nil {
+		return out, nil
+	}
+	list, err := s.o.Channels.Channels(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, c := range list {
+		if c.Type == notify.TypeEmail && c.Enabled && len(c.Settings.To) > 0 {
+			out = append(out, ChannelRef{ID: c.ID, Name: c.Name})
+		}
+	}
+	return out, nil
 }
 
 // Options — зависимости сервиса.
@@ -133,6 +170,9 @@ type Options struct {
 // Service — построение отчётов и расписания рассылки.
 type Service struct {
 	o Options
+	// prunedAt — последняя очистка журнала рассылки (только из Tick).
+	mu       sync.Mutex
+	prunedAt time.Time
 }
 
 // New создаёт сервис.
@@ -346,6 +386,9 @@ func (s *Service) Tick(ctx context.Context) error {
 	}); err != nil {
 		return err
 	}
+	if err := s.prune(ctx, now); err != nil {
+		return err
+	}
 	for n := 0; n < enqueueBatch; n++ {
 		r, sc, ok, err := s.o.Store.ClaimRun(ctx, s.now(), runLease)
 		if err != nil {
@@ -359,6 +402,22 @@ func (s *Service) Tick(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// prune раз в pruneEvery удаляет завершённые запуски старше RunRetention
+// (3Н47 ревью 3.r4: журнал рассылки не растёт бесконечно).
+func (s *Service) prune(ctx context.Context, now time.Time) error {
+	s.mu.Lock()
+	due := now.Sub(s.prunedAt) >= pruneEvery
+	if due {
+		s.prunedAt = now
+	}
+	s.mu.Unlock()
+	if !due {
+		return nil
+	}
+	_, err := s.o.Store.PruneRuns(ctx, now.Add(-RunRetention))
+	return err
 }
 
 // Run выполняет Tick каждые interval до отмены ctx.
@@ -418,7 +477,8 @@ func (s *Service) deliver(ctx context.Context, r Run, sc Schedule, loc *time.Loc
 // send строит отчёт, пишет data.export и отправляет письмо; возвращает код
 // ошибки (пусто — отправлено). Запись аудита — до отправки и отдельной
 // транзакцией (3В32 ревью 3.r4): без записи письмо не уходит, как и
-// выгрузка по запросу.
+// выгрузка по запросу. Адреса получателей в записи — те, по которым уходит
+// именно это письмо (3Н47 ревью 3.r4): запись делается из ReportMail.Before.
 func (s *Service) send(ctx context.Context, r Run, sc Schedule, loc *time.Location) string {
 	per, err := NewPeriod(r.PeriodFirst, r.PeriodLast, loc, s.now())
 	if err != nil {
@@ -438,19 +498,26 @@ func (s *Service) send(ctx context.Context, r Run, sc Schedule, loc *time.Locati
 	if s.o.Mailer == nil {
 		return ErrCodeChannel
 	}
+	details := map[string]any{"report": sc.Report, "format": sc.Format, "from": r.PeriodFirst,
+		"to": r.PeriodLast, "rows": doc.Rows(), "channel_id": sc.ChannelID, "run_id": r.ID, "attempt": r.Attempts, "scheduled": true}
 	rec := audit.Entry{OrgID: s.o.OrgID, Actor: systemActor(sc.ID), Action: "data.export", Object: audit.Object{Type: "report_schedule", ID: sc.ID},
-		Result: audit.ResultSuccess, Details: map[string]any{"report": sc.Report, "format": sc.Format, "from": r.PeriodFirst,
-			"to": r.PeriodLast, "rows": doc.Rows(), "channel_id": sc.ChannelID, "run_id": r.ID, "attempt": r.Attempts, "scheduled": true}}
-	if err := s.o.Store.Record(ctx, rec); err != nil {
-		s.o.Logger.Error("рассылка отчётов: выгрузка не записана в журнал аудита, письмо не отправлено", "class", "reports",
-			"schedule", sc.ID, "error", err)
-		return ErrCodeAudit
-	}
+		Result: audit.ResultSuccess, Details: details}
+	var auditErr error
 	mail := notify.ReportMail{ID: r.ID, Subject: "[AISec] " + Title(sc.Report) + ": " + per.Label(),
 		Body: fmt.Sprintf("%s за период %s.\n\nОтчёт во вложении. Расписание: %s.\nСформирован платформой AISec; содержимого запросов и ответов в отчёте нет.",
 			Title(sc.Report), per.Label(), sc.Name),
-		Filename: fmt.Sprintf("aisec-%s-%s_%s.%s", sc.Report, per.First, per.Last, sc.Format), ContentType: ContentType(sc.Format), Data: buf.Bytes()}
+		Filename: fmt.Sprintf("aisec-%s-%s_%s.%s", sc.Report, per.First, per.Last, sc.Format), ContentType: ContentType(sc.Format), Data: buf.Bytes(),
+		Before: func(to []string) error {
+			details["recipients"] = to
+			auditErr = s.o.Store.Record(ctx, rec)
+			return auditErr
+		}}
 	if err := s.o.Mailer.SendReport(ctx, sc.ChannelID, mail); err != nil {
+		if auditErr != nil {
+			s.o.Logger.Error("рассылка отчётов: выгрузка не записана в журнал аудита, письмо не отправлено", "class", "reports",
+				"schedule", sc.ID, "error", auditErr)
+			return ErrCodeAudit
+		}
 		if errors.Is(err, notify.ErrNotFound) {
 			return ErrCodeChannel
 		}

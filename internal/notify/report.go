@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"mime"
+	"slices"
 	"strings"
 	"time"
 )
@@ -26,6 +27,11 @@ type ReportMail struct {
 	Filename    string
 	ContentType string
 	Data        []byte
+	// Before — вызывается после чтения канала и до отправки с адресами
+	// получателей канала (3Н47 ревью 3.r4: data.export рассылки фиксирует,
+	// кому ушёл отчёт, ровно по адресам этой отправки). Ошибка — письмо не
+	// отправляется, SendReport возвращает её как есть.
+	Before func(to []string) error
 }
 
 // SendReport отправляет отчёт через почтовый канал channelID. Отключённый
@@ -47,6 +53,11 @@ func (s *Service) SendReport(ctx context.Context, channelID string, m ReportMail
 	sec, err := s.secrets(ctx, c)
 	if err != nil {
 		return failed(ErrCodeConfig)
+	}
+	if m.Before != nil {
+		if err := m.Before(slices.Clone(c.Settings.To)); err != nil {
+			return err
+		}
 	}
 	return s.transport.SendRaw(ctx, c, sec, reportMessage(m, c.Settings.From, c.Settings.To, s.now()))
 }

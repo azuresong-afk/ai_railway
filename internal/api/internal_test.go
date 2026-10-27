@@ -160,6 +160,18 @@ func TestHeartbeatHandler(t *testing.T) {
 	if w := do(h, http.MethodPost, "/internal/v1/heartbeat", `{"version":"1","stopping":true}`, "Content-Type", "application/json"); w.Code != http.StatusBadRequest {
 		t.Fatalf("stopping без started_at: %d %s", w.Code, w.Body)
 	}
+	// Часы и отпечаток сертификата адреса приложений (3Н40, 3Н43 ревью 3.r3):
+	// отпечаток — пусто или 64 строчные шестнадцатеричные цифры.
+	fp := strings.Repeat("ab", 32)
+	for body, want := range map[string]int{
+		`{"version":"1","time":"2026-10-21T10:00:00Z","tls_fingerprint":"` + fp + `"}`: http.StatusOK,
+		`{"version":"1","tls_fingerprint":"` + strings.ToUpper(fp) + `"}`:              http.StatusBadRequest,
+		`{"version":"1","tls_fingerprint":"ab"}`:                                       http.StatusBadRequest,
+	} {
+		if w := do(h, http.MethodPost, "/internal/v1/heartbeat", body, "Content-Type", "application/json"); w.Code != want {
+			t.Fatalf("%s: %d %s", body, w.Code, w.Body)
+		}
+	}
 	// Шлюз, которого нет в реестре (отозван между проверками), — 401.
 	h2, _, err := NewInternal(InternalOptions{Logger: quiet(), Hasher: testHasher(t), Gateways: svc, Authorizer: asGateway("nope")})
 	if err != nil {
@@ -195,7 +207,8 @@ func FuzzHeartbeatRequest(f *testing.F) {
 		`{"version":"1","selftest":{"ok":"да"}}`, `{"version":"1","integrity":null}`, `{"version":"1","selftest":[]}`,
 		`{"version":"1","started_at":"2026-10-21T10:00:00.123456789Z","stopping":true}`, `{"version":"1","stopping":true}`,
 		`{"version":"1","started_at":"2026-10-21T10:00:00Z","budget":{"months":[{"month":"2026-10","apps":[{"app":"crm","cost":5,"requests":1}]}]}}`,
-		`{"version":"1","budget":{"months":[{"month":"2026-13","apps":[]}]}}`} {
+		`{"version":"1","budget":{"months":[{"month":"2026-13","apps":[]}]}}`,
+		`{"version":"1","time":"2026-10-21T10:00:00Z","tls_fingerprint":""}`, `{"version":"1","tls_fingerprint":"zz"}`} {
 		f.Add(s, "application/json")
 	}
 	f.Add(`{"version":"1"}`, "text/plain")

@@ -6,7 +6,7 @@ import { formatAbsolute } from "../events/format";
 import { Button } from "../ui/Button";
 import { Field, Input } from "../ui/Field";
 import { Banner, Table, Td, Th } from "../ui/Layout";
-import { type PolicyExceptionItem, policiesApi } from "./api";
+import { exceptionMaxDays, type PolicyExceptionItem, policiesApi } from "./api";
 
 const sourceText = { user: "запрос", rag: "RAG", tool: "инструмент", output: "ответ" } as const;
 
@@ -110,10 +110,11 @@ export function ExceptionsPanel({ policyId, canManage, canEvents, mfa }: { polic
 
 function ExtendDialog({ policyId, version, item, mfa, onClose }: { policyId: string; version: number; item: PolicyExceptionItem; mfa: boolean; onClose: () => void }) {
   const qc = useQueryClient();
-  const [days, setDays] = useState("30");
+  const max = exceptionMaxDays(item.detector);
+  const [days, setDays] = useState(String(Math.min(30, max)));
   const [secret, setSecret] = useState("");
   const n = Number(days);
-  const ok = Number.isInteger(n) && n >= 1 && n <= 365;
+  const ok = Number.isInteger(n) && n >= 1 && n <= max;
   const m = useMutation({
     mutationFn: () => policiesApi.extendException(policyId, item.id, { base_version: version, expires_in_days: n, ...(mfa ? { code: secret } : { password: secret }) }),
     onSuccess: async () => {
@@ -131,7 +132,7 @@ function ExtendDialog({ policyId, version, item, mfa, onClose }: { policyId: str
           if (ok && secret) m.mutate();
         }}
       >
-        <Field label="Срок, суток" hint="От 1 до 365." {...(!ok ? { error: "Введите целое число от 1 до 365." } : {})}>
+        <Field label="Срок, суток" hint={max < 365 ? `От 1 до ${max}: исключение для канарейки почти отключает защиту системного промпта.` : "От 1 до 365."} {...(!ok ? { error: `Введите целое число от 1 до ${max}.` } : {})}>
           {({ id, describedBy, invalid }) => <Input id={id} aria-describedby={describedBy} aria-invalid={invalid} autoFocus inputMode="numeric" value={days} onChange={(e) => setDays(e.target.value)} />}
         </Field>
         <Banner kind="warning">

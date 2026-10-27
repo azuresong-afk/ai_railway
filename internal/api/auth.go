@@ -124,6 +124,10 @@ type MeResponse struct {
 	// Permissions — разрешения, действующие в сессии (консоль скрывает
 	// недоступные действия; права всё равно проверяет сервер).
 	Permissions []string `json:"permissions"`
+	// OwnScope — разрешения из Permissions с областью own, только на свои
+	// объекты (УПД.8): консоль по ним сужает экраны (3Н46 ревью 3.r4 —
+	// отчёты владельца приложения).
+	OwnScope []string `json:"own_scope"`
 	// Timezone — часовой пояс показа времени из настроек установки (ВРМ.2,
 	// В26 ревью 2.r5): консоль показывает все даты в нём.
 	Timezone string `json:"timezone"`
@@ -175,6 +179,12 @@ func (d Deps) writeMe(w http.ResponseWriter, r *http.Request, c auth.Caller) {
 		return
 	}
 	resp.Permissions = g.Names()
+	resp.OwnScope = []string{}
+	for _, n := range resp.Permissions {
+		if g.Scope(n) == auth.ScopeOwn {
+			resp.OwnScope = append(resp.OwnScope, n)
+		}
+	}
 	left, warn, err := d.Auth.PasswordExpiresIn(r.Context(), c.User)
 	if err != nil {
 		WriteProblem(w, authProblem(d.Logger, err))

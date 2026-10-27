@@ -109,10 +109,18 @@ type Options struct {
 	// CANotAfter — срок действующего корня внутреннего УЦ; нулевое время —
 	// УЦ не подключён, условия ca_expiry нет (3В5 ревью 3.r1).
 	CANotAfter time.Time
-	// CustomerCert — сертификат заказчика для адреса шлюза (задача 3.27):
-	// имя адреса и срок цепочки; ok = false — сертификат не загружен. nil —
-	// условия customer_cert_expiry нет.
-	CustomerCert func(ctx context.Context) (host string, notAfter time.Time, ok bool, err error)
+	// CustomerCert — сертификат заказчика для адреса шлюза (задача 3.27);
+	// ok = false — сертификат не загружен. nil — условий customer_cert_expiry
+	// и gateway_tls нет.
+	CustomerCert func(ctx context.Context) (cert CustomerCert, ok bool, err error)
+}
+
+// CustomerCert — сведения о сертификате заказчика для адреса шлюза.
+type CustomerCert struct {
+	Host     string
+	NotAfter time.Time
+	// Fingerprint — SHA-256 листового сертификата, hex (gateway_tls.fingerprint).
+	Fingerprint string
 }
 
 // Service собирает состояние системы и ведёт уведомления.
@@ -274,8 +282,10 @@ func (s *Service) collect(ctx context.Context) collected {
 		}
 	}
 
-	// Шлюзы и счётчики событий.
+	// Шлюзы и счётчики событий; active — действующие шлюзы на связи (для
+	// условия gateway_tls).
 	var stats map[string]GatewayEvents
+	var active []gwregistry.Gateway
 	if s.o.Store != nil {
 		sctx, cancel := s.dbCtx(ctx)
 		var err error
@@ -306,6 +316,9 @@ func (s *Service) collect(ctx context.Context) collected {
 			}
 			if g.Status == gwregistry.StatusActive {
 				s.blinding(&c, g, &gs, stats, now)
+				if gs.State == GatewayOnline {
+					active = append(active, g)
+				}
 				code := integrityGateway + g.ID
 				var issues []map[string]any
 				if gs.Selftest != nil && !gs.Selftest.OK {
@@ -377,6 +390,7 @@ func (s *Service) collect(ctx context.Context) collected {
 	}
 
 	// Пакет конфигурации шлюзов (В16, Н28 ревью 2.r3b).
+	var bundle *BundleHealth
 	if s.o.Bundle != nil {
 		bctx, cancel := context.WithTimeout(ctx, bundleTimeout)
 		h, err := s.o.Bundle(bctx)
@@ -385,6 +399,7 @@ func (s *Service) collect(ctx context.Context) collected {
 		case err != nil:
 			s.unavailable(&c, "bundle", err)
 		case h != nil:
+			bundle = h
 			s.bundle(&c, h, now)
 		}
 	}
@@ -400,7 +415,7 @@ func (s *Service) collect(ctx context.Context) collected {
 	}
 	if s.o.CustomerCert != nil {
 		cctx, cancel := s.dbCtx(ctx)
-		host, notAfter, ok, err := s.o.CustomerCert(cctx)
+		cert, ok, err := s.o.CustomerCert(cctx)
 		cancel()
 		switch {
 		case err != nil:
@@ -409,12 +424,15 @@ func (s *Service) collect(ctx context.Context) collected {
 			// Сертификат удалён — условия снимаются.
 			c.conditions[ConditionCustomerCertExpiry], c.conditions[customerCertCritical] = false, false
 		default:
-			left := notAfter.Sub(now)
-			d := map[string]any{"host": host, "cert_not_after": notAfter.UTC().Format(time.RFC3339),
+			left := cert.NotAfter.Sub(now)
+			d := map[string]any{"host": cert.Host, "cert_not_after": cert.NotAfter.UTC().Format(time.RFC3339),
 				"days_left": max(int(left/(24*time.Hour)), 0)}
 			c.conditions[ConditionCustomerCertExpiry] = left <= CustomerCertExpiryWarn
 			c.conditions[customerCertCritical] = left <= CustomerCertExpiryCritical
 			c.details[ConditionCustomerCertExpiry], c.details[customerCertCritical] = d, d
+		}
+		if err == nil {
+			s.gatewayTLS(&c, active, cert, ok, bundle, now)
 		}
 	}
 	if s.o.Store != nil {
@@ -445,7 +463,12 @@ func (s *Service) alertJob(ctx context.Context, c *collected, now time.Time) {
 		d["last_run_at"] = job.LastRunAt.UTC().Format(time.RFC3339)
 		d["age_seconds"] = int64(job.Age / time.Second)
 	}
-	c.conditions[ConditionAlertJob] = stale
+	// 3Н48 ревью 3.r4: проход идёт, но правило падает на каждом проходе.
+	if job.FailingRules > 0 {
+		d["failing_rules"] = job.FailingRules
+		d["failing_since"] = job.FailingSince.UTC().Format(time.RFC3339)
+	}
+	c.conditions[ConditionAlertJob] = stale || job.FailingRules > 0
 	c.details[ConditionAlertJob] = d
 }
 
@@ -473,6 +496,13 @@ func (s *Service) blinding(c *collected, g gwregistry.Gateway, gs *GatewayStatus
 		c.details[code] = with(map[string]any{"cert_not_after": g.CertNotAfter.UTC()})
 	}
 	// Шлюз без связи не проверяется на устаревание: это условие offline.
+	if online && g.ClockSkew != nil {
+		code := ConditionGatewayClock + ":" + g.ID
+		skew := *g.ClockSkew
+		c.conditions[code] = skew > GatewayClockSkewWarn || skew < -GatewayClockSkewWarn
+		c.details[code] = with(map[string]any{"skew_seconds": int64(skew / time.Second),
+			"warn_seconds": int64(GatewayClockSkewWarn / time.Second)})
+	}
 	if online {
 		code := ConditionReportsStale + ":" + g.ID
 		stale := false
@@ -490,6 +520,31 @@ func (s *Service) blinding(c *collected, g gwregistry.Gateway, gs *GatewayStatus
 			d["checked_at"] = gs.Integrity.CheckedAt
 		}
 		c.details[code] = d
+	}
+}
+
+// gatewayTLS — условие ЗИ.4 по шлюзам на связи (3Н43 ревью 3.r3): шлюз
+// применил текущий пакет, но дольше BundleLagAfter после его сборки
+// отвечает приложениям не тем сертификатом, что загружен в консоли (без
+// сертификата заказчика — своим). Пакет не собран или шлюз на другой
+// версии — это условия config_bundle и config_bundle_lag, здесь не
+// проверяются. Шлюз, который отпечаток не присылает, пропускается.
+func (s *Service) gatewayTLS(c *collected, active []gwregistry.Gateway, cert CustomerCert, loaded bool, h *BundleHealth, now time.Time) {
+	if h == nil || h.Failed || h.Version == 0 {
+		return
+	}
+	want := ""
+	if loaded {
+		want = cert.Fingerprint
+	}
+	for _, g := range active {
+		if g.TLSFingerprint == nil || g.BundleETag == "" || g.BundleETag != h.ETag {
+			continue
+		}
+		code := ConditionGatewayTLS + ":" + g.ID
+		c.conditions[code] = *g.TLSFingerprint != want && now.Sub(h.BuiltAt) > BundleLagAfter
+		c.details[code] = map[string]any{"component": componentGateway + g.ID, "gateway_name": g.Name,
+			"gateway_fingerprint": *g.TLSFingerprint, "expected_fingerprint": want, "host": cert.Host}
 	}
 }
 
@@ -566,9 +621,11 @@ var conditionInfo = []struct{ code, requirement, title string }{
 	{ConditionEventsDropped, "РСБ.7", "Шлюз отбрасывает события"},
 	{ConditionReportsStale, "ОЦЛ.5", "Нет свежего итога контроля целостности шлюза"},
 	{ConditionCertExpiry, "ИАФ.10", "Скоро истекает сертификат шлюза"},
+	{ConditionGatewayClock, "ВРМ.1", "Часы шлюза расходятся с часами сервера больше чем на минуту"},
+	{ConditionGatewayTLS, "ЗИ.4", "Шлюз отвечает приложениям не тем сертификатом, что загружен в консоли"},
 	{ConditionCAExpiry, "ИАФ.10", "Истекает корень внутреннего УЦ: нужна ротация (aisec-cli keys rotate-ca)"},
 	{ConditionCustomerCertExpiry, "ЗИ.4", "Скоро истекает сертификат заказчика для адреса шлюза: загрузите новый"},
-	{ConditionAlertJob, "РСБ.7", "Фоновая задача правил оповещений не выполняется: правила частоты, аномалий и бюджетов молчат"},
+	{ConditionAlertJob, "РСБ.7", "Фоновая задача правил оповещений не выполняется или правило падает на каждом проходе: правила частоты, аномалий и бюджетов молчат"},
 }
 
 // family — условие раздела 7, к которому относится код (integrity:server —
@@ -636,7 +693,7 @@ func (s *Service) Status(ctx context.Context) Status {
 		case ConditionDenied:
 			n.Count, n.Active = denied, denied != nil && *denied > 0
 		case ConditionIntegrity, ConditionBundleLag, ConditionOffline, ConditionEventsDropped, ConditionReportsStale,
-			ConditionCertExpiry:
+			ConditionCertExpiry, ConditionGatewayClock, ConditionGatewayTLS:
 			// Одна строка на все компоненты; «с» — самое раннее из активных.
 			for _, code := range sortedCodes(c.conditions) {
 				if family(code) != ci.code || !c.conditions[code] {
@@ -768,8 +825,10 @@ func (s *Service) skip(c collected, fam string) bool {
 		return missing("bundle") || c.st.Bundle == nil
 	case ConditionBundleLag:
 		return missing("bundle", "gateways") || c.st.Bundle == nil
-	case ConditionOffline, ConditionCertExpiry, ConditionReportsStale:
+	case ConditionOffline, ConditionCertExpiry, ConditionReportsStale, ConditionGatewayClock:
 		return missing("gateways")
+	case ConditionGatewayTLS:
+		return missing("gateways", "bundle", "customer_cert")
 	case ConditionEventsDropped:
 		return missing("gateways", "events")
 	case ConditionCustomerCertExpiry:

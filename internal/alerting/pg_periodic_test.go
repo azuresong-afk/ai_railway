@@ -126,9 +126,31 @@ func TestPGPeriodicRules(t *testing.T) {
 		Scan(&alertsN, &runs, &failed); err != nil || alertsN != before+2 || runs != 1 || failed != 1 {
 		t.Fatalf("после сбоя правила: оповещений %d из %d, отметок %d, упавших %d, %v", alertsN, before, runs, failed, err)
 	}
+	// 3Н48 ревью 3.r4: повторный сбой сохраняет начало серии failing_since.
+	var since1, since2 time.Time
+	failingSince := func(dst *time.Time) {
+		t.Helper()
+		if err := e.owner.QueryRow(ctx, `SELECT (state->>'failing_since')::timestamptz FROM alert_rule_state
+			WHERE state->>'warning' = 'evaluation_failed'`).Scan(dst); err != nil {
+			t.Fatalf("начало серии сбоев: %v", err)
+		}
+	}
+	failingSince(&since1)
+	mu.Lock()
+	enqueued = append(enqueued[:base+1], enqueued[base+2:]...) // постановка отката не пережила
+	failAt = len(enqueued) + 1                                 // новое оповещение второго прохода — только у упавшего правила
+	mu.Unlock()
+	e.rewindJob(t)
+	if _, err := e.alerts.Periodic(ctx); err != nil {
+		t.Fatal(err)
+	}
+	failingSince(&since2)
+	if !since2.Equal(since1) {
+		t.Fatalf("начало серии сбоев сдвинулось: %v → %v", since1, since2)
+	}
 	mu.Lock()
 	failAt = 0
-	enqueued = append(enqueued[:base+1], enqueued[base+2:]...) // постановка отката не пережила
+	enqueued = enqueued[:len(enqueued)-1]
 	mu.Unlock()
 	e.rewindJob(t)
 	e.periodic(t)

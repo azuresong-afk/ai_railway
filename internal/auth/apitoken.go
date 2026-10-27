@@ -446,6 +446,20 @@ func (s *Service) APITokenByID(ctx context.Context, by Caller, id string) (APITo
 	return t, nil
 }
 
+// APITokenOwner — ID владельца токена без проверки прав вызывающего: для
+// решений о доступе (3Н48 ревью 3.r4 — оповещение о действиях своего
+// токена владелец не закрывает). Нет токена — ErrAPITokenNotFound.
+func (s *Service) APITokenOwner(ctx context.Context, id string) (string, error) {
+	if s.tokens == nil {
+		return "", errNoTokenStore
+	}
+	t, err := s.tokens.APITokenByID(ctx, s.orgID, id)
+	if err != nil {
+		return "", err
+	}
+	return t.UserID, nil
+}
+
 // RevokeAPIToken отзывает токен (api_token.revoke). Свой — при любой
 // области; чужой — только при области all и если права владельца входят в
 // права отзывающего (УПД.2). Отозванный токен не оживает.

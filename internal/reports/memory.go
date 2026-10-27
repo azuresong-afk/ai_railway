@@ -164,6 +164,15 @@ func (m *Memory) Record(_ context.Context, rec audit.Entry) error {
 }
 
 // FinishRun — см. Store.
+// PruneRuns — см. Store.
+func (m *Memory) PruneRuns(_ context.Context, before time.Time) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n := len(m.runs)
+	m.runs = slices.DeleteFunc(m.runs, func(r Run) bool { return r.Status != RunPending && r.UpdatedAt.Before(before) })
+	return int64(n - len(m.runs)), nil
+}
+
 func (m *Memory) FinishRun(_ context.Context, r Run, rec *audit.Entry) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

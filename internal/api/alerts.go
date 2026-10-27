@@ -94,7 +94,7 @@ func alertsProblem(logger *slog.Logger, err error, notFound string) *Problem {
 }
 
 // alertsBy — субъект запроса: для токена исполнитель — его владелец.
-func alertsBy(r *http.Request) (alerting.By, bool) {
+func (d Deps) alertsBy(r *http.Request) (alerting.By, bool) {
 	p, ok := PrincipalFrom(r.Context())
 	if !ok || p.Caller == nil {
 		return alerting.By{}, false
@@ -103,6 +103,19 @@ func alertsBy(r *http.Request) (alerting.By, bool) {
 	by := alerting.By{Actor: audit.Actor{Type: audit.ActorUser, ID: c.User.ID, Name: c.User.Login}, IP: clientAddr(r), UserID: c.User.ID}
 	if c.Token != nil {
 		by.Actor = audit.Actor{Type: audit.ActorAPIToken, ID: c.Token.ID, Name: c.User.Login + " (" + c.Token.Prefix + ")"}
+	}
+	// 3Н48 ревью 3.r4: владелец не закрывает оповещение о действиях своего
+	// токена. Ошибка поиска (кроме «нет токена») — как владение: закрыть нельзя.
+	ctx, userID := r.Context(), c.User.ID
+	by.OwnsToken = func(tokenID string) bool {
+		if d.Auth == nil {
+			return true
+		}
+		owner, err := d.Auth.APITokenOwner(ctx, tokenID)
+		if errors.Is(err, auth.ErrAPITokenNotFound) {
+			return false
+		}
+		return err != nil || owner == userID
 	}
 	return by, true
 }
@@ -280,7 +293,7 @@ type alertStatusRequest struct {
 }
 
 func (d Deps) setAlertStatus(w http.ResponseWriter, r *http.Request) {
-	by, ok := alertsBy(r)
+	by, ok := d.alertsBy(r)
 	if !ok {
 		WriteProblem(w, errForbidden())
 		return
@@ -382,7 +395,7 @@ type alertRuleRequest struct {
 }
 
 func (d Deps) createAlertRule(w http.ResponseWriter, r *http.Request) {
-	by, ok := alertsBy(r)
+	by, ok := d.alertsBy(r)
 	if !ok {
 		WriteProblem(w, errForbidden())
 		return
@@ -402,7 +415,7 @@ func (d Deps) createAlertRule(w http.ResponseWriter, r *http.Request) {
 }
 
 func (d Deps) updateAlertRule(w http.ResponseWriter, r *http.Request) {
-	by, ok := alertsBy(r)
+	by, ok := d.alertsBy(r)
 	if !ok {
 		WriteProblem(w, errForbidden())
 		return

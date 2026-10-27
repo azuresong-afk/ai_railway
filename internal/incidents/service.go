@@ -170,6 +170,8 @@ type By struct {
 	// сокращением срока хранения (DM-40); nil — сокращение отклоняется с
 	// ErrConfirmRequired.
 	Confirm func(ctx context.Context) error
+	// OwnsToken — см. alerting.By.OwnsToken.
+	OwnsToken func(tokenID string) bool
 }
 
 // ref — субъект в полях created_by, хронологии и комментариях.
@@ -198,7 +200,9 @@ func (b By) entry(action, objID string, details map[string]any) audit.Entry {
 		Result: audit.ResultSuccess, Details: details}
 }
 
-func (b By) alertBy() alerting.By { return alerting.By{Actor: b.Actor, IP: b.IP, UserID: b.UserID} }
+func (b By) alertBy() alerting.By {
+	return alerting.By{Actor: b.Actor, IP: b.IP, UserID: b.UserID, OwnsToken: b.OwnsToken}
+}
 
 // systemBy — субъект автоматических действий сервера.
 var systemBy = By{Actor: audit.Actor{Type: audit.ActorSystem, ID: "aisec-server", Name: "Сервер управления"}}

@@ -507,3 +507,47 @@ func TestHeartbeatObservesServerTime(t *testing.T) {
 		t.Fatalf("часы сроков исключений: %v, сервер %v", got, ahead)
 	}
 }
+
+// 3Н40, 3Н43 ревью 3.r3: heartbeat несёт часы шлюза и отпечаток
+// действующего сертификата адреса приложений (пусто — сертификат шлюза);
+// без источника отпечатка поле не уходит.
+func TestHeartbeatClockAndTLSFingerprint(t *testing.T) {
+	var bodies []map[string]any
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var b map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&b) //nolint:gosec // G104: тело проверяет тест
+		bodies = append(bodies, b)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"server_time": time.Now(), "interval_seconds": 60}) //nolint:gosec // G104: ответ тестового сервера
+	}))
+	defer srv.Close()
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 10, 22, 9, 30, 0, 0, time.UTC)
+	fp := strings.Repeat("ab", 32)
+	for _, current := range []string{fp, ""} {
+		gateway.RunHeartbeat(context.Background(), gateway.HeartbeatConfig{
+			Client: srv.Client(), Server: u, Version: "1", Logger: quiet(), Clock: func() time.Time { return at },
+			TLSFingerprint: func() string { return current },
+			Sleep:          func(context.Context, time.Duration) bool { return false },
+		})
+	}
+	gateway.RunHeartbeat(context.Background(), gateway.HeartbeatConfig{
+		Client: srv.Client(), Server: u, Version: "1", Logger: quiet(),
+		Sleep: func(context.Context, time.Duration) bool { return false },
+	})
+	if len(bodies) != 3 {
+		t.Fatalf("heartbeat: %v", bodies)
+	}
+	for i, want := range []string{fp, ""} {
+		got, _ := bodies[i]["time"].(string)
+		if ts, err := time.Parse(time.RFC3339Nano, got); err != nil || !ts.Equal(at) || bodies[i]["tls_fingerprint"] != want {
+			t.Fatalf("heartbeat %d: %v", i, bodies[i])
+		}
+	}
+	if _, ok := bodies[2]["tls_fingerprint"]; ok || bodies[2]["time"] == nil {
+		t.Fatalf("без источника отпечатка: %v", bodies[2])
+	}
+}

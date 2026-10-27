@@ -287,6 +287,12 @@ func ParseParams(kind string, q map[string][]string, loc *time.Location, now tim
 	if p.App != "" && p.Kind != KindSummary {
 		return p, errors.New("отчёты: приложение задаётся только для сводного отчёта")
 	}
+	// Без обеих дат — последние 30 суток по сегодняшний день (3Н46 ревью
+	// 3.r4: так обещает консоль); одна дата без другой — ошибка.
+	if from == "" && to == "" {
+		today := now.In(loc)
+		from, to = today.AddDate(0, 0, -(DefaultPeriodDays-1)).Format(dateLayout), today.Format(dateLayout)
+	}
 	if from == "" || to == "" {
 		return p, fmt.Errorf("%w: нужны from и to", ErrPeriod)
 	}
@@ -301,6 +307,9 @@ func truncate(s string, n int) string {
 	r := []rune(strings.ToValidUTF8(s, "?"))
 	return string(r[:n])
 }
+
+// DefaultPeriodDays — период отчёта без дат: последние 30 суток.
+const DefaultPeriodDays = 30
 
 // ErrTooLarge — отчёт не помещается в формат.
 var ErrTooLarge = errors.New("отчёты: отчёт слишком велик для формата")

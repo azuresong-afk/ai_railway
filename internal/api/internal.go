@@ -188,6 +188,11 @@ type HeartbeatRequest struct {
 	Stopping  bool       `json:"stopping,omitempty"`
 	// Budget — нарастающие счётчики расхода процесса шлюза (задача 3.18).
 	Budget *HeartbeatBudget `json:"budget,omitempty"`
+	// Time — часы шлюза при отправке; TLSFingerprint — отпечаток
+	// действующего сертификата адреса приложений, пусто — сертификат шлюза
+	// (3Н40, 3Н43 ревью 3.r3).
+	Time           *time.Time `json:"time,omitempty"`
+	TLSFingerprint *string    `json:"tls_fingerprint,omitempty"`
 }
 
 // HeartbeatBudget — счётчики расхода процесса шлюза за текущий и, после
@@ -287,7 +292,10 @@ func heartbeat(g *gwregistry.Service, logger *slog.Logger) http.HandlerFunc {
 		}
 		in := gwregistry.HeartbeatInput{
 			Version: req.Version, BundleETag: req.BundleETag, Selftest: req.Selftest.report(), Integrity: req.Integrity.report(),
-			BundleKeys: req.BundleKeys, Stopping: req.Stopping, Budget: req.Budget.report(),
+			BundleKeys: req.BundleKeys, Stopping: req.Stopping, Budget: req.Budget.report(), TLSFingerprint: req.TLSFingerprint,
+		}
+		if req.Time != nil {
+			in.Time = *req.Time
 		}
 		if req.VerifyRequest != nil {
 			in.VerifyRequest = *req.VerifyRequest
@@ -296,7 +304,7 @@ func heartbeat(g *gwregistry.Service, logger *slog.Logger) http.HandlerFunc {
 			in.StartedAt = req.StartedAt.UTC()
 		}
 		if err := in.Validate(); err != nil {
-			WriteProblem(w, Invalid("Неверные поля heartbeat: version — 1–64 символа латиницы, цифр и «.+_-», bundle_etag — до 128 печатных символов ASCII, selftest и integrity — результат, время проверки и число провалов 0–1000, манифест — версия и время вместе, bundle_keys — до 2 идентификаторов ключей, stopping и budget — только вместе с started_at, budget — 1–2 месяца ГГГГ-ММ по возрастанию, до 2 000 приложений, счётчики 0–2^62."))
+			WriteProblem(w, Invalid("Неверные поля heartbeat: version — 1–64 символа латиницы, цифр и «.+_-», bundle_etag — до 128 печатных символов ASCII, selftest и integrity — результат, время проверки и число провалов 0–1000, манифест — версия и время вместе, bundle_keys — до 2 идентификаторов ключей, stopping и budget — только вместе с started_at, budget — 1–2 месяца ГГГГ-ММ по возрастанию, до 2 000 приложений, счётчики 0–2^62, tls_fingerprint — пусто или 64 строчные шестнадцатеричные цифры."))
 			return
 		}
 		ctx, cancel := contextTimeout(r, 5*time.Second)

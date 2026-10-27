@@ -26,13 +26,19 @@ func TestRestoreFinishArgs(t *testing.T) {
 		"«..» в имени":     {"-copy-dir", "a/../b"},
 		"длинное имя":      {"-copy-dir", strings.Repeat("a", 129)},
 		"пробел в имени":   {"-copy-dir", "aisec 1"},
-		"недоступная БД":   {"-copy-dir", "aisec-20261022T101500Z"},
+		"недоступная БД":   {"-confirm", "-copy-dir", "aisec-20261022T101500Z"},
 	} {
 		if err := restoreFinish(args, dsn, &out, &errb, time.Now()); err == nil {
 			t.Errorf("%s: принято", name)
 		}
 	}
-	if err := restoreFinish(nil, "", &out, &errb, time.Now()); err == nil || !strings.Contains(err.Error(), "AISEC_DATABASE_URL") {
+	// 3Н53 ревью 3.r4: без -confirm — отказ до подключения к БД.
+	for _, args := range [][]string{nil, {"-copy-dir", "aisec-20261022T101500Z"}, {"-confirm=false"}} {
+		if err := restoreFinish(args, dsn, &out, &errb, time.Now()); err == nil || !strings.Contains(err.Error(), "-confirm") {
+			t.Errorf("%v без подтверждения: %v", args, err)
+		}
+	}
+	if err := restoreFinish([]string{"-confirm"}, "", &out, &errb, time.Now()); err == nil || !strings.Contains(err.Error(), "AISEC_DATABASE_URL") {
 		t.Errorf("пустая строка подключения: %v", err)
 	}
 	if !copyDirRe.MatchString(strings.Repeat("a", 128)) || !copyDirRe.MatchString("aisec-20261022T101500Z") {
@@ -165,7 +171,7 @@ func TestRestoreFinishOnRealDB(t *testing.T) {
 	// Свежая копия: всё действующее завершено, завершённое не тронуто.
 	out.Reset()
 	errb.Reset()
-	if err := restoreFinish([]string{"-copy-dir", "aisec-20261022T101500Z"}, sdsn, &out, &errb, time.Now()); err != nil {
+	if err := restoreFinish([]string{"-confirm", "-copy-dir", "aisec-20261022T101500Z"}, sdsn, &out, &errb, time.Now()); err != nil {
 		t.Fatalf("%v\n%s", err, errb.String())
 	}
 	if !strings.Contains(out.String(), "сессий консоли завершено 2, токенов API отозвано 1, токенов регистрации шлюзов погашено 2, "+
@@ -259,7 +265,7 @@ func TestRestoreFinishOnRealDB(t *testing.T) {
 	// предупреждение, код возврата — успех.
 	out.Reset()
 	errb.Reset()
-	if err := restoreFinish(nil, sdsn, &out, &errb, time.Now().Add(8*24*time.Hour)); err != nil {
+	if err := restoreFinish([]string{"-confirm"}, sdsn, &out, &errb, time.Now().Add(8*24*time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "завершено 0, токенов API отозвано 0") || !strings.Contains(errb.String(), "старше 7 суток") {

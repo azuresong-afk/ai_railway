@@ -36,7 +36,7 @@ type incidentSettingsRequest struct {
 }
 
 func (d Deps) putIncidentSettings(w http.ResponseWriter, r *http.Request) {
-	by, ok := incidentsBy(r)
+	by, ok := d.incidentsBy(r)
 	if !ok {
 		WriteProblem(w, errForbidden())
 		return

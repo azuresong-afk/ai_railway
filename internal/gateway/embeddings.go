@@ -124,7 +124,7 @@ func (e *EmbeddingsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if app.Provider.External() {
 		req.User = "" // идентификатор пользователя внешнему провайдеру не передаётся (ТЗ, 5.4)
 	}
-	rec.sent = true
+	rec.sent, rec.noOutput = true, true
 	providerStart := h.cfg.Now()
 	defer func() { rec.ev.LatencyMS["provider"] = h.cfg.Now().Sub(providerStart).Milliseconds() }()
 	pctx, sent := withSendTrace(r.Context())

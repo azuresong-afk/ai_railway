@@ -272,6 +272,20 @@ func (s *PGStore) HardUsageOthers(ctx context.Context, orgID, month, gatewayID s
 	return out, nil
 }
 
+// PruneUsage — см. Store.
+func (s *PGStore) PruneUsage(ctx context.Context, orgID, before string) (int64, error) {
+	var n int64
+	err := s.inTx(ctx, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, "DELETE FROM budget_usage WHERE org_id = $1 AND month < $2", orgID, before)
+		if err != nil {
+			return fmt.Errorf("приложения: срок хранения расхода: %w", err)
+		}
+		n = tag.RowsAffected()
+		return nil
+	})
+	return n, err
+}
+
 // Usage — см. Store.
 func (s *PGStore) Usage(ctx context.Context, orgID, month string) (map[string]Usage, error) {
 	ctx, cancel := pgCtx(ctx)

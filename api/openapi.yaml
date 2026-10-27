@@ -2717,7 +2717,7 @@ paths:
         версии (ADR-0016): новая версия поверх `base_version` (409, если политику уже изменили).
         Условие: детектор обязательно и хотя бы одно из `pattern`, `fragment`, `app`, `user`
         (детектор целиком для всех приложений не отключается — 400; исключение для `canary` —
-        только с `fragment`, иначе 400, 3Н42); `category` и `source` — дополнительные. Срок обязателен: `expires_in_days` 1–365 или `expires_at` не дальше 365
+        только с `fragment`, иначе 400, 3Н42); `category` и `source` — дополнительные; у `canary` срок не больше 7 суток (3Н49). Срок обязателен: `expires_in_days` 1–365 или `expires_at` не дальше 365
         суток, по умолчанию 30 суток. Автора и время ставит сервер. Добавление — ослабление
         защиты: текущий пароль или код TOTP в теле (без них — 403, неверные — 403
         `reauthentication_failed`), запись `policy.exception_add` с `weakening` (DM-40).
@@ -2754,7 +2754,7 @@ paths:
       summary: Изменить срок исключения — новая версия политики
       description: |
         Право `policies.manage`. Новый срок — от момента сохранения (`expires_in_days` 1–365 или
-        `expires_at`). Продление — ослабление защиты: пароль или код TOTP и `weakening` в записи
+        `expires_at`; у `canary` — не больше 7 суток, 3Н49). Продление — ослабление защиты: пароль или код TOTP и `weakening` в записи
         `policy.exception_extend` (DM-40); сокращение срока — нет.
       x-permission: policies.manage
       security: [{ sessionCookie: [] }]
@@ -3977,7 +3977,8 @@ paths:
         сводный отчёт по приложению не входят). Владельцу приложения доступен только `summary` с `app`
         своего приложения; чужое приложение — 404, другой вид — 403. Каждая выгрузка пишет
         `data.export` до выдачи данных (DM-41); без записи отчёт не выдаётся (503). Одновременно — одна
-        выгрузка на пользователя, сверх предела 429.
+        выгрузка на пользователя, сверх предела 429. Без `from` и `to` — последние 30 суток по сегодняшний
+        день; одна дата без другой — 400.
       x-permission: reports.read
       security: [{ sessionCookie: [] }, { bearerToken: [] }]
       parameters:
@@ -3988,13 +3989,13 @@ paths:
           schema: { type: string, enum: [summary, incidents, pilot] }
         - name: from
           in: query
-          required: true
-          description: Первый день периода, ГГГГ-ММ-ДД
+          required: false
+          description: Первый день периода, ГГГГ-ММ-ДД; вместе с `to`
           schema: { type: string, pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' }
         - name: to
           in: query
-          required: true
-          description: Последний день периода включительно, ГГГГ-ММ-ДД
+          required: false
+          description: Последний день периода включительно, ГГГГ-ММ-ДД; вместе с `from`
           schema: { type: string, pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' }
         - name: format
           in: query
@@ -4165,6 +4166,26 @@ paths:
         '401': { $ref: '#/components/responses/ProblemUnauthorized' }
         '403': { $ref: '#/components/responses/ProblemForbidden' }
         '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/report-channels:
+    get:
+      summary: Почтовые каналы для рассылки отчётов
+      description: |
+        Право `reports.schedules.manage`. Включённые почтовые каналы уведомлений с получателями —
+        только ID и название, без адресов и настроек сервера: тот, кто ведёт расписания, выбирает
+        канал без права `notify_channels.read`.
+      x-permission: reports.schedules.manage
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      responses:
+        '200':
+          description: Каналы
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReportChannelList' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ProblemInternal' }
         '503': { $ref: '#/components/responses/Unavailable' }
@@ -4562,8 +4583,8 @@ components:
               condition:
                 type: string
                 enum: [account_lockout, access_denied, audit_chain, audit_storage, integrity, time_sync, config_bundle, config_bundle_lag, test_build,
-                  gateway_offline, events_dropped, reports_stale, cert_expiry, ca_expiry, customer_cert_expiry, alert_job_stale]
-                description: 'alert_job_stale (РСБ.7, DM-44) — фоновая задача правил «частота», «аномалия» и «бюджет» не отмечала проход дольше 5 минут при работающем сервере, 3В17 ревью 3.r2. ca_expiry (ИАФ.10) — действующему корню внутреннего УЦ осталось 60 суток и меньше, нужна ротация `aisec-cli keys rotate-ca`; system.alert пишется за 60 суток (ca_expiry) и за 7 суток (ca_expiry:critical), 3В5 ревью 3.r1. customer_cert_expiry (ЗИ.4) — сертификату заказчика для адреса шлюза осталось 30 суток и меньше; system.alert пишется за 30 суток (customer_cert_expiry) и за 7 суток (customer_cert_expiry:critical), задача 3.27'
+                  gateway_offline, events_dropped, reports_stale, cert_expiry, gateway_clock, gateway_tls, ca_expiry, customer_cert_expiry, alert_job_stale]
+                description: 'gateway_clock (ВРМ.1) — часы шлюза на связи в последнем heartbeat расходятся с часами сервера больше чем на минуту, 3Н40 ревью 3.r3. gateway_tls (ЗИ.4) — шлюз на текущем пакете конфигурации дольше 10 минут после его сборки отвечает приложениям не тем сертификатом, что загружен в консоли (по часам шлюза он ещё не действует или истёк; без сертификата заказчика — не своим), 3Н43 ревью 3.r3. alert_job_stale (РСБ.7, DM-44) — фоновая задача правил «частота», «аномалия» и «бюджет» не отмечала проход дольше 5 минут при работающем сервере, 3В17 ревью 3.r2. ca_expiry (ИАФ.10) — действующему корню внутреннего УЦ осталось 60 суток и меньше, нужна ротация `aisec-cli keys rotate-ca`; system.alert пишется за 60 суток (ca_expiry) и за 7 суток (ca_expiry:critical), 3В5 ревью 3.r1. customer_cert_expiry (ЗИ.4) — сертификату заказчика для адреса шлюза осталось 30 суток и меньше; system.alert пишется за 30 суток (customer_cert_expiry) и за 7 суток (customer_cert_expiry:critical), задача 3.27'
               requirement: { type: string, enum: [ИАФ.4, ИАФ.10, УПД.6, РСБ.4, РСБ.5, РСБ.7, ОЦЛ.1, ОЦЛ.3, ОЦЛ.5, ВРМ.1, ЗИ.4] }
               components:
                 type: array
@@ -5465,6 +5486,10 @@ components:
           type: array
           items: { type: string }
           description: 'Разрешения, действующие в сессии, включая `session` и, после второго фактора, `self`. Консоль скрывает недоступное; права проверяет сервер'
+        own_scope:
+          type: array
+          items: { type: string }
+          description: 'Разрешения из `permissions` с областью `own` — только на свои объекты (УПД.8), например `reports.read` владельца приложения'
         timezone: { type: string, description: 'Часовой пояс показа времени из настроек установки (ВРМ.2): консоль показывает даты в нём' }
     SessionState:
       type: string
@@ -6394,6 +6419,18 @@ components:
         error: { type: string, description: Код ошибки без текста ответа сервера }
         created_at: { type: string, format: date-time }
         sent_at: { type: string, format: date-time }
+    ReportChannelList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            required: [id, name]
+            properties:
+              id: { type: string, format: uuid }
+              name: { type: string }
     ReportRunList:
       type: object
       required: [items]

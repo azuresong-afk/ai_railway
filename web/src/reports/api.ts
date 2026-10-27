@@ -39,4 +39,6 @@ export const reportsApi = {
   update: (sid: string, b: ReportScheduleInput) => request<ReportSchedule>("PUT", `/api/v1/report-schedules/${id(sid)}`, b),
   remove: (sid: string) => request<void>("DELETE", `/api/v1/report-schedules/${id(sid)}`),
   runs: (sid: string, signal?: AbortSignal) => request<S["ReportRunList"]>("GET", `/api/v1/report-schedules/${id(sid)}/runs`, undefined, signal),
+  // Почтовые каналы для расписания: только ID и название, без права на каналы уведомлений.
+  channels: (signal?: AbortSignal) => request<S["ReportChannelList"]>("GET", "/api/v1/report-channels", undefined, signal),
 };

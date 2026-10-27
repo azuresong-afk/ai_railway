@@ -26,6 +26,11 @@ import (
 const (
 	// DashBackfillEvery — период задачи досчёта.
 	DashBackfillEvery = 30 * time.Second
+	// dashDirtyGrace — сколько метка досчёта часа считается обычной: час,
+	// помеченный при приросте (пересчёт занят), досчитывается следующим
+	// проходом, и «цифры неполные» на это время не показываются. Старше —
+	// досчёт отстаёт, Ready ложно.
+	dashDirtyGrace = 3 * DashBackfillEvery
 	// dashChunk — наибольшая часть одного шага досчёта. После таймаута часть
 	// делится пополам (не меньше часа), после успеха растёт обратно.
 	dashChunk = 6 * time.Hour
@@ -362,12 +367,12 @@ func (d *DashStore) Init(ctx context.Context) error {
 // больше dashChunk часов и dashChunkEvents событий, под блокировкой строки
 // отметки: два сервера не пересчитывают один интервал.
 func (d *DashStore) BackfillStep(ctx context.Context) (done bool, err error) {
-	return d.backfillStep(ctx, time.Now())
+	return d.backfillStep(ctx, time.Time{})
 }
 
 // backfillStep — шаг досчёта; помеченные часы — только отмеченные раньше
 // before: часы, помеченные во время пересчёта, ждут следующего прохода, а
-// не зацикливают его.
+// не зацикливают его. Нулевое before — начало транзакции шага по часам БД.
 func (d *DashStore) backfillStep(ctx context.Context, before time.Time) (done bool, err error) {
 	ctx, cancel := context.WithTimeout(ctx, AggregateTimeout)
 	defer cancel()
@@ -466,12 +471,17 @@ func (d *DashStore) RunBackfill(ctx context.Context, every time.Duration) {
 	t := time.NewTicker(every)
 	defer t.Stop()
 	for {
-		start := time.Now()
-		for range 128 {
-			done, err := d.backfillStep(ctx, start)
-			if err != nil {
+		// Часы, помеченные после начала прохода, ждут следующего; отсчёт —
+		// по часам БД, как и метки.
+		start, err := d.dbNow(ctx)
+		if err != nil && ctx.Err() == nil {
+			d.logger.Error("агрегаты дашбордов не досчитаны", "class", "db", "error", err)
+		}
+		for i := 0; err == nil && i < 128; i++ {
+			done, stepErr := d.backfillStep(ctx, start)
+			if stepErr != nil {
 				if ctx.Err() == nil {
-					d.logger.Error("агрегаты дашбордов не досчитаны", "class", "db", "error", err)
+					d.logger.Error("агрегаты дашбордов не досчитаны", "class", "db", "error", stepErr)
 				}
 				break
 			}
@@ -490,15 +500,36 @@ func (d *DashStore) RunBackfill(ctx context.Context, every time.Duration) {
 	}
 }
 
+// beforeArg — граница меток для запроса; нулевая — NULL (начало транзакции).
+func beforeArg(t time.Time) *time.Time {
+	if t.IsZero() {
+		return nil
+	}
+	return &t
+}
+
+// dbNow — время БД: метки часов ставятся по нему (clock_timestamp()).
+func (d *DashStore) dbNow(ctx context.Context) (time.Time, error) {
+	ctx, cancel := pgCtx(ctx)
+	defer cancel()
+	var now time.Time
+	if err := d.db.QueryRow(ctx, "SELECT clock_timestamp()").Scan(&now); err != nil {
+		return time.Time{}, dbError("время БД", err)
+	}
+	return now, nil
+}
+
 // recomputeDirty пересчитывает до dashDirtyHours часов, помеченных хуком до
-// before, и снимает их метки; false — пересчитывать нечего. Метки снимаются
+// before (нулевое — до начала транзакции tx по часам БД: метки ставятся по
+// clock_timestamp() БД, а часы сервера могут отставать), и снимает их
+// метки; false — пересчитывать нечего. Метки снимаются
 // до пересчёта: пересчёт видит все события, чьи транзакции успели
 // зафиксировать снятые метки, а метка, вставленная позже, остаётся.
 func (d *DashStore) recomputeDirty(ctx context.Context, tx pgx.Tx, before time.Time) (bool, error) {
 	rows, err := tx.Query(ctx, `WITH pick AS (
-			SELECT DISTINCT bucket FROM dash_dirty_hours WHERE org_id = $1 AND marked_at < $2 ORDER BY bucket LIMIT $3)
-		DELETE FROM dash_dirty_hours d USING pick WHERE d.org_id = $1 AND d.bucket = pick.bucket AND d.marked_at < $2
-		RETURNING d.bucket`, d.orgID, before, dashDirtyHours)
+			SELECT DISTINCT bucket FROM dash_dirty_hours WHERE org_id = $1 AND marked_at < COALESCE($2, now()) ORDER BY bucket LIMIT $3)
+		DELETE FROM dash_dirty_hours d USING pick WHERE d.org_id = $1 AND d.bucket = pick.bucket AND d.marked_at < COALESCE($2, now())
+		RETURNING d.bucket`, d.orgID, beforeArg(before), dashDirtyHours)
 	if err != nil {
 		return false, dbError("метки досчёта агрегатов дашбордов", err)
 	}
@@ -543,13 +574,16 @@ func (d *DashStore) Trim(ctx context.Context) error {
 	return nil
 }
 
-// Ready — досчёт прошлых периодов закончен: агрегаты полные.
+// Ready — досчёт прошлых периодов закончен: агрегаты полные. Свежие метки
+// часов (моложе dashDirtyGrace по часам БД) готовность не снимают: их
+// снимет следующий проход досчёта (перенесено из этапа 3, задача 4.5).
 func (d *DashStore) Ready(ctx context.Context) (bool, error) {
 	ctx, cancel := pgCtx(ctx)
 	defer cancel()
 	var done bool
-	err := d.rdb.QueryRow(ctx, `SELECT backfill_done AND NOT EXISTS (SELECT 1 FROM dash_dirty_hours WHERE org_id = $1)
-		FROM dash_state WHERE org_id = $1`, d.orgID).Scan(&done)
+	err := d.rdb.QueryRow(ctx, `SELECT backfill_done AND NOT EXISTS (SELECT 1 FROM dash_dirty_hours WHERE org_id = $1
+			AND marked_at < clock_timestamp() - make_interval(secs => $2))
+		FROM dash_state WHERE org_id = $1`, d.orgID, dashDirtyGrace.Seconds()).Scan(&done)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}

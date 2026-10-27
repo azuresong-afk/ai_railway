@@ -248,7 +248,7 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 			hbCancel()
 			return err
 		}
-		hbDone := startHeartbeat(hbCtx, cfg, control.client, logger, reports, bundles.ETag, verify, started, reissue.Reissue, hb.budget, hb.clock)
+		hbDone := startHeartbeat(hbCtx, cfg, control.client, logger, reports, bundles.ETag, verify, started, reissue.Reissue, hb.budget, hb.clock, appTLS.Current)
 		defer func() {
 			hbCancel()
 			<-hbDone
@@ -499,7 +499,7 @@ const gwReissueWarn = 30 * 24 * time.Hour
 // недоступен — шлюз всё равно работает (ТЗ, 4.2).
 func startHeartbeat(ctx context.Context, cfg *config.Gateway, client *http.Client, logger *slog.Logger, reports *gateway.Reports, etag func() string,
 	verify func(context.Context), started time.Time, reissue func(context.Context) error, budget *gateway.Budget,
-	clock *gateway.ServerClock) <-chan struct{} {
+	clock *gateway.ServerClock, tlsFingerprint func() string) <-chan struct{} {
 	v := version
 	if !gateway.ValidVersion(v) {
 		v = "unknown"
@@ -509,7 +509,7 @@ func startHeartbeat(ctx context.Context, cfg *config.Gateway, client *http.Clien
 		defer close(done)
 		gateway.RunHeartbeat(ctx, gateway.HeartbeatConfig{
 			Client: client, Server: cfg.Server, Version: v, Logger: logger, Reports: reports, BundleETag: etag, Verify: verify,
-			StartedAt: started, Reissue: reissue, Budget: budget, ServerTime: clock,
+			StartedAt: started, Reissue: reissue, Budget: budget, ServerTime: clock, TLSFingerprint: tlsFingerprint,
 		})
 	}()
 	return done

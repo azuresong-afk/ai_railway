@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"sync/atomic"
 	"time"
 
 	"github.com/azuresong-afk/ai_railway/internal/audit"
@@ -334,6 +335,9 @@ type Store interface {
 	HardUsageOthers(ctx context.Context, orgID, month, gatewayID string, startedAt time.Time) (map[string]int64, error)
 	// Usage — суммарный расход за month по slug приложений.
 	Usage(ctx context.Context, orgID, month string) (map[string]Usage, error)
+	// PruneUsage удаляет счётчики месяцев раньше before (ГГГГ-ММ) и
+	// возвращает число удалённых строк.
+	PruneUsage(ctx context.Context, orgID, before string) (int64, error)
 
 	// Сертификат заказчика для адреса шлюза (задача 3.27, миграция
 	// 0039_gateway_tls): один на организацию. SetGatewayTLS блокирует
@@ -386,6 +390,9 @@ type Service struct {
 	// timezone — часовой пояс установки для месяца расхода (задача 3.18);
 	// nil — UTC.
 	timezone func(ctx context.Context) (string, error)
+	// usagePrunedAt — время последней очистки budget_usage по сроку
+	// хранения (unix, с); очистка — не чаще раза в час.
+	usagePrunedAt atomic.Int64
 }
 
 // SetBundleCheck задаёт проверку приложения сборкой пакета (ошибка — с

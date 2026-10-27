@@ -35,7 +35,7 @@ type alertSettingsRequest struct {
 }
 
 func (d Deps) putAlertSettings(w http.ResponseWriter, r *http.Request) {
-	by, ok := alertsBy(r)
+	by, ok := d.alertsBy(r)
 	if !ok {
 		WriteProblem(w, errForbidden())
 		return
