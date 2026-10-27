@@ -49,6 +49,10 @@ type record struct {
 	// JSON (response_format).
 	vault    *pseudonym.Vault
 	jsonMode bool
+	// agent — агент запроса (nil — без агента); tools — описания функций
+	// запроса: по ним политика вызовов сверяет одобренный хеш (задача 4.10).
+	agent *Agent
+	tools []chat.Tool
 	// resp и respTexts — проверка ответа модели (задача 1.23); respMode —
 	// режим проверки; respCut — поток оборван (respCutRule — правило),
 	// respMasked — в потоке что-то замаскировано; respFailures — сбои

@@ -55,6 +55,7 @@ tools:
       risk: [high, critical]
       action: require_approval
       severity: high
+      message: Вызов подтверждает дежурный
     - id: deny-delete
       tool: files/delete*
       action: block
@@ -342,7 +343,7 @@ func TestToolDecisionSteps(t *testing.T) {
 	c := approved("files", "read_report", RiskHigh, `{"path":"/data/reports/a"}`)
 	d := p.DecideTool(c, nil)
 	if d.Action != RequireApproval || !d.Approval || d.Block || d.Rule != "high-risk" || !slices.Contains(d.Threats, ThreatToolApproval) ||
-		d.ApprovalTimeout != 10*time.Minute {
+		d.ApprovalTimeout != 10*time.Minute || d.Message != "Вызов подтверждает дежурный" {
 		t.Fatalf("require_approval: %+v", d)
 	}
 	// block из-за аргументов сильнее require_approval.
