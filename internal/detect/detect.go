@@ -26,10 +26,14 @@ type Source string
 
 // Источники.
 const (
-	SourceUser   Source = "user"
-	SourceRAG    Source = "rag"
-	SourceTool   Source = "tool"
-	SourceOutput Source = "output"
+	SourceUser Source = "user"
+	SourceRAG  Source = "rag"
+	SourceTool Source = "tool"
+	// SourceToolArgs — аргументы вызова инструмента агентом (tools/call
+	// через MCP-прокси, задача 4.11): вход, который уходит инструменту, а
+	// не модели.
+	SourceToolArgs Source = "tool_args"
+	SourceOutput   Source = "output"
 )
 
 // Text — проверяемый текст.
