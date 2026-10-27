@@ -1,6 +1,7 @@
 package mockmcp
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,7 +12,7 @@ import (
 
 func post(t *testing.T, h http.Handler, hdr map[string]string, body string) *httptest.ResponseRecorder {
 	t.Helper()
-	r := httptest.NewRequest(http.MethodPost, Path, strings.NewReader(body))
+	r := httptest.NewRequestWithContext(context.Background(), http.MethodPost, Path, strings.NewReader(body))
 	for k, v := range hdr {
 		r.Header.Set(k, v)
 	}
