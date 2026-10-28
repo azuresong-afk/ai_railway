@@ -357,6 +357,9 @@ type Service struct {
 	// budgets — счётчики расхода из heartbeat (задача 3.18); nil — не
 	// сохраняются.
 	budgets BudgetSync
+	// admit — допуск нового шлюза по лицензии (предел шлюзов, ADR-0026,
+	// п. 5); nil — без ограничения.
+	admit func(ctx context.Context) error
 
 	mu       sync.Mutex
 	lastHB   map[string]time.Time // ID шлюза → последний принятый heartbeat
@@ -422,6 +425,17 @@ func (s *Service) SetBundleKeys(k BundleKeys) {
 	}
 	s.bundleKeys.Store(&k)
 }
+
+// SetAdmission задаёт проверку перед регистрацией нового шлюза (предел
+// шлюзов лицензии, ADR-0026, п. 5). Вызывается в транзакции регистрации до
+// выпуска сертификата: отказ откатывает её, токен не погашается. Повторная
+// регистрация действующего шлюза не проверяется; отказ пишется в аудит
+// (gateway.register, reason license_limit). Вызывать до приёма запросов.
+// admit вызывается внутри Store.Register: в Memory — под его мьютексом
+// (обращаться к тому же реестру из admit нельзя), в PGStore — пока
+// транзакция держит соединение, поэтому admit берёт второе соединение пула
+// со своим сроком из ctx.
+func (s *Service) SetAdmission(admit func(ctx context.Context) error) { s.admit = admit }
 
 // ValidName — допустимое имя шлюза: как логин, латиница в нижнем регистре.
 func ValidName(name string) bool { return nameRe.MatchString(name) }
@@ -547,7 +561,14 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (Registration,
 	// токена; совпавший хеш дополнительно сверяется за постоянное время.
 	hash := s.hasher.Sum(raw)
 	var certPEM []byte
+	var notAdmitted *Gateway
 	gw, err := s.store.Register(ctx, s.hasher.Name(), hash, now, func(gw Gateway) (Issued, error) {
+		if gw.Status == StatusPending && s.admit != nil {
+			if err := s.admit(ctx); err != nil {
+				notAdmitted = &gw
+				return Issued{}, err
+			}
+		}
 		c, info, err := s.ca.IssueClient(in.CSR, gw.ID, s.validity, now)
 		certPEM = c
 		return Issued{Info: info, CA: s.activeRoot(), BundleKey: in.BundleKey}, err
@@ -564,6 +585,18 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (Registration,
 	})
 	if errors.Is(err, ErrTokenInvalid) {
 		return Registration{}, s.registerFailed(ctx, in.SourceIP, "token")
+	}
+	if err != nil && notAdmitted != nil {
+		// Отказ допуска (предел шлюзов лицензии) — в аудит: токен настоящий,
+		// он не погашен (ADR-0026, п. 5).
+		if aerr := s.audit.Record(ctx, audit.Entry{
+			OrgID: s.orgID, Actor: audit.Actor{Type: audit.ActorGateway, ID: notAdmitted.ID, Name: notAdmitted.Name},
+			SourceIP: in.SourceIP, Action: "gateway.register", Object: audit.Object{Type: "gateway", ID: notAdmitted.ID},
+			Result: audit.ResultDenied, Details: map[string]any{"reason": "license_limit"},
+		}); aerr != nil {
+			return Registration{}, fmt.Errorf("аудит отказа регистрации: %w", aerr)
+		}
+		return Registration{}, err
 	}
 	if err != nil {
 		return Registration{}, err

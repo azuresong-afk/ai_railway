@@ -86,11 +86,12 @@ func TestParseAPIToken(t *testing.T) {
 	}
 }
 
-// ИАФ.9: токену не выдаются функции безопасности и права на токены;
-// права токена — пересечение с ролью владельца, с меньшей областью.
+// ИАФ.9: токену не выдаются функции безопасности, права на токены и
+// загрузка лицензии (ADR-0026, п. 6); права токена — пересечение с ролью
+// владельца, с меньшей областью.
 func TestTokenGrants(t *testing.T) {
 	for _, p := range auth.Permissions() {
-		want := !p.Security && !strings.HasPrefix(p.Name, "api_tokens.")
+		want := !p.Security && !strings.HasPrefix(p.Name, "api_tokens.") && p.Name != auth.PermLicenseManage
 		if auth.TokenGrantable(p.Name) != want {
 			t.Errorf("%s: TokenGrantable = %v", p.Name, !want)
 		}

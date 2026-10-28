@@ -64,7 +64,8 @@ type appsEnv struct {
 	shadowSvc *shadowai.Service
 }
 
-func newAppsEnv(t testing.TB) *appsEnv {
+// newAppsEnv — окружение приложений; setup дополняет настройки сервера.
+func newAppsEnv(t testing.TB, setup ...func(*appsEnv, *Options)) *appsEnv {
 	t.Helper()
 	e := &appsEnv{authEnv: &authEnv{mem: authtest.NewMemory(), log: &bytes.Buffer{}, clock: &testClock{t: time.Now()}, secrets: map[string][]byte{}},
 		apps: apps.NewMemory(), pols: versions.NewMemory(), ev: events.NewMemory(), rec: &recAudit{}, dash: &fakeDash{}, stopping: make(chan struct{})}
@@ -146,10 +147,14 @@ func newAppsEnv(t testing.TB) *appsEnv {
 		Location: func(context.Context) (*time.Location, error) { return time.LoadLocation("Europe/Moscow") }}); err != nil {
 		t.Fatal(err)
 	}
-	h, _, err := New(Options{Hasher: testHasher(t), Logger: logger, Auth: authSvc, Apps: svc,
+	o := Options{Hasher: testHasher(t), Logger: logger, Auth: authSvc, Apps: svc,
 		Policies: pols, Events: e.ev, Audit: e.rec, Dashboards: e.dash, Reports: e.reports, Agents: e.agentsSvc, Approvals: e.approvalsSvc,
 		ShadowAI:  e.shadowSvc,
-		RateLimit: RateConfig{Rules: []RateRule{{Prefix: "/", Max: 100000, Window: time.Minute}}}, Stopping: e.stopping})
+		RateLimit: RateConfig{Rules: []RateRule{{Prefix: "/", Max: 100000, Window: time.Minute}}}, Stopping: e.stopping}
+	for _, f := range setup {
+		f(e, &o)
+	}
+	h, _, err := New(o)
 	if err != nil {
 		t.Fatal(err)
 	}

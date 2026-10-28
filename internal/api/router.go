@@ -53,6 +53,9 @@ type Router struct {
 	// onTokenUsed вызывается после каждого пропущенного запроса по токену
 	// API с шаблоном маршрута и кодом ответа (РСБ.1, задача 2.10).
 	onTokenUsed func(r *http.Request, p Principal, method, path string, status int)
+	// license — ограничения лицензии для изменяющих маршрутов (ADR-0026,
+	// п. 5, license_gate.go); nil — без ограничений.
+	license LicenseGate
 }
 
 // Routes возвращает копию списка маршрутов (контрактные тесты и документация).
@@ -103,8 +106,9 @@ func (rt *Router) hasPattern(n Route) bool {
 	return slices.ContainsFunc(rt.routes, func(r Route) bool { return r.Method == n.Method && r.Path == n.Path })
 }
 
-// wrap: права → предел тела → повторяемость → обработчик.
+// wrap: права → лицензия → предел тела → повторяемость → обработчик.
 func (rt *Router) wrap(r Route) http.Handler {
+	gated, module := licenseRule(r)
 	var h http.Handler = r.Handler
 	if r.Idempotent {
 		h = idempotent(rt.idem, rt.hasher, r.MaxBody, h)
@@ -132,6 +136,12 @@ func (rt *Router) wrap(r Route) http.Handler {
 		}
 		switch d {
 		case Allow:
+			if gated && rt.license != nil {
+				if lp := rt.checkLicense(req, r, module, p.ID); lp != nil {
+					WriteProblem(w, lp)
+					return
+				}
+			}
 			req = req.WithContext(WithPrincipal(req.Context(), p))
 			if p.Caller != nil && p.Caller.Token != nil && rt.onTokenUsed != nil {
 				rt.serveToken(w, req, h, p, r)
