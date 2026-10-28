@@ -259,6 +259,23 @@ func TestLicenseRestrictedAllowsDisablingExternalLogin(t *testing.T) {
 	}
 }
 
+// 4Н15 ревью 4.r2: выпуск ключа приложения с привязкой к агенту — изменение
+// модуля agents; без модуля — 403 license_module, без привязки — как раньше.
+func TestAgentKeyNeedsAgentsModule(t *testing.T) {
+	le := newLicenseEnv(t)
+	sys := le.mustLogin(t, "sysadm")
+	prov := le.provider(t, sys, "llm-a")
+	a := le.application(t, sys, "app-a", prov.ID, tOwnerID)
+	if w := le.call(sys, "PUT", "/api/v1/license", putLicenseBody(t, signLicense(t, testLicense(1)), tPhrase), true); w.Code != 200 {
+		t.Fatalf("загрузка: %d %s", w.Code, w.Body)
+	}
+	mustProblem(t, le.call(sys, "POST", "/api/v1/applications/"+a.ID+"/keys",
+		`{"name":"agent","agent_id":"01900000-0000-7000-8000-0000000000aa"}`, true), 403, license.CodeModule)
+	if w := le.call(sys, "POST", "/api/v1/applications/"+a.ID+"/keys", `{"name":"plain"}`, true); w.Code != http.StatusCreated {
+		t.Fatalf("ключ без агента: %d %s", w.Code, w.Body)
+	}
+}
+
 // ADR-0026, п. 5: новый изменяющий маршрут без строки в списке исключений
 // проходит проверку лицензии, то есть закрыт после льготного периода.
 func TestLicenseGateNewMutatingRoute(t *testing.T) {

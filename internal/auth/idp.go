@@ -327,6 +327,11 @@ func (s *Service) oidcConfig(st IdPSettings, secret string) oidc.Config {
 		RedirectURI: st.ConsoleURL + oidc.CallbackPath, Scopes: st.Scopes, ACRValues: st.RequiredACR}
 }
 
+// singleFactorAMR — значения amr (RFC 8176), которые сами по себе не второй
+// фактор: пароль, PIN, контрольные вопросы, вход Windows, местоположение,
+// присутствие пользователя.
+var singleFactorAMR = []string{"pwd", "pin", "kba", "wia", "geo", "user"}
+
 // cleanIdP проверяет и нормализует настройки.
 func (s *Service) cleanIdP(ctx context.Context, in IdPInput) (IdPSettings, error) {
 	out := IdPSettings{Enabled: in.Enabled}
@@ -378,6 +383,13 @@ func (s *Service) cleanIdP(ctx context.Context, in IdPInput) (IdPSettings, error
 	}
 	if out.RequiredAMR, err = cleanList(in.RequiredAMR, maxIdPListItem, printable); err != nil {
 		return out, &InputError{"required_amr", "Значения amr — до 16 строк печатных символов ASCII до 256 символов."}
+	}
+	// Однофакторные значения RFC 8176 (4Н18 ревью 4.r2): достаточно одного
+	// совпадения, поэтому «pwd» в списке засчитал бы вход по одному паролю
+	// как второй фактор.
+	if v := slices.IndexFunc(out.RequiredAMR, func(v string) bool { return slices.Contains(singleFactorAMR, v) }); v >= 0 {
+		return out, &InputError{"required_amr", "Значение amr «" + out.RequiredAMR[v] + "» означает один фактор: укажите значения второго " +
+			"фактора, например «otp», «hwk» или «mfa»."}
 	}
 	if len(in.GroupRoles) > maxGroupRoles {
 		return out, &InputError{"group_roles", "Не больше 200 строк сопоставления групп."}

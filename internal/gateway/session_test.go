@@ -350,6 +350,15 @@ func TestSessionFingerprint(t *testing.T) {
 	if rs.ev.ID == a || rs.ev.ID == rs2.ev.ID || rs.ev.Source != events.SessionHeader {
 		t.Fatal("псевдонимы заголовка и отпечатка совпадают")
 	}
+	// Тот же ID из заголовка у другого пользователя — другая сессия (4Н12
+	// ревью 4.r2): чужой риск сессии не поднять.
+	rs3, err := s.identify("app", "u2", []string{"x"}, parse(start))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rs3.ev.ID == rs.ev.ID || rs3.key == rs.key {
+		t.Fatal("сессия из заголовка общая для разных пользователей")
+	}
 	// Пробелы в начале диалога сессию не меняют (ревью B2, п. 2).
 	if b := id("app", "u1", dialog(t, "system", " Ты\n помощник ", "user", "привет  ")); b != a {
 		t.Fatal("лишние пробелы начали новую сессию")

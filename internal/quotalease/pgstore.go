@@ -169,6 +169,12 @@ func (s *PGStore) Lease(ctx context.Context, in LeaseInput) (Response, error) {
 	var resp Response
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
 		resp = Response{ServerTime: in.Now, Apps: []AppResponse{}}
+		// Ожидание чужой блокировки quota_locks — не дольше секунды (4Н16
+		// ревью 4.r2): шлюз повторит запрос, а не повиснет за долгой
+		// транзакцией.
+		if _, err := tx.Exec(ctx, `SET LOCAL lock_timeout = '1s'`); err != nil {
+			return err
+		}
 		var mode, tz string
 		var since *time.Time
 		err := tx.QueryRow(ctx, `SELECT quota_mode, timezone, quota_mode_changed_at FROM install_settings WHERE org_id = $1`,

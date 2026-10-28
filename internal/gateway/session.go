@@ -226,7 +226,11 @@ func (s *Sessions) identify(appID, user string, vals []string, req *chat.Request
 	b.WriteByte(0)
 	source := events.SessionHeader
 	if id != "" {
+		// Пользователь — в ключе (4Н12 ревью 4.r2): ID сессии приходит от
+		// клиента, и пользователь A не поднимает риск чужой сессии B.
 		b.WriteString("h\x00")
+		b.WriteString(user)
+		b.WriteByte(0)
 		b.WriteString(id)
 	} else {
 		source = events.SessionFingerprint

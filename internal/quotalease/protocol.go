@@ -45,6 +45,10 @@ const (
 	MaxBody = 64 << 10
 	// MaxApps — приложений в запросе (bundle.MaxApplications).
 	MaxApps = 2000
+	// MaxQuotasPerRequest — квот во всём запросе (шлюз шлёт не больше 300):
+	// иначе одна транзакция долго держала бы блокировки quota_locks многих
+	// приложений (4Н16 ревью 4.r2).
+	MaxQuotasPerRequest = 300
 	// MaxReports — отчётов об аренде в одной квоте: шлюз держит текущую
 	// и следующую аренду, остальное — запас на отложенные отчёты.
 	MaxReports = 8
@@ -165,6 +169,7 @@ func (r Request) Validate() error {
 	apps := make(map[string]bool, len(r.Apps))
 	ids := map[string]bool{}
 	leases := map[string]bool{}
+	quotas := 0
 	for i, a := range r.Apps {
 		if !appRe.MatchString(a.App) || apps[a.App] {
 			return fmt.Errorf("%w: apps[%d].app — ID приложения без повторов", ErrInvalid, i)
@@ -172,6 +177,9 @@ func (r Request) Validate() error {
 		apps[a.App] = true
 		if len(a.Quotas) == 0 || len(a.Quotas) > len(Quotas) {
 			return fmt.Errorf("%w: apps[%d].quotas — от 1 до %d", ErrInvalid, i, len(Quotas))
+		}
+		if quotas += len(a.Quotas); quotas > MaxQuotasPerRequest {
+			return fmt.Errorf("%w: квот в запросе — не больше %d", ErrInvalid, MaxQuotasPerRequest)
 		}
 		seen := map[string]bool{}
 		for j, q := range a.Quotas {
