@@ -218,6 +218,8 @@ type fakeMailer struct {
 	err   error
 	// cancel — вызывается при отправке: остановка сервера посреди письма.
 	cancel func()
+	// rejected — сколько адресов пользователей «отклонил» сервер SMTP.
+	rejected int
 }
 
 func (f *fakeMailer) SendReport(_ context.Context, _ string, m notify.ReportMail) error {
@@ -239,6 +241,9 @@ func (f *fakeMailer) SendReport(_ context.Context, _ string, m notify.ReportMail
 		return &notify.DeliveryError{Code: notify.ErrCodeDial}
 	}
 	f.mails = append(f.mails, m)
+	if f.rejected > 0 && m.Rejected != nil {
+		m.Rejected(f.rejected)
+	}
 	return nil
 }
 
@@ -707,6 +712,9 @@ func TestTickUserRecipients(t *testing.T) {
 	r.Active = false
 	e.dir.users[uWithMail2] = r
 	e.dir.mu.Unlock()
+	// Сервер SMTP отклонил адрес пользователя: письмо ушло остальным,
+	// адрес считается пропущенным (ревью 4.r1, 4В13).
+	e.mail.rejected = 1
 	if err := e.svc.Tick(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -714,7 +722,7 @@ func TestTickUserRecipients(t *testing.T) {
 		t.Fatalf("получатели-пользователи: %+v", e.mail.mails)
 	}
 	runs, _ := e.svc.Runs(ctx, s.ID, 10) //nolint:gosec // G104: ошибка не важна для проверки
-	if len(runs) != 1 || runs[0].Status != RunSent || runs[0].SkippedNoEmail != 2 {
+	if len(runs) != 1 || runs[0].Status != RunSent || runs[0].SkippedNoEmail != 3 {
 		t.Fatalf("журнал: %+v", runs)
 	}
 	var export map[string]any

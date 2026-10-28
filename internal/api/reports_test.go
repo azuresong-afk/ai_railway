@@ -356,7 +356,7 @@ func TestReportSchedulesViaAPI(t *testing.T) {
 func TestReportRecipientsViaAPI(t *testing.T) {
 	e := newAppsEnv(t)
 	admin := e.mustLogin(t, "admin")
-	if w := e.call(admin, "PUT", "/api/v1/users/"+tAuditorID+"/email", `{"email":"auditor@example.ru"}`, true); w.Code != 200 {
+	if w := e.call(admin, "PUT", "/api/v1/users/"+tAuditorID+"/email", `{"email":"auditor@example.ru","password":"`+tPhrase+`"}`, true); w.Code != 200 {
 		t.Fatalf("e-mail аудитора: %d %s", w.Code, w.Body)
 	}
 	w := e.call(admin, "GET", "/api/v1/report-recipients", "", false)

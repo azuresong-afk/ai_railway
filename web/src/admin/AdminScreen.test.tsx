@@ -144,12 +144,19 @@ describe("администрирование", () => {
     fireEvent.click(screen.getByRole("button", { name: "E-mail: petrov" }));
     const dialog = await screen.findByRole("dialog");
     fireEvent.change(within(dialog).getByLabelText("E-mail"), { target: { value: "плохой" } });
+    // Без пароля администратора сохранить нельзя (ревью 4.r1, 4В12).
+    expect(within(dialog).getByRole("button", { name: "Сохранить" })).toBeDisabled();
+    fireEvent.change(within(dialog).getByLabelText("Текущий пароль"), { target: { value: "секрет" } });
     fireEvent.click(within(dialog).getByRole("button", { name: "Сохранить" }));
     expect(await within(dialog).findByText(/вида user@example.ru/)).toBeInTheDocument();
     fireEvent.change(within(dialog).getByLabelText("E-mail"), { target: { value: " petrov@example.ru " } });
+    fireEvent.change(within(dialog).getByLabelText("Текущий пароль"), { target: { value: "секрет" } });
     fireEvent.click(within(dialog).getByRole("button", { name: "Сохранить" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-    expect(calls.filter((c) => c.method === "PUT").map((c) => c.body)).toEqual([{ email: "плохой" }, { email: "petrov@example.ru" }]);
+    expect(calls.filter((c) => c.method === "PUT").map((c) => c.body)).toEqual([
+      { email: "плохой", password: "секрет" },
+      { email: "petrov@example.ru", password: "секрет" },
+    ]);
   });
 
   it("смена роли идёт через диалог, отказ сервера показывается", async () => {

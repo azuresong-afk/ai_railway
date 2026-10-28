@@ -614,8 +614,26 @@ func TestUserEmail(t *testing.T) {
 	analyst := e.mustLogin(t, "analyst")
 	auditor := e.mustLogin(t, "auditor")
 	path := "/api/v1/users/" + tAnalystID + "/email"
+	pass := `,"password":"` + tPhrase + `"}`
 
-	w := e.call(admin, "PUT", path, `{"email":" analyst@example.ru "}`, true)
+	// Ревью 4.r1, 4В12: без повторной проверки адрес не меняется — ни свой,
+	// ни чужой; неверный пароль — отказ.
+	for _, c := range []struct {
+		who  session
+		path string
+	}{{admin, path}, {analyst, "/api/v1/me/email"}} {
+		if w := e.call(c.who, "PUT", c.path, `{"email":"evil@example.ru"}`, true); w.Code != 400 || !strings.Contains(w.Body.String(), "password") {
+			t.Fatalf("%s без пароля: %d %s", c.path, w.Code, w.Body)
+		}
+		if w := e.call(c.who, "PUT", c.path, `{"email":"evil@example.ru","password":"неверный пароль 1"}`, true); w.Code != 403 && w.Code != 401 {
+			t.Fatalf("%s с неверным паролем: %d %s", c.path, w.Code, w.Body)
+		}
+	}
+	if w := e.call(admin, "GET", "/api/v1/users/"+tAnalystID, "", false); strings.Contains(w.Body.String(), "evil@example.ru") {
+		t.Fatalf("адрес изменён без повторной проверки: %s", w.Body)
+	}
+
+	w := e.call(admin, "PUT", path, `{"email":" analyst@example.ru "`+pass, true)
 	var v UserView
 	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &v) != nil || v.Email != "analyst@example.ru" {
 		t.Fatalf("задание администратором: %d %s", w.Code, w.Body)
@@ -634,14 +652,14 @@ func TestUserEmail(t *testing.T) {
 		t.Fatalf("адрес аудитора изменился: %s", w.Body)
 	}
 	// Маршрут профиля меняет только свою запись.
-	if w := e.call(auditor, "PUT", "/api/v1/me/email", `{"email":"auditor@example.ru"}`, true); w.Code != 200 || !strings.Contains(w.Body.String(), `"email":"auditor@example.ru"`) {
+	if w := e.call(auditor, "PUT", "/api/v1/me/email", `{"email":"auditor@example.ru"`+pass, true); w.Code != 200 || !strings.Contains(w.Body.String(), `"email":"auditor@example.ru"`) {
 		t.Fatalf("свой адрес: %d %s", w.Code, w.Body)
 	}
 	if w := e.call(admin, "GET", "/api/v1/users/"+tAnalystID, "", false); !strings.Contains(w.Body.String(), `"email":"analyst@example.ru"`) {
 		t.Fatalf("адрес аналитика изменился через профиль аудитора: %s", w.Body)
 	}
 	// Убрать адрес.
-	if w := e.call(analyst, "PUT", "/api/v1/me/email", `{"email":""}`, true); w.Code != 200 || !strings.Contains(w.Body.String(), `"email":""`) {
+	if w := e.call(analyst, "PUT", "/api/v1/me/email", `{"email":""`+pass, true); w.Code != 200 || !strings.Contains(w.Body.String(), `"email":""`) {
 		t.Fatalf("очистка: %d %s", w.Code, w.Body)
 	}
 	// Неверный ввод.
@@ -651,7 +669,7 @@ func TestUserEmail(t *testing.T) {
 		mustProblem(t, e.call(analyst, "PUT", "/api/v1/me/email", b, true), 400, CodeInvalidRequest)
 	}
 	mustProblem(t, e.call(admin, "PUT", "/api/v1/users/not-a-uuid/email", `{"email":""}`, true), 404, CodeNotFound)
-	mustProblem(t, e.call(admin, "PUT", "/api/v1/users/01900000-0000-7000-8000-0000000000ee/email", `{"email":""}`, true), 404, CodeNotFound)
+	mustProblem(t, e.call(admin, "PUT", "/api/v1/users/01900000-0000-7000-8000-0000000000ee/email", `{"email":""`+pass, true), 404, CodeNotFound)
 	// Без сессии.
 	mustProblem(t, do(e.h, "PUT", "/api/v1/me/email", `{"email":"a@example.ru"}`, "Content-Type", "application/json"), 401, CodeUnauthorized)
 
@@ -661,9 +679,12 @@ func TestUserEmail(t *testing.T) {
 		if r.Action != "user.email_set" {
 			continue
 		}
-		n++
 		if strings.Contains(fmt.Sprintf("%+v", r), "example.ru") {
 			t.Errorf("адрес в журнале аудита: %+v", r)
+		}
+		// Неверный пароль повторной проверки — запись об отказе.
+		if r.Result == audit.ResultSuccess {
+			n++
 		}
 	}
 	if n != 3 {

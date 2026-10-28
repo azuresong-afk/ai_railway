@@ -62,6 +62,8 @@ type smtpServer struct {
 	rcpt     []string
 	data     []string
 	tlsUsed  bool
+	// rejectRcpt — адрес, на который RCPT отвечает 550.
+	rejectRcpt string
 }
 
 func newSMTPServer(t *testing.T, tp aisecCrypto.TLSProvider, cert, key []byte, startTLS bool) *smtpServer {
@@ -140,8 +142,15 @@ func (s *smtpServer) serve(conn net.Conn, upgrade func(net.Conn) net.Conn) {
 			w("250 ok")
 		case "RCPT":
 			s.mu.Lock()
-			s.rcpt = append(s.rcpt, line)
+			reject := s.rejectRcpt != "" && strings.Contains(strings.ToLower(line), "<"+s.rejectRcpt+">")
+			if !reject {
+				s.rcpt = append(s.rcpt, line)
+			}
 			s.mu.Unlock()
+			if reject {
+				w("550 mailbox unavailable")
+				continue
+			}
 			w("250 ok")
 		case "DATA":
 			w("354 go")
