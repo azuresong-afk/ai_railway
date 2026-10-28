@@ -107,6 +107,24 @@ func NewChatHandler(cfg ChatConfig) (*ChatHandler, error) {
 	return &ChatHandler{cfg: cfg, logger: cfg.Logger}, nil
 }
 
+// readLimited читает тело не больше limit байт и не дольше
+// BodyReadTimeout: медленная передача тела не держит соединение и горутину
+// (общий путь chat и MCP-прокси, ревью 4.r1, 4В6). Таймаут — net.Error с
+// Timeout().
+func (h *ChatHandler) readLimited(w http.ResponseWriter, r *http.Request, limit int64) ([]byte, error) {
+	rc := http.NewResponseController(w)
+	if err := rc.SetReadDeadline(time.Now().Add(h.cfg.BodyReadTimeout)); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		h.logger.Warn("не удалось ограничить время чтения тела", "error", err)
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, limit))
+	// После чтения тела срок снимается: дальше соединение нужно для ответа,
+	// в том числе долгого потокового.
+	if derr := rc.SetReadDeadline(time.Time{}); derr != nil && !errors.Is(derr, http.ErrNotSupported) {
+		h.logger.Warn("не удалось снять срок чтения", "error", derr)
+	}
+	return body, err
+}
+
 // readBody читает тело с пределом размера и времени. При ошибке ответ уже
 // записан.
 func (h *ChatHandler) readBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
@@ -115,16 +133,7 @@ func (h *ChatHandler) readBody(w http.ResponseWriter, r *http.Request) ([]byte, 
 		WriteError(w, http.StatusUnsupportedMediaType, "ожидается Content-Type: application/json", "invalid_request_error", "unsupported_media_type")
 		return nil, false
 	}
-	rc := http.NewResponseController(w)
-	if err := rc.SetReadDeadline(time.Now().Add(h.cfg.BodyReadTimeout)); err != nil && !errors.Is(err, http.ErrNotSupported) {
-		h.logger.Warn("не удалось ограничить время чтения тела", "error", err)
-	}
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, h.cfg.MaxBodyBytes))
-	// После чтения тела срок снимается: дальше соединение нужно для ответа,
-	// в том числе долгого потокового.
-	if derr := rc.SetReadDeadline(time.Time{}); derr != nil && !errors.Is(derr, http.ErrNotSupported) {
-		h.logger.Warn("не удалось снять срок чтения", "error", derr)
-	}
+	body, err := h.readLimited(w, r, h.cfg.MaxBodyBytes)
 	if err != nil {
 		var tooLarge *http.MaxBytesError
 		var ne net.Error

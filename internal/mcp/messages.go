@@ -177,38 +177,39 @@ func (l *List) Rebuild(keep func(i int) bool, version string) argschema.Value {
 }
 
 // DescriptionText — строки описания элемента через перевод строки: все
-// строковые значения и имена свойств схем, кроме name, icons и _meta.
-// Имя проверяется правилами имени, а не детекторами.
+// строковые значения и все имена ключей объектов на любой глубине, кроме
+// name, icons и _meta верхнего уровня. Имя проверяется правилами имени, а
+// не детекторами. Ключи пишутся все, а не только у properties: клиент
+// получает схему целиком, и инструкция в ключе $defs, patternProperties
+// или неизвестного поля доходит до модели (ревью 4.r1, 4В7).
 func DescriptionText(v *argschema.Value) string {
 	var b strings.Builder
-	var walk func(v *argschema.Value, top, props bool)
-	walk = func(v *argschema.Value, top, props bool) {
+	line := func(s string) {
+		if b.Len() > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(s)
+	}
+	var walk func(v *argschema.Value, top bool)
+	walk = func(v *argschema.Value, top bool) {
 		switch v.Kind {
 		case argschema.String:
-			if b.Len() > 0 {
-				b.WriteByte('\n')
-			}
-			b.WriteString(v.Str)
+			line(v.Str)
 		case argschema.Array:
 			for i := range v.Arr {
-				walk(&v.Arr[i], false, false)
+				walk(&v.Arr[i], false)
 			}
 		case argschema.Object:
 			for i, k := range v.Keys {
 				if top && (k == "name" || k == "icons" || k == "_meta") {
 					continue
 				}
-				if props {
-					if b.Len() > 0 {
-						b.WriteByte('\n')
-					}
-					b.WriteString(k)
-				}
-				walk(&v.Vals[i], false, k == "properties")
+				line(k)
+				walk(&v.Vals[i], false)
 			}
 		}
 	}
-	walk(v, true, false)
+	walk(v, true)
 	return b.String()
 }
 
@@ -500,12 +501,33 @@ func (cr *ContentResult) collect(v *argschema.Value, at string) {
 	}
 }
 
-// ArgTexts — строковые значения аргументов вызова с путями (детекторы с
-// источником tool_args).
+// ArgTexts — фрагменты аргументов вызова с путями для детекторов с
+// источником tool_args: строковые значения, а также имена ключей и записи
+// чисел (ревью 4.r1, 4В8: номер телефона числом или номер карты в имени
+// ключа иначе уходили бы мимо pii и secrets). Фрагменты ключей и чисел —
+// копии только для находок: аргументы не меняются.
 func ArgTexts(args *argschema.Value) []Text {
-	cr := &ContentResult{}
-	cr.collect(args, "arguments")
-	return cr.Texts
+	var out []Text
+	var walk func(v *argschema.Value, at string)
+	walk = func(v *argschema.Value, at string) {
+		switch v.Kind {
+		case argschema.String:
+			out = append(out, Text{Path: at, Ref: v})
+		case argschema.Number:
+			out = append(out, Text{Path: at, Ref: &argschema.Value{Kind: argschema.String, Str: v.Raw}})
+		case argschema.Array:
+			for i := range v.Arr {
+				walk(&v.Arr[i], at+"["+strconv.Itoa(i)+"]")
+			}
+		case argschema.Object:
+			for i, k := range v.Keys {
+				out = append(out, Text{Path: at + "." + k + "#key", Ref: &argschema.Value{Kind: argschema.String, Str: k}})
+				walk(&v.Vals[i], at+"."+k)
+			}
+		}
+	}
+	walk(args, "arguments")
+	return out
 }
 
 // MetaDecision — ключ _meta результата с решением шлюза (ADR-0023,
