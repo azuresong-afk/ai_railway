@@ -9387,6 +9387,636 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/shadow-ai/services": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Теневой ИИ — сервисы
+         * @description Право `shadow_ai.read`. Публичные ИИ-сервисы из каталога, к которым обращались по импортированным
+         *     журналам прокси (DM-37; ADR-0027), по убыванию обращений, не больше 500. Период — `from`, `to`
+         *     (RFC 3339; по умолчанию последние 30 суток, не длиннее 1830 суток); `service` — только этот сервис.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description Начало периода (RFC 3339); по умолчанию — за 30 суток до `to` */
+                    from?: components["parameters"]["ShadowFrom"];
+                    /** @description Конец периода (RFC 3339, не включается); по умолчанию — текущее время */
+                    to?: components["parameters"]["ShadowTo"];
+                    /** @description ID сервиса каталога */
+                    service?: components["parameters"]["ShadowService"];
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Сервисы за период */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ShadowServiceList"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/shadow-ai/users": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Теневой ИИ — пользователи
+         * @description Право `shadow_ai.read`. Пользователи — только псевдонимами (HMAC на ключе псевдонимов, как в событиях,
+         *     ТЗ 5.5): `kind` `user` — логин из журнала, `address` — адрес клиента, если логина нет. Исходные логины
+         *     и адреса не хранятся. По убыванию обращений, не больше `limit` (по умолчанию и максимум 1000).
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description Начало периода (RFC 3339); по умолчанию — за 30 суток до `to` */
+                    from?: components["parameters"]["ShadowFrom"];
+                    /** @description Конец периода (RFC 3339, не включается); по умолчанию — текущее время */
+                    to?: components["parameters"]["ShadowTo"];
+                    /** @description ID сервиса каталога */
+                    service?: components["parameters"]["ShadowService"];
+                    limit?: number;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Пользователи за период */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ShadowUserList"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/shadow-ai/timeline": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Теневой ИИ — динамика
+         * @description Право `shadow_ai.read`. Обращения, байты, число пользователей и сервисов по часам (`step=hour`, период не
+         *     длиннее 366 суток) или суткам (`step=day`, по умолчанию; сутки — в часовом поясе установки).
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description Начало периода (RFC 3339); по умолчанию — за 30 суток до `to` */
+                    from?: components["parameters"]["ShadowFrom"];
+                    /** @description Конец периода (RFC 3339, не включается); по умолчанию — текущее время */
+                    to?: components["parameters"]["ShadowTo"];
+                    /** @description ID сервиса каталога */
+                    service?: components["parameters"]["ShadowService"];
+                    step?: "hour" | "day";
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Динамика */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ShadowTimeline"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/shadow-ai/catalog": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Каталог ИИ-сервисов
+         * @description Право `shadow_ai.read`. Загруженный каталог: версия, дата, номер заверения рабочего ключа и его срок,
+         *     отпечаток, сервисы. `valid: false` — подпись сохранённого файла не прошла проверку при запуске сервера
+         *     (файл в БД изменён): импорт невозможен до загрузки подписанного каталога.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Каталог */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ShadowCatalog"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        /**
+         * Загрузить каталог ИИ-сервисов
+         * @description Право `shadow_ai.manage`. Тело — подписанный файл каталога из выпуска (`.aisecdb`, до 4 МиБ,
+         *     `Content-Type: application/octet-stream`; ADR-0027, пп. 2–4). Проверяются: заверение рабочего ключа
+         *     ключом производителя (назначение `service_db`, срок на текущее время, отзыв), подпись базы рабочим ключом,
+         *     вид базы, дата каталога в сроке заверения, строгий разбор YAML. Неверный файл — 422 (причина в тексте),
+         *     версия не больше загруженной — 409. Пишет `shadow_ai.catalog_loaded` или `shadow_ai.catalog_rejected`
+         *     с причиной, без содержимого файла.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/octet-stream": string;
+                };
+            };
+            responses: {
+                /** @description Каталог загружен */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ShadowCatalog"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/shadow-ai/imports": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Журнал импорта
+         * @description Право `shadow_ai.read`. Последние 100 импортов: формат, счётчики строк, номера первых ошибочных строк
+         *     (до 20, без содержимого), период, хеш файла. Имя файла и строки журнала не хранятся.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Импорты, новые первыми */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ShadowImportList"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        /**
+         * Импортировать журнал прокси
+         * @description Право `shadow_ai.manage`. Тело — файл журнала целиком (до 256 МиБ; `text/plain`, `text/csv`,
+         *     `application/gzip` или `application/octet-stream`), разбирается потоком (ADR-0027, п. 5). Форматы:
+         *     `csv` — с заголовком (время, пользователь, домен или URL, байты; разделитель `,` или `;`), `squid` —
+         *     access.log в формате native, `cef` — CEF (в том числе UserGate, ArcSight). `compression=gzip` —
+         *     файл сжат (после распаковки до 1 ГиБ). Пределы: строка 16 КиБ (длиннее — ошибочная), 10 млн строк,
+         *     500 тыс. сочетаний сервиса, пользователя и часа, 10 минут. Сопоставление с каталогом — по точному имени
+         *     и суффиксу домена (DM-37). В БД — только сводки по сервису, псевдониму пользователя и часу; сырые
+         *     строки и URL не хранятся. Записи старше срока хранения не сохраняются (`outdated`). Повтор того же
+         *     файла — 409; каталог не загружен — 409; уже идёт импорт — 429 с `Retry-After`. Пишет
+         *     `shadow_ai.import` (счётчики, хеш, версия каталога).
+         */
+        post: {
+            parameters: {
+                query: {
+                    format: "csv" | "squid" | "cef";
+                    compression?: "gzip";
+                };
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "text/plain": string;
+                    "text/csv": string;
+                    "application/gzip": string;
+                    "application/octet-stream": string;
+                };
+            };
+            responses: {
+                /** @description Журнал импортирован */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ShadowImport"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/shadow-ai/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Настройки теневого ИИ
+         * @description Право `shadow_ai.read`. Срок хранения сводок, суток (по умолчанию 365), и задан ли серверу ключ
+         *     псевдонимов пользователей (`users_pseudonymized`; без него пользователи из журналов не учитываются).
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Настройки */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ShadowSettings"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        /**
+         * Изменить срок хранения сводок теневого ИИ
+         * @description Право `shadow_ai.manage`. Срок — от 30 до 1825 суток; сводки старше срока удаляются фоновой задачей раз в
+         *     час (`shadow_ai.retention`). Сокращение необратимо и требует текущего пароля (`password`) или кода TOTP
+         *     (`code`) в сессии консоли (токеном API — 403); неверное значение — 403 `reauthentication_failed`;
+         *     пишется с `weakening: true` (DM-40). До первичной настройки — 409. Пишет `shadow_ai.settings_changed`.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["ShadowSettingsUpdate"];
+                };
+            };
+            responses: {
+                /** @description Срок изменён */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ShadowSettings"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/shadow-ai/exclusions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Исключения теневого ИИ
+         * @description Право `shadow_ai.read`. Пользователи (псевдонимами) и сервисы, которые не учитываются в сводках и
+         *     оповещениях теневого ИИ (задача 4.23), — например учётная запись самого шлюза, которая ходит к
+         *     провайдерам через прокси. Не больше 1000.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Исключения */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ShadowExclusionList"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        /**
+         * Добавить исключение теневого ИИ
+         * @description Право `shadow_ai.manage`. Пользователь задаётся логином или адресом клиента из журнала (`login`) —
+         *     сервер сразу заменяет его псевдонимом на ключе псевдонимов, логин нигде не хранится — или готовым
+         *     псевдонимом (`alias`); сервис — ID сервиса каталога (`service`). Строки исключённых не попадают в
+         *     сводки и оповещения, накопленные сводки исключённого удаляются той же транзакцией. Это ослабление
+         *     (DM-40): нужен текущий пароль (`password`) или код TOTP (`code`) в сессии консоли (токеном API —
+         *     403), в аудите `shadow_ai.exclusion_added` с `weakening: true`. Пользователь без ключа псевдонимов —
+         *     409; повтор и сверх 1000 — 409.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["ShadowExclusionInput"];
+                };
+            };
+            responses: {
+                /** @description Исключение добавлено */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ShadowExclusion"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/shadow-ai/exclusions/{kind}/{value}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Снять исключение теневого ИИ
+         * @description Право `shadow_ai.manage`. Следующие строки пользователя или сервиса снова учитываются; удалённые при
+         *     добавлении исключения сводки не возвращаются. Пишет `shadow_ai.exclusion_removed`.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    kind: "user" | "service";
+                    /** @description Псевдоним или ID сервиса */
+                    value: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Исключение снято */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/shadow-ai/syslog": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Состояние приёма журналов по syslog
+         * @description Право `shadow_ai.read`. Слушатель TCP/TLS сервера управления (RFC 5425, кадры RFC 6587), выключен по
+         *     умолчанию и включается флагами сервера `-shadow-ai-syslog-*`. Адрес, формат, режим TLS, разрешённые
+         *     сети, пределы и счётчики с запуска сервера: отказы и разрывы сверх пределов, строки, запись сводок.
+         *     Содержимого строк в ответе нет.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Состояние слушателя */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ShadowSyslogStats"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -9471,6 +10101,8 @@ export interface components {
                 /** @description Шлюзы на связи, которые дольше 10 минут работают на другой версии */
                 lagging: string[];
             };
+            /** @description Приём журналов прокси по syslog (теневой ИИ); нет — слушатель выключен */
+            shadow_ai_syslog?: components["schemas"]["ShadowSyslogStats"];
             notifications: {
                 /**
                  * @description gateway_clock (ВРМ.1) — часы шлюза на связи в последнем heartbeat расходятся с часами сервера больше чем на минуту, 3Н40 ревью 3.r3. gateway_tls (ЗИ.4) — шлюз на текущем пакете конфигурации дольше 10 минут после его сборки отвечает приложениям не тем сертификатом, что загружен в консоли (по часам шлюза он ещё не действует или истёк; без сертификата заказчика — не своим), 3Н43 ревью 3.r3. alert_job_stale (РСБ.7, DM-44) — фоновая задача правил «частота», «аномалия» и «бюджет» не отмечала проход дольше 5 минут при работающем сервере, 3В17 ревью 3.r2. ca_expiry (ИАФ.10) — действующему корню внутреннего УЦ осталось 60 суток и меньше, нужна ротация `aisec-cli keys rotate-ca`; system.alert пишется за 60 суток (ca_expiry) и за 7 суток (ca_expiry:critical), 3В5 ревью 3.r1. customer_cert_expiry (ЗИ.4) — сертификату заказчика для адреса шлюза осталось 30 суток и меньше; system.alert пишется за 30 суток (customer_cert_expiry) и за 7 суток (customer_cert_expiry:critical), задача 3.27
@@ -11681,10 +12313,10 @@ export interface components {
             filter?: string;
             min_severity?: components["schemas"]["AlertSeverity"];
             /**
-             * @description Поле правила «новое»; tool — только у встроенного agents.tool_new
+             * @description Поле правила «новое»; tool — только у встроенного agents.tool_new, shadow_ai_service — у shadow_ai.new_service
              * @enum {string}
              */
-            field?: "model" | "provider" | "user" | "app" | "tool";
+            field?: "model" | "provider" | "user" | "app" | "tool" | "shadow_ai_service";
             /** @description Порог «частоты»: событий в окне по ключу группировки */
             count?: number;
             /** @description Окно «частоты» */
@@ -11769,6 +12401,326 @@ export interface components {
             password?: string;
             /** @description Код из приложения-аутентификатора вместо пароля */
             code?: string;
+        };
+        ShadowServiceStat: {
+            id: string;
+            /** @description Название из каталога; нет в текущем каталоге — ID */
+            name: string;
+            vendor: string;
+            /** @description chat, api, code, image, search, platform; пусто — нет в текущем каталоге */
+            category: string;
+            /** Format: int64 */
+            requests: number;
+            /** Format: int64 */
+            bytes: number;
+            /**
+             * Format: int64
+             * @description Разных пользователей (псевдонимов)
+             */
+            users: number;
+            /**
+             * Format: date-time
+             * @description Начало первого часа с обращениями
+             */
+            first_seen: string;
+            /**
+             * Format: date-time
+             * @description Начало последнего часа с обращениями
+             */
+            last_seen: string;
+        };
+        ShadowServiceList: {
+            items: components["schemas"]["ShadowServiceStat"][];
+        };
+        ShadowUserStat: {
+            /** @description Псевдоним (как user_hash в событиях) */
+            alias: string;
+            /** @enum {string} */
+            kind: "user" | "address";
+            /** Format: int64 */
+            requests: number;
+            /** Format: int64 */
+            bytes: number;
+            services: string[];
+            /** Format: date-time */
+            last_seen: string;
+        };
+        ShadowUserList: {
+            items: components["schemas"]["ShadowUserStat"][];
+        };
+        ShadowPoint: {
+            /**
+             * Format: date-time
+             * @description Начало часа или суток (сутки — в часовом поясе установки)
+             */
+            bucket: string;
+            /** Format: int64 */
+            requests: number;
+            /** Format: int64 */
+            bytes: number;
+            /** Format: int64 */
+            users: number;
+            /** Format: int64 */
+            services: number;
+        };
+        ShadowTimeline: {
+            /** @enum {string} */
+            step: "hour" | "day";
+            items: components["schemas"]["ShadowPoint"][];
+        };
+        ShadowCatalogService: {
+            id: string;
+            name: string;
+            vendor: string;
+            /** @enum {string} */
+            category: "chat" | "api" | "code" | "image" | "search" | "platform";
+            /** @description Точные имена узлов */
+            domains: string[];
+            /** @description Имя и все его поддомены */
+            suffixes: string[];
+        };
+        ShadowCatalog: {
+            /** @description Каталог загружали */
+            loaded: boolean;
+            /** @description Подпись сохранённого каталога проверена */
+            valid: boolean;
+            /** Format: int64 */
+            version?: number;
+            /** Format: date */
+            date?: string;
+            /**
+             * Format: int64
+             * @description Номер заверения рабочего ключа
+             */
+            subkey_serial?: number;
+            /**
+             * Format: date-time
+             * @description Конец срока заверения рабочего ключа
+             */
+            subkey_not_after?: string;
+            /** @description Отпечаток рабочего ключа */
+            fingerprint?: string;
+            /** Format: date-time */
+            uploaded_at?: string;
+            services: components["schemas"]["ShadowCatalogService"][];
+        };
+        ShadowImport: {
+            /** Format: uuid */
+            id: string;
+            /** Format: date-time */
+            created_at: string;
+            /** @description Тип и ID субъекта */
+            created_by: string;
+            /** Format: int64 */
+            catalog_version: number;
+            /** @enum {string} */
+            format: "csv" | "squid" | "cef";
+            /**
+             * Format: int64
+             * @description Строк в файле, без пустых и заголовка CSV
+             */
+            lines: number;
+            /**
+             * Format: int64
+             * @description Обращений к сервисам каталога
+             */
+            matched: number;
+            /**
+             * Format: int64
+             * @description Обращений к прочим узлам и адресам IP
+             */
+            unmatched: number;
+            /**
+             * Format: int64
+             * @description Строк, которые не разобраны
+             */
+            errors: number;
+            /**
+             * Format: int64
+             * @description Обращений старше срока хранения (не сохранены)
+             */
+            outdated: number;
+            /** @description Номера первых ошибочных строк, без содержимого */
+            error_lines: number[];
+            /** Format: date-time */
+            from?: string;
+            /** Format: date-time */
+            to?: string;
+            /** @description false — ключа псевдонимов нет, пользователи не учтены */
+            users_pseudonymized: boolean;
+            /** @description Хеш файла после распаковки */
+            sha256: string;
+            /** @description Разных сервисов найдено */
+            services: number;
+            /**
+             * Format: int64
+             * @description Обращений исключённых пользователей и сервисов (не сохранены)
+             */
+            excluded?: number;
+        };
+        ShadowImportList: {
+            items: components["schemas"]["ShadowImport"][];
+        };
+        ShadowSettings: {
+            retention_days: number;
+            users_pseudonymized: boolean;
+        };
+        ShadowSettingsUpdate: {
+            retention_days: number;
+            /**
+             * Format: password
+             * @description Текущий пароль, если срок сокращается
+             */
+            password?: string;
+            /** @description Код из приложения-аутентификатора вместо пароля */
+            code?: string;
+        };
+        ShadowExclusion: {
+            /** @enum {string} */
+            kind: "user" | "service";
+            /** @description Псевдоним пользователя (32 hex) или ID сервиса каталога */
+            value: string;
+            comment: string;
+            /** Format: date-time */
+            created_at: string;
+            /** @description Тип и ID субъекта */
+            created_by: string;
+        };
+        ShadowExclusionInput: {
+            /** @enum {string} */
+            kind: "user" | "service";
+            /** @description Логин или адрес клиента из журнала; сервер хранит только псевдоним */
+            login?: string;
+            /** @description Готовый псевдоним вместо логина */
+            alias?: string;
+            /** @description ID сервиса каталога */
+            service?: string;
+            comment?: string;
+            /**
+             * Format: password
+             * @description Текущий пароль
+             */
+            password?: string;
+            /** @description Код из приложения-аутентификатора вместо пароля */
+            code?: string;
+        };
+        ShadowExclusionList: {
+            items: components["schemas"]["ShadowExclusion"][];
+        };
+        /** @description Приём журналов по syslog; счётчики — с запуска сервера */
+        ShadowSyslogStats: {
+            /** @description false — слушатель выключен (остальные поля нулевые) */
+            enabled: boolean;
+            /** @description Слушатель принимает соединения; false при enabled — приём остановлен ошибкой */
+            running: boolean;
+            /**
+             * Format: date-time
+             * @description Когда приём остановился
+             */
+            stopped_at?: string;
+            /** @description Причина остановки приёма */
+            last_error?: string;
+            address?: string;
+            /** @enum {string} */
+            format?: "cef" | "squid";
+            tls: boolean;
+            client_cert_required: boolean;
+            /** @description Пусто — любые источники (только с TLS) */
+            allowed_networks: string[];
+            /** Format: date-time */
+            started_at?: string;
+            /** @description Открытых соединений сейчас */
+            connections: number;
+            limits: {
+                max_connections: number;
+                max_connections_per_address: number;
+                max_frame_bytes: number;
+                lines_per_second: number;
+                idle_timeout_seconds: number;
+                frame_timeout_seconds: number;
+            };
+            /**
+             * Format: int64
+             * @description Принято соединений
+             */
+            accepted: number;
+            /**
+             * Format: int64
+             * @description Временных ошибок приёма соединений (повторяются с паузой)
+             */
+            accept_errors: number;
+            /**
+             * Format: int64
+             * @description Отказ: источник не из разрешённых сетей
+             */
+            rejected_network: number;
+            /**
+             * Format: int64
+             * @description Отказ: сверх предела соединений
+             */
+            rejected_limit: number;
+            /**
+             * Format: int64
+             * @description Рукопожатие TLS не удалось (в том числе нет клиентского сертификата)
+             */
+            tls_failed: number;
+            /**
+             * Format: int64
+             * @description Разрыв: кадр длиннее 16 КиБ
+             */
+            frame_too_large: number;
+            /**
+             * Format: int64
+             * @description Разрыв: поток оборван внутри кадра
+             */
+            bad_frame: number;
+            /**
+             * Format: int64
+             * @description Разрыв: нет кадров дольше срока простоя
+             */
+            idle_timeouts: number;
+            /**
+             * Format: int64
+             * @description Разрыв: кадр не пришёл целиком за срок
+             */
+            read_timeouts: number;
+            /** Format: int64 */
+            lines: number;
+            /** Format: int64 */
+            matched: number;
+            /** Format: int64 */
+            unmatched: number;
+            /**
+             * Format: int64
+             * @description Строки не разобраны
+             */
+            errors: number;
+            /** Format: int64 */
+            excluded: number;
+            /** Format: int64 */
+            outdated: number;
+            /**
+             * Format: int64
+             * @description Строки до загрузки каталога (не учтены)
+             */
+            no_catalog: number;
+            /**
+             * Format: int64
+             * @description Строки сверх предела сводок в памяти (не учтены)
+             */
+            dropped: number;
+            /**
+             * Format: int64
+             * @description Кадров, чтение которых задержано пределом строк в секунду
+             */
+            throttled: number;
+            /** @description Сводок в памяти до следующей записи */
+            pending: number;
+            /** Format: date-time */
+            last_flush_at?: string;
+            /** Format: int64 */
+            flush_failures: number;
+            last_flush_failed: boolean;
         };
         /**
          * @description Настройки без секретов. Почта — host, port (587), username, from, to (1–20 адресов); webhook —
@@ -12564,6 +13516,12 @@ export interface components {
         };
     };
     parameters: {
+        /** @description Начало периода (RFC 3339); по умолчанию — за 30 суток до `to` */
+        ShadowFrom: string;
+        /** @description Конец периода (RFC 3339, не включается); по умолчанию — текущее время */
+        ShadowTo: string;
+        /** @description ID сервиса каталога */
+        ShadowService: string;
         /** @description Размер страницы */
         Limit: number;
         /** @description Непрозрачный курсор из `next_cursor` предыдущей страницы */

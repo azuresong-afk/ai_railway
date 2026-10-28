@@ -96,6 +96,7 @@ const ProvidersScreen = lazy(() => import("../providers/ProvidersScreen").then((
 const AgentsScreen = lazy(() => import("../agents/AgentsScreen").then((m) => ({ default: m.AgentsScreen })));
 const SessionScreen = lazy(() => import("../agents/SessionScreen").then((m) => ({ default: m.SessionScreen })));
 const ApprovalsScreen = lazy(() => import("../approvals/ApprovalsScreen").then((m) => ({ default: m.ApprovalsScreen })));
+const ShadowAIScreen = lazy(() => import("../shadowai/ShadowAIScreen").then((m) => ({ default: m.ShadowAIScreen })));
 const PoliciesScreen = lazy(() => import("../policies/PoliciesScreen").then((m) => ({ default: m.PoliciesScreen })));
 
 function GuardedRoute({ me, perm, title, children }: { me: Me; perm: string; title: string; children: React.ReactNode }) {
@@ -254,6 +255,7 @@ function Frame({ me, onLogout }: { me: Me; onLogout: () => void }) {
               <Route path="/agents" element={<GuardedRoute me={me} perm="agents.read" title="агенты"><AgentsScreen me={me} /></GuardedRoute>} />
               <Route path="/approvals" element={<GuardedRoute me={me} perm="approvals.read" title="подтверждения"><ApprovalsScreen me={me} /></GuardedRoute>} />
               <Route path="/session/:id" element={<GuardedRoute me={me} perm="events.read" title="хронология сессии"><SessionScreen me={me} /></GuardedRoute>} />
+              <Route path="/shadow-ai" element={<GuardedRoute me={me} perm="shadow_ai.read" title="теневой ИИ"><ShadowAIScreen me={me} /></GuardedRoute>} />
               <Route path="/policies" element={<GuardedRoute me={me} perm="policies.read" title="политики"><PoliciesScreen me={me} /></GuardedRoute>} />
               <Route path="/reports" element={<GuardedRoute me={me} perm="reports.read" title="отчёты"><ReportsScreen me={me} /></GuardedRoute>} />
               <Route path="/profile" element={<ProfileScreen me={me} />} />
