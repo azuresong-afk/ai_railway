@@ -1,0 +1,34 @@
+# Приём журналов прокси и NGFW по syslog для теневого ИИ (задача 4.23,
+# ADR-0027, дополнение 1). По умолчанию выключен: в compose.yaml порта нет,
+# сервер без адреса слушателя его не открывает. Включение — этим файлом
+# поверх основного:
+#
+#   docker compose -f compose.yaml -f compose.shadow-ai-syslog.yaml up -d aisec-server
+#
+# или COMPOSE_FILE=compose.yaml:compose.shadow-ai-syslog.yaml в .env — тогда
+# дополнение действует во всех командах docker compose.
+#
+# Значения — в .env (раздел «Теневой ИИ: приём по syslog» в .env.example).
+# TLS (RFC 5425) — сертификатом консоли: источники проверяют имя
+# AISEC_CONSOLE_HOST. Клиентские сертификаты источников проверяются корнем
+# AISEC_SHADOW_AI_SYSLOG_CLIENT_CA — файлом в ${AISEC_DATA_DIR}/keys
+# (/etc/aisec/keys/… в контейнере). Без TLS не включается: приём без
+# шифрования — только флагом сервера вручную и только из разрешённых сетей
+# (docs/user/admin-guide.md, «Теневой ИИ: приём по syslog»).
+#
+# Порт по умолчанию публикуется на 127.0.0.1; для источников в сети укажите
+# адрес интерфейса хоста в AISEC_SHADOW_AI_SYSLOG_BIND и ограничьте сети
+# источников AISEC_SHADOW_AI_SYSLOG_ALLOWED_NETWORKS. Адрес внешнего
+# источника Docker сохраняет (правила iptables); соединения с самого хоста
+# через 127.0.0.1 приходят с адреса моста docker и в разрешённые сети, как
+# правило, не входят.
+services:
+  aisec-server:
+    environment:
+      AISEC_SERVER_SHADOW_AI_SYSLOG_LISTEN: "0.0.0.0:6514"
+      AISEC_SERVER_SHADOW_AI_SYSLOG_FORMAT: ${AISEC_SHADOW_AI_SYSLOG_FORMAT:?задайте AISEC_SHADOW_AI_SYSLOG_FORMAT — cef или squid}
+      AISEC_SERVER_SHADOW_AI_SYSLOG_TLS_CERT: /run/secrets/console-tls-cert
+      AISEC_SERVER_SHADOW_AI_SYSLOG_TLS_KEY: /run/secrets/console-tls-key
+      AISEC_SERVER_SHADOW_AI_SYSLOG_CLIENT_CA: ${AISEC_SHADOW_AI_SYSLOG_CLIENT_CA:-}
+      AISEC_SERVER_SHADOW_AI_SYSLOG_ALLOWED_NETWORKS: ${AISEC_SHADOW_AI_SYSLOG_ALLOWED_NETWORKS:-}
+    ports: ["${AISEC_SHADOW_AI_SYSLOG_BIND:-127.0.0.1}:${AISEC_SHADOW_AI_SYSLOG_PORT:-6514}:6514"]
