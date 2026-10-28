@@ -329,7 +329,7 @@ func filterShape(p *ber.Packet) string {
 }
 
 func writeShape(b *strings.Builder, p *ber.Packet) {
-	b.WriteString(strconv.Itoa(int(p.ClassType)) + "." + strconv.Itoa(int(p.Tag)) + "(")
+	b.WriteString(strconv.Itoa(int(p.ClassType)) + "." + strconv.FormatUint(uint64(p.Tag), 10) + "(")
 	switch {
 	case p.ClassType != ber.ClassContext:
 	case p.Tag == goldap.FilterAnd || p.Tag == goldap.FilterOr || p.Tag == goldap.FilterNot:
@@ -340,7 +340,7 @@ func writeShape(b *strings.Builder, p *ber.Packet) {
 		b.WriteString(strconv.Quote(p.Data.String()))
 	case p.Tag == goldap.FilterExtensibleMatch:
 		for _, c := range p.Children {
-			b.WriteString(strconv.Itoa(int(c.Tag)))
+			b.WriteString(strconv.FormatUint(uint64(c.Tag), 10))
 			if c.Tag != goldap.MatchingRuleAssertionMatchValue {
 				b.WriteString(strconv.Quote(c.Data.String()))
 			}
@@ -354,7 +354,7 @@ func writeShape(b *strings.Builder, p *ber.Packet) {
 				b.WriteString(strconv.Quote(c.Data.String()))
 			case p.Tag == goldap.FilterSubstrings:
 				for _, part := range c.Children {
-					b.WriteString(strconv.Itoa(int(part.Tag)) + ",")
+					b.WriteString(strconv.FormatUint(uint64(part.Tag), 10) + ",")
 				}
 			}
 			b.WriteString(";")
