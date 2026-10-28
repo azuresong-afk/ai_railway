@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -359,6 +360,49 @@ func TestSyslogWithoutCatalog(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, "строки с каталогом", func() bool { return st.l.Stats().Matched > 0 })
+}
+
+// 4В18 ревью 4.r2: без модуля лицензии shadow_ai строки по syslog
+// отбрасываются до разбора и сводки не пишутся; сбой проверки лицензии
+// оставляет прежний ответ; с модулем приём снова учитывает строки.
+func TestSyslogWithoutLicenseModule(t *testing.T) {
+	var licensed atomic.Bool
+	var failing atomic.Bool
+	st := startSyslog(t, SyslogConfig{Licensed: func(context.Context) (bool, error) {
+		if failing.Load() {
+			return true, errors.New("лицензия недоступна")
+		}
+		return licensed.Load(), nil
+	}})
+	if s := st.l.Stats(); s.LicenseModule {
+		t.Fatalf("модуль до проверки: %+v", s)
+	}
+	c := dialFrom(t, st.l.Addr(), "")
+	stream, n := squidFrames(t)
+	if _, err := io.WriteString(c, stream); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "строки без модуля", func() bool { return st.l.Stats().Unlicensed == int64(n) })
+	if s := st.l.Stats(); s.Matched != 0 || s.Errors != 0 || s.Pending != 0 {
+		t.Fatalf("строки без модуля учтены: %+v", s)
+	}
+	failing.Store(true)
+	st.l.Refresh(context.Background())
+	if st.l.Stats().LicenseModule {
+		t.Fatal("сбой проверки лицензии включил модуль")
+	}
+	failing.Store(false)
+	licensed.Store(true)
+	st.l.Refresh(context.Background())
+	if _, err := io.WriteString(c, stream); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "строки с модулем", func() bool { return st.l.Stats().Matched > 0 })
+	_ = c.Close() //nolint:gosec // закрытие тестового соединения, ошибка не важна
+	st.stop()
+	if len(st.m.Aggregates()) == 0 || st.l.Stats().Unlicensed != int64(n) {
+		t.Fatalf("сводки с модулем: %d, без модуля строк %d", len(st.m.Aggregates()), st.l.Stats().Unlicensed)
+	}
 }
 
 // Исключённый пользователь не попадает в сводки приёма по syslog.

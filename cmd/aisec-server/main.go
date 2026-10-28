@@ -610,7 +610,18 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	// Выход из run по любой ошибке после запуска тоже ждёт последней
 	// записи сводок (4.23-6).
 	syslogCtx, stopSyslog := context.WithCancel(ctx)
-	syslogDone, err := startShadowSyslog(syslogCtx, cfg.ShadowAISyslog, tp, shadowSvc, auditLog, logger.With("component", "shadow_ai"))
+	// Без модуля лицензии shadow_ai строки по syslog не учитываются, как
+	// импорт файлом получает 403 license_module (4В18 ревью 4.r2).
+	shadowLicensed := func(ctx context.Context) (bool, error) {
+		err := licSvc.CheckModule(ctx, license.ModuleShadowAI)
+		var d *license.Denied
+		if errors.As(err, &d) {
+			return false, nil
+		}
+		return err == nil, err
+	}
+	syslogDone, err := startShadowSyslog(syslogCtx, cfg.ShadowAISyslog, tp, shadowSvc, shadowLicensed, auditLog,
+		logger.With("component", "shadow_ai"))
 	if err != nil {
 		stopSyslog()
 		return err
