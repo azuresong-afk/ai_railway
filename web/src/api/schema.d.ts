@@ -7877,7 +7877,9 @@ export interface paths {
         /**
          * Отчёт за период
          * @description Право `reports.read` (владелец приложения — на своих приложениях). Виды: `summary` (сводный),
-         *     `incidents` (по инцидентам), `pilot` («Итоги пилота», сценарий S10). Данные — только агрегаты
+         *     `incidents` (по инцидентам), `pilot` («Итоги пилота», сценарий S10), `compliance` («Соответствие
+         *     требованиям» для аттестационных испытаний и аудита ИСПДн, сценарий S7; нужно ещё право
+         *     `compliance.read`, иначе 403; период не используется — отчёт на момент формирования). Данные — только агрегаты
          *     дашбордов, инциденты, оповещения, бюджеты и отметки аналитиков: содержимого запросов и ответов
          *     и значений находок в отчёте нет. Период — `from` и `to`, дни `ГГГГ-ММ-ДД` часового пояса
          *     установки, оба включительно; начало не в будущем, конец позже сегодняшнего урезается до
@@ -7907,7 +7909,7 @@ export interface paths {
                 header?: never;
                 path: {
                     /** @description Вид отчёта */
-                    kind: "summary" | "incidents" | "pilot";
+                    kind: "summary" | "incidents" | "pilot" | "compliance";
                 };
                 cookie?: never;
             };
@@ -10011,6 +10013,301 @@ export interface paths {
             };
         };
         put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/compliance": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Соответствие требованиям
+         * @description Право `compliance.read` (администратор безопасности, аудитор, администратор системы). Пункты действующей
+         *     базы требований (ТЗ 2.3; встроенной или загруженной подписанной) со статусами: `met`, `partial`, `not_met`,
+         *     `not_applicable`, `manual` (нужна ручная отметка). Статус вычисляют именованные проверки по настройкам и
+         *     состоянию сервера (например, «фильтрация входа включена для 5 из 7 приложений промышленной среды»),
+         *     организационные меры — ручные отметки. Итоговый процент (`summary.percent`) не включает пункты с признаком
+         *     «проект» (`draft`) и «не применимо»; частично — половина; `null`, если считать нечего. Фильтры: `source`
+         *     (ID источника из `sources`) и `applies` (`gis`, `kii`, `ispdn`, `commercial`). `unavailable` — группы
+         *     сведений, которые не удалось прочитать: проверки, которым они нужны, не засчитаны. Содержимого запросов и
+         *     ответов в ответе нет.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description ID источника требований */
+                    source?: string;
+                    applies?: "gis" | "kii" | "ispdn" | "commercial";
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Обзор соответствия */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ComplianceOverview"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/compliance/requirements/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Пункт соответствия
+         * @description Право `compliance.read`. Пункт с результатами проверок, ссылками на доказательства (экраны консоли,
+         *     фильтры журнала аудита и событий, отчёты) и ручной отметкой.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description ID пункта базы требований */
+                    id: components["parameters"]["ComplianceRequirementID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Пункт */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ComplianceItem"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/compliance/requirements/{id}/mark": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Поставить ручную отметку
+         * @description Право `compliance.mark` (администратор безопасности; токену API не выдаётся). Статус, комментарий (обязателен),
+         *     ссылка на документ-основание и срок пересмотра. После срока пересмотра отметка не засчитывается. У пункта,
+         *     статус которого вычисляют только проверки, допустима лишь отметка `not_applicable`; иначе 422. Пишет
+         *     `compliance.mark_set` (статус, прежний статус, срок, комментарий). После льготного периода лицензии модуль
+         *     закрыт для изменений (ADR-0026).
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID пункта базы требований */
+                    id: components["parameters"]["ComplianceRequirementID"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["ComplianceMarkInput"];
+                };
+            };
+            responses: {
+                /** @description Пункт с новой отметкой */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ComplianceItem"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        post?: never;
+        /**
+         * Снять ручную отметку
+         * @description Право `compliance.mark`. Нет отметки — 404. Пишет `compliance.mark_cleared`.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID пункта базы требований */
+                    id: components["parameters"]["ComplianceRequirementID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Пункт без отметки */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ComplianceItem"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/compliance/base": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * База требований
+         * @description Право `compliance.read`. Действующая база (встроенная в сборку или загруженная подписанная, если её версия
+         *     больше встроенной), встроенная база и сведения о загруженной: версия, дата, число пунктов, номер заверения
+         *     рабочего ключа и его срок, отпечаток, `valid` — подпись сохранённого файла проверена при запуске сервера.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description База требований */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ComplianceBaseView"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        /**
+         * Загрузить обновлённую базу требований
+         * @description Право `compliance.base.load` (администратор системы). Тело — подписанный файл базы вида
+         *     `compliance_requirements` из выпуска (`.aisecdb`, до 4 МиБ, `Content-Type: application/octet-stream`;
+         *     ADR-0027, пп. 2–4). Проверяются: заверение рабочего ключа ключом производителя (назначение `service_db`,
+         *     срок на текущее время, отзыв), подпись базы, вид, дата в сроке заверения, строгий разбор YAML (неизвестная
+         *     проверка или параметр — отказ). Неверный файл — 422 (причина в тексте), версия не больше действующей — 409.
+         *     Пишет `compliance.base_loaded` или `compliance.base_rejected` с причиной, без содержимого файла.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/octet-stream": string;
+                };
+            };
+            responses: {
+                /** @description База загружена */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ComplianceBaseView"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
         post?: never;
         delete?: never;
         options?: never;
@@ -12665,6 +12962,133 @@ export interface components {
             uploaded_at?: string;
             services: components["schemas"]["ShadowCatalogService"][];
         };
+        ComplianceEvidence: {
+            /** @enum {string} */
+            kind: "screen" | "audit" | "events" | "report";
+            title: string;
+            /** @description Раздел консоли, например /apps */
+            path: string;
+            /** @description Параметры адреса раздела (например, фильтр событий f) */
+            query?: {
+                [key: string]: string;
+            };
+            /** @description Где искать внутри раздела */
+            hint?: string;
+        };
+        ComplianceCheckResult: {
+            name: string;
+            title: string;
+            /** @enum {string} */
+            status: "met" | "partial" | "not_met" | "not_applicable";
+            /** @description Результат словами, без содержимого запросов */
+            detail: string;
+        };
+        ComplianceMark: {
+            requirement_id: string;
+            /** @enum {string} */
+            status: "met" | "partial" | "not_met" | "not_applicable";
+            comment: string;
+            document?: string;
+            /** Format: date */
+            review_by?: string;
+            /** Format: date-time */
+            set_at: string;
+            set_by: string;
+        };
+        ComplianceMarkInput: {
+            /** @enum {string} */
+            status: "met" | "partial" | "not_met" | "not_applicable";
+            /** @description Обязателен */
+            comment: string;
+            /** @description Ссылка на документ-основание */
+            document?: string;
+            /**
+             * Format: date
+             * @description Срок пересмотра: не в прошлом и не дальше трёх лет
+             */
+            review_by?: string;
+        };
+        ComplianceItem: {
+            id: string;
+            source: string;
+            source_title: string;
+            clause: string;
+            title: string;
+            /** @description Пересказ своими словами */
+            summary: string;
+            applies: ("gis" | "kii" | "ispdn" | "commercial")[];
+            /** @description Из проекта документа: в процент не входит */
+            draft: boolean;
+            /** @description Нужна ручная отметка */
+            manual: boolean;
+            /** @enum {string} */
+            status: "met" | "partial" | "not_met" | "not_applicable" | "manual";
+            auto?: {
+                /** @enum {string} */
+                status?: "met" | "partial" | "not_met" | "not_applicable";
+            };
+            checks?: components["schemas"]["ComplianceCheckResult"][];
+            evidence?: components["schemas"]["ComplianceEvidence"][];
+            mark?: components["schemas"]["ComplianceMark"];
+            /** @description Срок пересмотра отметки истёк: не засчитывается */
+            mark_overdue?: boolean;
+        };
+        ComplianceCounts: {
+            met: number;
+            partial: number;
+            not_met: number;
+            not_applicable: number;
+            manual: number;
+        };
+        ComplianceSummary: {
+            percent: number | null;
+            counts: components["schemas"]["ComplianceCounts"];
+            /** @description Пунктов в проценте */
+            counted: number;
+            /** @description Пунктов-проектов (в процент и счётчики не входят) */
+            drafts: number;
+        };
+        ComplianceBaseInfo: {
+            /** Format: int64 */
+            version: number;
+            /** Format: date */
+            date: string;
+            /** @enum {string} */
+            origin: "builtin" | "uploaded";
+            requirements: number;
+        };
+        ComplianceOverview: {
+            /** Format: date-time */
+            generated_at: string;
+            base: components["schemas"]["ComplianceBaseInfo"];
+            sources: {
+                id: string;
+                title: string;
+            }[];
+            summary: components["schemas"]["ComplianceSummary"];
+            items: components["schemas"]["ComplianceItem"][];
+            unavailable: ("apps" | "roles" | "audit_chain" | "integrity" | "alerts" | "channels")[];
+        };
+        ComplianceBaseView: {
+            active: components["schemas"]["ComplianceBaseInfo"];
+            builtin: components["schemas"]["ComplianceBaseInfo"];
+            uploaded?: {
+                /** Format: int64 */
+                version: number;
+                /** Format: date */
+                date: string;
+                requirements: number;
+                /** Format: int64 */
+                subkey_serial: number;
+                /** Format: date-time */
+                subkey_not_after?: string;
+                fingerprint: string;
+                /** Format: date-time */
+                uploaded_at: string;
+                /** @description Подпись сохранённого файла проверена при запуске */
+                valid: boolean;
+            };
+        };
         ShadowImport: {
             /** Format: uuid */
             id: string;
@@ -12984,7 +13408,7 @@ export interface components {
         ReportScheduleInput: {
             name: string;
             /** @enum {string} */
-            report: "summary" | "incidents" | "pilot";
+            report: "summary" | "incidents" | "pilot" | "compliance";
             /** @enum {string} */
             frequency: "daily" | "weekly" | "monthly";
             /** @description Для weekly; 1 — понедельник */
@@ -13013,7 +13437,7 @@ export interface components {
             id: string;
             name: string;
             /** @enum {string} */
-            report: "summary" | "incidents" | "pilot";
+            report: "summary" | "incidents" | "pilot" | "compliance";
             /** @enum {string} */
             frequency: "daily" | "weekly" | "monthly";
             weekday?: number;
@@ -13681,6 +14105,8 @@ export interface components {
         };
     };
     parameters: {
+        /** @description ID пункта базы требований */
+        ComplianceRequirementID: string;
         /** @description Начало периода (RFC 3339); по умолчанию — за 30 суток до `to` */
         ShadowFrom: string;
         /** @description Конец периода (RFC 3339, не включается); по умолчанию — текущее время */

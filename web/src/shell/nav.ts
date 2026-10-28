@@ -40,7 +40,7 @@ export const navItems: NavItem[] = [
   { path: "/agents", title: "Агенты", icon: Bot, anyOf: ["agents.read"] },
   { path: "/approvals", title: "Подтверждения", icon: ClipboardCheck, anyOf: ["approvals.read"] },
   { path: "/shadow-ai", title: "Теневой ИИ", icon: EyeOff, anyOf: ["shadow_ai.read"] },
-  { path: "/compliance", title: "Соответствие", icon: BadgeCheck, stage4: true },
+  { path: "/compliance", title: "Соответствие", icon: BadgeCheck, anyOf: ["compliance.read"] },
   { path: "/reports", title: "Отчёты", icon: FileText, anyOf: ["reports.read"] },
   {
     path: "/admin",

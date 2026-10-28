@@ -5,7 +5,7 @@ type S = components["schemas"];
 export type ReportSchedule = S["ReportSchedule"];
 export type ReportScheduleInput = S["ReportScheduleInput"];
 export type ReportRun = S["ReportRun"];
-export type ReportKind = "summary" | "incidents" | "pilot";
+export type ReportKind = "summary" | "incidents" | "pilot" | "compliance";
 
 const id = encodeURIComponent;
 
@@ -13,6 +13,7 @@ export const reportKinds: [ReportKind, string][] = [
   ["summary", "Сводный отчёт"],
   ["incidents", "Отчёт по инцидентам"],
   ["pilot", "Итоги пилота"],
+  ["compliance", "Соответствие требованиям"],
 ];
 
 export const frequencyTitles = new Map<string, string>([
