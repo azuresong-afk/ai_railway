@@ -79,6 +79,10 @@ type SyslogConfig struct {
 	HandshakeTimeout time.Duration
 	FlushInterval    time.Duration
 	MaxKeys          int
+	// Licensed — модуль лицензии shadow_ai включён (4В18 ревью 4.r2):
+	// false — строки не разбираются и не пишутся; ошибка — проверить не
+	// удалось, действует прежний ответ. nil — без проверки.
+	Licensed func(ctx context.Context) (bool, error)
 }
 
 // CheckSyslogConfig проверяет настройки до открытия порта.
@@ -184,6 +188,11 @@ type SyslogStats struct {
 	Dropped   int64 `json:"dropped"`
 	// Throttled — кадров, чтение которых задержано пределом строк в секунду.
 	Throttled int64 `json:"throttled"`
+	// Unlicensed — строк, отброшенных до разбора: модуль shadow_ai не входит
+	// в лицензию.
+	Unlicensed int64 `json:"unlicensed"`
+	// LicenseModule — модуль shadow_ai входит в лицензию (или лицензии нет).
+	LicenseModule bool `json:"license_module"`
 	// Pending — сводок в памяти до следующей записи.
 	Pending       int        `json:"pending"`
 	LastFlushAt   *time.Time `json:"last_flush_at,omitempty"`
@@ -207,7 +216,7 @@ type syslogCounters struct {
 	frameTooLarge, badFrame, idleTimeouts, readTimeouts atomic.Int64
 	lines, matched, unmatched, errs, excluded, outdated atomic.Int64
 	noCatalog, dropped, throttled, flushFailures        atomic.Int64
-	acceptErrors                                        atomic.Int64
+	acceptErrors, unlicensed                            atomic.Int64
 }
 
 // syslogEnv — каталог, срок хранения, часовой пояс и исключения; обновляется
@@ -243,6 +252,10 @@ type SyslogListener struct {
 	// lastFlush — время последней успешной записи, Unix нс; 0 — не было.
 	lastFlush   atomic.Int64
 	flushFailed atomic.Bool
+
+	// unlicensed — модуль shadow_ai не входит в лицензию: строки не
+	// разбираются, сводки не пишутся.
+	unlicensed atomic.Bool
 
 	// running — идёт приём; stopped и lastErr — когда и почему остановлен.
 	running atomic.Bool
@@ -280,8 +293,18 @@ func (s *Service) ListenSyslog(ctx context.Context, cfg SyslogConfig) (*SyslogLi
 // Addr — адрес слушателя.
 func (l *SyslogListener) Addr() string { return l.ln.Addr().String() }
 
-// refresh перечитывает каталог, срок хранения, пояс и исключения.
+// refresh перечитывает модуль лицензии, каталог, срок хранения, пояс и
+// исключения. Модуль — первым: сбой чтения остального его не задерживает,
+// а сбой проверки лицензии оставляет прежний ответ.
 func (l *SyslogListener) refresh(ctx context.Context) error {
+	var lerr error
+	if l.cfg.Licensed != nil {
+		ok, err := l.cfg.Licensed(ctx)
+		if err == nil {
+			l.unlicensed.Store(!ok)
+		}
+		lerr = err
+	}
 	sc, _, err := l.svc.current(ctx)
 	if err != nil {
 		return err
@@ -311,7 +334,7 @@ func (l *SyslogListener) refresh(ctx context.Context) error {
 		l.acc.catalog, l.acc.cutoff, l.acc.exclude = env.catalog, env.cutoff, env.exclude
 	}
 	l.mu.Unlock()
-	return nil
+	return lerr
 }
 
 // Refresh перечитывает каталог и исключения сразу (после их изменения).
@@ -544,7 +567,7 @@ func (l *SyslogListener) serve(ctx context.Context, raw net.Conn) {
 		if waited {
 			l.c.throttled.Add(1)
 		}
-		l.line(frame)
+		l.line(frame, ip)
 	}
 }
 
@@ -570,9 +593,16 @@ func (l *SyslogListener) closedBy(err error, waiting bool, ip netip.Addr) {
 	}
 }
 
-// line разбирает кадр и учитывает строку в сводках.
-func (l *SyslogListener) line(frame []byte) {
+// line разбирает кадр и учитывает строку в сводках. Без модуля лицензии
+// shadow_ai строка отбрасывается до разбора (4В18 ревью 4.r2), как импорт
+// файлом отвечает 403 license_module.
+func (l *SyslogListener) line(frame []byte, ip netip.Addr) {
 	l.c.lines.Add(1)
+	if l.unlicensed.Load() {
+		l.c.unlicensed.Add(1)
+		l.note("license_module", ip)
+		return
+	}
 	env := l.env.Load()
 	if env == nil || env.catalog == nil {
 		l.c.noCatalog.Add(1)
@@ -674,7 +704,14 @@ func (l *SyslogListener) flush(ctx context.Context) error {
 	l.resetAcc()
 	l.mu.Unlock()
 	var err error
-	if len(acc.aggs) > 0 {
+	switch {
+	// Модуль выключили, пока копились сводки: они не пишутся (счётчик
+	// dropped — по числу запросов в них).
+	case l.unlicensed.Load():
+		for _, a := range acc.aggs {
+			l.c.dropped.Add(a.Requests)
+		}
+	case len(acc.aggs) > 0:
 		err = l.svc.o.Store.SaveSyslog(ctx, l.svc.o.OrgID, SyslogBatch{Aggregates: acc.sorted(), ServiceNames: acc.names()})
 	}
 	if err != nil {
@@ -725,7 +762,8 @@ func (l *SyslogListener) Stats() SyslogStats {
 		Matched: l.c.matched.Load(), Unmatched: l.c.unmatched.Load(), Errors: l.c.errs.Load(), Excluded: l.c.excluded.Load(),
 		Outdated: l.c.outdated.Load(), NoCatalog: l.c.noCatalog.Load(), Dropped: l.c.dropped.Load(),
 		Throttled: l.c.throttled.Load(), FlushFailures: l.c.flushFailures.Load(), LastFlushFailed: l.flushFailed.Load(),
-		Running: l.running.Load(), AcceptErrors: l.c.acceptErrors.Load()}
+		Running: l.running.Load(), AcceptErrors: l.c.acceptErrors.Load(), Unlicensed: l.c.unlicensed.Load(),
+		LicenseModule: !l.unlicensed.Load()}
 	if ns := l.stopped.Load(); ns != 0 {
 		t := time.Unix(0, ns).UTC()
 		st.StoppedAt = &t

@@ -25,7 +25,7 @@ type PGDB interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
-// PGStore — Store на PostgreSQL (миграция 0064_compliance). SQL только
+// PGStore — Store на PostgreSQL (миграция 0065_compliance). SQL только
 // параметризованный.
 type PGStore struct {
 	db    PGDB

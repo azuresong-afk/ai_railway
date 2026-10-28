@@ -22,6 +22,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/license"
 	"github.com/azuresong-afk/ai_railway/internal/notify"
 	"github.com/azuresong-afk/ai_railway/internal/policy/versions"
+	"github.com/azuresong-afk/ai_railway/internal/quotalease"
 	"github.com/azuresong-afk/ai_railway/internal/reports"
 	"github.com/azuresong-afk/ai_railway/internal/shadowai"
 )
@@ -79,6 +80,8 @@ type Options struct {
 	// ограничения изменяющих маршрутов, предел приложений; nil — эндпоинты
 	// лицензии отвечают 503, ограничений нет.
 	License *license.Service
+	// Quotas — режим распределённых квот (задача 4.29); nil — его эндпоинты отвечают 503.
+	Quotas *quotalease.Service
 	// Incidents — инциденты (задача 3.16 этапа 3); nil — их эндпоинты
 	// отвечают 503.
 	Incidents *incidents.Service
@@ -152,6 +155,8 @@ type Deps struct {
 	Compliance *compliance.Service
 	// License — nil, если лицензия не подключена: её эндпоинты отвечают 503.
 	License *license.Service
+	// Quotas — nil, если распределённые квоты не подключены: их эндпоинты отвечают 503.
+	Quotas *quotalease.Service
 	// Incidents — nil, если инциденты не подключены: их эндпоинты отвечают 503.
 	Incidents *incidents.Service
 	// Dashboards — nil, если агрегаты дашбордов не подключены: их эндпоинты отвечают 503.
@@ -210,7 +215,7 @@ func New(o Options) (http.Handler, *Router, error) {
 	deps := Deps{Logger: o.Logger, Version: o.Version, Ready: o.Ready, Auth: o.Auth, Gateways: o.Gateways, Integrity: o.Integrity,
 		Status: o.Status, Events: o.Events, Audit: o.Audit, Apps: o.Apps, Policies: o.Policies,
 		AuditLog: o.AuditLog, AuditVerifier: o.AuditVerifier, Alerts: o.Alerts, Notify: o.Notify, Agents: o.Agents, Approvals: o.Approvals, ShadowAI: o.ShadowAI, Compliance: o.Compliance,
-		License: o.License, Incidents: o.Incidents,
+		License: o.License, Quotas: o.Quotas, Incidents: o.Incidents,
 		Dashboards: o.Dashboards, Reports: o.Reports, DashCache: newDashCache(), DashStreams: NewExportGate(dashStreamsPerSubject, dashStreamsTotal),
 		Reauthorize: o.Authorizer.Authorize, Stopping: o.Stopping,
 		Exports: NewExportGate(MaxExportsPerSubject, MaxExportsTotal), AuditReads: NewExportGate(MaxAuditReadsPerSubject, MaxAuditReadsTotal)}

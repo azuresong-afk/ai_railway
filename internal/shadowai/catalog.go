@@ -238,8 +238,9 @@ func truncate(s string, n int) string {
 }
 
 // NormalizeHost приводит имя узла из журнала к виду каталога: нижний
-// регистр ASCII, без порта, завершающей точки и квадратных скобок. Адрес IP
-// и имя не из ASCII дают ok = false: они не сопоставляются (DM-37).
+// регистр ASCII, без порта, завершающей точки и квадратных скобок. Адрес IP,
+// имя не из ASCII и имя с пустой меткой дают ok = false: они не
+// сопоставляются (DM-37).
 func NormalizeHost(h string) (string, bool) {
 	h = strings.TrimSpace(h)
 	if strings.HasPrefix(h, "[") {
@@ -251,8 +252,14 @@ func NormalizeHost(h string) (string, bool) {
 		}
 		h = h[:i]
 	}
-	h = strings.TrimRight(h, ".")
-	if h == "" || len(h) > maxHostLen {
+	h = strings.TrimSuffix(h, ".")
+	// «a..» — пустая метка: не имя узла (после снятия одной точки остаётся «a.»).
+	if h == "" || len(h) > maxHostLen || strings.HasSuffix(h, ".") {
+		return "", false
+	}
+	// Пустая метка («..», «.a», «a..b») — не имя узла: иначе «..» дало бы «.»,
+	// которое при повторной нормализации меняется (FuzzParseSquid).
+	if strings.HasPrefix(h, ".") || strings.HasSuffix(h, ".") || strings.Contains(h, "..") {
 		return "", false
 	}
 	if _, err := netip.ParseAddr(h); err == nil {

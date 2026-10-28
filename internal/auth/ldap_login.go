@@ -66,6 +66,16 @@ func (s *Service) ldapLogin(ctx context.Context, in LoginInput, login string, st
 	id, err := s.ldap.Authenticate(ctx, ldapConfig(st, secret), login, in.Password)
 	if err != nil {
 		f.reason, f.details = ldapReason(err), map[string]any{"error": ldap.ErrorCode(err), "detail": ldap.Detail(err)}
+		// Неверный пароль известной записи — отказ привязан к ней (4В21
+		// ревью 4.r2): DM-39 считает отказы по записи, а не только по адресу.
+		if ldap.ErrorCode(err) == ldap.CodeCredentials && id.ID != "" {
+			f.subject = id.ID
+			if u, uerr := s.ldapStore.UserByIdentity(ctx, s.orgID, LDAPIssuer, id.ID); uerr == nil {
+				f.user = &u
+			} else if !errors.Is(uerr, ErrNotFound) {
+				return LoginResult{}, uerr
+			}
+		}
 		return LoginResult{}, s.ldapFailed(ctx, in, f)
 	}
 	f.subject, f.details = id.ID, map[string]any{}
@@ -194,6 +204,10 @@ func ldapReason(err error) string {
 	return ldapReasonUnavailable
 }
 
+// LDAPEntryObject — тип объекта записи аудита для записи каталога без
+// учётной записи консоли (ID — неизменяемый идентификатор записи).
+const LDAPEntryObject = "ldap_entry"
+
 // ldapFailure — отказ входа через каталог для аудита.
 type ldapFailure struct {
 	login, reason, subject string
@@ -209,9 +223,14 @@ type ldapFailure struct {
 func (s *Service) ldapFailed(ctx context.Context, in LoginInput, f ldapFailure) error {
 	actor := audit.Actor{Type: audit.ActorUser, ID: unknownActor, Name: unknownLogin}
 	var obj audit.Object
-	if f.user != nil {
+	switch {
+	case f.user != nil:
 		actor = audit.Actor{Type: audit.ActorUser, ID: f.user.ID, Name: f.user.Login}
 		obj = userObject(f.user.ID)
+	// Запись каталога без учётной записи консоли (ещё не входила):
+	// объект — запись каталога, по нему DM-39 считает отказы (4В21).
+	case f.subject != "":
+		obj = audit.Object{Type: LDAPEntryObject, ID: f.subject}
 	}
 	d := map[string]any{"method": "ldap", "reason": f.reason}
 	for k, v := range f.details {

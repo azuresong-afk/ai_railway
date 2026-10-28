@@ -237,7 +237,21 @@ const (
 	ConditionLicenseInvalid    = "license_invalid"
 	ConditionLicenseClock      = "license_clock"
 	licenseExpiryCritical      = ConditionLicenseExpiry + ":critical"
+	// ConditionQuotaApprox — ЗИ.6, DM-36 (задача 4.29, ADR-0021, п. 2):
+	// режим квот local, а действующих шлюзов на связи больше одного — квоты
+	// и жёсткие бюджеты соблюдаются с превышением до числа шлюзов.
+	ConditionQuotaApprox = "quota_approximate"
+	// ConditionQuotaAutonomous — ЗИ.6, DM-36 (ADR-0021, п. 5): шлюз в
+	// последнем heartbeat сообщил, что работает на автономной доле — аренду
+	// получить не удаётся. Код — семейство и ID шлюза.
+	ConditionQuotaAutonomous = "quota_autonomous"
 )
+
+// QuotaHealth — режим квот и шлюзы на автономной доле (quotalease.Health).
+type QuotaHealth struct {
+	Mode       string
+	Autonomous []string
+}
 
 // AlertJobStaleAfter — возраст последнего прохода фоновой задачи правил
 // (период — минута), после которого она считается остановленной: пять
@@ -306,7 +320,7 @@ const (
 
 // gatewayFamilies — семейства условий с кодом «семейство:ID шлюза».
 var gatewayFamilies = []string{ConditionBundleLag, ConditionEventsDropped, ConditionOffline, ConditionCertExpiry,
-	ConditionReportsStale, ConditionGatewayClock, ConditionGatewayTLS}
+	ConditionReportsStale, ConditionGatewayClock, ConditionGatewayTLS, ConditionQuotaAutonomous}
 
 // GatewayClockSkewWarn — расхождение часов шлюза с сервером, после которого
 // поднимается условие gateway_clock (шлюз пишет предупреждение в свой

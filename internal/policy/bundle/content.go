@@ -80,7 +80,14 @@ type Content struct {
 	// этапа 4, usertokens.go).
 	UserTokenKeys []IssuerKeys `json:"user_token_keys,omitempty"`
 	UserTokens    []UserToken  `json:"user_tokens,omitempty"`
+	// QuotaMode — режим квот установки (ADR-0021, задача 4.29): leased —
+	// шлюз берёт у сервера аренду квот и жёстких бюджетов; пусто — local,
+	// счётчики в памяти шлюза (байты пакета прежние).
+	QuotaMode string `json:"quota_mode,omitempty"`
 }
+
+// QuotaLeased — значение QuotaMode режима аренды.
+const QuotaLeased = "leased"
 
 // Unavailable — приложение, исключённое из пакета: только ID, контур и
 // действующие ключи (отозванный ключ в пакет не попадает и на шлюзе — 401).
@@ -291,6 +298,9 @@ func (c *Content) Validate() error {
 	errs = append(errs, c.Budgets.validate(provIDs, appIDs)...)
 	errs = append(errs, c.GatewayTLS.validate()...)
 	errs = append(errs, c.validateAgents()...)
+	if c.QuotaMode != "" && c.QuotaMode != QuotaLeased {
+		errs = append(errs, errors.New("quota_mode: пусто или leased"))
+	}
 	return errors.Join(errs...)
 }
 

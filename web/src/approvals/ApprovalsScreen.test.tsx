@@ -98,6 +98,20 @@ describe("экран «Подтверждения»", () => {
     await waitFor(() => expect(calls.find((c) => c.url.endsWith("/approve"))?.body).toEqual({ args_hash: "h1", code: "123456" }));
   });
 
+  it("скрытые управляющие символы в аргументах: маркеры, предупреждение и повторная проверка (4В20 ревью 4.r2)", async () => {
+    list = [ap({ risk: "low" })];
+    detail = ap({ risk: "low", args: '{"path": "/tmp/\u202Etxt.exe"}' });
+    renderScreen(decider, true);
+    const args = await screen.findByText(/⟦U\+202E⟧txt\.exe/);
+    expect(args.textContent).not.toContain("\u202E");
+    expect(screen.getByText(/В аргументах есть скрытые управляющие символы/)).toBeTruthy();
+    const btn = screen.getByRole("button", { name: "Одобрить вызов" }) as HTMLButtonElement;
+    expect(btn.disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText("Код из приложения-аутентификатора"), { target: { value: "123456" } });
+    fireEvent.click(btn);
+    await waitFor(() => expect(calls.find((c) => c.url.endsWith("/approve"))?.body).toEqual({ args_hash: "h1", code: "123456" }));
+  });
+
   it("409: запрос изменился — сообщение и обновление данных", async () => {
     handler = (c) => (c.url.endsWith("/approve") ? problem(409, "conflict", "args_hash") : undefined);
     renderScreen(decider);

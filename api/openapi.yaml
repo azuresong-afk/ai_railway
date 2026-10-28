@@ -2479,7 +2479,10 @@ paths:
         300 секунд (по умолчанию 60). `model_groups` — модель или псевдоним приложения →
         от 1 до 64 групп: модель из списка доступна только пользователю с одной из этих групп
         в JWT (иначе 403 `model_access_denied`, DM-33), остальные модели — всем; только с
-        режимом `optional` или `required`, всего не больше 500 пар. Пишет
+        режимом `optional` или `required`, всего не больше 500 пар. Группы псевдонима
+        сохраняются под именем его модели (удаление или смена псевдонима не снимает
+        ограничение); у модели и её псевдонимов, заданных вместе, — общие группы, без общих
+        групп — 400. Пишет
         `application.user_access_set` (до и после). Смягчение режима, смена издателя,
         аудитории или утверждения с группами, рост допуска и расширение доступа к модели —
         ослабление (DM-40): `weakening: true` с причинами и повторная проверка (`password` или
@@ -3823,6 +3826,63 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/IncidentSettings' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '409': { $ref: '#/components/responses/ProblemConflict' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/quota-settings:
+    get:
+      summary: Режим квот при нескольких шлюзах
+      description: |
+        Право `budgets.read` (задача 4.29 этапа 4, ADR-0021). `local` (по умолчанию) — счётчики
+        квот приложений и жёстких бюджетов в памяти каждого шлюза: при нескольких шлюзах они
+        соблюдаются приблизительно (условие `quota_approximate` на «Состоянии системы»). `leased` —
+        шлюзы берут у сервера аренду: долю квоты на 10 секунд (минутные квоты) или 5 минут (суточная
+        квота и жёсткий бюджет), сумма выданного не больше лимита при любом числе шлюзов.
+        `gateways_online` — действующих шлюзов с heartbeat за 90 секунд.
+      x-permission: budgets.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      responses:
+        '200':
+          description: Режим
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/QuotaSettings' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    put:
+      summary: Изменить режим квот
+      description: |
+        Право `quota_mode.manage` (администратор системы и администратор безопасности). Новый режим
+        уходит шлюзам в пакете конфигурации (`quota_mode`). Переход на `local`, когда на связи больше
+        одного шлюза, — ослабление защиты (DM-40): нужен текущий пароль (`password`) или код TOTP
+        (`code`) — без них 400 с полем `password`, неверное значение — 403 `reauthentication_failed`,
+        по токену API — 403; пишется с `weakening: true` (причина `quota_local_multi_gateway`) и
+        порождает оповещение «Ослабление защиты». Тот же режим — без изменений и записи. До
+        первичной настройки — 409. Пишет `install.quota_mode_changed` (до, после, шлюзов на связи).
+      x-permission: quota_mode.manage
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/QuotaSettingsUpdate' }
+      responses:
+        '200':
+          description: Режим изменён
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/QuotaSettings' }
         '400': { $ref: '#/components/responses/ProblemInvalid' }
         '401': { $ref: '#/components/responses/ProblemUnauthorized' }
         '403': { $ref: '#/components/responses/ProblemForbidden' }
@@ -6318,9 +6378,10 @@ components:
               condition:
                 type: string
                 enum: [account_lockout, access_denied, audit_chain, audit_storage, integrity, time_sync, config_bundle, config_bundle_lag, test_build,
-                  gateway_offline, events_dropped, reports_stale, cert_expiry, gateway_clock, gateway_tls, ca_expiry, customer_cert_expiry, alert_job_stale]
-                description: 'gateway_clock (ВРМ.1) — часы шлюза на связи в последнем heartbeat расходятся с часами сервера больше чем на минуту, 3Н40 ревью 3.r3. gateway_tls (ЗИ.4) — шлюз на текущем пакете конфигурации дольше 10 минут после его сборки отвечает приложениям не тем сертификатом, что загружен в консоли (по часам шлюза он ещё не действует или истёк; без сертификата заказчика — не своим), 3Н43 ревью 3.r3. alert_job_stale (РСБ.7, DM-44) — фоновая задача правил «частота», «аномалия» и «бюджет» не отмечала проход дольше 5 минут при работающем сервере, 3В17 ревью 3.r2. ca_expiry (ИАФ.10) — действующему корню внутреннего УЦ осталось 60 суток и меньше, нужна ротация `aisec-cli keys rotate-ca`; system.alert пишется за 60 суток (ca_expiry) и за 7 суток (ca_expiry:critical), 3В5 ревью 3.r1. customer_cert_expiry (ЗИ.4) — сертификату заказчика для адреса шлюза осталось 30 суток и меньше; system.alert пишется за 30 суток (customer_cert_expiry) и за 7 суток (customer_cert_expiry:critical), задача 3.27'
-              requirement: { type: string, enum: [ИАФ.4, ИАФ.10, УПД.6, РСБ.4, РСБ.5, РСБ.7, ОЦЛ.1, ОЦЛ.3, ОЦЛ.5, ВРМ.1, ЗИ.4] }
+                  gateway_offline, events_dropped, reports_stale, cert_expiry, gateway_clock, gateway_tls, ca_expiry, customer_cert_expiry, alert_job_stale,
+                  license_expiry, license_grace, license_restricted, license_invalid, license_clock, quota_approximate, quota_autonomous]
+                description: 'gateway_clock (ВРМ.1) — часы шлюза на связи в последнем heartbeat расходятся с часами сервера больше чем на минуту, 3Н40 ревью 3.r3. gateway_tls (ЗИ.4) — шлюз на текущем пакете конфигурации дольше 10 минут после его сборки отвечает приложениям не тем сертификатом, что загружен в консоли (по часам шлюза он ещё не действует или истёк; без сертификата заказчика — не своим), 3Н43 ревью 3.r3. alert_job_stale (РСБ.7, DM-44) — фоновая задача правил «частота», «аномалия» и «бюджет» не отмечала проход дольше 5 минут при работающем сервере, 3В17 ревью 3.r2. ca_expiry (ИАФ.10) — действующему корню внутреннего УЦ осталось 60 суток и меньше, нужна ротация `aisec-cli keys rotate-ca`; system.alert пишется за 60 суток (ca_expiry) и за 7 суток (ca_expiry:critical), 3В5 ревью 3.r1. customer_cert_expiry (ЗИ.4) — сертификату заказчика для адреса шлюза осталось 30 суток и меньше; system.alert пишется за 30 суток (customer_cert_expiry) и за 7 суток (customer_cert_expiry:critical), задача 3.27. quota_approximate (ЗИ.6) — режим квот local, а действующих шлюзов на связи больше одного: квоты приложений и жёсткие бюджеты соблюдаются приблизительно, задача 4.29. quota_autonomous (ЗИ.6, по компонентам gateway:<ID>) — шлюз в режиме leased сообщил в heartbeat, что сервер недоступен и он работает на автономной доле квот, задача 4.29'
+              requirement: { type: string, enum: [ИАФ.4, ИАФ.10, УПД.6, РСБ.4, РСБ.5, РСБ.7, ОЦЛ.1, ОЦЛ.3, ОЦЛ.5, ВРМ.1, ЗИ.2, ЗИ.4, ЗИ.6] }
               components:
                 type: array
                 items: { type: string }
@@ -8500,6 +8561,22 @@ components:
         retention_days: { type: integer, minimum: 365, maximum: 1825 }
         password: { type: string, maxLength: 1024, format: password, description: 'Текущий пароль, если срок сокращается' }
         code: { type: string, maxLength: 64, description: 'Код из приложения-аутентификатора вместо пароля' }
+    QuotaSettings:
+      type: object
+      required: [mode, changed_at, gateways_online]
+      additionalProperties: false
+      properties:
+        mode: { type: string, enum: [local, leased] }
+        changed_at: { type: [string, 'null'], format: date-time, description: 'Последняя смена режима; null — не менялся' }
+        gateways_online: { type: integer, minimum: 0, description: 'Действующих шлюзов на связи (heartbeat за 90 секунд)' }
+    QuotaSettingsUpdate:
+      type: object
+      required: [mode]
+      additionalProperties: false
+      properties:
+        mode: { type: string, enum: [local, leased] }
+        password: { type: string, maxLength: 1024, format: password, description: 'Текущий пароль для перехода на local при нескольких шлюзах' }
+        code: { type: string, maxLength: 64, description: 'Код из приложения-аутентификатора вместо пароля' }
     ShadowServiceStat:
       type: object
       required: [id, name, vendor, category, requests, bytes, users, first_seen, last_seen]
@@ -8800,7 +8877,8 @@ components:
       description: Приём журналов по syslog; счётчики — с запуска сервера
       required: [enabled, running, tls, client_cert_required, allowed_networks, connections, limits, accepted, accept_errors,
         rejected_network, rejected_limit, tls_failed, frame_too_large, bad_frame, idle_timeouts, read_timeouts, lines, matched,
-        unmatched, errors, excluded, outdated, no_catalog, dropped, throttled, pending, flush_failures, last_flush_failed]
+        unmatched, errors, excluded, outdated, no_catalog, dropped, throttled, unlicensed, license_module, pending, flush_failures,
+        last_flush_failed]
       properties:
         enabled: { type: boolean, description: 'false — слушатель выключен (остальные поля нулевые)' }
         running: { type: boolean, description: 'Слушатель принимает соединения; false при enabled — приём остановлен ошибкой' }
@@ -8842,6 +8920,8 @@ components:
         no_catalog: { type: integer, format: int64, description: 'Строки до загрузки каталога (не учтены)' }
         dropped: { type: integer, format: int64, description: 'Строки сверх предела сводок в памяти (не учтены)' }
         throttled: { type: integer, format: int64, description: 'Кадров, чтение которых задержано пределом строк в секунду' }
+        unlicensed: { type: integer, format: int64, description: 'Строки, отброшенные до разбора: модуль shadow_ai не входит в лицензию (4В18 ревью 4.r2)' }
+        license_module: { type: boolean, description: 'Модуль shadow_ai входит в лицензию (или лицензии нет); false — строки не учитываются' }
         pending: { type: integer, description: 'Сводок в памяти до следующей записи' }
         last_flush_at: { type: string, format: date-time }
         flush_failures: { type: integer, format: int64 }

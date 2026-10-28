@@ -316,6 +316,38 @@ func TestLimitsAndModules(t *testing.T) {
 	}
 }
 
+// 4В16 ревью 4.r2: после льготного периода предел шлюзов действует, при
+// недействительной лицензии новый шлюз не регистрируется.
+func TestGatewayLimitRestrictedAndInvalid(t *testing.T) {
+	f := newFixture(t, day(2026, 11, 1))
+	ctx := context.Background()
+	if _, err := f.upload(t, baseLicense(1)); err != nil { // шлюзов 2
+		t.Fatal(err)
+	}
+	f.usage.Gateways = 2
+	f.clock.t = day(2027, 10, 28).Add(GracePeriod + time.Hour)
+	if st := f.state(t); st.Phase != PhaseRestricted {
+		t.Fatalf("состояние: %s", st.Phase)
+	}
+	var d *Denied
+	if err := f.svc.CheckGateway(ctx); !errors.As(err, &d) || d.Code != CodeLimit {
+		t.Fatalf("restricted, предел шлюзов: %v", err)
+	}
+	f.usage.Gateways = 1
+	if err := f.svc.CheckGateway(ctx); err != nil {
+		t.Fatalf("restricted ниже предела: %v", err)
+	}
+	f.clock.t = day(2026, 11, 2)
+	f.store.Replace(audit.DefaultOrgID, swapPayload(t, signTest(t, baseLicense(1)), must(Encode(baseLicense(3)))(t)))
+	if err := f.svc.Refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+	f.usage.Gateways = 0
+	if err := f.svc.CheckGateway(ctx); !errors.As(err, &d) || d.Code != CodeRestricted {
+		t.Fatalf("invalid: %v", err)
+	}
+}
+
 func TestTamperedStoredLicenseIsInvalid(t *testing.T) {
 	f := newFixture(t, day(2026, 11, 1))
 	if _, err := f.upload(t, baseLicense(1)); err != nil {

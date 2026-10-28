@@ -28,8 +28,9 @@ func (o pgOps) countAudit(ctx context.Context, orgID string, q auditCount) (int,
 	}
 	var n int
 	err := o.tx.QueryRow(ctx, `SELECT count(*) FROM audit_log WHERE org_id = $1 AND action = ANY($2) AND ts >= $3
-		AND ($4::inet IS NULL OR source_ip = $4::inet) AND ($5 = '' OR (actor_type = $5 AND actor_id = $6))`,
-		orgID, q.Actions, q.Since, ip, q.ActorType, q.ActorID).Scan(&n)
+		AND ($4::inet IS NULL OR source_ip = $4::inet) AND ($5 = '' OR (actor_type = $5 AND actor_id = $6))
+		AND ($7 = '' OR (object_type = $7 AND object_id = $8))`,
+		orgID, q.Actions, q.Since, ip, q.ActorType, q.ActorID, q.ObjectType, q.ObjectID).Scan(&n)
 	return n, err
 }
 
@@ -59,6 +60,9 @@ func (o memOps) countAudit(_ context.Context, orgID string, q auditCount) (int, 
 			continue
 		}
 		if q.ActorType != "" && (string(r.Actor.Type) != q.ActorType || r.Actor.ID != q.ActorID) {
+			continue
+		}
+		if q.ObjectType != "" && (r.Object.Type != q.ObjectType || r.Object.ID != q.ObjectID) {
 			continue
 		}
 		n++

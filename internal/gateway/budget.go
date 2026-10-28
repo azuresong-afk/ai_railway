@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"slices"
@@ -23,7 +24,10 @@ import (
 // жёстким бюджетом отклоняются, когда свой расход и чужой вместе достигли
 // бюджета. До первого ответа сервера после запуска чужой расход неизвестен
 // и не учитывается: шлюз работает автономно (ТЗ 4.2), бюджет может быть
-// превышен на расход, не дошедший до сервера.
+// превышен на расход, не дошедший до сервера. В режиме leased (ADR-0021,
+// п. 4, задача 4.29) жёсткий бюджет берётся арендой у сервера: перед
+// вызовом провайдера резервируется оценка стоимости (Reserve), после ответа
+// резерв уточняется фактическим расходом; others не используется.
 
 const (
 	// ruleBudget — правило отказа по исчерпанному жёсткому бюджету.
@@ -55,6 +59,16 @@ type Budget struct {
 	// others — расход остальных процессов за месяц othersMonth.
 	others      map[string]int64
 	othersMonth string
+	// lease — аренда жёстких бюджетов у сервера (режим leased).
+	lease *LeaseClient
+}
+
+// SetLeases подключает аренду бюджетов у сервера (задача 4.29); вызывается
+// до начала работы.
+func (b *Budget) SetLeases(c *LeaseClient) {
+	b.mu.Lock()
+	b.lease = c
+	b.mu.Unlock()
 }
 
 type priceKey struct{ provider, model string }
@@ -135,9 +149,39 @@ func (b *Budget) Reconfigure(sec *bundle.Budgets, apps ...string) error {
 		hard[h.App] = h.Limit
 	}
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	b.on, b.loc, b.prices, b.hard = true, loc, prices, hard
+	lease := b.lease
+	b.mu.Unlock()
+	lease.setLocation(loc)
 	return nil
+}
+
+// Leased — жёсткий бюджет приложения берётся арендой у сервера: тогда
+// Exhausted не применяется, а запрос резервирует оценку через Reserve.
+func (b *Budget) Leased(app string) bool {
+	b.mu.Lock()
+	_, hard := b.hard[app]
+	on, lease := b.on, b.lease
+	b.mu.Unlock()
+	return on && hard && lease.Enabled()
+}
+
+// Reserve резервирует в аренде бюджета оценку стоимости запроса: input и
+// output токенов по цене модели, не меньше одной единицы (ADR-0021, п. 4).
+// nil, nil — аренда не применяется (нет жёсткого бюджета или цены модели:
+// стоимость не определена, запрос не отклоняется). *Exceeded с правилом
+// budget.hard — бюджет исчерпан; ErrQuotaUnavailable — сервер недоступен.
+func (b *Budget) Reserve(ctx context.Context, app, provider, model string, input, output int64) (*leaseHold, error) {
+	b.mu.Lock()
+	limit, hard := b.hard[app]
+	p, priced := b.prices[priceKey{provider, model}]
+	on, lease := b.on, b.lease
+	b.mu.Unlock()
+	if !on || !hard || !priced {
+		return nil, nil
+	}
+	est := max(bundle.Cost(p, max(input, 0), max(output, 0)), 1)
+	return lease.take(ctx, app, quotaBudget, est, limit)
 }
 
 // Exhausted сообщает, исчерпан ли жёсткий бюджет приложения в текущем
@@ -168,13 +212,14 @@ func (b *Budget) Exhausted(app string) (bool, time.Duration) {
 
 // Record учитывает запрос приложения, ушедший провайдеру: расход по цене
 // модели или, если цены нет, токены и запрос «без цены» — стоимость не
-// определена, запрос не отклоняется.
-func (b *Budget) Record(app, provider, model string, input, output int64) {
+// определена, запрос не отклоняется. Возвращает стоимость запроса (0 —
+// без цены или учёт выключен): ею уточняется резерв Reserve.
+func (b *Budget) Record(app, provider, model string, input, output int64) int64 {
 	input, output = max(input, 0), max(output, 0)
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if !b.on {
-		return
+		return 0
 	}
 	month := bundle.Month(b.now(), b.loc)
 	b.roll(month)
@@ -182,7 +227,11 @@ func (b *Budget) Record(app, provider, model string, input, output int64) {
 	u := m[app]
 	if u == nil {
 		if len(m) >= maxBudgetApps && !b.evict(m, app) {
-			return
+			// Счётчик месяца не заведён, но резерв аренды уточняется ценой.
+			if p, ok := b.prices[priceKey{provider, model}]; ok {
+				return bundle.Cost(p, input, output)
+			}
+			return 0
 		}
 		u = &budgetUsage{App: app}
 		m[app] = u
@@ -193,10 +242,12 @@ func (b *Budget) Record(app, provider, model string, input, output int64) {
 	if !ok {
 		u.UnpricedRequests = bundle.AddCost(u.UnpricedRequests, 1)
 		u.UnpricedTokens = bundle.AddCost(u.UnpricedTokens, tokens)
-		return
+		return 0
 	}
+	cost := bundle.Cost(p, input, output)
 	u.PricedTokens = bundle.AddCost(u.PricedTokens, tokens)
-	u.Cost = bundle.AddCost(u.Cost, bundle.Cost(p, input, output))
+	u.Cost = bundle.AddCost(u.Cost, cost)
+	return cost
 }
 
 // evict освобождает место в переполненном месяце m для приложения app:

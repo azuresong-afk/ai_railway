@@ -99,6 +99,20 @@ func TestDM37_CatalogMatch(t *testing.T) {
 	}
 }
 
+// Пустые метки не дают имени узла: «..» не превращается в «.» (находка
+// FuzzParseSquid), граничные «a.» и «a.:443» — допустимое имя с точкой в конце.
+func TestNormalizeHostEmptyLabels(t *testing.T) {
+	for raw, want := range map[string]string{
+		"..": "", ".": "", "...": "", ".example.com": "", "a..b": "", "chatgpt.com..": "", "..:443": "",
+		"a.": "a", "A.:443": "a", "chatgpt.com.": "chatgpt.com",
+	} {
+		got, ok := NormalizeHost(raw)
+		if ok != (want != "") || got != want {
+			t.Errorf("%q: %q, %v; ожидалось %q", raw, got, ok, want)
+		}
+	}
+}
+
 func TestCatalogSource(t *testing.T) {
 	c := sourceCatalog(t)
 	if c.Version != 1 || c.Date != "2026-10-28" || len(c.Services) < 25 {

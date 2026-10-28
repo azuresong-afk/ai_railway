@@ -410,12 +410,34 @@ func (h *ChatHandler) admitSize(w http.ResponseWriter, r *http.Request, rec *rec
 	// Жёсткий бюджет — до квот: отказ не тратит квоту. Check API модели
 	// не вызывает и бюджет не тратит.
 	if b := h.cfg.Budget; b != nil && rec.ev.Type == events.TypeGatewayRequest {
-		if out, wait := b.Exhausted(rec.app.ID); out {
+		budgetExceeded := func(wait time.Duration) bool {
 			rec.reject(ruleBudget, "DM-15")
 			w.Header().Set(HeaderDecision, string(policy.Block))
 			w.Header().Set("Retry-After", strconv.FormatInt(int64((wait+time.Second-1)/time.Second), 10))
 			WriteError(w, http.StatusTooManyRequests, "исчерпан месячный бюджет приложения", "rate_limit_error", "budget_exceeded")
 			return false
+		}
+		if b.Leased(rec.app.ID) {
+			// Режим leased (ADR-0021, п. 4): оценка — вход и предел ответа.
+			hold, err := b.Reserve(r.Context(), rec.app.ID, rec.ev.Provider, rec.ev.Model, int64(max(tokens-rec.maxOut, 0)),
+				int64(rec.maxOut))
+			var ex *Exceeded
+			switch {
+			case err == nil && hold == nil:
+				// Аренда не применяется (на сервере у приложения нет
+				// жёсткого бюджета, цена модели неизвестна): локальный учёт.
+				if out, wait := b.Exhausted(rec.app.ID); out {
+					return budgetExceeded(wait)
+				}
+			case err == nil:
+				rec.budget = hold
+			case errors.As(err, &ex):
+				return budgetExceeded(ex.RetryAfter)
+			default:
+				return h.quotaFailed(w, r, rec, err)
+			}
+		} else if out, wait := b.Exhausted(rec.app.ID); out {
+			return budgetExceeded(wait)
 		}
 	}
 	if h.cfg.Quotas == nil {
@@ -425,12 +447,14 @@ func (h *ChatHandler) admitSize(w http.ResponseWriter, r *http.Request, rec *rec
 	if id, ok := IdentityFrom(r.Context()); ok {
 		qr.Key = id.KeyPrefix
 	}
-	res, err := h.cfg.Quotas.Admit(qr)
+	res, err := h.cfg.Quotas.AdmitCtx(r.Context(), qr)
 	var ex *Exceeded
 	switch {
 	case err == nil:
 		rec.res = res
 		return true
+	case errors.Is(err, ErrQuotaUnavailable), r.Context().Err() != nil:
+		return h.quotaFailed(w, r, rec, err)
 	case errors.As(err, &ex):
 		rec.reject(ruleQuotaPrefix+ex.Rule, ex.Threat)
 		w.Header().Set(HeaderDecision, string(policy.Block))
@@ -440,6 +464,29 @@ func (h *ChatHandler) admitSize(w http.ResponseWriter, r *http.Request, rec *rec
 		WriteError(w, http.StatusTooManyRequests, "превышена квота приложения", "rate_limit_error", "quota_exceeded")
 	default:
 		// Приложения нет в квотах — ошибка сборки шлюза; не пропускаем.
+		h.logger.Error("квоты не проверены", "app", rec.app.ID, "error", err)
+		rec.failClosed()
+		w.Header().Set(HeaderDecision, string(policy.Block))
+		WriteError(w, http.StatusInternalServerError, "внутренняя ошибка шлюза", "server_error", "internal_error")
+	}
+	return false
+}
+
+// quotaFailed — аренда квоты не получена: сервер управления недоступен, а
+// льготный срок приложения с fail_closed истёк — 503 quota_unavailable
+// (ADR-0021, п. 5); клиент ушёл — событие не пишется. При отказе ответ уже
+// записан.
+func (h *ChatHandler) quotaFailed(w http.ResponseWriter, r *http.Request, rec *record, err error) bool {
+	switch {
+	case r.Context().Err() != nil:
+		rec.skip = true
+	case errors.Is(err, ErrQuotaUnavailable):
+		rec.reject(ruleQuotaPrefix+"unavailable", "DM-36")
+		w.Header().Set(HeaderDecision, string(policy.Block))
+		w.Header().Set("Retry-After", strconv.Itoa(int(leaseMinuteTTL/time.Second)))
+		WriteError(w, http.StatusServiceUnavailable, "квоты приложения временно не проверяются: сервер управления недоступен",
+			"server_error", "quota_unavailable")
+	default:
 		h.logger.Error("квоты не проверены", "app", rec.app.ID, "error", err)
 		rec.failClosed()
 		w.Header().Set(HeaderDecision, string(policy.Block))

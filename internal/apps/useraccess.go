@@ -89,7 +89,8 @@ func userModeRank(mode string) int {
 }
 
 // clean проверяет ввод и приводит его к записи: группы без повторов и по
-// возрастанию, модели — из моделей и псевдонимов приложения a.
+// возрастанию, модели — из моделей и псевдонимов приложения a; группы
+// псевдонима — под именем его модели.
 func (in UserAccessInput) clean(a Application) (UserAccess, error) {
 	out := UserAccess{Mode: in.Mode, Issuer: strings.TrimSpace(in.Issuer), Audience: strings.TrimSpace(in.Audience),
 		GroupsClaim: strings.TrimSpace(in.GroupsClaim), Leeway: DefaultLeeway, ModelGroups: map[string][]string{}}
@@ -127,9 +128,11 @@ func (in UserAccessInput) clean(a Application) (UserAccess, error) {
 	if len(in.ModelGroups) > 0 && !jwt {
 		errs = append(errs, errors.New("model_groups — доступ по группам работает только с JWT: выберите режим optional или required"))
 	}
-	entries := 0
 	for m, groups := range in.ModelGroups {
-		_, alias := a.Aliases[m]
+		model, alias := a.Aliases[m]
+		if !alias {
+			model = m
+		}
 		if !alias && !slices.Contains(a.Models, m) {
 			errs = append(errs, fmt.Errorf("model_groups — %q не модель и не псевдоним приложения", clipName(m)))
 			continue
@@ -147,8 +150,23 @@ func (in UserAccessInput) clean(a Application) (UserAccess, error) {
 			errs = append(errs, fmt.Errorf("model_groups[%s] — от 1 до %d групп", clipName(m), bundle.MaxGroupsPerModel))
 			continue
 		}
-		entries += len(set)
-		out.ModelGroups[m] = slices.Sorted(maps.Keys(set))
+		// Группы псевдонима хранятся под именем модели (4В15 ревью 4.r2):
+		// иначе удаление или перенацеливание псевдонима правкой приложения
+		// снимало бы ограничение с модели. Модель и её псевдонимы со своими
+		// группами — общие группы (не слабее прежней проверки «у каждого
+		// имени своя общая группа с JWT»).
+		if prev, ok := out.ModelGroups[model]; ok {
+			maps.DeleteFunc(set, func(g string, _ bool) bool { return !slices.Contains(prev, g) })
+			if len(set) == 0 {
+				errs = append(errs, fmt.Errorf("model_groups[%s] — у модели и её псевдонимов нет общей группы", clipName(model)))
+				continue
+			}
+		}
+		out.ModelGroups[model] = slices.Sorted(maps.Keys(set))
+	}
+	entries := 0
+	for _, groups := range out.ModelGroups {
+		entries += len(groups)
 	}
 	if entries > MaxModelGroupEntries {
 		errs = append(errs, fmt.Errorf("model_groups — не больше %d пар «модель — группа»", MaxModelGroupEntries))
@@ -233,16 +251,35 @@ func userAccessWeakened(a Application, prev, next UserAccess) []any {
 	if next.Leeway > prev.Leeway {
 		out = append(out, "user_token_leeway")
 	}
-	// Модель без ограничения или с новой группой — доступ шире.
-	for m, before := range prev.ModelGroups {
-		if _, alias := a.Aliases[m]; !alias && !slices.Contains(a.Models, m) {
-			continue
-		}
+	// Модель без ограничения или с новой группой — доступ шире. Прежние
+	// записи по псевдонимам (до 4В15) сравниваются по их моделям.
+	for m, before := range byModel(a, prev.ModelGroups) {
 		after, ok := next.ModelGroups[m]
 		if !ok || slices.ContainsFunc(after, func(g string) bool { return !slices.Contains(before, g) }) {
 			out = append(out, "model_groups")
 			break
 		}
+	}
+	return out
+}
+
+// byModel — группы по именам моделей приложения a: псевдоним — под своей
+// моделью, у нескольких записей одной модели — общие группы; имена, которых
+// у приложения нет, пропускаются.
+func byModel(a Application, mg map[string][]string) map[string][]string {
+	out := map[string][]string{}
+	for m, groups := range mg {
+		model, alias := a.Aliases[m]
+		if !alias {
+			if !slices.Contains(a.Models, m) {
+				continue
+			}
+			model = m
+		}
+		if prev, ok := out[model]; ok {
+			groups = slices.DeleteFunc(slices.Clone(groups), func(g string) bool { return !slices.Contains(prev, g) })
+		}
+		out[model] = groups
 	}
 	return out
 }
