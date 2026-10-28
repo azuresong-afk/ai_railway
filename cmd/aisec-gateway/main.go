@@ -207,6 +207,14 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 		quotas: gateway.NewLimiter(nil), budget: gateway.NewBudget(nil), userMAC: userMAC, clock: &gateway.ServerClock{},
 		sessions: sessions, toolRate: toolrate.New(0), mcpSessions: gateway.NewMCPSessions(rnd, nil)}
 	hb.budget.SetLogger(logger)
+	// ML-детекторы через aisec-ml (задача 4.19): сокет проверяется при
+	// каждом подключении, недоступность — ml_unavailable, не отказ запуска.
+	if cfg.MLSocket != "" {
+		if hb.ml, err = gateway.NewMLClient(gateway.MLClientConfig{Socket: cfg.MLSocket, Logger: logger}); err != nil {
+			return err
+		}
+		defer hb.ml.Close()
+	}
 	// Проверка JWT пользователей приложений (задача 4.21); в профиле без
 	// неё (gost до этапа 6) JWT отклоняются.
 	if j, err := p.JWT(); err == nil {
@@ -319,6 +327,9 @@ type handlerBuilder struct {
 	// toolRate — счётчики лимитов политики вызовов (chat и MCP-прокси):
 	// переживают смену пакета.
 	toolRate *toolrate.Counters
+	// ml — клиент aisec-ml (-ml-socket, ADR-0024): пул соединений
+	// переживает смену пакета; nil — ML-детекторы «недоступны».
+	ml *gateway.MLClient
 	// mcpSessions — сессии MCP-прокси 2025-11-25 (задача 4.11): переживают
 	// смену пакета; mcpObserver — описания инструментов на сервер, nil —
 	// без сервера.
@@ -342,7 +353,11 @@ func (hb *handlerBuilder) build(apps []config.Application, provs map[string]prov
 			return nil, fmt.Errorf("приложение %s: JWT пользователя требует ключ псевдонимов пользователей (user-hmac-key)", id)
 		}
 	}
-	router, err := gateway.NewRouter(apps, provs, specs)
+	var routerOpts []gateway.RouterOption
+	if hb.ml != nil {
+		routerOpts = append(routerOpts, gateway.WithML(hb.ml))
+	}
+	router, err := gateway.NewRouter(apps, provs, specs, routerOpts...)
 	if err != nil {
 		return nil, err
 	}

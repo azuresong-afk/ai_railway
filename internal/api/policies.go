@@ -916,6 +916,7 @@ type PolicyTestResult struct {
 	Message       string               `json:"message,omitempty"`
 	Incomplete    bool                 `json:"incomplete"`
 	Unchecked     bool                 `json:"unchecked"`
+	MLUnavailable bool                 `json:"ml_unavailable"`
 	Failures      []SandboxFailureView `json:"failures"`
 	Findings      []SandboxFindingView `json:"findings"`
 	Truncated     bool                 `json:"findings_truncated,omitempty"`
@@ -1053,6 +1054,7 @@ func (d Deps) testPolicy(w http.ResponseWriter, r *http.Request) {
 	}
 	res.Direction, res.Mode, res.Decision, res.Action, res.Rule = string(out.Direction), string(out.Mode), out.Decision, string(out.Action), out.Rule
 	res.Blocked, res.FailBlock, res.Message, res.Incomplete, res.Unchecked = out.Blocked, out.FailBlock, out.Message, out.Incomplete, out.Unchecked
+	res.MLUnavailable = out.MLUnavailable
 	res.Truncated = out.Truncated
 	for _, f := range out.Failures {
 		res.Failures = append(res.Failures, SandboxFailureView{Detector: f.Detector, Location: f.Location, Reason: f.Reason})

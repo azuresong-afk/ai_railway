@@ -48,6 +48,11 @@ const (
 	KindMigration  Kind = "migration"   // миграции схемы, migrations/ (встроены в aisec-cli)
 	KindDetectorDB Kind = "detector_db" // служебные базы детекторов, detect/
 	KindConfig     Kind = "config"      // эталонная конфигурация, config/
+	// KindLibrary — разделяемые библиотеки aisec-ml: ONNX Runtime и
+	// системные библиотеки образа, lib/ (ADR-0024, раздел 8).
+	KindLibrary Kind = "library"
+	// KindModel — пакет моделей ML-детекторов, models/ (ADR-0024, раздел 5).
+	KindModel Kind = "model"
 )
 
 // kindPrefix — каталог вида: путь записи обязан начинаться с него, поэтому
@@ -58,6 +63,8 @@ var kindPrefix = map[Kind]string{
 	KindMigration:  "migrations/",
 	KindDetectorDB: "detect/",
 	KindConfig:     "config/",
+	KindLibrary:    "lib/",
+	KindModel:      "models/",
 }
 
 // Embedded — файлы вида встроены в бинарники (go:embed): их сверяет
