@@ -71,6 +71,12 @@ func TestCheckLicense(t *testing.T) {
 		{"PostgreSQL в продукте", Component{License: "PostgreSQL", Scope: ScopeProduct, LicenseDecision: "ADR-0019"}, false},
 		{"PostgreSQL в сборке", Component{License: "PostgreSQL", Scope: ScopeBuild, LicenseDecision: "ADR-0003"}, false},
 		{"AGPL во внешнем образе", Component{License: "AGPL-3.0-only", Scope: ScopeExternal, LicenseDecision: "ADR-0019"}, false},
+		// ADR-0024: Boost.Mp11 (BSL-1.0) внутри ONNX Runtime — только native-library с решением.
+		{"BSL в native с решением", Component{License: "BSL-1.0", Type: TypeNative, Scope: ScopeProduct, LicenseDecision: "ADR-0024"}, true},
+		{"BSL в native без решения", Component{License: "BSL-1.0", Type: TypeNative, Scope: ScopeProduct}, false},
+		{"BSL в модуле Go", Component{License: "BSL-1.0", Type: TypeGoModule, Scope: ScopeProduct, LicenseDecision: "ADR-0024"}, false},
+		{"BUSL в native", Component{License: "BUSL-1.1", Type: TypeNative, Scope: ScopeProduct, LicenseDecision: "ADR-0024"}, false},
+		{"BSL и GPL в native", Component{License: "BSL-1.0 AND GPL-3.0-only", Type: TypeNative, Scope: ScopeProduct, LicenseDecision: "ADR-0024"}, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

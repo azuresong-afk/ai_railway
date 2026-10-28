@@ -74,6 +74,10 @@ func EvalExpression(expr string) (Verdict, []string, error) {
 	return evalExpression(expr, nil)
 }
 
+// NativeLicenses — лицензии вне списка CLAUDE.md, которые допускаются только
+// у native-library при license_decision (ADR-0024: Boost.Mp11 внутри ONNX Runtime).
+var NativeLicenses = map[string]bool{"BSL-1.0": true}
+
 // NPMBuildLicenses — лицензии, которые допускаются только у npm-пакетов
 // сборочной среды (достижимых лишь из devDependencies) и не попадают в
 // поставку. Решение владельца от 20.10.2026, ADR-0011.
@@ -224,6 +228,14 @@ func CheckLicense(c Component) error {
 			return fmt.Errorf("лицензия %q допускается только отдельным решением: заполните license_decision", c.License)
 		}
 		return nil
+	}
+	// BSL-1.0 (Boost Software License, не BUSL) — только у библиотек,
+	// встроенных в сборку ONNX Runtime, по отдельному решению владельца
+	// (ADR-0024, 27.10.2026).
+	if c.Type == TypeNative && strings.TrimSpace(c.LicenseDecision) != "" {
+		if v, _, err := evalExpression(c.License, NativeLicenses); err == nil && v == Allowed {
+			return nil
+		}
 	}
 	// Лицензии npm из NPMBuildLicenses — при отдельном решении (ADR-0011).
 	if c.Type == TypeNPM && strings.TrimSpace(c.LicenseDecision) != "" {
