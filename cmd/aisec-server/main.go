@@ -32,6 +32,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/auth"
 	"github.com/azuresong-afk/ai_railway/internal/auth/ldap"
 	"github.com/azuresong-afk/ai_railway/internal/auth/oidc"
+	"github.com/azuresong-afk/ai_railway/internal/compliance"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/internal/detect"
 	"github.com/azuresong-afk/ai_railway/internal/detect/builtin"
@@ -554,6 +555,24 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	alertStore.SetBudgetSource(budgetUsage(appsSvc))
 	go alerting.RunPeriodic(ctx, alertStore, alerting.PeriodicInterval, logger)
 
+	// Соответствие требованиям (ТЗ 5.18, задача 4.24): база требований —
+	// встроенная и подписанная загруженная (ADR-0027); снимок настроек
+	// собирается из сервисов сервера, содержимое запросов не читается.
+	complianceStore, err := compliance.NewPGStore(db.Pool(), auditLog)
+	if err != nil {
+		return err
+	}
+	complianceSvc, err := compliance.New(compliance.Options{Store: complianceStore, Provider: p, OrgID: audit.DefaultOrgID,
+		Facts: &compliance.SystemFacts{Apps: appsSvc, Policies: policiesSvc, Roles: authSvc, Status: statusSvc, Alerts: alertsSvc,
+			Channels: notifySvc, Detectors: detectors, Logger: logger.With("component", "compliance")},
+		Logger: logger.With("component", "compliance")})
+	if err != nil {
+		return err
+	}
+	if err := complianceSvc.Load(ctx); err != nil {
+		logger.Error("соответствие: загруженная база не прочитана из БД", "class", "db", "error", err)
+	}
+
 	// Отчёты (ТЗ 5.8, S10; задача 3.24) строятся из агрегатов дашбордов,
 	// инцидентов, оповещений и бюджетов; рассылка по расписанию (задача
 	// 3.25) идёт через почтовый канал уведомлений. Время расписаний — в
@@ -564,7 +583,7 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	}
 	reportsSvc, err := reports.New(reports.Options{
 		Store: reportStore,
-		Builder: &reports.Builder{Dash: reportsDash, Incidents: incidentsSvc, Alerts: alertsSvc,
+		Builder: &reports.Builder{Dash: reportsDash, Incidents: incidentsSvc, Alerts: alertsSvc, Compliance: complianceSvc,
 			Facts: &reports.PGFacts{DB: readDB.Pool(), OrgID: audit.DefaultOrgID, Apps: appsSvc, Policies: policiesSvc, Gateways: gateways}},
 		Mailer: notifySvc, Channels: notifySvc, Directory: api.ReportDirectory{Auth: authSvc},
 		Location: func(ctx context.Context) (*time.Location, error) {
@@ -658,6 +677,7 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		Agents:     agentsSvc,
 		Approvals:  approvalsSvc,
 		ShadowAI:   shadowSvc,
+		Compliance: complianceSvc,
 		License:    licSvc,
 		Quotas:     quotaSvc,
 		Incidents:  incidentsSvc,

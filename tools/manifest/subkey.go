@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/azuresong-afk/ai_railway/internal/compliance"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/internal/integrity"
 	"github.com/azuresong-afk/ai_railway/internal/shadowai"
@@ -27,6 +28,13 @@ var dbKinds = map[string]func([]byte) (string, error){
 			return "", err
 		}
 		return fmt.Sprintf("каталог теневого ИИ: версия %d от %s, сервисов: %d", c.Version, c.Date, len(c.Services)), nil
+	},
+	compliance.BaseKind: func(data []byte) (string, error) {
+		b, err := compliance.ParseBase(data)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("база требований соответствия: версия %d от %s, пунктов: %d", b.Version, b.Date, len(b.Requirements)), nil
 	},
 }
 
@@ -274,8 +282,13 @@ func signDB(p aisecCrypto.Provider, args []string, stdout, stderr io.Writer) err
 	if err != nil {
 		return err
 	}
-	if *kind == shadowai.CatalogKind {
+	switch *kind {
+	case shadowai.CatalogKind:
 		if _, err := shadowai.VerifyCatalog(p, vendor, file, now); err != nil {
+			return fmt.Errorf("проверка готового файла: %w", err)
+		}
+	case compliance.BaseKind:
+		if _, err := compliance.VerifyBase(p, vendor, file, now); err != nil {
 			return fmt.Errorf("проверка готового файла: %w", err)
 		}
 	}

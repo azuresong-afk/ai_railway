@@ -143,7 +143,8 @@ type Recipient struct {
 // Eligible — получателю можно слать отчёт расписания sc: учётная запись
 // активна, есть reports.read, а права на разделы покрывают разделы расписания.
 func (r Recipient) Eligible(sc Scope) bool {
-	return r.Active && r.CanRead && (!sc.Incidents || r.Scope.Incidents) && (!sc.Alerts || r.Scope.Alerts) && (!sc.Budgets || r.Scope.Budgets)
+	return r.Active && r.CanRead && (!sc.Incidents || r.Scope.Incidents) && (!sc.Alerts || r.Scope.Alerts) && (!sc.Budgets || r.Scope.Budgets) &&
+		(!sc.Compliance || r.Scope.Compliance)
 }
 
 // Directory — справочник пользователей (*auth.Service через api): адрес и
@@ -271,11 +272,23 @@ func (s *Service) entry(b By, action, id string, details any) audit.Entry {
 		Object: audit.Object{Type: "report_schedule", ID: id}, Result: audit.ResultSuccess, Details: details}
 }
 
+// scheduleScope — разделы, которые сохраняются в расписании отчёта kind:
+// «Соответствие» целиком зависит от одного права, а в прочих видах раздела
+// соответствия нет — получатели проверяются только по тому, что в отчёте.
+func scheduleScope(kind string, by Scope) Scope {
+	if kind == KindCompliance {
+		return Scope{Compliance: by.Compliance}
+	}
+	by.Compliance = false
+	return by
+}
+
 func view(sc Schedule) map[string]any {
 	return map[string]any{"name": sc.Name, "report": sc.Report, "frequency": sc.Frequency, "weekday": sc.Weekday, "day": sc.Day,
 		"at": sc.At, "format": sc.Format, "channel_id": sc.ChannelID, "enabled": sc.Enabled,
 		"recipient_user_ids": sc.RecipientUserIDs,
-		"scope":              map[string]bool{"incidents": sc.Scope.Incidents, "alerts": sc.Scope.Alerts, "budgets": sc.Scope.Budgets}}
+		"scope": map[string]bool{"incidents": sc.Scope.Incidents, "alerts": sc.Scope.Alerts, "budgets": sc.Scope.Budgets,
+			"compliance": sc.Scope.Compliance}}
 }
 
 // Schedules — все расписания.
@@ -346,11 +359,11 @@ func (s *Service) CreateSchedule(ctx context.Context, by By, in ScheduleInput) (
 	if !by.Scope.Allows(sc.Report) {
 		return Schedule{}, ErrScope
 	}
-	sc.Scope = by.Scope
+	sc.Scope = scheduleScope(sc.Report, by.Scope)
 	if err := s.checkChannel(ctx, sc.ChannelID); err != nil {
 		return Schedule{}, err
 	}
-	if err := s.checkRecipients(ctx, sc.RecipientUserIDs, by.Scope); err != nil {
+	if err := s.checkRecipients(ctx, sc.RecipientUserIDs, sc.Scope); err != nil {
 		return Schedule{}, err
 	}
 	loc, err := s.o.Location(ctx)
@@ -382,10 +395,11 @@ func (s *Service) UpdateSchedule(ctx context.Context, by By, id string, in Sched
 	if !by.Scope.Allows(sc.Report) {
 		return Schedule{}, ErrScope
 	}
+	scope := scheduleScope(sc.Report, by.Scope)
 	if err := s.checkChannel(ctx, sc.ChannelID); err != nil {
 		return Schedule{}, err
 	}
-	if err := s.checkRecipients(ctx, sc.RecipientUserIDs, by.Scope); err != nil {
+	if err := s.checkRecipients(ctx, sc.RecipientUserIDs, scope); err != nil {
 		return Schedule{}, err
 	}
 	loc, err := s.o.Location(ctx)
@@ -398,7 +412,7 @@ func (s *Service) UpdateSchedule(ctx context.Context, by By, id string, in Sched
 		}
 		n := old
 		n.Name, n.Report, n.Frequency, n.Weekday, n.Day, n.At = sc.Name, sc.Report, sc.Frequency, sc.Weekday, sc.Day, sc.At
-		n.Format, n.ChannelID, n.Enabled, n.Scope = sc.Format, sc.ChannelID, sc.Enabled, by.Scope
+		n.Format, n.ChannelID, n.Enabled, n.Scope = sc.Format, sc.ChannelID, sc.Enabled, scope
 		n.RecipientUserIDs = sc.RecipientUserIDs
 		n.Version, n.UpdatedAt, n.UpdatedBy = old.Version+1, s.now(), by.ref()
 		next, err := n.Next(s.now(), loc)

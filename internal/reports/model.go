@@ -16,10 +16,13 @@ const (
 	KindSummary   = "summary"   // сводный за период
 	KindIncidents = "incidents" // по инцидентам
 	KindPilot     = "pilot"     // «Итоги пилота» (S10)
+	// KindCompliance — «Соответствие требованиям» для аттестационных
+	// испытаний и аудита ИСПДн (S7, ТЗ 5.9; задача 4.25).
+	KindCompliance = "compliance"
 )
 
 // Kinds — виды отчётов в порядке показа.
-func Kinds() []string { return []string{KindSummary, KindIncidents, KindPilot} }
+func Kinds() []string { return []string{KindSummary, KindIncidents, KindPilot, KindCompliance} }
 
 // Title — название вида отчёта для людей.
 func Title(kind string) string {
@@ -30,6 +33,8 @@ func Title(kind string) string {
 		return "Отчёт по инцидентам"
 	case KindPilot:
 		return "Итоги пилота"
+	case KindCompliance:
+		return "Соответствие требованиям"
 	}
 	return kind
 }

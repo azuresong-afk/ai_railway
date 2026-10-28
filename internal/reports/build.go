@@ -82,14 +82,25 @@ type Scope struct {
 	Incidents bool
 	// Alerts — разрешено читать оповещения (alerts.read).
 	Alerts bool
+	// Compliance — разрешено читать соответствие требованиям (compliance.read
+	// на все объекты): отчёт «Соответствие» целиком требует этого права.
+	Compliance bool
 }
 
 // ErrScope — вид отчёта целиком требует права, которого у вызывающего нет.
 var ErrScope = errors.New("отчёты: нет права на данные отчёта")
 
 // Allows — вид отчёта доступен с этими правами: «По инцидентам» — только с
-// правом чтения инцидентов.
-func (sc Scope) Allows(kind string) bool { return kind != KindIncidents || sc.Incidents }
+// правом чтения инцидентов, «Соответствие» — только с compliance.read.
+func (sc Scope) Allows(kind string) bool {
+	switch kind {
+	case KindIncidents:
+		return sc.Incidents
+	case KindCompliance:
+		return sc.Compliance
+	}
+	return true
+}
 
 // noAccess — раздел, скрытый по правам.
 func noAccess(title string) Section {
@@ -102,6 +113,9 @@ type Builder struct {
 	Incidents IncidentSource
 	Alerts    AlertSource
 	Facts     Facts
+	// Compliance — модуль соответствия (отчёт «Соответствие»); nil — отчёт
+	// недоступен (ErrNoSource), остальные виды строятся.
+	Compliance ComplianceSource
 	// Now — часы; nil — time.Now.
 	Now func() time.Time
 }
@@ -132,6 +146,11 @@ func (b *Builder) Build(ctx context.Context, p Params, sc Scope) (Doc, error) {
 		return b.incidentsReport(ctx, p, meta)
 	case KindPilot:
 		return b.pilot(ctx, p, sc, meta)
+	case KindCompliance:
+		if !sc.Allows(KindCompliance) {
+			return Doc{}, ErrScope
+		}
+		return b.complianceReport(ctx, p)
 	}
 	return Doc{}, errors.New("отчёты: неизвестный вид отчёта")
 }

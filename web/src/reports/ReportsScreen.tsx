@@ -42,6 +42,7 @@ function ReportsTab({ me }: { me: Me }) {
   const [app, setApp] = useState("");
   const [delimiter, setDelimiter] = useState<"semicolon" | "comma">("semicolon");
   const [preview, setPreview] = useState("");
+  const noPeriod = kind === "compliance";
   // Владелец приложения (reports.read только на свои объекты) получает только сводный отчёт по своему приложению.
   const full = !(me.own_scope ?? []).includes("reports.read");
   const apps = useQuery({ queryKey: ["reports-apps"], queryFn: ({ signal }) => appsApi.applications(signal), enabled: me.permissions.includes("applications.read") });
@@ -51,9 +52,10 @@ function ReportsTab({ me }: { me: Me }) {
       : from !== "" && from > to
         ? "Начало периода не может быть позже конца."
         : undefined;
-  const blocked = Boolean(bad) || (!full && app === "");
+  const blocked = (Boolean(bad) && !noPeriod) || (!full && app === "");
   const appArg = kind === "summary" ? app : "";
-  const kinds = full ? reportKinds : reportKinds.filter(([k]) => k === "summary");
+  // «Соответствие» видно только с правом compliance.read; период ему не нужен: отчёт на момент формирования.
+  const kinds = full ? reportKinds.filter(([k]) => k !== "compliance" || me.permissions.includes("compliance.read")) : reportKinds.filter(([k]) => k === "summary");
   return (
     <div className="flex flex-col gap-3">
       <Panel className="flex flex-wrap items-end gap-3">
@@ -68,13 +70,13 @@ function ReportsTab({ me }: { me: Me }) {
             </Select>
           )}
         </Field>
-        <Field label="С даты" hint="Пусто — последние 30 суток" error={bad}>
+        <Field label="С даты" hint={noPeriod ? "Отчёт на момент формирования" : "Пусто — последние 30 суток"} error={bad}>
           {({ id, describedBy, invalid }) => (
-            <Input id={id} type="date" value={from} aria-describedby={describedBy} aria-invalid={invalid} onChange={(e) => setFrom(e.target.value)} />
+            <Input id={id} type="date" disabled={noPeriod} value={from} aria-describedby={describedBy} aria-invalid={invalid} onChange={(e) => setFrom(e.target.value)} />
           )}
         </Field>
         <Field label="По дату">
-          {({ id }) => <Input id={id} type="date" value={to} onChange={(e) => setTo(e.target.value)} />}
+          {({ id }) => <Input id={id} type="date" disabled={noPeriod} value={to} onChange={(e) => setTo(e.target.value)} />}
         </Field>
         <Field label="Разделитель CSV" hint="Для Excel с русской локалью — точка с запятой">
           {({ id }) => (
@@ -98,13 +100,13 @@ function ReportsTab({ me }: { me: Me }) {
         </Field>
       </Panel>
       <div className="flex flex-wrap gap-2">
-        <Button variant="primary" disabled={blocked} onClick={() => setPreview(reportUrl(kind, "html", from, to, appArg))}>
+        <Button variant="primary" disabled={blocked} onClick={() => setPreview(reportUrl(kind, "html", noPeriod ? "" : from, noPeriod ? "" : to, appArg))}>
           Показать отчёт
         </Button>
-        <DownloadLink disabled={blocked} href={reportUrl(kind, "csv", from, to, appArg, delimiter)}>
+        <DownloadLink disabled={blocked} href={reportUrl(kind, "csv", noPeriod ? "" : from, noPeriod ? "" : to, appArg, delimiter)}>
           Скачать CSV
         </DownloadLink>
-        <DownloadLink disabled={blocked} href={reportUrl(kind, "xlsx", from, to, appArg)}>
+        <DownloadLink disabled={blocked} href={reportUrl(kind, "xlsx", noPeriod ? "" : from, noPeriod ? "" : to, appArg)}>
           Скачать XLSX
         </DownloadLink>
         {preview && (
@@ -131,7 +133,7 @@ function toInput(s: ReportSchedule): ReportScheduleInput {
 
 const emptyForm: ReportScheduleInput = { name: "", report: "summary", frequency: "weekly", weekday: 1, at: "09:00", format: "xlsx", channel_id: "", enabled: true, recipient_user_ids: [] };
 
-function ScheduleForm({ initial, onDone, onCancel }: { initial?: ReportSchedule; onDone: () => void; onCancel: () => void }) {
+function ScheduleForm({ initial, kinds, onDone, onCancel }: { initial?: ReportSchedule; kinds: [ReportKind, string][]; onDone: () => void; onCancel: () => void }) {
   const qc = useQueryClient();
   const [f, setF] = useState<ReportScheduleInput>(initial ? toInput(initial) : emptyForm);
   const [err, setErr] = useState("");
@@ -168,7 +170,7 @@ function ScheduleForm({ initial, onDone, onCancel }: { initial?: ReportSchedule;
         <Field label="Отчёт">
           {({ id }) => (
             <Select id={id} value={f.report} onChange={(e) => set({ report: e.target.value as ReportScheduleInput["report"] })}>
-              {reportKinds.map(([k, t]) => (
+              {kinds.map(([k, t]) => (
                 <option key={k} value={k}>
                   {t}
                 </option>
@@ -268,6 +270,8 @@ function ScheduleForm({ initial, onDone, onCancel }: { initial?: ReportSchedule;
 function SchedulesTab({ me }: { me: Me }) {
   const qc = useQueryClient();
   const manage = me.permissions.includes("reports.schedules.manage");
+  // Отчёт «Соответствие» в расписание ставит только тот, у кого есть compliance.read.
+  const scheduleKinds = reportKinds.filter(([k]) => k !== "compliance" || me.permissions.includes("compliance.read"));
   const [editing, setEditing] = useState<string>(""); // "" — нет формы, "new" — новое, иначе id
   const [runsFor, setRunsFor] = useState("");
   const [err, setErr] = useState("");
@@ -291,8 +295,8 @@ function SchedulesTab({ me }: { me: Me }) {
           </Button>
         </div>
       )}
-      {editing === "new" && <ScheduleForm onDone={() => setEditing("")} onCancel={() => setEditing("")} />}
-      {cur && <ScheduleForm initial={cur} onDone={() => setEditing("")} onCancel={() => setEditing("")} />}
+      {editing === "new" && <ScheduleForm kinds={scheduleKinds} onDone={() => setEditing("")} onCancel={() => setEditing("")} />}
+      {cur && <ScheduleForm initial={cur} kinds={scheduleKinds} onDone={() => setEditing("")} onCancel={() => setEditing("")} />}
       {list.isSuccess && items.length === 0 ? (
         <EmptyState title="Расписаний пока нет" action={<p className="text-sm text-muted">Отчёт можно получать на почту: добавьте расписание.</p>} />
       ) : (

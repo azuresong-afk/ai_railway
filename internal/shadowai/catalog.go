@@ -253,7 +253,8 @@ func NormalizeHost(h string) (string, bool) {
 		h = h[:i]
 	}
 	h = strings.TrimSuffix(h, ".")
-	if h == "" || len(h) > maxHostLen {
+	// «a..» — пустая метка: не имя узла (после снятия одной точки остаётся «a.»).
+	if h == "" || len(h) > maxHostLen || strings.HasSuffix(h, ".") {
 		return "", false
 	}
 	// Пустая метка («..», «.a», «a..b») — не имя узла: иначе «..» дало бы «.»,

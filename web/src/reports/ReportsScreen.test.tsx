@@ -71,6 +71,17 @@ describe("экран «Отчёты»", () => {
     expect(frame.getAttribute("src")).toContain("format=html");
   });
 
+  it("отчёт «Соответствие» виден только с compliance.read и выгружается без периода", () => {
+    const { unmount } = renderScreen(all);
+    expect(screen.queryByRole("option", { name: "Соответствие требованиям" })).toBeNull();
+    unmount();
+    renderScreen([...all, "compliance.read"]);
+    fireEvent.change(screen.getByLabelText("С даты"), { target: { value: "2026-10-01" } });
+    fireEvent.change(screen.getByLabelText("Отчёт"), { target: { value: "compliance" } });
+    expect((screen.getByLabelText("С даты") as HTMLInputElement).disabled).toBe(true);
+    expect(screen.getByRole("link", { name: "Скачать XLSX" }).getAttribute("href")).toBe("/api/v1/reports/compliance?format=xlsx");
+  });
+
   it("разделитель CSV: по умолчанию «;», запятая — по выбору; на XLSX и HTML не влияет", () => {
     renderScreen(all);
     expect(screen.getByRole("link", { name: "Скачать CSV" }).getAttribute("href")).toContain("delimiter=semicolon");

@@ -77,8 +77,8 @@ test("каркас: тема, свёртка панели, выход", async ({
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
   await page.getByRole("button", { name: "Свернуть панель разделов" }).click();
   await expect(page.getByRole("button", { name: "Развернуть панель разделов" })).toBeVisible();
-  // «Отчёты» готовы с этапа 3; заглушка — у раздела, которого ещё нет.
-  await page.getByRole("link", { name: "Соответствие" }).click();
+  // Все разделы меню готовы; заглушка — у адреса, которого нет.
+  await page.goto("/#/no-such-section");
   await expect(page.getByText("раздел в разработке")).toBeVisible();
   await page.keyboard.press("?");
   await expect(page.getByRole("heading", { name: "Горячие клавиши" })).toBeVisible();

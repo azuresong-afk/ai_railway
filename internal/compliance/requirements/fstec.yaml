@@ -1,0 +1,204 @@
+# База требований: документы ФСТЭК России (ТЗ 2.1, 2.3; задача 4.24).
+# Пересказ своими словами, без копирования нормативного текста. Проверки
+# ссылаются на именованные функции internal/compliance/checks.go.
+format: aisec-compliance-base-v1
+version: 1
+date: "2026-10-28"
+sources:
+  - {id: fstec-117, title: "Приказ ФСТЭК России № 117"}
+  - {id: fstec-method, title: "Методический документ ФСТЭК России от 12.04.2026"}
+  - {id: fstec-117-draft, title: "Проект изменений в приказ ФСТЭК России № 117 (август 2026)"}
+requirements:
+  - id: f117.p60.access
+    source: fstec-117
+    clause: "п. 60"
+    title: "Защита наборов данных, моделей и сервисов ИИ от несанкционированного доступа и воздействия"
+    summary: "Обращения к моделям и сервисам ИИ проходят через фильтры, которые не пропускают недопустимое содержимое ни в запросе, ни в ответе. Контроль целостности самих моделей и RAG — отдельный пункт."
+    applies: [gis]
+    checks:
+      - {name: filter_enforced, params: {direction: input, env: prod}}
+      - {name: filter_enforced, params: {direction: output, env: prod}}
+    evidence:
+      - {kind: screen, title: "Приложения: политика и режим", path: /apps}
+      - {kind: screen, title: "Политики: правила и режим enforce", path: /policies}
+      - {kind: events, title: "События: отказы в доступе", path: /events, query: {f: "type = auth_failure"}}
+  - id: f117.p60.no-leak-to-vendor
+    source: fstec-117
+    clause: "п. 60"
+    title: "Защищаемая информация не передаётся разработчику модели"
+    summary: "Перед отправкой внешнему провайдеру из запроса убираются или заменяются псевдонимами персональные данные и секреты; до провайдера доходит только то, что допустимо отдавать."
+    applies: [gis]
+    checks:
+      - {name: pii_protection_external, params: {env: prod}}
+    evidence:
+      - {kind: screen, title: "Провайдеры: внешние и внутренние", path: /providers}
+      - {kind: screen, title: "Политики: маскирование и псевдонимизация", path: /policies}
+      - {kind: report, title: "Сводный отчёт: находки по ПДн", path: /reports}
+  - id: f117.p61.control-interaction
+    source: fstec-117
+    clause: "п. 61"
+    title: "Контроль взаимодействия пользователей с сервисами ИИ"
+    summary: "Все обращения к ИИ фиксируются, на них действуют квоты и правила; кто и что делал, можно восстановить по журналу."
+    applies: [gis]
+    checks:
+      - {name: content_storage, params: {env: prod}}
+      - {name: quota_configured, params: {env: prod, field: any}}
+    evidence:
+      - {kind: events, title: "События: все запросы через шлюз", path: /events, query: {f: "type = gateway_request"}}
+      - {kind: screen, title: "Теневой ИИ: обращения в обход шлюза", path: /shadow-ai}
+      - {kind: screen, title: "Потребление: токены и расходы", path: /usage}
+  - id: f117.p61.ai-influence
+    source: fstec-117
+    clause: "п. 61"
+    title: "Исключение влияния ИИ на функционирование информационной системы"
+    summary: "Агенты и инструменты, которыми ИИ воздействует на систему, ограничены: неодобренные инструменты блокируются, набор моделей задан заранее."
+    applies: [gis]
+    checks:
+      - {name: tool_policy_strict, params: {env: prod}}
+      - {name: model_list_restricted, params: {env: prod}}
+    evidence:
+      - {kind: screen, title: "Агенты: реестр инструментов и одобрения", path: /agents}
+      - {kind: screen, title: "Подтверждения вызовов", path: /approvals}
+  - id: fstec-m.3.18.iaf-upd-rsb
+    source: fstec-method
+    clause: "п. 3.18"
+    title: "Идентификация, управление доступом и регистрация событий для систем ИИ и фильтров входа и выхода"
+    summary: "Управление платформой защищено вторым фактором, права разделены по ролям, журнал аудита ведётся и неизменяем, целостность программ проверяется."
+    applies: [gis, kii, ispdn, commercial]
+    checks:
+      - {name: mfa_privileged_roles}
+      - {name: audit_chain_verified, params: {max_age_hours: "48"}}
+      - {name: integrity_verified}
+    evidence:
+      - {kind: screen, title: "Администрирование: роли и разрешения", path: /admin, hint: "вкладка «Роли и разрешения»"}
+      - {kind: audit, title: "Журнал аудита: входы и действия администраторов", path: /admin, hint: "вкладка «Журнал аудита», фильтр по действию auth.*"}
+      - {kind: screen, title: "Состояние системы: целостность и цепочка аудита", path: /system}
+  - id: fstec-m.3.18.log-all
+    source: fstec-method
+    clause: "п. 3.18"
+    title: "Регистрация всех запросов и ответов модели и журналов фильтрации"
+    summary: "Запросы, ответы и решения фильтров сохраняются в журнале событий; режим хранения содержимого выбран осознанно, а не «не хранить» по умолчанию."
+    applies: [gis, kii, ispdn, commercial]
+    checks:
+      - {name: content_storage, params: {env: prod}}
+    evidence:
+      - {kind: events, title: "События: запросы и решения фильтров", path: /events}
+      - {kind: screen, title: "Время и хранение событий", path: /admin, hint: "вкладка «Время и хранение»"}
+  - id: fstec-m.3.18.output-leak
+    source: fstec-method
+    clause: "п. 3.18"
+    title: "Проверка ответов на утечки персональных данных и иной информации ограниченного доступа"
+    summary: "Ответы модели проверяются выходными детекторами до выдачи пользователю; найденное маскируется или блокируется."
+    applies: [gis, kii, ispdn, commercial]
+    checks:
+      - {name: filter_enforced, params: {direction: output, env: prod}}
+    evidence:
+      - {kind: screen, title: "Политики: правила на выходе", path: /policies}
+      - {kind: events, title: "События: сработавшие правила на выходе", path: /events, query: {f: "source = output"}}
+  - id: fstec-m.3.18.quota-anomaly
+    source: fstec-method
+    clause: "п. 3.18"
+    title: "Квотирование запросов и токенов, выявление аномальных запросов"
+    summary: "У приложений заданы лимиты на запросы и токены, а резкие отклонения замечаются оповещениями, которые доходят до дежурных."
+    applies: [gis, kii, ispdn, commercial]
+    checks:
+      - {name: quota_configured, params: {env: prod, field: any}}
+      - {name: alert_rules_enabled, params: {min: "3"}}
+      - {name: notification_channel}
+    evidence:
+      - {kind: screen, title: "Приложения: квоты", path: /apps}
+      - {kind: screen, title: "Оповещения: правила", path: /alerts}
+  - id: fstec-m.3.18.model-integrity
+    source: fstec-method
+    clause: "п. 3.18"
+    title: "Контроль целостности обученной модели, LoRA и RAG; отказ от формата pickle"
+    summary: "Модели и дополнения к ним проверяются по хешам и подписям, небезопасные форматы запрещены. Автоматической проверки в платформе пока нет (модуль проверки моделей — этап 5): статус ставит человек по организационным мерам заказчика."
+    applies: [gis, kii, ispdn, commercial]
+    manual: true
+    evidence:
+      - {kind: screen, title: "Состояние системы: целостность компонентов платформы", path: /system}
+  - id: fstec-m.3.18.prompt-testing
+    source: fstec-method
+    clause: "п. 3.18"
+    title: "Периодическое тестирование на атаки через промпты"
+    summary: "Раз в установленный срок защита проверяется набором промпт-атак. Автоматического модуля тестирования устойчивости пока нет (этап 5): отметка ставится по результатам тестирования заказчика."
+    applies: [gis, kii, ispdn, commercial]
+    manual: true
+    evidence:
+      - {kind: report, title: "Отчёты: срабатывания детекторов за период", path: /reports}
+  - id: fstec-m.3.18.secure-dev
+    source: fstec-method
+    clause: "п. 3.18"
+    title: "Безопасная разработка по ГОСТ Р 56939-2024 и сертификация программного обеспечения системы ИИ"
+    summary: "Если ИИ обрабатывает защищаемые данные, ПО разрабатывается по требованиям безопасной разработки и проходит сертификацию. Подтверждается документами и сертификатом, а не настройками платформы."
+    applies: [gis, kii, ispdn]
+    manual: true
+  - id: f117d.ai-segment-mfa
+    source: fstec-117-draft
+    clause: "проект, сегментация и МФА"
+    title: "Отдельный сегмент сети для ИИ с доступом по многофакторной аутентификации"
+    summary: "Системы ИИ выделены в отдельный сегмент, доступ в него требует второго фактора. Платформа обеспечивает второй фактор в консоли; сегментация — средствами сети заказчика."
+    applies: [gis]
+    draft: true
+    manual: true
+    checks:
+      - {name: mfa_privileged_roles}
+    evidence:
+      - {kind: screen, title: "Администрирование: вход и сессии", path: /admin, hint: "вкладка «Вход и сессии»"}
+  - id: f117d.least-privilege-models
+    source: fstec-117-draft
+    clause: "проект, доступ к моделям"
+    title: "Доступ к моделям по принципу минимальных прав"
+    summary: "Приложения и пользователи получают только те модели, которые им нужны."
+    applies: [gis]
+    draft: true
+    checks:
+      - {name: model_list_restricted, params: {env: prod}}
+    evidence:
+      - {kind: screen, title: "Приложения: разрешённые модели и доступ по группам", path: /apps}
+  - id: f117d.filter-io
+    source: fstec-117-draft
+    clause: "проект, фильтрация входа и выхода"
+    title: "Фильтрация входа и выхода"
+    summary: "Запросы к ИИ и ответы проходят через фильтры."
+    applies: [gis]
+    draft: true
+    checks:
+      - {name: filter_enforced, params: {direction: input, env: prod}}
+      - {name: filter_enforced, params: {direction: output, env: prod}}
+    evidence:
+      - {kind: screen, title: "Политики", path: /policies}
+  - id: f117d.input-volume-quota
+    source: fstec-117-draft
+    clause: "проект, квоты на входные данные"
+    title: "Квотирование объёма входных данных"
+    summary: "Размер входных данных ограничен, чтобы через запросы нельзя было вынести или подать лишнее."
+    applies: [gis]
+    draft: true
+    checks:
+      - {name: quota_configured, params: {env: prod, field: max_input_bytes}}
+    evidence:
+      - {kind: screen, title: "Приложения: квоты", path: /apps}
+  - id: f117d.limit-functionality
+    source: fstec-117-draft
+    clause: "проект, ограничение функциональности"
+    title: "Ограничение функциональности моделей"
+    summary: "Модели используют только в тех сценариях, для которых они допущены."
+    applies: [gis]
+    draft: true
+    checks:
+      - {name: model_list_restricted, params: {env: prod}}
+      - {name: tool_policy_strict, params: {env: prod}}
+    evidence:
+      - {kind: screen, title: "Агенты и политики", path: /agents}
+  - id: f117d.agent-protection
+    source: fstec-117-draft
+    clause: "проект, защита от воздействия агентов"
+    title: "Защита от воздействия ИИ-агентов"
+    summary: "Действия агентов контролируются: неодобренные инструменты блокируются, рискованные вызовы ждут подтверждения человека."
+    applies: [gis]
+    draft: true
+    checks:
+      - {name: tool_policy_strict, params: {env: prod}}
+    evidence:
+      - {kind: screen, title: "Подтверждения вызовов", path: /approvals}
