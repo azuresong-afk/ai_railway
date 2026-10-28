@@ -89,11 +89,26 @@ GitHub Actions — тонкая обёртка над `make` (ADR-0002):
 - npm: до этапа 6 — публичный реестр строго по lock-файлу, затем внутреннее зеркало.
 
 ## Сборка ONNX Runtime для `aisec-ml` (ADR-0024, раздел 8)
-Статус на 27.10.2026: решение принято в ADR-0024, библиотека ждёт согласия владельца; до него `aisec-ml` собирается без cgo и без исполнителя ONNX (`CGO_ALLOWED` пуст).
-- Версия — ONNX Runtime 1.31.0 (C API 31, коммит `402979ac1bef89dcd55add41eaa7277c407599eb`), ровно та, под которую собрана Go-обвязка.
-- Рекомендуемый вариант — сборка из исходников с `--no_telemetry`, библиотека общего пользования, только исполнитель CPU. В официальной сборке Microsoft для Linux телеметрия включена по умолчанию (клиент 1DS со статическими curl, mbedTLS, SQLite; SHA-256 архива `onnxruntime-linux-x64-1.31.0.tgz` — `cc5c72baf5ae5c8238a6841f0897227be2d02826b9cf98eaf02fdefaeeb03a57`).
-- Исходники ORT и архивы зависимостей из `cmake/deps.txt` скачиваются отдельным шагом с сетью (`make ort-fetch`) и сверяются с SHA-256 из `deploy/build/onnxruntime/deps.lock`; сборка (`make ort-build`) — в контейнере `--network none` с `FETCHCONTENT_FULLY_DISCONNECTED=ON`.
-- SHA-256 собранной библиотеки фиксируется в `deploy/build/onnxruntime/ort.sha256` и встраивается в `aisec-ml`; `aisec-ml` сверяет хеш файла до `dlopen`. Библиотека входит в манифест целостности (вид `library`) и в SBOM со списком статически встроенных компонентов.
+Статус на 28.10.2026 (задача 4.19, часть 1): сборка из исходников без сети и телеметрии реализована и проверена пробной сборкой в облачной среде; эталонная сборка на машине владельца ещё не выполнена (`ort.sha256` нет). Подробности решения — ADR-0024, дополнение «сборка ORT и поставка `aisec-ml`».
+- Версия — ONNX Runtime 1.31.0 (C API 31, коммит `402979ac1bef89dcd55add41eaa7277c407599eb`), ровно та, под которую собрана Go-обвязка. Официальная сборка Microsoft не используется: в ней включена телеметрия (1DS со статическими curl, mbedTLS, SQLite; SHA-256 архива `onnxruntime-linux-x64-1.31.0.tgz` — `cc5c72baf5ae5c8238a6841f0897227be2d02826b9cf98eaf02fdefaeeb03a57`).
+- `make ort-fetch` (единственный шаг с сетью, `fetch.sh`) — ORT и 12 зависимостей из `deploy/build/onnxruntime/deps.lock` в `build/ort-mirror`: git по коммиту (`git fetch --depth 1` + `git archive`), protobuf — архив выпуска по https; SHA-256 каждого файла сверяется с `deps.lock`.
+- `make ort-build` — `deploy/build/Dockerfile.ml`, цель `ort-out`: сборочный образ `golang:1.27.3-bookworm` (digest — в `components.yaml`), cmake из `bookworm-backports`, сборка `build.sh` в `RUN --network=none`. Результат — `build/ort/`: `lib/libonnxruntime.so.1.31.0`, `include/onnxruntime_c_api.h`, `LICENSE`, `ThirdPartyNotices.txt`, `toolchain.versions` (версии пакетов сборки). `make ort-verify` сверяет хеш с `deploy/build/onnxruntime/ort.sha256`.
+- `make ml-release-dir [RELEASE=1]` — выпуск `aisec-ml` в `build/release-ml` (цель `ml-release` того же Dockerfile, без сети): `aisec-ml` с cgo, хешем ORT, загрузчиком и RPATH `/opt/aisec/lib`; библиотеки — `ml-libs.sh`; манифест — тестовым ключом или (`RELEASE=1`) без подписи для подписи на машине без сети. `make images ML=1` добавляет образ `aisec-ml` (только после подписи выпуска `aisec-ml` и при совпадении с эталоном ORT).
+- Пробная сборка ORT заняла около двух часов на 4 vCPU (параллельно с другой работой); `ORT_JOBS=N` ограничивает параллельность, если не хватает памяти.
+
+**Пробная сборка в облачной среде** (28.10.2026, Ubuntu 24.04, gcc 13.3, glibc 2.39, cmake 3.28.3; не эталон — компилятор другой, чем в `Dockerfile.ml`): `make ort-fetch` и `build.sh` под `unshare -n` прошли без сети, 1 357 шагов; `libonnxruntime.so.1.31.0` — 26 МиБ, SHA-256 `49d67ffe9c4974a468d96066c439e072401acd631af2470eef6e91a07e7c6b67`; повторная сборка с нуля, уже с `EIGEN_MPL2_ONLY`, дала побайтно ту же библиотеку (сборка воспроизводима, части Eigen под LGPL в ORT не было); зависимости — только libc, libm, libstdc++, libgcc_s, ld-linux, RUNPATH `$ORIGIN`; строк телеметрии, curl и mbedTLS нет. С этой библиотекой проходят `TestONNXExecutor` и `TestInitORTRefusesForeignLibrary`; собранный `make ml-release-assemble` выпуск (7 файлов) в раскладке `/opt/aisec` запускается своим загрузчиком от непривилегированного пользователя, проходит самопроверку целостности и отказывает без пакета моделей; изменённый байт в `lib/libm.so.6` останавливает его как нарушение целостности. `aisec-cli verify -release build/release-ml` проходит.
+
+**Эталонная сборка на машине владельца** (Linux x86-64 с Docker 23+ и доступом к github.com и deb.debian.org; ключ производителя для этого не нужен):
+```
+git fetch origin && git checkout <коммит выпуска>
+make ort-fetch
+make ort-build                      # печатает SHA-256 библиотеки
+cat build/ort/toolchain.versions    # версии cmake, gcc, glibc сборки
+make ort-build                      # повтор с нуля: хеш должен совпасть (воспроизводимость)
+sha256sum build/ort/lib/libonnxruntime.so.1.31.0 > deploy/build/onnxruntime/ort.sha256   # затем коммит
+make ml-release-dir                 # выпуск aisec-ml с тестовым ключом; хеш ORT сверяется с эталоном
+```
+Для поставки: `make ml-release-dir RELEASE=1` на теге, подпись `make release-sign RELEASE_DIR=build/release-ml` на машине без сети, затем `make images RELEASE=1 ML=1`. Лицензии системных библиотек образа приняты владельцем 28.10.2026 (ADR-0024); образ `aisec-ml` заказчику не передаётся до пакета моделей (часть 2 задачи 4.19).
 
 ## Управление изменениями и подпись
 Решение — ADR-0002.

@@ -1504,7 +1504,7 @@ paths:
         type, app, env, user, provider, model, source, policy_mode, action, rule, severity,
         storage, gateway, threat, detector, exception (находки, пропущенные по исключению с этим ID),
         mark (`false_positive`, `confirmed` или `none` — без отметки), stream, non_text_unchecked,
-        has_content, session (псевдоним сессии запроса чата или агента), agent, mcp_server, tool
+        has_content, ml_unavailable (ML-детекторы не дали результата), session (псевдоним сессии запроса чата или агента), agent, mcp_server, tool
         (события агентов); операторы
         `=`, `!=`, `in (…)`, `not in (…)` (у логических полей — только `=`). Лимиты: 2048 байт,
         20 условий, 50 значений в списке, значение до 256 байт. Пишет `events.list`
@@ -8339,7 +8339,7 @@ components:
         request: { $ref: '#/components/schemas/CheckRequest' }
     PolicyTestResult:
       type: object
-      required: [draft, direction, mode, decision, action, blocked, fail_block, incomplete, unchecked, failures, findings, texts]
+      required: [draft, direction, mode, decision, action, blocked, fail_block, incomplete, unchecked, ml_unavailable, failures, findings, texts]
       properties:
         policy_id: { type: string }
         version: { type: integer }
@@ -8355,6 +8355,7 @@ components:
         message: { type: string }
         incomplete: { type: boolean }
         unchecked: { type: boolean }
+        ml_unavailable: { type: boolean, description: 'ML-детектор политики не дал результата: на сервере нет aisec-ml, проверку ML песочница не выполняет, решение — по остальным детекторам (ADR-0024)' }
         failures:
           type: array
           items:
@@ -9474,6 +9475,7 @@ components:
         message: { type: string, description: Сообщение политики при блокировке. }
         incomplete: { type: boolean, description: Часть детекторов не дала результата (fail_open). }
         unchecked: { type: boolean, description: 'У политики нет правил для этого направления: детекторы не запускались, allow не означает «проверено».' }
+        ml_unavailable: { type: boolean, description: 'ML-детектор политики (injection.ml, toxicity.ml) не дал результата: aisec-ml недоступен, решение принято по остальным детекторам (ADR-0024).' }
         findings:
           type: array
           description: Находки детекторов политики приложения для этого направления.

@@ -30,11 +30,13 @@ const diff = {
 
 const calls: { method: string; url: string; body: unknown }[] = [];
 let testStatus = 200;
+let testML = false;
 
 beforeEach(() => {
   vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
   calls.length = 0;
   testStatus = 200;
+  testML = false;
   vi.stubGlobal(
     "fetch",
     vi.fn((url: string, init: RequestInit) => {
@@ -50,7 +52,7 @@ beforeEach(() => {
       if (url === "/api/v1/policies/mine/rollback") return json({ ...summaries[1], current_version: 3, spec }, 200);
       if (url === "/api/v1/policies/test") {
         return testStatus === 200
-          ? json({ policy_id: "mine", draft: false, direction: "input", mode: "enforce", decision: "redact", action: "redact", blocked: false, fail_block: false, incomplete: false, unchecked: false, failures: [], findings: [{ detector: "pii.ru", category: "pii.phone", score: 0.9, start: 0, end: 5, location: "text", rule: "pii-ru", action: "redact", apply: "redact" }], texts: [{ location: "text", text: "Позвоните <PHONE>", changed: true }] })
+          ? json({ policy_id: "mine", draft: false, direction: "input", mode: "enforce", decision: "redact", action: "redact", blocked: false, fail_block: false, incomplete: false, unchecked: false, ml_unavailable: testML, failures: [], findings: [{ detector: "pii.ru", category: "pii.phone", score: 0.9, start: 0, end: 5, location: "text", rule: "pii-ru", action: "redact", apply: "redact" }], texts: [{ location: "text", text: "Позвоните <PHONE>", changed: true }] })
           : json({ code: "unprocessable", detail: "Категория lists.vip: словаря нет у приложения.", status: 422 }, 422);
       }
       if (url.startsWith("/api/v1/applications?")) return json({ items: [] });
@@ -121,6 +123,17 @@ describe("экран «Политики»", () => {
     await screen.findByRole("region", { name: "Результат проверки" });
     expect(screen.getByText("Позвоните <PHONE>")).toBeInTheDocument();
     expect(calls.find((c) => c.url === "/api/v1/policies/test")?.body).toEqual({ policy_id: "mine", request: { direction: "input", text: "Позвоните +7 900 000-00-00" } });
+  });
+
+  it("песочница: ML-детекторы недоступны — пояснение, решение по остальным", async () => {
+    testML = true;
+    renderScreen(["policies.read", "policies.test"]);
+    await screen.findByText("Моя политика");
+    fireEvent.click(screen.getByRole("button", { name: "Открыть политику Моя политика" }));
+    fireEvent.mouseDown(await screen.findByRole("tab", { name: "Песочница" }), { button: 0 });
+    fireEvent.change(await screen.findByLabelText("Проверяемый текст"), { target: { value: "текст" } });
+    fireEvent.click(screen.getByRole("button", { name: "Проверить текст" }));
+    expect(await screen.findByText(/модели работают только в шлюзе/)).toBeInTheDocument();
   });
 
   it("песочница: 422 из-за словаря объясняется подсказкой со ссылкой на приложения", async () => {

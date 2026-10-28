@@ -118,6 +118,10 @@ type Config struct {
 	// AllFiles — сверить с диском все невстроенные файлы манифеста
 	// (aisec-cli verify).
 	AllFiles bool
+	// DiskPrefixes — сверить с диском только невстроенные файлы манифеста с
+	// этими каталогами (lib/, models/ у aisec-ml: в его образе нет остальных
+	// файлов выпуска). При AllFiles не нужен.
+	DiskPrefixes []string
 	// Watch — файлы конфигурации и корни доверия: изменение после запуска —
 	// нарушение (ОЦЛ.3, В19 ревью 2.r4).
 	Watch []WatchFile
@@ -164,6 +168,11 @@ func NewChecker(cfg Config) (*Checker, error) {
 	for prefix := range cfg.Embedded {
 		if err := ValidPath(prefix); err != nil {
 			return nil, fmt.Errorf("контроль целостности: префикс %q: %w", prefix, err)
+		}
+	}
+	for _, prefix := range cfg.DiskPrefixes {
+		if !strings.HasSuffix(prefix, "/") || ValidPath(strings.TrimSuffix(prefix, "/")) != nil {
+			return nil, fmt.Errorf("контроль целостности: каталог %q: путь с «/» в конце", prefix)
 		}
 	}
 	c := &Checker{cfg: cfg, hasher: h, watched: map[string][]byte{}}
@@ -349,16 +358,33 @@ func (c *Checker) checkEmbedded(ctx context.Context, res *Result, m *Manifest) e
 	return nil
 }
 
+// onDisk — файл манифеста сверяется с диском: все невстроенные при
+// AllFiles, иначе — из каталогов DiskPrefixes.
+func (c *Checker) onDisk(e Entry) bool {
+	if e.Kind.Embedded() {
+		return false
+	}
+	if c.cfg.AllFiles {
+		return true
+	}
+	for _, p := range c.cfg.DiskPrefixes {
+		if strings.HasPrefix(e.Path, p) {
+			return true
+		}
+	}
+	return false
+}
+
 // checkDisk сверяет невстроенные файлы манифеста с каталогом установки.
 // Файлы читаются через os.Root: ссылка за пределы корня не открывается.
 func (c *Checker) checkDisk(ctx context.Context, res *Result, m *Manifest) error {
-	if !c.cfg.AllFiles {
+	if !c.cfg.AllFiles && len(c.cfg.DiskPrefixes) == 0 {
 		return nil
 	}
 	root, err := os.OpenRoot(filepath.Dir(c.cfg.ManifestPath))
 	if err != nil {
 		for _, e := range m.Files {
-			if !e.Kind.Embedded() {
+			if c.onDisk(e) {
 				res.fail(e.Path, ProblemUnreadable)
 			}
 		}
@@ -366,7 +392,7 @@ func (c *Checker) checkDisk(ctx context.Context, res *Result, m *Manifest) error
 	}
 	defer root.Close() //nolint:errcheck // каталог только читается
 	for _, e := range m.Files {
-		if e.Kind.Embedded() {
+		if !c.onDisk(e) {
 			continue
 		}
 		if err := ctx.Err(); err != nil {

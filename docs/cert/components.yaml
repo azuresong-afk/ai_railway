@@ -8,7 +8,9 @@
 #
 # Поля:
 #   name, version        — имя и точная версия.
-#   type                 — go-module | toolchain | tool | image | github-action | npm-package.
+#   type                 — go-module | toolchain | tool | image | github-action | npm-package | font | native-library.
+#                          Для native-library: библиотека C/C++ из исходников по deploy/build/onnxruntime/deps.lock
+#                          (ONNX Runtime и статически встроенные в неё); version — версия выпуска и коммит.
 #                          Для image: name — репозиторий образа (golang), version — «тег@sha256:…».
 #                          Для npm-package: прямая зависимость web/package.json (dependencies — scope product,
 #                          devDependencies — build); транзитивные пакеты проверяет make licenses по web/package-lock.json
@@ -175,7 +177,7 @@ components:
     version: 1.27.3-bookworm@sha256:21ade014faf952365b9ecbd8dbdb87176fbacb82fac9fb132d9f2a7b8cc3f132
     type: image
     scope: build
-    purpose: Основа сборочного образа (deploy/build/Dockerfile), стадии сборки образов стенда разработки и стадии go лабораторной сборки (deploy/build/Dockerfile.lab, задача 4.32).
+    purpose: Основа сборочного образа (deploy/build/Dockerfile), стадии сборки образов стенда разработки, стадии go лабораторной сборки (deploy/build/Dockerfile.lab, задача 4.32) и сборки ONNX Runtime и aisec-ml (deploy/build/Dockerfile.ml, задача 4.19; cmake — из bookworm-backports). Загрузчик и системные библиотеки этого образа (glibc — LGPL-2.1-or-later, libstdc++ и libgcc_s — GPL-3.0-or-later WITH GCC-exception-3.1) копируются в образ aisec-ml (deploy/build/ml-libs.sh) — это уже поставка; решение владельца по их лицензиям ожидается (ADR-0024, дополнение от 28.10.2026), до него образ aisec-ml заказчику не передаётся.
     # Go — BSD-3-Clause; пакеты Debian в образе (gcc, make, bash, git и др.) — в том числе GPL и LGPL.
     license: BSD-3-Clause AND GPL-2.0-or-later AND GPL-3.0-or-later AND LGPL-2.1-or-later
     license_decision: ADR-0003 — образ сборочной среды, в поставку не входит; образы поставки собираются в scratch
@@ -1103,3 +1105,232 @@ components:
     decided: 2026-10-27
     license_files:
       LICENSE: b7177fa196f86e5102a5d2702c1b28ea62eb02fd2d633a37f2dbd6ffc0ba8b4f
+
+  - name: onnxruntime
+    version: 1.31.0 (402979ac1bef89dcd55add41eaa7277c407599eb)
+    type: native-library
+    scope: product
+    purpose: Исполнитель моделей ML-детекторов в процессе aisec-ml (ADR-0024) — libonnxruntime.so.1.31.0, только исполнитель CPU, без телеметрии, тестов и Python. Загружается aisec-ml по дескриптору файла после сверки хеша со встроенным при сборке.
+    license: MIT
+    repository: https://github.com/microsoft/onnxruntime
+    attack_surface: true
+    security_function: false
+    provided_by: Microsoft Corporation
+    justification: Движка вывода нейросетей на Go нет; ONNX Runtime — стандартный исполнитель формата ONNX с C API. Официальная сборка для Linux содержит телеметрию (1DS, curl, mbedTLS), поэтому библиотека собирается из исходников без сети с onnxruntime_USE_TELEMETRY=OFF; build.sh проверяет отсутствие адресов телеметрии и HTTP-клиента, зависимости — только системные (glibc, libstdc++, libgcc_s). Разбирает модель и обрабатывает тензоры из текста запроса — поверхность атаки, изолирована в контейнере без сети (ADR-0024).
+    decision: ADR-0024, раздел «Зависимости»; согласие владельца 27.10.2026 (поток 4-C3); сборка — задача 4.19 (поток E5)
+    decided: 2026-10-28
+
+  - name: abseil-cpp
+    version: 20250814.0 (987c57f325f7fa8472fa84e1f885f7534d391b0d)
+    type: native-library
+    scope: product
+    purpose: Базовые библиотеки C++ Google, на которых построены ONNX Runtime, protobuf и re2.
+    license: Apache-2.0
+    repository: https://github.com/abseil/abseil-cpp
+    attack_surface: false
+    security_function: false
+    provided_by: Google LLC
+    justification: Статически встроена в libonnxruntime.so при сборке из исходников (deploy/build/onnxruntime/deps.lock, SHA-256 архива); отдельно не поставляется.
+    decision: ADR-0024, раздел «Зависимости»; согласие владельца 27.10.2026 (поток 4-C3); сборка — задача 4.19 (поток E5)
+    decided: 2026-10-28
+
+  - name: protobuf
+    version: 33.6
+    type: native-library
+    scope: product
+    purpose: Разбор формата моделей ONNX (protobuf lite) внутри ONNX Runtime. В архиве выпуска — utf8_range (MIT).
+    license: BSD-3-Clause AND MIT
+    repository: https://github.com/protocolbuffers/protobuf
+    attack_surface: true
+    security_function: false
+    provided_by: Google LLC
+    justification: Статически встроена в libonnxruntime.so при сборке из исходников (deploy/build/onnxruntime/deps.lock, SHA-256 архива); отдельно не поставляется. Разбирает файл модели — модели только подписанные производителем (ADR-0024, раздел 5).
+    decision: ADR-0024, раздел «Зависимости»; согласие владельца 27.10.2026 (поток 4-C3); сборка — задача 4.19 (поток E5)
+    decided: 2026-10-28
+
+  - name: onnx
+    version: 1.22.0 (2bb50465112feca9003e1ed654d77f01ff1415ca)
+    type: native-library
+    scope: product
+    purpose: Описание формата и операторов ONNX, проверка графа модели внутри ONNX Runtime.
+    license: Apache-2.0
+    repository: https://github.com/onnx/onnx
+    attack_surface: true
+    security_function: false
+    provided_by: LF AI & Data Foundation (проект ONNX)
+    justification: Статически встроена в libonnxruntime.so при сборке из исходников (deploy/build/onnxruntime/deps.lock, SHA-256 архива); отдельно не поставляется.
+    decision: ADR-0024, раздел «Зависимости»; согласие владельца 27.10.2026 (поток 4-C3); сборка — задача 4.19 (поток E5)
+    decided: 2026-10-28
+
+  - name: re2
+    version: 2024-07-02 (6dcd83d60f7944926bfd308cc13979fc53dd69ca)
+    type: native-library
+    scope: product
+    purpose: Регулярные выражения с линейным временем в операторах ONNX Runtime (строковые операции).
+    license: BSD-3-Clause
+    repository: https://github.com/google/re2
+    attack_surface: false
+    security_function: false
+    provided_by: Google LLC
+    justification: Статически встроена в libonnxruntime.so при сборке из исходников (deploy/build/onnxruntime/deps.lock, SHA-256 архива); отдельно не поставляется.
+    decision: ADR-0024, раздел «Зависимости»; согласие владельца 27.10.2026 (поток 4-C3); сборка — задача 4.19 (поток E5)
+    decided: 2026-10-28
+
+  - name: flatbuffers
+    version: 23.5.26 (0100f6a5779831fa7a651e4b67ef389a8752bd9b)
+    type: native-library
+    scope: product
+    purpose: Формат ORT-моделей и служебных структур ONNX Runtime (заголовки времени выполнения).
+    license: Apache-2.0
+    repository: https://github.com/google/flatbuffers
+    attack_surface: false
+    security_function: false
+    provided_by: Google LLC
+    justification: Статически встроена в libonnxruntime.so при сборке из исходников (deploy/build/onnxruntime/deps.lock, SHA-256 архива); отдельно не поставляется.
+    decision: ADR-0024, раздел «Зависимости»; согласие владельца 27.10.2026 (поток 4-C3); сборка — задача 4.19 (поток E5)
+    decided: 2026-10-28
+
+  - name: eigen
+    version: 1d8b82b0740839c0de7f1242a3585e3390ff5f33
+    type: native-library
+    scope: product
+    purpose: Линейная алгебра в ядрах CPU ONNX Runtime (заголовочная библиотека).
+    license: MPL-2.0
+    license_decision: ADR-0024 — Eigen (MPL-2.0) внутри ONNX Runtime, согласие владельца 27.10.2026
+    repository: https://gitlab.com/libeigen/eigen
+    attack_surface: false
+    security_function: false
+    provided_by: Eigen (сообщество, зеркало github.com/eigen-mirror/eigen)
+    justification: Статически встроена в libonnxruntime.so при сборке из исходников (deploy/build/onnxruntime/deps.lock, SHA-256 архива); отдельно не поставляется. Используется без изменений; обязанность MPL-2.0 — предоставить исходники Eigen по запросу — архив хранится вместе с исходниками сборки (build/ort-mirror, SHA-256 в deps.lock).
+    decision: ADR-0024, раздел «Зависимости»; согласие владельца 27.10.2026 (поток 4-C3); сборка — задача 4.19 (поток E5)
+    decided: 2026-10-28
+
+  - name: mp11
+    version: boost-1.82.0 (0a0b5fb001ce0233ae3a6f99d849c0649e5a7361)
+    type: native-library
+    scope: product
+    purpose: Метапрограммирование C++ (Boost.Mp11) в ядрах ONNX Runtime (заголовочная библиотека).
+    license: BSL-1.0
+    license_decision: ADR-0024 — Boost.Mp11 (BSL-1.0) внутри ONNX Runtime, согласие владельца 27.10.2026
+    repository: https://github.com/boostorg/mp11
+    attack_surface: false
+    security_function: false
+    provided_by: Boost (Peter Dimov)
+    justification: Статически встроена в libonnxruntime.so при сборке из исходников (deploy/build/onnxruntime/deps.lock, SHA-256 архива); отдельно не поставляется. BSL-1.0 (Boost Software License, не BUSL) разрешительная, но нет в списке CLAUDE.md — допущена отдельным решением владельца.
+    decision: ADR-0024, раздел «Зависимости»; согласие владельца 27.10.2026 (поток 4-C3); сборка — задача 4.19 (поток E5)
+    decided: 2026-10-28
+
+  - name: date
+    version: 3.0.1 (6e921e1b1d21e84a5c82416ba7ecd98e33a436d0)
+    type: native-library
+    scope: product
+    purpose: Работа с датой и временем в ONNX Runtime (заголовочная библиотека Howard Hinnant).
+    license: MIT
+    repository: https://github.com/HowardHinnant/date
+    attack_surface: false
+    security_function: false
+    provided_by: Howard Hinnant
+    justification: Статически встроена в libonnxruntime.so при сборке из исходников (deploy/build/onnxruntime/deps.lock, SHA-256 архива); отдельно не поставляется.
+    decision: ADR-0024, раздел «Зависимости»; согласие владельца 27.10.2026 (поток 4-C3); сборка — задача 4.19 (поток E5)
+    decided: 2026-10-28
+
+  - name: microsoft-gsl
+    version: 4.2.1 (249146590e322123cd0b378b1f364d6069717687)
+    type: native-library
+    scope: product
+    purpose: Guidelines Support Library (gsl::span и проверки границ) в ONNX Runtime.
+    license: MIT
+    repository: https://github.com/microsoft/GSL
+    attack_surface: false
+    security_function: false
+    provided_by: Microsoft Corporation
+    justification: Статически встроена в libonnxruntime.so при сборке из исходников (deploy/build/onnxruntime/deps.lock, SHA-256 архива); отдельно не поставляется.
+    decision: ADR-0024, раздел «Зависимости»; согласие владельца 27.10.2026 (поток 4-C3); сборка — задача 4.19 (поток E5)
+    decided: 2026-10-28
+
+  - name: nlohmann-json
+    version: 3.11.3 (9cca280a4d0ccf0c08f47a99aa71d1b0e52f8d03)
+    type: native-library
+    scope: product
+    purpose: Разбор JSON-настроек внутри ONNX Runtime (заголовочная библиотека).
+    license: MIT
+    repository: https://github.com/nlohmann/json
+    attack_surface: false
+    security_function: false
+    provided_by: Niels Lohmann
+    justification: Статически встроена в libonnxruntime.so при сборке из исходников (deploy/build/onnxruntime/deps.lock, SHA-256 архива); отдельно не поставляется.
+    decision: ADR-0024, раздел «Зависимости»; согласие владельца 27.10.2026 (поток 4-C3); сборка — задача 4.19 (поток E5)
+    decided: 2026-10-28
+
+  - name: safeint
+    version: 3.0.28 (4cafc9196c4da9c817992b20f5253ef967685bf8)
+    type: native-library
+    scope: product
+    purpose: Арифметика без переполнений при расчёте размеров тензоров в ONNX Runtime.
+    license: MIT
+    repository: https://github.com/dcleblanc/SafeInt
+    attack_surface: false
+    security_function: false
+    provided_by: David LeBlanc
+    justification: Статически встроена в libonnxruntime.so при сборке из исходников (deploy/build/onnxruntime/deps.lock, SHA-256 архива); отдельно не поставляется.
+    decision: ADR-0024, раздел «Зависимости»; согласие владельца 27.10.2026 (поток 4-C3); сборка — задача 4.19 (поток E5)
+    decided: 2026-10-28
+
+  - name: cpuinfo
+    version: 66ee79c038d70dad9f08705b2c9b3e58f6d8f512
+    type: native-library
+    scope: product
+    purpose: Определение возможностей процессора (наборы инструкций, кеши) для выбора ядер ONNX Runtime.
+    license: BSD-2-Clause
+    repository: https://github.com/pytorch/cpuinfo
+    attack_surface: false
+    security_function: false
+    provided_by: Meta Platforms, Inc. (проект PyTorch)
+    justification: Статически встроена в libonnxruntime.so при сборке из исходников (deploy/build/onnxruntime/deps.lock, SHA-256 архива); отдельно не поставляется.
+    decision: ADR-0024, раздел «Зависимости»; согласие владельца 27.10.2026 (поток 4-C3); сборка — задача 4.19 (поток E5)
+    decided: 2026-10-28
+
+  - name: glibc
+    version: 2.36 (Debian bookworm, сборочный образ golang:1.27.3-bookworm по digest)
+    type: native-library
+    scope: product
+    purpose: Системная библиотека C и загрузчик (ld-linux-x86-64.so.2, libc.so.6, libm.so.6) для aisec-ml и ONNX Runtime в образе aisec-ml.
+    license: LGPL-2.1-or-later
+    license_decision: ADR-0024 — системные библиотеки среды выполнения в образе aisec-ml, решение владельца 28.10.2026
+    repository: https://sourceware.org/git/glibc.git
+    attack_surface: false
+    security_function: false
+    provided_by: Free Software Foundation (проект GNU C Library), сборка Debian
+    justification: ONNX Runtime — библиотека C++, без системной библиотеки C не работает. Файлы копируются без изменений из сборочного образа (deploy/build/ml-libs.sh), их хеши — в манифесте выпуска aisec-ml; динамическая компоновка сохраняет возможность замены библиотеки, которую требует LGPL. Точная версия пакета — build/ort/toolchain.versions.
+    decision: ADR-0024, «Решение владельца по лицензиям системных библиотек» (28.10.2026, поток E5)
+    decided: 2026-10-28
+
+  - name: libstdc++
+    version: 12.2.0 (Debian bookworm, сборочный образ golang:1.27.3-bookworm по digest)
+    type: native-library
+    scope: product
+    purpose: Стандартная библиотека C++ (libstdc++.so.6) для ONNX Runtime в образе aisec-ml.
+    license: GPL-3.0-or-later WITH GCC-exception-3.1
+    license_decision: ADR-0024 — среда выполнения GCC в образе aisec-ml, решение владельца 28.10.2026
+    repository: https://gcc.gnu.org/git/gcc.git
+    attack_surface: false
+    security_function: false
+    provided_by: Free Software Foundation (проект GCC), сборка Debian
+    justification: ONNX Runtime написан на C++ и требует стандартной библиотеки C++. Исключение GCC Runtime Library 3.1 разрешает распространять код, скомпонованный с библиотекой, под любой лицензией; политика допускает эту GPL только с этим исключением и только у native-library. Файл копируется без изменений из сборочного образа, хеш — в манифесте выпуска aisec-ml.
+    decision: ADR-0024, «Решение владельца по лицензиям системных библиотек» (28.10.2026, поток E5)
+    decided: 2026-10-28
+
+  - name: libgcc_s
+    version: 12.2.0 (Debian bookworm, сборочный образ golang:1.27.3-bookworm по digest)
+    type: native-library
+    scope: product
+    purpose: Библиотека поддержки GCC (libgcc_s.so.1, раскрутка стека исключений C++) для ONNX Runtime в образе aisec-ml.
+    license: GPL-3.0-or-later WITH GCC-exception-3.1
+    license_decision: ADR-0024 — среда выполнения GCC в образе aisec-ml, решение владельца 28.10.2026
+    repository: https://gcc.gnu.org/git/gcc.git
+    attack_surface: false
+    security_function: false
+    provided_by: Free Software Foundation (проект GCC), сборка Debian
+    justification: Нужна libstdc++ и ONNX Runtime для исключений C++. Исключение GCC Runtime Library 3.1 разрешает распространять скомпонованный код под любой лицензией. Файл копируется без изменений из сборочного образа, хеш — в манифесте выпуска aisec-ml.
+    decision: ADR-0024, «Решение владельца по лицензиям системных библиотек» (28.10.2026, поток E5)
+    decided: 2026-10-28

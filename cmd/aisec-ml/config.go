@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/azuresong-afk/ai_railway/internal/integrity"
 	"github.com/azuresong-afk/ai_railway/internal/ml"
 )
 
@@ -33,6 +34,11 @@ type config struct {
 	QueueWait     time.Duration
 	MaxModelBytes int64
 	ORTLib        string
+	// Manifest — манифест целостности выпуска; пусто — над каталогом bin/
+	// бинарника (integrity.DefaultManifestPath).
+	Manifest          string
+	IntegrityAction   integrity.Action
+	IntegrityInterval time.Duration
 }
 
 func envName(flagName string) string {
@@ -51,6 +57,11 @@ func loadConfig(args []string, getenv func(string) string, errOut io.Writer) (*c
 	queueWait := fs.String("queue-wait", ml.DefaultQueueWait.String(), "ожидание свободного исполнителя, затем overloaded (AISEC_ML_QUEUE_WAIT)")
 	ortLib := fs.String("ort-lib", DefaultORTLib, "библиотека ONNX Runtime; хеш сверяется со встроенным при сборке (AISEC_ML_ORT_LIB)")
 	maxModel := fs.String("max-model-bytes", strconv.Itoa(ml.DefaultMaxModelBytes), "предел суммарного размера моделей в памяти, байт (AISEC_ML_MAX_MODEL_BYTES)")
+	manifest := fs.String("manifest", "", "манифест целостности; по умолчанию ../aisec-manifest.json от каталога бинарника (AISEC_ML_MANIFEST)")
+	// stop по умолчанию: остановка aisec-ml не останавливает трафик — шлюз
+	// работает на эвристиках с признаком ml_unavailable (ADR-0024, раздел 4).
+	action := fs.String("integrity-action", string(integrity.ActionStop), "реакция на нарушение целостности: alert или stop (AISEC_ML_INTEGRITY_ACTION)")
+	interval := fs.String("integrity-interval", integrity.DefaultInterval.String(), "период проверки целостности, не меньше 1m (AISEC_ML_INTEGRITY_INTERVAL)")
 	if err := fs.Parse(args); err != nil {
 		return nil, err
 	}
@@ -62,6 +73,7 @@ func loadConfig(args []string, getenv func(string) string, errOut io.Writer) (*c
 	for name, dst := range map[string]*string{
 		"socket": socket, "models": models, "max-conns": maxConns, "workers": workers,
 		"queue-wait": queueWait, "max-model-bytes": maxModel, "ort-lib": ortLib,
+		"manifest": manifest, "integrity-action": action, "integrity-interval": interval,
 	} {
 		if !set[name] {
 			if v := getenv(envName(name)); v != "" {
@@ -69,8 +81,16 @@ func loadConfig(args []string, getenv func(string) string, errOut io.Writer) (*c
 			}
 		}
 	}
-	cfg := &config{Socket: *socket, Models: *models, ORTLib: *ortLib}
+	cfg := &config{Socket: *socket, Models: *models, ORTLib: *ortLib, Manifest: *manifest}
 	var errs []error
+	if cfg.Manifest != "" && !filepath.IsAbs(cfg.Manifest) {
+		errs = append(errs, errors.New("manifest: абсолютный путь"))
+	}
+	if a, err := integrity.ParseAction(*action); err != nil {
+		errs = append(errs, fmt.Errorf("integrity-action: %w", err))
+	} else {
+		cfg.IntegrityAction = a
+	}
 	if !filepath.IsAbs(cfg.Socket) || filepath.Clean(cfg.Socket) != cfg.Socket || len(cfg.Socket) > maxSocketPath {
 		errs = append(errs, fmt.Errorf("socket: абсолютный путь без «..» не длиннее %d байт", maxSocketPath))
 	}
@@ -89,6 +109,9 @@ func loadConfig(args []string, getenv func(string) string, errOut io.Writer) (*c
 	}
 	if cfg.QueueWait, err = time.ParseDuration(*queueWait); err != nil || cfg.QueueWait < time.Millisecond || cfg.QueueWait > time.Second {
 		errs = append(errs, errors.New("queue-wait: длительность от 1ms до 1s"))
+	}
+	if cfg.IntegrityInterval, err = time.ParseDuration(*interval); err != nil || cfg.IntegrityInterval < integrity.MinInterval {
+		errs = append(errs, fmt.Errorf("integrity-interval: длительность не меньше %s", integrity.MinInterval))
 	}
 	if cfg.MaxModelBytes, err = strconv.ParseInt(*maxModel, 10, 64); err != nil || cfg.MaxModelBytes < 1<<20 || cfg.MaxModelBytes > 16<<30 {
 		errs = append(errs, errors.New("max-model-bytes: число от 1 МиБ до 16 ГиБ"))

@@ -561,7 +561,7 @@ func TestDM35_AppDetectorsFromConfig(t *testing.T) {
 		t.Fatalf("находки lists: %v", rules)
 	}
 
-	reg, err := appDetectors(config.Application{ExfilAllowDomains: []string{"img.example"}})
+	reg, err := appDetectors(config.Application{ExfilAllowDomains: []string{"img.example"}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -577,9 +577,9 @@ func TestDM35_AppDetectorsFromConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	specs := []policy.Spec{{ID: "custom", Name: "x", Version: 1, Mode: policy.Enforce, Rules: []policy.RuleSpec{
-		{ID: "r", Detector: "injection.ml", Action: policy.Block, Severity: policy.High}}}}
+		{ID: "r", Detector: "unknown.ml", Action: policy.Block, Severity: policy.High}}}}
 	_, err = NewRouter([]config.Application{{ID: "a", Provider: "up", Models: []string{"m"}, Policy: "custom"}}, map[string]providers.Provider{"up": p}, specs)
-	if err == nil || !strings.Contains(err.Error(), "injection.ml") {
+	if err == nil || !strings.Contains(err.Error(), "unknown.ml") {
 		t.Fatalf("неизвестный детектор в политике: %v", err)
 	}
 }

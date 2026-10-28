@@ -161,14 +161,18 @@ func (rt *Router) noApp(w http.ResponseWriter, r *http.Request) {
 // Политика приложения ищется среди specs, затем среди шаблонов; пусто —
 // «Базовая защита» (решение Р7). Детектор из политики заказчика, которого
 // нет среди встроенных, — ошибка запуска.
-func NewRouter(apps []config.Application, provs map[string]providers.Provider, specs []policy.Spec) (*Router, error) {
+func NewRouter(apps []config.Application, provs map[string]providers.Provider, specs []policy.Spec, opts ...RouterOption) (*Router, error) {
+	var o routerOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
 	rt := &Router{apps: map[string]*App{}}
 	for _, a := range apps {
 		p, ok := provs[a.Provider]
 		if !ok {
 			return nil, fmt.Errorf("приложение %s: провайдер %q не создан", a.ID, a.Provider)
 		}
-		reg, err := appDetectors(a)
+		reg, err := appDetectors(a, o.ml)
 		if err != nil {
 			return nil, fmt.Errorf("приложение %s: %w", a.ID, err)
 		}
@@ -211,11 +215,41 @@ const (
 	maxUserIDLength = 256
 )
 
+// RouterOption — необязательный параметр NewRouter.
+type RouterOption func(*routerOptions)
+
+type routerOptions struct {
+	ml *MLClient
+}
+
+// WithML — ML-детекторы проверяют текст через aisec-ml (флаг шлюза
+// -ml-socket, ADR-0024). Без него ML-детекторы политики «недоступны» и
+// событие получает ml_unavailable.
+func WithML(c *MLClient) RouterOption {
+	return func(o *routerOptions) { o.ml = c }
+}
+
 // appDetectors — встроенные детекторы с настройками приложения: lists — со
-// списками заказчика вдобавок к встроенному, output.exfil — с allowlist.
-func appDetectors(a config.Application) (*detect.Registry, error) {
+// списками заказчика вдобавок к встроенному, output.exfil — с allowlist;
+// ML-детекторы — с клиентом aisec-ml, если он задан.
+func appDetectors(a config.Application, mlc *MLClient) (*detect.Registry, error) {
 	ds := builtin.Catalog()
+	var mlSpecs map[string]builtin.MLSpec
+	if mlc != nil {
+		mlSpecs = map[string]builtin.MLSpec{}
+		for _, s := range builtin.MLSpecs() {
+			mlSpecs[s.ID] = s
+		}
+	}
 	for i, d := range ds {
+		if spec, ok := mlSpecs[d.ID()]; ok {
+			md, err := NewMLDetector(spec, mlc)
+			if err != nil {
+				return nil, err
+			}
+			ds[i] = md
+			continue
+		}
 		switch d.ID() {
 		case lists.ID:
 			if len(a.Lists) == 0 {
@@ -247,7 +281,7 @@ func appDetectors(a config.Application) (*detect.Registry, error) {
 func CheckApplications(apps []config.Application, specs []policy.Spec) error {
 	var errs []error
 	for _, a := range apps {
-		reg, err := appDetectors(a)
+		reg, err := appDetectors(a, nil)
 		if err == nil {
 			_, err = policy.Resolve(a.Policy, specs, reg)
 		}

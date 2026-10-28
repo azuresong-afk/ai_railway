@@ -83,6 +83,7 @@ export const fields: FieldInfo[] = [
   { id: "stream", title: "Потоковый ответ", bool: true, options: yesNo },
   { id: "non_text_unchecked", title: "Нетекстовое не проверено", bool: true, options: yesNo },
   { id: "has_content", title: "Есть содержимое", bool: true, options: yesNo },
+  { id: "ml_unavailable", title: "ML-проверка недоступна", bool: true, options: yesNo },
 ];
 
 const byId = new Map(fields.map((f) => [f.id, f]));

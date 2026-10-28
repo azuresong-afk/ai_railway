@@ -16,6 +16,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/azuresong-afk/ai_railway/internal/detect"
+	"github.com/azuresong-afk/ai_railway/internal/detect/builtin"
 	"github.com/azuresong-afk/ai_railway/internal/ml"
 )
 
@@ -451,24 +452,9 @@ func (c *MLClient) ok() {
 	}
 }
 
-// MLDetectorSpec — ML-детектор в реестре (задачи 4.19, 4.20 задают ID,
-// модели и пороги).
-type MLDetectorSpec struct {
-	// ID — ID детектора: injection.ml, toxicity.ml, pii.ner.
-	ID string
-	// Version — версия кода детектора (x.y.z); версия модели — в Rule находки.
-	Version string
-	// Model — ID модели в пакете aisec-ml.
-	Model      string
-	Directions []detect.Direction
-	// Categories — метка модели → категория находки; метки без категории
-	// (например, benign) находок не дают.
-	Categories map[string]string
-	// Threat — строка матрицы обнаружения (DM-NN).
-	Threat string
-	// Threshold — минимальная оценка находки.
-	Threshold float64
-}
+// MLDetectorSpec — ML-детектор в реестре: описание из
+// internal/detect/builtin (MLSpecs).
+type MLDetectorSpec = builtin.MLSpec
 
 // MLDetector — ML-детектор: обычный detect.Detector с клиентом aisec-ml.
 type MLDetector struct {

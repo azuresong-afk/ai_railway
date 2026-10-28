@@ -76,9 +76,12 @@ type checkResponse struct {
 	Incomplete bool `json:"incomplete,omitempty"`
 	// Unchecked — у политики нет ни одного правила для этого направления:
 	// ни один детектор не запускался, «allow» не означает «проверено».
-	Unchecked bool           `json:"unchecked,omitempty"`
-	Findings  []checkFinding `json:"findings"`
-	Truncated bool           `json:"findings_truncated,omitempty"`
+	Unchecked bool `json:"unchecked,omitempty"`
+	// MLUnavailable — ML-детектор политики не дал результата (aisec-ml
+	// недоступен, ADR-0024): решение — по остальным детекторам.
+	MLUnavailable bool           `json:"ml_unavailable,omitempty"`
+	Findings      []checkFinding `json:"findings"`
+	Truncated     bool           `json:"findings_truncated,omitempty"`
 	// Text и Messages — преобразованный вход (после redact); при блокировке
 	// не возвращаются.
 	Text     *string        `json:"text,omitempty"`
@@ -234,7 +237,7 @@ func (c *CheckHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	resp := checkResponse{
 		ID: rec.ev.ID, Decision: in.headerDecision(), Action: string(in.Decision.Action), Blocked: in.Decision.Block,
 		Incomplete: len(in.Failures) > 0, Findings: []checkFinding{},
-		Unchecked: len(app.Policy.Detectors(dir)) == 0,
+		Unchecked: len(app.Policy.Detectors(dir)) == 0, MLUnavailable: in.MLUnavailable,
 	}
 	// Находки детекторов маскирования для хранения (storage: masked) — не
 	// ответ политики: от режима хранения ответ API не зависит.

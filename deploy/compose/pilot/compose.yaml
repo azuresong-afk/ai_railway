@@ -123,25 +123,8 @@ services:
     mem_limit: 1g
     stop_grace_period: 30s
 
-  # Процесс ML-детекторов (ADR-0024): выключен по умолчанию (профиль ml),
-  # включается вместе с первыми ML-детекторами (задача 4.19). Сети нет
-  # вовсе: шлюз обращается к нему через Unix-сокет в каталоге ml/run (0750,
-  # владелец — пользователь aisec-ml, группа — шлюз). Модели — подписанный
-  # пакет внутри образа, проверяется до загрузки. До появления пользователя
-  # aisec-ml в prepare-host.sh (4.19) работает от пользователя шлюза.
-  aisec-ml:
-    <<: *hardening
-    image: ${AISEC_IMAGE_REPO:-aisec}/aisec-ml:${AISEC_VERSION:?задайте AISEC_VERSION}
-    profiles: [ml]
-    user: "${AISEC_GW_UID:?запустите prepare-host.sh}:${AISEC_GW_GID:?запустите prepare-host.sh}"
-    network_mode: none
-    command:
-      - "-socket=/run/aisec-ml/aisec-ml.sock"
-      - "-models=/opt/aisec/models"
-    volumes:
-      - ${AISEC_DATA_DIR:?задайте AISEC_DATA_DIR}/ml/run:/run/aisec-ml
-    mem_limit: ${AISEC_ML_MEM_LIMIT:-2g}
-    stop_grace_period: 10s
+  # Процесс ML-детекторов (ADR-0024) — в дополнении compose.ml.yaml: здесь
+  # его нет, чтобы установка без пользователя aisec-ml работала как раньше.
 
   # Служебные операции: docker compose run --rm aisec-cli <команда>.
   # Не запускается командой up (профиль tools).

@@ -1,4 +1,5 @@
-# Образы поставки пилота (ADR-0019): aisec-server, aisec-gateway, aisec-cli.
+# Образы поставки пилота (ADR-0019): aisec-server, aisec-gateway, aisec-cli;
+# aisec-ml (ADR-0024) — из своего каталога выпуска build/release-ml (make image-ml).
 #
 # Собирает make images (RELEASE=1, ключ производителя) или make images-test
 # (тестовый ключ, НЕ ДЛЯ ПОСТАВКИ). Контекст сборки — каталог выпуска
@@ -50,3 +51,16 @@ LABEL org.opencontainers.image.title="aisec-cli" \
       org.opencontainers.image.description="AISec: служебные операции и проверка целостности выпуска"
 COPY bin/ /opt/aisec/bin/
 ENTRYPOINT ["/opt/aisec/bin/aisec-cli"]
+
+# aisec-ml — процесс ML-детекторов (ADR-0024). Контекст — build/release-ml
+# (make ml-release-dir): бинарник с cgo, ONNX Runtime с загрузчиком и
+# системными библиотеками сборочного образа в lib/ (их хеши — в манифесте
+# выпуска aisec-ml) и подписанный пакет моделей в models/. Переменных
+# окружения нет: загрузчик и путь к библиотекам зашиты в бинарник.
+FROM base AS aisec-ml
+LABEL org.opencontainers.image.title="aisec-ml" \
+      org.opencontainers.image.description="AISec: изолированный процесс ML-детекторов"
+COPY lib/ /opt/aisec/lib/
+COPY models/ /opt/aisec/models/
+COPY bin/aisec-ml /opt/aisec/bin/aisec-ml
+ENTRYPOINT ["/opt/aisec/bin/aisec-ml"]

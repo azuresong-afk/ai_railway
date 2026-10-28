@@ -6,8 +6,9 @@
 |---|---|
 | `compose.yaml` | сервисы, сети, тома и секреты; проверяется командой `make images-verify` (`tools/imagecheck compose`) и тестами |
 | `compose.shadow-ai-syslog.yaml` | дополнение к `compose.yaml`: приём журналов прокси и NGFW по syslog поверх TLS для теневого ИИ (порт 6514, по умолчанию на 127.0.0.1). Без него порт закрыт: `docker compose -f compose.yaml -f compose.shadow-ai-syslog.yaml up -d aisec-server` ([руководство администратора](../../../docs/user/admin-guide.md), «Теневой ИИ: приём по syslog») |
+| `compose.ml.yaml` | дополнение к `compose.yaml`: процесс ML-детекторов `aisec-ml` (без сети, свой пользователь `aisec-ml`) и подключение к нему шлюза через Unix-сокет `ml/run` ([ADR-0024](../../../docs/adr/0024-ml-detektory-i-aisec-ml.md)). По умолчанию выключено: шлюз работает на эвристиках. Включение — ниже, «ML-детекторы» |
 | `.env.example` | образец `.env`: версия, имена, адреса, UID и GID; секретов в нём нет |
-| `prepare-host.sh` | от root: пользователи `aisec`, `aisec-gw`, `aisec-db`, каталоги `0700`, пароли ролей БД, UID и GID в `.env`; после `init` — якорь шлюза `secrets/gateway-bundle-anchor.pub` |
+| `prepare-host.sh` | от root: пользователи `aisec`, `aisec-gw`, `aisec-db`, `aisec-ml`, каталоги `0700` (каталог сокета `ml/run` — `0750`, группа шлюза), пароли ролей БД, UID и GID в `.env`; после `init` — якорь шлюза `secrets/gateway-bundle-anchor.pub` |
 | `initdb/10-aisec-roles.sql` | роли `aisec_owner`, `aisec_server` и база `aisec` — при первом запуске PostgreSQL |
 | `backup.sh` | от root: полная копия установки — архив ключей, секретов и каталогов шлюза, `pg_dump` БД, контрольные суммы ([руководство администратора](../../../docs/user/admin-guide.md), раздел 12) |
 | `restore.sh` | от root: восстановление копии `backup.sh` в пустую установку после `prepare-host.sh`: файлы, БД одной транзакцией, миграции, завершение сессий и отзыв токенов API копии (`aisec-cli restore-finish`, запись `system.restored`), проверка цепочки аудита |
@@ -35,3 +36,14 @@ docker compose up -d
 Образы собирает `make images` (только `RELEASE=1` из каталога выпуска, подписанного ключом производителя на машине без сети, ADR-0022) или `make images-test` (тестовый ключ, **не для поставки**).
 
 **Отпечаток ключа производителя:** публикуется с первым выпуском (`make release-fingerprint`). Сверяйте его с отпечатком в руководстве установки или в письме производителя: этот файл приходит вместе с поставкой и сам по себе доверия не даёт.
+
+## ML-детекторы (задача 4.19)
+`injection.ml` и `toxicity.ml` работают в отдельном процессе `aisec-ml` без сети. Пока в поставке нет пакета моделей (часть 2 задачи 4.19), `aisec-ml` не принимает соединения, а проверки с ML-детекторами в политике получают признак `ml_unavailable` и решаются по остальным детекторам.
+
+1. `sudo ./prepare-host.sh` — создаёт пользователя `aisec-ml`, каталог `ml/run` и пишет `AISEC_ML_UID` в `.env` (повторный запуск безопасен).
+2. Образ `aisec-ml` — архив `images/aisec-ml.tar` выпуска с ML (`make images ML=1`): `docker load -i images/aisec-ml.tar`. Проверка подписи выпуска `aisec-ml`: `docker compose run --rm -v "$PWD/release-ml:/release-ml:ro" aisec-cli verify -manifest /release-ml/aisec-manifest.json`. Скрипт `verify-release.sh` образ `aisec-ml` пока не проверяет.
+3. В `.env`: `COMPOSE_FILE=compose.yaml:compose.ml.yaml` и `COMPOSE_PROFILES=db,ml` (своя СУБД — `COMPOSE_PROFILES=ml`). Без профиля `ml` дополнение не запустится — это защита от шлюза, который ждёт несуществующий сокет.
+4. `docker compose up -d`. Отключение — убрать `compose.ml.yaml` из `COMPOSE_FILE` и `ml` из `COMPOSE_PROFILES`, затем `docker compose up -d --remove-orphans`.
+
+Всплеск проверок без ML поднимает встроенное оповещение «Проверки без ML-детекторов» (`frequency.ml_unavailable`).
+

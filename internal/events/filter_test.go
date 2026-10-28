@@ -268,3 +268,35 @@ func FuzzParseFilter(f *testing.F) {
 		}
 	})
 }
+
+// ml_unavailable (задача 4.19): признак решения в details, значение — только
+// параметром; без признака — false.
+func TestFilterMLUnavailableSQL(t *testing.T) {
+	f, err := ParseFilter(`ml_unavailable = true and app = "crm"`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.String() != `ml_unavailable = true and app = "crm"` {
+		t.Fatalf("запись: %s", f.String())
+	}
+	var b strings.Builder
+	a := &sqlArgs{}
+	f.appendSQL(&b, a)
+	want := ` AND COALESCE((e.details->'decision'->>'ml_unavailable')::boolean, false) = $1 AND e.app = ANY($2::text[])`
+	if b.String() != want || a.args[0] != true {
+		t.Fatalf("SQL %q, параметры %v", b.String(), a.args)
+	}
+	for _, bad := range []string{`ml_unavailable != true`, `ml_unavailable = "yes"`, `ml_unavailable in (true)`} {
+		if _, err := ParseFilter(bad); err == nil {
+			t.Errorf("%q: принято", bad)
+		}
+	}
+	r := &Record{Details: &Details{Decision: &Decision{MLUnavailable: true}}}
+	g, err := ParseFilter(`ml_unavailable = false`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g.Match(r) || !g.Match(&Record{}) {
+		t.Fatal("Match ml_unavailable = false")
+	}
+}

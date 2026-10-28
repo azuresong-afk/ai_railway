@@ -12695,6 +12695,8 @@ export interface components {
             message?: string;
             incomplete: boolean;
             unchecked: boolean;
+            /** @description ML-детектор политики не дал результата: на сервере нет aisec-ml, проверку ML песочница не выполняет, решение — по остальным детекторам (ADR-0024) */
+            ml_unavailable: boolean;
             failures: {
                 detector: string;
                 location: string;
@@ -14018,6 +14020,8 @@ export interface components {
             incomplete?: boolean;
             /** @description У политики нет правил для этого направления: детекторы не запускались, allow не означает «проверено». */
             unchecked?: boolean;
+            /** @description ML-детектор политики (injection.ml, toxicity.ml) не дал результата: aisec-ml недоступен, решение принято по остальным детекторам (ADR-0024). */
+            ml_unavailable?: boolean;
             /** @description Находки детекторов политики приложения для этого направления. */
             findings: {
                 detector: string;

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
+	"github.com/azuresong-afk/ai_railway/internal/integrity"
 	"github.com/azuresong-afk/ai_railway/internal/ml"
 	"github.com/azuresong-afk/ai_railway/internal/ml/mltest"
 )
@@ -204,7 +205,8 @@ func TestLoadConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Socket != "/run/x/s.sock" || cfg.Workers != 2 || cfg.Models != DefaultModels {
+	if cfg.Socket != "/run/x/s.sock" || cfg.Workers != 2 || cfg.Models != DefaultModels ||
+		cfg.IntegrityAction != integrity.ActionStop || cfg.IntegrityInterval != integrity.DefaultInterval {
 		t.Fatalf("конфигурация: %+v", cfg)
 	}
 	for _, args := range [][]string{
@@ -217,10 +219,38 @@ func TestLoadConfig(t *testing.T) {
 		{"-max-model-bytes=10"},
 		{"-ort-lib=lib.so"},
 		{"-ort-lib=/opt/../lib.so"},
+		{"-manifest=aisec-manifest.json"},
+		{"-integrity-action=ignore"},
+		{"-integrity-interval=10s"},
 		{"лишний"},
 	} {
 		if _, err := loadConfig(args, func(string) string { return "" }, io.Discard); err == nil {
 			t.Errorf("%v: принято", args)
 		}
+	}
+}
+
+// Самопроверка целостности при запуске (ОЦЛ.2): без манифеста с реакцией
+// stop aisec-ml не запускается, с alert — запускается и пишет нарушение.
+func TestStartIntegrity(t *testing.T) {
+	p, err := aisecCrypto.New(aisecCrypto.ProfileStandard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cfg := &config{Manifest: filepath.Join(t.TempDir(), integrity.ManifestFile), IntegrityAction: integrity.ActionStop,
+		IntegrityInterval: integrity.DefaultInterval}
+	var log strings.Builder
+	logger := slog.New(slog.NewTextHandler(&log, nil))
+	if err := startIntegrity(ctx, cfg, p, logger, func(error) {}); err == nil || !strings.Contains(err.Error(), string(integrity.ReasonManifestMissing)) {
+		t.Fatalf("stop без манифеста: %v", err)
+	}
+	cfg.IntegrityAction = integrity.ActionAlert
+	if err := startIntegrity(ctx, cfg, p, logger, func(error) {}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(log.String(), "нарушена целостность") {
+		t.Fatalf("журнал: %s", log.String())
 	}
 }
