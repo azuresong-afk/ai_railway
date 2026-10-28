@@ -75,13 +75,14 @@ var licenseExempt = map[string]string{ //nolint:gosec // G101: пути API и �
 	"PUT /api/v1/gateway-certificate":                    "трафик: замена истекающего сертификата заказчика",
 }
 
-// licenseModules — префиксы путей модулей (ADR-0026, п. 3, 5). Модули
-// compliance и ml маршрутов пока не имеют: префиксы добавят задачи 4.24 и 4.19.
+// licenseModules — префиксы путей модулей (ADR-0026, п. 3, 5). Модуль ml
+// маршрутов пока не имеет: префикс добавит задача 4.19.
 var licenseModules = []struct{ prefix, module string }{
 	{"/api/v1/agents", license.ModuleAgents},
 	{"/api/v1/mcp-servers", license.ModuleAgents},
 	{"/api/v1/agent-tools", license.ModuleAgents},
 	{"/api/v1/shadow-ai", license.ModuleShadowAI},
+	{"/api/v1/compliance", license.ModuleCompliance},
 }
 
 // licenseModuleExempt — изменяющие маршруты модуля, которые выключенный

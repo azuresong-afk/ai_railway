@@ -136,6 +136,14 @@ const (
 	// системы с повторной проверкой паролем или кодом (у токена её нет).
 	PermLicenseRead   = "license.read"
 	PermLicenseManage = "license.manage"
+	// Соответствие требованиям (ТЗ 5.9, Р10; задача 4.24): чтение статусов и
+	// отчёта; ручные отметки — решение администратора безопасности, они
+	// меняют картину соответствия в отчёте для проверяющих (Security, не
+	// входит в «.read» аудитора и не выдаётся токенам); загрузка обновлённой
+	// подписанной базы требований — администратор системы.
+	PermComplianceRead     = "compliance.read"
+	PermComplianceMark     = "compliance.mark"
+	PermComplianceBaseLoad = "compliance.base.load"
 )
 
 // Permission — разрешение из каталога.
@@ -231,6 +239,11 @@ var permissionCatalog = []Permission{
 	{Name: PermShadowAIManage, Title: "Импорт журналов прокси, загрузка подписанного каталога ИИ-сервисов, срок хранения сводок", Group: "Теневой ИИ"},
 	{Name: PermLicenseRead, Title: "Просмотр лицензии: владелец, срок, пределы и их использование, модули", Group: "Система"},
 	{Name: PermLicenseManage, Title: "Загрузка и замена лицензии (с повторной проверкой паролем или кодом)", Group: "Система"},
+	{Name: PermComplianceRead, Title: "Просмотр соответствия требованиям: пункты, статусы, доказательства, ручные отметки и база требований", Group: "Соответствие"},
+	// Безопасность: ручная отметка меняет статус пункта в отчёте для проверяющих.
+	{Name: PermComplianceMark, Title: "Ручные отметки по пунктам соответствия (организационные меры) с комментарием и сроком пересмотра",
+		Group: "Соответствие", Security: true},
+	{Name: PermComplianceBaseLoad, Title: "Загрузка обновлённой подписанной базы требований", Group: "Соответствие"},
 }
 
 // auditorExtra — разрешения аудитора сверх чтения: они ничего не меняют,
@@ -420,7 +433,8 @@ var builtinRoles = []RoleDef{
 			PermDashboardsRead: ScopeAll, PermGatewayTLSRead: ScopeAll, PermGatewayTLSManage: ScopeAll,
 			PermReportsRead: ScopeAll, PermReportSchedulesRead: ScopeAll, PermReportSchedulesManage: ScopeAll,
 			PermAgentsRead: ScopeAll, PermAgentsManage: ScopeAll, PermShadowAIRead: ScopeAll, PermShadowAIManage: ScopeAll,
-			PermLicenseRead: ScopeAll, PermLicenseManage: ScopeAll}},
+			PermLicenseRead: ScopeAll, PermLicenseManage: ScopeAll,
+			PermComplianceRead: ScopeAll, PermComplianceBaseLoad: ScopeAll}},
 	{ID: RoleAnalyst, DisplayName: "Аналитик", Builtin: true,
 		Description: "Разбор оповещений и инцидентов, поиск по событиям",
 		Grants: grantAll(PermSystemRead, PermEventsRead, PermEventsExport, PermEventsMark, PermApplicationsRead, PermProvidersRead,

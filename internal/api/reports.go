@@ -83,7 +83,7 @@ func (d Deps) reportProblem(err error) *Problem {
 	case errors.Is(err, reports.ErrPeriod):
 		return Invalid("Период задан неверно.", FieldError{Field: "from", Detail: "Укажите дни в формате ГГГГ-ММ-ДД; начало не в будущем, период не длиннее 366 суток."})
 	case errors.Is(err, reports.ErrScope):
-		return NewProblem(http.StatusForbidden, CodeForbidden, "Отчёт «По инцидентам» доступен только с правом просмотра инцидентов.")
+		return NewProblem(http.StatusForbidden, CodeForbidden, "Отчёт доступен только с правом на его данные: «По инцидентам» — просмотр инцидентов, «Соответствие» — просмотр соответствия требованиям.")
 	case errors.Is(err, reports.ErrNotFound):
 		return NewProblem(http.StatusNotFound, CodeNotFound, reportScheduleNotFound)
 	case errors.Is(err, reports.ErrVersionConflict):
@@ -243,7 +243,8 @@ func (d Deps) getReport(w http.ResponseWriter, r *http.Request) {
 // объекты; без права на все отчёты (владелец приложения) — ни одного.
 func reportScope(p Principal, full bool) reports.Scope {
 	return reports.Scope{Budgets: full && p.Grants.Full(auth.PermBudgetsRead),
-		Incidents: full && p.Grants.Full(auth.PermIncidentsRead), Alerts: full && p.Grants.Full(auth.PermAlertsRead)}
+		Incidents: full && p.Grants.Full(auth.PermIncidentsRead), Alerts: full && p.Grants.Full(auth.PermAlertsRead),
+		Compliance: full && p.Grants.Full(auth.PermComplianceRead)}
 }
 
 // reportsBy — субъект запроса.

@@ -4413,7 +4413,9 @@ paths:
       summary: Отчёт за период
       description: |
         Право `reports.read` (владелец приложения — на своих приложениях). Виды: `summary` (сводный),
-        `incidents` (по инцидентам), `pilot` («Итоги пилота», сценарий S10). Данные — только агрегаты
+        `incidents` (по инцидентам), `pilot` («Итоги пилота», сценарий S10), `compliance` («Соответствие
+        требованиям» для аттестационных испытаний и аудита ИСПДн, сценарий S7; нужно ещё право
+        `compliance.read`, иначе 403; период не используется — отчёт на момент формирования). Данные — только агрегаты
         дашбордов, инциденты, оповещения, бюджеты и отметки аналитиков: содержимого запросов и ответов
         и значений находок в отчёте нет. Период — `from` и `to`, дни `ГГГГ-ММ-ДД` часового пояса
         установки, оба включительно; начало не в будущем, конец позже сегодняшнего урезается до
@@ -4433,7 +4435,7 @@ paths:
           in: path
           required: true
           description: Вид отчёта
-          schema: { type: string, enum: [summary, incidents, pilot] }
+          schema: { type: string, enum: [summary, incidents, pilot, compliance] }
         - name: from
           in: query
           required: false
@@ -5616,6 +5618,175 @@ paths:
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ProblemInternal' }
         '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/compliance:
+    get:
+      summary: Соответствие требованиям
+      description: |
+        Право `compliance.read` (администратор безопасности, аудитор, администратор системы). Пункты действующей
+        базы требований (ТЗ 2.3; встроенной или загруженной подписанной) со статусами: `met`, `partial`, `not_met`,
+        `not_applicable`, `manual` (нужна ручная отметка). Статус вычисляют именованные проверки по настройкам и
+        состоянию сервера (например, «фильтрация входа включена для 5 из 7 приложений промышленной среды»),
+        организационные меры — ручные отметки. Итоговый процент (`summary.percent`) не включает пункты с признаком
+        «проект» (`draft`) и «не применимо»; частично — половина; `null`, если считать нечего. Фильтры: `source`
+        (ID источника из `sources`) и `applies` (`gis`, `kii`, `ispdn`, `commercial`). `unavailable` — группы
+        сведений, которые не удалось прочитать: проверки, которым они нужны, не засчитаны. Содержимого запросов и
+        ответов в ответе нет.
+      x-permission: compliance.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - name: source
+          in: query
+          required: false
+          description: ID источника требований
+          schema: { type: string, maxLength: 32 }
+        - name: applies
+          in: query
+          required: false
+          schema: { type: string, enum: [gis, kii, ispdn, commercial] }
+      responses:
+        '200':
+          description: Обзор соответствия
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ComplianceOverview' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/compliance/requirements/{id}:
+    get:
+      summary: Пункт соответствия
+      description: |
+        Право `compliance.read`. Пункт с результатами проверок, ссылками на доказательства (экраны консоли,
+        фильтры журнала аудита и событий, отчёты) и ручной отметкой.
+      x-permission: compliance.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ComplianceRequirementID'
+      responses:
+        '200':
+          description: Пункт
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ComplianceItem' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/compliance/requirements/{id}/mark:
+    put:
+      summary: Поставить ручную отметку
+      description: |
+        Право `compliance.mark` (администратор безопасности; токену API не выдаётся). Статус, комментарий (обязателен),
+        ссылка на документ-основание и срок пересмотра. После срока пересмотра отметка не засчитывается. У пункта,
+        статус которого вычисляют только проверки, допустима лишь отметка `not_applicable`; иначе 422. Пишет
+        `compliance.mark_set` (статус, прежний статус, срок, комментарий). После льготного периода лицензии модуль
+        закрыт для изменений (ADR-0026).
+      x-permission: compliance.mark
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ComplianceRequirementID'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ComplianceMarkInput' }
+      responses:
+        '200':
+          description: Пункт с новой отметкой
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ComplianceItem' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '422': { $ref: '#/components/responses/ProblemUnprocessable' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    delete:
+      summary: Снять ручную отметку
+      description: |
+        Право `compliance.mark`. Нет отметки — 404. Пишет `compliance.mark_cleared`.
+      x-permission: compliance.mark
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ComplianceRequirementID'
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '200':
+          description: Пункт без отметки
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ComplianceItem' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/compliance/base:
+    get:
+      summary: База требований
+      description: |
+        Право `compliance.read`. Действующая база (встроенная в сборку или загруженная подписанная, если её версия
+        больше встроенной), встроенная база и сведения о загруженной: версия, дата, число пунктов, номер заверения
+        рабочего ключа и его срок, отпечаток, `valid` — подпись сохранённого файла проверена при запуске сервера.
+      x-permission: compliance.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      responses:
+        '200':
+          description: База требований
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ComplianceBaseView' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    put:
+      summary: Загрузить обновлённую базу требований
+      description: |
+        Право `compliance.base.load` (администратор системы). Тело — подписанный файл базы вида
+        `compliance_requirements` из выпуска (`.aisecdb`, до 4 МиБ, `Content-Type: application/octet-stream`;
+        ADR-0027, пп. 2–4). Проверяются: заверение рабочего ключа ключом производителя (назначение `service_db`,
+        срок на текущее время, отзыв), подпись базы, вид, дата в сроке заверения, строгий разбор YAML (неизвестная
+        проверка или параметр — отказ). Неверный файл — 422 (причина в тексте), версия не больше действующей — 409.
+        Пишет `compliance.base_loaded` или `compliance.base_rejected` с причиной, без содержимого файла.
+      x-permission: compliance.base.load
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: { type: string, format: binary, maxLength: 4194304 }
+      responses:
+        '200':
+          description: База загружена
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ComplianceBaseView' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '409': { $ref: '#/components/responses/ProblemConflict' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '422': { $ref: '#/components/responses/ProblemUnprocessable' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
   /api/v1/license:
     get:
       summary: Лицензия
@@ -5697,6 +5868,12 @@ components:
         признаком `security` и на токены токену недоступны. Операции, доступные токену,
         перечисляют `bearerToken` в `security`. Каждый запрос пишет `api_token.used`.
   parameters:
+    ComplianceRequirementID:
+      name: id
+      in: path
+      required: true
+      description: ID пункта базы требований
+      schema: { type: string, pattern: '^[a-z0-9][a-z0-9._-]{1,63}$' }
     ShadowFrom:
       name: from
       in: query
@@ -8440,6 +8617,117 @@ components:
         fingerprint: { type: string, description: 'Отпечаток рабочего ключа' }
         uploaded_at: { type: string, format: date-time }
         services: { type: array, items: { $ref: '#/components/schemas/ShadowCatalogService' } }
+    ComplianceEvidence:
+      type: object
+      required: [kind, title, path]
+      properties:
+        kind: { type: string, enum: [screen, audit, events, report] }
+        title: { type: string }
+        path: { type: string, description: 'Раздел консоли, например /apps' }
+        query: { type: object, additionalProperties: { type: string }, description: 'Параметры адреса раздела (например, фильтр событий f)' }
+        hint: { type: string, description: 'Где искать внутри раздела' }
+    ComplianceCheckResult:
+      type: object
+      required: [name, title, status, detail]
+      properties:
+        name: { type: string }
+        title: { type: string }
+        status: { type: string, enum: [met, partial, not_met, not_applicable] }
+        detail: { type: string, description: 'Результат словами, без содержимого запросов' }
+    ComplianceMark:
+      type: object
+      required: [requirement_id, status, comment, set_at, set_by]
+      properties:
+        requirement_id: { type: string }
+        status: { type: string, enum: [met, partial, not_met, not_applicable] }
+        comment: { type: string, maxLength: 1000 }
+        document: { type: string, maxLength: 300 }
+        review_by: { type: string, format: date }
+        set_at: { type: string, format: date-time }
+        set_by: { type: string }
+    ComplianceMarkInput:
+      type: object
+      required: [status, comment]
+      additionalProperties: false
+      properties:
+        status: { type: string, enum: [met, partial, not_met, not_applicable] }
+        comment: { type: string, minLength: 1, maxLength: 1000, description: 'Обязателен' }
+        document: { type: string, maxLength: 300, description: 'Ссылка на документ-основание' }
+        review_by: { type: string, format: date, description: 'Срок пересмотра: не в прошлом и не дальше трёх лет' }
+    ComplianceItem:
+      type: object
+      required: [id, source, source_title, clause, title, summary, applies, draft, manual, status]
+      properties:
+        id: { type: string }
+        source: { type: string }
+        source_title: { type: string }
+        clause: { type: string }
+        title: { type: string }
+        summary: { type: string, description: 'Пересказ своими словами' }
+        applies: { type: array, items: { type: string, enum: [gis, kii, ispdn, commercial] } }
+        draft: { type: boolean, description: 'Из проекта документа: в процент не входит' }
+        manual: { type: boolean, description: 'Нужна ручная отметка' }
+        status: { type: string, enum: [met, partial, not_met, not_applicable, manual] }
+        auto: { type: object, properties: { status: { type: string, enum: [met, partial, not_met, not_applicable] } } }
+        checks: { type: array, items: { $ref: '#/components/schemas/ComplianceCheckResult' } }
+        evidence: { type: array, items: { $ref: '#/components/schemas/ComplianceEvidence' } }
+        mark: { $ref: '#/components/schemas/ComplianceMark' }
+        mark_overdue: { type: boolean, description: 'Срок пересмотра отметки истёк: не засчитывается' }
+    ComplianceCounts:
+      type: object
+      required: [met, partial, not_met, not_applicable, manual]
+      properties:
+        met: { type: integer }
+        partial: { type: integer }
+        not_met: { type: integer }
+        not_applicable: { type: integer }
+        manual: { type: integer }
+    ComplianceSummary:
+      type: object
+      required: [percent, counts, counted, drafts]
+      properties:
+        percent: { type: integer, nullable: true, minimum: 0, maximum: 100 }
+        counts: { $ref: '#/components/schemas/ComplianceCounts' }
+        counted: { type: integer, description: 'Пунктов в проценте' }
+        drafts: { type: integer, description: 'Пунктов-проектов (в процент и счётчики не входят)' }
+    ComplianceBaseInfo:
+      type: object
+      required: [version, date, origin, requirements]
+      properties:
+        version: { type: integer, format: int64 }
+        date: { type: string, format: date }
+        origin: { type: string, enum: [builtin, uploaded] }
+        requirements: { type: integer }
+    ComplianceOverview:
+      type: object
+      required: [generated_at, base, sources, summary, items, unavailable]
+      properties:
+        generated_at: { type: string, format: date-time }
+        base: { $ref: '#/components/schemas/ComplianceBaseInfo' }
+        sources:
+          type: array
+          items: { type: object, required: [id, title], properties: { id: { type: string }, title: { type: string } } }
+        summary: { $ref: '#/components/schemas/ComplianceSummary' }
+        items: { type: array, items: { $ref: '#/components/schemas/ComplianceItem' } }
+        unavailable: { type: array, items: { type: string, enum: [apps, roles, audit_chain, integrity, alerts, channels] } }
+    ComplianceBaseView:
+      type: object
+      required: [active, builtin]
+      properties:
+        active: { $ref: '#/components/schemas/ComplianceBaseInfo' }
+        builtin: { $ref: '#/components/schemas/ComplianceBaseInfo' }
+        uploaded:
+          type: object
+          required: [version, date, requirements, subkey_serial, fingerprint, uploaded_at, valid]
+          properties:
+            version: { type: integer, format: int64 }
+            date: { type: string, format: date }
+            requirements: { type: integer }
+            subkey_serial: { type: integer, format: int64 }
+            subkey_not_after: { type: string, format: date-time }
+            fingerprint: { type: string }
+            uploaded_at: { type: string, format: date-time }
+            valid: { type: boolean, description: 'Подпись сохранённого файла проверена при запуске' }
     ShadowImport:
       type: object
       required: [id, created_at, created_by, catalog_version, format, lines, matched, unmatched, errors, outdated,
@@ -8639,7 +8927,7 @@ components:
       required: [name, report, frequency, at, format, channel_id]
       properties:
         name: { type: string, minLength: 1, maxLength: 200 }
-        report: { type: string, enum: [summary, incidents, pilot] }
+        report: { type: string, enum: [summary, incidents, pilot, compliance] }
         frequency: { type: string, enum: [daily, weekly, monthly] }
         weekday: { type: integer, minimum: 1, maximum: 7, description: Для weekly; 1 — понедельник }
         day: { type: integer, minimum: 1, maximum: 28, description: Для monthly }
@@ -8663,7 +8951,7 @@ components:
       properties:
         id: { type: string, format: uuid }
         name: { type: string }
-        report: { type: string, enum: [summary, incidents, pilot] }
+        report: { type: string, enum: [summary, incidents, pilot, compliance] }
         frequency: { type: string, enum: [daily, weekly, monthly] }
         weekday: { type: integer }
         day: { type: integer }

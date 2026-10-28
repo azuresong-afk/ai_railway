@@ -73,6 +73,12 @@
 | GET | `/api/v1/auth/policy` | `auth_policy.read` | да | — | — | да | — | да |
 | PUT | `/api/v1/auth/policy` | `auth_policy.manage` | да | — | — | — | — | — |
 | GET | `/api/v1/budgets` | `budgets.read` | да | да | да | да | — | да |
+| GET | `/api/v1/compliance` | `compliance.read` | да | да | — | да | — | да |
+| GET | `/api/v1/compliance/base` | `compliance.read` | да | да | — | да | — | да |
+| PUT | `/api/v1/compliance/base` | `compliance.base.load` | да | да | — | — | — | да |
+| GET | `/api/v1/compliance/requirements/{id}` | `compliance.read` | да | да | — | да | — | да |
+| PUT | `/api/v1/compliance/requirements/{id}/mark` | `compliance.mark` | да | — | — | — | — | — |
+| DELETE | `/api/v1/compliance/requirements/{id}/mark` | `compliance.mark` | да | — | — | — | — | — |
 | GET | `/api/v1/dashboards/app/{id}` | `dashboards.read` | да | да | да | да | свои | да |
 | GET | `/api/v1/dashboards/consumption` | `dashboards.read` | да | да | да | да | свои | да |
 | GET | `/api/v1/dashboards/overview` | `dashboards.read` | да | да | да | да | свои | да |

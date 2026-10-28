@@ -257,7 +257,7 @@ func TestMePermissions(t *testing.T) {
 	for login, want := range map[string]string{
 		"analyst": `"permissions":["agents.read","alert_rules.read","alerts.manage","alerts.read","applications.read","approvals.decide","approvals.read","budgets.read","dashboards.read","events.export","events.mark","events.read","incidents.export","incidents.manage","incidents.read","model_prices.read","policies.read","policies.test","providers.read","reports.read","self","session","shadow_ai.read","system.read"]`,
 		// Без events.content.read: содержимое событий — только у администратора безопасности (ТЗ 1.3).
-		"auditor": `"permissions":["agents.read","alert_rules.read","alerts.read","api_tokens.read","applications.read","approvals.read","audit.read","audit.verify","auth_idp.read","auth_policy.read","budgets.read","dashboards.read","events.read","gateway_tls.read","incidents.read","license.read","model_prices.read","notify_channels.read","policies.read","providers.read","reports.read","reports.schedules.read","roles.read","self","session","sessions.read","shadow_ai.read","system.read","users.read"]`,
+		"auditor": `"permissions":["agents.read","alert_rules.read","alerts.read","api_tokens.read","applications.read","approvals.read","audit.read","audit.verify","auth_idp.read","auth_policy.read","budgets.read","compliance.read","dashboards.read","events.read","gateway_tls.read","incidents.read","license.read","model_prices.read","notify_channels.read","policies.read","providers.read","reports.read","reports.schedules.read","roles.read","self","session","sessions.read","shadow_ai.read","system.read","users.read"]`,
 	} {
 		s := e.mustLogin(t, login)
 		if w := e.call(s, "GET", "/api/v1/me", "", false); !strings.Contains(w.Body.String(), want) {
