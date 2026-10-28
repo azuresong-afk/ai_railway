@@ -211,7 +211,6 @@
 - **Оповещения.** Встроенные `threshold.session_risk`, `threshold.prompt_integrity`, `threshold.history_integrity` (серьёзность `high`).
 - **Тесты.** `TestDM06_*`, `TestDM26_*`, `TestDM03_*`, `TestSessionHeaderValidation`, `TestSessionFingerprint`, `TestPromptBaselineValidation`, `TestPGPromptBaselineStorage`, `TestPGSessionHistoryCheck`, `TestPromptBaselinesSectionValidate`, `TestCompileChecksAllowedActions`, `FuzzSessionHeader`, `FuzzNormalize`.
 
-<<<<<<< HEAD
 ## Пользователь приложения по JWT и группы моделей (ТЗ 4.3, 7.3 УПД.9, 5.16 DM-33; задача 4.21 этапа 4, ADR-0025, раздел 4)
 Код: `internal/gateway/usertoken.go`, `internal/crypto/jwt.go`, `internal/auth/oidc/client.go` (`KeysForBundle`), `internal/auth/idp.go` (`IdPKeys`), `internal/apps/useraccess.go`, `internal/policy/bundle/usertokens.go`, `internal/policy/bundle/build/usertokens.go`, `internal/api/user_access.go`, `web/src/apps/UserAccessDialog.tsx`, миграция `0059_app_user_access`.
 
@@ -223,7 +222,7 @@
 - **Изменение.** Право `applications.policy` (признак безопасности). Ослабление — повторная проверка и `weakening` с причинами `user_token_mode`, `user_token_trust`, `user_token_groups_claim`, `user_token_leeway`, `model_groups` (DM-40).
 - **Аудит.** `application.user_access_set` (до и после: режим, издатель, аудитория, утверждение, допуск, группы моделей) в одной транзакции с изменением; сборка пакета пишет `user_tokens` и `user_token_keys` в `bundle.build`.
 - **Тесты.** `TestDM33_GroupDeniedModel`, `TestDM33_GroupAllowedModel`, `TestUserTokenRejected`, `TestUserTokenModes`, `TestSetUserTokensRejects`, `TestVerifyUserTokenAccepts`, `TestVerifyUserTokenRejects`, `TestVerifyUserTokenLeeway`, `TestMarshalJWKSCanonical`, `TestKeysForBundle`, `TestUserTokensSectionValidate`, `TestBuildUserTokens`, `TestUserAccessLifecycle`, `TestUserAccessValidation`, `TestPGUserAccessStorage`, `TestDM33_UserAccessViaAPI`, `FuzzUserTokenGroups`.
-=======
+
 ## ML-детекторы и процесс `aisec-ml` (ТЗ 4.1, 5.2, 8.12; задача 4.18 этапа 4, ADR-0024)
 Основа ML-детекторов `injection.ml`, `toxicity.ml`, `pii.ner` (сами детекторы — задачи 4.19, 4.20). Код: `internal/ml` (протокол, сервер, пакет моделей), `cmd/aisec-ml`, `internal/gateway/mlclient.go`, признак `ml_unavailable` в `internal/events`.
 
@@ -234,7 +233,6 @@
 - **Протокол.** Свой двоичный протокол с пределами по типу кадра, проверкой заголовка до чтения тела, строгим JSON и проверкой находок (метки модели, позиции на границах символов); fuzz-тесты обеих сторон.
 - **Исполнитель ONNX Runtime** (`cmd/aisec-ml`, тег `aisec_onnx`). Хеш библиотеки ORT встраивается при сборке; до `dlopen` файл (обычный, до 512 МиБ) хешируется хешем профиля и сверяется за постоянное время, затем загружается по `/proc/self/fd/N` того же дескриптора; без встроенного хеша загрузка запрещена. Телеметрия выключается дважды: `ORT_DISABLE_TELEMETRY=1` и `DisableTelemetry()` (основная защита — сборка без неё). Сеанс создаётся из проверенных байтов модели; входы (`input_ids`, `attention_mask`, необязательный `token_type_ids`, int64) и выход `logits` (float32, размерности по задаче и числу меток) сверяются с манифестом пакета, иначе модель не загружается. Один поток на вывод, параллельность — `-workers`; отмена прерывает вывод (`RunOptions.Terminate`). Выход разбирается без доверия: NaN и бесконечности — ошибка, находок не больше предела протокола. Токенизаторы — с первыми моделями (4.19, 4.20); до них модель не загружается.
 - **Тесты.** `TestReadFrameTooLargeDoesNotReadBody`, `TestServerRejectsOversizeFrame`, `TestServerOverloaded`, `TestServerExecutorPanicAndBadFindings`, `TestLoadModelsRejectsForeignSignature`, `TestLoadModelsRejectsTamperedWeights`, `TestRunRefusesUnverifiedPackage`, `TestListenSocketDirectoryChecks`, `TestMLClientRefusesForeignPermissions`, `TestMLClientBackoff`, `TestMLClientInflightLimit`, `TestMLUnavailableDoesNotBlockGateway`, `TestMLDetectorTimeoutIsMLUnavailable`, `TestMLUnavailableWithOtherFailureFailsClosed`, `TestMLClientTimeoutsAndBackoff`, `TestMLClientRetriesClosedIdleConn`, `TestMLClientDropsStaleIdleConn`, `TestMLDetectorChecksModel`, `TestONNXExecutor` (с `AISEC_ORT_LIB`), `TestCheckIO`, `TestTokenSpans`, `FuzzServerReadFrame`, `FuzzClientReadFrame`, `FuzzParseModelsManifest`.
->>>>>>> origin/claude/stage-4-integration
 
 ## Политики в сервере управления (ТЗ, 5.3; задача 2.12)
 `internal/policy/versions` (`Service`, `Compare`, `Memory`, `PGStore`), `internal/gateway/sandbox.go` (`Sandbox`), `internal/api/policies.go`, миграция `0017_policies`, ADR-0016.
