@@ -6,7 +6,6 @@ import (
 	"errors"
 	"hash"
 	"io"
-	"sort"
 	"time"
 
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
@@ -84,6 +83,9 @@ type ImportResult struct {
 	Errors    int64 `json:"errors"`
 	// Outdated — сопоставленные строки старше срока хранения: не сохранены.
 	Outdated int64 `json:"outdated"`
+	// Excluded — сопоставленные строки исключённых пользователей и сервисов:
+	// не сохранены (задача 4.23).
+	Excluded int64 `json:"excluded"`
 	// ErrorLines — первые номера ошибочных строк (с 1), без содержимого.
 	ErrorLines []int64 `json:"error_lines"`
 	// From и To — время первой и последней сопоставленной записи.
@@ -97,6 +99,9 @@ type ImportResult struct {
 	// Services — сколько разных сервисов найдено.
 	Services   int         `json:"services"`
 	Aggregates []Aggregate `json:"-"`
+	// ServiceNames — названия найденных сервисов по каталогу: для записи
+	// аудита о новом сервисе (DM-37).
+	ServiceNames map[string]string `json:"-"`
 }
 
 // importInput — всё, что нужно для разбора одного файла.
@@ -109,8 +114,9 @@ type importInput struct {
 	loc    *time.Location
 	now    time.Time
 	// cutoff — час, раньше которого записи не сохраняются (срок хранения).
-	cutoff time.Time
-	limits Limits
+	cutoff  time.Time
+	exclude Exclusions
+	limits  Limits
 }
 
 type aggKey struct {
@@ -157,9 +163,7 @@ func aggregate(ctx context.Context, r io.Reader, in importInput) (ImportResult, 
 	lr := &limitReader{r: r, max: lim.MaxDecompressed, h: in.hasher.New()}
 	lines := newLineReader(lr, lim.MaxLine)
 	res := ImportResult{Format: in.format, ErrorLines: []int64{}, UsersPseudonymized: in.mac != nil}
-	aggs := map[aggKey]*Aggregate{}
-	services := map[string]struct{}{}
-	var from, to time.Time
+	acc := newAccumulator(in.catalog, in.mac, in.cutoff, in.exclude, lim.MaxKeys)
 	var lineNo int64
 	lineErr := func() {
 		res.Errors++
@@ -201,65 +205,31 @@ func aggregate(ctx context.Context, r io.Reader, in importInput) (ImportResult, 
 			lineErr()
 			continue
 		}
-		host, ok := NormalizeHost(rec.host)
-		var svc CatalogService
-		if ok {
-			svc, ok = in.catalog.Match(host)
+		o, err := acc.add(rec)
+		if err != nil {
+			return ImportResult{}, err
 		}
-		if !ok {
+		switch o {
+		case outcomeMatched:
+			res.Matched++
+		case outcomeUnmatched:
 			res.Unmatched++
-			continue
-		}
-		bucket := rec.time.Truncate(time.Hour)
-		if bucket.Before(in.cutoff) {
+		case outcomeOutdated:
 			res.Outdated++
-			continue
-		}
-		res.Matched++
-		k := aggKey{bucket: bucket.Unix(), service: svc.ID, kind: UserKindNone}
-		if in.mac != nil && rec.userKind != UserKindNone {
-			k.alias, k.kind = pseudonym(in.mac, rec.user), rec.userKind
-		}
-		a := aggs[k]
-		if a == nil {
-			if len(aggs) >= lim.MaxKeys {
-				return ImportResult{}, ErrTooManyKeys
-			}
-			a = &Aggregate{Bucket: bucket, Service: k.service, UserAlias: k.alias, UserKind: k.kind}
-			aggs[k] = a
-		}
-		a.Requests = min(a.Requests+1, maxCounter)
-		a.Bytes = min(a.Bytes+rec.bytes, maxCounter)
-		services[svc.ID] = struct{}{}
-		if from.IsZero() || rec.time.Before(from) {
-			from = rec.time
-		}
-		if rec.time.After(to) {
-			to = rec.time
+		case outcomeExcluded:
+			res.Excluded++
 		}
 	}
 	if lr.n == 0 {
 		return ImportResult{}, ErrEmpty
 	}
 	res.SHA256 = hex.EncodeToString(lr.h.Sum(nil))
-	res.Services = len(services)
-	if !from.IsZero() {
-		f, t := from.UTC(), to.UTC()
+	res.Services = len(acc.services)
+	if !acc.from.IsZero() {
+		f, t := acc.from.UTC(), acc.to.UTC()
 		res.From, res.To = &f, &t
 	}
-	res.Aggregates = make([]Aggregate, 0, len(aggs))
-	for _, a := range aggs {
-		res.Aggregates = append(res.Aggregates, *a)
-	}
-	sort.Slice(res.Aggregates, func(i, j int) bool {
-		a, b := res.Aggregates[i], res.Aggregates[j]
-		if !a.Bucket.Equal(b.Bucket) {
-			return a.Bucket.Before(b.Bucket)
-		}
-		if a.Service != b.Service {
-			return a.Service < b.Service
-		}
-		return a.UserAlias < b.UserAlias
-	})
+	res.Aggregates = acc.sorted()
+	res.ServiceNames = acc.names()
 	return res, nil
 }

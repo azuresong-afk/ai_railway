@@ -240,3 +240,72 @@ func TestShadowAIImportBusy(t *testing.T) {
 		t.Fatalf("первый импорт: %d %s", w.Code, w.Body)
 	}
 }
+
+// Исключения (задача 4.23): чтение — shadow_ai.read, изменение —
+// shadow_ai.manage с повторной проверкой (токен API не добавляет); логина
+// нет ни в ответе, ни в аудите. Состояние приёма по syslog — shadow_ai.read.
+func TestShadowAIExclusionsViaAPI(t *testing.T) {
+	e := newAppsEnv(t)
+	sys := e.mustLogin(t, "sysadm")
+	analyst := e.mustLogin(t, "analyst")
+	owner := e.mustLogin(t, "owner")
+	for _, p := range []string{"/api/v1/shadow-ai/exclusions", "/api/v1/shadow-ai/syslog"} {
+		mustProblem(t, e.call(owner, "GET", p, "", false), 403, CodeForbidden)
+	}
+	mustProblem(t, e.call(analyst, "POST", "/api/v1/shadow-ai/exclusions", `{"kind":"service","service":"chatgpt"}`, true), 403, CodeForbidden)
+	mustProblem(t, e.call(analyst, "DELETE", "/api/v1/shadow-ai/exclusions/service/chatgpt", "", true), 403, CodeForbidden)
+
+	if w := e.call(analyst, "GET", "/api/v1/shadow-ai/syslog", "", false); w.Code != 200 ||
+		!strings.Contains(w.Body.String(), `"enabled":false`) {
+		t.Fatalf("syslog: %d %s", w.Code, w.Body)
+	}
+	if w := e.call(analyst, "GET", "/api/v1/shadow-ai/exclusions", "", false); w.Code != 200 || w.Body.String() != `{"items":[]}`+"\n" {
+		t.Fatalf("пустой список: %d %q", w.Code, w.Body)
+	}
+	// Без пароля — 400 по полю password; неверный — 403; токен — 403.
+	w := e.call(sys, "POST", "/api/v1/shadow-ai/exclusions", `{"kind":"user","login":"ivanov.ia"}`, true)
+	if p := decode[Problem](t, w.Body.Bytes()); w.Code != 400 || len(p.Errors) != 1 || p.Errors[0].Field != "password" {
+		t.Fatalf("без пароля: %d %s", w.Code, w.Body)
+	}
+	mustProblem(t, e.call(sys, "POST", "/api/v1/shadow-ai/exclusions", `{"kind":"user","login":"ivanov.ia","password":"не тот"}`, true),
+		403, CodeReauthFailed)
+	tok := session{bearer: e.issueToken(t, sys, auth.PermShadowAIRead, auth.PermShadowAIManage).Token}
+	mustProblem(t, e.call(tok, "POST", "/api/v1/shadow-ai/exclusions", `{"kind":"service","service":"chatgpt"}`, false), 403, CodeForbidden)
+	for _, body := range []string{`{"kind":"group"}`, `{"kind":"service","service":"Chat GPT"}`, `{"kind":"user"}`,
+		`{"kind":"service","service":"chatgpt","extra":1}`} {
+		if w := e.call(sys, "POST", "/api/v1/shadow-ai/exclusions", body[:len(body)-1]+`,"password":"`+tPhrase+`"}`, true); w.Code != 400 {
+			t.Fatalf("%s: %d %s", body, w.Code, w.Body)
+		}
+	}
+	w = e.call(sys, "POST", "/api/v1/shadow-ai/exclusions", `{"kind":"user","login":"ivanov.ia","comment":"шлюз","password":"`+tPhrase+`"}`, true)
+	ex := decode[shadowai.Exclusion](t, w.Body.Bytes())
+	if w.Code != 201 || len(ex.Value) != 32 || strings.Contains(w.Body.String(), "ivanov") {
+		t.Fatalf("исключение пользователя: %d %s", w.Code, w.Body)
+	}
+	mustProblem(t, e.call(sys, "POST", "/api/v1/shadow-ai/exclusions", `{"kind":"user","alias":"`+ex.Value+`","password":"`+tPhrase+`"}`, true),
+		409, CodeConflict)
+	if w := e.call(sys, "POST", "/api/v1/shadow-ai/exclusions", `{"kind":"service","service":"chatgpt","password":"`+tPhrase+`"}`, true); w.Code != 201 {
+		t.Fatalf("исключение сервиса: %d %s", w.Code, w.Body)
+	}
+	w = e.call(analyst, "GET", "/api/v1/shadow-ai/exclusions", "", false)
+	if list := decode[ShadowExclusionList](t, w.Body.Bytes()); w.Code != 200 || len(list.Items) != 2 {
+		t.Fatalf("список: %d %s", w.Code, w.Body)
+	}
+	if w := e.call(sys, "DELETE", "/api/v1/shadow-ai/exclusions/service/chatgpt", "", true); w.Code != 204 {
+		t.Fatalf("снятие: %d %s", w.Code, w.Body)
+	}
+	mustProblem(t, e.call(sys, "DELETE", "/api/v1/shadow-ai/exclusions/service/chatgpt", "", true), 404, CodeNotFound)
+	if w := e.call(tok, "DELETE", "/api/v1/shadow-ai/exclusions/user/"+ex.Value, "", false); w.Code != 204 {
+		t.Fatalf("снятие токеном: %d %s", w.Code, w.Body)
+	}
+	got := map[string]int{}
+	for _, r := range e.shadow.Records() {
+		got[r.Action]++
+		if strings.Contains(mustJSON(t, r.Details), "ivanov") {
+			t.Fatalf("логин в аудите: %+v", r)
+		}
+	}
+	if got["shadow_ai.exclusion_added"] != 2 || got["shadow_ai.exclusion_removed"] != 2 {
+		t.Fatalf("аудит: %v", got)
+	}
+}

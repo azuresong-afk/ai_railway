@@ -113,8 +113,19 @@ type Store interface {
 	// (иначе ErrStaleCatalog), и пишет rec той же транзакцией.
 	SaveCatalog(ctx context.Context, orgID string, c StoredCatalog, rec audit.Entry) error
 	// SaveImport пишет запись импорта, агрегаты и rec одной транзакцией;
-	// повтор хеша — ErrDuplicate.
+	// повтор хеша — ErrDuplicate. Сводки исключённых не пишутся; о новых
+	// сервисах — записи shadow_ai.new_service той же транзакцией (DM-37).
 	SaveImport(ctx context.Context, orgID string, imp ImportRecord, rec audit.Entry) error
+	// SaveSyslog пишет сводки приёма по syslog и записи о новых сервисах
+	// одной транзакцией.
+	SaveSyslog(ctx context.Context, orgID string, b SyslogBatch) error
+	Exclusions(ctx context.Context, orgID string) ([]Exclusion, error)
+	// AddExclusion добавляет исключение, удаляет сводки исключённого и пишет
+	// запись аудита fn(удалено строк) одной транзакцией. Повтор —
+	// ErrExclusionExists, сверх MaxExclusions — ErrTooManyExclusions.
+	AddExclusion(ctx context.Context, orgID string, ex Exclusion, fn func(deleted int64) audit.Entry) error
+	// RemoveExclusion снимает исключение и пишет rec; нет — ErrExclusionNotFound.
+	RemoveExclusion(ctx context.Context, orgID, kind, value string, rec audit.Entry) error
 	Imports(ctx context.Context, orgID string, limit int) ([]ImportRecord, error)
 	Services(ctx context.Context, orgID string, q Query) ([]ServiceStat, error)
 	Users(ctx context.Context, orgID string, q Query) ([]UserStat, error)
@@ -177,6 +188,19 @@ type Service struct {
 	catalog *SignedCatalog
 	stored  StoredCatalog
 	loaded  bool
+	// excl — кэш исключений; exclLoaded = false — перечитать из хранилища.
+	excl       Exclusions
+	exclLoaded bool
+	// exclGen — поколение исключений: растёт при каждом изменении.
+	exclGen uint64
+	// syslog — слушатель приёма по syslog; nil — выключен.
+	syslog *SyslogListener
+}
+
+// SyslogBatch — сводки приёма по syslog за период накопления.
+type SyslogBatch struct {
+	Aggregates   []Aggregate
+	ServiceNames map[string]string
 }
 
 // New создаёт сервис. Каталог читается из хранилища при первом обращении
@@ -212,6 +236,17 @@ func New(o Options) (*Service, error) {
 		o.vendor = v
 	}
 	return &Service{o: o, busy: make(chan struct{}, 1)}, nil
+}
+
+// refreshSyslog — каталог или исключения изменились: слушатель syslog
+// перечитывает их сразу, а не при следующей записи сводок.
+func (s *Service) refreshSyslog(ctx context.Context) {
+	s.mu.Lock()
+	l := s.syslog
+	s.mu.Unlock()
+	if l != nil {
+		l.Refresh(ctx)
+	}
 }
 
 // UsersPseudonymized — задан ключ псевдонимов пользователей.
@@ -342,6 +377,7 @@ func (s *Service) UploadCatalog(ctx context.Context, by By, data []byte) (Catalo
 			s.mu.Lock()
 			s.catalog, s.stored, s.loaded = &sc, st, true
 			s.mu.Unlock()
+			s.refreshSyslog(ctx)
 			return s.Catalog(ctx)
 		}
 		if !errors.Is(err, ErrStaleCatalog) {
@@ -391,11 +427,15 @@ func (s *Service) Import(ctx context.Context, by By, format string, r io.Reader)
 	if err != nil {
 		return ImportRecord{}, err
 	}
+	ex, err := s.exclusions(ctx)
+	if err != nil {
+		return ImportRecord{}, err
+	}
 	now := s.o.Clock().UTC()
 	ctx, cancel := context.WithTimeout(ctx, ImportTimeout)
 	defer cancel()
 	res, err := aggregate(ctx, r, importInput{format: format, catalog: sc.Catalog, mac: s.o.UserMAC, hasher: h, loc: loc, now: now,
-		cutoff: now.Truncate(time.Hour).AddDate(0, 0, -days), limits: s.o.Limits})
+		cutoff: now.Truncate(time.Hour).AddDate(0, 0, -days), exclude: ex, limits: s.o.Limits})
 	if err != nil {
 		return ImportRecord{}, err
 	}
@@ -406,7 +446,7 @@ func (s *Service) Import(ctx context.Context, by By, format string, r io.Reader)
 	id := uid.String()
 	imp := ImportRecord{ID: id, CreatedAt: now, CreatedBy: by.ref(), CatalogVersion: sc.Catalog.Version, ImportResult: res}
 	details := map[string]any{"format": format, "lines": res.Lines, "matched": res.Matched, "unmatched": res.Unmatched,
-		"errors": res.Errors, "outdated": res.Outdated, "services": res.Services, "aggregates": len(res.Aggregates),
+		"errors": res.Errors, "outdated": res.Outdated, "excluded": res.Excluded, "services": res.Services, "aggregates": len(res.Aggregates),
 		"sha256": res.SHA256, "catalog_version": sc.Catalog.Version, "users_pseudonymized": res.UsersPseudonymized}
 	if res.From != nil {
 		details["period_from"], details["period_to"] = res.From.Format(time.RFC3339), res.To.Format(time.RFC3339)

@@ -181,3 +181,67 @@ func TestLoadConfigAuditVerifyAndProxies(t *testing.T) {
 		}
 	}
 }
+
+// Приём syslog теневого ИИ (задача 4.23): по умолчанию выключен; TLS
+// обязателен, без него — только явным флагом и из разрешённых сетей;
+// отдельный порт; пределы — в разумных границах.
+func TestLoadConfigShadowSyslog(t *testing.T) {
+	base := map[string]string{"AISEC_SERVER_TLS_CERT": "c", "AISEC_SERVER_TLS_KEY": "k", "AISEC_SERVER_KEYS_DIR": "/keys", "AISEC_DATABASE_URL": "postgres://u@h/d"}
+	cfg, err := loadConfig(nil, env(base), io.Discard)
+	if err != nil || cfg.ShadowAISyslog.Listen != "" {
+		t.Fatalf("по умолчанию выключен: %+v %v", cfg.ShadowAISyslog, err)
+	}
+	// Без адреса прочие флаги не действуют и не проверяются.
+	if _, err := loadConfig([]string{"-shadow-ai-syslog-format", "xml"}, env(base), io.Discard); err != nil {
+		t.Fatalf("формат без адреса: %v", err)
+	}
+	withTLS := map[string]string{}
+	for k, v := range base {
+		withTLS[k] = v
+	}
+	withTLS["AISEC_SERVER_SHADOW_AI_SYSLOG_LISTEN"] = "0.0.0.0:6514"
+	withTLS["AISEC_SERVER_SHADOW_AI_SYSLOG_FORMAT"] = "cef"
+	withTLS["AISEC_SERVER_SHADOW_AI_SYSLOG_TLS_CERT"] = "/keys/syslog.crt"
+	withTLS["AISEC_SERVER_SHADOW_AI_SYSLOG_TLS_KEY"] = "/keys/syslog.key"
+	withTLS["AISEC_SERVER_SHADOW_AI_SYSLOG_CLIENT_CA"] = "/keys/sources-ca.crt"
+	withTLS["AISEC_SERVER_SHADOW_AI_SYSLOG_ALLOWED_NETWORKS"] = "10.0.0.0/8"
+	withTLS["AISEC_SERVER_SHADOW_AI_SYSLOG_MAX_CONNECTIONS"] = "64"
+	cfg, err = loadConfig(nil, env(withTLS), io.Discard)
+	s := cfg.ShadowAISyslog
+	if err != nil || s.Listen != "0.0.0.0:6514" || s.Format != "cef" || s.TLSKeyFile != "/keys/syslog.key" || s.ClientCAFile != "/keys/sources-ca.crt" ||
+		s.Insecure || len(s.AllowedNetworks) != 1 || s.MaxConns != 64 || s.MaxConnsPerIP != 16 || s.LinesPerSecond != 5000 {
+		t.Fatalf("из окружения: %+v %v", s, err)
+	}
+	cfg, err = loadConfig([]string{"-shadow-ai-syslog-format", "squid", "-shadow-ai-syslog-lines-per-second", "100"}, env(withTLS), io.Discard)
+	if err != nil || cfg.ShadowAISyslog.Format != "squid" || cfg.ShadowAISyslog.LinesPerSecond != 100 {
+		t.Fatalf("флаг важнее окружения: %+v %v", cfg.ShadowAISyslog, err)
+	}
+	insecure := []string{"-shadow-ai-syslog-listen", "127.0.0.1:5514", "-shadow-ai-syslog-format", "squid",
+		"-shadow-ai-syslog-insecure", "true", "-shadow-ai-syslog-allowed-networks", "127.0.0.1"}
+	cfg, err = loadConfig(insecure, env(base), io.Discard)
+	if err != nil || !cfg.ShadowAISyslog.Insecure || cfg.ShadowAISyslog.AllowedNetworks[0].String() != "127.0.0.1/32" {
+		t.Fatalf("без TLS из разрешённой сети: %+v %v", cfg.ShadowAISyslog, err)
+	}
+	listen := []string{"-shadow-ai-syslog-listen", "0.0.0.0:6514", "-shadow-ai-syslog-format", "cef"}
+	tls := append(append([]string{}, listen...), "-shadow-ai-syslog-tls-cert", "s.crt", "-shadow-ai-syslog-tls-key", "s.key")
+	for name, args := range map[string][]string{
+		"нет сертификата":         listen,
+		"нет ключа":               append(append([]string{}, listen...), "-shadow-ai-syslog-tls-cert", "s.crt"),
+		"нет формата":             {"-shadow-ai-syslog-listen", "0.0.0.0:6514", "-shadow-ai-syslog-tls-cert", "s.crt", "-shadow-ai-syslog-tls-key", "s.key"},
+		"чужой формат":            append(append([]string{}, tls...), "-shadow-ai-syslog-format", "json"),
+		"адрес без порта":         append(append([]string{}, tls...), "-shadow-ai-syslog-listen", "6514"),
+		"порт консоли":            append(append([]string{}, tls...), "-shadow-ai-syslog-listen", defaultListen),
+		"порт шлюзов":             append(append([]string{}, tls...), "-shadow-ai-syslog-listen", defaultInternalListen),
+		"без TLS без сетей":       append(append([]string{}, listen...), "-shadow-ai-syslog-insecure", "true"),
+		"без TLS с сертификатом":  append(append([]string{}, tls...), "-shadow-ai-syslog-insecure", "true", "-shadow-ai-syslog-allowed-networks", "10.0.0.0/8"),
+		"insecure не логическое":  append(append([]string{}, tls...), "-shadow-ai-syslog-insecure", "да"),
+		"сеть /0":                 append(append([]string{}, tls...), "-shadow-ai-syslog-allowed-networks", "0.0.0.0/0"),
+		"соединений ноль":         append(append([]string{}, tls...), "-shadow-ai-syslog-max-connections", "0"),
+		"с адреса не число":       append(append([]string{}, tls...), "-shadow-ai-syslog-max-connections-per-address", "x"),
+		"строк в секунду слишком": append(append([]string{}, tls...), "-shadow-ai-syslog-lines-per-second", "2000000"),
+	} {
+		if _, err := loadConfig(args, env(base), io.Discard); err == nil {
+			t.Errorf("%s: принято", name)
+		}
+	}
+}

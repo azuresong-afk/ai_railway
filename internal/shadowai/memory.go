@@ -2,6 +2,7 @@ package shadowai
 
 import (
 	"context"
+	"net/netip"
 	"slices"
 	"sort"
 	"sync"
@@ -24,6 +25,13 @@ type Memory struct {
 	setUp     bool
 	records   []audit.Entry
 	now       func() time.Time
+	// exclusions — исключения (задача 4.23).
+	exclusions []Exclusion
+	// failErr — ошибка следующей записи сводок; failAll — всех записей.
+	failErr error
+	failAll error
+	// syslogSaves — сколько раз вызывалась запись партии syslog.
+	syslogSaves int
 }
 
 // NewMemory — пустое хранилище; первичная настройка считается выполненной.
@@ -89,16 +97,32 @@ func (m *Memory) SaveCatalog(_ context.Context, _ string, c StoredCatalog, rec a
 	return nil
 }
 
-// SaveImport — см. Store.
-func (m *Memory) SaveImport(_ context.Context, _ string, imp ImportRecord, rec audit.Entry) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for _, i := range m.imports {
-		if i.SHA256 == imp.SHA256 {
-			return ErrDuplicate
+// writeLocked прибавляет сводки, кроме исключённых, и возвращает записанные
+// сводки и новые сервисы среди них — по тем же правилам, что PGStore.
+func (m *Memory) writeLocked(aggs []Aggregate) ([]Aggregate, []string) {
+	ex := ExclusionsOf(m.exclusions)
+	kept := make([]Aggregate, 0, len(aggs))
+	for _, a := range aggs {
+		if !ex.Excludes(a.Service, a.UserAlias) {
+			kept = append(kept, a)
 		}
 	}
-	for _, a := range imp.Aggregates {
+	ids, firsts := firstArrays(kept)
+	var fresh []string
+	for i, id := range ids {
+		since := firsts[i].Add(-NewServiceWindow)
+		seen := false
+		for k := range m.aggs {
+			if k.service == id && !time.Unix(k.bucket, 0).Before(since) {
+				seen = true
+				break
+			}
+		}
+		if !seen {
+			fresh = append(fresh, id)
+		}
+	}
+	for _, a := range kept {
 		k := aggKey{bucket: a.Bucket.Unix(), service: a.Service, alias: a.UserAlias, kind: a.UserKind}
 		cur, ok := m.aggs[k]
 		if !ok {
@@ -109,8 +133,110 @@ func (m *Memory) SaveImport(_ context.Context, _ string, imp ImportRecord, rec a
 		}
 		m.aggs[k] = cur
 	}
-	imp.Aggregates = nil
+	return kept, fresh
+}
+
+// SaveImport — см. Store.
+func (m *Memory) SaveImport(_ context.Context, _ string, imp ImportRecord, rec audit.Entry) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := m.takeErr(); err != nil {
+		return err
+	}
+	for _, i := range m.imports {
+		if i.SHA256 == imp.SHA256 {
+			return ErrDuplicate
+		}
+	}
+	kept, fresh := m.writeLocked(imp.Aggregates)
+	m.records = append(m.records, rec)
+	m.records = append(m.records, newServiceEntries(rec.Actor, rec.SourceIP, SourceImport, kept, imp.ServiceNames, fresh)...)
+	imp.Aggregates, imp.ServiceNames = nil, nil
 	m.imports = append(m.imports, imp)
+	return nil
+}
+
+// SaveSyslog — см. Store.
+func (m *Memory) SaveSyslog(_ context.Context, _ string, b SyslogBatch) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.syslogSaves++
+	if err := m.takeErr(); err != nil {
+		return err
+	}
+	kept, fresh := m.writeLocked(b.Aggregates)
+	m.records = append(m.records, newServiceEntries(systemActor, netip.Addr{}, SourceSyslog, kept, b.ServiceNames, fresh)...)
+	return nil
+}
+
+// FailNext — следующая запись сводок вернёт err (сбой БД в тестах).
+func (m *Memory) FailNext(err error) { m.mu.Lock(); m.failErr = err; m.mu.Unlock() }
+
+// FailAll — все записи сводок возвращают err, пока не вызван FailAll(nil).
+func (m *Memory) FailAll(err error) { m.mu.Lock(); m.failAll = err; m.mu.Unlock() }
+
+// SyslogSaves — число вызовов записи партии syslog.
+func (m *Memory) SyslogSaves() int { m.mu.Lock(); defer m.mu.Unlock(); return m.syslogSaves }
+
+func (m *Memory) takeErr() error {
+	if m.failAll != nil {
+		return m.failAll
+	}
+	err := m.failErr
+	m.failErr = nil
+	return err
+}
+
+// Exclusions — см. Store.
+func (m *Memory) Exclusions(context.Context, string) ([]Exclusion, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := slices.Clone(m.exclusions)
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Kind != out[j].Kind {
+			return out[i].Kind < out[j].Kind
+		}
+		return out[i].Value < out[j].Value
+	})
+	if out == nil {
+		out = []Exclusion{}
+	}
+	return out, nil
+}
+
+// AddExclusion — см. Store.
+func (m *Memory) AddExclusion(_ context.Context, _ string, ex Exclusion, fn func(deleted int64) audit.Entry) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, e := range m.exclusions {
+		if e.Kind == ex.Kind && e.Value == ex.Value {
+			return ErrExclusionExists
+		}
+	}
+	if len(m.exclusions) >= MaxExclusions {
+		return ErrTooManyExclusions
+	}
+	m.exclusions = append(m.exclusions, ex)
+	var n int64
+	for k := range m.aggs {
+		if (ex.Kind == ExcludeService && k.service == ex.Value) || (ex.Kind == ExcludeUser && k.alias == ex.Value) {
+			delete(m.aggs, k)
+			n++
+		}
+	}
+	m.records = append(m.records, fn(n))
+	return nil
+}
+
+// RemoveExclusion — см. Store.
+func (m *Memory) RemoveExclusion(_ context.Context, _ string, kind, value string, rec audit.Entry) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	i := slices.IndexFunc(m.exclusions, func(e Exclusion) bool { return e.Kind == kind && e.Value == value })
+	if i < 0 {
+		return ErrExclusionNotFound
+	}
+	m.exclusions = slices.Delete(m.exclusions, i, i+1)
 	m.records = append(m.records, rec)
 	return nil
 }
