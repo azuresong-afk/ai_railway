@@ -126,7 +126,8 @@ func TestLDAPLoginCreatesExternalUser(t *testing.T) {
 	}
 }
 
-// Покрывает: DM-39 (4В21 ревью 4.r2: отказ привязан к записи каталога).
+// Покрывает: DM-39
+// 4В21 ревью 4.r2: отказ привязан к записи каталога.
 func TestLDAPWrongPasswordNotCounted(t *testing.T) {
 	e := newLDAPEnv(t)
 	e.save(t, e.input())
