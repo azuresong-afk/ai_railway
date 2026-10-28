@@ -267,10 +267,12 @@ func (s *Service) CheckModule(ctx context.Context, module string) error {
 	return moduleDenied(st, module)
 }
 
-// limit — предел шлюзов или приложений действующей лицензии; 0 — нет.
+// limit — предел шлюзов или приложений проверенной лицензии, в том числе
+// после льготного периода (4В16 ревью 4.r2: прежде в restricted предела не
+// было); 0 — нет предела или нет проверенной лицензии.
 func (s *Service) limit(ctx context.Context, pick func(Limits) int) (State, int, Usage, error) {
 	st, err := s.State(ctx)
-	if err != nil || !st.Licensed() || s.o.Usage == nil {
+	if err != nil || st.Signed == nil || s.o.Usage == nil {
 		return st, 0, Usage{}, err
 	}
 	n := pick(st.Signed.License.Limits)
@@ -283,8 +285,13 @@ func (s *Service) limit(ctx context.Context, pick func(Limits) int) (State, int,
 
 // CheckGateway — можно ли зарегистрировать новый шлюз (повторная
 // регистрация действующего не проверяется): действующих меньше предела.
+// Регистрация идёт мимо проверки маршрутизатора, поэтому при
+// недействительной лицензии (пределов не прочесть) — отказ (4В16 ревью 4.r2).
 func (s *Service) CheckGateway(ctx context.Context) error {
 	st, n, u, err := s.limit(ctx, func(l Limits) int { return l.Gateways })
+	if err == nil && st.Phase == PhaseInvalid {
+		return &Denied{Code: CodeRestricted, Message: restrictedMessage(st)}
+	}
 	if err != nil || n == 0 {
 		return err
 	}
