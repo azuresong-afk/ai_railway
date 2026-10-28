@@ -43,6 +43,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/integrity"
 	"github.com/azuresong-afk/ai_railway/internal/integrity/selftest"
 	"github.com/azuresong-afk/ai_railway/internal/keyring"
+	"github.com/azuresong-afk/ai_railway/internal/license"
 	"github.com/azuresong-afk/ai_railway/internal/notify"
 	"github.com/azuresong-afk/ai_railway/internal/policy/bundle/build"
 	"github.com/azuresong-afk/ai_railway/internal/policy/versions"
@@ -431,7 +432,25 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	if ca != nil {
 		caNotAfter = ca.ca.NotAfter()
 	}
-	statusSvc, err := newStatus(ctx, cfg, db, auditLog, integritySvc, selftestRes, bundleHealth(&bundleSvc), timezone, caNotAfter, logger)
+	// Лицензия (ТЗ 5.15, задачи 4.26–4.27, ADR-0026): подпись сохранённой
+	// лицензии проверяется заново при запуске и раз в минуту, отметка часов
+	// поднимается тогда же; предел шлюзов — в транзакции регистрации.
+	licStore, err := license.NewPGStore(db.Pool(), auditLog)
+	if err != nil {
+		return err
+	}
+	licSvc, err := license.New(license.Options{Store: licStore, Provider: p, OrgID: audit.DefaultOrgID,
+		Logger: logger.With("component", "license"),
+		Usage:  func(ctx context.Context) (license.Usage, error) { return licStore.Usage(ctx, audit.DefaultOrgID) }})
+	if err != nil {
+		return err
+	}
+	go licSvc.Run(ctx, license.RefreshInterval)
+	if gateways != nil {
+		gateways.SetAdmission(licSvc.CheckGateway)
+	}
+	statusSvc, err := newStatus(ctx, cfg, db, auditLog, integritySvc, selftestRes, bundleHealth(&bundleSvc), timezone, caNotAfter,
+		licSvc.State, logger)
 	if err != nil {
 		return err
 	}
@@ -587,6 +606,7 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		Agents:     agentsSvc,
 		Approvals:  approvalsSvc,
 		ShadowAI:   shadowSvc,
+		License:    licSvc,
 		Incidents:  incidentsSvc,
 		Dashboards: dashStore,
 		Reports:    reportsSvc,
@@ -661,7 +681,8 @@ func budgetUsage(svc *apps.Service) alerting.BudgetSource {
 // условий уведомлений раздела 7.
 func newStatus(ctx context.Context, cfg *serverConfig, db *store.DB, auditLog *audit.Log, integritySvc integrity.Service,
 	selftestRes selftest.Result, bundle func(context.Context) (*sysstatus.BundleHealth, error),
-	timezone func(context.Context) (string, error), caNotAfter time.Time, logger *slog.Logger) (*sysstatus.Service, error) {
+	timezone func(context.Context) (string, error), caNotAfter time.Time, lic func(context.Context) (license.State, error),
+	logger *slog.Logger) (*sysstatus.Service, error) {
 	gwStore, err := gwregistry.NewPGStore(db.Pool(), auditLog)
 	if err != nil {
 		return nil, err
@@ -696,7 +717,7 @@ func newStatus(ctx context.Context, cfg *serverConfig, db *store.DB, auditLog *a
 		Gateways:  sysstatus.GatewayLister{Store: gwStore},
 		Integrity: integritySvc.Store, Store: pg,
 		Timezone: timezone, StorageLimit: cfg.AuditStorageLimit, WarnPercent: cfg.AuditStorageWarnPercent,
-		Logger: logger, Bundle: bundle, CANotAfter: caNotAfter, CustomerCert: customerCert,
+		Logger: logger, Bundle: bundle, CANotAfter: caNotAfter, CustomerCert: customerCert, License: lic,
 	})
 	if err != nil {
 		return nil, err

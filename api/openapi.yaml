@@ -1192,7 +1192,8 @@ paths:
         токена). Повторная регистрация того же шлюза (новый токен с `-reregister`) заменяет
         сертификат и закреплённый ключ получателя (`bundle_key`): прежний сертификат перестаёт
         приниматься внутренним API сразу. Без внутреннего УЦ
-        на сервере (`-ca-cert`) — 503. Предел частоты — 10 запросов в минуту с адреса.
+        на сервере (`-ca-cert`) — 503. Сверх предела действующих шлюзов лицензии (ADR-0026) —
+        403 `license_limit`, токен не гасится. Предел частоты — 10 запросов в минуту с адреса.
         Без `Idempotency-Key`: ответ содержит выпущенный сертификат.
       security: []
       requestBody:
@@ -5520,6 +5521,66 @@ paths:
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ProblemInternal' }
         '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/license:
+    get:
+      summary: Лицензия
+      description: |
+        Право `license.read` (администратор системы, администратор безопасности, аудитор; ADR-0026, п. 6).
+        Состояние (`none` — «пилот по договору» без ограничений, `active`, `expiring` — 30 суток и меньше,
+        `grace` — льготный период 30 суток, `restricted` — изменения конфигурации запрещены, `invalid` —
+        загруженная лицензия не прошла повторную проверку подписи), владелец, срок, пределы и их использование,
+        модули, номер и срок заверения рабочего ключа. `clock_behind` — часы сервера раньше даты выдачи лицензии
+        или отметки часов (условие `license_clock`).
+      x-permission: license.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      responses:
+        '200':
+          description: Сведения о лицензии
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LicenseInfo' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    put:
+      summary: Загрузить или заменить лицензию
+      description: |
+        Право `license.manage` (администратор системы и администратор безопасности). Только в сессии консоли с текущим паролем (`password`)
+        или кодом TOTP (`code`): токену API это право не выдаётся (повторной проверки у токена нет), неверное
+        значение — 403 `reauthentication_failed`.
+        `license` — текст файла `*.aiseclic` (до 16 КиБ; ADR-0026, п. 2). Проверяются: заверение рабочего ключа
+        ключом производителя (назначение `license`, срок на текущее время, отзыв), подпись лицензии, строгий
+        разбор содержимого, дата выдачи в сроке заверения, срок лицензии (действует сейчас), дата выдачи не позже
+        часов сервера. Замена — только на лицензию с номером больше и датой выдачи не раньше загруженной (иначе
+        409). Неверный файл — 422 с причиной. Работает и после льготного периода. Пишет `license.loaded` или
+        `license.rejected` без файла и подписи.
+      x-permission: license.manage
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LicenseUpload' }
+      responses:
+        '200':
+          description: Лицензия загружена
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LicenseInfo' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '409': { $ref: '#/components/responses/ProblemConflict' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '422': { $ref: '#/components/responses/ProblemUnprocessable' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
 components:
   securitySchemes:
     appKey:
@@ -5811,7 +5872,10 @@ components:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }
     ProblemForbidden:
-      description: Недостаточно прав (`forbidden`)
+      description: |
+        Недостаточно прав (`forbidden`) или изменение запрещено лицензией (ADR-0026, п. 5): после льготного
+        периода — `license_restricted`, модуль не входит в лицензию — `license_module`, превышен предел шлюзов
+        или приложений — `license_limit`; причина — в `detail`
       content:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }
@@ -7318,7 +7382,8 @@ components:
           enum: [invalid_request, unauthorized, forbidden, not_found, method_not_allowed, conflict,
                  payload_too_large, unsupported_media_type, unprocessable, rate_limited,
                  internal_error, service_unavailable, reauthentication_failed, bundle_key_mismatch,
-                 reissue_not_needed, self_review, approval_queue_full]
+                 reissue_not_needed, self_review, approval_queue_full, license_restricted, license_module,
+                 license_limit]
         errors:
           type: array
           items:
@@ -8218,6 +8283,52 @@ components:
         category: { type: string, enum: [chat, api, code, image, search, platform] }
         domains: { type: array, items: { type: string }, description: 'Точные имена узлов' }
         suffixes: { type: array, items: { type: string }, description: 'Имя и все его поддомены' }
+    LicenseInfo:
+      description: Лицензия и её состояние (ADR-0026, пп. 3–6)
+      type: object
+      required: [state, restricted, clock_behind, number, modules]
+      properties:
+        state: { type: string, enum: [none, active, expiring, grace, restricted, invalid] }
+        restricted: { type: boolean, description: 'Изменения конфигурации запрещены (restricted, invalid)' }
+        clock_behind: { type: boolean, description: 'Часы сервера раньше даты выдачи лицензии или отметки часов' }
+        number: { type: integer, format: int64, description: 'Номер загруженной лицензии; 0 — «пилот по договору»' }
+        type: { type: string, enum: [pilot, commercial] }
+        licensee:
+          type: object
+          required: [organization, inn]
+          properties:
+            organization: { type: string }
+            inn: { type: string, pattern: '^([0-9]{10}|[0-9]{12})$' }
+        issued_at: { type: string, format: date-time }
+        valid_from: { type: string, format: date-time }
+        valid_until: { type: string, format: date-time }
+        grace_until: { type: string, format: date-time, description: 'Конец льготного периода' }
+        days_left: { type: integer, description: 'Целых суток до конца срока' }
+        grace_days_left: { type: integer, description: 'Целых суток до конца льготного периода' }
+        limits: { $ref: '#/components/schemas/LicenseCounts' }
+        usage: { $ref: '#/components/schemas/LicenseCounts' }
+        modules:
+          type: array
+          description: 'Включённые модули; без лицензии — все'
+          items: { type: string, enum: [agents, shadow_ai, compliance, ml] }
+        subkey_serial: { type: integer, format: int64, description: 'Номер заверения рабочего ключа лицензий' }
+        subkey_not_after: { type: string, format: date-time }
+        fingerprint: { type: string, description: 'Отпечаток рабочего ключа лицензий' }
+        loaded_at: { type: string, format: date-time }
+    LicenseCounts:
+      description: Пределы (0 — без ограничения) или их использование
+      type: object
+      required: [gateways, applications]
+      properties:
+        gateways: { type: integer, minimum: 0 }
+        applications: { type: integer, minimum: 0 }
+    LicenseUpload:
+      type: object
+      required: [license]
+      properties:
+        license: { type: string, maxLength: 16384, description: 'Текст файла лицензии *.aiseclic' }
+        password: { type: string, description: 'Текущий пароль (или code)' }
+        code: { type: string, description: 'Код TOTP (или password)' }
     ShadowCatalog:
       type: object
       required: [loaded, valid, services]

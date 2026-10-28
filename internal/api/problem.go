@@ -3,6 +3,8 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+
+	"github.com/azuresong-afk/ai_railway/internal/license"
 )
 
 // ContentTypeProblem — тип содержимого ошибок (RFC 9457).
@@ -60,6 +62,12 @@ const (
 	// CodeApprovalQueueFull — очередь подтверждений шлюза или агента
 	// переполнена (DM-22, задача 4.10); только внутренний API.
 	CodeApprovalQueueFull = "approval_queue_full"
+	// Отказы по лицензии (ADR-0026, п. 5): изменения запрещены после
+	// льготного периода, модуль не входит в лицензию, превышен предел
+	// шлюзов или приложений.
+	CodeLicenseRestricted = license.CodeRestricted
+	CodeLicenseModule     = license.CodeModule
+	CodeLicenseLimit      = license.CodeLimit
 )
 
 var problemTitles = map[string]string{
@@ -80,6 +88,9 @@ var problemTitles = map[string]string{
 	CodeReissueNotNeeded:  "Перевыпуск сертификата не нужен",
 	CodeSelfReview:        "Нужна проверка другим пользователем",
 	CodeApprovalQueueFull: "Очередь подтверждений переполнена",
+	CodeLicenseRestricted: "Изменения запрещены лицензией",
+	CodeLicenseModule:     "Модуль не входит в лицензию",
+	CodeLicenseLimit:      "Превышен предел лицензии",
 }
 
 // NewProblem собирает ошибку по коду; заголовок берётся из таблицы.

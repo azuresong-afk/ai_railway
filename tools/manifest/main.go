@@ -14,6 +14,9 @@
 //	manifest sign-db -key РАБОЧИЙ_КЛЮЧ -endorsement ФАЙЛ -vendor-pub ФАЙЛ -kind shadow_ai_catalog \
 //	    -in catalog.yaml -out ФАЙЛ [-test]
 //	manifest inspect-db -in ФАЙЛ
+//	manifest sign-license -key РАБОЧИЙ_КЛЮЧ -endorsement ФАЙЛ -vendor-pub ФАЙЛ -in license.json \
+//	    -out ФАЙЛ.aiseclic [-test]
+//	manifest inspect-license -in ФАЙЛ [-vendor-pub ФАЙЛ]
 //
 // Ключ производителя (-key) хранится вне репозитория на отдельном носителе,
 // файл с правами 0400; sign и gen-key работают только на машине без сети
@@ -24,7 +27,8 @@
 //
 // Рабочие ключи служебных баз и лицензий (ADR-0022, п. 2; ADR-0027, п. 3)
 // создаются и заверяются ключом производителя тоже только без сети:
-// gen-subkey, endorse, sign-db (subkey.go).
+// gen-subkey, endorse, sign-db (subkey.go), sign-license (license.go,
+// ADR-0026).
 package main
 
 import (
@@ -54,7 +58,7 @@ func main() {
 	}
 }
 
-const commands = "build, sign, fingerprint, gen-key, gen-subkey, endorse, sign-db или inspect-db"
+const commands = "build, sign, fingerprint, gen-key, gen-subkey, endorse, sign-db, inspect-db, sign-license или inspect-license"
 
 func run(args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
@@ -81,6 +85,10 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return signDB(p, args[1:], stdout, stderr)
 	case "inspect-db":
 		return inspectDB(p, args[1:], stdout, stderr)
+	case "sign-license":
+		return signLicense(p, args[1:], stdout, stderr)
+	case "inspect-license":
+		return inspectLicense(p, args[1:], stdout, stderr)
 	}
 	return fmt.Errorf("неизвестная команда %q: ожидается %s", args[0], commands)
 }

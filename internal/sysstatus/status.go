@@ -223,6 +223,17 @@ const (
 	// если вычисление правила падает на каждом проходе дольше этого срока
 	// (3Н48 ревью 3.r4).
 	ConditionAlertJob = "alert_job_stale"
+	// Условия лицензии (ТЗ 5.15, ADR-0026, п. 8): до конца срока
+	// license.ExpiryWarn и меньше (за license.ExpiryCritical — ещё одно
+	// system.alert с кодом license_expiry:critical), льготный период,
+	// запрет изменений, лицензия не прошла повторную проверку, часы сервера
+	// отстают от отметки часов лицензии или от даты её выдачи.
+	ConditionLicenseExpiry     = "license_expiry"
+	ConditionLicenseGrace      = "license_grace"
+	ConditionLicenseRestricted = "license_restricted"
+	ConditionLicenseInvalid    = "license_invalid"
+	ConditionLicenseClock      = "license_clock"
+	licenseExpiryCritical      = ConditionLicenseExpiry + ":critical"
 )
 
 // AlertJobStaleAfter — возраст последнего прохода фоновой задачи правил
