@@ -443,6 +443,12 @@ var systemFamilies = map[string]string{
 	// ревью 3.r3).
 	"gateway_clock": BuiltinTimeSync,
 	"gateway_tls":   BuiltinConfigBundle,
+	// Лицензия (задача 4.26, ADR-0026, п. 8).
+	"license_expiry":     BuiltinLicenseExpiry,
+	"license_grace":      BuiltinLicenseExpiry,
+	"license_restricted": BuiltinLicenseExpiry,
+	"license_invalid":    BuiltinLicenseExpiry,
+	"license_clock":      BuiltinLicenseExpiry,
 }
 
 // systemRaise — оповещение по возникшему условию раздела 7 (запись
@@ -470,6 +476,8 @@ func systemRaise(r *audit.Record, d map[string]any) (Raise, bool) {
 		values["gateway"] = str(d["gateway_name"], strings.TrimPrefix(code, fam+":"))
 	case BuiltinAuditStream:
 		values["channel"] = str(d["channel_name"], strings.TrimPrefix(code, fam+":"))
+	case BuiltinLicenseExpiry:
+		values[LicenseStageField] = licenseStage(code, d)
 	case BuiltinCertExpiry:
 		// Условие ca_expiry (корень внутреннего УЦ) ведёт sysstatus с задачи
 		// 3В5; ca_expiry:critical — второе условие за 7 суток.
