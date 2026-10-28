@@ -126,6 +126,11 @@ const (
 	// Очередь подтверждений вызовов (задача 4.10, ADR-0023, раздел 9).
 	PermApprovalsRead   = "approvals.read"
 	PermApprovalsDecide = "approvals.decide"
+	// Теневой ИИ (ТЗ 5.11, DM-37; задача 4.22, ADR-0027, п. 7): сводки по
+	// журналам прокси — пользователи только псевдонимами; управление —
+	// импорт журналов, загрузка подписанного каталога, срок хранения.
+	PermShadowAIRead   = "shadow_ai.read"
+	PermShadowAIManage = "shadow_ai.manage"
 )
 
 // Permission — разрешение из каталога.
@@ -216,6 +221,8 @@ var permissionCatalog = []Permission{
 	// входит в чтение аудитора — подтверждает вызов человек (ADR-0023, раздел 9).
 	{Name: PermApprovalsDecide, Title: "Одобрение и отклонение вызовов инструментов агентов из очереди подтверждений",
 		Group: "Агенты", Security: true},
+	{Name: PermShadowAIRead, Title: "Просмотр сводок теневого ИИ (пользователи — псевдонимами), каталога сервисов и журнала импорта", Group: "Теневой ИИ"},
+	{Name: PermShadowAIManage, Title: "Импорт журналов прокси, загрузка подписанного каталога ИИ-сервисов, срок хранения сводок", Group: "Теневой ИИ"},
 }
 
 // auditorExtra — разрешения аудитора сверх чтения: они ничего не меняют,
@@ -404,13 +411,13 @@ var builtinRoles = []RoleDef{
 			PermModelPricesRead: ScopeAll, PermModelPricesManage: ScopeAll, PermBudgetsRead: ScopeAll, PermBudgetsManage: ScopeAll,
 			PermDashboardsRead: ScopeAll, PermGatewayTLSRead: ScopeAll, PermGatewayTLSManage: ScopeAll,
 			PermReportsRead: ScopeAll, PermReportSchedulesRead: ScopeAll, PermReportSchedulesManage: ScopeAll,
-			PermAgentsRead: ScopeAll, PermAgentsManage: ScopeAll}},
+			PermAgentsRead: ScopeAll, PermAgentsManage: ScopeAll, PermShadowAIRead: ScopeAll, PermShadowAIManage: ScopeAll}},
 	{ID: RoleAnalyst, DisplayName: "Аналитик", Builtin: true,
 		Description: "Разбор оповещений и инцидентов, поиск по событиям",
 		Grants: grantAll(PermSystemRead, PermEventsRead, PermEventsExport, PermEventsMark, PermApplicationsRead, PermProvidersRead,
 			PermPoliciesRead, PermPoliciesTest, PermAlertsRead, PermAlertsManage, PermAlertRulesRead, PermModelPricesRead, PermBudgetsRead,
 			PermDashboardsRead, PermIncidentsRead, PermIncidentsManage, PermIncidentsExport, PermReportsRead, PermAgentsRead,
-			PermApprovalsRead, PermApprovalsDecide)},
+			PermApprovalsRead, PermApprovalsDecide, PermShadowAIRead)},
 	{ID: RoleAuditor, DisplayName: "Аудитор", Builtin: true,
 		Description: "Только просмотр: журнал аудита, отчёты, состояние соответствия. Ничего не меняет",
 		Grants:      auditorPermissions()},

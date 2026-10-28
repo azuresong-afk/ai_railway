@@ -47,6 +47,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/policy/bundle/build"
 	"github.com/azuresong-afk/ai_railway/internal/policy/versions"
 	"github.com/azuresong-afk/ai_railway/internal/reports"
+	"github.com/azuresong-afk/ai_railway/internal/shadowai"
 	"github.com/azuresong-afk/ai_railway/internal/store"
 	"github.com/azuresong-afk/ai_railway/internal/sysstatus"
 	"github.com/azuresong-afk/ai_railway/web"
@@ -153,6 +154,18 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 			return fmt.Errorf("ключ проверки аудита: %w", err)
 		}
 	}
+	// Ключ псевдонимов пользователей (ADR-0027, п. 6) — тот же файл, что у
+	// шлюзов: логин из журнала прокси и из событий дают один псевдоним.
+	var userHMACKey []byte
+	var userMAC aisecCrypto.MAC
+	if cfg.UserHMACKey != "" {
+		if userHMACKey, err = aisecCrypto.ReadKeyFile(cfg.UserHMACKey); err != nil {
+			return fmt.Errorf("ключ псевдонимов пользователей: %w", err)
+		}
+		if userMAC, err = p.NewMAC(userHMACKey); err != nil {
+			return fmt.Errorf("ключ псевдонимов пользователей: %w", err)
+		}
+	}
 	checkpoints, err := audit.NewPGCheckpoints(db.Pool(), p, auditVerifier)
 	if err != nil {
 		return err
@@ -242,7 +255,7 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	integritySvc, err := startIntegrity(ctx, cfg, p, db, auditLog, logger, cancel, auditPubPEM, trust)
+	integritySvc, err := startIntegrity(ctx, cfg, p, db, auditLog, logger, cancel, auditPubPEM, userHMACKey, trust)
 	if err != nil {
 		return err
 	}
@@ -525,6 +538,30 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	}
 	go reportsSvc.Run(ctx, reports.TickInterval)
 
+	// Теневой ИИ (ТЗ 5.11, DM-37; задача 4.22, ADR-0027): каталог —
+	// подписанная служебная база, подпись сохранённого файла проверяется
+	// заново при запуске; сводки старше срока удаляются раз в час.
+	shadowStore, err := shadowai.NewPGStore(db.Pool(), auditLog)
+	if err != nil {
+		return err
+	}
+	shadowSvc, err := shadowai.New(shadowai.Options{Store: shadowStore, Provider: p, OrgID: audit.DefaultOrgID, UserMAC: userMAC,
+		Location: func(ctx context.Context) (*time.Location, error) {
+			tz, err := timezone(ctx)
+			if err != nil {
+				return nil, err
+			}
+			return time.LoadLocation(tz)
+		},
+		IDs: ids.NewGenerator(rnd), Logger: logger.With("component", "shadow_ai")})
+	if err != nil {
+		return err
+	}
+	if err := shadowSvc.Load(ctx); err != nil {
+		logger.Error("теневой ИИ: каталог не прочитан из БД", "class", "db", "error", err)
+	}
+	go shadowSvc.RunRetention(ctx, shadowai.RetentionInterval)
+
 	// Консоль отдаётся, только если она собрана (make web-build перед go build); иначе сервер — чистый API.
 	var console http.Handler
 	if dist, err := fs.Sub(web.Dist, "dist"); err == nil {
@@ -549,6 +586,7 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		Notify:     notifySvc,
 		Agents:     agentsSvc,
 		Approvals:  approvalsSvc,
+		ShadowAI:   shadowSvc,
 		Incidents:  incidentsSvc,
 		Dashboards: dashStore,
 		Reports:    reportsSvc,
@@ -729,7 +767,7 @@ func startAuditVerify(ctx context.Context, cfg *serverConfig, auditLog *audit.Lo
 // ключи подписи пакетов. Сертификаты TLS не наблюдаются: их меняют при
 // продлении.
 func startIntegrity(ctx context.Context, cfg *serverConfig, p aisecCrypto.Provider, db *store.DB, auditLog *audit.Log,
-	logger *slog.Logger, stop context.CancelCauseFunc, auditPubPEM []byte, trust *serverTrust) (integrity.Service, error) {
+	logger *slog.Logger, stop context.CancelCauseFunc, auditPubPEM, userHMACKey []byte, trust *serverTrust) (integrity.Service, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		exe = "" // проверка отметит исполняемый файл как нечитаемый
@@ -748,6 +786,9 @@ func startIntegrity(ctx context.Context, cfg *serverConfig, p aisecCrypto.Provid
 	}
 	if cfg.CACert != "" {
 		watch = append(watch, integrity.WatchFile{Path: cfg.CACert})
+	}
+	if cfg.UserHMACKey != "" {
+		watch = append(watch, integrity.WatchFile{Path: cfg.UserHMACKey, Data: userHMACKey})
 	}
 	if trust != nil {
 		watch = append(watch, trust.watch(cfg)...)

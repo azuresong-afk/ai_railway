@@ -164,6 +164,15 @@
 | GET | `/api/v1/roles/{id}` | `roles.read` | да | — | — | да | — | да |
 | PUT | `/api/v1/roles/{id}` | `roles.manage` | да | — | — | — | — | — |
 | DELETE | `/api/v1/roles/{id}` | `roles.manage` | да | — | — | — | — | — |
+| GET | `/api/v1/shadow-ai/catalog` | `shadow_ai.read` | да | да | да | да | — | да |
+| PUT | `/api/v1/shadow-ai/catalog` | `shadow_ai.manage` | да | да | — | — | — | да |
+| GET | `/api/v1/shadow-ai/imports` | `shadow_ai.read` | да | да | да | да | — | да |
+| POST | `/api/v1/shadow-ai/imports` | `shadow_ai.manage` | да | да | — | — | — | да |
+| GET | `/api/v1/shadow-ai/services` | `shadow_ai.read` | да | да | да | да | — | да |
+| GET | `/api/v1/shadow-ai/settings` | `shadow_ai.read` | да | да | да | да | — | да |
+| PUT | `/api/v1/shadow-ai/settings` | `shadow_ai.manage` | да | да | — | — | — | да |
+| GET | `/api/v1/shadow-ai/timeline` | `shadow_ai.read` | да | да | да | да | — | да |
+| GET | `/api/v1/shadow-ai/users` | `shadow_ai.read` | да | да | да | да | — | да |
 | GET | `/api/v1/system/info` | `system.read` | да | да | да | да | — | да |
 | GET | `/api/v1/system/integrity` | `system.read` | да | да | да | да | — | да |
 | POST | `/api/v1/system/integrity/verify` | `integrity.verify` | да | — | — | — | — | — |

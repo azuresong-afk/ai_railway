@@ -5260,6 +5260,263 @@ paths:
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ProblemInternal' }
         '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/shadow-ai/services:
+    get:
+      summary: Теневой ИИ — сервисы
+      description: |
+        Право `shadow_ai.read`. Публичные ИИ-сервисы из каталога, к которым обращались по импортированным
+        журналам прокси (DM-37; ADR-0027), по убыванию обращений, не больше 500. Период — `from`, `to`
+        (RFC 3339; по умолчанию последние 30 суток, не длиннее 1830 суток); `service` — только этот сервис.
+      x-permission: shadow_ai.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ShadowFrom'
+        - $ref: '#/components/parameters/ShadowTo'
+        - $ref: '#/components/parameters/ShadowService'
+      responses:
+        '200':
+          description: Сервисы за период
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ShadowServiceList' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/shadow-ai/users:
+    get:
+      summary: Теневой ИИ — пользователи
+      description: |
+        Право `shadow_ai.read`. Пользователи — только псевдонимами (HMAC на ключе псевдонимов, как в событиях,
+        ТЗ 5.5): `kind` `user` — логин из журнала, `address` — адрес клиента, если логина нет. Исходные логины
+        и адреса не хранятся. По убыванию обращений, не больше `limit` (по умолчанию и максимум 1000).
+      x-permission: shadow_ai.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ShadowFrom'
+        - $ref: '#/components/parameters/ShadowTo'
+        - $ref: '#/components/parameters/ShadowService'
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 1000 }
+      responses:
+        '200':
+          description: Пользователи за период
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ShadowUserList' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/shadow-ai/timeline:
+    get:
+      summary: Теневой ИИ — динамика
+      description: |
+        Право `shadow_ai.read`. Обращения, байты, число пользователей и сервисов по часам (`step=hour`, период не
+        длиннее 366 суток) или суткам (`step=day`, по умолчанию; сутки — в часовом поясе установки).
+      x-permission: shadow_ai.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ShadowFrom'
+        - $ref: '#/components/parameters/ShadowTo'
+        - $ref: '#/components/parameters/ShadowService'
+        - name: step
+          in: query
+          required: false
+          schema: { type: string, enum: [hour, day], default: day }
+      responses:
+        '200':
+          description: Динамика
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ShadowTimeline' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/shadow-ai/catalog:
+    get:
+      summary: Каталог ИИ-сервисов
+      description: |
+        Право `shadow_ai.read`. Загруженный каталог: версия, дата, номер заверения рабочего ключа и его срок,
+        отпечаток, сервисы. `valid: false` — подпись сохранённого файла не прошла проверку при запуске сервера
+        (файл в БД изменён): импорт невозможен до загрузки подписанного каталога.
+      x-permission: shadow_ai.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      responses:
+        '200':
+          description: Каталог
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ShadowCatalog' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    put:
+      summary: Загрузить каталог ИИ-сервисов
+      description: |
+        Право `shadow_ai.manage`. Тело — подписанный файл каталога из выпуска (`.aisecdb`, до 4 МиБ,
+        `Content-Type: application/octet-stream`; ADR-0027, пп. 2–4). Проверяются: заверение рабочего ключа
+        ключом производителя (назначение `service_db`, срок на текущее время, отзыв), подпись базы рабочим ключом,
+        вид базы, дата каталога в сроке заверения, строгий разбор YAML. Неверный файл — 422 (причина в тексте),
+        версия не больше загруженной — 409. Пишет `shadow_ai.catalog_loaded` или `shadow_ai.catalog_rejected`
+        с причиной, без содержимого файла.
+      x-permission: shadow_ai.manage
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: { type: string, format: binary, maxLength: 4194304 }
+      responses:
+        '200':
+          description: Каталог загружен
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ShadowCatalog' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '409': { $ref: '#/components/responses/ProblemConflict' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '422': { $ref: '#/components/responses/ProblemUnprocessable' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/shadow-ai/imports:
+    get:
+      summary: Журнал импорта
+      description: |
+        Право `shadow_ai.read`. Последние 100 импортов: формат, счётчики строк, номера первых ошибочных строк
+        (до 20, без содержимого), период, хеш файла. Имя файла и строки журнала не хранятся.
+      x-permission: shadow_ai.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      responses:
+        '200':
+          description: Импорты, новые первыми
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ShadowImportList' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    post:
+      summary: Импортировать журнал прокси
+      description: |
+        Право `shadow_ai.manage`. Тело — файл журнала целиком (до 256 МиБ; `text/plain`, `text/csv`,
+        `application/gzip` или `application/octet-stream`), разбирается потоком (ADR-0027, п. 5). Форматы:
+        `csv` — с заголовком (время, пользователь, домен или URL, байты; разделитель `,` или `;`), `squid` —
+        access.log в формате native, `cef` — CEF (в том числе UserGate, ArcSight). `compression=gzip` —
+        файл сжат (после распаковки до 1 ГиБ). Пределы: строка 16 КиБ (длиннее — ошибочная), 10 млн строк,
+        500 тыс. сочетаний сервиса, пользователя и часа, 10 минут. Сопоставление с каталогом — по точному имени
+        и суффиксу домена (DM-37). В БД — только сводки по сервису, псевдониму пользователя и часу; сырые
+        строки и URL не хранятся. Записи старше срока хранения не сохраняются (`outdated`). Повтор того же
+        файла — 409; каталог не загружен — 409; уже идёт импорт — 429 с `Retry-After`. Пишет
+        `shadow_ai.import` (счётчики, хеш, версия каталога).
+      x-permission: shadow_ai.manage
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+        - name: format
+          in: query
+          required: true
+          schema: { type: string, enum: [csv, squid, cef] }
+        - name: compression
+          in: query
+          required: false
+          schema: { type: string, enum: [gzip] }
+      requestBody:
+        required: true
+        content:
+          text/plain:
+            schema: { type: string, maxLength: 268435456 }
+          text/csv:
+            schema: { type: string, maxLength: 268435456 }
+          application/gzip:
+            schema: { type: string, format: binary, maxLength: 268435456 }
+          application/octet-stream:
+            schema: { type: string, format: binary, maxLength: 268435456 }
+      responses:
+        '201':
+          description: Журнал импортирован
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ShadowImport' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '409': { $ref: '#/components/responses/ProblemConflict' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '422': { $ref: '#/components/responses/ProblemUnprocessable' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/shadow-ai/settings:
+    get:
+      summary: Настройки теневого ИИ
+      description: |
+        Право `shadow_ai.read`. Срок хранения сводок, суток (по умолчанию 365), и задан ли серверу ключ
+        псевдонимов пользователей (`users_pseudonymized`; без него пользователи из журналов не учитываются).
+      x-permission: shadow_ai.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      responses:
+        '200':
+          description: Настройки
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ShadowSettings' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    put:
+      summary: Изменить срок хранения сводок теневого ИИ
+      description: |
+        Право `shadow_ai.manage`. Срок — от 30 до 1825 суток; сводки старше срока удаляются фоновой задачей раз в
+        час (`shadow_ai.retention`). Сокращение необратимо и требует текущего пароля (`password`) или кода TOTP
+        (`code`) в сессии консоли (токеном API — 403); неверное значение — 403 `reauthentication_failed`;
+        пишется с `weakening: true` (DM-40). До первичной настройки — 409. Пишет `shadow_ai.settings_changed`.
+      x-permission: shadow_ai.manage
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ShadowSettingsUpdate' }
+      responses:
+        '200':
+          description: Срок изменён
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ShadowSettings' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '409': { $ref: '#/components/responses/ProblemConflict' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
 components:
   securitySchemes:
     appKey:
@@ -5281,6 +5538,24 @@ components:
         признаком `security` и на токены токену недоступны. Операции, доступные токену,
         перечисляют `bearerToken` в `security`. Каждый запрос пишет `api_token.used`.
   parameters:
+    ShadowFrom:
+      name: from
+      in: query
+      required: false
+      description: Начало периода (RFC 3339); по умолчанию — за 30 суток до `to`
+      schema: { type: string, format: date-time }
+    ShadowTo:
+      name: to
+      in: query
+      required: false
+      description: Конец периода (RFC 3339, не включается); по умолчанию — текущее время
+      schema: { type: string, format: date-time }
+    ShadowService:
+      name: service
+      in: query
+      required: false
+      description: ID сервиса каталога
+      schema: { type: string, pattern: '^[a-z0-9][a-z0-9-]{0,63}$' }
     Limit:
       name: limit
       in: query
@@ -7871,6 +8146,117 @@ components:
       additionalProperties: false
       properties:
         retention_days: { type: integer, minimum: 365, maximum: 1825 }
+        password: { type: string, maxLength: 1024, format: password, description: 'Текущий пароль, если срок сокращается' }
+        code: { type: string, maxLength: 64, description: 'Код из приложения-аутентификатора вместо пароля' }
+    ShadowServiceStat:
+      type: object
+      required: [id, name, vendor, category, requests, bytes, users, first_seen, last_seen]
+      properties:
+        id: { type: string }
+        name: { type: string, description: 'Название из каталога; нет в текущем каталоге — ID' }
+        vendor: { type: string }
+        category: { type: string, description: 'chat, api, code, image, search, platform; пусто — нет в текущем каталоге' }
+        requests: { type: integer, format: int64 }
+        bytes: { type: integer, format: int64 }
+        users: { type: integer, format: int64, description: 'Разных пользователей (псевдонимов)' }
+        first_seen: { type: string, format: date-time, description: 'Начало первого часа с обращениями' }
+        last_seen: { type: string, format: date-time, description: 'Начало последнего часа с обращениями' }
+    ShadowServiceList:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, maxItems: 500, items: { $ref: '#/components/schemas/ShadowServiceStat' } }
+    ShadowUserStat:
+      type: object
+      required: [alias, kind, requests, bytes, services, last_seen]
+      properties:
+        alias: { type: string, pattern: '^[0-9a-f]{32}$', description: 'Псевдоним (как user_hash в событиях)' }
+        kind: { type: string, enum: [user, address] }
+        requests: { type: integer, format: int64 }
+        bytes: { type: integer, format: int64 }
+        services: { type: array, items: { type: string } }
+        last_seen: { type: string, format: date-time }
+    ShadowUserList:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, maxItems: 1000, items: { $ref: '#/components/schemas/ShadowUserStat' } }
+    ShadowPoint:
+      type: object
+      required: [bucket, requests, bytes, users, services]
+      properties:
+        bucket: { type: string, format: date-time, description: 'Начало часа или суток (сутки — в часовом поясе установки)' }
+        requests: { type: integer, format: int64 }
+        bytes: { type: integer, format: int64 }
+        users: { type: integer, format: int64 }
+        services: { type: integer, format: int64 }
+    ShadowTimeline:
+      type: object
+      required: [step, items]
+      properties:
+        step: { type: string, enum: [hour, day] }
+        items: { type: array, items: { $ref: '#/components/schemas/ShadowPoint' } }
+    ShadowCatalogService:
+      type: object
+      required: [id, name, vendor, category, domains, suffixes]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        vendor: { type: string }
+        category: { type: string, enum: [chat, api, code, image, search, platform] }
+        domains: { type: array, items: { type: string }, description: 'Точные имена узлов' }
+        suffixes: { type: array, items: { type: string }, description: 'Имя и все его поддомены' }
+    ShadowCatalog:
+      type: object
+      required: [loaded, valid, services]
+      properties:
+        loaded: { type: boolean, description: 'Каталог загружали' }
+        valid: { type: boolean, description: 'Подпись сохранённого каталога проверена' }
+        version: { type: integer, format: int64 }
+        date: { type: string, format: date }
+        subkey_serial: { type: integer, format: int64, description: 'Номер заверения рабочего ключа' }
+        subkey_not_after: { type: string, format: date-time, description: 'Конец срока заверения рабочего ключа' }
+        fingerprint: { type: string, description: 'Отпечаток рабочего ключа' }
+        uploaded_at: { type: string, format: date-time }
+        services: { type: array, items: { $ref: '#/components/schemas/ShadowCatalogService' } }
+    ShadowImport:
+      type: object
+      required: [id, created_at, created_by, catalog_version, format, lines, matched, unmatched, errors, outdated,
+        error_lines, users_pseudonymized, sha256, services]
+      properties:
+        id: { type: string, format: uuid }
+        created_at: { type: string, format: date-time }
+        created_by: { type: string, description: 'Тип и ID субъекта' }
+        catalog_version: { type: integer, format: int64 }
+        format: { type: string, enum: [csv, squid, cef] }
+        lines: { type: integer, format: int64, description: 'Строк в файле, без пустых и заголовка CSV' }
+        matched: { type: integer, format: int64, description: 'Обращений к сервисам каталога' }
+        unmatched: { type: integer, format: int64, description: 'Обращений к прочим узлам и адресам IP' }
+        errors: { type: integer, format: int64, description: 'Строк, которые не разобраны' }
+        outdated: { type: integer, format: int64, description: 'Обращений старше срока хранения (не сохранены)' }
+        error_lines: { type: array, maxItems: 20, items: { type: integer, format: int64 }, description: 'Номера первых ошибочных строк, без содержимого' }
+        from: { type: string, format: date-time }
+        to: { type: string, format: date-time }
+        users_pseudonymized: { type: boolean, description: 'false — ключа псевдонимов нет, пользователи не учтены' }
+        sha256: { type: string, pattern: '^[0-9a-f]{64}$', description: 'Хеш файла после распаковки' }
+        services: { type: integer, description: 'Разных сервисов найдено' }
+    ShadowImportList:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, maxItems: 100, items: { $ref: '#/components/schemas/ShadowImport' } }
+    ShadowSettings:
+      type: object
+      required: [retention_days, users_pseudonymized]
+      properties:
+        retention_days: { type: integer, minimum: 30, maximum: 1825 }
+        users_pseudonymized: { type: boolean }
+    ShadowSettingsUpdate:
+      type: object
+      required: [retention_days]
+      additionalProperties: false
+      properties:
+        retention_days: { type: integer, minimum: 30, maximum: 1825 }
         password: { type: string, maxLength: 1024, format: password, description: 'Текущий пароль, если срок сокращается' }
         code: { type: string, maxLength: 64, description: 'Код из приложения-аутентификатора вместо пароля' }
     NotifyChannelSettings:
