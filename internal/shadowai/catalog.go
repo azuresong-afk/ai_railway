@@ -251,7 +251,7 @@ func NormalizeHost(h string) (string, bool) {
 		}
 		h = h[:i]
 	}
-	h = strings.TrimSuffix(h, ".")
+	h = strings.TrimRight(h, ".")
 	if h == "" || len(h) > maxHostLen {
 		return "", false
 	}
