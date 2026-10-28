@@ -61,6 +61,9 @@ const (
 	ReasonOverused      = "overused"       // израсходовано больше выданного
 	ReasonRereported    = "rereported"     // повторный отчёт с другим числом
 	ReasonReusedRequest = "reused_request" // ID запроса уже выдал аренду другой квоты
+	// ReasonOfflineOverclaim — автономный расход за окно больше доли шлюза;
+	// запрос не отклоняется, лишнее не учитывается (4В19 ревью 4.r2).
+	ReasonOfflineOverclaim = "offline_overclaim"
 )
 
 // Settings — режим квот установки.

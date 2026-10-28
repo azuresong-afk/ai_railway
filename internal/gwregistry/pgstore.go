@@ -472,7 +472,23 @@ func (s *PGStore) Revoke(ctx context.Context, orgID, name string, now time.Time,
 		if err != nil {
 			return fmt.Errorf("реестр шлюзов: отзыв: %w", err)
 		}
-		return s.record(ctx, tx, rec(gw))
+		// Неотчитанные аренды и заявленный автономный расход отозванного
+		// шлюза больше не занимают квоты и бюджеты приложений (4В19 ревью
+		// 4.r2): иначе скомпрометированный шлюз держал бы их до конца
+		// суток или месяца. Число освобождённых выдач — в записи аудита.
+		tag, err := tx.Exec(ctx, `DELETE FROM quota_grants WHERE org_id = $1 AND gateway_id = $2
+			AND ((kind = 'lease' AND used IS NULL) OR kind = 'offline')`, orgID, cur.ID)
+		if err != nil {
+			return fmt.Errorf("реестр шлюзов: выдачи квот: %w", err)
+		}
+		e := rec(gw)
+		switch d := e.Details.(type) {
+		case map[string]any:
+			d["quota_grants_released"] = tag.RowsAffected()
+		case nil:
+			e.Details = map[string]any{"quota_grants_released": tag.RowsAffected()}
+		}
+		return s.record(ctx, tx, e)
 	})
 	return gw, err
 }

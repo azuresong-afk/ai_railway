@@ -175,6 +175,11 @@ func TestShare(t *testing.T) {
 		{"давняя", 100, 1, 3, minute, &prevGrant{granted: 34, recent: false}, 34},
 		{"удвоение не больше лимита", 100, 1, 3, minute, &prevGrant{granted: 80, recent: true}, 100},
 		{"предел чисел", MaxUnits, 1, 1, minute, &prevGrant{granted: MaxUnits, recent: true}, MaxUnits},
+		// 4В19 ревью 4.r2.
+		{"сутки — want не больше равной доли", 10000, MaxUnits, 3, day, nil, 3334},
+		{"минута — want как есть", 100, 100, 3, minute, nil, 100},
+		{"две неотчитанные — удвоение", 100, 1, 3, minute, &prevGrant{granted: 34, recent: true, unreported: 2}, 68},
+		{"три неотчитанные — без удвоения", 100, 1, 3, minute, &prevGrant{granted: 34, recent: true, unreported: 3}, 34},
 	} {
 		if got := share(c.limit, c.want, c.gw, c.w, c.prev); got != c.expect {
 			t.Errorf("%s: %d, ожидается %d", c.name, got, c.expect)
