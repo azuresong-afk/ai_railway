@@ -222,7 +222,7 @@ func TestLicenseRestrictionsViaAPI(t *testing.T) {
 	// Права проверяются раньше лицензии: аналитик получает обычный отказ.
 	mustProblem(t, le.call(analyst, "POST", "/api/v1/providers", `{"slug":"llm-c"}`, true), 403, CodeForbidden)
 	// Исключение: своя учётная запись.
-	if w := le.call(sys, "PUT", "/api/v1/me/email", `{"email":"sysadm@example.ru"}`, true); w.Code != 200 {
+	if w := le.call(sys, "PUT", "/api/v1/me/email", `{"email":"sysadm@example.ru","password":"`+tPhrase+`"}`, true); w.Code != 200 {
 		t.Fatalf("свой e-mail: %d %s", w.Code, w.Body)
 	}
 
