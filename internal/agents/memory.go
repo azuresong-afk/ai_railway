@@ -89,7 +89,7 @@ func (m *Memory) CreateServer(_ context.Context, s MCPServer, rec audit.Entry) e
 }
 
 // UpdateServer — см. Store.
-func (m *Memory) UpdateServer(_ context.Context, orgID, id string, fn func(*MCPServer) (audit.Entry, error)) (MCPServer, error) {
+func (m *Memory) UpdateServer(_ context.Context, orgID, id string, fn func(*MCPServer, []Tool) (ServerUpdate, error)) (MCPServer, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	s, ok := m.servers[id]
@@ -97,12 +97,23 @@ func (m *Memory) UpdateServer(_ context.Context, orgID, id string, fn func(*MCPS
 		return MCPServer{}, ErrNotFound
 	}
 	s = cloneServer(s)
-	rec, err := fn(&s)
+	var tools []Tool
+	for _, t := range m.tools {
+		if t.OrgID == orgID && t.ServerID == id {
+			tools = append(tools, cloneTool(t))
+		}
+	}
+	slices.SortFunc(tools, func(a, b Tool) int { return cmp.Compare(a.Name, b.Name) })
+	upd, err := fn(&s, tools)
 	if err != nil {
 		return MCPServer{}, err
 	}
 	m.servers[id] = cloneServer(s)
-	m.records = append(m.records, rec)
+	for _, t := range upd.Tools {
+		m.tools[t.ID] = cloneTool(t)
+	}
+	m.records = append(m.records, upd.Entry)
+	m.records = append(m.records, upd.ToolEntries...)
 	return s, nil
 }
 
