@@ -387,13 +387,35 @@ release-sign: ## Подписать манифест поставки ключо
 	go run ./tools/manifest sign -key '$(MANIFEST_KEY)' -manifest $(RELEASE_DIR)/aisec-manifest.json \
 		$(if $(MANIFEST_SHA256),-expect-sha256 '$(MANIFEST_SHA256)')
 
+# Каталог выпуска подписан ключом производителя (ревью 4.r1, 4В11):
+# verify -manifest при тестовом ключе только предупреждает, поэтому выпуск
+# проверяет aisec-cli из каталога с -release, и отказ — при тестовом ключе,
+# при отпечатке ключа в бинарниках, отличном от VENDOR_PUB, и при версии
+# манифеста, отличной от VERSION.
+VENDOR_PUB ?= internal/integrity/keys/manifest.pub
+
+.PHONY: release-signed-check
+release-signed-check: ## Каталог выпуска подписан ключом производителя VENDOR_PUB, версия манифеста — VERSION (ADR-0022)
+	@mkdir -p $(BUILD)
+	@$(RELEASE_DIR)/bin/aisec-cli verify -release $(RELEASE_DIR) -allow-older >$(BUILD)/release-verify.out || \
+		{ cat $(BUILD)/release-verify.out; echo "release-signed-check: каталог выпуска не прошёл проверку"; exit 1; }
+	@cat $(BUILD)/release-verify.out
+	@! grep -q 'тестовым ключом' $(BUILD)/release-verify.out || \
+		{ echo "release-signed-check: каталог выпуска собран с тестовым ключом — make release-dir RELEASE=1 и подпись ключом производителя"; exit 1; }
+	@got=$$(sed -n 's/^Отпечаток ключа производителя: //p' $(BUILD)/release-verify.out | tail -n 1); \
+		want=$$(go run ./tools/manifest fingerprint -pub '$(VENDOR_PUB)') || exit 1; \
+		test -n "$$got" && test "$$got" = "$$want" || \
+		{ echo "release-signed-check: бинарники выпуска проверяют подпись ключом $$got, а $(VENDOR_PUB) — $$want"; exit 1; }
+	@v=$$(sed -n 's/^  "version": "\([^"]*\)",$$/\1/p' $(RELEASE_DIR)/aisec-manifest.json); \
+		test "$$v" = '$(VERSION)' || { echo "release-signed-check: версия манифеста $$v не совпадает с VERSION=$(VERSION)"; exit 1; }
+
 .PHONY: images
 images: ## Образы поставки пилота из подписанного каталога выпуска — только RELEASE=1 (Н34, ADR-0022): сборка, SBOM, проверка (ЗИ.5)
 	@test '$(RELEASE)' = 1 || { echo "images: только RELEASE=1 (Н34); образы с тестовым ключом, не для поставки — make images-test"; exit 1; }
 	$(release-tree-check)
 	@test -s $(RELEASE_DIR)/aisec-manifest.json.sig || { echo "images: нет $(RELEASE_DIR)/aisec-manifest.json.sig — make release-dir RELEASE=1, затем подпись на машине без сети (make release-sign)"; exit 1; }
 	$(MAKE) release-test
-	$(RELEASE_DIR)/bin/aisec-cli verify -manifest $(RELEASE_DIR)/aisec-manifest.json
+	$(MAKE) --no-print-directory release-signed-check
 	$(MAKE) --no-print-directory release-fingerprint
 	$(MAKE) images-build
 
