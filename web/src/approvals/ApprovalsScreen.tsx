@@ -9,6 +9,7 @@ import { formatAbsolute } from "../events/format";
 import { Button } from "../ui/Button";
 import { Field, Input, Select } from "../ui/Field";
 import { Banner, EmptyState, Panel, RawText } from "../ui/Layout";
+import { hasInvisible, revealInvisible } from "../ui/reveal";
 import { type Approval, type ApprovalState, approvalsApi } from "./api";
 import { formatCountdown, useCountdown } from "./countdown";
 
@@ -74,7 +75,9 @@ function ApprovalCard({ a, canDecide, canSession, mfa, visible }: { a: Approval;
   const deny = useMutation({ mutationFn: () => approvalsApi.deny(a.id, comment), onSuccess: settle, onError: async (e) => {
       if (isConflict(e)) await settle();
     } });
-  const critical = a.risk === "critical";
+  // Скрытые символы в аргументах (4В20 ревью 4.r2) — показываются маркерами, одобрение — с повторной проверкой, как при critical.
+  const hidden = !!shown?.args && hasInvisible(shown.args);
+  const critical = a.risk === "critical" || hidden;
   const busy = approve.isPending || deny.isPending;
   const conflict = conflictText(approve.error ?? deny.error, "Запрос изменился или уже закрыт. Данные обновлены, проверьте их и повторите.");
 
@@ -125,7 +128,18 @@ function ApprovalCard({ a, canDecide, canSession, mfa, visible }: { a: Approval;
           <h3 className="text-sm font-medium">Аргументы (персональные данные и секреты заменены категорией)</h3>
           {detail.isPending && <p className="text-sm text-muted">Загрузка аргументов…</p>}
           <ErrorBanner error={detail.error} />
-          {shown && (shown.args_deleted ? <p className="text-sm text-muted">Аргументы удалены по сроку хранения.</p> : <RawText>{shown.args ?? ""}</RawText>)}
+          {hidden && (
+            <Banner kind="error">
+              В аргументах есть скрытые управляющие символы: они могут менять видимый порядок текста. Ниже они показаны как ⟦U+…⟧. Проверьте
+              аргументы внимательно.
+            </Banner>
+          )}
+          {shown &&
+            (shown.args_deleted ? (
+              <p className="text-sm text-muted">Аргументы удалены по сроку хранения.</p>
+            ) : (
+              <RawText>{revealInvisible(shown.args ?? "")}</RawText>
+            ))}
         </section>
       )}
       {canDecide && pending && (
@@ -135,7 +149,9 @@ function ApprovalCard({ a, canDecide, canSession, mfa, visible }: { a: Approval;
           </Field>
           {critical && (
             <>
-              <Banner kind="warning">Риск критический: для одобрения нужно подтвердить, что это вы.</Banner>
+              <Banner kind="warning">
+                {hidden ? "В аргументах скрытые символы" : "Риск критический"}: для одобрения нужно подтвердить, что это вы.
+              </Banner>
               <SecretField mfa={mfa} value={secret} onChange={setSecret} />
             </>
           )}
