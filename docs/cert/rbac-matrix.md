@@ -152,6 +152,8 @@
 | DELETE | `/api/v1/providers/{id}` | `providers.manage` | да | да | — | — | — | да |
 | PUT | `/api/v1/providers/{id}/credentials` | `providers.manage` | да | да | — | — | — | да |
 | PUT | `/api/v1/providers/{id}/external` | `providers.external` | да | — | — | — | — | — |
+| GET | `/api/v1/quota-settings` | `budgets.read` | да | да | да | да | — | да |
+| PUT | `/api/v1/quota-settings` | `quota_mode.manage` | да | да | — | — | — | да |
 | GET | `/api/v1/report-channels` | `reports.schedules.manage` | да | да | — | — | — | да |
 | GET | `/api/v1/report-recipients` | `reports.schedules.manage` | да | да | — | — | — | да |
 | GET | `/api/v1/report-schedules` | `reports.schedules.read` | да | да | — | да | — | да |

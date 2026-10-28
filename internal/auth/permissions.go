@@ -91,6 +91,11 @@ const (
 	PermModelPricesManage = "model_prices.manage"
 	PermBudgetsRead       = "budgets.read"
 	PermBudgetsManage     = "budgets.manage"
+	// Режим квот при нескольких шлюзах (ADR-0021, задача 4.29): local или
+	// leased. Переход на local при нескольких шлюзах на связи — ослабление
+	// (DM-40) с повторной проверкой; право не относится к безопасности, как
+	// и бюджеты, чтение — по budgets.read.
+	PermQuotaModeManage = "quota_mode.manage"
 	// Дашборды (ТЗ 5.8, задача 3.19 этапа 3): агрегаты без содержимого
 	// запросов. Со ScopeOwn (владелец приложения) — только дашборд «Приложение»
 	// своих приложений (УПД.8); остальные дашборды видят роли со ScopeAll.
@@ -209,6 +214,7 @@ var permissionCatalog = []Permission{
 	{Name: PermModelPricesManage, Title: "Задание, изменение и удаление цен моделей", Group: "Потребление"},
 	{Name: PermBudgetsRead, Title: "Просмотр бюджетов и расхода приложений", Group: "Потребление"},
 	{Name: PermBudgetsManage, Title: "Задание, изменение и снятие бюджетов приложений", Group: "Потребление"},
+	{Name: PermQuotaModeManage, Title: "Изменение режима учёта квот и бюджетов при нескольких шлюзах (local или leased)", Group: "Потребление"},
 	{Name: PermReportsRead, Title: "Построение и выгрузка отчётов: сводный, по инцидентам, «Итоги пилота»", Group: "Отчёты", Ownable: true},
 	{Name: PermReportSchedulesRead, Title: "Просмотр расписаний рассылки отчётов и журнала рассылки", Group: "Отчёты"},
 	{Name: PermReportSchedulesManage, Title: "Создание, изменение и удаление расписаний рассылки отчётов", Group: "Отчёты"},
@@ -417,7 +423,7 @@ var builtinRoles = []RoleDef{
 			PermApplicationsRead: ScopeAll, PermApplicationsManage: ScopeAll, PermAppKeysManage: ScopeAll,
 			PermProvidersRead: ScopeAll, PermProvidersManage: ScopeAll, PermPoliciesRead: ScopeAll, PermPoliciesTest: ScopeAll,
 			PermModelPricesRead: ScopeAll, PermModelPricesManage: ScopeAll, PermBudgetsRead: ScopeAll, PermBudgetsManage: ScopeAll,
-			PermDashboardsRead: ScopeAll, PermGatewayTLSRead: ScopeAll, PermGatewayTLSManage: ScopeAll,
+			PermQuotaModeManage: ScopeAll, PermDashboardsRead: ScopeAll, PermGatewayTLSRead: ScopeAll, PermGatewayTLSManage: ScopeAll,
 			PermReportsRead: ScopeAll, PermReportSchedulesRead: ScopeAll, PermReportSchedulesManage: ScopeAll,
 			PermAgentsRead: ScopeAll, PermAgentsManage: ScopeAll, PermShadowAIRead: ScopeAll, PermShadowAIManage: ScopeAll,
 			PermLicenseRead: ScopeAll, PermLicenseManage: ScopeAll}},

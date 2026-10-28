@@ -279,6 +279,54 @@ paths:
         '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ProblemInternal' }
+  /internal/v1/quota-leases:
+    post:
+      summary: Аренда квот и жёстких бюджетов (задача 4.29, ADR-0021)
+      description: |
+        Только в режиме квот `leased` (пакет конфигурации с `quota_mode: leased`;
+        иначе 409). Шлюз одним запросом просит долю квот `requests_per_minute`,
+        `tokens_per_minute`, `tokens_per_day` и жёсткого бюджета (`budget`, в
+        1e-7 ₽) для приложений своего пакета и сообщает израсходованное из
+        прошлых аренд (`reports`) и расход на автономной доле (`offline`), пока
+        сервер был недоступен. Сервер учитывает выданное сразу при выдаче,
+        поэтому сумма выданного в окне не больше лимита при любом числе
+        шлюзов: минутные квоты — скользящая минута, аренда на 10 секунд;
+        суточная квота и бюджет — календарные сутки и месяц в часовом поясе
+        установки, аренда на 5 минут и не дальше границы окна. Неизрасходованный
+        остаток аренды возвращается в окно отчётом; аренда без отчёта
+        учитывается полностью. `request_id` (UUID шлюза) делает запрос
+        идемпотентным: повтор возвращает ту же выдачу и не учитывает
+        `offline` ещё раз. `granted: 0` — свободного остатка нет,
+        `retry_after_ms` — когда освободится. Отчёт об аренде не этого шлюза,
+        приложения или квоты, израсходовано больше выданного или повторный
+        отчёт с другим числом — 400 для всего запроса и `quota.lease_violation`
+        в аудите. До 2 000 приложений, тело до 64 КиБ. Не чаще 10 запросов в
+        секунду на шлюз (по сертификату, не по адресу) — иначе 429 с
+        `Retry-After`. Срок аренды шлюз отсчитывает по своим монотонным часам
+        от отправки запроса.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/QuotaLeaseRequest' }
+      responses:
+        '200':
+          description: Выдачи
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/QuotaLeaseResponse' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '409':
+          description: Установка в режиме квот `local` или не настроена (`conflict`)
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
   /internal/v1/approvals:
     post:
       summary: Запрос подтверждения вызова инструмента (задача 4.10, ADR-0023, раздел 5)
@@ -402,7 +450,7 @@ components:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }
     ProblemTooLarge:
-      description: Тело больше предела маршрута — heartbeat 1 МиБ, пакет событий и описания инструментов 8 МиБ, отчёт о пакете 1 КиБ, перевыпуск сертификата 16 КиБ (`payload_too_large`)
+      description: Тело больше предела маршрута — heartbeat 1 МиБ, пакет событий и описания инструментов 8 МиБ, отчёт о пакете 1 КиБ, перевыпуск сертификата 16 КиБ, аренда квот 64 КиБ (`payload_too_large`)
       content:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }
@@ -605,6 +653,81 @@ components:
             которых нет в списке и которые созданы больше минуты назад,
             закрываются как `interrupted` (шлюз перезапустился). С `stopping` —
             закрываются все ожидающие запросы шлюза. Нет поля — сверки нет.
+        quota_autonomous:
+          type: boolean
+          description: |
+            Шлюз в режиме квот `leased` работает на автономной доле: сервер
+            недоступен для аренды (задача 4.29). Только после ответа с
+            `quota_leases: true`. Сервер ведёт условие «Состояния системы»
+            `quota_autonomous` (признак держится 3 минуты после heartbeat).
+    QuotaLeaseRequest:
+      type: object
+      required: [apps]
+      additionalProperties: false
+      properties:
+        apps:
+          type: array
+          minItems: 1
+          maxItems: 2000
+          items:
+            type: object
+            required: [app, quotas]
+            additionalProperties: false
+            properties:
+              app: { type: string, pattern: '^[a-z0-9][a-z0-9-]{0,62}$', description: 'ID (slug) приложения из пакета шлюза, без повторов' }
+              quotas:
+                type: array
+                minItems: 1
+                maxItems: 4
+                items:
+                  type: object
+                  required: [quota, request_id, want]
+                  additionalProperties: false
+                  properties:
+                    quota: { type: string, enum: [requests_per_minute, tokens_per_minute, tokens_per_day, budget], description: 'Без повторов у приложения' }
+                    request_id: { type: string, format: uuid, description: 'UUID запроса шлюза, без повторов в запросе; повтор с тем же ID возвращает ту же выдачу' }
+                    want: { type: integer, format: int64, minimum: 0, maximum: 4611686018427387904, description: 'Сколько единиц нужно сейчас (0 — только отчёт); сервер выдаёт не меньше, если свободно' }
+                    offline: { type: integer, format: int64, minimum: 0, maximum: 4611686018427387904, description: 'Израсходовано на автономной доле с прошлого успешного запроса (учитывается у tokens_per_day и budget)' }
+                    reports:
+                      type: array
+                      maxItems: 8
+                      items:
+                        type: object
+                        required: [lease, used]
+                        additionalProperties: false
+                        properties:
+                          lease: { type: string, format: uuid, description: 'ID аренды этого шлюза, приложения и квоты; без повторов в запросе' }
+                          used: { type: integer, format: int64, minimum: 0, maximum: 4611686018427387904, description: 'Израсходовано, не больше выданного' }
+    QuotaLeaseResponse:
+      type: object
+      required: [server_time, gateways, apps]
+      properties:
+        server_time: { type: string, format: date-time }
+        gateways: { type: integer, minimum: 0, description: 'Действующих шлюзов на связи — для автономной доли' }
+        apps:
+          type: array
+          items:
+            type: object
+            required: [app, quotas]
+            properties:
+              app: { type: string }
+              quotas:
+                type: array
+                description: 'Выдачи по квотам с want больше 0'
+                items:
+                  type: object
+                  required: [quota, request_id, granted, ttl_ms, remaining, limit]
+                  properties:
+                    quota: { type: string }
+                    request_id: { type: string, format: uuid }
+                    lease: { type: string, format: uuid, description: 'ID аренды для отчёта; нет — ничего не выдано' }
+                    granted: { type: integer, format: int64, minimum: 0 }
+                    ttl_ms: { type: integer, format: int64, minimum: 0, description: 'Срок аренды от отправки запроса по часам шлюза' }
+                    remaining: { type: integer, format: int64, minimum: 0, description: 'Свободный остаток окна после выдачи' }
+                    limit: { type: integer, format: int64, minimum: 0 }
+                    retry_after_ms: { type: integer, format: int64, minimum: 0, description: 'При granted 0 — когда освободится' }
+                    unlimited: { type: boolean, description: 'У приложения нет этого лимита — шлюз не ограничивает' }
+                    unknown: { type: boolean, description: 'Приложения нет среди действующих' }
     BudgetReport:
       description: |
         Нарастающие счётчики расхода процесса шлюза (`started_at`) с его
@@ -676,6 +799,11 @@ components:
           description: |
             Сервер ведёт очередь подтверждений и принимает `approvals_pending`
             (задача 4.10): шлюз присылает список только после такого ответа.
+        quota_leases:
+          type: boolean
+          description: |
+            Сервер выдаёт аренду квот и принимает `quota_autonomous` (задача
+            4.29): шлюз присылает поле только после такого ответа.
         reissue:
           type: boolean
           description: |

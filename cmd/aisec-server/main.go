@@ -47,6 +47,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/notify"
 	"github.com/azuresong-afk/ai_railway/internal/policy/bundle/build"
 	"github.com/azuresong-afk/ai_railway/internal/policy/versions"
+	"github.com/azuresong-afk/ai_railway/internal/quotalease"
 	"github.com/azuresong-afk/ai_railway/internal/reports"
 	"github.com/azuresong-afk/ai_railway/internal/shadowai"
 	"github.com/azuresong-afk/ai_railway/internal/store"
@@ -419,6 +420,20 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	go events.RunAggregates(ctx, eventStore, events.AggregateEvery, logger)
 	go dashStore.RunBackfill(ctx, events.DashBackfillEvery)
 
+	// Распределённые квоты (задача 4.29, ADR-0021): аренда квот и жёстких
+	// бюджетов шлюзам на внутреннем порту, режим — в консоли; выдачи старше
+	// двух окон удаляются раз в минуту.
+	quotaStore, err := quotalease.NewPGStore(db.Pool(), auditLog)
+	if err != nil {
+		return err
+	}
+	quotaSvc, err := quotalease.New(quotalease.Options{Store: quotaStore, IDs: ids.NewGenerator(rnd), OrgID: audit.DefaultOrgID,
+		Logger: logger.With("component", "quota_lease")})
+	if err != nil {
+		return err
+	}
+	go quotaSvc.RunCleanup(ctx, quotalease.CleanupInterval)
+
 	// «Состояние системы» (задача 2.20): шлюзы читаются из реестра и без
 	// внутреннего УЦ; уведомления ВРМ.1, РСБ.5, ОЦЛ.5 пишутся в аудит при
 	// смене состояния, раз в минуту.
@@ -450,7 +465,7 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		gateways.SetAdmission(licSvc.CheckGateway)
 	}
 	statusSvc, err := newStatus(ctx, cfg, db, auditLog, integritySvc, selftestRes, bundleHealth(&bundleSvc), timezone, caNotAfter,
-		licSvc.State, logger)
+		licSvc.State, quotaHealth(quotaSvc), logger)
 	if err != nil {
 		return err
 	}
@@ -607,6 +622,7 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		Approvals:  approvalsSvc,
 		ShadowAI:   shadowSvc,
 		License:    licSvc,
+		Quotas:     quotaSvc,
 		Incidents:  incidentsSvc,
 		Dashboards: dashStore,
 		Reports:    reportsSvc,
@@ -633,15 +649,17 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	if gateways != nil {
 		// Пакеты конфигурации (задача 2.13): без ключа подписи внутренний
 		// порт не открывается — шлюзы не получили бы конфигурацию.
-		bundleRoutes, bsvc, err := newBundleRoutes(cfg, p, db, auditLog, appsSvc, policiesSvc, agentsSvc, gateways, trust, authSvc.IdPKeys, logger)
+		bundleRoutes, bsvc, err := newBundleRoutes(cfg, p, db, auditLog, appsSvc, policiesSvc, agentsSvc, gateways, trust, authSvc.IdPKeys,
+			quotaSvc.Mode, logger)
 		if err != nil {
 			return err
 		}
 		bundleRoutes = append(bundleRoutes, api.AgentsInternalRoutes(agentsSvc, logger.With("listener", "internal"))...)
 		bundleRoutes = append(bundleRoutes, api.ApprovalsInternalRoutes(approvalsSvc, logger.With("listener", "internal"))...)
+		bundleRoutes = append(bundleRoutes, api.QuotaInternalRoutes(quotaSvc, logger.With("listener", "internal"))...)
 		bundleSvc.Store(bsvc)
-		internal, err := newInternalServer(ctx, cfg, tp, hasher, gateways, eventStore, approvalsSvc, ca, certPEM, keyPEM, bundleRoutes,
-			logger)
+		internal, err := newInternalServer(ctx, cfg, tp, hasher, gateways, eventStore, approvalsSvc, quotaSvc, ca, certPEM, keyPEM,
+			bundleRoutes, logger)
 		if err != nil {
 			return err
 		}
@@ -655,6 +673,15 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	}
 	recordStop(ctx, auditLog, err, logger)
 	return err
+}
+
+// quotaHealth — режим квот и шлюзы на автономной доле для «Состояния
+// системы» (задача 4.29).
+func quotaHealth(svc *quotalease.Service) func(context.Context) (sysstatus.QuotaHealth, error) {
+	return func(ctx context.Context) (sysstatus.QuotaHealth, error) {
+		h, err := svc.Health(ctx)
+		return sysstatus.QuotaHealth{Mode: h.Mode, Autonomous: h.Autonomous}, err
+	}
 }
 
 // budgetUsage — расход приложений с бюджетом за текущий месяц для правил
@@ -682,7 +709,7 @@ func budgetUsage(svc *apps.Service) alerting.BudgetSource {
 func newStatus(ctx context.Context, cfg *serverConfig, db *store.DB, auditLog *audit.Log, integritySvc integrity.Service,
 	selftestRes selftest.Result, bundle func(context.Context) (*sysstatus.BundleHealth, error),
 	timezone func(context.Context) (string, error), caNotAfter time.Time, lic func(context.Context) (license.State, error),
-	logger *slog.Logger) (*sysstatus.Service, error) {
+	quota func(context.Context) (sysstatus.QuotaHealth, error), logger *slog.Logger) (*sysstatus.Service, error) {
 	gwStore, err := gwregistry.NewPGStore(db.Pool(), auditLog)
 	if err != nil {
 		return nil, err
@@ -717,7 +744,7 @@ func newStatus(ctx context.Context, cfg *serverConfig, db *store.DB, auditLog *a
 		Gateways:  sysstatus.GatewayLister{Store: gwStore},
 		Integrity: integritySvc.Store, Store: pg,
 		Timezone: timezone, StorageLimit: cfg.AuditStorageLimit, WarnPercent: cfg.AuditStorageWarnPercent,
-		Logger: logger, Bundle: bundle, CANotAfter: caNotAfter, CustomerCert: customerCert, License: lic,
+		Logger: logger, Bundle: bundle, CANotAfter: caNotAfter, CustomerCert: customerCert, License: lic, Quota: quota,
 	})
 	if err != nil {
 		return nil, err
@@ -864,7 +891,8 @@ func loadCA(certFile, keyFile string) (*aisecCrypto.CA, error) {
 // newInternalServer — внутренний API шлюзов на отдельном порту: TLS с
 // обязательным клиентским сертификатом внутреннего УЦ (mTLS, ИАФ.10).
 func newInternalServer(ctx context.Context, cfg *serverConfig, tp aisecCrypto.TLSProvider, hasher aisecCrypto.Hasher,
-	gateways *gwregistry.Service, eventStore events.Store, approvalsSvc *approvals.Service, ca *serverCA, certPEM, keyPEM []byte,
+	gateways *gwregistry.Service, eventStore events.Store, approvalsSvc *approvals.Service, quotaSvc *quotalease.Service,
+	ca *serverCA, certPEM, keyPEM []byte,
 	extra []api.Route, logger *slog.Logger) (*httpserver.Server, error) {
 	if cfg.InternalTLSCertFile != "" {
 		var err error
@@ -877,7 +905,7 @@ func newInternalServer(ctx context.Context, cfg *serverConfig, tp aisecCrypto.TL
 	}
 	ilog := logger.With("listener", "internal")
 	handler, _, err := api.NewInternal(api.InternalOptions{Logger: ilog, Hasher: hasher, Gateways: gateways, Events: eventStore,
-		Approvals: approvalsSvc, Extra: extra})
+		Approvals: approvalsSvc, Quotas: quotaSvc, Extra: extra})
 	if err != nil {
 		return nil, err
 	}

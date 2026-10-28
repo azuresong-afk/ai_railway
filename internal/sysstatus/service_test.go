@@ -87,9 +87,9 @@ func TestNewValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	st := s.Status(context.Background())
-	// Без источников: пустые массивы, UTC, умолчания, все двадцать три условия.
+	// Без источников: пустые массивы, UTC, умолчания, все двадцать пять условия.
 	if st.Time.Timezone != "UTC" || st.Storage.LimitBytes != sysstatus.DefaultStorageLimit || st.Storage.WarnPercent != 80 ||
-		len(st.Notifications) != 23 || st.Bundle != nil || st.Gateways == nil || st.Unavailable == nil || st.Server.Integrity == nil {
+		len(st.Notifications) != 25 || st.Bundle != nil || st.Gateways == nil || st.Unavailable == nil || st.Server.Integrity == nil {
 		t.Fatalf("%+v", st)
 	}
 }
@@ -1006,5 +1006,52 @@ func TestDM44_GatewayClockAndTLS(t *testing.T) {
 	}
 	if got := states(); len(got) != 6 || got[4] != "gateway_tls:g1:raised" || got[5] != "gateway_tls:g2:raised" {
 		t.Fatalf("сертификат удалён: %v", got)
+	}
+}
+
+// Задача 4.29: режим local при нескольких шлюзах на связи — квоты
+// приблизительные; шлюз на автономной доле — по компонентам.
+func TestStatusQuotaConditions(t *testing.T) {
+	e := newEnv()
+	h := sysstatus.QuotaHealth{Mode: "local"}
+	var herr error
+	o := e.opts()
+	o.Quota = func(context.Context) (sysstatus.QuotaHealth, error) { return h, herr }
+	s, err := sysstatus.New(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	e.gws.list = []gwregistry.Gateway{
+		{ID: "g1", Name: "a", Status: gwregistry.StatusActive, LastSeenAt: t0},
+		{ID: "g2", Name: "b", Status: gwregistry.StatusActive, LastSeenAt: t0.Add(-5 * time.Minute)},
+	}
+	// Один шлюз на связи — режим local допустим.
+	if n := notif(s.Status(ctx), sysstatus.ConditionQuotaApprox); n.Active || n.Requirement != "ЗИ.6" {
+		t.Fatalf("один шлюз: %+v", n)
+	}
+	e.gws.list[1].LastSeenAt = t0
+	if n := notif(s.Status(ctx), sysstatus.ConditionQuotaApprox); !n.Active {
+		t.Fatalf("два шлюза в local: %+v", n)
+	}
+	// Режим leased: приблизительных квот нет, g2 на автономной доле.
+	h = sysstatus.QuotaHealth{Mode: "leased", Autonomous: []string{"g2", "g9"}}
+	st := s.Status(ctx)
+	if n := notif(st, sysstatus.ConditionQuotaApprox); n.Active {
+		t.Fatalf("leased: %+v", n)
+	}
+	n := notif(st, sysstatus.ConditionQuotaAutonomous)
+	if !n.Active || n.Requirement != "ЗИ.6" || !slices.Equal(n.Components, []string{"gateway:g2"}) {
+		t.Fatalf("автономная доля: %+v", n)
+	}
+	// Признак автономной доли в режиме local не учитывается.
+	h.Mode = "local"
+	if n := notif(s.Status(ctx), sysstatus.ConditionQuotaAutonomous); n.Active {
+		t.Fatalf("автономная доля в local: %+v", n)
+	}
+	// Источник недоступен — раздел в unavailable, условия не меняются.
+	herr = errors.New("нет связи с БД")
+	if st := s.Status(ctx); !slices.Contains(st.Unavailable, "quota") {
+		t.Fatalf("недоступность: %v", st.Unavailable)
 	}
 }
