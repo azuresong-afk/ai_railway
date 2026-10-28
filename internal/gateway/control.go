@@ -240,8 +240,11 @@ type HeartbeatConfig struct {
 	// (ApprovalClient.Pending, задача 4.10): по списку сервер закрывает
 	// запросы, которых шлюз уже не ждёт; nil — не передаётся.
 	PendingApprovals func() []string
-	Logger           *slog.Logger
-	Clock            func() time.Time
+	// QuotaAutonomous — шлюз пропускал запросы на автономной доле квот
+	// (LeaseClient.Autonomous, задача 4.29); nil — не передаётся.
+	QuotaAutonomous func() bool
+	Logger          *slog.Logger
+	Clock           func() time.Time
 	// Sleep ждёт d или отмены ctx (тесты подменяют его).
 	Sleep func(ctx context.Context, d time.Duration) bool
 }
@@ -273,8 +276,10 @@ func RunHeartbeat(ctx context.Context, c HeartbeatConfig) {
 	// approvals — сервер ведёт очередь подтверждений и принимает поле
 	// approvals_pending (сообщил в ответе).
 	approvals := false
+	// quotaLeases — сервер выдаёт аренду квот и принимает quota_autonomous.
+	quotaLeases := false
 	for {
-		wait, ok := c.beat(ctx, u, &interval, &backoff, &clockTLS, &approvals)
+		wait, ok := c.beat(ctx, u, &interval, &backoff, &clockTLS, &approvals, &quotaLeases)
 		if !ok {
 			return
 		}
@@ -308,7 +313,7 @@ func (c HeartbeatConfig) stopping(ctx context.Context, u string) {
 }
 
 // beat отправляет один heartbeat и возвращает паузу до следующего.
-func (c HeartbeatConfig) beat(ctx context.Context, u string, interval, backoff *time.Duration, clockTLS, approvals *bool) (time.Duration, bool) {
+func (c HeartbeatConfig) beat(ctx context.Context, u string, interval, backoff *time.Duration, clockTLS, approvals, quotaLeases *bool) (time.Duration, bool) {
 	if ctx.Err() != nil {
 		return 0, false
 	}
@@ -329,6 +334,8 @@ func (c HeartbeatConfig) beat(ctx context.Context, u string, interval, backoff *
 		ClockTLS bool `json:"clock_tls"`
 		// Approvals — сервер принимает approvals_pending (задача 4.10).
 		Approvals bool `json:"approvals"`
+		// QuotaLeases — сервер принимает quota_autonomous (задача 4.29).
+		QuotaLeases bool `json:"quota_leases"`
 	}
 	sent := c.Clock()
 	body := heartbeatBody{Version: c.Version, BundleETag: etag}
@@ -346,6 +353,10 @@ func (c HeartbeatConfig) beat(ctx context.Context, u string, interval, backoff *
 	if *approvals && c.PendingApprovals != nil {
 		pending := c.PendingApprovals()
 		body.ApprovalsPending = &pending
+	}
+	if *quotaLeases && c.QuotaAutonomous != nil {
+		auto := c.QuotaAutonomous()
+		body.QuotaAutonomous = &auto
 	}
 	body.Selftest, body.Integrity, body.BundleKeys, body.VerifyRequest = c.Reports.snapshot()
 	if c.Budget != nil && body.StartedAt != nil {
@@ -373,7 +384,7 @@ func (c HeartbeatConfig) beat(ctx context.Context, u string, interval, backoff *
 		return wait, true
 	}
 	*backoff = 0
-	*clockTLS, *approvals = resp.ClockTLS, resp.Approvals
+	*clockTLS, *approvals, *quotaLeases = resp.ClockTLS, resp.Approvals, resp.QuotaLeases
 	if c.Budget != nil {
 		c.Budget.apply(body.Budget, resp.Budget)
 	}

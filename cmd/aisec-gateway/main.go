@@ -221,6 +221,15 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 		}
 		hb.mcpObserver = gateway.NewToolObserver(control.client, cfg.Server, logger)
 		go hb.mcpObserver.Run(ctx)
+		// Аренда квот и жёстких бюджетов (задача 4.29, ADR-0021): включается
+		// пакетом в режиме leased.
+		if hb.leases, err = gateway.NewLeaseClient(gateway.LeaseConfig{Client: control.client, Server: cfg.Server,
+			IDs: ids.NewGenerator(rnd), Logger: logger}); err != nil {
+			return err
+		}
+		hb.quotas.SetLeases(hb.leases)
+		hb.budget.SetLeases(hb.leases)
+		go hb.leases.Run(ctx)
 	}
 	var handler http.Handler
 	var bundles *gateway.BundleClient
@@ -272,7 +281,7 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 			return err
 		}
 		hbDone := startHeartbeat(hbCtx, cfg, control.client, logger, reports, bundles.ETag, verify, started, reissue.Reissue, hb.budget, hb.clock, appTLS.Current,
-			hb.approvals.Pending)
+			hb.approvals.Pending, hb.leases.Autonomous)
 		defer func() {
 			hbCancel()
 			<-hbDone
@@ -295,7 +304,9 @@ type handlerBuilder struct {
 	quotas *gateway.Limiter
 	// budget — счётчики расхода процесса (задача 3.18): переживают смену
 	// пакета.
-	budget  *gateway.Budget
+	budget *gateway.Budget
+	// leases — аренда квот у сервера (задача 4.29); nil — без сервера.
+	leases  *gateway.LeaseClient
 	userMAC aisecCrypto.MAC
 	// clock — сроки исключений не раньше времени сервера управления (3Н40).
 	clock *gateway.ServerClock
@@ -574,7 +585,7 @@ const gwReissueWarn = 30 * 24 * time.Hour
 // недоступен — шлюз всё равно работает (ТЗ, 4.2).
 func startHeartbeat(ctx context.Context, cfg *config.Gateway, client *http.Client, logger *slog.Logger, reports *gateway.Reports, etag func() string,
 	verify func(context.Context), started time.Time, reissue func(context.Context) error, budget *gateway.Budget,
-	clock *gateway.ServerClock, tlsFingerprint func() string, pendingApprovals func() []string) <-chan struct{} {
+	clock *gateway.ServerClock, tlsFingerprint func() string, pendingApprovals func() []string, quotaAutonomous func() bool) <-chan struct{} {
 	v := version
 	if !gateway.ValidVersion(v) {
 		v = "unknown"
@@ -585,7 +596,7 @@ func startHeartbeat(ctx context.Context, cfg *config.Gateway, client *http.Clien
 		gateway.RunHeartbeat(ctx, gateway.HeartbeatConfig{
 			Client: client, Server: cfg.Server, Version: v, Logger: logger, Reports: reports, BundleETag: etag, Verify: verify,
 			StartedAt: started, Reissue: reissue, Budget: budget, ServerTime: clock, TLSFingerprint: tlsFingerprint,
-			PendingApprovals: pendingApprovals,
+			PendingApprovals: pendingApprovals, QuotaAutonomous: quotaAutonomous,
 		})
 	}()
 	return done

@@ -138,4 +138,7 @@ type heartbeatBody struct {
 	// ApprovalsPending — ID ожидающих подтверждения запросов (задача 4.10):
 	// только серверу, который сообщил о поддержке.
 	ApprovalsPending *[]string `json:"approvals_pending,omitempty"`
+	// QuotaAutonomous — шлюз работает на автономной доле квот (задача 4.29):
+	// только серверу, который сообщил quota_leases.
+	QuotaAutonomous *bool `json:"quota_autonomous,omitempty"`
 }

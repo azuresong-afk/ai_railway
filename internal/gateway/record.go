@@ -26,7 +26,9 @@ type record struct {
 	// по usage провайдера, -1 — неизвестен. Без usage (или с нулевым) расход
 	// оценивается по размеру: inTokens — оценка входа, outBytes — размер
 	// ответа провайдера до действий политики (nil — ответа нет).
-	res      *Reservation
+	res *Reservation
+	// budget — резерв жёсткого бюджета в аренде у сервера (режим leased).
+	budget   *leaseHold
 	sent     bool
 	tokens   int
 	inTokens int
@@ -198,11 +200,15 @@ func (h *ChatHandler) emit(rec *record) {
 	if rec.skip {
 		return
 	}
+	degraded := rec.res.Degraded() || rec.budget.Degraded()
 	rec.ev.LatencyMS["total"] = h.cfg.Now().Sub(rec.start).Milliseconds()
 	if rec.in != nil {
 		rec.fill()
 	}
 	rec.fillResponse()
+	if degraded && rec.ev.Decision != nil {
+		rec.ev.Decision.QuotaDegraded = true
+	}
 	if err := h.cfg.Events.Enqueue(rec.ev); err != nil {
 		h.logger.Error("событие не принято", "type", rec.ev.Type, "event_id", rec.ev.ID, "error", err)
 	}
@@ -214,6 +220,10 @@ func (h *ChatHandler) emit(rec *record) {
 // таймаут, обрыв до ответа) — вход и предел ответа запроса (3В22 ревью
 // 3.r3). Явный отказ провайдера — расхода нет и запрос не считается.
 func (h *ChatHandler) spend(rec *record) {
+	// Резерв аренды бюджета уточняется фактической стоимостью; запрос не
+	// ушёл или расхода нет — возвращается.
+	var cost int64
+	defer func() { rec.budget.Settle(cost) }()
 	if h.cfg.Budget == nil || !rec.sent || rec.ev.Type != events.TypeGatewayRequest {
 		return
 	}
@@ -228,7 +238,7 @@ func (h *ChatHandler) spend(rec *record) {
 	default:
 		return
 	}
-	h.cfg.Budget.Record(rec.app.ID, rec.ev.Provider, rec.ev.Model, in, out)
+	cost = h.cfg.Budget.Record(rec.app.ID, rec.ev.Provider, rec.ev.Model, in, out)
 }
 
 // unknownOutTokens — оценка ответа запроса без max_tokens, исход которого

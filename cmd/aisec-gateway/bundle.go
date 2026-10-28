@@ -58,6 +58,8 @@ func newBundleClient(cfg *config.Gateway, p aisecCrypto.Provider, tp aisecCrypto
 		}
 		sw.Store(h)
 		appTLS.Use(prepared)
+		// Режим квот из пакета (задача 4.29): leased — аренда у сервера.
+		hb.leases.SetEnabled(b.Content.QuotaMode == bundle.QuotaLeased)
 		return nil
 	}
 	bc, err := gateway.NewBundleClient(gateway.BundleConfig{Client: control.client, Server: cfg.Server, Opener: opener,
