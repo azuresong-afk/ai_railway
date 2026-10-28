@@ -3,6 +3,7 @@ package apps_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -40,12 +41,13 @@ func TestUserAccessLifecycle(t *testing.T) {
 	noConfirm := e.by
 	noConfirm.Confirm = nil
 	// Включение и ужесточение — без повторной проверки.
+	// Группы псевдонима default хранятся под его моделью (4В15 ревью 4.r2).
 	u, err = e.svc.SetUserAccess(ctx, noConfirm, a.ID, userInput(apps.UserTokenRequired,
-		map[string][]string{"gpt-4o-mini": {" b ", "a", "a"}, "default": {"a"}}))
+		map[string][]string{"default": {" b ", "a", "a"}}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(u.ModelGroups["gpt-4o-mini"], []string{"a", "b"}) || !u.Configured {
+	if len(u.ModelGroups) != 1 || !slices.Equal(u.ModelGroups["gpt-4o-mini"], []string{"a", "b"}) || !u.Configured {
 		t.Fatalf("группы: %+v", u.ModelGroups)
 	}
 	if r := reasons(t, e); len(r) != 0 {
@@ -53,7 +55,7 @@ func TestUserAccessLifecycle(t *testing.T) {
 	}
 	n := len(e.mem.Records())
 	if _, err := e.svc.SetUserAccess(ctx, noConfirm, a.ID, userInput(apps.UserTokenRequired,
-		map[string][]string{"gpt-4o-mini": {"b", "a"}, "default": {"a"}})); err != nil || len(e.mem.Records()) != n {
+		map[string][]string{"gpt-4o-mini": {"b", "a"}})); err != nil || len(e.mem.Records()) != n {
 		t.Fatalf("повтор без изменений: %v, записей %d → %d", err, n, len(e.mem.Records()))
 	}
 	// Ослабления: каждое без повторной проверки — отказ, с ней — причина.
@@ -62,8 +64,10 @@ func TestUserAccessLifecycle(t *testing.T) {
 		in     apps.UserAccessInput
 		reason string
 	}{
-		{userInput(apps.UserTokenRequired, map[string][]string{"gpt-4o-mini": {"a", "b", "c"}, "default": {"a"}}), "model_groups"},
-		{userInput(apps.UserTokenRequired, map[string][]string{"gpt-4o-mini": {"a"}}), "model_groups"},
+		{userInput(apps.UserTokenRequired, map[string][]string{"gpt-4o-mini": {"a", "b", "c"}}), "model_groups"},
+		{userInput(apps.UserTokenRequired, map[string][]string{"default": {"a", "b", "c", "d"}}), "model_groups"},
+		{userInput(apps.UserTokenRequired, map[string][]string{"gpt-4o-mini": {"a"}}), ""},
+		{userInput(apps.UserTokenRequired, nil), "model_groups"},
 		{apps.UserAccessInput{Mode: apps.UserTokenRequired, Issuer: issuer, Audience: "aisec-gateway", Leeway: &leeway,
 			ModelGroups: map[string][]string{"gpt-4o-mini": {"a"}}}, "user_token_leeway"},
 		{apps.UserAccessInput{Mode: apps.UserTokenRequired, Issuer: issuer + "2", Audience: "aisec-gateway", Leeway: &leeway,
@@ -74,6 +78,12 @@ func TestUserAccessLifecycle(t *testing.T) {
 			GroupsClaim: "roles", ModelGroups: map[string][]string{"gpt-4o-mini": {"a"}}}, "user_token_mode"},
 		{apps.UserAccessInput{Mode: apps.UserTokenOff}, "user_token_mode"},
 	} {
+		if c.reason == "" {
+			if _, err := e.svc.SetUserAccess(ctx, noConfirm, a.ID, c.in); err != nil {
+				t.Fatalf("ужесточение: %v", err)
+			}
+			continue
+		}
 		if _, err := e.svc.SetUserAccess(ctx, noConfirm, a.ID, c.in); !errors.Is(err, apps.ErrConfirmRequired) {
 			t.Fatalf("%s без повторной проверки: %v", c.reason, err)
 		}
@@ -84,26 +94,59 @@ func TestUserAccessLifecycle(t *testing.T) {
 			t.Fatalf("%s: причины %v", c.reason, r)
 		}
 	}
-	// Группы псевдонима, которого у приложения больше нет, не действуют:
-	// их пропажа при следующем сохранении — не ослабление.
-	if _, err := e.svc.SetUserAccess(ctx, e.by, a.ID, apps.UserAccessInput{Mode: apps.UserTokenRequired, Issuer: issuer,
-		Audience: "aisec-gateway", ModelGroups: map[string][]string{"gpt-4o-mini": {"a"}, "default": {"a"}}}); err != nil {
+	if _, err := e.svc.UserAccess(ctx, "01900000-0000-7000-8000-0000000000ff"); !errors.Is(err, apps.ErrNotFound) {
+		t.Fatalf("чужое приложение: %v", err)
+	}
+}
+
+// DM-33, 4В15 ревью 4.r2: группы псевдонима хранятся под именем модели,
+// поэтому удаление или перенацеливание псевдонима правкой приложения (право
+// applications.manage есть у токена API) не открывает модель; псевдоним
+// попадает в аудит application.update. Модель и псевдоним со своими
+// группами — общие группы, без общих — отказ.
+func TestDM33_AliasRemovalKeepsModelGroups(t *testing.T) {
+	e := newEnv(t, true)
+	ctx := context.Background()
+	a := e.app(t, "sales", e.provider(t, "llm").ID, ownerA)
+	if _, err := e.svc.SetUserAccess(ctx, e.by, a.ID, userInput(apps.UserTokenRequired,
+		map[string][]string{"default": {"ai-admins"}})); err != nil {
 		t.Fatal(err)
 	}
 	in := appInput("sales", a.ProviderID, ownerA)
+	in.Models = []string{"gpt-4o-mini", "gpt-4o"}
+	in.Aliases = map[string]string{"default": "gpt-4o"}
+	noConfirm := e.by
+	noConfirm.Confirm = nil
+	if _, err := e.svc.UpdateApplication(ctx, noConfirm, a.ID, in); err != nil {
+		t.Fatal(err)
+	}
+	d := details(t, e.last(t, "application.update"))
+	if after, _ := d["after"].(map[string]any); fmt.Sprint(after["aliases"]) != "map[default:gpt-4o]" {
+		t.Fatalf("псевдонимы в аудите: %v", d)
+	}
 	in.Aliases = nil
+	if _, err := e.svc.UpdateApplication(ctx, noConfirm, a.ID, in); err != nil {
+		t.Fatal(err)
+	}
+	u, err := e.svc.UserAccess(ctx, a.ID)
+	if err != nil || len(u.ModelGroups) != 1 || !slices.Equal(u.ModelGroups["gpt-4o-mini"], []string{"ai-admins"}) {
+		t.Fatalf("группы модели после удаления псевдонима: %+v %v", u.ModelGroups, err)
+	}
+	// Модель и псевдоним одной модели: общие группы.
+	in.Aliases = map[string]string{"default": "gpt-4o-mini"}
 	if _, err := e.svc.UpdateApplication(ctx, e.by, a.ID, in); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.svc.SetUserAccess(ctx, noConfirm, a.ID, apps.UserAccessInput{Mode: apps.UserTokenRequired, Issuer: issuer,
-		Audience: "aisec-gateway", ModelGroups: map[string][]string{"gpt-4o-mini": {"a"}}}); err != nil {
-		t.Fatalf("без удалённого псевдонима: %v", err)
+	u, err = e.svc.SetUserAccess(ctx, e.by, a.ID, userInput(apps.UserTokenRequired,
+		map[string][]string{"default": {"ai-admins", "ops"}, "gpt-4o-mini": {"ops", "dev"}}))
+	if err != nil || len(u.ModelGroups) != 1 || !slices.Equal(u.ModelGroups["gpt-4o-mini"], []string{"ops"}) {
+		t.Fatalf("общие группы: %+v %v", u.ModelGroups, err)
 	}
-	if r := reasons(t, e); len(r) != 0 {
-		t.Fatalf("удалённый псевдоним — ослабление: %v", r)
-	}
-	if _, err := e.svc.UserAccess(ctx, "01900000-0000-7000-8000-0000000000ff"); !errors.Is(err, apps.ErrNotFound) {
-		t.Fatalf("чужое приложение: %v", err)
+	_, err = e.svc.SetUserAccess(ctx, e.by, a.ID, userInput(apps.UserTokenRequired,
+		map[string][]string{"default": {"ai-admins"}, "gpt-4o-mini": {"dev"}}))
+	var ie *apps.InputError
+	if !errors.As(err, &ie) {
+		t.Fatalf("без общих групп: %v", err)
 	}
 }
 

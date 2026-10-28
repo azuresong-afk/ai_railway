@@ -268,7 +268,7 @@ func ext(m map[string]bool, id string) bool {
 func appDetails(a Application) map[string]any {
 	return map[string]any{
 		"slug": a.Slug, "name": a.Name, "department": a.Department, "owner_id": a.OwnerID, "env": a.Env,
-		"provider_id": a.ProviderID, "models": a.Models, "policy": a.Policy, "policy_mode": a.PolicyMode,
+		"provider_id": a.ProviderID, "models": a.Models, "aliases": a.Aliases, "policy": a.Policy, "policy_mode": a.PolicyMode,
 		"storage": a.Storage, "fail_mode": a.FailMode, "user_from": a.UserFrom, "quotas": a.Quotas,
 		"lists": len(a.Lists), "exfil_allow_domains": len(a.ExfilAllowDomains),
 	}
