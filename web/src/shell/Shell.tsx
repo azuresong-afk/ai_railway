@@ -1,10 +1,13 @@
+import { useQuery } from "@tanstack/react-query";
 import { Keyboard, LogOut, Maximize2, PanelLeft, Search, X } from "lucide-react";
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { HashRouter, NavLink, Route, Routes, useLocation, useNavigate, useSearchParams } from "react-router";
+import { adminApi } from "../admin/api";
+import { licenseNotice } from "../admin/licenseText";
 import type { Me } from "../api/client";
 import { Button } from "../ui/Button";
 import { Input, Select } from "../ui/Field";
-import { EmptyState } from "../ui/Layout";
+import { Banner, EmptyState } from "../ui/Layout";
 import { Modal } from "../ui/Overlay";
 import { navItems, visibleNav } from "./nav";
 
@@ -132,6 +135,26 @@ function AdminRoute({ me }: { me: Me }) {
   );
 }
 
+// Баннер лицензии (ADR-0026, п. 4): срок на исходе, льготный период, запрет изменений. Сведения читают те, у кого
+// есть license.read; остальным причину отказа объясняет ответ сервера на само изменение.
+function LicenseBanner({ me }: { me: Me }) {
+  const allowed = me.permissions.includes("license.read");
+  const q = useQuery({
+    queryKey: ["license"],
+    queryFn: ({ signal }) => adminApi.license(signal),
+    enabled: allowed,
+    refetchInterval: 10 * 60 * 1000,
+    retry: false,
+  });
+  const n = q.data ? licenseNotice(q.data) : null;
+  if (!allowed || !n) return null;
+  return (
+    <div className="border-b border-line px-4 py-2">
+      <Banner kind={n.kind}>{n.text}</Banner>
+    </div>
+  );
+}
+
 function Frame({ me, onLogout }: { me: Me; onLogout: () => void }) {
   const [collapsed, setCollapsed] = useState(false);
   const [theme, setTheme] = useTheme();
@@ -241,6 +264,7 @@ function Frame({ me, onLogout }: { me: Me; onLogout: () => void }) {
             </Button>
           </div>
         </header>
+        <LicenseBanner me={me} />
         <div className="flex min-h-0 flex-1">
           <main className="min-w-0 flex-1 overflow-auto p-6">
             <Routes>

@@ -25,6 +25,7 @@ export type SessionList = S["SessionList"];
 export type AuditRecord = S["AuditRecord"];
 export type AuditPage = S["AuditPage"];
 export type AuditVerification = S["AuditVerification"];
+export type LicenseInfo = S["LicenseInfo"];
 // Фильтр журнала аудита: коды или группы «auth.*», субъект и итог (задача 2.4a).
 export type AuditFilter = { from: string; to: string; actions: string[]; actor: string; result: string };
 
@@ -83,6 +84,11 @@ export const adminApi = {
   revokeToken: (tid: string) => request<unknown>("DELETE", `/api/v1/api-tokens/${id(tid)}`),
 
   // Часовой пояс показа и режим хранения по умолчанию (В26 ревью 2.r5): none или full — с паролем или кодом.
+  // Лицензия (ADR-0026): загрузка — только с паролем или кодом в теле.
+  license: (signal?: AbortSignal) => request<LicenseInfo>("GET", "/api/v1/license", undefined, signal),
+  uploadLicense: (license: string, re: { password: string } | { code: string }) =>
+    request<LicenseInfo>("PUT", "/api/v1/license", { license, ...re }),
+
   installSettings: (signal?: AbortSignal) => request<InstallSettings>("GET", "/api/v1/system/settings", undefined, signal),
   saveInstallSettings: (b: InstallSettings, re: ReauthBody = {}) =>
     request<InstallSettings>("PUT", "/api/v1/system/settings", { ...b, ...re }),

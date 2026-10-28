@@ -3,6 +3,7 @@ import { EmptyState, TabBar } from "../ui/Layout";
 import { AuditTab } from "./AuditTab";
 import { IdPTab } from "./IdPTab";
 import { LDAPTab } from "./LDAPTab";
+import { LicenseTab } from "./LicenseTab";
 import { PolicyTab } from "./PolicyTab";
 import { RetentionTab } from "./RetentionTab";
 import { RolesTab } from "./RolesTab";
@@ -21,6 +22,7 @@ export function AdminScreen({ me }: { me: Me }) {
     has("api_tokens.read") && { value: "tokens", title: "Токены API", content: <TokensTab me={me} /> },
     has("events.read") && { value: "retention", title: "Время и хранение", content: <RetentionTab me={me} /> },
     has("audit.read") && { value: "audit", title: "Журнал аудита", content: <AuditTab me={me} /> },
+    has("license.read") && { value: "license", title: "Лицензия", content: <LicenseTab me={me} /> },
   ].filter((t): t is { value: string; title: string; content: React.JSX.Element } => t !== false);
 
   if (tabs.length === 0) {
