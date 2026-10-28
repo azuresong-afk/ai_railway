@@ -1289,3 +1289,48 @@ components:
     justification: Статически встроена в libonnxruntime.so при сборке из исходников (deploy/build/onnxruntime/deps.lock, SHA-256 архива); отдельно не поставляется.
     decision: ADR-0024, раздел «Зависимости»; согласие владельца 27.10.2026 (поток 4-C3); сборка — задача 4.19 (поток E5)
     decided: 2026-10-28
+
+  - name: glibc
+    version: 2.36 (Debian bookworm, сборочный образ golang:1.27.3-bookworm по digest)
+    type: native-library
+    scope: product
+    purpose: Системная библиотека C и загрузчик (ld-linux-x86-64.so.2, libc.so.6, libm.so.6) для aisec-ml и ONNX Runtime в образе aisec-ml.
+    license: LGPL-2.1-or-later
+    license_decision: ADR-0024 — системные библиотеки среды выполнения в образе aisec-ml, решение владельца 28.10.2026
+    repository: https://sourceware.org/git/glibc.git
+    attack_surface: false
+    security_function: false
+    provided_by: Free Software Foundation (проект GNU C Library), сборка Debian
+    justification: ONNX Runtime — библиотека C++, без системной библиотеки C не работает. Файлы копируются без изменений из сборочного образа (deploy/build/ml-libs.sh), их хеши — в манифесте выпуска aisec-ml; динамическая компоновка сохраняет возможность замены библиотеки, которую требует LGPL. Точная версия пакета — build/ort/toolchain.versions.
+    decision: ADR-0024, «Решение владельца по лицензиям системных библиотек» (28.10.2026, поток E5)
+    decided: 2026-10-28
+
+  - name: libstdc++
+    version: 12.2.0 (Debian bookworm, сборочный образ golang:1.27.3-bookworm по digest)
+    type: native-library
+    scope: product
+    purpose: Стандартная библиотека C++ (libstdc++.so.6) для ONNX Runtime в образе aisec-ml.
+    license: GPL-3.0-or-later WITH GCC-exception-3.1
+    license_decision: ADR-0024 — среда выполнения GCC в образе aisec-ml, решение владельца 28.10.2026
+    repository: https://gcc.gnu.org/git/gcc.git
+    attack_surface: false
+    security_function: false
+    provided_by: Free Software Foundation (проект GCC), сборка Debian
+    justification: ONNX Runtime написан на C++ и требует стандартной библиотеки C++. Исключение GCC Runtime Library 3.1 разрешает распространять код, скомпонованный с библиотекой, под любой лицензией; политика допускает эту GPL только с этим исключением и только у native-library. Файл копируется без изменений из сборочного образа, хеш — в манифесте выпуска aisec-ml.
+    decision: ADR-0024, «Решение владельца по лицензиям системных библиотек» (28.10.2026, поток E5)
+    decided: 2026-10-28
+
+  - name: libgcc_s
+    version: 12.2.0 (Debian bookworm, сборочный образ golang:1.27.3-bookworm по digest)
+    type: native-library
+    scope: product
+    purpose: Библиотека поддержки GCC (libgcc_s.so.1, раскрутка стека исключений C++) для ONNX Runtime в образе aisec-ml.
+    license: GPL-3.0-or-later WITH GCC-exception-3.1
+    license_decision: ADR-0024 — среда выполнения GCC в образе aisec-ml, решение владельца 28.10.2026
+    repository: https://gcc.gnu.org/git/gcc.git
+    attack_surface: false
+    security_function: false
+    provided_by: Free Software Foundation (проект GCC), сборка Debian
+    justification: Нужна libstdc++ и ONNX Runtime для исключений C++. Исключение GCC Runtime Library 3.1 разрешает распространять скомпонованный код под любой лицензией. Файл копируется без изменений из сборочного образа, хеш — в манифесте выпуска aisec-ml.
+    decision: ADR-0024, «Решение владельца по лицензиям системных библиотек» (28.10.2026, поток E5)
+    decided: 2026-10-28

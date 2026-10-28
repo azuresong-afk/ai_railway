@@ -108,7 +108,7 @@ make ort-build                      # повтор с нуля: хеш долж�
 sha256sum build/ort/lib/libonnxruntime.so.1.31.0 > deploy/build/onnxruntime/ort.sha256   # затем коммит
 make ml-release-dir                 # выпуск aisec-ml с тестовым ключом; хеш ORT сверяется с эталоном
 ```
-Для поставки: `make ml-release-dir RELEASE=1` на теге, подпись `make release-sign RELEASE_DIR=build/release-ml` на машине без сети, затем `make images RELEASE=1 ML=1`. Образ `aisec-ml` заказчику не передаётся до решения владельца по лицензиям системных библиотек (ADR-0024) и до пакета моделей (часть 2 задачи 4.19).
+Для поставки: `make ml-release-dir RELEASE=1` на теге, подпись `make release-sign RELEASE_DIR=build/release-ml` на машине без сети, затем `make images RELEASE=1 ML=1`. Лицензии системных библиотек образа приняты владельцем 28.10.2026 (ADR-0024); образ `aisec-ml` заказчику не передаётся до пакета моделей (часть 2 задачи 4.19).
 
 ## Управление изменениями и подпись
 Решение — ADR-0002.
