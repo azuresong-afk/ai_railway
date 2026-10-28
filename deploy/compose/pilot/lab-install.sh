@@ -2,10 +2,11 @@
 # Установка для лаборатории и стенда одной командой (задача 4.32 этапа 4):
 # на хосте нужен только Docker. Скрипт собирает образы в Docker из исходников
 # репозитория (тестовый ключ манифеста, aisec-test/…:ВЕРСИЯ-test — НЕ ДЛЯ
-# ПОСТАВКИ), готовит хост (prepare-host.sh), выпускает сертификаты TLS без
-# корпоративного УЦ (aisec-cli tls init), создаёт ключи установки,
-# регистрирует шлюз и запускает всё. Шаги — те же, что в
-# docs/user/install-pilot.md, разделы 3–4.
+# ПОСТАВКИ), готовит хост (prepare-host.sh), выпускает сертификаты TLS от
+# собственного УЦ установки (aisec-cli tls init) или берёт готовые
+# сертификаты УЦ заказчика (--tls-dir, задача 4.33) и проверяет их
+# (aisec-cli tls check), создаёт ключи установки, регистрирует шлюз и
+# запускает всё. Шаги — те же, что в docs/user/install-pilot.md, разделы 3–4.
 #
 #   sudo ./lab-install.sh --host 192.168.1.50 [--host lab.example.ru] [параметры]
 #
@@ -14,7 +15,8 @@
 # пропускаются, образы пересобираются из текущих исходников. Имена в
 # сертификатах задаются при первом выпуске: сменить имя консоли повторным
 # запуском нельзя (скрипт откажет), адрес интерфейса без --bind остаётся
-# прежним из .env.
+# прежним из .env. Источник сертификатов (свой УЦ установки или --tls-dir)
+# тоже задаётся первым запуском: сменить его повторным запуском нельзя.
 set -eu
 umask 077
 cd "$(dirname "$0")"
@@ -27,6 +29,10 @@ usage() {
                        обращаются к шлюзу; можно несколько раз или через запятую
   --console-name ИМЯ   имя консоли внутри установки (AISEC_CONSOLE_HOST); по
                        умолчанию — первое имя из --host, без имён — aisec-console
+  --tls-dir КАТАЛОГ    сертификаты УЦ заказчика: console.crt, console.key,
+                       gateway.crt, gateway.key и ca.crt (корень); каталог —
+                       владелец root, без записи для группы и остальных. Без
+                       параметра — собственный УЦ установки (aisec-cli tls init)
   --bind АДРЕС         адрес интерфейса для портов 8444 и 8443 (по умолчанию
                        0.0.0.0 — все интерфейсы; при повторном запуске — как в .env)
   --mirror РЕЕСТР      зеркало Docker Hub для базовых образов и PostgreSQL,
@@ -48,7 +54,7 @@ step() {
 	echo "==> $*"
 }
 
-hosts= console_name= bind= mirror= build_ca= build=1
+hosts= console_name= bind= mirror= build_ca= build=1 tls_dir=
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--host)
@@ -59,6 +65,12 @@ while [ $# -gt 0 ]; do
 	--console-name)
 		[ $# -ge 2 ] || usage
 		console_name=$2
+		shift 2
+		;;
+	--tls-dir)
+		[ $# -ge 2 ] || usage
+		tls_dir=${2%/}
+		[ -n "$tls_dir" ] || die "--tls-dir: укажите каталог с сертификатами, например /root/aisec-tls"
 		shift 2
 		;;
 	--bind)
@@ -87,6 +99,37 @@ done
 [ "$(id -u)" -eq 0 ] || die "запустите от root (sudo ./lab-install.sh …)"
 [ -f compose.yaml ] && [ -x prepare-host.sh ] || die "запустите из каталога deploy/compose/pilot"
 [ -z "$build_ca" ] || [ -s "$build_ca" ] || die "нет файла $build_ca"
+# check_tls_dir — каталог сертификатов заказчика подменить может только
+# root: сам каталог — root без записи для группы и остальных, каждый каталог
+# пути до него — настоящий каталог (не ссылка) root, без записи для группы и
+# остальных или с битом sticky (как /tmp). Тогда между проверкой файла и его
+# копированием никто, кроме root, не подставит ссылку на чужой файл. Ключи —
+# без доступа для группы и остальных. Вызывается до сборки (чтобы ошибка не
+# всплыла через 15 минут) и ещё раз перед копированием.
+check_tls_dir() {
+	# Скрипт работает из своего каталога: относительный путь указывал бы не туда.
+	case "$tls_dir" in
+	/*) ;;
+	*) die "--tls-dir: укажите абсолютный путь, например /root/aisec-tls" ;;
+	esac
+	[ -n "$(find "$tls_dir" -maxdepth 0 -type d -user 0 ! -perm /022 2>/dev/null)" ] ||
+		die "--tls-dir: $tls_dir — нужен каталог (не ссылка) с владельцем root без записи для группы и остальных: chown root:root $tls_dir && chmod 0700 $tls_dir"
+	d=$(dirname "$tls_dir")
+	while :; do
+		[ -n "$(find "$d" -maxdepth 0 -type d -user 0 \( ! -perm /022 -o -perm -1000 \) 2>/dev/null)" ] ||
+			die "--tls-dir: в пути к $tls_dir каталог $d — символьная ссылка, не принадлежит root или открыт на запись другим пользователям; положите сертификаты, например, в /root/aisec-tls"
+		[ "$d" != / ] || break
+		d=$(dirname "$d")
+	done
+	for f in console.crt console.key gateway.crt gateway.key ca.crt; do
+		[ -e "$tls_dir/$f" ] || die "--tls-dir: нет файла $tls_dir/$f (нужны console.crt, console.key, gateway.crt, gateway.key, ca.crt)"
+	done
+	for f in console.key gateway.key; do
+		[ -z "$(find "$tls_dir/$f" -prune -perm /077)" ] ||
+			die "--tls-dir: $tls_dir/$f доступен группе или остальным: chmod 0600 $tls_dir/$f"
+	done
+}
+[ -z "$tls_dir" ] || check_tls_dir
 case "$console_name$bind$mirror" in
 *[!A-Za-z0-9.:/_-]*) die "недопустимые символы в --console-name, --bind или --mirror" ;;
 esac
@@ -225,6 +268,27 @@ have=0
 for f in $tls_files; do
 	[ ! -s "$secrets/$f" ] || have=$((have + 1))
 done
+# Источник сертификатов: local — собственный УЦ установки (tls init),
+# customer — УЦ заказчика (--tls-dir). Установки 4.32 без отметки — local.
+tls_source=local
+[ -z "$tls_dir" ] || tls_source=customer
+old_source=$(env_get AISEC_TLS_SOURCE)
+[ -n "$old_source" ] || old_source=local
+if [ "$have" -eq 5 ] && [ "$old_source" != "$tls_source" ]; then
+	if [ "$old_source" = customer ]; then
+		die "сертификаты в $secrets — от УЦ заказчика (прежний запуск с --tls-dir). Повторите запуск с --tls-dir КАТАЛОГ или, чтобы перейти на собственный УЦ установки, удалите пять файлов ($tls_files) из $secrets и запустите без --tls-dir"
+	fi
+	die "сертификаты в $secrets выпущены собственным УЦ установки. Чтобы перейти на сертификаты УЦ заказчика, удалите пять файлов ($tls_files) из $secrets и запустите снова с --tls-dir; клиентам и приложениям нужен корень УЦ заказчика вместо прежнего ca.crt"
+fi
+if [ "$have" -eq 5 ] && [ -n "$tls_dir" ]; then
+	check_tls_dir
+	for f in console.crt console.key gateway.crt gateway.key ca.crt; do
+		g=$f
+		[ "$f" != ca.crt ] || g=console-ca.crt
+		cmp -s "$tls_dir/$f" "$secrets/$g" ||
+			die "в $secrets уже другие сертификаты УЦ заказчика ($g не совпадает с $tls_dir/$f). Чтобы заменить их, удалите пять файлов ($tls_files) из $secrets и запустите снова с --tls-dir"
+	done
+fi
 # Готовые сертификаты выпущены на прежнее имя консоли: с другим именем шлюз
 # не прошёл бы проверку сертификата консоли. Проверка — до записи в .env.
 old_name=$(env_get AISEC_CONSOLE_HOST)
@@ -243,12 +307,80 @@ fi
 [ -z "$mirror" ] || set_env AISEC_POSTGRES_IMAGE "$mirror/postgres"
 echo "Хост подготовлен: $data_dir, .env заполнен."
 
-step "4/8 Сертификаты TLS без корпоративного УЦ"
-fingerprint=
+# Каталог для aisec-cli tls check: root:aisec 0750, файлы root:aisec 0440 —
+# aisec-cli (пользователь aisec) читает их, но подменить не может; root
+# ставит в secrets ровно то, что проверено. Удаляется при любом выходе.
+stage_open() {
+	stage=$(mktemp -d "$data_dir/tls-check.XXXXXX")
+	trap 'rm -rf "$stage"' EXIT
+	trap 'exit 130' INT TERM
+	chown root:aisec "$stage"
+	chmod 0750 "$stage"
+}
+
+# stage_file ИСТОЧНИК ИМЯ — только обычный файл без символьных и жёстких
+# ссылок (как в 4.32) и не больше 64 КиБ; окончательная проверка — tls check.
+stage_file() {
+	[ "$(find "$1" -prune -type f -links 1)" = "$1" ] || die "$1: нужен обычный файл без символьных и жёстких ссылок"
+	[ "$(wc -c <"$1")" -le 65536 ] || die "$1: больше 64 КиБ — это не сертификат и не ключ"
+	install -o root -g aisec -m 0440 "$1" "$stage/$2"
+}
+
+# stage_check ПОДСКАЗКА — tls check; при ошибке — отказ с подсказкой.
+stage_check() {
+	docker compose run --rm --no-deps -T -v "$stage:/in:ro" aisec-cli tls check -dir /in -hosts "$hosts" -console-name "$console_name" ||
+		die "сертификаты не прошли проверку (пункты выше): $1"
+}
+
+# Перед заменой сертификатов сервер и шлюз останавливаются: шлюз сверяет
+# console-ca.crt с прочитанным при запуске (контроль целостности), сервер со
+# старым сертификатом шлюз уже не узнал бы. Без контейнеров — ничего не делает.
+stop_services() {
+	docker compose stop aisec-gateway aisec-server
+}
+
+stage_close() {
+	rm -rf "$stage"
+	trap - EXIT
+}
+
+# install_tls КАТАЛОГ — пять файлов в secrets с владельцами и правами шага 3.4.
+install_tls() {
+	install -o aisec -g aisec -m 0644 "$1/console.crt" "$secrets/console.crt"
+	install -o aisec -g aisec -m 0600 "$1/console.key" "$secrets/console.key"
+	install -o root -g root -m 0644 "$1/ca.crt" "$secrets/console-ca.crt"
+	install -o aisec-gw -g aisec-gw -m 0600 "$1/gateway.key" "$secrets/gateway.key"
+	install -o aisec-gw -g aisec-gw -m 0644 "$1/gateway.crt" "$secrets/gateway.crt"
+}
+
+if [ "$tls_source" = customer ]; then
+	step "4/8 Сертификаты TLS УЦ заказчика"
+else
+	step "4/8 Сертификаты TLS от собственного УЦ установки"
+fi
+fingerprint= tls_new=
 if [ "$have" -eq 5 ]; then
-	echo "Сертификаты уже есть в $secrets — не меняю (имена и адреса в них — с первого выпуска)."
+	echo "Сертификаты уже есть в $secrets — проверяю и не меняю (имена и адреса в них — с первой установки)."
+	stage_open
+	for f in console.crt console.key gateway.crt gateway.key; do
+		stage_file "$secrets/$f" "$f"
+	done
+	stage_file "$secrets/console-ca.crt" ca.crt
+	stage_check "запустите с прежними --host (без новых имён и адресов) или замените сертификаты — удалите пять файлов ($tls_files) из $secrets и запустите снова"
+	stage_close
 elif [ "$have" -ne 0 ]; then
 	die "в $secrets есть только часть сертификатов: положите недостающие сами (install-pilot.md, шаг 3.4) или удалите все пять и запустите снова"
+elif [ -n "$tls_dir" ]; then
+	check_tls_dir
+	stage_open
+	for f in console.crt console.key gateway.crt gateway.key ca.crt; do
+		stage_file "$tls_dir/$f" "$f"
+	done
+	stage_check "исправьте сертификаты в $tls_dir (или попросите новые у УЦ) и запустите снова"
+	stop_services
+	install_tls "$stage"
+	stage_close
+	tls_new=1
 else
 	tmp=$(mktemp -d "$data_dir/tls.XXXXXX")
 	# Закрытые ключи во временном каталоге удаляются при любом выходе.
@@ -268,14 +400,13 @@ else
 	for f in console.crt console.key ca.crt gateway.key gateway.crt; do
 		[ "$(find "$tmp/$f" -prune -type f -links 1)" = "$tmp/$f" ] || die "$f: aisec-cli tls init не создал обычный файл"
 	done
-	install -o aisec -g aisec -m 0644 "$tmp/console.crt" "$secrets/console.crt"
-	install -o aisec -g aisec -m 0600 "$tmp/console.key" "$secrets/console.key"
-	install -o root -g root -m 0644 "$tmp/ca.crt" "$secrets/console-ca.crt"
-	install -o aisec-gw -g aisec-gw -m 0600 "$tmp/gateway.key" "$secrets/gateway.key"
-	install -o aisec-gw -g aisec-gw -m 0644 "$tmp/gateway.crt" "$secrets/gateway.crt"
+	stop_services
+	install_tls "$tmp"
 	rm -rf "$tmp"
 	trap - EXIT
+	tls_new=1
 fi
+set_env AISEC_TLS_SOURCE "$tls_source"
 # Копия корня для администраторов и приложений — вне каталога секретов.
 install -o root -g root -m 0644 "$secrets/console-ca.crt" "$data_dir/ca.crt"
 
@@ -297,7 +428,9 @@ fi
 ./prepare-host.sh >/dev/null
 
 step "7/8 Сервер и регистрация шлюза"
-docker compose up -d aisec-server
+# Новые сертификаты — пересоздать контейнер: файлы секретов читаются при
+# запуске (после удаления пяти файлов и повторного запуска работает прежний).
+docker compose up -d ${tls_new:+--force-recreate} aisec-server
 if [ -s "$data_dir/gateway/reg/gateway.crt" ]; then
 	echo "Шлюз уже зарегистрирован — не меняю."
 else
@@ -327,6 +460,9 @@ else
 fi
 
 step "8/8 Запуск"
+# После замены сертификатов шлюз пересоздаётся: файлы секретов читаются
+# при запуске (остановлен он ещё на шаге 4).
+[ -z "$tls_new" ] || docker compose up -d --no-deps --force-recreate aisec-gateway
 docker compose up -d
 console_port=$(env_get AISEC_CONSOLE_PORT)
 gateway_port=$(env_get AISEC_GATEWAY_PORT)
@@ -334,7 +470,11 @@ echo
 echo "Готово. Это тестовая сборка (aisec-test, тестовый ключ манифеста) — НЕ ДЛЯ ПОСТАВКИ заказчику."
 echo "  Консоль: https://$first_host:${console_port:-8444}"
 echo "  Шлюз:    https://$first_host:${gateway_port:-8443}/v1 (OpenAI-совместимый API)"
-echo "  Корень УЦ установки: $data_dir/ca.crt — добавьте его в доверенные в браузере и у приложений"
+if [ "$tls_source" = customer ]; then
+	echo "  Корень УЦ заказчика: $data_dir/ca.crt — если его ещё нет в доверенных у администраторов и приложений, добавьте"
+else
+	echo "  Корень УЦ установки: $data_dir/ca.crt — добавьте его в доверенные в браузере и у приложений"
+fi
 if [ -n "$fingerprint" ]; then
 	echo "  Отпечаток SHA-256 корня (сверьте при импорте): $fingerprint"
 else

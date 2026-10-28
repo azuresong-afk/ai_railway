@@ -67,6 +67,11 @@ type serverConfig struct {
 	// предупреждения.
 	AuditStorageLimit       int64
 	AuditStorageWarnPercent int
+	// UserHMACKey — ключ псевдонимов пользователей (тот же файл, что
+	// -user-hmac-key у шлюзов; ADR-0027, п. 6): им теневой ИИ заменяет
+	// логины и адреса из журналов прокси псевдонимами, как в событиях.
+	// Пусто — пользователи из журналов не учитываются.
+	UserHMACKey string
 	// DatabaseURL содержит пароль, поэтому берётся только из окружения, не из
 	// аргументов командной строки (их видно в списке процессов).
 	DatabaseURL string
@@ -94,6 +99,7 @@ func loadConfig(args []string, getenv func(string) string, errOut io.Writer) (*s
 	verifyInterval := fs.String("audit-verify-interval", audit.DefaultVerifyInterval.String(), "период проверки цепочки журнала аудита, не меньше 1m (AISEC_SERVER_AUDIT_VERIFY_INTERVAL)")
 	proxies := fs.String("trusted-proxies", "", "сети доверенных обратных прокси через запятую, например 10.0.0.5/32; от них принимается X-Forwarded-For (AISEC_SERVER_TRUSTED_PROXIES)")
 	notifyNets := fs.String("notify-allowed-networks", "", "сети через запятую, куда разрешены каналы уведомлений, хотя по умолчанию запрещены (loopback, link-local), например 127.0.0.1/32 для локального приёмника syslog (AISEC_SERVER_NOTIFY_ALLOWED_NETWORKS)")
+	userKey := fs.String("user-hmac-key", "", "ключ псевдонимов пользователей шлюзов, права 0600; для теневого ИИ, без него пользователи из журналов прокси не учитываются (AISEC_SERVER_USER_HMAC_KEY)")
 	if err := fs.Parse(args); err != nil {
 		return nil, err
 	}
@@ -106,7 +112,8 @@ func loadConfig(args []string, getenv func(string) string, errOut io.Writer) (*s
 		"manifest": manifest, "integrity-action": action, "integrity-interval": interval,
 		"ca-cert": caCert, "ca-key": caKey, "internal-listen": internalListen, "internal-tls-cert": internalCert, "internal-tls-key": internalKey,
 		"audit-storage-limit": storageLimit, "audit-storage-warn-percent": storageWarn,
-		"audit-verify-interval": verifyInterval, "trusted-proxies": proxies, "notify-allowed-networks": notifyNets} {
+		"audit-verify-interval": verifyInterval, "trusted-proxies": proxies, "notify-allowed-networks": notifyNets,
+		"user-hmac-key": userKey} {
 		if set[name] {
 			continue
 		}
@@ -116,7 +123,7 @@ func loadConfig(args []string, getenv func(string) string, errOut io.Writer) (*s
 	}
 	cfg := &serverConfig{Listen: *listen, TLSCertFile: *cert, TLSKeyFile: *key, AuditSigningPub: *auditPub, KeysDir: *keysDir,
 		Manifest: *manifest, CACert: *caCert, CAKey: *caKey, InternalListen: *internalListen,
-		InternalTLSCertFile: *internalCert, InternalTLSKeyFile: *internalKey, DatabaseURL: getenv("AISEC_DATABASE_URL")}
+		InternalTLSCertFile: *internalCert, InternalTLSKeyFile: *internalKey, UserHMACKey: *userKey, DatabaseURL: getenv("AISEC_DATABASE_URL")}
 	var errs []error
 	var err error
 	if cfg.AuditStorageLimit, err = strconv.ParseInt(*storageLimit, 10, 64); err != nil || cfg.AuditStorageLimit < 1<<20 {

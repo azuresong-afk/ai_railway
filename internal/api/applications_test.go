@@ -25,6 +25,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/keyring"
 	"github.com/azuresong-afk/ai_railway/internal/policy/versions"
 	"github.com/azuresong-afk/ai_railway/internal/reports"
+	"github.com/azuresong-afk/ai_railway/internal/shadowai"
 )
 
 // Синтетические учётные записи для приложений.
@@ -58,6 +59,9 @@ type appsEnv struct {
 	approvals    *approvals.Memory
 	approvalsSvc *approvals.Service
 	aclock       *testClock
+	// shadow и shadowSvc — теневой ИИ (shadowai_test.go).
+	shadow    *shadowai.Memory
+	shadowSvc *shadowai.Service
 }
 
 func newAppsEnv(t testing.TB) *appsEnv {
@@ -136,8 +140,15 @@ func newAppsEnv(t testing.TB) *appsEnv {
 	if e.approvalsSvc, err = approvals.New(approvals.Options{Store: e.approvals, Provider: p, Box: box, Clock: e.aclock.now}); err != nil {
 		t.Fatal(err)
 	}
+	e.shadow = shadowai.NewMemory()
+	if e.shadowSvc, err = shadowai.New(shadowai.Options{Store: e.shadow, Provider: p, UserMAC: shadowTestMAC(t, p),
+		Clock: func() time.Time { return shadowTestNow }, Logger: logger,
+		Location: func(context.Context) (*time.Location, error) { return time.LoadLocation("Europe/Moscow") }}); err != nil {
+		t.Fatal(err)
+	}
 	h, _, err := New(Options{Hasher: testHasher(t), Logger: logger, Auth: authSvc, Apps: svc,
 		Policies: pols, Events: e.ev, Audit: e.rec, Dashboards: e.dash, Reports: e.reports, Agents: e.agentsSvc, Approvals: e.approvalsSvc,
+		ShadowAI:  e.shadowSvc,
 		RateLimit: RateConfig{Rules: []RateRule{{Prefix: "/", Max: 100000, Window: time.Minute}}}, Stopping: e.stopping})
 	if err != nil {
 		t.Fatal(err)

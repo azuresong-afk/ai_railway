@@ -52,6 +52,8 @@ var keyFileSize = map[string]int{
 	KeyKindManifestSigning:       SigningSeedSize,
 	KeyKindManifestSigningPublic: PublicKeySize,
 	KeyKindBundleEncryption:      RecipientKeySize,
+	KeyKindVendorSubkey:          SigningSeedSize,
+	KeyKindVendorSubkeyPublic:    PublicKeySize,
 }
 
 // EncodeKeyPEM кодирует ключ вида kind для профиля profile.

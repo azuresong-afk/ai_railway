@@ -28,6 +28,18 @@ func TestLoadConfigDefaultsAndEnv(t *testing.T) {
 	if cfg, err = loadConfig(nil, e, io.Discard); err != nil || cfg.AuditSigningPub != "/keys/audit-signing.pub" {
 		t.Fatalf("ключ аудита из окружения: %+v %v", cfg, err)
 	}
+	// Ключ псевдонимов для теневого ИИ (ADR-0027, п. 6) — необязательный.
+	if cfg.UserHMACKey != "" {
+		t.Fatalf("ключ псевдонимов по умолчанию: %q", cfg.UserHMACKey)
+	}
+	e = env(map[string]string{"AISEC_SERVER_TLS_CERT": "c", "AISEC_SERVER_TLS_KEY": "k", "AISEC_SERVER_KEYS_DIR": "/keys", "AISEC_DATABASE_URL": "postgres://u@h/d",
+		"AISEC_SERVER_USER_HMAC_KEY": "/keys/user-hmac.key"})
+	if cfg, err = loadConfig(nil, e, io.Discard); err != nil || cfg.UserHMACKey != "/keys/user-hmac.key" {
+		t.Fatalf("ключ псевдонимов из окружения: %+v %v", cfg, err)
+	}
+	if cfg, err = loadConfig([]string{"-user-hmac-key", "/k2"}, e, io.Discard); err != nil || cfg.UserHMACKey != "/k2" {
+		t.Fatalf("ключ псевдонимов из флага: %+v %v", cfg, err)
+	}
 }
 
 func TestLoadConfigIntegrity(t *testing.T) {

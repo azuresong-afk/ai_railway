@@ -8,6 +8,12 @@
 //	manifest sign -key ФАЙЛ -manifest build/release/aisec-manifest.json [-expect-sha256 HEX]
 //	manifest fingerprint -pub ФАЙЛ
 //	manifest gen-key -key ФАЙЛ -pub ФАЙЛ
+//	manifest gen-subkey -key ФАЙЛ -pub ФАЙЛ [-test]
+//	manifest endorse -key КЛЮЧ_ПРОИЗВОДИТЕЛЯ -subkey-pub ФАЙЛ -purpose service_db -serial N \
+//	    -not-after ДАТА [-not-before ДАТА] [-comment ТЕКСТ] -out ФАЙЛ [-test]
+//	manifest sign-db -key РАБОЧИЙ_КЛЮЧ -endorsement ФАЙЛ -vendor-pub ФАЙЛ -kind shadow_ai_catalog \
+//	    -in catalog.yaml -out ФАЙЛ [-test]
+//	manifest inspect-db -in ФАЙЛ
 //
 // Ключ производителя (-key) хранится вне репозитория на отдельном носителе,
 // файл с правами 0400; sign и gen-key работают только на машине без сети
@@ -15,6 +21,10 @@
 // шаги. Тестовый ключ (-test-key) лежит в репозитории и годится только для
 // CI и разработки: им подписанный манифест принимают лишь сборки без тега
 // aisec_release.
+//
+// Рабочие ключи служебных баз и лицензий (ADR-0022, п. 2; ADR-0027, п. 3)
+// создаются и заверяются ключом производителя тоже только без сети:
+// gen-subkey, endorse, sign-db (subkey.go).
 package main
 
 import (
@@ -44,9 +54,11 @@ func main() {
 	}
 }
 
+const commands = "build, sign, fingerprint, gen-key, gen-subkey, endorse, sign-db или inspect-db"
+
 func run(args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("ожидается команда: build, sign, fingerprint или gen-key")
+		return errors.New("ожидается команда: " + commands)
 	}
 	p, err := aisecCrypto.New(aisecCrypto.ProfileStandard)
 	if err != nil {
@@ -61,8 +73,16 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return fingerprint(p, args[1:], stdout, stderr)
 	case "gen-key":
 		return genKey(p, args[1:], stdout, stderr)
+	case "gen-subkey":
+		return genSubkey(p, args[1:], stdout, stderr)
+	case "endorse":
+		return endorse(p, args[1:], stdout, stderr)
+	case "sign-db":
+		return signDB(p, args[1:], stdout, stderr)
+	case "inspect-db":
+		return inspectDB(p, args[1:], stdout, stderr)
 	}
-	return fmt.Errorf("неизвестная команда %q: ожидается build, sign, fingerprint или gen-key", args[0])
+	return fmt.Errorf("неизвестная команда %q: ожидается %s", args[0], commands)
 }
 
 func build(p aisecCrypto.Provider, args []string, stdout, stderr io.Writer) error {
