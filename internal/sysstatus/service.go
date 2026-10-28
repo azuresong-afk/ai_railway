@@ -15,6 +15,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/audit"
 	"github.com/azuresong-afk/ai_railway/internal/gwregistry"
 	"github.com/azuresong-afk/ai_railway/internal/integrity"
+	"github.com/azuresong-afk/ai_railway/internal/license"
 )
 
 // Настройки по умолчанию (ТЗ 7.4 РСБ.5, 7.8 ВРМ.2).
@@ -116,6 +117,8 @@ type Options struct {
 	// ShadowAISyslog — состояние приёма журналов по syslog (задача 4.23);
 	// nil или Enabled = false — раздела нет.
 	ShadowAISyslog func() ShadowAISyslogStats
+	// License — состояние лицензии (задача 4.26); nil — условий license_* нет.
+	License func(ctx context.Context) (license.State, error)
 }
 
 // CustomerCert — сведения о сертификате заказчика для адреса шлюза.
@@ -439,11 +442,51 @@ func (s *Service) collect(ctx context.Context) collected {
 			s.gatewayTLS(&c, active, cert, ok, bundle, now)
 		}
 	}
+	if s.o.License != nil {
+		lctx, cancel := s.dbCtx(ctx)
+		st, err := s.o.License(lctx)
+		cancel()
+		if err != nil {
+			s.unavailable(&c, "license", err)
+		} else {
+			licenseConditions(&c, st)
+		}
+	}
 	if s.o.Store != nil {
 		s.alertJob(ctx, &c, now)
 	}
 	sort.Strings(c.st.Unavailable)
 	return c
+}
+
+// licenseConditions — условия лицензии (ADR-0026, п. 8). Без лицензии
+// («пилот по договору») все условия сняты, в том числе license_clock:
+// сроков, которые можно продлить переводом часов, нет.
+func licenseConditions(c *collected, st license.State) {
+	// «state» занят состоянием условия (raised или cleared).
+	d := map[string]any{"license_state": st.Phase}
+	if st.Number > 0 {
+		d["number"] = st.Number
+	}
+	if st.Signed != nil {
+		d["valid_until"] = st.Signed.License.ValidUntil.UTC().Format(time.RFC3339)
+		d["days_left"] = st.DaysLeft()
+		d["grace_until"] = st.GraceUntil().UTC().Format(time.RFC3339)
+	}
+	expiring := st.Phase == license.PhaseExpiring
+	c.conditions[ConditionLicenseExpiry] = expiring
+	c.conditions[licenseExpiryCritical] = expiring && st.LeftUntil() <= license.ExpiryCritical
+	c.conditions[ConditionLicenseGrace] = st.Phase == license.PhaseGrace
+	c.conditions[ConditionLicenseRestricted] = st.Phase == license.PhaseRestricted
+	c.conditions[ConditionLicenseInvalid] = st.Phase == license.PhaseInvalid
+	c.conditions[ConditionLicenseClock] = st.Phase != license.PhaseNone && st.ClockBehind
+	clock := map[string]any{"server_time": st.Now.UTC().Format(time.RFC3339), "license_time": st.At.UTC().Format(time.RFC3339)}
+	for _, code := range []string{ConditionLicenseExpiry, licenseExpiryCritical, ConditionLicenseGrace, ConditionLicenseRestricted,
+		ConditionLicenseInvalid} {
+		c.details[code] = d
+	}
+	maps.Copy(clock, d)
+	c.details[ConditionLicenseClock] = clock
 }
 
 // alertJob — условие alert_job_stale (DM-44, 3В17 ревью 3.r2): фоновая
@@ -629,6 +672,11 @@ var conditionInfo = []struct{ code, requirement, title string }{
 	{ConditionGatewayTLS, "ЗИ.4", "Шлюз отвечает приложениям не тем сертификатом, что загружен в консоли"},
 	{ConditionCAExpiry, "ИАФ.10", "Истекает корень внутреннего УЦ: нужна ротация (aisec-cli keys rotate-ca)"},
 	{ConditionCustomerCertExpiry, "ЗИ.4", "Скоро истекает сертификат заказчика для адреса шлюза: загрузите новый"},
+	{ConditionLicenseExpiry, "ЗИ.2", "Скоро истекает срок лицензии: запросите новую у производителя"},
+	{ConditionLicenseGrace, "ЗИ.2", "Срок лицензии истёк, идёт льготный период: после него изменения конфигурации будут запрещены"},
+	{ConditionLicenseRestricted, "ЗИ.2", "Льготный период лицензии закончился: изменения конфигурации запрещены, трафик и защита работают"},
+	{ConditionLicenseInvalid, "ЗИ.2", "Загруженная лицензия не прошла проверку подписи: изменения конфигурации запрещены"},
+	{ConditionLicenseClock, "ВРМ.1", "Часы сервера отстают от времени, которое уже видела лицензия: проверьте синхронизацию времени"},
 	{ConditionAlertJob, "РСБ.7", "Фоновая задача правил оповещений не выполняется или правило падает на каждом проходе: правила частоты, аномалий и бюджетов молчат"},
 }
 
@@ -837,6 +885,8 @@ func (s *Service) skip(c collected, fam string) bool {
 		return missing("gateways", "events")
 	case ConditionCustomerCertExpiry:
 		return missing("customer_cert")
+	case ConditionLicenseExpiry, ConditionLicenseGrace, ConditionLicenseRestricted, ConditionLicenseInvalid, ConditionLicenseClock:
+		return missing("license")
 	}
 	return false
 }

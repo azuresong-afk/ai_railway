@@ -169,9 +169,12 @@ type Identity struct {
 type ConfigError struct {
 	Field  string
 	Reason string
+	err    error
 }
 
 func (e *ConfigError) Error() string { return "LDAP: " + e.Field + ": " + e.Reason }
+
+func (e *ConfigError) Unwrap() error { return e.err }
 
 // endpoint — разобранный адрес каталога.
 type endpoint struct {
@@ -265,12 +268,25 @@ func UserFilter(tmpl, login string) string {
 	return strings.ReplaceAll(tmpl, LoginPlaceholder, goldap.EscapeFilter(login))
 }
 
+// ErrLoginPlacement — {login} стоит не в значении условия: логин меняет
+// структуру фильтра или атрибут условия (4В14). Текст — для администратора.
+var ErrLoginPlacement = errors.New(LoginPlaceholder + " должен стоять в значении условия, например (uid=" +
+	LoginPlaceholder + ")")
+
+// loginProbes — пробы логина для проверки шаблона: обычные логины и логины с
+// символами, которые EscapeFilter не экранирует, но которые вне значения
+// меняют разбор условия (расширяемое сравнение, ~=, <=, >=, :dn:).
+var loginProbes = []string{"x", "y", ":", "=", "~", "<", ">", "*", "(", ")", "\\", "&", "|", "!",
+	":dn:", "x:=", "~=", "<=", ">=", "x:dn:1.2.3:=", "a\x00"}
+
 // validFilter — шаблон фильтра: до 512 байт, с LoginPlaceholder только в
 // значении (сразу после «=» или «*»: имя атрибута экранированием не
 // защищается), и после подстановки — разбираемый фильтр LDAP.
-func validFilter(tmpl string) bool {
+// ErrLoginPlacement — логин стоит в имени атрибута или подстановка проб
+// логина даёт фильтры разной структуры (то же свойство, что FuzzUserFilter).
+func validFilter(tmpl string) error {
 	if len(tmpl) > maxFilter || !utf8.ValidString(tmpl) || !strings.Contains(tmpl, LoginPlaceholder) {
-		return false
+		return errBadFilter
 	}
 	for i := 0; ; {
 		j := strings.Index(tmpl[i:], LoginPlaceholder)
@@ -278,43 +294,104 @@ func validFilter(tmpl string) bool {
 			break
 		}
 		if k := i + j; k == 0 || (tmpl[k-1] != '=' && tmpl[k-1] != '*') {
-			return false
+			return ErrLoginPlacement
 		}
 		i += j + len(LoginPlaceholder)
 	}
-	_, err := goldap.CompileFilter(UserFilter(tmpl, "x"))
-	return err == nil
+	want := ""
+	for n, probe := range loginProbes {
+		p, err := goldap.CompileFilter(UserFilter(tmpl, probe))
+		if err != nil && n == 0 {
+			return errBadFilter
+		}
+		if err != nil {
+			return ErrLoginPlacement
+		}
+		got := filterShape(p)
+		if n == 0 {
+			want = got
+		} else if got != want {
+			return ErrLoginPlacement
+		}
+	}
+	return nil
+}
+
+var errBadFilter = errors.New("фильтр не разобран или в нём нет " + LoginPlaceholder)
+
+// filterShape — дерево фильтра без значений условий: теги, атрибуты и
+// правила сравнения. Значения (равенство, порядок, подстроки, значение
+// расширяемого сравнения) не учитываются: только туда попадает логин.
+func filterShape(p *ber.Packet) string {
+	var b strings.Builder
+	writeShape(&b, p)
+	return b.String()
+}
+
+func writeShape(b *strings.Builder, p *ber.Packet) {
+	b.WriteString(strconv.Itoa(int(p.ClassType)) + "." + strconv.FormatUint(uint64(p.Tag), 10) + "(")
+	switch {
+	case p.ClassType != ber.ClassContext:
+	case p.Tag == goldap.FilterAnd || p.Tag == goldap.FilterOr || p.Tag == goldap.FilterNot:
+		for _, c := range p.Children {
+			writeShape(b, c)
+		}
+	case p.Tag == goldap.FilterPresent:
+		b.WriteString(strconv.Quote(p.Data.String()))
+	case p.Tag == goldap.FilterExtensibleMatch:
+		for _, c := range p.Children {
+			b.WriteString(strconv.FormatUint(uint64(c.Tag), 10))
+			if c.Tag != goldap.MatchingRuleAssertionMatchValue {
+				b.WriteString(strconv.Quote(c.Data.String()))
+			}
+			b.WriteString(",")
+		}
+	default:
+		// Равенство, подстроки, >=, <=, ~=: атрибут и виды частей подстроки.
+		for i, c := range p.Children {
+			switch {
+			case i == 0:
+				b.WriteString(strconv.Quote(c.Data.String()))
+			case p.Tag == goldap.FilterSubstrings:
+				for _, part := range c.Children {
+					b.WriteString(strconv.FormatUint(uint64(part.Tag), 10) + ",")
+				}
+			}
+			b.WriteString(";")
+		}
+	}
+	b.WriteString(")")
 }
 
 // ValidateConfig проверяет настройки без обращения к каталогу; пароль
 // сервисной учётной записи не проверяется (он может быть «прежним»).
 func ValidateConfig(cfg Config) error {
 	if _, err := parseURL(cfg.URL); err != nil {
-		return &ConfigError{"url", err.Error()}
+		return &ConfigError{Field: "url", Reason: err.Error()}
 	}
 	if !ValidDN(cfg.BindDN) {
-		return &ConfigError{"bind_dn", "DN сервисной учётной записи не разобран"}
+		return &ConfigError{Field: "bind_dn", Reason: "DN сервисной учётной записи не разобран"}
 	}
 	if !ValidDN(cfg.UserBaseDN) {
-		return &ConfigError{"user_base_dn", "DN ветки пользователей не разобран"}
+		return &ConfigError{Field: "user_base_dn", Reason: "DN ветки пользователей не разобран"}
 	}
-	if !validFilter(cfg.UserFilter) {
-		return &ConfigError{"user_filter", "фильтр не разобран или в нём нет " + LoginPlaceholder}
+	if err := validFilter(cfg.UserFilter); err != nil {
+		return &ConfigError{Field: "user_filter", Reason: err.Error(), err: err}
 	}
 	if !slices.Contains(IDAttributes, cfg.IDAttribute) {
-		return &ConfigError{"id_attribute", "атрибут идентификатора — один из " + strings.Join(IDAttributes, ", ")}
+		return &ConfigError{Field: "id_attribute", Reason: "атрибут идентификатора — один из " + strings.Join(IDAttributes, ", ")}
 	}
 	if !attrName(cfg.DisplayAttribute) {
-		return &ConfigError{"display_attribute", "имя атрибута — латиница, цифры и «-», до 64 символов"}
+		return &ConfigError{Field: "display_attribute", Reason: "имя атрибута — латиница, цифры и «-», до 64 символов"}
 	}
 	if !slices.Contains(GroupModes, cfg.GroupMode) {
-		return &ConfigError{"group_mode", "способ получения групп — " + strings.Join(GroupModes, ", ")}
+		return &ConfigError{Field: "group_mode", Reason: "способ получения групп — " + strings.Join(GroupModes, ", ")}
 	}
 	if cfg.GroupMode != GroupsMemberOf && !ValidDN(cfg.GroupBaseDN) {
-		return &ConfigError{"group_base_dn", "DN ветки групп не разобран"}
+		return &ConfigError{Field: "group_base_dn", Reason: "DN ветки групп не разобран"}
 	}
 	if cfg.GroupMode == GroupsMemberOf && cfg.GroupBaseDN != "" && !ValidDN(cfg.GroupBaseDN) {
-		return &ConfigError{"group_base_dn", "DN ветки групп не разобран"}
+		return &ConfigError{Field: "group_base_dn", Reason: "DN ветки групп не разобран"}
 	}
 	return nil
 }
@@ -546,6 +623,11 @@ func (c *Client) Authenticate(ctx context.Context, cfg Config, login, password s
 	}
 	if login == "" {
 		return Identity{}, fail(CodeNotFound, "пустой логин")
+	}
+	// Шаблон, сохранённый до проверки структуры (4В14): логин не
+	// подставляется, отказ пишется в аудит входа с кодом config.
+	if err := validFilter(cfg.UserFilter); err != nil {
+		return Identity{}, failErr(CodeConfig, "шаблон фильтра: "+err.Error(), err)
 	}
 	ctx, done, err := c.withDeadline(ctx)
 	if err != nil {

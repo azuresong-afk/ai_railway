@@ -131,6 +131,11 @@ const (
 	// импорт журналов, загрузка подписанного каталога, срок хранения.
 	PermShadowAIRead   = "shadow_ai.read"
 	PermShadowAIManage = "shadow_ai.manage"
+	// Лицензия (ТЗ 5.15; задача 4.27, ADR-0026, п. 6): просмотр сведений и
+	// использования пределов; загрузка и замена — действие администратора
+	// системы с повторной проверкой паролем или кодом (у токена её нет).
+	PermLicenseRead   = "license.read"
+	PermLicenseManage = "license.manage"
 )
 
 // Permission — разрешение из каталога.
@@ -152,10 +157,11 @@ func (p Permission) ReadOnly() bool { return strings.HasSuffix(p.Name, ".read") 
 // TokenGrantable — разрешение можно выдать токену API (решение владельца
 // по задаче 2.10): кроме функций безопасности и самих токенов. Управление
 // доступом остаётся за человеком с паролем и вторым фактором; токен не
-// выпускает и не продлевает токены.
+// выпускает и не продлевает токены. Загрузка лицензии требует повторной
+// проверки в сессии (ADR-0026, п. 6) — токену тоже не выдаётся.
 func TokenGrantable(perm string) bool {
 	p, ok := LookupPermission(perm)
-	return ok && !p.Security && !strings.HasPrefix(p.Name, "api_tokens.")
+	return ok && !p.Security && !strings.HasPrefix(p.Name, "api_tokens.") && p.Name != PermLicenseManage
 }
 
 var permissionCatalog = []Permission{
@@ -223,6 +229,8 @@ var permissionCatalog = []Permission{
 		Group: "Агенты", Security: true},
 	{Name: PermShadowAIRead, Title: "Просмотр сводок теневого ИИ (пользователи — псевдонимами), каталога сервисов и журнала импорта", Group: "Теневой ИИ"},
 	{Name: PermShadowAIManage, Title: "Импорт журналов прокси, загрузка подписанного каталога ИИ-сервисов, срок хранения сводок", Group: "Теневой ИИ"},
+	{Name: PermLicenseRead, Title: "Просмотр лицензии: владелец, срок, пределы и их использование, модули", Group: "Система"},
+	{Name: PermLicenseManage, Title: "Загрузка и замена лицензии (с повторной проверкой паролем или кодом)", Group: "Система"},
 }
 
 // auditorExtra — разрешения аудитора сверх чтения: они ничего не меняют,
@@ -411,7 +419,8 @@ var builtinRoles = []RoleDef{
 			PermModelPricesRead: ScopeAll, PermModelPricesManage: ScopeAll, PermBudgetsRead: ScopeAll, PermBudgetsManage: ScopeAll,
 			PermDashboardsRead: ScopeAll, PermGatewayTLSRead: ScopeAll, PermGatewayTLSManage: ScopeAll,
 			PermReportsRead: ScopeAll, PermReportSchedulesRead: ScopeAll, PermReportSchedulesManage: ScopeAll,
-			PermAgentsRead: ScopeAll, PermAgentsManage: ScopeAll, PermShadowAIRead: ScopeAll, PermShadowAIManage: ScopeAll}},
+			PermAgentsRead: ScopeAll, PermAgentsManage: ScopeAll, PermShadowAIRead: ScopeAll, PermShadowAIManage: ScopeAll,
+			PermLicenseRead: ScopeAll, PermLicenseManage: ScopeAll}},
 	{ID: RoleAnalyst, DisplayName: "Аналитик", Builtin: true,
 		Description: "Разбор оповещений и инцидентов, поиск по событиям",
 		Grants: grantAll(PermSystemRead, PermEventsRead, PermEventsExport, PermEventsMark, PermApplicationsRead, PermProvidersRead,

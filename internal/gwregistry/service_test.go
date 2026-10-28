@@ -473,3 +473,42 @@ func TestHeartbeatClockSkewAndTLS(t *testing.T) {
 		t.Fatalf("heartbeat прежней версии: %+v", g)
 	}
 }
+
+// Предел шлюзов лицензии (ADR-0026, п. 5): новый шлюз сверх предела не
+// регистрируется и токен не погашается; повторная регистрация действующего
+// шлюза предел не проверяет.
+func TestRegisterAdmission(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	reg, _ := e.register(t, e.token(t, "gw-1", false))
+	errLimit := errors.New("предел шлюзов")
+	calls := 0
+	e.svc.SetAdmission(func(context.Context) error {
+		calls++
+		return errLimit
+	})
+	tok := e.token(t, "gw-2", false)
+	_, csr, err := aisecCrypto.NewClientCSR("gw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.svc.Register(ctx, gwregistry.RegisterInput{Token: tok, CSR: csr, SourceIP: testIP}); !errors.Is(err, errLimit) {
+		t.Fatalf("сверх предела: %v", err)
+	}
+	// Отказ — в аудите, с ID шлюза из токена.
+	recs := e.aud.all()
+	if last := recs[len(recs)-1]; last.Action != "gateway.register" || last.Result != audit.ResultDenied ||
+		last.Actor.Name != "gw-2" || last.Details.(map[string]any)["reason"] != "license_limit" {
+		t.Fatalf("аудит отказа: %+v", last)
+	}
+	// Повторная регистрация действующего шлюза проходит без проверки.
+	again, _ := e.register(t, e.token(t, "gw-1", true))
+	if again.Gateway.ID != reg.Gateway.ID || calls != 1 {
+		t.Fatalf("повторная регистрация: %+v, проверок %d", again.Gateway, calls)
+	}
+	// После снятия предела тот же токен годен.
+	e.svc.SetAdmission(nil)
+	if r, _ := e.register(t, tok); r.Gateway.Name != "gw-2" {
+		t.Fatalf("тот же токен: %+v", r.Gateway)
+	}
+}

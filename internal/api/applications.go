@@ -270,6 +270,13 @@ func (d Deps) createApplication(w http.ResponseWriter, r *http.Request) {
 			"Политику, режимы, словари и домены-исключения задаёт администратор безопасности: создайте приложение без них."))
 		return
 	}
+	// Предел приложений лицензии (ADR-0026, п. 5): существующие работают.
+	if d.License != nil {
+		if err := d.License.CheckApplication(r.Context()); err != nil {
+			WriteProblem(w, licenseProblem(d.Logger, err))
+			return
+		}
+	}
 	a, err := d.Apps.CreateApplication(r.Context(), by, in, prot)
 	if err != nil {
 		WriteProblem(w, appsProblem(d.Logger, err, appNotFound))

@@ -2215,7 +2215,8 @@ export interface paths {
          *     токена). Повторная регистрация того же шлюза (новый токен с `-reregister`) заменяет
          *     сертификат и закреплённый ключ получателя (`bundle_key`): прежний сертификат перестаёт
          *     приниматься внутренним API сразу. Без внутреннего УЦ
-         *     на сервере (`-ca-cert`) — 503. Предел частоты — 10 запросов в минуту с адреса.
+         *     на сервере (`-ca-cert`) — 503. Сверх предела действующих шлюзов лицензии (ADR-0026) —
+         *     403 `license_limit`, токен не гасится. Предел частоты — 10 запросов в минуту с адреса.
          *     Без `Idempotency-Key`: ответ содержит выпущенный сертификат.
          */
         post: {
@@ -10017,6 +10018,103 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/license": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Лицензия
+         * @description Право `license.read` (администратор системы, администратор безопасности, аудитор; ADR-0026, п. 6).
+         *     Состояние (`none` — «пилот по договору» без ограничений, `active`, `expiring` — 30 суток и меньше,
+         *     `grace` — льготный период 30 суток, `restricted` — изменения конфигурации запрещены, `invalid` —
+         *     загруженная лицензия не прошла повторную проверку подписи), владелец, срок, пределы и их использование,
+         *     модули, номер и срок заверения рабочего ключа. `clock_behind` — часы сервера раньше даты выдачи лицензии
+         *     или отметки часов (условие `license_clock`).
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Сведения о лицензии */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["LicenseInfo"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        /**
+         * Загрузить или заменить лицензию
+         * @description Право `license.manage` (администратор системы и администратор безопасности). Только в сессии консоли с текущим паролем (`password`)
+         *     или кодом TOTP (`code`): токену API это право не выдаётся (повторной проверки у токена нет), неверное
+         *     значение — 403 `reauthentication_failed`.
+         *     `license` — текст файла `*.aiseclic` (до 16 КиБ; ADR-0026, п. 2). Проверяются: заверение рабочего ключа
+         *     ключом производителя (назначение `license`, срок на текущее время, отзыв), подпись лицензии, строгий
+         *     разбор содержимого, дата выдачи в сроке заверения, срок лицензии (действует сейчас), дата выдачи не позже
+         *     часов сервера. Замена — только на лицензию с номером больше и датой выдачи не раньше загруженной (иначе
+         *     409). Неверный файл — 422 с причиной. Работает и после льготного периода. Пишет `license.loaded` или
+         *     `license.rejected` без файла и подписи.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["LicenseUpload"];
+                };
+            };
+            responses: {
+                /** @description Лицензия загружена */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["LicenseInfo"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -11574,7 +11672,7 @@ export interface components {
             status: number;
             detail: string;
             /** @enum {string} */
-            code: "invalid_request" | "unauthorized" | "forbidden" | "not_found" | "method_not_allowed" | "conflict" | "payload_too_large" | "unsupported_media_type" | "unprocessable" | "rate_limited" | "internal_error" | "service_unavailable" | "reauthentication_failed" | "bundle_key_mismatch" | "reissue_not_needed" | "self_review" | "approval_queue_full";
+            code: "invalid_request" | "unauthorized" | "forbidden" | "not_found" | "method_not_allowed" | "conflict" | "payload_too_large" | "unsupported_media_type" | "unprocessable" | "rate_limited" | "internal_error" | "service_unavailable" | "reauthentication_failed" | "bundle_key_mismatch" | "reissue_not_needed" | "self_review" | "approval_queue_full" | "license_restricted" | "license_module" | "license_limit";
             errors?: {
                 field: string;
                 detail: string;
@@ -12478,6 +12576,69 @@ export interface components {
             domains: string[];
             /** @description Имя и все его поддомены */
             suffixes: string[];
+        };
+        /** @description Лицензия и её состояние (ADR-0026, пп. 3–6) */
+        LicenseInfo: {
+            /** @enum {string} */
+            state: "none" | "active" | "expiring" | "grace" | "restricted" | "invalid";
+            /** @description Изменения конфигурации запрещены (restricted, invalid) */
+            restricted: boolean;
+            /** @description Часы сервера раньше даты выдачи лицензии или отметки часов */
+            clock_behind: boolean;
+            /**
+             * Format: int64
+             * @description Номер загруженной лицензии; 0 — «пилот по договору»
+             */
+            number: number;
+            /** @enum {string} */
+            type?: "pilot" | "commercial";
+            licensee?: {
+                organization: string;
+                inn: string;
+            };
+            /** Format: date-time */
+            issued_at?: string;
+            /** Format: date-time */
+            valid_from?: string;
+            /** Format: date-time */
+            valid_until?: string;
+            /**
+             * Format: date-time
+             * @description Конец льготного периода
+             */
+            grace_until?: string;
+            /** @description Целых суток до конца срока */
+            days_left?: number;
+            /** @description Целых суток до конца льготного периода */
+            grace_days_left?: number;
+            limits?: components["schemas"]["LicenseCounts"];
+            usage?: components["schemas"]["LicenseCounts"];
+            /** @description Включённые модули; без лицензии — все */
+            modules: ("agents" | "shadow_ai" | "compliance" | "ml")[];
+            /**
+             * Format: int64
+             * @description Номер заверения рабочего ключа лицензий
+             */
+            subkey_serial?: number;
+            /** Format: date-time */
+            subkey_not_after?: string;
+            /** @description Отпечаток рабочего ключа лицензий */
+            fingerprint?: string;
+            /** Format: date-time */
+            loaded_at?: string;
+        };
+        /** @description Пределы (0 — без ограничения) или их использование */
+        LicenseCounts: {
+            gateways: number;
+            applications: number;
+        };
+        LicenseUpload: {
+            /** @description Текст файла лицензии *.aiseclic */
+            license: string;
+            /** @description Текущий пароль (или code) */
+            password?: string;
+            /** @description Код TOTP (или password) */
+            code?: string;
         };
         ShadowCatalog: {
             /** @description Каталог загружали */
@@ -13420,7 +13581,11 @@ export interface components {
                 "application/problem+json": components["schemas"]["Problem"];
             };
         };
-        /** @description Недостаточно прав (`forbidden`) */
+        /**
+         * @description Недостаточно прав (`forbidden`) или изменение запрещено лицензией (ADR-0026, п. 5): после льготного
+         *     периода — `license_restricted`, модуль не входит в лицензию — `license_module`, превышен предел шлюзов
+         *     или приложений — `license_limit`; причина — в `detail`
+         */
         ProblemForbidden: {
             headers: {
                 [name: string]: unknown;

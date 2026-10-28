@@ -46,7 +46,7 @@ export const navItems: NavItem[] = [
     path: "/admin",
     title: "Администрирование",
     icon: Settings,
-    anyOf: ["users.read", "roles.read", "sessions.read", "auth_policy.read", "auth_idp.read", "api_tokens.read"],
+    anyOf: ["users.read", "roles.read", "sessions.read", "auth_policy.read", "auth_idp.read", "api_tokens.read", "license.read"],
   },
   { path: "/system", title: "Состояние системы", icon: Activity, anyOf: ["system.read"] },
 ];
