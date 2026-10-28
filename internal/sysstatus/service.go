@@ -114,6 +114,9 @@ type Options struct {
 	// ok = false — сертификат не загружен. nil — условий customer_cert_expiry
 	// и gateway_tls нет.
 	CustomerCert func(ctx context.Context) (cert CustomerCert, ok bool, err error)
+	// ShadowAISyslog — состояние приёма журналов по syslog (задача 4.23);
+	// nil или Enabled = false — раздела нет.
+	ShadowAISyslog func() ShadowAISyslogStats
 	// License — состояние лицензии (задача 4.26); nil — условий license_* нет.
 	License func(ctx context.Context) (license.State, error)
 	// Quota — режим квот и шлюзы на автономной доле (задача 4.29); nil —
@@ -410,6 +413,7 @@ func (s *Service) collect(ctx context.Context) collected {
 		}
 	}
 
+	s.shadowAISyslog(&c)
 	c.conditions[ConditionTime] = clk.Sync == SyncUnsynchronized
 	c.conditions[ConditionStorage] = c.st.Storage.WarnExceeded
 	if ca := s.o.CANotAfter; !ca.IsZero() {

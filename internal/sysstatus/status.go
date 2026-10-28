@@ -22,6 +22,9 @@ type Status struct {
 	// Bundle — сборка пакета конфигурации шлюзов (В16, Н28 ревью 2.r3b);
 	// nil — сервер без внутреннего порта для шлюзов.
 	Bundle *BundleStatus `json:"bundle"`
+	// ShadowAISyslog — приём журналов прокси по syslog (задача 4.23); nil —
+	// слушатель выключен.
+	ShadowAISyslog *ShadowAISyslogStats `json:"shadow_ai_syslog,omitempty"`
 	// Notifications — по одной записи на каждое условие раздела 7.
 	Notifications []Notification `json:"notifications"`
 	// Unavailable — разделы, которые не удалось собрать (сбой БД и т. п.);

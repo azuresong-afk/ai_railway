@@ -5578,6 +5578,101 @@ paths:
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ProblemInternal' }
         '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/shadow-ai/exclusions:
+    get:
+      summary: Исключения теневого ИИ
+      description: |
+        Право `shadow_ai.read`. Пользователи (псевдонимами) и сервисы, которые не учитываются в сводках и
+        оповещениях теневого ИИ (задача 4.23), — например учётная запись самого шлюза, которая ходит к
+        провайдерам через прокси. Не больше 1000.
+      x-permission: shadow_ai.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      responses:
+        '200':
+          description: Исключения
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ShadowExclusionList' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    post:
+      summary: Добавить исключение теневого ИИ
+      description: |
+        Право `shadow_ai.manage`. Пользователь задаётся логином или адресом клиента из журнала (`login`) —
+        сервер сразу заменяет его псевдонимом на ключе псевдонимов, логин нигде не хранится — или готовым
+        псевдонимом (`alias`); сервис — ID сервиса каталога (`service`). Строки исключённых не попадают в
+        сводки и оповещения, накопленные сводки исключённого удаляются той же транзакцией. Это ослабление
+        (DM-40): нужен текущий пароль (`password`) или код TOTP (`code`) в сессии консоли (токеном API —
+        403), в аудите `shadow_ai.exclusion_added` с `weakening: true`. Пользователь без ключа псевдонимов —
+        409; повтор и сверх 1000 — 409.
+      x-permission: shadow_ai.manage
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ShadowExclusionInput' }
+      responses:
+        '201':
+          description: Исключение добавлено
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ShadowExclusion' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '409': { $ref: '#/components/responses/ProblemConflict' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/shadow-ai/exclusions/{kind}/{value}:
+    delete:
+      summary: Снять исключение теневого ИИ
+      description: |
+        Право `shadow_ai.manage`. Следующие строки пользователя или сервиса снова учитываются; удалённые при
+        добавлении исключения сводки не возвращаются. Пишет `shadow_ai.exclusion_removed`.
+      x-permission: shadow_ai.manage
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+        - { name: kind, in: path, required: true, schema: { type: string, enum: [user, service] } }
+        - { name: value, in: path, required: true, schema: { type: string, maxLength: 64 }, description: 'Псевдоним или ID сервиса' }
+      responses:
+        '204': { description: Исключение снято }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/shadow-ai/syslog:
+    get:
+      summary: Состояние приёма журналов по syslog
+      description: |
+        Право `shadow_ai.read`. Слушатель TCP/TLS сервера управления (RFC 5425, кадры RFC 6587), выключен по
+        умолчанию и включается флагами сервера `-shadow-ai-syslog-*`. Адрес, формат, режим TLS, разрешённые
+        сети, пределы и счётчики с запуска сервера: отказы и разрывы сверх пределов, строки, запись сводок.
+        Содержимого строк в ответе нет.
+      x-permission: shadow_ai.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      responses:
+        '200':
+          description: Состояние слушателя
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ShadowSyslogStats' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
   /api/v1/license:
     get:
       summary: Лицензия
@@ -6090,6 +6185,9 @@ components:
                   type: array
                   description: 'Шлюзы на связи, которые дольше 10 минут работают на другой версии'
                   items: { type: string }
+        shadow_ai_syslog:
+          $ref: '#/components/schemas/ShadowSyslogStats'
+          description: 'Приём журналов прокси по syslog (теневой ИИ); нет — слушатель выключен'
         notifications:
           type: array
           items:
@@ -8195,7 +8293,7 @@ components:
       properties:
         filter: { type: string, maxLength: 2048, description: Фильтр событий (язык — в описании GET /api/v1/events) }
         min_severity: { $ref: '#/components/schemas/AlertSeverity' }
-        field: { type: string, enum: [model, provider, user, app, tool], description: 'Поле правила «новое»; tool — только у встроенного agents.tool_new' }
+        field: { type: string, enum: [model, provider, user, app, tool, shadow_ai_service], description: 'Поле правила «новое»; tool — только у встроенного agents.tool_new, shadow_ai_service — у shadow_ai.new_service' }
         count: { type: integer, minimum: 2, maximum: 100000, description: 'Порог «частоты»: событий в окне по ключу группировки' }
         window_minutes: { type: integer, minimum: 1, maximum: 1440, description: Окно «частоты», минут }
         metric:
@@ -8437,6 +8535,7 @@ components:
         users_pseudonymized: { type: boolean, description: 'false — ключа псевдонимов нет, пользователи не учтены' }
         sha256: { type: string, pattern: '^[0-9a-f]{64}$', description: 'Хеш файла после распаковки' }
         services: { type: integer, description: 'Разных сервисов найдено' }
+        excluded: { type: integer, format: int64, description: 'Обращений исключённых пользователей и сервисов (не сохранены)' }
     ShadowImportList:
       type: object
       required: [items]
@@ -8456,6 +8555,83 @@ components:
         retention_days: { type: integer, minimum: 30, maximum: 1825 }
         password: { type: string, maxLength: 1024, format: password, description: 'Текущий пароль, если срок сокращается' }
         code: { type: string, maxLength: 64, description: 'Код из приложения-аутентификатора вместо пароля' }
+    ShadowExclusion:
+      type: object
+      required: [kind, value, comment, created_at, created_by]
+      properties:
+        kind: { type: string, enum: [user, service] }
+        value: { type: string, description: 'Псевдоним пользователя (32 hex) или ID сервиса каталога' }
+        comment: { type: string, maxLength: 200 }
+        created_at: { type: string, format: date-time }
+        created_by: { type: string, description: 'Тип и ID субъекта' }
+    ShadowExclusionInput:
+      type: object
+      required: [kind]
+      additionalProperties: false
+      properties:
+        kind: { type: string, enum: [user, service] }
+        login: { type: string, maxLength: 256, description: 'Логин или адрес клиента из журнала; сервер хранит только псевдоним' }
+        alias: { type: string, pattern: '^[0-9a-f]{32}$', description: 'Готовый псевдоним вместо логина' }
+        service: { type: string, pattern: '^[a-z0-9][a-z0-9-]{0,63}$', description: 'ID сервиса каталога' }
+        comment: { type: string, maxLength: 200 }
+        password: { type: string, maxLength: 1024, format: password, description: 'Текущий пароль' }
+        code: { type: string, maxLength: 64, description: 'Код из приложения-аутентификатора вместо пароля' }
+    ShadowExclusionList:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, maxItems: 1000, items: { $ref: '#/components/schemas/ShadowExclusion' } }
+    ShadowSyslogStats:
+      type: object
+      description: Приём журналов по syslog; счётчики — с запуска сервера
+      required: [enabled, running, tls, client_cert_required, allowed_networks, connections, limits, accepted, accept_errors,
+        rejected_network, rejected_limit, tls_failed, frame_too_large, bad_frame, idle_timeouts, read_timeouts, lines, matched,
+        unmatched, errors, excluded, outdated, no_catalog, dropped, throttled, pending, flush_failures, last_flush_failed]
+      properties:
+        enabled: { type: boolean, description: 'false — слушатель выключен (остальные поля нулевые)' }
+        running: { type: boolean, description: 'Слушатель принимает соединения; false при enabled — приём остановлен ошибкой' }
+        stopped_at: { type: string, format: date-time, description: 'Когда приём остановился' }
+        last_error: { type: string, description: 'Причина остановки приёма' }
+        address: { type: string }
+        format: { type: string, enum: [cef, squid] }
+        tls: { type: boolean }
+        client_cert_required: { type: boolean }
+        allowed_networks: { type: array, items: { type: string }, description: 'Пусто — любые источники (только с TLS)' }
+        started_at: { type: string, format: date-time }
+        connections: { type: integer, description: 'Открытых соединений сейчас' }
+        limits:
+          type: object
+          required: [max_connections, max_connections_per_address, max_frame_bytes, lines_per_second, idle_timeout_seconds,
+            frame_timeout_seconds]
+          properties:
+            max_connections: { type: integer }
+            max_connections_per_address: { type: integer }
+            max_frame_bytes: { type: integer }
+            lines_per_second: { type: integer }
+            idle_timeout_seconds: { type: integer }
+            frame_timeout_seconds: { type: integer }
+        accepted: { type: integer, format: int64, description: 'Принято соединений' }
+        accept_errors: { type: integer, format: int64, description: 'Временных ошибок приёма соединений (повторяются с паузой)' }
+        rejected_network: { type: integer, format: int64, description: 'Отказ: источник не из разрешённых сетей' }
+        rejected_limit: { type: integer, format: int64, description: 'Отказ: сверх предела соединений' }
+        tls_failed: { type: integer, format: int64, description: 'Рукопожатие TLS не удалось (в том числе нет клиентского сертификата)' }
+        frame_too_large: { type: integer, format: int64, description: 'Разрыв: кадр длиннее 16 КиБ' }
+        bad_frame: { type: integer, format: int64, description: 'Разрыв: поток оборван внутри кадра' }
+        idle_timeouts: { type: integer, format: int64, description: 'Разрыв: нет кадров дольше срока простоя' }
+        read_timeouts: { type: integer, format: int64, description: 'Разрыв: кадр не пришёл целиком за срок' }
+        lines: { type: integer, format: int64 }
+        matched: { type: integer, format: int64 }
+        unmatched: { type: integer, format: int64 }
+        errors: { type: integer, format: int64, description: 'Строки не разобраны' }
+        excluded: { type: integer, format: int64 }
+        outdated: { type: integer, format: int64 }
+        no_catalog: { type: integer, format: int64, description: 'Строки до загрузки каталога (не учтены)' }
+        dropped: { type: integer, format: int64, description: 'Строки сверх предела сводок в памяти (не учтены)' }
+        throttled: { type: integer, format: int64, description: 'Кадров, чтение которых задержано пределом строк в секунду' }
+        pending: { type: integer, description: 'Сводок в памяти до следующей записи' }
+        last_flush_at: { type: string, format: date-time }
+        flush_failures: { type: integer, format: int64 }
+        last_flush_failed: { type: boolean }
     NotifyChannelSettings:
       type: object
       additionalProperties: false

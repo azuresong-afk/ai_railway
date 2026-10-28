@@ -53,6 +53,15 @@ func shadowAIRoutes(d Deps) []Route {
 			Handler: needShadowAI(d, d.getShadowSettings)},
 		{Method: http.MethodPut, Path: "/api/v1/shadow-ai/settings", Permission: auth.PermShadowAIManage,
 			MaxBody: smallMaxBody, Handler: needShadowAI(d, d.putShadowSettings)},
+		// Исключения и состояние приёма по syslog (задача 4.23).
+		{Method: http.MethodGet, Path: "/api/v1/shadow-ai/exclusions", Permission: auth.PermShadowAIRead,
+			Handler: needShadowAI(d, d.listShadowExclusions)},
+		{Method: http.MethodPost, Path: "/api/v1/shadow-ai/exclusions", Permission: auth.PermShadowAIManage,
+			MaxBody: smallMaxBody, Handler: needShadowAI(d, d.postShadowExclusion)},
+		{Method: http.MethodDelete, Path: "/api/v1/shadow-ai/exclusions/{kind}/{value}", Permission: auth.PermShadowAIManage,
+			Handler: needShadowAI(d, d.deleteShadowExclusion)},
+		{Method: http.MethodGet, Path: "/api/v1/shadow-ai/syslog", Permission: auth.PermShadowAIRead,
+			Handler: needShadowAI(d, d.getShadowSyslog)},
 	}
 }
 
@@ -115,7 +124,16 @@ func shadowProblem(logger *slog.Logger, err error) *Problem {
 		return NewProblem(http.StatusConflict, CodeConflict, "Первичная настройка не выполнена: срок хранения пока не меняется.")
 	case errors.Is(err, shadowai.ErrConfirmNeeded):
 		return NewProblem(http.StatusForbidden, CodeForbidden,
-			"Сокращение срока хранения удаляет сводки: выполните его в консоли с вводом текущего пароля или кода.")
+			"Сокращение срока хранения и исключения удаляют сводки: выполните действие в консоли с вводом текущего пароля или кода.")
+	case errors.Is(err, shadowai.ErrNoUserKey):
+		return NewProblem(http.StatusConflict, CodeConflict,
+			"Серверу не задан ключ псевдонимов пользователей (-user-hmac-key): пользователи из журналов не учитываются, исключать некого.")
+	case errors.Is(err, shadowai.ErrExclusionExists):
+		return NewProblem(http.StatusConflict, CodeConflict, "Такое исключение уже есть.")
+	case errors.Is(err, shadowai.ErrTooManyExclusions):
+		return NewProblem(http.StatusConflict, CodeConflict, "Исключений уже 1000: снимите ненужные.")
+	case errors.Is(err, shadowai.ErrExclusionNotFound):
+		return NewProblem(http.StatusNotFound, CodeNotFound, "Исключение не найдено.")
 	case errors.Is(err, context.DeadlineExceeded):
 		return NewProblem(http.StatusUnprocessableEntity, CodeUnprocessable,
 			"Журнал не обработан за 10 минут: разделите его на части.")
@@ -416,4 +434,66 @@ func (d Deps) putShadowSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	WriteJSON(w, http.StatusOK, st)
+}
+
+// ShadowExclusionList — исключения теневого ИИ.
+type ShadowExclusionList struct {
+	Items []shadowai.Exclusion `json:"items"`
+}
+
+func (d Deps) listShadowExclusions(w http.ResponseWriter, r *http.Request) {
+	list, err := d.ShadowAI.ListExclusions(r.Context())
+	if err != nil {
+		WriteProblem(w, shadowProblem(d.Logger, err))
+		return
+	}
+	WriteJSON(w, http.StatusOK, ShadowExclusionList{Items: list})
+}
+
+type shadowExclusionRequest struct {
+	shadowai.ExclusionInput
+	reauthFields
+}
+
+// postShadowExclusion добавляет исключение. Логин пользователя сразу
+// заменяется псевдонимом и не попадает ни в БД, ни в аудит, ни в ответ.
+// Исключение удаляет накопленные сводки — повторная проверка паролем или
+// кодом (DM-40); токен API исключений не добавляет.
+func (d Deps) postShadowExclusion(w http.ResponseWriter, r *http.Request) {
+	by, ok := d.shadowBy(r)
+	if !ok {
+		WriteProblem(w, errForbidden())
+		return
+	}
+	var req shadowExclusionRequest
+	if p := DecodeJSON(w, r, &req, smallMaxBody); p != nil {
+		WriteProblem(w, p)
+		return
+	}
+	by.Confirm = d.confirmFunc(r, req.reauthFields, "shadow_ai.exclusion_added", shadowai.ErrConfirmNeeded)
+	ex, err := d.ShadowAI.AddExclusion(r.Context(), by, req.ExclusionInput)
+	if err != nil {
+		WriteProblem(w, shadowProblem(d.Logger, err))
+		return
+	}
+	WriteJSON(w, http.StatusCreated, ex)
+}
+
+func (d Deps) deleteShadowExclusion(w http.ResponseWriter, r *http.Request) {
+	by, ok := d.shadowBy(r)
+	if !ok {
+		WriteProblem(w, errForbidden())
+		return
+	}
+	if err := d.ShadowAI.RemoveExclusion(r.Context(), by, r.PathValue("kind"), r.PathValue("value")); err != nil {
+		WriteProblem(w, shadowProblem(d.Logger, err))
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// getShadowSyslog — состояние приёма журналов по syslog: адрес, формат,
+// режим TLS, пределы и счётчики с запуска сервера.
+func (d Deps) getShadowSyslog(w http.ResponseWriter, _ *http.Request) {
+	WriteJSON(w, http.StatusOK, d.ShadowAI.SyslogStats())
 }

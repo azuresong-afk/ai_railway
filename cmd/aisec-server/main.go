@@ -447,6 +447,15 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	if ca != nil {
 		caNotAfter = ca.ca.NotAfter()
 	}
+	// Приём журналов по syslog (задача 4.23) — раздел «Состояния системы»;
+	// сервис теневого ИИ создаётся ниже.
+	var shadowRef atomic.Pointer[shadowai.Service]
+	shadowSyslog := func() shadowai.SyslogStats {
+		if s := shadowRef.Load(); s != nil {
+			return s.SyslogStats()
+		}
+		return shadowai.SyslogStats{}
+	}
 	// Лицензия (ТЗ 5.15, задачи 4.26–4.27, ADR-0026): подпись сохранённой
 	// лицензии проверяется заново при запуске и раз в минуту, отметка часов
 	// поднимается тогда же; предел шлюзов — в транзакции регистрации.
@@ -465,7 +474,7 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		gateways.SetAdmission(licSvc.CheckGateway)
 	}
 	statusSvc, err := newStatus(ctx, cfg, db, auditLog, integritySvc, selftestRes, bundleHealth(&bundleSvc), timezone, caNotAfter,
-		licSvc.State, quotaHealth(quotaSvc), logger)
+		licSvc.State, quotaHealth(quotaSvc), shadowSyslog, logger)
 	if err != nil {
 		return err
 	}
@@ -595,6 +604,23 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		logger.Error("теневой ИИ: каталог не прочитан из БД", "class", "db", "error", err)
 	}
 	go shadowSvc.RunRetention(ctx, shadowai.RetentionInterval)
+	shadowRef.Store(shadowSvc)
+	// Приём журналов прокси по syslog (задача 4.23): выключен по умолчанию;
+	// при остановке сервера накопленные сводки записываются.
+	// Выход из run по любой ошибке после запуска тоже ждёт последней
+	// записи сводок (4.23-6).
+	syslogCtx, stopSyslog := context.WithCancel(ctx)
+	syslogDone, err := startShadowSyslog(syslogCtx, cfg.ShadowAISyslog, tp, shadowSvc, auditLog, logger.With("component", "shadow_ai"))
+	if err != nil {
+		stopSyslog()
+		return err
+	}
+	defer func() {
+		stopSyslog()
+		if syslogDone != nil {
+			<-syslogDone
+		}
+	}()
 
 	// Консоль отдаётся, только если она собрана (make web-build перед go build); иначе сервер — чистый API.
 	var console http.Handler
@@ -668,6 +694,12 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	recordStart(ctx, auditLog, logger)
 	logger.Info("сервер управления запущен")
 	err = runAll(ctx, servers...)
+	// Сводки syslog записываются до записи об остановке сервера.
+	stopSyslog()
+	if syslogDone != nil {
+		<-syslogDone
+		syslogDone = nil
+	}
 	if cause := context.Cause(ctx); errors.Is(cause, integrity.ErrViolation) {
 		err = errors.Join(err, cause)
 	}
@@ -709,7 +741,8 @@ func budgetUsage(svc *apps.Service) alerting.BudgetSource {
 func newStatus(ctx context.Context, cfg *serverConfig, db *store.DB, auditLog *audit.Log, integritySvc integrity.Service,
 	selftestRes selftest.Result, bundle func(context.Context) (*sysstatus.BundleHealth, error),
 	timezone func(context.Context) (string, error), caNotAfter time.Time, lic func(context.Context) (license.State, error),
-	quota func(context.Context) (sysstatus.QuotaHealth, error), logger *slog.Logger) (*sysstatus.Service, error) {
+	quota func(context.Context) (sysstatus.QuotaHealth, error), shadowSyslog func() shadowai.SyslogStats,
+	logger *slog.Logger) (*sysstatus.Service, error) {
 	gwStore, err := gwregistry.NewPGStore(db.Pool(), auditLog)
 	if err != nil {
 		return nil, err
@@ -745,6 +778,7 @@ func newStatus(ctx context.Context, cfg *serverConfig, db *store.DB, auditLog *a
 		Integrity: integritySvc.Store, Store: pg,
 		Timezone: timezone, StorageLimit: cfg.AuditStorageLimit, WarnPercent: cfg.AuditStorageWarnPercent,
 		Logger: logger, Bundle: bundle, CANotAfter: caNotAfter, CustomerCert: customerCert, License: lic, Quota: quota,
+		ShadowAISyslog: shadowSyslog,
 	})
 	if err != nil {
 		return nil, err

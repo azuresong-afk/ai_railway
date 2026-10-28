@@ -81,6 +81,15 @@ export async function requestText(
   return resp.text();
 }
 
+// Загрузка файла телом запроса (журнал прокси, каталог): браузер передаёт File потоком, без чтения в память
+// страницы. Ответ — JSON; тот же CSRF и тот же разбор ошибок.
+export async function upload<T>(method: "POST" | "PUT", path: string, file: Blob, contentType: string): Promise<T> {
+  const headers: Record<string, string> = { Accept: "application/json", "Content-Type": contentType, "X-CSRF-Token": csrfToken() };
+  const resp = await fetch(path, { method, headers, credentials: "same-origin", cache: "no-store", body: file });
+  if (!resp.ok) throw await problemError(resp, path);
+  return (await resp.json()) as T;
+}
+
 export const api = {
   // null — сессии нет (401).
   async me(signal?: AbortSignal): Promise<Me | null> {

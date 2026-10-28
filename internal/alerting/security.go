@@ -322,6 +322,10 @@ func classifyAudit(ctx context.Context, ops secOps, r *audit.Record) ([]Raise, e
 		if x, ok := agentToolRaise(r, details()); ok {
 			raises = append(raises, x)
 		}
+	case "shadow_ai.new_service":
+		if x, ok := shadowNewServiceRaise(r, details()); ok {
+			raises = append(raises, x)
+		}
 	case "agent.approval.requested", "agent.approval.queue_full":
 		x, err := approvalRaise(ctx, ops, r, details())
 		if err != nil {

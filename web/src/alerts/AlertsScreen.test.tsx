@@ -236,6 +236,19 @@ describe("правила", () => {
     expect(within(create).queryByRole("option", { name: "Новый инструмент агента" })).toBeNull();
   });
 
+  it("«Новый ИИ-сервис в журналах прокси»: поле shadow_ai_service не меняется (задача 4.23)", async () => {
+    store.rules = [rule({ id: "r-4", name: "Новый ИИ-сервис в журналах прокси", kind: "new", builtin: "shadow_ai.new_service", condition: { field: "shadow_ai_service" }, group_by: ["shadow_ai_service"] })];
+    renderScreen(allPerms);
+    tab("Правила");
+    fireEvent.click(await screen.findByRole("button", { name: "Изменить правило Новый ИИ-сервис в журналах прокси" }));
+    const dlg = await screen.findByRole("dialog", { name: "Правило «Новый ИИ-сервис в журналах прокси»" });
+    const field = within(dlg).getByLabelText("За чем следить") as HTMLSelectElement;
+    expect(field.disabled).toBe(true);
+    expect(field.value).toBe("shadow_ai_service");
+    fireEvent.click(within(dlg).getByRole("button", { name: "Сохранить правило" }));
+    await waitFor(() => expect(calls.find((c) => c.url === "/api/v1/alert-rules/r-4" && c.method === "PUT")?.body).toMatchObject({ condition: { field: "shadow_ai_service" } }));
+  });
+
   it("без прав на роли, пользователей и события — названия прав, не коды (3Н39 ревью 3.r2)", async () => {
     const { unmount } = renderScreen(["alerts.read", "alerts.manage", "alert_rules.read", "alert_rules.manage"]);
     tab("Правила");

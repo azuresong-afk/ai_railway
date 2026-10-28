@@ -7,6 +7,7 @@ import { formatAbsolute, formatNumber } from "../events/format";
 import { Button } from "../ui/Button";
 import { Banner, Panel, Table, Td, Th } from "../ui/Layout";
 import { ShapeIcon } from "../ui/icons";
+import { SyslogPanel } from "../shadowai/SyslogPanel";
 import { type IntegrityCheck, type SystemStatus, systemApi } from "./api";
 import { chainReasonText, formatBytes, gatewayText, problemText, reasonText, syncText, triggerText } from "./format";
 
@@ -253,6 +254,12 @@ function Body({ s }: { s: SystemStatus }) {
         )}
         <p className="text-xs text-muted">Счётчики идут с последнего запуска каждого шлюза.</p>
       </Section>
+
+      {s.shadow_ai_syslog && (
+        <Section title="Приём журналов теневого ИИ по syslog">
+          <SyslogPanel s={s.shadow_ai_syslog} />
+        </Section>
+      )}
 
       <Section title="Время">
         <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-base">

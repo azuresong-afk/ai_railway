@@ -5,6 +5,7 @@
 | Файл | Что |
 |---|---|
 | `compose.yaml` | сервисы, сети, тома и секреты; проверяется командой `make images-verify` (`tools/imagecheck compose`) и тестами |
+| `compose.shadow-ai-syslog.yaml` | дополнение к `compose.yaml`: приём журналов прокси и NGFW по syslog поверх TLS для теневого ИИ (порт 6514, по умолчанию на 127.0.0.1). Без него порт закрыт: `docker compose -f compose.yaml -f compose.shadow-ai-syslog.yaml up -d aisec-server` ([руководство администратора](../../../docs/user/admin-guide.md), «Теневой ИИ: приём по syslog») |
 | `.env.example` | образец `.env`: версия, имена, адреса, UID и GID; секретов в нём нет |
 | `prepare-host.sh` | от root: пользователи `aisec`, `aisec-gw`, `aisec-db`, каталоги `0700`, пароли ролей БД, UID и GID в `.env`; после `init` — якорь шлюза `secrets/gateway-bundle-anchor.pub` |
 | `initdb/10-aisec-roles.sql` | роли `aisec_owner`, `aisec_server` и база `aisec` — при первом запуске PostgreSQL |
