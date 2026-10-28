@@ -316,3 +316,64 @@ func TestE2EPilotScripts_BackupRefuses(t *testing.T) {
 		})
 	}
 }
+
+// verifyStubDocker — заглушка docker для verify-release.sh: образ
+// установленной версии есть, только если задан STUB_HAVE; каждый docker run
+// записывается в STUB_LOG и завершается отказом проверки.
+const verifyStubDocker = `#!/bin/sh
+case "$*" in
+"image inspect "*) [ -n "${STUB_HAVE:-}" ] ;;
+"run "*) echo "$*" >>"$STUB_LOG"; exit 1 ;;
+"rmi "*) ;;
+*) echo "заглушка docker: неожиданный вызов: $*" >&2; exit 99 ;;
+esac
+`
+
+// Ревью 4.r1, 4В10: в режиме обновления verify-release.sh проверяет выпуск
+// только локальным образом aisec-cli установленной версии — без него
+// отказ, а docker run не скачивает образ из реестра (--pull never).
+func TestE2EPilotScripts_VerifyReleaseNoPull(t *testing.T) {
+	root := t.TempDir()
+	dir, rel := filepath.Join(root, "pilot"), filepath.Join(root, "release")
+	for _, d := range []string{dir, filepath.Join(root, "bin"), filepath.Join(rel, "bin"), filepath.Join(rel, "images")} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s2Copy(t, filepath.Join("..", "..", "deploy", "compose", "pilot", "verify-release.sh"), filepath.Join(dir, "verify-release.sh"), 0o755)
+	s2Copy(t, writeTemp(t, verifyStubDocker), filepath.Join(root, "bin", "docker"), 0o755)
+	mustWrite(t, filepath.Join(dir, ".env"), []byte("AISEC_VERSION=0.3.0\nAISEC_IMAGE_REPO=aisec-test\n"))
+	for _, f := range []string{"aisec-manifest.json", "aisec-manifest.json.sig", "bin/aisec-cli",
+		"images/aisec-server.tar", "images/aisec-gateway.tar", "images/aisec-cli.tar"} {
+		mustWrite(t, filepath.Join(rel, f), []byte("x"))
+	}
+	run := func(have bool) (string, string, int) {
+		t.Helper()
+		log := filepath.Join(t.TempDir(), "docker.log")
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, filepath.Join(dir, "verify-release.sh"), rel) //nolint:gosec // G204: тест запускает скрипт поставки из копии
+		cmd.Env = append(os.Environ(), "PATH="+filepath.Join(root, "bin")+":"+os.Getenv("PATH"), "STUB_LOG="+log)
+		if have {
+			cmd.Env = append(cmd.Env, "STUB_HAVE=1")
+		}
+		out, err := cmd.CombinedOutput()
+		code := 0
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			code = ee.ExitCode()
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		runs, _ := os.ReadFile(log) //nolint:gosec // G304: файл журнала заглушки во временном каталоге теста
+		return string(out), string(runs), code
+	}
+	out, runs, code := run(false)
+	if code != 1 || !strings.Contains(out, "нет образа aisec-test/aisec-cli:0.3.0") || runs != "" {
+		t.Fatalf("без образа установленной версии: код %d, docker run: %q\n%s", code, runs, out)
+	}
+	out, runs, code = run(true)
+	if code != 1 || !strings.Contains(runs, "run --rm --pull never ") || !strings.Contains(out, "не прошёл проверку") {
+		t.Fatalf("с образом: код %d, docker run: %q\n%s", code, runs, out)
+	}
+}
