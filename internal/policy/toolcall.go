@@ -12,8 +12,9 @@ import (
 // Шаги зафиксированы тестом TestToolDecisionSteps:
 //  1. Инструмент не в состоянии approved или его хеш не совпадает с
 //     одобренным — действие unapproved (DM-25 для подмены, DM-24 для
-//     отравленного описания, DM-20 для остального).
-//  2. Иначе выбираются все правила, подходящие по агенту, инструменту и
+//     отравленного описания, DM-20 для остального). При unapproved: block
+//     решение на этом заканчивается, при log — продолжается шагами 2–3.
+//  2. Выбираются все правила, подходящие по агенту, инструменту и
 //     риску. Ни одно не подошло — действие default (DM-20).
 //  3. По каждому подходящему правилу проверяются args (нарушение — block,
 //     DM-21) и rate, затем лимиты раздела (нарушение — block, DM-23).
@@ -226,9 +227,11 @@ func (p *Policy) ToolListed(c ToolCall) bool {
 		// Подменённое, отравленное или отозванное описание не показывается
 		// и при мягком unapproved: до решения человека в реестре.
 		return false
-	case c.Status != ToolApproved:
-		return tp.unapproved != Block
+	case c.Status != ToolApproved && tp.unapproved == Block:
+		return false
 	}
+	// Неодобренный при мягком unapproved проверяется правилами, как в
+	// DecideTool (ревью 4.r1, 4В3).
 	tool := c.Server + "/" + c.Name
 	matched := false
 	for i := range tp.rules {
@@ -306,7 +309,13 @@ func (p *Policy) DecideTool(c ToolCall, rc RateCounter) ToolDecision {
 			reason, threat, sev = ToolReasonSuspicious, ThreatToolPoisoned, High
 		}
 		step(ToolStep{Rule: ToolRuleUnapproved, Action: tp.unapproved, Threat: threat, Reason: reason}, sev, "")
-		return p.finishTool(d)
+		// При мягком unapproved (log) решение продолжается: правила
+		// require_approval и block и лимиты действуют и для неодобренного
+		// инструмента, иначе клиент пути chat обходил бы их, не называя
+		// агента или меняя описание (ревью 4.r1, 4В3; ADR-0023, дополнение 5).
+		if tp.unapproved == Block {
+			return p.finishTool(d)
+		}
 	}
 
 	// Шаг 2. Подходящие правила.
@@ -346,7 +355,9 @@ func (p *Policy) DecideTool(c ToolCall, rc RateCounter) ToolDecision {
 			}
 		}
 	}
-	if rc != nil {
+	// Уже отклонённый в enforce вызов лимиты не считает: ключи сессии и
+	// повторов не вытесняют счётчики других приложений (ревью 4.r1, 4Н11).
+	if rc != nil && (mode != Enforce || d.Action != Block) {
 		l := tp.limits
 		limit := func(reason string, exceeded bool) {
 			if exceeded {
