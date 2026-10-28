@@ -12,6 +12,7 @@ const (
 	TypeGatewayRequest = "gateway_request" // обработка запроса шлюзом
 	TypeCheck          = "check"           // проверка через Check API
 	TypeAuthFailure    = "auth_failure"    // неудачная аутентификация на шлюзе (DM-38)
+	// TypeAgentToolCall и TypeAgentMCP — события агентов (agent.go).
 )
 
 // Режимы хранения содержимого (ТЗ, 5.5). Содержимое full хранится только на
@@ -190,6 +191,8 @@ type Event struct {
 	AuthFailure      *AuthFailure     `json:"auth_failure,omitempty"`
 	// Session — сессия запроса чата (задачи 4.13, 4.14 этапа 4).
 	Session *Session `json:"session,omitempty"`
+	// Agent — событие агента: вызов инструмента или метод MCP (задача 4.11).
+	Agent *Agent `json:"agent,omitempty"`
 }
 
 var threatRe = regexp.MustCompile(`^DM-\d{2}$`)
@@ -232,6 +235,9 @@ func (e *Event) Validate() error {
 		if e.PolicyMode != ModeMonitor && e.PolicyMode != ModeEnforce {
 			errs = append(errs, fmt.Errorf("%s: неизвестный режим политики %q", e.Type, e.PolicyMode))
 		}
+		if e.Agent != nil {
+			errs = append(errs, fmt.Errorf("%s: раздел agent — только у событий агентов", e.Type))
+		}
 		if e.Session != nil {
 			if e.Type != TypeGatewayRequest {
 				errs = append(errs, fmt.Errorf("%s: сессия бывает только у запроса чата", e.Type))
@@ -244,6 +250,11 @@ func (e *Event) Validate() error {
 			}
 			errs = append(errs, e.Session.validate()...)
 		}
+	case TypeAgentToolCall, TypeAgentMCP:
+		errs = append(errs, e.validateAgent()...)
+		if r := e.Response; r != nil {
+			errs = append(errs, fmt.Errorf("%s: проверка ответа модели бывает только у запроса чата", e.Type))
+		}
 	case TypeAuthFailure:
 		if e.AuthFailure == nil || e.AuthFailure.Reason == "" {
 			errs = append(errs, errors.New("auth_failure: нужна причина"))
@@ -253,6 +264,9 @@ func (e *Event) Validate() error {
 		}
 		if e.Session != nil {
 			errs = append(errs, errors.New("auth_failure: у события нет сессии"))
+		}
+		if e.Agent != nil {
+			errs = append(errs, errors.New("auth_failure: у события нет раздела agent"))
 		}
 		// Столбец policy_mode принимает только monitor и enforce: чужое значение
 		// не должно доходить до СУБД (В10 ревью 2.r3a).
@@ -287,9 +301,9 @@ func (e *Event) Validate() error {
 			errs = append(errs, fmt.Errorf("находка %s: exception — ID исключения", f.Detector))
 		}
 		switch f.Source {
-		case "", "user", "rag", "tool", "output":
+		case "", "user", "rag", "tool", "tool_args", "output":
 		default:
-			errs = append(errs, fmt.Errorf("находка %s: source — user, rag, tool или output", f.Detector))
+			errs = append(errs, fmt.Errorf("находка %s: source — user, rag, tool, tool_args или output", f.Detector))
 		}
 	}
 	return errors.Join(errs...)

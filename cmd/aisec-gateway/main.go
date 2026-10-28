@@ -205,7 +205,7 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 	// Квоты общие для всех маршрутов приложений и переживают смену пакета.
 	hb := &handlerBuilder{cfg: cfg, logger: logger, hasher: h, auth: authBase, events: queue,
 		quotas: gateway.NewLimiter(nil), budget: gateway.NewBudget(nil), userMAC: userMAC, clock: &gateway.ServerClock{},
-		sessions: sessions, toolRate: toolrate.New(0)}
+		sessions: sessions, toolRate: toolrate.New(0), mcpSessions: gateway.NewMCPSessions(rnd, nil)}
 	hb.budget.SetLogger(logger)
 	// Проверка JWT пользователей приложений (задача 4.21); в профиле без
 	// неё (gost до этапа 6) JWT отклоняются.
@@ -219,6 +219,8 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 			Hasher: h, Logger: logger}); err != nil {
 			return err
 		}
+		hb.mcpObserver = gateway.NewToolObserver(control.client, cfg.Server, logger)
+		go hb.mcpObserver.Run(ctx)
 	}
 	var handler http.Handler
 	var bundles *gateway.BundleClient
@@ -233,7 +235,7 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 		}
 		// Политики компилируются по детекторам приложения при запуске:
 		// незарегистрированный детектор в политике заказчика — отказ запуска.
-		if handler, err = hb.build(file.Applications, provs, file.Policies, recs, nil, nil, nil, nil, userTokens{}); err != nil {
+		if handler, err = hb.build(file.Applications, provs, file.Policies, recs, nil, nil, nil, nil, userTokens{}, nil); err != nil {
 			return err
 		}
 		logger.Info("конфигурация из файла", "applications", len(file.Applications), "providers", len(provs))
@@ -306,6 +308,11 @@ type handlerBuilder struct {
 	// toolRate — счётчики лимитов политики вызовов (chat и MCP-прокси):
 	// переживают смену пакета.
 	toolRate *toolrate.Counters
+	// mcpSessions — сессии MCP-прокси 2025-11-25 (задача 4.11): переживают
+	// смену пакета; mcpObserver — описания инструментов на сервер, nil —
+	// без сервера.
+	mcpSessions *gateway.MCPSessions
+	mcpObserver *gateway.ToolObserver
 	// jwt — проверка JWT пользователей приложений (задача 4.21); nil —
 	// криптопрофиль без неё.
 	jwt aisecCrypto.JWTVerifier
@@ -313,7 +320,7 @@ type handlerBuilder struct {
 
 func (hb *handlerBuilder) build(apps []config.Application, provs map[string]providers.Provider, specs []policy.Spec,
 	recs []auth.KeyRecord, unavailable []string, budgets *bundle.Budgets, baselines []bundle.PromptBaseline,
-	agents *gateway.Agents, userTokens userTokens) (http.Handler, error) {
+	agents *gateway.Agents, userTokens userTokens, mcpServers gateway.MCPServers) (http.Handler, error) {
 	for _, a := range apps {
 		if hb.userMAC == nil && a.UserFrom != "" && a.UserFrom != "none" {
 			return nil, fmt.Errorf("приложение %s: user_from %s требует ключ псевдонимов пользователей (user-hmac-key)", a.ID, a.UserFrom)
@@ -374,8 +381,16 @@ func (hb *handlerBuilder) build(apps []config.Application, provs map[string]prov
 	if err != nil {
 		return nil, err
 	}
+	// MCP-прокси (задача 4.11) — только при MCP-серверах в пакете.
+	var mcpHandler http.Handler
+	if len(mcpServers) > 0 {
+		if mcpHandler, err = gateway.NewMCPHandler(gateway.MCPConfig{Chat: chatHandler, Servers: mcpServers, Hasher: hb.hasher,
+			Observer: hb.mcpObserver, Sessions: hb.mcpSessions, Rates: hb.toolRate}); err != nil {
+			return nil, err
+		}
+	}
 	h, err := gateway.New(gateway.Options{Logger: hb.logger, Chat: chatHandler, Embeddings: embeddingsHandler,
-		Check: checkHandler, Router: router, Auth: &authCfg})
+		Check: checkHandler, MCP: mcpHandler, Router: router, Auth: &authCfg})
 	if err != nil {
 		return nil, err
 	}

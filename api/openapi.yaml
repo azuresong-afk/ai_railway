@@ -2,8 +2,9 @@
 # Здесь — интерфейсы шлюза для приложений и API управления (aisec-server,
 # префикс /api/v1), которые добавляются по мере реализации. Ошибки API
 # управления — Problem Details (RFC 9457), ошибки шлюза — формат OpenAI.
-# OpenAI-совместимые /v1/chat/completions и /v1/models пока описаны только в
-# docs/cert/attack-surface.md. Контрактный тест internal/api сверяет маршруты
+# OpenAI-совместимые /v1/chat/completions и /v1/models, а также MCP-прокси
+# POST /mcp/v1/{server} (JSON-RPC по Streamable HTTP, задача 4.11) пока
+# описаны только в docs/cert/attack-surface.md. Контрактный тест internal/api сверяет маршруты
 # сервера с этим файлом в обе стороны.
 # У каждой защищённой операции API управления есть расширение x-permission —
 # имя разрешения из internal/auth/permissions.go (УПД.3). Из него строится
@@ -1499,7 +1500,8 @@ paths:
         type, app, env, user, provider, model, source, policy_mode, action, rule, severity,
         storage, gateway, threat, detector, exception (находки, пропущенные по исключению с этим ID),
         mark (`false_positive`, `confirmed` или `none` — без отметки), stream, non_text_unchecked,
-        has_content; операторы
+        has_content, session (псевдоним сессии запроса чата или агента), agent, mcp_server, tool
+        (события агентов); операторы
         `=`, `!=`, `in (…)`, `not in (…)` (у логических полей — только `=`). Лимиты: 2048 байт,
         20 условий, 50 значений в списке, значение до 256 байт. Пишет `events.list`
         (отключаемое событие).
@@ -7047,7 +7049,7 @@ components:
         time: { type: string, format: date-time, description: Время события по часам шлюза }
         received_at: { type: string, format: date-time }
         gateway_id: { type: string, format: uuid }
-        type: { type: string, enum: [gateway_request, check, auth_failure] }
+        type: { type: string, enum: [gateway_request, check, auth_failure, agent_tool_call, agent_mcp] }
         app: { type: string }
         env: { type: string }
         user: { type: string, description: Псевдоним пользователя (HMAC), не исходный идентификатор }
@@ -7072,6 +7074,45 @@ components:
           additionalProperties: true
           properties:
             content_truncated: { type: boolean, description: 'Содержимое full обрезано сервером под предел хранения 256 КиБ (В10 ревью 2.r3a)' }
+            agent: { $ref: '#/components/schemas/EventAgent' }
+    EventAgent:
+      description: >
+        События агентов agent_tool_call и agent_mcp (задача 4.11, ADR-0023, раздел 7): служебные имена,
+        хеши и счётчики без содержимого; аргументы и результат — в содержимом события по режиму хранения.
+      type: object
+      properties:
+        path: { type: string, enum: [mcp, chat] }
+        request_event_id: { type: string, format: uuid }
+        agent: { type: string, description: Slug агента }
+        server: { type: string, description: Slug MCP-сервера (function — путь chat) }
+        method: { type: string, description: Метод MCP }
+        protocol: { type: string, enum: ['2025-11-25', '2026-07-28'] }
+        tool: { type: string }
+        tool_hash: { type: string, pattern: '^[0-9a-f]{64}$' }
+        risk: { type: string, enum: [low, medium, high, critical] }
+        tool_status: { type: string, enum: [new, approved, changed, suspicious, revoked, unknown] }
+        session: { type: string, pattern: '^[0-9a-f]{32}$' }
+        approval:
+          type: object
+          required: [state, waited_ms]
+          properties:
+            id: { type: string, format: uuid }
+            state: { type: string, enum: [approved, denied, timeout, cancelled, interrupted, queue_full, unavailable] }
+            decided_by: { type: string }
+            waited_ms: { type: integer }
+            comment: { type: string }
+        upstream_status: { type: integer }
+        result_bytes: { type: integer }
+        is_error: { type: boolean }
+        args_unmasked: { type: boolean, description: По аргументам сработали redact или pseudonymize, но маскирование не выполнялось }
+        items: { type: integer }
+        hidden: { type: array, items: { type: string } }
+        poisoned: { type: array, items: { type: string } }
+        changed: { type: array, items: { type: string } }
+        invalid: { type: integer }
+        stripped: { type: array, items: { type: string } }
+        dropped: { type: integer }
+        violation: { type: string }
     EventPage:
       allOf:
         - $ref: '#/components/schemas/PageInfo'
@@ -7243,7 +7284,7 @@ components:
         detector: { type: string, description: ID детектора, например pii.ru }
         directions: { type: array, items: { type: string, enum: [input, output] } }
         categories: { type: array, maxItems: 32, items: { type: string } }
-        sources: { type: array, items: { type: string, enum: [user, rag, tool, output] } }
+        sources: { type: array, items: { type: string, enum: [user, rag, tool, tool_args, output] } }
         threshold: { type: number, exclusiveMinimum: 0, maximum: 1 }
         action: { type: string, enum: [allow, log, redact, pseudonymize, block] }
         severity: { type: string, enum: [info, low, medium, high, critical] }
@@ -7327,7 +7368,7 @@ components:
         fragment: { type: string, pattern: '^[0-9a-f]{32}$', description: Хеш фрагмента (HMAC на ключе шлюза) из находки события }
         app: { type: string, pattern: '^[a-z0-9][a-z0-9-]{0,62}$' }
         user: { type: string, pattern: '^[0-9a-f]{32}$', description: Псевдоним пользователя из события }
-        source: { type: string, enum: [user, rag, tool, output] }
+        source: { type: string, enum: [user, rag, tool, tool_args, output] }
         reason: { type: string, minLength: 1, maxLength: 500 }
         author: { type: string, readOnly: true }
         created_at: { type: string, format: date-time, readOnly: true }
@@ -7357,7 +7398,7 @@ components:
         fragment: { type: string, pattern: '^[0-9a-f]{32}$' }
         app: { type: string, pattern: '^[a-z0-9][a-z0-9-]{0,62}$' }
         user: { type: string, pattern: '^[0-9a-f]{32}$' }
-        source: { type: string, enum: [user, rag, tool, output] }
+        source: { type: string, enum: [user, rag, tool, tool_args, output] }
         reason: { type: string, maxLength: 500 }
         expires_in_days: { type: integer, minimum: 1, maximum: 365 }
         expires_at: { type: string, format: date-time }

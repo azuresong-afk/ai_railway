@@ -187,6 +187,8 @@ type Details struct {
 	// Session — псевдоним сессии, источник и session.risk; хешей реплик
 	// здесь нет (Session.stored).
 	Session *Session `json:"session,omitempty"`
+	// Agent — событие агента (задача 4.11).
+	Agent *Agent `json:"agent,omitempty"`
 	// ContentTruncated — содержимое full обрезано сервером под предел
 	// шифротекста (FitContent); ставит только сервер при записи.
 	ContentTruncated bool `json:"content_truncated,omitempty"`
@@ -213,6 +215,7 @@ func (e *Event) Details() Details {
 	return Details{
 		Decision: e.Decision, Findings: e.Findings, LatencyMS: e.LatencyMS, Tokens: e.Tokens,
 		Response: e.Response, Pseudonyms: e.Pseudonyms, AuthFailure: e.AuthFailure, Session: e.Session.stored(),
+		Agent: e.Agent,
 	}
 }
 

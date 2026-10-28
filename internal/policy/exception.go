@@ -83,7 +83,7 @@ type ExceptionSpec struct {
 	App string `yaml:"app,omitempty"`
 	// User — псевдоним пользователя (HMAC), как в событии.
 	User string `yaml:"user,omitempty"`
-	// Source — источник текста: user, rag, tool, output.
+	// Source — источник текста: user, rag, tool, tool_args, output.
 	Source detect.Source `yaml:"source,omitempty"`
 	Reason string        `yaml:"reason"`
 	// Author — кто создал или последним изменил исключение (тип:ID).
@@ -139,7 +139,7 @@ func (e *ExceptionSpec) validate() []error {
 		add("user — псевдоним пользователя из события: 32 шестнадцатеричные цифры")
 	}
 	if e.Source != "" && !sources[e.Source] {
-		add("source — user, rag, tool или output")
+		add("source — user, rag, tool, tool_args или output")
 	}
 	if !e.Narrowed() {
 		add("%v", ErrExceptionTooBroad)

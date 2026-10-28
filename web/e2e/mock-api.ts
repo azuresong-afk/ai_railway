@@ -51,6 +51,9 @@ export async function mockApi(page: Page, init: Partial<MockState>): Promise<Moc
     switch (key) {
       case "GET /api/v1/me":
         return route.fulfill(st.me ? ok(st.me) : problem(401, "unauthorized", "Требуется вход."));
+      case "GET /api/v1/auth/oidc":
+        // Вход через IdP (ADR-0025) в e2e выключен.
+        return route.fulfill(ok({ enabled: false }));
       case "GET /api/v1/auth/setup":
         return route.fulfill(ok({ setup_required: Boolean(st.setupRequired) }));
       case "POST /api/v1/auth/setup":

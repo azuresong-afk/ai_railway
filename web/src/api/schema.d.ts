@@ -2775,7 +2775,8 @@ export interface paths {
          *     type, app, env, user, provider, model, source, policy_mode, action, rule, severity,
          *     storage, gateway, threat, detector, exception (находки, пропущенные по исключению с этим ID),
          *     mark (`false_positive`, `confirmed` или `none` — без отметки), stream, non_text_unchecked,
-         *     has_content; операторы
+         *     has_content, session (псевдоним сессии запроса чата или агента), agent, mcp_server, tool
+         *     (события агентов); операторы
          *     `=`, `!=`, `in (…)`, `not in (…)` (у логических полей — только `=`). Лимиты: 2048 байт,
          *     20 условий, 50 значений в списке, значение до 256 байт. Пишет `events.list`
          *     (отключаемое событие).
@@ -10943,7 +10944,7 @@ export interface components {
             /** Format: uuid */
             gateway_id: string;
             /** @enum {string} */
-            type: "gateway_request" | "check" | "auth_failure";
+            type: "gateway_request" | "check" | "auth_failure" | "agent_tool_call" | "agent_mcp";
             app?: string;
             env?: string;
             /** @description Псевдоним пользователя (HMAC) */
@@ -10967,9 +10968,54 @@ export interface components {
             details?: {
                 /** @description Содержимое full обрезано сервером под предел хранения 256 КиБ (В10 ревью 2.r3a) */
                 content_truncated?: boolean;
+                agent?: components["schemas"]["EventAgent"];
             } & {
                 [key: string]: unknown;
             };
+        };
+        /** @description События агентов agent_tool_call и agent_mcp (задача 4.11, ADR-0023, раздел 7): служебные имена, хеши и счётчики без содержимого; аргументы и результат — в содержимом события по режиму хранения. */
+        EventAgent: {
+            /** @enum {string} */
+            path?: "mcp" | "chat";
+            /** Format: uuid */
+            request_event_id?: string;
+            /** @description Slug агента */
+            agent?: string;
+            /** @description Slug MCP-сервера (function — путь chat) */
+            server?: string;
+            /** @description Метод MCP */
+            method?: string;
+            /** @enum {string} */
+            protocol?: "2025-11-25" | "2026-07-28";
+            tool?: string;
+            tool_hash?: string;
+            /** @enum {string} */
+            risk?: "low" | "medium" | "high" | "critical";
+            /** @enum {string} */
+            tool_status?: "new" | "approved" | "changed" | "suspicious" | "revoked" | "unknown";
+            session?: string;
+            approval?: {
+                /** Format: uuid */
+                id?: string;
+                /** @enum {string} */
+                state: "approved" | "denied" | "timeout" | "cancelled" | "interrupted" | "queue_full" | "unavailable";
+                decided_by?: string;
+                waited_ms: number;
+                comment?: string;
+            };
+            upstream_status?: number;
+            result_bytes?: number;
+            is_error?: boolean;
+            /** @description По аргументам сработали redact или pseudonymize */
+            args_unmasked?: boolean;
+            items?: number;
+            hidden?: string[];
+            poisoned?: string[];
+            changed?: string[];
+            invalid?: number;
+            stripped?: string[];
+            dropped?: number;
+            violation?: string;
         };
         EventPage: components["schemas"]["PageInfo"] & {
             items: components["schemas"]["Event"][];
@@ -11123,7 +11169,7 @@ export interface components {
             detector: string;
             directions?: ("input" | "output")[];
             categories?: string[];
-            sources?: ("user" | "rag" | "tool" | "output")[];
+            sources?: ("user" | "rag" | "tool" | "tool_args" | "output")[];
             threshold?: number;
             /** @enum {string} */
             action: "allow" | "log" | "redact" | "pseudonymize" | "block";
@@ -11213,7 +11259,7 @@ export interface components {
             /** @description Псевдоним пользователя из события */
             user?: string;
             /** @enum {string} */
-            source?: "user" | "rag" | "tool" | "output";
+            source?: "user" | "rag" | "tool" | "tool_args" | "output";
             reason: string;
             readonly author?: string;
             /** Format: date-time */
@@ -11249,7 +11295,7 @@ export interface components {
             app?: string;
             user?: string;
             /** @enum {string} */
-            source?: "user" | "rag" | "tool" | "output";
+            source?: "user" | "rag" | "tool" | "tool_args" | "output";
             reason?: string;
             expires_in_days?: number;
             /** Format: date-time */

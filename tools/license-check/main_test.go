@@ -198,7 +198,7 @@ func TestCheckPins(t *testing.T) {
 			"\nFROM ${GO_IMAGE} AS build\nFROM build AS test\nFROM scratch\nCOPY --from=build /x /x\n")}
 		// Образ из compose (внешний, scope: external) и образы продукта.
 		f["deploy/compose/pilot/compose.yaml"] = &fstest.MapFile{Data: []byte("services:\n  db:\n    image: ${PG:-postgres}:17.11-alpine@sha256:" + digest +
-			"\n  srv:\n    image: ${AISEC_IMAGE_REPO:-aisec}/aisec-server:${AISEC_VERSION:?v}\n  dev:\n    image: aisec-dev/mock-llm\n")}
+			"\n  srv:\n    image: ${AISEC_IMAGE_REPO:-aisec}/aisec-server:${AISEC_VERSION:?v}\n  dev:\n    image: aisec-dev/mock-llm\n  mcp:\n    image: aisec-dev/mock-mcp\n")}
 		return f
 	}
 	problems, err := run(good())

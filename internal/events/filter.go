@@ -63,7 +63,8 @@ const (
 	kindFinding                  // поле находки в details.findings (fieldDef.key)
 	kindUUID                     // столбец uuid
 	kindMark                     // отметка аналитика (event_marks)
-	kindSession                  // псевдоним сессии details.session.id (задача 4.13)
+	kindSession                  // псевдоним сессии details.session.id (задача 4.13) или details.agent.session (4.11)
+	kindAgent                    // поле раздела details.agent (задача 4.11): агент, MCP-сервер, инструмент
 )
 
 // fieldDef — поле фильтра: столбец таблицы events (константа кода, не ввод
@@ -95,7 +96,8 @@ func uuidValue(s string) bool {
 
 // filterFields — белый список полей фильтра.
 var filterFields = map[string]fieldDef{
-	"type":               {column: "type", kind: kindText, valid: oneOf(TypeGatewayRequest, TypeCheck, TypeAuthFailure)},
+	"type": {column: "type", kind: kindText,
+		valid: oneOf(TypeGatewayRequest, TypeCheck, TypeAuthFailure, TypeAgentToolCall, TypeAgentMCP)},
 	"app":                {column: "app", kind: kindText, valid: anyText},
 	"env":                {column: "env", kind: kindText, valid: anyText},
 	"user":               {column: "user_alias", kind: kindText, valid: anyText},
@@ -119,6 +121,11 @@ var filterFields = map[string]fieldDef{
 	"mark":      {column: "id", kind: kindMark, valid: oneOf(MarkFalsePositive, MarkConfirmed, MarkNone)},
 	// Задача 4.13 этапа 4: события одной сессии (псевдоним из карточки события).
 	"session": {column: "details", kind: kindSession, valid: sessionIDRe.MatchString},
+	// Задача 4.11 этапа 4: события агентов по агенту, MCP-серверу и
+	// инструменту (хронология сессии агента, правило agents.tool_blocked).
+	"agent":      {column: "details", kind: kindAgent, valid: agentSlugRe.MatchString, key: "agent"},
+	"mcp_server": {column: "details", kind: kindAgent, valid: agentSlugRe.MatchString, key: "server"},
+	"tool":       {column: "details", kind: kindAgent, valid: toolNameRe.MatchString, key: "tool"},
 }
 
 // FilterFields — имена полей фильтра по алфавиту (документация, подсказки).
@@ -492,11 +499,19 @@ func (f Filter) appendSQL(b *strings.Builder, a *sqlArgs) {
 				"->'findings', '[]'::jsonb)) AS f WHERE f->>'" + def.key + "' = ANY(" + ref + "))")
 		case kindSession:
 			ref := a.add(c.Values) + "::text[]"
-			sid := "(" + col + "->'session'->>'id')"
+			sid := "COALESCE(" + col + "->'session'->>'id', " + col + "->'agent'->>'session')"
 			if negate {
 				b.WriteString("(" + sid + " IS NULL OR " + sid + " <> ALL(" + ref + "))")
 			} else {
 				b.WriteString(sid + " = ANY(" + ref + ")")
+			}
+		case kindAgent:
+			ref := a.add(c.Values) + "::text[]"
+			v := "(" + col + "->'agent'->>'" + def.key + "')"
+			if negate {
+				b.WriteString("(" + v + " IS NULL OR " + v + " <> ALL(" + ref + "))")
+			} else {
+				b.WriteString(v + " = ANY(" + ref + ")")
 			}
 		case kindMark:
 			// «none» — нет отметки: значение отметки события, либо none.
@@ -588,7 +603,19 @@ func (r *Record) filterValues(field string) []string {
 		if r.Details != nil && r.Details.Session != nil {
 			return one(r.Details.Session.ID)
 		}
+		if r.Details != nil && r.Details.Agent != nil && r.Details.Agent.Session != "" {
+			return one(r.Details.Agent.Session)
+		}
 		return nil
+	case "agent", "mcp_server", "tool":
+		if r.Details == nil || r.Details.Agent == nil {
+			return nil
+		}
+		v := map[string]string{"agent": r.Details.Agent.Agent, "mcp_server": r.Details.Agent.Server, "tool": r.Details.Agent.Tool}[field]
+		if v == "" {
+			return nil
+		}
+		return one(v)
 	case "mark":
 		if r.Mark == nil {
 			return []string{MarkNone}

@@ -8,7 +8,7 @@ import { Field, Input } from "../ui/Field";
 import { Banner, Table, Td, Th } from "../ui/Layout";
 import { exceptionMaxDays, type PolicyExceptionItem, policiesApi } from "./api";
 
-const sourceText = { user: "запрос", rag: "RAG", tool: "инструмент", output: "ответ" } as const;
+const sourceText = { user: "запрос", rag: "RAG", tool: "инструмент", tool_args: "аргументы инструмента", output: "ответ" } as const;
 
 // Условия исключения одной строкой (хеш фрагмента — только хвост: полностью он пользователю не нужен).
 export function conditionText(e: PolicyExceptionItem): string {

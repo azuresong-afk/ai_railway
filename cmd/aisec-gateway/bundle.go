@@ -126,8 +126,14 @@ func buildFromBundle(b *bundle.Bundle, tp aisecCrypto.TLSProvider, rnd aisecCryp
 	if err != nil {
 		return nil, err
 	}
+	// Учётные данные MCP-серверов остаются только в клиентах серверов.
+	mcpServers, err := gateway.NewMCPServers(b.Content.MCPServers, b.MCPSecrets, tp)
+	b.MCPSecrets.Clear()
+	if err != nil {
+		return nil, err
+	}
 	return hb.build(b.Content.GatewayApplications(), provs, specs, recs, b.Content.UnavailableIDs(), b.Content.Budgets,
-		b.Content.PromptBaselines, gateway.NewAgents(b.Content), userTokensOf(b.Content))
+		b.Content.PromptBaselines, gateway.NewAgents(b.Content), userTokensOf(b.Content), mcpServers)
 }
 
 // userTokens — ключи издателей и проверка JWT пользователей приложений из
