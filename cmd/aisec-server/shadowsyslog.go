@@ -16,13 +16,14 @@ import (
 // TLS — только из internal/crypto: свой сертификат слушателя и, если задан
 // корень клиентов, обязательный клиентский сертификат (mTLS). Возвращает
 // канал, который закрывается после остановки и последней записи сводок.
+// licensed — модуль лицензии shadow_ai включён.
 func startShadowSyslog(ctx context.Context, c shadowSyslogConfig, tp aisecCrypto.TLSProvider, svc *shadowai.Service,
-	auditLog *audit.Log, logger *slog.Logger) (<-chan struct{}, error) {
+	licensed func(context.Context) (bool, error), auditLog *audit.Log, logger *slog.Logger) (<-chan struct{}, error) {
 	if c.Listen == "" {
 		return nil, nil
 	}
 	sc := shadowai.SyslogConfig{Addr: c.Listen, Format: c.Format, Insecure: c.Insecure, Allowed: c.AllowedNetworks,
-		MaxConns: c.MaxConns, MaxConnsPerIP: c.MaxConnsPerIP, LinesPerSecond: c.LinesPerSecond}
+		MaxConns: c.MaxConns, MaxConnsPerIP: c.MaxConnsPerIP, LinesPerSecond: c.LinesPerSecond, Licensed: licensed}
 	if !c.Insecure {
 		certPEM, err := aisecCrypto.ReadPEMFile(c.TLSCertFile)
 		if err != nil {

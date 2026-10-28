@@ -5,6 +5,7 @@ import { formatAbsolute } from "../events/format";
 import { Button } from "../ui/Button";
 import { Field, Input, Select } from "../ui/Field";
 import { Banner } from "../ui/Layout";
+import { hasInvisible, revealInvisible } from "../ui/reveal";
 import { type AgentTool, agentsApi, type Risk } from "./api";
 import { type DiffRow, descriptorLines, diffLines } from "./diff";
 import { RiskBadge, riskLabel, riskOrder, StatusBadge } from "./labels";
@@ -28,7 +29,7 @@ export function Diff({ rows }: { rows: DiffRow[] }) {
       {rows.map((r, i) => (
         <div key={i} data-kind={r.kind} className={`whitespace-pre-wrap break-words ${rowStyle.get(r.kind)}`}>
           {mark.get(r.kind)}
-          {r.text}
+          {revealInvisible(r.text)}
         </div>
       ))}
     </pre>
@@ -106,6 +107,11 @@ export function ToolDialog({ tool, canApprove, mfa, onClose }: { tool: AgentTool
             <Banner kind="error">В описании найдены внедрённые инструкции для модели (DM-24). Одобрять такой инструмент не рекомендуется.</Banner>
           )}
           {cur.status === "changed" && <Banner kind="warning">Описание изменилось после одобрения. Проверьте разницу перед повторным одобрением.</Banner>}
+          {rows.some((r) => hasInvisible(r.text)) && (
+            <Banner kind="error">
+              В описании есть скрытые управляющие символы: они могут менять видимый порядок текста. Ниже они показаны как ⟦U+…⟧.
+            </Banner>
+          )}
           <section aria-label="Описание" className="flex flex-col gap-1">
             <h3 className="text-md font-semibold">{d.approved_descriptor ? "Что изменилось" : "Описание"}</h3>
             <p className="text-xs text-muted">

@@ -2479,7 +2479,10 @@ paths:
         300 секунд (по умолчанию 60). `model_groups` — модель или псевдоним приложения →
         от 1 до 64 групп: модель из списка доступна только пользователю с одной из этих групп
         в JWT (иначе 403 `model_access_denied`, DM-33), остальные модели — всем; только с
-        режимом `optional` или `required`, всего не больше 500 пар. Пишет
+        режимом `optional` или `required`, всего не больше 500 пар. Группы псевдонима
+        сохраняются под именем его модели (удаление или смена псевдонима не снимает
+        ограничение); у модели и её псевдонимов, заданных вместе, — общие группы, без общих
+        групп — 400. Пишет
         `application.user_access_set` (до и после). Смягчение режима, смена издателя,
         аудитории или утверждения с группами, рост допуска и расширение доступа к модели —
         ослабление (DM-40): `weakening: true` с причинами и повторная проверка (`password` или
@@ -8587,7 +8590,8 @@ components:
       description: Приём журналов по syslog; счётчики — с запуска сервера
       required: [enabled, running, tls, client_cert_required, allowed_networks, connections, limits, accepted, accept_errors,
         rejected_network, rejected_limit, tls_failed, frame_too_large, bad_frame, idle_timeouts, read_timeouts, lines, matched,
-        unmatched, errors, excluded, outdated, no_catalog, dropped, throttled, pending, flush_failures, last_flush_failed]
+        unmatched, errors, excluded, outdated, no_catalog, dropped, throttled, unlicensed, license_module, pending, flush_failures,
+        last_flush_failed]
       properties:
         enabled: { type: boolean, description: 'false — слушатель выключен (остальные поля нулевые)' }
         running: { type: boolean, description: 'Слушатель принимает соединения; false при enabled — приём остановлен ошибкой' }
@@ -8629,6 +8633,8 @@ components:
         no_catalog: { type: integer, format: int64, description: 'Строки до загрузки каталога (не учтены)' }
         dropped: { type: integer, format: int64, description: 'Строки сверх предела сводок в памяти (не учтены)' }
         throttled: { type: integer, format: int64, description: 'Кадров, чтение которых задержано пределом строк в секунду' }
+        unlicensed: { type: integer, format: int64, description: 'Строки, отброшенные до разбора: модуль shadow_ai не входит в лицензию (4В18 ревью 4.r2)' }
+        license_module: { type: boolean, description: 'Модуль shadow_ai входит в лицензию (или лицензии нет); false — строки не учитываются' }
         pending: { type: integer, description: 'Сводок в памяти до следующей записи' }
         last_flush_at: { type: string, format: date-time }
         flush_failures: { type: integer, format: int64 }

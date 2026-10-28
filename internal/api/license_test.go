@@ -237,6 +237,45 @@ func TestLicenseRestrictionsViaAPI(t *testing.T) {
 	le.application(t, sys, "app-b", prov.ID, tOwnerID)
 }
 
+// 4В17 ревью 4.r2: после льготного периода можно отключить вход через
+// внешний IdP и каталог и снять исключение из политики — это снижение
+// доступа и возврат контроля, а не изменение конфигурации в пользу
+// заказчика.
+func TestLicenseRestrictedAllowsDisablingExternalLogin(t *testing.T) {
+	le := newLicenseEnv(t)
+	sys := le.mustLogin(t, "sysadm")
+	if w := le.call(sys, "PUT", "/api/v1/license", putLicenseBody(t, signLicense(t, testLicense(1)), tPhrase), true); w.Code != 200 {
+		t.Fatalf("загрузка: %d %s", w.Code, w.Body)
+	}
+	sec := le.mustLogin(t, "admin")
+	le.setNow(time.Date(2027, 12, 1, 0, 0, 0, 0, time.UTC))
+	mustProblem(t, le.call(sec, "PUT", "/api/v1/auth/idp", `{}`, true), 403, license.CodeRestricted)
+	for _, path := range []string{"/api/v1/auth/idp", "/api/v1/auth/ldap",
+		"/api/v1/policies/01900000-0000-7000-8000-0000000000ff/exceptions/01900000-0000-7000-8000-0000000000fe"} {
+		w := le.call(sec, "DELETE", path, `{"password":"`+tPhrase+`"}`, true)
+		if w.Code == http.StatusForbidden {
+			t.Errorf("DELETE %s после льготного периода: %d %s", path, w.Code, w.Body)
+		}
+	}
+}
+
+// 4Н15 ревью 4.r2: выпуск ключа приложения с привязкой к агенту — изменение
+// модуля agents; без модуля — 403 license_module, без привязки — как раньше.
+func TestAgentKeyNeedsAgentsModule(t *testing.T) {
+	le := newLicenseEnv(t)
+	sys := le.mustLogin(t, "sysadm")
+	prov := le.provider(t, sys, "llm-a")
+	a := le.application(t, sys, "app-a", prov.ID, tOwnerID)
+	if w := le.call(sys, "PUT", "/api/v1/license", putLicenseBody(t, signLicense(t, testLicense(1)), tPhrase), true); w.Code != 200 {
+		t.Fatalf("загрузка: %d %s", w.Code, w.Body)
+	}
+	mustProblem(t, le.call(sys, "POST", "/api/v1/applications/"+a.ID+"/keys",
+		`{"name":"agent","agent_id":"01900000-0000-7000-8000-0000000000aa"}`, true), 403, license.CodeModule)
+	if w := le.call(sys, "POST", "/api/v1/applications/"+a.ID+"/keys", `{"name":"plain"}`, true); w.Code != http.StatusCreated {
+		t.Fatalf("ключ без агента: %d %s", w.Code, w.Body)
+	}
+}
+
 // ADR-0026, п. 5: новый изменяющий маршрут без строки в списке исключений
 // проходит проверку лицензии, то есть закрыт после льготного периода.
 func TestLicenseGateNewMutatingRoute(t *testing.T) {

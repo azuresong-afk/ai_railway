@@ -25,14 +25,14 @@ func TestParseValid(t *testing.T) {
 	if err != nil || len(r.Apps) != 1 || r.Apps[0].Quotas[0].Want != 5 || r.Apps[0].Quotas[0].Offline != 3 {
 		t.Fatalf("%+v %v", r, err)
 	}
-	// Граница: 2 000 приложений, 2^62 единиц.
+	// Граница: 300 квот в запросе (по одной у 300 приложений), 2^62 единиц.
 	var apps []string
-	for i := range MaxApps {
+	for i := range MaxQuotasPerRequest {
 		apps = append(apps, fmt.Sprintf(`{"app":"a%d","quotas":[{"quota":"budget","request_id":"%08x-0000-7000-8000-000000000000","want":%d}]}`,
 			i, i, int64(MaxUnits)))
 	}
 	if b := body(apps...); len(b) > MaxBody {
-		t.Logf("2 000 приложений не помещаются в 64 КиБ (%d байт): проверяется Validate", len(b))
+		t.Logf("300 приложений не помещаются в 64 КиБ (%d байт): проверяется Validate", len(b))
 		var r Request
 		if err := json.Unmarshal([]byte(b), &r); err != nil {
 			t.Fatal(err)
@@ -83,6 +83,22 @@ func TestParseRejects(t *testing.T) {
 	}
 	if err := r.Validate(); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("2 001 приложение: %v", err)
+	}
+	// 301 квота (4Н16 ревью 4.r2): 76 приложений по 4 квоты — отказ.
+	r = Request{}
+	for i := range 76 {
+		a := AppRequest{App: fmt.Sprintf("a%d", i)}
+		for j, q := range Quotas {
+			a.Quotas = append(a.Quotas, QuotaRequest{Quota: q, RequestID: fmt.Sprintf("%08x-0000-7000-8000-%012x", i, j), Want: 1})
+		}
+		r.Apps = append(r.Apps, a)
+	}
+	if err := r.Validate(); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("304 квоты: %v", err)
+	}
+	r.Apps = r.Apps[:75]
+	if err := r.Validate(); err != nil {
+		t.Fatalf("300 квот: %v", err)
 	}
 }
 
@@ -175,6 +191,11 @@ func TestShare(t *testing.T) {
 		{"давняя", 100, 1, 3, minute, &prevGrant{granted: 34, recent: false}, 34},
 		{"удвоение не больше лимита", 100, 1, 3, minute, &prevGrant{granted: 80, recent: true}, 100},
 		{"предел чисел", MaxUnits, 1, 1, minute, &prevGrant{granted: MaxUnits, recent: true}, MaxUnits},
+		// 4В19 ревью 4.r2.
+		{"сутки — want не больше равной доли", 10000, MaxUnits, 3, day, nil, 3334},
+		{"минута — want как есть", 100, 100, 3, minute, nil, 100},
+		{"две неотчитанные — удвоение", 100, 1, 3, minute, &prevGrant{granted: 34, recent: true, unreported: 2}, 68},
+		{"три неотчитанные — без удвоения", 100, 1, 3, minute, &prevGrant{granted: 34, recent: true, unreported: 3}, 34},
 	} {
 		if got := share(c.limit, c.want, c.gw, c.w, c.prev); got != c.expect {
 			t.Errorf("%s: %d, ожидается %d", c.name, got, c.expect)

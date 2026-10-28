@@ -16,6 +16,7 @@ import (
 
 	"github.com/azuresong-afk/ai_railway/internal/audit"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
+	"github.com/azuresong-afk/ai_railway/internal/gwregistry"
 	"github.com/azuresong-afk/ai_railway/internal/ids"
 	"github.com/azuresong-afk/ai_railway/internal/store"
 	"github.com/azuresong-afk/ai_railway/migrations"
@@ -41,6 +42,7 @@ type pgEnv struct {
 	owner, app *pgxpool.Pool
 	st         *PGStore
 	ids        *ids.Generator
+	prov       aisecCrypto.Provider
 }
 
 func pgTestCtx(t *testing.T) context.Context {
@@ -193,7 +195,7 @@ func setupPG(t *testing.T) *pgEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &pgEnv{owner: owner, app: app, st: st, ids: ids.NewGenerator(r)}
+	return &pgEnv{owner: owner, app: app, st: st, ids: ids.NewGenerator(r), prov: p}
 }
 
 func (e *pgEnv) newID() (string, error) {
@@ -371,17 +373,24 @@ func TestPGLeaseDayAndMonthBoundary(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// Каждый шлюз получает не больше равной доли суток (4В19 ревью 4.r2):
+	// ⌈10 000/3⌉, при остатке — повтор через секунду, а не в конце суток.
 	d := e.mustLease(t, gwA, late, "crm", QuotaRequest{Quota: QuotaTPD, Want: 10000})
 	m := e.mustLease(t, gwA, late, "crm", QuotaRequest{Quota: QuotaBudget, Want: 1})
-	if d.Granted != 10000 || d.TTLMS != (2*time.Minute).Milliseconds() || m.TTLMS != (2*time.Minute).Milliseconds() {
+	if d.Granted != 3334 || d.RetryAfterMS != time.Second.Milliseconds() || d.TTLMS != (2*time.Minute).Milliseconds() ||
+		m.TTLMS != (2*time.Minute).Milliseconds() {
 		t.Fatalf("срок у границы: %+v %+v", d, m)
+	}
+	e.mustLease(t, gwB, late, "crm", QuotaRequest{Quota: QuotaTPD, Want: 10000})
+	if g := e.mustLease(t, gwC, late, "crm", QuotaRequest{Quota: QuotaTPD, Want: 10000}); g.Granted != 3332 || g.Remaining != 0 {
+		t.Fatalf("остаток суток: %+v", g)
 	}
 	if g := e.mustLease(t, gwB, late, "crm", QuotaRequest{Quota: QuotaTPD, Want: 1}); g.Granted != 0 ||
 		g.RetryAfterMS != (2*time.Minute).Milliseconds() {
 		t.Fatalf("до конца суток: %+v", g)
 	}
 	keys := e.count(t, `SELECT count(*) FROM quota_grants WHERE kind = 'lease' AND window_key IN ('2026-10-31', '2026-10')`)
-	if keys != 2 {
+	if keys != 4 {
 		t.Fatalf("ключи окон: %d", keys)
 	}
 	next := late.Add(2 * time.Minute)
@@ -420,8 +429,10 @@ func TestPGLeaseRetryIsIdempotent(t *testing.T) {
 	if n := e.count(t, `SELECT count(*) FROM quota_grants WHERE quota = 'requests_per_minute'`); n != 0 {
 		t.Fatalf("минутный автономный расход: %d", n)
 	}
-	// Остаток суток: 10 000 − 500 офлайн − выданное.
-	if g := e.mustLease(t, gwB, pgNow, "crm", QuotaRequest{Quota: QuotaTPD, Want: 10000}); g.Granted != 10000-500-g1.Granted {
+	// Остаток суток: 10 000 − 500 офлайн − выданное; шлюзу — не больше
+	// равной доли ⌈10 000/3⌉.
+	if g := e.mustLease(t, gwB, pgNow, "crm", QuotaRequest{Quota: QuotaTPD, Want: 10000}); g.Granted != 3334 ||
+		g.Remaining != 10000-500-g1.Granted-3334 {
 		t.Fatalf("остаток суток: %+v", g)
 	}
 }
@@ -597,5 +608,78 @@ func TestPGPurgeOldGrants(t *testing.T) {
 	}
 	if n := e.count(t, `SELECT count(*) FROM quota_gateway_state`); n != 0 {
 		t.Fatalf("признаки шлюзов: %d", n)
+	}
+}
+
+// 4В19 ревью 4.r2: скомпрометированный шлюз одним запросом не выбирает
+// весь суточный лимит или месячный бюджет — ни огромным want, ни огромным
+// автономным расходом, ни удвоением доли без отчётов; отзыв шлюза
+// освобождает его неотчитанные аренды и автономный расход.
+func TestPGLeaseOverclaimBounded(t *testing.T) {
+	e := setupPG(t)
+	ctx := pgTestCtx(t)
+	budget := int64(10000 * 100_000)
+	// Огромный want — не больше равной доли (три шлюза на связи).
+	if g := e.mustLease(t, gwA, pgNow, "crm", QuotaRequest{Quota: QuotaTPD, Want: MaxUnits}); g.Granted != 3334 {
+		t.Fatalf("суточная квота, огромный want: %+v", g)
+	}
+	if g := e.mustLease(t, gwA, pgNow, "crm", QuotaRequest{Quota: QuotaBudget, Want: MaxUnits}); g.Granted != ceilDiv(budget, 3) {
+		t.Fatalf("бюджет, огромный want: %+v", g)
+	}
+	// Огромный автономный расход учитывается не больше доли шлюза за окно;
+	// лишнее — в аудит, запрос не отклоняется.
+	off := QuotaRequest{Quota: QuotaBudget, RequestID: e.uuid(t), Offline: MaxUnits}
+	e.mustLease(t, gwB, pgNow, "crm", off)
+	e.mustLease(t, gwB, pgNow, "crm", off) // повтор того же запроса — без второй записи
+	e.mustLease(t, gwB, pgNow, "crm", QuotaRequest{Quota: QuotaBudget, Offline: MaxUnits})
+	if n := e.count(t, `SELECT SUM(granted) FROM quota_grants WHERE kind = 'offline' AND gateway_id = $1`, gwB); n != ceilDiv(budget, 3) {
+		t.Fatalf("автономный расход шлюза B: %d", n)
+	}
+	if n := e.count(t, `SELECT count(*) FROM audit_log WHERE action = 'quota.lease_violation'
+		AND details->>'reason' = 'offline_overclaim'`); n != 2 {
+		t.Fatalf("записей offline_overclaim: %d", n)
+	}
+	// Шлюз C получает свою долю бюджета.
+	if g := e.mustLease(t, gwC, pgNow, "crm", QuotaRequest{Quota: QuotaBudget, Want: 1}); g.Granted == 0 || g.Remaining == 0 {
+		t.Fatalf("бюджет после завышенного расхода: %+v", g)
+	}
+	// Без отчётов удвоение — не больше двух раз подряд: 100, 200, 400, затем
+	// снова начальная доля — 1 % суточной квоты.
+	got := []int64{}
+	for i := range 5 {
+		g := e.mustLease(t, gwC, pgNow.Add(time.Duration(i+1)*time.Second), "crm", QuotaRequest{Quota: QuotaTPD, Want: 1})
+		got = append(got, g.Granted)
+	}
+	if fmt.Sprint(got) != "[100 200 400 100 100]" {
+		t.Fatalf("выдачи без отчётов: %v", got)
+	}
+	// Отзыв шлюза B освобождает его автономный расход, A — неотчитанные
+	// аренды; отчитанное остаётся.
+	l, err := audit.New(e.owner, e.prov)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg, err := gwregistry.NewPGStore(e.owner, l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var released any
+	for _, name := range []string{"gw-1", "gw-2"} {
+		if _, err := reg.Revoke(ctx, audit.DefaultOrgID, name, pgNow, func(gw gwregistry.Gateway) audit.Entry {
+			return audit.Entry{OrgID: audit.DefaultOrgID, Actor: audit.Actor{Type: audit.ActorCLI, ID: "test"}, Action: "gateway.revoke",
+				Object: audit.Object{Type: "gateway", ID: gw.ID}, Result: audit.ResultSuccess}
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := e.count(t, `SELECT count(*) FROM quota_grants WHERE gateway_id IN ($1, $2)`, gwA, gwB); n != 0 {
+		t.Fatalf("после отзыва у A и B осталось выдач: %d", n)
+	}
+	if err := e.owner.QueryRow(ctx, `SELECT details->'quota_grants_released' FROM audit_log WHERE action = 'gateway.revoke'
+		AND object_id = $1`, gwA).Scan(&released); err != nil || fmt.Sprint(released) != "2" {
+		t.Fatalf("аудит отзыва A: %v %v", released, err)
+	}
+	if n := e.count(t, `SELECT count(*) FROM quota_grants WHERE gateway_id = $1`, gwC); n != 6 {
+		t.Fatalf("выдачи шлюза C: %d", n)
 	}
 }

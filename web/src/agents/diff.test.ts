@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { hasInvisible, revealInvisible } from "../ui/reveal";
 import { descriptorLines, diffLines } from "./diff";
 
 describe("разница описаний", () => {
@@ -31,5 +32,12 @@ describe("разница описаний", () => {
   it("разметка в описании остаётся текстом", () => {
     const r = diffLines([], descriptorLines({ description: "<img src=x onerror=alert(1)>" }));
     expect(r.some((x) => x.text.includes("<img"))).toBe(true);
+  });
+  it("управляющие символы направления JSON не экранирует — их показывает revealInvisible (4В20 ревью 4.r2)", () => {
+    const lines = descriptorLines({ description: "удаляет \u202Efdp.txt" });
+    const rows = diffLines([], lines);
+    const row = rows.find((r) => hasInvisible(r.text));
+    expect(row).toBeDefined();
+    expect(revealInvisible(row!.text)).toContain("⟦U+202E⟧fdp.txt");
   });
 });

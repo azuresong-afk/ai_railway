@@ -169,6 +169,12 @@ func (s *PGStore) Lease(ctx context.Context, in LeaseInput) (Response, error) {
 	var resp Response
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
 		resp = Response{ServerTime: in.Now, Apps: []AppResponse{}}
+		// Ожидание чужой блокировки quota_locks — не дольше секунды (4Н16
+		// ревью 4.r2): шлюз повторит запрос, а не повиснет за долгой
+		// транзакцией.
+		if _, err := tx.Exec(ctx, `SET LOCAL lock_timeout = '1s'`); err != nil {
+			return err
+		}
 		var mode, tz string
 		var since *time.Time
 		err := tx.QueryRow(ctx, `SELECT quota_mode, timezone, quota_mode_changed_at FROM install_settings WHERE org_id = $1`,
@@ -352,14 +358,7 @@ func (s *PGStore) grant(ctx context.Context, tx pgx.Tx, in LeaseInput, a *appRow
 	// Минутные квоты его не принимают: автономный расход последней минуты
 	// шлюз сам засчитывает в первую аренду после восстановления связи.
 	if q.Offline > 0 && (q.Quota == QuotaTPD || q.Quota == QuotaBudget) {
-		id, err := in.NewID()
-		if err != nil {
-			return g, err
-		}
-		if _, err := tx.Exec(ctx, `INSERT INTO quota_grants (id, org_id, app_id, quota, kind, gateway_id, request_id, window_key,
-			granted, used, granted_at, expires_at, reported_at) VALUES ($1, $2, $3, $4, 'offline', $5, $6, $7, $8, $8, $9, $9, $9)
-			ON CONFLICT (org_id, gateway_id, request_id, kind) DO NOTHING`,
-			id, in.OrgID, a.id, q.Quota, in.GatewayID, q.RequestID, w.key, q.Offline, in.Now); err != nil {
+		if err := s.offline(ctx, tx, in, a, slug, q, w, limit, gateways); err != nil {
 			return g, err
 		}
 	}
@@ -410,10 +409,59 @@ func (s *PGStore) grant(ctx context.Context, tx pgx.Tx, in LeaseInput, a *appRow
 			return g, err
 		}
 	}
-	if g.Granted < q.Want {
+	switch {
+	case g.Granted >= q.Want:
+	// Выдача урезана равной долей (сутки и месяц), а остаток в окне есть:
+	// шлюз добирает следующим запросом, а не ждёт конца окна.
+	case g.Remaining > 0:
+		g.RetryAfterMS = time.Second.Milliseconds()
+	default:
 		g.RetryAfterMS = retryAfter(w, in.Now, oldest).Milliseconds()
 	}
 	return g, nil
+}
+
+// offline учитывает автономный расход шлюза за сутки или месяц — с ID
+// запроса: повтор не учитывает его дважды. Автономная доля шлюза в окне —
+// лимит, делённый на число шлюзов (ADR-0021, п. 5), поэтому за окно шлюз
+// может заявить не больше ceilDiv(limit, gateways) (4В19 ревью 4.r2).
+// Сверх этого расход не учитывается, а в аудит пишется
+// quota.lease_violation с причиной offline_overclaim; запрос не
+// отклоняется: честный шлюз, у которого с тех пор сменилось число шлюзов
+// на связи, не должен застревать с неотправленным расходом.
+func (s *PGStore) offline(ctx context.Context, tx pgx.Tx, in LeaseInput, a *appRow, slug string, q QuotaRequest,
+	w window, limit int64, gateways int) error {
+	var dup bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM quota_grants WHERE org_id = $1 AND gateway_id = $2
+		AND request_id = $3 AND kind = 'offline')`, in.OrgID, in.GatewayID, q.RequestID).Scan(&dup); err != nil || dup {
+		return err
+	}
+	var claimed int64
+	if err := tx.QueryRow(ctx, `SELECT LEAST(COALESCE(SUM(granted), 0), `+unitsCap+`)::bigint FROM quota_grants
+		WHERE org_id = $1 AND app_id = $2 AND quota = $3 AND window_key = $4 AND gateway_id = $5 AND kind = 'offline'`,
+		in.OrgID, a.id, q.Quota, w.key, in.GatewayID).Scan(&claimed); err != nil {
+		return err
+	}
+	allowed := max(ceilDiv(limit, int64(max(gateways, 1)))-claimed, 0)
+	units := min(q.Offline, allowed)
+	if units < q.Offline {
+		if err := s.audit.RecordTx(ctx, tx, audit.Entry{OrgID: in.OrgID,
+			Actor: audit.Actor{Type: audit.ActorGateway, ID: in.GatewayID}, Action: "quota.lease_violation",
+			Object: audit.Object{Type: "gateway", ID: in.GatewayID}, Result: audit.ResultFailure,
+			Details: map[string]any{"app": slug, "quota": q.Quota, "reason": ReasonOfflineOverclaim,
+				"offline": q.Offline, "accepted": units}}); err != nil {
+			return err
+		}
+	}
+	id, err := in.NewID()
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO quota_grants (id, org_id, app_id, quota, kind, gateway_id, request_id, window_key,
+		granted, used, granted_at, expires_at, reported_at) VALUES ($1, $2, $3, $4, 'offline', $5, $6, $7, $8, $8, $9, $9, $9)
+		ON CONFLICT (org_id, gateway_id, request_id, kind) DO NOTHING`,
+		id, in.OrgID, a.id, q.Quota, in.GatewayID, q.RequestID, w.key, units, in.Now)
+	return err
 }
 
 // budgetBase — расход месяца до включения аренды: при первой выдаче
@@ -487,7 +535,13 @@ func (s *PGStore) prev(ctx context.Context, tx pgx.Tx, in LeaseInput, a *appRow,
 		ttl = LongTTL
 	}
 	p.recent = !at.Before(in.Now.Add(-2 * ttl))
-	return &p, nil
+	if !p.recent || p.used != nil {
+		return &p, nil
+	}
+	err = tx.QueryRow(ctx, `SELECT count(*) FROM quota_grants WHERE org_id = $1 AND app_id = $2 AND quota = $3
+		AND gateway_id = $4 AND kind = 'lease' AND used IS NULL AND granted_at >= $5`,
+		in.OrgID, a.id, quota, in.GatewayID, in.Now.Add(-2*ttl)).Scan(&p.unreported)
+	return &p, err
 }
 
 // retryAfter — когда в окне может освободиться доля: минутное окно — когда

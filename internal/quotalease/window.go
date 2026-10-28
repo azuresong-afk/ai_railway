@@ -43,13 +43,17 @@ func windowOf(quota string, now time.Time, loc *time.Location) window {
 // до удвоенной прошлой выдачи. Для минутных квот «лимит на срок аренды» —
 // весь лимит (как в ADR); для суток и месяца — его часть на срок аренды:
 // иначе один шлюз сразу забирал бы полсуток или полмесяца, а остановленный
-// шлюз «замораживал» бы их до отчёта. Не меньше want — одного запроса.
+// шлюз «замораживал» бы их до отчёта. Не меньше want — одного запроса;
+// для суток и месяца want берётся не больше равной доли лимита на шлюз
+// (4В19 ревью 4.r2): иначе один запрос скомпрометированного шлюза выбирал
+// бы весь суточный лимит или месячный бюджет до конца окна.
 func share(limit, want int64, gateways int, w window, prev *prevGrant) int64 {
 	eff := limit
+	n := int64(max(gateways, 1))
 	if !w.end.IsZero() {
 		eff = msPart(limit, LongTTL, w.length)
+		want = min(want, ceilDiv(limit, n))
 	}
-	n := int64(max(gateways, 1))
 	size := max(ceilDiv(eff, n), ceilDiv(limit, 100), 1)
 	if prev != nil && prev.busy() {
 		size = max(size, min(satAdd(prev.granted, prev.granted), limit))
@@ -65,12 +69,28 @@ type prevGrant struct {
 	used *int64
 	// recent — выдана не раньше двух сроков аренды назад.
 	recent bool
+	// unreported — недавних неотчитанных аренд шлюза по приложению и
+	// квоте, включая эту.
+	unreported int
 }
 
-// busy — прошлая аренда недавняя и использована хотя бы наполовину (или
-// ещё не закрыта: шлюз просит новую, израсходовав 80 % текущей).
+// maxUnreported — сколько недавних неотчитанных аренд шлюза ещё считаются
+// загрузкой: текущая и прошлая, отчёт о которой не готов (резервы
+// держатся до минуты после срока).
+const maxUnreported = 2
+
+// busy — прошлая аренда недавняя и использована хотя бы наполовину или
+// ещё не закрыта (шлюз просит новую, израсходовав 80 % текущей). Без
+// отчётов удвоение не больше двух раз подряд (4В19 ревью 4.r2): иначе
+// шлюз удваивал бы долю запросами без отчёта до всего лимита.
 func (p *prevGrant) busy() bool {
-	return p.recent && (p.used == nil || *p.used*2 >= p.granted)
+	if !p.recent {
+		return false
+	}
+	if p.used == nil {
+		return p.unreported <= maxUnreported
+	}
+	return *p.used*2 >= p.granted
 }
 
 func ceilDiv(a, b int64) int64 {

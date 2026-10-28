@@ -612,7 +612,9 @@ func (c *Client) Check(ctx context.Context, cfg Config) error {
 	return nil
 }
 
-// Authenticate проверяет логин и пароль пользователя каталога: поиск
+// Authenticate проверяет логин и пароль пользователя каталога (при
+// неверном пароле найденной записи вместе с ошибкой CodeCredentials
+// возвращает её DN и ID без групп): поиск
 // записи сервисной учётной записью (не больше одной), simple bind
 // пользователя на отдельном соединении, затем группы. Пустой пароль
 // отклоняется до обращения к каталогу: иначе bind стал бы
@@ -670,6 +672,12 @@ func (c *Client) Authenticate(ctx context.Context, cfg Config, login, password s
 		return Identity{}, fail(CodeResponse, "DN записи не разобран")
 	}
 	if err := c.bindUser(ctx, cfg, e.DN, password); err != nil {
+		// Неверный пароль найденной записи: DN и ID — вместе с ошибкой,
+		// чтобы отказ в аудите был привязан к записи (4В21 ревью 4.r2:
+		// иначе перебор по одной записи с многих адресов не виден DM-39).
+		if ErrorCode(err) == CodeCredentials {
+			return Identity{DN: e.DN, ID: id}, err
+		}
 		return Identity{}, err
 	}
 	out := Identity{DN: e.DN, ID: id, DisplayName: displayValue(e.GetEqualFoldAttributeValues(cfg.DisplayAttribute))}

@@ -168,6 +168,39 @@ func TestDM39_ConsoleBruteForceAlert(t *testing.T) {
 	}
 }
 
+// DM-39, 4В21 ревью 4.r2: перебор пароля одной записи каталога с многих
+// адресов (ниже порога каждого адреса) — оповещение по записи; отказы по
+// разным записям в счёт друг друга не идут.
+// Покрывает: DM-39 (оповещение)
+func TestDM39_AccountBruteForceAcrossAddresses(t *testing.T) {
+	e := newEnv(t)
+	entry := audit.Object{Type: "ldap_entry", ID: "3e9a1f2c-5b6d-4e7f-8a9b-0c1d2e3f4a5b"}
+	for i := range ConsoleFailThreshold - 1 {
+		e.audit(t, e.rec(t, tUnknown, fmt.Sprintf("192.0.2.%d", 30+i), "auth.login_failed", entry, audit.ResultFailure,
+			map[string]any{"method": "ldap", "reason": "wrong_password"}))
+	}
+	e.audit(t, e.rec(t, tUnknown, "192.0.2.60", "auth.login_failed", audit.Object{Type: "ldap_entry", ID: "other"},
+		audit.ResultFailure, nil))
+	if got := e.alerts(t, BuiltinConsoleBrute); len(got) != 0 {
+		t.Fatalf("оповещение ниже порога: %+v", got)
+	}
+	e.audit(t, e.rec(t, tUnknown, "192.0.2.61", "auth.login_failed", entry, audit.ResultFailure, nil))
+	got := e.alerts(t, BuiltinConsoleBrute)
+	if len(got) != 1 || got[0].Values["account"] != entry.ID || got[0].Count != ConsoleFailThreshold {
+		t.Fatalf("перебор по записи: %+v", got)
+	}
+	// Учётная запись консоли: имя субъекта в заголовке, ключ — как у auth.locked.
+	for i := range ConsoleFailThreshold {
+		e.audit(t, e.rec(t, tUser, fmt.Sprintf("198.51.100.%d", i+1), "auth.login_failed", audit.Object{Type: "user", ID: tUser.ID},
+			audit.ResultFailure, nil))
+	}
+	e.audit(t, e.rec(t, tUser, "198.51.100.99", "auth.locked", audit.Object{Type: "user", ID: tUser.ID}, audit.ResultSuccess, nil))
+	got = e.alerts(t, BuiltinConsoleBrute)
+	if len(got) != 2 {
+		t.Fatalf("оповещений %d, ожидалось 2: %+v", len(got), got)
+	}
+}
+
 // DM-40 (этап 3): ослабление защиты — оповещение высокой серьёзности;
 // изменения одного пользователя за 10 минут объединяются в одно со списком
 // изменений, после окна — новое; у другого пользователя — своё.

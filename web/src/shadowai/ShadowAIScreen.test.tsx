@@ -42,7 +42,7 @@ const syslogOff: ShadowSyslog = {
   enabled: false, running: false, accept_errors: 0, tls: false, client_cert_required: false, allowed_networks: [], connections: 0,
   limits: { max_connections: 0, max_connections_per_address: 0, max_frame_bytes: 0, lines_per_second: 0, idle_timeout_seconds: 0, frame_timeout_seconds: 0 },
   accepted: 0, rejected_network: 0, rejected_limit: 0, tls_failed: 0, frame_too_large: 0, bad_frame: 0, idle_timeouts: 0, read_timeouts: 0, lines: 0,
-  matched: 0, unmatched: 0, errors: 0, excluded: 0, outdated: 0, no_catalog: 0, dropped: 0, throttled: 0, pending: 0, flush_failures: 0, last_flush_failed: false,
+  matched: 0, unmatched: 0, errors: 0, excluded: 0, outdated: 0, no_catalog: 0, dropped: 0, throttled: 0, unlicensed: 0, license_module: true, pending: 0, flush_failures: 0, last_flush_failed: false,
 };
 
 type Call = { method: string; url: string; body: unknown; type: string | undefined };
