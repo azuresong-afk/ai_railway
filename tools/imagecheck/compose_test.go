@@ -7,7 +7,10 @@ import (
 	"testing"
 )
 
-const pilotCompose = "../../deploy/compose/pilot/compose.yaml"
+const (
+	pilotCompose = "../../deploy/compose/pilot/compose.yaml"
+	pilotML      = "../../deploy/compose/pilot/compose.ml.yaml"
+)
 
 func readPilot(t testing.TB) string {
 	t.Helper()
@@ -16,6 +19,28 @@ func readPilot(t testing.TB) string {
 		t.Fatal(err)
 	}
 	return string(data)
+}
+
+func readPilotML(t testing.TB) string {
+	t.Helper()
+	data, err := os.ReadFile(pilotML)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
+// checkWithOverlay — нарушения compose пилота с дополнением.
+func checkWithOverlay(t *testing.T, base, overlay string) []string {
+	t.Helper()
+	c, err := parseCompose([]byte(base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := applyOverlay(c, []byte(overlay)); err != nil {
+		t.Fatal(err)
+	}
+	return checkCompose(c)
 }
 
 // ЗИ.5: compose пилота проходит все правила запуска.
@@ -31,6 +56,80 @@ func TestPilotCompose(t *testing.T) {
 	if s := c.Services["aisec-gateway"]; !s.ReadOnly || s.PidsLimit == 0 {
 		t.Fatalf("якорь hardening не применён: %+v", s)
 	}
+	// Без дополнения ML сервиса aisec-ml нет: установка работает как раньше.
+	if _, ok := c.Services["aisec-ml"]; ok {
+		t.Fatal("aisec-ml в основном compose")
+	}
+}
+
+// ADR-0024, задача 4.19: compose пилота с дополнением ML проходит все правила.
+func TestPilotComposeML(t *testing.T) {
+	if p := checkWithOverlay(t, readPilot(t), readPilotML(t)); len(p) > 0 {
+		t.Fatal(strings.Join(p, "\n"))
+	}
+}
+
+func TestComposeMLRejects(t *testing.T) {
+	ml := readPilotML(t)
+	for name, tc := range map[string]struct {
+		old, new, want string
+	}{
+		"aisec-ml в сети":            {"    network_mode: none\n", "    networks: [control]\n", "network_mode: none"},
+		"aisec-ml network_mode host": {"    network_mode: none\n", "    network_mode: host\n", "network_mode"},
+		"порт у aisec-ml":            {"    profiles: [ml]\n", "    profiles: [ml]\n    ports: [\"${X:-127.0.0.1}:9000:9000\"]\n", "публиковать можно только"},
+		"aisec-ml от шлюза":          {"${AISEC_ML_UID:?запустите prepare-host.sh}", "${AISEC_GW_UID:-0}", "user"},
+		"aisec-ml без read_only":     {"    read_only: true\n", "", "read_only"},
+		"сокет шлюзу на запись":      {"/run/aisec-ml:ro\n", "/run/aisec-ml\n", "aisec-gateway: том"},
+		"шлюз без сокета":            {"      AISEC_GATEWAY_ML_SOCKET: /run/aisec-ml/aisec-ml.sock\n", "", "AISEC_GATEWAY_ML_SOCKET"},
+		"шлюз без тома":              {"      - ${AISEC_DATA_DIR:?задайте AISEC_DATA_DIR}/ml/run:/run/aisec-ml:ro\n", "      - ${AISEC_DATA_DIR:?задайте AISEC_DATA_DIR}/gateway/reg:/var/lib/aisec-gateway/reg\n", "с aisec-ml нужны"},
+		"LD_PRELOAD у aisec-ml":      {"    network_mode: none\n", "    network_mode: none\n    environment: {LD_PRELOAD: /run/aisec-ml/x.so}\n", "переменные загрузчика"},
+		"LD_LIBRARY_PATH у шлюза":    {"      AISEC_GATEWAY_ML_SOCKET: /run/aisec-ml/aisec-ml.sock\n", "      AISEC_GATEWAY_ML_SOCKET: /run/aisec-ml/aisec-ml.sock\n      LD_LIBRARY_PATH: /tmp\n", "переменные загрузчика"},
+		"самопроверка alert в env":   {"    network_mode: none\n", "    network_mode: none\n    environment: {AISEC_ML_INTEGRITY_ACTION: alert}\n", "ослабление самопроверки"},
+		"самопроверка alert флагом":  {"      - \"-models=/opt/aisec/models\"\n", "      - \"-models=/opt/aisec/models\"\n      - \"-integrity-action=alert\"\n", "ослабление самопроверки"},
+		"ключи у aisec-ml":           {"/ml/run:/run/aisec-ml\n", "/ml/run:/run/aisec-ml\n      - ${AISEC_DATA_DIR:?задайте AISEC_DATA_DIR}/keys:/etc/aisec/keys:ro\n", "aisec-ml: том"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if !strings.Contains(ml, tc.old) {
+				t.Fatalf("в compose.ml.yaml нет фрагмента %q — обновите тест", tc.old)
+			}
+			problems := checkWithOverlay(t, readPilot(t), strings.Replace(ml, tc.old, tc.new, 1))
+			if !strings.Contains(strings.Join(problems, "\n"), tc.want) {
+				t.Fatalf("ожидалось нарушение %q, получено %v", tc.want, problems)
+			}
+		})
+	}
+	// Шлюз с сокетом без aisec-ml: сокет некому открыть.
+	gwOnly := ml[:strings.Index(ml, "  aisec-ml:\n")]
+	gwOnly = strings.Replace(gwOnly, "    depends_on:\n      aisec-ml: {condition: service_started}\n", "", 1)
+	if p := checkWithOverlay(t, readPilot(t), gwOnly); !strings.Contains(strings.Join(p, "\n"), "только вместе с сервисом aisec-ml") {
+		t.Fatalf("шлюз с сокетом без aisec-ml: %v", p)
+	}
+}
+
+// Дополнение не обходит правила: существующему сервису — только
+// зависимости, окружение и тома; переменную основного файла не заменить.
+func TestApplyOverlayRejects(t *testing.T) {
+	for name, overlay := range map[string]string{
+		"права шлюзу":                "services:\n  aisec-gateway:\n    privileged: true\n",
+		"чужой пользователь":         "services:\n  aisec-gateway:\n    user: \"0:0\"\n",
+		"переопределение переменной": "services:\n  aisec-server:\n    environment:\n      AISEC_SERVER_INTEGRITY_ACTION: ignore\n",
+		"неизвестная зависимость":    "services:\n  aisec-gateway:\n    depends_on:\n      nope: {condition: service_started}\n",
+		"неизвестное поле сервиса":   "services:\n  aisec-ml:\n    sysctls: {a: 1}\n",
+		"ключ верхнего уровня":       "include: [x.yaml]\nservices: {}\n",
+		"тег !override":              "services:\n  aisec-gateway:\n    volumes: !override [\"/x:/y:ro\"]\n",
+		"тег !reset":                 "services:\n  aisec-gateway:\n    environment: !reset {}\n",
+		"слишком большое":            strings.Repeat("#", maxCompose+1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			c, err := parseCompose([]byte(readPilot(t)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := applyOverlay(c, []byte(overlay)); err == nil {
+				t.Fatal("дополнение принято")
+			}
+		})
+	}
 }
 
 func TestComposeRejects(t *testing.T) {
@@ -44,10 +143,7 @@ func TestComposeRejects(t *testing.T) {
 		"cap_add":                     {"    image: ${AISEC_IMAGE_REPO:-aisec}/aisec-gateway:", "    cap_add: [NET_ADMIN]\n    image: ${AISEC_IMAGE_REPO:-aisec}/aisec-gateway:", "cap_add"},
 		"privileged":                  {"    profiles: [tools]\n", "    profiles: [tools]\n    privileged: true\n", "privileged"},
 		"network_mode host":           {"    profiles: [tools]\n", "    profiles: [tools]\n    network_mode: host\n", "network_mode"},
-		"aisec-ml в сети":             {"    network_mode: none\n", "    networks: [control]\n", "network_mode: none"},
-		"aisec-ml network_mode host":  {"    network_mode: none\n", "    network_mode: host\n", "network_mode"},
 		"aisec-cli network_mode none": {"    profiles: [tools]\n", "    profiles: [tools]\n    network_mode: none\n", "network_mode"},
-		"порт у aisec-ml":             {"    profiles: [ml]\n", "    profiles: [ml]\n    ports: [\"${X:-127.0.0.1}:9000:9000\"]\n", "публиковать можно только"},
 		"root по умолчанию":           {`user: "${AISEC_GW_UID:?запустите prepare-host.sh}:${AISEC_GW_GID:?запустите prepare-host.sh}"`, `user: "${AISEC_GW_UID:-0}:${AISEC_GW_GID:-0}"`, "user"},
 		"порт без адреса":             {`ports: ["${AISEC_GATEWAY_BIND:-127.0.0.1}:${AISEC_GATEWAY_PORT:-8443}:8443"]`, `ports: ["8443:8443"]`, "без адреса"},
 		"порт на все адреса":          {`${AISEC_GATEWAY_BIND:-127.0.0.1}`, `${AISEC_GATEWAY_BIND:-0.0.0.0}`, "127.0.0.1"},
@@ -110,6 +206,7 @@ func TestComposeUnknownFields(t *testing.T) {
 		"extends":        {"    profiles: [tools]\n", "    profiles: [tools]\n    extends: {service: aisec-server}\n"},
 		"внешняя сеть":   {"    internal: true\n", "    internal: true\n    external: true\n"},
 		"include":        {"\nsecrets:\n", "\ninclude: [other.yaml]\n\nsecrets:\n"},
+		"тег !reset":     {"    profiles: [tools]\n", "    profiles: [tools]\n    tmpfs: !reset []\n"},
 		"внешний секрет": {"  db-server-pgpass:\n    file: ", "  db-server-pgpass:\n    external: true\n    file: "},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -141,8 +238,14 @@ func FuzzCheckCompose(f *testing.F) {
 			return
 		}
 		problems := checkCompose(c)
-		// Файл без всех четырёх сервисов никогда не проходит проверку.
-		if len(c.Services) < len(composeRules) && len(problems) == 0 {
+		// Файл без обязательных сервисов никогда не проходит проверку.
+		required := 0
+		for _, r := range composeRules {
+			if !r.Optional {
+				required++
+			}
+		}
+		if len(c.Services) < required && len(problems) == 0 {
 			t.Fatal("неполный compose прошёл проверку")
 		}
 		if len(problems) > 0 {
@@ -151,7 +254,7 @@ func FuzzCheckCompose(f *testing.F) {
 		// Прошедший проверку файл: тома и секреты — ровно из правил (3В8).
 		for name, s := range c.Services {
 			for _, v := range s.Volumes {
-				if !slices.Contains(composeRules[name].Volumes, normVolume(v)) {
+				if r := composeRules[name]; !slices.Contains(r.Volumes, normVolume(v)) && !slices.Contains(r.OptionalVolumes, normVolume(v)) {
 					t.Fatalf("%s: том %q вне правил прошёл проверку", name, v)
 				}
 			}

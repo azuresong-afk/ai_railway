@@ -1,0 +1,53 @@
+# ML-детекторы (ADR-0024, задача 4.19): процесс aisec-ml и подключение к
+# нему шлюза. По умолчанию выключены: без этого файла шлюз работает на
+# эвристиках, как раньше. Включение — после prepare-host.sh (он создаёт
+# пользователя aisec-ml и каталог сокета ml/run, пишет AISEC_ML_UID в .env)
+# в .env:
+#
+#   COMPOSE_FILE=compose.yaml:compose.ml.yaml
+#   COMPOSE_PROFILES=db,ml
+#
+# Файл без профиля ml — ошибка compose («depends on undefined service»), а
+# не тихая работа шлюза без ML: шлюз зависит от aisec-ml.
+#
+# aisec-ml работает без сети вовсе (network_mode: none) от своего
+# пользователя с группой шлюза. Каталог ml/run — 0750, владелец aisec-ml,
+# группа aisec-gw: шлюз только подключается к сокету (том только для
+# чтения), остальные пользователи хоста каталог не видят. Модели —
+# подписанный пакет внутри образа (/opt/aisec/models), проверяется до
+# загрузки; библиотека ONNX Runtime сверяется с хешем, встроенным в aisec-ml.
+# Нет пакета моделей, подпись или хеш не сошлись — aisec-ml не принимает
+# соединения, шлюз отмечает проверки признаком ml_unavailable и решает по
+# остальным детекторам (оповещение frequency.ml_unavailable).
+#
+# Якоря compose.yaml сюда не переходят: защита сервиса записана полностью и
+# проверяется make images-verify (tools/imagecheck compose).
+services:
+  aisec-gateway:
+    depends_on:
+      aisec-ml: {condition: service_started}
+    environment:
+      AISEC_GATEWAY_ML_SOCKET: /run/aisec-ml/aisec-ml.sock
+    volumes:
+      - ${AISEC_DATA_DIR:?задайте AISEC_DATA_DIR}/ml/run:/run/aisec-ml:ro
+
+  aisec-ml:
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+    pids_limit: 256
+    logging:
+      driver: local
+      options: {max-size: "20m", max-file: "5"}
+    image: ${AISEC_IMAGE_REPO:-aisec}/aisec-ml:${AISEC_VERSION:?задайте AISEC_VERSION}
+    profiles: [ml]
+    user: "${AISEC_ML_UID:?запустите prepare-host.sh}:${AISEC_GW_GID:?запустите prepare-host.sh}"
+    network_mode: none
+    command:
+      - "-socket=/run/aisec-ml/aisec-ml.sock"
+      - "-models=/opt/aisec/models"
+    volumes:
+      - ${AISEC_DATA_DIR:?задайте AISEC_DATA_DIR}/ml/run:/run/aisec-ml
+    mem_limit: ${AISEC_ML_MEM_LIMIT:-2g}
+    stop_grace_period: 10s

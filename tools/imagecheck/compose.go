@@ -91,24 +91,38 @@ var composeRules = map[string]struct {
 	Product  bool
 	Secrets  []string
 	Volumes  []string
+	// OptionalVolumes — тома, которые сервису можно, но не обязательно иметь.
+	OptionalVolumes []string
 	// Isolated — сервис без сети вовсе (network_mode: none, ADR-0024):
 	// ни одной сети, ни одного порта, связь только через том с сокетом.
 	Isolated bool
+	// Optional — сервиса может не быть: он приходит из дополнения compose.
+	Optional bool
 }{
 	"aisec-server": {Ports: []string{"8444"}, External: true, Product: true,
 		Secrets: []string{"console-tls-cert", "console-tls-key", "db-server-pgpass"},
 		Volumes: []string{"DATA/keys:/etc/aisec/keys:ro"}},
 	"aisec-gateway": {Ports: []string{"8443"}, External: true, Product: true,
 		Secrets: []string{"gateway-tls-cert", "gateway-tls-key", "console-ca", "gateway-bundle-anchor"},
-		Volumes: []string{"DATA/gateway/reg:/var/lib/aisec-gateway/reg:rw", "DATA/gateway/state:/var/lib/aisec-gateway/state:rw"}},
+		Volumes: []string{"DATA/gateway/reg:/var/lib/aisec-gateway/reg:rw", "DATA/gateway/state:/var/lib/aisec-gateway/state:rw"},
+		// Каталог сокета aisec-ml — только чтение: шлюз лишь подключается.
+		OptionalVolumes: []string{mlRunGateway}},
 	"aisec-cli": {Product: true, Secrets: []string{"db-owner-pgpass"},
 		Volumes: []string{"DATA/keys:/etc/aisec/keys:rw", "DATA/backups:/var/lib/aisec/backups:rw"}},
 	// Процесс ML-детекторов (ADR-0024): только сокет в общем со шлюзом
-	// каталоге, модели — внутри образа.
-	"aisec-ml": {Product: true, Isolated: true, Volumes: []string{"DATA/ml/run:/run/aisec-ml:rw"}},
+	// каталоге, модели — внутри образа. Приходит из compose.ml.yaml.
+	"aisec-ml": {Product: true, Isolated: true, Optional: true, Volumes: []string{"DATA/ml/run:/run/aisec-ml:rw"}},
 	"postgres": {Secrets: []string{"db-postgres-password", "db-owner-password", "db-server-password"},
 		Volumes: []string{"DATA/pg:/var/lib/postgresql/data:rw", "./initdb:/docker-entrypoint-initdb.d:ro"}},
 }
+
+// Подключение шлюза к aisec-ml (compose.ml.yaml): том каталога сокета и путь
+// сокета в окружении шлюза.
+const (
+	mlRunGateway  = "DATA/ml/run:/run/aisec-ml:ro"
+	mlSocketEnv   = "AISEC_GATEWAY_ML_SOCKET"
+	mlSocketValue = "/run/aisec-ml/aisec-ml.sock"
+)
 
 // secretFiles — файл каждого секрета (DATA — ${AISEC_DATA_DIR}). Якорь
 // проверки пакетов шлюза — своя копия в secrets/, не файл каталога ключей
@@ -169,6 +183,9 @@ func parseCompose(data []byte) (*composeFile, error) {
 	if len(data) > maxCompose {
 		return nil, fmt.Errorf("compose больше %d байт", maxCompose)
 	}
+	if err := checkTags(data); err != nil {
+		return nil, fmt.Errorf("разбор compose: %w", err)
+	}
 	var c composeFile
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
@@ -181,6 +198,116 @@ func parseCompose(data []byte) (*composeFile, error) {
 		}
 	}
 	return &c, nil
+}
+
+// checkTags отвергает теги YAML, кроме стандартных (!!str, !!map, …):
+// docker compose понимает свои теги (!override, !reset), которые меняют
+// слияние файлов — проверка видела бы объединение, а docker — замену.
+func checkTags(data []byte) error {
+	var root yaml.Node
+	if err := yaml.Unmarshal(data, &root); err != nil {
+		return err
+	}
+	var walk func(n *yaml.Node) error
+	walk = func(n *yaml.Node) error {
+		if n.Tag != "" && !strings.HasPrefix(n.Tag, "!!") {
+			return fmt.Errorf("строка %d: тег YAML %s запрещён", n.Line, n.Tag)
+		}
+		for _, c := range n.Content {
+			if err := walk(c); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return walk(&root)
+}
+
+// composeOverlay — дополнение compose (compose.ml.yaml): новые сервисы целиком,
+// а существующим — только зависимости, окружение и тома.
+type composeOverlay struct {
+	Services map[string]yaml.Node `yaml:"services"`
+}
+
+// overlayPatch — что дополнение может добавить существующему сервису.
+type overlayPatch struct {
+	DependsOn   map[string]yaml.Node `yaml:"depends_on"`
+	Environment map[string]string    `yaml:"environment"`
+	Volumes     []string             `yaml:"volumes"`
+}
+
+// strictDecode разбирает узел YAML так же строго, как файл: неизвестное поле
+// — ошибка.
+func strictDecode(n *yaml.Node, v any) error {
+	data, err := yaml.Marshal(n)
+	if err != nil {
+		return err
+	}
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	return dec.Decode(v)
+}
+
+// applyOverlay накладывает дополнение на разобранный compose так же, как
+// docker compose -f основной -f дополнение: окружение и тома добавляются,
+// зависимости объединяются. Переопределять переменную основного файла
+// дополнению нельзя: проверка не должна зависеть от порядка файлов.
+func applyOverlay(c *composeFile, data []byte) error {
+	if len(data) > maxCompose {
+		return fmt.Errorf("дополнение compose больше %d байт", maxCompose)
+	}
+	if err := checkTags(data); err != nil {
+		return fmt.Errorf("разбор дополнения compose: %w", err)
+	}
+	var o composeOverlay
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(&o); err != nil {
+		return fmt.Errorf("разбор дополнения compose: %w", err)
+	}
+	names := make([]string, 0, len(o.Services))
+	for name := range o.Services {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		node := o.Services[name]
+		base, ok := c.Services[name]
+		if !ok {
+			var s composeService
+			if err := strictDecode(&node, &s); err != nil {
+				return fmt.Errorf("дополнение compose, сервис %s: %w", name, err)
+			}
+			if c.Services == nil {
+				c.Services = map[string]composeService{}
+			}
+			c.Services[name] = s
+			continue
+		}
+		var p overlayPatch
+		if err := strictDecode(&node, &p); err != nil {
+			return fmt.Errorf("дополнение compose, сервис %s: только depends_on, environment и volumes: %w", name, err)
+		}
+		for k, v := range p.Environment {
+			if _, dup := base.Environment[k]; dup {
+				return fmt.Errorf("дополнение compose, сервис %s: переменная %s уже задана", name, k)
+			}
+			if base.Environment == nil {
+				base.Environment = map[string]string{}
+			}
+			base.Environment[k] = v
+		}
+		base.Volumes = append(base.Volumes, p.Volumes...)
+		for dep := range p.DependsOn {
+			if _, ok := o.Services[dep]; !ok {
+				if _, ok := c.Services[dep]; !ok {
+					return fmt.Errorf("дополнение compose, сервис %s: зависимость от неизвестного сервиса %s", name, dep)
+				}
+			}
+		}
+		c.Services[name] = base
+	}
+	return nil
 }
 
 // serviceNetworks — сети сервиса: список или отображение «сеть: настройки».
@@ -208,9 +335,22 @@ func serviceNetworks(n yaml.Node) ([]string, error) {
 func checkCompose(c *composeFile) []string {
 	var problems []string
 	add := func(format string, a ...any) { problems = append(problems, fmt.Sprintf(format, a...)) }
-	for name := range composeRules {
-		if _, ok := c.Services[name]; !ok {
+	for name, rule := range composeRules {
+		if _, ok := c.Services[name]; !ok && !rule.Optional {
 			add("нет сервиса %s", name)
+		}
+	}
+	// Шлюз подключён к aisec-ml тогда и только тогда, когда aisec-ml есть:
+	// иначе сокет либо некому открыть, либо шлюз о нём не знает.
+	if gw, ok := c.Services["aisec-gateway"]; ok {
+		_, hasML := c.Services["aisec-ml"]
+		vol := slices.ContainsFunc(gw.Volumes, func(v string) bool { return normVolume(v) == mlRunGateway })
+		env, hasEnv := gw.Environment[mlSocketEnv]
+		switch {
+		case hasML && (!vol || env != mlSocketValue):
+			add("aisec-gateway: с aisec-ml нужны том %s и %s=%s", mlRunGateway, mlSocketEnv, mlSocketValue)
+		case !hasML && (vol || hasEnv):
+			add("aisec-gateway: том %s и %s — только вместе с сервисом aisec-ml", mlRunGateway, mlSocketEnv)
 		}
 	}
 	for name, s := range c.Services {
@@ -264,8 +404,8 @@ func checkCompose(c *composeFile) []string {
 			switch {
 			case strings.Contains(v, ".."):
 				at("том %q: «..» в пути", v)
-			case !slices.Contains(rule.Volumes, n):
-				at("том %q: не из списка сервиса %v (источник, цель и режим ro/rw)", v, rule.Volumes)
+			case !slices.Contains(rule.Volumes, n) && !slices.Contains(rule.OptionalVolumes, n):
+				at("том %q: не из списка сервиса %v (источник, цель и режим ro/rw)", v, slices.Concat(rule.Volumes, rule.OptionalVolumes))
 			}
 		}
 		for _, want := range rule.Volumes {
@@ -283,6 +423,25 @@ func checkCompose(c *composeFile) []string {
 				at("порт %q: адрес по умолчанию — 127.0.0.1", p)
 			case !slices.Contains(rule.Ports, parts[2]):
 				at("порт %q: публиковать можно только %v", p, rule.Ports)
+			}
+		}
+		// Переменные загрузчика (LD_PRELOAD, LD_AUDIT, LD_LIBRARY_PATH…) подменяют
+		// код динамического aisec-ml в обход хеша библиотеки и манифеста.
+		for k := range s.Environment {
+			if strings.HasPrefix(strings.ToUpper(k), "LD_") {
+				at("переменная %s: переменные загрузчика запрещены", k)
+			}
+		}
+		if name == "aisec-ml" {
+			for k := range s.Environment {
+				if !strings.HasPrefix(k, "AISEC_ML_") || k == "AISEC_ML_INTEGRITY_ACTION" {
+					at("переменная %s: у aisec-ml разрешены только AISEC_ML_*, кроме AISEC_ML_INTEGRITY_ACTION (ослабление самопроверки)", k)
+				}
+			}
+			for _, a := range s.Command {
+				if strings.HasPrefix(strings.TrimLeft(a, "-"), "integrity-action") {
+					at("аргумент %q: ослабление самопроверки aisec-ml запрещено", a)
+				}
 			}
 		}
 		for k, v := range s.Environment {
