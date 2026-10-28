@@ -216,7 +216,7 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 	// с сервером управления; без него такие вызовы отклоняются.
 	if control != nil {
 		if hb.approvals, err = gateway.NewApprovalClient(gateway.ApprovalClientConfig{Client: control.client, Server: cfg.Server,
-			Hasher: h, Logger: logger}); err != nil {
+			Hasher: h, Random: rnd, Logger: logger}); err != nil {
 			return err
 		}
 		hb.mcpObserver = gateway.NewToolObserver(control.client, cfg.Server, logger)

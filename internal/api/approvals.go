@@ -110,12 +110,18 @@ type ApprovalView struct {
 	ArgsDeleted   bool            `json:"args_deleted,omitempty"`
 }
 
-func approvalView(r approvals.Request, now time.Time) ApprovalView {
+// approvalView — карточка запроса. Хеш аргументов и комментарий решения
+// нужны только тем, кто решает (approvals.decide): аудитору они не
+// выдаются (ревью 4.r1, 4В9, 4Н8).
+func approvalView(r approvals.Request, now time.Time, decide bool) ApprovalView {
 	v := ApprovalView{ID: r.ID, State: r.State, Path: r.Path, ApplicationID: r.App, Agent: r.Agent, User: r.User, Session: r.Session,
 		Server: r.Server, Tool: r.Tool, ApprovedHash: r.ApprovedHash, Risk: r.Risk, Rule: r.Rule, Message: r.Message,
-		Severity: r.Severity, ArgsHash: r.ArgsHash, GatewayID: r.GatewayID, EventID: r.RequestEventID,
-		CreatedAt: r.CreatedAt.UTC(), Deadline: r.Deadline.UTC(), DecidedBy: r.DecidedByName, Comment: r.Comment,
+		Severity: r.Severity, GatewayID: r.GatewayID, EventID: r.RequestEventID,
+		CreatedAt: r.CreatedAt.UTC(), Deadline: r.Deadline.UTC(), DecidedBy: r.DecidedByName,
 		WaitedMS: r.Waited(now).Milliseconds(), ArgsDeleted: r.Args == nil}
+	if decide {
+		v.ArgsHash, v.Comment = r.ArgsHash, r.Comment
+	}
 	if !r.ClosedAt.IsZero() {
 		at := r.ClosedAt.UTC()
 		v.ClosedAt = &at
@@ -168,6 +174,7 @@ func (d Deps) listApprovals(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := time.Now()
+	decide := canDecide(r)
 	resp := PageResponse[ApprovalView]{Items: make([]ApprovalView, 0, min(len(list), page.Limit))}
 	for i, a := range list {
 		if i == page.Limit {
@@ -175,7 +182,7 @@ func (d Deps) listApprovals(w http.ResponseWriter, r *http.Request) {
 			resp.NextCursor = Cursor{TimeMicro: last.CreatedAt.UnixMicro(), ID: last.ID}.Encode()
 			break
 		}
-		resp.Items = append(resp.Items, approvalView(a, now))
+		resp.Items = append(resp.Items, approvalView(a, now, decide))
 	}
 	WriteJSON(w, http.StatusOK, resp)
 }
@@ -190,10 +197,11 @@ func (d Deps) getApproval(w http.ResponseWriter, r *http.Request) {
 		WriteProblem(w, approvalsProblem(d.Logger, err))
 		return
 	}
-	v := approvalView(a, time.Now())
+	decide := canDecide(r)
+	v := approvalView(a, time.Now(), decide)
 	// Аргументы нужны дежурному для решения (ТЗ 5.10); аудитор видит запрос
 	// без них, как события без содержимого.
-	if p, ok := PrincipalFrom(r.Context()); ok && p.Grants.Allows(auth.PermApprovalsDecide) && a.Args != nil {
+	if decide && a.Args != nil {
 		args, err := d.Approvals.Args(r.Context(), a)
 		if err != nil {
 			WriteProblem(w, approvalsProblem(d.Logger, err))
@@ -246,7 +254,13 @@ func (d Deps) decideApproval(w http.ResponseWriter, r *http.Request, approve boo
 		WriteProblem(w, approvalsProblem(d.Logger, err))
 		return
 	}
-	WriteJSON(w, http.StatusOK, approvalView(a, time.Now()))
+	WriteJSON(w, http.StatusOK, approvalView(a, time.Now(), true))
+}
+
+// canDecide — у субъекта есть право решать (approvals.decide).
+func canDecide(r *http.Request) bool {
+	p, ok := PrincipalFrom(r.Context())
+	return ok && p.Grants.Allows(auth.PermApprovalsDecide)
 }
 
 func (d Deps) approveApproval(w http.ResponseWriter, r *http.Request) { d.decideApproval(w, r, true) }
