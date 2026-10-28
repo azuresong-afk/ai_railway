@@ -1650,7 +1650,8 @@ export interface paths {
         /**
          * Задать или убрать свой e-mail
          * @description Право `self`: меняется только запись самого пользователя (идентификатор берётся из сессии).
-         *     Правила и журнал — как у `PUT /api/v1/users/{id}/email`. Токеном API не вызывается.
+         *     Правила и журнал — как у `PUT /api/v1/users/{id}/email`, в том числе повторная проверка паролем
+         *     или кодом TOTP (ревью 4.r1, 4В12). Токеном API не вызывается.
          */
         put: {
             parameters: {
@@ -1950,6 +1951,8 @@ export interface paths {
          *     и нужен для рассылки отчётов: до 254 символов, простая проверка формата, без письма-подтверждения.
          *     Пустая строка убирает адрес. Адрес — персональные данные: в журнал аудита пишется только факт
          *     изменения (`user.email_set`: `self`, `cleared`, `changed`), в технические журналы адрес не попадает.
+         *     Смена — с повторной проверкой администратора паролем или кодом TOTP (ревью 4.r1, 4В12); токеном API
+         *     не вызывается.
          */
         put: {
             parameters: {
@@ -11224,7 +11227,10 @@ export interface components {
             message?: string;
             /** @enum {string} */
             severity: "info" | "low" | "medium" | "high" | "critical";
-            /** @description Хеш аргументов */
+            /**
+             * @description Хеш привязки решения к аргументам (hex): со случайным числом шлюза, одинаковые аргументы дают разные
+             *     хеши. Пустая строка без права approvals.decide (ревью 4.r1, 4В9).
+             */
             args_hash: string;
             /** @description Маскированные аргументы; только с approvals.decide, 30 суток после закрытия */
             args?: string;
@@ -11242,6 +11248,7 @@ export interface components {
             closed_at?: string;
             /** @description Логин пользователя консоли */
             decided_by?: string;
+            /** @description Комментарий решения; только с approvals.decide (ревью 4.r1, 4Н8) */
             comment?: string;
             /** Format: int64 */
             waited_ms: number;
@@ -11356,9 +11363,20 @@ export interface components {
             /** Format: date-time */
             deactivated_at?: string;
         };
+        /**
+         * @description На адрес уходят отчёты по расписанию, поэтому смена — с повторной проверкой вызывающего: ровно одно
+         *     из `password` и `code` (ревью 4.r1, 4В12). Без них — 400 с полем `password`.
+         */
         EmailInput: {
             /** @description Адрес вида user@example.ru; пустая строка убирает адрес */
             email: string;
+            /**
+             * Format: password
+             * @description Текущий пароль вызывающего (ровно одно из password и code)
+             */
+            password?: string;
+            /** @description Код из приложения-аутентификатора вызывающего */
+            code?: string;
         };
         NewUser: {
             login: string;

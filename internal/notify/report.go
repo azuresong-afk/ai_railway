@@ -36,6 +36,10 @@ type ReportMail struct {
 	// кому ушёл отчёт, ровно по адресам этой отправки). Ошибка — письмо не
 	// отправляется, SendReport возвращает её как есть.
 	Before func(to []string) error
+	// Rejected — вызывается после отправки с числом адресов пользователей
+	// (ExtraTo), которые сервер SMTP отклонил в RCPT: письмо ушло остальным
+	// (ревью 4.r1, 4В13). nil — не вызывается.
+	Rejected func(n int)
 }
 
 // MaxReportRecipients — наибольшее число получателей письма с отчётом:
@@ -83,13 +87,22 @@ func (s *Service) SendReport(ctx context.Context, channelID string, m ReportMail
 		return failed(ErrCodeConfig)
 	}
 	// Адреса получателей этой отправки: канал и пользователи расписания.
+	// В заголовке To — только адреса канала: адреса пользователей идут
+	// лишь в конверте (RCPT) и не видны другим получателям, в том числе
+	// внешним адресам канала (ревью 4.r1, 4Н10).
+	header := slices.Clone(c.Settings.To)
 	c.Settings.To = MergeRecipients(c.Settings.To, m.ExtraTo)
+	users := c.Settings.To[len(header):]
 	if m.Before != nil {
 		if err := m.Before(slices.Clone(c.Settings.To)); err != nil {
 			return err
 		}
 	}
-	return s.transport.SendRaw(ctx, c, sec, reportMessage(m, c.Settings.From, c.Settings.To, s.now()))
+	n, err := s.transport.SendRawSoft(ctx, c, sec, reportMessage(m, c.Settings.From, header, s.now()), users)
+	if err == nil && n > 0 && m.Rejected != nil {
+		m.Rejected(n)
+	}
+	return err
 }
 
 // wrap64 разбивает base64 на строки по 76 знаков (RFC 2045).

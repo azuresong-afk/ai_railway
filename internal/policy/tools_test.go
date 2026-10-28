@@ -483,3 +483,52 @@ func TestDM20_ToolListed(t *testing.T) {
 		t.Error("совместимость: подменённый показан")
 	}
 }
+
+// Ревью 4.r1, 4В3: при unapproved: log шаги 2–3 выполняются и для
+// неодобренного инструмента — правила require_approval и block и лимиты
+// DM-23 не обходятся (ADR-0023, дополнение 5).
+func TestDM22_UnapprovedLogKeepsRulesAndLimits(t *testing.T) {
+	p := mustTools(t, strings.Replace(toolsYAML, "  unapproved: block\n  default: block\n", "  unapproved: log\n  default: log\n", 1))
+	// Неизвестный инструмент без агента (путь chat без X-AISec-Agent).
+	c := ToolCall{App: "app", Server: FunctionServer, Name: "transfer", Risk: RiskHigh, Args: []byte(`{}`),
+		Now: time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)}
+	d := p.DecideTool(c, nil)
+	if !d.Approval || d.Rule != "high-risk" || !slices.Contains(d.Threats, ThreatToolNotAllowed) ||
+		!slices.Contains(d.Threats, ThreatToolApproval) {
+		t.Fatalf("неизвестный инструмент и require_approval: %+v", d)
+	}
+	// Подменённое описание одобренного инструмента — тоже.
+	c = approved("files", "read_report", RiskHigh, `{"path":"/data/reports/a"}`)
+	c.HashMatch = false
+	if d := p.DecideTool(c, nil); !d.Approval || !slices.Contains(d.Threats, ThreatToolChanged) {
+		t.Fatalf("подменённое описание и require_approval: %+v", d)
+	}
+	// block-правило сильнее unapproved: log.
+	c = approved("files", "delete_all", RiskLow, `{}`)
+	c.Status = ToolNew
+	if d := p.DecideTool(c, nil); !d.Block || d.Rule != "deny-delete" {
+		t.Fatalf("block-правило: %+v", d)
+	}
+	if p.ToolListed(c) {
+		t.Error("неодобренный под block-правилом показан в tools/list")
+	}
+	// Уже заблокированный в enforce вызов ключей счётчиков не создаёт (4Н11).
+	blocked := toolrate.New(0)
+	c.ArgsHash = "h0"
+	if d := p.DecideTool(c, blocked); !d.Block || blocked.Len() != 0 {
+		t.Fatalf("ключи счётчиков у заблокированного вызова: %d", blocked.Len())
+	}
+	// Цикл одинаковых вызовов new-инструмента упирается в repeat (DM-23).
+	rc := toolrate.New(0)
+	c = approved("mail", "send", RiskLow, `{"to":"a@example.ru","amount":1}`)
+	c.Status, c.ArgsHash = ToolNew, "h1"
+	for i := range 6 {
+		d := p.DecideTool(c, rc)
+		if (i < 5) == d.Block {
+			t.Fatalf("повтор %d: %+v", i+1, d)
+		}
+		if i == 5 && !slices.Contains(d.Threats, ThreatToolRate) {
+			t.Fatalf("повтор без DM-23: %+v", d)
+		}
+	}
+}

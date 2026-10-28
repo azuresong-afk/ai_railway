@@ -153,11 +153,16 @@ if [ -n "$first" ]; then
 	verify_flags=-allow-older
 else
 	checker="$repo/aisec-cli:$installed"
+	# Проверяет только уже установленный образ: без него docker run скачал
+	# бы aisec-cli из реестра, и сверка отпечатка ничего бы не доказала
+	# (ревью 4.r1, 4В10).
+	docker image inspect "$checker" >/dev/null 2>&1 ||
+		die "нет образа $checker установленной версии; первая установка — с -first"
 	echo "1. Подпись и файлы выпуска — aisec-cli $installed (установленная версия)."
 	verify_flags=
 fi
 # shellcheck disable=SC2086 # флаг без пробелов
-docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges:true \
+docker run --rm --pull never --network none --read-only --cap-drop ALL --security-opt no-new-privileges:true \
 	--user 65534:65534 --mount "type=bind,source=$rel,target=/release,readonly" \
 	"$checker" verify -release /release $verify_flags >"$work/verify.out" || {
 	cat "$work/verify.out"
@@ -222,7 +227,7 @@ for c in aisec-server aisec-gateway aisec-cli; do
 	want="linux/amd64 65534:65534 [\"/opt/aisec/bin/$c\"] null [\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"] null $ports null null null"
 	[ "$got" = "$want" ] || die "$image: настройки образа отличаются от ожидаемых: $got"
 
-	id=$(docker create "$image")
+	id=$(docker create --pull never "$image")
 	docker export "$id" | tar -tv | awk '{ $3 = $4 = $5 = ""; print }' | tr -s ' ' |
 		grep -Ev '^[^ ]+ [^ ]+ (\.dockerenv|dev/.*|proc/|sys/|etc/|etc/(hostname|hosts|resolv\.conf)|etc/mtab -> /proc/mounts)$' |
 		sort >"$work/$c.files" || true

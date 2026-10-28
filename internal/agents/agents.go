@@ -219,6 +219,14 @@ type Observed struct {
 	Suspicious bool
 }
 
+// ServerUpdate — итог правки MCP-сервера: запись аудита сервера и
+// изменённые инструменты сервера с их записями (ревью 4.r1, 4В4).
+type ServerUpdate struct {
+	Entry       audit.Entry
+	Tools       []Tool
+	ToolEntries []audit.Entry
+}
+
 // Store — хранилище (миграция 0054_agents). Рабочая реализация — PGStore,
 // для тестов без PostgreSQL — Memory. Функции fn выполняются внутри
 // транзакции над заблокированной строкой и возвращают запись аудита,
@@ -226,7 +234,9 @@ type Observed struct {
 type Store interface {
 	// CreateServer — ErrSlugTaken, ErrTooMany.
 	CreateServer(ctx context.Context, m MCPServer, rec audit.Entry) error
-	UpdateServer(ctx context.Context, orgID, id string, fn func(*MCPServer) (audit.Entry, error)) (MCPServer, error)
+	// UpdateServer передаёт fn сервер и его инструменты (заблокированы);
+	// изменённые fn инструменты сохраняются той же транзакцией.
+	UpdateServer(ctx context.Context, orgID, id string, fn func(*MCPServer, []Tool) (ServerUpdate, error)) (MCPServer, error)
 	// DeleteServer — ErrInUse, если сервер в списке агента; инструменты
 	// сервера удаляются вместе с ним.
 	DeleteServer(ctx context.Context, orgID, id string, fn func(MCPServer) (audit.Entry, error)) (MCPServer, error)

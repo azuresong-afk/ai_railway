@@ -55,7 +55,8 @@ export const adminApi = {
     request<SessionList>("GET", `/api/v1/users/${id(uid)}/sessions`, undefined, signal),
   revokeSessions: (uid: string, revokeTokens: boolean) =>
     request<unknown>("DELETE", `/api/v1/users/${id(uid)}/sessions?revoke_api_tokens=${revokeTokens}`),
-  setEmail: (uid: string, email: string) => request<User>("PUT", `/api/v1/users/${id(uid)}/email`, { email }),
+  // Смена адреса — с повторной проверкой администратора (ревью 4.r1, 4В12).
+  setEmail: (uid: string, email: string, reauth: ReauthBody) => request<User>("PUT", `/api/v1/users/${id(uid)}/email`, { email, ...reauth }),
   setRole: (uid: string, role: string) => request<S["RoleAssigned"]>("PUT", `/api/v1/users/${id(uid)}/role`, { role }),
 
   permissions: (signal?: AbortSignal) => request<S["PermissionList"]>("GET", "/api/v1/permissions", undefined, signal),

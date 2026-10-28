@@ -45,22 +45,27 @@ describe("профиль", () => {
     const save = screen.getByRole("button", { name: "Сохранить" });
     expect(save).toBeDisabled();
     fireEvent.change(screen.getByLabelText(/E-mail для рассылки/), { target: { value: " petrov@example.ru " } });
+    // Без пароля сохранить нельзя (ревью 4.r1, 4В12).
+    expect(save).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Текущий пароль"), { target: { value: "секрет" } });
     fireEvent.click(save);
     expect(await screen.findByText("Сохранено.")).toBeInTheDocument();
-    expect(calls).toEqual([{ method: "PUT", url: "/api/v1/me/email", body: { email: "petrov@example.ru" } }]);
+    expect(calls).toEqual([{ method: "PUT", url: "/api/v1/me/email", body: { email: "petrov@example.ru", password: "секрет" } }]);
   });
 
   it("пустое поле убирает адрес", async () => {
     renderScreen("petrov@example.ru");
     fireEvent.change(screen.getByLabelText(/E-mail для рассылки/), { target: { value: "" } });
+    fireEvent.change(screen.getByLabelText("Текущий пароль"), { target: { value: "секрет" } });
     fireEvent.click(screen.getByRole("button", { name: "Сохранить" }));
-    await waitFor(() => expect(calls.at(-1)?.body).toEqual({ email: "" }));
+    await waitFor(() => expect(calls.at(-1)?.body).toEqual({ email: "", password: "секрет" }));
   });
 
   it("ошибка сервера показывается", async () => {
     failure = true;
     renderScreen("");
     fireEvent.change(screen.getByLabelText(/E-mail для рассылки/), { target: { value: "плохой" } });
+    fireEvent.change(screen.getByLabelText("Текущий пароль"), { target: { value: "секрет" } });
     fireEvent.click(screen.getByRole("button", { name: "Сохранить" }));
     expect(await screen.findByRole("alert")).toHaveTextContent(/вида user@example.ru/);
   });

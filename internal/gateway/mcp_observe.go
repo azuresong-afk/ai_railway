@@ -35,12 +35,37 @@ const (
 	maxObserveBody = 7 << 20
 )
 
-// ObservedTool — увиденное описание: как прислал сервер, хеш шлюза и
-// признак находок встроенной проверки описаний (DM-24).
+// ObservedTool — увиденное описание: имя инструмента, описание как прислал
+// сервер, хеш шлюза и признак находок встроенной проверки описаний (DM-24).
 type ObservedTool struct {
+	Name       string
 	Descriptor []byte
 	Hash       string
 	Suspicious bool
+}
+
+// mergeObserved кладёт описание t в очередь p: описание того же имени
+// заменяется (Suspicious — у любого из двух, подозрительное описание
+// приоритетнее), иначе добавляется, если в очереди меньше limit. Сервер
+// отвергает сообщение с повтором имени целиком, и сервер MCP, меняющий
+// описание при каждом tools/list, ослеплял бы реестр (ревью 4.r1, 4В5).
+// Второе значение — очередь изменилась.
+func mergeObserved(p []ObservedTool, t ObservedTool, limit int) ([]ObservedTool, bool) {
+	if slices.ContainsFunc(p, func(x ObservedTool) bool { return x.Hash == t.Hash }) {
+		return p, false
+	}
+	if i := slices.IndexFunc(p, func(x ObservedTool) bool { return t.Name != "" && x.Name == t.Name }); i >= 0 {
+		old := p[i]
+		if !old.Suspicious || t.Suspicious {
+			p[i] = t
+		}
+		p[i].Suspicious = old.Suspicious || t.Suspicious
+		return p, true
+	}
+	if len(p) >= limit {
+		return p, false
+	}
+	return append(p, t), true
 }
 
 // ToolObserver копит и отправляет описания. nil — шлюз без сервера
@@ -70,7 +95,8 @@ func NewToolObserver(client *http.Client, server *url.URL, logger *slog.Logger) 
 
 // Observe ставит описания сервера в очередь; не блокирует. Уже отправленные
 // и уже ждущие хеши пропускаются, сверх MaxObserveBatch ждущих — тоже
-// (уйдут после следующего tools/list).
+// (уйдут после следующего tools/list); ждущее описание того же имени
+// заменяется (mergeObserved).
 func (o *ToolObserver) Observe(server string, tools []ObservedTool) {
 	if o == nil || len(tools) == 0 {
 		return
@@ -78,12 +104,13 @@ func (o *ToolObserver) Observe(server string, tools []ObservedTool) {
 	o.mu.Lock()
 	added := false
 	for _, t := range tools {
-		if o.sent[server][t.Hash] || len(o.pending[server]) >= MaxObserveBatch ||
-			slices.ContainsFunc(o.pending[server], func(p ObservedTool) bool { return p.Hash == t.Hash }) {
+		if o.sent[server][t.Hash] {
 			continue
 		}
-		o.pending[server] = append(o.pending[server], t)
-		added = true
+		var ok bool
+		if o.pending[server], ok = mergeObserved(o.pending[server], t, MaxObserveBatch); ok {
+			added = true
+		}
 	}
 	o.mu.Unlock()
 	if added {
@@ -146,6 +173,13 @@ type observeItem struct {
 // очередь (повтор после срока), прочие отказы — описания отбрасываются с
 // записью в технический журнал (без описаний).
 func (o *ToolObserver) send(ctx context.Context, server string, tools []ObservedTool) {
+	// Повторы имени (возврат после 429, остаток прошлого сообщения)
+	// сливаются: сервер отверг бы сообщение целиком (4В5).
+	var uniq []ObservedTool
+	for _, t := range tools {
+		uniq, _ = mergeObserved(uniq, t, len(tools))
+	}
+	tools = uniq
 	size := 0
 	for i, t := range tools {
 		if size += len(t.Descriptor); size > maxObserveBody && i > 0 {

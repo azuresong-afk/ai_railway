@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -53,8 +54,10 @@ type mcpOpts struct {
 	// описание).
 	changed []string
 	// setup — правка приложения после сборки маршрутизатора.
-	setup   func(*App)
-	storage string
+	setup func(*App)
+	// bodyTimeout — срок чтения тела запроса; 0 — по умолчанию.
+	bodyTimeout time.Duration
+	storage     string
 	// approver — очередь подтверждений; nil — NoApprover.
 	approver Approver
 	// upstream — свой обработчик вместо мока; allowed — сети сверх
@@ -207,7 +210,7 @@ func newMCPEnv(t *testing.T, mod func(*mcpOpts)) *mcpEnv {
 		o.setup(rt.apps["app"])
 	}
 	ch, err := NewChatHandler(ChatConfig{Router: rt, MaxBodyBytes: 1 << 20, Logger: quiet(), Events: e.log, IDs: gen,
-		Sessions: testSessions(t, 0, nil)})
+		Sessions: testSessions(t, 0, nil), BodyReadTimeout: o.bodyTimeout})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -855,5 +858,41 @@ func TestMCPInvalidToolCallEvent(t *testing.T) {
 	}
 	if ev := e.lastEvent(); ev.Type != events.TypeAgentMCP || ev.Agent.Violation != violationInvalid {
 		t.Fatalf("событие: %s %+v", ev.Type, ev.Agent)
+	}
+}
+
+// Ревью 4.r1, 4В6: медленная передача тела POST /mcp/v1/{server} не держит
+// соединение дольше срока чтения — ответ 408 с ошибкой JSON-RPC.
+func TestMCPSlowBodyTimesOut(t *testing.T) {
+	e := newMCPEnv(t, func(o *mcpOpts) { o.bodyTimeout = 200 * time.Millisecond })
+	gw := httptest.NewServer(e.g)
+	defer gw.Close()
+	pr, pw := io.Pipe()
+	go func() {
+		if _, err := io.WriteString(pw, `{"jsonrpc":"2.0",`); err != nil {
+			return
+		}
+		time.Sleep(2 * time.Second)
+		pw.Close() //nolint:errcheck,gosec // конец медленного тела; ошибка в тесте не важна
+	}()
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, gw.URL+"/mcp/v1/files", pr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	req.Header.Set("Authorization", "Bearer "+e.bound)
+	req.Header.Set(mcp.HeaderProtocolVersion, mcp.Version20260728)
+	start := time.Now()
+	resp, err := gw.Client().Do(req)
+	if err == nil {
+		defer resp.Body.Close() //nolint:errcheck // тест проверяет только код
+		if resp.StatusCode != http.StatusRequestTimeout {
+			b, _ := io.ReadAll(resp.Body) //nolint:gosec // G104: тело ответа только для сообщения теста
+			t.Fatalf("медленное тело: код %d %s", resp.StatusCode, b)
+		}
+	}
+	if time.Since(start) > 1500*time.Millisecond {
+		t.Fatalf("соединение занято %s", time.Since(start))
 	}
 }

@@ -1,5 +1,6 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, useState } from "react";
+import { SecretField, secretBody } from "../agents/Secret";
 import { ApiError, type Me, request } from "../api/client";
 import { Button } from "../ui/Button";
 import { Field, Input } from "../ui/Field";
@@ -12,16 +13,22 @@ function errorText(e: unknown): string {
 }
 
 // Профиль пользователя: свои данные и e-mail для рассылки отчётов (задача 4.6). Меняется только своя запись.
+// На адрес уходят отчёты с разделами инцидентов, поэтому смена — с повторной проверкой паролем или кодом
+// (ревью 4.r1, 4В12): угнанная сессия не перенаправит рассылку.
 export function ProfileScreen({ me }: { me: Me }) {
   const qc = useQueryClient();
+  const mfa = me.mfa?.enabled === true;
   const [email, setEmail] = useState(me.user.email);
+  const [secret, setSecret] = useState("");
   const [saved, setSaved] = useState(false);
   const m = useMutation({
-    mutationFn: () => request<unknown>("PUT", "/api/v1/me/email", { email: email.trim() }),
+    mutationFn: () => request<unknown>("PUT", "/api/v1/me/email", { email: email.trim(), ...secretBody(mfa, secret) }),
     onSuccess: () => {
       setSaved(true);
+      setSecret("");
       void qc.invalidateQueries({ queryKey: ["me"] });
     },
+    onError: () => setSecret(""),
   });
   const submit = (e: FormEvent) => {
     e.preventDefault();
@@ -47,10 +54,11 @@ export function ProfileScreen({ me }: { me: Me }) {
             <Input id={id} type="email" autoComplete="email" aria-describedby={describedBy} value={email} onChange={(e) => setEmail(e.target.value)} />
           )}
         </Field>
+        <SecretField mfa={mfa} value={secret} onChange={setSecret} />
         {m.isError && <Banner kind="error">{errorText(m.error)}</Banner>}
         {saved && <Banner kind="info">Сохранено.</Banner>}
         <div>
-          <Button type="submit" variant="primary" disabled={m.isPending || email.trim() === me.user.email}>
+          <Button type="submit" variant="primary" disabled={m.isPending || email.trim() === me.user.email || secret === ""}>
             Сохранить
           </Button>
         </div>

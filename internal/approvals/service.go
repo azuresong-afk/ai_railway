@@ -99,10 +99,11 @@ func gatewayActor(gatewayID string) audit.Actor {
 }
 
 // requestDetails — подробности записи аудита и оповещения: без аргументов,
-// сообщения правила и комментария пользователя приложения.
+// их хеша (ревью 4.r1, 4В9: журнал неизменяем, а хеш связывает запись с
+// аргументами), сообщения правила и комментария пользователя приложения.
 func requestDetails(r *Request) map[string]any {
 	d := map[string]any{"app": r.App, "server": r.Server, "tool": r.Tool, "risk": string(r.Risk), "rule": r.Rule,
-		"path": r.Path, "args_hash": r.ArgsHash, "deadline": r.Deadline.UTC().Format(time.RFC3339)}
+		"path": r.Path, "deadline": r.Deadline.UTC().Format(time.RFC3339)}
 	if r.Agent != "" {
 		d["agent"] = r.Agent
 	}
@@ -163,7 +164,6 @@ func (s *Service) queueFull(ctx context.Context, gatewayID string, r *Request, s
 	s.full[key] = now
 	s.mu.Unlock()
 	d := requestDetails(r)
-	delete(d, "args_hash")
 	delete(d, "deadline")
 	d["scope"] = scope
 	d["limit"] = MaxPerGateway

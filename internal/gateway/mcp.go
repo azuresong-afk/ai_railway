@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"mime"
+	"net"
 	"net/http"
 	"slices"
 	"strings"
@@ -259,12 +260,18 @@ func (m *MCPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // readBody — тело до предела шлюза и до mcp.MaxMessage.
 func (m *MCPHandler) readBody(q *mcpReq) ([]byte, bool) {
 	limit := min(m.h.cfg.MaxBodyBytes, int64(mcp.MaxMessage))
-	body, err := io.ReadAll(http.MaxBytesReader(q.w, q.r.Body, limit))
+	body, err := m.h.readLimited(q.w, q.r, limit)
 	if err != nil {
 		var tooLarge *http.MaxBytesError
-		if errors.As(err, &tooLarge) {
+		var ne net.Error
+		switch {
+		case errors.As(err, &tooLarge):
 			m.rpcError(q, http.StatusRequestEntityTooLarge, nil, mcp.CodeInvalidRequest,
 				fmt.Sprintf("тело запроса больше %d байт", limit), nil, violationInvalid)
+			return nil, false
+		case errors.As(err, &ne) && ne.Timeout():
+			m.rpcError(q, http.StatusRequestTimeout, nil, mcp.CodeInvalidRequest,
+				"тело запроса передавалось слишком долго", nil, violationInvalid)
 			return nil, false
 		}
 		q.rec.skip = true

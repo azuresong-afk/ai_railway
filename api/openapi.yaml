@@ -904,7 +904,8 @@ paths:
       summary: Задать или убрать свой e-mail
       description: |
         Право `self`: меняется только запись самого пользователя (идентификатор берётся из сессии).
-        Правила и журнал — как у `PUT /api/v1/users/{id}/email`. Токеном API не вызывается.
+        Правила и журнал — как у `PUT /api/v1/users/{id}/email`, в том числе повторная проверка паролем
+        или кодом TOTP (ревью 4.r1, 4В12). Токеном API не вызывается.
       x-permission: self
       security: [{ sessionCookie: [] }]
       parameters:
@@ -1052,6 +1053,8 @@ paths:
         и нужен для рассылки отчётов: до 254 символов, простая проверка формата, без письма-подтверждения.
         Пустая строка убирает адрес. Адрес — персональные данные: в журнал аудита пишется только факт
         изменения (`user.email_set`: `self`, `cleared`, `changed`), в технические журналы адрес не попадает.
+        Смена — с повторной проверкой администратора паролем или кодом TOTP (ревью 4.r1, 4В12); токеном API
+        не вызывается.
       x-permission: users.manage
       security: [{ sessionCookie: [] }]
       parameters:
@@ -7127,7 +7130,11 @@ components:
         rule: { type: string, description: 'Правило раздела tools политики, потребовавшее подтверждения' }
         message: { type: string }
         severity: { type: string, enum: [info, low, medium, high, critical] }
-        args_hash: { type: string, description: Хеш аргументов, которые шлюз передаст после одобрения (hex) }
+        args_hash:
+          type: string
+          description: |
+            Хеш привязки решения к аргументам (hex): со случайным числом шлюза, одинаковые аргументы дают разные
+            хеши. Пустая строка без права approvals.decide (ревью 4.r1, 4В9).
         args: { type: string, description: 'Маскированные аргументы; только с approvals.decide, 30 суток после закрытия' }
         args_deleted: { type: boolean, description: Аргументы удалены по сроку }
         gateway_id: { type: string, format: uuid }
@@ -7136,7 +7143,7 @@ components:
         deadline: { type: string, format: date-time }
         closed_at: { type: string, format: date-time }
         decided_by: { type: string, description: Логин пользователя консоли }
-        comment: { type: string }
+        comment: { type: string, description: 'Комментарий решения; только с approvals.decide (ревью 4.r1, 4Н8)' }
         waited_ms: { type: integer, format: int64 }
     ApprovalList:
       type: object
@@ -7248,8 +7255,13 @@ components:
       type: object
       required: [email]
       additionalProperties: false
+      description: |
+        На адрес уходят отчёты по расписанию, поэтому смена — с повторной проверкой вызывающего: ровно одно
+        из `password` и `code` (ревью 4.r1, 4В12). Без них — 400 с полем `password`.
       properties:
         email: { type: string, maxLength: 254, description: 'Адрес вида user@example.ru; пустая строка убирает адрес' }
+        password: { type: string, maxLength: 1024, format: password, description: 'Текущий пароль вызывающего (ровно одно из password и code)' }
+        code: { type: string, maxLength: 64, description: 'Код из приложения-аутентификатора вызывающего' }
     NewUser:
       type: object
       required: [login, display_name, role]

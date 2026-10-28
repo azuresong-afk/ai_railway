@@ -88,7 +88,8 @@ type Run struct {
 	SentAt                  time.Time
 	// SkippedNoEmail — сколько получателей-пользователей пропущено в последней
 	// попытке: нет адреса, учётная запись деактивирована или без права
-	// reports.read. Адреса в журнал доставки не пишутся.
+	// reports.read, либо сервер SMTP отклонил адрес. Адреса в журнал
+	// доставки не пишутся.
 	SkippedNoEmail int
 }
 
@@ -611,7 +612,10 @@ func (s *Service) send(ctx context.Context, r *Run, sc Schedule, loc *time.Locat
 			details["recipients"] = to
 			auditErr = s.o.Store.Record(ctx, rec)
 			return auditErr
-		}}
+		},
+		// Адрес пользователя, отклонённый сервером SMTP, не срывает
+		// рассылку остальным и считается пропущенным (ревью 4.r1, 4В13).
+		Rejected: func(n int) { r.SkippedNoEmail += n }}
 	if err := s.o.Mailer.SendReport(ctx, sc.ChannelID, mail); err != nil {
 		if auditErr != nil {
 			s.o.Logger.Error("рассылка отчётов: выгрузка не записана в журнал аудита, письмо не отправлено", "class", "reports",

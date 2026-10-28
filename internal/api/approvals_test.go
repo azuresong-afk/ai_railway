@@ -92,7 +92,8 @@ func TestDM22_ApprovalsConsoleFlow(t *testing.T) {
 		t.Fatalf("дежурный: %d %s", w.Code, w.Body)
 	}
 	w = e.call(auditor, "GET", "/api/v1/approvals/"+r.ID, "", false)
-	if w.Code != 200 || strings.Contains(w.Body.String(), "report.txt") || strings.Contains(w.Body.String(), `"args"`) {
+	if w.Code != 200 || strings.Contains(w.Body.String(), "report.txt") || strings.Contains(w.Body.String(), `"args"`) ||
+		strings.Contains(w.Body.String(), tArgsHash) {
 		t.Fatalf("аудитор: %d %s", w.Code, w.Body)
 	}
 	// Одобрение по хешу показанных аргументов.
@@ -107,6 +108,19 @@ func TestDM22_ApprovalsConsoleFlow(t *testing.T) {
 	}
 	if strings.Contains(fmt.Sprint(recs[0].Details), "report.txt") {
 		t.Fatal("аргументы в журнале аудита")
+	}
+	// Ревью 4.r1, 4В9 и 4Н8: хеша аргументов нет в журнале аудита, а
+	// комментарий решения и хеш не выдаются аудитору.
+	for _, a := range []string{"agent.approval.requested", "agent.approval.approve"} {
+		for _, rec := range e.approvalRecords(a) {
+			if strings.Contains(fmt.Sprint(rec.Details), tArgsHash) {
+				t.Fatalf("хеш аргументов в аудите %s: %+v", a, rec.Details)
+			}
+		}
+	}
+	w = e.call(auditor, "GET", "/api/v1/approvals/"+r.ID, "", false)
+	if w.Code != 200 || strings.Contains(w.Body.String(), "Проверено") || strings.Contains(w.Body.String(), tArgsHash) {
+		t.Fatalf("аудитор после решения: %d %s", w.Code, w.Body)
 	}
 	// Повторное решение — 409.
 	mustProblem(t, e.call(analyst, "POST", "/api/v1/approvals/"+r.ID+"/deny", `{}`, true), http.StatusConflict, CodeConflict)

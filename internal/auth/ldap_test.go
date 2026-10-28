@@ -337,6 +337,7 @@ func TestLDAPSettingsValidation(t *testing.T) {
 		{"DN не разобран", "bind_dn", func(in *auth.LDAPInput) { in.BindDN = "aisec-svc" }},
 		{"фильтр без логина", "user_filter", func(in *auth.LDAPInput) { in.UserFilter = "(uid=petrova)" }},
 		{"логин в имени атрибута", "user_filter", func(in *auth.LDAPInput) { in.UserFilter = "({login}=x)" }},
+		{"логин меняет структуру (4В14)", "user_filter", func(in *auth.LDAPInput) { in.UserFilter = "(*{login}=)" }},
 		{"атрибут идентификатора", "id_attribute", func(in *auth.LDAPInput) { in.IDAttribute = "uid" }},
 		{"способ групп", "group_mode", func(in *auth.LDAPInput) { in.GroupMode = "x" }},
 		{"нет ветки групп", "group_base_dn", func(in *auth.LDAPInput) { in.GroupMode = ldap.GroupsMember }},
@@ -362,6 +363,9 @@ func TestLDAPSettingsValidation(t *testing.T) {
 			var ie *auth.InputError
 			if !errors.As(err, &ie) || ie.Field != c.field {
 				t.Fatalf("ожидалась ошибка поля %s: %v", c.field, err)
+			}
+			if strings.HasPrefix(c.name, "логин") && ie.Reason != "{login} должен стоять в значении условия, например (uid={login})." {
+				t.Fatalf("текст ошибки: %q", ie.Reason)
 			}
 		})
 	}
