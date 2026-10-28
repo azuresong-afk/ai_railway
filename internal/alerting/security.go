@@ -149,6 +149,9 @@ type auditCount struct {
 	// ActorType и ActorID — только записи этого субъекта; пусто — любого.
 	ActorType string
 	ActorID   string
+	// ObjectType и ObjectID — только записи об этом объекте; пусто — любом.
+	ObjectType string
+	ObjectID   string
 }
 
 // secOps — действия правил по журналу аудита в транзакции записи.
@@ -258,6 +261,27 @@ func classifyAudit(ctx context.Context, ops secOps, r *audit.Record) ([]Raise, e
 			ip := addrString(r.SourceIP)
 			raises = append(raises, raiseOf(BuiltinConsoleBrute, map[string]string{"source_ip": ip},
 				map[string]string{"source_ip": ip}, countFor(n, ConsoleFailThreshold),
+				map[string]any{"window_minutes": int(ConsoleFailWindow / time.Minute), "failures_in_window": n}))
+		}
+		// Перебор пароля одной записи с многих адресов (4В21 ревью 4.r2):
+		// у записей каталога блокировки консоли нет, порог адреса не
+		// срабатывает — счёт неудачных входов по учётной записи или записи
+		// каталога; ключ — как у auth.locked.
+		if r.Action != "auth.login_failed" || r.Object.ID == "" || (r.Object.Type != "user" && r.Object.Type != "ldap_entry") {
+			break
+		}
+		n, err = ops.countAudit(ctx, r.OrgID, auditCount{Actions: []string{"auth.login_failed"},
+			Since: r.TS.Add(-ConsoleFailWindow), ObjectType: r.Object.Type, ObjectID: r.Object.ID})
+		if err != nil {
+			return nil, err
+		}
+		if n >= ConsoleFailThreshold {
+			account := r.Object.ID
+			if r.Object.Type == "user" {
+				account = actorName(r.Actor)
+			}
+			raises = append(raises, raiseOf(BuiltinConsoleBrute, map[string]string{"account": r.Object.ID},
+				map[string]string{"account": account}, countFor(n, ConsoleFailThreshold),
 				map[string]any{"window_minutes": int(ConsoleFailWindow / time.Minute), "failures_in_window": n}))
 		}
 	case "access.denied":

@@ -126,15 +126,25 @@ func TestLDAPLoginCreatesExternalUser(t *testing.T) {
 	}
 }
 
+// Покрывает: DM-39 (4В21 ревью 4.r2: отказ привязан к записи каталога).
 func TestLDAPWrongPasswordNotCounted(t *testing.T) {
 	e := newLDAPEnv(t)
 	e.save(t, e.input())
-	e.mfa.completeLogin(t, e.mustLogin(t, "petrova", dirPass))
+	// Запись каталога ещё не входила: объект — запись каталога, субъект неизвестен.
+	e.fail(t, "petrova", "synthetic-wrong")
+	if r := lastRecord(t, e.mem, "auth.login_failed"); r.Object.Type != auth.LDAPEntryObject || r.Object.ID != dirPetrovaID ||
+		r.Actor.ID == dirPetrovaID {
+		t.Fatalf("отказ до первого входа: %+v", r)
+	}
+	res := e.mfa.completeLogin(t, e.mustLogin(t, "petrova", dirPass))
 	for range 7 {
 		e.fail(t, "petrova", "synthetic-wrong")
 	}
-	if d := failReason(t, e.env); d["reason"] != "wrong_password" || d["method"] != "ldap" || d["subject"] != nil {
+	if d := failReason(t, e.env); d["reason"] != "wrong_password" || d["method"] != "ldap" || d["subject"] != dirPetrovaID {
 		t.Fatalf("причина: %v", d)
+	}
+	if r := lastRecord(t, e.mem, "auth.login_failed"); r.Actor.ID != res.Caller.User.ID || r.Object.ID != res.Caller.User.ID {
+		t.Fatalf("отказ не привязан к учётной записи: %+v", r)
 	}
 	// Неверный пароль каталога не блокирует запись консоли: попытки
 	// ограничивает политика каталога.
