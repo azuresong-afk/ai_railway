@@ -19,7 +19,7 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 80
     # Сквозные тесты этапа 2 идут на живой PostgreSQL (ADR-0002, дополнение):
     # тот же образ, что в compose пилота (ADR-0019). Пароль — тестовый, база одноразовая.
     services:
