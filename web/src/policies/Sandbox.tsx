@@ -144,6 +144,9 @@ function Result({ r }: { r: PolicyTestResult }) {
       </dl>
       {r.fail_block && <Banner kind="warning">Сбой детектора при режиме «fail_closed»: шлюз ответил бы 503.</Banner>}
       {r.incomplete && <Banner kind="warning">Часть детекторов не дала результата, проверка неполная.</Banner>}
+      {r.ml_unavailable && (
+        <Banner kind="info">ML-детекторы в песочнице не проверяют текст: модели работают только в шлюзе. Решение показано по остальным детекторам.</Banner>
+      )}
       {r.unchecked && <Banner kind="info">У политики нет правил для этого направления: детекторы не запускались, «пропущено» не означает «проверено».</Banner>}
       {r.failures.length > 0 && (
         <p className="text-sm">Сбои детекторов: {r.failures.map((f) => `${f.detector} (${f.reason === "timeout" ? "таймаут" : "ошибка"})`).join(", ")}.</p>

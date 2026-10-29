@@ -5,6 +5,7 @@ import { formatAbsolute } from "../events/format";
 import { Button } from "../ui/Button";
 import { Field, Input, Select } from "../ui/Field";
 import { Banner, EmptyState, Table, Td, Th } from "../ui/Layout";
+import { SecretField, secretBody } from "../agents/Secret";
 import { adminApi, type RoleDetails, type User } from "./api";
 import { ConfirmDialog, ErrorBanner, FormDialog, SecretDialog } from "./common";
 import { assignable } from "./matrix";
@@ -177,6 +178,7 @@ export function UsersTab({ me }: { me: Me }) {
       {action?.kind === "email" && (
         <EditEmail
           user={action.user}
+          mfa={me.mfa?.enabled === true}
           onClose={close}
           onDone={() => {
             close();
@@ -324,10 +326,16 @@ function ChangeRole({
   );
 }
 
-// E-mail нужен для рассылки отчётов; проверку формата делает сервер, без письма-подтверждения.
-function EditEmail({ user, onClose, onDone }: { user: User; onClose: () => void; onDone: () => void }) {
+// E-mail нужен для рассылки отчётов; проверку формата делает сервер, без письма-подтверждения. На адрес уходят
+// отчёты, поэтому смена — с повторной проверкой паролем или кодом (ревью 4.r1, 4В12).
+function EditEmail({ user, mfa, onClose, onDone }: { user: User; mfa: boolean; onClose: () => void; onDone: () => void }) {
   const [email, setEmail] = useState(user.email);
-  const m = useMutation({ mutationFn: () => adminApi.setEmail(user.id, email.trim()), onSuccess: onDone });
+  const [secret, setSecret] = useState("");
+  const m = useMutation({
+    mutationFn: () => adminApi.setEmail(user.id, email.trim(), secretBody(mfa, secret)),
+    onSuccess: onDone,
+    onError: () => setSecret(""),
+  });
   const submit = (e: FormEvent) => {
     e.preventDefault();
     m.mutate();
@@ -345,10 +353,11 @@ function EditEmail({ user, onClose, onDone }: { user: User; onClose: () => void;
             <Input id={id} type="email" autoComplete="off" aria-describedby={describedBy} value={email} onChange={(e) => setEmail(e.target.value)} />
           )}
         </Field>
+        <SecretField mfa={mfa} value={secret} onChange={setSecret} />
         <ErrorBanner error={m.error} />
         <div className="flex justify-end gap-2">
           <Button onClick={onClose}>Отменить</Button>
-          <Button type="submit" variant="primary" disabled={m.isPending || email.trim() === user.email}>
+          <Button type="submit" variant="primary" disabled={m.isPending || email.trim() === user.email || secret === ""}>
             Сохранить
           </Button>
         </div>

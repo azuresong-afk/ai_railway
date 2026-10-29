@@ -251,6 +251,9 @@ func (s *Service) cleanLDAP(ctx context.Context, in LDAPInput) (LDAPSettings, er
 	err := ldap.ValidateConfig(ldapConfig(out, ""))
 	var ce *ldap.ConfigError
 	if errors.As(err, &ce) {
+		if errors.Is(err, ldap.ErrLoginPlacement) {
+			return out, &InputError{ce.Field, ldap.ErrLoginPlacement.Error() + "."}
+		}
 		return out, &InputError{ce.Field, ldapFieldReason(ce.Field)}
 	}
 	if err != nil {

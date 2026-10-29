@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/url"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -53,6 +54,10 @@ type Gateway struct {
 	// UserHMACKeyFile — ключ псевдонимов пользователей (ТЗ, 5.5) в режиме с
 	// сервером; без сервера — gateway.user_hmac_key_file в файле конфигурации.
 	UserHMACKeyFile string
+	// MLSocket — Unix-сокет процесса ML-детекторов aisec-ml (ADR-0024);
+	// пусто — ML-детекторы политики не дают результата, событие получает
+	// ml_unavailable, решение — по эвристикам.
+	MLSocket string
 }
 
 // MaxBundlePubFiles — ключей проверки пакетов одновременно (как
@@ -102,6 +107,7 @@ func LoadGateway(args []string, getenv func(string) string, errOut io.Writer) (*
 	bundlePub := fs.String("bundle-pub", "", "открытый ключ проверки пакетов конфигурации bundle-signing.pub; на время ротации — два файла через запятую (AISEC_GATEWAY_BUNDLE_PUB)")
 	stateDir := fs.String("state-dir", "", "каталог состояния 0700: ключ шлюза для секретов пакета и последний пакет (AISEC_GATEWAY_STATE_DIR)")
 	userKey := fs.String("user-hmac-key", "", "ключ псевдонимов пользователей, права 0600; в режиме с сервером (AISEC_GATEWAY_USER_HMAC_KEY)")
+	mlSocket := fs.String("ml-socket", "", "Unix-сокет aisec-ml для ML-детекторов, например /run/aisec-ml/aisec-ml.sock; пусто — без ML (AISEC_GATEWAY_ML_SOCKET)")
 	if err := fs.Parse(args); err != nil {
 		return nil, err
 	}
@@ -114,7 +120,7 @@ func LoadGateway(args []string, getenv func(string) string, errOut io.Writer) (*
 		"config": configFile, "listen": listen, "tls-cert": cert, "tls-key": key, "max-body-bytes": maxBody,
 		"manifest": manifest, "integrity-action": action, "integrity-interval": interval, "selftest-action": selftestAction,
 		"server": server, "server-ca": serverCA, "client-cert": clientCert, "client-key": clientKey,
-		"bundle-pub": bundlePub, "state-dir": stateDir, "user-hmac-key": userKey,
+		"bundle-pub": bundlePub, "state-dir": stateDir, "user-hmac-key": userKey, "ml-socket": mlSocket,
 	} {
 		if set[name] {
 			continue // флаг важнее окружения
@@ -127,7 +133,7 @@ func LoadGateway(args []string, getenv func(string) string, errOut io.Writer) (*
 	cfg := &Gateway{ConfigFile: *configFile, Listen: *listen, TLSCertFile: *cert, TLSKeyFile: *key,
 		Manifest: *manifest, IntegrityAction: *action, SelftestAction: *selftestAction,
 		ServerCAFile: *serverCA, ClientCertFile: *clientCert, ClientKeyFile: *clientKey,
-		StateDir: *stateDir, UserHMACKeyFile: *userKey}
+		StateDir: *stateDir, UserHMACKeyFile: *userKey, MLSocket: *mlSocket}
 	if *bundlePub != "" {
 		cfg.BundlePubFiles = strings.Split(*bundlePub, ",")
 	}
@@ -143,6 +149,10 @@ func LoadGateway(args []string, getenv func(string) string, errOut io.Writer) (*
 		errs = append(errs, fmt.Errorf("integrity-interval: длительность не меньше %s, например 1h", MinIntegrityInterval))
 	}
 	cfg.IntegrityInterval = iv
+	// Предел sun_path — 108 байт; путь без «..», как у aisec-ml.
+	if cfg.MLSocket != "" && (!filepath.IsAbs(cfg.MLSocket) || filepath.Clean(cfg.MLSocket) != cfg.MLSocket || len(cfg.MLSocket) > 100) {
+		errs = append(errs, errors.New("ml-socket: абсолютный путь без «..» не длиннее 100 байт"))
+	}
 	if _, _, err := net.SplitHostPort(cfg.Listen); err != nil {
 		errs = append(errs, errors.New("listen: ожидается адрес:порт"))
 	}

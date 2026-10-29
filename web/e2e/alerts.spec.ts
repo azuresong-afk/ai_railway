@@ -42,6 +42,8 @@ async function mockAlerts(page: Page): Promise<Seen> {
       });
     }
     if (p === "/api/v1/events") return json({ items: [] });
+    // Экран «События» при переходе из карточки загружает сохранённые фильтры.
+    if (p === "/api/v1/events/filters") return json({ items: [] });
     return json({ code: "not_found", detail: "Нет такого маршрута." }, 404);
   });
   return seen;

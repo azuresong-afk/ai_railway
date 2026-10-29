@@ -3,6 +3,7 @@ package gateway_test
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -41,6 +42,7 @@ type approvalEnv struct {
 	srv    *httptest.Server
 	client *gateway.ApprovalClient
 	hasher aisecCrypto.Hasher
+	random aisecCrypto.Random
 }
 
 func newApprovalEnv(t *testing.T, clock func() time.Time) *approvalEnv {
@@ -57,7 +59,11 @@ func newApprovalEnv(t *testing.T, clock func() time.Time) *approvalEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e := &approvalEnv{hasher: h}
+	rnd, err := p.Random()
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := &approvalEnv{hasher: h, random: rnd}
 	if e.svc, err = approvals.New(approvals.Options{Store: approvals.NewMemory(), Provider: p, Box: box, Clock: clock}); err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +89,7 @@ func (e *approvalEnv) newClient(t *testing.T, server string) *gateway.ApprovalCl
 		t.Fatal(err)
 	}
 	c, err := gateway.NewApprovalClient(gateway.ApprovalClientConfig{Client: e.srv.Client(), Server: u, Hasher: e.hasher,
-		Logger: quiet(), PollWait: time.Second, Sleep: func(ctx context.Context, d time.Duration) bool {
+		Random: e.random, Logger: quiet(), PollWait: time.Second, Sleep: func(ctx context.Context, d time.Duration) bool {
 			select {
 			case <-ctx.Done():
 				return false
@@ -120,6 +126,46 @@ func (e *approvalEnv) pendingID(t *testing.T) string {
 
 var duty = approvals.By{Actor: audit.Actor{Type: audit.ActorUser, ID: "01900000-0000-7000-8000-0000000000c1", Name: "duty"}}
 
+// Ревью 4.r1, 4В9: хеш привязки — со случайным числом шлюза: одинаковые
+// аргументы двух запросов дают разные args_hash, перебором по хешу из
+// карточки аргументы не восстановить.
+func TestDM22_ApprovalArgsHashSalted(t *testing.T) {
+	e := newApprovalEnv(t, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{}, 2)
+	for range 2 {
+		go func() {
+			e.client.Await(ctx, approvalRequest(), nil)
+			done <- struct{}{}
+		}()
+	}
+	var ids []string
+	for range 500 {
+		if ids = e.client.Pending(); len(ids) == 2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(ids) != 2 {
+		t.Fatalf("запросов: %d", len(ids))
+	}
+	var hashes []string
+	for _, id := range ids {
+		r, err := e.svc.Get(context.Background(), id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		hashes = append(hashes, r.ArgsHash)
+	}
+	if hashes[0] == hashes[1] || hashes[0] == gateway.ToolArgsHash(e.hasher, []byte(approvalArgs)) {
+		t.Fatalf("хеши аргументов: %v", hashes)
+	}
+	cancel()
+	<-done
+	<-done
+}
+
 func TestDM22_ApprovedCallForwardedWithSameArgs(t *testing.T) {
 	e := newApprovalEnv(t, nil)
 	var ticks atomic.Int32
@@ -130,8 +176,10 @@ func TestDM22_ApprovedCallForwardedWithSameArgs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Решение связано с хешем ровно тех аргументов, что уйдут дальше.
-	if r.ArgsHash != gateway.ToolArgsHash(e.hasher, []byte(approvalArgs)) || r.ApprovedHash != strings.Repeat("ab", 32) {
+	// Решение связано с хешем аргументов, что уйдут дальше; хеш со
+	// случайным числом шлюза, а не хеш одних аргументов (4В9).
+	if len(r.ArgsHash) != 64 || r.ArgsHash == gateway.ToolArgsHash(e.hasher, []byte(approvalArgs)) ||
+		r.ApprovedHash != strings.Repeat("ab", 32) {
 		t.Fatalf("запрос: %+v", r)
 	}
 	if shown, err := e.svc.Args(context.Background(), r); err != nil || string(shown) != approvalArgs {
@@ -255,11 +303,23 @@ func TestDM22_ApprovalQueueFull(t *testing.T) {
 func TestDM22_ApprovalResponseMismatchDenied(t *testing.T) {
 	e := newApprovalEnv(t, nil)
 	id := "01900000-0000-7000-8000-0000000000aa"
+	// good — хеш из тела создания: сервер повторяет его в ответе.
+	const good = "good"
+	var created atomic.Value
+	created.Store("")
 	status := func(state, hash string) map[string]any {
 		return map[string]any{"id": id, "state": state, "args_hash": hash, "approved_hash": strings.Repeat("ab", 32),
 			"deadline": time.Now().Add(time.Minute)}
 	}
-	good := gateway.ToolArgsHash(e.hasher, []byte(approvalArgs))
+	// resolve подставляет хеш из тела создания вместо good.
+	resolve := func(m map[string]any) map[string]any {
+		if m == nil || m["args_hash"] != good {
+			return m
+		}
+		out := maps.Clone(m)
+		out["args_hash"] = created.Load().(string)
+		return out
+	}
 	for name, c := range map[string]struct {
 		create, poll map[string]any
 		want         gateway.ApprovalState
@@ -272,15 +332,20 @@ func TestDM22_ApprovalResponseMismatchDenied(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/cancel") {
-				_ = json.NewEncoder(w).Encode(status("cancelled", good)) //nolint:gosec // G104: ответ тестового сервера
+				_ = json.NewEncoder(w).Encode(resolve(status("cancelled", good))) //nolint:gosec // G104: ответ тестового сервера
 				return
 			}
 			if r.Method == http.MethodPost {
+				var body struct {
+					ArgsHash string `json:"args_hash"`
+				}
+				_ = json.NewDecoder(r.Body).Decode(&body) //nolint:gosec // G104: тело тестового клиента
+				created.Store(body.ArgsHash)
 				w.WriteHeader(http.StatusCreated)
-				_ = json.NewEncoder(w).Encode(c.create) //nolint:gosec // G104: ответ тестового сервера
+				_ = json.NewEncoder(w).Encode(resolve(c.create)) //nolint:gosec // G104: ответ тестового сервера
 				return
 			}
-			_ = json.NewEncoder(w).Encode(c.poll) //nolint:gosec // G104: ответ тестового сервера
+			_ = json.NewEncoder(w).Encode(resolve(c.poll)) //nolint:gosec // G104: ответ тестового сервера
 		}))
 		res := e.newClient(t, srv.URL).Await(context.Background(), approvalRequest(), nil)
 		srv.Close()

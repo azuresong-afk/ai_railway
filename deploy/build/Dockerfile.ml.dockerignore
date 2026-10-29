@@ -1,0 +1,14 @@
+# Контекст сборки Dockerfile.ml — только то, что нужно сборке ONNX Runtime и
+# выпуска aisec-ml.
+*
+!Makefile
+!go.mod
+!go.sum
+!vendor/
+!cmd/
+!internal/
+!tools/
+!deploy/build/onnxruntime/
+!deploy/build/ml-libs.sh
+!build/ort-mirror/
+!testdata/integrity/manifest-test.signkey

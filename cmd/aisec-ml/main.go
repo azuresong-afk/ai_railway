@@ -38,11 +38,25 @@ func main() {
 		logger.Error("окружение", "error", err)
 		os.Exit(1)
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	// От root aisec-ml не запускается: в compose пилота пользователь
+	// aisec-ml появляется после prepare-host.sh (ADR-0024, раздел 9).
+	if os.Getuid() == 0 {
+		logger.Error("aisec-ml не запускается от root: запустите prepare-host.sh — он создаст пользователя aisec-ml и запишет AISEC_ML_UID в .env")
+		os.Exit(2)
+	}
+	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	ctx, cancel := context.WithCancelCause(sigCtx)
+	defer cancel(nil)
 	p, err := aisecCrypto.New(aisecCrypto.ProfileStandard)
 	if err != nil {
 		logger.Error("криптопрофиль", "error", err)
+		os.Exit(1)
+	}
+	// Целостность бинарника, библиотек и моделей — до загрузки ONNX Runtime
+	// и моделей (ОЦЛ.2).
+	if err := startIntegrity(ctx, cfg, p, logger, cancel); err != nil {
+		logger.Error("контроль целостности", "error", err)
 		os.Exit(1)
 	}
 	v, testKey, err := integrity.EmbeddedVerifier(p)
@@ -53,7 +67,11 @@ func main() {
 	if testKey {
 		logger.Warn("сборка с тестовым ключом: пакет моделей проверяется тестовым ключом репозитория, не для поставки")
 	}
-	if err := run(ctx, cfg, deps{provider: p, verifier: v, newExecutor: newExecutor, logger: logger}); err != nil {
+	err = run(ctx, cfg, deps{provider: p, verifier: v, newExecutor: newExecutor, logger: logger})
+	if cause := context.Cause(ctx); errors.Is(cause, integrity.ErrViolation) {
+		err = errors.Join(err, cause)
+	}
+	if err != nil {
 		logger.Error("остановка с ошибкой", "error", err)
 		os.Exit(1)
 	}

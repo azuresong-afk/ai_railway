@@ -203,14 +203,32 @@ func (s *PGStore) CreateServer(ctx context.Context, m MCPServer, rec audit.Entry
 }
 
 // UpdateServer — см. Store.
-func (s *PGStore) UpdateServer(ctx context.Context, orgID, id string, fn func(*MCPServer) (audit.Entry, error)) (MCPServer, error) {
+func (s *PGStore) UpdateServer(ctx context.Context, orgID, id string, fn func(*MCPServer, []Tool) (ServerUpdate, error)) (MCPServer, error) {
 	var out MCPServer
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
 		m, err := scanServer(tx.QueryRow(ctx, `SELECT `+serverCols+` FROM mcp_servers WHERE org_id = $1 AND id = $2 FOR UPDATE`, orgID, id))
 		if err != nil {
 			return err
 		}
-		rec, err := fn(&m)
+		rows, err := tx.Query(ctx, `SELECT `+toolCols+` FROM agent_tools WHERE org_id = $1 AND server_id = $2 ORDER BY name
+			LIMIT $3 FOR UPDATE`, orgID, id, MaxToolsPerOwner)
+		if err != nil {
+			return err
+		}
+		var tools []Tool
+		for rows.Next() {
+			t, err := scanTool(rows)
+			if err != nil {
+				rows.Close()
+				return err
+			}
+			tools = append(tools, t)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		upd, err := fn(&m, tools)
 		if err != nil {
 			return err
 		}
@@ -222,8 +240,18 @@ func (s *PGStore) UpdateServer(ctx context.Context, orgID, id string, fn func(*M
 			m.CallTimeout, m.Versions, m.UpdatedAt, m.UpdatedBy); err != nil {
 			return pgErr(err, false)
 		}
+		for _, t := range upd.Tools {
+			if err := saveTool(ctx, tx, t); err != nil {
+				return err
+			}
+		}
 		out = m
-		return s.record(ctx, tx, rec)
+		for _, r := range append([]audit.Entry{upd.Entry}, upd.ToolEntries...) {
+			if err := s.record(ctx, tx, r); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 	return out, err
 }

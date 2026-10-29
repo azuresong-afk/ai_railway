@@ -107,6 +107,24 @@ func NewChatHandler(cfg ChatConfig) (*ChatHandler, error) {
 	return &ChatHandler{cfg: cfg, logger: cfg.Logger}, nil
 }
 
+// readLimited читает тело не больше limit байт и не дольше
+// BodyReadTimeout: медленная передача тела не держит соединение и горутину
+// (общий путь chat и MCP-прокси, ревью 4.r1, 4В6). Таймаут — net.Error с
+// Timeout().
+func (h *ChatHandler) readLimited(w http.ResponseWriter, r *http.Request, limit int64) ([]byte, error) {
+	rc := http.NewResponseController(w)
+	if err := rc.SetReadDeadline(time.Now().Add(h.cfg.BodyReadTimeout)); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		h.logger.Warn("не удалось ограничить время чтения тела", "error", err)
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, limit))
+	// После чтения тела срок снимается: дальше соединение нужно для ответа,
+	// в том числе долгого потокового.
+	if derr := rc.SetReadDeadline(time.Time{}); derr != nil && !errors.Is(derr, http.ErrNotSupported) {
+		h.logger.Warn("не удалось снять срок чтения", "error", derr)
+	}
+	return body, err
+}
+
 // readBody читает тело с пределом размера и времени. При ошибке ответ уже
 // записан.
 func (h *ChatHandler) readBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
@@ -115,16 +133,7 @@ func (h *ChatHandler) readBody(w http.ResponseWriter, r *http.Request) ([]byte, 
 		WriteError(w, http.StatusUnsupportedMediaType, "ожидается Content-Type: application/json", "invalid_request_error", "unsupported_media_type")
 		return nil, false
 	}
-	rc := http.NewResponseController(w)
-	if err := rc.SetReadDeadline(time.Now().Add(h.cfg.BodyReadTimeout)); err != nil && !errors.Is(err, http.ErrNotSupported) {
-		h.logger.Warn("не удалось ограничить время чтения тела", "error", err)
-	}
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, h.cfg.MaxBodyBytes))
-	// После чтения тела срок снимается: дальше соединение нужно для ответа,
-	// в том числе долгого потокового.
-	if derr := rc.SetReadDeadline(time.Time{}); derr != nil && !errors.Is(derr, http.ErrNotSupported) {
-		h.logger.Warn("не удалось снять срок чтения", "error", derr)
-	}
+	body, err := h.readLimited(w, r, h.cfg.MaxBodyBytes)
 	if err != nil {
 		var tooLarge *http.MaxBytesError
 		var ne net.Error
@@ -401,12 +410,34 @@ func (h *ChatHandler) admitSize(w http.ResponseWriter, r *http.Request, rec *rec
 	// Жёсткий бюджет — до квот: отказ не тратит квоту. Check API модели
 	// не вызывает и бюджет не тратит.
 	if b := h.cfg.Budget; b != nil && rec.ev.Type == events.TypeGatewayRequest {
-		if out, wait := b.Exhausted(rec.app.ID); out {
+		budgetExceeded := func(wait time.Duration) bool {
 			rec.reject(ruleBudget, "DM-15")
 			w.Header().Set(HeaderDecision, string(policy.Block))
 			w.Header().Set("Retry-After", strconv.FormatInt(int64((wait+time.Second-1)/time.Second), 10))
 			WriteError(w, http.StatusTooManyRequests, "исчерпан месячный бюджет приложения", "rate_limit_error", "budget_exceeded")
 			return false
+		}
+		if b.Leased(rec.app.ID) {
+			// Режим leased (ADR-0021, п. 4): оценка — вход и предел ответа.
+			hold, err := b.Reserve(r.Context(), rec.app.ID, rec.ev.Provider, rec.ev.Model, int64(max(tokens-rec.maxOut, 0)),
+				int64(rec.maxOut))
+			var ex *Exceeded
+			switch {
+			case err == nil && hold == nil:
+				// Аренда не применяется (на сервере у приложения нет
+				// жёсткого бюджета, цена модели неизвестна): локальный учёт.
+				if out, wait := b.Exhausted(rec.app.ID); out {
+					return budgetExceeded(wait)
+				}
+			case err == nil:
+				rec.budget = hold
+			case errors.As(err, &ex):
+				return budgetExceeded(ex.RetryAfter)
+			default:
+				return h.quotaFailed(w, r, rec, err)
+			}
+		} else if out, wait := b.Exhausted(rec.app.ID); out {
+			return budgetExceeded(wait)
 		}
 	}
 	if h.cfg.Quotas == nil {
@@ -416,12 +447,14 @@ func (h *ChatHandler) admitSize(w http.ResponseWriter, r *http.Request, rec *rec
 	if id, ok := IdentityFrom(r.Context()); ok {
 		qr.Key = id.KeyPrefix
 	}
-	res, err := h.cfg.Quotas.Admit(qr)
+	res, err := h.cfg.Quotas.AdmitCtx(r.Context(), qr)
 	var ex *Exceeded
 	switch {
 	case err == nil:
 		rec.res = res
 		return true
+	case errors.Is(err, ErrQuotaUnavailable), r.Context().Err() != nil:
+		return h.quotaFailed(w, r, rec, err)
 	case errors.As(err, &ex):
 		rec.reject(ruleQuotaPrefix+ex.Rule, ex.Threat)
 		w.Header().Set(HeaderDecision, string(policy.Block))
@@ -431,6 +464,29 @@ func (h *ChatHandler) admitSize(w http.ResponseWriter, r *http.Request, rec *rec
 		WriteError(w, http.StatusTooManyRequests, "превышена квота приложения", "rate_limit_error", "quota_exceeded")
 	default:
 		// Приложения нет в квотах — ошибка сборки шлюза; не пропускаем.
+		h.logger.Error("квоты не проверены", "app", rec.app.ID, "error", err)
+		rec.failClosed()
+		w.Header().Set(HeaderDecision, string(policy.Block))
+		WriteError(w, http.StatusInternalServerError, "внутренняя ошибка шлюза", "server_error", "internal_error")
+	}
+	return false
+}
+
+// quotaFailed — аренда квоты не получена: сервер управления недоступен, а
+// льготный срок приложения с fail_closed истёк — 503 quota_unavailable
+// (ADR-0021, п. 5); клиент ушёл — событие не пишется. При отказе ответ уже
+// записан.
+func (h *ChatHandler) quotaFailed(w http.ResponseWriter, r *http.Request, rec *record, err error) bool {
+	switch {
+	case r.Context().Err() != nil:
+		rec.skip = true
+	case errors.Is(err, ErrQuotaUnavailable):
+		rec.reject(ruleQuotaPrefix+"unavailable", "DM-36")
+		w.Header().Set(HeaderDecision, string(policy.Block))
+		w.Header().Set("Retry-After", strconv.Itoa(int(leaseMinuteTTL/time.Second)))
+		WriteError(w, http.StatusServiceUnavailable, "квоты приложения временно не проверяются: сервер управления недоступен",
+			"server_error", "quota_unavailable")
+	default:
 		h.logger.Error("квоты не проверены", "app", rec.app.ID, "error", err)
 		rec.failClosed()
 		w.Header().Set(HeaderDecision, string(policy.Block))

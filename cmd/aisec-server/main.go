@@ -32,6 +32,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/auth"
 	"github.com/azuresong-afk/ai_railway/internal/auth/ldap"
 	"github.com/azuresong-afk/ai_railway/internal/auth/oidc"
+	"github.com/azuresong-afk/ai_railway/internal/compliance"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/internal/detect"
 	"github.com/azuresong-afk/ai_railway/internal/detect/builtin"
@@ -43,10 +44,13 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/integrity"
 	"github.com/azuresong-afk/ai_railway/internal/integrity/selftest"
 	"github.com/azuresong-afk/ai_railway/internal/keyring"
+	"github.com/azuresong-afk/ai_railway/internal/license"
 	"github.com/azuresong-afk/ai_railway/internal/notify"
 	"github.com/azuresong-afk/ai_railway/internal/policy/bundle/build"
 	"github.com/azuresong-afk/ai_railway/internal/policy/versions"
+	"github.com/azuresong-afk/ai_railway/internal/quotalease"
 	"github.com/azuresong-afk/ai_railway/internal/reports"
+	"github.com/azuresong-afk/ai_railway/internal/shadowai"
 	"github.com/azuresong-afk/ai_railway/internal/store"
 	"github.com/azuresong-afk/ai_railway/internal/sysstatus"
 	"github.com/azuresong-afk/ai_railway/web"
@@ -153,6 +157,18 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 			return fmt.Errorf("ключ проверки аудита: %w", err)
 		}
 	}
+	// Ключ псевдонимов пользователей (ADR-0027, п. 6) — тот же файл, что у
+	// шлюзов: логин из журнала прокси и из событий дают один псевдоним.
+	var userHMACKey []byte
+	var userMAC aisecCrypto.MAC
+	if cfg.UserHMACKey != "" {
+		if userHMACKey, err = aisecCrypto.ReadKeyFile(cfg.UserHMACKey); err != nil {
+			return fmt.Errorf("ключ псевдонимов пользователей: %w", err)
+		}
+		if userMAC, err = p.NewMAC(userHMACKey); err != nil {
+			return fmt.Errorf("ключ псевдонимов пользователей: %w", err)
+		}
+	}
 	checkpoints, err := audit.NewPGCheckpoints(db.Pool(), p, auditVerifier)
 	if err != nil {
 		return err
@@ -242,7 +258,7 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	integritySvc, err := startIntegrity(ctx, cfg, p, db, auditLog, logger, cancel, auditPubPEM, trust)
+	integritySvc, err := startIntegrity(ctx, cfg, p, db, auditLog, logger, cancel, auditPubPEM, userHMACKey, trust)
 	if err != nil {
 		return err
 	}
@@ -405,6 +421,20 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	go events.RunAggregates(ctx, eventStore, events.AggregateEvery, logger)
 	go dashStore.RunBackfill(ctx, events.DashBackfillEvery)
 
+	// Распределённые квоты (задача 4.29, ADR-0021): аренда квот и жёстких
+	// бюджетов шлюзам на внутреннем порту, режим — в консоли; выдачи старше
+	// двух окон удаляются раз в минуту.
+	quotaStore, err := quotalease.NewPGStore(db.Pool(), auditLog)
+	if err != nil {
+		return err
+	}
+	quotaSvc, err := quotalease.New(quotalease.Options{Store: quotaStore, IDs: ids.NewGenerator(rnd), OrgID: audit.DefaultOrgID,
+		Logger: logger.With("component", "quota_lease")})
+	if err != nil {
+		return err
+	}
+	go quotaSvc.RunCleanup(ctx, quotalease.CleanupInterval)
+
 	// «Состояние системы» (задача 2.20): шлюзы читаются из реестра и без
 	// внутреннего УЦ; уведомления ВРМ.1, РСБ.5, ОЦЛ.5 пишутся в аудит при
 	// смене состояния, раз в минуту.
@@ -418,7 +448,34 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	if ca != nil {
 		caNotAfter = ca.ca.NotAfter()
 	}
-	statusSvc, err := newStatus(ctx, cfg, db, auditLog, integritySvc, selftestRes, bundleHealth(&bundleSvc), timezone, caNotAfter, logger)
+	// Приём журналов по syslog (задача 4.23) — раздел «Состояния системы»;
+	// сервис теневого ИИ создаётся ниже.
+	var shadowRef atomic.Pointer[shadowai.Service]
+	shadowSyslog := func() shadowai.SyslogStats {
+		if s := shadowRef.Load(); s != nil {
+			return s.SyslogStats()
+		}
+		return shadowai.SyslogStats{}
+	}
+	// Лицензия (ТЗ 5.15, задачи 4.26–4.27, ADR-0026): подпись сохранённой
+	// лицензии проверяется заново при запуске и раз в минуту, отметка часов
+	// поднимается тогда же; предел шлюзов — в транзакции регистрации.
+	licStore, err := license.NewPGStore(db.Pool(), auditLog)
+	if err != nil {
+		return err
+	}
+	licSvc, err := license.New(license.Options{Store: licStore, Provider: p, OrgID: audit.DefaultOrgID,
+		Logger: logger.With("component", "license"),
+		Usage:  func(ctx context.Context) (license.Usage, error) { return licStore.Usage(ctx, audit.DefaultOrgID) }})
+	if err != nil {
+		return err
+	}
+	go licSvc.Run(ctx, license.RefreshInterval)
+	if gateways != nil {
+		gateways.SetAdmission(licSvc.CheckGateway)
+	}
+	statusSvc, err := newStatus(ctx, cfg, db, auditLog, integritySvc, selftestRes, bundleHealth(&bundleSvc), timezone, caNotAfter,
+		licSvc.State, quotaHealth(quotaSvc), shadowSyslog, logger)
 	if err != nil {
 		return err
 	}
@@ -498,6 +555,24 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	alertStore.SetBudgetSource(budgetUsage(appsSvc))
 	go alerting.RunPeriodic(ctx, alertStore, alerting.PeriodicInterval, logger)
 
+	// Соответствие требованиям (ТЗ 5.18, задача 4.24): база требований —
+	// встроенная и подписанная загруженная (ADR-0027); снимок настроек
+	// собирается из сервисов сервера, содержимое запросов не читается.
+	complianceStore, err := compliance.NewPGStore(db.Pool(), auditLog)
+	if err != nil {
+		return err
+	}
+	complianceSvc, err := compliance.New(compliance.Options{Store: complianceStore, Provider: p, OrgID: audit.DefaultOrgID,
+		Facts: &compliance.SystemFacts{Apps: appsSvc, Policies: policiesSvc, Roles: authSvc, Status: statusSvc, Alerts: alertsSvc,
+			Channels: notifySvc, Detectors: detectors, Logger: logger.With("component", "compliance")},
+		Logger: logger.With("component", "compliance")})
+	if err != nil {
+		return err
+	}
+	if err := complianceSvc.Load(ctx); err != nil {
+		logger.Error("соответствие: загруженная база не прочитана из БД", "class", "db", "error", err)
+	}
+
 	// Отчёты (ТЗ 5.8, S10; задача 3.24) строятся из агрегатов дашбордов,
 	// инцидентов, оповещений и бюджетов; рассылка по расписанию (задача
 	// 3.25) идёт через почтовый канал уведомлений. Время расписаний — в
@@ -508,7 +583,7 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	}
 	reportsSvc, err := reports.New(reports.Options{
 		Store: reportStore,
-		Builder: &reports.Builder{Dash: reportsDash, Incidents: incidentsSvc, Alerts: alertsSvc,
+		Builder: &reports.Builder{Dash: reportsDash, Incidents: incidentsSvc, Alerts: alertsSvc, Compliance: complianceSvc,
 			Facts: &reports.PGFacts{DB: readDB.Pool(), OrgID: audit.DefaultOrgID, Apps: appsSvc, Policies: policiesSvc, Gateways: gateways}},
 		Mailer: notifySvc, Channels: notifySvc, Directory: api.ReportDirectory{Auth: authSvc},
 		Location: func(ctx context.Context) (*time.Location, error) {
@@ -524,6 +599,58 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		return err
 	}
 	go reportsSvc.Run(ctx, reports.TickInterval)
+
+	// Теневой ИИ (ТЗ 5.11, DM-37; задача 4.22, ADR-0027): каталог —
+	// подписанная служебная база, подпись сохранённого файла проверяется
+	// заново при запуске; сводки старше срока удаляются раз в час.
+	shadowStore, err := shadowai.NewPGStore(db.Pool(), auditLog)
+	if err != nil {
+		return err
+	}
+	shadowSvc, err := shadowai.New(shadowai.Options{Store: shadowStore, Provider: p, OrgID: audit.DefaultOrgID, UserMAC: userMAC,
+		Location: func(ctx context.Context) (*time.Location, error) {
+			tz, err := timezone(ctx)
+			if err != nil {
+				return nil, err
+			}
+			return time.LoadLocation(tz)
+		},
+		IDs: ids.NewGenerator(rnd), Logger: logger.With("component", "shadow_ai")})
+	if err != nil {
+		return err
+	}
+	if err := shadowSvc.Load(ctx); err != nil {
+		logger.Error("теневой ИИ: каталог не прочитан из БД", "class", "db", "error", err)
+	}
+	go shadowSvc.RunRetention(ctx, shadowai.RetentionInterval)
+	shadowRef.Store(shadowSvc)
+	// Приём журналов прокси по syslog (задача 4.23): выключен по умолчанию;
+	// при остановке сервера накопленные сводки записываются.
+	// Выход из run по любой ошибке после запуска тоже ждёт последней
+	// записи сводок (4.23-6).
+	syslogCtx, stopSyslog := context.WithCancel(ctx)
+	// Без модуля лицензии shadow_ai строки по syslog не учитываются, как
+	// импорт файлом получает 403 license_module (4В18 ревью 4.r2).
+	shadowLicensed := func(ctx context.Context) (bool, error) {
+		err := licSvc.CheckModule(ctx, license.ModuleShadowAI)
+		var d *license.Denied
+		if errors.As(err, &d) {
+			return false, nil
+		}
+		return err == nil, err
+	}
+	syslogDone, err := startShadowSyslog(syslogCtx, cfg.ShadowAISyslog, tp, shadowSvc, shadowLicensed, auditLog,
+		logger.With("component", "shadow_ai"))
+	if err != nil {
+		stopSyslog()
+		return err
+	}
+	defer func() {
+		stopSyslog()
+		if syslogDone != nil {
+			<-syslogDone
+		}
+	}()
 
 	// Консоль отдаётся, только если она собрана (make web-build перед go build); иначе сервер — чистый API.
 	var console http.Handler
@@ -549,6 +676,10 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		Notify:     notifySvc,
 		Agents:     agentsSvc,
 		Approvals:  approvalsSvc,
+		ShadowAI:   shadowSvc,
+		Compliance: complianceSvc,
+		License:    licSvc,
+		Quotas:     quotaSvc,
 		Incidents:  incidentsSvc,
 		Dashboards: dashStore,
 		Reports:    reportsSvc,
@@ -575,15 +706,17 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	if gateways != nil {
 		// Пакеты конфигурации (задача 2.13): без ключа подписи внутренний
 		// порт не открывается — шлюзы не получили бы конфигурацию.
-		bundleRoutes, bsvc, err := newBundleRoutes(cfg, p, db, auditLog, appsSvc, policiesSvc, agentsSvc, gateways, trust, authSvc.IdPKeys, logger)
+		bundleRoutes, bsvc, err := newBundleRoutes(cfg, p, db, auditLog, appsSvc, policiesSvc, agentsSvc, gateways, trust, authSvc.IdPKeys,
+			quotaSvc.Mode, logger)
 		if err != nil {
 			return err
 		}
 		bundleRoutes = append(bundleRoutes, api.AgentsInternalRoutes(agentsSvc, logger.With("listener", "internal"))...)
 		bundleRoutes = append(bundleRoutes, api.ApprovalsInternalRoutes(approvalsSvc, logger.With("listener", "internal"))...)
+		bundleRoutes = append(bundleRoutes, api.QuotaInternalRoutes(quotaSvc, logger.With("listener", "internal"))...)
 		bundleSvc.Store(bsvc)
-		internal, err := newInternalServer(ctx, cfg, tp, hasher, gateways, eventStore, approvalsSvc, ca, certPEM, keyPEM, bundleRoutes,
-			logger)
+		internal, err := newInternalServer(ctx, cfg, tp, hasher, gateways, eventStore, approvalsSvc, quotaSvc, ca, certPEM, keyPEM,
+			bundleRoutes, logger)
 		if err != nil {
 			return err
 		}
@@ -592,11 +725,26 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	recordStart(ctx, auditLog, logger)
 	logger.Info("сервер управления запущен")
 	err = runAll(ctx, servers...)
+	// Сводки syslog записываются до записи об остановке сервера.
+	stopSyslog()
+	if syslogDone != nil {
+		<-syslogDone
+		syslogDone = nil
+	}
 	if cause := context.Cause(ctx); errors.Is(cause, integrity.ErrViolation) {
 		err = errors.Join(err, cause)
 	}
 	recordStop(ctx, auditLog, err, logger)
 	return err
+}
+
+// quotaHealth — режим квот и шлюзы на автономной доле для «Состояния
+// системы» (задача 4.29).
+func quotaHealth(svc *quotalease.Service) func(context.Context) (sysstatus.QuotaHealth, error) {
+	return func(ctx context.Context) (sysstatus.QuotaHealth, error) {
+		h, err := svc.Health(ctx)
+		return sysstatus.QuotaHealth{Mode: h.Mode, Autonomous: h.Autonomous}, err
+	}
 }
 
 // budgetUsage — расход приложений с бюджетом за текущий месяц для правил
@@ -623,7 +771,9 @@ func budgetUsage(svc *apps.Service) alerting.BudgetSource {
 // условий уведомлений раздела 7.
 func newStatus(ctx context.Context, cfg *serverConfig, db *store.DB, auditLog *audit.Log, integritySvc integrity.Service,
 	selftestRes selftest.Result, bundle func(context.Context) (*sysstatus.BundleHealth, error),
-	timezone func(context.Context) (string, error), caNotAfter time.Time, logger *slog.Logger) (*sysstatus.Service, error) {
+	timezone func(context.Context) (string, error), caNotAfter time.Time, lic func(context.Context) (license.State, error),
+	quota func(context.Context) (sysstatus.QuotaHealth, error), shadowSyslog func() shadowai.SyslogStats,
+	logger *slog.Logger) (*sysstatus.Service, error) {
 	gwStore, err := gwregistry.NewPGStore(db.Pool(), auditLog)
 	if err != nil {
 		return nil, err
@@ -658,7 +808,8 @@ func newStatus(ctx context.Context, cfg *serverConfig, db *store.DB, auditLog *a
 		Gateways:  sysstatus.GatewayLister{Store: gwStore},
 		Integrity: integritySvc.Store, Store: pg,
 		Timezone: timezone, StorageLimit: cfg.AuditStorageLimit, WarnPercent: cfg.AuditStorageWarnPercent,
-		Logger: logger, Bundle: bundle, CANotAfter: caNotAfter, CustomerCert: customerCert,
+		Logger: logger, Bundle: bundle, CANotAfter: caNotAfter, CustomerCert: customerCert, License: lic, Quota: quota,
+		ShadowAISyslog: shadowSyslog,
 	})
 	if err != nil {
 		return nil, err
@@ -729,7 +880,7 @@ func startAuditVerify(ctx context.Context, cfg *serverConfig, auditLog *audit.Lo
 // ключи подписи пакетов. Сертификаты TLS не наблюдаются: их меняют при
 // продлении.
 func startIntegrity(ctx context.Context, cfg *serverConfig, p aisecCrypto.Provider, db *store.DB, auditLog *audit.Log,
-	logger *slog.Logger, stop context.CancelCauseFunc, auditPubPEM []byte, trust *serverTrust) (integrity.Service, error) {
+	logger *slog.Logger, stop context.CancelCauseFunc, auditPubPEM, userHMACKey []byte, trust *serverTrust) (integrity.Service, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		exe = "" // проверка отметит исполняемый файл как нечитаемый
@@ -748,6 +899,9 @@ func startIntegrity(ctx context.Context, cfg *serverConfig, p aisecCrypto.Provid
 	}
 	if cfg.CACert != "" {
 		watch = append(watch, integrity.WatchFile{Path: cfg.CACert})
+	}
+	if cfg.UserHMACKey != "" {
+		watch = append(watch, integrity.WatchFile{Path: cfg.UserHMACKey, Data: userHMACKey})
 	}
 	if trust != nil {
 		watch = append(watch, trust.watch(cfg)...)
@@ -802,7 +956,8 @@ func loadCA(certFile, keyFile string) (*aisecCrypto.CA, error) {
 // newInternalServer — внутренний API шлюзов на отдельном порту: TLS с
 // обязательным клиентским сертификатом внутреннего УЦ (mTLS, ИАФ.10).
 func newInternalServer(ctx context.Context, cfg *serverConfig, tp aisecCrypto.TLSProvider, hasher aisecCrypto.Hasher,
-	gateways *gwregistry.Service, eventStore events.Store, approvalsSvc *approvals.Service, ca *serverCA, certPEM, keyPEM []byte,
+	gateways *gwregistry.Service, eventStore events.Store, approvalsSvc *approvals.Service, quotaSvc *quotalease.Service,
+	ca *serverCA, certPEM, keyPEM []byte,
 	extra []api.Route, logger *slog.Logger) (*httpserver.Server, error) {
 	if cfg.InternalTLSCertFile != "" {
 		var err error
@@ -815,7 +970,7 @@ func newInternalServer(ctx context.Context, cfg *serverConfig, tp aisecCrypto.TL
 	}
 	ilog := logger.With("listener", "internal")
 	handler, _, err := api.NewInternal(api.InternalOptions{Logger: ilog, Hasher: hasher, Gateways: gateways, Events: eventStore,
-		Approvals: approvalsSvc, Extra: extra})
+		Approvals: approvalsSvc, Quotas: quotaSvc, Extra: extra})
 	if err != nil {
 		return nil, err
 	}

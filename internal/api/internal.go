@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -44,8 +45,17 @@ type InternalOptions struct {
 	// Approvals — очередь подтверждений (задача 4.10): по списку ожидающих
 	// из heartbeat пропавшие запросы закрываются как interrupted; nil — нет.
 	Approvals *approvals.Service
+	// Quotas — признак автономной доли квот из heartbeat (задача 4.29,
+	// ADR-0021, п. 5); nil — сервер его не принимает.
+	Quotas QuotaObserver
 	// Extra — дополнительные маршруты (тесты и следующие задачи: пакеты 2.13).
 	Extra []Route
+}
+
+// QuotaObserver — состояние квот шлюза для «Состояния системы»
+// (quotalease.Service).
+type QuotaObserver interface {
+	Observe(ctx context.Context, gatewayID string, autonomous bool) error
 }
 
 // GatewayAuthorizer пускает только шлюз с проверенным клиентским
@@ -95,7 +105,7 @@ func NewInternal(o InternalOptions) (http.Handler, *Router, error) {
 	if o.Now == nil {
 		o.Now = time.Now
 	}
-	routes := internalRoutes(o.Gateways, o.Approvals, o.Logger)
+	routes := internalRoutes(o.Gateways, o.Approvals, o.Quotas, o.Logger)
 	if o.Events != nil {
 		routes = append(routes, eventsRoutes(o.Events, o.Now, o.Logger)...)
 	}
@@ -109,10 +119,10 @@ func NewInternal(o InternalOptions) (http.Handler, *Router, error) {
 	return h, rt, nil
 }
 
-func internalRoutes(g *gwregistry.Service, a *approvals.Service, logger *slog.Logger) []Route {
+func internalRoutes(g *gwregistry.Service, a *approvals.Service, q QuotaObserver, logger *slog.Logger) []Route {
 	return []Route{
 		{Method: http.MethodPost, Path: "/internal/v1/heartbeat", Permission: PermGatewayInternal, MaxBody: heartbeatMaxBody,
-			Handler: heartbeat(g, a, logger)},
+			Handler: heartbeat(g, a, q, logger)},
 		{Method: http.MethodPost, Path: "/internal/v1/certificate", Permission: PermGatewayInternal, MaxBody: certificateMaxBody,
 			Handler: reissueCertificate(g, logger)},
 	}
@@ -201,6 +211,10 @@ type HeartbeatRequest struct {
 	// (задача 4.10); шлюз присылает его только после ответа с approvals.
 	// Пропавшие из списка запросы закрываются как interrupted.
 	ApprovalsPending *[]string `json:"approvals_pending,omitempty"`
+	// QuotaAutonomous — шлюз работает на автономной доле квот: аренду
+	// получить не удаётся (задача 4.29, ADR-0021, п. 5); шлюз присылает поле
+	// только после ответа с quota_leases.
+	QuotaAutonomous *bool `json:"quota_autonomous,omitempty"`
 }
 
 // HeartbeatBudget — счётчики расхода процесса шлюза за текущий и, после
@@ -289,6 +303,8 @@ type HeartbeatResponse struct {
 	// Approvals — сервер ведёт очередь подтверждений и принимает поле
 	// approvals_pending (задача 4.10).
 	Approvals bool `json:"approvals,omitempty"`
+	// QuotaLeases — сервер принимает поле quota_autonomous (задача 4.29).
+	QuotaLeases bool `json:"quota_leases,omitempty"`
 }
 
 // HeartbeatBudgetState — расход остальных процессов: приложение → 1e-7 ₽.
@@ -297,7 +313,7 @@ type HeartbeatBudgetState struct {
 	Others map[string]int64 `json:"others"`
 }
 
-func heartbeat(g *gwregistry.Service, a *approvals.Service, logger *slog.Logger) http.HandlerFunc {
+func heartbeat(g *gwregistry.Service, a *approvals.Service, q QuotaObserver, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		p, _ := PrincipalFrom(r.Context())
 		var req HeartbeatRequest
@@ -343,7 +359,13 @@ func heartbeat(g *gwregistry.Service, a *approvals.Service, logger *slog.Logger)
 			return
 		}
 		resp := HeartbeatResponse{ServerTime: res.At.UTC(), ClockTLS: true, IntervalSeconds: int(gwregistry.DefaultHeartbeatInterval / time.Second),
-			Reissue: res.Reissue, Approvals: a != nil}
+			Reissue: res.Reissue, Approvals: a != nil, QuotaLeases: q != nil}
+		if q != nil && req.QuotaAutonomous != nil {
+			if err := q.Observe(ctx, p.ID, *req.QuotaAutonomous); err != nil {
+				// heartbeat не отклоняется: условие обновится со следующим.
+				logger.Error("квоты: признак автономной доли шлюза не записан", "class", "db", "gateway_id", p.ID, "error", err)
+			}
+		}
 		if a != nil && (req.ApprovalsPending != nil || req.Stopping) {
 			var pending []string
 			if req.ApprovalsPending != nil {

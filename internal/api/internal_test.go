@@ -101,7 +101,8 @@ func newInternalHandler(t testing.TB, authz Authorizer) (http.Handler, *Router) 
 	h, rt, err := NewInternal(InternalOptions{Logger: quiet(), Hasher: testHasher(t), Gateways: svc, Authorizer: authz,
 		Events: events.NewMemory(), RateLimit: RateConfig{Rules: []RateRule{{Prefix: "/", Max: 0}}},
 		Extra: append(BundleRoutes(newBundleEnv(t, true).svc, nil, quiet()), append(AgentsInternalRoutes(newAgentsService(t), quiet()),
-			ApprovalsInternalRoutes(newApprovalsService(t, time.Now), quiet())...)...)})
+			append(ApprovalsInternalRoutes(newApprovalsService(t, time.Now), quiet()),
+				QuotaInternalRoutes(newQuotaService(t, newMemQuotaStore(), testIDs(t)), quiet())...)...)...)})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -7,6 +7,7 @@ import (
 
 	"github.com/azuresong-afk/ai_railway/internal/apps"
 	"github.com/azuresong-afk/ai_railway/internal/auth"
+	"github.com/azuresong-afk/ai_railway/internal/license"
 )
 
 // appMaxBody — предел тела запросов приложения: списки заказчика до 20 000
@@ -270,6 +271,13 @@ func (d Deps) createApplication(w http.ResponseWriter, r *http.Request) {
 			"Политику, режимы, словари и домены-исключения задаёт администратор безопасности: создайте приложение без них."))
 		return
 	}
+	// Предел приложений лицензии (ADR-0026, п. 5): существующие работают.
+	if d.License != nil {
+		if err := d.License.CheckApplication(r.Context()); err != nil {
+			WriteProblem(w, licenseProblem(d.Logger, err))
+			return
+		}
+	}
 	a, err := d.Apps.CreateApplication(r.Context(), by, in, prot)
 	if err != nil {
 		WriteProblem(w, appsProblem(d.Logger, err, appNotFound))
@@ -458,6 +466,14 @@ func (d Deps) issueAppKey(w http.ResponseWriter, r *http.Request) {
 	if pr, _ := PrincipalFrom(r.Context()); req.AgentID != "" && !pr.Grants.Full(auth.PermAgentsManage) {
 		WriteProblem(w, NewProblem(http.StatusForbidden, CodeForbidden, "Привязать ключ к агенту может только обладатель права agents.manage."))
 		return
+	}
+	// Привязка к агенту — изменение модуля agents (4Н15 ревью 4.r2): путь
+	// маршрута не под префиксом модуля, проверка — здесь.
+	if req.AgentID != "" && d.License != nil {
+		if err := d.License.CheckMutation(r.Context(), license.ModuleAgents); err != nil {
+			WriteProblem(w, licenseProblem(d.Logger, err))
+			return
+		}
 	}
 	k, raw, err := d.Apps.IssueKey(r.Context(), by, id, owner, apps.KeyInput{Name: req.Name, ExpiresInDays: req.ExpiresInDays,
 		AllowedCIDRs: req.AllowedCIDRs, AgentID: req.AgentID})

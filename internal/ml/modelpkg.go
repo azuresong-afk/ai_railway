@@ -415,3 +415,63 @@ func CheckMLBOM(data []byte, spec ModelSpec) error {
 func nameRune(r rune) bool {
 	return r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '_' || r == '-'
 }
+
+// Имена файлов модели в каталоге <id>/ пакета (ADR-0024, раздел 5).
+const (
+	ModelFileName     = "model.onnx"
+	TokenizerFileName = "tokenizer.json" //nolint:gosec // G101: имя файла токенизатора модели, не секрет
+	MLBOMFileName     = "mlbom.cdx.json"
+)
+
+// BuildModelsManifest собирает манифест пакета моделей из каталога dir
+// (команда подписи пакета, tools/manifest sign-models): у каждой модели
+// specs (без Files) читаются <id>/model.onnx, tokenizer.json и
+// mlbom.cdx.json — обычные файлы в пределах роли, — считаются размер и
+// хеш, ML-BOM сверяется с моделью. Манифест проверяется тем же правилом,
+// что и при загрузке.
+func BuildModelsManifest(p aisecCrypto.Provider, dir, version string, created time.Time, specs []ModelSpec) (*ModelsManifest, error) {
+	h, err := p.Hasher()
+	if err != nil {
+		return nil, err
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return nil, fmt.Errorf("каталог моделей: %w", err)
+	}
+	defer root.Close() //nolint:errcheck // каталог только читается
+	m := &ModelsManifest{Format: ModelsFormatV1, Version: version, Profile: p.Name(), HashAlg: h.Name(), Created: created.UTC()}
+	for _, spec := range specs {
+		if len(spec.Files) > 0 {
+			return nil, bad("модель %s: файлы считает сборка пакета", spec.ID)
+		}
+		if !ValidModelID(spec.ID) {
+			return nil, bad("ID модели")
+		}
+		var bom []byte
+		for _, f := range []struct{ name, role string }{
+			{ModelFileName, RoleModel}, {TokenizerFileName, RoleTokenizer}, {MLBOMFileName, RoleMLBOM},
+		} {
+			rel := spec.ID + "/" + f.name
+			info, err := root.Lstat(rel)
+			if err != nil {
+				return nil, fmt.Errorf("%s: %w", rel, err)
+			}
+			b, err := readRegular(root, rel, min(info.Size(), roleLimit[f.role]))
+			if err != nil {
+				return nil, err
+			}
+			if f.role == RoleMLBOM {
+				bom = b
+			}
+			spec.Files = append(spec.Files, ModelFile{Path: rel, Role: f.role, Size: int64(len(b)), Hash: hex.EncodeToString(h.Sum(b))})
+		}
+		if err := CheckMLBOM(bom, spec); err != nil {
+			return nil, fmt.Errorf("модель %s: %w", spec.ID, err)
+		}
+		m.Models = append(m.Models, spec)
+	}
+	if err := m.validate(); err != nil {
+		return nil, err
+	}
+	return m, nil
+}

@@ -1,10 +1,13 @@
+import { useQuery } from "@tanstack/react-query";
 import { Keyboard, LogOut, Maximize2, PanelLeft, Search, X } from "lucide-react";
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { HashRouter, NavLink, Route, Routes, useLocation, useNavigate, useSearchParams } from "react-router";
+import { adminApi } from "../admin/api";
+import { licenseNotice } from "../admin/licenseText";
 import type { Me } from "../api/client";
 import { Button } from "../ui/Button";
 import { Input, Select } from "../ui/Field";
-import { EmptyState } from "../ui/Layout";
+import { Banner, EmptyState } from "../ui/Layout";
 import { Modal } from "../ui/Overlay";
 import { navItems, visibleNav } from "./nav";
 
@@ -93,6 +96,11 @@ const AppsScreen = lazy(() => import("../apps/AppsScreen").then((m) => ({ defaul
 const AlertsScreen = lazy(() => import("../alerts/AlertsScreen").then((m) => ({ default: m.AlertsScreen })));
 const IncidentsScreen = lazy(() => import("../incidents/IncidentsScreen").then((m) => ({ default: m.IncidentsScreen })));
 const ProvidersScreen = lazy(() => import("../providers/ProvidersScreen").then((m) => ({ default: m.ProvidersScreen })));
+const AgentsScreen = lazy(() => import("../agents/AgentsScreen").then((m) => ({ default: m.AgentsScreen })));
+const SessionScreen = lazy(() => import("../agents/SessionScreen").then((m) => ({ default: m.SessionScreen })));
+const ApprovalsScreen = lazy(() => import("../approvals/ApprovalsScreen").then((m) => ({ default: m.ApprovalsScreen })));
+const ComplianceScreen = lazy(() => import("../compliance/ComplianceScreen").then((m) => ({ default: m.ComplianceScreen })));
+const ShadowAIScreen = lazy(() => import("../shadowai/ShadowAIScreen").then((m) => ({ default: m.ShadowAIScreen })));
 const PoliciesScreen = lazy(() => import("../policies/PoliciesScreen").then((m) => ({ default: m.PoliciesScreen })));
 
 function GuardedRoute({ me, perm, title, children }: { me: Me; perm: string; title: string; children: React.ReactNode }) {
@@ -126,6 +134,26 @@ function AdminRoute({ me }: { me: Me }) {
     <Suspense fallback={null}>
       <AdminScreen me={me} />
     </Suspense>
+  );
+}
+
+// Баннер лицензии (ADR-0026, п. 4): срок на исходе, льготный период, запрет изменений. Сведения читают те, у кого
+// есть license.read; остальным причину отказа объясняет ответ сервера на само изменение.
+function LicenseBanner({ me }: { me: Me }) {
+  const allowed = me.permissions.includes("license.read");
+  const q = useQuery({
+    queryKey: ["license"],
+    queryFn: ({ signal }) => adminApi.license(signal),
+    enabled: allowed,
+    refetchInterval: 10 * 60 * 1000,
+    retry: false,
+  });
+  const n = q.data ? licenseNotice(q.data) : null;
+  if (!allowed || !n) return null;
+  return (
+    <div className="border-b border-line px-4 py-2">
+      <Banner kind={n.kind}>{n.text}</Banner>
+    </div>
   );
 }
 
@@ -238,6 +266,7 @@ function Frame({ me, onLogout }: { me: Me; onLogout: () => void }) {
             </Button>
           </div>
         </header>
+        <LicenseBanner me={me} />
         <div className="flex min-h-0 flex-1">
           <main className="min-w-0 flex-1 overflow-auto p-6">
             <Routes>
@@ -248,6 +277,11 @@ function Frame({ me, onLogout }: { me: Me; onLogout: () => void }) {
               <Route path="/alerts" element={<GuardedRoute me={me} perm="alerts.read" title="оповещения"><AlertsScreen me={me} /></GuardedRoute>} />
               <Route path="/incidents" element={<GuardedRoute me={me} perm="incidents.read" title="инциденты"><IncidentsScreen me={me} /></GuardedRoute>} />
               <Route path="/providers" element={<GuardedRoute me={me} perm="providers.read" title="провайдеры"><ProvidersScreen me={me} /></GuardedRoute>} />
+              <Route path="/agents" element={<GuardedRoute me={me} perm="agents.read" title="агенты"><AgentsScreen me={me} /></GuardedRoute>} />
+              <Route path="/approvals" element={<GuardedRoute me={me} perm="approvals.read" title="подтверждения"><ApprovalsScreen me={me} /></GuardedRoute>} />
+              <Route path="/session/:id" element={<GuardedRoute me={me} perm="events.read" title="хронология сессии"><SessionScreen me={me} /></GuardedRoute>} />
+              <Route path="/shadow-ai" element={<GuardedRoute me={me} perm="shadow_ai.read" title="теневой ИИ"><ShadowAIScreen me={me} /></GuardedRoute>} />
+              <Route path="/compliance" element={<GuardedRoute me={me} perm="compliance.read" title="соответствие"><ComplianceScreen me={me} /></GuardedRoute>} />
               <Route path="/policies" element={<GuardedRoute me={me} perm="policies.read" title="политики"><PoliciesScreen me={me} /></GuardedRoute>} />
               <Route path="/reports" element={<GuardedRoute me={me} perm="reports.read" title="отчёты"><ReportsScreen me={me} /></GuardedRoute>} />
               <Route path="/profile" element={<ProfileScreen me={me} />} />

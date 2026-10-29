@@ -74,6 +74,15 @@ func EvalExpression(expr string) (Verdict, []string, error) {
 	return evalExpression(expr, nil)
 }
 
+// NativeLicenses — лицензии вне списка CLAUDE.md, которые допускаются только
+// у native-library при license_decision (ADR-0024): Boost.Mp11 внутри ONNX
+// Runtime и среда выполнения GCC (libstdc++, libgcc_s) в образе aisec-ml —
+// GPL только вместе с исключением GCC Runtime Library, без него GPL запрещена.
+var NativeLicenses = map[string]bool{
+	"BSL-1.0": true,
+	"GPL-3.0-or-later WITH GCC-exception-3.1": true,
+}
+
 // NPMBuildLicenses — лицензии, которые допускаются только у npm-пакетов
 // сборочной среды (достижимых лишь из devDependencies) и не попадают в
 // поставку. Решение владельца от 20.10.2026, ADR-0011.
@@ -200,6 +209,21 @@ func (p *exprParser) parseAtom(depth int) (Verdict, error) {
 		return Forbidden, fmt.Errorf("неожиданный элемент %q в выражении лицензии", t)
 	}
 	p.pos++
+	// Оговорка WITH допускается только в виде, явно перечисленном в extra
+	// (исключение GCC Runtime Library у native-library); иначе — ошибка.
+	if p.peek() == "WITH" {
+		p.pos++
+		exc := p.peek()
+		switch exc {
+		case "", "(", ")", "AND", "OR", "WITH":
+			return Forbidden, errors.New("после WITH нет исключения в выражении лицензии")
+		}
+		p.pos++
+		t += " WITH " + exc
+		if !p.extra[t] {
+			return Forbidden, fmt.Errorf("оговорка %q не допускается политикой лицензий", t)
+		}
+	}
 	p.ids = append(p.ids, t)
 	if p.extra[t] {
 		return Allowed, nil
@@ -212,6 +236,15 @@ func (p *exprParser) parseAtom(depth int) (Verdict, error) {
 // допустимы при заполненном license_decision (ADR-0003, ADR-0019); условные
 // лицензии всегда требуют license_decision.
 func CheckLicense(c Component) error {
+	// BSL-1.0 (Boost Software License, не BUSL) у библиотек, встроенных в
+	// сборку ONNX Runtime, и GPL с исключением GCC Runtime Library у среды
+	// выполнения GCC в образе aisec-ml — только у native-library по отдельному
+	// решению владельца (ADR-0024, 27.10.2026 и 28.10.2026).
+	if c.Type == TypeNative && strings.TrimSpace(c.LicenseDecision) != "" {
+		if v, _, err := evalExpression(c.License, NativeLicenses); err == nil && v == Allowed {
+			return nil
+		}
+	}
 	v, ids, err := EvalExpression(c.License)
 	if err != nil {
 		return err

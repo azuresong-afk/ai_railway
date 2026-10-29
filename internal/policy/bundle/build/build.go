@@ -91,6 +91,9 @@ type Options struct {
 	// ошибки — IdP не настроен. nil — ключей в пакете нет, и шлюзы
 	// отклоняют JWT пользователей.
 	IdPKeys func(ctx context.Context) (issuer string, keys *aisecCrypto.JWKS, err error)
+	// QuotaMode — режим квот установки (install_settings.quota_mode, задача
+	// 4.29); nil — local.
+	QuotaMode func(ctx context.Context) (string, error)
 }
 
 // UserTokenKeysRefresh — как часто пакет собирается заново, пока у
@@ -140,6 +143,8 @@ type Service struct {
 	reuse    time.Duration
 	revision func(ctx context.Context) (int64, error)
 	idpKeys  func(ctx context.Context) (string, *aisecCrypto.JWKS, error)
+	// quotaMode — режим квот установки; nil — local.
+	quotaMode func(ctx context.Context) (string, error)
 	// jwt — кодирование JWKS для пакета; nil — профиль без проверки JWT.
 	jwt aisecCrypto.JWTVerifier
 	// builds — число выборок данных для сборки (для тестов Н26).
@@ -195,7 +200,7 @@ func New(o Options) (*Service, error) {
 	s := &Service{apps: o.Apps, agents: o.Agents, policies: o.Policies, store: o.Store, audit: o.Audit, sealer: o.Sealer, hasher: h,
 		orgID: o.OrgID, clock: o.Clock, logger: o.Logger, reuse: o.Reuse, revision: o.Revision,
 		sem: make(chan struct{}, 1), checks: map[string]string{}, lastReport: map[string]time.Time{}, sealed: map[string]sealedBody{},
-		idpKeys: o.IdPKeys}
+		idpKeys: o.IdPKeys, quotaMode: o.QuotaMode}
 	// Профиль без проверки JWT (gost до этапа 6): ключей IdP в пакете нет.
 	if j, err := o.Provider.JWT(); err == nil {
 		s.jwt = j
@@ -534,6 +539,15 @@ func (s *Service) collect(ctx context.Context, now time.Time) (*bundle.Content, 
 	if err := s.addUserTokens(ctx, c, appSlugs, now); err != nil {
 		return nil, nil, nil, err
 	}
+	if s.quotaMode != nil {
+		mode, err := s.quotaMode(ctx)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		if mode == bundle.QuotaLeased {
+			c.QuotaMode = bundle.QuotaLeased
+		}
+	}
 	slices.SortFunc(c.Applications, func(a, b bundle.Application) int { return strings.Compare(a.ID, b.ID) })
 	slices.SortFunc(c.Providers, func(a, b bundle.Provider) int { return strings.Compare(a.ID, b.ID) })
 	slices.SortFunc(c.Policies, func(a, b bundle.Policy) int { return strings.Compare(a.ID, b.ID) })
@@ -549,6 +563,9 @@ func (s *Service) collect(ctx context.Context, now time.Time) (*bundle.Content, 
 	}
 	if len(c.PromptBaselines) > 0 {
 		stats["prompt_baselines"] = len(c.PromptBaselines)
+	}
+	if c.QuotaMode != "" {
+		stats["quota_mode"] = c.QuotaMode
 	}
 	if len(c.UserTokens) > 0 {
 		stats["user_tokens"], stats["user_token_keys"] = len(c.UserTokens), len(c.UserTokenKeys)

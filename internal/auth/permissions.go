@@ -91,6 +91,11 @@ const (
 	PermModelPricesManage = "model_prices.manage"
 	PermBudgetsRead       = "budgets.read"
 	PermBudgetsManage     = "budgets.manage"
+	// Режим квот при нескольких шлюзах (ADR-0021, задача 4.29): local или
+	// leased. Переход на local при нескольких шлюзах на связи — ослабление
+	// (DM-40) с повторной проверкой; право не относится к безопасности, как
+	// и бюджеты, чтение — по budgets.read.
+	PermQuotaModeManage = "quota_mode.manage"
 	// Дашборды (ТЗ 5.8, задача 3.19 этапа 3): агрегаты без содержимого
 	// запросов. Со ScopeOwn (владелец приложения) — только дашборд «Приложение»
 	// своих приложений (УПД.8); остальные дашборды видят роли со ScopeAll.
@@ -126,6 +131,24 @@ const (
 	// Очередь подтверждений вызовов (задача 4.10, ADR-0023, раздел 9).
 	PermApprovalsRead   = "approvals.read"
 	PermApprovalsDecide = "approvals.decide"
+	// Теневой ИИ (ТЗ 5.11, DM-37; задача 4.22, ADR-0027, п. 7): сводки по
+	// журналам прокси — пользователи только псевдонимами; управление —
+	// импорт журналов, загрузка подписанного каталога, срок хранения.
+	PermShadowAIRead   = "shadow_ai.read"
+	PermShadowAIManage = "shadow_ai.manage"
+	// Лицензия (ТЗ 5.15; задача 4.27, ADR-0026, п. 6): просмотр сведений и
+	// использования пределов; загрузка и замена — действие администратора
+	// системы с повторной проверкой паролем или кодом (у токена её нет).
+	PermLicenseRead   = "license.read"
+	PermLicenseManage = "license.manage"
+	// Соответствие требованиям (ТЗ 5.9, Р10; задача 4.24): чтение статусов и
+	// отчёта; ручные отметки — решение администратора безопасности, они
+	// меняют картину соответствия в отчёте для проверяющих (Security, не
+	// входит в «.read» аудитора и не выдаётся токенам); загрузка обновлённой
+	// подписанной базы требований — администратор системы.
+	PermComplianceRead     = "compliance.read"
+	PermComplianceMark     = "compliance.mark"
+	PermComplianceBaseLoad = "compliance.base.load"
 )
 
 // Permission — разрешение из каталога.
@@ -147,10 +170,11 @@ func (p Permission) ReadOnly() bool { return strings.HasSuffix(p.Name, ".read") 
 // TokenGrantable — разрешение можно выдать токену API (решение владельца
 // по задаче 2.10): кроме функций безопасности и самих токенов. Управление
 // доступом остаётся за человеком с паролем и вторым фактором; токен не
-// выпускает и не продлевает токены.
+// выпускает и не продлевает токены. Загрузка лицензии требует повторной
+// проверки в сессии (ADR-0026, п. 6) — токену тоже не выдаётся.
 func TokenGrantable(perm string) bool {
 	p, ok := LookupPermission(perm)
-	return ok && !p.Security && !strings.HasPrefix(p.Name, "api_tokens.")
+	return ok && !p.Security && !strings.HasPrefix(p.Name, "api_tokens.") && p.Name != PermLicenseManage
 }
 
 var permissionCatalog = []Permission{
@@ -198,6 +222,7 @@ var permissionCatalog = []Permission{
 	{Name: PermModelPricesManage, Title: "Задание, изменение и удаление цен моделей", Group: "Потребление"},
 	{Name: PermBudgetsRead, Title: "Просмотр бюджетов и расхода приложений", Group: "Потребление"},
 	{Name: PermBudgetsManage, Title: "Задание, изменение и снятие бюджетов приложений", Group: "Потребление"},
+	{Name: PermQuotaModeManage, Title: "Изменение режима учёта квот и бюджетов при нескольких шлюзах (local или leased)", Group: "Потребление"},
 	{Name: PermReportsRead, Title: "Построение и выгрузка отчётов: сводный, по инцидентам, «Итоги пилота»", Group: "Отчёты", Ownable: true},
 	{Name: PermReportSchedulesRead, Title: "Просмотр расписаний рассылки отчётов и журнала рассылки", Group: "Отчёты"},
 	{Name: PermReportSchedulesManage, Title: "Создание, изменение и удаление расписаний рассылки отчётов", Group: "Отчёты"},
@@ -216,6 +241,15 @@ var permissionCatalog = []Permission{
 	// входит в чтение аудитора — подтверждает вызов человек (ADR-0023, раздел 9).
 	{Name: PermApprovalsDecide, Title: "Одобрение и отклонение вызовов инструментов агентов из очереди подтверждений",
 		Group: "Агенты", Security: true},
+	{Name: PermShadowAIRead, Title: "Просмотр сводок теневого ИИ (пользователи — псевдонимами), каталога сервисов и журнала импорта", Group: "Теневой ИИ"},
+	{Name: PermShadowAIManage, Title: "Импорт журналов прокси, загрузка подписанного каталога ИИ-сервисов, срок хранения сводок", Group: "Теневой ИИ"},
+	{Name: PermLicenseRead, Title: "Просмотр лицензии: владелец, срок, пределы и их использование, модули", Group: "Система"},
+	{Name: PermLicenseManage, Title: "Загрузка и замена лицензии (с повторной проверкой паролем или кодом)", Group: "Система"},
+	{Name: PermComplianceRead, Title: "Просмотр соответствия требованиям: пункты, статусы, доказательства, ручные отметки и база требований", Group: "Соответствие"},
+	// Безопасность: ручная отметка меняет статус пункта в отчёте для проверяющих.
+	{Name: PermComplianceMark, Title: "Ручные отметки по пунктам соответствия (организационные меры) с комментарием и сроком пересмотра",
+		Group: "Соответствие", Security: true},
+	{Name: PermComplianceBaseLoad, Title: "Загрузка обновлённой подписанной базы требований", Group: "Соответствие"},
 }
 
 // auditorExtra — разрешения аудитора сверх чтения: они ничего не меняют,
@@ -402,15 +436,17 @@ var builtinRoles = []RoleDef{
 			PermApplicationsRead: ScopeAll, PermApplicationsManage: ScopeAll, PermAppKeysManage: ScopeAll,
 			PermProvidersRead: ScopeAll, PermProvidersManage: ScopeAll, PermPoliciesRead: ScopeAll, PermPoliciesTest: ScopeAll,
 			PermModelPricesRead: ScopeAll, PermModelPricesManage: ScopeAll, PermBudgetsRead: ScopeAll, PermBudgetsManage: ScopeAll,
-			PermDashboardsRead: ScopeAll, PermGatewayTLSRead: ScopeAll, PermGatewayTLSManage: ScopeAll,
+			PermQuotaModeManage: ScopeAll, PermDashboardsRead: ScopeAll, PermGatewayTLSRead: ScopeAll, PermGatewayTLSManage: ScopeAll,
 			PermReportsRead: ScopeAll, PermReportSchedulesRead: ScopeAll, PermReportSchedulesManage: ScopeAll,
-			PermAgentsRead: ScopeAll, PermAgentsManage: ScopeAll}},
+			PermAgentsRead: ScopeAll, PermAgentsManage: ScopeAll, PermShadowAIRead: ScopeAll, PermShadowAIManage: ScopeAll,
+			PermLicenseRead: ScopeAll, PermLicenseManage: ScopeAll,
+			PermComplianceRead: ScopeAll, PermComplianceBaseLoad: ScopeAll}},
 	{ID: RoleAnalyst, DisplayName: "Аналитик", Builtin: true,
 		Description: "Разбор оповещений и инцидентов, поиск по событиям",
 		Grants: grantAll(PermSystemRead, PermEventsRead, PermEventsExport, PermEventsMark, PermApplicationsRead, PermProvidersRead,
 			PermPoliciesRead, PermPoliciesTest, PermAlertsRead, PermAlertsManage, PermAlertRulesRead, PermModelPricesRead, PermBudgetsRead,
 			PermDashboardsRead, PermIncidentsRead, PermIncidentsManage, PermIncidentsExport, PermReportsRead, PermAgentsRead,
-			PermApprovalsRead, PermApprovalsDecide)},
+			PermApprovalsRead, PermApprovalsDecide, PermShadowAIRead)},
 	{ID: RoleAuditor, DisplayName: "Аудитор", Builtin: true,
 		Description: "Только просмотр: журнал аудита, отчёты, состояние соответствия. Ничего не меняет",
 		Grants:      auditorPermissions()},

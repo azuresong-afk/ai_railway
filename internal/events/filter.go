@@ -75,6 +75,8 @@ type fieldDef struct {
 	valid  func(string) bool
 	// key — поле находки для kindFinding (константа кода).
 	key string
+	// expr — выражение SQL вместо столбца e.<column> (константа кода).
+	expr string
 }
 
 var (
@@ -115,6 +117,10 @@ var filterFields = map[string]fieldDef{
 	"stream":             {column: "stream", kind: kindBool, valid: oneOf("true", "false")},
 	"non_text_unchecked": {column: "non_text_unchecked", kind: kindBool, valid: oneOf("true", "false")},
 	"has_content":        {column: "has_content", kind: kindBool, valid: oneOf("true", "false")},
+	// Задача 4.19 этапа 4: ML-детекторы политики не дали результата
+	// (aisec-ml недоступен, ADR-0024) — признак решения в details.
+	"ml_unavailable": {column: "details", kind: kindBool, valid: oneOf("true", "false"),
+		expr: "COALESCE((e.details->'decision'->>'ml_unavailable')::boolean, false)"},
 	// Задача 3.22: exception — находки, пропущенные по исключению с этим ID;
 	// mark — отметка аналитика (false_positive, confirmed, none — нет отметки).
 	"exception": {column: "details", kind: kindFinding, valid: exceptionRe.MatchString, key: "exception"},
@@ -468,6 +474,9 @@ func (f Filter) appendSQL(b *strings.Builder, a *sqlArgs) {
 		negate := c.Op == OpNe || c.Op == OpNotIn
 		b.WriteString(" AND ")
 		col := "e." + def.column
+		if def.expr != "" {
+			col = def.expr
+		}
 		switch def.kind {
 		case kindBool:
 			b.WriteString(col + " = " + a.add(c.Values[0] == "true"))
@@ -627,6 +636,8 @@ func (r *Record) filterValues(field string) []string {
 		return []string{strconv.FormatBool(r.NonTextUnchecked)}
 	case "has_content":
 		return []string{strconv.FormatBool(r.HasContent)}
+	case "ml_unavailable":
+		return []string{strconv.FormatBool(r.Details != nil && r.Details.Decision != nil && r.Details.Decision.MLUnavailable)}
 	}
 	return nil
 }

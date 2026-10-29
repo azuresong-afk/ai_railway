@@ -161,6 +161,47 @@ func TestAuthenticateFilterInjection(t *testing.T) {
 	}
 }
 
+// 4В14 (ревью 4.r1): шаблон, где {login} стоит вне значения условия,
+// отклоняется — логин «:» превратил бы равенство в расширяемое сравнение.
+func TestValidateConfigLoginOutsideValue(t *testing.T) {
+	base := ldap.Config{URL: "ldaps://dc1.example.test", BindDN: svcDN, UserBaseDN: usersDN, UserFilter: userQuery,
+		IDAttribute: "entryUUID", DisplayAttribute: "displayName", GroupMode: ldap.GroupsMemberOf}
+	for _, tmpl := range []string{"(*{login}=)", "(*{login}=x)", "(uid*{login}=v)", "(&(objectClass=person)(cn*{login}=*))",
+		"(:{login})", "({login}=x)"} {
+		c := base
+		c.UserFilter = tmpl
+		var ce *ldap.ConfigError
+		err := ldap.ValidateConfig(c)
+		if !errors.As(err, &ce) || ce.Field != "user_filter" || !errors.Is(err, ldap.ErrLoginPlacement) {
+			t.Errorf("%s: %v", tmpl, err)
+		}
+	}
+	for _, tmpl := range []string{"(uid={login})", "(|(uid={login})(mail={login}))", "(cn=*{login}*)", "(cn={login}*)",
+		"(&(objectClass=person)(!(uid={login})))", "(uid:caseExactMatch:={login})", "(mail~={login})", "(uidNumber>={login})"} {
+		c := base
+		c.UserFilter = tmpl
+		if err := ldap.ValidateConfig(c); err != nil {
+			t.Errorf("%s: %v", tmpl, err)
+		}
+	}
+}
+
+// 4В14: уже сохранённый шаблон с {login} вне значения — вход отказывает с
+// кодом config, к каталогу не обращается, логин не подставляется.
+func TestAuthenticateSavedBadFilter(t *testing.T) {
+	e := newEnv(t, true)
+	cfg := e.cfg
+	cfg.UserFilter = "(*{login}=)"
+	_, err := e.c.Authenticate(context.Background(), cfg, ":", ivanPass)
+	code(t, err, ldap.CodeConfig)
+	if !errors.Is(err, ldap.ErrLoginPlacement) {
+		t.Fatalf("ошибка: %v", err)
+	}
+	if f, b := e.dir.Filters(), e.dir.Binds(); len(f) != 0 || len(b) != 0 {
+		t.Fatalf("обращение к каталогу: фильтры %v, bind %v", f, b)
+	}
+}
+
 func TestAuthenticateServiceBindFails(t *testing.T) {
 	e := newEnv(t, true)
 	e.cfg.BindPassword = "synthetic-wrong-service"

@@ -15,6 +15,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/audit"
 	"github.com/azuresong-afk/ai_railway/internal/gwregistry"
 	"github.com/azuresong-afk/ai_railway/internal/integrity"
+	"github.com/azuresong-afk/ai_railway/internal/license"
 )
 
 // Настройки по умолчанию (ТЗ 7.4 РСБ.5, 7.8 ВРМ.2).
@@ -113,6 +114,14 @@ type Options struct {
 	// ok = false — сертификат не загружен. nil — условий customer_cert_expiry
 	// и gateway_tls нет.
 	CustomerCert func(ctx context.Context) (cert CustomerCert, ok bool, err error)
+	// ShadowAISyslog — состояние приёма журналов по syslog (задача 4.23);
+	// nil или Enabled = false — раздела нет.
+	ShadowAISyslog func() ShadowAISyslogStats
+	// License — состояние лицензии (задача 4.26); nil — условий license_* нет.
+	License func(ctx context.Context) (license.State, error)
+	// Quota — режим квот и шлюзы на автономной доле (задача 4.29); nil —
+	// условий quota_approximate и quota_autonomous нет.
+	Quota func(ctx context.Context) (QuotaHealth, error)
 }
 
 // CustomerCert — сведения о сертификате заказчика для адреса шлюза.
@@ -404,6 +413,7 @@ func (s *Service) collect(ctx context.Context) collected {
 		}
 	}
 
+	s.shadowAISyslog(&c)
 	c.conditions[ConditionTime] = clk.Sync == SyncUnsynchronized
 	c.conditions[ConditionStorage] = c.st.Storage.WarnExceeded
 	if ca := s.o.CANotAfter; !ca.IsZero() {
@@ -435,11 +445,73 @@ func (s *Service) collect(ctx context.Context) collected {
 			s.gatewayTLS(&c, active, cert, ok, bundle, now)
 		}
 	}
+	if s.o.License != nil {
+		lctx, cancel := s.dbCtx(ctx)
+		st, err := s.o.License(lctx)
+		cancel()
+		if err != nil {
+			s.unavailable(&c, "license", err)
+		} else {
+			licenseConditions(&c, st)
+		}
+	}
+	if s.o.Quota != nil && s.o.Gateways != nil {
+		s.quota(ctx, &c, active)
+	}
 	if s.o.Store != nil {
 		s.alertJob(ctx, &c, now)
 	}
 	sort.Strings(c.st.Unavailable)
 	return c
+}
+
+// licenseConditions — условия лицензии (ADR-0026, п. 8). Без лицензии
+// («пилот по договору») все условия сняты, в том числе license_clock:
+// сроков, которые можно продлить переводом часов, нет.
+func licenseConditions(c *collected, st license.State) {
+	// «state» занят состоянием условия (raised или cleared).
+	d := map[string]any{"license_state": st.Phase}
+	if st.Number > 0 {
+		d["number"] = st.Number
+	}
+	if st.Signed != nil {
+		d["valid_until"] = st.Signed.License.ValidUntil.UTC().Format(time.RFC3339)
+		d["days_left"] = st.DaysLeft()
+		d["grace_until"] = st.GraceUntil().UTC().Format(time.RFC3339)
+	}
+	expiring := st.Phase == license.PhaseExpiring
+	c.conditions[ConditionLicenseExpiry] = expiring
+	c.conditions[licenseExpiryCritical] = expiring && st.LeftUntil() <= license.ExpiryCritical
+	c.conditions[ConditionLicenseGrace] = st.Phase == license.PhaseGrace
+	c.conditions[ConditionLicenseRestricted] = st.Phase == license.PhaseRestricted
+	c.conditions[ConditionLicenseInvalid] = st.Phase == license.PhaseInvalid
+	c.conditions[ConditionLicenseClock] = st.Phase != license.PhaseNone && st.ClockBehind
+	clock := map[string]any{"server_time": st.Now.UTC().Format(time.RFC3339), "license_time": st.At.UTC().Format(time.RFC3339)}
+	for _, code := range []string{ConditionLicenseExpiry, licenseExpiryCritical, ConditionLicenseGrace, ConditionLicenseRestricted,
+		ConditionLicenseInvalid} {
+		c.details[code] = d
+	}
+	maps.Copy(clock, d)
+	c.details[ConditionLicenseClock] = clock
+}
+
+// quota — условия квот (задача 4.29, ADR-0021, пп. 2 и 5): режим local при
+// нескольких действующих шлюзах на связи и шлюзы на автономной доле.
+func (s *Service) quota(ctx context.Context, c *collected, active []gwregistry.Gateway) {
+	qctx, cancel := s.dbCtx(ctx)
+	h, err := s.o.Quota(qctx)
+	cancel()
+	if err != nil {
+		s.unavailable(c, "quota", err)
+		return
+	}
+	c.conditions[ConditionQuotaApprox] = h.Mode == "local" && len(active) > 1
+	c.details[ConditionQuotaApprox] = map[string]any{"gateways_online": len(active), "quota_mode": h.Mode}
+	for _, g := range active {
+		code := ConditionQuotaAutonomous + ":" + g.ID
+		c.conditions[code] = h.Mode == "leased" && slices.Contains(h.Autonomous, g.ID)
+		c.details[code] = map[string]any{"component": componentGateway + g.ID, "gateway_name": g.Name}
+	}
 }
 
 // alertJob — условие alert_job_stale (DM-44, 3В17 ревью 3.r2): фоновая
@@ -625,7 +697,14 @@ var conditionInfo = []struct{ code, requirement, title string }{
 	{ConditionGatewayTLS, "ЗИ.4", "Шлюз отвечает приложениям не тем сертификатом, что загружен в консоли"},
 	{ConditionCAExpiry, "ИАФ.10", "Истекает корень внутреннего УЦ: нужна ротация (aisec-cli keys rotate-ca)"},
 	{ConditionCustomerCertExpiry, "ЗИ.4", "Скоро истекает сертификат заказчика для адреса шлюза: загрузите новый"},
+	{ConditionLicenseExpiry, "ЗИ.2", "Скоро истекает срок лицензии: запросите новую у производителя"},
+	{ConditionLicenseGrace, "ЗИ.2", "Срок лицензии истёк, идёт льготный период: после него изменения конфигурации будут запрещены"},
+	{ConditionLicenseRestricted, "ЗИ.2", "Льготный период лицензии закончился: изменения конфигурации запрещены, трафик и защита работают"},
+	{ConditionLicenseInvalid, "ЗИ.2", "Загруженная лицензия не прошла проверку подписи: изменения конфигурации запрещены"},
+	{ConditionLicenseClock, "ВРМ.1", "Часы сервера отстают от времени, которое уже видела лицензия: проверьте синхронизацию времени"},
 	{ConditionAlertJob, "РСБ.7", "Фоновая задача правил оповещений не выполняется или правило падает на каждом проходе: правила частоты, аномалий и бюджетов молчат"},
+	{ConditionQuotaApprox, "ЗИ.6", "Квоты соблюдаются приблизительно: шлюзов на связи больше одного, а режим квот — local (переключите на leased)"},
+	{ConditionQuotaAutonomous, "ЗИ.6", "Квоты в автономном режиме: шлюз не получает аренду квот у сервера и работает на равной доле"},
 }
 
 // family — условие раздела 7, к которому относится код (integrity:server —
@@ -693,7 +772,7 @@ func (s *Service) Status(ctx context.Context) Status {
 		case ConditionDenied:
 			n.Count, n.Active = denied, denied != nil && *denied > 0
 		case ConditionIntegrity, ConditionBundleLag, ConditionOffline, ConditionEventsDropped, ConditionReportsStale,
-			ConditionCertExpiry, ConditionGatewayClock, ConditionGatewayTLS:
+			ConditionCertExpiry, ConditionGatewayClock, ConditionGatewayTLS, ConditionQuotaAutonomous:
 			// Одна строка на все компоненты; «с» — самое раннее из активных.
 			for _, code := range sortedCodes(c.conditions) {
 				if family(code) != ci.code || !c.conditions[code] {
@@ -833,6 +912,10 @@ func (s *Service) skip(c collected, fam string) bool {
 		return missing("gateways", "events")
 	case ConditionCustomerCertExpiry:
 		return missing("customer_cert")
+	case ConditionLicenseExpiry, ConditionLicenseGrace, ConditionLicenseRestricted, ConditionLicenseInvalid, ConditionLicenseClock:
+		return missing("license")
+	case ConditionQuotaApprox, ConditionQuotaAutonomous:
+		return missing("gateways", "quota")
 	}
 	return false
 }

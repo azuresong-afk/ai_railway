@@ -152,9 +152,28 @@ func (d Deps) getUser(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, userView(u, time.Now()))
 }
 
-// emailRequest — тело PUT .../email: пустая строка убирает адрес.
+// emailRequest — тело PUT .../email: пустая строка убирает адрес. На адрес
+// уходят отчёты по расписанию с разделами инцидентов, поэтому смена — с
+// повторной проверкой паролем или кодом TOTP (ревью 4.r1, 4В12): угнанная
+// сессия не перенаправит рассылку.
 type emailRequest struct {
 	Email *string `json:"email"`
+	reauthFields
+}
+
+// emailReauth — повторная проверка субъекта перед сменой адреса; false —
+// ответ уже записан. Только полная сессия консоли: у токена API нет
+// пароля и кода.
+func (d Deps) emailReauth(w http.ResponseWriter, r *http.Request, c auth.Caller, req emailRequest) bool {
+	if c.Token != nil {
+		WriteProblem(w, errForbidden())
+		return false
+	}
+	if err := d.Auth.Reauthenticate(r.Context(), c, req.Password, req.Code, "user.email_set"); err != nil {
+		WriteProblem(w, authProblem(d.Logger, err))
+		return false
+	}
+	return true
 }
 
 func (d Deps) setUserEmail(w http.ResponseWriter, r *http.Request) {
@@ -174,6 +193,9 @@ func (d Deps) setUserEmail(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Email == nil {
 		WriteProblem(w, Invalid("Укажите поле email; пустая строка убирает адрес."))
+		return
+	}
+	if !d.emailReauth(w, r, c, req) {
 		return
 	}
 	if err := d.Auth.SetEmail(r.Context(), c, id, *req.Email); err != nil {
@@ -203,6 +225,9 @@ func (d Deps) setOwnEmail(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Email == nil {
 		WriteProblem(w, Invalid("Укажите поле email; пустая строка убирает адрес."))
+		return
+	}
+	if !d.emailReauth(w, r, c, req) {
 		return
 	}
 	if err := d.Auth.SetOwnEmail(r.Context(), c, *req.Email); err != nil {

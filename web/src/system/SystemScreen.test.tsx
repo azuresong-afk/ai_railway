@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Me } from "../api/client";
 import { formatBytes } from "./format";
@@ -99,5 +99,23 @@ describe("размеры", () => {
     expect(formatBytes(0)).toBe("0 Б");
     expect(formatBytes(1536)).toBe("1,5 КиБ");
     expect(formatBytes(21474836480)).toBe("20 ГиБ");
+  });
+
+  it("раздел приёма syslog теневого ИИ — только когда слушатель включён", async () => {
+    renderScreen(["system.read"]);
+    expect(await screen.findByRole("region", { name: "Сервер" })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Приём журналов теневого ИИ по syslog" })).toBeNull();
+    const limits = { max_connections: 256, max_connections_per_address: 16, max_frame_bytes: 16384, lines_per_second: 5000, idle_timeout_seconds: 300, frame_timeout_seconds: 30 };
+    const syslog = {
+      enabled: true, running: true, accept_errors: 0, address: "0.0.0.0:6514", format: "squid", tls: false, client_cert_required: false, allowed_networks: ["10.0.0.0/8"], connections: 1, limits,
+      accepted: 4, rejected_network: 0, rejected_limit: 7, tls_failed: 0, frame_too_large: 0, bad_frame: 0, idle_timeouts: 0, read_timeouts: 0, lines: 10,
+      matched: 5, unmatched: 5, errors: 0, excluded: 0, outdated: 0, no_catalog: 0, dropped: 0, throttled: 0, unlicensed: 0, license_module: true, pending: 2, flush_failures: 0, last_flush_failed: false,
+    };
+    vi.mocked(fetch).mockImplementation(() => Promise.resolve(new Response(JSON.stringify({ ...status, shadow_ai_syslog: syslog }))));
+    cleanup();
+    renderScreen(["system.read"]);
+    const region = await screen.findByRole("region", { name: "Приём журналов теневого ИИ по syslog" });
+    expect(region).toHaveTextContent("Приём без TLS");
+    expect(region).toHaveTextContent("Отказ: сверх предела соединений7");
   });
 });

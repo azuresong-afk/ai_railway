@@ -239,7 +239,7 @@ func (m *MCPHandler) reviewTools(q *mcpReq, l *mcp.List) ([]bool, bool) {
 		}
 		seen[name] = &seenTool{hash: hash, headers: it.Headers, poisoned: poisoned, unchecked: unchecked[i]}
 		if !inReg || reg.ApprovedHash != hash || poisoned && status != policy.ToolSuspicious {
-			observed = append(observed, ObservedTool{Descriptor: it.Raw, Hash: hash, Suspicious: poisoned})
+			observed = append(observed, ObservedTool{Name: name, Descriptor: it.Raw, Hash: hash, Suspicious: poisoned})
 		}
 	}
 	if !enforce {
@@ -362,7 +362,7 @@ func (m *MCPHandler) fetchPage(q *mcpReq, cursor string, page int, name string) 
 		seen[it.Tool.Name] = &seenTool{hash: hash, headers: it.Headers, poisoned: poisoned, unchecked: failed[i] && !q.app.FailOpen}
 		found = found || it.Tool.Name == name
 		if !inReg || reg.ApprovedHash != hash {
-			observed = append(observed, ObservedTool{Descriptor: it.Raw, Hash: hash, Suspicious: poisoned})
+			observed = append(observed, ObservedTool{Name: it.Tool.Name, Descriptor: it.Raw, Hash: hash, Suspicious: poisoned})
 		}
 	}
 	m.remember(q.up.srv.ID, seen)

@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -31,6 +32,12 @@ import (
 type imageRule struct {
 	Bins  []string // бинарники в /opt/aisec/bin
 	Ports []string // EXPOSE, «порт/tcp»
+	// Trees — каталоги в /opt/aisec, файлы которых — ровно файлы этих
+	// каталогов выпуска (lib/ и models/ у aisec-ml, ADR-0024).
+	Trees []string
+	// Dynamic — бинарник с cgo (aisec-ml): загрузчик и все разделяемые
+	// библиотеки — только из /opt/aisec/lib образа, не из системы.
+	Dynamic bool
 }
 
 // productCmds — бинарники поставки (PRODUCT_CMDS в Makefile).
@@ -41,11 +48,15 @@ var imageRules = map[string]imageRule{
 	"aisec-gateway": {Bins: []string{"aisec-gateway"}, Ports: []string{"8443/tcp"}},
 	// aisec-cli — полный выпуск: aisec-cli verify сверяет все файлы манифеста.
 	"aisec-cli": {Bins: productCmds},
+	// aisec-ml — свой выпуск (build/release-ml): бинарник с ONNX Runtime,
+	// библиотеки и пакет моделей; портов нет, сети нет (ADR-0024).
+	"aisec-ml": {Bins: []string{"aisec-ml"}, Trees: []string{"lib", "models"}, Dynamic: true},
 }
 
 const (
 	installDir    = "opt/aisec"
 	binDir        = installDir + "/bin"
+	libDir        = installDir + "/lib"
 	manifestFile  = installDir + "/aisec-manifest.json"
 	signatureFile = manifestFile + ".sig"
 	runUser       = "65534:65534"
@@ -350,7 +361,7 @@ func readLayer(blob string, r io.Reader, hasher aisecCrypto.Hasher, diffID strin
 			}
 		}
 		sort.Strings(e.Xattrs)
-		if hdr.Typeflag == tar.TypeReg && (path.Dir(name) == binDir || name == manifestFile || name == signatureFile) {
+		if hdr.Typeflag == tar.TypeReg && (path.Dir(name) == binDir || name == manifestFile || name == signatureFile || inTrees(name)) {
 			if hdr.Size > maxFile {
 				return nil, fmt.Errorf("%s больше %d байт", name, maxFile)
 			}
@@ -379,6 +390,29 @@ func readLayer(blob string, r io.Reader, hasher aisecCrypto.Hasher, diffID strin
 	return files, nil
 }
 
+// inTrees — файл из каталогов Trees какого-либо правила: его содержимое
+// нужно для сверки с выпуском.
+func inTrees(name string) bool {
+	for _, r := range imageRules {
+		for _, t := range r.Trees {
+			if strings.HasPrefix(name, installDir+"/"+t+"/") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// treeOf — каталог Trees правила, в котором лежит name ("" — ни в каком).
+func treeOf(rule imageRule, name string) string {
+	for _, t := range rule.Trees {
+		if name == installDir+"/"+t || strings.HasPrefix(name, installDir+"/"+t+"/") {
+			return t
+		}
+	}
+	return ""
+}
+
 // checkImage проверяет образ по правилу его имени. kind — release или test
 // (метка ru.aisec.build-kind); release — каталог выпуска, с которым
 // побайтно сравниваются бинарники, манифест и подпись (пусто — без сверки).
@@ -387,7 +421,7 @@ func checkImage(img *image, kind, release string) []string {
 	add := func(format string, a ...any) { problems = append(problems, fmt.Sprintf(format, a...)) }
 	rule, ok := imageRules[img.Name]
 	if !ok {
-		add("неизвестный образ %q: ожидается один из aisec-server, aisec-gateway, aisec-cli", img.Name)
+		add("неизвестный образ %q: ожидается один из aisec-server, aisec-gateway, aisec-cli, aisec-ml", img.Name)
 		return problems
 	}
 	c := img.Config.Config
@@ -463,6 +497,12 @@ func checkFiles(img *image, rule imageRule) []string {
 			if f.Type != tar.TypeReg {
 				add("/%s: ожидается обычный файл", n)
 			}
+		case treeOf(rule, n) != "":
+			// Каталоги и обычные файлы; ссылки запрещены — проверка
+			// целостности aisec-ml по ним не ходит.
+			if f.Type != tar.TypeReg && f.Type != tar.TypeDir {
+				add("/%s: в %s только каталоги и обычные файлы", n, treeOf(rule, n))
+			}
 		default:
 			add("/%s: лишний файл в образе", n)
 			continue
@@ -493,12 +533,80 @@ func checkFiles(img *image, rule imageRule) []string {
 		if f.Mode&0o111 == 0 {
 			add("/%s/%s: не исполняемый", binDir, b)
 		}
-		if err := checkStatic(f.Data); err != nil {
+		check := checkStatic
+		if rule.Dynamic {
+			check = func(data []byte) error { return checkDynamic(data, img.Files, true) }
+		}
+		if err := check(f.Data); err != nil {
 			add("/%s/%s: %v", binDir, b, err)
+		}
+	}
+	// Библиотеки образа тоже берут зависимости только из /opt/aisec/lib.
+	if rule.Dynamic {
+		for _, n := range names {
+			f := img.Files[n]
+			if !strings.HasPrefix(n, libDir+"/") || f.Type != tar.TypeReg || !bytes.HasPrefix(f.Data, []byte("\x7fELF")) {
+				continue
+			}
+			if err := checkDynamic(f.Data, img.Files, false); err != nil {
+				add("/%s: %v", n, err)
+			}
 		}
 	}
 	sort.Strings(problems)
 	return problems
+}
+
+// checkDynamic: загрузчик (у исполняемого файла он обязателен) и все
+// разделяемые библиотеки ELF — файлы /opt/aisec/lib образа; пути поиска
+// библиотек (RPATH, RUNPATH) — только /opt/aisec/lib (у библиотек — и $ORIGIN).
+func checkDynamic(data []byte, files map[string]fileEntry, exe bool) error {
+	f, err := elf.NewFile(bytes.NewReader(data))
+	if err != nil {
+		return fmt.Errorf("не ELF: %w", err)
+	}
+	defer f.Close() //nolint:errcheck // файл в памяти
+	interp := ""
+	for _, p := range f.Progs {
+		if p.Type != elf.PT_INTERP {
+			continue
+		}
+		b := make([]byte, p.Filesz)
+		if _, err := p.ReadAt(b, 0); err != nil {
+			return fmt.Errorf("PT_INTERP: %w", err)
+		}
+		interp = strings.TrimRight(string(b), "\x00")
+	}
+	switch {
+	case exe && interp == "":
+		return errors.New("нет загрузчика (PT_INTERP): ожидается сборка с cgo и загрузчиком из /" + libDir)
+	case interp != "" && (path.Dir(interp) != "/"+libDir || files[strings.TrimPrefix(interp, "/")].Type != tar.TypeReg):
+		return fmt.Errorf("загрузчик %s — не файл /%s образа", interp, libDir)
+	}
+	libs, err := f.ImportedLibraries()
+	if err != nil {
+		return fmt.Errorf("список библиотек: %w", err)
+	}
+	for _, l := range libs {
+		if strings.Contains(l, "/") || files[libDir+"/"+l].Type != tar.TypeReg {
+			return fmt.Errorf("библиотеки %s нет в /%s образа", l, libDir)
+		}
+	}
+	for _, tag := range []elf.DynTag{elf.DT_RPATH, elf.DT_RUNPATH} {
+		vals, err := f.DynString(tag)
+		if err != nil {
+			return fmt.Errorf("%v: %w", tag, err)
+		}
+		for _, v := range vals {
+			for _, d := range strings.Split(v, ":") {
+				// $ORIGIN — только у библиотек: у бинарника это /opt/aisec/bin.
+				if d != "/"+libDir && (exe || d != "$ORIGIN") {
+					return fmt.Errorf("путь поиска библиотек %s вне /%s", d, libDir)
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // checkStatic: ELF без интерпретатора и разделяемых библиотек.
@@ -531,10 +639,44 @@ func checkRelease(img *image, rule imageRule, release string) []string {
 	for _, b := range rule.Bins {
 		pairs[binDir+"/"+b] = filepath.Join(release, "bin", b)
 	}
+	// Каталоги Trees: файлы образа — ровно файлы каталогов выпуска.
+	for _, t := range rule.Trees {
+		root := filepath.Join(release, t)
+		err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+			if errors.Is(err, fs.ErrNotExist) && p == root {
+				return nil // каталога в выпуске нет: в образе его файлов тоже не должно быть
+			}
+			if err != nil || d.IsDir() {
+				return err
+			}
+			if !d.Type().IsRegular() {
+				return fmt.Errorf("%s: не обычный файл", p)
+			}
+			rel, err := filepath.Rel(release, p)
+			if err != nil {
+				return err
+			}
+			pairs[installDir+"/"+filepath.ToSlash(rel)] = p
+			return nil
+		})
+		if err != nil {
+			add("выпуск: %v", err)
+		}
+	}
+	for n, f := range img.Files {
+		if t := treeOf(rule, n); t != "" && f.Type == tar.TypeReg {
+			if _, ok := pairs[n]; !ok {
+				add("/%s: нет в выпуске %s", n, filepath.Join(release, t))
+			}
+		}
+	}
 	for in, out := range pairs {
 		f, ok := img.Files[in]
 		if !ok {
-			continue // уже в checkFiles
+			if treeOf(rule, in) != "" {
+				add("/%s: файла выпуска %s нет в образе", in, out)
+			}
+			continue // остальное — уже в checkFiles
 		}
 		want, err := readLimited(out)
 		if err != nil {

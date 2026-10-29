@@ -10,9 +10,11 @@ import (
 	"net/http"
 	"net/netip"
 	"net/smtp"
+	"net/textproto"
 	"os"
 	"slices"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -230,23 +232,39 @@ func (t *Transport) dial(ctx context.Context, host string, port int) (net.Conn, 
 // sendEmail — net/smtp: STARTTLS обязателен; сервер без STARTTLS — отказ
 // до передачи пароля и письма.
 func (t *Transport) sendEmail(ctx context.Context, ch Channel, sec Secrets, msg Message) error {
-	return t.smtpSend(ctx, ch, sec, emailMessage(msg, ch.Settings.From, ch.Settings.To, msg.ID, t.now()))
+	_, err := t.smtpSend(ctx, ch, sec, emailMessage(msg, ch.Settings.From, ch.Settings.To, msg.ID, t.now()), nil)
+	return err
 }
 
 // SendRaw отправляет готовое письмо (RFC 5322) получателям почтового канала
 // ch: так уходят отчёты по расписанию (задача 3.25). Условия те же, что у
 // уведомлений: STARTTLS обязателен, срок попытки — DefaultSendTimeout.
 func (t *Transport) SendRaw(ctx context.Context, ch Channel, sec Secrets, raw []byte) error {
+	_, err := t.SendRawSoft(ctx, ch, sec, raw, nil)
+	return err
+}
+
+// SendRawSoft — SendRaw, в котором отказ сервера в RCPT по адресу из soft
+// (адреса пользователей консоли) не срывает письмо: адрес пропускается и
+// учитывается в rejected (ревью 4.r1, 4В13). Иначе пользователь, задавший
+// себе адрес, который relay не принимает, лишал бы отчёта всех получателей.
+// Отказ по адресу канала — по-прежнему ошибка письма.
+func (t *Transport) SendRawSoft(ctx context.Context, ch Channel, sec Secrets, raw []byte, soft []string) (rejected int, err error) {
 	if ch.Type != TypeEmail {
-		return failed(ErrCodeConfig)
+		return 0, failed(ErrCodeConfig)
 	}
 	ctx, cancel := context.WithTimeout(ctx, t.timeout)
 	defer cancel()
-	return t.smtpSend(ctx, ch, sec, raw)
+	set := make(map[string]bool, len(soft))
+	for _, a := range soft {
+		set[strings.ToLower(a)] = true
+	}
+	return t.smtpSend(ctx, ch, sec, raw, set)
 }
 
-// smtpSend передаёт письмо raw: STARTTLS, при заданном имени — вход.
-func (t *Transport) smtpSend(ctx context.Context, ch Channel, sec Secrets, raw []byte) (err error) {
+// smtpSend передаёт письмо raw: STARTTLS, при заданном имени — вход. Отказ
+// сервера в RCPT по адресу из soft пропускается (rejected).
+func (t *Transport) smtpSend(ctx context.Context, ch Channel, sec Secrets, raw []byte, soft map[string]bool) (rejected int, err error) {
 	defer func() {
 		// Обмен прерван закрытием соединения по сроку ctx — это тайм-аут,
 		// а не отказ соединения (3Н31 ревью 3.r2).
@@ -257,12 +275,12 @@ func (t *Transport) smtpSend(ctx context.Context, ch Channel, sec Secrets, raw [
 	s := ch.Settings
 	cfg, err := t.tls.ClientConfig([]byte(s.CAPEM))
 	if err != nil {
-		return failed(ErrCodeConfig)
+		return 0, failed(ErrCodeConfig)
 	}
 	cfg.ServerName = s.Host
 	conn, err := t.dial(ctx, s.Host, s.Port)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	// Закрытие по отмене ctx прерывает зависший обмен.
 	stop := context.AfterFunc(ctx, func() { _ = conn.Close() }) //nolint:gosec // G104: соединение прерывается
@@ -272,45 +290,53 @@ func (t *Transport) smtpSend(ctx context.Context, ch Channel, sec Secrets, raw [
 	// объём чтения за попытку ограничен.
 	c, err := smtp.NewClient(&limitedConn{Conn: conn, left: maxSMTPRead}, s.Host)
 	if err != nil {
-		return netCode(err, ErrCodeDial)
+		return 0, netCode(err, ErrCodeDial)
 	}
 	if err := c.Hello(DefaultHostname); err != nil {
-		return netCode(err, ErrCodeRejected)
+		return 0, netCode(err, ErrCodeRejected)
 	}
 	if ok, _ := c.Extension("STARTTLS"); !ok {
-		return failed(ErrCodeNoSTARTTLS)
+		return 0, failed(ErrCodeNoSTARTTLS)
 	}
 	if err := c.StartTLS(cfg); err != nil {
-		return netCode(err, ErrCodeTLS)
+		return 0, netCode(err, ErrCodeTLS)
 	}
 	if s.Username != "" {
 		if ok, _ := c.Extension("AUTH"); !ok {
-			return failed(ErrCodeAuth)
+			return 0, failed(ErrCodeAuth)
 		}
 		if err := c.Auth(smtp.PlainAuth("", s.Username, sec.Password, s.Host)); err != nil {
-			return netCode(err, ErrCodeAuth)
+			return 0, netCode(err, ErrCodeAuth)
 		}
 	}
 	if err := c.Mail(s.From); err != nil {
-		return netCode(err, ErrCodeRejected)
+		return 0, netCode(err, ErrCodeRejected)
 	}
 	for _, to := range s.To {
 		if err := c.Rcpt(to); err != nil {
-			return netCode(err, ErrCodeRejected)
+			var reply *textproto.Error
+			if soft[strings.ToLower(to)] && errors.As(err, &reply) {
+				rejected++
+				continue
+			}
+			return 0, netCode(err, ErrCodeRejected)
 		}
+	}
+	if rejected == len(s.To) {
+		return 0, failed(ErrCodeRejected)
 	}
 	w, err := c.Data()
 	if err != nil {
-		return netCode(err, ErrCodeRejected)
+		return 0, netCode(err, ErrCodeRejected)
 	}
 	if _, err := w.Write(raw); err != nil {
-		return netCode(err, ErrCodeWrite)
+		return 0, netCode(err, ErrCodeWrite)
 	}
 	if err := w.Close(); err != nil {
-		return netCode(err, ErrCodeRejected)
+		return 0, netCode(err, ErrCodeRejected)
 	}
 	_ = c.Quit() //nolint:gosec // G104: письмо принято, ответ на QUIT не важен
-	return nil
+	return rejected, nil
 }
 
 // maxSMTPRead — предел чтения от сервера SMTP за одну попытку.

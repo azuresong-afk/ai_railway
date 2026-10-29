@@ -22,6 +22,9 @@ type Status struct {
 	// Bundle — сборка пакета конфигурации шлюзов (В16, Н28 ревью 2.r3b);
 	// nil — сервер без внутреннего порта для шлюзов.
 	Bundle *BundleStatus `json:"bundle"`
+	// ShadowAISyslog — приём журналов прокси по syslog (задача 4.23); nil —
+	// слушатель выключен.
+	ShadowAISyslog *ShadowAISyslogStats `json:"shadow_ai_syslog,omitempty"`
 	// Notifications — по одной записи на каждое условие раздела 7.
 	Notifications []Notification `json:"notifications"`
 	// Unavailable — разделы, которые не удалось собрать (сбой БД и т. п.);
@@ -223,7 +226,32 @@ const (
 	// если вычисление правила падает на каждом проходе дольше этого срока
 	// (3Н48 ревью 3.r4).
 	ConditionAlertJob = "alert_job_stale"
+	// Условия лицензии (ТЗ 5.15, ADR-0026, п. 8): до конца срока
+	// license.ExpiryWarn и меньше (за license.ExpiryCritical — ещё одно
+	// system.alert с кодом license_expiry:critical), льготный период,
+	// запрет изменений, лицензия не прошла повторную проверку, часы сервера
+	// отстают от отметки часов лицензии или от даты её выдачи.
+	ConditionLicenseExpiry     = "license_expiry"
+	ConditionLicenseGrace      = "license_grace"
+	ConditionLicenseRestricted = "license_restricted"
+	ConditionLicenseInvalid    = "license_invalid"
+	ConditionLicenseClock      = "license_clock"
+	licenseExpiryCritical      = ConditionLicenseExpiry + ":critical"
+	// ConditionQuotaApprox — ЗИ.6, DM-36 (задача 4.29, ADR-0021, п. 2):
+	// режим квот local, а действующих шлюзов на связи больше одного — квоты
+	// и жёсткие бюджеты соблюдаются с превышением до числа шлюзов.
+	ConditionQuotaApprox = "quota_approximate"
+	// ConditionQuotaAutonomous — ЗИ.6, DM-36 (ADR-0021, п. 5): шлюз в
+	// последнем heartbeat сообщил, что работает на автономной доле — аренду
+	// получить не удаётся. Код — семейство и ID шлюза.
+	ConditionQuotaAutonomous = "quota_autonomous"
 )
+
+// QuotaHealth — режим квот и шлюзы на автономной доле (quotalease.Health).
+type QuotaHealth struct {
+	Mode       string
+	Autonomous []string
+}
 
 // AlertJobStaleAfter — возраст последнего прохода фоновой задачи правил
 // (период — минута), после которого она считается остановленной: пять
@@ -292,7 +320,7 @@ const (
 
 // gatewayFamilies — семейства условий с кодом «семейство:ID шлюза».
 var gatewayFamilies = []string{ConditionBundleLag, ConditionEventsDropped, ConditionOffline, ConditionCertExpiry,
-	ConditionReportsStale, ConditionGatewayClock, ConditionGatewayTLS}
+	ConditionReportsStale, ConditionGatewayClock, ConditionGatewayTLS, ConditionQuotaAutonomous}
 
 // GatewayClockSkewWarn — расхождение часов шлюза с сервером, после которого
 // поднимается условие gateway_clock (шлюз пишет предупреждение в свой

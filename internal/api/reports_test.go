@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/azuresong-afk/ai_railway/internal/alerting"
+	"github.com/azuresong-afk/ai_railway/internal/compliance"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/internal/ids"
 	"github.com/azuresong-afk/ai_railway/internal/incidents"
@@ -80,7 +81,7 @@ func newTestReports(t testing.TB, d reports.Dash, dir reports.Directory) *report
 		t.Fatal(err)
 	}
 	svc, err := reports.New(reports.Options{Store: reports.NewMemory(),
-		Builder:  &reports.Builder{Dash: d, Incidents: fakeReportIncidents{}, Alerts: fakeReportAlerts{}, Facts: fakeReportFacts{}},
+		Builder:  &reports.Builder{Dash: d, Incidents: fakeReportIncidents{}, Alerts: fakeReportAlerts{}, Facts: fakeReportFacts{}, Compliance: fakeReportCompliance{}},
 		Channels: fakeReportChannels{}, Directory: dir, IDs: ids.NewGenerator(r),
 		Location: func(context.Context) (*time.Location, error) { return time.UTC, nil },
 		Logger:   slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))})
@@ -111,8 +112,9 @@ func TestReportsViaAPI(t *testing.T) {
 		s := e.mustLogin(t, login)
 		for _, kind := range reports.Kinds() {
 			w := e.call(s, "GET", reportPath(kind, "", ""), "", false)
-			if login == "sysadm" && kind == reports.KindIncidents {
-				// Нет incidents.read — отчёта по инцидентам нет (3В31 ревью 3.r4).
+			if (login == "sysadm" && kind == reports.KindIncidents) || (login == "analyst" && kind == reports.KindCompliance) {
+				// Нет incidents.read — отчёта по инцидентам нет (3В31 ревью 3.r4);
+				// нет compliance.read — отчёта «Соответствие» нет (задача 4.25).
 				mustProblem(t, w, 403, CodeForbidden)
 				continue
 			}
@@ -145,7 +147,7 @@ func TestReportsViaAPI(t *testing.T) {
 		t.Fatalf("XLSX: %d %v", w.Code, w.Header())
 	}
 	exports := e.rec.find("data.export")
-	if len(exports) != 4*3-1+2 { // без отчёта по инцидентам у sysadm
+	if len(exports) != 4*4-2+2 { // без отчёта по инцидентам у sysadm и «Соответствие» у аналитика
 		t.Fatalf("записей data.export %d", len(exports))
 	}
 	last := exports[len(exports)-1]
@@ -157,6 +159,20 @@ func TestReportsViaAPI(t *testing.T) {
 			t.Errorf("в подробностях нет %s: %s", key, e.rec.canon[len(e.rec.canon)-1])
 		}
 	}
+	// Отчёт «Соответствие» (задача 4.25): все три формата, запись data.export,
+	// без права compliance.read — 403, владелец приложения — 403.
+	for _, f := range []string{"html", "csv", "xlsx"} {
+		w := e.call(e.mustLogin(t, "auditor"), "GET", reportPath("compliance", f, ""), "", false)
+		if w.Code != 200 || w.Header().Get("X-Export-Rows") == "" {
+			t.Fatalf("соответствие %s: %d %s", f, w.Code, w.Body)
+		}
+		if f == "html" && !strings.Contains(w.Body.String(), "Соответствие требованиям") {
+			t.Errorf("страница отчёта: %s", w.Body)
+		}
+	}
+	mustProblem(t, e.call(e.mustLogin(t, "owner"), "GET", reportPath("compliance", "", ""), "", false), 403, CodeForbidden)
+	mustProblem(t, e.call(e.mustLogin(t, "analyst"), "GET", reportPath("compliance", "csv", ""), "", false), 403, CodeForbidden)
+	mustProblem(t, e.call(session{}, "GET", reportPath("compliance", "", ""), "", false), 401, CodeUnauthorized)
 }
 
 // УПД.8: владелец приложения видит только сводный отчёт по своему
@@ -356,7 +372,7 @@ func TestReportSchedulesViaAPI(t *testing.T) {
 func TestReportRecipientsViaAPI(t *testing.T) {
 	e := newAppsEnv(t)
 	admin := e.mustLogin(t, "admin")
-	if w := e.call(admin, "PUT", "/api/v1/users/"+tAuditorID+"/email", `{"email":"auditor@example.ru"}`, true); w.Code != 200 {
+	if w := e.call(admin, "PUT", "/api/v1/users/"+tAuditorID+"/email", `{"email":"auditor@example.ru","password":"`+tPhrase+`"}`, true); w.Code != 200 {
 		t.Fatalf("e-mail аудитора: %d %s", w.Code, w.Body)
 	}
 	w := e.call(admin, "GET", "/api/v1/report-recipients", "", false)
@@ -411,4 +427,15 @@ func TestReportRecipientsViaAPI(t *testing.T) {
 	if w := e.call(admin, "GET", "/api/v1/report-schedules/"+sch.ID+"/runs", "", false); w.Code != 200 {
 		t.Fatalf("журнал: %d", w.Code)
 	}
+}
+
+// fakeReportCompliance — обзор соответствия для отчёта «Соответствие».
+type fakeReportCompliance struct{}
+
+func (fakeReportCompliance) Evaluate(context.Context, compliance.Filter) (compliance.Overview, error) {
+	pct := 50
+	return compliance.Overview{GeneratedAt: time.Now().UTC(), Base: compliance.BaseInfo{Version: 1, Date: "2026-10-28", Origin: "builtin", Requirements: 1},
+		Summary: compliance.Summary{Percent: &pct, Counted: 2},
+		Items: []compliance.Item{{Requirement: compliance.Requirement{ID: "t.one", Source: "s", Clause: "п. 1", Title: "Тест", Applies: []string{"gis"}},
+			SourceTitle: "Источник", Status: compliance.StatusMet}}}, nil
 }

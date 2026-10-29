@@ -184,3 +184,40 @@ func TestONNXExecutor(t *testing.T) {
 		t.Fatalf("длинный текст: %+v %v", r, err)
 	}
 }
+
+// Чужая библиотека ONNX Runtime не загружается: хеш сверяется до dlopen,
+// библиотека не нужна (тест идёт в make ml-test без AISEC_ORT_LIB).
+func TestInitORTRefusesForeignLibrary(t *testing.T) {
+	p, err := aisecCrypto.New(aisecCrypto.ProfileStandard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lib := t.TempDir() + "/libonnxruntime.so.1.31.0"
+	if err := os.WriteFile(lib, []byte("не та библиотека"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := initORT(lib, p, strings.Repeat("ab", 32)); err == nil || !strings.Contains(err.Error(), "хеш не совпадает") {
+		t.Fatalf("чужая библиотека: %v", err)
+	}
+	if err := initORT(lib, p, ""); err == nil || !strings.Contains(err.Error(), "без хеша") {
+		t.Fatalf("сборка без хеша: %v", err)
+	}
+	if err := initORT(t.TempDir(), p, strings.Repeat("ab", 32)); err == nil {
+		t.Fatal("каталог вместо библиотеки принят")
+	}
+	// Через newExecutor — тот же отказ: aisec-ml не запускается.
+	saved := ortLibHash
+	t.Cleanup(func() { ortLibHash = saved })
+	ortLibHash = strings.Repeat("ab", 32)
+	if _, err := initORTOnceForTest(lib, p); err == nil {
+		t.Fatal("исполнитель создан с чужой библиотекой")
+	}
+}
+
+// initORTOnceForTest — newExecutor без кеша sync.Once процесса.
+func initORTOnceForTest(lib string, p aisecCrypto.Provider) (ml.Executor, error) {
+	if err := initORT(lib, p, ortLibHash); err != nil {
+		return nil, err
+	}
+	return onnxExecutor{}, nil
+}

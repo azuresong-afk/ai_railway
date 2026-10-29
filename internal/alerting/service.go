@@ -245,11 +245,14 @@ func (s *Service) UpdateRule(ctx context.Context, by By, id string, in RuleInput
 		next.Recipients = rc
 	} else if next, err = ParseRuleInput(in, cur.Kind); err != nil {
 		return Rule{}, err
-	} else if (cur.Condition.Field == ToolField) != (next.Condition.Field == ToolField) {
-		// Поле tool — только у встроенного правила agents.tool_new: его
-		// срабатывания идут из аудита по ключу правила, не по событиям.
+	} else if (serverRaisedField(cur.Condition.Field) || serverRaisedField(next.Condition.Field)) &&
+		cur.Condition.Field != next.Condition.Field {
+		// Поля tool и shadow_ai_service — только у встроенных правил
+		// agents.tool_new и shadow_ai.new_service: их срабатывания идут из
+		// аудита по ключу правила, не по событиям.
 		return Rule{}, &InputError{Errs: []error{errors.New(
-			"condition.field: tool — только у встроенного правила «Новый инструмент агента», и у него поле не меняется")}}
+			"condition.field: tool и shadow_ai_service — только у встроенных правил «Новый инструмент агента» и " +
+				"«Новый ИИ-сервис в журналах прокси», и у них поле не меняется")}}
 	}
 	if err := s.checkRecipients(ctx, next.Recipients); err != nil {
 		return Rule{}, err

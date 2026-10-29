@@ -143,6 +143,44 @@ func TestSendReportUserRecipients(t *testing.T) {
 	}
 }
 
+// Ревью 4.r1, 4В13 и 4Н10: relay отклоняет адрес пользователя (550) — отчёт
+// уходит остальным, отклонённый адрес учитывается; отказ по адресу канала —
+// ошибка письма. Адреса пользователей не видны в заголовке To.
+func TestSendReportUserAddressRejected(t *testing.T) {
+	e := newEnv(t)
+	srv := newSMTPServer(t, e.tp, e.cert, e.key, true)
+	c, err := e.svc.CreateChannel(testCtx(t), e.by, e.emailInput(srv.addr, ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := ReportMail{ID: "01900000-0000-7000-8000-000000000004", Subject: "Отчёт", Body: "Во вложении.", Filename: "r.csv",
+		ContentType: "text/csv", Data: []byte("a,b\r\n"), ExtraTo: []string{"blocked@example.ru", "ivanov@example.ru"}}
+	rejected := 0
+	m.Rejected = func(n int) { rejected += n }
+	srv.mu.Lock()
+	srv.rejectRcpt = "blocked@example.ru"
+	srv.mu.Unlock()
+	if err := e.svc.SendReport(testCtx(t), c.ID, m); err != nil {
+		t.Fatalf("отказ по адресу пользователя сорвал отчёт: %v", err)
+	}
+	srv.mu.Lock()
+	if rejected != 1 || len(srv.data) != 1 || len(srv.rcpt) != 3 {
+		srv.mu.Unlock()
+		t.Fatalf("отклонено %d, писем %d, RCPT %v", rejected, len(srv.data), srv.rcpt)
+	}
+	for _, l := range strings.Split(srv.data[0], "\r\n") {
+		if strings.HasPrefix(l, "To:") && strings.Contains(l, "ivanov@example.ru") {
+			t.Errorf("адрес пользователя в заголовке: %s", l)
+		}
+	}
+	// Отказ по адресу канала — ошибка письма.
+	srv.rejectRcpt = "duty@example.ru"
+	srv.mu.Unlock()
+	if err := e.svc.SendReport(testCtx(t), c.ID, m); ErrorCode(err) != ErrCodeRejected {
+		t.Fatalf("отказ по адресу канала: %v", err)
+	}
+}
+
 func TestMergeRecipients(t *testing.T) {
 	var many []string
 	for i := range 60 {

@@ -95,7 +95,7 @@ endif
 
 # Тесты поставочной сборки (тег aisec_release, Н35) входят в каждую проверку:
 # без RELEASE=1 — с имитацией ключа производителя (ADR-0022).
-check: fmt-check vet docs-check repocheck licenses vendor-check lint lint-selftest sast test release-test build manifest e2e dm-coverage detector-quality sbom fuzz-smoke vuln $(WEB_CHECKS) ## Все проверки перед pull request
+check: fmt-check vet docs-check repocheck licenses vendor-check lint lint-selftest sast test ml-test release-test build manifest e2e dm-coverage detector-quality sbom fuzz-smoke vuln $(WEB_CHECKS) ## Все проверки перед pull request
 	@if [ -n "$(strip $(PENDING_CHECKS))" ]; then \
 		echo "ВНИМАНИЕ: make check неполный, не выполнены: $(PENDING_CHECKS) (docs/plans/stage-0.md; для web-* нужен Node.js, web/README.md)"; fi
 
@@ -189,6 +189,13 @@ lint: lint-version ## Линтеры, в том числе depguard (.golangci.y
 	CGO_ENABLED=1 $(BIN)/golangci-lint run ./...
 	# Исполнитель ONNX Runtime в aisec-ml собирается только с тегом aisec_onnx (ADR-0024).
 	CGO_ENABLED=1 $(BIN)/golangci-lint run --build-tags e2e,aisec_onnx ./cmd/aisec-ml/...
+
+# Исполнитель ONNX Runtime в aisec-ml (тег aisec_onnx, ADR-0024): проверка
+# хеша библиотеки и отказ загрузить чужую — без самой библиотеки. С
+# AISEC_ORT_LIB=…/libonnxruntime.so.1.31.0 (make ort-build) — и вывод модели.
+.PHONY: ml-test
+ml-test: ## Тесты aisec-ml с исполнителем ONNX Runtime (тег aisec_onnx, cgo)
+	CGO_ENABLED=1 go test -count=1 -tags aisec_onnx ./cmd/aisec-ml/
 
 .PHONY: sast
 sast: lint-version ## Статический анализ (gosec) в SARIF и сверка с разметкой docs/cert/sast-triage/
@@ -387,13 +394,42 @@ release-sign: ## Подписать манифест поставки ключо
 	go run ./tools/manifest sign -key '$(MANIFEST_KEY)' -manifest $(RELEASE_DIR)/aisec-manifest.json \
 		$(if $(MANIFEST_SHA256),-expect-sha256 '$(MANIFEST_SHA256)')
 
+# Каталог выпуска подписан ключом производителя (ревью 4.r1, 4В11):
+# verify -manifest при тестовом ключе только предупреждает, поэтому выпуск
+# проверяет aisec-cli из каталога с -release, и отказ — при тестовом ключе,
+# при отпечатке ключа в бинарниках, отличном от VENDOR_PUB, и при версии
+# манифеста, отличной от VERSION.
+VENDOR_PUB ?= internal/integrity/keys/manifest.pub
+
+.PHONY: release-signed-check
+release-signed-check: ## Каталог выпуска подписан ключом производителя VENDOR_PUB, версия манифеста — VERSION (ADR-0022)
+	@mkdir -p $(BUILD)
+	@$(RELEASE_DIR)/bin/aisec-cli verify -release $(RELEASE_DIR) -allow-older >$(BUILD)/release-verify.out || \
+		{ cat $(BUILD)/release-verify.out; echo "release-signed-check: каталог выпуска не прошёл проверку"; exit 1; }
+	@cat $(BUILD)/release-verify.out
+	@! grep -q 'тестовым ключом' $(BUILD)/release-verify.out || \
+		{ echo "release-signed-check: каталог выпуска собран с тестовым ключом — make release-dir RELEASE=1 и подпись ключом производителя"; exit 1; }
+	@got=$$(sed -n 's/^Отпечаток ключа производителя: //p' $(BUILD)/release-verify.out | tail -n 1); \
+		want=$$(go run ./tools/manifest fingerprint -pub '$(VENDOR_PUB)') || exit 1; \
+		test -n "$$got" && test "$$got" = "$$want" || \
+		{ echo "release-signed-check: бинарники выпуска проверяют подпись ключом $$got, а $(VENDOR_PUB) — $$want"; exit 1; }
+	@v=$$(sed -n 's/^  "version": "\([^"]*\)",$$/\1/p' $(RELEASE_DIR)/aisec-manifest.json); \
+		test "$$v" = '$(VERSION)' || { echo "release-signed-check: версия манифеста $$v не совпадает с VERSION=$(VERSION)"; exit 1; }
+
 .PHONY: images
 images: ## Образы поставки пилота из подписанного каталога выпуска — только RELEASE=1 (Н34, ADR-0022): сборка, SBOM, проверка (ЗИ.5)
 	@test '$(RELEASE)' = 1 || { echo "images: только RELEASE=1 (Н34); образы с тестовым ключом, не для поставки — make images-test"; exit 1; }
 	$(release-tree-check)
 	@test -s $(RELEASE_DIR)/aisec-manifest.json.sig || { echo "images: нет $(RELEASE_DIR)/aisec-manifest.json.sig — make release-dir RELEASE=1, затем подпись на машине без сети (make release-sign)"; exit 1; }
 	$(MAKE) release-test
-	$(RELEASE_DIR)/bin/aisec-cli verify -manifest $(RELEASE_DIR)/aisec-manifest.json
+	$(MAKE) --no-print-directory release-signed-check
+ifeq ($(filter 1,$(ML)),1)
+	@test -s $(ML_RELEASE_DIR)/aisec-manifest.json.sig || { echo "images: нет $(ML_RELEASE_DIR)/aisec-manifest.json.sig — make ml-release-dir RELEASE=1, затем make release-sign RELEASE_DIR=$(ML_RELEASE_DIR) на машине без сети"; exit 1; }
+	@$(RELEASE_DIR)/bin/aisec-cli verify -release $(ML_RELEASE_DIR) -allow-older >$(BUILD)/release-ml-verify.out || \
+		{ cat $(BUILD)/release-ml-verify.out; echo "images: выпуск aisec-ml не прошёл проверку"; exit 1; }
+	@! grep -q 'тестовым ключом' $(BUILD)/release-ml-verify.out || { echo "images: выпуск aisec-ml подписан тестовым ключом"; exit 1; }
+	$(MAKE) --no-print-directory ort-verify ORT_LIB_DIR=$(ML_RELEASE_DIR)/lib
+endif
 	$(MAKE) --no-print-directory release-fingerprint
 	$(MAKE) images-build
 
@@ -410,6 +446,9 @@ images-all:
 .PHONY: images-build
 images-build:
 	$(MAKE) images-docker
+ifeq ($(filter 1,$(ML)),1)
+	$(MAKE) image-ml
+endif
 	$(MAKE) images-sbom
 	$(MAKE) images-verify
 
@@ -445,6 +484,118 @@ images-sbom: $(BIN)/sbom-utility ## SBOM каждого образа (CycloneDX 
 images-verify: ## Проверка образов (ЗИ.5): не root, нет оболочки и пакетов ОС, только свои порты, бинарники = манифест выпуска; compose пилота
 	go run ./tools/imagecheck image -release $(RELEASE_DIR) -kind $(IMAGE_KIND) $(addprefix $(IMAGES_DIR)/,$(addsuffix .tar,$(IMAGE_CMDS)))
 	go run ./tools/imagecheck compose $(PILOT_COMPOSE)
+	go run ./tools/imagecheck compose $(PILOT_COMPOSE) $(PILOT_ML_COMPOSE)
+ifeq ($(filter 1,$(ML)),1)
+	go run ./tools/imagecheck image -release $(ML_RELEASE_DIR) -kind $(IMAGE_KIND) $(IMAGES_DIR)/aisec-ml.tar
+endif
+
+# ML-детекторы (ADR-0024, задача 4.19): ONNX Runtime 1.31.0 из исходников без
+# телеметрии и выпуск aisec-ml со своим манифестом целостности.
+#
+#   make ort-fetch            зеркало исходников по deps.lock (сеть: git и https)
+#   make ort-build            библиотека ORT в Dockerfile.ml без сети; хеш — с ort.sha256
+#   make ml-release-dir       каталог выпуска build/release-ml (Dockerfile.ml)
+#   make images ML=1          образы поставки вместе с aisec-ml
+#
+# Выпуск aisec-ml — отдельный каталог и манифест: в основном выпуске нет
+# библиотек с cgo, и aisec-cli verify не зависит от ML. С RELEASE=1 манифест
+# выпуска aisec-ml подписывается так же, как основной: make release-sign
+# RELEASE_DIR=build/release-ml на машине без сети.
+ML ?=
+ORT_VERSION    := 1.31.0
+ORT_DIR        := deploy/build/onnxruntime
+ORT_MIRROR     := $(BUILD)/ort-mirror
+ORT_OUT        := $(BUILD)/ort
+ORT_LIB_DIR    ?= $(ORT_OUT)/lib
+ORT_JOBS       ?=
+ML_RELEASE_DIR := $(BUILD)/release-ml
+ML_LIB_PATH    := /opt/aisec/lib
+# Подписанный пакет моделей (tools/manifest sign-models) — в образ aisec-ml;
+# пусто — образ без моделей, aisec-ml отвечает «недоступен» (часть 2 задачи 4.19).
+ML_MODELS_DIR  ?=
+MANIFEST_MODE  ?= $(if $(filter 1,$(RELEASE)),unsigned,test)
+PILOT_ML_COMPOSE := deploy/compose/pilot/compose.ml.yaml
+
+.PHONY: ort-fetch
+ort-fetch: ## Зеркало исходников ONNX Runtime и зависимостей по deps.lock с проверкой SHA-256 (сеть)
+	bash $(ORT_DIR)/fetch.sh $(ORT_DIR)/deps.lock $(ORT_MIRROR)
+
+.PHONY: ort-build
+ort-build: ## Сборка ONNX Runtime без сети в Dockerfile.ml; хеш библиотеки сверяется с ort.sha256
+	@test -d $(ORT_MIRROR) || { echo "ort-build: нет $(ORT_MIRROR) — сначала make ort-fetch"; exit 1; }
+	docker build --pull=false -f deploy/build/Dockerfile.ml --target ort-out \
+		--build-arg ORT_JOBS='$(ORT_JOBS)' -o type=local,dest=$(ORT_OUT) .
+	$(MAKE) --no-print-directory ort-verify
+
+# Эталонный хеш (ort.sha256) записывается после эталонной сборки на машине
+# владельца (docs/cert/build-env.md). Пока его нет, сборка только печатает хеш;
+# поставка (RELEASE=1) без эталона не собирается.
+.PHONY: ort-verify
+ort-verify:
+	@test -f $(ORT_LIB_DIR)/libonnxruntime.so.$(ORT_VERSION) || { echo "ort-verify: нет $(ORT_LIB_DIR)/libonnxruntime.so.$(ORT_VERSION)"; exit 1; }
+	@got=$$(sha256sum $(ORT_LIB_DIR)/libonnxruntime.so.$(ORT_VERSION) | cut -d' ' -f1) || exit 1; \
+		echo "SHA-256 libonnxruntime.so.$(ORT_VERSION): $$got"; \
+		if [ -s $(ORT_DIR)/ort.sha256 ]; then \
+			want=$$(cut -d' ' -f1 $(ORT_DIR)/ort.sha256); \
+			test "$$got" = "$$want" || { echo "ort-verify: хеш не совпадает с эталоном $(ORT_DIR)/ort.sha256 ($$want) — сборка невоспроизводима или подменена"; exit 1; }; \
+			echo "Совпадает с эталоном $(ORT_DIR)/ort.sha256."; \
+		elif [ '$(RELEASE)' = 1 ]; then \
+			echo "ort-verify: нет эталона $(ORT_DIR)/ort.sha256 — поставка без эталонной сборки запрещена"; exit 1; \
+		else \
+			echo "Эталона $(ORT_DIR)/ort.sha256 нет: запишите хеш эталонной сборки (docs/cert/build-env.md)."; \
+		fi
+
+.PHONY: ml-release-dir
+ml-release-dir: ## Каталог выпуска aisec-ml build/release-ml в Dockerfile.ml без сети (с RELEASE=1 — без подписи)
+ifeq ($(filter 1,$(RELEASE)),1)
+	$(release-tree-check)
+endif
+	@test -d $(ORT_MIRROR) || { echo "ml-release-dir: нет $(ORT_MIRROR) — сначала make ort-fetch"; exit 1; }
+	rm -rf $(ML_RELEASE_DIR)
+	docker build --pull=false -f deploy/build/Dockerfile.ml --target ml-release \
+		--build-arg VERSION='$(VERSION)' --build-arg SOURCE_DATE='$(SOURCE_DATE)' --build-arg SOURCE_EPOCH='$(SOURCE_EPOCH)' \
+		--build-arg MANIFEST_MODE=$(MANIFEST_MODE) --build-arg RELEASE='$(RELEASE)' --build-arg ORT_JOBS='$(ORT_JOBS)' \
+		$(if $(ML_MODELS_DIR),--build-context ml-models=$(ML_MODELS_DIR) --build-arg ML_MODELS=1) -o type=local,dest=$(ML_RELEASE_DIR) .
+	$(MAKE) --no-print-directory ort-verify ORT_LIB_DIR=$(ML_RELEASE_DIR)/lib
+
+# Сборка выпуска aisec-ml внутри Dockerfile.ml (стадия ml): бинарник с cgo,
+# загрузчиком и RPATH /opt/aisec/lib, хешем библиотеки ORT (SHA-256 —
+# криптопрофиль standard aisec-ml), библиотеки из того же образа и манифест.
+.PHONY: ml-release-assemble
+ml-release-assemble:
+	@test '$(MANIFEST_MODE)' != unsigned || test '$(RELEASE)' = 1 || { echo "ml-release-assemble: MANIFEST_MODE=unsigned — только с RELEASE=1 (иначе в aisec-ml тестовый ключ)"; exit 1; }
+	@test '$(MANIFEST_MODE)' = unsigned || test '$(RELEASE)' != 1 || { echo "ml-release-assemble: RELEASE=1 — только MANIFEST_MODE=unsigned"; exit 1; }
+	@test -f $(ORT_LIB_DIR)/libonnxruntime.so.$(ORT_VERSION) || { echo "ml-release-assemble: нет $(ORT_LIB_DIR)/libonnxruntime.so.$(ORT_VERSION)"; exit 1; }
+	rm -rf $(ML_RELEASE_DIR)
+	mkdir -p $(ML_RELEASE_DIR)/bin $(ML_RELEASE_DIR)/lib $(ML_RELEASE_DIR)/models
+	$(if $(ML_MODELS_DIR),cp -R $(ML_MODELS_DIR)/. $(ML_RELEASE_DIR)/models/)
+	install -m 0644 $(ORT_LIB_DIR)/libonnxruntime.so.$(ORT_VERSION) $(ML_RELEASE_DIR)/lib/
+	hash=$$(sha256sum $(ML_RELEASE_DIR)/lib/libonnxruntime.so.$(ORT_VERSION) | cut -d' ' -f1) && \
+	CGO_ENABLED=1 go build -trimpath -tags '$(BUILD_TAGS) aisec_onnx' \
+		-ldflags "$(LDFLAGS) -X main.ortLibHash=$$hash -linkmode=external -extldflags '-Wl,--dynamic-linker=$(ML_LIB_PATH)/ld-linux-x86-64.so.2 -Wl,--disable-new-dtags -Wl,-rpath,$(ML_LIB_PATH)'" \
+		-o $(ML_RELEASE_DIR)/bin/aisec-ml ./cmd/aisec-ml
+	bash deploy/build/ml-libs.sh $(ML_RELEASE_DIR)
+	go run ./tools/manifest build -out $(ML_RELEASE_DIR)/aisec-manifest.json \
+		$(if $(filter unsigned,$(MANIFEST_MODE)),-unsigned,-test-key $(MANIFEST_TEST_KEY)) \
+		-version '$(VERSION)' -created '$(SOURCE_DATE)' -bin $(ML_RELEASE_DIR)/bin -cmds aisec-ml -lib $(ML_RELEASE_DIR)/lib \
+		$(if $(ML_MODELS_DIR),-models $(ML_RELEASE_DIR)/models)
+
+.PHONY: image-ml
+image-ml: ## Образ aisec-ml из build/release-ml (без сети и без RUN), SBOM
+	@test -s $(ML_RELEASE_DIR)/aisec-manifest.json || { echo "image-ml: нет $(ML_RELEASE_DIR) — make ml-release-dir"; exit 1; }
+	mkdir -p $(IMAGES_DIR)
+	docker build --pull=false --network=none --provenance=false --sbom=false \
+		-f deploy/build/Dockerfile.release --target aisec-ml \
+		--build-arg VERSION='$(VERSION)' --build-arg BUILD_KIND=$(IMAGE_KIND) \
+		--build-arg SOURCE_DATE_EPOCH=$(SOURCE_EPOCH) \
+		-t $(IMAGE_REPO)/aisec-ml:$(IMAGE_TAG) $(ML_RELEASE_DIR)
+	docker save -o $(IMAGES_DIR)/aisec-ml.tar $(IMAGE_REPO)/aisec-ml:$(IMAGE_TAG)
+	go run ./tools/sbom -registry docs/cert/components.yaml -gosum go.sum -native \
+		-out $(IMAGES_DIR)/aisec-ml.cdx.json -version '$(VERSION)' -timestamp '$(SOURCE_DATE)' -image $(IMAGE_REPO)/aisec-ml:$(IMAGE_TAG) \
+		-file $(ML_RELEASE_DIR)/aisec-manifest.json -file $(ML_RELEASE_DIR)/aisec-manifest.json.sig \
+		$(addprefix -file ,$(sort $(wildcard $(ML_RELEASE_DIR)/lib/*))) $(ML_RELEASE_DIR)/bin/aisec-ml
+	$(BIN)/sbom-utility validate --quiet --input-file $(IMAGES_DIR)/aisec-ml.cdx.json
+	go run ./tools/sbom -check $(IMAGES_DIR)/aisec-ml.cdx.json
 
 # CI: Go-шаги — в сборочном образе (точная версия Go и sbom-utility), docker
 # build — на хосте.

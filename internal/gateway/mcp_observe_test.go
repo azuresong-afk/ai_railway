@@ -99,6 +99,52 @@ func TestToolObserverBatching(t *testing.T) {
 	none.Run(ctx)
 }
 
+// Ревью 4.r1, 4В5: сервер MCP меняет описание read_file при каждом
+// tools/list — в сообщение уходит одно описание имени (подозрительное
+// приоритетнее), и сервер управления его принимает.
+func TestToolObserverNameRepeatMerged(t *testing.T) {
+	var got []observeBody
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var b observeBody
+		if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
+			t.Errorf("тело: %v", err)
+		}
+		got = append(got, b)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`)) //nolint:gosec // G104: клиент теста ушёл — писать некуда
+	}))
+	defer srv.Close()
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := NewToolObserver(srv.Client(), u, quiet())
+	desc := func(h string, bad bool) ObservedTool {
+		return ObservedTool{Name: "read_file", Descriptor: []byte(`{"name":"read_file","description":"` + h + `"}`), Hash: h,
+			Suspicious: bad}
+	}
+	o.Observe("files", []ObservedTool{desc("v1", false)})
+	o.Observe("files", []ObservedTool{desc("v2", true)})
+	o.Observe("files", []ObservedTool{desc("v3", false), {Name: "write_file", Descriptor: []byte(`{"name":"write_file"}`), Hash: "w"}})
+	o.flush(context.Background())
+	if len(got) != 1 || len(got[0].Tools) != 2 {
+		t.Fatalf("сообщения: %+v", got)
+	}
+	if d := got[0].Tools[0]; string(d.Descriptor) != `{"name":"read_file","description":"v2"}` || !d.Suspicious {
+		t.Fatalf("описание read_file: %s %v", d.Descriptor, d.Suspicious)
+	}
+	// Повтор имени в остатке после 429 тоже сливается перед отправкой.
+	uniq := []ObservedTool{desc("v4", false), desc("v5", false)}
+	o.mu.Lock()
+	o.pending["files"] = uniq
+	o.mu.Unlock()
+	o.now = func() time.Time { return time.Now().Add(time.Hour) }
+	o.flush(context.Background())
+	if len(got) != 2 || len(got[1].Tools) != 1 {
+		t.Fatalf("остаток с повтором имени: %+v", got)
+	}
+}
+
 // Предел ждущих описаний на сервер — MaxObserveBatch.
 func TestToolObserverPendingLimit(t *testing.T) {
 	u, err := url.Parse("https://127.0.0.1:1")

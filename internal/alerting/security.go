@@ -149,6 +149,9 @@ type auditCount struct {
 	// ActorType и ActorID — только записи этого субъекта; пусто — любого.
 	ActorType string
 	ActorID   string
+	// ObjectType и ObjectID — только записи об этом объекте; пусто — любом.
+	ObjectType string
+	ObjectID   string
 }
 
 // secOps — действия правил по журналу аудита в транзакции записи.
@@ -260,6 +263,27 @@ func classifyAudit(ctx context.Context, ops secOps, r *audit.Record) ([]Raise, e
 				map[string]string{"source_ip": ip}, countFor(n, ConsoleFailThreshold),
 				map[string]any{"window_minutes": int(ConsoleFailWindow / time.Minute), "failures_in_window": n}))
 		}
+		// Перебор пароля одной записи с многих адресов (4В21 ревью 4.r2):
+		// у записей каталога блокировки консоли нет, порог адреса не
+		// срабатывает — счёт неудачных входов по учётной записи или записи
+		// каталога; ключ — как у auth.locked.
+		if r.Action != "auth.login_failed" || r.Object.ID == "" || (r.Object.Type != "user" && r.Object.Type != "ldap_entry") {
+			break
+		}
+		n, err = ops.countAudit(ctx, r.OrgID, auditCount{Actions: []string{"auth.login_failed"},
+			Since: r.TS.Add(-ConsoleFailWindow), ObjectType: r.Object.Type, ObjectID: r.Object.ID})
+		if err != nil {
+			return nil, err
+		}
+		if n >= ConsoleFailThreshold {
+			account := r.Object.ID
+			if r.Object.Type == "user" {
+				account = actorName(r.Actor)
+			}
+			raises = append(raises, raiseOf(BuiltinConsoleBrute, map[string]string{"account": r.Object.ID},
+				map[string]string{"account": account}, countFor(n, ConsoleFailThreshold),
+				map[string]any{"window_minutes": int(ConsoleFailWindow / time.Minute), "failures_in_window": n}))
+		}
 	case "access.denied":
 		n, err := ops.countAudit(ctx, r.OrgID, auditCount{Actions: []string{"access.denied"}, Since: r.TS.Add(-DeniedWindow),
 			ActorType: string(r.Actor.Type), ActorID: r.Actor.ID})
@@ -320,6 +344,10 @@ func classifyAudit(ctx context.Context, ops secOps, r *audit.Record) ([]Raise, e
 			map[string]any{"items": []any{item(r, map[string]any{"reason": dd["reason"], "from_seq": dd["from_seq"], "to_seq": dd["to_seq"]})}}))
 	case "agent_tool.discovered", "agent_tool.changed":
 		if x, ok := agentToolRaise(r, details()); ok {
+			raises = append(raises, x)
+		}
+	case "shadow_ai.new_service":
+		if x, ok := shadowNewServiceRaise(r, details()); ok {
 			raises = append(raises, x)
 		}
 	case "agent.approval.requested", "agent.approval.queue_full":
@@ -443,6 +471,12 @@ var systemFamilies = map[string]string{
 	// ревью 3.r3).
 	"gateway_clock": BuiltinTimeSync,
 	"gateway_tls":   BuiltinConfigBundle,
+	// Лицензия (задача 4.26, ADR-0026, п. 8).
+	"license_expiry":     BuiltinLicenseExpiry,
+	"license_grace":      BuiltinLicenseExpiry,
+	"license_restricted": BuiltinLicenseExpiry,
+	"license_invalid":    BuiltinLicenseExpiry,
+	"license_clock":      BuiltinLicenseExpiry,
 }
 
 // systemRaise — оповещение по возникшему условию раздела 7 (запись
@@ -470,6 +504,8 @@ func systemRaise(r *audit.Record, d map[string]any) (Raise, bool) {
 		values["gateway"] = str(d["gateway_name"], strings.TrimPrefix(code, fam+":"))
 	case BuiltinAuditStream:
 		values["channel"] = str(d["channel_name"], strings.TrimPrefix(code, fam+":"))
+	case BuiltinLicenseExpiry:
+		values[LicenseStageField] = licenseStage(code, d)
 	case BuiltinCertExpiry:
 		// Условие ca_expiry (корень внутреннего УЦ) ведёт sysstatus с задачи
 		// 3В5; ca_expiry:critical — второе условие за 7 суток.

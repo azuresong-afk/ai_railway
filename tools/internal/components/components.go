@@ -28,6 +28,9 @@ const (
 	TypeGitHubAction = "github-action" // шаг CI
 	TypeNPM          = "npm-package"   // прямая зависимость web/package.json
 	TypeFont         = "font"          // шрифт, файлы которого лежат в репозитории (web/src/assets/fonts)
+	// TypeNative — библиотека C/C++, собираемая из исходников по
+	// deploy/build/onnxruntime/deps.lock (ONNX Runtime и встроенные в неё).
+	TypeNative = "native-library"
 )
 
 // Области применения.
@@ -70,7 +73,7 @@ type Registry struct {
 }
 
 var (
-	validTypes  = map[string]bool{TypeGoModule: true, TypeToolchain: true, TypeTool: true, TypeImage: true, TypeGitHubAction: true, TypeNPM: true, TypeFont: true}
+	validTypes  = map[string]bool{TypeGoModule: true, TypeToolchain: true, TypeTool: true, TypeImage: true, TypeGitHubAction: true, TypeNPM: true, TypeFont: true, TypeNative: true}
 	validScopes = map[string]bool{ScopeProduct: true, ScopeBuild: true, ScopeExternal: true}
 	makeVarRe   = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
 	sha256HexRe = regexp.MustCompile(`^[0-9a-f]{64}$`)

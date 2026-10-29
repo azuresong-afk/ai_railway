@@ -15,7 +15,7 @@ import (
 
 func baseSpec(t *testing.T) *policy.Spec {
 	t.Helper()
-	reg, err := appDetectors(config.Application{})
+	reg, err := appDetectors(config.Application{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

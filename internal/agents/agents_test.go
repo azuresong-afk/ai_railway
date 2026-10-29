@@ -596,3 +596,79 @@ func TestAgentsReviewFixes(t *testing.T) {
 		t.Fatalf("второй шлюз кластера: %v", err)
 	}
 }
+
+// Ревью 4.r1, 4В4: смена адресата MCP-сервера отзывает одобрения его
+// инструментов — подставной узел с копиями одобренных описаний не
+// получает вызовов без решения администратора безопасности (DM-25).
+func TestDM25_ServerEndpointChangeRevokesApprovals(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	m := e.server(t, "files")
+	writeDesc := `{"name":"write_file","description":"Пишет файл."}`
+	e.observe(t, "files", false, readDesc, writeDesc)
+	tl := e.tool(t, m.ID, "read_file")
+	if _, err := e.svc.Approve(ctx, e.by, tl.ID, ApproveInput{Risk: policy.RiskLow, Hash: hexOf(tl.Hash)}); err != nil {
+		t.Fatal(err)
+	}
+	in := ServerInput{Name: "Файлы", URL: m.URL, CAPEM: m.CAPEM, Versions: m.Versions}
+	// Правка без смены адресата одобрения не трогает.
+	manager := e.by
+	manager.Security = false
+	if _, err := e.svc.UpdateServer(ctx, manager, m.ID, in); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.tool(t, m.ID, "read_file").Status; got != policy.ToolApproved {
+		t.Fatalf("правка имени: %s", got)
+	}
+	// Новый узел — одобренный инструмент отозван, new остаётся new.
+	in.URL = "https://mcp.attacker.example/mcp"
+	if _, err := e.svc.UpdateServer(ctx, manager, m.ID, in); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.tool(t, m.ID, "read_file").Status; got != policy.ToolRevoked {
+		t.Fatalf("после смены узла: %s", got)
+	}
+	if got := e.tool(t, m.ID, "write_file").Status; got != policy.ToolNew {
+		t.Fatalf("new после смены узла: %s", got)
+	}
+	recs := e.mem.Records()
+	var upd, revoke map[string]any
+	for _, r := range recs {
+		switch r.Action {
+		case "mcp_server.update":
+			upd = r.Details.(map[string]any)
+		case "agent_tool.revoke":
+			revoke = r.Details.(map[string]any)
+		}
+	}
+	if upd["tools_revoked"] != 1 || revoke == nil || revoke["reason"] != "mcp_endpoint_changed" || revoke["previous_status"] != "approved" {
+		t.Fatalf("аудит: %+v; %+v", upd, revoke)
+	}
+	// Тот же хеш с нового узла одобрение не возвращает.
+	e.observe(t, "files", false, readDesc)
+	if got := e.tool(t, m.ID, "read_file").Status; got != policy.ToolRevoked {
+		t.Fatalf("после tools:observe: %s", got)
+	}
+	// Смена корневых сертификатов — тоже смена адресата.
+	tl = e.tool(t, m.ID, "read_file")
+	if _, err := e.svc.Approve(ctx, e.by, tl.ID, ApproveInput{Risk: policy.RiskLow, Hash: hexOf(tl.Hash)}); err != nil {
+		t.Fatal(err)
+	}
+	ca, err := aisecCrypto.NewCA("AISec other MCP CA", time.Hour, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	in.CAPEM = string(ca.CertPEM())
+	if _, err := e.svc.UpdateServer(ctx, manager, m.ID, in); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.tool(t, m.ID, "read_file").Status; got != policy.ToolRevoked {
+		t.Fatalf("после смены корней: %s", got)
+	}
+	// Схема прописными (4Н11) — ошибка проверки, а не обход ветки http.
+	in.URL = "HTTP://mcp.attacker.example/mcp"
+	var ie *InputError
+	if _, err := e.svc.UpdateServer(ctx, manager, m.ID, in); !errors.As(err, &ie) {
+		t.Fatalf("HTTP://: %v", err)
+	}
+}

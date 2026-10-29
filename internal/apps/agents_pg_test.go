@@ -165,9 +165,19 @@ func TestPGAgentsRegistry(t *testing.T) {
 	}
 	clear(cred)
 
+	// Смена узла сервера отзывает одобрения его инструментов той же
+	// транзакцией (ревью 4.r1, 4В4).
+	if _, err := svc.UpdateServer(ctx, by, m.ID, agents.ServerInput{Name: m.Name, URL: "https://mcp.other.example.ru/mcp",
+		CAPEM: m.CAPEM, Versions: m.Versions}); err != nil {
+		t.Fatal(err)
+	}
+	if tl, err = svc.Tool(ctx, tl.ID, ""); err != nil || tl.Status != policy.ToolRevoked {
+		t.Fatalf("после смены узла: %+v %v", tl, err)
+	}
+
 	acts := e.actions(t)
 	for _, a := range []string{"mcp_server.create", "mcp_server.credentials_set", "agent.create", "app_key.issue",
-		"agent_tool.discovered", "agent_tool.approve", "agent_tool.changed"} {
+		"agent_tool.discovered", "agent_tool.approve", "agent_tool.changed", "mcp_server.update", "agent_tool.revoke"} {
 		if acts[a] == 0 {
 			t.Errorf("нет записи %s в аудите: %v", a, acts)
 		}

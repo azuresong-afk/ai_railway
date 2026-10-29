@@ -75,6 +75,11 @@ func (s *Service) checkURL(raw string, insecure bool) []error {
 	default:
 		errs = append(errs, errors.New("url — только https://"))
 	}
+	// url.Parse приводит схему к строчным: HTTP:// обошёл бы проверку
+	// схемы по строке и упал бы на CHECK БД (ревью 4.r1, 4Н11).
+	if !strings.HasPrefix(raw, u.Scheme+"://") {
+		errs = append(errs, errors.New("url — схема строчными буквами: https://"))
+	}
 	if u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
 		errs = append(errs, errors.New("url — без имени пользователя, параметров запроса и фрагмента"))
 	}
@@ -173,33 +178,59 @@ func (s *Service) CreateServer(ctx context.Context, by By, in ServerInput) (MCPS
 // бы на новый адрес. Адрес http:// у сервера с insecure_http меняет
 // только администратор безопасности с повторной проверкой (DM-40).
 func (s *Service) UpdateServer(ctx context.Context, by By, id string, in ServerInput) (MCPServer, error) {
-	return s.store.UpdateServer(ctx, s.orgID, id, func(m *MCPServer) (audit.Entry, error) {
+	return s.store.UpdateServer(ctx, s.orgID, id, func(m *MCPServer, tools []Tool) (ServerUpdate, error) {
 		if err := s.checkServer(in, m.InsecureHTTP); err != nil {
-			return audit.Entry{}, err
+			return ServerUpdate{}, err
 		}
 		before := serverDetails(*m)
 		old := *m
 		in.apply(m)
 		d := map[string]any{"before": before}
+		var upd ServerUpdate
+		now := s.now()
 		if origin(old.URL) != origin(m.URL) || old.CAPEM != m.CAPEM {
 			d["credential_reset"] = m.Credential != nil
 			d["external_reset"] = !m.External
 			m.Credential, m.External = nil, true
-			if strings.HasPrefix(m.URL, "http:") {
+			if insecureURL(m.URL) {
 				if !by.Security {
-					return audit.Entry{}, ErrSecurityRequired
+					return ServerUpdate{}, ErrSecurityRequired
 				}
 				if err := by.confirm(ctx); err != nil {
-					return audit.Entry{}, err
+					return ServerUpdate{}, err
 				}
 				d["weakening"], d["weakening_reasons"] = true, []string{"mcp_insecure_http"}
 			}
+			// Одобрения инструментов относятся к прежнему адресату: новый
+			// узел отдал бы копии одобренных описаний с теми же хешами, и
+			// вызовы ушли бы на него без решения администратора
+			// безопасности (ревью 4.r1, 4В4). Отзыв, а не changed: Observe
+			// вернул бы changed в approved при совпадении хеша.
+			for _, t := range tools {
+				switch t.Status {
+				case policy.ToolApproved, policy.ToolChanged, policy.ToolSuspicious:
+				default:
+					continue
+				}
+				prev := t.Status
+				t.Status, t.Comment, t.DecidedBy, t.DecidedAt, t.UpdatedAt = policy.ToolRevoked, "", by.ref(), now, now
+				td := toolDetails(t, m.Slug)
+				td["previous_status"], td["reason"] = string(prev), "mcp_endpoint_changed"
+				upd.Tools = append(upd.Tools, t)
+				upd.ToolEntries = append(upd.ToolEntries, by.entry("agent_tool.revoke", "agent_tool", t.ID, td))
+			}
+			d["tools_revoked"] = len(upd.Tools)
 		}
 		d["after"] = serverDetails(*m)
-		m.UpdatedAt, m.UpdatedBy = s.now(), by.ref()
-		return by.entry("mcp_server.update", "mcp_server", id, d), nil
+		m.UpdatedAt, m.UpdatedBy = now, by.ref()
+		upd.Entry = by.entry("mcp_server.update", "mcp_server", id, d)
+		return upd, nil
 	})
 }
+
+// insecureURL — адрес со схемой http (без учёта регистра схемы, ревью
+// 4.r1, 4Н11).
+func insecureURL(raw string) bool { return strings.HasPrefix(origin(raw), "http://") }
 
 // origin — схема, узел и порт адреса в каноническом виде.
 func origin(raw string) string {
@@ -260,17 +291,18 @@ func (s *Service) SetServerCredential(ctx context.Context, by By, id string, cre
 	if err != nil {
 		return MCPServer{}, err
 	}
-	return s.store.UpdateServer(ctx, s.orgID, id, func(m *MCPServer) (audit.Entry, error) {
+	return s.store.UpdateServer(ctx, s.orgID, id, func(m *MCPServer, _ []Tool) (ServerUpdate, error) {
 		// Адрес или корни сменили параллельно: секрет вводили для прежнего
 		// узла (4Н2 ревью 4.r1).
 		if origin(m.URL) != origin(cur.URL) || m.CAPEM != cur.CAPEM {
-			return audit.Entry{}, ErrServerChanged
+			return ServerUpdate{}, ErrServerChanged
 		}
 		now := s.now()
 		replaced := m.Credential != nil
 		m.Credential = &Sealed{Data: sealed, KeyID: keyID, Alg: s.box.Alg(), SetAt: now}
 		m.UpdatedAt, m.UpdatedBy = now, by.ref()
-		return by.entry("mcp_server.credentials_set", "mcp_server", id, map[string]any{"slug": m.Slug, "replaced": replaced}), nil
+		return ServerUpdate{Entry: by.entry("mcp_server.credentials_set", "mcp_server", id,
+			map[string]any{"slug": m.Slug, "replaced": replaced})}, nil
 	})
 }
 
@@ -309,7 +341,7 @@ func (s *Service) SetServerSecurity(ctx context.Context, by By, id string, in Se
 	if !by.Security {
 		return MCPServer{}, ErrSecurityRequired
 	}
-	m, err := s.store.UpdateServer(ctx, s.orgID, id, func(m *MCPServer) (audit.Entry, error) {
+	m, err := s.store.UpdateServer(ctx, s.orgID, id, func(m *MCPServer, _ []Tool) (ServerUpdate, error) {
 		before := serverDetails(*m)
 		var reasons []string
 		if in.External != nil && *in.External != m.External {
@@ -321,25 +353,25 @@ func (s *Service) SetServerSecurity(ctx context.Context, by By, id string, in Se
 		if in.InsecureHTTP != nil && *in.InsecureHTTP != m.InsecureHTTP {
 			if *in.InsecureHTTP {
 				reasons = append(reasons, "mcp_insecure_http")
-			} else if strings.HasPrefix(m.URL, "http:") {
-				return audit.Entry{}, invalidf("insecure_http — сначала смените адрес сервера на https://")
+			} else if insecureURL(m.URL) {
+				return ServerUpdate{}, invalidf("insecure_http — сначала смените адрес сервера на https://")
 			}
 			m.InsecureHTTP = *in.InsecureHTTP
 		}
 		after := serverDetails(*m)
 		if before["external"] == after["external"] && before["insecure_http"] == after["insecure_http"] {
-			return audit.Entry{}, errUnchanged
+			return ServerUpdate{}, errUnchanged
 		}
 		if len(reasons) > 0 {
 			if err := by.confirm(ctx); err != nil {
-				return audit.Entry{}, err
+				return ServerUpdate{}, err
 			}
 		}
 		m.UpdatedAt, m.UpdatedBy = s.now(), by.ref()
-		return by.entry("mcp_server.security_changed", "mcp_server", id, map[string]any{"slug": m.Slug,
+		return ServerUpdate{Entry: by.entry("mcp_server.security_changed", "mcp_server", id, map[string]any{"slug": m.Slug,
 			"before": map[string]any{"external": before["external"], "insecure_http": before["insecure_http"]},
 			"after":  map[string]any{"external": m.External, "insecure_http": m.InsecureHTTP},
-			"reason": reason, "weakening": len(reasons) > 0, "weakening_reasons": reasons}), nil
+			"reason": reason, "weakening": len(reasons) > 0, "weakening_reasons": reasons})}, nil
 	})
 	if errors.Is(err, errUnchanged) {
 		return s.store.Server(ctx, s.orgID, id)

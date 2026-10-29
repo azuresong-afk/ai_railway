@@ -93,6 +93,9 @@ type Decision struct {
 	// недоступен, перегружен или проверил не весь текст. Решение принято по
 	// остальным детекторам (fail-open для ML, ADR-0024).
 	MLUnavailable bool `json:"ml_unavailable,omitempty"`
+	// QuotaDegraded — квоты или жёсткий бюджет проверены по автономной доле:
+	// режим leased, а сервер управления не выдавал аренду (ADR-0021, п. 5).
+	QuotaDegraded bool `json:"quota_degraded,omitempty"`
 }
 
 // Причины сбоя детектора.

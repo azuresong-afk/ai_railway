@@ -408,3 +408,23 @@ func TestPGReportMarks(t *testing.T) {
 		t.Fatalf("другой период: %+v %v", ms, err)
 	}
 }
+
+// Расписание отчёта «Соответствие» (4.25): scope_compliance хранится и читается;
+// CHECK схемы не пускает отчёт compliance без области.
+func TestPGReportComplianceSchedule(t *testing.T) {
+	ctx, e := setupPG(t)
+	s := e.schedule(t, "Для аттестации")
+	s.Report, s.Scope = reports.KindCompliance, reports.Scope{Compliance: true}
+	if err := e.store.CreateSchedule(ctx, s, entry("report_schedule.create", s.ID)); err != nil {
+		t.Fatal(err)
+	}
+	got, err := e.store.Schedule(ctx, s.ID)
+	if err != nil || got.Report != reports.KindCompliance || !got.Scope.Compliance {
+		t.Fatalf("чтение: %+v %v", got, err)
+	}
+	bad := e.schedule(t, "Без области")
+	bad.Report = reports.KindCompliance
+	if err := e.store.CreateSchedule(ctx, bad, entry("report_schedule.create", bad.ID)); err == nil {
+		t.Fatal("отчёт compliance без области принят")
+	}
+}

@@ -8,6 +8,7 @@ import (
 
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/internal/gwregistry"
+	"github.com/azuresong-afk/ai_railway/internal/license"
 )
 
 // registerMaxBody — предел тела запроса регистрации (токен и CSR в PEM).
@@ -68,7 +69,12 @@ func (d Deps) registerGateway(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	reg, err := d.Gateways.Register(ctx, gwregistry.RegisterInput{Token: req.Token, CSR: []byte(req.CSR), SourceIP: clientAddr(r),
 		BundleKey: bundleKey})
+	var ld *license.Denied
 	switch {
+	case errors.As(err, &ld):
+		// Предел шлюзов лицензии (ADR-0026, п. 5): токен не погашен.
+		d.Logger.Warn("регистрация шлюза отклонена пределом лицензии", "source_ip", clientAddr(r).String())
+		WriteProblem(w, NewProblem(http.StatusForbidden, ld.Code, ld.Message))
 	case errors.Is(err, gwregistry.ErrInvalidRequest):
 		WriteProblem(w, Invalid("Неверный запрос на сертификат: нужен один CSR в PEM на ключ ECDSA P-256 с верной подписью.",
 			FieldError{Field: "csr", Detail: "неверный CSR"}))

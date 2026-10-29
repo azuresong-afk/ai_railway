@@ -47,10 +47,25 @@ const (
 // argsHashPrefix — разделение области хеша аргументов вызова.
 const argsHashPrefix = "aisec-tool-args-v1\n"
 
-// ToolArgsHash — хеш аргументов вызова инструмента (hex): им решение
-// дежурного связано с аргументами, которые шлюз передаст дальше.
+// ToolArgsHash — хеш аргументов вызова инструмента (hex) для признака
+// зацикливания (limits.repeat): живёт только в памяти шлюза.
 func ToolArgsHash(h aisecCrypto.Hasher, args []byte) string {
 	return hex.EncodeToString(h.Sum(append([]byte(argsHashPrefix), args...)))
+}
+
+// bindNonceSize — байт случайного числа в хеше привязки.
+const bindNonceSize = 32
+
+// bindArgsHash — хеш привязки решения дежурного к аргументам (hex):
+// хешер профиля над префиксом, случайным числом запроса и аргументами.
+// Число живёт только в памяти шлюза на время Await, поэтому по хешу из
+// карточки нельзя перебором восстановить замаскированные аргументы, а
+// одинаковые аргументы двух запросов дают разные хеши (ревью 4.r1, 4В9).
+// Защита от подмены — сверка хеша ответа сервера на шлюзе.
+func bindArgsHash(h aisecCrypto.Hasher, nonce, args []byte) string {
+	b := make([]byte, 0, len(argsHashPrefix)+len(nonce)+len(args))
+	b = append(append(append(b, argsHashPrefix...), nonce...), args...)
+	return hex.EncodeToString(h.Sum(b))
 }
 
 var approvalIDRe = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
@@ -63,6 +78,8 @@ type ApprovalClientConfig struct {
 	// Server — адрес внутреннего API (https://хост:8445).
 	Server *url.URL
 	Hasher aisecCrypto.Hasher
+	// Random — источник случайных чисел хеша привязки (bindArgsHash).
+	Random aisecCrypto.Random
 	Logger *slog.Logger
 	// Clock — часы сроков (тесты подменяют); nil — time.Now.
 	Clock func() time.Time
@@ -79,6 +96,7 @@ type ApprovalClient struct {
 	poll   *http.Client
 	base   *url.URL
 	hasher aisecCrypto.Hasher
+	random aisecCrypto.Random
 	logger *slog.Logger
 	clock  func() time.Time
 	sleep  func(ctx context.Context, d time.Duration) bool
@@ -92,8 +110,8 @@ type ApprovalClient struct {
 // NewApprovalClient создаёт клиент. Для долгого опроса берётся копия
 // транспорта управляющего канала с таймаутом ответа 35 с.
 func NewApprovalClient(c ApprovalClientConfig) (*ApprovalClient, error) {
-	if c.Client == nil || c.Server == nil || c.Hasher == nil {
-		return nil, errors.New("очередь подтверждений: не заданы клиент, адрес сервера или хеш")
+	if c.Client == nil || c.Server == nil || c.Hasher == nil || c.Random == nil {
+		return nil, errors.New("очередь подтверждений: не заданы клиент, адрес сервера, хеш или источник случайных чисел")
 	}
 	poll := &http.Client{Timeout: approvalPollTimeout, CheckRedirect: noRedirect}
 	if t, ok := c.Client.Transport.(*http.Transport); ok {
@@ -103,7 +121,7 @@ func NewApprovalClient(c ApprovalClientConfig) (*ApprovalClient, error) {
 	} else {
 		poll.Transport = c.Client.Transport
 	}
-	a := &ApprovalClient{create: c.Client, poll: poll, base: c.Server, hasher: c.Hasher, logger: c.Logger, clock: c.Clock,
+	a := &ApprovalClient{create: c.Client, poll: poll, base: c.Server, hasher: c.Hasher, random: c.Random, logger: c.Logger, clock: c.Clock,
 		sleep: c.Sleep, pending: map[string]struct{}{}}
 	pw := c.PollWait.Truncate(time.Second)
 	if pw <= 0 || pw > approvalPollWait {
@@ -217,14 +235,21 @@ func (a *ApprovalClient) Await(ctx context.Context, req ApprovalRequest, wait fu
 	id := ""
 	defer func() { a.release(id) }()
 	defer func() { res.Waited = max(a.clock().Sub(start), 0) }()
-	argsHash := ToolArgsHash(a.hasher, req.Args)
+	nonce, err := aisecCrypto.RandomBytes(a.random, bindNonceSize)
+	if err != nil {
+		a.logger.Error("очередь подтверждений: нет случайного числа для хеша аргументов: вызов отклонён", "error", err)
+		res.State = ApprovalUnavailable
+		return res
+	}
+	argsHash := bindArgsHash(a.hasher, nonce, req.Args)
+	clear(nonce)
 	timeout := approvalTimeout(req)
 	body := approvalCreate{Path: req.Path, App: req.App, Agent: req.Agent, User: req.User, Session: req.Session,
 		Server: req.Server, Tool: req.Tool, ApprovedHash: req.ApprovedHash, Risk: req.Risk, Rule: req.Rule,
 		Message: req.Message, Severity: req.Severity, ArgsHash: argsHash, Args: req.ShownArgs,
 		TimeoutSeconds: int(timeout / time.Second), RequestEventID: req.RequestEventID}
 	var st approvalStatus
-	err := postControl(ctx, a.create, a.base.JoinPath("/internal/v1/approvals").String(), body, &st, http.StatusCreated)
+	err = postControl(ctx, a.create, a.base.JoinPath("/internal/v1/approvals").String(), body, &st, http.StatusCreated)
 	if err != nil {
 		var ce *controlError
 		if errors.As(err, &ce) && ce.Status == http.StatusTooManyRequests {

@@ -204,8 +204,9 @@ func TestAlertRulesViaAPI(t *testing.T) {
 	// 5 встроенных задачи 3.10, 15 задачи 3.11, 5 задачи 3.12, правило DM-08 с инцидентом задачи 3.16, 1 задачи 3.14
 	// и system.alert_job (3В17 ревью 3.r2), 3 правила DM-03, DM-06, DM-26 задач 4.13 и 4.14,
 	// agents.tool_new и agents.tool_changed задачи 4.8, agents.approval_requested и agents.approval_queue_full задачи 4.10,
-	// agents.tool_blocked и agents.tool_poisoning задачи 4.11.
-	if w.Code != 200 || len(list.Items) != 37 {
+	// agents.tool_blocked и agents.tool_poisoning задачи 4.11, system.license_expiry задачи 4.26,
+	// shadow_ai.new_service задачи 4.23, frequency.ml_unavailable задачи 4.19.
+	if w.Code != 200 || len(list.Items) != 40 {
 		t.Fatalf("правила: %d %s", w.Code, w.Body)
 	}
 	var sec AlertRuleView

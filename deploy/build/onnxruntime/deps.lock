@@ -1,0 +1,28 @@
+# Исходники ONNX Runtime 1.31.0 и его зависимостей для сборки без сети
+# (ADR-0024, раздел 8; задача 4.19). Читают fetch.sh (шаг с сетью) и
+# build.sh (шаг без сети).
+#
+# Формат: имя;вид;источник;версия;sha256;лицензия
+#   git — источник — репозиторий, версия — полный коммит; архив —
+#         git archive --format=tar --prefix=<имя>/ <коммит>: архивы GitHub
+#         (codeload) из среды разработки недоступны, git clone работает;
+#   url — источник — архив выпуска (только https), версия — «-».
+# sha256 — хеш файла в локальном зеркале (<имя>.tar для git, имя файла
+# источника для url). Имя совпадает с первым столбцом cmake/deps.txt ORT:
+# build.sh подставляет в deps.txt путь к файлу зеркала и его SHA-1.
+# Зависимость, которой здесь нет, сборка без сети не получит — ошибка cmake.
+# Список — минимальный для библиотеки CPU без тестов, Python и телеметрии;
+# лицензии — для docs/cert/components.yaml.
+onnxruntime;git;https://github.com/microsoft/onnxruntime.git;402979ac1bef89dcd55add41eaa7277c407599eb;b4fd73aad7658d7e552f3db7ade701a37fbea7a739cd14def659e4bd2d20a147;MIT
+abseil_cpp;git;https://github.com/abseil/abseil-cpp.git;987c57f325f7fa8472fa84e1f885f7534d391b0d;440447eb51d99ddcea217bc89f7e9a4a0e54e6e92f0ab18d4f0ca226c4719b59;Apache-2.0
+date;git;https://github.com/HowardHinnant/date.git;6e921e1b1d21e84a5c82416ba7ecd98e33a436d0;6d4059fc8146fba75a52182db1a91268b0910852938320d77e95e2d4d52ec247;MIT
+eigen;git;https://github.com/eigen-mirror/eigen.git;1d8b82b0740839c0de7f1242a3585e3390ff5f33;6cbfeeed4cad3b0be74708937e8bc1c584fd9b9ff2990f2c34efc59fa59cccdf;MPL-2.0
+flatbuffers;git;https://github.com/google/flatbuffers.git;0100f6a5779831fa7a651e4b67ef389a8752bd9b;a72ee677329ac7575e514ff43ab61bc3b84781cc58fe856effbd5fc540d10502;Apache-2.0
+json;git;https://github.com/nlohmann/json.git;9cca280a4d0ccf0c08f47a99aa71d1b0e52f8d03;6adad690e98123a2a074a0893f3eaea5488c894d728bb82a2c04805e497494ae;MIT
+microsoft_gsl;git;https://github.com/microsoft/GSL.git;249146590e322123cd0b378b1f364d6069717687;31f1dcac307d38257a3ba1eb9dc5dcfab555fc050e9d48e4bad49e73e87a3adf;MIT
+mp11;git;https://github.com/boostorg/mp11.git;0a0b5fb001ce0233ae3a6f99d849c0649e5a7361;9ce725a8bb48b22da5d34bae508c6cecf3113dcb5bc1718a83b258e4809ca0ca;BSL-1.0
+onnx;git;https://github.com/onnx/onnx.git;2bb50465112feca9003e1ed654d77f01ff1415ca;200a306a3487925525c3a4aaf57deb17fc3c2647d8755e3ed10a7e15d7dcbf17;Apache-2.0
+protobuf;url;https://github.com/protocolbuffers/protobuf/releases/download/v33.6/protobuf-33.6.tar.gz;-;16498d7dc7967e9b100632138babd4b86b61592beeccdd556f67539d9c231355;BSD-3-Clause
+pytorch_cpuinfo;git;https://github.com/pytorch/cpuinfo.git;66ee79c038d70dad9f08705b2c9b3e58f6d8f512;1b5bbe9ea5b8c4dc9ccd22a40267f89bf0dd6268e2f2f909510349f5d5c3a581;BSD-2-Clause
+re2;git;https://github.com/google/re2.git;6dcd83d60f7944926bfd308cc13979fc53dd69ca;857a36d83e1da55f22f1103f6d78212fb6f5171ad74b7b39a617b6c85f7717af;BSD-3-Clause
+safeint;git;https://github.com/dcleblanc/SafeInt.git;4cafc9196c4da9c817992b20f5253ef967685bf8;2514a525db0ca6719e4009ddab5a916baa0a8392ee9aa6e8aa5083eed5ef3df9;MIT

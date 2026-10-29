@@ -1,0 +1,159 @@
+# Каталог доменов публичных ИИ-сервисов (ТЗ 5.11, DM-37; ADR-0027, п. 4).
+#
+# Служебная база: в установку попадает только подписанный файл
+# (aisec-manifest-sign sign-db -kind shadow_ai_catalog), который загружает
+# администратор. Версия только растёт. Наполнение — по открытым сведениям
+# (сайты и документация API сервисов), без обращений в сеть из кода.
+#
+# domains — точное имя узла; suffixes — имя и все его поддомены. Общие
+# домены компаний (google.com, yandex.ru, microsoft.com, sber.ru) не
+# включаются: иначе поиск, почта и облако считались бы ИИ. Одно имя — только
+# у одного сервиса.
+format: aisec-shadow-ai-catalog-v1
+version: 1
+date: "2026-10-28"
+services:
+  - id: chatgpt
+    name: ChatGPT
+    vendor: OpenAI
+    category: chat
+    domains: [chat.openai.com]
+    suffixes: [chatgpt.com, oaiusercontent.com, oaistatic.com, sora.com]
+  - id: openai-api
+    name: OpenAI API и платформа
+    vendor: OpenAI
+    category: api
+    suffixes: [openai.com]
+  - id: azure-openai
+    name: Azure OpenAI
+    vendor: Microsoft
+    category: api
+    suffixes: [openai.azure.com, services.ai.azure.com, cognitiveservices.azure.com]
+  - id: claude
+    name: Claude
+    vendor: Anthropic
+    category: chat
+    suffixes: [claude.ai, claude.com]
+  - id: anthropic-api
+    name: Anthropic API
+    vendor: Anthropic
+    category: api
+    suffixes: [anthropic.com]
+  - id: gemini
+    name: Gemini
+    vendor: Google
+    category: chat
+    domains: [gemini.google.com, bard.google.com, notebooklm.google.com]
+  - id: google-ai-api
+    name: Google AI Studio и Gemini API
+    vendor: Google
+    category: api
+    domains: [aistudio.google.com, generativelanguage.googleapis.com, aiplatform.googleapis.com, makersuite.google.com]
+  - id: microsoft-copilot
+    name: Microsoft Copilot
+    vendor: Microsoft
+    category: chat
+    domains: [copilot.microsoft.com, sydney.bing.com, copilot.cloud.microsoft]
+  - id: github-copilot
+    name: GitHub Copilot
+    vendor: GitHub
+    category: code
+    domains: [copilot-proxy.githubusercontent.com]
+    suffixes: [githubcopilot.com]
+  - id: deepseek
+    name: DeepSeek
+    vendor: DeepSeek
+    category: chat
+    suffixes: [deepseek.com]
+  - id: perplexity
+    name: Perplexity
+    vendor: Perplexity AI
+    category: search
+    suffixes: [perplexity.ai, pplx.ai]
+  - id: mistral
+    name: Mistral Le Chat и API
+    vendor: Mistral AI
+    category: chat
+    suffixes: [mistral.ai]
+  - id: qwen
+    name: Qwen
+    vendor: Alibaba Cloud
+    category: chat
+    domains: [dashscope.aliyuncs.com, dashscope-intl.aliyuncs.com]
+    suffixes: [qwen.ai, qwenlm.ai]
+  - id: gigachat
+    name: GigaChat
+    vendor: Сбер
+    category: chat
+    domains: [gigachat.devices.sberbank.ru, ngw.devices.sberbank.ru]
+    suffixes: [giga.chat]
+  - id: yandexgpt-alice
+    name: YandexGPT и Алиса
+    vendor: Яндекс
+    category: chat
+    domains: [alice.yandex.ru, llm.api.cloud.yandex.net]
+  - id: shedevrum
+    name: Шедеврум
+    vendor: Яндекс
+    category: image
+    suffixes: [shedevrum.ai]
+  - id: kandinsky
+    name: Kandinsky (FusionBrain)
+    vendor: Сбер
+    category: image
+    suffixes: [fusionbrain.ai]
+  - id: grok
+    name: Grok
+    vendor: xAI
+    category: chat
+    suffixes: [grok.com, x.ai]
+  - id: meta-ai
+    name: Meta AI
+    vendor: Meta
+    category: chat
+    suffixes: [meta.ai]
+  - id: character-ai
+    name: Character.AI
+    vendor: Character Technologies
+    category: chat
+    suffixes: [character.ai]
+  - id: huggingface
+    name: Hugging Face
+    vendor: Hugging Face
+    category: platform
+    suffixes: [huggingface.co, hf.co]
+  - id: poe
+    name: Poe
+    vendor: Quora
+    category: chat
+    suffixes: [poe.com]
+  - id: you
+    name: You.com
+    vendor: You.com
+    category: search
+    suffixes: [you.com]
+  - id: cursor
+    name: Cursor
+    vendor: Anysphere
+    category: code
+    suffixes: [cursor.com, cursor.sh]
+  - id: midjourney
+    name: Midjourney
+    vendor: Midjourney
+    category: image
+    suffixes: [midjourney.com]
+  - id: cohere
+    name: Cohere
+    vendor: Cohere
+    category: api
+    suffixes: [cohere.com, cohere.ai]
+  - id: openrouter
+    name: OpenRouter
+    vendor: OpenRouter
+    category: api
+    suffixes: [openrouter.ai]
+  - id: kimi
+    name: Kimi
+    vendor: Moonshot AI
+    category: chat
+    suffixes: [kimi.com, kimi.ai, moonshot.cn, moonshot.ai]

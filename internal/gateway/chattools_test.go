@@ -388,3 +388,35 @@ func TestDM22_ChatApprovalsShareDeadline(t *testing.T) {
 		t.Fatalf("запросы: %d %+v", len(reqs), reqs)
 	}
 }
+
+// Ревью 4.r1, 4В3: при unapproved: log неодобренный вызов не обходит
+// правило require_approval — ни без заголовка агента, ни с изменённым
+// описанием функции (ADR-0023, раздел 1, п. 4; дополнение 5).
+func TestDM22_ChatUnapprovedLogKeepsApprovalRule(t *testing.T) {
+	soft := func(o *gwOpts) {
+		s := toolsSpec(t)
+		s.Tools.Unapproved = policy.Log
+		o.specs = []policy.Spec{s}
+	}
+	changed := mailTool
+	changed.Function.Description += " "
+	cases := map[string]struct {
+		hdr  map[string]string
+		tool chat.Tool
+	}{
+		"без агента":          {nil, mailTool},
+		"изменённое описание": {agentHeader, changed},
+	}
+	for name, tc := range cases {
+		up, _ := newUpstream(t, toolCallReply(t, "send_mail", mailArgs))
+		appr := &recApprover{state: ApprovalDenied}
+		g := newGateway(t, up.URL, toolsOpts(t, appr, "enforce", soft))
+		resp := postChat(t, g, toolsBody(t, false, tc.tool), tc.hdr)
+		if resp.Code != http.StatusBadRequest || errCode(t, resp) != "policy_violation" {
+			t.Errorf("%s: %d %s", name, resp.Code, resp.Body)
+		}
+		if reqs := appr.requests(); len(reqs) != 1 || reqs[0].Rule != "mail-approve" || reqs[0].ApprovedHash != "" {
+			t.Errorf("%s: запросы подтверждения %+v", name, reqs)
+		}
+	}
+}

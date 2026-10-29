@@ -42,13 +42,14 @@ func main() {
 	image := flag.String("image", "", "SBOM образа поставки «репозиторий:тег» вместо SBOM продукта (ADR-0019)")
 	var files fileList
 	flag.Var(&files, "file", "файл образа помимо бинарников (манифест, подпись); можно повторять, только с -image")
+	native := flag.Bool("native", false, "библиотеки C/C++ из реестра (native-library, образ aisec-ml, ADR-0024); только с -image")
 	flag.Parse()
 
 	var err error
 	if *check != "" {
 		err = checkFile(*check)
 	} else {
-		err = run(*registry, *goSum, *npmLock, *out, *version, *timestamp, flag.Args(), imageSpec{Name: *image, Files: files})
+		err = run(*registry, *goSum, *npmLock, *out, *version, *timestamp, flag.Args(), imageSpec{Name: *image, Files: files, Native: *native})
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "sbom:", err)
@@ -60,8 +61,8 @@ func run(registryPath, goSumPath, npmLockPath, out, version, timestamp string, b
 	if len(binaries) == 0 {
 		return errors.New("не указаны бинарники")
 	}
-	if img.Name == "" && len(img.Files) > 0 {
-		return errors.New("-file — только вместе с -image")
+	if img.Name == "" && (len(img.Files) > 0 || img.Native) {
+		return errors.New("-file и -native — только вместе с -image")
 	}
 	ts := time.Unix(0, 0).UTC()
 	if timestamp != "" {
@@ -125,6 +126,11 @@ func run(registryPath, goSumPath, npmLockPath, out, version, timestamp string, b
 				return err
 			}
 			files = append(files, f)
+		}
+		if img.Native {
+			if err := AddNative(bom, reg); err != nil {
+				return err
+			}
 		}
 		if err := AsImage(bom, img.Name, files, hasher); err != nil {
 			return err

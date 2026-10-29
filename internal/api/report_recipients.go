@@ -41,5 +41,5 @@ func (d ReportDirectory) of(ctx context.Context, u auth.User, grants map[auth.Ro
 	full := g.Full(auth.PermReportsRead)
 	return reports.Recipient{Email: u.Email, Active: u.Status == auth.StatusActive, CanRead: full,
 		Scope: reports.Scope{Budgets: full && g.Full(auth.PermBudgetsRead), Incidents: full && g.Full(auth.PermIncidentsRead),
-			Alerts: full && g.Full(auth.PermAlertsRead)}}, nil
+			Alerts: full && g.Full(auth.PermAlertsRead), Compliance: full && g.Full(auth.PermComplianceRead)}}, nil
 }

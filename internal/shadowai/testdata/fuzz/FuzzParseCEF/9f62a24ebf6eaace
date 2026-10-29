@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("CEF:|||||||rt=OCt 1 2000 0:00:00 dhost=a..")

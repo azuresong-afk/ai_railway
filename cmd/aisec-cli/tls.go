@@ -33,15 +33,24 @@ const (
 var tlsFileNames = []string{tlsConsoleKeyFile, tlsGatewayKeyFile, tlsConsoleCertFile, tlsGatewayCertFile, tlsCAFile}
 
 func tlsCmd(args []string, stdout, stderr io.Writer, now time.Time) error {
-	if len(args) == 0 || args[0] != "init" {
-		return errors.New("подкоманда: init")
+	if len(args) > 0 {
+		switch args[0] {
+		case "init":
+			return tlsInitCmd(args[1:], stdout, stderr, now)
+		case "check":
+			return tlsCheckCmd(args[1:], stdout, stderr, now)
+		}
 	}
+	return errors.New("подкоманда: init или check")
+}
+
+func tlsInitCmd(args []string, stdout, stderr io.Writer, now time.Time) error {
 	fs := flag.NewFlagSet("tls init", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	out := fs.String("out", "", "пустой каталог с правами 0700 для сертификатов и ключей (обязательный)")
 	hostsArg := fs.String("hosts", "", "имена и IP-адреса консоли и шлюза через запятую (обязательный)")
 	days := fs.Int("days", tlsDefaultDays, "срок действия в сутках, от 1 до 825")
-	if err := fs.Parse(args[1:]); err != nil {
+	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() > 0 {

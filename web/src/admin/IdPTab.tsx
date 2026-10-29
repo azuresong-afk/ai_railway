@@ -192,7 +192,7 @@ function IdPForm({
       >
         {({ id, describedBy, invalid }) => <Input id={id} aria-describedby={describedBy} aria-invalid={invalid} disabled={disabled} value={d.required_acr} onChange={set("required_acr")} />}
       </Field>
-      <Field label="Допустимые значения amr" hint="Через пробел, например «otp mfa hwk». Достаточно одного совпадения." error={fieldError(err, "required_amr")}>
+      <Field label="Допустимые значения amr" hint="Через пробел, например «otp mfa hwk». Достаточно одного совпадения. Однофакторные значения (pwd, pin, kba, wia, geo, user) не принимаются." error={fieldError(err, "required_amr")}>
         {({ id, describedBy, invalid }) => <Input id={id} aria-describedby={describedBy} aria-invalid={invalid} disabled={disabled} value={d.required_amr} onChange={set("required_amr")} />}
       </Field>
 

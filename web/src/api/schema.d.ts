@@ -1650,7 +1650,8 @@ export interface paths {
         /**
          * Задать или убрать свой e-mail
          * @description Право `self`: меняется только запись самого пользователя (идентификатор берётся из сессии).
-         *     Правила и журнал — как у `PUT /api/v1/users/{id}/email`. Токеном API не вызывается.
+         *     Правила и журнал — как у `PUT /api/v1/users/{id}/email`, в том числе повторная проверка паролем
+         *     или кодом TOTP (ревью 4.r1, 4В12). Токеном API не вызывается.
          */
         put: {
             parameters: {
@@ -1950,6 +1951,8 @@ export interface paths {
          *     и нужен для рассылки отчётов: до 254 символов, простая проверка формата, без письма-подтверждения.
          *     Пустая строка убирает адрес. Адрес — персональные данные: в журнал аудита пишется только факт
          *     изменения (`user.email_set`: `self`, `cleared`, `changed`), в технические журналы адрес не попадает.
+         *     Смена — с повторной проверкой администратора паролем или кодом TOTP (ревью 4.r1, 4В12); токеном API
+         *     не вызывается.
          */
         put: {
             parameters: {
@@ -2212,7 +2215,8 @@ export interface paths {
          *     токена). Повторная регистрация того же шлюза (новый токен с `-reregister`) заменяет
          *     сертификат и закреплённый ключ получателя (`bundle_key`): прежний сертификат перестаёт
          *     приниматься внутренним API сразу. Без внутреннего УЦ
-         *     на сервере (`-ca-cert`) — 503. Предел частоты — 10 запросов в минуту с адреса.
+         *     на сервере (`-ca-cert`) — 503. Сверх предела действующих шлюзов лицензии (ADR-0026) —
+         *     403 `license_limit`, токен не гасится. Предел частоты — 10 запросов в минуту с адреса.
          *     Без `Idempotency-Key`: ответ содержит выпущенный сертификат.
          */
         post: {
@@ -4504,7 +4508,10 @@ export interface paths {
          *     300 секунд (по умолчанию 60). `model_groups` — модель или псевдоним приложения →
          *     от 1 до 64 групп: модель из списка доступна только пользователю с одной из этих групп
          *     в JWT (иначе 403 `model_access_denied`, DM-33), остальные модели — всем; только с
-         *     режимом `optional` или `required`, всего не больше 500 пар. Пишет
+         *     режимом `optional` или `required`, всего не больше 500 пар. Группы псевдонима
+         *     сохраняются под именем его модели (удаление или смена псевдонима не снимает
+         *     ограничение); у модели и её псевдонимов, заданных вместе, — общие группы, без общих
+         *     групп — 400. Пишет
          *     `application.user_access_set` (до и после). Смягчение режима, смена издателя,
          *     аудитории или утверждения с группами, рост допуска и расширение доступа к модели —
          *     ослабление (DM-40): `weakening: true` с причинами и повторная проверка (`password` или
@@ -6854,6 +6861,100 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/quota-settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Режим квот при нескольких шлюзах
+         * @description Право `budgets.read` (задача 4.29 этапа 4, ADR-0021). `local` (по умолчанию) — счётчики
+         *     квот приложений и жёстких бюджетов в памяти каждого шлюза: при нескольких шлюзах они
+         *     соблюдаются приблизительно (условие `quota_approximate` на «Состоянии системы»). `leased` —
+         *     шлюзы берут у сервера аренду: долю квоты на 10 секунд (минутные квоты) или 5 минут (суточная
+         *     квота и жёсткий бюджет), сумма выданного не больше лимита при любом числе шлюзов.
+         *     `gateways_online` — действующих шлюзов с heartbeat за 90 секунд.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Режим */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["QuotaSettings"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        /**
+         * Изменить режим квот
+         * @description Право `quota_mode.manage` (администратор системы и администратор безопасности). Новый режим
+         *     уходит шлюзам в пакете конфигурации (`quota_mode`). Переход на `local`, когда на связи больше
+         *     одного шлюза, — ослабление защиты (DM-40): нужен текущий пароль (`password`) или код TOTP
+         *     (`code`) — без них 400 с полем `password`, неверное значение — 403 `reauthentication_failed`,
+         *     по токену API — 403; пишется с `weakening: true` (причина `quota_local_multi_gateway`) и
+         *     порождает оповещение «Ослабление защиты». Тот же режим — без изменений и записи. До
+         *     первичной настройки — 409. Пишет `install.quota_mode_changed` (до, после, шлюзов на связи).
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["QuotaSettingsUpdate"];
+                };
+            };
+            responses: {
+                /** @description Режим изменён */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["QuotaSettings"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/notify-channels": {
         parameters: {
             query?: never;
@@ -7873,7 +7974,9 @@ export interface paths {
         /**
          * Отчёт за период
          * @description Право `reports.read` (владелец приложения — на своих приложениях). Виды: `summary` (сводный),
-         *     `incidents` (по инцидентам), `pilot` («Итоги пилота», сценарий S10). Данные — только агрегаты
+         *     `incidents` (по инцидентам), `pilot` («Итоги пилота», сценарий S10), `compliance` («Соответствие
+         *     требованиям» для аттестационных испытаний и аудита ИСПДн, сценарий S7; нужно ещё право
+         *     `compliance.read`, иначе 403; период не используется — отчёт на момент формирования). Данные — только агрегаты
          *     дашбордов, инциденты, оповещения, бюджеты и отметки аналитиков: содержимого запросов и ответов
          *     и значений находок в отчёте нет. Период — `from` и `to`, дни `ГГГГ-ММ-ДД` часового пояса
          *     установки, оба включительно; начало не в будущем, конец позже сегодняшнего урезается до
@@ -7903,7 +8006,7 @@ export interface paths {
                 header?: never;
                 path: {
                     /** @description Вид отчёта */
-                    kind: "summary" | "incidents" | "pilot";
+                    kind: "summary" | "incidents" | "pilot" | "compliance";
                 };
                 cookie?: never;
             };
@@ -9384,6 +9487,1028 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/shadow-ai/services": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Теневой ИИ — сервисы
+         * @description Право `shadow_ai.read`. Публичные ИИ-сервисы из каталога, к которым обращались по импортированным
+         *     журналам прокси (DM-37; ADR-0027), по убыванию обращений, не больше 500. Период — `from`, `to`
+         *     (RFC 3339; по умолчанию последние 30 суток, не длиннее 1830 суток); `service` — только этот сервис.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description Начало периода (RFC 3339); по умолчанию — за 30 суток до `to` */
+                    from?: components["parameters"]["ShadowFrom"];
+                    /** @description Конец периода (RFC 3339, не включается); по умолчанию — текущее время */
+                    to?: components["parameters"]["ShadowTo"];
+                    /** @description ID сервиса каталога */
+                    service?: components["parameters"]["ShadowService"];
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Сервисы за период */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ShadowServiceList"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/shadow-ai/users": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Теневой ИИ — пользователи
+         * @description Право `shadow_ai.read`. Пользователи — только псевдонимами (HMAC на ключе псевдонимов, как в событиях,
+         *     ТЗ 5.5): `kind` `user` — логин из журнала, `address` — адрес клиента, если логина нет. Исходные логины
+         *     и адреса не хранятся. По убыванию обращений, не больше `limit` (по умолчанию и максимум 1000).
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description Начало периода (RFC 3339); по умолчанию — за 30 суток до `to` */
+                    from?: components["parameters"]["ShadowFrom"];
+                    /** @description Конец периода (RFC 3339, не включается); по умолчанию — текущее время */
+                    to?: components["parameters"]["ShadowTo"];
+                    /** @description ID сервиса каталога */
+                    service?: components["parameters"]["ShadowService"];
+                    limit?: number;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Пользователи за период */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ShadowUserList"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/shadow-ai/timeline": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Теневой ИИ — динамика
+         * @description Право `shadow_ai.read`. Обращения, байты, число пользователей и сервисов по часам (`step=hour`, период не
+         *     длиннее 366 суток) или суткам (`step=day`, по умолчанию; сутки — в часовом поясе установки).
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description Начало периода (RFC 3339); по умолчанию — за 30 суток до `to` */
+                    from?: components["parameters"]["ShadowFrom"];
+                    /** @description Конец периода (RFC 3339, не включается); по умолчанию — текущее время */
+                    to?: components["parameters"]["ShadowTo"];
+                    /** @description ID сервиса каталога */
+                    service?: components["parameters"]["ShadowService"];
+                    step?: "hour" | "day";
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Динамика */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ShadowTimeline"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/shadow-ai/catalog": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Каталог ИИ-сервисов
+         * @description Право `shadow_ai.read`. Загруженный каталог: версия, дата, номер заверения рабочего ключа и его срок,
+         *     отпечаток, сервисы. `valid: false` — подпись сохранённого файла не прошла проверку при запуске сервера
+         *     (файл в БД изменён): импорт невозможен до загрузки подписанного каталога.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Каталог */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ShadowCatalog"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        /**
+         * Загрузить каталог ИИ-сервисов
+         * @description Право `shadow_ai.manage`. Тело — подписанный файл каталога из выпуска (`.aisecdb`, до 4 МиБ,
+         *     `Content-Type: application/octet-stream`; ADR-0027, пп. 2–4). Проверяются: заверение рабочего ключа
+         *     ключом производителя (назначение `service_db`, срок на текущее время, отзыв), подпись базы рабочим ключом,
+         *     вид базы, дата каталога в сроке заверения, строгий разбор YAML. Неверный файл — 422 (причина в тексте),
+         *     версия не больше загруженной — 409. Пишет `shadow_ai.catalog_loaded` или `shadow_ai.catalog_rejected`
+         *     с причиной, без содержимого файла.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/octet-stream": string;
+                };
+            };
+            responses: {
+                /** @description Каталог загружен */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ShadowCatalog"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/shadow-ai/imports": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Журнал импорта
+         * @description Право `shadow_ai.read`. Последние 100 импортов: формат, счётчики строк, номера первых ошибочных строк
+         *     (до 20, без содержимого), период, хеш файла. Имя файла и строки журнала не хранятся.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Импорты, новые первыми */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ShadowImportList"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        /**
+         * Импортировать журнал прокси
+         * @description Право `shadow_ai.manage`. Тело — файл журнала целиком (до 256 МиБ; `text/plain`, `text/csv`,
+         *     `application/gzip` или `application/octet-stream`), разбирается потоком (ADR-0027, п. 5). Форматы:
+         *     `csv` — с заголовком (время, пользователь, домен или URL, байты; разделитель `,` или `;`), `squid` —
+         *     access.log в формате native, `cef` — CEF (в том числе UserGate, ArcSight). `compression=gzip` —
+         *     файл сжат (после распаковки до 1 ГиБ). Пределы: строка 16 КиБ (длиннее — ошибочная), 10 млн строк,
+         *     500 тыс. сочетаний сервиса, пользователя и часа, 10 минут. Сопоставление с каталогом — по точному имени
+         *     и суффиксу домена (DM-37). В БД — только сводки по сервису, псевдониму пользователя и часу; сырые
+         *     строки и URL не хранятся. Записи старше срока хранения не сохраняются (`outdated`). Повтор того же
+         *     файла — 409; каталог не загружен — 409; уже идёт импорт — 429 с `Retry-After`. Пишет
+         *     `shadow_ai.import` (счётчики, хеш, версия каталога).
+         */
+        post: {
+            parameters: {
+                query: {
+                    format: "csv" | "squid" | "cef";
+                    compression?: "gzip";
+                };
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "text/plain": string;
+                    "text/csv": string;
+                    "application/gzip": string;
+                    "application/octet-stream": string;
+                };
+            };
+            responses: {
+                /** @description Журнал импортирован */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ShadowImport"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/shadow-ai/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Настройки теневого ИИ
+         * @description Право `shadow_ai.read`. Срок хранения сводок, суток (по умолчанию 365), и задан ли серверу ключ
+         *     псевдонимов пользователей (`users_pseudonymized`; без него пользователи из журналов не учитываются).
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Настройки */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ShadowSettings"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        /**
+         * Изменить срок хранения сводок теневого ИИ
+         * @description Право `shadow_ai.manage`. Срок — от 30 до 1825 суток; сводки старше срока удаляются фоновой задачей раз в
+         *     час (`shadow_ai.retention`). Сокращение необратимо и требует текущего пароля (`password`) или кода TOTP
+         *     (`code`) в сессии консоли (токеном API — 403); неверное значение — 403 `reauthentication_failed`;
+         *     пишется с `weakening: true` (DM-40). До первичной настройки — 409. Пишет `shadow_ai.settings_changed`.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["ShadowSettingsUpdate"];
+                };
+            };
+            responses: {
+                /** @description Срок изменён */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ShadowSettings"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/shadow-ai/exclusions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Исключения теневого ИИ
+         * @description Право `shadow_ai.read`. Пользователи (псевдонимами) и сервисы, которые не учитываются в сводках и
+         *     оповещениях теневого ИИ (задача 4.23), — например учётная запись самого шлюза, которая ходит к
+         *     провайдерам через прокси. Не больше 1000.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Исключения */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ShadowExclusionList"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        /**
+         * Добавить исключение теневого ИИ
+         * @description Право `shadow_ai.manage`. Пользователь задаётся логином или адресом клиента из журнала (`login`) —
+         *     сервер сразу заменяет его псевдонимом на ключе псевдонимов, логин нигде не хранится — или готовым
+         *     псевдонимом (`alias`); сервис — ID сервиса каталога (`service`). Строки исключённых не попадают в
+         *     сводки и оповещения, накопленные сводки исключённого удаляются той же транзакцией. Это ослабление
+         *     (DM-40): нужен текущий пароль (`password`) или код TOTP (`code`) в сессии консоли (токеном API —
+         *     403), в аудите `shadow_ai.exclusion_added` с `weakening: true`. Пользователь без ключа псевдонимов —
+         *     409; повтор и сверх 1000 — 409.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["ShadowExclusionInput"];
+                };
+            };
+            responses: {
+                /** @description Исключение добавлено */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ShadowExclusion"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/shadow-ai/exclusions/{kind}/{value}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Снять исключение теневого ИИ
+         * @description Право `shadow_ai.manage`. Следующие строки пользователя или сервиса снова учитываются; удалённые при
+         *     добавлении исключения сводки не возвращаются. Пишет `shadow_ai.exclusion_removed`.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    kind: "user" | "service";
+                    /** @description Псевдоним или ID сервиса */
+                    value: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Исключение снято */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/shadow-ai/syslog": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Состояние приёма журналов по syslog
+         * @description Право `shadow_ai.read`. Слушатель TCP/TLS сервера управления (RFC 5425, кадры RFC 6587), выключен по
+         *     умолчанию и включается флагами сервера `-shadow-ai-syslog-*`. Адрес, формат, режим TLS, разрешённые
+         *     сети, пределы и счётчики с запуска сервера: отказы и разрывы сверх пределов, строки, запись сводок.
+         *     Содержимого строк в ответе нет.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Состояние слушателя */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ShadowSyslogStats"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/compliance": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Соответствие требованиям
+         * @description Право `compliance.read` (администратор безопасности, аудитор, администратор системы). Пункты действующей
+         *     базы требований (ТЗ 2.3; встроенной или загруженной подписанной) со статусами: `met`, `partial`, `not_met`,
+         *     `not_applicable`, `manual` (нужна ручная отметка). Статус вычисляют именованные проверки по настройкам и
+         *     состоянию сервера (например, «фильтрация входа включена для 5 из 7 приложений промышленной среды»),
+         *     организационные меры — ручные отметки. Итоговый процент (`summary.percent`) не включает пункты с признаком
+         *     «проект» (`draft`) и «не применимо»; частично — половина; `null`, если считать нечего. Фильтры: `source`
+         *     (ID источника из `sources`) и `applies` (`gis`, `kii`, `ispdn`, `commercial`). `unavailable` — группы
+         *     сведений, которые не удалось прочитать: проверки, которым они нужны, не засчитаны. Содержимого запросов и
+         *     ответов в ответе нет.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description ID источника требований */
+                    source?: string;
+                    applies?: "gis" | "kii" | "ispdn" | "commercial";
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Обзор соответствия */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ComplianceOverview"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/compliance/requirements/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Пункт соответствия
+         * @description Право `compliance.read`. Пункт с результатами проверок, ссылками на доказательства (экраны консоли,
+         *     фильтры журнала аудита и событий, отчёты) и ручной отметкой.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description ID пункта базы требований */
+                    id: components["parameters"]["ComplianceRequirementID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Пункт */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ComplianceItem"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/compliance/requirements/{id}/mark": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Поставить ручную отметку
+         * @description Право `compliance.mark` (администратор безопасности; токену API не выдаётся). Статус, комментарий (обязателен),
+         *     ссылка на документ-основание и срок пересмотра. После срока пересмотра отметка не засчитывается. У пункта,
+         *     статус которого вычисляют только проверки, допустима лишь отметка `not_applicable`; иначе 422. Пишет
+         *     `compliance.mark_set` (статус, прежний статус, срок, комментарий). После льготного периода лицензии модуль
+         *     закрыт для изменений (ADR-0026).
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID пункта базы требований */
+                    id: components["parameters"]["ComplianceRequirementID"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["ComplianceMarkInput"];
+                };
+            };
+            responses: {
+                /** @description Пункт с новой отметкой */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ComplianceItem"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        post?: never;
+        /**
+         * Снять ручную отметку
+         * @description Право `compliance.mark`. Нет отметки — 404. Пишет `compliance.mark_cleared`.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID пункта базы требований */
+                    id: components["parameters"]["ComplianceRequirementID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Пункт без отметки */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ComplianceItem"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/compliance/base": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * База требований
+         * @description Право `compliance.read`. Действующая база (встроенная в сборку или загруженная подписанная, если её версия
+         *     больше встроенной), встроенная база и сведения о загруженной: версия, дата, число пунктов, номер заверения
+         *     рабочего ключа и его срок, отпечаток, `valid` — подпись сохранённого файла проверена при запуске сервера.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description База требований */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ComplianceBaseView"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        /**
+         * Загрузить обновлённую базу требований
+         * @description Право `compliance.base.load` (администратор системы). Тело — подписанный файл базы вида
+         *     `compliance_requirements` из выпуска (`.aisecdb`, до 4 МиБ, `Content-Type: application/octet-stream`;
+         *     ADR-0027, пп. 2–4). Проверяются: заверение рабочего ключа ключом производителя (назначение `service_db`,
+         *     срок на текущее время, отзыв), подпись базы, вид, дата в сроке заверения, строгий разбор YAML (неизвестная
+         *     проверка или параметр — отказ). Неверный файл — 422 (причина в тексте), версия не больше действующей — 409.
+         *     Пишет `compliance.base_loaded` или `compliance.base_rejected` с причиной, без содержимого файла.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/octet-stream": string;
+                };
+            };
+            responses: {
+                /** @description База загружена */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ComplianceBaseView"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/license": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Лицензия
+         * @description Право `license.read` (администратор системы, администратор безопасности, аудитор; ADR-0026, п. 6).
+         *     Состояние (`none` — «пилот по договору» без ограничений, `active`, `expiring` — 30 суток и меньше,
+         *     `grace` — льготный период 30 суток, `restricted` — изменения конфигурации запрещены, `invalid` —
+         *     загруженная лицензия не прошла повторную проверку подписи), владелец, срок, пределы и их использование,
+         *     модули, номер и срок заверения рабочего ключа. `clock_behind` — часы сервера раньше даты выдачи лицензии
+         *     или отметки часов (условие `license_clock`).
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Сведения о лицензии */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["LicenseInfo"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        /**
+         * Загрузить или заменить лицензию
+         * @description Право `license.manage` (администратор системы и администратор безопасности). Только в сессии консоли с текущим паролем (`password`)
+         *     или кодом TOTP (`code`): токену API это право не выдаётся (повторной проверки у токена нет), неверное
+         *     значение — 403 `reauthentication_failed`.
+         *     `license` — текст файла `*.aiseclic` (до 16 КиБ; ADR-0026, п. 2). Проверяются: заверение рабочего ключа
+         *     ключом производителя (назначение `license`, срок на текущее время, отзыв), подпись лицензии, строгий
+         *     разбор содержимого, дата выдачи в сроке заверения, срок лицензии (действует сейчас), дата выдачи не позже
+         *     часов сервера. Замена — только на лицензию с номером больше и датой выдачи не раньше загруженной (иначе
+         *     409). Неверный файл — 422 с причиной. Работает и после льготного периода. Пишет `license.loaded` или
+         *     `license.rejected` без файла и подписи.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["LicenseUpload"];
+                };
+            };
+            responses: {
+                /** @description Лицензия загружена */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["LicenseInfo"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -9468,14 +10593,16 @@ export interface components {
                 /** @description Шлюзы на связи, которые дольше 10 минут работают на другой версии */
                 lagging: string[];
             };
+            /** @description Приём журналов прокси по syslog (теневой ИИ); нет — слушатель выключен */
+            shadow_ai_syslog?: components["schemas"]["ShadowSyslogStats"];
             notifications: {
                 /**
-                 * @description gateway_clock (ВРМ.1) — часы шлюза на связи в последнем heartbeat расходятся с часами сервера больше чем на минуту, 3Н40 ревью 3.r3. gateway_tls (ЗИ.4) — шлюз на текущем пакете конфигурации дольше 10 минут после его сборки отвечает приложениям не тем сертификатом, что загружен в консоли (по часам шлюза он ещё не действует или истёк; без сертификата заказчика — не своим), 3Н43 ревью 3.r3. alert_job_stale (РСБ.7, DM-44) — фоновая задача правил «частота», «аномалия» и «бюджет» не отмечала проход дольше 5 минут при работающем сервере, 3В17 ревью 3.r2. ca_expiry (ИАФ.10) — действующему корню внутреннего УЦ осталось 60 суток и меньше, нужна ротация `aisec-cli keys rotate-ca`; system.alert пишется за 60 суток (ca_expiry) и за 7 суток (ca_expiry:critical), 3В5 ревью 3.r1. customer_cert_expiry (ЗИ.4) — сертификату заказчика для адреса шлюза осталось 30 суток и меньше; system.alert пишется за 30 суток (customer_cert_expiry) и за 7 суток (customer_cert_expiry:critical), задача 3.27
+                 * @description gateway_clock (ВРМ.1) — часы шлюза на связи в последнем heartbeat расходятся с часами сервера больше чем на минуту, 3Н40 ревью 3.r3. gateway_tls (ЗИ.4) — шлюз на текущем пакете конфигурации дольше 10 минут после его сборки отвечает приложениям не тем сертификатом, что загружен в консоли (по часам шлюза он ещё не действует или истёк; без сертификата заказчика — не своим), 3Н43 ревью 3.r3. alert_job_stale (РСБ.7, DM-44) — фоновая задача правил «частота», «аномалия» и «бюджет» не отмечала проход дольше 5 минут при работающем сервере, 3В17 ревью 3.r2. ca_expiry (ИАФ.10) — действующему корню внутреннего УЦ осталось 60 суток и меньше, нужна ротация `aisec-cli keys rotate-ca`; system.alert пишется за 60 суток (ca_expiry) и за 7 суток (ca_expiry:critical), 3В5 ревью 3.r1. customer_cert_expiry (ЗИ.4) — сертификату заказчика для адреса шлюза осталось 30 суток и меньше; system.alert пишется за 30 суток (customer_cert_expiry) и за 7 суток (customer_cert_expiry:critical), задача 3.27. quota_approximate (ЗИ.6) — режим квот local, а действующих шлюзов на связи больше одного: квоты приложений и жёсткие бюджеты соблюдаются приблизительно, задача 4.29. quota_autonomous (ЗИ.6, по компонентам gateway:<ID>) — шлюз в режиме leased сообщил в heartbeat, что сервер недоступен и он работает на автономной доле квот, задача 4.29
                  * @enum {string}
                  */
-                condition: "account_lockout" | "access_denied" | "audit_chain" | "audit_storage" | "integrity" | "time_sync" | "config_bundle" | "config_bundle_lag" | "test_build" | "gateway_offline" | "events_dropped" | "reports_stale" | "cert_expiry" | "gateway_clock" | "gateway_tls" | "ca_expiry" | "customer_cert_expiry" | "alert_job_stale";
+                condition: "account_lockout" | "access_denied" | "audit_chain" | "audit_storage" | "integrity" | "time_sync" | "config_bundle" | "config_bundle_lag" | "test_build" | "gateway_offline" | "events_dropped" | "reports_stale" | "cert_expiry" | "gateway_clock" | "gateway_tls" | "ca_expiry" | "customer_cert_expiry" | "alert_job_stale" | "license_expiry" | "license_grace" | "license_restricted" | "license_invalid" | "license_clock" | "quota_approximate" | "quota_autonomous";
                 /** @enum {string} */
-                requirement: "ИАФ.4" | "ИАФ.10" | "УПД.6" | "РСБ.4" | "РСБ.5" | "РСБ.7" | "ОЦЛ.1" | "ОЦЛ.3" | "ОЦЛ.5" | "ВРМ.1" | "ЗИ.4";
+                requirement: "ИАФ.4" | "ИАФ.10" | "УПД.6" | "РСБ.4" | "РСБ.5" | "РСБ.7" | "ОЦЛ.1" | "ОЦЛ.3" | "ОЦЛ.5" | "ВРМ.1" | "ЗИ.2" | "ЗИ.4" | "ЗИ.6";
                 /** @description Компоненты с активным условием (integrity — server или gateway:<ID>, config_bundle_lag, gateway_offline, events_dropped, reports_stale, cert_expiry — gateway:<ID>); каждое ведётся отдельно и пишется в system.alert (В18 ревью 2.r3b), а возникшее условие порождает оповещение системного правила (задача 3.11 этапа 3, DM-42–DM-44). test_build (ОЦЛ.1) — компоненты, собранные с тестовым ключом манифеста (Н34 ревью 2.r4); integrity шлюза поднимает и откат выпуска, и чужой ключ проверки пакетов (В19, В20 ревью 2.r4). DM-44: gateway_offline — шлюз не на связи дольше трёх периодов heartbeat, events_dropped — счётчик отброшенных событий вырос за 15 минут, cert_expiry — сертификат истекает меньше чем через 14 суток, reports_stale — итог целостности старше двух часов или не приходит (Н29) */
                 components?: string[];
                 title: string;
@@ -10685,7 +11812,10 @@ export interface components {
             message?: string;
             /** @enum {string} */
             severity: "info" | "low" | "medium" | "high" | "critical";
-            /** @description Хеш аргументов */
+            /**
+             * @description Хеш привязки решения к аргументам (hex): со случайным числом шлюза, одинаковые аргументы дают разные
+             *     хеши. Пустая строка без права approvals.decide (ревью 4.r1, 4В9).
+             */
             args_hash: string;
             /** @description Маскированные аргументы; только с approvals.decide, 30 суток после закрытия */
             args?: string;
@@ -10703,6 +11833,7 @@ export interface components {
             closed_at?: string;
             /** @description Логин пользователя консоли */
             decided_by?: string;
+            /** @description Комментарий решения; только с approvals.decide (ревью 4.r1, 4Н8) */
             comment?: string;
             /** Format: int64 */
             waited_ms: number;
@@ -10817,9 +11948,20 @@ export interface components {
             /** Format: date-time */
             deactivated_at?: string;
         };
+        /**
+         * @description На адрес уходят отчёты по расписанию, поэтому смена — с повторной проверкой вызывающего: ровно одно
+         *     из `password` и `code` (ревью 4.r1, 4В12). Без них — 400 с полем `password`.
+         */
         EmailInput: {
             /** @description Адрес вида user@example.ru; пустая строка убирает адрес */
             email: string;
+            /**
+             * Format: password
+             * @description Текущий пароль вызывающего (ровно одно из password и code)
+             */
+            password?: string;
+            /** @description Код из приложения-аутентификатора вызывающего */
+            code?: string;
         };
         NewUser: {
             login: string;
@@ -10924,7 +12066,7 @@ export interface components {
             status: number;
             detail: string;
             /** @enum {string} */
-            code: "invalid_request" | "unauthorized" | "forbidden" | "not_found" | "method_not_allowed" | "conflict" | "payload_too_large" | "unsupported_media_type" | "unprocessable" | "rate_limited" | "internal_error" | "service_unavailable" | "reauthentication_failed" | "bundle_key_mismatch" | "reissue_not_needed" | "self_review" | "approval_queue_full";
+            code: "invalid_request" | "unauthorized" | "forbidden" | "not_found" | "method_not_allowed" | "conflict" | "payload_too_large" | "unsupported_media_type" | "unprocessable" | "rate_limited" | "internal_error" | "service_unavailable" | "reauthentication_failed" | "bundle_key_mismatch" | "reissue_not_needed" | "self_review" | "approval_queue_full" | "license_restricted" | "license_module" | "license_limit";
             errors?: {
                 field: string;
                 detail: string;
@@ -11553,6 +12695,8 @@ export interface components {
             message?: string;
             incomplete: boolean;
             unchecked: boolean;
+            /** @description ML-детектор политики не дал результата: на сервере нет aisec-ml, проверку ML песочница не выполняет, решение — по остальным детекторам (ADR-0024) */
+            ml_unavailable: boolean;
             failures: {
                 detector: string;
                 location: string;
@@ -11663,10 +12807,10 @@ export interface components {
             filter?: string;
             min_severity?: components["schemas"]["AlertSeverity"];
             /**
-             * @description Поле правила «новое»; tool — только у встроенного agents.tool_new
+             * @description Поле правила «новое»; tool — только у встроенного agents.tool_new, shadow_ai_service — у shadow_ai.new_service
              * @enum {string}
              */
-            field?: "model" | "provider" | "user" | "app" | "tool";
+            field?: "model" | "provider" | "user" | "app" | "tool" | "shadow_ai_service";
             /** @description Порог «частоты»: событий в окне по ключу группировки */
             count?: number;
             /** @description Окно «частоты» */
@@ -11751,6 +12895,545 @@ export interface components {
             password?: string;
             /** @description Код из приложения-аутентификатора вместо пароля */
             code?: string;
+        };
+        QuotaSettings: {
+            /** @enum {string} */
+            mode: "local" | "leased";
+            /**
+             * Format: date-time
+             * @description Последняя смена режима; null — не менялся
+             */
+            changed_at: string | null;
+            /** @description Действующих шлюзов на связи (heartbeat за 90 секунд) */
+            gateways_online: number;
+        };
+        QuotaSettingsUpdate: {
+            /** @enum {string} */
+            mode: "local" | "leased";
+            /**
+             * Format: password
+             * @description Текущий пароль для перехода на local при нескольких шлюзах
+             */
+            password?: string;
+            /** @description Код из приложения-аутентификатора вместо пароля */
+            code?: string;
+        };
+        ShadowServiceStat: {
+            id: string;
+            /** @description Название из каталога; нет в текущем каталоге — ID */
+            name: string;
+            vendor: string;
+            /** @description chat, api, code, image, search, platform; пусто — нет в текущем каталоге */
+            category: string;
+            /** Format: int64 */
+            requests: number;
+            /** Format: int64 */
+            bytes: number;
+            /**
+             * Format: int64
+             * @description Разных пользователей (псевдонимов)
+             */
+            users: number;
+            /**
+             * Format: date-time
+             * @description Начало первого часа с обращениями
+             */
+            first_seen: string;
+            /**
+             * Format: date-time
+             * @description Начало последнего часа с обращениями
+             */
+            last_seen: string;
+        };
+        ShadowServiceList: {
+            items: components["schemas"]["ShadowServiceStat"][];
+        };
+        ShadowUserStat: {
+            /** @description Псевдоним (как user_hash в событиях) */
+            alias: string;
+            /** @enum {string} */
+            kind: "user" | "address";
+            /** Format: int64 */
+            requests: number;
+            /** Format: int64 */
+            bytes: number;
+            services: string[];
+            /** Format: date-time */
+            last_seen: string;
+        };
+        ShadowUserList: {
+            items: components["schemas"]["ShadowUserStat"][];
+        };
+        ShadowPoint: {
+            /**
+             * Format: date-time
+             * @description Начало часа или суток (сутки — в часовом поясе установки)
+             */
+            bucket: string;
+            /** Format: int64 */
+            requests: number;
+            /** Format: int64 */
+            bytes: number;
+            /** Format: int64 */
+            users: number;
+            /** Format: int64 */
+            services: number;
+        };
+        ShadowTimeline: {
+            /** @enum {string} */
+            step: "hour" | "day";
+            items: components["schemas"]["ShadowPoint"][];
+        };
+        ShadowCatalogService: {
+            id: string;
+            name: string;
+            vendor: string;
+            /** @enum {string} */
+            category: "chat" | "api" | "code" | "image" | "search" | "platform";
+            /** @description Точные имена узлов */
+            domains: string[];
+            /** @description Имя и все его поддомены */
+            suffixes: string[];
+        };
+        /** @description Лицензия и её состояние (ADR-0026, пп. 3–6) */
+        LicenseInfo: {
+            /** @enum {string} */
+            state: "none" | "active" | "expiring" | "grace" | "restricted" | "invalid";
+            /** @description Изменения конфигурации запрещены (restricted, invalid) */
+            restricted: boolean;
+            /** @description Часы сервера раньше даты выдачи лицензии или отметки часов */
+            clock_behind: boolean;
+            /**
+             * Format: int64
+             * @description Номер загруженной лицензии; 0 — «пилот по договору»
+             */
+            number: number;
+            /** @enum {string} */
+            type?: "pilot" | "commercial";
+            licensee?: {
+                organization: string;
+                inn: string;
+            };
+            /** Format: date-time */
+            issued_at?: string;
+            /** Format: date-time */
+            valid_from?: string;
+            /** Format: date-time */
+            valid_until?: string;
+            /**
+             * Format: date-time
+             * @description Конец льготного периода
+             */
+            grace_until?: string;
+            /** @description Целых суток до конца срока */
+            days_left?: number;
+            /** @description Целых суток до конца льготного периода */
+            grace_days_left?: number;
+            limits?: components["schemas"]["LicenseCounts"];
+            usage?: components["schemas"]["LicenseCounts"];
+            /** @description Включённые модули; без лицензии — все */
+            modules: ("agents" | "shadow_ai" | "compliance" | "ml")[];
+            /**
+             * Format: int64
+             * @description Номер заверения рабочего ключа лицензий
+             */
+            subkey_serial?: number;
+            /** Format: date-time */
+            subkey_not_after?: string;
+            /** @description Отпечаток рабочего ключа лицензий */
+            fingerprint?: string;
+            /** Format: date-time */
+            loaded_at?: string;
+        };
+        /** @description Пределы (0 — без ограничения) или их использование */
+        LicenseCounts: {
+            gateways: number;
+            applications: number;
+        };
+        LicenseUpload: {
+            /** @description Текст файла лицензии *.aiseclic */
+            license: string;
+            /** @description Текущий пароль (или code) */
+            password?: string;
+            /** @description Код TOTP (или password) */
+            code?: string;
+        };
+        ShadowCatalog: {
+            /** @description Каталог загружали */
+            loaded: boolean;
+            /** @description Подпись сохранённого каталога проверена */
+            valid: boolean;
+            /** Format: int64 */
+            version?: number;
+            /** Format: date */
+            date?: string;
+            /**
+             * Format: int64
+             * @description Номер заверения рабочего ключа
+             */
+            subkey_serial?: number;
+            /**
+             * Format: date-time
+             * @description Конец срока заверения рабочего ключа
+             */
+            subkey_not_after?: string;
+            /** @description Отпечаток рабочего ключа */
+            fingerprint?: string;
+            /** Format: date-time */
+            uploaded_at?: string;
+            services: components["schemas"]["ShadowCatalogService"][];
+        };
+        ComplianceEvidence: {
+            /** @enum {string} */
+            kind: "screen" | "audit" | "events" | "report";
+            title: string;
+            /** @description Раздел консоли, например /apps */
+            path: string;
+            /** @description Параметры адреса раздела (например, фильтр событий f) */
+            query?: {
+                [key: string]: string;
+            };
+            /** @description Где искать внутри раздела */
+            hint?: string;
+        };
+        ComplianceCheckResult: {
+            name: string;
+            title: string;
+            /** @enum {string} */
+            status: "met" | "partial" | "not_met" | "not_applicable";
+            /** @description Результат словами, без содержимого запросов */
+            detail: string;
+        };
+        ComplianceMark: {
+            requirement_id: string;
+            /** @enum {string} */
+            status: "met" | "partial" | "not_met" | "not_applicable";
+            comment: string;
+            document?: string;
+            /** Format: date */
+            review_by?: string;
+            /** Format: date-time */
+            set_at: string;
+            set_by: string;
+        };
+        ComplianceMarkInput: {
+            /** @enum {string} */
+            status: "met" | "partial" | "not_met" | "not_applicable";
+            /** @description Обязателен */
+            comment: string;
+            /** @description Ссылка на документ-основание */
+            document?: string;
+            /**
+             * Format: date
+             * @description Срок пересмотра: не в прошлом и не дальше трёх лет
+             */
+            review_by?: string;
+        };
+        ComplianceItem: {
+            id: string;
+            source: string;
+            source_title: string;
+            clause: string;
+            title: string;
+            /** @description Пересказ своими словами */
+            summary: string;
+            applies: ("gis" | "kii" | "ispdn" | "commercial")[];
+            /** @description Из проекта документа: в процент не входит */
+            draft: boolean;
+            /** @description Нужна ручная отметка */
+            manual: boolean;
+            /** @enum {string} */
+            status: "met" | "partial" | "not_met" | "not_applicable" | "manual";
+            auto?: {
+                /** @enum {string} */
+                status?: "met" | "partial" | "not_met" | "not_applicable";
+            };
+            checks?: components["schemas"]["ComplianceCheckResult"][];
+            evidence?: components["schemas"]["ComplianceEvidence"][];
+            mark?: components["schemas"]["ComplianceMark"];
+            /** @description Срок пересмотра отметки истёк: не засчитывается */
+            mark_overdue?: boolean;
+        };
+        ComplianceCounts: {
+            met: number;
+            partial: number;
+            not_met: number;
+            not_applicable: number;
+            manual: number;
+        };
+        ComplianceSummary: {
+            percent: number | null;
+            counts: components["schemas"]["ComplianceCounts"];
+            /** @description Пунктов в проценте */
+            counted: number;
+            /** @description Пунктов-проектов (в процент и счётчики не входят) */
+            drafts: number;
+        };
+        ComplianceBaseInfo: {
+            /** Format: int64 */
+            version: number;
+            /** Format: date */
+            date: string;
+            /** @enum {string} */
+            origin: "builtin" | "uploaded";
+            requirements: number;
+        };
+        ComplianceOverview: {
+            /** Format: date-time */
+            generated_at: string;
+            base: components["schemas"]["ComplianceBaseInfo"];
+            sources: {
+                id: string;
+                title: string;
+            }[];
+            summary: components["schemas"]["ComplianceSummary"];
+            items: components["schemas"]["ComplianceItem"][];
+            unavailable: ("apps" | "roles" | "audit_chain" | "integrity" | "alerts" | "channels")[];
+        };
+        ComplianceBaseView: {
+            active: components["schemas"]["ComplianceBaseInfo"];
+            builtin: components["schemas"]["ComplianceBaseInfo"];
+            uploaded?: {
+                /** Format: int64 */
+                version: number;
+                /** Format: date */
+                date: string;
+                requirements: number;
+                /** Format: int64 */
+                subkey_serial: number;
+                /** Format: date-time */
+                subkey_not_after?: string;
+                fingerprint: string;
+                /** Format: date-time */
+                uploaded_at: string;
+                /** @description Подпись сохранённого файла проверена при запуске */
+                valid: boolean;
+            };
+        };
+        ShadowImport: {
+            /** Format: uuid */
+            id: string;
+            /** Format: date-time */
+            created_at: string;
+            /** @description Тип и ID субъекта */
+            created_by: string;
+            /** Format: int64 */
+            catalog_version: number;
+            /** @enum {string} */
+            format: "csv" | "squid" | "cef";
+            /**
+             * Format: int64
+             * @description Строк в файле, без пустых и заголовка CSV
+             */
+            lines: number;
+            /**
+             * Format: int64
+             * @description Обращений к сервисам каталога
+             */
+            matched: number;
+            /**
+             * Format: int64
+             * @description Обращений к прочим узлам и адресам IP
+             */
+            unmatched: number;
+            /**
+             * Format: int64
+             * @description Строк, которые не разобраны
+             */
+            errors: number;
+            /**
+             * Format: int64
+             * @description Обращений старше срока хранения (не сохранены)
+             */
+            outdated: number;
+            /** @description Номера первых ошибочных строк, без содержимого */
+            error_lines: number[];
+            /** Format: date-time */
+            from?: string;
+            /** Format: date-time */
+            to?: string;
+            /** @description false — ключа псевдонимов нет, пользователи не учтены */
+            users_pseudonymized: boolean;
+            /** @description Хеш файла после распаковки */
+            sha256: string;
+            /** @description Разных сервисов найдено */
+            services: number;
+            /**
+             * Format: int64
+             * @description Обращений исключённых пользователей и сервисов (не сохранены)
+             */
+            excluded?: number;
+        };
+        ShadowImportList: {
+            items: components["schemas"]["ShadowImport"][];
+        };
+        ShadowSettings: {
+            retention_days: number;
+            users_pseudonymized: boolean;
+        };
+        ShadowSettingsUpdate: {
+            retention_days: number;
+            /**
+             * Format: password
+             * @description Текущий пароль, если срок сокращается
+             */
+            password?: string;
+            /** @description Код из приложения-аутентификатора вместо пароля */
+            code?: string;
+        };
+        ShadowExclusion: {
+            /** @enum {string} */
+            kind: "user" | "service";
+            /** @description Псевдоним пользователя (32 hex) или ID сервиса каталога */
+            value: string;
+            comment: string;
+            /** Format: date-time */
+            created_at: string;
+            /** @description Тип и ID субъекта */
+            created_by: string;
+        };
+        ShadowExclusionInput: {
+            /** @enum {string} */
+            kind: "user" | "service";
+            /** @description Логин или адрес клиента из журнала; сервер хранит только псевдоним */
+            login?: string;
+            /** @description Готовый псевдоним вместо логина */
+            alias?: string;
+            /** @description ID сервиса каталога */
+            service?: string;
+            comment?: string;
+            /**
+             * Format: password
+             * @description Текущий пароль
+             */
+            password?: string;
+            /** @description Код из приложения-аутентификатора вместо пароля */
+            code?: string;
+        };
+        ShadowExclusionList: {
+            items: components["schemas"]["ShadowExclusion"][];
+        };
+        /** @description Приём журналов по syslog; счётчики — с запуска сервера */
+        ShadowSyslogStats: {
+            /** @description false — слушатель выключен (остальные поля нулевые) */
+            enabled: boolean;
+            /** @description Слушатель принимает соединения; false при enabled — приём остановлен ошибкой */
+            running: boolean;
+            /**
+             * Format: date-time
+             * @description Когда приём остановился
+             */
+            stopped_at?: string;
+            /** @description Причина остановки приёма */
+            last_error?: string;
+            address?: string;
+            /** @enum {string} */
+            format?: "cef" | "squid";
+            tls: boolean;
+            client_cert_required: boolean;
+            /** @description Пусто — любые источники (только с TLS) */
+            allowed_networks: string[];
+            /** Format: date-time */
+            started_at?: string;
+            /** @description Открытых соединений сейчас */
+            connections: number;
+            limits: {
+                max_connections: number;
+                max_connections_per_address: number;
+                max_frame_bytes: number;
+                lines_per_second: number;
+                idle_timeout_seconds: number;
+                frame_timeout_seconds: number;
+            };
+            /**
+             * Format: int64
+             * @description Принято соединений
+             */
+            accepted: number;
+            /**
+             * Format: int64
+             * @description Временных ошибок приёма соединений (повторяются с паузой)
+             */
+            accept_errors: number;
+            /**
+             * Format: int64
+             * @description Отказ: источник не из разрешённых сетей
+             */
+            rejected_network: number;
+            /**
+             * Format: int64
+             * @description Отказ: сверх предела соединений
+             */
+            rejected_limit: number;
+            /**
+             * Format: int64
+             * @description Рукопожатие TLS не удалось (в том числе нет клиентского сертификата)
+             */
+            tls_failed: number;
+            /**
+             * Format: int64
+             * @description Разрыв: кадр длиннее 16 КиБ
+             */
+            frame_too_large: number;
+            /**
+             * Format: int64
+             * @description Разрыв: поток оборван внутри кадра
+             */
+            bad_frame: number;
+            /**
+             * Format: int64
+             * @description Разрыв: нет кадров дольше срока простоя
+             */
+            idle_timeouts: number;
+            /**
+             * Format: int64
+             * @description Разрыв: кадр не пришёл целиком за срок
+             */
+            read_timeouts: number;
+            /** Format: int64 */
+            lines: number;
+            /** Format: int64 */
+            matched: number;
+            /** Format: int64 */
+            unmatched: number;
+            /**
+             * Format: int64
+             * @description Строки не разобраны
+             */
+            errors: number;
+            /** Format: int64 */
+            excluded: number;
+            /** Format: int64 */
+            outdated: number;
+            /**
+             * Format: int64
+             * @description Строки до загрузки каталога (не учтены)
+             */
+            no_catalog: number;
+            /**
+             * Format: int64
+             * @description Строки сверх предела сводок в памяти (не учтены)
+             */
+            dropped: number;
+            /**
+             * Format: int64
+             * @description Кадров, чтение которых задержано пределом строк в секунду
+             */
+            throttled: number;
+            /**
+             * Format: int64
+             * @description Строки, отброшенные до разбора: модуль shadow_ai не входит в лицензию (4В18 ревью 4.r2)
+             */
+            unlicensed: number;
+            /** @description Модуль shadow_ai входит в лицензию (или лицензии нет); false — строки не учитываются */
+            license_module: boolean;
+            /** @description Сводок в памяти до следующей записи */
+            pending: number;
+            /** Format: date-time */
+            last_flush_at?: string;
+            /** Format: int64 */
+            flush_failures: number;
+            last_flush_failed: boolean;
         };
         /**
          * @description Настройки без секретов. Почта — host, port (587), username, from, to (1–20 адресов); webhook —
@@ -11853,7 +13536,7 @@ export interface components {
         ReportScheduleInput: {
             name: string;
             /** @enum {string} */
-            report: "summary" | "incidents" | "pilot";
+            report: "summary" | "incidents" | "pilot" | "compliance";
             /** @enum {string} */
             frequency: "daily" | "weekly" | "monthly";
             /** @description Для weekly; 1 — понедельник */
@@ -11882,7 +13565,7 @@ export interface components {
             id: string;
             name: string;
             /** @enum {string} */
-            report: "summary" | "incidents" | "pilot";
+            report: "summary" | "incidents" | "pilot" | "compliance";
             /** @enum {string} */
             frequency: "daily" | "weekly" | "monthly";
             weekday?: number;
@@ -12337,6 +14020,8 @@ export interface components {
             incomplete?: boolean;
             /** @description У политики нет правил для этого направления: детекторы не запускались, allow не означает «проверено». */
             unchecked?: boolean;
+            /** @description ML-детектор политики (injection.ml, toxicity.ml) не дал результата: aisec-ml недоступен, решение принято по остальным детекторам (ADR-0024). */
+            ml_unavailable?: boolean;
             /** @description Находки детекторов политики приложения для этого направления. */
             findings: {
                 detector: string;
@@ -12450,7 +14135,11 @@ export interface components {
                 "application/problem+json": components["schemas"]["Problem"];
             };
         };
-        /** @description Недостаточно прав (`forbidden`) */
+        /**
+         * @description Недостаточно прав (`forbidden`) или изменение запрещено лицензией (ADR-0026, п. 5): после льготного
+         *     периода — `license_restricted`, модуль не входит в лицензию — `license_module`, превышен предел шлюзов
+         *     или приложений — `license_limit`; причина — в `detail`
+         */
         ProblemForbidden: {
             headers: {
                 [name: string]: unknown;
@@ -12546,6 +14235,14 @@ export interface components {
         };
     };
     parameters: {
+        /** @description ID пункта базы требований */
+        ComplianceRequirementID: string;
+        /** @description Начало периода (RFC 3339); по умолчанию — за 30 суток до `to` */
+        ShadowFrom: string;
+        /** @description Конец периода (RFC 3339, не включается); по умолчанию — текущее время */
+        ShadowTo: string;
+        /** @description ID сервиса каталога */
+        ShadowService: string;
         /** @description Размер страницы */
         Limit: number;
         /** @description Непрозрачный курсор из `next_cursor` предыдущей страницы */

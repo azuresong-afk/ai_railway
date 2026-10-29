@@ -34,7 +34,9 @@ case "$data_dir" in
 esac
 
 nologin=$(command -v nologin || echo /usr/sbin/nologin)
-for user in aisec aisec-gw aisec-db; do
+# aisec-ml — процесс ML-детекторов (ADR-0024): создаётся всегда, работает
+# только с дополнением compose.ml.yaml.
+for user in aisec aisec-gw aisec-db aisec-ml; do
 	if ! id -u "$user" >/dev/null 2>&1; then
 		useradd --system --user-group --no-create-home --home-dir /nonexistent --shell "$nologin" "$user"
 		echo "Создан пользователь $user."
@@ -60,11 +62,15 @@ dir() {
 		install -d -o "$owner" -g "$owner" -m "$mode" "$d"
 	done
 }
-dir root 0755 "$data_dir" "$data_dir/gateway"
+dir root 0755 "$data_dir" "$data_dir/gateway" "$data_dir/ml"
 dir root 0700 "$data_dir/secrets"
 dir aisec 0700 "$data_dir/keys" "$data_dir/backups"
 dir aisec-gw 0700 "$data_dir/gateway/reg" "$data_dir/gateway/state"
 dir aisec-db 0700 "$data_dir/pg"
+# Каталог сокета aisec-ml: создаёт сокет aisec-ml, подключается шлюз (группа
+# aisec-gw, только чтение каталога), остальные пользователи хоста его не видят.
+[ ! -L "$data_dir/ml/run" ] || die "$data_dir/ml/run — символьная ссылка; удалите её и повторите"
+install -d -o aisec-ml -g aisec-gw -m 0750 "$data_dir/ml/run"
 
 # put ФАЙЛ ВЛАДЕЛЕЦ СОДЕРЖИМОЕ — новый секрет 0400; printf — встроенная
 # команда, содержимое не попадает в список процессов.
@@ -114,6 +120,9 @@ set_env AISEC_GW_UID "$(id -u aisec-gw)"
 set_env AISEC_GW_GID "$(id -g aisec-gw)"
 set_env AISEC_DB_UID "$(id -u aisec-db)"
 set_env AISEC_DB_GID "$(id -g aisec-db)"
+# Группа aisec-ml в контейнере — aisec-gw (AISEC_GW_GID): сокет получает
+# группу шлюза.
+set_env AISEC_ML_UID "$(id -u aisec-ml)"
 
 missing=0
 check() {
@@ -161,3 +170,4 @@ if [ ! -s "$anchor" ]; then
 	fi
 fi
 echo "Хост подготовлен: $data_dir."
+echo "ML-детекторы (необязательно): в .env COMPOSE_FILE=compose.yaml:compose.ml.yaml и ml в COMPOSE_PROFILES (README.md)."

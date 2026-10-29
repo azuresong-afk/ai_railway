@@ -4,7 +4,7 @@
 
 «да» — доступ есть; «свои» — только к своим объектам (УПД.8); «—» — отказ 403. Каждую пару проверяет тест `TestRBACMatrixDenials` (`internal/api`): для «—» — ответ 403 и запись `access.denied` в журнале аудита, для остальных — ни 401, ни 403. Тот же тест проверяет свою роль без разрешений: ей доступны только эндпоинты с `self` и `session`. Сессия с временным или истёкшим паролем получает только `self` и `session`, сессия до второго фактора — только `session`, независимо от роли.
 
-Колонка «токен API» — можно ли выдать разрешение токену API (ИАФ.9, `auth.TokenGrantable`): функции безопасности, свои данные и сами токены токену недоступны. Права токена — пересечение его области с правами роли владельца; эти пары проверяет `TestRBACMatrixTokenDenials`.
+Колонка «токен API» — можно ли выдать разрешение токену API (ИАФ.9, `auth.TokenGrantable`): функции безопасности, свои данные, сами токены и загрузка лицензии токену недоступны. Права токена — пересечение его области с правами роли владельца; эти пары проверяет `TestRBACMatrixTokenDenials`.
 
 ## Защищённые эндпоинты
 
@@ -73,6 +73,12 @@
 | GET | `/api/v1/auth/policy` | `auth_policy.read` | да | — | — | да | — | да |
 | PUT | `/api/v1/auth/policy` | `auth_policy.manage` | да | — | — | — | — | — |
 | GET | `/api/v1/budgets` | `budgets.read` | да | да | да | да | — | да |
+| GET | `/api/v1/compliance` | `compliance.read` | да | да | — | да | — | да |
+| GET | `/api/v1/compliance/base` | `compliance.read` | да | да | — | да | — | да |
+| PUT | `/api/v1/compliance/base` | `compliance.base.load` | да | да | — | — | — | да |
+| GET | `/api/v1/compliance/requirements/{id}` | `compliance.read` | да | да | — | да | — | да |
+| PUT | `/api/v1/compliance/requirements/{id}/mark` | `compliance.mark` | да | — | — | — | — | — |
+| DELETE | `/api/v1/compliance/requirements/{id}/mark` | `compliance.mark` | да | — | — | — | — | — |
 | GET | `/api/v1/dashboards/app/{id}` | `dashboards.read` | да | да | да | да | свои | да |
 | GET | `/api/v1/dashboards/consumption` | `dashboards.read` | да | да | да | да | свои | да |
 | GET | `/api/v1/dashboards/overview` | `dashboards.read` | да | да | да | да | свои | да |
@@ -107,6 +113,8 @@
 | GET | `/api/v1/incidents/{id}/export` | `incidents.export` | да | — | да | — | — | да |
 | POST | `/api/v1/incidents/{id}/stages/{stage}` | `incidents.manage` | да | — | да | — | — | да |
 | POST | `/api/v1/incidents/{id}/status` | `incidents.manage` | да | — | да | — | — | да |
+| GET | `/api/v1/license` | `license.read` | да | да | — | да | — | да |
+| PUT | `/api/v1/license` | `license.manage` | да | да | — | — | — | — |
 | GET | `/api/v1/mcp-servers` | `agents.read` | да | да | да | да | свои | да |
 | POST | `/api/v1/mcp-servers` | `agents.manage` | да | да | — | — | — | да |
 | GET | `/api/v1/mcp-servers/{id}` | `agents.read` | да | да | да | да | свои | да |
@@ -150,6 +158,8 @@
 | DELETE | `/api/v1/providers/{id}` | `providers.manage` | да | да | — | — | — | да |
 | PUT | `/api/v1/providers/{id}/credentials` | `providers.manage` | да | да | — | — | — | да |
 | PUT | `/api/v1/providers/{id}/external` | `providers.external` | да | — | — | — | — | — |
+| GET | `/api/v1/quota-settings` | `budgets.read` | да | да | да | да | — | да |
+| PUT | `/api/v1/quota-settings` | `quota_mode.manage` | да | да | — | — | — | да |
 | GET | `/api/v1/report-channels` | `reports.schedules.manage` | да | да | — | — | — | да |
 | GET | `/api/v1/report-recipients` | `reports.schedules.manage` | да | да | — | — | — | да |
 | GET | `/api/v1/report-schedules` | `reports.schedules.read` | да | да | — | да | — | да |
@@ -164,6 +174,19 @@
 | GET | `/api/v1/roles/{id}` | `roles.read` | да | — | — | да | — | да |
 | PUT | `/api/v1/roles/{id}` | `roles.manage` | да | — | — | — | — | — |
 | DELETE | `/api/v1/roles/{id}` | `roles.manage` | да | — | — | — | — | — |
+| GET | `/api/v1/shadow-ai/catalog` | `shadow_ai.read` | да | да | да | да | — | да |
+| PUT | `/api/v1/shadow-ai/catalog` | `shadow_ai.manage` | да | да | — | — | — | да |
+| GET | `/api/v1/shadow-ai/exclusions` | `shadow_ai.read` | да | да | да | да | — | да |
+| POST | `/api/v1/shadow-ai/exclusions` | `shadow_ai.manage` | да | да | — | — | — | да |
+| DELETE | `/api/v1/shadow-ai/exclusions/{kind}/{value}` | `shadow_ai.manage` | да | да | — | — | — | да |
+| GET | `/api/v1/shadow-ai/imports` | `shadow_ai.read` | да | да | да | да | — | да |
+| POST | `/api/v1/shadow-ai/imports` | `shadow_ai.manage` | да | да | — | — | — | да |
+| GET | `/api/v1/shadow-ai/services` | `shadow_ai.read` | да | да | да | да | — | да |
+| GET | `/api/v1/shadow-ai/settings` | `shadow_ai.read` | да | да | да | да | — | да |
+| PUT | `/api/v1/shadow-ai/settings` | `shadow_ai.manage` | да | да | — | — | — | да |
+| GET | `/api/v1/shadow-ai/syslog` | `shadow_ai.read` | да | да | да | да | — | да |
+| GET | `/api/v1/shadow-ai/timeline` | `shadow_ai.read` | да | да | да | да | — | да |
+| GET | `/api/v1/shadow-ai/users` | `shadow_ai.read` | да | да | да | да | — | да |
 | GET | `/api/v1/system/info` | `system.read` | да | да | да | да | — | да |
 | GET | `/api/v1/system/integrity` | `system.read` | да | да | да | да | — | да |
 | POST | `/api/v1/system/integrity/verify` | `integrity.verify` | да | — | — | — | — | — |

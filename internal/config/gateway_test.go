@@ -42,6 +42,23 @@ func TestLoadGatewayIntegrity(t *testing.T) {
 	}
 }
 
+// Сокет aisec-ml (ADR-0024, задача 4.19): по умолчанию ML не подключён.
+func TestLoadGatewayMLSocket(t *testing.T) {
+	cfg, err := LoadGateway(required, env(nil), io.Discard)
+	if err != nil || cfg.MLSocket != "" {
+		t.Fatalf("по умолчанию: %+v %v", cfg, err)
+	}
+	cfg, err = LoadGateway(required, env(map[string]string{"AISEC_GATEWAY_ML_SOCKET": "/run/aisec-ml/aisec-ml.sock"}), io.Discard)
+	if err != nil || cfg.MLSocket != "/run/aisec-ml/aisec-ml.sock" {
+		t.Fatalf("из окружения: %+v %v", cfg, err)
+	}
+	for _, bad := range []string{"aisec-ml.sock", "/run/../aisec-ml.sock", "/run/" + strings.Repeat("a", 100)} {
+		if _, err := LoadGateway(append(append([]string{}, required...), "-ml-socket", bad), env(nil), io.Discard); err == nil {
+			t.Errorf("%q: принято", bad)
+		}
+	}
+}
+
 func TestLoadGatewaySelftest(t *testing.T) {
 	cfg, err := LoadGateway(required, env(nil), io.Discard)
 	if err != nil || cfg.SelftestAction != IntegrityAlert {

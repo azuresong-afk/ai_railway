@@ -18,6 +18,14 @@ export function splitGroups(text: string): string[] {
   return [...new Set(text.split(/[,\n;]+/).map((g) => g.trim()).filter((g) => g !== ""))];
 }
 
+const isHttps = (v: string): boolean => {
+  try {
+    return new URL(v).protocol === "https:";
+  } catch {
+    return false;
+  }
+};
+
 function modeHint(mode: Mode): string {
   switch (mode) {
     case "off":
@@ -80,17 +88,18 @@ function AccessForm({
   const [audience, setAudience] = useState(current.audience);
   const [claim, setClaim] = useState(current.groups_claim);
   const [leeway, setLeeway] = useState(String(current.leeway));
-  const [groups, setGroups] = useState<Record<string, string>>(() =>
-    Object.fromEntries(names.map((m) => [m, (current.model_groups[m] ?? []).join(", ")])),
-  );
+  const [groups, setGroups] = useState<Map<string, string>>(() => {
+    const saved = new Map(Object.entries(current.model_groups));
+    return new Map(names.map((m) => [m, (saved.get(m) ?? []).join(", ")]));
+  });
   const re = useReauth(mfa);
   const jwt = mode !== "off";
   const lw = Number(leeway);
-  const issuerErr = jwt && !issuer.trim().startsWith("https://") ? "Адрес издателя JWT, как iss в токене: https://…" : undefined;
+  const issuerErr = jwt && !isHttps(issuer.trim()) ? "Адрес издателя JWT, как iss в токене: https://…" : undefined;
   const audErr = jwt && audience.trim() === "" ? "Значение aud, которое IdP выдаёт для этого приложения." : undefined;
   const leewayErr = !Number.isInteger(lw) || lw < 0 || lw > maxLeeway ? `Целое число от 0 до ${maxLeeway} секунд.` : undefined;
   const modelGroups = Object.fromEntries(
-    Object.entries(groups)
+    [...groups]
       .map(([m, text]) => [m, splitGroups(text)] as const)
       .filter(([, g]) => g.length > 0),
   );
@@ -176,8 +185,8 @@ function AccessForm({
               <Input
                 id={id}
                 aria-describedby={describedBy}
-                value={groups[m] ?? ""}
-                onChange={(e) => setGroups((g) => ({ ...g, [m]: e.target.value }))}
+                value={groups.get(m) ?? ""}
+                onChange={(e) => setGroups((g) => new Map(g).set(m, e.target.value))}
               />
             )}
           </Field>

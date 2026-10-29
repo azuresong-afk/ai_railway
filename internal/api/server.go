@@ -15,12 +15,16 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/approvals"
 	"github.com/azuresong-afk/ai_railway/internal/apps"
 	"github.com/azuresong-afk/ai_railway/internal/auth"
+	"github.com/azuresong-afk/ai_railway/internal/compliance"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/internal/gwregistry"
 	"github.com/azuresong-afk/ai_railway/internal/incidents"
+	"github.com/azuresong-afk/ai_railway/internal/license"
 	"github.com/azuresong-afk/ai_railway/internal/notify"
 	"github.com/azuresong-afk/ai_railway/internal/policy/versions"
+	"github.com/azuresong-afk/ai_railway/internal/quotalease"
 	"github.com/azuresong-afk/ai_railway/internal/reports"
+	"github.com/azuresong-afk/ai_railway/internal/shadowai"
 )
 
 // Options — зависимости каркаса. Последующие задачи добавляют сюда свои
@@ -68,6 +72,16 @@ type Options struct {
 	// Approvals — очередь подтверждений вызовов (задача 4.10); nil — её
 	// эндпоинты отвечают 503.
 	Approvals *approvals.Service
+	// ShadowAI — теневой ИИ (задача 4.22); nil — его эндпоинты отвечают 503.
+	ShadowAI *shadowai.Service
+	// Compliance — модуль соответствия (задача 4.24); nil — его эндпоинты отвечают 503.
+	Compliance *compliance.Service
+	// License — лицензия (задача 4.27, ADR-0026): эндпоинты /api/v1/license,
+	// ограничения изменяющих маршрутов, предел приложений; nil — эндпоинты
+	// лицензии отвечают 503, ограничений нет.
+	License *license.Service
+	// Quotas — режим распределённых квот (задача 4.29); nil — его эндпоинты отвечают 503.
+	Quotas *quotalease.Service
 	// Incidents — инциденты (задача 3.16 этапа 3); nil — их эндпоинты
 	// отвечают 503.
 	Incidents *incidents.Service
@@ -135,6 +149,14 @@ type Deps struct {
 	Agents *agents.Service
 	// Approvals — nil, если очередь подтверждений не подключена: её эндпоинты отвечают 503.
 	Approvals *approvals.Service
+	// ShadowAI — nil, если теневой ИИ не подключён: его эндпоинты отвечают 503.
+	ShadowAI *shadowai.Service
+	// Compliance — nil, если модуль соответствия не подключён: его эндпоинты отвечают 503.
+	Compliance *compliance.Service
+	// License — nil, если лицензия не подключена: её эндпоинты отвечают 503.
+	License *license.Service
+	// Quotas — nil, если распределённые квоты не подключены: их эндпоинты отвечают 503.
+	Quotas *quotalease.Service
 	// Incidents — nil, если инциденты не подключены: их эндпоинты отвечают 503.
 	Incidents *incidents.Service
 	// Dashboards — nil, если агрегаты дашбордов не подключены: их эндпоинты отвечают 503.
@@ -186,11 +208,14 @@ func New(o Options) (http.Handler, *Router, error) {
 		mux: http.NewServeMux(), authz: o.Authorizer, idem: o.Idempotency, hasher: o.Hasher,
 		logger: o.Logger, fallback: o.Fallback, onDenied: o.OnDenied, onTokenUsed: o.OnTokenUsed,
 	}
+	if o.License != nil {
+		rt.license = o.License
+	}
 	rt.mux.HandleFunc("/", rt.notFound)
 	deps := Deps{Logger: o.Logger, Version: o.Version, Ready: o.Ready, Auth: o.Auth, Gateways: o.Gateways, Integrity: o.Integrity,
 		Status: o.Status, Events: o.Events, Audit: o.Audit, Apps: o.Apps, Policies: o.Policies,
-		AuditLog: o.AuditLog, AuditVerifier: o.AuditVerifier, Alerts: o.Alerts, Notify: o.Notify, Agents: o.Agents, Approvals: o.Approvals,
-		Incidents:  o.Incidents,
+		AuditLog: o.AuditLog, AuditVerifier: o.AuditVerifier, Alerts: o.Alerts, Notify: o.Notify, Agents: o.Agents, Approvals: o.Approvals, ShadowAI: o.ShadowAI, Compliance: o.Compliance,
+		License: o.License, Quotas: o.Quotas, Incidents: o.Incidents,
 		Dashboards: o.Dashboards, Reports: o.Reports, DashCache: newDashCache(), DashStreams: NewExportGate(dashStreamsPerSubject, dashStreamsTotal),
 		Reauthorize: o.Authorizer.Authorize, Stopping: o.Stopping,
 		Exports: NewExportGate(MaxExportsPerSubject, MaxExportsTotal), AuditReads: NewExportGate(MaxAuditReadsPerSubject, MaxAuditReadsTotal)}

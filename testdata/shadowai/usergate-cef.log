@@ -1,0 +1,4 @@
+<134>Oct 27 10:00:00 ngfw-01.example.ru CEF:0|UserGate|NGFW|7.1|web_access|Веб-доступ|3|rt=1793095200000 src=10.0.20.5 suser=ivanov.ia dhost=chatgpt.com request=https://chatgpt.com/backend-api/conversation in=2048 out=10240 act=allow
+<134>Oct 27 10:05:00 ngfw-01.example.ru CEF:0|UserGate|NGFW|7.1|web_access|Веб-доступ|3|rt=Oct 27 2026 10:05:00 +0300 src=10.0.20.6 request=https://copilot.microsoft.com/c/api in=100 out=200
+<134>Oct 27 10:06:00 ngfw-01.example.ru CEF:0|UserGate|NGFW|7.1|web_access|Веб-доступ|3|rt=1793095560000 src=10.0.20.7 suser=petrova.ms dhost=www.example.com in=1 out=1
+<134>Oct 27 10:07:00 ngfw-01.example.ru CEF:0|UserGate|NGFW|7.1|web_access|Веб-доступ|3|src=10.0.20.7 suser=petrova.ms dhost=claude.ai

@@ -46,6 +46,12 @@ const arr = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
 const str = (v: unknown): string => (typeof v === "string" ? v : "");
 const numOrNull = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
 
+// Псевдоним сессии: у запроса чата — details.session.id, у событий агентов — details.agent.session.
+export function sessionOf(raw: unknown): string {
+  const d = rec(raw);
+  return str(rec(d.session).id) || str(rec(d.agent).session);
+}
+
 export function readDetails(raw: unknown): Details {
   const d = rec(raw);
   const dec = rec(d.decision);
@@ -380,6 +386,12 @@ function Body({ ev, canReadContent, rights }: { ev: Event; canReadContent: boole
           ]}
         />
       </Panel>
+      {sessionOf(ev.details) !== "" && (
+        // Адрес с «#»: консоль работает на хеш-маршрутах, ссылка открывает хронологию без контекста маршрутизатора.
+        <a className="text-sm underline" href={`#/session/${encodeURIComponent(sessionOf(ev.details))}`}>
+          Хронология сессии
+        </a>
+      )}
       {ev.non_text_unchecked && (
         <Banner kind="warning">В запросе есть нетекстовые части (изображения или аудио), они не проверялись.</Banner>
       )}

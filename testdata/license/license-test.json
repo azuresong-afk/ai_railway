@@ -1,0 +1,4 @@
+{"format":"aisec-license-data-v1","number":1,
+ "licensee":{"organization":"ООО «Тестовый заказчик» (НЕ ДЛЯ ПОСТАВКИ)","inn":"0012345673"},
+ "issued_at":"2026-10-28T00:00:00Z","valid_from":"2026-10-28T00:00:00Z","valid_until":"2027-10-28T00:00:00Z",
+ "type":"commercial","limits":{"gateways":10,"applications":50},"modules":["agents","shadow_ai","compliance","ml"]}

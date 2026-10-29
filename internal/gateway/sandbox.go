@@ -75,9 +75,12 @@ type SandboxResult struct {
 	Message    string
 	Incomplete bool
 	Unchecked  bool
-	Failures   []events.DetectorFailure
-	Findings   []SandboxFinding
-	Truncated  bool
+	// MLUnavailable — ML-детектор политики не дал результата: на сервере
+	// aisec-ml нет, проверку ML песочница не показывает (ADR-0024).
+	MLUnavailable bool
+	Failures      []events.DetectorFailure
+	Findings      []SandboxFinding
+	Truncated     bool
 	// Texts — фрагменты после защиты данных; при блокировке — пусто.
 	Texts []SandboxText
 }
@@ -102,7 +105,7 @@ func Sandbox(ctx context.Context, req SandboxRequest) (*SandboxResult, error) {
 	if req.Spec == nil {
 		return nil, errors.New("песочница: нет политики")
 	}
-	reg, err := appDetectors(req.App)
+	reg, err := appDetectors(req.App, nil)
 	if err != nil {
 		return nil, errors.Join(ErrSandboxPolicy, err)
 	}
@@ -129,7 +132,7 @@ func Sandbox(ctx context.Context, req SandboxRequest) (*SandboxResult, error) {
 	res := &SandboxResult{
 		Direction: dir, Mode: in.Decision.Mode, Decision: in.headerDecision(), Action: in.Decision.Action, Rule: in.Decision.Rule,
 		Blocked: in.Blocked(), FailBlock: in.FailBlock, Incomplete: len(in.Failures) > 0, Unchecked: len(policyIDs) == 0,
-		Failures: in.Failures, Findings: []SandboxFinding{},
+		Failures: in.Failures, Findings: []SandboxFinding{}, MLUnavailable: in.MLUnavailable,
 	}
 	if in.Decision.Block {
 		res.Message = in.Decision.Message

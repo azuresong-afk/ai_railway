@@ -99,6 +99,9 @@ func TestIdPSettingsValidation(t *testing.T) {
 		{"утверждение групп с пробелом", "groups_claim", func(in *auth.IdPInput) { in.GroupsClaim = "my groups" }},
 		{"длинный acr", "required_acr", func(in *auth.IdPInput) { in.RequiredACR = []string{long} }},
 		{"amr с управляющим", "required_amr", func(in *auth.IdPInput) { in.RequiredAMR = []string{"otp\x00"} }},
+		// 4Н18 ревью 4.r2: однофакторные значения RFC 8176 не второй фактор.
+		{"amr pwd", "required_amr", func(in *auth.IdPInput) { in.RequiredAMR = []string{"otp", "pwd"} }},
+		{"amr kba", "required_amr", func(in *auth.IdPInput) { in.RequiredAMR = []string{"kba"} }},
 		{"нет групп при включении", "group_roles", func(in *auth.IdPInput) { in.GroupRoles = nil }},
 		{"пустая группа", "group_roles", func(in *auth.IdPInput) { in.GroupRoles = []auth.GroupRole{{Role: auth.RoleAnalyst}} }},
 		{"группа с управляющим", "group_roles", func(in *auth.IdPInput) {

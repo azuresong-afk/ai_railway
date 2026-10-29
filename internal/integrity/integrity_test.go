@@ -804,3 +804,56 @@ func TestReleaseCIKeyAndFingerprint(t *testing.T) {
 		t.Fatalf("отпечаток встроенного ключа %s, ожидается %s (%v)", got, want, err)
 	}
 }
+
+// Самопроверка aisec-ml (ADR-0024, раздел 8): свой бинарник и каталоги
+// lib/ и models/; остальных файлов выпуска в его образе нет, и их
+// отсутствие нарушением не считается.
+func TestCheckDiskPrefixes(t *testing.T) {
+	in := newInstall(t)
+	p := provider(t)
+	for rel, body := range map[string]string{"lib/libonnxruntime.so.1.31.0": "ort", "models/m/model.onnx": "onnx"} {
+		full := filepath.Join(in.root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(full), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, full, []byte(body))
+	}
+	m, err := Build(p, BuildInput{Version: "1.0.0-test", Created: time.Date(2026, 10, 28, 0, 0, 0, 0, time.UTC), Sources: []Source{
+		{Kind: KindBinary, Dir: filepath.Join(in.root, "bin"), Files: []string{"aisec-test", "aisec-other"}},
+		{Kind: KindLibrary, Dir: filepath.Join(in.root, "lib"), Recursive: true},
+		{Kind: KindModel, Dir: filepath.Join(in.root, "models"), Recursive: true},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	in.writeManifest(t, data, in.signer)
+	cfg := in.config(t)
+	cfg.AllFiles, cfg.Embedded, cfg.DiskPrefixes = false, nil, []string{"lib/", "models/"}
+	// bin/aisec-other нет в образе aisec-ml — не нарушение.
+	if err := os.Remove(filepath.Join(in.root, "bin", "aisec-other")); err != nil {
+		t.Fatal(err)
+	}
+	if res := check(t, cfg); !res.OK() || res.Checked != 3 {
+		t.Fatalf("итог: %+v", res)
+	}
+	writeFile(t, filepath.Join(in.root, "lib", "libonnxruntime.so.1.31.0"), []byte("ORT"))
+	if res := check(t, cfg); res.OK() || !hasFailure(res, "lib/libonnxruntime.so.1.31.0", ProblemModified) {
+		t.Fatalf("подмена библиотеки не найдена: %+v", res)
+	}
+	if err := os.Remove(filepath.Join(in.root, "models", "m", "model.onnx")); err != nil {
+		t.Fatal(err)
+	}
+	if res := check(t, cfg); !hasFailure(res, "models/m/model.onnx", ProblemMissing) {
+		t.Fatalf("пропажа модели не найдена: %+v", res)
+	}
+	for _, bad := range [][]string{{"lib"}, {"/lib/"}, {"../lib/"}} {
+		cfg.DiskPrefixes = bad
+		if _, err := NewChecker(cfg); err == nil {
+			t.Fatalf("каталог %q принят", bad)
+		}
+	}
+}

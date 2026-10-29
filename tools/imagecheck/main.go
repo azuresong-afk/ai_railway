@@ -2,7 +2,7 @@
 // ADR-0019) — цель make images-verify.
 //
 //	imagecheck image -kind release|test [-release build/release] build/images/aisec-*.tar
-//	imagecheck compose deploy/compose/pilot/compose.yaml
+//	imagecheck compose deploy/compose/pilot/compose.yaml [compose.ml.yaml …]
 //
 // image — архивы docker save: пользователь не root, нет оболочки, пакетного
 // менеджера и лишних файлов, только свои порты, бинарники статические и
@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 )
@@ -107,8 +108,8 @@ func runCompose(args []string, stdout, stderr io.Writer) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if fs.NArg() != 1 {
-		return errors.New("укажите один compose-файл")
+	if fs.NArg() < 1 {
+		return errors.New("укажите compose-файл и, если нужно, его дополнения")
 	}
 	data, err := readLimitedN(fs.Arg(0), maxCompose)
 	if err != nil {
@@ -118,7 +119,18 @@ func runCompose(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	return report(stdout, fs.Arg(0), checkCompose(c))
+	// Дополнения (compose.ml.yaml) проверяются вместе с основным файлом — так,
+	// как их объединит docker compose -f … -f ….
+	for _, o := range fs.Args()[1:] {
+		data, err := readLimitedN(o, maxCompose)
+		if err != nil {
+			return err
+		}
+		if err := applyOverlay(c, data); err != nil {
+			return fmt.Errorf("%s: %w", o, err)
+		}
+	}
+	return report(stdout, strings.Join(fs.Args(), " + "), checkCompose(c))
 }
 
 func readLimitedN(p string, limit int64) ([]byte, error) {

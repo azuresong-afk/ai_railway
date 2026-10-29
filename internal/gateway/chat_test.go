@@ -116,6 +116,8 @@ type gwOpts struct {
 	tokenKeys map[string][]byte
 	tokens    map[string]UserToken
 	jwt       aisecCrypto.JWTVerifier
+	// leases — аренда квот у сервера управления (задача 4.29 этапа 4).
+	leases *LeaseClient
 }
 
 // newGateway — шлюз с OpenAI-совместимым провайдером на upstream и одним
@@ -164,8 +166,13 @@ func newGateway(t testing.TB, upstream string, mod func(*gwOpts)) http.Handler {
 	rt.SetAgents(o.agents)
 	rt.SetApprover(o.approver)
 	ta := newTestAuth(t, o.limiter)
+	lim := NewLimiter(apps)
+	if o.leases != nil {
+		lim.SetLeases(o.leases)
+		lim.Reconfigure(apps)
+	}
 	ch, err := NewChatHandler(ChatConfig{Router: rt, MaxBodyBytes: o.maxBody, Logger: o.logger, BodyReadTimeout: o.bodyTimeout,
-		Events: o.events, IDs: ta.cfg.IDs, Quotas: NewLimiter(apps), Budget: o.budget, UserMAC: o.userMAC, DetectorTimeout: o.detTimeout, Sessions: o.sessions,
+		Events: o.events, IDs: ta.cfg.IDs, Quotas: lim, Budget: o.budget, UserMAC: o.userMAC, DetectorTimeout: o.detTimeout, Sessions: o.sessions,
 		Hasher: testHasher(t), Now: o.now})
 	if err != nil {
 		t.Fatal(err)

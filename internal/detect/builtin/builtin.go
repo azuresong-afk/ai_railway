@@ -23,10 +23,11 @@ func All() []detect.Detector {
 	}
 }
 
-// Catalog — детекторы, которые может назвать политика: All и детекторы
-// уровня запроса и сессии (internal/detect/session: session.risk,
-// prompt.integrity, history.integrity). Текст проверяют только детекторы
-// All, поэтому корпуса, метрики качества и эталоны самотеста — у них.
+// Catalog — детекторы, которые может назвать политика: All, ML-детекторы
+// (ml.go: без aisec-ml — заглушки «недоступен») и детекторы уровня запроса
+// и сессии (internal/detect/session: session.risk, prompt.integrity,
+// history.integrity). Корпуса, метрики качества и эталоны самотеста — у
+// детекторов All; у ML-детекторов — в части 2 задачи 4.19 (Р4).
 func Catalog() []detect.Detector {
-	return append(All(), session.All()...)
+	return append(append(All(), ML()...), session.All()...)
 }

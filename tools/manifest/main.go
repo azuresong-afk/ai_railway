@@ -8,6 +8,15 @@
 //	manifest sign -key ФАЙЛ -manifest build/release/aisec-manifest.json [-expect-sha256 HEX]
 //	manifest fingerprint -pub ФАЙЛ
 //	manifest gen-key -key ФАЙЛ -pub ФАЙЛ
+//	manifest gen-subkey -key ФАЙЛ -pub ФАЙЛ [-test]
+//	manifest endorse -key КЛЮЧ_ПРОИЗВОДИТЕЛЯ -subkey-pub ФАЙЛ -purpose service_db -serial N \
+//	    -not-after ДАТА [-not-before ДАТА] [-comment ТЕКСТ] -out ФАЙЛ [-test]
+//	manifest sign-db -key РАБОЧИЙ_КЛЮЧ -endorsement ФАЙЛ -vendor-pub ФАЙЛ -kind shadow_ai_catalog \
+//	    -in catalog.yaml -out ФАЙЛ [-test]
+//	manifest inspect-db -in ФАЙЛ
+//	manifest sign-license -key РАБОЧИЙ_КЛЮЧ -endorsement ФАЙЛ -vendor-pub ФАЙЛ -in license.json \
+//	    -out ФАЙЛ.aiseclic [-test]
+//	manifest inspect-license -in ФАЙЛ [-vendor-pub ФАЙЛ]
 //
 // Ключ производителя (-key) хранится вне репозитория на отдельном носителе,
 // файл с правами 0400; sign и gen-key работают только на машине без сети
@@ -15,6 +24,11 @@
 // шаги. Тестовый ключ (-test-key) лежит в репозитории и годится только для
 // CI и разработки: им подписанный манифест принимают лишь сборки без тега
 // aisec_release.
+//
+// Рабочие ключи служебных баз и лицензий (ADR-0022, п. 2; ADR-0027, п. 3)
+// создаются и заверяются ключом производителя тоже только без сети:
+// gen-subkey, endorse, sign-db (subkey.go), sign-license (license.go,
+// ADR-0026).
 package main
 
 import (
@@ -44,9 +58,11 @@ func main() {
 	}
 }
 
+const commands = "build, sign, sign-models, fingerprint, gen-key, gen-subkey, endorse, sign-db, inspect-db, sign-license или inspect-license"
+
 func run(args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("ожидается команда: build, sign, fingerprint или gen-key")
+		return errors.New("ожидается команда: " + commands)
 	}
 	p, err := aisecCrypto.New(aisecCrypto.ProfileStandard)
 	if err != nil {
@@ -57,12 +73,26 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return build(p, args[1:], stdout, stderr)
 	case "sign":
 		return sign(p, args[1:], stdout, stderr)
+	case "sign-models":
+		return signModels(p, args[1:], stdout, stderr)
 	case "fingerprint":
 		return fingerprint(p, args[1:], stdout, stderr)
 	case "gen-key":
 		return genKey(p, args[1:], stdout, stderr)
+	case "gen-subkey":
+		return genSubkey(p, args[1:], stdout, stderr)
+	case "endorse":
+		return endorse(p, args[1:], stdout, stderr)
+	case "sign-db":
+		return signDB(p, args[1:], stdout, stderr)
+	case "inspect-db":
+		return inspectDB(p, args[1:], stdout, stderr)
+	case "sign-license":
+		return signLicense(p, args[1:], stdout, stderr)
+	case "inspect-license":
+		return inspectLicense(p, args[1:], stdout, stderr)
 	}
-	return fmt.Errorf("неизвестная команда %q: ожидается build, sign, fingerprint или gen-key", args[0])
+	return fmt.Errorf("неизвестная команда %q: ожидается %s", args[0], commands)
 }
 
 func build(p aisecCrypto.Provider, args []string, stdout, stderr io.Writer) error {
@@ -78,14 +108,21 @@ func build(p aisecCrypto.Provider, args []string, stdout, stderr io.Writer) erro
 	static := fs.String("static", "", "каталог статики веб-консоли (web/dist)")
 	migrations := fs.String("migrations", "", "каталог миграций (*.sql)")
 	detect := fs.String("detect", "", "каталог служебных баз детекторов (необязательно)")
+	lib := fs.String("lib", "", "каталог разделяемых библиотек aisec-ml: ONNX Runtime и системные (необязательно, ADR-0024)")
+	models := fs.String("models", "", "каталог подписанного пакета моделей aisec-ml (необязательно, ADR-0024)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() > 0 {
 		return fmt.Errorf("лишние аргументы: %d", fs.NArg())
 	}
-	if *out == "" || *bin == "" || *cmds == "" || *static == "" || *migrations == "" || *version == "" {
-		return errors.New("обязательны -out, -bin, -cmds, -static, -migrations, -version")
+	if *out == "" || *bin == "" || *cmds == "" || *version == "" {
+		return errors.New("обязательны -out, -bin, -cmds, -version")
+	}
+	// Выпуск aisec-ml (-lib, ADR-0024) — свой манифест: бинарник, библиотеки и
+	// модели, без консоли и миграций. Основному выпуску они обязательны.
+	if *lib == "" && (*static == "" || *migrations == "") {
+		return errors.New("обязательны -static и -migrations (без них — только выпуск aisec-ml с -lib)")
 	}
 	if (*testKey == "") != *unsigned {
 		return errors.New("нужен ровно один из -test-key и -unsigned; ключ производителя — только manifest sign на машине без сети")
@@ -100,13 +137,21 @@ func build(p aisecCrypto.Provider, args []string, stdout, stderr io.Writer) erro
 			return err
 		}
 	}
-	sources := []integrity.Source{
-		{Kind: integrity.KindBinary, Dir: *bin, Files: strings.Fields(*cmds)},
-		{Kind: integrity.KindStatic, Dir: *static, Recursive: true},
-		{Kind: integrity.KindMigration, Dir: *migrations, Glob: "*.sql"},
+	sources := []integrity.Source{{Kind: integrity.KindBinary, Dir: *bin, Files: strings.Fields(*cmds)}}
+	if *static != "" {
+		sources = append(sources, integrity.Source{Kind: integrity.KindStatic, Dir: *static, Recursive: true})
+	}
+	if *migrations != "" {
+		sources = append(sources, integrity.Source{Kind: integrity.KindMigration, Dir: *migrations, Glob: "*.sql"})
 	}
 	if *detect != "" {
 		sources = append(sources, integrity.Source{Kind: integrity.KindDetectorDB, Dir: *detect, Recursive: true})
+	}
+	if *lib != "" {
+		sources = append(sources, integrity.Source{Kind: integrity.KindLibrary, Dir: *lib, Recursive: true})
+	}
+	if *models != "" {
+		sources = append(sources, integrity.Source{Kind: integrity.KindModel, Dir: *models, Recursive: true})
 	}
 	m, err := integrity.Build(p, integrity.BuildInput{Version: *version, Created: ts, Sources: sources})
 	if err != nil {

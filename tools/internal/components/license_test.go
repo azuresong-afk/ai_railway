@@ -42,7 +42,7 @@ func TestEvalExpression(t *testing.T) {
 }
 
 func TestEvalExpressionErrors(t *testing.T) {
-	for _, expr := range []string{"", "   ", "MIT AND", "AND MIT", "(MIT", "MIT)", "MIT OR OR ISC", "MIT WITH x",
+	for _, expr := range []string{"", "   ", "MIT AND", "AND MIT", "(MIT", "MIT)", "MIT OR OR ISC", "MIT WITH x", "GPL-3.0-or-later WITH", "MIT WITH (",
 		strings.Repeat("(", maxDepth+1) + "MIT" + strings.Repeat(")", maxDepth+1), strings.Repeat("MIT AND ", 100) + "MIT"} {
 		if _, _, err := EvalExpression(expr); err == nil {
 			t.Errorf("%q: ожидалась ошибка", expr)
@@ -71,6 +71,20 @@ func TestCheckLicense(t *testing.T) {
 		{"PostgreSQL в продукте", Component{License: "PostgreSQL", Scope: ScopeProduct, LicenseDecision: "ADR-0019"}, false},
 		{"PostgreSQL в сборке", Component{License: "PostgreSQL", Scope: ScopeBuild, LicenseDecision: "ADR-0003"}, false},
 		{"AGPL во внешнем образе", Component{License: "AGPL-3.0-only", Scope: ScopeExternal, LicenseDecision: "ADR-0019"}, false},
+		// ADR-0024: Boost.Mp11 (BSL-1.0) внутри ONNX Runtime — только native-library с решением.
+		{"BSL в native с решением", Component{License: "BSL-1.0", Type: TypeNative, Scope: ScopeProduct, LicenseDecision: "ADR-0024"}, true},
+		{"BSL в native без решения", Component{License: "BSL-1.0", Type: TypeNative, Scope: ScopeProduct}, false},
+		{"BSL в модуле Go", Component{License: "BSL-1.0", Type: TypeGoModule, Scope: ScopeProduct, LicenseDecision: "ADR-0024"}, false},
+		{"BUSL в native", Component{License: "BUSL-1.1", Type: TypeNative, Scope: ScopeProduct, LicenseDecision: "ADR-0024"}, false},
+		{"BSL и GPL в native", Component{License: "BSL-1.0 AND GPL-3.0-only", Type: TypeNative, Scope: ScopeProduct, LicenseDecision: "ADR-0024"}, false},
+		// ADR-0024, 28.10.2026: среда выполнения GCC в образе aisec-ml.
+		{"GCC runtime в native с решением", Component{License: "GPL-3.0-or-later WITH GCC-exception-3.1", Type: TypeNative, Scope: ScopeProduct, LicenseDecision: "ADR-0024"}, true},
+		{"GCC runtime в native без решения", Component{License: "GPL-3.0-or-later WITH GCC-exception-3.1", Type: TypeNative, Scope: ScopeProduct}, false},
+		{"GCC runtime в модуле Go", Component{License: "GPL-3.0-or-later WITH GCC-exception-3.1", Type: TypeGoModule, Scope: ScopeProduct, LicenseDecision: "ADR-0024"}, false},
+		{"GPL без исключения в native", Component{License: "GPL-3.0-or-later", Type: TypeNative, Scope: ScopeProduct, LicenseDecision: "ADR-0024"}, false},
+		{"GPL с другим исключением в native", Component{License: "GPL-3.0-or-later WITH Classpath-exception-2.0", Type: TypeNative, Scope: ScopeProduct, LicenseDecision: "ADR-0024"}, false},
+		{"GPL-2.0 с исключением GCC в native", Component{License: "GPL-2.0-or-later WITH GCC-exception-3.1", Type: TypeNative, Scope: ScopeProduct, LicenseDecision: "ADR-0024"}, false},
+		{"glibc LGPL в native с решением", Component{License: "LGPL-2.1-or-later", Type: TypeNative, Scope: ScopeProduct, LicenseDecision: "ADR-0024"}, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

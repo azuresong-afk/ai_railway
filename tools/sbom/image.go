@@ -23,8 +23,11 @@ const (
 	imageRef = "image"
 	// propImageBase — базовый образ (у образов поставки — scratch).
 	propImageBase = "aisec:image_base"
-	// maxImageFile ограничивает размер дополнительного файла образа.
-	maxImageFile = 4 << 20
+	// propNativeSource — версия библиотеки C/C++ из реестра с коммитом исходников.
+	propNativeSource = "aisec:native_source"
+	// maxImageFile ограничивает размер дополнительного файла образа (файл
+	// хешируется потоком; самый крупный — библиотека ONNX Runtime aisec-ml).
+	maxImageFile = 512 << 20
 )
 
 // imageNameRe — ссылка на образ «репозиторий:тег» без digest: digest
@@ -36,6 +39,8 @@ var imageNameRe = regexp.MustCompile(`^[a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+
 type imageSpec struct {
 	Name  string   // «репозиторий:тег»
 	Files []string // файлы образа помимо бинарников
+	// Native — добавить библиотеки C/C++ из реестра (образ aisec-ml).
+	Native bool
 }
 
 // fileList — повторяемый флаг -file.
