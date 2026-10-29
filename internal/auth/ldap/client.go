@@ -536,12 +536,22 @@ func netError(ctx context.Context, lim *limitedConn, err error) error {
 		return failErr(CodeTooLarge, "ответ каталога", err)
 	case errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded):
 		return failErr(CodeTimeout, "срок", err)
+	case deadlinePassed(ctx):
+		// Срок соединения равен сроку контекста: библиотека может сообщить
+		// обрыв по сроку раньше, чем сработает таймер контекста.
+		return failErr(CodeTimeout, "срок", err)
 	}
 	var ne net.Error
 	if errors.As(err, &ne) && ne.Timeout() {
 		return failErr(CodeTimeout, "срок", err)
 	}
 	return failErr(CodeNetwork, "соединение", err)
+}
+
+// deadlinePassed — срок контекста уже наступил, даже если ctx.Err() ещё пуст.
+func deadlinePassed(ctx context.Context) bool {
+	dl, ok := ctx.Deadline()
+	return ok && !time.Now().Before(dl)
 }
 
 // opError — ошибка операции LDAP: сетевая (код 200 библиотеки и
