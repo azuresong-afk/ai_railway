@@ -274,7 +274,7 @@ func (s *Server) run(ctx context.Context, m Model, text string) (res Result, err
 		return Result{}, fmt.Errorf("находок больше %d", MaxFindings)
 	}
 	for _, f := range res.Findings {
-		if f.validate(info.Labels, text) != nil {
+		if f.validate(info, text) != nil {
 			return Result{}, errors.New("исполнитель вернул неверную находку")
 		}
 	}
