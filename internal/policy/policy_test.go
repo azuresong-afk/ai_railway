@@ -392,7 +392,7 @@ type mlFake struct {
 
 func (d mlFake) MLConnected() bool { return d.connected }
 
-// ML-правила шаблонов (задача 4.19, DM-01, DM-18): только на шлюзе с
+// ML-правила шаблонов (задачи 4.19 и 4.20, DM-01, DM-18, DM-31): только на шлюзе с
 // aisec-ml, только журнал (мониторинг до замера Р4), с порогом в правиле.
 // Без aisec-ml шаблон их не содержит: иначе каждое событие получало бы
 // ml_unavailable. Template (копия для политики заказчика) их не содержит.
@@ -401,7 +401,8 @@ func TestTemplateMLRulesOnlyWithAisecML(t *testing.T) {
 	reg := func(connected bool) *detect.Registry {
 		r, err := detect.NewRegistry(fakeDetector{id: detInjection, dirs: in},
 			mlFake{fakeDetector{id: detInjML, dirs: in, cats: []string{"injection.ml"}}, connected},
-			mlFake{fakeDetector{id: detToxML, dirs: both, cats: []string{"toxicity.insult"}}, connected})
+			mlFake{fakeDetector{id: detToxML, dirs: both, cats: []string{"toxicity.insult"}}, connected},
+			mlFake{fakeDetector{id: detNER, dirs: both, cats: []string{"pii.person"}}, connected})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -410,7 +411,7 @@ func TestTemplateMLRulesOnlyWithAisecML(t *testing.T) {
 	for _, id := range TemplateIDs() {
 		raw, _ := Template(id)
 		for _, r := range raw.Rules {
-			if r.Detector == detInjML || r.Detector == detToxML {
+			if r.Detector == detInjML || r.Detector == detToxML || r.Detector == detNER {
 				t.Fatalf("%s: ML-правило в Template", id)
 			}
 		}
@@ -420,11 +421,11 @@ func TestTemplateMLRulesOnlyWithAisecML(t *testing.T) {
 		s, _ := TemplateFor(id, reg(true))
 		var ml []RuleSpec
 		for _, r := range s.Rules {
-			if r.Detector == detInjML || r.Detector == detToxML {
+			if r.Detector == detInjML || r.Detector == detToxML || r.Detector == detNER {
 				ml = append(ml, r)
 			}
 		}
-		if len(ml) != 2 {
+		if len(ml) != 3 {
 			t.Fatalf("%s с aisec-ml: правил ML %d", id, len(ml))
 		}
 		for _, r := range ml {
@@ -455,7 +456,7 @@ func TestTemplateMLRulesOnlyWithAisecML(t *testing.T) {
 	s, _ := TemplateFor(TemplateBase, reg(true))
 	*s.Rules[len(s.Rules)-1].Threshold = 0.1
 	again, _ := TemplateFor(TemplateBase, reg(true))
-	if *again.Rules[len(again.Rules)-1].Threshold != thrToxML {
+	if *again.Rules[len(again.Rules)-1].Threshold != thrNER {
 		t.Fatal("порог шаблона изменился через копию")
 	}
 }

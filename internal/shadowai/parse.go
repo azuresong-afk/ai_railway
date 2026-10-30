@@ -170,9 +170,11 @@ func (r *record) withUser(user, addr string) error {
 }
 
 // hostOf — имя узла из домена, «узел:порт» или URL. Пусто — узла нет.
+// Схема — только [A-Za-z][A-Za-z0-9+.-]* перед первым «://», стоящим раньше
+// «/?#» (4Н19): «chatgpt.com/c?next=https://ya.ru» — узел chatgpt.com.
 func hostOf(s string) string {
 	s = strings.TrimSpace(s)
-	if i := strings.Index(s, "://"); i >= 0 {
+	if i := strings.Index(s, "://"); i > 0 && !strings.ContainsAny(s[:i], "/?#") && isScheme(s[:i]) {
 		s = s[i+3:]
 		if j := strings.IndexAny(s, "/?#"); j >= 0 {
 			s = s[:j]
@@ -186,6 +188,17 @@ func hostOf(s string) string {
 		s = s[:j]
 	}
 	return s
+}
+
+// isScheme — схема URL по RFC 3986: буква, затем буквы, цифры, «+», «-», «.».
+func isScheme(s string) bool {
+	for i, r := range s {
+		ok := r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || i > 0 && (r >= '0' && r <= '9' || r == '+' || r == '-' || r == '.')
+		if !ok {
+			return false
+		}
+	}
+	return s != ""
 }
 
 // parseBytes — неотрицательное целое не больше maxLineBytes; «-» и пусто — 0.
@@ -516,7 +529,7 @@ func cefKeyByte(c byte) bool {
 
 // cefPairs разбирает «ключ=значение ключ=значение»: значение может
 // содержать пробелы и тянется до следующего «пробел ключ=» (знак «=» в
-// значении экранируется как «\=»). Ключи — до maxCEFPairs, повтор ключа —
+// значении экранируется как «\=», неэкранированный — буквальный). Ключи — до maxCEFPairs, повтор ключа —
 // ошибка.
 func cefPairs(ext []byte) (map[string]string, bool) {
 	// Начала ключей: позиции после пробела (или начало), с которых идёт
@@ -563,17 +576,16 @@ func cefPairs(ext []byte) (map[string]string, bool) {
 }
 
 // cefUnescape: «\=», «\\», «\n», «\r»; неэкранированный «=» в значении —
-// ошибка (по спецификации CEF он экранируется).
+// буквальный (4Н20): источник, не экранирующий «=» в URL или User-Agent, не
+// теряет строку, и «curl -A 'a=b'» не прячет обращение.
 func cefUnescape(v []byte) (string, bool) {
-	if bytes.IndexByte(v, '\\') < 0 && bytes.IndexByte(v, '=') < 0 {
+	if bytes.IndexByte(v, '\\') < 0 {
 		return string(v), true
 	}
 	var b strings.Builder
 	for i := 0; i < len(v); i++ {
 		c := v[i]
 		switch {
-		case c == '=':
-			return "", false
 		case c != '\\':
 			b.WriteByte(c)
 		case i+1 >= len(v):

@@ -2779,7 +2779,7 @@ export interface paths {
          *     type, app, env, user, provider, model, source, policy_mode, action, rule, severity,
          *     storage, gateway, threat, detector, exception (находки, пропущенные по исключению с этим ID),
          *     mark (`false_positive`, `confirmed` или `none` — без отметки), stream, non_text_unchecked,
-         *     has_content, session (псевдоним сессии запроса чата или агента), agent, mcp_server, tool
+         *     has_content, ml_unavailable (ML-детекторы не дали результата), session (псевдоним сессии запроса чата или агента), agent, mcp_server, tool
          *     (события агентов); операторы
          *     `=`, `!=`, `in (…)`, `not in (…)` (у логических полей — только `=`). Лимиты: 2048 байт,
          *     20 условий, 50 значений в списке, значение до 256 байт. Пишет `events.list`
@@ -9969,7 +9969,8 @@ export interface paths {
         put?: never;
         /**
          * Добавить исключение теневого ИИ
-         * @description Право `shadow_ai.manage`. Пользователь задаётся логином или адресом клиента из журнала (`login`) —
+         * @description Право безопасности `shadow_ai.exclusions.manage` — только `security_admin`, токенам API не выдаётся
+         *     (исключение пользователя необратимо удаляет его сводки). Пользователь задаётся логином или адресом клиента из журнала (`login`) —
          *     сервер сразу заменяет его псевдонимом на ключе псевдонимов, логин нигде не хранится — или готовым
          *     псевдонимом (`alias`); сервис — ID сервиса каталога (`service`). Строки исключённых не попадают в
          *     сводки и оповещения, накопленные сводки исключённого удаляются той же транзакцией. Это ослабление
@@ -10031,7 +10032,7 @@ export interface paths {
         post?: never;
         /**
          * Снять исключение теневого ИИ
-         * @description Право `shadow_ai.manage`. Следующие строки пользователя или сервиса снова учитываются; удалённые при
+         * @description Право безопасности `shadow_ai.exclusions.manage`. Следующие строки пользователя или сервиса снова учитываются; удалённые при
          *     добавлении исключения сводки не возвращаются. Пишет `shadow_ai.exclusion_removed`.
          */
         delete: {
@@ -14020,7 +14021,7 @@ export interface components {
             incomplete?: boolean;
             /** @description У политики нет правил для этого направления: детекторы не запускались, allow не означает «проверено». */
             unchecked?: boolean;
-            /** @description ML-детектор политики (injection.ml, toxicity.ml) не дал результата: aisec-ml недоступен, решение принято по остальным детекторам (ADR-0024). */
+            /** @description ML-детектор политики (injection.ml, toxicity.ml, pii.ner) не дал результата: aisec-ml недоступен, решение принято по остальным детекторам (ADR-0024). */
             ml_unavailable?: boolean;
             /** @description Находки детекторов политики приложения для этого направления. */
             findings: {

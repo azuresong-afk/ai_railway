@@ -73,10 +73,18 @@ build=$work/build
 # EIGEN_MPL2_ONLY: части Eigen под LGPL не компилируются (ошибка сборки, если
 # ORT их использует) — внутри только код MPL-2.0 (ADR-0024).
 map="-ffile-prefix-map=$src=/ort/src -ffile-prefix-map=$build=/ort/build -DEIGEN_MPL2_ONLY"
+# Пути поиска библиотек (4В24): aisec-ml загружает ORT через /proc/self/fd/N,
+# где $ORIGIN — это /proc/self/fd, а при DT_RUNPATH glibc не смотрит в RPATH
+# aisec-ml. Поэтому у ORT только RPATH /opt/aisec/lib (--disable-new-dtags):
+# LINKER_SUPPORT_RPATH=OFF выключает «-rpath=$ORIGIN» в cmake/onnxruntime.cmake,
+# CMAKE_SKIP_RPATH — пути каталога сборки.
+rpath=/opt/aisec/lib
 cmake -S "$src/cmake" -B "$build" -G Ninja \
 	-DCMAKE_BUILD_TYPE=Release \
 	-DCMAKE_C_FLAGS="$map" -DCMAKE_CXX_FLAGS="$map" \
-	-DCMAKE_SHARED_LINKER_FLAGS="-Wl,--build-id=sha1" \
+	-DCMAKE_SHARED_LINKER_FLAGS="-Wl,--build-id=sha1 -Wl,--disable-new-dtags -Wl,-rpath,$rpath" \
+	-DCMAKE_SKIP_RPATH=ON \
+	-DLINKER_SUPPORT_RPATH=OFF \
 	-DFETCHCONTENT_TRY_FIND_PACKAGE_MODE=NEVER \
 	-DFETCHCONTENT_QUIET=ON \
 	-Donnxruntime_BUILD_SHARED_LIB=ON \
@@ -110,10 +118,17 @@ for n in $needed; do
 	esac
 done
 
+# Только RPATH /opt/aisec/lib: ни RUNPATH, ни $ORIGIN (4В24; то же проверяет
+# tools/imagecheck в образе).
+dyn=$(readelf -d "$lib")
+! grep -q '(RUNPATH)' <<<"$dyn" || die "у библиотеки RUNPATH: $(grep '(RUNPATH)' <<<"$dyn")"
+got=$(sed -n 's/.*(RPATH).*\[\(.*\)\]/\1/p' <<<"$dyn")
+[ "$got" = "$rpath" ] || die "RPATH библиотеки «$got», ожидается $rpath"
+
 rm -rf "${out:?}/lib" "$out/include"
 mkdir -p "$out/lib" "$out/include"
 install -m 0644 "$lib" "$out/lib/"
 install -m 0644 "$src/include/onnxruntime/core/session/onnxruntime_c_api.h" "$out/include/"
 install -m 0644 "$src/LICENSE" "$src/ThirdPartyNotices.txt" "$out/"
-echo "Динамические зависимости: $needed"
+echo "Динамические зависимости: $needed; RPATH $rpath"
 sha256sum "$out/lib/libonnxruntime.so.1.31.0"

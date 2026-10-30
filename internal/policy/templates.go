@@ -46,6 +46,7 @@ const (
 	detLists     = "lists"
 	detInjML     = "injection.ml"
 	detToxML     = "toxicity.ml"
+	detNER       = "pii.ner"
 )
 
 // Пороги ML-правил шаблонов — до замера Р4 (задача 4.19); после замера —
@@ -53,6 +54,7 @@ const (
 var (
 	thrInjML = 0.8
 	thrToxML = 0.7
+	thrNER   = 0.7
 )
 
 // TemplateMLThreshold — порог правил ML-детектора det в шаблонах (замер Р4
@@ -63,23 +65,30 @@ func TemplateMLThreshold(det string) (float64, bool) {
 		return thrInjML, true
 	case detToxML:
 		return thrToxML, true
+	case detNER:
+		return thrNER, true
 	}
 	return 0, false
 }
 
 // templateMLRules — правила ML-детекторов шаблона id: только журнал.
+// pii.ner (задача 4.20) тоже начинает в мониторинге: имена, адреса и
+// организации маскирует правило с redact или pseudonymize, которое
+// администратор включает после замера Р4.
 func templateMLRules(id string) []RuleSpec {
-	inj, tox := thrInjML, thrToxML
+	inj, tox, ner := thrInjML, thrToxML, thrNER
 	switch id {
 	case TemplateBase, TemplatePIIStrict, TemplateExternalPII, TemplateAgentBase:
 		return []RuleSpec{
 			{ID: "injection-ml", Detector: detInjML, Directions: slices.Clone(in), Threshold: &inj, Action: Log, Severity: High},
 			{ID: "toxicity-ml", Detector: detToxML, Threshold: &tox, Action: Log, Severity: Medium},
+			{ID: "pii-ner", Detector: detNER, Threshold: &ner, Action: Log, Severity: Medium},
 		}
 	case TemplateMonitorOnly:
 		return []RuleSpec{
 			{ID: "log-injection-ml", Detector: detInjML, Threshold: &inj, Action: Log, Severity: Info},
 			{ID: "log-toxicity-ml", Detector: detToxML, Threshold: &tox, Action: Log, Severity: Info},
+			{ID: "log-pii-ner", Detector: detNER, Threshold: &ner, Action: Log, Severity: Info},
 		}
 	}
 	return nil

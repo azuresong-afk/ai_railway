@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
+	"io"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -292,5 +294,66 @@ func TestPGShadowAIRetention(t *testing.T) {
 	}
 	if n := e.count(t, `SELECT count(*) FROM audit_log WHERE action = 'shadow_ai.settings_changed'`); n != 1 {
 		t.Fatalf("записей о настройке: %d", n)
+	}
+}
+
+// 4В27: число разных и новых для организации псевдонимов импорта и сумма
+// новых в организации за сутки — в журнале импорта и в аудите
+// shadow_ai.import; первый импорт с пользователями — исходный состав, его
+// псевдонимы тоже новые (4В28), сумма — по организации (4Н28). Логины
+// синтетические.
+func TestPGShadowAIImportUsers(t *testing.T) {
+	e := setupPG(t)
+	ctx := pgTestCtx(t)
+	s := e.service(t)
+	if _, err := s.UploadCatalog(ctx, testBy, readFile(t, testCatalogSigned)); err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 10, 27, 0, 0, 0, 0, time.UTC)
+	probe := func(prefix string, n int) *strings.Reader {
+		var b strings.Builder
+		for i := range n {
+			b.WriteString(strings.Join([]string{strconv.FormatInt(at.Add(time.Duration(i%24)*time.Hour).Unix(), 10) + ".000", "10",
+				"10.0.0.1", "TCP_TUNNEL/200", "100", "CONNECT", "chatgpt.com:443", prefix + strconv.Itoa(i), "HIER_DIRECT/203.0.113.1", "-"}, " ") + "\n")
+		}
+		return strings.NewReader(b.String())
+	}
+	last := func() map[string]any {
+		var d map[string]any
+		if err := e.owner.QueryRow(ctx, `SELECT details FROM audit_log WHERE action = 'shadow_ai.import' ORDER BY seq DESC LIMIT 1`).Scan(&d); err != nil {
+			t.Fatal(err)
+		}
+		return d
+	}
+	if _, err := s.Import(ctx, testBy, FormatSquid, probe("staff.", 30)); err != nil {
+		t.Fatal(err)
+	}
+	if d := last(); d["users"] != float64(30) || d["new_users"] != float64(30) || d["new_users_day"] != float64(30) || d["baseline"] != true {
+		t.Fatalf("исходный состав: %v", d)
+	}
+	if _, err := s.Import(ctx, testBy, FormatSquid, io.MultiReader(probe("probe.", 20), probe("staff.", 10))); err != nil {
+		t.Fatal(err)
+	}
+	if d := last(); d["users"] != float64(30) || d["new_users"] != float64(20) || d["new_users_day"] != float64(50) || d["baseline"] != nil {
+		t.Fatalf("второй импорт: %v", d)
+	}
+	if _, err := s.Import(ctx, testBy, FormatSquid, probe("more.", 5)); err != nil {
+		t.Fatal(err)
+	}
+	if d := last(); d["new_users"] != float64(5) || d["new_users_day"] != float64(55) {
+		t.Fatalf("третий импорт: %v", d)
+	}
+	other := By{Actor: audit.Actor{Type: audit.ActorUser, ID: "u-other"}}
+	if _, err := s.Import(ctx, other, FormatSquid, probe("other.", 3)); err != nil {
+		t.Fatal(err)
+	}
+	if d := last(); d["new_users"] != float64(3) || d["new_users_day"] != float64(58) {
+		t.Fatalf("другой субъект: %v", d)
+	}
+	if n := e.count(t, `SELECT count(*) FROM shadow_ai_imports WHERE baseline AND users = 30 AND new_users = 30`); n != 1 {
+		t.Fatalf("исходный состав в журнале импорта: %d", n)
+	}
+	if n := e.count(t, `SELECT sum(new_users) FROM shadow_ai_imports`); n != 58 {
+		t.Fatalf("новых в журнале импорта: %d", n)
 	}
 }

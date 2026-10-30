@@ -19,6 +19,16 @@ const (
 	// ShadowServiceField — поле правила «новое» для BuiltinShadowNewService:
 	// сервис каталога. В событиях шлюза такого поля нет.
 	ShadowServiceField = "shadow_ai_service"
+	// BuiltinShadowAliasProbe — перебор псевдонимов импортом журнала (4В27
+	// ревью 4.r3, DM-37): журнал, где каждому подобранному логину отведён
+	// свой час, даёт таблицу «логин → псевдоним» и для событий шлюза.
+	// Правило безопасности: не отключается.
+	BuiltinShadowAliasProbe = "security.shadow_ai_alias_probe"
+	// ShadowAliasProbeThreshold — больше стольких новых для организации
+	// псевдонимов за импорт или за сутки — перебор. Исходный состав (первый
+	// импорт с пользователями) тоже считается (4В28): пустые сводки бывают
+	// и после очистки по сроку.
+	ShadowAliasProbeThreshold = 500
 )
 
 // shadowAIRules — встроенные правила задачи 4.23.
@@ -30,6 +40,12 @@ func shadowAIRules() []Rule {
 				"за предыдущие 30 суток. В оповещении — сервис и число пользователей, без логинов и псевдонимов.",
 			Enabled: true, Severity: "medium", Condition: Condition{Field: ShadowServiceField}, GroupBy: []string{ShadowServiceField},
 			SuppressMinutes: DefaultSuppressMinutes, Recipients: none},
+		{BuiltinKey: BuiltinShadowAliasProbe, Kind: KindSecurity, Name: "Перебор псевдонимов импортом журнала",
+			Description: "DM-37: импорт журнала прокси добавил больше " + strconv.Itoa(ShadowAliasProbeThreshold) +
+				" новых для организации псевдонимов пользователей за импорт или за сутки — возможно " +
+				"сопоставление логинов с псевдонимами. Первый импорт с пользователями (исходный состав) тоже считается: " +
+				"при подключении прокси оповещение ожидаемо.",
+			Enabled: true, Severity: "high", GroupBy: []string{"actor"}, Recipients: none},
 	}
 }
 
@@ -59,4 +75,25 @@ func shadowNewServiceRaise(r *audit.Record, d map[string]any) (Raise, bool) {
 	return raiseOf(BuiltinShadowNewService, map[string]string{ShadowServiceField: id},
 		map[string]string{ShadowServiceField: name + " (пользователей: " + strconv.Itoa(users) + ")"}, 1,
 		map[string]any{"items": []any{item(r, extra)}}), true
+}
+
+// shadowAliasProbeRaise — срабатывание по записи shadow_ai.import, если
+// новых псевдонимов за импорт или за сутки больше порога (4В27). Исходный
+// состав не освобождается (4В28) — в подробностях помечен baseline.
+func shadowAliasProbeRaise(r *audit.Record, d map[string]any) (Raise, bool) {
+	if r.Result != audit.ResultSuccess {
+		return Raise{}, false
+	}
+	num := func(k string) int64 {
+		v, _ := d[k].(float64)
+		return int64(v)
+	}
+	n, day := num("new_users"), num("new_users_day")
+	if max(n, day) <= ShadowAliasProbeThreshold {
+		return Raise{}, false
+	}
+	base, _ := d["baseline"].(bool)
+	return raiseOf(BuiltinShadowAliasProbe, map[string]string{"actor": actorKey(r.Actor)},
+		map[string]string{"actor": actorName(r.Actor)}, 1,
+		map[string]any{"items": []any{item(r, map[string]any{"users": num("users"), "new_users": n, "new_users_day": day, "baseline": base})}}), true
 }

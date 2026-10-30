@@ -433,6 +433,8 @@ ifeq ($(filter 1,$(ML)),1)
 	@$(RELEASE_DIR)/bin/aisec-cli verify -release $(ML_RELEASE_DIR) -allow-older >$(BUILD)/release-ml-verify.out || \
 		{ cat $(BUILD)/release-ml-verify.out; echo "images: выпуск aisec-ml не прошёл проверку"; exit 1; }
 	@! grep -q 'тестовым ключом' $(BUILD)/release-ml-verify.out || { echo "images: выпуск aisec-ml подписан тестовым ключом"; exit 1; }
+	@v=$$(sed -n 's/^  "version": "\([^"]*\)",$$/\1/p' $(ML_RELEASE_DIR)/aisec-manifest.json); \
+		test "$$v" = '$(VERSION)' || { echo "images: версия выпуска aisec-ml $$v не совпадает с VERSION=$(VERSION) (4Н26)"; exit 1; }
 	$(MAKE) --no-print-directory ort-verify ORT_LIB_DIR=$(ML_RELEASE_DIR)/lib
 endif
 	$(MAKE) --no-print-directory release-fingerprint
@@ -532,9 +534,10 @@ ort-build: ## Сборка ONNX Runtime без сети в Dockerfile.ml; хеш
 		--build-arg ORT_JOBS='$(ORT_JOBS)' -o type=local,dest=$(ORT_OUT) .
 	$(MAKE) --no-print-directory ort-verify
 
-# Эталонный хеш (ort.sha256) записывается после эталонной сборки на машине
-# владельца (docs/cert/build-env.md). Пока его нет, сборка только печатает хеш;
-# поставка (RELEASE=1) без эталона не собирается.
+# Эталонный хеш (ort.sha256) и набор инструментов (toolchain.versions,
+# сверяется в Dockerfile.ml) записываются после эталонной сборки на машине
+# владельца (docs/cert/build-env.md). Пока их нет, сборка только печатает хеш;
+# поставка (RELEASE=1) без эталонов не собирается.
 .PHONY: ort-verify
 ort-verify:
 	@test -f $(ORT_LIB_DIR)/libonnxruntime.so.$(ORT_VERSION) || { echo "ort-verify: нет $(ORT_LIB_DIR)/libonnxruntime.so.$(ORT_VERSION)"; exit 1; }
@@ -549,6 +552,8 @@ ort-verify:
 		else \
 			echo "Эталона $(ORT_DIR)/ort.sha256 нет: запишите хеш эталонной сборки (docs/cert/build-env.md)."; \
 		fi
+	@test '$(RELEASE)' != 1 || test -s $(ORT_DIR)/toolchain.versions || \
+		{ echo "ort-verify: нет эталона $(ORT_DIR)/toolchain.versions — поставка без зафиксированного набора инструментов запрещена (4В25)"; exit 1; }
 
 .PHONY: ml-release-dir
 ml-release-dir: ## Каталог выпуска aisec-ml build/release-ml в Dockerfile.ml без сети (с RELEASE=1 — без подписи)
@@ -606,7 +611,7 @@ image-ml: ## Образ aisec-ml из build/release-ml (без сети и бе�
 # владельца, по порядку (docs/cert/build-env.md, раздел «Модели»):
 #   make ml-venv            окружение Python build/ml/venv по tools/ml/requirements.txt (хеши)
 #   make ml-fetch ML_LOCK=1 скачать модели и наборы; первый раз — зафиксировать коммиты и хеши
-#   make ml-train           подготовка данных и дообучка injection.ml (rubert-tiny2)
+#   make ml-train           подготовка данных и дообучка injection.ml и pii.ner (rubert-tiny2)
 #   make ml-export          ONNX, токенизаторы, эталоны и ML-BOM обеих моделей
 #   make ml-verify          aisec-ml (ONNX Runtime) сверяется с эталонами Python
 #   make ml-p4              замер Р4 → build/ml/p4.md (таблица для docs/detectors.md)
@@ -652,10 +657,14 @@ ml-fetch: ## Скачать модели и наборы по tools/ml/sources.j
 	$(ML_PY) tools/ml/fetch.py $(if $(filter 1,$(ML_LOCK)),--lock)
 
 .PHONY: ml-train
-ml-train: ## Подготовка данных и дообучка injection.ml без сети (build/ml/train)
+ml-train: ## Подготовка данных и дообучка injection.ml и pii.ner без сети (build/ml/train)
 	@test -x $(ML_PY) || { echo "ml-train: нет $(ML_VENV) — сначала make ml-venv"; exit 1; }
 	$(ML_PY) tools/ml/prepare.py
 	$(ML_PY) tools/ml/train.py
+	mkdir -p $(ML_BUILD)/data
+	go run ./tools/synth-pii -kind ner -split train -format spans -n 6000 > $(ML_BUILD)/data/ner-synth.jsonl
+	$(ML_PY) tools/ml/prepare_ner.py
+	$(ML_PY) tools/ml/train_ner.py
 
 .PHONY: ml-export
 ml-export: ## ONNX, токенизаторы, эталоны и ML-BOM моделей без сети (build/ml/models)
@@ -668,6 +677,10 @@ ml-export: ## ONNX, токенизаторы, эталоны и ML-BOM моде�
 	$(ML_PY) tools/ml/mlbom.py --id injection-ru-en --version $(ML_VERSION) --source rubert-tiny2 \
 		--train-report $(ML_BUILD)/train/injection-ru-en/train_report.json
 	$(ML_PY) tools/ml/mlbom.py --id toxicity-ru --version $(ML_VERSION) --source rubert-tiny-toxicity
+	$(ML_PY) tools/ml/export.py --model $(ML_BUILD)/train/pii-ner-ru --id pii-ner-ru --version $(ML_VERSION) \
+		--task token_classification --directions input,output --corpus testdata/corpus/pii.ner
+	$(ML_PY) tools/ml/mlbom.py --id pii-ner-ru --version $(ML_VERSION) --source rubert-tiny2 --use 'pii.ner (DM-31, DM-09)' \
+		--train-report $(ML_BUILD)/train/pii-ner-ru/train_report.json
 	cd $(ML_BUILD)/models && sha256sum */model.onnx */tokenizer.json
 
 # Сверка и замер — Go с ONNX Runtime (make ort-build или ML_ORT_LIB=…):

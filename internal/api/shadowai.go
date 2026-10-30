@@ -56,9 +56,9 @@ func shadowAIRoutes(d Deps) []Route {
 		// Исключения и состояние приёма по syslog (задача 4.23).
 		{Method: http.MethodGet, Path: "/api/v1/shadow-ai/exclusions", Permission: auth.PermShadowAIRead,
 			Handler: needShadowAI(d, d.listShadowExclusions)},
-		{Method: http.MethodPost, Path: "/api/v1/shadow-ai/exclusions", Permission: auth.PermShadowAIManage,
+		{Method: http.MethodPost, Path: "/api/v1/shadow-ai/exclusions", Permission: auth.PermShadowAIExclusionsManage,
 			MaxBody: smallMaxBody, Handler: needShadowAI(d, d.postShadowExclusion)},
-		{Method: http.MethodDelete, Path: "/api/v1/shadow-ai/exclusions/{kind}/{value}", Permission: auth.PermShadowAIManage,
+		{Method: http.MethodDelete, Path: "/api/v1/shadow-ai/exclusions/{kind}/{value}", Permission: auth.PermShadowAIExclusionsManage,
 			Handler: needShadowAI(d, d.deleteShadowExclusion)},
 		{Method: http.MethodGet, Path: "/api/v1/shadow-ai/syslog", Permission: auth.PermShadowAIRead,
 			Handler: needShadowAI(d, d.getShadowSyslog)},

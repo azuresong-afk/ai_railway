@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"slices"
+	"strings"
 	"sync"
 
 	"github.com/azuresong-afk/ai_railway/internal/ml"
@@ -23,7 +24,6 @@ const (
 	inputMask     = "attention_mask"
 	inputTypeIDs  = "token_type_ids"
 	outputLogits  = "logits"
-	labelOutside  = "O" // метка «вне фрагмента» у разметки токенов
 	maxIOOfModels = 8
 )
 
@@ -100,8 +100,16 @@ func checkIO(spec ml.ModelSpec, inputs, outputs []ioInfo) (modelIO, error) {
 		if len(logits.Dims) != 3 || !dimOK(logits.Dims[1], int64(spec.MaxTokens)) || !dimOK(logits.Dims[2], labels) {
 			return io, fmt.Errorf("выход logits: нужен [пакет, токены, %d]", labels)
 		}
-		if !slices.Contains(spec.Labels, labelOutside) {
-			return io, fmt.Errorf("у разметки токенов нет метки %q", labelOutside)
+		if !slices.Contains(spec.Labels, ml.LabelOutside) {
+			return io, fmt.Errorf("у разметки токенов нет метки %q", ml.LabelOutside)
+		}
+		// Схема BIO или IO: у продолжения «i-X» есть начало «b-X», иначе
+		// находка «X» не прошла бы проверку меток (ModelInfo.HasLabel) и
+		// каждый ответ был бы отказом.
+		for _, l := range spec.Labels {
+			if e, ok := strings.CutPrefix(l, "i-"); ok && !slices.Contains(spec.Labels, "b-"+e) {
+				return io, fmt.Errorf("у метки %q нет начала %q", l, "b-"+e)
+			}
 		}
 	default:
 		return io, fmt.Errorf("задача %q не поддерживается", spec.Task)
@@ -238,9 +246,11 @@ func runWindows(ctx context.Context, spec ml.ModelSpec, tok tokenizer, text stri
 		}
 	}
 	if spec.Task == ml.TaskTokenClassification && len(tokOffs) > 0 {
-		if res.Findings, err = tokenSpans(tokLogits, spec.Labels, tokOffs); err != nil {
+		var cut bool
+		if res.Findings, cut, err = tokenSpans(tokLogits, spec.Labels, tokOffs); err != nil {
 			return ml.Result{}, err
 		}
+		res.Truncated = res.Truncated || cut
 	}
 	return res, nil
 }
@@ -409,21 +419,19 @@ func classify(logits []float32, labels []string, offsets [][2]int, multi bool) (
 }
 
 // tokenSpans — разметка токенов: метка с наибольшей вероятностью у каждого
-// токена, соседние токены с одной меткой (кроме «O») — один фрагмент с
-// наименьшей из их оценок. Служебные токены (пустые границы) фрагмент
-// прерывают.
-func tokenSpans(logits []float32, labels []string, offsets [][2]int) ([]ml.Score, error) {
+// токена, склейка во фрагменты по схеме BIO — ml.MergeTokens (служебные
+// токены с пустыми границами фрагмент прерывают). truncated — находок
+// больше ml.MaxFindings, остаток отброшен.
+func tokenSpans(logits []float32, labels []string, offsets [][2]int) (_ []ml.Score, truncated bool, _ error) {
 	nl := len(labels)
 	if nl == 0 || len(logits) != len(offsets)*nl {
-		return nil, fmt.Errorf("выход модели: %d значений, токенов %d, меток %d", len(logits), len(offsets), nl)
+		return nil, false, fmt.Errorf("выход модели: %d значений, токенов %d, меток %d", len(logits), len(offsets), nl)
 	}
-	var out []ml.Score
-	cur := -1 // индекс открытого фрагмента в out
-	curLabel := ""
+	toks := make([]ml.TokenLabel, len(offsets))
 	for t, o := range offsets {
 		p, err := softmax(logits[t*nl : (t+1)*nl])
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		best := 0
 		for i := range p {
@@ -431,21 +439,8 @@ func tokenSpans(logits []float32, labels []string, offsets [][2]int) ([]ml.Score
 				best = i
 			}
 		}
-		label := labels[best] //nolint:gosec // G602: best — индекс в p, а len(p) == len(labels)
-		if o[1] <= o[0] || label == labelOutside {
-			cur, curLabel = -1, ""
-			continue
-		}
-		if cur >= 0 && label == curLabel && o[0] >= out[cur].End {
-			out[cur].End = o[1]
-			out[cur].Score = min(out[cur].Score, p[best])
-			continue
-		}
-		if len(out) == ml.MaxFindings {
-			break
-		}
-		out = append(out, ml.Score{Label: label, Score: p[best], Start: o[0], End: o[1]})
-		cur, curLabel = len(out)-1, label
+		toks[t] = ml.TokenLabel{Label: labels[best], Score: p[best], Start: o[0], End: o[1]} //nolint:gosec // G602: best — индекс в p, а len(p) == len(labels)
 	}
-	return out, nil
+	scores, truncated := ml.MergeTokens(toks)
+	return scores, truncated, nil
 }

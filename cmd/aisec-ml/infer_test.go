@@ -28,8 +28,12 @@ func TestCheckIO(t *testing.T) {
 	if mio, err := checkIO(clsSpec, withTypes, outs); err != nil || !mio.TypeIDs {
 		t.Fatalf("token_type_ids: %+v %v", mio, err)
 	}
-	ner := ml.ModelSpec{ID: "ner", Version: "1.0", Task: ml.TaskTokenClassification, Labels: []string{"O", "PER"}, MaxTokens: 512}
+	ner := ml.ModelSpec{ID: "ner", Version: "1.0", Task: ml.TaskTokenClassification, Labels: []string{"o", "per"}, MaxTokens: 512}
 	if _, err := checkIO(ner, ins, []ioInfo{{Name: outputLogits, Kind: kindFloat32, Dims: []int64{-1, -1, 2}}}); err != nil {
+		t.Fatal(err)
+	}
+	bio := ml.ModelSpec{ID: "ner", Version: "1.0", Task: ml.TaskTokenClassification, Labels: []string{"o", "b-per", "i-per"}, MaxTokens: 512}
+	if _, err := checkIO(bio, ins, []ioInfo{{Name: outputLogits, Kind: kindFloat32, Dims: []int64{-1, -1, 3}}}); err != nil {
 		t.Fatal(err)
 	}
 	for name, tc := range map[string]struct {
@@ -44,8 +48,9 @@ func TestCheckIO(t *testing.T) {
 		"нет logits":       {clsSpec, ins, []ioInfo{{Name: "scores", Kind: kindFloat32, Dims: []int64{-1, 2}}}},
 		"меток больше":     {clsSpec, ins, []ioInfo{{Name: outputLogits, Kind: kindFloat32, Dims: []int64{-1, 3}}}},
 		"logits int64":     {clsSpec, ins, []ioInfo{{Name: outputLogits, Kind: kindInt64, Dims: []int64{-1, 2}}}},
-		"разметка без O":   {ml.ModelSpec{Task: ml.TaskTokenClassification, Labels: []string{"PER", "LOC"}, MaxTokens: 512}, ins, []ioInfo{{Name: outputLogits, Kind: kindFloat32, Dims: []int64{-1, -1, 2}}}},
+		"разметка без O":   {ml.ModelSpec{Task: ml.TaskTokenClassification, Labels: []string{"per", "loc"}, MaxTokens: 512}, ins, []ioInfo{{Name: outputLogits, Kind: kindFloat32, Dims: []int64{-1, -1, 2}}}},
 		"разметка 2 измер": {ner, ins, outs},
+		"i- без b-":        {ml.ModelSpec{Task: ml.TaskTokenClassification, Labels: []string{"o", "i-per"}, MaxTokens: 512}, ins, []ioInfo{{Name: outputLogits, Kind: kindFloat32, Dims: []int64{-1, -1, 2}}}},
 	} {
 		if _, err := checkIO(tc.spec, tc.ins, tc.outs); err == nil {
 			t.Errorf("%s: принято", name)
@@ -88,7 +93,7 @@ func TestClassify(t *testing.T) {
 }
 
 func TestTokenSpans(t *testing.T) {
-	labels := []string{"O", "PER", "LOC"}
+	labels := []string{"o", "per", "loc"}
 	// [CLS] Иван Петров из Москвы [SEP]
 	text := "Иван Петров из Москвы"
 	offs := [][2]int{{0, 0}, {0, 8}, {9, 21}, {22, 26}, {27, 39}, {0, 0}}
@@ -100,17 +105,16 @@ func TestTokenSpans(t *testing.T) {
 		0, 0, 4, // Москвы — LOC
 		9, 0, 0, // SEP
 	}
-	s, err := tokenSpans(logits, labels, offs)
-	if err != nil || len(s) != 2 {
+	s, cut, err := tokenSpans(logits, labels, offs)
+	if err != nil || cut || len(s) != 2 {
 		t.Fatalf("%+v %v", s, err)
 	}
-	if text[s[0].Start:s[0].End] != "Иван Петров" || s[0].Label != "PER" || text[s[1].Start:s[1].End] != "Москвы" {
+	if text[s[0].Start:s[0].End] != "Иван Петров" || s[0].Label != "per" || text[s[1].Start:s[1].End] != "Москвы" {
 		t.Fatalf("фрагменты: %+v", s)
 	}
-	if _, err := tokenSpans(logits[:5], labels, offs); err == nil {
+	if _, _, err := tokenSpans(logits[:5], labels, offs); err == nil {
 		t.Fatal("неполный выход принят")
 	}
-	// Находок не больше предела протокола.
 	n := ml.MaxFindings + 10
 	many := make([]float32, 0, n*4)
 	manyOffs := make([][2]int, 0, n*2)
@@ -118,8 +122,9 @@ func TestTokenSpans(t *testing.T) {
 		many = append(many, 0, 1, 1, 0)
 		manyOffs = append(manyOffs, [2]int{4 * i, 4*i + 1}, [2]int{4*i + 2, 4*i + 3})
 	}
-	if s, err := tokenSpans(many, []string{"O", "PER"}, manyOffs); err != nil || len(s) != ml.MaxFindings {
-		t.Fatalf("предел находок: %d %v", len(s), err)
+	// Находок не больше предела протокола, остаток — признак усечения.
+	if s, cut, err := tokenSpans(many, []string{"o", "per"}, manyOffs); err != nil || len(s) != ml.MaxFindings || !cut {
+		t.Fatalf("предел находок: %d %v %v", len(s), cut, err)
 	}
 }
 
@@ -236,8 +241,9 @@ func TestRunWindows(t *testing.T) {
 	if r, err := runWindows(context.Background(), clsSpec, seqTokenizer{}, "  ", cls, nil); err != nil || len(r.Findings) != 0 || calls.Load() != 0 {
 		t.Fatalf("пустой текст: %+v %v %d", r, err, calls.Load())
 	}
-	// Разметка токенов: каждое слово — «PER», один сплошной фрагмент.
-	ner := ml.ModelSpec{ID: "ner", Version: "1", Task: ml.TaskTokenClassification, Labels: []string{"O", "PER"}, MaxTokens: 512}
+	// Разметка токенов: каждое слово — «per», фрагменты подряд по границам
+	// окон и не длиннее ml.MaxSpanBytes покрывают весь текст.
+	ner := ml.ModelSpec{ID: "ner", Version: "1", Task: ml.TaskTokenClassification, Labels: []string{"o", "per"}, MaxTokens: 512}
 	tokcls := func(_ context.Context, ids []int64) ([]float32, error) {
 		out := make([]float32, 0, 2*len(ids))
 		for _, id := range ids {
@@ -250,8 +256,33 @@ func TestRunWindows(t *testing.T) {
 		return out, nil
 	}
 	r, err = runWindows(context.Background(), ner, seqTokenizer{}, text, tokcls, make(chan struct{}, 3))
-	if err != nil || len(r.Findings) != 1 || r.Findings[0].Start != 0 || r.Findings[0].End != len(text) {
+	if err != nil || len(r.Findings) < 2 || r.Findings[0].Start != 0 || r.Findings[len(r.Findings)-1].End != len(text) {
 		t.Fatalf("разметка: %+v %v", r.Findings, err)
+	}
+	for i, f := range r.Findings {
+		if f.End-f.Start > ml.MaxSpanBytes || (i > 0 && f.Start != r.Findings[i-1].End+1) {
+			t.Fatalf("фрагмент %d: %+v", i, f)
+		}
+	}
+	if r.Truncated {
+		t.Fatal("ложный признак усечения")
+	}
+	// Находок больше ml.MaxFindings (каждое второе слово — отдельное имя):
+	// ответ помечен усечённым, а не «проверен целиком».
+	alt := func(_ context.Context, ids []int64) ([]float32, error) {
+		out := make([]float32, 0, 2*len(ids))
+		for _, id := range ids {
+			if id < 10 || id%2 == 0 {
+				out = append(out, 5, 0)
+			} else {
+				out = append(out, 0, 5)
+			}
+		}
+		return out, nil
+	}
+	r, err = runWindows(context.Background(), ner, seqTokenizer{}, words(1200), alt, make(chan struct{}, 3))
+	if err != nil || len(r.Findings) != ml.MaxFindings || !r.Truncated {
+		t.Fatalf("усечение: %d находок, %v %v", len(r.Findings), r.Truncated, err)
 	}
 	// Отмена между окнами прерывает вывод; сбой модели — ошибка.
 	ctx, cancel := context.WithCancel(context.Background())

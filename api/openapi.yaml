@@ -5606,15 +5606,16 @@ paths:
     post:
       summary: Добавить исключение теневого ИИ
       description: |
-        Право `shadow_ai.manage`. Пользователь задаётся логином или адресом клиента из журнала (`login`) —
+        Право безопасности `shadow_ai.exclusions.manage` — только `security_admin`, токенам API не выдаётся
+        (исключение пользователя необратимо удаляет его сводки). Пользователь задаётся логином или адресом клиента из журнала (`login`) —
         сервер сразу заменяет его псевдонимом на ключе псевдонимов, логин нигде не хранится — или готовым
         псевдонимом (`alias`); сервис — ID сервиса каталога (`service`). Строки исключённых не попадают в
         сводки и оповещения, накопленные сводки исключённого удаляются той же транзакцией. Это ослабление
         (DM-40): нужен текущий пароль (`password`) или код TOTP (`code`) в сессии консоли (токеном API —
         403), в аудите `shadow_ai.exclusion_added` с `weakening: true`. Пользователь без ключа псевдонимов —
         409; повтор и сверх 1000 — 409.
-      x-permission: shadow_ai.manage
-      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      x-permission: shadow_ai.exclusions.manage
+      security: [{ sessionCookie: [] }]
       parameters:
         - $ref: '#/components/parameters/CSRFToken'
       requestBody:
@@ -5641,10 +5642,10 @@ paths:
     delete:
       summary: Снять исключение теневого ИИ
       description: |
-        Право `shadow_ai.manage`. Следующие строки пользователя или сервиса снова учитываются; удалённые при
+        Право безопасности `shadow_ai.exclusions.manage`. Следующие строки пользователя или сервиса снова учитываются; удалённые при
         добавлении исключения сводки не возвращаются. Пишет `shadow_ai.exclusion_removed`.
-      x-permission: shadow_ai.manage
-      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      x-permission: shadow_ai.exclusions.manage
+      security: [{ sessionCookie: [] }]
       parameters:
         - $ref: '#/components/parameters/CSRFToken'
         - { name: kind, in: path, required: true, schema: { type: string, enum: [user, service] } }
@@ -9475,7 +9476,7 @@ components:
         message: { type: string, description: Сообщение политики при блокировке. }
         incomplete: { type: boolean, description: Часть детекторов не дала результата (fail_open). }
         unchecked: { type: boolean, description: 'У политики нет правил для этого направления: детекторы не запускались, allow не означает «проверено».' }
-        ml_unavailable: { type: boolean, description: 'ML-детектор политики (injection.ml, toxicity.ml) не дал результата: aisec-ml недоступен, решение принято по остальным детекторам (ADR-0024).' }
+        ml_unavailable: { type: boolean, description: 'ML-детектор политики (injection.ml, toxicity.ml, pii.ner) не дал результата: aisec-ml недоступен, решение принято по остальным детекторам (ADR-0024).' }
         findings:
           type: array
           description: Находки детекторов политики приложения для этого направления.

@@ -13,6 +13,7 @@ import (
 
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/internal/detect"
+	"github.com/azuresong-afk/ai_railway/internal/detect/builtin"
 	"github.com/azuresong-afk/ai_railway/internal/detect/pii"
 	"github.com/azuresong-afk/ai_railway/internal/detect/secretscan"
 	"github.com/azuresong-afk/ai_railway/internal/detect/session"
@@ -70,6 +71,14 @@ const (
 // события в режиме хранения masked (ТЗ, 5.5), даже если политика их не
 // использует.
 var maskDetectors = []string{pii.ID, secretscan.ID}
+
+// maskFindings — детекторы, находки которых маскируются в содержимом
+// события в режиме masked, если детектор запускался по политике:
+// maskDetectors и pii.ner (ADR-0024, дополнение 4.20). pii.ner не
+// запускается ради маскирования события, а его сбой не делает маскирование
+// невозможным (MaskFailed): ПДн с контрольными суммами закрывает pii.ru,
+// событие получает ml_unavailable.
+var maskFindings = append(slices.Clone(maskDetectors), builtin.PIINERID)
 
 // inspectText — проверяемый фрагмент.
 type inspectText struct {
@@ -570,10 +579,10 @@ func rewrite(text string, spans []span) string {
 	return b.String()
 }
 
-// maskedContent — содержимое запроса для события в режиме masked: ПДн,
-// секреты и всё, что замаскировала политика, заменены категорией находки,
-// скрытые символы вырезаны. Пусто и false — замаскировать нельзя (сбой
-// детектора маскирования).
+// maskedContent — содержимое запроса для события в режиме masked: ПДн
+// (maskFindings), секреты и всё, что замаскировала политика, заменены
+// категорией находки, скрытые символы вырезаны. Пусто и false —
+// замаскировать нельзя (сбой детектора маскирования).
 func (in *inspection) maskedContent(texts []inspectText) (string, bool) {
 	if in.MaskFailed {
 		return "", false
@@ -587,7 +596,7 @@ func (in *inspection) maskedContent(texts []inspectText) (string, bool) {
 	byText := map[int][]span{}
 	for i, f := range in.Findings {
 		cut := cutOut(f.Finding)
-		if !applied[i] && !cut && !slices.Contains(maskDetectors, f.Detector) {
+		if !applied[i] && !cut && !slices.Contains(maskFindings, f.Detector) {
 			continue
 		}
 		repl := "[" + f.Category + "]"
