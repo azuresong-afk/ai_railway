@@ -725,6 +725,24 @@ ml-p4: ## Замер Р4 ML-детекторов против эвристик �
 		taskset -c $(ML_P4_CPUS) go test -count=1 -timeout 30m -tags aisec_onnx,aisec_models -run TestP4Measure -v ./cmd/aisec-ml/
 	cat $(ML_BUILD)/p4.md
 
+# Синтетические модели для отладки и e2e без моделей владельца
+# (tools/ml/synthetic.py): маленький BERT, обученный с нуля на синтетике
+# репозитория, пакет — только тестовым ключом. НЕ ДЛЯ ПОСТАВКИ: подпись
+# тестовым ключом не принимает поставочная сборка aisec-ml.
+ML_SYNTHETIC_VERSION ?= 0.0.1
+.PHONY: ml-synthetic
+ml-synthetic: ## Синтетический пакет моделей build/ml/models для отладки и e2e (тестовый ключ, НЕ ДЛЯ ПОСТАВКИ)
+	@test -x $(ML_PY) || { echo "ml-synthetic: нет $(ML_VENV) — сначала make ml-venv"; exit 1; }
+	rm -rf $(ML_BUILD)/models $(ML_BUILD)/ref $(ML_BUILD)/models.spec.json $(ML_BUILD)/synthetic
+	$(ML_PY) tools/ml/synthetic.py
+	$(ML_PY) tools/ml/export.py --model $(ML_BUILD)/synthetic/injection-ru-en --id injection-ru-en --version $(ML_SYNTHETIC_VERSION) \
+		--task classification --directions input --corpus testdata/corpus/injection.ml
+	$(ML_PY) tools/ml/export.py --model $(ML_BUILD)/synthetic/toxicity-ru --id toxicity-ru --version $(ML_SYNTHETIC_VERSION) \
+		--task multilabel_classification --directions input,output --corpus testdata/corpus/toxicity.ml
+	$(ML_PY) tools/ml/synthetic.py --bom
+	go run ./tools/manifest sign-models -dir $(ML_BUILD)/models -spec $(ML_BUILD)/models.spec.json \
+		-version '$(ML_SYNTHETIC_VERSION)' -created '$(SOURCE_DATE)' -test-key $(MANIFEST_TEST_KEY)
+
 # Ключ производителя — только на машине без сети (как make release-sign);
 # ML_TEST_KEY=1 — тестовый ключ, пакет не для поставки. Готовый пакет:
 # make ml-release-dir ML_MODELS_DIR=build/ml/models.
@@ -780,6 +798,19 @@ e2e-pilot-run: ## e2e пилота на собранных образах и б�
 	cd test/e2e && $(PILOT_E2E_SUDO) env AISEC_E2E_PILOT=1 AISEC_VERSION='$(IMAGE_TAG)' AISEC_IMAGE_REPO='$(IMAGE_REPO)' \
 		AISEC_E2E_TOOLS='$(abspath $(PILOT_E2E))' $(if $(AISEC_POSTGRES_IMAGE),AISEC_POSTGRES_IMAGE='$(AISEC_POSTGRES_IMAGE)') \
 		'$(abspath $(PILOT_E2E))/e2e.test' -test.run '^TestE2EPilot' -test.v -test.count=1 -test.timeout 30m
+
+# e2e пилота с ML-детекторами (задача 4.19): выпуск и образ aisec-ml с
+# пакетом build/ml/models (make ml-synthetic или пакет моделей владельца),
+# compose.ml.yaml. Нужны образы make images-test и ORT_LIB_DIR с
+# libonnxruntime.so.1.31.0 (make ort-build).
+.PHONY: e2e-pilot-ml
+e2e-pilot-ml: e2e-pilot-bin ## e2e пилота с aisec-ml: ML-детекторы блокируют, журналируют и не мешают при отказе aisec-ml
+	@test -s $(ML_BUILD)/models/aisec-models.json.sig || { echo "e2e-pilot-ml: нет пакета $(ML_BUILD)/models — make ml-synthetic"; exit 1; }
+	$(MAKE) --no-print-directory ml-release-assemble ML_MODELS_DIR=$(ML_BUILD)/models
+	$(MAKE) --no-print-directory image-ml
+	cd test/e2e && $(PILOT_E2E_SUDO) env AISEC_E2E_PILOT=1 AISEC_E2E_PILOT_ML=1 AISEC_VERSION='$(IMAGE_TAG)' AISEC_IMAGE_REPO='$(IMAGE_REPO)' \
+		AISEC_E2E_TOOLS='$(abspath $(PILOT_E2E))' $(if $(AISEC_POSTGRES_IMAGE),AISEC_POSTGRES_IMAGE='$(AISEC_POSTGRES_IMAGE)') \
+		'$(abspath $(PILOT_E2E))/e2e.test' -test.run '^TestE2EPilot_ML$$' -test.v -test.count=1 -test.timeout 30m
 
 .PHONY: e2e-pilot
 e2e-pilot: e2e-pilot-bin ## e2e пилота: без интернета (3.7), копия и восстановление (3.8); сначала make images-test
