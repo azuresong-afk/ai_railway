@@ -1,4 +1,6 @@
-module example.com/lintsample
+// Путь модуля — как у продукта: правила depguard для internal/media называют
+// пакеты по полному пути, а internal-пакеты импортируются только внутри модуля.
+module github.com/azuresong-afk/ai_railway
 
 go 1.27.0
 
@@ -9,6 +11,7 @@ require (
 	github.com/google/uuid v0.0.0
 	github.com/yalue/onnxruntime_go v0.0.0
 	golang.org/x/crypto v0.0.0
+	golang.org/x/image v0.0.0
 )
 
 // Заглушка вместо настоящего модуля: образец собирается без сети.
@@ -23,3 +26,5 @@ replace github.com/google/uuid => ./stub/uuid
 replace github.com/Azure/go-ntlmssp => ./stub/ntlmssp
 
 replace github.com/yalue/onnxruntime_go => ./stub/onnxruntime
+
+replace golang.org/x/image => ./stub/ximage
