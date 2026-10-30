@@ -10,7 +10,7 @@ import { Banner, Panel, Table, Td, Th } from "../ui/Layout";
 import { ShapeIcon } from "../ui/icons";
 import { SyslogPanel } from "../shadowai/SyslogPanel";
 import { type IntegrityCheck, type SystemStatus, systemApi } from "./api";
-import { chainReasonText, formatBytes, gatewayText, problemText, reasonText, syncText, triggerText } from "./format";
+import { chainReasonText, componentText, errorConditions, formatBytes, gatewayText, problemText, reasonText, syncText, triggerText } from "./format";
 
 // Состояние всегда словами и значком своей формы; цвет — дополнение (ТЗ 6.2).
 function Tag({ ok, children }: { ok: boolean | null; children: ReactNode }) {
@@ -127,9 +127,35 @@ function VerifyResult({ r }: { r: IntegrityCheck }) {
   );
 }
 
+type Gateway = SystemStatus["gateways"][number];
+
+// Счётчики в памяти шлюза (задача 5.9): заполнение и вытеснения с запуска.
+function Limits({ l }: { l: Gateway["limits"] }) {
+  if (!l) return <span className="text-muted">нет данных</span>;
+  const t = l.tool_rate;
+  const ss = l.sessions;
+  return (
+    <div className="flex flex-col gap-0.5 text-sm">
+      {t && (
+        <Tag ok={t.evictions === 0}>
+          Лимиты вызовов: {formatNumber(t.keys)} из {formatNumber(t.max_keys)}, вытеснено {formatNumber(t.evictions)}
+        </Tag>
+      )}
+      {ss && (
+        <Tag ok={ss.evictions === 0}>
+          Сессии: {formatNumber(ss.sessions)} из {formatNumber(ss.max_sessions)} (на приложение до {formatNumber(ss.max_app_sessions)}), вытеснено{" "}
+          {formatNumber(ss.evictions)}, по доле приложения {formatNumber(ss.app_evictions)}
+        </Tag>
+      )}
+      <span className="text-xs text-muted">с запуска шлюза {when(l.started_at)}</span>
+    </div>
+  );
+}
+
 function Body({ s }: { s: SystemStatus }) {
   const gone = new Set<string>(s.unavailable);
   const active = s.notifications.filter((n) => n.active);
+  const names = new Map(s.gateways.map((g) => [g.id, g.name]));
   return (
     <>
       {s.unavailable.length > 0 && (
@@ -144,8 +170,9 @@ function Body({ s }: { s: SystemStatus }) {
           <ul className="flex flex-col gap-2">
             {active.map((n) => (
               <li key={n.condition}>
-                <Banner kind="warning">
+                <Banner kind={errorConditions.has(n.condition) ? "error" : "warning"}>
                   {n.title} ({n.requirement})
+                  {n.components && n.components.length > 0 ? `: ${n.components.map((c) => componentText(c, names)).join(", ")}` : ""}
                   {n.since ? `, с ${formatAbsolute(n.since)}` : ""}
                   {n.count !== null ? `, за 24 часа: ${formatNumber(n.count)}` : ""}
                 </Banner>
@@ -218,6 +245,7 @@ function Body({ s }: { s: SystemStatus }) {
                 <Th>Сертификат до</Th>
                 <Th>Самотест</Th>
                 <Th>Целостность</Th>
+                <Th>Счётчики в памяти</Th>
               </tr>
             </thead>
             <tbody>
@@ -235,6 +263,9 @@ function Body({ s }: { s: SystemStatus }) {
                   </Td>
                   <Td>
                     <Report r={g.integrity} what="целостность" />
+                  </Td>
+                  <Td>
+                    <Limits l={g.limits} />
                   </Td>
                 </tr>
               ))}
@@ -256,6 +287,37 @@ function Body({ s }: { s: SystemStatus }) {
         )}
         <p className="text-xs text-muted">Счётчики идут с последнего запуска каждого шлюза.</p>
       </Section>
+
+      {(s.shadow_ai_storage || gone.has("shadow_ai_storage")) && (
+        <Section title="Сводки теневого ИИ">
+          {s.shadow_ai_storage ? (
+            <div className="flex flex-col gap-1">
+              <div
+                role="progressbar"
+                aria-label="Заполнение хранилища сводок теневого ИИ"
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={s.shadow_ai_storage.used_percent}
+                className="h-2 w-full overflow-hidden rounded-full bg-bg"
+              >
+                <div className="h-full bg-accent" style={{ width: `${s.shadow_ai_storage.used_percent}%` }} />
+              </div>
+              <p className="text-base">
+                <Tag ok={s.shadow_ai_storage.used_percent < s.shadow_ai_storage.warn_percent}>
+                  Сводок {formatNumber(s.shadow_ai_storage.aggregates)} из {formatNumber(s.shadow_ai_storage.max_aggregates)} (
+                  {s.shadow_ai_storage.used_percent}%)
+                </Tag>
+              </p>
+              <p className="text-xs text-muted">
+                Предупреждение при {s.shadow_ai_storage.warn_percent}%. При заполнении импорт журналов и приём по syslog отклоняются: сократите срок
+                хранения сводок или добавьте исключения.
+              </p>
+            </div>
+          ) : (
+            <p className="text-sm text-muted">Заполнение недоступно.</p>
+          )}
+        </Section>
+      )}
 
       {s.shadow_ai_syslog && (
         <Section title="Приём журналов теневого ИИ по syslog">

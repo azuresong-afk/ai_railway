@@ -16,6 +16,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/gwregistry"
 	"github.com/azuresong-afk/ai_railway/internal/integrity"
 	"github.com/azuresong-afk/ai_railway/internal/license"
+	"github.com/azuresong-afk/ai_railway/internal/servicedb"
 )
 
 // Настройки по умолчанию (ТЗ 7.4 РСБ.5, 7.8 ВРМ.2).
@@ -122,6 +123,16 @@ type Options struct {
 	// Quota — режим квот и шлюзы на автономной доле (задача 4.29); nil —
 	// условий quota_approximate и quota_autonomous нет.
 	Quota func(ctx context.Context) (QuotaHealth, error)
+	// GatewayLimits — последние счётчики в памяти шлюзов из heartbeat
+	// (gwregistry.Service.GatewayLimits, задача 5.9 этапа 5); nil — сервер
+	// без внутреннего порта, данных и условия gateway_limits нет.
+	GatewayLimits func() map[string]gwregistry.LimitsMark
+	// ShadowAIStorage — число сводок теневого ИИ и предел (4Н25); nil —
+	// модуль не подключён, условий shadow_ai_* нет.
+	ShadowAIStorage func(ctx context.Context) (count, limit int64, err error)
+	// ServiceDBs — состояние служебных баз (servicedb.Registry.States,
+	// ADR-0028); nil — условий service_db_* нет.
+	ServiceDBs func(ctx context.Context) ([]servicedb.State, error)
 }
 
 // CustomerCert — сведения о сертификате заказчика для адреса шлюза.
@@ -140,6 +151,8 @@ type Service struct {
 	// первое наблюдение — точка отсчёта.
 	mu      sync.Mutex
 	dropped map[string]droppedMark
+	// evicted — то же для вытеснений счётчиков в памяти шлюза (задача 5.9).
+	evicted map[string]droppedMark
 }
 
 type droppedMark struct {
@@ -156,20 +169,36 @@ func (s *Service) observeDropped(id string, ev GatewayEvents, now time.Time) boo
 	if s.dropped == nil {
 		s.dropped = map[string]droppedMark{}
 	}
-	m, ok := s.dropped[id]
+	return grew(s.dropped, id, ev.StartedAt, ev.Dropped, now)
+}
+
+// observeEvicted — то же для вытеснений счётчиков в памяти шлюза.
+func (s *Service) observeEvicted(id string, startedAt time.Time, n uint64, now time.Time) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.evicted == nil {
+		s.evicted = map[string]droppedMark{}
+	}
+	return grew(s.evicted, id, startedAt, n, now)
+}
+
+// grew обновляет точку отсчёта счётчика n процесса шлюза, запущенного в
+// startedAt, и сообщает, рос ли он за последние DroppedWindow.
+func grew(marks map[string]droppedMark, id string, startedAt time.Time, n uint64, now time.Time) bool {
+	m, ok := marks[id]
 	switch {
 	case !ok:
-		m = droppedMark{startedAt: ev.StartedAt, n: ev.Dropped}
-	case !m.startedAt.Equal(ev.StartedAt):
-		// Новый запуск шлюза: счётчик начат заново, любое отброшенное — рост.
-		if ev.Dropped > 0 {
+		m = droppedMark{startedAt: startedAt, n: n}
+	case !m.startedAt.Equal(startedAt):
+		// Новый запуск шлюза: счётчик начат заново, любое ненулевое — рост.
+		if n > 0 {
 			m.grewAt = now
 		}
-		m.startedAt, m.n = ev.StartedAt, ev.Dropped
-	case ev.Dropped > m.n:
-		m.n, m.grewAt = ev.Dropped, now
+		m.startedAt, m.n = startedAt, n
+	case n > m.n:
+		m.n, m.grewAt = n, now
 	}
-	s.dropped[id] = m
+	marks[id] = m
 	return !m.grewAt.IsZero() && now.Sub(m.grewAt) <= DroppedWindow
 }
 
@@ -295,6 +324,10 @@ func (s *Service) collect(ctx context.Context) collected {
 	// условия gateway_tls).
 	var stats map[string]GatewayEvents
 	var active []gwregistry.Gateway
+	var limits map[string]gwregistry.LimitsMark
+	if s.o.GatewayLimits != nil {
+		limits = s.o.GatewayLimits()
+	}
 	if s.o.Store != nil {
 		sctx, cancel := s.dbCtx(ctx)
 		var err error
@@ -323,8 +356,14 @@ func (s *Service) collect(ctx context.Context) collected {
 				c.st.Events.Dropped += ev.Dropped
 				c.st.Events.Rejected += ev.Rejected
 			}
+			if m, ok := limits[g.ID]; ok {
+				gs.Limits = gatewayLimits(m)
+			}
 			if g.Status == gwregistry.StatusActive {
 				s.blinding(&c, g, &gs, stats, now)
+				if m, ok := limits[g.ID]; ok && s.o.GatewayLimits != nil {
+					s.gatewayLimits(&c, g, m, now)
+				}
 				if gs.State == GatewayOnline {
 					active = append(active, g)
 				}
@@ -461,8 +500,98 @@ func (s *Service) collect(ctx context.Context) collected {
 	if s.o.Store != nil {
 		s.alertJob(ctx, &c, now)
 	}
+	if s.o.ShadowAIStorage != nil {
+		s.shadowAIStorage(ctx, &c)
+	}
+	if s.o.ServiceDBs != nil {
+		s.serviceDBs(ctx, &c)
+	}
 	sort.Strings(c.st.Unavailable)
 	return c
+}
+
+// gatewayLimits — счётчики в памяти шлюза для ответа.
+func gatewayLimits(m gwregistry.LimitsMark) *GatewayLimits {
+	out := &GatewayLimits{ReportedAt: m.At.UTC(), StartedAt: timePtr(m.StartedAt)}
+	if t := m.ToolRate; t != nil {
+		out.ToolRate = &GatewayToolRate{Keys: t.Keys, MaxKeys: t.MaxKeys, Evictions: t.Evictions}
+	}
+	if ss := m.Sessions; ss != nil {
+		out.Sessions = &GatewaySessions{Sessions: ss.Sessions, MaxSessions: ss.MaxSessions, MaxAppSessions: ss.MaxAppSessions,
+			Evictions: ss.Evictions, AppEvictions: ss.AppEvictions}
+	}
+	return out
+}
+
+// gatewayLimits — условие gateway_limits действующего шлюза (задача 5.9
+// этапа 5): за DroppedWindow росли вытеснения счётчиков лимитов вызовов
+// инструментов или сессий session.risk из-за общего предела. Вытеснения
+// из-за доли приложения в условие не входят: приложение вытесняет свои же
+// сессии, чужие оценки не страдают (4Н13); они видны в разделе шлюза.
+func (s *Service) gatewayLimits(c *collected, g gwregistry.Gateway, m gwregistry.LimitsMark, now time.Time) {
+	var tool, sess int64
+	if m.ToolRate != nil {
+		tool = m.ToolRate.Evictions
+	}
+	if m.Sessions != nil {
+		sess = m.Sessions.Evictions
+	}
+	code := ConditionGatewayLimits + ":" + g.ID
+	c.conditions[code] = s.observeEvicted(g.ID, m.StartedAt, uint64(tool)+uint64(sess), now) //nolint:gosec // G115: счётчики 0–2^62 (gwregistry.Limits.validate)
+	c.details[code] = map[string]any{"component": componentGateway + g.ID, "gateway_name": g.Name,
+		"tool_rate_evictions": tool, "session_evictions": sess}
+}
+
+// shadowAIStorage — заполнение хранилища сводок теневого ИИ и условия
+// shadow_ai_storage (от ShadowAIWarnPercent) и shadow_ai_full (предел
+// достигнут: импорт получает 507). Активно одно из двух.
+func (s *Service) shadowAIStorage(ctx context.Context, c *collected) {
+	sctx, cancel := s.dbCtx(ctx)
+	n, limit, err := s.o.ShadowAIStorage(sctx)
+	cancel()
+	if err != nil {
+		s.unavailable(c, "shadow_ai_storage", err)
+		return
+	}
+	if limit <= 0 {
+		return
+	}
+	st := &ShadowAIStorage{Aggregates: n, MaxAggregates: limit, UsedPercent: percent(n, limit), WarnPercent: ShadowAIWarnPercent}
+	c.st.ShadowAIStorage = st
+	full := n >= limit
+	d := map[string]any{"aggregates": n, "max_aggregates": limit, "used_percent": st.UsedPercent}
+	c.conditions[ConditionShadowAIFull] = full
+	c.conditions[ConditionShadowAIStorage] = !full && st.UsedPercent >= ShadowAIWarnPercent
+	c.details[ConditionShadowAIFull], c.details[ConditionShadowAIStorage] = d, d
+}
+
+// serviceDBs — условия служебных баз (ADR-0028): текущая сохранённая
+// версия не прошла повторную проверку — работает предыдущая
+// (service_db_previous) или база не используется (service_db_unused).
+// Непрошедшая предыдущая версия при действующей текущей — не условие:
+// работе она не мешает, а возврат на неё отклоняется проверкой.
+func (s *Service) serviceDBs(ctx context.Context, c *collected) {
+	sctx, cancel := s.dbCtx(ctx)
+	states, err := s.o.ServiceDBs(sctx)
+	cancel()
+	if err != nil {
+		s.unavailable(c, "service_dbs", err)
+		return
+	}
+	for _, st := range states {
+		invalid := st.Current != nil && !st.Current.Valid
+		prev, unused := ConditionServiceDBPrevious+":"+st.Kind, ConditionServiceDBUnused+":"+st.Kind
+		c.conditions[prev] = invalid && st.Active == servicedb.ActivePrevious
+		c.conditions[unused] = invalid && st.Active == servicedb.ActiveNone
+		d := map[string]any{"component": componentServiceDB + st.Kind, "kind": st.Kind, "title": st.Title, "active": st.Active}
+		if invalid {
+			d["version"], d["reason"] = st.Current.Version, st.Current.Reason
+		}
+		if st.Previous != nil && st.Active == servicedb.ActivePrevious {
+			d["previous_version"] = st.Previous.Version
+		}
+		c.details[prev], c.details[unused] = d, d
+	}
 }
 
 // licenseConditions — условия лицензии (ADR-0026, п. 8). Без лицензии
@@ -705,6 +834,11 @@ var conditionInfo = []struct{ code, requirement, title string }{
 	{ConditionAlertJob, "РСБ.7", "Фоновая задача правил оповещений не выполняется или правило падает на каждом проходе: правила частоты, аномалий и бюджетов молчат"},
 	{ConditionQuotaApprox, "ЗИ.6", "Квоты соблюдаются приблизительно: шлюзов на связи больше одного, а режим квот — local: переключите на leased запросом PUT /api/v1/quota-settings (руководство администратора, раздел 7, «Квоты при нескольких экземплярах шлюза»)"},
 	{ConditionQuotaAutonomous, "ЗИ.6", "Квоты в автономном режиме: шлюз не получает аренду квот у сервера и работает на равной доле"},
+	{ConditionGatewayLimits, "РСБ.7", "Шлюз вытесняет счётчики лимитов вызовов инструментов или оценки сессий: для части ключей счёт начат заново"},
+	{ConditionShadowAIStorage, "РСБ.7", "Хранилище сводок теневого ИИ заполнено на 90 % и больше: сократите срок хранения сводок"},
+	{ConditionShadowAIFull, "РСБ.7", "Хранилище сводок теневого ИИ заполнено: импорт журналов и приём по syslog отклоняются"},
+	{ConditionServiceDBPrevious, "ОЦЛ.5", "Сохранённая служебная база не прошла проверку подписи: работает предыдущая версия"},
+	{ConditionServiceDBUnused, "ОЦЛ.5", "Сохранённая служебная база не прошла проверку подписи: база не используется"},
 }
 
 // family — условие раздела 7, к которому относится код (integrity:server —
@@ -727,6 +861,11 @@ func component(code string) string {
 	for _, fam := range gatewayFamilies {
 		if strings.HasPrefix(code, fam+":") {
 			return componentGateway + strings.TrimPrefix(code, fam+":")
+		}
+	}
+	for _, fam := range serviceDBFamilies {
+		if strings.HasPrefix(code, fam+":") {
+			return componentServiceDB + strings.TrimPrefix(code, fam+":")
 		}
 	}
 	return ""
@@ -772,7 +911,8 @@ func (s *Service) Status(ctx context.Context) Status {
 		case ConditionDenied:
 			n.Count, n.Active = denied, denied != nil && *denied > 0
 		case ConditionIntegrity, ConditionBundleLag, ConditionOffline, ConditionEventsDropped, ConditionReportsStale,
-			ConditionCertExpiry, ConditionGatewayClock, ConditionGatewayTLS, ConditionQuotaAutonomous:
+			ConditionCertExpiry, ConditionGatewayClock, ConditionGatewayTLS, ConditionQuotaAutonomous, ConditionGatewayLimits,
+			ConditionServiceDBPrevious, ConditionServiceDBUnused:
 			// Одна строка на все компоненты; «с» — самое раннее из активных.
 			for _, code := range sortedCodes(c.conditions) {
 				if family(code) != ci.code || !c.conditions[code] {
@@ -859,7 +999,9 @@ func (s *Service) Evaluate(ctx context.Context) error {
 		}
 	}
 	for code, st := range states {
-		if _, ok := c.conditions[code]; !ok && st.Active && (code == ConditionIntegrity || component(code) != "" && !known[component(code)]) {
+		comp := component(code)
+		gone := strings.HasPrefix(comp, componentGateway) && !known[comp]
+		if _, ok := c.conditions[code]; !ok && st.Active && (code == ConditionIntegrity || gone) {
 			c.conditions[code] = false
 		}
 	}
@@ -916,6 +1058,12 @@ func (s *Service) skip(c collected, fam string) bool {
 		return missing("license")
 	case ConditionQuotaApprox, ConditionQuotaAutonomous:
 		return missing("gateways", "quota")
+	case ConditionGatewayLimits:
+		return missing("gateways")
+	case ConditionShadowAIStorage, ConditionShadowAIFull:
+		return missing("shadow_ai_storage")
+	case ConditionServiceDBPrevious, ConditionServiceDBUnused:
+		return missing("service_dbs")
 	}
 	return false
 }
