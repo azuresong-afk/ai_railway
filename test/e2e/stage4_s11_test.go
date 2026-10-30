@@ -155,7 +155,9 @@ func TestE2EStage4_S11_ShadowAI(t *testing.T) {
 	}
 	// Пользователи — только псевдонимами; ни логинов, ни адресов в ответах.
 	users := admin.do("GET", "/api/v1/shadow-ai/users", nil)
-	var ul struct{ Items []struct{ Alias, Kind string } }
+	var ul struct {
+		Items []struct{ Alias, Kind string }
+	}
 	users.json(t, &ul)
 	if users.code != http.StatusOK || len(ul.Items) != 2 {
 		t.Fatalf("пользователи теневого ИИ: %s", users)

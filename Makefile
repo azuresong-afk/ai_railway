@@ -108,12 +108,17 @@ fmt-check: ## Форматирование Go-кода (gofmt); vendor/ — чу
 vet: ## go vet (с cgo, чтобы проверялись и файлы с import "C")
 	CGO_ENABLED=1 go vet ./...
 
+# Предел времени сквозных тестов: сценарии этапа 4 ждут таймауты очереди
+# подтверждений (1 минута) и сводки syslog (раз в минуту), стандартных
+# 10 минут пакету не хватает.
+E2E_TIMEOUT ?= 40m
+
 .PHONY: dm-coverage
 dm-coverage: build ## Покрытие матрицы обнаружения 5.16 тестами (строки с этапом не выше STAGE)
 	@mkdir -p $(BUILD)
 	@# Падения тестов ловит make test; здесь нужен полный отчёт, поэтому код возврата не важен.
 	go test -count=1 -json ./... > $(BUILD)/dm-tests.json || true
-	go test -tags e2e -count=1 -json ./test/e2e/ -bin $(BUILD)/bin > $(BUILD)/dm-e2e.json || true
+	go test -tags e2e -count=1 -timeout $(E2E_TIMEOUT) -json ./test/e2e/ -bin $(BUILD)/bin > $(BUILD)/dm-e2e.json || true
 	go run ./tools/dm-coverage -spec docs/SPEC.md -stage $(STAGE) \
 		-gotest $(BUILD)/dm-tests.json,$(BUILD)/dm-e2e.json -out $(BUILD)/dm-coverage
 
@@ -608,7 +613,7 @@ images-test-docker: build-image ## make images-test, где Go-шаги идут
 
 .PHONY: e2e
 e2e: manifest ## Сквозные тесты: шлюз и mock-llm по TLS (этап 1); сервер, CLI и PostgreSQL (этап 2, нужен AISEC_TEST_DATABASE_URL — иначе пропускаются)
-	go test -tags e2e -count=1 ./test/e2e/ -bin $(BUILD)/bin
+	go test -tags e2e -count=1 -timeout $(E2E_TIMEOUT) ./test/e2e/ -bin $(BUILD)/bin
 
 # e2e пилота в docker compose (задачи 3.7 и 3.8 этапа 3): сети без выхода
 # наружу и ловушка сети (test/e2e/netwatch), копия и восстановление
