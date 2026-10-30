@@ -287,7 +287,7 @@ func backupRestore(args []string, dsn string, stdout, stderr io.Writer, now time
 		return fail(audit.ResultFailure, "invalid", fmt.Errorf("%w: %w", errBackupInvalid, err))
 	}
 	// Объекты — правилами сервиса этого выпуска, до записи «до» (В22).
-	if err := checkSnapshot(snap, *keepTokens); err != nil {
+	if err := checkSnapshot(p, snap, *keepTokens); err != nil {
 		return fail(audit.ResultFailure, "invalid", fmt.Errorf("%w: %w", errBackupInvalid, err))
 	}
 	details := snap.Counts()
@@ -298,6 +298,7 @@ func backupRestore(args []string, dsn string, stdout, stderr io.Writer, now time
 	details["keep_api_tokens"] = *keepTokens
 	details["accept_old_copy"] = *acceptOld
 	details["schema_version"] = snap.SchemaVersion
+	details["format_version"] = arch.Version
 	if err := l.Record(ctx, entry(audit.ResultSuccess, details)); err != nil {
 		return fmt.Errorf("запись аудита перед восстановлением: %w — восстановление не начато", err)
 	}
@@ -338,12 +339,26 @@ func backupRestore(args []string, dsn string, stdout, stderr io.Writer, now time
 		say(stdout, "Токены API (%d) восстановлены отозванными: владельцы выпускают их заново.\n", res.APITokensRevoked)
 	}
 	if res.AgentKeysRevoked > 0 {
-		say(stdout, "Ключи приложений, закреплённые за агентами (%d), восстановлены отозванными: агенты в копию не входят. "+
-			"Создайте агентов заново и выпустите им ключи.\n", res.AgentKeysRevoked)
+		say(stdout, "Ключи приложений, закреплённые за агентами (%d), восстановлены отозванными: их агентов в копии нет "+
+			"(копия версии 1 или агент пропущен). Создайте агентов заново и выпустите им ключи.\n", res.AgentKeysRevoked)
 	}
 	if res.AgentKeysUnknown {
 		say(stdout, "Внимание: копия снята выпуском, не отмечавшим привязку ключей к агентам. Ключ, закреплённый за агентом, "+
 			"восстановлен без привязки и может назваться любым агентом приложения: отзовите ключи агентов и выпустите заново.\n")
+	}
+	if res.LegacyFormat {
+		say(stdout, "Копия формата версии 1: настроек этапов 3 и 4 (оповещения, каналы, отчёты, бюджеты, инструкции, сертификат шлюза, "+
+			"OIDC и LDAP, агенты и MCP-серверы, теневой ИИ, лицензия, отметки соответствия) в ней нет — задайте их заново.\n")
+	}
+	if res.SettingsSkipped {
+		say(stdout, "Установка не пустая: настройки этапов 3 и 4 из копии (встроенные правила оповещений, инструкции, сертификат шлюза, "+
+			"OIDC и LDAP, исключения теневого ИИ, лицензия, отметки соответствия, режим квот и сроки хранения) не перенесены.\n")
+	}
+	if len(res.Skipped) > 0 {
+		say(stdout, "Пропущены объекты со ссылкой на объект, которого нет в копии (%d):\n", len(res.Skipped))
+		for _, line := range res.Skipped {
+			say(stdout, "  - %s\n", line)
+		}
 	}
 	say(stdout, "Дальше: зарегистрируйте шлюзы заново (aisec-cli gateway token): ключи шлюзов и УЦ не восстанавливаются. "+
 		"Пользователи входят заново со своими паролями и вторым фактором.\n")
@@ -431,6 +446,15 @@ func restoreTx(ctx context.Context, db *store.DB, l *audit.Log, prepared *backup
 	details["api_tokens_revoked"] = res.APITokensRevoked
 	details["agent_keys_revoked"] = res.AgentKeysRevoked
 	details["agent_keys_unknown"] = res.AgentKeysUnknown
+	details["format_version"] = prepared.Version()
+	details["skipped_objects"] = len(res.Skipped)
+	if len(res.Skipped) > 0 {
+		items := make([]any, 0, min(len(res.Skipped), maxInvalidListed))
+		for _, line := range res.Skipped[:min(len(res.Skipped), maxInvalidListed)] {
+			items = append(items, line)
+		}
+		details["skipped"] = items
+	}
 	if replaceSettings {
 		details["settings"] = snap.SettingsDetails()
 	}
@@ -518,7 +542,9 @@ func rollbackQuietly(ctx context.Context, tx pgx.Tx) {
 
 func describeObjects(m map[string]int) string {
 	var parts []string
-	for _, k := range []string{"users", "roles", "api_tokens", "providers", "applications", "policies"} {
+	for _, k := range []string{"users", "roles", "api_tokens", "providers", "applications", "policies", "notify_channels",
+		"alert_rules", "report_schedules", "model_prices", "incident_instructions", "gateway_tls", "oidc", "ldap", "mcp_servers",
+		"agents", "shadow_ai_exclusions", "licenses", "compliance_marks"} {
 		if m[k] > 0 {
 			parts = append(parts, fmt.Sprintf("%s: %d", k, m[k]))
 		}
@@ -529,6 +555,19 @@ func describeObjects(m map[string]int) string {
 func sayCounts(w io.Writer, c map[string]any) {
 	say(w, "  пользователей %v, своих ролей %v, токенов API %v, провайдеров %v, приложений %v (ключей %v), политик %v (версий %v)\n",
 		c["users"], c["roles"], c["api_tokens"], c["providers"], c["applications"], c["app_keys"], c["policies"], c["policy_versions"])
+	say(w, "  каналов %v, правил оповещений %v (+ встроенных %v), расписаний отчётов %v, цен моделей %v, бюджетов %v, "+
+		"инструкций %v, MCP-серверов %v, агентов %v, инструментов %v, эталонов промптов %v, доступов по группам %v, "+
+		"исключений теневого ИИ %v, лицензий %v, отметок соответствия %v; сертификат шлюза %s, OIDC %s, LDAP %s\n",
+		c["notify_channels"], c["alert_rules"], c["alert_rules_builtin"], c["report_schedules"], c["model_prices"], c["app_budgets"],
+		c["incident_instructions"], c["mcp_servers"], c["agents"], c["agent_tools"], c["prompt_baselines"], c["app_user_access"],
+		c["shadow_ai_exclusions"], c["licenses"], c["compliance_marks"], yesNo(c["gateway_tls"]), yesNo(c["oidc"]), yesNo(c["ldap"]))
+}
+
+func yesNo(v any) string {
+	if b, _ := v.(bool); b {
+		return "есть"
+	}
+	return "нет"
 }
 
 // writeFileAtomic пишет файл копии: временный файл 0600 в том же каталоге,

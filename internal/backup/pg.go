@@ -40,6 +40,14 @@ const (
 	credentialColumn = "credential"
 	mfaTable         = "user_mfa"
 	mfaColumn        = "secret"
+	// Места хранения секретов этапов 3 и 4 (internal/keyring.Rewrap):
+	// internal/notify, internal/apps, internal/agents, internal/auth.
+	channelsTable, channelsColumn     = "notify_channels", "secret"
+	baselineTable, baselineColumn     = "prompt_baselines", "text"
+	mcpTable, mcpColumn               = "mcp_servers", "credential"
+	gatewayTLSTable, gatewayTLSColumn = "gateway_tls", "key"
+	oidcTable, oidcColumn             = "oidc_settings", "client_secret"
+	ldapTable, ldapColumn             = "ldap_settings", "bind_password"
 )
 
 // Read снимает копию в транзакции tx. Транзакция — REPEATABLE READ (её
@@ -64,6 +72,29 @@ func Read(ctx context.Context, tx pgx.Tx, box SecretOpener, keys *Keys, orgID st
 		{"приложения", readApplications},
 		{"политики", readPolicies},
 	}
+	// Разделы версии 2 (sections.go): настройки этапов 3 и 4.
+	opener := func(fn func(context.Context, pgx.Tx, *Snapshot, SecretOpener, *Keys) error) func(context.Context, pgx.Tx, *Snapshot) error {
+		return func(ctx context.Context, tx pgx.Tx, s *Snapshot) error { return fn(ctx, tx, s, box, keys) }
+	}
+	steps = append(steps, []struct {
+		what string
+		fn   func(context.Context, pgx.Tx, *Snapshot) error
+	}{
+		{"каналы уведомлений", opener(readChannels)},
+		{"правила оповещений", readAlertRules},
+		{"расписания отчётов", readReportSchedules},
+		{"цены моделей", readModelPrices},
+		{"бюджеты, эталоны промптов и доступ по группам", opener(readAppExtras)},
+		{"инструкции реагирования", readInstructions},
+		{"сертификат шлюза", opener(readGatewayTLS)},
+		{"вход через OIDC и LDAP", opener(readIdP)},
+		{"MCP-серверы", opener(readMCPServers)},
+		{"агенты", readAgents},
+		{"инструменты агентов", readAgentTools},
+		{"исключения теневого ИИ", readShadowAIExclusions},
+		{"лицензия", readLicenses},
+		{"отметки соответствия", readComplianceMarks},
+	}...)
 	for _, st := range steps {
 		if err := st.fn(ctx, tx, s); err != nil {
 			return nil, fmt.Errorf("резервная копия: %s: %w", st.what, err)
@@ -112,8 +143,10 @@ func readSettings(ctx context.Context, tx pgx.Tx, s *Snapshot) error {
 		return err
 	}
 	var in InstallSettings
-	err = tx.QueryRow(ctx, "SELECT timezone, retention_mode, updated_at FROM install_settings WHERE org_id = $1",
-		s.OrgID).Scan(&in.Timezone, &in.RetentionMode, &in.UpdatedAt)
+	err = tx.QueryRow(ctx, `SELECT timezone, retention_mode, updated_at, alert_retention_days, incident_retention_days,
+		shadow_ai_retention_days, quota_mode, quota_mode_changed_at FROM install_settings WHERE org_id = $1`,
+		s.OrgID).Scan(&in.Timezone, &in.RetentionMode, &in.UpdatedAt, &in.AlertRetentionDays, &in.IncidentRetentionDays,
+		&in.ShadowAIRetentionDays, &in.QuotaMode, &in.QuotaModeChangedAt)
 	switch {
 	case err == nil:
 		s.Settings.Install = &in
@@ -164,7 +197,8 @@ func readRoles(ctx context.Context, tx pgx.Tx, s *Snapshot) error {
 func readUsers(ctx context.Context, tx pgx.Tx, s *Snapshot, box SecretOpener, keys *Keys) error {
 	rows, err := tx.Query(ctx, `SELECT id::text, login, display_name, role, status, password_hash, password_changed_at,
 		must_change_password, temp_password_expires_at, failed_attempts, locked_at, locked_until, created_at, created_by,
-		deactivated_at, last_login_at, auth_source, idp_issuer, idp_subject FROM users WHERE org_id = $1 ORDER BY created_at, id`, s.OrgID)
+		deactivated_at, last_login_at, auth_source, idp_issuer, idp_subject, email FROM users WHERE org_id = $1
+		ORDER BY created_at, id`, s.OrgID)
 	if err != nil {
 		return err
 	}
@@ -172,7 +206,7 @@ func readUsers(ctx context.Context, tx pgx.Tx, s *Snapshot, box SecretOpener, ke
 		var u User
 		err := r.Scan(&u.ID, &u.Login, &u.DisplayName, &u.Role, &u.Status, &u.PasswordHash, &u.PasswordChangedAt,
 			&u.MustChangePassword, &u.TempPasswordExpiresAt, &u.FailedAttempts, &u.LockedAt, &u.LockedUntil,
-			&u.CreatedAt, &u.CreatedBy, &u.DeactivatedAt, &u.LastLoginAt, &u.AuthSource, &u.IdPIssuer, &u.IdPSubject)
+			&u.CreatedAt, &u.CreatedBy, &u.DeactivatedAt, &u.LastLoginAt, &u.AuthSource, &u.IdPIssuer, &u.IdPSubject, &u.Email)
 		return u, err
 	})
 	if err != nil {
@@ -337,7 +371,7 @@ func readApplications(ctx context.Context, tx pgx.Tx, s *Snapshot) error {
 		idx[a.ID] = i
 	}
 	rows, err = tx.Query(ctx, `SELECT id::text, app_id::text, name, prefix, key_hash, hash_alg, allowed_cidrs::text[],
-		expires_at, created_at, created_by, rotated_from::text, revoked_at, revoked_by, agent_id IS NOT NULL
+		expires_at, created_at, created_by, rotated_from::text, revoked_at, revoked_by, agent_id::text
 		FROM app_keys WHERE org_id = $1 ORDER BY created_at, id`, s.OrgID)
 	if err != nil {
 		return err
@@ -346,9 +380,10 @@ func readApplications(ctx context.Context, tx pgx.Tx, s *Snapshot) error {
 		var k AppKey
 		var app string
 		if err := r.Scan(&k.ID, &app, &k.Name, &k.Prefix, &k.KeyHash, &k.HashAlg, &k.AllowedCIDRs, &k.ExpiresAt,
-			&k.CreatedAt, &k.CreatedBy, &k.RotatedFrom, &k.RevokedAt, &k.RevokedBy, &k.AgentBound); err != nil {
+			&k.CreatedAt, &k.CreatedBy, &k.RotatedFrom, &k.RevokedAt, &k.RevokedBy, &k.AgentID); err != nil {
 			return err
 		}
+		k.AgentBound = k.AgentID != nil
 		i, ok := idx[app]
 		if !ok {
 			return fmt.Errorf("ключ %s приложения другой организации", k.Prefix)
@@ -446,18 +481,41 @@ func Inspect(ctx context.Context, q Querier, orgID string) (State, error) {
 		orgID).Scan(&st.DataKey); err != nil {
 		return st, err
 	}
-	var users, roles, tokens, providers, apps, policies int
+	// Встроенные правила оповещений и отметку часов лицензии создаёт сервер
+	// при запуске: они не делают установку непустой.
+	names := []string{"users", "roles", "api_tokens", "providers", "applications", "policies",
+		"notify_channels", "alert_rules", "report_schedules", "model_prices", "incident_instructions", "gateway_tls",
+		"oidc", "ldap", "mcp_servers", "agents", "shadow_ai_exclusions", "licenses", "compliance_marks"}
+	counts := make([]int, len(names))
+	dst := make([]any, len(counts))
+	for i := range counts {
+		dst[i] = &counts[i]
+	}
 	if err := q.QueryRow(ctx, `SELECT
 		(SELECT count(*) FROM users WHERE org_id = $1),
 		(SELECT count(*) FROM roles WHERE org_id = $1 AND NOT builtin),
 		(SELECT count(*) FROM api_tokens WHERE org_id = $1),
 		(SELECT count(*) FROM providers WHERE org_id = $1),
 		(SELECT count(*) FROM applications WHERE org_id = $1),
-		(SELECT count(*) FROM policies WHERE org_id = $1)`, orgID).Scan(&users, &roles, &tokens, &providers, &apps, &policies); err != nil {
+		(SELECT count(*) FROM policies WHERE org_id = $1),
+		(SELECT count(*) FROM notify_channels WHERE org_id = $1),
+		(SELECT count(*) FROM alert_rules WHERE org_id = $1 AND builtin_key IS NULL),
+		(SELECT count(*) FROM report_schedules WHERE org_id = $1),
+		(SELECT count(*) FROM model_prices WHERE org_id = $1),
+		(SELECT count(*) FROM incident_instructions WHERE org_id = $1),
+		(SELECT count(*) FROM gateway_tls WHERE org_id = $1),
+		(SELECT count(*) FROM oidc_settings WHERE org_id = $1),
+		(SELECT count(*) FROM ldap_settings WHERE org_id = $1),
+		(SELECT count(*) FROM mcp_servers WHERE org_id = $1),
+		(SELECT count(*) FROM agents WHERE org_id = $1),
+		(SELECT count(*) FROM shadow_ai_exclusions WHERE org_id = $1),
+		(SELECT count(*) FROM licenses WHERE org_id = $1),
+		(SELECT count(*) FROM compliance_marks WHERE org_id = $1)`, orgID).Scan(dst...); err != nil {
 		return st, err
 	}
-	st.Objects = map[string]int{"users": users, "roles": roles, "api_tokens": tokens, "providers": providers,
-		"applications": apps, "policies": policies}
+	for i, n := range names {
+		st.Objects[n] = counts[i]
+	}
 	return st, nil
 }
 
@@ -473,8 +531,10 @@ func (e *ConflictError) Error() string {
 }
 
 // Conflicts ищет объекты копии, которые уже есть в установке: по ID или по
-// уникальному имени (логин, slug, префикс ключа).
+// уникальному имени (логин, slug, префикс ключа). Объекты, которые
+// восстановление пропустит (resolve), совпадением не считаются.
 func Conflicts(ctx context.Context, q Querier, s *Snapshot) error {
+	s, _ = s.withoutSettings().resolve()
 	var userIDs, logins, roleIDs, tokenIDs, tokenPrefixes, provIDs, provSlugs, appIDs, appSlugs, keyIDs, keyPrefixes, polIDs, polSlugs []string
 	for _, u := range s.Users {
 		userIDs, logins = append(userIDs, u.ID), append(logins, u.Login)
@@ -497,6 +557,30 @@ func Conflicts(ctx context.Context, q Querier, s *Snapshot) error {
 	for _, p := range s.Policies {
 		polIDs, polSlugs = append(polIDs, p.ID), append(polSlugs, p.Slug)
 	}
+	var chIDs, chNames, ruleIDs, schIDs, schNames, priceIDs, srvIDs, srvSlugs, agentIDs, toolIDs []string
+	for _, c := range s.Channels {
+		chIDs, chNames = append(chIDs, c.ID), append(chNames, c.Name)
+	}
+	for _, r := range s.AlertRules {
+		if r.BuiltinKey == nil {
+			ruleIDs = append(ruleIDs, r.ID)
+		}
+	}
+	for _, r := range s.ReportSchedules {
+		schIDs, schNames = append(schIDs, r.ID), append(schNames, r.Name)
+	}
+	for _, p := range s.ModelPrices {
+		priceIDs = append(priceIDs, p.ID)
+	}
+	for _, m := range s.MCPServers {
+		srvIDs, srvSlugs = append(srvIDs, m.ID), append(srvSlugs, m.Slug)
+	}
+	for _, a := range s.Agents {
+		agentIDs = append(agentIDs, a.ID)
+	}
+	for _, t := range s.AgentTools {
+		toolIDs = append(toolIDs, t.ID)
+	}
 	rows, err := q.Query(ctx, `
 		SELECT 'пользователь ' || login FROM users WHERE id = ANY($1::uuid[]) OR (org_id = $14 AND login = ANY($2))
 		UNION ALL SELECT 'роль ' || id FROM roles WHERE org_id = $14 AND id = ANY($3)
@@ -505,9 +589,18 @@ func Conflicts(ctx context.Context, q Querier, s *Snapshot) error {
 		UNION ALL SELECT 'приложение ' || slug FROM applications WHERE id = ANY($8::uuid[]) OR (org_id = $14 AND slug = ANY($9))
 		UNION ALL SELECT 'ключ приложения ' || prefix FROM app_keys WHERE id = ANY($10::uuid[]) OR prefix = ANY($11)
 		UNION ALL SELECT 'политика ' || slug FROM policies WHERE id = ANY($12::uuid[]) OR (org_id = $14 AND slug = ANY($13))
+		UNION ALL SELECT 'канал ' || name FROM notify_channels WHERE id = ANY($16::uuid[]) OR (org_id = $14 AND name = ANY($17))
+		UNION ALL SELECT 'правило оповещений ' || name FROM alert_rules WHERE id = ANY($18::uuid[])
+		UNION ALL SELECT 'расписание отчёта ' || name FROM report_schedules WHERE id = ANY($19::uuid[])
+			OR (org_id = $14 AND name = ANY($20))
+		UNION ALL SELECT 'цена модели ' || model FROM model_prices WHERE id = ANY($21::uuid[])
+		UNION ALL SELECT 'MCP-сервер ' || slug FROM mcp_servers WHERE id = ANY($22::uuid[]) OR (org_id = $14 AND slug = ANY($23))
+		UNION ALL SELECT 'агент ' || slug FROM agents WHERE id = ANY($24::uuid[])
+		UNION ALL SELECT 'инструмент ' || name FROM agent_tools WHERE id = ANY($25::uuid[])
 		LIMIT $15`,
 		userIDs, logins, roleIDs, tokenIDs, tokenPrefixes, provIDs, provSlugs, appIDs, appSlugs, keyIDs, keyPrefixes,
-		polIDs, polSlugs, s.OrgID, maxConflicts)
+		polIDs, polSlugs, s.OrgID, maxConflicts, chIDs, chNames, ruleIDs, schIDs, schNames, priceIDs, srvIDs, srvSlugs,
+		agentIDs, toolIDs)
 	if err != nil {
 		return err
 	}
@@ -524,12 +617,17 @@ func Conflicts(ctx context.Context, q Querier, s *Snapshot) error {
 // Prepared — копия, готовая к записи: секреты перешифрованы ключом данных
 // новой установки.
 type Prepared struct {
-	snap      *Snapshot
-	keyID     string
-	alg       string
-	providers map[string][]byte
-	mfa       map[string][]byte
+	snap   *Snapshot
+	keyID  string
+	alg    string
+	sealed map[string][]byte
 }
+
+// Version — версия формата файла копии.
+func (p *Prepared) Version() int { return p.snap.Version }
+
+// secret — секрет вида kind строки id под ключом данных установки.
+func (p *Prepared) secret(kind, id string) []byte { return p.sealed[kind+"|"+id] }
 
 // Prepare перешифровывает секреты копии ключом данных установки: каждый
 // секрет расшифровывается ключом копии и сразу шифруется ключом данных с
@@ -538,7 +636,7 @@ func Prepare(ctx context.Context, a *Archive, box SecretSealer) (*Prepared, erro
 	if a == nil || box == nil {
 		return nil, errors.New("резервная копия: нет копии или ключа данных")
 	}
-	p := &Prepared{snap: a.Snapshot, keyID: box.KeyID(), alg: box.Alg(), providers: map[string][]byte{}, mfa: map[string][]byte{}}
+	p := &Prepared{snap: a.Snapshot, keyID: box.KeyID(), alg: box.Alg(), sealed: map[string][]byte{}}
 	move := func(sealed []byte, kind, id, table, column string) ([]byte, error) {
 		plain, err := a.keys.OpenSecret(sealed, kind, id)
 		if err != nil {
@@ -553,25 +651,12 @@ func Prepare(ctx context.Context, a *Archive, box SecretSealer) (*Prepared, erro
 		}
 		return sealed, err
 	}
-	for _, pr := range a.Snapshot.Providers {
-		if pr.Credential == nil {
-			continue
-		}
-		out, err := move(pr.Credential, secretProviderCredential, pr.ID, providersTable, credentialColumn)
+	for _, r := range a.Snapshot.secrets() {
+		out, err := move(r.sealed, r.kind, r.id, r.table, r.column)
 		if err != nil {
-			return nil, fmt.Errorf("провайдер %s: %w", pr.Slug, err)
+			return nil, fmt.Errorf("%s: %w", r.what, err)
 		}
-		p.providers[pr.ID] = out
-	}
-	for _, u := range a.Snapshot.Users {
-		if u.MFA == nil {
-			continue
-		}
-		out, err := move(u.MFA.Secret, secretMFA, u.ID, mfaTable, mfaColumn)
-		if err != nil {
-			return nil, fmt.Errorf("второй фактор %s: %w", u.Login, err)
-		}
-		p.mfa[u.ID] = out
+		p.sealed[r.kind+"|"+r.id] = out
 	}
 	return p, nil
 }
@@ -618,6 +703,15 @@ type RestoreResult struct {
 	// AgentKeysUnknown — копия снята прежним выпуском со схемой агентов:
 	// привязка ключей к агентам в ней не отмечена.
 	AgentKeysUnknown bool
+	// LegacyFormat — копия формата версии 1: настроек этапов 3 и 4 в ней
+	// нет, их задают заново.
+	LegacyFormat bool
+	// Skipped — объекты копии, пропущенные из-за ссылки на объект, которого
+	// в копии нет (строки отчёта).
+	Skipped []string
+	// SettingsSkipped — настройки этапов 3 и 4 в копии есть, но не
+	// перенесены: установка не пустая.
+	SettingsSkipped bool
 }
 
 // agentsSchemaVersion — миграция, добавившая привязку ключей к агентам
@@ -630,23 +724,57 @@ const agentsSchemaVersion = 54
 // учётные записи восстановлены. Возвращает, что восстановлено отозванным.
 func Restore(ctx context.Context, tx pgx.Tx, p *Prepared, opts RestoreOptions) (RestoreResult, error) {
 	s := p.snap
-	res := RestoreResult{AgentKeysUnknown: !s.AgentKeysMarked && s.SchemaVersion >= agentsSchemaVersion}
+	settingsSkipped := !opts.ReplaceSettings && s.hasSettingsV2()
+	if !opts.ReplaceSettings {
+		s = s.withoutSettings()
+	}
+	s, skipped := s.resolve()
+	res := RestoreResult{AgentKeysUnknown: !s.AgentKeysMarked && s.SchemaVersion >= agentsSchemaVersion,
+		LegacyFormat: s.Version < 2, Skipped: skipped, SettingsSkipped: settingsSkipped}
+	settings := func(fn func() error) func() error {
+		return func() error {
+			if !opts.ReplaceSettings {
+				return nil
+			}
+			return fn()
+		}
+	}
+	agents := make(map[string]string, len(s.Agents))
+	for _, a := range s.Agents {
+		agents[a.ID] = a.AppID
+	}
+	// Порядок — по внешним ключам: провайдеры раньше цен, каналы раньше
+	// расписаний, MCP-серверы и приложения раньше агентов, агенты раньше
+	// ключей и инструментов.
 	steps := []struct {
 		what string
 		fn   func() error
 	}{
-		{"организация и настройки", func() error {
-			if !opts.ReplaceSettings {
-				return nil
-			}
-			return writeSettings(ctx, tx, s)
-		}},
+		{"организация и настройки", settings(func() error { return writeSettings(ctx, tx, s) })},
 		{"роли", func() error { return writeRoles(ctx, tx, s) }},
 		{"пользователи", func() error { return writeUsers(ctx, tx, p) }},
 		{"токены API", func() (err error) { res.APITokensRevoked, err = writeAPITokens(ctx, tx, s, opts); return err }},
 		{"провайдеры", func() error { return writeProviders(ctx, tx, p) }},
-		{"приложения", func() (err error) { res.AgentKeysRevoked, err = writeApplications(ctx, tx, s, opts.Now); return err }},
+		{"цены моделей", func() error { return writeModelPrices(ctx, tx, s) }},
+		{"каналы уведомлений", func() error { return writeChannels(ctx, tx, p, s) }},
+		{"MCP-серверы", func() error { return writeMCPServers(ctx, tx, p, s) }},
+		{"приложения", func() error { return writeApplications(ctx, tx, s) }},
+		{"агенты", func() error { return writeAgents(ctx, tx, s) }},
+		{"ключи приложений", func() (err error) {
+			res.AgentKeysRevoked, err = writeAppKeys(ctx, tx, s, agents, opts.Now)
+			return err
+		}},
+		{"бюджеты, эталоны промптов и доступ по группам", func() error { return writeAppExtras(ctx, tx, p, s) }},
+		{"инструменты агентов", func() error { return writeAgentTools(ctx, tx, s) }},
 		{"политики", func() error { return writePolicies(ctx, tx, s) }},
+		{"правила оповещений", func() error { return writeAlertRules(ctx, tx, s, opts.ReplaceSettings) }},
+		{"расписания отчётов", func() error { return writeReportSchedules(ctx, tx, s) }},
+		{"инструкции реагирования", settings(func() error { return writeInstructions(ctx, tx, s) })},
+		{"сертификат шлюза", settings(func() error { return writeGatewayTLS(ctx, tx, p, s) })},
+		{"вход через OIDC и LDAP", settings(func() error { return writeIdP(ctx, tx, p, s) })},
+		{"исключения теневого ИИ", settings(func() error { return writeShadowAIExclusions(ctx, tx, s) })},
+		{"лицензия", settings(func() error { return writeLicenses(ctx, tx, s) })},
+		{"отметки соответствия", settings(func() error { return writeComplianceMarks(ctx, tx, s) })},
 	}
 	for _, st := range steps {
 		if err := st.fn(); err != nil {
@@ -705,6 +833,18 @@ func writeSettings(ctx context.Context, tx pgx.Tx, s *Snapshot) error {
 			s.OrgID, i.Timezone, i.RetentionMode, i.UpdatedAt); err != nil {
 			return err
 		}
+		// Поля версии 2: nil (копия версии 1) — значение установки остаётся.
+		if _, err := tx.Exec(ctx, `UPDATE install_settings SET
+			alert_retention_days = coalesce($2, alert_retention_days),
+			incident_retention_days = coalesce($3, incident_retention_days),
+			shadow_ai_retention_days = coalesce($4, shadow_ai_retention_days),
+			quota_mode = coalesce($5, quota_mode),
+			quota_mode_changed_at = CASE WHEN $5::text IS NULL THEN quota_mode_changed_at ELSE $6 END
+			WHERE org_id = $1`,
+			s.OrgID, i.AlertRetentionDays, i.IncidentRetentionDays, i.ShadowAIRetentionDays, i.QuotaMode,
+			i.QuotaModeChangedAt); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -731,11 +871,11 @@ func writeUsers(ctx context.Context, tx pgx.Tx, p *Prepared) error {
 	for _, u := range s.Users {
 		if _, err := tx.Exec(ctx, `INSERT INTO users (id, org_id, login, display_name, role, status, password_hash,
 			password_changed_at, must_change_password, temp_password_expires_at, failed_attempts, locked_at, locked_until,
-			created_at, created_by, deactivated_at, last_login_at, auth_source, idp_issuer, idp_subject)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)`,
+			created_at, created_by, deactivated_at, last_login_at, auth_source, idp_issuer, idp_subject, email)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)`,
 			u.ID, s.OrgID, u.Login, u.DisplayName, u.Role, u.Status, u.PasswordHash, u.PasswordChangedAt,
 			u.MustChangePassword, u.TempPasswordExpiresAt, u.FailedAttempts, u.LockedAt, u.LockedUntil, u.CreatedAt,
-			u.CreatedBy, u.DeactivatedAt, u.LastLoginAt, u.source(), u.IdPIssuer, u.IdPSubject); err != nil {
+			u.CreatedBy, u.DeactivatedAt, u.LastLoginAt, u.source(), u.IdPIssuer, u.IdPSubject, u.Email); err != nil {
 			return fmt.Errorf("%s: %w", u.Login, err)
 		}
 		for _, h := range u.PasswordHistory {
@@ -747,7 +887,7 @@ func writeUsers(ctx context.Context, tx pgx.Tx, p *Prepared) error {
 		if m := u.MFA; m != nil {
 			if _, err := tx.Exec(ctx, `INSERT INTO user_mfa (user_id, state, secret, data_key_id, alg, last_step, created_at,
 				enabled_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-				u.ID, m.State, p.mfa[u.ID], p.keyID, p.alg, m.LastStep, m.CreatedAt, m.EnabledAt); err != nil {
+				u.ID, m.State, p.secret(secretMFA, u.ID), p.keyID, p.alg, m.LastStep, m.CreatedAt, m.EnabledAt); err != nil {
 				return fmt.Errorf("%s: %w", u.Login, err)
 			}
 		}
@@ -794,7 +934,7 @@ func writeProviders(ctx context.Context, tx pgx.Tx, p *Prepared) error {
 		var cred []byte
 		var keyID, alg *string
 		if pr.Credential != nil {
-			cred, keyID, alg = p.providers[pr.ID], &p.keyID, &p.alg
+			cred, keyID, alg = p.secret(secretProviderCredential, pr.ID), &p.keyID, &p.alg
 		}
 		if _, err := tx.Exec(ctx, `INSERT INTO providers (id, org_id, slug, name, type, base_url, ca_pem, auth_url, scope,
 			folder_id, connect_timeout_s, header_timeout_s, response_timeout_s, stream_idle_timeout_s, external,
@@ -812,13 +952,22 @@ func writeProviders(ctx context.Context, tx pgx.Tx, p *Prepared) error {
 // keyRevokedByRestore — кто отозвал ключ агента при восстановлении.
 const keyRevokedByRestore = "backup_restore"
 
-// revokeAgentKeys отзывает действующие ключи, закреплённые за агентами
-// (4В38): агенты не восстанавливаются, а ключ без привязки называл бы себя
-// любым агентом приложения. Отзыв — не раньше выпуска ключа.
-func revokeAgentKeys(keys []AppKey, now time.Time) ([]AppKey, int) {
+// revokeAgentKeys снимает привязку ключей к агентам, которые не
+// восстанавливаются (копия версии 1 или агента нет в копии), и отзывает
+// такие действующие ключи (4В38): ключ без привязки называл бы себя любым
+// агентом приложения. Привязка к агенту из копии (agents: ID агента →
+// приложение) сохраняется. Отзыв — не раньше выпуска ключа.
+func revokeAgentKeys(keys []AppKey, appID string, agents map[string]string, now time.Time) ([]AppKey, int) {
 	out, n := slices.Clone(keys), 0
 	for i, k := range out {
-		if !k.AgentBound || k.RevokedAt != nil {
+		if !k.AgentBound {
+			continue
+		}
+		if k.AgentID != nil && agents[*k.AgentID] == appID {
+			continue
+		}
+		out[i].AgentID = nil
+		if k.RevokedAt != nil {
 			continue
 		}
 		at, by := now.UTC(), keyRevokedByRestore
@@ -831,8 +980,7 @@ func revokeAgentKeys(keys []AppKey, now time.Time) ([]AppKey, int) {
 	return out, n
 }
 
-func writeApplications(ctx context.Context, tx pgx.Tx, s *Snapshot, now time.Time) (int, error) {
-	revoked := 0
+func writeApplications(ctx context.Context, tx pgx.Tx, s *Snapshot) error {
 	for _, a := range s.Applications {
 		if _, err := tx.Exec(ctx, `INSERT INTO applications (id, org_id, slug, name, description, department, owner_id, env,
 			provider_id, models, aliases, policy, policy_mode, storage, fail_mode, user_from, quotas, lists,
@@ -842,16 +990,25 @@ func writeApplications(ctx context.Context, tx pgx.Tx, s *Snapshot, now time.Tim
 			a.ID, s.OrgID, a.Slug, a.Name, a.Description, a.Department, a.OwnerID, a.Env, a.ProviderID, a.Models,
 			string(a.Aliases), a.Policy, a.PolicyMode, a.Storage, a.FailMode, a.UserFrom, string(a.Quotas), string(a.Lists),
 			nonNil(a.ExfilAllowDomains), a.CreatedAt, a.CreatedBy, a.UpdatedAt, a.UpdatedBy, a.ArchivedAt); err != nil {
-			return 0, fmt.Errorf("%s: %w", a.Slug, err)
+			return fmt.Errorf("%s: %w", a.Slug, err)
 		}
-		keys, n := revokeAgentKeys(a.Keys, now)
+	}
+	return nil
+}
+
+// writeAppKeys записывает ключи приложений после агентов: привязка ключа к
+// агенту — внешний ключ (agent_id, app_id).
+func writeAppKeys(ctx context.Context, tx pgx.Tx, s *Snapshot, agents map[string]string, now time.Time) (int, error) {
+	revoked := 0
+	for _, a := range s.Applications {
+		keys, n := revokeAgentKeys(a.Keys, a.ID, agents, now)
 		revoked += n
 		for _, k := range keyOrder(keys) {
 			if _, err := tx.Exec(ctx, `INSERT INTO app_keys (id, org_id, app_id, name, prefix, key_hash, hash_alg,
-				allowed_cidrs, expires_at, created_at, created_by, rotated_from, revoked_at, revoked_by)
-				VALUES ($1, $2, $3, $4, $5, $6, $7, $8::text[]::cidr[], $9, $10, $11, $12::uuid, $13, $14)`,
+				allowed_cidrs, expires_at, created_at, created_by, rotated_from, revoked_at, revoked_by, agent_id)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, $8::text[]::cidr[], $9, $10, $11, $12::uuid, $13, $14, $15::uuid)`,
 				k.ID, s.OrgID, a.ID, k.Name, k.Prefix, k.KeyHash, k.HashAlg, nonNil(k.AllowedCIDRs), k.ExpiresAt,
-				k.CreatedAt, k.CreatedBy, k.RotatedFrom, k.RevokedAt, k.RevokedBy); err != nil {
+				k.CreatedAt, k.CreatedBy, k.RotatedFrom, k.RevokedAt, k.RevokedBy, k.AgentID); err != nil {
 				return 0, fmt.Errorf("%s, ключ %s: %w", a.Slug, k.Prefix, err)
 			}
 		}

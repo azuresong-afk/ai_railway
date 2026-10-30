@@ -6,15 +6,21 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
+	"github.com/azuresong-afk/ai_railway/internal/alerting"
 	"github.com/azuresong-afk/ai_railway/internal/apps"
 	"github.com/azuresong-afk/ai_railway/internal/auth"
+	"github.com/azuresong-afk/ai_railway/internal/auth/ldap"
+	"github.com/azuresong-afk/ai_railway/internal/auth/oidc"
 	"github.com/azuresong-afk/ai_railway/internal/backup"
 	"github.com/azuresong-afk/ai_railway/internal/config"
+	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/internal/detect"
 	"github.com/azuresong-afk/ai_railway/internal/detect/builtin"
 	"github.com/azuresong-afk/ai_railway/internal/detect/lists"
 	"github.com/azuresong-afk/ai_railway/internal/gateway"
+	"github.com/azuresong-afk/ai_railway/internal/license"
 	"github.com/azuresong-afk/ai_railway/internal/policy"
 	"github.com/azuresong-afk/ai_railway/internal/policy/versions"
 )
@@ -47,7 +53,11 @@ func (e *invalidObjectsError) Error() string {
 // сборке пакета для шлюзов (В22 ревью 2.r4). Токены проверяются только
 // те, что останутся действующими (keepTokens): отозванный токен прав не
 // даёт, а неизвестное новому выпуску право в нём не повод отклонять копию.
-func checkSnapshot(s *backup.Snapshot, keepTokens bool) error {
+// Файлы лицензий проверяются подписью ключа производителя, как загруженная
+// лицензия при запуске сервера (ADR-0026, п. 2; задача 5.8): лицензию,
+// которую сервер не принял бы, копия не переносит, а без неё установка
+// вернулась бы в режим пилота — поэтому отказ, а не пропуск.
+func checkSnapshot(p aisecCrypto.Provider, s *backup.Snapshot, keepTokens bool) error {
 	reg, err := detect.NewRegistry(builtin.Catalog()...)
 	if err != nil {
 		return err
@@ -105,6 +115,44 @@ func checkSnapshot(s *backup.Snapshot, keepTokens bool) error {
 			gw = append(gw, ga)
 		}
 	}
+	// Разделы версии 2 (задача 5.8) — проверками модулей, которые
+	// доступны без изменения их пакетов: свои правила оповещений — как
+	// правило из API, издатель OIDC и настройки каталога LDAP — как при
+	// сохранении в консоли.
+	for _, r := range s.AlertRules {
+		if r.BuiltinKey != nil {
+			continue
+		}
+		if err := checkAlertRule(r); err != nil {
+			add("правило оповещений «"+r.Name+"»", err)
+		}
+	}
+	if o := s.OIDC; o != nil {
+		if err := oidc.ValidateIssuer(o.Issuer); err != nil {
+			add("вход через OIDC", err)
+		}
+	}
+	if l := s.LDAP; l != nil {
+		if err := ldap.ValidateConfig(ldap.Config{URL: l.URL, BindDN: l.BindDN, UserBaseDN: l.UserBaseDN, UserFilter: l.UserFilter,
+			IDAttribute: l.IDAttribute, DisplayAttribute: l.DisplayAttribute, GroupMode: l.GroupMode, GroupBaseDN: l.GroupBaseDN}); err != nil {
+			add("вход через LDAP", err)
+		}
+	}
+	if len(s.Licenses) > 0 {
+		vendor, err := license.VendorVerifier(p)
+		if err != nil {
+			return err
+		}
+		for _, l := range s.Licenses {
+			sg, err := license.Verify(p, vendor, l.File, time.Time{})
+			if err == nil && sg.License.Number != uint64(l.Number) { //nolint:gosec // G115: номер > 0 (CHECK в схеме), сравнение
+				err = fmt.Errorf("номер в файле %d", sg.License.Number)
+			}
+			if err != nil {
+				add(fmt.Sprintf("лицензия № %d", l.Number), err)
+			}
+		}
+	}
 	// Ошибки CheckApplications уже называют приложение.
 	if len(bad) == 0 {
 		if err := gateway.CheckApplications(gw, specs); err != nil {
@@ -117,6 +165,24 @@ func checkSnapshot(s *backup.Snapshot, keepTokens bool) error {
 		return &invalidObjectsError{items: bad}
 	}
 	return nil
+}
+
+// checkAlertRule проверяет своё правило оповещений копии правилами API
+// этого выпуска (alerting.ParseRuleInput): условие, группировка, важность,
+// окно подавления и получатели.
+func checkAlertRule(r backup.AlertRule) error {
+	var c alerting.Condition
+	var rc alerting.Recipients
+	if err := strictJSON(r.Condition, &c); err != nil {
+		return fmt.Errorf("condition: %w", err)
+	}
+	if err := strictJSON(r.Recipients, &rc); err != nil {
+		return fmt.Errorf("recipients: %w", err)
+	}
+	enabled, suppress := r.Enabled, r.SuppressMinutes
+	_, err := alerting.ParseRuleInput(alerting.RuleInput{Kind: r.Kind, Name: r.Name, Description: r.Description, Enabled: &enabled,
+		Severity: r.Severity, Condition: c, GroupBy: r.GroupBy, SuppressMinutes: &suppress, Recipients: rc}, "")
+	return err
 }
 
 // currentSpec — текущая версия политики, разобранная строгой схемой.

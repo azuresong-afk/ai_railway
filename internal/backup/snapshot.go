@@ -16,9 +16,12 @@ import (
 // Состав копии (H-Р2): политики со всеми версиями, приложения с хешами
 // ключей, провайдеры, пользователи (хеши паролей, история паролей, второй
 // фактор, хеши кодов восстановления), токены API (хеши), свои роли,
-// настройки и ключ HMAC псевдонимов. Секреты (учётные данные провайдеров,
-// секреты TOTP, ключ HMAC) лежат шифротекстами ключа секретов копии.
-// События, журнал аудита, сессии, шлюзы и ключи установки в копию не входят.
+// настройки и ключ HMAC псевдонимов. С версии 2 — настройки этапов 3 и 4
+// (sections.go). Секреты (учётные данные провайдеров и MCP-серверов,
+// секреты TOTP, каналов, OIDC и LDAP, ключ сертификата шлюза, эталоны
+// промптов, ключ HMAC) лежат шифротекстами ключа секретов копии. События,
+// инциденты, журнал аудита, очереди, сессии, шлюзы, служебные базы и ключи
+// установки в копию не входят.
 
 // Snapshot — содержимое копии.
 type Snapshot struct {
@@ -43,6 +46,24 @@ type Snapshot struct {
 	// (AppKey.AgentBound, 4В38 ревью 4.r4). Копия без отметки со схемой
 	// агентов снята прежним выпуском: привязка неизвестна.
 	AgentKeysMarked bool `json:"agent_keys_marked,omitempty"`
+
+	// Разделы версии 2 (задача 5.8 этапа 5). В копии версии 1 их нет.
+	Channels           []NotifyChannel       `json:"notify_channels,omitempty"`
+	AlertRules         []AlertRule           `json:"alert_rules,omitempty"`
+	ReportSchedules    []ReportSchedule      `json:"report_schedules,omitempty"`
+	ModelPrices        []ModelPrice          `json:"model_prices,omitempty"`
+	Instructions       []IncidentInstruction `json:"incident_instructions,omitempty"`
+	GatewayTLS         *GatewayTLS           `json:"gateway_tls,omitempty"`
+	OIDC               *OIDCSettings         `json:"oidc,omitempty"`
+	LDAP               *LDAPSettings         `json:"ldap,omitempty"`
+	MCPServers         []MCPServer           `json:"mcp_servers,omitempty"`
+	Agents             []Agent               `json:"agents,omitempty"`
+	AgentTools         []AgentTool           `json:"agent_tools,omitempty"`
+	ShadowAIExclusions []ShadowAIExclusion   `json:"shadow_ai_exclusions,omitempty"`
+	Licenses           []License             `json:"licenses,omitempty"`
+	// LicenseClock — отметка часов лицензии (license_clock.high_water).
+	LicenseClock    *time.Time       `json:"license_clock,omitempty"`
+	ComplianceMarks []ComplianceMark `json:"compliance_marks,omitempty"`
 }
 
 // Settings — настройки организации и установки. nil — строки нет, действуют
@@ -55,11 +76,18 @@ type Settings struct {
 }
 
 // InstallSettings — настройки первичной настройки (задача 2.24b, H-Р4):
-// часовой пояс показа времени и режим хранения по умолчанию.
+// часовой пояс показа времени и режим хранения по умолчанию. С версии 2 —
+// сроки хранения оповещений, инцидентов и агрегатов теневого ИИ и режим
+// квот (nil — в копии версии 1 их нет, остаются значения установки).
 type InstallSettings struct {
-	Timezone      string    `json:"timezone"`
-	RetentionMode string    `json:"retention_mode"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	Timezone              string     `json:"timezone"`
+	RetentionMode         string     `json:"retention_mode"`
+	UpdatedAt             time.Time  `json:"updated_at"`
+	AlertRetentionDays    *int       `json:"alert_retention_days,omitempty"`
+	IncidentRetentionDays *int       `json:"incident_retention_days,omitempty"`
+	ShadowAIRetentionDays *int       `json:"shadow_ai_retention_days,omitempty"`
+	QuotaMode             *string    `json:"quota_mode,omitempty"`
+	QuotaModeChangedAt    *time.Time `json:"quota_mode_changed_at,omitempty"`
 }
 
 // AuthSettings — строка auth_settings.
@@ -131,9 +159,11 @@ type User struct {
 	// AuthSource, IdPIssuer, IdPSubject — источник учётной записи (ADR-0025):
 	// у внешней записи нет пароля, она привязана к издателю и sub. В копиях
 	// до задачи 4.17 полей нет — запись локальная.
-	AuthSource      string            `json:"auth_source,omitempty"`
-	IdPIssuer       *string           `json:"idp_issuer,omitempty"`
-	IdPSubject      *string           `json:"idp_subject,omitempty"`
+	AuthSource string  `json:"auth_source,omitempty"`
+	IdPIssuer  *string `json:"idp_issuer,omitempty"`
+	IdPSubject *string `json:"idp_subject,omitempty"`
+	// Email — адрес для рассылки отчётов (задача 4.21); с версии 2.
+	Email           string            `json:"email,omitempty"`
 	PasswordHistory []PasswordHistory `json:"password_history"`
 	MFA             *MFA              `json:"mfa"`
 	RecoveryCodes   []RecoveryCode    `json:"recovery_codes"`
@@ -238,6 +268,11 @@ type Application struct {
 	UpdatedBy         string          `json:"updated_by"`
 	ArchivedAt        *time.Time      `json:"archived_at"`
 	Keys              []AppKey        `json:"keys"`
+	// С версии 2: бюджет, эталон системного промпта и доступ к моделям по
+	// группам пользователей.
+	Budget     *AppBudget      `json:"budget,omitempty"`
+	Baseline   *PromptBaseline `json:"prompt_baseline,omitempty"`
+	UserAccess *AppUserAccess  `json:"user_access,omitempty"`
 }
 
 // AppKey — ключ приложения (хранится только хеш).
@@ -254,11 +289,14 @@ type AppKey struct {
 	RotatedFrom  *string    `json:"rotated_from"`
 	RevokedAt    *time.Time `json:"revoked_at"`
 	RevokedBy    *string    `json:"revoked_by"`
-	// AgentBound — ключ закреплён за агентом ИИ (app_keys.agent_id).
-	// Агенты в копию не входят: без привязки ключ выбирал бы любого агента
-	// приложения заголовком X-AISec-Agent, поэтому такой ключ
-	// восстанавливается отозванным (4В38 ревью 4.r4).
+	// AgentBound — ключ закреплён за агентом ИИ (app_keys.agent_id). Без
+	// привязки ключ выбирал бы любого агента приложения заголовком
+	// X-AISec-Agent, поэтому ключ, чей агент не восстанавливается (копия
+	// версии 1 или агента нет в копии), восстанавливается отозванным (4В38
+	// ревью 4.r4).
 	AgentBound bool `json:"agent_bound,omitempty"`
+	// AgentID — агент ключа; с версии 2.
+	AgentID *string `json:"agent_id,omitempty"`
 }
 
 // Policy — политика организации со всеми версиями.
@@ -359,8 +397,11 @@ func truncate(s string) string {
 }
 
 func (s *Snapshot) validate() error {
-	if s.Version != FormatVersion {
+	if !supportedVersion(s.Version) {
 		return fmt.Errorf("версия содержимого %d", s.Version)
+	}
+	if s.Version < 2 && s.hasV2() {
+		return errors.New("в содержимом версии 1 разделы версии 2")
 	}
 	if err := checkUUID("организация", s.OrgID); err != nil {
 		return err
@@ -513,7 +554,7 @@ func (s *Snapshot) validate() error {
 			return fmt.Errorf("политика %s: текущей версии нет в копии", p.Slug)
 		}
 	}
-	return nil
+	return s.validateV2()
 }
 
 // verifyHashes сверяет хеши версий политик с их текстом: пакет для шлюзов
@@ -555,7 +596,33 @@ func (s *Snapshot) SettingsDetails() map[string]any {
 		out["events"] = map[string]any{"metadata_days": e.MetadataDays, "content_days": e.ContentDays}
 	}
 	if i := s.Settings.Install; i != nil {
-		out["install"] = map[string]any{"timezone": i.Timezone, "retention_mode": i.RetentionMode}
+		in := map[string]any{"timezone": i.Timezone, "retention_mode": i.RetentionMode}
+		for k, v := range map[string]*int{"alert_retention_days": i.AlertRetentionDays,
+			"incident_retention_days": i.IncidentRetentionDays, "shadow_ai_retention_days": i.ShadowAIRetentionDays} {
+			if v != nil {
+				in[k] = *v
+			}
+		}
+		if i.QuotaMode != nil {
+			in["quota_mode"] = *i.QuotaMode
+		}
+		out["install"] = in
+	}
+	if o := s.OIDC; o != nil {
+		out["oidc"] = map[string]any{"enabled": o.Enabled, "issuer": o.Issuer, "client_id": o.ClientID, "groups": len(o.GroupRoles)}
+	}
+	if l := s.LDAP; l != nil {
+		out["ldap"] = map[string]any{"enabled": l.Enabled, "url": l.URL, "bind_dn": l.BindDN, "groups": len(l.GroupRoles)}
+	}
+	if t := s.GatewayTLS; t != nil {
+		out["gateway_tls"] = map[string]any{"host": t.Host, "fingerprint": t.Fingerprint, "not_after": t.NotAfter.UTC().Format(time.RFC3339)}
+	}
+	if n := len(s.Licenses); n > 0 {
+		var top int64
+		for _, l := range s.Licenses {
+			top = max(top, l.Number)
+		}
+		out["license_number"] = top
 	}
 	return out
 }
@@ -569,9 +636,33 @@ func (s *Snapshot) Counts() map[string]any {
 	for _, p := range s.Policies {
 		versions += len(p.Versions)
 	}
+	var budgets, baselines, access int
+	for _, a := range s.Applications {
+		budgets += boolInt(a.Budget != nil)
+		baselines += boolInt(a.Baseline != nil)
+		access += boolInt(a.UserAccess != nil)
+	}
+	var custom int
+	for _, r := range s.AlertRules {
+		custom += boolInt(r.BuiltinKey == nil)
+	}
 	return map[string]any{
 		"roles": len(s.Roles), "users": len(s.Users), "api_tokens": len(s.APITokens),
 		"providers": len(s.Providers), "applications": len(s.Applications), "app_keys": keys,
 		"policies": len(s.Policies), "policy_versions": versions, "user_hmac_included": s.UserHMACKey != nil,
+		"notify_channels": len(s.Channels), "alert_rules": custom, "alert_rules_builtin": len(s.AlertRules) - custom,
+		"report_schedules": len(s.ReportSchedules), "model_prices": len(s.ModelPrices), "app_budgets": budgets,
+		"prompt_baselines": baselines, "app_user_access": access, "incident_instructions": len(s.Instructions),
+		"gateway_tls": s.GatewayTLS != nil, "oidc": s.OIDC != nil, "ldap": s.LDAP != nil,
+		"mcp_servers": len(s.MCPServers), "agents": len(s.Agents), "agent_tools": len(s.AgentTools),
+		"shadow_ai_exclusions": len(s.ShadowAIExclusions), "licenses": len(s.Licenses),
+		"compliance_marks": len(s.ComplianceMarks),
 	}
+}
+
+func boolInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }

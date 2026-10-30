@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -82,10 +83,96 @@ func sampleSnapshot(t testing.TB, p crypto.Provider, keys *Keys) *Snapshot {
 			Versions: []PolicyVersion{{Version: 1, SpecYAML: spec, SpecHash: h.Sum([]byte(spec)), HashAlg: h.Name(),
 				Source: "api", CreatedAt: testTime, CreatedBy: "x"}}}},
 	}
+	addSections(t, s, keys)
 	if err := s.SetUserHMACKey(keys, bytes.Repeat([]byte{9}, 32)); err != nil {
 		t.Fatal(err)
 	}
 	return s
+}
+
+// Синтетические ID разделов версии 2.
+const (
+	tChannel  = "0192a000-0000-7000-8000-000000000701"
+	tRule     = "0192a000-0000-7000-8000-000000000702"
+	tBuiltin  = "0192a000-0000-7000-8000-000000000703"
+	tSchedule = "0192a000-0000-7000-8000-000000000704"
+	tPrice    = "0192a000-0000-7000-8000-000000000705"
+	tServer   = "0192a000-0000-7000-8000-000000000706"
+	tAgent    = "0192a000-0000-7000-8000-000000000707"
+	tTool     = "0192a000-0000-7000-8000-000000000708"
+	tFunc     = "0192a000-0000-7000-8000-000000000709"
+)
+
+// addSections дополняет копию объектами всех видов версии 2 (секреты —
+// под ключом секретов копии).
+func addSections(t testing.TB, s *Snapshot, keys *Keys) {
+	t.Helper()
+	seal := func(plain, kind, id string) []byte {
+		out, err := keys.SealSecret([]byte(plain), kind, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	user, app, prov := s.Users[0].ID, &s.Applications[0], s.Providers[0].ID
+	days, mode := 400, "leased"
+	s.Settings.Install = &InstallSettings{Timezone: "Europe/Moscow", RetentionMode: "masked", UpdatedAt: testTime,
+		AlertRetentionDays: &days, QuotaMode: &mode, QuotaModeChangedAt: &testTime}
+	s.Users[0].Email = "admin@example.test"
+	s.Channels = []NotifyChannel{{ID: tChannel, Name: "Почта", Type: "email", Enabled: true, MinSeverity: "high",
+		Settings: json.RawMessage(`{"host":"smtp.example.test"}`), SecretFields: []string{"password"},
+		Secret: seal(`{"password":"synthetic-smtp"}`, secretChannel, tChannel), Version: 1,
+		CreatedAt: testTime, CreatedBy: "x", UpdatedAt: testTime, UpdatedBy: "x"}}
+	builtin := "security.audit_failure"
+	s.AlertRules = []AlertRule{
+		{ID: tRule, Kind: "threshold", Name: "Много блокировок", Enabled: true, Severity: "high",
+			Condition: json.RawMessage(`{"count":5}`), GroupBy: []string{"app"}, Recipients: json.RawMessage(`{"roles":["duty_analyst"],"users":["` + user + `"]}`),
+			Version: 1, CreatedAt: testTime, CreatedBy: "x", UpdatedAt: testTime, UpdatedBy: "x"},
+		{ID: tBuiltin, BuiltinKey: &builtin, Kind: "security", Name: "Сбой аудита", Enabled: true, Severity: "critical",
+			Condition: json.RawMessage(`{}`), Recipients: json.RawMessage(`{"roles":[],"users":[]}`), Version: 2,
+			CreatedAt: testTime, CreatedBy: "system", UpdatedAt: testTime, UpdatedBy: "x"},
+	}
+	wd := int16(1)
+	s.ReportSchedules = []ReportSchedule{{ID: tSchedule, Name: "Еженедельно", Report: "summary", Frequency: "weekly",
+		Weekday: &wd, AtTime: "09:00", Format: "html", ChannelID: tChannel, Enabled: true, NextRunAt: testTime,
+		RecipientUserIDs: []string{user}, Version: 1, CreatedAt: testTime, CreatedBy: "x", UpdatedAt: testTime, UpdatedBy: "x"}}
+	s.ModelPrices = []ModelPrice{{ID: tPrice, ProviderID: prov, Model: "m", InputPrice: 10, OutputPrice: 20,
+		CreatedAt: testTime, CreatedBy: "x", UpdatedAt: testTime, UpdatedBy: "x"}}
+	app.Budget = &AppBudget{Mode: "hard", MonthlyLimit: 1000, CreatedAt: testTime, CreatedBy: "x", UpdatedAt: testTime, UpdatedBy: "x"}
+	app.Baseline = &PromptBaseline{Mode: "alert", Hash: strings.Repeat("ab", 32), TextBytes: 20,
+		Text: seal("synthetic-system-prompt", secretBaseline, app.ID), CreatedAt: testTime, CreatedBy: "x", UpdatedAt: testTime, UpdatedBy: "x"}
+	app.UserAccess = &AppUserAccess{Mode: "required", Issuer: "https://idp.example.test", Audience: "aisec",
+		GroupsClaim: "groups", ModelGroups: json.RawMessage(`{"m":["g"]}`), UpdatedAt: testTime, UpdatedBy: "x"}
+	agent := tAgent
+	app.Keys[0].AgentBound, app.Keys[0].AgentID = true, &agent
+	s.Instructions = []IncidentInstruction{{Category: "pii_leak", Version: 2, Body: "Порядок действий", CreatedAt: testTime, CreatedBy: "x"}}
+	s.GatewayTLS = &GatewayTLS{Host: "gw.example.test", ChainPEM: "PEM", ChainLen: 1, Serial: "01", Fingerprint: strings.Repeat("0", 64),
+		NotBefore: testTime, NotAfter: testTime.Add(time.Hour), CertKeyAlg: "ECDSA P-256",
+		Key: seal("synthetic-tls-key", secretGatewayTLS, s.OrgID), CreatedAt: testTime, CreatedBy: "x", UpdatedAt: testTime, UpdatedBy: "x"}
+	s.OIDC = &OIDCSettings{Enabled: true, DisplayName: "IdP", Issuer: "https://idp.example.test", ClientID: "aisec",
+		ClientSecret: seal("synthetic-oidc-secret", secretOIDC, s.OrgID), ConsoleURL: "https://aisec.example.test", CAPEM: "PEM",
+		GroupsClaim: "groups", Version: 1, UpdatedAt: testTime, UpdatedBy: user,
+		GroupRoles: []GroupRole{{Group: "sec", Role: "security_admin"}, {Group: "duty", Role: "duty_analyst"}}}
+	s.LDAP = &LDAPSettings{Enabled: true, URL: "ldaps://ldap.example.test", CAPEM: "PEM", BindDN: "cn=svc",
+		BindPassword: seal("synthetic-ldap-password", secretLDAP, s.OrgID), UserBaseDN: "dc=x", UserFilter: "(uid=%s)",
+		IDAttribute: "entryUUID", DisplayAttribute: "cn", GroupMode: "member_of", Version: 1, UpdatedAt: testTime, UpdatedBy: user}
+	s.MCPServers = []MCPServer{{ID: tServer, Slug: "files", Name: "Файлы", URL: "https://mcp.example.test", CAPEM: "PEM",
+		Credential: seal("synthetic-mcp-token", secretMCP, tServer), CredentialSetAt: &testTime, External: true,
+		Versions: []string{"2025-11-25"}, CreatedAt: testTime, CreatedBy: "x", UpdatedAt: testTime, UpdatedBy: "x"}}
+	s.Agents = []Agent{{ID: tAgent, AppID: app.ID, Slug: "reader", Name: "Читатель", Status: "active", ServerIDs: []string{tServer},
+		CreatedAt: testTime, CreatedBy: "x", UpdatedAt: testTime, UpdatedBy: "x"}}
+	srv := tServer
+	s.AgentTools = []AgentTool{
+		{ID: tTool, ServerID: &srv, Name: "read_file", Descriptor: "{}", DescriptorHash: make([]byte, 32), HashAlg: "SHA-256",
+			Risk: "low", Status: "new", FirstSeen: testTime, LastSeen: testTime, UpdatedAt: testTime},
+		{ID: tFunc, AgentID: &agent, Name: "lookup", Descriptor: "{}", DescriptorHash: make([]byte, 32), HashAlg: "SHA-256",
+			Risk: "medium", Status: "new", FirstSeen: testTime, LastSeen: testTime, UpdatedAt: testTime},
+	}
+	s.ShadowAIExclusions = []ShadowAIExclusion{{Kind: "service", Value: "chatgpt", CreatedAt: testTime, CreatedBy: "x"},
+		{Kind: "user", Value: strings.Repeat("ab", 16), CreatedAt: testTime, CreatedBy: "x"}}
+	s.Licenses = []License{{Number: 1, File: []byte("synthetic-license"), LoadedAt: testTime, LoadedBy: "x"}}
+	s.LicenseClock = &testTime
+	s.ComplianceMarks = []ComplianceMark{{RequirementID: "fstec.upd.1", Status: "met", Comment: "проверено", SetAt: testTime, SetBy: "x"}}
 }
 
 func sealSample(t *testing.T, p crypto.Provider) ([]byte, *Snapshot) {
@@ -107,10 +194,11 @@ func sealSample(t *testing.T, p crypto.Provider) ([]byte, *Snapshot) {
 func TestSealOpenRoundTrip(t *testing.T) {
 	p := provider(t)
 	data, want := sealSample(t, p)
-	if !bytes.HasPrefix(data, []byte(`{"format":"aisec-config-backup","version":1,"profile":"standard","kdf":"Argon2id","kdf_params":"m=65536,t=3,p=2"`)) {
+	if !bytes.HasPrefix(data, []byte(`{"format":"aisec-config-backup","version":2,"profile":"standard","kdf":"Argon2id","kdf_params":"m=65536,t=3,p=2"`)) {
 		t.Fatalf("заголовок: %.200s", data)
 	}
-	for _, leak := range []string{"synthetic-credential", "Синтетическая", "admin", "argon2id$"} {
+	for _, leak := range []string{"synthetic-credential", "Синтетическая", "admin", "argon2id$", "synthetic-smtp",
+		"synthetic-system-prompt", "synthetic-tls-key", "synthetic-oidc-secret", "synthetic-ldap-password", "synthetic-mcp-token"} {
 		if bytes.Contains(data, []byte(leak)) {
 			t.Errorf("в файле открытым текстом: %q", leak)
 		}
@@ -177,7 +265,7 @@ func TestOpenRejectsWrongPassphraseAndTampering(t *testing.T) {
 		t.Errorf("обрезанный файл: %v", err)
 	}
 	// Версия в заголовке подменена: AAD не сходится — отказ до разбора.
-	bad := bytes.Replace(data, []byte(`"version":1`), []byte(`"version":2`), 1)
+	bad := bytes.Replace(data, []byte(`"version":2`), []byte(`"version":1`), 1)
 	if _, err := Open(ctx, p, []byte(testPhrase), bad); !errors.Is(err, ErrDecrypt) {
 		t.Errorf("подменённая версия: %v", err)
 	}
@@ -213,9 +301,9 @@ func sealRaw(t *testing.T, p crypto.Provider, version int, payload []byte) []byt
 func TestOpenVersionThenSchema(t *testing.T) {
 	p := provider(t)
 	ctx := context.Background()
-	payload := []byte(`{"version":2,"something_new":true}`)
-	if _, err := Open(ctx, p, []byte(testPhrase), sealRaw(t, p, 2, payload)); !errors.Is(err, ErrVersion) {
-		t.Fatalf("версия 2: %v", err)
+	payload := []byte(`{"version":3,"something_new":true}`)
+	if _, err := Open(ctx, p, []byte(testPhrase), sealRaw(t, p, 3, payload)); !errors.Is(err, ErrVersion) {
+		t.Fatalf("версия 3: %v", err)
 	}
 	w, err := NewWriter(ctx, p, []byte(testPhrase), testTime)
 	if err != nil {
@@ -227,10 +315,13 @@ func TestOpenVersionThenSchema(t *testing.T) {
 	}
 	for name, mutate := range map[string]func([]byte) []byte{
 		"лишнее поле": func(b []byte) []byte {
-			return bytes.Replace(b, []byte(`{"version":1,`), []byte(`{"version":1,"extra":1,`), 1)
+			return bytes.Replace(b, []byte(`{"version":2,`), []byte(`{"version":2,"extra":1,`), 1)
 		},
 		"данные после":       func(b []byte) []byte { return append(b, []byte(` {}`)...) },
-		"версия содержимого": func(b []byte) []byte { return bytes.Replace(b, []byte(`{"version":1,`), []byte(`{"version":3,`), 1) },
+		"версия содержимого": func(b []byte) []byte { return bytes.Replace(b, []byte(`{"version":2,`), []byte(`{"version":3,`), 1) },
+		"версия 1 в заголовке 2": func(b []byte) []byte {
+			return bytes.Replace(b, []byte(`{"version":2,`), []byte(`{"version":1,`), 1)
+		},
 		"неверный ID": func(b []byte) []byte {
 			return bytes.Replace(b, []byte(`"0192a000-0000-7000-8000-000000000101"`), []byte(`"x"`), 1)
 		},
@@ -239,13 +330,63 @@ func TestOpenVersionThenSchema(t *testing.T) {
 		},
 		"не JSON": func([]byte) []byte { return []byte("not json") },
 	} {
-		_, err := Open(ctx, p, []byte(testPhrase), sealRaw(t, p, 1, mutate(bytes.Clone(good))))
+		_, err := Open(ctx, p, []byte(testPhrase), sealRaw(t, p, FormatVersion, mutate(bytes.Clone(good))))
 		if !errors.Is(err, ErrFormat) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
-	if _, err := Open(ctx, p, []byte(testPhrase), sealRaw(t, p, 1, good)); err != nil {
+	if _, err := Open(ctx, p, []byte(testPhrase), sealRaw(t, p, FormatVersion, good)); err != nil {
 		t.Fatalf("подлинная копия через sealRaw: %v", err)
+	}
+}
+
+// Копия формата версии 1 (до задачи 5.8) открывается; разделы версии 2 в
+// содержимом версии 1 — ErrFormat.
+func TestOpenVersion1(t *testing.T) {
+	p := provider(t)
+	ctx := context.Background()
+	w, err := NewWriter(ctx, p, []byte(testPhrase), testTime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := sampleSnapshot(t, p, w.Keys())
+	v1 := *s
+	v1.Version = 1
+	v1.Channels, v1.AlertRules, v1.ReportSchedules, v1.ModelPrices, v1.Instructions = nil, nil, nil, nil, nil
+	v1.MCPServers, v1.Agents, v1.AgentTools, v1.ShadowAIExclusions, v1.Licenses, v1.ComplianceMarks = nil, nil, nil, nil, nil, nil
+	v1.GatewayTLS, v1.OIDC, v1.LDAP, v1.LicenseClock = nil, nil, nil, nil
+	v1.Settings.Install = nil
+	v1.Users = slices.Clone(s.Users)
+	for i := range v1.Users {
+		v1.Users[i].Email = ""
+	}
+	v1.Applications = slices.Clone(s.Applications)
+	for i := range v1.Applications {
+		a := &v1.Applications[i]
+		a.Budget, a.Baseline, a.UserAccess = nil, nil, nil
+		a.Keys = slices.Clone(a.Keys)
+		for j := range a.Keys {
+			a.Keys[j].AgentID = nil
+		}
+	}
+	payload, err := json.Marshal(&v1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := Open(ctx, p, []byte(testPhrase), sealRaw(t, p, 1, payload))
+	if err != nil {
+		t.Fatalf("копия версии 1: %v", err)
+	}
+	if a.Version != 1 || a.Snapshot.hasV2() {
+		t.Fatalf("версия %d, разделы версии 2: %v", a.Version, a.Snapshot.hasV2())
+	}
+	full, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	full = bytes.Replace(full, []byte(`{"version":2,`), []byte(`{"version":1,`), 1)
+	if _, err := Open(ctx, p, []byte(testPhrase), sealRaw(t, p, 1, full)); !errors.Is(err, ErrFormat) {
+		t.Fatalf("разделы версии 2 в копии версии 1: %v", err)
 	}
 }
 
@@ -341,6 +482,20 @@ func TestValidateReferences(t *testing.T) {
 		"учётные данные без времени": func(s *Snapshot) { s.Providers[0].CredentialSetAt = nil },
 		"фактор без секрета":         func(s *Snapshot) { s.Users[0].MFA.Secret = nil },
 		"нет схемы":                  func(s *Snapshot) { s.SchemaVersion = 0 },
+		"повтор канала":              func(s *Snapshot) { s.Channels = append(s.Channels, s.Channels[0]) },
+		"канал без секрета":          func(s *Snapshot) { s.Channels[0].Secret = nil },
+		"повтор встроенного правила": func(s *Snapshot) { s.AlertRules[0].BuiltinKey = s.AlertRules[1].BuiltinKey },
+		"OIDC без секрета":           func(s *Snapshot) { s.OIDC.ClientSecret = nil },
+		"повтор группы LDAP": func(s *Snapshot) {
+			s.LDAP.GroupRoles = []GroupRole{{Group: "g", Role: "auditor"}, {Group: "g", Role: "analyst"}}
+		},
+		"MCP без времени":             func(s *Snapshot) { s.MCPServers[0].CredentialSetAt = nil },
+		"инструмент без владельца":    func(s *Snapshot) { s.AgentTools[0].ServerID = nil },
+		"инструмент двух владельцев":  func(s *Snapshot) { s.AgentTools[1].ServerID = s.AgentTools[0].ServerID },
+		"повтор лицензии":             func(s *Snapshot) { s.Licenses = append(s.Licenses, s.Licenses[0]) },
+		"привязка без отметки":        func(s *Snapshot) { s.Applications[0].Keys[0].AgentBound = false },
+		"нет закрытого ключа шлюза":   func(s *Snapshot) { s.GatewayTLS.Key = nil },
+		"разделы версии 2 в версии 1": func(s *Snapshot) { s.Version = 1 },
 	} {
 		s := sampleSnapshot(t, p, w.Keys())
 		mutate(s)
@@ -350,6 +505,69 @@ func TestValidateReferences(t *testing.T) {
 	}
 	if err := sampleSnapshot(t, p, w.Keys()).validate(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// Объект со ссылкой на объект, которого нет в копии, пропускается со
+// строкой отчёта (задача 5.8); исходный снимок не меняется.
+func TestResolveSkipsDanglingReferences(t *testing.T) {
+	p := provider(t)
+	w, err := NewWriter(context.Background(), p, []byte(testPhrase), testTime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := sampleSnapshot(t, p, w.Keys())
+	r, lines := s.resolve()
+	if len(lines) != 0 || len(r.AlertRules) != 2 || len(r.Agents) != 1 || len(r.AgentTools) != 2 || len(r.OIDC.GroupRoles) != 2 {
+		t.Fatalf("согласованная копия: %v", lines)
+	}
+	missing := "0192a000-0000-7000-8000-00000000ffff"
+	s.ReportSchedules[0].ChannelID = missing
+	s.AlertRules[0].Recipients = json.RawMessage(`{"roles":[],"users":["` + missing + `"]}`)
+	s.ModelPrices[0].ProviderID = missing
+	s.Agents[0].AppID = missing
+	s.Agents[0].ServerIDs = append(s.Agents[0].ServerIDs, missing)
+	s.OIDC.GroupRoles[1].Role = "nobody"
+	s.LDAP.UpdatedBy = missing
+	r, lines = s.resolve()
+	if len(r.ReportSchedules) != 0 || len(r.AlertRules) != 1 || len(r.ModelPrices) != 0 || len(r.Agents) != 0 ||
+		len(r.AgentTools) != 1 || *r.AgentTools[0].ServerID != tServer || len(r.OIDC.GroupRoles) != 1 || r.LDAP != nil {
+		t.Fatalf("пропуски: %+v", r)
+	}
+	if len(lines) != 7 {
+		t.Fatalf("строк отчёта %d: %v", len(lines), lines)
+	}
+	for _, l := range lines {
+		if strings.Contains(l, "synthetic") {
+			t.Fatalf("секрет в строке отчёта: %s", l)
+		}
+	}
+	if len(s.ReportSchedules) != 1 || len(s.OIDC.GroupRoles) != 2 || s.LDAP == nil {
+		t.Fatal("исходный снимок изменён")
+	}
+
+	// Исключение по пользователю — псевдоним ключа HMAC: без ключа в копии
+	// пропускается, значение в строку отчёта не попадает.
+	s = sampleSnapshot(t, p, w.Keys())
+	s.UserHMACKey = nil
+	r, lines = s.resolve()
+	if len(r.ShadowAIExclusions) != 1 || r.ShadowAIExclusions[0].Kind != "service" || len(lines) != 1 ||
+		strings.Contains(lines[0], "abab") {
+		t.Fatalf("исключения без ключа псевдонимов: %+v, %v", r.ShadowAIExclusions, lines)
+	}
+
+	// В непустую установку настройки не переносятся: строк о пропуске по
+	// ним нет, свои правила оповещений остаются.
+	s = sampleSnapshot(t, p, w.Keys())
+	s.LDAP.UpdatedBy = missing
+	s.OIDC.GroupRoles[1].Role = "nobody"
+	r, lines = s.withoutSettings().resolve()
+	if len(lines) != 0 || r.OIDC != nil || r.LDAP != nil || r.GatewayTLS != nil || len(r.Licenses) != 0 ||
+		len(r.ShadowAIExclusions) != 0 || len(r.AlertRules) != 1 || r.AlertRules[0].BuiltinKey != nil {
+		t.Fatalf("без настроек: %v, %+v", lines, r.AlertRules)
+	}
+	if !s.hasSettingsV2() || s.OIDC == nil {
+		t.Fatal("исходный снимок изменён")
 	}
 }
 
@@ -382,7 +600,7 @@ func TestRevokeAgentKeys(t *testing.T) {
 		{ID: "agent-revoked", AgentBound: true, CreatedAt: testTime.Add(-48 * time.Hour), RevokedAt: &gone, RevokedBy: &by},
 		{ID: "agent-future", AgentBound: true, CreatedAt: testTime.Add(time.Hour)},
 	}
-	out, n := revokeAgentKeys(keys, testTime)
+	out, n := revokeAgentKeys(keys, "app", nil, testTime)
 	if n != 2 {
 		t.Fatalf("отозвано %d, ожидалось 2", n)
 	}
@@ -397,6 +615,20 @@ func TestRevokeAgentKeys(t *testing.T) {
 	}
 	if k := out[3]; k.RevokedAt == nil || !k.RevokedAt.Equal(k.CreatedAt) {
 		t.Fatalf("отзыв раньше выпуска: %+v", k)
+	}
+	// Версия 2: привязка к агенту того же приложения из копии сохраняется;
+	// агент другого приложения или отсутствующий — отзыв без привязки.
+	mine, other := "agent-1", "agent-2"
+	keys = []AppKey{
+		{ID: "bound", AgentBound: true, AgentID: &mine, CreatedAt: testTime.Add(-time.Hour)},
+		{ID: "foreign", AgentBound: true, AgentID: &other, CreatedAt: testTime.Add(-time.Hour)},
+	}
+	out, n = revokeAgentKeys(keys, "app", map[string]string{mine: "app", other: "app-2"}, testTime)
+	if n != 1 || out[0].RevokedAt != nil || out[0].AgentID == nil || out[1].RevokedAt == nil || out[1].AgentID != nil {
+		t.Fatalf("привязка версии 2: %d %+v", n, out)
+	}
+	if keys[1].AgentID == nil {
+		t.Fatal("изменён исходный срез")
 	}
 	if keys[1].RevokedAt != nil {
 		t.Fatal("изменён исходный срез")
@@ -450,7 +682,7 @@ func FuzzDecodeSnapshot(f *testing.F) {
 			}
 			return
 		}
-		if s.Version != FormatVersion || !uuidRe.MatchString(s.OrgID) {
+		if !supportedVersion(s.Version) || !uuidRe.MatchString(s.OrgID) {
 			t.Fatalf("принята копия %+v", s)
 		}
 		if err := s.validate(); err != nil {
