@@ -100,7 +100,7 @@ GitHub Actions — тонкая обёртка над `make` (ADR-0002):
 
 **Проверочная сборка после исправления 4В24** (30.10.2026, облачная среда, та же Ubuntu 24.04 и gcc 13.3 — не эталон): `build.sh` под `unshare -n` прошёл, у `libonnxruntime.so.1.31.0` только RPATH `/opt/aisec/lib`, без RUNPATH (SHA-256 `c3243a94865df4e5facfdbb38a5dea88e78a0821a6b8c685306208724eda5a53` — флаги компоновки изменились, поэтому хеш другой). Дымовая проверка загрузки: тестовый бинарник `aisec-ml` (тег `aisec_onnx`, загрузчик и RPATH `/opt/aisec/lib`, встроенный хеш ORT) и библиотеки `ml-libs.sh` в отдельном корне `chroot` — только `/opt/aisec/{bin,lib}`, `/proc` и `/tmp`, без `/usr/lib` и `/etc/ld.so.cache`, от непривилегированного пользователя: `TestONNXExecutor` (загрузка ORT через `/proc/self/fd`, сессия и вывод модели ONNX) проходит; без `libstdc++.so.6` в `/opt/aisec/lib` — «libstdc++.so.6: cannot open shared object file», то есть библиотека берётся только из проверенной `lib/`.
 
-**Эталонная сборка на машине владельца** (Linux x86-64 с Docker 23+ и доступом к github.com и deb.debian.org; ключ производителя для этого не нужен):
+**Эталонная сборка на машине владельца** (Linux x86-64 с Docker 23+ и доступом к github.com и snapshot.debian.org; ключ производителя для этого не нужен):
 ```
 git fetch origin && git checkout <коммит выпуска>
 make ort-fetch
