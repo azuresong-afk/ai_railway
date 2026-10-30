@@ -626,11 +626,11 @@ image-ml: ## Образ aisec-ml из build/release-ml (без сети и бе�
 #   make ml-p4              замер Р4 → build/ml/p4.md (таблица для docs/detectors.md)
 #   make ml-package ML_KEY=… подписанный пакет build/ml/models (машина без сети)
 # Python и его пакеты — только инструменты разработки, в поставку не входят.
-# ML_MODELS — модели пакета: pii-ner-ru (pii.ner) — только явным
-# ML_MODELS='injection-ru-en toxicity-ru pii-ner-ru' после решения владельца
-# по модели и наборам (4В32); ключ производителя подписывает только модели
-# с записью type: ml-model в docs/cert/components.yaml.
-ML_MODELS      ?= injection-ru-en toxicity-ru
+# ML_MODELS — модели пакета; pii-ner-ru (pii.ner) — по решению владельца
+# 30.10.2026 о модели и наборах (ADR-0024, 4В32). Ключ производителя
+# подписывает только модели с записью type: ml-model в
+# docs/cert/components.yaml; модель, не прошедшая Р4, туда не вносится.
+ML_MODELS      ?= injection-ru-en toxicity-ru pii-ner-ru
 ML_BUILD       := $(BUILD)/ml
 ML_VENV        := $(ML_BUILD)/venv
 ML_PY          := $(ML_VENV)/bin/python
@@ -674,7 +674,7 @@ ml-fetch: ## Скачать модели и наборы по tools/ml/sources.j
 	$(ML_PY) tools/ml/fetch.py $(if $(filter 1,$(ML_LOCK)),--lock)
 
 .PHONY: ml-train
-ml-train: ## Подготовка данных и дообучка моделей ML_MODELS без сети (build/ml/train; pii-ner-ru — только явно)
+ml-train: ## Подготовка данных и дообучка моделей ML_MODELS без сети (build/ml/train)
 	@test -x $(ML_PY) || { echo "ml-train: нет $(ML_VENV) — сначала make ml-venv"; exit 1; }
 ifneq ($(filter injection-ru-en,$(ML_MODELS)),)
 	$(ML_PY) tools/ml/prepare.py

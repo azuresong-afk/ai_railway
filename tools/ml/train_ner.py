@@ -192,7 +192,7 @@ def main():
             model.save_pretrained(args.out, safe_serialization=True)
             tok.save_pretrained(args.out)
     # Проверка на живом тексте — один раз, лучшей эпохой; без factRuEval
-    # (нет согласия владельца, ADR-0024) — нет и проверки.
+    # (не скачан) — нет и проверки.
     model = AutoModelForTokenClassification.from_pretrained(args.out, local_files_only=True)
     factru = evaluate(check) if check else None
     report = {

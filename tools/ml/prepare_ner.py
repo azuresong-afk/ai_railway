@@ -7,9 +7,9 @@
       train -format spans (вымышленные люди, организации, адреса);
   build/ml/src/factrueval-2016/ — factRuEval-2016 (make ml-fetch): devset —
       обучение, testset — проверка на живом тексте (в обучение не идёт).
-      Источник вносится в sources.json после согласия владельца (ADR-0024,
-      дополнение 4.20); пока его нет, набор — только синтетика, и
-      stats.json это показывает (factru: false).
+      Источник — решение владельца 30.10.2026 (ADR-0024, дополнение 4.20);
+      если каталога нет (ml-fetch не запускался), набор — только синтетика,
+      и stats.json это показывает (factru: false).
 Пишет build/ml/data/ner/: train.jsonl, dev.jsonl (10% каждого источника —
 выбор эпохи), check-factru.jsonl (testset factRuEval), stats.json (сколько
 примеров и сущностей из какого источника — для ML-BOM).
@@ -124,7 +124,7 @@ def main():
         fr_train = [dict(c, source=FACTRU) for _, t, es in factru_docs(os.path.join(args.factru, "devset")) for c in chunks(t, es)]
         fr_check = [dict(c, source=FACTRU) for _, t, es in factru_docs(os.path.join(args.factru, "testset")) for c in chunks(t, es)]
     else:
-        print(f"внимание: нет {os.path.relpath(args.factru, common.ROOT)} — factRuEval не скачан (ADR-0024), "
+        print(f"внимание: нет {os.path.relpath(args.factru, common.ROOT)} — factRuEval не скачан (make ml-fetch), "
               "обучение только на синтетике, проверки на живом тексте не будет")
     print(f"синтетика: {len(synth)}, factRuEval devset: {len(fr_train)} частей, testset: {len(fr_check)} частей")
 
