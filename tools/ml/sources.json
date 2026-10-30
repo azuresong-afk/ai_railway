@@ -1,11 +1,11 @@
 {
-  "comment": "Модели и наборы данных для tools/ml (задача 4.19). revision — коммит репозитория Hugging Face, files — SHA-256 каждого скачанного файла. Пустые revision и files заполняет первый запуск make ml-fetch ML_LOCK=1 на машине владельца; файл с заполненными значениями фиксируется в репозитории, дальше make ml-fetch только сверяет.",
+  "comment": "Модели и наборы данных для tools/ml (задачи 4.19 и 4.20). revision — коммит репозитория Hugging Face, files — SHA-256 каждого скачанного файла. Пустые revision и files заполняет первый запуск make ml-fetch ML_LOCK=1 на машине владельца; файл с заполненными значениями фиксируется в репозитории, дальше make ml-fetch только сверяет. Источник с полем git — репозиторий GitHub: revision — коммит, files — SHA-256 архива git archive --format=tar по путям paths (factRuEval-2016 для pii.ner вносится после согласия владельца, ADR-0024).",
   "models": [
     {
       "name": "rubert-tiny2",
       "repo": "cointegrated/rubert-tiny2",
       "license": "MIT",
-      "use": "основа injection.ml (дообучка)",
+      "use": "основа injection.ml и pii.ner (дообучка)",
       "patterns": ["config.json", "tokenizer.json", "tokenizer_config.json", "special_tokens_map.json", "vocab.txt", "model.safetensors", "pytorch_model.bin"],
       "revision": "",
       "files": {}

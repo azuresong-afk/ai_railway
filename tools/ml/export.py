@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
-"""Экспорт модели в ONNX для пакета моделей aisec-ml (задача 4.19, ADR-0024).
+"""Экспорт модели в ONNX для пакета моделей aisec-ml (задачи 4.19, 4.20; ADR-0024).
 
 Только для разработки, в поставку не входит; без сети. Из каталога модели
 transformers (дообученной или скачанной) делает build/ml/models/<id>/:
   model.onnx     — веса и граф одним файлом (без внешних данных: сборка ORT
                    их запрещает), входы input_ids, attention_mask,
-                   token_type_ids, выход logits;
+                   token_type_ids, выход logits ([пакет, метки] у
+                   классификации, [пакет, токены, метки] у разметки токенов);
   tokenizer.json — токенизатор (WordPiece, разбирает aisec-ml);
 и дописывает описание модели в build/ml/models.spec.json (для
 tools/manifest sign-models). Для проверки на машине владельца пишет эталоны
 в build/ml/ref/: <id>.tokref.jsonl — токены и границы эталонного
 токенизатора, <id>.logits.jsonl — выход исходной модели torch на текстах
-проверочного корпуса (make ml-verify сверяет с ними aisec-ml).
+проверочного корпуса (make ml-verify сверяет с ними aisec-ml); у разметки
+токенов — logits всех токенов окна подряд, строка за строкой.
 """
 
 import argparse
@@ -25,9 +27,9 @@ import tokref
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--model", required=True, help="каталог модели transformers")
-    ap.add_argument("--id", required=True, help="ID модели в пакете (injection-ru-en, toxicity-ru)")
+    ap.add_argument("--id", required=True, help="ID модели в пакете (injection-ru-en, toxicity-ru, pii-ner-ru)")
     ap.add_argument("--version", required=True)
-    ap.add_argument("--task", required=True, choices=["classification", "multilabel_classification"])
+    ap.add_argument("--task", required=True, choices=["classification", "multilabel_classification", "token_classification"])
     ap.add_argument("--directions", default="input", help="input, output или input,output")
     ap.add_argument("--corpus", required=True, help="каталог проверочного корпуса (тексты эталонов)")
     ap.add_argument("--out", default=os.path.join(common.BUILD, "models"))
@@ -38,19 +40,23 @@ def main():
         common.die(f"ID модели {args.id!r}")
 
     import torch
-    from transformers import AutoModelForSequenceClassification, AutoTokenizer
+    from transformers import AutoModelForSequenceClassification, AutoModelForTokenClassification, AutoTokenizer
 
     torch.manual_seed(0)
     tok = AutoTokenizer.from_pretrained(args.model, local_files_only=True)
     if not tok.is_fast:
         common.die("нужен быстрый токенизатор (tokenizer.json)")
     tok.backend_tokenizer.encode_special_tokens = True
-    model = AutoModelForSequenceClassification.from_pretrained(args.model, local_files_only=True).eval()
+    tokens = args.task == "token_classification"
+    auto = AutoModelForTokenClassification if tokens else AutoModelForSequenceClassification
+    model = auto.from_pretrained(args.model, local_files_only=True).eval()
     cfg = model.config
     labels = [str(cfg.id2label[i]).lower() for i in range(cfg.num_labels)]
     for lab in labels:
         if not common.ID_RE.match(lab):
             common.die(f"метка {lab!r} не подходит протоколу aisec-ml")
+    if tokens and "o" not in labels:
+        common.die("у разметки токенов нет метки «o»")
     dest = os.path.join(args.out, args.id)
     os.makedirs(dest, exist_ok=True)
 
@@ -73,7 +79,7 @@ def main():
             return self.m(**dict(zip(names, xs))).logits
 
     dyn = {n: {0: "batch", 1: "seq"} for n in names}
-    dyn["logits"] = {0: "batch"}
+    dyn["logits"] = {0: "batch", 1: "seq"} if tokens else {0: "batch"}
     # Обёртка — тоже в режиме вывода: экспорт возвращает модулю прежний режим,
     # и обёртка в режиме обучения включила бы dropout у модели.
     torch.onnx.export(Wrapped(model).eval(), tuple(sample[n] for n in names), onnx_path, input_names=names,
@@ -107,7 +113,8 @@ def main():
             enc = tok(t, return_tensors="pt")
             if enc["input_ids"].shape[1] > args.max_tokens:
                 continue
-            rows.append({"text": t, "logits": [round(float(x), 6) for x in model(**enc).logits[0]]})
+            out = model(**enc).logits[0].reshape(-1)
+            rows.append({"text": t, "logits": [round(float(x), 6) for x in out]})
     common.write_jsonl(os.path.join(ref, f"{args.id}.logits.jsonl"), rows)
     common.ok(f"{args.id}: {os.path.relpath(onnx_path, common.ROOT)} ({os.path.getsize(onnx_path)} байт), метки {labels}, "
               f"эталонов {len(rows)}")

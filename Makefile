@@ -601,7 +601,7 @@ image-ml: ## Образ aisec-ml из build/release-ml (без сети и бе�
 # владельца, по порядку (docs/cert/build-env.md, раздел «Модели»):
 #   make ml-venv            окружение Python build/ml/venv по tools/ml/requirements.txt (хеши)
 #   make ml-fetch ML_LOCK=1 скачать модели и наборы; первый раз — зафиксировать коммиты и хеши
-#   make ml-train           подготовка данных и дообучка injection.ml (rubert-tiny2)
+#   make ml-train           подготовка данных и дообучка injection.ml и pii.ner (rubert-tiny2)
 #   make ml-export          ONNX, токенизаторы, эталоны и ML-BOM обеих моделей
 #   make ml-verify          aisec-ml (ONNX Runtime) сверяется с эталонами Python
 #   make ml-p4              замер Р4 → build/ml/p4.md (таблица для docs/detectors.md)
@@ -647,10 +647,14 @@ ml-fetch: ## Скачать модели и наборы по tools/ml/sources.j
 	$(ML_PY) tools/ml/fetch.py $(if $(filter 1,$(ML_LOCK)),--lock)
 
 .PHONY: ml-train
-ml-train: ## Подготовка данных и дообучка injection.ml без сети (build/ml/train)
+ml-train: ## Подготовка данных и дообучка injection.ml и pii.ner без сети (build/ml/train)
 	@test -x $(ML_PY) || { echo "ml-train: нет $(ML_VENV) — сначала make ml-venv"; exit 1; }
 	$(ML_PY) tools/ml/prepare.py
 	$(ML_PY) tools/ml/train.py
+	mkdir -p $(ML_BUILD)/data
+	go run ./tools/synth-pii -kind ner -split train -format spans -n 6000 > $(ML_BUILD)/data/ner-synth.jsonl
+	$(ML_PY) tools/ml/prepare_ner.py
+	$(ML_PY) tools/ml/train_ner.py
 
 .PHONY: ml-export
 ml-export: ## ONNX, токенизаторы, эталоны и ML-BOM моделей без сети (build/ml/models)
@@ -663,6 +667,10 @@ ml-export: ## ONNX, токенизаторы, эталоны и ML-BOM моде�
 	$(ML_PY) tools/ml/mlbom.py --id injection-ru-en --version $(ML_VERSION) --source rubert-tiny2 \
 		--train-report $(ML_BUILD)/train/injection-ru-en/train_report.json
 	$(ML_PY) tools/ml/mlbom.py --id toxicity-ru --version $(ML_VERSION) --source rubert-tiny-toxicity
+	$(ML_PY) tools/ml/export.py --model $(ML_BUILD)/train/pii-ner-ru --id pii-ner-ru --version $(ML_VERSION) \
+		--task token_classification --directions input,output --corpus testdata/corpus/pii.ner
+	$(ML_PY) tools/ml/mlbom.py --id pii-ner-ru --version $(ML_VERSION) --source rubert-tiny2 --use 'pii.ner (DM-31, DM-09)' \
+		--train-report $(ML_BUILD)/train/pii-ner-ru/train_report.json
 	cd $(ML_BUILD)/models && sha256sum */model.onnx */tokenizer.json
 
 # Сверка и замер — Go с ONNX Runtime (make ort-build или ML_ORT_LIB=…):
