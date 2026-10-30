@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -55,8 +56,9 @@ func newFixture(t *testing.T) *fixture {
 	if err := os.Chmod(sockDir, 0o750); err != nil { //nolint:gosec // G302: тест задаёт права сокета и каталога намеренно
 		t.Fatal(err)
 	}
+	uid, gid := ownIDs()
 	cfg := &config{Socket: filepath.Join(sockDir, "aisec-ml.sock"), Models: models, MaxConns: 4, Workers: 1,
-		QueueWait: 10 * time.Millisecond, MaxModelBytes: ml.DefaultMaxModelBytes}
+		QueueWait: 10 * time.Millisecond, MaxModelBytes: ml.DefaultMaxModelBytes, PeerUID: uid, PeerGID: gid}
 	d := deps{provider: p, verifier: v, manifest: manifest, version: "1.0.0", logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		newExecutor: func(*config, aisecCrypto.Provider) (ml.Executor, error) { return mltest.Executor{}, nil }}
 	return &fixture{cfg: cfg, d: d, signer: s}
@@ -280,13 +282,18 @@ func TestListenSocketDirectoryChecks(t *testing.T) {
 	_ = l2.Close() //nolint:gosec // G104: ошибка в тесте не важна
 }
 
+// ownIDs — UID и GID теста: собеседник по сокету — сам тест.
+func ownIDs() (uid, gid uint32) {
+	return uint32(os.Getuid()), uint32(os.Getgid()) //nolint:gosec // G115: UID и GID в Linux — 32 бита без знака
+}
+
 func TestLoadConfig(t *testing.T) {
-	env := map[string]string{"AISEC_ML_SOCKET": "/run/x/s.sock", "AISEC_ML_WORKERS": "3"}
-	cfg, err := loadConfig([]string{"-workers=2"}, func(k string) string { return env[k] }, io.Discard)
+	env := map[string]string{"AISEC_ML_SOCKET": "/run/x/s.sock", "AISEC_ML_WORKERS": "3", "AISEC_ML_PEER_GID": "992"}
+	cfg, err := loadConfig([]string{"-workers=2", "-peer-uid=991"}, func(k string) string { return env[k] }, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Socket != "/run/x/s.sock" || cfg.Workers != 2 || cfg.Models != DefaultModels ||
+	if cfg.Socket != "/run/x/s.sock" || cfg.Workers != 2 || cfg.Models != DefaultModels || cfg.PeerUID != 991 || cfg.PeerGID != 992 ||
 		cfg.IntegrityAction != integrity.ActionStop || cfg.IntegrityInterval != integrity.DefaultInterval ||
 		cfg.RunTimeout != ml.DefaultRunTimeout || cfg.MaxRunTimeout != ml.DefaultMaxRunTimeout {
 		t.Fatalf("конфигурация: %+v", cfg)
@@ -308,10 +315,24 @@ func TestLoadConfig(t *testing.T) {
 		{"-integrity-action=ignore"},
 		{"-integrity-interval=10s"},
 		{"лишний"},
+		// 4Н27: без UID и GID шлюза aisec-ml не запускается.
+		{"-peer-gid=991"},
+		{"-peer-uid=991"},
+		{"-peer-uid=0", "-peer-gid=991"},
+		{"-peer-uid=991", "-peer-gid=0"},
+		{"-peer-uid=-1", "-peer-gid=991"},
+		{"-peer-uid=4294967295", "-peer-gid=991"},
+		{"-peer-uid=aisec-gw", "-peer-gid=991"},
 	} {
+		if !slices.ContainsFunc(args, func(a string) bool { return strings.HasPrefix(a, "-peer-") }) {
+			args = append(args, "-peer-uid=991", "-peer-gid=991")
+		}
 		if _, err := loadConfig(args, func(string) string { return "" }, io.Discard); err == nil {
 			t.Errorf("%v: принято", args)
 		}
+	}
+	if _, err := loadConfig(nil, func(string) string { return "" }, io.Discard); err == nil || !strings.Contains(err.Error(), "peer-uid: обязателен") {
+		t.Errorf("без -peer-uid и -peer-gid: %v", err)
 	}
 }
 

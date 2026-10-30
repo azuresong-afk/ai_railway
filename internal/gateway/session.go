@@ -4,7 +4,6 @@ import (
 	"container/list"
 	"encoding/hex"
 	"errors"
-	"hash"
 	"math"
 	"strconv"
 	"strings"
@@ -366,46 +365,30 @@ func (s *Sessions) Len() int {
 }
 
 // reply — хеш реплики ассистента потоком: хеш криптопрофиля от
-// нормализованного текста (session.Normalize), затем HMAC на ключе сессий,
-// 16 байт в hex. Простой хеш не годится: реплику модели (часто короткую,
-// «Да, конечно») держатель событий подобрал бы по словарю.
+// нормализованного текста (session.ReplyHasher, общий с самотестом), затем
+// HMAC на ключе сессий, 16 байт в hex. Простой хеш не годится: реплику
+// модели (часто короткую, «Да, конечно») держатель событий подобрал бы по
+// словарю.
 type reply struct {
 	s *Sessions
-	h hash.Hash
-	n *session.Normalizer
-	w countWriter
-}
-
-// countWriter считает записанное: пустая после нормализации реплика хеша
-// не получает.
-type countWriter struct {
-	h hash.Hash
-	n int
-}
-
-func (c *countWriter) Write(p []byte) (int, error) {
-	c.n += len(p)
-	return c.h.Write(p)
+	r *session.ReplyHasher
 }
 
 func (s *Sessions) newReply() *reply {
-	r := &reply{s: s, h: s.hasher.New()}
-	r.w.h = r.h
-	r.n = session.NewNormalizer(&r.w)
-	return r
+	return &reply{s: s, r: session.NewReplyHasher(s.hasher)}
 }
 
 // WriteString дописывает часть реплики.
-func (r *reply) WriteString(p string) { r.n.WriteString(p) }
+func (r *reply) WriteString(p string) { r.r.WriteString(p) }
 
 // Sum — хеш реплики; пусто — реплика пустая (только пробелы или вызовы
 // инструментов без текста).
 func (r *reply) Sum() string {
-	r.n.Flush()
-	if r.w.n == 0 {
+	sum := r.r.Sum()
+	if r.r.Empty() {
 		return ""
 	}
-	return hex.EncodeToString(r.s.mac.Sum(append([]byte(replyDomain), r.h.Sum(nil)...))[:16])
+	return hex.EncodeToString(r.s.mac.Sum(append([]byte(replyDomain), sum...))[:16])
 }
 
 // replyHash — хеш реплики целиком.

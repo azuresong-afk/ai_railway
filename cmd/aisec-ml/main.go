@@ -96,6 +96,9 @@ type deps struct {
 // манифестом из манифеста выпуска (4В23): подписанный пакет другой версии
 // не загружается.
 func run(ctx context.Context, cfg *config, d deps) error {
+	if !peerCredSupported {
+		return errors.New("проверка собеседника по сокету (SO_PEERCRED) есть только в Linux: aisec-ml не запускается")
+	}
 	want, err := releaseModels(d.manifest, d.version, cfg.Models, d.provider, d.verifier)
 	if err != nil {
 		return fmt.Errorf("пакет моделей отвергнут: %w", err)
@@ -126,15 +129,16 @@ func run(ctx context.Context, cfg *config, d deps) error {
 	if err != nil {
 		return err
 	}
-	l, err := listenSocket(ctx, cfg.Socket)
+	sock, err := listenSocket(ctx, cfg.Socket)
 	if err != nil {
 		return err
 	}
+	l := newPeerListener(sock, cfg.PeerUID, cfg.PeerGID, d.logger)
 	ids := make([]string, 0, len(models))
 	for _, mdl := range models {
 		ids = append(ids, mdl.Info().ID+"@"+mdl.Info().Version)
 	}
-	d.logger.Info("aisec-ml готов", "socket", cfg.Socket, "package", m.Version, "models", ids)
+	d.logger.Info("aisec-ml готов", "socket", cfg.Socket, "package", m.Version, "models", ids, "peer_uid", cfg.PeerUID, "peer_gid", cfg.PeerGID)
 	if d.ready != nil {
 		d.ready()
 	}
