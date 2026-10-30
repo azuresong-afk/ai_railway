@@ -203,6 +203,9 @@ type s3Opts struct {
 	auditStream bool
 	// serverArgs — аргументы сервера сверх обязательных.
 	serverArgs []string
+	// serverArgsFn — аргументы сервера, которым нужны файлы стенда (ключи
+	// и сертификаты TLS появляются вместе со стендом).
+	serverArgsFn func(s *s2Stand) []string
 }
 
 // s3Stack — сервер, шлюз, mock-llm и (по желанию) приёмник syslog.
@@ -230,7 +233,11 @@ func s3NewStack(t *testing.T, o s3Opts) *s3Stack {
 		// Приёмник — на loopback теста: каналы по умолчанию его не принимают.
 		args = append(args, "-notify-allowed-networks", "127.0.0.0/8")
 	}
-	s.mustStart(append(args, o.serverArgs...)...)
+	args = append(args, o.serverArgs...)
+	if o.serverArgsFn != nil {
+		args = append(args, o.serverArgsFn(s)...)
+	}
+	s.mustStart(args...)
 	s.base = "https://" + console
 	st := &s3Stack{t: t, s: s, admin: s.setupAdmin()}
 	st.env = newS2GatewayEnv(t, s, internal)
