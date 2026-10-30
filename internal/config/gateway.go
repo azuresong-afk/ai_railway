@@ -58,6 +58,11 @@ type Gateway struct {
 	// пусто — ML-детекторы политики не дают результата, событие получает
 	// ml_unavailable, решение — по эвристикам.
 	MLSocket string
+	// MLTimeout — срок вызова aisec-ml на текст в одно окно модели;
+	// MLTimePerWindow — добавка за каждое следующее окно (4В30). Срок вызова
+	// не больше срока детектора.
+	MLTimeout       time.Duration
+	MLTimePerWindow time.Duration
 }
 
 // MaxBundlePubFiles — ключей проверки пакетов одновременно (как
@@ -81,6 +86,10 @@ const (
 	MinIntegrityInterval     = time.Minute
 	IntegrityAlert           = "alert"
 	IntegrityStop            = "stop"
+	// Сроки вызова aisec-ml: совпадают с gateway.DefaultMLTimeout и
+	// gateway.DefaultMLTimePerWindow (сверка — в тесте шлюза).
+	DefaultMLTimeout       = 80 * time.Millisecond
+	DefaultMLTimePerWindow = 10 * time.Millisecond
 )
 
 // LoadGateway разбирает аргументы командной строки и окружение. getenv
@@ -108,6 +117,8 @@ func LoadGateway(args []string, getenv func(string) string, errOut io.Writer) (*
 	stateDir := fs.String("state-dir", "", "каталог состояния 0700: ключ шлюза для секретов пакета и последний пакет (AISEC_GATEWAY_STATE_DIR)")
 	userKey := fs.String("user-hmac-key", "", "ключ псевдонимов пользователей, права 0600; в режиме с сервером (AISEC_GATEWAY_USER_HMAC_KEY)")
 	mlSocket := fs.String("ml-socket", "", "Unix-сокет aisec-ml для ML-детекторов, например /run/aisec-ml/aisec-ml.sock; пусто — без ML (AISEC_GATEWAY_ML_SOCKET)")
+	mlTimeout := fs.String("ml-timeout", DefaultMLTimeout.String(), "срок вызова aisec-ml на текст в одно окно модели (AISEC_GATEWAY_ML_TIMEOUT)")
+	mlPerWindow := fs.String("ml-timeout-per-window", DefaultMLTimePerWindow.String(), "добавка к сроку вызова aisec-ml за каждое следующее окно длинного текста (AISEC_GATEWAY_ML_TIMEOUT_PER_WINDOW)")
 	if err := fs.Parse(args); err != nil {
 		return nil, err
 	}
@@ -121,6 +132,7 @@ func LoadGateway(args []string, getenv func(string) string, errOut io.Writer) (*
 		"manifest": manifest, "integrity-action": action, "integrity-interval": interval, "selftest-action": selftestAction,
 		"server": server, "server-ca": serverCA, "client-cert": clientCert, "client-key": clientKey,
 		"bundle-pub": bundlePub, "state-dir": stateDir, "user-hmac-key": userKey, "ml-socket": mlSocket,
+		"ml-timeout": mlTimeout, "ml-timeout-per-window": mlPerWindow,
 	} {
 		if set[name] {
 			continue // флаг важнее окружения
@@ -152,6 +164,12 @@ func LoadGateway(args []string, getenv func(string) string, errOut io.Writer) (*
 	// Предел sun_path — 108 байт; путь без «..», как у aisec-ml.
 	if cfg.MLSocket != "" && (!filepath.IsAbs(cfg.MLSocket) || filepath.Clean(cfg.MLSocket) != cfg.MLSocket || len(cfg.MLSocket) > 100) {
 		errs = append(errs, errors.New("ml-socket: абсолютный путь без «..» не длиннее 100 байт"))
+	}
+	if cfg.MLTimeout, err = time.ParseDuration(*mlTimeout); err != nil || cfg.MLTimeout < 10*time.Millisecond || cfg.MLTimeout > 10*time.Second {
+		errs = append(errs, errors.New("ml-timeout: длительность от 10ms до 10s"))
+	}
+	if cfg.MLTimePerWindow, err = time.ParseDuration(*mlPerWindow); err != nil || cfg.MLTimePerWindow < 0 || cfg.MLTimePerWindow > time.Second {
+		errs = append(errs, errors.New("ml-timeout-per-window: длительность от 0 до 1s"))
 	}
 	if _, _, err := net.SplitHostPort(cfg.Listen); err != nil {
 		errs = append(errs, errors.New("listen: ожидается адрес:порт"))

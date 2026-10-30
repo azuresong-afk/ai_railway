@@ -101,7 +101,9 @@ const renderScreen = (permissions: string[]) =>
     </MemoryRouter>,
   );
 const reader = ["shadow_ai.read", "events.read"];
-const manager = ["shadow_ai.read", "shadow_ai.manage", "events.read"];
+const manager = ["shadow_ai.read", "shadow_ai.manage", "shadow_ai.exclusions.manage", "events.read"];
+// Администратор системы (4В26): импорт и каталог — да, исключения — нет.
+const sysadmin = ["shadow_ai.read", "shadow_ai.manage", "events.read"];
 const openTab = async (name: string) => fireEvent.mouseDown(await screen.findByRole("tab", { name }), { button: 0 });
 
 describe("экран «Теневой ИИ»", () => {
@@ -184,6 +186,19 @@ describe("экран «Теневой ИИ»", () => {
     expect(screen.queryByRole("button", { name: /Снять исключение/ })).toBeNull();
   });
 
+  it("без права исключений нет кнопок исключения, импорт доступен", async () => {
+    exclusions = [{ kind: "user", value: alias, comment: "шлюз", created_at: "2026-10-28T10:00:00Z", created_by: "user:u-1" }];
+    renderScreen(sysadmin);
+    const table = await screen.findByRole("table", { name: "Сервисы за период" });
+    expect(within(table).queryByRole("button", { name: "Исключить сервис ChatGPT" })).toBeNull();
+    await openTab("Импорт и каталог");
+    expect(await screen.findByRole("button", { name: "Импортировать журнал" })).toBeInTheDocument();
+    await openTab("Исключения");
+    expect(await screen.findByText("шлюз")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Добавить исключение" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Снять исключение/ })).toBeNull();
+  });
+
   it("исключение сервиса из таблицы — с паролем; снятие — с подтверждением", async () => {
     renderScreen(manager);
     const table = await screen.findByRole("table", { name: "Сервисы за период" });
@@ -248,6 +263,17 @@ describe("экран «Теневой ИИ»", () => {
     const conns = screen.getByRole("table", { name: "Соединения syslog" });
     expect(within(within(conns).getByText("Отказ: источник не из разрешённых сетей").closest("tr")!).getByText("5")).toBeInTheDocument();
     expect(screen.getByText(/Последняя запись сводок в базу не удалась/)).toBeInTheDocument();
+    expect(screen.queryByText(/строки может прислать любой узел сети/)).toBeNull();
+  });
+
+  it("TLS без клиентского сертификата и без разрешённых сетей — предупреждение", async () => {
+    handler = (c) =>
+      c.url === "/api/v1/shadow-ai/syslog"
+        ? json({ ...syslogOff, enabled: true, running: true, address: "0.0.0.0:6514", format: "cef", tls: true, client_cert_required: false, allowed_networks: [] })
+        : undefined;
+    renderScreen(reader);
+    await openTab("Приём по syslog");
+    expect(await screen.findByText(/строки может прислать любой узел сети/)).toBeInTheDocument();
   });
 
   it("приём по syslog остановлен ошибкой — сообщение с причиной", async () => {

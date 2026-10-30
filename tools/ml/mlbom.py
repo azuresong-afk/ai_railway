@@ -28,6 +28,8 @@ TOXICITY_DATA = [
 
 
 def hf_ref(src):
+    if src.get("git"):  # набор с GitHub по коммиту (factRuEval-2016)
+        return {"type": "vcs", "url": src["git"], "comment": f"коммит {src.get('revision') or 'не зафиксирован'}"}
     kind = "datasets/" if src in common.load_sources()["datasets"] else ""
     return {"type": "distribution", "url": f"https://huggingface.co/{kind}{src['repo']}",
             "comment": f"коммит {src.get('revision') or 'не зафиксирован'}"}
@@ -42,6 +44,7 @@ def main():
     ap.add_argument("--id", required=True)
     ap.add_argument("--version", required=True)
     ap.add_argument("--source", required=True, help="исходная модель из sources.json (rubert-tiny2, rubert-tiny-toxicity)")
+    ap.add_argument("--use", default="", help="назначение модели для карточки (детектор и строки матрицы)")
     ap.add_argument("--train-report", default="", help="train_report.json дообучки")
     ap.add_argument("--dir", default=os.path.join(common.BUILD, "models"))
     args = ap.parse_args()
@@ -67,6 +70,10 @@ def main():
                 d = {"type": "data", "bom-ref": "data-synthetic-ru", "name": "Синтетический русский корпус AISec",
                      "licenses": [{"license": {"id": "MIT"}}],
                      "description": "testdata/ml/injection-train (tools/ml/gen_synthetic.py), без ПДн"}
+            elif name == "synthetic-ru-ner":
+                d = {"type": "data", "bom-ref": "data-synthetic-ru-ner", "name": "Синтетический корпус сущностей AISec",
+                     "licenses": [{"license": {"id": "MIT"}}],
+                     "description": "tools/synth-pii -kind ner -split train: вымышленные люди, организации и адреса"}
             else:
                 s = common.source(name)
                 d = {"type": "data", "bom-ref": "data-" + name, "name": s["repo"], "licenses": lic(s["license"]),
@@ -83,17 +90,27 @@ def main():
                                "description": "набор обучения исходной модели по её карточке; лицензия в карточке не указана"})
             datasets.append({"ref": ref})
 
+    tokens = mspec["task"] == "token_classification"
+    use = args.use or ("injection.ml (DM-01)" if "injection" in args.id else "toxicity.ml (DM-18)")
     card = {"modelParameters": {"task": mspec["task"], "architectureFamily": "BERT",
-                                "modelArchitecture": "BertForSequenceClassification", "datasets": datasets,
+                                "modelArchitecture": "BertForTokenClassification" if tokens else "BertForSequenceClassification",
+                                "datasets": datasets,
                                 "outputs": [{"format": "logits: " + ", ".join(mspec["labels"])}]},
-            "considerations": {"useCases": ["детектор " + ("injection.ml (DM-01)" if "injection" in args.id else "toxicity.ml (DM-18)")
-                                            + " в процессе aisec-ml"],
+            "considerations": {"useCases": ["детектор " + use + " в процессе aisec-ml"],
                                "technicalLimitations": ["окно 512 токенов, не больше 16 окон на запрос",
                                                         "качество — docs/detectors.md, раздел «Замер Р4»"]}}
     if report:
         best = report["history"][report["best_epoch"] - 1]
-        card["quantitativeAnalysis"] = {"performanceMetrics": [
-            {"type": k, "value": f"{best[k]:.4f}", "slice": "проверка эпох (dev), порог 0,5"} for k in ("recall", "fpr", "precision")]}
+        if tokens:  # разметка: по фрагментам сущностей ПДн (per, org, addr)
+            metrics = [{"type": k, "value": f"{best['dev']['pii'][k]:.4f}", "slice": "проверка эпох (dev), фрагменты ПДн"}
+                       for k in ("precision", "recall", "f1")]
+            if report.get("check_factru"):
+                metrics += [{"type": k, "value": f"{report['check_factru']['pii'][k]:.4f}",
+                             "slice": "testset factRuEval-2016, фрагменты per и org"} for k in ("precision", "recall", "f1")]
+        else:
+            metrics = [{"type": k, "value": f"{best[k]:.4f}", "slice": "проверка эпох (dev), порог 0,5"}
+                       for k in ("recall", "fpr", "precision")]
+        card["quantitativeAnalysis"] = {"performanceMetrics": metrics}
     model = {"type": "machine-learning-model", "bom-ref": "model", "name": args.id, "version": args.version,
              "licenses": [{"license": {"id": "MIT"}}] if report else lic(src["license"]),
              "hashes": [{"alg": "SHA-256", "content": hashes["model.onnx"]}],

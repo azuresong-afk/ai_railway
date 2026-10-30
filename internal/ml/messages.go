@@ -216,7 +216,8 @@ func ParseHelloOK(body []byte) (*HelloOK, error) {
 }
 
 // ParseResult разбирает ответ на detect и сверяет его с запросом: модель
-// та же, метки — из описания модели, позиции — в пределах текста и на
+// та же, метки — из описания модели (у разметки токенов — сущность метки
+// «b-<сущность>», ModelInfo.HasLabel), позиции — в пределах текста и на
 // границах символов.
 func ParseResult(body []byte, info ModelInfo, text string) (*Result, error) {
 	var r Result
@@ -227,22 +228,15 @@ func ParseResult(body []byte, info ModelInfo, text string) (*Result, error) {
 		return nil, ErrBadBody
 	}
 	for _, f := range r.Findings {
-		if err := f.validate(info.Labels, text); err != nil {
+		if err := f.validate(info, text); err != nil {
 			return nil, err
 		}
 	}
 	return &r, nil
 }
 
-func (s Score) validate(labels []string, text string) error {
-	known := false
-	for _, l := range labels {
-		if l == s.Label {
-			known = true
-			break
-		}
-	}
-	if !known || math.IsNaN(s.Score) || s.Score < 0 || s.Score > 1 {
+func (s Score) validate(info ModelInfo, text string) error {
+	if !info.HasLabel(s.Label) || math.IsNaN(s.Score) || s.Score < 0 || s.Score > 1 {
 		return ErrBadBody
 	}
 	if s.Start < 0 || s.End <= s.Start || s.End > len(text) || !runeBoundary(text, s.Start) || !runeBoundary(text, s.End) {

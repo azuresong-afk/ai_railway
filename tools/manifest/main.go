@@ -6,6 +6,8 @@
 //	    -version V -created ВРЕМЯ -bin build/bin -cmds 'aisec-gateway …' \
 //	    -static web/dist -migrations migrations [-detect КАТАЛОГ]
 //	manifest sign -key ФАЙЛ -manifest build/release/aisec-manifest.json [-expect-sha256 HEX]
+//	manifest sign-models -dir КАТАЛОГ -spec ФАЙЛ -version V -created ВРЕМЯ \
+//	    (-key ФАЙЛ [-expect-sha256 HEX] | -test-key ФАЙЛ | -dry-run)
 //	manifest fingerprint -pub ФАЙЛ
 //	manifest gen-key -key ФАЙЛ -pub ФАЙЛ
 //	manifest gen-subkey -key ФАЙЛ -pub ФАЙЛ [-test]
@@ -58,7 +60,7 @@ func main() {
 	}
 }
 
-const commands = "build, sign, sign-models, fingerprint, gen-key, gen-subkey, endorse, sign-db, inspect-db, sign-license или inspect-license"
+const commands = "build, sign, sign-models, check-models, fingerprint, gen-key, gen-subkey, endorse, sign-db, inspect-db, sign-license или inspect-license"
 
 func run(args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
@@ -75,6 +77,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return sign(p, args[1:], stdout, stderr)
 	case "sign-models":
 		return signModels(p, args[1:], stdout, stderr)
+	case "check-models":
+		return checkModels(args[1:], stdout, stderr)
 	case "fingerprint":
 		return fingerprint(p, args[1:], stdout, stderr)
 	case "gen-key":

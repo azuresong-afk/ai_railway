@@ -694,3 +694,52 @@ func TestDashboardStreamBounded(t *testing.T) {
 		waitEOF(nil)
 	}
 }
+
+// Остаток ревью 4.r1 (G3, УПД.10): фоновый опрос консоли с заголовком
+// X-AISec-Background не продлевает сессию; тот же запрос без заголовка —
+// продлевает; изменяющий запрос заголовком признак не снимает.
+func TestBackgroundPollDoesNotExtendSession(t *testing.T) {
+	idle := time.Duration(auth.DefaultPolicy().SessionIdleMinutes) * time.Minute
+	get := func(e *appsEnv, s session, bg bool) int {
+		r := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/v1/me", nil)
+		r.RemoteAddr = "192.0.2.1:1234"
+		for _, c := range s.cookies {
+			r.AddCookie(c)
+		}
+		if bg {
+			r.Header.Set(BackgroundHeader, "1")
+		}
+		w := httptest.NewRecorder()
+		e.h.ServeHTTP(w, r)
+		return w.Code
+	}
+	advance := func(e *appsEnv, d time.Duration) {
+		e.clock.mu.Lock()
+		e.clock.t = e.clock.t.Add(d)
+		e.clock.mu.Unlock()
+	}
+	for _, bg := range []bool{true, false} {
+		e := newAppsEnv(t)
+		an := e.mustLogin(t, "analyst")
+		advance(e, idle-time.Minute)
+		if code := get(e, an, bg); code != http.StatusOK {
+			t.Fatalf("фоновый %v: запрос до простоя: %d", bg, code)
+		}
+		advance(e, 2*time.Minute)
+		want := http.StatusOK
+		if bg {
+			want = http.StatusUnauthorized
+		}
+		if code := get(e, an, false); code != want {
+			t.Fatalf("фоновый %v: после %v без действий: %d, ожидалось %d", bg, idle+time.Minute, code, want)
+		}
+	}
+	if background(httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)) {
+		t.Fatal("GET без заголовка помечен фоновым")
+	}
+	post := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/", nil)
+	post.Header.Set(BackgroundHeader, "1")
+	if background(post) {
+		t.Fatal("POST помечен фоновым")
+	}
+}

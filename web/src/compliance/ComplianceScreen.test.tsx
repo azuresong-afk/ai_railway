@@ -133,6 +133,31 @@ describe("экран «Соответствие»", () => {
     expect([...select.options].map((o) => o.text)).toEqual(["Не применимо"]);
   });
 
+  it("«не применимо» у пункта с проверками — со сроком пересмотра и повторной проверкой (4В36)", async () => {
+    handler = (c) => {
+      const b = c.body as Record<string, unknown> | undefined;
+      if (c.method === "PUT" && !b?.password) {
+        return new Response(JSON.stringify({ status: 400, code: "invalid_request", detail: "Нужна повторная проверка", errors: [{ field: "password", detail: "Введите пароль" }] }), { status: 400 });
+      }
+      return undefined;
+    };
+    renderScreen(marker);
+    fireEvent.click(await screen.findByRole("button", { name: /Показать подробности: Фильтрация входа и выхода/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Поставить отметку" }));
+    const save = (await screen.findByRole("button", { name: "Сохранить отметку" })) as HTMLButtonElement;
+    fireEvent.change(screen.getByLabelText("Комментарий"), { target: { value: "Закрыто договором" } });
+    expect(save.disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText("Пересмотреть до"), { target: { value: "2027-06-30" } });
+    expect(save.disabled).toBe(false);
+    fireEvent.click(save);
+    const pass = await screen.findByLabelText("Текущий пароль");
+    expect(save.disabled).toBe(true);
+    fireEvent.change(pass, { target: { value: "секрет" } });
+    fireEvent.click(save);
+    await waitFor(() => expect(calls.filter((c) => c.method === "PUT")).toHaveLength(2));
+    expect(calls.filter((c) => c.method === "PUT")[1]!.body).toEqual({ status: "not_applicable", comment: "Закрыто договором", review_by: "2027-06-30", password: "секрет" });
+  });
+
   it("показывает отказ сервера в диалоге отметки", async () => {
     handler = (c) => (c.method === "PUT" ? problem(403, "forbidden", "Нет права на ручные отметки") : undefined);
     renderScreen(marker);

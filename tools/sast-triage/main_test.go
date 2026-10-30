@@ -79,6 +79,20 @@ func TestParseTriage(t *testing.T) {
 	}
 }
 
+// 4В39 ревью 4.r4: отчёты прогонов с разными тегами объединяются, общий
+// файл не даёт повторов.
+func TestMergeFindings(t *testing.T) {
+	a := []Finding{{Rule: "G304", File: "x.go", Line: 3}, {Rule: "G115", File: "y.go", Line: 7}}
+	b := []Finding{{Rule: "G304", File: "x.go", Line: 3}, {Rule: "G115", File: "cmd/aisec-ml/executor_onnx.go", Line: 9}}
+	got := MergeFindings(a, b)
+	if len(got) != 3 || got[2].File != "cmd/aisec-ml/executor_onnx.go" {
+		t.Fatalf("объединение: %+v", got)
+	}
+	if len(MergeFindings()) != 0 {
+		t.Fatal("пустое объединение")
+	}
+}
+
 func TestCompare(t *testing.T) {
 	findings := []Finding{
 		{Rule: "gosec/G104", File: "a/b.go", Line: 2, Snippet: "_ = f.Close()"},  // размечено

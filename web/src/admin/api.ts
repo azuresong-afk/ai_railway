@@ -86,7 +86,7 @@ export const adminApi = {
 
   // Часовой пояс показа и режим хранения по умолчанию (В26 ревью 2.r5): none или full — с паролем или кодом.
   // Лицензия (ADR-0026): загрузка — только с паролем или кодом в теле.
-  license: (signal?: AbortSignal) => request<LicenseInfo>("GET", "/api/v1/license", undefined, signal),
+  license: (signal?: AbortSignal, background?: boolean) => request<LicenseInfo>("GET", "/api/v1/license", undefined, signal, background),
   uploadLicense: (license: string, re: { password: string } | { code: string }) =>
     request<LicenseInfo>("PUT", "/api/v1/license", { license, ...re }),
 

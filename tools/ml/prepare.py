@@ -120,6 +120,8 @@ def main():
 
     rows = []
     for src in common.load_sources()["datasets"]:
+        if src.get("task", "injection") != "injection":  # наборы pii.ner — prepare_ner.py
+            continue
         part = load_dataset(src)
         print(f"{src['name']}: {len(part)} примеров")
         rows += part

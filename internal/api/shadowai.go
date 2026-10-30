@@ -56,9 +56,9 @@ func shadowAIRoutes(d Deps) []Route {
 		// Исключения и состояние приёма по syslog (задача 4.23).
 		{Method: http.MethodGet, Path: "/api/v1/shadow-ai/exclusions", Permission: auth.PermShadowAIRead,
 			Handler: needShadowAI(d, d.listShadowExclusions)},
-		{Method: http.MethodPost, Path: "/api/v1/shadow-ai/exclusions", Permission: auth.PermShadowAIManage,
+		{Method: http.MethodPost, Path: "/api/v1/shadow-ai/exclusions", Permission: auth.PermShadowAIExclusionsManage,
 			MaxBody: smallMaxBody, Handler: needShadowAI(d, d.postShadowExclusion)},
-		{Method: http.MethodDelete, Path: "/api/v1/shadow-ai/exclusions/{kind}/{value}", Permission: auth.PermShadowAIManage,
+		{Method: http.MethodDelete, Path: "/api/v1/shadow-ai/exclusions/{kind}/{value}", Permission: auth.PermShadowAIExclusionsManage,
 			Handler: needShadowAI(d, d.deleteShadowExclusion)},
 		{Method: http.MethodGet, Path: "/api/v1/shadow-ai/syslog", Permission: auth.PermShadowAIRead,
 			Handler: needShadowAI(d, d.getShadowSyslog)},
@@ -117,6 +117,9 @@ func shadowProblem(logger *slog.Logger, err error) *Problem {
 		return NewProblem(http.StatusTooManyRequests, CodeRateLimited, "Уже идёт другой импорт: повторите после его завершения.")
 	case errors.Is(err, shadowai.ErrDuplicate):
 		return NewProblem(http.StatusConflict, CodeConflict, "Этот файл уже импортирован.")
+	case errors.Is(err, shadowai.ErrStorageFull):
+		return NewProblem(http.StatusInsufficientStorage, CodeInsufficientStorage,
+			"Достигнут предел хранимых сводок теневого ИИ (5 млн строк): сократите срок хранения или добавьте исключения и повторите импорт.")
 	case errors.Is(err, shadowai.ErrNoCatalog):
 		return NewProblem(http.StatusConflict, CodeConflict,
 			"Каталог ИИ-сервисов не загружен или не прошёл проверку подписи: загрузите подписанный каталог из выпуска.")

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/azuresong-afk/ai_railway/internal/audit"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
@@ -63,11 +64,12 @@ func TestVectorsMatchCorpus(t *testing.T) {
 	}
 }
 
-// TestVectorsCoverBuiltin — у каждого встроенного детектора есть оба вида
-// эталонов, и нет эталонов для неизвестных детекторов.
+// TestVectorsCoverBuiltin — у каждого встроенного детектора, в том числе
+// ML-детектора, есть оба вида эталонов, и нет эталонов для неизвестных
+// детекторов.
 func TestVectorsCoverBuiltin(t *testing.T) {
 	ids := map[string]bool{}
-	for _, d := range builtin.All() {
+	for _, d := range append(builtin.All(), builtin.ML()...) {
 		ids[d.ID()] = true
 		if !hasBoth(vectorsFor(d.ID())) {
 			t.Errorf("%s: нужны положительный и отрицательный эталоны", d.ID())
@@ -96,7 +98,8 @@ func TestRunBuiltinOK(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !res.OK() || res.Detectors != len(builtin.All()) || res.Vectors != len(vectors) || res.Tools != len(toolVectors)+1+len(descriptorVectors) {
+	if !res.OK() || res.Detectors != len(builtin.All()) || res.Vectors != len(vectors)-mlVectors() ||
+		res.Tools != len(toolVectors)+1+len(descriptorVectors) || res.Hashes != len(promptVectors)+len(historyVectors) || res.MLUnavailable != 0 {
 		t.Fatalf("итог %+v", res)
 	}
 	if !res.At.Equal(fixedNow()) || res.Profile != aisecCrypto.ProfileStandard {
@@ -167,6 +170,152 @@ func TestDM25_DescriptorVectors(t *testing.T) {
 		Vector: descriptorVectors[0].ID, Problem: ProblemHash}) || f[1] != (Failure{Detector: DescriptorCheck,
 		Vector: descriptorVectors[1].ID, Problem: ProblemHash}) {
 		t.Fatalf("провал хеша не найден: %+v", f)
+	}
+}
+
+// mlVectors — число эталонов ML-детекторов.
+func mlVectors() int {
+	n := 0
+	for _, d := range builtin.ML() {
+		n += len(vectorsFor(d.ID()))
+	}
+	return n
+}
+
+// TestDM26_PromptHashVectors — эталоны хеша системного промпта: пробельные
+// символы хеш не меняют, невидимый символ и дописанная инструкция меняют,
+// известный хеш в профиле standard совпадает; неверный эталон — провал
+// hash, профиль без хеш-функции — провал error по обеим проверкам.
+func TestDM26_PromptHashVectors(t *testing.T) {
+	var same, diff bool
+	for _, v := range promptVectors {
+		same = same || v.Same && v.SHA256 != ""
+		diff = diff || !v.Same
+	}
+	if !same || !diff {
+		t.Fatal("эталоны хеша промпта неполны")
+	}
+	var n int
+	if f := runHashes(standard(t), &n); len(f) != 0 || n != len(promptVectors)+len(historyVectors) {
+		t.Fatalf("эталоны: %+v", f)
+	}
+	gost, err := aisecCrypto.New(aisecCrypto.ProfileGOST)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f := runHashes(gost, &n); len(f) != 2 || f[0] != (Failure{Detector: PromptCheck, Problem: ProblemError}) ||
+		f[1] != (Failure{Detector: HistoryCheck, Problem: ProblemError}) {
+		t.Fatalf("профиль без хеша: %+v", f)
+	}
+	saved := promptVectors
+	t.Cleanup(func() { promptVectors = saved })
+	promptVectors = slices.Clone(saved)
+	promptVectors[0].SHA256 = strings.Repeat("0", 64)
+	promptVectors[1].Same = true
+	if f := runHashes(standard(t), &n); len(f) != 2 || f[0] != (Failure{Detector: PromptCheck, Vector: promptVectors[0].ID,
+		Problem: ProblemHash}) || f[1] != (Failure{Detector: PromptCheck, Vector: promptVectors[1].ID, Problem: ProblemHash}) {
+		t.Fatalf("провал хеша не найден: %+v", f)
+	}
+}
+
+// TestDM03_HistoryHashVectors — эталоны хеша реплик: ответ модели,
+// разрезанный посреди символа UTF-8, совпадает с той же репликой в истории,
+// изменённая реплика — нет; неверный эталон — провал hash.
+func TestDM03_HistoryHashVectors(t *testing.T) {
+	var split, diff bool
+	for _, v := range historyVectors {
+		for _, p := range v.Stream {
+			split = split || v.Same && !utf8.ValidString(p)
+		}
+		diff = diff || !v.Same
+	}
+	if !split || !diff {
+		t.Fatal("эталоны хеша реплик неполны")
+	}
+	saved := historyVectors
+	t.Cleanup(func() { historyVectors = saved })
+	historyVectors = slices.Clone(saved)
+	historyVectors[0].Stream = []string{"Да, конечно."}
+	historyVectors[1].Same = true
+	var n int
+	if f := runHashes(standard(t), &n); len(f) != 2 || f[0] != (Failure{Detector: HistoryCheck, Vector: historyVectors[0].ID,
+		Problem: ProblemHash}) || f[1] != (Failure{Detector: HistoryCheck, Vector: historyVectors[1].ID, Problem: ProblemHash}) {
+		t.Fatalf("провал хеша не найден: %+v", f)
+	}
+}
+
+// mlFake — ML-детектор с описанием заглушки и своим поведением: имитирует
+// детектор шлюза с клиентом aisec-ml.
+type mlFake struct {
+	detect.Detector
+	fn func(t detect.Text) ([]detect.Finding, error)
+}
+
+func (f mlFake) Detect(_ context.Context, t detect.Text) ([]detect.Finding, error) { return f.fn(t) }
+func (mlFake) MLBacked() bool                                                      { return true }
+
+// mlDetectors — встроенные детекторы и ML-детекторы с поведением fn; nil —
+// заглушки без aisec-ml.
+func mlDetectors(fn func(d detect.Detector, t detect.Text) ([]detect.Finding, error)) []detect.Detector {
+	ds := builtin.All()
+	for _, stub := range builtin.ML() {
+		if fn == nil {
+			ds = append(ds, stub)
+			continue
+		}
+		ds = append(ds, mlFake{Detector: stub, fn: func(t detect.Text) ([]detect.Finding, error) { return fn(stub, t) }})
+	}
+	return ds
+}
+
+// TestMLVectors — ML-детекторы (ADR-0024): без aisec-ml эталоны дают
+// ml_unavailable и самотест проходит; с доступным aisec-ml модель, которая
+// находит положительные эталоны и молчит на отрицательных, проходит, а
+// молчащая или шумная — нет.
+func TestMLVectors(t *testing.T) {
+	run := func(ds []detect.Detector) Result {
+		t.Helper()
+		res, err := Run(context.Background(), Config{Component: "gateway", Provider: standard(t), Detectors: ds, Now: fixedNow})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res
+	}
+	if res := run(mlDetectors(nil)); !res.OK() || res.MLUnavailable != mlVectors() || res.Vectors != len(vectors) {
+		t.Fatalf("без aisec-ml: %+v", res)
+	}
+	if res := run(mlDetectors(func(detect.Detector, detect.Text) ([]detect.Finding, error) {
+		return nil, errors.New("aisec-ml недоступен: отсрочка после сбоя")
+	})); !res.OK() || res.MLUnavailable != mlVectors() {
+		t.Fatalf("сбой связи: %+v", res)
+	}
+	// Модель «знает» эталоны: находка — на положительных, по ожиданию.
+	model := func(d detect.Detector, tx detect.Text) ([]detect.Finding, error) {
+		for _, v := range vectorsFor(d.ID()) {
+			if v.Text == tx.Text && len(v.Expect) > 0 {
+				return []detect.Finding{{Detector: d.ID(), Version: d.Version(), Category: v.Expect[0], Threat: "DM-01",
+					Score: 0.9, End: len(tx.Text)}}, nil
+			}
+		}
+		return nil, nil
+	}
+	if res := run(mlDetectors(model)); !res.OK() || res.MLUnavailable != 0 || res.Vectors != len(vectors) {
+		t.Fatalf("aisec-ml доступен: %+v", res)
+	}
+	res := run(mlDetectors(func(detect.Detector, detect.Text) ([]detect.Finding, error) { return nil, nil }))
+	if res.OK() || !slices.Contains(res.Failures, Failure{Detector: builtin.InjectionMLID, Vector: "inj-ru-p005",
+		Problem: ProblemMissed, Category: "injection.ml"}) || !slices.Contains(res.Failures, Failure{Detector: builtin.ToxicityMLID,
+		Vector: "tox-insult-001", Problem: ProblemMissed, Category: "toxicity.insult"}) {
+		t.Fatalf("молчащая модель: %+v", res.Failures)
+	}
+	res = run(mlDetectors(func(d detect.Detector, tx detect.Text) ([]detect.Finding, error) {
+		return []detect.Finding{{Detector: d.ID(), Version: d.Version(), Category: d.(detect.Categorizer).Categories()[0],
+			Threat: "DM-18", Score: 0.9, End: len(tx.Text)}}, nil
+	}))
+	if res.OK() || !slices.ContainsFunc(res.Failures, func(f Failure) bool {
+		return f.Vector == "tox-clean-002" && f.Problem == ProblemUnexpected
+	}) {
+		t.Fatalf("шумная модель: %+v", res.Failures)
 	}
 }
 

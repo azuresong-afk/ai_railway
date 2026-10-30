@@ -24,6 +24,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/detect"
 	"github.com/azuresong-afk/ai_railway/internal/detect/builtin"
 	"github.com/azuresong-afk/ai_railway/internal/detect/injection"
+	"github.com/azuresong-afk/ai_railway/internal/detect/pii"
 	"github.com/azuresong-afk/ai_railway/internal/gateway"
 	"github.com/azuresong-afk/ai_railway/internal/ml"
 	"github.com/azuresong-afk/ai_railway/internal/policy"
@@ -140,7 +141,7 @@ func TestModelsMatchReference(t *testing.T) {
 					t.Fatal(err)
 				}
 				n++
-				ids, offs, _, err := m.tok.Encode(r.Text, ml.MaxText)
+				ids, offs, _, err := m.tok.Encode(context.Background(), r.Text, ml.MaxText)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -166,7 +167,7 @@ func TestModelsMatchReference(t *testing.T) {
 				if err := json.Unmarshal(line, &r); err != nil {
 					t.Fatal(err)
 				}
-				ids, _, trunc, err := m.tok.Encode(r.Text, m.spec.MaxTokens-2)
+				ids, _, trunc, err := m.tok.Encode(context.Background(), r.Text, m.spec.MaxTokens-2)
 				if err != nil || trunc {
 					t.Fatalf("%.60q: %v %v", r.Text, trunc, err)
 				}
@@ -236,7 +237,11 @@ func TestP4Measure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	heur := map[string]detect.Detector{builtin.InjectionMLID: injection.New(), builtin.ToxicityMLID: base}
+	nerBase, err := p4.ListsBaseline(filepath.Join(repoRoot, "testdata/ml/ner-baseline.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	heur := map[string]detect.Detector{builtin.InjectionMLID: injection.New(), builtin.ToxicityMLID: base, builtin.PIINERID: nerBase}
 	var cases []p4.Case
 	for _, s := range builtin.MLSpecs() {
 		m, ok := models[s.Model]
@@ -251,15 +256,22 @@ func TestP4Measure(t *testing.T) {
 		th, _ := policy.TemplateMLThreshold(s.ID)
 		dir := filepath.Join(repoRoot, "testdata/corpus", s.ID)
 		text, n, err := p4.LatencyText(dir, func(x string) (int, error) {
-			ids, _, _, err := m.tok.Encode(x, ml.MaxText)
+			ids, _, _, err := m.tok.Encode(context.Background(), x, ml.MaxText)
 			return len(ids), err
 		}, p4.LatencyTokens)
 		if err != nil {
 			t.Fatal(err)
 		}
 		model := s.Model
-		cases = append(cases, p4.Case{ML: d, Heuristic: heur[s.ID], Corpus: dir, Threshold: th, LatencyText: text, LatencyTokens: n,
-			LatencyRuns: 200, Latency: func(ctx context.Context, x string) error { _, err := client.Detect(ctx, model, x); return err }})
+		c := p4.Case{ML: d, Heuristic: heur[s.ID], Corpus: dir, Threshold: th, LatencyText: text, LatencyTokens: n,
+			LatencyRuns: 200, Latency: func(ctx context.Context, x string) error { _, err := client.Detect(ctx, model, x); return err }}
+		cases = append(cases, c)
+		// pii.ner — ещё и против pii.ru: он имён не ищет, строка показывает,
+		// что добавляет NER к детектору этапа 1 (задача 4.20).
+		if s.ID == builtin.PIINERID {
+			c.Heuristic = pii.New()
+			cases = append(cases, c)
+		}
 	}
 	rs, err := p4.Run(context.Background(), cases)
 	if err != nil {
@@ -268,6 +280,32 @@ func TestP4Measure(t *testing.T) {
 	env := fmt.Sprintf("%s, %s, процессоров %d (GOMAXPROCS %d), %s, %s", cpuModel(), runtime.GOARCH, runtime.NumCPU(),
 		runtime.GOMAXPROCS(0), runtime.Version(), time.Now().Format("02.01.2006"))
 	md := p4.Markdown(rs, env)
+	// 4В30 (г): все модели одновременно на тексте в 16 окон — как их
+	// вызывают детекторы одного фрагмента — против срока вызова шлюза.
+	calls := map[string]func(context.Context, string) error{}
+	var counter *onnxModel
+	for id, m := range models {
+		calls[id] = func(ctx context.Context, x string) error { _, err := client.Detect(ctx, id, x); return err }
+		if counter == nil || m.spec.MaxTokens < counter.spec.MaxTokens {
+			counter = m
+		}
+	}
+	if counter != nil {
+		const windows = 16
+		text, n, err := p4.LatencyText(filepath.Join(repoRoot, "testdata/corpus", builtin.InjectionMLID), func(x string) (int, error) {
+			ids, _, _, err := counter.tok.Encode(context.Background(), x, ml.MaxText)
+			return len(ids), err
+		}, windows*(counter.spec.MaxTokens-2-windowOverlap))
+		if err != nil {
+			t.Fatal(err)
+		}
+		limit := gateway.DefaultMLTimeout + (windows-1)*gateway.DefaultMLTimePerWindow
+		cr, err := p4.Concurrent(context.Background(), calls, text, n, 100, limit)
+		if err != nil {
+			t.Fatal(err)
+		}
+		md += cr.Markdown()
+	}
 	out := filepath.Join(mlDir(t), "p4.md")
 	if err := os.WriteFile(out, []byte(md), 0o600); err != nil {
 		t.Fatal(err)

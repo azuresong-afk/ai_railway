@@ -4,7 +4,14 @@
 // находку ожидаемой категории) и отрицательном (без находок). Эталоны —
 // синтетические примеры корпуса testdata/corpus (vectors.go). Вместе с
 // детекторами проверяется политика вызовов инструментов агентами
-// (ADR-0023): эталонные вызовы обязаны получить ожидаемое решение.
+// (ADR-0023): эталонные вызовы обязаны получить ожидаемое решение; хеш
+// описаний инструментов (DM-25), эталона системного промпта (DM-26) и
+// реплик ассистента (DM-03) — совпасть с эталонами.
+//
+// ML-детекторы (ADR-0024) проверяются, если компонент их передал: без
+// aisec-ml эталон даёт ml_unavailable (Result.MLUnavailable) и самотест не
+// валит — как конвейер шлюза, где сбой ML не включает fail_closed; при
+// доступном aisec-ml находки сверяются с эталоном, как у остальных.
 //
 // Провал криптопрофиля всегда останавливает запуск: без исправной
 // криптографии компонент не работает. Провал детекторов и политики
@@ -27,6 +34,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/audit"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/internal/detect"
+	"github.com/azuresong-afk/ai_railway/internal/detect/session"
 	"github.com/azuresong-afk/ai_railway/internal/integrity"
 	"github.com/azuresong-afk/ai_railway/internal/policy"
 	"github.com/azuresong-afk/ai_railway/internal/policy/tooldesc"
@@ -44,12 +52,15 @@ const (
 	ProblemMissed     Problem = "missed"     // ожидаемая категория не найдена
 	ProblemUnexpected Problem = "unexpected" // находка, которой не должно быть
 	ProblemDecision   Problem = "decision"   // решение политики вызовов не совпало с эталоном
-	ProblemHash       Problem = "hash"       // хеш описания инструмента не совпал с эталоном
+	ProblemHash       Problem = "hash"       // хеш описания инструмента, эталона промпта или реплики не совпал с эталоном
 )
 
 // Failure — провал одного эталона. Текста эталона и находок не содержит.
 type Failure struct {
-	Detector string // пусто — криптопрофиль; ToolsCheck — политика вызовов; DescriptorCheck — хеш описаний
+	// Detector: пусто — криптопрофиль; ToolsCheck — политика вызовов;
+	// DescriptorCheck — хеш описаний; PromptCheck, HistoryCheck — хеш
+	// эталона промпта и реплик.
+	Detector string
 	Vector   string // ID эталона (ID примера корпуса)
 	Problem  Problem
 	Category string // для missed и unexpected
@@ -64,7 +75,11 @@ type Result struct {
 	Detectors int // проверено детекторов
 	Vectors   int // прогнано эталонов детекторов
 	Tools     int // прогнано эталонов политики вызовов и хеша описаний
-	Failures  []Failure
+	Hashes    int // прогнано эталонов хеша промпта и реплик (DM-26, DM-03)
+	// MLUnavailable — эталоны ML-детекторов без ответа aisec-ml
+	// (ml_unavailable): не провал, но в журнале и аудите.
+	MLUnavailable int
+	Failures      []Failure
 	// cryptoErr — причина провала криптопрофиля для журнала.
 	cryptoErr error
 }
@@ -115,12 +130,14 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 	}
 	res.Failures = append(res.Failures, runTools(cfg.Now(), &res.Tools)...)
 	res.Failures = append(res.Failures, runDescriptors(cfg.Provider, &res.Tools)...)
+	res.Failures = append(res.Failures, runHashes(cfg.Provider, &res.Hashes)...)
 	reg, err := detect.NewRegistry(cfg.Detectors...)
 	if err != nil {
 		return res, fmt.Errorf("самотест: %w", err)
 	}
 	for _, d := range cfg.Detectors {
 		res.Detectors++
+		ml := mlBacked(d)
 		vs := vectorsFor(d.ID())
 		if !hasBoth(vs) {
 			res.Failures = append(res.Failures, Failure{Detector: d.ID(), Problem: ProblemNoVectors})
@@ -134,6 +151,10 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 				return res, fmt.Errorf("самотест прерван: %w", err)
 			}
 			res.Vectors++
+			if ml && len(runErrs) > 0 {
+				res.MLUnavailable++
+				continue
+			}
 			res.Failures = append(res.Failures, compare(d.ID(), v, fs, runErrs)...)
 		}
 	}
@@ -209,6 +230,54 @@ func runDescriptors(p aisecCrypto.Provider, n *int) []Failure {
 	return out
 }
 
+// runHashes прогоняет эталоны хеша системного промпта (promptVectors) и
+// реплик ассистента (historyVectors) на криптопрофиле компонента: хеш
+// эталона промпта считает сервер, а сравнивает шлюз; хеши реплик шлюз
+// считает потоком и целиком. Расхождение дало бы ложные находки
+// prompt.integrity и history.integrity или пропуск подмены.
+func runHashes(p aisecCrypto.Provider, n *int) []Failure {
+	h, err := p.Hasher()
+	if err != nil {
+		return []Failure{{Detector: PromptCheck, Problem: ProblemError}, {Detector: HistoryCheck, Problem: ProblemError}}
+	}
+	sha := h.Name() == "SHA-256"
+	var out []Failure
+	for _, v := range promptVectors {
+		*n++
+		a := session.PromptHash(h, v.A)
+		if (a == session.PromptHash(h, v.B)) != v.Same || sha && v.SHA256 != "" && a != v.SHA256 {
+			out = append(out, Failure{Detector: PromptCheck, Vector: v.ID, Problem: ProblemHash})
+		}
+	}
+	for _, v := range historyVectors {
+		*n++
+		s := replyHash(h, v.Stream...)
+		if bytes.Equal(s, replyHash(h, v.History)) != v.Same || sha && v.SHA256 != "" && hex.EncodeToString(s) != v.SHA256 {
+			out = append(out, Failure{Detector: HistoryCheck, Vector: v.ID, Problem: ProblemHash})
+		}
+	}
+	return out
+}
+
+// replyHash — хеш реплики, как его считает шлюз до имитовставки на ключе
+// сессий: нормализация потоком (session.Normalizer) по частям.
+func replyHash(h aisecCrypto.Hasher, parts ...string) []byte {
+	sum := h.New()
+	nz := session.NewNormalizer(sum)
+	for _, p := range parts {
+		nz.WriteString(p)
+	}
+	nz.Flush()
+	return sum.Sum(nil)
+}
+
+// mlBacked — детектор работает через aisec-ml (ADR-0024): заглушка
+// internal/detect/builtin или детектор шлюза с клиентом aisec-ml.
+func mlBacked(d detect.Detector) bool {
+	m, ok := d.(interface{ MLBacked() bool })
+	return ok && m.MLBacked()
+}
+
 func hasBoth(vs []Vector) bool {
 	pos, neg := false, false
 	for _, v := range vs {
@@ -271,7 +340,8 @@ func Startup(ctx context.Context, cfg StartupConfig) (Result, error) {
 		return res, err
 	}
 	attrs := []any{"class", "selftest", "profile", res.Profile, "crypto_ok", res.CryptoOK,
-		"detectors", res.Detectors, "vectors", res.Vectors, "tool_vectors", res.Tools}
+		"detectors", res.Detectors, "vectors", res.Vectors, "tool_vectors", res.Tools, "hash_vectors", res.Hashes,
+		"ml_unavailable", res.MLUnavailable}
 	if res.OK() {
 		cfg.Logger.Info("самотестирование пройдено", attrs...)
 		return res, nil
@@ -318,7 +388,7 @@ func (r Result) Details() map[string]any {
 	}
 	return map[string]any{
 		"profile": r.Profile, "crypto_ok": r.CryptoOK, "detectors": r.Detectors, "vectors": r.Vectors,
-		"failures": list, "omitted": omitted,
+		"tool_vectors": r.Tools, "hash_vectors": r.Hashes, "ml_unavailable": r.MLUnavailable, "failures": list, "omitted": omitted,
 	}
 }
 

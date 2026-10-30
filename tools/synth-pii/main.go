@@ -2,7 +2,9 @@
 // тестов: валидные контрольные суммы, но значения не могут принадлежать
 // реальным лицам (internal/detect/pii, synth.go). Значения детерминированы
 // номером: synth-pii -kind inn12 -from 1 -n 5. Счёт с тем же номером, что и
-// БИК, проходит проверку ключа по этому БИК.
+// БИК, проходит проверку ключа по этому БИК. Вид ner — фразы с размеченными
+// именами, организациями и адресами для pii.ner (ner.go): synth-pii -kind
+// ner -split check -format corpus -n 260.
 package main
 
 import (
@@ -22,14 +24,22 @@ var kinds = map[string]func(uint64) string{
 	"bik": pii.SynthBIK, "account": pii.SynthAccount,
 }
 
-const kindList = "snils, inn10, inn12, ogrn, ogrnip, card, passport, phone, email, bik, account"
+const kindList = "snils, inn10, inn12, ogrn, ogrnip, card, passport, phone, email, bik, account, ner"
 
 func main() {
 	kind := flag.String("kind", "", "вид: "+kindList)
 	from := flag.Uint64("from", 1, "номер первого значения")
 	n := flag.Int("n", 10, "сколько значений (до 10 000)")
+	split := flag.String("split", "train", "ner: часть корпуса — train (обучение) или check (проверка)")
+	format := flag.String("format", "corpus", "ner: corpus — строки корпуса детекторов, spans — текст и сущности для обучения")
 	flag.Parse()
-	if err := run(os.Stdout, *kind, *from, *n); err != nil {
+	var err error
+	if *kind == "ner" {
+		err = runNER(os.Stdout, *split, *format, *from, *n)
+	} else {
+		err = run(os.Stdout, *kind, *from, *n)
+	}
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "synth-pii:", err)
 		os.Exit(2)
 	}

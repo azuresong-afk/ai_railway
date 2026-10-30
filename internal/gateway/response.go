@@ -183,6 +183,7 @@ func (h *ChatHandler) outputCheck(ctx context.Context, app *App, user string, te
 	return app.inspect(ctx, inspectRequest{
 		Endpoint: policy.EndpointChat, Direction: detect.Output, Mode: mode, External: app.Provider.External(), Texts: texts, User: user,
 		Mask: forEvent && app.Storage == events.StorageMasked, Timeout: h.cfg.DetectorTimeout, DetectOnly: detectOnly,
+		Window: detectOnly && !forEvent,
 	})
 }
 

@@ -5,17 +5,24 @@
 // Окно — скользящее приближённо: счёт текущего окна плюс доля прошлого
 // по оставшемуся времени. Память ограничена: не больше MaxKeys ключей,
 // при переполнении вытесняется давно не использованный ключ, его счётчик
-// сбрасывается (fail-open по счётчику, метрика Evictions выводится на
-// «Состоянии системы»). Пакет чистый, без сети: его используют MCP-прокси и
-// путь chat (задача 4.11).
+// сбрасывается (fail-open по счётчику). Вытеснения считает Evictions, а
+// Maintain пишет о них предупреждение в журнал шлюза; вывод на «Состоянии
+// системы» — этап 5 (4Н11 ревью 4.r1). Пакет без сети: его используют
+// MCP-прокси и путь chat (задача 4.11).
 package toolrate
 
 import (
 	"container/list"
+	"context"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
 )
+
+// SweepIdle — ключ без вызовов дольше двух самых длинных окон (24 ч,
+// политика вызовов) уже ничего не считает и удаляется Maintain.
+const SweepIdle = 48 * time.Hour
 
 // DefaultMaxKeys — предел ключей по умолчанию (ADR-0023, раздел 4).
 const DefaultMaxKeys = 100000
@@ -134,8 +141,32 @@ func (e *entry) count(now time.Time) float64 {
 	return float64(e.cur) + float64(e.prev)*rest
 }
 
+// Maintain раз в every удаляет ключи, не использованные дольше idle
+// (Sweep), и пишет предупреждение, если с прошлого раза ключи вытеснялись
+// пределом: их счётчики сброшены, лимиты по ним — fail-open (4Н11 ревью
+// 4.r1). В журнал — только числа, без ключей (в них ID агентов и сессий).
+// Возвращается при отмене ctx.
+func (c *Counters) Maintain(ctx context.Context, every, idle time.Duration, logger *slog.Logger) {
+	t := time.NewTicker(every)
+	defer t.Stop()
+	var seen uint64
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-t.C:
+			c.Sweep(now, idle)
+			if n := c.Evictions(); n > seen {
+				logger.Warn("счётчики лимитов вызовов инструментов: ключи вытеснены пределом, их счёт начат заново",
+					"evicted", n-seen, "max_keys", c.max)
+				seen = n
+			}
+		}
+	}
+}
+
 // Sweep удаляет ключи, не использованные дольше idle: память не держит
-// счётчики давно ушедших сессий. Вызывается периодически.
+// счётчики давно ушедших сессий. Вызывается периодически (Maintain).
 func (c *Counters) Sweep(now time.Time, idle time.Duration) int {
 	c.mu.Lock()
 	defer c.mu.Unlock()

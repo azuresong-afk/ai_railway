@@ -43,6 +43,16 @@ type Store interface {
 	Create(ctx context.Context, rec Record, entry audit.Entry) error
 }
 
+// KeysTimeStore — момент последнего получения ключей IdP (миграция 0067,
+// 4Н14 ревью 4.r2): срок ключей прежней версии отсчитывается от него и
+// после перезапуска сервера. Memory и PGStore его реализуют; хранилище без
+// него — отсчёт от запуска.
+type KeysTimeStore interface {
+	// UserTokenKeysAt — сохранённый момент; нулевое время — его нет.
+	UserTokenKeysAt(ctx context.Context, orgID string) (time.Time, error)
+	SetUserTokenKeysAt(ctx context.Context, orgID string, at time.Time) error
+}
+
 // Auditor — журнал аудита для записей без изменения данных (выдача пакета,
 // отчёт шлюза, неудачная сборка).
 type Auditor interface {
@@ -54,10 +64,26 @@ type Memory struct {
 	mu      sync.Mutex
 	recs    map[string][]Record
 	entries []audit.Entry
+	keysAt  map[string]time.Time
 }
 
 // NewMemory создаёт пустое хранилище.
-func NewMemory() *Memory { return &Memory{recs: map[string][]Record{}} }
+func NewMemory() *Memory { return &Memory{recs: map[string][]Record{}, keysAt: map[string]time.Time{}} }
+
+// UserTokenKeysAt — см. KeysTimeStore.
+func (m *Memory) UserTokenKeysAt(_ context.Context, orgID string) (time.Time, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.keysAt[orgID], nil
+}
+
+// SetUserTokenKeysAt — см. KeysTimeStore.
+func (m *Memory) SetUserTokenKeysAt(_ context.Context, orgID string, at time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.keysAt[orgID] = at
+	return nil
+}
 
 // Latest — см. Store.
 func (m *Memory) Latest(_ context.Context, orgID string) (Record, error) {
@@ -176,6 +202,36 @@ func (s *PGStore) Create(ctx context.Context, rec Record, entry audit.Entry) err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("пакеты: фиксация: %w", err)
+	}
+	return nil
+}
+
+// UserTokenKeysAt — см. KeysTimeStore.
+func (s *PGStore) UserTokenKeysAt(ctx context.Context, orgID string) (time.Time, error) {
+	ctx, cancel := pgCtx(ctx)
+	defer cancel()
+	var at time.Time
+	err := s.db.QueryRow(ctx, `SELECT fetched_at FROM user_token_keys_state WHERE org_id = $1`, orgID).Scan(&at)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return time.Time{}, nil
+	}
+	if err != nil {
+		return time.Time{}, fmt.Errorf("пакеты: момент получения ключей IdP: %w", err)
+	}
+	return at, nil
+}
+
+// SetUserTokenKeysAt — см. KeysTimeStore. Момент не уходит назад: другой
+// экземпляр сервера мог записать более поздний.
+func (s *PGStore) SetUserTokenKeysAt(ctx context.Context, orgID string, at time.Time) error {
+	ctx, cancel := pgCtx(ctx)
+	defer cancel()
+	var ok bool
+	err := s.db.QueryRow(ctx, `INSERT INTO user_token_keys_state (org_id, fetched_at) VALUES ($1, $2)
+		ON CONFLICT (org_id) DO UPDATE SET fetched_at = greatest(user_token_keys_state.fetched_at, EXCLUDED.fetched_at)
+		RETURNING true`, orgID, at).Scan(&ok)
+	if err != nil {
+		return fmt.Errorf("пакеты: запись момента получения ключей IdP: %w", err)
 	}
 	return nil
 }

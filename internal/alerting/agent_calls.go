@@ -66,13 +66,16 @@ func agentFieldValue(rec *events.Record, field string) string {
 	return ""
 }
 
-// processToolPoisoning — DM-24 по принятым событиям agent_mcp в транзакции
-// приёма: одно оповещение на MCP-сервер и инструмент. Имена инструментов в
-// событии уже проверены (events.Agent), описаний в оповещении нет.
+// processToolPoisoning — DM-24 по принятым событиям agent_mcp и
+// agent_tool_call (описания из служебного tools/list шлюза перед вызовом —
+// ревью 4.r1, остаток для G3) в транзакции приёма: одно оповещение на
+// MCP-сервер и инструмент. Имена инструментов в событии уже проверены
+// (events.Agent), описаний в оповещении нет.
 func processToolPoisoning(ctx context.Context, ops txOps, evs []*events.Event) error {
 	g := group{by: map[string]*Trigger{}}
 	for _, e := range evs {
-		if e.Type != events.TypeAgentMCP || e.Agent == nil || len(e.Agent.Poisoned) == 0 || e.Agent.Server == "" {
+		if e.Type != events.TypeAgentMCP && e.Type != events.TypeAgentToolCall || e.Agent == nil || len(e.Agent.Poisoned) == 0 ||
+			e.Agent.Server == "" {
 			continue
 		}
 		ts, err := events.PartitionTime(e.ID)

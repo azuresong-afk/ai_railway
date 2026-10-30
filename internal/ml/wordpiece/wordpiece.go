@@ -17,6 +17,7 @@ package wordpiece
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -251,8 +252,10 @@ func (t *Tokenizer) Special() (cls, sep int64) { return t.cls, t.sep }
 
 // Encode — токены текста без служебных: номера и байтовые границы в text.
 // Не больше limit токенов; truncated — у текста есть ещё токены. Длина
-// текста проверяется до разбора.
-func (t *Tokenizer) Encode(text string, limit int) (ids []int64, offsets [][2]int, truncated bool, err error) {
+// текста проверяется до разбора. Срок ctx проверяется каждые checkEvery
+// символов (4В31): разбор идёт в слоте исполнителя aisec-ml, и брошенный
+// шлюзом запрос не должен занимать его до конца текста.
+func (t *Tokenizer) Encode(ctx context.Context, text string, limit int) (ids []int64, offsets [][2]int, truncated bool, err error) {
 	if len(text) > MaxText || !utf8.ValidString(text) {
 		return nil, nil, false, fmt.Errorf("wordpiece: текст больше %d байт или не UTF-8", MaxText)
 	}
@@ -260,7 +263,11 @@ func (t *Tokenizer) Encode(text string, limit int) (ids []int64, offsets [][2]in
 		return nil, nil, false, errors.New("wordpiece: предел токенов меньше 1")
 	}
 	e := encoder{t: t, limit: limit}
+	n := 0
 	for pos := 0; pos < len(text) && !e.full(); {
+		if n++; n%checkEvery == 0 && ctx.Err() != nil {
+			return nil, nil, false, fmt.Errorf("wordpiece: %w", context.Cause(ctx))
+		}
 		r, size := utf8.DecodeRuneInString(text[pos:])
 		e.char(r, pos, pos+size)
 		pos += size
@@ -274,6 +281,10 @@ func (t *Tokenizer) Encode(text string, limit int) (ids []int64, offsets [][2]in
 	return e.ids, e.offs, false, nil
 }
 
+// checkEvery — через сколько символов Encode проверяет срок: разбор
+// тысячи символов в худшем случае — десятки микросекунд.
+const checkEvery = 1024
+
 // encoder — разбор одного текста: слово копится символами (нормализованный
 // символ и его байтовые границы в исходном тексте) и разбирается WordPiece
 // на границе слова.
@@ -285,6 +296,9 @@ type encoder struct {
 	word  []rune
 	spans [][2]int
 	buf   []byte
+	// ends — конец каждого символа кандидата в buf: префиксы кандидата
+	// проверяются по этим границам без повторной сборки строки.
+	ends []int
 }
 
 // full — набрано на один токен больше предела: известно, что текст длиннее.
@@ -334,16 +348,21 @@ func (e *encoder) flush() {
 	}
 	mark := len(e.ids)
 	for start := 0; start < len(w); {
+		// Кандидат на позиции собирается один раз (4В31): префиксы —
+		// срезы buf по границам символов, от самого длинного.
+		last := min(len(w), start+t.maxPiece)
+		e.buf, e.ends = e.buf[:0], e.ends[:0]
+		if start > 0 {
+			e.buf = append(e.buf, t.prefix...)
+		}
+		for _, r := range w[start:last] {
+			e.buf = utf8.AppendRune(e.buf, r)
+			e.ends = append(e.ends, len(e.buf))
+		}
 		found := false
-		for end := min(len(w), start+t.maxPiece); end > start; end-- {
-			e.buf = e.buf[:0]
-			if start > 0 {
-				e.buf = append(e.buf, t.prefix...)
-			}
-			for _, r := range w[start:end] {
-				e.buf = utf8.AppendRune(e.buf, r)
-			}
-			if id, ok := t.vocab[string(e.buf)]; ok {
+		for k := len(e.ends); k > 0; k-- {
+			if id, ok := t.vocab[string(e.buf[:e.ends[k-1]])]; ok {
+				end := start + k
 				e.ids, e.offs = append(e.ids, id), append(e.offs, [2]int{spans[start][0], spans[end-1][1]})
 				start, found = end, true
 				break

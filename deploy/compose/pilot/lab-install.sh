@@ -307,15 +307,18 @@ fi
 [ -z "$mirror" ] || set_env AISEC_POSTGRES_IMAGE "$mirror/postgres"
 echo "Хост подготовлен: $data_dir, .env заполнен."
 
-# Каталог для aisec-cli tls check: root:aisec 0750, файлы root:aisec 0440 —
-# aisec-cli (пользователь aisec) читает их, но подменить не может; root
-# ставит в secrets ровно то, что проверено. Удаляется при любом выходе.
+# Каталог для aisec-cli tls check: root:root 0700, файлы root 0400 —
+# ключ шлюза не открывается группе aisec; проверка идёт в контейнере от
+# root без сети (4Н17 ревью 4.r2). root ставит в secrets ровно то, что
+# проверено. Удаляется при любом выходе; копии, оставшиеся после SIGKILL
+# или OOM прежнего запуска (ловушка EXIT не сработала), удаляются в начале.
 stage_open() {
+	find "$data_dir" -maxdepth 1 -name 'tls-check.*' -type d -exec rm -rf {} +
 	stage=$(mktemp -d "$data_dir/tls-check.XXXXXX")
 	trap 'rm -rf "$stage"' EXIT
 	trap 'exit 130' INT TERM
-	chown root:aisec "$stage"
-	chmod 0750 "$stage"
+	chown root:root "$stage"
+	chmod 0700 "$stage"
 }
 
 # stage_file ИСТОЧНИК ИМЯ — только обычный файл без символьных и жёстких
@@ -323,12 +326,15 @@ stage_open() {
 stage_file() {
 	[ "$(find "$1" -prune -type f -links 1)" = "$1" ] || die "$1: нужен обычный файл без символьных и жёстких ссылок"
 	[ "$(wc -c <"$1")" -le 65536 ] || die "$1: больше 64 КиБ — это не сертификат и не ключ"
-	install -o root -g aisec -m 0440 "$1" "$stage/$2"
+	install -o root -g root -m 0400 "$1" "$stage/$2"
 }
 
-# stage_check ПОДСКАЗКА — tls check; при ошибке — отказ с подсказкой.
+# stage_check ПОДСКАЗКА — tls check в отдельном контейнере: от root (файлы
+# 0400), без сети, без привилегий, с корнем только для чтения; при ошибке —
+# отказ с подсказкой.
 stage_check() {
-	docker compose run --rm --no-deps -T -v "$stage:/in:ro" aisec-cli tls check -dir /in -hosts "$hosts" -console-name "$console_name" ||
+	docker run --rm --user 0:0 --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
+		-v "$stage:/in:ro" "${image_repo:-aisec}/aisec-cli:$tag" tls check -dir /in -hosts "$hosts" -console-name "$console_name" ||
 		die "сертификаты не прошли проверку (пункты выше): $1"
 }
 

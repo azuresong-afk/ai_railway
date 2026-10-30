@@ -15,6 +15,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/detect/builtin"
 	"github.com/azuresong-afk/ai_railway/internal/detect/corpus"
 	"github.com/azuresong-afk/ai_railway/internal/detect/injection"
+	"github.com/azuresong-afk/ai_railway/internal/detect/pii"
 	"github.com/azuresong-afk/ai_railway/internal/gateway"
 	"github.com/azuresong-afk/ai_railway/internal/ml"
 	"github.com/azuresong-afk/ai_railway/internal/ml/mltest"
@@ -35,7 +36,13 @@ func serve(t *testing.T) *gateway.MLClient {
 		Labels: []string{"dangerous", "insult", "non-toxic", "obscenity", "threat"}, Directions: []string{"input", "output"}},
 		map[string]string{"идиот": "insult", "дебил": "insult", "нахуй": "obscenity", "бля": "obscenity", "убью": "threat",
 			"наркотики": "dangerous"}, nil)
-	srv, err := ml.NewServer(ml.ServerConfig{Models: []ml.Model{inj, tox}, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	// pii.ner: метки BIO, находки — сущности (per, org, addr); слова —
+	// приметы отчеств, правовых форм и адресов.
+	ner := mltest.NewModel(ml.ModelInfo{ID: "pii-ner-ru", Version: "test",
+		Labels:     []string{"o", "b-per", "i-per", "b-org", "i-org", "b-loc", "i-loc", "b-addr", "i-addr"},
+		Directions: []string{"input", "output"}},
+		map[string]string{"ович": "per", "овна": "per", "евич": "per", "ООО «": "org", "АО «": "org", "ул. ": "addr", "кв. ": "addr"}, nil)
+	srv, err := ml.NewServer(ml.ServerConfig{Models: []ml.Model{inj, tox, ner}, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,6 +139,73 @@ func TestDM18_MLCorpusOnTestExecutor(t *testing.T) {
 	}
 }
 
+// Корпус pii.ner (синтетика tools/synth-pii, вымышленные люди, организации
+// и адреса) — путь шлюз → aisec-ml → находки и расчёт Р4 против словарной
+// эвристики (testdata/ml/ner-baseline.json) и pii.ru, который имён не
+// ищет. Качество — make ml-p4 на машине владельца.
+//
+// Покрывает: DM-31 (NER)
+func TestDM31_NERCorpusOnTestExecutor(t *testing.T) {
+	c := serve(t)
+	d := mlDetector(t, builtin.PIINERID, c)
+	dir := filepath.Join(root, "testdata/corpus/pii.ner")
+	checkCorpus(t, d, dir)
+	base, err := p4.ListsBaseline(filepath.Join(root, "testdata/ml/ner-baseline.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rs, err := p4.Run(context.Background(), []p4.Case{
+		{ML: d, Heuristic: base, Corpus: dir, Threshold: 0.7},
+		{ML: d, Heuristic: pii.New(), Corpus: dir, Threshold: 0.7},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range rs {
+		if r.MLm.Errors != 0 || r.MLm.Pos != 243 || r.MLm.Neg != 57 || r.MLm.TP == 0 {
+			t.Fatalf("%+v", r)
+		}
+	}
+	if rs[0].Heur.Recall() < 0.5 || rs[1].Heur.Recall() > 0.05 {
+		t.Fatalf("эвристики: словарь %v, pii.ru %v", rs[0].Heur.Recall(), rs[1].Heur.Recall())
+	}
+}
+
+// Находка pii.ner в ответе модели — строка DM-09, в запросе — DM-31 (как
+// у pii.ru); границы — целые слова.
+//
+// Покрывает: DM-09 (NER)
+func TestDM09_NERCorpusThreatByDirection(t *testing.T) {
+	d := mlDetector(t, builtin.PIINERID, serve(t))
+	samples, err := corpus.Load(filepath.Join(root, "testdata/corpus/pii.ner"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]int{}
+	for _, s := range samples {
+		fs, err := d.Detect(context.Background(), detect.Text{Text: s.Text, Direction: s.Direction, Source: s.Source})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := "DM-31"
+		if s.Direction == detect.Output {
+			want = "DM-09"
+		}
+		for _, f := range fs {
+			if f.Threat != want {
+				t.Fatalf("%s: %+v", s.ID, f)
+			}
+			if f.Category == builtin.CatPerson && (strings.HasPrefix(s.Text[f.Start:], "ович") || strings.HasPrefix(s.Text[f.Start:], "овна")) {
+				t.Fatalf("%s: фрагмент не расширен до слова: %q", s.ID, s.Text[f.Start:f.End])
+			}
+			seen[f.Threat]++
+		}
+	}
+	if seen["DM-09"] == 0 || seen["DM-31"] == 0 {
+		t.Fatalf("находки по строкам: %v", seen)
+	}
+}
+
 // checkCorpus — каждый пример корпуса проходит через ML-детектор без сбоя,
 // находки — только категорий детектора и проходят проверку находок.
 func checkCorpus(t *testing.T, d detect.Detector, dir string) {
@@ -205,4 +279,26 @@ func (f fake) Detect(_ context.Context, t detect.Text) ([]detect.Finding, error)
 		return []detect.Finding{{Detector: f.id, Category: "x.y", Score: s, End: len(t.Text)}}, nil
 	}
 	return nil, nil
+}
+
+// 4В30 (г): модели вызываются одновременно, время — до ответа последней;
+// p95 сверяется со сроком вызова шлюза.
+func TestConcurrent(t *testing.T) {
+	slow := func(d time.Duration) func(context.Context, string) error {
+		return func(context.Context, string) error { time.Sleep(d); return nil }
+	}
+	calls := map[string]func(context.Context, string) error{"a": slow(time.Millisecond), "b": slow(20 * time.Millisecond), "c": slow(time.Millisecond)}
+	r, err := p4.Concurrent(context.Background(), calls, "x", 8000, 10, 15*time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.P95 < 20*time.Millisecond || r.P95 > 80*time.Millisecond || r.Pass || len(r.Models) != 3 {
+		t.Fatalf("одновременно: %+v", r)
+	}
+	if !strings.Contains(r.Markdown(), "не укладывается") {
+		t.Fatalf("строка: %s", r.Markdown())
+	}
+	if r, err = p4.Concurrent(context.Background(), calls, "x", 8000, 10, time.Second); err != nil || !r.Pass {
+		t.Fatalf("срок с запасом: %+v %v", r, err)
+	}
 }

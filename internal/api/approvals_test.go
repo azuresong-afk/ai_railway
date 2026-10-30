@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -96,8 +97,17 @@ func TestDM22_ApprovalsConsoleFlow(t *testing.T) {
 		strings.Contains(w.Body.String(), tArgsHash) {
 		t.Fatalf("аудитор: %d %s", w.Code, w.Body)
 	}
-	// Одобрение по хешу показанных аргументов.
+	// 4В37: сессия без второго фактора (аналитику TOTP не обязателен) —
+	// одобрение и риска high только с повторной проверкой.
 	w = e.call(analyst, "POST", "/api/v1/approvals/"+r.ID+"/approve", approveBody(tArgsHash, `,"comment":"Проверено"`), true)
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), `"field":"password"`) {
+		t.Fatalf("одобрение без второго фактора и пароля: %d %s", w.Code, w.Body)
+	}
+	if got := mustApproval(t, e.approvalsSvc, r.ID); got.State != approvals.Pending {
+		t.Fatalf("одобрено без повторной проверки: %s", got.State)
+	}
+	// Одобрение по хешу показанных аргументов.
+	w = e.call(analyst, "POST", "/api/v1/approvals/"+r.ID+"/approve", approveBody(tArgsHash, `,"comment":"Проверено","password":"`+tPhrase+`"`), true)
 	v = decode[ApprovalView](t, w.Body.Bytes())
 	if w.Code != 200 || v.State != approvals.Approved || v.DecidedBy != "analyst" || v.Comment != "Проверено" {
 		t.Fatalf("одобрение: %d %s", w.Code, w.Body)
@@ -212,6 +222,47 @@ func TestDM22_ApprovalsCriticalReauth(t *testing.T) {
 	}
 }
 
+// 4Н8 ревью 4.r1 (остаток): каждый показ аргументов — запись
+// agent.approval.args_read, без записи аргументы не выдаются (503);
+// аргументы закрытого запроса — только с events.content.read.
+func TestDM22_ApprovalArgsReadAudited(t *testing.T) {
+	e := newAppsEnv(t)
+	analyst, admin := e.mustLogin(t, "analyst"), e.mustLogin(t, "admin")
+	r := e.pendingApproval(t, policy.RiskHigh)
+	path := "/api/v1/approvals/" + r.ID
+	e.rec.mu.Lock()
+	e.rec.err = errors.New("журнал недоступен")
+	e.rec.mu.Unlock()
+	if w := e.call(analyst, "GET", path, "", false); w.Code != http.StatusServiceUnavailable || strings.Contains(w.Body.String(), "report.txt") {
+		t.Fatalf("без записи аудита: %d %s", w.Code, w.Body)
+	}
+	e.rec.mu.Lock()
+	e.rec.err = nil
+	e.rec.mu.Unlock()
+	if w := e.call(analyst, "GET", path, "", false); w.Code != 200 || !strings.Contains(w.Body.String(), "report.txt") {
+		t.Fatalf("дежурный: %d %s", w.Code, w.Body)
+	}
+	recs := e.rec.find("agent.approval.args_read")
+	if len(recs) != 1 || recs[0].Actor.Name != "analyst" || recs[0].Object.ID != r.ID || strings.Contains(fmt.Sprint(recs[0].Details), "report.txt") {
+		t.Fatalf("аудит показа: %+v", recs)
+	}
+	if _, err := e.approvalsSvc.Decide(context.Background(), approvals.By{Actor: audit.Actor{Type: audit.ActorUser, ID: tAdminID, Name: "admin"}},
+		r.ID, approvals.DecideInput{}); err != nil {
+		t.Fatal(err)
+	}
+	// Закрытый запрос: аналитику (нет events.content.read) — без аргументов
+	// и без записи, администратору безопасности — с записью.
+	if w := e.call(analyst, "GET", path, "", false); w.Code != 200 || strings.Contains(w.Body.String(), "report.txt") {
+		t.Fatalf("аналитик, закрытый запрос: %d %s", w.Code, w.Body)
+	}
+	if w := e.call(admin, "GET", path, "", false); w.Code != 200 || !strings.Contains(w.Body.String(), "report.txt") {
+		t.Fatalf("администратор, закрытый запрос: %d %s", w.Code, w.Body)
+	}
+	if recs := e.rec.find("agent.approval.args_read"); len(recs) != 2 || recs[1].Actor.Name != "admin" {
+		t.Fatalf("аудит показа закрытого: %+v", recs)
+	}
+}
+
 func TestDM22_ApprovalsDecisionAfterDeadline(t *testing.T) {
 	e := newAppsEnv(t)
 	analyst := e.mustLogin(t, "analyst")
@@ -219,7 +270,7 @@ func TestDM22_ApprovalsDecisionAfterDeadline(t *testing.T) {
 	e.aclock.mu.Lock()
 	e.aclock.t = e.aclock.t.Add(10 * time.Minute)
 	e.aclock.mu.Unlock()
-	w := e.call(analyst, "POST", "/api/v1/approvals/"+r.ID+"/approve", approveBody(tArgsHash, ""), true)
+	w := e.call(analyst, "POST", "/api/v1/approvals/"+r.ID+"/approve", approveBody(tArgsHash, `,"password":"`+tPhrase+`"`), true)
 	mustProblem(t, w, http.StatusConflict, CodeConflict)
 	if !strings.Contains(w.Body.String(), "Срок подтверждения истёк") {
 		t.Fatalf("текст: %s", w.Body)

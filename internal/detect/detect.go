@@ -198,12 +198,19 @@ type RunError struct {
 
 func (e RunError) Error() string { return e.Detector + ": " + e.Err.Error() }
 
+// ErrPartial — детектор проверил не весь текст (предел модели). Находки
+// проверенной части он возвращает вместе с этой ошибкой, и Run выдаёт их
+// наряду с RunError: найденное маскируется, а вызывающий видит, что
+// проверка неполная.
+var ErrPartial = errors.New("проверена часть текста")
+
 // ErrDetectorTimeout — детектор не уложился в срок.
 var ErrDetectorTimeout = errors.New("детектор не уложился в срок")
 
 // Run запускает детекторы ids, применимые к направлению текста,
 // параллельно, каждому — не дольше timeout. Находки — в порядке ids.
-// Неизвестный ID — ошибка вызывающего кода, а не сбой детектора.
+// Неизвестный ID — ошибка вызывающего кода, а не сбой детектора. Сбой с
+// ErrPartial — и RunError, и находки проверенной части.
 func (r *Registry) Run(ctx context.Context, ids []string, t Text, timeout time.Duration) ([]Finding, []RunError, error) {
 	type result struct {
 		id  string
@@ -233,7 +240,9 @@ func (r *Registry) Run(ctx context.Context, ids []string, t Text, timeout time.D
 	for _, res := range results {
 		if res.err != nil {
 			errs = append(errs, RunError{Detector: res.id, Err: res.err})
-			continue
+			if !errors.Is(res.err, ErrPartial) {
+				continue
+			}
 		}
 		all = append(all, res.fs...)
 	}
@@ -273,14 +282,16 @@ func runOne(parent context.Context, d Detector, t Text, timeout time.Duration) (
 			if ctx.Err() != nil {
 				return nil, stopReason(parent)
 			}
-			return nil, o.err
+			if !errors.Is(o.err, ErrPartial) {
+				return nil, o.err
+			}
 		}
 		for _, f := range o.fs {
 			if err := ValidateFinding(f, d, t.Text); err != nil {
 				return nil, err
 			}
 		}
-		return o.fs, nil
+		return o.fs, o.err
 	case <-ctx.Done():
 		return nil, stopReason(parent)
 	}

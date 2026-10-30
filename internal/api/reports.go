@@ -12,6 +12,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/apps"
 	"github.com/azuresong-afk/ai_railway/internal/audit"
 	"github.com/azuresong-afk/ai_railway/internal/auth"
+	"github.com/azuresong-afk/ai_railway/internal/license"
 	"github.com/azuresong-afk/ai_railway/internal/reports"
 )
 
@@ -327,6 +328,9 @@ func (d Deps) createReportSchedule(w http.ResponseWriter, r *http.Request) {
 		WriteProblem(w, p)
 		return
 	}
+	if !d.complianceScheduleAllowed(w, r, req) {
+		return
+	}
 	s, err := d.Reports.CreateSchedule(r.Context(), by, req)
 	if err != nil {
 		WriteProblem(w, d.reportProblem(err))
@@ -351,12 +355,30 @@ func (d Deps) updateReportSchedule(w http.ResponseWriter, r *http.Request) {
 		WriteProblem(w, p)
 		return
 	}
+	if !d.complianceScheduleAllowed(w, r, req) {
+		return
+	}
 	s, err := d.Reports.UpdateSchedule(r.Context(), by, id, req)
 	if err != nil {
 		WriteProblem(w, d.reportProblem(err))
 		return
 	}
 	WriteJSON(w, http.StatusOK, reportScheduleView(s))
+}
+
+// complianceScheduleAllowed — расписание отчёта «Соответствие» — изменение
+// модуля compliance (ревью 4.r4, как 4Н15): путь маршрута не под префиксом
+// модуля, проверка лицензии — здесь. Удаление расписания не проверяется:
+// это снижение использования модуля.
+func (d Deps) complianceScheduleAllowed(w http.ResponseWriter, r *http.Request, req reports.ScheduleInput) bool {
+	if req.Report != reports.KindCompliance || d.License == nil {
+		return true
+	}
+	if err := d.License.CheckMutation(r.Context(), license.ModuleCompliance); err != nil {
+		WriteProblem(w, licenseProblem(d.Logger, err))
+		return false
+	}
+	return true
 }
 
 func (d Deps) deleteReportSchedule(w http.ResponseWriter, r *http.Request) {

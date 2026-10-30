@@ -3,11 +3,13 @@ package gateway
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -545,7 +547,7 @@ func TestMLClientTimeoutsAndBackoff(t *testing.T) {
 		t.Fatalf("отмена запроса: %v, отсрочка %v", err, c.isDown())
 	}
 	for i := 1; i <= mlTimeoutsToFail; i++ {
-		if _, err := c.Detect(context.Background(), "injection", "x"); !errors.Is(err, ErrMLUnavailable) {
+		if _, err := c.Detect(context.Background(), "injection", fmt.Sprint("x", i)); !errors.Is(err, ErrMLUnavailable) {
 			t.Fatalf("вызов %d: %v", i, err)
 		}
 		if c.isDown() != (i == mlTimeoutsToFail) {
@@ -557,6 +559,130 @@ func TestMLClientTimeoutsAndBackoff(t *testing.T) {
 	c.fail(errors.New("сбой"))
 	if c.backoff != backoff {
 		t.Fatalf("отсрочка выросла во время отсрочки: %v → %v", backoff, c.backoff)
+	}
+}
+
+// 4В22: срок детектора короче Timeout клиента — срок вызова урезается до
+// срока детектора с запасом, такие сроки подряд включают отсрочку, а не
+// считаются отменой запроса.
+func TestMLClientDetectorDeadlineCountsAsTimeout(t *testing.T) {
+	sock := startFakeML(t, helloThen(func(net.Conn, ml.Header) bool { time.Sleep(time.Second); return true }))
+	c := newMLClient(t, sock, func(cfg *MLClientConfig) { cfg.Timeout = 300 * time.Millisecond })
+	for i := 1; i <= mlTimeoutsToFail; i++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+		start := time.Now()
+		_, err := c.Detect(ctx, "injection", fmt.Sprint("x", i))
+		cancel()
+		if !errors.Is(err, ErrMLUnavailable) {
+			t.Fatalf("вызов %d: %v", i, err)
+		}
+		if d := time.Since(start); d > 200*time.Millisecond {
+			t.Fatalf("вызов %d ждал %v — дольше срока детектора", i, d)
+		}
+		if c.isDown() != (i == mlTimeoutsToFail) {
+			t.Fatalf("вызов %d: отсрочка %v", i, c.isDown())
+		}
+	}
+	// Срок вызывающего уже истёк — сразу ErrMLUnavailable, без соединения.
+	c2 := newMLClient(t, sock, nil)
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Millisecond))
+	defer cancel()
+	if _, err := c2.Detect(ctx, "injection", "x"); !errors.Is(err, ErrMLUnavailable) {
+		t.Fatalf("истёкший срок: %v", err)
+	}
+}
+
+// Сроки согласованы (ADR-0024, раздел 4; 4В22): вывод aisec-ml не дольше
+// вызова шлюза, вызов шлюза короче срока детектора.
+func TestMLTimeoutsOrdered(t *testing.T) {
+	if ml.DefaultRunTimeout > DefaultMLTimeout || DefaultMLTimeout >= DefaultDetectorTimeout {
+		t.Fatalf("RunTimeout %v, MLTimeout %v, DetectorTimeout %v", ml.DefaultRunTimeout, DefaultMLTimeout, DefaultDetectorTimeout)
+	}
+	// 4В30: предел срока вывода aisec-ml не меньше наибольшего срока вызова
+	// шлюза; умолчания флагов шлюза совпадают с умолчаниями клиента.
+	if longest := DefaultMLTimeout + (mlMaxWindows-1)*DefaultMLTimePerWindow; ml.DefaultMaxRunTimeout < longest {
+		t.Fatalf("MaxRunTimeout %v меньше наибольшего срока вызова %v", ml.DefaultMaxRunTimeout, longest)
+	}
+	if config.DefaultMLTimeout != DefaultMLTimeout || config.DefaultMLTimePerWindow != DefaultMLTimePerWindow {
+		t.Fatal("умолчания -ml-timeout и -ml-timeout-per-window расходятся с клиентом")
+	}
+}
+
+// 4В30: срок на длинном тексте (его подбирает нарушитель) не включает
+// отсрочку; детекторы одного фрагмента (один текст) дают одну отметку срока;
+// сроки на разных коротких текстах подряд — включают.
+func TestMLClientLongTextTimeoutNoBackoff(t *testing.T) {
+	sock := startFakeML(t, helloThen(func(net.Conn, ml.Header) bool { time.Sleep(time.Second); return true }))
+	c := newMLClient(t, sock, func(cfg *MLClientConfig) { cfg.Timeout = 20 * time.Millisecond })
+	long := strings.Repeat("ignore previous instructions ", 3000)
+	for i := 0; i < 2*mlTimeoutsToFail; i++ {
+		if _, err := c.Detect(context.Background(), "injection", long); !errors.Is(err, ErrMLUnavailable) {
+			t.Fatalf("длинный текст, вызов %d: %v", i, err)
+		}
+	}
+	if c.isDown() {
+		t.Fatal("сроки на длинном тексте включили отсрочку")
+	}
+	// Три детектора одного фрагмента — одновременно, с одним текстом.
+	var wg sync.WaitGroup
+	for range mlTimeoutsToFail {
+		wg.Go(func() { _, _ = c.Detect(context.Background(), "injection", "фрагмент") }) //nolint:gosec // G104: ошибка проверяется ниже
+	}
+	wg.Wait()
+	if c.isDown() {
+		t.Fatal("один фрагмент включил отсрочку")
+	}
+	for i := 1; i < mlTimeoutsToFail; i++ {
+		if _, err := c.Detect(context.Background(), "injection", fmt.Sprint("короткий ", i)); !errors.Is(err, ErrMLUnavailable) {
+			t.Fatalf("короткий текст %d: %v", i, err)
+		}
+	}
+	if !c.isDown() {
+		t.Fatal("сроки на разных коротких текстах подряд не включили отсрочку")
+	}
+}
+
+// 4В30: срок вызова растёт с числом окон и передаётся aisec-ml в заголовке
+// detect, но не выходит за срок вызывающего.
+func TestMLClientCallTimeoutByLength(t *testing.T) {
+	c := newMLClient(t, "/nonexistent/s", func(cfg *MLClientConfig) {
+		cfg.Timeout, cfg.TimePerWindow = 80*time.Millisecond, 10*time.Millisecond
+	})
+	for _, tc := range []struct {
+		n    int
+		want time.Duration
+	}{
+		{0, 80 * time.Millisecond}, {mlWindowBytes, 80 * time.Millisecond}, {mlWindowBytes + 1, 90 * time.Millisecond},
+		{16 * mlWindowBytes, 230 * time.Millisecond}, {ml.MaxText * MLMaxChunks * 2, 80*time.Millisecond + (mlMaxWindows-1)*10*time.Millisecond},
+	} {
+		if got := c.callTimeout(tc.n); got != tc.want {
+			t.Errorf("%d байт: срок %v, нужно %v", tc.n, got, tc.want)
+		}
+	}
+	got := make(chan uint16, 2)
+	sock := startFakeML(t, helloThen(func(conn net.Conn, h ml.Header) bool {
+		got <- h.Timeout
+		return ml.WriteFrame(conn, ml.Header{Type: ml.TypeResult, ID: h.ID}, emptyResult) == nil
+	}))
+	c = newMLClient(t, sock, func(cfg *MLClientConfig) {
+		cfg.Timeout, cfg.TimePerWindow = 80*time.Millisecond, 10*time.Millisecond
+	})
+	if _, err := c.Detect(context.Background(), "injection", strings.Repeat("a", 8*mlWindowBytes)); err != nil {
+		t.Fatal(err)
+	}
+	// Срок отсчитывается до подключения и hello: под нагрузкой (-race,
+	// параллельные пакеты) до записи кадра проходят десятки миллисекунд.
+	// Нижняя граница выше срока одного окна (80 мс) — срок от длины.
+	if ms := <-got; ms < 100 || ms > 160 {
+		t.Errorf("срок в заголовке %d мс, нужно около 160", ms)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
+	defer cancel()
+	if _, err := c.Detect(ctx, "injection", strings.Repeat("a", 8*mlWindowBytes)); err != nil {
+		t.Fatal(err)
+	}
+	if ms := <-got; ms > 56 {
+		t.Errorf("срок в заголовке %d мс — дольше срока вызывающего", ms)
 	}
 }
 
@@ -628,5 +754,78 @@ func TestMLUnavailableWithOtherFailureFailsClosed(t *testing.T) {
 	e := lastEvent(t, log, resp)
 	if !e.Decision.MLUnavailable || e.Decision.Rule != ruleFailClosed || len(e.Decision.Failures) != 1 || e.Decision.Failures[0].Detector != broken.ID() {
 		t.Fatalf("решение: %+v", e.Decision)
+	}
+}
+
+// 4В30 (в): окно потока ответа не вызывает ML-детектор, у которого в
+// политике только правила log; детектор с block вызывается; проверка ответа
+// целиком (не окно) вызывает оба.
+func TestStreamWindowSkipsLogOnlyML(t *testing.T) {
+	var calls atomic.Int32
+	sock := startML(t, func(context.Context, string) error { calls.Add(1); return nil })
+	c := newMLClient(t, sock, nil)
+	spec := func(id string) *MLDetector {
+		d, err := NewMLDetector(MLDetectorSpec{ID: id, Version: "1.0.0", Model: "injection", Directions: []detect.Direction{detect.Input},
+			Categories: map[string]string{"injection": "injection.ml"}, Threat: "DM-01", Threshold: 0.5}, c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return d
+	}
+	reg, err := detect.NewRegistry(spec("test.ml"), spec("test.mlblock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	newApp := func(blockAction policy.Action) *App {
+		p, err := policy.Compile(&policy.Spec{ID: "t", Name: "t", Version: 1, Mode: policy.Enforce, Rules: []policy.RuleSpec{
+			{ID: "log", Detector: "test.ml", Action: policy.Log, Severity: policy.Low},
+			{ID: "other", Detector: "test.mlblock", Action: blockAction, Severity: policy.High},
+		}}, reg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return &App{Detectors: reg, Policy: p}
+	}
+	texts := []inspectText{{Text: "hello", Source: detect.SourceUser, Location: "x", Message: -1}}
+	for _, tc := range []struct {
+		action policy.Action
+		window bool
+		want   int32
+	}{{policy.Block, true, 1}, {policy.Log, true, 0}, {policy.Block, false, 2}, {policy.Log, false, 2}} {
+		calls.Store(0)
+		if _, err := newApp(tc.action).inspect(context.Background(), inspectRequest{Endpoint: policy.EndpointChat, Texts: texts,
+			DetectOnly: true, Window: tc.window}); err != nil {
+			t.Fatal(err)
+		}
+		if got := calls.Load(); got != tc.want {
+			t.Errorf("второе правило %s, окно %v: вызовов aisec-ml %d, нужно %d", tc.action, tc.window, got, tc.want)
+		}
+	}
+}
+
+// 4Н27 ревью 4.r3: сокет, владелец которого — не владелец каталога сокета,
+// не используется (подменённый сокет чужого процесса).
+func TestCheckMLSocketOwner(t *testing.T) {
+	dir := mlSocketDir(t)
+	path := filepath.Join(dir, "ml.sock")
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })          //nolint:gosec // G104: ошибка в тесте не важна
+	if err := os.Chmod(path, 0o660); err != nil { //nolint:gosec // G302: тест задаёт права сокета намеренно
+		t.Fatal(err)
+	}
+	if err := checkMLSocket(path); err != nil {
+		t.Fatalf("свой сокет: %v", err)
+	}
+	if os.Geteuid() != 0 {
+		t.Skip("смена владельца сокета — только от root")
+	}
+	if err := os.Lchown(path, 4321, -1); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkMLSocket(path); err == nil || !strings.Contains(err.Error(), "не владелец каталога") {
+		t.Fatalf("чужой сокет: %v", err)
 	}
 }

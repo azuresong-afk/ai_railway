@@ -74,7 +74,7 @@ const (
 
 func main() {
 	root := flag.String("root", ".", "корень репозитория")
-	sarifPath := flag.String("sarif", "build/sast/gosec.sarif", "отчёт SARIF")
+	sarifPath := flag.String("sarif", "build/sast/gosec.sarif", "отчёты SARIF через запятую (прогоны с разными тегами сборки)")
 	triagePath := flag.String("triage", "docs/cert/sast-triage/triage.yaml", "файл разметки")
 	suppressedOut := flag.String("suppressed", "build/sast/suppressed.md", "куда записать перечень подавлений в коде")
 	flag.Parse()
@@ -97,14 +97,22 @@ func run(root, sarifPath, triagePath, suppressedOut string) (err error) {
 	}()
 	fsys := r.FS()
 
-	sarifData, err := readLimited(fsys, sarifPath, maxSARIF)
-	if err != nil {
-		return err
+	// Несколько отчётов — прогоны с разными тегами сборки (4В39 ревью 4.r4:
+	// исполнитель ONNX Runtime в aisec-ml собирается с тегом aisec_onnx);
+	// разметка сверяется с их объединением.
+	var lists [][]Finding
+	for _, path := range strings.Split(sarifPath, ",") {
+		sarifData, err := readLimited(fsys, path, maxSARIF)
+		if err != nil {
+			return err
+		}
+		f, err := ParseSARIF(sarifData)
+		if err != nil {
+			return fmt.Errorf("%s: %w", path, err)
+		}
+		lists = append(lists, f)
 	}
-	findings, err := ParseSARIF(sarifData)
-	if err != nil {
-		return err
-	}
+	findings := MergeFindings(lists...)
 	for i := range findings {
 		findings[i].Snippet = sourceLine(fsys, findings[i].File, findings[i].Line)
 	}
@@ -263,6 +271,23 @@ func ParseTriage(data []byte) (*Triage, error) {
 
 func key(rule, file, snippet string) string {
 	return rule + "\x00" + file + "\x00" + strings.TrimSpace(snippet)
+}
+
+// MergeFindings объединяет срабатывания нескольких отчётов: файл, который
+// попал в оба прогона, даёт одно срабатывание (правило, файл, строка).
+func MergeFindings(lists ...[]Finding) []Finding {
+	out := []Finding{}
+	seen := map[string]bool{}
+	for _, l := range lists {
+		for _, f := range l {
+			k := fmt.Sprintf("%s\x00%s\x00%d", f.Rule, f.File, f.Line)
+			if !seen[k] {
+				seen[k] = true
+				out = append(out, f)
+			}
+		}
+	}
+	return out
 }
 
 // Compare сверяет срабатывания с разметкой. Возвращает нарушения и

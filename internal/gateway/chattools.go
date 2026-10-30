@@ -10,6 +10,7 @@ import (
 
 	"github.com/azuresong-afk/ai_railway/internal/chat"
 	"github.com/azuresong-afk/ai_railway/internal/detect"
+	"github.com/azuresong-afk/ai_railway/internal/detect/builtin"
 	"github.com/azuresong-afk/ai_railway/internal/policy"
 	"github.com/azuresong-afk/ai_railway/internal/policy/tooldesc"
 )
@@ -199,10 +200,23 @@ func (a *App) ApprovalArgs(ctx context.Context, args []byte, timeout time.Durati
 	if len(ids) < len(maskDetectors) {
 		return "", false
 	}
+	// pii.ner — если он в политике (4Н33 ревью 4.r4): имена закрыты и в
+	// событии (maskFindings). Сбой ML — не отказ: ПДн с контрольными
+	// суммами закрывает pii.ru.
+	if _, ok := a.Detectors.Get(builtin.PIINERID); ok && a.Policy != nil &&
+		(slices.Contains(a.Policy.Detectors(detect.Input), builtin.PIINERID) ||
+			slices.Contains(a.Policy.Detectors(detect.Output), builtin.PIINERID)) {
+		ids = append(ids, builtin.PIINERID)
+	}
 	fs, rerrs, err := a.Detectors.Run(ctx, ids, detect.Text{Text: text, Direction: detect.Output, Source: detect.SourceOutput},
 		detectorTimeout(timeout, len(text)))
-	if err != nil || len(rerrs) > 0 {
+	if err != nil {
 		return "", false
+	}
+	for _, re := range rerrs {
+		if !mlBacked(a.Detectors, re.Detector) {
+			return "", false
+		}
 	}
 	spans := make([]span, 0, len(fs))
 	for _, f := range fs {

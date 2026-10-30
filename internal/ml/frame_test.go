@@ -109,6 +109,24 @@ func TestParseHeaderRejects(t *testing.T) {
 	}
 }
 
+// TestHeaderTimeout — срок шлюза передаётся только в detect (4В30): у
+// остальных типов поле — нулевой резерв.
+func TestHeaderTimeout(t *testing.T) {
+	b := AppendHeader(nil, Header{Type: TypeDetect, Timeout: 250, ID: 7, Length: 3})
+	h, err := ParseHeader(b, ServerSide)
+	if err != nil || h.Timeout != 250 || h.ID != 7 || h.Length != 3 {
+		t.Fatalf("срок detect: %+v, %v", h, err)
+	}
+	for _, tc := range []struct {
+		side Side
+		typ  FrameType
+	}{{ServerSide, TypeHello}, {ClientSide, TypeResult}, {ClientSide, TypeError}, {ClientSide, TypeHelloOK}} {
+		if _, err := ParseHeader(AppendHeader(nil, Header{Type: tc.typ, Timeout: 1}), tc.side); !errors.Is(err, ErrProtocol) {
+			t.Errorf("тип %d со сроком: %v", tc.typ, err)
+		}
+	}
+}
+
 func TestReadFrameTruncatedBody(t *testing.T) {
 	b := frame(TypeError, 1, []byte(`{"code":"internal"}`))
 	if _, _, err := ReadFrame(bytes.NewReader(b[:len(b)-3]), ClientSide); !errors.Is(err, io.ErrUnexpectedEOF) {

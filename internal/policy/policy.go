@@ -218,6 +218,19 @@ func (p *Policy) Detectors(dir detect.Direction) []string {
 	return ids
 }
 
+// LogOnly — у детектора в направлении dir только правила с действием log
+// (или правил нет): его находки решения не меняют. Окна потока ответа такие
+// ML-детекторы не вызывают (4В30) — находки попадут в событие при проверке
+// ответа целиком.
+func (p *Policy) LogOnly(detector string, dir detect.Direction) bool {
+	for _, r := range p.rules {
+		if r.detector == detector && slices.Contains(r.directions, dir) && r.action != Log {
+			return false
+		}
+	}
+	return true
+}
+
 // Hit — находка детектора и источник текста, в котором она найдена.
 type Hit struct {
 	Finding detect.Finding

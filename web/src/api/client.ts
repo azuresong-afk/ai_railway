@@ -39,10 +39,18 @@ export function setUnauthorizedHandler(fn: (() => void) | undefined) {
   onUnauthorized = fn;
 }
 
-export async function request<T>(method: "GET" | "POST" | "PUT" | "DELETE", path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+export async function request<T>(
+  method: "GET" | "POST" | "PUT" | "DELETE",
+  path: string,
+  body?: unknown,
+  signal?: AbortSignal,
+  background = false,
+): Promise<T> {
   const headers: Record<string, string> = { Accept: "application/json" };
   if (body !== undefined) headers["Content-Type"] = "application/json";
   if (method !== "GET") headers["X-CSRF-Token"] = csrfToken();
+  // Фоновый опрос (УПД.10): такой GET сервер не считает действием пользователя, и он не продлевает сессию.
+  else if (background) headers["X-AISec-Background"] = "1";
   const init: RequestInit = { method, headers, credentials: "same-origin", cache: "no-store" };
   if (body !== undefined) init.body = JSON.stringify(body);
   if (signal) init.signal = signal;

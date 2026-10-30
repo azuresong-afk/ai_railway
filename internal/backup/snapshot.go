@@ -39,6 +39,10 @@ type Snapshot struct {
 	// UserHMACKey — ключ псевдонимов пользователей (шифротекст ключа
 	// секретов); нет — администратор явно отказался его включать.
 	UserHMACKey []byte `json:"user_hmac_key"`
+	// AgentKeysMarked — у ключей приложений отмечена привязка к агенту
+	// (AppKey.AgentBound, 4В38 ревью 4.r4). Копия без отметки со схемой
+	// агентов снята прежним выпуском: привязка неизвестна.
+	AgentKeysMarked bool `json:"agent_keys_marked,omitempty"`
 }
 
 // Settings — настройки организации и установки. nil — строки нет, действуют
@@ -250,6 +254,11 @@ type AppKey struct {
 	RotatedFrom  *string    `json:"rotated_from"`
 	RevokedAt    *time.Time `json:"revoked_at"`
 	RevokedBy    *string    `json:"revoked_by"`
+	// AgentBound — ключ закреплён за агентом ИИ (app_keys.agent_id).
+	// Агенты в копию не входят: без привязки ключ выбирал бы любого агента
+	// приложения заголовком X-AISec-Agent, поэтому такой ключ
+	// восстанавливается отозванным (4В38 ревью 4.r4).
+	AgentBound bool `json:"agent_bound,omitempty"`
 }
 
 // Policy — политика организации со всеми версиями.

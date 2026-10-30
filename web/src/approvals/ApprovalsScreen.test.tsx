@@ -79,7 +79,7 @@ describe("экран «Подтверждения»", () => {
   });
 
   it("одобрение передаёт args_hash показанного запроса", async () => {
-    renderScreen(decider);
+    renderScreen(decider, true);
     await screen.findByText(/<script>/);
     fireEvent.click(screen.getByRole("button", { name: "Одобрить вызов" }));
     await waitFor(() => expect(calls.find((c) => c.url.endsWith("/approve"))?.body).toEqual({ args_hash: "h1" }));
@@ -112,9 +112,20 @@ describe("экран «Подтверждения»", () => {
     await waitFor(() => expect(calls.find((c) => c.url.endsWith("/approve"))?.body).toEqual({ args_hash: "h1", code: "123456" }));
   });
 
+  it("без второго фактора одобрение и риска high — с паролем (4В37)", async () => {
+    renderScreen(decider);
+    await screen.findByText(/<script>/);
+    expect(screen.getByText(/Второй фактор не подключён/)).toBeTruthy();
+    const btn = screen.getByRole("button", { name: "Одобрить вызов" }) as HTMLButtonElement;
+    expect(btn.disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText("Текущий пароль"), { target: { value: "секрет" } });
+    fireEvent.click(btn);
+    await waitFor(() => expect(calls.find((c) => c.url.endsWith("/approve"))?.body).toEqual({ args_hash: "h1", password: "секрет" }));
+  });
+
   it("409: запрос изменился — сообщение и обновление данных", async () => {
     handler = (c) => (c.url.endsWith("/approve") ? problem(409, "conflict", "args_hash") : undefined);
-    renderScreen(decider);
+    renderScreen(decider, true);
     await screen.findByText(/<script>/);
     const before = calls.filter((c) => c.url === "/api/v1/approvals/ap-1").length;
     fireEvent.click(screen.getByRole("button", { name: "Одобрить вызов" }));

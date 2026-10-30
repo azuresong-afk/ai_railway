@@ -257,7 +257,17 @@ func TestCEFPairs(t *testing.T) {
 	if !ok || kv["suser"] != "Иван Петров" || kv["request"] != "https://a.example/?q=1" || kv["msg"] != "a\\b\nc" {
 		t.Fatalf("%q %v", kv, ok)
 	}
-	for _, in := range []string{`текст rt=1`, `rt=1 rt=2`, `rt=a\x`, `rt=a\`} {
+	// 4Н20: неэкранированный «=» в значении — буквальный, строка не теряется.
+	kv, ok = cefPairs([]byte(`rt=1 request=https://chatgpt.com/?q=1&a=b requestClientApplication=a=b suser=u`))
+	if !ok || kv["request"] != "https://chatgpt.com/?q=1&a=b" || kv["requestClientApplication"] != "a=b" || kv["suser"] != "u" {
+		t.Fatalf("неэкранированный «=»: %q %v", kv, ok)
+	}
+	// 4Н31 ревью 4.r3: повтор ключа — часть значения предыдущего ключа.
+	kv, ok = cefPairs([]byte(`rt=1 requestClientApplication=x dhost=ya.ru dhost=chatgpt.com suser=u rt=2`))
+	if !ok || kv["requestClientApplication"] != "x" || kv["dhost"] != "ya.ru dhost=chatgpt.com" || kv["suser"] != "u rt=2" || kv["rt"] != "1" {
+		t.Fatalf("повтор ключа: %q %v", kv, ok)
+	}
+	for _, in := range []string{`текст rt=1`, `rt=a\x`, `rt=a\`} {
 		if _, ok := cefPairs([]byte(in)); ok {
 			t.Errorf("%q принято", in)
 		}

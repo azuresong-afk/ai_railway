@@ -37,6 +37,8 @@ var (
 	ErrStaleCatalog  = errors.New("версия каталога не больше загруженной")
 	ErrNotSetUp      = errors.New("первичная настройка не выполнена")
 	ErrConfirmNeeded = errors.New("сокращение срока хранения требует повторной проверки")
+	// ErrStorageFull — сводок организации больше MaxStoredAggregates (4Н25).
+	ErrStorageFull = errors.New("достигнут предел хранимых сводок теневого ИИ")
 )
 
 // Limits — пределы одного импорта; нули — умолчания.

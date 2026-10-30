@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/netip"
+	"sort"
 	"sync"
 	"time"
 
@@ -60,6 +61,45 @@ type ImportRecord struct {
 	CreatedBy      string    `json:"created_by"`
 	CatalogVersion uint64    `json:"catalog_version"`
 	ImportResult
+	// users — пользователи импорта, записанные хранилищем (4В27).
+	users ImportUsers
+}
+
+// ImportUsers — пользователи импорта для аудита и обнаружения перебора
+// псевдонимов (4В27): импорт журнала, где каждому подобранному логину отведён
+// свой час, даёт таблицу «логин → псевдоним», годную и для событий шлюза.
+type ImportUsers struct {
+	// Users — разных псевдонимов в сводках импорта.
+	Users int64
+	// NewUsers — псевдонимов, которых не было в сводках организации.
+	NewUsers int64
+	// Baseline — до импорта в сводках не было ни одного пользователя:
+	// исходный состав. Все его псевдонимы новые (4В28): пустые сводки —
+	// свежая установка или очистка по сроку — не освобождают от правила.
+	Baseline bool
+	// NewUsersDay — новых псевдонимов организации за сутки вместе с этим
+	// импортом. Сумма по организации, а не по субъекту (4Н28): у каждого
+	// токена API свой субъект.
+	NewUsersDay int64
+}
+
+// importUsersWindow — окно суммы новых псевдонимов организации.
+const importUsersWindow = 24 * time.Hour
+
+// aliasesOf — разные псевдонимы сводок по возрастанию.
+func aliasesOf(aggs []Aggregate) []string {
+	seen := map[string]struct{}{}
+	for _, a := range aggs {
+		if a.UserAlias != "" {
+			seen[a.UserAlias] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for a := range seen {
+		out = append(out, a)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // ServiceStat — сервис за период.
@@ -110,12 +150,15 @@ type Query struct {
 type Store interface {
 	Catalog(ctx context.Context, orgID string) (StoredCatalog, error)
 	// SaveCatalog сохраняет каталог, если его версия больше сохранённой
-	// (иначе ErrStaleCatalog), и пишет rec той же транзакцией.
+	// (иначе ErrStaleCatalog), и пишет rec той же транзакцией; в
+	// rec.Details (map[string]any) записывает previous_version — версию,
+	// которую заменил, прочитанную под той же блокировкой (4Н21).
 	SaveCatalog(ctx context.Context, orgID string, c StoredCatalog, rec audit.Entry) error
-	// SaveImport пишет запись импорта, агрегаты и rec одной транзакцией;
-	// повтор хеша — ErrDuplicate. Сводки исключённых не пишутся; о новых
-	// сервисах — записи shadow_ai.new_service той же транзакцией (DM-37).
-	SaveImport(ctx context.Context, orgID string, imp ImportRecord, rec audit.Entry) error
+	// SaveImport пишет запись импорта, агрегаты и запись аудита fn(число
+	// пользователей, 4В27) одной транзакцией; повтор хеша — ErrDuplicate.
+	// Сводки исключённых не пишутся; о новых сервисах — записи
+	// shadow_ai.new_service той же транзакцией (DM-37).
+	SaveImport(ctx context.Context, orgID string, imp ImportRecord, fn func(ImportUsers) audit.Entry) error
 	// SaveSyslog пишет сводки приёма по syslog и записи о новых сервисах
 	// одной транзакцией.
 	SaveSyslog(ctx context.Context, orgID string, b SyslogBatch) error
@@ -367,15 +410,16 @@ func (s *Service) UploadCatalog(ctx context.Context, by By, data []byte) (Catalo
 	if err == nil {
 		st := StoredCatalog{Version: sc.Catalog.Version, Date: sc.Catalog.Day(), SubkeySerial: sc.Endorsement.Serial,
 			Fingerprint: sc.Fingerprint, Services: len(sc.Catalog.Services), File: data, UploadedAt: now, UploadedBy: by.ref()}
-		_, prev, perr := s.current(ctx)
-		if perr != nil {
-			return CatalogView{}, perr
-		}
-		rec := by.entry("shadow_ai.catalog_loaded", obj, map[string]any{"version": st.Version, "previous_version": prev.Version,
+		// previous_version пишет хранилище: прежняя версия читается в той
+		// же транзакции, что и запись (4Н21 ревью 4.r3).
+		rec := by.entry("shadow_ai.catalog_loaded", obj, map[string]any{"version": st.Version,
 			"date": sc.Catalog.Date, "services": st.Services, "subkey_serial": st.SubkeySerial, "fingerprint": st.Fingerprint})
 		if err = s.o.Store.SaveCatalog(ctx, s.o.OrgID, st, rec); err == nil {
+			// Две загрузки сразу (4Н21): в памяти — старшая версия, как в БД.
 			s.mu.Lock()
-			s.catalog, s.stored, s.loaded = &sc, st, true
+			if !s.loaded || st.Version > s.stored.Version {
+				s.catalog, s.stored, s.loaded = &sc, st, true
+			}
 			s.mu.Unlock()
 			s.refreshSyslog(ctx)
 			return s.Catalog(ctx)
@@ -451,8 +495,16 @@ func (s *Service) Import(ctx context.Context, by By, format string, r io.Reader)
 	if res.From != nil {
 		details["period_from"], details["period_to"] = res.From.Format(time.RFC3339), res.To.Format(time.RFC3339)
 	}
-	rec := by.entry("shadow_ai.import", audit.Object{Type: "shadow_ai_import", ID: id}, details)
-	if err := s.o.Store.SaveImport(ctx, s.o.OrgID, imp, rec); err != nil {
+	// Число пользователей и новых для организации — в аудите (4В27): по
+	// нему правило security.shadow_ai_alias_probe видит перебор логинов.
+	err = s.o.Store.SaveImport(ctx, s.o.OrgID, imp, func(u ImportUsers) audit.Entry {
+		details["users"], details["new_users"], details["new_users_day"] = u.Users, u.NewUsers, u.NewUsersDay
+		if u.Baseline {
+			details["baseline"] = true
+		}
+		return by.entry("shadow_ai.import", audit.Object{Type: "shadow_ai_import", ID: id}, details)
+	})
+	if err != nil {
 		return ImportRecord{}, err
 	}
 	return imp, nil

@@ -22,8 +22,9 @@ var spec = mltest.Spec{ID: "injection", Version: "1.0", Directions: []string{"in
 // fixture — пакет моделей, ключ «производителя» и каталог сокета 0750
 // (короткий путь: предел sun_path — 108 байт).
 type fixture struct {
-	cfg *config
-	d   deps
+	cfg    *config
+	d      deps
+	signer aisecCrypto.Signer
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -40,10 +41,12 @@ func newFixture(t *testing.T) *fixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	models := t.TempDir()
+	root := t.TempDir()
+	models := filepath.Join(root, "models")
 	if _, err := mltest.WritePackage(models, p, s, spec); err != nil {
 		t.Fatal(err)
 	}
+	manifest := writeReleaseManifest(t, p, s, root)
 	sockDir, err := os.MkdirTemp("", "ml")
 	if err != nil {
 		t.Fatal(err)
@@ -54,9 +57,39 @@ func newFixture(t *testing.T) *fixture {
 	}
 	cfg := &config{Socket: filepath.Join(sockDir, "aisec-ml.sock"), Models: models, MaxConns: 4, Workers: 1,
 		QueueWait: 10 * time.Millisecond, MaxModelBytes: ml.DefaultMaxModelBytes}
-	d := deps{provider: p, verifier: v, logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	d := deps{provider: p, verifier: v, manifest: manifest, version: "1.0.0", logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		newExecutor: func(*config, aisecCrypto.Provider) (ml.Executor, error) { return mltest.Executor{}, nil }}
-	return &fixture{cfg: cfg, d: d}
+	return &fixture{cfg: cfg, d: d, signer: s}
+}
+
+// writeReleaseManifest — подписанный манифест выпуска в root с файлами
+// models/ (как make ml-release-assemble).
+// Без src — файлы models/.
+func writeReleaseManifest(t *testing.T, p aisecCrypto.Provider, s aisecCrypto.Signer, root string, src ...integrity.Source) string {
+	t.Helper()
+	if len(src) == 0 {
+		src = []integrity.Source{{Kind: integrity.KindModel, Dir: filepath.Join(root, "models"), Recursive: true}}
+	}
+	m, err := integrity.Build(p, integrity.BuildInput{Version: "1.0.0", Created: time.Unix(1, 0), Sources: src})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := integrity.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sig, err := integrity.Sign(s, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, integrity.ManifestFile)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path+".sig", sig, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 func TestRunServesVerifiedModels(t *testing.T) {
@@ -124,13 +157,48 @@ func TestRunRefusesUnverifiedPackage(t *testing.T) {
 				t.Fatal(err)
 			}
 		},
+		// 4В23: старый подписанный пакет вне каталога выпуска или в нём.
+		"пакет вне каталога выпуска": func(t *testing.T, f *fixture) {
+			f.cfg.Models = oldPackage(t, f)
+		},
+		"старый пакет в каталоге выпуска": func(t *testing.T, f *fixture) {
+			if err := os.RemoveAll(f.cfg.Models); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Rename(oldPackage(t, f), f.cfg.Models); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"манифест выпуска без моделей": func(t *testing.T, f *fixture) {
+			root := filepath.Dir(f.cfg.Models)
+			if err := os.MkdirAll(filepath.Join(root, "lib"), 0o750); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(root, "lib", "libx.so"), []byte("x"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			writeReleaseManifest(t, f.d.provider, f.signer, root, integrity.Source{Kind: integrity.KindLibrary, Dir: filepath.Join(root, "lib"), Recursive: true})
+		},
+		"манифест выпуска чужим ключом": func(t *testing.T, f *fixture) {
+			other, err := f.d.provider.GenerateSigner()
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeReleaseManifest(t, f.d.provider, other, filepath.Dir(f.cfg.Models))
+		},
+		// 4Н30: манифест другого выпуска (например, -manifest на старый
+		// выпуск при -integrity-action=alert).
+		"манифест другой версии": func(_ *testing.T, f *fixture) { f.d.version = "1.1.0" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newFixture(t)
 			spoil(t, f)
 			loaded := false
 			f.d.newExecutor = func(*config, aisecCrypto.Provider) (ml.Executor, error) { loaded = true; return mltest.Executor{}, nil }
-			err := run(context.Background(), f.cfg, f.d)
+			// Принятый пакет — сервер до срока, а не зависание теста.
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			err := run(ctx, f.cfg, f.d)
 			if err == nil || !strings.Contains(err.Error(), "пакет моделей отвергнут") {
 				t.Fatalf("пакет принят: %v", err)
 			}
@@ -142,6 +210,19 @@ func TestRunRefusesUnverifiedPackage(t *testing.T) {
 			}
 		})
 	}
+}
+
+// oldPackage — пакет другой версии, подписанный тем же ключом
+// производителя (откат версии моделей, 4В23).
+func oldPackage(t *testing.T, f *fixture) string {
+	t.Helper()
+	old := spec
+	old.Version = "0.9"
+	dir := filepath.Join(filepath.Dir(f.cfg.Models), "old")
+	if _, err := mltest.WritePackage(dir, f.d.provider, f.signer, old); err != nil {
+		t.Fatal(err)
+	}
+	return dir
 }
 
 func TestListenSocketDirectoryChecks(t *testing.T) {
@@ -206,7 +287,8 @@ func TestLoadConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	if cfg.Socket != "/run/x/s.sock" || cfg.Workers != 2 || cfg.Models != DefaultModels ||
-		cfg.IntegrityAction != integrity.ActionStop || cfg.IntegrityInterval != integrity.DefaultInterval {
+		cfg.IntegrityAction != integrity.ActionStop || cfg.IntegrityInterval != integrity.DefaultInterval ||
+		cfg.RunTimeout != ml.DefaultRunTimeout || cfg.MaxRunTimeout != ml.DefaultMaxRunTimeout {
 		t.Fatalf("конфигурация: %+v", cfg)
 	}
 	for _, args := range [][]string{
@@ -216,6 +298,9 @@ func TestLoadConfig(t *testing.T) {
 		{"-max-conns=0"},
 		{"-workers=-1"},
 		{"-queue-wait=5s"},
+		{"-run-timeout=1ms"},
+		{"-run-timeout=500ms", "-max-run-timeout=100ms"},
+		{"-max-run-timeout=1m"},
 		{"-max-model-bytes=10"},
 		{"-ort-lib=lib.so"},
 		{"-ort-lib=/opt/../lib.so"},

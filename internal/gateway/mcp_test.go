@@ -414,6 +414,22 @@ func TestDM25_ChangedToolCallBlocked(t *testing.T) {
 	}
 }
 
+// Покрывает: DM-25
+// 4В34: политика без раздела tools (совместимость, unapproved: log — как у
+// шаблонов «ПДн — строго» и других) — изменённый инструмент в enforce
+// вызывается по имени только до повторного одобрения: вызов блокируется.
+func TestDM25_ChangedToolBlockedWithoutToolsSection(t *testing.T) {
+	e := newMCPEnv(t, func(o *mcpOpts) { o.tools, o.changed = nil, []string{"read_file"} })
+	m := mreply(t, e.call26(e.bound, "tools/call", "read_file", `"name":"read_file","arguments":{"path":"/data/a.txt"}`, nil))
+	if !isErrorResult(m) {
+		t.Fatalf("вызов изменённого: %s", m.Encode())
+	}
+	ev := e.lastEvent()
+	if ev.Decision.Action != "block" || !slices.Contains(ev.Threats, "DM-25") || ev.Agent.Upstream != 0 {
+		t.Fatalf("событие вызова: %+v %+v", ev.Decision, ev.Agent)
+	}
+}
+
 func isErrorResult(m *mcp.Message) bool {
 	if m.Result == nil {
 		return false
@@ -845,6 +861,50 @@ func TestMCPDescriptionCheckFailureIsNotPoisoning(t *testing.T) {
 	notPoisoned(e, "tools/call")
 	if _, body := e.lastUpstream(); strings.Contains(body, `"tools/call"`) {
 		t.Fatalf("вызов дошёл до сервера: %s", body)
+	}
+}
+
+// Покрывает: DM-24
+// Остаток ревью 4.r1 (G3): описание, которое блокирует правило политики, не
+// вызывается и без tools/list клиента — список, запрошенный шлюзом,
+// проходит те же правила; кэш описаний раздельный по приложениям.
+func TestDM24_RuleBlockedDescriptionNotCallable(t *testing.T) {
+	desc := fakeDetector{id: "test.desc", run: func(_ context.Context, x detect.Text) ([]detect.Finding, error) {
+		if x.Source != detect.SourceTool || !strings.Contains(x.Text, "Читает") {
+			return nil, nil
+		}
+		return []detect.Finding{{Detector: "test.desc", Version: "1.0.0", Category: "test.desc", Threat: "DM-24",
+			Score: 1, Start: 0, End: len(x.Text), Rule: "desc"}}, nil
+	}}
+	e := newMCPEnv(t, func(o *mcpOpts) {
+		o.setup = func(a *App) {
+			reg, err := detect.NewRegistry(append(builtin.All(), desc)...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			spec, _ := policy.Template(policy.TemplateBase)
+			spec.ID, spec.Mode, spec.Tools = "mcp", policy.Enforce, defaultTools()
+			spec.Rules = append(spec.Rules, policy.RuleSpec{ID: "desc", Detector: desc.id, Action: policy.Block, Severity: policy.High})
+			p, err := policy.Compile(spec, reg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			a.Detectors, a.Policy = reg, p
+		}
+	})
+	m := mreply(t, e.call26(e.bound, "tools/call", "read_file", `"name":"read_file","arguments":{"path":"/data/a.txt"}`, nil))
+	if !isErrorResult(m) {
+		t.Fatalf("вызов инструмента с заблокированным описанием: %s", m.Encode())
+	}
+	if ev := e.lastEvent(); ev.Decision.Action != "block" || ev.Agent.Upstream != 0 {
+		t.Fatalf("событие: %+v %+v", ev.Decision, ev.Agent)
+	}
+	if _, body := e.lastUpstream(); strings.Contains(body, `"tools/call"`) {
+		t.Fatalf("вызов дошёл до сервера: %s", body)
+	}
+	// Второй вызов берёт описание из кэша и тоже блокируется.
+	if m := mreply(t, e.call26(e.bound, "tools/call", "read_file", `"name":"read_file","arguments":{"path":"/data/b.txt"}`, nil)); !isErrorResult(m) {
+		t.Fatalf("повторный вызов: %s", m.Encode())
 	}
 }
 

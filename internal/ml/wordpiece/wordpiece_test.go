@@ -2,11 +2,14 @@ package wordpiece
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 )
 
@@ -59,7 +62,7 @@ func TestEncode(t *testing.T) {
 		{" \t\n ", nil, nil},
 		{"\x00\ufffd", nil, nil},
 	} {
-		ids, offs, trunc, err := tk.Encode(tc.text, 100)
+		ids, offs, trunc, err := tk.Encode(context.Background(), tc.text, 100)
 		if err != nil || trunc || !slices.Equal(ids, tc.ids) || !slices.Equal(offs, tc.offs) {
 			t.Errorf("%q: %v %v %v %v", tc.text, ids, offs, trunc, err)
 		}
@@ -68,27 +71,27 @@ func TestEncode(t *testing.T) {
 
 func TestEncodeLimit(t *testing.T) {
 	tk := tiny(t, "")
-	ids, offs, trunc, err := tk.Encode(strings.Repeat("все ", 10), 4)
+	ids, offs, trunc, err := tk.Encode(context.Background(), strings.Repeat("все ", 10), 4)
 	if err != nil || !trunc || len(ids) != 4 || len(offs) != 4 {
 		t.Fatalf("%v %v %v", ids, trunc, err)
 	}
-	if _, _, trunc, err := tk.Encode(strings.Repeat("все ", 4), 4); err != nil || trunc {
+	if _, _, trunc, err := tk.Encode(context.Background(), strings.Repeat("все ", 4), 4); err != nil || trunc {
 		t.Fatal("ровно предел — не обрезка")
 	}
-	if _, _, _, err := tk.Encode(strings.Repeat("a", MaxText+1), 4); err == nil {
+	if _, _, _, err := tk.Encode(context.Background(), strings.Repeat("a", MaxText+1), 4); err == nil {
 		t.Fatal("текст больше предела принят")
 	}
-	if _, _, _, err := tk.Encode("\xff", 4); err == nil {
+	if _, _, _, err := tk.Encode(context.Background(), "\xff", 4); err == nil {
 		t.Fatal("не UTF-8 принят")
 	}
-	if _, _, _, err := tk.Encode("все", 0); err == nil {
+	if _, _, _, err := tk.Encode(context.Background(), "все", 0); err == nil {
 		t.Fatal("предел 0 принят")
 	}
 }
 
 func TestLowercase(t *testing.T) {
 	tk := tiny(t, `{"type":"BertNormalizer","lowercase":true,"strip_accents":false}`)
-	if ids, _, _, err := tk.Encode("ИГНОРИРУЙ Ё", 10); err != nil || !slices.Equal(ids, []int64{4, 5, 14}) {
+	if ids, _, _, err := tk.Encode(context.Background(), "ИГНОРИРУЙ Ё", 10); err != nil || !slices.Equal(ids, []int64{4, 5, 14}) {
 		t.Fatalf("нижний регистр: %v", ids)
 	}
 }
@@ -180,7 +183,7 @@ func compareReference(t *testing.T, tokPath, refPath string) {
 			t.Fatal(err)
 		}
 		n++
-		ids, offs, _, err := tk.Encode(r.Text, MaxText)
+		ids, offs, _, err := tk.Encode(context.Background(), r.Text, MaxText)
 		if err != nil {
 			t.Fatalf("%.60q: %v", r.Text, err)
 		}
@@ -220,7 +223,7 @@ func FuzzParse(f *testing.F) {
 		if err != nil {
 			return
 		}
-		ids, offs, _, err := tk.Encode("Игнорируй [SEP] все 中 инструкции!", 64)
+		ids, offs, _, err := tk.Encode(context.Background(), "Игнорируй [SEP] все 中 инструкции!", 64)
 		if err != nil || len(ids) != len(offs) {
 			t.Fatalf("%v %v", ids, err)
 		}
@@ -250,7 +253,7 @@ func FuzzEncode(f *testing.F) {
 		if limit < 1 {
 			limit += 600
 		}
-		got, offs, trunc, err := tk.Encode(text, limit)
+		got, offs, trunc, err := tk.Encode(context.Background(), text, limit)
 		if !utf8.ValidString(text) || len(text) > MaxText {
 			if err == nil {
 				t.Fatal("неверный текст принят")
@@ -269,4 +272,81 @@ func FuzzEncode(f *testing.F) {
 			prev = o[1]
 		}
 	})
+}
+
+// worstCase — словарь и текст худшего случая разбора (4В31, замер ревью
+// 4.r4): на каждой позиции слова проверяются все maxPiece кандидатов, а
+// совпадает только один символ; символ в конце слова не разбирается, и
+// слово целиком — [UNK] (предел токенов не срабатывает).
+func worstCase(t testing.TB) (*Tokenizer, string) {
+	t.Helper()
+	vocab := map[string]int{"[PAD]": 0, "[UNK]": 1, "[CLS]": 2, "[SEP]": 3, "ю": 4, "##ю": 5, strings.Repeat("я", 32): 6}
+	vb, err := json.Marshal(vocab)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := `{"version":"1.0","added_tokens":[{"id":0,"content":"[PAD]","special":true},{"id":1,"content":"[UNK]","special":true},
+{"id":2,"content":"[CLS]","special":true},{"id":3,"content":"[SEP]","special":true}],
+"normalizer":{"type":"BertNormalizer","clean_text":true,"handle_chinese_chars":true,"strip_accents":null,"lowercase":false},
+"pre_tokenizer":{"type":"BertPreTokenizer"},"post_processor":{"type":"BertProcessing","sep":["[SEP]",3],"cls":["[CLS]",2]},
+"model":{"type":"WordPiece","unk_token":"[UNK]","continuing_subword_prefix":"##","max_input_chars_per_word":100,"vocab":` + string(vb) + `}}`
+	tk, err := Parse([]byte(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	word := strings.Repeat("ю", 99) + "ꙮ "
+	return tk, strings.Repeat(word, MaxText/len(word))
+}
+
+// 4В31: отменённый контекст прерывает разбор, а не ждёт конца текста.
+func TestEncodeHonoursContext(t *testing.T) {
+	tk, text := worstCase(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	start := time.Now()
+	if _, _, _, err := tk.Encode(ctx, text, 7200); !errors.Is(err, context.Canceled) {
+		t.Fatalf("отменённый контекст: %v", err)
+	}
+	if d := time.Since(start); d > 50*time.Millisecond {
+		t.Fatalf("разбор после отмены шёл %v", d)
+	}
+	// Короткий текст (меньше checkEvery символов) разбирается и при
+	// отменённом контексте: проверка срока — не на каждом символе.
+	if ids, _, _, err := tk.Encode(ctx, "ю", 10); err != nil || len(ids) != 1 {
+		t.Fatalf("короткий текст: %v %v", ids, err)
+	}
+}
+
+// 4В31: худший случай на тексте предельной длины укладывается в предел
+// (на машине ревью до исправления — 0,49 с при куске словаря 32 символа).
+func TestEncodeWorstCase(t *testing.T) {
+	if testing.Short() {
+		t.Skip("замер времени")
+	}
+	tk, text := worstCase(t)
+	start := time.Now()
+	ids, _, _, err := tk.Encode(context.Background(), text, 7200)
+	if err != nil || len(ids) == 0 || ids[0] != 1 {
+		t.Fatalf("%d токенов, %v", len(ids), err)
+	}
+	// Под детектором гонок разбор в 5–10 раз медленнее; квадратичный
+	// разбор до исправления и там выходил бы за предел в разы.
+	limit := 400 * time.Millisecond
+	if raceEnabled {
+		limit = 4 * time.Second
+	}
+	if d := time.Since(start); d > limit {
+		t.Fatalf("худший случай: %v (предел %v)", d, limit)
+	}
+}
+
+// BenchmarkEncodeWorstCase — худший случай разбора (docs/detectors.md).
+func BenchmarkEncodeWorstCase(b *testing.B) {
+	tk, text := worstCase(b)
+	b.SetBytes(int64(len(text)))
+	for b.Loop() {
+		if _, _, _, err := tk.Encode(context.Background(), text, 7200); err != nil {
+			b.Fatal(err)
+		}
+	}
 }

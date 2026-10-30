@@ -120,7 +120,7 @@ func lastAuthFailure(t *testing.T, log *eventLog) events.Event {
 	return events.Event{}
 }
 
-// Покрывает: DM-33
+// Покрывает: DM-33 (группы)
 // Модель, закрытая группами, без нужной группы в JWT — 403 без списка
 // групп, событие с правилом model_group_denied; до провайдера запрос не
 // доходит. Псевдоним той же модели закрыт так же.
@@ -149,7 +149,7 @@ func TestDM33_GroupDeniedModel(t *testing.T) {
 	}
 }
 
-// Покрывает: DM-33
+// Покрывает: DM-33 (группы)
 // Группы заданы только у псевдонима: прямое имя модели закрыто так же, и
 // в /v1/embeddings тоже.
 func TestDM33_GroupDeniedAliasModel(t *testing.T) {
@@ -173,7 +173,7 @@ func TestDM33_GroupDeniedAliasModel(t *testing.T) {
 	}
 }
 
-// Покрывает: DM-33
+// Покрывает: DM-33 (группы)
 // Пользователь с одной из групп модели получает ответ; модель без
 // ограничения доступна любому пользователю с действительным JWT.
 func TestDM33_GroupAllowedModel(t *testing.T) {

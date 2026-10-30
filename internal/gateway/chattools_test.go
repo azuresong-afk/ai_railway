@@ -390,8 +390,9 @@ func TestDM22_ChatApprovalsShareDeadline(t *testing.T) {
 }
 
 // Ревью 4.r1, 4В3: при unapproved: log неодобренный вызов не обходит
-// правило require_approval — ни без заголовка агента, ни с изменённым
-// описанием функции (ADR-0023, раздел 1, п. 4; дополнение 5).
+// правило require_approval без заголовка агента (ADR-0023, раздел 1, п. 4;
+// дополнение 5). С изменённым описанием функции вызов в enforce
+// блокируется сразу, без запроса подтверждения (4В34, DM-25).
 func TestDM22_ChatUnapprovedLogKeepsApprovalRule(t *testing.T) {
 	soft := func(o *gwOpts) {
 		s := toolsSpec(t)
@@ -401,11 +402,12 @@ func TestDM22_ChatUnapprovedLogKeepsApprovalRule(t *testing.T) {
 	changed := mailTool
 	changed.Function.Description += " "
 	cases := map[string]struct {
-		hdr  map[string]string
-		tool chat.Tool
+		hdr      map[string]string
+		tool     chat.Tool
+		approval bool
 	}{
-		"без агента":          {nil, mailTool},
-		"изменённое описание": {agentHeader, changed},
+		"без агента":          {nil, mailTool, true},
+		"изменённое описание": {agentHeader, changed, false},
 	}
 	for name, tc := range cases {
 		up, _ := newUpstream(t, toolCallReply(t, "send_mail", mailArgs))
@@ -415,7 +417,14 @@ func TestDM22_ChatUnapprovedLogKeepsApprovalRule(t *testing.T) {
 		if resp.Code != http.StatusBadRequest || errCode(t, resp) != "policy_violation" {
 			t.Errorf("%s: %d %s", name, resp.Code, resp.Body)
 		}
-		if reqs := appr.requests(); len(reqs) != 1 || reqs[0].Rule != "mail-approve" || reqs[0].ApprovedHash != "" {
+		reqs := appr.requests()
+		if !tc.approval {
+			if len(reqs) != 0 {
+				t.Errorf("%s: заблокированный вызов ушёл на подтверждение %+v", name, reqs)
+			}
+			continue
+		}
+		if len(reqs) != 1 || reqs[0].Rule != "mail-approve" || reqs[0].ApprovedHash != "" {
 			t.Errorf("%s: запросы подтверждения %+v", name, reqs)
 		}
 	}

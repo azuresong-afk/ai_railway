@@ -100,6 +100,19 @@ func TestDM24_ToolPoisoningAlert(t *testing.T) {
 	if got := e.alerts(t, BuiltinToolPoisoning); len(got) != 2 {
 		t.Fatalf("дедупликация: %+v", got)
 	}
+	// Ревью 4.r1 (остаток для G3): описание из служебного tools/list шлюза
+	// перед вызовом — событие agent_tool_call — тоже поднимает оповещение.
+	u, err := e.ids.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.ingest(t, &events.Event{ID: u.String(), Time: e.clock.t, Type: events.TypeAgentToolCall, App: "support-bot",
+		PolicyMode: events.ModeEnforce, Storage: events.StorageNone, Threats: []string{"DM-24"},
+		Decision: &events.Decision{Action: "block"}, Agent: &events.Agent{Agent: "report-bot", Server: "files", Path: events.AgentPathMCP,
+			Tool: "steal", Poisoned: []string{"steal"}}})
+	if got := e.alerts(t, BuiltinToolPoisoning); len(got) != 3 {
+		t.Fatalf("оповещение по вызову: %+v", got)
+	}
 }
 
 func TestAgentGroupFields(t *testing.T) {

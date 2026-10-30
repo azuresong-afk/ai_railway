@@ -364,7 +364,7 @@ func TestSyslogWithoutCatalog(t *testing.T) {
 
 // 4В18 ревью 4.r2: без модуля лицензии shadow_ai строки по syslog
 // отбрасываются до разбора и сводки не пишутся; сбой проверки лицензии
-// оставляет прежний ответ; с модулем приём снова учитывает строки.
+// модуль не включает; с модулем приём снова учитывает строки.
 func TestSyslogWithoutLicenseModule(t *testing.T) {
 	var licensed atomic.Bool
 	var failing atomic.Bool
@@ -402,6 +402,56 @@ func TestSyslogWithoutLicenseModule(t *testing.T) {
 	st.stop()
 	if len(st.m.Aggregates()) == 0 || st.l.Stats().Unlicensed != int64(n) {
 		t.Fatalf("сводки с модулем: %d, без модуля строк %d", len(st.m.Aggregates()), st.l.Stats().Unlicensed)
+	}
+}
+
+// 4Н22: сбой проверки лицензии при запуске — модуль считается выключенным
+// (как 503 у API), а не включённым.
+func TestSyslogLicenseErrorAtStart(t *testing.T) {
+	st := startSyslog(t, SyslogConfig{Licensed: func(context.Context) (bool, error) {
+		return true, errors.New("лицензия недоступна")
+	}})
+	if s := st.l.Stats(); s.LicenseModule {
+		t.Fatalf("сбой лицензии на старте включил модуль: %+v", s)
+	}
+}
+
+// 4Н22 ревью 4.r3 (остаток): лицензия проверяется перед записью сводок —
+// модуль выключили, пока они копились, — сброс без записи; сбой проверки —
+// сводки остаются в памяти без записи, а сбой после успеха не оставляет
+// прежнее «разрешено».
+func TestSyslogLicenseCheckedBeforeSave(t *testing.T) {
+	var licensed, failing atomic.Bool
+	licensed.Store(true)
+	st := startSyslog(t, SyslogConfig{Licensed: func(context.Context) (bool, error) {
+		if failing.Load() {
+			return true, errors.New("лицензия недоступна")
+		}
+		return licensed.Load(), nil
+	}})
+	ctx := context.Background()
+	c := dialFrom(t, st.l.Addr(), "")
+	defer func() { _ = c.Close() }() //nolint:gosec // закрытие тестового соединения, ошибка не важна
+	stream, _ := squidFrames(t)
+	send := func() {
+		if _, err := io.WriteString(c, stream); err != nil {
+			t.Fatal(err)
+		}
+		waitFor(t, "сводки в памяти", func() bool { return st.l.Stats().Pending > 0 })
+	}
+	send()
+	failing.Store(true)
+	if err := st.l.flush(ctx); err == nil || len(st.m.Aggregates()) != 0 || st.l.Stats().Pending == 0 {
+		t.Fatalf("сбой лицензии: %v, записано %d, в памяти %d", err, len(st.m.Aggregates()), st.l.Stats().Pending)
+	}
+	st.l.Refresh(ctx)
+	if st.l.Stats().LicenseModule {
+		t.Fatal("сбой проверки после успеха оставил модуль включённым")
+	}
+	failing.Store(false)
+	licensed.Store(false)
+	if err := st.l.flush(ctx); err != nil || len(st.m.Aggregates()) != 0 || st.l.Stats().Pending != 0 || st.l.Stats().Dropped == 0 {
+		t.Fatalf("модуль выключен до записи: %v, записано %d, %+v", err, len(st.m.Aggregates()), st.l.Stats())
 	}
 }
 
@@ -538,5 +588,16 @@ func TestCheckSyslogConfig(t *testing.T) {
 		if err := CheckSyslogConfig(c); err != nil {
 			t.Errorf("%s: %v", name, err)
 		}
+	}
+}
+
+// 4Н23: предел соединений на адрес у IPv6 считается по сети /64.
+func TestSyslogLimitKey(t *testing.T) {
+	a, b := netip.MustParseAddr("2001:db8:1:2::10"), netip.MustParseAddr("2001:db8:1:2:ffff::1")
+	if limitKey(a) != limitKey(b) || limitKey(a) == limitKey(netip.MustParseAddr("2001:db8:1:3::10")) {
+		t.Fatalf("IPv6: %v %v", limitKey(a), limitKey(b))
+	}
+	if v4 := netip.MustParseAddr("192.0.2.1"); limitKey(v4) != v4 {
+		t.Fatalf("IPv4: %v", limitKey(v4))
 	}
 }

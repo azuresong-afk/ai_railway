@@ -19,6 +19,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/auth"
 	"github.com/azuresong-afk/ai_railway/internal/config"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
+	"github.com/azuresong-afk/ai_railway/internal/detect"
 	"github.com/azuresong-afk/ai_railway/internal/detect/builtin"
 	"github.com/azuresong-afk/ai_railway/internal/events"
 	"github.com/azuresong-afk/ai_railway/internal/gateway"
@@ -107,18 +108,14 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 	// встроенные детекторы на эталонах. Своей БД у шлюза нет — итог в
 	// техническом журнале и в heartbeat на сервер (2.20).
 	reports := &gateway.Reports{}
-	if res, err := selftest.Startup(ctx, selftest.StartupConfig{
+	startRes, err := selftest.Startup(ctx, selftest.StartupConfig{
 		Config: selftest.Config{Component: "gateway", Provider: p, Detectors: builtin.All()},
 		Action: integrity.Action(cfg.SelftestAction), Logger: logger,
-	}); err != nil {
+	})
+	if err != nil {
 		return err
-	} else {
-		failed := len(res.Failures)
-		if !res.CryptoOK {
-			failed++
-		}
-		reports.SetSelftest(res.OK(), res.At, failed)
 	}
+	reports.SetSelftest(startRes.OK(), startRes.At, selftestFailed(startRes))
 	// Контроль целостности до приёма трафика (ОЦЛ.2–3): нарушение с
 	// реакцией stop после запуска отменяет контекст с причиной ErrViolation.
 	ctx, cancel := context.WithCancelCause(ctx)
@@ -207,13 +204,18 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 		quotas: gateway.NewLimiter(nil), budget: gateway.NewBudget(nil), userMAC: userMAC, clock: &gateway.ServerClock{},
 		sessions: sessions, toolRate: toolrate.New(0), mcpSessions: gateway.NewMCPSessions(rnd, nil)}
 	hb.budget.SetLogger(logger)
+	// Счётчики лимитов вызовов: уборка и предупреждение о вытеснениях (4Н11).
+	go hb.toolRate.Maintain(ctx, 10*time.Minute, toolrate.SweepIdle, logger)
 	// ML-детекторы через aisec-ml (задача 4.19): сокет проверяется при
 	// каждом подключении, недоступность — ml_unavailable, не отказ запуска.
 	if cfg.MLSocket != "" {
-		if hb.ml, err = gateway.NewMLClient(gateway.MLClientConfig{Socket: cfg.MLSocket, Logger: logger}); err != nil {
+		if hb.ml, err = gateway.NewMLClient(gateway.MLClientConfig{Socket: cfg.MLSocket, Timeout: cfg.MLTimeout, TimePerWindow: cfg.MLTimePerWindow, Logger: logger}); err != nil {
 			return err
 		}
 		defer hb.ml.Close()
+		if err := mlSelftest(ctx, cfg, p, hb.ml, logger, reports, startRes); err != nil {
+			return err
+		}
 	}
 	// Проверка JWT пользователей приложений (задача 4.21); в профиле без
 	// неё (gost до этапа 6) JWT отклоняются.
@@ -446,6 +448,49 @@ type trustFiles struct {
 // пакетов (-bundle-pub) и ключ псевдонимов пользователей. Подмена
 // -bundle-pub после запуска — нарушение целостности (В19 ревью 2.r4).
 // Сертификаты и ключи TLS не наблюдаются: их меняют при продлении.
+// selftestFailed — число провалов самотеста для heartbeat.
+func selftestFailed(res selftest.Result) int {
+	failed := len(res.Failures)
+	if !res.CryptoOK {
+		failed++
+	}
+	return failed
+}
+
+// mlSelftest повторяет эталоны ML-детекторов с клиентом aisec-ml (4.28,
+// остаток ревью 4.r4): первый прогон шёл до создания клиента, и ML-детекторы
+// в нём — заглушки builtin.All(). Недоступный aisec-ml — ml_unavailable, не
+// провал (fail-open, как в конвейере); неверный ответ модели — провал с
+// реакцией -selftest-action. Итог для heartbeat — общий с первым прогоном.
+func mlSelftest(ctx context.Context, cfg *config.Gateway, p aisecCrypto.Provider, c *gateway.MLClient, logger *slog.Logger,
+	reports *gateway.Reports, first selftest.Result) error {
+	var ds []detect.Detector
+	mlIDs := map[string]bool{}
+	for _, spec := range builtin.MLSpecs() {
+		d, err := gateway.NewMLDetector(spec, c)
+		if err != nil {
+			return err
+		}
+		ds, mlIDs[spec.ID] = append(ds, d), true
+	}
+	res, err := selftest.Startup(ctx, selftest.StartupConfig{
+		Config: selftest.Config{Component: "gateway", Provider: p, Detectors: ds},
+		Action: integrity.Action(cfg.SelftestAction), Logger: logger,
+	})
+	if err != nil {
+		return err
+	}
+	// Криптопрофиль и эталоны вызовов уже учтены первым прогоном.
+	mlFailed := 0
+	for _, f := range res.Failures {
+		if mlIDs[f.Detector] {
+			mlFailed++
+		}
+	}
+	reports.SetSelftest(first.OK() && mlFailed == 0, res.At, selftestFailed(first)+mlFailed)
+	return nil
+}
+
 func readTrustFiles(cfg *config.Gateway, file *config.GatewayFile) (trustFiles, error) {
 	var t trustFiles
 	var err error
