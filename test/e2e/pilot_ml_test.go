@@ -51,6 +51,28 @@ func TestE2EPilot_ML(t *testing.T) {
 		t.Fatalf("aisec-ml: ожидалось «%s», получено %q (код %d)", want, inspect, code)
 	}
 
+	// Сервер из compose.ml.yaml знает про aisec-ml (AISEC_SERVER_ML_TEMPLATES):
+	// шаблоны содержат ML-правила в режиме журнала.
+	var base struct {
+		Spec struct {
+			Rules []struct{ Detector, Action string }
+		}
+	}
+	r := admin.do("GET", "/api/v1/policies/base", nil)
+	if r.code != http.StatusOK {
+		t.Fatalf("шаблон base: %s", r)
+	}
+	r.json(t, &base)
+	mlRules := map[string]string{}
+	for _, rule := range base.Spec.Rules {
+		if strings.HasSuffix(rule.Detector, ".ml") {
+			mlRules[rule.Detector] = rule.Action
+		}
+	}
+	if len(mlRules) != 2 || mlRules["injection.ml"] != "log" || mlRules["toxicity.ml"] != "log" {
+		t.Fatalf("ML-правила шаблона base: %v", mlRules)
+	}
+
 	mock := addProvider(t, admin, "mock", "https://mock-llm:9443/v1", tls.ca)
 	spec := map[string]any{"name": "ML e2e", "mode": "enforce", "rules": []map[string]any{
 		{"id": "injection-ml", "detector": "injection.ml", "directions": []string{"input"}, "threshold": 0.8,
@@ -61,7 +83,7 @@ func TestE2EPilot_ML(t *testing.T) {
 	if r := admin.do("POST", "/api/v1/policies", map[string]any{"id": "ml-e2e", "spec": spec}); r.code != http.StatusCreated {
 		t.Fatalf("политика: %s", r)
 	}
-	r := admin.do("POST", "/api/v1/applications", map[string]any{"slug": "ml-bot", "name": "Приложение ml-bot", "env": "prod",
+	r = admin.do("POST", "/api/v1/applications", map[string]any{"slug": "ml-bot", "name": "Приложение ml-bot", "env": "prod",
 		"provider_id": mock, "models": []string{pilotMockModel}, "policy": "ml-e2e", "policy_mode": "enforce"})
 	if r.code != http.StatusCreated {
 		t.Fatalf("приложение: %s", r)
