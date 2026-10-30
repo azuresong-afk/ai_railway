@@ -527,9 +527,10 @@ ort-build: ## Сборка ONNX Runtime без сети в Dockerfile.ml; хеш
 		--build-arg ORT_JOBS='$(ORT_JOBS)' -o type=local,dest=$(ORT_OUT) .
 	$(MAKE) --no-print-directory ort-verify
 
-# Эталонный хеш (ort.sha256) записывается после эталонной сборки на машине
-# владельца (docs/cert/build-env.md). Пока его нет, сборка только печатает хеш;
-# поставка (RELEASE=1) без эталона не собирается.
+# Эталонный хеш (ort.sha256) и набор инструментов (toolchain.versions,
+# сверяется в Dockerfile.ml) записываются после эталонной сборки на машине
+# владельца (docs/cert/build-env.md). Пока их нет, сборка только печатает хеш;
+# поставка (RELEASE=1) без эталонов не собирается.
 .PHONY: ort-verify
 ort-verify:
 	@test -f $(ORT_LIB_DIR)/libonnxruntime.so.$(ORT_VERSION) || { echo "ort-verify: нет $(ORT_LIB_DIR)/libonnxruntime.so.$(ORT_VERSION)"; exit 1; }
@@ -544,6 +545,8 @@ ort-verify:
 		else \
 			echo "Эталона $(ORT_DIR)/ort.sha256 нет: запишите хеш эталонной сборки (docs/cert/build-env.md)."; \
 		fi
+	@test '$(RELEASE)' != 1 || test -s $(ORT_DIR)/toolchain.versions || \
+		{ echo "ort-verify: нет эталона $(ORT_DIR)/toolchain.versions — поставка без зафиксированного набора инструментов запрещена (4В25)"; exit 1; }
 
 .PHONY: ml-release-dir
 ml-release-dir: ## Каталог выпуска aisec-ml build/release-ml в Dockerfile.ml без сети (с RELEASE=1 — без подписи)
