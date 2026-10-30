@@ -413,8 +413,11 @@ func (s *Service) UploadCatalog(ctx context.Context, by By, data []byte) (Catalo
 		rec := by.entry("shadow_ai.catalog_loaded", obj, map[string]any{"version": st.Version, "previous_version": prev.Version,
 			"date": sc.Catalog.Date, "services": st.Services, "subkey_serial": st.SubkeySerial, "fingerprint": st.Fingerprint})
 		if err = s.o.Store.SaveCatalog(ctx, s.o.OrgID, st, rec); err == nil {
+			// Две загрузки сразу (4Н21): в памяти — старшая версия, как в БД.
 			s.mu.Lock()
-			s.catalog, s.stored, s.loaded = &sc, st, true
+			if !s.loaded || st.Version > s.stored.Version {
+				s.catalog, s.stored, s.loaded = &sc, st, true
+			}
 			s.mu.Unlock()
 			s.refreshSyslog(ctx)
 			return s.Catalog(ctx)

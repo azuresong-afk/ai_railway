@@ -69,6 +69,12 @@ export function SyslogPanel({ s }: { s: ShadowSyslog }) {
       )}
       {failed && <Banner kind="error">Последняя запись сводок в базу не удалась. Строки сохранены в памяти, сервер повторит запись.</Banner>}
       {!s.tls && <Banner kind="warning">Приём без TLS: журналы идут по сети открытым текстом. Источники ограничены разрешёнными сетями.</Banner>}
+      {s.tls && !s.client_cert_required && s.allowed_networks.length === 0 && (
+        <Banner kind="warning">
+          Приём без клиентского сертификата и без разрешённых сетей: строки может прислать любой узел сети. Задайте корень клиентских
+          сертификатов или разрешённые сети.
+        </Banner>
+      )}
       <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-base">
         <dt className="text-muted">Адрес</dt>
         <dd className="font-mono text-sm">{s.address}</dd>

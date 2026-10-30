@@ -263,6 +263,17 @@ describe("экран «Теневой ИИ»", () => {
     const conns = screen.getByRole("table", { name: "Соединения syslog" });
     expect(within(within(conns).getByText("Отказ: источник не из разрешённых сетей").closest("tr")!).getByText("5")).toBeInTheDocument();
     expect(screen.getByText(/Последняя запись сводок в базу не удалась/)).toBeInTheDocument();
+    expect(screen.queryByText(/строки может прислать любой узел сети/)).toBeNull();
+  });
+
+  it("TLS без клиентского сертификата и без разрешённых сетей — предупреждение", async () => {
+    handler = (c) =>
+      c.url === "/api/v1/shadow-ai/syslog"
+        ? json({ ...syslogOff, enabled: true, running: true, address: "0.0.0.0:6514", format: "cef", tls: true, client_cert_required: false, allowed_networks: [] })
+        : undefined;
+    renderScreen(reader);
+    await openTab("Приём по syslog");
+    expect(await screen.findByText(/строки может прислать любой узел сети/)).toBeInTheDocument();
   });
 
   it("приём по syslog остановлен ошибкой — сообщение с причиной", async () => {

@@ -428,6 +428,8 @@ ifeq ($(filter 1,$(ML)),1)
 	@$(RELEASE_DIR)/bin/aisec-cli verify -release $(ML_RELEASE_DIR) -allow-older >$(BUILD)/release-ml-verify.out || \
 		{ cat $(BUILD)/release-ml-verify.out; echo "images: выпуск aisec-ml не прошёл проверку"; exit 1; }
 	@! grep -q 'тестовым ключом' $(BUILD)/release-ml-verify.out || { echo "images: выпуск aisec-ml подписан тестовым ключом"; exit 1; }
+	@v=$$(sed -n 's/^  "version": "\([^"]*\)",$$/\1/p' $(ML_RELEASE_DIR)/aisec-manifest.json); \
+		test "$$v" = '$(VERSION)' || { echo "images: версия выпуска aisec-ml $$v не совпадает с VERSION=$(VERSION) (4Н26)"; exit 1; }
 	$(MAKE) --no-print-directory ort-verify ORT_LIB_DIR=$(ML_RELEASE_DIR)/lib
 endif
 	$(MAKE) --no-print-directory release-fingerprint

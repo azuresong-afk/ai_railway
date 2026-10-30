@@ -85,8 +85,15 @@ func TestDM37_CatalogMatch(t *testing.T) {
 		"":                                  "", "google.com": "", "www.google.com": "", "yandex.ru": "", "mail.yandex.ru": "", "sber.ru": "",
 		"microsoft.com": "", "openai.com.evil.example.com": "", "notchatgpt.com": "", "chatgpt.com.example.ru": "",
 		"203.0.113.10": "", "[2001:db8::1]:443": "", "2001:db8::1": "", "чат.рф": "", "xn--80aswg.xn--p1ai": "",
+		// 4Н19: «://» в пути или запросе URL без схемы — не схема.
+		"https://chatgpt.com/c":            "chatgpt",
+		"chatgpt.com/c?next=https://ya.ru": "chatgpt",
+		"chatgpt.com?u=http://yandex.ru":   "chatgpt",
+		"chatgpt.com#https://ya.ru":        "chatgpt",
+		"HTTPS://user@claude.ai:443/x":     "claude",
+		"1http://chatgpt.com":              "",
 	} {
-		host, ok := NormalizeHost(raw)
+		host, ok := NormalizeHost(hostOf(raw))
 		got := ""
 		if ok {
 			if s, found := c.Match(host); found {
