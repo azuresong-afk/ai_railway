@@ -34,7 +34,24 @@ type Memory struct {
 	syslogSaves int
 	// dbs — служебные базы (каталог) для тестов: Options.ServiceDBs.
 	dbs *servicedb.Memory
+	// maxAggs — предел для Capacity; 0 — MaxStoredAggregates.
+	maxAggs int64
 }
+
+// Capacity — см. Store: число сводок и предел MaxStoredAggregates (или
+// заданный SetMaxAggregates).
+func (m *Memory) Capacity(context.Context, string) (int64, int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	limit := m.maxAggs
+	if limit == 0 {
+		limit = MaxStoredAggregates
+	}
+	return int64(len(m.aggs)), limit, nil
+}
+
+// SetMaxAggregates — предел сводок для Capacity (тесты).
+func (m *Memory) SetMaxAggregates(n int64) { m.mu.Lock(); m.maxAggs = n; m.mu.Unlock() }
 
 // ServiceDBs — хранилище служебных баз в памяти, парное этому (каталог).
 func (m *Memory) ServiceDBs() *servicedb.Memory { return m.dbs }

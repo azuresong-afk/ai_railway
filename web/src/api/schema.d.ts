@@ -10797,15 +10797,23 @@ export interface components {
             };
             /** @description Приём журналов прокси по syslog (теневой ИИ); нет — слушатель выключен */
             shadow_ai_syslog?: components["schemas"]["ShadowSyslogStats"];
+            /** @description Заполнение хранилища почасовых сводок теневого ИИ (4Н25, задача 5.9 этапа 5): от warn_percent — условие shadow_ai_storage, при достижении предела — shadow_ai_full (импорт получает 507). Нет — модуль не подключён */
+            shadow_ai_storage?: {
+                /** @description Строк сводок организации (счёт до предела плюс одна) */
+                aggregates: number;
+                max_aggregates: number;
+                used_percent: number;
+                warn_percent: number;
+            };
             notifications: {
                 /**
-                 * @description gateway_clock (ВРМ.1) — часы шлюза на связи в последнем heartbeat расходятся с часами сервера больше чем на минуту, 3Н40 ревью 3.r3. gateway_tls (ЗИ.4) — шлюз на текущем пакете конфигурации дольше 10 минут после его сборки отвечает приложениям не тем сертификатом, что загружен в консоли (по часам шлюза он ещё не действует или истёк; без сертификата заказчика — не своим), 3Н43 ревью 3.r3. alert_job_stale (РСБ.7, DM-44) — фоновая задача правил «частота», «аномалия» и «бюджет» не отмечала проход дольше 5 минут при работающем сервере, 3В17 ревью 3.r2. ca_expiry (ИАФ.10) — действующему корню внутреннего УЦ осталось 60 суток и меньше, нужна ротация `aisec-cli keys rotate-ca`; system.alert пишется за 60 суток (ca_expiry) и за 7 суток (ca_expiry:critical), 3В5 ревью 3.r1. customer_cert_expiry (ЗИ.4) — сертификату заказчика для адреса шлюза осталось 30 суток и меньше; system.alert пишется за 30 суток (customer_cert_expiry) и за 7 суток (customer_cert_expiry:critical), задача 3.27. quota_approximate (ЗИ.6) — режим квот local, а действующих шлюзов на связи больше одного: квоты приложений и жёсткие бюджеты соблюдаются приблизительно, задача 4.29. quota_autonomous (ЗИ.6, по компонентам gateway:<ID>) — шлюз в режиме leased сообщил в heartbeat, что сервер недоступен и он работает на автономной доле квот, задача 4.29
+                 * @description gateway_clock (ВРМ.1) — часы шлюза на связи в последнем heartbeat расходятся с часами сервера больше чем на минуту, 3Н40 ревью 3.r3. gateway_tls (ЗИ.4) — шлюз на текущем пакете конфигурации дольше 10 минут после его сборки отвечает приложениям не тем сертификатом, что загружен в консоли (по часам шлюза он ещё не действует или истёк; без сертификата заказчика — не своим), 3Н43 ревью 3.r3. alert_job_stale (РСБ.7, DM-44) — фоновая задача правил «частота», «аномалия» и «бюджет» не отмечала проход дольше 5 минут при работающем сервере, 3В17 ревью 3.r2. ca_expiry (ИАФ.10) — действующему корню внутреннего УЦ осталось 60 суток и меньше, нужна ротация `aisec-cli keys rotate-ca`; system.alert пишется за 60 суток (ca_expiry) и за 7 суток (ca_expiry:critical), 3В5 ревью 3.r1. customer_cert_expiry (ЗИ.4) — сертификату заказчика для адреса шлюза осталось 30 суток и меньше; system.alert пишется за 30 суток (customer_cert_expiry) и за 7 суток (customer_cert_expiry:critical), задача 3.27. quota_approximate (ЗИ.6) — режим квот local, а действующих шлюзов на связи больше одного: квоты приложений и жёсткие бюджеты соблюдаются приблизительно, задача 4.29. quota_autonomous (ЗИ.6, по компонентам gateway:<ID>) — шлюз в режиме leased сообщил в heartbeat, что сервер недоступен и он работает на автономной доле квот, задача 4.29. gateway_limits (РСБ.7, по компонентам gateway:<ID>) — шлюз за последние 15 минут вытеснял счётчики лимитов вызовов инструментов или сессии session.risk из-за общего предела (вытеснения по доле приложения не входят), задача 5.9 этапа 5. shadow_ai_storage (РСБ.7) — сводки теневого ИИ заняли 90 % предела и больше; shadow_ai_full (РСБ.7) — предел достигнут, импорт и приём по syslog отклоняются (507), 4Н25. service_db_previous и service_db_unused (ОЦЛ.5, по компонентам service_db:<вид>) — текущая сохранённая версия служебной базы не прошла повторную проверку подписи: работает предыдущая версия или база не используется (ADR-0028)
                  * @enum {string}
                  */
-                condition: "account_lockout" | "access_denied" | "audit_chain" | "audit_storage" | "integrity" | "time_sync" | "config_bundle" | "config_bundle_lag" | "test_build" | "gateway_offline" | "events_dropped" | "reports_stale" | "cert_expiry" | "gateway_clock" | "gateway_tls" | "ca_expiry" | "customer_cert_expiry" | "alert_job_stale" | "license_expiry" | "license_grace" | "license_restricted" | "license_invalid" | "license_clock" | "quota_approximate" | "quota_autonomous";
+                condition: "account_lockout" | "access_denied" | "audit_chain" | "audit_storage" | "integrity" | "time_sync" | "config_bundle" | "config_bundle_lag" | "test_build" | "gateway_offline" | "events_dropped" | "reports_stale" | "cert_expiry" | "gateway_clock" | "gateway_tls" | "ca_expiry" | "customer_cert_expiry" | "alert_job_stale" | "license_expiry" | "license_grace" | "license_restricted" | "license_invalid" | "license_clock" | "quota_approximate" | "quota_autonomous" | "gateway_limits" | "shadow_ai_storage" | "shadow_ai_full" | "service_db_previous" | "service_db_unused";
                 /** @enum {string} */
                 requirement: "ИАФ.4" | "ИАФ.10" | "УПД.6" | "РСБ.4" | "РСБ.5" | "РСБ.7" | "ОЦЛ.1" | "ОЦЛ.3" | "ОЦЛ.5" | "ВРМ.1" | "ЗИ.2" | "ЗИ.4" | "ЗИ.6";
-                /** @description Компоненты с активным условием (integrity — server или gateway:<ID>, config_bundle_lag, gateway_offline, events_dropped, reports_stale, cert_expiry — gateway:<ID>); каждое ведётся отдельно и пишется в system.alert (В18 ревью 2.r3b), а возникшее условие порождает оповещение системного правила (задача 3.11 этапа 3, DM-42–DM-44). test_build (ОЦЛ.1) — компоненты, собранные с тестовым ключом манифеста (Н34 ревью 2.r4); integrity шлюза поднимает и откат выпуска, и чужой ключ проверки пакетов (В19, В20 ревью 2.r4). DM-44: gateway_offline — шлюз не на связи дольше трёх периодов heartbeat, events_dropped — счётчик отброшенных событий вырос за 15 минут, cert_expiry — сертификат истекает меньше чем через 14 суток, reports_stale — итог целостности старше двух часов или не приходит (Н29) */
+                /** @description Компоненты с активным условием (integrity — server или gateway:<ID>, config_bundle_lag, gateway_offline, events_dropped, reports_stale, cert_expiry, gateway_limits — gateway:<ID>; service_db_previous, service_db_unused — service_db:<вид>); каждое ведётся отдельно и пишется в system.alert (В18 ревью 2.r3b), а возникшее условие порождает оповещение системного правила (задача 3.11 этапа 3, DM-42–DM-44). test_build (ОЦЛ.1) — компоненты, собранные с тестовым ключом манифеста (Н34 ревью 2.r4); integrity шлюза поднимает и откат выпуска, и чужой ключ проверки пакетов (В19, В20 ревью 2.r4). DM-44: gateway_offline — шлюз не на связи дольше трёх периодов heartbeat, events_dropped — счётчик отброшенных событий вырос за 15 минут, cert_expiry — сертификат истекает меньше чем через 14 суток, reports_stale — итог целостности старше двух часов или не приходит (Н29) */
                 components?: string[];
                 title: string;
                 active: boolean;
@@ -10817,7 +10825,7 @@ export interface components {
                 /** @description Число событий за 24 часа (только ИАФ.4 и УПД.6) */
                 count: number | null;
             }[];
-            unavailable: ("integrity" | "gateways" | "events" | "storage" | "audit_chain" | "bundle" | "notifications")[];
+            unavailable: ("integrity" | "gateways" | "events" | "storage" | "audit_chain" | "bundle" | "notifications" | "timezone" | "customer_cert" | "license" | "quota" | "alert_job" | "shadow_ai_storage" | "service_dbs")[];
         };
         StatusReport: {
             ok: boolean;
@@ -10869,6 +10877,34 @@ export interface components {
                 /** Format: date-time */
                 reported_at: string;
             } | null;
+            /** @description Заполнение и вытеснения счётчиков в памяти шлюза с его запуска из последнего heartbeat (задача 5.9 этапа 5; 4Н11, 4Н13). Вытесненный ключ начинает счёт заново: лимиты вызовов инструментов и session.risk по нему не действуют. null — шлюз прежней версии или heartbeat после перезапуска сервера ещё не пришёл (данные в памяти сервера) */
+            limits: null | {
+                /** Format: date-time */
+                reported_at: string;
+                /**
+                 * Format: date-time
+                 * @description Запуск процесса шлюза
+                 */
+                started_at: string | null;
+                /** @description Счётчики лимитов вызовов инструментов (DM-23); null — шлюз раздел не прислал */
+                tool_rate: null | {
+                    keys: number;
+                    max_keys: number;
+                    /** @description Ключей вытеснено из-за предела */
+                    evictions: number;
+                };
+                /** @description Состояния session.risk (DM-06); null — шлюз раздел не прислал */
+                sessions: null | {
+                    sessions: number;
+                    max_sessions: number;
+                    /** @description Доля одного приложения (по умолчанию четверть предела) */
+                    max_app_sessions: number;
+                    /** @description Вытеснено из-за общего предела */
+                    evictions: number;
+                    /** @description Вытеснено из-за доли приложения: сессия того же приложения */
+                    app_evictions: number;
+                };
+            };
         };
         IntegrityList: {
             items: components["schemas"]["IntegrityCheck"][];

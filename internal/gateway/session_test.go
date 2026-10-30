@@ -253,6 +253,62 @@ func TestDM06_SessionLimitEvictsOldest(t *testing.T) {
 	}
 }
 
+// Покрывает: DM-06
+// Доля приложения (4Н13 ревью 4.r2): поток новых ID сессий одного
+// приложения вытесняет только его же сессии, накопленные оценки другого
+// приложения остаются; вытеснения считаются отдельно.
+func TestDM06_AppShareKeepsOtherApps(t *testing.T) {
+	clock := newFakeClock()
+	s := testSessions(t, 8, clock)
+	if st := s.Stats(); st.MaxAppSessions != 2 || st.MaxSessions != 8 {
+		t.Fatalf("доля по умолчанию: %+v", st)
+	}
+	clock.advance(time.Second)
+	s.observe("victim\x00a", 1)
+	clock.advance(time.Second)
+	s.observe("victim\x00b", 1)
+	for i := 0; i < 1000; i++ {
+		clock.advance(time.Millisecond)
+		s.observe(fmt.Sprint("flood\x00", i), 1)
+	}
+	for _, k := range []string{"victim\x00a", "victim\x00b"} {
+		if _, turns := s.observe(k, 0); turns != 2 {
+			t.Fatalf("оценка %q другого приложения сброшена: turns %d", k, turns)
+		}
+	}
+	st := s.Stats()
+	if st.Sessions != 4 || st.AppEvictions != 998 || st.Evictions != 0 {
+		t.Fatalf("после потока: %+v", st)
+	}
+	// Общий предел: четыре приложения по доле и пятое — вытесняется самая
+	// давняя сессия, счётчик общих вытеснений растёт.
+	for _, app := range []string{"c", "d"} {
+		for i := 0; i < 2; i++ {
+			clock.advance(time.Second)
+			s.observe(app+"\x00"+fmt.Sprint(i), 1)
+		}
+	}
+	clock.advance(time.Second)
+	s.observe("e\x000", 1)
+	if st := s.Stats(); st.Sessions != 8 || st.Evictions != 1 {
+		t.Fatalf("общий предел: %+v", st)
+	}
+}
+
+// Доля приложения из настроек: не больше общего предела, 0 — четверть.
+func TestSessionAppShareConfig(t *testing.T) {
+	for _, c := range []struct{ max, app, want int }{{3, 0, 1}, {100, 0, 25}, {10, 50, 10}, {10, 3, 3}} {
+		cfg := SessionConfig{Provider: testProvider(t), MAC: testMAC(t), MaxSessions: c.max, MaxAppSessions: c.app}
+		s, err := NewSessions(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := s.Stats().MaxAppSessions; got != c.want {
+			t.Fatalf("max %d, app %d: доля %d, ожидалась %d", c.max, c.app, got, c.want)
+		}
+	}
+}
+
 // Сессия запроса: заголовок — 1–128 байт из [A-Za-z0-9._:-], один; неверный
 // — 400 invalid_session без эха значения, и запрос до провайдера не доходит.
 // Заголовок проверяется и у шлюза без сессий.

@@ -665,6 +665,41 @@ components:
             недоступен для аренды (задача 4.29). Только после ответа с
             `quota_leases: true`. Сервер ведёт условие «Состояния системы»
             `quota_autonomous` (признак держится 3 минуты после heartbeat).
+        limits:
+          type: object
+          additionalProperties: false
+          minProperties: 1
+          description: |
+            Заполнение и вытеснения счётчиков в памяти шлюза с его запуска
+            (задача 5.9 этапа 5; 4Н11, 4Н13): только числа, без ключей и ID
+            приложений. Только после ответа с `limits: true`; нет поля — шлюз
+            прежней версии, данных нет. Сервер держит последние значения в
+            памяти и показывает их на «Состоянии системы»; рост вытеснений
+            из-за общего предела — условие `gateway_limits`. Счётчики 0–2^62,
+            заполнение не больше предела, иначе 400.
+          properties:
+            tool_rate:
+              type: object
+              required: [keys, max_keys, evictions]
+              additionalProperties: false
+              description: Счётчики лимитов вызовов инструментов (DM-23).
+              properties:
+                keys: { type: integer, minimum: 0, maximum: 4611686018427387904 }
+                max_keys: { type: integer, minimum: 1, maximum: 4611686018427387904 }
+                evictions: { type: integer, minimum: 0, maximum: 4611686018427387904 }
+            sessions:
+              type: object
+              required: [sessions, max_sessions, max_app_sessions, evictions, app_evictions]
+              additionalProperties: false
+              description: |
+                Состояния session.risk (DM-06): общий предел, доля приложения,
+                вытеснения из-за общего предела и из-за доли приложения.
+              properties:
+                sessions: { type: integer, minimum: 0, maximum: 4611686018427387904 }
+                max_sessions: { type: integer, minimum: 1, maximum: 4611686018427387904 }
+                max_app_sessions: { type: integer, minimum: 1, maximum: 4611686018427387904 }
+                evictions: { type: integer, minimum: 0, maximum: 4611686018427387904 }
+                app_evictions: { type: integer, minimum: 0, maximum: 4611686018427387904 }
     QuotaLeaseRequest:
       type: object
       required: [apps]
@@ -809,6 +844,11 @@ components:
           description: |
             Сервер выдаёт аренду квот и принимает `quota_autonomous` (задача
             4.29): шлюз присылает поле только после такого ответа.
+        limits:
+          type: boolean
+          description: |
+            Сервер принимает поле `limits` (задача 5.9 этапа 5): шлюз
+            присылает его только после такого ответа.
         reissue:
           type: boolean
           description: |

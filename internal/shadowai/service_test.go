@@ -304,3 +304,42 @@ func TestRetention(t *testing.T) {
 		t.Fatalf("без первичной настройки: %v", err)
 	}
 }
+
+// Задача 5.9 этапа 5 (4Н25): заполнение хранилища сводок для «Состояния
+// системы» — счёт кэшируется на StorageCacheTTL, импорт сбрасывает кэш.
+func TestStorageCache(t *testing.T) {
+	ctx := context.Background()
+	m := NewMemory()
+	m.SetMaxAggregates(1000)
+	now := testNow
+	o := Options{Store: m, ServiceDBs: m.ServiceDBs(), Provider: provider(t), Clock: func() time.Time { return now }}
+	s, err := New(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, limit, err := s.Storage(ctx); err != nil || n != 0 || limit != 1000 {
+		t.Fatalf("пусто: %d из %d, %v", n, limit, err)
+	}
+	if _, err := s.UploadCatalog(ctx, testBy, readFile(t, testCatalogSigned)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Import(ctx, testBy, FormatSquid, bytes.NewReader(readFile(t, "../../testdata/shadowai/access-squid.log"))); err != nil {
+		t.Fatal(err)
+	}
+	n, _, err := s.Storage(ctx)
+	if err != nil || n == 0 || n != int64(len(m.Aggregates())) {
+		t.Fatalf("после импорта: %d, %v", n, err)
+	}
+	// Сводки изменились без импорта (очистка по сроку): до истечения кэша —
+	// прежний счёт, после — новый.
+	m.mu.Lock()
+	clear(m.aggs)
+	m.mu.Unlock()
+	if got, _, _ := s.Storage(ctx); got != n {
+		t.Fatalf("кэш: %d, ожидалось %d", got, n)
+	}
+	now = now.Add(StorageCacheTTL)
+	if got, _, _ := s.Storage(ctx); got != 0 {
+		t.Fatalf("после срока кэша: %d", got)
+	}
+}
