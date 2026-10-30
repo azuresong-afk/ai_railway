@@ -31,7 +31,7 @@ func TestServicedbInspect(t *testing.T) {
 	dir := t.TempDir()
 	write := func(name string, data []byte) string {
 		path := filepath.Join(dir, name)
-		if err := os.WriteFile(path, data, 0o600); err != nil {
+		if err := os.WriteFile(path, data, 0o600); err != nil { //nolint:gosec // G703: путь во временном каталоге теста
 			t.Fatal(err)
 		}
 		return path

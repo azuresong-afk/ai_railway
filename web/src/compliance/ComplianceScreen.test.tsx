@@ -225,4 +225,14 @@ describe("экран «Соответствие»", () => {
     expect(await screen.findByText("Предыдущая")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Вернуть предыдущую версию" })).toBeNull();
   });
+
+  it("вкладка базы: непроверенную предыдущую версию вернуть нельзя", async () => {
+    const bad = { ...uploadedBase, previous: { ...uploadedBase.previous!, valid: false, reason: "signature" as const } };
+    handler = (c) => (c.url === "/api/v1/compliance/base" && c.method === "GET" ? json(bad) : undefined);
+    renderScreen([...reader, "compliance.base.load"]);
+    fireEvent.mouseDown(await screen.findByRole("tab", { name: "База требований" }), { button: 0 });
+    expect(await screen.findByText(/не прошла проверку: подпись неверна/)).toBeTruthy();
+    expect(screen.getByText(/Предыдущую версию вернуть нельзя/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Вернуть предыдущую версию" })).toBeNull();
+  });
 });

@@ -414,7 +414,7 @@ function BaseTab({ canLoad }: { canLoad: boolean }) {
       )}
       {canLoad && (
         <div className="flex flex-wrap items-end gap-3">
-          <Field label="Файл базы требований" hint="Подписанный файл из выпуска, до 4 МиБ. Версия должна быть новее действующей.">
+          <Field label="Файл базы требований" hint="Подписанный файл из выпуска, до 4 МиБ. Версия должна быть новее текущей загруженной и встроенной.">
             {({ id, describedBy }) => (
               <input id={id} aria-describedby={describedBy} ref={file} type="file" accept=".aisecdb" className="text-sm" onChange={(e) => setPicked(Boolean(e.target.files?.length))} />
             )}

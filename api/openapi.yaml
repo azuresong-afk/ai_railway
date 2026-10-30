@@ -8808,7 +8808,8 @@ components:
         subkey_not_after: { type: string, format: date-time, description: 'Конец срока заверения (только у прошедшей проверку)' }
         fingerprint: { type: string, description: 'Отпечаток рабочего ключа' }
         uploaded_at: { type: string, format: date-time }
-        valid: { type: boolean, description: 'Подпись и содержимое сохранённого файла проверены при запуске сервера' }
+        uploaded_by: { type: string, maxLength: 128, description: 'Кто загрузил версию: user:ID или token:ID' }
+        valid: { type: boolean, description: 'Подпись и содержимое сохранённого файла проверены при запуске сервера; у проверенной версии дата, число записей, номер заверения и отпечаток взяты из подписанного файла, у непроверенной — из записи в БД и не подтверждены' }
         reason:
           type: string
           enum: [signature, purpose, kind, expired, date, revoked, content, format]

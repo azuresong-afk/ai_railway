@@ -86,7 +86,10 @@ export function ServiceDBVersions({
           <Row title="Предыдущая" v={previous} active={active === "previous"} />
         </tbody>
       </Table>
-      {canManage && previous && (
+      {canManage && previous && !previous.valid && (
+        <p className="text-muted">Предыдущую версию вернуть нельзя: она не прошла проверку подписи. Загрузите файл из текущего выпуска.</p>
+      )}
+      {canManage && previous?.valid && (
         <div>
           <Confirm
             trigger={<Button disabled={pending}>Вернуть предыдущую версию</Button>}

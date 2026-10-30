@@ -105,7 +105,11 @@ func (s *PGStore) Slots(ctx context.Context, orgID, kind string) (Slots, error) 
 	}
 	// Оба слота — из одного снимка: откат или загрузка между чтениями не
 	// должны дать несогласованную пару.
-	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }() //nolint:gosec // G104: транзакция только читает
+	defer func() {
+		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), pgRollbackTimeout)
+		defer cancel()
+		_ = tx.Rollback(rctx) //nolint:gosec // G104: транзакция только читает
+	}()
 	if _, err := tx.Exec(ctx, `SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY`); err != nil {
 		return Slots{}, fmt.Errorf("служебные базы: %w", err)
 	}

@@ -57,18 +57,23 @@ func servicedbInspect(args []string, stdout, stderr io.Writer, now time.Time) er
 		title = "неизвестен этому выпуску"
 	}
 	e := r.Endorsement
-	say(stdout, "Вид: %s (%s)\n", r.Kind, title)
+	// У непринятого файла сведения из конверта не подтверждены подписью.
+	unverified := ""
+	if !r.Verified {
+		unverified = " (не проверено)"
+	}
+	say(stdout, "Вид%s: %s (%s)\n", unverified, r.Kind, title)
 	if r.Verified {
 		say(stdout, "Версия: %d от %s, записей: %d\n", r.Version, r.Date.Format(time.DateOnly), r.Records)
 	}
-	say(stdout, "Заверение рабочего ключа: номер %d, срок %s — %s\nОтпечаток рабочего ключа: %s\n",
-		e.Serial, e.NotBefore.UTC().Format(time.RFC3339), e.NotAfter.UTC().Format(time.RFC3339), r.Fingerprint)
+	say(stdout, "Заверение рабочего ключа%s: номер %d, срок %s — %s\nОтпечаток рабочего ключа%s: %s\n", unverified,
+		e.Serial, e.NotBefore.UTC().Format(time.RFC3339), e.NotAfter.UTC().Format(time.RFC3339), unverified, r.Fingerprint)
 	if !r.Verified {
 		say(stdout, "Итог: НЕ ПРИНЯТ — %s\n", inspectReasonText(r.Reason))
 		return errServiceDBRejected
 	}
 	say(stdout, "Итог: подпись, заверение, отзыв, срок и содержимое проверены встроенным ключом производителя.\n"+
-		"Сервер примет файл, если его версия больше загруженной.\n")
+		"Сервер примет файл, если его версия больше загруженной (база требований — и больше встроенной в установленный выпуск).\n")
 	return nil
 }
 
@@ -87,6 +92,10 @@ func readServiceDBFile(path string) ([]byte, error) {
 		return nil, err
 	}
 	defer func() { _ = f.Close() }() //nolint:gosec // G104: файл только читается
+	// Путь не подменён между Lstat и Open: тот же обычный файл.
+	if fi, err := f.Stat(); err != nil || !fi.Mode().IsRegular() || !os.SameFile(info, fi) {
+		return nil, fmt.Errorf("%s: файл заменён во время чтения", path)
+	}
 	data, err := io.ReadAll(io.LimitReader(f, aisecCrypto.MaxServiceDBSize+1))
 	if err != nil {
 		return nil, err

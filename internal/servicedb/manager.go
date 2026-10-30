@@ -150,12 +150,13 @@ func (m *Manager) loadLocked(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	m.cur, m.prev = m.check(sl.Current), m.check(sl.Previous)
-	m.loaded = true
+	cur, prev := m.check(sl.Current), m.check(sl.Previous)
+	// Состояние меняется только после всех записей аудита: при сбое записи
+	// следующее обращение перечитает и запишет снова (ADR-0028, п. 5).
 	for _, s := range []struct {
 		slot string
 		st   slotState
-	}{{SlotCurrent, m.cur}, {SlotPrevious, m.prev}} {
+	}{{SlotCurrent, cur}, {SlotPrevious, prev}} {
 		if s.st.stored == nil || s.st.err == nil {
 			continue
 		}
@@ -168,13 +169,14 @@ func (m *Manager) loadLocked(ctx context.Context) error {
 			"kind", m.o.Kind.Name, "slot", s.slot, "version", s.st.stored.Version, "reason", reason)
 		rec := audit.Entry{Actor: systemActor, Action: ActionStoredInvalid, Object: audit.Object{Type: ObjectType, ID: m.o.Kind.Name},
 			Result: audit.ResultFailure, Details: map[string]any{"kind": m.o.Kind.Name, "slot": s.slot, "version": s.st.stored.Version,
-				"subkey_serial": s.st.stored.SubkeySerial, "reason": reason, "active": m.activeLocked()}}
+				"subkey_serial": s.st.stored.SubkeySerial, "reason": reason, "active": active(cur, prev)}}
 		rec.OrgID = m.o.OrgID
 		if err := m.o.Store.Record(ctx, rec); err != nil {
 			return err
 		}
 		m.reported[key] = true
 	}
+	m.cur, m.prev, m.loaded = cur, prev, true
 	return nil
 }
 
@@ -196,14 +198,26 @@ func (m *Manager) ensure(ctx context.Context) error {
 	return m.loadLocked(ctx)
 }
 
-func (m *Manager) activeLocked() string {
+func (m *Manager) activeLocked() string { return active(m.cur, m.prev) }
+
+func active(cur, prev slotState) string {
 	switch {
-	case m.cur.verified != nil:
+	case cur.verified != nil:
 		return ActiveCurrent
-	case m.prev.verified != nil:
+	case prev.verified != nil:
 		return ActivePrevious
 	}
 	return ActiveNone
+}
+
+func (m *Manager) activeVerifiedLocked() *Verified {
+	switch m.activeLocked() {
+	case ActiveCurrent:
+		return m.cur.verified
+	case ActivePrevious:
+		return m.prev.verified
+	}
+	return nil
 }
 
 // Active — действующая проверенная база; nil — нет ни одной.
@@ -213,13 +227,7 @@ func (m *Manager) Active(ctx context.Context) (*Verified, error) {
 	if err := m.ensure(ctx); err != nil {
 		return nil, err
 	}
-	switch m.activeLocked() {
-	case ActiveCurrent:
-		return m.cur.verified, nil
-	case ActivePrevious:
-		return m.prev.verified, nil
-	}
-	return nil, nil
+	return m.activeVerifiedLocked(), nil
 }
 
 // VersionState — сохранённая версия в состоянии.
@@ -231,6 +239,8 @@ type VersionState struct {
 	SubkeyNotAfter *time.Time `json:"subkey_not_after,omitempty"`
 	Fingerprint    string     `json:"fingerprint"`
 	UploadedAt     time.Time  `json:"uploaded_at"`
+	// UploadedBy — кто загрузил («user:ID», «token:ID»).
+	UploadedBy string `json:"uploaded_by"`
 	// Valid — подпись и содержимое сохранённого файла проверены.
 	Valid bool `json:"valid"`
 	// Reason — причина, по которой версия не прошла проверку.
@@ -253,10 +263,14 @@ func versionState(s slotState) *VersionState {
 		return nil
 	}
 	v := &VersionState{Version: s.stored.Version, Date: s.stored.Date.UTC().Format(time.DateOnly), Records: s.stored.Records,
-		SubkeySerial: s.stored.SubkeySerial, Fingerprint: s.stored.Fingerprint, UploadedAt: s.stored.UploadedAt.UTC(), Valid: s.verified != nil}
+		SubkeySerial: s.stored.SubkeySerial, Fingerprint: s.stored.Fingerprint, UploadedAt: s.stored.UploadedAt.UTC(),
+		UploadedBy: s.stored.UploadedBy, Valid: s.verified != nil}
 	if s.verified != nil {
-		until := s.verified.Endorsement.NotAfter
-		v.SubkeyNotAfter = &until
+		// У проверенной версии сведения — из подписанного файла, а не из
+		// строки БД, которую можно изменить, не трогая файл.
+		c, e := s.verified.Content, s.verified.Endorsement
+		until := e.NotAfter
+		v.Date, v.Records, v.SubkeySerial, v.Fingerprint, v.SubkeyNotAfter = c.Date.UTC().Format(time.DateOnly), c.Records, e.Serial, s.verified.Fingerprint, &until
 	} else {
 		v.Reason = Reason(s.err)
 	}
@@ -274,6 +288,19 @@ func (m *Manager) State(ctx context.Context) (State, error) {
 		Current: versionState(m.cur), Previous: versionState(m.prev)}, nil
 }
 
+// Snapshot — состояние и действующая база из одного чтения под одной
+// блокировкой: при одновременной загрузке версия и содержимое в ответе не
+// расходятся.
+func (m *Manager) Snapshot(ctx context.Context) (State, *Verified, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := m.ensure(ctx); err != nil {
+		return State{}, nil, err
+	}
+	return State{Kind: m.o.Kind.Name, Title: m.o.Kind.Title, Active: m.activeLocked(),
+		Current: versionState(m.cur), Previous: versionState(m.prev)}, m.activeVerifiedLocked(), nil
+}
+
 func (m *Manager) entry(by By, action string, result audit.Result, details map[string]any) audit.Entry {
 	details["kind"] = m.o.Kind.Name
 	return audit.Entry{OrgID: m.o.OrgID, Actor: by.Actor, SourceIP: by.IP, Action: action,
@@ -281,11 +308,16 @@ func (m *Manager) entry(by By, action string, result audit.Result, details map[s
 }
 
 // reload перечитывает сохранённые версии после записи: в памяти — то, что
-// в хранилище (две загрузки сразу дают одну старшую версию, 4Н21).
-func (m *Manager) reload(ctx context.Context) error {
+// в хранилище (две загрузки сразу дают одну старшую версию, 4Н21). Запись
+// уже зафиксирована, поэтому сбой чтения не делает её отказом: состояние
+// помечается непрочитанным и перечитывается при следующем обращении.
+func (m *Manager) reload(ctx context.Context) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.loadLocked(ctx)
+	if err := m.loadLocked(ctx); err != nil {
+		m.loaded = false
+		m.o.Logger.Error("служебная база: состояние не перечитано после записи", "kind", m.o.Kind.Name, "err", err)
+	}
 }
 
 // Upload проверяет файл (срок заверения — на текущее время) и сохраняет его
@@ -307,11 +339,16 @@ func (m *Manager) Upload(ctx context.Context, by By, data []byte) (Verified, err
 				"subkey_serial": st.SubkeySerial, "fingerprint": st.Fingerprint, "previous_version": uint64(0)}
 			if prev != nil {
 				d["previous_version"] = prev.Version
+				// Не прошедшая проверку текущая не становится предыдущей.
+				if _, perr := m.verifyStored(*prev); perr != nil {
+					d["previous_dropped"], d["previous_reason"] = true, Reason(perr)
+				}
 			}
 			return m.entry(by, ActionLoaded, audit.ResultSuccess, d)
 		})
 		if err == nil {
-			return v, m.reload(ctx)
+			m.reload(ctx)
+			return v, nil
 		}
 		if !errors.Is(err, ErrStale) {
 			return Verified{}, err
@@ -340,14 +377,15 @@ func (m *Manager) Rollback(ctx context.Context, by By) (Verified, error) {
 		return err
 	}
 	_, err := m.o.Store.Rollback(ctx, m.o.OrgID, m.o.Kind.Name, check, func(from *Stored, to Stored) audit.Entry {
-		d := map[string]any{"version": to.Version, "from_version": uint64(0), "subkey_serial": to.SubkeySerial}
+		d := map[string]any{"version": to.Version, "from_version": uint64(0), "subkey_serial": v.Endorsement.Serial}
 		if from != nil {
 			d["from_version"] = from.Version
 		}
 		return m.entry(by, ActionRolledBack, audit.ResultSuccess, d)
 	})
 	if err == nil {
-		return v, m.reload(ctx)
+		m.reload(ctx)
+		return v, nil
 	}
 	if !errors.Is(err, ErrNoPrevious) && !isVerifyError(err) {
 		return Verified{}, err

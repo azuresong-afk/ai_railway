@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -98,7 +99,7 @@ func TestManagerUploadAndRollback(t *testing.T) {
 	if err != nil || got.Content.Version != 1 {
 		t.Fatalf("откат: %+v %v", got, err)
 	}
-	if a, _ := m.Active(ctx); a == nil || a.Content.Version != 1 {
+	if a, _ := m.Active(ctx); a == nil || a.Content.Version != 1 { //nolint:gosec // G104: ошибка проверяется значением
 		t.Fatalf("действует после отката: %+v", a)
 	}
 	if rec, n := count(st, ActionRolledBack, audit.ResultSuccess); n != 1 || rec.Details.(map[string]any)["from_version"] != uint64(2) ||
@@ -118,7 +119,7 @@ func TestManagerUploadAndRollback(t *testing.T) {
 	if _, err := m.Upload(ctx, testBy, v2); err != nil {
 		t.Fatalf("повторная загрузка откатанной: %v", err)
 	}
-	if s, _ := m.State(ctx); s.Current.Version != 2 || s.Previous.Version != 1 {
+	if s, _ := m.State(ctx); s.Current.Version != 2 || s.Previous.Version != 1 { //nolint:gosec // G104: ошибка проверяется значением
 		t.Fatalf("после повторной загрузки: %+v", s)
 	}
 }
@@ -180,7 +181,7 @@ func TestManagerStoredInvalid(t *testing.T) {
 	if _, err := m2.Upload(ctx, testBy, sign(t, testKindName, payload(3, "2026-10-28"), nil)); err != nil {
 		t.Fatal(err)
 	}
-	if s, _ := m2.State(ctx); s.Current.Version != 3 || s.Previous == nil || s.Previous.Version != 1 || !s.Previous.Valid {
+	if s, _ := m2.State(ctx); s.Current.Version != 3 || s.Previous == nil || s.Previous.Version != 1 || !s.Previous.Valid { //nolint:gosec // G104: ошибка проверяется значением
 		t.Fatalf("после загрузки: %+v", s)
 	}
 	// Номер в строке не совпадает с подписанным — строка изменена.
@@ -223,7 +224,7 @@ func TestManagerRollbackCorruptedPrevious(t *testing.T) {
 	if rec, n := count(st, ActionRolledBack, audit.ResultFailure); n != 1 || rec.Details.(map[string]any)["reason"] != ReasonSignature {
 		t.Fatalf("аудит: %d %+v", n, rec)
 	}
-	if a, _ := m.Active(ctx); a == nil || a.Content.Version != 2 {
+	if a, _ := m.Active(ctx); a == nil || a.Content.Version != 2 { //nolint:gosec // G104: ошибка проверяется значением
 		t.Fatalf("текущая изменилась: %+v", a)
 	}
 	if sl, _ := st.Slots(ctx, "", testKindName); sl.Current.Version != 2 || sl.Previous == nil { //nolint:gosec // G104: Memory не возвращает ошибку
@@ -285,5 +286,79 @@ func TestInspect(t *testing.T) {
 	}
 	if _, err := KindByName(kinds, "x"); !errors.Is(err, ErrUnknownKind) {
 		t.Fatalf("KindByName: %v", err)
+	}
+}
+
+// flakyStore — хранилище со сбоями чтения и записи аудита по признаку.
+type flakyStore struct {
+	*Memory
+	failSlots, failRecord atomic.Bool
+}
+
+var errFlaky = errors.New("сбой хранилища")
+
+func (f *flakyStore) Slots(ctx context.Context, org, kind string) (Slots, error) {
+	if f.failSlots.Load() {
+		return Slots{}, errFlaky
+	}
+	return f.Memory.Slots(ctx, org, kind)
+}
+
+func (f *flakyStore) Record(ctx context.Context, rec audit.Entry) error {
+	if f.failRecord.Load() {
+		return errFlaky
+	}
+	return f.Memory.Record(ctx, rec)
+}
+
+// Сбой чтения после зафиксированной записи — не отказ: база записана,
+// состояние перечитывается при следующем обращении. Сбой записи аудита
+// stored_invalid при запуске не теряет запись: менеджер перечитывает и
+// пишет её снова. Сведения проверенной версии — из подписанного файла,
+// а не из строки хранилища.
+func TestManagerStoreFailures(t *testing.T) {
+	ctx := context.Background()
+	st := &flakyStore{Memory: NewMemory()}
+	m := newManager(t, st, 0)
+	if _, err := m.Upload(ctx, testBy, sign(t, testKindName, payload(1, "2026-10-28"), nil)); err != nil {
+		t.Fatal(err)
+	}
+	st.failSlots.Store(true)
+	if v, err := m.Upload(ctx, testBy, sign(t, testKindName, payload(2, "2026-10-28"), nil)); err != nil || v.Content.Version != 2 {
+		t.Fatalf("записанная база — отказ: %+v %v", v, err)
+	}
+	if _, err := m.State(ctx); !errors.Is(err, errFlaky) {
+		t.Fatalf("состояние при сбое: %v", err)
+	}
+	st.failSlots.Store(false)
+	if s, err := m.State(ctx); err != nil || s.Current.Version != 2 || s.Previous.Version != 1 {
+		t.Fatalf("после сбоя: %+v %v", s, err)
+	}
+
+	sl, _ := st.Memory.Slots(ctx, "", testKindName) //nolint:gosec // G104: Memory не возвращает ошибку
+	bad := *sl.Current
+	bad.File = corrupt(bad.File)
+	st.Put(testKindName, SlotCurrent, &bad)
+	forged := *sl.Previous
+	forged.SubkeySerial, forged.Records, forged.Fingerprint = 77, 999, "чужой"
+	st.Put(testKindName, SlotPrevious, &forged)
+	st.failRecord.Store(true)
+	m2 := newManager(t, st, 0)
+	if err := m2.Load(ctx); !errors.Is(err, errFlaky) {
+		t.Fatalf("сбой аудита при запуске: %v", err)
+	}
+	if a, err := m2.Active(ctx); !errors.Is(err, errFlaky) || a != nil {
+		t.Fatalf("непроверенное состояние отдано: %+v %v", a, err)
+	}
+	st.failRecord.Store(false)
+	s, err := m2.State(ctx)
+	if err != nil || s.Active != ActivePrevious {
+		t.Fatalf("после сбоя аудита: %+v %v", s, err)
+	}
+	if _, n := count(st.Memory, ActionStoredInvalid, audit.ResultFailure); n != 1 {
+		t.Fatalf("записей stored_invalid: %d", n)
+	}
+	if p := s.Previous; p.SubkeySerial == 77 || p.Records == 999 || p.Fingerprint == "чужой" || p.UploadedBy == "" {
+		t.Fatalf("сведения из строки хранилища: %+v", p)
 	}
 }

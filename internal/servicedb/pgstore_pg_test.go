@@ -5,6 +5,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"os"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -270,5 +272,45 @@ func TestPGMigration0068MovesRows(t *testing.T) {
 		if n := e.count(t, `SELECT count(*) FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = $1`, table); n != 0 {
 			t.Fatalf("таблица %s осталась", table)
 		}
+	}
+}
+
+// Одновременные загрузки одной версии на PostgreSQL: ровно одна успешна,
+// остальные — stale_version; запись базы и аудит не расходятся.
+func TestPGServiceDBsConcurrentUpload(t *testing.T) {
+	e := setupSchema(t)
+	if err := e.migrator(0); err != nil {
+		t.Fatal(err)
+	}
+	st, _ := e.store(t)
+	ctx := pgTestCtx(t)
+	file := sign(t, testKindName, payload(3, "2026-10-28"), nil)
+	const n = 6
+	var ok, stale atomic.Int32
+	var wg sync.WaitGroup
+	for range n {
+		m := newManager(t, st, 0)
+		wg.Go(func() {
+			_, err := m.Upload(ctx, testBy, file)
+			var re *RejectError
+			switch {
+			case err == nil:
+				ok.Add(1)
+			case errors.As(err, &re) && re.Reason == ReasonStale:
+				stale.Add(1)
+			default:
+				t.Errorf("загрузка: %v", err)
+			}
+		})
+	}
+	wg.Wait()
+	if ok.Load() != 1 || stale.Load() != n-1 {
+		t.Fatalf("успешных %d, отказов stale %d", ok.Load(), stale.Load())
+	}
+	if c := e.count(t, `SELECT count(*) FROM service_dbs WHERE kind = $1`, testKindName); c != 1 {
+		t.Fatalf("строк: %d", c)
+	}
+	if c := e.count(t, `SELECT count(*) FROM audit_log WHERE action = $1 AND details->>'kind' = $2`, ActionLoaded, testKindName); c != 1 {
+		t.Fatalf("записей loaded: %d", c)
 	}
 }

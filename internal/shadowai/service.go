@@ -321,13 +321,15 @@ type CatalogView struct {
 
 // Catalog — сведения о каталоге и его сервисы.
 func (s *Service) Catalog(ctx context.Context) (CatalogView, error) {
-	st, err := s.db.State(ctx)
+	// Состояние и действующий каталог — из одного снимка менеджера.
+	st, active, err := s.db.Snapshot(ctx)
 	if err != nil {
 		return CatalogView{}, err
 	}
-	sc, err := s.current(ctx)
-	if err != nil {
-		return CatalogView{}, err
+	var sc *SignedCatalog
+	if active != nil {
+		c := signedCatalog(*active)
+		sc = &c
 	}
 	v := CatalogView{Services: []CatalogService{}, Active: st.Active, Current: st.Current, Previous: st.Previous}
 	v.Loaded = st.Current != nil || st.Previous != nil

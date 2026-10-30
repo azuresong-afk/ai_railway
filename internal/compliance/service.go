@@ -171,14 +171,19 @@ func (s *Service) current(ctx context.Context) (*Base, *SignedBase, error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	base, sb := s.pick(v)
+	return base, sb, nil
+}
+
+func (s *Service) pick(v *servicedb.Verified) (*Base, *SignedBase) {
 	if v == nil {
-		return s.o.Embedded, nil, nil
+		return s.o.Embedded, nil
 	}
 	sb := signedBase(*v)
 	if sb.Base.Version > s.o.Embedded.Version {
-		return sb.Base, &sb, nil
+		return sb.Base, &sb
 	}
-	return s.o.Embedded, &sb, nil
+	return s.o.Embedded, &sb
 }
 
 // snapshot возвращает снимок сведений; повторные запросы в пределах
@@ -469,14 +474,12 @@ type BaseView struct {
 
 // BaseView — сведения о действующей и загруженных базах.
 func (s *Service) BaseView(ctx context.Context) (BaseView, error) {
-	base, _, err := s.current(ctx)
+	// Состояние и действующая база — из одного снимка менеджера.
+	st, v, err := s.db.Snapshot(ctx)
 	if err != nil {
 		return BaseView{}, err
 	}
-	st, err := s.db.State(ctx)
-	if err != nil {
-		return BaseView{}, err
-	}
+	base, _ := s.pick(v)
 	return BaseView{Active: s.baseInfo(base), Builtin: s.baseInfo(s.o.Embedded), Uploaded: st.Current, Previous: st.Previous,
 		Slot: st.Active}, nil
 }
