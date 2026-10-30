@@ -8,6 +8,7 @@ import { formatAbsolute } from "../events/format";
 import { Button } from "../ui/Button";
 import { Field, Input, Select } from "../ui/Field";
 import { Banner, EmptyState, Panel, TabBar, Table, Td, Th } from "../ui/Layout";
+import { ServiceDBVersions } from "../ui/ServiceDBVersions";
 import { type ComplianceItem, type ComplianceOverview, complianceApi, complianceReportUrl, type Filters } from "./api";
 import { appliesTitle, checkStatusTitle, evidenceTo, groupTitle, markStatuses, percentText, statusTitle } from "./format";
 
@@ -344,7 +345,8 @@ function Requirements({ me }: { me: Me }) {
   );
 }
 
-// База требований: версия, происхождение и загрузка обновления (право compliance.base.load).
+// База требований: версия, происхождение, загрузка обновления и возврат
+// предыдущей загруженной версии (право compliance.base.load).
 function BaseTab({ canLoad }: { canLoad: boolean }) {
   const qc = useQueryClient();
   const q = useQuery({ queryKey: ["compliance", "base"], queryFn: ({ signal }) => complianceApi.base(signal) });
@@ -355,6 +357,14 @@ function BaseTab({ canLoad }: { canLoad: boolean }) {
     onSuccess: async () => {
       if (file.current) file.current.value = "";
       setPicked(false);
+      rollback.reset();
+      await qc.invalidateQueries({ queryKey: ["compliance"] });
+    },
+  });
+  const rollback = useMutation({
+    mutationFn: () => complianceApi.rollbackBase(),
+    onSuccess: async () => {
+      load.reset();
       await qc.invalidateQueries({ queryKey: ["compliance"] });
     },
   });
@@ -383,7 +393,25 @@ function BaseTab({ canLoad }: { canLoad: boolean }) {
           </dd>
         </dl>
       )}
-      {b?.uploaded && !b.uploaded.valid && <Banner kind="warning">Сохранённая база не прошла проверку подписи при запуске сервера, действует встроенная.</Banner>}
+      {b?.uploaded && !b.uploaded.valid && (
+        <Banner kind="warning">
+          {b.slot === "previous"
+            ? "Сохранённая база не прошла проверку подписи при запуске сервера, действует предыдущая загруженная версия или встроенная, если она новее."
+            : "Сохранённая база не прошла проверку подписи при запуске сервера, действует встроенная."}
+        </Banner>
+      )}
+      {b && (
+        <ServiceDBVersions
+          title="базу требований"
+          recordsTitle="Пунктов"
+          current={b.uploaded}
+          previous={b.previous}
+          active={b.slot}
+          canManage={canLoad}
+          pending={rollback.isPending}
+          onRollback={() => rollback.mutate()}
+        />
+      )}
       {canLoad && (
         <div className="flex flex-wrap items-end gap-3">
           <Field label="Файл базы требований" hint="Подписанный файл из выпуска, до 4 МиБ. Версия должна быть новее действующей.">
@@ -396,8 +424,13 @@ function BaseTab({ canLoad }: { canLoad: boolean }) {
           </Button>
         </div>
       )}
-      <ErrorBanner error={load.error} />
+      <ErrorBanner error={load.error ?? rollback.error} />
       {load.data && <Banner kind="info">База версии {load.data.active.version} загружена.</Banner>}
+      {rollback.data && (
+        <Banner kind="info">
+          Возвращена предыдущая версия загруженной базы. Действует версия {rollback.data.active.version} ({rollback.data.active.origin === "uploaded" ? "загруженная" : "встроенная"}).
+        </Banner>
+      )}
     </Panel>
   );
 }

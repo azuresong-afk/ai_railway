@@ -36,6 +36,14 @@ const overview = (items: ComplianceItem[]): ComplianceOverview => ({
 const baseView: ComplianceBaseView = {
   active: { version: 1, date: "2026-10-28", origin: "builtin", requirements: 2 },
   builtin: { version: 1, date: "2026-10-28", origin: "builtin", requirements: 2 },
+  slot: "none",
+};
+const uploadedBase: ComplianceBaseView = {
+  active: { version: 3, date: "2026-10-29", origin: "uploaded", requirements: 4 },
+  builtin: baseView.builtin,
+  uploaded: { version: 3, date: "2026-10-29", records: 4, subkey_serial: 1, fingerprint: "ab12", uploaded_at: "2026-10-29T10:00:00Z", valid: true },
+  previous: { version: 2, date: "2026-10-28", records: 3, subkey_serial: 1, fingerprint: "ab12", uploaded_at: "2026-10-28T10:00:00Z", valid: true },
+  slot: "current",
 };
 
 type Call = { method: string; url: string; body: unknown };
@@ -192,5 +200,29 @@ describe("экран «Соответствие»", () => {
     fireEvent.mouseDown(await screen.findByRole("tab", { name: "База требований" }), { button: 0 });
     expect(await screen.findByText(/встроенная в сборку/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Загрузить базу" })).toBeTruthy();
+  });
+
+  it("вкладка базы: возврат предыдущей загруженной версии с подтверждением", async () => {
+    handler = (c) => {
+      if (c.url === "/api/v1/compliance/base" && c.method === "GET") return json(uploadedBase);
+      if (c.url === "/api/v1/compliance/base/rollback" && c.method === "POST")
+        return json({ ...uploadedBase, active: { ...uploadedBase.active, version: 2 }, uploaded: uploadedBase.previous, previous: undefined });
+      return undefined;
+    };
+    renderScreen([...reader, "compliance.base.load"]);
+    fireEvent.mouseDown(await screen.findByRole("tab", { name: "База требований" }), { button: 0 });
+    expect(await screen.findByText("Предыдущая")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Вернуть предыдущую версию" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Вернуть версию" }));
+    expect(await screen.findByText(/Возвращена предыдущая версия загруженной базы. Действует версия 2/)).toBeTruthy();
+    expect(calls.some((c) => c.method === "POST" && c.url === "/api/v1/compliance/base/rollback")).toBe(true);
+  });
+
+  it("вкладка базы: без права нет возврата версии", async () => {
+    handler = (c) => (c.url === "/api/v1/compliance/base" && c.method === "GET" ? json(uploadedBase) : undefined);
+    renderScreen(reader);
+    fireEvent.mouseDown(await screen.findByRole("tab", { name: "База требований" }), { button: 0 });
+    expect(await screen.findByText("Предыдущая")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Вернуть предыдущую версию" })).toBeNull();
   });
 });

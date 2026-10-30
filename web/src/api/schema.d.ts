@@ -9669,6 +9669,61 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/service-dbs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Состояние служебных баз
+         * @description Право `system.read` (ОБН.4, ADR-0028, п. 5). По каждому подключённому виду служебной базы (каталог
+         *     ИИ-сервисов `shadow_ai_catalog`, база требований `compliance_requirements`) — сохранённые текущая и
+         *     предыдущая версии: версия, дата выпуска, число записей, номер заверения рабочего ключа и его срок, отпечаток,
+         *     итог проверки подписи при запуске сервера и причина отказа; `active` — какая версия действует (`none` — ни
+         *     одна не прошла проверку или базы нет). Для условия на «Состоянии системы» (задача 5.9). Содержимого баз и
+         *     файлов в ответе нет. Загрузка и откат — эндпоинты модулей со своими правами. Запрос ничего не записывает.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: {
+                    /**
+                     * @description `1` — фоновый опрос консоли по таймеру (УПД.10): запрос сессии не считается действием пользователя и не
+                     *     продлевает её по бездействию. Принимается только у `GET`; у изменяющих запросов не действует.
+                     */
+                    "X-AISec-Background"?: components["parameters"]["Background"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Состояние служебных баз */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ServiceDBList"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/shadow-ai/catalog": {
         parameters: {
             query?: never;
@@ -9678,9 +9733,11 @@ export interface paths {
         };
         /**
          * Каталог ИИ-сервисов
-         * @description Право `shadow_ai.read`. Загруженный каталог: версия, дата, номер заверения рабочего ключа и его срок,
-         *     отпечаток, сервисы. `valid: false` — подпись сохранённого файла не прошла проверку при запуске сервера
-         *     (файл в БД изменён): импорт невозможен до загрузки подписанного каталога.
+         * @description Право `shadow_ai.read`. Действующий каталог: версия, дата, номер заверения рабочего ключа и его срок,
+         *     отпечаток, сервисы; `current` и `previous` — сохранённые текущая и предыдущая версии (ADR-0028).
+         *     Если текущая не прошла проверку подписи при запуске сервера (файл в БД изменён, ключ отозван), действует
+         *     предыдущая (`active: previous`); если и она не прошла — `valid: false`, `active: none`, импорт невозможен до
+         *     загрузки подписанного каталога.
          */
         get: {
             parameters: {
@@ -9713,8 +9770,8 @@ export interface paths {
          *     `Content-Type: application/octet-stream`; ADR-0027, пп. 2–4). Проверяются: заверение рабочего ключа
          *     ключом производителя (назначение `service_db`, срок на текущее время, отзыв), подпись базы рабочим ключом,
          *     вид базы, дата каталога в сроке заверения, строгий разбор YAML. Неверный файл — 422 (причина в тексте),
-         *     версия не больше загруженной — 409. Пишет `shadow_ai.catalog_loaded` или `shadow_ai.catalog_rejected`
-         *     с причиной, без содержимого файла.
+         *     версия не больше текущей сохранённой — 409. Прежняя текущая версия становится предыдущей (ADR-0028).
+         *     Пишет `service_db.loaded` или `service_db.rejected` (вид `shadow_ai_catalog`) с причиной, без содержимого файла.
          */
         put: {
             parameters: {
@@ -9754,6 +9811,58 @@ export interface paths {
             };
         };
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/shadow-ai/catalog/rollback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Вернуть предыдущую версию каталога ИИ-сервисов
+         * @description Право `shadow_ai.manage`. Возвращает хранимую предыдущую версию каталога (ADR-0028, п. 4): перед этим
+         *     она проверяется заново, как сохранённый каталог при запуске (подпись, заверение, отзыв, дата, содержимое).
+         *     Она становится текущей, слот предыдущей пустеет; откатанную версию можно загрузить снова. Тело не нужно.
+         *     Предыдущей нет — 409, она не прошла проверку — 422. Пишет `service_db.rolled_back` (успех или отказ с причиной).
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Предыдущая версия стала текущей */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ShadowCatalog"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                409: components["responses"]["ProblemConflict"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
         delete?: never;
         options?: never;
         head?: never;
@@ -10362,8 +10471,10 @@ export interface paths {
         /**
          * База требований
          * @description Право `compliance.read`. Действующая база (встроенная в сборку или загруженная подписанная, если её версия
-         *     больше встроенной), встроенная база и сведения о загруженной: версия, дата, число пунктов, номер заверения
-         *     рабочего ключа и его срок, отпечаток, `valid` — подпись сохранённого файла проверена при запуске сервера.
+         *     больше встроенной), встроенная база и сохранённые загруженные версии — текущая (`uploaded`) и предыдущая
+         *     (`previous`): версия, дата, число пунктов, номер заверения рабочего ключа и его срок, отпечаток, `valid` —
+         *     подпись сохранённого файла проверена при запуске сервера. `slot` — какая загруженная версия действует
+         *     (`previous` — текущая не прошла проверку; ADR-0028).
          */
         get: {
             parameters: {
@@ -10396,8 +10507,9 @@ export interface paths {
          *     `compliance_requirements` из выпуска (`.aisecdb`, до 4 МиБ, `Content-Type: application/octet-stream`;
          *     ADR-0027, пп. 2–4). Проверяются: заверение рабочего ключа ключом производителя (назначение `service_db`,
          *     срок на текущее время, отзыв), подпись базы, вид, дата в сроке заверения, строгий разбор YAML (неизвестная
-         *     проверка или параметр — отказ). Неверный файл — 422 (причина в тексте), версия не больше действующей — 409.
-         *     Пишет `compliance.base_loaded` или `compliance.base_rejected` с причиной, без содержимого файла.
+         *     проверка или параметр — отказ). Неверный файл — 422 (причина в тексте), версия не больше текущей
+         *     загруженной или встроенной — 409. Прежняя текущая версия становится предыдущей (ADR-0028). Пишет
+         *     `service_db.loaded` или `service_db.rejected` (вид `compliance_requirements`) с причиной, без содержимого файла.
          */
         put: {
             parameters: {
@@ -10437,6 +10549,59 @@ export interface paths {
             };
         };
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/compliance/base/rollback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Вернуть предыдущую версию базы требований
+         * @description Право `compliance.base.load`. Возвращает хранимую предыдущую загруженную версию базы (ADR-0028, п. 4):
+         *     перед этим она проверяется заново, как сохранённая база при запуске. Она становится текущей, слот
+         *     предыдущей пустеет; откатанную версию можно загрузить снова. Если возвращённая версия не новее встроенной,
+         *     действует встроенная. Тело не нужно. Предыдущей нет — 409, она не прошла проверку — 422. Пишет
+         *     `service_db.rolled_back` (успех или отказ с причиной).
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Предыдущая версия стала текущей */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ComplianceBaseView"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                409: components["responses"]["ProblemConflict"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
         delete?: never;
         options?: never;
         head?: never;
@@ -13095,11 +13260,66 @@ export interface components {
             /** @description Код TOTP (или password) */
             code?: string;
         };
-        ShadowCatalog: {
-            /** @description Каталог загружали */
-            loaded: boolean;
-            /** @description Подпись сохранённого каталога проверена */
+        /** @description Сохранённая версия служебной базы (ADR-0028) */
+        ServiceDBVersion: {
+            /** Format: int64 */
+            version: number;
+            /**
+             * Format: date
+             * @description Дата выпуска базы
+             */
+            date: string;
+            /** @description Записей: сервисов каталога, пунктов базы требований */
+            records: number;
+            /**
+             * Format: int64
+             * @description Номер заверения рабочего ключа
+             */
+            subkey_serial: number;
+            /**
+             * Format: date-time
+             * @description Конец срока заверения (только у прошедшей проверку)
+             */
+            subkey_not_after?: string;
+            /** @description Отпечаток рабочего ключа */
+            fingerprint: string;
+            /** Format: date-time */
+            uploaded_at: string;
+            /** @description Подпись и содержимое сохранённого файла проверены при запуске сервера */
             valid: boolean;
+            /**
+             * @description Причина, по которой версия не прошла проверку
+             * @enum {string}
+             */
+            reason?: "signature" | "purpose" | "kind" | "expired" | "date" | "revoked" | "content" | "format";
+        };
+        ServiceDBState: {
+            /** @description Вид базы (shadow_ai_catalog, compliance_requirements) */
+            kind: string;
+            title: string;
+            /**
+             * @description Какая сохранённая версия действует
+             * @enum {string}
+             */
+            active: "current" | "previous" | "none";
+            current?: components["schemas"]["ServiceDBVersion"];
+            previous?: components["schemas"]["ServiceDBVersion"];
+        };
+        ServiceDBList: {
+            items: components["schemas"]["ServiceDBState"][];
+        };
+        ShadowCatalog: {
+            /** @description Сохранена хотя бы одна версия каталога */
+            loaded: boolean;
+            /** @description Есть действующий каталог (подпись проверена) */
+            valid: boolean;
+            /**
+             * @description Какая сохранённая версия действует
+             * @enum {string}
+             */
+            active: "current" | "previous" | "none";
+            current?: components["schemas"]["ServiceDBVersion"];
+            previous?: components["schemas"]["ServiceDBVersion"];
             /** Format: int64 */
             version?: number;
             /** Format: date */
@@ -13237,22 +13457,13 @@ export interface components {
         ComplianceBaseView: {
             active: components["schemas"]["ComplianceBaseInfo"];
             builtin: components["schemas"]["ComplianceBaseInfo"];
-            uploaded?: {
-                /** Format: int64 */
-                version: number;
-                /** Format: date */
-                date: string;
-                requirements: number;
-                /** Format: int64 */
-                subkey_serial: number;
-                /** Format: date-time */
-                subkey_not_after?: string;
-                fingerprint: string;
-                /** Format: date-time */
-                uploaded_at: string;
-                /** @description Подпись сохранённого файла проверена при запуске */
-                valid: boolean;
-            };
+            uploaded?: components["schemas"]["ServiceDBVersion"];
+            previous?: components["schemas"]["ServiceDBVersion"];
+            /**
+             * @description Какая загруженная версия действует
+             * @enum {string}
+             */
+            slot: "current" | "previous" | "none";
         };
         ShadowImport: {
             /** Format: uuid */
