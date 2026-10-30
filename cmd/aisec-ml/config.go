@@ -43,6 +43,9 @@ type config struct {
 	Manifest          string
 	IntegrityAction   integrity.Action
 	IntegrityInterval time.Duration
+	// PeerUID и PeerGID — UID и GID шлюза: соединение принимается, только
+	// если SO_PEERCRED собеседника совпадает с обоими (4Н27, ADR-0024).
+	PeerUID, PeerGID uint32
 }
 
 func envName(flagName string) string {
@@ -68,6 +71,10 @@ func loadConfig(args []string, getenv func(string) string, errOut io.Writer) (*c
 	// работает на эвристиках с признаком ml_unavailable (ADR-0024, раздел 4).
 	action := fs.String("integrity-action", string(integrity.ActionStop), "реакция на нарушение целостности: alert или stop (AISEC_ML_INTEGRITY_ACTION)")
 	interval := fs.String("integrity-interval", integrity.DefaultInterval.String(), "период проверки целостности, не меньше 1m (AISEC_ML_INTEGRITY_INTERVAL)")
+	// Обязательны: группа шлюза есть и у самого aisec-ml, поэтому сверяются
+	// и UID, и GID собеседника (4Н27).
+	peerUID := fs.String("peer-uid", "", "UID шлюза, обязателен: соединения других пользователей закрываются (AISEC_ML_PEER_UID)")
+	peerGID := fs.String("peer-gid", "", "GID шлюза, обязателен: соединения других групп закрываются (AISEC_ML_PEER_GID)")
 	if err := fs.Parse(args); err != nil {
 		return nil, err
 	}
@@ -80,6 +87,7 @@ func loadConfig(args []string, getenv func(string) string, errOut io.Writer) (*c
 		"socket": socket, "models": models, "max-conns": maxConns, "workers": workers,
 		"queue-wait": queueWait, "run-timeout": runTimeout, "max-run-timeout": maxRunTimeout, "max-model-bytes": maxModel, "ort-lib": ortLib,
 		"manifest": manifest, "integrity-action": action, "integrity-interval": interval,
+		"peer-uid": peerUID, "peer-gid": peerGID,
 	} {
 		if !set[name] {
 			if v := getenv(envName(name)); v != "" {
@@ -128,8 +136,27 @@ func loadConfig(args []string, getenv func(string) string, errOut io.Writer) (*c
 	if cfg.MaxModelBytes, err = strconv.ParseInt(*maxModel, 10, 64); err != nil || cfg.MaxModelBytes < 1<<20 || cfg.MaxModelBytes > 16<<30 {
 		errs = append(errs, errors.New("max-model-bytes: число от 1 МиБ до 16 ГиБ"))
 	}
+	if cfg.PeerUID, err = parseID(*peerUID); err != nil {
+		errs = append(errs, fmt.Errorf("peer-uid: %w (в compose — AISEC_GW_UID из .env, его пишет prepare-host.sh)", err))
+	}
+	if cfg.PeerGID, err = parseID(*peerGID); err != nil {
+		errs = append(errs, fmt.Errorf("peer-gid: %w (в compose — AISEC_GW_GID из .env, его пишет prepare-host.sh)", err))
+	}
 	if len(errs) > 0 {
 		return nil, errors.Join(errs...)
 	}
 	return cfg, nil
+}
+
+// parseID разбирает UID или GID шлюза: обязателен, от 1 (шлюз не работает
+// от root) до 2^31-1.
+func parseID(v string) (uint32, error) {
+	if v == "" {
+		return 0, errors.New("обязателен")
+	}
+	n, err := strconv.ParseUint(v, 10, 31)
+	if err != nil || n == 0 {
+		return 0, errors.New("число от 1 до 2147483647")
+	}
+	return uint32(n), nil
 }
