@@ -53,9 +53,10 @@ const (
 	DefaultQueueWait   = 20 * time.Millisecond
 	DefaultBodyTimeout = 5 * time.Second
 	DefaultIdleTimeout = 60 * time.Second
-	// DefaultRunTimeout — срок вывода: шлюз ждёт ответа не дольше
-	// 300 мс, дольше занимать исполнитель нет смысла.
-	DefaultRunTimeout = 500 * time.Millisecond
+	// DefaultRunTimeout — срок вывода: не больше срока вызова шлюза
+	// (gateway.DefaultMLTimeout, 4В22) — брошенный шлюзом вывод дольше
+	// занимать исполнитель нет смысла.
+	DefaultRunTimeout = 80 * time.Millisecond
 	// acceptRetry — пауза после ошибки приёма соединения.
 	acceptRetry = 100 * time.Millisecond
 )

@@ -560,6 +560,44 @@ func TestMLClientTimeoutsAndBackoff(t *testing.T) {
 	}
 }
 
+// 4В22: срок детектора короче Timeout клиента — срок вызова урезается до
+// срока детектора с запасом, такие сроки подряд включают отсрочку, а не
+// считаются отменой запроса.
+func TestMLClientDetectorDeadlineCountsAsTimeout(t *testing.T) {
+	sock := startFakeML(t, helloThen(func(net.Conn, ml.Header) bool { time.Sleep(time.Second); return true }))
+	c := newMLClient(t, sock, func(cfg *MLClientConfig) { cfg.Timeout = 300 * time.Millisecond })
+	for i := 1; i <= mlTimeoutsToFail; i++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+		start := time.Now()
+		_, err := c.Detect(ctx, "injection", "x")
+		cancel()
+		if !errors.Is(err, ErrMLUnavailable) {
+			t.Fatalf("вызов %d: %v", i, err)
+		}
+		if d := time.Since(start); d > 200*time.Millisecond {
+			t.Fatalf("вызов %d ждал %v — дольше срока детектора", i, d)
+		}
+		if c.isDown() != (i == mlTimeoutsToFail) {
+			t.Fatalf("вызов %d: отсрочка %v", i, c.isDown())
+		}
+	}
+	// Срок вызывающего уже истёк — сразу ErrMLUnavailable, без соединения.
+	c2 := newMLClient(t, sock, nil)
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Millisecond))
+	defer cancel()
+	if _, err := c2.Detect(ctx, "injection", "x"); !errors.Is(err, ErrMLUnavailable) {
+		t.Fatalf("истёкший срок: %v", err)
+	}
+}
+
+// Сроки согласованы (ADR-0024, раздел 4; 4В22): вывод aisec-ml не дольше
+// вызова шлюза, вызов шлюза короче срока детектора.
+func TestMLTimeoutsOrdered(t *testing.T) {
+	if ml.DefaultRunTimeout > DefaultMLTimeout || DefaultMLTimeout >= DefaultDetectorTimeout {
+		t.Fatalf("RunTimeout %v, MLTimeout %v, DetectorTimeout %v", ml.DefaultRunTimeout, DefaultMLTimeout, DefaultDetectorTimeout)
+	}
+}
+
 // После Close вызовы получают ErrMLUnavailable и соединения в пул не
 // возвращаются.
 func TestMLClientClosed(t *testing.T) {
