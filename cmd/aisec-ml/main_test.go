@@ -57,7 +57,7 @@ func newFixture(t *testing.T) *fixture {
 	}
 	cfg := &config{Socket: filepath.Join(sockDir, "aisec-ml.sock"), Models: models, MaxConns: 4, Workers: 1,
 		QueueWait: 10 * time.Millisecond, MaxModelBytes: ml.DefaultMaxModelBytes}
-	d := deps{provider: p, verifier: v, manifest: manifest, logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	d := deps{provider: p, verifier: v, manifest: manifest, version: "1.0.0", logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		newExecutor: func(*config, aisecCrypto.Provider) (ml.Executor, error) { return mltest.Executor{}, nil }}
 	return &fixture{cfg: cfg, d: d, signer: s}
 }
@@ -186,6 +186,9 @@ func TestRunRefusesUnverifiedPackage(t *testing.T) {
 			}
 			writeReleaseManifest(t, f.d.provider, other, filepath.Dir(f.cfg.Models))
 		},
+		// 4Н30: манифест другого выпуска (например, -manifest на старый
+		// выпуск при -integrity-action=alert).
+		"манифест другой версии": func(_ *testing.T, f *fixture) { f.d.version = "1.1.0" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newFixture(t)

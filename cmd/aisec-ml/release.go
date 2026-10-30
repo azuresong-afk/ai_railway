@@ -37,9 +37,9 @@ func manifestPath(cfg *config) string {
 }
 
 // releaseModels проверяет, что каталог моделей — models/ выпуска с
-// манифестом manifest, и возвращает хеш aisec-models.json из подписанного
-// манифеста выпуска.
-func releaseModels(manifest, models string, p aisecCrypto.Provider, v aisecCrypto.Verifier) ([]byte, error) {
+// манифестом manifest версии version, и возвращает хеш aisec-models.json из
+// подписанного манифеста выпуска.
+func releaseModels(manifest, version, models string, p aisecCrypto.Provider, v aisecCrypto.Verifier) ([]byte, error) {
 	if manifest == "" || !filepath.IsAbs(manifest) {
 		return nil, errors.New("манифест выпуска: нужен абсолютный путь")
 	}
@@ -64,6 +64,10 @@ func releaseModels(manifest, models string, p aisecCrypto.Provider, v aisecCrypt
 	h, err := p.Hasher()
 	if err != nil {
 		return nil, err
+	}
+	// Манифест другого выпуска не годится, даже подписанный (4Н30).
+	if m.Version != version {
+		return nil, fmt.Errorf("манифест выпуска версии %q, а aisec-ml — %q", m.Version, version)
 	}
 	if m.Profile != p.Name() || m.HashAlg != h.Name() {
 		return nil, fmt.Errorf("манифест выпуска в профиле %s, а aisec-ml — в %s", m.Profile, p.Name())

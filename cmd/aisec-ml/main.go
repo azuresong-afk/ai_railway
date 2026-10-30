@@ -67,7 +67,7 @@ func main() {
 	if testKey {
 		logger.Warn("сборка с тестовым ключом: пакет моделей проверяется тестовым ключом репозитория, не для поставки")
 	}
-	err = run(ctx, cfg, deps{provider: p, verifier: v, manifest: manifestPath(cfg), newExecutor: newExecutor, logger: logger})
+	err = run(ctx, cfg, deps{provider: p, verifier: v, manifest: manifestPath(cfg), version: version, newExecutor: newExecutor, logger: logger})
 	if cause := context.Cause(ctx); errors.Is(cause, integrity.ErrViolation) {
 		err = errors.Join(err, cause)
 	}
@@ -83,6 +83,7 @@ type deps struct {
 	verifier aisecCrypto.Verifier
 	// manifest — манифест целостности выпуска (привязка пакета моделей, 4В23).
 	manifest    string
+	version     string // версия бинарника: манифест выпуска — той же версии (4Н30)
 	newExecutor func(*config, aisecCrypto.Provider) (ml.Executor, error)
 	logger      *slog.Logger
 	// ready вызывается, когда сокет готов (для тестов).
@@ -95,7 +96,7 @@ type deps struct {
 // манифестом из манифеста выпуска (4В23): подписанный пакет другой версии
 // не загружается.
 func run(ctx context.Context, cfg *config, d deps) error {
-	want, err := releaseModels(d.manifest, cfg.Models, d.provider, d.verifier)
+	want, err := releaseModels(d.manifest, d.version, cfg.Models, d.provider, d.verifier)
 	if err != nil {
 		return fmt.Errorf("пакет моделей отвергнут: %w", err)
 	}
