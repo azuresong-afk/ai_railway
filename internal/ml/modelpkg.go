@@ -36,7 +36,10 @@ const (
 
 // Задачи моделей.
 const (
-	TaskClassification      = "classification"       // оценка текста целиком (injection.ml, toxicity.ml)
+	TaskClassification = "classification" // оценка текста целиком, одна метка из всех (softmax): injection.ml
+	// TaskMultiLabel — оценка текста целиком, каждая метка отдельно
+	// (сигмоида): toxicity.ml (rubert-tiny-toxicity).
+	TaskMultiLabel          = "multilabel_classification"
 	TaskTokenClassification = "token_classification" // разметка фрагментов (pii.ner)
 )
 
@@ -159,7 +162,7 @@ func (m ModelSpec) validate() error {
 	if err := m.Info().Validate(); err != nil {
 		return bad("ID, версия, метки или направления")
 	}
-	if m.Task != TaskClassification && m.Task != TaskTokenClassification {
+	if m.Task != TaskClassification && m.Task != TaskMultiLabel && m.Task != TaskTokenClassification {
 		return bad("задача модели")
 	}
 	if m.MaxTokens < 1 || m.MaxTokens > MaxModelTokens {

@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math"
 	"slices"
+	"sync"
 
 	"github.com/azuresong-afk/ai_railway/internal/ml"
+	"github.com/azuresong-afk/ai_railway/internal/ml/wordpiece"
 )
 
 // Общая часть исполнителя моделей, не зависящая от ONNX Runtime: описание
@@ -89,7 +92,7 @@ func checkIO(spec ml.ModelSpec, inputs, outputs []ioInfo) (modelIO, error) {
 	}
 	labels := int64(len(spec.Labels))
 	switch spec.Task {
-	case ml.TaskClassification:
+	case ml.TaskClassification, ml.TaskMultiLabel:
 		if len(logits.Dims) != 2 || !dimOK(logits.Dims[1], labels) {
 			return io, fmt.Errorf("выход logits: нужен [пакет, %d]", labels)
 		}
@@ -112,21 +115,196 @@ func dimOK(d, want int64) bool {
 	return d == -1 || d == want
 }
 
-// tokenizer — перевод текста в номера токенов модели. offsets — байтовые
-// границы токена в тексте (у служебных токенов [0, 0]); truncated — текст
-// длиннее окна модели и проверен не весь.
+// tokenizer — перевод текста в номера токенов модели: токены без служебных
+// с байтовыми границами в тексте, не больше limit; truncated — у текста
+// есть ещё токены. Special — номера [CLS] и [SEP].
 type tokenizer interface {
-	Encode(text string, maxTokens int) (ids []int64, offsets [][2]int, truncated bool, err error)
+	Encode(text string, limit int) (ids []int64, offsets [][2]int, truncated bool, err error)
+	Special() (cls, sep int64)
 }
 
-// errNoTokenizer — формат токенизатора пакета не поддерживается.
-var errNoTokenizer = errors.New("формат токенизатора не поддерживается: токенизаторы появятся вместе с первыми моделями (задачи 4.19, 4.20)")
-
 // newTokenizer — токенизатор модели по tokenizer.json из проверенного
-// пакета. В 4.18 форматов нет: модель с любым токенизатором не загружается,
-// а не работает с неверными номерами токенов.
+// пакета: WordPiece (internal/ml/wordpiece) — для моделей семейства BERT.
+// Другой формат — отказ загрузки модели, а не неверные номера токенов.
 var newTokenizer = func(spec ml.ModelSpec, data []byte) (tokenizer, error) {
-	return nil, errNoTokenizer
+	tk, err := wordpiece.Parse(data)
+	if err != nil {
+		return nil, fmt.Errorf("модель %s: %w", spec.ID, err)
+	}
+	return tk, nil
+}
+
+// Окна длинного текста (ADR-0024, раздел 6): окно — [CLS], до max_tokens-2
+// токенов текста, [SEP]; соседние окна перекрываются, чтобы фраза на стыке
+// попала в окно целиком. Окон не больше maxWindows; остаток не проверяется
+// (truncated, шлюз ставит ml_unavailable, если находок нет).
+const (
+	maxWindows    = 16
+	windowOverlap = 64
+)
+
+// window — окно: номера токенов со служебными, границы токенов в тексте
+// (у служебных [0, 0]) и номера «своих» токенов окна [own[0], own[1]) — для
+// разметки токенов каждый токен перекрытия относится к одному окну.
+type window struct {
+	ids     []int64
+	offsets [][2]int
+	own     [2]int
+}
+
+// splitWindows режет текст на окна по maxTokens токенов. Токенизатор
+// останавливается на пределе всех окон: длина текста не увеличивает работу
+// сверх maxWindows окон.
+func splitWindows(tok tokenizer, text string, maxTokens int) ([]window, bool, error) {
+	w := maxTokens - 2
+	if w < 1 {
+		return nil, false, fmt.Errorf("окно модели %d токенов: нужно не меньше 3", maxTokens)
+	}
+	overlap := min(windowOverlap, w/4)
+	stride := w - overlap
+	ids, offs, truncated, err := tok.Encode(text, w+(maxWindows-1)*stride)
+	if err != nil {
+		return nil, false, err
+	}
+	if len(ids) != len(offs) {
+		return nil, false, errors.New("токенизатор вернул неверное число границ")
+	}
+	cls, sep := tok.Special()
+	var out []window
+	for start := 0; start < len(ids); start += stride {
+		end := min(start+w, len(ids))
+		win := window{ids: make([]int64, 0, end-start+2), offsets: make([][2]int, 0, end-start+2)}
+		win.ids = append(append(append(win.ids, cls), ids[start:end]...), sep)
+		win.offsets = append(append(append(win.offsets, [2]int{}), offs[start:end]...), [2]int{})
+		// Свои токены окна — без половины перекрытия с каждым соседом.
+		win.own = [2]int{1, 1 + end - start}
+		if start > 0 {
+			win.own[0] += overlap / 2
+		}
+		last := end == len(ids)
+		if !last {
+			win.own[1] -= overlap - overlap/2
+		}
+		out = append(out, win)
+		if last {
+			break
+		}
+	}
+	return out, truncated, nil
+}
+
+// inferFunc — вывод модели на одном окне: logits окна.
+type inferFunc func(ctx context.Context, ids []int64) ([]float32, error)
+
+// runWindows — вывод модели на тексте по окнам. Окна одного текста
+// выполняются одновременно, каждое занимает место в slots (общий предел
+// выводов исполнителя, -workers): задержка длинного текста при свободных
+// ядрах — около одного окна, а одновременных выводов не больше -workers.
+// slots == nil — окна по очереди. Классификация: у каждой метки —
+// наибольшая оценка среди окон и границы этого окна. Разметка токенов:
+// фрагменты по своим токенам окон подряд. Текст без токенов (пустой, только
+// пробелы) находок не даёт.
+func runWindows(ctx context.Context, spec ml.ModelSpec, tok tokenizer, text string, infer inferFunc, slots chan struct{}) (ml.Result, error) {
+	info := spec.Info()
+	res := ml.Result{Model: info.ID, Version: info.Version, Findings: []ml.Score{}}
+	wins, truncated, err := splitWindows(tok, text, spec.MaxTokens)
+	if err != nil {
+		return ml.Result{}, err
+	}
+	res.Truncated = truncated
+	logits, err := inferAll(ctx, wins, infer, slots)
+	if err != nil {
+		return ml.Result{}, err
+	}
+	nl := len(spec.Labels)
+	var tokLogits []float32
+	var tokOffs [][2]int
+	for i, win := range wins {
+		switch spec.Task {
+		case ml.TaskClassification, ml.TaskMultiLabel:
+			scores, err := classify(logits[i], spec.Labels, win.offsets, spec.Task == ml.TaskMultiLabel)
+			if err != nil {
+				return ml.Result{}, err
+			}
+			res.Findings = mergeMax(res.Findings, scores)
+		case ml.TaskTokenClassification:
+			if len(logits[i]) != len(win.ids)*nl {
+				return ml.Result{}, fmt.Errorf("выход модели: %d значений, токенов %d, меток %d", len(logits[i]), len(win.ids), nl)
+			}
+			tokLogits = append(tokLogits, logits[i][win.own[0]*nl:win.own[1]*nl]...)
+			tokOffs = append(tokOffs, win.offsets[win.own[0]:win.own[1]]...)
+		default:
+			return ml.Result{}, fmt.Errorf("задача %q не поддерживается", spec.Task)
+		}
+	}
+	if spec.Task == ml.TaskTokenClassification && len(tokOffs) > 0 {
+		if res.Findings, err = tokenSpans(tokLogits, spec.Labels, tokOffs); err != nil {
+			return ml.Result{}, err
+		}
+	}
+	return res, nil
+}
+
+// inferAll — вывод на всех окнах: по очереди (slots == nil) или
+// одновременно в пределах slots. Первый сбой отменяет остальные окна.
+func inferAll(ctx context.Context, wins []window, infer inferFunc, slots chan struct{}) ([][]float32, error) {
+	out := make([][]float32, len(wins))
+	if slots == nil || len(wins) == 1 {
+		for i, w := range wins {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			l, err := infer(ctx, w.ids)
+			if err != nil {
+				return nil, err
+			}
+			out[i] = l
+		}
+		return out, nil
+	}
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	var wg sync.WaitGroup
+	for i, w := range wins {
+		wg.Go(func() {
+			select {
+			case slots <- struct{}{}:
+			case <-ctx.Done():
+				return
+			}
+			defer func() { <-slots }()
+			if ctx.Err() != nil {
+				return
+			}
+			l, err := infer(ctx, w.ids)
+			if err != nil {
+				cancel(err)
+				return
+			}
+			out[i] = l
+		})
+	}
+	wg.Wait()
+	if err := context.Cause(ctx); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// mergeMax — оценки меток по окнам: у каждой метки — наибольшая.
+func mergeMax(acc, scores []ml.Score) []ml.Score {
+	if len(acc) == 0 {
+		return scores
+	}
+	if len(scores) != len(acc) { // окно без токенов текста оценок не даёт
+		return acc
+	}
+	for i := range acc {
+		if scores[i].Score > acc[i].Score {
+			acc[i] = scores[i]
+		}
+	}
+	return acc
 }
 
 // encodeInputs — тензоры входов модели для одного текста ([1, n]).
@@ -186,17 +364,43 @@ func textSpan(offsets [][2]int) (start, end int) {
 	return start, end
 }
 
-// classify — оценка каждой метки по тексту целиком: находка на проверенной
-// части текста. Метки без категории (например, benign) отбрасывает шлюз.
-func classify(logits []float32, labels []string, offsets [][2]int) ([]ml.Score, error) {
+// sigmoid — вероятность каждой метки отдельно (многометочная модель);
+// NaN и бесконечности — ошибка модели.
+func sigmoid(logits []float32) ([]float64, error) {
+	if len(logits) == 0 {
+		return nil, errors.New("пустой выход модели")
+	}
+	out := make([]float64, len(logits))
+	for i, v := range logits {
+		f := float64(v)
+		if math.IsNaN(f) || math.IsInf(f, 0) {
+			return nil, errors.New("выход модели не число")
+		}
+		out[i] = 1 / (1 + math.Exp(-f))
+	}
+	return out, nil
+}
+
+// classify — оценка каждой метки по окну текста: находка на проверенной
+// части окна. multi — метки независимы (сигмоида), иначе одна из всех
+// (softmax). Окно без токенов текста находок не даёт. Метки без категории
+// (например, benign) отбрасывает шлюз.
+func classify(logits []float32, labels []string, offsets [][2]int, multi bool) ([]ml.Score, error) {
 	if len(logits) != len(labels) {
 		return nil, fmt.Errorf("выход модели: %d значений, меток %d", len(logits), len(labels))
 	}
-	p, err := softmax(logits)
+	prob := softmax
+	if multi {
+		prob = sigmoid
+	}
+	p, err := prob(logits)
 	if err != nil {
 		return nil, err
 	}
 	start, end := textSpan(offsets)
+	if end <= start {
+		return nil, nil
+	}
 	out := make([]ml.Score, 0, len(labels))
 	for i, l := range labels {
 		out = append(out, ml.Score{Label: l, Score: p[i], Start: start, End: end})
