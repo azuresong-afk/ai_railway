@@ -137,7 +137,7 @@ func (m *Memory) writeLocked(aggs []Aggregate) ([]Aggregate, []string) {
 }
 
 // SaveImport — см. Store.
-func (m *Memory) SaveImport(_ context.Context, _ string, imp ImportRecord, rec audit.Entry) error {
+func (m *Memory) SaveImport(_ context.Context, _ string, imp ImportRecord, fn func(ImportUsers) audit.Entry) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if err := m.takeErr(); err != nil {
@@ -148,12 +148,40 @@ func (m *Memory) SaveImport(_ context.Context, _ string, imp ImportRecord, rec a
 			return ErrDuplicate
 		}
 	}
+	u := m.importUsersLocked(imp)
+	imp.users = u
+	rec := fn(u)
 	kept, fresh := m.writeLocked(imp.Aggregates)
 	m.records = append(m.records, rec)
 	m.records = append(m.records, newServiceEntries(rec.Actor, rec.SourceIP, SourceImport, kept, imp.ServiceNames, fresh)...)
 	imp.Aggregates, imp.ServiceNames = nil, nil
 	m.imports = append(m.imports, imp)
 	return nil
+}
+
+// importUsersLocked — пользователи импорта по сводкам до записи (4В27).
+func (m *Memory) importUsersLocked(imp ImportRecord) ImportUsers {
+	known := map[string]struct{}{}
+	for k := range m.aggs {
+		if k.alias != "" {
+			known[k.alias] = struct{}{}
+		}
+	}
+	aliases := aliasesOf(imp.Aggregates)
+	u := ImportUsers{Users: int64(len(aliases)), Baseline: len(known) == 0 && len(aliases) > 0}
+	for _, a := range aliases {
+		if _, ok := known[a]; !ok {
+			u.NewUsers++
+		}
+	}
+	u.NewUsersDay = u.NewUsers
+	since := imp.CreatedAt.Add(-importUsersWindow)
+	for _, i := range m.imports {
+		if i.CreatedAt.After(since) {
+			u.NewUsersDay += i.users.NewUsers
+		}
+	}
+	return u
 }
 
 // SaveSyslog — см. Store.

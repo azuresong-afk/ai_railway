@@ -144,6 +144,11 @@ var secretFiles = map[string]string{
 
 // dataPath заменяет ведущее ${AISEC_DATA_DIR:?…} на DATA; ok = false — путь
 // не начинается с него.
+// mlFixedPaths — флаги aisec-ml с путями выпуска (4В23): каталог моделей,
+// манифест и библиотека ONNX Runtime — только из образа, иначе старый
+// подписанный пакет моделей подкладывается в обход привязки к выпуску.
+var mlFixedPaths = []string{"models", "manifest", "ort-lib"}
+
 func dataPath(p string) (string, bool) {
 	if !strings.HasPrefix(p, dataDirRef) {
 		return p, false
@@ -437,10 +442,17 @@ func checkCompose(c *composeFile) []string {
 				if !strings.HasPrefix(k, "AISEC_ML_") || k == "AISEC_ML_INTEGRITY_ACTION" {
 					at("переменная %s: у aisec-ml разрешены только AISEC_ML_*, кроме AISEC_ML_INTEGRITY_ACTION (ослабление самопроверки)", k)
 				}
+				if slices.Contains(mlFixedPaths, strings.ToLower(strings.ReplaceAll(strings.TrimPrefix(k, "AISEC_ML_"), "_", "-"))) {
+					at("переменная %s: пути выпуска aisec-ml (модели, манифест, ONNX Runtime) задаёт образ", k)
+				}
 			}
 			for _, a := range s.Command {
-				if strings.HasPrefix(strings.TrimLeft(a, "-"), "integrity-action") {
+				flagName, _, _ := strings.Cut(strings.TrimLeft(a, "-"), "=")
+				switch {
+				case flagName == "integrity-action":
 					at("аргумент %q: ослабление самопроверки aisec-ml запрещено", a)
+				case slices.Contains(mlFixedPaths, flagName):
+					at("аргумент %q: пути выпуска aisec-ml (модели, манифест, ONNX Runtime) задаёт образ", a)
 				}
 			}
 		}

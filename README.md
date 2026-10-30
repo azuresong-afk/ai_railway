@@ -2,7 +2,7 @@
 
 Платформа безопасности ИИ: шлюз-посредник между приложениями и LLM (фильтрация запросов и ответов, маскирование ПДн, защита от промпт-инъекций, контроль ИИ-агентов) и веб-консоль с дашбордами, оповещениями и инцидентами. Продукт проектируется под сертификацию ФСТЭК России (уровень доверия 4).
 
-Состояние: этап 0 «Фундамент» — план и статусы задач в [`docs/plans/stage-0.md`](docs/plans/stage-0.md).
+Состояние: этапы 0–3 закрыты, этап 4 «Расширение защиты» в работе — план и статусы задач в [`docs/plans/stage-4.md`](docs/plans/stage-4.md), дорожная карта — [`docs/plans/roadmap.md`](docs/plans/roadmap.md). Руководство администратора — [`docs/user/admin-guide.md`](docs/user/admin-guide.md), установка пилота — [`docs/user/install-pilot.md`](docs/user/install-pilot.md).
 
 ## Документы
 - Техническое задание — [`docs/SPEC.md`](docs/SPEC.md).
@@ -25,7 +25,7 @@
 
 ## Структура
 ```
-cmd/          исполняемые компоненты: aisec-gateway, aisec-server, aisec-cli, aisec-media, mock-llm (только для разработки)
+cmd/          исполняемые компоненты: aisec-gateway, aisec-server, aisec-cli, aisec-ml, aisec-media, mock-llm и mock-mcp (только для разработки)
 internal/     пакеты продукта; криптография — только в internal/crypto
 api/          контракт API управления (OpenAPI 3.1)
 web/          веб-консоль (с этапа 2)

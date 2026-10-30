@@ -134,6 +134,32 @@ func lockWrites(ctx context.Context, tx pgx.Tx, orgID string) error {
 	return nil
 }
 
+// importUsers — псевдонимы импорта и те из них, которых нет в сводках
+// организации (4В27); при пустых сводках — исходный состав (Baseline), все
+// псевдонимы новые (4В28).
+func importUsers(ctx context.Context, tx pgx.Tx, orgID string, imp ImportRecord) (ImportUsers, error) {
+	aliases := aliasesOf(imp.Aggregates)
+	u := ImportUsers{Users: int64(len(aliases))}
+	if len(aliases) == 0 {
+		return u, nil
+	}
+	var known bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM shadow_ai_hour WHERE org_id = $1 AND user_alias <> '')`,
+		orgID).Scan(&known); err != nil {
+		return u, fmt.Errorf("теневой ИИ: пользователи сводок: %w", err)
+	}
+	if !known {
+		u.Baseline, u.NewUsers = true, u.Users
+		return u, nil
+	}
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM unnest($2::text[]) AS t(a)
+		WHERE NOT EXISTS (SELECT 1 FROM shadow_ai_hour h WHERE h.org_id = $1 AND h.user_alias = t.a)`,
+		orgID, aliases).Scan(&u.NewUsers); err != nil {
+		return u, fmt.Errorf("теневой ИИ: новые пользователи: %w", err)
+	}
+	return u, nil
+}
+
 // writeAggregates прибавляет сводки, кроме исключённых (исключение могло
 // появиться после разбора — блокировка lockWrites делает список точным), и
 // возвращает записанные сводки и новые сервисы среди них (DM-37).
@@ -197,29 +223,44 @@ func writeAggregates(ctx context.Context, tx pgx.Tx, orgID string, aggs []Aggreg
 }
 
 // SaveImport — см. Store.
-func (s *PGStore) SaveImport(ctx context.Context, orgID string, imp ImportRecord, rec audit.Entry) error {
+func (s *PGStore) SaveImport(ctx context.Context, orgID string, imp ImportRecord, fn func(ImportUsers) audit.Entry) error {
 	return s.inTx(ctx, func(tx pgx.Tx) error {
+		// Блокировка — до подсчёта новых псевдонимов: партия syslog или
+		// другой импорт не добавят их между подсчётом и записью сводок.
+		if err := lockWrites(ctx, tx, orgID); err != nil {
+			return err
+		}
+		u, err := importUsers(ctx, tx, orgID, imp)
+		if err != nil {
+			return err
+		}
 		var id string
-		err := tx.QueryRow(ctx, `INSERT INTO shadow_ai_imports (id, org_id, created_at, created_by, format, sha256, catalog_version,
-			lines, matched, unmatched, errors, outdated, error_lines, services, users_pseudonymized, period_from, period_to, excluded)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+		err = tx.QueryRow(ctx, `INSERT INTO shadow_ai_imports (id, org_id, created_at, created_by, format, sha256, catalog_version,
+			lines, matched, unmatched, errors, outdated, error_lines, services, users_pseudonymized, period_from, period_to, excluded,
+			users, new_users, baseline)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
 			ON CONFLICT (org_id, sha256) DO NOTHING RETURNING id::text`,
 			imp.ID, orgID, imp.CreatedAt, imp.CreatedBy, imp.Format, imp.SHA256, int64(imp.CatalogVersion), //nolint:gosec // G115: версия каталога не больше 2^53
 			imp.Lines, imp.Matched, imp.Unmatched, imp.Errors, imp.Outdated, imp.ErrorLines, imp.Services, imp.UsersPseudonymized,
-			imp.From, imp.To, imp.Excluded).Scan(&id)
+			imp.From, imp.To, imp.Excluded, u.Users, u.NewUsers, u.Baseline).Scan(&id)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrDuplicate
 		}
 		if err != nil {
 			return fmt.Errorf("теневой ИИ: запись импорта: %w", err)
 		}
-		if err := lockWrites(ctx, tx, orgID); err != nil {
-			return err
+		// Сумма организации за сутки (4Н28) — вместе с только что
+		// вставленной строкой.
+		if err := tx.QueryRow(ctx, `SELECT coalesce(sum(new_users), 0)::bigint FROM shadow_ai_imports
+			WHERE org_id = $1 AND created_at > $2`,
+			orgID, imp.CreatedAt.Add(-importUsersWindow)).Scan(&u.NewUsersDay); err != nil {
+			return fmt.Errorf("теневой ИИ: новые пользователи за сутки: %w", err)
 		}
 		kept, fresh, err := writeAggregates(ctx, tx, orgID, imp.Aggregates)
 		if err != nil {
 			return err
 		}
+		rec := fn(u)
 		if err := s.record(ctx, tx, orgID, rec); err != nil {
 			return err
 		}

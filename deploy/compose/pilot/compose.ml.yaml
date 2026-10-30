@@ -15,7 +15,8 @@
 # группа aisec-gw: шлюз только подключается к сокету (том только для
 # чтения), остальные пользователи хоста каталог не видят. Модели —
 # подписанный пакет внутри образа (/opt/aisec/models), проверяется до
-# загрузки; библиотека ONNX Runtime сверяется с хешем, встроенным в aisec-ml.
+# загрузки и сверяется с манифестом выпуска (пути моделей, манифеста и
+# ONNX Runtime в compose не задаются — make images-verify); библиотека ONNX Runtime сверяется с хешем, встроенным в aisec-ml.
 # Нет пакета моделей, подпись или хеш не сошлись — aisec-ml не принимает
 # соединения, шлюз отмечает проверки признаком ml_unavailable и решает по
 # остальным детекторам (оповещение frequency.ml_unavailable).
@@ -46,7 +47,6 @@ services:
     network_mode: none
     command:
       - "-socket=/run/aisec-ml/aisec-ml.sock"
-      - "-models=/opt/aisec/models"
     volumes:
       - ${AISEC_DATA_DIR:?задайте AISEC_DATA_DIR}/ml/run:/run/aisec-ml
     mem_limit: ${AISEC_ML_MEM_LIMIT:-2g}

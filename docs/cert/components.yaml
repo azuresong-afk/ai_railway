@@ -1301,7 +1301,7 @@ components:
     attack_surface: false
     security_function: false
     provided_by: Free Software Foundation (проект GNU C Library), сборка Debian
-    justification: ONNX Runtime — библиотека C++, без системной библиотеки C не работает. Файлы копируются без изменений из сборочного образа (deploy/build/ml-libs.sh), их хеши — в манифесте выпуска aisec-ml; динамическая компоновка сохраняет возможность замены библиотеки, которую требует LGPL. Точная версия пакета — build/ort/toolchain.versions.
+    justification: ONNX Runtime — библиотека C++, без системной библиотеки C не работает. Файлы копируются без изменений из сборочного образа (deploy/build/ml-libs.sh), их хеши — в манифесте выпуска aisec-ml; динамическая компоновка сохраняет возможность замены библиотеки, которую требует LGPL. Точная ревизия пакета Debian (libc6=2.36-9+deb12uN) — в эталоне deploy/build/onnxruntime/toolchain.versions, который записывается после эталонной сборки и сверяется при каждой сборке ORT (4В25 ревью 4.r3).
     decision: ADR-0024, «Решение владельца по лицензиям системных библиотек» (28.10.2026, поток E5)
     decided: 2026-10-28
 

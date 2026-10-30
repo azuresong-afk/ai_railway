@@ -108,12 +108,17 @@ fmt-check: ## Форматирование Go-кода (gofmt); vendor/ — чу
 vet: ## go vet (с cgo, чтобы проверялись и файлы с import "C")
 	CGO_ENABLED=1 go vet ./...
 
+# Предел времени сквозных тестов: сценарии этапа 4 ждут таймауты очереди
+# подтверждений (1 минута) и сводки syslog (раз в минуту), стандартных
+# 10 минут пакету не хватает.
+E2E_TIMEOUT ?= 40m
+
 .PHONY: dm-coverage
 dm-coverage: build ## Покрытие матрицы обнаружения 5.16 тестами (строки с этапом не выше STAGE)
 	@mkdir -p $(BUILD)
 	@# Падения тестов ловит make test; здесь нужен полный отчёт, поэтому код возврата не важен.
 	go test -count=1 -json ./... > $(BUILD)/dm-tests.json || true
-	go test -tags e2e -count=1 -json ./test/e2e/ -bin $(BUILD)/bin > $(BUILD)/dm-e2e.json || true
+	go test -tags e2e -count=1 -timeout $(E2E_TIMEOUT) -json ./test/e2e/ -bin $(BUILD)/bin > $(BUILD)/dm-e2e.json || true
 	go run ./tools/dm-coverage -spec docs/SPEC.md -stage $(STAGE) \
 		-gotest $(BUILD)/dm-tests.json,$(BUILD)/dm-e2e.json -out $(BUILD)/dm-coverage
 
@@ -428,6 +433,8 @@ ifeq ($(filter 1,$(ML)),1)
 	@$(RELEASE_DIR)/bin/aisec-cli verify -release $(ML_RELEASE_DIR) -allow-older >$(BUILD)/release-ml-verify.out || \
 		{ cat $(BUILD)/release-ml-verify.out; echo "images: выпуск aisec-ml не прошёл проверку"; exit 1; }
 	@! grep -q 'тестовым ключом' $(BUILD)/release-ml-verify.out || { echo "images: выпуск aisec-ml подписан тестовым ключом"; exit 1; }
+	@v=$$(sed -n 's/^  "version": "\([^"]*\)",$$/\1/p' $(ML_RELEASE_DIR)/aisec-manifest.json); \
+		test "$$v" = '$(VERSION)' || { echo "images: версия выпуска aisec-ml $$v не совпадает с VERSION=$(VERSION) (4Н26)"; exit 1; }
 	$(MAKE) --no-print-directory ort-verify ORT_LIB_DIR=$(ML_RELEASE_DIR)/lib
 endif
 	$(MAKE) --no-print-directory release-fingerprint
@@ -527,9 +534,10 @@ ort-build: ## Сборка ONNX Runtime без сети в Dockerfile.ml; хеш
 		--build-arg ORT_JOBS='$(ORT_JOBS)' -o type=local,dest=$(ORT_OUT) .
 	$(MAKE) --no-print-directory ort-verify
 
-# Эталонный хеш (ort.sha256) записывается после эталонной сборки на машине
-# владельца (docs/cert/build-env.md). Пока его нет, сборка только печатает хеш;
-# поставка (RELEASE=1) без эталона не собирается.
+# Эталонный хеш (ort.sha256) и набор инструментов (toolchain.versions,
+# сверяется в Dockerfile.ml) записываются после эталонной сборки на машине
+# владельца (docs/cert/build-env.md). Пока их нет, сборка только печатает хеш;
+# поставка (RELEASE=1) без эталонов не собирается.
 .PHONY: ort-verify
 ort-verify:
 	@test -f $(ORT_LIB_DIR)/libonnxruntime.so.$(ORT_VERSION) || { echo "ort-verify: нет $(ORT_LIB_DIR)/libonnxruntime.so.$(ORT_VERSION)"; exit 1; }
@@ -544,6 +552,8 @@ ort-verify:
 		else \
 			echo "Эталона $(ORT_DIR)/ort.sha256 нет: запишите хеш эталонной сборки (docs/cert/build-env.md)."; \
 		fi
+	@test '$(RELEASE)' != 1 || test -s $(ORT_DIR)/toolchain.versions || \
+		{ echo "ort-verify: нет эталона $(ORT_DIR)/toolchain.versions — поставка без зафиксированного набора инструментов запрещена (4В25)"; exit 1; }
 
 .PHONY: ml-release-dir
 ml-release-dir: ## Каталог выпуска aisec-ml build/release-ml в Dockerfile.ml без сети (с RELEASE=1 — без подписи)
@@ -710,7 +720,7 @@ images-test-docker: build-image ## make images-test, где Go-шаги идут
 
 .PHONY: e2e
 e2e: manifest ## Сквозные тесты: шлюз и mock-llm по TLS (этап 1); сервер, CLI и PostgreSQL (этап 2, нужен AISEC_TEST_DATABASE_URL — иначе пропускаются)
-	go test -tags e2e -count=1 ./test/e2e/ -bin $(BUILD)/bin
+	go test -tags e2e -count=1 -timeout $(E2E_TIMEOUT) ./test/e2e/ -bin $(BUILD)/bin
 
 # e2e пилота в docker compose (задачи 3.7 и 3.8 этапа 3): сети без выхода
 # наружу и ловушка сети (test/e2e/netwatch), копия и восстановление

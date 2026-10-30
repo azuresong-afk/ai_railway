@@ -559,7 +559,7 @@ func checkFiles(img *image, rule imageRule) []string {
 
 // checkDynamic: загрузчик (у исполняемого файла он обязателен) и все
 // разделяемые библиотеки ELF — файлы /opt/aisec/lib образа; пути поиска
-// библиотек (RPATH, RUNPATH) — только /opt/aisec/lib (у библиотек — и $ORIGIN).
+// библиотек — только RPATH /opt/aisec/lib, без RUNPATH и $ORIGIN.
 func checkDynamic(data []byte, files map[string]fileEntry, exe bool) error {
 	f, err := elf.NewFile(bytes.NewReader(data))
 	if err != nil {
@@ -592,17 +592,24 @@ func checkDynamic(data []byte, files map[string]fileEntry, exe bool) error {
 			return fmt.Errorf("библиотеки %s нет в /%s образа", l, libDir)
 		}
 	}
-	for _, tag := range []elf.DynTag{elf.DT_RPATH, elf.DT_RUNPATH} {
-		vals, err := f.DynString(tag)
-		if err != nil {
-			return fmt.Errorf("%v: %w", tag, err)
-		}
-		for _, v := range vals {
-			for _, d := range strings.Split(v, ":") {
-				// $ORIGIN — только у библиотек: у бинарника это /opt/aisec/bin.
-				if d != "/"+libDir && (exe || d != "$ORIGIN") {
-					return fmt.Errorf("путь поиска библиотек %s вне /%s", d, libDir)
-				}
+	// DT_RUNPATH не допускается (4В24): при нём glibc не смотрит в RPATH
+	// aisec-ml, а $ORIGIN у ORT, загруженной через /proc/self/fd/N, — это
+	// /proc/self/fd, и libstdc++ ищется в системе мимо /opt/aisec/lib.
+	runpath, err := f.DynString(elf.DT_RUNPATH)
+	if err != nil {
+		return fmt.Errorf("%v: %w", elf.DT_RUNPATH, err)
+	}
+	if len(runpath) > 0 {
+		return fmt.Errorf("RUNPATH %s: допускается только RPATH /%s (-Wl,--disable-new-dtags)", strings.Join(runpath, ":"), libDir)
+	}
+	rpath, err := f.DynString(elf.DT_RPATH)
+	if err != nil {
+		return fmt.Errorf("%v: %w", elf.DT_RPATH, err)
+	}
+	for _, v := range rpath {
+		for _, d := range strings.Split(v, ":") {
+			if d != "/"+libDir {
+				return fmt.Errorf("путь поиска библиотек %s вне /%s", d, libDir)
 			}
 		}
 	}

@@ -405,6 +405,17 @@ func TestSyslogWithoutLicenseModule(t *testing.T) {
 	}
 }
 
+// 4Н22: сбой проверки лицензии при запуске — модуль считается выключенным
+// (как 503 у API), а не включённым.
+func TestSyslogLicenseErrorAtStart(t *testing.T) {
+	st := startSyslog(t, SyslogConfig{Licensed: func(context.Context) (bool, error) {
+		return true, errors.New("лицензия недоступна")
+	}})
+	if s := st.l.Stats(); s.LicenseModule {
+		t.Fatalf("сбой лицензии на старте включил модуль: %+v", s)
+	}
+}
+
 // Исключённый пользователь не попадает в сводки приёма по syslog.
 func TestSyslogExcludedUser(t *testing.T) {
 	st := startSyslog(t, SyslogConfig{})
@@ -538,5 +549,16 @@ func TestCheckSyslogConfig(t *testing.T) {
 		if err := CheckSyslogConfig(c); err != nil {
 			t.Errorf("%s: %v", name, err)
 		}
+	}
+}
+
+// 4Н23: предел соединений на адрес у IPv6 считается по сети /64.
+func TestSyslogLimitKey(t *testing.T) {
+	a, b := netip.MustParseAddr("2001:db8:1:2::10"), netip.MustParseAddr("2001:db8:1:2:ffff::1")
+	if limitKey(a) != limitKey(b) || limitKey(a) == limitKey(netip.MustParseAddr("2001:db8:1:3::10")) {
+		t.Fatalf("IPv6: %v %v", limitKey(a), limitKey(b))
+	}
+	if v4 := netip.MustParseAddr("192.0.2.1"); limitKey(v4) != v4 {
+		t.Fatalf("IPv4: %v", limitKey(v4))
 	}
 }

@@ -279,6 +279,9 @@ func (s *Service) ListenSyslog(ctx context.Context, cfg SyslogConfig) (*SyslogLi
 		started: s.o.Clock().UTC(), limiter: newRateLimiter(cfg.LinesPerSecond, time.Now),
 		flushNow: make(chan struct{}, 1), conns: map[net.Conn]netip.Addr{}, perIP: map[netip.Addr]int{},
 		lastLog: map[string]time.Time{}}
+	// С проверкой лицензии — до первого успешного ответа строки не
+	// учитываются (4Н22: сбой чтения лицензии на старте — не fail-open).
+	l.unlicensed.Store(cfg.Licensed != nil)
 	if err := l.refresh(ctx); err != nil {
 		l.logger.Warn("теневой ИИ: настройки приёма по syslog не прочитаны, строки до следующей записи — без каталога",
 			"class", "shadow_ai", "error", err)
@@ -441,6 +444,15 @@ func addrOf(a net.Addr) netip.Addr {
 	return ap.Addr().Unmap()
 }
 
+// limitKey — ключ предела соединений на адрес: у IPv6 — сеть /64 (4Н23),
+// иначе один узел с /64 обходит предел сменой адреса.
+func limitKey(ip netip.Addr) netip.Addr {
+	if ip.Is6() {
+		return netip.PrefixFrom(ip, 64).Masked().Addr()
+	}
+	return ip
+}
+
 // admit проверяет сеть источника и пределы соединений.
 func (l *SyslogListener) admit(conn net.Conn) bool {
 	ip := addrOf(conn.RemoteAddr())
@@ -450,11 +462,12 @@ func (l *SyslogListener) admit(conn net.Conn) bool {
 		_ = conn.Close() //nolint:gosec // G104: отказ источнику не из разрешённых сетей
 		return false
 	}
+	key := limitKey(ip)
 	l.mu.Lock()
-	ok := !l.closed && len(l.conns) < l.cfg.MaxConns && l.perIP[ip] < l.cfg.MaxConnsPerIP
+	ok := !l.closed && len(l.conns) < l.cfg.MaxConns && l.perIP[key] < l.cfg.MaxConnsPerIP
 	if ok {
-		l.conns[conn] = ip
-		l.perIP[ip]++
+		l.conns[conn] = key
+		l.perIP[key]++
 	}
 	l.mu.Unlock()
 	if !ok {

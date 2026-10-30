@@ -31,7 +31,9 @@ var ErrMLUnavailable = errors.New("aisec-ml недоступен")
 
 // Умолчания клиента.
 const (
-	DefaultMLTimeout     = 300 * time.Millisecond
+	// DefaultMLTimeout — меньше DefaultDetectorTimeout (4В22): срок вызова
+	// истекает раньше срока детектора, и сроки подряд включают отсрочку.
+	DefaultMLTimeout     = 80 * time.Millisecond
 	DefaultMLMaxInflight = 16
 	DefaultMLMinBackoff  = time.Second
 	DefaultMLMaxBackoff  = 30 * time.Second
@@ -44,13 +46,17 @@ const (
 	// mlTimeoutsToFail — сколько вызовов подряд должны не уложиться в срок,
 	// чтобы включилась отсрочка: одиночный долгий вывод — не сбой процесса.
 	mlTimeoutsToFail = 3
+	// mlDeadlineMargin — запас до срока вызывающего (срока детектора): срок
+	// вызова истекает раньше, и клиент отличает свой срок от отмены запроса.
+	mlDeadlineMargin = 5 * time.Millisecond
 )
 
 // MLClientConfig — параметры клиента aisec-ml.
 type MLClientConfig struct {
 	// Socket — путь к Unix-сокету aisec-ml.
 	Socket string
-	// Timeout — предел одного вызова (меньше срока детектора).
+	// Timeout — предел одного вызова; не больше срока вызывающего за вычетом
+	// запаса (Detect урезает сам).
 	Timeout time.Duration
 	// MaxInflight — предел одновременных вызовов; сверх — сразу ErrMLUnavailable.
 	MaxInflight int
@@ -148,7 +154,19 @@ func (c *MLClient) Detect(ctx context.Context, model, text string) (*mlResult, e
 		return nil, fmt.Errorf("%w: предел одновременных вызовов", ErrMLUnavailable)
 	}
 	parent := ctx
-	ctx, cancel := context.WithTimeout(ctx, c.cfg.Timeout)
+	// Срок вызова — min(Timeout, срок вызывающего − запас) (4В22): иначе
+	// первым истекает срок детектора, клиент принимает это за отмену запроса,
+	// и зависший aisec-ml задерживает каждый фрагмент без отсрочки.
+	timeout := c.cfg.Timeout
+	if dl, ok := parent.Deadline(); ok {
+		if left := time.Until(dl) - mlDeadlineMargin; left < timeout {
+			timeout = left
+		}
+	}
+	if timeout <= 0 {
+		return nil, fmt.Errorf("%w: не осталось времени до срока проверки", ErrMLUnavailable)
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	for attempt := 0; ; attempt++ {
 		mc, reused, err := c.conn(ctx)
@@ -389,12 +407,12 @@ func (c *MLClient) isDown() bool {
 	return c.cfg.now().Before(c.downUntil)
 }
 
-// failed разбирает сбой вызова. Отмена запроса (клиент ушёл, истёк общий
-// срок проверки) — не сбой aisec-ml. Срок вызова истёк — отсрочка только
-// после mlTimeoutsToFail таких вызовов подряд. Остальное (нет сокета, hello,
-// нарушение протокола, обрыв) — сразу.
+// failed разбирает сбой вызова. Отмена запроса (клиент ушёл) — не сбой
+// aisec-ml. Срок вызова или вызывающего истёк — отсрочка только после
+// mlTimeoutsToFail таких вызовов подряд (4В22: срок детектора — тоже срок).
+// Остальное (нет сокета, hello, нарушение протокола, обрыв) — сразу.
 func (c *MLClient) failed(parent, ctx context.Context, err error) {
-	if parent.Err() != nil {
+	if parent.Err() != nil && !errors.Is(context.Cause(parent), context.DeadlineExceeded) {
 		return
 	}
 	// Срок соединения равен сроку ctx, и чтение может прерваться раньше,
