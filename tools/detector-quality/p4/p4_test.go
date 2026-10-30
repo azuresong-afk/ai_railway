@@ -15,6 +15,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/detect/builtin"
 	"github.com/azuresong-afk/ai_railway/internal/detect/corpus"
 	"github.com/azuresong-afk/ai_railway/internal/detect/injection"
+	"github.com/azuresong-afk/ai_railway/internal/detect/pii"
 	"github.com/azuresong-afk/ai_railway/internal/gateway"
 	"github.com/azuresong-afk/ai_railway/internal/ml"
 	"github.com/azuresong-afk/ai_railway/internal/ml/mltest"
@@ -35,7 +36,13 @@ func serve(t *testing.T) *gateway.MLClient {
 		Labels: []string{"dangerous", "insult", "non-toxic", "obscenity", "threat"}, Directions: []string{"input", "output"}},
 		map[string]string{"идиот": "insult", "дебил": "insult", "нахуй": "obscenity", "бля": "obscenity", "убью": "threat",
 			"наркотики": "dangerous"}, nil)
-	srv, err := ml.NewServer(ml.ServerConfig{Models: []ml.Model{inj, tox}, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	// pii.ner: метки BIO, находки — сущности (per, org, addr); слова —
+	// приметы отчеств, правовых форм и адресов.
+	ner := mltest.NewModel(ml.ModelInfo{ID: "pii-ner-ru", Version: "test",
+		Labels:     []string{"o", "b-per", "i-per", "b-org", "i-org", "b-loc", "i-loc", "b-addr", "i-addr"},
+		Directions: []string{"input", "output"}},
+		map[string]string{"ович": "per", "овна": "per", "евич": "per", "ООО «": "org", "АО «": "org", "ул. ": "addr", "кв. ": "addr"}, nil)
+	srv, err := ml.NewServer(ml.ServerConfig{Models: []ml.Model{inj, tox, ner}, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,6 +136,73 @@ func TestDM18_MLCorpusOnTestExecutor(t *testing.T) {
 	r := rs[0]
 	if r.MLm.Errors != 0 || r.MLm.Pos != 56 || r.Heur.Recall() < 0.5 || r.Pass || !strings.Contains(strings.Join(r.Reasons, ";"), "задержка не замерена") {
 		t.Fatalf("%+v", r)
+	}
+}
+
+// Корпус pii.ner (синтетика tools/synth-pii, вымышленные люди, организации
+// и адреса) — путь шлюз → aisec-ml → находки и расчёт Р4 против словарной
+// эвристики (testdata/ml/ner-baseline.json) и pii.ru, который имён не
+// ищет. Качество — make ml-p4 на машине владельца.
+//
+// Покрывает: DM-31 (NER)
+func TestDM31_NERCorpusOnTestExecutor(t *testing.T) {
+	c := serve(t)
+	d := mlDetector(t, builtin.PIINERID, c)
+	dir := filepath.Join(root, "testdata/corpus/pii.ner")
+	checkCorpus(t, d, dir)
+	base, err := p4.ListsBaseline(filepath.Join(root, "testdata/ml/ner-baseline.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rs, err := p4.Run(context.Background(), []p4.Case{
+		{ML: d, Heuristic: base, Corpus: dir, Threshold: 0.7},
+		{ML: d, Heuristic: pii.New(), Corpus: dir, Threshold: 0.7},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range rs {
+		if r.MLm.Errors != 0 || r.MLm.Pos != 243 || r.MLm.Neg != 57 || r.MLm.TP == 0 {
+			t.Fatalf("%+v", r)
+		}
+	}
+	if rs[0].Heur.Recall() < 0.5 || rs[1].Heur.Recall() > 0.05 {
+		t.Fatalf("эвристики: словарь %v, pii.ru %v", rs[0].Heur.Recall(), rs[1].Heur.Recall())
+	}
+}
+
+// Находка pii.ner в ответе модели — строка DM-09, в запросе — DM-31 (как
+// у pii.ru); границы — целые слова.
+//
+// Покрывает: DM-09 (NER)
+func TestDM09_NERCorpusThreatByDirection(t *testing.T) {
+	d := mlDetector(t, builtin.PIINERID, serve(t))
+	samples, err := corpus.Load(filepath.Join(root, "testdata/corpus/pii.ner"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]int{}
+	for _, s := range samples {
+		fs, err := d.Detect(context.Background(), detect.Text{Text: s.Text, Direction: s.Direction, Source: s.Source})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := "DM-31"
+		if s.Direction == detect.Output {
+			want = "DM-09"
+		}
+		for _, f := range fs {
+			if f.Threat != want {
+				t.Fatalf("%s: %+v", s.ID, f)
+			}
+			if f.Category == builtin.CatPerson && (strings.HasPrefix(s.Text[f.Start:], "ович") || strings.HasPrefix(s.Text[f.Start:], "овна")) {
+				t.Fatalf("%s: фрагмент не расширен до слова: %q", s.ID, s.Text[f.Start:f.End])
+			}
+			seen[f.Threat]++
+		}
+	}
+	if seen["DM-09"] == 0 || seen["DM-31"] == 0 {
+		t.Fatalf("находки по строкам: %v", seen)
 	}
 }
 

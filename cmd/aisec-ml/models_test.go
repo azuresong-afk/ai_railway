@@ -24,6 +24,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/detect"
 	"github.com/azuresong-afk/ai_railway/internal/detect/builtin"
 	"github.com/azuresong-afk/ai_railway/internal/detect/injection"
+	"github.com/azuresong-afk/ai_railway/internal/detect/pii"
 	"github.com/azuresong-afk/ai_railway/internal/gateway"
 	"github.com/azuresong-afk/ai_railway/internal/ml"
 	"github.com/azuresong-afk/ai_railway/internal/policy"
@@ -236,7 +237,11 @@ func TestP4Measure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	heur := map[string]detect.Detector{builtin.InjectionMLID: injection.New(), builtin.ToxicityMLID: base}
+	nerBase, err := p4.ListsBaseline(filepath.Join(repoRoot, "testdata/ml/ner-baseline.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	heur := map[string]detect.Detector{builtin.InjectionMLID: injection.New(), builtin.ToxicityMLID: base, builtin.PIINERID: nerBase}
 	var cases []p4.Case
 	for _, s := range builtin.MLSpecs() {
 		m, ok := models[s.Model]
@@ -258,8 +263,15 @@ func TestP4Measure(t *testing.T) {
 			t.Fatal(err)
 		}
 		model := s.Model
-		cases = append(cases, p4.Case{ML: d, Heuristic: heur[s.ID], Corpus: dir, Threshold: th, LatencyText: text, LatencyTokens: n,
-			LatencyRuns: 200, Latency: func(ctx context.Context, x string) error { _, err := client.Detect(ctx, model, x); return err }})
+		c := p4.Case{ML: d, Heuristic: heur[s.ID], Corpus: dir, Threshold: th, LatencyText: text, LatencyTokens: n,
+			LatencyRuns: 200, Latency: func(ctx context.Context, x string) error { _, err := client.Detect(ctx, model, x); return err }}
+		cases = append(cases, c)
+		// pii.ner — ещё и против pii.ru: он имён не ищет, строка показывает,
+		// что добавляет NER к детектору этапа 1 (задача 4.20).
+		if s.ID == builtin.PIINERID {
+			c.Heuristic = pii.New()
+			cases = append(cases, c)
+		}
 	}
 	rs, err := p4.Run(context.Background(), cases)
 	if err != nil {
