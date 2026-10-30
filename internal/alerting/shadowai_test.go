@@ -141,3 +141,31 @@ func detailsText(t *testing.T, v any) string {
 	}
 	return string(b)
 }
+
+// 4В27: импорт журнала, добавивший больше ShadowAliasProbeThreshold новых
+// псевдонимов от одного субъекта за импорт или за сутки, — оповещение
+// безопасности security.shadow_ai_alias_probe (правило не отключается);
+// исходный состав и импорт до порога — нет. Покрывает: DM-37.
+func TestDM37_AliasProbeAlert(t *testing.T) {
+	e := newEnv(t)
+	imp := func(details map[string]any) {
+		e.audit(t, e.rec(t, tUser, "", "shadow_ai.import", audit.Object{Type: "shadow_ai_import", ID: "i"}, audit.ResultSuccess, details))
+	}
+	imp(map[string]any{"users": 4000, "new_users": 0, "new_users_day": 0, "baseline": true})
+	imp(map[string]any{"users": 300, "new_users": ShadowAliasProbeThreshold, "new_users_day": ShadowAliasProbeThreshold})
+	if got := e.alerts(t, BuiltinShadowAliasProbe); len(got) != 0 {
+		t.Fatalf("до порога: %+v", got)
+	}
+	// За сутки набралось больше порога, хотя в импорте — немного.
+	imp(map[string]any{"users": 10, "new_users": 10, "new_users_day": ShadowAliasProbeThreshold + 10})
+	got := e.alerts(t, BuiltinShadowAliasProbe)
+	if len(got) != 1 || got[0].Kind != KindSecurity || got[0].Severity != "high" {
+		t.Fatalf("перебор за сутки: %+v", got)
+	}
+	if !strings.Contains(detailsText(t, got[0].Details), `"new_users_day":510`) {
+		t.Fatalf("подробности: %s", detailsText(t, got[0].Details))
+	}
+	if r := e.rule(t, BuiltinShadowAliasProbe); !Locked(r.Kind) {
+		t.Fatalf("правило отключаемо: %+v", r)
+	}
+}
