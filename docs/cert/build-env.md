@@ -152,6 +152,12 @@ make ml-release-dir                 # выпуск aisec-ml с тестовым 
 | pyarrow | 25.0.1 | Apache-2.0 | чтение наборов (parquet) |
 | транзитивные: filelock, fsspec, hf-xet, httpx2, httpcore2, h11, anyio, idna, truststore, Jinja2, MarkupSafe, networkx, sympy, mpmath, packaging, PyYAML, regex, setuptools, typing_extensions, tqdm, typer, click, rich, markdown-it-py, mdurl, Pygments, shellingham, annotated-doc | см. `requirements.txt` | MIT, BSD-2/3-Clause, Apache-2.0, ISC; PSF-2.0 (typing_extensions), Apache-2.0 и CNRI-Python (regex), MPL-2.0 и MIT (tqdm) | зависимости прямых пакетов |
 
+**Синтетическая проверка без моделей владельца** (30.10.2026). `make ml-synthetic` обучает с нуля маленький BERT (2 слоя, ширина 64) на синтетике репозитория (`tools/ml/synthetic.py`), экспортирует обе модели, пишет ML-BOM с пометкой «не для поставки» и подписывает пакет `build/ml/models` **только тестовым ключом** — поставочная сборка `aisec-ml` его не примет. Модели находят то, на чём учились: этого хватает, чтобы проверить путь целиком, но о качестве настоящих моделей они ничего не говорят. Дальше:
+- `make ml-verify`, `make ml-p4` — сверка с эталонами и расчёт Р4 на этом пакете;
+- `make e2e-pilot-ml ORT_LIB_DIR=…` (после `make images-test`) — выпуск и образ `aisec-ml` с пакетом, пилот в docker compose с `compose.ml.yaml` (`TestE2EPilot_ML`): `aisec-ml` без сети и от своего пользователя, `injection.ml` блокирует, `toxicity.ml` журналирует, после остановки `aisec-ml` запрос проходит с `ml_unavailable`, после запуска блокировка возвращается, текстов запросов в журналах нет. Библиотека ORT — эталонная сборка (`make ort-build`): у сборок с `RUNPATH $ORIGIN` (официальная, из pip) при загрузке через `/proc/self/fd` не находятся зависимости (ADR-0024, 4В24).
+
+Прогон 30.10.2026 в облачной среде (ORT из pip с RPATH `/opt/aisec/lib`, только для теста): `make ml-verify` — токены совпадают, расхождение logits до 1·10⁻⁵; `TestE2EPilot_ML` — PASS за 57 с.
+
 **Если что-то пошло не так.**
 - `ml-venv`: «хеш torch не совпадает» — другой файл на сервере или другая версия Python, чем при записи эталона; не продолжать, сообщить в поток.
 - `ml-fetch`: «хеш не совпадает» или «лишний файл» — репозиторий модели или набора изменился; не продолжать.
