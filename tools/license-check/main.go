@@ -7,7 +7,10 @@
 //     лицензий совпадает с license_files в реестре (смена текста при
 //     обновлении версии требует пересмотра);
 //   - license_decision ссылается на существующий ADR;
-//   - версия Go toolchain совпадает с go.mod, версии инструментов — с Makefile.
+//   - версия Go toolchain совпадает с go.mod, версии инструментов — с Makefile;
+//   - каждая строка deploy/build/onnxruntime/deps.lock есть в реестре как
+//     native-library с той же версией и лицензией, лицензия строки — по
+//     политике (nativelock.go).
 package main
 
 import (
@@ -202,6 +205,11 @@ func run(fsys fs.FS) ([]string, error) {
 		return nil, err
 	}
 	problems = append(problems, npmProblems...)
+	nativeProblems, err := checkNativeLock(fsys, reg)
+	if err != nil {
+		return nil, err
+	}
+	problems = append(problems, nativeProblems...)
 	sort.Strings(problems)
 	return problems, nil
 }
