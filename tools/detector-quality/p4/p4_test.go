@@ -155,11 +155,14 @@ func TestDM31_NERCorpusOnTestExecutor(t *testing.T) {
 		t.Fatal(err)
 	}
 	rs, err := p4.Run(context.Background(), []p4.Case{
-		{ML: d, Heuristic: base, Corpus: dir, Threshold: 0.7},
-		{ML: d, Heuristic: pii.New(), Corpus: dir, Threshold: 0.7},
+		{ML: d, Heuristic: base, Corpus: dir, Threshold: 0.7, EqualFPR: true},
+		{ML: d, Heuristic: pii.New(), Corpus: dir, Threshold: 0.7, Reference: true},
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !rs[0].EqualFPR || rs[1].Pass || len(rs[1].Reasons) != 0 || !strings.Contains(p4.Markdown(rs, "тест"), "для сравнения, без вердикта") {
+		t.Fatalf("правила строк: %+v", rs)
 	}
 	for _, r := range rs {
 		if r.MLm.Errors != 0 || r.MLm.Pos != 243 || r.MLm.Neg != 57 || r.MLm.TP == 0 {
@@ -263,6 +266,54 @@ func TestJudge(t *testing.T) {
 	rs, err = p4.Run(context.Background(), []p4.Case{{ML: ml, Heuristic: heur, Corpus: dir, Threshold: 0.8, Latency: slow, LatencyRuns: 3}})
 	if err != nil || rs[0].Pass || len(rs[0].Reasons) != 2 {
 		t.Fatalf("%+v", rs[0])
+	}
+}
+
+// Правило «при той же доле ложных» (pii.ner, решение владельца 30.10.2026):
+// берётся порог с долей ложных не выше эвристики и наибольшей полнотой;
+// прибавка 10 п. п. не нужна, но полнота должна быть выше.
+//
+// Покрывает: DM-31 (NER)
+func TestJudgeEqualFPR(t *testing.T) {
+	dir := t.TempDir()
+	lines := []string{
+		`{"id":"p1","direction":"input","text":"имя один","expect":["pii.person"]}`,
+		`{"id":"p2","direction":"input","text":"имя два","expect":["pii.person"]}`,
+		`{"id":"p3","direction":"input","text":"имя три","expect":["pii.person"]}`,
+		`{"id":"p4","direction":"input","text":"имя четыре","expect":["pii.person"]}`,
+		`{"id":"n1","direction":"input","text":"роман","expect":[]}`,
+		`{"id":"n2","direction":"input","text":"погода","expect":[]}`,
+	}
+	if err := os.WriteFile(filepath.Join(dir, "v.jsonl"), []byte(strings.Join(lines, "\n")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fast := func(context.Context, string) error { return nil }
+	// Словарь: 3 из 4 и одно ложное («роман»).
+	heur := fake{id: "h", score: map[string]float64{"имя один": 0.9, "имя два": 0.9, "имя три": 0.9, "роман": 0.9}}
+	// ML: на пороге 0,7 — 4 из 4, но два ложных; на 0,8 и 0,9 — одно
+	// ложное; на 0,95 — ни одного, полнота та же: выбирается 0,95.
+	ml := fake{id: "ml", score: map[string]float64{"имя один": 0.95, "имя два": 0.95, "имя три": 0.95, "имя четыре": 0.95,
+		"роман": 0.92, "погода": 0.75}}
+	rs, err := p4.Run(context.Background(), []p4.Case{{ML: ml, Heuristic: heur, Corpus: dir, Threshold: 0.7, EqualFPR: true, Latency: fast, LatencyRuns: 3}})
+	if err != nil || !rs[0].Pass || rs[0].Threshold != 0.95 || rs[0].Template != 0.7 || rs[0].MLm.Recall() != 1 || rs[0].MLm.FPR() != 0 {
+		t.Fatalf("%+v %v", rs, err)
+	}
+	if md := p4.Markdown(rs, "тест"); !strings.Contains(md, "порог правила шаблона — 0,950 вместо 0,700") {
+		t.Fatalf("строка: %s", md)
+	}
+	// Полнота не выше эвристики при той же доле ложных — не проходит, хотя
+	// прибавка 10 п. п. и не нужна.
+	ml.score = map[string]float64{"имя один": 0.95, "имя два": 0.95, "имя три": 0.95, "роман": 0.92}
+	rs, err = p4.Run(context.Background(), []p4.Case{{ML: ml, Heuristic: heur, Corpus: dir, Threshold: 0.7, EqualFPR: true, Latency: fast, LatencyRuns: 3}})
+	if err != nil || rs[0].Pass || len(rs[0].Reasons) != 1 || !strings.Contains(rs[0].Reasons[0], "нужно выше") {
+		t.Fatalf("%+v %v", rs, err)
+	}
+	// Ни на одном пороге ложных не меньше — остаётся порог шаблона, провал по
+	// доле ложных.
+	ml.score = map[string]float64{"имя один": 0.99, "имя два": 0.99, "имя три": 0.99, "имя четыре": 0.99, "роман": 0.99, "погода": 0.99}
+	rs, err = p4.Run(context.Background(), []p4.Case{{ML: ml, Heuristic: heur, Corpus: dir, Threshold: 0.7, EqualFPR: true, Latency: fast, LatencyRuns: 3}})
+	if err != nil || rs[0].Pass || rs[0].Threshold != 0.7 || !strings.Contains(strings.Join(rs[0].Reasons, ";"), "доля ложных") {
+		t.Fatalf("%+v %v", rs, err)
 	}
 }
 
