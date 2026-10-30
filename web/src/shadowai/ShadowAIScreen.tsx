@@ -47,12 +47,12 @@ function rangeOf(id: PeriodId, now: number): Range {
 function OverviewTab({
   me,
   catalog,
-  canManage,
+  canExclude,
   onExclude,
 }: {
   me: Me;
   catalog: ShadowCatalog | undefined;
-  canManage: boolean;
+  canExclude: boolean;
   onExclude: (d: ExclusionDraft) => void;
 }) {
   const [period, setPeriod] = useState<PeriodId>("30d");
@@ -145,7 +145,7 @@ function OverviewTab({
                         <Button variant="ghost" aria-pressed={s.id === service} onClick={() => setService(s.id === service ? "" : s.id)}>
                           {s.id === service ? "Все пользователи" : "Пользователи сервиса"}
                         </Button>
-                        {canManage && (
+                        {canExclude && (
                           <Button variant="ghost" aria-label={`Исключить сервис ${s.name}`} onClick={() => onExclude({ kind: "service", value: s.id, by: "login" })}>
                             Исключить
                           </Button>
@@ -179,7 +179,7 @@ function OverviewTab({
                   <Th className="text-right">Объём</Th>
                   <Th>Сервисы</Th>
                   <Th>Последний раз</Th>
-                  {(canEvents || canManage) && <Th>Действия</Th>}
+                  {(canEvents || canExclude) && <Th>Действия</Th>}
                 </tr>
               </thead>
               <tbody>
@@ -191,7 +191,7 @@ function OverviewTab({
                     <Td className="text-right">{formatBytes(u.bytes)}</Td>
                     <Td>{u.services.map((id) => serviceName(catalog, id)).join(", ")}</Td>
                     <Td>{formatAbsolute(u.last_seen)}</Td>
-                    {(canEvents || canManage) && (
+                    {(canEvents || canExclude) && (
                       <Td>
                         <div className="flex flex-wrap items-center gap-2">
                           {canEvents && (
@@ -203,7 +203,7 @@ function OverviewTab({
                               События
                             </Link>
                           )}
-                          {canManage && (
+                          {canExclude && (
                             <Button variant="ghost" aria-label={`Исключить пользователя ${u.alias}`} onClick={() => onExclude({ kind: "user", value: u.alias, by: "alias" })}>
                               Исключить
                             </Button>
@@ -223,9 +223,11 @@ function OverviewTab({
 }
 
 // Экран «Теневой ИИ» (ТЗ 5.12, DM-37; задачи 4.22–4.23): обращения к публичным ИИ-сервисам по журналам прокси и NGFW.
-// Права проверяет сервер; консоль только скрывает кнопки управления без shadow_ai.manage.
+// Права проверяет сервер; консоль только скрывает кнопки управления без shadow_ai.manage
+// и исключений без права безопасности shadow_ai.exclusions.manage (только администратор безопасности).
 export function ShadowAIScreen({ me }: { me: Me }) {
   const canManage = me.permissions.includes("shadow_ai.manage");
+  const canExclude = me.permissions.includes("shadow_ai.exclusions.manage");
   const mfa = me.mfa?.enabled === true;
   const catalog = useQuery({ queryKey: ["shadow-ai", "catalog"], queryFn: ({ signal }) => shadowApi.catalog(signal) });
   const settings = useQuery({ queryKey: ["shadow-ai", "settings"], queryFn: ({ signal }) => shadowApi.settings(signal) });
@@ -252,12 +254,12 @@ export function ShadowAIScreen({ me }: { me: Me }) {
         label="Разделы теневого ИИ"
         defaultValue="overview"
         tabs={[
-          { value: "overview", title: "Сервисы и пользователи", content: <OverviewTab me={me} catalog={c} canManage={canManage} onExclude={setDraft} /> },
+          { value: "overview", title: "Сервисы и пользователи", content: <OverviewTab me={me} catalog={c} canExclude={canExclude} onExclude={setDraft} /> },
           { value: "import", title: "Импорт и каталог", content: <ImportTab canManage={canManage} catalog={c} /> },
           {
             value: "exclusions",
             title: "Исключения",
-            content: <ExclusionsTab canManage={canManage} catalog={c} mfa={mfa} usersPseudonymized={pseudonymized} />,
+            content: <ExclusionsTab canExclude={canExclude} catalog={c} mfa={mfa} usersPseudonymized={pseudonymized} />,
           },
           {
             value: "syslog",

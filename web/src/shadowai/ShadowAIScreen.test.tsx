@@ -101,7 +101,9 @@ const renderScreen = (permissions: string[]) =>
     </MemoryRouter>,
   );
 const reader = ["shadow_ai.read", "events.read"];
-const manager = ["shadow_ai.read", "shadow_ai.manage", "events.read"];
+const manager = ["shadow_ai.read", "shadow_ai.manage", "shadow_ai.exclusions.manage", "events.read"];
+// Администратор системы (4В26): импорт и каталог — да, исключения — нет.
+const sysadmin = ["shadow_ai.read", "shadow_ai.manage", "events.read"];
 const openTab = async (name: string) => fireEvent.mouseDown(await screen.findByRole("tab", { name }), { button: 0 });
 
 describe("экран «Теневой ИИ»", () => {
@@ -178,6 +180,19 @@ describe("экран «Теневой ИИ»", () => {
     await openTab("Импорт и каталог");
     expect(await screen.findByText(/Импортировать журналы и загружать каталог может администратор безопасности/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Загрузить каталог" })).toBeNull();
+    await openTab("Исключения");
+    expect(await screen.findByText("шлюз")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Добавить исключение" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Снять исключение/ })).toBeNull();
+  });
+
+  it("без права исключений нет кнопок исключения, импорт доступен", async () => {
+    exclusions = [{ kind: "user", value: alias, comment: "шлюз", created_at: "2026-10-28T10:00:00Z", created_by: "user:u-1" }];
+    renderScreen(sysadmin);
+    const table = await screen.findByRole("table", { name: "Сервисы за период" });
+    expect(within(table).queryByRole("button", { name: "Исключить сервис ChatGPT" })).toBeNull();
+    await openTab("Импорт и каталог");
+    expect(await screen.findByRole("button", { name: "Импортировать журнал" })).toBeInTheDocument();
     await openTab("Исключения");
     expect(await screen.findByText("шлюз")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Добавить исключение" })).toBeNull();
