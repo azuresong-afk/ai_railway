@@ -169,17 +169,15 @@ func (m *Memory) importUsersLocked(imp ImportRecord) ImportUsers {
 	}
 	aliases := aliasesOf(imp.Aggregates)
 	u := ImportUsers{Users: int64(len(aliases)), Baseline: len(known) == 0 && len(aliases) > 0}
-	if !u.Baseline {
-		for _, a := range aliases {
-			if _, ok := known[a]; !ok {
-				u.NewUsers++
-			}
+	for _, a := range aliases {
+		if _, ok := known[a]; !ok {
+			u.NewUsers++
 		}
 	}
 	u.NewUsersDay = u.NewUsers
 	since := imp.CreatedAt.Add(-importUsersWindow)
 	for _, i := range m.imports {
-		if i.CreatedBy == imp.CreatedBy && i.CreatedAt.After(since) {
+		if i.CreatedAt.After(since) {
 			u.NewUsersDay += i.users.NewUsers
 		}
 	}

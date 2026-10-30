@@ -135,7 +135,8 @@ func lockWrites(ctx context.Context, tx pgx.Tx, orgID string) error {
 }
 
 // importUsers — псевдонимы импорта и те из них, которых нет в сводках
-// организации (4В27); при пустых сводках — исходный состав (Baseline).
+// организации (4В27); при пустых сводках — исходный состав (Baseline), все
+// псевдонимы новые (4В28).
 func importUsers(ctx context.Context, tx pgx.Tx, orgID string, imp ImportRecord) (ImportUsers, error) {
 	aliases := aliasesOf(imp.Aggregates)
 	u := ImportUsers{Users: int64(len(aliases))}
@@ -148,7 +149,7 @@ func importUsers(ctx context.Context, tx pgx.Tx, orgID string, imp ImportRecord)
 		return u, fmt.Errorf("теневой ИИ: пользователи сводок: %w", err)
 	}
 	if !known {
-		u.Baseline = true
+		u.Baseline, u.NewUsers = true, u.Users
 		return u, nil
 	}
 	if err := tx.QueryRow(ctx, `SELECT count(*) FROM unnest($2::text[]) AS t(a)
@@ -248,10 +249,11 @@ func (s *PGStore) SaveImport(ctx context.Context, orgID string, imp ImportRecord
 		if err != nil {
 			return fmt.Errorf("теневой ИИ: запись импорта: %w", err)
 		}
-		// Сумма за сутки — вместе с только что вставленной строкой.
+		// Сумма организации за сутки (4Н28) — вместе с только что
+		// вставленной строкой.
 		if err := tx.QueryRow(ctx, `SELECT coalesce(sum(new_users), 0)::bigint FROM shadow_ai_imports
-			WHERE org_id = $1 AND created_by = $2 AND created_at > $3`,
-			orgID, imp.CreatedBy, imp.CreatedAt.Add(-importUsersWindow)).Scan(&u.NewUsersDay); err != nil {
+			WHERE org_id = $1 AND created_at > $2`,
+			orgID, imp.CreatedAt.Add(-importUsersWindow)).Scan(&u.NewUsersDay); err != nil {
 			return fmt.Errorf("теневой ИИ: новые пользователи за сутки: %w", err)
 		}
 		kept, fresh, err := writeAggregates(ctx, tx, orgID, imp.Aggregates)

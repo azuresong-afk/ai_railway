@@ -145,13 +145,12 @@ func detailsText(t *testing.T, v any) string {
 // 4В27: импорт журнала, добавивший больше ShadowAliasProbeThreshold новых
 // псевдонимов от одного субъекта за импорт или за сутки, — оповещение
 // безопасности security.shadow_ai_alias_probe (правило не отключается);
-// исходный состав и импорт до порога — нет. Покрывает: DM-37.
+// импорт до порога — нет. Покрывает: DM-37.
 func TestDM37_AliasProbeAlert(t *testing.T) {
 	e := newEnv(t)
 	imp := func(details map[string]any) {
 		e.audit(t, e.rec(t, tUser, "", "shadow_ai.import", audit.Object{Type: "shadow_ai_import", ID: "i"}, audit.ResultSuccess, details))
 	}
-	imp(map[string]any{"users": 4000, "new_users": 0, "new_users_day": 0, "baseline": true})
 	imp(map[string]any{"users": 300, "new_users": ShadowAliasProbeThreshold, "new_users_day": ShadowAliasProbeThreshold})
 	if got := e.alerts(t, BuiltinShadowAliasProbe); len(got) != 0 {
 		t.Fatalf("до порога: %+v", got)
@@ -167,5 +166,18 @@ func TestDM37_AliasProbeAlert(t *testing.T) {
 	}
 	if r := e.rule(t, BuiltinShadowAliasProbe); !Locked(r.Kind) {
 		t.Fatalf("правило отключаемо: %+v", r)
+	}
+}
+
+// 4В28: исходный состав (первый импорт с пользователями) не освобождается
+// от правила: при пустых сводках — свежая установка или очистка по сроку —
+// первый импорт перебором строил бы таблицу без оповещения. Покрывает: DM-37.
+func TestDM37_AliasProbeBaselineAlert(t *testing.T) {
+	e := newEnv(t)
+	e.audit(t, e.rec(t, tUser, "", "shadow_ai.import", audit.Object{Type: "shadow_ai_import", ID: "i"}, audit.ResultSuccess,
+		map[string]any{"users": 4000, "new_users": 4000, "new_users_day": 4000, "baseline": true}))
+	got := e.alerts(t, BuiltinShadowAliasProbe)
+	if len(got) != 1 || !strings.Contains(detailsText(t, got[0].Details), `"baseline":true`) {
+		t.Fatalf("исходный состав: %+v", got)
 	}
 }

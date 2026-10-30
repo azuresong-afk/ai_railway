@@ -243,9 +243,10 @@ func TestDM37_NewServiceAudit(t *testing.T) {
 
 // 4В27: импорт журнала, где каждому подобранному логину отведён свой час, —
 // оракул псевдонимов. Число разных и новых для организации псевдонимов
-// импорта и сумма новых от того же субъекта за сутки пишутся в аудит
-// shadow_ai.import; первый импорт с пользователями — исходный состав.
-// Логины синтетические. Покрывает: DM-37.
+// импорта и сумма новых в организации за сутки пишутся в аудит
+// shadow_ai.import. Первый импорт с пользователями — исходный состав, но
+// его псевдонимы тоже новые (4В28); сумма — по организации, а не по
+// субъекту (4Н28). Логины синтетические. Покрывает: DM-37.
 func TestDM37_ImportCountsNewAliases(t *testing.T) {
 	ctx := context.Background()
 	s, m := loadedService(t, true)
@@ -267,28 +268,29 @@ func TestDM37_ImportCountsNewAliases(t *testing.T) {
 	if _, err := s.Import(ctx, testBy, FormatSquid, strings.NewReader(probe("staff.", 30))); err != nil {
 		t.Fatal(err)
 	}
-	if d := details(); d["users"] != int64(30) || d["new_users"] != int64(0) || d["baseline"] != true || d["new_users_day"] != int64(0) {
+	if d := details(); d["users"] != int64(30) || d["new_users"] != int64(30) || d["baseline"] != true || d["new_users_day"] != int64(30) {
 		t.Fatalf("исходный состав: %v", d)
 	}
 	// 20 новых логинов и 10 известных.
 	if _, err := s.Import(ctx, testBy, FormatSquid, strings.NewReader(probe("probe.", 20)+probe("staff.", 10))); err != nil {
 		t.Fatal(err)
 	}
-	if d := details(); d["users"] != int64(30) || d["new_users"] != int64(20) || d["baseline"] != nil || d["new_users_day"] != int64(20) {
+	if d := details(); d["users"] != int64(30) || d["new_users"] != int64(20) || d["baseline"] != nil || d["new_users_day"] != int64(50) {
 		t.Fatalf("второй импорт: %v", d)
 	}
-	// Сумма за сутки — по субъекту: другой субъект её не продолжает.
 	if _, err := s.Import(ctx, testBy, FormatSquid, strings.NewReader(probe("more.", 5))); err != nil {
 		t.Fatal(err)
 	}
-	if d := details(); d["new_users"] != int64(5) || d["new_users_day"] != int64(25) {
+	if d := details(); d["new_users"] != int64(5) || d["new_users_day"] != int64(55) {
 		t.Fatalf("третий импорт: %v", d)
 	}
+	// Сумма за сутки — по организации: другой субъект (свой токен API) её
+	// продолжает.
 	other := By{Actor: audit.Actor{Type: audit.ActorUser, ID: "u-other"}}
 	if _, err := s.Import(ctx, other, FormatSquid, strings.NewReader(probe("other.", 3))); err != nil {
 		t.Fatal(err)
 	}
-	if d := details(); d["new_users"] != int64(3) || d["new_users_day"] != int64(3) {
+	if d := details(); d["new_users"] != int64(3) || d["new_users_day"] != int64(58) {
 		t.Fatalf("другой субъект: %v", d)
 	}
 	for _, r := range m.Records() {

@@ -298,8 +298,10 @@ func TestPGShadowAIRetention(t *testing.T) {
 }
 
 // 4В27: число разных и новых для организации псевдонимов импорта и сумма
-// новых от субъекта за сутки — в журнале импорта и в аудите shadow_ai.import;
-// первый импорт с пользователями — исходный состав. Логины синтетические.
+// новых в организации за сутки — в журнале импорта и в аудите
+// shadow_ai.import; первый импорт с пользователями — исходный состав, его
+// псевдонимы тоже новые (4В28), сумма — по организации (4Н28). Логины
+// синтетические.
 func TestPGShadowAIImportUsers(t *testing.T) {
 	e := setupPG(t)
 	ctx := pgTestCtx(t)
@@ -326,25 +328,32 @@ func TestPGShadowAIImportUsers(t *testing.T) {
 	if _, err := s.Import(ctx, testBy, FormatSquid, probe("staff.", 30)); err != nil {
 		t.Fatal(err)
 	}
-	if d := last(); d["users"] != float64(30) || d["new_users"] != float64(0) || d["baseline"] != true {
+	if d := last(); d["users"] != float64(30) || d["new_users"] != float64(30) || d["new_users_day"] != float64(30) || d["baseline"] != true {
 		t.Fatalf("исходный состав: %v", d)
 	}
 	if _, err := s.Import(ctx, testBy, FormatSquid, io.MultiReader(probe("probe.", 20), probe("staff.", 10))); err != nil {
 		t.Fatal(err)
 	}
-	if d := last(); d["users"] != float64(30) || d["new_users"] != float64(20) || d["new_users_day"] != float64(20) || d["baseline"] != nil {
+	if d := last(); d["users"] != float64(30) || d["new_users"] != float64(20) || d["new_users_day"] != float64(50) || d["baseline"] != nil {
 		t.Fatalf("второй импорт: %v", d)
 	}
 	if _, err := s.Import(ctx, testBy, FormatSquid, probe("more.", 5)); err != nil {
 		t.Fatal(err)
 	}
-	if d := last(); d["new_users"] != float64(5) || d["new_users_day"] != float64(25) {
+	if d := last(); d["new_users"] != float64(5) || d["new_users_day"] != float64(55) {
 		t.Fatalf("третий импорт: %v", d)
 	}
-	if n := e.count(t, `SELECT count(*) FROM shadow_ai_imports WHERE baseline AND users = 30 AND new_users = 0`); n != 1 {
+	other := By{Actor: audit.Actor{Type: audit.ActorUser, ID: "u-other"}}
+	if _, err := s.Import(ctx, other, FormatSquid, probe("other.", 3)); err != nil {
+		t.Fatal(err)
+	}
+	if d := last(); d["new_users"] != float64(3) || d["new_users_day"] != float64(58) {
+		t.Fatalf("другой субъект: %v", d)
+	}
+	if n := e.count(t, `SELECT count(*) FROM shadow_ai_imports WHERE baseline AND users = 30 AND new_users = 30`); n != 1 {
 		t.Fatalf("исходный состав в журнале импорта: %d", n)
 	}
-	if n := e.count(t, `SELECT sum(new_users) FROM shadow_ai_imports`); n != 25 {
+	if n := e.count(t, `SELECT sum(new_users) FROM shadow_ai_imports`); n != 58 {
 		t.Fatalf("новых в журнале импорта: %d", n)
 	}
 }

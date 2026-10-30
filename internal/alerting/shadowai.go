@@ -25,8 +25,9 @@ const (
 	// Правило безопасности: не отключается.
 	BuiltinShadowAliasProbe = "security.shadow_ai_alias_probe"
 	// ShadowAliasProbeThreshold — больше стольких новых для организации
-	// псевдонимов от одного субъекта за импорт или за сутки — перебор.
-	// Исходный состав (первый импорт с пользователями) не считается.
+	// псевдонимов за импорт или за сутки — перебор. Исходный состав (первый
+	// импорт с пользователями) тоже считается (4В28): пустые сводки бывают
+	// и после очистки по сроку.
 	ShadowAliasProbeThreshold = 500
 )
 
@@ -41,8 +42,9 @@ func shadowAIRules() []Rule {
 			SuppressMinutes: DefaultSuppressMinutes, Recipients: none},
 		{BuiltinKey: BuiltinShadowAliasProbe, Kind: KindSecurity, Name: "Перебор псевдонимов импортом журнала",
 			Description: "DM-37: импорт журнала прокси добавил больше " + strconv.Itoa(ShadowAliasProbeThreshold) +
-				" новых для организации псевдонимов пользователей от одного субъекта за импорт или за сутки — возможно " +
-				"сопоставление логинов с псевдонимами. Первый импорт с пользователями (исходный состав) не считается.",
+				" новых для организации псевдонимов пользователей за импорт или за сутки — возможно " +
+				"сопоставление логинов с псевдонимами. Первый импорт с пользователями (исходный состав) тоже считается: " +
+				"при подключении прокси оповещение ожидаемо.",
 			Enabled: true, Severity: "high", GroupBy: []string{"actor"}, Recipients: none},
 	}
 }
@@ -76,7 +78,8 @@ func shadowNewServiceRaise(r *audit.Record, d map[string]any) (Raise, bool) {
 }
 
 // shadowAliasProbeRaise — срабатывание по записи shadow_ai.import, если
-// новых псевдонимов за импорт или за сутки больше порога (4В27).
+// новых псевдонимов за импорт или за сутки больше порога (4В27). Исходный
+// состав не освобождается (4В28) — в подробностях помечен baseline.
 func shadowAliasProbeRaise(r *audit.Record, d map[string]any) (Raise, bool) {
 	if r.Result != audit.ResultSuccess {
 		return Raise{}, false
@@ -86,10 +89,11 @@ func shadowAliasProbeRaise(r *audit.Record, d map[string]any) (Raise, bool) {
 		return int64(v)
 	}
 	n, day := num("new_users"), num("new_users_day")
-	if base, _ := d["baseline"].(bool); base || max(n, day) <= ShadowAliasProbeThreshold {
+	if max(n, day) <= ShadowAliasProbeThreshold {
 		return Raise{}, false
 	}
+	base, _ := d["baseline"].(bool)
 	return raiseOf(BuiltinShadowAliasProbe, map[string]string{"actor": actorKey(r.Actor)},
 		map[string]string{"actor": actorName(r.Actor)}, 1,
-		map[string]any{"items": []any{item(r, map[string]any{"users": num("users"), "new_users": n, "new_users_day": day})}}), true
+		map[string]any{"items": []any{item(r, map[string]any{"users": num("users"), "new_users": n, "new_users_day": day, "baseline": base})}}), true
 }
