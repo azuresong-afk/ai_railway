@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"slices"
 	"time"
 
@@ -291,6 +292,20 @@ type License struct {
 	LoadedBy string    `json:"loaded_by"`
 }
 
+// ServiceDB — сохранённая служебная база (ADR-0028): подписанный файл
+// текущей или предыдущей версии вида и сведения о загрузке. Раздел
+// необязательный (остатки волны A этапа 5): копия выпуска до него
+// восстанавливается без баз. Сведения о версии при восстановлении берутся
+// из проверенного файла, а не из этих полей.
+type ServiceDB struct {
+	Kind       string    `json:"kind"`
+	Slot       string    `json:"slot"`
+	Version    uint64    `json:"version"`
+	File       []byte    `json:"file"`
+	UploadedAt time.Time `json:"uploaded_at"`
+	UploadedBy string    `json:"uploaded_by"`
+}
+
 // ComplianceMark — ручная отметка соответствия требованию.
 type ComplianceMark struct {
 	RequirementID string     `json:"requirement_id"`
@@ -316,9 +331,15 @@ const (
 	maxTools        = 100_000
 	maxExclusions   = 100_000
 	maxLicenses     = 1000
-	maxLicenseFile  = 16 << 10
-	maxMarks        = 10_000
-	maxBaseline     = 160 << 10
+	// maxServiceDBs — видов служебных баз по две версии; maxServiceDBFile —
+	// предел файла (CHECK миграции 0068).
+	maxServiceDBs    = 64
+	maxServiceDBFile = 4 << 20
+	// maxServiceDBVersion — предел номера версии (CHECK миграции 0068).
+	maxServiceDBVersion = 1<<53 - 1
+	maxLicenseFile      = 16 << 10
+	maxMarks            = 10_000
+	maxBaseline         = 160 << 10
 )
 
 // Виды секретов разделов версии 2 (входят в AAD шифротекста копии).
@@ -334,7 +355,8 @@ const (
 // hasV2 — в содержимом есть разделы версии 2.
 func (s *Snapshot) hasV2() bool {
 	if len(s.Channels)+len(s.AlertRules)+len(s.ReportSchedules)+len(s.ModelPrices)+len(s.Instructions)+
-		len(s.MCPServers)+len(s.Agents)+len(s.AgentTools)+len(s.ShadowAIExclusions)+len(s.Licenses)+len(s.ComplianceMarks) > 0 ||
+		len(s.MCPServers)+len(s.Agents)+len(s.AgentTools)+len(s.ShadowAIExclusions)+len(s.Licenses)+len(s.ComplianceMarks)+
+		len(s.ServiceDBs) > 0 ||
 		s.GatewayTLS != nil || s.OIDC != nil || s.LDAP != nil || s.LicenseClock != nil {
 		return true
 	}
@@ -369,7 +391,7 @@ func (s *Snapshot) validateV2() error {
 	case len(s.Channels) > maxChannels, len(s.AlertRules) > maxAlertRules, len(s.ReportSchedules) > maxSchedules,
 		len(s.ModelPrices) > maxPrices, len(s.Instructions) > maxInstructions, len(s.MCPServers) > maxMCPServers,
 		len(s.Agents) > maxAgents, len(s.AgentTools) > maxTools, len(s.ShadowAIExclusions) > maxExclusions,
-		len(s.Licenses) > maxLicenses, len(s.ComplianceMarks) > maxMarks:
+		len(s.Licenses) > maxLicenses, len(s.ComplianceMarks) > maxMarks, len(s.ServiceDBs) > maxServiceDBs:
 		return errors.New("объектов больше предела")
 	}
 	channels, cnames := ids{}, ids{}
@@ -521,6 +543,9 @@ func (s *Snapshot) validateV2() error {
 		if len(l.File) == 0 || len(l.File) > maxLicenseFile {
 			return fmt.Errorf("лицензия %d: неверная длина файла", l.Number)
 		}
+	}
+	if err := s.validateServiceDBs(); err != nil {
+		return err
 	}
 	marks := ids{}
 	for _, m := range s.ComplianceMarks {
@@ -792,6 +817,41 @@ func strictJSON(raw json.RawMessage, dst any) error {
 	}
 	if dec.More() {
 		return errors.New("данные после значения")
+	}
+	return nil
+}
+
+// serviceDBKindRe — вид служебной базы (CHECK миграции 0068).
+var serviceDBKindRe = regexp.MustCompile(`^[a-z0-9_]{1,64}$`)
+
+// validateServiceDBs — вид и слот без повторов, у вида с предыдущей
+// версией есть текущая и она старше, длина файла и отметки загрузки в
+// пределах схемы.
+func (s *Snapshot) validateServiceDBs() error {
+	slots := ids{}
+	cur := map[string]uint64{}
+	for _, b := range s.ServiceDBs {
+		if !serviceDBKindRe.MatchString(b.Kind) {
+			return fmt.Errorf("служебная база: неверный вид %q", truncate(b.Kind))
+		}
+		if b.Slot != "current" && b.Slot != "previous" {
+			return fmt.Errorf("служебная база %s: неверный слот %q", b.Kind, truncate(b.Slot))
+		}
+		if err := slots.add("служебная база", b.Kind+"|"+b.Slot); err != nil {
+			return err
+		}
+		if b.Version == 0 || b.Version > maxServiceDBVersion || len(b.File) == 0 || len(b.File) > maxServiceDBFile ||
+			b.UploadedBy == "" || len(b.UploadedBy) > 128 || b.UploadedAt.IsZero() {
+			return fmt.Errorf("служебная база %s (%s): неверная версия, файл или отметка загрузки", b.Kind, b.Slot)
+		}
+		if b.Slot == "current" {
+			cur[b.Kind] = b.Version
+		}
+	}
+	for _, b := range s.ServiceDBs {
+		if b.Slot == "previous" && (cur[b.Kind] == 0 || cur[b.Kind] <= b.Version) {
+			return fmt.Errorf("служебная база %s: предыдущая версия %d без текущей или не старше её", b.Kind, b.Version)
+		}
 	}
 	return nil
 }

@@ -94,6 +94,7 @@ func Read(ctx context.Context, tx pgx.Tx, box SecretOpener, keys *Keys, orgID st
 		{"исключения теневого ИИ", readShadowAIExclusions},
 		{"лицензия", readLicenses},
 		{"отметки соответствия", readComplianceMarks},
+		{"служебные базы", readServiceDBs},
 	}...)
 	for _, st := range steps {
 		if err := st.fn(ctx, tx, s); err != nil {
@@ -670,6 +671,26 @@ func (a *Archive) UserHMACKey() ([]byte, error) {
 	return a.keys.OpenSecret(a.Snapshot.UserHMACKey, secretUserHMACKey, userHMACKeyID)
 }
 
+// ChannelSecrets расшифровывает секреты канала копии (JSON секретов модуля
+// уведомлений) для проверки до записи в БД; nil — секретов нет.
+// Вызывающий затирает результат.
+func (a *Archive) ChannelSecrets(c NotifyChannel) ([]byte, error) {
+	if c.Secret == nil {
+		return nil, nil
+	}
+	return a.keys.OpenSecret(c.Secret, secretChannel, c.ID)
+}
+
+// GatewayTLSKey расшифровывает ключ сертификата шлюза копии (PKCS#8 PEM)
+// для проверки до записи в БД; nil — сертификата нет. Вызывающий затирает
+// результат.
+func (a *Archive) GatewayTLSKey() ([]byte, error) {
+	if a.Snapshot.GatewayTLS == nil {
+		return nil, nil
+	}
+	return a.keys.OpenSecret(a.Snapshot.GatewayTLS.Key, secretGatewayTLS, a.Snapshot.OrgID)
+}
+
 // SetUserHMACKey шифрует ключ псевдонимов ключом секретов копии.
 func (s *Snapshot) SetUserHMACKey(keys *Keys, key []byte) error {
 	sealed, err := keys.SealSecret(key, secretUserHMACKey, userHMACKeyID)
@@ -691,6 +712,11 @@ type RestoreOptions struct {
 	KeepAPITokens bool
 	// Now — время отзыва токенов.
 	Now time.Time
+	// VerifyServiceDB проверяет файл служебной базы вида kind по правилам
+	// ADR-0028 для сохранённых версий (подпись, заверение, отзыв,
+	// содержимое) и возвращает сведения из подписанного файла; nil —
+	// служебные базы не восстанавливаются (строка в отчёте).
+	VerifyServiceDB func(kind string, file []byte) (ServiceDBMeta, error)
 }
 
 // RestoreResult — что восстановлено не как в копии (строки отчёта).
@@ -712,6 +738,9 @@ type RestoreResult struct {
 	// SettingsSkipped — настройки этапов 3 и 4 в копии есть, но не
 	// перенесены: установка не пустая.
 	SettingsSkipped bool
+	// ServiceDBs — строки отчёта о служебных базах: восстановлена,
+	// пропущена (в установке версия не ниже) или не прошла проверку.
+	ServiceDBs []string
 }
 
 // agentsSchemaVersion — миграция, добавившая привязку ключей к агентам
@@ -775,6 +804,10 @@ func Restore(ctx context.Context, tx pgx.Tx, p *Prepared, opts RestoreOptions) (
 		{"исключения теневого ИИ", settings(func() error { return writeShadowAIExclusions(ctx, tx, s) })},
 		{"лицензия", settings(func() error { return writeLicenses(ctx, tx, s) })},
 		{"отметки соответствия", settings(func() error { return writeComplianceMarks(ctx, tx, s) })},
+		{"служебные базы", func() (err error) {
+			res.ServiceDBs, err = writeServiceDBs(ctx, tx, s, opts.VerifyServiceDB)
+			return err
+		}},
 	}
 	for _, st := range steps {
 		if err := st.fn(); err != nil {

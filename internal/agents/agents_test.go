@@ -672,3 +672,40 @@ func TestDM25_ServerEndpointChangeRevokesApprovals(t *testing.T) {
 		t.Fatalf("HTTP://: %v", err)
 	}
 }
+
+// Сохранённый MCP-сервер проверяется правилами API (остаток 5.8, остатки
+// волны A этапа 5): адрес http:// — только с признаком insecure_http,
+// slug, узел по правилу адресов, корневые сертификаты.
+func TestCheckStoredServer(t *testing.T) {
+	e := newEnv(t)
+	tlsp := e.svc.tls
+	ok := ServerInput{Name: "Файлы", URL: "https://files.example.ru/mcp", CAPEM: e.caPEM, AuthHeader: "X-Api-Key",
+		Versions: []string{MCP20251125, MCP20260728}}
+	if err := CheckStoredServer(tlsp, nil, "files", ok, false); err != nil {
+		t.Fatal(err)
+	}
+	plain := ok
+	plain.URL = "http://files.example.ru/mcp"
+	if err := CheckStoredServer(tlsp, nil, "files", plain, true); err != nil {
+		t.Fatalf("http:// с insecure_http: %v", err)
+	}
+	for _, tc := range []struct {
+		name, slug, field string
+		change            func(in *ServerInput)
+	}{
+		{"http:// без insecure_http", "files", "url", func(in *ServerInput) { in.URL = plain.URL }},
+		{"slug function", "function", "slug", func(*ServerInput) {}},
+		{"loopback", "files", "url — адрес запрещён", func(in *ServerInput) { in.URL = "https://127.0.0.1/mcp" }},
+		{"заголовок транспорта", "files", "auth_header", func(in *ServerInput) { in.AuthHeader = "Cookie" }},
+		{"неверный корень", "files", "ca_pem", func(in *ServerInput) { in.CAPEM = "CA-PEM" }},
+		{"неизвестная версия", "files", "versions", func(in *ServerInput) { in.Versions = []string{"2024-11-05"} }},
+	} {
+		in := ok
+		tc.change(&in)
+		err := CheckStoredServer(tlsp, nil, tc.slug, in, false)
+		var ie *InputError
+		if !errors.As(err, &ie) || !strings.Contains(err.Error(), tc.field) {
+			t.Errorf("%s: %v", tc.name, err)
+		}
+	}
+}

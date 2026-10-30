@@ -64,6 +64,10 @@ type Snapshot struct {
 	// LicenseClock — отметка часов лицензии (license_clock.high_water).
 	LicenseClock    *time.Time       `json:"license_clock,omitempty"`
 	ComplianceMarks []ComplianceMark `json:"compliance_marks,omitempty"`
+	// ServiceDBs — служебные базы, текущая и предыдущая версия каждого вида
+	// (остатки волны A этапа 5, ADR-0017, дополнение). Раздел
+	// необязательный, формат остаётся версии 2.
+	ServiceDBs []ServiceDB `json:"service_dbs,omitempty"`
 }
 
 // Settings — настройки организации и установки. nil — строки нет, действуют
@@ -656,7 +660,7 @@ func (s *Snapshot) Counts() map[string]any {
 		"gateway_tls": s.GatewayTLS != nil, "oidc": s.OIDC != nil, "ldap": s.LDAP != nil,
 		"mcp_servers": len(s.MCPServers), "agents": len(s.Agents), "agent_tools": len(s.AgentTools),
 		"shadow_ai_exclusions": len(s.ShadowAIExclusions), "licenses": len(s.Licenses),
-		"compliance_marks": len(s.ComplianceMarks),
+		"compliance_marks": len(s.ComplianceMarks), "service_dbs": len(s.ServiceDBs),
 	}
 }
 
