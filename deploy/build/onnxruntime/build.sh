@@ -105,9 +105,17 @@ lib=$build/libonnxruntime.so.1.31.0
 strip --strip-unneeded -o "$work/libonnxruntime.so.1.31.0" "$lib"
 lib=$work/libonnxruntime.so.1.31.0
 
-# Телеметрии и HTTP-клиента в библиотеке быть не должно (ADR-0024).
-for s in mobile.events.data.microsoft.com libcurl mbedtls 'Microsoft.ML.ONNXRuntime.Telemetry'; do
-	! grep -aqF "$s" "$lib" || die "в библиотеке найдено «$s»: сборка с телеметрией"
+# Телеметрии и HTTP-клиента в библиотеке быть не должно (ADR-0024). Строки
+# — без учёта регистра (ревью 4.r3): адрес сборщика, клиент 1DS OneCollector,
+# HTTP и TLS, локальная очередь событий на sqlite.
+for s in events.data.microsoft.com OneCollector libcurl mbedtls sqlite 'Microsoft.ML.ONNXRuntime.Telemetry'; do
+	! grep -aqiF "$s" "$lib" || die "в библиотеке найдено «$s»: сборка с телеметрией"
+done
+# Сетевых вызовов библиотека не импортирует: неопределённые socket, connect
+# и getaddrinfo означали бы сетевой клиент внутри ONNX Runtime.
+undef=$(nm -D --undefined-only "$lib" | awk '{print $NF}' | sed 's/@.*//')
+for f in socket connect getaddrinfo; do
+	! grep -qx "$f" <<<"$undef" || die "библиотека импортирует $f: сетевой клиент в сборке"
 done
 # Динамические зависимости — только системные библиотеки (ADR-0024).
 needed=$(readelf -d "$lib" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p' | sort | tr '\n' ' ')

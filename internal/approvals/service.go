@@ -295,7 +295,8 @@ type DecideInput struct {
 // Decide закрывает ожидающий запрос решением пользователя консоли с записью
 // аудита agent.approval.approve или agent.approval.deny. После срока —
 // ErrExpired (запрос закрывается как timeout), закрытый — ErrClosed.
-// Одобрение вызова с риском critical — после повторной проверки.
+// Одобрение вызова с риском critical и любое одобрение из сессии без
+// второго фактора — после повторной проверки (4В37).
 func (s *Service) Decide(ctx context.Context, by By, id string, in DecideInput) (Request, error) {
 	if by.Actor.Type != audit.ActorUser || by.Actor.ID == "" {
 		return Request{}, ErrHumanRequired
@@ -310,7 +311,7 @@ func (s *Service) Decide(ctx context.Context, by By, id string, in DecideInput) 
 	if in.Approve && in.ArgsHash != cur.ArgsHash {
 		return Request{}, ErrStale
 	}
-	if in.Approve && cur.Risk == policy.RiskCritical && cur.State == Pending {
+	if in.Approve && (cur.Risk == policy.RiskCritical || by.NoMFA) && cur.State == Pending {
 		if by.Confirm == nil {
 			return Request{}, ErrConfirmRequired
 		}

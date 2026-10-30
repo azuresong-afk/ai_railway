@@ -121,7 +121,8 @@ func run(ctx context.Context, cfg *config, d deps) error {
 		}
 		models = append(models, mdl)
 	}
-	srv, err := ml.NewServer(ml.ServerConfig{Models: models, MaxConns: cfg.MaxConns, Workers: cfg.Workers, QueueWait: cfg.QueueWait, Logger: d.logger})
+	srv, err := ml.NewServer(ml.ServerConfig{Models: models, MaxConns: cfg.MaxConns, Workers: cfg.Workers, QueueWait: cfg.QueueWait,
+		RunTimeout: cfg.RunTimeout, MaxRunTimeout: cfg.MaxRunTimeout, Logger: d.logger})
 	if err != nil {
 		return err
 	}

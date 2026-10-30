@@ -23,7 +23,15 @@ var (
 	// ErrMarkNotAllowed — для пункта допустима только отметка «не применимо»:
 	// его статус вычисляют проверки.
 	ErrMarkNotAllowed = errors.New("соответствие: статус пункта вычисляют проверки")
+	// ErrConfirmRequired — «не применимо» для пункта с проверками снимает
+	// невыполненные проверки (ослабление, DM-40): только в сессии консоли с
+	// повторной проверкой (4В36).
+	ErrConfirmRequired = errors.New("соответствие: «не применимо» для пункта с проверками — только с повторной проверкой")
 )
+
+// weakeningNotApplicable — причина ослабления в аудите: пункт с
+// автоматическими проверками исключён отметкой «не применимо».
+const weakeningNotApplicable = "compliance_not_applicable"
 
 // Пределы ручной отметки.
 const (
@@ -92,6 +100,9 @@ type Options struct {
 type By struct {
 	Actor audit.Actor
 	IP    netip.Addr
+	// Confirm — повторная проверка субъекта (пароль или код) перед
+	// ослаблением; nil — не из сессии консоли (токен API).
+	Confirm func(context.Context) error
 }
 
 func (b By) ref() string {
@@ -116,10 +127,19 @@ type Service struct {
 	signed *SignedBase
 	stored StoredBase
 
-	snapMu   sync.Mutex
-	snap     *Snapshot
-	snapAt   time.Time
-	snapWait sync.Mutex
+	snapMu sync.Mutex
+	snap   *Snapshot
+	snapAt time.Time
+	// collecting — идущий сбор снимка: остальные вызовы ждут его, а не
+	// начинают свой (4В35).
+	collecting *snapCall
+}
+
+// snapCall — сбор снимка: результат готов после закрытия done.
+type snapCall struct {
+	done chan struct{}
+	sn   *Snapshot
+	err  error
 }
 
 // New создаёт сервис.
@@ -201,29 +221,49 @@ func (s *Service) current(ctx context.Context) (*Base, *SignedBase, StoredBase, 
 
 // snapshot возвращает снимок сведений; повторные запросы в пределах
 // snapshotTTL используют один и тот же (сбор обращается ко многим сервисам).
+// Сбор идёт в своей горутине с контекстом без отмены вызвавшего (4В35):
+// ушедший клиент не портит снимок остальным, а каждый ожидающий
+// возвращается по своей отмене сразу.
 func (s *Service) snapshot(ctx context.Context) (*Snapshot, error) {
-	s.snapWait.Lock()
-	defer s.snapWait.Unlock()
 	s.snapMu.Lock()
 	if s.snap != nil && s.now().Sub(s.snapAt) < snapshotTTL {
 		sn := s.snap
 		s.snapMu.Unlock()
 		return sn, nil
 	}
+	c := s.collecting
+	if c == nil {
+		c = &snapCall{done: make(chan struct{})}
+		s.collecting = c
+		go s.collect(context.WithoutCancel(ctx), c)
+	}
 	s.snapMu.Unlock()
+	select {
+	case <-c.done:
+		return c.sn, c.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// collect собирает снимок для c. Снимок с недоступными группами не
+// кешируется: сбой источника не должен на snapshotTTL показывать «не
+// выполнено» всем (4В35).
+func (s *Service) collect(ctx context.Context, c *snapCall) {
 	cctx, cancel := context.WithTimeout(ctx, snapshotTimeout)
 	defer cancel()
 	sn, err := s.o.Facts.Snapshot(cctx)
-	if err != nil {
-		return nil, err
-	}
-	if sn.Now.IsZero() {
+	if err == nil && sn.Now.IsZero() {
 		sn.Now = s.now()
 	}
 	s.snapMu.Lock()
-	s.snap, s.snapAt = sn, s.now()
+	if err == nil && len(sn.Unavailable) == 0 {
+		s.snap, s.snapAt = sn, s.now()
+	}
+	s.collecting = nil
 	s.snapMu.Unlock()
-	return sn, nil
+	c.sn, c.err = sn, err
+	close(c.done)
 }
 
 // BaseInfo — сведения о действующей базе.
@@ -398,6 +438,21 @@ func (s *Service) SetMark(ctx context.Context, by By, id string, in MarkInput) (
 	if len(r.Checks) > 0 && !r.Manual && in.Status != StatusNotApplicable {
 		return Item{}, ErrMarkNotAllowed
 	}
+	// «Не применимо» у пункта с автоматическими проверками убирает их из
+	// процента: ослабление (DM-40) — со сроком пересмотра и повторной
+	// проверкой, как исключения теневого ИИ (4В36).
+	weakening := len(r.Checks) > 0 && in.Status == StatusNotApplicable
+	if weakening {
+		if in.ReviewBy == "" {
+			return Item{}, &InputError{Fields: map[string]string{"review_by": "Для пункта с автоматическими проверками «не применимо» — только со сроком пересмотра."}}
+		}
+		if by.Confirm == nil {
+			return Item{}, ErrConfirmRequired
+		}
+		if err := by.Confirm(ctx); err != nil {
+			return Item{}, err
+		}
+	}
 	m := Mark{RequirementID: id, Status: in.Status, Comment: in.Comment, Document: in.Document, ReviewBy: in.ReviewBy,
 		SetAt: now, SetBy: by.ref()}
 	err = s.o.Store.SetMark(ctx, s.o.OrgID, m, func(prev *Mark) audit.Entry {
@@ -405,6 +460,9 @@ func (s *Service) SetMark(ctx context.Context, by By, id string, in MarkInput) (
 			"document": m.Document}
 		if prev != nil {
 			d["previous_status"] = string(prev.Status)
+		}
+		if weakening {
+			d["weakening"], d["weakening_reasons"] = true, []string{weakeningNotApplicable}
 		}
 		return by.entry("compliance.mark_set", reqObject(id), audit.ResultSuccess, d)
 	})

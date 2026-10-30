@@ -6,6 +6,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 )
 
 func env(m map[string]string) func(string) string {
@@ -55,6 +56,23 @@ func TestLoadGatewayMLSocket(t *testing.T) {
 	for _, bad := range []string{"aisec-ml.sock", "/run/../aisec-ml.sock", "/run/" + strings.Repeat("a", 100)} {
 		if _, err := LoadGateway(append(append([]string{}, required...), "-ml-socket", bad), env(nil), io.Discard); err == nil {
 			t.Errorf("%q: принято", bad)
+		}
+	}
+}
+
+// Сроки вызова aisec-ml (4В30): по умолчанию, из окружения, границы.
+func TestLoadGatewayMLTimeout(t *testing.T) {
+	cfg, err := LoadGateway(required, env(nil), io.Discard)
+	if err != nil || cfg.MLTimeout != DefaultMLTimeout || cfg.MLTimePerWindow != DefaultMLTimePerWindow {
+		t.Fatalf("по умолчанию: %+v %v", cfg, err)
+	}
+	cfg, err = LoadGateway(required, env(map[string]string{"AISEC_GATEWAY_ML_TIMEOUT": "150ms", "AISEC_GATEWAY_ML_TIMEOUT_PER_WINDOW": "0s"}), io.Discard)
+	if err != nil || cfg.MLTimeout != 150*time.Millisecond || cfg.MLTimePerWindow != 0 {
+		t.Fatalf("из окружения: %+v %v", cfg, err)
+	}
+	for _, bad := range [][]string{{"-ml-timeout", "1ms"}, {"-ml-timeout", "1m"}, {"-ml-timeout-per-window", "-1ms"}, {"-ml-timeout-per-window", "2s"}} {
+		if _, err := LoadGateway(append(append([]string{}, required...), bad...), env(nil), io.Discard); err == nil {
+			t.Errorf("%v: принято", bad)
 		}
 	}
 }

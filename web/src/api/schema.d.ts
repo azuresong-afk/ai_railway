@@ -357,7 +357,13 @@ export interface paths {
         get: {
             parameters: {
                 query?: never;
-                header?: never;
+                header?: {
+                    /**
+                     * @description `1` — фоновый опрос консоли по таймеру (УПД.10): запрос сессии не считается действием пользователя и не
+                     *     продлевает её по бездействию. Принимается только у `GET`; у изменяющих запросов не действует.
+                     */
+                    "X-AISec-Background"?: components["parameters"]["Background"];
+                };
                 path?: never;
                 cookie?: never;
             };
@@ -8086,8 +8092,9 @@ export interface paths {
          *     поясе установки. Отчёт за предыдущие полные сутки, неделю (понедельник–воскресенье) или
          *     календарный месяц; во вложении HTML или XLSX. Получатели и сервер SMTP — почтовый канал
          *     уведомлений (`channel_id`, включённый, с получателями). Пропущенный после простоя запуск
-         *     отправляется один раз. Не больше 50 расписаний — иначе 422; повтор названия — 400. Пишет
-         *     `report_schedule.create`.
+         *     отправляется один раз. Не больше 50 расписаний — иначе 422; повтор названия — 400. Расписание
+         *     отчёта `compliance` — изменение модуля «Соответствие»: без модуля в лицензии или после льготного
+         *     периода — 403 `license_module` или `license_restricted` (ADR-0026). Пишет `report_schedule.create`.
          */
         post: {
             parameters: {
@@ -8177,7 +8184,8 @@ export interface paths {
         /**
          * Изменить расписание рассылки отчёта
          * @description Право `reports.schedules.manage`. Полная замена настроек; `version` — версия, которую открыли
-         *     для изменения (устаревшая — 409). Ближайший запуск пересчитывается от текущего момента. Пишет
+         *     для изменения (устаревшая — 409). Ближайший запуск пересчитывается от текущего момента. Перевод
+         *     на отчёт `compliance` — как при создании: без модуля «Соответствие» в лицензии — 403. Пишет
          *     `report_schedule.update` (до и после).
          */
         put: {
@@ -9284,7 +9292,13 @@ export interface paths {
                     /** @description Slug агента */
                     agent?: string;
                 };
-                header?: never;
+                header?: {
+                    /**
+                     * @description `1` — фоновый опрос консоли по таймеру (УПД.10): запрос сессии не считается действием пользователя и не
+                     *     продлевает её по бездействию. Принимается только у `GET`; у изменяющих запросов не действует.
+                     */
+                    "X-AISec-Background"?: components["parameters"]["Background"];
+                };
                 path?: never;
                 cookie?: never;
             };
@@ -9325,7 +9339,9 @@ export interface paths {
         /**
          * Запрос подтверждения
          * @description Право `approvals.read`. Маскированные шлюзом аргументы вызова (ПДн и секреты заменены категорией, до
-         *     16 КиБ) — в поле `args` только у пользователя с `approvals.decide` и только 30 суток после закрытия.
+         *     16 КиБ) — в поле `args` только у пользователя с `approvals.decide`; у закрытого запроса — только при
+         *     праве `events.content.read` и только 30 суток после закрытия. Каждый показ аргументов пишет
+         *     `agent.approval.args_read`; если запись не удалась — 503, аргументы не выдаются.
          *     Аргументы пришли от модели или агента и показываются только как текст.
          */
         get: {
@@ -9376,10 +9392,13 @@ export interface paths {
         put?: never;
         /**
          * Одобрить вызов
-         * @description Право `approvals.decide` (признак `security`: не выдаётся администратору системы и токенам API —
-         *     подтверждает человек). `args_hash` — хеш аргументов показанного запроса (не совпал — 409). Вызов с
-         *     риском `critical` одобряется с текущим паролем или кодом TOTP (иначе 403). После срока — 409, запрос
-         *     уже закрыт как `timeout`. Шлюз передаёт дальше ровно проверенные аргументы. Пишет `agent.approval.approve`.
+         * @description Право `approvals.decide`: встроенные роли «Администратор безопасности» и «Аналитик» (дежурный, ADR-0023,
+         *     раздел 5) и свои роли, которым его выдал администратор безопасности. Право функции безопасности: не
+         *     выдаётся администратору системы, аудитору и токенам API — решение принимает человек в сессии консоли.
+         *     `args_hash` — хеш аргументов показанного запроса (не совпал — 409). Вызов с риском `critical` и любой
+         *     вызов из сессии без принятого второго фактора одобряются с текущим паролем или кодом TOTP (нет — 400 с
+         *     полем `password`, неверный — 403). После срока — 409, запрос уже закрыт как `timeout`. Шлюз передаёт
+         *     дальше ровно проверенные аргументы. Пишет `agent.approval.approve`.
          */
         post: {
             parameters: {
@@ -9438,7 +9457,7 @@ export interface paths {
         put?: never;
         /**
          * Отклонить вызов
-         * @description Право `approvals.decide`. Комментарий виден в событии вызова, агенту не передаётся: агент получает
+         * @description Право `approvals.decide` (кому выдаётся — см. одобрение вызова). Комментарий виден в событии вызова, агенту не передаётся: агент получает
          *     сообщение правила или «Вызов отклонён». После срока или повторное решение — 409. Пишет `agent.approval.deny`.
          */
         post: {
@@ -9789,8 +9808,9 @@ export interface paths {
          *     500 тыс. сочетаний сервиса, пользователя и часа, 10 минут. Сопоставление с каталогом — по точному имени
          *     и суффиксу домена (DM-37). В БД — только сводки по сервису, псевдониму пользователя и часу; сырые
          *     строки и URL не хранятся. Записи старше срока хранения не сохраняются (`outdated`). Повтор того же
-         *     файла — 409; каталог не загружен — 409; уже идёт импорт — 429 с `Retry-After`. Пишет
-         *     `shadow_ai.import` (счётчики, хеш, версия каталога).
+         *     файла — 409; каталог не загружен — 409; уже идёт импорт — 429 с `Retry-After`; сводок организации
+         *     стало бы больше 5 млн строк — 507 `insufficient_storage` (сократите срок хранения или добавьте
+         *     исключения). Пишет `shadow_ai.import` (счётчики, хеш, версия каталога).
          */
         post: {
             parameters: {
@@ -9833,6 +9853,7 @@ export interface paths {
                 429: components["responses"]["RateLimited"];
                 500: components["responses"]["ProblemInternal"];
                 503: components["responses"]["Unavailable"];
+                507: components["responses"]["ProblemInsufficientStorage"];
             };
         };
         delete?: never;
@@ -10088,7 +10109,13 @@ export interface paths {
         get: {
             parameters: {
                 query?: never;
-                header?: never;
+                header?: {
+                    /**
+                     * @description `1` — фоновый опрос консоли по таймеру (УПД.10): запрос сессии не считается действием пользователя и не
+                     *     продлевает её по бездействию. Принимается только у `GET`; у изменяющих запросов не действует.
+                     */
+                    "X-AISec-Background"?: components["parameters"]["Background"];
+                };
                 path?: never;
                 cookie?: never;
             };
@@ -10236,9 +10263,12 @@ export interface paths {
          * Поставить ручную отметку
          * @description Право `compliance.mark` (администратор безопасности; токену API не выдаётся). Статус, комментарий (обязателен),
          *     ссылка на документ-основание и срок пересмотра. После срока пересмотра отметка не засчитывается. У пункта,
-         *     статус которого вычисляют только проверки, допустима лишь отметка `not_applicable`; иначе 422. Пишет
-         *     `compliance.mark_set` (статус, прежний статус, срок, комментарий). После льготного периода лицензии модуль
-         *     закрыт для изменений (ADR-0026).
+         *     статус которого вычисляют только проверки, допустима лишь отметка `not_applicable`; иначе 422. Отметка
+         *     `not_applicable` у пункта с автоматическими проверками снимает их с процента — это ослабление (DM-40, 4В36):
+         *     срок пересмотра обязателен, нужна повторная проверка (`password` или `code`; без неё — 400 с полем
+         *     `password` или `code`, вне сессии консоли — 403), в аудите `weakening: true`. Пишет `compliance.mark_set`
+         *     (статус, прежний статус, срок, комментарий). После льготного периода лицензии модуль закрыт для изменений
+         *     (ADR-0026).
          */
         put: {
             parameters: {
@@ -10432,7 +10462,13 @@ export interface paths {
         get: {
             parameters: {
                 query?: never;
-                header?: never;
+                header?: {
+                    /**
+                     * @description `1` — фоновый опрос консоли по таймеру (УПД.10): запрос сессии не считается действием пользователя и не
+                     *     продлевает её по бездействию. Принимается только у `GET`; у изменяющих запросов не действует.
+                     */
+                    "X-AISec-Background"?: components["parameters"]["Background"];
+                };
                 path?: never;
                 cookie?: never;
             };
@@ -12067,7 +12103,7 @@ export interface components {
             status: number;
             detail: string;
             /** @enum {string} */
-            code: "invalid_request" | "unauthorized" | "forbidden" | "not_found" | "method_not_allowed" | "conflict" | "payload_too_large" | "unsupported_media_type" | "unprocessable" | "rate_limited" | "internal_error" | "service_unavailable" | "reauthentication_failed" | "bundle_key_mismatch" | "reissue_not_needed" | "self_review" | "approval_queue_full" | "license_restricted" | "license_module" | "license_limit";
+            code: "invalid_request" | "unauthorized" | "forbidden" | "not_found" | "method_not_allowed" | "conflict" | "payload_too_large" | "unsupported_media_type" | "unprocessable" | "rate_limited" | "internal_error" | "service_unavailable" | "reauthentication_failed" | "bundle_key_mismatch" | "reissue_not_needed" | "self_review" | "approval_queue_full" | "license_restricted" | "license_module" | "license_limit" | "insufficient_storage";
             errors?: {
                 field: string;
                 detail: string;
@@ -13126,9 +13162,16 @@ export interface components {
             document?: string;
             /**
              * Format: date
-             * @description Срок пересмотра: не в прошлом и не дальше трёх лет
+             * @description Срок пересмотра: не в прошлом и не дальше трёх лет; для not_applicable у пункта с проверками — обязателен
              */
             review_by?: string;
+            /**
+             * Format: password
+             * @description Текущий пароль (повторная проверка для not_applicable у пункта с проверками, ровно одно из password и code)
+             */
+            password?: string;
+            /** @description Код из приложения-аутентификатора, если второй фактор подключён */
+            code?: string;
         };
         ComplianceItem: {
             id: string;
@@ -14185,6 +14228,15 @@ export interface components {
                 "application/problem+json": components["schemas"]["Problem"];
             };
         };
+        /** @description Достигнут предел хранимых данных (`insufficient_storage`) */
+        ProblemInsufficientStorage: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/problem+json": components["schemas"]["Problem"];
+            };
+        };
         /** @description Действие недопустимо (`unprocessable`) */
         ProblemUnprocessable: {
             headers: {
@@ -14248,6 +14300,11 @@ export interface components {
         Limit: number;
         /** @description Непрозрачный курсор из `next_cursor` предыдущей страницы */
         Cursor: string;
+        /**
+         * @description `1` — фоновый опрос консоли по таймеру (УПД.10): запрос сессии не считается действием пользователя и не
+         *     продлевает её по бездействию. Принимается только у `GET`; у изменяющих запросов не действует.
+         */
+        Background: "1";
         /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
         CSRFToken: string;
         /** @description ID учётной записи (UUID) */

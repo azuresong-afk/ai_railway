@@ -1,8 +1,9 @@
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { RefreshCw, ShieldCheck } from "lucide-react";
 import type { ReactNode } from "react";
 import { ErrorBanner } from "../admin/common";
 import type { Me } from "../api/client";
+import { isRefetch } from "../api/poll";
 import { formatAbsolute, formatNumber } from "../events/format";
 import { Button } from "../ui/Button";
 import { Banner, Panel, Table, Td, Th } from "../ui/Layout";
@@ -46,9 +47,10 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
 
 // Экран «Состояние системы» (ТЗ 6.3, п. 13): GET /system/status, проверка целостности по кнопке.
 export function SystemScreen({ me }: { me: Me }) {
+  const qc = useQueryClient();
   const q = useQuery({
     queryKey: ["system", "status"],
-    queryFn: ({ signal }) => systemApi.status(signal),
+    queryFn: ({ signal, queryKey }) => systemApi.status(signal, isRefetch(qc, queryKey)),
     refetchInterval: 30_000,
   });
   const canVerify = me.permissions.includes("integrity.verify");

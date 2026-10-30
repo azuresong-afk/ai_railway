@@ -529,8 +529,10 @@ func cefKeyByte(c byte) bool {
 
 // cefPairs разбирает «ключ=значение ключ=значение»: значение может
 // содержать пробелы и тянется до следующего «пробел ключ=» (знак «=» в
-// значении экранируется как «\=», неэкранированный — буквальный). Ключи — до maxCEFPairs, повтор ключа —
-// ошибка.
+// значении экранируется как «\=», неэкранированный — буквальный). Ключи — до maxCEFPairs. Повтор ключа —
+// часть значения предыдущего ключа (4Н31 ревью 4.r3): источник без
+// экранирования «=» в значении вида «x dhost=ya.ru» не подставляет чужой
+// узел и не теряет строку.
 func cefPairs(ext []byte) (map[string]string, bool) {
 	// Начала ключей: позиции после пробела (или начало), с которых идёт
 	// ключ и неэкранированный «=».
@@ -556,21 +558,33 @@ func cefPairs(ext []byte) (map[string]string, bool) {
 	if len(bytes.TrimSpace(ext)) > 0 && (len(starts) == 0 || len(bytes.TrimSpace(ext[:starts[0].k])) > 0) {
 		return nil, false // текст до первого ключа
 	}
-	m := make(map[string]string, len(starts))
+	type pair struct {
+		key    string
+		v, end int
+	}
+	pairs := make([]pair, 0, len(starts))
+	seen := make(map[string]bool, len(starts))
 	for n, s := range starts {
 		end := len(ext)
 		if n+1 < len(starts) {
 			end = starts[n+1].k
 		}
 		key := string(ext[s.k : s.v-1])
-		if _, dup := m[key]; dup {
-			return nil, false
+		if seen[key] {
+			// Значения идут подряд: хвост вклеивается в предыдущее как есть.
+			pairs[len(pairs)-1].end = end
+			continue
 		}
-		v, ok := cefUnescape(bytes.TrimRight(ext[s.v:end], " "))
+		seen[key] = true
+		pairs = append(pairs, pair{key: key, v: s.v, end: end})
+	}
+	m := make(map[string]string, len(pairs))
+	for _, p := range pairs {
+		v, ok := cefUnescape(bytes.TrimRight(ext[p.v:p.end], " "))
 		if !ok {
 			return nil, false
 		}
-		m[key] = v
+		m[p.key] = v
 	}
 	return m, true
 }

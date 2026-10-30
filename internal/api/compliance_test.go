@@ -131,7 +131,28 @@ func TestComplianceViaAPI(t *testing.T) {
 	mustProblem(t, e.call(admin, "PUT", markURL, `{"status":"met","comment":"x","review_by":"2020-01-01"}`, true), 400, CodeInvalidRequest)
 	mustProblem(t, e.call(admin, "PUT", "/api/v1/compliance/requirements/nope/mark", body, true), 404, CodeNotFound)
 	// Статус пункта с проверками вычисляют проверки.
-	mustProblem(t, e.call(admin, "PUT", "/api/v1/compliance/requirements/f117.p60.access/mark", body, true), 422, CodeUnprocessable)
+	const autoURL = "/api/v1/compliance/requirements/f117.p60.access/mark"
+	mustProblem(t, e.call(admin, "PUT", autoURL, body, true), 422, CodeUnprocessable)
+	// 4В36: «не применимо» у пункта с проверками — ослабление: срок
+	// пересмотра обязателен, без пароля — 400 с полем password, с неверным —
+	// отказ; с паролем — отметка с weakening в аудите.
+	na := `{"status":"not_applicable","comment":"Доступ к ПДн закрыт договором","review_by":"2027-06-30"`
+	mustProblem(t, e.call(admin, "PUT", autoURL, `{"status":"not_applicable","comment":"Доступ закрыт"}`, true), 400, CodeInvalidRequest)
+	if w := e.call(admin, "PUT", autoURL, na+`}`, true); w.Code != 400 || !strings.Contains(w.Body.String(), `"field":"password"`) {
+		t.Fatalf("без пароля: %d %s", w.Code, w.Body)
+	}
+	if w := e.call(admin, "PUT", autoURL, na+`,"password":"неверный пароль"}`, true); w.Code == 200 {
+		t.Fatalf("неверный пароль: %d %s", w.Code, w.Body)
+	}
+	if w := e.call(admin, "PUT", autoURL, na+`,"password":"`+tPhrase+`"}`, true); w.Code != 200 {
+		t.Fatalf("«не применимо» с паролем: %d %s", w.Code, w.Body)
+	}
+	if rec, _ := lastComplianceRecord(e, "compliance.mark_set"); rec.Details.(map[string]any)["weakening"] != true {
+		t.Fatalf("аудит без weakening: %+v", rec.Details)
+	}
+	if w := e.call(admin, "DELETE", autoURL, "", true); w.Code != 200 {
+		t.Fatalf("снятие: %d %s", w.Code, w.Body)
+	}
 	w = e.call(admin, "PUT", markURL, `{"status":"met","comment":"Регламент утверждён приказом № 5","document":"СТО-ИБ-12","review_by":"2027-06-30"}`, true)
 	if it := decode[compliance.Item](t, w.Body.Bytes()); w.Code != 200 || it.Status != compliance.StatusMet || it.Mark == nil {
 		t.Fatalf("отметка: %d %s", w.Code, w.Body)

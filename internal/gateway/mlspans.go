@@ -16,9 +16,11 @@ import (
 // длины текста.
 const maxWordExpand = 64
 
-// wordRune — символ слова: буква, цифра или диакритический знак.
+// wordRune — символ слова: буква, цифра, диакритический знак или знак
+// форматирования (Cf: мягкий перенос U+00AD токенизатор выбрасывает, и
+// модель видит «Ива\u00adнову» одним словом — 4Н34 ревью 4.r4).
 func wordRune(r rune) bool {
-	return unicode.IsLetter(r) || unicode.IsDigit(r) || unicode.Is(unicode.Mn, r)
+	return unicode.IsLetter(r) || unicode.IsDigit(r) || unicode.Is(unicode.Mn, r) || unicode.Is(unicode.Cf, r)
 }
 
 // expandWords — границы [start, end) фрагмента text, расширенные до целых

@@ -87,8 +87,11 @@ type MCPConfig struct {
 type MCPHandler struct {
 	cfg MCPConfig
 	h   *ChatHandler
-	// seen — описания из последнего tools/list по серверу: хеш и
-	// заголовки Mcp-Param-* (живут до смены пакета).
+	// seen — описания из последнего tools/list по приложению и серверу:
+	// хеш, заголовки Mcp-Param-* и итог проверки правилами этого
+	// приложения (живут до смены пакета). Ключ — seenKey: итог проверки у
+	// приложений свой (правила, fail_open), общий кэш давал бы одному
+	// приложению решение другого (ревью 4.r1, остаток для G3).
 	mu   sync.Mutex
 	seen map[string]map[string]*seenTool
 }
@@ -101,7 +104,13 @@ type seenTool struct {
 	// unchecked — проверка описания не выполнена (сбой детектора в
 	// fail_closed): инструмент скрыт и не вызывается, но не отравлен.
 	unchecked bool
+	// blocked — правило политики приложения с block по находке в
+	// описании (enforce): инструмент скрыт и не вызывается.
+	blocked bool
 }
+
+// seenKey — ключ кэша описаний: приложение и сервер.
+func seenKey(app, server string) string { return app + "\x00" + server }
 
 // maxSeenTools — запомненных описаний на сервер (несколько страниц).
 const maxSeenTools = 1024

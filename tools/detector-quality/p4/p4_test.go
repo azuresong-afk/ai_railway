@@ -280,3 +280,25 @@ func (f fake) Detect(_ context.Context, t detect.Text) ([]detect.Finding, error)
 	}
 	return nil, nil
 }
+
+// 4В30 (г): модели вызываются одновременно, время — до ответа последней;
+// p95 сверяется со сроком вызова шлюза.
+func TestConcurrent(t *testing.T) {
+	slow := func(d time.Duration) func(context.Context, string) error {
+		return func(context.Context, string) error { time.Sleep(d); return nil }
+	}
+	calls := map[string]func(context.Context, string) error{"a": slow(time.Millisecond), "b": slow(20 * time.Millisecond), "c": slow(time.Millisecond)}
+	r, err := p4.Concurrent(context.Background(), calls, "x", 8000, 10, 15*time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.P95 < 20*time.Millisecond || r.P95 > 80*time.Millisecond || r.Pass || len(r.Models) != 3 {
+		t.Fatalf("одновременно: %+v", r)
+	}
+	if !strings.Contains(r.Markdown(), "не укладывается") {
+		t.Fatalf("строка: %s", r.Markdown())
+	}
+	if r, err = p4.Concurrent(context.Background(), calls, "x", 8000, 10, time.Second); err != nil || !r.Pass {
+		t.Fatalf("срок с запасом: %+v %v", r, err)
+	}
+}

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError, api, csrfToken, setUnauthorizedHandler } from "./client";
+import { ApiError, api, csrfToken, request, setUnauthorizedHandler } from "./client";
 
 const fetchMock = vi.fn();
 
@@ -34,6 +34,20 @@ describe("клиент API", () => {
     expect((post.headers as Record<string, string>)["X-CSRF-Token"]).toBe("tok+1");
     expect((get.headers as Record<string, string>)["X-CSRF-Token"]).toBeUndefined();
     expect(post.credentials).toBe("same-origin");
+  });
+
+  // Остаток ревью 4.r1 (УПД.10): фоновый опрос помечен заголовком и не продлевает сессию; изменяющий запрос — никогда.
+  it("помечает фоновый GET заголовком X-AISec-Background", async () => {
+    reply(200, {});
+    await request("GET", "/api/v1/system/status", undefined, undefined, true);
+    reply(200, {});
+    await request("GET", "/api/v1/system/status");
+    reply(204);
+    await request("POST", "/api/v1/x", {}, undefined, true);
+    const h = (i: number) => (fetchMock.mock.calls.at(i)![1] as RequestInit).headers as Record<string, string>;
+    expect(h(0)["X-AISec-Background"]).toBe("1");
+    expect(h(1)["X-AISec-Background"]).toBeUndefined();
+    expect(h(2)["X-AISec-Background"]).toBeUndefined();
   });
 
   it("me возвращает null при 401", async () => {

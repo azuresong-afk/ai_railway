@@ -337,16 +337,16 @@ func readApplications(ctx context.Context, tx pgx.Tx, s *Snapshot) error {
 		idx[a.ID] = i
 	}
 	rows, err = tx.Query(ctx, `SELECT id::text, app_id::text, name, prefix, key_hash, hash_alg, allowed_cidrs::text[],
-		expires_at, created_at, created_by, rotated_from::text, revoked_at, revoked_by
+		expires_at, created_at, created_by, rotated_from::text, revoked_at, revoked_by, agent_id IS NOT NULL
 		FROM app_keys WHERE org_id = $1 ORDER BY created_at, id`, s.OrgID)
 	if err != nil {
 		return err
 	}
-	return forEach(rows, func(r pgx.Rows) error {
+	err = forEach(rows, func(r pgx.Rows) error {
 		var k AppKey
 		var app string
 		if err := r.Scan(&k.ID, &app, &k.Name, &k.Prefix, &k.KeyHash, &k.HashAlg, &k.AllowedCIDRs, &k.ExpiresAt,
-			&k.CreatedAt, &k.CreatedBy, &k.RotatedFrom, &k.RevokedAt, &k.RevokedBy); err != nil {
+			&k.CreatedAt, &k.CreatedBy, &k.RotatedFrom, &k.RevokedAt, &k.RevokedBy, &k.AgentBound); err != nil {
 			return err
 		}
 		i, ok := idx[app]
@@ -356,6 +356,10 @@ func readApplications(ctx context.Context, tx pgx.Tx, s *Snapshot) error {
 		s.Applications[i].Keys = append(s.Applications[i].Keys, k)
 		return nil
 	})
+	if err == nil {
+		s.AgentKeysMarked = true
+	}
+	return err
 }
 
 func readPolicies(ctx context.Context, tx pgx.Tx, s *Snapshot) error {
@@ -604,14 +608,29 @@ type RestoreOptions struct {
 	Now time.Time
 }
 
+// RestoreResult — что восстановлено не как в копии (строки отчёта).
+type RestoreResult struct {
+	// APITokensRevoked — токены API, восстановленные отозванными.
+	APITokensRevoked int
+	// AgentKeysRevoked — действующие ключи приложений, закреплённые за
+	// агентами: восстановлены отозванными (4В38 ревью 4.r4).
+	AgentKeysRevoked int
+	// AgentKeysUnknown — копия снята прежним выпуском со схемой агентов:
+	// привязка ключей к агентам в ней не отмечена.
+	AgentKeysUnknown bool
+}
+
+// agentsSchemaVersion — миграция, добавившая привязку ключей к агентам
+// (0054_agents.sql).
+const agentsSchemaVersion = 54
+
 // Restore записывает копию в транзакции tx. Пустоту установки и
 // совпадения (Inspect, Conflicts) вызывающий проверяет в той же
 // транзакции. Неиспользованный токен первичной настройки гасится:
-// учётные записи восстановлены. Возвращает число токенов API, отозванных
-// при восстановлении.
-func Restore(ctx context.Context, tx pgx.Tx, p *Prepared, opts RestoreOptions) (int, error) {
+// учётные записи восстановлены. Возвращает, что восстановлено отозванным.
+func Restore(ctx context.Context, tx pgx.Tx, p *Prepared, opts RestoreOptions) (RestoreResult, error) {
 	s := p.snap
-	revoked := 0
+	res := RestoreResult{AgentKeysUnknown: !s.AgentKeysMarked && s.SchemaVersion >= agentsSchemaVersion}
 	steps := []struct {
 		what string
 		fn   func() error
@@ -624,23 +643,23 @@ func Restore(ctx context.Context, tx pgx.Tx, p *Prepared, opts RestoreOptions) (
 		}},
 		{"роли", func() error { return writeRoles(ctx, tx, s) }},
 		{"пользователи", func() error { return writeUsers(ctx, tx, p) }},
-		{"токены API", func() (err error) { revoked, err = writeAPITokens(ctx, tx, s, opts); return err }},
+		{"токены API", func() (err error) { res.APITokensRevoked, err = writeAPITokens(ctx, tx, s, opts); return err }},
 		{"провайдеры", func() error { return writeProviders(ctx, tx, p) }},
-		{"приложения", func() error { return writeApplications(ctx, tx, s) }},
+		{"приложения", func() (err error) { res.AgentKeysRevoked, err = writeApplications(ctx, tx, s, opts.Now); return err }},
 		{"политики", func() error { return writePolicies(ctx, tx, s) }},
 	}
 	for _, st := range steps {
 		if err := st.fn(); err != nil {
-			return 0, fmt.Errorf("резервная копия: восстановление: %s: %w", st.what, err)
+			return RestoreResult{}, fmt.Errorf("резервная копия: восстановление: %s: %w", st.what, err)
 		}
 	}
 	if len(s.Users) > 0 {
 		if _, err := tx.Exec(ctx, "UPDATE setup_tokens SET used_at = greatest(now(), created_at) WHERE org_id = $1 AND used_at IS NULL",
 			s.OrgID); err != nil {
-			return 0, fmt.Errorf("резервная копия: погашение токена первичной настройки: %w", err)
+			return RestoreResult{}, fmt.Errorf("резервная копия: погашение токена первичной настройки: %w", err)
 		}
 	}
-	return revoked, nil
+	return res, nil
 }
 
 func writeSettings(ctx context.Context, tx pgx.Tx, s *Snapshot) error {
@@ -790,7 +809,30 @@ func writeProviders(ctx context.Context, tx pgx.Tx, p *Prepared) error {
 	return nil
 }
 
-func writeApplications(ctx context.Context, tx pgx.Tx, s *Snapshot) error {
+// keyRevokedByRestore — кто отозвал ключ агента при восстановлении.
+const keyRevokedByRestore = "backup_restore"
+
+// revokeAgentKeys отзывает действующие ключи, закреплённые за агентами
+// (4В38): агенты не восстанавливаются, а ключ без привязки называл бы себя
+// любым агентом приложения. Отзыв — не раньше выпуска ключа.
+func revokeAgentKeys(keys []AppKey, now time.Time) ([]AppKey, int) {
+	out, n := slices.Clone(keys), 0
+	for i, k := range out {
+		if !k.AgentBound || k.RevokedAt != nil {
+			continue
+		}
+		at, by := now.UTC(), keyRevokedByRestore
+		if at.Before(k.CreatedAt) {
+			at = k.CreatedAt
+		}
+		out[i].RevokedAt, out[i].RevokedBy = &at, &by
+		n++
+	}
+	return out, n
+}
+
+func writeApplications(ctx context.Context, tx pgx.Tx, s *Snapshot, now time.Time) (int, error) {
+	revoked := 0
 	for _, a := range s.Applications {
 		if _, err := tx.Exec(ctx, `INSERT INTO applications (id, org_id, slug, name, description, department, owner_id, env,
 			provider_id, models, aliases, policy, policy_mode, storage, fail_mode, user_from, quotas, lists,
@@ -800,19 +842,21 @@ func writeApplications(ctx context.Context, tx pgx.Tx, s *Snapshot) error {
 			a.ID, s.OrgID, a.Slug, a.Name, a.Description, a.Department, a.OwnerID, a.Env, a.ProviderID, a.Models,
 			string(a.Aliases), a.Policy, a.PolicyMode, a.Storage, a.FailMode, a.UserFrom, string(a.Quotas), string(a.Lists),
 			nonNil(a.ExfilAllowDomains), a.CreatedAt, a.CreatedBy, a.UpdatedAt, a.UpdatedBy, a.ArchivedAt); err != nil {
-			return fmt.Errorf("%s: %w", a.Slug, err)
+			return 0, fmt.Errorf("%s: %w", a.Slug, err)
 		}
-		for _, k := range keyOrder(a.Keys) {
+		keys, n := revokeAgentKeys(a.Keys, now)
+		revoked += n
+		for _, k := range keyOrder(keys) {
 			if _, err := tx.Exec(ctx, `INSERT INTO app_keys (id, org_id, app_id, name, prefix, key_hash, hash_alg,
 				allowed_cidrs, expires_at, created_at, created_by, rotated_from, revoked_at, revoked_by)
 				VALUES ($1, $2, $3, $4, $5, $6, $7, $8::text[]::cidr[], $9, $10, $11, $12::uuid, $13, $14)`,
 				k.ID, s.OrgID, a.ID, k.Name, k.Prefix, k.KeyHash, k.HashAlg, nonNil(k.AllowedCIDRs), k.ExpiresAt,
 				k.CreatedAt, k.CreatedBy, k.RotatedFrom, k.RevokedAt, k.RevokedBy); err != nil {
-				return fmt.Errorf("%s, ключ %s: %w", a.Slug, k.Prefix, err)
+				return 0, fmt.Errorf("%s, ключ %s: %w", a.Slug, k.Prefix, err)
 			}
 		}
 	}
-	return nil
+	return revoked, nil
 }
 
 // keyOrder — порядок вставки ключей: предшественник по ротации раньше

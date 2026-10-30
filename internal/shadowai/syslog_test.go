@@ -364,7 +364,7 @@ func TestSyslogWithoutCatalog(t *testing.T) {
 
 // 4В18 ревью 4.r2: без модуля лицензии shadow_ai строки по syslog
 // отбрасываются до разбора и сводки не пишутся; сбой проверки лицензии
-// оставляет прежний ответ; с модулем приём снова учитывает строки.
+// модуль не включает; с модулем приём снова учитывает строки.
 func TestSyslogWithoutLicenseModule(t *testing.T) {
 	var licensed atomic.Bool
 	var failing atomic.Bool
@@ -413,6 +413,45 @@ func TestSyslogLicenseErrorAtStart(t *testing.T) {
 	}})
 	if s := st.l.Stats(); s.LicenseModule {
 		t.Fatalf("сбой лицензии на старте включил модуль: %+v", s)
+	}
+}
+
+// 4Н22 ревью 4.r3 (остаток): лицензия проверяется перед записью сводок —
+// модуль выключили, пока они копились, — сброс без записи; сбой проверки —
+// сводки остаются в памяти без записи, а сбой после успеха не оставляет
+// прежнее «разрешено».
+func TestSyslogLicenseCheckedBeforeSave(t *testing.T) {
+	var licensed, failing atomic.Bool
+	licensed.Store(true)
+	st := startSyslog(t, SyslogConfig{Licensed: func(context.Context) (bool, error) {
+		if failing.Load() {
+			return true, errors.New("лицензия недоступна")
+		}
+		return licensed.Load(), nil
+	}})
+	ctx := context.Background()
+	c := dialFrom(t, st.l.Addr(), "")
+	defer func() { _ = c.Close() }() //nolint:gosec // закрытие тестового соединения, ошибка не важна
+	stream, _ := squidFrames(t)
+	send := func() {
+		if _, err := io.WriteString(c, stream); err != nil {
+			t.Fatal(err)
+		}
+		waitFor(t, "сводки в памяти", func() bool { return st.l.Stats().Pending > 0 })
+	}
+	send()
+	failing.Store(true)
+	if err := st.l.flush(ctx); err == nil || len(st.m.Aggregates()) != 0 || st.l.Stats().Pending == 0 {
+		t.Fatalf("сбой лицензии: %v, записано %d, в памяти %d", err, len(st.m.Aggregates()), st.l.Stats().Pending)
+	}
+	st.l.Refresh(ctx)
+	if st.l.Stats().LicenseModule {
+		t.Fatal("сбой проверки после успеха оставил модуль включённым")
+	}
+	failing.Store(false)
+	licensed.Store(false)
+	if err := st.l.flush(ctx); err != nil || len(st.m.Aggregates()) != 0 || st.l.Stats().Pending != 0 || st.l.Stats().Dropped == 0 {
+		t.Fatalf("модуль выключен до записи: %v, записано %d, %+v", err, len(st.m.Aggregates()), st.l.Stats())
 	}
 }
 

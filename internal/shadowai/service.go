@@ -150,7 +150,9 @@ type Query struct {
 type Store interface {
 	Catalog(ctx context.Context, orgID string) (StoredCatalog, error)
 	// SaveCatalog сохраняет каталог, если его версия больше сохранённой
-	// (иначе ErrStaleCatalog), и пишет rec той же транзакцией.
+	// (иначе ErrStaleCatalog), и пишет rec той же транзакцией; в
+	// rec.Details (map[string]any) записывает previous_version — версию,
+	// которую заменил, прочитанную под той же блокировкой (4Н21).
 	SaveCatalog(ctx context.Context, orgID string, c StoredCatalog, rec audit.Entry) error
 	// SaveImport пишет запись импорта, агрегаты и запись аудита fn(число
 	// пользователей, 4В27) одной транзакцией; повтор хеша — ErrDuplicate.
@@ -408,11 +410,9 @@ func (s *Service) UploadCatalog(ctx context.Context, by By, data []byte) (Catalo
 	if err == nil {
 		st := StoredCatalog{Version: sc.Catalog.Version, Date: sc.Catalog.Day(), SubkeySerial: sc.Endorsement.Serial,
 			Fingerprint: sc.Fingerprint, Services: len(sc.Catalog.Services), File: data, UploadedAt: now, UploadedBy: by.ref()}
-		_, prev, perr := s.current(ctx)
-		if perr != nil {
-			return CatalogView{}, perr
-		}
-		rec := by.entry("shadow_ai.catalog_loaded", obj, map[string]any{"version": st.Version, "previous_version": prev.Version,
+		// previous_version пишет хранилище: прежняя версия читается в той
+		// же транзакции, что и запись (4Н21 ревью 4.r3).
+		rec := by.entry("shadow_ai.catalog_loaded", obj, map[string]any{"version": st.Version,
 			"date": sc.Catalog.Date, "services": st.Services, "subkey_serial": st.SubkeySerial, "fingerprint": st.Fingerprint})
 		if err = s.o.Store.SaveCatalog(ctx, s.o.OrgID, st, rec); err == nil {
 			// Две загрузки сразу (4Н21): в памяти — старшая версия, как в БД.

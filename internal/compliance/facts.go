@@ -2,6 +2,7 @@ package compliance
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 
@@ -134,16 +135,22 @@ func (f *SystemFacts) collectApps(ctx context.Context, s *Snapshot) error {
 		external[p.ID] = p.External
 	}
 	specs := map[string]*policy.Spec{}
-	spec := func(slug string) *policy.Spec {
+	// spec — действующая версия политики; «не найдена» — приложение без
+	// политики, другой сбой — группа недоступна (4В35), а не «не выполнено».
+	spec := func(slug string) (*policy.Spec, error) {
 		if sp, ok := specs[slug]; ok {
-			return sp
+			return sp, nil
 		}
 		var sp *policy.Spec
-		if doc, err := f.Policies.Get(ctx, slug, 0); err == nil {
+		doc, err := f.Policies.Get(ctx, slug, 0)
+		switch {
+		case err == nil:
 			sp = doc.Spec
+		case !errors.Is(err, versions.ErrNotFound):
+			return nil, err
 		}
 		specs[slug] = sp
-		return sp
+		return sp, nil
 	}
 	var after *apps.Cursor
 	for {
@@ -155,7 +162,11 @@ func (f *SystemFacts) collectApps(ctx context.Context, s *Snapshot) error {
 			if a.Archived() {
 				continue
 			}
-			s.Apps = append(s.Apps, f.appFact(a, external[a.ProviderID], spec(a.Policy)))
+			sp, err := spec(a.Policy)
+			if err != nil {
+				return err
+			}
+			s.Apps = append(s.Apps, f.appFact(a, external[a.ProviderID], sp))
 		}
 		if len(page) < appsPage {
 			return nil

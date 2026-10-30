@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -91,8 +92,25 @@ func TestSignModelsVendorKeyOffline(t *testing.T) {
 		t.Fatalf("ключ производителя при работающей сети: %v", err)
 	}
 	netInterfaces = offlineIfs
-	if err := run(signModelsArgs(dir, spec, "-key", key), io.Discard, io.Discard); err != nil {
+	// 4В32: модели без записи с решением владельца ключом производителя не
+	// подписываются.
+	if err := run(signModelsArgs(dir, spec, "-key", key, "-components", modelsRegistry(t, "injection-ru-en")), io.Discard, io.Discard); err == nil ||
+		!strings.Contains(err.Error(), "toxicity-ru") {
+		t.Fatalf("модель без решения владельца: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ml.ModelsManifestFile)); !os.IsNotExist(err) {
+		t.Fatalf("манифест записан при отказе: %v", err)
+	}
+	reg := modelsRegistry(t, "toxicity-ru")
+	if err := run(signModelsArgs(dir, spec, "-key", key, "-components", reg), io.Discard, io.Discard); err != nil {
 		t.Fatal(err)
+	}
+	// check-models (ml-release-dir RELEASE=1) — по манифесту готового пакета.
+	if err := run([]string{"check-models", "-dir", dir, "-components", reg}, io.Discard, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if err := run([]string{"check-models", "-dir", dir, "-components", modelsRegistry(t)}, io.Discard, io.Discard); err == nil {
+		t.Fatal("check-models: пакет с моделью без решения принят")
 	}
 	p, err := aisecCrypto.New(aisecCrypto.ProfileStandard)
 	if err != nil {
@@ -239,5 +257,70 @@ func TestBuildLibraryAndModels(t *testing.T) {
 	if err := run([]string{"build", "-test-key", "../../testdata/integrity/manifest-test.signkey", "-out", filepath.Join(dir, "x.json"), "-version", "1",
 		"-created", "2026-10-28T00:00:00Z", "-bin", filepath.Join(dir, "bin"), "-cmds", "aisec-ml", "-models", filepath.Join(dir, "models")}, io.Discard, io.Discard); err == nil {
 		t.Fatal("основной выпуск без -static и -migrations принят")
+	}
+}
+
+// modelsRegistry — реестр компонентов с записями type: ml-model для ids.
+func modelsRegistry(t *testing.T, ids ...string) string {
+	t.Helper()
+	var b strings.Builder
+	b.WriteString("schema_version: 1\ncomponents:\n")
+	for _, id := range ids {
+		fmt.Fprintf(&b, `  - name: %s
+    version: "1.0.0"
+    type: ml-model
+    scope: product
+    purpose: Модель ML-детектора.
+    license: MIT
+    repository: https://example.ru/models
+    attack_surface: false
+    security_function: true
+    provided_by: Производитель
+    justification: Тест.
+    decision: ADR-0024, решение владельца
+    decided: 2026-10-30
+`, id)
+	}
+	if len(ids) == 0 {
+		b.WriteString("  []\n")
+	}
+	path := filepath.Join(t.TempDir(), "components.yaml")
+	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// Ревью 4.r3 (остаток для 4.r4): -dry-run печатает хеш манифеста пакета
+// без ключа и без записи файлов; -expect-sha256 с другим хешем — отказ до
+// подписи, с тем же — подпись.
+func TestSignModelsExpectSHA256(t *testing.T) {
+	dir, spec := modelsDir(t, "1.0.0")
+	var stdout strings.Builder
+	if err := run(signModelsArgs(dir, spec, "-dry-run"), &stdout, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	_, after, ok := strings.Cut(stdout.String(), "SHA-256 манифеста пакета: ")
+	sum, _, _ := strings.Cut(after, "\n")
+	if !ok || len(sum) != 64 {
+		t.Fatalf("вывод -dry-run: %q", stdout.String())
+	}
+	if _, err := os.Stat(filepath.Join(dir, ml.ModelsManifestFile)); !os.IsNotExist(err) {
+		t.Fatalf("-dry-run записал манифест: %v", err)
+	}
+	if err := run(signModelsArgs(dir, spec, "-dry-run", "-test-key", "../../testdata/integrity/manifest-test.signkey"), io.Discard, io.Discard); err == nil {
+		t.Fatal("-dry-run вместе с ключом принят")
+	}
+	key := []string{"-test-key", "../../testdata/integrity/manifest-test.signkey"}
+	other := strings.Repeat("0", 64)
+	if err := run(signModelsArgs(dir, spec, append(key, "-expect-sha256", other)...), io.Discard, io.Discard); err == nil ||
+		!strings.Contains(err.Error(), "не совпадает") {
+		t.Fatalf("чужой хеш: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ml.ModelsSignatureFile)); !os.IsNotExist(err) {
+		t.Fatalf("подпись записана при несовпадении хеша: %v", err)
+	}
+	if err := run(signModelsArgs(dir, spec, append(key, "-expect-sha256", strings.ToUpper(sum))...), io.Discard, io.Discard); err != nil {
+		t.Fatal(err)
 	}
 }

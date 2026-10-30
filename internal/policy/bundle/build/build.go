@@ -173,8 +173,12 @@ type Service struct {
 	revOK     bool
 	expiry    time.Time
 	collected time.Time
-	// keysAt — последнее успешное получение ключей IdP (сначала — запуск).
-	keysAt time.Time
+	// keysAt — последнее успешное получение ключей IdP (сначала — запуск
+	// или момент из KeysTimeStore); keysLoaded — момент прочитан из
+	// хранилища; keysSaved — последний записанный в него (4Н14).
+	keysAt     time.Time
+	keysLoaded bool
+	keysSaved  time.Time
 
 	// sealedMu защищает sealed — подписанные пакеты по шлюзам (задача
 	// 3.34): повторная выдача той же версии тому же шлюзу не расшифровывает

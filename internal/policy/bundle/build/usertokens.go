@@ -64,18 +64,19 @@ func (s *Service) addUserTokens(ctx context.Context, c *bundle.Content, appSlugs
 	if refresh := now.Add(UserTokenKeysRefresh); s.collected.IsZero() || refresh.Before(s.collected) {
 		s.collected = refresh
 	}
+	s.loadKeysAt(ctx)
 	issuer, keys, err := s.idpKeys(ctx)
 	if err == nil && issuer != "" && wanted[issuer] {
 		var raw []byte
 		if raw, err = s.jwt.MarshalJWKS(keys); err == nil {
 			c.UserTokenKeys = []bundle.IssuerKeys{{Issuer: issuer, JWKS: raw}}
-			s.keysAt = now
+			s.saveKeysAt(ctx, now)
 			return nil
 		}
 	}
 	if err == nil {
 		// IdP не настроен или приложения ждут другого издателя: ключей нет.
-		s.keysAt = now
+		s.saveKeysAt(ctx, now)
 		return nil
 	}
 	if ctx.Err() != nil {
@@ -95,6 +96,42 @@ func (s *Service) addUserTokens(ctx context.Context, c *bundle.Content, appSlugs
 	s.logger.Warn("ключи IdP для проверки JWT пользователей не получены: в пакете ключи прежней версии",
 		"error", err, "previous", len(c.UserTokenKeys), "previous_error", perr)
 	return nil
+}
+
+// loadKeysAt один раз читает момент последнего получения ключей из
+// хранилища (4Н14 ревью 4.r2): срок прежних ключей не начинается заново
+// при перезапуске сервера. Сбой чтения — отсчёт от запуска, повтор при
+// следующей сборке.
+func (s *Service) loadKeysAt(ctx context.Context) {
+	ks, ok := s.store.(KeysTimeStore)
+	if s.keysLoaded || !ok {
+		return
+	}
+	at, err := ks.UserTokenKeysAt(ctx, s.orgID)
+	if err != nil {
+		s.logger.Warn("момент получения ключей IdP не прочитан: срок прежних ключей — от запуска сервера", "error", err)
+		return
+	}
+	s.keysLoaded, s.keysSaved = true, at
+	if !at.IsZero() && at.Before(s.keysAt) {
+		s.keysAt = at
+	}
+}
+
+// saveKeysAt отмечает успешное получение ключей и записывает момент в
+// хранилище не чаще UserTokenKeysRefresh: после перезапуска срок прежних
+// ключей короче не больше чем на этот интервал.
+func (s *Service) saveKeysAt(ctx context.Context, now time.Time) {
+	s.keysAt = now
+	ks, ok := s.store.(KeysTimeStore)
+	if !ok || now.Sub(s.keysSaved) < UserTokenKeysRefresh {
+		return
+	}
+	if err := ks.SetUserTokenKeysAt(ctx, s.orgID, now); err != nil {
+		s.logger.Warn("момент получения ключей IdP не записан", "error", err)
+		return
+	}
+	s.keysSaved = now
 }
 
 // previousUserTokenKeys — раздел user_token_keys последней версии пакета.

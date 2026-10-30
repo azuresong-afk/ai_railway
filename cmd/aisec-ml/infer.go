@@ -127,7 +127,8 @@ func dimOK(d, want int64) bool {
 // с байтовыми границами в тексте, не больше limit; truncated — у текста
 // есть ещё токены. Special — номера [CLS] и [SEP].
 type tokenizer interface {
-	Encode(text string, limit int) (ids []int64, offsets [][2]int, truncated bool, err error)
+	// Encode проверяет срок ctx по ходу разбора (4В31).
+	Encode(ctx context.Context, text string, limit int) (ids []int64, offsets [][2]int, truncated bool, err error)
 	Special() (cls, sep int64)
 }
 
@@ -163,14 +164,14 @@ type window struct {
 // splitWindows режет текст на окна по maxTokens токенов. Токенизатор
 // останавливается на пределе всех окон: длина текста не увеличивает работу
 // сверх maxWindows окон.
-func splitWindows(tok tokenizer, text string, maxTokens int) ([]window, bool, error) {
+func splitWindows(ctx context.Context, tok tokenizer, text string, maxTokens int) ([]window, bool, error) {
 	w := maxTokens - 2
 	if w < 1 {
 		return nil, false, fmt.Errorf("окно модели %d токенов: нужно не меньше 3", maxTokens)
 	}
 	overlap := min(windowOverlap, w/4)
 	stride := w - overlap
-	ids, offs, truncated, err := tok.Encode(text, w+(maxWindows-1)*stride)
+	ids, offs, truncated, err := tok.Encode(ctx, text, w+(maxWindows-1)*stride)
 	if err != nil {
 		return nil, false, err
 	}
@@ -215,7 +216,7 @@ type inferFunc func(ctx context.Context, ids []int64) ([]float32, error)
 func runWindows(ctx context.Context, spec ml.ModelSpec, tok tokenizer, text string, infer inferFunc, slots chan struct{}) (ml.Result, error) {
 	info := spec.Info()
 	res := ml.Result{Model: info.ID, Version: info.Version, Findings: []ml.Score{}}
-	wins, truncated, err := splitWindows(tok, text, spec.MaxTokens)
+	wins, truncated, err := splitWindows(ctx, tok, text, spec.MaxTokens)
 	if err != nil {
 		return ml.Result{}, err
 	}

@@ -298,14 +298,13 @@ func (l *SyslogListener) Addr() string { return l.ln.Addr().String() }
 
 // refresh перечитывает модуль лицензии, каталог, срок хранения, пояс и
 // исключения. Модуль — первым: сбой чтения остального его не задерживает,
-// а сбой проверки лицензии оставляет прежний ответ.
+// а сбой проверки лицензии — «модуля нет», а не прежний ответ (4Н22 ревью
+// 4.r3: как API, которое в этом случае отвечает 503).
 func (l *SyslogListener) refresh(ctx context.Context) error {
 	var lerr error
 	if l.cfg.Licensed != nil {
 		ok, err := l.cfg.Licensed(ctx)
-		if err == nil {
-			l.unlicensed.Store(!ok)
-		}
+		l.unlicensed.Store(err != nil || !ok)
 		lerr = err
 	}
 	sc, _, err := l.svc.current(ctx)
@@ -716,8 +715,17 @@ func (l *SyslogListener) flush(ctx context.Context) error {
 	acc := l.acc
 	l.resetAcc()
 	l.mu.Unlock()
+	// Модуль лицензии — перед записью (4Н22 ревью 4.r3): выключен —
+	// сводки сбрасываются, сбой проверки — возвращаются без записи.
 	var err error
+	if len(acc.aggs) > 0 && l.cfg.Licensed != nil {
+		var ok bool
+		if ok, err = l.cfg.Licensed(ctx); err == nil {
+			l.unlicensed.Store(!ok)
+		}
+	}
 	switch {
+	case err != nil:
 	// Модуль выключили, пока копились сводки: они не пишутся (счётчик
 	// dropped — по числу запросов в них).
 	case l.unlicensed.Load():
@@ -730,6 +738,14 @@ func (l *SyslogListener) flush(ctx context.Context) error {
 	if err != nil {
 		l.c.flushFailures.Add(1)
 		l.flushFailed.Store(true)
+		// Предел сводок организации (4Н25): повтор не поможет — сводки
+		// отбрасываются со счётчиком, ошибка — в журнал.
+		if errors.Is(err, ErrStorageFull) {
+			for _, a := range acc.aggs {
+				l.c.dropped.Add(a.Requests)
+			}
+			return err
+		}
 		l.mu.Lock()
 		l.mergeBack(acc)
 		l.mu.Unlock()

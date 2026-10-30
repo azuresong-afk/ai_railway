@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -200,11 +201,26 @@ func (d Deps) getApproval(w http.ResponseWriter, r *http.Request) {
 	decide := canDecide(r)
 	v := approvalView(a, time.Now(), decide)
 	// Аргументы нужны дежурному для решения (ТЗ 5.10); аудитор видит запрос
-	// без них, как события без содержимого.
-	if decide && a.Args != nil {
+	// без них, как события без содержимого. Аргументы закрытого запроса
+	// решению уже не нужны — только с events.content.read, как содержимое
+	// события (4Н8 ревью 4.r1: ПДн при хранении none).
+	p, _ := PrincipalFrom(r.Context())
+	if decide && a.Args != nil && (a.State == approvals.Pending || p.Grants.Full(auth.PermEventsContentRead)) {
 		args, err := d.Approvals.Args(r.Context(), a)
 		if err != nil {
 			WriteProblem(w, approvalsProblem(d.Logger, err))
+			return
+		}
+		// Каждый показ аргументов — запись agent.approval.args_read до
+		// ответа; не записалось — аргументы не выдаются.
+		actx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
+		defer cancel()
+		if err := d.Audit.Record(actx, audit.Entry{Actor: eventsActor(p), SourceIP: clientAddr(r), Action: "agent.approval.args_read",
+			Object: audit.Object{Type: "approval", ID: a.ID}, Result: audit.ResultSuccess,
+			Details: map[string]any{"state": string(a.State)}}); err != nil {
+			d.Logger.Error("показ аргументов подтверждения не записан в журнал аудита: аргументы не выданы", "approval_id", a.ID, "error", err)
+			WriteProblem(w, NewProblem(http.StatusServiceUnavailable, CodeUnavailable,
+				"Не удалось записать доступ в журнал аудита: аргументы не выданы. Повторите позже."))
 			return
 		}
 		s := string(args)
@@ -227,7 +243,7 @@ func (d Deps) approvalsBy(r *http.Request, re reauthFields, action string) (appr
 		return approvals.By{}, false
 	}
 	return approvals.By{Actor: audit.Actor{Type: audit.ActorUser, ID: c.User.ID, Name: c.User.Login}, IP: clientAddr(r),
-		Confirm: d.confirmFunc(r, re, action, approvals.ErrConfirmRequired)}, true
+		Confirm: d.confirmFunc(r, re, action, approvals.ErrConfirmRequired), NoMFA: !c.Session.MFAVerified}, true
 }
 
 func (d Deps) decideApproval(w http.ResponseWriter, r *http.Request, approve bool) {

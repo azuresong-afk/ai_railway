@@ -53,9 +53,11 @@ test("подтверждения: вызов ждёт решения — одо�
   const card = page.getByLabel(/Подтверждение: delete_file/);
   await expect(card.getByText("delete-needs-human")).toBeVisible();
   await expect(card.getByText("/tmp/report.txt")).toBeVisible();
+  // Сеанс без второго фактора: решение подтверждается паролем (4В37).
+  await card.getByLabel("Текущий пароль").fill("Correct-Horse-1");
   await card.getByRole("button", { name: "Одобрить вызов" }).click();
   await expect(page.getByText("Вызовов, ожидающих решения, нет")).toBeVisible();
-  expect(calls.find((c) => c.path.endsWith("/approve"))?.body).toEqual({ args_hash: "h1" });
+  expect(calls.find((c) => c.path.endsWith("/approve"))?.body).toEqual({ args_hash: "h1", password: "Correct-Horse-1" });
   done();
 });
 

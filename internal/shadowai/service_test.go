@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -37,6 +38,43 @@ func lastRecord(m *Memory, action string) (audit.Entry, int) {
 		}
 	}
 	return last, n
+}
+
+// 4Н21 ревью 4.r3: две загрузки сразу — в памяти и в хранилище старшая
+// версия, previous_version в аудите — та версия, которую заменила запись.
+func TestCatalogUploadConcurrent(t *testing.T) {
+	ctx := context.Background()
+	files := [][]byte{signCatalog(t, catalogYAML(5, "2026-10-28"), nil), signCatalog(t, catalogYAML(6, "2026-10-28"), nil)}
+	for range 20 {
+		m := NewMemory()
+		s := newTestService(t, m, true)
+		var wg sync.WaitGroup
+		for _, f := range files {
+			wg.Go(func() { _, _ = s.UploadCatalog(ctx, testBy, f) }) //nolint:gosec // G104: исход проверяется по хранилищу и аудиту
+		}
+		wg.Wait()
+		v, err := s.Catalog(ctx)
+		if err != nil || v.Version != 6 {
+			t.Fatalf("в памяти версия %d: %v", v.Version, err)
+		}
+		if st, err := m.Catalog(ctx, ""); err != nil || st.Version != 6 {
+			t.Fatalf("в хранилище версия %d: %v", st.Version, err)
+		}
+		var prev uint64
+		for _, r := range m.Records() {
+			if r.Action != "shadow_ai.catalog_loaded" {
+				continue
+			}
+			d := r.Details.(map[string]any)
+			if d["previous_version"] != prev {
+				t.Fatalf("previous_version %v, ожидалось %d: %+v", d["previous_version"], prev, d)
+			}
+			prev = d["version"].(uint64)
+		}
+		if prev != 6 {
+			t.Fatalf("последняя загруженная версия в аудите: %d", prev)
+		}
+	}
 }
 
 func TestCatalogUpload(t *testing.T) {

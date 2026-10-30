@@ -18,6 +18,12 @@ const (
 	// возвращается в заголовке CSRFHeader (двойная отправка).
 	CSRFCookie = "__Host-aisec_csrf"
 	CSRFHeader = "X-CSRF-Token"
+	// BackgroundHeader со значением «1» помечает фоновый опрос консоли
+	// (таймер «Состояния системы», очереди подтверждений, приёмника syslog,
+	// лицензии): такой GET не считается действием пользователя и не
+	// продлевает сессию по бездействию (УПД.10). Изменяющие запросы признак
+	// не снимает: они всегда — действие.
+	BackgroundHeader = "X-AISec-Background"
 )
 
 // SessionAuthorizer проверяет права по сессии консоли: cookie → сессия
@@ -34,7 +40,11 @@ func (a SessionAuthorizer) Authorize(r *http.Request, permission string) (Princi
 	if err != nil {
 		return Principal{}, Unauthenticated
 	}
-	caller, err := a.Auth.Authenticate(r.Context(), c.Value, clientAddr(r))
+	ctx := r.Context()
+	if background(r) {
+		ctx = auth.WithoutActivity(ctx)
+	}
+	caller, err := a.Auth.Authenticate(ctx, c.Value, clientAddr(r))
 	if err != nil {
 		if !errors.Is(err, auth.ErrUnauthenticated) && a.Logger != nil {
 			// Сбой хранилища: отказ, а причина — в техническом журнале (без токена).
@@ -58,6 +68,11 @@ func (a SessionAuthorizer) Authorize(r *http.Request, permission string) (Princi
 		return p, Forbidden
 	}
 	return p, Allow
+}
+
+// background — фоновый опрос: безопасный метод и BackgroundHeader: 1.
+func background(r *http.Request) bool {
+	return !unsafeMethod(r.Method) && r.Header.Get(BackgroundHeader) == "1"
 }
 
 func unsafeMethod(m string) bool {

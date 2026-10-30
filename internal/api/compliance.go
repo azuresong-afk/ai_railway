@@ -68,10 +68,23 @@ func (d Deps) complianceBy(r *http.Request) (compliance.By, bool) {
 
 const requirementNotFound = "Пункт не найден в действующей базе требований."
 
+// putComplianceMarkRequest — отметка и поля повторной проверки (пароль или
+// код второго фактора) для «не применимо» у пункта с проверками.
+type putComplianceMarkRequest struct {
+	compliance.MarkInput
+	reauthFields
+}
+
 func complianceProblem(logger *slog.Logger, err error) *Problem {
 	var ie *compliance.InputError
 	var be *compliance.BaseError
+	var re *reauthError
 	switch {
+	case errors.As(err, &re):
+		return authProblem(logger, re.err)
+	case errors.Is(err, compliance.ErrConfirmRequired):
+		return NewProblem(http.StatusForbidden, CodeForbidden,
+			"Пункт с автоматическими проверками объявляют неприменимым в консоли с вводом текущего пароля или кода: токеном API — нельзя.")
 	case errors.As(err, &ie):
 		fields := make([]FieldError, 0, len(ie.Fields))
 		for _, k := range sortedKeys(ie.Fields) {
@@ -177,14 +190,17 @@ func (d Deps) putComplianceMark(w http.ResponseWriter, r *http.Request) {
 		WriteProblem(w, errForbidden())
 		return
 	}
-	var in compliance.MarkInput
-	if p := DecodeJSON(w, r, &in, smallMaxBody); p != nil {
+	var req putComplianceMarkRequest
+	if p := DecodeJSON(w, r, &req, smallMaxBody); p != nil {
 		WriteProblem(w, p)
 		return
 	}
+	// «Не применимо» у пункта с проверками — ослабление (4В36): сервис
+	// вызывает повторную проверку, только если она нужна.
+	by.Confirm = d.confirmFunc(r, req.reauthFields, "compliance.mark_set", compliance.ErrConfirmRequired)
 	ctx, cancel := contextTimeout(r, complianceReadTimeout)
 	defer cancel()
-	it, err := d.Compliance.SetMark(ctx, by, id, in)
+	it, err := d.Compliance.SetMark(ctx, by, id, req.MarkInput)
 	if err != nil {
 		WriteProblem(w, complianceProblem(d.Logger, err))
 		return

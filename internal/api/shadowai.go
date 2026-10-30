@@ -117,6 +117,9 @@ func shadowProblem(logger *slog.Logger, err error) *Problem {
 		return NewProblem(http.StatusTooManyRequests, CodeRateLimited, "Уже идёт другой импорт: повторите после его завершения.")
 	case errors.Is(err, shadowai.ErrDuplicate):
 		return NewProblem(http.StatusConflict, CodeConflict, "Этот файл уже импортирован.")
+	case errors.Is(err, shadowai.ErrStorageFull):
+		return NewProblem(http.StatusInsufficientStorage, CodeInsufficientStorage,
+			"Достигнут предел хранимых сводок теневого ИИ (5 млн строк): сократите срок хранения или добавьте исключения и повторите импорт.")
 	case errors.Is(err, shadowai.ErrNoCatalog):
 		return NewProblem(http.StatusConflict, CodeConflict,
 			"Каталог ИИ-сервисов не загружен или не прошёл проверку подписи: загрузите подписанный каталог из выпуска.")

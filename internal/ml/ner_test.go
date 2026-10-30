@@ -68,6 +68,19 @@ func TestMergeTokens(t *testing.T) {
 			t.Errorf("%d: %+v %q, ожидалось %+v", i, got[i], text[got[i].Start:got[i].End], w)
 		}
 	}
+	// 4В33: неуверенный кусок (ниже MinTokenScore) — граница фрагмента, а не
+	// наименьшая оценка всего имени: «Иванов Пётр Сер» и «вич» остаются
+	// находками, «##гее» шлюз закроет расширением до слова.
+	name := "Иванов Пётр Сергеевич"
+	nt := func(w string) int { return strings.Index(name, w) }
+	unsure, _ := MergeTokens([]TokenLabel{
+		tok("b-per", 0.99, nt("Иванов"), "Иванов"), tok("i-per", 0.97, nt("Пётр"), "Пётр"),
+		tok("i-per", 0.9, nt("Сер"), "Сер"), tok("i-per", 0.45, nt("гее"), "гее"), tok("i-per", 0.9, nt("вич"), "вич"),
+	})
+	if len(unsure) != 2 || name[unsure[0].Start:unsure[0].End] != "Иванов Пётр Сер" || unsure[0].Score < MinTokenScore ||
+		name[unsure[1].Start:unsure[1].End] != "вич" || unsure[1].Score < MinTokenScore {
+		t.Fatalf("неуверенный кусок имени: %+v", unsure)
+	}
 	// Позиции назад (неверный токенизатор) фрагмент не продолжают.
 	back, _ := MergeTokens([]TokenLabel{tok("b-per", 1, 10, "abcd"), tok("i-per", 1, 5, "abcd")})
 	if len(back) != 1 || back[0].End != 14 {

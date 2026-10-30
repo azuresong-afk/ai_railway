@@ -357,3 +357,42 @@ func TestPGShadowAIImportUsers(t *testing.T) {
 		t.Fatalf("новых в журнале импорта: %d", n)
 	}
 }
+
+// 4Н25 ревью 4.r3: предел строк сводок организации — импорт с изменённым
+// байтом и партия syslog сверх него отклоняются (ErrStorageFull), сводки и
+// запись импорта не пишутся.
+func TestPGShadowAIStorageLimit(t *testing.T) {
+	e := setupPG(t)
+	ctx := pgTestCtx(t)
+	s := e.service(t)
+	if _, err := s.UploadCatalog(ctx, testBy, readFile(t, testCatalogSigned)); err != nil {
+		t.Fatal(err)
+	}
+	squid := readFile(t, "../../testdata/shadowai/access-squid.log")
+	if _, err := s.Import(ctx, testBy, FormatSquid, bytes.NewReader(squid)); err != nil {
+		t.Fatal(err)
+	}
+	count := func(q string) int64 {
+		var n int64
+		if err := e.owner.QueryRow(ctx, q).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	rows, imports := count("SELECT count(*) FROM shadow_ai_hour"), count("SELECT count(*) FROM shadow_ai_imports")
+	if rows == 0 {
+		t.Fatal("сводок нет")
+	}
+	e.st.maxAggs = rows
+	if _, err := s.Import(ctx, testBy, FormatSquid, bytes.NewReader(append(bytes.Clone(squid), '\n'))); !errors.Is(err, ErrStorageFull) {
+		t.Fatalf("импорт сверх предела: %v", err)
+	}
+	err := e.st.SaveSyslog(ctx, audit.DefaultOrgID, SyslogBatch{Aggregates: []Aggregate{{Bucket: testNow.Truncate(time.Hour),
+		Service: "chatgpt", UserKind: "none", Requests: 1}}})
+	if !errors.Is(err, ErrStorageFull) {
+		t.Fatalf("партия syslog сверх предела: %v", err)
+	}
+	if count("SELECT count(*) FROM shadow_ai_hour") != rows || count("SELECT count(*) FROM shadow_ai_imports") != imports {
+		t.Fatal("записано сверх предела")
+	}
+}

@@ -69,6 +69,25 @@ func (b *Builder) complianceReport(ctx context.Context, p Params) (Doc, error) {
 		}
 	}
 	d.Sections = append(d.Sections, Section{Title: "Требования", Header: header, Rows: regular})
+	// Пункты с автоматическими проверками, исключённые отметкой «не
+	// применимо» (4В36): отдельно, с автором и датой — проверяющий видит,
+	// кто и когда снял невыполненные проверки с процента.
+	var excluded [][]Cell
+	for _, it := range o.Items {
+		m := it.Mark
+		if m == nil || it.Auto == nil || it.MarkOverdue || m.Status != compliance.StatusNotApplicable {
+			continue
+		}
+		review := m.ReviewBy
+		if review == "" {
+			review = "не задан"
+		}
+		excluded = append(excluded, []Cell{T(it.ID), T(it.Clause), T(it.Title), T(compliance.StatusTitle(it.Auto.Status)),
+			T(m.Comment), T(m.SetBy), T(fmtTime(m.SetAt, p.Period.Loc)), T(review)})
+	}
+	d.Sections = append(d.Sections, Section{Title: "Исключены вручную",
+		Note:   "Пункты с автоматическими проверками, объявленные неприменимыми; в процент не входят. Автор — учётная запись из журнала аудита (compliance.mark_set).",
+		Header: []string{"ID", "Пункт", "Требование", "Итог проверок", "Основание", "Кто отметил", "Когда", "Пересмотр до"}, Rows: excluded})
 	d.Sections = append(d.Sections, Section{Title: "Требования из проектов документов",
 		Note:   "Проекты не вступили в силу: пункты показаны для подготовки и в итоговый процент не входят.",
 		Header: header, Rows: drafts})

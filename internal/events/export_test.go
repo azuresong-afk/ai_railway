@@ -36,6 +36,13 @@ func TestCSVCell(t *testing.T) {
 		"DM-05;DM-13":          "DM-05;DM-13",
 		"2026-10-21T12:00:00Z": "2026-10-21T12:00:00Z",
 		"a-b=c":                "a-b=c",
+		// Полноширинные знаки формулы (ревью 4.r1, остаток).
+		"\uff1d1+2":     "'\uff1d1+2",
+		"\uff0b7":       "'\uff0b7",
+		"a;\uff0d1":     "a;'\uff0d1",
+		"\uff20SUM(A1)": "'\uff20SUM(A1)",
+		"a\uff1d1":      "a\uff1d1",
+		"\uff1e\uff0c":  "\uff1e\uff0c",
 	} {
 		if got := CSVCell(in); got != want {
 			t.Errorf("%q → %q, ожидалось %q", in, got, want)
@@ -129,7 +136,7 @@ func TestExportCSVRussianLocale(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, p := range excelRuPieces(strings.TrimPrefix(buf.String(), utf8BOM)) {
-			if p != "" && strings.ContainsRune("=+-@", rune(p[0])) {
+			if p != "" && (strings.ContainsRune("=+-@", rune(p[0])) || fullwidthFormula(p)) {
 				t.Fatalf("%q: кусок %q начинается с формулы", a, p)
 			}
 		}
@@ -145,7 +152,7 @@ func TestExportCSVRussianLocale(t *testing.T) {
 }
 
 func FuzzCSVCell(f *testing.F) {
-	for _, s := range []string{"", "=1", "a;=1", "a; \"@x", "\t-1", "обычный текст"} {
+	for _, s := range []string{"", "=1", "a;=1", "a; \"@x", "\t-1", "обычный текст", "a;\uff1d1"} {
 		f.Add(s)
 	}
 	f.Fuzz(func(t *testing.T, s string) {
@@ -154,7 +161,7 @@ func FuzzCSVCell(f *testing.F) {
 			t.Fatalf("CSVCell изменил не только апострофы: %q → %q", s, out)
 		}
 		for _, p := range excelRuPieces(out) {
-			if p != "" && strings.ContainsRune("=+-@", rune(p[0])) {
+			if p != "" && (strings.ContainsRune("=+-@", rune(p[0])) || fullwidthFormula(p)) {
 				t.Fatalf("%q: кусок %q начинается с формулы", s, p)
 			}
 		}

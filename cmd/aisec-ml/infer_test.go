@@ -148,7 +148,7 @@ type seqTokenizer struct{}
 
 func (seqTokenizer) Special() (cls, sep int64) { return 1, 2 }
 
-func (seqTokenizer) Encode(text string, limit int) ([]int64, [][2]int, bool, error) {
+func (seqTokenizer) Encode(_ context.Context, text string, limit int) ([]int64, [][2]int, bool, error) {
 	var ids []int64
 	var offs [][2]int
 	pos := 0
@@ -182,7 +182,7 @@ func TestSplitWindows(t *testing.T) {
 		{100000, 512, 16, true},
 		{10, 3, 10, false},
 	} {
-		wins, trunc, err := splitWindows(seqTokenizer{}, words(tc.tokens), tc.max)
+		wins, trunc, err := splitWindows(context.Background(), seqTokenizer{}, words(tc.tokens), tc.max)
 		if err != nil || len(wins) != tc.windows || trunc != tc.truncated {
 			t.Fatalf("%d токенов, окно %d: окон %d, обрезка %v, %v", tc.tokens, tc.max, len(wins), trunc, err)
 		}
@@ -205,7 +205,7 @@ func TestSplitWindows(t *testing.T) {
 			t.Fatalf("%d токенов: свои токены окон до %d, ожидалось %d", tc.tokens, next, want)
 		}
 	}
-	if _, _, err := splitWindows(seqTokenizer{}, "w", 2); err == nil {
+	if _, _, err := splitWindows(context.Background(), seqTokenizer{}, "w", 2); err == nil {
 		t.Fatal("окно 2 токена принято")
 	}
 }

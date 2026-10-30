@@ -35,14 +35,37 @@ type PGDB interface {
 type PGStore struct {
 	db    PGDB
 	audit *audit.Log
+	// maxAggs — предел строк сводок организации (MaxStoredAggregates).
+	maxAggs int64
 }
+
+// MaxStoredAggregates — предел строк почасовых сводок организации (4Н25
+// ревью 4.r3): повтор ловится только по точному хешу файла, и импорт с
+// изменённым байтом раздувал бы shadow_ai_hour до исчерпания диска.
+// Проверка консервативна: число строк плюс партия, без учёта того, что
+// часть партии лишь прибавится к существующим строкам.
+const MaxStoredAggregates = 5_000_000
 
 // NewPGStore создаёт хранилище; журнал аудита должен работать через тот же пул.
 func NewPGStore(db PGDB, a *audit.Log) (*PGStore, error) {
 	if db == nil || a == nil {
 		return nil, errors.New("теневой ИИ: нет БД или журнала аудита")
 	}
-	return &PGStore{db: db, audit: a}, nil
+	return &PGStore{db: db, audit: a, maxAggs: MaxStoredAggregates}, nil
+}
+
+// checkCapacity — ErrStorageFull, если после записи партии из n сводок
+// строк организации стало бы больше предела. Счёт — под lockWrites.
+func (s *PGStore) checkCapacity(ctx context.Context, tx pgx.Tx, orgID string, n int) error {
+	var have int64
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM (SELECT 1 FROM shadow_ai_hour WHERE org_id = $1 LIMIT $2) t`,
+		orgID, s.maxAggs+1).Scan(&have); err != nil {
+		return fmt.Errorf("теневой ИИ: число сводок: %w", err)
+	}
+	if have+int64(n) > s.maxAggs {
+		return ErrStorageFull
+	}
+	return nil
 }
 
 func pgCtx(ctx context.Context) (context.Context, context.CancelFunc) {
@@ -100,13 +123,25 @@ func (s *PGStore) Catalog(ctx context.Context, orgID string) (StoredCatalog, err
 	return c, nil
 }
 
-// SaveCatalog — см. Store. Версия сравнивается в самом запросе: две
-// загрузки одновременно не опустят версию.
+// SaveCatalog — см. Store. Загрузки организации идут по одной
+// (блокировка транзакции): прежняя версия для аудита читается под ней, а
+// сравнение в самом запросе не даёт опустить версию.
 func (s *PGStore) SaveCatalog(ctx context.Context, orgID string, c StoredCatalog, rec audit.Entry) error {
 	if c.Version > maxCatalogVersion || c.SubkeySerial > maxCatalogVersion {
 		return ErrStaleCatalog
 	}
 	return s.inTx(ctx, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('aisec.shadow_ai.catalog:' || $1, 0))`, orgID); err != nil {
+			return fmt.Errorf("теневой ИИ: блокировка каталога: %w", err)
+		}
+		var prev int64
+		err := tx.QueryRow(ctx, `SELECT version FROM shadow_ai_catalog WHERE org_id = $1 FOR UPDATE`, orgID).Scan(&prev)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("теневой ИИ: прежний каталог: %w", err)
+		}
+		if d, ok := rec.Details.(map[string]any); ok {
+			d["previous_version"] = uint64(prev) //nolint:gosec // G115: CHECK version > 0 в схеме
+		}
 		tag, err := tx.Exec(ctx, `INSERT INTO shadow_ai_catalog
 			(org_id, version, catalog_date, subkey_serial, fingerprint, services, file, uploaded_at, uploaded_by)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
@@ -230,6 +265,9 @@ func (s *PGStore) SaveImport(ctx context.Context, orgID string, imp ImportRecord
 		if err := lockWrites(ctx, tx, orgID); err != nil {
 			return err
 		}
+		if err := s.checkCapacity(ctx, tx, orgID, len(imp.Aggregates)); err != nil {
+			return err
+		}
 		u, err := importUsers(ctx, tx, orgID, imp)
 		if err != nil {
 			return err
@@ -280,6 +318,9 @@ func (s *PGStore) SaveSyslog(ctx context.Context, orgID string, b SyslogBatch) e
 	}
 	return s.inTx(ctx, func(tx pgx.Tx) error {
 		if err := lockWrites(ctx, tx, orgID); err != nil {
+			return err
+		}
+		if err := s.checkCapacity(ctx, tx, orgID, len(b.Aggregates)); err != nil {
 			return err
 		}
 		kept, fresh, err := writeAggregates(ctx, tx, orgID, b.Aggregates)

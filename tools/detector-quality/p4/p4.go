@@ -18,6 +18,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/azuresong-afk/ai_railway/internal/detect"
@@ -198,6 +199,75 @@ func latency(ctx context.Context, c Case, r *Result) error {
 	r.P50, r.P95 = ds[len(ds)/2], ds[(len(ds)*95+99)/100-1]
 	r.LatencyTokens, r.Runs = c.LatencyTokens, runs
 	return nil
+}
+
+// ConcurrentResult — задержка вызовов всех моделей одновременно на длинном
+// тексте (4В30): так их вызывает шлюз — детекторы фрагмента параллельно.
+type ConcurrentResult struct {
+	Models []string
+	Tokens int
+	Runs   int
+	// P50, P95 — время до ответа последней модели.
+	P50, P95 time.Duration
+	// Limit — срок вызова шлюза на таком тексте (-ml-timeout и
+	// -ml-timeout-per-window); p95 больше срока — на таких текстах ML
+	// отвечает ml_unavailable.
+	Limit time.Duration
+	Pass  bool
+}
+
+// Concurrent замеряет вызовы calls одновременно на тексте text (около
+// tokens токенов) runs раз после прогрева.
+func Concurrent(ctx context.Context, calls map[string]func(ctx context.Context, text string) error, text string, tokens, runs int, limit time.Duration) (ConcurrentResult, error) {
+	if runs <= 0 {
+		runs = 100
+	}
+	r := ConcurrentResult{Tokens: tokens, Runs: runs, Limit: limit}
+	for id := range calls {
+		r.Models = append(r.Models, id)
+	}
+	sort.Strings(r.Models)
+	round := func() error {
+		errs := make([]error, len(r.Models))
+		var wg sync.WaitGroup
+		for i, id := range r.Models {
+			wg.Go(func() { errs[i] = calls[id](ctx, text) })
+		}
+		wg.Wait()
+		for i, err := range errs {
+			if err != nil {
+				return fmt.Errorf("%s: %w", r.Models[i], err)
+			}
+		}
+		return nil
+	}
+	for range 3 {
+		if err := round(); err != nil {
+			return r, err
+		}
+	}
+	ds := make([]time.Duration, 0, runs)
+	for range runs {
+		start := time.Now()
+		if err := round(); err != nil {
+			return r, err
+		}
+		ds = append(ds, time.Since(start))
+	}
+	sort.Slice(ds, func(i, j int) bool { return ds[i] < ds[j] })
+	r.P50, r.P95 = ds[len(ds)/2], ds[(len(ds)*95+99)/100-1]
+	r.Pass = r.P95 <= limit
+	return r, nil
+}
+
+// Markdown — строка замера одновременных вызовов.
+func (r ConcurrentResult) Markdown() string {
+	verdict := "укладывается"
+	if !r.Pass {
+		verdict = "не укладывается: на таких текстах ML ответит ml_unavailable — поднять -ml-timeout-per-window или -workers"
+	}
+	return fmt.Sprintf("\nОдновременно %s на тексте %d токенов (до 16 окон), %d вызовов: p50 %s, p95 %s; срок вызова шлюза %s — %s.\n",
+		strings.Join(r.Models, ", "), r.Tokens, r.Runs, ms(r.P50), ms(r.P95), ms(r.Limit), verdict)
 }
 
 // judge — вердикт Р4: полнота выше на 10 п. п., доля ложных не выше, p95 не

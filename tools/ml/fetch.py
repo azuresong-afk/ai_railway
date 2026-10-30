@@ -41,8 +41,11 @@ def list_files(api, src, kind):
             if s.size is not None and s.size > MAX_FILE:
                 common.die(f"{src['repo']}: {s.rfilename} больше {MAX_FILE} байт")
             names.append(s.rfilename)
-    # Веса: safetensors предпочтительнее pickle (pytorch_model.bin).
-    if "model.safetensors" in names and "pytorch_model.bin" in names:
+    # Веса — только safetensors: pickle (pytorch_model.bin) при загрузке
+    # исполняет код из файла (ревью 4.r4, ниже порога).
+    if "pytorch_model.bin" in names:
+        if "model.safetensors" not in names:
+            common.die(f"{src['repo']}: веса только в pickle (pytorch_model.bin), нужен model.safetensors — сообщите в поток")
         names.remove("pytorch_model.bin")
     if not names:
         common.die(f"{src['repo']}: нет файлов по шаблонам {src['patterns']}; файлы репозитория: "

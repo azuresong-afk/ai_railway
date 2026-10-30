@@ -88,8 +88,15 @@ func (m *Memory) Catalog(context.Context, string) (StoredCatalog, error) {
 func (m *Memory) SaveCatalog(_ context.Context, _ string, c StoredCatalog, rec audit.Entry) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.catalog != nil && c.Version <= m.catalog.Version {
+	var prev uint64
+	if m.catalog != nil {
+		prev = m.catalog.Version
+	}
+	if c.Version <= prev {
 		return ErrStaleCatalog
+	}
+	if d, ok := rec.Details.(map[string]any); ok {
+		d["previous_version"] = prev
 	}
 	c.File = slices.Clone(c.File)
 	m.catalog = &c

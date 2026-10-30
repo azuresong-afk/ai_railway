@@ -125,7 +125,7 @@ func TestE2EStage4_S7_ComplianceReport(t *testing.T) {
 	if marked.Status != "met" || marked.Mark == nil || marked.Mark.Comment != comment || marked.Mark.SetBy == "" {
 		t.Fatalf("пункт после отметки: %+v", marked)
 	}
-	if after.Summary.Percent == nil || *after.Summary.Percent < *before.Summary.Percent || after.Summary.Counted != before.Summary.Counted {
+	if after.Summary.Percent == nil || *after.Summary.Percent <= *before.Summary.Percent || after.Summary.Counted != before.Summary.Counted {
 		t.Fatalf("итог после отметки: %+v (был %+v)", after.Summary, before.Summary)
 	}
 

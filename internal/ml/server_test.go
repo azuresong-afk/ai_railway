@@ -232,3 +232,35 @@ func TestServerTextAtLimit(t *testing.T) {
 		t.Fatalf("текст на пределе: %+v %s", h, b)
 	}
 }
+
+// TestServerRunTimeoutFromRequest — срок вывода назначает шлюз (4В30):
+// длинный текст не обрывается сроком сервера по умолчанию, пока его ждёт
+// шлюз, а срок шлюза ограничен MaxRunTimeout.
+func TestServerRunTimeoutFromRequest(t *testing.T) {
+	got := make(chan time.Duration, 4)
+	m := mltest.NewModel(injInfo, map[string]string{"x": "injection"}, func(ctx context.Context, text string) error {
+		dl, _ := ctx.Deadline()
+		got <- time.Until(dl)
+		return nil
+	})
+	sock := startServer(t, ml.ServerConfig{Models: []ml.Model{m}, RunTimeout: 50 * time.Millisecond, MaxRunTimeout: 300 * time.Millisecond})
+	c := dial(t, sock)
+	for _, tc := range []struct {
+		ms       uint16
+		min, max time.Duration
+	}{
+		{0, 30 * time.Millisecond, 50 * time.Millisecond},
+		{200, 150 * time.Millisecond, 200 * time.Millisecond},
+		{60000, 250 * time.Millisecond, 300 * time.Millisecond},
+	} {
+		if err := ml.WriteFrame(c, ml.Header{Type: ml.TypeDetect, ID: 1, Timeout: tc.ms}, detectBody(t, "injection", "x")); err != nil {
+			t.Fatal(err)
+		}
+		if h, _, err := ml.ReadFrame(c, ml.ClientSide); err != nil || h.Type != ml.TypeResult {
+			t.Fatalf("срок %d мс: %+v, %v", tc.ms, h, err)
+		}
+		if d := <-got; d < tc.min || d > tc.max {
+			t.Errorf("срок %d мс: вывод получил %s, ожидалось %s–%s", tc.ms, d, tc.min, tc.max)
+		}
+	}
+}

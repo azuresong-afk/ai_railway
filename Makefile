@@ -207,7 +207,11 @@ sast: lint-version ## Статический анализ (gosec) в SARIF и с
 	@mkdir -p $(BUILD)/sast
 	CGO_ENABLED=1 $(BIN)/golangci-lint run --enable-only gosec --issues-exit-code 0 \
 		--output.sarif.path $(BUILD)/sast/gosec.sarif --output.text.path stderr --show-stats=false ./...
-	go run ./tools/sast-triage -root . -sarif build/sast/gosec.sarif \
+	# Поставочная сборка aisec-ml — с тегом aisec_onnx (исполнитель ONNX
+	# Runtime, ADR-0024): отдельный прогон и SARIF (4В39 ревью 4.r4).
+	CGO_ENABLED=1 $(BIN)/golangci-lint run --enable-only gosec --build-tags e2e,aisec_onnx --issues-exit-code 0 \
+		--output.sarif.path $(BUILD)/sast/gosec-ml.sarif --output.text.path stderr --show-stats=false ./cmd/aisec-ml/...
+	go run ./tools/sast-triage -root . -sarif build/sast/gosec.sarif,build/sast/gosec-ml.sarif \
 		-triage docs/cert/sast-triage/triage.yaml -suppressed build/sast/suppressed.md
 
 .PHONY: lint-version
@@ -243,6 +247,8 @@ GOVULNDB ?= https://vuln.go.dev
 .PHONY: vuln
 vuln: $(BIN)/govulncheck ## Уязвимости зависимостей (govulncheck, база GOVULNDB)
 	$(BIN)/govulncheck -db '$(GOVULNDB)' ./...
+	# onnxruntime_go импортирует только исполнитель с тегом aisec_onnx (4В39).
+	CGO_ENABLED=1 $(BIN)/govulncheck -db '$(GOVULNDB)' -tags aisec_onnx ./cmd/aisec-ml/...
 
 $(BIN)/govulncheck:
 	@echo "Нет $@: выполните make tools (или используйте сборочный образ)"; exit 1
@@ -561,6 +567,9 @@ ifeq ($(filter 1,$(RELEASE)),1)
 	$(release-tree-check)
 endif
 	@test -d $(ORT_MIRROR) || { echo "ml-release-dir: нет $(ORT_MIRROR) — сначала make ort-fetch"; exit 1; }
+ifeq ($(filter 1,$(RELEASE)),1)
+	$(if $(ML_MODELS_DIR),go run ./tools/manifest check-models -dir $(ML_MODELS_DIR))
+endif
 	rm -rf $(ML_RELEASE_DIR)
 	docker build --pull=false -f deploy/build/Dockerfile.ml --target ml-release \
 		--build-arg VERSION='$(VERSION)' --build-arg SOURCE_DATE='$(SOURCE_DATE)' --build-arg SOURCE_EPOCH='$(SOURCE_EPOCH)' \
@@ -611,12 +620,17 @@ image-ml: ## Образ aisec-ml из build/release-ml (без сети и бе�
 # владельца, по порядку (docs/cert/build-env.md, раздел «Модели»):
 #   make ml-venv            окружение Python build/ml/venv по tools/ml/requirements.txt (хеши)
 #   make ml-fetch ML_LOCK=1 скачать модели и наборы; первый раз — зафиксировать коммиты и хеши
-#   make ml-train           подготовка данных и дообучка injection.ml и pii.ner (rubert-tiny2)
-#   make ml-export          ONNX, токенизаторы, эталоны и ML-BOM обеих моделей
+#   make ml-train           подготовка данных и дообучка моделей ML_MODELS (rubert-tiny2)
+#   make ml-export          ONNX, токенизаторы, эталоны и ML-BOM моделей ML_MODELS
 #   make ml-verify          aisec-ml (ONNX Runtime) сверяется с эталонами Python
 #   make ml-p4              замер Р4 → build/ml/p4.md (таблица для docs/detectors.md)
 #   make ml-package ML_KEY=… подписанный пакет build/ml/models (машина без сети)
 # Python и его пакеты — только инструменты разработки, в поставку не входят.
+# ML_MODELS — модели пакета: pii-ner-ru (pii.ner) — только явным
+# ML_MODELS='injection-ru-en toxicity-ru pii-ner-ru' после решения владельца
+# по модели и наборам (4В32); ключ производителя подписывает только модели
+# с записью type: ml-model в docs/cert/components.yaml.
+ML_MODELS      ?= injection-ru-en toxicity-ru
 ML_BUILD       := $(BUILD)/ml
 ML_VENV        := $(ML_BUILD)/venv
 ML_PY          := $(ML_VENV)/bin/python
@@ -634,7 +648,7 @@ ML_P4_CPUS     ?= 0-3
 # CUDA под проприетарной лицензией). Хеш колеса сверяется с
 # tools/ml/torch.sha256; пока эталона нет, печатается для записи (как ort.sha256).
 .PHONY: ml-venv
-ml-venv: ## Окружение Python для моделей build/ml/venv: точные версии и SHA-256 пакетов (сеть)
+ml-venv: ## Окружение Python для моделей build/ml/venv: точные версии и SHA-256 пакетов (сеть; ML_LOCK=1 — записать эталон torch)
 	@test -f tools/ml/requirements.txt || { echo "ml-venv: нет tools/ml/requirements.txt — список пакетов Python ждёт решения владельца (docs/cert/build-env.md, «Модели»)"; exit 1; }
 	python3 -m venv $(ML_VENV)
 	rm -rf $(ML_BUILD)/wheels
@@ -644,8 +658,11 @@ ml-venv: ## Окружение Python для моделей build/ml/venv: то�
 		if [ -s tools/ml/torch.sha256 ]; then \
 			grep -q "^$$got " tools/ml/torch.sha256 || { echo "ml-venv: хеш torch не совпадает с tools/ml/torch.sha256 — файл подменён или другая версия Python"; exit 1; }; \
 			echo "Совпадает с tools/ml/torch.sha256."; \
+		elif [ '$(ML_LOCK)' = 1 ]; then \
+			echo "$$got  $$(basename $(ML_BUILD)/wheels/torch-*.whl)" > tools/ml/torch.sha256; \
+			echo "Эталон записан в tools/ml/torch.sha256: зафиксируйте его коммитом."; \
 		else \
-			echo "Эталона tools/ml/torch.sha256 нет: запишите строку «$$got  $$(basename $(ML_BUILD)/wheels/torch-*.whl)» в этот файл и зафиксируйте коммитом."; \
+			echo "ml-venv: эталона tools/ml/torch.sha256 нет — колесо не ставится; первый запуск — make ml-venv ML_LOCK=1 (записать эталон)"; exit 1; \
 		fi
 	$(ML_PY) -m pip install --no-deps --no-index $(ML_BUILD)/wheels/torch-*.whl
 	$(ML_PY) -m pip install --no-deps --require-hashes --only-binary=:all: -r tools/ml/requirements.txt
@@ -657,30 +674,40 @@ ml-fetch: ## Скачать модели и наборы по tools/ml/sources.j
 	$(ML_PY) tools/ml/fetch.py $(if $(filter 1,$(ML_LOCK)),--lock)
 
 .PHONY: ml-train
-ml-train: ## Подготовка данных и дообучка injection.ml и pii.ner без сети (build/ml/train)
+ml-train: ## Подготовка данных и дообучка моделей ML_MODELS без сети (build/ml/train; pii-ner-ru — только явно)
 	@test -x $(ML_PY) || { echo "ml-train: нет $(ML_VENV) — сначала make ml-venv"; exit 1; }
+ifneq ($(filter injection-ru-en,$(ML_MODELS)),)
 	$(ML_PY) tools/ml/prepare.py
 	$(ML_PY) tools/ml/train.py
+endif
+ifneq ($(filter pii-ner-ru,$(ML_MODELS)),)
 	mkdir -p $(ML_BUILD)/data
 	go run ./tools/synth-pii -kind ner -split train -format spans -n 6000 > $(ML_BUILD)/data/ner-synth.jsonl
 	$(ML_PY) tools/ml/prepare_ner.py
 	$(ML_PY) tools/ml/train_ner.py
+endif
 
 .PHONY: ml-export
-ml-export: ## ONNX, токенизаторы, эталоны и ML-BOM моделей без сети (build/ml/models)
+ml-export: ## ONNX, токенизаторы, эталоны и ML-BOM моделей ML_MODELS без сети (build/ml/models)
 	@test -x $(ML_PY) || { echo "ml-export: нет $(ML_VENV) — сначала make ml-venv"; exit 1; }
 	rm -rf $(ML_BUILD)/models $(ML_BUILD)/ref $(ML_BUILD)/models.spec.json
+ifneq ($(filter injection-ru-en,$(ML_MODELS)),)
 	$(ML_PY) tools/ml/export.py --model $(ML_BUILD)/train/injection-ru-en --id injection-ru-en --version $(ML_VERSION) \
 		--task classification --directions input --corpus testdata/corpus/injection.ml
-	$(ML_PY) tools/ml/export.py --model $(ML_BUILD)/src/rubert-tiny-toxicity --id toxicity-ru --version $(ML_VERSION) \
-		--task multilabel_classification --directions input,output --corpus testdata/corpus/toxicity.ml
 	$(ML_PY) tools/ml/mlbom.py --id injection-ru-en --version $(ML_VERSION) --source rubert-tiny2 \
 		--train-report $(ML_BUILD)/train/injection-ru-en/train_report.json
+endif
+ifneq ($(filter toxicity-ru,$(ML_MODELS)),)
+	$(ML_PY) tools/ml/export.py --model $(ML_BUILD)/src/rubert-tiny-toxicity --id toxicity-ru --version $(ML_VERSION) \
+		--task multilabel_classification --directions input,output --corpus testdata/corpus/toxicity.ml
 	$(ML_PY) tools/ml/mlbom.py --id toxicity-ru --version $(ML_VERSION) --source rubert-tiny-toxicity
+endif
+ifneq ($(filter pii-ner-ru,$(ML_MODELS)),)
 	$(ML_PY) tools/ml/export.py --model $(ML_BUILD)/train/pii-ner-ru --id pii-ner-ru --version $(ML_VERSION) \
 		--task token_classification --directions input,output --corpus testdata/corpus/pii.ner
 	$(ML_PY) tools/ml/mlbom.py --id pii-ner-ru --version $(ML_VERSION) --source rubert-tiny2 --use 'pii.ner (DM-31, DM-09)' \
 		--train-report $(ML_BUILD)/train/pii-ner-ru/train_report.json
+endif
 	cd $(ML_BUILD)/models && sha256sum */model.onnx */tokenizer.json
 
 # Сверка и замер — Go с ONNX Runtime (make ort-build или ML_ORT_LIB=…):
@@ -702,12 +729,20 @@ ml-p4: ## Замер Р4 ML-детекторов против эвристик �
 # ML_TEST_KEY=1 — тестовый ключ, пакет не для поставки. Готовый пакет:
 # make ml-release-dir ML_MODELS_DIR=build/ml/models.
 .PHONY: ml-package
-ml-package: ## Подписанный пакет моделей build/ml/models (ML_KEY=… или ML_TEST_KEY=1)
+ml-package: ## Подписанный пакет моделей build/ml/models (ML_KEY=… [ML_SHA256=…] или ML_TEST_KEY=1)
 	@test -n '$(ML_KEY)$(filter 1,$(ML_TEST_KEY))' || { echo "ml-package: нужен ML_KEY=<ключ производителя> или ML_TEST_KEY=1"; exit 1; }
 	@test -z '$(ML_KEY)' || test -z '$(filter 1,$(ML_TEST_KEY))' || { echo "ml-package: ML_KEY и ML_TEST_KEY=1 вместе нельзя"; exit 1; }
 	go run ./tools/manifest sign-models -dir $(ML_BUILD)/models -spec $(ML_BUILD)/models.spec.json \
 		-version '$(ML_VERSION)' -created '$(SOURCE_DATE)' \
-		$(if $(ML_KEY),-key '$(ML_KEY)',-test-key $(MANIFEST_TEST_KEY))
+		$(if $(ML_KEY),-key '$(ML_KEY)',-test-key $(MANIFEST_TEST_KEY)) \
+		$(if $(ML_SHA256),-expect-sha256 '$(ML_SHA256)')
+
+# Хеш манифеста пакета моделей на сборочной машине — для ML_SHA256=… на
+# машине подписи (как MANIFEST_SHA256 у release-sign).
+.PHONY: ml-package-sum
+ml-package-sum: ## SHA-256 манифеста пакета моделей без подписи (для ml-package ML_KEY=… ML_SHA256=…)
+	go run ./tools/manifest sign-models -dir $(ML_BUILD)/models -spec $(ML_BUILD)/models.spec.json \
+		-version '$(ML_VERSION)' -created '$(SOURCE_DATE)' -dry-run
 
 # CI: Go-шаги — в сборочном образе (точная версия Go и sbom-utility), docker
 # build — на хосте.

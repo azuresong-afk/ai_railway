@@ -70,6 +70,27 @@ func TestComplianceReportDoc(t *testing.T) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
+	// 4В36: пункт с проверками, исключённый «не применимо», — в разделе
+	// «Исключены вручную» с автором и датой.
+	o := complianceOverview()
+	na := &compliance.Mark{RequirementID: "a.one", Status: compliance.StatusNotApplicable, Comment: "Закрыто договором", ReviewBy: "2027-03-01",
+		SetAt: time.Date(2026, 10, 21, 9, 0, 0, 0, time.UTC), SetBy: "user:u7"}
+	o.Items[0].Mark, o.Items[0].Status = na, compliance.StatusNotApplicable
+	o.Items[0].Auto = &compliance.AutoResult{Status: compliance.StatusNotMet}
+	dx, err := (&Builder{Compliance: fakeCompliance{o: o}}).complianceReport(context.Background(), Params{Kind: KindCompliance, Period: Period{Loc: time.UTC}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ex *Section
+	for i := range dx.Sections {
+		if dx.Sections[i].Title == "Исключены вручную" {
+			ex = &dx.Sections[i]
+		}
+	}
+	if ex == nil || len(ex.Rows) != 1 || ex.Rows[0][0].Text != "a.one" || ex.Rows[0][5].Text != "user:u7" ||
+		!strings.Contains(ex.Rows[0][6].Text, "21.10.2026") || ex.Rows[0][3].Text != compliance.StatusTitle(compliance.StatusNotMet) {
+		t.Fatalf("исключены вручную: %+v", ex)
+	}
 	// В CSV комментарий-формула не исполняется: префикс «'».
 	var csv bytes.Buffer
 	if err := WriteCSV(&csv, d, ';'); err != nil {

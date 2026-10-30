@@ -109,8 +109,12 @@ cat build/ort/toolchain.versions    # версии cmake, gcc, glibc сборк�
 make ort-build                      # повтор с нуля: хеш должен совпасть (воспроизводимость)
 sha256sum build/ort/lib/libonnxruntime.so.1.31.0 > deploy/build/onnxruntime/ort.sha256
 cp build/ort/toolchain.versions deploy/build/onnxruntime/toolchain.versions                # эталон набора инструментов; затем коммит обоих
+make ml-test AISEC_ORT_LIB=build/ort/lib/libonnxruntime.so.1.31.0   # TestONNXExecutor: вывод модели через собранную библиотеку
 make ml-release-dir                 # выпуск aisec-ml с тестовым ключом; хеш ORT сверяется с эталоном
 ```
+`TestONNXExecutor` без `AISEC_ORT_LIB` пропускается — так в `make check` и CI, где библиотеки нет (ревью 4.r4, ниже порога): вывод через ONNX Runtime проверяет только этот шаг у владельца и `make ml-verify`.
+
+Сборочные инструменты `Dockerfile.ml` (cmake, ninja-build, python3, gcc, binutils) в продукт не попадают и отдельных записей `scope: build` в `components.yaml` не имеют: их точные версии фиксирует `toolchain.versions` (эталон в репозитории), а образ `golang` — запись `components.yaml` с digest.
 Для поставки: `make ml-release-dir RELEASE=1` на теге, подпись `make release-sign RELEASE_DIR=build/release-ml` на машине без сети, затем `make images RELEASE=1 ML=1`. Лицензии системных библиотек образа приняты владельцем 28.10.2026 (ADR-0024); образ `aisec-ml` заказчику не передаётся до пакета моделей (часть 2 задачи 4.19).
 
 ## Модели для `aisec-ml` (задачи 4.19, часть 2, и 4.20; ADR-0024)
@@ -124,13 +128,13 @@ make ml-release-dir                 # выпуск aisec-ml с тестовым 
 
 | Шаг | Команда | Что делает | Сеть | Что получится |
 |---|---|---|---|---|
-| 1 | `make ml-venv` | Создаёт отдельное окружение Python `build/ml/venv` (систему не трогает) и ставит пакеты точных версий по `tools/ml/requirements.txt`; у каждого файла сверяется SHA-256. torch — сборка только для процессора с download.pytorch.org (с PyPI тянет CUDA под проприетарной лицензией NVIDIA) | да | первый раз печатает хеш колеса torch — записать строку, которую он покажет, в `tools/ml/torch.sha256` и закоммитить; дальше хеш сверяется |
+| 1 | `make ml-venv ML_LOCK=1` (первый раз), дальше `make ml-venv` | Создаёт отдельное окружение Python `build/ml/venv` (систему не трогает) и ставит пакеты точных версий по `tools/ml/requirements.txt`; у каждого файла сверяется SHA-256. torch — сборка только для процессора с download.pytorch.org (с PyPI тянет CUDA под проприетарной лицензией NVIDIA) | да | первый раз (`ML_LOCK=1`) записывает хеш колеса torch в `tools/ml/torch.sha256` — закоммитить; дальше хеш сверяется, а без эталона и без `ML_LOCK=1` колесо не ставится |
 | 2 | `make ml-fetch ML_LOCK=1` | Скачивает 2 модели и 4 набора данных из `tools/ml/sources.json` в `build/ml/src` (после согласия владельца — ещё factRuEval-2016 с GitHub, задача 4.20). Первый раз фиксирует коммит репозитория и SHA-256 каждого файла в `sources.json` | да | изменённый `tools/ml/sources.json` — закоммитить. Повторный запуск без `ML_LOCK=1` только сверяет: другой файл — ошибка |
 | 3 | `make ml-train` | Готовит данные (`build/ml/data`): убирает из обучения всё, что похоже на проверочный корпус, делит на обучение и проверку эпох; дообучает `rubert-tiny2` на распознавание инъекций | нет | `build/ml/train/injection-ru-en` и `train_report.json` (полнота и доля ложных по эпохам). На 4 ядрах — от получаса до нескольких часов |
 | 4 | `make ml-export` | Переводит обе модели в ONNX, сохраняет токенизаторы, считает эталоны (токены и выход модели в Python) и пишет ML-BOM | нет | `build/ml/models/<модель>/` (`model.onnx`, `tokenizer.json`, `mlbom.cdx.json`), `build/ml/models.spec.json`, `build/ml/ref`; в конце — SHA-256 файлов моделей |
 | 5 | `make ml-verify` | Продукт (Go и ONNX Runtime, как в `aisec-ml`) разбирает тексты своим токенизатором и считает модели; сверяет с эталонами шага 4 | нет | `PASS` и строка «токены и logits совпадают» по каждой модели. Расхождение — ошибка: модель в пакет не идёт |
 | 6 | `make ml-p4` | Замер Р4 (`docs/detectors.md`, раздел «Замер Р4»): ML против эвристик на проверочных корпусах и задержка на 2 000 токенов; процесс привязан к процессорам 0–3 (`ML_P4_CPUS=…` — другие четыре) | нет | `build/ml/p4.md` — прислать в поток или вставить таблицу в `docs/detectors.md`; столбец «Р4» — «проходит» или причина |
-| 7 | `make ml-package ML_KEY=<ключ>` | Подписывает пакет моделей ключом производителя: только на машине без сети, как `make release-sign` (ADR-0022) | нет | `build/ml/models/aisec-models.json` и `.sig`. Для пробы — `make ml-package ML_TEST_KEY=1` (тестовый ключ, не для поставки) |
+| 7 | `make ml-package-sum` на сборочной машине, затем `make ml-package ML_KEY=<ключ> ML_SHA256=<хеш>` | Первая команда печатает SHA-256 манифеста пакета, ничего не записывая; вторая подписывает пакет ключом производителя только на машине без сети, как `make release-sign` (ADR-0022), и отказывает, если манифест, собранный из перенесённых файлов, дал другой хеш | нет | `build/ml/models/aisec-models.json` и `.sig`. Для пробы — `make ml-package ML_TEST_KEY=1` (тестовый ключ, не для поставки) |
 | 8 | `make ml-release-dir ML_MODELS_DIR=build/ml/models` | Выпуск `aisec-ml` вместе с пакетом моделей (раздел выше) | нет | `build/release-ml/models` |
 
 В пакет моделей шага 7 входит только модель, прошедшая Р4: если `injection.ml` не прошла, перед шагом 4 модель исключается (сообщить в поток — поправим цель), а итог пишется в `docs/detectors.md`. Версия пакета — `ML_VERSION=…` (по умолчанию `1.0.0`) на шагах 4 и 7, одна и та же.

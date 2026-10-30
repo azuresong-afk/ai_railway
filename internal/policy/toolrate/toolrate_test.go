@@ -1,7 +1,11 @@
 package toolrate
 
 import (
+	"bytes"
+	"context"
+	"log/slog"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -77,5 +81,48 @@ func TestConcurrentHits(t *testing.T) {
 	wg.Wait()
 	if c.Len() > 10 {
 		t.Fatalf("ключей больше предела: %d", c.Len())
+	}
+}
+
+// syncBuffer — журнал для фоновой горутины теста.
+type syncBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
+}
+
+// 4Н11 ревью 4.r1: уборка по таймеру удаляет давно не использованные
+// ключи, о вытеснениях — предупреждение с числом, без ключей.
+func TestMaintainSweepsAndWarns(t *testing.T) {
+	c := New(2)
+	for _, k := range []string{"agent-secret-1", "agent-secret-2", "agent-secret-3"} {
+		c.Hit(k, time.Minute, 10, t0) // t0 — давно: дольше SweepIdle
+	}
+	var log syncBuffer
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		c.Maintain(ctx, 5*time.Millisecond, SweepIdle, slog.New(slog.NewJSONHandler(&log, nil)))
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for (c.Len() != 0 || !strings.Contains(log.String(), `"evicted":1`)) && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	<-done
+	if c.Len() != 0 || strings.Count(log.String(), `"evicted"`) != 1 || strings.Contains(log.String(), "agent-secret") {
+		t.Fatalf("ключей %d, журнал: %s", c.Len(), log.String())
 	}
 }

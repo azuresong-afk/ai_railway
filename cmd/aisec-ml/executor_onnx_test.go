@@ -102,7 +102,7 @@ type wordTokenizer struct{}
 
 func (wordTokenizer) Special() (cls, sep int64) { return 0, 0 }
 
-func (wordTokenizer) Encode(text string, maxTokens int) ([]int64, [][2]int, bool, error) {
+func (wordTokenizer) Encode(_ context.Context, text string, maxTokens int) ([]int64, [][2]int, bool, error) {
 	var ids []int64
 	var offs [][2]int
 	pos := 0

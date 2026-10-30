@@ -381,6 +381,11 @@ func readRegular(root *os.Root, name string, limit int64) ([]byte, error) {
 	if err != nil || !os.SameFile(info, st) {
 		return nil, fmt.Errorf("%s: файл заменён во время проверки", name)
 	}
+	// Размер открытого файла — снова в пределе: файл мог вырасти между
+	// проверкой и открытием, а буфер выделяется по нему (ревью 4.r3).
+	if st.Size() > limit || st.Size() != info.Size() {
+		return nil, fmt.Errorf("%s: файл изменён во время проверки", name)
+	}
 	// Ровно заявленный размер; файл, выросший после проверки, отвергается.
 	b := make([]byte, st.Size())
 	if _, err := io.ReadFull(f, b); err != nil {

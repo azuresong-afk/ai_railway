@@ -270,8 +270,15 @@ func TestVerifyCatalogRejects(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	revokedSerials := revokedServiceDBSerials
-	t.Cleanup(func() { revokedServiceDBSerials = revokedSerials })
+	// База требований соответствия — того же назначения service_db, но
+	// другого вида: под видом каталога не принимается (threat-model.md).
+	base, err := aisecCrypto.SignServiceDB(signer(t, testSubkey, aisecCrypto.KeyKindVendorSubkey), readFile(t, testEndorsement),
+		"compliance_requirements", []byte(catalogYAML(2, "2026-10-28")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Отозванный номер заверения — табличный тест в internal/integrity
+	// (TestRevokedServiceDBAndLicense).
 	for name, tc := range map[string]struct {
 		vendor aisecCrypto.Verifier
 		data   []byte
@@ -282,12 +289,11 @@ func TestVerifyCatalogRejects(t *testing.T) {
 		"заверение лицензий":       {vendor, swapEndorsement(t, good, endorseTest(t, aisecCrypto.PurposeLicense, 2, from, until)), testNow, "purpose"},
 		"истёкшее заверение":       {vendor, good, time.Date(2031, 10, 1, 0, 0, 0, 0, time.UTC), "expired"},
 		"дата вне заверения":       {vendor, signCatalog(t, catalogYAML(2, "2027-12-01"), endorseTest(t, aisecCrypto.PurposeServiceDB, 3, from, until)), time.Time{}, "date"},
-		"отозванное":               {vendor, signCatalog(t, catalogYAML(2, "2026-10-28"), endorseTest(t, aisecCrypto.PurposeServiceDB, 99, from, until)), testNow, "revoked"},
+		"база требований":          {vendor, base, testNow, "kind"},
 		"мусор":                    {vendor, []byte("\x00\x01binary"), testNow, "format"},
 		"неверный каталог":         {vendor, signCatalog(t, "format: x\n", nil), testNow, "format"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			revokedServiceDBSerials = []uint64{99}
 			_, err := VerifyCatalog(p, tc.vendor, tc.data, tc.at)
 			if err == nil || RejectReason(err) != tc.reason {
 				t.Fatalf("ожидалась причина %s, получено %v (%s)", tc.reason, err, RejectReason(err))

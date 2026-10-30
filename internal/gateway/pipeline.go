@@ -131,6 +131,11 @@ type inspectRequest struct {
 	// DetectOnly — только находки и решение, фрагменты не меняются
 	// (окна потока, проверка после передачи).
 	DetectOnly bool
+	// Window — окно потока ответа: ML-детекторы, у которых в политике только
+	// правила log, не вызываются (4В30) — решения они не меняют, а вызов
+	// каждые streamCheckStep байт нагружает aisec-ml; находки для события
+	// даёт проверка ответа целиком.
+	Window bool
 	// User — псевдоним пользователя запроса (условие исключений).
 	User string
 	// Extra — находки детекторов уровня запроса, найденные до проверки
@@ -249,6 +254,11 @@ func (a *App) inspect(ctx context.Context, req inspectRequest) (*inspection, err
 		req.Direction = detect.Input
 	}
 	policyIDs := a.Policy.Detectors(req.Direction)
+	if req.Window {
+		policyIDs = slices.DeleteFunc(policyIDs, func(id string) bool {
+			return mlBacked(a.Detectors, id) && a.Policy.LogOnly(id, req.Direction)
+		})
+	}
 	runIDs := slices.Clone(policyIDs)
 	if req.Mask {
 		for _, id := range maskDetectors {

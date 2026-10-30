@@ -62,6 +62,9 @@ const (
 	// CodeApprovalQueueFull — очередь подтверждений шлюза или агента
 	// переполнена (DM-22, задача 4.10); только внутренний API.
 	CodeApprovalQueueFull = "approval_queue_full"
+	// CodeInsufficientStorage — достигнут предел хранимых сводок теневого
+	// ИИ (4Н25 ревью 4.r3).
+	CodeInsufficientStorage = "insufficient_storage"
 	// Отказы по лицензии (ADR-0026, п. 5): изменения запрещены после
 	// льготного периода, модуль не входит в лицензию, превышен предел
 	// шлюзов или приложений.
@@ -71,26 +74,27 @@ const (
 )
 
 var problemTitles = map[string]string{
-	CodeInvalidRequest:    "Неверный запрос",
-	CodeUnauthorized:      "Требуется вход",
-	CodeForbidden:         "Доступ запрещён",
-	CodeReauthFailed:      "Повторная проверка не пройдена",
-	CodeNotFound:          "Не найдено",
-	CodeMethodNotAllowed:  "Метод не поддерживается",
-	CodeConflict:          "Конфликт",
-	CodePayloadTooLarge:   "Запрос слишком большой",
-	CodeUnsupportedMedia:  "Неподдерживаемый тип содержимого",
-	CodeUnprocessable:     "Запрос не может быть обработан",
-	CodeRateLimited:       "Слишком много запросов",
-	CodeInternal:          "Внутренняя ошибка",
-	CodeUnavailable:       "Сервис недоступен",
-	CodeBundleKeyMismatch: "Ключ получателя не совпадает с закреплённым",
-	CodeReissueNotNeeded:  "Перевыпуск сертификата не нужен",
-	CodeSelfReview:        "Нужна проверка другим пользователем",
-	CodeApprovalQueueFull: "Очередь подтверждений переполнена",
-	CodeLicenseRestricted: "Изменения запрещены лицензией",
-	CodeLicenseModule:     "Модуль не входит в лицензию",
-	CodeLicenseLimit:      "Превышен предел лицензии",
+	CodeInvalidRequest:      "Неверный запрос",
+	CodeUnauthorized:        "Требуется вход",
+	CodeForbidden:           "Доступ запрещён",
+	CodeReauthFailed:        "Повторная проверка не пройдена",
+	CodeNotFound:            "Не найдено",
+	CodeMethodNotAllowed:    "Метод не поддерживается",
+	CodeConflict:            "Конфликт",
+	CodePayloadTooLarge:     "Запрос слишком большой",
+	CodeUnsupportedMedia:    "Неподдерживаемый тип содержимого",
+	CodeUnprocessable:       "Запрос не может быть обработан",
+	CodeRateLimited:         "Слишком много запросов",
+	CodeInternal:            "Внутренняя ошибка",
+	CodeUnavailable:         "Сервис недоступен",
+	CodeBundleKeyMismatch:   "Ключ получателя не совпадает с закреплённым",
+	CodeReissueNotNeeded:    "Перевыпуск сертификата не нужен",
+	CodeSelfReview:          "Нужна проверка другим пользователем",
+	CodeApprovalQueueFull:   "Очередь подтверждений переполнена",
+	CodeInsufficientStorage: "Достигнут предел хранимых данных",
+	CodeLicenseRestricted:   "Изменения запрещены лицензией",
+	CodeLicenseModule:       "Модуль не входит в лицензию",
+	CodeLicenseLimit:        "Превышен предел лицензии",
 }
 
 // NewProblem собирает ошибку по коду; заголовок берётся из таблицы.

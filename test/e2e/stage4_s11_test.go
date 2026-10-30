@@ -168,7 +168,11 @@ func TestE2EStage4_S11_ShadowAI(t *testing.T) {
 		}
 	}
 	for _, path := range []string{"/api/v1/shadow-ai/users", "/api/v1/shadow-ai/services", "/api/v1/shadow-ai/imports", "/api/v1/audit?limit=50"} {
-		if body := string(admin.do("GET", path, nil).body); strings.Contains(body, "ivanov.ia") || strings.Contains(body, "petrova.ms") ||
+		r := admin.do("GET", path, nil)
+		if r.code != http.StatusOK {
+			t.Fatalf("%s: %d (проверка «содержимого нет» без ответа 200 ничего не доказывает, 4Н36)", path, r.code)
+		}
+		if body := string(r.body); strings.Contains(body, "ivanov.ia") || strings.Contains(body, "petrova.ms") ||
 			strings.Contains(body, "10.0.12.3") || strings.Contains(body, "example.ru") {
 			t.Fatalf("в ответе %s логин, адрес или узел из журнала: %.400s", path, body)
 		}

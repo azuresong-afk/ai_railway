@@ -3,20 +3,11 @@ package compliance
 import (
 	"errors"
 	"fmt"
-	"slices"
 	"time"
 
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/internal/integrity"
 )
-
-// revokedServiceDBSerials — отозванные номера заверений рабочих ключей
-// служебных баз (ADR-0022, п. 2; ADR-0027, п. 2). Список ведётся отдельно
-// от каталога теневого ИИ: при отзыве ключа номер вносится в оба списка
-// (ревью 4.r4 сведёт их в один).
-var revokedServiceDBSerials = []uint64{}
-
-func revokedSerial(serial uint64) bool { return slices.Contains(revokedServiceDBSerials, serial) }
 
 // ErrBaseDate — дата базы вне срока заверения рабочего ключа.
 var ErrBaseDate = errors.New("база требований: дата выпуска вне срока заверения рабочего ключа")
@@ -45,7 +36,7 @@ func VerifyBaseFile(p aisecCrypto.Provider, data []byte, at time.Time) (SignedBa
 // подписи проверяет готовый файл ключом из -vendor-pub). Подпись, заверение
 // и вид проверяет только internal/crypto.
 func VerifyBase(p aisecCrypto.Provider, vendor aisecCrypto.Verifier, data []byte, at time.Time) (SignedBase, error) {
-	db, err := aisecCrypto.VerifyServiceDB(p, vendor, data, BaseKind, aisecCrypto.EndorsementCheck{At: at, Revoked: revokedSerial})
+	db, err := aisecCrypto.VerifyServiceDB(p, vendor, data, BaseKind, aisecCrypto.EndorsementCheck{At: at, Revoked: integrity.RevokedServiceDB})
 	if err != nil {
 		return SignedBase{}, err
 	}

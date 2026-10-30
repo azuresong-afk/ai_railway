@@ -8,8 +8,8 @@ export type ApprovalState = Approval["state"];
 const id = encodeURIComponent;
 
 export const approvalsApi = {
-  list: (state: ApprovalState | undefined, signal?: AbortSignal) =>
-    request<S["ApprovalList"]>("GET", `/api/v1/approvals?limit=100${state ? `&state=${state}` : ""}`, undefined, signal),
+  list: (state: ApprovalState | undefined, signal?: AbortSignal, background?: boolean) =>
+    request<S["ApprovalList"]>("GET", `/api/v1/approvals?limit=100${state ? `&state=${state}` : ""}`, undefined, signal, background),
   get: (aid: string, signal?: AbortSignal) => request<Approval>("GET", `/api/v1/approvals/${id(aid)}`, undefined, signal),
   approve: (aid: string, b: S["ApprovalApprove"]) => request<Approval>("POST", `/api/v1/approvals/${id(aid)}/approve`, b),
   deny: (aid: string, comment: string) => request<Approval>("POST", `/api/v1/approvals/${id(aid)}/deny`, comment ? { comment } : {}),

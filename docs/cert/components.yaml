@@ -177,7 +177,7 @@ components:
     version: 1.27.3-bookworm@sha256:21ade014faf952365b9ecbd8dbdb87176fbacb82fac9fb132d9f2a7b8cc3f132
     type: image
     scope: build
-    purpose: Основа сборочного образа (deploy/build/Dockerfile), стадии сборки образов стенда разработки, стадии go лабораторной сборки (deploy/build/Dockerfile.lab, задача 4.32) и сборки ONNX Runtime и aisec-ml (deploy/build/Dockerfile.ml, задача 4.19; cmake — из bookworm-backports). Загрузчик и системные библиотеки этого образа (glibc — LGPL-2.1-or-later, libstdc++ и libgcc_s — GPL-3.0-or-later WITH GCC-exception-3.1) копируются в образ aisec-ml (deploy/build/ml-libs.sh) — это уже поставка; решение владельца по их лицензиям ожидается (ADR-0024, дополнение от 28.10.2026), до него образ aisec-ml заказчику не передаётся.
+    purpose: Основа сборочного образа (deploy/build/Dockerfile), стадии сборки образов стенда разработки, стадии go лабораторной сборки (deploy/build/Dockerfile.lab, задача 4.32) и сборки ONNX Runtime и aisec-ml (deploy/build/Dockerfile.ml, задача 4.19; cmake — из bookworm-backports). Загрузчик и системные библиотеки этого образа (glibc — LGPL-2.1-or-later, libstdc++ и libgcc_s — GPL-3.0-or-later WITH GCC-exception-3.1) копируются в образ aisec-ml (deploy/build/ml-libs.sh) — это уже поставка; лицензии приняты владельцем 28.10.2026 как системные библиотеки среды выполнения (ADR-0024, дополнение от 28.10.2026), состав — в SBOM образа aisec-ml.
     # Go — BSD-3-Clause; пакеты Debian в образе (gcc, make, bash, git и др.) — в том числе GPL и LGPL.
     license: BSD-3-Clause AND GPL-2.0-or-later AND GPL-3.0-or-later AND LGPL-2.1-or-later
     license_decision: ADR-0003 — образ сборочной среды, в поставку не входит; образы поставки собираются в scratch
@@ -185,7 +185,7 @@ components:
     attack_surface: false
     security_function: false
     provided_by: Docker Official Images (Docker, Inc.); Go — The Go Authors
-    justification: Официальный образ Go закреплён по digest (ТЗ, 8.7). Внутри — пакеты Debian под разными лицензиями, в том числе GPL; в продукт они не попадают — образы поставки собираются в scratch (ADR-0003).
+    justification: Официальный образ Go закреплён по digest (ТЗ, 8.7). Внутри — пакеты Debian под разными лицензиями, в том числе GPL; в продукт они не попадают — образы поставки собираются в scratch (ADR-0003), кроме загрузчика и системных библиотек в образе aisec-ml (см. purpose, решение владельца 28.10.2026).
     decision: план этапа 0, Д4; ADR-0003; 1.27.3 — вместе с toolchain (исправления уязвимостей стандартной библиотеки)
     decided: 2026-10-10
 
@@ -1339,9 +1339,11 @@ components:
 # Записи вносятся после make ml-fetch ML_LOCK=1 и make ml-export на машине
 # владельца (docs/cert/build-env.md, раздел «Модели»): version — коммит
 # репозитория Hugging Face из tools/ml/sources.json, хеши файлов — там же и
-# в ML-BOM пакета (build/ml/models/<id>/mlbom.cdx.json). Тип записи для
-# моделей в tools/license-check появится вместе с ними; до замера Р4 модель
-# в поставку не входит.
+# в ML-BOM пакета (build/ml/models/<id>/mlbom.cdx.json). Модель пакета —
+# запись type: ml-model, name — ID модели в пакете (injection-ru-en,
+# toxicity-ru, pii-ner-ru): без неё с решением владельца make ml-package с
+# ключом производителя и make ml-release-dir RELEASE=1 отказывают (4В32,
+# tools/manifest check-models). До замера Р4 модель в поставку не входит.
 #
 #  - name: cointegrated/rubert-tiny2            # основа injection.ml (модель injection-ru-en, дообучка)
 #    version: <коммит — ждёт хешей>
@@ -1355,3 +1357,15 @@ components:
 #    license: MIT
 #    repository: https://huggingface.co/cointegrated/rubert-tiny-toxicity
 #    # лицензии наборов обучения исходной модели в карточке не указаны — записано в ML-BOM (решение владельца 28.10.2026)
+#
+#  - name: pii-ner-ru                            # pii.ner (DM-31, DM-09): дообучка rubert-tiny2 — ЖДЁТ РЕШЕНИЯ ВЛАДЕЛЬЦА
+#    version: <ML_VERSION пакета>
+#    type: ml-model
+#    scope: product
+#    license: MIT                                 # основа rubert-tiny2; лицензии обучающих данных — ниже
+#    repository: https://huggingface.co/cointegrated/rubert-tiny2
+#    security_function: true
+#    # обучающие данные: синтетика tools/synth-pii -kind ner (своя, без ПДн реальных людей);
+#    # factRuEval-2016 (MIT, https://github.com/dialogue-evaluation/factRuEval-2016) — ждёт решения владельца
+#    # (запись для tools/ml/sources.json — ADR-0024, дополнение 4.20); без решения make ml-train её не берёт
+#    decision: <ждёт решения владельца по модели и наборам (карточка потока F5, 30.10.2026)>

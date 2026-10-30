@@ -1,8 +1,9 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { Link } from "react-router";
 import { ErrorBanner } from "../admin/common";
 import type { Me } from "../api/client";
+import { isRefetch } from "../api/poll";
 import { ChartCard } from "../dashboards/charts";
 import { token } from "../dashboards/Chart";
 import { bucketLabel } from "../dashboards/format";
@@ -231,7 +232,12 @@ export function ShadowAIScreen({ me }: { me: Me }) {
   const mfa = me.mfa?.enabled === true;
   const catalog = useQuery({ queryKey: ["shadow-ai", "catalog"], queryFn: ({ signal }) => shadowApi.catalog(signal) });
   const settings = useQuery({ queryKey: ["shadow-ai", "settings"], queryFn: ({ signal }) => shadowApi.settings(signal) });
-  const syslog = useQuery({ queryKey: ["shadow-ai", "syslog"], queryFn: ({ signal }) => shadowApi.syslog(signal), refetchInterval: 30_000 });
+  const qc = useQueryClient();
+  const syslog = useQuery({
+    queryKey: ["shadow-ai", "syslog"],
+    queryFn: ({ signal, queryKey }) => shadowApi.syslog(signal, isRefetch(qc, queryKey)),
+    refetchInterval: 30_000,
+  });
   const [draft, setDraft] = useState<ExclusionDraft | null>(null);
   const c = catalog.data;
   const pseudonymized = settings.data?.users_pseudonymized ?? true;

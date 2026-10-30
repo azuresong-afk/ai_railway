@@ -287,7 +287,8 @@ func TestLoadConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	if cfg.Socket != "/run/x/s.sock" || cfg.Workers != 2 || cfg.Models != DefaultModels ||
-		cfg.IntegrityAction != integrity.ActionStop || cfg.IntegrityInterval != integrity.DefaultInterval {
+		cfg.IntegrityAction != integrity.ActionStop || cfg.IntegrityInterval != integrity.DefaultInterval ||
+		cfg.RunTimeout != ml.DefaultRunTimeout || cfg.MaxRunTimeout != ml.DefaultMaxRunTimeout {
 		t.Fatalf("конфигурация: %+v", cfg)
 	}
 	for _, args := range [][]string{
@@ -297,6 +298,9 @@ func TestLoadConfig(t *testing.T) {
 		{"-max-conns=0"},
 		{"-workers=-1"},
 		{"-queue-wait=5s"},
+		{"-run-timeout=1ms"},
+		{"-run-timeout=500ms", "-max-run-timeout=100ms"},
+		{"-max-run-timeout=1m"},
 		{"-max-model-bytes=10"},
 		{"-ort-lib=lib.so"},
 		{"-ort-lib=/opt/../lib.so"},

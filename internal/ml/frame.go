@@ -7,8 +7,9 @@ import (
 	"io"
 )
 
-// Заголовок кадра (ADR-0024, раздел 3): magic, версия, тип, резерв, номер
-// запроса и длина тела, порядок байтов big-endian.
+// Заголовок кадра (ADR-0024, раздел 3): magic, версия, тип, срок (у detect;
+// у остальных — нулевой резерв), номер запроса и длина тела, порядок байтов
+// big-endian.
 const (
 	Magic           = "AIML"
 	ProtocolVersion = 1
@@ -41,9 +42,13 @@ const (
 
 // Header — разобранный заголовок кадра.
 type Header struct {
-	Type   FrameType
-	ID     uint32
-	Length uint32
+	Type FrameType
+	// Timeout — срок вывода в миллисекундах, который назначил шлюз (только
+	// у detect; 0 — срок сервера по умолчанию). Сервер не ждёт дольше
+	// своего предела и не бросает вывод раньше срока шлюза (4В30).
+	Timeout uint16
+	ID      uint32
+	Length  uint32
 }
 
 // ErrProtocol — кадр не соответствует протоколу: соединение закрывается.
@@ -90,22 +95,26 @@ func limit(t FrameType, side Side) (max uint32, ok bool) {
 // AppendHeader дописывает заголовок кадра в b.
 func AppendHeader(b []byte, h Header) []byte {
 	b = append(b, Magic...)
-	b = append(b, ProtocolVersion, byte(h.Type), 0, 0)
+	b = append(b, ProtocolVersion, byte(h.Type))
+	b = binary.BigEndian.AppendUint16(b, h.Timeout)
 	b = binary.BigEndian.AppendUint32(b, h.ID)
 	return binary.BigEndian.AppendUint32(b, h.Length)
 }
 
-// ParseHeader проверяет заголовок: magic, версию, нулевой резерв, тип для
-// стороны side и длину по пределу типа. Ошибка ErrFrameTooLarge — тело
+// ParseHeader проверяет заголовок: magic, версию, тип для стороны side,
+// срок (не у detect — нулевой резерв) и длину по пределу типа. Ошибка ErrFrameTooLarge — тело
 // читать нельзя.
 func ParseHeader(b []byte, side Side) (Header, error) {
 	if len(b) != HeaderSize {
 		return Header{}, ErrProtocol
 	}
-	if string(b[:4]) != Magic || b[4] != ProtocolVersion || b[6] != 0 || b[7] != 0 {
+	if string(b[:4]) != Magic || b[4] != ProtocolVersion {
 		return Header{}, ErrProtocol
 	}
-	h := Header{Type: FrameType(b[5]), ID: binary.BigEndian.Uint32(b[8:12]), Length: binary.BigEndian.Uint32(b[12:16])}
+	h := Header{Type: FrameType(b[5]), Timeout: binary.BigEndian.Uint16(b[6:8]), ID: binary.BigEndian.Uint32(b[8:12]), Length: binary.BigEndian.Uint32(b[12:16])}
+	if h.Timeout != 0 && h.Type != TypeDetect {
+		return Header{}, ErrProtocol
+	}
 	maxLen, ok := limit(h.Type, side)
 	if !ok {
 		return Header{}, ErrProtocol

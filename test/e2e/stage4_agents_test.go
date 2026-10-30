@@ -347,8 +347,10 @@ func TestE2EStage4_S5_AgentDangerousAction(t *testing.T) {
 	if al.Severity != "high" || al.Group["agent"] != "report-bot" || al.Group["tool"] != "read_file" {
 		t.Fatalf("оповещение agents.tool_blocked: %+v", al)
 	}
-	if r := st.admin.do("GET", "/api/v1/alerts/"+al.ID, nil); strings.Contains(string(r.body), "/etc/passwd") {
-		t.Fatalf("аргументы вызова в оповещении: %s", r.body)
+	// Сначала код ответа: при 403 или 500 отсутствие содержимого ничего не
+	// доказывает (4Н36 ревью 4.r4).
+	if r := st.admin.do("GET", "/api/v1/alerts/"+al.ID, nil); r.code != http.StatusOK || strings.Contains(string(r.body), "/etc/passwd") {
+		t.Fatalf("аргументы вызова в оповещении: %s", r)
 	}
 
 	// DM-22. Вызов без решения ждёт в очереди и до сервера не доходит.

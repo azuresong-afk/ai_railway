@@ -307,7 +307,7 @@ func backupRestore(args []string, dsn string, stdout, stderr io.Writer, now time
 		}
 	}
 	opts := restoreOptions{allowNonEmpty: *allowNonEmpty, keepTokens: *keepTokens, now: now, ageHours: ageHours}
-	revoked, err := restoreTx(ctx, db, l, prepared, snap, opts, entry)
+	res, err := restoreTx(ctx, db, l, prepared, snap, opts, entry)
 	if err != nil {
 		var unknown *commitUnknownError
 		if errors.As(err, &unknown) {
@@ -334,8 +334,16 @@ func backupRestore(args []string, dsn string, stdout, stderr io.Writer, now time
 	if *hmacOut != "" {
 		say(stdout, "Ключ псевдонимов пользователей записан в %s (0600): передайте его шлюзам (-user-hmac-key).\n", *hmacOut)
 	}
-	if revoked > 0 {
-		say(stdout, "Токены API (%d) восстановлены отозванными: владельцы выпускают их заново.\n", revoked)
+	if res.APITokensRevoked > 0 {
+		say(stdout, "Токены API (%d) восстановлены отозванными: владельцы выпускают их заново.\n", res.APITokensRevoked)
+	}
+	if res.AgentKeysRevoked > 0 {
+		say(stdout, "Ключи приложений, закреплённые за агентами (%d), восстановлены отозванными: агенты в копию не входят. "+
+			"Создайте агентов заново и выпустите им ключи.\n", res.AgentKeysRevoked)
+	}
+	if res.AgentKeysUnknown {
+		say(stdout, "Внимание: копия снята выпуском, не отмечавшим привязку ключей к агентам. Ключ, закреплённый за агентом, "+
+			"восстановлен без привязки и может назваться любым агентом приложения: отзовите ключи агентов и выпустите заново.\n")
 	}
 	say(stdout, "Дальше: зарегистрируйте шлюзы заново (aisec-cli gateway token): ключи шлюзов и УЦ не восстанавливаются. "+
 		"Пользователи входят заново со своими паролями и вторым фактором.\n")
@@ -374,10 +382,10 @@ func (e *commitUnknownError) Unwrap() error { return e.err }
 // restoreTx записывает копию одной транзакцией: проверка пустоты и
 // совпадений под блокировкой, вставка, запись аудита «после» — вместе.
 func restoreTx(ctx context.Context, db *store.DB, l *audit.Log, prepared *backup.Prepared, snap *backup.Snapshot,
-	opts restoreOptions, entry func(audit.Result, map[string]any) audit.Entry) (int, error) {
+	opts restoreOptions, entry func(audit.Result, map[string]any) audit.Entry) (backup.RestoreResult, error) {
 	tx, err := db.Pool().Begin(ctx)
 	if err != nil {
-		return 0, err
+		return backup.RestoreResult{}, err
 	}
 	defer rollbackQuietly(ctx, tx)
 	// Блокировка первичной настройки — после своей, в одном порядке: иначе
@@ -385,7 +393,7 @@ func restoreTx(ctx context.Context, db *store.DB, l *audit.Log, prepared *backup
 	// между проверкой пустоты и вставкой (Н40 ревью 2.r4).
 	for _, key := range []int64{restoreLockID, setupLockKey} {
 		if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", key); err != nil {
-			return 0, err
+			return backup.RestoreResult{}, err
 		}
 	}
 	// Сессия, активная за последние минуты, — признак работающего сервера:
@@ -393,47 +401,49 @@ func restoreTx(ctx context.Context, db *store.DB, l *audit.Log, prepared *backup
 	var live int
 	if err := tx.QueryRow(ctx, `SELECT count(*) FROM sessions WHERE revoked_at IS NULL
 		AND last_seen_at > now() - make_interval(mins => $1)`, int(liveSessionWindow/time.Minute)).Scan(&live); err != nil {
-		return 0, err
+		return backup.RestoreResult{}, err
 	}
 	if live > 0 {
-		return 0, fmt.Errorf("%w (активных сессий за %d мин: %d)", errServerRunning, int(liveSessionWindow/time.Minute), live)
+		return backup.RestoreResult{}, fmt.Errorf("%w (активных сессий за %d мин: %d)", errServerRunning, int(liveSessionWindow/time.Minute), live)
 	}
 	st, err := backup.Inspect(ctx, tx, audit.DefaultOrgID)
 	if err != nil {
-		return 0, err
+		return backup.RestoreResult{}, err
 	}
 	if !st.Empty() && !opts.allowNonEmpty {
-		return 0, errNotEmpty
+		return backup.RestoreResult{}, errNotEmpty
 	}
 	if err := backup.Conflicts(ctx, tx, snap); err != nil {
-		return 0, err
+		return backup.RestoreResult{}, err
 	}
 	// Настройки и название организации переносятся только в пустую
 	// установку; их новые значения — в записи аудита.
 	replaceSettings := st.Empty()
-	revoked, err := backup.Restore(ctx, tx, prepared, backup.RestoreOptions{ReplaceSettings: replaceSettings,
+	res, err := backup.Restore(ctx, tx, prepared, backup.RestoreOptions{ReplaceSettings: replaceSettings,
 		KeepAPITokens: opts.keepTokens, Now: opts.now})
 	if err != nil {
-		return 0, err
+		return backup.RestoreResult{}, err
 	}
 	details := snap.Counts()
 	details["stage"] = "done"
 	details["settings_restored"] = replaceSettings
 	details["copy_age_hours"] = opts.ageHours
-	details["api_tokens_revoked"] = revoked
+	details["api_tokens_revoked"] = res.APITokensRevoked
+	details["agent_keys_revoked"] = res.AgentKeysRevoked
+	details["agent_keys_unknown"] = res.AgentKeysUnknown
 	if replaceSettings {
 		details["settings"] = snap.SettingsDetails()
 	}
 	if err := l.RecordTx(ctx, tx, entry(audit.ResultSuccess, details)); err != nil {
-		return 0, err
+		return backup.RestoreResult{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		if errors.Is(err, pgx.ErrTxCommitRollback) {
-			return 0, err
+			return backup.RestoreResult{}, err
 		}
-		return 0, &commitUnknownError{err: err}
+		return backup.RestoreResult{}, &commitUnknownError{err: err}
 	}
-	return revoked, nil
+	return res, nil
 }
 
 // writeUserHMACKey пишет ключ псевдонимов из копии в новый файл 0600.

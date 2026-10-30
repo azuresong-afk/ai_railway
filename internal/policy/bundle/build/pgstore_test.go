@@ -198,4 +198,17 @@ func TestPGConfigBundles(t *testing.T) {
 	if _, err := app.Exec(ctx, "DELETE FROM config_bundles WHERE version = 100"); sqlState(err) != "42501" {
 		t.Errorf("удаление ролью сервера: %v", err)
 	}
+	// 4Н14: момент получения ключей IdP — одна строка, ролью сервера, не
+	// уходит назад (другой экземпляр мог записать более поздний).
+	if at, err := st.UserTokenKeysAt(ctx, org); err != nil || !at.IsZero() {
+		t.Fatalf("момент до записи: %v %v", at, err)
+	}
+	for _, at := range []time.Time{now, now.Add(time.Hour), now.Add(time.Minute)} {
+		if err := st.SetUserTokenKeysAt(ctx, org, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if at, err := st.UserTokenKeysAt(ctx, org); err != nil || !at.Equal(now.Add(time.Hour)) {
+		t.Fatalf("момент получения ключей: %v %v", at, err)
+	}
 }

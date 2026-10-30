@@ -66,6 +66,12 @@ func TestExpandWords(t *testing.T) {
 			t.Errorf("%q → %q, ожидалось %q", tc.part, text[s:e], tc.want)
 		}
 	}
+	// 4Н34 ревью 4.r4: мягкий перенос (Cf) — внутри слова, хвост фамилии
+	// не уходит провайдеру.
+	soft := "Передай Ива\u00adнову отчёт"
+	if s, e := expandWords(soft, strings.Index(soft, "Ива"), strings.Index(soft, "Ива")+len("Ива")); soft[s:e] != "Ива\u00adнову" {
+		t.Errorf("мягкий перенос: %q", soft[s:e])
+	}
 	// Расширение ограничено: слово длиннее предела не раскрывается целиком.
 	long := strings.Repeat("я", 200)
 	s, e := expandWords(long, 200, 202)
@@ -212,6 +218,34 @@ func TestNERMaskedInEventContent(t *testing.T) {
 	}
 }
 
+// 4Н33 ревью 4.r4: имя, найденное pii.ner, закрыто и в аргументах для
+// дежурного (как в событии); сбой aisec-ml — не отказ показа, ПДн с
+// контрольными суммами закрывает pii.ru.
+//
+// Покрывает: DM-31 (NER)
+func TestDM31_NERMaskedInApprovalArgs(t *testing.T) {
+	sock := startNERML(t, map[string]string{"Иванов": "per"})
+	up, _ := newUpstream(t, echoHandler(t))
+	var app *App
+	newGateway(t, up.URL, func(o *gwOpts) {
+		setup := nerPolicySetup(t, sock, policy.Enforce, policy.Log, policy.Log)
+		o.setup = func(a *App) { setup(a); app = a }
+	})
+	shown, ok := app.ApprovalArgs(context.Background(), []byte(`{"to":"Иванову","mail":"`+piiEmail+`"}`), 0)
+	if !ok || strings.Contains(shown, "Иванов") || strings.Contains(shown, piiEmail) || !strings.Contains(shown, "[pii.person]") {
+		t.Fatalf("аргументы: %q %v", shown, ok)
+	}
+	// aisec-ml недоступен: показ не запрещается, pii.ru работает.
+	var down *App
+	newGateway(t, up.URL, func(o *gwOpts) {
+		setup := nerPolicySetup(t, filepath.Join(t.TempDir(), "none.sock"), policy.Enforce, policy.Log, policy.Log)
+		o.setup = func(a *App) { setup(a); down = a }
+	})
+	if shown, ok := down.ApprovalArgs(context.Background(), []byte(`{"mail":"`+piiEmail+`"}`), 0); !ok || strings.Contains(shown, piiEmail) {
+		t.Fatalf("без aisec-ml: %q %v", shown, ok)
+	}
+}
+
 // Текст длиннее MLMaxChunks частей: имена проверенной части возвращаются
 // (их маскируют), и сбой — неполная проверка (ml_unavailable), а не
 // «проверено целиком»: остаток текста не замаскирован.
@@ -247,5 +281,30 @@ func TestNERPartialKeepsFindings(t *testing.T) {
 	// Короткий текст проверен целиком — без сбоя.
 	if fs, rerrs, err = reg.Run(context.Background(), []string{builtin.PIINERID}, detect.Text{Text: "Иванову", Direction: detect.Input}, 5*time.Second); err != nil || len(fs) != 1 || len(rerrs) != 0 {
 		t.Fatalf("%+v %v %v", fs, rerrs, err)
+	}
+}
+
+// 4В33: неуверенный кусок имени (ниже ml.MinTokenScore) aisec-ml делает
+// границей фрагмента — шлюз получает «Иванов Пётр Сер» и «вич», и
+// расширение до слова закрывает всё отчество; имя целиком провайдеру не
+// уходит.
+//
+// Покрывает: DM-31 (NER)
+func TestDM31_NERUnsureTokenStillMasked(t *testing.T) {
+	if ml.MinTokenScore != builtin.MLFindingFloor {
+		t.Fatalf("граница токена %v расходится с порогом находки %v", ml.MinTokenScore, builtin.MLFindingFloor)
+	}
+	sock := startNERML(t, map[string]string{"Иванов Пётр Сер": "per", "вич": "per"})
+	up, rec := newUpstream(t, echoHandler(t))
+	g := newGateway(t, up.URL, func(o *gwOpts) { o.setup = nerSetup(t, sock) })
+	resp := postChat(t, g, userBody(t, "Передай Иванов Пётр Сергеевич отчёт"), nil)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("%d %s", resp.Code, resp.Body.String())
+	}
+	_, _, body, _ := rec.get()
+	for _, part := range []string{"Иванов", "Пётр", "Сер", "гее", "вич"} {
+		if strings.Contains(body, part) {
+			t.Fatalf("провайдер получил %q: %s", part, body)
+		}
 	}
 }
