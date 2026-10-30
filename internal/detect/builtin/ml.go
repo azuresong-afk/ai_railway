@@ -16,9 +16,14 @@ import (
 // детекторам (fail-open для ML). Шлюз с -ml-socket подставляет вместо
 // заглушки детектор с клиентом aisec-ml (gateway.MLDetector).
 //
-// Метки, модели и пороги — предварительные: модели выбирает владелец
-// (дополнение ADR-0024 от 28.10.2026), пороги и включение в поставку по
-// критерию Р4 — часть 2 задачи 4.19. До неё пакета моделей в поставке нет.
+// Модели — решение владельца от 28.10.2026 (ADR-0024, «Решение
+// владельца»): injection.ml — своя дообучка rubert-tiny2 (метки benign и
+// injection, softmax), toxicity.ml — cointegrated/rubert-tiny-toxicity
+// (метки non-toxic, insult, obscenity, threat, dangerous; каждая — своя
+// сигмоида). Threshold здесь — нижняя граница находки; порог решения — в
+// правиле политики (threshold), в шаблонах — по замеру Р4
+// (docs/detectors.md). До замера Р4 правила шаблонов только журналируют
+// (Log): новые детекторы начинают в мониторинге.
 
 // ID ML-детекторов.
 const (
@@ -44,6 +49,11 @@ type MLSpec struct {
 	Threshold float64
 }
 
+// MLFindingFloor — нижняя граница оценки находки ML-детектора: ниже —
+// находки нет. Как порог правила по умолчанию (policy.DefaultThreshold) и
+// порог метрик качества.
+const MLFindingFloor = 0.5
+
 // MLSpecs — ML-детекторы поставки.
 func MLSpecs() []MLSpec {
 	return []MLSpec{
@@ -51,7 +61,7 @@ func MLSpecs() []MLSpec {
 			ID: InjectionMLID, Version: "1.0.0", Model: "injection-ru-en",
 			Directions: []detect.Direction{detect.Input},
 			Categories: map[string]string{"injection": "injection.ml"},
-			Threat:     "DM-01", Threshold: 0.8,
+			Threat:     "DM-01", Threshold: MLFindingFloor,
 		},
 		{
 			ID: ToxicityMLID, Version: "1.0.0", Model: "toxicity-ru",
@@ -60,7 +70,7 @@ func MLSpecs() []MLSpec {
 				"insult": "toxicity.insult", "obscenity": "toxicity.obscenity",
 				"threat": "toxicity.threat", "dangerous": "toxicity.dangerous",
 			},
-			Threat: "DM-18", Threshold: 0.7,
+			Threat: "DM-18", Threshold: MLFindingFloor,
 		},
 	}
 }
@@ -93,6 +103,12 @@ func (d mlStub) Categories() []string           { return d.spec.MLCategories() }
 // MLBacked — сбой детектора не включает fail_closed, а ставит признак
 // ml_unavailable (ADR-0024, раздел 4).
 func (mlStub) MLBacked() bool { return true }
+
+// MLConnected — связи с aisec-ml нет: правила шаблонов политик с этим
+// детектором опускаются (policy.TemplateFor), чтобы шаблон по умолчанию на
+// шлюзе без aisec-ml не ставил ml_unavailable каждому событию. Политика
+// заказчика, назвавшая ML-детектор, по-прежнему получает ml_unavailable.
+func (mlStub) MLConnected() bool { return false }
 
 func (mlStub) Detect(context.Context, detect.Text) ([]detect.Finding, error) {
 	return nil, ErrMLNotConnected

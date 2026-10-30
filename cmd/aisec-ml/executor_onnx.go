@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
+	"slices"
 	"strconv"
 	"sync"
 
@@ -42,7 +44,17 @@ func newExecutor(cfg *config, p aisecCrypto.Provider) (ml.Executor, error) {
 	if ortErr != nil {
 		return nil, ortErr
 	}
-	return onnxExecutor{}, nil
+	return newONNXExecutor(cfg), nil
+}
+
+// newONNXExecutor — исполнитель с пределом одновременных выводов окон:
+// -workers (0 — по числу процессоров), как у сервера протокола.
+func newONNXExecutor(cfg *config) onnxExecutor {
+	n := cfg.Workers
+	if n <= 0 {
+		n = runtime.GOMAXPROCS(0)
+	}
+	return onnxExecutor{slots: make(chan struct{}, n)}
 }
 
 // initORT сверяет хеш файла библиотеки и загружает её по дескриптору уже
@@ -88,11 +100,13 @@ func initORT(path string, p aisecCrypto.Provider, wantHex string) error {
 	return nil
 }
 
-type onnxExecutor struct{}
+// onnxExecutor — исполнитель; slots — общий предел одновременных выводов
+// окон всех моделей.
+type onnxExecutor struct{ slots chan struct{} }
 
 // Load создаёт сеанс из проверенных байтов модели: файл модели повторно не
 // читается. Входы и выходы сверяются с манифестом пакета.
-func (onnxExecutor) Load(lm ml.LoadedModel) (ml.Model, error) {
+func (e onnxExecutor) Load(lm ml.LoadedModel) (ml.Model, error) {
 	tok, err := newTokenizer(lm.Spec, lm.Tokenizer)
 	if err != nil {
 		return nil, err
@@ -122,7 +136,7 @@ func (onnxExecutor) Load(lm ml.LoadedModel) (ml.Model, error) {
 	if err != nil {
 		return nil, fmt.Errorf("сеанс ONNX Runtime: %w", err)
 	}
-	return &onnxModel{spec: lm.Spec, info: lm.Spec.Info(), io: mio, tok: tok, s: s}, nil
+	return &onnxModel{spec: lm.Spec, info: lm.Spec.Info(), io: mio, tok: tok, s: s, slots: e.slots}, nil
 }
 
 func convertIO(in []ort.InputOutputInfo) []ioInfo {
@@ -143,24 +157,27 @@ func convertIO(in []ort.InputOutputInfo) []ioInfo {
 }
 
 type onnxModel struct {
-	spec ml.ModelSpec
-	info ml.ModelInfo
-	io   modelIO
-	tok  tokenizer
-	s    *ort.DynamicAdvancedSession
+	spec  ml.ModelSpec
+	info  ml.ModelInfo
+	io    modelIO
+	tok   tokenizer
+	s     *ort.DynamicAdvancedSession
+	slots chan struct{}
 }
 
 func (m *onnxModel) Info() ml.ModelInfo { return m.info }
 
-// Run — вывод на одном тексте. Отмена ctx прерывает вывод в ONNX Runtime
-// (RunOptions.Terminate).
+// Run — вывод на тексте по окнам (runWindows): окна одного текста —
+// одновременно в пределах -workers. Отмена ctx прерывает вывод в ONNX
+// Runtime (RunOptions.Terminate).
 func (m *onnxModel) Run(ctx context.Context, text string) (ml.Result, error) {
-	ids, offsets, truncated, err := m.tok.Encode(text, m.spec.MaxTokens)
-	if err != nil {
-		return ml.Result{}, err
-	}
-	if len(ids) == 0 || len(ids) > m.spec.MaxTokens || len(offsets) != len(ids) {
-		return ml.Result{}, errors.New("токенизатор вернул неверное число токенов")
+	return runWindows(ctx, m.spec, m.tok, text, m.infer, m.slots)
+}
+
+// infer — вывод на одном окне [1, len(ids)].
+func (m *onnxModel) infer(ctx context.Context, ids []int64) ([]float32, error) {
+	if len(ids) == 0 || len(ids) > m.spec.MaxTokens {
+		return nil, errors.New("окно токенов вне пределов модели")
 	}
 	shape := ort.NewShape(1, int64(len(ids)))
 	data := encodeInputs(m.io, ids)
@@ -173,13 +190,13 @@ func (m *onnxModel) Run(ctx context.Context, text string) (ml.Result, error) {
 	for _, name := range m.io.Inputs {
 		t, err := ort.NewTensor(shape, data[name])
 		if err != nil {
-			return ml.Result{}, err
+			return nil, err
 		}
 		inputs = append(inputs, t)
 	}
 	ro, err := ort.NewRunOptions()
 	if err != nil {
-		return ml.Result{}, err
+		return nil, err
 	}
 	defer ro.Destroy()                                            //nolint:errcheck // параметры вызова освобождаются после вывода
 	stop := context.AfterFunc(ctx, func() { _ = ro.Terminate() }) //nolint:gosec // G104: прерывание вывода
@@ -187,26 +204,17 @@ func (m *onnxModel) Run(ctx context.Context, text string) (ml.Result, error) {
 	outputs := []ort.Value{nil}
 	if err := m.s.RunWithOptions(inputs, outputs, ro); err != nil {
 		if ctx.Err() != nil {
-			return ml.Result{}, ctx.Err()
+			return nil, ctx.Err()
 		}
-		return ml.Result{}, fmt.Errorf("вывод модели: %w", err)
+		return nil, fmt.Errorf("вывод модели: %w", err)
 	}
 	defer outputs[0].Destroy() //nolint:errcheck // выход освобождается после разбора
 	logits, ok := outputs[0].(*ort.Tensor[float32])
 	if !ok {
-		return ml.Result{}, errors.New("выход logits — не тензор float32")
+		return nil, errors.New("выход logits — не тензор float32")
 	}
-	var scores []ml.Score
-	switch m.spec.Task {
-	case ml.TaskClassification:
-		scores, err = classify(logits.GetData(), m.spec.Labels, offsets)
-	default:
-		scores, err = tokenSpans(logits.GetData(), m.spec.Labels, offsets)
-	}
-	if err != nil {
-		return ml.Result{}, err
-	}
-	return ml.Result{Model: m.info.ID, Version: m.info.Version, Truncated: truncated, Findings: scores}, nil
+	// Копия: тензор освобождается при выходе.
+	return slices.Clone(logits.GetData()), nil
 }
 
 func (m *onnxModel) Close() error { return m.s.Destroy() }

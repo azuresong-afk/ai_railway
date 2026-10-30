@@ -13,6 +13,13 @@ import (
 // для детекторов, которых нет в реестре, при компиляции шаблона опускаются
 // (TemplatePolicy). Политика заказчика проверяется строго: неизвестный
 // детектор — ошибка (Compile).
+//
+// ML-детекторы (ADR-0024): Template их правил не содержит; TemplateFor
+// добавляет их (templateMLRules) только для реестра с подключённым aisec-ml
+// — на шлюзе с -ml-socket. Без aisec-ml (сервер, песочница, шлюз без
+// сокета) правило ML-детектора только ставило бы ml_unavailable каждому
+// событию. До замера Р4 (docs/detectors.md) правила ML только журналируют
+// (log): новые детекторы начинают в мониторинге.
 
 // ID шаблонов.
 const (
@@ -37,7 +44,46 @@ const (
 	detCanary    = "canary"
 	detExfil     = "output.exfil"
 	detLists     = "lists"
+	detInjML     = "injection.ml"
+	detToxML     = "toxicity.ml"
 )
+
+// Пороги ML-правил шаблонов — до замера Р4 (задача 4.19); после замера —
+// по таблице «Замер Р4» docs/detectors.md.
+var (
+	thrInjML = 0.8
+	thrToxML = 0.7
+)
+
+// TemplateMLThreshold — порог правил ML-детектора det в шаблонах (замер Р4
+// считает метрики при нём).
+func TemplateMLThreshold(det string) (float64, bool) {
+	switch det {
+	case detInjML:
+		return thrInjML, true
+	case detToxML:
+		return thrToxML, true
+	}
+	return 0, false
+}
+
+// templateMLRules — правила ML-детекторов шаблона id: только журнал.
+func templateMLRules(id string) []RuleSpec {
+	inj, tox := thrInjML, thrToxML
+	switch id {
+	case TemplateBase, TemplatePIIStrict, TemplateExternalPII, TemplateAgentBase:
+		return []RuleSpec{
+			{ID: "injection-ml", Detector: detInjML, Directions: slices.Clone(in), Threshold: &inj, Action: Log, Severity: High},
+			{ID: "toxicity-ml", Detector: detToxML, Threshold: &tox, Action: Log, Severity: Medium},
+		}
+	case TemplateMonitorOnly:
+		return []RuleSpec{
+			{ID: "log-injection-ml", Detector: detInjML, Threshold: &inj, Action: Log, Severity: Info},
+			{ID: "log-toxicity-ml", Detector: detToxML, Threshold: &tox, Action: Log, Severity: Info},
+		}
+	}
+	return nil
+}
 
 var (
 	in     = []detect.Direction{detect.Input}
@@ -132,6 +178,14 @@ func Template(id string) (*Spec, bool) {
 	return s, true
 }
 
+// mlNotConnected — ML-детектор без связи с aisec-ml (заглушка
+// internal/detect/builtin): правило шаблона с ним только ставило бы
+// ml_unavailable каждому событию.
+func mlNotConnected(d detect.Detector) bool {
+	m, ok := d.(interface{ MLConnected() bool })
+	return ok && !m.MLConnected()
+}
+
 func slug(det string) string {
 	b := []byte(det)
 	for i, c := range b {
@@ -154,7 +208,8 @@ func TemplatePolicy(id string, c Catalog) (*Policy, error) {
 }
 
 // TemplateFor — копия шаблона для реестра: правила детекторов, которых в
-// реестре нет, опущены, направления — только те, что детектор проверяет.
+// реестре нет, опущены, направления — только те, что детектор проверяет;
+// правила ML-детекторов — только если aisec-ml подключён.
 // Такую спецификацию принимает строгая Compile (копия шаблона в сервере,
 // задача 2.12).
 func TemplateFor(id string, c Catalog) (*Spec, bool) {
@@ -162,10 +217,11 @@ func TemplateFor(id string, c Catalog) (*Spec, bool) {
 	if !ok {
 		return nil, false
 	}
+	s.Rules = append(s.Rules, templateMLRules(id)...)
 	rules := s.Rules[:0]
 	for _, r := range s.Rules {
 		d, ok := c.Get(r.Detector)
-		if !ok {
+		if !ok || mlNotConnected(d) {
 			continue
 		}
 		if len(r.Directions) > 0 {

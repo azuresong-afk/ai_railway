@@ -1334,3 +1334,24 @@ components:
     justification: Нужна libstdc++ и ONNX Runtime для исключений C++. Исключение GCC Runtime Library 3.1 разрешает распространять скомпонованный код под любой лицензией. Файл копируется без изменений из сборочного образа, хеш — в манифесте выпуска aisec-ml.
     decision: ADR-0024, «Решение владельца по лицензиям системных библиотек» (28.10.2026, поток E5)
     decided: 2026-10-28
+
+# Модели ML-детекторов (задача 4.19, часть 2; ADR-0024) — ЖДЁТ ХЕШЕЙ.
+# Записи вносятся после make ml-fetch ML_LOCK=1 и make ml-export на машине
+# владельца (docs/cert/build-env.md, раздел «Модели»): version — коммит
+# репозитория Hugging Face из tools/ml/sources.json, хеши файлов — там же и
+# в ML-BOM пакета (build/ml/models/<id>/mlbom.cdx.json). Тип записи для
+# моделей в tools/license-check появится вместе с ними; до замера Р4 модель
+# в поставку не входит.
+#
+#  - name: cointegrated/rubert-tiny2            # основа injection.ml (модель injection-ru-en, дообучка)
+#    version: <коммит — ждёт хешей>
+#    scope: product
+#    license: MIT
+#    repository: https://huggingface.co/cointegrated/rubert-tiny2
+#
+#  - name: cointegrated/rubert-tiny-toxicity    # toxicity.ml (модель toxicity-ru)
+#    version: <коммит — ждёт хешей>
+#    scope: product
+#    license: MIT
+#    repository: https://huggingface.co/cointegrated/rubert-tiny-toxicity
+#    # лицензии наборов обучения исходной модели в карточке не указаны — записано в ML-BOM (решение владельца 28.10.2026)
