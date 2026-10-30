@@ -625,7 +625,7 @@ ML_P4_CPUS     ?= 0-3
 # tools/ml/torch.sha256; пока эталона нет, печатается для записи (как ort.sha256).
 .PHONY: ml-venv
 ml-venv: ## Окружение Python для моделей build/ml/venv: точные версии и SHA-256 пакетов (сеть)
-	@test -f tools/ml/requirements.txt || { echo "ml-venv: нет tools/ml/requirements.txt — список пакетов Python ждёт решения владельца (docs/cert/build-env.md, «Модели»)"; exit 1; }
+	@python3 -c 'import sys; sys.exit(not (3, 12) <= sys.version_info[:2] <= (3, 14))' || { echo "ml-venv: нужен python3 версии 3.12, 3.13 или 3.14 (сейчас $$(python3 --version 2>&1)): под другие версии в tools/ml/requirements.txt нет хешей"; exit 1; }
 	python3 -m venv $(ML_VENV)
 	rm -rf $(ML_BUILD)/wheels
 	$(ML_PY) -m pip download --no-deps --only-binary=:all: --index-url $(ML_TORCH_INDEX) -d $(ML_BUILD)/wheels '$(ML_TORCH)'

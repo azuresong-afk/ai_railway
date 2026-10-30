@@ -113,9 +113,9 @@ make ml-release-dir                 # выпуск aisec-ml с тестовым 
 ## Модели для `aisec-ml` (задача 4.19, часть 2; ADR-0024)
 Модели `injection.ml` и `toxicity.ml` готовятся на машине владельца: из облачной среды разработки Hugging Face недоступен. Всё делается целями `make` из корня репозитория; знать Python не нужно — скрипты `tools/ml/` запускаются целями сами. Python и его пакеты — только инструмент подготовки моделей: в поставку и образы не входят, в `components.yaml` не вносятся (там — сами модели).
 
-Статус на 30.10.2026: цели и скрипты готовы и проверены в облаке на игрушечной модели (весь путь до подписанного пакета и таблицы Р4); список пакетов Python ждёт решения владельца, поэтому `tools/ml/requirements.txt` ещё нет и `make ml-venv` останавливается с сообщением об этом.
+Статус на 30.10.2026: цели и скрипты готовы и проверены в облаке на игрушечной модели (весь путь до подписанного пакета и таблицы Р4); список пакетов Python принят владельцем 30.10.2026 (`tools/ml/requirements.txt`, таблица ниже). Запуски на машине владельца ещё не выполнены.
 
-**Что нужно на машине.** Linux x86-64; `python3` 3.11 или новее с модулем `venv` (в Debian и Ubuntu — пакет `python3-venv`); Go 1.27.3 (или `GOTOOLCHAIN=go1.27.3`); библиотека ONNX Runtime из эталонной сборки (`make ort-build`, раздел выше) или путь к ней в `ML_ORT_LIB=…`; около 10 ГиБ на диске; не меньше 4 процессоров и 8 ГиБ памяти. Сеть нужна только шагам 1 и 2.
+**Что нужно на машине.** Linux x86-64; `python3` версии 3.12, 3.13 или 3.14 с модулем `venv` (в Debian и Ubuntu — пакет `python3-venv`); Go 1.27.3 (или `GOTOOLCHAIN=go1.27.3`); библиотека ONNX Runtime из эталонной сборки (`make ort-build`, раздел выше) или путь к ней в `ML_ORT_LIB=…`; около 10 ГиБ на диске; не меньше 4 процессоров и 8 ГиБ памяти. Сеть нужна только шагам 1 и 2.
 
 **Порядок.** Каждая цель в конце печатает `ГОТОВО: …` или `ОШИБКА: …` с причиной; при ошибке дальше не идти.
 
@@ -131,6 +131,19 @@ make ml-release-dir                 # выпуск aisec-ml с тестовым 
 | 8 | `make ml-release-dir ML_MODELS_DIR=build/ml/models` | Выпуск `aisec-ml` вместе с пакетом моделей (раздел выше) | нет | `build/release-ml/models` |
 
 В пакет моделей шага 7 входит только модель, прошедшая Р4: если `injection.ml` не прошла, перед шагом 4 модель исключается (сообщить в поток — поправим цель), а итог пишется в `docs/detectors.md`. Версия пакета — `ML_VERSION=…` (по умолчанию `1.0.0`) на шагах 4 и 7, одна и та же.
+
+**Пакеты Python** (решение владельца 30.10.2026; только `build/ml/venv`, в поставку не входят). Точные версии и SHA-256 — `tools/ml/requirements.txt`, torch — `tools/ml/torch.sha256`. Лицензии вне списка CLAUDE.md (PSF-2.0, CNRI-Python, CC0-1.0, Zlib, BSL-1.0 — разрешительные; MPL-2.0 у tqdm) допускаются только для этих инструментов разработки (ADR-0024).
+
+| Пакет | Версия | Лицензия | Зачем |
+|---|---|---|---|
+| torch (CPU, download.pytorch.org) | 2.14.1 | BSD-3-Clause; внутри Apache-2.0, MIT, BSD-2-Clause, BSL-1.0 | дообучка и экспорт в ONNX |
+| transformers | 5.20.1 | Apache-2.0 | загрузка моделей BERT |
+| tokenizers | 0.23.3 | Apache-2.0 | токенизатор и эталоны |
+| huggingface_hub | 2.2.0 | Apache-2.0 | скачивание по коммиту |
+| safetensors | 0.8.0 | Apache-2.0 | чтение весов без выполнения кода |
+| numpy | 2.5.3 | BSD-3-Clause; внутри 0BSD, MIT, Zlib, CC0-1.0 | массивы |
+| pyarrow | 25.0.1 | Apache-2.0 | чтение наборов (parquet) |
+| транзитивные: filelock, fsspec, hf-xet, httpx2, httpcore2, h11, anyio, idna, truststore, Jinja2, MarkupSafe, networkx, sympy, mpmath, packaging, PyYAML, regex, setuptools, typing_extensions, tqdm, typer, click, rich, markdown-it-py, mdurl, Pygments, shellingham, annotated-doc | см. `requirements.txt` | MIT, BSD-2/3-Clause, Apache-2.0, ISC; PSF-2.0 (typing_extensions), Apache-2.0 и CNRI-Python (regex), MPL-2.0 и MIT (tqdm) | зависимости прямых пакетов |
 
 **Если что-то пошло не так.**
 - `ml-venv`: «хеш torch не совпадает» — другой файл на сервере или другая версия Python, чем при записи эталона; не продолжать, сообщить в поток.
