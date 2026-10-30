@@ -19,6 +19,9 @@ import (
 // MaxFileSize ограничивает размер реестра и modules.txt.
 const MaxFileSize = 4 << 20
 
+// DefaultPath — реестр от корня репозитория.
+const DefaultPath = "docs/cert/components.yaml"
+
 // Типы компонентов.
 const (
 	TypeGoModule     = "go-module"     // модуль Go из vendor/
@@ -31,6 +34,10 @@ const (
 	// TypeNative — библиотека C/C++, собираемая из исходников по
 	// deploy/build/onnxruntime/deps.lock (ONNX Runtime и встроенные в неё).
 	TypeNative = "native-library"
+	// TypeModel — модель ML-детектора в пакете моделей aisec-ml (ADR-0024):
+	// name — ID модели в пакете. Без такой записи с решением владельца
+	// модель не подписывается ключом производителя (4В32).
+	TypeModel = "ml-model"
 )
 
 // Области применения.
@@ -73,7 +80,7 @@ type Registry struct {
 }
 
 var (
-	validTypes  = map[string]bool{TypeGoModule: true, TypeToolchain: true, TypeTool: true, TypeImage: true, TypeGitHubAction: true, TypeNPM: true, TypeFont: true, TypeNative: true}
+	validTypes  = map[string]bool{TypeGoModule: true, TypeToolchain: true, TypeTool: true, TypeImage: true, TypeGitHubAction: true, TypeNPM: true, TypeFont: true, TypeNative: true, TypeModel: true}
 	validScopes = map[string]bool{ScopeProduct: true, ScopeBuild: true, ScopeExternal: true}
 	makeVarRe   = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
 	sha256HexRe = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -177,6 +184,17 @@ func (r *Registry) validate() error {
 		seen[key] = true
 	}
 	return errors.Join(errs...)
+}
+
+// ApprovedModel — запись модели id (type: ml-model, scope: product).
+// Решение и дата обязательны для любой записи (validate).
+func (r *Registry) ApprovedModel(id string) bool {
+	for _, c := range r.Components {
+		if c.Type == TypeModel && c.Name == id && c.Scope == ScopeProduct {
+			return true
+		}
+	}
+	return false
 }
 
 // Module — модуль из vendor/modules.txt.

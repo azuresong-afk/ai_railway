@@ -51,6 +51,11 @@ func startShadowSyslog(ctx context.Context, c shadowSyslogConfig, tp aisecCrypto
 	if err != nil {
 		return nil, err
 	}
+	if !c.Insecure && c.ClientCAFile == "" && len(c.AllowedNetworks) == 0 {
+		// 4Н23: любой узел сети может прислать ложные CEF.
+		logger.Warn("теневой ИИ: приём по syslog без клиентского сертификата и без разрешённых сетей — строки принимаются от любого узла",
+			"class", "shadow_ai")
+	}
 	nets := make([]string, 0, len(c.AllowedNetworks))
 	for _, p := range c.AllowedNetworks {
 		nets = append(nets, p.String())

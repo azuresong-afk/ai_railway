@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRef, useState } from "react";
 import { Link } from "react-router";
 import { area, ConfirmDialog, ErrorBanner, fieldError, FormDialog } from "../admin/common";
+import { ReauthPrompt, useReauth, visibleError } from "../admin/reauth";
 import type { Me } from "../api/client";
 import { formatAbsolute } from "../events/format";
 import { Button } from "../ui/Button";
@@ -21,9 +22,14 @@ function StatusMark({ status }: { status: ComplianceItem["status"] }) {
 }
 
 // Ручная отметка (организационные меры): комментарий обязателен, срок пересмотра необязателен.
-function MarkDialog({ item, onClose }: { item: ComplianceItem | null; onClose: () => void }) {
+// «Не применимо» у пункта с автоматическими проверками снимает их с процента — ослабление (4В36):
+// срок пересмотра обязателен, сервер просит пароль или код.
+function MarkDialog({ item, mfa, onClose }: { item: ComplianceItem | null; mfa: boolean; onClose: () => void }) {
   const qc = useQueryClient();
-  const [status, setStatus] = useState(item?.mark?.status ?? "met");
+  const re = useReauth(mfa);
+  // Пункт, который вычисляют проверки, можно только объявить неприменимым.
+  const onlyNA = Boolean(item) && !item!.manual;
+  const [status, setStatus] = useState(item?.mark?.status ?? (onlyNA ? "not_applicable" : "met"));
   const [comment, setComment] = useState(item?.mark?.comment ?? "");
   const [document, setDocument] = useState(item?.mark?.document ?? "");
   const [reviewBy, setReviewBy] = useState(item?.mark?.review_by ?? "");
@@ -34,14 +40,16 @@ function MarkDialog({ item, onClose }: { item: ComplianceItem | null; onClose: (
         comment: comment.trim(),
         ...(document.trim() ? { document: document.trim() } : {}),
         ...(reviewBy ? { review_by: reviewBy } : {}),
+        ...re.body(),
       }),
     onSuccess: async () => {
+      re.reset();
       await qc.invalidateQueries({ queryKey: ["compliance"] });
       onClose();
     },
+    onError: re.onError,
   });
-  // Пункт, который вычисляют проверки, можно только объявить неприменимым.
-  const onlyNA = Boolean(item) && !item!.manual;
+  const weakening = Boolean(item) && (item!.checks?.length ?? 0) > 0 && status === "not_applicable";
   return (
     <FormDialog
       open={item !== null}
@@ -85,15 +93,28 @@ function MarkDialog({ item, onClose }: { item: ComplianceItem | null; onClose: (
           <Input id={id} aria-describedby={describedBy} aria-invalid={invalid} maxLength={300} value={document} onChange={(e) => setDocument(e.target.value)} />
         )}
       </Field>
-      <Field label="Пересмотреть до" hint="После этой даты отметка не засчитывается. Не дальше трёх лет." error={fieldError(save.error, "review_by")}>
+      <Field
+        label="Пересмотреть до"
+        hint={
+          weakening
+            ? "Обязательно: пункт с автоматическими проверками объявляется неприменимым на срок, не дальше трёх лет."
+            : "После этой даты отметка не засчитывается. Не дальше трёх лет."
+        }
+        error={fieldError(save.error, "review_by")}
+      >
         {({ id, describedBy, invalid }) => (
           <Input id={id} aria-describedby={describedBy} aria-invalid={invalid} type="date" value={reviewBy} onChange={(e) => setReviewBy(e.target.value)} />
         )}
       </Field>
-      <ErrorBanner error={save.error} />
+      <ReauthPrompt r={re} />
+      <ErrorBanner error={visibleError(save.error)} />
       <div className="flex justify-end gap-2">
         <Button onClick={onClose}>Отменить</Button>
-        <Button variant="primary" disabled={save.isPending || comment.trim() === ""} onClick={() => save.mutate()}>
+        <Button
+          variant="primary"
+          disabled={save.isPending || comment.trim() === "" || (weakening && reviewBy === "") || !re.ready}
+          onClick={() => save.mutate()}
+        >
           Сохранить отметку
         </Button>
       </div>
@@ -308,7 +329,7 @@ function Requirements({ me }: { me: Me }) {
             ))}
         </>
       )}
-      {marking && <MarkDialog key={marking.id} item={marking} onClose={() => setMarking(null)} />}
+      {marking && <MarkDialog key={marking.id} item={marking} mfa={me.mfa?.enabled === true} onClose={() => setMarking(null)} />}
       <ConfirmDialog
         open={clearing !== null}
         onOpenChange={(v) => !v && setClearing(null)}

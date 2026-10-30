@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -273,6 +274,32 @@ func TestAgentKeyNeedsAgentsModule(t *testing.T) {
 		`{"name":"agent","agent_id":"01900000-0000-7000-8000-0000000000aa"}`, true), 403, license.CodeModule)
 	if w := le.call(sys, "POST", "/api/v1/applications/"+a.ID+"/keys", `{"name":"plain"}`, true); w.Code != http.StatusCreated {
 		t.Fatalf("ключ без агента: %d %s", w.Code, w.Body)
+	}
+}
+
+// Ревью 4.r4 (как 4Н15): расписание отчёта «Соответствие» — изменение модуля
+// compliance; без модуля создание и перевод расписания на этот отчёт — 403
+// license_module, расписание другого отчёта — как раньше.
+func TestComplianceScheduleNeedsComplianceModule(t *testing.T) {
+	le := newLicenseEnv(t)
+	sys := le.mustLogin(t, "sysadm")
+	admin := le.mustLogin(t, "admin")
+	if w := le.call(sys, "PUT", "/api/v1/license", putLicenseBody(t, signLicense(t, testLicense(1)), tPhrase), true); w.Code != 200 {
+		t.Fatalf("загрузка: %d %s", w.Code, w.Body)
+	}
+	compliance := strings.Replace(scheduleBody("Соответствие"), `"report":"summary"`, `"report":"compliance"`, 1)
+	mustProblem(t, le.call(admin, "POST", "/api/v1/report-schedules", compliance, true), 403, license.CodeModule)
+	w := le.call(admin, "POST", "/api/v1/report-schedules", scheduleBody("Сводка"), true)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("расписание сводки: %d %s", w.Code, w.Body)
+	}
+	var s ReportScheduleView
+	if err := json.Unmarshal(w.Body.Bytes(), &s); err != nil {
+		t.Fatal(err)
+	}
+	mustProblem(t, le.call(admin, "PUT", "/api/v1/report-schedules/"+s.ID, compliance, true), 403, license.CodeModule)
+	if list, err := le.reports.Schedules(context.Background()); err != nil || len(list) != 1 || list[0].Report != "summary" {
+		t.Fatalf("расписания: %+v %v", list, err)
 	}
 }
 

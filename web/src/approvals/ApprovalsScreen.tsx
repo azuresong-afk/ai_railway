@@ -5,6 +5,7 @@ import { ErrorBanner } from "../admin/common";
 import { RiskBadge } from "../agents/labels";
 import { conflictText, isConflict, SecretField, secretBody } from "../agents/Secret";
 import type { Me } from "../api/client";
+import { isRefetch } from "../api/poll";
 import { formatAbsolute } from "../events/format";
 import { Button } from "../ui/Button";
 import { Field, Input, Select } from "../ui/Field";
@@ -77,7 +78,8 @@ function ApprovalCard({ a, canDecide, canSession, mfa, visible }: { a: Approval;
     } });
   // Скрытые символы в аргументах (4В20 ревью 4.r2) — показываются маркерами, одобрение — с повторной проверкой, как при critical.
   const hidden = !!shown?.args && hasInvisible(shown.args);
-  const critical = a.risk === "critical" || hidden;
+  // Без второго фактора в сессии любое одобрение — с паролем (4В37): украденного пароля входа не должно хватать.
+  const critical = a.risk === "critical" || hidden || !mfa;
   const busy = approve.isPending || deny.isPending;
   const conflict = conflictText(approve.error ?? deny.error, "Запрос изменился или уже закрыт. Данные обновлены, проверьте их и повторите.");
 
@@ -150,7 +152,8 @@ function ApprovalCard({ a, canDecide, canSession, mfa, visible }: { a: Approval;
           {critical && (
             <>
               <Banner kind="warning">
-                {hidden ? "В аргументах скрытые символы" : "Риск критический"}: для одобрения нужно подтвердить, что это вы.
+                {hidden ? "В аргументах скрытые символы" : a.risk === "critical" ? "Риск критический" : "Второй фактор не подключён"}: для одобрения нужно
+                подтвердить, что это вы.
               </Banner>
               <SecretField mfa={mfa} value={secret} onChange={setSecret} />
             </>
@@ -176,9 +179,10 @@ export function ApprovalsScreen({ me }: { me: Me }) {
   const has = (p: string) => me.permissions.includes(p);
   const [state, setState] = useState<ApprovalState | "">("pending");
   const visible = useVisible();
+  const qc = useQueryClient();
   const q = useQuery({
     queryKey: ["approvals", "list", state],
-    queryFn: ({ signal }) => approvalsApi.list(state || undefined, signal),
+    queryFn: ({ signal, queryKey }) => approvalsApi.list(state || undefined, signal, isRefetch(qc, queryKey)),
     // Опрос раз в 5 секунд, пока вкладка видима.
     refetchInterval: () => (document.visibilityState === "visible" ? 5000 : false),
   });

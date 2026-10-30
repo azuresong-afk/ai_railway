@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/azuresong-afk/ai_railway/internal/apps"
+	"github.com/azuresong-afk/ai_railway/internal/audit"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/internal/crypto/cryptotest"
 	"github.com/azuresong-afk/ai_railway/internal/policy/bundle"
@@ -125,5 +126,45 @@ func TestBuildUserTokens(t *testing.T) {
 	}
 	if c := content(t, svc); len(c.UserTokens) != 0 || len(c.UserTokenKeys) != 0 {
 		t.Fatalf("режим off: %+v", c.UserTokens)
+	}
+}
+
+// 4Н14 ревью 4.r2: срок прежних ключей IdP (24 ч) отсчитывается от
+// последнего получения, сохранённого на сервере, а не от запуска: после
+// перезапуска сервера с недоступным IdP ключ, полученный давно, в пакет
+// не возвращается.
+func TestUserTokenKeysStaleSurvivesRestart(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	idp := &fakeIdP{issuer: tokIssuer, keys: idpKeys(t, e, "ES256", "k1")}
+	start := func() *build.Service {
+		svc, err := build.New(build.Options{Apps: e.apps, Policies: e.policies, Store: e.store, Audit: e.audit,
+			Sealer: e.fx.Sealer, Provider: e.fx.Provider, Clock: e.clock, IdPKeys: idp.get})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return svc
+	}
+	svc := start()
+	if _, err := e.apps.SetUserAccess(ctx, e.appsBy, e.app.ID, apps.UserAccessInput{Mode: apps.UserTokenRequired, Issuer: tokIssuer,
+		Audience: "aisec-gateway"}); err != nil {
+		t.Fatal(err)
+	}
+	if c := content(t, svc); len(c.UserTokenKeys) != 1 {
+		t.Fatalf("ключи: %+v", c.UserTokenKeys)
+	}
+	got := e.now
+	if at, err := e.store.UserTokenKeysAt(ctx, audit.DefaultOrgID); err != nil || !at.Equal(got) {
+		t.Fatalf("момент получения не сохранён: %v %v", at, err)
+	}
+	// IdP недоступен; сервер перезапускается каждые 20 ч.
+	idp.err = errors.New("IdP: network")
+	e.now = got.Add(20 * time.Hour)
+	if c := content(t, start()); len(c.UserTokenKeys) != 1 {
+		t.Fatalf("в пределах срока после перезапуска: %+v", c.UserTokenKeys)
+	}
+	e.now = got.Add(build.MaxStaleUserTokenKeys + time.Minute)
+	if c := content(t, start()); len(c.UserTokens) != 1 || len(c.UserTokenKeys) != 0 {
+		t.Fatalf("после срока и перезапуска ключи остались: %+v", c.UserTokenKeys)
 	}
 }

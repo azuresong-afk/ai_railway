@@ -3,20 +3,11 @@ package shadowai
 import (
 	"errors"
 	"fmt"
-	"slices"
 	"time"
 
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/internal/integrity"
 )
-
-// revokedServiceDBSerials — отозванные номера заверений рабочих ключей
-// служебных баз (ADR-0022, п. 2: отзыв — новым выпуском; ADR-0027, п. 2).
-// Номер добавляется сюда, и выпуск с ним перестаёт принимать базы,
-// подписанные этим ключом, в том числе уже загруженные.
-var revokedServiceDBSerials = []uint64{}
-
-func revokedSerial(serial uint64) bool { return slices.Contains(revokedServiceDBSerials, serial) }
 
 // ErrCatalogDate — дата каталога вне срока заверения рабочего ключа.
 var ErrCatalogDate = errors.New("каталог: дата выпуска вне срока заверения рабочего ключа")
@@ -45,7 +36,7 @@ func VerifyCatalogFile(p aisecCrypto.Provider, data []byte, at time.Time) (Signe
 // VerifyCatalog — VerifyCatalogFile с заданным ключом производителя
 // (инструмент подписи проверяет готовый файл ключом из -vendor-pub).
 func VerifyCatalog(p aisecCrypto.Provider, vendor aisecCrypto.Verifier, data []byte, at time.Time) (SignedCatalog, error) {
-	db, err := aisecCrypto.VerifyServiceDB(p, vendor, data, CatalogKind, aisecCrypto.EndorsementCheck{At: at, Revoked: revokedSerial})
+	db, err := aisecCrypto.VerifyServiceDB(p, vendor, data, CatalogKind, aisecCrypto.EndorsementCheck{At: at, Revoked: integrity.RevokedServiceDB})
 	if err != nil {
 		return SignedCatalog{}, err
 	}

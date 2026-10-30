@@ -497,10 +497,11 @@ func TestDM22_UnapprovedLogKeepsRulesAndLimits(t *testing.T) {
 		!slices.Contains(d.Threats, ThreatToolApproval) {
 		t.Fatalf("неизвестный инструмент и require_approval: %+v", d)
 	}
-	// Подменённое описание одобренного инструмента — тоже.
+	// Подменённое описание одобренного инструмента блокируется и при
+	// unapproved: log (4В34) — сильнее require_approval.
 	c = approved("files", "read_report", RiskHigh, `{"path":"/data/reports/a"}`)
 	c.HashMatch = false
-	if d := p.DecideTool(c, nil); !d.Approval || !slices.Contains(d.Threats, ThreatToolChanged) {
+	if d := p.DecideTool(c, nil); !d.Block || !slices.Contains(d.Threats, ThreatToolChanged) {
 		t.Fatalf("подменённое описание и require_approval: %+v", d)
 	}
 	// block-правило сильнее unapproved: log.
@@ -530,5 +531,46 @@ func TestDM22_UnapprovedLogKeepsRulesAndLimits(t *testing.T) {
 		if i == 5 && !slices.Contains(d.Threats, ThreatToolRate) {
 			t.Fatalf("повтор без DM-23: %+v", d)
 		}
+	}
+}
+
+// Покрывает: DM-25
+// 4В34: изменённый, подозрительный и отозванный инструмент в enforce
+// блокируется до повторного одобрения и при unapproved: log (политика без
+// раздела tools — CompatTools, путь chat и MCP); новый и неизвестный —
+// только журналируются; в monitor блокировка только записывается.
+func TestDM25_ChangedToolBlockedUnderUnapprovedLog(t *testing.T) {
+	p := mustTools(t, strings.Replace(toolsYAML, "  unapproved: block\n  default: block\n", "  unapproved: log\n  default: log\n", 1))
+	for _, server := range []string{"files", FunctionServer} {
+		for _, tc := range []struct {
+			name   string
+			status ToolStatus
+			match  bool
+			block  bool
+			threat string
+		}{
+			{"описание подменено", ToolApproved, false, true, ThreatToolChanged},
+			{"changed", ToolChanged, false, true, ThreatToolChanged},
+			{"suspicious", ToolSuspicious, false, true, ThreatToolPoisoned},
+			{"revoked", ToolRevoked, true, true, ThreatToolNotAllowed},
+			{"new", ToolNew, false, false, ThreatToolNotAllowed},
+			{"неизвестный", ToolUnknown, false, false, ThreatToolNotAllowed},
+		} {
+			c := approved(server, "lookup", RiskLow, `{}`)
+			c.Status, c.HashMatch = tc.status, tc.match
+			d := p.DecideTool(c, nil)
+			if d.Block != tc.block || !slices.Contains(d.Threats, tc.threat) {
+				t.Errorf("%s, %s: %+v", server, tc.name, d)
+			}
+			c.Mode = Monitor
+			if d := p.DecideTool(c, nil); d.Block || !slices.Contains(d.Threats, tc.threat) {
+				t.Errorf("%s, %s, monitor: %+v", server, tc.name, d)
+			}
+		}
+	}
+	// Политика без раздела tools (шаблоны «ПДн — строго» и т. п.).
+	compat := CompatTools()
+	if compat.Unapproved != Log {
+		t.Fatal("CompatTools: unapproved не log")
 	}
 }

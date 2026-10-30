@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/maphash"
 	"io/fs"
 	"log/slog"
 	"net"
@@ -31,10 +32,17 @@ var ErrMLUnavailable = errors.New("aisec-ml недоступен")
 
 // Умолчания клиента.
 const (
-	DefaultMLTimeout     = 300 * time.Millisecond
-	DefaultMLMaxInflight = 16
-	DefaultMLMinBackoff  = time.Second
-	DefaultMLMaxBackoff  = 30 * time.Second
+	// DefaultMLTimeout — срок вызова на текст в одно окно; меньше
+	// DefaultDetectorTimeout (4В22): срок вызова истекает раньше срока
+	// детектора, и сроки подряд включают отсрочку.
+	DefaultMLTimeout = 80 * time.Millisecond
+	// DefaultMLTimePerWindow — добавка к сроку за каждое следующее окно
+	// длинного текста (4В30): вывод растёт с числом окон, а срок детектора —
+	// с длиной текста (detectorTimeout).
+	DefaultMLTimePerWindow = 10 * time.Millisecond
+	DefaultMLMaxInflight   = 16
+	DefaultMLMinBackoff    = time.Second
+	DefaultMLMaxBackoff    = 30 * time.Second
 	// MLMaxChunks — сколько частей по ml.MaxText проверяет ML в одном тексте;
 	// остаток не проверяется (ADR-0024, раздел 3).
 	MLMaxChunks = 8
@@ -44,14 +52,28 @@ const (
 	// mlTimeoutsToFail — сколько вызовов подряд должны не уложиться в срок,
 	// чтобы включилась отсрочка: одиночный долгий вывод — не сбой процесса.
 	mlTimeoutsToFail = 3
+	// mlWindowBytes — текст не длиннее этого считается текстом в одно окно
+	// модели (512 токенов — не меньше 2 КиБ текста). Только срок на таком
+	// тексте говорит о сбое aisec-ml: срок на длинном тексте нарушитель
+	// вызывает сам, и отсрочка выключала бы ML для всех (4В30).
+	mlWindowBytes = 2 << 10
+	// mlMaxWindows — предел окон в оценке срока: 16 окон на часть текста.
+	mlMaxWindows = MLMaxChunks * 16
+	// mlDeadlineMargin — запас до срока вызывающего (срока детектора): срок
+	// вызова истекает раньше, и клиент отличает свой срок от отмены запроса.
+	mlDeadlineMargin = 5 * time.Millisecond
 )
 
 // MLClientConfig — параметры клиента aisec-ml.
 type MLClientConfig struct {
 	// Socket — путь к Unix-сокету aisec-ml.
 	Socket string
-	// Timeout — предел одного вызова (меньше срока детектора).
+	// Timeout — срок вызова на текст в одно окно; не больше срока
+	// вызывающего за вычетом запаса (Detect урезает сам).
 	Timeout time.Duration
+	// TimePerWindow — добавка к сроку за каждое следующее окно (оценка —
+	// по длине текста, mlWindowBytes на окно); 0 — без добавки.
+	TimePerWindow time.Duration
 	// MaxInflight — предел одновременных вызовов; сверх — сразу ErrMLUnavailable.
 	MaxInflight int
 	// MinBackoff, MaxBackoff — отсрочка после сбоя: всё это время вызовы
@@ -74,7 +96,12 @@ type MLClient struct {
 	backoff   time.Duration
 	down      bool
 	timeouts  int
-	closed    bool
+	// lastTimeout — отпечаток текста последнего вызова, не уложившегося в
+	// срок: детекторы одного фрагмента вызывают aisec-ml одновременно с
+	// одним текстом, и фрагмент даёт одну отметку срока, а не три (4В30).
+	lastTimeout uint64
+	seed        maphash.Seed
+	closed      bool
 }
 
 // mlConn — соединение и модели, о которых aisec-ml сообщил в hello.
@@ -93,6 +120,9 @@ func NewMLClient(cfg MLClientConfig) (*MLClient, error) {
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = DefaultMLTimeout
 	}
+	if cfg.TimePerWindow < 0 {
+		cfg.TimePerWindow = 0
+	}
 	if cfg.MaxInflight <= 0 {
 		cfg.MaxInflight = DefaultMLMaxInflight
 	}
@@ -108,7 +138,14 @@ func NewMLClient(cfg MLClientConfig) (*MLClient, error) {
 	if cfg.now == nil {
 		cfg.now = time.Now
 	}
-	return &MLClient{cfg: cfg, sem: make(chan struct{}, cfg.MaxInflight)}, nil
+	return &MLClient{cfg: cfg, sem: make(chan struct{}, cfg.MaxInflight), seed: maphash.MakeSeed()}, nil
+}
+
+// callTimeout — срок вызова на текст длиной n байт: Timeout на первое окно и
+// TimePerWindow на каждое следующее (4В30).
+func (c *MLClient) callTimeout(n int) time.Duration {
+	w := min(max((n+mlWindowBytes-1)/mlWindowBytes, 1), mlMaxWindows)
+	return c.cfg.Timeout + time.Duration(w-1)*c.cfg.TimePerWindow
 }
 
 // Close закрывает свободные соединения; соединения, занятые вызовами,
@@ -148,12 +185,25 @@ func (c *MLClient) Detect(ctx context.Context, model, text string) (*mlResult, e
 		return nil, fmt.Errorf("%w: предел одновременных вызовов", ErrMLUnavailable)
 	}
 	parent := ctx
-	ctx, cancel := context.WithTimeout(ctx, c.cfg.Timeout)
+	// Срок вызова — min(срок по длине текста, срок вызывающего − запас)
+	// (4В22, 4В30): иначе первым истекает срок детектора, клиент принимает
+	// это за отмену запроса, и зависший aisec-ml задерживает каждый фрагмент
+	// без отсрочки.
+	timeout := c.callTimeout(len(text))
+	if dl, ok := parent.Deadline(); ok {
+		if left := time.Until(dl) - mlDeadlineMargin; left < timeout {
+			timeout = left
+		}
+	}
+	if timeout <= 0 {
+		return nil, fmt.Errorf("%w: не осталось времени до срока проверки", ErrMLUnavailable)
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	for attempt := 0; ; attempt++ {
 		mc, reused, err := c.conn(ctx)
 		if err != nil {
-			c.failed(parent, ctx, err)
+			c.failed(parent, ctx, err, text)
 			return nil, fmt.Errorf("%w: %w", ErrMLUnavailable, err)
 		}
 		res, keep, err := c.detectOn(ctx, mc, model, text)
@@ -173,7 +223,7 @@ func (c *MLClient) Detect(ctx context.Context, model, text string) (*mlResult, e
 			// одна попытка на новом соединении.
 			continue
 		}
-		c.failed(parent, ctx, err)
+		c.failed(parent, ctx, err, text)
 		return nil, fmt.Errorf("%w: %w", ErrMLUnavailable, err)
 	}
 }
@@ -239,7 +289,7 @@ func (c *MLClient) roundTrip(ctx context.Context, mc *mlConn, info ml.ModelInfo,
 			keep = false
 		}
 	}()
-	if err := ml.WriteFrame(mc.c, ml.Header{Type: ml.TypeDetect, ID: id}, body); err != nil {
+	if err := ml.WriteFrame(mc.c, ml.Header{Type: ml.TypeDetect, ID: id, Timeout: msUntil(ctx)}, body); err != nil {
 		return nil, false, err
 	}
 	h, b, err := ml.ReadFrame(mc.c, ml.ClientSide)
@@ -266,6 +316,17 @@ func (c *MLClient) roundTrip(ctx context.Context, mc *mlConn, info ml.ModelInfo,
 		return nil, keep, fmt.Errorf("aisec-ml ответил %s", code)
 	}
 	return nil, false, fmt.Errorf("%w: тип ответа %d", ml.ErrProtocol, h.Type)
+}
+
+// msUntil — оставшийся срок ctx в миллисекундах для заголовка detect:
+// aisec-ml не обрывает вывод раньше, чем его перестанет ждать шлюз (4В30).
+func msUntil(ctx context.Context) uint16 {
+	dl, ok := ctx.Deadline()
+	if !ok {
+		return 0
+	}
+	ms := (time.Until(dl) + time.Millisecond - 1) / time.Millisecond
+	return uint16(min(max(ms, 1), 1<<16-1)) //nolint:gosec // G115: значение ограничено выше
 }
 
 // bindDeadline переносит срок контекста на соединение и прерывает чтение
@@ -348,9 +409,11 @@ func (c *MLClient) hello(ctx context.Context, conn net.Conn) (_ *mlConn, err err
 }
 
 // checkMLSocket — путь ведёт к сокету (не к ссылке), у остальных нет прав на
-// сокет, каталог сокета — каталог, недоступный остальным на запись
-// (ADR-0024, раздел 2). Иначе к сокету мог бы подменить процесс другого
-// пользователя, и шлюз отправлял бы ему тексты запросов.
+// сокет, каталог сокета — каталог, недоступный остальным на запись, а
+// владелец сокета — владелец каталога (ADR-0024, раздел 2; 4Н27 ревью
+// 4.r3). Иначе сокет мог бы подменить процесс другого пользователя, и
+// шлюз отправлял бы ему тексты запросов. Подмена процессом с UID владельца
+// каталога — принятый риск до этапа 5 (ADR-0024, дополнение 30.10.2026).
 func checkMLSocket(path string) error {
 	dir, err := os.Lstat(filepath.Dir(path))
 	if err != nil {
@@ -368,6 +431,11 @@ func checkMLSocket(path string) error {
 	}
 	if info.Mode().Perm()&0o007 != 0 {
 		return fmt.Errorf("права сокета aisec-ml %#o: у остальных не должно быть доступа", info.Mode().Perm())
+	}
+	if du, ok := fileOwner(dir); ok {
+		if su, ok := fileOwner(info); ok && su != du {
+			return fmt.Errorf("владелец сокета aisec-ml (UID %d) — не владелец каталога сокета (UID %d)", su, du)
+		}
 	}
 	return nil
 }
@@ -389,19 +457,31 @@ func (c *MLClient) isDown() bool {
 	return c.cfg.now().Before(c.downUntil)
 }
 
-// failed разбирает сбой вызова. Отмена запроса (клиент ушёл, истёк общий
-// срок проверки) — не сбой aisec-ml. Срок вызова истёк — отсрочка только
-// после mlTimeoutsToFail таких вызовов подряд. Остальное (нет сокета, hello,
-// нарушение протокола, обрыв) — сразу.
-func (c *MLClient) failed(parent, ctx context.Context, err error) {
-	if parent.Err() != nil {
+// failed разбирает сбой вызова. Отмена запроса (клиент ушёл) — не сбой
+// aisec-ml. Срок вызова или вызывающего истёк — отсрочка только после
+// mlTimeoutsToFail таких вызовов подряд (4В22: срок детектора — тоже срок),
+// и только на тексте в одно окно, один раз на текст (4В30). Остальное (нет
+// сокета, hello, нарушение протокола, обрыв) — сразу.
+func (c *MLClient) failed(parent, ctx context.Context, err error, text string) {
+	if parent.Err() != nil && !errors.Is(context.Cause(parent), context.DeadlineExceeded) {
 		return
 	}
 	// Срок соединения равен сроку ctx, и чтение может прерваться раньше,
 	// чем сработает таймер контекста: это тоже истечение срока.
 	if ctx.Err() != nil || errors.Is(err, os.ErrDeadlineExceeded) {
+		// Длинный текст нарушитель подбирает сам: срок на нём — только
+		// ml_unavailable этого запроса, без отсрочки для всех (4В30).
+		if len(text) > mlWindowBytes {
+			return
+		}
+		h := maphash.String(c.seed, text)
 		c.mu.Lock()
+		if c.timeouts > 0 && h == c.lastTimeout {
+			c.mu.Unlock()
+			return
+		}
 		c.timeouts++
+		c.lastTimeout = h
 		n := c.timeouts
 		c.mu.Unlock()
 		if n < mlTimeoutsToFail {
@@ -478,12 +558,14 @@ func NewMLDetector(spec MLDetectorSpec, client *MLClient) (*MLDetector, error) {
 	slices.Sort(d.cats)
 	// Проверка ID, версии, категорий и строки матрицы — тем же правилом, что
 	// у находок.
-	probe := detect.Finding{Detector: spec.ID, Version: spec.Version, Category: d.cats[0], Threat: spec.Threat}
 	if _, err := detect.NewRegistry(d); err != nil {
 		return nil, fmt.Errorf("ML-детектор %s: %w", spec.ID, err)
 	}
-	if err := detect.ValidateFinding(probe, d, ""); err != nil {
-		return nil, fmt.Errorf("ML-детектор %s: %w", spec.ID, err)
+	for _, dir := range spec.Directions {
+		probe := detect.Finding{Detector: spec.ID, Version: spec.Version, Category: d.cats[0], Threat: spec.ThreatFor(dir)}
+		if err := detect.ValidateFinding(probe, d, ""); err != nil {
+			return nil, fmt.Errorf("ML-детектор %s: %w", spec.ID, err)
+		}
 	}
 	return d, nil
 }
@@ -504,11 +586,12 @@ func (d *MLDetector) Categories() []string { return slices.Clone(d.cats) }
 // fail_closed, а ставит признак ml_unavailable (ADR-0024, раздел 4).
 func (d *MLDetector) MLBacked() bool { return true }
 
-// errMLPartial — модель проверила не весь текст и ничего не нашла: снять
-// подозрение со всего текста ML не может, поэтому событие получает
-// ml_unavailable. Если в проверенной части есть находки, они возвращаются:
-// для решения политики этого достаточно.
-var errMLPartial = fmt.Errorf("%w: проверена часть текста", ErrMLUnavailable)
+// errMLPartial — модель проверила не весь текст: событие получает
+// ml_unavailable, находки проверенной части возвращаются вместе с ошибкой
+// (detect.ErrPartial). У классификаторов находка в проверенной части для
+// решения политики достаточна — ошибка ставится, только если находок нет.
+// У разметки (Spans) — всегда: непроверенный остаток не замаскирован.
+var errMLPartial = fmt.Errorf("%w: %w", ErrMLUnavailable, detect.ErrPartial)
 
 // Detect — находки модели не ниже порога.
 func (d *MLDetector) Detect(ctx context.Context, t detect.Text) ([]detect.Finding, error) {
@@ -522,22 +605,27 @@ func (d *MLDetector) Detect(ctx context.Context, t detect.Text) ([]detect.Findin
 		return nil, fmt.Errorf("%w: модель %s не проверяет направление %s", ErrMLUnavailable, res.Info.ID, t.Direction)
 	}
 	for label := range d.spec.Categories {
-		if !slices.Contains(res.Info.Labels, label) {
+		if !res.Info.HasLabel(label) {
 			return nil, fmt.Errorf("%w: у модели %s нет метки %s", ErrMLUnavailable, res.Info.ID, label)
 		}
 	}
 	rule := mlRule(res.Info)
+	threat := d.spec.ThreatFor(t.Direction)
 	var out []detect.Finding
 	for _, s := range res.Findings {
 		cat, ok := d.spec.Categories[s.Label]
 		if !ok || s.Score < d.spec.Threshold {
 			continue
 		}
-		out = append(out, detect.Finding{Detector: d.spec.ID, Version: d.spec.Version, Category: cat, Threat: d.spec.Threat,
-			Score: s.Score, Start: s.Start, End: s.End, Rule: rule})
+		start, end := s.Start, s.End
+		if d.spec.Spans {
+			start, end = expandWords(t.Text, start, end)
+		}
+		out = append(out, detect.Finding{Detector: d.spec.ID, Version: d.spec.Version, Category: cat, Threat: threat,
+			Score: s.Score, Start: start, End: end, Rule: rule})
 	}
-	if res.Partial && len(out) == 0 {
-		return nil, errMLPartial
+	if res.Partial && (d.spec.Spans || len(out) == 0) {
+		return out, errMLPartial
 	}
 	return out, nil
 }

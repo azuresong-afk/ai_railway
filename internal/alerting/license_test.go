@@ -10,6 +10,8 @@ import (
 // системы» поднимают системное правило system.license_expiry; за 30 и за 7
 // суток — отдельные оповещения, стадия — в заголовке; правило не
 // отключается; снятие условия оповещение не закрывает.
+//
+// Покрывает: DM-44 (лицензия)
 func TestDM44_LicenseExpiry(t *testing.T) {
 	e := newEnv(t)
 	r := e.rule(t, BuiltinLicenseExpiry)

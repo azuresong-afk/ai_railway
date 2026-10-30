@@ -93,6 +93,9 @@ var csvHeader = []string{"id", "time", "received_at", "gateway_id", "type", "app
 // если между ними только пробелы и кавычки: Excel в русской локали делит
 // строку по «;», и такой кусок стал бы отдельной ячейкой-формулой (В12
 // ревью 2.r3a). Табуляция и «\r» в начале значения тоже получают апостроф.
+// Полноширинные «＝», «＋», «－», «＠» — тоже: табличный редактор с
+// азиатской локалью или нормализацией NFKC читает их как обычные знаки
+// (ревью 4.r1, остаток).
 func CSVCell(s string) string {
 	var b strings.Builder
 	b.Grow(len(s) + 1)
@@ -106,7 +109,7 @@ func CSVCell(s string) string {
 		case c == ',' || c == ';' || c == '\t' || c == '\r' || c == '\n':
 			start = true
 		case start && (c == ' ' || c == '"'):
-		case start && (c == '=' || c == '+' || c == '-' || c == '@'):
+		case start && (c == '=' || c == '+' || c == '-' || c == '@' || fullwidthFormula(s[i:])):
 			b.WriteByte('\'')
 			start = false
 		default:
@@ -115,6 +118,17 @@ func CSVCell(s string) string {
 		b.WriteByte(c)
 	}
 	return b.String()
+}
+
+// fullwidthFormula — s начинается с полноширинного знака формулы
+// (U+FF1D, U+FF0B, U+FF0D, U+FF20).
+func fullwidthFormula(s string) bool {
+	for _, p := range [...]string{"\uff1d", "\uff0b", "\uff0d", "\uff20"} {
+		if strings.HasPrefix(s, p) {
+			return true
+		}
+	}
+	return false
 }
 
 func csvRow(r *Record) []string {

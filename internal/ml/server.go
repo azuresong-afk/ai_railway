@@ -42,9 +42,13 @@ type ServerConfig struct {
 	BodyTimeout time.Duration
 	// IdleTimeout — простой соединения между запросами.
 	IdleTimeout time.Duration
-	// RunTimeout — срок одного вывода.
+	// RunTimeout — срок вывода, если шлюз не передал свой (Header.Timeout).
 	RunTimeout time.Duration
-	Logger     *slog.Logger
+	// MaxRunTimeout — предел срока вывода, который может назначить шлюз:
+	// срок шлюза растёт с длиной текста (4В30), и вывод не должен
+	// обрываться раньше, чем его перестанет ждать шлюз.
+	MaxRunTimeout time.Duration
+	Logger        *slog.Logger
 }
 
 // Умолчания сервера (ADR-0024, раздел 3).
@@ -53,9 +57,13 @@ const (
 	DefaultQueueWait   = 20 * time.Millisecond
 	DefaultBodyTimeout = 5 * time.Second
 	DefaultIdleTimeout = 60 * time.Second
-	// DefaultRunTimeout — срок вывода: шлюз ждёт ответа не дольше
-	// 300 мс, дольше занимать исполнитель нет смысла.
-	DefaultRunTimeout = 500 * time.Millisecond
+	// DefaultRunTimeout — срок вывода: не больше срока вызова шлюза
+	// (gateway.DefaultMLTimeout, 4В22) — брошенный шлюзом вывод дольше
+	// занимать исполнитель нет смысла.
+	DefaultRunTimeout = 80 * time.Millisecond
+	// DefaultMaxRunTimeout — предел срока, назначенного шлюзом: срок шлюза
+	// не больше срока детектора (на 256 КиБ — около 0,6 с).
+	DefaultMaxRunTimeout = 2 * time.Second
 	// acceptRetry — пауза после ошибки приёма соединения.
 	acceptRetry = 100 * time.Millisecond
 )
@@ -68,6 +76,9 @@ type Server struct {
 	slots  chan struct{}
 	conns  atomic.Int64
 	wg     sync.WaitGroup
+	// expired — идёт серия выводов, не уложившихся в срок: предупреждение
+	// пишется один раз за серию.
+	expired atomic.Bool
 }
 
 // NewServer проверяет параметры и готовит ответ hello.
@@ -90,6 +101,10 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	if cfg.RunTimeout <= 0 {
 		cfg.RunTimeout = DefaultRunTimeout
 	}
+	if cfg.MaxRunTimeout <= 0 {
+		cfg.MaxRunTimeout = DefaultMaxRunTimeout
+	}
+	cfg.MaxRunTimeout = max(cfg.MaxRunTimeout, cfg.RunTimeout)
 	if cfg.Logger == nil {
 		cfg.Logger = slog.New(slog.DiscardHandler)
 	}
@@ -184,7 +199,7 @@ func (s *Server) handle(ctx context.Context, c net.Conn) {
 				return
 			}
 		case TypeDetect:
-			if !s.detect(ctx, c, h.ID, body) {
+			if !s.detect(ctx, c, h, body) {
 				return
 			}
 		}
@@ -216,8 +231,18 @@ func (s *Server) readRequest(c net.Conn) (Header, []byte, error) {
 	return h, body, nil
 }
 
+// runTimeout — срок вывода запроса: срок шлюза из заголовка (не больше
+// MaxRunTimeout) или RunTimeout.
+func (s *Server) runTimeout(h Header) time.Duration {
+	if h.Timeout == 0 {
+		return s.cfg.RunTimeout
+	}
+	return min(time.Duration(h.Timeout)*time.Millisecond, s.cfg.MaxRunTimeout)
+}
+
 // detect выполняет запрос; false — соединение закрыть.
-func (s *Server) detect(ctx context.Context, c net.Conn, id uint32, body []byte) bool {
+func (s *Server) detect(ctx context.Context, c net.Conn, h Header, body []byte) bool {
+	id := h.ID
 	model, text, err := ParseDetect(body)
 	if err != nil {
 		return s.writeError(c, id, ErrBadRequest)
@@ -236,12 +261,17 @@ func (s *Server) detect(ctx context.Context, c net.Conn, id uint32, body []byte)
 		t.Stop()
 		return false
 	}
-	res, err := s.run(ctx, m, text)
+	res, err := s.run(ctx, m, text, s.runTimeout(h))
 	<-s.slots
 	if err != nil {
-		s.cfg.Logger.Warn("сбой вывода модели", "model", model, "error", err)
+		// Истёкший срок на длинных текстах повторяется сериями: в журнал —
+		// один раз за серию, без текста запроса.
+		if !errors.Is(err, context.DeadlineExceeded) || !s.expired.Swap(true) {
+			s.cfg.Logger.Warn("сбой вывода модели", "model", model, "error", err)
+		}
 		return s.writeError(c, id, ErrInternal)
 	}
+	s.expired.Store(false)
 	out, err := MarshalBody(res)
 	if err != nil || len(out) > MaxResultBody {
 		s.cfg.Logger.Warn("ответ модели не помещается в кадр", "model", model, "findings", len(res.Findings))
@@ -253,13 +283,13 @@ func (s *Server) detect(ctx context.Context, c net.Conn, id uint32, body []byte)
 // run выполняет модель со сроком и проверяет результат тем же правилом, что
 // и шлюз. Паника исполнителя — ошибка запроса, а не остановка процесса
 // (сбой нативного кода всё равно остановит процесс — это граница ADR-0024).
-func (s *Server) run(ctx context.Context, m Model, text string) (res Result, err error) {
+func (s *Server) run(ctx context.Context, m Model, text string, timeout time.Duration) (res Result, err error) {
 	defer func() {
 		if p := recover(); p != nil {
 			err = errors.New("исполнитель завершился аварийно")
 		}
 	}()
-	rctx, cancel := context.WithTimeout(ctx, s.cfg.RunTimeout)
+	rctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	res, err = m.Run(rctx, text)
 	if err != nil {
@@ -274,7 +304,7 @@ func (s *Server) run(ctx context.Context, m Model, text string) (res Result, err
 		return Result{}, fmt.Errorf("находок больше %d", MaxFindings)
 	}
 	for _, f := range res.Findings {
-		if f.validate(info.Labels, text) != nil {
+		if f.validate(info, text) != nil {
 			return Result{}, errors.New("исполнитель вернул неверную находку")
 		}
 	}

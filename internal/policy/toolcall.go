@@ -302,18 +302,26 @@ func (p *Policy) DecideTool(c ToolCall, rc RateCounter) ToolDecision {
 	// Шаг 1. Состояние в реестре.
 	if c.Status != ToolApproved || !c.HashMatch {
 		reason, threat, sev := ToolReasonUnapproved, ThreatToolNotAllowed, Medium
+		// Изменённый, подозрительный и отозванный инструмент блокируется до
+		// повторного одобрения независимо от unapproved (ADR-0023, раздел 3;
+		// 4В34): мягкий unapproved — совместимость для новых и неизвестных
+		// инструментов пути chat, а не для подмены описания одобренного. В
+		// monitor блокировка только записывается (finishTool).
+		action := tp.unapproved
 		switch c.Status {
 		case ToolChanged, ToolApproved:
-			reason, threat, sev = ToolReasonChanged, ThreatToolChanged, High
+			reason, threat, sev, action = ToolReasonChanged, ThreatToolChanged, High, Block
 		case ToolSuspicious:
-			reason, threat, sev = ToolReasonSuspicious, ThreatToolPoisoned, High
+			reason, threat, sev, action = ToolReasonSuspicious, ThreatToolPoisoned, High, Block
+		case ToolRevoked:
+			action = Block
 		}
-		step(ToolStep{Rule: ToolRuleUnapproved, Action: tp.unapproved, Threat: threat, Reason: reason}, sev, "")
+		step(ToolStep{Rule: ToolRuleUnapproved, Action: action, Threat: threat, Reason: reason}, sev, "")
 		// При мягком unapproved (log) решение продолжается: правила
 		// require_approval и block и лимиты действуют и для неодобренного
 		// инструмента, иначе клиент пути chat обходил бы их, не называя
 		// агента или меняя описание (ревью 4.r1, 4В3; ADR-0023, дополнение 5).
-		if tp.unapproved == Block {
+		if action == Block {
 			return p.finishTool(d)
 		}
 	}

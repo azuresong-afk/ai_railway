@@ -237,7 +237,7 @@ func (m *MCPHandler) reviewTools(q *mcpReq, l *mcp.List) ([]bool, bool) {
 		if !listed && len(q.ev.Hidden) < events.MaxAgentNames {
 			q.ev.Hidden = append(q.ev.Hidden, name)
 		}
-		seen[name] = &seenTool{hash: hash, headers: it.Headers, poisoned: poisoned, unchecked: unchecked[i]}
+		seen[name] = &seenTool{hash: hash, headers: it.Headers, poisoned: poisoned, unchecked: unchecked[i], blocked: blocked[i]}
 		if !inReg || reg.ApprovedHash != hash || poisoned && status != policy.ToolSuspicious {
 			observed = append(observed, ObservedTool{Name: name, Descriptor: it.Raw, Hash: hash, Suspicious: poisoned})
 		}
@@ -245,7 +245,7 @@ func (m *MCPHandler) reviewTools(q *mcpReq, l *mcp.List) ([]bool, bool) {
 	if !enforce {
 		q.ev.Hidden = nil // в monitor ничего не убрано
 	}
-	m.remember(slug, seen)
+	m.remember(seenKey(q.app.ID, slug), seen)
 	m.cfg.Observer.Observe(slug, observed)
 	q.rec.addThreats(threats)
 	m.listDecision(q, threats, enforce)
@@ -288,11 +288,12 @@ func (m *MCPHandler) remember(server string, tools map[string]*seenTool) {
 	}
 }
 
-// lookupSeen — описание инструмента из последнего tools/list сервера.
-func (m *MCPHandler) lookupSeen(server, name string) (*seenTool, bool) {
+// lookupSeen — описание инструмента из последнего tools/list сервера,
+// проверенное для приложения (key — seenKey).
+func (m *MCPHandler) lookupSeen(key, name string) (*seenTool, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	t, ok := m.seen[server][name]
+	t, ok := m.seen[key][name]
 	return t, ok
 }
 
@@ -310,6 +311,10 @@ func (m *MCPHandler) fetchTools(q *mcpReq, name string) error {
 	}
 	return nil
 }
+
+// errMCPResponded — проверка служебного списка не выполнена, ответ клиенту
+// уже отправлен (inspectFailed).
+var errMCPResponded = errors.New("mcp: ответ уже отправлен")
 
 // mcpFetchPages — страниц tools/list, которые шлюз читает сам; mcpMaxCursor
 // — предел nextCursor.
@@ -346,11 +351,13 @@ func (m *MCPHandler) fetchPage(q *mcpReq, cursor string, page int, name string) 
 	// Статус в событии — статус самого вызова, а не служебного tools/list.
 	q.ev.Upstream = 0
 	seen := map[string]*seenTool{}
-	flagged, failed, builtin, err := m.checkDescriptions(q.r.Context(), q.app, listTexts(l))
-	if err != nil {
-		return "", false, err
+	// Та же проверка, что у tools/list клиента: встроенная и правила
+	// политики приложения (ревью 4.r1, остаток для G3: правило с block по
+	// описанию действует и без предварительного списка).
+	flagged, blocked, unchecked, ok := m.inspectDescriptions(q, listTexts(l))
+	if !ok {
+		return "", false, errMCPResponded
 	}
-	q.failures = append(q.failures, builtin.Failures...)
 	found := false
 	var observed []ObservedTool
 	agents := m.h.cfg.Router.Agents()
@@ -359,13 +366,19 @@ func (m *MCPHandler) fetchPage(q *mcpReq, cursor string, page int, name string) 
 		reg, inReg := agents.Tool(q.up.srv.ID, it.Tool.Name)
 		match := inReg && reg.ApprovedHash == hash && reg.HashAlg == m.cfg.Hasher.Name()
 		poisoned := flagged[i] && (reg.Status != policy.ToolApproved || !match)
-		seen[it.Tool.Name] = &seenTool{hash: hash, headers: it.Headers, poisoned: poisoned, unchecked: failed[i] && !q.app.FailOpen}
+		seen[it.Tool.Name] = &seenTool{hash: hash, headers: it.Headers, poisoned: poisoned, unchecked: unchecked[i], blocked: blocked[i]}
 		found = found || it.Tool.Name == name
+		// Отравленное описание из служебного списка — в событии вызова
+		// и в оповещении agents.tool_poisoning (ревью 4.r1, остаток).
+		if poisoned && len(q.ev.Poisoned) < events.MaxAgentNames && !slices.Contains(q.ev.Poisoned, it.Tool.Name) {
+			q.ev.Poisoned = append(q.ev.Poisoned, it.Tool.Name)
+			q.rec.addThreats(map[string]bool{threatPoisoned: true})
+		}
 		if !inReg || reg.ApprovedHash != hash {
 			observed = append(observed, ObservedTool{Name: it.Tool.Name, Descriptor: it.Raw, Hash: hash, Suspicious: poisoned})
 		}
 	}
-	m.remember(q.up.srv.ID, seen)
+	m.remember(seenKey(q.app.ID, q.up.srv.ID), seen)
 	m.cfg.Observer.Observe(q.up.srv.ID, observed)
 	next, _ := mcp.GetString(&l.Result, "nextCursor")
 	if len(next) > mcpMaxCursor {
@@ -391,13 +404,15 @@ func (m *MCPHandler) toolsCall(q *mcpReq) {
 	q.rec.ev.Type, q.ev.Path = events.TypeAgentToolCall, events.AgentPathMCP
 	slug, name := q.up.srv.ID, cp.Name
 	q.ev.Tool = name
-	seen, ok := m.lookupSeen(slug, name)
+	seen, ok := m.lookupSeen(seenKey(q.app.ID, slug), name)
 	if !ok {
 		if err := m.fetchTools(q, name); err != nil {
-			m.upstreamFailed(q, err)
+			if !errors.Is(err, errMCPResponded) {
+				m.upstreamFailed(q, err)
+			}
 			return
 		}
-		seen, ok = m.lookupSeen(slug, name)
+		seen, ok = m.lookupSeen(seenKey(q.app.ID, slug), name)
 	}
 	reg, inReg := m.h.cfg.Router.Agents().Tool(slug, name)
 	status := reg.Status
@@ -440,10 +455,12 @@ func (m *MCPHandler) toolsCall(q *mcpReq) {
 	// Описание с внедрёнными инструкциями (DM-24) или не проверенное из-за
 	// сбоя (fail_closed), скрытое из tools/list, не вызывается и тогда,
 	// когда политика пропускает неодобренные.
-	poisonedBlock := ok && (seen.poisoned || seen.unchecked) && effectiveMode(q.app) == policy.Enforce
+	poisonedBlock := ok && (seen.poisoned || seen.unchecked || seen.blocked) && effectiveMode(q.app) == policy.Enforce
 	if ok && seen.poisoned {
 		q.rec.addThreats(map[string]bool{threatPoisoned: true})
-		q.ev.Poisoned = []string{name}
+		if !slices.Contains(q.ev.Poisoned, name) && len(q.ev.Poisoned) < events.MaxAgentNames {
+			q.ev.Poisoned = append(q.ev.Poisoned, name)
+		}
 	}
 	if len(q.failures) > 0 || ok && seen.unchecked {
 		ed := q.rec.ev.Decision

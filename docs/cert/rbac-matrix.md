@@ -177,8 +177,8 @@
 | GET | `/api/v1/shadow-ai/catalog` | `shadow_ai.read` | да | да | да | да | — | да |
 | PUT | `/api/v1/shadow-ai/catalog` | `shadow_ai.manage` | да | да | — | — | — | да |
 | GET | `/api/v1/shadow-ai/exclusions` | `shadow_ai.read` | да | да | да | да | — | да |
-| POST | `/api/v1/shadow-ai/exclusions` | `shadow_ai.manage` | да | да | — | — | — | да |
-| DELETE | `/api/v1/shadow-ai/exclusions/{kind}/{value}` | `shadow_ai.manage` | да | да | — | — | — | да |
+| POST | `/api/v1/shadow-ai/exclusions` | `shadow_ai.exclusions.manage` | да | — | — | — | — | — |
+| DELETE | `/api/v1/shadow-ai/exclusions/{kind}/{value}` | `shadow_ai.exclusions.manage` | да | — | — | — | — | — |
 | GET | `/api/v1/shadow-ai/imports` | `shadow_ai.read` | да | да | да | да | — | да |
 | POST | `/api/v1/shadow-ai/imports` | `shadow_ai.manage` | да | да | — | — | — | да |
 | GET | `/api/v1/shadow-ai/services` | `shadow_ai.read` | да | да | да | да | — | да |

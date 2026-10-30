@@ -143,7 +143,14 @@ func (m *s4MCP) last() (http.Header, string) {
 // s4MCPCall — запрос ревизии 2026-07-28 к /mcp/v1/files: код и тело.
 func s4MCPCall(t *testing.T, st *s3Stack, key, method, name, params string) (int, string) {
 	t.Helper()
-	hc := &http.Client{Transport: st.s.transport(), Timeout: 30 * time.Second}
+	return s4MCPCallWait(t, st, key, method, name, params, 30*time.Second)
+}
+
+// s4MCPCallWait — s4MCPCall с заданным сроком ответа: вызов, который ждёт
+// подтверждения человека, отвечает не раньше решения или таймаута очереди.
+func s4MCPCallWait(t *testing.T, st *s3Stack, key, method, name, params string, wait time.Duration) (int, string) {
+	t.Helper()
+	hc := &http.Client{Transport: st.s.transport(), Timeout: wait}
 	defer hc.CloseIdleConnections()
 	if params != "" {
 		params += ","
@@ -169,7 +176,8 @@ func s4MCPCall(t *testing.T, st *s3Stack, key, method, name, params string) (int
 	defer resp.Body.Close() //nolint:errcheck // ошибка закрытия тела ответа не влияет на тест
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		t.Fatal(err)
+		// Вызывается и из горутин теста: t.Fatal там недопустим.
+		return 0, err.Error()
 	}
 	return resp.StatusCode, string(raw)
 }

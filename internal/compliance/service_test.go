@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/azuresong-afk/ai_railway/internal/apps"
 	"github.com/azuresong-afk/ai_railway/internal/audit"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
+	"github.com/azuresong-afk/ai_railway/internal/policy/versions"
 )
 
 func TestEvaluateOverview(t *testing.T) {
@@ -115,9 +118,30 @@ func TestMarkOnAutoRequirement(t *testing.T) {
 	if _, err := s.SetMark(ctx, testBy, "auto.one", MarkInput{Status: StatusMet, Comment: "x"}); !errors.Is(err, ErrMarkNotAllowed) {
 		t.Fatalf("ручное «выполнено» поверх проверок: %v", err)
 	}
-	it, err := s.SetMark(ctx, testBy, "auto.one", MarkInput{Status: StatusNotApplicable, Comment: "Приложений в промышленной среде нет, закрыто договором"})
+	na := MarkInput{Status: StatusNotApplicable, Comment: "Приложений в промышленной среде нет, закрыто договором"}
+	// 4В36: «не применимо» поверх проверок — ослабление: без срока
+	// пересмотра, без повторной проверки (токен) и с неверным паролем — отказ.
+	var ie *InputError
+	if _, err := s.SetMark(ctx, testBy, "auto.one", na); !errors.As(err, &ie) || ie.Fields["review_by"] == "" {
+		t.Fatalf("без срока пересмотра: %v", err)
+	}
+	na.ReviewBy = testNow.AddDate(0, 6, 0).Format("2006-01-02")
+	if _, err := s.SetMark(ctx, testBy, "auto.one", na); !errors.Is(err, ErrConfirmRequired) {
+		t.Fatalf("без повторной проверки: %v", err)
+	}
+	wrong := testBy
+	wrong.Confirm = func(context.Context) error { return errors.New("неверный пароль") }
+	if _, err := s.SetMark(ctx, wrong, "auto.one", na); err == nil || errors.Is(err, ErrConfirmRequired) {
+		t.Fatalf("неверный пароль: %v", err)
+	}
+	confirmed := testBy
+	confirmed.Confirm = func(context.Context) error { return nil }
+	it, err := s.SetMark(ctx, confirmed, "auto.one", na)
 	if err != nil || it.Status != StatusNotApplicable {
 		t.Fatalf("«не применимо»: %+v %v", it, err)
+	}
+	if rec, _ := lastRecord(s.o.Store.(*Memory), "compliance.mark_set"); rec.Details.(map[string]any)["weakening"] != true {
+		t.Fatalf("аудит без weakening: %+v", rec.Details)
 	}
 	o, _ := s.Evaluate(ctx, Filter{}) //nolint:gosec // G104: ошибка проверяется ниже по результату
 	if o.Summary.Counted != 1 {
@@ -225,3 +249,96 @@ func TestRejectReasonUnknown(t *testing.T) {
 		t.Fatal()
 	}
 }
+
+// ctxFacts — сведения, которые зависят от контекста сбора: при отменённом
+// контексте все группы недоступны (как SystemFacts), ready задерживает сбор.
+type ctxFacts struct {
+	ready chan struct{}
+	calls atomic.Int32
+}
+
+func (f *ctxFacts) Snapshot(ctx context.Context) (*Snapshot, error) {
+	f.calls.Add(1)
+	if f.ready != nil {
+		<-f.ready
+	}
+	sn := goodSnapshot()
+	if ctx.Err() != nil {
+		sn.Unavailable = map[string]bool{GroupApps: true, GroupRoles: true}
+		sn.Apps, sn.PrivilegedRoles = nil, nil
+	}
+	return sn, nil
+}
+
+// 4В35: отменённый первый вызов не портит снимок следующему; ожидающий с
+// отменённым контекстом возвращается сразу; снимок с недоступными группами
+// не кешируется.
+func TestSnapshotSurvivesCancelledCaller(t *testing.T) {
+	f := &ctxFacts{ready: make(chan struct{})}
+	s := newTestService(t, NewMemory(), goodSnapshot())
+	s.o.Facts = f
+	ctx, cancel := context.WithCancel(context.Background())
+	first := make(chan error, 1)
+	go func() { _, err := s.snapshot(ctx); first <- err }()
+	for f.calls.Load() == 0 {
+		time.Sleep(time.Millisecond)
+	}
+	cancel()
+	select {
+	case err := <-first:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("отменённый вызов: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("ожидающий с отменённым контекстом не вернулся")
+	}
+	close(f.ready)
+	sn, err := s.snapshot(context.Background())
+	if err != nil || len(sn.Unavailable) != 0 || len(sn.Apps) == 0 {
+		t.Fatalf("снимок после отмены первого вызова: %+v %v", sn, err)
+	}
+	if n := f.calls.Load(); n != 1 {
+		t.Fatalf("сборов %d, нужен один общий", n)
+	}
+	// Снимок с недоступной группой не кешируется.
+	bad := &fakeFacts{snap: goodSnapshot()}
+	bad.snap.Unavailable = map[string]bool{GroupAlerts: true}
+	s2 := newTestService(t, NewMemory(), bad.snap)
+	if sn, err := s2.snapshot(context.Background()); err != nil || !sn.Unavailable[GroupAlerts] {
+		t.Fatalf("снимок с недоступной группой: %+v %v", sn, err)
+	}
+	if s2.snap != nil {
+		t.Fatal("снимок с недоступной группой закеширован")
+	}
+}
+
+// failingPolicies — сбой хранилища политик (не «не найдена»).
+type failingPolicies struct{ err error }
+
+func (p failingPolicies) Get(context.Context, string, int) (versions.Doc, error) {
+	return versions.Doc{}, p.err
+}
+
+// 4В35: сбой чтения политики делает группу приложений недоступной, а
+// «политика не найдена» — приложение без политики.
+func TestSystemFactsPolicyError(t *testing.T) {
+	appsSrc := fakeApps{apps: []apps.Application{{Slug: "bot", Env: "prod", Policy: "p"}}}
+	f := &SystemFacts{Apps: appsSrc, Policies: failingPolicies{err: errors.New("сбой БД")}}
+	sn, err := f.Snapshot(context.Background())
+	if err != nil || !sn.Unavailable[GroupApps] {
+		t.Fatalf("сбой политики: %+v %v", sn, err)
+	}
+	f.Policies = failingPolicies{err: versions.ErrNotFound}
+	if sn, err = f.Snapshot(context.Background()); err != nil || sn.Unavailable[GroupApps] || len(sn.Apps) != 1 || sn.Apps[0].PolicyMode != "" {
+		t.Fatalf("политика не найдена: %+v %v", sn, err)
+	}
+}
+
+// fakeApps — приложения без поставщиков.
+type fakeApps struct{ apps []apps.Application }
+
+func (f fakeApps) Applications(context.Context, string, *apps.Cursor, int) ([]apps.Application, error) {
+	return f.apps, nil
+}
+
+func (f fakeApps) Providers(context.Context) ([]apps.Provider, error) { return nil, nil }

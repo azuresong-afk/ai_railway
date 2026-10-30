@@ -609,6 +609,59 @@ func TestBackupRestoreNonEmptyOnRealDB(t *testing.T) {
 	}
 }
 
+// 4В38 ревью 4.r4: агенты в копию не входят, поэтому действующий ключ,
+// закреплённый за агентом, восстанавливается отозванным (иначе он выбрал бы
+// любого агента приложения заголовком X-AISec-Agent); строка в выводе и
+// счётчик в записи аудита «после». Обычный ключ — действующий.
+func TestBackupRestoreAgentKeyRevokedOnRealDB(t *testing.T) {
+	base := os.Getenv("AISEC_TEST_DATABASE_URL")
+	if base == "" {
+		t.Skip("AISEC_TEST_DATABASE_URL не задан")
+	}
+	admin, err := store.Open(context.Background(), base, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close()
+	src := newInstallation(t, admin, base, "cli_backup_src6")
+	dst := newInstallation(t, admin, base, "cli_backup_dst6")
+	populate(t, src)
+	const agent, agentKey = "0192a000-0000-7000-8000-000000000601", "0192a000-0000-7000-8000-000000000303"
+	src.exec(t, `INSERT INTO agents (id, org_id, app_id, slug, name, status, created_at, created_by, updated_at, updated_by)
+		VALUES ($1, $2, $3, 'reader', 'Синтетический агент', 'active', now(), 'user:x', now(), 'user:x')`, agent, audit.DefaultOrgID, tApp)
+	src.exec(t, `INSERT INTO app_keys (id, org_id, app_id, agent_id, name, prefix, key_hash, hash_alg, expires_at, created_at,
+		created_by) VALUES ($1, $2, $3, $4, 'агент', 'aisec_cccc3333', $5, 'SHA-256', now() + interval '30 days', now(), 'user:x')`,
+		agentKey, audit.DefaultOrgID, tApp, agent, bytes.Repeat([]byte{3}, 32))
+	dir := t.TempDir()
+	phrase := writePhraseFile(t, testBackupPhrase, 0o400)
+	file := filepath.Join(dir, "config.aisec-backup")
+	var out, errb bytes.Buffer
+	if err := backupCmd([]string{"create", "-keys", src.keys, "-out", file, "-passphrase-file", phrase, "-no-user-hmac-key"},
+		src.dsn, &out, &errb, time.Now()); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	out.Reset()
+	if err := backupCmd([]string{"restore", "-keys", dst.keys, "-in", file, "-passphrase-file", phrase}, dst.dsn, &out, &errb,
+		time.Now()); err != nil {
+		t.Fatalf("restore: %v %s", err, errb.String())
+	}
+	if n := dst.count(t, `SELECT count(*) FROM app_keys WHERE id = $1 AND agent_id IS NULL AND revoked_at IS NOT NULL
+		AND revoked_by = 'backup_restore'`, agentKey); n != 1 {
+		t.Fatal("ключ агента восстановлен действующим")
+	}
+	if n := dst.count(t, "SELECT count(*) FROM app_keys WHERE id = $1 AND revoked_at IS NULL", tKey2); n != 1 {
+		t.Fatal("обычный ключ отозван")
+	}
+	if !strings.Contains(out.String(), "закреплённые за агентами (1), восстановлены отозванными") ||
+		strings.Contains(out.String(), "не отмечавшим привязку") {
+		t.Fatalf("вывод: %s", out.String())
+	}
+	if n := dst.count(t, `SELECT count(*) FROM audit_log WHERE action = 'backup.restore' AND details->>'stage' = 'done'
+		AND details->>'agent_keys_revoked' = '1' AND details->>'agent_keys_unknown' = 'false'`); n != 1 {
+		t.Fatal("в записи «после» нет счётчика ключей агентов")
+	}
+}
+
 // В21: копия старше 7 суток восстанавливается только с -accept-old-copy;
 // с -keep-api-tokens токены остаются как в копии и принимаются.
 func TestBackupRestoreOldCopyKeepTokensOnRealDB(t *testing.T) {

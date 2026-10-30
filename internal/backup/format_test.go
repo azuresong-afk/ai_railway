@@ -370,6 +370,39 @@ func TestKeyOrder(t *testing.T) {
 	}
 }
 
+// 4В38 ревью 4.r4: действующий ключ агента восстанавливается отозванным
+// не раньше выпуска; отозванный и обычный ключи — как в копии, исходный
+// срез не меняется.
+func TestRevokeAgentKeys(t *testing.T) {
+	gone := testTime.Add(-time.Hour)
+	by := "user:x"
+	keys := []AppKey{
+		{ID: "plain", CreatedAt: testTime.Add(-48 * time.Hour)},
+		{ID: "agent", AgentBound: true, CreatedAt: testTime.Add(-48 * time.Hour)},
+		{ID: "agent-revoked", AgentBound: true, CreatedAt: testTime.Add(-48 * time.Hour), RevokedAt: &gone, RevokedBy: &by},
+		{ID: "agent-future", AgentBound: true, CreatedAt: testTime.Add(time.Hour)},
+	}
+	out, n := revokeAgentKeys(keys, testTime)
+	if n != 2 {
+		t.Fatalf("отозвано %d, ожидалось 2", n)
+	}
+	if out[0].RevokedAt != nil {
+		t.Fatal("обычный ключ отозван")
+	}
+	if k := out[1]; k.RevokedAt == nil || !k.RevokedAt.Equal(testTime) || *k.RevokedBy != keyRevokedByRestore {
+		t.Fatalf("ключ агента: %+v", k)
+	}
+	if k := out[2]; !k.RevokedAt.Equal(gone) || *k.RevokedBy != by {
+		t.Fatalf("отозванный ключ изменён: %+v", k)
+	}
+	if k := out[3]; k.RevokedAt == nil || !k.RevokedAt.Equal(k.CreatedAt) {
+		t.Fatalf("отзыв раньше выпуска: %+v", k)
+	}
+	if keys[1].RevokedAt != nil {
+		t.Fatal("изменён исходный срез")
+	}
+}
+
 // Fuzz открытого заголовка: единственная часть файла, которая разбирается
 // до проверки AEAD.
 func FuzzParseHeader(f *testing.F) {

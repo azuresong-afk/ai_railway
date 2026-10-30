@@ -32,7 +32,8 @@ export const shadowApi = {
   imports: (signal?: AbortSignal) => request<S["ShadowImportList"]>("GET", "/api/v1/shadow-ai/imports", undefined, signal),
   settings: (signal?: AbortSignal) => request<ShadowSettings>("GET", "/api/v1/shadow-ai/settings", undefined, signal),
   exclusions: (signal?: AbortSignal) => request<S["ShadowExclusionList"]>("GET", "/api/v1/shadow-ai/exclusions", undefined, signal),
-  syslog: (signal?: AbortSignal) => request<ShadowSyslog>("GET", "/api/v1/shadow-ai/syslog", undefined, signal),
+  syslog: (signal?: AbortSignal, background?: boolean) =>
+    request<ShadowSyslog>("GET", "/api/v1/shadow-ai/syslog", undefined, signal, background),
   // Журнал — файлом целиком (до 256 МиБ); сжатый gzip — с compression=gzip.
   importLog: (file: File, format: LogFormat, gzip: boolean) =>
     upload<ShadowImport>(

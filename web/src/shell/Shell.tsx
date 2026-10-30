@@ -1,10 +1,11 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Keyboard, LogOut, Maximize2, PanelLeft, Search, X } from "lucide-react";
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { HashRouter, NavLink, Route, Routes, useLocation, useNavigate, useSearchParams } from "react-router";
 import { adminApi } from "../admin/api";
 import { licenseNotice } from "../admin/licenseText";
 import type { Me } from "../api/client";
+import { isRefetch } from "../api/poll";
 import { Button } from "../ui/Button";
 import { Input, Select } from "../ui/Field";
 import { Banner, EmptyState } from "../ui/Layout";
@@ -141,9 +142,10 @@ function AdminRoute({ me }: { me: Me }) {
 // есть license.read; остальным причину отказа объясняет ответ сервера на само изменение.
 function LicenseBanner({ me }: { me: Me }) {
   const allowed = me.permissions.includes("license.read");
+  const qc = useQueryClient();
   const q = useQuery({
     queryKey: ["license"],
-    queryFn: ({ signal }) => adminApi.license(signal),
+    queryFn: ({ signal, queryKey }) => adminApi.license(signal, isRefetch(qc, queryKey)),
     enabled: allowed,
     refetchInterval: 10 * 60 * 1000,
     retry: false,

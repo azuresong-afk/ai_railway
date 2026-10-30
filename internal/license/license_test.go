@@ -248,12 +248,8 @@ func TestVerifyRejects(t *testing.T) {
 			}
 		})
 	}
-	// Отозванный номер заверения.
-	revokedLicenseSerials = []uint64{2}
-	t.Cleanup(func() { revokedLicenseSerials = []uint64{} })
-	if _, err := Verify(p, vendor, good, time.Time{}); !errors.Is(err, aisecCrypto.ErrEndorsementRevoked) {
-		t.Fatalf("отозванное заверение: %v", err)
-	}
+	// Отозванный номер заверения — TestRevokedServiceDBAndLicense в
+	// internal/integrity.
 }
 
 // swapPayload — файл с подменённым содержимым и прежней подписью.

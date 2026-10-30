@@ -315,4 +315,8 @@ type By struct {
 	// Confirm — повторная проверка пароля или кода перед одобрением
 	// вызова с риском critical; nil — ErrConfirmRequired.
 	Confirm func(ctx context.Context) error
+	// NoMFA — в сессии не принят код второго фактора: любое одобрение —
+	// после повторной проверки, как у critical (4В37; аналитику TOTP не
+	// обязателен, а украденного пароля не должно хватать на одобрение).
+	NoMFA bool
 }

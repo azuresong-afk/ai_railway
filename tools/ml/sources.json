@@ -1,0 +1,82 @@
+{
+  "comment": "Модели и наборы данных для tools/ml (задачи 4.19 и 4.20). revision — коммит репозитория Hugging Face, files — SHA-256 каждого скачанного файла. Пустые revision и files заполняет первый запуск make ml-fetch ML_LOCK=1 на машине владельца; файл с заполненными значениями фиксируется в репозитории, дальше make ml-fetch только сверяет. Источник с полем git — репозиторий GitHub: revision — коммит, files — SHA-256 архива git archive --format=tar по путям paths (factRuEval-2016 для pii.ner — решение владельца 30.10.2026, ADR-0024).",
+  "models": [
+    {
+      "name": "rubert-tiny2",
+      "repo": "cointegrated/rubert-tiny2",
+      "license": "MIT",
+      "use": "основа injection.ml и pii.ner (дообучка)",
+      "patterns": ["config.json", "tokenizer.json", "tokenizer_config.json", "special_tokens_map.json", "vocab.txt", "model.safetensors", "pytorch_model.bin"],
+      "revision": "",
+      "files": {}
+    },
+    {
+      "name": "rubert-tiny-toxicity",
+      "repo": "cointegrated/rubert-tiny-toxicity",
+      "license": "MIT",
+      "use": "toxicity.ml",
+      "patterns": ["config.json", "tokenizer.json", "tokenizer_config.json", "special_tokens_map.json", "vocab.txt", "model.safetensors", "pytorch_model.bin"],
+      "revision": "",
+      "files": {}
+    }
+  ],
+  "datasets": [
+    {
+      "name": "deepset-prompt-injections",
+      "repo": "deepset/prompt-injections",
+      "license": "Apache-2.0",
+      "use": "обучение injection.ml: атаки и обычные запросы, EN и DE",
+      "patterns": ["data/train-*.parquet"],
+      "text_field": "text",
+      "label_field": "label",
+      "revision": "",
+      "files": {}
+    },
+    {
+      "name": "neuralchemy-prompt-injection",
+      "repo": "neuralchemy/Prompt-injection-dataset",
+      "license": "Apache-2.0",
+      "use": "обучение injection.ml: атаки и обычные запросы, EN",
+      "patterns": ["*train*.parquet", "*train*.jsonl", "*train*.csv", "data/train-*.parquet"],
+      "text_field": "",
+      "label_field": "",
+      "revision": "",
+      "files": {}
+    },
+    {
+      "name": "s-labs-prompt-injection",
+      "repo": "S-Labs/prompt-injection-dataset",
+      "license": "MIT",
+      "use": "обучение injection.ml: атаки и обычные запросы, EN",
+      "patterns": ["*train*.parquet", "*train*.jsonl", "*train*.csv", "data/train-*.parquet"],
+      "text_field": "",
+      "label_field": "",
+      "revision": "",
+      "files": {}
+    },
+    {
+      "name": "oasst2",
+      "repo": "OpenAssistant/oasst2",
+      "license": "Apache-2.0",
+      "use": "обучение injection.ml: обычные запросы людей (только реплики prompter, RU и EN)",
+      "patterns": ["data/train-*.parquet"],
+      "text_field": "text",
+      "label_field": "",
+      "benign_only": true,
+      "filter": {"role": "prompter", "lang": ["ru", "en"]},
+      "limit": 6000,
+      "revision": "",
+      "files": {}
+    },
+    {
+      "name": "factrueval-2016",
+      "git": "https://github.com/dialogue-evaluation/factRuEval-2016",
+      "paths": ["LICENSE", "devset", "testset"],
+      "license": "MIT",
+      "use": "pii.ner: devset — обучение, testset — проверка на живом тексте (решение владельца 30.10.2026, ADR-0024)",
+      "task": "ner",
+      "revision": "dfe96237fce79fde13b2021d1938587e4ea3042e",
+      "files": {"factrueval-2016.tar": "c615f4a6c42b41c3cad315096999c12e8e3995ae29e049a4d5a8f2e2c6d5e58a"}
+    }
+  ]
+}

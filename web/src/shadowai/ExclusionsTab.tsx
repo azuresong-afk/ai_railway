@@ -127,14 +127,14 @@ export function ExclusionDialog({
   );
 }
 
-// Вкладка «Исключения»: список, снятие и добавление (кнопки — только с правом shadow_ai.manage).
+// Вкладка «Исключения»: список, снятие и добавление (кнопки — только с правом shadow_ai.exclusions.manage).
 export function ExclusionsTab({
-  canManage,
+  canExclude,
   catalog,
   mfa,
   usersPseudonymized,
 }: {
-  canManage: boolean;
+  canExclude: boolean;
   catalog: ShadowCatalog | undefined;
   mfa: boolean;
   usersPseudonymized: boolean;
@@ -157,7 +157,7 @@ export function ExclusionsTab({
         <p className="text-sm text-muted">
           Например, учётная запись самого шлюза AISec, которая ходит к провайдерам через прокси. Пользователи хранятся только псевдонимами.
         </p>
-        {canManage && (
+        {canExclude && (
           <Button variant="primary" onClick={() => setAdding(true)}>
             Добавить исключение
           </Button>
@@ -174,7 +174,7 @@ export function ExclusionsTab({
               <Th>Кто или что</Th>
               <Th>Комментарий</Th>
               <Th>Добавлено</Th>
-              {canManage && <Th>Действия</Th>}
+              {canExclude && <Th>Действия</Th>}
             </tr>
           </thead>
           <tbody>
@@ -187,7 +187,7 @@ export function ExclusionsTab({
                   {formatAbsolute(x.created_at)}
                   <div className="text-xs text-muted">{x.created_by}</div>
                 </Td>
-                {canManage && (
+                {canExclude && (
                   <Td>
                     <Button variant="ghost" onClick={() => setRemoving(x)} aria-label={`Снять исключение ${x.value}`}>
                       Снять исключение

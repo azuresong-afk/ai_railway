@@ -13,6 +13,7 @@ import (
 
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/internal/detect"
+	"github.com/azuresong-afk/ai_railway/internal/detect/builtin"
 	"github.com/azuresong-afk/ai_railway/internal/detect/pii"
 	"github.com/azuresong-afk/ai_railway/internal/detect/secretscan"
 	"github.com/azuresong-afk/ai_railway/internal/detect/session"
@@ -71,6 +72,14 @@ const (
 // использует.
 var maskDetectors = []string{pii.ID, secretscan.ID}
 
+// maskFindings — детекторы, находки которых маскируются в содержимом
+// события в режиме masked, если детектор запускался по политике:
+// maskDetectors и pii.ner (ADR-0024, дополнение 4.20). pii.ner не
+// запускается ради маскирования события, а его сбой не делает маскирование
+// невозможным (MaskFailed): ПДн с контрольными суммами закрывает pii.ru,
+// событие получает ml_unavailable.
+var maskFindings = append(slices.Clone(maskDetectors), builtin.PIINERID)
+
 // inspectText — проверяемый фрагмент.
 type inspectText struct {
 	Text   string
@@ -122,6 +131,11 @@ type inspectRequest struct {
 	// DetectOnly — только находки и решение, фрагменты не меняются
 	// (окна потока, проверка после передачи).
 	DetectOnly bool
+	// Window — окно потока ответа: ML-детекторы, у которых в политике только
+	// правила log, не вызываются (4В30) — решения они не меняют, а вызов
+	// каждые streamCheckStep байт нагружает aisec-ml; находки для события
+	// даёт проверка ответа целиком.
+	Window bool
 	// User — псевдоним пользователя запроса (условие исключений).
 	User string
 	// Extra — находки детекторов уровня запроса, найденные до проверки
@@ -240,6 +254,11 @@ func (a *App) inspect(ctx context.Context, req inspectRequest) (*inspection, err
 		req.Direction = detect.Input
 	}
 	policyIDs := a.Policy.Detectors(req.Direction)
+	if req.Window {
+		policyIDs = slices.DeleteFunc(policyIDs, func(id string) bool {
+			return mlBacked(a.Detectors, id) && a.Policy.LogOnly(id, req.Direction)
+		})
+	}
 	runIDs := slices.Clone(policyIDs)
 	if req.Mask {
 		for _, id := range maskDetectors {
@@ -570,10 +589,10 @@ func rewrite(text string, spans []span) string {
 	return b.String()
 }
 
-// maskedContent — содержимое запроса для события в режиме masked: ПДн,
-// секреты и всё, что замаскировала политика, заменены категорией находки,
-// скрытые символы вырезаны. Пусто и false — замаскировать нельзя (сбой
-// детектора маскирования).
+// maskedContent — содержимое запроса для события в режиме masked: ПДн
+// (maskFindings), секреты и всё, что замаскировала политика, заменены
+// категорией находки, скрытые символы вырезаны. Пусто и false —
+// замаскировать нельзя (сбой детектора маскирования).
 func (in *inspection) maskedContent(texts []inspectText) (string, bool) {
 	if in.MaskFailed {
 		return "", false
@@ -587,7 +606,7 @@ func (in *inspection) maskedContent(texts []inspectText) (string, bool) {
 	byText := map[int][]span{}
 	for i, f := range in.Findings {
 		cut := cutOut(f.Finding)
-		if !applied[i] && !cut && !slices.Contains(maskDetectors, f.Detector) {
+		if !applied[i] && !cut && !slices.Contains(maskFindings, f.Detector) {
 			continue
 		}
 		repl := "[" + f.Category + "]"

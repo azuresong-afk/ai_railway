@@ -3,6 +3,7 @@ package detect
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"strings"
 	"testing"
@@ -36,10 +37,15 @@ func (f fakeDetector) Detect(ctx context.Context, t Text) ([]Finding, error) {
 		return nil, errors.New("сбой")
 	case "bad":
 		return []Finding{{Detector: f.id, Version: "1.0.0", Category: "test.secret", Threat: "DM-31", Score: 1, Start: 0, End: len(t.Text) + 1}}, nil
+	case "partial-bad":
+		return []Finding{{Detector: f.id, Version: "1.0.0", Category: "test.secret", Threat: "DM-31", Score: 1, Start: 0, End: len(t.Text) + 1}}, ErrPartial
 	}
 	var out []Finding
 	if i := strings.Index(t.Text, "секрет"); i >= 0 {
 		out = append(out, Finding{Detector: f.id, Version: "1.0.0", Category: "test.secret", Threat: "DM-31", Score: 0.9, Start: i, End: i + len("секрет"), Rule: "word"})
+	}
+	if f.mode == "partial" {
+		return out, fmt.Errorf("модель: %w", ErrPartial)
 	}
 	return out, nil
 }
@@ -154,6 +160,30 @@ func TestOnRuneBoundary(t *testing.T) {
 	} {
 		if got := OnRuneBoundary(c.text, c.p); got != c.want {
 			t.Errorf("%q, %d: %v", c.text, c.p, got)
+		}
+	}
+}
+
+// Неполная проверка (ErrPartial): находки проверенной части выдаются вместе
+// со сбоем, чтобы их замаскировать; неверная находка — только сбой.
+func TestRunPartial(t *testing.T) {
+	r, err := NewRegistry(fakeDetector{id: "part", mode: "partial"}, fakeDetector{id: "pbad", mode: "partial-bad"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs, errs, err := r.Run(context.Background(), r.IDs(), Text{Text: "это секрет", Direction: Input}, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fs) != 1 || fs[0].Detector != "part" {
+		t.Fatalf("находки: %+v", fs)
+	}
+	if len(errs) != 2 {
+		t.Fatalf("сбои: %v", errs)
+	}
+	for _, e := range errs {
+		if partial := errors.Is(e.Err, ErrPartial); partial != (e.Detector == "part") {
+			t.Errorf("%s: %v", e.Detector, e.Err)
 		}
 	}
 }

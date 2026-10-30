@@ -36,7 +36,10 @@ const (
 
 // Задачи моделей.
 const (
-	TaskClassification      = "classification"       // оценка текста целиком (injection.ml, toxicity.ml)
+	TaskClassification = "classification" // оценка текста целиком, одна метка из всех (softmax): injection.ml
+	// TaskMultiLabel — оценка текста целиком, каждая метка отдельно
+	// (сигмоида): toxicity.ml (rubert-tiny-toxicity).
+	TaskMultiLabel          = "multilabel_classification"
 	TaskTokenClassification = "token_classification" // разметка фрагментов (pii.ner)
 )
 
@@ -159,7 +162,7 @@ func (m ModelSpec) validate() error {
 	if err := m.Info().Validate(); err != nil {
 		return bad("ID, версия, метки или направления")
 	}
-	if m.Task != TaskClassification && m.Task != TaskTokenClassification {
+	if m.Task != TaskClassification && m.Task != TaskMultiLabel && m.Task != TaskTokenClassification {
 		return bad("задача модели")
 	}
 	if m.MaxTokens < 1 || m.MaxTokens > MaxModelTokens {
@@ -264,7 +267,15 @@ type LoadOptions struct {
 	Verifier aisecCrypto.Verifier
 	// MaxTotal — предел суммарного размера файлов моделей в памяти.
 	MaxTotal int64
+	// ManifestHash — хеш aisec-models.json из подписанного манифеста выпуска
+	// (4В23): пакет другой версии, хоть и подписанный, отвергается. Пусто —
+	// без привязки (проверка пакета при сборке, tools/manifest).
+	ManifestHash []byte
 }
+
+// ErrNotInRelease — манифест пакета моделей не совпадает с записью манифеста
+// выпуска: пакет от другого выпуска (откат версии моделей).
+var ErrNotInRelease = errors.New("пакет моделей не совпадает с манифестом выпуска")
 
 // DefaultMaxModelBytes — предел суммарного размера моделей по умолчанию.
 const DefaultMaxModelBytes = 1 << 30
@@ -296,11 +307,14 @@ func LoadModels(dir string, opt LoadOptions) ([]LoadedModel, *ModelsManifest, er
 	if err := VerifyModelsSignature(opt.Verifier, data, sig); err != nil {
 		return nil, nil, err
 	}
-	m, err := ParseModelsManifest(data)
+	hasher, err := opt.Provider.Hasher()
 	if err != nil {
 		return nil, nil, err
 	}
-	hasher, err := opt.Provider.Hasher()
+	if opt.ManifestHash != nil && !aisecCrypto.Equal(hasher.Sum(data), opt.ManifestHash) {
+		return nil, nil, ErrNotInRelease
+	}
+	m, err := ParseModelsManifest(data)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -366,6 +380,11 @@ func readRegular(root *os.Root, name string, limit int64) ([]byte, error) {
 	st, err := f.Stat()
 	if err != nil || !os.SameFile(info, st) {
 		return nil, fmt.Errorf("%s: файл заменён во время проверки", name)
+	}
+	// Размер открытого файла — снова в пределе: файл мог вырасти между
+	// проверкой и открытием, а буфер выделяется по нему (ревью 4.r3).
+	if st.Size() > limit || st.Size() != info.Size() {
+		return nil, fmt.Errorf("%s: файл изменён во время проверки", name)
 	}
 	// Ровно заявленный размер; файл, выросший после проверки, отвергается.
 	b := make([]byte, st.Size())
