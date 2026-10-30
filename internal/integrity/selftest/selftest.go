@@ -9,9 +9,10 @@
 // реплик ассистента (DM-03) — совпасть с эталонами.
 //
 // ML-детекторы (ADR-0024) проверяются, если компонент их передал: без
-// aisec-ml эталон даёт ml_unavailable (Result.MLUnavailable) и самотест не
-// валит — как конвейер шлюза, где сбой ML не включает fail_closed; при
-// доступном aisec-ml находки сверяются с эталоном, как у остальных.
+// aisec-ml (detect.ErrMLUnavailable) эталон даёт ml_unavailable
+// (Result.MLUnavailable) и самотест не валит — как конвейер шлюза, где
+// недоступность ML не включает fail_closed. Паника, другая ошибка или
+// неверная находка ML-детектора — провал, как у остальных детекторов.
 //
 // Провал криптопрофиля всегда останавливает запуск: без исправной
 // криптографии компонент не работает. Провал детекторов и политики
@@ -151,7 +152,7 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 				return res, fmt.Errorf("самотест прерван: %w", err)
 			}
 			res.Vectors++
-			if ml && len(runErrs) > 0 {
+			if ml && mlUnavailable(runErrs) {
 				res.MLUnavailable++
 				continue
 			}
@@ -276,6 +277,21 @@ func replyHash(h aisecCrypto.Hasher, parts ...string) []byte {
 func mlBacked(d detect.Detector) bool {
 	m, ok := d.(interface{ MLBacked() bool })
 	return ok && m.MLBacked()
+}
+
+// mlUnavailable — ML-эталон не проверен из-за недоступности aisec-ml
+// (detect.ErrMLUnavailable). Паника, срок детектора и другие ошибки — провал
+// самотеста, как у остальных детекторов (4.28 (б)).
+func mlUnavailable(runErrs []detect.RunError) bool {
+	if len(runErrs) == 0 {
+		return false
+	}
+	for _, e := range runErrs {
+		if !errors.Is(e.Err, detect.ErrMLUnavailable) {
+			return false
+		}
+	}
+	return true
 }
 
 func hasBoth(vs []Vector) bool {
