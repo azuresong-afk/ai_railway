@@ -13,6 +13,7 @@ import (
 
 	"github.com/azuresong-afk/ai_railway/internal/audit"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
+	"github.com/azuresong-afk/ai_railway/internal/servicedb"
 	"github.com/azuresong-afk/ai_railway/internal/store"
 	"github.com/azuresong-afk/ai_railway/migrations"
 )
@@ -82,7 +83,7 @@ func (t poolTx) Applied(ctx context.Context) ([]store.Applied, error) {
 	})
 }
 
-func setupPG(t *testing.T) (*pgxpool.Pool, *PGStore) {
+func setupPG(t *testing.T) (*pgxpool.Pool, *PGStore, *servicedb.PGStore) {
 	t.Helper()
 	dsn := os.Getenv("AISEC_TEST_DATABASE_URL")
 	if dsn == "" {
@@ -130,17 +131,21 @@ func setupPG(t *testing.T) (*pgxpool.Pool, *PGStore) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return owner, st
+	dbs, err := servicedb.NewPGStore(app, l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return owner, st, dbs
 }
 
 func TestPGComplianceMarksAndBase(t *testing.T) {
-	owner, st := setupPG(t)
+	owner, st, dbs := setupPG(t)
 	ctx := pgTestCtx(t)
 	base, err := ParseBase([]byte(miniBase(1, "2026-10-28")))
 	if err != nil {
 		t.Fatal(err)
 	}
-	s, err := New(Options{Store: st, Provider: provider(t), Facts: &fakeFacts{snap: goodSnapshot()}, Embedded: base,
+	s, err := New(Options{Store: st, ServiceDBs: dbs, Provider: provider(t), Facts: &fakeFacts{snap: goodSnapshot()}, Embedded: base,
 		Clock: func() time.Time { return testNow }})
 	if err != nil {
 		t.Fatal(err)
@@ -196,14 +201,14 @@ func TestPGComplianceMarksAndBase(t *testing.T) {
 	if _, err := s.UploadBase(ctx, testBy, signBase(t, BaseKind, y2, nil)); err != nil {
 		t.Fatal(err)
 	}
-	var be *BaseError
+	var be *servicedb.RejectError
 	if _, err := s.UploadBase(ctx, testBy, signBase(t, BaseKind, y2, nil)); !errors.As(err, &be) || be.Reason != "stale_version" {
 		t.Fatalf("та же версия: %v", err)
 	}
-	if n := count("SELECT count(*) FROM audit_log WHERE action = 'compliance.base_rejected'"); n != 1 {
+	if n := count("SELECT count(*) FROM audit_log WHERE action = 'service_db.rejected'"); n != 1 {
 		t.Fatalf("аудит отказа: %d", n)
 	}
-	s2, err := New(Options{Store: st, Provider: provider(t), Facts: &fakeFacts{snap: goodSnapshot()}, Embedded: base,
+	s2, err := New(Options{Store: st, ServiceDBs: dbs, Provider: provider(t), Facts: &fakeFacts{snap: goodSnapshot()}, Embedded: base,
 		Clock: func() time.Time { return testNow }})
 	if err != nil {
 		t.Fatal(err)
@@ -211,11 +216,5 @@ func TestPGComplianceMarksAndBase(t *testing.T) {
 	v, err := s2.BaseView(ctx)
 	if err != nil || v.Active.Version != 2 || v.Uploaded == nil || !v.Uploaded.Valid {
 		t.Fatalf("база из БД: %+v %v", v, err)
-	}
-	// Хранилище не опускает версию даже при прямом вызове.
-	err = st.SaveBase(ctx, audit.DefaultOrgID, StoredBase{Version: 1, Date: testNow, SubkeySerial: 1, Fingerprint: "fp", Requirements: 1, File: []byte("x"), UploadedAt: testNow, UploadedBy: "t"},
-		audit.Entry{Actor: testBy.Actor, Action: "compliance.base_loaded", Object: audit.Object{Type: "compliance_base", ID: "x"}, Result: audit.ResultSuccess})
-	if !errors.Is(err, ErrStaleBase) {
-		t.Fatalf("понижение версии: %v", err)
 	}
 }

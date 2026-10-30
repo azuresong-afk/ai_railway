@@ -12,6 +12,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/audit"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/internal/policy/versions"
+	"github.com/azuresong-afk/ai_railway/internal/servicedb"
 )
 
 func TestEvaluateOverview(t *testing.T) {
@@ -163,7 +164,7 @@ func TestUploadBase(t *testing.T) {
 	if err != nil || v.Active.Version != 2 || v.Active.Origin != "uploaded" || v.Uploaded == nil || !v.Uploaded.Valid || v.Active.Requirements != 4 {
 		t.Fatalf("загрузка: %+v %v", v, err)
 	}
-	rec, n := lastRecord(m, "compliance.base_loaded")
+	rec, n := lastRecord(m, servicedb.ActionLoaded)
 	if d, _ := rec.Details.(map[string]any); n != 1 || d["version"] != uint64(2) || d["subkey_serial"] != uint64(1) || rec.Result != audit.ResultSuccess {
 		t.Fatalf("аудит загрузки: %+v", rec)
 	}
@@ -185,16 +186,16 @@ func TestUploadBase(t *testing.T) {
 		"другой вид базы":      {signBase(t, "shadow_ai_catalog", miniBase(3, "2026-10-28"), nil), "kind"},
 		"заверение истекло":    {signBase(t, BaseKind, miniBase(3, "2026-10-28"), subOld), "expired"},
 		"назначение":           {swapEndorsement(t, base, endorseTest(t, aisecCrypto.PurposeLicense, 1, testNow.AddDate(-1, 0, 0), testNow.AddDate(1, 0, 0))), "purpose"},
-		"неизвестная проверка": {signBase(t, BaseKind, bytes.NewBufferString(miniBase(3, "2026-10-28")).String()+"  - {id: bad.one, source: src-a, clause: п., title: t, summary: s, applies: [gis], checks: [{name: shell_exec}]}\n", nil), "format"},
+		"неизвестная проверка": {signBase(t, BaseKind, bytes.NewBufferString(miniBase(3, "2026-10-28")).String()+"  - {id: bad.one, source: src-a, clause: п., title: t, summary: s, applies: [gis], checks: [{name: shell_exec}]}\n", nil), "content"},
 	} {
 		_, err := s.UploadBase(ctx, testBy, tc.data)
-		var be *BaseError
+		var be *servicedb.RejectError
 		if !errors.As(err, &be) || be.Reason != tc.reason {
 			t.Errorf("%s: %v (ожидалась причина %s)", name, err, tc.reason)
 			continue
 		}
-		rec, _ := lastRecord(m, "compliance.base_rejected")
-		if d, _ := rec.Details.(map[string]any); rec.Result != audit.ResultFailure || d["reason"] != tc.reason {
+		rec, _ := lastRecord(m, servicedb.ActionRejected)
+		if d, _ := rec.Details.(map[string]any); rec.Result != audit.ResultFailure || d["reason"] != tc.reason || d["kind"] != BaseKind {
 			t.Errorf("%s: аудит отказа %+v", name, rec)
 		}
 	}
@@ -203,7 +204,7 @@ func TestUploadBase(t *testing.T) {
 	}
 	// Дата базы вне срока заверения.
 	oldDate := signBase(t, BaseKind, miniBase(5, "2026-01-01"), nil)
-	if _, err = s.UploadBase(ctx, testBy, oldDate); RejectReason(errors.Unwrap(err)) != "date" {
+	if _, err = s.UploadBase(ctx, testBy, oldDate); servicedb.Reason(err) != "date" {
 		t.Fatalf("дата вне заверения: %v", err)
 	}
 	// Перезапуск: подпись проверяется заново; подменённый файл не используется.
@@ -211,12 +212,19 @@ func TestUploadBase(t *testing.T) {
 	if v, _ := s2.BaseView(ctx); v.Active.Version != 2 || v.Uploaded == nil || !v.Uploaded.Valid { //nolint:gosec // G104: ошибка проверяется ниже по результату
 		t.Fatalf("после перезапуска: %+v", v)
 	}
-	m.mu.Lock()
-	m.base.File = bytes.Replace(m.base.File, []byte(`"signature":"`), []byte(`"signature":"AA`), 1)
-	m.mu.Unlock()
+	sl, err := m.ServiceDBs().Slots(ctx, "", BaseKind)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sl.Current.File = bytes.Replace(sl.Current.File, []byte(`"signature":"`), []byte(`"signature":"AA`), 1)
+	m.ServiceDBs().Put(BaseKind, servicedb.SlotCurrent, sl.Current)
 	s3 := newTestService(t, m, goodSnapshot())
-	if v, _ := s3.BaseView(ctx); v.Active.Version != 1 || v.Active.Origin != "builtin" || v.Uploaded == nil || v.Uploaded.Valid { //nolint:gosec // G104: ошибка проверяется ниже по результату
+	if v, _ := s3.BaseView(ctx); v.Active.Version != 1 || v.Active.Origin != "builtin" || v.Uploaded == nil || v.Uploaded.Valid || //nolint:gosec // G104: ошибка проверяется ниже по результату
+		v.Uploaded.Reason != "format" || v.Slot != servicedb.ActiveNone {
 		t.Fatalf("подменённая база: %+v", v)
+	}
+	if rec, n := lastRecord(m, servicedb.ActionStoredInvalid); n != 1 || rec.Details.(map[string]any)["kind"] != BaseKind {
+		t.Fatalf("аудит подменённой базы: %d %+v", n, rec)
 	}
 }
 
@@ -232,7 +240,7 @@ func TestEmbeddedNewerThanUploaded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s2, err := New(Options{Store: m, Provider: provider(t), Facts: &fakeFacts{snap: goodSnapshot()}, Embedded: b, Clock: func() time.Time { return testNow }})
+	s2, err := New(Options{Store: m, ServiceDBs: m.ServiceDBs(), Provider: provider(t), Facts: &fakeFacts{snap: goodSnapshot()}, Embedded: b, Clock: func() time.Time { return testNow }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -242,7 +250,7 @@ func TestEmbeddedNewerThanUploaded(t *testing.T) {
 }
 
 func TestRejectReasonUnknown(t *testing.T) {
-	if RejectReason(errors.New("x")) != "format" {
+	if servicedb.Reason(errors.New("x")) != "format" {
 		t.Fatal("по умолчанию — format")
 	}
 	if !hasPrefix("abc", "a") {

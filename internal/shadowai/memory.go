@@ -11,14 +11,14 @@ import (
 	_ "time/tzdata"
 
 	"github.com/azuresong-afk/ai_railway/internal/audit"
+	"github.com/azuresong-afk/ai_railway/internal/servicedb"
 )
 
 // Memory — Store в памяти для тестов API и сервиса. Повторяет правила
-// PGStore: версия каталога растёт, хеш файла уникален, записи аудита — вместе
+// PGStore: хеш файла уникален, записи аудита — вместе
 // с данными.
 type Memory struct {
 	mu        sync.Mutex
-	catalog   *StoredCatalog
 	imports   []ImportRecord
 	aggs      map[aggKey]Aggregate
 	retention int
@@ -32,11 +32,16 @@ type Memory struct {
 	failAll error
 	// syslogSaves — сколько раз вызывалась запись партии syslog.
 	syslogSaves int
+	// dbs — служебные базы (каталог) для тестов: Options.ServiceDBs.
+	dbs *servicedb.Memory
 }
+
+// ServiceDBs — хранилище служебных баз в памяти, парное этому (каталог).
+func (m *Memory) ServiceDBs() *servicedb.Memory { return m.dbs }
 
 // NewMemory — пустое хранилище; первичная настройка считается выполненной.
 func NewMemory() *Memory {
-	return &Memory{aggs: map[aggKey]Aggregate{}, retention: DefaultRetentionDays, setUp: true, now: time.Now}
+	return &Memory{aggs: map[aggKey]Aggregate{}, retention: DefaultRetentionDays, setUp: true, now: time.Now, dbs: servicedb.NewMemory()}
 }
 
 // SetNotSetUp — первичная настройка не выполнена (нет строки настроек).
@@ -70,38 +75,6 @@ func (m *Memory) Aggregates() []Aggregate {
 		return out[i].UserAlias < out[j].UserAlias
 	})
 	return out
-}
-
-// Catalog — см. Store.
-func (m *Memory) Catalog(context.Context, string) (StoredCatalog, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.catalog == nil {
-		return StoredCatalog{}, ErrNoCatalog
-	}
-	c := *m.catalog
-	c.File = slices.Clone(c.File)
-	return c, nil
-}
-
-// SaveCatalog — см. Store.
-func (m *Memory) SaveCatalog(_ context.Context, _ string, c StoredCatalog, rec audit.Entry) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	var prev uint64
-	if m.catalog != nil {
-		prev = m.catalog.Version
-	}
-	if c.Version <= prev {
-		return ErrStaleCatalog
-	}
-	if d, ok := rec.Details.(map[string]any); ok {
-		d["previous_version"] = prev
-	}
-	c.File = slices.Clone(c.File)
-	m.catalog = &c
-	m.records = append(m.records, rec)
-	return nil
 }
 
 // writeLocked прибавляет сводки, кроме исключённых, и возвращает записанные
@@ -459,14 +432,6 @@ func (m *Memory) PurgeExpired(context.Context, string) (int64, error) {
 		m.records = append(m.records, retentionEntry(n, m.retention))
 	}
 	return n, nil
-}
-
-// Record — см. Store.
-func (m *Memory) Record(_ context.Context, rec audit.Entry) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.records = append(m.records, rec)
-	return nil
 }
 
 func retentionEntry(rows int64, days int) audit.Entry {

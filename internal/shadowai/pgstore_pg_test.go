@@ -18,6 +18,7 @@ import (
 
 	"github.com/azuresong-afk/ai_railway/internal/audit"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
+	"github.com/azuresong-afk/ai_railway/internal/servicedb"
 	"github.com/azuresong-afk/ai_railway/internal/store"
 	"github.com/azuresong-afk/ai_railway/migrations"
 )
@@ -28,6 +29,7 @@ import (
 type pgEnv struct {
 	owner, app *pgxpool.Pool
 	st         *PGStore
+	dbs        *servicedb.PGStore
 }
 
 func pgTestCtx(t *testing.T) context.Context {
@@ -140,12 +142,16 @@ func setupPG(t *testing.T) *pgEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &pgEnv{owner: owner, app: app, st: st}
+	dbs, err := servicedb.NewPGStore(app, l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &pgEnv{owner: owner, app: app, st: st, dbs: dbs}
 }
 
 func (e *pgEnv) service(t *testing.T) *Service {
 	t.Helper()
-	s, err := New(Options{Store: e.st, Provider: provider(t), OrgID: audit.DefaultOrgID, UserMAC: testMAC(t),
+	s, err := New(Options{Store: e.st, ServiceDBs: e.dbs, Provider: provider(t), OrgID: audit.DefaultOrgID, UserMAC: testMAC(t),
 		Clock:    func() time.Time { return testNow },
 		Location: func(context.Context) (*time.Location, error) { return time.LoadLocation("Europe/Moscow") }})
 	if err != nil {
@@ -181,7 +187,7 @@ func TestPGShadowAICatalogAndImport(t *testing.T) {
 	if _, err := s.UploadCatalog(ctx, testBy, readFile(t, testCatalogSigned)); err != nil {
 		t.Fatal(err)
 	}
-	var ce *CatalogError
+	var ce *servicedb.RejectError
 	if _, err := s.UploadCatalog(ctx, testBy, readFile(t, testCatalogSigned)); !errors.As(err, &ce) || ce.Reason != "stale_version" {
 		t.Fatalf("та же версия: %v", err)
 	}
@@ -236,7 +242,7 @@ func TestPGShadowAICatalogAndImport(t *testing.T) {
 			}
 		}
 	}
-	for action, want := range map[string]int{"shadow_ai.catalog_loaded": 1, "shadow_ai.catalog_rejected": 1, "shadow_ai.import": 2} {
+	for action, want := range map[string]int{servicedb.ActionLoaded: 1, servicedb.ActionRejected: 1, "shadow_ai.import": 2} {
 		if n := e.count(t, `SELECT count(*) FROM audit_log WHERE action = $1`, action); n != want {
 			t.Fatalf("%s: %d записей", action, n)
 		}

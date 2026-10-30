@@ -129,7 +129,7 @@ func TestE2EStage4_S11_ShadowAI(t *testing.T) {
 	if r := admin.doRaw("PUT", "/api/v1/shadow-ai/catalog", "application/octet-stream", catalog); r.code != http.StatusOK {
 		t.Fatalf("загрузка каталога: %s", r)
 	}
-	if st.s.auditCount("shadow_ai.catalog_loaded") != 1 || st.s.auditCount("shadow_ai.catalog_rejected") != 1 {
+	if st.s.auditCount("service_db.loaded") != 1 || st.s.auditCount("service_db.rejected") != 1 {
 		t.Fatal("в аудите нет записей о загрузке и отклонении каталога")
 	}
 

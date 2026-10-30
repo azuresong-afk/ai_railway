@@ -3,7 +3,6 @@ package shadowai
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"os"
 	"strconv"
 	"strings"
@@ -12,6 +11,7 @@ import (
 
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/internal/integrity"
+	"github.com/azuresong-afk/ai_railway/internal/servicedb"
 )
 
 const (
@@ -291,17 +291,14 @@ func TestVerifyCatalogRejects(t *testing.T) {
 		"дата вне заверения":       {vendor, signCatalog(t, catalogYAML(2, "2027-12-01"), endorseTest(t, aisecCrypto.PurposeServiceDB, 3, from, until)), time.Time{}, "date"},
 		"база требований":          {vendor, base, testNow, "kind"},
 		"мусор":                    {vendor, []byte("\x00\x01binary"), testNow, "format"},
-		"неверный каталог":         {vendor, signCatalog(t, "format: x\n", nil), testNow, "format"},
+		"неверный каталог":         {vendor, signCatalog(t, "format: x\n", nil), testNow, "content"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := VerifyCatalog(p, tc.vendor, tc.data, tc.at)
-			if err == nil || RejectReason(err) != tc.reason {
-				t.Fatalf("ожидалась причина %s, получено %v (%s)", tc.reason, err, RejectReason(err))
+			if err == nil || servicedb.Reason(err) != tc.reason {
+				t.Fatalf("ожидалась причина %s, получено %v (%s)", tc.reason, err, servicedb.Reason(err))
 			}
 		})
-	}
-	if RejectReason(ErrStaleCatalog) != "stale_version" || !errors.Is(&CatalogError{Err: ErrStaleCatalog}, ErrStaleCatalog) {
-		t.Fatal("причина stale_version")
 	}
 }
 
