@@ -2,6 +2,8 @@
 // задача 4.19): ML-детектор и эвристика того же класса на одном проверочном
 // корпусе — полнота, доля ложных срабатываний и точность по примерам, а
 // также задержка p50 и p95 вызова aisec-ml на тексте около 2 000 токенов.
+// Для pii.ner правило другое (решение владельца 30.10.2026, Case.EqualFPR):
+// полнота выше эвристики при доле ложных не выше, чем у неё.
 //
 // Пакет — расширение tools/detector-quality: настоящий замер идёт на
 // машине владельца (make ml-p4: исполнитель ONNX Runtime и модели пакета),
@@ -49,6 +51,16 @@ type Case struct {
 	LatencyText   string
 	LatencyTokens int
 	LatencyRuns   int
+	// EqualFPR — правило «при той же доле ложных» (pii.ner, решение
+	// владельца 30.10.2026; ADR-0024, дополнение 4.20): среди порогов ML с
+	// долей ложных не выше, чем у эвристики, берётся порог с наибольшей
+	// полнотой, и она должна быть выше полноты эвристики. Прибавка 10 п. п.
+	// не требуется: словарь имён уже находит больше 90 % примеров ценой
+	// ложных срабатываний.
+	EqualFPR bool
+	// Reference — строка для сравнения без вердикта Р4 (pii.ner против
+	// pii.ru, который имён не ищет).
+	Reference bool
 }
 
 // Metrics — счёт по примерам: пример с ожидаемыми находками положительный,
@@ -90,8 +102,13 @@ type Result struct {
 	P50, P95      time.Duration
 	LatencyTokens int
 	Runs          int
-	Pass          bool
-	Reasons       []string
+	// EqualFPR, Reference — правило из Case. При EqualFPR Threshold и MLm —
+	// выбранный порог и метрики ML на нём, Template — порог правила
+	// шаблона, с которым запускался замер.
+	EqualFPR, Reference bool
+	Template            float64
+	Pass                bool
+	Reasons             []string
 }
 
 var sweep = []float64{0.5, 0.6, 0.7, 0.8, 0.9, 0.95}
@@ -105,7 +122,9 @@ func Run(ctx context.Context, cases []Case) ([]Result, error) {
 			return nil, err
 		}
 		r := Result{ML: c.ML.ID(), Heuristic: c.Heuristic.ID(), Corpus: c.Corpus, Threshold: c.Threshold,
-			ByLang: map[string][2]Metrics{}, Sweep: map[float64]Metrics{}}
+			ByLang: map[string][2]Metrics{}, Sweep: map[float64]Metrics{}, EqualFPR: c.EqualFPR, Reference: c.Reference,
+			Template: c.Threshold}
+		ths := thresholds(c.Threshold)
 		for _, s := range samples {
 			t := detect.Text{Text: s.Text, Direction: s.Direction, Source: s.Source, Lang: s.Lang}
 			pos := len(s.Expect) > 0
@@ -121,7 +140,7 @@ func Run(ctx context.Context, cases []Case) ([]Result, error) {
 			count(&r.MLm, pos, mErr == nil && mScore >= c.Threshold, mErr != nil)
 			count(&bl[1], pos, mErr == nil && mScore >= c.Threshold, mErr != nil)
 			r.ByLang[lang] = bl
-			for _, th := range sweep {
+			for _, th := range ths {
 				m := r.Sweep[th]
 				count(&m, pos, mErr == nil && mScore >= th, mErr != nil)
 				r.Sweep[th] = m
@@ -132,10 +151,41 @@ func Run(ctx context.Context, cases []Case) ([]Result, error) {
 				return nil, fmt.Errorf("%s: задержка: %w", c.ML.ID(), err)
 			}
 		}
+		if c.EqualFPR {
+			pickEqualFPR(&r)
+		}
 		judge(&r, c.Latency != nil)
 		out = append(out, r)
 	}
 	return out, nil
+}
+
+// thresholds — пороги таблицы порогов: sweep и порог правила.
+func thresholds(rule float64) []float64 {
+	ths := append(slices.Clone(sweep), rule)
+	slices.Sort(ths)
+	return slices.Compact(ths)
+}
+
+// pickEqualFPR — порог ML для правила EqualFPR: доля ложных не выше, чем у
+// эвристики, полнота наибольшая; при равной полноте — меньше ложных, затем
+// порог выше. Нет такого порога — остаются порог правила и его метрики,
+// judge отметит превышение доли ложных.
+func pickEqualFPR(r *Result) {
+	limit := r.Heur.FPR()
+	found := false
+	for _, th := range thresholds(r.Template) {
+		m := r.Sweep[th]
+		if m.FPR() > limit {
+			continue
+		}
+		cur := r.MLm
+		better := !found || m.Recall() > cur.Recall() ||
+			m.Recall() == cur.Recall() && (m.FPR() < cur.FPR() || m.FPR() == cur.FPR() && th > r.Threshold)
+		if better {
+			r.Threshold, r.MLm, found = th, m, true
+		}
+	}
 }
 
 // best — наибольшая оценка находок детектора на тексте; сбой — ошибка.
@@ -270,11 +320,18 @@ func (r ConcurrentResult) Markdown() string {
 		strings.Join(r.Models, ", "), r.Tokens, r.Runs, ms(r.P50), ms(r.P95), ms(r.Limit), verdict)
 }
 
-// judge — вердикт Р4: полнота выше на 10 п. п., доля ложных не выше, p95 не
-// больше 30 мс. Сбои ML на корпусе — провал: замер недостоверен.
+// judge — вердикт Р4: полнота выше на 10 п. п. (при EqualFPR — просто
+// выше), доля ложных не выше, p95 не больше 30 мс. Сбои ML на корпусе —
+// провал: замер недостоверен. Строка Reference вердикта не получает.
 func judge(r *Result, withLatency bool) {
+	if r.Reference {
+		return
+	}
 	gain := r.MLm.Recall() - r.Heur.Recall()
-	if gain < MinRecallGain {
+	switch {
+	case r.EqualFPR && gain <= 0:
+		r.Reasons = append(r.Reasons, fmt.Sprintf("при доле ложных не выше эвристики полнота %s, у эвристики %s (нужно выше)", num(r.MLm.Recall()), num(r.Heur.Recall())))
+	case !r.EqualFPR && gain < MinRecallGain:
 		r.Reasons = append(r.Reasons, fmt.Sprintf("полнота выше эвристики на %s п. п. (нужно не меньше %.0f)", dec(100*gain, 1), 100*MinRecallGain))
 	}
 	if r.MLm.FPR() > r.Heur.FPR() {
@@ -300,8 +357,18 @@ func Markdown(rs []Result, env string) string {
 	b.WriteString("|---|---|---|---|---|---|---|---|---|\n")
 	for _, r := range rs {
 		verdict := "проходит"
-		if !r.Pass {
+		switch {
+		case r.Reference:
+			verdict = "для сравнения, без вердикта"
+		case !r.Pass:
 			verdict = "не проходит: " + strings.Join(r.Reasons, "; ")
+		}
+		if r.EqualFPR && !r.Reference {
+			verdict += " (правило «при той же доле ложных»"
+			if r.Pass && r.Threshold != r.Template {
+				verdict += fmt.Sprintf("; порог правила шаблона — %s вместо %s", num(r.Threshold), num(r.Template))
+			}
+			verdict += ")"
 		}
 		lat := "—"
 		if r.Runs > 0 {
@@ -323,7 +390,7 @@ func Markdown(rs []Result, env string) string {
 			fmt.Fprintf(&b, "| %s | %s / %s | %s / %s |\n", l, num(m[0].Recall()), num(m[1].Recall()), num(m[0].FPR()), num(m[1].FPR()))
 		}
 		b.WriteString("\n| Порог ML | Полнота | Доля ложных | Точность |\n|---|---|---|---|\n")
-		for _, th := range sweep {
+		for _, th := range thresholds(r.Template) {
 			m := r.Sweep[th]
 			fmt.Fprintf(&b, "| %s | %s | %s | %s |\n", num(th), num(m.Recall()), num(m.FPR()), num(m.Precision()))
 		}
