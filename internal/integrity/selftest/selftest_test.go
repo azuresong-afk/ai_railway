@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"path/filepath"
@@ -285,9 +286,23 @@ func TestMLVectors(t *testing.T) {
 		t.Fatalf("без aisec-ml: %+v", res)
 	}
 	if res := run(mlDetectors(func(detect.Detector, detect.Text) ([]detect.Finding, error) {
-		return nil, errors.New("aisec-ml недоступен: отсрочка после сбоя")
+		return nil, fmt.Errorf("%w: отсрочка после сбоя", detect.ErrMLUnavailable)
 	})); !res.OK() || res.MLUnavailable != mlVectors() {
 		t.Fatalf("сбой связи: %+v", res)
+	}
+	// 4.28 (б): недоступность — только detect.ErrMLUnavailable; паника и
+	// другая ошибка ML-детектора — провал самотеста, как у остальных.
+	for name, fn := range map[string]func(detect.Detector, detect.Text) ([]detect.Finding, error){
+		"другая ошибка": func(detect.Detector, detect.Text) ([]detect.Finding, error) {
+			return nil, errors.New("aisec-ml недоступен") // тот же текст, но не та ошибка
+		},
+		"паника": func(detect.Detector, detect.Text) ([]detect.Finding, error) { panic("сбой модели") },
+	} {
+		res := run(mlDetectors(fn))
+		if res.OK() || res.MLUnavailable != 0 || !slices.Contains(res.Failures, Failure{Detector: builtin.InjectionMLID,
+			Vector: "inj-ru-p005", Problem: ProblemError}) {
+			t.Fatalf("%s: %+v", name, res)
+		}
 	}
 	// Модель «знает» эталоны: находка — на положительных, по ожиданию.
 	model := func(d detect.Detector, tx detect.Text) ([]detect.Finding, error) {

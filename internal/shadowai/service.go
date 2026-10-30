@@ -14,6 +14,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/audit"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/internal/ids"
+	"github.com/azuresong-afk/ai_railway/internal/servicedb"
 )
 
 // Срок хранения агрегатов (ADR-0027, п. 6).
@@ -41,18 +42,6 @@ const (
 	StepHour = "hour"
 	StepDay  = "day"
 )
-
-// StoredCatalog — каталог в хранилище.
-type StoredCatalog struct {
-	Version      uint64
-	Date         time.Time
-	SubkeySerial uint64
-	Fingerprint  string
-	Services     int
-	File         []byte
-	UploadedAt   time.Time
-	UploadedBy   string
-}
 
 // ImportRecord — запись журнала импорта.
 type ImportRecord struct {
@@ -148,12 +137,6 @@ type Query struct {
 
 // Store — хранилище теневого ИИ (PGStore, Memory).
 type Store interface {
-	Catalog(ctx context.Context, orgID string) (StoredCatalog, error)
-	// SaveCatalog сохраняет каталог, если его версия больше сохранённой
-	// (иначе ErrStaleCatalog), и пишет rec той же транзакцией; в
-	// rec.Details (map[string]any) записывает previous_version — версию,
-	// которую заменил, прочитанную под той же блокировкой (4Н21).
-	SaveCatalog(ctx context.Context, orgID string, c StoredCatalog, rec audit.Entry) error
 	// SaveImport пишет запись импорта, агрегаты и запись аудита fn(число
 	// пользователей, 4В27) одной транзакцией; повтор хеша — ErrDuplicate.
 	// Сводки исключённых не пишутся; о новых сервисах — записи
@@ -180,15 +163,16 @@ type Store interface {
 	// PurgeExpired удаляет агрегаты старше срока и пишет shadow_ai.retention,
 	// если удалено что-то.
 	PurgeExpired(ctx context.Context, orgID string) (int64, error)
-	// Record пишет запись аудита вне транзакции данных (отказ в загрузке).
-	Record(ctx context.Context, rec audit.Entry) error
 }
 
 // Options — зависимости сервиса.
 type Options struct {
-	Store    Store
-	Provider aisecCrypto.Provider
-	OrgID    string
+	Store Store
+	// ServiceDBs — хранилище служебных баз (каталог — вид shadow_ai_catalog,
+	// ADR-0028).
+	ServiceDBs servicedb.Store
+	Provider   aisecCrypto.Provider
+	OrgID      string
 	// UserMAC — ключ псевдонимов пользователей (тот же, что у шлюзов); nil —
 	// пользователи из журналов не учитываются.
 	UserMAC aisecCrypto.MAC
@@ -227,10 +211,10 @@ type Service struct {
 	o    Options
 	busy chan struct{}
 
-	mu      sync.Mutex
-	catalog *SignedCatalog
-	stored  StoredCatalog
-	loaded  bool
+	// db — каталог: служебная база вида shadow_ai_catalog (ADR-0028).
+	db *servicedb.Manager
+
+	mu sync.Mutex
 	// excl — кэш исключений; exclLoaded = false — перечитать из хранилища.
 	excl       Exclusions
 	exclLoaded bool
@@ -249,7 +233,7 @@ type SyslogBatch struct {
 // New создаёт сервис. Каталог читается из хранилища при первом обращении
 // (или Load) и проверяется заново.
 func New(o Options) (*Service, error) {
-	if o.Store == nil || o.Provider == nil {
+	if o.Store == nil || o.ServiceDBs == nil || o.Provider == nil {
 		return nil, errors.New("теневой ИИ: нет хранилища или криптопрофиля")
 	}
 	if o.OrgID == "" {
@@ -271,15 +255,16 @@ func New(o Options) (*Service, error) {
 	if o.Location == nil {
 		o.Location = func(context.Context) (*time.Location, error) { return time.UTC, nil }
 	}
-	if o.vendor == nil {
-		v, err := vendorVerifier(o.Provider)
-		if err != nil {
-			return nil, err
-		}
-		o.vendor = v
+	db, err := servicedb.NewManager(servicedb.Options{Store: o.ServiceDBs, Provider: o.Provider, Kind: DBKind(), OrgID: o.OrgID,
+		Clock: o.Clock, Logger: o.Logger, Vendor: o.vendor})
+	if err != nil {
+		return nil, err
 	}
-	return &Service{o: o, busy: make(chan struct{}, 1)}, nil
+	return &Service{o: o, db: db, busy: make(chan struct{}, 1)}, nil
 }
+
+// DB — каталог как служебная база (состояние для GET /api/v1/service-dbs).
+func (s *Service) DB() *servicedb.Manager { return s.db }
 
 // refreshSyslog — каталог или исключения изменились: слушатель syslog
 // перечитывает их сразу, а не при следующей записи сводок.
@@ -296,51 +281,32 @@ func (s *Service) refreshSyslog(ctx context.Context) {
 func (s *Service) UsersPseudonymized() bool { return s.o.UserMAC != nil }
 
 // Load читает каталог из хранилища и проверяет подпись заново (ADR-0027,
-// п. 3). Каталог, не прошедший проверку, не используется: импорт отвечает
-// ErrNoCatalog, причина — в техническом журнале.
+// п. 3; ADR-0028, п. 5). Не прошедшая проверку текущая версия не
+// используется: действует предыдущая, если она проверяется, иначе импорт
+// отвечает ErrNoCatalog; запись аудита — service_db.stored_invalid.
 func (s *Service) Load(ctx context.Context) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.loadLocked(ctx)
-}
-
-func (s *Service) loadLocked(ctx context.Context) error {
-	st, err := s.o.Store.Catalog(ctx, s.o.OrgID)
-	if errors.Is(err, ErrNoCatalog) {
-		s.catalog, s.stored, s.loaded = nil, StoredCatalog{}, true
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	sc, err := VerifyCatalog(s.o.Provider, s.o.vendor, st.File, time.Time{})
-	if err != nil {
-		s.catalog, s.stored, s.loaded = nil, st, true
-		s.o.Logger.Error("теневой ИИ: загруженный каталог не прошёл проверку подписи", "class", "integrity", "error", err,
-			"version", st.Version)
-		return nil
-	}
-	s.catalog, s.stored, s.loaded = &sc, st, true
-	return nil
+	return s.db.Load(ctx)
 }
 
 // current — действующий каталог; nil — нет.
-func (s *Service) current(ctx context.Context) (*SignedCatalog, StoredCatalog, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if !s.loaded {
-		if err := s.loadLocked(ctx); err != nil {
-			return nil, StoredCatalog{}, err
-		}
+func (s *Service) current(ctx context.Context) (*SignedCatalog, error) {
+	v, err := s.db.Active(ctx)
+	if err != nil || v == nil {
+		return nil, err
 	}
-	return s.catalog, s.stored, nil
+	sc := signedCatalog(*v)
+	return &sc, nil
 }
 
-// CatalogView — каталог в ответах API.
+// CatalogView — каталог в ответах API: действующая версия, сервисы и обе
+// сохранённые версии (ADR-0028, п. 7).
 type CatalogView struct {
+	// Loaded — сохранена хотя бы одна версия.
 	Loaded bool `json:"loaded"`
-	// Valid — подпись загруженного каталога проверена при запуске.
-	Valid        bool             `json:"valid"`
+	// Valid — есть действующий каталог (подпись проверена при запуске).
+	Valid bool `json:"valid"`
+	// Active — какая сохранённая версия действует: current, previous, none.
+	Active       string           `json:"active"`
 	Version      uint64           `json:"version,omitempty"`
 	Date         string           `json:"date,omitempty"`
 	SubkeySerial uint64           `json:"subkey_serial,omitempty"`
@@ -348,21 +314,33 @@ type CatalogView struct {
 	Fingerprint  string           `json:"fingerprint,omitempty"`
 	UploadedAt   *time.Time       `json:"uploaded_at,omitempty"`
 	Services     []CatalogService `json:"services"`
+	// Current и Previous — сохранённые версии (откат — на Previous).
+	Current  *servicedb.VersionState `json:"current,omitempty"`
+	Previous *servicedb.VersionState `json:"previous,omitempty"`
 }
 
 // Catalog — сведения о каталоге и его сервисы.
 func (s *Service) Catalog(ctx context.Context) (CatalogView, error) {
-	sc, st, err := s.current(ctx)
+	// Состояние и действующий каталог — из одного снимка менеджера.
+	st, active, err := s.db.Snapshot(ctx)
 	if err != nil {
 		return CatalogView{}, err
 	}
-	v := CatalogView{Services: []CatalogService{}}
-	if st.Version == 0 {
-		return v, nil
+	var sc *SignedCatalog
+	if active != nil {
+		c := signedCatalog(*active)
+		sc = &c
 	}
-	up := st.UploadedAt.UTC()
-	v.Loaded, v.Version, v.Date, v.SubkeySerial, v.Fingerprint, v.UploadedAt = true, st.Version,
-		st.Date.Format(catalogDateLayout), st.SubkeySerial, st.Fingerprint, &up
+	v := CatalogView{Services: []CatalogService{}, Active: st.Active, Current: st.Current, Previous: st.Previous}
+	v.Loaded = st.Current != nil || st.Previous != nil
+	vs := st.Current
+	if st.Active == servicedb.ActivePrevious {
+		vs = st.Previous
+	}
+	if vs != nil {
+		up := vs.UploadedAt
+		v.Version, v.Date, v.SubkeySerial, v.Fingerprint, v.UploadedAt = vs.Version, vs.Date, vs.SubkeySerial, vs.Fingerprint, &up
+	}
 	if sc != nil {
 		until := sc.Endorsement.NotAfter
 		v.Valid, v.SubkeyUntil, v.Services = true, &until, sc.Catalog.Services
@@ -370,74 +348,28 @@ func (s *Service) Catalog(ctx context.Context) (CatalogView, error) {
 	return v, nil
 }
 
-// RejectReason — код причины отказа в загрузке каталога.
-func RejectReason(err error) string {
-	switch {
-	case errors.Is(err, aisecCrypto.ErrEndorsementSignature), errors.Is(err, aisecCrypto.ErrServiceDBSignature):
-		return "signature"
-	case errors.Is(err, aisecCrypto.ErrEndorsementPurpose):
-		return "purpose"
-	case errors.Is(err, aisecCrypto.ErrEndorsementExpired):
-		return "expired"
-	case errors.Is(err, aisecCrypto.ErrEndorsementRevoked):
-		return "revoked"
-	case errors.Is(err, aisecCrypto.ErrServiceDBKind):
-		return "kind"
-	case errors.Is(err, ErrCatalogDate):
-		return "date"
-	case errors.Is(err, ErrStaleCatalog):
-		return "stale_version"
-	}
-	return "format"
-}
-
-// CatalogError — отказ в загрузке каталога с кодом причины.
-type CatalogError struct {
-	Reason string
-	Err    error
-}
-
-func (e *CatalogError) Error() string { return e.Err.Error() }
-func (e *CatalogError) Unwrap() error { return e.Err }
+func (b By) db() servicedb.By { return servicedb.By{Actor: b.Actor, IP: b.IP} }
 
 // UploadCatalog проверяет подписанный файл (срок заверения — на текущее
-// время) и сохраняет его, если версия больше загруженной. И успех, и отказ
-// пишутся в аудит без содержимого.
+// время) и сохраняет его, если версия больше текущей сохранённой; прежняя
+// становится предыдущей. Отказ — *servicedb.RejectError; и успех, и отказ
+// пишутся в аудит без содержимого (service_db.loaded, service_db.rejected).
 func (s *Service) UploadCatalog(ctx context.Context, by By, data []byte) (CatalogView, error) {
-	now := s.o.Clock().UTC()
-	sc, err := VerifyCatalog(s.o.Provider, s.o.vendor, data, now)
-	obj := audit.Object{Type: "shadow_ai_catalog"}
-	if err == nil {
-		st := StoredCatalog{Version: sc.Catalog.Version, Date: sc.Catalog.Day(), SubkeySerial: sc.Endorsement.Serial,
-			Fingerprint: sc.Fingerprint, Services: len(sc.Catalog.Services), File: data, UploadedAt: now, UploadedBy: by.ref()}
-		// previous_version пишет хранилище: прежняя версия читается в той
-		// же транзакции, что и запись (4Н21 ревью 4.r3).
-		rec := by.entry("shadow_ai.catalog_loaded", obj, map[string]any{"version": st.Version,
-			"date": sc.Catalog.Date, "services": st.Services, "subkey_serial": st.SubkeySerial, "fingerprint": st.Fingerprint})
-		if err = s.o.Store.SaveCatalog(ctx, s.o.OrgID, st, rec); err == nil {
-			// Две загрузки сразу (4Н21): в памяти — старшая версия, как в БД.
-			s.mu.Lock()
-			if !s.loaded || st.Version > s.stored.Version {
-				s.catalog, s.stored, s.loaded = &sc, st, true
-			}
-			s.mu.Unlock()
-			s.refreshSyslog(ctx)
-			return s.Catalog(ctx)
-		}
-		if !errors.Is(err, ErrStaleCatalog) {
-			return CatalogView{}, err
-		}
+	if _, err := s.db.Upload(ctx, by.db(), data); err != nil {
+		return CatalogView{}, err
 	}
-	reason := RejectReason(err)
-	rec := by.entry("shadow_ai.catalog_rejected", obj, map[string]any{"reason": reason, "bytes": len(data)})
-	rec.Result = audit.ResultFailure
-	if sc.Catalog != nil {
-		rec.Details = map[string]any{"reason": reason, "bytes": len(data), "version": sc.Catalog.Version, "subkey_serial": sc.Endorsement.Serial}
+	s.refreshSyslog(ctx)
+	return s.Catalog(ctx)
+}
+
+// RollbackCatalog возвращает предыдущую версию каталога после её повторной
+// проверки (ADR-0028, п. 4). Отказ — *servicedb.RejectError.
+func (s *Service) RollbackCatalog(ctx context.Context, by By) (CatalogView, error) {
+	if _, err := s.db.Rollback(ctx, by.db()); err != nil {
+		return CatalogView{}, err
 	}
-	if aerr := s.o.Store.Record(ctx, rec); aerr != nil {
-		return CatalogView{}, aerr
-	}
-	return CatalogView{}, &CatalogError{Reason: reason, Err: err}
+	s.refreshSyslog(ctx)
+	return s.Catalog(ctx)
 }
 
 // Import разбирает журнал и сохраняет агрегаты (ADR-0027, п. 5). Одновременно
@@ -452,7 +384,7 @@ func (s *Service) Import(ctx context.Context, by By, format string, r io.Reader)
 	if _, err := newParser(format, timeBounds{}); err != nil {
 		return ImportRecord{}, ErrBadFormat
 	}
-	sc, _, err := s.current(ctx)
+	sc, err := s.current(ctx)
 	if err != nil {
 		return ImportRecord{}, err
 	}
@@ -549,7 +481,7 @@ func (s *Service) Services(ctx context.Context, q Query) ([]ServiceStat, error) 
 	if err != nil {
 		return nil, err
 	}
-	sc, _, err := s.current(ctx)
+	sc, err := s.current(ctx)
 	if err != nil {
 		return nil, err
 	}

@@ -28,6 +28,8 @@ export const complianceApi = {
   clearMark: (rid: string) => request<ComplianceItem>("DELETE", `/api/v1/compliance/requirements/${id(rid)}/mark`),
   // Подписанный файл базы из выпуска, до 4 МиБ.
   uploadBase: (file: File) => upload<ComplianceBaseView>("PUT", "/api/v1/compliance/base", file, "application/octet-stream"),
+  // Возврат предыдущей загруженной версии (задача 5.15).
+  rollbackBase: () => request<ComplianceBaseView>("POST", "/api/v1/compliance/base/rollback"),
 };
 
 // Ссылка на отчёт «Соответствие»: файл отдаёт сервер, он же пишет выгрузку в журнал аудита.

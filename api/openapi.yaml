@@ -5418,13 +5418,40 @@ paths:
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ProblemInternal' }
         '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/service-dbs:
+    get:
+      summary: Состояние служебных баз
+      description: |
+        Право `system.read` (ОБН.4, ADR-0028, п. 5). По каждому подключённому виду служебной базы (каталог
+        ИИ-сервисов `shadow_ai_catalog`, база требований `compliance_requirements`) — сохранённые текущая и
+        предыдущая версии: версия, дата выпуска, число записей, номер заверения рабочего ключа и его срок, отпечаток,
+        итог проверки подписи при запуске сервера и причина отказа; `active` — какая версия действует (`none` — ни
+        одна не прошла проверку или базы нет). Для условия на «Состоянии системы» (задача 5.9). Содержимого баз и
+        файлов в ответе нет. Загрузка и откат — эндпоинты модулей со своими правами. Запрос ничего не записывает.
+      x-permission: system.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/Background'
+      responses:
+        '200':
+          description: Состояние служебных баз
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ServiceDBList' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
   /api/v1/shadow-ai/catalog:
     get:
       summary: Каталог ИИ-сервисов
       description: |
-        Право `shadow_ai.read`. Загруженный каталог: версия, дата, номер заверения рабочего ключа и его срок,
-        отпечаток, сервисы. `valid: false` — подпись сохранённого файла не прошла проверку при запуске сервера
-        (файл в БД изменён): импорт невозможен до загрузки подписанного каталога.
+        Право `shadow_ai.read`. Действующий каталог: версия, дата, номер заверения рабочего ключа и его срок,
+        отпечаток, сервисы; `current` и `previous` — сохранённые текущая и предыдущая версии (ADR-0028).
+        Если текущая не прошла проверку подписи при запуске сервера (файл в БД изменён, ключ отозван), действует
+        предыдущая (`active: previous`); если и она не прошла — `valid: false`, `active: none`, импорт невозможен до
+        загрузки подписанного каталога.
       x-permission: shadow_ai.read
       security: [{ sessionCookie: [] }, { bearerToken: [] }]
       responses:
@@ -5445,8 +5472,8 @@ paths:
         `Content-Type: application/octet-stream`; ADR-0027, пп. 2–4). Проверяются: заверение рабочего ключа
         ключом производителя (назначение `service_db`, срок на текущее время, отзыв), подпись базы рабочим ключом,
         вид базы, дата каталога в сроке заверения, строгий разбор YAML. Неверный файл — 422 (причина в тексте),
-        версия не больше загруженной — 409. Пишет `shadow_ai.catalog_loaded` или `shadow_ai.catalog_rejected`
-        с причиной, без содержимого файла.
+        версия не больше текущей сохранённой — 409. Прежняя текущая версия становится предыдущей (ADR-0028).
+        Пишет `service_db.loaded` или `service_db.rejected` (вид `shadow_ai_catalog`) с причиной, без содержимого файла.
       x-permission: shadow_ai.manage
       security: [{ sessionCookie: [] }, { bearerToken: [] }]
       parameters:
@@ -5468,6 +5495,31 @@ paths:
         '409': { $ref: '#/components/responses/ProblemConflict' }
         '413': { $ref: '#/components/responses/ProblemTooLarge' }
         '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '422': { $ref: '#/components/responses/ProblemUnprocessable' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/shadow-ai/catalog/rollback:
+    post:
+      summary: Вернуть предыдущую версию каталога ИИ-сервисов
+      description: |
+        Право `shadow_ai.manage`. Возвращает хранимую предыдущую версию каталога (ADR-0028, п. 4): перед этим
+        она проверяется заново, как сохранённый каталог при запуске (подпись, заверение, отзыв, дата, содержимое).
+        Она становится текущей, слот предыдущей пустеет; откатанную версию можно загрузить снова. Тело не нужно.
+        Предыдущей нет — 409, она не прошла проверку — 422. Пишет `service_db.rolled_back` (успех или отказ с причиной).
+      x-permission: shadow_ai.manage
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '200':
+          description: Предыдущая версия стала текущей
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ShadowCatalog' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '409': { $ref: '#/components/responses/ProblemConflict' }
         '422': { $ref: '#/components/responses/ProblemUnprocessable' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ProblemInternal' }
@@ -5816,8 +5868,10 @@ paths:
       summary: База требований
       description: |
         Право `compliance.read`. Действующая база (встроенная в сборку или загруженная подписанная, если её версия
-        больше встроенной), встроенная база и сведения о загруженной: версия, дата, число пунктов, номер заверения
-        рабочего ключа и его срок, отпечаток, `valid` — подпись сохранённого файла проверена при запуске сервера.
+        больше встроенной), встроенная база и сохранённые загруженные версии — текущая (`uploaded`) и предыдущая
+        (`previous`): версия, дата, число пунктов, номер заверения рабочего ключа и его срок, отпечаток, `valid` —
+        подпись сохранённого файла проверена при запуске сервера. `slot` — какая загруженная версия действует
+        (`previous` — текущая не прошла проверку; ADR-0028).
       x-permission: compliance.read
       security: [{ sessionCookie: [] }, { bearerToken: [] }]
       responses:
@@ -5838,8 +5892,9 @@ paths:
         `compliance_requirements` из выпуска (`.aisecdb`, до 4 МиБ, `Content-Type: application/octet-stream`;
         ADR-0027, пп. 2–4). Проверяются: заверение рабочего ключа ключом производителя (назначение `service_db`,
         срок на текущее время, отзыв), подпись базы, вид, дата в сроке заверения, строгий разбор YAML (неизвестная
-        проверка или параметр — отказ). Неверный файл — 422 (причина в тексте), версия не больше действующей — 409.
-        Пишет `compliance.base_loaded` или `compliance.base_rejected` с причиной, без содержимого файла.
+        проверка или параметр — отказ). Неверный файл — 422 (причина в тексте), версия не больше текущей
+        загруженной или встроенной — 409. Прежняя текущая версия становится предыдущей (ADR-0028). Пишет
+        `service_db.loaded` или `service_db.rejected` (вид `compliance_requirements`) с причиной, без содержимого файла.
       x-permission: compliance.base.load
       security: [{ sessionCookie: [] }, { bearerToken: [] }]
       parameters:
@@ -5861,6 +5916,32 @@ paths:
         '409': { $ref: '#/components/responses/ProblemConflict' }
         '413': { $ref: '#/components/responses/ProblemTooLarge' }
         '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '422': { $ref: '#/components/responses/ProblemUnprocessable' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/compliance/base/rollback:
+    post:
+      summary: Вернуть предыдущую версию базы требований
+      description: |
+        Право `compliance.base.load`. Возвращает хранимую предыдущую загруженную версию базы (ADR-0028, п. 4):
+        перед этим она проверяется заново, как сохранённая база при запуске. Она становится текущей, слот
+        предыдущей пустеет; откатанную версию можно загрузить снова. Если возвращённая версия не новее встроенной,
+        действует встроенная. Тело не нужно. Предыдущей нет — 409, она не прошла проверку — 422. Пишет
+        `service_db.rolled_back` (успех или отказ с причиной).
+      x-permission: compliance.base.load
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '200':
+          description: Предыдущая версия стала текущей
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ComplianceBaseView' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '409': { $ref: '#/components/responses/ProblemConflict' }
         '422': { $ref: '#/components/responses/ProblemUnprocessable' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ProblemInternal' }
@@ -8715,12 +8796,47 @@ components:
         license: { type: string, maxLength: 16384, description: 'Текст файла лицензии *.aiseclic' }
         password: { type: string, description: 'Текущий пароль (или code)' }
         code: { type: string, description: 'Код TOTP (или password)' }
+    ServiceDBVersion:
+      type: object
+      description: Сохранённая версия служебной базы (ADR-0028)
+      required: [version, date, records, subkey_serial, fingerprint, uploaded_at, valid]
+      properties:
+        version: { type: integer, format: int64, minimum: 1 }
+        date: { type: string, format: date, description: 'Дата выпуска базы' }
+        records: { type: integer, minimum: 0, description: 'Записей: сервисов каталога, пунктов базы требований' }
+        subkey_serial: { type: integer, format: int64, description: 'Номер заверения рабочего ключа' }
+        subkey_not_after: { type: string, format: date-time, description: 'Конец срока заверения (только у прошедшей проверку)' }
+        fingerprint: { type: string, description: 'Отпечаток рабочего ключа' }
+        uploaded_at: { type: string, format: date-time }
+        uploaded_by: { type: string, maxLength: 128, description: 'Кто загрузил версию: user:ID или token:ID' }
+        valid: { type: boolean, description: 'Подпись и содержимое сохранённого файла проверены при запуске сервера; у проверенной версии дата, число записей, номер заверения и отпечаток взяты из подписанного файла, у непроверенной — из записи в БД и не подтверждены' }
+        reason:
+          type: string
+          enum: [signature, purpose, kind, expired, date, revoked, content, format]
+          description: 'Причина, по которой версия не прошла проверку'
+    ServiceDBState:
+      type: object
+      required: [kind, title, active]
+      properties:
+        kind: { type: string, pattern: '^[a-z0-9_]{1,64}$', description: 'Вид базы (shadow_ai_catalog, compliance_requirements)' }
+        title: { type: string }
+        active: { type: string, enum: [current, previous, none], description: 'Какая сохранённая версия действует' }
+        current: { $ref: '#/components/schemas/ServiceDBVersion' }
+        previous: { $ref: '#/components/schemas/ServiceDBVersion' }
+    ServiceDBList:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/ServiceDBState' } }
     ShadowCatalog:
       type: object
-      required: [loaded, valid, services]
+      required: [loaded, valid, active, services]
       properties:
-        loaded: { type: boolean, description: 'Каталог загружали' }
-        valid: { type: boolean, description: 'Подпись сохранённого каталога проверена' }
+        loaded: { type: boolean, description: 'Сохранена хотя бы одна версия каталога' }
+        valid: { type: boolean, description: 'Есть действующий каталог (подпись проверена)' }
+        active: { type: string, enum: [current, previous, none], description: 'Какая сохранённая версия действует' }
+        current: { $ref: '#/components/schemas/ServiceDBVersion' }
+        previous: { $ref: '#/components/schemas/ServiceDBVersion' }
         version: { type: integer, format: int64 }
         date: { type: string, format: date }
         subkey_serial: { type: integer, format: int64, description: 'Номер заверения рабочего ключа' }
@@ -8825,22 +8941,13 @@ components:
         unavailable: { type: array, items: { type: string, enum: [apps, roles, audit_chain, integrity, alerts, channels] } }
     ComplianceBaseView:
       type: object
-      required: [active, builtin]
+      required: [active, builtin, slot]
       properties:
         active: { $ref: '#/components/schemas/ComplianceBaseInfo' }
         builtin: { $ref: '#/components/schemas/ComplianceBaseInfo' }
-        uploaded:
-          type: object
-          required: [version, date, requirements, subkey_serial, fingerprint, uploaded_at, valid]
-          properties:
-            version: { type: integer, format: int64 }
-            date: { type: string, format: date }
-            requirements: { type: integer }
-            subkey_serial: { type: integer, format: int64 }
-            subkey_not_after: { type: string, format: date-time }
-            fingerprint: { type: string }
-            uploaded_at: { type: string, format: date-time }
-            valid: { type: boolean, description: 'Подпись сохранённого файла проверена при запуске' }
+        uploaded: { $ref: '#/components/schemas/ServiceDBVersion' }
+        previous: { $ref: '#/components/schemas/ServiceDBVersion' }
+        slot: { type: string, enum: [current, previous, none], description: 'Какая загруженная версия действует' }
     ShadowImport:
       type: object
       required: [id, created_at, created_by, catalog_version, format, lines, matched, unmatched, errors, outdated,

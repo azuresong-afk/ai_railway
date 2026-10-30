@@ -7,19 +7,24 @@ import (
 	"sync"
 
 	"github.com/azuresong-afk/ai_railway/internal/audit"
+	"github.com/azuresong-afk/ai_railway/internal/servicedb"
 )
 
 // Memory — Store в памяти для тестов сервиса и API. Повторяет правила
-// PGStore: версия базы растёт, запись аудита — вместе с данными.
+// PGStore: запись аудита — вместе с данными.
 type Memory struct {
 	mu      sync.Mutex
 	marks   map[string]Mark
-	base    *StoredBase
 	records []audit.Entry
+	// dbs — служебные базы (загруженная база) для тестов: Options.ServiceDBs.
+	dbs *servicedb.Memory
 }
 
 // NewMemory — пустое хранилище.
-func NewMemory() *Memory { return &Memory{marks: map[string]Mark{}} }
+func NewMemory() *Memory { return &Memory{marks: map[string]Mark{}, dbs: servicedb.NewMemory()} }
+
+// ServiceDBs — хранилище служебных баз в памяти, парное этому.
+func (m *Memory) ServiceDBs() *servicedb.Memory { return m.dbs }
 
 // Records — записи аудита.
 func (m *Memory) Records() []audit.Entry {
@@ -66,37 +71,6 @@ func (m *Memory) ClearMark(_ context.Context, orgID, id string, fn func(prev Mar
 	rec := fn(p)
 	rec.OrgID = orgID
 	delete(m.marks, id)
-	m.records = append(m.records, rec)
-	return nil
-}
-
-// Base — см. Store.
-func (m *Memory) Base(_ context.Context, _ string) (StoredBase, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.base == nil {
-		return StoredBase{}, ErrNoBase
-	}
-	return *m.base, nil
-}
-
-// SaveBase — см. Store.
-func (m *Memory) SaveBase(_ context.Context, orgID string, b StoredBase, rec audit.Entry) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.base != nil && m.base.Version >= b.Version {
-		return ErrStaleBase
-	}
-	rec.OrgID = orgID
-	m.base = &b
-	m.records = append(m.records, rec)
-	return nil
-}
-
-// Record — см. Store.
-func (m *Memory) Record(_ context.Context, rec audit.Entry) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.records = append(m.records, rec)
 	return nil
 }

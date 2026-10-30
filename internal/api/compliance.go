@@ -45,6 +45,9 @@ func complianceRoutes(d Deps) []Route {
 			Handler: needCompliance(d, d.getComplianceBase)},
 		{Method: http.MethodPut, Path: "/api/v1/compliance/base", Permission: auth.PermComplianceBaseLoad,
 			MaxBody: complianceBaseMaxBody, Handler: needCompliance(d, d.putComplianceBase)},
+		// Откат на предыдущую загруженную версию (задача 5.15, ADR-0028, п. 4).
+		{Method: http.MethodPost, Path: "/api/v1/compliance/base/rollback", Permission: auth.PermComplianceBaseLoad,
+			MaxBody: smallMaxBody, Handler: needCompliance(d, d.rollbackComplianceBase)},
 	}
 }
 
@@ -77,7 +80,6 @@ type putComplianceMarkRequest struct {
 
 func complianceProblem(logger *slog.Logger, err error) *Problem {
 	var ie *compliance.InputError
-	var be *compliance.BaseError
 	var re *reauthError
 	switch {
 	case errors.As(err, &re):
@@ -98,35 +100,11 @@ func complianceProblem(logger *slog.Logger, err error) *Problem {
 	case errors.Is(err, compliance.ErrMarkNotAllowed):
 		return NewProblem(http.StatusUnprocessableEntity, CodeUnprocessable,
 			"Статус этого пункта вычисляют проверки: вручную можно отметить только «не применимо» с комментарием.")
-	case errors.As(err, &be):
-		if be.Reason == "stale_version" {
-			return NewProblem(http.StatusConflict, CodeConflict,
-				"Версия базы не больше действующей: загрузите базу из более нового выпуска.")
-		}
-		return NewProblem(http.StatusUnprocessableEntity, CodeUnprocessable, complianceRejectText(be.Reason))
 	case errors.Is(err, context.DeadlineExceeded):
 		return NewProblem(http.StatusServiceUnavailable, CodeUnavailable, "Статусы не успели вычислиться: повторите позже.")
 	}
 	logger.Error("соответствие: ошибка обработки запроса", "class", "compliance", "error", err)
 	return errInternal()
-}
-
-func complianceRejectText(reason string) string {
-	switch reason {
-	case "signature":
-		return "Подпись базы или заверения ключа неверна: файл изменён или выпущен не производителем."
-	case "purpose":
-		return "Ключ, которым подписана база, заверен не для служебных баз."
-	case "expired":
-		return "Срок заверения ключа, которым подписана база, истёк или ещё не наступил."
-	case "revoked":
-		return "Ключ, которым подписана база, отозван производителем."
-	case "kind":
-		return "Файл — служебная база другого вида, а не база требований."
-	case "date":
-		return "Дата базы вне срока заверения ключа подписи."
-	}
-	return "Файл не похож на подписанную базу требований (.aisecdb) или содержит неизвестные проверки."
 }
 
 func (d Deps) getCompliance(w http.ResponseWriter, r *http.Request) {
@@ -266,6 +244,32 @@ func (d Deps) putComplianceBase(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := contextTimeout(r, complianceReadTimeout)
 	defer cancel()
 	v, err := d.Compliance.UploadBase(ctx, by, data)
+	if p := serviceDBProblem(err, "базу", false); p != nil {
+		WriteProblem(w, p)
+		return
+	}
+	if err != nil {
+		WriteProblem(w, complianceProblem(d.Logger, err))
+		return
+	}
+	WriteJSON(w, http.StatusOK, v)
+}
+
+// rollbackComplianceBase возвращает предыдущую загруженную версию базы
+// после её повторной проверки; тело запроса не нужно.
+func (d Deps) rollbackComplianceBase(w http.ResponseWriter, r *http.Request) {
+	by, ok := d.complianceBy(r)
+	if !ok {
+		WriteProblem(w, errForbidden())
+		return
+	}
+	ctx, cancel := contextTimeout(r, complianceReadTimeout)
+	defer cancel()
+	v, err := d.Compliance.RollbackBase(ctx, by)
+	if p := serviceDBProblem(err, "базу", true); p != nil {
+		WriteProblem(w, p)
+		return
+	}
 	if err != nil {
 		WriteProblem(w, complianceProblem(d.Logger, err))
 		return

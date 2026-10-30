@@ -30,6 +30,13 @@ func (complianceTestFacts) Snapshot(context.Context) (*compliance.Snapshot, erro
 // signComplianceBase подписывает базу тестовым рабочим ключом репозитория.
 func signComplianceBase(t *testing.T, yaml string) []byte {
 	t.Helper()
+	return signServiceDBKind(t, compliance.BaseKind, yaml)
+}
+
+// signServiceDBKind подписывает содержимое служебной базы вида kind тестовым
+// рабочим ключом.
+func signServiceDBKind(t *testing.T, kind, yaml string) []byte {
+	t.Helper()
 	read := func(name string) []byte {
 		b, err := os.ReadFile("../../testdata/shadowai/" + name) //nolint:gosec // G304: фикстура теста из репозитория
 		if err != nil {
@@ -49,7 +56,7 @@ func signComplianceBase(t *testing.T, yaml string) []byte {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, err := aisecCrypto.SignServiceDB(sub, read("subkey-test.endorsement"), compliance.BaseKind, []byte(yaml))
+	out, err := aisecCrypto.SignServiceDB(sub, read("subkey-test.endorsement"), kind, []byte(yaml))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +165,7 @@ func TestComplianceViaAPI(t *testing.T) {
 		t.Fatalf("отметка: %d %s", w.Code, w.Body)
 	}
 	var rec audit.Entry
-	for _, r := range e.compl.Records() {
+	for _, r := range append(e.compl.Records(), e.dbs.Records()...) {
 		if r.Action == "compliance.mark_set" {
 			rec = r
 		}
@@ -185,7 +192,7 @@ func TestComplianceViaAPI(t *testing.T) {
 	signed := signComplianceBase(t, complianceTestBase)
 	tampered := bytes.Replace(signed, []byte(`"payload":"`), []byte(`"payload":"AA`), 1)
 	mustProblem(t, e.callFile(sys, "PUT", "/api/v1/compliance/base", octet, tampered), 422, CodeUnprocessable)
-	if _, n := lastComplianceRecord(e, "compliance.base_rejected"); n != 2 {
+	if _, n := lastComplianceRecord(e, "service_db.rejected"); n != 2 {
 		t.Fatalf("отказов в аудите %d", n)
 	}
 	mustProblem(t, e.callFile(sys, "PUT", "/api/v1/compliance/base", octet, bytes.Repeat([]byte("x"), complianceBaseMaxBody+1)), 413, CodePayloadTooLarge)
@@ -205,7 +212,7 @@ func TestComplianceViaAPI(t *testing.T) {
 func lastComplianceRecord(e *appsEnv, action string) (audit.Entry, int) {
 	var last audit.Entry
 	n := 0
-	for _, r := range e.compl.Records() {
+	for _, r := range append(e.compl.Records(), e.dbs.Records()...) {
 		if r.Action == action {
 			last, n = r, n+1
 		}

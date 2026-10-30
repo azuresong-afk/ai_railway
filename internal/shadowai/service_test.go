@@ -11,13 +11,14 @@ import (
 	"time"
 
 	"github.com/azuresong-afk/ai_railway/internal/audit"
+	"github.com/azuresong-afk/ai_railway/internal/servicedb"
 )
 
 var testBy = By{Actor: audit.Actor{Type: audit.ActorUser, ID: "01900000-0000-7000-8000-0000000000a1", Name: "sysadm"}}
 
 func newTestService(t testing.TB, st Store, mac bool) *Service {
 	t.Helper()
-	o := Options{Store: st, Provider: provider(t), Clock: func() time.Time { return testNow },
+	o := Options{Store: st, ServiceDBs: st.(*Memory).ServiceDBs(), Provider: provider(t), Clock: func() time.Time { return testNow },
 		Location: func(context.Context) (*time.Location, error) { return time.LoadLocation("Europe/Moscow") }}
 	if mac {
 		o.UserMAC = testMAC(t)
@@ -32,7 +33,7 @@ func newTestService(t testing.TB, st Store, mac bool) *Service {
 func lastRecord(m *Memory, action string) (audit.Entry, int) {
 	var last audit.Entry
 	n := 0
-	for _, r := range m.Records() {
+	for _, r := range append(m.Records(), m.ServiceDBs().Records()...) {
 		if r.Action == action {
 			last, n = r, n+1
 		}
@@ -57,12 +58,12 @@ func TestCatalogUploadConcurrent(t *testing.T) {
 		if err != nil || v.Version != 6 {
 			t.Fatalf("в памяти версия %d: %v", v.Version, err)
 		}
-		if st, err := m.Catalog(ctx, ""); err != nil || st.Version != 6 {
-			t.Fatalf("в хранилище версия %d: %v", st.Version, err)
+		if sl, err := m.ServiceDBs().Slots(ctx, "", CatalogKind); err != nil || sl.Current.Version != 6 {
+			t.Fatalf("в хранилище версия %+v: %v", sl.Current, err)
 		}
 		var prev uint64
-		for _, r := range m.Records() {
-			if r.Action != "shadow_ai.catalog_loaded" {
+		for _, r := range m.ServiceDBs().Records() {
+			if r.Action != servicedb.ActionLoaded {
 				continue
 			}
 			d := r.Details.(map[string]any)
@@ -94,7 +95,7 @@ func TestCatalogUpload(t *testing.T) {
 	if !v.Loaded || !v.Valid || v.Version != 1 || v.SubkeySerial != 1 || len(v.Services) != 28 || v.Date != "2026-10-28" {
 		t.Fatalf("каталог: %+v", v)
 	}
-	rec, n := lastRecord(m, "shadow_ai.catalog_loaded")
+	rec, n := lastRecord(m, servicedb.ActionLoaded)
 	if d, _ := rec.Details.(map[string]any); n != 1 || d["version"] != uint64(1) || d["subkey_serial"] != uint64(1) {
 		t.Fatalf("аудит загрузки: %+v", rec)
 	}
@@ -108,12 +109,12 @@ func TestCatalogUpload(t *testing.T) {
 		"подмена":      {bytes.Replace(readFile(t, testCatalogSigned), []byte(`"payload":"`), []byte(`"payload":"AA`), 1), "format"},
 	} {
 		_, err := s.UploadCatalog(ctx, testBy, tc.data)
-		var ce *CatalogError
+		var ce *servicedb.RejectError
 		if !errors.As(err, &ce) || ce.Reason != tc.reason {
 			t.Fatalf("%s: %v", name, err)
 		}
-		rec, _ := lastRecord(m, "shadow_ai.catalog_rejected")
-		if d, _ := rec.Details.(map[string]any); rec.Result != audit.ResultFailure || d["reason"] != tc.reason {
+		rec, _ := lastRecord(m, servicedb.ActionRejected)
+		if d, _ := rec.Details.(map[string]any); rec.Result != audit.ResultFailure || d["reason"] != tc.reason || d["kind"] != CatalogKind {
 			t.Fatalf("%s: аудит отказа %+v", name, rec)
 		}
 	}
@@ -129,13 +130,22 @@ func TestCatalogUpload(t *testing.T) {
 	if v, err := s2.Catalog(ctx); err != nil || !v.Valid || v.Version != 2 {
 		t.Fatalf("после перезапуска: %+v %v", v, err)
 	}
-	// Каталог, подменённый в хранилище, не используется.
-	m.mu.Lock()
-	m.catalog.File = bytes.Replace(m.catalog.File, []byte(`"signature":"`), []byte(`"signature":"AA`), 1)
-	m.mu.Unlock()
+	// Подменённые в хранилище текущая и предыдущая версии не используются:
+	// импорт невозможен, в аудите — service_db.stored_invalid.
+	sl, err := m.ServiceDBs().Slots(ctx, "", CatalogKind)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for slot, st := range map[string]*servicedb.Stored{servicedb.SlotCurrent: sl.Current, servicedb.SlotPrevious: sl.Previous} {
+		st.File = bytes.Replace(st.File, []byte(`"signature":"`), []byte(`"signature":"AA`), 1)
+		m.ServiceDBs().Put(CatalogKind, slot, st)
+	}
 	s3 := newTestService(t, m, true)
-	if v, err := s3.Catalog(ctx); err != nil || v.Valid || !v.Loaded {
+	if v, err := s3.Catalog(ctx); err != nil || v.Valid || !v.Loaded || v.Active != servicedb.ActiveNone {
 		t.Fatalf("подменённый каталог: %+v %v", v, err)
+	}
+	if _, n := lastRecord(m, servicedb.ActionStoredInvalid); n != 2 {
+		t.Fatalf("записей stored_invalid: %d", n)
 	}
 	if _, err := s3.Import(ctx, testBy, FormatSquid, strings.NewReader("x\n")); !errors.Is(err, ErrNoCatalog) {
 		t.Fatalf("импорт с подменённым каталогом: %v", err)

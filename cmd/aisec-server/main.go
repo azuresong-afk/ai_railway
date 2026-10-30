@@ -50,6 +50,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/policy/versions"
 	"github.com/azuresong-afk/ai_railway/internal/quotalease"
 	"github.com/azuresong-afk/ai_railway/internal/reports"
+	"github.com/azuresong-afk/ai_railway/internal/servicedb"
 	"github.com/azuresong-afk/ai_railway/internal/shadowai"
 	"github.com/azuresong-afk/ai_railway/internal/store"
 	"github.com/azuresong-afk/ai_railway/internal/sysstatus"
@@ -558,11 +559,18 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	// Соответствие требованиям (ТЗ 5.18, задача 4.24): база требований —
 	// встроенная и подписанная загруженная (ADR-0027); снимок настроек
 	// собирается из сервисов сервера, содержимое запросов не читается.
+	// Служебные базы (ОБН.4, ADR-0028): одно хранилище для всех видов —
+	// каталога теневого ИИ и базы требований; подпись сохранённых файлов
+	// проверяется заново при запуске.
+	serviceDBStore, err := servicedb.NewPGStore(db.Pool(), auditLog)
+	if err != nil {
+		return err
+	}
 	complianceStore, err := compliance.NewPGStore(db.Pool(), auditLog)
 	if err != nil {
 		return err
 	}
-	complianceSvc, err := compliance.New(compliance.Options{Store: complianceStore, Provider: p, OrgID: audit.DefaultOrgID,
+	complianceSvc, err := compliance.New(compliance.Options{Store: complianceStore, ServiceDBs: serviceDBStore, Provider: p, OrgID: audit.DefaultOrgID,
 		Facts: &compliance.SystemFacts{Apps: appsSvc, Policies: policiesSvc, Roles: authSvc, Status: statusSvc, Alerts: alertsSvc,
 			Channels: notifySvc, Detectors: detectors, Logger: logger.With("component", "compliance")},
 		Logger: logger.With("component", "compliance")})
@@ -607,7 +615,7 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	shadowSvc, err := shadowai.New(shadowai.Options{Store: shadowStore, Provider: p, OrgID: audit.DefaultOrgID, UserMAC: userMAC,
+	shadowSvc, err := shadowai.New(shadowai.Options{Store: shadowStore, ServiceDBs: serviceDBStore, Provider: p, OrgID: audit.DefaultOrgID, UserMAC: userMAC,
 		Location: func(ctx context.Context) (*time.Location, error) {
 			tz, err := timezone(ctx)
 			if err != nil {
@@ -678,6 +686,7 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		Approvals:  approvalsSvc,
 		ShadowAI:   shadowSvc,
 		Compliance: complianceSvc,
+		ServiceDBs: servicedb.NewRegistry(shadowSvc.DB(), complianceSvc.DB()),
 		License:    licSvc,
 		Quotas:     quotaSvc,
 		Incidents:  incidentsSvc,

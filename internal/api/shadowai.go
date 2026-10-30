@@ -45,6 +45,9 @@ func shadowAIRoutes(d Deps) []Route {
 			Handler: needShadowAI(d, d.getShadowCatalog)},
 		{Method: http.MethodPut, Path: "/api/v1/shadow-ai/catalog", Permission: auth.PermShadowAIManage,
 			MaxBody: shadowCatalogMaxBody, Handler: needShadowAI(d, d.putShadowCatalog)},
+		// Откат на предыдущую версию каталога (задача 5.15, ADR-0028, п. 4).
+		{Method: http.MethodPost, Path: "/api/v1/shadow-ai/catalog/rollback", Permission: auth.PermShadowAIManage,
+			MaxBody: smallMaxBody, Handler: needShadowAI(d, d.rollbackShadowCatalog)},
 		{Method: http.MethodGet, Path: "/api/v1/shadow-ai/imports", Permission: auth.PermShadowAIRead,
 			Handler: needShadowAI(d, d.listShadowImports)},
 		{Method: http.MethodPost, Path: "/api/v1/shadow-ai/imports", Permission: auth.PermShadowAIManage,
@@ -86,7 +89,6 @@ func (d Deps) shadowBy(r *http.Request) (shadowai.By, bool) {
 // shadowProblem переводит ошибки теневого ИИ в ответы API.
 func shadowProblem(logger *slog.Logger, err error) *Problem {
 	var qe *shadowai.QueryError
-	var ce *shadowai.CatalogError
 	var re *reauthError
 	var mbe *http.MaxBytesError
 	var fce flate.CorruptInputError
@@ -95,12 +97,6 @@ func shadowProblem(logger *slog.Logger, err error) *Problem {
 		return authProblem(logger, re.err)
 	case errors.As(err, &qe):
 		return Invalid("Проверьте параметры запроса.", FieldError{Detail: qe.Msg})
-	case errors.As(err, &ce):
-		if ce.Reason == "stale_version" {
-			return NewProblem(http.StatusConflict, CodeConflict,
-				"Версия каталога не больше загруженной: загрузите каталог из более нового выпуска.")
-		}
-		return NewProblem(http.StatusUnprocessableEntity, CodeUnprocessable, catalogRejectText(ce.Reason))
 	case errors.As(err, &mbe):
 		return NewProblem(http.StatusRequestEntityTooLarge, CodePayloadTooLarge, "Файл больше 256 МиБ: разделите журнал на части.")
 	case errors.Is(err, shadowai.ErrTooLarge):
@@ -143,24 +139,6 @@ func shadowProblem(logger *slog.Logger, err error) *Problem {
 	}
 	logger.Error("теневой ИИ: ошибка обработки запроса", "error", err)
 	return errInternal()
-}
-
-func catalogRejectText(reason string) string {
-	switch reason {
-	case "signature":
-		return "Подпись каталога или заверения ключа неверна: файл изменён или выпущен не производителем."
-	case "purpose":
-		return "Ключ, которым подписан каталог, заверен не для служебных баз."
-	case "expired":
-		return "Срок заверения ключа, которым подписан каталог, истёк или ещё не наступил."
-	case "revoked":
-		return "Ключ, которым подписан каталог, отозван производителем."
-	case "kind":
-		return "Файл — служебная база другого вида, а не каталог ИИ-сервисов."
-	case "date":
-		return "Дата каталога вне срока заверения ключа подписи."
-	}
-	return "Файл не похож на подписанный каталог ИИ-сервисов (.aisecdb)."
 }
 
 // importBadText — причина отказа без содержимого журнала.
@@ -307,6 +285,30 @@ func (d Deps) putShadowCatalog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	v, err := d.ShadowAI.UploadCatalog(r.Context(), by, data)
+	if p := serviceDBProblem(err, "каталог", false); p != nil {
+		WriteProblem(w, p)
+		return
+	}
+	if err != nil {
+		WriteProblem(w, shadowProblem(d.Logger, err))
+		return
+	}
+	WriteJSON(w, http.StatusOK, v)
+}
+
+// rollbackShadowCatalog возвращает предыдущую версию каталога после её
+// повторной проверки; тело запроса не нужно.
+func (d Deps) rollbackShadowCatalog(w http.ResponseWriter, r *http.Request) {
+	by, ok := d.shadowBy(r)
+	if !ok {
+		WriteProblem(w, errForbidden())
+		return
+	}
+	v, err := d.ShadowAI.RollbackCatalog(r.Context(), by)
+	if p := serviceDBProblem(err, "каталог", true); p != nil {
+		WriteProblem(w, p)
+		return
+	}
 	if err != nil {
 		WriteProblem(w, shadowProblem(d.Logger, err))
 		return

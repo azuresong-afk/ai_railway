@@ -104,62 +104,6 @@ func (s *PGStore) record(ctx context.Context, tx pgx.Tx, orgID string, rec audit
 	return nil
 }
 
-// Catalog — см. Store.
-func (s *PGStore) Catalog(ctx context.Context, orgID string) (StoredCatalog, error) {
-	ctx, cancel := pgCtx(ctx)
-	defer cancel()
-	var c StoredCatalog
-	var version, serial int64
-	err := s.db.QueryRow(ctx, `SELECT version, catalog_date, subkey_serial, fingerprint, services, file, uploaded_at, uploaded_by
-		FROM shadow_ai_catalog WHERE org_id = $1`, orgID).
-		Scan(&version, &c.Date, &serial, &c.Fingerprint, &c.Services, &c.File, &c.UploadedAt, &c.UploadedBy)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return StoredCatalog{}, ErrNoCatalog
-	}
-	if err != nil {
-		return StoredCatalog{}, fmt.Errorf("теневой ИИ: каталог: %w", err)
-	}
-	c.Version, c.SubkeySerial = uint64(version), uint64(serial) //nolint:gosec // G115: CHECK > 0 в схеме
-	return c, nil
-}
-
-// SaveCatalog — см. Store. Загрузки организации идут по одной
-// (блокировка транзакции): прежняя версия для аудита читается под ней, а
-// сравнение в самом запросе не даёт опустить версию.
-func (s *PGStore) SaveCatalog(ctx context.Context, orgID string, c StoredCatalog, rec audit.Entry) error {
-	if c.Version > maxCatalogVersion || c.SubkeySerial > maxCatalogVersion {
-		return ErrStaleCatalog
-	}
-	return s.inTx(ctx, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('aisec.shadow_ai.catalog:' || $1, 0))`, orgID); err != nil {
-			return fmt.Errorf("теневой ИИ: блокировка каталога: %w", err)
-		}
-		var prev int64
-		err := tx.QueryRow(ctx, `SELECT version FROM shadow_ai_catalog WHERE org_id = $1 FOR UPDATE`, orgID).Scan(&prev)
-		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			return fmt.Errorf("теневой ИИ: прежний каталог: %w", err)
-		}
-		if d, ok := rec.Details.(map[string]any); ok {
-			d["previous_version"] = uint64(prev) //nolint:gosec // G115: CHECK version > 0 в схеме
-		}
-		tag, err := tx.Exec(ctx, `INSERT INTO shadow_ai_catalog
-			(org_id, version, catalog_date, subkey_serial, fingerprint, services, file, uploaded_at, uploaded_by)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-			ON CONFLICT (org_id) DO UPDATE SET version = EXCLUDED.version, catalog_date = EXCLUDED.catalog_date,
-				subkey_serial = EXCLUDED.subkey_serial, fingerprint = EXCLUDED.fingerprint, services = EXCLUDED.services,
-				file = EXCLUDED.file, uploaded_at = EXCLUDED.uploaded_at, uploaded_by = EXCLUDED.uploaded_by
-			WHERE shadow_ai_catalog.version < EXCLUDED.version`,
-			orgID, int64(c.Version), c.Date, int64(c.SubkeySerial), c.Fingerprint, c.Services, c.File, c.UploadedAt, c.UploadedBy) //nolint:gosec // G115: версия и номер не больше 2^53 (проверено выше)
-		if err != nil {
-			return fmt.Errorf("теневой ИИ: сохранение каталога: %w", err)
-		}
-		if tag.RowsAffected() == 0 {
-			return ErrStaleCatalog
-		}
-		return s.record(ctx, tx, orgID, rec)
-	})
-}
-
 // lockWrites — блокировка записи сводок и исключений организации до конца
 // транзакции: новый сервис определяется по сводкам, видимым под ней.
 func lockWrites(ctx context.Context, tx pgx.Tx, orgID string) error {
@@ -565,9 +509,4 @@ func (s *PGStore) PurgeExpired(ctx context.Context, orgID string) (int64, error)
 		return 0, fmt.Errorf("теневой ИИ: удаление по сроку хранения: %w", err)
 	}
 	return n, nil
-}
-
-// Record — см. Store.
-func (s *PGStore) Record(ctx context.Context, rec audit.Entry) error {
-	return s.audit.Record(ctx, rec)
 }

@@ -11,7 +11,8 @@
 # не тихая работа шлюза без ML: шлюз зависит от aisec-ml.
 #
 # aisec-ml работает без сети вовсе (network_mode: none) от своего
-# пользователя с группой шлюза. Каталог ml/run — 0750, владелец aisec-ml,
+# пользователя с группой шлюза и принимает соединения только от шлюза
+# (UID и GID собеседника — AISEC_GW_UID и AISEC_GW_GID). Каталог ml/run — 0750, владелец aisec-ml,
 # группа aisec-gw: шлюз только подключается к сокету (том только для
 # чтения), остальные пользователи хоста каталог не видят. Модели —
 # подписанный пакет внутри образа (/opt/aisec/models), проверяется до
@@ -47,6 +48,10 @@ services:
     network_mode: none
     command:
       - "-socket=/run/aisec-ml/aisec-ml.sock"
+      # Собеседник по сокету — только шлюз: UID и GID сверяются по
+      # SO_PEERCRED (4Н27); без них aisec-ml не запускается.
+      - "-peer-uid=${AISEC_GW_UID:?запустите prepare-host.sh}"
+      - "-peer-gid=${AISEC_GW_GID:?запустите prepare-host.sh}"
     volumes:
       - ${AISEC_DATA_DIR:?задайте AISEC_DATA_DIR}/ml/run:/run/aisec-ml
     mem_limit: ${AISEC_ML_MEM_LIMIT:-2g}

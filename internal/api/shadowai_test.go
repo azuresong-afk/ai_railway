@@ -189,13 +189,13 @@ func TestShadowAIViaAPI(t *testing.T) {
 
 	// Аудит: коды есть, содержимого журналов нет.
 	got := map[string]int{}
-	for _, r := range e.shadow.Records() {
+	for _, r := range append(e.shadow.Records(), e.dbs.Records()...) {
 		got[r.Action]++
 		if strings.Contains(strings.ToLower(mustJSON(t, r.Details)), "ivanov") {
 			t.Fatalf("логин в аудите: %+v", r)
 		}
 	}
-	for action, n := range map[string]int{"shadow_ai.catalog_loaded": 1, "shadow_ai.catalog_rejected": 2, "shadow_ai.import": 3,
+	for action, n := range map[string]int{"service_db.loaded": 1, "service_db.rejected": 2, "shadow_ai.import": 3,
 		"shadow_ai.settings_changed": 2} {
 		if got[action] != n {
 			t.Errorf("%s: %d записей, ждали %d (%v)", action, got[action], n, got)
@@ -310,7 +310,7 @@ func TestShadowAIExclusionsViaAPI(t *testing.T) {
 		t.Fatalf("снятие пользователя: %d %s", w.Code, w.Body)
 	}
 	got := map[string]int{}
-	for _, r := range e.shadow.Records() {
+	for _, r := range append(e.shadow.Records(), e.dbs.Records()...) {
 		got[r.Action]++
 		if strings.Contains(mustJSON(t, r.Details), "ivanov") {
 			t.Fatalf("логин в аудите: %+v", r)

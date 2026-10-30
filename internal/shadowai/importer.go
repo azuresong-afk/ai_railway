@@ -34,7 +34,6 @@ var (
 	ErrBusy          = errors.New("уже идёт другой импорт")
 	ErrDuplicate     = errors.New("этот файл уже импортирован")
 	ErrBadFormat     = errors.New("неизвестный формат журнала")
-	ErrStaleCatalog  = errors.New("версия каталога не больше загруженной")
 	ErrNotSetUp      = errors.New("первичная настройка не выполнена")
 	ErrConfirmNeeded = errors.New("сокращение срока хранения требует повторной проверки")
 	// ErrStorageFull — сводок организации больше MaxStoredAggregates (4Н25).

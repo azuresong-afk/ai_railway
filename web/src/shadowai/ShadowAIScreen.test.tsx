@@ -23,7 +23,9 @@ const me = (permissions: string[]): Me =>
 // Синтетические данные: псевдонимы — произвольные hex, не от реальных логинов.
 const alias = "0123456789abcdef0123456789abcdef";
 const catalog: ShadowCatalog = {
-  loaded: true, valid: true, version: 3, date: "2026-10-01", uploaded_at: "2026-10-02T10:00:00Z", subkey_not_after: "2027-10-01T00:00:00Z",
+  loaded: true, valid: true, active: "current", version: 3, date: "2026-10-01", uploaded_at: "2026-10-02T10:00:00Z", subkey_not_after: "2027-10-01T00:00:00Z",
+  current: { version: 3, date: "2026-10-01", records: 2, subkey_serial: 1, fingerprint: "ab12", uploaded_at: "2026-10-02T10:00:00Z", valid: true },
+  previous: { version: 2, date: "2026-09-01", records: 2, subkey_serial: 1, fingerprint: "ab12", uploaded_at: "2026-09-02T10:00:00Z", valid: true },
   services: [
     { id: "chatgpt", name: "ChatGPT", vendor: "OpenAI", category: "chat", domains: ["chatgpt.com"], suffixes: [] },
     { id: "deepseek", name: "DeepSeek", vendor: "DeepSeek", category: "chat", domains: [], suffixes: ["deepseek.com"] },
@@ -131,7 +133,7 @@ describe("экран «Теневой ИИ»", () => {
 
   it("пустой период и незагруженный каталог", async () => {
     services = [];
-    cat = { loaded: false, valid: false, services: [] };
+    cat = { loaded: false, valid: false, active: "none", services: [] };
     renderScreen(manager);
     expect(await screen.findByText("За период обращений к ИИ-сервисам не найдено")).toBeInTheDocument();
     expect(screen.getByText(/Каталог ИИ-сервисов не загружен/)).toBeInTheDocument();
@@ -174,12 +176,26 @@ describe("экран «Теневой ИИ»", () => {
     expect(await screen.findByText("Этот файл уже импортирован.")).toBeInTheDocument();
   });
 
+  it("текущая и предыдущая версии каталога, возврат предыдущей с подтверждением", async () => {
+    handler = (c) => (c.method === "POST" && c.url === "/api/v1/shadow-ai/catalog/rollback" ? json({ ...catalog, version: 2, previous: undefined }) : undefined);
+    renderScreen(manager);
+    await openTab("Импорт и каталог");
+    expect(await screen.findByText("Текущая")).toBeInTheDocument();
+    expect(screen.getByText("2 от 2026-09-01")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Вернуть предыдущую версию" }));
+    expect(await screen.findByText(/Версия 2 от 2026-09-01 станет текущей, версия 3 будет удалена/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Вернуть версию" }));
+    expect(await screen.findByText("Возвращена предыдущая версия каталога: 2.")).toBeInTheDocument();
+    expect(calls.some((c) => c.method === "POST" && c.url === "/api/v1/shadow-ai/catalog/rollback")).toBe(true);
+  });
+
   it("без права управления нет импорта, загрузки каталога и исключений", async () => {
     exclusions = [{ kind: "user", value: alias, comment: "шлюз", created_at: "2026-10-28T10:00:00Z", created_by: "user:u-1" }];
     renderScreen(reader);
     await openTab("Импорт и каталог");
     expect(await screen.findByText(/Импортировать журналы и загружать каталог может администратор безопасности/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Загрузить каталог" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Вернуть предыдущую версию" })).toBeNull();
     await openTab("Исключения");
     expect(await screen.findByText("шлюз")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Добавить исключение" })).toBeNull();

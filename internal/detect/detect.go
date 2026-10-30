@@ -204,6 +204,12 @@ func (e RunError) Error() string { return e.Detector + ": " + e.Err.Error() }
 // проверка неполная.
 var ErrPartial = errors.New("проверена часть текста")
 
+// ErrMLUnavailable — aisec-ml недоступен, перегружен, не уложился в срок или
+// нарушил протокол (ADR-0024, раздел 4): ML-детектор не дал результата, и
+// это не сбой детектора — запрос проходит без проверки ML с признаком
+// ml_unavailable. Самотест отличает её от паники и других ошибок (4.28 (б)).
+var ErrMLUnavailable = errors.New("aisec-ml недоступен")
+
 // ErrDetectorTimeout — детектор не уложился в срок.
 var ErrDetectorTimeout = errors.New("детектор не уложился в срок")
 
