@@ -5745,6 +5745,199 @@ paths:
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ProblemInternal' }
         '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/inventory:
+    get:
+      summary: Сводка реестра ИИ
+      description: |
+        Право `inventory.read` (ТЗ 5.11, задача 5.17, ADR-0029). Приложения (провайдер, разрешённые модели, архив)
+        с ключами — действующие и истёкшие, новые первыми, не больше 20 на приложение: префикс, название, срок,
+        состояние; хеша и секрета ключа нет. Провайдеры — тип, признак «внешний», заданы ли учётные данные (сами
+        данные и адрес не показываются). Число моделей и записей использования, пределы реестра и состояние
+        пополнения по трафику: до какого часа прочитаны агрегаты, время запуска, достигнут ли предел и сколько
+        записей тогда пропущено. Запрос ничего не записывает.
+      x-permission: inventory.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/Background'
+      responses:
+        '200':
+          description: Сводка реестра
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InventoryOverview' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/inventory/models:
+    get:
+      summary: Модели в реестре ИИ
+      description: |
+        Право `inventory.read`. Модели провайдеров (`kind=provider`) и заказчика (`customer`), добавленные по трафику
+        (`origin=traffic`) или вручную (`manual`), в порядке добавления. Отбор: вид, происхождение, провайдер,
+        подстрока имени или названия без учёта регистра (`q`, до 256 символов). Файлы — только в карточке, здесь — их
+        число.
+      x-permission: inventory.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/Background'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - { name: kind, in: query, required: false, description: Вид модели, schema: { type: string, enum: [provider, customer] } }
+        - { name: origin, in: query, required: false, description: Происхождение записи, schema: { type: string, enum: [traffic, manual] } }
+        - $ref: '#/components/parameters/InventoryProvider'
+        - { name: q, in: query, required: false, description: Подстрока имени или названия, schema: { type: string, maxLength: 256 } }
+      responses:
+        '200':
+          description: Страница моделей
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InventoryModelPage' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    post:
+      summary: Добавить модель в реестр вручную
+      description: |
+        Право `inventory.manage`. Модель заказчика (`customer`) — с файлами и их хешами SHA-256 (эталон для сверки
+        сканером, DM-29), провайдер необязателен: если модель обслуживает провайдер продукта, запись связывается с
+        трафиком по паре «провайдер, имя». Модель провайдера (`provider`) — провайдер обязателен. Тело — до 256 КиБ,
+        строгий JSON; имя — до 256 символов, файлов — до 256, путь — относительный, до 512 байт. Пара «провайдер,
+        имя» уже есть — 409; провайдера нет — 400; в реестре 5 000 моделей — 422. Пишет `inventory.model_created`.
+      x-permission: inventory.manage
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NewInventoryModel' }
+      responses:
+        '201':
+          description: Модель добавлена
+          headers:
+            Location: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InventoryModelCard' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '409': { $ref: '#/components/responses/ProblemConflict' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '422': { $ref: '#/components/responses/ProblemUnprocessable' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/inventory/models/{id}:
+    get:
+      summary: Карточка модели
+      description: |
+        Право `inventory.read`. Модель с файлами (путь, размер, роль, хеш) и до 200 записей использования
+        приложениями по трафику.
+      x-permission: inventory.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/InventoryModelID'
+        - $ref: '#/components/parameters/Background'
+      responses:
+        '200':
+          description: Карточка модели
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InventoryModelCard' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    patch:
+      summary: Изменить модель
+      description: |
+        Право `inventory.manage`. Меняются вид, версия, название, описание, ответственный; `files` заменяет список
+        файлов целиком. Провайдер и имя не меняются: по ним модель связана с трафиком. Модель без провайдера не может
+        стать моделью провайдера (400). Изменение без отличий ничего не пишет. Пишет `inventory.model_updated`
+        (изменённые поля, число файлов до и после).
+      x-permission: inventory.manage
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/InventoryModelID'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/InventoryModelPatch' }
+      responses:
+        '200':
+          description: Модель изменена
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InventoryModelCard' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    delete:
+      summary: Удалить модель из реестра
+      description: |
+        Право `inventory.manage`. Модель удаляется вместе с файлами; записи использования остаются. Модель из трафика
+        появится снова, если её продолжают вызывать (ADR-0029, п. 2): чтобы её не использовали, уберите её из
+        разрешённых моделей приложения. Пишет `inventory.model_deleted`.
+      x-permission: inventory.manage
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/InventoryModelID'
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '204': { description: Модель удалена }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/inventory/usage:
+    get:
+      summary: Использование моделей приложениями
+      description: |
+        Право `inventory.read`. Тройки «приложение, провайдер, модель» из почасовых агрегатов трафика шлюзов с первым
+        и последним часом появления; счётчиков запросов нет (они на дашбордах). Пополняется задачей сервера раз в
+        10 минут, не больше 20 000 записей. Отбор по приложению, провайдеру и модели — точное совпадение.
+      x-permission: inventory.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/Background'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - { name: application, in: query, required: false, description: ID (slug) приложения, schema: { type: string, maxLength: 256 } }
+        - { name: provider, in: query, required: false, description: ID провайдера, schema: { type: string, maxLength: 256 } }
+        - { name: model, in: query, required: false, description: Имя модели, schema: { type: string, maxLength: 256 } }
+      responses:
+        '200':
+          description: Страница использования
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InventoryUsagePage' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
   /api/v1/compliance:
     get:
       summary: Соответствие требованиям
@@ -6029,6 +6222,18 @@ components:
         признаком `security` и на токены токену недоступны. Операции, доступные токену,
         перечисляют `bearerToken` в `security`. Каждый запрос пишет `api_token.used`.
   parameters:
+    InventoryModelID:
+      name: id
+      in: path
+      required: true
+      description: ID модели в реестре ИИ
+      schema: { type: string, format: uuid }
+    InventoryProvider:
+      name: provider
+      in: query
+      required: false
+      description: ID провайдера
+      schema: { type: string, pattern: '^[a-z0-9][a-z0-9-]{0,62}$' }
     ComplianceRequirementID:
       name: id
       in: path
@@ -6375,6 +6580,147 @@ components:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }
   schemas:
+    InventoryOverview:
+      type: object
+      required: [applications, providers, models, usage, limits, sync]
+      properties:
+        applications:
+          type: array
+          items:
+            type: object
+            required: [id, slug, name, env, department, provider, models, archived, keys]
+            properties:
+              id: { type: string, format: uuid }
+              slug: { type: string }
+              name: { type: string }
+              env: { type: string, enum: [prod, test] }
+              department: { type: string }
+              provider: { type: string, description: ID провайдера приложения }
+              models: { type: array, items: { type: string }, description: Разрешённые модели }
+              archived: { type: boolean }
+              keys:
+                type: array
+                description: Действующие и истёкшие ключи, новые первыми, не больше 20; без секрета и хеша
+                items:
+                  type: object
+                  required: [id, name, prefix, state, expires_at, created_at]
+                  properties:
+                    id: { type: string, format: uuid }
+                    name: { type: string }
+                    prefix: { type: string }
+                    state: { type: string, enum: [active, expired] }
+                    expires_at: { type: string, format: date-time }
+                    created_at: { type: string, format: date-time }
+        providers:
+          type: array
+          items:
+            type: object
+            required: [id, slug, name, type, external, credential_set]
+            properties:
+              id: { type: string, format: uuid }
+              slug: { type: string }
+              name: { type: string }
+              type: { type: string, enum: [openai, gigachat, yandexgpt] }
+              external: { type: boolean }
+              credential_set: { type: boolean, description: Учётные данные заданы (сами данные не показываются) }
+              credential_set_at: { type: string, format: date-time }
+        models: { type: integer, description: Моделей в реестре }
+        usage: { type: integer, description: Записей использования }
+        limits:
+          type: object
+          required: [models, usage]
+          properties:
+            models: { type: integer }
+            usage: { type: integer }
+        sync:
+          type: object
+          required: [limit_reached, skipped]
+          description: Пополнение по трафику
+          properties:
+            synced_upto: { type: string, format: date-time, description: Час, до которого прочитаны агрегаты }
+            run_at: { type: string, format: date-time }
+            limit_reached: { type: boolean, description: В последнем запуске не всё поместилось в пределы }
+            skipped: { type: integer, description: Пропущено в последнем запуске из-за пределов }
+    InventoryFile:
+      type: object
+      required: [path, size, role, sha256]
+      properties:
+        path: { type: string, minLength: 1, maxLength: 512, description: Путь относительно каталога модели, через «/», без «..» }
+        size: { type: integer, format: int64, minimum: 0, maximum: 1125899906842624 }
+        role: { type: string, enum: [weights, adapter, tokenizer, config, other] }
+        sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        hash_alg: { type: string, enum: [SHA-256], readOnly: true }
+    InventoryModel:
+      type: object
+      required: [id, kind, provider, name, version, title, description, owner, origin, status, file_count, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        kind: { type: string, enum: [provider, customer] }
+        provider: { type: string, description: ID провайдера; пусто — модель заказчика без провайдера продукта }
+        name: { type: string }
+        version: { type: string }
+        title: { type: string }
+        description: { type: string }
+        owner: { type: string }
+        origin: { type: string, enum: [traffic, manual] }
+        status: { type: string, enum: [active] }
+        first_seen: { type: string, format: date-time, description: Первый час в трафике }
+        last_seen: { type: string, format: date-time, description: Последний час в трафике }
+        file_count: { type: integer }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    InventoryModelCard:
+      allOf:
+        - $ref: '#/components/schemas/InventoryModel'
+        - type: object
+          required: [files, usage]
+          properties:
+            files: { type: array, items: { $ref: '#/components/schemas/InventoryFile' } }
+            usage: { type: array, items: { $ref: '#/components/schemas/InventoryUsage' } }
+    InventoryModelPage:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/InventoryModel' } }
+        next_cursor: { type: string }
+    NewInventoryModel:
+      type: object
+      additionalProperties: false
+      required: [kind, name]
+      properties:
+        kind: { type: string, enum: [provider, customer] }
+        provider: { type: string, pattern: '^([a-z0-9][a-z0-9-]{0,62})?$', description: Обязателен у модели провайдера }
+        name: { type: string, minLength: 1, maxLength: 256 }
+        version: { type: string, maxLength: 128 }
+        title: { type: string, maxLength: 200 }
+        description: { type: string, maxLength: 2000 }
+        owner: { type: string, maxLength: 200 }
+        files: { type: array, maxItems: 256, items: { $ref: '#/components/schemas/InventoryFile' } }
+    InventoryModelPatch:
+      type: object
+      additionalProperties: false
+      properties:
+        kind: { type: string, enum: [provider, customer] }
+        version: { type: string, maxLength: 128 }
+        title: { type: string, maxLength: 200 }
+        description: { type: string, maxLength: 2000 }
+        owner: { type: string, maxLength: 200 }
+        files: { type: array, maxItems: 256, items: { $ref: '#/components/schemas/InventoryFile' }, description: Заменяет список целиком }
+    InventoryUsage:
+      type: object
+      required: [application, provider, model, first_seen, last_seen]
+      properties:
+        application: { type: string }
+        provider: { type: string }
+        model: { type: string }
+        first_seen: { type: string, format: date-time }
+        last_seen: { type: string, format: date-time }
+    InventoryUsagePage:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/InventoryUsage' } }
+        next_cursor: { type: string }
     Status:
       type: object
       required: [status]

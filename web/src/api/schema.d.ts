@@ -10254,6 +10254,374 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/inventory": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Сводка реестра ИИ
+         * @description Право `inventory.read` (ТЗ 5.11, задача 5.17, ADR-0029). Приложения (провайдер, разрешённые модели, архив)
+         *     с ключами — действующие и истёкшие, новые первыми, не больше 20 на приложение: префикс, название, срок,
+         *     состояние; хеша и секрета ключа нет. Провайдеры — тип, признак «внешний», заданы ли учётные данные (сами
+         *     данные и адрес не показываются). Число моделей и записей использования, пределы реестра и состояние
+         *     пополнения по трафику: до какого часа прочитаны агрегаты, время запуска, достигнут ли предел и сколько
+         *     записей тогда пропущено. Запрос ничего не записывает.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: {
+                    /**
+                     * @description `1` — фоновый опрос консоли по таймеру (УПД.10): запрос сессии не считается действием пользователя и не
+                     *     продлевает её по бездействию. Принимается только у `GET`; у изменяющих запросов не действует.
+                     */
+                    "X-AISec-Background"?: components["parameters"]["Background"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Сводка реестра */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["InventoryOverview"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/inventory/models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Модели в реестре ИИ
+         * @description Право `inventory.read`. Модели провайдеров (`kind=provider`) и заказчика (`customer`), добавленные по трафику
+         *     (`origin=traffic`) или вручную (`manual`), в порядке добавления. Отбор: вид, происхождение, провайдер,
+         *     подстрока имени или названия без учёта регистра (`q`, до 256 символов). Файлы — только в карточке, здесь — их
+         *     число.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description Размер страницы */
+                    limit?: components["parameters"]["Limit"];
+                    /** @description Непрозрачный курсор из `next_cursor` предыдущей страницы */
+                    cursor?: components["parameters"]["Cursor"];
+                    /** @description Вид модели */
+                    kind?: "provider" | "customer";
+                    /** @description Происхождение записи */
+                    origin?: "traffic" | "manual";
+                    /** @description ID провайдера */
+                    provider?: components["parameters"]["InventoryProvider"];
+                    /** @description Подстрока имени или названия */
+                    q?: string;
+                };
+                header?: {
+                    /**
+                     * @description `1` — фоновый опрос консоли по таймеру (УПД.10): запрос сессии не считается действием пользователя и не
+                     *     продлевает её по бездействию. Принимается только у `GET`; у изменяющих запросов не действует.
+                     */
+                    "X-AISec-Background"?: components["parameters"]["Background"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Страница моделей */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["InventoryModelPage"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        /**
+         * Добавить модель в реестр вручную
+         * @description Право `inventory.manage`. Модель заказчика (`customer`) — с файлами и их хешами SHA-256 (эталон для сверки
+         *     сканером, DM-29), провайдер необязателен: если модель обслуживает провайдер продукта, запись связывается с
+         *     трафиком по паре «провайдер, имя». Модель провайдера (`provider`) — провайдер обязателен. Тело — до 256 КиБ,
+         *     строгий JSON; имя — до 256 символов, файлов — до 256, путь — относительный, до 512 байт. Пара «провайдер,
+         *     имя» уже есть — 409; провайдера нет — 400; в реестре 5 000 моделей — 422. Пишет `inventory.model_created`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                    /** @description Ключ повторяемости создающего запроса, 1–64 символа `[A-Za-z0-9._-]` */
+                    "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["NewInventoryModel"];
+                };
+            };
+            responses: {
+                /** @description Модель добавлена */
+                201: {
+                    headers: {
+                        Location?: string;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["InventoryModelCard"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/inventory/models/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Карточка модели
+         * @description Право `inventory.read`. Модель с файлами (путь, размер, роль, хеш) и до 200 записей использования
+         *     приложениями по трафику.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: {
+                    /**
+                     * @description `1` — фоновый опрос консоли по таймеру (УПД.10): запрос сессии не считается действием пользователя и не
+                     *     продлевает её по бездействию. Принимается только у `GET`; у изменяющих запросов не действует.
+                     */
+                    "X-AISec-Background"?: components["parameters"]["Background"];
+                };
+                path: {
+                    /** @description ID модели в реестре ИИ */
+                    id: components["parameters"]["InventoryModelID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Карточка модели */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["InventoryModelCard"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        /**
+         * Удалить модель из реестра
+         * @description Право `inventory.manage`. Модель удаляется вместе с файлами; записи использования остаются. Модель из трафика
+         *     появится снова, если её продолжают вызывать (ADR-0029, п. 2): чтобы её не использовали, уберите её из
+         *     разрешённых моделей приложения. Пишет `inventory.model_deleted`.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID модели в реестре ИИ */
+                    id: components["parameters"]["InventoryModelID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Модель удалена */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        options?: never;
+        head?: never;
+        /**
+         * Изменить модель
+         * @description Право `inventory.manage`. Меняются вид, версия, название, описание, ответственный; `files` заменяет список
+         *     файлов целиком. Провайдер и имя не меняются: по ним модель связана с трафиком. Модель без провайдера не может
+         *     стать моделью провайдера (400). Изменение без отличий ничего не пишет. Пишет `inventory.model_updated`
+         *     (изменённые поля, число файлов до и после).
+         */
+        patch: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID модели в реестре ИИ */
+                    id: components["parameters"]["InventoryModelID"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["InventoryModelPatch"];
+                };
+            };
+            responses: {
+                /** @description Модель изменена */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["InventoryModelCard"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        trace?: never;
+    };
+    "/api/v1/inventory/usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Использование моделей приложениями
+         * @description Право `inventory.read`. Тройки «приложение, провайдер, модель» из почасовых агрегатов трафика шлюзов с первым
+         *     и последним часом появления; счётчиков запросов нет (они на дашбордах). Пополняется задачей сервера раз в
+         *     10 минут, не больше 20 000 записей. Отбор по приложению, провайдеру и модели — точное совпадение.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description Размер страницы */
+                    limit?: components["parameters"]["Limit"];
+                    /** @description Непрозрачный курсор из `next_cursor` предыдущей страницы */
+                    cursor?: components["parameters"]["Cursor"];
+                    /** @description ID (slug) приложения */
+                    application?: string;
+                    /** @description ID провайдера */
+                    provider?: string;
+                    /** @description Имя модели */
+                    model?: string;
+                };
+                header?: {
+                    /**
+                     * @description `1` — фоновый опрос консоли по таймеру (УПД.10): запрос сессии не считается действием пользователя и не
+                     *     продлевает её по бездействию. Принимается только у `GET`; у изменяющих запросов не действует.
+                     */
+                    "X-AISec-Background"?: components["parameters"]["Background"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Страница использования */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["InventoryUsagePage"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/compliance": {
         parameters: {
             query?: never;
@@ -10715,6 +11083,156 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        InventoryOverview: {
+            applications: {
+                /** Format: uuid */
+                id: string;
+                slug: string;
+                name: string;
+                /** @enum {string} */
+                env: "prod" | "test";
+                department: string;
+                /** @description ID провайдера приложения */
+                provider: string;
+                /** @description Разрешённые модели */
+                models: string[];
+                archived: boolean;
+                /** @description Действующие и истёкшие ключи, новые первыми, не больше 20; без секрета и хеша */
+                keys: {
+                    /** Format: uuid */
+                    id: string;
+                    name: string;
+                    prefix: string;
+                    /** @enum {string} */
+                    state: "active" | "expired";
+                    /** Format: date-time */
+                    expires_at: string;
+                    /** Format: date-time */
+                    created_at: string;
+                }[];
+            }[];
+            providers: {
+                /** Format: uuid */
+                id: string;
+                slug: string;
+                name: string;
+                /** @enum {string} */
+                type: "openai" | "gigachat" | "yandexgpt";
+                external: boolean;
+                /** @description Учётные данные заданы (сами данные не показываются) */
+                credential_set: boolean;
+                /** Format: date-time */
+                credential_set_at?: string;
+            }[];
+            /** @description Моделей в реестре */
+            models: number;
+            /** @description Записей использования */
+            usage: number;
+            limits: {
+                models: number;
+                usage: number;
+            };
+            /** @description Пополнение по трафику */
+            sync: {
+                /**
+                 * Format: date-time
+                 * @description Час
+                 */
+                synced_upto?: string;
+                /** Format: date-time */
+                run_at?: string;
+                /** @description В последнем запуске не всё поместилось в пределы */
+                limit_reached: boolean;
+                /** @description Пропущено в последнем запуске из-за пределов */
+                skipped: number;
+            };
+        };
+        InventoryFile: {
+            /** @description Путь относительно каталога модели */
+            path: string;
+            /** Format: int64 */
+            size: number;
+            /** @enum {string} */
+            role: "weights" | "adapter" | "tokenizer" | "config" | "other";
+            sha256: string;
+            /** @enum {string} */
+            readonly hash_alg?: "SHA-256";
+        };
+        InventoryModel: {
+            /** Format: uuid */
+            id: string;
+            /** @enum {string} */
+            kind: "provider" | "customer";
+            /** @description ID провайдера; пусто — модель заказчика без провайдера продукта */
+            provider: string;
+            name: string;
+            version: string;
+            title: string;
+            description: string;
+            owner: string;
+            /** @enum {string} */
+            origin: "traffic" | "manual";
+            /** @enum {string} */
+            status: "active";
+            /**
+             * Format: date-time
+             * @description Первый час в трафике
+             */
+            first_seen?: string;
+            /**
+             * Format: date-time
+             * @description Последний час в трафике
+             */
+            last_seen?: string;
+            file_count: number;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        InventoryModelCard: components["schemas"]["InventoryModel"] & {
+            files: components["schemas"]["InventoryFile"][];
+            usage: components["schemas"]["InventoryUsage"][];
+        };
+        InventoryModelPage: {
+            items: components["schemas"]["InventoryModel"][];
+            next_cursor?: string;
+        };
+        NewInventoryModel: {
+            /** @enum {string} */
+            kind: "provider" | "customer";
+            /** @description Обязателен у модели провайдера */
+            provider?: string;
+            name: string;
+            version?: string;
+            title?: string;
+            description?: string;
+            owner?: string;
+            files?: components["schemas"]["InventoryFile"][];
+        };
+        InventoryModelPatch: {
+            /** @enum {string} */
+            kind?: "provider" | "customer";
+            version?: string;
+            title?: string;
+            description?: string;
+            owner?: string;
+            /** @description Заменяет список целиком */
+            files?: components["schemas"]["InventoryFile"][];
+        };
+        InventoryUsage: {
+            application: string;
+            provider: string;
+            model: string;
+            /** Format: date-time */
+            first_seen: string;
+            /** Format: date-time */
+            last_seen: string;
+        };
+        InventoryUsagePage: {
+            items: components["schemas"]["InventoryUsage"][];
+            next_cursor?: string;
+        };
         Status: {
             status: string;
         };
@@ -14501,6 +15019,10 @@ export interface components {
         };
     };
     parameters: {
+        /** @description ID модели в реестре ИИ */
+        InventoryModelID: string;
+        /** @description ID провайдера */
+        InventoryProvider: string;
         /** @description ID пункта базы требований */
         ComplianceRequirementID: string;
         /** @description Начало периода (RFC 3339); по умолчанию — за 30 суток до `to` */

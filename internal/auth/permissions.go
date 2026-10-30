@@ -153,6 +153,12 @@ const (
 	PermComplianceRead     = "compliance.read"
 	PermComplianceMark     = "compliance.mark"
 	PermComplianceBaseLoad = "compliance.base.load"
+	// Реестр ИИ (ТЗ 5.11; задача 5.17 этапа 5, ADR-0029, п. 6): приложения,
+	// ключи (без секретов), провайдеры, модели и их файлы с хешами,
+	// использование по трафику; ручные записи моделей. Не функция
+	// безопасности: запрет модели (5.22) — отдельное право.
+	PermInventoryRead   = "inventory.read"
+	PermInventoryManage = "inventory.manage"
 )
 
 // Permission — разрешение из каталога.
@@ -257,6 +263,8 @@ var permissionCatalog = []Permission{
 	{Name: PermComplianceMark, Title: "Ручные отметки по пунктам соответствия (организационные меры) с комментарием и сроком пересмотра",
 		Group: "Соответствие", Security: true},
 	{Name: PermComplianceBaseLoad, Title: "Загрузка обновлённой подписанной базы требований и возврат её предыдущей версии", Group: "Соответствие"},
+	{Name: PermInventoryRead, Title: "Просмотр реестра ИИ: приложения, ключи (без секретов), провайдеры, модели, файлы моделей и использование", Group: "Реестр ИИ"},
+	{Name: PermInventoryManage, Title: "Добавление, изменение и удаление моделей в реестре ИИ (в том числе файлов моделей заказчика с хешами)", Group: "Реестр ИИ"},
 }
 
 // auditorExtra — разрешения аудитора сверх чтения: они ничего не меняют,
@@ -447,13 +455,13 @@ var builtinRoles = []RoleDef{
 			PermReportsRead: ScopeAll, PermReportSchedulesRead: ScopeAll, PermReportSchedulesManage: ScopeAll,
 			PermAgentsRead: ScopeAll, PermAgentsManage: ScopeAll, PermShadowAIRead: ScopeAll, PermShadowAIManage: ScopeAll,
 			PermLicenseRead: ScopeAll, PermLicenseManage: ScopeAll,
-			PermComplianceRead: ScopeAll, PermComplianceBaseLoad: ScopeAll}},
+			PermComplianceRead: ScopeAll, PermComplianceBaseLoad: ScopeAll, PermInventoryRead: ScopeAll, PermInventoryManage: ScopeAll}},
 	{ID: RoleAnalyst, DisplayName: "Аналитик", Builtin: true,
 		Description: "Разбор оповещений и инцидентов, поиск по событиям",
 		Grants: grantAll(PermSystemRead, PermEventsRead, PermEventsExport, PermEventsMark, PermApplicationsRead, PermProvidersRead,
 			PermPoliciesRead, PermPoliciesTest, PermAlertsRead, PermAlertsManage, PermAlertRulesRead, PermModelPricesRead, PermBudgetsRead,
 			PermDashboardsRead, PermIncidentsRead, PermIncidentsManage, PermIncidentsExport, PermReportsRead, PermAgentsRead,
-			PermApprovalsRead, PermApprovalsDecide, PermShadowAIRead)},
+			PermApprovalsRead, PermApprovalsDecide, PermShadowAIRead, PermInventoryRead)},
 	{ID: RoleAuditor, DisplayName: "Аудитор", Builtin: true,
 		Description: "Только просмотр: журнал аудита, отчёты, состояние соответствия. Ничего не меняет",
 		Grants:      auditorPermissions()},
