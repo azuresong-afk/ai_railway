@@ -43,6 +43,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/incidents"
 	"github.com/azuresong-afk/ai_railway/internal/integrity"
 	"github.com/azuresong-afk/ai_railway/internal/integrity/selftest"
+	"github.com/azuresong-afk/ai_railway/internal/inventory"
 	"github.com/azuresong-afk/ai_railway/internal/keyring"
 	"github.com/azuresong-afk/ai_railway/internal/license"
 	"github.com/azuresong-afk/ai_railway/internal/notify"
@@ -682,6 +683,19 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		}
 	}()
 
+	// Реестр ИИ (ТЗ 5.11; задача 5.17, ADR-0029): модели и использование
+	// пополняются по почасовым агрегатам дашбордов раз в 10 минут.
+	inventoryStore, err := inventory.NewPGStore(db.Pool(), auditLog)
+	if err != nil {
+		return err
+	}
+	inventorySvc, err := inventory.New(inventory.Options{Store: inventoryStore, Provider: p, OrgID: audit.DefaultOrgID,
+		Logger: logger.With("component", "inventory")})
+	if err != nil {
+		return err
+	}
+	go inventorySvc.Run(ctx, inventory.SyncInterval)
+
 	// Консоль отдаётся, только если она собрана (make web-build перед go build); иначе сервер — чистый API.
 	var console http.Handler
 	if dist, err := fs.Sub(web.Dist, "dist"); err == nil {
@@ -707,6 +721,7 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		Agents:     agentsSvc,
 		Approvals:  approvalsSvc,
 		ShadowAI:   shadowSvc,
+		Inventory:  inventorySvc,
 		Compliance: complianceSvc,
 		ServiceDBs: serviceDBs,
 		License:    licSvc,
