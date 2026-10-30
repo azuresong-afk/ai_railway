@@ -96,8 +96,11 @@ func testModel() []byte {
 	return pbBytes(m, 7, g)
 }
 
-// wordTokenizer — токены по пробелам: «ignore» — номер 10, прочее — 0.
+// wordTokenizer — токены по пробелам: «ignore» — номер 10, прочее — 0;
+// служебные — тоже 0.
 type wordTokenizer struct{}
+
+func (wordTokenizer) Special() (cls, sep int64) { return 0, 0 }
 
 func (wordTokenizer) Encode(text string, maxTokens int) ([]int64, [][2]int, bool, error) {
 	var ids []int64
@@ -179,9 +182,17 @@ func TestONNXExecutor(t *testing.T) {
 	if len(r.Findings) != 2 || r.Findings[0].Label != "injection" || r.Findings[0].Score < 0.99 || r.Findings[0].End != len("please ignore ignore") || r.Truncated {
 		t.Fatalf("результат: %+v", r)
 	}
-	r, err = m.Run(context.Background(), strings.Repeat("a ", 20))
-	if err != nil || !r.Truncated || r.Findings[1].Label != "benign" || r.Findings[1].Score != 0.5 {
+	// Окно 8 токенов: 6 токенов текста, шаг 5; «ignore» в конце длинного
+	// текста находит последнее окно.
+	long := strings.Repeat("a ", 30) + "ignore ignore ignore"
+	r, err = m.Run(context.Background(), long)
+	if err != nil || r.Truncated || r.Findings[0].Score < 0.99 || r.Findings[0].End != len(long) || r.Findings[1].Label != "benign" {
 		t.Fatalf("длинный текст: %+v %v", r, err)
+	}
+	// Сверх 16 окон — проверена часть текста.
+	r, err = m.Run(context.Background(), strings.Repeat("a ", 200))
+	if err != nil || !r.Truncated || r.Findings[1].Score != 0.5 {
+		t.Fatalf("очень длинный текст: %+v %v", r, err)
 	}
 }
 
@@ -219,5 +230,5 @@ func initORTOnceForTest(lib string, p aisecCrypto.Provider) (ml.Executor, error)
 	if err := initORT(lib, p, ortLibHash); err != nil {
 		return nil, err
 	}
-	return onnxExecutor{}, nil
+	return newONNXExecutor(&config{}), nil
 }

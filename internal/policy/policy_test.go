@@ -383,6 +383,83 @@ func TestTemplateOmitsMissingDetectors(t *testing.T) {
 	}
 }
 
+// mlFake — ML-детектор с признаком связи с aisec-ml (заглушка без связи —
+// connected = false).
+type mlFake struct {
+	fakeDetector
+	connected bool
+}
+
+func (d mlFake) MLConnected() bool { return d.connected }
+
+// ML-правила шаблонов (задача 4.19, DM-01, DM-18): только на шлюзе с
+// aisec-ml, только журнал (мониторинг до замера Р4), с порогом в правиле.
+// Без aisec-ml шаблон их не содержит: иначе каждое событие получало бы
+// ml_unavailable. Template (копия для политики заказчика) их не содержит.
+func TestTemplateMLRulesOnlyWithAisecML(t *testing.T) {
+	both := []detect.Direction{detect.Input, detect.Output}
+	reg := func(connected bool) *detect.Registry {
+		r, err := detect.NewRegistry(fakeDetector{id: detInjection, dirs: in},
+			mlFake{fakeDetector{id: detInjML, dirs: in, cats: []string{"injection.ml"}}, connected},
+			mlFake{fakeDetector{id: detToxML, dirs: both, cats: []string{"toxicity.insult"}}, connected})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	for _, id := range TemplateIDs() {
+		raw, _ := Template(id)
+		for _, r := range raw.Rules {
+			if r.Detector == detInjML || r.Detector == detToxML {
+				t.Fatalf("%s: ML-правило в Template", id)
+			}
+		}
+		if s, _ := TemplateFor(id, reg(false)); slices.ContainsFunc(s.Rules, func(r RuleSpec) bool { return r.Detector != detInjection }) {
+			t.Fatalf("%s без aisec-ml: %+v", id, s.Rules)
+		}
+		s, _ := TemplateFor(id, reg(true))
+		var ml []RuleSpec
+		for _, r := range s.Rules {
+			if r.Detector == detInjML || r.Detector == detToxML {
+				ml = append(ml, r)
+			}
+		}
+		if len(ml) != 2 {
+			t.Fatalf("%s с aisec-ml: правил ML %d", id, len(ml))
+		}
+		for _, r := range ml {
+			if r.Action != Log || r.Threshold == nil || *r.Threshold < 0.5 {
+				t.Fatalf("%s: правило %+v", id, r)
+			}
+		}
+		if _, err := TemplatePolicy(id, reg(true)); err != nil {
+			t.Fatalf("%s: %v", id, err)
+		}
+	}
+	// Находка ML в enforce только журналируется; ниже порога правила — нет.
+	p, err := TemplatePolicy(TemplatePIIStrict, reg(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := p.Evaluate(Request{Endpoint: EndpointChat, Direction: detect.Input,
+		Hits: []Hit{hit(detInjML, "injection.ml", 0.95, detect.SourceUser)}})
+	if d.Block || d.Action != Log || d.Rule != "injection-ml" {
+		t.Fatalf("находка ML: %+v", d)
+	}
+	d = p.Evaluate(Request{Endpoint: EndpointChat, Direction: detect.Input,
+		Hits: []Hit{hit(detInjML, "injection.ml", 0.6, detect.SourceUser)}})
+	if d.Rule != "" {
+		t.Fatalf("ниже порога: %+v", d)
+	}
+	// Изменение порога в копии не меняет шаблон.
+	s, _ := TemplateFor(TemplateBase, reg(true))
+	*s.Rules[len(s.Rules)-1].Threshold = 0.1
+	again, _ := TemplateFor(TemplateBase, reg(true))
+	if *again.Rules[len(again.Rules)-1].Threshold != thrToxML {
+		t.Fatal("порог шаблона изменился через копию")
+	}
+}
+
 // «ПДн — строго» в monitor: block только журналируется, но ПДн и секреты
 // к внешнему провайдеру маскируются правилами *-protect.
 func TestPIIStrictInMonitorStillProtects(t *testing.T) {
