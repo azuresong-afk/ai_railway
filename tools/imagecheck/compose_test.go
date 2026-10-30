@@ -69,6 +69,9 @@ func TestPilotComposeML(t *testing.T) {
 	}
 }
 
+// mlSocketArg — аргумент сокета aisec-ml в compose.ml.yaml.
+const mlSocketArg = "      - \"-socket=/run/aisec-ml/aisec-ml.sock\"\n"
+
 func TestComposeMLRejects(t *testing.T) {
 	ml := readPilotML(t)
 	for name, tc := range map[string]struct {
@@ -85,8 +88,15 @@ func TestComposeMLRejects(t *testing.T) {
 		"LD_PRELOAD у aisec-ml":      {"    network_mode: none\n", "    network_mode: none\n    environment: {LD_PRELOAD: /run/aisec-ml/x.so}\n", "переменные загрузчика"},
 		"LD_LIBRARY_PATH у шлюза":    {"      AISEC_GATEWAY_ML_SOCKET: /run/aisec-ml/aisec-ml.sock\n", "      AISEC_GATEWAY_ML_SOCKET: /run/aisec-ml/aisec-ml.sock\n      LD_LIBRARY_PATH: /tmp\n", "переменные загрузчика"},
 		"самопроверка alert в env":   {"    network_mode: none\n", "    network_mode: none\n    environment: {AISEC_ML_INTEGRITY_ACTION: alert}\n", "ослабление самопроверки"},
-		"самопроверка alert флагом":  {"      - \"-models=/opt/aisec/models\"\n", "      - \"-models=/opt/aisec/models\"\n      - \"-integrity-action=alert\"\n", "ослабление самопроверки"},
-		"ключи у aisec-ml":           {"/ml/run:/run/aisec-ml\n", "/ml/run:/run/aisec-ml\n      - ${AISEC_DATA_DIR:?задайте AISEC_DATA_DIR}/keys:/etc/aisec/keys:ro\n", "aisec-ml: том"},
+		"самопроверка alert флагом":  {mlSocketArg, mlSocketArg + "      - \"-integrity-action=alert\"\n", "ослабление самопроверки"},
+		// 4В23: старый подписанный пакет моделей в обход выпуска.
+		"каталог моделей флагом": {mlSocketArg, mlSocketArg + "      - \"-models=/run/aisec-ml/pkg\"\n", "пути выпуска"},
+		"манифест флагом":        {mlSocketArg, mlSocketArg + "      - \"--manifest\"\n", "пути выпуска"},
+		"ORT флагом":             {mlSocketArg, mlSocketArg + "      - \"-ort-lib=/run/aisec-ml/o.so\"\n", "пути выпуска"},
+		"каталог моделей в env":  {"    network_mode: none\n", "    network_mode: none\n    environment: {AISEC_ML_MODELS: /run/aisec-ml/pkg}\n", "пути выпуска"},
+		"манифест в env":         {"    network_mode: none\n", "    network_mode: none\n    environment: {AISEC_ML_MANIFEST: /run/aisec-ml/m.json}\n", "пути выпуска"},
+		"ORT в env":              {"    network_mode: none\n", "    network_mode: none\n    environment: {AISEC_ML_ORT_LIB: /run/aisec-ml/o.so}\n", "пути выпуска"},
+		"ключи у aisec-ml":       {"/ml/run:/run/aisec-ml\n", "/ml/run:/run/aisec-ml\n      - ${AISEC_DATA_DIR:?задайте AISEC_DATA_DIR}/keys:/etc/aisec/keys:ro\n", "aisec-ml: том"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if !strings.Contains(ml, tc.old) {
