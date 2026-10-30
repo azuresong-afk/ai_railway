@@ -14020,7 +14020,7 @@ export interface components {
             incomplete?: boolean;
             /** @description У политики нет правил для этого направления: детекторы не запускались, allow не означает «проверено». */
             unchecked?: boolean;
-            /** @description ML-детектор политики (injection.ml, toxicity.ml) не дал результата: aisec-ml недоступен, решение принято по остальным детекторам (ADR-0024). */
+            /** @description ML-детектор политики (injection.ml, toxicity.ml, pii.ner) не дал результата: aisec-ml недоступен, решение принято по остальным детекторам (ADR-0024). */
             ml_unavailable?: boolean;
             /** @description Находки детекторов политики приложения для этого направления. */
             findings: {

@@ -9475,7 +9475,7 @@ components:
         message: { type: string, description: Сообщение политики при блокировке. }
         incomplete: { type: boolean, description: Часть детекторов не дала результата (fail_open). }
         unchecked: { type: boolean, description: 'У политики нет правил для этого направления: детекторы не запускались, allow не означает «проверено».' }
-        ml_unavailable: { type: boolean, description: 'ML-детектор политики (injection.ml, toxicity.ml) не дал результата: aisec-ml недоступен, решение принято по остальным детекторам (ADR-0024).' }
+        ml_unavailable: { type: boolean, description: 'ML-детектор политики (injection.ml, toxicity.ml, pii.ner) не дал результата: aisec-ml недоступен, решение принято по остальным детекторам (ADR-0024).' }
         findings:
           type: array
           description: Находки детекторов политики приложения для этого направления.

@@ -478,12 +478,14 @@ func NewMLDetector(spec MLDetectorSpec, client *MLClient) (*MLDetector, error) {
 	slices.Sort(d.cats)
 	// Проверка ID, версии, категорий и строки матрицы — тем же правилом, что
 	// у находок.
-	probe := detect.Finding{Detector: spec.ID, Version: spec.Version, Category: d.cats[0], Threat: spec.Threat}
 	if _, err := detect.NewRegistry(d); err != nil {
 		return nil, fmt.Errorf("ML-детектор %s: %w", spec.ID, err)
 	}
-	if err := detect.ValidateFinding(probe, d, ""); err != nil {
-		return nil, fmt.Errorf("ML-детектор %s: %w", spec.ID, err)
+	for _, dir := range spec.Directions {
+		probe := detect.Finding{Detector: spec.ID, Version: spec.Version, Category: d.cats[0], Threat: spec.ThreatFor(dir)}
+		if err := detect.ValidateFinding(probe, d, ""); err != nil {
+			return nil, fmt.Errorf("ML-детектор %s: %w", spec.ID, err)
+		}
 	}
 	return d, nil
 }
@@ -504,11 +506,12 @@ func (d *MLDetector) Categories() []string { return slices.Clone(d.cats) }
 // fail_closed, а ставит признак ml_unavailable (ADR-0024, раздел 4).
 func (d *MLDetector) MLBacked() bool { return true }
 
-// errMLPartial — модель проверила не весь текст и ничего не нашла: снять
-// подозрение со всего текста ML не может, поэтому событие получает
-// ml_unavailable. Если в проверенной части есть находки, они возвращаются:
-// для решения политики этого достаточно.
-var errMLPartial = fmt.Errorf("%w: проверена часть текста", ErrMLUnavailable)
+// errMLPartial — модель проверила не весь текст: событие получает
+// ml_unavailable, находки проверенной части возвращаются вместе с ошибкой
+// (detect.ErrPartial). У классификаторов находка в проверенной части для
+// решения политики достаточна — ошибка ставится, только если находок нет.
+// У разметки (Spans) — всегда: непроверенный остаток не замаскирован.
+var errMLPartial = fmt.Errorf("%w: %w", ErrMLUnavailable, detect.ErrPartial)
 
 // Detect — находки модели не ниже порога.
 func (d *MLDetector) Detect(ctx context.Context, t detect.Text) ([]detect.Finding, error) {
@@ -522,22 +525,27 @@ func (d *MLDetector) Detect(ctx context.Context, t detect.Text) ([]detect.Findin
 		return nil, fmt.Errorf("%w: модель %s не проверяет направление %s", ErrMLUnavailable, res.Info.ID, t.Direction)
 	}
 	for label := range d.spec.Categories {
-		if !slices.Contains(res.Info.Labels, label) {
+		if !res.Info.HasLabel(label) {
 			return nil, fmt.Errorf("%w: у модели %s нет метки %s", ErrMLUnavailable, res.Info.ID, label)
 		}
 	}
 	rule := mlRule(res.Info)
+	threat := d.spec.ThreatFor(t.Direction)
 	var out []detect.Finding
 	for _, s := range res.Findings {
 		cat, ok := d.spec.Categories[s.Label]
 		if !ok || s.Score < d.spec.Threshold {
 			continue
 		}
-		out = append(out, detect.Finding{Detector: d.spec.ID, Version: d.spec.Version, Category: cat, Threat: d.spec.Threat,
-			Score: s.Score, Start: s.Start, End: s.End, Rule: rule})
+		start, end := s.Start, s.End
+		if d.spec.Spans {
+			start, end = expandWords(t.Text, start, end)
+		}
+		out = append(out, detect.Finding{Detector: d.spec.ID, Version: d.spec.Version, Category: cat, Threat: threat,
+			Score: s.Score, Start: start, End: end, Rule: rule})
 	}
-	if res.Partial && len(out) == 0 {
-		return nil, errMLPartial
+	if res.Partial && (d.spec.Spans || len(out) == 0) {
+		return out, errMLPartial
 	}
 	return out, nil
 }

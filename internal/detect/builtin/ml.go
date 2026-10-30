@@ -20,15 +20,27 @@ import (
 // владельца»): injection.ml — своя дообучка rubert-tiny2 (метки benign и
 // injection, softmax), toxicity.ml — cointegrated/rubert-tiny-toxicity
 // (метки non-toxic, insult, obscenity, threat, dangerous; каждая — своя
-// сигмоида). Threshold здесь — нижняя граница находки; порог решения — в
-// правиле политики (threshold), в шаблонах — по замеру Р4
-// (docs/detectors.md). До замера Р4 правила шаблонов только журналируют
+// сигмоида). pii.ner (задача 4.20) — разметка токенов по схеме BIO
+// (сущности per, org, loc, addr; loc находок не даёт: город или страна сами
+// по себе не ПДн), модель — рекомендация потока F5, ждёт решения
+// владельца (ADR-0024, дополнение 30.10.2026). Threshold здесь — нижняя
+// граница находки; порог решения — в правиле политики (threshold), в
+// шаблонах — по замеру Р4 (docs/detectors.md). До замера Р4 правила шаблонов только журналируют
 // (Log): новые детекторы начинают в мониторинге.
 
 // ID ML-детекторов.
 const (
 	InjectionMLID = "injection.ml"
 	ToxicityMLID  = "toxicity.ml"
+	PIINERID      = "pii.ner"
+)
+
+// Категории находок pii.ner — тип псевдонима по последней части
+// (pseudonym.TypeOf): PERSON, ORGANIZATION, ADDRESS.
+const (
+	CatPerson       = "pii.person"
+	CatOrganization = "pii.organization"
+	CatAddress      = "pii.address"
 )
 
 // MLSpec — описание ML-детектора.
@@ -43,8 +55,14 @@ type MLSpec struct {
 	// Categories — метка модели → категория находки; метки без категории
 	// (например, benign) находок не дают.
 	Categories map[string]string
-	// Threat — строка матрицы обнаружения (DM-NN).
-	Threat string
+	// Threat — строка матрицы обнаружения (DM-NN); OutputThreat — строка
+	// для ответа модели, если она другая (pii.ner: DM-31 в запросе, DM-09 в
+	// ответе, как у pii.ru).
+	Threat, OutputThreat string
+	// Spans — находки модели — фрагменты текста (разметка токенов): шлюз
+	// расширяет их до целых слов, чтобы маскирование не оставляло часть
+	// имени (gateway.MLDetector).
+	Spans bool
 	// Threshold — минимальная оценка находки.
 	Threshold float64
 }
@@ -72,7 +90,21 @@ func MLSpecs() []MLSpec {
 			},
 			Threat: "DM-18", Threshold: MLFindingFloor,
 		},
+		{
+			ID: PIINERID, Version: "1.0.0", Model: "pii-ner-ru",
+			Directions: []detect.Direction{detect.Input, detect.Output},
+			Categories: map[string]string{"per": CatPerson, "org": CatOrganization, "addr": CatAddress},
+			Threat:     "DM-31", OutputThreat: "DM-09", Spans: true, Threshold: MLFindingFloor,
+		},
 	}
+}
+
+// ThreatFor — строка матрицы находки в направлении dir.
+func (s MLSpec) ThreatFor(dir detect.Direction) string {
+	if dir == detect.Output && s.OutputThreat != "" {
+		return s.OutputThreat
+	}
+	return s.Threat
 }
 
 // ErrMLNotConnected — у компонента нет связи с aisec-ml: сервер, песочница
