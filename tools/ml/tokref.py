@@ -2,7 +2,8 @@
 """Эталон токенизатора для проверки WordPiece на Go (задача 4.19).
 
 Только для разработки, в поставку не входит. Читает tokenizer.json модели и
-тексты (JSONL с полем "text": корпуса testdata/corpus и testdata/ml), кодирует
+тексты (JSONL с полем "text": корпуса testdata/corpus и testdata/ml, кроме
+корпуса secrets — похожие на ключи строки GitHub не принимает), кодирует
 каждый текст эталонной библиотекой tokenizers (Hugging Face) и пишет JSONL:
 
     {"text": "...", "ids": [...], "offsets": [[начало, конец], ...]}
