@@ -1358,7 +1358,7 @@ components:
 #    repository: https://huggingface.co/cointegrated/rubert-tiny-toxicity
 #    # лицензии наборов обучения исходной модели в карточке не указаны — записано в ML-BOM (решение владельца 28.10.2026)
 #
-#  - name: pii-ner-ru                            # pii.ner (DM-31, DM-09): дообучка rubert-tiny2 — ЖДЁТ РЕШЕНИЯ ВЛАДЕЛЬЦА
+#  - name: pii-ner-ru                            # pii.ner (DM-31, DM-09): дообучка rubert-tiny2 — ждёт Р4
 #    version: <ML_VERSION пакета>
 #    type: ml-model
 #    scope: product
@@ -1366,6 +1366,7 @@ components:
 #    repository: https://huggingface.co/cointegrated/rubert-tiny2
 #    security_function: true
 #    # обучающие данные: синтетика tools/synth-pii -kind ner (своя, без ПДн реальных людей);
-#    # factRuEval-2016 (MIT, https://github.com/dialogue-evaluation/factRuEval-2016) — ждёт решения владельца
-#    # (запись для tools/ml/sources.json — ADR-0024, дополнение 4.20); без решения make ml-train её не берёт
-#    decision: <ждёт решения владельца по модели и наборам (карточка потока F5, 30.10.2026)>
+#    # factRuEval-2016 (MIT, https://github.com/dialogue-evaluation/factRuEval-2016, коммит dfe96237…;
+#    # SHA-256 архива — tools/ml/sources.json): devset — обучение, testset — проверка
+#    decision: ADR-0024, дополнение 4.20, «Решение владельца» (30.10.2026) — модель и наборы приняты; в поставку — после Р4
+#    decided: 2026-10-30
