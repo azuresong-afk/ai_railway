@@ -261,15 +261,13 @@ func runHashes(p aisecCrypto.Provider, n *int) []Failure {
 }
 
 // replyHash — хеш реплики, как его считает шлюз до имитовставки на ключе
-// сессий: нормализация потоком (session.Normalizer) по частям.
+// сессий: та же функция session.ReplyHasher, по частям.
 func replyHash(h aisecCrypto.Hasher, parts ...string) []byte {
-	sum := h.New()
-	nz := session.NewNormalizer(sum)
+	r := session.NewReplyHasher(h)
 	for _, p := range parts {
-		nz.WriteString(p)
+		r.WriteString(p)
 	}
-	nz.Flush()
-	return sum.Sum(nil)
+	return r.Sum()
 }
 
 // mlBacked — детектор работает через aisec-ml (ADR-0024): заглушка
