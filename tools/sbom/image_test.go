@@ -23,7 +23,7 @@ func TestAsImage(t *testing.T) {
 	if m.Type != "container" || m.Name != "aisec-test/aisec-gateway" || m.Version != "1.0.0-test" || m.BOMRef != imageRef {
 		t.Fatalf("предмет документа: %+v", m)
 	}
-	if len(m.Properties) != 1 || m.Properties[0] != (Property{propImageBase, "scratch"}) {
+	if len(m.Properties) != 1 || m.Properties[0] != (Property{Name: propImageBase, Value: "scratch"}) {
 		t.Errorf("свойства образа: %+v", m.Properties)
 	}
 	root := bom.Dependencies[0]

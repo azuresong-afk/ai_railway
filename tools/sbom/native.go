@@ -35,7 +35,7 @@ func AddNative(bom *BOM, reg *components.Registry) error {
 		seen[purl] = true
 		comp := fromRegistry(c, "library", purl, c.Name, version, purl)
 		if version != c.Version {
-			comp.Properties = append(comp.Properties, Property{propNativeSource, c.Version})
+			comp.Properties = append(comp.Properties, Property{Name: propNativeSource, Value: c.Version})
 		}
 		bom.Components = append(bom.Components, comp)
 		refs = append(refs, purl)
