@@ -768,7 +768,7 @@ func writeServiceDBs(ctx context.Context, tx pgx.Tx, s *Snapshot, verify func(ki
 		if len(ok) == 0 {
 			continue
 		}
-		line, err := writeServiceDB(ctx, tx, s.OrgID, kind, ok)
+		line, err := writeServiceDB(ctx, tx, s.OrgID, kind, ok, verify)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", kind, err)
 		}
@@ -779,19 +779,31 @@ func writeServiceDBs(ctx context.Context, tx pgx.Tx, s *Snapshot, verify func(ki
 
 // writeServiceDB записывает проверенные версии одного вида (ok — по
 // убыванию версии, не больше двух) под блокировкой строк вида.
-func writeServiceDB(ctx context.Context, tx pgx.Tx, orgID, kind string, ok []serviceDBCandidate) (string, error) {
-	rows, err := tx.Query(ctx, `SELECT slot, version FROM service_dbs WHERE org_id = $1 AND kind = $2 FOR UPDATE`, orgID, kind)
+func writeServiceDB(ctx context.Context, tx pgx.Tx, orgID, kind string, ok []serviceDBCandidate,
+	verify func(kind string, file []byte) (ServiceDBMeta, error)) (string, error) {
+	// Та же блокировка вида, что у загрузки и возврата (servicedb.PGStore.inTx):
+	// FOR UPDATE не блокирует строки, которых ещё нет (5Н2 ревью 5.r1).
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('aisec.service_db:' || $1 || ':' || $2, 0))`,
+		orgID, kind); err != nil {
+		return "", err
+	}
+	rows, err := tx.Query(ctx, `SELECT slot, version, file FROM service_dbs WHERE org_id = $1 AND kind = $2 FOR UPDATE`, orgID, kind)
 	if err != nil {
 		return "", err
 	}
 	installed := map[string]int64{}
+	var curFile []byte
 	if err := forEach(rows, func(r pgx.Rows) error {
 		var slot string
 		var v int64
-		if err := r.Scan(&slot, &v); err != nil {
+		var file []byte
+		if err := r.Scan(&slot, &v, &file); err != nil {
 			return err
 		}
 		installed[slot] = v
+		if slot == slotCurrent {
+			curFile = file
+		}
 		return nil
 	}); err != nil {
 		return "", err
@@ -801,6 +813,19 @@ func writeServiceDB(ctx context.Context, tx pgx.Tx, orgID, kind string, ok []ser
 	switch {
 	case hasCur && uint64(cur) >= top.b.Version: //nolint:gosec // G115: CHECK version BETWEEN 1 AND 2^53-1
 		return fmt.Sprintf("%s: в установке версия %d не ниже версии копии %d — пропущена", kind, cur, top.b.Version), nil
+	case hasCur && !storedValid(verify, kind, cur, curFile):
+		// Как PGStore.Save: текущая установки, не прошедшая проверку, в
+		// предыдущую не уходит — откат должен вести на проверенную базу
+		// (5Н2 ревью 5.r1); предыдущая установки остаётся.
+		if _, err := tx.Exec(ctx, `DELETE FROM service_dbs WHERE org_id = $1 AND kind = $2 AND slot = 'current'`, orgID, kind); err != nil {
+			return "", err
+		}
+		ok = ok[:1]
+		if err := insertServiceDBs(ctx, tx, orgID, kind, ok); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("%s: восстановлена версия %d (текущая), версия установки %d не прошла проверку — удалена", kind,
+			top.b.Version, cur), nil
 	case hasCur:
 		// Как при загрузке: прежняя текущая установки — предыдущей.
 		if _, err := tx.Exec(ctx, `DELETE FROM service_dbs WHERE org_id = $1 AND kind = $2 AND slot = 'previous'`, orgID, kind); err != nil {
@@ -818,14 +843,8 @@ func writeServiceDB(ctx context.Context, tx pgx.Tx, orgID, kind string, ok []ser
 			return "", err
 		}
 	}
-	slots := []string{slotCurrent, slotPrevious}
-	for i, c := range ok[:min(len(ok), 2)] {
-		if _, err := tx.Exec(ctx, `INSERT INTO service_dbs (org_id, kind, slot, version, db_date, records, subkey_serial,
-			fingerprint, file, uploaded_at, uploaded_by) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-			orgID, kind, slots[i], int64(c.meta.Version), c.meta.Date, c.meta.Records, int64(c.meta.SubkeySerial), //nolint:gosec // G115: версия и номер заверения до 2^53-1 (ADR-0027)
-			c.meta.Fingerprint, c.b.File, c.b.UploadedAt, c.b.UploadedBy); err != nil {
-			return "", err
-		}
+	if err := insertServiceDBs(ctx, tx, orgID, kind, ok); err != nil {
+		return "", err
 	}
 	switch {
 	case hasCur:
@@ -834,6 +853,28 @@ func writeServiceDB(ctx context.Context, tx pgx.Tx, orgID, kind string, ok []ser
 		return fmt.Sprintf("%s: восстановлены версии %d (текущая) и %d (предыдущая)", kind, ok[0].b.Version, ok[1].b.Version), nil
 	}
 	return fmt.Sprintf("%s: восстановлена версия %d (текущая)", kind, top.b.Version), nil
+}
+
+// insertServiceDBs записывает проверенные версии копии: первую — текущей,
+// вторую — предыдущей.
+func insertServiceDBs(ctx context.Context, tx pgx.Tx, orgID, kind string, ok []serviceDBCandidate) error {
+	slots := []string{slotCurrent, slotPrevious}
+	for i, c := range ok[:min(len(ok), 2)] {
+		if _, err := tx.Exec(ctx, `INSERT INTO service_dbs (org_id, kind, slot, version, db_date, records, subkey_serial,
+			fingerprint, file, uploaded_at, uploaded_by) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+			orgID, kind, slots[i], int64(c.meta.Version), c.meta.Date, c.meta.Records, int64(c.meta.SubkeySerial), //nolint:gosec // G115: версия и номер заверения до 2^53-1 (ADR-0027)
+			c.meta.Fingerprint, c.b.File, c.b.UploadedAt, c.b.UploadedBy); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// storedValid — сохранённая версия установки проходит ту же проверку, что
+// версии копии, и номер в файле совпадает с номером строки.
+func storedValid(verify func(kind string, file []byte) (ServiceDBMeta, error), kind string, version int64, file []byte) bool {
+	meta, err := verify(kind, file)
+	return err == nil && version >= 0 && meta.Version == uint64(version)
 }
 
 // Слоты служебных баз (servicedb.SlotCurrent, servicedb.SlotPrevious;

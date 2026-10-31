@@ -11,6 +11,7 @@ import (
 
 	"github.com/azuresong-afk/ai_railway/internal/alerting"
 	"github.com/azuresong-afk/ai_railway/internal/audit"
+	"github.com/azuresong-afk/ai_railway/internal/integrity"
 	"github.com/azuresong-afk/ai_railway/internal/store"
 )
 
@@ -121,5 +122,71 @@ func TestBackupRestoreNonEmptySkipsSettingsCheckOnRealDB(t *testing.T) {
 	}
 	if n := dst.count(t, "SELECT count(*) FROM users"); n != 3 {
 		t.Fatalf("пользователей после восстановления: %d", n)
+	}
+}
+
+// 5Н2 ревью 5.r1 этапа 5: при восстановлении служебной базы поверх более
+// старой версии установки её текущая версия уходит в предыдущую, только
+// если проходит проверку (как при загрузке, PGStore.Save); непрошедшая
+// удаляется, и откат не ведёт на непроверенную базу.
+func TestBackupServiceDBsStaleCurrentOnRealDB(t *testing.T) {
+	base := os.Getenv("AISEC_TEST_DATABASE_URL")
+	if base == "" {
+		t.Skip("AISEC_TEST_DATABASE_URL не задан")
+	}
+	if _, testKey, err := integrity.EmbeddedVerifier(standardProvider(t)); err != nil || !testKey {
+		t.Skip("сборка с ключом производителя: тестовые базы она не принимает")
+	}
+	admin, err := store.Open(context.Background(), base, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close()
+	src := newInstallation(t, admin, base, "cli_backup_src_5n2")
+	populate(t, src)
+	v1, err := os.ReadFile("../../testdata/shadowai/catalog-test.aisecdb")
+	if err != nil {
+		t.Fatal(err)
+	}
+	v2 := signTestCatalog(t, 2)
+	insertServiceDB(t, src, "shadow_ai_catalog", "current", 2, v2)
+	dir := t.TempDir()
+	phrase := writePhraseFile(t, testBackupPhrase, 0o400)
+	file := filepath.Join(dir, "config.aisec-backup")
+	var out, errb bytes.Buffer
+	if err := backupCmd([]string{"create", "-keys", src.keys, "-out", file, "-passphrase-file", phrase, "-no-user-hmac-key"},
+		src.dsn, &out, &errb, time.Now()); err != nil {
+		t.Fatalf("create: %v %s", err, errb.String())
+	}
+	broken := bytes.Clone(v1)
+	broken[len(broken)/2] ^= 0x01
+	for _, tc := range []struct {
+		schema   string
+		file     []byte
+		want     string
+		previous int
+	}{
+		{"cli_backup_dst_5n2a", v1, "shadow_ai_catalog: восстановлена версия 2 (текущая), версия установки 1 — предыдущая", 1},
+		{"cli_backup_dst_5n2b", broken, "shadow_ai_catalog: восстановлена версия 2 (текущая), версия установки 1 не прошла проверку — удалена", 0},
+	} {
+		dst := newInstallation(t, admin, base, tc.schema)
+		insertServiceDB(t, dst, "shadow_ai_catalog", "current", 1, tc.file)
+		out.Reset()
+		if err := backupCmd([]string{"restore", "-keys", dst.keys, "-in", file, "-passphrase-file", phrase}, dst.dsn, &out, &errb,
+			time.Now()); err != nil {
+			t.Fatalf("%s: restore: %v %s", tc.schema, err, errb.String())
+		}
+		if !strings.Contains(out.String(), tc.want) {
+			t.Errorf("%s: в выводе нет %q: %s", tc.schema, tc.want, out.String())
+		}
+		if n := dst.count(t, "SELECT count(*) FROM service_dbs WHERE slot = 'current' AND version = 2 AND file = $1", v2); n != 1 {
+			t.Fatalf("%s: текущая версия не из копии", tc.schema)
+		}
+		if n := dst.count(t, "SELECT count(*) FROM service_dbs WHERE slot = 'previous' AND file = $1", v1); n != tc.previous {
+			t.Fatalf("%s: предыдущих версий %d, ожидалось %d", tc.schema, n, tc.previous)
+		}
+		if n := dst.count(t, "SELECT count(*) FROM service_dbs WHERE file = $1", broken); n != 0 {
+			t.Fatalf("%s: непроверенная версия установки осталась", tc.schema)
+		}
 	}
 }
