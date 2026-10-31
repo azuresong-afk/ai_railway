@@ -751,6 +751,44 @@ func (s *Snapshot) resolve() (*Snapshot, []string) {
 	return &r, lines
 }
 
+// withReleaseBuiltins сверяет встроенные правила оповещений копии с
+// правилами этого выпуска (5В1 ревью 5.r1 этапа 5): правило, которого в
+// выпуске нет, пропускается строкой отчёта; у системных правил и правил
+// безопасности из копии остаются только ID, получатели, версия и отметки
+// изменения, остальные поля — значения выпуска: через API у них меняются
+// только получатели, и копия не может их выключить или ослабить. Остальные
+// встроенные правила переносятся как в копии (проверены правилами API).
+// Исходный снимок не меняется.
+func (s *Snapshot) withReleaseBuiltins(builtin func(key string) (BuiltinAlertRule, bool)) (*Snapshot, []string) {
+	r := *s
+	var lines []string
+	r.AlertRules = make([]AlertRule, 0, len(s.AlertRules))
+	for _, a := range s.AlertRules {
+		if a.BuiltinKey == nil {
+			r.AlertRules = append(r.AlertRules, a)
+			continue
+		}
+		var b BuiltinAlertRule
+		ok := false
+		if builtin != nil {
+			b, ok = builtin(*a.BuiltinKey)
+		}
+		if !ok {
+			lines = append(lines, fmt.Sprintf("встроенное правило оповещений «%s» (%s): в этом выпуске его нет", a.Name,
+				truncate(*a.BuiltinKey)))
+			continue
+		}
+		if b.Locked {
+			x := b.Rule
+			x.ID, x.BuiltinKey, x.Recipients = a.ID, a.BuiltinKey, a.Recipients
+			x.Version, x.CreatedAt, x.CreatedBy, x.UpdatedAt, x.UpdatedBy = a.Version, a.CreatedAt, a.CreatedBy, a.UpdatedAt, a.UpdatedBy
+			a = x
+		}
+		r.AlertRules = append(r.AlertRules, a)
+	}
+	return &r, lines
+}
+
 // withoutSettings — копия без настроек версии 2, которые переносятся только
 // в пустую установку: в непустую они не пишутся, и строк о пропуске по ним
 // в отчёте быть не должно.

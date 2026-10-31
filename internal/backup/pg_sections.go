@@ -546,7 +546,7 @@ func writeAgentTools(ctx context.Context, tx pgx.Tx, s *Snapshot) error {
 // writeAlertRules записывает правила оповещений. Правило администратора
 // добавляется. Встроенное — настройка: только в пустую установку; если
 // сервер его уже создал (EnsureBuiltins), строка обновляется значениями
-// копии и сохраняет свой ID.
+// копии, сверенными с выпуском (withReleaseBuiltins), и сохраняет свой ID.
 func writeAlertRules(ctx context.Context, tx pgx.Tx, s *Snapshot, replaceSettings bool) error {
 	for _, r := range s.AlertRules {
 		if r.BuiltinKey != nil {

@@ -447,7 +447,7 @@ func restoreTx(ctx context.Context, db *store.DB, l *audit.Log, prepared *backup
 	// установку; их новые значения — в записи аудита.
 	replaceSettings := st.Empty()
 	res, err := backup.Restore(ctx, tx, prepared, backup.RestoreOptions{ReplaceSettings: replaceSettings,
-		KeepAPITokens: opts.keepTokens, Now: opts.now, VerifyServiceDB: opts.verifyServiceDB})
+		KeepAPITokens: opts.keepTokens, Now: opts.now, VerifyServiceDB: opts.verifyServiceDB, BuiltinAlertRule: builtinAlertRule})
 	if err != nil {
 		return backup.RestoreResult{}, err
 	}

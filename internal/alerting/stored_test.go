@@ -13,9 +13,11 @@ func storedInput(r Rule) RuleInput {
 }
 
 // Каждое встроенное правило этого выпуска проходит проверку сохранённого
-// правила; неизвестный ключ, чужой вид, изменённое условие правила
-// безопасности и поле правила «новое» — отказ (остаток 5.8, остатки волны A
-// этапа 5).
+// правила; чужой вид, получатели не по правилам API и поле правила «новое»
+// — отказ (остаток 5.8, остатки волны A этапа 5). Неизвестный ключ —
+// ErrUnknownBuiltin, а не отказ; у правила безопасности поля, кроме
+// получателей, не проверяются: восстановление берёт их у выпуска (5В1
+// ревью 5.r1).
 func TestCheckStoredRule(t *testing.T) {
 	var locked, newTool Rule
 	for _, r := range builtinRules() {
@@ -48,6 +50,13 @@ func TestCheckStoredRule(t *testing.T) {
 	}
 	changed := locked
 	changed.Condition.Filter = `action = "allow"`
+	changed.Enabled, changed.Severity, changed.SuppressMinutes = false, "info", MaxSuppressMinutes
+	if err := CheckStoredRule(locked.BuiltinKey, storedInput(changed)); err != nil {
+		t.Fatalf("поля правила безопасности из копии: %v", err)
+	}
+	if err := CheckStoredRule("threshold.removed", storedInput(locked)); !errors.Is(err, ErrUnknownBuiltin) {
+		t.Fatalf("неизвестный ключ: %v", err)
+	}
 	field := newTool
 	field.Condition.Field = "model"
 	field.GroupBy = []string{"model"}
@@ -55,9 +64,7 @@ func TestCheckStoredRule(t *testing.T) {
 		name, key, want string
 		in              RuleInput
 	}{
-		{"неизвестный ключ", "threshold.removed", "builtin_key", storedInput(locked)},
 		{"чужой вид", locked.BuiltinKey, "kind", func() RuleInput { in := storedInput(locked); in.Kind = KindThreshold; return in }()},
-		{"условие правила безопасности", locked.BuiltinKey, "condition", storedInput(changed)},
 		{"получатель не роль", locked.BuiltinKey, "recipients.roles",
 			func() RuleInput {
 				in := storedInput(locked)
@@ -71,6 +78,24 @@ func TestCheckStoredRule(t *testing.T) {
 		var ie *InputError
 		if !errors.As(err, &ie) || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s: %v", tc.name, err)
+		}
+	}
+}
+
+// StoredBuiltin отдаёт копию встроенного правила: правка результата не
+// меняет правила выпуска; пустой и неизвестный ключ — нет (5В1 ревью 5.r1).
+func TestStoredBuiltin(t *testing.T) {
+	r, ok := StoredBuiltin(BuiltinRecipientsChanged)
+	if !ok || r.Kind != KindSecurity || !r.Enabled {
+		t.Fatalf("правило безопасности: %+v %v", r, ok)
+	}
+	r.Recipients.Roles = append(r.Recipients.Roles, "x")
+	if again, _ := StoredBuiltin(BuiltinRecipientsChanged); len(again.Recipients.Roles) != 0 {
+		t.Fatal("правка результата изменила правило выпуска")
+	}
+	for _, key := range []string{"", "threshold.removed"} {
+		if _, ok := StoredBuiltin(key); ok {
+			t.Errorf("ключ %q найден", key)
 		}
 	}
 }

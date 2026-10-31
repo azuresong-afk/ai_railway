@@ -142,7 +142,9 @@ func checkSnapshot(p aisecCrypto.Provider, arch *backup.Archive, keepTokens bool
 		}
 	}
 	for _, r := range s.AlertRules {
-		if err := checkAlertRule(r); err != nil {
+		// Снятое в этом выпуске встроенное правило восстановление пропускает
+		// строкой отчёта (5В1 ревью 5.r1).
+		if err := checkAlertRule(r); err != nil && !errors.Is(err, alerting.ErrUnknownBuiltin) {
 			add("правило оповещений «"+r.Name+"»", err)
 		}
 	}
@@ -281,6 +283,26 @@ func checkAlertRule(r backup.AlertRule) error {
 	}
 	return alerting.CheckStoredRule(key, alerting.RuleInput{Kind: r.Kind, Name: r.Name, Description: r.Description, Enabled: &enabled,
 		Severity: r.Severity, Condition: c, GroupBy: r.GroupBy, SuppressMinutes: &suppress, Recipients: rc})
+}
+
+// builtinAlertRule — встроенное правило оповещений этого выпуска для
+// восстановления (backup.RestoreOptions.BuiltinAlertRule, 5В1 ревью 5.r1).
+func builtinAlertRule(key string) (backup.BuiltinAlertRule, bool) {
+	r, ok := alerting.StoredBuiltin(key)
+	if !ok {
+		return backup.BuiltinAlertRule{}, false
+	}
+	cond, err := json.Marshal(r.Condition)
+	if err != nil {
+		return backup.BuiltinAlertRule{}, false
+	}
+	group := r.GroupBy
+	if group == nil {
+		group = []string{}
+	}
+	return backup.BuiltinAlertRule{Locked: alerting.Locked(r.Kind), Rule: backup.AlertRule{Kind: r.Kind, Name: r.Name,
+		Description: r.Description, Enabled: r.Enabled, Severity: r.Severity, Condition: cond, GroupBy: group,
+		SuppressMinutes: r.SuppressMinutes, GroupMinutes: r.GroupMinutes}}, true
 }
 
 // currentSpec — текущая версия политики, разобранная строгой схемой.
