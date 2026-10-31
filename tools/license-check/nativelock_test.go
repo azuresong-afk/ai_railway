@@ -90,6 +90,32 @@ func TestNativeLockVersionMismatch(t *testing.T) {
 	}
 }
 
+// 5Н7 ревью 5.r1 этапа 5: версия реестра — окончание имени архива без
+// расширения, а не подстрока: 33 и 3 не соответствуют protobuf-33.6.tar.gz,
+// архив неизвестного вида — тоже нет.
+func TestVersionMatchesArchiveSuffix(t *testing.T) {
+	url := func(name string) lockEntry {
+		return lockEntry{kind: "url", source: "https://example.test/v/" + name}
+	}
+	for _, tc := range []struct {
+		archive, version string
+		want             bool
+	}{
+		{"protobuf-33.6.tar.gz", "33.6", true},
+		{"protobuf-33.6.zip", "33.6", true},
+		{"protobuf-33.6.tar.gz", "33", false},
+		{"x-3.1.tar.gz", "3", false},
+		{"protobuf-133.6.tar.gz", "33.6", false},
+		{"protobuf-33.6.tar.gz", "6", false},
+		{"protobuf-33.6.bin", "33.6", false},
+		{"protobuf-33.6.tar.gz", "", false},
+	} {
+		if got := versionMatches(url(tc.archive), tc.version); got != tc.want {
+			t.Errorf("%s и %q: %v, ожидалось %v", tc.archive, tc.version, got, tc.want)
+		}
+	}
+}
+
 // Строка без записи реестра — провал; запись со ссылкой на deps.lock без
 // строки — тоже.
 func TestNativeLockMissingRecord(t *testing.T) {
