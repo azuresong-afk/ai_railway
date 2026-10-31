@@ -7994,7 +7994,9 @@ export interface paths {
          *     своего приложения; чужое приложение — 404, другой вид — 403. Каждая выгрузка пишет
          *     `data.export` до выдачи данных (DM-41); без записи отчёт не выдаётся (503). Одновременно — одна
          *     выгрузка на пользователя, сверх предела 429. Без `from` и `to` — последние 30 суток по сегодняшний
-         *     день; одна дата без другой — 400.
+         *     день; одна дата без другой — 400. `applies` — только для `compliance`: в отчёт и процент входят
+         *     пункты выбранной применимости (у коммерческого оператора пункты ГИС и КИИ не учитываются); без
+         *     параметра — все пункты базы; с другим видом — 400.
          */
         get: {
             parameters: {
@@ -8008,6 +8010,8 @@ export interface paths {
                     delimiter?: "semicolon" | "comma";
                     /** @description Slug приложения */
                     app?: string;
+                    /** @description Применимость требований для отчёта `compliance`; без параметра — все пункты */
+                    applies?: "gis" | "kii" | "ispdn" | "commercial";
                 };
                 header?: never;
                 path: {
@@ -14358,6 +14362,11 @@ export interface components {
             at: string;
             /** @enum {string} */
             format: "html" | "xlsx";
+            /**
+             * @description Применимость требований — только для `report=compliance` (иначе 400); нет поля или пусто — все пункты базы
+             * @enum {string}
+             */
+            applies?: "" | "gis" | "kii" | "ispdn" | "commercial";
             /** Format: uuid */
             channel_id: string;
             /** @default true */
@@ -14384,6 +14393,11 @@ export interface components {
             at: string;
             /** @enum {string} */
             format: "html" | "xlsx";
+            /**
+             * @description Применимость отчёта соответствия; нет поля — все пункты
+             * @enum {string}
+             */
+            applies?: "gis" | "kii" | "ispdn" | "commercial";
             /** Format: uuid */
             channel_id: string;
             enabled: boolean;

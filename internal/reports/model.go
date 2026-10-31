@@ -3,12 +3,15 @@ package reports
 import (
 	"errors"
 	"fmt"
-	"github.com/azuresong-afk/ai_railway/internal/events"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/azuresong-afk/ai_railway/internal/compliance"
+	"github.com/azuresong-afk/ai_railway/internal/events"
 )
 
 // Виды отчётов (ТЗ 5.8).
@@ -236,9 +239,18 @@ type Params struct {
 	Period    Period
 	// App — slug приложения; пусто — все приложения.
 	App string
+	// Applies — применимость требований в отчёте соответствия (gis, kii,
+	// ispdn, commercial): в отчёт и процент входят только пункты, которые к
+	// ней относятся. Пусто — все пункты базы (задача 5.12 этапа 5).
+	Applies string
 }
 
-// ParseParams разбирает параметры GET /reports/{kind}: format, from, to, app.
+// ValidApplies — применимость допустима для отчёта соответствия; пусто —
+// все пункты.
+func ValidApplies(a string) bool { return a == "" || slices.Contains(compliance.Applicabilities(), a) }
+
+// ParseParams разбирает параметры GET /reports/{kind}: format, from, to,
+// app, applies.
 // Неизвестные и повторные параметры отклоняются.
 func ParseParams(kind string, q map[string][]string, loc *time.Location, now time.Time) (Params, error) {
 	if !ValidKind(kind) {
@@ -259,7 +271,7 @@ func ParseParams(kind string, q map[string][]string, loc *time.Location, now tim
 	}
 	for k := range q {
 		switch k {
-		case "format", "delimiter", "from", "to", "app":
+		case "format", "delimiter", "from", "to", "app", "applies":
 		default:
 			return Params{}, fmt.Errorf("отчёты: неизвестный параметр %q", truncate(k, 32))
 		}
@@ -305,6 +317,15 @@ func ParseParams(kind string, q map[string][]string, loc *time.Location, now tim
 	// инцидентам» считаются по всей установке (3Н47 ревью 3.r4).
 	if p.App != "" && p.Kind != KindSummary {
 		return p, errors.New("отчёты: приложение задаётся только для сводного отчёта")
+	}
+	if p.Applies, err = get("applies"); err != nil {
+		return p, err
+	}
+	if !ValidApplies(p.Applies) {
+		return p, errors.New("отчёты: применимость — gis, kii, ispdn или commercial")
+	}
+	if p.Applies != "" && p.Kind != KindCompliance {
+		return p, errors.New("отчёты: применимость задаётся только для отчёта соответствия")
 	}
 	// Без обеих дат — последние 30 суток по сегодняшний день (3Н46 ревью
 	// 3.r4: так обещает консоль); одна дата без другой — ошибка.

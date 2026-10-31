@@ -148,6 +148,8 @@ func TestScheduleValidate(t *testing.T) {
 		"at":         func(i *ScheduleInput) { i.At = "24:00" },
 		"format":     func(i *ScheduleInput) { i.Format = FormatCSV },
 		"channel_id": func(i *ScheduleInput) { i.ChannelID = "x" },
+		// Применимость — только у отчёта соответствия и из набора (5.12).
+		"applies": func(i *ScheduleInput) { i.Applies = "gis" },
 	}
 	for field, mut := range cases {
 		in := ok
@@ -157,6 +159,15 @@ func TestScheduleValidate(t *testing.T) {
 		if !errors.As(err, &ie) || ie.Fields[field] == "" {
 			t.Errorf("%s: %v", field, err)
 		}
+	}
+	in := ok
+	in.Report, in.Applies = KindCompliance, "commercial"
+	if s, err := in.Validate(); err != nil || s.Applies != "commercial" {
+		t.Fatalf("применимость отчёта соответствия: %+v %v", s, err)
+	}
+	in.Applies = "private"
+	if _, err := in.Validate(); err == nil {
+		t.Error("неизвестная применимость принята")
 	}
 	// День месяца только 1–28; лишние поля чужой периодичности отклоняются.
 	for _, in := range []ScheduleInput{

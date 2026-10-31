@@ -113,6 +113,15 @@ func TestInventoryViaAPI(t *testing.T) {
 	if w := e.call(sys, "PATCH", path, `{"title":"Кредиты"}`, true); w.Code != http.StatusOK || len(mem.Records) != n {
 		t.Fatalf("изменение без отличий: %d, записей %d → %d", w.Code, n, len(mem.Records))
 	}
+	// Карточка без файлов — с пустым массивом files (поле обязательно по схеме).
+	w = e.call(sys, "POST", "/api/v1/inventory/models", `{"kind":"customer","name":"без-файлов"}`, true)
+	if w.Code != http.StatusCreated || !strings.Contains(w.Body.String(), `"files":[]`) {
+		t.Fatalf("карточка без файлов: %d %s", w.Code, w.Body)
+	}
+	empty := decode[InventoryModelCard](t, w.Body.Bytes())
+	if w := e.call(sys, "DELETE", "/api/v1/inventory/models/"+empty.ID, "", true); w.Code != http.StatusNoContent {
+		t.Fatalf("удаление: %d", w.Code)
+	}
 	mustProblem(t, e.call(sys, "PATCH", path, `{"kind":"provider"}`, true), http.StatusBadRequest, CodeInvalidRequest)
 	mustProblem(t, e.call(sys, "PATCH", path, `{"name":"другое"}`, true), http.StatusBadRequest, CodeInvalidRequest)
 	mustProblem(t, e.call(sys, "GET", "/api/v1/inventory/models/not-a-uuid", "", false), http.StatusNotFound, CodeNotFound)
@@ -138,7 +147,7 @@ func TestInventoryViaAPI(t *testing.T) {
 		t.Fatalf("сводка: %+v", ov)
 	}
 	page := decode[PageResponse[InventoryModelView]](t, e.call(sys, "GET", "/api/v1/inventory/models?limit=1", "", false).Body.Bytes())
-	if len(page.Items) != 1 || page.NextCursor == "" || page.Items[0].Files != nil {
+	if len(page.Items) != 1 || page.NextCursor == "" {
 		t.Fatalf("первая страница: %+v", page)
 	}
 	page = decode[PageResponse[InventoryModelView]](t, e.call(sys, "GET", "/api/v1/inventory/models?limit=1&cursor="+page.NextCursor, "", false).Body.Bytes())

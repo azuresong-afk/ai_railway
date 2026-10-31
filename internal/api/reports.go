@@ -267,6 +267,8 @@ type ReportScheduleView struct {
 	Day       int    `json:"day,omitempty"`
 	At        string `json:"at"`
 	Format    string `json:"format"`
+	// Applies — применимость отчёта соответствия; нет поля — все пункты.
+	Applies   string `json:"applies,omitempty"`
 	ChannelID string `json:"channel_id"`
 	Enabled   bool   `json:"enabled"`
 	// RecipientUserIDs — получатели-пользователи: адрес берётся из учётной записи.
@@ -282,7 +284,7 @@ type ReportScheduleView struct {
 
 func reportScheduleView(s reports.Schedule) ReportScheduleView {
 	return ReportScheduleView{ID: s.ID, Name: s.Name, Report: s.Report, Frequency: s.Frequency, Weekday: s.Weekday, Day: s.Day,
-		At: s.At, Format: s.Format, ChannelID: s.ChannelID, Enabled: s.Enabled, RecipientUserIDs: nonNilIDs(s.RecipientUserIDs), NextRunAt: s.NextRunAt.UTC(), LastRunAt: optTime(s.LastRunAt),
+		At: s.At, Format: s.Format, Applies: s.Applies, ChannelID: s.ChannelID, Enabled: s.Enabled, RecipientUserIDs: nonNilIDs(s.RecipientUserIDs), NextRunAt: s.NextRunAt.UTC(), LastRunAt: optTime(s.LastRunAt),
 		Version: s.Version, CreatedAt: s.CreatedAt.UTC(), CreatedBy: s.CreatedBy, UpdatedAt: s.UpdatedAt.UTC(), UpdatedBy: s.UpdatedBy}
 }
 

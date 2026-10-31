@@ -285,7 +285,7 @@ func scheduleScope(kind string, by Scope) Scope {
 
 func view(sc Schedule) map[string]any {
 	return map[string]any{"name": sc.Name, "report": sc.Report, "frequency": sc.Frequency, "weekday": sc.Weekday, "day": sc.Day,
-		"at": sc.At, "format": sc.Format, "channel_id": sc.ChannelID, "enabled": sc.Enabled,
+		"at": sc.At, "format": sc.Format, "applies": sc.Applies, "channel_id": sc.ChannelID, "enabled": sc.Enabled,
 		"recipient_user_ids": sc.RecipientUserIDs,
 		"scope": map[string]bool{"incidents": sc.Scope.Incidents, "alerts": sc.Scope.Alerts, "budgets": sc.Scope.Budgets,
 			"compliance": sc.Scope.Compliance}}
@@ -412,7 +412,7 @@ func (s *Service) UpdateSchedule(ctx context.Context, by By, id string, in Sched
 		}
 		n := old
 		n.Name, n.Report, n.Frequency, n.Weekday, n.Day, n.At = sc.Name, sc.Report, sc.Frequency, sc.Weekday, sc.Day, sc.At
-		n.Format, n.ChannelID, n.Enabled, n.Scope = sc.Format, sc.ChannelID, sc.Enabled, scope
+		n.Format, n.Applies, n.ChannelID, n.Enabled, n.Scope = sc.Format, sc.Applies, sc.ChannelID, sc.Enabled, scope
 		n.RecipientUserIDs = sc.RecipientUserIDs
 		n.Version, n.UpdatedAt, n.UpdatedBy = old.Version+1, s.now(), by.ref()
 		next, err := n.Next(s.now(), loc)
@@ -593,7 +593,7 @@ func (s *Service) send(ctx context.Context, r *Run, sc Schedule, loc *time.Locat
 	}
 	bctx, cancel := context.WithTimeout(ctx, buildTimeout)
 	defer cancel()
-	doc, err := s.o.Builder.Build(bctx, Params{Kind: sc.Report, Format: sc.Format, Period: per}, sc.Scope)
+	doc, err := s.o.Builder.Build(bctx, Params{Kind: sc.Report, Format: sc.Format, Period: per, Applies: sc.Applies}, sc.Scope)
 	if err != nil {
 		s.o.Logger.Error("рассылка отчётов: отчёт не построен", "class", "reports", "schedule", sc.ID, "error", err)
 		return ErrCodeBuild

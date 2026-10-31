@@ -123,6 +123,41 @@ linters:
           deny:
             - pkg: "github.com/yalue/onnxruntime_go"
               desc: "ONNX Runtime — только в cmd/aisec-ml (ADR-0024)"
+        media-analyzer:
+          # Анализатор изображений (ADR-0032, раздел 10): разбор, декодирование,
+          # очередь и кэш — только в процессе aisec-media; шлюзу доступен лишь
+          # протокол кадров internal/media/wire. «$» — ровно пакет internal/media,
+          # «/» — его подпакеты, кроме разрешённого wire.
+          list-mode: lax
+          files:
+            - "$all"
+            - "!**/cmd/aisec-media/**"
+            - "!**/internal/media/**"
+          allow:
+            - "github.com/azuresong-afk/ai_railway/internal/media/wire"
+          deny:
+            - pkg: "github.com/azuresong-afk/ai_railway/internal/media$"
+              desc: "анализатор изображений — только в cmd/aisec-media; шлюзу — internal/media/wire (ADR-0032)"
+            - pkg: "github.com/azuresong-afk/ai_railway/internal/media/"
+              desc: "анализатор изображений — только в cmd/aisec-media; шлюзу — internal/media/wire (ADR-0032)"
+        media-decoders:
+          # Декодеры недоверенных изображений — только в internal/media, то есть
+          # в изолированном процессе aisec-media (CLAUDE.md «Медиа», ТЗ 5.1, ЗИ.7):
+          # шлюз и сервер не могут слинковать декодер даже случайно. Протокол
+          # internal/media/wire декодеров тоже не содержит.
+          list-mode: lax
+          files:
+            - "$all"
+            - "!**/internal/media/*.go"
+          deny:
+            - pkg: "image/png"
+              desc: "декодер изображений — только в internal/media (ADR-0032, CLAUDE.md «Медиа»)"
+            - pkg: "image/jpeg"
+              desc: "декодер изображений — только в internal/media (ADR-0032, CLAUDE.md «Медиа»)"
+            - pkg: "image/gif"
+              desc: "декодер изображений — только в internal/media (ADR-0032, CLAUDE.md «Медиа»)"
+            - pkg: "golang.org/x/image"
+              desc: "декодер изображений — только в internal/media (ADR-0032, CLAUDE.md «Медиа»)"
         transitive-only:
           # Модули, которые в vendor только как зависимости go-ldap: свой UUID
           # продукта — в internal/crypto (ADR-0001), NTLM и MD4 не используются
