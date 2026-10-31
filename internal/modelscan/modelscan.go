@@ -43,6 +43,7 @@ const (
 	FormatGGUF            Format = "gguf"
 	FormatONNX            Format = "onnx"
 	FormatTokenizerConfig Format = "tokenizer_config"
+	FormatChatTemplate    Format = "chat_template"
 	FormatJSON            Format = "json"
 	FormatText            Format = "text"
 	FormatUnknown         Format = "unknown"
@@ -287,6 +288,19 @@ func (s *Scanner) ScanReader(r io.ReaderAt, size int64, name string) FileReport 
 		return fr
 	}
 	fr.Format = detect(head, size)
+	// Имя отличает конфигурацию токенизатора от прочего JSON; содержимое
+	// другого формата (pickle и т. п.) проверяется по своему формату.
+	textual := fr.Format == FormatJSON || fr.Format == FormatText || fr.Format == FormatUnknown && isJSON(head)
+	switch {
+	case (name == nameTokenizerConfig || name == nameChatTemplateJSON) && textual:
+		fr.Format = FormatTokenizerConfig
+		s.scanTokenizerConfig(r, size, name, &fr)
+		return fr
+	case name == nameChatTemplateJinja && textual:
+		fr.Format = FormatChatTemplate
+		s.scanTokenizerConfig(r, size, name, &fr)
+		return fr
+	}
 	switch fr.Format {
 	case FormatZip:
 		s.scanZip(r, size, &fr)
@@ -296,6 +310,10 @@ func (s *Scanner) ScanReader(r io.ReaderAt, size int64, name string) FileReport 
 		s.scanNumpy(io.NewSectionReader(r, 0, size), size, &fr, "")
 	case FormatSafetensors:
 		s.scanSafetensors(r, size, &fr)
+	case FormatGGUF:
+		s.scanGGUF(r, size, &fr)
+	case FormatONNX:
+		s.scanONNX(r, size, &fr)
 	case FormatCompressed:
 		scanCompressed(head, &fr)
 	case FormatUnknown:
@@ -445,12 +463,18 @@ func detect(head []byte, size int64) Format {
 		return FormatPickle
 	case hasPrefix(head, "\x93NUMPY"):
 		return FormatNumpy
+	case hasPrefix(head, "GGUF"):
+		return FormatGGUF
 	case isSafetensors(head, size):
 		return FormatSafetensors
 	case compressionName(head) != "":
 		return FormatCompressed
+	case isONNX(head):
+		return FormatONNX
 	case looksLikePickle(head):
 		return FormatPickle
+	case isJSON(head) && isText(head):
+		return FormatJSON
 	case isText(head):
 		return FormatText
 	}
