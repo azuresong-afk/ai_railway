@@ -44,6 +44,9 @@ type Schedule struct {
 	// At — время суток «ЧЧ:ММ» в часовом поясе установки.
 	At     string
 	Format string // html или xlsx
+	// Applies — применимость требований для отчёта соответствия (задача
+	// 5.12 этапа 5); пусто — все пункты базы. У других видов всегда пусто.
+	Applies string
 	// ChannelID — почтовый канал: сервер SMTP и получатели.
 	ChannelID string
 	Enabled   bool
@@ -74,6 +77,9 @@ type ScheduleInput struct {
 	Day       int    `json:"day"`
 	At        string `json:"at"`
 	Format    string `json:"format"`
+	// Applies — применимость для отчёта соответствия: gis, kii, ispdn,
+	// commercial; пусто — все пункты.
+	Applies   string `json:"applies"`
 	ChannelID string `json:"channel_id"`
 	Enabled   *bool  `json:"enabled"`
 	// RecipientUserIDs — пользователи консоли, которым уходит отчёт
@@ -104,7 +110,13 @@ func (in ScheduleInput) Validate() (Schedule, error) {
 	if !ValidKind(in.Report) {
 		bad["report"] = "Одно из значений: summary, incidents, pilot."
 	}
-	s := Schedule{Name: name, Report: in.Report, Frequency: in.Frequency, At: in.At, Format: in.Format, ChannelID: in.ChannelID}
+	switch {
+	case !ValidApplies(in.Applies):
+		bad["applies"] = "Одно из значений: gis, kii, ispdn, commercial — или пусто."
+	case in.Applies != "" && in.Report != KindCompliance:
+		bad["applies"] = "Применимость задаётся только для отчёта соответствия."
+	}
+	s := Schedule{Name: name, Report: in.Report, Frequency: in.Frequency, At: in.At, Format: in.Format, Applies: in.Applies, ChannelID: in.ChannelID}
 	switch in.Frequency {
 	case FreqDaily:
 		if in.Weekday != 0 || in.Day != 0 {

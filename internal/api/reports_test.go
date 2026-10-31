@@ -173,6 +173,13 @@ func TestReportsViaAPI(t *testing.T) {
 	mustProblem(t, e.call(e.mustLogin(t, "owner"), "GET", reportPath("compliance", "", ""), "", false), 403, CodeForbidden)
 	mustProblem(t, e.call(e.mustLogin(t, "analyst"), "GET", reportPath("compliance", "csv", ""), "", false), 403, CodeForbidden)
 	mustProblem(t, e.call(session{}, "GET", reportPath("compliance", "", ""), "", false), 401, CodeUnauthorized)
+	// Применимость (задача 5.12 этапа 5): только у отчёта соответствия.
+	if w := e.call(e.mustLogin(t, "auditor"), "GET", reportPath("compliance", "html", "")+"&applies=commercial", "", false); w.Code != 200 ||
+		!strings.Contains(w.Body.String(), "Коммерческий оператор") {
+		t.Fatalf("соответствие с применимостью: %d", w.Code)
+	}
+	mustProblem(t, e.call(e.mustLogin(t, "auditor"), "GET", reportPath("summary", "", "")+"&applies=commercial", "", false), 400, CodeInvalidRequest)
+	mustProblem(t, e.call(e.mustLogin(t, "auditor"), "GET", reportPath("compliance", "", "")+"&applies=x", "", false), 400, CodeInvalidRequest)
 }
 
 // УПД.8: владелец приложения видит только сводный отчёт по своему

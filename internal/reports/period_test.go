@@ -116,11 +116,28 @@ func TestParseParams(t *testing.T) {
 	if _, err := ParseParams("other", q("from=2026-10-01&to=2026-10-02"), msk, now2026); err == nil {
 		t.Error("неизвестный вид отчёта принят")
 	}
+	// Применимость — только у отчёта соответствия (задача 5.12 этапа 5).
+	if p, err = ParseParams(KindCompliance, q("applies=commercial"), msk, now2026); err != nil || p.Applies != "commercial" {
+		t.Fatalf("применимость: %+v %v", p, err)
+	}
+	if p, err = ParseParams(KindCompliance, q(""), msk, now2026); err != nil || p.Applies != "" {
+		t.Fatalf("без применимости: %+v %v", p, err)
+	}
+	for kind, bad := range map[string]string{KindCompliance: "applies=private", KindSummary: "applies=gis", KindPilot: "applies=kii",
+		"": "applies=commercial&applies=gis"} {
+		if kind == "" {
+			kind = KindCompliance
+		}
+		if _, err := ParseParams(kind, q(bad), msk, now2026); err == nil {
+			t.Errorf("%s: принято %q", kind, bad)
+		}
+	}
 }
 
 func FuzzParseParams(f *testing.F) {
 	f.Add("summary", "from", "2026-10-01", "to", "2026-10-31", "html")
 	f.Add("pilot", "app", "x", "format", "\x00", "csv")
+	f.Add("compliance", "applies", "commercial", "applies", "gis", "html")
 	f.Fuzz(func(t *testing.T, kind, k1, v1, k2, v2, format string) {
 		loc := time.UTC
 		q := map[string][]string{k1: {v1}, k2: {v2}, "format": {format}}
@@ -136,6 +153,9 @@ func FuzzParseParams(f *testing.F) {
 		}
 		if p.App != "" && !ValidSlug(p.App) {
 			t.Fatalf("приложение %q", p.App)
+		}
+		if !ValidApplies(p.Applies) || p.Applies != "" && p.Kind != KindCompliance {
+			t.Fatalf("применимость %q у %s", p.Applies, p.Kind)
 		}
 	})
 }
