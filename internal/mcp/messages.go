@@ -309,6 +309,15 @@ func CheckMeta(params *argschema.Value) error {
 	return nil
 }
 
+// MaxServerInfoField — предел длины name, title и version в serverInfo
+// результата initialize и server/discover (5Н6 ревью 5.r1 этапа 5).
+const MaxServerInfoField = 256
+
+// serverInfoKeys — поля serverInfo, которые уходят клиенту: description,
+// icons, websiteUrl и прочее — текст и внешние ссылки сервера, которых
+// проверка описаний не видит (как icons инструментов, List.Rebuild).
+var serverInfoKeys = []string{"name", "title", "version"}
+
 // handshakeKeys — поля верхнего уровня результата initialize (2025-11-25)
 // и server/discover (2026-07-28) по спецификации.
 var handshakeKeys = map[string][]string{
@@ -321,7 +330,10 @@ var handshakeKeys = map[string][]string{
 // — их не видела проверка описаний (ревью 4.r4, задача 5.10 этапа 5).
 // Типы: protocolVersion и instructions — строки, capabilities и serverInfo
 // — объекты, supportedVersions — массив строк, resultType — complete.
-// Неверный тип — ошибка: instructions другого типа обошли бы проверку.
+// Неверный тип — ошибка: instructions другого типа обошли бы проверку. В
+// serverInfo остаются только name, title и version — строки до
+// MaxServerInfoField байт (5Н6 ревью 5.r1 этапа 5); title проверяет
+// вызывающий, как instructions (ServerTitle).
 func HandshakeResult(method string, result *argschema.Value) error {
 	keys, ok := handshakeKeys[method]
 	if !ok {
@@ -337,6 +349,14 @@ func HandshakeResult(method string, result *argschema.Value) error {
 	for _, k := range []string{"capabilities", "serverInfo"} {
 		if v, ok := result.Get(k); ok && v.Kind != argschema.Object {
 			return bad(k + " — объект")
+		}
+	}
+	if si, ok := result.Get("serverInfo"); ok {
+		Keep(si, serverInfoKeys...)
+		for i, k := range si.Keys {
+			if v := si.Vals[i]; v.Kind != argschema.String || len(v.Str) > MaxServerInfoField {
+				return bad(fmt.Sprintf("serverInfo.%s — строка до %d байт", k, MaxServerInfoField))
+			}
 		}
 	}
 	if v, ok := result.Get("supportedVersions"); ok {
@@ -717,6 +737,22 @@ func ProgressNotification(token argschema.Value, progress int64, message string)
 	Set(&p, "progress", Int(progress))
 	Set(&p, "message", String(message))
 	return &Message{Kind: KindNotification, Method: "notifications/progress", Params: &p}
+}
+
+// ServerTitle — serverInfo.title результата initialize или server/discover
+// (после HandshakeResult — строка): клиент показывает его человеку и
+// агенту, поэтому он проходит встроенную проверку описаний, как
+// instructions (5Н6 ревью 5.r1 этапа 5).
+func ServerTitle(result *argschema.Value) (*argschema.Value, bool) {
+	si, ok := GetObject(result, "serverInfo")
+	if !ok {
+		return nil, false
+	}
+	v, ok := si.Get("title")
+	if !ok || v.Kind != argschema.String {
+		return nil, false
+	}
+	return v, true
 }
 
 // Instructions — поле instructions результата initialize (2025-11-25) или

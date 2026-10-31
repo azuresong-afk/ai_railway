@@ -143,6 +143,7 @@ func FuzzHandshakeResult(f *testing.F) {
 		`{"supportedVersions":["2026-07-28"],"capabilities":{},"serverInfo":{"name":"s"},"resultType":"complete","x":1}`,
 		`{"instructions":{"text":"i"}}`,
 		`{"supportedVersions":[1,"a"],"resultType":"input_required"}`,
+		`{"serverInfo":{"name":"s","title":"t","version":"1","icons":[],"websiteUrl":"https://x.test/","description":"d"}}`,
 	} {
 		f.Add([]byte(s), false)
 		f.Add([]byte(s), true)
@@ -167,6 +168,14 @@ func FuzzHandshakeResult(f *testing.F) {
 		}
 		if v, ok := r.Get("instructions"); ok && v.Kind != argschema.String {
 			t.Fatal("instructions не строка")
+		}
+		// 5Н6 ревью 5.r1: в serverInfo — только name, title и version, строки.
+		if si, ok := GetObject(&r, "serverInfo"); ok {
+			for i, k := range si.Keys {
+				if !slices.Contains(serverInfoKeys, k) || si.Vals[i].Kind != argschema.String || len(si.Vals[i].Str) > MaxServerInfoField {
+					t.Fatalf("serverInfo.%s клиенту", k)
+				}
+			}
 		}
 		if b := AppendJSON(nil, r); !json.Valid(b) {
 			t.Fatalf("результат — не JSON: %q", b)

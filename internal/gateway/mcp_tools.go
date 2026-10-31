@@ -826,22 +826,42 @@ func (m *MCPHandler) handshake(q *mcpReq) {
 			return
 		}
 	}
+	// instructions и serverInfo.title — текст сервера, который видят агент и
+	// человек: оба проходят встроенную проверку описаний (5Н6 ревью 5.r1).
+	var texts []inspectText
+	var drop []func()
 	if ins, ok := mcp.Instructions(&result); ok {
-		texts := []inspectText{{Text: ins.Str, Source: detect.SourceTool, Location: "instructions", Threat: threatPoisoned, Message: -1}}
+		texts = append(texts, inspectText{Text: ins.Str, Source: detect.SourceTool, Location: "instructions", Threat: threatPoisoned, Message: -1})
+		drop = append(drop, func() { mcp.Delete(&result, "instructions") })
+	}
+	if title, ok := mcp.ServerTitle(&result); ok {
+		texts = append(texts, inspectText{Text: title.Str, Source: detect.SourceTool, Location: "serverInfo.title", Threat: threatPoisoned, Message: -1})
+		drop = append(drop, func() {
+			if si, ok := mcp.GetObject(&result, "serverInfo"); ok {
+				mcp.Delete(si, "title")
+			}
+		})
+	}
+	if len(texts) > 0 {
 		flagged, blocked, _, ok := m.inspectDescriptions(q, texts)
 		if !ok {
 			return
 		}
 		enforce := effectiveMode(q.app) == policy.Enforce
 		threats := map[string]bool{}
-		if flagged[0] {
+		if slices.Contains(flagged, true) {
 			threats[threatPoisoned] = true
 		}
 		q.rec.addThreats(threats)
 		m.listDecision(q, threats, enforce)
-		if enforce && (flagged[0] || blocked[0]) {
-			mcp.Delete(&result, "instructions")
-		} else {
+		removed := false
+		for i := range texts {
+			if enforce && (flagged[i] || blocked[i]) {
+				drop[i]()
+				removed = true
+			}
+		}
+		if !removed {
 			q.rec.ev.Decision.Applied = []string{}
 		}
 	}
