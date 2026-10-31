@@ -792,8 +792,9 @@ func (m *MCPHandler) contentMethod(q *mcpReq) {
 }
 
 // handshake — initialize (2025-11-25) и server/discover (2026-07-28):
-// возможности клиента вырезаются, instructions сервера проходят встроенную
-// проверку описаний; initialize открывает сессию шлюза.
+// возможности клиента вырезаются, в результате остаются только поля
+// спецификации (mcp.HandshakeResult), instructions сервера проходят
+// встроенную проверку описаний; initialize открывает сессию шлюза.
 func (m *MCPHandler) handshake(q *mcpReq) {
 	req, stripped := upstreamRequest(q.msg)
 	q.ev.Stripped = stripped
@@ -812,6 +813,11 @@ func (m *MCPHandler) handshake(q *mcpReq) {
 		return
 	}
 	result := mcp.Clone(*resp.Result)
+	// Клиенту — только поля спецификации (задача 5.10 этапа 5).
+	if err := mcp.HandshakeResult(q.msg.Method, &result); err != nil {
+		m.upstreamFailed(q, &mcpUpstreamError{Status: q.ev.Upstream, Msg: "MCP-сервер: " + err.Error()})
+		return
+	}
 	if q.msg.Method == "initialize" {
 		if v, _ := mcp.GetString(&result, "protocolVersion"); v != mcp.Version20251125 {
 			m.upstreamFailed(q, &mcpUpstreamError{Status: q.ev.Upstream, Msg: "MCP-сервер предложил неподдерживаемую версию"})
