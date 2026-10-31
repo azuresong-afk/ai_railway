@@ -335,11 +335,11 @@ func TestStorageCache(t *testing.T) {
 	m.mu.Lock()
 	clear(m.aggs)
 	m.mu.Unlock()
-	if got, _, _ := s.Storage(ctx); got != n {
-		t.Fatalf("кэш: %d, ожидалось %d", got, n)
+	if got, _, err := s.Storage(ctx); err != nil || got != n {
+		t.Fatalf("кэш: %d, ожидалось %d, %v", got, n, err)
 	}
 	now = now.Add(StorageCacheTTL)
-	if got, _, _ := s.Storage(ctx); got != 0 {
-		t.Fatalf("после срока кэша: %d", got)
+	if got, _, err := s.Storage(ctx); err != nil || got != 0 {
+		t.Fatalf("после срока кэша: %d, %v", got, err)
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/azuresong-afk/ai_railway/internal/agents"
 	"github.com/azuresong-afk/ai_railway/internal/alerting"
 	"github.com/azuresong-afk/ai_railway/internal/apps"
 	"github.com/azuresong-afk/ai_railway/internal/auth"
@@ -21,8 +22,11 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/detect/lists"
 	"github.com/azuresong-afk/ai_railway/internal/gateway"
 	"github.com/azuresong-afk/ai_railway/internal/license"
+	"github.com/azuresong-afk/ai_railway/internal/notify"
 	"github.com/azuresong-afk/ai_railway/internal/policy"
 	"github.com/azuresong-afk/ai_railway/internal/policy/versions"
+	"github.com/azuresong-afk/ai_railway/internal/servicedb"
+	"github.com/azuresong-afk/ai_railway/internal/servicedb/kinds"
 )
 
 // setupLockKey — блокировка первичной настройки (Н40 ревью 2.r4).
@@ -57,8 +61,13 @@ func (e *invalidObjectsError) Error() string {
 // лицензия при запуске сервера (ADR-0026, п. 2; задача 5.8): лицензию,
 // которую сервер не принял бы, копия не переносит, а без неё установка
 // вернулась бы в режим пилота — поэтому отказ, а не пропуск.
-func checkSnapshot(p aisecCrypto.Provider, s *backup.Snapshot, keepTokens bool) error {
+func checkSnapshot(p aisecCrypto.Provider, arch *backup.Archive, keepTokens bool) error {
+	s := arch.Snapshot
 	reg, err := detect.NewRegistry(builtin.Catalog()...)
+	if err != nil {
+		return err
+	}
+	tlsp, err := p.TLS()
 	if err != nil {
 		return err
 	}
@@ -106,6 +115,11 @@ func checkSnapshot(p aisecCrypto.Provider, s *backup.Snapshot, keepTokens bool) 
 	}
 	var gw []config.Application
 	for _, a := range s.Applications {
+		if a.UserAccess != nil {
+			if err := checkUserAccess(a); err != nil {
+				add("доступ по группам приложения "+a.Slug, err)
+			}
+		}
 		ga, err := gatewayApplication(a, providers[a.ProviderID])
 		if err != nil {
 			add("приложение "+a.Slug, err)
@@ -115,16 +129,42 @@ func checkSnapshot(p aisecCrypto.Provider, s *backup.Snapshot, keepTokens bool) 
 			gw = append(gw, ga)
 		}
 	}
-	// Разделы версии 2 (задача 5.8) — проверками модулей, которые
-	// доступны без изменения их пакетов: свои правила оповещений — как
-	// правило из API, издатель OIDC и настройки каталога LDAP — как при
-	// сохранении в консоли.
-	for _, r := range s.AlertRules {
-		if r.BuiltinKey != nil {
-			continue
+	// Разделы версии 2 (задача 5.8) — проверками модулей (вынесены в
+	// остатках волны A этапа 5): каналы уведомлений — как при сохранении
+	// через API, с расшифрованными секретами; правила оповещений — свои как
+	// правило из API, встроенные — по ключу этого выпуска; MCP-серверы —
+	// адрес, признак insecure_http и корневые сертификаты; сертификат шлюза
+	// — пара ключу и цепочка; издатель OIDC и настройки каталога LDAP — как
+	// при сохранении в консоли.
+	for _, c := range s.Channels {
+		if err := checkChannel(tlsp, arch, c); err != nil {
+			add("канал «"+c.Name+"»", err)
 		}
+	}
+	for _, r := range s.AlertRules {
 		if err := checkAlertRule(r); err != nil {
 			add("правило оповещений «"+r.Name+"»", err)
+		}
+	}
+	for _, m := range s.MCPServers {
+		header := ""
+		if m.AuthHeader != nil {
+			header = *m.AuthHeader
+		}
+		in := agents.ServerInput{Name: m.Name, URL: m.URL, CAPEM: m.CAPEM, AuthHeader: header, CallTimeout: m.CallTimeoutS,
+			Versions: m.Versions}
+		if err := agents.CheckStoredServer(tlsp, nil, m.Slug, in, m.InsecureHTTP); err != nil {
+			add("MCP-сервер "+m.Slug, err)
+		}
+	}
+	if t := s.GatewayTLS; t != nil {
+		key, err := arch.GatewayTLSKey()
+		if err == nil {
+			err = apps.CheckStoredGatewayTLS(t.Host, []byte(t.ChainPEM), key, t.Fingerprint, t.NotAfter)
+			clear(key)
+		}
+		if err != nil {
+			add("сертификат шлюза", err)
 		}
 	}
 	if o := s.OIDC; o != nil {
@@ -167,9 +207,64 @@ func checkSnapshot(p aisecCrypto.Provider, s *backup.Snapshot, keepTokens bool) 
 	return nil
 }
 
-// checkAlertRule проверяет своё правило оповещений копии правилами API
-// этого выпуска (alerting.ParseRuleInput): условие, группировка, важность,
-// окно подавления и получатели.
+// serviceDBVerifier — проверка файла служебной базы копии по правилам
+// ADR-0028 для сохранённой версии, как при запуске сервера: подпись файла
+// и заверения встроенным ключом производителя, отзыв, дата выпуска внутри
+// срока заверения, разбор содержимого видом этого выпуска; срок заверения
+// на текущее время не проверяется. Вид, неизвестный выпуску, — ошибка.
+func serviceDBVerifier(p aisecCrypto.Provider) (func(kind string, file []byte) (backup.ServiceDBMeta, error), error) {
+	vendor, err := servicedb.EmbeddedVendor(p)
+	if err != nil {
+		return nil, err
+	}
+	all := kinds.All()
+	return func(kind string, file []byte) (backup.ServiceDBMeta, error) {
+		k, err := servicedb.KindByName(all, kind)
+		if err != nil {
+			return backup.ServiceDBMeta{}, errors.New(inspectReasonText(servicedb.ReasonKind))
+		}
+		v, err := servicedb.Verify(p, vendor, k, file, time.Time{})
+		if err != nil {
+			return backup.ServiceDBMeta{}, errors.New(inspectReasonText(servicedb.Reason(err)))
+		}
+		return backup.ServiceDBMeta{Version: v.Content.Version, Date: v.Content.Date, Records: v.Content.Records,
+			SubkeySerial: v.Endorsement.Serial, Fingerprint: v.Fingerprint}, nil
+	}, nil
+}
+
+// checkChannel проверяет канал уведомлений копии правилами сохранения
+// через API (notify.CheckStoredChannel); секреты расшифровываются ключом
+// копии только на время проверки.
+func checkChannel(tlsp aisecCrypto.TLSProvider, arch *backup.Archive, c backup.NotifyChannel) error {
+	sec, err := arch.ChannelSecrets(c)
+	if err != nil {
+		return err
+	}
+	defer clear(sec)
+	return notify.CheckStoredChannel(tlsp, notify.StoredChannel{Name: c.Name, Type: c.Type, Enabled: c.Enabled,
+		MinSeverity: c.MinSeverity, Settings: c.Settings, SecretFields: c.SecretFields, Secrets: sec, AuditStream: c.AuditStream})
+}
+
+// checkUserAccess проверяет доступ к моделям по группам правилами API для
+// моделей и псевдонимов приложения (apps.CheckStoredUserAccess).
+func checkUserAccess(a backup.Application) error {
+	u := a.UserAccess
+	var aliases map[string]string
+	if err := strictJSON(a.Aliases, &aliases); err != nil {
+		return fmt.Errorf("aliases: %w", err)
+	}
+	var groups map[string][]string
+	if err := strictJSON(u.ModelGroups, &groups); err != nil {
+		return fmt.Errorf("model_groups: %w", err)
+	}
+	return apps.CheckStoredUserAccess(a.Models, aliases, apps.UserAccess{Mode: u.Mode, Issuer: u.Issuer, Audience: u.Audience,
+		GroupsClaim: u.GroupsClaim, Leeway: u.LeewaySeconds, ModelGroups: groups})
+}
+
+// checkAlertRule проверяет правило оповещений копии правилами API этого
+// выпуска (alerting.CheckStoredRule): своё — условие, группировка,
+// важность, окно подавления и получатели; встроенное — ключ, вид и то, что
+// у него меняется через API.
 func checkAlertRule(r backup.AlertRule) error {
 	var c alerting.Condition
 	var rc alerting.Recipients
@@ -180,9 +275,12 @@ func checkAlertRule(r backup.AlertRule) error {
 		return fmt.Errorf("recipients: %w", err)
 	}
 	enabled, suppress := r.Enabled, r.SuppressMinutes
-	_, err := alerting.ParseRuleInput(alerting.RuleInput{Kind: r.Kind, Name: r.Name, Description: r.Description, Enabled: &enabled,
-		Severity: r.Severity, Condition: c, GroupBy: r.GroupBy, SuppressMinutes: &suppress, Recipients: rc}, "")
-	return err
+	key := ""
+	if r.BuiltinKey != nil {
+		key = *r.BuiltinKey
+	}
+	return alerting.CheckStoredRule(key, alerting.RuleInput{Kind: r.Kind, Name: r.Name, Description: r.Description, Enabled: &enabled,
+		Severity: r.Severity, Condition: c, GroupBy: r.GroupBy, SuppressMinutes: &suppress, Recipients: rc})
 }
 
 // currentSpec — текущая версия политики, разобранная строгой схемой.
