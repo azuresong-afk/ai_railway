@@ -2,7 +2,7 @@
 // ADR-0019) — цель make images-verify.
 //
 //	imagecheck image -kind release|test [-release build/release] build/images/aisec-*.tar
-//	imagecheck compose deploy/compose/pilot/compose.yaml [compose.ml.yaml …]
+//	imagecheck compose deploy/compose/pilot/compose.yaml [compose.ml.yaml compose.media.yaml …]
 //
 // image — архивы docker save: пользователь не root, нет оболочки, пакетного
 // менеджера и лишних файлов, только свои порты, бинарники статические и
@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
@@ -130,7 +131,16 @@ func runCompose(args []string, stdout, stderr io.Writer) error {
 			return fmt.Errorf("%s: %w", o, err)
 		}
 	}
-	return report(stdout, strings.Join(fs.Args(), " + "), checkCompose(c))
+	problems := checkCompose(c)
+	// Профиль seccomp aisec-media — файл рядом с compose.yaml (ADR-0032).
+	if _, ok := c.Services["aisec-media"]; ok {
+		data, err := readLimitedN(filepath.Join(filepath.Dir(fs.Arg(0)), mediaSeccompFile), maxSeccomp)
+		if err != nil {
+			return err
+		}
+		problems = append(problems, checkSeccomp(data)...)
+	}
+	return report(stdout, strings.Join(fs.Args(), " + "), problems)
 }
 
 func readLimitedN(p string, limit int64) ([]byte, error) {
