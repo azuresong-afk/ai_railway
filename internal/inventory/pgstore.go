@@ -56,7 +56,10 @@ func pgCtx(ctx context.Context, d time.Duration) (context.Context, context.Cance
 	return context.WithTimeout(ctx, d)
 }
 
-func (s *PGStore) inTx(ctx context.Context, d time.Duration, fn func(pgx.Tx) error) error {
+// inTx — транзакция со сроком d; fn получает контекст со сроком и все
+// запросы делает с ним (ревью 5.17: иначе срок действует только на
+// Begin и Commit).
+func (s *PGStore) inTx(ctx context.Context, d time.Duration, fn func(context.Context, pgx.Tx) error) error {
 	ctx, cancel := pgCtx(ctx, d)
 	defer cancel()
 	tx, err := s.db.Begin(ctx)
@@ -68,7 +71,7 @@ func (s *PGStore) inTx(ctx context.Context, d time.Duration, fn func(pgx.Tx) err
 		defer cancel()
 		_ = tx.Rollback(rctx) //nolint:gosec // G104: откат после коммита безвреден, ошибку скрывает исходная
 	}()
-	if err := fn(tx); err != nil {
+	if err := fn(ctx, tx); err != nil {
 		return err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -307,7 +310,7 @@ func insertFiles(ctx context.Context, tx pgx.Tx, id string, fs []File) error {
 
 // CreateModel — ErrExists, ErrTooMany.
 func (s *PGStore) CreateModel(ctx context.Context, m Model, rec audit.Entry) error {
-	return s.inTx(ctx, pgTimeout, func(tx pgx.Tx) error {
+	return s.inTx(ctx, pgTimeout, func(ctx context.Context, tx pgx.Tx) error {
 		if err := lockOrg(ctx, tx, m.OrgID); err != nil {
 			return dbErr("блокировка", err)
 		}
@@ -335,7 +338,7 @@ func (s *PGStore) CreateModel(ctx context.Context, m Model, rec audit.Entry) err
 // UpdateModel — файлы заменяются целиком.
 func (s *PGStore) UpdateModel(ctx context.Context, orgID, id string, fn func(*Model) (audit.Entry, error)) (Model, error) {
 	var out Model
-	err := s.inTx(ctx, pgTimeout, func(tx pgx.Tx) error {
+	err := s.inTx(ctx, pgTimeout, func(ctx context.Context, tx pgx.Tx) error {
 		m, err := scanModel(tx.QueryRow(ctx, `SELECT `+modelCols+` FROM inventory_models m WHERE m.org_id = $1 AND m.id = $2 FOR UPDATE`, orgID, id))
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrNotFound
@@ -376,7 +379,7 @@ func (s *PGStore) UpdateModel(ctx context.Context, orgID, id string, fn func(*Mo
 // DeleteModel удаляет модель; файлы удаляются каскадом.
 func (s *PGStore) DeleteModel(ctx context.Context, orgID, id string, fn func(Model) (audit.Entry, error)) (Model, error) {
 	var out Model
-	err := s.inTx(ctx, pgTimeout, func(tx pgx.Tx) error {
+	err := s.inTx(ctx, pgTimeout, func(ctx context.Context, tx pgx.Tx) error {
 		m, err := scanModel(tx.QueryRow(ctx, `SELECT `+modelCols+` FROM inventory_models m WHERE m.org_id = $1 AND m.id = $2 FOR UPDATE`, orgID, id))
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrNotFound
@@ -441,7 +444,7 @@ const seenSQL = `SELECT app, provider, model, min(bucket), max(bucket) FROM dash
 func (s *PGStore) Discover(ctx context.Context, orgID string, now time.Time, newID func() (string, error),
 	rec func(DiscoverResult) *audit.Entry) (DiscoverResult, error) {
 	var res DiscoverResult
-	err := s.inTx(ctx, pgDiscoverTimeout, func(tx pgx.Tx) error {
+	err := s.inTx(ctx, pgDiscoverTimeout, func(ctx context.Context, tx pgx.Tx) error {
 		res = DiscoverResult{Names: []string{}}
 		if err := lockOrg(ctx, tx, orgID); err != nil {
 			return dbErr("блокировка", err)
@@ -469,21 +472,37 @@ func (s *PGStore) Discover(ctx context.Context, orgID string, now time.Time, new
 		span := map[pair][2]time.Time{}
 		var order []pair
 		for _, v := range seen {
+			// Окно перекрывается с прошлым запуском: строка меняется, только
+			// если границы действительно расширились (ревью 5.17: без лишних
+			// версий строк и блокировок на всё время пополнения).
 			tag, err := tx.Exec(ctx, `UPDATE inventory_usage SET first_seen = LEAST(first_seen, $5), last_seen = GREATEST(last_seen, $6)
-				WHERE org_id = $1 AND app = $2 AND provider = $3 AND model = $4`, orgID, v.App, v.Provider, v.Model, v.First, v.Last)
+				WHERE org_id = $1 AND app = $2 AND provider = $3 AND model = $4 AND (first_seen > $5 OR last_seen < $6)`,
+				orgID, v.App, v.Provider, v.Model, v.First, v.Last)
 			if err != nil {
 				return dbErr("использование", err)
 			}
 			if tag.RowsAffected() == 0 {
-				if usage >= MaxUsage {
-					res.Skipped++
-				} else {
-					if _, err := tx.Exec(ctx, `INSERT INTO inventory_usage (org_id, app, provider, model, first_seen, last_seen)
-						VALUES ($1, $2, $3, $4, $5, $6)`, orgID, v.App, v.Provider, v.Model, v.First, v.Last); err != nil {
+				switch {
+				case usage < MaxUsage:
+					tag, err := tx.Exec(ctx, `INSERT INTO inventory_usage (org_id, app, provider, model, first_seen, last_seen)
+						VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (org_id, app, provider, model) DO NOTHING`,
+						orgID, v.App, v.Provider, v.Model, v.First, v.Last)
+					if err != nil {
 						return dbErr("использование", err)
 					}
-					usage++
-					res.Links++
+					if tag.RowsAffected() > 0 {
+						usage++
+						res.Links++
+					}
+				default:
+					var ok bool
+					if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM inventory_usage WHERE org_id = $1 AND app = $2 AND provider = $3 AND model = $4)`,
+						orgID, v.App, v.Provider, v.Model).Scan(&ok); err != nil {
+						return dbErr("использование", err)
+					}
+					if !ok {
+						res.Skipped++
+					}
 				}
 			}
 			p := pair{v.Provider, v.Model}
@@ -502,13 +521,16 @@ func (s *PGStore) Discover(ctx context.Context, orgID string, now time.Time, new
 		}
 		for _, p := range order {
 			sp := span[p]
-			tag, err := tx.Exec(ctx, `UPDATE inventory_models SET first_seen = LEAST(COALESCE(first_seen, $4), $4),
+			var known bool
+			if err := tx.QueryRow(ctx, `WITH u AS (UPDATE inventory_models SET first_seen = LEAST(COALESCE(first_seen, $4), $4),
 					last_seen = GREATEST(COALESCE(last_seen, $5), $5)
-				WHERE org_id = $1 AND provider = $2 AND name = $3`, orgID, p.provider, p.model, sp[0], sp[1])
-			if err != nil {
+				WHERE org_id = $1 AND provider = $2 AND name = $3
+					AND (first_seen IS NULL OR last_seen IS NULL OR first_seen > $4 OR last_seen < $5) RETURNING 1)
+				SELECT EXISTS (SELECT 1 FROM u) OR EXISTS (SELECT 1 FROM inventory_models WHERE org_id = $1 AND provider = $2 AND name = $3)`,
+				orgID, p.provider, p.model, sp[0], sp[1]).Scan(&known); err != nil {
 				return dbErr("модель", err)
 			}
-			if tag.RowsAffected() > 0 {
+			if known {
 				continue
 			}
 			if models >= MaxModels {
@@ -519,6 +541,8 @@ func (s *PGStore) Discover(ctx context.Context, orgID string, now time.Time, new
 			if err != nil {
 				return err
 			}
+			// Модель с той же парой вставить нельзя: пара проверена выше под
+			// блокировкой организации, а CreateModel берёт ту же блокировку.
 			if _, err := tx.Exec(ctx, `INSERT INTO inventory_models (id, org_id, kind, provider, name, origin, status, first_seen, last_seen,
 					created_at, created_by, updated_at, updated_by)
 				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $10, $11)`,

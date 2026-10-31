@@ -54,36 +54,40 @@ func TestParseModelInputRejects(t *testing.T) {
 		return fmt.Sprintf(`{"kind":"customer","name":"m","files":[{"path":%q,"size":%d,"role":%q,"sha256":%q}]}`, path, size, role, hash)
 	}
 	cases := map[string]string{
-		"не JSON":                 `{"kind":`,
-		"неизвестное поле":        `{"kind":"customer","name":"m","weights":"AAAA"}`,
-		"два значения":            `{"kind":"customer","name":"m"} {}`,
-		"вид":                     `{"kind":"pickle","name":"m"}`,
-		"провайдер без ID":        `{"kind":"provider","name":"m"}`,
-		"ID провайдера":           `{"kind":"customer","provider":"Giga Chat","name":"m"}`,
-		"пустое имя":              `{"kind":"customer","name":""}`,
-		"длинное имя":             fmt.Sprintf(`{"kind":"customer","name":%q}`, strings.Repeat("я", maxName+1)),
-		"управляющий символ":      `{"kind":"customer","name":"m\u0007"}`,
-		"пробел в имени":          `{"kind":"customer","name":" m"}`,
-		"длинная версия":          fmt.Sprintf(`{"kind":"customer","name":"m","version":%q}`, strings.Repeat("1", maxVersion+1)),
-		"длинное описание":        fmt.Sprintf(`{"kind":"customer","name":"m","description":%q}`, strings.Repeat("я", maxDescription+1)),
-		"табуляция в описании":    `{"kind":"customer","name":"m","description":"a\tb"}`,
-		"путь ..":                 file("../etc/passwd", 1, "weights", testHash),
-		"путь в середине ..":      file("a/../b", 1, "weights", testHash),
-		"абсолютный путь":         file("/opt/model.bin", 1, "weights", testHash),
-		"путь с диском":           file("C:/model.bin", 1, "weights", testHash),
-		"обратная косая":          file(`a\b`, 1, "weights", testHash),
-		"пустая часть":            file("a//b", 1, "weights", testHash),
-		"точка":                   file("./a", 1, "weights", testHash),
-		"длинный путь":            file(strings.Repeat("a", MaxPathBytes+1), 1, "weights", testHash),
-		"отрицательный размер":    file("a", -1, "weights", testHash),
-		"размер больше 2^50":      file("a", MaxFileSize+1, "weights", testHash),
-		"роль":                    file("a", 1, "code", testHash),
-		"хеш в верхнем регистре":  file("a", 1, "weights", strings.ToUpper(testHash)),
-		"короткий хеш":            file("a", 1, "weights", testHash[:62]),
-		"хеш не hex":              file("a", 1, "weights", strings.Repeat("z", 64)),
-		"повтор пути":             `{"kind":"customer","name":"m","files":[` + fileJSON("a") + `,` + fileJSON("a") + `]}`,
-		"тело больше предела":     `{"kind":"customer","name":"m","description":"` + strings.Repeat(" ", MaxBody) + `"}`,
-		"размер — не целое число": `{"kind":"customer","name":"m","files":[{"path":"a","size":1.5,"role":"weights","sha256":"` + testHash + `"}]}`,
+		"не JSON":                   `{"kind":`,
+		"неизвестное поле":          `{"kind":"customer","name":"m","weights":"AAAA"}`,
+		"два значения":              `{"kind":"customer","name":"m"} {}`,
+		"вид":                       `{"kind":"pickle","name":"m"}`,
+		"провайдер без ID":          `{"kind":"provider","name":"m"}`,
+		"ID провайдера":             `{"kind":"customer","provider":"Giga Chat","name":"m"}`,
+		"пустое имя":                `{"kind":"customer","name":""}`,
+		"длинное имя":               fmt.Sprintf(`{"kind":"customer","name":%q}`, strings.Repeat("я", maxName+1)),
+		"управляющий символ":        `{"kind":"customer","name":"m\u0007"}`,
+		"пробел в имени":            `{"kind":"customer","name":" m"}`,
+		"длинная версия":            fmt.Sprintf(`{"kind":"customer","name":"m","version":%q}`, strings.Repeat("1", maxVersion+1)),
+		"длинное описание":          fmt.Sprintf(`{"kind":"customer","name":"m","description":%q}`, strings.Repeat("я", maxDescription+1)),
+		"табуляция в описании":      `{"kind":"customer","name":"m","description":"a\tb"}`,
+		"путь ..":                   file("../etc/passwd", 1, "weights", testHash),
+		"путь в середине ..":        file("a/../b", 1, "weights", testHash),
+		"абсолютный путь":           file("/opt/model.bin", 1, "weights", testHash),
+		"путь с диском":             file("C:/model.bin", 1, "weights", testHash),
+		"поток NTFS":                file("a/b.bin:ads", 1, "weights", testHash),
+		"смена направления":         file("a/\u202egpj.exe", 1, "weights", testHash),
+		"смена направления в имени": `{"kind":"customer","name":"m\u202e"}`,
+		"нулевая ширина в описании": `{"kind":"customer","name":"m","description":"a\u200bb"}`,
+		"обратная косая":            file(`a\b`, 1, "weights", testHash),
+		"пустая часть":              file("a//b", 1, "weights", testHash),
+		"точка":                     file("./a", 1, "weights", testHash),
+		"длинный путь":              file(strings.Repeat("a", MaxPathBytes+1), 1, "weights", testHash),
+		"отрицательный размер":      file("a", -1, "weights", testHash),
+		"размер больше 2^50":        file("a", MaxFileSize+1, "weights", testHash),
+		"роль":                      file("a", 1, "code", testHash),
+		"хеш в верхнем регистре":    file("a", 1, "weights", strings.ToUpper(testHash)),
+		"короткий хеш":              file("a", 1, "weights", testHash[:62]),
+		"хеш не hex":                file("a", 1, "weights", strings.Repeat("z", 64)),
+		"повтор пути":               `{"kind":"customer","name":"m","files":[` + fileJSON("a") + `,` + fileJSON("a") + `]}`,
+		"тело больше предела":       `{"kind":"customer","name":"m","description":"` + strings.Repeat(" ", MaxBody) + `"}`,
+		"размер — не целое число":   `{"kind":"customer","name":"m","files":[{"path":"a","size":1.5,"role":"weights","sha256":"` + testHash + `"}]}`,
 	}
 	files := make([]string, MaxFiles+1)
 	for i := range files {
@@ -142,6 +146,9 @@ func checkAccepted(t *testing.T, name, version, title, owner, desc string, files
 			t.Fatalf("недопустимый файл принят: %+v", f)
 		}
 		seen[f.Path] = true
+		if strings.ContainsRune(f.Path, ':') || strings.IndexFunc(f.Path, hidden) >= 0 {
+			t.Fatalf("двоеточие или скрытый символ в пути принят: %q", f.Path)
+		}
 		for _, part := range strings.Split(f.Path, "/") {
 			if part == ".." {
 				t.Fatalf("выход за каталог принят: %q", f.Path)

@@ -175,24 +175,23 @@ type InventoryFileView struct {
 	SHA256  string `json:"sha256"`
 }
 
-// InventoryModelView — модель в реестре. Files — только в карточке.
+// InventoryModelView — модель в реестре; файлы — только в карточке.
 type InventoryModelView struct {
-	ID          string              `json:"id"`
-	Kind        string              `json:"kind"`
-	Provider    string              `json:"provider"`
-	Name        string              `json:"name"`
-	Version     string              `json:"version"`
-	Title       string              `json:"title"`
-	Description string              `json:"description"`
-	Owner       string              `json:"owner"`
-	Origin      string              `json:"origin"`
-	Status      string              `json:"status"`
-	FirstSeen   *time.Time          `json:"first_seen,omitempty"`
-	LastSeen    *time.Time          `json:"last_seen,omitempty"`
-	FileCount   int                 `json:"file_count"`
-	Files       []InventoryFileView `json:"files,omitempty"`
-	CreatedAt   time.Time           `json:"created_at"`
-	UpdatedAt   time.Time           `json:"updated_at"`
+	ID          string     `json:"id"`
+	Kind        string     `json:"kind"`
+	Provider    string     `json:"provider"`
+	Name        string     `json:"name"`
+	Version     string     `json:"version"`
+	Title       string     `json:"title"`
+	Description string     `json:"description"`
+	Owner       string     `json:"owner"`
+	Origin      string     `json:"origin"`
+	Status      string     `json:"status"`
+	FirstSeen   *time.Time `json:"first_seen,omitempty"`
+	LastSeen    *time.Time `json:"last_seen,omitempty"`
+	FileCount   int        `json:"file_count"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
 }
 
 // InventoryUsageView — тройка «приложение, провайдер, модель» из трафика.
@@ -206,22 +205,25 @@ type InventoryUsageView struct {
 
 // InventoryModelCard — ответ карточки модели: модель с файлами и
 // приложения, которые её вызывали.
+// Files всегда в ответе, пустой — [] (по схеме поле обязательно).
 type InventoryModelCard struct {
 	InventoryModelView
+	Files []InventoryFileView  `json:"files"`
 	Usage []InventoryUsageView `json:"usage"`
 }
 
-func inventoryModelView(m inventory.Model, withFiles bool) InventoryModelView {
-	v := InventoryModelView{ID: m.ID, Kind: m.Kind, Provider: m.Provider, Name: m.Name, Version: m.Version, Title: m.Title,
+func inventoryModelView(m inventory.Model) InventoryModelView {
+	return InventoryModelView{ID: m.ID, Kind: m.Kind, Provider: m.Provider, Name: m.Name, Version: m.Version, Title: m.Title,
 		Description: m.Description, Owner: m.Owner, Origin: m.Origin, Status: m.Status, FirstSeen: m.FirstSeen, LastSeen: m.LastSeen,
 		FileCount: m.FileCount, CreatedAt: m.CreatedAt.UTC(), UpdatedAt: m.UpdatedAt.UTC()}
-	if withFiles {
-		v.Files = make([]InventoryFileView, 0, len(m.Files))
-		for _, f := range m.Files {
-			v.Files = append(v.Files, InventoryFileView{Path: f.Path, Size: f.Size, Role: f.Role, HashAlg: f.HashAlg, SHA256: hex.EncodeToString(f.Hash)})
-		}
+}
+
+func inventoryFiles(m inventory.Model) []InventoryFileView {
+	out := make([]InventoryFileView, 0, len(m.Files))
+	for _, f := range m.Files {
+		out = append(out, InventoryFileView{Path: f.Path, Size: f.Size, Role: f.Role, HashAlg: f.HashAlg, SHA256: hex.EncodeToString(f.Hash)})
 	}
-	return v
+	return out
 }
 
 func usageView(u inventory.Usage) InventoryUsageView {
@@ -271,7 +273,7 @@ func (d Deps) listInventoryModels(w http.ResponseWriter, r *http.Request) {
 		resp.NextCursor = Cursor{TimeMicro: last.CreatedAt.UnixMicro(), ID: last.ID}.Encode()
 	}
 	for _, m := range ms {
-		resp.Items = append(resp.Items, inventoryModelView(m, false))
+		resp.Items = append(resp.Items, inventoryModelView(m))
 	}
 	WriteJSON(w, http.StatusOK, resp)
 }
@@ -290,7 +292,7 @@ func (d Deps) getInventoryModel(w http.ResponseWriter, r *http.Request) {
 }
 
 func (d Deps) writeInventoryCard(w http.ResponseWriter, status int, m inventory.Model, us []inventory.Usage) {
-	card := InventoryModelCard{InventoryModelView: inventoryModelView(m, true), Usage: make([]InventoryUsageView, 0, len(us))}
+	card := InventoryModelCard{InventoryModelView: inventoryModelView(m), Files: inventoryFiles(m), Usage: make([]InventoryUsageView, 0, len(us))}
 	for _, u := range us {
 		card.Usage = append(card.Usage, usageView(u))
 	}

@@ -198,8 +198,13 @@ func checkFiles(fs []FileInput) ([][]byte, []error) {
 	return hashes, errs
 }
 
+// hidden — управляющие символы (Cc) и символы форматирования (Cf, в том
+// числе смена направления текста U+202E): в консоли они подменяли бы
+// видимое имя (ревью 5.17).
+func hidden(r rune) bool { return unicode.IsControl(r) || unicode.Is(unicode.Cf, r) }
+
 // checkPath — путь относительно каталога модели: части через «/», без
-// пустых частей, «.», «..», «\», двоеточия в первой части (диск Windows) и
+// пустых частей, «.», «..», «\», двоеточия (диск и потоки NTFS) и
 // управляющих символов.
 func checkPath(p string) error {
 	if p == "" || len(p) > MaxPathBytes {
@@ -208,7 +213,7 @@ func checkPath(p string) error {
 	if !utf8.ValidString(p) {
 		return errors.New("не UTF-8")
 	}
-	if strings.ContainsRune(p, '\\') || strings.IndexFunc(p, unicode.IsControl) >= 0 {
+	if strings.ContainsRune(p, '\\') || strings.IndexFunc(p, hidden) >= 0 {
 		return errors.New("без «\\» и управляющих символов")
 	}
 	parts := strings.Split(p, "/")
@@ -217,8 +222,8 @@ func checkPath(p string) error {
 			return errors.New("относительный путь без пустых частей, «.» и «..»")
 		}
 	}
-	if strings.Contains(parts[0], ":") {
-		return errors.New("относительный путь, без имени диска")
+	if strings.ContainsRune(p, ':') {
+		return errors.New("относительный путь без «:» (имя диска, потоки NTFS)")
 	}
 	return nil
 }
@@ -236,7 +241,7 @@ func text(field, v string, lo, hi int) []error {
 			errs = append(errs, fmt.Errorf("%s — не больше %d символов", field, hi))
 		}
 	}
-	if strings.IndexFunc(v, unicode.IsControl) >= 0 {
+	if strings.IndexFunc(v, hidden) >= 0 {
 		errs = append(errs, errors.New(field+" — без управляющих символов"))
 	}
 	return errs
@@ -251,7 +256,7 @@ func multiline(field, v string, hi int) []error {
 	if utf8.RuneCountInString(v) > hi {
 		errs = append(errs, fmt.Errorf("%s — не больше %d символов", field, hi))
 	}
-	if strings.IndexFunc(v, func(r rune) bool { return unicode.IsControl(r) && r != '\n' }) >= 0 {
+	if strings.IndexFunc(v, func(r rune) bool { return hidden(r) && r != '\n' }) >= 0 {
 		errs = append(errs, errors.New(field+" — без управляющих символов, кроме перевода строки"))
 	}
 	return errs

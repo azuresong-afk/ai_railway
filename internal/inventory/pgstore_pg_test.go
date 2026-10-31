@@ -427,6 +427,26 @@ func TestPGInventoryLimits(t *testing.T) {
 	if err != nil || !o.Sync.LimitReached || o.Sync.Skipped != 1 {
 		t.Fatalf("состояние: %+v, %v", o.Sync, err)
 	}
+	// Повтор окна без новых данных строку не переписывает (ревью 5.17).
+	xmin := func() string {
+		t.Helper()
+		var x string
+		if err := e.owner.QueryRow(ctx, `SELECT xmin::text FROM inventory_usage WHERE app = 'billing'`).Scan(&x); err != nil {
+			t.Fatal(err)
+		}
+		return x
+	}
+	before := xmin()
+	if res, err := e.svc.Discover(ctx); err != nil || res.Links != 0 || xmin() != before {
+		t.Fatalf("повтор окна: %+v, %v, xmin %s → %s", res, err, before, xmin())
+	}
+	// Предел связей: новая тройка пропускается, известная — нет.
+	mustExec(t, e.owner, `INSERT INTO inventory_usage (org_id, app, provider, model, first_seen, last_seen)
+		SELECT $1, 'app-' || g, 'gigachat', 'GigaChat-Pro', now(), now() FROM generate_series(1, $2::int) g`, audit.DefaultOrgID, MaxUsage-1)
+	e.aggregate(t, e.clock.t.Truncate(time.Hour), "crm", "gigachat", "GigaChat-Pro")
+	if res, err := e.svc.Discover(ctx); err != nil || res.Links != 0 || res.Skipped != 2 {
+		t.Fatalf("пополнение у предела связей: %+v, %v", res, err)
+	}
 	// Ограничения таблиц: путь, хеш, вид без провайдера, роль.
 	id := "01900000-0000-7000-8000-000000000001"
 	for _, sql := range []string{

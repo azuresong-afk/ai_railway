@@ -431,6 +431,9 @@ func clampLimit(n int) int {
 
 // CreateModel добавляет модель вручную (inventory.model_created).
 func (s *Service) CreateModel(ctx context.Context, by By, in ModelInput) (Model, error) {
+	// Провайдер проверяется до транзакции и без внешнего ключа: запись
+	// реестра — сведения, а не настройка маршрута, поэтому модель
+	// удалённого позже провайдера остаётся в реестре как была (ADR-0029).
 	if err := s.checkProvider(ctx, in.Provider); err != nil {
 		return Model{}, err
 	}
