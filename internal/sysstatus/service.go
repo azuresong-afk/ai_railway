@@ -565,9 +565,15 @@ func (s *Service) shadowAIStorage(ctx context.Context, c *collected) {
 	c.details[ConditionShadowAIFull], c.details[ConditionShadowAIStorage] = d, d
 }
 
+// builtinFallbackKind — вид служебной базы, у которого без проверенной
+// загруженной версии действует встроенная база выпуска: compliance.BaseKind
+// (импорт compliance дал бы цикл; совпадение проверяет TestStatusServiceDBInvalid).
+const builtinFallbackKind = "compliance_requirements"
+
 // serviceDBs — условия служебных баз (ADR-0028): текущая сохранённая
 // версия не прошла повторную проверку — работает предыдущая
-// (service_db_previous) или база не используется (service_db_unused).
+// (service_db_previous) или база не используется (service_db_unused; у базы
+// требований действует встроенная, подробность fallback: builtin).
 // Непрошедшая предыдущая версия при действующей текущей — не условие:
 // работе она не мешает, а возврат на неё отклоняется проверкой.
 func (s *Service) serviceDBs(ctx context.Context, c *collected) {
@@ -584,6 +590,11 @@ func (s *Service) serviceDBs(ctx context.Context, c *collected) {
 		c.conditions[prev] = invalid && st.Active == servicedb.ActivePrevious
 		c.conditions[unused] = invalid && st.Active == servicedb.ActiveNone
 		d := map[string]any{"component": componentServiceDB + st.Kind, "kind": st.Kind, "title": st.Title, "active": st.Active}
+		if st.Kind == builtinFallbackKind && st.Active == servicedb.ActiveNone {
+			// База требований без проверенной загруженной версии переходит на
+			// встроенную базу выпуска (5Н9 ревью 5.r1 этапа 5).
+			d["fallback"] = "builtin"
+		}
 		if invalid {
 			d["version"], d["reason"] = st.Current.Version, st.Current.Reason
 		}
@@ -838,7 +849,7 @@ var conditionInfo = []struct{ code, requirement, title string }{
 	{ConditionShadowAIStorage, "РСБ.7", "Хранилище сводок теневого ИИ заполнено на 90 % и больше: сократите срок хранения сводок"},
 	{ConditionShadowAIFull, "РСБ.7", "Хранилище сводок теневого ИИ заполнено: импорт журналов и приём по syslog отклоняются"},
 	{ConditionServiceDBPrevious, "ОЦЛ.5", "Сохранённая служебная база не прошла проверку подписи: работает предыдущая версия"},
-	{ConditionServiceDBUnused, "ОЦЛ.5", "Сохранённая служебная база не прошла проверку подписи: база не используется"},
+	{ConditionServiceDBUnused, "ОЦЛ.5", "Сохранённая служебная база не прошла проверку подписи: загруженная база не используется (для базы требований действует встроенная база выпуска)"},
 }
 
 // family — условие раздела 7, к которому относится код (integrity:server —

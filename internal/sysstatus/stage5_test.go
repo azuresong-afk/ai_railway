@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/azuresong-afk/ai_railway/internal/compliance"
 	"github.com/azuresong-afk/ai_railway/internal/gwregistry"
 	"github.com/azuresong-afk/ai_railway/internal/servicedb"
 	"github.com/azuresong-afk/ai_railway/internal/sysstatus"
@@ -176,6 +178,20 @@ func TestStatusServiceDBInvalid(t *testing.T) {
 	if got["service_db_previous:shadow_ai_catalog"] != "raised" || got["service_db_unused:compliance_requirements"] != "raised" ||
 		got["service_db_previous:third"] != "" {
 		t.Fatalf("записи: %v", got)
+	}
+	// 5Н9 ревью 5.r1: у базы требований без загруженной версии действует
+	// встроенная — так и в тексте, и в подробности записи (fallback: builtin).
+	if !strings.Contains(unused.Title, "встроенная база выпуска") {
+		t.Fatalf("текст условия: %q", unused.Title)
+	}
+	for _, r := range e.mem.Records {
+		d := r.Details.(map[string]any)
+		if d["condition"] == "service_db_unused:"+compliance.BaseKind && d["fallback"] != "builtin" {
+			t.Fatalf("нет подробности о встроенной базе: %v", d)
+		}
+		if d["condition"] == "service_db_previous:shadow_ai_catalog" && d["fallback"] != nil {
+			t.Fatalf("встроенная база у каталога: %v", d)
+		}
 	}
 	// Условие по виду базы не снимается как «пропавший шлюз», а после
 	// загрузки исправной версии — снимается.
