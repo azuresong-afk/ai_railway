@@ -151,6 +151,8 @@
 | `FuzzParsePNG`, `FuzzParseJPEG`, `FuzzParseGIF`, `FuzzParseWebP`, `FuzzParseBMP`, `FuzzParseTIFF` | `internal/media` | Свой разбор заголовка недоверенного изображения в `aisec-media` (ADR-0032, раздел 6): без паники; принятый заголовок — ширина и высота от 1 до 2^31, хотя бы один кадр, пиксели больше 0; итог анализа тех же данных проходит `wire.Result.Validate` | 5.37 |
 | `FuzzServerReadFrame` | `internal/media/wire` | Кадр протокола `aisec-media` со стороны анализатора (от шлюза): без паники; принятый кадр — только `hello` или `analyze`, длина тела совпадает с заголовком и не больше 32 МиБ, срок — только у `analyze` | 5.37 |
 | `FuzzClientReadFrame` | `internal/media/wire` | Кадр протокола `aisec-media` со стороны шлюза: без паники; принят только `hello_ok`, `result` или `error`; принятый `result` согласован (статус, причина, формат, размеры, проверки), пределы `hello_ok` не больше протокольных | 5.37 |
+| `FuzzImageInfo` | `tools/synth-media` | Чанки PNG и сегменты JPEG до `SOS`, текстовые чанки (`zTXt` и `iTXt` — с пределом распаковки), `EXIF` и `XMP` генератора корпуса изображений: без паники; принятый файл — с форматом и размерами больше 0. Утилита вне поставки, разбирает только свой корпус | 5.36 |
+| `FuzzReadExif` | `tools/synth-media` | Блок `TIFF` в `EXIF` (IFD0 и Exif IFD): без паники и выхода за пределы; длина текста ограничена | 5.36 |
 | `FuzzParseNativeLock` | `tools/license-check` | Строки `deploy/build/onnxruntime/deps.lock`: без паники; принятая строка — имя из строчных букв, цифр и «_», вид `git` с коммитом из 40 знаков или `url` с версией «-», источник https | 5.11 |
 
 ## Кампании и результаты

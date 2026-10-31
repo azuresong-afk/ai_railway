@@ -1,0 +1,25 @@
+{
+  "id": "meta-05",
+  "file": "meta-05.jpg",
+  "text_file": "meta-05.txt",
+  "kind": "metadata",
+  "lang": "ru",
+  "dm": [
+    "DM-47"
+  ],
+  "description": "JPEG: пароль в комментарии COM",
+  "metadata": [
+    {
+      "container": "jpeg-com",
+      "text": "Пароль от почты: Zt6p3Hs8kN1q!, логин ops.duty"
+    }
+  ],
+  "qr": [],
+  "expect": [
+    {
+      "type": "secret.password",
+      "source": "metadata",
+      "text": "Zt6p3Hs8kN1q!"
+    }
+  ]
+}

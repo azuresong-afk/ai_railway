@@ -1,0 +1,7 @@
+ops@build-01: ~/billing
+$ cat .env
+APP_ENV=production
+DB_PASSWORD=Qx7m2Lp9vT4w!
+DATABASE_URL=postgres://billing:Rk4n8Wq2zY6e!@db.billing.test:5432/billing
+LOG_LEVEL=info
+# не коммитить этот файл

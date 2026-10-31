@@ -1,0 +1,30 @@
+{
+  "id": "card-04",
+  "file": "card-04.png",
+  "text_file": "card-04.txt",
+  "kind": "card",
+  "lang": "en",
+  "dm": [
+    "DM-46"
+  ],
+  "description": "Payment profile: card number, phone and e-mail, no name",
+  "metadata": [],
+  "qr": [],
+  "expect": [
+    {
+      "type": "pii.card",
+      "source": "ocr",
+      "text": "4000 0044 2984 0600"
+    },
+    {
+      "type": "pii.phone",
+      "source": "ocr",
+      "text": "+7 300 642-41-57"
+    },
+    {
+      "type": "pii.email",
+      "source": "ocr",
+      "text": "client4894@pochta.test"
+    }
+  ]
+}
