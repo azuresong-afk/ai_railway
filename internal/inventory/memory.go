@@ -241,3 +241,31 @@ func maxTime(a, b time.Time) time.Time {
 	}
 	return a
 }
+
+// Export — снимок реестра для AI-BOM; запись аудита — в Records.
+func (m *Memory) Export(_ context.Context, _ string, fn func(Snapshot) (audit.Entry, error)) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	snap := Snapshot{Providers: slices.Clone(m.Providers), Usage: slices.Clone(m.usage)}
+	for _, a := range m.Apps {
+		if !a.Archived {
+			a.Keys = nil
+			snap.Apps = append(snap.Apps, a)
+		}
+	}
+	files := 0
+	for _, v := range m.sorted() {
+		v.Files = slices.Clone(v.Files)
+		files += len(v.Files)
+		snap.Models = append(snap.Models, v)
+	}
+	if files > MaxAIBOMFiles {
+		return ErrExportTooLarge
+	}
+	rec, err := fn(snap)
+	if err != nil {
+		return err
+	}
+	m.Records = append(m.Records, rec)
+	return nil
+}

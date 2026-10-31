@@ -22,6 +22,8 @@ const (
 	pgRollbackTimeout = 5 * time.Second
 	// maxSeenRows — троек из агрегатов за один запуск.
 	maxSeenRows = 2 * MaxUsage
+	// pgExportTimeout — предел на чтение реестра для выгрузки AI-BOM.
+	pgExportTimeout = time.Minute
 	// maxKeysShown — ключей приложения в сводке (новые первыми, без
 	// отозванных); остальные — только числом.
 	maxKeysShown = 20
@@ -602,4 +604,116 @@ func readSeen(ctx context.Context, tx pgx.Tx, orgID string, from *time.Time) ([]
 		return out[:maxSeenRows], true, nil
 	}
 	return out, false, nil
+}
+
+// Export читает реестр одним снимком (REPEATABLE READ) и той же
+// транзакцией записывает аудит выгрузки: документ без записи не выдаётся.
+func (s *PGStore) Export(ctx context.Context, orgID string, fn func(Snapshot) (audit.Entry, error)) error {
+	return s.inTx(ctx, pgExportTimeout, func(ctx context.Context, tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `SET TRANSACTION ISOLATION LEVEL REPEATABLE READ`); err != nil {
+			return dbErr("выгрузка", err)
+		}
+		var files int
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM inventory_model_files f JOIN inventory_models m ON m.id = f.model_id
+			WHERE m.org_id = $1`, orgID).Scan(&files); err != nil {
+			return dbErr("выгрузка", err)
+		}
+		if files > MaxAIBOMFiles {
+			return ErrExportTooLarge
+		}
+		var snap Snapshot
+		rows, err := tx.Query(ctx, `SELECT a.id, a.slug, a.name, a.env, a.department, p.slug, a.models
+			FROM applications a JOIN providers p ON p.id = a.provider_id WHERE a.org_id = $1 AND a.archived_at IS NULL ORDER BY a.slug`, orgID)
+		if err != nil {
+			return dbErr("приложения", err)
+		}
+		for rows.Next() {
+			var a App
+			if err := rows.Scan(&a.ID, &a.Slug, &a.Name, &a.Env, &a.Department, &a.Provider, &a.Models); err != nil {
+				rows.Close()
+				return dbErr("приложения", err)
+			}
+			snap.Apps = append(snap.Apps, a)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return dbErr("приложения", err)
+		}
+		// Адрес провайдера читается для AI-BOM; учётные данные — нет.
+		rows, err = tx.Query(ctx, `SELECT id, slug, name, type, external, base_url FROM providers WHERE org_id = $1 ORDER BY slug`, orgID)
+		if err != nil {
+			return dbErr("провайдеры", err)
+		}
+		for rows.Next() {
+			var p Provider
+			if err := rows.Scan(&p.ID, &p.Slug, &p.Name, &p.Type, &p.External, &p.Endpoint); err != nil {
+				rows.Close()
+				return dbErr("провайдеры", err)
+			}
+			snap.Providers = append(snap.Providers, p)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return dbErr("провайдеры", err)
+		}
+		rows, err = tx.Query(ctx, `SELECT `+modelCols+` FROM inventory_models m WHERE m.org_id = $1 ORDER BY m.provider, m.name`, orgID)
+		if err != nil {
+			return dbErr("модели", err)
+		}
+		idx := map[string]int{}
+		for rows.Next() {
+			m, err := scanModel(rows)
+			if err != nil {
+				rows.Close()
+				return dbErr("модели", err)
+			}
+			idx[m.ID] = len(snap.Models)
+			snap.Models = append(snap.Models, m)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return dbErr("модели", err)
+		}
+		rows, err = tx.Query(ctx, `SELECT f.model_id, f.path, f.size, f.role, f.hash_alg, f.hash FROM inventory_model_files f
+			JOIN inventory_models m ON m.id = f.model_id WHERE m.org_id = $1 ORDER BY f.model_id, f.path`, orgID)
+		if err != nil {
+			return dbErr("файлы моделей", err)
+		}
+		for rows.Next() {
+			var id string
+			var f File
+			if err := rows.Scan(&id, &f.Path, &f.Size, &f.Role, &f.HashAlg, &f.Hash); err != nil {
+				rows.Close()
+				return dbErr("файлы моделей", err)
+			}
+			if i, ok := idx[id]; ok {
+				snap.Models[i].Files = append(snap.Models[i].Files, f)
+			}
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return dbErr("файлы моделей", err)
+		}
+		rows, err = tx.Query(ctx, `SELECT id, app, provider, model, first_seen, last_seen FROM inventory_usage WHERE org_id = $1 ORDER BY id`, orgID)
+		if err != nil {
+			return dbErr("использование", err)
+		}
+		for rows.Next() {
+			var u Usage
+			if err := rows.Scan(&u.ID, &u.App, &u.Provider, &u.Model, &u.FirstSeen, &u.LastSeen); err != nil {
+				rows.Close()
+				return dbErr("использование", err)
+			}
+			snap.Usage = append(snap.Usage, u)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return dbErr("использование", err)
+		}
+		rec, err := fn(snap)
+		if err != nil {
+			return err
+		}
+		return s.record(ctx, tx, rec)
+	})
 }

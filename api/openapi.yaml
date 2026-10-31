@@ -5945,6 +5945,33 @@ paths:
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ProblemInternal' }
         '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/inventory/aibom:
+    get:
+      summary: Выгрузка AI-BOM
+      description: |
+        Право `inventory.export` (администраторы; аудитору не выдаётся). Реестр ИИ одним документом CycloneDX 1.6
+        JSON (ML-BOM, ADR-0029, п. 3): установка — `metadata.component`; приложения — компоненты `application` с
+        зависимостями от моделей и сервисов провайдеров (по использованию и разрешённым моделям); модели —
+        `machine-learning-model` (издатель — ответственный, свойства `aisec:kind`, `aisec:origin`, `aisec:status`)
+        с вложенными компонентами `file` и хешем SHA-256; провайдеры — `services` с `trustZone` `external` или
+        `internal` и адресом без учётных данных (только схема, хост и порт). Архивные приложения и ключи
+        приложений не выгружаются. Каждая выгрузка пишет в журнал аудита `data.export` (вид `aibom`, число
+        компонентов и сервисов) до выдачи документа: без записи документ не выдаётся (DM-41). Больше 100 000
+        файлов моделей — 422.
+      x-permission: inventory.export
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      responses:
+        '200':
+          description: Документ CycloneDX 1.6 (вложение `aisec-aibom.cdx.json`)
+          content:
+            application/vnd.cyclonedx+json:
+              schema: { type: object, description: Документ по схеме CycloneDX 1.6 (bom-1.6.schema.json) }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '422': { $ref: '#/components/responses/ProblemUnprocessable' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
   /api/v1/compliance:
     get:
       summary: Соответствие требованиям

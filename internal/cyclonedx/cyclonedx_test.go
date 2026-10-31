@@ -66,3 +66,39 @@ func FuzzParse(f *testing.F) {
 		_, _ = Parse(data, 1<<16)
 	})
 }
+
+func TestValidate(t *testing.T) {
+	h := hasher(t)
+	good := func() *BOM {
+		b := &BOM{BOMFormat: BOMFormat, SpecVersion: SpecVersion, Version: 1,
+			Metadata: Metadata{Timestamp: "2026-10-31T00:00:00Z", Component: Component{Type: "application", BOMRef: "aisec", Name: "AISec"}},
+			Components: []Component{{Type: "machine-learning-model", BOMRef: "m", Name: "m",
+				Components: []Component{{Type: "file", BOMRef: "m/f", Name: "f", Hashes: []Hash{{Alg: "SHA-256", Content: strings.Repeat("ab", 32)}}}}}},
+			Services:     []Service{{BOMRef: "p", Name: "p", TrustZone: "external"}},
+			Dependencies: []Dependency{{Ref: "aisec", DependsOn: []string{"m"}}, {Ref: "m", DependsOn: []string{"p"}}}}
+		b.SerialNumber = SerialFor(b, h)
+		return b
+	}
+	if err := Validate(good()); err != nil {
+		t.Fatalf("правильный документ: %v", err)
+	}
+	for name, mut := range map[string]func(*BOM){
+		"версия":              func(b *BOM) { b.SpecVersion = "1.5" },
+		"серийный номер":      func(b *BOM) { b.SerialNumber = "x" },
+		"время":               func(b *BOM) { b.Metadata.Timestamp = "вчера" },
+		"тип компонента":      func(b *BOM) { b.Components[0].Type = "model" },
+		"алгоритм хеша":       func(b *BOM) { b.Components[0].Components[0].Hashes[0].Alg = "GOST" },
+		"вид хеша":            func(b *BOM) { b.Components[0].Components[0].Hashes[0].Content = "xyz" },
+		"повтор bom-ref":      func(b *BOM) { b.Services[0].BOMRef = "m/f" },
+		"ссылка связи":        func(b *BOM) { b.Dependencies[1].DependsOn = []string{"нет"} },
+		"зона доверия":        func(b *BOM) { b.Services[0].TrustZone = "dmz" },
+		"повтор связи":        func(b *BOM) { b.Dependencies = append(b.Dependencies, Dependency{Ref: "m"}) },
+		"компонент без имени": func(b *BOM) { b.Components[0].Name = "" },
+	} {
+		b := good()
+		mut(b)
+		if Validate(b) == nil {
+			t.Errorf("%s: ошибка не найдена", name)
+		}
+	}
+}

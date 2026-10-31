@@ -14,6 +14,7 @@ import (
 
 	"github.com/azuresong-afk/ai_railway/internal/audit"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
+	"github.com/azuresong-afk/ai_railway/internal/cyclonedx"
 	"github.com/azuresong-afk/ai_railway/internal/store"
 	"github.com/azuresong-afk/ai_railway/migrations"
 )
@@ -460,5 +461,50 @@ func TestPGInventoryLimits(t *testing.T) {
 		if _, err := e.owner.Exec(ctx, sql, id); err == nil {
 			t.Errorf("ограничение не сработало: %s", sql)
 		}
+	}
+}
+
+// Выгрузка AI-BOM на живой БД (задача 5.18): снимок реестра, адрес
+// провайдера без пути, запись data.export той же транзакцией.
+func TestPGInventoryAIBOM(t *testing.T) {
+	e := setupPG(t)
+	ctx := pgTestCtx(t)
+	in := customerInput(t, "llama-ft", "model.safetensors")
+	in.Provider = "gigachat"
+	m, err := e.svc.CreateModel(ctx, e.by, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := e.audits(t, "data.export")
+	bom, err := e.svc.ExportAIBOM(ctx, e.by, "1.5.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cyclonedx.Validate(bom); err != nil {
+		t.Fatalf("документ не по схеме: %v", err)
+	}
+	if len(bom.Services) != 1 || bom.Services[0].TrustZone != "external" || bom.Services[0].Endpoints[0] != "https://gigachat.example.ru:443" {
+		t.Fatalf("сервисы: %+v", bom.Services)
+	}
+	var model *cyclonedx.Component
+	for i := range bom.Components {
+		if bom.Components[i].BOMRef == "model:"+m.ID {
+			model = &bom.Components[i]
+		}
+	}
+	if model == nil || len(model.Components) != 1 || len(model.Components[0].Hashes) != 1 {
+		t.Fatalf("модель: %+v", bom.Components)
+	}
+	if e.audits(t, "data.export") != before+1 {
+		t.Fatal("нет записи data.export")
+	}
+	var kind string
+	var comps int
+	if err := e.owner.QueryRow(ctx, `SELECT details->>'kind', (details->>'components')::int FROM audit_log
+		WHERE action = 'data.export' ORDER BY seq DESC LIMIT 1`).Scan(&kind, &comps); err != nil {
+		t.Fatal(err)
+	}
+	if kind != ExportKindAIBOM || comps != 3 {
+		t.Errorf("запись: вид %q, компонентов %d", kind, comps)
 	}
 }

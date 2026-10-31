@@ -30,6 +30,7 @@ func inventoryRoutes(d Deps) []Route {
 		{Method: http.MethodDelete, Path: "/api/v1/inventory/models/{id}", Permission: auth.PermInventoryManage,
 			Handler: needInventory(d, d.deleteInventoryModel)},
 		{Method: http.MethodGet, Path: "/api/v1/inventory/usage", Permission: auth.PermInventoryRead, Handler: needInventory(d, d.listInventoryUsage)},
+		{Method: http.MethodGet, Path: "/api/v1/inventory/aibom", Permission: auth.PermInventoryExport, Handler: needInventory(d, d.exportAIBOM)},
 	}
 }
 
@@ -66,6 +67,9 @@ func inventoryProblem(logger *slog.Logger, err error) *Problem {
 		return NewProblem(http.StatusConflict, CodeConflict, "Модель с этим именем у этого провайдера уже есть в реестре: измените её.")
 	case errors.Is(err, inventory.ErrTooMany):
 		return NewProblem(http.StatusUnprocessableEntity, CodeUnprocessable, "В реестре уже 5 000 моделей: удалите неиспользуемые.")
+	case errors.Is(err, inventory.ErrExportTooLarge):
+		return NewProblem(http.StatusUnprocessableEntity, CodeUnprocessable,
+			"В реестре больше 100 000 файлов моделей: AI-BOM одним документом не выгружается.")
 	case errors.Is(err, inventory.ErrNoProvider):
 		return Invalid("Проверьте введённые данные.", FieldError{Field: "provider", Detail: "Провайдер не найден: укажите ID существующего провайдера."})
 	}
@@ -408,4 +412,33 @@ func (d Deps) listInventoryUsage(w http.ResponseWriter, r *http.Request) {
 		resp.Items = append(resp.Items, usageView(u))
 	}
 	WriteJSON(w, http.StatusOK, resp)
+}
+
+// exportAIBOM — GET /api/v1/inventory/aibom: реестр в CycloneDX 1.6
+// (ADR-0029, п. 3). Запись data.export пишется сервисом той же транзакцией,
+// что читает реестр; без неё документ не выдаётся.
+func (d Deps) exportAIBOM(w http.ResponseWriter, r *http.Request) {
+	by, ok := d.inventoryBy(r)
+	if !ok {
+		WriteProblem(w, errInternal())
+		return
+	}
+	bom, err := d.Inventory.ExportAIBOM(r.Context(), by, d.Version)
+	if err != nil {
+		WriteProblem(w, inventoryProblem(d.Logger, err))
+		return
+	}
+	data, err := json.MarshalIndent(bom, "", "  ")
+	if err != nil {
+		WriteProblem(w, inventoryProblem(d.Logger, err))
+		return
+	}
+	h := w.Header()
+	h.Set("Content-Type", "application/vnd.cyclonedx+json; version=1.6")
+	h.Set("Cache-Control", "no-store")
+	h.Set("Content-Disposition", `attachment; filename="aisec-aibom.cdx.json"`)
+	w.WriteHeader(http.StatusOK)
+	if _, err := w.Write(append(data, '\n')); err != nil {
+		d.Logger.Warn("выгрузка AI-BOM не передана клиенту", "error", err)
+	}
 }

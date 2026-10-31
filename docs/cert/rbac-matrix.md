@@ -115,6 +115,7 @@
 | POST | `/api/v1/incidents/{id}/stages/{stage}` | `incidents.manage` | да | — | да | — | — | да |
 | POST | `/api/v1/incidents/{id}/status` | `incidents.manage` | да | — | да | — | — | да |
 | GET | `/api/v1/inventory` | `inventory.read` | да | да | да | да | — | да |
+| GET | `/api/v1/inventory/aibom` | `inventory.export` | да | да | — | — | — | да |
 | GET | `/api/v1/inventory/models` | `inventory.read` | да | да | да | да | — | да |
 | POST | `/api/v1/inventory/models` | `inventory.manage` | да | да | — | — | — | да |
 | GET | `/api/v1/inventory/models/{id}` | `inventory.read` | да | да | да | да | — | да |

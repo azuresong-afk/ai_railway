@@ -10626,6 +10626,59 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/inventory/aibom": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Выгрузка AI-BOM
+         * @description Право `inventory.export` (администраторы; аудитору не выдаётся). Реестр ИИ одним документом CycloneDX 1.6
+         *     JSON (ML-BOM, ADR-0029, п. 3): установка — `metadata.component`; приложения — компоненты `application` с
+         *     зависимостями от моделей и сервисов провайдеров (по использованию и разрешённым моделям); модели —
+         *     `machine-learning-model` (издатель — ответственный, свойства `aisec:kind`, `aisec:origin`, `aisec:status`)
+         *     с вложенными компонентами `file` и хешем SHA-256; провайдеры — `services` с `trustZone` `external` или
+         *     `internal` и адресом без учётных данных (только схема, хост и порт). Архивные приложения и ключи
+         *     приложений не выгружаются. Каждая выгрузка пишет в журнал аудита `data.export` (вид `aibom`, число
+         *     компонентов и сервисов) до выдачи документа: без записи документ не выдаётся (DM-41). Больше 100 000
+         *     файлов моделей — 422.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Документ CycloneDX 1.6 (вложение `aisec-aibom.cdx.json`) */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/vnd.cyclonedx+json": Record<string, never>;
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/compliance": {
         parameters: {
             query?: never;
