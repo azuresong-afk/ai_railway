@@ -159,6 +159,9 @@ const (
 	// безопасности: запрет модели (5.22) — отдельное право.
 	PermInventoryRead   = "inventory.read"
 	PermInventoryManage = "inventory.manage"
+	// Выгрузка AI-BOM (задача 5.18, ADR-0029, п. 6): весь реестр одним
+	// документом — администраторам; аудитор не получает (не «.read»).
+	PermInventoryExport = "inventory.export"
 )
 
 // Permission — разрешение из каталога.
@@ -265,6 +268,7 @@ var permissionCatalog = []Permission{
 	{Name: PermComplianceBaseLoad, Title: "Загрузка обновлённой подписанной базы требований и возврат её предыдущей версии", Group: "Соответствие"},
 	{Name: PermInventoryRead, Title: "Просмотр реестра ИИ: приложения, ключи (без секретов), провайдеры, модели, файлы моделей и использование", Group: "Реестр ИИ"},
 	{Name: PermInventoryManage, Title: "Добавление, изменение и удаление моделей в реестре ИИ (в том числе файлов моделей заказчика с хешами)", Group: "Реестр ИИ"},
+	{Name: PermInventoryExport, Title: "Выгрузка реестра ИИ в AI-BOM (CycloneDX 1.6)", Group: "Реестр ИИ"},
 }
 
 // auditorExtra — разрешения аудитора сверх чтения: они ничего не меняют,
@@ -455,7 +459,8 @@ var builtinRoles = []RoleDef{
 			PermReportsRead: ScopeAll, PermReportSchedulesRead: ScopeAll, PermReportSchedulesManage: ScopeAll,
 			PermAgentsRead: ScopeAll, PermAgentsManage: ScopeAll, PermShadowAIRead: ScopeAll, PermShadowAIManage: ScopeAll,
 			PermLicenseRead: ScopeAll, PermLicenseManage: ScopeAll,
-			PermComplianceRead: ScopeAll, PermComplianceBaseLoad: ScopeAll, PermInventoryRead: ScopeAll, PermInventoryManage: ScopeAll}},
+			PermComplianceRead: ScopeAll, PermComplianceBaseLoad: ScopeAll, PermInventoryRead: ScopeAll, PermInventoryManage: ScopeAll,
+			PermInventoryExport: ScopeAll}},
 	{ID: RoleAnalyst, DisplayName: "Аналитик", Builtin: true,
 		Description: "Разбор оповещений и инцидентов, поиск по событиям",
 		Grants: grantAll(PermSystemRead, PermEventsRead, PermEventsExport, PermEventsMark, PermApplicationsRead, PermProvidersRead,

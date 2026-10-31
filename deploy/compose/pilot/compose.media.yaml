@@ -1,0 +1,75 @@
+# Анализатор изображений (ADR-0032, задача 5.38): процесс aisec-media и
+# подключение к нему шлюза. По умолчанию выключен. Включение — после
+# prepare-host.sh (он создаёт пользователя aisec-media и каталог сокета
+# media/run, пишет AISEC_MEDIA_UID в .env) в .env:
+#
+#   COMPOSE_FILE=compose.yaml:compose.media.yaml
+#   COMPOSE_PROFILES=db,media
+#
+# Вместе с ML: COMPOSE_FILE=compose.yaml:compose.ml.yaml:compose.media.yaml и
+# COMPOSE_PROFILES=db,ml,media. Файл без профиля media — ошибка compose
+# («depends on undefined service»), а не тихая работа шлюза без анализатора.
+#
+# Изоляция ЗИ.7 (ADR-0032, раздел 3): без сети вовсе (network_mode: none),
+# корень только для чтения, /tmp — небольшой tmpfs без исполнения, лимиты
+# памяти, процессора и числа процессов, без привилегий (cap_drop: ALL,
+# no-new-privileges) и со своим профилем seccomp — список разрешённых
+# системных вызовов, socket — только AF_UNIX (seccomp/aisec-media.json).
+# Свой пользователь aisec-media с группой шлюза; соединения принимаются
+# только от шлюза (UID и GID собеседника — AISEC_GW_UID и AISEC_GW_GID,
+# SO_PEERCRED). Каталог media/run — 0750, владелец aisec-media, группа
+# aisec-gw: шлюз только подключается к сокету (том только для чтения),
+# остальные пользователи хоста каталог не видят. Самопроверка целостности —
+# по манифесту выпуска aisec-media внутри образа, при нарушении — остановка.
+#
+# Падение, зависание или перегрузка aisec-media не останавливают шлюз:
+# изображения получают отметку «не проверено» (ADR-0032, раздел 8). Шлюз
+# начинает передавать изображения с задачи 5.39; до неё сокет готов, но
+# шлюз его не открывает.
+#
+# Якоря compose.yaml сюда не переходят: защита сервиса записана полностью и
+# проверяется make images-verify (tools/imagecheck compose) и тестами
+# tools/imagecheck — убрать ограничение молча нельзя.
+services:
+  aisec-gateway:
+    depends_on:
+      aisec-media: {condition: service_started}
+    environment:
+      AISEC_GATEWAY_MEDIA_SOCKET: /run/aisec-media/aisec-media.sock
+    volumes:
+      - ${AISEC_DATA_DIR:?задайте AISEC_DATA_DIR}/media/run:/run/aisec-media:ro
+
+  aisec-media:
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true", "seccomp=./seccomp/aisec-media.json"]
+    restart: unless-stopped
+    logging:
+      driver: local
+      options: {max-size: "20m", max-file: "5"}
+    image: ${AISEC_IMAGE_REPO:-aisec}/aisec-media:${AISEC_VERSION:?задайте AISEC_VERSION}
+    profiles: [media]
+    user: "${AISEC_MEDIA_UID:?запустите prepare-host.sh}:${AISEC_GW_GID:?запустите prepare-host.sh}"
+    network_mode: none
+    # Временный каталог — только для движка OCR, если он потребует (ADR-0033):
+    # недоверенные изображения на диск не пишутся.
+    tmpfs:
+      - "/tmp:size=16m,mode=1777,noexec,nosuid,nodev"
+    command:
+      - "-socket=/run/aisec-media/aisec-media.sock"
+      # Собеседник по сокету — только шлюз: UID и GID сверяются по
+      # SO_PEERCRED; без них aisec-media не запускается.
+      - "-peer-uid=${AISEC_GW_UID:?запустите prepare-host.sh}"
+      - "-peer-gid=${AISEC_GW_GID:?запустите prepare-host.sh}"
+      # Память растёт с числом исполнителей: до 250 МиБ на каждого при
+      # пределе 25 Мпикс (ADR-0032, раздел 5). Больше исполнителей —
+      # больше AISEC_MEDIA_MEM_LIMIT.
+      - "-workers=${AISEC_MEDIA_WORKERS:-2}"
+    volumes:
+      - ${AISEC_DATA_DIR:?задайте AISEC_DATA_DIR}/media/run:/run/aisec-media
+    mem_limit: ${AISEC_MEDIA_MEM_LIMIT:-1g}
+    # Своп не даёт обойти лимит памяти.
+    memswap_limit: ${AISEC_MEDIA_MEM_LIMIT:-1g}
+    cpus: ${AISEC_MEDIA_CPUS:-2}
+    pids_limit: 64
+    stop_grace_period: 10s

@@ -191,6 +191,9 @@ type Provider struct {
 	External        bool
 	CredentialSet   bool
 	CredentialSetAt *time.Time
+	// Endpoint — адрес провайдера; заполняется только для выгрузки AI-BOM,
+	// в документ попадают лишь схема, хост и порт.
+	Endpoint string
 }
 
 // SyncState — состояние задачи пополнения.
@@ -282,6 +285,10 @@ type Store interface {
 	// или nil (новых записей нет).
 	Discover(ctx context.Context, orgID string, now time.Time, ids func() (string, error),
 		rec func(DiscoverResult) *audit.Entry) (DiscoverResult, error)
+	// Export читает реестр одним снимком и в той же транзакции записывает
+	// запись аудита, которую вернёт fn; ошибка fn отменяет выгрузку.
+	// ErrExportTooLarge — файлов моделей больше MaxAIBOMFiles.
+	Export(ctx context.Context, orgID string, fn func(Snapshot) (audit.Entry, error)) error
 }
 
 // Options — зависимости Service.
@@ -296,6 +303,7 @@ type Options struct {
 // Service — реестр ИИ.
 type Service struct {
 	store  Store
+	hasher aisecCrypto.Hasher
 	ids    *ids.Generator
 	orgID  string
 	clock  func() time.Time
@@ -311,7 +319,11 @@ func New(o Options) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Service{store: o.Store, ids: ids.NewGenerator(r), orgID: o.OrgID, clock: o.Clock, logger: o.Logger}
+	h, err := o.Provider.Hasher()
+	if err != nil {
+		return nil, err
+	}
+	s := &Service{store: o.Store, hasher: h, ids: ids.NewGenerator(r), orgID: o.OrgID, clock: o.Clock, logger: o.Logger}
 	if s.orgID == "" {
 		s.orgID = audit.DefaultOrgID
 	}

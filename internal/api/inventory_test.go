@@ -8,6 +8,7 @@ import (
 	"time"
 
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
+	"github.com/azuresong-afk/ai_railway/internal/cyclonedx"
 	"github.com/azuresong-afk/ai_railway/internal/inventory"
 )
 
@@ -55,6 +56,8 @@ func TestInventoryAccessDenied(t *testing.T) {
 		{owner, "GET", "/api/v1/inventory/usage", ""},
 		{auditor, "POST", "/api/v1/inventory/models", body}, {auditor, "PATCH", id, `{}`}, {auditor, "DELETE", id, ""},
 		{analyst, "POST", "/api/v1/inventory/models", body}, {analyst, "PATCH", id, `{}`}, {analyst, "DELETE", id, ""},
+		// AI-BOM — только администраторам: аудитор и аналитик не выгружают (inventory.export не «.read»).
+		{owner, "GET", "/api/v1/inventory/aibom", ""}, {auditor, "GET", "/api/v1/inventory/aibom", ""}, {analyst, "GET", "/api/v1/inventory/aibom", ""},
 	} {
 		mustProblem(t, e.call(c.s, c.method, c.path, c.body, true), http.StatusForbidden, CodeForbidden)
 	}
@@ -175,5 +178,53 @@ func TestInventoryViaAPI(t *testing.T) {
 	mustProblem(t, e.call(sys, "DELETE", path, "", true), http.StatusNotFound, CodeNotFound)
 	if r := mem.Records[len(mem.Records)-1]; r.Action != "inventory.model_deleted" {
 		t.Fatalf("аудит удаления: %+v", r)
+	}
+}
+
+// Выгрузка AI-BOM (задача 5.18): CycloneDX 1.6 по правилам схемы, запись
+// data.export с видом aibom и числом компонентов (DM-41).
+func TestInventoryAIBOMViaAPI(t *testing.T) {
+	e, mem := newInventoryEnv(t)
+	sys := e.mustLogin(t, "sysadm")
+	w := e.call(sys, "POST", "/api/v1/inventory/models", `{"kind":"customer","provider":"gigachat","name":"llama-ft","owner":"Отдел ИИ","files":[`+
+		fmt.Sprintf(`{"path":"model.safetensors","size":4096,"role":"weights","sha256":%q}`, invHash)+`]}`, true)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("создание: %d %s", w.Code, w.Body)
+	}
+	n := len(mem.Records)
+	w = e.call(sys, "GET", "/api/v1/inventory/aibom", "", false)
+	if w.Code != http.StatusOK || !strings.HasPrefix(w.Header().Get("Content-Type"), "application/vnd.cyclonedx+json") ||
+		w.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("выгрузка: %d %v %s", w.Code, w.Header(), w.Body)
+	}
+	bom, err := cyclonedx.Parse(w.Body.Bytes(), 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cyclonedx.Validate(bom); err != nil {
+		t.Fatalf("документ не по схеме: %v", err)
+	}
+	types := map[string]bool{}
+	for _, c := range bom.Components {
+		types[c.Type] = true
+		for _, f := range c.Components {
+			if f.Type == "file" && (len(f.Hashes) != 1 || f.Hashes[0].Content != invHash) {
+				t.Errorf("файл модели без хеша: %+v", f)
+			}
+		}
+	}
+	if !types["machine-learning-model"] || !types["application"] || len(bom.Services) != 1 || bom.Services[0].TrustZone != "external" {
+		t.Fatalf("состав: %v, сервисы %+v", types, bom.Services)
+	}
+	if strings.Contains(w.Body.String(), "aisec_aaaaaaaa") {
+		t.Error("префикс ключа приложения в AI-BOM")
+	}
+	if len(mem.Records) != n+1 {
+		t.Fatalf("записей аудита %d → %d", n, len(mem.Records))
+	}
+	rec := mem.Records[n]
+	det, _ := rec.Details.(map[string]any)
+	if rec.Action != "data.export" || det["kind"] != inventory.ExportKindAIBOM || det["components"] != 3 || rec.Actor.Name != "sysadm" {
+		t.Errorf("запись data.export: %+v", rec)
 	}
 }

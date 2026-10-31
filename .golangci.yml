@@ -158,6 +158,22 @@ linters:
               desc: "декодер изображений — только в internal/media (ADR-0032, CLAUDE.md «Медиа»)"
             - pkg: "golang.org/x/image"
               desc: "декодер изображений — только в internal/media (ADR-0032, CLAUDE.md «Медиа»)"
+        model-scanner:
+          # Разбор недоверенных файлов моделей (ADR-0029, п. 4; задача 5.19) —
+          # только в aisec-cli на узле с моделями и в тестах: сервер и шлюз
+          # такие файлы не открывают. «$» — ровно пакет internal/modelscan,
+          # «/» — его подпакеты.
+          list-mode: lax
+          files:
+            - "$all"
+            - "!$test"
+            - "!**/cmd/aisec-cli/**"
+            - "!**/internal/modelscan/**"
+          deny:
+            - pkg: "github.com/azuresong-afk/ai_railway/internal/modelscan$"
+              desc: "сканер файлов моделей — только в cmd/aisec-cli и тестах (ADR-0029, п. 4)"
+            - pkg: "github.com/azuresong-afk/ai_railway/internal/modelscan/"
+              desc: "сканер файлов моделей — только в cmd/aisec-cli и тестах (ADR-0029, п. 4)"
         transitive-only:
           # Модули, которые в vendor только как зависимости go-ldap: свой UUID
           # продукта — в internal/crypto (ADR-0001), NTLM и MD4 не используются

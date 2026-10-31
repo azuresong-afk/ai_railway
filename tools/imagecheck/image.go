@@ -51,6 +51,9 @@ var imageRules = map[string]imageRule{
 	// aisec-ml — свой выпуск (build/release-ml): бинарник с ONNX Runtime,
 	// библиотеки и пакет моделей; портов нет, сети нет (ADR-0024).
 	"aisec-ml": {Bins: []string{"aisec-ml"}, Trees: []string{"lib", "models"}, Dynamic: true},
+	// aisec-media — свой выпуск (build/release-media, ADR-0032): статический
+	// бинарник; портов нет, сети нет. Движок OCR и модели — по ADR-0033.
+	"aisec-media": {Bins: []string{"aisec-media"}},
 }
 
 const (
@@ -421,7 +424,7 @@ func checkImage(img *image, kind, release string) []string {
 	add := func(format string, a ...any) { problems = append(problems, fmt.Sprintf(format, a...)) }
 	rule, ok := imageRules[img.Name]
 	if !ok {
-		add("неизвестный образ %q: ожидается один из aisec-server, aisec-gateway, aisec-cli, aisec-ml", img.Name)
+		add("неизвестный образ %q: ожидается один из aisec-server, aisec-gateway, aisec-cli, aisec-ml, aisec-media", img.Name)
 		return problems
 	}
 	c := img.Config.Config
