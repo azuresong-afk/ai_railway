@@ -42,10 +42,12 @@ const (
 const msgApprovalPending = "Ожидает подтверждения"
 
 // dropServer — сообщения сервера до ответа, кроме разрешённых
-// уведомлений, клиенту не передаются (запросы к клиенту, журнал сервера).
+// уведомлений, клиенту не передаются (запросы к клиенту, журнал сервера);
+// progress — только с progressToken этого запроса клиента.
 func (m *MCPHandler) dropServer(q *mcpReq) func(*mcp.Message) bool {
+	token := mcp.RequestProgressToken(q.msg)
 	return func(msg *mcp.Message) bool {
-		if q.sse != nil && mcp.ServerMessageAllowed(msg, false) {
+		if q.sse != nil && mcp.ServerMessageAllowed(msg, false, token) {
 			q.sse.send(mcp.Sanitize(msg))
 			return q.sse.err == nil
 		}
@@ -873,7 +875,7 @@ func (m *MCPHandler) listen(q *mcpReq) {
 	m.decide(q, policy.Allow, "")
 	m.stream(q)
 	resp, _, err := m.call(q, req, mcpListenTimeout, nil, func(msg *mcp.Message) bool {
-		if mcp.ServerMessageAllowed(msg, true) {
+		if mcp.ServerMessageAllowed(msg, true, nil) {
 			q.sse.send(mcp.Sanitize(msg))
 			return q.sse.err == nil
 		}

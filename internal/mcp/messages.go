@@ -267,6 +267,22 @@ func ParseCallParams(params *argschema.Value) (*CallParams, error) {
 	return cp, nil
 }
 
+// RequestProgressToken — params._meta.progressToken запроса клиента по
+// спецификации (ValidProgressToken); nil — нет или не по спецификации.
+func RequestProgressToken(m *Message) *argschema.Value {
+	if m == nil {
+		return nil
+	}
+	meta, ok := GetObject(m.Params, "_meta")
+	if !ok {
+		return nil
+	}
+	if t, ok := meta.Get(MetaProgressToken); ok && ValidProgressToken(t) {
+		return t
+	}
+	return nil
+}
+
 // ValidProgressToken — progressToken по спецификации (ProgressToken —
 // строка или число; шлюз, как для id запроса, принимает строку до
 // MaxIDLen байт или целое без дробной части и экспоненты): токен уходит
@@ -642,22 +658,24 @@ func ErrorResult(msg, version string, decision *argschema.Value) argschema.Value
 
 // ServerMessageAllowed — сообщение вышестоящего сервера, кроме ответа на
 // запрос, передаётся клиенту (ADR-0023, раздел 6): notifications/progress
-// (не в потоке subscriptions/listen), notifications/*/list_changed и
-// подтверждение подписки (только в потоке listen). Запросы сервера к
-// клиенту (2025-11-25) и прочие уведомления — нет.
-func ServerMessageAllowed(m *Message, listen bool) bool {
+// (не в потоке subscriptions/listen) с progressToken запроса клиента token,
+// notifications/*/list_changed и подтверждение подписки (только в потоке
+// listen). Запросы сервера к клиенту (2025-11-25) и прочие уведомления —
+// нет. token — RequestProgressToken запроса; nil — progress не передаётся.
+func ServerMessageAllowed(m *Message, listen bool, token *argschema.Value) bool {
 	if m.Kind != KindNotification {
 		return false
 	}
 	switch {
 	case m.Method == "notifications/progress":
-		// progressToken другого вида (ValidProgressToken) клиенту не
-		// передаётся: такой токен клиент серверу не давал.
-		if m.Params == nil {
+		// progressToken, которого нет в запросе клиента (другой вид, другое
+		// значение или запрос без токена), клиенту не передаётся: такой токен
+		// клиент серверу не давал (5Н5 ревью 5.r1 этапа 5).
+		if m.Params == nil || token == nil {
 			return false
 		}
 		t, ok := m.Params.Get("progressToken")
-		return !listen && ok && ValidProgressToken(t)
+		return !listen && ok && ValidProgressToken(t) && SameID(*t, *token)
 	case m.Method == "notifications/subscriptions/acknowledged":
 		return listen
 	case strings.HasPrefix(m.Method, "notifications/") && strings.HasSuffix(m.Method, "/list_changed"):

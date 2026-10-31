@@ -530,10 +530,28 @@ func TestServerMessages(t *testing.T) {
 		{`{"jsonrpc":"2.0","method":"notifications/progress","params":{"progressToken":1.5,"progress":1}}`, false, false},
 		{`{"jsonrpc":"2.0","method":"notifications/progress","params":{"progress":1}}`, false, false},
 	}
+	req := mustParse(t, `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"f","_meta":{"progressToken":1}}}`)
+	token := RequestProgressToken(req)
+	if token == nil {
+		t.Fatal("нет progressToken запроса")
+	}
 	for _, c := range cases {
 		m := mustParse(t, c.in)
-		if ServerMessageAllowed(m, false) != c.normal || ServerMessageAllowed(m, true) != c.listen {
+		if ServerMessageAllowed(m, false, token) != c.normal || ServerMessageAllowed(m, true, token) != c.listen {
 			t.Errorf("%s", c.in)
+		}
+	}
+	// 5Н5 ревью 5.r1: progress только с токеном этого запроса — другое
+	// значение, строка вместо целого и запрос без токена — не передаётся.
+	progress := mustParse(t, cases[0].in)
+	for _, r := range []string{
+		`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"f","_meta":{"progressToken":2}}}`,
+		`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"f","_meta":{"progressToken":"1"}}}`,
+		`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"f"}}`,
+		`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"f","_meta":{"progressToken":1.5}}}`,
+	} {
+		if ServerMessageAllowed(progress, false, RequestProgressToken(mustParse(t, r))) {
+			t.Errorf("progress с чужим токеном передан: %s", r)
 		}
 	}
 	p := Sanitize(mustParse(t, cases[0].in))
