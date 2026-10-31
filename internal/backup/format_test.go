@@ -173,6 +173,10 @@ func addSections(t testing.TB, s *Snapshot, keys *Keys) {
 	s.Licenses = []License{{Number: 1, File: []byte("synthetic-license"), LoadedAt: testTime, LoadedBy: "x"}}
 	s.LicenseClock = &testTime
 	s.ComplianceMarks = []ComplianceMark{{RequirementID: "fstec.upd.1", Status: "met", Comment: "проверено", SetAt: testTime, SetBy: "x"}}
+	s.ServiceDBs = []ServiceDB{
+		{Kind: "shadow_ai_catalog", Slot: "current", Version: 2, File: []byte("synthetic-db-2"), UploadedAt: testTime, UploadedBy: "x"},
+		{Kind: "shadow_ai_catalog", Slot: "previous", Version: 1, File: []byte("synthetic-db-1"), UploadedAt: testTime, UploadedBy: "x"},
+	}
 }
 
 func sealSample(t *testing.T, p crypto.Provider) ([]byte, *Snapshot) {
@@ -354,7 +358,7 @@ func TestOpenVersion1(t *testing.T) {
 	v1.Version = 1
 	v1.Channels, v1.AlertRules, v1.ReportSchedules, v1.ModelPrices, v1.Instructions = nil, nil, nil, nil, nil
 	v1.MCPServers, v1.Agents, v1.AgentTools, v1.ShadowAIExclusions, v1.Licenses, v1.ComplianceMarks = nil, nil, nil, nil, nil, nil
-	v1.GatewayTLS, v1.OIDC, v1.LDAP, v1.LicenseClock = nil, nil, nil, nil
+	v1.GatewayTLS, v1.OIDC, v1.LDAP, v1.LicenseClock, v1.ServiceDBs = nil, nil, nil, nil, nil
 	v1.Settings.Install = nil
 	v1.Users = slices.Clone(s.Users)
 	for i := range v1.Users {
@@ -496,6 +500,14 @@ func TestValidateReferences(t *testing.T) {
 		"привязка без отметки":        func(s *Snapshot) { s.Applications[0].Keys[0].AgentBound = false },
 		"нет закрытого ключа шлюза":   func(s *Snapshot) { s.GatewayTLS.Key = nil },
 		"разделы версии 2 в версии 1": func(s *Snapshot) { s.Version = 1 },
+		"повтор слота базы":           func(s *Snapshot) { s.ServiceDBs[1].Slot = "current" },
+		"неизвестный слот базы":       func(s *Snapshot) { s.ServiceDBs[1].Slot = "next" },
+		"вид базы":                    func(s *Snapshot) { s.ServiceDBs[0].Kind = "Shadow AI" },
+		"предыдущая без текущей":      func(s *Snapshot) { s.ServiceDBs = s.ServiceDBs[1:] },
+		"предыдущая не старше":        func(s *Snapshot) { s.ServiceDBs[1].Version = 2 },
+		"пустой файл базы":            func(s *Snapshot) { s.ServiceDBs[0].File = nil },
+		"версия базы 0":               func(s *Snapshot) { s.ServiceDBs[0].Version = 0 },
+		"версия базы сверх 2^53":      func(s *Snapshot) { s.ServiceDBs[0].Version = 1 << 53 },
 	} {
 		s := sampleSnapshot(t, p, w.Keys())
 		mutate(s)

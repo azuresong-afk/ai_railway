@@ -287,7 +287,7 @@ func backupRestore(args []string, dsn string, stdout, stderr io.Writer, now time
 		return fail(audit.ResultFailure, "invalid", fmt.Errorf("%w: %w", errBackupInvalid, err))
 	}
 	// Объекты — правилами сервиса этого выпуска, до записи «до» (В22).
-	if err := checkSnapshot(p, snap, *keepTokens); err != nil {
+	if err := checkSnapshot(p, arch, *keepTokens); err != nil {
 		return fail(audit.ResultFailure, "invalid", fmt.Errorf("%w: %w", errBackupInvalid, err))
 	}
 	details := snap.Counts()
@@ -307,7 +307,11 @@ func backupRestore(args []string, dsn string, stdout, stderr io.Writer, now time
 			return fail(audit.ResultFailure, "hmac_out", err)
 		}
 	}
-	opts := restoreOptions{allowNonEmpty: *allowNonEmpty, keepTokens: *keepTokens, now: now, ageHours: ageHours}
+	verifyDB, err := serviceDBVerifier(p)
+	if err != nil {
+		return fail(audit.ResultFailure, "error", err)
+	}
+	opts := restoreOptions{allowNonEmpty: *allowNonEmpty, keepTokens: *keepTokens, now: now, ageHours: ageHours, verifyServiceDB: verifyDB}
 	res, err := restoreTx(ctx, db, l, prepared, snap, opts, entry)
 	if err != nil {
 		var unknown *commitUnknownError
@@ -360,6 +364,12 @@ func backupRestore(args []string, dsn string, stdout, stderr io.Writer, now time
 			say(stdout, "  - %s\n", line)
 		}
 	}
+	if len(res.ServiceDBs) > 0 {
+		say(stdout, "Служебные базы:\n")
+		for _, line := range res.ServiceDBs {
+			say(stdout, "  - %s\n", line)
+		}
+	}
 	say(stdout, "Дальше: зарегистрируйте шлюзы заново (aisec-cli gateway token): ключи шлюзов и УЦ не восстанавливаются. "+
 		"Пользователи входят заново со своими паролями и вторым фактором.\n")
 	say(stdout, "Обязательно: копия возвращает состояние на %s. По архиву журнала аудита за время после неё "+
@@ -374,6 +384,8 @@ type restoreOptions struct {
 	keepTokens    bool
 	now           time.Time
 	ageHours      int64
+	// verifyServiceDB — проверка файлов служебных баз (serviceDBVerifier).
+	verifyServiceDB func(kind string, file []byte) (backup.ServiceDBMeta, error)
 }
 
 // liveSessionWindow — сессия с активностью в этом окне означает, что
@@ -435,7 +447,7 @@ func restoreTx(ctx context.Context, db *store.DB, l *audit.Log, prepared *backup
 	// установку; их новые значения — в записи аудита.
 	replaceSettings := st.Empty()
 	res, err := backup.Restore(ctx, tx, prepared, backup.RestoreOptions{ReplaceSettings: replaceSettings,
-		KeepAPITokens: opts.keepTokens, Now: opts.now})
+		KeepAPITokens: opts.keepTokens, Now: opts.now, VerifyServiceDB: opts.verifyServiceDB})
 	if err != nil {
 		return backup.RestoreResult{}, err
 	}
@@ -454,6 +466,13 @@ func restoreTx(ctx context.Context, db *store.DB, l *audit.Log, prepared *backup
 			items = append(items, line)
 		}
 		details["skipped"] = items
+	}
+	if len(res.ServiceDBs) > 0 {
+		items := make([]any, 0, len(res.ServiceDBs))
+		for _, line := range res.ServiceDBs {
+			items = append(items, line)
+		}
+		details["service_dbs_report"] = items
 	}
 	if replaceSettings {
 		details["settings"] = snap.SettingsDetails()

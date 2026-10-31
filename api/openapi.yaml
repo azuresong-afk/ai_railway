@@ -5745,6 +5745,199 @@ paths:
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ProblemInternal' }
         '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/inventory:
+    get:
+      summary: Сводка реестра ИИ
+      description: |
+        Право `inventory.read` (ТЗ 5.11, задача 5.17, ADR-0029). Приложения (провайдер, разрешённые модели, архив)
+        с ключами — действующие и истёкшие, новые первыми, не больше 20 на приложение: префикс, название, срок,
+        состояние; хеша и секрета ключа нет. Провайдеры — тип, признак «внешний», заданы ли учётные данные (сами
+        данные и адрес не показываются). Число моделей и записей использования, пределы реестра и состояние
+        пополнения по трафику: до какого часа прочитаны агрегаты, время запуска, достигнут ли предел и сколько
+        записей тогда пропущено. Запрос ничего не записывает.
+      x-permission: inventory.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/Background'
+      responses:
+        '200':
+          description: Сводка реестра
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InventoryOverview' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/inventory/models:
+    get:
+      summary: Модели в реестре ИИ
+      description: |
+        Право `inventory.read`. Модели провайдеров (`kind=provider`) и заказчика (`customer`), добавленные по трафику
+        (`origin=traffic`) или вручную (`manual`), в порядке добавления. Отбор: вид, происхождение, провайдер,
+        подстрока имени или названия без учёта регистра (`q`, до 256 символов). Файлы — только в карточке, здесь — их
+        число.
+      x-permission: inventory.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/Background'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - { name: kind, in: query, required: false, description: Вид модели, schema: { type: string, enum: [provider, customer] } }
+        - { name: origin, in: query, required: false, description: Происхождение записи, schema: { type: string, enum: [traffic, manual] } }
+        - $ref: '#/components/parameters/InventoryProvider'
+        - { name: q, in: query, required: false, description: Подстрока имени или названия, schema: { type: string, maxLength: 256 } }
+      responses:
+        '200':
+          description: Страница моделей
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InventoryModelPage' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    post:
+      summary: Добавить модель в реестр вручную
+      description: |
+        Право `inventory.manage`. Модель заказчика (`customer`) — с файлами и их хешами SHA-256 (эталон для сверки
+        сканером, DM-29), провайдер необязателен: если модель обслуживает провайдер продукта, запись связывается с
+        трафиком по паре «провайдер, имя». Модель провайдера (`provider`) — провайдер обязателен. Тело — до 256 КиБ,
+        строгий JSON; имя — до 256 символов, файлов — до 256, путь — относительный, до 512 байт. Пара «провайдер,
+        имя» уже есть — 409; провайдера нет — 400; в реестре 5 000 моделей — 422. Пишет `inventory.model_created`.
+      x-permission: inventory.manage
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NewInventoryModel' }
+      responses:
+        '201':
+          description: Модель добавлена
+          headers:
+            Location: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InventoryModelCard' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '409': { $ref: '#/components/responses/ProblemConflict' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '422': { $ref: '#/components/responses/ProblemUnprocessable' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/inventory/models/{id}:
+    get:
+      summary: Карточка модели
+      description: |
+        Право `inventory.read`. Модель с файлами (путь, размер, роль, хеш) и до 200 записей использования
+        приложениями по трафику.
+      x-permission: inventory.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/InventoryModelID'
+        - $ref: '#/components/parameters/Background'
+      responses:
+        '200':
+          description: Карточка модели
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InventoryModelCard' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    patch:
+      summary: Изменить модель
+      description: |
+        Право `inventory.manage`. Меняются вид, версия, название, описание, ответственный; `files` заменяет список
+        файлов целиком. Провайдер и имя не меняются: по ним модель связана с трафиком. Модель без провайдера не может
+        стать моделью провайдера (400). Изменение без отличий ничего не пишет. Пишет `inventory.model_updated`
+        (изменённые поля, число файлов до и после).
+      x-permission: inventory.manage
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/InventoryModelID'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/InventoryModelPatch' }
+      responses:
+        '200':
+          description: Модель изменена
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InventoryModelCard' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    delete:
+      summary: Удалить модель из реестра
+      description: |
+        Право `inventory.manage`. Модель удаляется вместе с файлами; записи использования остаются. Модель из трафика
+        появится снова, если её продолжают вызывать (ADR-0029, п. 2): чтобы её не использовали, уберите её из
+        разрешённых моделей приложения. Пишет `inventory.model_deleted`.
+      x-permission: inventory.manage
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/InventoryModelID'
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '204': { description: Модель удалена }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/inventory/usage:
+    get:
+      summary: Использование моделей приложениями
+      description: |
+        Право `inventory.read`. Тройки «приложение, провайдер, модель» из почасовых агрегатов трафика шлюзов с первым
+        и последним часом появления; счётчиков запросов нет (они на дашбордах). Пополняется задачей сервера раз в
+        10 минут, не больше 20 000 записей. Отбор по приложению, провайдеру и модели — точное совпадение.
+      x-permission: inventory.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/Background'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - { name: application, in: query, required: false, description: ID (slug) приложения, schema: { type: string, maxLength: 256 } }
+        - { name: provider, in: query, required: false, description: ID провайдера, schema: { type: string, maxLength: 256 } }
+        - { name: model, in: query, required: false, description: Имя модели, schema: { type: string, maxLength: 256 } }
+      responses:
+        '200':
+          description: Страница использования
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InventoryUsagePage' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
   /api/v1/compliance:
     get:
       summary: Соответствие требованиям
@@ -6029,6 +6222,18 @@ components:
         признаком `security` и на токены токену недоступны. Операции, доступные токену,
         перечисляют `bearerToken` в `security`. Каждый запрос пишет `api_token.used`.
   parameters:
+    InventoryModelID:
+      name: id
+      in: path
+      required: true
+      description: ID модели в реестре ИИ
+      schema: { type: string, format: uuid }
+    InventoryProvider:
+      name: provider
+      in: query
+      required: false
+      description: ID провайдера
+      schema: { type: string, pattern: '^[a-z0-9][a-z0-9-]{0,62}$' }
     ComplianceRequirementID:
       name: id
       in: path
@@ -6375,6 +6580,147 @@ components:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }
   schemas:
+    InventoryOverview:
+      type: object
+      required: [applications, providers, models, usage, limits, sync]
+      properties:
+        applications:
+          type: array
+          items:
+            type: object
+            required: [id, slug, name, env, department, provider, models, archived, keys]
+            properties:
+              id: { type: string, format: uuid }
+              slug: { type: string }
+              name: { type: string }
+              env: { type: string, enum: [prod, test] }
+              department: { type: string }
+              provider: { type: string, description: ID провайдера приложения }
+              models: { type: array, items: { type: string }, description: Разрешённые модели }
+              archived: { type: boolean }
+              keys:
+                type: array
+                description: Действующие и истёкшие ключи, новые первыми, не больше 20; без секрета и хеша
+                items:
+                  type: object
+                  required: [id, name, prefix, state, expires_at, created_at]
+                  properties:
+                    id: { type: string, format: uuid }
+                    name: { type: string }
+                    prefix: { type: string }
+                    state: { type: string, enum: [active, expired] }
+                    expires_at: { type: string, format: date-time }
+                    created_at: { type: string, format: date-time }
+        providers:
+          type: array
+          items:
+            type: object
+            required: [id, slug, name, type, external, credential_set]
+            properties:
+              id: { type: string, format: uuid }
+              slug: { type: string }
+              name: { type: string }
+              type: { type: string, enum: [openai, gigachat, yandexgpt] }
+              external: { type: boolean }
+              credential_set: { type: boolean, description: Учётные данные заданы (сами данные не показываются) }
+              credential_set_at: { type: string, format: date-time }
+        models: { type: integer, description: Моделей в реестре }
+        usage: { type: integer, description: Записей использования }
+        limits:
+          type: object
+          required: [models, usage]
+          properties:
+            models: { type: integer }
+            usage: { type: integer }
+        sync:
+          type: object
+          required: [limit_reached, skipped]
+          description: Пополнение по трафику
+          properties:
+            synced_upto: { type: string, format: date-time, description: Час, до которого прочитаны агрегаты }
+            run_at: { type: string, format: date-time }
+            limit_reached: { type: boolean, description: В последнем запуске не всё поместилось в пределы }
+            skipped: { type: integer, description: Пропущено в последнем запуске из-за пределов }
+    InventoryFile:
+      type: object
+      required: [path, size, role, sha256]
+      properties:
+        path: { type: string, minLength: 1, maxLength: 512, description: Путь относительно каталога модели, через «/», без «..» }
+        size: { type: integer, format: int64, minimum: 0, maximum: 1125899906842624 }
+        role: { type: string, enum: [weights, adapter, tokenizer, config, other] }
+        sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        hash_alg: { type: string, enum: [SHA-256], readOnly: true }
+    InventoryModel:
+      type: object
+      required: [id, kind, provider, name, version, title, description, owner, origin, status, file_count, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        kind: { type: string, enum: [provider, customer] }
+        provider: { type: string, description: ID провайдера; пусто — модель заказчика без провайдера продукта }
+        name: { type: string }
+        version: { type: string }
+        title: { type: string }
+        description: { type: string }
+        owner: { type: string }
+        origin: { type: string, enum: [traffic, manual] }
+        status: { type: string, enum: [active] }
+        first_seen: { type: string, format: date-time, description: Первый час в трафике }
+        last_seen: { type: string, format: date-time, description: Последний час в трафике }
+        file_count: { type: integer }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    InventoryModelCard:
+      allOf:
+        - $ref: '#/components/schemas/InventoryModel'
+        - type: object
+          required: [files, usage]
+          properties:
+            files: { type: array, items: { $ref: '#/components/schemas/InventoryFile' } }
+            usage: { type: array, items: { $ref: '#/components/schemas/InventoryUsage' } }
+    InventoryModelPage:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/InventoryModel' } }
+        next_cursor: { type: string }
+    NewInventoryModel:
+      type: object
+      additionalProperties: false
+      required: [kind, name]
+      properties:
+        kind: { type: string, enum: [provider, customer] }
+        provider: { type: string, pattern: '^([a-z0-9][a-z0-9-]{0,62})?$', description: Обязателен у модели провайдера }
+        name: { type: string, minLength: 1, maxLength: 256 }
+        version: { type: string, maxLength: 128 }
+        title: { type: string, maxLength: 200 }
+        description: { type: string, maxLength: 2000 }
+        owner: { type: string, maxLength: 200 }
+        files: { type: array, maxItems: 256, items: { $ref: '#/components/schemas/InventoryFile' } }
+    InventoryModelPatch:
+      type: object
+      additionalProperties: false
+      properties:
+        kind: { type: string, enum: [provider, customer] }
+        version: { type: string, maxLength: 128 }
+        title: { type: string, maxLength: 200 }
+        description: { type: string, maxLength: 2000 }
+        owner: { type: string, maxLength: 200 }
+        files: { type: array, maxItems: 256, items: { $ref: '#/components/schemas/InventoryFile' }, description: Заменяет список целиком }
+    InventoryUsage:
+      type: object
+      required: [application, provider, model, first_seen, last_seen]
+      properties:
+        application: { type: string }
+        provider: { type: string }
+        model: { type: string }
+        first_seen: { type: string, format: date-time }
+        last_seen: { type: string, format: date-time }
+    InventoryUsagePage:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/InventoryUsage' } }
+        next_cursor: { type: string }
     Status:
       type: object
       required: [status]
@@ -6482,6 +6828,16 @@ components:
         shadow_ai_syslog:
           $ref: '#/components/schemas/ShadowSyslogStats'
           description: 'Приём журналов прокси по syslog (теневой ИИ); нет — слушатель выключен'
+        shadow_ai_storage:
+          type: object
+          description: 'Заполнение хранилища почасовых сводок теневого ИИ (4Н25, задача 5.9 этапа 5): от warn_percent — условие shadow_ai_storage, при достижении предела — shadow_ai_full (импорт получает 507). Нет — модуль не подключён'
+          required: [aggregates, max_aggregates, used_percent, warn_percent]
+          additionalProperties: false
+          properties:
+            aggregates: { type: integer, minimum: 0, description: 'Строк сводок организации (счёт до предела плюс одна)' }
+            max_aggregates: { type: integer, minimum: 1 }
+            used_percent: { type: integer, minimum: 0, maximum: 100 }
+            warn_percent: { type: integer, minimum: 1, maximum: 100 }
         notifications:
           type: array
           items:
@@ -6493,20 +6849,22 @@ components:
                 type: string
                 enum: [account_lockout, access_denied, audit_chain, audit_storage, integrity, time_sync, config_bundle, config_bundle_lag, test_build,
                   gateway_offline, events_dropped, reports_stale, cert_expiry, gateway_clock, gateway_tls, ca_expiry, customer_cert_expiry, alert_job_stale,
-                  license_expiry, license_grace, license_restricted, license_invalid, license_clock, quota_approximate, quota_autonomous]
-                description: 'gateway_clock (ВРМ.1) — часы шлюза на связи в последнем heartbeat расходятся с часами сервера больше чем на минуту, 3Н40 ревью 3.r3. gateway_tls (ЗИ.4) — шлюз на текущем пакете конфигурации дольше 10 минут после его сборки отвечает приложениям не тем сертификатом, что загружен в консоли (по часам шлюза он ещё не действует или истёк; без сертификата заказчика — не своим), 3Н43 ревью 3.r3. alert_job_stale (РСБ.7, DM-44) — фоновая задача правил «частота», «аномалия» и «бюджет» не отмечала проход дольше 5 минут при работающем сервере, 3В17 ревью 3.r2. ca_expiry (ИАФ.10) — действующему корню внутреннего УЦ осталось 60 суток и меньше, нужна ротация `aisec-cli keys rotate-ca`; system.alert пишется за 60 суток (ca_expiry) и за 7 суток (ca_expiry:critical), 3В5 ревью 3.r1. customer_cert_expiry (ЗИ.4) — сертификату заказчика для адреса шлюза осталось 30 суток и меньше; system.alert пишется за 30 суток (customer_cert_expiry) и за 7 суток (customer_cert_expiry:critical), задача 3.27. quota_approximate (ЗИ.6) — режим квот local, а действующих шлюзов на связи больше одного: квоты приложений и жёсткие бюджеты соблюдаются приблизительно, задача 4.29. quota_autonomous (ЗИ.6, по компонентам gateway:<ID>) — шлюз в режиме leased сообщил в heartbeat, что сервер недоступен и он работает на автономной доле квот, задача 4.29'
+                  license_expiry, license_grace, license_restricted, license_invalid, license_clock, quota_approximate, quota_autonomous,
+                  gateway_limits, shadow_ai_storage, shadow_ai_full, service_db_previous, service_db_unused]
+                description: 'gateway_clock (ВРМ.1) — часы шлюза на связи в последнем heartbeat расходятся с часами сервера больше чем на минуту, 3Н40 ревью 3.r3. gateway_tls (ЗИ.4) — шлюз на текущем пакете конфигурации дольше 10 минут после его сборки отвечает приложениям не тем сертификатом, что загружен в консоли (по часам шлюза он ещё не действует или истёк; без сертификата заказчика — не своим), 3Н43 ревью 3.r3. alert_job_stale (РСБ.7, DM-44) — фоновая задача правил «частота», «аномалия» и «бюджет» не отмечала проход дольше 5 минут при работающем сервере, 3В17 ревью 3.r2. ca_expiry (ИАФ.10) — действующему корню внутреннего УЦ осталось 60 суток и меньше, нужна ротация `aisec-cli keys rotate-ca`; system.alert пишется за 60 суток (ca_expiry) и за 7 суток (ca_expiry:critical), 3В5 ревью 3.r1. customer_cert_expiry (ЗИ.4) — сертификату заказчика для адреса шлюза осталось 30 суток и меньше; system.alert пишется за 30 суток (customer_cert_expiry) и за 7 суток (customer_cert_expiry:critical), задача 3.27. quota_approximate (ЗИ.6) — режим квот local, а действующих шлюзов на связи больше одного: квоты приложений и жёсткие бюджеты соблюдаются приблизительно, задача 4.29. quota_autonomous (ЗИ.6, по компонентам gateway:<ID>) — шлюз в режиме leased сообщил в heartbeat, что сервер недоступен и он работает на автономной доле квот, задача 4.29. gateway_limits (РСБ.7, по компонентам gateway:<ID>) — шлюз за последние 15 минут вытеснял счётчики лимитов вызовов инструментов или сессии session.risk из-за общего предела (вытеснения по доле приложения не входят), задача 5.9 этапа 5. shadow_ai_storage (РСБ.7) — сводки теневого ИИ заняли 90 % предела и больше; shadow_ai_full (РСБ.7) — предел достигнут, импорт и приём по syslog отклоняются (507), 4Н25. service_db_previous и service_db_unused (ОЦЛ.5, по компонентам service_db:<вид>) — текущая сохранённая версия служебной базы не прошла повторную проверку подписи: работает предыдущая версия или база не используется (ADR-0028)'
               requirement: { type: string, enum: [ИАФ.4, ИАФ.10, УПД.6, РСБ.4, РСБ.5, РСБ.7, ОЦЛ.1, ОЦЛ.3, ОЦЛ.5, ВРМ.1, ЗИ.2, ЗИ.4, ЗИ.6] }
               components:
                 type: array
                 items: { type: string }
-                description: 'Компоненты с активным условием (integrity — server или gateway:<ID>, config_bundle_lag, gateway_offline, events_dropped, reports_stale, cert_expiry — gateway:<ID>); каждое ведётся отдельно и пишется в system.alert (В18 ревью 2.r3b), а возникшее условие порождает оповещение системного правила (задача 3.11 этапа 3, DM-42–DM-44). test_build (ОЦЛ.1) — компоненты, собранные с тестовым ключом манифеста (Н34 ревью 2.r4); integrity шлюза поднимает и откат выпуска, и чужой ключ проверки пакетов (В19, В20 ревью 2.r4). DM-44: gateway_offline — шлюз не на связи дольше трёх периодов heartbeat, events_dropped — счётчик отброшенных событий вырос за 15 минут, cert_expiry — сертификат истекает меньше чем через 14 суток, reports_stale — итог целостности старше двух часов или не приходит (Н29)'
+                description: 'Компоненты с активным условием (integrity — server или gateway:<ID>, config_bundle_lag, gateway_offline, events_dropped, reports_stale, cert_expiry, gateway_limits — gateway:<ID>; service_db_previous, service_db_unused — service_db:<вид>); каждое ведётся отдельно и пишется в system.alert (В18 ревью 2.r3b), а возникшее условие порождает оповещение системного правила (задача 3.11 этапа 3, DM-42–DM-44). test_build (ОЦЛ.1) — компоненты, собранные с тестовым ключом манифеста (Н34 ревью 2.r4); integrity шлюза поднимает и откат выпуска, и чужой ключ проверки пакетов (В19, В20 ревью 2.r4). DM-44: gateway_offline — шлюз не на связи дольше трёх периодов heartbeat, events_dropped — счётчик отброшенных событий вырос за 15 минут, cert_expiry — сертификат истекает меньше чем через 14 суток, reports_stale — итог целостности старше двух часов или не приходит (Н29)'
               title: { type: string }
               active: { type: boolean }
               since: { type: [string, 'null'], format: date-time, description: 'Когда условие возникло; у ИАФ.4 и УПД.6 не задаётся' }
               count: { type: [integer, 'null'], minimum: 0, description: 'Число событий за 24 часа (только ИАФ.4 и УПД.6)' }
         unavailable:
           type: array
-          items: { type: string, enum: [integrity, gateways, events, storage, audit_chain, bundle, notifications] }
+          items: { type: string, enum: [integrity, gateways, events, storage, audit_chain, bundle, notifications, timezone, customer_cert, license,
+            quota, alert_job, shadow_ai_storage, service_dbs] }
     StatusReport:
       type: object
       required: [ok, checked_at, failed]
@@ -6532,7 +6890,7 @@ components:
         failed: { type: integer, minimum: 0, description: 'Число нарушений, включая не вошедшие в список' }
     StatusGateway:
       type: object
-      required: [id, name, state, last_seen_at, version, bundle_etag, cert_not_after, selftest, integrity, events]
+      required: [id, name, state, last_seen_at, version, bundle_etag, cert_not_after, selftest, integrity, events, limits]
       additionalProperties: false
       properties:
         id: { type: string }
@@ -6560,6 +6918,40 @@ components:
                 started_at: { type: string, format: date-time, description: Запуск шлюза }
                 reported_at: { type: string, format: date-time }
             - type: 'null'
+        limits:
+          description: 'Заполнение и вытеснения счётчиков в памяти шлюза с его запуска из последнего heartbeat (задача 5.9 этапа 5; 4Н11, 4Н13). Вытесненный ключ начинает счёт заново: лимиты вызовов инструментов и session.risk по нему не действуют. null — шлюз прежней версии или heartbeat после перезапуска сервера ещё не пришёл (данные в памяти сервера)'
+          oneOf:
+            - type: 'null'
+            - type: object
+              required: [reported_at, started_at, tool_rate, sessions]
+              additionalProperties: false
+              properties:
+                reported_at: { type: string, format: date-time }
+                started_at: { type: [string, 'null'], format: date-time, description: Запуск процесса шлюза }
+                tool_rate:
+                  description: 'Счётчики лимитов вызовов инструментов (DM-23); null — шлюз раздел не прислал'
+                  oneOf:
+                    - type: 'null'
+                    - type: object
+                      required: [keys, max_keys, evictions]
+                      additionalProperties: false
+                      properties:
+                        keys: { type: integer, minimum: 0 }
+                        max_keys: { type: integer, minimum: 1 }
+                        evictions: { type: integer, minimum: 0, description: 'Ключей вытеснено из-за предела' }
+                sessions:
+                  description: 'Состояния session.risk (DM-06); null — шлюз раздел не прислал'
+                  oneOf:
+                    - type: 'null'
+                    - type: object
+                      required: [sessions, max_sessions, max_app_sessions, evictions, app_evictions]
+                      additionalProperties: false
+                      properties:
+                        sessions: { type: integer, minimum: 0 }
+                        max_sessions: { type: integer, minimum: 1 }
+                        max_app_sessions: { type: integer, minimum: 1, description: 'Доля одного приложения (по умолчанию четверть предела)' }
+                        evictions: { type: integer, minimum: 0, description: 'Вытеснено из-за общего предела' }
+                        app_evictions: { type: integer, minimum: 0, description: 'Вытеснено из-за доли приложения: сессия того же приложения' }
     IntegrityList:
       type: object
       required: [items]

@@ -1,10 +1,14 @@
 package backup
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -686,4 +690,171 @@ func writeComplianceMarks(ctx context.Context, tx pgx.Tx, s *Snapshot) error {
 		}
 	}
 	return nil
+}
+
+func readServiceDBs(ctx context.Context, tx pgx.Tx, s *Snapshot) error {
+	rows, err := tx.Query(ctx, `SELECT kind, slot, version, file, uploaded_at, uploaded_by FROM service_dbs
+		WHERE org_id = $1 ORDER BY kind, slot`, s.OrgID)
+	if err != nil {
+		return err
+	}
+	s.ServiceDBs, err = pgx.CollectRows(rows, func(r pgx.CollectableRow) (ServiceDB, error) {
+		var b ServiceDB
+		var v int64
+		err := r.Scan(&b.Kind, &b.Slot, &v, &b.File, &b.UploadedAt, &b.UploadedBy)
+		b.Version = uint64(v) //nolint:gosec // G115: CHECK version BETWEEN 1 AND 2^53-1 (миграция 0068)
+		return b, err
+	})
+	return err
+}
+
+// ServiceDBMeta — сведения проверенного файла служебной базы: из
+// подписанного содержимого, а не из полей копии.
+type ServiceDBMeta struct {
+	Version      uint64
+	Date         time.Time
+	Records      int
+	SubkeySerial uint64
+	Fingerprint  string
+}
+
+// serviceDBCandidate — проверенная версия копии.
+type serviceDBCandidate struct {
+	b    ServiceDB
+	meta ServiceDBMeta
+}
+
+// writeServiceDBs восстанавливает служебные базы по правилам ADR-0028 для
+// сохранённых версий: каждый файл проверяется verify (подпись, заверение,
+// содержимое, номер версии); не прошедший проверку пропускается — как
+// сохранённая версия, которая не используется, — и тогда текущей
+// становится проверенная предыдущая. Если в установке текущая версия вида
+// не ниже версии копии, вид пропускается; если ниже — версия копии
+// становится текущей, прежняя текущая установки — предыдущей (как при
+// загрузке). verify == nil — базы не восстанавливаются. Возвращает строки
+// отчёта по каждому виду.
+func writeServiceDBs(ctx context.Context, tx pgx.Tx, s *Snapshot, verify func(kind string, file []byte) (ServiceDBMeta, error)) ([]string, error) {
+	var kinds []string
+	byKind := map[string][]ServiceDB{}
+	for _, b := range s.ServiceDBs {
+		if _, ok := byKind[b.Kind]; !ok {
+			kinds = append(kinds, b.Kind)
+		}
+		byKind[b.Kind] = append(byKind[b.Kind], b)
+	}
+	slices.Sort(kinds)
+	var lines []string
+	for _, kind := range kinds {
+		list := byKind[kind]
+		// Текущая раньше предыдущей.
+		slices.SortFunc(list, func(a, b ServiceDB) int { return cmp.Compare(b.Version, a.Version) })
+		if verify == nil {
+			lines = append(lines, fmt.Sprintf("%s: этот выпуск не проверяет такие базы — не восстановлена", kind))
+			continue
+		}
+		var ok []serviceDBCandidate
+		for _, b := range list {
+			meta, err := verify(kind, b.File)
+			if err == nil && meta.Version != b.Version {
+				err = fmt.Errorf("номер версии в файле %d", meta.Version)
+			}
+			if err != nil {
+				lines = append(lines, fmt.Sprintf("%s: версия %d (%s) не прошла проверку (%s) — не восстановлена", kind, b.Version,
+					slotText(b.Slot), shortErr(err)))
+				continue
+			}
+			ok = append(ok, serviceDBCandidate{b: b, meta: meta})
+		}
+		if len(ok) == 0 {
+			continue
+		}
+		line, err := writeServiceDB(ctx, tx, s.OrgID, kind, ok)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", kind, err)
+		}
+		lines = append(lines, line)
+	}
+	return lines, nil
+}
+
+// writeServiceDB записывает проверенные версии одного вида (ok — по
+// убыванию версии, не больше двух) под блокировкой строк вида.
+func writeServiceDB(ctx context.Context, tx pgx.Tx, orgID, kind string, ok []serviceDBCandidate) (string, error) {
+	rows, err := tx.Query(ctx, `SELECT slot, version FROM service_dbs WHERE org_id = $1 AND kind = $2 FOR UPDATE`, orgID, kind)
+	if err != nil {
+		return "", err
+	}
+	installed := map[string]int64{}
+	if err := forEach(rows, func(r pgx.Rows) error {
+		var slot string
+		var v int64
+		if err := r.Scan(&slot, &v); err != nil {
+			return err
+		}
+		installed[slot] = v
+		return nil
+	}); err != nil {
+		return "", err
+	}
+	top := ok[0]
+	cur, hasCur := installed[slotCurrent]
+	switch {
+	case hasCur && uint64(cur) >= top.b.Version: //nolint:gosec // G115: CHECK version BETWEEN 1 AND 2^53-1
+		return fmt.Sprintf("%s: в установке версия %d не ниже версии копии %d — пропущена", kind, cur, top.b.Version), nil
+	case hasCur:
+		// Как при загрузке: прежняя текущая установки — предыдущей.
+		if _, err := tx.Exec(ctx, `DELETE FROM service_dbs WHERE org_id = $1 AND kind = $2 AND slot = 'previous'`, orgID, kind); err != nil {
+			return "", err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE service_dbs SET slot = 'previous' WHERE org_id = $1 AND kind = $2 AND slot = 'current'`,
+			orgID, kind); err != nil {
+			return "", err
+		}
+		ok = ok[:1]
+	case len(installed) > 0:
+		// Предыдущая без текущей сервисом не создаётся; на всякий случай —
+		// версии копии заменяют её целиком.
+		if _, err := tx.Exec(ctx, `DELETE FROM service_dbs WHERE org_id = $1 AND kind = $2`, orgID, kind); err != nil {
+			return "", err
+		}
+	}
+	slots := []string{slotCurrent, slotPrevious}
+	for i, c := range ok[:min(len(ok), 2)] {
+		if _, err := tx.Exec(ctx, `INSERT INTO service_dbs (org_id, kind, slot, version, db_date, records, subkey_serial,
+			fingerprint, file, uploaded_at, uploaded_by) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+			orgID, kind, slots[i], int64(c.meta.Version), c.meta.Date, c.meta.Records, int64(c.meta.SubkeySerial), //nolint:gosec // G115: версия и номер заверения до 2^53-1 (ADR-0027)
+			c.meta.Fingerprint, c.b.File, c.b.UploadedAt, c.b.UploadedBy); err != nil {
+			return "", err
+		}
+	}
+	switch {
+	case hasCur:
+		return fmt.Sprintf("%s: восстановлена версия %d (текущая), версия установки %d — предыдущая", kind, top.b.Version, cur), nil
+	case len(ok) > 1:
+		return fmt.Sprintf("%s: восстановлены версии %d (текущая) и %d (предыдущая)", kind, ok[0].b.Version, ok[1].b.Version), nil
+	}
+	return fmt.Sprintf("%s: восстановлена версия %d (текущая)", kind, top.b.Version), nil
+}
+
+// Слоты служебных баз (servicedb.SlotCurrent, servicedb.SlotPrevious;
+// пакет модуля копия не импортирует).
+const (
+	slotCurrent  = "current"
+	slotPrevious = "previous"
+)
+
+func slotText(slot string) string {
+	if slot == slotPrevious {
+		return "предыдущая"
+	}
+	return "текущая"
+}
+
+// shortErr — первая строка ошибки, не больше 200 символов.
+func shortErr(err error) string {
+	msg, _, _ := strings.Cut(err.Error(), "\n")
+	if utf8.RuneCountInString(msg) > 200 {
+		msg = string([]rune(msg)[:200]) + "…"
+	}
+	return msg
 }

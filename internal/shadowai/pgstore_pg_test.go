@@ -401,4 +401,11 @@ func TestPGShadowAIStorageLimit(t *testing.T) {
 	if count("SELECT count(*) FROM shadow_ai_hour") != rows || count("SELECT count(*) FROM shadow_ai_imports") != imports {
 		t.Fatal("записано сверх предела")
 	}
+	// «Состояние системы» (задача 5.9 этапа 5): счёт и предел.
+	if n, limit, err := e.st.Capacity(ctx, audit.DefaultOrgID); err != nil || n != rows || limit != rows {
+		t.Fatalf("заполнение: %d из %d, %v", n, limit, err)
+	}
+	if n, _, err := e.st.Capacity(ctx, "01900000-0000-7000-8000-00000000ffff"); err != nil || n != 0 {
+		t.Fatalf("чужая организация: %d, %v", n, err)
+	}
 }

@@ -163,6 +163,9 @@ type Store interface {
 	// PurgeExpired удаляет агрегаты старше срока и пишет shadow_ai.retention,
 	// если удалено что-то.
 	PurgeExpired(ctx context.Context, orgID string) (int64, error)
+	// Capacity — число строк сводок организации (счёт останавливается на
+	// limit + 1) и предел MaxStoredAggregates (4Н25, задача 5.9 этапа 5).
+	Capacity(ctx context.Context, orgID string) (count, limit int64, err error)
 }
 
 // Options — зависимости сервиса.
@@ -222,6 +225,46 @@ type Service struct {
 	exclGen uint64
 	// syslog — слушатель приёма по syslog; nil — выключен.
 	syslog *SyslogListener
+	// storage — последний счёт сводок и его время (StorageCacheTTL);
+	// нулевое время — перечитать.
+	storageN, storageMax int64
+	storageAt            time.Time
+}
+
+// StorageCacheTTL — сколько держится счёт сводок для «Состояния системы»:
+// счёт идёт по индексу до предела строк и не должен повторяться при
+// каждом опросе экрана.
+const StorageCacheTTL = 2 * time.Minute
+
+// Storage — число сводок организации и предел (4Н25 ревью 4.r3, задача 5.9
+// этапа 5) для «Состояния системы»: предупреждение от 90 %, ошибка — при
+// достижении предела (импорт и приём по syslog получают ErrStorageFull).
+// Счёт кэшируется на StorageCacheTTL, после импорта перечитывается.
+func (s *Service) Storage(ctx context.Context) (count, limit int64, err error) {
+	now := s.o.Clock()
+	s.mu.Lock()
+	if !s.storageAt.IsZero() && now.Sub(s.storageAt) < StorageCacheTTL && !now.Before(s.storageAt) {
+		n, m := s.storageN, s.storageMax
+		s.mu.Unlock()
+		return n, m, nil
+	}
+	s.mu.Unlock()
+	n, m, err := s.o.Store.Capacity(ctx, s.o.OrgID)
+	if err != nil {
+		return 0, 0, err
+	}
+	s.mu.Lock()
+	s.storageN, s.storageMax, s.storageAt = n, m, now
+	s.mu.Unlock()
+	return n, m, nil
+}
+
+// dropStorageCache — сводки изменились (импорт): следующий Storage
+// перечитывает счёт.
+func (s *Service) dropStorageCache() {
+	s.mu.Lock()
+	s.storageAt = time.Time{}
+	s.mu.Unlock()
 }
 
 // SyslogBatch — сводки приёма по syslog за период накопления.
@@ -436,6 +479,9 @@ func (s *Service) Import(ctx context.Context, by By, format string, r io.Reader)
 		}
 		return by.entry("shadow_ai.import", audit.Object{Type: "shadow_ai_import", ID: id}, details)
 	})
+	if err == nil || errors.Is(err, ErrStorageFull) {
+		s.dropStorageCache()
+	}
 	if err != nil {
 		return ImportRecord{}, err
 	}

@@ -55,13 +55,9 @@ func (s *Service) SetGatewayTLS(ctx context.Context, by By, in GatewayTLSInput) 
 	if s.box == nil {
 		return GatewayTLS{}, ErrNoDataKey
 	}
-	host, err := aisecCrypto.NormalizeHost(in.Host)
+	host, cert, key, err := ParseGatewayTLS(in, s.clock())
 	if err != nil {
-		return GatewayTLS{}, invalid(err)
-	}
-	cert, key, err := aisecCrypto.ParseServerCert(in.ChainPEM, in.KeyPEM, host, s.clock())
-	if err != nil {
-		return GatewayTLS{}, invalid(err)
+		return GatewayTLS{}, err
 	}
 	keyID, sealed, err := s.box.SealKey(ctx, key, gatewayTLSTable, gatewayTLSColumn, s.orgID)
 	clear(key)
@@ -80,6 +76,43 @@ func (s *Service) SetGatewayTLS(ctx context.Context, by By, in GatewayTLSInput) 
 		}
 		return next, by.entry("gateway_tls.set", "gateway_tls", s.orgID, d), nil
 	})
+}
+
+// ParseGatewayTLS проверяет сертификат заказчика правилами загрузки: имя
+// адреса шлюза, цепочку до корня, срок на now, имя адреса в SAN, пару ключу
+// (aisecCrypto.ParseServerCert). Возвращает имя в нижнем регистре,
+// сведения и ключ в PKCS#8 PEM (вызывающий затирает его); ошибка —
+// *InputError.
+func ParseGatewayTLS(in GatewayTLSInput, now time.Time) (string, aisecCrypto.ServerCert, []byte, error) {
+	host, err := aisecCrypto.NormalizeHost(in.Host)
+	if err != nil {
+		return "", aisecCrypto.ServerCert{}, nil, invalid(err)
+	}
+	cert, key, err := aisecCrypto.ParseServerCert(in.ChainPEM, in.KeyPEM, host, now)
+	if err != nil {
+		return "", aisecCrypto.ServerCert{}, nil, invalid(err)
+	}
+	return host, cert, key, nil
+}
+
+// CheckStoredGatewayTLS проверяет сохранённый сертификат заказчика
+// правилами загрузки (ParseGatewayTLS): ключ — пара листу цепочки, имя
+// адреса в SAN, цепочка до корня; имя, отпечаток листа и срок — те, что
+// записаны рядом. Срок цепочки проверяется на момент внутри него (notAfter
+// минус секунда, как у шлюза): сертификат, истёкший после снятия копии, —
+// не повод для отказа, о нём сообщает «Состояние системы» (gateway_tls).
+// Вызывает восстановление копии конфигурации до записи в БД (остаток 5.8,
+// остатки волны A этапа 5).
+func CheckStoredGatewayTLS(host string, chainPEM, keyPEM []byte, fingerprint string, notAfter time.Time) error {
+	h, cert, key, err := ParseGatewayTLS(GatewayTLSInput{Host: host, ChainPEM: chainPEM, KeyPEM: keyPEM}, notAfter.Add(-time.Second))
+	clear(key)
+	if err != nil {
+		return err
+	}
+	if h != host || cert.Fingerprint != fingerprint || !cert.NotAfter.Equal(notAfter) {
+		return invalidf("сведения о сертификате (имя адреса, отпечаток, срок) не совпадают с цепочкой")
+	}
+	return nil
 }
 
 // GatewayTLS — сертификат заказчика организации (ErrNoGatewayTLS — нет).

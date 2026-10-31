@@ -68,6 +68,18 @@ func (s *PGStore) checkCapacity(ctx context.Context, tx pgx.Tx, orgID string, n 
 	return nil
 }
 
+// Capacity — см. Store: число строк сводок до maxAggs + 1 и предел.
+func (s *PGStore) Capacity(ctx context.Context, orgID string) (int64, int64, error) {
+	ctx, cancel := pgCtx(ctx)
+	defer cancel()
+	var have int64
+	if err := s.db.QueryRow(ctx, `SELECT count(*) FROM (SELECT 1 FROM shadow_ai_hour WHERE org_id = $1 LIMIT $2) t`,
+		orgID, s.maxAggs+1).Scan(&have); err != nil {
+		return 0, 0, fmt.Errorf("теневой ИИ: число сводок: %w", err)
+	}
+	return have, s.maxAggs, nil
+}
+
 func pgCtx(ctx context.Context) (context.Context, context.CancelFunc) {
 	if _, ok := ctx.Deadline(); ok {
 		return context.WithCancel(ctx)

@@ -3,11 +3,13 @@ package agents
 import (
 	"context"
 	"errors"
+	"net/netip"
 	"net/url"
 	"slices"
 	"strings"
 
 	"github.com/azuresong-afk/ai_railway/internal/audit"
+	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/internal/netguard"
 	"github.com/azuresong-afk/ai_railway/internal/policy"
 )
@@ -57,7 +59,7 @@ func validHeaderName(h string) bool {
 
 // checkURL — адрес MCP-сервера: https:// (http:// — только с insecure),
 // без userinfo, запроса и фрагмента; узел не запрещён правилом адресов.
-func (s *Service) checkURL(raw string, insecure bool) []error {
+func checkURL(raw string, insecure bool, allowed []netip.Prefix) []error {
 	if raw == "" || len(raw) > maxURL {
 		return []error{errors.New("url — от 1 до 2048 байт")}
 	}
@@ -83,15 +85,25 @@ func (s *Service) checkURL(raw string, insecure bool) []error {
 	if u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
 		errs = append(errs, errors.New("url — без имени пользователя, параметров запроса и фрагмента"))
 	}
-	if err := netguard.CheckHost(u.Hostname(), s.allowed); err != nil {
+	if err := netguard.CheckHost(u.Hostname(), allowed); err != nil {
 		errs = append(errs, errors.New("url — адрес запрещён: loopback, link-local, multicast и службы метаданных недоступны"))
 	}
 	return errs
 }
 
 func (s *Service) checkServer(in ServerInput, insecure bool) error {
+	return CheckServer(s.tls, s.allowed, in, insecure)
+}
+
+// CheckServer проверяет параметры MCP-сервера правилами API: название,
+// адрес (insecure — разрешён ли http://, признак insecure_http), заголовок
+// учётных данных, таймаут, версии MCP и корневые сертификаты; allowed —
+// разрешённые сети правила адресов (nil — только запреты по умолчанию).
+// Ошибка — *InputError. Используют сервис и восстановление копии
+// конфигурации (остаток 5.8, остатки волны A этапа 5).
+func CheckServer(tlsp aisecCrypto.TLSProvider, allowed []netip.Prefix, in ServerInput, insecure bool) error {
 	errs := text("name", in.Name, 1, maxName)
-	errs = append(errs, s.checkURL(in.URL, insecure)...)
+	errs = append(errs, checkURL(in.URL, insecure, allowed)...)
 	if in.AuthHeader != "" && !validHeaderName(in.AuthHeader) {
 		errs = append(errs, errors.New("auth_header — имя заголовка из латиницы, цифр и дефиса до 64 символов; "+
 			"заголовки транспорта, MCP и AISec заняты"))
@@ -116,9 +128,41 @@ func (s *Service) checkServer(in ServerInput, insecure bool) error {
 	case len(in.CAPEM) > MaxCAPEM:
 		errs = append(errs, errors.New("ca_pem — не больше 256 КиБ"))
 	default:
-		if _, err := s.tls.ClientConfig([]byte(in.CAPEM)); err != nil {
+		if _, err := tlsp.ClientConfig([]byte(in.CAPEM)); err != nil {
 			errs = append(errs, errors.New("ca_pem — не найдено ни одного корректного сертификата PEM"))
 		}
+	}
+	if len(errs) > 0 {
+		return invalid(errs...)
+	}
+	return nil
+}
+
+// checkServerSlug — slug MCP-сервера (ADR-0023, раздел 1); function занят
+// инструментами-функциями агента.
+func checkServerSlug(slug string) error {
+	if !slugRe.MatchString(slug) || slug == policy.FunctionServer {
+		return errors.New("slug — строчные латинские буквы, цифры и дефис, до 64 символов; slug function занят")
+	}
+	return nil
+}
+
+// CheckStoredServer проверяет сохранённый MCP-сервер правилами API: slug —
+// как при создании, параметры — CheckServer с его признаком insecure_http
+// (адрес http:// без признака — отказ). Признак external не проверяется:
+// оба значения допустимы. Вызывает восстановление копии конфигурации до
+// записи в БД (остаток 5.8, остатки волны A этапа 5).
+func CheckStoredServer(tlsp aisecCrypto.TLSProvider, allowed []netip.Prefix, slug string, in ServerInput, insecureHTTP bool) error {
+	var errs []error
+	if err := checkServerSlug(slug); err != nil {
+		errs = append(errs, err)
+	}
+	if err := CheckServer(tlsp, allowed, in, insecureHTTP); err != nil {
+		var ie *InputError
+		if !errors.As(err, &ie) {
+			return err
+		}
+		errs = append(errs, ie.Errs...)
 	}
 	if len(errs) > 0 {
 		return invalid(errs...)
@@ -145,8 +189,8 @@ func serverDetails(m MCPServer) map[string]any {
 // безопасности).
 func (s *Service) CreateServer(ctx context.Context, by By, in ServerInput) (MCPServer, error) {
 	var errs []error
-	if !slugRe.MatchString(in.Slug) || in.Slug == policy.FunctionServer {
-		errs = append(errs, errors.New("slug — строчные латинские буквы, цифры и дефис, до 64 символов; slug function занят"))
+	if err := checkServerSlug(in.Slug); err != nil {
+		errs = append(errs, err)
 	}
 	if err := s.checkServer(in, false); err != nil {
 		var ie *InputError
