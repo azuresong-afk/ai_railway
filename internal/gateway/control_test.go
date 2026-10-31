@@ -617,3 +617,57 @@ func TestHeartbeatLimits(t *testing.T) {
 		t.Fatalf("сервер без limits: %v", bodies[3])
 	}
 }
+
+// 5Н4 ревью 5.r1 этапа 5: сервер откатили на выпуск без limits — строгий
+// разбор отвечает 400 на heartbeat с этим полем. Шлюз сбрасывает признаки
+// возможностей и сразу повторяет heartbeat без необязательных полей, а не
+// выглядит недоступным до перезапуска.
+func TestHeartbeatRetriesWithoutOptionalFieldsOn400(t *testing.T) {
+	var bodies []map[string]any
+	strict := false
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var b map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&b) //nolint:gosec // G104: тело проверяет тест
+		bodies = append(bodies, b)
+		w.Header().Set("Content-Type", "application/json")
+		if _, ok := b["limits"]; ok && strict {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"code":"invalid_request"}`)) //nolint:gosec // G104: ответ тестового сервера
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"server_time": time.Now(), "interval_seconds": 60, "limits": !strict, //nolint:gosec // G104: ответ тестового сервера
+			"clock_tls": !strict})
+		strict = true
+	}))
+	defer srv.Close()
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rates := toolrate.New(2)
+	report := func() *gateway.LimitsReport { return gateway.NewLimitsReport(rates, nil) }
+	var waits []time.Duration
+	n := 0
+	gateway.RunHeartbeat(context.Background(), gateway.HeartbeatConfig{
+		Client: srv.Client(), Server: u, Version: "1", Logger: quiet(), Limits: report,
+		Sleep: func(_ context.Context, d time.Duration) bool { waits = append(waits, d); n++; return n < 3 },
+	})
+	// 1 — без признаков; 2 — с limits и time, 400; 3 — сразу без них; 4 — без них.
+	if len(bodies) != 4 {
+		t.Fatalf("heartbeat: %d %v", len(bodies), bodies)
+	}
+	if _, ok := bodies[1]["limits"]; !ok {
+		t.Fatalf("второй heartbeat без limits: %v", bodies[1])
+	}
+	for _, i := range []int{2, 3} {
+		if _, ok := bodies[i]["limits"]; ok {
+			t.Fatalf("heartbeat %d после 400 с limits: %v", i+1, bodies[i])
+		}
+		if _, ok := bodies[i]["time"]; ok {
+			t.Fatalf("heartbeat %d после 400 с time: %v", i+1, bodies[i])
+		}
+	}
+	if waits[1] != time.Minute {
+		t.Fatalf("после повтора — отсрочка, а не интервал сервера: %v", waits)
+	}
+}

@@ -377,9 +377,19 @@ func (c HeartbeatConfig) beat(ctx context.Context, u string, interval, backoff *
 		return 0, false
 	}
 	if err != nil {
+		var ce *controlError
+		// Сервер, откатанный на прежний выпуск без перезапуска шлюза, строгим
+		// разбором отвечает 400 на поля, которых не знает: признаки
+		// возможностей сбрасываются, heartbeat сразу повторяется без
+		// необязательных полей, а следующий успешный ответ включает их
+		// заново (5Н4 ревью 5.r1 этапа 5).
+		if errors.As(err, &ce) && ce.Status == http.StatusBadRequest && (*clockTLS || *approvals || *quotaLeases || *limits) {
+			c.Logger.Warn("сервер управления отклонил heartbeat с необязательными полями: повтор без них", "status", ce.Status)
+			*clockTLS, *approvals, *quotaLeases, *limits = false, false, false, false
+			return c.beat(ctx, u, interval, backoff, clockTLS, approvals, quotaLeases, limits)
+		}
 		*backoff = min(max(2**backoff, minHeartbeatInterval), heartbeatBackoffMax)
 		wait := *backoff
-		var ce *controlError
 		switch {
 		case errors.As(err, &ce) && ce.Status == http.StatusUnauthorized:
 			c.Logger.Error("сервер отклонил сертификат шлюза: шлюз отозван или сертификат заменён; нужна повторная регистрация",
