@@ -95,7 +95,7 @@ func readAlertRules(ctx context.Context, tx pgx.Tx, s *Snapshot) error {
 
 func readReportSchedules(ctx context.Context, tx pgx.Tx, s *Snapshot) error {
 	rows, err := tx.Query(ctx, `SELECT id::text, name, report, frequency, weekday, day, at_time, format, channel_id::text,
-		enabled, next_run_at, last_run_at, scope_incidents, scope_alerts, scope_budgets, scope_compliance,
+		enabled, next_run_at, last_run_at, scope_incidents, scope_alerts, scope_budgets, scope_compliance, applies,
 		recipient_user_ids::text[], version, created_at, created_by, updated_at, updated_by
 		FROM report_schedules WHERE org_id = $1 ORDER BY created_at, id`, s.OrgID)
 	if err != nil {
@@ -104,7 +104,7 @@ func readReportSchedules(ctx context.Context, tx pgx.Tx, s *Snapshot) error {
 	s.ReportSchedules, err = pgx.CollectRows(rows, func(r pgx.CollectableRow) (ReportSchedule, error) {
 		var x ReportSchedule
 		err := r.Scan(&x.ID, &x.Name, &x.Report, &x.Frequency, &x.Weekday, &x.Day, &x.AtTime, &x.Format, &x.ChannelID,
-			&x.Enabled, &x.NextRunAt, &x.LastRunAt, &x.ScopeIncidents, &x.ScopeAlerts, &x.ScopeBudgets, &x.ScopeCompliance,
+			&x.Enabled, &x.NextRunAt, &x.LastRunAt, &x.ScopeIncidents, &x.ScopeAlerts, &x.ScopeBudgets, &x.ScopeCompliance, &x.Applies,
 			&x.RecipientUserIDs, &x.Version, &x.CreatedAt, &x.CreatedBy, &x.UpdatedAt, &x.UpdatedBy)
 		return x, err
 	})
@@ -581,12 +581,12 @@ func writeReportSchedules(ctx context.Context, tx pgx.Tx, s *Snapshot) error {
 	for _, r := range s.ReportSchedules {
 		if _, err := tx.Exec(ctx, `INSERT INTO report_schedules (id, org_id, name, report, frequency, weekday, day, at_time,
 			format, channel_id, enabled, next_run_at, last_run_at, scope_incidents, scope_alerts, scope_budgets,
-			scope_compliance, recipient_user_ids, version, created_at, created_by, updated_at, updated_by)
+			scope_compliance, recipient_user_ids, version, created_at, created_by, updated_at, updated_by, applies)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18::uuid[], $19, $20, $21,
-			$22, $23)`,
+			$22, $23, $24)`,
 			r.ID, s.OrgID, r.Name, r.Report, r.Frequency, r.Weekday, r.Day, r.AtTime, r.Format, r.ChannelID, r.Enabled,
 			r.NextRunAt, r.LastRunAt, r.ScopeIncidents, r.ScopeAlerts, r.ScopeBudgets, r.ScopeCompliance,
-			nonNil(r.RecipientUserIDs), r.Version, r.CreatedAt, r.CreatedBy, r.UpdatedAt, r.UpdatedBy); err != nil {
+			nonNil(r.RecipientUserIDs), r.Version, r.CreatedAt, r.CreatedBy, r.UpdatedAt, r.UpdatedBy, r.Applies); err != nil {
 			return fmt.Errorf("%s: %w", r.Name, err)
 		}
 	}

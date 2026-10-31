@@ -669,13 +669,16 @@ func TestBackupRestoreNonEmptyOnRealDB(t *testing.T) {
 	}
 	// Объекты этапов 3–4 добавлены, настройки (OIDC, LDAP, сертификат шлюза,
 	// лицензия, встроенные правила, инструкции, отметки) — нет.
-	for table, want := range map[string]int{"notify_channels": 3, "alert_rules": 1, "report_schedules": 1, "agents": 1,
+	for table, want := range map[string]int{"notify_channels": 3, "alert_rules": 1, "report_schedules": 2, "agents": 1,
 		"agent_tools": 2, "mcp_servers": 1, "model_prices": 1, "app_budgets": 1, "prompt_baselines": 1,
 		"oidc_settings": 0, "ldap_settings": 0, "gateway_tls": 0, "licenses": 0, "incident_instructions": 0,
 		"compliance_marks": 0, "shadow_ai_exclusions": 0} {
 		if n := dst.count(t, "SELECT count(*) FROM "+table); n != want {
 			t.Errorf("%s: %d, ожидалось %d", table, n, want)
 		}
+	}
+	if n := dst.count(t, "SELECT count(*) FROM report_schedules WHERE id = $1 AND applies = 'kii'", tScheduleKII); n != 1 {
+		t.Fatal("применимость расписания отчёта соответствия не восстановлена")
 	}
 	if !strings.Contains(out.String(), "настройки этапов 3 и 4 из копии") {
 		t.Fatalf("вывод без строки о непереносе настроек: %s", out.String())

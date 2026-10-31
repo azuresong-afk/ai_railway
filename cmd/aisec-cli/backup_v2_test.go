@@ -29,6 +29,7 @@ const (
 	tRule        = "0192a000-0000-7000-8000-000000000711"
 	tBuiltinRule = "0192a000-0000-7000-8000-000000000712"
 	tSchedule    = "0192a000-0000-7000-8000-000000000721"
+	tScheduleKII = "0192a000-0000-7000-8000-000000000722"
 	tPrice       = "0192a000-0000-7000-8000-000000000731"
 	tMCP         = "0192a000-0000-7000-8000-000000000741"
 	tAgent       = "0192a000-0000-7000-8000-000000000751"
@@ -153,6 +154,11 @@ func populateStage34(t *testing.T, in *installation) {
 		next_run_at, scope_incidents, scope_alerts, recipient_user_ids, version, created_at, created_by, updated_at, updated_by)
 		VALUES ($1, $2, 'Еженедельная сводка', 'summary', 'weekly', 1, '09:30', 'xlsx', $3, true, now() + interval '2 days',
 		true, true, $4::uuid[], 1, now(), 'user:x', now(), 'user:x')`, tSchedule, org, tChannelMail, []string{tUser})
+	// Применимость требований отчёта соответствия (миграция 0070).
+	in.exec(t, `INSERT INTO report_schedules (id, org_id, name, report, frequency, day, at_time, format, channel_id, enabled,
+		next_run_at, scope_compliance, applies, recipient_user_ids, version, created_at, created_by, updated_at, updated_by)
+		VALUES ($1, $2, 'Соответствие КИИ', 'compliance', 'monthly', 1, '08:00', 'xlsx', $3, true, now() + interval '5 days',
+		true, 'kii', $4::uuid[], 1, now(), 'user:x', now(), 'user:x')`, tScheduleKII, org, tChannelMail, []string{tUser})
 	in.exec(t, `INSERT INTO model_prices (id, org_id, provider_id, model, input_price, output_price, created_at, created_by,
 		updated_at, updated_by) VALUES ($1, $2, $3, 'gpt-x', 150, 600, now(), 'user:x', now(), 'user:x')`, tPrice, org, tProvider)
 	in.exec(t, `INSERT INTO app_budgets (app_id, org_id, mode, monthly_limit, created_at, created_by, updated_at, updated_by)

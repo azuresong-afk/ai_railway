@@ -66,28 +66,32 @@ type AlertRule struct {
 
 // ReportSchedule — расписание рассылки отчётов.
 type ReportSchedule struct {
-	ID               string     `json:"id"`
-	Name             string     `json:"name"`
-	Report           string     `json:"report"`
-	Frequency        string     `json:"frequency"`
-	Weekday          *int16     `json:"weekday"`
-	Day              *int16     `json:"day"`
-	AtTime           string     `json:"at_time"`
-	Format           string     `json:"format"`
-	ChannelID        string     `json:"channel_id"`
-	Enabled          bool       `json:"enabled"`
-	NextRunAt        time.Time  `json:"next_run_at"`
-	LastRunAt        *time.Time `json:"last_run_at"`
-	ScopeIncidents   bool       `json:"scope_incidents"`
-	ScopeAlerts      bool       `json:"scope_alerts"`
-	ScopeBudgets     bool       `json:"scope_budgets"`
-	ScopeCompliance  bool       `json:"scope_compliance"`
-	RecipientUserIDs []string   `json:"recipient_user_ids"`
-	Version          int        `json:"version"`
-	CreatedAt        time.Time  `json:"created_at"`
-	CreatedBy        string     `json:"created_by"`
-	UpdatedAt        time.Time  `json:"updated_at"`
-	UpdatedBy        string     `json:"updated_by"`
+	ID              string     `json:"id"`
+	Name            string     `json:"name"`
+	Report          string     `json:"report"`
+	Frequency       string     `json:"frequency"`
+	Weekday         *int16     `json:"weekday"`
+	Day             *int16     `json:"day"`
+	AtTime          string     `json:"at_time"`
+	Format          string     `json:"format"`
+	ChannelID       string     `json:"channel_id"`
+	Enabled         bool       `json:"enabled"`
+	NextRunAt       time.Time  `json:"next_run_at"`
+	LastRunAt       *time.Time `json:"last_run_at"`
+	ScopeIncidents  bool       `json:"scope_incidents"`
+	ScopeAlerts     bool       `json:"scope_alerts"`
+	ScopeBudgets    bool       `json:"scope_budgets"`
+	ScopeCompliance bool       `json:"scope_compliance"`
+	// Applies — применимость требований отчёта соответствия (миграция
+	// 0070, задача 5.12); пусто — все пункты базы. Необязательное поле:
+	// в копии без него — пусто.
+	Applies          string    `json:"applies,omitempty"`
+	RecipientUserIDs []string  `json:"recipient_user_ids"`
+	Version          int       `json:"version"`
+	CreatedAt        time.Time `json:"created_at"`
+	CreatedBy        string    `json:"created_by"`
+	UpdatedAt        time.Time `json:"updated_at"`
+	UpdatedBy        string    `json:"updated_by"`
 }
 
 // ModelPrice — цена модели провайдера.
@@ -433,6 +437,11 @@ func (s *Snapshot) validateV2() error {
 		}
 		if err := snames.add("имя расписания", r.Name); err != nil {
 			return err
+		}
+		// Как CHECK миграции 0070: значение из списка, только у отчёта
+		// соответствия.
+		if !slices.Contains([]string{"", "gis", "kii", "ispdn", "commercial"}, r.Applies) || (r.Applies != "" && r.Report != "compliance") {
+			return fmt.Errorf("расписание отчёта %s: applies — gis, kii, ispdn или commercial, только у отчёта compliance", r.ID)
 		}
 	}
 	prices, pmodels := ids{}, ids{}
