@@ -180,6 +180,10 @@ func TestReportsViaAPI(t *testing.T) {
 		!strings.Contains(w.Body.String(), "Коммерческий оператор") {
 		t.Fatalf("соответствие с применимостью: %d", w.Code)
 	}
+	// 5Н8 ревью 5.r1: применимость — в подробностях data.export.
+	if last := e.rec.canon[len(e.rec.canon)-1]; !strings.Contains(last, `"applies":"commercial"`) || !strings.Contains(last, `"report":"compliance"`) {
+		t.Errorf("в подробностях data.export нет применимости: %s", last)
+	}
 	mustProblem(t, e.call(aud, "GET", reportPath("summary", "", "")+"&applies=commercial", "", false), 400, CodeInvalidRequest)
 	mustProblem(t, e.call(aud, "GET", reportPath("compliance", "", "")+"&applies=x", "", false), 400, CodeInvalidRequest)
 }

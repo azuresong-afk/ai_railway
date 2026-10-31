@@ -614,6 +614,9 @@ func (s *Service) send(ctx context.Context, r *Run, sc Schedule, loc *time.Locat
 	details := map[string]any{"report": sc.Report, "format": sc.Format, "from": r.PeriodFirst,
 		"to": r.PeriodLast, "rows": doc.Rows(), "channel_id": sc.ChannelID, "run_id": r.ID, "attempt": r.Attempts, "scheduled": true,
 		"user_recipients": len(extra), "skipped_users": skipped}
+	if sc.Report == KindCompliance {
+		details["applies"] = sc.Applies // 5Н8 ревью 5.r1: от неё зависят состав и процент
+	}
 	rec := audit.Entry{OrgID: s.o.OrgID, Actor: systemActor(sc.ID), Action: "data.export", Object: audit.Object{Type: "report_schedule", ID: sc.ID},
 		Result: audit.ResultSuccess, Details: details}
 	var auditErr error
