@@ -286,8 +286,10 @@ func backupRestore(args []string, dsn string, stdout, stderr io.Writer, now time
 	if err != nil {
 		return fail(audit.ResultFailure, "invalid", fmt.Errorf("%w: %w", errBackupInvalid, err))
 	}
-	// Объекты — правилами сервиса этого выпуска, до записи «до» (В22).
-	if err := checkSnapshot(p, arch, *keepTokens); err != nil {
+	// Объекты — правилами сервиса этого выпуска, до записи «до» (В22);
+	// настройки — только для пустой установки (5Н1 ревью 5.r1).
+	settingsChecked := st.Empty()
+	if err := checkSnapshot(p, arch, *keepTokens, settingsChecked); err != nil {
 		return fail(audit.ResultFailure, "invalid", fmt.Errorf("%w: %w", errBackupInvalid, err))
 	}
 	details := snap.Counts()
@@ -311,7 +313,8 @@ func backupRestore(args []string, dsn string, stdout, stderr io.Writer, now time
 	if err != nil {
 		return fail(audit.ResultFailure, "error", err)
 	}
-	opts := restoreOptions{allowNonEmpty: *allowNonEmpty, keepTokens: *keepTokens, now: now, ageHours: ageHours, verifyServiceDB: verifyDB}
+	opts := restoreOptions{allowNonEmpty: *allowNonEmpty, keepTokens: *keepTokens, now: now, ageHours: ageHours, verifyServiceDB: verifyDB,
+		settingsChecked: settingsChecked}
 	res, err := restoreTx(ctx, db, l, prepared, snap, opts, entry)
 	if err != nil {
 		var unknown *commitUnknownError
@@ -386,6 +389,9 @@ type restoreOptions struct {
 	ageHours      int64
 	// verifyServiceDB — проверка файлов служебных баз (serviceDBVerifier).
 	verifyServiceDB func(kind string, file []byte) (backup.ServiceDBMeta, error)
+	// settingsChecked — настройки копии проверены (checkSnapshot для пустой
+	// установки): только тогда их можно записать.
+	settingsChecked bool
 }
 
 // liveSessionWindow — сессия с активностью в этом окне означает, что
@@ -446,6 +452,9 @@ func restoreTx(ctx context.Context, db *store.DB, l *audit.Log, prepared *backup
 	// Настройки и название организации переносятся только в пустую
 	// установку; их новые значения — в записи аудита.
 	replaceSettings := st.Empty()
+	if replaceSettings && !opts.settingsChecked {
+		return backup.RestoreResult{}, errors.New("установка стала пустой после проверки копии: настройки копии не проверены — повторите восстановление")
+	}
 	res, err := backup.Restore(ctx, tx, prepared, backup.RestoreOptions{ReplaceSettings: replaceSettings,
 		KeepAPITokens: opts.keepTokens, Now: opts.now, VerifyServiceDB: opts.verifyServiceDB, BuiltinAlertRule: builtinAlertRule})
 	if err != nil {

@@ -71,3 +71,55 @@ func TestBackupRestoreLockedBuiltinRulesOnRealDB(t *testing.T) {
 		t.Fatalf("нет строки о пропуске: %s", out.String())
 	}
 }
+
+// 5Н1 ревью 5.r1 этапа 5: в непустую установку настройки копии не пишутся,
+// поэтому и не проверяются — лицензия чужим ключом и встроенное правило с
+// неверными получателями копию не отклоняют. В пустую установку та же копия
+// — отказ (TestBackupRestoreInvalidObjectsOnRealDB).
+func TestBackupRestoreNonEmptySkipsSettingsCheckOnRealDB(t *testing.T) {
+	base := os.Getenv("AISEC_TEST_DATABASE_URL")
+	if base == "" {
+		t.Skip("AISEC_TEST_DATABASE_URL не задан")
+	}
+	admin, err := store.Open(context.Background(), base, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close()
+	src := newInstallation(t, admin, base, "cli_backup_src_5n1")
+	dst := newInstallation(t, admin, base, "cli_backup_dst_5n1")
+	populate(t, src)
+	org := audit.DefaultOrgID
+	lic := readLicenseFixture(t)
+	lic[len(lic)/2] ^= 0x01
+	src.exec(t, "INSERT INTO licenses (org_id, number, file, loaded_at, loaded_by) VALUES ($1, 9, $2, now(), 'user:x')", org, lic)
+	src.exec(t, `INSERT INTO alert_rules (id, org_id, builtin_key, kind, name, description, enabled, severity, condition, group_by,
+		suppress_minutes, group_minutes, recipients, version, created_at, created_by, updated_at, updated_by)
+		VALUES ('0192a000-0000-7000-8000-000000000531', $1, $2, 'security', 'Получатели', '', true, 'high', '{}', '{actor}', 0, 10,
+		'{"roles":["Не роль"],"users":[]}', 1, now(), 'system', now(), 'user:x')`, org, alerting.BuiltinRecipientsChanged)
+	dst.exec(t, `INSERT INTO users (id, org_id, login, display_name, role, status, password_hash, password_changed_at,
+		must_change_password, created_at, created_by) VALUES ('0192a000-0000-7000-8000-00000000aaab', $1, 'first.admin',
+		'Синтетический первый', 'security_admin', 'active', 'x', now(), false, now(), 'setup')`, org)
+
+	dir := t.TempDir()
+	phrase := writePhraseFile(t, testBackupPhrase, 0o400)
+	file := filepath.Join(dir, "config.aisec-backup")
+	var out, errb bytes.Buffer
+	if err := backupCmd([]string{"create", "-keys", src.keys, "-out", file, "-passphrase-file", phrase, "-no-user-hmac-key"},
+		src.dsn, &out, &errb, time.Now()); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := backupCmd([]string{"restore", "-keys", dst.keys, "-in", file, "-passphrase-file", phrase, "-allow-nonempty"},
+		dst.dsn, &out, &errb, time.Now()); err != nil {
+		t.Fatalf("restore в непустую установку: %v", err)
+	}
+	if n := dst.count(t, "SELECT count(*) FROM licenses"); n != 0 {
+		t.Fatalf("лицензия записана в непустую установку: %d", n)
+	}
+	if n := dst.count(t, "SELECT count(*) FROM alert_rules WHERE builtin_key IS NOT NULL"); n != 0 {
+		t.Fatalf("встроенное правило записано в непустую установку: %d", n)
+	}
+	if n := dst.count(t, "SELECT count(*) FROM users"); n != 3 {
+		t.Fatalf("пользователей после восстановления: %d", n)
+	}
+}

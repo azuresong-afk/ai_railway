@@ -60,8 +60,12 @@ func (e *invalidObjectsError) Error() string {
 // Файлы лицензий проверяются подписью ключа производителя, как загруженная
 // лицензия при запуске сервера (ADR-0026, п. 2; задача 5.8): лицензию,
 // которую сервер не принял бы, копия не переносит, а без неё установка
-// вернулась бы в режим пилота — поэтому отказ, а не пропуск.
-func checkSnapshot(p aisecCrypto.Provider, arch *backup.Archive, keepTokens bool) error {
+// вернулась бы в режим пилота — поэтому отказ, а не пропуск. Настройки,
+// которые переносятся только в пустую установку (встроенные правила
+// оповещений, сертификат шлюза, OIDC, LDAP, лицензии), проверяются только
+// при settings: в непустую установку Restore их не пишет, и отклонять из-за
+// них копию незачем (5Н1 ревью 5.r1 этапа 5).
+func checkSnapshot(p aisecCrypto.Provider, arch *backup.Archive, keepTokens, settings bool) error {
 	s := arch.Snapshot
 	reg, err := detect.NewRegistry(builtin.Catalog()...)
 	if err != nil {
@@ -142,6 +146,9 @@ func checkSnapshot(p aisecCrypto.Provider, arch *backup.Archive, keepTokens bool
 		}
 	}
 	for _, r := range s.AlertRules {
+		if r.BuiltinKey != nil && !settings {
+			continue
+		}
 		// Снятое в этом выпуске встроенное правило восстановление пропускает
 		// строкой отчёта (5В1 ревью 5.r1).
 		if err := checkAlertRule(r); err != nil && !errors.Is(err, alerting.ErrUnknownBuiltin) {
@@ -159,7 +166,7 @@ func checkSnapshot(p aisecCrypto.Provider, arch *backup.Archive, keepTokens bool
 			add("MCP-сервер "+m.Slug, err)
 		}
 	}
-	if t := s.GatewayTLS; t != nil {
+	if t := s.GatewayTLS; t != nil && settings {
 		key, err := arch.GatewayTLSKey()
 		if err == nil {
 			err = apps.CheckStoredGatewayTLS(t.Host, []byte(t.ChainPEM), key, t.Fingerprint, t.NotAfter)
@@ -169,18 +176,18 @@ func checkSnapshot(p aisecCrypto.Provider, arch *backup.Archive, keepTokens bool
 			add("сертификат шлюза", err)
 		}
 	}
-	if o := s.OIDC; o != nil {
+	if o := s.OIDC; o != nil && settings {
 		if err := oidc.ValidateIssuer(o.Issuer); err != nil {
 			add("вход через OIDC", err)
 		}
 	}
-	if l := s.LDAP; l != nil {
+	if l := s.LDAP; l != nil && settings {
 		if err := ldap.ValidateConfig(ldap.Config{URL: l.URL, BindDN: l.BindDN, UserBaseDN: l.UserBaseDN, UserFilter: l.UserFilter,
 			IDAttribute: l.IDAttribute, DisplayAttribute: l.DisplayAttribute, GroupMode: l.GroupMode, GroupBaseDN: l.GroupBaseDN}); err != nil {
 			add("вход через LDAP", err)
 		}
 	}
-	if len(s.Licenses) > 0 {
+	if len(s.Licenses) > 0 && settings {
 		vendor, err := license.VendorVerifier(p)
 		if err != nil {
 			return err
