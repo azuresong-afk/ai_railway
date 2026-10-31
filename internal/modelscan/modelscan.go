@@ -42,7 +42,7 @@ const (
 	FormatSafetensors     Format = "safetensors"
 	FormatGGUF            Format = "gguf"
 	FormatONNX            Format = "onnx"
-	FormatTokenizerConfig Format = "tokenizer_config"
+	FormatTokenizerConfig Format = "tokenizer_config" //nolint:gosec // G101: имя формата файла, не секрет
 	FormatChatTemplate    Format = "chat_template"
 	FormatJSON            Format = "json"
 	FormatText            Format = "text"
@@ -438,7 +438,7 @@ func (s *Scanner) checkExternal(root, dir string, fr *FileReport) {
 			if i == len(parts)-1 {
 				if !fi.Mode().IsRegular() {
 					fr.add(CodeExternalData, SeverityBlock, "внешние данные %s — не обычный файл", clean(ext.location))
-				} else if ext.hasRange && (ext.offset > uint64(fi.Size()) || ext.length > uint64(fi.Size())-ext.offset) {
+				} else if fsz := uint64(fi.Size()); ext.hasRange && (ext.offset > fsz || ext.length > fsz-ext.offset) { //nolint:gosec // G115: размер обычного файла неотрицателен
 					fr.add(CodeExternalData, SeverityBlock, "внешние данные %s за концом файла", clean(ext.location))
 				}
 			}

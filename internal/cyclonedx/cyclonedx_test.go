@@ -63,7 +63,7 @@ func TestParseLimit(t *testing.T) {
 func FuzzParse(f *testing.F) {
 	f.Add([]byte(`{"bomFormat":"CycloneDX","specVersion":"1.6","components":[{"type":"file","name":"a"}]}`))
 	f.Fuzz(func(t *testing.T, data []byte) {
-		_, _ = Parse(data, 1<<16)
+		_, _ = Parse(data, 1<<16) //nolint:gosec // G104: в fuzz важна только паника
 	})
 }
 

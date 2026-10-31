@@ -72,7 +72,7 @@ func readZipDirectory(r io.ReaderAt, size int64) (zipDirectory, error) {
 				return zipDirectory{}, errors.New("запись ZIP64 за концом файла")
 			}
 			var rec [eocd64Len]byte
-			if _, err := r.ReadAt(rec[:], int64(at)); err != nil {
+			if _, err := r.ReadAt(rec[:], int64(at)); err != nil { //nolint:gosec // G115: at ≤ size проверено выше
 				return zipDirectory{}, err
 			}
 			if string(rec[:4]) != "PK\x06\x06" {
@@ -133,18 +133,22 @@ func (s *Scanner) scanZip(r io.ReaderAt, size int64, fr *FileReport) {
 		if strings.HasSuffix(strings.ToLower(base), ".npy") {
 			npy++
 			s.scanNumpy(rc, int64(min(f.UncompressedSize64, 1<<62)), fr, f.Name) //nolint:gosec // G115: размер ограничен 2^62
-			_ = rc.Close()
+			closeEntry(rc)
 			continue
 		}
 		head := make([]byte, zipPeek)
-		n, _ := io.ReadFull(rc, head)
-		_ = rc.Close()
+		n, err := io.ReadFull(rc, head)
+		closeEntry(rc)
+		if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+			// Ошибка распаковки: прочитанное начало всё равно проверяется.
+			unread++
+		}
 		head = head[:n]
 		isPickle := strings.HasSuffix(strings.ToLower(base), ".pkl") ||
 			n >= 2 && head[0] == opProto && head[1] <= 5 || looksLikePickle(head)
 		if isPickle {
 			if len(pickles) == 0 {
-				pickleWalkInfo, _ = walkPickle(head)
+				pickleWalkInfo = pickleInfo(head)
 			}
 			if len(pickles) < maxZipNames {
 				pickles = append(pickles, clean(f.Name))
@@ -182,8 +186,7 @@ func scanCompressed(head []byte, fr *FileReport) {
 		return
 	}
 	if len(plain) >= 2 && plain[0] == opProto && plain[1] <= 5 || looksLikePickle(plain) {
-		w, _ := walkPickle(plain)
-		fr.add(CodePickle, SeverityBlock, "%s", pickleDetail("поток pickle, сжатый "+name+" (joblib или .pkl."+name+")", w))
+		fr.add(CodePickle, SeverityBlock, "%s", pickleDetail("поток pickle, сжатый "+name+" (joblib или .pkl."+name+")", pickleInfo(plain)))
 		return
 	}
 	fr.add(CodeUnknownFormat, SeverityWarn, "сжатый поток %s: содержимое не распознано", name)
@@ -212,4 +215,10 @@ func decompressHead(name string, head []byte) ([]byte, bool) {
 		return nil, false
 	}
 	return out[:n], true
+}
+
+// closeEntry закрывает запись архива: данные уже прочитаны (не больше
+// zipPeek байт), ошибка контрольной суммы неполного чтения не важна.
+func closeEntry(rc io.Closer) {
+	_ = rc.Close() //nolint:gosec // G104: запись прочитана не целиком, контрольная сумма не проверяется
 }

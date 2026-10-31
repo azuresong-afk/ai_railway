@@ -55,7 +55,7 @@ func npyBytes(descr string, data []byte) []byte {
 	}
 	header += "\n"
 	out := []byte("\x93NUMPY\x01\x00")
-	out = binary.LittleEndian.AppendUint16(out, uint16(len(header)))
+	out = binary.LittleEndian.AppendUint16(out, uint16(len(header))) //nolint:gosec // G115: заголовок образца короче 64 КиБ
 	out = append(out, header...)
 	return append(out, data...)
 }
@@ -320,7 +320,7 @@ func FuzzNumpyHeader(f *testing.F) {
 	f.Add(npyBytes("[('a', '<f4'), ('b', [('c', '|O')])]", nil))
 	f.Add([]byte("\x93NUMPY\x02\x00\x10\x00\x00\x00{'descr': 'O'}  "))
 	f.Fuzz(func(t *testing.T, data []byte) {
-		_, _ = numpyHasObject(bytes.NewReader(data), int64(len(data)), 1<<12)
+		_, _ = numpyHasObject(bytes.NewReader(data), int64(len(data)), 1<<12) //nolint:gosec // G104: в fuzz важна только паника
 	})
 }
 
@@ -330,7 +330,7 @@ func FuzzZipDirectory(f *testing.F) {
 	f.Add([]byte("PK\x05\x06" + strings.Repeat("\x00", 18)))
 	s := New(Limits{MaxZipEntries: 64, MaxZipDirectory: 1 << 16})
 	f.Fuzz(func(t *testing.T, data []byte) {
-		_, _ = readZipDirectory(bytes.NewReader(data), int64(len(data)))
+		_, _ = readZipDirectory(bytes.NewReader(data), int64(len(data))) //nolint:gosec // G104: в fuzz важна только паника
 		fr := FileReport{}
 		s.scanZip(bytes.NewReader(data), int64(len(data)), &fr)
 	})

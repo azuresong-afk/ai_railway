@@ -54,7 +54,7 @@ func ggufBytes(version uint32, kvs []ggufKV, tensors []ggufTensorDef, align, dat
 	}
 	for _, t := range tensors {
 		out = append(out, ggufStr(t.name)...)
-		out = binary.LittleEndian.AppendUint32(out, uint32(len(t.dims)))
+		out = binary.LittleEndian.AppendUint32(out, uint32(len(t.dims))) //nolint:gosec // G115: в образцах до пяти размерностей
 		for _, d := range t.dims {
 			out = binary.LittleEndian.AppendUint64(out, d)
 		}
@@ -392,6 +392,6 @@ func FuzzTokenizerConfig(f *testing.F) {
 	f.Add([]byte(`{"chat_template":"{{ messages }}"}`))
 	f.Add([]byte(`{"chat_template":[{"name":"a","template":"b"}]}`))
 	f.Fuzz(func(t *testing.T, data []byte) {
-		_, _ = parseTokenizerConfig(data)
+		_, _ = parseTokenizerConfig(data) //nolint:gosec // G104: в fuzz важна только паника
 	})
 }

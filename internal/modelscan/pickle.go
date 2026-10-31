@@ -2,6 +2,7 @@ package modelscan
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -86,6 +87,8 @@ type pickleWalk struct {
 	globals []string
 	// short — данные кончились посреди опкода (поток длиннее просмотра).
 	short bool
+	// broken — просмотр остановился на байте не по формату (pickleInfo).
+	broken bool
 }
 
 // walkPickle просматривает поток в buf; err — байт не опкод или аргумент
@@ -135,12 +138,13 @@ func walkPickle(buf []byte) (pickleWalk, error) {
 				n = le64(buf[pos:])
 			}
 			pos += width
-			if n > uint64(len(buf)-pos) {
+			if n > uint64(len(buf)-pos) { //nolint:gosec // G115: pos ≤ len(buf)
 				w.short = true
 				return w, nil
 			}
-			arg = buf[pos : pos+int(n)]
-			pos += int(n)
+			m := int(n) //nolint:gosec // G115: n не больше длины буфера
+			arg = buf[pos : pos+m]
+			pos += m
 		default:
 			lines := 1
 			if info.kind == argLines2 {
@@ -253,6 +257,14 @@ func looksLikePickle(buf []byte) bool {
 	return w.ops >= minPickleOps
 }
 
+// pickleInfo — итог просмотра для пояснения находки: поток, который
+// просмотр не прошёл целиком, остаётся находкой, отмечается признак.
+func pickleInfo(buf []byte) pickleWalk {
+	w, err := walkPickle(buf)
+	w.broken = err != nil
+	return w
+}
+
 // pickleDetail — пояснение находки pickle.
 func pickleDetail(what string, w pickleWalk) string {
 	var b strings.Builder
@@ -263,6 +275,9 @@ func pickleDetail(what string, w pickleWalk) string {
 	if len(w.globals) > 0 {
 		b.WriteString("; импортирует: " + strings.Join(w.globals, ", "))
 	}
+	if w.broken {
+		fmt.Fprintf(&b, "; после %d опкодов поток не по формату", w.ops)
+	}
 	b.WriteString(". pickle выполняет код при загрузке; запрет без исключений (DM-27)")
 	return b.String()
 }
@@ -271,7 +286,9 @@ func pickleDetail(what string, w pickleWalk) string {
 // формата и joblib без сжатия).
 func (s *Scanner) scanPickle(r io.ReaderAt, size int64, fr *FileReport) {
 	buf := make([]byte, min(size, pickleProbe))
-	n, _ := r.ReadAt(buf, 0)
-	w, _ := walkPickle(buf[:n])
-	fr.add(CodePickle, SeverityBlock, "%s", pickleDetail("поток pickle", w))
+	n, err := r.ReadAt(buf, 0)
+	if err != nil && !errors.Is(err, io.EOF) {
+		n = 0
+	}
+	fr.add(CodePickle, SeverityBlock, "%s", pickleDetail("поток pickle", pickleInfo(buf[:n])))
 }

@@ -15,7 +15,7 @@ import (
 // шаблон — до MaxChatTemplate. chat_template.jinja — шаблон текстом.
 
 const (
-	nameTokenizerConfig   = "tokenizer_config.json"
+	nameTokenizerConfig   = "tokenizer_config.json" //nolint:gosec // G101: имя файла, не секрет
 	nameChatTemplateJSON  = "chat_template.json"
 	nameChatTemplateJinja = "chat_template.jinja"
 )

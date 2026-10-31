@@ -70,7 +70,7 @@ func (g *ggufReader) read(n int) ([]byte, error) {
 	if _, err := io.ReadFull(g.r, b); err != nil {
 		return nil, errTruncated
 	}
-	g.pos += uint64(n)
+	g.pos += uint64(n) //nolint:gosec // G115: n — длина прочитанного, неотрицательна
 	return b, nil
 }
 
@@ -141,6 +141,7 @@ type ggufTensor struct {
 }
 
 func (s *Scanner) parseGGUF(r io.ReaderAt, size int64, fr *FileReport) error {
+	usize := uint64(size) //nolint:gosec // G115: size > 0 проверен в ScanReader
 	g := &ggufReader{r: bufio.NewReaderSize(io.NewSectionReader(r, 0, size), 64<<10), lim: s.limits}
 	if _, err := g.read(4); err != nil {
 		return err
@@ -242,13 +243,13 @@ func (s *Scanner) parseGGUF(r io.ReaderAt, size int64, fr *FileReport) error {
 	}
 	fr.Tensors = len(list)
 	start := (g.pos + align - 1) / align * align
-	if start > uint64(size) {
+	if start > usize {
 		if len(list) == 0 {
 			return nil
 		}
 		return errors.New("область данных за концом файла")
 	}
-	dataLen := uint64(size) - start
+	dataLen := usize - start
 	sort.Slice(list, func(i, j int) bool { return list[i].offset < list[j].offset })
 	var prevEnd uint64
 	var prev string

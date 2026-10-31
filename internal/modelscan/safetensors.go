@@ -37,11 +37,12 @@ func (s *Scanner) scanSafetensors(r io.ReaderAt, size int64, fr *FileReport) {
 		return
 	}
 	n := le64(pre[:])
+	usize := uint64(size) //nolint:gosec // G115: size > 0 проверен в ScanReader
 	if n > s.limits.MaxSafetensorsHeader {
 		fr.add(CodeLimitExceeded, SeverityBlock, "safetensors: заголовок %d байт, предел %d", n, s.limits.MaxSafetensorsHeader)
 		return
 	}
-	if n > uint64(size)-8 {
+	if n > usize-8 {
 		fr.add(CodeMalformed, SeverityBlock, "safetensors: обрезанный заголовок (%d байт заявлено, в файле %d)", n, size-8)
 		return
 	}
@@ -50,7 +51,7 @@ func (s *Scanner) scanSafetensors(r io.ReaderAt, size int64, fr *FileReport) {
 		fr.add(CodeMalformed, SeverityBlock, "safetensors: заголовок не прочитан")
 		return
 	}
-	spans, err := parseSafetensorsHeader(header, uint64(size)-8-n, s.limits.MaxTensors)
+	spans, err := parseSafetensorsHeader(header, usize-8-n, s.limits.MaxTensors)
 	switch {
 	case errors.Is(err, errLimit):
 		fr.add(CodeLimitExceeded, SeverityBlock, "safetensors: тензоров больше %d", s.limits.MaxTensors)

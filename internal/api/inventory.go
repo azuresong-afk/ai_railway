@@ -419,9 +419,21 @@ func (d Deps) listInventoryUsage(w http.ResponseWriter, r *http.Request) {
 // что читает реестр; без неё документ не выдаётся.
 func (d Deps) exportAIBOM(w http.ResponseWriter, r *http.Request) {
 	by, ok := d.inventoryBy(r)
-	if !ok {
+	p, pok := PrincipalFrom(r.Context())
+	if !ok || !pok {
 		WriteProblem(w, errInternal())
 		return
+	}
+	// Одновременных выгрузок — в общих пределах выгрузок субъекта.
+	if d.Exports != nil {
+		subject := exportSubject(p)
+		if !d.Exports.Acquire(subject) {
+			w.Header().Set("Retry-After", exportRetryAfter)
+			WriteProblem(w, NewProblem(http.StatusTooManyRequests, CodeRateLimited,
+				"Выгрузка уже выполняется: дождитесь её окончания и повторите."))
+			return
+		}
+		defer d.Exports.Release(subject)
 	}
 	bom, err := d.Inventory.ExportAIBOM(r.Context(), by, d.Version)
 	if err != nil {

@@ -21,7 +21,8 @@ import (
 func aibomMemory() *Memory {
 	mem := NewMemory()
 	mem.Providers = []Provider{
-		{ID: "p1", Slug: "gigachat", Name: "GigaChat", Type: "gigachat", External: true,
+		// Синтетический адрес с учётными данными: проверка, что они не попадают в AI-BOM.
+		{ID: "p1", Slug: "gigachat", Name: "GigaChat", Type: "gigachat", External: true, //nolint:gosec // G101: синтетический адрес теста, не секрет
 			Endpoint: "https://user:secret@gigachat.example.ru/api/v1?token=x"},
 		{ID: "p2", Slug: "vllm", Name: "vLLM в контуре", Type: "openai", External: false, Endpoint: "http://10.0.0.5:8000/v1"},
 	}
