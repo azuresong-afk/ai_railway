@@ -1,0 +1,27 @@
+{
+  "id": "qr-02",
+  "file": "qr-02.png",
+  "text_file": "qr-02.txt",
+  "kind": "qr",
+  "lang": "ru",
+  "dm": [
+    "DM-47"
+  ],
+  "description": "Плакат с QR-кодом визитки: телефон и e-mail в QR (UTF-8, байтовый режим без ECI)",
+  "metadata": [],
+  "qr": [
+    "Контакт: тел. +7 300 642-41-57, почта client4894@pochta.test"
+  ],
+  "expect": [
+    {
+      "type": "pii.phone",
+      "source": "qr",
+      "text": "+7 300 642-41-57"
+    },
+    {
+      "type": "pii.email",
+      "source": "qr",
+      "text": "client4894@pochta.test"
+    }
+  ]
+}

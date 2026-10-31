@@ -126,6 +126,14 @@ dm-coverage: build ## Покрытие матрицы обнаружения 5.1
 detector-quality: ## Точность и полнота детекторов на корпусах против docs/detectors.md (ТЗ, 5.2)
 	go run ./tools/detector-quality -doc docs/detectors.md -corpus testdata/corpus -out $(BUILD)/detector-quality.md
 
+# Корпус изображений testdata/corpus/media (задача 5.36, tools/synth-media):
+# headless Chromium из AISEC_CHROMIUM без сети, шрифты — web/src/assets/fonts.
+# CI корпус не перегенерирует: сверку с манифестом делает make test.
+.PHONY: media-corpus
+media-corpus: ## Перегенерировать корпус изображений (нужен AISEC_CHROMIUM)
+	@test -n "$(AISEC_CHROMIUM)" || { echo "задайте AISEC_CHROMIUM — путь к Chromium"; exit 2; }
+	go run ./tools/synth-media -out testdata/corpus/media -chromium "$(AISEC_CHROMIUM)"
+
 # Демо-данные для демо-стенда (задача 3.29, tools/demo-data/README.md): запросы
 # идут в Check API шлюза, оповещения и инциденты создают правила сервера.
 # Адрес по умолчанию — loopback; чужой стенд — только с DEMO_FLAGS=-allow-remote.

@@ -1,0 +1,25 @@
+{
+  "id": "shot-02",
+  "file": "shot-02.png",
+  "text_file": "shot-02.txt",
+  "kind": "screenshot",
+  "lang": "ru",
+  "dm": [
+    "DM-46"
+  ],
+  "description": "Скриншот переписки в мессенджере: телефон и e-mail",
+  "metadata": [],
+  "qr": [],
+  "expect": [
+    {
+      "type": "pii.phone",
+      "source": "ocr",
+      "text": "+7 300 395-22-13"
+    },
+    {
+      "type": "pii.email",
+      "source": "ocr",
+      "text": "client9388@pochta.test"
+    }
+  ]
+}

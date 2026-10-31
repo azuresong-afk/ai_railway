@@ -1,0 +1,20 @@
+{
+  "id": "scan-03",
+  "file": "scan-03.jpg",
+  "text_file": "scan-03.txt",
+  "kind": "scan",
+  "lang": "en",
+  "dm": [
+    "DM-46"
+  ],
+  "description": "Scanned refund request with a card number",
+  "metadata": [],
+  "qr": [],
+  "expect": [
+    {
+      "type": "pii.card",
+      "source": "ocr",
+      "text": "5555 5599 2729 4622"
+    }
+  ]
+}
