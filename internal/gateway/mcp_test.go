@@ -1032,7 +1032,7 @@ func rpcCode(t *testing.T, m *mcp.Message) int {
 	return int(c.Num.Num().Int64())
 }
 
-// Покрывает: DM-24 (часть)
+// Покрывает: DM-24
 // 5Н6 ревью 5.r1 этапа 5: в serverInfo результата initialize клиенту
 // уходят только name, title и version; description, icons и websiteUrl
 // сервера — нет, а title проходит встроенную проверку описаний, как

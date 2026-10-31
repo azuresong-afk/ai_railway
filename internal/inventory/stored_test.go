@@ -32,7 +32,7 @@ func TestCheckStoredModel(t *testing.T) {
 		"ID провайдера":         {func(m *StoredModel) { m.Provider = "Open AI" }, "provider"},
 		"пустое имя":            {func(m *StoredModel) { m.Name = "" }, "name"},
 		"пробел в имени":        {func(m *StoredModel) { m.Name = " x" }, "name"},
-		"смена направления":     {func(m *StoredModel) { m.Title = "a‮b" }, "title"},
+		"смена направления":     {func(m *StoredModel) { m.Title = "a\u202eb" }, "title"},
 		"длинный владелец":      {func(m *StoredModel) { m.Owner = strings.Repeat("я", maxOwner+1) }, "owner"},
 		"управляющий символ":    {func(m *StoredModel) { m.Description = "a\x00b" }, "description"},
 		"происхождение":         {func(m *StoredModel) { m.Origin = "import" }, "origin"},
