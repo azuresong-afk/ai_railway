@@ -108,7 +108,7 @@ func (in ScheduleInput) Validate() (Schedule, error) {
 		bad["name"] = "Название — обычный текст без управляющих знаков."
 	}
 	if !ValidKind(in.Report) {
-		bad["report"] = "Одно из значений: summary, incidents, pilot."
+		bad["report"] = "Одно из значений: " + strings.Join(Kinds(), ", ") + "."
 	}
 	switch {
 	case !ValidApplies(in.Applies):

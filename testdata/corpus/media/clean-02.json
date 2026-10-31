@@ -1,0 +1,14 @@
+{
+  "id": "clean-02",
+  "file": "clean-02.png",
+  "text_file": "clean-02.txt",
+  "kind": "clean",
+  "lang": "ru",
+  "dm": [
+    "DM-46"
+  ],
+  "description": "Счёт с номерами, похожими на ПДн: номер договора в раскладке СНИЛС с неверным контрольным числом",
+  "metadata": [],
+  "qr": [],
+  "expect": []
+}

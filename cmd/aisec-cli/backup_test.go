@@ -840,8 +840,7 @@ func TestBackupRestoreInvalidObjectsOnRealDB(t *testing.T) {
 		org, src.seal(t, []byte(tLDAPPassword), "ldap_settings", "bind_password", org), src.box.KeyID(), tUser)
 	// По неверному значению в каждом разделе, проверку которого вынесли из
 	// модулей (остатки волны A этапа 5): url_origin канала не по адресу из
-	// секретов (консоль показала бы другой адресат), встроенное правило с
-	// ключом, которого нет в выпуске, MCP-сервер на localhost (правило адресов),
+	// секретов (консоль показала бы другой адресат), MCP-сервер на localhost (правило адресов),
 	// группы для модели не из приложения, ключ сертификата шлюза от другой
 	// цепочки.
 	ca := testCAPEM(t)
@@ -886,11 +885,16 @@ func TestBackupRestoreInvalidObjectsOnRealDB(t *testing.T) {
 	}
 	for _, want := range []string{"политика legacy", "pii.renamed_card", "токен API aisec_pat_vvvv7777", "приложение support-bot",
 		"лицензия № 9", "правило оповещений «Каждое событие»", "вход через LDAP", "канал «Подменённый webhook»: settings",
-		"правило оповещений «Снятое встроенное»: builtin_key", "MCP-сервер plain: url", "доступ по группам приложения support-bot",
+		"MCP-сервер plain: url", "доступ по группам приложения support-bot",
 		"сертификат шлюза: закрытый ключ не подходит"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("в ошибке нет %q: %v", want, err)
 		}
+	}
+	// Снятое в выпуске встроенное правило — пропуск при восстановлении, не
+	// отказ (5В1 ревью 5.r1).
+	if strings.Contains(err.Error(), "Снятое встроенное") {
+		t.Errorf("снятое встроенное правило отклонило копию: %v", err)
 	}
 	t.Setenv("AISEC_DATABASE_URL", dst.dsn)
 	if code := run([]string{"backup", "restore", "-keys", dst.keys, "-in", file, "-passphrase-file", phrase}, &out, &errb,

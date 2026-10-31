@@ -46,7 +46,7 @@ func complianceRoutes(d Deps) []Route {
 		{Method: http.MethodPut, Path: "/api/v1/compliance/base", Permission: auth.PermComplianceBaseLoad,
 			MaxBody: complianceBaseMaxBody, Handler: needCompliance(d, d.putComplianceBase)},
 		// Откат на предыдущую загруженную версию (задача 5.15, ADR-0028, п. 4).
-		{Method: http.MethodPost, Path: "/api/v1/compliance/base/rollback", Permission: auth.PermComplianceBaseLoad,
+		{Method: http.MethodPost, Path: "/api/v1/compliance/base/rollback", Permission: auth.PermComplianceBaseLoad, SessionOnly: true,
 			MaxBody: smallMaxBody, Handler: needCompliance(d, d.rollbackComplianceBase)},
 	}
 }

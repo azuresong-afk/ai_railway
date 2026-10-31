@@ -104,13 +104,32 @@ func registryName(lockName string) string {
 }
 
 // versionMatches — версия записи реестра соответствует строке deps.lock: у
-// git — коммит («<коммит>» или «<версия> (<коммит>)»), у url — версия в
-// имени архива («protobuf-33.6.tar.gz» для 33.6).
+// git — коммит («<коммит>» или «<версия> (<коммит>)»), у url — имя архива
+// без расширения оканчивается на «-<версия>» («protobuf-33.6.tar.gz» для
+// 33.6; запись 33 или 3 ему не соответствует — 5Н7 ревью 5.r1 этапа 5).
 func versionMatches(e lockEntry, regVersion string) bool {
 	if e.kind == "git" {
 		return regVersion == e.version || strings.HasSuffix(regVersion, " ("+e.version+")")
 	}
-	return regVersion != "" && !strings.ContainsAny(regVersion, " /") && strings.Contains(path.Base(e.source), "-"+regVersion+".")
+	if regVersion == "" || strings.ContainsAny(regVersion, " /") {
+		return false
+	}
+	stem, ok := archiveStem(path.Base(e.source))
+	return ok && strings.HasSuffix(stem, "-"+regVersion)
+}
+
+// archiveExts — расширения архивов исходников в строках url deps.lock.
+var archiveExts = []string{".tar.gz", ".tgz", ".tar.xz", ".tar.bz2", ".zip"}
+
+// archiveStem — имя архива без расширения; ok = false — расширение не из
+// archiveExts.
+func archiveStem(name string) (string, bool) {
+	for _, ext := range archiveExts {
+		if stem, ok := strings.CutSuffix(name, ext); ok {
+			return stem, true
+		}
+	}
+	return "", false
 }
 
 // licenseCovered — каждая лицензия строки deps.lock есть в выражении записи

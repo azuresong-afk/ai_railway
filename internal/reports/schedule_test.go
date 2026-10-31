@@ -160,7 +160,13 @@ func TestScheduleValidate(t *testing.T) {
 			t.Errorf("%s: %v", field, err)
 		}
 	}
+	// 5Н8 ревью 5.r1: в тексте ошибки — все виды отчётов, и compliance.
 	in := ok
+	in.Report = "all"
+	if _, err := in.Validate(); !strings.Contains(fieldsOf(err)["report"], KindCompliance) {
+		t.Errorf("текст ошибки вида отчёта: %v", err)
+	}
+	in = ok
 	in.Report, in.Applies = KindCompliance, "commercial"
 	if s, err := in.Validate(); err != nil || s.Applies != "commercial" {
 		t.Fatalf("применимость отчёта соответствия: %+v %v", s, err)
@@ -203,4 +209,13 @@ func FuzzScheduleNext(f *testing.F) {
 			}
 		}
 	})
+}
+
+// fieldsOf — поля ошибки проверки (*InputError).
+func fieldsOf(err error) map[string]string {
+	var ie *InputError
+	if errors.As(err, &ie) {
+		return ie.Fields
+	}
+	return nil
 }

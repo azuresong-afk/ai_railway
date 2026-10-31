@@ -210,11 +210,17 @@ func (d Deps) getReport(w http.ResponseWriter, r *http.Request) {
 	// Запись data.export — до выдачи данных; без записи отчёт не выдаётся.
 	actx, acancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
 	defer acancel()
+	details := map[string]any{
+		"report": kind, "format": params.Format, "delimiter": delimName(params.Delimiter, params.Format), "from": params.Period.First, "to": params.Period.Last, "app": params.App,
+		"rows": doc.Rows(),
+	}
+	if kind == reports.KindCompliance {
+		// От применимости зависят состав и процент отчёта (5Н8 ревью 5.r1);
+		// пусто — все пункты базы.
+		details["applies"] = params.Applies
+	}
 	if err := d.Audit.Record(actx, audit.Entry{Actor: eventsActor(p), SourceIP: clientAddr(r), Action: "data.export",
-		Object: audit.Object{Type: "report", ID: kind}, Result: audit.ResultSuccess, Details: map[string]any{
-			"report": kind, "format": params.Format, "delimiter": delimName(params.Delimiter, params.Format), "from": params.Period.First, "to": params.Period.Last, "app": params.App,
-			"rows": doc.Rows(),
-		}}); err != nil {
+		Object: audit.Object{Type: "report", ID: kind}, Result: audit.ResultSuccess, Details: details}); err != nil {
 		d.Logger.Error("выгрузка отчёта не записана в журнал аудита: выгрузка отменена", "class", "reports", "error", err)
 		WriteProblem(w, NewProblem(http.StatusServiceUnavailable, CodeUnavailable,
 			"Не удалось записать выгрузку в журнал аудита: выгрузка отменена. Повторите позже."))

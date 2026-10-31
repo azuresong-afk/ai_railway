@@ -717,6 +717,20 @@ type RestoreOptions struct {
 	// содержимое) и возвращает сведения из подписанного файла; nil —
 	// служебные базы не восстанавливаются (строка в отчёте).
 	VerifyServiceDB func(kind string, file []byte) (ServiceDBMeta, error)
+	// BuiltinAlertRule — встроенное правило оповещений этого выпуска по
+	// ключу (alerting.StoredBuiltin); ok = false — правила в выпуске нет,
+	// оно пропускается строкой отчёта. nil — встроенные правила из копии
+	// не восстанавливаются (их создаст сервер при запуске).
+	BuiltinAlertRule func(key string) (BuiltinAlertRule, bool)
+}
+
+// BuiltinAlertRule — встроенное правило оповещений этого выпуска для
+// восстановления: Rule — его поля (вид, название, описание, включение,
+// важность, условие, группировка, окна), Locked — системное правило или
+// правило безопасности.
+type BuiltinAlertRule struct {
+	Rule   AlertRule
+	Locked bool
 }
 
 // RestoreResult — что восстановлено не как в копии (строки отчёта).
@@ -757,7 +771,9 @@ func Restore(ctx context.Context, tx pgx.Tx, p *Prepared, opts RestoreOptions) (
 	if !opts.ReplaceSettings {
 		s = s.withoutSettings()
 	}
+	s, builtinSkipped := s.withReleaseBuiltins(opts.BuiltinAlertRule)
 	s, skipped := s.resolve()
+	skipped = append(builtinSkipped, skipped...)
 	res := RestoreResult{AgentKeysUnknown: !s.AgentKeysMarked && s.SchemaVersion >= agentsSchemaVersion,
 		LegacyFormat: s.Version < 2, Skipped: skipped, SettingsSkipped: settingsSkipped}
 	settings := func(fn func() error) func() error {

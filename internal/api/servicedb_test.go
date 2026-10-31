@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/azuresong-afk/ai_railway/internal/audit"
+	"github.com/azuresong-afk/ai_railway/internal/auth"
 	"github.com/azuresong-afk/ai_railway/internal/compliance"
 	"github.com/azuresong-afk/ai_railway/internal/servicedb"
 	"github.com/azuresong-afk/ai_railway/internal/shadowai"
@@ -26,6 +27,17 @@ func TestServiceDBsViaAPI(t *testing.T) {
 	mustProblem(t, e.call(analyst, "POST", "/api/v1/compliance/base/rollback", "", true), 403, CodeForbidden)
 	mustProblem(t, e.call(auditor, "POST", "/api/v1/compliance/base/rollback", "", true), 403, CodeForbidden)
 	mustProblem(t, e.call(owner, "GET", "/api/v1/service-dbs", "", false), 403, CodeForbidden)
+	// 5Н3 ревью 5.r1: возврат — только в сессии консоли; токен с правом
+	// модуля (токен импорта) — 403 с записью access.denied от имени токена.
+	tok := session{bearer: e.issueToken(t, sys, auth.PermShadowAIManage, auth.PermComplianceBaseLoad).Token}
+	for _, path := range []string{"/api/v1/shadow-ai/catalog/rollback", "/api/v1/compliance/base/rollback"} {
+		_, before := lastDenied(t, e.mem)
+		mustProblem(t, e.call(tok, "POST", path, "", false), 403, CodeForbidden)
+		rec, after := lastDenied(t, e.mem)
+		if after != before+1 || rec.Actor.Type != audit.ActorAPIToken || rec.Details.(map[string]any)["reason"] != DenyReasonSessionOnly {
+			t.Fatalf("%s: отказ токену не записан: %+v", path, rec)
+		}
+	}
 
 	// Состояние до загрузки: оба вида есть, версий нет.
 	w := e.call(auditor, "GET", "/api/v1/service-dbs", "", false)

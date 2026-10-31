@@ -1,0 +1,35 @@
+{
+  "id": "clean-04",
+  "file": "clean-04.jpg",
+  "text_file": "clean-04.txt",
+  "kind": "clean",
+  "lang": "en",
+  "dm": [
+    "DM-47"
+  ],
+  "description": "JPEG с безобидными EXIF и XMP (камера, программа, название)",
+  "metadata": [
+    {
+      "container": "exif",
+      "field": "Make",
+      "text": "SynthCam"
+    },
+    {
+      "container": "exif",
+      "field": "Model",
+      "text": "SC-1"
+    },
+    {
+      "container": "exif",
+      "field": "Software",
+      "text": "synth-media"
+    },
+    {
+      "container": "xmp",
+      "field": "dc:title",
+      "text": "Sunset over the bay"
+    }
+  ],
+  "qr": [],
+  "expect": []
+}
