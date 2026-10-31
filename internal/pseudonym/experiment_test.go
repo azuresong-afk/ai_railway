@@ -43,6 +43,11 @@ func loadCorpora(t *testing.T) map[string][]corpus.Sample {
 		if !d.IsDir() {
 			continue
 		}
+		// Корпус изображений media (задача 5.36) — не текстовый: в нём нет
+		// файлов *.jsonl.
+		if jsonl, _ := filepath.Glob(filepath.Join(corpusRoot, d.Name(), "*.jsonl")); len(jsonl) == 0 {
+			continue
+		}
 		ss, err := corpus.Load(filepath.Join(corpusRoot, d.Name()))
 		if err != nil {
 			t.Fatal(err)
