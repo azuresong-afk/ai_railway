@@ -46,7 +46,7 @@ func shadowAIRoutes(d Deps) []Route {
 		{Method: http.MethodPut, Path: "/api/v1/shadow-ai/catalog", Permission: auth.PermShadowAIManage,
 			MaxBody: shadowCatalogMaxBody, Handler: needShadowAI(d, d.putShadowCatalog)},
 		// Откат на предыдущую версию каталога (задача 5.15, ADR-0028, п. 4).
-		{Method: http.MethodPost, Path: "/api/v1/shadow-ai/catalog/rollback", Permission: auth.PermShadowAIManage,
+		{Method: http.MethodPost, Path: "/api/v1/shadow-ai/catalog/rollback", Permission: auth.PermShadowAIManage, SessionOnly: true,
 			MaxBody: smallMaxBody, Handler: needShadowAI(d, d.rollbackShadowCatalog)},
 		{Method: http.MethodGet, Path: "/api/v1/shadow-ai/imports", Permission: auth.PermShadowAIRead,
 			Handler: needShadowAI(d, d.listShadowImports)},

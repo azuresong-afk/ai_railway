@@ -5514,8 +5514,10 @@ paths:
         она проверяется заново, как сохранённый каталог при запуске (подпись, заверение, отзыв, дата, содержимое).
         Она становится текущей, слот предыдущей пустеет; откатанную версию можно загрузить снова. Тело не нужно.
         Предыдущей нет — 409, она не прошла проверку — 422. Пишет `service_db.rolled_back` (успех или отказ с причиной).
+        Только в сессии консоли: запрос по токену API (даже с правом `shadow_ai.manage`) — 403 и `access.denied`
+        с причиной `session_only` (5Н3 ревью 5.r1).
       x-permission: shadow_ai.manage
-      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      security: [{ sessionCookie: [] }]
       parameters:
         - $ref: '#/components/parameters/CSRFToken'
       responses:
@@ -6128,9 +6130,10 @@ paths:
         перед этим она проверяется заново, как сохранённая база при запуске. Она становится текущей, слот
         предыдущей пустеет; откатанную версию можно загрузить снова. Если возвращённая версия не новее встроенной,
         действует встроенная. Тело не нужно. Предыдущей нет — 409, она не прошла проверку — 422. Пишет
-        `service_db.rolled_back` (успех или отказ с причиной).
+        `service_db.rolled_back` (успех или отказ с причиной). Только в сессии консоли: запрос по токену API (даже с
+        правом `compliance.base.load`) — 403 и `access.denied` с причиной `session_only` (5Н3 ревью 5.r1).
       x-permission: compliance.base.load
-      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      security: [{ sessionCookie: [] }]
       parameters:
         - $ref: '#/components/parameters/CSRFToken'
       responses:
