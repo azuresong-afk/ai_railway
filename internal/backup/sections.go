@@ -310,6 +310,46 @@ type ServiceDB struct {
 	UploadedBy string    `json:"uploaded_by"`
 }
 
+// InventoryModel — модель реестра ИИ (миграция 0069, ADR-0029). Ручная
+// модель входит целиком: с файлами и эталонными хешами (эталон сверки
+// DM-29). Модель из трафика входит, только если у неё есть правки (вид,
+// версия, название, описание, владелец или файлы): при восстановлении
+// они сопоставляются с моделью установки по паре «провайдер, имя».
+// Первое и последнее появление в трафике, использование и состояние
+// задачи пополнения не входят: их наполняет трафик.
+type InventoryModel struct {
+	ID          string          `json:"id"`
+	Kind        string          `json:"kind"`
+	Provider    string          `json:"provider"`
+	Name        string          `json:"name"`
+	Version     string          `json:"version"`
+	Title       string          `json:"title"`
+	Description string          `json:"description"`
+	Owner       string          `json:"owner"`
+	Origin      string          `json:"origin"`
+	Status      string          `json:"status"`
+	Files       []InventoryFile `json:"files,omitempty"`
+	CreatedAt   time.Time       `json:"created_at"`
+	CreatedBy   string          `json:"created_by"`
+	UpdatedAt   time.Time       `json:"updated_at"`
+	UpdatedBy   string          `json:"updated_by"`
+}
+
+// InventoryFile — файл модели реестра: путь, размер, роль и хеш.
+type InventoryFile struct {
+	Path    string `json:"path"`
+	Size    int64  `json:"size"`
+	Role    string `json:"role"`
+	HashAlg string `json:"hash_alg"`
+	Hash    []byte `json:"hash"`
+}
+
+// Происхождение модели реестра (inventory.OriginManual, OriginTraffic).
+const (
+	inventoryManual  = "manual"
+	inventoryTraffic = "traffic"
+)
+
 // ComplianceMark — ручная отметка соответствия требованию.
 type ComplianceMark struct {
 	RequirementID string     `json:"requirement_id"`
@@ -344,6 +384,11 @@ const (
 	maxLicenseFile      = 16 << 10
 	maxMarks            = 10_000
 	maxBaseline         = 160 << 10
+	// maxInventoryModels и maxInventoryFiles — пределы реестра ИИ
+	// (inventory.MaxModels, inventory.MaxFiles): копия и восстановление
+	// их не превышают.
+	maxInventoryModels = 5000
+	maxInventoryFiles  = 256
 )
 
 // Виды секретов разделов версии 2 (входят в AAD шифротекста копии).
@@ -360,7 +405,7 @@ const (
 func (s *Snapshot) hasV2() bool {
 	if len(s.Channels)+len(s.AlertRules)+len(s.ReportSchedules)+len(s.ModelPrices)+len(s.Instructions)+
 		len(s.MCPServers)+len(s.Agents)+len(s.AgentTools)+len(s.ShadowAIExclusions)+len(s.Licenses)+len(s.ComplianceMarks)+
-		len(s.ServiceDBs) > 0 ||
+		len(s.ServiceDBs)+len(s.InventoryModels) > 0 ||
 		s.GatewayTLS != nil || s.OIDC != nil || s.LDAP != nil || s.LicenseClock != nil {
 		return true
 	}
@@ -395,7 +440,8 @@ func (s *Snapshot) validateV2() error {
 	case len(s.Channels) > maxChannels, len(s.AlertRules) > maxAlertRules, len(s.ReportSchedules) > maxSchedules,
 		len(s.ModelPrices) > maxPrices, len(s.Instructions) > maxInstructions, len(s.MCPServers) > maxMCPServers,
 		len(s.Agents) > maxAgents, len(s.AgentTools) > maxTools, len(s.ShadowAIExclusions) > maxExclusions,
-		len(s.Licenses) > maxLicenses, len(s.ComplianceMarks) > maxMarks, len(s.ServiceDBs) > maxServiceDBs:
+		len(s.Licenses) > maxLicenses, len(s.ComplianceMarks) > maxMarks, len(s.ServiceDBs) > maxServiceDBs,
+		len(s.InventoryModels) > maxInventoryModels:
 		return errors.New("объектов больше предела")
 	}
 	channels, cnames := ids{}, ids{}
@@ -555,6 +601,31 @@ func (s *Snapshot) validateV2() error {
 	}
 	if err := s.validateServiceDBs(); err != nil {
 		return err
+	}
+	models, pairs := ids{}, ids{}
+	for _, m := range s.InventoryModels {
+		if err := checkUUID("модель реестра", m.ID); err != nil {
+			return err
+		}
+		if err := models.add("модель реестра", m.ID); err != nil {
+			return err
+		}
+		// Провайдер — slug без «/», поэтому пара однозначна.
+		if err := pairs.add("модель реестра провайдера", m.Provider+"/"+m.Name); err != nil {
+			return err
+		}
+		if m.Origin != inventoryManual && m.Origin != inventoryTraffic {
+			return fmt.Errorf("модель реестра %s: origin — manual или traffic", m.ID)
+		}
+		if len(m.Files) > maxInventoryFiles {
+			return fmt.Errorf("модель реестра %s: файлов больше предела", m.ID)
+		}
+		paths := ids{}
+		for _, f := range m.Files {
+			if err := paths.add("файл модели реестра "+m.ID, f.Path); err != nil {
+				return err
+			}
+		}
 	}
 	marks := ids{}
 	for _, m := range s.ComplianceMarks {

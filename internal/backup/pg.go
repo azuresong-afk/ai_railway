@@ -95,6 +95,7 @@ func Read(ctx context.Context, tx pgx.Tx, box SecretOpener, keys *Keys, orgID st
 		{"лицензия", readLicenses},
 		{"отметки соответствия", readComplianceMarks},
 		{"служебные базы", readServiceDBs},
+		{"реестр ИИ", readInventoryModels},
 	}...)
 	for _, st := range steps {
 		if err := st.fn(ctx, tx, s); err != nil {
@@ -582,6 +583,17 @@ func Conflicts(ctx context.Context, q Querier, s *Snapshot) error {
 	for _, t := range s.AgentTools {
 		toolIDs = append(toolIDs, t.ID)
 	}
+	// Реестр ИИ: ручная модель — совпадение по ID или паре «провайдер, имя»;
+	// модель из трафика сопоставляется по паре, совпадение — только ID у
+	// модели установки с другой парой.
+	var manualIDs, manualPairs, trafficIDs, trafficPairs []string
+	for _, m := range s.InventoryModels {
+		if m.Origin == inventoryManual {
+			manualIDs, manualPairs = append(manualIDs, m.ID), append(manualPairs, m.Provider+"/"+m.Name)
+		} else {
+			trafficIDs, trafficPairs = append(trafficIDs, m.ID), append(trafficPairs, m.Provider+"/"+m.Name)
+		}
+	}
 	rows, err := q.Query(ctx, `
 		SELECT 'пользователь ' || login FROM users WHERE id = ANY($1::uuid[]) OR (org_id = $14 AND login = ANY($2))
 		UNION ALL SELECT 'роль ' || id FROM roles WHERE org_id = $14 AND id = ANY($3)
@@ -598,10 +610,13 @@ func Conflicts(ctx context.Context, q Querier, s *Snapshot) error {
 		UNION ALL SELECT 'MCP-сервер ' || slug FROM mcp_servers WHERE id = ANY($22::uuid[]) OR (org_id = $14 AND slug = ANY($23))
 		UNION ALL SELECT 'агент ' || slug FROM agents WHERE id = ANY($24::uuid[])
 		UNION ALL SELECT 'инструмент ' || name FROM agent_tools WHERE id = ANY($25::uuid[])
+		UNION ALL SELECT 'модель реестра ' || provider || '/' || name FROM inventory_models
+			WHERE id = ANY($26::uuid[]) OR (org_id = $14 AND provider || '/' || name = ANY($27))
+			OR (id = ANY($28::uuid[]) AND NOT provider || '/' || name = ANY($29))
 		LIMIT $15`,
 		userIDs, logins, roleIDs, tokenIDs, tokenPrefixes, provIDs, provSlugs, appIDs, appSlugs, keyIDs, keyPrefixes,
 		polIDs, polSlugs, s.OrgID, maxConflicts, chIDs, chNames, ruleIDs, schIDs, schNames, priceIDs, srvIDs, srvSlugs,
-		agentIDs, toolIDs)
+		agentIDs, toolIDs, manualIDs, manualPairs, trafficIDs, trafficPairs)
 	if err != nil {
 		return err
 	}
@@ -755,6 +770,9 @@ type RestoreResult struct {
 	// ServiceDBs — строки отчёта о служебных базах: восстановлена,
 	// пропущена (в установке версия не ниже) или не прошла проверку.
 	ServiceDBs []string
+	// Inventory — строки отчёта о моделях реестра ИИ из трафика: правки
+	// перенесены на модель установки или пропущены (у неё свои правки).
+	Inventory []string
 }
 
 // agentsSchemaVersion — миграция, добавившая привязку ключей к агентам
@@ -824,6 +842,7 @@ func Restore(ctx context.Context, tx pgx.Tx, p *Prepared, opts RestoreOptions) (
 			res.ServiceDBs, err = writeServiceDBs(ctx, tx, s, opts.VerifyServiceDB)
 			return err
 		}},
+		{"реестр ИИ", func() (err error) { res.Inventory, err = writeInventoryModels(ctx, tx, s); return err }},
 	}
 	for _, st := range steps {
 		if err := st.fn(); err != nil {

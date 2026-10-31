@@ -21,6 +21,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/detect/builtin"
 	"github.com/azuresong-afk/ai_railway/internal/detect/lists"
 	"github.com/azuresong-afk/ai_railway/internal/gateway"
+	"github.com/azuresong-afk/ai_railway/internal/inventory"
 	"github.com/azuresong-afk/ai_railway/internal/license"
 	"github.com/azuresong-afk/ai_railway/internal/notify"
 	"github.com/azuresong-afk/ai_railway/internal/policy"
@@ -200,6 +201,17 @@ func checkSnapshot(p aisecCrypto.Provider, arch *backup.Archive, keepTokens, set
 			if err != nil {
 				add(fmt.Sprintf("лицензия № %d", l.Number), err)
 			}
+		}
+	}
+	// Модели реестра ИИ — правилами ручной записи (остаток 5.17 этапа 5).
+	for _, m := range s.InventoryModels {
+		files := make([]inventory.File, 0, len(m.Files))
+		for _, f := range m.Files {
+			files = append(files, inventory.File{Path: f.Path, Size: f.Size, Role: f.Role, HashAlg: f.HashAlg, Hash: f.Hash})
+		}
+		if err := inventory.CheckStoredModel(inventory.StoredModel{Kind: m.Kind, Provider: m.Provider, Name: m.Name, Version: m.Version,
+			Title: m.Title, Description: m.Description, Owner: m.Owner, Origin: m.Origin, Status: m.Status, Files: files}); err != nil {
+			add("модель реестра ИИ "+m.ID, err)
 		}
 	}
 	// Ошибки CheckApplications уже называют приложение.

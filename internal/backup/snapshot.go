@@ -68,6 +68,10 @@ type Snapshot struct {
 	// (остатки волны A этапа 5, ADR-0017, дополнение). Раздел
 	// необязательный, формат остаётся версии 2.
 	ServiceDBs []ServiceDB `json:"service_dbs,omitempty"`
+	// InventoryModels — модели реестра ИИ (остаток 5.17 этапа 5, ADR-0017,
+	// дополнение): ручные — целиком, из трафика — только с правками.
+	// Раздел необязательный, формат остаётся версии 2.
+	InventoryModels []InventoryModel `json:"inventory_models,omitempty"`
 }
 
 // Settings — настройки организации и установки. nil — строки нет, действуют
@@ -660,7 +664,7 @@ func (s *Snapshot) Counts() map[string]any {
 		"gateway_tls": s.GatewayTLS != nil, "oidc": s.OIDC != nil, "ldap": s.LDAP != nil,
 		"mcp_servers": len(s.MCPServers), "agents": len(s.Agents), "agent_tools": len(s.AgentTools),
 		"shadow_ai_exclusions": len(s.ShadowAIExclusions), "licenses": len(s.Licenses),
-		"compliance_marks": len(s.ComplianceMarks), "service_dbs": len(s.ServiceDBs),
+		"compliance_marks": len(s.ComplianceMarks), "service_dbs": len(s.ServiceDBs), "inventory_models": len(s.InventoryModels),
 	}
 }
 

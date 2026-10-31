@@ -899,3 +899,122 @@ func shortErr(err error) string {
 	}
 	return msg
 }
+
+// inventoryEdited — у модели реестра есть правки (SQL-условие над строкой m):
+// ручная, вид не «провайдер», состояние не «active» (запрет 5.22 — функция
+// безопасности, копия его переносит), заданы версия, название, описание,
+// владелец или файлы. Модель из трафика без правок копия не переносит.
+const inventoryEdited = `(m.origin = 'manual' OR m.kind <> 'provider' OR m.status <> 'active' OR m.version <> '' OR m.title <> ''
+	OR m.description <> '' OR m.owner <> '' OR EXISTS (SELECT 1 FROM inventory_model_files f WHERE f.model_id = m.id))`
+
+func readInventoryModels(ctx context.Context, tx pgx.Tx, s *Snapshot) error {
+	rows, err := tx.Query(ctx, `SELECT m.id::text, m.kind, m.provider, m.name, m.version, m.title, m.description, m.owner, m.origin,
+		m.status, m.created_at, m.created_by, m.updated_at, m.updated_by FROM inventory_models m
+		WHERE m.org_id = $1 AND `+inventoryEdited+` ORDER BY m.created_at, m.id`, s.OrgID)
+	if err != nil {
+		return err
+	}
+	s.InventoryModels, err = pgx.CollectRows(rows, func(r pgx.CollectableRow) (InventoryModel, error) {
+		var m InventoryModel
+		err := r.Scan(&m.ID, &m.Kind, &m.Provider, &m.Name, &m.Version, &m.Title, &m.Description, &m.Owner, &m.Origin, &m.Status,
+			&m.CreatedAt, &m.CreatedBy, &m.UpdatedAt, &m.UpdatedBy)
+		return m, err
+	})
+	if err != nil {
+		return err
+	}
+	idx := make(map[string]int, len(s.InventoryModels))
+	for i, m := range s.InventoryModels {
+		idx[m.ID] = i
+	}
+	rows, err = tx.Query(ctx, `SELECT f.model_id::text, f.path, f.size, f.role, f.hash_alg, f.hash FROM inventory_model_files f
+		JOIN inventory_models m ON m.id = f.model_id WHERE m.org_id = $1 ORDER BY f.model_id, f.path`, s.OrgID)
+	if err != nil {
+		return err
+	}
+	return forEach(rows, func(r pgx.Rows) error {
+		var id string
+		var f InventoryFile
+		if err := r.Scan(&id, &f.Path, &f.Size, &f.Role, &f.HashAlg, &f.Hash); err != nil {
+			return err
+		}
+		if i, ok := idx[id]; ok {
+			s.InventoryModels[i].Files = append(s.InventoryModels[i].Files, f)
+		}
+		return nil
+	})
+}
+
+// writeInventoryModels записывает модели реестра ИИ (остаток 5.17 этапа 5).
+// Ручная модель добавляется: совпадения по ID и паре «провайдер, имя»
+// проверил Conflicts. Модель из трафика с правками сопоставляется по паре:
+// в установке есть такая модель без своих правок — правки копии переносятся
+// на неё (ID установки остаётся); есть со своими правками — пропуск
+// строкой отчёта (существующее восстановление не затирает); нет —
+// добавляется с ID копии без отметок трафика, их поставит пополнение.
+// Возвращает строки отчёта.
+func writeInventoryModels(ctx context.Context, tx pgx.Tx, s *Snapshot) ([]string, error) {
+	if len(s.InventoryModels) == 0 {
+		return nil, nil
+	}
+	var have int
+	if err := tx.QueryRow(ctx, "SELECT count(*) FROM inventory_models WHERE org_id = $1", s.OrgID).Scan(&have); err != nil {
+		return nil, err
+	}
+	var lines []string
+	for _, m := range s.InventoryModels {
+		label := truncate(m.Name)
+		if m.Provider != "" {
+			label = m.Provider + "/" + label
+		}
+		if m.Origin == inventoryTraffic {
+			var id string
+			var edited bool
+			err := tx.QueryRow(ctx, `SELECT m.id::text, `+inventoryEdited+` FROM inventory_models m
+				WHERE m.org_id = $1 AND m.provider = $2 AND m.name = $3 FOR UPDATE`, s.OrgID, m.Provider, m.Name).Scan(&id, &edited)
+			switch {
+			case err == nil && edited:
+				lines = append(lines, fmt.Sprintf("модель %s: в установке у неё свои правки — правки копии не перенесены", label))
+				continue
+			case err == nil:
+				if _, err := tx.Exec(ctx, `UPDATE inventory_models SET kind = $3, version = $4, title = $5, description = $6,
+					owner = $7, status = $8, updated_at = $9, updated_by = $10 WHERE org_id = $1 AND id = $2`,
+					s.OrgID, id, m.Kind, m.Version, m.Title, m.Description, m.Owner, m.Status, m.UpdatedAt, m.UpdatedBy); err != nil {
+					return nil, fmt.Errorf("%s: %w", label, err)
+				}
+				if err := writeInventoryFiles(ctx, tx, id, m.Files); err != nil {
+					return nil, fmt.Errorf("%s: %w", label, err)
+				}
+				lines = append(lines, fmt.Sprintf("модель %s: правки копии перенесены на модель установки", label))
+				continue
+			case !errors.Is(err, pgx.ErrNoRows):
+				return nil, err
+			}
+		}
+		if have >= maxInventoryModels {
+			return nil, fmt.Errorf("в реестре ИИ установки станет больше %d моделей", maxInventoryModels)
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO inventory_models (id, org_id, kind, provider, name, version, title, description,
+			owner, origin, status, created_at, created_by, updated_at, updated_by)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+			m.ID, s.OrgID, m.Kind, m.Provider, m.Name, m.Version, m.Title, m.Description, m.Owner, m.Origin, m.Status,
+			m.CreatedAt, m.CreatedBy, m.UpdatedAt, m.UpdatedBy); err != nil {
+			return nil, fmt.Errorf("%s: %w", label, err)
+		}
+		if err := writeInventoryFiles(ctx, tx, m.ID, m.Files); err != nil {
+			return nil, fmt.Errorf("%s: %w", label, err)
+		}
+		have++
+	}
+	return lines, nil
+}
+
+func writeInventoryFiles(ctx context.Context, tx pgx.Tx, modelID string, files []InventoryFile) error {
+	for _, f := range files {
+		if _, err := tx.Exec(ctx, `INSERT INTO inventory_model_files (model_id, path, size, role, hash_alg, hash)
+			VALUES ($1, $2, $3, $4, $5, $6)`, modelID, f.Path, f.Size, f.Role, f.HashAlg, f.Hash); err != nil {
+			return fmt.Errorf("файл %s: %w", truncate(f.Path), err)
+		}
+	}
+	return nil
+}

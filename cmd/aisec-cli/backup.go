@@ -373,6 +373,12 @@ func backupRestore(args []string, dsn string, stdout, stderr io.Writer, now time
 			say(stdout, "  - %s\n", line)
 		}
 	}
+	if len(res.Inventory) > 0 {
+		say(stdout, "Реестр ИИ:\n")
+		for _, line := range res.Inventory {
+			say(stdout, "  - %s\n", line)
+		}
+	}
 	say(stdout, "Дальше: зарегистрируйте шлюзы заново (aisec-cli gateway token): ключи шлюзов и УЦ не восстанавливаются. "+
 		"Пользователи входят заново со своими паролями и вторым фактором.\n")
 	say(stdout, "Обязательно: копия возвращает состояние на %s. По архиву журнала аудита за время после неё "+
@@ -483,6 +489,13 @@ func restoreTx(ctx context.Context, db *store.DB, l *audit.Log, prepared *backup
 		}
 		details["service_dbs_report"] = items
 	}
+	if len(res.Inventory) > 0 {
+		items := make([]any, 0, min(len(res.Inventory), maxInvalidListed))
+		for _, line := range res.Inventory[:min(len(res.Inventory), maxInvalidListed)] {
+			items = append(items, line)
+		}
+		details["inventory_report"] = items
+	}
 	if replaceSettings {
 		details["settings"] = snap.SettingsDetails()
 	}
@@ -585,10 +598,11 @@ func sayCounts(w io.Writer, c map[string]any) {
 		c["users"], c["roles"], c["api_tokens"], c["providers"], c["applications"], c["app_keys"], c["policies"], c["policy_versions"])
 	say(w, "  каналов %v, правил оповещений %v (+ встроенных %v), расписаний отчётов %v, цен моделей %v, бюджетов %v, "+
 		"инструкций %v, MCP-серверов %v, агентов %v, инструментов %v, эталонов промптов %v, доступов по группам %v, "+
-		"исключений теневого ИИ %v, лицензий %v, отметок соответствия %v; сертификат шлюза %s, OIDC %s, LDAP %s\n",
+		"исключений теневого ИИ %v, лицензий %v, отметок соответствия %v, моделей реестра ИИ %v; сертификат шлюза %s, OIDC %s, LDAP %s\n",
 		c["notify_channels"], c["alert_rules"], c["alert_rules_builtin"], c["report_schedules"], c["model_prices"], c["app_budgets"],
 		c["incident_instructions"], c["mcp_servers"], c["agents"], c["agent_tools"], c["prompt_baselines"], c["app_user_access"],
-		c["shadow_ai_exclusions"], c["licenses"], c["compliance_marks"], yesNo(c["gateway_tls"]), yesNo(c["oidc"]), yesNo(c["ldap"]))
+		c["shadow_ai_exclusions"], c["licenses"], c["compliance_marks"], c["inventory_models"], yesNo(c["gateway_tls"]), yesNo(c["oidc"]),
+		yesNo(c["ldap"]))
 }
 
 func yesNo(v any) string {

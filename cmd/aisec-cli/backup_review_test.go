@@ -190,3 +190,128 @@ func TestBackupServiceDBsStaleCurrentOnRealDB(t *testing.T) {
 		}
 	}
 }
+
+// insertModel добавляет модель реестра ИИ (миграция 0069) с файлами.
+func insertModel(t *testing.T, in *installation, id, kind, provider, name, title, origin string, files ...string) {
+	t.Helper()
+	in.exec(t, `INSERT INTO inventory_models (id, org_id, kind, provider, name, title, origin, status, first_seen, last_seen,
+		created_at, created_by, updated_at, updated_by) VALUES ($1, $2, $3, $4, $5, $6, $7, 'active',
+		CASE WHEN $7 = 'traffic' THEN now() - interval '1 day' END, CASE WHEN $7 = 'traffic' THEN now() END,
+		now(), 'system', now(), 'user:x')`, id, audit.DefaultOrgID, kind, provider, name, title, origin)
+	for i, path := range files {
+		in.exec(t, `INSERT INTO inventory_model_files (model_id, path, size, role, hash_alg, hash) VALUES ($1, $2, $3, 'weights',
+			'SHA-256', $4)`, id, path, 1000+i, bytes.Repeat([]byte{byte(i + 1)}, 32))
+	}
+}
+
+// Остаток 5.17 этапа 5: реестр ИИ в копии конфигурации. Ручные модели —
+// с файлами и эталонными хешами; модели из трафика — только с правками,
+// без отметок трафика; модель из трафика без правок и использование не
+// переносятся. В непустой установке правки сопоставляются по паре
+// «провайдер, имя»: модель без своих правок их получает, со своими — нет
+// (строка отчёта); ручная модель с той же парой — совпадение, отказ.
+func TestBackupInventoryOnRealDB(t *testing.T) {
+	base := os.Getenv("AISEC_TEST_DATABASE_URL")
+	if base == "" {
+		t.Skip("AISEC_TEST_DATABASE_URL не задан")
+	}
+	admin, err := store.Open(context.Background(), base, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close()
+	src := newInstallation(t, admin, base, "cli_backup_src_inv")
+	populate(t, src)
+	const (
+		mCustomer = "0192a000-0000-7000-8000-000000000901"
+		mManual   = "0192a000-0000-7000-8000-000000000902"
+		mEdited   = "0192a000-0000-7000-8000-000000000903"
+		mPlain    = "0192a000-0000-7000-8000-000000000904"
+		mOwn      = "0192a000-0000-7000-8000-000000000905"
+	)
+	insertModel(t, src, mCustomer, "customer", "", "llama-support-ft", "Модель поддержки", "manual", "model.gguf", "adapter/lora.bin")
+	insertModel(t, src, mManual, "provider", "mock-llm", "gpt-manual", "", "manual")
+	insertModel(t, src, mEdited, "provider", "mock-llm", "gpt-edited", "Основная модель", "traffic")
+	insertModel(t, src, mPlain, "provider", "mock-llm", "gpt-plain", "", "traffic")
+	insertModel(t, src, mOwn, "provider", "mock-llm", "gpt-own", "Из копии", "traffic")
+	src.exec(t, `INSERT INTO inventory_usage (org_id, app, provider, model, first_seen, last_seen)
+		VALUES ($1, 'support-bot', 'mock-llm', 'gpt-plain', now() - interval '1 day', now())`, audit.DefaultOrgID)
+
+	dir := t.TempDir()
+	phrase := writePhraseFile(t, testBackupPhrase, 0o400)
+	file := filepath.Join(dir, "config.aisec-backup")
+	var out, errb bytes.Buffer
+	if err := backupCmd([]string{"create", "-keys", src.keys, "-out", file, "-passphrase-file", phrase, "-no-user-hmac-key"},
+		src.dsn, &out, &errb, time.Now()); err != nil {
+		t.Fatalf("create: %v %s", err, errb.String())
+	}
+
+	// Пустая установка: 4 модели (без gpt-plain), файлы с хешами, без отметок
+	// трафика и без использования.
+	dst := newInstallation(t, admin, base, "cli_backup_dst_inv")
+	out.Reset()
+	if err := backupCmd([]string{"restore", "-keys", dst.keys, "-in", file, "-passphrase-file", phrase}, dst.dsn, &out, &errb,
+		time.Now()); err != nil {
+		t.Fatalf("restore: %v %s", err, errb.String())
+	}
+	if !strings.Contains(out.String(), "моделей реестра ИИ 4") || strings.Contains(out.String(), "Реестр ИИ:") {
+		t.Fatalf("вывод: %s", out.String())
+	}
+	if n := dst.count(t, "SELECT count(*) FROM inventory_models"); n != 4 {
+		t.Fatalf("моделей: %d", n)
+	}
+	if n := dst.count(t, `SELECT count(*) FROM inventory_model_files f JOIN inventory_models m ON m.id = f.model_id
+		WHERE m.id = $1 AND m.title = 'Модель поддержки' AND m.origin = 'manual' AND ((f.path = 'model.gguf' AND f.hash = $2)
+		OR (f.path = 'adapter/lora.bin' AND f.hash = $3))`, mCustomer, bytes.Repeat([]byte{1}, 32), bytes.Repeat([]byte{2}, 32)); n != 2 {
+		t.Fatalf("файлы ручной модели с хешами: %d", n)
+	}
+	if n := dst.count(t, `SELECT count(*) FROM inventory_models WHERE id = $1 AND origin = 'traffic' AND title = 'Основная модель'
+		AND first_seen IS NULL AND last_seen IS NULL`, mEdited); n != 1 {
+		t.Fatal("правки модели из трафика не восстановлены или перенесены отметки трафика")
+	}
+	if n := dst.count(t, "SELECT count(*) FROM inventory_models WHERE name = 'gpt-plain'") + dst.count(t,
+		"SELECT count(*) FROM inventory_usage"); n != 0 {
+		t.Fatalf("модель без правок или использование в копии: %d", n)
+	}
+
+	// Непустая установка: gpt-edited уже найдена трафиком без правок —
+	// правки копии переходят на неё; у gpt-own свои правки — остаются.
+	ne := newInstallation(t, admin, base, "cli_backup_ne_inv")
+	ne.exec(t, `INSERT INTO users (id, org_id, login, display_name, role, status, password_hash, password_changed_at,
+		must_change_password, created_at, created_by) VALUES ('0192a000-0000-7000-8000-00000000aaac', $1, 'first.admin',
+		'Синтетический первый', 'security_admin', 'active', 'x', now(), false, now(), 'setup')`, audit.DefaultOrgID)
+	const neEdited, neOwn = "0192a000-0000-7000-8000-000000000911", "0192a000-0000-7000-8000-000000000912"
+	insertModel(t, ne, neEdited, "provider", "mock-llm", "gpt-edited", "", "traffic")
+	insertModel(t, ne, neOwn, "provider", "mock-llm", "gpt-own", "Своё название", "traffic")
+	out.Reset()
+	if err := backupCmd([]string{"restore", "-keys", ne.keys, "-in", file, "-passphrase-file", phrase, "-allow-nonempty"},
+		ne.dsn, &out, &errb, time.Now()); err != nil {
+		t.Fatalf("restore в непустую: %v %s", err, errb.String())
+	}
+	for _, want := range []string{"Реестр ИИ:", "модель mock-llm/gpt-edited: правки копии перенесены на модель установки",
+		"модель mock-llm/gpt-own: в установке у неё свои правки — правки копии не перенесены"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("в выводе нет %q: %s", want, out.String())
+		}
+	}
+	if n := ne.count(t, `SELECT count(*) FROM inventory_models WHERE (id = $1 AND title = 'Основная модель' AND last_seen IS NOT NULL)
+		OR (id = $2 AND title = 'Своё название')`, neEdited, neOwn); n != 2 {
+		t.Fatal("сопоставление по паре «провайдер, имя» в непустой установке")
+	}
+	if n := ne.count(t, `SELECT count(*) FROM audit_log WHERE action = 'backup.restore' AND details->>'stage' = 'done'
+		AND json_array_length(details->'inventory_report') = 2`); n != 1 {
+		t.Fatal("отчёт о реестре ИИ не записан в аудит")
+	}
+
+	// Ручная модель копии с парой, которая в установке уже есть, — совпадение.
+	cf := newInstallation(t, admin, base, "cli_backup_cf_inv")
+	cf.exec(t, `INSERT INTO users (id, org_id, login, display_name, role, status, password_hash, password_changed_at,
+		must_change_password, created_at, created_by) VALUES ('0192a000-0000-7000-8000-00000000aaad', $1, 'first.admin',
+		'Синтетический первый', 'security_admin', 'active', 'x', now(), false, now(), 'setup')`, audit.DefaultOrgID)
+	insertModel(t, cf, "0192a000-0000-7000-8000-000000000921", "provider", "mock-llm", "gpt-manual", "", "traffic")
+	err = backupCmd([]string{"restore", "-keys", cf.keys, "-in", file, "-passphrase-file", phrase, "-allow-nonempty"},
+		cf.dsn, &out, &errb, time.Now())
+	if err == nil || !strings.Contains(err.Error(), "модель реестра mock-llm/gpt-manual") {
+		t.Fatalf("совпадение ручной модели: %v", err)
+	}
+}

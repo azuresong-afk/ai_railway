@@ -177,6 +177,13 @@ func addSections(t testing.TB, s *Snapshot, keys *Keys) {
 		{Kind: "shadow_ai_catalog", Slot: "current", Version: 2, File: []byte("synthetic-db-2"), UploadedAt: testTime, UploadedBy: "x"},
 		{Kind: "shadow_ai_catalog", Slot: "previous", Version: 1, File: []byte("synthetic-db-1"), UploadedAt: testTime, UploadedBy: "x"},
 	}
+	s.InventoryModels = []InventoryModel{
+		{ID: "0192a000-0000-7000-8000-000000000901", Kind: "customer", Name: "llama-ft", Title: "Модель поддержки", Origin: "manual",
+			Status: "active", Files: []InventoryFile{{Path: "model.gguf", Size: 10, Role: "weights", HashAlg: "SHA-256",
+				Hash: bytes.Repeat([]byte{1}, 32)}}, CreatedAt: testTime, CreatedBy: "x", UpdatedAt: testTime, UpdatedBy: "x"},
+		{ID: "0192a000-0000-7000-8000-000000000902", Kind: "provider", Provider: "mock-llm", Name: "gpt-x", Title: "Основная",
+			Origin: "traffic", Status: "active", CreatedAt: testTime, CreatedBy: "system", UpdatedAt: testTime, UpdatedBy: "x"},
+	}
 }
 
 func sealSample(t *testing.T, p crypto.Provider) ([]byte, *Snapshot) {
@@ -358,7 +365,7 @@ func TestOpenVersion1(t *testing.T) {
 	v1.Version = 1
 	v1.Channels, v1.AlertRules, v1.ReportSchedules, v1.ModelPrices, v1.Instructions = nil, nil, nil, nil, nil
 	v1.MCPServers, v1.Agents, v1.AgentTools, v1.ShadowAIExclusions, v1.Licenses, v1.ComplianceMarks = nil, nil, nil, nil, nil, nil
-	v1.GatewayTLS, v1.OIDC, v1.LDAP, v1.LicenseClock, v1.ServiceDBs = nil, nil, nil, nil, nil
+	v1.GatewayTLS, v1.OIDC, v1.LDAP, v1.LicenseClock, v1.ServiceDBs, v1.InventoryModels = nil, nil, nil, nil, nil, nil
 	v1.Settings.Install = nil
 	v1.Users = slices.Clone(s.Users)
 	for i := range v1.Users {
@@ -509,6 +516,15 @@ func TestValidateReferences(t *testing.T) {
 		"пустой файл базы":             func(s *Snapshot) { s.ServiceDBs[0].File = nil },
 		"версия базы 0":                func(s *Snapshot) { s.ServiceDBs[0].Version = 0 },
 		"версия базы сверх 2^53":       func(s *Snapshot) { s.ServiceDBs[0].Version = 1 << 53 },
+		// Реестр ИИ (остаток 5.17 этапа 5).
+		"ID модели реестра":    func(s *Snapshot) { s.InventoryModels[0].ID = "x" },
+		"повтор модели":        func(s *Snapshot) { s.InventoryModels[1].ID = s.InventoryModels[0].ID },
+		"повтор пары модели":   func(s *Snapshot) { s.InventoryModels[1].Provider, s.InventoryModels[1].Name = "", "llama-ft" },
+		"происхождение модели": func(s *Snapshot) { s.InventoryModels[0].Origin = "import" },
+		"повтор файла модели": func(s *Snapshot) {
+			s.InventoryModels[0].Files = append(s.InventoryModels[0].Files, s.InventoryModels[0].Files[0])
+		},
+		"файлов модели больше предела": func(s *Snapshot) { s.InventoryModels[0].Files = make([]InventoryFile, maxInventoryFiles+1) },
 	} {
 		s := sampleSnapshot(t, p, w.Keys())
 		mutate(s)
