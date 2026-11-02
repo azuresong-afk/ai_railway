@@ -76,6 +76,10 @@ type serverConfig struct {
 	// ShadowAISyslog — приём журналов прокси по syslog (теневой ИИ, задача
 	// 4.23); Listen пусто — выключен (по умолчанию).
 	ShadowAISyslog shadowSyslogConfig
+	// MLTemplates — в установке есть aisec-ml (compose.ml.yaml, ADR-0024):
+	// шаблоны политик получают правила injection.ml и toxicity.ml (действие
+	// «журнал»). Сам сервер к aisec-ml не подключается.
+	MLTemplates bool
 	// DatabaseURL содержит пароль, поэтому берётся только из окружения, не из
 	// аргументов командной строки (их видно в списке процессов).
 	DatabaseURL string
@@ -132,6 +136,7 @@ func loadConfig(args []string, getenv func(string) string, errOut io.Writer) (*s
 	syslogNets := fs.String("shadow-ai-syslog-allowed-networks", "", "сети источников syslog через запятую; пусто — любые (только с TLS) (AISEC_SERVER_SHADOW_AI_SYSLOG_ALLOWED_NETWORKS)")
 	syslogConns := fs.String("shadow-ai-syslog-max-connections", strconv.Itoa(shadowai.DefaultSyslogMaxConns), "предел соединений syslog всего (AISEC_SERVER_SHADOW_AI_SYSLOG_MAX_CONNECTIONS)")
 	syslogPerIP := fs.String("shadow-ai-syslog-max-connections-per-address", strconv.Itoa(shadowai.DefaultSyslogMaxConnsPerIP), "предел соединений syslog с одного адреса (AISEC_SERVER_SHADOW_AI_SYSLOG_MAX_CONNECTIONS_PER_ADDRESS)")
+	mlTemplates := fs.String("ml-templates", "false", "в установке есть aisec-ml: шаблоны политик с правилами ML-детекторов, true или false (AISEC_SERVER_ML_TEMPLATES)")
 	syslogRate := fs.String("shadow-ai-syslog-lines-per-second", strconv.Itoa(shadowai.DefaultSyslogLinesPerSecond), "предел строк syslog в секунду на все соединения (AISEC_SERVER_SHADOW_AI_SYSLOG_LINES_PER_SECOND)")
 	if err := fs.Parse(args); err != nil {
 		return nil, err
@@ -150,7 +155,7 @@ func loadConfig(args []string, getenv func(string) string, errOut io.Writer) (*s
 		"shadow-ai-syslog-tls-cert": syslogCert, "shadow-ai-syslog-tls-key": syslogKey, "shadow-ai-syslog-client-ca": syslogCA,
 		"shadow-ai-syslog-insecure": syslogInsecure, "shadow-ai-syslog-allowed-networks": syslogNets,
 		"shadow-ai-syslog-max-connections": syslogConns, "shadow-ai-syslog-max-connections-per-address": syslogPerIP,
-		"shadow-ai-syslog-lines-per-second": syslogRate} {
+		"shadow-ai-syslog-lines-per-second": syslogRate, "ml-templates": mlTemplates} {
 		if set[name] {
 			continue
 		}
@@ -163,6 +168,12 @@ func loadConfig(args []string, getenv func(string) string, errOut io.Writer) (*s
 		InternalTLSCertFile: *internalCert, InternalTLSKeyFile: *internalKey, UserHMACKey: *userKey, DatabaseURL: getenv("AISEC_DATABASE_URL")}
 	var errs []error
 	var err error
+	switch *mlTemplates {
+	case "true", "false":
+		cfg.MLTemplates = *mlTemplates == "true"
+	default:
+		errs = append(errs, errors.New("ml-templates: true или false"))
+	}
 	if cfg.AuditStorageLimit, err = strconv.ParseInt(*storageLimit, 10, 64); err != nil || cfg.AuditStorageLimit < 1<<20 {
 		errs = append(errs, errors.New("audit-storage-limit: целое число байт, не меньше 1 МиБ"))
 	}

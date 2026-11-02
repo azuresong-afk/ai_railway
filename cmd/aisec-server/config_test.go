@@ -40,6 +40,18 @@ func TestLoadConfigDefaultsAndEnv(t *testing.T) {
 	if cfg, err = loadConfig([]string{"-user-hmac-key", "/k2"}, e, io.Discard); err != nil || cfg.UserHMACKey != "/k2" {
 		t.Fatalf("ключ псевдонимов из флага: %+v %v", cfg, err)
 	}
+	// Правила ML-детекторов в шаблонах (compose.ml.yaml, ADR-0024) — только явно.
+	if cfg.MLTemplates {
+		t.Fatal("ml-templates по умолчанию включён")
+	}
+	e = env(map[string]string{"AISEC_SERVER_TLS_CERT": "c", "AISEC_SERVER_TLS_KEY": "k", "AISEC_SERVER_KEYS_DIR": "/keys", "AISEC_DATABASE_URL": "postgres://u@h/d",
+		"AISEC_SERVER_ML_TEMPLATES": "true"})
+	if cfg, err = loadConfig(nil, e, io.Discard); err != nil || !cfg.MLTemplates {
+		t.Fatalf("ml-templates из окружения: %+v %v", cfg, err)
+	}
+	if cfg, err = loadConfig([]string{"-ml-templates", "false"}, e, io.Discard); err != nil || cfg.MLTemplates {
+		t.Fatalf("ml-templates: флаг важнее окружения: %+v %v", cfg, err)
+	}
 }
 
 func TestLoadConfigIntegrity(t *testing.T) {
@@ -95,6 +107,7 @@ func TestLoadConfigRejects(t *testing.T) {
 		"внутренний порт = консоль":       {[]string{"-internal-listen", "127.0.0.1:8444"}, full},
 		"плохой внутренний адрес":         {[]string{"-internal-listen", "8445"}, full},
 		"внутренний сертификат без ключа": {[]string{"-internal-tls-cert", "i.crt"}, full},
+		"ml-templates не true/false":      {[]string{"-ml-templates", "1"}, full},
 	} {
 		if _, err := loadConfig(tc.args, env(tc.env), io.Discard); err == nil {
 			t.Errorf("%s: принято", name)
