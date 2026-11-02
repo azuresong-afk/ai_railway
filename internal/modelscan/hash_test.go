@@ -79,7 +79,7 @@ func TestScanPathWithHash(t *testing.T) {
 	if err := os.Symlink(filepath.Join(dir, "weights", "a.bin"), filepath.Join(dir, "link.bin")); err != nil {
 		t.Skip(err)
 	}
-	rep, _ = s.HashPath(dir)
+	rep, _ = s.HashPath(dir) //nolint:gosec // G104: ошибку покажет проверка файлов ниже
 	for _, f := range rep.Files {
 		if f.Path == "link.bin" && (!f.Symlink || f.SHA256 != shaABC) {
 			t.Fatalf("ссылка: %+v", f)

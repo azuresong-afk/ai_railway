@@ -86,7 +86,7 @@ func TestSubmitReportHashes(t *testing.T) {
 			if !acts[ActionScanReported] || !acts[ActionHashMismatch] || !acts[ActionBlocked] {
 				t.Fatalf("аудит: %v", acts)
 			}
-			if bm, _ := s.Blocked(ctx); len(bm) != 1 || bm[0] != (BlockedModel{Provider: "vllm", Name: "llama-ft"}) {
+			if bm, _ := s.Blocked(ctx); len(bm) != 1 || bm[0] != (BlockedModel{Provider: "vllm", Name: "llama-ft"}) { //nolint:gosec // G104: ошибка даёт пустой список — проверка длины её поймает
 				t.Fatalf("запрещённые: %+v", bm)
 			}
 		})
@@ -172,7 +172,7 @@ func TestUnblockAndDelete(t *testing.T) {
 	if _, err := s.Unblock(ctx, admin, "m1"); !errors.Is(err, bad) {
 		t.Fatalf("неверная проверка: %v", err)
 	}
-	if m, _, _ := s.Model(ctx, "m1"); m.Status != StatusBlocked || count(mem, ActionUnblocked) != 0 {
+	if m, _, _ := s.Model(ctx, "m1"); m.Status != StatusBlocked || count(mem, ActionUnblocked) != 0 { //nolint:gosec // G104: ошибка даёт пустую модель — проверка состояния её поймает
 		t.Fatalf("после отказа: %+v", m)
 	}
 	called := 0
@@ -186,7 +186,7 @@ func TestUnblockAndDelete(t *testing.T) {
 	if rec.Action != ActionUnblocked || d["weakening"] != true || rec.Actor.ID != "u1" {
 		t.Fatalf("аудит снятия: %+v", rec)
 	}
-	if bm, _ := s.Blocked(ctx); len(bm) != 0 {
+	if bm, _ := s.Blocked(ctx); len(bm) != 0 { //nolint:gosec // G104: ошибка даёт пустой список
 		t.Fatalf("после снятия: %+v", bm)
 	}
 	if err := s.DeleteModel(ctx, admin, "m1"); err != nil {

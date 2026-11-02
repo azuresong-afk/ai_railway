@@ -72,7 +72,7 @@ func TestParseTemplateBaseReal(t *testing.T) {
 				t.Errorf("%s: текст при лицензии %s", x.Variant, x.License)
 			}
 			if x.Text != "" {
-				if h, _ := TemplateHash(x.Text); h != x.SHA256 {
+				if h, _ := TemplateHash(x.Text); h != x.SHA256 { //nolint:gosec // G104: ошибка даёт пустой хеш — сравнение её поймает
 					t.Errorf("%s: хеш текста", x.Variant)
 				}
 			}
@@ -105,7 +105,7 @@ func TestTestTemplatesMatchSource(t *testing.T) {
 
 func minimalBase() map[string]any {
 	text := "{% for m in messages %}{{ m.content }}{% endfor %}"
-	h, _ := TemplateHash(text)
+	h, _ := TemplateHash(text) //nolint:gosec // G104: хеш проверяет разбор ниже
 	return map[string]any{"format": TemplatesFormat, "version": 2, "date": "2026-11-02", "families": []any{
 		map[string]any{"id": "acme", "title": "Acme", "match": []any{"acme"}, "templates": []any{
 			map[string]any{"variant": "Acme-7B", "sha256": h, "source": "https://example.org/acme", "license": "MIT", "text": text},
@@ -195,8 +195,8 @@ func TestNormalizeTemplate(t *testing.T) {
 	if NormalizeTemplate(strings.ReplaceAll(base, "  {{", "{{")) == base {
 		t.Fatal("отступ в начале строки потерян")
 	}
-	h1, _ := TemplateHash(base)
-	h2, _ := TemplateHash(strings.ReplaceAll(base, "\n", "\r\n"))
+	h1, _ := TemplateHash(base)                                   //nolint:gosec // G104: длина хеша проверяется ниже
+	h2, _ := TemplateHash(strings.ReplaceAll(base, "\n", "\r\n")) //nolint:gosec // G104: длина хеша проверяется ниже
 	if h1 != h2 || len(h1) != 64 {
 		t.Fatalf("хеш нормализованного: %s %s", h1, h2)
 	}
@@ -292,14 +292,14 @@ func TestDM28_ChatTemplateInjection(t *testing.T) {
 			}
 			// В аудите — итог, без текста шаблона.
 			for _, rec := range mem.Records {
-				raw, _ := json.Marshal(rec.Details)
+				raw, _ := json.Marshal(rec.Details) //nolint:gosec // G104: Details — карта из сервиса, кодируется всегда
 				for _, w := range []string{"im_start", "Ignore", "Игнорируй", "You are"} {
 					if bytes.Contains(raw, []byte(w)) {
 						t.Fatalf("текст шаблона в аудите %s: %s", rec.Action, raw)
 					}
 				}
 			}
-			if bm, _ := s.Blocked(ctx); len(bm) != 0 {
+			if bm, _ := s.Blocked(ctx); len(bm) != 0 { //nolint:gosec // G104: ошибка даёт пустой список
 				t.Fatalf("модель заказчика без провайдера в пакете: %+v", bm)
 			}
 		})

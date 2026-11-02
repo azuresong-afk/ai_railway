@@ -82,7 +82,7 @@ func TestPGInventoryScanReports(t *testing.T) {
 	if e.audits(t, ActionUnblocked) != 1 || e.revision(t) <= rev {
 		t.Fatal("снятие: аудит или ревизия")
 	}
-	if bm, _ := e.svc.Blocked(ctx); len(bm) != 0 {
+	if bm, _ := e.svc.Blocked(ctx); len(bm) != 0 { //nolint:gosec // G104: ошибка даёт пустой список — проверка ниже
 		t.Fatalf("после снятия: %+v", bm)
 	}
 	// Хранятся последние отчёты.
@@ -97,7 +97,7 @@ func TestPGInventoryScanReports(t *testing.T) {
 	if n := e.count(t, `SELECT count(*) FROM inventory_scan_reports WHERE model_id = $1`, m.ID); n != MaxReportsPerModel {
 		t.Fatalf("отчётов в БД: %d", n)
 	}
-	list, _ = e.svc.Reports(ctx, m.ID)
+	list, _ = e.svc.Reports(ctx, m.ID) //nolint:gosec // G104: ошибку покажет проверка списка ниже
 	if list[0].Host != fmt.Sprintf("gpu-%02d", MaxReportsPerModel+2) {
 		t.Fatalf("первым — последний: %s", list[0].Host)
 	}

@@ -116,7 +116,7 @@ func newModelsEnv(t *testing.T) *modelsEnv {
 		t.Fatal(err)
 	}
 	e.modelDir = filepath.Join(e.dir, "model")
-	for name, data := range map[string]string{"weights/a.bin": "abc", "tokenizer_config.json": `{"chat_template":"{{ messages }}"}`} {
+	for name, data := range map[string]string{"weights/a.bin": "abc", "tokenizer_config.json": `{"chat_template":"{{ messages }}"}`} { //nolint:gosec // G101: имя файла tokenizer_config.json, не учётные данные
 		p := filepath.Join(e.modelDir, filepath.FromSlash(name))
 		if err := os.MkdirAll(filepath.Dir(p), 0o750); err != nil {
 			t.Fatal(err)
@@ -215,7 +215,7 @@ func TestModelsRejects(t *testing.T) {
 		}
 	}
 	// Файл токена, доступный группе, — отказ до запроса.
-	if err := os.Chmod(e.token, 0o644); err != nil {
+	if err := os.Chmod(e.token, 0o644); err != nil { //nolint:gosec // G302: проверка отказа на файле токена, доступном группе
 		t.Fatal(err)
 	}
 	if code := e.run("scan", e.modelDir); code == 0 || len(e.api.reports) != 0 || !strings.Contains(e.stderr.String(), "0600") {

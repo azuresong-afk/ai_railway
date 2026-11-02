@@ -63,7 +63,7 @@ func TestParseReportRejects(t *testing.T) {
 		"нет files":         {func(r *ReportInput) { r.Files = nil }, "files"},
 		"путь ..":           {func(r *ReportInput) { r.Files[0].Path = "../etc/passwd" }, "files[0].path"},
 		"путь повтор":       {func(r *ReportInput) { r.Files[1].Path = r.Files[0].Path }, "повторяется"},
-		"путь U+202E":       {func(r *ReportInput) { r.Files[0].Path = "a‮bin.safetensors" }, "files[0].path"},
+		"путь U+202E":       {func(r *ReportInput) { r.Files[0].Path = "a\u202ebin.safetensors" }, "files[0].path"},
 		"размер":            {func(r *ReportInput) { r.Files[0].Size = -1 }, "files[0].size"},
 		"хеш":               {func(r *ReportInput) { r.Files[0].SHA256 = strings.ToUpper(repHash) }, "files[0].sha256"},
 		"формат":            {func(r *ReportInput) { r.Files[0].Format = "Safe Tensors" }, "files[0].format"},
