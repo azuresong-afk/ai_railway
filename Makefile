@@ -970,6 +970,32 @@ check-offline: build-image ## make check в сборочном образе бе
 	$(DOCKER_RUN) --network=none -v $(abspath $(VULNDB_DIR)):/govulndb:ro $(BUILD_IMAGE) \
 		make check BIN=/opt/aisec-tools/bin GOVULNDB=file:///govulndb
 
+# Эксперимент OCR (задача 5.40, ADR-0033): цели для машины разработчика,
+# в make check не входят. Нужны python3 3.13, Tesseract 5 в системе
+# (tesseract-ocr из apt) и Chromium (AISEC_CHROMIUM) — им готовится растр:
+# декодеры изображений в Go вне internal/media запрещены.
+#   make ocr-venv     окружение Python build/ocr/venv по tools/ocr-eval/requirements.txt (хеши)
+#   make ocr-models   модели и tessdata из tools/ocr-eval/models.json (SHA-256)
+#   make ocr-eval     прогон на 4 ядрах (taskset) и отчёт build/ocr/report.md
+OCR_BUILD := $(BUILD)/ocr
+OCR_PY    := $(OCR_BUILD)/venv/bin/python
+OCR_CPUS  ?= 0-3
+
+.PHONY: ocr-venv ocr-models ocr-eval
+ocr-venv: ## Окружение Python для эксперимента OCR build/ocr/venv: точные версии и SHA-256 пакетов (сеть)
+	@python3 -c 'import sys; sys.exit(sys.version_info[:2] != (3, 13))' || { echo "ocr-venv: нужен python3 3.13: под другие версии в tools/ocr-eval/requirements.txt нет хешей"; exit 1; }
+	python3 -m venv $(OCR_BUILD)/venv
+	$(OCR_PY) -m pip install --require-hashes --no-deps --only-binary=:all: -r tools/ocr-eval/requirements.txt
+
+ocr-models: ## Модели кандидатов OCR в build/ocr/models со сверкой SHA-256 (сеть)
+	python3 -I tools/ocr-eval/fetch.py -out $(OCR_BUILD)/models
+
+ocr-eval: ## Эксперимент OCR на testdata/corpus/media: build/ocr/run.json и build/ocr/report.md
+	@test -n "$(AISEC_CHROMIUM)" || { echo "ocr-eval: задайте AISEC_CHROMIUM — путь к Chromium"; exit 1; }
+	taskset -c $(OCR_CPUS) $(OCR_PY) -I tools/ocr-eval/run_ocr.py -corpus testdata/corpus/media -models $(OCR_BUILD)/models \
+		-tessdata $(OCR_BUILD)/models/tessdata_best -chromium "$(AISEC_CHROMIUM)" -threads 4 -out $(OCR_BUILD)/run.json
+	go run ./tools/ocr-eval -run $(OCR_BUILD)/run.json -corpus testdata/corpus/media -out $(OCR_BUILD)/report.md
+
 .PHONY: clean
 clean: ## Удалить результаты сборки
 	rm -rf $(BUILD)
