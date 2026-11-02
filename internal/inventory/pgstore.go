@@ -710,6 +710,23 @@ func (s *PGStore) Export(ctx context.Context, orgID string, fn func(Snapshot) (a
 		if err := rows.Err(); err != nil {
 			return dbErr("использование", err)
 		}
+		// Коллекции RAG (миграция 0071, задача 5.24) — только текущие версии.
+		rows, err = tx.Query(ctx, `SELECT slug, version, documents, size, loaded_at FROM rag_collections WHERE org_id = $1 ORDER BY slug`, orgID)
+		if err != nil {
+			return dbErr("коллекции RAG", err)
+		}
+		for rows.Next() {
+			var c RAGCollection
+			if err := rows.Scan(&c.Slug, &c.Version, &c.Documents, &c.Size, &c.LoadedAt); err != nil {
+				rows.Close()
+				return dbErr("коллекции RAG", err)
+			}
+			snap.RAG = append(snap.RAG, c)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return dbErr("коллекции RAG", err)
+		}
 		rec, err := fn(snap)
 		if err != nil {
 			return err

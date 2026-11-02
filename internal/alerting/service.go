@@ -247,12 +247,13 @@ func (s *Service) UpdateRule(ctx context.Context, by By, id string, in RuleInput
 		return Rule{}, err
 	} else if (serverRaisedField(cur.Condition.Field) || serverRaisedField(next.Condition.Field)) &&
 		cur.Condition.Field != next.Condition.Field {
-		// Поля tool и shadow_ai_service — только у встроенных правил
-		// agents.tool_new и shadow_ai.new_service: их срабатывания идут из
+		// Поля tool, shadow_ai_service и rag_collection — только у
+		// встроенных правил agents.tool_new, shadow_ai.new_service и
+		// rag.document_changed: их срабатывания идут из
 		// аудита по ключу правила, не по событиям.
 		return Rule{}, &InputError{Errs: []error{errors.New(
-			"condition.field: tool и shadow_ai_service — только у встроенных правил «Новый инструмент агента» и " +
-				"«Новый ИИ-сервис в журналах прокси», и у них поле не меняется")}}
+			"condition.field: tool, shadow_ai_service и rag_collection — только у встроенных правил «Новый инструмент агента», " +
+				"«Новый ИИ-сервис в журналах прокси» и «Изменились документы коллекции RAG», и у них поле не меняется")}}
 	}
 	if err := s.checkRecipients(ctx, next.Recipients); err != nil {
 		return Rule{}, err

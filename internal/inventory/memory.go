@@ -18,7 +18,9 @@ type Memory struct {
 	Apps      []App
 	Providers []Provider
 	// Seen — тройки, которые Discover «прочитает» из агрегатов.
-	Seen    []Seen
+	Seen []Seen
+	// RAG — коллекции RAG, которые увидит выгрузка AI-BOM.
+	RAG     []RAGCollection
 	Records []audit.Entry
 
 	models map[string]Model
@@ -246,7 +248,7 @@ func maxTime(a, b time.Time) time.Time {
 func (m *Memory) Export(_ context.Context, _ string, fn func(Snapshot) (audit.Entry, error)) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	snap := Snapshot{Providers: slices.Clone(m.Providers), Usage: slices.Clone(m.usage)}
+	snap := Snapshot{Providers: slices.Clone(m.Providers), Usage: slices.Clone(m.usage), RAG: slices.Clone(m.RAG)}
 	for _, a := range m.Apps {
 		if !a.Archived {
 			a.Keys = nil
