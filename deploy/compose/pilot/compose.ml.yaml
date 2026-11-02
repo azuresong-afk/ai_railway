@@ -24,6 +24,13 @@
 # Якоря compose.yaml сюда не переходят: защита сервиса записана полностью и
 # проверяется make images-verify (tools/imagecheck compose).
 services:
+  # Сервер к aisec-ml не подключается; переменная говорит ему, что aisec-ml
+  # в установке есть: шаблоны политик получают правила injection.ml и
+  # toxicity.ml с действием «журнал».
+  aisec-server:
+    environment:
+      AISEC_SERVER_ML_TEMPLATES: "true"
+
   aisec-gateway:
     depends_on:
       aisec-ml: {condition: service_started}

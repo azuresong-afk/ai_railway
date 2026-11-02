@@ -45,5 +45,7 @@ docker compose up -d
 3. В `.env`: `COMPOSE_FILE=compose.yaml:compose.ml.yaml` и `COMPOSE_PROFILES=db,ml` (своя СУБД — `COMPOSE_PROFILES=ml`). Без профиля `ml` дополнение не запустится — это защита от шлюза, который ждёт несуществующий сокет.
 4. `docker compose up -d`. Отключение — убрать `compose.ml.yaml` из `COMPOSE_FILE` и `ml` из `COMPOSE_PROFILES`, затем `docker compose up -d --remove-orphans`.
 
+С дополнением сервер тоже знает про `aisec-ml` (`AISEC_SERVER_ML_TEMPLATES=true` в `compose.ml.yaml`): новые политики из шаблонов получают правила `injection.ml` и `toxicity.ml` с действием «журнал». Политики, созданные раньше, не меняются — правила в них администратор добавляет сам.
+
 Всплеск проверок без ML поднимает встроенное оповещение «Проверки без ML-детекторов» (`frequency.ml_unavailable`).
 

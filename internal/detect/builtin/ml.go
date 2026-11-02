@@ -124,8 +124,13 @@ func (s MLSpec) MLCategories() []string {
 }
 
 // mlStub — ML-детектор без aisec-ml: политика может его назвать, а
-// проверка текста всегда «недоступна».
-type mlStub struct{ spec MLSpec }
+// проверка текста всегда «недоступна». installed — aisec-ml есть в
+// установке (сервер с -ml-templates): сам сервер к aisec-ml не подключается,
+// но шаблоны политик для шлюзов получают правила ML-детекторов.
+type mlStub struct {
+	spec      MLSpec
+	installed bool
+}
 
 func (d mlStub) ID() string                     { return d.spec.ID }
 func (d mlStub) Version() string                { return d.spec.Version }
@@ -136,22 +141,30 @@ func (d mlStub) Categories() []string           { return d.spec.MLCategories() }
 // ml_unavailable (ADR-0024, раздел 4).
 func (mlStub) MLBacked() bool { return true }
 
-// MLConnected — связи с aisec-ml нет: правила шаблонов политик с этим
-// детектором опускаются (policy.TemplateFor), чтобы шаблон по умолчанию на
-// шлюзе без aisec-ml не ставил ml_unavailable каждому событию. Политика
-// заказчика, назвавшая ML-детектор, по-прежнему получает ml_unavailable.
-func (mlStub) MLConnected() bool { return false }
+// MLConnected — есть ли aisec-ml для правил шаблонов политик. Без него
+// правила с этим детектором опускаются (policy.TemplateFor), чтобы шаблон по
+// умолчанию на шлюзе без aisec-ml не ставил ml_unavailable каждому событию.
+// Политика заказчика, назвавшая ML-детектор, по-прежнему получает
+// ml_unavailable.
+func (d mlStub) MLConnected() bool { return d.installed }
 
 func (mlStub) Detect(context.Context, detect.Text) ([]detect.Finding, error) {
 	return nil, ErrMLNotConnected
 }
 
 // ML — ML-детекторы без aisec-ml (заглушки), в порядке MLSpecs.
-func ML() []detect.Detector {
+func ML() []detect.Detector { return mlStubs(false) }
+
+// MLInstalled — заглушки ML-детекторов сервера, когда aisec-ml есть в
+// установке (-ml-templates, compose.ml.yaml): проверка текста по-прежнему
+// «недоступна», а шаблоны политик получают правила ML-детекторов.
+func MLInstalled() []detect.Detector { return mlStubs(true) }
+
+func mlStubs(installed bool) []detect.Detector {
 	specs := MLSpecs()
 	out := make([]detect.Detector, 0, len(specs))
 	for _, s := range specs {
-		out = append(out, mlStub{spec: s})
+		out = append(out, mlStub{spec: s, installed: installed})
 	}
 	return out
 }

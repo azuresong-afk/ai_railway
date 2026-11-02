@@ -28,6 +28,14 @@ func All() []detect.Detector {
 // и сессии (internal/detect/session: session.risk, prompt.integrity,
 // history.integrity). Корпуса, метрики качества и эталоны самотеста — у
 // детекторов All; у ML-детекторов — в части 2 задачи 4.19 (Р4).
-func Catalog() []detect.Detector {
-	return append(append(All(), ML()...), session.All()...)
+func Catalog() []detect.Detector { return CatalogFor(false) }
+
+// CatalogFor — Catalog сервера: mlInstalled — aisec-ml есть в установке
+// (-ml-templates), шаблоны политик получают правила ML-детекторов.
+func CatalogFor(mlInstalled bool) []detect.Detector {
+	ml := ML()
+	if mlInstalled {
+		ml = MLInstalled()
+	}
+	return append(append(All(), ml...), session.All()...)
 }

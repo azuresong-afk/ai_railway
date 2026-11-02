@@ -119,6 +119,7 @@ type pilotInstall struct {
 	project string
 	overlay string
 	ids     map[string]int // AISEC_UID… из .env после prepare-host.sh
+	ml      bool           // compose.ml.yaml и профиль ml (withML)
 }
 
 // newPilotInstall копирует compose пилота во временный каталог, заполняет
@@ -215,11 +216,26 @@ func (p *pilotInstall) putCerts() {
 // проект через переменные compose, чтобы backup.sh и restore.sh работали с
 // тем же стендом без правки.
 func (p *pilotInstall) env() []string {
-	return append(os.Environ(),
-		"COMPOSE_FILE="+filepath.Join(p.dir, "compose.yaml")+string(os.PathListSeparator)+p.overlay,
+	files := []string{filepath.Join(p.dir, "compose.yaml")}
+	var extra []string
+	if p.ml {
+		files = append(files, filepath.Join(p.dir, "compose.ml.yaml"))
+		extra = append(extra, "COMPOSE_PROFILES=db,ml")
+	}
+	files = append(files, p.overlay)
+	return append(append(os.Environ(),
+		"COMPOSE_FILE="+strings.Join(files, string(os.PathListSeparator)),
 		"COMPOSE_PROJECT_NAME="+p.project,
 		"AISEC_E2E_TOOLS="+p.cfg.tools,
-		"AISEC_E2E_TLS="+p.tls.mockDir)
+		"AISEC_E2E_TLS="+p.tls.mockDir), extra...)
+}
+
+// withML включает ML-детекторы, как README пилота, «ML-детекторы»:
+// compose.ml.yaml и профиль ml. Вызывается до install.
+func (p *pilotInstall) withML() {
+	p.t.Helper()
+	s2Copy(p.t, filepath.Join("..", "..", "deploy", "compose", "pilot", "compose.ml.yaml"), filepath.Join(p.dir, "compose.ml.yaml"), 0o644)
+	p.ml = true
 }
 
 // run выполняет команду в каталоге compose и возвращает вывод и код.

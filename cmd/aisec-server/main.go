@@ -482,7 +482,8 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 
 	// Политики и их версии (ТЗ 5.3, задача 2.12): проверяются строго по
 	// встроенным детекторам и детекторам уровня сессии — тем же, что у шлюза.
-	detectors, err := detect.NewRegistry(builtin.Catalog()...)
+	// С -ml-templates шаблоны получают правила ML-детекторов (ADR-0024).
+	detectors, err := detect.NewRegistry(builtin.CatalogFor(cfg.MLTemplates)...)
 	if err != nil {
 		return err
 	}
