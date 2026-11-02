@@ -228,12 +228,17 @@ func TestBackupInventoryOnRealDB(t *testing.T) {
 		mEdited   = "0192a000-0000-7000-8000-000000000903"
 		mPlain    = "0192a000-0000-7000-8000-000000000904"
 		mOwn      = "0192a000-0000-7000-8000-000000000905"
+		mBlocked  = "0192a000-0000-7000-8000-000000000906"
 	)
 	insertModel(t, src, mCustomer, "customer", "", "llama-support-ft", "Модель поддержки", "manual", "model.gguf", "adapter/lora.bin")
 	insertModel(t, src, mManual, "provider", "mock-llm", "gpt-manual", "", "manual")
 	insertModel(t, src, mEdited, "provider", "mock-llm", "gpt-edited", "Основная модель", "traffic")
 	insertModel(t, src, mPlain, "provider", "mock-llm", "gpt-plain", "", "traffic")
 	insertModel(t, src, mOwn, "provider", "mock-llm", "gpt-own", "Из копии", "traffic")
+	// Запрещённая сканером модель (5.22) без других правок: запрет — правка,
+	// модель переносится запрещённой.
+	insertModel(t, src, mBlocked, "provider", "mock-llm", "gpt-blocked", "", "traffic")
+	src.exec(t, `UPDATE inventory_models SET status = 'blocked' WHERE id = $1`, mBlocked)
 	src.exec(t, `INSERT INTO inventory_usage (org_id, app, provider, model, first_seen, last_seen)
 		VALUES ($1, 'support-bot', 'mock-llm', 'gpt-plain', now() - interval '1 day', now())`, audit.DefaultOrgID)
 
@@ -246,19 +251,22 @@ func TestBackupInventoryOnRealDB(t *testing.T) {
 		t.Fatalf("create: %v %s", err, errb.String())
 	}
 
-	// Пустая установка: 4 модели (без gpt-plain), файлы с хешами, без отметок
-	// трафика и без использования.
+	// Пустая установка: 5 моделей (без gpt-plain), файлы с хешами, без отметок
+	// трафика и без использования; запрещённая — запрещённой.
 	dst := newInstallation(t, admin, base, "cli_backup_dst_inv")
 	out.Reset()
 	if err := backupCmd([]string{"restore", "-keys", dst.keys, "-in", file, "-passphrase-file", phrase}, dst.dsn, &out, &errb,
 		time.Now()); err != nil {
 		t.Fatalf("restore: %v %s", err, errb.String())
 	}
-	if !strings.Contains(out.String(), "моделей реестра ИИ 4") || strings.Contains(out.String(), "Реестр ИИ:") {
+	if !strings.Contains(out.String(), "моделей реестра ИИ 5") || strings.Contains(out.String(), "Реестр ИИ:") {
 		t.Fatalf("вывод: %s", out.String())
 	}
-	if n := dst.count(t, "SELECT count(*) FROM inventory_models"); n != 4 {
+	if n := dst.count(t, "SELECT count(*) FROM inventory_models"); n != 5 {
 		t.Fatalf("моделей: %d", n)
+	}
+	if n := dst.count(t, "SELECT count(*) FROM inventory_models WHERE id = $1 AND status = 'blocked'", mBlocked); n != 1 {
+		t.Fatal("запрещённая модель восстановлена без запрета")
 	}
 	if n := dst.count(t, `SELECT count(*) FROM inventory_model_files f JOIN inventory_models m ON m.id = f.model_id
 		WHERE m.id = $1 AND m.title = 'Модель поддержки' AND m.origin = 'manual' AND ((f.path = 'model.gguf' AND f.hash = $2)

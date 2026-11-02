@@ -5903,9 +5903,10 @@ paths:
     delete:
       summary: Удалить модель из реестра
       description: |
-        Право `inventory.manage`. Модель удаляется вместе с файлами; записи использования остаются. Модель из трафика
-        появится снова, если её продолжают вызывать (ADR-0029, п. 2): чтобы её не использовали, уберите её из
-        разрешённых моделей приложения. Пишет `inventory.model_deleted`.
+        Право `inventory.manage`. Модель удаляется вместе с файлами и отчётами сканера; записи использования остаются.
+        Модель из трафика появится снова, если её продолжают вызывать (ADR-0029, п. 2): чтобы её не использовали,
+        уберите её из разрешённых моделей приложения. Запрещённую модель (`blocked`) удалить нельзя — 409: удаление
+        обошло бы снятие запрета. Пишет `inventory.model_deleted`.
       x-permission: inventory.manage
       security: [{ sessionCookie: [] }, { bearerToken: [] }]
       parameters:
@@ -5916,6 +5917,7 @@ paths:
         '401': { $ref: '#/components/responses/ProblemUnauthorized' }
         '403': { $ref: '#/components/responses/ProblemForbidden' }
         '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '409': { $ref: '#/components/responses/ProblemConflict' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ProblemInternal' }
         '503': { $ref: '#/components/responses/Unavailable' }
@@ -5970,6 +5972,202 @@ paths:
               schema: { type: object, description: Документ по схеме CycloneDX 1.6 (bom-1.6.schema.json) }
         '401': { $ref: '#/components/responses/ProblemUnauthorized' }
         '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '422': { $ref: '#/components/responses/ProblemUnprocessable' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/inventory/models/{id}/reference:
+    get:
+      summary: Эталонные хеши файлов модели
+      description: |
+        Право `models.report` (токен узла с моделями; задача 5.22, ADR-0029, п. 4). Все файлы модели из реестра:
+        путь, размер, роль и SHA-256 — эталон для `aisec-cli models verify`, который сверяет их с файлами на узле и
+        присылает отчёт. Права читать реестр не даёт: только эталон модели по её ID.
+      x-permission: models.report
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/InventoryModelID'
+      responses:
+        '200':
+          description: Эталонные хеши
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InventoryReference' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/inventory/models/{id}/scan-reports:
+    get:
+      summary: Отчёты сканера модели
+      description: |
+        Право `inventory.read`. До 20 последних отчётов `aisec-cli models scan` и `models verify` (новые первыми):
+        итог, сверка хешей с реестром и расхождения, итог проверки шаблонов чата (текст — только у шаблонов вне
+        эталона), файлы с находками (до 100). Хеши файлов без находок в ответ не входят.
+      x-permission: inventory.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/InventoryModelID'
+        - $ref: '#/components/parameters/Background'
+      responses:
+        '200':
+          description: Отчёты
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ScanReportList' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    post:
+      summary: Отчёт сканера моделей
+      description: |
+        Право `models.report` (токен узла с моделями; задачи 5.21 и 5.22, ADR-0029, п. 4 и дополнение 1). Отчёт
+        `aisec-cli models scan` (форматы, находки, шаблоны чата, SHA-256 файлов) или `models verify` (только хеши):
+        JSON до 4 МиБ, до 10 000 файлов, до 100 находок на файл, строгий разбор. Весов в отчёте нет. Сервер:
+        сверяет файлы весов и адаптеров с эталонными хешами реестра (изменённый, пропавший или лишний файл —
+        `models.hash_mismatch`, DM-29); проверяет шаблоны чата детекторами инъекций и сверяет с базой эталонов
+        семейства модели (DM-28); при находке с весом `block`, инъекции в шаблоне или расхождении хешей переводит
+        модель в состояние `blocked` (`models.blocked`) — она исключается из пакета шлюзов, приложения получают
+        отказ `model_not_allowed`. Пишет `models.scan_reported`. Хранится 20 последних отчётов модели.
+      x-permission: models.report
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/InventoryModelID'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ScanReportInput' }
+      responses:
+        '201':
+          description: Отчёт принят; итог и состояние модели после него
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ScanReportResult' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/inventory/models/{id}/unblock:
+    post:
+      summary: Снять запрет модели
+      description: |
+        Право `inventory.unblock` (функция безопасности: администратор безопасности; задача 5.22). Снимает
+        состояние `blocked`, выставленное по отчёту сканера: модель возвращается в пакет шлюзов. Нужен текущий
+        пароль или код TOTP (`password` или `code`); без них — 403. Только в сессии консоли: запрос по токену API —
+        403 и `access.denied` с причиной `session_only`. Модель не запрещена — 409. Пишет `models.unblocked` с
+        признаком ослабления защиты (DM-40, оповещение `security.weakening`).
+      x-permission: inventory.unblock
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/InventoryModelID'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Reauth' }
+      responses:
+        '200':
+          description: Запрет снят
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InventoryModelCard' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '409': { $ref: '#/components/responses/ProblemConflict' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/inventory/chat-templates:
+    get:
+      summary: База эталонов шаблонов чата
+      description: |
+        Право `inventory.read`. Служебная база эталонов шаблонов чата (вид `chat_template_baselines`, ADR-0028;
+        задача 5.21): сохранённые текущая и предыдущая версии, какая действует, семейства действующей версии с
+        подстроками имени модели и вариантами. Тексты и хеши шаблонов не выдаются. Базы нет — шаблоны чата
+        проверяются только детекторами, итог «эталона нет».
+      x-permission: inventory.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      responses:
+        '200':
+          description: База эталонов
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ChatTemplates' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    put:
+      summary: Загрузить базу эталонов шаблонов чата
+      description: |
+        Право `models.templates.load`. Тело — подписанный файл базы (`.aisecdb`, до 4 МиБ,
+        `Content-Type: application/octet-stream`); проверяются заверение рабочего ключа, подпись, вид
+        `chat_template_baselines`, дата в сроке заверения и содержимое (строгий JSON, пределы, хеш текста шаблона,
+        текст — только при лицензии, разрешающей распространение). Неверный файл — 422, версия не больше текущей
+        сохранённой — 409. Прежняя текущая становится предыдущей. Пишет `service_db.loaded` или `service_db.rejected`.
+      x-permission: models.templates.load
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: { type: string, format: binary, maxLength: 4194304 }
+      responses:
+        '200':
+          description: База загружена
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ChatTemplates' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '409': { $ref: '#/components/responses/ProblemConflict' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '422': { $ref: '#/components/responses/ProblemUnprocessable' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/inventory/chat-templates/rollback:
+    post:
+      summary: Вернуть предыдущую версию базы эталонов шаблонов чата
+      description: |
+        Право `models.templates.load`. Возвращает хранимую предыдущую версию после повторной проверки (ADR-0028,
+        п. 4). Предыдущей нет — 409, она не прошла проверку — 422. Пишет `service_db.rolled_back`. Только в сессии
+        консоли: запрос по токену API — 403 и `access.denied` с причиной `session_only`.
+      x-permission: models.templates.load
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '200':
+          description: Предыдущая версия стала текущей
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ChatTemplates' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '409': { $ref: '#/components/responses/ProblemConflict' }
         '422': { $ref: '#/components/responses/ProblemUnprocessable' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ProblemInternal' }
@@ -6700,7 +6898,7 @@ components:
         description: { type: string }
         owner: { type: string }
         origin: { type: string, enum: [traffic, manual] }
-        status: { type: string, enum: [active] }
+        status: { type: string, enum: [active, blocked], description: 'blocked — запрет использования по отчёту сканера (задача 5.22): модель исключена из пакета шлюзов' }
         first_seen: { type: string, format: date-time, description: Первый час в трафике }
         last_seen: { type: string, format: date-time, description: Последний час в трафике }
         file_count: { type: integer }
@@ -6714,6 +6912,164 @@ components:
           properties:
             files: { type: array, items: { $ref: '#/components/schemas/InventoryFile' } }
             usage: { type: array, items: { $ref: '#/components/schemas/InventoryUsage' } }
+    InventoryReference:
+      type: object
+      description: Эталонные хеши файлов модели для aisec-cli models verify (задача 5.22)
+      required: [model_id, status, hash_alg, files]
+      properties:
+        model_id: { type: string, format: uuid }
+        status: { type: string, enum: [active, blocked] }
+        hash_alg: { type: string, enum: [SHA-256] }
+        files:
+          type: array
+          items:
+            type: object
+            required: [path, size, role, sha256]
+            properties:
+              path: { type: string }
+              size: { type: integer, format: int64 }
+              role: { type: string, enum: [weights, adapter, tokenizer, config, other] }
+              sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+    ScanFinding:
+      type: object
+      additionalProperties: false
+      required: [code, severity]
+      properties:
+        code: { type: string, pattern: '^[a-z][a-z0-9_]{0,31}$', description: 'Код находки сканера: pickle, malformed, limit_exceeded, external_data, unknown_format, not_scanned, onnx_domain, external_data_missing' }
+        severity: { type: string, enum: [block, warn] }
+        detail: { type: string, maxLength: 1024 }
+    ScanTemplateInput:
+      type: object
+      additionalProperties: false
+      required: [source, text]
+      properties:
+        source: { type: string, pattern: '^[a-z][a-z0-9_.]{0,63}$', description: 'Откуда шаблон: gguf, tokenizer_config, chat_template_json, chat_template_jinja' }
+        name: { type: string, maxLength: 128, description: 'Имя именованного шаблона (tool_use и т. п.)' }
+        text: { type: string, minLength: 1, maxLength: 65536 }
+    ScanFileInput:
+      type: object
+      additionalProperties: false
+      required: [path, size]
+      properties:
+        path: { type: string, maxLength: 512, description: 'Путь относительно каталога модели через «/»' }
+        size: { type: integer, format: int64, minimum: 0, maximum: 1125899906842624 }
+        symlink: { type: boolean }
+        format: { type: string, pattern: '^[a-z][a-z0-9_]{0,31}$', description: 'Формат по сигнатуре (только в отчёте scan)' }
+        tensors: { type: integer, minimum: 0, maximum: 1048576 }
+        sha256: { type: string, pattern: '^[0-9a-f]{64}$', description: 'Хеш содержимого; нет — файл не прочитан' }
+        findings: { type: array, maxItems: 100, items: { $ref: '#/components/schemas/ScanFinding' } }
+        findings_truncated: { type: boolean }
+        chat_templates: { type: array, maxItems: 32, items: { $ref: '#/components/schemas/ScanTemplateInput' } }
+    ScanReportInput:
+      type: object
+      additionalProperties: false
+      description: Отчёт aisec-cli models scan или verify (до 4 МиБ; в отчёте verify — только пути, размеры и хеши)
+      required: [kind, host, scanner_version, files]
+      properties:
+        kind: { type: string, enum: [scan, verify] }
+        host: { type: string, pattern: '^[A-Za-z0-9][A-Za-z0-9._-]{0,252}$' }
+        scanner_version: { type: string, pattern: '^[A-Za-z0-9][A-Za-z0-9.+_-]{0,63}$' }
+        files: { type: array, maxItems: 10000, items: { $ref: '#/components/schemas/ScanFileInput' } }
+        findings: { type: array, maxItems: 100, items: { $ref: '#/components/schemas/ScanFinding' } }
+        truncated: { type: boolean, description: 'В каталоге больше файлов, чем проверяет сканер' }
+    ScanHashMismatch:
+      type: object
+      required: [path, problem, expected_size, actual_size]
+      properties:
+        path: { type: string }
+        role: { type: string, enum: [weights, adapter] }
+        problem: { type: string, enum: [changed, missing, extra, not_hashed] }
+        expected_sha256: { type: string }
+        actual_sha256: { type: string }
+        expected_size: { type: integer, format: int64, description: '-1 — неизвестен (лишний файл)' }
+        actual_size: { type: integer, format: int64, description: '-1 — неизвестен (файла нет)' }
+    ScanTemplateCheck:
+      type: object
+      required: [file, source, sha256, result, base_version]
+      properties:
+        file: { type: string }
+        source: { type: string }
+        name: { type: string }
+        sha256: { type: string, description: 'SHA-256 нормализованного шаблона' }
+        result: { type: string, enum: [baseline, unknown, changed, injection] }
+        family: { type: string }
+        variant: { type: string }
+        base_version: { type: integer, format: int64, description: 'Версия базы эталонов; 0 — базы нет' }
+        findings:
+          type: array
+          items:
+            type: object
+            required: [detector, category, score]
+            properties:
+              detector: { type: string }
+              category: { type: string }
+              rule: { type: string }
+              score: { type: number }
+        text: { type: string, description: 'Текст шаблона вне эталона (до 128 КиБ на отчёт)' }
+    ScanFileFindings:
+      type: object
+      required: [path, size, findings]
+      properties:
+        path: { type: string }
+        size: { type: integer, format: int64 }
+        format: { type: string }
+        sha256: { type: string }
+        findings: { type: array, items: { $ref: '#/components/schemas/ScanFinding' } }
+    ScanReport:
+      type: object
+      required: [id, model_id, kind, host, scanner_version, received_at, received_by, verdict, hashes, templates, files, findings,
+        truncated, blocked, block_reasons, report_findings, finding_files, mismatches, mismatch_total, chat_templates]
+      properties:
+        id: { type: string, format: uuid }
+        model_id: { type: string, format: uuid }
+        kind: { type: string, enum: [scan, verify] }
+        host: { type: string }
+        scanner_version: { type: string }
+        received_at: { type: string, format: date-time }
+        received_by: { type: string, description: 'Кто прислал: token:ID или user:ID' }
+        verdict: { type: string, enum: [ok, warn, block] }
+        hashes: { type: string, enum: [match, mismatch, no_reference] }
+        templates: { type: string, enum: [none, baseline, unknown, changed, injection] }
+        files: { type: integer }
+        findings: { type: integer }
+        truncated: { type: boolean }
+        blocked: { type: boolean, description: 'Этот отчёт перевёл модель в состояние blocked' }
+        block_reasons: { type: array, items: { type: string, enum: [scan, chat_template, hash_mismatch] } }
+        report_findings: { type: array, items: { $ref: '#/components/schemas/ScanFinding' } }
+        finding_files: { type: array, maxItems: 100, items: { $ref: '#/components/schemas/ScanFileFindings' } }
+        mismatches: { type: array, maxItems: 100, items: { $ref: '#/components/schemas/ScanHashMismatch' } }
+        mismatch_total: { type: integer }
+        chat_templates: { type: array, items: { $ref: '#/components/schemas/ScanTemplateCheck' } }
+    ScanReportResult:
+      allOf:
+        - $ref: '#/components/schemas/ScanReport'
+        - type: object
+          required: [model_status]
+          properties:
+            model_status: { type: string, enum: [active, blocked] }
+    ScanReportList:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, maxItems: 20, items: { $ref: '#/components/schemas/ScanReport' } }
+    ChatTemplates:
+      type: object
+      description: База эталонов шаблонов чата (служебная база, ADR-0028; задача 5.21)
+      required: [active, families]
+      properties:
+        active: { type: string, enum: [current, previous, none] }
+        current: { $ref: '#/components/schemas/ServiceDBVersion' }
+        previous: { $ref: '#/components/schemas/ServiceDBVersion' }
+        families:
+          type: array
+          items:
+            type: object
+            required: [id, title, match, variants]
+            properties:
+              id: { type: string }
+              title: { type: string }
+              match: { type: array, items: { type: string } }
+              variants: { type: array, items: { type: string } }
     InventoryModelPage:
       type: object
       required: [items]
@@ -9247,7 +9603,7 @@ components:
       type: object
       required: [kind, title, active]
       properties:
-        kind: { type: string, pattern: '^[a-z0-9_]{1,64}$', description: 'Вид базы (shadow_ai_catalog, compliance_requirements)' }
+        kind: { type: string, pattern: '^[a-z0-9_]{1,64}$', description: 'Вид базы (shadow_ai_catalog, compliance_requirements, chat_template_baselines)' }
         title: { type: string }
         active: { type: string, enum: [current, previous, none], description: 'Какая сохранённая версия действует' }
         current: { $ref: '#/components/schemas/ServiceDBVersion' }

@@ -15,8 +15,10 @@
 package modelscan
 
 import (
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"io/fs"
 	"os"
@@ -107,6 +109,10 @@ type FileReport struct {
 	Findings      []Finding      `json:"findings,omitempty"`
 	FindingsCut   bool           `json:"findings_truncated,omitempty"`
 	ChatTemplates []ChatTemplate `json:"chat_templates,omitempty"`
+	// SHA256 — хеш содержимого файла (Scanner.WithHash, задачи 5.21 и
+	// 5.22): эталон для сверки с реестром (DM-29). Пусто — не считался или
+	// файл не прочитан.
+	SHA256 string `json:"sha256,omitempty"`
 
 	// external — ссылки ONNX на внешние данные, их сверяет ScanPath.
 	external []externalRef
@@ -261,6 +267,17 @@ func (l Limits) withDefaults() Limits {
 // Scanner проверяет файлы моделей.
 type Scanner struct {
 	limits Limits
+	// hash — потоковый хеш содержимого файлов; nil — хеши не считаются.
+	hash func() hash.Hash
+}
+
+// WithHash — сканер, который вдобавок считает хеш содержимого каждого
+// обычного файла (SHA-256 из internal/crypto передаёт aisec-cli: в пакете
+// своей криптографии нет). Файл читается потоком целиком.
+func (s *Scanner) WithHash(h func() hash.Hash) *Scanner {
+	c := *s
+	c.hash = h
+	return &c
 }
 
 // New — сканер с пределами l (нулевые поля — по умолчанию).
@@ -326,13 +343,27 @@ func (s *Scanner) ScanReader(r io.ReaderAt, size int64, name string) FileReport 
 // проверяются по содержимому цели (каталоги моделей из кэша загрузки
 // ссылаются на общие файлы), на каталоги — не обходятся.
 func (s *Scanner) ScanPath(root string) (*Report, error) {
+	return s.walk(root, true)
+}
+
+// HashPath обходит файл или каталог модели по тем же правилам, что ScanPath,
+// но только считает хеши (WithHash): форматы не разбираются, находок по
+// файлам нет (models verify, DM-29). Без WithHash — ошибка.
+func (s *Scanner) HashPath(root string) (*Report, error) {
+	if s.hash == nil {
+		return nil, errors.New("modelscan: хеш не задан (WithHash)")
+	}
+	return s.walk(root, false)
+}
+
+func (s *Scanner) walk(root string, scan bool) (*Report, error) {
 	info, err := os.Stat(root)
 	if err != nil {
 		return nil, err
 	}
 	rep := &Report{}
 	if !info.IsDir() {
-		fr, err := s.scanFile(root, filepath.Base(root), false)
+		fr, err := s.scanFile(root, filepath.Base(root), false, scan)
 		if err != nil {
 			return nil, err
 		}
@@ -367,7 +398,7 @@ func (s *Scanner) ScanPath(root string) (*Report, error) {
 			rep.Files = append(rep.Files, fr)
 			return nil
 		}
-		fr, err := s.scanFile(full, p, link)
+		fr, err := s.scanFile(full, p, link, scan)
 		if err != nil {
 			return err
 		}
@@ -393,7 +424,7 @@ func isRegularTarget(full string) bool {
 	return err == nil && ti.Mode().IsRegular()
 }
 
-func (s *Scanner) scanFile(full, rel string, link bool) (FileReport, error) {
+func (s *Scanner) scanFile(full, rel string, link, scan bool) (FileReport, error) {
 	f, err := os.Open(full) //nolint:gosec // G304: путь к файлам модели задаёт администратор узла
 	if err != nil {
 		return FileReport{}, err
@@ -403,10 +434,34 @@ func (s *Scanner) scanFile(full, rel string, link bool) (FileReport, error) {
 	if err != nil {
 		return FileReport{}, err
 	}
-	fr := s.ScanReader(f, info.Size(), path.Base(rel))
+	fr := FileReport{Size: info.Size()}
+	if scan {
+		fr = s.ScanReader(f, info.Size(), path.Base(rel))
+	}
 	fr.Path = rel
 	fr.Symlink = link
+	if s.hash != nil {
+		sum, err := hashFile(f, s.hash())
+		if err != nil {
+			return FileReport{}, err
+		}
+		fr.SHA256 = sum
+	}
 	return fr, nil
+}
+
+// hashBuffer — буфер чтения при подсчёте хеша.
+const hashBuffer = 1 << 20
+
+// hashFile — хеш всего содержимого открытого файла (с начала).
+func hashFile(f *os.File, h hash.Hash) (string, error) {
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return "", err
+	}
+	if _, err := io.CopyBuffer(h, f, make([]byte, hashBuffer)); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // checkExternal сверяет ссылки ONNX на внешние данные с файловой системой:

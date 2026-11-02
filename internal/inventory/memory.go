@@ -21,14 +21,17 @@ type Memory struct {
 	Seen    []Seen
 	Records []audit.Entry
 
-	models map[string]Model
-	usage  []Usage
-	nextID int64
-	sync   SyncState
+	models  map[string]Model
+	reports map[string][]ScanReport
+	usage   []Usage
+	nextID  int64
+	sync    SyncState
 }
 
 // NewMemory создаёт пустое хранилище.
-func NewMemory() *Memory { return &Memory{models: map[string]Model{}} }
+func NewMemory() *Memory {
+	return &Memory{models: map[string]Model{}, reports: map[string][]ScanReport{}}
+}
 
 // Overview — сводка реестра.
 func (m *Memory) Overview(_ context.Context, _ string, _ time.Time) (Overview, error) {
@@ -147,8 +150,59 @@ func (m *Memory) DeleteModel(_ context.Context, _, id string, fn func(Model) (au
 		return Model{}, err
 	}
 	delete(m.models, id)
+	delete(m.reports, id)
 	m.Records = append(m.Records, rec)
 	return v, nil
+}
+
+// AddReport — отчёт сканера под блокировкой хранилища.
+func (m *Memory) AddReport(_ context.Context, _, id string, fn func(*Model) (ScanReport, []audit.Entry, error)) (ScanReport, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	v, ok := m.models[id]
+	if !ok {
+		return ScanReport{}, ErrNotFound
+	}
+	v.Files = slices.Clone(v.Files)
+	r, recs, err := fn(&v)
+	if err != nil {
+		return ScanReport{}, err
+	}
+	m.models[id] = v
+	list := append([]ScanReport{r}, m.reports[id]...)
+	if len(list) > MaxReportsPerModel {
+		list = list[:MaxReportsPerModel]
+	}
+	m.reports[id] = list
+	m.Records = append(m.Records, recs...)
+	return r, nil
+}
+
+// Reports — последние отчёты модели.
+func (m *Memory) Reports(_ context.Context, _, id string, limit int) ([]ScanReport, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.models[id]; !ok {
+		return nil, ErrNotFound
+	}
+	list := m.reports[id]
+	if len(list) > limit {
+		list = list[:limit]
+	}
+	return slices.Clone(list), nil
+}
+
+// Blocked — запрещённые модели с провайдером.
+func (m *Memory) Blocked(_ context.Context, _ string) ([]BlockedModel, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := []BlockedModel{}
+	for _, v := range m.models {
+		if v.Status == StatusBlocked && v.Provider != "" {
+			out = append(out, BlockedModel{Provider: v.Provider, Name: v.Name})
+		}
+	}
+	return out, nil
 }
 
 // Usage — страница использования.

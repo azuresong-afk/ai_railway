@@ -354,6 +354,14 @@ func classifyAudit(ctx context.Context, ops secOps, r *audit.Record) ([]Raise, e
 		if x, ok := shadowAliasProbeRaise(r, details()); ok {
 			raises = append(raises, x)
 		}
+	case "models.hash_mismatch":
+		if x, ok := modelHashMismatchRaise(r, details()); ok {
+			raises = append(raises, x)
+		}
+	case "models.scan_reported":
+		if x, ok := modelScanBlockedRaise(r, details()); ok {
+			raises = append(raises, x)
+		}
 	case "agent.approval.requested", "agent.approval.queue_full":
 		x, err := approvalRaise(ctx, ops, r, details())
 		if err != nil {
