@@ -25,8 +25,12 @@ type Policy struct {
 	Mode          Mode
 	NonText       NonText
 	ResponseCheck ResponseCheck
-	BlockMessage  string
-	rules         []rule
+	// MediaCheck — режим проверки изображений (off, async, sync); MediaTimeout
+	// — срок анализа в режиме sync.
+	MediaCheck   MediaCheck
+	MediaTimeout time.Duration
+	BlockMessage string
+	rules        []rule
 	// exceptions — исключения версии (exception.go), в порядке спецификации.
 	exceptions []ExceptionSpec
 	// tools — политика вызовов инструментов (toolcall.go).
@@ -55,6 +59,13 @@ func Compile(s *Spec, c Catalog) (*Policy, error) {
 	p := &Policy{
 		ID: s.ID, Name: s.Name, Version: s.Version, Mode: s.Mode,
 		NonText: s.NonText, ResponseCheck: s.ResponseCheck, BlockMessage: s.BlockMessage,
+		MediaCheck: s.MediaCheck, MediaTimeout: time.Duration(s.MediaTimeoutMS) * time.Millisecond,
+	}
+	if p.MediaCheck == "" {
+		p.MediaCheck = MediaCheckOff
+	}
+	if p.MediaTimeout == 0 {
+		p.MediaTimeout = DefaultMediaTimeout
 	}
 	if p.NonText == "" {
 		p.NonText = NonTextAllowUnchecked
@@ -247,6 +258,10 @@ type MediaPart struct {
 	// URL — ссылка, которую провайдер загрузит сам (не данные в запросе и не
 	// идентификатор файла у провайдера).
 	URL bool
+	// Checked — часть проверена анализатором aisec-media (media_check, ADR-0032,
+	// раздел 8): её текст — в Hits с источником image, параметр non_text к ней
+	// не применяется.
+	Checked bool
 }
 
 // Request — что оценивается: находки по тексту одного направления.
@@ -399,7 +414,7 @@ func (p *Policy) Evaluate(req Request) Decision {
 			d.Message = r.message
 		}
 	}
-	d.NonTextUnchecked = len(req.Media) > 0 && !d.Block
+	d.NonTextUnchecked = slices.ContainsFunc(req.Media, func(m MediaPart) bool { return !m.Checked }) && !d.Block
 	return d
 }
 
@@ -419,6 +434,11 @@ func (p *Policy) match(i int, h Hit, req Request) (Match, bool) {
 		if (req.Endpoint == EndpointEmbeddings || req.Endpoint == EndpointCheck) && a == Pseudonymize {
 			a, asRedact = Redact, true
 		}
+		if h.Source == SourceImage && protects(a) {
+			// Текст на изображении не замаскировать: защита данных — блокировкой
+			// (Р9 этапа 5). В monitor она, как и block, только журналируется.
+			a = Block
+		}
 		if m.order < 0 || Stronger(a, m.Action) {
 			m.Rule, m.Action, m.order = r.id, a, j
 		}
@@ -434,12 +454,13 @@ func (p *Policy) match(i int, h Hit, req Request) (Match, bool) {
 }
 
 // nonTextBlocks — параметр non_text требует блокировать нетекстовые части.
+// Проверенные aisec-media части (Checked) параметр не учитывает.
 func (p *Policy) nonTextBlocks(media []MediaPart) bool {
 	switch p.NonText {
 	case NonTextBlock:
-		return len(media) > 0
+		return slices.ContainsFunc(media, func(m MediaPart) bool { return !m.Checked })
 	case NonTextAllowInline:
-		return slices.ContainsFunc(media, func(m MediaPart) bool { return m.URL })
+		return slices.ContainsFunc(media, func(m MediaPart) bool { return m.URL && !m.Checked })
 	}
 	return false
 }
