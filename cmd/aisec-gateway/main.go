@@ -409,6 +409,11 @@ func (hb *handlerBuilder) build(apps []config.Application, provs map[string]prov
 	if err != nil {
 		return nil, err
 	}
+	// Проверка документов RAG до индексации (задача 5.25).
+	checkBatchHandler, err := gateway.NewCheckBatchHandler(handlerCfg)
+	if err != nil {
+		return nil, err
+	}
 	// MCP-прокси (задача 4.11) — только при MCP-серверах в пакете.
 	var mcpHandler http.Handler
 	if len(mcpServers) > 0 {
@@ -418,7 +423,7 @@ func (hb *handlerBuilder) build(apps []config.Application, provs map[string]prov
 		}
 	}
 	h, err := gateway.New(gateway.Options{Logger: hb.logger, Chat: chatHandler, Embeddings: embeddingsHandler,
-		Check: checkHandler, MCP: mcpHandler, Router: router, Auth: &authCfg})
+		Check: checkHandler, CheckBatch: checkBatchHandler, MCP: mcpHandler, Router: router, Auth: &authCfg})
 	if err != nil {
 		return nil, err
 	}

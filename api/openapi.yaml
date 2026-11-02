@@ -92,6 +92,46 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
+  /guard/v1/check/batch:
+    post:
+      summary: Проверка документов RAG до индексации (пакет Check API)
+      description: >
+        Индексатор заказчика проверяет тексты документов коллекции до
+        индексации (ТЗ 5.12, 5.16 DM-07 «RAG — 5»; ADR-0029, п. 5): до 100
+        документов за вызов, каждый текст — до предела тела запроса шлюза,
+        всё тело — до большего из предела тела запроса и 8 МиБ. Каждый текст
+        проверяется конвейером как Check API с `source: rag` и получает своё
+        событие check (содержимое — только по режиму хранения приложения);
+        ID событий — в `results[].event_id`, заголовка `X-AISec-Event-Id` нет.
+        Решение по документу: `allow` — индексировать (если политика изменила
+        текст, например замаскировала ПДн, — индексировать `text`), `exclude` —
+        не индексировать: `reason: policy` — политика заблокировала бы текст
+        (например, косвенная инъекция), `reason: check_unavailable` — текст не
+        удалось проверить при `fail_closed` (повторите позже). В режиме monitor
+        документы не исключаются, `action` показывает решение как в enforce.
+        Квоты приложения: пакет — один запрос для частоты, предел размера
+        входа — к каждому тексту; отказ квоты — 429 на весь пакет. Модель не
+        вызывается. Ответ на ошибку разбора не содержит значений из запроса.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CheckBatchRequest' }
+      responses:
+        '200':
+          description: Решения по документам в порядке запроса
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CheckBatchResponse' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/AppNotConfigured' }
+        '408': { $ref: '#/components/responses/InvalidRequest' }
+        '413': { $ref: '#/components/responses/InvalidRequest' }
+        '415': { $ref: '#/components/responses/InvalidRequest' }
+        '429': { $ref: '#/components/responses/QuotaExceeded' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/CheckUnavailable' }
   /healthz:
     get:
       summary: Живость процесса (шлюз и сервер управления)
@@ -6970,6 +7010,61 @@ components:
       properties:
         document_id: { type: string, minLength: 1, maxLength: 512 }
         reason: { type: string, maxLength: 500 }
+    CheckBatchRequest:
+      type: object
+      additionalProperties: false
+      required: [source, stage, documents]
+      properties:
+        source: { type: string, enum: [rag] }
+        stage: { type: string, enum: [pre_index] }
+        user: { type: string, maxLength: 256, description: Идентификатор пользователя или сервисной учётной записи индексатора (как у Check API). }
+        documents:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            type: object
+            additionalProperties: false
+            required: [id, text]
+            properties:
+              id: { type: string, minLength: 1, maxLength: 512, description: 'ID документа у индексатора (правила ID манифеста коллекции: UTF-8 без управляющих символов и символов форматирования, без пробелов по краям), без повторов в пакете.' }
+              text: { type: string, minLength: 1, description: Текст документа или его части; не длиннее предела тела запроса шлюза (иначе 413 document_too_large). }
+    CheckBatchResponse:
+      type: object
+      required: [stage, excluded, results]
+      properties:
+        stage: { type: string, enum: [pre_index] }
+        unchecked: { type: boolean, description: 'У политики нет правил для входа: детекторы не запускались, allow не означает «проверено».' }
+        excluded: { type: integer, description: Число документов с decision=exclude. }
+        results:
+          type: array
+          items:
+            type: object
+            required: [id, event_id, decision, action, findings]
+            properties:
+              id: { type: string }
+              event_id: { type: string, description: Идентификатор события check документа. }
+              decision: { type: string, enum: [allow, exclude] }
+              action: { type: string, description: Решение политики как в режиме enforce (в monitor может отличаться от decision). }
+              reason: { type: string, enum: [policy, check_unavailable], description: Причина exclude. }
+              incomplete: { type: boolean, description: Часть детекторов не дала результата. }
+              ml_unavailable: { type: boolean, description: ML-детектор политики не дал результата (ADR-0024). }
+              findings:
+                type: array
+                description: Находки детекторов политики, без найденных значений.
+                items:
+                  type: object
+                  required: [detector, category, score, start, end, location]
+                  properties:
+                    detector: { type: string }
+                    category: { type: string }
+                    score: { type: number }
+                    start: { type: integer }
+                    end: { type: integer }
+                    location: { type: string }
+                    threat: { type: string, description: ID строки матрицы обнаружения (DM-NN). }
+              findings_truncated: { type: boolean }
+              text: { type: string, description: 'Текст после действий политики, если она его изменила (индексировать нужно его); нет у exclude.' }
     InventoryFile:
       type: object
       required: [path, size, role, sha256]
