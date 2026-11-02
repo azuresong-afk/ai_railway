@@ -174,3 +174,38 @@ func TestEndpointOf(t *testing.T) {
 		}
 	}
 }
+
+// Коллекции RAG (задача 5.24) — компоненты data с версией манифеста и числом
+// документов, от них зависит установка; документы в AI-BOM не входят.
+func TestAIBOMRAGCollections(t *testing.T) {
+	mem := aibomMemory()
+	at := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
+	mem.RAG = []RAGCollection{{Slug: "kb-hr", Version: 3, Documents: 120, Size: 4096, LoadedAt: at}, {Slug: "kb-fin", Version: 1, LoadedAt: at}}
+	bom, err := aibomService(t, mem).ExportAIBOM(context.Background(), By{Actor: audit.Actor{Type: audit.ActorUser, ID: "u1"}}, "5.0.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cyclonedx.Validate(bom); err != nil {
+		t.Fatalf("документ не по схеме: %v", err)
+	}
+	c := findComponent(bom.Components, "rag:kb-hr")
+	if c == nil || c.Type != "data" || c.Version != "3" {
+		t.Fatalf("коллекция: %+v", c)
+	}
+	props := map[string]string{}
+	for _, p := range c.Properties {
+		props[p.Name] = p.Value
+	}
+	if props["aisec:kind"] != "rag_collection" || props["aisec:documents"] != "120" || props["aisec:size"] != "4096" {
+		t.Fatalf("свойства: %v", props)
+	}
+	var product *cyclonedx.Dependency
+	for i := range bom.Dependencies {
+		if bom.Dependencies[i].Ref == productRef {
+			product = &bom.Dependencies[i]
+		}
+	}
+	if product == nil || !strings.Contains(strings.Join(product.DependsOn, " "), "rag:kb-fin rag:kb-hr") {
+		t.Fatalf("зависимости установки: %+v", product)
+	}
+}

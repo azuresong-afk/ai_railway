@@ -5974,6 +5974,181 @@ paths:
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ProblemInternal' }
         '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/rag/collections:
+    get:
+      summary: Коллекции RAG
+      description: |
+        Право `rag.read` (администраторы, аналитик, аудитор). Коллекции с текущей версией манифеста, числом
+        документов, разницей с предыдущей версией и числом исключений, а также пределы манифеста (ADR-0029, п. 5).
+        Содержимого документов у сервера нет: только ID, SHA-256 и размер, которые прислал индексатор.
+      x-permission: rag.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      responses:
+        '200':
+          description: Коллекции по ID
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RAGCollectionList' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/rag/collections/{slug}:
+    get:
+      summary: Карточка коллекции RAG
+      description: |
+        Право `rag.read`. Текущая версия манифеста, разница с предыдущей (число новых, изменённых и пропавших
+        документов и до 100 ID каждого вида) и исключения документов администратором.
+      x-permission: rag.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/RAGCollectionSlug'
+      responses:
+        '200':
+          description: Карточка коллекции
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RAGCollectionCard' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/rag/collections/{slug}/manifest:
+    get:
+      summary: Документы текущей версии манифеста
+      description: |
+        Право `rag.read`. Документы текущей версии по возрастанию ID (сравнение байтов), страницами до 1000:
+        следующая страница — с `after` из `next_after`. `excluded` — отметка индексатора (проверка до индексации
+        вернула «исключить»), `blocked` — документ исключён администратором: индексатор его не индексирует.
+        Между запросами страниц индексатор может загрузить новую версию — сверяйте `version` страниц.
+      x-permission: rag.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/RAGCollectionSlug'
+        - name: after
+          in: query
+          description: ID документа, после которого начинается страница
+          schema: { type: string, maxLength: 512 }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 1000, default: 200 }
+      responses:
+        '200':
+          description: Страница документов
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RAGDocumentPage' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    put:
+      summary: Загрузить манифест коллекции
+      description: |
+        Право `rag.manage` (доступно токену API — манифест отправляет индексатор). Новая версия манифеста — полный
+        список документов коллекции `{id, sha256, size, excluded?}` (DM-30, ADR-0029, п. 5): до 100 000 документов,
+        тело до 16 МиБ, строгий JSON; ID документа — 1–512 байт UTF-8 без управляющих символов и символов
+        форматирования, без пробелов в начале и в конце, без повторов; `sha256` — 64 шестнадцатеричных символа в
+        нижнем регистре — хеш текста, который индексатор индексирует; `size` — от 0 до 2^50. Коллекция создаётся
+        первой загрузкой (201; не больше 100 коллекций — иначе 422). Сервер хранит текущую и предыдущую версии и
+        разницу между ними (документ изменён, если отличаются хеш или размер; `excluded` изменением не считается).
+        Пишет `rag.manifest_loaded`; если в новой версии есть документы вне прошлой версии, изменённые или
+        пропавшие — ещё `rag.document_changed` (число и до 20 ID документов, без хешей и содержимого), по которой
+        встроенное правило `rag.document_changed` поднимает оповещение. В ответе — `blocked`: ID документов
+        манифеста, исключённых администратором.
+      x-permission: rag.manage
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/RAGCollectionSlug'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RAGManifest' }
+      responses:
+        '200':
+          description: Новая версия загружена
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RAGManifestResult' }
+        '201':
+          description: Коллекция создана, загружена первая версия
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RAGManifestResult' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '422': { $ref: '#/components/responses/ProblemUnprocessable' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/rag/collections/{slug}/exclusions:
+    post:
+      summary: Исключить документ из индекса
+      description: |
+        Право `rag.manage`. Администратор исключает документ коллекции по ID (документа может ещё не быть в
+        манифесте); индексатор получает исключённые документы в ответе на загрузку манифеста (`blocked`) и в
+        страницах документов. Причина — до 500 символов. Не больше 1000 исключений в коллекции (422); повтор — 409.
+        Пишет `rag.document_excluded`.
+      x-permission: rag.manage
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/RAGCollectionSlug'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NewRAGExclusion' }
+      responses:
+        '201':
+          description: Документ исключён
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RAGExclusion' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '409': { $ref: '#/components/responses/ProblemConflict' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '422': { $ref: '#/components/responses/ProblemUnprocessable' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/rag/collections/{slug}/exclusions/{id}:
+    delete:
+      summary: Снять исключение документа
+      description: |
+        Право `rag.manage`, только сессия консоли: снятие исключения — ослабление защиты (документ снова попадёт
+        в индекс), токен API получает 403 с записью `access.denied`. Пишет `rag.exclusion_removed` с признаком
+        ослабления (DM-40).
+      x-permission: rag.manage
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/RAGCollectionSlug'
+        - $ref: '#/components/parameters/RAGExclusionID'
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '204': { description: Исключение снято }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
   /api/v1/compliance:
     get:
       summary: Соответствие требованиям
@@ -6259,6 +6434,18 @@ components:
         признаком `security` и на токены токену недоступны. Операции, доступные токену,
         перечисляют `bearerToken` в `security`. Каждый запрос пишет `api_token.used`.
   parameters:
+    RAGCollectionSlug:
+      name: slug
+      in: path
+      required: true
+      description: ID коллекции RAG
+      schema: { type: string, pattern: '^[a-z0-9][a-z0-9-]{0,62}$' }
+    RAGExclusionID:
+      name: id
+      in: path
+      required: true
+      description: ID исключения документа
+      schema: { type: string, format: uuid }
     InventoryModelID:
       name: id
       in: path
@@ -6678,6 +6865,111 @@ components:
             run_at: { type: string, format: date-time }
             limit_reached: { type: boolean, description: В последнем запуске не всё поместилось в пределы }
             skipped: { type: integer, description: Пропущено в последнем запуске из-за пределов }
+    RAGDiff:
+      type: object
+      required: [added, changed, removed, added_ids, changed_ids, removed_ids]
+      description: Разница версии манифеста с предыдущей; у первой версии — нули
+      properties:
+        added: { type: integer }
+        changed: { type: integer }
+        removed: { type: integer }
+        added_ids: { type: array, maxItems: 100, items: { type: string }, description: До 100 ID по возрастанию }
+        changed_ids: { type: array, maxItems: 100, items: { type: string } }
+        removed_ids: { type: array, maxItems: 100, items: { type: string } }
+    RAGCollection:
+      type: object
+      required: [slug, version, documents, size, excluded, exclusions, loaded_at, loaded_by, diff, created_at]
+      properties:
+        slug: { type: string }
+        version: { type: integer, minimum: 1, description: Номер текущей версии манифеста }
+        documents: { type: integer }
+        size: { type: integer, format: int64, description: Сумма размеров документов, байт }
+        excluded: { type: integer, description: Документов, исключённых проверкой до индексации (отметка индексатора) }
+        exclusions: { type: integer, description: Исключений администратора }
+        loaded_at: { type: string, format: date-time }
+        loaded_by: { type: string, description: Субъект загрузки (тип и ID) }
+        prev_loaded_at: { type: string, format: date-time, description: Время предыдущей версии }
+        diff: { $ref: '#/components/schemas/RAGDiff' }
+        created_at: { type: string, format: date-time }
+    RAGExclusion:
+      type: object
+      required: [id, document_id, reason, created_at, created_by]
+      properties:
+        id: { type: string, format: uuid }
+        document_id: { type: string }
+        reason: { type: string }
+        created_at: { type: string, format: date-time }
+        created_by: { type: string }
+    RAGCollectionCard:
+      allOf:
+        - $ref: '#/components/schemas/RAGCollection'
+        - type: object
+          required: [exclusion_list]
+          properties:
+            exclusion_list: { type: array, maxItems: 1000, items: { $ref: '#/components/schemas/RAGExclusion' } }
+    RAGCollectionList:
+      type: object
+      required: [items, limits]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/RAGCollection' } }
+        limits:
+          type: object
+          required: [collections, documents, body_bytes, document_id_bytes, exclusions, diff_sample_ids]
+          properties:
+            collections: { type: integer }
+            documents: { type: integer }
+            body_bytes: { type: integer }
+            document_id_bytes: { type: integer }
+            exclusions: { type: integer }
+            diff_sample_ids: { type: integer }
+    RAGDocument:
+      type: object
+      required: [id, sha256, size, excluded, blocked]
+      properties:
+        id: { type: string }
+        sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        size: { type: integer, format: int64 }
+        excluded: { type: boolean, description: Отметка индексатора — исключён проверкой до индексации }
+        blocked: { type: boolean, description: Исключён администратором }
+    RAGDocumentPage:
+      type: object
+      required: [version, items]
+      properties:
+        version: { type: integer }
+        items: { type: array, items: { $ref: '#/components/schemas/RAGDocument' } }
+        next_after: { type: string, description: ID для параметра after следующей страницы }
+    RAGManifest:
+      type: object
+      additionalProperties: false
+      required: [documents]
+      properties:
+        documents:
+          type: array
+          maxItems: 100000
+          items:
+            type: object
+            additionalProperties: false
+            required: [id, sha256, size]
+            properties:
+              id: { type: string, minLength: 1, maxLength: 512, description: ID документа у индексатора (до 512 байт UTF-8) }
+              sha256: { type: string, pattern: '^[0-9a-f]{64}$', description: SHA-256 текста, который индексируется }
+              size: { type: integer, format: int64, minimum: 0, maximum: 1125899906842624 }
+              excluded: { type: boolean, description: Индексатор не индексирует документ — проверка до индексации вернула exclude }
+    RAGManifestResult:
+      allOf:
+        - $ref: '#/components/schemas/RAGCollection'
+        - type: object
+          required: [created, blocked]
+          properties:
+            created: { type: boolean }
+            blocked: { type: array, items: { type: string }, description: ID документов манифеста, исключённых администратором }
+    NewRAGExclusion:
+      type: object
+      additionalProperties: false
+      required: [document_id]
+      properties:
+        document_id: { type: string, minLength: 1, maxLength: 512 }
+        reason: { type: string, maxLength: 500 }
     InventoryFile:
       type: object
       required: [path, size, role, sha256]
@@ -9017,7 +9309,7 @@ components:
       properties:
         filter: { type: string, maxLength: 2048, description: Фильтр событий (язык — в описании GET /api/v1/events) }
         min_severity: { $ref: '#/components/schemas/AlertSeverity' }
-        field: { type: string, enum: [model, provider, user, app, tool, shadow_ai_service], description: 'Поле правила «новое»; tool — только у встроенного agents.tool_new, shadow_ai_service — у shadow_ai.new_service' }
+        field: { type: string, enum: [model, provider, user, app, tool, shadow_ai_service, rag_collection], description: 'Поле правила «новое»; tool — только у встроенного agents.tool_new, shadow_ai_service — у shadow_ai.new_service, rag_collection — у rag.document_changed' }
         count: { type: integer, minimum: 2, maximum: 100000, description: 'Порог «частоты»: событий в окне по ключу группировки' }
         window_minutes: { type: integer, minimum: 1, maximum: 1440, description: Окно «частоты», минут }
         metric:

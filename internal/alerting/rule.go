@@ -52,8 +52,9 @@ func severityRank(s string) int { return slices.Index(severities, s) + 1 }
 // — для установок с самостоятельной регистрацией приложений). tool — только
 // у встроенного правила agents.tool_new (задача 4.8): его поднимает сервер
 // по записи аудита agent_tool.discovered, в событиях поля нет;
-// shadow_ai_service — так же у shadow_ai.new_service (задача 4.23, DM-37).
-var newFields = []string{"model", "provider", "user", "app", "tool", ShadowServiceField}
+// shadow_ai_service — так же у shadow_ai.new_service (задача 4.23, DM-37),
+// rag_collection — у rag.document_changed (задача 5.24, DM-30).
+var newFields = []string{"model", "provider", "user", "app", "tool", ShadowServiceField, RAGCollectionField}
 
 // groupFields — поля группировки правила «порог»: однозначные столбцы
 // событий. Многозначные (угрозы, детекторы) ключом не годятся.
@@ -373,8 +374,8 @@ func ParseRuleInput(in RuleInput, kind string) (Rule, error) {
 	}
 	errs = append(errs, r.parseCondition(in.Condition, in.GroupBy)...)
 	if creating && kind == KindNew && serverRaisedField(in.Condition.Field) {
-		errs = append(errs, errors.New("condition.field: tool и shadow_ai_service — только у встроенных правил "+
-			"«Новый инструмент агента» и «Новый ИИ-сервис в журналах прокси»"))
+		errs = append(errs, errors.New("condition.field: tool, shadow_ai_service и rag_collection — только у встроенных правил "+
+			"«Новый инструмент агента», «Новый ИИ-сервис в журналах прокси» и «Изменились документы коллекции RAG»"))
 	}
 	if b, err := json.Marshal(r.Condition); err != nil || len(b) > maxConditionJSON {
 		errs = append(errs, fmt.Errorf("condition: больше %d байт в JSON", maxConditionJSON))
