@@ -131,7 +131,7 @@ func waitEvent(t *testing.T, log *eventLog, id string) events.Event {
 	return events.Event{}
 }
 
-// Покрывает: DM-45 (часть)
+// Покрывает: DM-45
 // sync: инструкция текстом на изображении блокирует запрос до провайдера;
 // находка — с источником image, местом изображения и рамкой.
 func TestMediaSyncBlocksInjectionOnImage(t *testing.T) {
@@ -163,7 +163,7 @@ func TestMediaSyncBlocksInjectionOnImage(t *testing.T) {
 	}
 }
 
-// Покрывает: DM-46 (часть)
+// Покрывает: DM-46
 // ПДн на изображении не замаскировать: правило pseudonymize даёт блокировку.
 func TestMediaSyncPIIOnImageBlocks(t *testing.T) {
 	up, rec := newUpstream(t, nil)
