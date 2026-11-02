@@ -100,4 +100,8 @@
 
 | Проверка | Вид | Строки | OWASP | Рабочая группа | БДУ | MITRE ATLAS |
 |---|---|---|---|---|---|---|
-| Сканер файлов моделей (`internal/modelscan`, `aisec-cli models scan`): находка `pickle` — запрет; safetensors, GGUF, ONNX, `tokenizer_config.json` — разбор с пределами | сканер на узле с моделями | DM-27 | LLM03 | О | не заполнено | AML.T0010.003 (AI Supply Chain Compromise: Model), AML.T0011.000 (User Execution: Unsafe AI Artifacts) |
+| Сканер файлов моделей (`internal/modelscan`, `aisec-cli models scan`): находка `pickle` — запрет; safetensors, GGUF, ONNX, `tokenizer_config.json` — разбор с пределами | сканер на узле с моделями | DM-27 | LLM03 | О | не заполнено | AML.T0010.003 (Supply Chain Compromise: Model Repository), AML.T0011.000 (User Execution: Unsafe AI Artifacts) |
+| Шаблон чата из отчёта сканера (`aisec-cli models scan`): детекторы `injection.heuristic` и `unicode.hidden`, сверка с базой эталонов семейства `chat_template_baselines` | сервер (отчёт сканера) | DM-28 | LLM03 | Б6 | не заполнено | AML.T0018.003 (Manipulate AI Model: Modify Prompt Construction Logic), AML.T0011.000 (User Execution: Unsafe AI Artifacts) |
+| Сверка хешей файлов весов и адаптеров с реестром (`aisec-cli models verify`), запрет модели и исключение из пакета шлюзов | сервер (отчёт сканера), шлюз | DM-29 | LLM03, LLM04 | Б4 | не заполнено | AML.T0018.000 (Manipulate AI Model: Poison AI Model), AML.T0010.003 (Supply Chain Compromise: Model Repository) |
+| `models.hash_mismatch` | правило оповещения | DM-29 | LLM03, LLM04 | Б4 | не заполнено | AML.T0018.000, AML.T0010.003 |
+| `models.scan_blocked` | правило оповещения | DM-27, DM-28 | LLM03 | О; Б6 | не заполнено | AML.T0011.000, AML.T0018.003 |
