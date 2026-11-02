@@ -1,0 +1,55 @@
+{
+  "comment": "Модели и данные кандидатов OCR для эксперимента 5.40 (ADR-0033). Только инструмент разработки: в поставку не входят. Файл берётся, только если SHA-256 совпал. Источники по порядку: официальный, затем зеркало на GitHub (в облачной среде официальные хранилища моделей закрыты сетевой политикой). Хеши моделей PaddleOCR — из default_models.yaml колеса rapidocr 3.10.0.",
+  "files": [
+    {
+      "name": "PP-OCRv6_det_small.onnx",
+      "sha256": "090f04abcd9d9a7498bc4ebf677e4cb9bdce1fe4197ddb7e529f1ef44e1ff94f",
+      "license": "Apache-2.0",
+      "wheel": {
+        "url": "https://files.pythonhosted.org/packages/59/07/203065283bba0c5e9c10af3602dc25ab3e59ee54dc2d1d22c8faeabf5ed8/rapidocr-3.10.0-py3-none-any.whl",
+        "sha256": "2fc34e26cd0f48514804a94f8832283039c7334076bff60768b1fed9ad068050",
+        "member": "rapidocr/models/PP-OCRv6_det_small.onnx"
+      }
+    },
+    {
+      "name": "PP-OCRv6_rec_small.onnx",
+      "sha256": "6f327246b50388f3c176ae304bd95767ea6dc0c9ae92153ef8cbe210b3c14884",
+      "license": "Apache-2.0",
+      "wheel": {
+        "url": "https://files.pythonhosted.org/packages/59/07/203065283bba0c5e9c10af3602dc25ab3e59ee54dc2d1d22c8faeabf5ed8/rapidocr-3.10.0-py3-none-any.whl",
+        "sha256": "2fc34e26cd0f48514804a94f8832283039c7334076bff60768b1fed9ad068050",
+        "member": "rapidocr/models/PP-OCRv6_rec_small.onnx"
+      }
+    },
+    {
+      "name": "eslav_PP-OCRv5_rec_mobile.onnx",
+      "sha256": "08705d6721849b1347d26187f15a5e362c431963a2a62bfff4feac578c489aab",
+      "license": "Apache-2.0",
+      "urls": [
+        "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.10.0/onnx/PP-OCRv5/rec/eslav_PP-OCRv5_rec_mobile.onnx",
+        "https://media.githubusercontent.com/media/MikeBelousov/MDify/8a89eeca/workers/ocr/models/rec/eslav_PP-OCRv5_rec_mobile.onnx"
+      ]
+    },
+    {
+      "name": "cyrillic_PP-OCRv5_rec_mobile.onnx",
+      "sha256": "90f761b4bfcce0c8c561c0cb5c887b0971d3ec01c32164bdf7374a35b0982711",
+      "license": "Apache-2.0",
+      "urls": [
+        "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.10.0/onnx/PP-OCRv5/rec/cyrillic_PP-OCRv5_rec_mobile.onnx",
+        "https://media.githubusercontent.com/media/Vicomtech/dardcollect/HEAD/dardcollect/models/cyrillic_PP-OCRv5_rec_mobile.onnx"
+      ]
+    },
+    {
+      "name": "tessdata_best/rus.traineddata",
+      "sha256": "b617eb6830ffabaaa795dd87ea7fd251adfe9cf0efe05eb9a2e8128b7728d6b6",
+      "license": "Apache-2.0",
+      "urls": ["https://raw.githubusercontent.com/tesseract-ocr/tessdata_best/e12c65a/rus.traineddata"]
+    },
+    {
+      "name": "tessdata_best/eng.traineddata",
+      "sha256": "8280aed0782fe27257a68ea10fe7ef324ca0f8d85bd2fd145d1c2b560bcb66ba",
+      "license": "Apache-2.0",
+      "urls": ["https://raw.githubusercontent.com/tesseract-ocr/tessdata_best/e12c65a/eng.traineddata"]
+    }
+  ]
+}
