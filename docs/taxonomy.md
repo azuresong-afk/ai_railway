@@ -101,3 +101,5 @@
 | Проверка | Вид | Строки | OWASP | Рабочая группа | БДУ | MITRE ATLAS |
 |---|---|---|---|---|---|---|
 | Сканер файлов моделей (`internal/modelscan`, `aisec-cli models scan`): находка `pickle` — запрет; safetensors, GGUF, ONNX, `tokenizer_config.json` — разбор с пределами | сканер на узле с моделями | DM-27 | LLM03 | О | не заполнено | AML.T0010.003 (AI Supply Chain Compromise: Model), AML.T0011.000 (User Execution: Unsafe AI Artifacts) |
+| Манифест коллекции RAG (`internal/rag`, `PUT /api/v1/rag/collections/{slug}/manifest`): сравнение версии с предыдущей по ID, SHA-256 и размеру документов; исключение документа администратором | сервер управления | DM-30 | LLM04, LLM08 | Б4 | не заполнено | AML.T0070 (RAG Poisoning), AML.T0059 (Erode Dataset Integrity) |
+| `rag.document_changed` | правило оповещения | DM-30 | LLM04, LLM08 | Б4 | не заполнено | AML.T0070 |
