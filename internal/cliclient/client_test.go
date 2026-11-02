@@ -71,6 +71,11 @@ func startServer(t *testing.T, h http.Handler) testServer {
 
 func write(t *testing.T, path string, data []byte, perm os.FileMode) {
 	t.Helper()
+	// Файл с правами 0400 не перезаписать без root (CI идёт не от root):
+	// прежний файл удаляется.
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(path, data, perm); err != nil {
 		t.Fatal(err)
 	}
