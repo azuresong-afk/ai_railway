@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"hash/maphash"
-	"io/fs"
 	"log/slog"
 	"net"
 	"os"
@@ -409,37 +408,9 @@ func (c *MLClient) hello(ctx context.Context, conn net.Conn) (_ *mlConn, err err
 	return mc, nil
 }
 
-// checkMLSocket — путь ведёт к сокету (не к ссылке), у остальных нет прав на
-// сокет, каталог сокета — каталог, недоступный остальным на запись, а
-// владелец сокета — владелец каталога (ADR-0024, раздел 2; 4Н27 ревью
-// 4.r3). Иначе сокет мог бы подменить процесс другого пользователя, и
-// шлюз отправлял бы ему тексты запросов. Подмена процессом с UID владельца
-// каталога — принятый риск до этапа 5 (ADR-0024, дополнение 30.10.2026).
-func checkMLSocket(path string) error {
-	dir, err := os.Lstat(filepath.Dir(path))
-	if err != nil {
-		return err
-	}
-	if !dir.IsDir() || dir.Mode().Perm()&0o022 != 0 {
-		return errors.New("каталог сокета aisec-ml — не каталог или доступен на запись группе или остальным")
-	}
-	info, err := os.Lstat(path)
-	if err != nil {
-		return err
-	}
-	if info.Mode().Type() != fs.ModeSocket {
-		return errors.New("на месте сокета aisec-ml не сокет")
-	}
-	if info.Mode().Perm()&0o007 != 0 {
-		return fmt.Errorf("права сокета aisec-ml %#o: у остальных не должно быть доступа", info.Mode().Perm())
-	}
-	if du, ok := fileOwner(dir); ok {
-		if su, ok := fileOwner(info); ok && su != du {
-			return fmt.Errorf("владелец сокета aisec-ml (UID %d) — не владелец каталога сокета (UID %d)", su, du)
-		}
-	}
-	return nil
-}
+// checkMLSocket — проверка сокета aisec-ml перед подключением (ADR-0024,
+// раздел 2; 4Н27 ревью 4.r3): checkPeerSocket.
+func checkMLSocket(path string) error { return checkPeerSocket(path, "aisec-ml") }
 
 func (c *MLClient) put(mc *mlConn) {
 	c.mu.Lock()
