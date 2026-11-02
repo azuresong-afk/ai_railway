@@ -190,7 +190,11 @@ func newGateway(t testing.TB, upstream string, mod func(*gwOpts)) http.Handler {
 	if err != nil {
 		t.Fatal(err)
 	}
-	g := mustNew(t, Options{Logger: o.logger, Chat: ch, Embeddings: eh, Check: kh, Router: rt, Auth: ta.cfg})
+	bh, err := NewCheckBatchHandler(hcfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := mustNew(t, Options{Logger: o.logger, Chat: ch, Embeddings: eh, Check: kh, CheckBatch: bh, Router: rt, Auth: ta.cfg})
 	if o.noKey {
 		return g
 	}
