@@ -172,6 +172,12 @@ const (
 	// Снятие запрета модели (5.22) — ослабление защиты (DM-40): только
 	// администратор безопасности, с повторной проверкой паролем или кодом.
 	PermInventoryUnblock = "inventory.unblock"
+	// Манифест коллекций RAG (задача 5.24, ADR-0029, п. 6): чтение
+	// коллекций, манифестов и исключений; загрузка манифеста (токену
+	// индексатора) и исключение документов. Не функция безопасности:
+	// снятие исключения — только из консоли (SessionOnly).
+	PermRAGRead   = "rag.read"
+	PermRAGManage = "rag.manage"
 )
 
 // Permission — разрешение из каталога.
@@ -282,6 +288,8 @@ var permissionCatalog = []Permission{
 	{Name: PermModelsReport, Title: "Отправка отчёта сканера моделей и чтение эталонных хешей файлов модели (aisec-cli models scan и verify)", Group: "Реестр ИИ"},
 	{Name: PermModelsTemplatesLoad, Title: "Загрузка подписанной базы эталонов шаблонов чата и возврат её предыдущей версии", Group: "Реестр ИИ"},
 	{Name: PermInventoryUnblock, Title: "Снятие запрета использования модели, выставленного по отчёту сканера", Group: "Реестр ИИ", Security: true},
+	{Name: PermRAGRead, Title: "Просмотр коллекций RAG: версии манифеста, документы с хешами, изменения и исключения", Group: "Реестр ИИ"},
+	{Name: PermRAGManage, Title: "Загрузка манифеста коллекции RAG (индексатор), исключение документов и снятие исключений (из консоли)", Group: "Реестр ИИ"},
 }
 
 // auditorExtra — разрешения аудитора сверх чтения: они ничего не меняют,
@@ -473,13 +481,14 @@ var builtinRoles = []RoleDef{
 			PermAgentsRead: ScopeAll, PermAgentsManage: ScopeAll, PermShadowAIRead: ScopeAll, PermShadowAIManage: ScopeAll,
 			PermLicenseRead: ScopeAll, PermLicenseManage: ScopeAll,
 			PermComplianceRead: ScopeAll, PermComplianceBaseLoad: ScopeAll, PermInventoryRead: ScopeAll, PermInventoryManage: ScopeAll,
-			PermInventoryExport: ScopeAll, PermModelsReport: ScopeAll, PermModelsTemplatesLoad: ScopeAll}},
+			PermInventoryExport: ScopeAll, PermModelsReport: ScopeAll, PermModelsTemplatesLoad: ScopeAll, PermRAGRead: ScopeAll,
+			PermRAGManage: ScopeAll}},
 	{ID: RoleAnalyst, DisplayName: "Аналитик", Builtin: true,
 		Description: "Разбор оповещений и инцидентов, поиск по событиям",
 		Grants: grantAll(PermSystemRead, PermEventsRead, PermEventsExport, PermEventsMark, PermApplicationsRead, PermProvidersRead,
 			PermPoliciesRead, PermPoliciesTest, PermAlertsRead, PermAlertsManage, PermAlertRulesRead, PermModelPricesRead, PermBudgetsRead,
 			PermDashboardsRead, PermIncidentsRead, PermIncidentsManage, PermIncidentsExport, PermReportsRead, PermAgentsRead,
-			PermApprovalsRead, PermApprovalsDecide, PermShadowAIRead, PermInventoryRead)},
+			PermApprovalsRead, PermApprovalsDecide, PermShadowAIRead, PermInventoryRead, PermRAGRead)},
 	{ID: RoleAuditor, DisplayName: "Аудитор", Builtin: true,
 		Description: "Только просмотр: журнал аудита, отчёты, состояние соответствия. Ничего не меняет",
 		Grants:      auditorPermissions()},

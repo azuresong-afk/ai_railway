@@ -45,6 +45,19 @@ type Snapshot struct {
 	Providers []Provider
 	Models    []Model
 	Usage     []Usage
+	// RAG — коллекции RAG (задача 5.24): текущие версии манифестов.
+	RAG []RAGCollection
+}
+
+// RAGCollection — коллекция RAG в AI-BOM: ID, номер текущей версии
+// манифеста, число документов, суммарный размер и время загрузки. Реестр
+// читает таблицу манифестов (миграция 0071), документы в AI-BOM не входят.
+type RAGCollection struct {
+	Slug      string
+	Version   int
+	Documents int
+	Size      int64
+	LoadedAt  time.Time
 }
 
 // ExportAIBOM строит AI-BOM; version — версия выпуска сервера. Запись
@@ -146,6 +159,20 @@ func BuildAIBOM(snap Snapshot, version string, ts time.Time) *cyclonedx.BOM {
 		bom.Components = append(bom.Components, c)
 	}
 
+	// Коллекции RAG — компоненты data, от них зависит установка: документы
+	// индексатора заказчика проверяет продукт (DM-07, DM-30).
+	cols := slices.Clone(snap.RAG)
+	slices.SortFunc(cols, func(a, b RAGCollection) int { return strings.Compare(a.Slug, b.Slug) })
+	var ragRefs []string
+	for _, c := range cols {
+		ref := ragRef(c.Slug)
+		ragRefs = append(ragRefs, ref)
+		bom.Components = append(bom.Components, cyclonedx.Component{Type: "data", BOMRef: ref, Name: c.Slug,
+			Version: strconv.Itoa(c.Version), Description: "коллекция RAG",
+			Properties: []cyclonedx.Property{prop("aisec:kind", "rag_collection"), prop("aisec:documents", strconv.Itoa(c.Documents)),
+				prop("aisec:size", strconv.FormatInt(c.Size, 10)), prop("aisec:loaded_at", c.LoadedAt.UTC().Format(time.RFC3339))}})
+	}
+
 	apps := slices.Clone(snap.Apps)
 	slices.SortFunc(apps, func(a, b App) int { return strings.Compare(a.Slug, b.Slug) })
 	uses := map[string][][2]string{}
@@ -185,6 +212,7 @@ func BuildAIBOM(snap Snapshot, version string, ts time.Time) *cyclonedx.BOM {
 		slices.Sort(deps)
 		appDeps = append(appDeps, cyclonedx.Dependency{Ref: ref, DependsOn: deps})
 	}
+	product.DependsOn = append(product.DependsOn, ragRefs...)
 	bom.Dependencies = append(bom.Dependencies, product)
 	bom.Dependencies = append(bom.Dependencies, appDeps...)
 	bom.Dependencies = append(bom.Dependencies, modelDeps...)
@@ -194,6 +222,7 @@ func BuildAIBOM(snap Snapshot, version string, ts time.Time) *cyclonedx.BOM {
 func appRef(slug string) string      { return "app:" + slug }
 func modelRef(id string) string      { return "model:" + id }
 func providerRef(slug string) string { return "provider:" + slug }
+func ragRef(slug string) string      { return "rag:" + slug }
 
 func firstNonEmpty(a, b string) string {
 	if a != "" {

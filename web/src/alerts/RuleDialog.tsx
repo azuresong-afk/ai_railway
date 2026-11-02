@@ -14,11 +14,13 @@ const groupTitle = new Map<string, string>(Object.entries({
   gateway: "Шлюз", action: "Действие", rule: "Правило обнаружения", severity: "Серьёзность", policy_mode: "Режим политики",
 }));
 const newFields: [string, string][] = [["model", "Новая модель"], ["provider", "Новый провайдер"], ["user", "Новый пользователь"], ["app", "Новое приложение"]];
-// Поля tool и shadow_ai_service — только у встроенных правил «Новый инструмент агента» и «Новый ИИ-сервис в журналах прокси»:
+// Поля tool, shadow_ai_service и rag_collection — только у встроенных правил «Новый инструмент агента», «Новый ИИ-сервис в журналах прокси»
+// и «Изменились документы коллекции RAG»:
 // создать такое правило или сменить поле нельзя (сервер ответит 400).
 const serverFields = new Map<string, string>([
   ["tool", "Новый инструмент агента"],
   ["shadow_ai_service", "Новый ИИ-сервис (теневой ИИ)"],
+  ["rag_collection", "Изменились документы коллекции RAG"],
 ]);
 type GroupBy = NonNullable<AlertRuleInput["group_by"]>;
 const editable = new Set(["threshold", "new"]);

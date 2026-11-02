@@ -125,6 +125,58 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/guard/v1/check/batch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Проверка документов RAG до индексации (пакет Check API)
+         * @description Индексатор заказчика проверяет тексты документов коллекции до индексации (ТЗ 5.12, 5.16 DM-07 «RAG — 5»; ADR-0029, п. 5): до 100 документов за вызов, каждый текст — до предела тела запроса шлюза, всё тело — до большего из предела тела запроса и 8 МиБ. Каждый текст проверяется конвейером как Check API с `source: rag` и получает своё событие check (содержимое — только по режиму хранения приложения); ID событий — в `results[].event_id`, заголовка `X-AISec-Event-Id` нет. Решение по документу: `allow` — индексировать (если политика изменила текст, например замаскировала ПДн, — индексировать `text`), `exclude` — не индексировать: `reason: policy` — политика заблокировала бы текст (например, косвенная инъекция), `reason: check_unavailable` — текст не удалось проверить при `fail_closed` (повторите позже). В режиме monitor документы не исключаются, `action` показывает решение как в enforce. Квоты приложения: пакет — один запрос для частоты, предел размера входа — к каждому тексту; отказ квоты — 429 на весь пакет. Модель не вызывается. Ответ на ошибку разбора не содержит значений из запроса.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["CheckBatchRequest"];
+                };
+            };
+            responses: {
+                /** @description Решения по документам в порядке запроса */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["CheckBatchResponse"];
+                    };
+                };
+                400: components["responses"]["InvalidRequest"];
+                401: components["responses"]["Unauthorized"];
+                403: components["responses"]["AppNotConfigured"];
+                408: components["responses"]["InvalidRequest"];
+                413: components["responses"]["InvalidRequest"];
+                415: components["responses"]["InvalidRequest"];
+                429: components["responses"]["QuotaExceeded"];
+                500: components["responses"]["InternalError"];
+                503: components["responses"]["CheckUnavailable"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/healthz": {
         parameters: {
             query?: never;
@@ -10471,6 +10523,7 @@ export interface paths {
                 401: components["responses"]["ProblemUnauthorized"];
                 403: components["responses"]["ProblemForbidden"];
                 404: components["responses"]["ProblemNotFound"];
+                409: components["responses"]["ProblemConflict"];
                 429: components["responses"]["RateLimited"];
                 500: components["responses"]["ProblemInternal"];
                 503: components["responses"]["Unavailable"];
@@ -10510,7 +10563,6 @@ export interface paths {
                 401: components["responses"]["ProblemUnauthorized"];
                 403: components["responses"]["ProblemForbidden"];
                 404: components["responses"]["ProblemNotFound"];
-                409: components["responses"]["ProblemConflict"];
                 429: components["responses"]["RateLimited"];
                 500: components["responses"]["ProblemInternal"];
                 503: components["responses"]["Unavailable"];
@@ -10678,6 +10730,335 @@ export interface paths {
         put?: never;
         post?: never;
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/rag/collections": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Коллекции RAG
+         * @description Право `rag.read` (администраторы, аналитик, аудитор). Коллекции с текущей версией манифеста, числом
+         *     документов, разницей с предыдущей версией и числом исключений, а также пределы манифеста (ADR-0029, п. 5).
+         *     Содержимого документов у сервера нет: только ID, SHA-256 и размер, которые прислал индексатор.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Коллекции по ID */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["RAGCollectionList"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/rag/collections/{slug}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Карточка коллекции RAG
+         * @description Право `rag.read`. Текущая версия манифеста, разница с предыдущей (число новых, изменённых и пропавших
+         *     документов и до 100 ID каждого вида) и исключения документов администратором.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description ID коллекции RAG */
+                    slug: components["parameters"]["RAGCollectionSlug"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Карточка коллекции */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["RAGCollectionCard"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/rag/collections/{slug}/manifest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Документы текущей версии манифеста
+         * @description Право `rag.read`. Документы текущей версии по возрастанию ID (сравнение байтов), страницами до 1000:
+         *     следующая страница — с `after` из `next_after`. `excluded` — отметка индексатора (проверка до индексации
+         *     вернула «исключить»), `blocked` — документ исключён администратором: индексатор его не индексирует.
+         *     Между запросами страниц индексатор может загрузить новую версию — сверяйте `version` страниц.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description ID документа, после которого начинается страница */
+                    after?: string;
+                    limit?: number;
+                };
+                header?: never;
+                path: {
+                    /** @description ID коллекции RAG */
+                    slug: components["parameters"]["RAGCollectionSlug"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Страница документов */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["RAGDocumentPage"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        /**
+         * Загрузить манифест коллекции
+         * @description Право `rag.manage` (доступно токену API — манифест отправляет индексатор). Новая версия манифеста — полный
+         *     список документов коллекции `{id, sha256, size, excluded?}` (DM-30, ADR-0029, п. 5): до 100 000 документов,
+         *     тело до 16 МиБ, строгий JSON; ID документа — 1–512 байт UTF-8 без управляющих символов и символов
+         *     форматирования, без пробелов в начале и в конце, без повторов; `sha256` — 64 шестнадцатеричных символа в
+         *     нижнем регистре — хеш текста, который индексатор индексирует; `size` — от 0 до 2^50. Коллекция создаётся
+         *     первой загрузкой (201; не больше 100 коллекций — иначе 422). Сервер хранит текущую и предыдущую версии и
+         *     разницу между ними (документ изменён, если отличаются хеш или размер; `excluded` изменением не считается).
+         *     Пишет `rag.manifest_loaded`; если в новой версии есть документы вне прошлой версии, изменённые или
+         *     пропавшие — ещё `rag.document_changed` (число и до 20 ID документов, без хешей и содержимого), по которой
+         *     встроенное правило `rag.document_changed` поднимает оповещение. В ответе — `blocked`: ID документов
+         *     манифеста, исключённых администратором.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID коллекции RAG */
+                    slug: components["parameters"]["RAGCollectionSlug"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["RAGManifest"];
+                };
+            };
+            responses: {
+                /** @description Новая версия загружена */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["RAGManifestResult"];
+                    };
+                };
+                /** @description Коллекция создана, загружена первая версия */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["RAGManifestResult"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/rag/collections/{slug}/exclusions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Исключить документ из индекса
+         * @description Право `rag.manage`. Администратор исключает документ коллекции по ID (документа может ещё не быть в
+         *     манифесте); индексатор получает исключённые документы в ответе на загрузку манифеста (`blocked`) и в
+         *     страницах документов. Причина — до 500 символов. Не больше 1000 исключений в коллекции (422); повтор — 409.
+         *     Пишет `rag.document_excluded`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID коллекции RAG */
+                    slug: components["parameters"]["RAGCollectionSlug"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["NewRAGExclusion"];
+                };
+            };
+            responses: {
+                /** @description Документ исключён */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["RAGExclusion"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/rag/collections/{slug}/exclusions/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Снять исключение документа
+         * @description Право `rag.manage`, только сессия консоли: снятие исключения — ослабление защиты (документ снова попадёт
+         *     в индекс), токен API получает 403 с записью `access.denied`. Пишет `rag.exclusion_removed` с признаком
+         *     ослабления (DM-40).
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID коллекции RAG */
+                    slug: components["parameters"]["RAGCollectionSlug"];
+                    /** @description ID исключения документа */
+                    id: components["parameters"]["RAGExclusionID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Исключение снято */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
         options?: never;
         head?: never;
         patch?: never;
@@ -11568,6 +11949,157 @@ export interface components {
                 /** @description Пропущено в последнем запуске из-за пределов */
                 skipped: number;
             };
+        };
+        /** @description Разница версии манифеста с предыдущей; у первой версии — нули */
+        RAGDiff: {
+            added: number;
+            changed: number;
+            removed: number;
+            /** @description До 100 ID по возрастанию */
+            added_ids: string[];
+            changed_ids: string[];
+            removed_ids: string[];
+        };
+        RAGCollection: {
+            slug: string;
+            /** @description Номер текущей версии манифеста */
+            version: number;
+            documents: number;
+            /**
+             * Format: int64
+             * @description Сумма размеров документов
+             */
+            size: number;
+            /** @description Документов */
+            excluded: number;
+            /** @description Исключений администратора */
+            exclusions: number;
+            /** Format: date-time */
+            loaded_at: string;
+            /** @description Субъект загрузки (тип и ID) */
+            loaded_by: string;
+            /**
+             * Format: date-time
+             * @description Время предыдущей версии
+             */
+            prev_loaded_at?: string;
+            diff: components["schemas"]["RAGDiff"];
+            /** Format: date-time */
+            created_at: string;
+        };
+        RAGExclusion: {
+            /** Format: uuid */
+            id: string;
+            document_id: string;
+            reason: string;
+            /** Format: date-time */
+            created_at: string;
+            created_by: string;
+        };
+        RAGCollectionCard: components["schemas"]["RAGCollection"] & {
+            exclusion_list: components["schemas"]["RAGExclusion"][];
+        };
+        RAGCollectionList: {
+            items: components["schemas"]["RAGCollection"][];
+            limits: {
+                collections: number;
+                documents: number;
+                body_bytes: number;
+                document_id_bytes: number;
+                exclusions: number;
+                diff_sample_ids: number;
+            };
+        };
+        RAGDocument: {
+            id: string;
+            sha256: string;
+            /** Format: int64 */
+            size: number;
+            /** @description Отметка индексатора — исключён проверкой до индексации */
+            excluded: boolean;
+            /** @description Исключён администратором */
+            blocked: boolean;
+        };
+        RAGDocumentPage: {
+            version: number;
+            items: components["schemas"]["RAGDocument"][];
+            /** @description ID для параметра after следующей страницы */
+            next_after?: string;
+        };
+        RAGManifest: {
+            documents: {
+                /** @description ID документа у индексатора (до 512 байт UTF-8) */
+                id: string;
+                /** @description SHA-256 текста */
+                sha256: string;
+                /** Format: int64 */
+                size: number;
+                /** @description Индексатор не индексирует документ — проверка до индексации вернула exclude */
+                excluded?: boolean;
+            }[];
+        };
+        RAGManifestResult: components["schemas"]["RAGCollection"] & {
+            created: boolean;
+            /** @description ID документов манифеста */
+            blocked: string[];
+        };
+        NewRAGExclusion: {
+            document_id: string;
+            reason?: string;
+        };
+        CheckBatchRequest: {
+            /** @enum {string} */
+            source: "rag";
+            /** @enum {string} */
+            stage: "pre_index";
+            /** @description Идентификатор пользователя или сервисной учётной записи индексатора (как у Check API). */
+            user?: string;
+            documents: {
+                /** @description ID документа у индексатора (правила ID манифеста коллекции: UTF-8 без управляющих символов и символов форматирования, без пробелов по краям), без повторов в пакете. */
+                id: string;
+                /** @description Текст документа или его части; не длиннее предела тела запроса шлюза (иначе 413 document_too_large). */
+                text: string;
+            }[];
+        };
+        CheckBatchResponse: {
+            /** @enum {string} */
+            stage: "pre_index";
+            /** @description У политики нет правил для входа: детекторы не запускались, allow не означает «проверено». */
+            unchecked?: boolean;
+            /** @description Число документов с decision=exclude. */
+            excluded: number;
+            results: {
+                id: string;
+                /** @description Идентификатор события check документа. */
+                event_id: string;
+                /** @enum {string} */
+                decision: "allow" | "exclude";
+                /** @description Решение политики как в режиме enforce (в monitor может отличаться от decision). */
+                action: string;
+                /**
+                 * @description Причина exclude.
+                 * @enum {string}
+                 */
+                reason?: "policy" | "check_unavailable";
+                /** @description Часть детекторов не дала результата. */
+                incomplete?: boolean;
+                /** @description ML-детектор политики не дал результата (ADR-0024). */
+                ml_unavailable?: boolean;
+                /** @description Находки детекторов политики, без найденных значений. */
+                findings: {
+                    detector: string;
+                    category: string;
+                    score: number;
+                    start: number;
+                    end: number;
+                    location: string;
+                    /** @description ID строки матрицы обнаружения (DM-NN). */
+                    threat?: string;
+                }[];
+                findings_truncated?: boolean;
+                /** @description Текст после действий политики, если она его изменила (индексировать нужно его); нет у exclude. */
+                text?: string;
+            }[];
         };
         InventoryFile: {
             /** @description Путь относительно каталога модели */
@@ -14147,10 +14679,10 @@ export interface components {
             filter?: string;
             min_severity?: components["schemas"]["AlertSeverity"];
             /**
-             * @description Поле правила «новое»; tool — только у встроенного agents.tool_new, shadow_ai_service — у shadow_ai.new_service
+             * @description Поле правила «новое»; tool — только у встроенного agents.tool_new, shadow_ai_service — у shadow_ai.new_service, rag_collection — у rag.document_changed
              * @enum {string}
              */
-            field?: "model" | "provider" | "user" | "app" | "tool" | "shadow_ai_service";
+            field?: "model" | "provider" | "user" | "app" | "tool" | "shadow_ai_service" | "rag_collection";
             /** @description Порог «частоты»: событий в окне по ключу группировки */
             count?: number;
             /** @description Окно «частоты» */
@@ -15649,6 +16181,10 @@ export interface components {
         };
     };
     parameters: {
+        /** @description ID коллекции RAG */
+        RAGCollectionSlug: string;
+        /** @description ID исключения документа */
+        RAGExclusionID: string;
         /** @description ID модели в реестре ИИ */
         InventoryModelID: string;
         /** @description ID провайдера */

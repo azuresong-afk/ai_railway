@@ -48,6 +48,7 @@ func Routes(d Deps) []Route {
 	routes = append(routes, shadowAIRoutes(d)...)
 	routes = append(routes, inventoryRoutes(d)...)
 	routes = append(routes, inventoryScanRoutes(d)...)
+	routes = append(routes, ragRoutes(d)...)
 	routes = append(routes, complianceRoutes(d)...)
 	routes = append(routes, serviceDBRoutes(d)...)
 	routes = append(routes, licenseRoutes(d)...)

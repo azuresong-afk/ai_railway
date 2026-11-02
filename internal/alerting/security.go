@@ -350,6 +350,10 @@ func classifyAudit(ctx context.Context, ops secOps, r *audit.Record) ([]Raise, e
 		if x, ok := shadowNewServiceRaise(r, details()); ok {
 			raises = append(raises, x)
 		}
+	case "rag.document_changed":
+		if x, ok := ragDocumentChangedRaise(r, details()); ok {
+			raises = append(raises, x)
+		}
 	case "shadow_ai.import":
 		if x, ok := shadowAliasProbeRaise(r, details()); ok {
 			raises = append(raises, x)

@@ -105,3 +105,6 @@
 | Сверка хешей файлов весов и адаптеров с реестром (`aisec-cli models verify`), запрет модели и исключение из пакета шлюзов | сервер (отчёт сканера), шлюз | DM-29 | LLM03, LLM04 | Б4 | не заполнено | AML.T0018.000 (Manipulate AI Model: Poison AI Model), AML.T0010.003 (Supply Chain Compromise: Model Repository) |
 | `models.hash_mismatch` | правило оповещения | DM-29 | LLM03, LLM04 | Б4 | не заполнено | AML.T0018.000, AML.T0010.003 |
 | `models.scan_blocked` | правило оповещения | DM-27, DM-28 | LLM03 | О; Б6 | не заполнено | AML.T0011.000, AML.T0018.003 |
+| Манифест коллекции RAG (`internal/rag`, `PUT /api/v1/rag/collections/{slug}/manifest`): сравнение версии с предыдущей по ID, SHA-256 и размеру документов; исключение документа администратором | сервер управления | DM-30 | LLM04, LLM08 | Б4 | не заполнено | AML.T0070 (RAG Poisoning), AML.T0059 (Erode Dataset Integrity) |
+| `rag.document_changed` | правило оповещения | DM-30 | LLM04, LLM08 | Б4 | не заполнено | AML.T0070 |
+| Проверка документов RAG до индексации (`POST /guard/v1/check/batch`, `stage: pre_index`): детекторы входа политики приложения с источником `rag`, решение `exclude` по документу | шлюз | DM-07 (RAG) | LLM01, LLM08 | Б1 | не заполнено | AML.T0051.001 (LLM Prompt Injection: Indirect), AML.T0070 (RAG Poisoning) |

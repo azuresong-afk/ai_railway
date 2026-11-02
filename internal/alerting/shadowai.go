@@ -51,8 +51,11 @@ func shadowAIRules() []Rule {
 
 // serverRaisedField — поле правила «новое», которое поднимает сервер по
 // записям аудита, а не события шлюза: tool (agents.tool_new) и
-// shadow_ai_service. Такие правила не создаются через API и не меняют поле.
-func serverRaisedField(f string) bool { return f == ToolField || f == ShadowServiceField }
+// shadow_ai_service, rag_collection (задача 5.24). Такие правила не
+// создаются через API и не меняют поле.
+func serverRaisedField(f string) bool {
+	return f == ToolField || f == ShadowServiceField || f == RAGCollectionField
+}
 
 // shadowNewServiceRaise — срабатывание по записи shadow_ai.new_service.
 // В подробностях — число пользователей и обращений, первый час, источник;
