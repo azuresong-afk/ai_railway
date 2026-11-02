@@ -103,6 +103,9 @@ type inspectText struct {
 	// фрагмент; -1 — не сообщение (описание инструмента, ответ модели,
 	// Check API). По нему session.risk отбирает находки нового хода.
 	Message int
+	// Box — рамка текста на изображении (источник image, задача 5.39): её
+	// получают находки фрагмента в событии.
+	Box *events.Box
 }
 
 // joinedDetector — детектор проверяет и склейку частей сообщения.
@@ -143,6 +146,10 @@ type inspectRequest struct {
 	Extra []locatedFinding
 	// Session — сессия запроса чата для session.risk; nil — без сессии.
 	Session *reqSession
+	// Failures — сбои проверки до детекторов (aisec-media в режиме sync,
+	// задача 5.39): участвуют в режиме при отказе наравне со сбоями
+	// детекторов.
+	Failures []events.DetectorFailure
 }
 
 // locatedFinding — находка и номер фрагмента, в котором она найдена.
@@ -267,7 +274,7 @@ func (a *App) inspect(ctx context.Context, req inspectRequest) (*inspection, err
 			}
 		}
 	}
-	in := &inspection{}
+	in := &inspection{Failures: slices.Clone(req.Failures)}
 	total, cancel := context.WithTimeout(ctx, MaxDetectorTimeout)
 	defer cancel()
 	joinedIDs := slices.DeleteFunc(slices.Clone(runIDs), func(id string) bool { return !joinedDetector(id) })
@@ -301,6 +308,9 @@ func (a *App) inspect(ctx context.Context, req inspectRequest) (*inspection, err
 		for _, f := range fs {
 			if t.Threat != "" {
 				f.Threat = t.Threat
+			}
+			if t.Source == policy.SourceImage {
+				f.Threat = imageThreat(f)
 			}
 			lf := locatedFinding{Finding: f, Text: i}
 			key := fmt.Sprint(f.Detector, "\x00", f.Category, "\x00", partSpans(req.Texts, lf))

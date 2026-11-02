@@ -12927,6 +12927,8 @@ export interface components {
                 /** @description Содержимое full обрезано сервером под предел хранения 256 КиБ (В10 ревью 2.r3a) */
                 content_truncated?: boolean;
                 agent?: components["schemas"]["EventAgent"];
+                /** @description Проверка изображений запроса (задача 5.39); находки в тексте изображений — с source: image и полем box. */
+                media?: components["schemas"]["MediaCheck"][];
             } & {
                 [key: string]: unknown;
             };
@@ -13127,7 +13129,7 @@ export interface components {
             detector: string;
             directions?: ("input" | "output")[];
             categories?: string[];
-            sources?: ("user" | "rag" | "tool" | "tool_args" | "output")[];
+            sources?: ("user" | "rag" | "tool" | "tool_args" | "output" | "image")[];
             threshold?: number;
             /** @enum {string} */
             action: "allow" | "log" | "redact" | "pseudonymize" | "block";
@@ -13150,6 +13152,13 @@ export interface components {
              * @enum {string}
              */
             response_check?: "buffered" | "incremental" | "monitor";
+            /**
+             * @description Проверка изображений запроса анализатором aisec-media (ADR-0032, раздел 8; задача 5.39). Пусто — off (только non_text). async — запрос уходит провайдеру сразу, находки попадают в событие после отправки; sync — запрос ждёт итога не дольше media_check_timeout_ms, недоступность анализатора — по режиму приложения при отказе.
+             * @enum {string}
+             */
+            media_check?: "off" | "async" | "sync";
+            /** @description Срок анализа в режиме sync; не задан — 2000 */
+            media_check_timeout_ms?: number;
             block_message?: string;
             rules: components["schemas"]["PolicyRule"][];
             /** @description Исключения (задача 3.22). При сохранении: поле не передано — исключения текущей версии сохраняются; пустой список — удаляются. Автора и created_at новых и изменённых ставит сервер */
@@ -13217,7 +13226,7 @@ export interface components {
             /** @description Псевдоним пользователя из события */
             user?: string;
             /** @enum {string} */
-            source?: "user" | "rag" | "tool" | "tool_args" | "output";
+            source?: "user" | "rag" | "tool" | "tool_args" | "output" | "image";
             reason: string;
             readonly author?: string;
             /** Format: date-time */
@@ -13253,7 +13262,7 @@ export interface components {
             app?: string;
             user?: string;
             /** @enum {string} */
-            source?: "user" | "rag" | "tool" | "tool_args" | "output";
+            source?: "user" | "rag" | "tool" | "tool_args" | "output" | "image";
             reason?: string;
             expires_in_days?: number;
             /** Format: date-time */
@@ -13426,7 +13435,7 @@ export interface components {
             to: number;
             fields: {
                 /** @enum {string} */
-                field: "name" | "mode" | "non_text" | "response_check" | "block_message";
+                field: "name" | "mode" | "non_text" | "response_check" | "media_check" | "media_check_timeout_ms" | "block_message";
                 before: string;
                 after: string;
             }[];
@@ -13443,7 +13452,7 @@ export interface components {
             weakening: boolean;
             weakening_reasons: {
                 /** @enum {string} */
-                kind: "mode_monitor" | "non_text_weakened" | "response_check_weakened" | "rule_removed" | "action_weakened" | "threshold_raised" | "scope_narrowed" | "detector_changed" | "exception_added" | "exception_extended" | "exception_changed" | "tools_unapproved_weakened" | "tool_rule_added" | "tool_action_weakened" | "tool_scope_widened" | "tool_scope_narrowed" | "tool_args_relaxed" | "tool_rate_raised" | "approval_timeout_raised" | "tool_rule_removed";
+                kind: "mode_monitor" | "non_text_weakened" | "response_check_weakened" | "media_check_weakened" | "rule_removed" | "action_weakened" | "threshold_raised" | "scope_narrowed" | "detector_changed" | "exception_added" | "exception_extended" | "exception_changed" | "tools_unapproved_weakened" | "tool_rule_added" | "tool_action_weakened" | "tool_scope_widened" | "tool_scope_narrowed" | "tool_args_relaxed" | "tool_rate_raised" | "approval_timeout_raised" | "tool_rule_removed";
                 rule?: string;
                 exception?: string;
                 /** @description ID правила раздела tools */
@@ -14861,7 +14870,7 @@ export interface components {
                 code: string;
             };
         };
-        /** @description Ровно одно из `text` и `messages`. */
+        /** @description Не больше одного из `text` и `messages`; без них нужен `images`. */
         CheckRequest: {
             /**
              * @description input — запрос к модели, документ RAG, ответ инструмента; output — ответ модели.
@@ -14869,7 +14878,7 @@ export interface components {
              */
             direction: "input" | "output";
             /**
-             * @description Для input — user, rag или tool; для output — output. Без указания: для input сообщения с ролью tool — tool, остальные — user; для output — output. Источники image и audio появятся с этапа 5.
+             * @description Для input — user, rag или tool; для output — output. Без указания: для input сообщения с ролью tool — tool, остальные — user; для output — output. Изображения передаются полем `images` (источник находок — image); audio пока не принимается (`unsupported`).
              * @enum {string}
              */
             source?: "user" | "rag" | "tool" | "output";
@@ -14880,8 +14889,51 @@ export interface components {
                 role: "system" | "developer" | "user" | "assistant" | "tool";
                 content: string;
             }[];
+            /** @description Изображения для проверки (ТЗ 5.17, задача 5.39), только при direction: input. Элемент — `data:<тип>;base64,<данные>` (данные не длиннее `quotas.max_media_bytes`, иначе 413 `media_too_large`) или ссылка `https://` до 2048 байт. Ссылку шлюз не загружает (ЗИ.2): изображение «не проверено», решает `non_text` политики. Изображения анализирует aisec-media по `media_check` политики; `async` в Check API выполняется как `sync`. */
+            images?: string[];
             /** @description Идентификатор пользователя, если приложение берёт его из поля (`user_from: field`). */
             user?: string;
+        };
+        /** @description Итог проверки одного изображения анализатором aisec-media (ADR-0032, раздел 8; задача 5.39). Без содержимого изображения и извлечённого текста. */
+        MediaCheck: {
+            /** @description messages[i].content[j] в чате, images[i] в Check API */
+            location: string;
+            /**
+             * @description media_check политики
+             * @enum {string}
+             */
+            mode: "off" | "async" | "sync";
+            /** @description Текст изображения извлечён и проверен детекторами; non_text к нему не применялся. */
+            checked: boolean;
+            /**
+             * @description Почему изображение не проверено; у проверенного нет.
+             * @enum {string}
+             */
+            reason?: "off" | "url" | "limit" | "too_large" | "too_many_pixels" | "too_many_frames" | "too_many_scans" | "malformed" | "unsupported" | "no_ocr" | "unavailable" | "overloaded" | "timeout" | "error";
+            /** @enum {string} */
+            format?: "png" | "jpeg" | "gif" | "webp" | "bmp" | "tiff";
+            /** Format: int64 */
+            width?: number;
+            /** Format: int64 */
+            height?: number;
+            /** Format: int64 */
+            frames?: number;
+            cached?: boolean;
+            /** @description Сколько фрагментов текста извлечено */
+            texts?: number;
+            /** Format: int64 */
+            latency_ms?: number;
+        };
+        /** @description Рамка находки на изображении в пикселях исходного растра (ТЗ 5.17, п. 5). */
+        ImageBox: {
+            /** Format: int64 */
+            x: number;
+            /** Format: int64 */
+            y: number;
+            /** Format: int64 */
+            w: number;
+            /** Format: int64 */
+            h: number;
         };
         CheckResponse: {
             /** @description Идентификатор события check */
@@ -14911,11 +14963,16 @@ export interface components {
                 /** @description Байтовое смещение в UTF-8 начала находки в исходном тексте фрагмента (из запроса, а не в преобразованном text или messages). */
                 start: number;
                 end: number;
-                /** @description text или messages[i].content */
+                /** @description text, messages[i].content или images[i] (start и end — в тексте, извлечённом из изображения) */
                 location: string;
                 /** @description ID строки матрицы обнаружения (DM-NN). */
                 threat?: string;
+                box?: components["schemas"]["ImageBox"];
             }[];
+            /** @description Итог проверки каждого изображения из `images`. */
+            media?: components["schemas"]["MediaCheck"][];
+            /** @description Есть непроверенные изображения (ссылка, отказ анализатора, нет OCR); как с ними поступить, решает non_text политики. */
+            media_unchecked?: boolean;
             /** @description Находок больше 1024 */
             findings_truncated?: boolean;
             /** @description Текст после действий политики; изменён только при decision=redact; в monitor маскирование входа применяется, если провайдер приложения внешний (ТЗ 5.3), остальные действия — нет. Не использовать без проверки blocked. Нет при блокировке. */
