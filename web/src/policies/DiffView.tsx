@@ -7,6 +7,8 @@ const fieldText: Record<PolicyDiff["fields"][number]["field"], string> = {
   mode: "Режим",
   non_text: "Нетекстовые данные",
   response_check: "Проверка ответа",
+  media_check: "Проверка изображений",
+  media_check_timeout_ms: "Срок проверки изображений, мс",
   block_message: "Сообщение при блокировке",
 };
 

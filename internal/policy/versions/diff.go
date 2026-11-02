@@ -3,6 +3,7 @@ package versions
 import (
 	"encoding/json"
 	"slices"
+	"strconv"
 
 	"github.com/azuresong-afk/ai_railway/internal/detect"
 	"github.com/azuresong-afk/ai_railway/internal/policy"
@@ -30,6 +31,7 @@ type RuleChange struct {
 const (
 	WeakModeMonitor     = "mode_monitor"            // enforce → monitor
 	WeakNonText         = "non_text_weakened"       // block → allow_*, allow_inline → allow_unchecked
+	WeakMediaCheck      = "media_check_weakened"    // sync → async → off, срок sync короче
 	WeakResponseCheck   = "response_check_weakened" // buffered → incremental → monitor
 	WeakRuleRemoved     = "rule_removed"            // удалено правило с block, redact или pseudonymize
 	WeakActionWeakened  = "action_weakened"         // действие ниже по таблице приоритетов
@@ -98,7 +100,16 @@ func (d Diff) Weakened() bool { return len(d.Weakening) > 0 }
 var (
 	responseRank = map[policy.ResponseCheck]int{"": 2, policy.ResponseMonitor: 1, policy.ResponseIncremental: 2, policy.ResponseBuffered: 3}
 	nonTextRank  = map[policy.NonText]int{"": 1, policy.NonTextAllowUnchecked: 1, policy.NonTextAllowInline: 2, policy.NonTextBlock: 3}
+	mediaRank    = map[policy.MediaCheck]int{"": 1, policy.MediaCheckOff: 1, policy.MediaCheckAsync: 2, policy.MediaCheckSync: 3}
 )
+
+// mediaTimeout — срок sync в миллисекундах с умолчанием.
+func mediaTimeout(s *policy.Spec) int {
+	if s.MediaTimeoutMS == 0 {
+		return int(policy.DefaultMediaTimeout.Milliseconds())
+	}
+	return s.MediaTimeoutMS
+}
 
 // Compare сравнивает спецификации a (раньше) и b (позже). ID и номер версии
 // не сравниваются.
@@ -113,6 +124,10 @@ func Compare(a, b *policy.Spec) Diff {
 	field("mode", string(a.Mode), string(b.Mode))
 	field("non_text", string(a.NonText), string(b.NonText))
 	field("response_check", string(a.ResponseCheck), string(b.ResponseCheck))
+	field("media_check", string(a.MediaCheck), string(b.MediaCheck))
+	if a.MediaTimeoutMS != b.MediaTimeoutMS {
+		field("media_check_timeout_ms", strconv.Itoa(a.MediaTimeoutMS), strconv.Itoa(b.MediaTimeoutMS))
+	}
 	field("block_message", a.BlockMessage, b.BlockMessage)
 	if a.Mode == policy.Enforce && b.Mode == policy.Monitor {
 		d.Weakening = append(d.Weakening, Weakening{Kind: WeakModeMonitor})
@@ -122,6 +137,12 @@ func Compare(a, b *policy.Spec) Diff {
 	}
 	if responseRank[b.ResponseCheck] < responseRank[a.ResponseCheck] {
 		d.Weakening = append(d.Weakening, Weakening{Kind: WeakResponseCheck})
+	}
+	// Более короткий срок sync — тоже ослабление: при перегрузке анализатора
+	// больше изображений остаются непроверенными.
+	if mediaRank[b.MediaCheck] < mediaRank[a.MediaCheck] ||
+		a.MediaCheck == policy.MediaCheckSync && b.MediaCheck == policy.MediaCheckSync && mediaTimeout(b) < mediaTimeout(a) {
+		d.Weakening = append(d.Weakening, Weakening{Kind: WeakMediaCheck})
 	}
 
 	after := make(map[string]policy.RuleSpec, len(b.Rules))

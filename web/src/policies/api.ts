@@ -88,6 +88,7 @@ export const policiesApi = {
 export const weakeningText: Record<NonNullable<PolicyDiff["weakening_reasons"][number]["kind"]>, string> = {
   mode_monitor: "политика переведена в режим мониторинга",
   non_text_weakened: "ослаблена проверка нетекстовых данных",
+  media_check_weakened: "ослаблена проверка изображений",
   response_check_weakened: "ослаблена проверка ответа модели",
   rule_removed: "правило удалено",
   action_weakened: "действие правила смягчено",

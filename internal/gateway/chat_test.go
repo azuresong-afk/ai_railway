@@ -118,6 +118,8 @@ type gwOpts struct {
 	jwt       aisecCrypto.JWTVerifier
 	// leases — аренда квот у сервера управления (задача 4.29 этапа 4).
 	leases *LeaseClient
+	// media — анализатор изображений (задача 5.39 этапа 5).
+	media MediaAnalyzer
 }
 
 // newGateway — шлюз с OpenAI-совместимым провайдером на upstream и одним
@@ -173,12 +175,13 @@ func newGateway(t testing.TB, upstream string, mod func(*gwOpts)) http.Handler {
 	}
 	ch, err := NewChatHandler(ChatConfig{Router: rt, MaxBodyBytes: o.maxBody, Logger: o.logger, BodyReadTimeout: o.bodyTimeout,
 		Events: o.events, IDs: ta.cfg.IDs, Quotas: lim, Budget: o.budget, UserMAC: o.userMAC, DetectorTimeout: o.detTimeout, Sessions: o.sessions,
-		Hasher: testHasher(t), Now: o.now})
+		Hasher: testHasher(t), Now: o.now, Media: o.media})
 	if err != nil {
 		t.Fatal(err)
 	}
 	hcfg := ChatConfig{Router: rt, MaxBodyBytes: o.maxBody, Logger: o.logger, BodyReadTimeout: o.bodyTimeout,
-		Events: o.events, IDs: ta.cfg.IDs, Quotas: ch.cfg.Quotas, Budget: o.budget, UserMAC: o.userMAC, DetectorTimeout: o.detTimeout, Sessions: o.sessions}
+		Events: o.events, IDs: ta.cfg.IDs, Quotas: ch.cfg.Quotas, Budget: o.budget, UserMAC: o.userMAC, DetectorTimeout: o.detTimeout, Sessions: o.sessions,
+		Media: o.media}
 	eh, err := NewEmbeddingsHandler(hcfg)
 	if err != nil {
 		t.Fatal(err)

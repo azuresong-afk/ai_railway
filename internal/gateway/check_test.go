@@ -318,6 +318,7 @@ func FuzzParseCheck(f *testing.F) {
 		`{"direction":"output","source":"output","messages":[{"role":"assistant","content":"x"}]}`,
 		`{"direction":"input","source":"rag","text":"x","user":"u"}`,
 		`{"direction":"input"}`, `{}`, `[]`, `null`, "{\"direction\":\"input\",\"text\":\"\xff\"}",
+		`{"direction":"input","images":["data:image/png;base64,iVBORw0KGgo="]}`,
 	} {
 		f.Add([]byte(s), 4)
 	}
@@ -329,7 +330,7 @@ func FuzzParseCheck(f *testing.F) {
 			}
 			return
 		}
-		if len(texts) == 0 || dir == "" {
+		if len(texts) == 0 && len(req.Images) == 0 || dir == "" {
 			t.Fatalf("пустой результат без ошибки: %+v", texts)
 		}
 		for _, x := range texts {

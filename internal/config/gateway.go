@@ -63,6 +63,10 @@ type Gateway struct {
 	// не больше срока детектора.
 	MLTimeout       time.Duration
 	MLTimePerWindow time.Duration
+	// MediaSocket — Unix-сокет анализатора изображений aisec-media (ADR-0032,
+	// задача 5.39); пусто — изображения не анализируются: «не проверено»,
+	// решает non_text политики.
+	MediaSocket string
 }
 
 // MaxBundlePubFiles — ключей проверки пакетов одновременно (как
@@ -119,6 +123,7 @@ func LoadGateway(args []string, getenv func(string) string, errOut io.Writer) (*
 	mlSocket := fs.String("ml-socket", "", "Unix-сокет aisec-ml для ML-детекторов, например /run/aisec-ml/aisec-ml.sock; пусто — без ML (AISEC_GATEWAY_ML_SOCKET)")
 	mlTimeout := fs.String("ml-timeout", DefaultMLTimeout.String(), "срок вызова aisec-ml на текст в одно окно модели (AISEC_GATEWAY_ML_TIMEOUT)")
 	mlPerWindow := fs.String("ml-timeout-per-window", DefaultMLTimePerWindow.String(), "добавка к сроку вызова aisec-ml за каждое следующее окно длинного текста (AISEC_GATEWAY_ML_TIMEOUT_PER_WINDOW)")
+	mediaSocket := fs.String("media-socket", "", "Unix-сокет aisec-media для проверки изображений, например /run/aisec-media/aisec-media.sock; пусто — без анализа изображений (AISEC_GATEWAY_MEDIA_SOCKET)")
 	if err := fs.Parse(args); err != nil {
 		return nil, err
 	}
@@ -132,7 +137,7 @@ func LoadGateway(args []string, getenv func(string) string, errOut io.Writer) (*
 		"manifest": manifest, "integrity-action": action, "integrity-interval": interval, "selftest-action": selftestAction,
 		"server": server, "server-ca": serverCA, "client-cert": clientCert, "client-key": clientKey,
 		"bundle-pub": bundlePub, "state-dir": stateDir, "user-hmac-key": userKey, "ml-socket": mlSocket,
-		"ml-timeout": mlTimeout, "ml-timeout-per-window": mlPerWindow,
+		"ml-timeout": mlTimeout, "ml-timeout-per-window": mlPerWindow, "media-socket": mediaSocket,
 	} {
 		if set[name] {
 			continue // флаг важнее окружения
@@ -145,7 +150,7 @@ func LoadGateway(args []string, getenv func(string) string, errOut io.Writer) (*
 	cfg := &Gateway{ConfigFile: *configFile, Listen: *listen, TLSCertFile: *cert, TLSKeyFile: *key,
 		Manifest: *manifest, IntegrityAction: *action, SelftestAction: *selftestAction,
 		ServerCAFile: *serverCA, ClientCertFile: *clientCert, ClientKeyFile: *clientKey,
-		StateDir: *stateDir, UserHMACKeyFile: *userKey, MLSocket: *mlSocket}
+		StateDir: *stateDir, UserHMACKeyFile: *userKey, MLSocket: *mlSocket, MediaSocket: *mediaSocket}
 	if *bundlePub != "" {
 		cfg.BundlePubFiles = strings.Split(*bundlePub, ",")
 	}
@@ -164,6 +169,9 @@ func LoadGateway(args []string, getenv func(string) string, errOut io.Writer) (*
 	// Предел sun_path — 108 байт; путь без «..», как у aisec-ml.
 	if cfg.MLSocket != "" && (!filepath.IsAbs(cfg.MLSocket) || filepath.Clean(cfg.MLSocket) != cfg.MLSocket || len(cfg.MLSocket) > 100) {
 		errs = append(errs, errors.New("ml-socket: абсолютный путь без «..» не длиннее 100 байт"))
+	}
+	if cfg.MediaSocket != "" && (!filepath.IsAbs(cfg.MediaSocket) || filepath.Clean(cfg.MediaSocket) != cfg.MediaSocket || len(cfg.MediaSocket) > 100) {
+		errs = append(errs, errors.New("media-socket: абсолютный путь без «..» не длиннее 100 байт"))
 	}
 	if cfg.MLTimeout, err = time.ParseDuration(*mlTimeout); err != nil || cfg.MLTimeout < 10*time.Millisecond || cfg.MLTimeout > 10*time.Second {
 		errs = append(errs, errors.New("ml-timeout: длительность от 10ms до 10s"))

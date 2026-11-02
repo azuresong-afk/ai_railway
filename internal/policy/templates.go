@@ -109,11 +109,15 @@ func TemplateIDs() []string {
 func IsTemplate(id string) bool { return slices.Contains(TemplateIDs(), id) }
 
 // Template возвращает копию шаблона: изменение копии шаблон не меняет.
+//
+// media_check (задача 5.39): при non_text: block — sync, иначе изображение
+// без итога анализа всегда блокировалось бы; при allow_unchecked — async,
+// чтобы анализ не задерживал запрос (ТЗ 5.17).
 func Template(id string) (*Spec, bool) {
 	var s *Spec
 	switch id {
 	case TemplateBase:
-		s = &Spec{Name: "Базовая защита", Mode: Monitor, NonText: NonTextAllowUnchecked, Rules: []RuleSpec{
+		s = &Spec{Name: "Базовая защита", Mode: Monitor, NonText: NonTextAllowUnchecked, MediaCheck: MediaCheckAsync, Rules: []RuleSpec{
 			{ID: "unicode-hidden", Detector: detUnicode, Directions: in, Categories: hidden, Action: Redact, Severity: Medium},
 			{ID: "unicode-homoglyph", Detector: detUnicode, Directions: in, Categories: []string{"unicode.homoglyph"}, Action: Log, Severity: Low},
 			{ID: "injection", Detector: detInjection, Directions: in, Action: Block, Severity: High},
@@ -127,7 +131,7 @@ func Template(id string) (*Spec, bool) {
 	case TemplatePIIStrict:
 		// Правила *-protect — защита данных, если приложение переведено в
 		// monitor: там block только журналируется (ТЗ, 5.3).
-		s = &Spec{Name: "ПДн — строго", Mode: Enforce, NonText: NonTextBlock, Rules: []RuleSpec{
+		s = &Spec{Name: "ПДн — строго", Mode: Enforce, NonText: NonTextBlock, MediaCheck: MediaCheckSync, Rules: []RuleSpec{
 			{ID: "unicode-hidden", Detector: detUnicode, Directions: in, Categories: hidden, Action: Block, Severity: High},
 			{ID: "unicode-hidden-protect", Detector: detUnicode, Directions: in, Categories: hidden, Action: Redact, Severity: High},
 			{ID: "unicode-homoglyph", Detector: detUnicode, Directions: in, Categories: []string{"unicode.homoglyph"}, Action: Log, Severity: Low},
@@ -143,7 +147,7 @@ func Template(id string) (*Spec, bool) {
 			{ID: "lists", Detector: detLists, Action: Log, Severity: Medium},
 		}}
 	case TemplateExternalPII:
-		s = &Spec{Name: "Внешний провайдер: ПДн не передавать", Mode: Enforce, NonText: NonTextBlock, Rules: []RuleSpec{
+		s = &Spec{Name: "Внешний провайдер: ПДн не передавать", Mode: Enforce, NonText: NonTextBlock, MediaCheck: MediaCheckSync, Rules: []RuleSpec{
 			{ID: "unicode-hidden", Detector: detUnicode, Directions: in, Categories: hidden, Action: Redact, Severity: Medium},
 			{ID: "unicode-homoglyph", Detector: detUnicode, Directions: in, Categories: []string{"unicode.homoglyph"}, Action: Log, Severity: Low},
 			{ID: "injection", Detector: detInjection, Directions: in, Action: Block, Severity: High},
@@ -157,7 +161,7 @@ func Template(id string) (*Spec, bool) {
 	case TemplateMonitorOnly:
 		// Только журнал: ПДн уходят внешнему провайдеру как есть. Для
 		// внешнего провайдера — «Базовая защита» в monitor.
-		s = &Spec{Name: "Только мониторинг", Mode: Monitor, NonText: NonTextAllowUnchecked}
+		s = &Spec{Name: "Только мониторинг", Mode: Monitor, NonText: NonTextAllowUnchecked, MediaCheck: MediaCheckAsync}
 		for _, det := range []string{detUnicode, detInjection, detPII, detSecrets, detCanary, detExfil, detLists} {
 			s.Rules = append(s.Rules, RuleSpec{ID: "log-" + slug(det), Detector: det, Action: Log, Severity: Info})
 		}
@@ -168,7 +172,7 @@ func Template(id string) (*Spec, bool) {
 		// среднего риска разрешены; лимиты — значения ADR-0023 (DM-23).
 		// Режим enforce: шаблон выбирают для защиты агента, а не наблюдения.
 		base, _ := Template(TemplateBase)
-		s = &Spec{Name: "Агент: базовая защита", Mode: Enforce, NonText: NonTextAllowUnchecked, Rules: base.Rules,
+		s = &Spec{Name: "Агент: базовая защита", Mode: Enforce, NonText: NonTextAllowUnchecked, MediaCheck: MediaCheckAsync, Rules: base.Rules,
 			Tools: &ToolsSpec{Unapproved: Block, Default: Block, ApprovalTimeout: Duration(DefaultApprovalTimeout),
 				Limits: ToolLimits{AgentPerMinute: 120, SessionCalls: 500, Repeat: 5, RepeatWindow: Duration(10 * time.Minute)},
 				Rules: []ToolRuleSpec{

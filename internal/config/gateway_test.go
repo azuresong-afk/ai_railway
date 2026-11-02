@@ -60,6 +60,23 @@ func TestLoadGatewayMLSocket(t *testing.T) {
 	}
 }
 
+// Сокет aisec-media (ADR-0032, задача 5.39): по умолчанию анализа изображений нет.
+func TestLoadGatewayMediaSocket(t *testing.T) {
+	cfg, err := LoadGateway(required, env(nil), io.Discard)
+	if err != nil || cfg.MediaSocket != "" {
+		t.Fatalf("по умолчанию: %+v %v", cfg, err)
+	}
+	cfg, err = LoadGateway(required, env(map[string]string{"AISEC_GATEWAY_MEDIA_SOCKET": "/run/aisec-media/aisec-media.sock"}), io.Discard)
+	if err != nil || cfg.MediaSocket != "/run/aisec-media/aisec-media.sock" {
+		t.Fatalf("из окружения: %+v %v", cfg, err)
+	}
+	for _, bad := range []string{"aisec-media.sock", "/run/../aisec-media.sock", "/run/" + strings.Repeat("a", 100)} {
+		if _, err := LoadGateway(append(append([]string{}, required...), "-media-socket", bad), env(nil), io.Discard); err == nil {
+			t.Errorf("%q: принято", bad)
+		}
+	}
+}
+
 // Сроки вызова aisec-ml (4В30): по умолчанию, из окружения, границы.
 func TestLoadGatewayMLTimeout(t *testing.T) {
 	cfg, err := LoadGateway(required, env(nil), io.Discard)

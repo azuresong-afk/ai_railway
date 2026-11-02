@@ -47,6 +47,11 @@ type Spec struct {
 	NonText NonText `yaml:"non_text,omitempty"`
 	// ResponseCheck — пусто означает incremental (решение Р7).
 	ResponseCheck ResponseCheck `yaml:"response_check,omitempty"`
+	// MediaCheck — проверка изображений aisec-media; пусто означает off
+	// (ADR-0032, раздел 8). MediaTimeoutMS — срок анализа в режиме sync,
+	// 0 — DefaultMediaTimeout.
+	MediaCheck     MediaCheck `yaml:"media_check,omitempty"`
+	MediaTimeoutMS int        `yaml:"media_check_timeout_ms,omitempty"`
 	// BlockMessage — сообщение о блокировке; пусто — DefaultBlockMessage.
 	BlockMessage string     `yaml:"block_message,omitempty"`
 	Rules        []RuleSpec `yaml:"rules"`
@@ -66,7 +71,8 @@ type RuleSpec struct {
 	Directions []detect.Direction `yaml:"directions,omitempty,flow"`
 	// Categories — только эти категории находок (pii.card); пусто — все.
 	Categories []string `yaml:"categories,omitempty,flow"`
-	// Sources — только эти источники текста (user, rag, tool, tool_args, output);
+	// Sources — только эти источники текста (user, rag, tool, tool_args,
+	// output, image);
 	// пусто — все.
 	Sources []detect.Source `yaml:"sources,omitempty,flow"`
 	// Threshold — минимальная оценка находки, (0, 1]; nil — DefaultThreshold.
@@ -84,9 +90,10 @@ var (
 	categoryRe = regexp.MustCompile(`^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$`)
 	directions = map[detect.Direction]bool{detect.Input: true, detect.Output: true}
 	sources    = map[detect.Source]bool{detect.SourceUser: true, detect.SourceRAG: true, detect.SourceTool: true,
-		detect.SourceToolArgs: true, detect.SourceOutput: true}
-	nonTexts   = map[NonText]bool{"": true, NonTextAllowUnchecked: true, NonTextAllowInline: true, NonTextBlock: true}
-	respChecks = map[ResponseCheck]bool{"": true, ResponseBuffered: true, ResponseIncremental: true, ResponseMonitor: true}
+		detect.SourceToolArgs: true, detect.SourceOutput: true, SourceImage: true}
+	nonTexts    = map[NonText]bool{"": true, NonTextAllowUnchecked: true, NonTextAllowInline: true, NonTextBlock: true}
+	respChecks  = map[ResponseCheck]bool{"": true, ResponseBuffered: true, ResponseIncremental: true, ResponseMonitor: true}
+	mediaChecks = map[MediaCheck]bool{"": true, MediaCheckOff: true, MediaCheckAsync: true, MediaCheckSync: true}
 )
 
 // Validate проверяет спецификацию без реестра детекторов. Ошибки — по всем
@@ -113,6 +120,12 @@ func (s *Spec) Validate() error {
 	}
 	if !respChecks[s.ResponseCheck] {
 		add("response_check — buffered, incremental или monitor")
+	}
+	if !mediaChecks[s.MediaCheck] {
+		add("media_check — off, async или sync")
+	}
+	if s.MediaTimeoutMS != 0 && (s.MediaTimeoutMS < MinMediaTimeoutMS || s.MediaTimeoutMS > MaxMediaTimeoutMS) {
+		add("media_check_timeout_ms — от %d до %d", MinMediaTimeoutMS, MaxMediaTimeoutMS)
 	}
 	if s.BlockMessage != "" && checkText(s.BlockMessage, MaxMessageLen) != nil {
 		add("block_message — до %d символов без управляющих символов", MaxMessageLen)
@@ -158,7 +171,7 @@ func (r *RuleSpec) validate() []error {
 		add("categories — до %d категорий вида pii.card без повторов", MaxCategories)
 	}
 	if !unique(r.Sources, func(s detect.Source) bool { return sources[s] }) {
-		add("sources — user, rag, tool, tool_args, output без повторов")
+		add("sources — user, rag, tool, tool_args, output, image без повторов")
 	}
 	// Отрицание сравнения отвергает и NaN (.nan в YAML).
 	if r.Threshold != nil && !(*r.Threshold > 0 && *r.Threshold <= 1) {

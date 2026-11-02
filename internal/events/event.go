@@ -49,10 +49,13 @@ type Finding struct {
 	// Exception — ID исключения, по которому находка пропущена: в решении
 	// она не участвовала.
 	Exception string `json:"exception,omitempty"`
-	// Source — источник текста находки: user, rag, tool, output. Черновик
-	// исключения берёт его в условие (3В24 ревью 3.r3, ТЗ 5.3); у событий
-	// прежних версий пусто.
+	// Source — источник текста находки: user, rag, tool, output, image.
+	// Черновик исключения берёт его в условие (3В24 ревью 3.r3, ТЗ 5.3); у
+	// событий прежних версий пусто.
 	Source string `json:"source,omitempty"`
+	// Box — рамка текста находки на изображении (только у источника image,
+	// задача 5.39); Location — место изображения в запросе.
+	Box *Box `json:"box,omitempty"`
 }
 
 var (
@@ -96,6 +99,10 @@ type Decision struct {
 	// QuotaDegraded — квоты или жёсткий бюджет проверены по автономной доле:
 	// режим leased, а сервер управления не выдавал аренду (ADR-0021, п. 5).
 	QuotaDegraded bool `json:"quota_degraded,omitempty"`
+	// MediaUnchecked — изображение запроса не проверено анализатором
+	// aisec-media (недоступен, перегружен, срок, отказ по пределам, OCR ещё
+	// нет): к нему применён non_text. Подробности — Event.Media.
+	MediaUnchecked bool `json:"media_unchecked,omitempty"`
 }
 
 // Причины сбоя детектора.
@@ -196,6 +203,8 @@ type Event struct {
 	Session *Session `json:"session,omitempty"`
 	// Agent — событие агента: вызов инструмента или метод MCP (задача 4.11).
 	Agent *Agent `json:"agent,omitempty"`
+	// Media — проверка изображений запроса aisec-media (задача 5.39).
+	Media []MediaCheck `json:"media,omitempty"`
 }
 
 var threatRe = regexp.MustCompile(`^DM-\d{2}$`)
@@ -304,10 +313,11 @@ func (e *Event) Validate() error {
 			errs = append(errs, fmt.Errorf("находка %s: exception — ID исключения", f.Detector))
 		}
 		switch f.Source {
-		case "", "user", "rag", "tool", "tool_args", "output":
+		case "", "user", "rag", "tool", "tool_args", "output", SourceImage:
 		default:
-			errs = append(errs, fmt.Errorf("находка %s: source — user, rag, tool, tool_args или output", f.Detector))
+			errs = append(errs, fmt.Errorf("находка %s: source — user, rag, tool, tool_args, output или image", f.Detector))
 		}
 	}
+	errs = append(errs, e.validateMedia()...)
 	return errors.Join(errs...)
 }
