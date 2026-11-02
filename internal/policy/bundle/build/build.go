@@ -35,6 +35,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/agents"
 	"github.com/azuresong-afk/ai_railway/internal/apps"
 	"github.com/azuresong-afk/ai_railway/internal/audit"
+	"github.com/azuresong-afk/ai_railway/internal/config"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/internal/gateway"
 	"github.com/azuresong-afk/ai_railway/internal/policy"
@@ -94,6 +95,10 @@ type Options struct {
 	// QuotaMode — режим квот установки (install_settings.quota_mode, задача
 	// 4.29); nil — local.
 	QuotaMode func(ctx context.Context) (string, error)
+	// BlockedModels — модели реестра ИИ, запрещённые по отчёту сканера
+	// (задача 5.22, раздел blocked_models); nil — запретов в пакете нет.
+	// Смена состояния модели растит счётчик изменений (миграция 0072).
+	BlockedModels func(ctx context.Context) ([]bundle.BlockedModel, error)
 }
 
 // UserTokenKeysRefresh — как часто пакет собирается заново, пока у
@@ -145,6 +150,8 @@ type Service struct {
 	idpKeys  func(ctx context.Context) (string, *aisecCrypto.JWKS, error)
 	// quotaMode — режим квот установки; nil — local.
 	quotaMode func(ctx context.Context) (string, error)
+	// blockedModels — запрещённые модели реестра ИИ (Options.BlockedModels).
+	blockedModels func(ctx context.Context) ([]bundle.BlockedModel, error)
 	// jwt — кодирование JWKS для пакета; nil — профиль без проверки JWT.
 	jwt aisecCrypto.JWTVerifier
 	// builds — число выборок данных для сборки (для тестов Н26).
@@ -204,7 +211,7 @@ func New(o Options) (*Service, error) {
 	s := &Service{apps: o.Apps, agents: o.Agents, policies: o.Policies, store: o.Store, audit: o.Audit, sealer: o.Sealer, hasher: h,
 		orgID: o.OrgID, clock: o.Clock, logger: o.Logger, reuse: o.Reuse, revision: o.Revision,
 		sem: make(chan struct{}, 1), checks: map[string]string{}, lastReport: map[string]time.Time{}, sealed: map[string]sealedBody{},
-		idpKeys: o.IdPKeys, quotaMode: o.QuotaMode}
+		idpKeys: o.IdPKeys, quotaMode: o.QuotaMode, blockedModels: o.BlockedModels}
 	// Профиль без проверки JWT (gost до этапа 6): ключей IdP в пакете нет.
 	if j, err := o.Provider.JWT(); err == nil {
 		s.jwt = j
@@ -552,6 +559,9 @@ func (s *Service) collect(ctx context.Context, now time.Time) (*bundle.Content, 
 			c.QuotaMode = bundle.QuotaLeased
 		}
 	}
+	if err := s.addBlockedModels(ctx, c); err != nil {
+		return nil, nil, nil, err
+	}
 	slices.SortFunc(c.Applications, func(a, b bundle.Application) int { return strings.Compare(a.ID, b.ID) })
 	slices.SortFunc(c.Providers, func(a, b bundle.Provider) int { return strings.Compare(a.ID, b.ID) })
 	slices.SortFunc(c.Policies, func(a, b bundle.Policy) int { return strings.Compare(a.ID, b.ID) })
@@ -570,6 +580,9 @@ func (s *Service) collect(ctx context.Context, now time.Time) (*bundle.Content, 
 	}
 	if c.QuotaMode != "" {
 		stats["quota_mode"] = c.QuotaMode
+	}
+	if len(c.BlockedModels) > 0 {
+		stats["blocked_models"] = len(c.BlockedModels)
 	}
 	if len(c.UserTokens) > 0 {
 		stats["user_tokens"], stats["user_token_keys"] = len(c.UserTokens), len(c.UserTokenKeys)
@@ -619,6 +632,38 @@ func (s *Service) addBudgets(ctx context.Context, c *bundle.Content, provs map[s
 	})
 	slices.SortFunc(b.Hard, func(x, y bundle.HardBudget) int { return strings.Compare(x.App, y.App) })
 	c.Budgets = b
+	return nil
+}
+
+// addBlockedModels — запрещённые модели провайдеров пакета (5.22). Модель
+// провайдера, которого в пакете нет, и имя, недопустимое для приложений,
+// не нужны шлюзу: приложения их и так не вызывают.
+func (s *Service) addBlockedModels(ctx context.Context, c *bundle.Content) error {
+	if s.blockedModels == nil {
+		return nil
+	}
+	list, err := s.blockedModels(ctx)
+	if err != nil {
+		return err
+	}
+	provs := map[string]bool{}
+	for _, p := range c.Providers {
+		provs[p.ID] = true
+	}
+	seen := map[bundle.BlockedModel]bool{}
+	for _, b := range list {
+		if !provs[b.Provider] || !config.ValidModel(b.Model) || seen[b] || len(c.BlockedModels) == bundle.MaxBlockedModels {
+			continue
+		}
+		seen[b] = true
+		c.BlockedModels = append(c.BlockedModels, b)
+	}
+	slices.SortFunc(c.BlockedModels, func(a, b bundle.BlockedModel) int {
+		if x := strings.Compare(a.Provider, b.Provider); x != 0 {
+			return x
+		}
+		return strings.Compare(a.Model, b.Model)
+	})
 	return nil
 }
 

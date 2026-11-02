@@ -17,7 +17,7 @@ func TestAllKindsUnique(t *testing.T) {
 		}
 		seen[k.Name] = true
 	}
-	if !seen["shadow_ai_catalog"] || !seen["compliance_requirements"] {
+	if !seen["shadow_ai_catalog"] || !seen["compliance_requirements"] || !seen["chat_template_baselines"] {
 		t.Fatalf("виды: %v", seen)
 	}
 }
@@ -32,6 +32,11 @@ func FuzzInspect(f *testing.F) {
 		f.Fatal(err)
 	}
 	f.Add(good)
+	tmpl, err := os.ReadFile("../../../testdata/inventory/chat-templates-test.aisecdb")
+	if err != nil {
+		f.Fatal(err)
+	}
+	f.Add(tmpl)
 	f.Add([]byte(`{"format":"aisec-service-db-v1","kind":"compliance_requirements","endorsement":{},"payload":"","signature":""}`))
 	f.Add([]byte("{}"))
 	p, err := aisecCrypto.New(aisecCrypto.ProfileStandard)

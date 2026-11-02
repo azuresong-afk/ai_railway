@@ -2,6 +2,7 @@ package inventory
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -357,8 +358,8 @@ func (s *PGStore) UpdateModel(ctx context.Context, orgID, id string, fn func(*Mo
 			return err
 		}
 		if _, err := tx.Exec(ctx, `UPDATE inventory_models SET kind = $3, version = $4, title = $5, description = $6, owner = $7,
-				updated_at = $8, updated_by = $9 WHERE org_id = $1 AND id = $2`,
-			orgID, id, m.Kind, m.Version, m.Title, m.Description, m.Owner, m.UpdatedAt, m.UpdatedBy); err != nil {
+				updated_at = $8, updated_by = $9, status = $10 WHERE org_id = $1 AND id = $2`,
+			orgID, id, m.Kind, m.Version, m.Title, m.Description, m.Owner, m.UpdatedAt, m.UpdatedBy, m.Status); err != nil {
 			return dbErr("модель", err)
 		}
 		if !sameFiles(oldFiles, m.Files) {
@@ -733,4 +734,120 @@ func (s *PGStore) Export(ctx context.Context, orgID string, fn func(Snapshot) (a
 		}
 		return s.record(ctx, tx, rec)
 	})
+}
+
+// AddReport — отчёт сканера: модель блокируется строкой, состояние, отчёт,
+// удаление старых отчётов и записи аудита — одной транзакцией.
+func (s *PGStore) AddReport(ctx context.Context, orgID, id string, fn func(*Model) (ScanReport, []audit.Entry, error)) (ScanReport, error) {
+	var out ScanReport
+	err := s.inTx(ctx, pgTimeout, func(ctx context.Context, tx pgx.Tx) error {
+		m, err := scanModel(tx.QueryRow(ctx, `SELECT `+modelCols+` FROM inventory_models m WHERE m.org_id = $1 AND m.id = $2 FOR UPDATE`, orgID, id))
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return dbErr("модель", err)
+		}
+		if err := s.loadFiles(ctx, tx, &m); err != nil {
+			return err
+		}
+		status := m.Status
+		r, recs, err := fn(&m)
+		if err != nil {
+			return err
+		}
+		if m.Status != status {
+			if _, err := tx.Exec(ctx, `UPDATE inventory_models SET status = $3, updated_at = $4, updated_by = $5 WHERE org_id = $1 AND id = $2`,
+				orgID, id, m.Status, m.UpdatedAt, m.UpdatedBy); err != nil {
+				return dbErr("модель", err)
+			}
+		}
+		body, err := marshalDetail(r.Detail)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO inventory_scan_reports (id, org_id, model_id, kind, host, scanner_version, received_at,
+				received_by, verdict, hashes, templates, files, findings, blocked, report)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+			r.ID, orgID, id, r.Kind, r.Host, r.ScannerVersion, r.ReceivedAt, r.ReceivedBy, r.Verdict, r.Hashes, r.Templates,
+			r.Files, r.Findings, r.Blocked, body); err != nil {
+			return dbErr("отчёт сканера", err)
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM inventory_scan_reports WHERE model_id = $1 AND id NOT IN (
+				SELECT id FROM inventory_scan_reports WHERE model_id = $1 ORDER BY received_at DESC, id DESC LIMIT $2)`,
+			id, MaxReportsPerModel); err != nil {
+			return dbErr("отчёты сканера", err)
+		}
+		for _, rec := range recs {
+			if err := s.record(ctx, tx, rec); err != nil {
+				return err
+			}
+		}
+		out = r
+		return nil
+	})
+	return out, err
+}
+
+// Reports — последние отчёты модели, новые первыми.
+func (s *PGStore) Reports(ctx context.Context, orgID, id string, limit int) ([]ScanReport, error) {
+	ctx, cancel := pgCtx(ctx, pgTimeout)
+	defer cancel()
+	var one int
+	err := s.db.QueryRow(ctx, `SELECT 1 FROM inventory_models WHERE org_id = $1 AND id = $2`, orgID, id).Scan(&one)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, dbErr("модель", err)
+	}
+	rows, err := s.db.Query(ctx, `SELECT id, model_id, kind, host, scanner_version, received_at, received_by, verdict, hashes, templates,
+			files, findings, blocked, report
+		FROM inventory_scan_reports WHERE org_id = $1 AND model_id = $2 ORDER BY received_at DESC, id DESC LIMIT $3`, orgID, id, limit)
+	if err != nil {
+		return nil, dbErr("отчёты сканера", err)
+	}
+	defer rows.Close()
+	out := []ScanReport{}
+	for rows.Next() {
+		var r ScanReport
+		var body []byte
+		if err := rows.Scan(&r.ID, &r.ModelID, &r.Kind, &r.Host, &r.ScannerVersion, &r.ReceivedAt, &r.ReceivedBy, &r.Verdict, &r.Hashes,
+			&r.Templates, &r.Files, &r.Findings, &r.Blocked, &body); err != nil {
+			return nil, dbErr("отчёты сканера", err)
+		}
+		if err := json.Unmarshal(body, &r.Detail); err != nil {
+			return nil, fmt.Errorf("отчёт сканера %s: %w", r.ID, err)
+		}
+		r.ReceivedAt = r.ReceivedAt.UTC()
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, dbErr("отчёты сканера", err)
+	}
+	return out, nil
+}
+
+// Blocked — запрещённые модели с провайдером.
+func (s *PGStore) Blocked(ctx context.Context, orgID string) ([]BlockedModel, error) {
+	ctx, cancel := pgCtx(ctx, pgTimeout)
+	defer cancel()
+	rows, err := s.db.Query(ctx, `SELECT provider, name FROM inventory_models WHERE org_id = $1 AND status = 'blocked' AND provider <> ''
+		ORDER BY provider, name`, orgID)
+	if err != nil {
+		return nil, dbErr("запрещённые модели", err)
+	}
+	defer rows.Close()
+	out := []BlockedModel{}
+	for rows.Next() {
+		var b BlockedModel
+		if err := rows.Scan(&b.Provider, &b.Name); err != nil {
+			return nil, dbErr("запрещённые модели", err)
+		}
+		out = append(out, b)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, dbErr("запрещённые модели", err)
+	}
+	return out, nil
 }

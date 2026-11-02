@@ -23,6 +23,7 @@ import (
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/internal/events"
 	"github.com/azuresong-afk/ai_railway/internal/ids"
+	"github.com/azuresong-afk/ai_railway/internal/servicedb"
 )
 
 // Пределы (ADR-0029, пп. 2 и 8).
@@ -73,7 +74,8 @@ const (
 	OriginManual  = "manual"
 )
 
-// Состояние модели; запрет использования (blocked) — задача 5.22.
+// Состояние модели: действует; запрет использования — StatusBlocked
+// (задача 5.22, scan.go).
 const StatusActive = "active"
 
 // Роли файлов модели.
@@ -289,6 +291,15 @@ type Store interface {
 	// запись аудита, которую вернёт fn; ошибка fn отменяет выгрузку.
 	// ErrExportTooLarge — файлов моделей больше MaxAIBOMFiles.
 	Export(ctx context.Context, orgID string, fn func(Snapshot) (audit.Entry, error)) error
+	// AddReport передаёт fn заблокированную модель с файлами; fn возвращает
+	// отчёт и записи аудита и может сменить состояние модели. Отчёт, смена
+	// состояния и записи фиксируются одной транзакцией; отчёты модели сверх
+	// MaxReportsPerModel удаляются (старые). ErrNotFound.
+	AddReport(ctx context.Context, orgID, id string, fn func(*Model) (ScanReport, []audit.Entry, error)) (ScanReport, error)
+	// Reports — до limit последних отчётов модели, новые первыми; ErrNotFound.
+	Reports(ctx context.Context, orgID, id string, limit int) ([]ScanReport, error)
+	// Blocked — модели в состоянии blocked с непустым провайдером.
+	Blocked(ctx context.Context, orgID string) ([]BlockedModel, error)
 }
 
 // Options — зависимости Service.
@@ -298,16 +309,21 @@ type Options struct {
 	OrgID    string // пусто — организация по умолчанию
 	Clock    func() time.Time
 	Logger   *slog.Logger
+	// ServiceDBs — хранилище служебных баз (ADR-0028) для базы эталонов
+	// шаблонов чата (5.21); nil — базы нет, шаблоны сверяются только
+	// детекторами.
+	ServiceDBs servicedb.Store
 }
 
 // Service — реестр ИИ.
 type Service struct {
-	store  Store
-	hasher aisecCrypto.Hasher
-	ids    *ids.Generator
-	orgID  string
-	clock  func() time.Time
-	logger *slog.Logger
+	store     Store
+	templates *servicedb.Manager
+	hasher    aisecCrypto.Hasher
+	ids       *ids.Generator
+	orgID     string
+	clock     func() time.Time
+	logger    *slog.Logger
 }
 
 // New создаёт сервис.
@@ -333,6 +349,14 @@ func New(o Options) (*Service, error) {
 	if s.logger == nil {
 		s.logger = slog.New(slog.DiscardHandler)
 	}
+	if o.ServiceDBs != nil {
+		m, err := servicedb.NewManager(servicedb.Options{Store: o.ServiceDBs, Provider: o.Provider, Kind: TemplatesDBKind(),
+			OrgID: s.orgID, Clock: s.clock, Logger: s.logger})
+		if err != nil {
+			return nil, err
+		}
+		s.templates = m
+	}
 	return s, nil
 }
 
@@ -340,6 +364,9 @@ func New(o Options) (*Service, error) {
 type By struct {
 	Actor audit.Actor
 	IP    netip.Addr
+	// Confirm — повторная проверка паролем или кодом (снятие запрета
+	// модели, 5.22); nil — проверки нет (не сессия консоли).
+	Confirm func(ctx context.Context) error
 }
 
 func (b By) entry(action, id string, details map[string]any) audit.Entry {
@@ -546,6 +573,11 @@ func sameFiles(a, b []File) bool {
 // трафика появится снова, если её продолжают вызывать (ADR-0029, п. 2).
 func (s *Service) DeleteModel(ctx context.Context, by By, id string) error {
 	_, err := s.store.DeleteModel(ctx, s.orgID, id, func(m Model) (audit.Entry, error) {
+		if m.Status == StatusBlocked {
+			// Удаление запрещённой модели обошло бы снятие запрета: модель из
+			// трафика вернулась бы задачей пополнения уже без запрета.
+			return audit.Entry{}, ErrBlocked
+		}
 		return by.entry("inventory.model_deleted", m.ID, map[string]any{"kind": m.Kind, "provider": m.Provider, "name": m.Name,
 			"origin": m.Origin, "files": len(m.Files)}), nil
 	})

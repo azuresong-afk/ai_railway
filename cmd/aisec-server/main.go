@@ -655,8 +655,7 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	}
 	go shadowSvc.RunRetention(ctx, shadowai.RetentionInterval)
 	shadowRef.Store(shadowSvc)
-	serviceDBs := servicedb.NewRegistry(shadowSvc.DB(), complianceSvc.DB())
-	serviceDBRef.Store(serviceDBs)
+	serviceDBRef.Store(servicedb.NewRegistry(shadowSvc.DB(), complianceSvc.DB()))
 	// Приём журналов прокси по syslog (задача 4.23): выключен по умолчанию;
 	// при остановке сервера накопленные сводки записываются.
 	// Выход из run по любой ошибке после запуска тоже ждёт последней
@@ -691,12 +690,16 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	// База эталонов шаблонов чата (5.21) — служебная база по ADR-0028.
 	inventorySvc, err := inventory.New(inventory.Options{Store: inventoryStore, Provider: p, OrgID: audit.DefaultOrgID,
-		Logger: logger.With("component", "inventory")})
+		Logger: logger.With("component", "inventory"), ServiceDBs: serviceDBStore})
 	if err != nil {
 		return err
 	}
 	go inventorySvc.Run(ctx, inventory.SyncInterval)
+	// Состояние служебных баз — с эталонами шаблонов чата реестра ИИ.
+	serviceDBs := servicedb.NewRegistry(shadowSvc.DB(), complianceSvc.DB(), inventorySvc.TemplatesDB())
+	serviceDBRef.Store(serviceDBs)
 
 	// Манифесты коллекций RAG (ТЗ 5.12, DM-30; задача 5.24, ADR-0029, п. 5).
 	ragStore, err := rag.NewPGStore(db.Pool(), auditLog)

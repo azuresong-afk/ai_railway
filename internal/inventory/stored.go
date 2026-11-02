@@ -52,8 +52,10 @@ func CheckStoredModel(m StoredModel) error {
 	if m.Origin != OriginManual && m.Origin != OriginTraffic {
 		errs = append(errs, errors.New("origin — manual или traffic"))
 	}
-	if m.Status != StatusActive {
-		errs = append(errs, errors.New("status — active"))
+	// Запрет модели (blocked, 5.22) переносится копией: восстановление не
+	// должно снимать его в обход inventory.unblock.
+	if m.Status != StatusActive && m.Status != StatusBlocked {
+		errs = append(errs, errors.New("status — active или blocked"))
 	}
 	errs = append(errs, checkStoredFiles(m.Files)...)
 	if len(errs) > 0 {

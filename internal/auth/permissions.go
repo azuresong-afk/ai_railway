@@ -162,6 +162,16 @@ const (
 	// Выгрузка AI-BOM (задача 5.18, ADR-0029, п. 6): весь реестр одним
 	// документом — администраторам; аудитор не получает (не «.read»).
 	PermInventoryExport = "inventory.export"
+	// Сканер моделей (задачи 5.21 и 5.22, ADR-0029, п. 6): отчёт сканера и
+	// эталонные хеши файлов модели — токену узла с моделями; не право
+	// безопасности (отчёт не ослабляет защиту, о запрете решает сервер).
+	PermModelsReport = "models.report"
+	// Загрузка подписанной базы эталонов шаблонов чата и возврат её
+	// предыдущей версии (5.21, ADR-0028, п. 7) — администраторам.
+	PermModelsTemplatesLoad = "models.templates.load"
+	// Снятие запрета модели (5.22) — ослабление защиты (DM-40): только
+	// администратор безопасности, с повторной проверкой паролем или кодом.
+	PermInventoryUnblock = "inventory.unblock"
 	// Манифест коллекций RAG (задача 5.24, ADR-0029, п. 6): чтение
 	// коллекций, манифестов и исключений; загрузка манифеста (токену
 	// индексатора) и исключение документов. Не функция безопасности:
@@ -275,6 +285,9 @@ var permissionCatalog = []Permission{
 	{Name: PermInventoryRead, Title: "Просмотр реестра ИИ: приложения, ключи (без секретов), провайдеры, модели, файлы моделей и использование", Group: "Реестр ИИ"},
 	{Name: PermInventoryManage, Title: "Добавление, изменение и удаление моделей в реестре ИИ (в том числе файлов моделей заказчика с хешами)", Group: "Реестр ИИ"},
 	{Name: PermInventoryExport, Title: "Выгрузка реестра ИИ в AI-BOM (CycloneDX 1.6)", Group: "Реестр ИИ"},
+	{Name: PermModelsReport, Title: "Отправка отчёта сканера моделей и чтение эталонных хешей файлов модели (aisec-cli models scan и verify)", Group: "Реестр ИИ"},
+	{Name: PermModelsTemplatesLoad, Title: "Загрузка подписанной базы эталонов шаблонов чата и возврат её предыдущей версии", Group: "Реестр ИИ"},
+	{Name: PermInventoryUnblock, Title: "Снятие запрета использования модели, выставленного по отчёту сканера", Group: "Реестр ИИ", Security: true},
 	{Name: PermRAGRead, Title: "Просмотр коллекций RAG: версии манифеста, документы с хешами, изменения и исключения", Group: "Реестр ИИ"},
 	{Name: PermRAGManage, Title: "Загрузка манифеста коллекции RAG (индексатор), исключение документов и снятие исключений (из консоли)", Group: "Реестр ИИ"},
 }
@@ -468,7 +481,8 @@ var builtinRoles = []RoleDef{
 			PermAgentsRead: ScopeAll, PermAgentsManage: ScopeAll, PermShadowAIRead: ScopeAll, PermShadowAIManage: ScopeAll,
 			PermLicenseRead: ScopeAll, PermLicenseManage: ScopeAll,
 			PermComplianceRead: ScopeAll, PermComplianceBaseLoad: ScopeAll, PermInventoryRead: ScopeAll, PermInventoryManage: ScopeAll,
-			PermInventoryExport: ScopeAll, PermRAGRead: ScopeAll, PermRAGManage: ScopeAll}},
+			PermInventoryExport: ScopeAll, PermModelsReport: ScopeAll, PermModelsTemplatesLoad: ScopeAll, PermRAGRead: ScopeAll,
+			PermRAGManage: ScopeAll}},
 	{ID: RoleAnalyst, DisplayName: "Аналитик", Builtin: true,
 		Description: "Разбор оповещений и инцидентов, поиск по событиям",
 		Grants: grantAll(PermSystemRead, PermEventsRead, PermEventsExport, PermEventsMark, PermApplicationsRead, PermProvidersRead,

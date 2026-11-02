@@ -70,6 +70,9 @@ func inventoryProblem(logger *slog.Logger, err error) *Problem {
 	case errors.Is(err, inventory.ErrExportTooLarge):
 		return NewProblem(http.StatusUnprocessableEntity, CodeUnprocessable,
 			"В реестре больше 100 000 файлов моделей: AI-BOM одним документом не выгружается.")
+	case errors.Is(err, inventory.ErrBlocked):
+		return NewProblem(http.StatusConflict, CodeConflict,
+			"Модель запрещена по отчёту сканера: удалить её можно только после снятия запрета администратором безопасности.")
 	case errors.Is(err, inventory.ErrNoProvider):
 		return Invalid("Проверьте введённые данные.", FieldError{Field: "provider", Detail: "Провайдер не найден: укажите ID существующего провайдера."})
 	}

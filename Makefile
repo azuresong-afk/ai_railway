@@ -33,8 +33,10 @@ CGO_ALLOWED :=
 # (Р4, задача 3.13; обоснование — docs/cert/attack-surface.md);
 # internal/auth/oidc — discovery, JWKS и обмен кода только с издателем из
 # настроек IdP (ADR-0025, задача 4.17); internal/auth/ldap — поиск и bind
-# только в каталоге из настроек LDAP, LDAPS или StartTLS (ADR-0025, задача 4.16).
-NET_CLIENT_ALLOWED := cmd/aisec-gateway,internal/gateway,internal/providers,internal/notify,internal/auth/oidc,internal/auth/ldap
+# только в каталоге из настроек LDAP, LDAPS или StartTLS (ADR-0025, задача 4.16);
+# internal/cliclient — aisec-cli models scan/verify только к серверу из флага
+# -server, https с корнем доверия из файла (ADR-0029, дополнение 1, задача 5.21).
+NET_CLIENT_ALLOWED := cmd/aisec-gateway,internal/gateway,internal/providers,internal/notify,internal/auth/oidc,internal/auth/ldap,internal/cliclient
 
 # Версии инструментов разработки (ТЗ, 8.2). Меняются только вместе с
 # docs/cert/components.yaml (scope: build) и сборочным образом.
