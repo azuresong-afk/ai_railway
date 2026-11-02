@@ -396,6 +396,35 @@ func (d mlFake) MLConnected() bool { return d.connected }
 // aisec-ml, только журнал (мониторинг до замера Р4), с порогом в правиле.
 // Без aisec-ml шаблон их не содержит: иначе каждое событие получало бы
 // ml_unavailable. Template (копия для политики заказчика) их не содержит.
+// Каталог сервера (builtin.CatalogFor): с -ml-templates шаблоны получают
+// правила injection.ml и toxicity.ml с действием «журнал», без него — нет.
+func TestTemplateMLRulesServerCatalog(t *testing.T) {
+	for _, installed := range []bool{false, true} {
+		reg, err := detect.NewRegistry(builtin.CatalogFor(installed)...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, id := range TemplateIDs() {
+			s, _ := TemplateFor(id, reg)
+			var ml []string
+			for _, r := range s.Rules {
+				if r.Detector == detInjML || r.Detector == detToxML {
+					if r.Action != Log {
+						t.Fatalf("%s: правило %+v", id, r)
+					}
+					ml = append(ml, r.Detector)
+				}
+			}
+			if installed != (len(ml) == 2) || !installed && len(ml) != 0 {
+				t.Fatalf("%s, aisec-ml в установке %v: правила ML %v", id, installed, ml)
+			}
+			if _, err := TemplatePolicy(id, reg); err != nil {
+				t.Fatalf("%s: %v", id, err)
+			}
+		}
+	}
+}
+
 func TestTemplateMLRulesOnlyWithAisecML(t *testing.T) {
 	both := []detect.Direction{detect.Input, detect.Output}
 	reg := func(connected bool) *detect.Registry {
