@@ -11,6 +11,8 @@ package e2e
 import (
 	"encoding/json"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -68,6 +70,33 @@ func TestE2EStage5_RAGPreindexAndManifest(t *testing.T) {
 	card := st.admin.do("GET", "/api/v1/events/"+ev.ID, nil)
 	if card.code != http.StatusOK || strings.Contains(string(card.body), "admin password") || !strings.Contains(string(card.body), `"DM-07"`) {
 		t.Fatalf("карточка события: %s", card)
+	}
+
+	// То же для индексатора без своего HTTP-клиента: aisec-cli rag check по
+	// файлам с текстами, полный ответ — в -out, «исключить» — код 3.
+	dir := t.TempDir()
+	keyFile := filepath.Join(dir, "app.key")
+	mustWrite(t, keyFile, []byte(app.key+"\n"))
+	if err := os.Chmod(keyFile, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cleanFile, poisonFile := filepath.Join(dir, "report-q3.md"), filepath.Join(dir, "report-q3-full.md")
+	mustWrite(t, cleanFile, []byte("Квартальный отчёт: выручка выросла на 4 %."))
+	mustWrite(t, poisonFile, []byte(s4RAGDoc))
+	outFile := filepath.Join(dir, "result.json")
+	out, code := st.s.cli("rag", "check", "-gateway", st.gw.base, "-ca", st.s.tls.ca, "-key-file", keyFile, "-out", outFile,
+		cleanFile, poisonFile)
+	if code != 3 || !strings.Contains(out, "exclude\t"+filepath.ToSlash(poisonFile)+"\tpolicy") ||
+		!strings.Contains(out, "allow\t"+filepath.ToSlash(cleanFile)) || strings.Contains(out, app.key) {
+		t.Fatalf("aisec-cli rag check: код %d\n%s", code, out)
+	}
+	var cliRes s5RAGBatch
+	if err := json.Unmarshal(mustRead(t, outFile), &cliRes); err != nil || len(cliRes.Results) != 2 || cliRes.Excluded != 1 ||
+		cliRes.Results[1].EventID == "" {
+		t.Fatalf("-out: %v", err)
+	}
+	if st.mockLast().Received {
+		t.Fatal("aisec-cli rag check обратился к провайдеру")
 	}
 
 	// Манифест — токеном API индексатора с правом rag.manage.

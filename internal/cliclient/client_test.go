@@ -195,6 +195,11 @@ func TestDo(t *testing.T) {
 		_, _ = w.Write([]byte(`{"code":"invalid_request","detail":"Отчёт не прошёл проверку.\u001b[31m","errors":[` + //nolint:gosec // G104: ответ тестового сервера
 			strings.Repeat(`{"field":"files[0].path","detail":"путь"},`, 7) + `{"field":"x","detail":"последний"}]}`))
 	})
+	mux.HandleFunc("POST /guard/v1/check/batch", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusRequestEntityTooLarge)
+		_, _ = w.Write([]byte(`{"error":{"message":"documents[3].text: больше 1024 байт","type":"invalid_request_error","code":"document_too_large"}}`)) //nolint:gosec // G104: ответ тестового сервера
+	})
 	mux.HandleFunc("GET /api/v1/html", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		_, _ = w.Write([]byte(`<html></html>`)) //nolint:gosec // G104: ответ тестового сервера
@@ -227,13 +232,18 @@ func TestDo(t *testing.T) {
 		strings.ContainsRune(p.Detail, 0x1b) || strings.Contains(p.Detail, testToken) {
 		t.Fatalf("отказ: %#v", err)
 	}
+	// Ошибка Check API шлюза — код и текст из {"error":{…}}.
+	err = c.Do(ctx, "POST", "/guard/v1/check/batch", []byte(`{}`), "application/json", nil)
+	if !errors.As(err, &p) || p.Status != 413 || p.Code != "document_too_large" || !strings.Contains(p.Detail, "documents[3].text") {
+		t.Fatalf("отказ шлюза: %#v", err)
+	}
 	if err := c.Do(ctx, "GET", "/api/v1/html", nil, "", &out); !errors.Is(err, ErrContentType) {
 		t.Fatalf("не JSON: %v", err)
 	}
 	if err := c.Do(ctx, "GET", "/api/v1/slow", nil, "", nil); err == nil {
 		t.Fatal("срок запроса не сработал")
 	}
-	for _, bad := range []string{"/v1/ok", "api/v1/ok", "/api/v1/ok?x=1", "/api/v1/ok#f"} {
+	for _, bad := range []string{"/v1/ok", "api/v1/ok", "/api/v1/ok?x=1", "/api/v1/ok#f", "/guardx/v1", "/healthz"} {
 		if err := c.Do(ctx, "GET", bad, nil, "", nil); err == nil {
 			t.Errorf("путь %q принят", bad)
 		}

@@ -84,6 +84,9 @@ const usage = `aisec-cli — служебные операции AISec.
   models verify -server URL -ca ФАЙЛ -token-file ФАЙЛ -model ID [-host ИМЯ] ПУТЬ
                                 сверить SHA-256 файлов модели с эталоном реестра и отправить отчёт; 3 — расхождение
                                 или модель запрещена (запуск по расписанию — cron или systemd timer узла)
+  rag check -gateway URL -ca ФАЙЛ -key-file ФАЙЛ [-out ФАЙЛ] [-user ИМЯ] [-max-text 1048576] [-timeout 60s] ФАЙЛ…
+                                проверить тексты документов RAG до индексации на шлюзе (ключ приложения, пакеты
+                                до 100 документов): allow — индексировать, exclude — нет; 3 — есть exclude
   version                       версия
 `
 
@@ -234,6 +237,18 @@ func run(args []string, stdout, stderr io.Writer, now time.Time) int {
 			}
 			say(stderr, "aisec-cli models: %v\n", err)
 			if errors.Is(err, errModelBlocked) {
+				return 3
+			}
+			return 1
+		}
+		return 0
+	case "rag":
+		if err := ragCmd(args[1:], stdout, stderr); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return 0
+			}
+			say(stderr, "aisec-cli rag: %v\n", err)
+			if errors.Is(err, errRAGExcluded) {
 				return 3
 			}
 			return 1

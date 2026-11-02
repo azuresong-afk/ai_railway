@@ -1,6 +1,9 @@
 // Package cliclient — сетевой клиент aisec-cli к API сервера управления
 // (задачи 5.21 и 5.22 этапа 5, ADR-0029, дополнение 1): отчёт сканера
-// моделей и эталонные хеши с узла заказчика, где лежат файлы модели.
+// моделей и эталонные хеши с узла заказчика, где лежат файлы модели; а
+// также Check API шлюза для проверки документов RAG до индексации (задача
+// 5.25, aisec-cli rag check): адрес шлюза и ключ приложения — по тем же
+// правилам.
 // Первый исходящий вызов CLI, поэтому клиент узкий:
 //   - адрес сервера — только из флага команды и только https;
 //   - TLS — из internal/crypto (криптопрофиль), корень доверия — из файла,
@@ -183,11 +186,12 @@ func New(o Options) (*Client, error) {
 // Server — адрес сервера (без пути).
 func (c *Client) Server() string { return c.base.String() }
 
-// Do выполняет запрос к пути API (начинается с «/api/»): тело body с типом
-// contentType (nil — без тела), ответ JSON — в out (nil — не разбирается).
-// Отказ сервера — *Problem.
+// Do выполняет запрос к пути API (начинается с «/api/» — сервер управления
+// — или с «/guard/» — Check API шлюза): тело body с типом contentType (nil —
+// без тела), ответ JSON — в out (nil — не разбирается). Отказ сервера —
+// *Problem.
 func (c *Client) Do(ctx context.Context, method, path string, body []byte, contentType string, out any) error {
-	if !strings.HasPrefix(path, "/api/") || strings.ContainsAny(path, "?#") {
+	if (!strings.HasPrefix(path, "/api/") && !strings.HasPrefix(path, "/guard/")) || strings.ContainsAny(path, "?#") {
 		return errors.New("клиент API: неверный путь запроса")
 	}
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
@@ -246,7 +250,8 @@ const (
 	maxFieldErrors = 5
 )
 
-// problemOf — отказ сервера: код и текст из problem+json, без тела ответа
+// problemOf — отказ сервера: код и текст из problem+json сервера управления
+// или из ошибки шлюза ({"error":{"code","message"}}), без тела ответа
 // целиком (оно может быть страницей посредника).
 func problemOf(status int, data []byte) *Problem {
 	p := &Problem{Status: status}
@@ -258,9 +263,16 @@ func problemOf(status int, data []byte) *Problem {
 			Field  string `json:"field"`
 			Detail string `json:"detail"`
 		} `json:"errors"`
+		Gateway *struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
 	}
 	if json.Unmarshal(data, &body) != nil {
 		return p
+	}
+	if g := body.Gateway; g != nil && body.Code == "" && body.Detail == "" {
+		body.Code, body.Detail = g.Code, g.Message
 	}
 	detail := body.Detail
 	if detail == "" {
