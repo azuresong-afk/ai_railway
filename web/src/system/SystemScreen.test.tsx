@@ -16,13 +16,27 @@ const status = {
   generated_at: "2026-10-21T12:00:00Z",
   server: { version: "0.2.0", started_at: "2026-10-21T10:00:00Z", selftest: { ok: true, checked_at: "2026-10-21T10:00:01Z", failed: 0 }, integrity: [] },
   gateways: [
-    { id: "g1", name: "gw-1", state: "offline", last_seen_at: "2026-10-21T11:00:00Z", version: "0.2.0", bundle_etag: "x", cert_not_after: null, selftest: null, integrity: null, events: null },
+    { id: "g1", name: "gw-1", state: "offline", last_seen_at: "2026-10-21T11:00:00Z", version: "0.2.0", bundle_etag: "x", cert_not_after: null, selftest: null, integrity: null, events: null, limits: null },
+    {
+      id: "g2", name: "gw-2", state: "online", last_seen_at: "2026-10-21T12:00:00Z", version: "0.5.0", bundle_etag: "x", cert_not_after: null, selftest: null, integrity: null, events: null,
+      limits: {
+        reported_at: "2026-10-21T12:00:00Z", started_at: "2026-10-21T10:00:00Z",
+        tool_rate: { keys: 100000, max_keys: 100000, evictions: 17 },
+        sessions: { sessions: 30, max_sessions: 100000, max_app_sessions: 25000, evictions: 0, app_evictions: 4 },
+      },
+    },
   ],
+  shadow_ai_storage: { aggregates: 5000000, max_aggregates: 5000000, used_percent: 100, warn_percent: 90 },
   events: { dropped: 12, rejected: 3 },
   time: { server_time: "2026-10-21T12:00:00Z", timezone: "Europe/Moscow", sync: "unsynchronized", error_micros: null },
   storage: { available: true, audit_bytes: 1073741824, limit_bytes: 21474836480, used_percent: 5, warn_percent: 80, warn_exceeded: false },
   audit_chain: { checked_at: "2026-10-21T11:30:00Z", ok: false, checked: 100, last_seq: 100, reason: "hash_mismatch", broken_seq: 42 },
-  notifications: [{ condition: "time_sync", requirement: "ВРМ.1", title: "Время не синхронизировано", active: true, since: "2026-10-21T11:00:00Z", count: null }],
+  notifications: [
+    { condition: "time_sync", requirement: "ВРМ.1", title: "Время не синхронизировано", active: true, since: "2026-10-21T11:00:00Z", count: null },
+    { condition: "gateway_limits", requirement: "РСБ.7", title: "Шлюз вытесняет счётчики", active: true, since: null, count: null, components: ["gateway:g2"] },
+    { condition: "shadow_ai_full", requirement: "РСБ.7", title: "Хранилище сводок теневого ИИ заполнено", active: true, since: null, count: null },
+    { condition: "service_db_previous", requirement: "ОЦЛ.5", title: "Служебная база не прошла проверку", active: true, since: null, count: null, components: ["service_db:shadow_ai_catalog"] },
+  ],
   unavailable: ["events"],
 };
 let verifyStatus = 200;
@@ -68,6 +82,18 @@ describe("состояние системы", () => {
     expect(screen.getByText(/нарушение на записи 42/)).toBeInTheDocument();
     expect(screen.getByRole("progressbar", { name: "Заполнение журнала аудита" })).toHaveAttribute("aria-valuenow", "5");
     expect(screen.getByText(/Не удалось собрать разделы: events/)).toBeInTheDocument();
+  });
+
+  it("задача 5.9: счётчики в памяти шлюза, компоненты условий и заполнение сводок теневого ИИ", async () => {
+    renderScreen(["system.read"]);
+    expect(await screen.findByText(/Шлюз вытесняет счётчики \(РСБ\.7\): шлюз gw-2/)).toBeInTheDocument();
+    expect(screen.getByText(/Служебная база не прошла проверку \(ОЦЛ\.5\): каталог ИИ-сервисов/)).toBeInTheDocument();
+    // Заполненное хранилище — ошибка, а не предупреждение.
+    expect(screen.getByText(/Хранилище сводок теневого ИИ заполнено/).closest("[role=alert]")).not.toBeNull();
+    expect(screen.getByText(/Лимиты вызовов: 100.000 из 100.000, вытеснено 17/)).toBeInTheDocument();
+    expect(screen.getByText(/по доле приложения 4/)).toBeInTheDocument();
+    expect(screen.getAllByText("нет данных").length).toBeGreaterThan(0);
+    expect(screen.getByRole("progressbar", { name: "Заполнение хранилища сводок теневого ИИ" })).toHaveAttribute("aria-valuenow", "100");
   });
 
   it("без права integrity.verify кнопки проверки нет", async () => {

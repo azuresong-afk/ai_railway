@@ -93,3 +93,11 @@
 | `agents.approval_requested`, `agents.approval_queue_full` | правила оповещения | DM-22 | LLM06 | Б1 | не заполнено | AML.T0053 |
 | `shadow_ai.new_service` | правило оповещения | DM-37 | — | Н (п. 61) | не заполнено | — |
 | `system.license_expiry` | правило оповещения | DM-44 (лицензия) | — | О | не заполнено | — |
+
+## Проверки этапа 5
+
+Привязка проверок этапа 5 к строкам матрицы, OWASP и MITRE ATLAS; колонки — как в таблице этапа 4.
+
+| Проверка | Вид | Строки | OWASP | Рабочая группа | БДУ | MITRE ATLAS |
+|---|---|---|---|---|---|---|
+| Сканер файлов моделей (`internal/modelscan`, `aisec-cli models scan`): находка `pickle` — запрет; safetensors, GGUF, ONNX, `tokenizer_config.json` — разбор с пределами | сканер на узле с моделями | DM-27 | LLM03 | О | не заполнено | AML.T0010.003 (AI Supply Chain Compromise: Model), AML.T0011.000 (User Execution: Unsafe AI Artifacts) |

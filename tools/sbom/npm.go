@@ -56,18 +56,18 @@ func npmComponents(reg *components.Registry, lock *npmlock.Lock) ([]Component, [
 		if direct {
 			comp.Description = c.Purpose
 			comp.Properties = []Property{
-				{propAttackSurface, yesNo(*c.AttackSurface)},
-				{propSecurityFunction, yesNo(*c.SecurityFunction)},
-				{propProvidedBy, c.ProvidedBy},
+				{Name: propAttackSurface, Value: yesNo(*c.AttackSurface)},
+				{Name: propSecurityFunction, Value: yesNo(*c.SecurityFunction)},
+				{Name: propProvidedBy, Value: c.ProvidedBy},
 			}
 			if c.Repository != "" {
 				comp.ExternalReferences = []ExternalRef{{Type: "vcs", URL: c.Repository}}
 			}
 		} else {
 			comp.Properties = []Property{
-				{propAttackSurface, yesNo(attack[p.Path])},
-				{propSecurityFunction, yesNo(secfn[p.Path])},
-				{propProvidedBy, "Авторы пакета (реестр npm)"},
+				{Name: propAttackSurface, Value: yesNo(attack[p.Path])},
+				{Name: propSecurityFunction, Value: yesNo(secfn[p.Path])},
+				{Name: propProvidedBy, Value: "Авторы пакета (реестр npm)"},
 			}
 		}
 		comps = append(comps, comp)

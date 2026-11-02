@@ -232,6 +232,16 @@ func (m *MCPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		m.rpcError(q, http.StatusBadRequest, nil, mcp.CodeInvalidRequest, "шлюз не передаёт серверу ответы клиента", nil, violationNotRequest)
 		return
 	}
+	// _meta запроса уходит серверу (mcp.UpstreamParams): progressToken —
+	// строка или целое в пределах (задача 5.10 этапа 5).
+	if err := mcp.CheckMeta(msg2.Params); err != nil {
+		status := http.StatusOK
+		if msg2.Kind == mcp.KindNotification {
+			status = http.StatusBadRequest
+		}
+		m.rpcError(q, status, idOf(msg2), mcp.CodeOf(err), err.Error(), nil, violationInvalid)
+		return
+	}
 	eu, ok := h.user(w, r, app, "")
 	if !ok {
 		return

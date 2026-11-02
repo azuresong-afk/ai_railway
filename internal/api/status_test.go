@@ -35,7 +35,7 @@ func TestSystemStatus(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Server.Version != "1.2.3" || got.Time.Sync != sysstatus.SyncSynchronized || len(got.Notifications) != 25 {
+	if got.Server.Version != "1.2.3" || got.Time.Sync != sysstatus.SyncSynchronized || len(got.Notifications) != 30 {
 		t.Fatalf("%+v", got)
 	}
 	// Пустые списки — массивы, не null: клиент консоли не проверяет на null.
@@ -100,5 +100,48 @@ func TestHeartbeatReports(t *testing.T) {
 	// Совместимость: heartbeat прежнего шлюза без итогов принимается.
 	if w := post(`{"version":"1"}`); w.Code != http.StatusOK && w.Code != http.StatusTooManyRequests {
 		t.Fatalf("%d", w.Code)
+	}
+}
+
+// Задача 5.9 этапа 5: heartbeat со счётчиками в памяти шлюза — ответ
+// сообщает limits, счётчики доходят до реестра, неверные — 400, шлюз
+// прежней версии без поля принимается.
+func TestHeartbeatLimits(t *testing.T) {
+	svc, gw := newGatewayEnv(t)
+	h, _, err := NewInternal(InternalOptions{Logger: quiet(), Hasher: testHasher(t), Gateways: svc, Authorizer: asGateway(gw.ID),
+		RateLimit: RateConfig{Rules: []RateRule{{Prefix: "/", Max: 0}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	post := func(body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/internal/v1/heartbeat", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+		return w
+	}
+	for _, bad := range []string{
+		`{"version":"1","limits":{}}`,
+		`{"version":"1","limits":{"tool_rate":{"keys":3,"max_keys":2,"evictions":0}}}`,
+		`{"version":"1","limits":{"tool_rate":{"keys":1,"max_keys":2,"evictions":0,"extra":1}}}`,
+		`{"version":"1","limits":{"sessions":{"sessions":1,"max_sessions":4,"max_app_sessions":5,"evictions":0,"app_evictions":0}}}`,
+	} {
+		mustProblem(t, post(bad), http.StatusBadRequest, CodeInvalidRequest)
+	}
+	w := post(`{"version":"1"}`)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"limits":true`) {
+		t.Fatalf("%d %s", w.Code, w.Body.String())
+	}
+	if len(svc.GatewayLimits()) != 0 {
+		t.Fatal("шлюз прежней версии: счётчики появились")
+	}
+	w = post(`{"version":"1","limits":{"tool_rate":{"keys":2,"max_keys":2,"evictions":5},` +
+		`"sessions":{"sessions":3,"max_sessions":8,"max_app_sessions":2,"evictions":1,"app_evictions":4}}}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("%d %s", w.Code, w.Body.String())
+	}
+	m, ok := svc.GatewayLimits()[gw.ID]
+	if !ok || m.ToolRate == nil || m.ToolRate.Evictions != 5 || m.Sessions == nil || m.Sessions.AppEvictions != 4 {
+		t.Fatalf("счётчики: %+v %v", m, ok)
 	}
 }

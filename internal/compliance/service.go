@@ -13,13 +13,13 @@ import (
 
 	"github.com/azuresong-afk/ai_railway/internal/audit"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
+	"github.com/azuresong-afk/ai_railway/internal/servicedb"
 )
 
 // Ошибки сервиса.
 var (
-	ErrNotFound  = errors.New("соответствие: пункт не найден")
-	ErrNoMark    = errors.New("соответствие: ручной отметки нет")
-	ErrStaleBase = errors.New("соответствие: версия базы не больше действующей")
+	ErrNotFound = errors.New("соответствие: пункт не найден")
+	ErrNoMark   = errors.New("соответствие: ручной отметки нет")
 	// ErrMarkNotAllowed — для пункта допустима только отметка «не применимо»:
 	// его статус вычисляют проверки.
 	ErrMarkNotAllowed = errors.New("соответствие: статус пункта вычисляют проверки")
@@ -45,19 +45,8 @@ const (
 	snapshotTimeout = 30 * time.Second
 )
 
-// StoredBase — загруженная подписанная база в хранилище.
-type StoredBase struct {
-	Version      uint64
-	Date         time.Time
-	SubkeySerial uint64
-	Fingerprint  string
-	Requirements int
-	File         []byte
-	UploadedAt   time.Time
-	UploadedBy   string
-}
-
-// Store — хранилище ручных отметок и загруженной базы.
+// Store — хранилище ручных отметок. Загруженная база — служебная база
+// вида compliance_requirements в servicedb.Store (ADR-0028).
 type Store interface {
 	Marks(ctx context.Context, orgID string) ([]Mark, error)
 	// SetMark сохраняет отметку (заменяя прежнюю) и пишет запись аудита
@@ -65,17 +54,7 @@ type Store interface {
 	SetMark(ctx context.Context, orgID string, m Mark, fn func(prev *Mark) audit.Entry) error
 	// ClearMark снимает отметку и пишет fn(прежняя); нет отметки — ErrNoMark.
 	ClearMark(ctx context.Context, orgID, requirementID string, fn func(prev Mark) audit.Entry) error
-	// Base — загруженная база; нет — ErrNoBase.
-	Base(ctx context.Context, orgID string) (StoredBase, error)
-	// SaveBase сохраняет базу, если её версия больше сохранённой (иначе
-	// ErrStaleBase), и пишет rec той же транзакцией.
-	SaveBase(ctx context.Context, orgID string, b StoredBase, rec audit.Entry) error
-	// Record пишет запись аудита вне транзакции данных (отказ в загрузке).
-	Record(ctx context.Context, rec audit.Entry) error
 }
-
-// ErrNoBase — загруженной базы нет, действует встроенная.
-var ErrNoBase = errors.New("соответствие: загруженной базы нет")
 
 // Facts — источник снимка настроек и состояния.
 type Facts interface {
@@ -84,12 +63,14 @@ type Facts interface {
 
 // Options — зависимости сервиса.
 type Options struct {
-	Store    Store
-	Provider aisecCrypto.Provider
-	Facts    Facts
-	OrgID    string
-	Clock    func() time.Time
-	Logger   *slog.Logger
+	Store Store
+	// ServiceDBs — хранилище служебных баз (база требований, ADR-0028).
+	ServiceDBs servicedb.Store
+	Provider   aisecCrypto.Provider
+	Facts      Facts
+	OrgID      string
+	Clock      func() time.Time
+	Logger     *slog.Logger
 	// Embedded — встроенная база; nil — requirements/*.yaml из сборки.
 	Embedded *Base
 	// vendor — ключ производителя для тестов; nil — встроенный.
@@ -121,11 +102,8 @@ func (b By) entry(action string, obj audit.Object, result audit.Result, details 
 type Service struct {
 	o Options
 
-	mu     sync.Mutex
-	loaded bool
-	// signed — проверенная загруженная база; nil — нет или не прошла проверку.
-	signed *SignedBase
-	stored StoredBase
+	// db — загруженная база: служебная база вида compliance_requirements.
+	db *servicedb.Manager
 
 	snapMu sync.Mutex
 	snap   *Snapshot
@@ -144,7 +122,7 @@ type snapCall struct {
 
 // New создаёт сервис.
 func New(o Options) (*Service, error) {
-	if o.Store == nil || o.Provider == nil || o.Facts == nil {
+	if o.Store == nil || o.ServiceDBs == nil || o.Provider == nil || o.Facts == nil {
 		return nil, errors.New("соответствие: нет хранилища, криптопрофиля или источника сведений")
 	}
 	if o.OrgID == "" {
@@ -163,60 +141,49 @@ func New(o Options) (*Service, error) {
 		}
 		o.Embedded = b
 	}
-	if o.vendor == nil {
-		v, err := vendorVerifier(o.Provider)
-		if err != nil {
-			return nil, err
-		}
-		o.vendor = v
+	// Загружаемая база должна быть новее и встроенной в выпуск.
+	db, err := servicedb.NewManager(servicedb.Options{Store: o.ServiceDBs, Provider: o.Provider, Kind: DBKind(), OrgID: o.OrgID,
+		Clock: o.Clock, Logger: o.Logger, MinVersion: o.Embedded.Version, Vendor: o.vendor})
+	if err != nil {
+		return nil, err
 	}
-	return &Service{o: o}, nil
+	return &Service{o: o, db: db}, nil
 }
+
+// DB — база требований как служебная база (состояние для
+// GET /api/v1/service-dbs).
+func (s *Service) DB() *servicedb.Manager { return s.db }
 
 func (s *Service) now() time.Time { return s.o.Clock().UTC().Truncate(time.Microsecond) }
 
-// Load читает загруженную базу из хранилища и проверяет подпись заново.
-// База, не прошедшая проверку, не используется: действует встроенная,
-// причина — в техническом журнале.
+// Load читает загруженную базу из хранилища и проверяет подпись заново
+// (ADR-0028, п. 5). Текущая версия, не прошедшая проверку, не
+// используется: действует предыдущая, если она проверяется, иначе
+// встроенная; запись аудита — service_db.stored_invalid.
 func (s *Service) Load(ctx context.Context) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.loadLocked(ctx)
+	return s.db.Load(ctx)
 }
 
-func (s *Service) loadLocked(ctx context.Context) error {
-	st, err := s.o.Store.Base(ctx, s.o.OrgID)
-	if errors.Is(err, ErrNoBase) {
-		s.signed, s.stored, s.loaded = nil, StoredBase{}, true
-		return nil
-	}
+// current — действующая база: загруженная (текущая или, если та не прошла
+// проверку, предыдущая), если её версия больше встроенной, иначе встроенная.
+func (s *Service) current(ctx context.Context) (*Base, *SignedBase, error) {
+	v, err := s.db.Active(ctx)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
-	sb, err := VerifyBase(s.o.Provider, s.o.vendor, st.File, time.Time{})
-	if err != nil {
-		s.o.Logger.Error("соответствие: сохранённая база требований не прошла проверку подписи, действует встроенная",
-			"class", "compliance", "error", err)
-		s.signed, s.stored, s.loaded = nil, st, true
-		return nil
-	}
-	s.signed, s.stored, s.loaded = &sb, st, true
-	return nil
+	base, sb := s.pick(v)
+	return base, sb, nil
 }
 
-// current — действующая база: загруженная, если её версия больше встроенной.
-func (s *Service) current(ctx context.Context) (*Base, *SignedBase, StoredBase, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if !s.loaded {
-		if err := s.loadLocked(ctx); err != nil {
-			return nil, nil, StoredBase{}, err
-		}
+func (s *Service) pick(v *servicedb.Verified) (*Base, *SignedBase) {
+	if v == nil {
+		return s.o.Embedded, nil
 	}
-	if s.signed != nil && s.signed.Base.Version > s.o.Embedded.Version {
-		return s.signed.Base, s.signed, s.stored, nil
+	sb := signedBase(*v)
+	if sb.Base.Version > s.o.Embedded.Version {
+		return sb.Base, &sb
 	}
-	return s.o.Embedded, s.signed, s.stored, nil
+	return s.o.Embedded, &sb
 }
 
 // snapshot возвращает снимок сведений; повторные запросы в пределах
@@ -288,7 +255,7 @@ type Overview struct {
 
 // Evaluate вычисляет статусы всех пунктов, подходящих под фильтр.
 func (s *Service) Evaluate(ctx context.Context, f Filter) (Overview, error) {
-	base, _, _, err := s.current(ctx)
+	base, _, err := s.current(ctx)
 	if err != nil {
 		return Overview{}, err
 	}
@@ -336,7 +303,7 @@ func (s *Service) baseInfo(b *Base) BaseInfo {
 
 // Item возвращает один пункт с проверками и отметкой.
 func (s *Service) Item(ctx context.Context, id string) (Item, error) {
-	base, _, _, err := s.current(ctx)
+	base, _, err := s.current(ctx)
 	if err != nil {
 		return Item{}, err
 	}
@@ -423,7 +390,7 @@ func reqObject(id string) audit.Object { return audit.Object{Type: "compliance_r
 // SetMark ставит ручную отметку. Пункт, статус которого вычисляют только
 // проверки, принимает лишь «не применимо» (решение человека с комментарием).
 func (s *Service) SetMark(ctx context.Context, by By, id string, in MarkInput) (Item, error) {
-	base, _, _, err := s.current(ctx)
+	base, _, err := s.current(ctx)
 	if err != nil {
 		return Item{}, err
 	}
@@ -474,7 +441,7 @@ func (s *Service) SetMark(ctx context.Context, by By, id string, in MarkInput) (
 
 // ClearMark снимает ручную отметку.
 func (s *Service) ClearMark(ctx context.Context, by By, id string) (Item, error) {
-	base, _, _, err := s.current(ctx)
+	base, _, err := s.current(ctx)
 	if err != nil {
 		return Item{}, err
 	}
@@ -497,110 +464,49 @@ type BaseView struct {
 	Active BaseInfo `json:"active"`
 	// Builtin — версия и дата встроенной базы.
 	Builtin BaseInfo `json:"builtin"`
-	// Uploaded — загруженная подписанная база; nil — не загружалась.
-	Uploaded *UploadedInfo `json:"uploaded,omitempty"`
+	// Uploaded — текущая загруженная подписанная база; nil — не загружалась.
+	Uploaded *servicedb.VersionState `json:"uploaded,omitempty"`
+	// Previous — предыдущая загруженная версия (откат — на неё); nil — нет.
+	Previous *servicedb.VersionState `json:"previous,omitempty"`
+	// Slot — какая загруженная версия действует: current, previous, none.
+	Slot string `json:"slot"`
 }
 
-// UploadedInfo — загруженная подписанная база.
-type UploadedInfo struct {
-	Version      uint64     `json:"version"`
-	Date         string     `json:"date"`
-	Requirements int        `json:"requirements"`
-	SubkeySerial uint64     `json:"subkey_serial"`
-	SubkeyUntil  *time.Time `json:"subkey_not_after,omitempty"`
-	Fingerprint  string     `json:"fingerprint"`
-	UploadedAt   time.Time  `json:"uploaded_at"`
-	// Valid — подпись сохранённого файла проверена при запуске.
-	Valid bool `json:"valid"`
-}
-
-// BaseView — сведения о действующей и загруженной базе.
+// BaseView — сведения о действующей и загруженных базах.
 func (s *Service) BaseView(ctx context.Context) (BaseView, error) {
-	base, sb, st, err := s.current(ctx)
+	// Состояние и действующая база — из одного снимка менеджера.
+	st, v, err := s.db.Snapshot(ctx)
 	if err != nil {
 		return BaseView{}, err
 	}
-	v := BaseView{Active: s.baseInfo(base), Builtin: s.baseInfo(s.o.Embedded)}
-	if st.Version > 0 {
-		u := &UploadedInfo{Version: st.Version, Date: st.Date.Format(baseDateLayout), Requirements: st.Requirements,
-			SubkeySerial: st.SubkeySerial, Fingerprint: st.Fingerprint, UploadedAt: st.UploadedAt.UTC(), Valid: sb != nil}
-		if sb != nil {
-			until := sb.Endorsement.NotAfter
-			u.SubkeyUntil = &until
-		}
-		v.Uploaded = u
-	}
-	return v, nil
+	base, _ := s.pick(v)
+	return BaseView{Active: s.baseInfo(base), Builtin: s.baseInfo(s.o.Embedded), Uploaded: st.Current, Previous: st.Previous,
+		Slot: st.Active}, nil
 }
 
-// BaseError — отказ в загрузке базы с кодом причины.
-type BaseError struct {
-	Reason string
-	Err    error
-}
-
-func (e *BaseError) Error() string { return e.Err.Error() }
-func (e *BaseError) Unwrap() error { return e.Err }
-
-// RejectReason — код причины отказа в загрузке базы.
-func RejectReason(err error) string {
-	switch {
-	case errors.Is(err, aisecCrypto.ErrEndorsementSignature), errors.Is(err, aisecCrypto.ErrServiceDBSignature):
-		return "signature"
-	case errors.Is(err, aisecCrypto.ErrEndorsementPurpose):
-		return "purpose"
-	case errors.Is(err, aisecCrypto.ErrEndorsementExpired):
-		return "expired"
-	case errors.Is(err, aisecCrypto.ErrEndorsementRevoked):
-		return "revoked"
-	case errors.Is(err, aisecCrypto.ErrServiceDBKind):
-		return "kind"
-	case errors.Is(err, ErrBaseDate):
-		return "date"
-	case errors.Is(err, ErrStaleBase):
-		return "stale_version"
-	}
-	return "format"
-}
+func (b By) db() servicedb.By { return servicedb.By{Actor: b.Actor, IP: b.IP} }
 
 // UploadBase проверяет подписанный файл (срок заверения — на текущее
-// время) и сохраняет его, если версия больше действующей. Каждая
-// попытка — запись аудита без содержимого файла.
+// время) и сохраняет его, если версия больше текущей загруженной и
+// встроенной; прежняя загруженная становится предыдущей. Каждая попытка —
+// запись аудита без содержимого файла; отказ — *servicedb.RejectError.
 func (s *Service) UploadBase(ctx context.Context, by By, data []byte) (BaseView, error) {
-	now := s.now()
-	sb, err := VerifyBase(s.o.Provider, s.o.vendor, data, now)
-	obj := audit.Object{Type: "compliance_base"}
-	if err == nil {
-		var cur *Base
-		if cur, _, _, err = s.current(ctx); err == nil && sb.Base.Version <= cur.Version {
-			err = ErrStaleBase
-		}
+	if _, err := s.db.Upload(ctx, by.db(), data); err != nil {
+		return BaseView{}, err
 	}
-	if err == nil {
-		st := StoredBase{Version: sb.Base.Version, Date: sb.Base.Day(), SubkeySerial: sb.Endorsement.Serial, Fingerprint: sb.Fingerprint,
-			Requirements: len(sb.Base.Requirements), File: data, UploadedAt: now, UploadedBy: by.ref()}
-		rec := by.entry("compliance.base_loaded", obj, audit.ResultSuccess, map[string]any{"version": st.Version, "date": sb.Base.Date,
-			"requirements": st.Requirements, "subkey_serial": st.SubkeySerial, "fingerprint": st.Fingerprint})
-		if err = s.o.Store.SaveBase(ctx, s.o.OrgID, st, rec); err == nil {
-			s.mu.Lock()
-			s.signed, s.stored, s.loaded = &sb, st, true
-			s.mu.Unlock()
-			s.dropSnapshot()
-			return s.BaseView(ctx)
-		}
-		if !errors.Is(err, ErrStaleBase) {
-			return BaseView{}, err
-		}
+	s.dropSnapshot()
+	return s.BaseView(ctx)
+}
+
+// RollbackBase возвращает предыдущую загруженную версию после её повторной
+// проверки (ADR-0028, п. 4). Если она не новее встроенной, действует
+// встроенная. Отказ — *servicedb.RejectError.
+func (s *Service) RollbackBase(ctx context.Context, by By) (BaseView, error) {
+	if _, err := s.db.Rollback(ctx, by.db()); err != nil {
+		return BaseView{}, err
 	}
-	reason := RejectReason(err)
-	details := map[string]any{"reason": reason, "bytes": len(data)}
-	if sb.Base != nil {
-		details["version"], details["subkey_serial"] = sb.Base.Version, sb.Endorsement.Serial
-	}
-	if aerr := s.o.Store.Record(ctx, by.entry("compliance.base_rejected", obj, audit.ResultFailure, details)); aerr != nil {
-		return BaseView{}, aerr
-	}
-	return BaseView{}, &BaseError{Reason: reason, Err: err}
+	s.dropSnapshot()
+	return s.BaseView(ctx)
 }
 
 func (s *Service) dropSnapshot() {

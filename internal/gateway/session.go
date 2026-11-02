@@ -4,7 +4,6 @@ import (
 	"container/list"
 	"encoding/hex"
 	"errors"
-	"hash"
 	"math"
 	"strconv"
 	"strings"
@@ -41,7 +40,12 @@ import (
 // и без этого каждая прошлая находка считалась бы заново. Содержимое
 // сообщений в состоянии не хранится: только ключ (псевдоним) и числа.
 // Число сессий ограничено: при переполнении вытесняется сессия, которая
-// дольше всех не обновлялась, поэтому память не растёт под нагрузкой.
+// дольше всех не обновлялась, поэтому память не растёт под нагрузкой. У
+// приложения — не больше доли общего предела (по умолчанию четверть,
+// 4Н13 ревью 4.r2): новая сессия приложения, исчерпавшего долю, вытесняет
+// его же самую давнюю, и поток новых ID одного приложения не сбрасывает
+// накопленные оценки других. Вытеснения считаются и уходят в heartbeat
+// («Состояние системы», задача 5.9).
 
 // HeaderSession — идентификатор сессии от приложения.
 const HeaderSession = "X-AISec-Session"
@@ -52,6 +56,9 @@ const (
 	MaxSessionIDLength = 128
 	// DefaultMaxSessions — сессий session.risk в памяти шлюза.
 	DefaultMaxSessions = 100_000
+	// DefaultAppShareDivisor — доля приложения по умолчанию: предел,
+	// делённый на это число.
+	DefaultAppShareDivisor = 4
 	// DefaultSessionTTL — сессия без ходов дольше этого забывается.
 	DefaultSessionTTL = 24 * time.Hour
 	// DefaultRiskHalfLife — за это время накопленная оценка убывает вдвое.
@@ -95,8 +102,11 @@ type SessionConfig struct {
 	MAC aisecCrypto.MAC
 	// MaxSessions, TTL, HalfLife — 0 — значения по умолчанию.
 	MaxSessions int
-	TTL         time.Duration
-	HalfLife    time.Duration
+	// MaxAppSessions — доля одного приложения; 0 — MaxSessions /
+	// DefaultAppShareDivisor (не меньше 1), больше MaxSessions — MaxSessions.
+	MaxAppSessions int
+	TTL            time.Duration
+	HalfLife       time.Duration
 	// Now — часы; по умолчанию time.Now.
 	Now func() time.Time
 }
@@ -112,18 +122,41 @@ type Sessions struct {
 	halfLife time.Duration
 	now      func() time.Time
 
+	appMax int
+
 	mu    sync.Mutex
 	byKey map[string]*list.Element
 	// lru — состояния, свежие спереди; вытесняется последнее.
 	lru *list.List
+	// apps — состояния каждого приложения в том же порядке (элементы —
+	// *sessionState): по нему вытесняется давняя сессия своего приложения.
+	apps map[string]*list.List
+	// evictions — вытеснено сессий из-за общего предела (чужих приложений
+	// в том числе), appEvictions — из-за доли своего приложения.
+	evictions, appEvictions uint64
 }
 
 // sessionState — состояние session.risk одной сессии: только числа.
 type sessionState struct {
 	key   string
+	app   string
 	acc   float64
 	at    time.Time
 	turns int
+	// appEl — элемент в списке приложения.
+	appEl *list.Element
+}
+
+// SessionStats — заполнение и вытеснения сессий session.risk с запуска
+// шлюза (heartbeat, «Состояние системы»).
+type SessionStats struct {
+	Sessions       int
+	MaxSessions    int
+	MaxAppSessions int
+	// Evictions — вытеснено из-за общего предела; AppEvictions — из-за доли
+	// приложения (вытесняется сессия того же приложения).
+	Evictions    uint64
+	AppEvictions uint64
 }
 
 // NewSessions создаёт сессии шлюза.
@@ -152,10 +185,15 @@ func NewSessions(cfg SessionConfig) (*Sessions, error) {
 		}
 	}
 	s := &Sessions{mac: mac, hasher: h, max: cfg.MaxSessions, ttl: cfg.TTL, halfLife: cfg.HalfLife, now: cfg.Now,
-		byKey: map[string]*list.Element{}, lru: list.New()}
+		byKey: map[string]*list.Element{}, lru: list.New(), apps: map[string]*list.List{}}
 	if s.max <= 0 {
 		s.max = DefaultMaxSessions
 	}
+	s.appMax = cfg.MaxAppSessions
+	if s.appMax <= 0 {
+		s.appMax = max(1, s.max/DefaultAppShareDivisor)
+	}
+	s.appMax = min(s.appMax, s.max)
 	if s.ttl <= 0 {
 		s.ttl = DefaultSessionTTL
 	}
@@ -331,23 +369,34 @@ func (s *Sessions) observe(key string, turn float64) (float64, int) {
 			st.acc *= math.Exp2(-float64(dt) / float64(s.halfLife))
 		}
 		s.lru.MoveToFront(el)
+		s.apps[st.app].MoveToFront(st.appEl)
 	} else {
 		if turn <= 0 {
 			return 0, 0
 		}
 		// Сначала забываются сессии старше TTL (они в хвосте), затем при
+		// исчерпании доли приложения — его самая давняя, затем при общем
 		// переполнении — та, что дольше всех не обновлялась.
 		for old := s.lru.Back(); old != nil && now.Sub(old.Value.(*sessionState).at) > s.ttl; old = s.lru.Back() {
-			s.lru.Remove(old)
-			delete(s.byKey, old.Value.(*sessionState).key)
+			s.remove(old)
+		}
+		app := sessionApp(key)
+		if al := s.apps[app]; al != nil && al.Len() >= s.appMax {
+			s.remove(s.byKey[al.Back().Value.(*sessionState).key])
+			s.appEvictions++
 		}
 		for s.lru.Len() >= s.max {
-			old := s.lru.Back()
-			s.lru.Remove(old)
-			delete(s.byKey, old.Value.(*sessionState).key)
+			s.remove(s.lru.Back())
+			s.evictions++
 		}
-		st = &sessionState{key: key}
+		st = &sessionState{key: key, app: app}
 		s.byKey[key] = s.lru.PushFront(st)
+		al := s.apps[app]
+		if al == nil {
+			al = list.New()
+			s.apps[app] = al
+		}
+		st.appEl = al.PushFront(st)
 	}
 	st.acc += max(turn, 0)
 	if st.acc < riskEpsilon {
@@ -358,6 +407,28 @@ func (s *Sessions) observe(key string, turn float64) (float64, int) {
 	return min(1, st.acc/riskSaturation), st.turns
 }
 
+// remove убирает состояние из общего списка и списка приложения; под mu.
+func (s *Sessions) remove(el *list.Element) {
+	st := el.Value.(*sessionState)
+	s.lru.Remove(el)
+	delete(s.byKey, st.key)
+	if al := s.apps[st.app]; al != nil {
+		al.Remove(st.appEl)
+		if al.Len() == 0 {
+			delete(s.apps, st.app)
+		}
+	}
+}
+
+// sessionApp — приложение из ключа состояния (reqSession.key: приложение,
+// U+0000, псевдоним); ключ без разделителя — сам себе приложение.
+func sessionApp(key string) string {
+	if i := strings.IndexByte(key, 0); i >= 0 {
+		return key[:i]
+	}
+	return key
+}
+
 // Len — число сессий с состоянием session.risk.
 func (s *Sessions) Len() int {
 	s.mu.Lock()
@@ -365,47 +436,39 @@ func (s *Sessions) Len() int {
 	return s.lru.Len()
 }
 
+// Stats — заполнение и вытеснения с запуска шлюза.
+func (s *Sessions) Stats() SessionStats {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return SessionStats{Sessions: s.lru.Len(), MaxSessions: s.max, MaxAppSessions: s.appMax,
+		Evictions: s.evictions, AppEvictions: s.appEvictions}
+}
+
 // reply — хеш реплики ассистента потоком: хеш криптопрофиля от
-// нормализованного текста (session.Normalize), затем HMAC на ключе сессий,
-// 16 байт в hex. Простой хеш не годится: реплику модели (часто короткую,
-// «Да, конечно») держатель событий подобрал бы по словарю.
+// нормализованного текста (session.ReplyHasher, общий с самотестом), затем
+// HMAC на ключе сессий, 16 байт в hex. Простой хеш не годится: реплику
+// модели (часто короткую, «Да, конечно») держатель событий подобрал бы по
+// словарю.
 type reply struct {
 	s *Sessions
-	h hash.Hash
-	n *session.Normalizer
-	w countWriter
-}
-
-// countWriter считает записанное: пустая после нормализации реплика хеша
-// не получает.
-type countWriter struct {
-	h hash.Hash
-	n int
-}
-
-func (c *countWriter) Write(p []byte) (int, error) {
-	c.n += len(p)
-	return c.h.Write(p)
+	r *session.ReplyHasher
 }
 
 func (s *Sessions) newReply() *reply {
-	r := &reply{s: s, h: s.hasher.New()}
-	r.w.h = r.h
-	r.n = session.NewNormalizer(&r.w)
-	return r
+	return &reply{s: s, r: session.NewReplyHasher(s.hasher)}
 }
 
 // WriteString дописывает часть реплики.
-func (r *reply) WriteString(p string) { r.n.WriteString(p) }
+func (r *reply) WriteString(p string) { r.r.WriteString(p) }
 
 // Sum — хеш реплики; пусто — реплика пустая (только пробелы или вызовы
 // инструментов без текста).
 func (r *reply) Sum() string {
-	r.n.Flush()
-	if r.w.n == 0 {
+	sum := r.r.Sum()
+	if r.r.Empty() {
 		return ""
 	}
-	return hex.EncodeToString(r.s.mac.Sum(append([]byte(replyDomain), r.h.Sum(nil)...))[:16])
+	return hex.EncodeToString(r.s.mac.Sum(append([]byte(replyDomain), sum...))[:16])
 }
 
 // replyHash — хеш реплики целиком.

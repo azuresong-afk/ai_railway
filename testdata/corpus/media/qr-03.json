@@ -1,0 +1,16 @@
+{
+  "id": "qr-03",
+  "file": "qr-03.png",
+  "text_file": "qr-03.txt",
+  "kind": "clean",
+  "lang": "ru",
+  "dm": [
+    "DM-47"
+  ],
+  "description": "Чистый QR-код со ссылкой на меню (ложные срабатывания)",
+  "metadata": [],
+  "qr": [
+    "https://menu.example.test/spring"
+  ],
+  "expect": []
+}

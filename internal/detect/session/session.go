@@ -18,6 +18,7 @@ package session
 import (
 	"context"
 	"encoding/hex"
+	"hash"
 	"io"
 	"strings"
 	"unicode"
@@ -143,6 +144,49 @@ func Normalize(s string) string {
 	n.Flush()
 	return b.String()
 }
+
+// ReplyHasher — хеш реплики ассистента потоком до имитовставки: хеш
+// криптопрофиля от нормализованного текста (Normalizer). Одна функция для
+// шлюза (internal/gateway: затем HMAC на ключе сессий) и самотеста
+// (internal/integrity/selftest): расхождение дало бы ложные находки
+// history.integrity (4.28 (в)).
+type ReplyHasher struct {
+	h hash.Hash
+	n *Normalizer
+	w countWriter
+}
+
+// countWriter считает записанное после нормализации.
+type countWriter struct {
+	h hash.Hash
+	n int
+}
+
+func (c *countWriter) Write(p []byte) (int, error) {
+	c.n += len(p)
+	return c.h.Write(p)
+}
+
+// NewReplyHasher начинает хеш реплики хешем криптопрофиля h.
+func NewReplyHasher(h aisecCrypto.Hasher) *ReplyHasher {
+	r := &ReplyHasher{h: h.New()}
+	r.w.h = r.h
+	r.n = NewNormalizer(&r.w)
+	return r
+}
+
+// WriteString дописывает часть реплики.
+func (r *ReplyHasher) WriteString(p string) { r.n.WriteString(p) }
+
+// Sum дописывает отложенное и возвращает хеш нормализованной реплики.
+func (r *ReplyHasher) Sum() []byte {
+	r.n.Flush()
+	return r.h.Sum(nil)
+}
+
+// Empty — после нормализации не записано ничего (только пробелы); верно
+// после Sum.
+func (r *ReplyHasher) Empty() bool { return r.w.n == 0 }
 
 // Normalizer — Normalize потоком: текст ответа модели приходит частями, и
 // часть может кончаться посреди символа UTF-8. Неполный символ ждёт

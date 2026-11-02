@@ -23,7 +23,10 @@ func (b *Builder) complianceReport(ctx context.Context, p Params) (Doc, error) {
 	if b.Compliance == nil {
 		return Doc{}, ErrNoSource
 	}
-	o, err := b.Compliance.Evaluate(ctx, compliance.Filter{})
+	// Применимость сужает пункты и процент (задача 5.12 этапа 5): пункты
+	// ГИС и КИИ не входят в итог коммерческого заказчика. Настройки
+	// применимости у организации нет, поэтому по умолчанию — все пункты.
+	o, err := b.Compliance.Evaluate(ctx, compliance.Filter{Applies: p.Applies})
 	if err != nil {
 		return Doc{}, err
 	}
@@ -39,10 +42,15 @@ func (b *Builder) complianceReport(ctx context.Context, p Params) (Doc, error) {
 	if o.Summary.Percent != nil {
 		percent = fmt.Sprintf("%d %% (учтено пунктов: %d; пункты из проектов документов и «не применимо» не входят)", *o.Summary.Percent, o.Summary.Counted)
 	}
+	applies := "все пункты базы"
+	if p.Applies != "" {
+		applies = compliance.ApplicabilityTitle(p.Applies) + " (только относящиеся пункты)"
+	}
 	d := Doc{Kind: KindCompliance, Title: Title(KindCompliance), Meta: [][2]string{
 		{"Состояние на", fmtTime(o.GeneratedAt, p.Period.Loc)},
 		{"Часовой пояс", tz},
 		{"База требований", fmt.Sprintf("версия %d от %s, %s", o.Base.Version, o.Base.Date, origin)},
+		{"Применимость", applies},
 		{"Итог соответствия", percent},
 	}}
 	c := o.Summary.Counts

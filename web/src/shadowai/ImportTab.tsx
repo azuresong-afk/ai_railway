@@ -5,6 +5,7 @@ import { formatAbsolute, formatNumber } from "../events/format";
 import { Button } from "../ui/Button";
 import { Check, Field, Select } from "../ui/Field";
 import { Banner, EmptyState, Panel, Table, Td, Th } from "../ui/Layout";
+import { ServiceDBVersions } from "../ui/ServiceDBVersions";
 import { type LogFormat, type ShadowCatalog, type ShadowImport, shadowApi } from "./api";
 import { formatTitle } from "./format";
 
@@ -40,6 +41,14 @@ function CatalogPanel({ catalog, canManage }: { catalog: ShadowCatalog | undefin
     onSuccess: async () => {
       if (file.current) file.current.value = "";
       setPicked(false);
+      rollback.reset();
+      await qc.invalidateQueries({ queryKey: ["shadow-ai"] });
+    },
+  });
+  const rollback = useMutation({
+    mutationFn: () => shadowApi.rollbackCatalog(),
+    onSuccess: async () => {
+      load.reset();
       await qc.invalidateQueries({ queryKey: ["shadow-ai"] });
     },
   });
@@ -53,6 +62,11 @@ function CatalogPanel({ catalog, canManage }: { catalog: ShadowCatalog | undefin
       ) : (
         <>
           {!catalog.valid && <Banner kind="error">Подпись сохранённого каталога не прошла проверку. Импорт невозможен: загрузите подписанный каталог заново.</Banner>}
+          {catalog.active === "previous" && (
+            <Banner kind="warning">
+              Текущая версия каталога не прошла проверку подписи и не используется: действует предыдущая. Загрузите подписанный каталог из выпуска заново.
+            </Banner>
+          )}
           <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-base">
             <dt className="text-muted">Версия</dt>
             <dd>
@@ -65,6 +79,16 @@ function CatalogPanel({ catalog, canManage }: { catalog: ShadowCatalog | undefin
             <dt className="text-muted">Рабочий ключ заверен до</dt>
             <dd>{catalog.subkey_not_after ? formatAbsolute(catalog.subkey_not_after) : "—"}</dd>
           </dl>
+          <ServiceDBVersions
+            title="каталог ИИ-сервисов"
+            recordsTitle="Сервисов"
+            current={catalog.current}
+            previous={catalog.previous}
+            active={catalog.active}
+            canManage={canManage}
+            pending={rollback.isPending}
+            onRollback={() => rollback.mutate()}
+          />
         </>
       )}
       {canManage && (
@@ -79,8 +103,9 @@ function CatalogPanel({ catalog, canManage }: { catalog: ShadowCatalog | undefin
           </Button>
         </div>
       )}
-      <ErrorBanner error={load.error} />
+      <ErrorBanner error={load.error ?? rollback.error} />
       {load.data && <Banner kind="info">Каталог версии {load.data.version} загружен.</Banner>}
+      {rollback.data && <Banner kind="info">Возвращена предыдущая версия каталога: {rollback.data.version}.</Banner>}
     </Panel>
   );
 }

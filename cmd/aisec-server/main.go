@@ -43,6 +43,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/incidents"
 	"github.com/azuresong-afk/ai_railway/internal/integrity"
 	"github.com/azuresong-afk/ai_railway/internal/integrity/selftest"
+	"github.com/azuresong-afk/ai_railway/internal/inventory"
 	"github.com/azuresong-afk/ai_railway/internal/keyring"
 	"github.com/azuresong-afk/ai_railway/internal/license"
 	"github.com/azuresong-afk/ai_railway/internal/notify"
@@ -50,6 +51,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/policy/versions"
 	"github.com/azuresong-afk/ai_railway/internal/quotalease"
 	"github.com/azuresong-afk/ai_railway/internal/reports"
+	"github.com/azuresong-afk/ai_railway/internal/servicedb"
 	"github.com/azuresong-afk/ai_railway/internal/shadowai"
 	"github.com/azuresong-afk/ai_railway/internal/store"
 	"github.com/azuresong-afk/ai_railway/internal/sysstatus"
@@ -457,6 +459,26 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		}
 		return shadowai.SyslogStats{}
 	}
+	// Заполнение сводок теневого ИИ и служебные базы (задача 5.9 этапа 5) —
+	// условия «Состояния системы»; сервисы создаются ниже.
+	var serviceDBRef atomic.Pointer[servicedb.Registry]
+	extras := statusExtras{
+		ShadowAIStorage: func(ctx context.Context) (int64, int64, error) {
+			if s := shadowRef.Load(); s != nil {
+				return s.Storage(ctx)
+			}
+			return 0, 0, nil
+		},
+		ServiceDBs: func(ctx context.Context) ([]servicedb.State, error) {
+			if r := serviceDBRef.Load(); r != nil {
+				return r.States(ctx)
+			}
+			return nil, nil
+		},
+	}
+	if gateways != nil {
+		extras.GatewayLimits = gateways.GatewayLimits
+	}
 	// Лицензия (ТЗ 5.15, задачи 4.26–4.27, ADR-0026): подпись сохранённой
 	// лицензии проверяется заново при запуске и раз в минуту, отметка часов
 	// поднимается тогда же; предел шлюзов — в транзакции регистрации.
@@ -475,7 +497,7 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		gateways.SetAdmission(licSvc.CheckGateway)
 	}
 	statusSvc, err := newStatus(ctx, cfg, db, auditLog, integritySvc, selftestRes, bundleHealth(&bundleSvc), timezone, caNotAfter,
-		licSvc.State, quotaHealth(quotaSvc), shadowSyslog, logger)
+		licSvc.State, quotaHealth(quotaSvc), shadowSyslog, extras, logger)
 	if err != nil {
 		return err
 	}
@@ -559,11 +581,18 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	// Соответствие требованиям (ТЗ 5.18, задача 4.24): база требований —
 	// встроенная и подписанная загруженная (ADR-0027); снимок настроек
 	// собирается из сервисов сервера, содержимое запросов не читается.
+	// Служебные базы (ОБН.4, ADR-0028): одно хранилище для всех видов —
+	// каталога теневого ИИ и базы требований; подпись сохранённых файлов
+	// проверяется заново при запуске.
+	serviceDBStore, err := servicedb.NewPGStore(db.Pool(), auditLog)
+	if err != nil {
+		return err
+	}
 	complianceStore, err := compliance.NewPGStore(db.Pool(), auditLog)
 	if err != nil {
 		return err
 	}
-	complianceSvc, err := compliance.New(compliance.Options{Store: complianceStore, Provider: p, OrgID: audit.DefaultOrgID,
+	complianceSvc, err := compliance.New(compliance.Options{Store: complianceStore, ServiceDBs: serviceDBStore, Provider: p, OrgID: audit.DefaultOrgID,
 		Facts: &compliance.SystemFacts{Apps: appsSvc, Policies: policiesSvc, Roles: authSvc, Status: statusSvc, Alerts: alertsSvc,
 			Channels: notifySvc, Detectors: detectors, Logger: logger.With("component", "compliance")},
 		Logger: logger.With("component", "compliance")})
@@ -608,7 +637,7 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	shadowSvc, err := shadowai.New(shadowai.Options{Store: shadowStore, Provider: p, OrgID: audit.DefaultOrgID, UserMAC: userMAC,
+	shadowSvc, err := shadowai.New(shadowai.Options{Store: shadowStore, ServiceDBs: serviceDBStore, Provider: p, OrgID: audit.DefaultOrgID, UserMAC: userMAC,
 		Location: func(ctx context.Context) (*time.Location, error) {
 			tz, err := timezone(ctx)
 			if err != nil {
@@ -625,6 +654,8 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	}
 	go shadowSvc.RunRetention(ctx, shadowai.RetentionInterval)
 	shadowRef.Store(shadowSvc)
+	serviceDBs := servicedb.NewRegistry(shadowSvc.DB(), complianceSvc.DB())
+	serviceDBRef.Store(serviceDBs)
 	// Приём журналов прокси по syslog (задача 4.23): выключен по умолчанию;
 	// при остановке сервера накопленные сводки записываются.
 	// Выход из run по любой ошибке после запуска тоже ждёт последней
@@ -653,6 +684,19 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		}
 	}()
 
+	// Реестр ИИ (ТЗ 5.11; задача 5.17, ADR-0029): модели и использование
+	// пополняются по почасовым агрегатам дашбордов раз в 10 минут.
+	inventoryStore, err := inventory.NewPGStore(db.Pool(), auditLog)
+	if err != nil {
+		return err
+	}
+	inventorySvc, err := inventory.New(inventory.Options{Store: inventoryStore, Provider: p, OrgID: audit.DefaultOrgID,
+		Logger: logger.With("component", "inventory")})
+	if err != nil {
+		return err
+	}
+	go inventorySvc.Run(ctx, inventory.SyncInterval)
+
 	// Консоль отдаётся, только если она собрана (make web-build перед go build); иначе сервер — чистый API.
 	var console http.Handler
 	if dist, err := fs.Sub(web.Dist, "dist"); err == nil {
@@ -678,7 +722,9 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		Agents:     agentsSvc,
 		Approvals:  approvalsSvc,
 		ShadowAI:   shadowSvc,
+		Inventory:  inventorySvc,
 		Compliance: complianceSvc,
+		ServiceDBs: serviceDBs,
 		License:    licSvc,
 		Quotas:     quotaSvc,
 		Incidents:  incidentsSvc,
@@ -768,13 +814,20 @@ func budgetUsage(svc *apps.Service) alerting.BudgetSource {
 	}
 }
 
+// statusExtras — источники условий «Состояния системы» задачи 5.9 этапа 5.
+type statusExtras struct {
+	GatewayLimits   func() map[string]gwregistry.LimitsMark
+	ShadowAIStorage func(ctx context.Context) (int64, int64, error)
+	ServiceDBs      func(ctx context.Context) ([]servicedb.State, error)
+}
+
 // newStatus собирает «Состояние системы» и запускает фоновую проверку
 // условий уведомлений раздела 7.
 func newStatus(ctx context.Context, cfg *serverConfig, db *store.DB, auditLog *audit.Log, integritySvc integrity.Service,
 	selftestRes selftest.Result, bundle func(context.Context) (*sysstatus.BundleHealth, error),
 	timezone func(context.Context) (string, error), caNotAfter time.Time, lic func(context.Context) (license.State, error),
 	quota func(context.Context) (sysstatus.QuotaHealth, error), shadowSyslog func() shadowai.SyslogStats,
-	logger *slog.Logger) (*sysstatus.Service, error) {
+	extras statusExtras, logger *slog.Logger) (*sysstatus.Service, error) {
 	gwStore, err := gwregistry.NewPGStore(db.Pool(), auditLog)
 	if err != nil {
 		return nil, err
@@ -810,7 +863,8 @@ func newStatus(ctx context.Context, cfg *serverConfig, db *store.DB, auditLog *a
 		Integrity: integritySvc.Store, Store: pg,
 		Timezone: timezone, StorageLimit: cfg.AuditStorageLimit, WarnPercent: cfg.AuditStorageWarnPercent,
 		Logger: logger, Bundle: bundle, CANotAfter: caNotAfter, CustomerCert: customerCert, License: lic, Quota: quota,
-		ShadowAISyslog: shadowSyslog,
+		ShadowAISyslog: shadowSyslog, GatewayLimits: extras.GatewayLimits, ShadowAIStorage: extras.ShadowAIStorage,
+		ServiceDBs: extras.ServiceDBs,
 	})
 	if err != nil {
 		return nil, err

@@ -367,6 +367,8 @@ type Service struct {
 	// lastReissue и lastMismatch — по ID шлюза: перевыпуск и запись о
 	// чужом ключе получателя не чаще раза в минуту.
 	lastReissue, lastMismatch map[string]time.Time
+	// limits — последние счётчики в памяти каждого шлюза (задача 5.9).
+	limits map[string]LimitsMark
 
 	// malformed — запросы регистрации с токеном неверного формата: они идут
 	// в технический журнал, а не в аудит (Н17 ревью 2.r3a, как В9).
@@ -394,6 +396,7 @@ func New(o Options) (*Service, error) {
 		orgID: o.OrgID, clock: o.Clock, validity: o.CertValidity, minHB: o.HeartbeatMinInterval, logger: o.Logger,
 		lastHB: map[string]time.Time{}, lastDeny: map[string]time.Time{},
 		lastReissue: map[string]time.Time{}, lastMismatch: map[string]time.Time{}, anchorRoot: o.AnchorRoot,
+		limits: map[string]LimitsMark{},
 	}
 	if s.anchorRoot == "" && s.ca != nil {
 		s.anchorRoot = RootID(h, s.ca.CertDER())
@@ -721,6 +724,9 @@ type HeartbeatInput struct {
 	// нулевое и nil — шлюз прежней версии (3Н40, 3Н43 ревью 3.r3).
 	Time           time.Time
 	TLSFingerprint *string
+	// Limits — заполнение и вытеснения счётчиков в памяти шлюза (задача 5.9
+	// этапа 5); nil — шлюз прежней версии или сервер не сообщил limits.
+	Limits *Limits
 }
 
 // Пределы итогов проверок в heartbeat.
@@ -795,6 +801,9 @@ func (in HeartbeatInput) Validate() error {
 		return fmt.Errorf("%w: budget — только вместе с started_at", ErrInvalidRequest)
 	}
 	if err := in.Budget.validate(); err != nil {
+		return err
+	}
+	if err := in.Limits.validate(); err != nil {
 		return err
 	}
 	if in.Version == "" || len(in.Version) > maxVersion {
@@ -882,6 +891,7 @@ func (s *Service) Heartbeat(ctx context.Context, gatewayID string, in HeartbeatI
 	if err != nil {
 		return HeartbeatResult{}, err
 	}
+	s.observeLimits(gatewayID, in, now)
 	out := HeartbeatResult{At: now, Reissue: s.needReissue(ch.CertCA, ch.CertNotAfter, now),
 		Budget: s.syncBudget(ctx, gatewayID, in)}
 	if !ch.VerifyDone {

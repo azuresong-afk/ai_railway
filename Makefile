@@ -126,6 +126,14 @@ dm-coverage: build ## Покрытие матрицы обнаружения 5.1
 detector-quality: ## Точность и полнота детекторов на корпусах против docs/detectors.md (ТЗ, 5.2)
 	go run ./tools/detector-quality -doc docs/detectors.md -corpus testdata/corpus -out $(BUILD)/detector-quality.md
 
+# Корпус изображений testdata/corpus/media (задача 5.36, tools/synth-media):
+# headless Chromium из AISEC_CHROMIUM без сети, шрифты — web/src/assets/fonts.
+# CI корпус не перегенерирует: сверку с манифестом делает make test.
+.PHONY: media-corpus
+media-corpus: ## Перегенерировать корпус изображений (нужен AISEC_CHROMIUM)
+	@test -n "$(AISEC_CHROMIUM)" || { echo "задайте AISEC_CHROMIUM — путь к Chromium"; exit 2; }
+	go run ./tools/synth-media -out testdata/corpus/media -chromium "$(AISEC_CHROMIUM)"
+
 # Демо-данные для демо-стенда (задача 3.29, tools/demo-data/README.md): запросы
 # идут в Check API шлюза, оповещения и инциденты создают правила сервера.
 # Адрес по умолчанию — loopback; чужой стенд — только с DEMO_FLAGS=-allow-remote.
@@ -443,6 +451,14 @@ ifeq ($(filter 1,$(ML)),1)
 		test "$$v" = '$(VERSION)' || { echo "images: версия выпуска aisec-ml $$v не совпадает с VERSION=$(VERSION) (4Н26)"; exit 1; }
 	$(MAKE) --no-print-directory ort-verify ORT_LIB_DIR=$(ML_RELEASE_DIR)/lib
 endif
+ifeq ($(filter 1,$(MEDIA)),1)
+	@test -s $(MEDIA_RELEASE_DIR)/aisec-manifest.json.sig || { echo "images: нет $(MEDIA_RELEASE_DIR)/aisec-manifest.json.sig — make media-release-dir RELEASE=1, затем make release-sign RELEASE_DIR=$(MEDIA_RELEASE_DIR) на машине без сети"; exit 1; }
+	@$(RELEASE_DIR)/bin/aisec-cli verify -release $(MEDIA_RELEASE_DIR) -allow-older >$(BUILD)/release-media-verify.out || \
+		{ cat $(BUILD)/release-media-verify.out; echo "images: выпуск aisec-media не прошёл проверку"; exit 1; }
+	@! grep -q 'тестовым ключом' $(BUILD)/release-media-verify.out || { echo "images: выпуск aisec-media подписан тестовым ключом"; exit 1; }
+	@v=$$(sed -n 's/^  "version": "\([^"]*\)",$$/\1/p' $(MEDIA_RELEASE_DIR)/aisec-manifest.json); \
+		test "$$v" = '$(VERSION)' || { echo "images: версия выпуска aisec-media $$v не совпадает с VERSION=$(VERSION)"; exit 1; }
+endif
 	$(MAKE) --no-print-directory release-fingerprint
 	$(MAKE) images-build
 
@@ -454,6 +470,9 @@ images-test: ## Те же образы с тестовым ключом мани
 .PHONY: images-all
 images-all:
 	$(MAKE) release-dir
+ifeq ($(filter 1,$(MEDIA)),1)
+	$(MAKE) media-release-dir
+endif
 	$(MAKE) images-build
 
 .PHONY: images-build
@@ -461,6 +480,9 @@ images-build:
 	$(MAKE) images-docker
 ifeq ($(filter 1,$(ML)),1)
 	$(MAKE) image-ml
+endif
+ifeq ($(filter 1,$(MEDIA)),1)
+	$(MAKE) image-media
 endif
 	$(MAKE) images-sbom
 	$(MAKE) images-verify
@@ -498,9 +520,60 @@ images-verify: ## Проверка образов (ЗИ.5): не root, нет о
 	go run ./tools/imagecheck image -release $(RELEASE_DIR) -kind $(IMAGE_KIND) $(addprefix $(IMAGES_DIR)/,$(addsuffix .tar,$(IMAGE_CMDS)))
 	go run ./tools/imagecheck compose $(PILOT_COMPOSE)
 	go run ./tools/imagecheck compose $(PILOT_COMPOSE) $(PILOT_ML_COMPOSE)
+	go run ./tools/imagecheck compose $(PILOT_COMPOSE) $(PILOT_MEDIA_COMPOSE)
+	go run ./tools/imagecheck compose $(PILOT_COMPOSE) $(PILOT_ML_COMPOSE) $(PILOT_MEDIA_COMPOSE)
 ifeq ($(filter 1,$(ML)),1)
 	go run ./tools/imagecheck image -release $(ML_RELEASE_DIR) -kind $(IMAGE_KIND) $(IMAGES_DIR)/aisec-ml.tar
 endif
+ifeq ($(filter 1,$(MEDIA)),1)
+	go run ./tools/imagecheck image -release $(MEDIA_RELEASE_DIR) -kind $(IMAGE_KIND) $(IMAGES_DIR)/aisec-media.tar
+endif
+
+# Анализатор изображений aisec-media (ADR-0032, задача 5.38): свой каталог
+# выпуска и манифест, как у aisec-ml, — после ADR-0033 в него добавятся
+# движок OCR (lib/) и модели (models/), а основной выпуск останется без них.
+# Пока бинарник статический (CGO_ENABLED=0) и совпадает с bin/aisec-media
+# основного выпуска.
+#
+#   make media-release-dir    каталог выпуска build/release-media
+#   make images MEDIA=1       образы поставки вместе с aisec-media
+#
+# С RELEASE=1 манифест подписывается так же, как основной: make release-sign
+# RELEASE_DIR=build/release-media на машине без сети.
+MEDIA ?=
+MEDIA_RELEASE_DIR := $(BUILD)/release-media
+PILOT_MEDIA_COMPOSE := deploy/compose/pilot/compose.media.yaml
+
+.PHONY: media-release-dir
+media-release-dir: ## Каталог выпуска aisec-media build/release-media: бинарник и свой манифест (с RELEASE=1 — без подписи)
+ifeq ($(filter 1,$(RELEASE)),1)
+	$(release-tree-check)
+endif
+	rm -rf $(MEDIA_RELEASE_DIR)
+	mkdir -p $(MEDIA_RELEASE_DIR)/bin
+	CGO_ENABLED=0 go build -trimpath -tags '$(BUILD_TAGS)' -ldflags '$(LDFLAGS)' -o $(MEDIA_RELEASE_DIR)/bin/ ./cmd/aisec-media
+	go run ./tools/manifest build -out $(MEDIA_RELEASE_DIR)/aisec-manifest.json \
+		$(if $(filter 1,$(RELEASE)),-unsigned,-test-key $(MANIFEST_TEST_KEY)) \
+		-version '$(VERSION)' -created '$(SOURCE_DATE)' -bin $(MEDIA_RELEASE_DIR)/bin -cmds aisec-media
+ifneq ($(filter 1,$(RELEASE)),1)
+	go run ./cmd/aisec-cli verify -release $(MEDIA_RELEASE_DIR) -allow-older
+endif
+
+.PHONY: image-media
+image-media: $(BIN)/sbom-utility ## Образ aisec-media из build/release-media (без сети и без RUN), SBOM
+	@test -s $(MEDIA_RELEASE_DIR)/aisec-manifest.json || { echo "image-media: нет $(MEDIA_RELEASE_DIR) — make media-release-dir"; exit 1; }
+	mkdir -p $(IMAGES_DIR)
+	docker build --pull=false --network=none --provenance=false --sbom=false \
+		-f deploy/build/Dockerfile.release --target aisec-media \
+		--build-arg VERSION='$(VERSION)' --build-arg BUILD_KIND=$(IMAGE_KIND) \
+		--build-arg SOURCE_DATE_EPOCH=$(SOURCE_EPOCH) \
+		-t $(IMAGE_REPO)/aisec-media:$(IMAGE_TAG) $(MEDIA_RELEASE_DIR)
+	docker save -o $(IMAGES_DIR)/aisec-media.tar $(IMAGE_REPO)/aisec-media:$(IMAGE_TAG)
+	go run ./tools/sbom -registry docs/cert/components.yaml -gosum go.sum \
+		-out $(IMAGES_DIR)/aisec-media.cdx.json -version '$(VERSION)' -timestamp '$(SOURCE_DATE)' -image $(IMAGE_REPO)/aisec-media:$(IMAGE_TAG) \
+		-file $(MEDIA_RELEASE_DIR)/aisec-manifest.json -file $(MEDIA_RELEASE_DIR)/aisec-manifest.json.sig $(MEDIA_RELEASE_DIR)/bin/aisec-media
+	$(BIN)/sbom-utility validate --quiet --input-file $(IMAGES_DIR)/aisec-media.cdx.json
+	go run ./tools/sbom -check $(IMAGES_DIR)/aisec-media.cdx.json
 
 # ML-детекторы (ADR-0024, задача 4.19): ONNX Runtime 1.31.0 из исходников без
 # телеметрии и выпуск aisec-ml со своим манифестом целостности.

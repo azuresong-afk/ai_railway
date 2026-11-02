@@ -1,15 +1,19 @@
 package integrity_test
 
 import (
+	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"testing"
 	"time"
 
+	"github.com/azuresong-afk/ai_railway/internal/audit"
 	"github.com/azuresong-afk/ai_railway/internal/compliance"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/internal/integrity"
 	"github.com/azuresong-afk/ai_railway/internal/license"
+	"github.com/azuresong-afk/ai_railway/internal/servicedb"
 	"github.com/azuresong-afk/ai_railway/internal/shadowai"
 )
 
@@ -92,5 +96,61 @@ func TestRevokedServiceDBAndLicense(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// Задача 5.15 (ADR-0028, п. 5): номер заверения отозван новым выпуском —
+// уже сохранённые базы этого ключа не используются (запись аудита
+// service_db.stored_invalid с причиной revoked), новую загрузить нельзя.
+func TestRevokedServiceDBStored(t *testing.T) {
+	ctx := context.Background()
+	p, err := aisecCrypto.New(aisecCrypto.ProfileStandard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, pub, err := aisecCrypto.DecodeKeyPEM(readFixture(t, "keys/manifest-test.pub"), aisecCrypto.KeyKindManifestSigningPublic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vendor, err := p.NewVerifier(pub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := servicedb.NewMemory()
+	at := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
+	newManager := func() *servicedb.Manager {
+		m, err := servicedb.NewManager(servicedb.Options{Store: st, Provider: p, Kind: shadowai.DBKind(), Vendor: vendor,
+			Clock: func() time.Time { return at }, Logger: slog.New(slog.DiscardHandler)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+	by := servicedb.By{Actor: audit.Actor{Type: audit.ActorUser, ID: "01900000-0000-7000-8000-0000000000a1", Name: "sysadm"}}
+	if _, err := newManager().Upload(ctx, by, readFixture(t, "../../testdata/shadowai/catalog-test.aisecdb")); err != nil {
+		t.Fatal(err)
+	}
+	restore := integrity.SetRevoked([]uint64{1}, nil)
+	defer restore()
+	m := newManager()
+	if a, err := m.Active(ctx); err != nil || a != nil {
+		t.Fatalf("отозванный каталог используется: %+v %v", a, err)
+	}
+	if s, _ := m.State(ctx); s.Current == nil || s.Current.Valid || s.Current.Reason != servicedb.ReasonRevoked { //nolint:gosec // G104: проверено выше
+		t.Fatalf("состояние: %+v", s)
+	}
+	found := false
+	for _, r := range st.Records() {
+		if r.Action == servicedb.ActionStoredInvalid && r.Details.(map[string]any)["reason"] == servicedb.ReasonRevoked {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("нет записи stored_invalid: %+v", st.Records())
+	}
+	_, err = m.Upload(ctx, by, readFixture(t, "../../testdata/shadowai/catalog-test.aisecdb"))
+	var re *servicedb.RejectError
+	if !errors.As(err, &re) || re.Reason != servicedb.ReasonRevoked {
+		t.Fatalf("загрузка отозванным ключом: %v", err)
 	}
 }

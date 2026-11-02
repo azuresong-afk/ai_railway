@@ -5,9 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
+	"time"
 )
 
 // socketMode — права сокета: владелец (aisec-ml) и группа шлюза.
@@ -51,3 +55,68 @@ func listenSocket(ctx context.Context, path string) (net.Listener, error) {
 	}
 	return l, nil
 }
+
+// peerLogEvery — не чаще одной записи об отказе в технический журнал:
+// процесс группы шлюза, открывающий соединения в цикле, не заполнит журнал.
+// Счётчик отказов в записи — все отказы с запуска.
+const peerLogEvery = time.Second
+
+// peerListener пропускает к серверу только соединения шлюза: UID и GID
+// собеседника (SO_PEERCRED) совпадают с ожидаемыми (4Н27, ADR-0024,
+// раздел 2). Сверяются оба: группа шлюза есть и у самого aisec-ml, и одна
+// группа не отличает шлюз от других процессов этой группы. Чужое
+// соединение закрывается в Accept — до чтения кадра и до слота сервера
+// (ml.ServerConfig.MaxConns).
+type peerListener struct {
+	net.Listener
+	uid, gid uint32
+	logger   *slog.Logger
+	rejected atomic.Uint64
+	mu       sync.Mutex
+	lastLog  time.Time
+}
+
+func newPeerListener(l net.Listener, uid, gid uint32, logger *slog.Logger) *peerListener {
+	return &peerListener{Listener: l, uid: uid, gid: gid, logger: logger}
+}
+
+// Accept возвращает следующее соединение шлюза; чужие закрываются, ошибка
+// чтения учётных данных — тоже отказ.
+func (l *peerListener) Accept() (net.Conn, error) {
+	for {
+		c, err := l.Listener.Accept()
+		if err != nil {
+			return nil, err
+		}
+		uid, gid, err := peerCred(c)
+		if err == nil && uid == l.uid && gid == l.gid {
+			return c, nil
+		}
+		_ = c.Close() //nolint:gosec // G104: чужое соединение закрывается без чтения
+		l.reject(uid, gid, err)
+	}
+}
+
+// reject считает отказ и пишет в журнал UID и GID собеседника — без
+// содержимого: из соединения ничего не прочитано.
+func (l *peerListener) reject(uid, gid uint32, err error) {
+	n := l.rejected.Add(1)
+	l.mu.Lock()
+	now := time.Now()
+	write := now.Sub(l.lastLog) >= peerLogEvery
+	if write {
+		l.lastLog = now
+	}
+	l.mu.Unlock()
+	if !write {
+		return
+	}
+	if err != nil {
+		l.logger.Warn("aisec-ml: учётные данные собеседника не прочитаны, соединение закрыто", "error", err, "rejected_total", n)
+		return
+	}
+	l.logger.Warn("aisec-ml: соединение не от шлюза закрыто", "peer_uid", uid, "peer_gid", gid, "rejected_total", n)
+}
+
+// Rejected — число отказов с запуска.
+func (l *peerListener) Rejected() uint64 { return l.rejected.Load() }

@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
+	"github.com/azuresong-afk/ai_railway/internal/cyclonedx"
 )
 
 // SBOM образа поставки (ADR-0019): тот же состав из бинарников, что у SBOM
@@ -107,8 +108,8 @@ func AsImage(bom *BOM, name string, files []ImageFile, hasher aisecCrypto.Hasher
 	bom.Metadata.Component = Component{
 		Type: "container", BOMRef: imageRef, Name: repo, Version: tag,
 		Description: productName + ": образ поставки",
-		Properties:  []Property{{propImageBase, "scratch"}},
+		Properties:  []Property{{Name: propImageBase, Value: "scratch"}},
 	}
-	bom.SerialNumber = serialFor(bom, hasher)
+	bom.SerialNumber = cyclonedx.SerialFor(bom, hasher)
 	return nil
 }

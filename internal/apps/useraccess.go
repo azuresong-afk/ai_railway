@@ -88,10 +88,16 @@ func userModeRank(mode string) int {
 	return 0
 }
 
-// clean проверяет ввод и приводит его к записи: группы без повторов и по
-// возрастанию, модели — из моделей и псевдонимов приложения a; группы
-// псевдонима — под именем его модели.
+// clean проверяет ввод для приложения a (CleanUserAccess).
 func (in UserAccessInput) clean(a Application) (UserAccess, error) {
+	return CleanUserAccess(a.Models, a.Aliases, in)
+}
+
+// CleanUserAccess проверяет ввод и приводит его к записи: группы без
+// повторов и по возрастанию, модели — из models и псевдонимов aliases
+// приложения; группы псевдонима — под именем его модели. Используют
+// сервис и восстановление копии конфигурации (CheckStoredUserAccess).
+func CleanUserAccess(models []string, aliases map[string]string, in UserAccessInput) (UserAccess, error) {
 	out := UserAccess{Mode: in.Mode, Issuer: strings.TrimSpace(in.Issuer), Audience: strings.TrimSpace(in.Audience),
 		GroupsClaim: strings.TrimSpace(in.GroupsClaim), Leeway: DefaultLeeway, ModelGroups: map[string][]string{}}
 	if out.GroupsClaim == "" {
@@ -129,11 +135,11 @@ func (in UserAccessInput) clean(a Application) (UserAccess, error) {
 		errs = append(errs, errors.New("model_groups — доступ по группам работает только с JWT: выберите режим optional или required"))
 	}
 	for m, groups := range in.ModelGroups {
-		model, alias := a.Aliases[m]
+		model, alias := aliases[m]
 		if !alias {
 			model = m
 		}
-		if !alias && !slices.Contains(a.Models, m) {
+		if !alias && !slices.Contains(models, m) {
 			errs = append(errs, fmt.Errorf("model_groups — %q не модель и не псевдоним приложения", clipName(m)))
 			continue
 		}
@@ -175,6 +181,28 @@ func (in UserAccessInput) clean(a Application) (UserAccess, error) {
 		return UserAccess{}, invalid(errs...)
 	}
 	return out, nil
+}
+
+// CheckStoredUserAccess проверяет сохранённую настройку пользователя
+// приложения правилами API (CleanUserAccess) для моделей и псевдонимов
+// приложения: запись должна совпадать с тем, что сохранил бы сервер, —
+// иначе, например, группы псевдонима не под именем модели снимали бы
+// ограничение при перенацеливании псевдонима (4В15). Вызывает
+// восстановление копии конфигурации до записи в БД (остаток 5.8,
+// остатки волны A этапа 5).
+func CheckStoredUserAccess(models []string, aliases map[string]string, u UserAccess) error {
+	leeway := u.Leeway
+	out, err := CleanUserAccess(models, aliases, UserAccessInput{Mode: u.Mode, Issuer: u.Issuer, Audience: u.Audience,
+		GroupsClaim: u.GroupsClaim, Leeway: &leeway, ModelGroups: u.ModelGroups})
+	if err != nil {
+		return err
+	}
+	if out.Mode != u.Mode || out.Issuer != u.Issuer || out.Audience != u.Audience || out.GroupsClaim != u.GroupsClaim ||
+		!maps.EqualFunc(out.ModelGroups, u.ModelGroups, slices.Equal[[]string]) {
+		return invalid(errors.New("user_access — не в том виде, в каком её сохраняет сервер (без пробелов по краям; группы " +
+			"без повторов по возрастанию; группы псевдонима — под именем модели)"))
+	}
+	return nil
 }
 
 func clipName(s string) string {

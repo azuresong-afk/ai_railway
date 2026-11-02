@@ -57,7 +57,7 @@ func TestServiceDBFlow(t *testing.T) {
 		&out, io.Discard); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "каталог теневого ИИ: версия 1") || !strings.Contains(out.String(), "SHA-256 файла:") {
+	if !strings.Contains(out.String(), "Каталог ИИ-сервисов: версия 1 от 2026-10-28, записей: 28") || !strings.Contains(out.String(), "SHA-256 файла:") {
 		t.Fatalf("вывод sign-db: %s", out.String())
 	}
 	if info, err := os.Stat(db); err != nil || info.Mode().Perm() != 0o644 {
@@ -116,6 +116,8 @@ func TestServiceDBRejects(t *testing.T) {
 		"неверный каталог":        signDB(sk, good, vpub, badYAML),
 		"заверение вместо базы":   signDB(sk, catalogSource, vpub, catalogSource),
 		"неизвестный вид базы":    run([]string{"sign-db", "-kind", "x", "-key", sk, "-endorsement", good, "-in", catalogSource, "-out", filepath.Join(dir, "k")}, io.Discard, io.Discard),
+		"каталог видом базы требований": run([]string{"sign-db", "-kind", "compliance_requirements", "-key", sk, "-endorsement", good, "-vendor-pub", vpub,
+			"-in", catalogSource, "-out", filepath.Join(dir, "k2")}, io.Discard, io.Discard),
 		"заверение длиннее 5 лет": run([]string{"endorse", "-key", vkey, "-subkey-pub", spub, "-purpose", "service_db", "-serial", "8", "-not-before", "2026-10-01", "-not-after", "2032-10-01", "-out", filepath.Join(dir, "e1")}, io.Discard, io.Discard),
 		"неизвестное назначение":  run(endorseArgs(vkey, spub, "firmware", filepath.Join(dir, "e2")), io.Discard, io.Discard),
 		"номер 0": run([]string{"endorse", "-key", vkey, "-subkey-pub", spub, "-purpose", "service_db", "-serial", "0", "-not-after", "2027-10-01", "-out", filepath.Join(dir, "e3")}, io.Discard, io.Discard),

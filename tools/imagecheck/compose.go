@@ -39,27 +39,30 @@ type composeFile struct {
 }
 
 type composeService struct {
-	Image       string            `yaml:"image"`
-	Build       yaml.Node         `yaml:"build"`
-	User        string            `yaml:"user"`
-	ReadOnly    bool              `yaml:"read_only"`
-	CapDrop     []string          `yaml:"cap_drop"`
-	CapAdd      []string          `yaml:"cap_add"`
-	SecurityOpt []string          `yaml:"security_opt"`
-	Privileged  bool              `yaml:"privileged"`
-	NetworkMode string            `yaml:"network_mode"`
-	Pid         string            `yaml:"pid"`
-	Ipc         string            `yaml:"ipc"`
-	UsernsMode  string            `yaml:"userns_mode"`
-	Devices     []string          `yaml:"devices"`
-	Volumes     []string          `yaml:"volumes"`
-	Ports       []string          `yaml:"ports"`
-	PidsLimit   int               `yaml:"pids_limit"`
-	MemLimit    string            `yaml:"mem_limit"`
-	Environment map[string]string `yaml:"environment"`
-	Networks    yaml.Node         `yaml:"networks"`
-	Secrets     []string          `yaml:"secrets"`
-	Healthcheck struct {
+	Image       string    `yaml:"image"`
+	Build       yaml.Node `yaml:"build"`
+	User        string    `yaml:"user"`
+	ReadOnly    bool      `yaml:"read_only"`
+	CapDrop     []string  `yaml:"cap_drop"`
+	CapAdd      []string  `yaml:"cap_add"`
+	SecurityOpt []string  `yaml:"security_opt"`
+	Privileged  bool      `yaml:"privileged"`
+	NetworkMode string    `yaml:"network_mode"`
+	Pid         string    `yaml:"pid"`
+	Ipc         string    `yaml:"ipc"`
+	UsernsMode  string    `yaml:"userns_mode"`
+	Devices     []string  `yaml:"devices"`
+	Volumes     []string  `yaml:"volumes"`
+	Ports       []string  `yaml:"ports"`
+	PidsLimit   int       `yaml:"pids_limit"`
+	MemLimit    string    `yaml:"mem_limit"`
+	// MemswapLimit и Cpus обязательны у aisec-media (ADR-0032, раздел 3).
+	MemswapLimit string            `yaml:"memswap_limit"`
+	Cpus         string            `yaml:"cpus"`
+	Environment  map[string]string `yaml:"environment"`
+	Networks     yaml.Node         `yaml:"networks"`
+	Secrets      []string          `yaml:"secrets"`
+	Healthcheck  struct {
 		Test        []string `yaml:"test"`
 		Interval    string   `yaml:"interval"`
 		Timeout     string   `yaml:"timeout"`
@@ -105,13 +108,17 @@ var composeRules = map[string]struct {
 	"aisec-gateway": {Ports: []string{"8443"}, External: true, Product: true,
 		Secrets: []string{"gateway-tls-cert", "gateway-tls-key", "console-ca", "gateway-bundle-anchor"},
 		Volumes: []string{"DATA/gateway/reg:/var/lib/aisec-gateway/reg:rw", "DATA/gateway/state:/var/lib/aisec-gateway/state:rw"},
-		// Каталог сокета aisec-ml — только чтение: шлюз лишь подключается.
-		OptionalVolumes: []string{mlRunGateway}},
+		// Каталоги сокетов aisec-ml и aisec-media — только чтение: шлюз лишь подключается.
+		OptionalVolumes: []string{mlRunGateway, mediaRunGateway}},
 	"aisec-cli": {Product: true, Secrets: []string{"db-owner-pgpass"},
 		Volumes: []string{"DATA/keys:/etc/aisec/keys:rw", "DATA/backups:/var/lib/aisec/backups:rw"}},
 	// Процесс ML-детекторов (ADR-0024): только сокет в общем со шлюзом
 	// каталоге, модели — внутри образа. Приходит из compose.ml.yaml.
 	"aisec-ml": {Product: true, Isolated: true, Optional: true, Volumes: []string{"DATA/ml/run:/run/aisec-ml:rw"}},
+	// Анализатор изображений (ADR-0032): то же, что aisec-ml, и сверх того —
+	// профиль seccomp, tmpfs, лимиты процессора и свопа (checkMedia).
+	// Приходит из compose.media.yaml.
+	"aisec-media": {Product: true, Isolated: true, Optional: true, Volumes: []string{"DATA/media/run:/run/aisec-media:rw"}},
 	"postgres": {Secrets: []string{"db-postgres-password", "db-owner-password", "db-server-password"},
 		Volumes: []string{"DATA/pg:/var/lib/postgresql/data:rw", "./initdb:/docker-entrypoint-initdb.d:ro"}},
 }
@@ -122,6 +129,14 @@ const (
 	mlRunGateway  = "DATA/ml/run:/run/aisec-ml:ro"
 	mlSocketEnv   = "AISEC_GATEWAY_ML_SOCKET"
 	mlSocketValue = "/run/aisec-ml/aisec-ml.sock"
+)
+
+// Подключение шлюза к aisec-media (compose.media.yaml): том каталога сокета
+// и путь сокета в окружении шлюза (шлюз читает его с задачи 5.39).
+const (
+	mediaRunGateway  = "DATA/media/run:/run/aisec-media:ro"
+	mediaSocketEnv   = "AISEC_GATEWAY_MEDIA_SOCKET"
+	mediaSocketValue = "/run/aisec-media/aisec-media.sock"
 )
 
 // secretFiles — файл каждого секрета (DATA — ${AISEC_DATA_DIR}). Якорь
@@ -345,17 +360,22 @@ func checkCompose(c *composeFile) []string {
 			add("нет сервиса %s", name)
 		}
 	}
-	// Шлюз подключён к aisec-ml тогда и только тогда, когда aisec-ml есть:
-	// иначе сокет либо некому открыть, либо шлюз о нём не знает.
+	// Шлюз подключён к aisec-ml (aisec-media) тогда и только тогда, когда
+	// этот сервис есть: иначе сокет либо некому открыть, либо шлюз о нём не знает.
 	if gw, ok := c.Services["aisec-gateway"]; ok {
-		_, hasML := c.Services["aisec-ml"]
-		vol := slices.ContainsFunc(gw.Volumes, func(v string) bool { return normVolume(v) == mlRunGateway })
-		env, hasEnv := gw.Environment[mlSocketEnv]
-		switch {
-		case hasML && (!vol || env != mlSocketValue):
-			add("aisec-gateway: с aisec-ml нужны том %s и %s=%s", mlRunGateway, mlSocketEnv, mlSocketValue)
-		case !hasML && (vol || hasEnv):
-			add("aisec-gateway: том %s и %s — только вместе с сервисом aisec-ml", mlRunGateway, mlSocketEnv)
+		for _, p := range []struct{ svc, vol, env, value string }{
+			{"aisec-ml", mlRunGateway, mlSocketEnv, mlSocketValue},
+			{"aisec-media", mediaRunGateway, mediaSocketEnv, mediaSocketValue},
+		} {
+			_, has := c.Services[p.svc]
+			vol := slices.ContainsFunc(gw.Volumes, func(v string) bool { return normVolume(v) == p.vol })
+			env, hasEnv := gw.Environment[p.env]
+			switch {
+			case has && (!vol || env != p.value):
+				add("aisec-gateway: с %s нужны том %s и %s=%s", p.svc, p.vol, p.env, p.value)
+			case !has && (vol || hasEnv):
+				add("aisec-gateway: том %s и %s — только вместе с сервисом %s", p.vol, p.env, p.svc)
+			}
 		}
 	}
 	for name, s := range c.Services {
@@ -374,8 +394,12 @@ func checkCompose(c *composeFile) []string {
 		if len(s.CapAdd) > 0 {
 			at("cap_add запрещён: %v", s.CapAdd)
 		}
-		if !slices.Equal(s.SecurityOpt, []string{"no-new-privileges:true"}) {
-			at("security_opt: ровно [no-new-privileges:true], получено %v", s.SecurityOpt)
+		wantOpt := []string{"no-new-privileges:true"}
+		if name == "aisec-media" {
+			wantOpt = append(wantOpt, mediaSeccompOpt)
+		}
+		if !slices.Equal(s.SecurityOpt, wantOpt) {
+			at("security_opt: ровно %v, получено %v", wantOpt, s.SecurityOpt)
 		}
 		for _, sec := range s.Secrets {
 			if _, ok := c.Secrets[sec]; !ok {
@@ -436,6 +460,9 @@ func checkCompose(c *composeFile) []string {
 			if strings.HasPrefix(strings.ToUpper(k), "LD_") {
 				at("переменная %s: переменные загрузчика запрещены", k)
 			}
+		}
+		if name == "aisec-media" {
+			checkMedia(s, at)
 		}
 		if name == "aisec-ml" {
 			for k := range s.Environment {

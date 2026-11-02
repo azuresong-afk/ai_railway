@@ -76,6 +76,8 @@ const usage = `aisec-cli — служебные операции AISec.
   tls check -dir КАТАЛОГ -hosts ИМЯ,АДРЕС,… [-console-name ИМЯ]
                                 проверка готовых сертификатов до установки (УЦ заказчика или tls init): цепочка до корня
                                 из ca.crt, срок, имена в SAN, serverAuth, ключ; при ошибке код выхода 1
+  servicedb inspect ФАЙЛ        проверить подписанную служебную базу (.aisecdb) до загрузки без сети и БД: вид, версия,
+                                дата, заверение рабочего ключа, отпечаток; при отказе код выхода 1
   version                       версия
 `
 
@@ -205,6 +207,17 @@ func run(args []string, stdout, stderr io.Writer, now time.Time) int {
 				return 0
 			}
 			say(stderr, "aisec-cli tls: %v\n", err)
+			return 1
+		}
+		return 0
+	case "servicedb":
+		if err := servicedbCmd(args[1:], stdout, stderr, now); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return 0
+			}
+			if !errors.Is(err, errServiceDBRejected) {
+				say(stderr, "aisec-cli servicedb: %v\n", err)
+			}
 			return 1
 		}
 		return 0

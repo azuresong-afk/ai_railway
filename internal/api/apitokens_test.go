@@ -201,6 +201,7 @@ func TestRBACMatrixTokenDenials(t *testing.T) {
 			if r.Scoped {
 				deny = !g.Allows(r.Permission)
 			}
+			deny = deny || r.SessionOnly
 			if !deny {
 				if w.Code == http.StatusUnauthorized || w.Code == http.StatusForbidden {
 					t.Errorf("%s %s, токен роли %s: ожидался доступ, ответ %d %s", r.Method, r.Path, role.ID, w.Code, w.Body)

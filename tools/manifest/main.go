@@ -124,9 +124,12 @@ func build(p aisecCrypto.Provider, args []string, stdout, stderr io.Writer) erro
 		return errors.New("обязательны -out, -bin, -cmds, -version")
 	}
 	// Выпуск aisec-ml (-lib, ADR-0024) — свой манифест: бинарник, библиотеки и
-	// модели, без консоли и миграций. Основному выпуску они обязательны.
-	if *lib == "" && (*static == "" || *migrations == "") {
-		return errors.New("обязательны -static и -migrations (без них — только выпуск aisec-ml с -lib)")
+	// модели, без консоли и миграций. Выпуск aisec-media (ADR-0032, задача
+	// 5.38) — тоже свой: только его бинарник (движок OCR — по ADR-0033).
+	// Основному выпуску консоль и миграции обязательны.
+	mediaRelease := strings.Join(strings.Fields(*cmds), " ") == "aisec-media"
+	if *lib == "" && !mediaRelease && (*static == "" || *migrations == "") {
+		return errors.New("обязательны -static и -migrations (без них — только выпуск aisec-ml с -lib или выпуск aisec-media)")
 	}
 	if (*testKey == "") != *unsigned {
 		return errors.New("нужен ровно один из -test-key и -unsigned; ключ производителя — только manifest sign на машине без сети")

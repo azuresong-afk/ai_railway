@@ -143,6 +143,22 @@ describe("экран «Отчёты»", () => {
     await waitFor(() => expect(calls.find((c) => c.method === "POST")?.body).toEqual({ name: "Сводка", report: "summary", frequency: "weekly", weekday: 1, at: "09:00", format: "xlsx", channel_id: "c-1", enabled: true, recipient_user_ids: [] }));
   });
 
+  it("расписание отчёта соответствия передаёт применимость, у других видов её нет", async () => {
+    renderScreen([...all, "compliance.read"]);
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "Рассылка" }), { button: 0 });
+    await screen.findByText("Недельная сводка");
+    fireEvent.click(screen.getByRole("button", { name: "Добавить расписание" }));
+    await screen.findByRole("option", { name: "Почта SOC" });
+    expect(screen.queryByLabelText("Применимость требований")).toBeNull();
+    const form = screen.getByRole("heading", { name: "Новое расписание рассылки" }).parentElement as HTMLElement;
+    fireEvent.change(within(form).getByLabelText("Отчёт"), { target: { value: "compliance" } });
+    fireEvent.change(screen.getByLabelText("Применимость требований"), { target: { value: "commercial" } });
+    fireEvent.change(screen.getByLabelText("Название"), { target: { value: "Соответствие" } });
+    fireEvent.change(screen.getByLabelText("Почтовый канал"), { target: { value: "c-1" } });
+    fireEvent.click(screen.getByRole("button", { name: "Создать расписание" }));
+    await waitFor(() => expect((calls.find((c) => c.method === "POST")?.body as { applies?: string }).applies).toBe("commercial"));
+  });
+
   it("получатели-пользователи: выбор, подсказка о пользователе без адреса, идентификаторы уходят в запрос", async () => {
     renderScreen(all);
     fireEvent.mouseDown(screen.getByRole("tab", { name: "Рассылка" }), { button: 0 });

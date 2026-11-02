@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
+	"slices"
 	"testing"
 	"unicode/utf8"
+
+	"github.com/azuresong-afk/ai_railway/internal/policy/argschema"
 )
 
 // FuzzParseJSONRPC — строгий разбор сообщения JSON-RPC от клиента и
@@ -39,6 +42,15 @@ func FuzzParseJSONRPC(f *testing.F) {
 		}
 		if m2.Kind != m.Kind || m2.Method != m.Method || !bytes.Equal(m2.Encode(), out) {
 			t.Fatalf("сборка неустойчива: %q → %q", out, m2.Encode())
+		}
+		// Принятый _meta (задача 5.10 этапа 5): progressToken по
+		// спецификации, и ровно он уходит серверу.
+		if m.Params != nil && CheckMeta(m.Params) == nil {
+			if meta, ok := GetObject(m.Params, "_meta"); ok {
+				if tok, ok := meta.Get(MetaProgressToken); ok && !ValidProgressToken(tok) {
+					t.Fatalf("progressToken принят: %q", AppendJSON(nil, *tok))
+				}
+			}
 		}
 	})
 }
@@ -105,6 +117,11 @@ func FuzzToolsListResult(f *testing.F) {
 		if !json.Valid(b) {
 			t.Fatalf("список — не JSON: %q", b)
 		}
+		for _, k := range out.Keys {
+			if k != "tools" && !slices.Contains(listKeys[Version20260728], k) {
+				t.Fatalf("поле %q верхнего уровня в списке клиенту", k)
+			}
+		}
 		tools, _ := out.Get("tools")
 		for i := range tools.Arr {
 			if _, ok := tools.Arr[i].Get("icons"); ok {
@@ -113,6 +130,55 @@ func FuzzToolsListResult(f *testing.F) {
 			if _, ok := tools.Arr[i].Get("_meta"); ok {
 				t.Fatal("_meta в списке клиенту")
 			}
+		}
+	})
+}
+
+// FuzzHandshakeResult — результат initialize и server/discover
+// вышестоящего сервера (задача 5.10 этапа 5): без паники; в принятом —
+// только поля спецификации метода, instructions — строка, результат — JSON.
+func FuzzHandshakeResult(f *testing.F) {
+	for _, s := range []string{
+		`{"protocolVersion":"2025-11-25","capabilities":{"tools":{}},"serverInfo":{"name":"s"},"instructions":"i","_meta":{}}`,
+		`{"supportedVersions":["2026-07-28"],"capabilities":{},"serverInfo":{"name":"s"},"resultType":"complete","x":1}`,
+		`{"instructions":{"text":"i"}}`,
+		`{"supportedVersions":[1,"a"],"resultType":"input_required"}`,
+		`{"serverInfo":{"name":"s","title":"t","version":"1","icons":[],"websiteUrl":"https://x.test/","description":"d"}}`,
+	} {
+		f.Add([]byte(s), false)
+		f.Add([]byte(s), true)
+	}
+	f.Fuzz(func(t *testing.T, data []byte, discover bool) {
+		m, err := Parse(append(append([]byte(`{"jsonrpc":"2.0","id":1,"result":`), data...), '}'), Limits(1<<20))
+		if err != nil || m.Kind != KindResult {
+			return
+		}
+		method := "initialize"
+		if discover {
+			method = "server/discover"
+		}
+		r := Clone(*m.Result)
+		if err := HandshakeResult(method, &r); err != nil {
+			return
+		}
+		for _, k := range r.Keys {
+			if !slices.Contains(handshakeKeys[method], k) {
+				t.Fatalf("поле %q в результате %s клиенту", k, method)
+			}
+		}
+		if v, ok := r.Get("instructions"); ok && v.Kind != argschema.String {
+			t.Fatal("instructions не строка")
+		}
+		// 5Н6 ревью 5.r1: в serverInfo — только name, title и version, строки.
+		if si, ok := GetObject(&r, "serverInfo"); ok {
+			for i, k := range si.Keys {
+				if !slices.Contains(serverInfoKeys, k) || si.Vals[i].Kind != argschema.String || len(si.Vals[i].Str) > MaxServerInfoField {
+					t.Fatalf("serverInfo.%s клиенту", k)
+				}
+			}
+		}
+		if b := AppendJSON(nil, r); !json.Valid(b) {
+			t.Fatalf("результат — не JSON: %q", b)
 		}
 	})
 }

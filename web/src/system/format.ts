@@ -64,3 +64,26 @@ export const chainReasonText = new Map([
   ["checkpoint_invalid", "контрольная точка неверна"],
   ["anchor_forged", "опорная точка подделана"],
 ]);
+
+// Условия-ошибки: работа уже нарушена, а не близка к нарушению.
+export const errorConditions = new Set(["shadow_ai_full", "service_db_unused"]);
+
+// Компонент условия словами: шлюз — по имени, служебная база — по виду.
+export function componentText(c: string, gateways: Map<string, string>): string {
+  if (c === "server") return "сервер";
+  if (c.startsWith("gateway:")) {
+    const id = c.slice("gateway:".length);
+    return `шлюз ${gateways.get(id) ?? id}`;
+  }
+  if (c.startsWith("service_db:")) {
+    const kind = c.slice("service_db:".length);
+    return serviceDBText.get(kind) ?? `служебная база ${kind}`;
+  }
+  return c;
+}
+
+// Виды служебных баз (ADR-0028).
+export const serviceDBText = new Map([
+  ["shadow_ai_catalog", "каталог ИИ-сервисов"],
+  ["compliance_requirements", "база требований"],
+]);

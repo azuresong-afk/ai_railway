@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -264,12 +265,15 @@ func TestP4Measure(t *testing.T) {
 		}
 		model := s.Model
 		c := p4.Case{ML: d, Heuristic: heur[s.ID], Corpus: dir, Threshold: th, LatencyText: text, LatencyTokens: n,
-			LatencyRuns: 200, Latency: func(ctx context.Context, x string) error { _, err := client.Detect(ctx, model, x); return err }}
+			LatencyRuns: 200, Latency: func(ctx context.Context, x string) error { _, err := client.Detect(ctx, model, x); return err },
+			// pii.ner — правило «при той же доле ложных» (решение владельца
+			// 30.10.2026, ADR-0024, дополнение 4.20).
+			EqualFPR: s.ID == builtin.PIINERID}
 		cases = append(cases, c)
-		// pii.ner — ещё и против pii.ru: он имён не ищет, строка показывает,
-		// что добавляет NER к детектору этапа 1 (задача 4.20).
+		// pii.ner — ещё и против pii.ru: он имён не ищет, строка для
+		// сравнения показывает, что добавляет NER к детектору этапа 1.
 		if s.ID == builtin.PIINERID {
-			c.Heuristic = pii.New()
+			c.Heuristic, c.Reference, c.Latency = pii.New(), true, nil
 			cases = append(cases, c)
 		}
 	}
@@ -306,11 +310,40 @@ func TestP4Measure(t *testing.T) {
 		}
 		md += cr.Markdown()
 	}
+	md += factRuLine(t)
 	out := filepath.Join(mlDir(t), "p4.md")
 	if err := os.WriteFile(out, []byte(md), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	t.Logf("замер Р4 -> %s\n%s", out, md)
+}
+
+// factRuLine — полнота pii.ner по фрагментам на testset factRuEval-2016 из
+// отчёта дообучки (tools/ml/train_ner.py): вторая часть правила Р4 для
+// pii.ner (решение владельца 30.10.2026) — проверка на живом тексте, а не
+// только на синтетике. Нет отчёта или проверки — так и пишется.
+func factRuLine(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(mlDir(t), "train", "pii-ner-ru", "train_report.json")
+	data, err := os.ReadFile(path) //nolint:gosec // G304: путь собирает тест из каталога сборки
+	if err != nil {
+		return "\n`pii.ner` на testset factRuEval-2016: отчёта дообучки нет (" + path + ").\n"
+	}
+	var rep struct {
+		CheckFactru *struct {
+			PII struct{ Precision, Recall, F1 float64 } `json:"pii"`
+		} `json:"check_factru"`
+	}
+	if err := json.Unmarshal(data, &rep); err != nil {
+		t.Fatalf("%s: %v", path, err)
+	}
+	if rep.CheckFactru == nil {
+		return "\n`pii.ner` на testset factRuEval-2016: проверки не было (набор не скачан).\n"
+	}
+	m := rep.CheckFactru.PII
+	dec := func(v float64) string { return strings.Replace(strconv.FormatFloat(v, 'f', 3, 64), ".", ",", 1) }
+	return fmt.Sprintf("\n`pii.ner` на testset factRuEval-2016 (живые новости, фрагменты имён и организаций; из отчёта дообучки): точность %s, полнота %s, F1 %s.\n",
+		dec(m.Precision), dec(m.Recall), dec(m.F1))
 }
 
 func cpuModel() string {

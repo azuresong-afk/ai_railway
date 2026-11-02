@@ -1,0 +1,30 @@
+{
+  "id": "card-02",
+  "file": "card-02.png",
+  "text_file": "card-02.txt",
+  "kind": "card",
+  "lang": "ru",
+  "dm": [
+    "DM-46"
+  ],
+  "description": "Реквизиты контрагента: ИНН, ОГРН, БИК и расчётный счёт",
+  "metadata": [],
+  "qr": [],
+  "expect": [
+    {
+      "type": "pii.inn",
+      "source": "ocr",
+      "text": "0072020630"
+    },
+    {
+      "type": "pii.ogrn",
+      "source": "ocr",
+      "text": "1400062510870"
+    },
+    {
+      "type": "pii.account",
+      "source": "ocr",
+      "text": "40817810400006251087"
+    }
+  ]
+}

@@ -43,6 +43,8 @@ export const shadowApi = {
       gzip ? "application/gzip" : "text/plain",
     ),
   uploadCatalog: (file: File) => upload<ShadowCatalog>("PUT", "/api/v1/shadow-ai/catalog", file, "application/octet-stream"),
+  // Возврат предыдущей версии каталога (задача 5.15).
+  rollbackCatalog: () => request<ShadowCatalog>("POST", "/api/v1/shadow-ai/catalog/rollback"),
   addExclusion: (b: ShadowExclusionInput) => request<ShadowExclusion>("POST", "/api/v1/shadow-ai/exclusions", b),
   removeExclusion: (kind: ShadowExclusion["kind"], value: string) =>
     request<void>("DELETE", `/api/v1/shadow-ai/exclusions/${id(kind)}/${id(value)}`),

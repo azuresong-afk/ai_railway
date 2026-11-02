@@ -2,7 +2,7 @@ package builtin
 
 import (
 	"context"
-	"errors"
+	"fmt"
 	"slices"
 
 	"github.com/azuresong-afk/ai_railway/internal/detect"
@@ -108,8 +108,9 @@ func (s MLSpec) ThreatFor(dir detect.Direction) string {
 }
 
 // ErrMLNotConnected — у компонента нет связи с aisec-ml: сервер, песочница
-// политик или шлюз без -ml-socket.
-var ErrMLNotConnected = errors.New("aisec-ml не подключён")
+// политик или шлюз без -ml-socket. Это недоступность aisec-ml
+// (detect.ErrMLUnavailable), а не сбой детектора.
+var ErrMLNotConnected = fmt.Errorf("%w: не подключён", detect.ErrMLUnavailable)
 
 // MLCategories — категории находок детектора по возрастанию.
 func (s MLSpec) MLCategories() []string {

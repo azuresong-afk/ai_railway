@@ -6,8 +6,13 @@
 #   ./verify-release.sh -first КАТАЛОГ_ВЫПУСКА    первая установка
 #
 # Каталог выпуска: aisec-manifest.json, aisec-manifest.json.sig, bin/ и
-# images/aisec-server.tar, aisec-gateway.tar, aisec-cli.tar. Запускается от
-# root (или группы docker с правом записи во временный каталог).
+# images/aisec-server.tar, aisec-gateway.tar, aisec-cli.tar. Необязательный
+# подкаталог media/ — свой выпуск анализатора изображений aisec-media
+# (ADR-0032, задача 5.38): aisec-manifest.json, aisec-manifest.json.sig,
+# bin/aisec-media и images/aisec-media.tar; он проверяется так же, тем же
+# aisec-cli и тем же отпечатком ключа, а его версия обязана совпасть с версией
+# основного выпуска. Запускается от root (или группы docker с правом записи во
+# временный каталог).
 #
 # 0. Выпуск копируется во временный каталог (владелец root, запись только
 #    владельцу), и дальше скрипт работает только с копией: файлы нельзя
@@ -99,7 +104,8 @@ esac
 chmod 0755 "$work"
 rel="$work/release"
 mkdir -p "$rel/images"
-for f in aisec-manifest.json aisec-manifest.json.sig bin images/aisec-server.tar images/aisec-gateway.tar images/aisec-cli.tar; do
+for f in aisec-manifest.json aisec-manifest.json.sig bin images/aisec-server.tar images/aisec-gateway.tar images/aisec-cli.tar \
+	media media/aisec-manifest.json media/aisec-manifest.json.sig media/bin media/images/aisec-media.tar; do
 	[ ! -L "$release/$f" ] || die "в выпуске $f — символьная ссылка"
 done
 cp -P "$release/aisec-manifest.json" "$release/aisec-manifest.json.sig" "$rel/"
@@ -109,6 +115,19 @@ for c in aisec-server aisec-gateway aisec-cli; do
 	[ -f "$release/images/$c.tar" ] || die "в выпуске нет images/$c.tar"
 	cp -P "$release/images/$c.tar" "$rel/images/"
 done
+# Выпуск aisec-media — только целиком: манифест, подпись, бинарник и образ.
+media=
+if [ -e "$release/media" ]; then
+	media=1
+	for f in aisec-manifest.json aisec-manifest.json.sig images/aisec-media.tar; do
+		[ -f "$release/media/$f" ] || die "в выпуске aisec-media нет media/$f"
+	done
+	[ -d "$release/media/bin" ] || die "в выпуске aisec-media нет media/bin/"
+	mkdir -p "$rel/media/images"
+	cp -P "$release/media/aisec-manifest.json" "$release/media/aisec-manifest.json.sig" "$rel/media/"
+	cp -RP "$release/media/bin" "$rel/media/bin"
+	cp -P "$release/media/images/aisec-media.tar" "$rel/media/images/"
+fi
 chown -R "$(id -u):$(id -g)" "$rel"
 chmod -R u=rwX,go=rX "$rel"
 
@@ -135,7 +154,7 @@ check_archive() {
 }
 
 manifest_version() {
-	sed -n 's/^  "version": "\([A-Za-z0-9._-]*\)",$/\1/p' "$rel/aisec-manifest.json"
+	sed -n 's/^  "version": "\([A-Za-z0-9._-]*\)",$/\1/p' "${1:-$rel}/aisec-manifest.json"
 }
 
 if [ -n "$first" ]; then
@@ -181,6 +200,21 @@ else
 	echo "   ВНИМАНИЕ: AISEC_VENDOR_FINGERPRINT не задан, отпечаток не сверен (сборка aisec-test, НЕ ДЛЯ ПОСТАВКИ)." >&2
 fi
 
+# Выпуск aisec-media — тем же aisec-cli и с тем же отпечатком ключа.
+if [ -n "$media" ]; then
+	echo "1a. Подпись и файлы выпуска aisec-media (media/) — тем же aisec-cli."
+	# shellcheck disable=SC2086 # флаг без пробелов
+	docker run --rm --pull never --network none --read-only --cap-drop ALL --security-opt no-new-privileges:true \
+		--user 65534:65534 --mount "type=bind,source=$rel/media,target=/release,readonly" \
+		"$checker" verify -release /release $verify_flags >"$work/verify-media.out" || {
+		cat "$work/verify-media.out"
+		die "выпуск aisec-media не прошёл проверку подписи и файлов — не устанавливайте его"
+	}
+	cat "$work/verify-media.out"
+	media_fp=$(sed -n 's/^Отпечаток ключа производителя: \([0-9a-f:]*\)$/\1/p' "$work/verify-media.out" | tail -n 1)
+	[ "$media_fp" = "$got_fp" ] || die "выпуск aisec-media проверен ключом $media_fp, а основной — $got_fp"
+fi
+
 # Манифест проверен: версия и список бинарников берутся из копии.
 version=$(manifest_version)
 [ -n "$version" ] || die "в манифесте нет версии"
@@ -189,6 +223,14 @@ tag="$version$suffix"
 [ -n "$first" ] || [ "$tag" != "$installed" ] || die "выпуск $tag уже установлен — проверять нечего"
 bins=$(sed -n 's/^      "path": "bin\/\([a-z0-9-]*\)",$/\1/p' "$rel/aisec-manifest.json" | sort)
 [ -n "$bins" ] || die "в манифесте нет бинарников"
+images="aisec-server aisec-gateway aisec-cli"
+if [ -n "$media" ]; then
+	[ "$(manifest_version "$rel/media")" = "$version" ] ||
+		die "версия выпуска aisec-media $(manifest_version "$rel/media") не совпадает с версией выпуска $version"
+	media_bins=$(sed -n 's/^      "path": "bin\/\([a-z0-9-]*\)",$/\1/p' "$rel/media/aisec-manifest.json" | sort)
+	[ "$media_bins" = aisec-media ] || die "в манифесте выпуска aisec-media не ровно bin/aisec-media"
+	images="$images aisec-media"
+fi
 
 # Ожидаемые файлы образа (tar -tv без размеров и дат). Файлы, которые Docker
 # сам создаёт в контейнере (/dev, /proc, /sys, /etc/hosts и т. п.), не
@@ -203,17 +245,21 @@ expected_files() {
 }
 
 echo "2. Образы выпуска $tag совпадают с проверенными файлами."
-for c in aisec-server aisec-gateway aisec-cli; do
-	archive="$rel/images/$c.tar"
-	image="$repo/$c:$tag"
+for c in $images; do
+	src=$rel
+	manifest_bins=$bins
 	case "$c" in
 	aisec-server) want_bins=aisec-server ports='{"8444/tcp":{},"8445/tcp":{}}' ;;
 	aisec-gateway) want_bins=aisec-gateway ports='{"8443/tcp":{}}' ;;
 	aisec-cli) want_bins=$bins ports=null ;;
+	# aisec-media — из своего выпуска media/, портов нет.
+	aisec-media) want_bins=aisec-media ports=null src=$rel/media manifest_bins=$media_bins ;;
 	esac
+	archive="$src/images/$c.tar"
+	image="$repo/$c:$tag"
 	# Бинарник каждого образа обязан быть в проверенном манифесте.
 	for b in $want_bins; do
-		printf '%s\n' "$bins" | grep -qx "$b" || die "в проверенном манифесте нет bin/$b для $image"
+		printf '%s\n' "$manifest_bins" | grep -qx "$b" || die "в проверенном манифесте нет bin/$b для $image"
 	done
 	# При первой установке aisec-cli уже проверен и загружен на шаге 1.
 	if [ "$image" != "$checker" ] || [ -z "$first" ]; then
@@ -242,10 +288,10 @@ for c in aisec-server aisec-gateway aisec-cli; do
 		die "$image: не скопировать /opt/aisec"
 	}
 	docker rm "$id" >/dev/null
-	cmp -s "$work/$c/aisec-manifest.json" "$rel/aisec-manifest.json" || die "$image: манифест отличается от проверенного"
-	cmp -s "$work/$c/aisec-manifest.json.sig" "$rel/aisec-manifest.json.sig" || die "$image: подпись отличается от проверенной"
+	cmp -s "$work/$c/aisec-manifest.json" "$src/aisec-manifest.json" || die "$image: манифест отличается от проверенного"
+	cmp -s "$work/$c/aisec-manifest.json.sig" "$src/aisec-manifest.json.sig" || die "$image: подпись отличается от проверенной"
 	for b in $want_bins; do
-		cmp -s "$work/$c/bin/$b" "$rel/bin/$b" || die "$image: bin/$b отличается от проверенного"
+		cmp -s "$work/$c/bin/$b" "$src/bin/$b" || die "$image: bin/$b отличается от проверенного"
 	done
 	echo "   $image — совпадает ($(echo "$want_bins" | wc -w) бинарн.)"
 done

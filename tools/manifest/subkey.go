@@ -9,9 +9,10 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/azuresong-afk/ai_railway/internal/compliance"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/internal/integrity"
+	"github.com/azuresong-afk/ai_railway/internal/servicedb"
+	"github.com/azuresong-afk/ai_railway/internal/servicedb/kinds"
 	"github.com/azuresong-afk/ai_railway/internal/shadowai"
 )
 
@@ -20,22 +21,9 @@ import (
 // сети; -test — тестовые пары репозитория (testdata/shadowai/), сеть не
 // проверяется, а заверение подписывает тестовый ключ производителя.
 
-// dbKinds — виды служебных баз и проверка содержимого перед подписью.
-var dbKinds = map[string]func([]byte) (string, error){
-	shadowai.CatalogKind: func(data []byte) (string, error) {
-		c, err := shadowai.ParseCatalog(data)
-		if err != nil {
-			return "", err
-		}
-		return fmt.Sprintf("каталог теневого ИИ: версия %d от %s, сервисов: %d", c.Version, c.Date, len(c.Services)), nil
-	},
-	compliance.BaseKind: func(data []byte) (string, error) {
-		b, err := compliance.ParseBase(data)
-		if err != nil {
-			return "", err
-		}
-		return fmt.Sprintf("база требований соответствия: версия %d от %s, пунктов: %d", b.Version, b.Date, len(b.Requirements)), nil
-	},
+// dbSummary — краткое описание проверенного содержимого базы.
+func dbSummary(k servicedb.Kind, c servicedb.Content) string {
+	return fmt.Sprintf("%s: версия %d от %s, записей: %d", k.Title, c.Version, c.Date.Format(time.DateOnly), c.Records)
 }
 
 // genSubkey создаёт пару рабочего ключа: закрытый — 0400 без перезаписи,
@@ -217,7 +205,7 @@ func signDB(p aisecCrypto.Provider, args []string, stdout, stderr io.Writer) err
 	keyFile := fs.String("key", "", "закрытый рабочий ключ (AISEC VENDOR SUBKEY, права 0400)")
 	endorsement := fs.String("endorsement", "", "файл заверения рабочего ключа (endorse)")
 	vendorPub := fs.String("vendor-pub", "", "открытый ключ производителя (manifest.pub) для проверки заверения")
-	kind := fs.String("kind", shadowai.CatalogKind, "вид базы")
+	kind := fs.String("kind", shadowai.CatalogKind, "вид базы из реестра выпуска (internal/servicedb/kinds)")
 	in := fs.String("in", "", "содержимое базы (например, internal/shadowai/catalog/catalog.yaml)")
 	out := fs.String("out", "", "подписанный файл базы (не должен существовать)")
 	testPair := fs.Bool("test", false, "тестовые ключи репозитория — НЕ ДЛЯ ПОСТАВКИ, сеть не проверяется")
@@ -227,9 +215,9 @@ func signDB(p aisecCrypto.Provider, args []string, stdout, stderr io.Writer) err
 	if fs.NArg() > 0 || *keyFile == "" || *endorsement == "" || *in == "" || *out == "" {
 		return errors.New("обязательны -key, -endorsement, -in и -out")
 	}
-	check, ok := dbKinds[*kind]
-	if !ok {
-		return fmt.Errorf("-kind: неизвестный вид базы %q", *kind)
+	k, err := servicedb.KindByName(kinds.All(), *kind)
+	if err != nil {
+		return fmt.Errorf("-kind: %w", err)
 	}
 	if !*testPair {
 		if err := checkOffline(); err != nil {
@@ -253,10 +241,13 @@ func signDB(p aisecCrypto.Provider, args []string, stdout, stderr io.Writer) err
 	if err != nil {
 		return err
 	}
-	summary, err := check(payload)
+	// Содержимое разбирается разборщиком вида до подписи: неверную базу не
+	// подписать.
+	content, err := k.Parse(payload)
 	if err != nil {
 		return fmt.Errorf("%s: %w", *in, err)
 	}
+	summary := dbSummary(k, content)
 	// Тестовый рабочий ключ лежит в репозитории, права файла git не хранит.
 	readKey := aisecCrypto.ReadKeyFile
 	if *testPair {
@@ -282,15 +273,9 @@ func signDB(p aisecCrypto.Provider, args []string, stdout, stderr io.Writer) err
 	if err != nil {
 		return err
 	}
-	switch *kind {
-	case shadowai.CatalogKind:
-		if _, err := shadowai.VerifyCatalog(p, vendor, file, now); err != nil {
-			return fmt.Errorf("проверка готового файла: %w", err)
-		}
-	case compliance.BaseKind:
-		if _, err := compliance.VerifyBase(p, vendor, file, now); err != nil {
-			return fmt.Errorf("проверка готового файла: %w", err)
-		}
+	// Готовый файл проверяется так же, как его проверит сервер при загрузке.
+	if _, err := servicedb.Verify(p, vendor, k, file, now); err != nil {
+		return fmt.Errorf("проверка готового файла: %w", err)
 	}
 	if err := writeNew(*out, file, 0o644); err != nil {
 		return err
@@ -337,10 +322,12 @@ func inspectDB(p aisecCrypto.Provider, args []string, stdout, stderr io.Writer) 
 		verified = "Подпись и заверение проверены"
 	}
 	summary := "вид неизвестен этому инструменту"
-	if check, ok := dbKinds[db.Kind]; ok {
-		if summary, err = check(db.Payload); err != nil {
+	if k, err := servicedb.KindByName(kinds.All(), db.Kind); err == nil {
+		c, err := k.Parse(db.Payload)
+		if err != nil {
 			return err
 		}
+		summary = dbSummary(k, c)
 	}
 	fp, err := integrity.Fingerprint(p, db.Endorsement.PublicKey)
 	if err != nil {

@@ -1,0 +1,20 @@
+{
+  "id": "faint-02",
+  "file": "faint-02.png",
+  "text_file": "faint-02.txt",
+  "kind": "faint",
+  "lang": "en",
+  "dm": [
+    "DM-46"
+  ],
+  "description": "Бледный номер карты на белом фоне",
+  "metadata": [],
+  "qr": [],
+  "expect": [
+    {
+      "type": "pii.card",
+      "source": "ocr_contrast",
+      "text": "4000 0044 2984 0600"
+    }
+  ]
+}

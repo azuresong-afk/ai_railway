@@ -17,6 +17,8 @@
 # запуском нельзя (скрипт откажет), адрес интерфейса без --bind остаётся
 # прежним из .env. Источник сертификатов (свой УЦ установки или --tls-dir)
 # тоже задаётся первым запуском: сменить его повторным запуском нельзя.
+# С --media (задача 5.38) ставится и анализатор изображений aisec-media: свой
+# выпуск и образ, compose.media.yaml и профиль media в .env.
 set -eu
 umask 077
 cd "$(dirname "$0")"
@@ -40,6 +42,9 @@ usage() {
   --build-ca ФАЙЛ      корневой сертификат прокси с проверкой TLS — нужен npm
                        при сборке консоли; в образы не попадает
   --no-build           не собирать образы: взять AISEC_IMAGE_REPO и AISEC_VERSION из .env
+  --media              включить анализатор изображений aisec-media (ADR-0032):
+                       собрать его выпуск и образ, добавить compose.media.yaml
+                       в COMPOSE_FILE и media в COMPOSE_PROFILES
 EOF
 	exit 2
 }
@@ -54,7 +59,7 @@ step() {
 	echo "==> $*"
 }
 
-hosts= console_name= bind= mirror= build_ca= build=1 tls_dir=
+hosts= console_name= bind= mirror= build_ca= build=1 tls_dir= media=
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--host)
@@ -92,12 +97,18 @@ while [ $# -gt 0 ]; do
 		build=
 		shift
 		;;
+	--media)
+		media=1
+		shift
+		;;
 	*) usage ;;
 	esac
 done
 [ -n "$hosts" ] || usage
 [ "$(id -u)" -eq 0 ] || die "запустите от root (sudo ./lab-install.sh …)"
 [ -f compose.yaml ] && [ -x prepare-host.sh ] || die "запустите из каталога deploy/compose/pilot"
+[ -z "$media" ] || { [ -f compose.media.yaml ] && [ -f seccomp/aisec-media.json ]; } ||
+	die "--media: нет compose.media.yaml или seccomp/aisec-media.json рядом со скриптом"
 [ -z "$build_ca" ] || [ -s "$build_ca" ] || die "нет файла $build_ca"
 # check_tls_dir — каталог сертификатов заказчика подменить может только
 # root: сам каталог — root без записи для группы и остальных, каждый каталог
@@ -244,6 +255,20 @@ if [ -n "$build" ]; then
 	done
 	# Целостность собранного выпуска — по подписанному манифесту в образе.
 	docker run --rm --network none "aisec-test/aisec-cli:$tag" verify
+	if [ -n "$media" ]; then
+		# aisec-media — свой выпуск и манифест (как make media-release-dir):
+		# каталог проверяет aisec-cli того же выпуска, образ — без сети.
+		mkdir "$release/media"
+		docker build -f "$repo/deploy/build/Dockerfile.lab" --target media-release "$@" -o type=local,dest="$release/media" "$repo"
+		docker run --rm --user 0:0 --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
+			-v "$release/media:/in:ro" "aisec-test/aisec-cli:$tag" verify -release /in -allow-older ||
+			die "выпуск aisec-media не прошёл проверку целостности"
+		docker build --pull=false --network=none --provenance=false --sbom=false -q \
+			-f "$repo/deploy/build/Dockerfile.release" --target aisec-media \
+			--build-arg VERSION="$version" --build-arg BUILD_KIND=test --build-arg SOURCE_DATE_EPOCH="$source_epoch" \
+			-t "aisec-test/aisec-media:$tag" "$release/media" >/dev/null
+		echo "Образ aisec-test/aisec-media:$tag."
+	fi
 	rm -rf "$release"
 	trap - EXIT
 else
@@ -251,7 +276,7 @@ else
 	[ -f .env ] || die "нет .env: без сборки возьмите AISEC_VERSION собранных образов из прошлого запуска"
 	tag=$(env_get AISEC_VERSION)
 	image_repo=$(env_get AISEC_IMAGE_REPO)
-	for c in aisec-server aisec-gateway aisec-cli; do
+	for c in aisec-server aisec-gateway aisec-cli ${media:+aisec-media}; do
 		docker image inspect "$image_repo/$c:$tag" >/dev/null 2>&1 || die "нет образа $image_repo/$c:$tag"
 	done
 fi
@@ -305,6 +330,22 @@ if [ -n "$bind" ] || [ -z "$env_existed" ]; then
 	set_env AISEC_GATEWAY_BIND "${bind:-0.0.0.0}"
 fi
 [ -z "$mirror" ] || set_env AISEC_POSTGRES_IMAGE "$mirror/postgres"
+if [ -n "$media" ]; then
+	# compose.media.yaml — к уже выбранным файлам (по умолчанию compose.yaml),
+	# media — к профилям; повторный запуск ничего не дублирует. Без --media
+	# прежний выбор не меняется: выключение — правкой .env (README.md).
+	files=$(env_get COMPOSE_FILE)
+	case ":${files:=compose.yaml}:" in
+	*:compose.media.yaml:*) ;;
+	*) set_env COMPOSE_FILE "$files:compose.media.yaml" ;;
+	esac
+	profiles=$(env_get COMPOSE_PROFILES)
+	case ",$profiles," in
+	*,media,*) ;;
+	*) set_env COMPOSE_PROFILES "${profiles:+$profiles,}media" ;;
+	esac
+	echo "Анализатор изображений: COMPOSE_FILE=$(env_get COMPOSE_FILE), COMPOSE_PROFILES=$(env_get COMPOSE_PROFILES)."
+fi
 echo "Хост подготовлен: $data_dir, .env заполнен."
 
 # Каталог для aisec-cli tls check: root:root 0700, файлы root 0400 —

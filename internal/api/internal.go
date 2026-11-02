@@ -215,6 +215,48 @@ type HeartbeatRequest struct {
 	// получить не удаётся (задача 4.29, ADR-0021, п. 5); шлюз присылает поле
 	// только после ответа с quota_leases.
 	QuotaAutonomous *bool `json:"quota_autonomous,omitempty"`
+	// Limits — заполнение и вытеснения счётчиков в памяти шлюза (задача 5.9
+	// этапа 5); шлюз присылает поле только после ответа с limits.
+	Limits *HeartbeatLimits `json:"limits,omitempty"`
+}
+
+// HeartbeatLimits — счётчики лимитов вызовов инструментов и сессий
+// session.risk шлюза с его запуска: только числа.
+type HeartbeatLimits struct {
+	ToolRate *HeartbeatToolRate `json:"tool_rate,omitempty"`
+	Sessions *HeartbeatSessions `json:"sessions,omitempty"`
+}
+
+// HeartbeatToolRate — ключи счётчиков лимитов вызовов, предел и вытеснения.
+type HeartbeatToolRate struct {
+	Keys      int64 `json:"keys"`
+	MaxKeys   int64 `json:"max_keys"`
+	Evictions int64 `json:"evictions"`
+}
+
+// HeartbeatSessions — сессии session.risk, пределы и вытеснения (общий
+// предел и доля приложения).
+type HeartbeatSessions struct {
+	Sessions       int64 `json:"sessions"`
+	MaxSessions    int64 `json:"max_sessions"`
+	MaxAppSessions int64 `json:"max_app_sessions"`
+	Evictions      int64 `json:"evictions"`
+	AppEvictions   int64 `json:"app_evictions"`
+}
+
+func (l *HeartbeatLimits) limits() *gwregistry.Limits {
+	if l == nil {
+		return nil
+	}
+	out := &gwregistry.Limits{}
+	if t := l.ToolRate; t != nil {
+		out.ToolRate = &gwregistry.ToolRateLimits{Keys: t.Keys, MaxKeys: t.MaxKeys, Evictions: t.Evictions}
+	}
+	if s := l.Sessions; s != nil {
+		out.Sessions = &gwregistry.SessionLimits{Sessions: s.Sessions, MaxSessions: s.MaxSessions, MaxAppSessions: s.MaxAppSessions,
+			Evictions: s.Evictions, AppEvictions: s.AppEvictions}
+	}
+	return out
 }
 
 // HeartbeatBudget — счётчики расхода процесса шлюза за текущий и, после
@@ -305,6 +347,8 @@ type HeartbeatResponse struct {
 	Approvals bool `json:"approvals,omitempty"`
 	// QuotaLeases — сервер принимает поле quota_autonomous (задача 4.29).
 	QuotaLeases bool `json:"quota_leases,omitempty"`
+	// Limits — сервер принимает поле limits (задача 5.9 этапа 5).
+	Limits bool `json:"limits,omitempty"`
 }
 
 // HeartbeatBudgetState — расход остальных процессов: приложение → 1e-7 ₽.
@@ -324,6 +368,7 @@ func heartbeat(g *gwregistry.Service, a *approvals.Service, q QuotaObserver, log
 		in := gwregistry.HeartbeatInput{
 			Version: req.Version, BundleETag: req.BundleETag, Selftest: req.Selftest.report(), Integrity: req.Integrity.report(),
 			BundleKeys: req.BundleKeys, Stopping: req.Stopping, Budget: req.Budget.report(), TLSFingerprint: req.TLSFingerprint,
+			Limits: req.Limits.limits(),
 		}
 		if req.Time != nil {
 			in.Time = *req.Time
@@ -335,7 +380,7 @@ func heartbeat(g *gwregistry.Service, a *approvals.Service, q QuotaObserver, log
 			in.StartedAt = req.StartedAt.UTC()
 		}
 		if err := in.Validate(); err != nil || !validPending(req.ApprovalsPending) {
-			WriteProblem(w, Invalid("Неверные поля heartbeat: version — 1–64 символа латиницы, цифр и «.+_-», bundle_etag — до 128 печатных символов ASCII, selftest и integrity — результат, время проверки и число провалов 0–1000, манифест — версия и время вместе, bundle_keys — до 2 идентификаторов ключей, stopping и budget — только вместе с started_at, budget — 1–2 месяца ГГГГ-ММ по возрастанию, до 2 000 приложений, счётчики 0–2^62, tls_fingerprint — пусто или 64 строчные шестнадцатеричные цифры, approvals_pending — до 256 разных UUID."))
+			WriteProblem(w, Invalid("Неверные поля heartbeat: version — 1–64 символа латиницы, цифр и «.+_-», bundle_etag — до 128 печатных символов ASCII, selftest и integrity — результат, время проверки и число провалов 0–1000, манифест — версия и время вместе, bundle_keys — до 2 идентификаторов ключей, stopping и budget — только вместе с started_at, budget — 1–2 месяца ГГГГ-ММ по возрастанию, до 2 000 приложений, счётчики 0–2^62, tls_fingerprint — пусто или 64 строчные шестнадцатеричные цифры, approvals_pending — до 256 разных UUID, limits — tool_rate или sessions со счётчиками 0–2^62, заполнение не больше предела."))
 			return
 		}
 		ctx, cancel := contextTimeout(r, 5*time.Second)
@@ -359,7 +404,7 @@ func heartbeat(g *gwregistry.Service, a *approvals.Service, q QuotaObserver, log
 			return
 		}
 		resp := HeartbeatResponse{ServerTime: res.At.UTC(), ClockTLS: true, IntervalSeconds: int(gwregistry.DefaultHeartbeatInterval / time.Second),
-			Reissue: res.Reissue, Approvals: a != nil, QuotaLeases: q != nil}
+			Reissue: res.Reissue, Approvals: a != nil, QuotaLeases: q != nil, Limits: true}
 		if q != nil && req.QuotaAutonomous != nil {
 			if err := q.Observe(ctx, p.ID, *req.QuotaAutonomous); err != nil {
 				// heartbeat не отклоняется: условие обновится со следующим.

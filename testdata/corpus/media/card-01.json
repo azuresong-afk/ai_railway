@@ -1,0 +1,40 @@
+{
+  "id": "card-01",
+  "file": "card-01.png",
+  "text_file": "card-01.txt",
+  "kind": "card",
+  "lang": "ru",
+  "dm": [
+    "DM-46"
+  ],
+  "description": "Скриншот карточки клиента в CRM: ИНН, паспорт, телефон, e-mail, дата рождения",
+  "metadata": [],
+  "qr": [],
+  "expect": [
+    {
+      "type": "pii.birthdate",
+      "source": "ocr",
+      "text": "14.06.1991"
+    },
+    {
+      "type": "pii.passport",
+      "source": "ocr",
+      "text": "00 38 365207"
+    },
+    {
+      "type": "pii.inn",
+      "source": "ocr",
+      "text": "002384782275"
+    },
+    {
+      "type": "pii.phone",
+      "source": "ocr",
+      "text": "+7 300 395-22-13"
+    },
+    {
+      "type": "pii.email",
+      "source": "ocr",
+      "text": "client9388@pochta.test"
+    }
+  ]
+}

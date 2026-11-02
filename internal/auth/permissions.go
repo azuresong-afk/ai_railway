@@ -153,6 +153,15 @@ const (
 	PermComplianceRead     = "compliance.read"
 	PermComplianceMark     = "compliance.mark"
 	PermComplianceBaseLoad = "compliance.base.load"
+	// Реестр ИИ (ТЗ 5.11; задача 5.17 этапа 5, ADR-0029, п. 6): приложения,
+	// ключи (без секретов), провайдеры, модели и их файлы с хешами,
+	// использование по трафику; ручные записи моделей. Не функция
+	// безопасности: запрет модели (5.22) — отдельное право.
+	PermInventoryRead   = "inventory.read"
+	PermInventoryManage = "inventory.manage"
+	// Выгрузка AI-BOM (задача 5.18, ADR-0029, п. 6): весь реестр одним
+	// документом — администраторам; аудитор не получает (не «.read»).
+	PermInventoryExport = "inventory.export"
 )
 
 // Permission — разрешение из каталога.
@@ -246,7 +255,7 @@ var permissionCatalog = []Permission{
 	{Name: PermApprovalsDecide, Title: "Одобрение и отклонение вызовов инструментов агентов из очереди подтверждений",
 		Group: "Агенты", Security: true},
 	{Name: PermShadowAIRead, Title: "Просмотр сводок теневого ИИ (пользователи — псевдонимами), каталога сервисов и журнала импорта", Group: "Теневой ИИ"},
-	{Name: PermShadowAIManage, Title: "Импорт журналов прокси, загрузка подписанного каталога ИИ-сервисов, срок хранения сводок", Group: "Теневой ИИ"},
+	{Name: PermShadowAIManage, Title: "Импорт журналов прокси, загрузка подписанного каталога ИИ-сервисов и возврат его предыдущей версии, срок хранения сводок", Group: "Теневой ИИ"},
 	// Безопасность: исключение пользователя удаляет его сводки (4В26).
 	{Name: PermShadowAIExclusionsManage, Title: "Исключение пользователей и сервисов из учёта теневого ИИ (сводки исключённого пользователя удаляются) и снятие исключений",
 		Group: "Теневой ИИ", Security: true},
@@ -256,7 +265,10 @@ var permissionCatalog = []Permission{
 	// Безопасность: ручная отметка меняет статус пункта в отчёте для проверяющих.
 	{Name: PermComplianceMark, Title: "Ручные отметки по пунктам соответствия (организационные меры) с комментарием и сроком пересмотра",
 		Group: "Соответствие", Security: true},
-	{Name: PermComplianceBaseLoad, Title: "Загрузка обновлённой подписанной базы требований", Group: "Соответствие"},
+	{Name: PermComplianceBaseLoad, Title: "Загрузка обновлённой подписанной базы требований и возврат её предыдущей версии", Group: "Соответствие"},
+	{Name: PermInventoryRead, Title: "Просмотр реестра ИИ: приложения, ключи (без секретов), провайдеры, модели, файлы моделей и использование", Group: "Реестр ИИ"},
+	{Name: PermInventoryManage, Title: "Добавление, изменение и удаление моделей в реестре ИИ (в том числе файлов моделей заказчика с хешами)", Group: "Реестр ИИ"},
+	{Name: PermInventoryExport, Title: "Выгрузка реестра ИИ в AI-BOM (CycloneDX 1.6)", Group: "Реестр ИИ"},
 }
 
 // auditorExtra — разрешения аудитора сверх чтения: они ничего не меняют,
@@ -447,13 +459,14 @@ var builtinRoles = []RoleDef{
 			PermReportsRead: ScopeAll, PermReportSchedulesRead: ScopeAll, PermReportSchedulesManage: ScopeAll,
 			PermAgentsRead: ScopeAll, PermAgentsManage: ScopeAll, PermShadowAIRead: ScopeAll, PermShadowAIManage: ScopeAll,
 			PermLicenseRead: ScopeAll, PermLicenseManage: ScopeAll,
-			PermComplianceRead: ScopeAll, PermComplianceBaseLoad: ScopeAll}},
+			PermComplianceRead: ScopeAll, PermComplianceBaseLoad: ScopeAll, PermInventoryRead: ScopeAll, PermInventoryManage: ScopeAll,
+			PermInventoryExport: ScopeAll}},
 	{ID: RoleAnalyst, DisplayName: "Аналитик", Builtin: true,
 		Description: "Разбор оповещений и инцидентов, поиск по событиям",
 		Grants: grantAll(PermSystemRead, PermEventsRead, PermEventsExport, PermEventsMark, PermApplicationsRead, PermProvidersRead,
 			PermPoliciesRead, PermPoliciesTest, PermAlertsRead, PermAlertsManage, PermAlertRulesRead, PermModelPricesRead, PermBudgetsRead,
 			PermDashboardsRead, PermIncidentsRead, PermIncidentsManage, PermIncidentsExport, PermReportsRead, PermAgentsRead,
-			PermApprovalsRead, PermApprovalsDecide, PermShadowAIRead)},
+			PermApprovalsRead, PermApprovalsDecide, PermShadowAIRead, PermInventoryRead)},
 	{ID: RoleAuditor, DisplayName: "Аудитор", Builtin: true,
 		Description: "Только просмотр: журнал аудита, отчёты, состояние соответствия. Ничего не меняет",
 		Grants:      auditorPermissions()},

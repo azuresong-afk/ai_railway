@@ -258,6 +258,33 @@ func TestBuildLibraryAndModels(t *testing.T) {
 		"-created", "2026-10-28T00:00:00Z", "-bin", filepath.Join(dir, "bin"), "-cmds", "aisec-ml", "-models", filepath.Join(dir, "models")}, io.Discard, io.Discard); err == nil {
 		t.Fatal("основной выпуск без -static и -migrations принят")
 	}
+	// Выпуск aisec-media (задача 5.38) — только его бинарник; вместе с другим
+	// бинарником это уже основной выпуск.
+	mediaBin := filepath.Join(dir, "media-bin")
+	if err := os.MkdirAll(mediaBin, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"aisec-media", "aisec-gateway"} {
+		if err := os.WriteFile(filepath.Join(mediaBin, name), []byte(name), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mediaOut := filepath.Join(dir, "media", "aisec-manifest.json")
+	if err := run([]string{"build", "-test-key", "../../testdata/integrity/manifest-test.signkey", "-out", mediaOut, "-version", "1",
+		"-created", "2026-10-28T00:00:00Z", "-bin", mediaBin, "-cmds", "aisec-media"}, io.Discard, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	data, err = os.ReadFile(mediaOut) //nolint:gosec // G304: файл теста
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m, err = integrity.Parse(data); err != nil || len(m.Files) != 1 || m.Files[0].Path != "bin/aisec-media" {
+		t.Fatalf("выпуск aisec-media: %+v %v", m, err)
+	}
+	if err := run([]string{"build", "-test-key", "../../testdata/integrity/manifest-test.signkey", "-out", filepath.Join(dir, "y.json"), "-version", "1",
+		"-created", "2026-10-28T00:00:00Z", "-bin", mediaBin, "-cmds", "aisec-media aisec-gateway"}, io.Discard, io.Discard); err == nil {
+		t.Fatal("основной выпуск с aisec-media без -static и -migrations принят")
+	}
 }
 
 // modelsRegistry — реестр компонентов с записями type: ml-model для ids.

@@ -112,6 +112,9 @@ func ParseList(method string, result *argschema.Value) (*List, error) {
 	if c, ok := l.Result.Get("nextCursor"); ok && c.Kind != argschema.String {
 		return nil, &ProtocolError{Code: CodeInternalError, Msg: "nextCursor — строка"}
 	}
+	if rt, ok := l.Result.Get("resultType"); ok && (rt.Kind != argschema.String || rt.Str != "complete") {
+		return nil, &ProtocolError{Code: CodeInternalError, Msg: "resultType списка — complete"}
+	}
 	names := map[string]bool{}
 	for i := range arr.Arr {
 		v := &arr.Arr[i]
@@ -145,13 +148,24 @@ func ParseList(method string, result *argschema.Value) (*List, error) {
 	return l, nil
 }
 
+// listKeys — поля верхнего уровня результата списка по ревизиям
+// (PaginatedResult; в 2026-07-28 ещё resultType, ttlMs и cacheScope), кроме
+// самого списка; остальные, и _meta, шлюз клиенту не передаёт (ревью 4.r4,
+// задача 5.10 этапа 5).
+var listKeys = map[string][]string{
+	Version20251125: {"nextCursor"},
+	Version20260728: {"nextCursor", "resultType", "ttlMs", "cacheScope"},
+}
+
 // Rebuild собирает результат списка из элементов keep (по номерам Items):
 // у каждого убираются icons и _meta (модель их не видит, внешние ссылки
-// консоль не загружает). Для ревизии 2026-07-28 ставятся cacheScope
-// "private" и ttlMs не больше MaxListTTL: список зависит от агента, отзыв
-// одобрения должен дойти до клиента за минуту. nextCursor — без изменений.
+// консоль не загружает). Поля верхнего уровня — только listKeys ревизии.
+// Для ревизии 2026-07-28 ставятся cacheScope "private" и ttlMs не больше
+// MaxListTTL: список зависит от агента, отзыв одобрения должен дойти до
+// клиента за минуту. nextCursor — без изменений.
 func (l *List) Rebuild(keep func(i int) bool, version string) argschema.Value {
 	out := Clone(l.Result)
+	Keep(&out, append([]string{l.Key}, listKeys[version]...)...)
 	items := Array()
 	items.Arr = []argschema.Value{}
 	for i, it := range l.Items {
@@ -164,7 +178,6 @@ func (l *List) Rebuild(keep func(i int) bool, version string) argschema.Value {
 		items.Arr = append(items.Arr, v)
 	}
 	Set(&out, l.Key, items)
-	Delete(&out, "_meta")
 	if version == Version20260728 {
 		ttl := int64(MaxListTTL)
 		if t, ok := out.Get("ttlMs"); ok && t.Kind == argschema.Number && t.Num.IsInt() && t.Num.Num().IsInt64() {
@@ -247,11 +260,119 @@ func ParseCallParams(params *argschema.Value) (*CallParams, error) {
 		cp.Args = *a
 	}
 	if meta, ok := GetObject(params, "_meta"); ok {
-		if t, ok := meta.Get(MetaProgressToken); ok && (t.Kind == argschema.String || t.Kind == argschema.Number) {
+		if t, ok := meta.Get(MetaProgressToken); ok && ValidProgressToken(t) {
 			cp.ProgressToken = t
 		}
 	}
 	return cp, nil
+}
+
+// RequestProgressToken — params._meta.progressToken запроса клиента по
+// спецификации (ValidProgressToken); nil — нет или не по спецификации.
+func RequestProgressToken(m *Message) *argschema.Value {
+	if m == nil {
+		return nil
+	}
+	meta, ok := GetObject(m.Params, "_meta")
+	if !ok {
+		return nil
+	}
+	if t, ok := meta.Get(MetaProgressToken); ok && ValidProgressToken(t) {
+		return t
+	}
+	return nil
+}
+
+// ValidProgressToken — progressToken по спецификации (ProgressToken —
+// строка или число; шлюз, как для id запроса, принимает строку до
+// MaxIDLen байт или целое без дробной части и экспоненты): токен уходит
+// вышестоящему серверу и возвращается клиенту в уведомлениях о ходе.
+func ValidProgressToken(t *argschema.Value) bool { return t != nil && checkID(*t, false) == nil }
+
+// CheckMeta проверяет params._meta запроса клиента: объект; progressToken —
+// ValidProgressToken. Иначе — ошибка CodeInvalidParams: в UpstreamParams
+// поле уходит серверу как есть (ревью 4.r4, задача 5.10 этапа 5).
+func CheckMeta(params *argschema.Value) error {
+	if params == nil {
+		return nil
+	}
+	meta, ok := params.Get("_meta")
+	if !ok {
+		return nil
+	}
+	if meta.Kind != argschema.Object {
+		return &ProtocolError{Code: CodeInvalidParams, Msg: "params._meta — объект"}
+	}
+	if t, ok := meta.Get(MetaProgressToken); ok && !ValidProgressToken(t) {
+		return &ProtocolError{Code: CodeInvalidParams, Msg: fmt.Sprintf("params._meta.progressToken — строка до %d байт или целое", MaxIDLen)}
+	}
+	return nil
+}
+
+// MaxServerInfoField — предел длины name, title и version в serverInfo
+// результата initialize и server/discover (5Н6 ревью 5.r1 этапа 5).
+const MaxServerInfoField = 256
+
+// serverInfoKeys — поля serverInfo, которые уходят клиенту: description,
+// icons, websiteUrl и прочее — текст и внешние ссылки сервера, которых
+// проверка описаний не видит (как icons инструментов, List.Rebuild).
+var serverInfoKeys = []string{"name", "title", "version"}
+
+// handshakeKeys — поля верхнего уровня результата initialize (2025-11-25)
+// и server/discover (2026-07-28) по спецификации.
+var handshakeKeys = map[string][]string{
+	"initialize":      {"protocolVersion", "capabilities", "serverInfo", "instructions"},
+	"server/discover": {"resultType", "supportedVersions", "capabilities", "serverInfo", "instructions"},
+}
+
+// HandshakeResult оставляет в результате initialize или server/discover
+// (копии) только поля спецификации: остальные, и _meta, клиенту не уходят
+// — их не видела проверка описаний (ревью 4.r4, задача 5.10 этапа 5).
+// Типы: protocolVersion и instructions — строки, capabilities и serverInfo
+// — объекты, supportedVersions — массив строк, resultType — complete.
+// Неверный тип — ошибка: instructions другого типа обошли бы проверку. В
+// serverInfo остаются только name, title и version — строки до
+// MaxServerInfoField байт (5Н6 ревью 5.r1 этапа 5); title проверяет
+// вызывающий, как instructions (ServerTitle).
+func HandshakeResult(method string, result *argschema.Value) error {
+	keys, ok := handshakeKeys[method]
+	if !ok {
+		return errors.New("не метод установления соединения")
+	}
+	Keep(result, keys...)
+	bad := func(msg string) error { return &ProtocolError{Code: CodeInternalError, Msg: msg} }
+	for _, k := range []string{"protocolVersion", "instructions"} {
+		if v, ok := result.Get(k); ok && v.Kind != argschema.String {
+			return bad(k + " — строка")
+		}
+	}
+	for _, k := range []string{"capabilities", "serverInfo"} {
+		if v, ok := result.Get(k); ok && v.Kind != argschema.Object {
+			return bad(k + " — объект")
+		}
+	}
+	if si, ok := result.Get("serverInfo"); ok {
+		Keep(si, serverInfoKeys...)
+		for i, k := range si.Keys {
+			if v := si.Vals[i]; v.Kind != argschema.String || len(v.Str) > MaxServerInfoField {
+				return bad(fmt.Sprintf("serverInfo.%s — строка до %d байт", k, MaxServerInfoField))
+			}
+		}
+	}
+	if v, ok := result.Get("supportedVersions"); ok {
+		if v.Kind != argschema.Array || len(v.Arr) > MaxListItems {
+			return bad("supportedVersions — массив строк")
+		}
+		for i := range v.Arr {
+			if v.Arr[i].Kind != argschema.String {
+				return bad("supportedVersions — массив строк")
+			}
+		}
+	}
+	if rt, ok := result.Get("resultType"); ok && (rt.Kind != argschema.String || rt.Str != "complete") {
+		return bad("resultType — complete")
+	}
+	return nil
 }
 
 // Поля params, которые шлюз передаёт вышестоящему серверу, по методам;
@@ -557,16 +678,24 @@ func ErrorResult(msg, version string, decision *argschema.Value) argschema.Value
 
 // ServerMessageAllowed — сообщение вышестоящего сервера, кроме ответа на
 // запрос, передаётся клиенту (ADR-0023, раздел 6): notifications/progress
-// (не в потоке subscriptions/listen), notifications/*/list_changed и
-// подтверждение подписки (только в потоке listen). Запросы сервера к
-// клиенту (2025-11-25) и прочие уведомления — нет.
-func ServerMessageAllowed(m *Message, listen bool) bool {
+// (не в потоке subscriptions/listen) с progressToken запроса клиента token,
+// notifications/*/list_changed и подтверждение подписки (только в потоке
+// listen). Запросы сервера к клиенту (2025-11-25) и прочие уведомления —
+// нет. token — RequestProgressToken запроса; nil — progress не передаётся.
+func ServerMessageAllowed(m *Message, listen bool, token *argschema.Value) bool {
 	if m.Kind != KindNotification {
 		return false
 	}
 	switch {
 	case m.Method == "notifications/progress":
-		return !listen
+		// progressToken, которого нет в запросе клиента (другой вид, другое
+		// значение или запрос без токена), клиенту не передаётся: такой токен
+		// клиент серверу не давал (5Н5 ревью 5.r1 этапа 5).
+		if m.Params == nil || token == nil {
+			return false
+		}
+		t, ok := m.Params.Get("progressToken")
+		return !listen && ok && ValidProgressToken(t) && SameID(*t, *token)
 	case m.Method == "notifications/subscriptions/acknowledged":
 		return listen
 	case strings.HasPrefix(m.Method, "notifications/") && strings.HasSuffix(m.Method, "/list_changed"):
@@ -608,6 +737,22 @@ func ProgressNotification(token argschema.Value, progress int64, message string)
 	Set(&p, "progress", Int(progress))
 	Set(&p, "message", String(message))
 	return &Message{Kind: KindNotification, Method: "notifications/progress", Params: &p}
+}
+
+// ServerTitle — serverInfo.title результата initialize или server/discover
+// (после HandshakeResult — строка): клиент показывает его человеку и
+// агенту, поэтому он проходит встроенную проверку описаний, как
+// instructions (5Н6 ревью 5.r1 этапа 5).
+func ServerTitle(result *argschema.Value) (*argschema.Value, bool) {
+	si, ok := GetObject(result, "serverInfo")
+	if !ok {
+		return nil, false
+	}
+	v, ok := si.Get("title")
+	if !ok || v.Kind != argschema.String {
+		return nil, false
+	}
+	return v, true
 }
 
 // Instructions — поле instructions результата initialize (2025-11-25) или

@@ -76,6 +76,7 @@
 | GET | `/api/v1/compliance` | `compliance.read` | да | да | — | да | — | да |
 | GET | `/api/v1/compliance/base` | `compliance.read` | да | да | — | да | — | да |
 | PUT | `/api/v1/compliance/base` | `compliance.base.load` | да | да | — | — | — | да |
+| POST | `/api/v1/compliance/base/rollback` | `compliance.base.load` | да | да | — | — | — | да |
 | GET | `/api/v1/compliance/requirements/{id}` | `compliance.read` | да | да | — | да | — | да |
 | PUT | `/api/v1/compliance/requirements/{id}/mark` | `compliance.mark` | да | — | — | — | — | — |
 | DELETE | `/api/v1/compliance/requirements/{id}/mark` | `compliance.mark` | да | — | — | — | — | — |
@@ -113,6 +114,14 @@
 | GET | `/api/v1/incidents/{id}/export` | `incidents.export` | да | — | да | — | — | да |
 | POST | `/api/v1/incidents/{id}/stages/{stage}` | `incidents.manage` | да | — | да | — | — | да |
 | POST | `/api/v1/incidents/{id}/status` | `incidents.manage` | да | — | да | — | — | да |
+| GET | `/api/v1/inventory` | `inventory.read` | да | да | да | да | — | да |
+| GET | `/api/v1/inventory/aibom` | `inventory.export` | да | да | — | — | — | да |
+| GET | `/api/v1/inventory/models` | `inventory.read` | да | да | да | да | — | да |
+| POST | `/api/v1/inventory/models` | `inventory.manage` | да | да | — | — | — | да |
+| GET | `/api/v1/inventory/models/{id}` | `inventory.read` | да | да | да | да | — | да |
+| PATCH | `/api/v1/inventory/models/{id}` | `inventory.manage` | да | да | — | — | — | да |
+| DELETE | `/api/v1/inventory/models/{id}` | `inventory.manage` | да | да | — | — | — | да |
+| GET | `/api/v1/inventory/usage` | `inventory.read` | да | да | да | да | — | да |
 | GET | `/api/v1/license` | `license.read` | да | да | — | да | — | да |
 | PUT | `/api/v1/license` | `license.manage` | да | да | — | — | — | — |
 | GET | `/api/v1/mcp-servers` | `agents.read` | да | да | да | да | свои | да |
@@ -174,8 +183,10 @@
 | GET | `/api/v1/roles/{id}` | `roles.read` | да | — | — | да | — | да |
 | PUT | `/api/v1/roles/{id}` | `roles.manage` | да | — | — | — | — | — |
 | DELETE | `/api/v1/roles/{id}` | `roles.manage` | да | — | — | — | — | — |
+| GET | `/api/v1/service-dbs` | `system.read` | да | да | да | да | — | да |
 | GET | `/api/v1/shadow-ai/catalog` | `shadow_ai.read` | да | да | да | да | — | да |
 | PUT | `/api/v1/shadow-ai/catalog` | `shadow_ai.manage` | да | да | — | — | — | да |
+| POST | `/api/v1/shadow-ai/catalog/rollback` | `shadow_ai.manage` | да | да | — | — | — | да |
 | GET | `/api/v1/shadow-ai/exclusions` | `shadow_ai.read` | да | да | да | да | — | да |
 | POST | `/api/v1/shadow-ai/exclusions` | `shadow_ai.exclusions.manage` | да | — | — | — | — | — |
 | DELETE | `/api/v1/shadow-ai/exclusions/{kind}/{value}` | `shadow_ai.exclusions.manage` | да | — | — | — | — | — |

@@ -1,5 +1,6 @@
 # Образы поставки пилота (ADR-0019): aisec-server, aisec-gateway, aisec-cli;
-# aisec-ml (ADR-0024) — из своего каталога выпуска build/release-ml (make image-ml).
+# aisec-ml (ADR-0024) — из своего каталога выпуска build/release-ml (make image-ml),
+# aisec-media (ADR-0032) — из build/release-media (make image-media).
 #
 # Собирает make images (RELEASE=1, ключ производителя) или make images-test
 # (тестовый ключ, НЕ ДЛЯ ПОСТАВКИ). Контекст сборки — каталог выпуска
@@ -64,3 +65,14 @@ COPY lib/ /opt/aisec/lib/
 COPY models/ /opt/aisec/models/
 COPY bin/aisec-ml /opt/aisec/bin/aisec-ml
 ENTRYPOINT ["/opt/aisec/bin/aisec-ml"]
+
+# aisec-media — анализатор изображений (ADR-0032, задача 5.38). Контекст —
+# build/release-media (make media-release-dir): статический бинарник и
+# манифест выпуска aisec-media. Портов нет: шлюз подключается к Unix-сокету в
+# общем томе, сети у контейнера нет (compose.media.yaml). Движок OCR и
+# модели (lib/, models/) добавятся по ADR-0033.
+FROM base AS aisec-media
+LABEL org.opencontainers.image.title="aisec-media" \
+      org.opencontainers.image.description="AISec: изолированный анализатор изображений"
+COPY bin/aisec-media /opt/aisec/bin/aisec-media
+ENTRYPOINT ["/opt/aisec/bin/aisec-media"]

@@ -31,6 +31,12 @@ type Route struct {
 	// приложения, секрет TOTP, коды восстановления). Такой ответ нельзя
 	// хранить для повтора по Idempotency-Key: признаки несовместимы.
 	SecretOnce bool
+	// SessionOnly — маршрут только для сессии консоли: запрос по токену API
+	// с нужным разрешением — отказ 403 с записью access.denied
+	// (DenyReasonSessionOnly). Для операций, которые разрешение модуля
+	// покрывает, но токену импорта не положены (возврат служебной базы,
+	// 5Н3 ревью 5.r1 этапа 5).
+	SessionOnly bool
 	// MaxBody — предел тела; ноль — DefaultMaxBody.
 	MaxBody int64
 	Handler http.HandlerFunc
@@ -133,6 +139,9 @@ func (rt *Router) wrap(r Route) http.Handler {
 		// которые сами отбирают объекты (УПД.8).
 		if d == Allow && !r.Scoped && !p.Grants.Full(r.Permission) {
 			d, reason = Forbidden, DenyReasonScope
+		}
+		if d == Allow && r.SessionOnly && (p.Caller == nil || p.Caller.Token != nil) {
+			d, reason = Forbidden, DenyReasonSessionOnly
 		}
 		switch d {
 		case Allow:

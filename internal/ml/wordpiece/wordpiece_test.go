@@ -5,8 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
+	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -347,6 +350,93 @@ func BenchmarkEncodeWorstCase(b *testing.B) {
 	for b.Loop() {
 		if _, _, _, err := tk.Encode(context.Background(), text, 7200); err != nil {
 			b.Fatal(err)
+		}
+	}
+}
+
+// vocabFile — tokenizer.json со словарём из n записей: служебные и t4…t(n-1).
+func vocabFile(t testing.TB, n int) []byte {
+	t.Helper()
+	var b strings.Builder
+	b.WriteString(`{"added_tokens":[],"normalizer":{"type":"BertNormalizer","lowercase":false,"strip_accents":false},` +
+		`"pre_tokenizer":{"type":"BertPreTokenizer"},"post_processor":{"type":"BertProcessing","sep":["[SEP]",3],"cls":["[CLS]",2]},` +
+		`"model":{"type":"WordPiece","unk_token":"[UNK]","vocab":{"[PAD]":0,"[UNK]":1,"[CLS]":2,"[SEP]":3`)
+	for i := 4; i < n; i++ {
+		b.WriteString(`,"t`)
+		b.WriteString(strconv.Itoa(i))
+		b.WriteString(`":`)
+		// Номера записей сверх MaxVocab повторяются: отказ должен случиться
+		// по числу записей, раньше проверки номера.
+		b.WriteString(strconv.Itoa(i % MaxVocab))
+	}
+	b.WriteString(`}}}`)
+	return []byte(b.String())
+}
+
+// allocBytes — байты, выделенные за один вызов f.
+func allocBytes(f func()) uint64 {
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	f()
+	runtime.ReadMemStats(&after)
+	return after.TotalAlloc - before.TotalAlloc
+}
+
+// Словарь на MaxVocab+1 запись отвергается при потоковом разборе, без
+// построения map: выделено заметно меньше, чем при приёме словаря на
+// MaxVocab записей (map на MaxVocab записей — не меньше 24 байт на запись).
+func TestParseVocabLimitBeforeMap(t *testing.T) {
+	if testing.Short() {
+		t.Skip("словарь на 1 млн записей")
+	}
+	over, full := vocabFile(t, MaxVocab+1), vocabFile(t, MaxVocab)
+	if len(over) > MaxFile {
+		t.Fatalf("файл %d байт больше MaxFile: проверка размера сработала бы раньше", len(over))
+	}
+	var err error
+	rejected := allocBytes(func() { _, err = Parse(over) })
+	if !errors.Is(err, ErrFormat) || !strings.Contains(err.Error(), "словарь больше") {
+		t.Fatalf("словарь на MaxVocab+1 запись: %v", err)
+	}
+	var tk *Tokenizer
+	accepted := allocBytes(func() { tk, err = Parse(full) })
+	if err != nil || len(tk.vocab) != MaxVocab {
+		t.Fatalf("словарь на MaxVocab записей: %v", err)
+	}
+	t.Logf("отказ %d, приём %d", rejected, accepted)
+	if accepted < rejected+24*MaxVocab {
+		t.Fatalf("отказ выделил %d байт, приём — %d: map строится до проверки числа записей", rejected, accepted)
+	}
+}
+
+// Длина токена и номер проверяются при разборе словаря; повтор токена
+// (повтор ключа JSON) и номера — отказ.
+func TestParseVocabEntries(t *testing.T) {
+	base := `{"normalizer":{"type":"BertNormalizer","lowercase":false,"strip_accents":false},"pre_tokenizer":{"type":"BertPreTokenizer"},` +
+		`"post_processor":{"type":"BertProcessing","sep":["[SEP]",3],"cls":["[CLS]",2]},` +
+		`"model":{"type":"WordPiece","unk_token":"[UNK]","vocab":{"[PAD]":0,"[UNK]":1,"[CLS]":2,"[SEP]":3%s}}}`
+	if _, err := Parse([]byte(fmt.Sprintf(base, `,"`+strings.Repeat("я", MaxTokenBytes/2)+`":4`))); err != nil {
+		t.Fatalf("токен на %d байт: %v", MaxTokenBytes, err)
+	}
+	for name, extra := range map[string]string{
+		"длинный токен":     `,"` + strings.Repeat("a", MaxTokenBytes+1) + `":4`,
+		"пустой токен":      `,"":4`,
+		"номер за MaxVocab": `,"x":` + strconv.Itoa(MaxVocab),
+		"дробный номер":     `,"x":4.5`,
+		"номер строкой":     `,"x":"4"`,
+		"повтор токена":     `,"x":4,"x":5`,
+		"повтор номера":     `,"x":4,"y":4`,
+		"вложенный объект":  `,"x":{}`,
+	} {
+		if _, err := Parse([]byte(fmt.Sprintf(base, extra))); !errors.Is(err, ErrFormat) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	for _, vocab := range []string{`null`, `[]`, `{}`, `"x"`} {
+		data := strings.Replace(fmt.Sprintf(base, ""), `{"[PAD]":0,"[UNK]":1,"[CLS]":2,"[SEP]":3}`, vocab, 1)
+		if _, err := Parse([]byte(data)); !errors.Is(err, ErrFormat) {
+			t.Errorf("словарь %s: %v", vocab, err)
 		}
 	}
 }

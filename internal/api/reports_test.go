@@ -173,6 +173,19 @@ func TestReportsViaAPI(t *testing.T) {
 	mustProblem(t, e.call(e.mustLogin(t, "owner"), "GET", reportPath("compliance", "", ""), "", false), 403, CodeForbidden)
 	mustProblem(t, e.call(e.mustLogin(t, "analyst"), "GET", reportPath("compliance", "csv", ""), "", false), 403, CodeForbidden)
 	mustProblem(t, e.call(session{}, "GET", reportPath("compliance", "", ""), "", false), 401, CodeUnauthorized)
+	// Применимость (задача 5.12 этапа 5): только у отчёта соответствия;
+	// одна сессия аудитора — без лишних входов.
+	aud := e.mustLogin(t, "auditor")
+	if w := e.call(aud, "GET", reportPath("compliance", "html", "")+"&applies=commercial", "", false); w.Code != 200 ||
+		!strings.Contains(w.Body.String(), "Коммерческий оператор") {
+		t.Fatalf("соответствие с применимостью: %d", w.Code)
+	}
+	// 5Н8 ревью 5.r1: применимость — в подробностях data.export.
+	if last := e.rec.canon[len(e.rec.canon)-1]; !strings.Contains(last, `"applies":"commercial"`) || !strings.Contains(last, `"report":"compliance"`) {
+		t.Errorf("в подробностях data.export нет применимости: %s", last)
+	}
+	mustProblem(t, e.call(aud, "GET", reportPath("summary", "", "")+"&applies=commercial", "", false), 400, CodeInvalidRequest)
+	mustProblem(t, e.call(aud, "GET", reportPath("compliance", "", "")+"&applies=x", "", false), 400, CodeInvalidRequest)
 }
 
 // УПД.8: владелец приложения видит только сводный отчёт по своему

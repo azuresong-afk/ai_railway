@@ -26,6 +26,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/keyring"
 	"github.com/azuresong-afk/ai_railway/internal/policy/versions"
 	"github.com/azuresong-afk/ai_railway/internal/reports"
+	"github.com/azuresong-afk/ai_railway/internal/servicedb"
 	"github.com/azuresong-afk/ai_railway/internal/shadowai"
 )
 
@@ -66,6 +67,8 @@ type appsEnv struct {
 	// compl и complSvc — модуль соответствия (compliance_test.go).
 	compl    *compliance.Memory
 	complSvc *compliance.Service
+	// dbs — служебные базы обоих модулей (servicedb_test.go).
+	dbs *servicedb.Memory
 }
 
 // newAppsEnv — окружение приложений; setup дополняет настройки сервера.
@@ -145,20 +148,20 @@ func newAppsEnv(t testing.TB, setup ...func(*appsEnv, *Options)) *appsEnv {
 	if e.approvalsSvc, err = approvals.New(approvals.Options{Store: e.approvals, Provider: p, Box: box, Clock: e.aclock.now}); err != nil {
 		t.Fatal(err)
 	}
-	e.shadow = shadowai.NewMemory()
-	if e.shadowSvc, err = shadowai.New(shadowai.Options{Store: e.shadow, Provider: p, UserMAC: shadowTestMAC(t, p),
+	e.shadow, e.dbs = shadowai.NewMemory(), servicedb.NewMemory()
+	if e.shadowSvc, err = shadowai.New(shadowai.Options{Store: e.shadow, ServiceDBs: e.dbs, Provider: p, UserMAC: shadowTestMAC(t, p),
 		Clock: func() time.Time { return shadowTestNow }, Logger: logger,
 		Location: func(context.Context) (*time.Location, error) { return time.LoadLocation("Europe/Moscow") }}); err != nil {
 		t.Fatal(err)
 	}
 	e.compl = compliance.NewMemory()
-	if e.complSvc, err = compliance.New(compliance.Options{Store: e.compl, Provider: p, Facts: complianceTestFacts{},
+	if e.complSvc, err = compliance.New(compliance.Options{Store: e.compl, ServiceDBs: e.dbs, Provider: p, Facts: complianceTestFacts{},
 		Clock: func() time.Time { return shadowTestNow }, Logger: logger}); err != nil {
 		t.Fatal(err)
 	}
 	o := Options{Hasher: testHasher(t), Logger: logger, Auth: authSvc, Apps: svc, Compliance: e.complSvc,
 		Policies: pols, Events: e.ev, Audit: e.rec, Dashboards: e.dash, Reports: e.reports, Agents: e.agentsSvc, Approvals: e.approvalsSvc,
-		ShadowAI:  e.shadowSvc,
+		ShadowAI: e.shadowSvc, ServiceDBs: servicedb.NewRegistry(e.shadowSvc.DB(), e.complSvc.DB()),
 		RateLimit: RateConfig{Rules: []RateRule{{Prefix: "/", Max: 100000, Window: time.Minute}}}, Stopping: e.stopping}
 	for _, f := range setup {
 		f(e, &o)

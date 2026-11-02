@@ -1,0 +1,30 @@
+{
+  "id": "scan-01",
+  "file": "scan-01.jpg",
+  "text_file": "scan-01.txt",
+  "kind": "scan",
+  "lang": "ru",
+  "dm": [
+    "DM-46"
+  ],
+  "description": "Скан заявления: паспорт, ИНН и телефон; поворот, размытие, шум",
+  "metadata": [],
+  "qr": [],
+  "expect": [
+    {
+      "type": "pii.passport",
+      "source": "ocr",
+      "text": "00 07 952213"
+    },
+    {
+      "type": "pii.inn",
+      "source": "ocr",
+      "text": "005440263000"
+    },
+    {
+      "type": "pii.phone",
+      "source": "ocr",
+      "text": "+7 300 790-75-13"
+    }
+  ]
+}

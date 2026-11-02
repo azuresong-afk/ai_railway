@@ -125,7 +125,7 @@ func newTestService(t testing.TB, st Store, snap *Snapshot) *Service {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s, err := New(Options{Store: st, Provider: provider(t), Facts: &fakeFacts{snap: snap}, Embedded: base,
+	s, err := New(Options{Store: st, ServiceDBs: st.(*Memory).ServiceDBs(), Provider: provider(t), Facts: &fakeFacts{snap: snap}, Embedded: base,
 		Clock: func() time.Time { return testNow }})
 	if err != nil {
 		t.Fatal(err)
@@ -136,7 +136,7 @@ func newTestService(t testing.TB, st Store, snap *Snapshot) *Service {
 func lastRecord(m *Memory, action string) (audit.Entry, int) {
 	var last audit.Entry
 	n := 0
-	for _, r := range m.Records() {
+	for _, r := range append(m.Records(), m.ServiceDBs().Records()...) {
 		if r.Action == action {
 			last, n = r, n+1
 		}

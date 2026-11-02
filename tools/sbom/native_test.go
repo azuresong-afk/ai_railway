@@ -63,7 +63,7 @@ func TestAddNative(t *testing.T) {
 		}
 	}
 	if ort == nil || ort.Version != "1.31.0" || ort.PURL != "pkg:generic/onnxruntime@1.31.0" || ort.Licenses[0].Expression != "MIT" ||
-		!slices.Contains(ort.Properties, Property{propNativeSource, "1.31.0 (402979ac1bef89dcd55add41eaa7277c407599eb)"}) {
+		!slices.Contains(ort.Properties, Property{Name: propNativeSource, Value: "1.31.0 (402979ac1bef89dcd55add41eaa7277c407599eb)"}) {
 		t.Fatalf("onnxruntime: %+v", ort)
 	}
 	root := bom.Dependencies[0]

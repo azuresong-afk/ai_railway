@@ -24,6 +24,7 @@ import (
 	"time"
 
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
+	"github.com/azuresong-afk/ai_railway/internal/cyclonedx"
 	"github.com/azuresong-afk/ai_railway/tools/internal/components"
 	"github.com/azuresong-afk/ai_railway/tools/internal/npmlock"
 )
@@ -273,16 +274,7 @@ func readSBOM(path string) ([]byte, error) {
 }
 
 // ParseBOM разбирает документ CycloneDX JSON; неизвестные поля пропускаются.
-func ParseBOM(data []byte) (*BOM, error) {
-	if len(data) > maxSBOM {
-		return nil, fmt.Errorf("SBOM больше %d байт", maxSBOM)
-	}
-	var bom BOM
-	if err := json.Unmarshal(data, &bom); err != nil {
-		return nil, fmt.Errorf("разбор SBOM: %w", err)
-	}
-	return &bom, nil
-}
+func ParseBOM(data []byte) (*BOM, error) { return cyclonedx.Parse(data, maxSBOM) }
 
 // readSBOMInput читает входной файл (lock-файл) с ограничением размера.
 func readSBOMInput(path string) ([]byte, error) {

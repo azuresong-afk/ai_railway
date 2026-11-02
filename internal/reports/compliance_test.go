@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/azuresong-afk/ai_railway/internal/compliance"
+	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 )
 
 type fakeCompliance struct {
@@ -115,5 +117,93 @@ func TestComplianceReportNoSourceAndScope(t *testing.T) {
 	}
 	if !(Scope{Compliance: true}).Allows(KindCompliance) {
 		t.Fatal("область с Compliance не пускает отчёт")
+	}
+}
+
+// complianceFacts — установка без настроенных мер: снимок пуст.
+type complianceFacts struct{}
+
+func (complianceFacts) Snapshot(context.Context) (*compliance.Snapshot, error) {
+	return &compliance.Snapshot{Now: time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC), Unavailable: map[string]bool{}}, nil
+}
+
+// Задача 5.12 этапа 5 (остаток ревью 4.r4): отчёт для коммерческого
+// заказчика строится по встроенной базе только из его пунктов — пункты
+// ГИС и КИИ не входят ни в разделы, ни в процент. Без применимости — все
+// пункты, как прежде.
+func TestComplianceReportApplicability(t *testing.T) {
+	p, err := aisecCrypto.New(aisecCrypto.ProfileStandard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := compliance.NewMemory()
+	svc, err := compliance.New(compliance.Options{Store: m, ServiceDBs: m.ServiceDBs(), Provider: p, Facts: complianceFacts{},
+		Clock: func() time.Time { return time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	b := &Builder{Compliance: svc}
+	build := func(applies string) (Doc, map[string]string) {
+		t.Helper()
+		d, err := b.complianceReport(ctx, Params{Kind: KindCompliance, Period: Period{Loc: time.UTC}, Applies: applies})
+		if err != nil {
+			t.Fatal(err)
+		}
+		meta := map[string]string{}
+		for _, kv := range d.Meta {
+			meta[kv[0]] = kv[1]
+		}
+		return d, meta
+	}
+	rows := func(d Doc) map[string]string {
+		out := map[string]string{}
+		for _, s := range d.Sections {
+			if s.Title == "Требования" || s.Title == "Требования из проектов документов" {
+				for _, r := range s.Rows {
+					out[r[0].Text] = r[4].Text
+				}
+			}
+		}
+		return out
+	}
+	all, allMeta := build("")
+	com, comMeta := build(compliance.AppliesCommercial)
+	if allMeta["Применимость"] != "все пункты базы" || !strings.HasPrefix(comMeta["Применимость"], "Коммерческий оператор") {
+		t.Fatalf("строка применимости: %q / %q", allMeta["Применимость"], comMeta["Применимость"])
+	}
+	allRows, comRows := rows(all), rows(com)
+	gisKII := 0
+	for id, applies := range allRows {
+		if strings.Contains(applies, "Коммерческий оператор") {
+			if _, ok := comRows[id]; !ok {
+				t.Errorf("пункт %s коммерческого оператора выпал из отчёта", id)
+			}
+			continue
+		}
+		if strings.Contains(applies, "ГИС") || strings.Contains(applies, "КИИ") {
+			gisKII++
+		}
+		if _, ok := comRows[id]; ok {
+			t.Errorf("пункт %s (%s) вошёл в отчёт коммерческого заказчика", id, applies)
+		}
+	}
+	if gisKII == 0 || len(comRows) == 0 || len(comRows) >= len(allRows) {
+		t.Fatalf("во встроенной базе нет пунктов только ГИС и КИИ: всего %d, коммерческих %d, ГИС и КИИ %d", len(allRows), len(comRows), gisKII)
+	}
+	// Процент отчёта — по тем же пунктам, что и экран с фильтром.
+	want, err := svc.Evaluate(ctx, compliance.Filter{Applies: compliance.AppliesCommercial})
+	if err != nil {
+		t.Fatal(err)
+	}
+	full, err := svc.Evaluate(ctx, compliance.Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want.Summary.Counted >= full.Summary.Counted {
+		t.Fatalf("учтено пунктов: коммерческий %d, все %d", want.Summary.Counted, full.Summary.Counted)
+	}
+	if want.Summary.Percent != nil && !strings.HasPrefix(comMeta["Итог соответствия"], fmt.Sprintf("%d %% (учтено пунктов: %d;", *want.Summary.Percent, want.Summary.Counted)) {
+		t.Fatalf("итог: %q, ожидалось %d %% из %d", comMeta["Итог соответствия"], *want.Summary.Percent, want.Summary.Counted)
 	}
 }

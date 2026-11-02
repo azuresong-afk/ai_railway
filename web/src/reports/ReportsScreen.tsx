@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { ApiError, type Me } from "../api/client";
 import { appsApi } from "../apps/api";
+import { appliesTitle } from "../compliance/format";
 import { Button } from "../ui/Button";
 import { Field, Input, Select } from "../ui/Field";
 import { Banner, EmptyState, Panel, TabBar, Table, Td, Th } from "../ui/Layout";
@@ -128,7 +129,7 @@ function ReportsTab({ me }: { me: Me }) {
 }
 
 function toInput(s: ReportSchedule): ReportScheduleInput {
-  return { name: s.name, report: s.report, frequency: s.frequency, weekday: s.weekday ?? 1, day: s.day ?? 1, at: s.at, format: s.format, channel_id: s.channel_id, enabled: s.enabled, recipient_user_ids: s.recipient_user_ids };
+  return { name: s.name, report: s.report, frequency: s.frequency, weekday: s.weekday ?? 1, day: s.day ?? 1, at: s.at, format: s.format, channel_id: s.channel_id, enabled: s.enabled, recipient_user_ids: s.recipient_user_ids, ...(s.applies ? { applies: s.applies } : {}) };
 }
 
 const emptyForm: ReportScheduleInput = { name: "", report: "summary", frequency: "weekly", weekday: 1, at: "09:00", format: "xlsx", channel_id: "", enabled: true, recipient_user_ids: [] };
@@ -151,6 +152,8 @@ function ScheduleForm({ initial, kinds, onDone, onCancel }: { initial?: ReportSc
       const body: ReportScheduleInput = { ...f };
       if (f.frequency !== "weekly") delete body.weekday;
       if (f.frequency !== "monthly") delete body.day;
+      // Применимость — только у отчёта соответствия; пусто — все пункты.
+      if (f.report !== "compliance" || !f.applies) delete body.applies;
       return initial ? reportsApi.update(initial.id, { ...body, version: initial.version }) : reportsApi.create(body);
     },
     onSuccess: async () => {
@@ -178,6 +181,20 @@ function ScheduleForm({ initial, kinds, onDone, onCancel }: { initial?: ReportSc
             </Select>
           )}
         </Field>
+        {f.report === "compliance" && (
+          <Field label="Применимость требований" hint="В отчёт и процент входят только пункты выбранной применимости">
+            {({ id }) => (
+              <Select id={id} value={f.applies ?? ""} onChange={(e) => set({ applies: e.target.value as ReportScheduleInput["applies"] })}>
+                <option value="">Все пункты базы</option>
+                {[...appliesTitle].map(([k, t]) => (
+                  <option key={k} value={k}>
+                    {t}
+                  </option>
+                ))}
+              </Select>
+            )}
+          </Field>
+        )}
         <Field label="Периодичность">
           {({ id }) => (
             <Select id={id} value={f.frequency} onChange={(e) => set({ frequency: e.target.value as ReportScheduleInput["frequency"] })}>

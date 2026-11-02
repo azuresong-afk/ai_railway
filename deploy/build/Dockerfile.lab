@@ -43,3 +43,18 @@ RUN --network=none test -n "$VERSION" && test -n "$SOURCE_DATE" && test -n "$SOU
 
 FROM scratch AS release
 COPY --from=go /src/build/release/ /
+
+# Выпуск aisec-media для лаборатории (lab-install.sh --media, задача 5.38):
+# свой каталог и манифест, как make media-release-dir; консоль не нужна.
+FROM ${GO_IMAGE} AS media-go
+ARG VERSION
+ARG SOURCE_DATE
+ARG SOURCE_EPOCH
+WORKDIR /src
+ENV GOTOOLCHAIN=local HOME=/tmp GOCACHE=/tmp/go-cache
+COPY . .
+RUN --network=none test -n "$VERSION" && test -n "$SOURCE_DATE" && test -n "$SOURCE_EPOCH" \
+ && make media-release-dir VERSION="$VERSION" SOURCE_DATE="$SOURCE_DATE" SOURCE_EPOCH="$SOURCE_EPOCH"
+
+FROM scratch AS media-release
+COPY --from=media-go /src/build/release-media/ /

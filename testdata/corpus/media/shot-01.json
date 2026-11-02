@@ -1,0 +1,25 @@
+{
+  "id": "shot-01",
+  "file": "shot-01.png",
+  "text_file": "shot-01.txt",
+  "kind": "screenshot",
+  "lang": "en",
+  "dm": [
+    "DM-46"
+  ],
+  "description": "Скриншот терминала: пароль БД и строка подключения в .env",
+  "metadata": [],
+  "qr": [],
+  "expect": [
+    {
+      "type": "secret.password",
+      "source": "ocr",
+      "text": "DB_PASSWORD=Qx7m2Lp9vT4w!"
+    },
+    {
+      "type": "secret.connection_string",
+      "source": "ocr",
+      "text": "postgres://billing:Rk4n8Wq2zY6e!@db.billing.test:5432/billing"
+    }
+  ]
+}

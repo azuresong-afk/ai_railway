@@ -18,7 +18,9 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/auth"
 	"github.com/azuresong-afk/ai_railway/internal/backup"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
+	"github.com/azuresong-afk/ai_railway/internal/crypto/cryptotest"
 	"github.com/azuresong-afk/ai_railway/internal/keyring"
+	"github.com/azuresong-afk/ai_railway/internal/notify"
 	"github.com/azuresong-afk/ai_railway/internal/store"
 )
 
@@ -316,6 +318,7 @@ func view(t *testing.T, in *installation, w *backup.Writer) string {
 			}
 		}
 	}
+	openSectionSecrets(t, s, w)
 	out, err := json.MarshalIndent(s, "", " ")
 	if err != nil {
 		t.Fatal(err)
@@ -374,6 +377,15 @@ func TestBackupRoundTripOnRealDB(t *testing.T) {
 	src := newInstallation(t, admin, base, "cli_backup_src")
 	dst := newInstallation(t, admin, base, "cli_backup_dst")
 	populate(t, src)
+	populateStage34(t, src)
+	// Сервер новой установки уже запускался: встроенное правило создано со
+	// своим ID, отметка часов лицензии — позже, чем в копии.
+	dst.exec(t, `INSERT INTO alert_rules (id, org_id, builtin_key, kind, name, description, enabled, severity, condition, group_by,
+		suppress_minutes, group_minutes, recipients, version, created_at, created_by, updated_at, updated_by)
+		VALUES ('0192a000-0000-7000-8000-0000000007ff', $1, $2, 'threshold', 'Заблокированные инъекции', 'встроенное', true,
+		'high', '{"count":1}', '{}', 0, 10, '{"roles":[],"users":[]}', 1, now(), 'system', now(), 'system')`,
+		audit.DefaultOrgID, builtinRuleKey)
+	dst.exec(t, "INSERT INTO license_clock (org_id, high_water) VALUES ($1, now() + interval '2 days')", audit.DefaultOrgID)
 	// Внешняя учётная запись IdP (ADR-0025): без пароля, привязана к издателю и sub.
 	src.exec(t, `INSERT INTO users (id, org_id, login, display_name, role, status, password_hash, password_changed_at,
 		must_change_password, created_at, created_by, auth_source, idp_issuer, idp_subject) VALUES
@@ -401,7 +413,7 @@ func TestBackupRoundTripOnRealDB(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, leak := range [][]byte{tCredential, tTOTP, hmacKey, []byte("sec.admin"), []byte("argon2id")} {
+	for _, leak := range append([][]byte{tCredential, tTOTP, hmacKey, []byte("sec.admin"), []byte("argon2id")}, stage34Secrets(t)...) {
 		if bytes.Contains(data, leak) {
 			t.Errorf("в файле копии открытым текстом: %q", leak)
 		}
@@ -416,8 +428,14 @@ func TestBackupRoundTripOnRealDB(t *testing.T) {
 		"-user-hmac-key-out", hmacOut}, dst.dsn, &out, &errb, time.Now()); err != nil {
 		t.Fatalf("restore: %v %s", err, errb.String())
 	}
-	if !strings.Contains(out.String(), "Конфигурация восстановлена") {
+	if !strings.Contains(out.String(), "Конфигурация восстановлена") || strings.Contains(out.String(), "Пропущены") ||
+		strings.Contains(out.String(), "версии 1") || !strings.Contains(out.String(), "каналов 3, правил оповещений 1 (+ встроенных 1)") {
 		t.Fatalf("вывод: %s", out.String())
+	}
+	for _, leak := range stage34Secrets(t) {
+		if bytes.Contains(out.Bytes(), leak) || bytes.Contains(errb.Bytes(), leak) {
+			t.Errorf("в выводе команд открытым текстом: %q", leak)
+		}
 	}
 	w, err := backup.NewWriter(ctx, standardProvider(t), []byte(testBackupPhrase), time.Now())
 	if err != nil {
@@ -429,6 +447,39 @@ func TestBackupRoundTripOnRealDB(t *testing.T) {
 	if n := dst.count(t, `SELECT count(*) FROM users WHERE id = $1 AND auth_source = 'oidc' AND idp_subject = 'idp-user-1'
 		AND password_hash = '!external'`, tUserExt); n != 1 {
 		t.Fatal("внешняя учётная запись не восстановлена")
+	}
+	// Этапы 3–4: встроенное правило обновлено значениями копии и сохранило
+	// ID установки; отметка часов лицензии назад не поставлена; ключ агента
+	// восстановлен с привязкой; секреты — под ключом данных новой установки.
+	if n := dst.count(t, `SELECT count(*) FROM alert_rules WHERE builtin_key = $1 AND id = '0192a000-0000-7000-8000-0000000007ff'
+		AND NOT enabled AND severity = 'critical' AND version = 3`, builtinRuleKey); n != 1 {
+		t.Fatal("встроенное правило не обновлено из копии")
+	}
+	if n := dst.count(t, "SELECT count(*) FROM license_clock WHERE high_water > now() + interval '1 day'"); n != 1 {
+		t.Fatal("отметка часов лицензии поставлена назад")
+	}
+	if n := dst.count(t, "SELECT count(*) FROM app_keys WHERE id = $1 AND agent_id = $2 AND revoked_at IS NULL", tAgentKey, tAgent); n != 1 {
+		t.Fatal("привязка ключа к агенту не восстановлена")
+	}
+	for _, q := range []string{
+		"SELECT count(*) FROM notify_channels WHERE secret IS NOT NULL AND secret_key_id = $1",
+		"SELECT count(*) FROM prompt_baselines WHERE text_key_id = $1",
+		"SELECT count(*) FROM mcp_servers WHERE credential_key_id = $1",
+		"SELECT count(*) FROM gateway_tls WHERE key_key_id = $1",
+		"SELECT count(*) FROM oidc_settings WHERE client_secret_key_id = $1",
+		"SELECT count(*) FROM ldap_settings WHERE bind_password_key_id = $1",
+	} {
+		if n := dst.count(t, q, dst.box.KeyID()); n == 0 {
+			t.Errorf("секрет не под ключом данных новой установки: %s", q)
+		}
+	}
+	var hookSealed []byte
+	if err := dst.db.Pool().QueryRow(ctx, "SELECT secret FROM notify_channels WHERE id = $1", tChannelHook).Scan(&hookSealed); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := dst.box.Open(dst.box.KeyID(), hookSealed, "notify_channels", "secret", tChannelHook); err != nil ||
+		string(got) != tWebhookSecret {
+		t.Fatalf("секрет webhook: %v", err)
 	}
 	// В21: действующий токен копии восстановлен отозванным и не принимается;
 	// отозванный до копии сохранил свою причину.
@@ -480,8 +531,16 @@ func TestBackupRoundTripOnRealDB(t *testing.T) {
 	}
 	if n := dst.count(t, `SELECT count(*) FROM audit_log WHERE action = 'backup.restore' AND details->>'stage' = 'done'
 		AND details->>'settings_restored' = 'true' AND details->'settings'->'events'->>'content_days' = '30'
-		AND details->'settings'->'install'->>'timezone' = 'Asia/Yekaterinburg'`); n != 1 {
+		AND details->'settings'->'install'->>'timezone' = 'Asia/Yekaterinburg'
+		AND details->'settings'->'install'->>'quota_mode' = 'leased' AND details->'settings'->'oidc'->>'client_id' = 'aisec-console'
+		AND details->'settings'->>'license_number' = '1' AND details->>'format_version' = '2'
+		AND details->>'skipped_objects' = '0' AND details->>'notify_channels' = '3'`); n != 1 {
 		t.Fatal("в записи «после» нет новых значений настроек")
+	}
+	for _, leak := range stage34Secrets(t) {
+		if n := dst.count(t, "SELECT count(*) FROM audit_log WHERE strpos(details::text, $1) > 0", string(leak)); n != 0 {
+			t.Errorf("секрет в журнале аудита: %q", leak)
+		}
 	}
 	out.Reset()
 	if err := auditCmd([]string{"verify"}, dst.dsn, &out, &errb); err != nil || !strings.Contains(out.String(), "Цепочка цела") {
@@ -555,6 +614,7 @@ func TestBackupRestoreNonEmptyOnRealDB(t *testing.T) {
 	src := newInstallation(t, admin, base, "cli_backup_src2")
 	dst := newInstallation(t, admin, base, "cli_backup_dst2")
 	populate(t, src)
+	populateStage34(t, src)
 	dst.exec(t, `INSERT INTO users (id, org_id, login, display_name, role, status, password_hash, password_changed_at,
 		must_change_password, created_at, created_by) VALUES ('0192a000-0000-7000-8000-00000000aaaa', $1, 'first.admin',
 		'Синтетический первый', 'security_admin', 'active', 'x', now(), false, now(), 'setup')`, audit.DefaultOrgID)
@@ -607,13 +667,30 @@ func TestBackupRestoreNonEmptyOnRealDB(t *testing.T) {
 		AND details->>'settings_restored' = 'false'`); n != 1 {
 		t.Fatal("в записи «после» нет признака, что настройки не переносились")
 	}
+	// Объекты этапов 3–4 добавлены, настройки (OIDC, LDAP, сертификат шлюза,
+	// лицензия, встроенные правила, инструкции, отметки) — нет.
+	for table, want := range map[string]int{"notify_channels": 3, "alert_rules": 1, "report_schedules": 2, "agents": 1,
+		"agent_tools": 2, "mcp_servers": 1, "model_prices": 1, "app_budgets": 1, "prompt_baselines": 1,
+		"oidc_settings": 0, "ldap_settings": 0, "gateway_tls": 0, "licenses": 0, "incident_instructions": 0,
+		"compliance_marks": 0, "shadow_ai_exclusions": 0} {
+		if n := dst.count(t, "SELECT count(*) FROM "+table); n != want {
+			t.Errorf("%s: %d, ожидалось %d", table, n, want)
+		}
+	}
+	if n := dst.count(t, "SELECT count(*) FROM report_schedules WHERE id = $1 AND applies = 'kii'", tScheduleKII); n != 1 {
+		t.Fatal("применимость расписания отчёта соответствия не восстановлена")
+	}
+	if !strings.Contains(out.String(), "настройки этапов 3 и 4 из копии") {
+		t.Fatalf("вывод без строки о непереносе настроек: %s", out.String())
+	}
 }
 
-// 4В38 ревью 4.r4: агенты в копию не входят, поэтому действующий ключ,
-// закреплённый за агентом, восстанавливается отозванным (иначе он выбрал бы
-// любого агента приложения заголовком X-AISec-Agent); строка в выводе и
-// счётчик в записи аудита «после». Обычный ключ — действующий.
-func TestBackupRestoreAgentKeyRevokedOnRealDB(t *testing.T) {
+// 4В38 ревью 4.r4 и задача 5.8: с версии 2 агенты входят в копию, поэтому
+// ключ, закреплённый за агентом, восстанавливается действующим с той же
+// привязкой (без неё он выбрал бы любого агента приложения заголовком
+// X-AISec-Agent); отзыва и строки о нём нет. Копия версии 1 —
+// TestBackupRestoreVersion1OnRealDB.
+func TestBackupRestoreAgentKeyBoundOnRealDB(t *testing.T) {
 	base := os.Getenv("AISEC_TEST_DATABASE_URL")
 	if base == "" {
 		t.Skip("AISEC_TEST_DATABASE_URL не задан")
@@ -645,19 +722,18 @@ func TestBackupRestoreAgentKeyRevokedOnRealDB(t *testing.T) {
 		time.Now()); err != nil {
 		t.Fatalf("restore: %v %s", err, errb.String())
 	}
-	if n := dst.count(t, `SELECT count(*) FROM app_keys WHERE id = $1 AND agent_id IS NULL AND revoked_at IS NOT NULL
-		AND revoked_by = 'backup_restore'`, agentKey); n != 1 {
-		t.Fatal("ключ агента восстановлен действующим")
+	if n := dst.count(t, `SELECT count(*) FROM app_keys WHERE id = $1 AND agent_id = $2 AND revoked_at IS NULL`,
+		agentKey, agent); n != 1 {
+		t.Fatal("ключ агента восстановлен без привязки или отозванным")
 	}
 	if n := dst.count(t, "SELECT count(*) FROM app_keys WHERE id = $1 AND revoked_at IS NULL", tKey2); n != 1 {
 		t.Fatal("обычный ключ отозван")
 	}
-	if !strings.Contains(out.String(), "закреплённые за агентами (1), восстановлены отозванными") ||
-		strings.Contains(out.String(), "не отмечавшим привязку") {
+	if strings.Contains(out.String(), "закреплённые за агентами") || strings.Contains(out.String(), "не отмечавшим привязку") {
 		t.Fatalf("вывод: %s", out.String())
 	}
 	if n := dst.count(t, `SELECT count(*) FROM audit_log WHERE action = 'backup.restore' AND details->>'stage' = 'done'
-		AND details->>'agent_keys_revoked' = '1' AND details->>'agent_keys_unknown' = 'false'`); n != 1 {
+		AND details->>'agent_keys_revoked' = '0' AND details->>'agent_keys_unknown' = 'false'`); n != 1 {
 		t.Fatal("в записи «после» нет счётчика ключей агентов")
 	}
 }
@@ -747,6 +823,50 @@ func TestBackupRestoreInvalidObjectsOnRealDB(t *testing.T) {
 		created_at) VALUES ('0192a000-0000-7000-8000-000000000503', $1, $2, 'verify', 'aisec_pat_vvvv7777', $3, 'SHA-256',
 		'{users.manage:all}', now() + interval '10 days', now())`, org, tUser, h.Sum([]byte("token-verify")))
 	src.exec(t, `UPDATE applications SET lists = '[{"name":"stop"}]' WHERE id = $1`, tApp)
+	// Файл лицензии с испорченной подписью: сервер его не принял бы (задача 5.8).
+	lic := readLicenseFixture(t)
+	lic[len(lic)/2] ^= 0x01
+	src.exec(t, "INSERT INTO licenses (org_id, number, file, loaded_at, loaded_by) VALUES ($1, 9, $2, now(), 'user:x')", org, lic)
+	// Правило оповещений, которое API этого выпуска не примет (каждое событие —
+	// оповещение), и каталог LDAP с фильтром без логина — задача 5.8.
+	src.exec(t, `INSERT INTO alert_rules (id, org_id, kind, name, description, enabled, severity, condition, group_by,
+		suppress_minutes, group_minutes, recipients, version, created_at, created_by, updated_at, updated_by)
+		VALUES ('0192a000-0000-7000-8000-000000000504', $1, 'frequency', 'Каждое событие', '', true, 'high',
+		'{"count":1,"window_minutes":1}', '{}', 0, 5, '{"roles":["duty_analyst"],"users":[]}', 1, now(), 'user:x', now(), 'user:x')`, org)
+	src.exec(t, `INSERT INTO ldap_settings (org_id, enabled, url, ca_pem, bind_dn, bind_password, bind_password_key_id,
+		user_base_dn, user_filter, id_attribute, display_attribute, group_mode, group_base_dn, version, updated_at, updated_by)
+		VALUES ($1, false, 'ldaps://ldap.example.test', 'CA-PEM', 'cn=aisec,ou=svc,dc=example,dc=test', $2, $3,
+		'ou=people,dc=example,dc=test', '(uid=*)', 'entryUUID', 'cn', 'member_of', '', 1, now(), $4)`,
+		org, src.seal(t, []byte(tLDAPPassword), "ldap_settings", "bind_password", org), src.box.KeyID(), tUser)
+	// По неверному значению в каждом разделе, проверку которого вынесли из
+	// модулей (остатки волны A этапа 5): url_origin канала не по адресу из
+	// секретов (консоль показала бы другой адресат), MCP-сервер на localhost (правило адресов),
+	// группы для модели не из приложения, ключ сертификата шлюза от другой
+	// цепочки.
+	ca := testCAPEM(t)
+	k := src.box.KeyID()
+	const hookID = "0192a000-0000-7000-8000-000000000705"
+	src.exec(t, `INSERT INTO notify_channels (id, org_id, name, type, enabled, min_severity, settings, secret_fields, secret,
+		secret_key_id, audit_stream, version, created_at, created_by, updated_at, updated_by)
+		VALUES ($1, $2, 'Подменённый webhook', 'webhook', true, 'medium', $3::jsonb, '{signing_key,url}', $4, $5, false, 1, now(),
+		'user:x', now(), 'user:x')`, hookID, org, channelSettings(t, notify.Settings{CAPEM: ca, Format: notify.FormatGeneric,
+		URLOrigin: "https://other.example.test"}), src.seal(t, []byte(tWebhookSecret), "notify_channels", "secret", hookID), k)
+	src.exec(t, `INSERT INTO alert_rules (id, org_id, builtin_key, kind, name, description, enabled, severity, condition, group_by,
+		suppress_minutes, group_minutes, recipients, version, created_at, created_by, updated_at, updated_by)
+		VALUES ('0192a000-0000-7000-8000-000000000505', $1, 'threshold.removed', 'threshold', 'Снятое встроенное', '', true,
+		'high', '{"min_severity":"high"}', '{app}', 0, 10, '{"roles":[],"users":[]}', 1, now(), 'system', now(), 'system')`, org)
+	src.exec(t, `INSERT INTO mcp_servers (id, org_id, slug, name, url, ca_pem, external, insecure_http, call_timeout_s, versions,
+		created_at, created_by, updated_at, updated_by) VALUES ('0192a000-0000-7000-8000-000000000742', $1, 'plain', 'Локальный',
+		'https://localhost/mcp', $2, true, false, 30, '{2025-11-25}', now(), 'user:x', now(), 'user:x')`, org, ca)
+	src.exec(t, `INSERT INTO app_user_access (app_id, org_id, mode, issuer, audience, groups_claim, leeway_seconds, model_groups,
+		updated_at, updated_by) VALUES ($1, $2, 'required', 'https://idp.example.test/realms/aisec', 'support-bot', 'groups', 30,
+		'{"gpt-unknown":["support"]}', now(), 'user:x')`, tApp, org)
+	_, cert, _ := testGatewayChain(t)
+	other, err := cryptotest.NewChain(cryptotest.ChainOptions{Hosts: []string{"gw.example.test"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	insertGatewayTLS(t, src, cert, other.Key)
 
 	dir := t.TempDir()
 	phrase := writePhraseFile(t, testBackupPhrase, 0o400)
@@ -763,10 +883,18 @@ func TestBackupRestoreInvalidObjectsOnRealDB(t *testing.T) {
 	if !errors.Is(err, errBackupInvalid) || !errors.As(err, &ie) {
 		t.Fatalf("недопустимые объекты: %v", err)
 	}
-	for _, want := range []string{"политика legacy", "pii.renamed_card", "токен API aisec_pat_vvvv7777", "приложение support-bot"} {
+	for _, want := range []string{"политика legacy", "pii.renamed_card", "токен API aisec_pat_vvvv7777", "приложение support-bot",
+		"лицензия № 9", "правило оповещений «Каждое событие»", "вход через LDAP", "канал «Подменённый webhook»: settings",
+		"MCP-сервер plain: url", "доступ по группам приложения support-bot",
+		"сертификат шлюза: закрытый ключ не подходит"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("в ошибке нет %q: %v", want, err)
 		}
+	}
+	// Снятое в выпуске встроенное правило — пропуск при восстановлении, не
+	// отказ (5В1 ревью 5.r1).
+	if strings.Contains(err.Error(), "Снятое встроенное") {
+		t.Errorf("снятое встроенное правило отклонило копию: %v", err)
 	}
 	t.Setenv("AISEC_DATABASE_URL", dst.dsn)
 	if code := run([]string{"backup", "restore", "-keys", dst.keys, "-in", file, "-passphrase-file", phrase}, &out, &errb,
@@ -780,7 +908,8 @@ func TestBackupRestoreInvalidObjectsOnRealDB(t *testing.T) {
 	if n := auditCount(t, dst, "backup.restore", "success", "started"); n != 0 {
 		t.Fatalf("запись «до» при отказе: %d", n)
 	}
-	for _, table := range []string{"users", "api_tokens", "providers", "applications", "policies"} {
+	for _, table := range []string{"users", "api_tokens", "providers", "applications", "policies", "licenses", "notify_channels",
+		"mcp_servers", "app_user_access", "gateway_tls"} {
 		if n := dst.count(t, "SELECT count(*) FROM "+table); n != 0 {
 			t.Fatalf("отказ изменил %s: %d", table, n)
 		}

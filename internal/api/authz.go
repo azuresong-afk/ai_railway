@@ -43,6 +43,9 @@ const (
 	// DenyReasonCheck — разрешение есть, но не пройдена другая проверка
 	// авторизатора (CSRF у сессии консоли).
 	DenyReasonCheck = "check"
+	// DenyReasonSessionOnly — маршрут только для сессии консоли, а запрос
+	// по токену API (Route.SessionOnly).
+	DenyReasonSessionOnly = "session_only"
 )
 
 type principalKey struct{}

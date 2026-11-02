@@ -25,6 +25,9 @@ type Status struct {
 	// ShadowAISyslog — приём журналов прокси по syslog (задача 4.23); nil —
 	// слушатель выключен.
 	ShadowAISyslog *ShadowAISyslogStats `json:"shadow_ai_syslog,omitempty"`
+	// ShadowAIStorage — заполнение хранилища сводок теневого ИИ (4Н25,
+	// задача 5.9 этапа 5); nil — модуль не подключён.
+	ShadowAIStorage *ShadowAIStorage `json:"shadow_ai_storage,omitempty"`
 	// Notifications — по одной записи на каждое условие раздела 7.
 	Notifications []Notification `json:"notifications"`
 	// Unavailable — разделы, которые не удалось собрать (сбой БД и т. п.);
@@ -89,7 +92,51 @@ type GatewayStatus struct {
 	Integrity *Report `json:"integrity"`
 	// Events — счётчики отправителя событий шлюза; nil — шлюз событий не слал.
 	Events *GatewayEvents `json:"events"`
+	// Limits — заполнение и вытеснения счётчиков в памяти шлюза из
+	// последнего heartbeat (задача 5.9 этапа 5); nil — шлюз прежней версии
+	// или heartbeat после перезапуска сервера ещё не пришёл.
+	Limits *GatewayLimits `json:"limits"`
 }
+
+// GatewayLimits — счётчики лимитов вызовов инструментов и сессий
+// session.risk шлюза с его запуска (4Н11, 4Н13 ревью 4.r1–4.r2).
+type GatewayLimits struct {
+	ReportedAt time.Time  `json:"reported_at"`
+	StartedAt  *time.Time `json:"started_at"`
+	// ToolRate и Sessions — nil, если шлюз раздел не прислал.
+	ToolRate *GatewayToolRate `json:"tool_rate"`
+	Sessions *GatewaySessions `json:"sessions"`
+}
+
+// GatewayToolRate — ключи счётчиков лимитов вызовов: заполнение, предел,
+// вытеснения (у вытесненного ключа счёт начат заново — fail-open).
+type GatewayToolRate struct {
+	Keys      int64 `json:"keys"`
+	MaxKeys   int64 `json:"max_keys"`
+	Evictions int64 `json:"evictions"`
+}
+
+// GatewaySessions — сессии session.risk: заполнение, общий предел, доля
+// приложения, вытеснения из-за общего предела и из-за доли.
+type GatewaySessions struct {
+	Sessions       int64 `json:"sessions"`
+	MaxSessions    int64 `json:"max_sessions"`
+	MaxAppSessions int64 `json:"max_app_sessions"`
+	Evictions      int64 `json:"evictions"`
+	AppEvictions   int64 `json:"app_evictions"`
+}
+
+// ShadowAIStorage — заполнение хранилища почасовых сводок теневого ИИ.
+type ShadowAIStorage struct {
+	Aggregates    int64 `json:"aggregates"`
+	MaxAggregates int64 `json:"max_aggregates"`
+	UsedPercent   int   `json:"used_percent"`
+	WarnPercent   int   `json:"warn_percent"`
+}
+
+// ShadowAIWarnPercent — с какого заполнения хранилища сводок теневого ИИ
+// поднимается предупреждение (4Н25 ревью 4.r3).
+const ShadowAIWarnPercent = 90
 
 // GatewayEvents — счётчики отправителя событий шлюза с его последнего запуска.
 type GatewayEvents struct {
@@ -245,6 +292,22 @@ const (
 	// последнем heartbeat сообщил, что работает на автономной доле — аренду
 	// получить не удаётся. Код — семейство и ID шлюза.
 	ConditionQuotaAutonomous = "quota_autonomous"
+	// ConditionGatewayLimits — РСБ.7 (задача 5.9 этапа 5; 4Н11, 4Н13): шлюз
+	// за последние DroppedWindow вытеснял счётчики лимитов вызовов
+	// инструментов или сессии session.risk из-за общего предела — счёт по
+	// вытесненным ключам начат заново. Код — семейство и ID шлюза.
+	ConditionGatewayLimits = "gateway_limits"
+	// ConditionShadowAIStorage и ConditionShadowAIFull — РСБ.7 (4Н25 ревью
+	// 4.r3): сводки теневого ИИ заняли ShadowAIWarnPercent предела и больше;
+	// предел достигнут — импорт и приём по syslog отклоняются (507).
+	ConditionShadowAIStorage = "shadow_ai_storage"
+	ConditionShadowAIFull    = "shadow_ai_full"
+	// ConditionServiceDBPrevious и ConditionServiceDBUnused — ОЦЛ.5
+	// (ADR-0028, задача 5.9 этапа 5): текущая сохранённая версия служебной
+	// базы не прошла повторную проверку подписи — работает предыдущая версия
+	// или база не используется. Код — семейство и вид базы.
+	ConditionServiceDBPrevious = "service_db_previous"
+	ConditionServiceDBUnused   = "service_db_unused"
 )
 
 // QuotaHealth — режим квот и шлюзы на автономной доле (quotalease.Health).
@@ -320,7 +383,13 @@ const (
 
 // gatewayFamilies — семейства условий с кодом «семейство:ID шлюза».
 var gatewayFamilies = []string{ConditionBundleLag, ConditionEventsDropped, ConditionOffline, ConditionCertExpiry,
-	ConditionReportsStale, ConditionGatewayClock, ConditionGatewayTLS, ConditionQuotaAutonomous}
+	ConditionReportsStale, ConditionGatewayClock, ConditionGatewayTLS, ConditionQuotaAutonomous, ConditionGatewayLimits}
+
+// serviceDBFamilies — семейства условий с кодом «семейство:вид базы»;
+// компонент — service_db:<вид>.
+var serviceDBFamilies = []string{ConditionServiceDBPrevious, ConditionServiceDBUnused}
+
+const componentServiceDB = "service_db:"
 
 // GatewayClockSkewWarn — расхождение часов шлюза с сервером, после которого
 // поднимается условие gateway_clock (шлюз пишет предупреждение в свой

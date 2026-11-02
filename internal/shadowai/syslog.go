@@ -307,7 +307,7 @@ func (l *SyslogListener) refresh(ctx context.Context) error {
 		l.unlicensed.Store(err != nil || !ok)
 		lerr = err
 	}
-	sc, _, err := l.svc.current(ctx)
+	sc, err := l.svc.current(ctx)
 	if err != nil {
 		return err
 	}

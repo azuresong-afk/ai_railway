@@ -10,77 +10,24 @@ import (
 	"time"
 
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
+	"github.com/azuresong-afk/ai_railway/internal/cyclonedx"
 	"github.com/azuresong-afk/ai_railway/tools/internal/components"
 	"github.com/azuresong-afk/ai_railway/tools/internal/npmlock"
 )
 
-// Структуры CycloneDX 1.6 — только используемые поля.
-
-// BOM — документ CycloneDX.
-type BOM struct {
-	BOMFormat    string       `json:"bomFormat"`
-	SpecVersion  string       `json:"specVersion"`
-	SerialNumber string       `json:"serialNumber"`
-	Version      int          `json:"version"`
-	Metadata     Metadata     `json:"metadata"`
-	Components   []Component  `json:"components"`
-	Dependencies []Dependency `json:"dependencies"`
-}
-
-// Metadata — сведения о документе и продукте.
-type Metadata struct {
-	Timestamp string    `json:"timestamp"`
-	Tools     Tools     `json:"tools"`
-	Component Component `json:"component"`
-}
-
-// Tools — чем сформирован документ.
-type Tools struct {
-	Components []Component `json:"components"`
-}
-
-// Component — компонент.
-type Component struct {
-	Type               string        `json:"type"`
-	BOMRef             string        `json:"bom-ref,omitempty"`
-	Name               string        `json:"name"`
-	Version            string        `json:"version,omitempty"`
-	Description        string        `json:"description,omitempty"`
-	PURL               string        `json:"purl,omitempty"`
-	Hashes             []Hash        `json:"hashes,omitempty"`
-	Licenses           []License     `json:"licenses,omitempty"`
-	ExternalReferences []ExternalRef `json:"externalReferences,omitempty"`
-	Properties         []Property    `json:"properties,omitempty"`
-}
-
-// Hash — хеш компонента.
-type Hash struct {
-	Alg     string `json:"alg"`
-	Content string `json:"content"`
-}
-
-// License — лицензия в виде выражения SPDX.
-type License struct {
-	Expression string `json:"expression"`
-}
-
-// ExternalRef — внешняя ссылка.
-type ExternalRef struct {
-	Type string `json:"type"`
-	URL  string `json:"url"`
-}
-
-// Property — свойство «имя — значение».
-type Property struct {
-	Name  string `json:"name"`
-	Value string `json:"value"`
-}
-
-// Dependency — связь «компонент зависит от».
-type Dependency struct {
-	Ref       string   `json:"ref"`
-	DependsOn []string `json:"dependsOn"`
-}
+// Структуры CycloneDX 1.6 — общий кодировщик internal/cyclonedx (им же
+// пользуется выгрузка AI-BOM сервера, задача 5.18 этапа 5).
+type (
+	BOM         = cyclonedx.BOM
+	Metadata    = cyclonedx.Metadata
+	Tools       = cyclonedx.Tools
+	Component   = cyclonedx.Component
+	Hash        = cyclonedx.Hash
+	License     = cyclonedx.License
+	ExternalRef = cyclonedx.ExternalRef
+	Property    = cyclonedx.Property
+	Dependency  = cyclonedx.Dependency
+)
 
 // Свойства по методике ФСТЭК (ТЗ, 8.6). Формат значений сверяется с
 // приложением 1 методики до этапа 6.
@@ -120,9 +67,9 @@ func fromRegistry(c components.Component, typ, ref, name, version, purl string) 
 		Description: c.Purpose,
 		Licenses:    []License{{Expression: c.License}},
 		Properties: []Property{
-			{propAttackSurface, yesNo(*c.AttackSurface)},
-			{propSecurityFunction, yesNo(*c.SecurityFunction)},
-			{propProvidedBy, c.ProvidedBy},
+			{Name: propAttackSurface, Value: yesNo(*c.AttackSurface)},
+			{Name: propSecurityFunction, Value: yesNo(*c.SecurityFunction)},
+			{Name: propProvidedBy, Value: c.ProvidedBy},
 		},
 	}
 	if c.Repository != "" {
@@ -189,7 +136,7 @@ func BuildWithNPM(reg *components.Registry, bins []Binary, lock *npmlock.Lock, v
 		comp := fromRegistry(c, "library", purl, p, d.Version, purl)
 		if h, err := h1ToSHA256(d.Sum); err == nil {
 			comp.Hashes = []Hash{{Alg: "SHA-256", Content: h}}
-			comp.Properties = append(comp.Properties, Property{propGoModuleHash, d.Sum})
+			comp.Properties = append(comp.Properties, Property{Name: propGoModuleHash, Value: d.Sum})
 		} else {
 			errs = append(errs, fmt.Errorf("модуль %s: %w", p, err))
 		}
@@ -234,8 +181,8 @@ func BuildWithNPM(reg *components.Registry, bins []Binary, lock *npmlock.Lock, v
 	deps = append([]Dependency{{Ref: productRef, DependsOn: binRefs}}, deps...)
 
 	bom := &BOM{
-		BOMFormat:   "CycloneDX",
-		SpecVersion: "1.6",
+		BOMFormat:   cyclonedx.BOMFormat,
+		SpecVersion: cyclonedx.SpecVersion,
 		Version:     1,
 		Metadata: Metadata{
 			Timestamp: ts.Format(time.RFC3339),
@@ -248,7 +195,7 @@ func BuildWithNPM(reg *components.Registry, bins []Binary, lock *npmlock.Lock, v
 		Components:   comps,
 		Dependencies: deps,
 	}
-	bom.SerialNumber = serialFor(bom, hasher)
+	bom.SerialNumber = cyclonedx.SerialFor(bom, hasher)
 	return bom, nil
 }
 
@@ -264,23 +211,6 @@ func h1ToSHA256(sum string) (string, error) {
 		return "", fmt.Errorf("хеш модуля %q повреждён", sum)
 	}
 	return hex.EncodeToString(raw), nil
-}
-
-// serialFor выводит серийный номер из содержимого документа: одинаковый
-// состав — одинаковый номер, что нужно для воспроизводимой сборки.
-func serialFor(bom *BOM, hasher aisecCrypto.Hasher) string {
-	var buf strings.Builder
-	buf.WriteString(bom.Metadata.Component.Version + "|" + bom.Metadata.Timestamp + "|")
-	for _, c := range bom.Components {
-		buf.WriteString(c.BOMRef + "|" + c.Version + "|")
-		for _, x := range c.Hashes {
-			buf.WriteString(x.Content + "|")
-		}
-	}
-	s := hasher.Sum([]byte(buf.String()))
-	s[6] = (s[6] & 0x0f) | 0x80 // версия 8 — UUID, определяемый приложением (RFC 9562)
-	s[8] = (s[8] & 0x3f) | 0x80 // вариант RFC 9562
-	return fmt.Sprintf("urn:uuid:%x-%x-%x-%x-%x", s[0:4], s[4:6], s[6:8], s[8:10], s[10:16])
 }
 
 // Check проверяет обязательные для сертификации поля: у каждого компонента,

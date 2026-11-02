@@ -27,8 +27,9 @@ import (
 // принимается по остальным детекторам (fail-open для ML, Р3).
 
 // ErrMLUnavailable — aisec-ml недоступен, перегружен, не уложился в срок или
-// нарушил протокол; запрос проходит без проверки ML.
-var ErrMLUnavailable = errors.New("aisec-ml недоступен")
+// нарушил протокол; запрос проходит без проверки ML. Сама ошибка — в
+// internal/detect: по ней самотест отличает недоступность от сбоя.
+var ErrMLUnavailable = detect.ErrMLUnavailable
 
 // Умолчания клиента.
 const (

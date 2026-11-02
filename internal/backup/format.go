@@ -21,8 +21,12 @@ import (
 const (
 	// FormatName — значение поля format заголовка.
 	FormatName = "aisec-config-backup"
-	// FormatVersion — версия формата файла и содержимого.
-	FormatVersion = 1
+	// FormatVersion — версия формата файла и содержимого новой копии.
+	// Версия 2 (задача 5.8 этапа 5) добавила настройки этапов 3 и 4;
+	// копии версии 1 по-прежнему открываются и восстанавливаются.
+	FormatVersion = 2
+	// minFormatVersion — самая старая версия, которую открывает этот выпуск.
+	minFormatVersion = 1
 	// maxHeader — предел строки заголовка, байт.
 	maxHeader = 1 << 10
 	// MaxFileSize — предел файла копии: заголовок и шифротекст содержимого
@@ -38,7 +42,8 @@ const (
 )
 
 // Контексты выведения ключей копии из результата Argon2id: ключ содержимого
-// и ключ секретов разные, шифротекст одного не открывается другим.
+// и ключ секретов разные, шифротекст одного не открывается другим. «v1» —
+// версия выведения ключей, а не формата: в версии 2 она та же.
 const (
 	payloadKeyInfo = "aisec-backup-v1|payload"
 	secretKeyInfo  = "aisec-backup-v1|secret"
@@ -67,6 +72,9 @@ type header struct {
 	AEAD      string    `json:"aead"`
 	CreatedAt time.Time `json:"created_at"`
 }
+
+// supportedVersion — версия формата, которую открывает этот выпуск.
+func supportedVersion(v int) bool { return v >= minFormatVersion && v <= FormatVersion }
 
 // Keys — ключи копии, выведенные из парольной фразы. Открытых ключей не
 // хранят: только развёрнутые объекты AEAD.
@@ -279,6 +287,8 @@ func payloadAAD(headerLine []byte) []byte {
 
 // Archive — расшифрованная и проверенная копия.
 type Archive struct {
+	// Version — версия формата файла.
+	Version   int
 	Profile   string
 	CreatedAt time.Time
 	Snapshot  *Snapshot
@@ -343,15 +353,16 @@ func Open(ctx context.Context, p crypto.Provider, passphrase, data []byte) (*Arc
 	}
 	payload, err := keys.payload.Open(sealed, payloadAAD(line))
 	if err != nil {
-		if h.Version != FormatVersion {
+		if !supportedVersion(h.Version) {
 			// Другой выпуск мог изменить и вывод ключей: подсказка, а не диагноз.
-			return nil, fmt.Errorf("%w (копия формата версии %d, этот выпуск поддерживает %d)", ErrDecrypt, h.Version, FormatVersion)
+			return nil, fmt.Errorf("%w (копия формата версии %d, этот выпуск поддерживает %d–%d)", ErrDecrypt, h.Version,
+				minFormatVersion, FormatVersion)
 		}
 		return nil, ErrDecrypt
 	}
 	defer clear(payload)
-	if h.Version != FormatVersion {
-		return nil, fmt.Errorf("%w: %d (поддерживается %d)", ErrVersion, h.Version, FormatVersion)
+	if !supportedVersion(h.Version) {
+		return nil, fmt.Errorf("%w: %d (поддерживаются %d–%d)", ErrVersion, h.Version, minFormatVersion, FormatVersion)
 	}
 	if h.AEAD != keys.payload.Name() {
 		return nil, fmt.Errorf("%w: алгоритм %q", ErrFormat, h.AEAD)
@@ -360,6 +371,9 @@ func Open(ctx context.Context, p crypto.Provider, passphrase, data []byte) (*Arc
 	if err != nil {
 		return nil, err
 	}
+	if s.Version != h.Version {
+		return nil, fmt.Errorf("%w: версия содержимого %d, заголовка %d", ErrFormat, s.Version, h.Version)
+	}
 	hasher, err := p.Hasher()
 	if err != nil {
 		return nil, err
@@ -367,5 +381,5 @@ func Open(ctx context.Context, p crypto.Provider, passphrase, data []byte) (*Arc
 	if err := s.verifyHashes(hasher); err != nil {
 		return nil, err
 	}
-	return &Archive{Profile: h.Profile, CreatedAt: h.CreatedAt, Snapshot: s, keys: keys}, nil
+	return &Archive{Version: h.Version, Profile: h.Profile, CreatedAt: h.CreatedAt, Snapshot: s, keys: keys}, nil
 }

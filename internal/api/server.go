@@ -19,6 +19,7 @@ import (
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/internal/gwregistry"
 	"github.com/azuresong-afk/ai_railway/internal/incidents"
+	"github.com/azuresong-afk/ai_railway/internal/inventory"
 	"github.com/azuresong-afk/ai_railway/internal/license"
 	"github.com/azuresong-afk/ai_railway/internal/notify"
 	"github.com/azuresong-afk/ai_railway/internal/policy/versions"
@@ -74,8 +75,12 @@ type Options struct {
 	Approvals *approvals.Service
 	// ShadowAI — теневой ИИ (задача 4.22); nil — его эндпоинты отвечают 503.
 	ShadowAI *shadowai.Service
+	// Inventory — реестр ИИ (задача 5.17); nil — его эндпоинты отвечают 503.
+	Inventory *inventory.Service
 	// Compliance — модуль соответствия (задача 4.24); nil — его эндпоинты отвечают 503.
 	Compliance *compliance.Service
+	// ServiceDBs — состояние служебных баз (задача 5.15); nil — 503.
+	ServiceDBs ServiceDBStates
 	// License — лицензия (задача 4.27, ADR-0026): эндпоинты /api/v1/license,
 	// ограничения изменяющих маршрутов, предел приложений; nil — эндпоинты
 	// лицензии отвечают 503, ограничений нет.
@@ -151,8 +156,12 @@ type Deps struct {
 	Approvals *approvals.Service
 	// ShadowAI — nil, если теневой ИИ не подключён: его эндпоинты отвечают 503.
 	ShadowAI *shadowai.Service
+	// Inventory — nil, если реестр ИИ не подключён: его эндпоинты отвечают 503.
+	Inventory *inventory.Service
 	// Compliance — nil, если модуль соответствия не подключён: его эндпоинты отвечают 503.
 	Compliance *compliance.Service
+	// ServiceDBs — состояние служебных баз (*servicedb.Registry); nil — 503.
+	ServiceDBs ServiceDBStates
 	// License — nil, если лицензия не подключена: её эндпоинты отвечают 503.
 	License *license.Service
 	// Quotas — nil, если распределённые квоты не подключены: их эндпоинты отвечают 503.
@@ -214,7 +223,7 @@ func New(o Options) (http.Handler, *Router, error) {
 	rt.mux.HandleFunc("/", rt.notFound)
 	deps := Deps{Logger: o.Logger, Version: o.Version, Ready: o.Ready, Auth: o.Auth, Gateways: o.Gateways, Integrity: o.Integrity,
 		Status: o.Status, Events: o.Events, Audit: o.Audit, Apps: o.Apps, Policies: o.Policies,
-		AuditLog: o.AuditLog, AuditVerifier: o.AuditVerifier, Alerts: o.Alerts, Notify: o.Notify, Agents: o.Agents, Approvals: o.Approvals, ShadowAI: o.ShadowAI, Compliance: o.Compliance,
+		AuditLog: o.AuditLog, AuditVerifier: o.AuditVerifier, Alerts: o.Alerts, Notify: o.Notify, Agents: o.Agents, Approvals: o.Approvals, ShadowAI: o.ShadowAI, Inventory: o.Inventory, Compliance: o.Compliance, ServiceDBs: o.ServiceDBs,
 		License: o.License, Quotas: o.Quotas, Incidents: o.Incidents,
 		Dashboards: o.Dashboards, Reports: o.Reports, DashCache: newDashCache(), DashStreams: NewExportGate(dashStreamsPerSubject, dashStreamsTotal),
 		Reauthorize: o.Authorizer.Authorize, Stopping: o.Stopping,

@@ -73,6 +73,43 @@ func TestDM26_PromptHash(t *testing.T) {
 	}
 }
 
+// Покрывает: DM-03
+// Хеш реплики (общий для шлюза и самотеста, 4.28 (в)): ответ потоком,
+// разрезанный посреди символа, и та же реплика из истории дают прежний
+// хеш эталона dm03-stream-split (internal/integrity/selftest/vectors.go) —
+// хеши, сохранённые старым шлюзом, по-прежнему совпадают; реплика из одних
+// пробелов — пустая.
+func TestDM03_ReplyHasherKnownValue(t *testing.T) {
+	p, err := aisecCrypto.New(aisecCrypto.ProfileStandard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := p.Hasher()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = "287b4c786980163815a2d69eadb1d24c026f7f5617a5930e567bcdd019f77779"
+	sum := func(parts ...string) (string, bool) {
+		r := NewReplyHasher(h)
+		for _, s := range parts {
+			r.WriteString(s)
+		}
+		return hexOf(r.Sum()), r.Empty()
+	}
+	if got, empty := sum("  Да, коне\xd1", "\x87но.\n\nВклад «Надёжный» —", " 12 % годовых.\n"); got != want || empty {
+		t.Fatalf("поток: %s", got)
+	}
+	if got, _ := sum("Да, конечно. Вклад «Надёжный» — 12 % годовых."); got != want {
+		t.Fatalf("история: %s", got)
+	}
+	if got, _ := sum("Да, конечно. Вклад «Надёжный» — 21 % годовых."); got == want {
+		t.Fatal("изменённая реплика совпала")
+	}
+	if _, empty := sum(" \n\t", "  "); !empty {
+		t.Fatal("реплика из пробелов не пустая")
+	}
+}
+
 func hexOf(b []byte) string {
 	const digits = "0123456789abcdef"
 	out := make([]byte, 0, 2*len(b))

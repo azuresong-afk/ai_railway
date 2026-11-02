@@ -88,6 +88,26 @@
 
 **Записать:** таблица «Итоги», строка 5: браузер и версия; число страниц; замечания по вёрстке со скриншотом.
 
+## 6. Изоляция анализатора изображений aisec-media
+
+Задача 5.38 этапа 5 (ЗИ.7, [ADR-0032](../adr/0032-aisec-media.md), раздел 3). В облаке нет Docker: правила `compose.media.yaml` и профиля seccomp проверяют автотесты `tools/imagecheck`, а профиль seccomp был проверен только на процессе вне контейнера (libseccomp, без runc). Здесь — то же на живом контейнере.
+
+**Нужно:** Linux-ВМ с Docker Engine 24+ и Compose 2.20+, репозиторий, root, 30–40 минут.
+
+**Шаги.**
+1. Установка: `sudo ./lab-install.sh --host <адрес ВМ> --media` в `deploy/compose/pilot`. Ожидается строка «Образ aisec-test/aisec-media:…», проверка выпуска aisec-media без ошибок, в `.env` — `compose.media.yaml` в `COMPOSE_FILE` и `media` в `COMPOSE_PROFILES`. Повторный запуск с `--media` ничего в `.env` не дублирует. Если `docker compose up` откажет с ошибкой про файл `seccomp/aisec-media.json` — compose не нашёл профиль по относительному пути: запишите текст ошибки.
+2. Контейнер и его pid: `c=$(docker compose ps -q aisec-media)`, `pid=$(docker inspect -f '{{.State.Pid}}' $c)`.
+3. Настройки контейнера: `docker inspect -f '{{.HostConfig.NetworkMode}} {{.HostConfig.ReadonlyRootfs}} {{.HostConfig.Memory}} {{.HostConfig.MemorySwap}} {{.HostConfig.NanoCpus}} {{.HostConfig.PidsLimit}} {{.HostConfig.CapDrop}} {{.Config.User}}' $c` — ожидается `none true 1073741824 1073741824 2000000000 64 [ALL] <AISEC_MEDIA_UID>:<AISEC_GW_GID>`. `docker inspect -f '{{json .HostConfig.SecurityOpt}}' $c` содержит `no-new-privileges:true` и профиль с `SCMP_ACT_ERRNO` (содержимое файла, а не `unconfined`).
+4. Ядро: `grep -E '^(Seccomp|Seccomp_filters|NoNewPrivs|CapEff|Uid|Gid):' /proc/$pid/status` — `Seccomp: 2`, `NoNewPrivs: 1`, `CapEff: 0000000000000000`, UID и GID — как в `.env`. Без сети: `nsenter -t $pid -n ip -o link` — только `lo`. tmpfs: `grep ' /tmp ' /proc/$pid/mounts` — `noexec,nosuid,nodev` и `size=16384k`. Лимиты cgroup: `cat /sys/fs/cgroup/system.slice/docker-$(docker inspect -f '{{.Id}}' $c).scope/{memory.max,memory.swap.max,pids.max}` — `1073741824`, `0`, `64`.
+5. Сокет и собеседник: `ls -ld /srv/aisec/media/run` — `drwxr-x--- aisec-media aisec-gw`; `sudo -u aisec python3 -c "import socket;socket.socket(socket.AF_UNIX).connect('/srv/aisec/media/run/aisec-media.sock')"` — отказ в доступе (каталог закрыт). От root: `python3 -c "import socket;s=socket.socket(socket.AF_UNIX);s.connect('/srv/aisec/media/run/aisec-media.sock');print(s.recv(1))"` печатает `b''` — соединение закрыто, а в `docker compose logs aisec-media` — запись «соединение не от шлюза закрыто» с `peer_uid=0`.
+6. Аварийное завершение: `kill -9 $pid` — контейнер перезапускается (`docker compose ps aisec-media`: снова `running`, счётчик `RestartCount` в `docker inspect` вырос), шлюз и сервер не перезапускались (`docker compose ps`), запросы к шлюзу проходят. При остановке `docker compose stop aisec-media` шлюз продолжает работать.
+7. Лимит памяти: в `.env` `AISEC_MEDIA_MEM_LIMIT=16m`, `docker compose up -d aisec-media` — контейнер либо работает, либо завершается с `OOMKilled: true` (`docker inspect -f '{{.State.OOMKilled}}' $c`), а не съедает память хоста; шлюз не затронут. Верните прежнее значение. Проверка OOM на большом изображении — после задачи 5.39, когда шлюз начнёт передавать изображения.
+8. Поставка: в выпуске с подкаталогом `media/` (`make images MEDIA=1` на машине производителя) `./verify-release.sh -first` проходит; подмена байта в `media/bin/aisec-media` или `media/images/aisec-media.tar` — отказ; `media/` с другим ключом или версией — отказ.
+
+**Ожидается:** все значения шагов 3–5 совпадают; сбой и нехватка памяти aisec-media не задевают шлюз; поставка с испорченным `media/` не проходит проверку.
+
+**Записать:** таблица «Итоги», строка 6: версия Docker и ядра; вывод шагов 3 и 4 — приложением; расхождения — в «Открытые вопросы» `docs/plans/stage-5.md` с пометкой «ручная проверка 6».
+
 ## Итоги
 
 Заполните при выполнении; один прогон — одна копия таблицы с датой.
@@ -99,3 +119,4 @@
 | 3 | Установка на чистой ВМ, замер (цель ≤ 60 мин) | | | факт: ___ мин | |
 | 4 | CSV и XLSX в Excel (русская локаль) | | | | |
 | 5 | Печать отчёта в PDF | | | | |
+| 6 | Изоляция aisec-media на живом контейнере | | | | |

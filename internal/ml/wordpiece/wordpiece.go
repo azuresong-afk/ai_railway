@@ -86,14 +86,64 @@ type normalizerJSON struct {
 }
 
 type modelJSON struct {
-	Type                    string           `json:"type"`
-	UnkToken                string           `json:"unk_token"`
-	ContinuingSubwordPrefix *string          `json:"continuing_subword_prefix"`
-	MaxInputCharsPerWord    *int             `json:"max_input_chars_per_word"`
-	Vocab                   map[string]int64 `json:"vocab"`
+	Type                    string    `json:"type"`
+	UnkToken                string    `json:"unk_token"`
+	ContinuingSubwordPrefix *string   `json:"continuing_subword_prefix"`
+	MaxInputCharsPerWord    *int      `json:"max_input_chars_per_word"`
+	Vocab                   vocabList `json:"vocab"`
 }
 
-// Parse разбирает tokenizer.json.
+// vocabEntry — запись словаря в порядке файла.
+type vocabEntry struct {
+	tok string
+	id  int64
+}
+
+// vocabList — словарь до проверки: map строится в Parse только после всех
+// проверок записей (ревью 4.r4, «ниже порога»).
+type vocabList []vocabEntry
+
+// UnmarshalJSON разбирает словарь потоково (json.Decoder.Token): число
+// записей, длина токена и номер проверяются по ходу разбора, до того как
+// запись попадёт в список. Словарь больше MaxVocab отвергается на записи
+// MaxVocab+1, map при этом не строится.
+func (v *vocabList) UnmarshalJSON(raw []byte) error {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return fmt.Errorf("%w: словарь не объект", ErrFormat)
+	}
+	var list vocabList
+	for dec.More() {
+		if len(list) == MaxVocab {
+			return fmt.Errorf("%w: словарь больше %d токенов", ErrFormat, MaxVocab)
+		}
+		k, err := dec.Token()
+		key, ok := k.(string)
+		if err != nil || !ok || key == "" || len(key) > MaxTokenBytes || !utf8.ValidString(key) {
+			return fmt.Errorf("%w: токен словаря", ErrFormat)
+		}
+		n, err := dec.Token()
+		num, ok := n.(json.Number)
+		if err != nil || !ok {
+			return fmt.Errorf("%w: номер токена словаря", ErrFormat)
+		}
+		id, err := num.Int64()
+		if err != nil || id < 0 || id >= MaxVocab {
+			return fmt.Errorf("%w: номер токена словаря", ErrFormat)
+		}
+		list = append(list, vocabEntry{tok: key, id: id})
+	}
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('}') {
+		return fmt.Errorf("%w: словарь не объект", ErrFormat)
+	}
+	*v = list
+	return nil
+}
+
+// Parse разбирает tokenizer.json. Размер файла (MaxFile) проверяется до
+// разбора, число записей словаря и длина токена — при потоковом разборе
+// словаря (vocabList), до построения map.
 func Parse(data []byte) (*Tokenizer, error) {
 	if len(data) > MaxFile {
 		return nil, fmt.Errorf("%w: больше %d байт", ErrFormat, MaxFile)
@@ -101,6 +151,9 @@ func Parse(data []byte) (*Tokenizer, error) {
 	var f fileJSON
 	dec := json.NewDecoder(bytes.NewReader(data))
 	if err := dec.Decode(&f); err != nil {
+		if errors.Is(err, ErrFormat) {
+			return nil, err
+		}
 		return nil, fmt.Errorf("%w: разбор JSON", ErrFormat)
 	}
 	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
@@ -110,10 +163,10 @@ func Parse(data []byte) (*Tokenizer, error) {
 	if m == nil || m.Type != "WordPiece" {
 		return nil, fmt.Errorf("%w: модель не WordPiece", ErrFormat)
 	}
-	if len(m.Vocab) == 0 || len(m.Vocab) > MaxVocab {
-		return nil, fmt.Errorf("%w: словарь пуст или больше %d токенов", ErrFormat, MaxVocab)
+	if len(m.Vocab) == 0 {
+		return nil, fmt.Errorf("%w: словарь пуст", ErrFormat)
 	}
-	t := &Tokenizer{vocab: m.Vocab, prefix: "##", maxChars: 100}
+	t := &Tokenizer{prefix: "##", maxChars: 100}
 	if m.ContinuingSubwordPrefix != nil {
 		t.prefix = *m.ContinuingSubwordPrefix
 	}
@@ -123,19 +176,23 @@ func Parse(data []byte) (*Tokenizer, error) {
 	if t.prefix == "" || len(t.prefix) > 8 || !utf8.ValidString(t.prefix) || t.maxChars < 1 || t.maxChars > MaxWordChars {
 		return nil, fmt.Errorf("%w: префикс продолжения или max_input_chars_per_word", ErrFormat)
 	}
-	ids := make(map[int64]bool, len(m.Vocab))
-	for tok, id := range m.Vocab {
-		if tok == "" || len(tok) > MaxTokenBytes || !utf8.ValidString(tok) || id < 0 || id >= MaxVocab || ids[id] {
-			return nil, fmt.Errorf("%w: токен словаря", ErrFormat)
+	// Записи уже проверены по пределам при разборе; здесь — повторы токенов
+	// и номеров. Номер меньше MaxVocab: занятые номера — битовая карта.
+	used := make([]uint64, MaxVocab/64)
+	t.vocab = make(map[string]int64, len(m.Vocab))
+	for _, e := range m.Vocab {
+		if _, dup := t.vocab[e.tok]; dup || used[e.id/64]&(1<<(e.id%64)) != 0 {
+			return nil, fmt.Errorf("%w: повтор токена или номера в словаре", ErrFormat)
 		}
-		ids[id] = true
-		n := utf8.RuneCountInString(tok)
-		if len(tok) > len(t.prefix) && tok[:len(t.prefix)] == t.prefix {
+		used[e.id/64] |= 1 << (e.id % 64)
+		t.vocab[e.tok] = e.id
+		n := utf8.RuneCountInString(e.tok)
+		if len(e.tok) > len(t.prefix) && e.tok[:len(t.prefix)] == t.prefix {
 			n -= utf8.RuneCountInString(t.prefix)
 		}
 		t.maxPiece = max(t.maxPiece, n)
 	}
-	unk, ok := m.Vocab[m.UnkToken]
+	unk, ok := t.vocab[m.UnkToken]
 	if !ok {
 		return nil, fmt.Errorf("%w: unk_token не в словаре", ErrFormat)
 	}
@@ -155,7 +212,7 @@ func Parse(data []byte) (*Tokenizer, error) {
 		if !a.Special {
 			return nil, fmt.Errorf("%w: добавленный токен %q не служебный", ErrFormat, a.Content)
 		}
-		if id, ok := m.Vocab[a.Content]; !ok || id != a.ID {
+		if id, ok := t.vocab[a.Content]; !ok || id != a.ID {
 			return nil, fmt.Errorf("%w: служебный токен %q не совпадает со словарём", ErrFormat, a.Content)
 		}
 	}

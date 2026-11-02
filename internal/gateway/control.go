@@ -243,8 +243,11 @@ type HeartbeatConfig struct {
 	// QuotaAutonomous — шлюз пропускал запросы на автономной доле квот
 	// (LeaseClient.Autonomous, задача 4.29); nil — не передаётся.
 	QuotaAutonomous func() bool
-	Logger          *slog.Logger
-	Clock           func() time.Time
+	// Limits — заполнение и вытеснения счётчиков в памяти шлюза (задача 5.9
+	// этапа 5): только серверу, который сообщил limits; nil — не передаются.
+	Limits func() *LimitsReport
+	Logger *slog.Logger
+	Clock  func() time.Time
 	// Sleep ждёт d или отмены ctx (тесты подменяют его).
 	Sleep func(ctx context.Context, d time.Duration) bool
 }
@@ -278,8 +281,10 @@ func RunHeartbeat(ctx context.Context, c HeartbeatConfig) {
 	approvals := false
 	// quotaLeases — сервер выдаёт аренду квот и принимает quota_autonomous.
 	quotaLeases := false
+	// limits — сервер принимает поле limits (задача 5.9 этапа 5).
+	limits := false
 	for {
-		wait, ok := c.beat(ctx, u, &interval, &backoff, &clockTLS, &approvals, &quotaLeases)
+		wait, ok := c.beat(ctx, u, &interval, &backoff, &clockTLS, &approvals, &quotaLeases, &limits)
 		if !ok {
 			return
 		}
@@ -313,7 +318,7 @@ func (c HeartbeatConfig) stopping(ctx context.Context, u string) {
 }
 
 // beat отправляет один heartbeat и возвращает паузу до следующего.
-func (c HeartbeatConfig) beat(ctx context.Context, u string, interval, backoff *time.Duration, clockTLS, approvals, quotaLeases *bool) (time.Duration, bool) {
+func (c HeartbeatConfig) beat(ctx context.Context, u string, interval, backoff *time.Duration, clockTLS, approvals, quotaLeases, limits *bool) (time.Duration, bool) {
 	if ctx.Err() != nil {
 		return 0, false
 	}
@@ -336,6 +341,8 @@ func (c HeartbeatConfig) beat(ctx context.Context, u string, interval, backoff *
 		Approvals bool `json:"approvals"`
 		// QuotaLeases — сервер принимает quota_autonomous (задача 4.29).
 		QuotaLeases bool `json:"quota_leases"`
+		// Limits — сервер принимает limits (задача 5.9 этапа 5).
+		Limits bool `json:"limits"`
 	}
 	sent := c.Clock()
 	body := heartbeatBody{Version: c.Version, BundleETag: etag}
@@ -358,6 +365,9 @@ func (c HeartbeatConfig) beat(ctx context.Context, u string, interval, backoff *
 		auto := c.QuotaAutonomous()
 		body.QuotaAutonomous = &auto
 	}
+	if *limits && c.Limits != nil {
+		body.Limits = c.Limits()
+	}
 	body.Selftest, body.Integrity, body.BundleKeys, body.VerifyRequest = c.Reports.snapshot()
 	if c.Budget != nil && body.StartedAt != nil {
 		body.Budget = c.Budget.report()
@@ -367,9 +377,19 @@ func (c HeartbeatConfig) beat(ctx context.Context, u string, interval, backoff *
 		return 0, false
 	}
 	if err != nil {
+		var ce *controlError
+		// Сервер, откатанный на прежний выпуск без перезапуска шлюза, строгим
+		// разбором отвечает 400 на поля, которых не знает: признаки
+		// возможностей сбрасываются, heartbeat сразу повторяется без
+		// необязательных полей, а следующий успешный ответ включает их
+		// заново (5Н4 ревью 5.r1 этапа 5).
+		if errors.As(err, &ce) && ce.Status == http.StatusBadRequest && (*clockTLS || *approvals || *quotaLeases || *limits) {
+			c.Logger.Warn("сервер управления отклонил heartbeat с необязательными полями: повтор без них", "status", ce.Status)
+			*clockTLS, *approvals, *quotaLeases, *limits = false, false, false, false
+			return c.beat(ctx, u, interval, backoff, clockTLS, approvals, quotaLeases, limits)
+		}
 		*backoff = min(max(2**backoff, minHeartbeatInterval), heartbeatBackoffMax)
 		wait := *backoff
-		var ce *controlError
 		switch {
 		case errors.As(err, &ce) && ce.Status == http.StatusUnauthorized:
 			c.Logger.Error("сервер отклонил сертификат шлюза: шлюз отозван или сертификат заменён; нужна повторная регистрация",
@@ -384,7 +404,7 @@ func (c HeartbeatConfig) beat(ctx context.Context, u string, interval, backoff *
 		return wait, true
 	}
 	*backoff = 0
-	*clockTLS, *approvals, *quotaLeases = resp.ClockTLS, resp.Approvals, resp.QuotaLeases
+	*clockTLS, *approvals, *quotaLeases, *limits = resp.ClockTLS, resp.Approvals, resp.QuotaLeases, resp.Limits
 	if c.Budget != nil {
 		c.Budget.apply(body.Budget, resp.Budget)
 	}

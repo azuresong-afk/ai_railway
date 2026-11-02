@@ -28,7 +28,7 @@ func shadowRecords(t *testing.T, logs ...string) []audit.Entry {
 		t.Fatal(err)
 	}
 	m := shadowai.NewMemory()
-	svc, err := shadowai.New(shadowai.Options{Store: m, Provider: p, UserMAC: mac,
+	svc, err := shadowai.New(shadowai.Options{Store: m, ServiceDBs: m.ServiceDBs(), Provider: p, UserMAC: mac,
 		Clock: func() time.Time { return time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC) }})
 	if err != nil {
 		t.Fatal(err)

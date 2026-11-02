@@ -427,4 +427,36 @@ func TestPGReportComplianceSchedule(t *testing.T) {
 	if err := e.store.CreateSchedule(ctx, bad, entry("report_schedule.create", bad.ID)); err == nil {
 		t.Fatal("отчёт compliance без области принят")
 	}
+	// Применимость (5.12, миграция 0070): хранится, меняется; у других видов
+	// и вне набора значений CHECK не пускает.
+	c := e.schedule(t, "Коммерческий заказчик")
+	c.Report, c.Scope, c.Applies = reports.KindCompliance, reports.Scope{Compliance: true}, "commercial"
+	if err := e.store.CreateSchedule(ctx, c, entry("report_schedule.create", c.ID)); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := e.store.Schedule(ctx, c.ID); err != nil || got.Applies != "commercial" {
+		t.Fatalf("применимость: %+v %v", got, err)
+	}
+	upd, err := e.store.UpdateSchedule(ctx, c.ID, func(old reports.Schedule) (reports.Schedule, audit.Entry, error) {
+		old.Applies, old.Version = "ispdn", old.Version+1
+		return old, entry("report_schedule.update", c.ID), nil
+	})
+	if err != nil || upd.Applies != "ispdn" {
+		t.Fatalf("изменение применимости: %+v %v", upd, err)
+	}
+	if got, err := e.store.Schedule(ctx, c.ID); err != nil || got.Applies != "ispdn" {
+		t.Fatalf("чтение после изменения: %+v %v", got, err)
+	}
+	for _, mut := range []func(*reports.Schedule){
+		func(x *reports.Schedule) { x.Applies = "gis" },
+		func(x *reports.Schedule) {
+			x.Report, x.Scope, x.Applies = reports.KindCompliance, reports.Scope{Compliance: true}, "private"
+		},
+	} {
+		x := e.schedule(t, "Неверная применимость")
+		mut(&x)
+		if err := e.store.CreateSchedule(ctx, x, entry("report_schedule.create", x.ID)); err == nil {
+			t.Errorf("принято: %s %q", x.Report, x.Applies)
+		}
+	}
 }

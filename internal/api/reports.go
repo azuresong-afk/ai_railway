@@ -210,11 +210,17 @@ func (d Deps) getReport(w http.ResponseWriter, r *http.Request) {
 	// Запись data.export — до выдачи данных; без записи отчёт не выдаётся.
 	actx, acancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
 	defer acancel()
+	details := map[string]any{
+		"report": kind, "format": params.Format, "delimiter": delimName(params.Delimiter, params.Format), "from": params.Period.First, "to": params.Period.Last, "app": params.App,
+		"rows": doc.Rows(),
+	}
+	if kind == reports.KindCompliance {
+		// От применимости зависят состав и процент отчёта (5Н8 ревью 5.r1);
+		// пусто — все пункты базы.
+		details["applies"] = params.Applies
+	}
 	if err := d.Audit.Record(actx, audit.Entry{Actor: eventsActor(p), SourceIP: clientAddr(r), Action: "data.export",
-		Object: audit.Object{Type: "report", ID: kind}, Result: audit.ResultSuccess, Details: map[string]any{
-			"report": kind, "format": params.Format, "delimiter": delimName(params.Delimiter, params.Format), "from": params.Period.First, "to": params.Period.Last, "app": params.App,
-			"rows": doc.Rows(),
-		}}); err != nil {
+		Object: audit.Object{Type: "report", ID: kind}, Result: audit.ResultSuccess, Details: details}); err != nil {
 		d.Logger.Error("выгрузка отчёта не записана в журнал аудита: выгрузка отменена", "class", "reports", "error", err)
 		WriteProblem(w, NewProblem(http.StatusServiceUnavailable, CodeUnavailable,
 			"Не удалось записать выгрузку в журнал аудита: выгрузка отменена. Повторите позже."))
@@ -267,6 +273,8 @@ type ReportScheduleView struct {
 	Day       int    `json:"day,omitempty"`
 	At        string `json:"at"`
 	Format    string `json:"format"`
+	// Applies — применимость отчёта соответствия; нет поля — все пункты.
+	Applies   string `json:"applies,omitempty"`
 	ChannelID string `json:"channel_id"`
 	Enabled   bool   `json:"enabled"`
 	// RecipientUserIDs — получатели-пользователи: адрес берётся из учётной записи.
@@ -282,7 +290,7 @@ type ReportScheduleView struct {
 
 func reportScheduleView(s reports.Schedule) ReportScheduleView {
 	return ReportScheduleView{ID: s.ID, Name: s.Name, Report: s.Report, Frequency: s.Frequency, Weekday: s.Weekday, Day: s.Day,
-		At: s.At, Format: s.Format, ChannelID: s.ChannelID, Enabled: s.Enabled, RecipientUserIDs: nonNilIDs(s.RecipientUserIDs), NextRunAt: s.NextRunAt.UTC(), LastRunAt: optTime(s.LastRunAt),
+		At: s.At, Format: s.Format, Applies: s.Applies, ChannelID: s.ChannelID, Enabled: s.Enabled, RecipientUserIDs: nonNilIDs(s.RecipientUserIDs), NextRunAt: s.NextRunAt.UTC(), LastRunAt: optTime(s.LastRunAt),
 		Version: s.Version, CreatedAt: s.CreatedAt.UTC(), CreatedBy: s.CreatedBy, UpdatedAt: s.UpdatedAt.UTC(), UpdatedBy: s.UpdatedBy}
 }
 

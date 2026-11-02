@@ -3,6 +3,8 @@ package gateway
 import (
 	"sync"
 	"time"
+
+	"github.com/azuresong-afk/ai_railway/internal/policy/toolrate"
 )
 
 // CheckReport — итог самотеста или контроля целостности шлюза для heartbeat
@@ -141,4 +143,47 @@ type heartbeatBody struct {
 	// QuotaAutonomous — шлюз работает на автономной доле квот (задача 4.29):
 	// только серверу, который сообщил quota_leases.
 	QuotaAutonomous *bool `json:"quota_autonomous,omitempty"`
+	// Limits — заполнение и вытеснения счётчиков в памяти (задача 5.9
+	// этапа 5): только серверу, который сообщил limits.
+	Limits *LimitsReport `json:"limits,omitempty"`
+}
+
+// LimitsReport — заполнение и вытеснения счётчиков в памяти шлюза с его
+// запуска (4Н11, 4Н13 ревью 4.r1–4.r2): вытесненный ключ начинает счёт
+// заново, поэтому рост вытеснений — признак того, что лимиты вызовов
+// инструментов или session.risk для части ключей не действуют. Только
+// числа: ни ключей, ни ID приложений.
+type LimitsReport struct {
+	ToolRate *ToolRateReport `json:"tool_rate,omitempty"`
+	Sessions *SessionsReport `json:"sessions,omitempty"`
+}
+
+// ToolRateReport — счётчики лимитов вызовов инструментов (toolrate).
+type ToolRateReport struct {
+	Keys      int    `json:"keys"`
+	MaxKeys   int    `json:"max_keys"`
+	Evictions uint64 `json:"evictions"`
+}
+
+// SessionsReport — состояния session.risk (SessionStats).
+type SessionsReport struct {
+	Sessions       int    `json:"sessions"`
+	MaxSessions    int    `json:"max_sessions"`
+	MaxAppSessions int    `json:"max_app_sessions"`
+	Evictions      uint64 `json:"evictions"`
+	AppEvictions   uint64 `json:"app_evictions"`
+}
+
+// NewLimitsReport собирает отчёт из счётчиков; nil пропускаются.
+func NewLimitsReport(rates *toolrate.Counters, sessions *Sessions) *LimitsReport {
+	out := &LimitsReport{}
+	if rates != nil {
+		out.ToolRate = &ToolRateReport{Keys: rates.Len(), MaxKeys: rates.MaxKeys(), Evictions: rates.Evictions()}
+	}
+	if sessions != nil {
+		st := sessions.Stats()
+		out.Sessions = &SessionsReport{Sessions: st.Sessions, MaxSessions: st.MaxSessions, MaxAppSessions: st.MaxAppSessions,
+			Evictions: st.Evictions, AppEvictions: st.AppEvictions}
+	}
+	return out
 }
