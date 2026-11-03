@@ -363,3 +363,22 @@ func TestDM36_ReconfigureKeepsCounters(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// Пакет учитывается в квотах частоты по числу запросов (ревью 5.r2, 5Н16):
+// пакет из пяти документов — пять запросов в минуту приложения, ключа и
+// пользователя; пакет больше предела не пройдёт никогда.
+func TestDM36_BatchCountsRequests(t *testing.T) {
+	l, _ := newTestLimiter(config.Quotas{RequestsPerMinute: 10, RequestsPerMinutePerKey: 10, RequestsPerMinutePerUser: 10})
+	batch := QuotaRequest{App: "app", Key: "k", User: "u", Requests: 5}
+	for range 2 {
+		if _, err := l.Admit(batch); err != nil {
+			t.Fatal(err)
+		}
+	}
+	exceeded(t, func() error { _, err := l.Admit(QuotaRequest{App: "app", Key: "k2"}); return err }(), QuotaRequestsPerMinute, "DM-36")
+	l2, _ := newTestLimiter(config.Quotas{RequestsPerMinutePerKey: 4})
+	if e := exceeded(t, func() error { _, err := l2.Admit(QuotaRequest{App: "app", Key: "k", Requests: 5}); return err }(),
+		QuotaRequestsPerMinutePerKey, "DM-36"); e.RetryAfter != 0 {
+		t.Errorf("пакет больше предела — без Retry-After: %+v", e)
+	}
+}

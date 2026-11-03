@@ -28,6 +28,9 @@ type record struct {
 	// оценивается по размеру: inTokens — оценка входа, outBytes — размер
 	// ответа провайдера до действий политики (nil — ответа нет).
 	res *Reservation
+	// quotaRequests — сколько запросов учитывают квоты частоты (пакет RAG —
+	// число документов); 0 — один.
+	quotaRequests int
 	// budget — резерв жёсткого бюджета в аренде у сервера (режим leased).
 	budget   *leaseHold
 	sent     bool

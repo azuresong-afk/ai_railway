@@ -218,22 +218,32 @@ func TestRAGBatchLimits(t *testing.T) {
 	}
 }
 
-// Квоты: пакет — один запрос для частоты, предел размера входа — к каждому
-// тексту; отказ — 429 и одно событие.
+// Квоты: пакет учитывается в частоте по числу документов (ревью 5.r2,
+// 5Н16), отказ — до проверки документов, 429 и одно событие; предел размера
+// входа — к каждому тексту.
 func TestRAGBatchQuotas(t *testing.T) {
 	up, _ := newUpstream(t, nil)
 	var log *eventLog
-	g := newGateway(t, up.URL, func(o *gwOpts) { o.quotas.RequestsPerMinute = 1; log = o.events })
+	g := newGateway(t, up.URL, func(o *gwOpts) { o.quotas.RequestsPerMinute = 3; log = o.events })
 	if r := decodeBatch(t, postJSON(t, g, batchPath, batchBody(t, [2]string{"a", "раз"}, [2]string{"b", "два"}), nil)); len(r.Results) != 2 {
 		t.Fatalf("первый пакет: %+v", r)
 	}
-	resp := postJSON(t, g, batchPath, batchBody(t, [2]string{"c", "три"}), nil)
+	resp := postJSON(t, g, batchPath, batchBody(t, [2]string{"c", "три"}, [2]string{"d", "четыре"}), nil)
 	if resp.Code != http.StatusTooManyRequests || errCode(t, resp) != "quota_exceeded" || resp.Header().Get("Retry-After") == "" {
-		t.Fatalf("второй пакет: %d %s", resp.Code, resp.Body.String())
+		t.Fatalf("второй пакет сверх квоты: %d %s", resp.Code, resp.Body.String())
 	}
 	evs := log.all()
 	if len(evs) != 3 || evs[2].Source != "rag" || evs[2].Decision.Action != "block" {
 		t.Fatalf("события: %+v", evs)
+	}
+	// Пакет больше квоты частоты не пройдёт никогда.
+	four := batchBody(t, [2]string{"e", "1"}, [2]string{"f", "2"}, [2]string{"g", "3"}, [2]string{"h", "4"})
+	g2 := newGateway(t, up.URL, func(o *gwOpts) { o.quotas.RequestsPerMinute = 3 })
+	if resp := postJSON(t, g2, batchPath, four, nil); resp.Code != http.StatusTooManyRequests {
+		t.Fatalf("пакет больше квоты: %d %s", resp.Code, resp.Body.String())
+	}
+	if r := decodeBatch(t, postJSON(t, g2, batchPath, batchBody(t, [2]string{"e", "1"}, [2]string{"f", "2"}, [2]string{"g", "3"}), nil)); len(r.Results) != 3 {
+		t.Fatalf("пакет в квоте: %+v", r)
 	}
 	g = newGateway(t, up.URL, func(o *gwOpts) { o.quotas.MaxInputBytes = 20 })
 	docs := make([][2]string, 5)

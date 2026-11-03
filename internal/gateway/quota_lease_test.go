@@ -587,3 +587,24 @@ func TestLeaseRequestFitsServerLimits(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// Режим leased: пакет берёт у сервера аренду на число документов и
+// возвращает её этим же числом (ревью 5.r2, 5Н16).
+func TestDM36_LeasedBatchCountsRequests(t *testing.T) {
+	f, u := newFakeLeaseServer(t, map[leaseKeyT]int64{{"crm", QuotaRequestsPerMinute}: 10})
+	clock := &syncClock{t: time.Unix(1_800_000_000, 0)}
+	g := newLeaseGW(t, u, clock, config.Quotas{RequestsPerMinute: 10})
+	for range 2 {
+		rs, err := g.lim.AdmitCtx(context.Background(), QuotaRequest{App: "crm", Requests: 5})
+		if err != nil {
+			t.Fatal(err)
+		}
+		rs.Settle(0)
+	}
+	if _, err := g.lim.AdmitCtx(context.Background(), QuotaRequest{App: "crm"}); err == nil {
+		t.Fatal("одиннадцатый запрос после двух пакетов по пять прошёл")
+	}
+	if c := f.get(leaseKeyT{"crm", QuotaRequestsPerMinute}); c != 10 {
+		t.Fatalf("учтено на сервере %d", c)
+	}
+}
