@@ -2837,7 +2837,7 @@ export interface paths {
          *     type, app, env, user, provider, model, source, policy_mode, action, rule, severity,
          *     storage, gateway, threat, detector, exception (находки, пропущенные по исключению с этим ID),
          *     mark (`false_positive`, `confirmed` или `none` — без отметки), stream, non_text_unchecked,
-         *     has_content, ml_unavailable (ML-детекторы не дали результата), judge_unchecked (оценка judge.llm не получена), session (псевдоним сессии запроса чата или агента), agent, mcp_server, tool
+         *     has_content, ml_unavailable (ML-детекторы не дали результата), media_unavailable (изображение не проверено из-за сбоя анализатора aisec-media, DM-50), judge_unchecked (оценка judge.llm не получена), session (псевдоним сессии запроса чата или агента), agent, mcp_server, tool
          *     (события агентов); операторы
          *     `=`, `!=`, `in (…)`, `not in (…)` (у логических полей — только `=`). Лимиты: 2048 байт,
          *     20 условий, 50 значений в списке, значение до 256 байт. Пишет `events.list`

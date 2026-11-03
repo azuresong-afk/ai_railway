@@ -4,8 +4,9 @@ package media
 import (
 	"image/png" // clean:depguard
 
-	"golang.org/x/image/webp" // clean:depguard
+	"github.com/makiuchi-d/gozxing" // clean:depguard
+	"golang.org/x/image/webp"       // clean:depguard
 )
 
 // Formats — форматы с декодером.
-func Formats() []string { _ = png.Decode; return []string{webp.Name} }
+func Formats() []string { _ = png.Decode; return []string{webp.Name, gozxing.Name} }

@@ -124,6 +124,10 @@ var filterFields = map[string]fieldDef{
 	// Задача 5.28 этапа 5: оценка judge.llm не получена (ADR-0030, раздел 7).
 	"judge_unchecked": {column: "details", kind: kindBool, valid: oneOf("true", "false"),
 		expr: "COALESCE((e.details->'decision'->>'judge_unchecked')::boolean, false)"},
+	// Задача 5.44 этапа 5 (DM-50): изображение не проверено из-за сбоя
+	// анализатора aisec-media — признак решения в details.
+	"media_unavailable": {column: "details", kind: kindBool, valid: oneOf("true", "false"),
+		expr: "COALESCE((e.details->'decision'->>'media_unavailable')::boolean, false)"},
 	// Задача 3.22: exception — находки, пропущенные по исключению с этим ID;
 	// mark — отметка аналитика (false_positive, confirmed, none — нет отметки).
 	"exception": {column: "details", kind: kindFinding, valid: exceptionRe.MatchString, key: "exception"},
@@ -643,6 +647,8 @@ func (r *Record) filterValues(field string) []string {
 		return []string{strconv.FormatBool(r.Details != nil && r.Details.Decision != nil && r.Details.Decision.MLUnavailable)}
 	case "judge_unchecked":
 		return []string{strconv.FormatBool(r.Details != nil && r.Details.Decision != nil && r.Details.Decision.JudgeUnchecked)}
+	case "media_unavailable":
+		return []string{strconv.FormatBool(r.Details != nil && r.Details.Decision != nil && r.Details.Decision.MediaUnavailable)}
 	}
 	return nil
 }

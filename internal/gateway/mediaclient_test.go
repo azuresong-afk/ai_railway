@@ -182,6 +182,31 @@ func TestMediaClientRejectedResult(t *testing.T) {
 	}
 }
 
+// Тексты итога (задача 5.43) переходят в MediaReply.Texts с источником и
+// рамкой; в Result текста не остаётся. Итог с текстом без своей проверки
+// в checks — нарушение протокола.
+func TestMediaClientTexts(t *testing.T) {
+	res := wire.Result{Status: wire.StatusOK, Format: wire.FormatPNG, Width: 40, Height: 40, Frames: 1,
+		Checks: []wire.Check{wire.CheckDecode, wire.CheckMetadata, wire.CheckQR},
+		Texts:  []wire.Text{{Text: "описание", Source: wire.SourceMetadata}, {Text: "код", Source: wire.SourceQR, Box: &wire.Box{X: 1, Y: 2, W: 30, H: 30}}}}
+	f := &fakeMedia{hello: defaultHello(), analyze: func(wire.Header, []byte) (wire.FrameType, any) { return wire.TypeResult, res }}
+	c := newMediaClient(t, f.start(t), nil)
+	r, err := c.Analyze(context.Background(), pngBytes)
+	if err != nil || len(r.Result.Texts) != 0 || len(r.Texts) != 2 {
+		t.Fatalf("%+v %v", r, err)
+	}
+	if r.Texts[0] != (MediaText{Text: "описание", Origin: "metadata"}) || r.Texts[1].Origin != "qr" || *r.Texts[1].Box != (events.Box{X: 1, Y: 2, W: 30, H: 30}) {
+		t.Fatalf("тексты %+v", r.Texts)
+	}
+	bad := res
+	bad.Checks = []wire.Check{wire.CheckDecode, wire.CheckQR}
+	f2 := &fakeMedia{hello: defaultHello(), analyze: func(wire.Header, []byte) (wire.FrameType, any) { return wire.TypeResult, bad }}
+	c2 := newMediaClient(t, f2.start(t), nil)
+	if _, err := c2.Analyze(context.Background(), pngBytes); err == nil {
+		t.Fatal("принят текст метаданных без проверки metadata")
+	}
+}
+
 // Изображение больше max_bytes анализатора не отправляется.
 func TestMediaClientOversizeNotSent(t *testing.T) {
 	h := defaultHello()

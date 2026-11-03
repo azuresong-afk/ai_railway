@@ -6,6 +6,8 @@ import (
 	"errors"
 	"io"
 	"slices"
+	"strings"
+	"unicode/utf8"
 )
 
 // ErrBadBody — тело кадра не соответствует протоколу.
@@ -31,7 +33,7 @@ var Formats = []Format{FormatPNG, FormatJPEG, FormatGIF, FormatWebP, FormatBMP, 
 // проверенным, только если среди проверок есть ocr (ADR-0032, раздел 8).
 type Check string
 
-// Проверки. В каркасе (задача 5.37) — только decode.
+// Проверки: decode — с каркаса (5.37), metadata и qr — с 5.43, ocr — 5.42.
 const (
 	CheckDecode   Check = "decode"   // растр декодирован
 	CheckOCR      Check = "ocr"      // OCR, обычный проход (5.42)
@@ -86,8 +88,50 @@ type HelloOK struct {
 	MaxPixels int64    `json:"max_pixels"`
 }
 
-// Result — итог анализа одного изображения. Извлечённого текста в
-// каркасе нет; поле texts появится в задаче 5.42.
+// Source — откуда текст на изображении (ADR-0032, раздел 4).
+type Source string
+
+// Источники текста.
+const (
+	SourceOCR         Source = "ocr"          // OCR, обычный проход (5.42)
+	SourceOCRContrast Source = "ocr_contrast" // OCR, проход с контрастом (5.42)
+	SourceMetadata    Source = "metadata"     // EXIF, XMP, текстовые чанки PNG, комментарий JPEG (5.43)
+	SourceQR          Source = "qr"           // QR-код (5.43)
+)
+
+// sourceCheck — проверка, без которой текста этого источника быть не может.
+var sourceCheck = map[Source]Check{
+	SourceOCR: CheckOCR, SourceOCRContrast: CheckOCR, SourceMetadata: CheckMetadata, SourceQR: CheckQR,
+}
+
+// Пределы текста в итоге. Худший случай кодирования JSON — \u-экранирование
+// <, >, & и U+2028/2029 (6 байт на символ): 32 КиБ текста и рамки 256
+// фрагментов укладываются в MaxResultBody.
+const (
+	MaxTexts      = 256
+	MaxTextBytes  = 4 << 10
+	MaxTextsBytes = 32 << 10
+)
+
+// Box — рамка текста на изображении в пикселях первого кадра (у QR — по
+// точкам шаблонов поиска). У текста метаданных рамки нет.
+type Box struct {
+	X int64 `json:"x"`
+	Y int64 `json:"y"`
+	W int64 `json:"w"`
+	H int64 `json:"h"`
+}
+
+// Text — фрагмент текста с изображения. Содержимое передаётся только
+// шлюзу и не кэшируется анализатором (ТЗ 5.17, ADR-0032, раздел 7).
+type Text struct {
+	Text   string `json:"text"`
+	Source Source `json:"source"`
+	Box    *Box   `json:"box,omitempty"`
+}
+
+// Result — итог анализа одного изображения: статус, размеры, выполненные
+// проверки и извлечённые тексты (только у ok).
 type Result struct {
 	Status Status  `json:"status"`
 	Reason Reason  `json:"reason,omitempty"`
@@ -96,6 +140,7 @@ type Result struct {
 	Height int64   `json:"height,omitempty"`
 	Frames int64   `json:"frames,omitempty"`
 	Checks []Check `json:"checks"`
+	Texts  []Text  `json:"texts,omitempty"`
 	Cached bool    `json:"cached,omitempty"`
 }
 
@@ -173,17 +218,57 @@ func (r *Result) Validate() error {
 			return ErrBadBody
 		}
 	case StatusUnsupported:
-		if r.Reason != "" || len(r.Checks) != 0 {
+		if r.Reason != "" || len(r.Checks) != 0 || len(r.Texts) != 0 {
 			return ErrBadBody
 		}
 	case StatusRejected:
-		if !slices.Contains(reasons, r.Reason) || len(r.Checks) != 0 {
+		if !slices.Contains(reasons, r.Reason) || len(r.Checks) != 0 || len(r.Texts) != 0 {
 			return ErrBadBody
 		}
 	default:
 		return ErrBadBody
 	}
+	return r.validateTexts()
+}
+
+// validateTexts — тексты в пределах: не больше MaxTexts, каждый — непустой
+// UTF-8 без управляющих символов (кроме перевода строки и табуляции) и не
+// длиннее MaxTextBytes, вместе — не больше MaxTextsBytes; источник —
+// из выполненных проверок; рамка — внутри изображения.
+func (r *Result) validateTexts() error {
+	if len(r.Texts) > MaxTexts {
+		return ErrBadBody
+	}
+	total := 0
+	for _, t := range r.Texts {
+		total += len(t.Text)
+		if !ValidText(t.Text) || total > MaxTextsBytes {
+			return ErrBadBody
+		}
+		c, ok := sourceCheck[t.Source]
+		if !ok || !slices.Contains(r.Checks, c) {
+			return ErrBadBody
+		}
+		if t.Box != nil && !t.Box.within(r.Width, r.Height) {
+			return ErrBadBody
+		}
+	}
 	return nil
+}
+
+// ValidText — фрагмент допустим в итоге: непустой, UTF-8, не длиннее
+// MaxTextBytes, без управляющих символов, кроме \t и \n.
+func ValidText(s string) bool {
+	if s == "" || len(s) > MaxTextBytes || !utf8.ValidString(s) {
+		return false
+	}
+	return !strings.ContainsFunc(s, func(r rune) bool {
+		return (r < 0x20 && r != '\t' && r != '\n') || r == 0x7F || (r >= 0x80 && r < 0xA0)
+	})
+}
+
+func (b *Box) within(w, h int64) bool {
+	return b.X >= 0 && b.Y >= 0 && b.W >= 1 && b.H >= 1 && b.X < w && b.Y < h && b.W <= w-b.X && b.H <= h-b.Y
 }
 
 // ParseResult разбирает итог анализа (недоверенный вход для шлюза).

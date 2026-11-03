@@ -158,6 +158,8 @@ linters:
               desc: "декодер изображений — только в internal/media (ADR-0032, CLAUDE.md «Медиа»)"
             - pkg: "golang.org/x/image"
               desc: "декодер изображений — только в internal/media (ADR-0032, CLAUDE.md «Медиа»)"
+            - pkg: "github.com/makiuchi-d/gozxing"
+              desc: "декодер QR — только в internal/media, то есть в aisec-media (ADR-0032, задача 5.43)"
         model-scanner:
           # Разбор недоверенных файлов моделей (ADR-0029, п. 4; задача 5.19) —
           # только в aisec-cli на узле с моделями и в тестах: сервер и шлюз

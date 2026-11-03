@@ -107,6 +107,11 @@ type Decision struct {
 	// срок, перегрузка, бюджет, инъекция, ответ не по формату): решение
 	// принято без неё. Подробности — Event.Judge (ADR-0030, раздел 7).
 	JudgeUnchecked bool `json:"judge_unchecked,omitempty"`
+	// MediaUnavailable — изображение не проверено из-за сбоя анализатора
+	// (недоступен, очередь заполнена, срок истёк, сбой анализа), а не из-за
+	// свойства изображения: признак перегрузки или отказа aisec-media
+	// (DM-50, задача 5.44); по нему — правило frequency.media_unavailable.
+	MediaUnavailable bool `json:"media_unavailable,omitempty"`
 }
 
 // Причины сбоя детектора.

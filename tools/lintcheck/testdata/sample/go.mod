@@ -9,6 +9,7 @@ require (
 	github.com/go-asn1-ber/asn1-ber v0.0.0
 	github.com/go-ldap/ldap/v3 v3.0.0
 	github.com/google/uuid v0.0.0
+	github.com/makiuchi-d/gozxing v0.0.0
 	github.com/yalue/onnxruntime_go v0.0.0
 	golang.org/x/crypto v0.0.0
 	golang.org/x/image v0.0.0
@@ -28,3 +29,5 @@ replace github.com/Azure/go-ntlmssp => ./stub/ntlmssp
 replace github.com/yalue/onnxruntime_go => ./stub/onnxruntime
 
 replace golang.org/x/image => ./stub/ximage
+
+replace github.com/makiuchi-d/gozxing => ./stub/gozxing

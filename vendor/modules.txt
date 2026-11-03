@@ -35,6 +35,19 @@ github.com/jackc/pgx/v5/pgxpool
 ## explicit; go 1.19
 github.com/jackc/puddle/v2
 github.com/jackc/puddle/v2/internal/genstack
+# github.com/makiuchi-d/gozxing v0.1.2-0.20250720151325-95e256b768ac
+## explicit; go 1.17
+github.com/makiuchi-d/gozxing
+github.com/makiuchi-d/gozxing/common
+github.com/makiuchi-d/gozxing/common/reedsolomon
+github.com/makiuchi-d/gozxing/common/util
+github.com/makiuchi-d/gozxing/multi
+github.com/makiuchi-d/gozxing/multi/qrcode
+github.com/makiuchi-d/gozxing/multi/qrcode/detector
+github.com/makiuchi-d/gozxing/qrcode
+github.com/makiuchi-d/gozxing/qrcode/decoder
+github.com/makiuchi-d/gozxing/qrcode/detector
+github.com/makiuchi-d/gozxing/qrcode/encoder
 # github.com/yalue/onnxruntime_go v1.38.0
 ## explicit; go 1.19
 github.com/yalue/onnxruntime_go
@@ -61,10 +74,21 @@ golang.org/x/term
 # golang.org/x/text v0.43.0
 ## explicit; go 1.26.0
 golang.org/x/text/cases
+golang.org/x/text/encoding
+golang.org/x/text/encoding/charmap
+golang.org/x/text/encoding/ianaindex
+golang.org/x/text/encoding/internal
+golang.org/x/text/encoding/internal/identifier
+golang.org/x/text/encoding/japanese
+golang.org/x/text/encoding/korean
+golang.org/x/text/encoding/simplifiedchinese
+golang.org/x/text/encoding/traditionalchinese
+golang.org/x/text/encoding/unicode
 golang.org/x/text/internal
 golang.org/x/text/internal/language
 golang.org/x/text/internal/language/compact
 golang.org/x/text/internal/tag
+golang.org/x/text/internal/utf8internal
 golang.org/x/text/language
 golang.org/x/text/runes
 golang.org/x/text/secure/bidirule
@@ -73,6 +97,10 @@ golang.org/x/text/transform
 golang.org/x/text/unicode/bidi
 golang.org/x/text/unicode/norm
 golang.org/x/text/width
+# golang.org/x/xerrors v0.0.0-20200804184101-5ec99f83aff1
+## explicit; go 1.11
+golang.org/x/xerrors
+golang.org/x/xerrors/internal
 # rsc.io/qr v0.2.0
 ## explicit
 rsc.io/qr

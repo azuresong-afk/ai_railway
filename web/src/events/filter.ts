@@ -85,6 +85,7 @@ export const fields: FieldInfo[] = [
   { id: "has_content", title: "Есть содержимое", bool: true, options: yesNo },
   { id: "ml_unavailable", title: "ML-проверка недоступна", bool: true, options: yesNo },
   { id: "judge_unchecked", title: "Оценщик не проверил", bool: true, options: yesNo },
+  { id: "media_unavailable", title: "Анализатор изображений недоступен", bool: true, options: yesNo },
 ];
 
 const byId = new Map(fields.map((f) => [f.id, f]));
