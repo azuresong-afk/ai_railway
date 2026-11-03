@@ -352,6 +352,19 @@ func (d Deps) updateInventoryModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, err := d.Inventory.UpdateModel(r.Context(), by, id, patch); err != nil {
+		if errors.Is(err, inventory.ErrReferenceSessionOnly) {
+			// Смена эталона весов по токену — отказ с записью access.denied,
+			// как у маршрутов SessionOnly (ревью 5.r2, 5Н18).
+			if p, ok := PrincipalFrom(r.Context()); ok && p.Caller != nil && d.Auth != nil {
+				if aerr := d.Auth.AccessDenied(r.Context(), *p.Caller, r.Method, "/api/v1/inventory/models/{id}",
+					auth.PermInventoryManage, DenyReasonSessionOnly); aerr != nil {
+					d.Logger.Error("отказ в доступе не записан в журнал аудита", "error", aerr)
+				}
+			}
+			WriteProblem(w, NewProblem(http.StatusForbidden, CodeForbidden,
+				"Эталонные хеши весов и адаптеров меняются только из консоли: токен API может добавлять новые файлы."))
+			return
+		}
 		WriteProblem(w, inventoryProblem(d.Logger, err))
 		return
 	}
