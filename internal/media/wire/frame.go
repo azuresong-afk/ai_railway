@@ -33,6 +33,13 @@ const (
 	TypeAnalyze FrameType = 3 // шлюз → aisec-media: байты изображения
 	TypeResult  FrameType = 4 // aisec-media → шлюз: итог анализа
 	TypeError   FrameType = 5 // aisec-media → шлюз: код ошибки
+	// TypeSanitize и TypeSanitized — очистка изображения перед отправкой
+	// провайдеру (media_sanitize, задача 5.45): шлюз → aisec-media байты
+	// изображения, aisec-media → шлюз байты очищенного PNG или JPEG.
+	// Анализатор объявляет операцию в hello_ok (sanitize: true); версия
+	// протокола не меняется (ADR-0032, раздел 8).
+	TypeSanitize  FrameType = 6
+	TypeSanitized FrameType = 7
 )
 
 // Пределы тела по типу кадра. Проверяются по заголовку, до чтения тела.
@@ -43,13 +50,17 @@ const (
 	MaxHelloOKBody = 4 << 10
 	MaxResultBody  = 256 << 10
 	MaxErrorBody   = 1 << 10
+	// MaxSanitizedBody — жёсткий предел очищенного изображения; рабочий —
+	// max_bytes из hello_ok: больше анализатор не отправляет, а шлюз не
+	// принимает.
+	MaxSanitizedBody = MaxContent
 )
 
 // Header — разобранный заголовок кадра.
 type Header struct {
 	Type FrameType
 	// Timeout — срок анализа в миллисекундах, который назначил шлюз (только
-	// у analyze; 0 — срок анализатора по умолчанию).
+	// у analyze и sanitize; 0 — срок анализатора по умолчанию).
 	Timeout uint16
 	ID      uint32
 	Length  uint32
@@ -80,7 +91,7 @@ func limit(t FrameType, side Side) (max uint32, ok bool) {
 		switch t {
 		case TypeHello:
 			return 0, true
-		case TypeAnalyze:
+		case TypeAnalyze, TypeSanitize:
 			return MaxContent, true
 		}
 		return 0, false
@@ -92,9 +103,14 @@ func limit(t FrameType, side Side) (max uint32, ok bool) {
 		return MaxResultBody, true
 	case TypeError:
 		return MaxErrorBody, true
+	case TypeSanitized:
+		return MaxSanitizedBody, true
 	}
 	return 0, false
 }
+
+// timed — у кадра типа t может быть срок в заголовке.
+func timed(t FrameType) bool { return t == TypeAnalyze || t == TypeSanitize }
 
 // AppendHeader дописывает заголовок кадра в b.
 func AppendHeader(b []byte, h Header) []byte {
@@ -106,7 +122,7 @@ func AppendHeader(b []byte, h Header) []byte {
 }
 
 // ParseHeader проверяет заголовок: magic, версию, тип для стороны side,
-// срок (не у analyze — нулевой резерв) и длину по пределу типа. Ошибка
+// срок (не у analyze и sanitize — нулевой резерв) и длину по пределу типа. Ошибка
 // ErrFrameTooLarge — тело читать нельзя.
 func ParseHeader(b []byte, side Side) (Header, error) {
 	if len(b) != HeaderSize {
@@ -116,7 +132,7 @@ func ParseHeader(b []byte, side Side) (Header, error) {
 		return Header{}, ErrProtocol
 	}
 	h := Header{Type: FrameType(b[5]), Timeout: binary.BigEndian.Uint16(b[6:8]), ID: binary.BigEndian.Uint32(b[8:12]), Length: binary.BigEndian.Uint32(b[12:16])}
-	if h.Timeout != 0 && h.Type != TypeAnalyze {
+	if h.Timeout != 0 && !timed(h.Type) {
 		return Header{}, ErrProtocol
 	}
 	maxLen, ok := limit(h.Type, side)
@@ -176,7 +192,7 @@ func WriteFrame(w io.Writer, h Header, body []byte) error {
 	if !ok || uint64(len(body)) > uint64(maxLen) {
 		return fmt.Errorf("%w: тип %d, тело %d байт", ErrFrameTooLarge, h.Type, len(body))
 	}
-	if h.Timeout != 0 && h.Type != TypeAnalyze {
+	if h.Timeout != 0 && !timed(h.Type) {
 		return fmt.Errorf("%w: срок у кадра типа %d", ErrProtocol, h.Type)
 	}
 	h.Length = uint32(len(body)) //nolint:gosec // G115: длина ограничена пределом типа выше
@@ -189,7 +205,7 @@ func WriteFrame(w io.Writer, h Header, body []byte) error {
 
 // sideReading — какая сторона читает кадр типа t.
 func sideReading(t FrameType) Side {
-	if t == TypeHello || t == TypeAnalyze {
+	if t == TypeHello || t == TypeAnalyze || t == TypeSanitize {
 		return ServerSide
 	}
 	return ClientSide

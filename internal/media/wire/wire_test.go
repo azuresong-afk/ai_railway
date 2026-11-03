@@ -41,6 +41,11 @@ func TestParseHeaderRejects(t *testing.T) {
 		"тип запроса у клиента":     {good, ClientSide, ErrProtocol},
 		"неизвестный тип":           {AppendHeader(nil, Header{Type: 9}), ServerSide, ErrProtocol},
 		"срок не у analyze":         {AppendHeader(nil, Header{Type: TypeHello, Timeout: 1}), ServerSide, ErrProtocol},
+		"sanitized на сервере":      {AppendHeader(nil, Header{Type: TypeSanitized}), ServerSide, ErrProtocol},
+		"sanitize у клиента":        {AppendHeader(nil, Header{Type: TypeSanitize}), ClientSide, ErrProtocol},
+		"срок у sanitized":          {AppendHeader(nil, Header{Type: TypeSanitized, Timeout: 1}), ClientSide, ErrProtocol},
+		"sanitize сверх предела":    {AppendHeader(nil, Header{Type: TypeSanitize, Length: MaxContent + 1}), ServerSide, ErrFrameTooLarge},
+		"sanitized сверх предела":   {AppendHeader(nil, Header{Type: TypeSanitized, Length: MaxSanitizedBody + 1}), ClientSide, ErrFrameTooLarge},
 		"тело у hello":              {AppendHeader(nil, Header{Type: TypeHello, Length: 1}), ServerSide, ErrFrameTooLarge},
 		"изображение сверх предела": {AppendHeader(nil, Header{Type: TypeAnalyze, Length: MaxContent + 1}), ServerSide, ErrFrameTooLarge},
 		"result сверх предела":      {AppendHeader(nil, Header{Type: TypeResult, Length: MaxResultBody + 1}), ClientSide, ErrFrameTooLarge},
@@ -154,19 +159,20 @@ func FuzzServerReadFrame(f *testing.F) {
 	f.Add(frame(TypeHello, 2, nil))
 	f.Add(frame(TypeResult, 3, []byte("{}")))
 	f.Add(AppendHeader(nil, Header{Type: TypeAnalyze, Length: MaxContent + 1}))
+	f.Add(frame(TypeSanitize, 4, []byte("\xff\xd8\xff")))
 	f.Fuzz(func(t *testing.T, data []byte) {
 		h, b, err := ReadFrame(bytes.NewReader(data), ServerSide)
 		if err != nil {
 			return
 		}
-		if h.Type != TypeHello && h.Type != TypeAnalyze {
+		if h.Type != TypeHello && h.Type != TypeAnalyze && h.Type != TypeSanitize {
 			t.Fatalf("сервер принял тип %d", h.Type)
 		}
 		if int(h.Length) != len(b) || len(b) > MaxContent || (h.Type == TypeHello && len(b) != 0) {
 			t.Fatalf("длина %d, тело %d", h.Length, len(b))
 		}
-		if h.Timeout != 0 && h.Type != TypeAnalyze {
-			t.Fatal("срок у кадра не analyze")
+		if h.Timeout != 0 && h.Type != TypeAnalyze && h.Type != TypeSanitize {
+			t.Fatal("срок у кадра не analyze и не sanitize")
 		}
 	})
 }
@@ -177,6 +183,9 @@ func FuzzClientReadFrame(f *testing.F) {
 	f.Add(frame(TypeResult, 1, []byte(`{"status":"ok","format":"png","width":10,"height":20,"frames":1,"checks":["decode"]}`)))
 	f.Add(frame(TypeHelloOK, 1, []byte(`{"protocol":1,"formats":["png"],"checks":["decode"],"max_bytes":1,"max_pixels":1}`)))
 	f.Add(frame(TypeError, 1, []byte(`{"code":"timeout"}`)))
+	f.Add(frame(TypeError, 1, []byte(`{"code":"rejected"}`)))
+	f.Add(frame(TypeSanitized, 1, []byte("\x89PNG\r\n\x1a\n")))
+	f.Add(frame(TypeHelloOK, 1, []byte(`{"protocol":1,"formats":["png"],"checks":["decode"],"max_bytes":1,"max_pixels":1,"sanitize":true}`)))
 	f.Add(frame(TypeResult, 1, []byte(`{"status":"ok","format":"png","width":10,"height":20,"frames":1,"checks":["decode","metadata","qr"],`+
 		`"texts":[{"text":"meta","source":"metadata"},{"text":"qr","source":"qr","box":{"x":1,"y":2,"w":3,"h":4}}]}`)))
 	f.Fuzz(func(t *testing.T, data []byte) {
@@ -197,6 +206,10 @@ func FuzzClientReadFrame(f *testing.F) {
 			}
 		case TypeError:
 			_, _ = ParseError(b) //nolint:gosec // G104: проверяется отсутствие паники
+		case TypeSanitized:
+			if f, err := SanitizedFormat(b); err == nil && f != FormatPNG && f != FormatJPEG {
+				t.Fatalf("очищенное изображение формата %s", f)
+			}
 		default:
 			t.Fatalf("клиент принял тип %d", h.Type)
 		}
@@ -259,5 +272,37 @@ func TestResultTexts(t *testing.T) {
 	}
 	if !ValidText("строка\tс\nпереводом") {
 		t.Error("табуляция и перевод строки отвергнуты")
+	}
+}
+
+// Задача 5.45: очищенное изображение — только PNG или JPEG по сигнатуре;
+// hello_ok с sanitize разбирается, без него — прежний анализатор.
+func TestSanitizeMessages(t *testing.T) {
+	for b, want := range map[string]Format{"\x89PNG\r\n\x1a\nrest": FormatPNG, "\xff\xd8\xff\xe0": FormatJPEG} {
+		if f, err := SanitizedFormat([]byte(b)); err != nil || f != want {
+			t.Errorf("%q: %s %v", b, f, err)
+		}
+	}
+	for _, b := range []string{"", "GIF89a", "\x89PN", "RIFF\x00\x00\x00\x00WEBP", "\xff\xd8"} {
+		if _, err := SanitizedFormat([]byte(b)); !errors.Is(err, ErrBadBody) {
+			t.Errorf("%q принят", b)
+		}
+	}
+	h, err := ParseHelloOK([]byte(`{"protocol":1,"formats":["png"],"checks":["decode"],"max_bytes":1,"max_pixels":1,"sanitize":true}`))
+	if err != nil || !h.Sanitize {
+		t.Fatalf("hello_ok с sanitize: %+v %v", h, err)
+	}
+	if code, err := ParseError([]byte(`{"code":"rejected"}`)); err != nil || code != ErrRejected {
+		t.Fatalf("rejected: %s %v", code, err)
+	}
+	var buf bytes.Buffer
+	if err := WriteFrame(&buf, Header{Type: TypeSanitize, Timeout: 500, ID: 3}, []byte("img")); err != nil {
+		t.Fatal(err)
+	}
+	if h, b, err := ReadFrame(&buf, ServerSide); err != nil || h.Type != TypeSanitize || h.Timeout != 500 || string(b) != "img" {
+		t.Fatalf("sanitize: %+v %q %v", h, b, err)
+	}
+	if err := WriteFrame(&buf, Header{Type: TypeSanitized, Timeout: 1}, nil); !errors.Is(err, ErrProtocol) {
+		t.Fatalf("срок у sanitized: %v", err)
 	}
 }

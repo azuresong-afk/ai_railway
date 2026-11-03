@@ -9426,6 +9426,14 @@ components:
             non_text). async — запрос уходит провайдеру сразу, находки попадают в событие после отправки; sync — запрос
             ждёт итога не дольше media_check_timeout_ms, недоступность анализатора — по режиму приложения при отказе.
         media_check_timeout_ms: { type: integer, minimum: 100, maximum: 10000, description: 'Срок анализа в режиме sync; не задан — 2000' }
+        media_sanitize:
+          type: boolean
+          description: >-
+            Очистка изображений перед отправкой провайдеру (задача 5.45, ТЗ 5.17): aisec-media удаляет метаданные,
+            перекодирует (JPEG — в JPEG, остальное — в PNG, у GIF — первый кадр) и уменьшает до -sanitize-max-side.
+            Не задано — выключена. Изображение, которое очистить нельзя (ссылка https://, сбой или перегрузка
+            анализатора, неизвестный формат, отказ по пределам), провайдеру не уходит: запрос отклоняется. Выключение —
+            ослабление (media_sanitize_weakened, DM-40).
         block_message: { type: string, maxLength: 300 }
         rules: { type: array, maxItems: 256, items: { $ref: '#/components/schemas/PolicyRule' } }
         exceptions:
@@ -9700,7 +9708,7 @@ components:
             type: object
             required: [field, before, after]
             properties:
-              field: { type: string, enum: [name, mode, non_text, response_check, media_check, media_check_timeout_ms, block_message, judge] }
+              field: { type: string, enum: [name, mode, non_text, response_check, media_check, media_check_timeout_ms, media_sanitize, block_message, judge] }
               before: { type: string }
               after: { type: string }
         rules_added: { type: array, items: { $ref: '#/components/schemas/PolicyRule' } }
@@ -9725,7 +9733,7 @@ components:
             properties:
               kind:
                 type: string
-                enum: [mode_monitor, non_text_weakened, response_check_weakened, media_check_weakened, rule_removed, action_weakened,
+                enum: [mode_monitor, non_text_weakened, response_check_weakened, media_check_weakened, media_sanitize_weakened, rule_removed, action_weakened,
                   threshold_raised, scope_narrowed, detector_changed, judge_weakened, exception_added, exception_extended, exception_changed,
                   tools_unapproved_weakened, tool_rule_added, tool_action_weakened, tool_scope_widened, tool_scope_narrowed,
                   tool_args_relaxed, tool_rate_raised, approval_timeout_raised, tool_rule_removed]
@@ -10965,6 +10973,11 @@ components:
         cached: { type: boolean }
         texts: { type: integer, description: Сколько фрагментов текста извлечено }
         latency_ms: { type: integer, format: int64 }
+        sanitized:
+          type: boolean
+          description: >
+            Провайдеру ушло очищенное изображение (media_sanitize, задача 5.45): без метаданных,
+            перекодированное и уменьшенное анализатором aisec-media.
     ImageBox:
       description: Рамка находки на изображении в пикселях исходного растра (ТЗ 5.17, п. 5).
       type: object

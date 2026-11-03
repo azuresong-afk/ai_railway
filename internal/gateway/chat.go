@@ -319,6 +319,24 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// провайдеру не передаётся (ТЗ, 5.4).
 		req.User = ""
 	}
+	if app.Policy.MediaSanitize {
+		// Очистка изображений (media_sanitize, задача 5.45) — последний шаг
+		// перед отправкой: провайдер получает только очищенные байты.
+		sanStart := h.cfg.Now()
+		locs, fail := h.sanitizeImages(r.Context(), req, app.Policy.MediaTimeout)
+		if len(locs) > 0 || fail != nil {
+			rec.ev.LatencyMS["media_sanitize"] = h.cfg.Now().Sub(sanStart).Milliseconds()
+		}
+		if fail != nil {
+			if fail.Failure {
+				h.logger.Warn("изображение не очищено: aisec-media недоступен", "app", app.ID, "event_id", rec.ev.ID, "reason", fail.Reason)
+			}
+			rec.sanitizeFail = fail
+			sanitizeDenied(w, fail)
+			return
+		}
+		rec.sanitized = locs
+	}
 	rec.sent = true
 	providerStart := h.cfg.Now()
 	defer func() { rec.ev.LatencyMS["provider"] = h.cfg.Now().Sub(providerStart).Milliseconds() }()

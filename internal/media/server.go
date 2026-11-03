@@ -49,7 +49,10 @@ type ServerConfig struct {
 	IdleTimeout   time.Duration
 	RunTimeout    time.Duration
 	MaxRunTimeout time.Duration
-	Logger        *slog.Logger
+	// SanitizeMaxSide — большая сторона очищенного изображения (кадр
+	// sanitize, задача 5.45); 0 — DefaultSanitizeMaxSide.
+	SanitizeMaxSide int
+	Logger          *slog.Logger
 }
 
 // Server — сервер протокола aisec-media: очередь с пределом, срок на
@@ -66,6 +69,8 @@ type Server struct {
 	wg    sync.WaitGroup
 	// analyze — анализ изображения (тесты подменяют медленным).
 	analyze func(context.Context, []byte) (wire.Result, error)
+	// sanitize — очистка изображения (тесты подменяют).
+	sanitize func(context.Context, []byte) ([]byte, error)
 
 	overloaded, timeouts atomic.Uint64
 }
@@ -103,17 +108,29 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		cfg.MaxRunTimeout = DefaultMaxRunTimeout
 	}
 	cfg.MaxRunTimeout = max(cfg.MaxRunTimeout, cfg.RunTimeout)
+	if cfg.SanitizeMaxSide == 0 {
+		cfg.SanitizeMaxSide = DefaultSanitizeMaxSide
+	}
+	if cfg.SanitizeMaxSide < MinSanitizeMaxSide || cfg.SanitizeMaxSide > MaxSanitizeMaxSide {
+		return nil, fmt.Errorf("aisec-media: сторона очищенного изображения — от %d до %d", MinSanitizeMaxSide, MaxSanitizeMaxSide)
+	}
 	if cfg.Logger == nil {
 		cfg.Logger = slog.New(slog.DiscardHandler)
 	}
 	an := Analyzer{Limits: cfg.Limits, OCR: cfg.OCR}
 	hello, err := wire.MarshalBody(wire.HelloOK{Protocol: wire.ProtocolVersion, Formats: Decodable(),
-		Checks: an.Checks(), MaxBytes: cfg.Limits.MaxBytes, MaxPixels: cfg.Limits.MaxPixels})
+		Checks: an.Checks(), MaxBytes: cfg.Limits.MaxBytes, MaxPixels: cfg.Limits.MaxPixels, Sanitize: true})
 	if err != nil {
 		return nil, err
 	}
+	limits, side := cfg.Limits, cfg.SanitizeMaxSide
+	sanitize := func(ctx context.Context, b []byte) ([]byte, error) {
+		out, _, err := Sanitize(ctx, b, limits, side)
+		return out, err
+	}
 	return &Server{cfg: cfg, hello: hello, cache: NewCache(cfg.CacheEntries),
-		queue: make(chan struct{}, cfg.Workers+cfg.Queue), slots: make(chan struct{}, cfg.Workers), analyze: an.Analyze}, nil
+		queue: make(chan struct{}, cfg.Workers+cfg.Queue), slots: make(chan struct{}, cfg.Workers), analyze: an.Analyze,
+		sanitize: sanitize}, nil
 }
 
 // Overloaded — отказов overloaded с запуска (DM-50).
@@ -183,6 +200,10 @@ func (s *Server) handle(ctx context.Context, c net.Conn) {
 			}
 		case wire.TypeAnalyze:
 			if !s.serveAnalyze(ctx, c, h, body) {
+				return
+			}
+		case wire.TypeSanitize:
+			if !s.serveSanitize(ctx, c, h, body) {
 				return
 			}
 		}
@@ -306,6 +327,72 @@ func (s *Server) safeAnalyze(ctx context.Context, body []byte) (res wire.Result,
 		}
 	}()
 	return s.analyze(ctx, body)
+}
+
+// serveSanitize отвечает на sanitize; false — соединение закрыть. Очистка
+// занимает очередь и исполнитель, как анализ (перегрузка — overloaded,
+// DM-50), срок — тот же; итог не кэшируется: очищенные байты — содержимое
+// запроса.
+func (s *Server) serveSanitize(ctx context.Context, c net.Conn, h wire.Header, body []byte) bool {
+	deadline := time.Now().Add(s.runTimeout(h))
+	select {
+	case s.queue <- struct{}{}:
+	default:
+		s.overloaded.Add(1)
+		return s.writeError(c, h.ID, wire.ErrOverloaded)
+	}
+	jctx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+	type sanitized struct {
+		out []byte
+		err error
+	}
+	done := make(chan sanitized, 1)
+	go func() {
+		defer func() { <-s.queue }()
+		select {
+		case s.slots <- struct{}{}:
+		case <-jctx.Done():
+			done <- sanitized{err: jctx.Err()}
+			return
+		}
+		defer func() { <-s.slots }()
+		out, err := s.safeSanitize(jctx, body)
+		done <- sanitized{out: out, err: err}
+	}()
+	var o sanitized
+	select {
+	case o = <-done:
+	case <-jctx.Done():
+		o.err = jctx.Err()
+	}
+	switch {
+	case o.err == nil:
+		if _, err := wire.SanitizedFormat(o.out); err != nil || int64(len(o.out)) > s.cfg.Limits.MaxBytes {
+			s.cfg.Logger.Warn("aisec-media: неверный итог очистки")
+			return s.writeError(c, h.ID, wire.ErrInternal)
+		}
+		return s.write(c, wire.Header{Type: wire.TypeSanitized, ID: h.ID}, o.out)
+	case ctx.Err() != nil:
+		return false
+	case errors.Is(o.err, context.DeadlineExceeded):
+		s.timeouts.Add(1)
+		return s.writeError(c, h.ID, wire.ErrTimeout)
+	case errors.Is(o.err, ErrSanitizeRejected):
+		return s.writeError(c, h.ID, wire.ErrRejected)
+	}
+	s.cfg.Logger.Warn("aisec-media: сбой очистки", "error", o.err)
+	return s.writeError(c, h.ID, wire.ErrInternal)
+}
+
+// safeSanitize — очистка с перехватом паники.
+func (s *Server) safeSanitize(ctx context.Context, body []byte) (out []byte, err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			err = errDecoderPanic
+		}
+	}()
+	return s.sanitize(ctx, body)
 }
 
 // writeResult отправляет итог; true — соединение можно продолжать.

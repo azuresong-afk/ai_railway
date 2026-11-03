@@ -88,6 +88,11 @@ type record struct {
 	// (emit), как media_check async.
 	judge      []events.JudgeCheck
 	judgeAsync []judgeTask
+	// sanitized — места изображений, очищенных перед отправкой провайдеру
+	// (media_sanitize, задача 5.45); sanitizeFail — отказ очистки: запрос
+	// заблокирован правилом media_sanitize.
+	sanitized    []string
+	sanitizeFail *sanitizeFailure
 }
 
 // issue запоминает хеши ответов, выданных приложению (history.integrity,
@@ -258,6 +263,9 @@ func (h *ChatHandler) enqueue(rec *record) {
 // запросу уже принято и не меняется.
 func (h *ChatHandler) finishMedia(rec *record, res mediaResult) {
 	rec.ev.Media = res.checks()
+	for i := range rec.ev.Media {
+		rec.ev.Media[i].Sanitized = slices.Contains(rec.sanitized, rec.ev.Media[i].Location)
+	}
 	if d := rec.ev.Decision; d != nil {
 		d.MediaUnchecked, d.MediaUnavailable = res.unchecked(), res.analyzerFailed()
 	}
@@ -336,6 +344,10 @@ func (rec *record) fill() {
 	threats := rec.findings(in, rec.texts)
 	if d.NonTextUnchecked || d.Rule == policy.NonTextRule {
 		threats["DM-14"] = true
+	}
+	if rec.sanitizeFail != nil {
+		sanitizeDecision(ed, rec.sanitizeFail)
+		threats["DM-47"] = true
 	}
 	rec.addThreats(threats)
 	rec.ev.Decision = ed
