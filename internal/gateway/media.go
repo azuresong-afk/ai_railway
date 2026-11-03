@@ -327,6 +327,13 @@ func (r mediaResult) checks() []events.MediaCheck {
 	return out
 }
 
+// analyzerFailed — изображение не проверено из-за сбоя анализатора
+// (unavailable, overloaded, timeout, error), а не свойства изображения:
+// признак media_unavailable события (DM-50, задача 5.44).
+func (r mediaResult) analyzerFailed() bool {
+	return slices.ContainsFunc(r.out, func(o mediaOutcome) bool { return o.failure })
+}
+
 // unchecked — есть непроверенное изображение.
 func (r mediaResult) unchecked() bool {
 	return slices.ContainsFunc(r.out, func(o mediaOutcome) bool { return !o.check.Checked })

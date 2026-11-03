@@ -503,3 +503,39 @@ func TestMediaMetadataAndQRTextWithoutOCR(t *testing.T) {
 		t.Fatalf("non_text: block без OCR: %d", resp.Code)
 	}
 }
+
+// Покрывает: DM-50
+// Очередь анализатора заполнена (overloaded) или срок истёк: изображение
+// «не проверено», событие — media_unavailable (по нему правило
+// frequency.media_unavailable); sync — режим приложения при отказе, а не
+// пропуск; async — запрос не ждёт, признак — в событии. Отказ по свойству
+// изображения и шлюз без анализатора признака не ставят.
+func TestDM50_QueueOverflowUnchecked(t *testing.T) {
+	up, rec := newUpstream(t, nil)
+	g, log := mediaGateway(t, up.URL, &stubMedia{fn: failWith(events.MediaReasonOverloaded)}, policy.MediaCheckSync, policy.NonTextAllowUnchecked, "fail_closed")
+	resp := postChat(t, g, imageChat(t, dataURL(pngBytes)), nil)
+	if resp.Code != http.StatusServiceUnavailable {
+		t.Fatalf("sync, fail_closed: %d %s", resp.Code, resp.Body.String())
+	}
+	if _, _, _, calls := rec.get(); calls != 0 {
+		t.Fatal("непроверенное изображение ушло провайдеру")
+	}
+	if e := waitEvent(t, log, resp.Header().Get(HeaderEventID)); !e.Decision.MediaUnchecked || !e.Decision.MediaUnavailable || e.Media[0].Reason != events.MediaReasonOverloaded {
+		t.Fatalf("sync: %+v %+v", e.Decision, e.Media)
+	}
+	g, log = mediaGateway(t, up.URL, &stubMedia{fn: hang}, policy.MediaCheckAsync, policy.NonTextAllowUnchecked, "fail_closed")
+	resp = postChat(t, g, imageChat(t, dataURL(pngBytes)), nil)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("async: %d", resp.Code)
+	}
+	if e := waitEvent(t, log, resp.Header().Get(HeaderEventID)); !e.Decision.MediaUnavailable || e.Media[0].Reason != events.MediaReasonTimeout {
+		t.Fatalf("async, срок: %+v %+v", e.Decision, e.Media)
+	}
+	for name, m := range map[string]MediaAnalyzer{"too_large": &stubMedia{fn: failWith(events.MediaReasonTooLarge)}, "без анализатора": nil} {
+		g, log = mediaGateway(t, up.URL, m, policy.MediaCheckSync, policy.NonTextAllowUnchecked, "fail_closed")
+		resp = postChat(t, g, imageChat(t, dataURL(pngBytes)), nil)
+		if e := waitEvent(t, log, resp.Header().Get(HeaderEventID)); !e.Decision.MediaUnchecked || e.Decision.MediaUnavailable {
+			t.Fatalf("%s: %+v %+v", name, e.Decision, e.Media)
+		}
+	}
+}

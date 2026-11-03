@@ -42,6 +42,10 @@ const (
 	MediaReasonError       = "error"       // сбой анализа внутри анализатора
 )
 
+// mediaFailureReasons — причины-сбои анализатора (а не свойства
+// изображения): по ним ставится Decision.MediaUnavailable (DM-50).
+var mediaFailureReasons = []string{MediaReasonUnavailable, MediaReasonOverloaded, MediaReasonTimeout, MediaReasonError}
+
 var mediaReasons = []string{MediaReasonOff, MediaReasonURL, MediaReasonLimit, MediaReasonTooLarge, MediaReasonPixels,
 	MediaReasonFrames, MediaReasonScans, MediaReasonMalformed, MediaReasonUnsupported, MediaReasonNoOCR,
 	MediaReasonUnavailable, MediaReasonOverloaded, MediaReasonTimeout, MediaReasonError}
@@ -136,6 +140,10 @@ func (e *Event) validateMedia() []error {
 	}
 	if d := e.Decision; d != nil && d.MediaUnchecked && len(e.Media) == 0 {
 		errs = append(errs, fmt.Errorf("%s: media_unchecked без записей о проверке изображений", e.Type))
+	}
+	if d := e.Decision; d != nil && d.MediaUnavailable && (!d.MediaUnchecked ||
+		!slices.ContainsFunc(e.Media, func(m MediaCheck) bool { return slices.Contains(mediaFailureReasons, m.Reason) })) {
+		errs = append(errs, fmt.Errorf("%s: media_unavailable — только вместе с media_unchecked и изображением, не проверенным из-за сбоя анализатора", e.Type))
 	}
 	return errs
 }
