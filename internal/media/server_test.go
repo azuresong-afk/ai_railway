@@ -100,11 +100,11 @@ func newBlocking() *blocking {
 	return &blocking{started: make(chan struct{}, 16), release: make(chan struct{})}
 }
 
-func (b *blocking) analyze(data []byte, l Limits) (wire.Result, error) {
+func (b *blocking) analyze(_ context.Context, data []byte) (wire.Result, error) {
 	b.calls.Add(1)
 	b.started <- struct{}{}
 	<-b.release
-	return Analyze(data, l)
+	return Analyze(data, testLimits)
 }
 
 func TestServerHelloAndAnalyze(t *testing.T) {
@@ -116,7 +116,7 @@ func TestServerHelloAndAnalyze(t *testing.T) {
 		t.Fatal(h, err)
 	}
 	hello, err := wire.ParseHelloOK(b)
-	if err != nil || hello.MaxBytes != DefaultMaxBytes || hello.MaxPixels != DefaultMaxPixels || len(hello.Formats) != 3 {
+	if err != nil || hello.MaxBytes != DefaultMaxBytes || hello.MaxPixels != DefaultMaxPixels || len(hello.Formats) != 6 {
 		t.Fatalf("%+v %v", hello, err)
 	}
 	send(t, c, wire.Header{Type: wire.TypeAnalyze, ID: 2}, encodePNG(t, 5, 4))
@@ -129,7 +129,7 @@ func TestServerHelloAndAnalyze(t *testing.T) {
 func TestServerCacheRepeat(t *testing.T) {
 	s := newTestServer(t, ServerConfig{})
 	var calls atomic.Int32
-	s.analyze = func(d []byte, l Limits) (wire.Result, error) { calls.Add(1); return Analyze(d, l) }
+	s.analyze = func(_ context.Context, d []byte) (wire.Result, error) { calls.Add(1); return Analyze(d, testLimits) }
 	c := dial(t, s)
 	img := encodeGIF(t, 2, 6, 6)
 	for i := range uint32(3) {
@@ -264,13 +264,13 @@ func TestServerDeadlineInQueue(t *testing.T) {
 // Паника анализа — internal для запроса, процесс и соединение работают.
 func TestServerAnalyzerPanic(t *testing.T) {
 	s := newTestServer(t, ServerConfig{})
-	s.analyze = func([]byte, Limits) (wire.Result, error) { panic("декодер") }
+	s.analyze = func(context.Context, []byte) (wire.Result, error) { panic("декодер") }
 	c := dial(t, s)
 	send(t, c, wire.Header{Type: wire.TypeAnalyze, ID: 1}, encodePNG(t, 2, 2))
 	if _, code := reply(t, c, 1); code != wire.ErrInternal {
 		t.Fatalf("код %q", code)
 	}
-	s.analyze = Analyze
+	s.analyze = Analyzer{Limits: testLimits}.Analyze
 	send(t, c, wire.Header{Type: wire.TypeAnalyze, ID: 2}, encodePNG(t, 2, 2))
 	if r, code := reply(t, c, 2); code != "" || r.Status != wire.StatusOK {
 		t.Fatalf("%+v %s", r, code)

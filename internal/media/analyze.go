@@ -2,6 +2,7 @@ package media
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"image"
@@ -9,6 +10,10 @@ import (
 	"image/jpeg"
 	"image/png"
 	"slices"
+
+	"golang.org/x/image/bmp"
+	"golang.org/x/image/tiff"
+	"golang.org/x/image/webp"
 
 	"github.com/azuresong-afk/ai_railway/internal/media/wire"
 )
@@ -39,9 +44,11 @@ func (l Limits) Validate() error {
 	return nil
 }
 
-// decodable — форматы, которые декодирует стандартная библиотека. WebP,
-// BMP и TIFF — после согласия на golang.org/x/image (задача 5.42).
-var decodable = []wire.Format{wire.FormatPNG, wire.FormatJPEG, wire.FormatGIF}
+// decodable — форматы с декодером: PNG, JPEG, GIF — стандартная
+// библиотека; WebP, BMP и TIFF — golang.org/x/image v0.47.0 (согласие
+// владельца 02.11.2026, задача 5.42), только в internal/media (depguard
+// media-decoders).
+var decodable = []wire.Format{wire.FormatPNG, wire.FormatJPEG, wire.FormatGIF, wire.FormatWebP, wire.FormatBMP, wire.FormatTIFF}
 
 // Decodable — форматы с декодером (для hello_ok).
 func Decodable() []wire.Format { return append([]wire.Format(nil), decodable...) }
@@ -49,10 +56,29 @@ func Decodable() []wire.Format { return append([]wire.Format(nil), decodable...)
 // errDecoderPanic — декодер завершился аварийно: итог запроса — internal.
 var errDecoderPanic = errors.New("aisec-media: декодер завершился аварийно")
 
-// Analyze проверяет изображение: размер, формат по сигнатуре, пределы по
-// своему разбору заголовка — и только затем декодирует. Ошибка — только
-// аварийное завершение декодера; отказы по формату и пределам — в итоге.
+// errDecoderUnsupported — разновидность формата, которую декодер не знает
+// (сжатие BMP, редкая схема TIFF): итог — unsupported, а не malformed.
+var errDecoderUnsupported = errors.New("aisec-media: разновидность формата не поддерживается декодером")
+
+// Analyze — анализ без OCR (сборка без исполнителя моделей, тесты и fuzz).
 func Analyze(data []byte, l Limits) (wire.Result, error) {
+	return Analyzer{Limits: l}.Analyze(context.Background(), data)
+}
+
+// Analyzer — анализ изображения с пределами и, если есть, OCR.
+type Analyzer struct {
+	Limits Limits
+	// OCR — распознавание текста (ADR-0033); nil — без OCR: проверки без
+	// ocr, изображение у шлюза «не проверено» (no_ocr).
+	OCR *OCR
+}
+
+// Analyze проверяет изображение: размер, формат по сигнатуре, пределы по
+// своему разбору заголовка — и только затем декодирует. Ошибка — аварийное
+// завершение декодера, отмена ctx или сбой OCR; отказы по формату и
+// пределам — в итоге.
+func (a Analyzer) Analyze(ctx context.Context, data []byte) (wire.Result, error) {
+	l := a.Limits
 	if int64(len(data)) > l.MaxBytes {
 		return rejected(Info{}, wire.ReasonTooLarge), nil
 	}
@@ -68,26 +94,44 @@ func Analyze(data []byte, l Limits) (wire.Result, error) {
 	}
 	frames, err := decode(data, info)
 	if err != nil {
-		if errors.Is(err, errDecoderPanic) {
+		switch {
+		case errors.Is(err, errDecoderPanic):
 			return wire.Result{}, err
+		case errors.Is(err, errDecoderUnsupported):
+			return unsupported(info), nil
 		}
 		return rejected(info, wire.ReasonMalformed), nil
 	}
 	// Текст — только у принятого декодером файла: метаданные, затем QR
-	// (задача 5.43). Порядок задаёт, что останется при пределе протокола.
+	// (задача 5.43), затем OCR (5.42). Порядок задаёт, что останется при
+	// пределе протокола. OCR — по первому кадру (у GIF — первый кадр
+	// анимации, обычно полный).
 	var ts textSet
 	readMetadata(data, info.Format, &ts)
 	if err := readQR(frames, &ts); err != nil {
 		return wire.Result{}, err
 	}
+	if a.OCR != nil {
+		if err := a.OCR.Read(ctx, frames[0], &ts); err != nil {
+			return wire.Result{}, err
+		}
+	}
 	return wire.Result{Status: wire.StatusOK, Format: info.Format, Width: info.Width, Height: info.Height,
-		Frames: info.Frames, Checks: slices.Clone(checksDone), Texts: ts.texts}, nil
+		Frames: info.Frames, Checks: a.Checks(), Texts: ts.texts}, nil
 }
 
-// checksDone — проверки принятого изображения; ocr — с задачи 5.42.
+// checksDone — проверки принятого изображения без OCR.
 var checksDone = []wire.Check{wire.CheckDecode, wire.CheckMetadata, wire.CheckQR}
 
-// Checks — проверки анализатора (для hello_ok).
+// Checks — проверки анализатора (для hello_ok и итога): с OCR — и ocr.
+func (a Analyzer) Checks() []wire.Check {
+	if a.OCR == nil {
+		return slices.Clone(checksDone)
+	}
+	return []wire.Check{wire.CheckDecode, wire.CheckOCR, wire.CheckMetadata, wire.CheckQR}
+}
+
+// Checks — проверки анализатора без OCR.
 func Checks() []wire.Check { return slices.Clone(checksDone) }
 
 // headerFailure — итог, если заголовок не разобран: формат не распознан
@@ -120,7 +164,7 @@ func (l Limits) exceeded(info Info) wire.Reason {
 // canDecode — есть декодер: формат из decodable, у JPEG — кадр SOF0–SOF2.
 func canDecode(info Info) bool {
 	switch info.Format {
-	case wire.FormatPNG, wire.FormatGIF:
+	case wire.FormatPNG, wire.FormatGIF, wire.FormatWebP, wire.FormatBMP, wire.FormatTIFF:
 		return true
 	case wire.FormatJPEG:
 		return info.jpegSOF >= 0xC0 && info.jpegSOF <= 0xC2
@@ -157,11 +201,17 @@ func decode(data []byte, info Info) (frames []image.Image, err error) {
 		cfg, err = jpeg.DecodeConfig(bytes.NewReader(data))
 	case wire.FormatGIF:
 		cfg, err = gif.DecodeConfig(bytes.NewReader(data))
+	case wire.FormatWebP:
+		cfg, err = webp.DecodeConfig(bytes.NewReader(data))
+	case wire.FormatBMP:
+		cfg, err = bmp.DecodeConfig(bytes.NewReader(data))
+	case wire.FormatTIFF:
+		cfg, err = tiff.DecodeConfig(bytes.NewReader(data))
 	default:
 		return nil, errors.New("aisec-media: нет декодера")
 	}
 	if err != nil {
-		return nil, err
+		return nil, decoderError(err)
 	}
 	if int64(cfg.Width) != info.Width || int64(cfg.Height) != info.Height {
 		return nil, errors.New("aisec-media: размеры декодера не совпали с заголовком")
@@ -180,6 +230,14 @@ func decodeRaster(data []byte, info Info) ([]image.Image, error) {
 		img, err = png.Decode(bytes.NewReader(data))
 	case wire.FormatJPEG:
 		img, err = jpeg.Decode(bytes.NewReader(data))
+	case wire.FormatWebP:
+		img, err = webp.Decode(bytes.NewReader(data))
+	case wire.FormatBMP:
+		img, err = bmp.Decode(bytes.NewReader(data))
+	case wire.FormatTIFF:
+		// Первая страница: остальные страницы x/image/tiff не декодирует,
+		// их число уже ограничено своим разбором (MaxTIFFPages).
+		img, err = tiff.Decode(bytes.NewReader(data))
 	default:
 		// GIF: все кадры — инструкция может быть не на первом. Число кадров
 		// и их размеры уже сверены своим разбором.
@@ -200,12 +258,22 @@ func decodeRaster(data []byte, info Info) ([]image.Image, error) {
 		return frames, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, decoderError(err)
 	}
 	if err := sameBounds(img.Bounds(), bounds); err != nil {
 		return nil, err
 	}
 	return []image.Image{img}, nil
+}
+
+// decoderError — ошибка декодера: неподдерживаемая разновидность BMP и
+// TIFF — errDecoderUnsupported, остальное — повреждённый файл.
+func decoderError(err error) error {
+	var tu tiff.UnsupportedError
+	if errors.Is(err, bmp.ErrUnsupported) || errors.As(err, &tu) {
+		return fmt.Errorf("%w: %w", errDecoderUnsupported, err)
+	}
+	return err
 }
 
 func sameBounds(got, want image.Rectangle) error {

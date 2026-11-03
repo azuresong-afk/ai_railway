@@ -32,6 +32,8 @@ const (
 // ServerConfig — параметры сервера протокола aisec-media.
 type ServerConfig struct {
 	Limits Limits
+	// OCR — распознавание текста (ADR-0033); nil — без OCR.
+	OCR *OCR
 	// Hasher — хеш содержимого для кэша (криптопрофиль).
 	Hasher aisecCrypto.Hasher
 	// MaxConns — предел соединений; лишние закрываются сразу.
@@ -63,7 +65,7 @@ type Server struct {
 	conns atomic.Int64
 	wg    sync.WaitGroup
 	// analyze — анализ изображения (тесты подменяют медленным).
-	analyze func([]byte, Limits) (wire.Result, error)
+	analyze func(context.Context, []byte) (wire.Result, error)
 
 	overloaded, timeouts atomic.Uint64
 }
@@ -104,13 +106,14 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.New(slog.DiscardHandler)
 	}
+	an := Analyzer{Limits: cfg.Limits, OCR: cfg.OCR}
 	hello, err := wire.MarshalBody(wire.HelloOK{Protocol: wire.ProtocolVersion, Formats: Decodable(),
-		Checks: Checks(), MaxBytes: cfg.Limits.MaxBytes, MaxPixels: cfg.Limits.MaxPixels})
+		Checks: an.Checks(), MaxBytes: cfg.Limits.MaxBytes, MaxPixels: cfg.Limits.MaxPixels})
 	if err != nil {
 		return nil, err
 	}
 	return &Server{cfg: cfg, hello: hello, cache: NewCache(cfg.CacheEntries),
-		queue: make(chan struct{}, cfg.Workers+cfg.Queue), slots: make(chan struct{}, cfg.Workers), analyze: Analyze}, nil
+		queue: make(chan struct{}, cfg.Workers+cfg.Queue), slots: make(chan struct{}, cfg.Workers), analyze: an.Analyze}, nil
 }
 
 // Overloaded — отказов overloaded с запуска (DM-50).
@@ -270,9 +273,10 @@ func (s *Server) serveAnalyze(ctx context.Context, c net.Conn, h wire.Header, bo
 	}
 }
 
-// runJob ждёт исполнителя до срока и анализирует. Начатый анализ не
-// прерывается (декодеры не принимают контекст): слот освобождается только
-// по его завершении, а итог попадает в кэш, даже если срок уже истёк.
+// runJob ждёт исполнителя до срока и анализирует. Декодеры контекст не
+// принимают, OCR прерывается по сроку (итог без OCR — ошибка, в кэш не
+// идёт): слот освобождается только по завершении анализа, а итог без
+// текстов попадает в кэш, даже если срок уже истёк.
 func (s *Server) runJob(ctx context.Context, key, body []byte, done chan<- outcome) {
 	defer func() { <-s.queue }()
 	select {
@@ -282,7 +286,7 @@ func (s *Server) runJob(ctx context.Context, key, body []byte, done chan<- outco
 		return
 	}
 	defer func() { <-s.slots }()
-	res, err := s.safeAnalyze(body)
+	res, err := s.safeAnalyze(ctx, body)
 	if err == nil {
 		if verr := res.Validate(); verr != nil {
 			err = fmt.Errorf("aisec-media: неверный итог анализа: %w", verr)
@@ -295,13 +299,13 @@ func (s *Server) runJob(ctx context.Context, key, body []byte, done chan<- outco
 
 // safeAnalyze — анализ с перехватом паники: сбой одного изображения не
 // останавливает процесс.
-func (s *Server) safeAnalyze(body []byte) (res wire.Result, err error) {
+func (s *Server) safeAnalyze(ctx context.Context, body []byte) (res wire.Result, err error) {
 	defer func() {
 		if p := recover(); p != nil {
 			err = errDecoderPanic
 		}
 	}()
-	return s.analyze(body, s.cfg.Limits)
+	return s.analyze(ctx, body)
 }
 
 // writeResult отправляет итог; true — соединение можно продолжать.
