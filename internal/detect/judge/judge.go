@@ -88,7 +88,9 @@ func (Detector) ID() string { return ID }
 func (Detector) Version() string { return Version }
 
 // Directions — вход и выход.
-func (Detector) Directions() []detect.Direction { return []detect.Direction{detect.Input, detect.Output} }
+func (Detector) Directions() []detect.Direction {
+	return []detect.Direction{detect.Input, detect.Output}
+}
 
 // Categories — категории находок (detect.Categorizer).
 func (Detector) Categories() []string { return []string{CategoryContent, CategoryBusiness} }

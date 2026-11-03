@@ -21,6 +21,7 @@ import (
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/internal/detect"
 	"github.com/azuresong-afk/ai_railway/internal/detect/builtin"
+	"github.com/azuresong-afk/ai_railway/internal/detect/judge"
 	"github.com/azuresong-afk/ai_railway/internal/events"
 	"github.com/azuresong-afk/ai_railway/internal/gateway"
 	"github.com/azuresong-afk/ai_railway/internal/httpserver"
@@ -202,7 +203,8 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 	// Квоты общие для всех маршрутов приложений и переживают смену пакета.
 	hb := &handlerBuilder{cfg: cfg, logger: logger, hasher: h, auth: authBase, events: queue,
 		quotas: gateway.NewLimiter(nil), budget: gateway.NewBudget(nil), userMAC: userMAC, clock: &gateway.ServerClock{},
-		sessions: sessions, toolRate: toolrate.New(0), mcpSessions: gateway.NewMCPSessions(rnd, nil)}
+		sessions: sessions, toolRate: toolrate.New(0), mcpSessions: gateway.NewMCPSessions(rnd, nil),
+		random: rnd, judgeShared: judge.NewShared()}
 	hb.budget.SetLogger(logger)
 	// Счётчики лимитов вызовов: уборка и предупреждение о вытеснениях (4Н11).
 	go hb.toolRate.Maintain(ctx, 10*time.Minute, toolrate.SweepIdle, logger)
@@ -264,7 +266,7 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 		}
 		// Политики компилируются по детекторам приложения при запуске:
 		// незарегистрированный детектор в политике заказчика — отказ запуска.
-		if handler, err = hb.build(file.Applications, provs, file.Policies, recs, nil, nil, nil, nil, userTokens{}, nil); err != nil {
+		if handler, err = hb.build(file.Applications, provs, file.Policies, recs, nil, nil, nil, nil, userTokens{}, nil, nil); err != nil {
 			return err
 		}
 		logger.Info("конфигурация из файла", "applications", len(file.Applications), "providers", len(provs))
@@ -353,11 +355,15 @@ type handlerBuilder struct {
 	// jwt — проверка JWT пользователей приложений (задача 4.21); nil —
 	// криптопрофиль без неё.
 	jwt aisecCrypto.JWTVerifier
+	// random — nonce разделителей оценщика; judgeShared — кэш, бюджеты и
+	// очереди judge.llm (задача 5.28): переживают смену пакета.
+	random      aisecCrypto.Random
+	judgeShared *judge.Shared
 }
 
 func (hb *handlerBuilder) build(apps []config.Application, provs map[string]providers.Provider, specs []policy.Spec,
 	recs []auth.KeyRecord, unavailable []string, budgets *bundle.Budgets, baselines []bundle.PromptBaseline,
-	agents *gateway.Agents, userTokens userTokens, mcpServers gateway.MCPServers) (http.Handler, error) {
+	agents *gateway.Agents, userTokens userTokens, mcpServers gateway.MCPServers, judges map[string]judge.Client) (http.Handler, error) {
 	for _, a := range apps {
 		if hb.userMAC == nil && a.UserFrom != "" && a.UserFrom != "none" {
 			return nil, fmt.Errorf("приложение %s: user_from %s требует ключ псевдонимов пользователей (user-hmac-key)", a.ID, a.UserFrom)
@@ -397,6 +403,11 @@ func (hb *handlerBuilder) build(apps []config.Application, provs map[string]prov
 	// JWT пользователей и доступ к моделям по группам (задача 4.21):
 	// неверный JWKS или настройка — пакет отклоняется.
 	if err := router.SetUserTokens(hb.jwt, userTokens.keys, userTokens.apps); err != nil {
+		return nil, err
+	}
+	// Оценщики judge.llm (задача 5.28): провайдеры пакета с признаком «у
+	// заказчика»; без него правила judge.llm дают «не проверено».
+	if err := router.SetJudges(gateway.Judges{Shared: hb.judgeShared, Clients: judges, Hasher: hb.hasher, Random: hb.random}); err != nil {
 		return nil, err
 	}
 	a, err := auth.NewAuthenticator(hb.hasher, recs)
@@ -762,6 +773,32 @@ func newProviders(file *config.GatewayFile, tp aisecCrypto.TLSProvider, rnd aise
 		}
 	}
 	return out, nil
+}
+
+// newJudgeClient — адаптер провайдера-оценщика judge.llm (ADR-0030, раздел
+// 1): только OpenAI-совместимый провайдер внутри контура, транспорт —
+// только к адресам частной сети с проверкой при каждом соединении.
+func newJudgeClient(pc config.Provider, rootsPEM []byte, key string, tp aisecCrypto.TLSProvider, logger *slog.Logger) (judge.Client, error) {
+	if pc.Type != config.ProviderOpenAI || pc.IsExternal() {
+		return nil, fmt.Errorf("провайдер %s: оценщик judge.llm — только OpenAI-совместимый провайдер внутри контура", pc.ID)
+	}
+	connect, header := time.Duration(pc.ConnectTimeout), time.Duration(pc.HeaderTimeout)
+	if connect == 0 {
+		connect = config.DefaultConnectTimeout
+	}
+	if header == 0 {
+		header = config.DefaultHeaderTimeout
+	}
+	transport, err := providers.NewPrivateTransport(tp, rootsPEM, connect, header)
+	if err != nil {
+		return nil, fmt.Errorf("провайдер %s: %w", pc.ID, err)
+	}
+	u, err := config.ParseUpstreamURL(pc.BaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("провайдер %s: %w", pc.ID, err)
+	}
+	return providers.NewOpenAI(providers.OpenAIConfig{BaseConfig: providers.BaseConfig{ID: pc.ID, Transport: transport, Logger: logger,
+		ResponseTimeout: time.Duration(pc.ResponseTimeout)}, BaseURL: u, Key: key})
 }
 
 // newProvider создаёт провайдера: rootsPEM — корневые сертификаты, key —
