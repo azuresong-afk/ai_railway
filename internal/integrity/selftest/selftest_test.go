@@ -19,6 +19,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/detect"
 	"github.com/azuresong-afk/ai_railway/internal/detect/builtin"
 	"github.com/azuresong-afk/ai_railway/internal/detect/corpus"
+	"github.com/azuresong-afk/ai_railway/internal/detect/judge"
 	"github.com/azuresong-afk/ai_railway/internal/integrity"
 	"github.com/azuresong-afk/ai_railway/internal/policy"
 )
@@ -100,7 +101,8 @@ func TestRunBuiltinOK(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !res.OK() || res.Detectors != len(builtin.All()) || res.Vectors != len(vectors)-mlVectors() ||
-		res.Tools != len(toolVectors)+1+len(descriptorVectors) || res.Hashes != len(promptVectors)+len(historyVectors) || res.MLUnavailable != 0 {
+		res.Tools != len(toolVectors)+1+len(descriptorVectors) || res.Hashes != len(promptVectors)+len(historyVectors) || res.MLUnavailable != 0 ||
+		res.Judge != len(judgeVectors) {
 		t.Fatalf("итог %+v", res)
 	}
 	if !res.At.Equal(fixedNow()) || res.Profile != aisecCrypto.ProfileStandard {
@@ -534,5 +536,41 @@ func TestDetailsLimited(t *testing.T) {
 	d := res.Details()
 	if len(d["failures"].([]any)) != maxAuditFailures || d["omitted"] != 5 {
 		t.Fatalf("подробности %+v", d)
+	}
+}
+
+// Эталоны judge.llm (ADR-0030, раздел 10): положительный даёт
+// judge.business, отрицательный — ничего, «оценщик недоступен» — не
+// проверено без провала; неверное ожидание — провал.
+//
+// Покрывает: DM-19 (LLM)
+func TestJudgeVectors(t *testing.T) {
+	var pos, neg, down bool
+	for _, v := range judgeVectors {
+		pos = pos || len(v.Expect) > 0 && !v.Down
+		neg = neg || len(v.Expect) == 0 && !v.Down
+		down = down || v.Down
+	}
+	if !pos || !neg || !down {
+		t.Fatal("эталоны judge.llm неполны")
+	}
+	var n int
+	if f := runJudge(context.Background(), standard(t), time.Second, &n); len(f) != 0 || n != len(judgeVectors) {
+		t.Fatalf("провалы %+v, прогнано %d", f, n)
+	}
+	saved := judgeVectors
+	t.Cleanup(func() { judgeVectors = saved })
+	judgeVectors = slices.Clone(saved)
+	judgeVectors[0].Expect = []string{judge.CategoryContent}
+	judgeVectors[1].Text = "Мы вернём деньги."
+	n = 0
+	f := runJudge(context.Background(), standard(t), time.Second, &n)
+	want := []Failure{
+		{Detector: JudgeCheck, Vector: judgeVectors[0].ID, Problem: ProblemMissed, Category: judge.CategoryContent},
+		{Detector: JudgeCheck, Vector: judgeVectors[0].ID, Problem: ProblemUnexpected, Category: judge.CategoryBusiness},
+		{Detector: JudgeCheck, Vector: judgeVectors[1].ID, Problem: ProblemUnexpected, Category: judge.CategoryBusiness},
+	}
+	if !slices.Equal(f, want) {
+		t.Fatalf("провал эталона не найден: %+v", f)
 	}
 }

@@ -6,7 +6,9 @@
 // детекторами проверяется политика вызовов инструментов агентами
 // (ADR-0023): эталонные вызовы обязаны получить ожидаемое решение; хеш
 // описаний инструментов (DM-25), эталона системного промпта (DM-26) и
-// реплик ассистента (DM-03) — совпасть с эталонами.
+// реплик ассистента (DM-03) — совпасть с эталонами; оценщик judge.llm
+// (DM-18, DM-19) — дать находку на стенде в памяти, а при недоступном
+// оценщике — «не проверено» без провала.
 //
 // ML-детекторы (ADR-0024) проверяются, если компонент их передал: без
 // aisec-ml (detect.ErrMLUnavailable) эталон даёт ml_unavailable
@@ -35,6 +37,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/audit"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/internal/detect"
+	"github.com/azuresong-afk/ai_railway/internal/detect/judge"
 	"github.com/azuresong-afk/ai_railway/internal/detect/session"
 	"github.com/azuresong-afk/ai_railway/internal/integrity"
 	"github.com/azuresong-afk/ai_railway/internal/policy"
@@ -77,6 +80,7 @@ type Result struct {
 	Vectors   int // прогнано эталонов детекторов
 	Tools     int // прогнано эталонов политики вызовов и хеша описаний
 	Hashes    int // прогнано эталонов хеша промпта и реплик (DM-26, DM-03)
+	Judge     int // прогнано эталонов оценщика judge.llm (DM-18, DM-19)
 	// MLUnavailable — эталоны ML-детекторов без ответа aisec-ml
 	// (ml_unavailable): не провал, но в журнале и аудите.
 	MLUnavailable int
@@ -132,6 +136,7 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 	res.Failures = append(res.Failures, runTools(cfg.Now(), &res.Tools)...)
 	res.Failures = append(res.Failures, runDescriptors(cfg.Provider, &res.Tools)...)
 	res.Failures = append(res.Failures, runHashes(cfg.Provider, &res.Hashes)...)
+	res.Failures = append(res.Failures, runJudge(ctx, cfg.Provider, cfg.Timeout, &res.Judge)...)
 	reg, err := detect.NewRegistry(cfg.Detectors...)
 	if err != nil {
 		return res, fmt.Errorf("самотест: %w", err)
@@ -270,6 +275,50 @@ func replyHash(h aisecCrypto.Hasher, parts ...string) []byte {
 	return r.Sum()
 }
 
+// errJudgeDown — отказ стенда-оценщика в эталоне «оценщик недоступен».
+var errJudgeDown = errors.New("самотест: оценщик недоступен")
+
+// runJudge прогоняет эталоны judge.llm (judgeVectors); n — счётчик
+// прогнанных. У каждого эталона своё общее состояние оценщика: кэш одного
+// эталона не отвечает за другой.
+func runJudge(ctx context.Context, p aisecCrypto.Provider, timeout time.Duration, n *int) []Failure {
+	h, err := p.Hasher()
+	if err != nil {
+		return []Failure{{Detector: JudgeCheck, Problem: ProblemError}}
+	}
+	rnd, err := p.Random()
+	if err != nil {
+		return []Failure{{Detector: JudgeCheck, Problem: ProblemError}}
+	}
+	cs := []judge.Criterion{{Rule: judgeVectorRule, Kind: judge.KindBusiness, Text: judgeVectorCriterion}}
+	var out []Failure
+	for _, v := range judgeVectors {
+		*n++
+		stand := judge.Stand{Markers: map[string]string{judgeVectorRule: judgeVectorMarker}}
+		if v.Down {
+			stand = judge.Stand{Err: errJudgeDown}
+		}
+		e, err := judge.NewEngine(judge.Config{Provider: "selftest", Model: "selftest", Client: stand, Hasher: h, Random: rnd,
+			Shared: judge.NewShared(), BudgetKey: "selftest", Limits: judge.Limits{CallsPerMinute: 60, TokensPerHour: 1 << 20}})
+		if err != nil {
+			out = append(out, Failure{Detector: JudgeCheck, Vector: v.ID, Problem: ProblemError})
+			continue
+		}
+		o := e.Evaluate(ctx, judge.Request{Direction: v.Direction, Text: v.Text, Criteria: cs, Sync: true, Timeout: timeout})
+		fs := o.Findings(cs)
+		switch {
+		case v.Down && (o.Checked || o.Reason != judge.ReasonUnavailable || len(fs) > 0):
+			out = append(out, Failure{Detector: JudgeCheck, Vector: v.ID, Problem: ProblemError})
+		case v.Down:
+		case !o.Checked:
+			out = append(out, Failure{Detector: JudgeCheck, Vector: v.ID, Problem: ProblemError})
+		default:
+			out = append(out, compare(JudgeCheck, Vector{ID: v.ID, Expect: v.Expect}, fs, nil)...)
+		}
+	}
+	return out
+}
+
 // mlBacked — детектор работает через aisec-ml (ADR-0024): заглушка
 // internal/detect/builtin или детектор шлюза с клиентом aisec-ml.
 func mlBacked(d detect.Detector) bool {
@@ -355,7 +404,7 @@ func Startup(ctx context.Context, cfg StartupConfig) (Result, error) {
 	}
 	attrs := []any{"class", "selftest", "profile", res.Profile, "crypto_ok", res.CryptoOK,
 		"detectors", res.Detectors, "vectors", res.Vectors, "tool_vectors", res.Tools, "hash_vectors", res.Hashes,
-		"ml_unavailable", res.MLUnavailable}
+		"judge_vectors", res.Judge, "ml_unavailable", res.MLUnavailable}
 	if res.OK() {
 		cfg.Logger.Info("самотестирование пройдено", attrs...)
 		return res, nil
@@ -402,7 +451,7 @@ func (r Result) Details() map[string]any {
 	}
 	return map[string]any{
 		"profile": r.Profile, "crypto_ok": r.CryptoOK, "detectors": r.Detectors, "vectors": r.Vectors,
-		"tool_vectors": r.Tools, "hash_vectors": r.Hashes, "ml_unavailable": r.MLUnavailable, "failures": list, "omitted": omitted,
+		"tool_vectors": r.Tools, "hash_vectors": r.Hashes, "judge_vectors": r.Judge, "ml_unavailable": r.MLUnavailable, "failures": list, "omitted": omitted,
 	}
 }
 
