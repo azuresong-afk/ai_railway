@@ -43,6 +43,11 @@ func loadCorpora(t *testing.T) map[string][]corpus.Sample {
 		if !d.IsDir() {
 			continue
 		}
+		// Корпус judge (задача 5.29) — другого формата (правила и примеры
+		// «нарушает / не нарушает»), читается пакетом tools/detector-quality/judgeq.
+		if d.Name() == "judge" {
+			continue
+		}
 		// Корпус изображений media (задача 5.36) — не текстовый: в нём нет
 		// файлов *.jsonl.
 		jsonl, err := filepath.Glob(filepath.Join(corpusRoot, d.Name(), "*.jsonl"))

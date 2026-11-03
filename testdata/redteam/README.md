@@ -14,6 +14,8 @@ go run ./tools/manifest sign-db -test -kind redteam_scenarios -key testdata/shad
   -in testdata/redteam/scenarios-test.json -out testdata/redteam/scenarios-test.aisecdb
 ```
 
+- `scenarios-library-test.aisecdb` — тестовая подпись полной библиотеки (задача 5.31): исходник `internal/redteam/scenariosdb/scenarios.json`, тот же тестовый ключ, НЕ ДЛЯ ПОСТАВКИ. Пересоздаётся командой из `internal/redteam/scenariosdb/README.md`; тест `TestLibraryTestSignature` сверяет её с исходником.
+
 Проверка файла: `go run ./cmd/aisec-cli servicedb inspect testdata/redteam/scenarios-test.aisecdb`.
 
 Поставочную базу подписывает владелец рабочим ключом производителя на машине без сети (`sign-db` без `-test`, ADR-0027, п. 3; ADR-0028).
