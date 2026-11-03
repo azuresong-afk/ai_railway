@@ -13357,13 +13357,13 @@ export interface components {
             };
             notifications: {
                 /**
-                 * @description gateway_clock (ВРМ.1) — часы шлюза на связи в последнем heartbeat расходятся с часами сервера больше чем на минуту, 3Н40 ревью 3.r3. gateway_tls (ЗИ.4) — шлюз на текущем пакете конфигурации дольше 10 минут после его сборки отвечает приложениям не тем сертификатом, что загружен в консоли (по часам шлюза он ещё не действует или истёк; без сертификата заказчика — не своим), 3Н43 ревью 3.r3. alert_job_stale (РСБ.7, DM-44) — фоновая задача правил «частота», «аномалия» и «бюджет» не отмечала проход дольше 5 минут при работающем сервере, 3В17 ревью 3.r2. ca_expiry (ИАФ.10) — действующему корню внутреннего УЦ осталось 60 суток и меньше, нужна ротация `aisec-cli keys rotate-ca`; system.alert пишется за 60 суток (ca_expiry) и за 7 суток (ca_expiry:critical), 3В5 ревью 3.r1. customer_cert_expiry (ЗИ.4) — сертификату заказчика для адреса шлюза осталось 30 суток и меньше; system.alert пишется за 30 суток (customer_cert_expiry) и за 7 суток (customer_cert_expiry:critical), задача 3.27. quota_approximate (ЗИ.6) — режим квот local, а действующих шлюзов на связи больше одного: квоты приложений и жёсткие бюджеты соблюдаются приблизительно, задача 4.29. quota_autonomous (ЗИ.6, по компонентам gateway:<ID>) — шлюз в режиме leased сообщил в heartbeat, что сервер недоступен и он работает на автономной доле квот, задача 4.29. gateway_limits (РСБ.7, по компонентам gateway:<ID>) — шлюз за последние 15 минут вытеснял счётчики лимитов вызовов инструментов или сессии session.risk из-за общего предела (вытеснения по доле приложения не входят), задача 5.9 этапа 5. shadow_ai_storage (РСБ.7) — сводки теневого ИИ заняли 90 % предела и больше; shadow_ai_full (РСБ.7) — предел достигнут, импорт и приём по syslog отклоняются (507), 4Н25. service_db_previous и service_db_unused (ОЦЛ.5, по компонентам service_db:<вид>) — текущая сохранённая версия служебной базы не прошла повторную проверку подписи: работает предыдущая версия или загруженная база не используется (у базы требований действует встроенная база выпуска, в записи system.alert — fallback: builtin; ADR-0028, 5Н9 ревью 5.r1)
+                 * @description gateway_clock (ВРМ.1) — часы шлюза на связи в последнем heartbeat расходятся с часами сервера больше чем на минуту, 3Н40 ревью 3.r3. gateway_tls (ЗИ.4) — шлюз на текущем пакете конфигурации дольше 10 минут после его сборки отвечает приложениям не тем сертификатом, что загружен в консоли (по часам шлюза он ещё не действует или истёк; без сертификата заказчика — не своим), 3Н43 ревью 3.r3. alert_job_stale (РСБ.7, DM-44) — фоновая задача правил «частота», «аномалия» и «бюджет» не отмечала проход дольше 5 минут при работающем сервере, 3В17 ревью 3.r2. ca_expiry (ИАФ.10) — действующему корню внутреннего УЦ осталось 60 суток и меньше, нужна ротация `aisec-cli keys rotate-ca`; system.alert пишется за 60 суток (ca_expiry) и за 7 суток (ca_expiry:critical), 3В5 ревью 3.r1. customer_cert_expiry (ЗИ.4) — сертификату заказчика для адреса шлюза осталось 30 суток и меньше; system.alert пишется за 30 суток (customer_cert_expiry) и за 7 суток (customer_cert_expiry:critical), задача 3.27. quota_approximate (ЗИ.6) — режим квот local, а действующих шлюзов на связи больше одного: квоты приложений и жёсткие бюджеты соблюдаются приблизительно, задача 4.29. quota_autonomous (ЗИ.6, по компонентам gateway:<ID>) — шлюз в режиме leased сообщил в heartbeat, что сервер недоступен и он работает на автономной доле квот, задача 4.29. gateway_limits (РСБ.7, по компонентам gateway:<ID>) — шлюз за последние 15 минут вытеснял счётчики лимитов вызовов инструментов или сессии session.risk из-за общего предела (вытеснения по доле приложения не входят), задача 5.9 этапа 5. shadow_ai_storage (РСБ.7) — сводки теневого ИИ заняли 90 % предела и больше; shadow_ai_full (РСБ.7) — предел достигнут, импорт и приём по syslog отклоняются (507), 4Н25. service_db_previous и service_db_unused (ОЦЛ.5, по компонентам service_db:<вид>) — текущая сохранённая версия служебной базы не прошла повторную проверку подписи: работает предыдущая версия или загруженная база не используется (у базы требований действует встроенная база выпуска, в записи system.alert — fallback: builtin; ADR-0028, 5Н9 ревью 5.r1). gateway_media_overloaded (ЗИ.7, DM-50, по компонентам gateway:<ID>) — за последние 15 минут изображения шлюза получали «не проверено» из-за перегрузки или срока aisec-media; gateway_media_unavailable (ЗИ.7, DM-50) — последний вызов aisec-media закончился сбоем или за 15 минут были отказы unavailable и error; gateway_media_selftest (ОЦЛ.5) — последний самотест aisec-media на эталонных изображениях не пройден (недоступный анализатор — не провал), задача 5.44 этапа 5
                  * @enum {string}
                  */
-                condition: "account_lockout" | "access_denied" | "audit_chain" | "audit_storage" | "integrity" | "time_sync" | "config_bundle" | "config_bundle_lag" | "test_build" | "gateway_offline" | "events_dropped" | "reports_stale" | "cert_expiry" | "gateway_clock" | "gateway_tls" | "ca_expiry" | "customer_cert_expiry" | "alert_job_stale" | "license_expiry" | "license_grace" | "license_restricted" | "license_invalid" | "license_clock" | "quota_approximate" | "quota_autonomous" | "gateway_limits" | "shadow_ai_storage" | "shadow_ai_full" | "service_db_previous" | "service_db_unused";
+                condition: "account_lockout" | "access_denied" | "audit_chain" | "audit_storage" | "integrity" | "time_sync" | "config_bundle" | "config_bundle_lag" | "test_build" | "gateway_offline" | "events_dropped" | "reports_stale" | "cert_expiry" | "gateway_clock" | "gateway_tls" | "ca_expiry" | "customer_cert_expiry" | "alert_job_stale" | "license_expiry" | "license_grace" | "license_restricted" | "license_invalid" | "license_clock" | "quota_approximate" | "quota_autonomous" | "gateway_limits" | "shadow_ai_storage" | "shadow_ai_full" | "service_db_previous" | "service_db_unused" | "gateway_media_overloaded" | "gateway_media_unavailable" | "gateway_media_selftest";
                 /** @enum {string} */
                 requirement: "ИАФ.4" | "ИАФ.10" | "УПД.6" | "РСБ.4" | "РСБ.5" | "РСБ.7" | "ОЦЛ.1" | "ОЦЛ.3" | "ОЦЛ.5" | "ВРМ.1" | "ЗИ.2" | "ЗИ.4" | "ЗИ.6";
-                /** @description Компоненты с активным условием (integrity — server или gateway:<ID>, config_bundle_lag, gateway_offline, events_dropped, reports_stale, cert_expiry, gateway_limits — gateway:<ID>; service_db_previous, service_db_unused — service_db:<вид>); каждое ведётся отдельно и пишется в system.alert (В18 ревью 2.r3b), а возникшее условие порождает оповещение системного правила (задача 3.11 этапа 3, DM-42–DM-44). test_build (ОЦЛ.1) — компоненты, собранные с тестовым ключом манифеста (Н34 ревью 2.r4); integrity шлюза поднимает и откат выпуска, и чужой ключ проверки пакетов (В19, В20 ревью 2.r4). DM-44: gateway_offline — шлюз не на связи дольше трёх периодов heartbeat, events_dropped — счётчик отброшенных событий вырос за 15 минут, cert_expiry — сертификат истекает меньше чем через 14 суток, reports_stale — итог целостности старше двух часов или не приходит (Н29) */
+                /** @description Компоненты с активным условием (integrity — server или gateway:<ID>, config_bundle_lag, gateway_offline, events_dropped, reports_stale, cert_expiry, gateway_limits, gateway_media_overloaded, gateway_media_unavailable, gateway_media_selftest — gateway:<ID>; service_db_previous, service_db_unused — service_db:<вид>); каждое ведётся отдельно и пишется в system.alert (В18 ревью 2.r3b), а возникшее условие порождает оповещение системного правила (задача 3.11 этапа 3, DM-42–DM-44). test_build (ОЦЛ.1) — компоненты, собранные с тестовым ключом манифеста (Н34 ревью 2.r4); integrity шлюза поднимает и откат выпуска, и чужой ключ проверки пакетов (В19, В20 ревью 2.r4). DM-44: gateway_offline — шлюз не на связи дольше трёх периодов heartbeat, events_dropped — счётчик отброшенных событий вырос за 15 минут, cert_expiry — сертификат истекает меньше чем через 14 суток, reports_stale — итог целостности старше двух часов или не приходит (Н29) */
                 components?: string[];
                 title: string;
                 active: boolean;
@@ -13453,6 +13453,39 @@ export interface components {
                     evictions: number;
                     /** @description Вытеснено из-за доли приложения: сессия того же приложения */
                     app_evictions: number;
+                };
+            };
+            /** @description Состояние клиента aisec-media шлюза из последнего heartbeat (задача 5.44 этапа 5, DM-50): очередь шлюза к анализатору, отсрочка после сбоя, итоги с запуска шлюза и последний самотест на эталонных изображениях. null — шлюз без aisec-media, прежней версии или heartbeat после перезапуска сервера ещё не пришёл */
+            media: null | {
+                /** Format: date-time */
+                reported_at: string;
+                /**
+                 * Format: date-time
+                 * @description Запуск процесса шлюза
+                 */
+                started_at: string | null;
+                /** @description Анализов шлюза к aisec-media сейчас */
+                inflight: number;
+                /** @description Предел одновременных анализов шлюза; сверх — overloaded */
+                max_inflight: number;
+                /** @description Последний вызов закончился сбоем анализатора, успешного после него не было */
+                down: boolean;
+                /** @description Ответов анализатора с запуска шлюза */
+                analyzed: number;
+                /** @description Изображения «не проверено» из-за сбоя анализатора по причинам с запуска шлюза */
+                unchecked: {
+                    unavailable: number;
+                    overloaded: number;
+                    timeout: number;
+                    error: number;
+                };
+                /** @description Последний самотест на двух эталонных изображениях (при запуске и каждые 10 минут); unchecked — анализатор недоступен, не провал; null — ещё не выполнялся */
+                selftest: null | {
+                    /** @enum {string} */
+                    result: "ok" | "failed" | "unchecked";
+                    /** Format: date-time */
+                    checked_at: string;
+                    failed: number;
                 };
             };
         };
@@ -15197,6 +15230,8 @@ export interface components {
             media_check?: "off" | "async" | "sync";
             /** @description Срок анализа в режиме sync; не задан — 2000 */
             media_check_timeout_ms?: number;
+            /** @description Очистка изображений перед отправкой провайдеру (задача 5.45, ТЗ 5.17): aisec-media удаляет метаданные, перекодирует (JPEG — в JPEG, остальное — в PNG, у GIF — первый кадр) и уменьшает до -sanitize-max-side. Не задано — выключена. Изображение, которое очистить нельзя (ссылка https://, сбой или перегрузка анализатора, неизвестный формат, отказ по пределам), провайдеру не уходит: запрос отклоняется. Выключение — ослабление (media_sanitize_weakened, DM-40). */
+            media_sanitize?: boolean;
             block_message?: string;
             rules: components["schemas"]["PolicyRule"][];
             /** @description Исключения (задача 3.22). При сохранении: поле не передано — исключения текущей версии сохраняются; пустой список — удаляются. Автора и created_at новых и изменённых ставит сервер */
@@ -15474,7 +15509,7 @@ export interface components {
             to: number;
             fields: {
                 /** @enum {string} */
-                field: "name" | "mode" | "non_text" | "response_check" | "media_check" | "media_check_timeout_ms" | "block_message" | "judge";
+                field: "name" | "mode" | "non_text" | "response_check" | "media_check" | "media_check_timeout_ms" | "media_sanitize" | "block_message" | "judge";
                 before: string;
                 after: string;
             }[];
@@ -15491,7 +15526,7 @@ export interface components {
             weakening: boolean;
             weakening_reasons: {
                 /** @enum {string} */
-                kind: "mode_monitor" | "non_text_weakened" | "response_check_weakened" | "media_check_weakened" | "rule_removed" | "action_weakened" | "threshold_raised" | "scope_narrowed" | "detector_changed" | "judge_weakened" | "exception_added" | "exception_extended" | "exception_changed" | "tools_unapproved_weakened" | "tool_rule_added" | "tool_action_weakened" | "tool_scope_widened" | "tool_scope_narrowed" | "tool_args_relaxed" | "tool_rate_raised" | "approval_timeout_raised" | "tool_rule_removed";
+                kind: "mode_monitor" | "non_text_weakened" | "response_check_weakened" | "media_check_weakened" | "media_sanitize_weakened" | "rule_removed" | "action_weakened" | "threshold_raised" | "scope_narrowed" | "detector_changed" | "judge_weakened" | "exception_added" | "exception_extended" | "exception_changed" | "tools_unapproved_weakened" | "tool_rule_added" | "tool_action_weakened" | "tool_scope_widened" | "tool_scope_narrowed" | "tool_args_relaxed" | "tool_rate_raised" | "approval_timeout_raised" | "tool_rule_removed";
                 rule?: string;
                 exception?: string;
                 /** @description ID правила раздела tools */
@@ -17203,6 +17238,8 @@ export interface components {
             texts?: number;
             /** Format: int64 */
             latency_ms?: number;
+            /** @description Провайдеру ушло очищенное изображение (media_sanitize, задача 5.45): без метаданных, перекодированное и уменьшенное анализатором aisec-media. */
+            sanitized?: boolean;
         };
         /** @description Рамка находки на изображении в пикселях исходного растра (ТЗ 5.17, п. 5). */
         ImageBox: {

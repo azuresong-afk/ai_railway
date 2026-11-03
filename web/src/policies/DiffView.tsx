@@ -9,6 +9,7 @@ const fieldText: Record<PolicyDiff["fields"][number]["field"], string> = {
   response_check: "Проверка ответа",
   media_check: "Проверка изображений",
   media_check_timeout_ms: "Срок проверки изображений, мс",
+  media_sanitize: "Очистка изображений",
   block_message: "Сообщение при блокировке",
   judge: "Модель-оценщик",
 };

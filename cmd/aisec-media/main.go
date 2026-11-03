@@ -113,7 +113,8 @@ func run(ctx context.Context, cfg *config, d deps) error {
 		return err
 	}
 	srv, err := media.NewServer(media.ServerConfig{Limits: cfg.Limits, OCR: ocr, Hasher: h, MaxConns: cfg.MaxConns, Workers: cfg.Workers,
-		Queue: cfg.Queue, CacheEntries: cfg.CacheEntries, RunTimeout: cfg.RunTimeout, MaxRunTimeout: cfg.MaxRunTimeout, Logger: d.logger})
+		Queue: cfg.Queue, CacheEntries: cfg.CacheEntries, RunTimeout: cfg.RunTimeout, MaxRunTimeout: cfg.MaxRunTimeout,
+		SanitizeMaxSide: cfg.SanitizeMaxSide, Logger: d.logger})
 	if err != nil {
 		return err
 	}

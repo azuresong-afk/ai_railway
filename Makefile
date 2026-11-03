@@ -52,7 +52,13 @@ BIN   ?= $(CURDIR)/bin
 BUILD := $(CURDIR)/build
 
 # Компоненты в поставке. mock-llm и mock-mcp в поставку не входят.
-PRODUCT_CMDS := aisec-gateway aisec-server aisec-cli aisec-media
+# PRODUCT_CMDS — основной выпуск (build/release, манифест, образ aisec-cli).
+# MEDIA_CMDS — анализатор изображений: свой выпуск build/release-media
+# (ADR-0032, задача 5.47); в основной выпуск и его манифест не входит, но
+# собирается make build (тесты изоляции, сквозные тесты) и входит в SBOM
+# продукта.
+PRODUCT_CMDS := aisec-gateway aisec-server aisec-cli
+MEDIA_CMDS   := aisec-media
 DEV_CMDS     := mock-llm mock-mcp
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
@@ -155,7 +161,7 @@ bench: ## Бенчмарки детекторов и реестра (задер�
 .PHONY: sbom
 sbom: build $(BIN)/sbom-utility ## SBOM продукта (CycloneDX 1.6) из собранных бинарников и проверка формата
 	go run ./tools/sbom -registry docs/cert/components.yaml -gosum go.sum -npm-lock web/package-lock.json -out $(BUILD)/sbom/aisec.cdx.json \
-		-version '$(VERSION)' -timestamp '$(SOURCE_DATE)' $(addprefix $(BUILD)/bin/,$(PRODUCT_CMDS))
+		-version '$(VERSION)' -timestamp '$(SOURCE_DATE)' $(addprefix $(BUILD)/bin/,$(PRODUCT_CMDS) $(MEDIA_CMDS))
 	$(BIN)/sbom-utility validate --quiet --input-file $(BUILD)/sbom/aisec.cdx.json
 	go run ./tools/sbom -check $(BUILD)/sbom/aisec.cdx.json
 
@@ -197,7 +203,7 @@ test: ## Модульные тесты с детектором гонок
 .PHONY: build
 build: ## Сборка бинарников в build/bin
 	@mkdir -p $(BUILD)/bin
-	go build -trimpath -tags '$(BUILD_TAGS)' -ldflags '$(LDFLAGS)' -o $(BUILD)/bin/ $(addprefix ./cmd/,$(PRODUCT_CMDS) $(DEV_CMDS))
+	go build -trimpath -tags '$(BUILD_TAGS)' -ldflags '$(LDFLAGS)' -o $(BUILD)/bin/ $(addprefix ./cmd/,$(PRODUCT_CMDS) $(MEDIA_CMDS) $(DEV_CMDS))
 
 .PHONY: lint
 lint: lint-version ## Линтеры, в том числе depguard (.golangci.yml); с cgo, чтобы проверялись все файлы

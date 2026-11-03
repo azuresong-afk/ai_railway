@@ -563,3 +563,24 @@ func TestPolicyToolsViaAPI(t *testing.T) {
 		t.Fatalf("сравнение: %d %s", w.Code, w.Body)
 	}
 }
+
+// media_sanitize (задача 5.45) переходит из JSON в спецификацию и обратно;
+// выключенная очистка в JSON не пишется.
+func TestPolicySpecJSONMediaSanitize(t *testing.T) {
+	var s PolicySpecJSON
+	if err := json.Unmarshal([]byte(`{"name":"П","mode":"enforce","media_sanitize":true,"rules":[]}`), &s); err != nil {
+		t.Fatal(err)
+	}
+	sp, err := s.spec("p")
+	if err != nil || !sp.MediaSanitize {
+		t.Fatalf("%+v %v", sp, err)
+	}
+	if !specJSON(sp).MediaSanitize {
+		t.Fatal("обратное преобразование потеряло media_sanitize")
+	}
+	sp.MediaSanitize = false
+	b, err := json.Marshal(specJSON(sp))
+	if err != nil || strings.Contains(string(b), "media_sanitize") {
+		t.Fatalf("%s %v", b, err)
+	}
+}

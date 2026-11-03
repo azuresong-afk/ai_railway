@@ -86,6 +86,11 @@ type HelloOK struct {
 	Checks    []Check  `json:"checks"`
 	MaxBytes  int64    `json:"max_bytes"`
 	MaxPixels int64    `json:"max_pixels"`
+	// Sanitize — анализатор выполняет очистку (кадр sanitize, задача 5.45).
+	// Анализатор прежней версии поле не присылает; шлюз прежней версии
+	// отвергает неизвестное поле, поэтому шлюз обновляется раньше
+	// aisec-media.
+	Sanitize bool `json:"sanitize,omitempty"`
 }
 
 // Source — откуда текст на изображении (ADR-0032, раздел 4).
@@ -154,9 +159,13 @@ const (
 	ErrTooLarge   ErrorCode = "too_large"   // кадр сверх предела, тело не прочитано
 	ErrBadRequest ErrorCode = "bad_request" // нарушение протокола
 	ErrInternal   ErrorCode = "internal"    // сбой анализа
+	// ErrRejected — изображение нельзя очистить: формат не распознан или без
+	// декодера, отказ по пределам, повреждённый файл, итог больше max_bytes
+	// (только ответ на sanitize).
+	ErrRejected ErrorCode = "rejected"
 )
 
-var codes = []ErrorCode{ErrOverloaded, ErrTimeout, ErrTooLarge, ErrBadRequest, ErrInternal}
+var codes = []ErrorCode{ErrOverloaded, ErrTimeout, ErrTooLarge, ErrBadRequest, ErrInternal, ErrRejected}
 
 // ErrorMsg — тело кадра error.
 type ErrorMsg struct {
@@ -293,6 +302,25 @@ func ParseError(body []byte) (ErrorCode, error) {
 		return "", ErrBadBody
 	}
 	return e.Code, nil
+}
+
+// Сигнатуры форматов очищенного изображения.
+const (
+	pngSignature  = "\x89PNG\r\n\x1a\n"
+	jpegSignature = "\xff\xd8\xff"
+)
+
+// SanitizedFormat — формат очищенного изображения по сигнатуре: только PNG
+// и JPEG (ADR-0032, дополнение 5.45). Иное — ошибка протокола: шлюз такие
+// байты провайдеру не передаёт.
+func SanitizedFormat(b []byte) (Format, error) {
+	switch {
+	case bytes.HasPrefix(b, []byte(pngSignature)):
+		return FormatPNG, nil
+	case bytes.HasPrefix(b, []byte(jpegSignature)):
+		return FormatJPEG, nil
+	}
+	return "", ErrBadBody
 }
 
 // MarshalBody кодирует тело сообщения.

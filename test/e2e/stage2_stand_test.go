@@ -203,7 +203,7 @@ func s2NewInstall(t *testing.T) s2Install {
 	if err := os.Mkdir(in.bin, 0o750); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"aisec-cli", "aisec-server", "aisec-gateway", "aisec-media"} {
+	for _, name := range []string{"aisec-cli", "aisec-server", "aisec-gateway"} {
 		s2Copy(t, filepath.Join(*binDir, name), in.path(name), 0o700)
 	}
 	src := filepath.Join(*binDir, "..", "aisec-manifest.json")
@@ -223,7 +223,7 @@ func (i s2Install) clone(t *testing.T) s2Install {
 	if err := os.Mkdir(out.bin, 0o750); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"aisec-cli", "aisec-server", "aisec-gateway", "aisec-media"} {
+	for _, name := range []string{"aisec-cli", "aisec-server", "aisec-gateway"} {
 		s2Copy(t, i.path(name), out.path(name), 0o700)
 	}
 	s2Copy(t, i.manifest(), out.manifest(), 0o600)

@@ -111,3 +111,7 @@
 | `judge.llm` — модель-оценщик в контуре заказчика по правилам политики на естественном языке (`kind: content` — DM-18, `kind: business` — DM-19) | детектор уровня запроса (шлюз) | DM-18 (LLM), DM-19 (LLM) | — | Б1 | не заполнено | — |
 | `threshold.judge_violation` | правило оповещения | DM-18, DM-19 | — | Б1 | не заполнено | — |
 | `frequency.judge_unchecked` | правило оповещения | DM-18, DM-19 | LLM10 | Б2 | не заполнено | AML.T0029 (Denial of AI Service) |
+| Очистка изображений перед провайдером (`media_sanitize`, `aisec-media`): перекодирование без метаданных, первый кадр, уменьшение; отказ очистки — блокировка (правило `media_sanitize`) | шлюз и `aisec-media` | DM-47 | LLM01, LLM02 | Б1 | не заполнено | AML.T0051.001 (LLM Prompt Injection: Indirect) |
+| `frequency.media_unavailable` — всплеск изображений «не проверено» из-за сбоя анализатора в событиях | правило оповещения | DM-50 | LLM10 | Б2 | не заполнено | AML.T0029 (Denial of AI Service) |
+| `gateway_media_overloaded`, `gateway_media_unavailable` — условия «Состояния системы» по счётчикам клиента `aisec-media` в heartbeat | сервер управления (heartbeat шлюза) | DM-50 | LLM10 | Б2 | не заполнено | AML.T0029 (Denial of AI Service) |
+| `gateway_media_selftest` — самотест пути «шлюз — `aisec-media` — детекторы» на эталонных изображениях | шлюз, сервер управления | DM-47, DM-50 | LLM10 | Б2 | не заполнено | — |

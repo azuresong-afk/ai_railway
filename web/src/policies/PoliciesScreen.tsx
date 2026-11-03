@@ -154,6 +154,8 @@ function PolicyDetail({ summary, me, onSelect, onImport }: { summary: PolicySumm
                   {mediaText[spec.media_check ?? "off"]}
                   {spec.media_check === "sync" && `, до ${spec.media_check_timeout_ms ?? 2000} мс`}
                 </dd>
+                <dt className="text-muted">Очистка изображений</dt>
+                <dd>{spec.media_sanitize ? "Включена" : "Выключена"}</dd>
                 {spec.block_message && (
                   <>
                     <dt className="text-muted">Сообщение при блокировке</dt>

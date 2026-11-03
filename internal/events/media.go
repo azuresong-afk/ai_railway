@@ -75,6 +75,9 @@ type MediaCheck struct {
 	Texts int `json:"texts,omitempty"`
 	// LatencyMS — время анализа этого изображения.
 	LatencyMS int64 `json:"latency_ms,omitempty"`
+	// Sanitized — провайдеру ушло очищенное изображение (media_sanitize,
+	// задача 5.45): без метаданных, перекодированное и уменьшенное.
+	Sanitized bool `json:"sanitized,omitempty"`
 }
 
 // Box — рамка находки на изображении в пикселях исходного растра (ТЗ 5.17,

@@ -1,6 +1,7 @@
 package media
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -326,5 +327,77 @@ func TestServerMaxConns(t *testing.T) {
 	_ = second.SetReadDeadline(time.Now().Add(2 * time.Second)) //nolint:gosec // G104: тест
 	if _, err := second.Read(make([]byte, 1)); !errors.Is(err, io.EOF) {
 		t.Fatalf("второе соединение не закрыто: %v", err)
+	}
+}
+
+// Задача 5.45: кадр sanitize — hello_ok объявляет операцию, ответ —
+// очищенные байты (sanitized), отказ по изображению — rejected без
+// закрытия соединения, паника — internal; очистка делит очередь с
+// анализом (overloaded, DM-50), срок истекает — timeout.
+func TestServerSanitize(t *testing.T) {
+	s := newTestServer(t, ServerConfig{})
+	c := dial(t, s)
+	send(t, c, wire.Header{Type: wire.TypeHello, ID: 1}, nil)
+	_, b, err := wire.ReadFrame(c, wire.ClientSide)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hello, err := wire.ParseHelloOK(b); err != nil || !hello.Sanitize {
+		t.Fatalf("hello_ok без sanitize: %+v %v", hello, err)
+	}
+	in := jpegWith(t, jpegSegment(0xFE, []byte("секрет в комментарии")))
+	send(t, c, wire.Header{Type: wire.TypeSanitize, ID: 2, Timeout: 2000}, in)
+	h, out, err := wire.ReadFrame(c, wire.ClientSide)
+	if err != nil || h.Type != wire.TypeSanitized || h.ID != 2 {
+		t.Fatalf("ответ на sanitize: %+v %v", h, err)
+	}
+	if f, err := wire.SanitizedFormat(out); err != nil || f != wire.FormatJPEG || bytes.Contains(out, []byte("секрет")) {
+		t.Fatalf("очищенное: %s %v", f, err)
+	}
+	send(t, c, wire.Header{Type: wire.TypeSanitize, ID: 3}, []byte("не изображение"))
+	if _, code := reply(t, c, 3); code != wire.ErrRejected {
+		t.Fatalf("неизвестный формат: %q", code)
+	}
+	s.sanitize = func(context.Context, []byte) ([]byte, error) { panic("сбой") }
+	send(t, c, wire.Header{Type: wire.TypeSanitize, ID: 4}, in)
+	if _, code := reply(t, c, 4); code != wire.ErrInternal {
+		t.Fatalf("паника: %q", code)
+	}
+	s.sanitize = func(context.Context, []byte) ([]byte, error) { return []byte("GIF89a"), nil }
+	send(t, c, wire.Header{Type: wire.TypeSanitize, ID: 5}, in)
+	if _, code := reply(t, c, 5); code != wire.ErrInternal {
+		t.Fatalf("итог не PNG и не JPEG: %q", code)
+	}
+	// Соединение после отказов работает дальше.
+	send(t, c, wire.Header{Type: wire.TypeAnalyze, ID: 6}, encodePNG(t, 3, 3))
+	if r, code := reply(t, c, 6); code != "" || r.Status != wire.StatusOK {
+		t.Fatalf("анализ после отказов: %+v %q", r, code)
+	}
+
+	// Очередь общая с анализом: занятый исполнитель и полная очередь —
+	// overloaded; срок истёк в очереди — timeout.
+	s = newTestServer(t, ServerConfig{Workers: 1, Queue: 0})
+	bl := newBlocking()
+	s.analyze = bl.analyze
+	defer close(bl.release)
+	a := dial(t, s)
+	send(t, a, wire.Header{Type: wire.TypeAnalyze, ID: 1}, encodePNG(t, 2, 2))
+	<-bl.started
+	o := dial(t, s)
+	send(t, o, wire.Header{Type: wire.TypeSanitize, ID: 9}, in)
+	if _, code := reply(t, o, 9); code != wire.ErrOverloaded {
+		t.Fatalf("перегрузка: %q", code)
+	}
+	s2 := newTestServer(t, ServerConfig{Workers: 1, Queue: 1})
+	bl2 := newBlocking()
+	s2.analyze = bl2.analyze
+	defer close(bl2.release)
+	a2 := dial(t, s2)
+	send(t, a2, wire.Header{Type: wire.TypeAnalyze, ID: 1}, encodePNG(t, 2, 2))
+	<-bl2.started
+	w := dial(t, s2)
+	send(t, w, wire.Header{Type: wire.TypeSanitize, ID: 10, Timeout: 100}, in)
+	if _, code := reply(t, w, 10); code != wire.ErrTimeout {
+		t.Fatalf("срок в очереди: %q", code)
 	}
 }

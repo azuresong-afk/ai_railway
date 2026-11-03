@@ -89,6 +89,7 @@ export const weakeningText: Record<NonNullable<PolicyDiff["weakening_reasons"][n
   mode_monitor: "политика переведена в режим мониторинга",
   non_text_weakened: "ослаблена проверка нетекстовых данных",
   media_check_weakened: "ослаблена проверка изображений",
+  media_sanitize_weakened: "выключена очистка изображений",
   response_check_weakened: "ослаблена проверка ответа модели",
   rule_removed: "правило удалено",
   action_weakened: "действие правила смягчено",
