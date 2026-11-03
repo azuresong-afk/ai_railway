@@ -298,13 +298,20 @@ func (s *Server) serveAnalyze(ctx context.Context, c net.Conn, h wire.Header, bo
 // принимают, OCR прерывается по сроку (итог без OCR — ошибка, в кэш не
 // идёт): слот освобождается только по завершении анализа, а итог без
 // текстов попадает в кэш, даже если срок уже истёк.
+//
+// Итог передаётся после освобождения слота и места в очереди: ответивший
+// шлюзу сервер уже готов принять следующий запрос (иначе ответ мог обогнать
+// освобождение, TestServerAnalyzerPanic в CI).
 func (s *Server) runJob(ctx context.Context, key, body []byte, done chan<- outcome) {
+	done <- s.job(ctx, key, body)
+}
+
+func (s *Server) job(ctx context.Context, key, body []byte) outcome {
 	defer func() { <-s.queue }()
 	select {
 	case s.slots <- struct{}{}:
 	case <-ctx.Done():
-		done <- outcome{err: ctx.Err()}
-		return
+		return outcome{err: ctx.Err()}
 	}
 	defer func() { <-s.slots }()
 	res, err := s.safeAnalyze(ctx, body)
@@ -315,7 +322,7 @@ func (s *Server) runJob(ctx context.Context, key, body []byte, done chan<- outco
 			s.cache.Put(key, res)
 		}
 	}
-	done <- outcome{res: res, err: err}
+	return outcome{res: res, err: err}
 }
 
 // safeAnalyze — анализ с перехватом паники: сбой одного изображения не
