@@ -1,6 +1,8 @@
 package main
 
 import (
+	"archive/tar"
+	"debug/elf"
 	"os"
 	"strings"
 	"testing"
@@ -134,6 +136,9 @@ func TestSeccompRejects(t *testing.T) {
 		"повтор вызова":          {`"accept4",`, `"accept4", "accept4",`, "дважды"},
 		"неизвестное поле":       {`"defaultErrnoRet": 1,`, `"defaultErrnoRet": 1, "flags": [],`, "unknown field"},
 		"нет read":               {`"read",`, ``, "нет вызова read"},
+		"clone3 с EPERM":         {`"errnoRet": 38`, `"errnoRet": 1`, "только правилом {clone3"},
+		"нет отказа clone3":      {",\n    {\n      \"names\": [\n        \"clone3\"\n      ],\n      \"action\": \"SCMP_ACT_ERRNO\",\n      \"errnoRet\": 38\n    }", "", "нет правила clone3"},
+		"отказ другому вызову":   {`"clone3"`, `"clone3", "ptrace"`, "только правилом {clone3"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if !strings.Contains(prof, tc.old) {
@@ -170,5 +175,44 @@ func TestImageMedia(t *testing.T) {
 	fx.Layers = [][]layerFile{goodFiles(t, "aisec-media", "aisec-gateway")}
 	if p := checkImage(load(t, fx), "test", ""); len(p) == 0 {
 		t.Fatal("лишний бинарник в образе aisec-media принят")
+	}
+}
+
+// Образ aisec-media с OCR (ADR-0033, задача 5.41): бинарник с загрузчиком
+// из /opt/aisec/lib, ONNX Runtime и модели — как у aisec-ml. Загрузчик не
+// из /opt/aisec/lib и библиотека у статического бинарника — нарушения.
+func TestImageMediaOCR(t *testing.T) {
+	ocrFixture := func(bin []byte, withLibs bool) *fixture {
+		files := goodFiles(t)
+		files = append(files, layerFile{Name: "opt/aisec/bin/aisec-media", Type: tar.TypeReg, Mode: 0o755, Data: bin})
+		if withLibs {
+			files = append(files,
+				layerFile{Name: "opt/aisec/lib/", Type: tar.TypeDir, Mode: 0o755},
+				layerFile{Name: "opt/aisec/lib/ld-linux-x86-64.so.2", Type: tar.TypeReg, Mode: 0o755, Data: []byte("loader")},
+				layerFile{Name: "opt/aisec/lib/libonnxruntime.so.1.31.0", Type: tar.TypeReg, Mode: 0o644, Data: fakeSharedLib(t, elf.DT_RPATH, "/opt/aisec/lib")},
+				layerFile{Name: "opt/aisec/models/", Type: tar.TypeDir, Mode: 0o755},
+				layerFile{Name: "opt/aisec/models/PP-OCRv6_det_small.onnx", Type: tar.TypeReg, Mode: 0o644, Data: []byte("onnx")},
+			)
+		}
+		return &fixture{Tag: "aisec-test/aisec-media:1.0.0-test", Config: goodConfig("aisec-media"), Layers: [][]layerFile{files}}
+	}
+	img := load(t, ocrFixture(fakeDynELF(t, mlLoader), true))
+	if p := checkImage(img, "test", mlRelease(t, img)); len(p) > 0 {
+		t.Fatal(p)
+	}
+	img = load(t, ocrFixture(fakeDynELF(t, "/lib64/ld-linux-x86-64.so.2"), true))
+	if p := checkImage(img, "test", ""); !strings.Contains(strings.Join(p, "\n"), "загрузчик") {
+		t.Fatalf("системный загрузчик принят: %v", p)
+	}
+	static := goodFiles(t, "aisec-media")
+	var bin []byte
+	for _, f := range static {
+		if f.Name == "opt/aisec/bin/aisec-media" {
+			bin = f.Data
+		}
+	}
+	img = load(t, ocrFixture(bin, true))
+	if p := checkImage(img, "test", ""); !strings.Contains(strings.Join(p, "\n"), "статическим бинарником") {
+		t.Fatalf("библиотеки при статическом бинарнике приняты: %v", p)
 	}
 }

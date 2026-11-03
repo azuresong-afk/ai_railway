@@ -175,6 +175,34 @@ components:
     license_files:
       LICENSE: 911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad
 
+  - name: PP-OCRv6_det_small
+    version: rapidocr-3.10.0
+    type: ml-model
+    scope: product
+    purpose: Детектор строк текста OCR в изолированном анализаторе aisec-media (задача 5.41, ADR-0033; DM-45, DM-46) — файл models/PP-OCRv6_det_small.onnx выпуска aisec-media, SHA-256 090f04abcd9d9a7498bc4ebf677e4cb9bdce1fe4197ddb7e529f1ef44e1ff94f.
+    license: Apache-2.0
+    repository: https://github.com/RapidAI/RapidOCR
+    attack_surface: true
+    security_function: true
+    provided_by: Baidu (PaddleOCR, веса) → RapidAI (RapidOCR v3.10.0, конвертация в ONNX)
+    justification: 'Выбор — эксперимент 5.40 (ADR-0033): модели — данные без нового кода, исполняет уже согласованная сборка ONNX Runtime 1.31.0. Получает растр недоверенного изображения (attack_surface): модель исполняется только в aisec-media без сети, хеш встроен в бинарник и записан в манифест выпуска и ML-BOM (deploy/build/ocr/mlbom.cdx.json). Источник — колесо rapidocr 3.10.0 на PyPI (SHA-256 колеса — deploy/build/ocr/models.json), файл в репозиторий не кладётся.'
+    decision: ADR-0033, подтверждение владельца 03.11.2026 (карточка в потоке промптов, «Подтвердить»)
+    decided: 2026-11-03
+
+  - name: cyrillic_PP-OCRv5_rec_mobile
+    version: rapidocr-3.10.0
+    type: ml-model
+    scope: product
+    purpose: Распознавание строк OCR (кириллица и латиница) в изолированном анализаторе aisec-media (задача 5.41, ADR-0033; DM-45, DM-46) — файл models/cyrillic_PP-OCRv5_rec_mobile.onnx выпуска aisec-media, SHA-256 90f761b4bfcce0c8c561c0cb5c887b0971d3ec01c32164bdf7374a35b0982711.
+    license: Apache-2.0
+    repository: https://github.com/RapidAI/RapidOCR
+    attack_surface: true
+    security_function: true
+    provided_by: Baidu (PaddleOCR, веса) → RapidAI (RapidOCR v3.10.0, конвертация в ONNX)
+    justification: 'Лучший CER на корпусе 5.40 (RU 4,3 %, EN 0,1 %) и все находки DM-46 (ADR-0033). Таблица символов — в метаданных модели. Исполняется только в aisec-media без сети; хеш встроен в бинарник, записан в манифест выпуска и ML-BOM. Источник — набор RapidOCR v3.10.0 (modelscope.cn, официальный; зеркало на GitHub принимается только при совпадении SHA-256, deploy/build/ocr/models.json), файл в репозиторий не кладётся.'
+    decision: ADR-0033, подтверждение владельца 03.11.2026 (карточка в потоке промптов, «Подтвердить»)
+    decided: 2026-11-03
+
   - name: golangci-lint
     version: v2.14.0
     type: tool

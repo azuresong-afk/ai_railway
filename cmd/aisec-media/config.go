@@ -17,7 +17,11 @@ import (
 
 // Умолчания aisec-media (ADR-0032).
 const (
-	DefaultSocket     = "/run/aisec-media/aisec-media.sock"
+	DefaultSocket = "/run/aisec-media/aisec-media.sock"
+	// DefaultModels — каталог моделей OCR в образе aisec-media (ADR-0033).
+	DefaultModels = "/opt/aisec/models"
+	// DefaultORTLib — библиотека ONNX Runtime в образе aisec-media (ADR-0033).
+	DefaultORTLib     = "/opt/aisec/lib/libonnxruntime.so.1.31.0"
 	maxSocketPath     = 100 // предел sun_path (108 байт) с запасом
 	maxWorkers        = 64
 	maxQueue          = 1024
@@ -43,6 +47,9 @@ type config struct {
 	Manifest          string
 	IntegrityAction   integrity.Action
 	IntegrityInterval time.Duration
+	// Models и ORTLib — модели OCR и библиотека ONNX Runtime; читаются только
+	// сборкой с OCR (тег aisec_onnx, ADR-0033).
+	Models, ORTLib string
 	// PeerUID и PeerGID — UID и GID шлюза: соединение принимается, только
 	// если SO_PEERCRED собеседника совпадает с обоими (ADR-0032, раздел 2).
 	PeerUID, PeerGID uint32
@@ -71,6 +78,8 @@ func loadConfig(args []string, getenv func(string) string, errOut io.Writer) (*c
 	// шлюз ставит отметку «не проверено» (ADR-0032, раздел 8).
 	action := fs.String("integrity-action", string(integrity.ActionStop), "реакция на нарушение целостности: alert или stop (AISEC_MEDIA_INTEGRITY_ACTION)")
 	interval := fs.String("integrity-interval", integrity.DefaultInterval.String(), "период проверки целостности, не меньше 1m (AISEC_MEDIA_INTEGRITY_INTERVAL)")
+	models := fs.String("models", DefaultModels, "каталог моделей OCR; хеши сверяются со встроенными при сборке, только сборка с OCR (AISEC_MEDIA_MODELS)")
+	ortLib := fs.String("ort-lib", DefaultORTLib, "библиотека ONNX Runtime; хеш сверяется со встроенным при сборке, только сборка с OCR (AISEC_MEDIA_ORT_LIB)")
 	peerUID := fs.String("peer-uid", "", "UID шлюза, обязателен: соединения других пользователей закрываются (AISEC_MEDIA_PEER_UID)")
 	peerGID := fs.String("peer-gid", "", "GID шлюза, обязателен: соединения других групп закрываются (AISEC_MEDIA_PEER_GID)")
 	if err := fs.Parse(args); err != nil {
@@ -85,7 +94,7 @@ func loadConfig(args []string, getenv func(string) string, errOut io.Writer) (*c
 		"socket": socket, "max-bytes": maxBytes, "max-pixels": maxPixels, "max-conns": maxConns, "workers": workers,
 		"queue": queue, "cache-entries": cache, "run-timeout": runTimeout, "max-run-timeout": maxRunTimeout,
 		"manifest": manifest, "integrity-action": action, "integrity-interval": interval,
-		"peer-uid": peerUID, "peer-gid": peerGID,
+		"peer-uid": peerUID, "peer-gid": peerGID, "models": models, "ort-lib": ortLib,
 	} {
 		if !set[name] {
 			if v := getenv(envName(name)); v != "" {
@@ -93,10 +102,16 @@ func loadConfig(args []string, getenv func(string) string, errOut io.Writer) (*c
 			}
 		}
 	}
-	cfg := &config{Socket: *socket, Manifest: *manifest}
+	cfg := &config{Socket: *socket, Manifest: *manifest, Models: *models, ORTLib: *ortLib}
 	var errs []error
 	if !filepath.IsAbs(cfg.Socket) || filepath.Clean(cfg.Socket) != cfg.Socket || len(cfg.Socket) > maxSocketPath {
 		errs = append(errs, fmt.Errorf("socket: абсолютный путь без «..» не длиннее %d байт", maxSocketPath))
+	}
+	if !filepath.IsAbs(cfg.Models) || filepath.Clean(cfg.Models) != cfg.Models {
+		errs = append(errs, errors.New("models: абсолютный путь без «..»"))
+	}
+	if !filepath.IsAbs(cfg.ORTLib) || filepath.Clean(cfg.ORTLib) != cfg.ORTLib {
+		errs = append(errs, errors.New("ort-lib: абсолютный путь без «..»"))
 	}
 	if cfg.Manifest != "" && !filepath.IsAbs(cfg.Manifest) {
 		errs = append(errs, errors.New("manifest: абсолютный путь"))
