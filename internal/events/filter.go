@@ -131,6 +131,10 @@ var filterFields = map[string]fieldDef{
 	// Задача 3.22: exception — находки, пропущенные по исключению с этим ID;
 	// mark — отметка аналитика (false_positive, confirmed, none — нет отметки).
 	"exception": {column: "details", kind: kindFinding, valid: exceptionRe.MatchString, key: "exception"},
+	// Задача 5.46 этапа 5: источник текста находки (user, rag, tool, tool_args,
+	// output, image) — например, все события с находками в тексте изображений.
+	"finding_source": {column: "details", kind: kindFinding, key: "source",
+		valid: oneOf("user", "rag", "tool", "tool_args", "output", SourceImage)},
 	"mark":      {column: "id", kind: kindMark, valid: oneOf(MarkFalsePositive, MarkConfirmed, MarkNone)},
 	// Задача 4.13 этапа 4: события одной сессии (псевдоним из карточки события).
 	"session": {column: "details", kind: kindSession, valid: sessionIDRe.MatchString},
@@ -611,6 +615,16 @@ func (r *Record) filterValues(field string) []string {
 			for _, fd := range r.Details.Findings {
 				if fd.Exception != "" {
 					out = append(out, fd.Exception)
+				}
+			}
+		}
+		return out
+	case "finding_source":
+		var out []string
+		if r.Details != nil {
+			for _, fd := range r.Details.Findings {
+				if fd.Source != "" {
+					out = append(out, fd.Source)
 				}
 			}
 		}

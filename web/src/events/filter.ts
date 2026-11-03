@@ -34,6 +34,18 @@ export const fields: FieldInfo[] = [
   { id: "model", title: "Модель" },
   { id: "source", title: "Источник текста" },
   {
+    id: "finding_source",
+    title: "Источник находки",
+    options: [
+      { value: "user", title: "текст пользователя" },
+      { value: "rag", title: "документы RAG" },
+      { value: "tool", title: "результат инструмента" },
+      { value: "tool_args", title: "аргументы инструмента" },
+      { value: "output", title: "ответ модели" },
+      { value: "image", title: "изображение" },
+    ],
+  },
+  {
     id: "policy_mode",
     title: "Режим политики",
     options: [

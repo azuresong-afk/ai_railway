@@ -9,6 +9,7 @@ import { Table, Td, Th } from "../ui/Layout";
 import { describeError, type Event, type EventContent, eventsApi } from "./api";
 import { formatAbsolute, formatNumber } from "./format";
 import { fieldTitle, valueTitle } from "./filter";
+import { type BoxMark, ImageBoxes } from "./ImageBoxes";
 import { MarkPanel } from "./MarkPanel";
 
 // Состав details не закреплён схемой: читаем только известные поля и только как текст и числа.
@@ -25,6 +26,18 @@ interface FindingRow {
   score: number | null;
   location: string;
   threat: string;
+  source: string;
+  box: { x: number; y: number; w: number; h: number } | null;
+}
+// Итог проверки одного изображения запроса (details.media, задача 5.39): без содержимого и текста.
+interface MediaRow {
+  location: string;
+  checked: boolean;
+  reason: string;
+  format: string;
+  width: number | null;
+  height: number | null;
+  texts: number | null;
 }
 interface Details {
   action: string;
@@ -37,6 +50,7 @@ interface Details {
   trace: TraceStep[];
   failures: { detector: string; location: string; reason: string }[];
   findings: FindingRow[];
+  media: MediaRow[];
   latency: [string, number][];
   tokens: { prompt: number; completion: number } | null;
 }
@@ -74,7 +88,29 @@ export function readDetails(raw: unknown): Details {
     }),
     findings: arr(d.findings).map((f) => {
       const r = rec(f);
-      return { detector: str(r.detector), category: str(r.category), score: numOrNull(r.score), location: str(r.location), threat: str(r.threat) };
+      const b = rec(r.box);
+      const [x, y, w, h] = [numOrNull(b.x), numOrNull(b.y), numOrNull(b.w), numOrNull(b.h)];
+      return {
+        detector: str(r.detector),
+        category: str(r.category),
+        score: numOrNull(r.score),
+        location: str(r.location),
+        threat: str(r.threat),
+        source: str(r.source),
+        box: x !== null && y !== null && w !== null && h !== null ? { x, y, w, h } : null,
+      };
+    }),
+    media: arr(d.media).map((m) => {
+      const r = rec(m);
+      return {
+        location: str(r.location),
+        checked: r.checked === true,
+        reason: str(r.reason),
+        format: str(r.format),
+        width: numOrNull(r.width),
+        height: numOrNull(r.height),
+        texts: numOrNull(r.texts),
+      };
     }),
     latency: Object.entries(rec(d.latency_ms)).flatMap(([k, v]) => (typeof v === "number" ? [[k, v] as [string, number]] : [])),
     tokens:
@@ -192,6 +228,77 @@ function Findings({ d, threats }: { d: Details; threats: string[] }) {
       ) : (
         <p className="text-sm text-muted">Находок нет.</p>
       )}
+    </section>
+  );
+}
+
+// Почему изображение не проверено (details.media[].reason, ADR-0032).
+const mediaReason = new Map([
+  ["off", "проверка изображений выключена в политике"],
+  ["url", "изображение передано ссылкой, шлюз его не загружает"],
+  ["limit", "изображений в запросе больше предела"],
+  ["too_large", "файл больше предела"],
+  ["too_many_pixels", "больше пикселей, чем допускается"],
+  ["too_many_frames", "слишком много кадров"],
+  ["too_many_scans", "слишком много сканов"],
+  ["malformed", "файл повреждён"],
+  ["unsupported", "формат не поддерживается"],
+  ["no_ocr", "распознавание текста не подключено"],
+  ["unavailable", "анализатор изображений недоступен"],
+  ["overloaded", "анализатор перегружен"],
+  ["timeout", "анализатор не уложился в срок"],
+  ["error", "ошибка анализатора"],
+]);
+
+// Изображения запроса и рамки находок на них (ТЗ 5.17, задача 5.46). Рамки и находки видны всем, кто читает события;
+// само изображение — только с правом на содержимое и по режиму хранения «полностью» (ТЗ 5.5). Сейчас сервер изображение не сохраняет:
+// рамки рисуются на пустом поле размеров исходного растра, а `src` подставится, когда содержимое начнёт его отдавать.
+function Images({ d, canReadContent, storage }: { d: Details; canReadContent: boolean; storage: string }) {
+  const imageFindings = d.findings.filter((f) => f.source === "image");
+  if (d.media.length === 0 && imageFindings.length === 0) return null;
+  // Номер находки сквозной по событию: совпадает с номером на рисунке и в списке под ним.
+  const numbered = imageFindings.map((f, i) => ({ ...f, n: i + 1 }));
+  return (
+    <section aria-labelledby="images" className="flex flex-col gap-3">
+      <h3 id="images" className="text-md font-semibold">
+        Изображения и рамки находок
+      </h3>
+      <p className="text-sm text-muted">
+        {canReadContent && storage === "full"
+          ? "Само изображение сервер не сохраняет, поэтому рамки показаны на пустом поле размеров исходного изображения."
+          : "Показаны рамки и находки без самого изображения."}
+      </p>
+      {d.media.map((m) => {
+        const here = numbered.filter((f) => f.location === m.location);
+        const marks: BoxMark[] = here.flatMap((f) =>
+          f.box ? [{ n: f.n, title: `${f.n}. ${f.detector}, ${f.category}${f.threat ? `, ${f.threat}` : ""}`, box: f.box }] : [],
+        );
+        return (
+          <div key={m.location} className="flex flex-col gap-2">
+            <h4 className="font-mono text-sm font-medium">{m.location}</h4>
+            <p className="text-sm">
+              {m.checked
+                ? `Проверено${m.texts !== null ? `, фрагментов текста: ${m.texts}` : ""}. Находок: ${here.length}.`
+                : `Не проверено: ${mediaReason.get(m.reason) ?? m.reason}.`}
+              {m.format && m.width !== null && m.height !== null ? ` Формат ${m.format.toUpperCase()}, ${m.width} × ${m.height} пикселей.` : ""}
+            </p>
+            {m.width !== null && m.height !== null && m.width > 0 && m.height > 0 && (
+              <ImageBoxes width={m.width} height={m.height} marks={marks} label={`Рамки находок на изображении ${m.location}: ${marks.length}`} />
+            )}
+            {here.length > 0 && (
+              <ol className="flex flex-col gap-0.5 text-sm" aria-label={`Находки на изображении ${m.location}`}>
+                {here.map((f) => (
+                  <li key={f.n}>
+                    <span className="font-medium">{f.n}.</span> <span className="font-mono">{f.detector}</span>, {f.category}
+                    {f.threat ? `, ${f.threat}` : ""}
+                    {f.box ? `, область ${f.box.w} × ${f.box.h} в точке ${f.box.x}, ${f.box.y}` : ""}
+                  </li>
+                ))}
+              </ol>
+            )}
+          </div>
+        );
+      })}
     </section>
   );
 }
@@ -397,6 +504,7 @@ function Body({ ev, canReadContent, rights }: { ev: Event; canReadContent: boole
       )}
       <Why ev={ev} d={d} />
       <Findings d={d} threats={ev.threats} />
+      <Images d={d} canReadContent={canReadContent} storage={ev.storage} />
       <MarkPanel ev={ev} canMark={rights.canMark === true} canException={rights.canException === true} mfa={rights.mfa === true} />
       <ContentBlock ev={ev} canRead={canReadContent} />
       {(d.latency.length > 0 || d.tokens) && (

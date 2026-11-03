@@ -113,3 +113,30 @@ func TestMediaUnavailableFlag(t *testing.T) {
 		}
 	}
 }
+
+// finding_source (задача 5.46): события с находками в тексте изображений.
+func TestFindingSourceFilter(t *testing.T) {
+	f, err := ParseFilter(`finding_source = "image"`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	img := &Record{Details: &Details{Findings: []Finding{{Detector: "pii.ru", Source: SourceImage}}}}
+	usr := &Record{Details: &Details{Findings: []Finding{{Detector: "pii.ru", Source: "user"}}}}
+	if !f.Match(img) || f.Match(usr) || f.Match(&Record{}) {
+		t.Fatal("Match finding_source")
+	}
+	var b strings.Builder
+	a := &sqlArgs{}
+	f.appendSQL(&b, a)
+	if !strings.Contains(b.String(), "f->>'source' = ANY($1::text[])") {
+		t.Fatalf("SQL %q", b.String())
+	}
+	for _, bad := range []string{`finding_source = "screen"`, `finding_source = "IMAGE"`} {
+		if _, err := ParseFilter(bad); err == nil {
+			t.Errorf("%s: принят", bad)
+		}
+	}
+	if g, err := ParseFilter(`finding_source != "image"`); err != nil || g.Match(img) || !g.Match(usr) {
+		t.Fatalf("not: %v", err)
+	}
+}
