@@ -139,7 +139,7 @@ var filterFields = map[string]fieldDef{
 	// output, image) — например, все события с находками в тексте изображений.
 	"finding_source": {column: "details", kind: kindFinding, key: "source",
 		valid: oneOf("user", "rag", "tool", "tool_args", "output", SourceImage)},
-	"mark":      {column: "id", kind: kindMark, valid: oneOf(MarkFalsePositive, MarkConfirmed, MarkNone)},
+	"mark": {column: "id", kind: kindMark, valid: oneOf(MarkFalsePositive, MarkConfirmed, MarkNone)},
 	// Задача 4.13 этапа 4: события одной сессии (псевдоним из карточки события).
 	"session": {column: "details", kind: kindSession, valid: sessionIDRe.MatchString},
 	// Задача 4.11 этапа 4: события агентов по агенту, MCP-серверу и
