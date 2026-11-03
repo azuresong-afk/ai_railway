@@ -1546,7 +1546,7 @@ paths:
         type, app, env, user, provider, model, source, policy_mode, action, rule, severity,
         storage, gateway, threat, detector, exception (находки, пропущенные по исключению с этим ID),
         mark (`false_positive`, `confirmed` или `none` — без отметки), stream, non_text_unchecked,
-        has_content, ml_unavailable (ML-детекторы не дали результата), session (псевдоним сессии запроса чата или агента), agent, mcp_server, tool
+        has_content, ml_unavailable (ML-детекторы не дали результата), judge_unchecked (оценка judge.llm не получена), session (псевдоним сессии запроса чата или агента), agent, mcp_server, tool
         (события агентов); операторы
         `=`, `!=`, `in (…)`, `not in (…)` (у логических полей — только `=`). Лимиты: 2048 байт,
         20 условий, 50 значений в списке, значение до 256 байт. Пишет `events.list`
@@ -9104,6 +9104,29 @@ components:
               maxItems: 64
               description: 'Проверка изображений запроса (задача 5.39); находки в тексте изображений — с source: image и полем box.'
               items: { $ref: '#/components/schemas/MediaCheck' }
+            judge:
+              type: array
+              maxItems: 4
+              description: >-
+                Оценки judge.llm запроса (задача 5.28, ADR-0030, раздел 7): по записи на направление и режим. Нарушения —
+                находки детектора judge.llm (DM-18, DM-19) без позиций; при неполученной оценке в decision —
+                judge_unchecked: true.
+              items: { $ref: '#/components/schemas/JudgeCheck' }
+    JudgeCheck:
+      type: object
+      required: [direction, mode, checked, rules]
+      properties:
+        direction: { type: string, enum: [input, output] }
+        mode: { type: string, enum: [async, sync] }
+        checked: { type: boolean, description: Вердикты получены (от оценщика или из кэша) }
+        reason:
+          type: string
+          enum: [unavailable, timeout, overloaded, budget, injection, too_large, bad_response, error]
+          description: Почему оценка не получена («не проверено»)
+        cached: { type: boolean }
+        rules: { type: integer, minimum: 1, maximum: 16 }
+        latency_ms: { type: integer }
+        tokens: { type: integer, description: Расход оценщика (prompt + completion) }
     EventAgent:
       description: >
         События агентов agent_tool_call и agent_mcp (задача 4.11, ADR-0023, раздел 7): служебные имена,

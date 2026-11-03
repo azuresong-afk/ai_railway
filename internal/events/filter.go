@@ -121,6 +121,9 @@ var filterFields = map[string]fieldDef{
 	// (aisec-ml недоступен, ADR-0024) — признак решения в details.
 	"ml_unavailable": {column: "details", kind: kindBool, valid: oneOf("true", "false"),
 		expr: "COALESCE((e.details->'decision'->>'ml_unavailable')::boolean, false)"},
+	// Задача 5.28 этапа 5: оценка judge.llm не получена (ADR-0030, раздел 7).
+	"judge_unchecked": {column: "details", kind: kindBool, valid: oneOf("true", "false"),
+		expr: "COALESCE((e.details->'decision'->>'judge_unchecked')::boolean, false)"},
 	// Задача 3.22: exception — находки, пропущенные по исключению с этим ID;
 	// mark — отметка аналитика (false_positive, confirmed, none — нет отметки).
 	"exception": {column: "details", kind: kindFinding, valid: exceptionRe.MatchString, key: "exception"},
@@ -638,6 +641,8 @@ func (r *Record) filterValues(field string) []string {
 		return []string{strconv.FormatBool(r.HasContent)}
 	case "ml_unavailable":
 		return []string{strconv.FormatBool(r.Details != nil && r.Details.Decision != nil && r.Details.Decision.MLUnavailable)}
+	case "judge_unchecked":
+		return []string{strconv.FormatBool(r.Details != nil && r.Details.Decision != nil && r.Details.Decision.JudgeUnchecked)}
 	}
 	return nil
 }
