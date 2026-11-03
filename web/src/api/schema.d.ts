@@ -11965,7 +11965,7 @@ export interface components {
         };
         RAGCollection: {
             slug: string;
-            /** @description Номер текущей версии манифеста */
+            /** @description Номер текущей версии манифеста; 0 — коллекция восстановлена из резервной копии с исключениями администратора, манифест ещё не загружен */
             version: number;
             documents: number;
             /**

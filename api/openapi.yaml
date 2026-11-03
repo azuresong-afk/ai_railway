@@ -7123,7 +7123,7 @@ components:
       required: [slug, version, documents, size, excluded, exclusions, loaded_at, loaded_by, diff, created_at]
       properties:
         slug: { type: string }
-        version: { type: integer, minimum: 1, description: Номер текущей версии манифеста }
+        version: { type: integer, minimum: 0, description: "Номер текущей версии манифеста; 0 — коллекция восстановлена из резервной копии с исключениями администратора, манифест ещё не загружен" }
         documents: { type: integer }
         size: { type: integer, format: int64, description: Сумма размеров документов, байт }
         excluded: { type: integer, description: Документов, исключённых проверкой до индексации (отметка индексатора) }

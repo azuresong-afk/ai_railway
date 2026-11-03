@@ -1018,3 +1018,115 @@ func writeInventoryFiles(ctx context.Context, tx pgx.Tx, modelID string, files [
 	}
 	return nil
 }
+
+// readRAGExclusions — исключения документов RAG администратором (ревью 5.r2
+// этапа 5, 5Н15). Манифесты (документы, версии) в копию не входят.
+func readRAGExclusions(ctx context.Context, tx pgx.Tx, s *Snapshot) error {
+	rows, err := tx.Query(ctx, `SELECT e.id::text, c.id::text, c.slug, e.doc_id, e.reason, e.created_at, e.created_by
+		FROM rag_exclusions e JOIN rag_collections c ON c.id = e.collection_id
+		WHERE c.org_id = $1 ORDER BY c.slug, e.doc_id`, s.OrgID)
+	if err != nil {
+		return err
+	}
+	s.RAGExclusions, err = pgx.CollectRows(rows, func(r pgx.CollectableRow) (RAGExclusion, error) {
+		var e RAGExclusion
+		err := r.Scan(&e.ID, &e.CollectionID, &e.Collection, &e.DocumentID, &e.Reason, &e.CreatedAt, &e.CreatedBy)
+		return e, err
+	})
+	return err
+}
+
+// ragRestoredBy — автор версии 0 коллекции, созданной восстановлением.
+const ragRestoredBy = "system:backup_restore"
+
+// ragEmptyDiff — разница версий коллекции без манифеста (rag.Diff).
+const ragEmptyDiff = `{"added":0,"changed":0,"removed":0,"added_ids":[],"changed_ids":[],"removed_ids":[]}`
+
+// writeRAGExclusions записывает исключения документов RAG (ревью 5.r2
+// этапа 5, 5Н15). Совпадения ID проверил Conflicts. Коллекция с тем же slug
+// есть в установке — исключения добавляются в неё, а документ, который в
+// ней уже исключён, пропускается строкой отчёта; коллекции нет — она
+// создаётся с ID копии без манифеста (версия 0, миграция 0073): исключения
+// действуют до первой загрузки манифеста. Пределы коллекций и исключений
+// RAG — как у API: превышение останавливает восстановление. Возвращает
+// строки отчёта.
+func writeRAGExclusions(ctx context.Context, tx pgx.Tx, s *Snapshot, now time.Time) ([]string, error) {
+	if len(s.RAGExclusions) == 0 {
+		return nil, nil
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	// Та же рекомендательная блокировка организации, что у загрузки
+	// манифеста (rag.PGStore.LoadManifest): предел коллекций и создание
+	// коллекции не гонятся с индексатором.
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('aisec.rag:' || $1, 0))`, s.OrgID); err != nil {
+		return nil, err
+	}
+	var order []string
+	byCol := map[string][]RAGExclusion{}
+	for _, e := range s.RAGExclusions {
+		if _, ok := byCol[e.Collection]; !ok {
+			order = append(order, e.Collection)
+		}
+		byCol[e.Collection] = append(byCol[e.Collection], e)
+	}
+	var lines []string
+	for _, slug := range order {
+		list := byCol[slug]
+		label := truncate(slug)
+		var colID string
+		var have int
+		created := false
+		err := tx.QueryRow(ctx, `SELECT c.id::text, (SELECT count(*) FROM rag_exclusions e WHERE e.collection_id = c.id)
+			FROM rag_collections c WHERE c.org_id = $1 AND c.slug = $2 FOR UPDATE`, s.OrgID, slug).Scan(&colID, &have)
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			var n int
+			if err := tx.QueryRow(ctx, "SELECT count(*) FROM rag_collections WHERE org_id = $1", s.OrgID).Scan(&n); err != nil {
+				return nil, err
+			}
+			if n >= maxRAGCollections {
+				return nil, fmt.Errorf("в установке станет больше %d коллекций RAG", maxRAGCollections)
+			}
+			colID, created = list[0].CollectionID, true
+			if _, err := tx.Exec(ctx, `INSERT INTO rag_collections (id, org_id, slug, version, documents, size, excluded, loaded_at,
+				loaded_by, diff, created_at) VALUES ($1, $2, $3, 0, 0, 0, 0, $4, $5, $6, $4)`,
+				colID, s.OrgID, slug, now, ragRestoredBy, ragEmptyDiff); err != nil {
+				return nil, fmt.Errorf("коллекция %s: %w", label, err)
+			}
+		case err != nil:
+			return nil, err
+		}
+		added, existed := 0, 0
+		for _, e := range list {
+			var dup bool
+			if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM rag_exclusions WHERE collection_id = $1 AND doc_id = $2)`,
+				colID, e.DocumentID).Scan(&dup); err != nil {
+				return nil, err
+			}
+			if dup {
+				existed++
+				continue
+			}
+			if have >= maxRAGExclusionsPerCollection {
+				return nil, fmt.Errorf("коллекция %s: исключений станет больше %d", label, maxRAGExclusionsPerCollection)
+			}
+			if _, err := tx.Exec(ctx, `INSERT INTO rag_exclusions (id, collection_id, doc_id, reason, created_at, created_by)
+				VALUES ($1, $2, $3, $4, $5, $6)`, e.ID, colID, e.DocumentID, e.Reason, e.CreatedAt, e.CreatedBy); err != nil {
+				return nil, fmt.Errorf("коллекция %s: исключение %s: %w", label, e.ID, err)
+			}
+			added++
+			have++
+		}
+		line := fmt.Sprintf("коллекция %s: исключений перенесено %d", label, added)
+		if existed > 0 {
+			line += fmt.Sprintf(", уже были в установке %d", existed)
+		}
+		if created {
+			line += "; коллекция создана без манифеста (версия 0) — исключения действуют, индексатор должен загрузить манифест"
+		}
+		lines = append(lines, line)
+	}
+	return lines, nil
+}
