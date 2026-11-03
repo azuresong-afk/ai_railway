@@ -193,6 +193,8 @@ type Details struct {
 	Media []MediaCheck `json:"media,omitempty"`
 	// Judge — оценки judge.llm (задача 5.28).
 	Judge []JudgeCheck `json:"judge,omitempty"`
+	// Test — событие тестирования устойчивости (задача 5.32).
+	Test bool `json:"test,omitempty"`
 	// ContentTruncated — содержимое full обрезано сервером под предел
 	// шифротекста (FitContent); ставит только сервер при записи.
 	ContentTruncated bool `json:"content_truncated,omitempty"`
@@ -219,7 +221,7 @@ func (e *Event) Details() Details {
 	return Details{
 		Decision: e.Decision, Findings: e.Findings, LatencyMS: e.LatencyMS, Tokens: e.Tokens,
 		Response: e.Response, Pseudonyms: e.Pseudonyms, AuthFailure: e.AuthFailure, Session: e.Session.stored(),
-		Agent: e.Agent, Media: e.Media, Judge: e.Judge,
+		Agent: e.Agent, Media: e.Media, Judge: e.Judge, Test: e.Test,
 	}
 }
 

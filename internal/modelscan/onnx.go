@@ -132,6 +132,11 @@ func (p *pbReader) field(end int64) (num uint64, wt uint64, n int64, err error) 
 	if err != nil {
 		return 0, 0, 0, err
 	}
+	// Ключ и длина — varint, их чтение может уйти за конец сообщения; тогда
+	// end-pos отрицателен и без этой проверки длина прошла бы сравнение.
+	if p.pos > end {
+		return 0, 0, 0, errors.New("ключ поля за границей сообщения")
+	}
 	num, wt = k>>3, k&7
 	if num == 0 {
 		return 0, 0, 0, errors.New("поле с номером 0")
@@ -141,7 +146,10 @@ func (p *pbReader) field(end int64) (num uint64, wt uint64, n int64, err error) 
 		if err != nil {
 			return 0, 0, 0, err
 		}
-		if l > uint64(end-p.pos) { //nolint:gosec // G115: end ≥ pos внутри сообщения
+		if p.pos > end {
+			return 0, 0, 0, errors.New("длина поля за границей сообщения")
+		}
+		if l > uint64(end-p.pos) { //nolint:gosec // G115: end ≥ pos проверено выше
 			return 0, 0, 0, errors.New("длина поля за границей сообщения")
 		}
 		n = int64(l) //nolint:gosec // G115: l не больше остатка сообщения
@@ -166,7 +174,7 @@ func (p *pbReader) skipValue(wt uint64, n int64) error {
 }
 
 func (p *pbReader) str(n int64) (string, error) {
-	if n > maxONNXString {
+	if n < 0 || n > maxONNXString {
 		return "", fmt.Errorf("%w: строка %d байт, предел %d", errLimit, n, maxONNXString)
 	}
 	b := make([]byte, n)

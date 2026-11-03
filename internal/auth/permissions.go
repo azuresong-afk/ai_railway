@@ -181,6 +181,15 @@ const (
 	// безопасности, только из консоли (ревью 5.r2, 5Н14; как
 	// inventory.unblock — разделение обязанностей, УПД.2).
 	PermRAGUnexclude = "rag.unexclude"
+	// Тестирование устойчивости (задача 5.32, ADR-0031, п. 9): чтение
+	// целей, сценариев и запусков; управление целями — право безопасности
+	// (адрес, на который продукт отправит атаки), только из консоли;
+	// запуск и отмена — без признака безопасности (запуск из CI токеном,
+	// 5.33); загрузка подписанной базы сценариев.
+	PermRedteamRead          = "redteam.read"
+	PermRedteamTargetsManage = "redteam.targets.manage"
+	PermRedteamRun           = "redteam.run"
+	PermRedteamScenariosLoad = "redteam.scenarios.load"
 )
 
 // Permission — разрешение из каталога.
@@ -294,6 +303,11 @@ var permissionCatalog = []Permission{
 	{Name: PermRAGRead, Title: "Просмотр коллекций RAG: версии манифеста, документы с хешами, изменения и исключения", Group: "Реестр ИИ"},
 	{Name: PermRAGManage, Title: "Загрузка манифеста коллекции RAG (индексатор) и исключение документов", Group: "Реестр ИИ"},
 	{Name: PermRAGUnexclude, Title: "Снятие исключения документа коллекции RAG (документ снова попадёт в индекс)", Group: "Реестр ИИ", Security: true},
+	{Name: PermRedteamRead, Title: "Просмотр целей тестирования устойчивости (без секретов), сценариев, запусков и их итогов", Group: "Тестирование устойчивости"},
+	{Name: PermRedteamTargetsManage, Title: "Создание, изменение и удаление целей тестирования устойчивости (адресов, на которые отправляются атаки)",
+		Group: "Тестирование устойчивости", Security: true},
+	{Name: PermRedteamRun, Title: "Запуск и отмена тестирования устойчивости", Group: "Тестирование устойчивости"},
+	{Name: PermRedteamScenariosLoad, Title: "Загрузка подписанной базы сценариев атак и возврат её предыдущей версии", Group: "Тестирование устойчивости"},
 }
 
 // auditorExtra — разрешения аудитора сверх чтения: они ничего не меняют,
@@ -486,13 +500,13 @@ var builtinRoles = []RoleDef{
 			PermLicenseRead: ScopeAll, PermLicenseManage: ScopeAll,
 			PermComplianceRead: ScopeAll, PermComplianceBaseLoad: ScopeAll, PermInventoryRead: ScopeAll, PermInventoryManage: ScopeAll,
 			PermInventoryExport: ScopeAll, PermModelsReport: ScopeAll, PermModelsTemplatesLoad: ScopeAll, PermRAGRead: ScopeAll,
-			PermRAGManage: ScopeAll}},
+			PermRAGManage: ScopeAll, PermRedteamRead: ScopeAll, PermRedteamScenariosLoad: ScopeAll}},
 	{ID: RoleAnalyst, DisplayName: "Аналитик", Builtin: true,
 		Description: "Разбор оповещений и инцидентов, поиск по событиям",
 		Grants: grantAll(PermSystemRead, PermEventsRead, PermEventsExport, PermEventsMark, PermApplicationsRead, PermProvidersRead,
 			PermPoliciesRead, PermPoliciesTest, PermAlertsRead, PermAlertsManage, PermAlertRulesRead, PermModelPricesRead, PermBudgetsRead,
 			PermDashboardsRead, PermIncidentsRead, PermIncidentsManage, PermIncidentsExport, PermReportsRead, PermAgentsRead,
-			PermApprovalsRead, PermApprovalsDecide, PermShadowAIRead, PermInventoryRead, PermRAGRead)},
+			PermApprovalsRead, PermApprovalsDecide, PermShadowAIRead, PermInventoryRead, PermRAGRead, PermRedteamRead)},
 	{ID: RoleAuditor, DisplayName: "Аудитор", Builtin: true,
 		Description: "Только просмотр: журнал аудита, отчёты, состояние соответствия. Ничего не меняет",
 		Grants:      auditorPermissions()},

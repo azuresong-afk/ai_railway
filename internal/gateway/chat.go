@@ -201,7 +201,7 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	rec, ok := h.newRecord(w, app, req, user, start)
+	rec, ok := h.newRecord(w, r, app, req, user, start)
 	if !ok {
 		return
 	}

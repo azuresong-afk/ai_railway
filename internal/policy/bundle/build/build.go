@@ -99,6 +99,11 @@ type Options struct {
 	// (задача 5.22, раздел blocked_models); nil — запретов в пакете нет.
 	// Смена состояния модели растит счётчик изменений (миграция 0072).
 	BlockedModels func(ctx context.Context) ([]bundle.BlockedModel, error)
+	// TestKeys — ключи идущих запусков тестирования устойчивости по ID
+	// приложения (задача 5.32, ADR-0031, раздел 2): в пакет — с признаком
+	// test и сроком до конца запуска. Начало и конец запуска растят
+	// счётчик изменений (триггер на redteam_runs). nil — ключей запусков нет.
+	TestKeys func(ctx context.Context, now time.Time) (map[string][]bundle.Key, error)
 }
 
 // UserTokenKeysRefresh — как часто пакет собирается заново, пока у
@@ -152,6 +157,8 @@ type Service struct {
 	quotaMode func(ctx context.Context) (string, error)
 	// blockedModels — запрещённые модели реестра ИИ (Options.BlockedModels).
 	blockedModels func(ctx context.Context) ([]bundle.BlockedModel, error)
+	// testKeys — ключи запусков тестирования устойчивости (Options.TestKeys).
+	testKeys func(ctx context.Context, now time.Time) (map[string][]bundle.Key, error)
 	// jwt — кодирование JWKS для пакета; nil — профиль без проверки JWT.
 	jwt aisecCrypto.JWTVerifier
 	// builds — число выборок данных для сборки (для тестов Н26).
@@ -211,7 +218,7 @@ func New(o Options) (*Service, error) {
 	s := &Service{apps: o.Apps, agents: o.Agents, policies: o.Policies, store: o.Store, audit: o.Audit, sealer: o.Sealer, hasher: h,
 		orgID: o.OrgID, clock: o.Clock, logger: o.Logger, reuse: o.Reuse, revision: o.Revision,
 		sem: make(chan struct{}, 1), checks: map[string]string{}, lastReport: map[string]time.Time{}, sealed: map[string]sealedBody{},
-		idpKeys: o.IdPKeys, quotaMode: o.QuotaMode, blockedModels: o.BlockedModels}
+		idpKeys: o.IdPKeys, quotaMode: o.QuotaMode, blockedModels: o.BlockedModels, testKeys: o.TestKeys}
 	// Профиль без проверки JWT (gost до этапа 6): ключей IdP в пакете нет.
 	if j, err := o.Provider.JWT(); err == nil {
 		s.jwt = j
@@ -466,6 +473,18 @@ func (s *Service) collect(ctx context.Context, now time.Time) (*bundle.Content, 
 	keys, drop, err := s.keysByApp(ctx, now)
 	if err != nil {
 		return nil, nil, nil, err
+	}
+	if s.testKeys != nil {
+		tk, err := s.testKeys(ctx, now)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		for app, ks := range tk {
+			for _, k := range ks {
+				k.Test = true
+				keys[app] = append(keys[app], k)
+			}
+		}
 	}
 	c := &bundle.Content{Providers: []bundle.Provider{}, Applications: []bundle.Application{}, Policies: []bundle.Policy{}}
 	usedProv := map[string]bool{}

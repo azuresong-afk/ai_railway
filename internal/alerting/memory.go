@@ -74,6 +74,7 @@ func (m *Memory) Ingest(ctx context.Context, gatewayID string, evs []*events.Eve
 	if err := m.takeErr(); err != nil {
 		return err
 	}
+	evs = withoutTest(evs)
 	if err := process(ctx, memOps{m}, gatewayID, evs, nil); err != nil {
 		return err
 	}

@@ -201,7 +201,7 @@ func (c *CheckHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	user := eu.ID
-	rec, ok := h.newEventRecord(w, app, events.TypeCheck, "", false, user, start)
+	rec, ok := h.newEventRecord(w, r, app, events.TypeCheck, "", false, user, start)
 	if !ok {
 		return
 	}

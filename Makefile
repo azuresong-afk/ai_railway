@@ -36,7 +36,7 @@ CGO_ALLOWED :=
 # только в каталоге из настроек LDAP, LDAPS или StartTLS (ADR-0025, задача 4.16);
 # internal/cliclient — aisec-cli models scan/verify только к серверу из флага
 # -server, https с корнем доверия из файла (ADR-0029, дополнение 1, задача 5.21).
-NET_CLIENT_ALLOWED := cmd/aisec-gateway,internal/gateway,internal/providers,internal/notify,internal/auth/oidc,internal/auth/ldap,internal/cliclient
+NET_CLIENT_ALLOWED := cmd/aisec-gateway,internal/gateway,internal/providers,internal/notify,internal/auth/oidc,internal/auth/ldap,internal/cliclient,internal/redteam
 
 # Версии инструментов разработки (ТЗ, 8.2). Меняются только вместе с
 # docs/cert/components.yaml (scope: build) и сборочным образом.

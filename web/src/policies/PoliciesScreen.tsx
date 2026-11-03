@@ -250,7 +250,7 @@ function PolicyDetail({ summary, me, onSelect, onImport }: { summary: PolicySumm
           },
         ]),
     ...(!summary.template && has("policies.manage") && policy.data
-      ? [{ value: "editor", title: "Редактор правил", content: <RulesEditor key={policy.data.current_version} policy={policy.data} mfa={me.mfa?.enabled === true} onSaved={() => void 0} /> }]
+      ? [{ value: "editor", title: "Редактор правил", content: <RulesEditor key={policy.data.current_version} policy={policy.data} mfa={me.mfa?.enabled === true} canReadProviders={has("providers.read")} onSaved={() => void 0} /> }]
       : []),
     ...(summary.template
       ? []
