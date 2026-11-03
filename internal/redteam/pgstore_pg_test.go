@@ -327,7 +327,7 @@ func TestPGRedTeamSchedules(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("занятие срока: %v %v", ok, err)
 	}
-	if ok, _ := pg.st.ClaimSchedule(ctx, audit.DefaultOrgID, sc.ID, sc.NextRunAt, sc.NextRunAt.AddDate(0, 0, 2)); ok {
+	if ok, _ := pg.st.ClaimSchedule(ctx, audit.DefaultOrgID, sc.ID, sc.NextRunAt, sc.NextRunAt.AddDate(0, 0, 2)); ok { //nolint:gosec // ошибка в этом тесте не влияет на проверяемое условие
 		t.Fatal("срок занят дважды")
 	}
 	// Полный круг: срок наступил, запуск начат, итог и запуск записаны.
@@ -335,7 +335,7 @@ func TestPGRedTeamSchedules(t *testing.T) {
 	if err := e.s.TickSchedules(ctx); err != nil {
 		t.Fatal(err)
 	}
-	got, _ = e.s.Schedule(ctx, sc.ID)
+	got, _ = e.s.Schedule(ctx, sc.ID) //nolint:gosec // ошибка в этом тесте не влияет на проверяемое условие
 	if got.LastStatus != ScheduleStarted || got.LastRunID == "" {
 		t.Fatalf("итог попытки: %+v", got)
 	}

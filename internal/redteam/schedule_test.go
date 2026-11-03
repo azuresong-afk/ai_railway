@@ -76,7 +76,7 @@ func TestScheduleInputValidation(t *testing.T) {
 			t.Errorf("%s: ожидалась ошибка ввода, получено %v", name, err)
 		}
 	}
-	if scs, _ := e.s.Schedules(context.Background()); len(scs) != 0 {
+	if scs, _ := e.s.Schedules(context.Background()); len(scs) != 0 { //nolint:gosec // ошибка в этом тесте не влияет на проверяемое условие
 		t.Fatalf("расписания после отказов: %d", len(scs))
 	}
 }
@@ -150,7 +150,7 @@ func TestScheduleTickStartsRun(t *testing.T) {
 	if err := e.s.TickSchedules(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if runs, _ := e.s.Runs(context.Background(), "", 10); len(runs) != 0 {
+	if runs, _ := e.s.Runs(context.Background(), "", 10); len(runs) != 0 { //nolint:gosec // ошибка в этом тесте не влияет на проверяемое условие
 		t.Fatalf("запуск до срока: %d", len(runs))
 	}
 	clk.Set(sc.NextRunAt.Add(2 * time.Minute))
@@ -178,7 +178,7 @@ func TestScheduleTickStartsRun(t *testing.T) {
 	if err := e.s.TickSchedules(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if runs, _ := e.s.Runs(context.Background(), "", 10); len(runs) != 1 {
+	if runs, _ := e.s.Runs(context.Background(), "", 10); len(runs) != 1 { //nolint:gosec // ошибка в этом тесте не влияет на проверяемое условие
 		t.Fatalf("повторный запуск того же срока: %d", len(runs))
 	}
 }
@@ -196,11 +196,11 @@ func TestScheduleMissedAfterDowntime(t *testing.T) {
 	if err := e.s.TickSchedules(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	got, _ := e.s.Schedule(context.Background(), sc.ID)
+	got, _ := e.s.Schedule(context.Background(), sc.ID) //nolint:gosec // ошибка в этом тесте не влияет на проверяемое условие
 	if got.LastStatus != ScheduleMissed || got.LastRunID != "" || !got.NextRunAt.After(clk.Now()) {
 		t.Fatalf("пропущенный срок: %+v", got)
 	}
-	if runs, _ := e.s.Runs(context.Background(), "", 10); len(runs) != 0 {
+	if runs, _ := e.s.Runs(context.Background(), "", 10); len(runs) != 0 { //nolint:gosec // ошибка в этом тесте не влияет на проверяемое условие
 		t.Fatalf("запуск при пропущенном сроке: %d", len(runs))
 	}
 	if !slices.Contains(e.actions(), ActionScheduleSkipped) {
@@ -224,7 +224,7 @@ func TestScheduleBusyRetries(t *testing.T) {
 	if err := e.s.TickSchedules(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	got, _ := e.s.Schedule(context.Background(), sc.ID)
+	got, _ := e.s.Schedule(context.Background(), sc.ID) //nolint:gosec // ошибка в этом тесте не влияет на проверяемое условие
 	if got.LastStatus != ScheduleBusy || got.Retries != 1 || !got.NextRunAt.Equal(clk.Now().Add(BusyRetry)) {
 		t.Fatalf("повтор: %+v", got)
 	}
@@ -236,7 +236,7 @@ func TestScheduleBusyRetries(t *testing.T) {
 	if err := e.s.TickSchedules(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	got, _ = e.s.Schedule(context.Background(), sc.ID)
+	got, _ = e.s.Schedule(context.Background(), sc.ID) //nolint:gosec // ошибка в этом тесте не влияет на проверяемое условие
 	if got.LastStatus != ScheduleStarted || got.Retries != 0 || got.LastRunID == "" {
 		t.Fatalf("после освобождения: %+v", got)
 	}
@@ -258,10 +258,10 @@ func TestScheduleBusyGivesUp(t *testing.T) {
 		if err := e.s.TickSchedules(context.Background()); err != nil {
 			t.Fatal(err)
 		}
-		got, _ := e.s.Schedule(context.Background(), sc.ID)
+		got, _ := e.s.Schedule(context.Background(), sc.ID) //nolint:gosec // ошибка в этом тесте не влияет на проверяемое условие
 		clk.Set(got.NextRunAt)
 	}
-	got, _ := e.s.Schedule(context.Background(), sc.ID)
+	got, _ := e.s.Schedule(context.Background(), sc.ID) //nolint:gosec // ошибка в этом тесте не влияет на проверяемое условие
 	if got.LastStatus != ScheduleBusy || got.Retries != 0 || !got.NextRunAt.Equal(sc.NextRunAt.AddDate(0, 0, 1)) {
 		t.Fatalf("после повторов: %+v", got)
 	}
@@ -292,11 +292,11 @@ func TestScheduleNeedsSecretAfterTargetChange(t *testing.T) {
 	if err := e.s.TickSchedules(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	got, _ := e.s.Schedule(context.Background(), sc.ID)
+	got, _ := e.s.Schedule(context.Background(), sc.ID) //nolint:gosec // ошибка в этом тесте не влияет на проверяемое условие
 	if got.LastStatus != ScheduleNeedsSecret || got.LastRunID != "" {
 		t.Fatalf("секретный заголовок: %+v", got)
 	}
-	if runs, _ := e.s.Runs(context.Background(), "", 10); len(runs) != 0 {
+	if runs, _ := e.s.Runs(context.Background(), "", 10); len(runs) != 0 { //nolint:gosec // ошибка в этом тесте не влияет на проверяемое условие
 		t.Fatalf("запуск без секрета: %d", len(runs))
 	}
 }
@@ -315,7 +315,7 @@ func TestScheduleDisabledAndDeletedTarget(t *testing.T) {
 	if err := e.s.TickSchedules(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if runs, _ := e.s.Runs(context.Background(), "", 10); len(runs) != 0 {
+	if runs, _ := e.s.Runs(context.Background(), "", 10); len(runs) != 0 { //nolint:gosec // ошибка в этом тесте не влияет на проверяемое условие
 		t.Fatalf("выключенное расписание запустило: %d", len(runs))
 	}
 	if err := e.s.DeleteTarget(context.Background(), admin, tg.ID); err != nil {

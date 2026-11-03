@@ -222,7 +222,7 @@ func TestRedteamRunAuthValueOnlyInRequest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st, _ := os.Stat(out); st.Mode().Perm() != 0o600 || strings.Contains(string(data), rtAuth) ||
+	if st, _ := os.Stat(out); st.Mode().Perm() != 0o600 || strings.Contains(string(data), rtAuth) || //nolint:gosec // ошибка в этом тесте не влияет на проверяемое условие
 		strings.Contains(e.stdout.String()+e.stderr.String(), rtAuth) {
 		t.Fatalf("файл итогов или вывод: %v %s", st.Mode(), data)
 	}
