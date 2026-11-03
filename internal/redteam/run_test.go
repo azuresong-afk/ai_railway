@@ -698,8 +698,8 @@ func TestGatewayTargetChecks(t *testing.T) {
 	}
 }
 
-// Цель endpoint: добавление и смена адреса — с повторной проверкой; смена
-// имени — без неё; без проверки (токен) — отказ; вид не меняется.
+// Цель endpoint: добавление, смена адреса и включение выдержек — с
+// повторной проверкой; смена имени — без неё; без проверки (токен) — отказ; вид не меняется.
 func TestTargetConfirm(t *testing.T) {
 	e := newEnv(t, nil)
 	noConfirm := By{Actor: admin.Actor}
@@ -718,6 +718,19 @@ func TestTargetConfirm(t *testing.T) {
 		in.URL = "http://other.example.test:8080/"
 	})); !errors.Is(err, ErrConfirmRequired) {
 		t.Fatalf("смена адреса без проверки: %v", err)
+	}
+	// Включение хранения выдержек (none → masked) — с повторной проверкой,
+	// отключение (masked → none) — без неё (5Н22 ревью 5.r3).
+	none := endpointInput(func(in *TargetInput) { in.Name, in.Storage = "Новое имя", StorageNone })
+	if _, err := e.s.UpdateTarget(context.Background(), noConfirm, tg.ID, none); err != nil {
+		t.Fatalf("отключение выдержек: %v", err)
+	}
+	masked := endpointInput(func(in *TargetInput) { in.Name = "Новое имя" })
+	if _, err := e.s.UpdateTarget(context.Background(), noConfirm, tg.ID, masked); !errors.Is(err, ErrConfirmRequired) {
+		t.Fatalf("включение выдержек без проверки: %v", err)
+	}
+	if got, err := e.s.UpdateTarget(context.Background(), admin, tg.ID, masked); err != nil || got.Storage != StorageMasked {
+		t.Fatalf("включение выдержек с проверкой: %+v %v", got, err)
 	}
 	if _, err := e.s.UpdateTarget(context.Background(), admin, tg.ID, TargetInput{Name: "x", Kind: KindGateway, AppID: testAppID, Model: "m"}); !isInput(err) {
 		t.Fatalf("смена вида: %v", err)

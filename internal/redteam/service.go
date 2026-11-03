@@ -318,10 +318,12 @@ func (s *Service) checkTarget(ctx context.Context, t Target) error {
 }
 
 // addressChanged — у цели endpoint меняется то, куда и с чем продукт
-// отправит атаки: адрес, заголовки, корневой сертификат.
+// отправит атаки (адрес, заголовки, корневой сертификат), или продукт
+// начинает хранить выдержки ответов (storage → masked, 5Н22 ревью 5.r3).
 func addressChanged(before, after Target) bool {
 	return before.Kind != after.Kind || before.URL != after.URL || before.AuthHeader != after.AuthHeader ||
-		before.CAPEM != after.CAPEM || !slices.Equal(before.Headers, after.Headers)
+		before.CAPEM != after.CAPEM || !slices.Equal(before.Headers, after.Headers) ||
+		before.Storage != StorageMasked && after.Storage == StorageMasked
 }
 
 func confirm(ctx context.Context, by By) error {
