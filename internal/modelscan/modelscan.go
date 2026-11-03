@@ -350,6 +350,11 @@ func (s *Scanner) ScanReader(r io.ReaderAt, size int64, name string) FileReport 
 			fr.add(CodeUnknownFormat, SeverityBlock, "файл с расширением весов — текст: формат весов не распознан")
 		}
 	}
+	// Файл .onnx, который не разобран как ModelProto, onnxruntime всё равно
+	// попробует загрузить (ревью 5.r2, 5Н12): запрет, если других нет.
+	if fr.Format != FormatONNX && strings.HasSuffix(strings.ToLower(name), ".onnx") && !fr.Blocked() {
+		fr.add(CodeMalformed, SeverityBlock, "файл .onnx не разобран как модель ONNX (формат %s)", fr.Format)
+	}
 	return fr
 }
 
@@ -596,7 +601,7 @@ func detect(head []byte, size int64) Format {
 		return FormatSafetensors
 	case compressionName(head) != "":
 		return FormatCompressed
-	case isONNX(head):
+	case isONNX(head, size):
 		return FormatONNX
 	case looksLikePickle(head):
 		return FormatPickle

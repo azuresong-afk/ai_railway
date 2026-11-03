@@ -284,6 +284,38 @@ func TestONNXExternalData(t *testing.T) {
 	}
 }
 
+// ModelProto с графом первым полем (ревью 5.r2, 5Н12): protobuf допускает
+// любой порядок, и внешние данные такой модели проверяются; файл .onnx, не
+// разобранный как модель, — запрет.
+func TestONNXFieldOrder(t *testing.T) {
+	ext := onnxExternalTensor(graphInitializer, [2]string{"location", "/etc/passwd"})
+	graphFirst := pbLen(modelGraph, pbStr(2, "g"), onnxNode("", "Relu"), ext)
+	graphFirst = append(graphFirst, pbVarint(1, 9)...)
+	graphFirst = append(graphFirst, onnxOpset("", 17)...)
+	opsetFirst := append(onnxOpset("", 17), pbLen(modelGraph, pbStr(2, "g"), ext)...)
+	// Длинный doc_string первым: граф дальше просмотра.
+	docFirst := append(pbStr(6, strings.Repeat("d", 5000)), pbStr(2, "x")...)
+	docFirst = append(docFirst, pbLen(modelGraph, pbStr(2, "g"), ext)...)
+	for name, data := range map[string][]byte{"граф первым": graphFirst, "opset первым": opsetFirst, "doc_string первым": docFirst} {
+		fr := scanBytes(t, "model.onnx", data, Limits{})
+		if fr.Format != FormatONNX || !fr.HasFinding(CodeExternalData) || !fr.Blocked() {
+			t.Errorf("%s: %+v", name, fr)
+		}
+	}
+	for name, data := range map[string][]byte{"текст": []byte("not a model\n"), "нули": make([]byte, 64)} {
+		fr := scanBytes(t, "model.onnx", data, Limits{})
+		if !fr.HasFinding(CodeMalformed) || !fr.Blocked() {
+			t.Errorf(".onnx — %s: %+v", name, fr)
+		}
+	}
+	// Текст, который начинается байтом ключа поля модели, — не ONNX.
+	for _, txt := range []string{":root { color: red }\n", "Base model: " + strings.Repeat("llama ", 900), "2024 release notes\n"} {
+		if fr := scanBytes(t, "notes.txt", []byte(txt), Limits{}); fr.Format != FormatText || len(fr.Findings) != 0 {
+			t.Errorf("%q: %+v", txt[:8], fr)
+		}
+	}
+}
+
 func TestONNXBoundaries(t *testing.T) {
 	good := onnxModelBytes([][]byte{onnxNode("", "Relu"), onnxNode("", "Relu")})
 	if fr := scanBytes(t, "m.onnx", good[:len(good)-3], Limits{}); !fr.HasFinding(CodeMalformed) {
@@ -396,6 +428,7 @@ func FuzzGGUF(f *testing.F) {
 func FuzzONNX(f *testing.F) {
 	f.Add(onnxModelBytes([][]byte{onnxNode("", "Relu"), onnxExternalTensor(graphInitializer, [2]string{"location", "a.bin"})}))
 	f.Add(onnxModelBytes([][]byte{onnxNode("x", "If", pbLen(nodeAttribute, pbLen(attrG, onnxNode("", "Relu"))))}))
+	f.Add(append(pbLen(modelGraph, pbStr(2, "g"), onnxNode("", "Relu")), pbVarint(1, 9)...))
 	s := New(Limits{MaxONNXItems: 1024})
 	f.Fuzz(func(t *testing.T, data []byte) {
 		fr := FileReport{}
@@ -405,7 +438,7 @@ func FuzzONNX(f *testing.F) {
 				t.Fatalf("принят путь %q", ext.location)
 			}
 		}
-		_ = isONNX(data)
+		_ = isONNX(data, int64(len(data)))
 	})
 }
 
