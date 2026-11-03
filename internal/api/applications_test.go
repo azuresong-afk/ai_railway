@@ -251,6 +251,22 @@ func TestProvidersViaAPI(t *testing.T) {
 		t.Fatalf("аудит снятия признака: %+v", rec)
 	}
 
+	// Признак «у заказчика» (оценщик judge.llm, ADR-0030) — тоже функция
+	// безопасности и ослабление: право providers.external и повторная проверка.
+	onp := "/api/v1/providers/" + p.ID + "/on-premise"
+	mustProblem(t, e.call(sys, "PUT", onp, `{"on_premise":true,"reason":"Оценщик"}`, true), 403, CodeForbidden)
+	mustProblem(t, e.call(auditor, "PUT", onp, `{"on_premise":true,"reason":"Оценщик"}`, true), 403, CodeForbidden)
+	mustProblem(t, e.call(admin, "PUT", onp, `{"reason":"Оценщик"}`, true), 400, CodeInvalidRequest)
+	mustProblem(t, e.call(admin, "PUT", onp, `{"on_premise":true,"reason":"Оценщик"}`, true), 400, CodeInvalidRequest)
+	w = e.call(admin, "PUT", onp, `{"on_premise":true,"reason":"Оценщик judge.llm в ЦОД","password":"`+tPhrase+`"}`, true)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"on_premise":true`) {
+		t.Fatalf("установка признака «у заказчика»: %d %s", w.Code, w.Body)
+	}
+	rec, n = e.appAction("provider.on_premise_changed")
+	if d, _ := rec.Details.(map[string]any); n != 1 || rec.Actor.ID != tAdminID || d["weakening"] != true {
+		t.Fatalf("аудит признака «у заказчика»: %+v", rec)
+	}
+
 	// Используемого провайдера не удалить; неиспользуемого — можно.
 	e.application(t, sys, "helpdesk", p.ID, tOwnerID)
 	mustProblem(t, e.call(sys, "DELETE", "/api/v1/providers/"+p.ID, "", true), 409, CodeConflict)

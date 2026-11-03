@@ -175,10 +175,23 @@ func (s *Scanner) parseGGUF(r io.ReaderAt, size int64, fr *FileReport) error {
 	}
 	align := uint64(ggufDefAlign)
 	keys := map[string]bool{}
+	// names — байт ключей и имён тензоров в памяти: общий предел (ревью
+	// 5.r2, 5Н13), иначе заголовок на несколько ГиБ исчерпал бы память.
+	var nameBytes uint64
+	addName := func(n string) error {
+		nameBytes += uint64(len(n))
+		if nameBytes > s.limits.MaxGGUFNameBytes {
+			return fmt.Errorf("%w: ключи и имена тензоров больше %d байт", errLimit, s.limits.MaxGGUFNameBytes)
+		}
+		return nil
+	}
 	for range kvs {
 		key, err := g.str(ggufMaxKey, true)
 		if err != nil {
 			return fmt.Errorf("ключ метаданных: %w", err)
+		}
+		if err := addName(key); err != nil {
+			return err
 		}
 		if keys[key] {
 			return fmt.Errorf("повтор ключа %q", clean(key))
@@ -230,6 +243,9 @@ func (s *Scanner) parseGGUF(r io.ReaderAt, size int64, fr *FileReport) error {
 	for range tensors {
 		t, err := g.tensorInfo()
 		if err != nil {
+			return err
+		}
+		if err := addName(t.name); err != nil {
 			return err
 		}
 		if names[t.name] {

@@ -1,0 +1,24 @@
+{
+  "comment": "Модели OCR в выпуске aisec-media (ADR-0033, задача 5.41): детектор строк и распознавание PaddleOCR в ONNX из набора RapidOCR v3.10.0, Apache-2.0. Шаг с сетью — make media-models (tools/ocr-eval/fetch.py -list этот файл): файл сохраняется, только если SHA-256 совпал; источники — по порядку, как в эксперименте 5.40 (официальный, затем зеркало на GitHub). Шаг без сети — make media-release-assemble сверяет каталог моделей с models.sha256. Те же хеши встроены в aisec-media (cmd/aisec-media/ocr.go) и записаны в mlbom.cdx.json; совпадение проверяет TestOCRModelHashesMatchLock.",
+  "files": [
+    {
+      "name": "PP-OCRv6_det_small.onnx",
+      "sha256": "090f04abcd9d9a7498bc4ebf677e4cb9bdce1fe4197ddb7e529f1ef44e1ff94f",
+      "license": "Apache-2.0",
+      "wheel": {
+        "url": "https://files.pythonhosted.org/packages/59/07/203065283bba0c5e9c10af3602dc25ab3e59ee54dc2d1d22c8faeabf5ed8/rapidocr-3.10.0-py3-none-any.whl",
+        "sha256": "2fc34e26cd0f48514804a94f8832283039c7334076bff60768b1fed9ad068050",
+        "member": "rapidocr/models/PP-OCRv6_det_small.onnx"
+      }
+    },
+    {
+      "name": "cyrillic_PP-OCRv5_rec_mobile.onnx",
+      "sha256": "90f761b4bfcce0c8c561c0cb5c887b0971d3ec01c32164bdf7374a35b0982711",
+      "license": "Apache-2.0",
+      "urls": [
+        "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.10.0/onnx/PP-OCRv5/rec/cyrillic_PP-OCRv5_rec_mobile.onnx",
+        "https://media.githubusercontent.com/media/Vicomtech/dardcollect/HEAD/dardcollect/models/cyrillic_PP-OCRv5_rec_mobile.onnx"
+      ]
+    }
+  ]
+}

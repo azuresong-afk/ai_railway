@@ -323,3 +323,138 @@ func TestBackupInventoryOnRealDB(t *testing.T) {
 		t.Fatalf("совпадение ручной модели: %v", err)
 	}
 }
+
+// insertRAGCollection добавляет коллекцию RAG (миграция 0071) версии 1 без
+// документов и исключения документов в ней.
+func insertRAGCollection(t *testing.T, in *installation, id, slug string, excl map[string]string) {
+	t.Helper()
+	in.exec(t, `INSERT INTO rag_collections (id, org_id, slug, version, documents, size, excluded, loaded_at, loaded_by, diff,
+		created_at) VALUES ($1, $2, $3, 1, 0, 0, 0, now(), 'token:indexer', '{}', now())`, id, audit.DefaultOrgID, slug)
+	for exclID, doc := range excl {
+		in.exec(t, `INSERT INTO rag_exclusions (id, collection_id, doc_id, reason, created_at, created_by)
+			VALUES ($1, $2, $3, 'синтетическая причина', now(), 'user:x')`, exclID, id, doc)
+	}
+}
+
+// Ревью 5.r2 этапа 5, 5Н15: исключения документов RAG в копии конфигурации.
+// В пустой установке коллекции создаются с ID копии без манифеста (версия
+// 0); в непустой исключения добавляются в коллекцию с тем же slug, уже
+// исключённые документы пропускаются строкой отчёта; ID исключения или
+// коллекции с другим slug — совпадение, отказ; поля проверяются до записи.
+func TestBackupRAGExclusionsOnRealDB(t *testing.T) {
+	base := os.Getenv("AISEC_TEST_DATABASE_URL")
+	if base == "" {
+		t.Skip("AISEC_TEST_DATABASE_URL не задан")
+	}
+	admin, err := store.Open(context.Background(), base, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close()
+	src := newInstallation(t, admin, base, "cli_backup_src_rag")
+	populate(t, src)
+	const (
+		colHR, colIT, colEmpty = "0192a000-0000-7000-8000-000000000b01", "0192a000-0000-7000-8000-000000000b02",
+			"0192a000-0000-7000-8000-000000000b03"
+		exHR1, exHR2, exIT = "0192a000-0000-7000-8000-000000000c01", "0192a000-0000-7000-8000-000000000c02",
+			"0192a000-0000-7000-8000-000000000c03"
+	)
+	insertRAGCollection(t, src, colHR, "kb-hr", map[string]string{exHR1: "doc-1", exHR2: "doc-2"})
+	insertRAGCollection(t, src, colIT, "kb-it", map[string]string{exIT: "wiki/start"})
+	insertRAGCollection(t, src, colEmpty, "kb-empty", nil)
+
+	dir := t.TempDir()
+	phrase := writePhraseFile(t, testBackupPhrase, 0o400)
+	file := filepath.Join(dir, "config.aisec-backup")
+	var out, errb bytes.Buffer
+	if err := backupCmd([]string{"create", "-keys", src.keys, "-out", file, "-passphrase-file", phrase, "-no-user-hmac-key"},
+		src.dsn, &out, &errb, time.Now()); err != nil {
+		t.Fatalf("create: %v %s", err, errb.String())
+	}
+
+	// Пустая установка: две коллекции версии 0 с ID копии, три исключения;
+	// коллекция без исключений и манифесты не переносятся.
+	dst := newInstallation(t, admin, base, "cli_backup_dst_rag")
+	out.Reset()
+	if err := backupCmd([]string{"restore", "-keys", dst.keys, "-in", file, "-passphrase-file", phrase}, dst.dsn, &out, &errb,
+		time.Now()); err != nil {
+		t.Fatalf("restore: %v %s", err, errb.String())
+	}
+	for _, want := range []string{"Исключения документов RAG:", "коллекция kb-hr: исключений перенесено 2; коллекция создана без манифеста",
+		"коллекция kb-it: исключений перенесено 1;"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("в выводе нет %q: %s", want, out.String())
+		}
+	}
+	if n := dst.count(t, `SELECT count(*) FROM rag_collections WHERE version = 0 AND documents = 0 AND prev_loaded_at IS NULL
+		AND ((id = $1 AND slug = 'kb-hr') OR (id = $2 AND slug = 'kb-it'))`, colHR, colIT); n != 2 {
+		t.Fatalf("коллекции версии 0 с ID копии: %d", n)
+	}
+	if n := dst.count(t, "SELECT count(*) FROM rag_collections"); n != 2 {
+		t.Fatalf("коллекций: %d", n)
+	}
+	if n := dst.count(t, `SELECT count(*) FROM rag_exclusions WHERE (id = $1 AND doc_id = 'doc-1' AND collection_id = $4)
+		OR (id = $2 AND doc_id = 'doc-2' AND collection_id = $4) OR (id = $3 AND doc_id = 'wiki/start' AND collection_id = $5)`,
+		exHR1, exHR2, exIT, colHR, colIT); n != 3 {
+		t.Fatalf("исключения: %d", n)
+	}
+
+	// Непустая установка: kb-hr уже есть со своим ID и doc-1 в ней исключён —
+	// добавляется только doc-2; kb-it создаётся.
+	ne := newInstallation(t, admin, base, "cli_backup_ne_rag")
+	ne.exec(t, `INSERT INTO users (id, org_id, login, display_name, role, status, password_hash, password_changed_at,
+		must_change_password, created_at, created_by) VALUES ('0192a000-0000-7000-8000-00000000aaae', $1, 'first.admin',
+		'Синтетический первый', 'security_admin', 'active', 'x', now(), false, now(), 'setup')`, audit.DefaultOrgID)
+	const neHR = "0192a000-0000-7000-8000-000000000b11"
+	insertRAGCollection(t, ne, neHR, "kb-hr", map[string]string{"0192a000-0000-7000-8000-000000000c11": "doc-1"})
+	out.Reset()
+	if err := backupCmd([]string{"restore", "-keys", ne.keys, "-in", file, "-passphrase-file", phrase, "-allow-nonempty"},
+		ne.dsn, &out, &errb, time.Now()); err != nil {
+		t.Fatalf("restore в непустую: %v %s", err, errb.String())
+	}
+	if want := "коллекция kb-hr: исключений перенесено 1, уже были в установке 1\n"; !strings.Contains(out.String(), want) {
+		t.Errorf("в выводе нет %q: %s", want, out.String())
+	}
+	if n := ne.count(t, `SELECT count(*) FROM rag_exclusions e JOIN rag_collections c ON c.id = e.collection_id
+		WHERE c.id = $1 AND c.version = 1`, neHR); n != 2 {
+		t.Fatalf("исключений в коллекции установки: %d", n)
+	}
+	if n := ne.count(t, `SELECT count(*) FROM audit_log WHERE action = 'backup.restore' AND details->>'stage' = 'done'
+		AND json_array_length(details->'rag_report') = 2`); n != 1 {
+		t.Fatal("отчёт об исключениях RAG не записан в аудит")
+	}
+
+	// Совпадения: ID коллекции копии у коллекции с другим slug и ID
+	// исключения копии в установке.
+	cf := newInstallation(t, admin, base, "cli_backup_cf_rag")
+	cf.exec(t, `INSERT INTO users (id, org_id, login, display_name, role, status, password_hash, password_changed_at,
+		must_change_password, created_at, created_by) VALUES ('0192a000-0000-7000-8000-00000000aaaf', $1, 'first.admin',
+		'Синтетический первый', 'security_admin', 'active', 'x', now(), false, now(), 'setup')`, audit.DefaultOrgID)
+	insertRAGCollection(t, cf, colHR, "kb-other", nil)
+	insertRAGCollection(t, cf, "0192a000-0000-7000-8000-000000000b21", "kb-third", map[string]string{exIT: "doc-x"})
+	err = backupCmd([]string{"restore", "-keys", cf.keys, "-in", file, "-passphrase-file", phrase, "-allow-nonempty"},
+		cf.dsn, &out, &errb, time.Now())
+	if err == nil || !strings.Contains(err.Error(), "коллекция RAG kb-other") || !strings.Contains(err.Error(), "исключение документа RAG doc-x") {
+		t.Fatalf("совпадения RAG: %v", err)
+	}
+	if n := cf.count(t, "SELECT count(*) FROM rag_exclusions"); n != 1 {
+		t.Fatalf("после отказа исключений: %d", n)
+	}
+
+	// Поля проверяются до записи: причина с управляющим символом, записанная
+	// в обход API, останавливает восстановление.
+	src.exec(t, "UPDATE rag_exclusions SET reason = $2 WHERE id = $1", exIT, "причина\x07")
+	bad := filepath.Join(dir, "bad.aisec-backup")
+	if err := backupCmd([]string{"create", "-keys", src.keys, "-out", bad, "-passphrase-file", phrase, "-no-user-hmac-key"},
+		src.dsn, &out, &errb, time.Now()); err != nil {
+		t.Fatalf("create: %v %s", err, errb.String())
+	}
+	chk := newInstallation(t, admin, base, "cli_backup_chk_rag")
+	err = backupCmd([]string{"restore", "-keys", chk.keys, "-in", bad, "-passphrase-file", phrase}, chk.dsn, &out, &errb, time.Now())
+	if err == nil || !strings.Contains(err.Error(), "исключение документа RAG "+exIT) {
+		t.Fatalf("причина с управляющим символом: %v", err)
+	}
+	if n := chk.count(t, "SELECT count(*) FROM rag_collections"); n != 0 {
+		t.Fatalf("после отказа коллекций: %d", n)
+	}
+}

@@ -5,7 +5,10 @@
 #                lib/libonnxruntime.so.1.31.0, include/, LICENSE, ThirdPartyNotices.txt;
 #   ml-release — каталог выпуска aisec-ml (make ml-release-dir): bin/aisec-ml,
 #                lib/ (ONNX Runtime, загрузчик и системные библиотеки из этого
-#                же образа) и манифест целостности.
+#                же образа) и манифест целостности;
+#   media-release — каталог выпуска aisec-media с OCR (make media-release-dir,
+#                ADR-0033): bin/aisec-media, lib/ как у aisec-ml, models/ с
+#                моделями OCR и ML-BOM и манифест целостности.
 #
 # В сеть ходит только стадия toolchain: пакеты сборки Debian (cmake, ninja,
 # python3) — из снимка архива дистрибутива с проверкой подписи apt. Исходники
@@ -103,3 +106,28 @@ RUN --network=none test -n "$VERSION" && test -n "$SOURCE_DATE" && test -n "$SOU
 
 FROM scratch AS ml-release
 COPY --from=ml /src/build/release-ml/ /
+
+# Выпуск aisec-media с OCR (ADR-0033, задача 5.41): та же библиотека ORT и
+# тот же набор инструментов, что у aisec-ml. Модели OCR — контекст сборки
+# media-models (make media-models: шаг с сетью и SHA-256 по
+# deploy/build/ocr/models.json); здесь они ещё раз сверяются с
+# deploy/build/ocr/models.sha256 без сети (make media-release-assemble).
+FROM scratch AS media-models
+
+FROM toolchain AS media
+ARG VERSION
+ARG SOURCE_DATE
+ARG SOURCE_EPOCH
+ARG MANIFEST_MODE=test
+ARG RELEASE=
+WORKDIR /src
+ENV GOTOOLCHAIN=local HOME=/tmp GOCACHE=/tmp/go-cache
+COPY . .
+COPY --from=ort-checked /out/lib/ /out/lib/
+COPY --from=media-models / /media-models/
+RUN --network=none test -n "$VERSION" && test -n "$SOURCE_DATE" && test -n "$SOURCE_EPOCH" \
+ && make media-release-assemble VERSION="$VERSION" SOURCE_DATE="$SOURCE_DATE" SOURCE_EPOCH="$SOURCE_EPOCH" \
+    ORT_LIB_DIR=/out/lib MANIFEST_MODE="$MANIFEST_MODE" RELEASE="$RELEASE" MEDIA_MODELS_DIR=/media-models
+
+FROM scratch AS media-release
+COPY --from=media /src/build/release-media/ /

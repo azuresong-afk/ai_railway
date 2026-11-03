@@ -136,7 +136,7 @@ export interface paths {
         put?: never;
         /**
          * Проверка документов RAG до индексации (пакет Check API)
-         * @description Индексатор заказчика проверяет тексты документов коллекции до индексации (ТЗ 5.12, 5.16 DM-07 «RAG — 5»; ADR-0029, п. 5): до 100 документов за вызов, каждый текст — до предела тела запроса шлюза, всё тело — до большего из предела тела запроса и 8 МиБ. Каждый текст проверяется конвейером как Check API с `source: rag` и получает своё событие check (содержимое — только по режиму хранения приложения); ID событий — в `results[].event_id`, заголовка `X-AISec-Event-Id` нет. Решение по документу: `allow` — индексировать (если политика изменила текст, например замаскировала ПДн, — индексировать `text`), `exclude` — не индексировать: `reason: policy` — политика заблокировала бы текст (например, косвенная инъекция), `reason: check_unavailable` — текст не удалось проверить при `fail_closed` (повторите позже). В режиме monitor документы не исключаются, `action` показывает решение как в enforce. Квоты приложения: пакет — один запрос для частоты, предел размера входа — к каждому тексту; отказ квоты — 429 на весь пакет. Модель не вызывается. Ответ на ошибку разбора не содержит значений из запроса.
+         * @description Индексатор заказчика проверяет тексты документов коллекции до индексации (ТЗ 5.12, 5.16 DM-07 «RAG — 5»; ADR-0029, п. 5): до 100 документов за вызов, каждый текст — до предела тела запроса шлюза, всё тело — до большего из предела тела запроса и 8 МиБ. Каждый текст проверяется конвейером как Check API с `source: rag` и получает своё событие check (содержимое — только по режиму хранения приложения); ID событий — в `results[].event_id`, заголовка `X-AISec-Event-Id` нет. Решение по документу: `allow` — индексировать (если политика изменила текст, например замаскировала ПДн, — индексировать `text`), `exclude` — не индексировать: `reason: policy` — политика заблокировала бы текст (например, косвенная инъекция), `reason: check_unavailable` — текст не удалось проверить при `fail_closed` (повторите позже). В режиме monitor документы не исключаются, `action` показывает решение как в enforce. Квоты приложения: частота — по числу документов пакета (пакет больше `requests_per_minute` не пройдёт никогда), предел размера входа — к каждому тексту; отказ квоты — 429 на весь пакет до проверки. Модель не вызывается. Ответ на ошибку разбора не содержит значений из запроса.
          */
         post: {
             parameters: {
@@ -2837,7 +2837,7 @@ export interface paths {
          *     type, app, env, user, provider, model, source, policy_mode, action, rule, severity,
          *     storage, gateway, threat, detector, exception (находки, пропущенные по исключению с этим ID),
          *     mark (`false_positive`, `confirmed` или `none` — без отметки), stream, non_text_unchecked,
-         *     has_content, ml_unavailable (ML-детекторы не дали результата), session (псевдоним сессии запроса чата или агента), agent, mcp_server, tool
+         *     has_content, ml_unavailable (ML-детекторы не дали результата), media_unavailable (изображение не проверено из-за сбоя анализатора aisec-media, DM-50), judge_unchecked (оценка judge.llm не получена), session (псевдоним сессии запроса чата или агента), agent, mcp_server, tool
          *     (события агентов); операторы
          *     `=`, `!=`, `in (…)`, `not in (…)` (у логических полей — только `=`). Лимиты: 2048 байт,
          *     20 условий, 50 значений в списке, значение до 256 байт. Пишет `events.list`
@@ -3793,6 +3793,74 @@ export interface paths {
             requestBody: {
                 content: {
                     "application/json": components["schemas"]["ProviderExternal"];
+                };
+            };
+            responses: {
+                /** @description Признак изменён */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Provider"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/providers/{id}/on-premise": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Изменить признак «размещён у заказчика»
+         * @description Право `providers.external` (признак `security`: только администратор безопасности; задача 5.28,
+         *     ADR-0030). Только провайдер с этим признаком может быть оценщиком `judge.llm` (раздел `judge`
+         *     политики). Установка — ослабление защиты (DM-40): текст запросов и ответов начнёт уходить на адрес
+         *     провайдера, поэтому нужен текущий пароль (`password`) или код TOTP (`code`), ровно одно из двух, иначе
+         *     400; неверное значение — 403 `reauthentication_failed`. Условия установки: тип `openai`, признак
+         *     «внешний» снят, узел `base_url` — не `localhost`, литерал адреса — в частной сети (10.0.0.0/8,
+         *     172.16.0.0/12, 192.168.0.0/16, fc00::/7) и не loopback, link-local или служба метаданных; иначе 400.
+         *     Имя узла шлюз проверяет при каждом соединении с оценщиком. Признак сбрасывается при смене адресата
+         *     провайдера и при установке «внешний». Только в сессии консоли: запрос по токену API — 403 и
+         *     `access.denied` с причиной `session_only`. Причина обязательна. Пишет `provider.on_premise_changed`
+         *     с `weakening: true` при установке; без изменения — 200 без записи.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID провайдера (UUID) */
+                    id: components["parameters"]["ProviderID"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["ProviderOnPremise"];
                 };
             };
             responses: {
@@ -10575,7 +10643,10 @@ export interface paths {
          * @description Право `inventory.manage`. Меняются вид, версия, название, описание, ответственный; `files` заменяет список
          *     файлов целиком. Провайдер и имя не меняются: по ним модель связана с трафиком. Модель без провайдера не может
          *     стать моделью провайдера (400). Изменение без отличий ничего не пишет. Пишет `inventory.model_updated`
-         *     (изменённые поля, число файлов до и после).
+         *     (изменённые поля, число файлов до и после). Смена хеша, размера или роли либо удаление файла весов или
+         *     адаптера с эталоном — ослабление сверки хешей (DM-29): только из сессии консоли (токен API — 403 с записью
+         *     `access.denied`, новые файлы токен добавляет), запись с `weakening: true`, `weakening_reasons:
+         *     [model_reference_changed]` и путями изменённых файлов (`reference_changed`, без хешей).
          */
         patch: {
             parameters: {
@@ -11023,9 +11094,9 @@ export interface paths {
         post?: never;
         /**
          * Снять исключение документа
-         * @description Право `rag.manage`, только сессия консоли: снятие исключения — ослабление защиты (документ снова попадёт
-         *     в индекс), токен API получает 403 с записью `access.denied`. Пишет `rag.exclusion_removed` с признаком
-         *     ослабления (DM-40).
+         * @description Право безопасности `rag.unexclude` (администратор безопасности; администратор системы с `rag.manage` получает
+         *     403), только сессия консоли: снятие исключения — ослабление защиты (документ снова попадёт в индекс), токен
+         *     API получает 403 с записью `access.denied`. Пишет `rag.exclusion_removed` с признаком ослабления (DM-40).
          */
         delete: {
             parameters: {
@@ -11962,7 +12033,7 @@ export interface components {
         };
         RAGCollection: {
             slug: string;
-            /** @description Номер текущей версии манифеста */
+            /** @description Номер текущей версии манифеста; 0 — коллекция восстановлена из резервной копии с исключениями администратора, манифест ещё не загружен */
             version: number;
             documents: number;
             /**
@@ -12948,6 +13019,8 @@ export interface components {
             timeouts: components["schemas"]["ProviderTimeouts"];
             /** @description Провайдер вне контура заказчика (ТЗ 5.4) */
             external: boolean;
+            /** @description Провайдер размещён у заказчика: может быть оценщиком judge.llm (ADR-0030) */
+            on_premise: boolean;
             /** @description Учётные данные заданы; само значение не возвращается */
             credential_set: boolean;
             /** Format: date-time */
@@ -13305,6 +13378,17 @@ export interface components {
              */
             password?: string;
             /** @description Код из приложения-аутентификатора при снятии признака */
+            code?: string;
+        };
+        ProviderOnPremise: {
+            on_premise: boolean;
+            reason: string;
+            /**
+             * Format: password
+             * @description Текущий пароль при установке признака (ровно одно из password и code)
+             */
+            password?: string;
+            /** @description Код из приложения-аутентификатора при установке признака */
             code?: string;
         };
         /** @description Лимиты (ТЗ 5.2); 0 — без лимита, не больше 10^9 */
@@ -13985,9 +14069,29 @@ export interface components {
                 agent?: components["schemas"]["EventAgent"];
                 /** @description Проверка изображений запроса (задача 5.39); находки в тексте изображений — с source: image и полем box. */
                 media?: components["schemas"]["MediaCheck"][];
+                /** @description Оценки judge.llm запроса (задача 5.28, ADR-0030, раздел 7): по записи на направление и режим. Нарушения — находки детектора judge.llm (DM-18, DM-19) без позиций; при неполученной оценке в decision — judge_unchecked: true. */
+                judge?: components["schemas"]["JudgeCheck"][];
             } & {
                 [key: string]: unknown;
             };
+        };
+        JudgeCheck: {
+            /** @enum {string} */
+            direction: "input" | "output";
+            /** @enum {string} */
+            mode: "async" | "sync";
+            /** @description Вердикты получены (от оценщика или из кэша) */
+            checked: boolean;
+            /**
+             * @description Почему оценка не получена («не проверено»)
+             * @enum {string}
+             */
+            reason?: "unavailable" | "timeout" | "overloaded" | "budget" | "injection" | "too_large" | "bad_response" | "error";
+            cached?: boolean;
+            rules: number;
+            latency_ms?: number;
+            /** @description Расход оценщика (prompt + completion) */
+            tokens?: number;
         };
         /** @description События агентов agent_tool_call и agent_mcp (задача 4.11, ADR-0023, раздел 7): служебные имена, хеши и счётчики без содержимого; аргументы и результат — в содержимом события по режиму хранения. */
         EventAgent: {
@@ -14192,6 +14296,39 @@ export interface components {
             /** @enum {string} */
             severity: "info" | "low" | "medium" | "high" | "critical";
             message?: string;
+            judge?: components["schemas"]["PolicyJudgeRule"];
+        };
+        /** @description Критерий правила judge.llm на естественном языке (ADR-0030, раздел 2; задача 5.28): только у правила с `detector: judge.llm` и обязателен у него. `categories` и `sources` у такого правила не задаются; действия — allow, log, block (block — только при mode sync). */
+        PolicyJudgeRule: {
+            /**
+             * @description content — недопустимый контент (DM-18), business — бизнес-правило (DM-19)
+             * @enum {string}
+             */
+            kind: "content" | "business";
+            /** @description Правило для оценщика без управляющих символов */
+            criterion: string;
+            /**
+             * @description Пусто — async: оценка после ответа приложению
+             * @enum {string}
+             */
+            mode?: "async" | "sync";
+            /** @description Только sync; не задан — 5000 */
+            timeout_ms?: number;
+            /**
+             * @description Только sync; не задан — allow («не проверено»)
+             * @enum {string}
+             */
+            on_failure?: "allow" | "block";
+        };
+        /** @description Оценщик judge.llm политики (ADR-0030): провайдер с признаком «у заказчика» (`on_premise`), модель и бюджет. Нужен, если в политике есть правила judge.llm; не больше 16 таких правил. */
+        PolicyJudge: {
+            /** @description slug провайдера */
+            provider: string;
+            model: string;
+            /** @description 0 — 60 */
+            max_calls_per_minute?: number;
+            /** @description 0 — 200000; иначе не меньше 1000 */
+            max_tokens_per_hour?: number;
         };
         /** @description Содержимое политики (ТЗ 5.3). ID и номер версии задаёт сервер. */
         PolicySpec: {
@@ -14220,6 +14357,7 @@ export interface components {
             /** @description Исключения (задача 3.22). При сохранении: поле не передано — исключения текущей версии сохраняются; пустой список — удаляются. Автора и created_at новых и изменённых ставит сервер */
             exceptions?: components["schemas"]["PolicyException"][];
             tools?: components["schemas"]["PolicyTools"];
+            judge?: components["schemas"]["PolicyJudge"];
         };
         /** @description Политика вызовов инструментов агентами (ADR-0023, раздел 2; DM-20–DM-23). При сохранении: поле не передано — раздел текущей версии сохраняется, у новой политики — unapproved: block, default: block. В ответе поля нет — версия без раздела: неодобренные инструменты только журналируются, остальное разрешено (совместимость). */
         PolicyTools: {
@@ -14491,7 +14629,7 @@ export interface components {
             to: number;
             fields: {
                 /** @enum {string} */
-                field: "name" | "mode" | "non_text" | "response_check" | "media_check" | "media_check_timeout_ms" | "block_message";
+                field: "name" | "mode" | "non_text" | "response_check" | "media_check" | "media_check_timeout_ms" | "block_message" | "judge";
                 before: string;
                 after: string;
             }[];
@@ -14508,7 +14646,7 @@ export interface components {
             weakening: boolean;
             weakening_reasons: {
                 /** @enum {string} */
-                kind: "mode_monitor" | "non_text_weakened" | "response_check_weakened" | "media_check_weakened" | "rule_removed" | "action_weakened" | "threshold_raised" | "scope_narrowed" | "detector_changed" | "exception_added" | "exception_extended" | "exception_changed" | "tools_unapproved_weakened" | "tool_rule_added" | "tool_action_weakened" | "tool_scope_widened" | "tool_scope_narrowed" | "tool_args_relaxed" | "tool_rate_raised" | "approval_timeout_raised" | "tool_rule_removed";
+                kind: "mode_monitor" | "non_text_weakened" | "response_check_weakened" | "media_check_weakened" | "rule_removed" | "action_weakened" | "threshold_raised" | "scope_narrowed" | "detector_changed" | "judge_weakened" | "exception_added" | "exception_extended" | "exception_changed" | "tools_unapproved_weakened" | "tool_rule_added" | "tool_action_weakened" | "tool_scope_widened" | "tool_scope_narrowed" | "tool_args_relaxed" | "tool_rate_raised" | "approval_timeout_raised" | "tool_rule_removed";
                 rule?: string;
                 exception?: string;
                 /** @description ID правила раздела tools */

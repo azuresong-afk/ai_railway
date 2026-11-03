@@ -393,14 +393,16 @@ func compareHashes(ref []File, in ReportInput) (string, []HashMismatch, int) {
 }
 
 // extraWeights — файл, которого нет в реестре, похож на веса или адаптер:
-// формат весов по сигнатуре (scan) или, в отчёте verify без форматов, —
-// расширение файла весов (adapter_model.safetensors — тоже).
+// формат весов по сигнатуре (scan) или расширение файла весов
+// (adapter_model.safetensors — тоже). Расширение проверяется и при известном
+// формате (ревью 5.r2, 5В2): pytorch_model.bin, который сканер счёл текстом,
+// — всё равно лишний файл весов.
 func extraWeights(f ReportFile) bool {
-	if f.Format != "" {
-		return weightFormats[f.Format]
+	if weightFormats[f.Format] {
+		return true
 	}
 	p := strings.ToLower(f.Path)
-	for _, ext := range []string{".safetensors", ".gguf", ".onnx", ".bin", ".pt", ".pth", ".ckpt", ".pkl", ".pickle", ".npy", ".npz", ".h5", ".msgpack"} {
+	for _, ext := range []string{".safetensors", ".gguf", ".onnx", ".bin", ".pt", ".pth", ".ckpt", ".pkl", ".pickle", ".joblib", ".npy", ".npz", ".h5", ".msgpack"} {
 		if strings.HasSuffix(p, ext) {
 			return true
 		}

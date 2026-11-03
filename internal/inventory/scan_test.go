@@ -57,6 +57,10 @@ func TestSubmitReportHashes(t *testing.T) {
 		"лишний pickle": {func() []ReportFile {
 			return append(okFiles(), ReportFile{Path: "evil.PT", Size: 10, SHA256: otherHash})
 		}, HashesMismatch, MismatchExtra},
+		// Ревью 5.r2, 5В2: расширение весов проверяется и при известном формате.
+		"лишний .bin формата text": {func() []ReportFile {
+			return append(okFiles(), ReportFile{Path: "pytorch_model.bin", Size: 5000, SHA256: otherHash, Format: "text"})
+		}, HashesMismatch, MismatchExtra},
 		"лишний README": {func() []ReportFile {
 			return append(okFiles(), ReportFile{Path: "README.md", Size: 10, SHA256: otherHash})
 		}, HashesMatch, ""},

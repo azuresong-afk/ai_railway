@@ -49,3 +49,29 @@ func TestMLUnavailableFilterMatch(t *testing.T) {
 		}
 	}
 }
+
+// Покрывает: DM-50
+// Задача 5.44: серия событий с media_unavailable на одном шлюзе —
+// оповещение frequency.media_unavailable; меньше порога и события без
+// признака — нет.
+func TestDM50_MediaUnavailableSpikeAlert(t *testing.T) {
+	e := newEnv(t)
+	noMedia := func() *events.Event {
+		ev := e.event(t, "crm-bot", "gigachat", "allow")
+		ev.Decision.MediaUnchecked, ev.Decision.MediaUnavailable = true, true
+		ev.Media = []events.MediaCheck{{Location: "messages[0].content[1]", Mode: events.MediaModeSync, Reason: events.MediaReasonOverloaded}}
+		return ev
+	}
+	e.ingest(t, repeat(MediaUnavailableCount-1, noMedia)...)
+	e.ingest(t, repeat(10, func() *events.Event { return e.event(t, "crm-bot", "gigachat", "allow") })...)
+	e.periodic(t, nil)
+	if got := e.alerts(t, BuiltinMediaUnavailable); len(got) != 0 {
+		t.Fatalf("%d событий — оповещение: %+v", MediaUnavailableCount-1, got)
+	}
+	e.ingest(t, noMedia())
+	e.periodic(t, nil)
+	got := e.alerts(t, BuiltinMediaUnavailable)
+	if len(got) != 1 || got[0].Values["gateway"] != testGateway || got[0].Count != MediaUnavailableCount || got[0].Severity != "high" {
+		t.Fatalf("всплеск media_unavailable: %+v", got)
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -183,6 +184,12 @@ func addSections(t testing.TB, s *Snapshot, keys *Keys) {
 				Hash: bytes.Repeat([]byte{1}, 32)}}, CreatedAt: testTime, CreatedBy: "x", UpdatedAt: testTime, UpdatedBy: "x"},
 		{ID: "0192a000-0000-7000-8000-000000000902", Kind: "provider", Provider: "mock-llm", Name: "gpt-x", Title: "Основная",
 			Origin: "traffic", Status: "active", CreatedAt: testTime, CreatedBy: "system", UpdatedAt: testTime, UpdatedBy: "x"},
+	}
+	s.RAGExclusions = []RAGExclusion{
+		{ID: "0192a000-0000-7000-8000-000000000a01", CollectionID: "0192a000-0000-7000-8000-000000000a00", Collection: "kb-hr",
+			DocumentID: "doc-1", Reason: "персональные данные", CreatedAt: testTime, CreatedBy: "x"},
+		{ID: "0192a000-0000-7000-8000-000000000a02", CollectionID: "0192a000-0000-7000-8000-000000000a00", Collection: "kb-hr",
+			DocumentID: "doc-2", Reason: "устарел", CreatedAt: testTime, CreatedBy: "x"},
 	}
 }
 
@@ -366,6 +373,7 @@ func TestOpenVersion1(t *testing.T) {
 	v1.Channels, v1.AlertRules, v1.ReportSchedules, v1.ModelPrices, v1.Instructions = nil, nil, nil, nil, nil
 	v1.MCPServers, v1.Agents, v1.AgentTools, v1.ShadowAIExclusions, v1.Licenses, v1.ComplianceMarks = nil, nil, nil, nil, nil, nil
 	v1.GatewayTLS, v1.OIDC, v1.LDAP, v1.LicenseClock, v1.ServiceDBs, v1.InventoryModels = nil, nil, nil, nil, nil, nil
+	v1.RAGExclusions = nil
 	v1.Settings.Install = nil
 	v1.Users = slices.Clone(s.Users)
 	for i := range v1.Users {
@@ -525,6 +533,15 @@ func TestValidateReferences(t *testing.T) {
 			s.InventoryModels[0].Files = append(s.InventoryModels[0].Files, s.InventoryModels[0].Files[0])
 		},
 		"файлов модели больше предела": func(s *Snapshot) { s.InventoryModels[0].Files = make([]InventoryFile, maxInventoryFiles+1) },
+		// Исключения RAG (ревью 5.r2 этапа 5, 5Н15).
+		"ID исключения RAG":         func(s *Snapshot) { s.RAGExclusions[0].ID = "x" },
+		"ID коллекции RAG":          func(s *Snapshot) { s.RAGExclusions[0].CollectionID = "" },
+		"повтор исключения RAG":     func(s *Snapshot) { s.RAGExclusions[1].ID = s.RAGExclusions[0].ID },
+		"повтор документа RAG":      func(s *Snapshot) { s.RAGExclusions[1].DocumentID = "doc-1" },
+		"два slug у коллекции":      func(s *Snapshot) { s.RAGExclusions[1].Collection = "kb-it" },
+		"два ID у коллекции":        func(s *Snapshot) { s.RAGExclusions[1].CollectionID = "0192a000-0000-7000-8000-000000000b00" },
+		"исключений больше предела": func(s *Snapshot) { s.RAGExclusions = ragExclusions(1, maxRAGExclusionsPerCollection+1) },
+		"коллекций больше предела":  func(s *Snapshot) { s.RAGExclusions = ragExclusions(maxRAGCollections+1, 1) },
 	} {
 		s := sampleSnapshot(t, p, w.Keys())
 		mutate(s)
@@ -535,6 +552,19 @@ func TestValidateReferences(t *testing.T) {
 	if err := sampleSnapshot(t, p, w.Keys()).validate(); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// ragExclusions — n исключений в каждой из c коллекций.
+func ragExclusions(c, n int) []RAGExclusion {
+	out := make([]RAGExclusion, 0, c*n)
+	for i := range c {
+		for j := range n {
+			out = append(out, RAGExclusion{ID: fmt.Sprintf("0192a000-0000-7000-8000-%012x", 1<<24+i<<12+j),
+				CollectionID: fmt.Sprintf("0192a000-0000-7000-8000-%012x", i), Collection: fmt.Sprintf("kb-%d", i),
+				DocumentID: fmt.Sprintf("doc-%d", j), Reason: "r", CreatedAt: testTime, CreatedBy: "x"})
+		}
+	}
+	return out
 }
 
 // Объект со ссылкой на объект, которого нет в копии, пропускается со

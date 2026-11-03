@@ -103,9 +103,10 @@ type seccompProfile struct {
 	DefaultErrnoRet *int     `json:"defaultErrnoRet"`
 	Architectures   []string `json:"architectures"`
 	Syscalls        []struct {
-		Names  []string `json:"names"`
-		Action string   `json:"action"`
-		Args   []struct {
+		Names    []string `json:"names"`
+		Action   string   `json:"action"`
+		ErrnoRet *int     `json:"errnoRet"`
+		Args     []struct {
 			Index    int    `json:"index"`
 			Value    uint64 `json:"value"`
 			ValueTwo uint64 `json:"valueTwo"`
@@ -117,7 +118,8 @@ type seccompProfile struct {
 // seccompDenied — вызовы, которых в профиле aisec-media быть не должно:
 // сеть наружу, отладка и чтение чужой памяти, пространства имён и
 // монтирование, загрузка кода в ядро, смена пользователя, io_uring (обходит
-// фильтр по отдельным вызовам), clone3 (флаги в структуре — их не проверить).
+// фильтр по отдельным вызовам), clone3 (флаги в структуре — их не проверить;
+// он отклоняется с ENOSYS отдельным правилом, см. clone3ENOSYS).
 var seccompDenied = []string{
 	"connect", "sendto", "sendmsg", "sendmmsg", "recvfrom", "recvmsg", "recvmmsg",
 	"ptrace", "process_vm_readv", "process_vm_writev", "perf_event_open", "bpf", "userfaultfd",
@@ -132,6 +134,13 @@ var seccompDenied = []string{
 
 // cloneNamespaceMask — флаги CLONE_NEW*: clone разрешён только без них.
 const cloneNamespaceMask = 0x7e020000
+
+// clone3ENOSYS — код отказа clone3. glibc 2.34+ создаёт потоки через
+// clone3 и переходит на clone (с проверкой флагов выше) только при ENOSYS;
+// при EPERM по умолчанию потоки не создаются, и aisec-media с cgo и ONNX
+// Runtime (задача 5.41) не запускается. Так же поступает профиль Docker по
+// умолчанию.
+const clone3ENOSYS = 38
 
 // checkSeccomp проверяет профиль seccomp aisec-media: по умолчанию —
 // отказ, только x86-64, разрешения — списком, без опасных вызовов; clone —
@@ -155,9 +164,20 @@ func checkSeccomp(data []byte) []string {
 		add("профиль seccomp: архитектуры — только SCMP_ARCH_X86_64, получено %v", p.Architectures)
 	}
 	seen := map[string]bool{}
+	clone3 := false
 	for _, r := range p.Syscalls {
-		if r.Action != "SCMP_ACT_ALLOW" {
-			add("профиль seccomp: правило %v с действием %s — только SCMP_ACT_ALLOW", r.Names, r.Action)
+		if r.Action == "SCMP_ACT_ERRNO" {
+			// Единственный отказ с особым кодом — clone3 → ENOSYS.
+			if !slices.Equal(r.Names, []string{"clone3"}) || r.ErrnoRet == nil || *r.ErrnoRet != clone3ENOSYS || len(r.Args) > 0 {
+				add("профиль seccomp: SCMP_ACT_ERRNO — только правилом {clone3, errnoRet %d (ENOSYS)} без условий, получено %v", clone3ENOSYS, r.Names)
+			} else if clone3 {
+				add("профиль seccomp: правило clone3 дважды")
+			}
+			clone3 = true
+			continue
+		}
+		if r.Action != "SCMP_ACT_ALLOW" || r.ErrnoRet != nil {
+			add("профиль seccomp: правило %v с действием %s — только SCMP_ACT_ALLOW (и отказ clone3 с ENOSYS)", r.Names, r.Action)
 		}
 		for _, n := range r.Names {
 			if seen[n] {
@@ -186,6 +206,9 @@ func checkSeccomp(data []byte) []string {
 		if !seen[n] {
 			add("профиль seccomp: нет вызова %s — aisec-media не запустится", n)
 		}
+	}
+	if !clone3 {
+		add("профиль seccomp: нет правила clone3 с errnoRet %d (ENOSYS) — glibc не создаст потоки, aisec-media с OCR не запустится", clone3ENOSYS)
 	}
 	return problems
 }

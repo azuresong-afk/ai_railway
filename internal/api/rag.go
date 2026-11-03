@@ -17,7 +17,7 @@ import (
 // ADR-0029, п. 5): загрузка манифеста индексатором (токен с rag.manage),
 // версии и разница с предыдущей, документы с хешами, исключения
 // документов администратором. Снятие исключения — ослабление защиты:
-// только из консоли. Изменения пишутся в аудит сервисом той же транзакцией.
+// право безопасности rag.unexclude и только из консоли (ревью 5.r2, 5Н14). Изменения пишутся в аудит сервисом той же транзакцией.
 func ragRoutes(d Deps) []Route {
 	return []Route{
 		{Method: http.MethodGet, Path: "/api/v1/rag/collections", Permission: auth.PermRAGRead, Handler: needRAG(d, d.listRAGCollections)},
@@ -28,7 +28,7 @@ func ragRoutes(d Deps) []Route {
 			Handler: needRAG(d, d.putRAGManifest)},
 		{Method: http.MethodPost, Path: "/api/v1/rag/collections/{slug}/exclusions", Permission: auth.PermRAGManage,
 			MaxBody: rag.MaxExclusionBody, Handler: needRAG(d, d.addRAGExclusion)},
-		{Method: http.MethodDelete, Path: "/api/v1/rag/collections/{slug}/exclusions/{id}", Permission: auth.PermRAGManage,
+		{Method: http.MethodDelete, Path: "/api/v1/rag/collections/{slug}/exclusions/{id}", Permission: auth.PermRAGUnexclude,
 			SessionOnly: true, Handler: needRAG(d, d.removeRAGExclusion)},
 	}
 }

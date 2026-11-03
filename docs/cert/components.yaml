@@ -127,6 +127,82 @@ components:
     license_files:
       LICENSE: 2d36597f7117c38b006835ae7f537487207d8ec407aa9d9980794b2030cbc067
 
+  - name: github.com/makiuchi-d/gozxing
+    version: v0.1.2-0.20250720151325-95e256b768ac
+    type: go-module
+    scope: product
+    purpose: Декодер QR-кодов в изолированном анализаторе aisec-media — текст QR на изображениях запросов идёт в текстовые детекторы (DM-47, задача 5.43, ADR-0032).
+    license: MIT
+    repository: https://github.com/makiuchi-d/gozxing
+    attack_surface: true
+    security_function: false
+    provided_by: Daisuke Makiuchi (порт ZXing, Apache-2.0; файла NOTICE в репозитории порта нет)
+    justification: 'Декодера QR в стандартной библиотеке нет, свой (поиск шаблонов, перспектива, сетка, Рида — Соломона, режимы данных) — большой объём и риск (решение Р9 этапа 5). Импорт — только в internal/media (depguard media-decoders), то есть только в процессе aisec-media; декодер получает уже декодированный и ограниченный пределами растр, а не файл; паника перехватывается. Коммит 95e256b, а не выпуск v0.1.1 (2021): в нём исправлена гонка в общей таблице sync.Once, без этого декодер нельзя вызывать из нескольких исполнителей. Активность низкая (один сопровождающий) — риск снижают вендоринг, fuzz-тест FuzzReadQR и изоляция процесса. В vendor попадают пакеты gozxing, common, common/reedsolomon, common/util, multi, multi/qrcode, qrcode и подпакеты; unsafe, reflect, math/rand, os/exec — только в testutil, который не импортируется. Из уже согласованного golang.org/x/text берутся пакеты encoding/* (кодировки текста QR, таблицы CJK).'
+    decision: ADR-0032, «Зависимости»; согласие владельца карточкой в потоке задачи 5.35 («Да, обе»)
+    decided: 2026-11-02
+    license_files:
+      LICENSE: 0221fa7ba7a053546a008478fb73399f6454cda4da36dd22a2a56f4a73f18a8d
+
+  - name: golang.org/x/xerrors
+    version: v0.0.0-20200804184101-5ec99f83aff1
+    type: go-module
+    scope: product
+    purpose: Обёртки ошибок для gozxing (транзитивная, задача 5.43).
+    license: BSD-3-Clause
+    repository: https://github.com/golang/xerrors
+    attack_surface: false
+    security_function: false
+    provided_by: The Go Authors (github.com/golang/xerrors)
+    justification: 'Транзитивная зависимость gozxing, около 600 строк; версию выбирает минимальный выбор версий Go по go.mod gozxing. Только стандартная библиотека, без unsafe и сетевого кода. Входит только в aisec-media.'
+    decision: ADR-0032, «Зависимости»; согласие владельца вместе с gozxing
+    decided: 2026-11-02
+    license_files:
+      LICENSE: 84d554e7a5d139b7c7b5d6ef0670ae556c4cdcfa354eaad72a1c07c08012c96f
+
+  - name: golang.org/x/image
+    version: v0.47.0
+    type: go-module
+    scope: product
+    purpose: Декодеры WebP, BMP и TIFF в изолированном анализаторе aisec-media (задача 5.42, ADR-0032) — изображения запросов в этих форматах проверяются, как PNG, JPEG и GIF.
+    license: BSD-3-Clause
+    repository: https://github.com/golang/image
+    attack_surface: true
+    security_function: false
+    provided_by: The Go Authors (github.com/golang/image)
+    justification: 'В стандартной библиотеке декодеров WebP, BMP и TIFF нет, свои — большой объём и риск (VP8, VP8L, сжатия TIFF). Импорт — только в internal/media (depguard media-decoders), то есть только в процессе aisec-media; размеры и число кадров и страниц проверяются своим разбором заголовка до декодирования и сверяются с DecodeConfig, паника перехватывается; анимированный WebP и неизвестные сжатия BMP и TIFF — «формат не поддерживается». В vendor — bmp, ccitt, internal/safemath, riff, tiff, tiff/lzw, vp8, vp8l, webp (около 8,7 тыс. строк), без unsafe, reflect и сетевого кода; fuzz-тест FuzzDecodeXImage. Требует x/sys v0.49.0 и x/text v0.43.0 — те же версии, что уже в go.mod.'
+    decision: ADR-0032, «Зависимости»; согласие владельца карточкой в потоке задачи 5.35 («Да, обе»)
+    decided: 2026-11-02
+    license_files:
+      LICENSE: 911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad
+
+  - name: PP-OCRv6_det_small
+    version: rapidocr-3.10.0
+    type: ml-model
+    scope: product
+    purpose: Детектор строк текста OCR в изолированном анализаторе aisec-media (задача 5.41, ADR-0033; DM-45, DM-46) — файл models/PP-OCRv6_det_small.onnx выпуска aisec-media, SHA-256 090f04abcd9d9a7498bc4ebf677e4cb9bdce1fe4197ddb7e529f1ef44e1ff94f.
+    license: Apache-2.0
+    repository: https://github.com/RapidAI/RapidOCR
+    attack_surface: true
+    security_function: true
+    provided_by: Baidu (PaddleOCR, веса) → RapidAI (RapidOCR v3.10.0, конвертация в ONNX)
+    justification: 'Выбор — эксперимент 5.40 (ADR-0033): модели — данные без нового кода, исполняет уже согласованная сборка ONNX Runtime 1.31.0. Получает растр недоверенного изображения (attack_surface): модель исполняется только в aisec-media без сети, хеш встроен в бинарник и записан в манифест выпуска и ML-BOM (deploy/build/ocr/mlbom.cdx.json). Источник — колесо rapidocr 3.10.0 на PyPI (SHA-256 колеса — deploy/build/ocr/models.json), файл в репозиторий не кладётся.'
+    decision: ADR-0033, подтверждение владельца 03.11.2026 (карточка в потоке промптов, «Подтвердить»)
+    decided: 2026-11-03
+
+  - name: cyrillic_PP-OCRv5_rec_mobile
+    version: rapidocr-3.10.0
+    type: ml-model
+    scope: product
+    purpose: Распознавание строк OCR (кириллица и латиница) в изолированном анализаторе aisec-media (задача 5.41, ADR-0033; DM-45, DM-46) — файл models/cyrillic_PP-OCRv5_rec_mobile.onnx выпуска aisec-media, SHA-256 90f761b4bfcce0c8c561c0cb5c887b0971d3ec01c32164bdf7374a35b0982711.
+    license: Apache-2.0
+    repository: https://github.com/RapidAI/RapidOCR
+    attack_surface: true
+    security_function: true
+    provided_by: Baidu (PaddleOCR, веса) → RapidAI (RapidOCR v3.10.0, конвертация в ONNX)
+    justification: 'Лучший CER на корпусе 5.40 (RU 4,3 %, EN 0,1 %) и все находки DM-46 (ADR-0033). Таблица символов — в метаданных модели. Исполняется только в aisec-media без сети; хеш встроен в бинарник, записан в манифест выпуска и ML-BOM. Источник — набор RapidOCR v3.10.0 (modelscope.cn, официальный; зеркало на GitHub принимается только при совпадении SHA-256, deploy/build/ocr/models.json), файл в репозиторий не кладётся.'
+    decision: ADR-0033, подтверждение владельца 03.11.2026 (карточка в потоке промптов, «Подтвердить»)
+    decided: 2026-11-03
+
   - name: golangci-lint
     version: v2.14.0
     type: tool
@@ -968,7 +1044,7 @@ components:
     version: v0.43.0
     type: go-module
     scope: product
-    purpose: Кодировки и нормализация текста под pgx (транзитивная).
+    purpose: Кодировки и нормализация текста под pgx (транзитивная); пакеты encoding/* — под декодер QR gozxing в aisec-media (задача 5.43).
     license: BSD-3-Clause
     repository: https://github.com/golang/text
     attack_surface: false

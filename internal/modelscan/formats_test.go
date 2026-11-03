@@ -119,6 +119,9 @@ func TestGGUFBoundaries(t *testing.T) {
 		{"строка сверх предела", goodGGUF(), Limits{MaxGGUFString: 3}, CodeLimitExceeded},
 		{"массив сверх предела", goodGGUF(), Limits{MaxGGUFArray: 2}, CodeLimitExceeded},
 		{"шаблон сверх предела", goodGGUF(), Limits{MaxChatTemplate: 16}, CodeLimitExceeded},
+		// Ревью 5.r2, 5Н13: общий предел байт ключей и имён тензоров.
+		{"ключи сверх общего предела", ggufBytes(3, []ggufKV{{"general.a", ggufUint32, ggufU32(1)}, {"general.b", ggufUint32, ggufU32(2)}}, nil, 1, 0), Limits{MaxGGUFNameBytes: 12}, CodeLimitExceeded},
+		{"имена тензоров сверх общего предела", ggufBytes(3, []ggufKV{{"general.a", ggufUint32, ggufU32(1)}}, []ggufTensorDef{{"tensor.w", []uint64{4}, 0, 0}}, 32, 32), Limits{MaxGGUFNameBytes: 12}, CodeLimitExceeded},
 		{"шаблон не строка", ggufBytes(3, []ggufKV{{"tokenizer.chat_template", ggufUint32, ggufU32(1)}}, nil, 1, 0), Limits{}, CodeMalformed},
 		{"смещение за концом", ggufBytes(3, nil, []ggufTensorDef{{"w", []uint64{4}, 0, 64}}, 32, 16), Limits{}, CodeMalformed},
 		{"данные за концом", ggufBytes(3, nil, tensor, 32, 8), Limits{}, CodeMalformed},
@@ -284,6 +287,38 @@ func TestONNXExternalData(t *testing.T) {
 	}
 }
 
+// ModelProto с графом первым полем (ревью 5.r2, 5Н12): protobuf допускает
+// любой порядок, и внешние данные такой модели проверяются; файл .onnx, не
+// разобранный как модель, — запрет.
+func TestONNXFieldOrder(t *testing.T) {
+	ext := onnxExternalTensor(graphInitializer, [2]string{"location", "/etc/passwd"})
+	graphFirst := pbLen(modelGraph, pbStr(2, "g"), onnxNode("", "Relu"), ext)
+	graphFirst = append(graphFirst, pbVarint(1, 9)...)
+	graphFirst = append(graphFirst, onnxOpset("", 17)...)
+	opsetFirst := append(onnxOpset("", 17), pbLen(modelGraph, pbStr(2, "g"), ext)...)
+	// Длинный doc_string первым: граф дальше просмотра.
+	docFirst := append(pbStr(6, strings.Repeat("d", 5000)), pbStr(2, "x")...)
+	docFirst = append(docFirst, pbLen(modelGraph, pbStr(2, "g"), ext)...)
+	for name, data := range map[string][]byte{"граф первым": graphFirst, "opset первым": opsetFirst, "doc_string первым": docFirst} {
+		fr := scanBytes(t, "model.onnx", data, Limits{})
+		if fr.Format != FormatONNX || !fr.HasFinding(CodeExternalData) || !fr.Blocked() {
+			t.Errorf("%s: %+v", name, fr)
+		}
+	}
+	for name, data := range map[string][]byte{"текст": []byte("not a model\n"), "нули": make([]byte, 64)} {
+		fr := scanBytes(t, "model.onnx", data, Limits{})
+		if !fr.HasFinding(CodeMalformed) || !fr.Blocked() {
+			t.Errorf(".onnx — %s: %+v", name, fr)
+		}
+	}
+	// Текст, который начинается байтом ключа поля модели, — не ONNX.
+	for _, txt := range []string{":root { color: red }\n", "Base model: " + strings.Repeat("llama ", 900), "2024 release notes\n"} {
+		if fr := scanBytes(t, "notes.txt", []byte(txt), Limits{}); fr.Format != FormatText || len(fr.Findings) != 0 {
+			t.Errorf("%q: %+v", txt[:8], fr)
+		}
+	}
+}
+
 func TestONNXBoundaries(t *testing.T) {
 	good := onnxModelBytes([][]byte{onnxNode("", "Relu"), onnxNode("", "Relu")})
 	if fr := scanBytes(t, "m.onnx", good[:len(good)-3], Limits{}); !fr.HasFinding(CodeMalformed) {
@@ -357,6 +392,27 @@ func TestTokenizerConfig(t *testing.T) {
 	}
 }
 
+// Шаблон и конфигурация разбираются по имени при любом начале файла (ревью
+// 5.r2, 5Н11): шаблон с управляющими символами загрузит transformers.
+func TestChatTemplateAnyContent(t *testing.T) {
+	for _, tpl := range []string{"\x0b" + testTemplate, "\x1b[0m" + testTemplate, "BZh1" + testTemplate} {
+		fr := scanBytes(t, nameChatTemplateJinja, []byte(tpl), Limits{})
+		if fr.Format != FormatChatTemplate || len(fr.ChatTemplates) != 1 || fr.ChatTemplates[0].Text != tpl || len(fr.Findings) != 0 {
+			t.Errorf("%q: %+v", tpl[:4], fr)
+		}
+	}
+	if fr := scanBytes(t, nameChatTemplateJinja, []byte("\xff\xfe{{ x }}"), Limits{}); !fr.HasFinding(CodeMalformed) || !fr.Blocked() {
+		t.Errorf("шаблон не UTF-8: %+v", fr)
+	}
+	for _, name := range []string{nameTokenizerConfig, nameChatTemplateJSON} {
+		for _, data := range []string{"\x1b{}", "BZh1", "\x00\x01\x02"} {
+			if fr := scanBytes(t, name, []byte(data), Limits{}); fr.Format != FormatTokenizerConfig || !fr.HasFinding(CodeMalformed) || !fr.Blocked() {
+				t.Errorf("%s %q: %+v", name, data, fr)
+			}
+		}
+	}
+}
+
 func FuzzGGUF(f *testing.F) {
 	f.Add(goodGGUF())
 	f.Add(ggufBytes(2, []ggufKV{{"a", ggufArray, ggufStrArray("x", "y")}}, nil, 1, 0))
@@ -375,6 +431,7 @@ func FuzzGGUF(f *testing.F) {
 func FuzzONNX(f *testing.F) {
 	f.Add(onnxModelBytes([][]byte{onnxNode("", "Relu"), onnxExternalTensor(graphInitializer, [2]string{"location", "a.bin"})}))
 	f.Add(onnxModelBytes([][]byte{onnxNode("x", "If", pbLen(nodeAttribute, pbLen(attrG, onnxNode("", "Relu"))))}))
+	f.Add(append(pbLen(modelGraph, pbStr(2, "g"), onnxNode("", "Relu")), pbVarint(1, 9)...))
 	s := New(Limits{MaxONNXItems: 1024})
 	f.Fuzz(func(t *testing.T, data []byte) {
 		fr := FileReport{}
@@ -384,7 +441,7 @@ func FuzzONNX(f *testing.F) {
 				t.Fatalf("принят путь %q", ext.location)
 			}
 		}
-		_ = isONNX(data)
+		_ = isONNX(data, int64(len(data)))
 	})
 }
 

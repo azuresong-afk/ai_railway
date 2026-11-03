@@ -356,8 +356,19 @@ func TestPGProviderCredential(t *testing.T) {
 	if _, err := e.svc.SetExternal(ctx, e.by, p.ID, false, "Провайдер развёрнут в контуре заказчика"); err != nil {
 		t.Fatal(err)
 	}
+	// Признак «у заказчика» (ADR-0030): сохраняется; ограничение БД не даёт
+	// сочетать его с «внешний».
+	if got, err := e.svc.SetOnPremise(ctx, e.by, p.ID, true, "Оценщик judge.llm"); err != nil || !got.OnPremise {
+		t.Fatalf("признак «у заказчика»: %+v %v", got, err)
+	}
+	if got, err := e.svc.Provider(ctx, p.ID); err != nil || !got.OnPremise || got.External {
+		t.Fatalf("признак не сохранён: %+v %v", got, err)
+	}
+	if _, err := e.owner.Exec(ctx, `UPDATE providers SET external = true WHERE id = $1`, p.ID); err == nil {
+		t.Fatal("БД приняла провайдера и внешнего, и «у заказчика»")
+	}
 	acts := e.actions(t)
-	if acts["provider.credentials_set"] != 1 || acts["provider.external_changed"] != 1 {
+	if acts["provider.credentials_set"] != 1 || acts["provider.external_changed"] != 1 || acts["provider.on_premise_changed"] != 1 {
 		t.Fatalf("аудит: %v", acts)
 	}
 	var details string

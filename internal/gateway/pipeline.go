@@ -306,10 +306,10 @@ func (a *App) inspect(ctx context.Context, req inspectRequest) (*inspection, err
 			return nil, err
 		}
 		for _, f := range fs {
-			if t.Threat != "" {
+			switch {
+			case t.Threat != "":
 				f.Threat = t.Threat
-			}
-			if t.Source == policy.SourceImage {
+			case t.Source == policy.SourceImage:
 				f.Threat = imageThreat(f)
 			}
 			lf := locatedFinding{Finding: f, Text: i}

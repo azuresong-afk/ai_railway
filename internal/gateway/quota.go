@@ -76,7 +76,14 @@ type QuotaRequest struct {
 	// InputBytes — размер текста сообщений; Tokens — оценка расхода токенов
 	// (вход и max_tokens): после ответа уточняется Reservation.Settle.
 	InputBytes, Tokens int
+	// Requests — сколько запросов учитывают квоты частоты (в минуту, на
+	// пользователя и на ключ); 0 — один. Пакет документов RAG учитывается по
+	// числу документов (ревью 5.r2, 5Н16).
+	Requests int
 }
+
+// requests — число запросов для квот частоты, не меньше одного.
+func (r QuotaRequest) requests() int64 { return max(int64(r.Requests), 1) }
 
 // Limiter — счётчики квот всех приложений. Безопасен для одновременного
 // вызова.
@@ -152,6 +159,8 @@ type Reservation struct {
 	// излишка идёт из них, а не из текущих.
 	tpmB, tpdB int64
 	settled    bool
+	// requests — запросов в квотах частоты (QuotaRequest.Requests).
+	requests int64
 	// rpm, tpm, tpd — резервы в аренде у сервера (режим leased): токены
 	// тогда в локальных окнах не учитываются.
 	rpm, tpm, tpd *leaseHold
@@ -196,7 +205,7 @@ func (l *Limiter) AdmitCtx(ctx context.Context, r QuotaRequest) (*Reservation, e
 		rule  string
 		limit int
 		cost  int64
-	}{{QuotaRequestsPerMinute, q.RequestsPerMinute, 1}, {QuotaTPM, q.TokensPerMinute, tokens}, {QuotaTPD, q.TokensPerDay, tokens}} {
+	}{{QuotaRequestsPerMinute, q.RequestsPerMinute, r.requests()}, {QuotaTPM, q.TokensPerMinute, tokens}, {QuotaTPD, q.TokensPerDay, tokens}} {
 		if c.limit > 0 && c.cost > int64(c.limit) {
 			return nil, &Exceeded{Rule: c.rule, Threat: "DM-36"}
 		}
@@ -213,7 +222,7 @@ func (l *Limiter) AdmitCtx(ctx context.Context, r QuotaRequest) (*Reservation, e
 		cost  int64
 		dst   **leaseHold
 	}{
-		{QuotaRequestsPerMinute, q.RequestsPerMinute, 1, &held.rpm},
+		{QuotaRequestsPerMinute, q.RequestsPerMinute, r.requests(), &held.rpm},
 		{QuotaTPM, q.TokensPerMinute, tokens, &held.tpm},
 		{QuotaTPD, q.TokensPerDay, tokens, &held.tpd},
 	} {
@@ -247,6 +256,7 @@ func (l *Limiter) admitLocal(r QuotaRequest, tokens int64, leased *Reservation) 
 	}
 	now := l.now()
 	q := a.q
+	reqs := r.requests()
 	var uw, kw *window
 	if r.User != "" && q.RequestsPerMinutePerUser > 0 {
 		uw = a.users.get(now, r.User, 60)
@@ -265,9 +275,9 @@ func (l *Limiter) admitLocal(r QuotaRequest, tokens int64, leased *Reservation) 
 		// held — квота в аренде: локально не проверяется.
 		held bool
 	}{
-		{QuotaRequestsPerMinute, a.rpm, q.RequestsPerMinute, 1, leased.rpm != nil},
-		{QuotaRequestsPerMinutePerUser, uw, q.RequestsPerMinutePerUser, 1, false},
-		{QuotaRequestsPerMinutePerKey, kw, q.RequestsPerMinutePerKey, 1, false},
+		{QuotaRequestsPerMinute, a.rpm, q.RequestsPerMinute, reqs, leased.rpm != nil},
+		{QuotaRequestsPerMinutePerUser, uw, q.RequestsPerMinutePerUser, reqs, false},
+		{QuotaRequestsPerMinutePerKey, kw, q.RequestsPerMinutePerKey, reqs, false},
 		{QuotaTPM, a.tpm, q.TokensPerMinute, tokens, leased.tpm != nil},
 		{QuotaTPD, a.tpd, q.TokensPerDay, tokens, leased.tpd != nil},
 	} {
@@ -283,13 +293,13 @@ func (l *Limiter) admitLocal(r QuotaRequest, tokens int64, leased *Reservation) 
 		}
 	}
 	if uw != nil {
-		uw.add(now, 1)
+		uw.add(now, reqs)
 	}
 	if kw != nil {
-		kw.add(now, 1)
+		kw.add(now, reqs)
 	}
 	if leased.rpm == nil {
-		a.rpm.add(now, 1)
+		a.rpm.add(now, reqs)
 	}
 	if leased.tpm == nil {
 		a.tpm.add(now, tokens)
@@ -297,7 +307,7 @@ func (l *Limiter) admitLocal(r QuotaRequest, tokens int64, leased *Reservation) 
 	if leased.tpd == nil {
 		a.tpd.add(now, tokens)
 	}
-	leased.l, leased.a, leased.reserved = l, a, tokens
+	leased.l, leased.a, leased.reserved, leased.requests = l, a, tokens, reqs
 	leased.tpmB, leased.tpdB = a.tpm.bucket(now), a.tpd.bucket(now)
 	return leased, nil
 }
@@ -324,7 +334,7 @@ func (rs *Reservation) Settle(actual int) {
 	if rs.leased() {
 		// Запрос учтён в requests_per_minute, даже если до модели не дошёл:
 		// так же, как в режиме local.
-		rs.rpm.Settle(1)
+		rs.rpm.Settle(max(rs.requests, 1))
 		rs.tpm.Settle(int64(actual))
 		rs.tpd.Settle(int64(actual))
 		if rs.tpm != nil && rs.tpd != nil {

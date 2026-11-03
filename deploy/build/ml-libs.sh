@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# Библиотеки выпуска aisec-ml (ADR-0024, раздел 8): копирует в lib/ каталога
-# выпуска загрузчик и системные библиотеки, нужные bin/aisec-ml и
-# lib/libonnxruntime.so.*, из того же сборочного образа, где собраны они сами.
+# Библиотеки выпуска aisec-ml (ADR-0024, раздел 8) и aisec-media с OCR
+# (ADR-0033): копирует в lib/ каталога выпуска загрузчик и системные
+# библиотеки, нужные bin/БИНАРНИК и lib/libonnxruntime.so.*, из того же
+# сборочного образа, где собраны они сами.
 #
-#   ml-libs.sh КАТАЛОГ_ВЫПУСКА
+#   ml-libs.sh КАТАЛОГ_ВЫПУСКА [БИНАРНИК]    (по умолчанию aisec-ml)
 #
-# Вызывает make ml-release-assemble (Dockerfile.ml, цель ml-release). Только
+# Вызывают make ml-release-assemble и make media-release-assemble
+# (Dockerfile.ml, цели ml-release и media-release). Только
 # x86-64. Зависимости собираются замыканием по NEEDED (readelf): в образе нет
 # ни одной библиотеки сверх нужных, и ни одна нужная не берётся из системы
 # хоста — загрузчик aisec-ml и RPATH указывают на /opt/aisec/lib.
@@ -18,14 +20,16 @@ die() {
 	exit 1
 }
 
-[ $# -eq 1 ] || die "использование: ml-libs.sh КАТАЛОГ_ВЫПУСКА"
+[ $# -eq 1 ] || [ $# -eq 2 ] || die "использование: ml-libs.sh КАТАЛОГ_ВЫПУСКА [БИНАРНИК]"
 rel=$1
+bin=${2:-aisec-ml}
+case $bin in aisec-ml | aisec-media) ;; *) die "бинарник — aisec-ml или aisec-media" ;; esac
 lib=$rel/lib
 loader=ld-linux-x86-64.so.2
-[ -x "$rel/bin/aisec-ml" ] || die "нет $rel/bin/aisec-ml"
+[ -x "$rel/bin/$bin" ] || die "нет $rel/bin/$bin"
 
-interp=$(readelf -l "$rel/bin/aisec-ml" | sed -n 's/.*Requesting program interpreter: \(.*\)\]$/\1/p')
-[ "$interp" = "/opt/aisec/lib/$loader" ] || die "загрузчик aisec-ml: «$interp», ожидается /opt/aisec/lib/$loader"
+interp=$(readelf -l "$rel/bin/$bin" | sed -n 's/.*Requesting program interpreter: \(.*\)\]$/\1/p')
+[ "$interp" = "/opt/aisec/lib/$loader" ] || die "загрузчик $bin: «$interp», ожидается /opt/aisec/lib/$loader"
 
 # copy ИМЯ — системная библиотека из путей компилятора образа.
 copy() {
@@ -37,7 +41,7 @@ copy() {
 	queue+=("$lib/$1")
 }
 
-queue=("$rel/bin/aisec-ml")
+queue=("$rel/bin/$bin")
 for f in "$lib"/libonnxruntime.so.*; do
 	[ -f "$f" ] || die "нет библиотеки ONNX Runtime в $lib"
 	queue+=("$f")
@@ -51,5 +55,5 @@ while [ ${#queue[@]} -gt 0 ]; do
 		[ -e "$lib/$n" ] || copy "$n"
 	done
 done
-echo "Библиотеки aisec-ml:"
+echo "Библиотеки $bin:"
 (cd "$lib" && sha256sum -- *)

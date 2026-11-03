@@ -131,6 +131,10 @@ type Provider struct {
 	StreamIdleTimeout int        `json:"stream_idle_timeout"`
 	External          bool       `json:"external"`
 	CredentialSetAt   *time.Time `json:"credential_set_at,omitempty"`
+	// OnPremise — провайдер размещён у заказчика: может быть оценщиком
+	// judge.llm (задача 5.28 этапа 5, ADR-0030, раздел 1). Ложь не
+	// выводится: без признака байты пакета прежние.
+	OnPremise bool `json:"on_premise,omitempty"`
 }
 
 // Application — действующее приложение (ТЗ 5.4).
@@ -252,6 +256,9 @@ func (c *Content) Validate() error {
 		}
 		if p.CAPEM == "" || len(p.CAPEM) > MaxCAPEM {
 			add("%s: ca_pem — от 1 байта до %d байт", at, MaxCAPEM)
+		}
+		if p.OnPremise && (p.External || p.Type != config.ProviderOpenAI) {
+			add("%s: on_premise — только у невнешнего провайдера типа openai", at)
 		}
 	}
 	if len(c.BlockedModels) > MaxBlockedModels {

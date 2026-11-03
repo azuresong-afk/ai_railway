@@ -26,6 +26,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/notify"
 	"github.com/azuresong-afk/ai_railway/internal/policy"
 	"github.com/azuresong-afk/ai_railway/internal/policy/versions"
+	"github.com/azuresong-afk/ai_railway/internal/rag"
 	"github.com/azuresong-afk/ai_railway/internal/servicedb"
 	"github.com/azuresong-afk/ai_railway/internal/servicedb/kinds"
 )
@@ -212,6 +213,12 @@ func checkSnapshot(p aisecCrypto.Provider, arch *backup.Archive, keepTokens, set
 		if err := inventory.CheckStoredModel(inventory.StoredModel{Kind: m.Kind, Provider: m.Provider, Name: m.Name, Version: m.Version,
 			Title: m.Title, Description: m.Description, Owner: m.Owner, Origin: m.Origin, Status: m.Status, Files: files}); err != nil {
 			add("модель реестра ИИ "+m.ID, err)
+		}
+	}
+	// Исключения документов RAG — той же проверкой, что API (5Н15 ревью 5.r2 этапа 5).
+	for _, e := range s.RAGExclusions {
+		if err := rag.CheckExclusion(e.Collection, e.DocumentID, e.Reason, e.CreatedBy); err != nil {
+			add("исключение документа RAG "+e.ID, err)
 		}
 	}
 	// Ошибки CheckApplications уже называют приложение.

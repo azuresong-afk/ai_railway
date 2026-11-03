@@ -9,6 +9,7 @@ import (
 
 	"github.com/azuresong-afk/ai_railway/internal/config"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
+	"github.com/azuresong-afk/ai_railway/internal/detect/judge"
 	"github.com/azuresong-afk/ai_railway/internal/gateway"
 	"github.com/azuresong-afk/ai_railway/internal/policy/bundle"
 	"github.com/azuresong-afk/ai_railway/internal/providers"
@@ -113,12 +114,20 @@ func loadTrustChain(p aisecCrypto.Provider, verifiers []aisecCrypto.Verifier, st
 func buildFromBundle(b *bundle.Bundle, tp aisecCrypto.TLSProvider, rnd aisecCrypto.Random, hb *handlerBuilder,
 	logger *slog.Logger) (http.Handler, error) {
 	provs := map[string]providers.Provider{}
+	judges := map[string]judge.Client{}
 	for i, pc := range b.Content.GatewayProviders() {
 		prov, err := newProvider(pc, []byte(b.Content.Providers[i].CAPEM), b.Secrets[pc.ID], tp, rnd, logger)
 		if err != nil {
 			return nil, err
 		}
 		provs[pc.ID] = prov
+		// Оценщик judge.llm (задача 5.28, ADR-0030) — отдельный адаптер того же
+		// провайдера с транспортом только к частной сети.
+		if b.Content.Providers[i].OnPremise {
+			if judges[pc.ID], err = newJudgeClient(pc, []byte(b.Content.Providers[i].CAPEM), b.Secrets[pc.ID], tp, logger); err != nil {
+				return nil, err
+			}
+		}
 	}
 	specs, err := b.Content.Specs()
 	if err != nil {
@@ -135,7 +144,7 @@ func buildFromBundle(b *bundle.Bundle, tp aisecCrypto.TLSProvider, rnd aisecCryp
 		return nil, err
 	}
 	return hb.build(b.Content.GatewayApplications(), provs, specs, recs, b.Content.UnavailableIDs(), b.Content.Budgets,
-		b.Content.PromptBaselines, gateway.NewAgents(b.Content), userTokensOf(b.Content), mcpServers)
+		b.Content.PromptBaselines, gateway.NewAgents(b.Content), userTokensOf(b.Content), mcpServers, judges)
 }
 
 // userTokens — ключи издателей и проверка JWT пользователей приложений из

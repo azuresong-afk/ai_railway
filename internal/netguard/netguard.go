@@ -60,3 +60,41 @@ func CheckHost(host string, allowed []netip.Prefix) error {
 	}
 	return nil
 }
+
+// privateNets — частные сети (RFC 1918, RFC 4193): только в них может
+// стоять оценщик judge.llm (ADR-0030, раздел 1). CGNAT (100.64.0.0/10) не
+// входит: это адреса оператора, а не контура заказчика.
+var privateNets = []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8"), netip.MustParsePrefix("172.16.0.0/12"),
+	netip.MustParsePrefix("192.168.0.0/16"), netip.MustParsePrefix("fc00::/7")}
+
+// Private — адрес в частной сети и не запрещён (Blocked): fd00:ec2::254
+// лежит в fc00::/7, но это служба метаданных.
+func Private(ip netip.Addr) bool {
+	ip = ip.Unmap()
+	if Blocked(ip) {
+		return false
+	}
+	for _, p := range privateNets {
+		if p.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// ErrNotPrivateHost — узел не в частной сети.
+var ErrNotPrivateHost = errors.New("адрес вне частной сети: оценщик должен быть в контуре заказчика (10/8, 172.16/12, 192.168/16, fc00::/7)")
+
+// CheckPrivateHost — проверка узла оценщика при сохранении: localhost
+// запрещён, литерал адреса — только частный. Имя разрешается при каждом
+// соединении, тогда частным должен быть каждый полученный адрес.
+func CheckPrivateHost(host string) error {
+	h := strings.ToLower(strings.TrimSuffix(host, "."))
+	if h == "" || h == "localhost" || strings.HasSuffix(h, ".localhost") {
+		return ErrBlockedHost
+	}
+	if ip, err := netip.ParseAddr(strings.Trim(h, "[]")); err == nil && !Private(ip.WithZone("")) {
+		return ErrNotPrivateHost
+	}
+	return nil
+}

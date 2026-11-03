@@ -238,19 +238,20 @@ func (h *ChatHandler) analyzeOne(ctx context.Context, o *mediaOutcome) {
 }
 
 // applyReply переносит итог анализатора в итог изображения. Проверенным
-// считается только изображение с ocr в checks (ADR-0032, раздел 8).
+// считается только изображение с ocr в checks (ADR-0032, раздел 8); текст
+// метаданных и QR (задача 5.43) проверяется детекторами и без OCR.
 func applyReply(o *mediaOutcome, reply *MediaReply) {
 	r := reply.Result
 	o.check.Format, o.check.Width, o.check.Height, o.check.Frames, o.check.Cached = string(r.Format), r.Width, r.Height, r.Frames, r.Cached
 	switch r.Status {
 	case wire.StatusOK:
+		o.texts = reply.Texts
+		o.check.Texts = len(reply.Texts)
 		if !slices.Contains(r.Checks, wire.CheckOCR) {
 			o.check.Reason = events.MediaReasonNoOCR
 			return
 		}
 		o.check.Checked = true
-		o.texts = reply.Texts
-		o.check.Texts = len(reply.Texts)
 	case wire.StatusUnsupported:
 		o.check.Reason = events.MediaReasonUnsupported
 	default:
@@ -326,6 +327,13 @@ func (r mediaResult) checks() []events.MediaCheck {
 	return out
 }
 
+// analyzerFailed — изображение не проверено из-за сбоя анализатора
+// (unavailable, overloaded, timeout, error), а не свойства изображения:
+// признак media_unavailable события (DM-50, задача 5.44).
+func (r mediaResult) analyzerFailed() bool {
+	return slices.ContainsFunc(r.out, func(o mediaOutcome) bool { return o.failure })
+}
+
 // unchecked — есть непроверенное изображение.
 func (r mediaResult) unchecked() bool {
 	return slices.ContainsFunc(r.out, func(o mediaOutcome) bool { return !o.check.Checked })
@@ -357,20 +365,23 @@ func (r mediaResult) failures() []events.DetectorFailure {
 	return out
 }
 
-// texts — тексты проверенных изображений для детекторов: источник image,
-// место — место изображения, рамка — у находки в событии.
+// texts — тексты изображений для детекторов: источник image, место —
+// место изображения, рамка — у находки в событии. Тексты есть только у
+// разобранных изображений (ok), в том числе без OCR: метаданные и QR.
+// Находки в метаданных и QR — строка DM-47 (ТЗ 5.16).
 func (r mediaResult) texts() []inspectText {
 	var out []inspectText
 	for _, o := range r.out {
-		if !o.check.Checked {
-			continue
-		}
 		for _, t := range o.texts {
 			if t.Text == "" {
 				continue
 			}
-			out = append(out, inspectText{Text: t.Text, Source: policy.SourceImage, Location: o.img.Location,
-				Message: o.img.Message, Box: t.Box})
+			it := inspectText{Text: t.Text, Source: policy.SourceImage, Location: o.img.Location,
+				Message: o.img.Message, Box: t.Box}
+			if t.Origin == string(wire.SourceMetadata) || t.Origin == string(wire.SourceQR) {
+				it.Threat = "DM-47"
+			}
+			out = append(out, it)
 		}
 	}
 	return out

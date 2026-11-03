@@ -253,16 +253,18 @@ func (c *CheckBatchHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	for _, d := range req.Documents {
 		size = max(size, len(d.Text))
 	}
-	// Квоты — на пакет целиком: частота — один запрос (индексатор шлёт
-	// пакеты вместо сотен вызовов), предел размера входа — к каждому тексту,
-	// как у Check API (сумма текстов пакета упиралась бы в предел одного
-	// запроса). Событие отказа — одно, с source rag.
+	// Квоты — на пакет целиком и до проверки: частота — по числу документов
+	// (ревью 5.r2, 5Н16: иначе пакет давал бы в 100 раз больше проверок, чем
+	// позволяет квота), предел размера входа — к каждому тексту, как у Check
+	// API (сумма текстов пакета упиралась бы в предел одного запроса).
+	// Событие отказа — одно, с source rag.
 	brec, err := c.docRecord(app, user, start)
 	if err != nil {
 		h.logger.Error("идентификатор события", "error", err)
 		WriteError(w, http.StatusInternalServerError, "внутренняя ошибка шлюза", "server_error", "internal_error")
 		return
 	}
+	brec.quotaRequests = len(req.Documents)
 	if !h.admitSize(w, r, brec, user, size, 0) {
 		h.emit(brec)
 		return

@@ -68,8 +68,14 @@ func (Detector) Detect(ctx context.Context, t detect.Text) ([]detect.Finding, er
 	if err := hiddenRuns(ctx, text, rtl, add); err != nil {
 		return nil, err
 	}
-	if err := homoglyphs(ctx, text, add); err != nil {
-		return nil, err
+	// Текст изображения (OCR, метаданные, QR) гомоглифами не проверяется:
+	// модель распознавания сама смешивает похожие буквы алфавитов («ИНН» —
+	// «ИHH»), и находка была бы ложной (ADR-0033, п. 3). Невидимые символы
+	// в метаданных и QR проверяются по-прежнему.
+	if t.Source != detect.SourceImage {
+		if err := homoglyphs(ctx, text, add); err != nil {
+			return nil, err
+		}
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Start < out[j].Start })
 	return out, nil
