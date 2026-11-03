@@ -81,8 +81,8 @@ func TestTestKeyMarksEvent(t *testing.T) {
 		if id.Test != tc.test {
 			t.Fatalf("личность ключа: %+v", id)
 		}
-		r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-		r = r.WithContext(context.WithValue(r.Context(), identityKey{}, id))
+		r := httptest.NewRequestWithContext(context.WithValue(context.Background(), identityKey{}, id), http.MethodPost,
+			"/v1/chat/completions", nil)
 		w := httptest.NewRecorder()
 		rec, ok := ch.newEventRecord(w, r, app, "gateway_request", "m", false, "", time.Now())
 		if !ok || rec.ev.Test != tc.test || w.Header().Get(HeaderEventID) != rec.ev.ID {
