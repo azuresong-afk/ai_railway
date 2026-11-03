@@ -172,6 +172,9 @@
 | `FuzzTokenizerConfig` | `internal/modelscan` | `tokenizer_config.json` и `chat_template.json`: без паники | 5.20 |
 | `FuzzParseReport` | `internal/inventory` | Отчёт `aisec-cli models scan`/`verify` (`POST …/scan-reports`, ADR-0029, дополнение 1): без паники; принятый отчёт — вид `scan` или `verify`, имя узла и версия по правилам, файлов, находок и шаблонов в пределах, пути по правилам ручной записи, в `verify` — без форматов и находок | 5.21 |
 | `FuzzParseTemplateBase` | `internal/inventory` | Содержимое базы эталонов шаблонов чата (`aisec-chat-templates-v1`): без паники; принятая база — версия от 1, семейства и эталоны в пределах, хеш каждого текста совпадает с указанным | 5.21 |
+| `FuzzParseScenarios` | `internal/redteam` | Содержимое базы сценариев атак (`aisec-redteam-scenarios-v1`, ADR-0031, раздел 5): без паники; принятая база — версия от 1, от 1 до 5000 сценариев без повторов ID, от 1 до 8 шагов у каждого | 5.32 |
+| `FuzzTargetInput` | `internal/redteam` | Цель тестирования устойчивости из тела API (`POST`/`PUT /api/v1/redteam/targets`): без паники; у принятой цели `endpoint` шаблон тела подставляется | 5.32 |
+| `FuzzExtractPath` | `internal/redteam` | Ответ цели `endpoint` (недоверенный JSON до 1 МиБ) и путь к тексту ответа: без паники | 5.32 |
 | `FuzzParse` | `internal/cyclonedx` | Документ CycloneDX JSON с пределом размера (общий кодировщик SBOM и AI-BOM, задача 5.18): без паники | 5.18 |
 
 ## Кампании и результаты
