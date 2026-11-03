@@ -70,7 +70,7 @@ func TestServicedbInspect(t *testing.T) {
 }
 
 // Покрывает: DM-05
-// База сценариев с записью \u{…} (дополнение 1 к ADR-0031): inspect принимает
+// База сценариев с записью \u{…} (дополнение 2 к ADR-0031): inspect принимает
 // её и не выводит символов форматирования — показывается запись, а не
 // раскрытые невидимые символы.
 func TestServicedbInspectScenariosEscapes(t *testing.T) {

@@ -298,7 +298,7 @@ func TestFindingsAreReachable(t *testing.T) {
 
 // Сырые невидимые и форматирующие символы в исходнике не допускаются: отравление базы должно быть видно при ревью,
 // а разборщик (redteam.ParseScenarios) их отвергает. Символы Cf пишутся только видимой записью \u{XXXX}
-// (дополнение 1 к ADR-0031).
+// (дополнение 2 к ADR-0031).
 func TestNoFormatCharacters(t *testing.T) {
 	db, raw := load(t)
 	for i, r := range string(raw) {
