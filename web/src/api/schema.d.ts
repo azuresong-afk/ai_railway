@@ -12318,7 +12318,7 @@ export interface paths {
          * @description Право `redteam.read`. Запуск и итоги сценариев: вердикт, шаг, сработавшие условия успеха, находки детекторов
          *     (без позиций и текста), итог оценщика, ID событий шлюза (цель `gateway`), код HTTP, задержка, код ошибки.
          *     Промптов и ответов нет; выдержка ответа цели `endpoint` в режиме `masked` здесь не выдаётся — её показывает
-         *     отчёт о тестировании (задача 5.33) с правом `events.content.read` (ADR-0031, раздел 7).
+         *     отчёт о запуске (`/runs/{id}/report`, задача 5.33) с правом `events.content.read` (ADR-0031, раздел 7).
          */
         get: {
             parameters: {
@@ -12403,6 +12403,291 @@ export interface paths {
             };
         };
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/redteam/runs/{id}/report": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Отчёт о запуске тестирования устойчивости
+         * @description Право `redteam.export` (администратор безопасности; доступно токену API — отчёт для CI). Отчёт строится в
+         *     общей модели отчётов (`internal/reports`): итоги по вердиктам, покрытие строк матрицы обнаружения, атаки,
+         *     которые удались, и все сценарии. `format`: `html` (по умолчанию), `csv` (UTF-8 с BOM, защита от формул,
+         *     `delimiter`), `xlsx`. Промптов атак в отчёте нет. `examples=true` добавляет выдержки ответов цели `endpoint`
+         *     в режиме `masked` для удавшихся атак (ПДн и секреты заменены категорией, до 1 КиБ) и требует права
+         *     `events.content.read` (только человек в сессии; токену его выдать нельзя) — без права 403; у цели в режиме
+         *     `none` и у цели `gateway` выдержек нет (пример цели `gateway` — событие шлюза по `event_ids`). Каждая
+         *     выгрузка пишет `data.export` (вид `redteam`, признак `examples`) до выдачи данных; без записи отчёт не
+         *     выдаётся (503). Одновременно — одна выгрузка на пользователя, сверх предела 429.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    format?: "html" | "csv" | "xlsx";
+                    /** @description Разделитель полей CSV; только с `format=csv`, по умолчанию `semicolon` («;») */
+                    delimiter?: "semicolon" | "comma";
+                    /** @description Включить выдержки ответов (нужно право `events.content.read`) */
+                    examples?: boolean;
+                };
+                header?: never;
+                path: {
+                    /** @description ID запуска тестирования устойчивости */
+                    id: components["parameters"]["RedTeamRunID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Отчёт; `X-Export-Rows` — число строк данных */
+                200: {
+                    headers: {
+                        "X-Export-Rows"?: number;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/html": string;
+                        "text/csv": string;
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": string;
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/redteam/schedules": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Расписания запусков тестирования устойчивости
+         * @description Право `redteam.read`. Расписания по названию (не больше 20) с ближайшим сроком и итогом последней попытки.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Расписания */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["RedTeamScheduleList"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        /**
+         * Создать расписание запусков тестирования устойчивости
+         * @description Право безопасности `redteam.schedules.manage` (администратор безопасности), только сессия консоли: по
+         *     расписанию продукт сам отправляет атаки на цель. Периодичность: `daily`, `weekly` (с `weekday`, 1 —
+         *     понедельник … 7), `monthly` (с `day`, 1–28); чаще раза в сутки не бывает; время `at` — ЧЧ:ММ в часовом поясе
+         *     установки. `threats` и `lang` — отбор сценариев (как в запуске), пусто — все. Цель с секретным заголовком
+         *     (`auth_header`) по расписанию не запускается — 400: значение заголовка в продукте не хранится, такую цель
+         *     запускает CI. Не больше 20 расписаний (422). Пишет `redteam.schedule_created`. Запуск по расписанию —
+         *     от имени расписания (`redteam.run_started`); срок, опоздавший больше чем на час (сервер был выключен),
+         *     пропускается, занятая цель — повтор каждые 5 минут до часа; несостоявшийся запуск пишет
+         *     `redteam.schedule_skipped`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["RedTeamScheduleInput"];
+                };
+            };
+            responses: {
+                /** @description Расписание создано */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["RedTeamSchedule"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/redteam/schedules/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Расписание запусков тестирования устойчивости
+         * @description Право `redteam.read`.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description ID расписания запусков тестирования устойчивости */
+                    id: components["parameters"]["RedTeamScheduleID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Расписание */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["RedTeamSchedule"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        /**
+         * Изменить расписание запусков тестирования устойчивости
+         * @description Право безопасности `redteam.schedules.manage`, только сессия консоли. Тело — расписание целиком с `version`,
+         *     которую видел администратор (чужая — 409); ближайший срок пересчитывается от текущего момента. Пишет
+         *     `redteam.schedule_updated` с параметрами до и после.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID расписания запусков тестирования устойчивости */
+                    id: components["parameters"]["RedTeamScheduleID"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["RedTeamScheduleInput"];
+                };
+            };
+            responses: {
+                /** @description Расписание изменено */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["RedTeamSchedule"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        post?: never;
+        /**
+         * Удалить расписание запусков тестирования устойчивости
+         * @description Право безопасности `redteam.schedules.manage`, только сессия консоли. Уже начатый запуск продолжается.
+         *     Пишет `redteam.schedule_deleted`.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID расписания запусков тестирования устойчивости */
+                    id: components["parameters"]["RedTeamScheduleID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Расписание удалено */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
         options?: never;
         head?: never;
         patch?: never;
@@ -15860,6 +16145,66 @@ export interface components {
         RedTeamRunCard: components["schemas"]["RedTeamRun"] & {
             results: components["schemas"]["RedTeamResult"][];
         };
+        RedTeamScheduleInput: {
+            name: string;
+            /** Format: uuid */
+            target_id: string;
+            /** @enum {string} */
+            frequency: "daily" | "weekly" | "monthly";
+            /** @description Только weekly: 1 — понедельник … 7 — воскресенье */
+            weekday?: number;
+            /** @description Только monthly */
+            day?: number;
+            /** @description Время в часовом поясе установки */
+            at: string;
+            /** @description Строки матрицы; пусто — все */
+            threats?: string[];
+            /** @enum {string} */
+            lang?: "ru" | "en";
+            /** @default true */
+            enabled: boolean;
+            /** @description Для изменения: версия, которую видел администратор */
+            version?: number;
+        };
+        RedTeamSchedule: {
+            /** Format: uuid */
+            id: string;
+            name: string;
+            /** Format: uuid */
+            target_id: string;
+            /** @enum {string} */
+            frequency: "daily" | "weekly" | "monthly";
+            weekday?: number;
+            day?: number;
+            at: string;
+            threats: string[];
+            /** @enum {string} */
+            lang?: "ru" | "en";
+            enabled: boolean;
+            /** Format: date-time */
+            next_run_at: string;
+            /**
+             * Format: date-time
+             * @description Плановое время последней попытки
+             */
+            last_run_at?: string;
+            /** Format: uuid */
+            last_run_id?: string;
+            /** @enum {string} */
+            last_status?: "started" | "busy" | "missed" | "no_scenarios" | "gateway_not_configured" | "needs_secret" | "target_invalid" | "error";
+            last_status_text?: string;
+            retries: number;
+            version: number;
+            /** Format: date-time */
+            created_at: string;
+            created_by: string;
+            /** Format: date-time */
+            updated_at: string;
+            updated_by: string;
+        };
+        RedTeamScheduleList: {
+            items: components["schemas"]["RedTeamSchedule"][];
+        };
         RedTeamRunList: {
             items: components["schemas"]["RedTeamRun"][];
         };
@@ -17121,6 +17466,8 @@ export interface components {
         RedTeamTargetID: string;
         /** @description ID запуска тестирования устойчивости */
         RedTeamRunID: string;
+        /** @description ID расписания запусков тестирования устойчивости */
+        RedTeamScheduleID: string;
         /** @description ID исключения документа */
         RAGExclusionID: string;
         /** @description ID модели в реестре ИИ */

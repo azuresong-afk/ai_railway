@@ -3,7 +3,9 @@ package redteam
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -292,5 +294,59 @@ func TestPGRedTeamKeysInterruptPurge(t *testing.T) {
 	bad.ID, bad.Status = "01900000-0000-7000-8000-0000000000e4", "paused"
 	if err := pg.st.CreateRun(ctx, bad, admin.entry(ActionRunStarted, objectRun, bad.ID, map[string]any{})); err == nil {
 		t.Fatal("неизвестное состояние запуска принято")
+	}
+}
+
+// Расписания на живой БД (задача 5.33, миграция 0076): создание с аудитом в
+// одной транзакции, предел числа, версия при изменении, занятие срока
+// (повторное — отказ), итог попытки, удаление вместе с целью.
+func TestPGRedTeamSchedules(t *testing.T) {
+	pg := setupPG(t)
+	clk := &testClock{t: time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)}
+	e := newEnv(t, func(o *Options) { o.Store = pg.st; o.Clock = clk.Now })
+	tg := e.target(nil)
+	ctx := context.Background()
+	sc, err := e.s.CreateSchedule(ctx, admin, daily(tg.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pg.audits(t, ActionScheduleCreated) != 1 {
+		t.Fatal("нет записи аудита создания")
+	}
+	got, err := e.s.Schedule(ctx, sc.ID)
+	if err != nil || !got.NextRunAt.Equal(sc.NextRunAt) || !slices.Equal(got.Threats, []string{"DM-01"}) || got.Version != 1 {
+		t.Fatalf("чтение: %+v %v", got, err)
+	}
+	in := daily(tg.ID)
+	in.Version = 9
+	if _, err := e.s.UpdateSchedule(ctx, admin, sc.ID, in); !errors.Is(err, ErrVersionConflict) {
+		t.Fatalf("чужая версия: %v", err)
+	}
+	// Срок: занять можно один раз.
+	ok, err := pg.st.ClaimSchedule(ctx, audit.DefaultOrgID, sc.ID, sc.NextRunAt, sc.NextRunAt.AddDate(0, 0, 1))
+	if err != nil || !ok {
+		t.Fatalf("занятие срока: %v %v", ok, err)
+	}
+	if ok, _ := pg.st.ClaimSchedule(ctx, audit.DefaultOrgID, sc.ID, sc.NextRunAt, sc.NextRunAt.AddDate(0, 0, 2)); ok {
+		t.Fatal("срок занят дважды")
+	}
+	// Полный круг: срок наступил, запуск начат, итог и запуск записаны.
+	clk.Set(sc.NextRunAt.AddDate(0, 0, 1).Add(time.Minute))
+	if err := e.s.TickSchedules(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = e.s.Schedule(ctx, sc.ID)
+	if got.LastStatus != ScheduleStarted || got.LastRunID == "" {
+		t.Fatalf("итог попытки: %+v", got)
+	}
+	e.wait(got.LastRunID)
+	if err := e.s.DeleteTarget(ctx, admin, tg.ID); err != nil {
+		t.Fatal(err)
+	}
+	if n := pg.count(t, "SELECT count(*) FROM redteam_schedules"); n != 0 {
+		t.Fatalf("расписания удалённой цели: %d", n)
+	}
+	if n := pg.count(t, "SELECT count(*) FROM redteam_runs WHERE id = $1", got.LastRunID); n != 1 {
+		t.Fatal("запуск пропал вместе с целью")
 	}
 }

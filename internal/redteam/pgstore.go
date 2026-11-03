@@ -480,3 +480,209 @@ func (s *PGStore) Purge(ctx context.Context, orgID string, results, runs time.Ti
 		return nil
 	})
 }
+
+const scheduleCols = `id::text, org_id::text, name, target_id::text, frequency, weekday, day, at_time, threats, lang, enabled, next_run_at,
+	last_run_at, COALESCE(last_run_id::text, ''), last_status, retries, version, created_at, created_by, updated_at, updated_by`
+
+func scanSchedule(row pgx.Row) (Schedule, error) {
+	var sc Schedule
+	var threats []byte
+	if err := row.Scan(&sc.ID, &sc.OrgID, &sc.Name, &sc.TargetID, &sc.Frequency, &sc.Weekday, &sc.Day, &sc.At, &threats, &sc.Lang, &sc.Enabled,
+		&sc.NextRunAt, &sc.LastRunAt, &sc.LastRunID, &sc.LastStatus, &sc.Retries, &sc.Version, &sc.CreatedAt, &sc.CreatedBy,
+		&sc.UpdatedAt, &sc.UpdatedBy); err != nil {
+		return Schedule{}, err
+	}
+	if err := json.Unmarshal(threats, &sc.Threats); err != nil {
+		return Schedule{}, fmt.Errorf("строки матрицы расписания: %w", err)
+	}
+	if sc.Threats == nil {
+		sc.Threats = []string{}
+	}
+	sc.NextRunAt, sc.CreatedAt, sc.UpdatedAt = sc.NextRunAt.UTC(), sc.CreatedAt.UTC(), sc.UpdatedAt.UTC()
+	if sc.LastRunAt != nil {
+		t := sc.LastRunAt.UTC()
+		sc.LastRunAt = &t
+	}
+	return sc, nil
+}
+
+// Schedules — расписания по названию.
+func (s *PGStore) Schedules(ctx context.Context, orgID string) ([]Schedule, error) {
+	ctx, cancel := pgCtx(ctx)
+	defer cancel()
+	rows, err := s.db.Query(ctx, `SELECT `+scheduleCols+` FROM redteam_schedules WHERE org_id = $1 ORDER BY name, id`, orgID)
+	if err != nil {
+		return nil, dbErr("расписания", err)
+	}
+	defer rows.Close()
+	out := []Schedule{}
+	for rows.Next() {
+		sc, err := scanSchedule(rows)
+		if err != nil {
+			return nil, dbErr("расписания", err)
+		}
+		out = append(out, sc)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, dbErr("расписания", err)
+	}
+	return out, nil
+}
+
+// Schedule — расписание по ID.
+func (s *PGStore) Schedule(ctx context.Context, orgID, id string) (Schedule, error) {
+	ctx, cancel := pgCtx(ctx)
+	defer cancel()
+	sc, err := scanSchedule(s.db.QueryRow(ctx, `SELECT `+scheduleCols+` FROM redteam_schedules WHERE org_id = $1 AND id = $2`, orgID, id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Schedule{}, ErrNotFound
+	}
+	if err != nil {
+		return Schedule{}, dbErr("расписание", err)
+	}
+	return sc, nil
+}
+
+func threatsJSON(t []string) ([]byte, error) {
+	if t == nil {
+		t = []string{}
+	}
+	return json.Marshal(t)
+}
+
+// CreateSchedule добавляет расписание.
+func (s *PGStore) CreateSchedule(ctx context.Context, sc Schedule, rec audit.Entry) error {
+	threats, err := threatsJSON(sc.Threats)
+	if err != nil {
+		return err
+	}
+	return s.inTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		if err := lockOrg(ctx, tx, sc.OrgID); err != nil {
+			return dbErr("блокировка", err)
+		}
+		var n int
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM redteam_schedules WHERE org_id = $1`, sc.OrgID).Scan(&n); err != nil {
+			return dbErr("число расписаний", err)
+		}
+		if n >= MaxSchedules {
+			return ErrTooManySchedules
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO redteam_schedules (id, org_id, name, target_id, frequency, weekday, day, at_time, threats, lang,
+			enabled, next_run_at, last_status, retries, version, created_at, created_by, updated_at, updated_by)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, '', 0, 1, $13, $14, $15, $16)`,
+			sc.ID, sc.OrgID, sc.Name, sc.TargetID, sc.Frequency, sc.Weekday, sc.Day, sc.At, threats, sc.Lang, sc.Enabled, sc.NextRunAt,
+			sc.CreatedAt, sc.CreatedBy, sc.UpdatedAt, sc.UpdatedBy); err != nil {
+			return dbErr("расписание", err)
+		}
+		return nil
+	}, rec)
+}
+
+// UpdateSchedule заменяет расписание, если версия не изменилась.
+func (s *PGStore) UpdateSchedule(ctx context.Context, sc Schedule, version int, rec audit.Entry) error {
+	threats, err := threatsJSON(sc.Threats)
+	if err != nil {
+		return err
+	}
+	return s.inTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `UPDATE redteam_schedules SET name = $4, target_id = $5, frequency = $6, weekday = $7, day = $8, at_time = $9,
+			threats = $10, lang = $11, enabled = $12, next_run_at = $13, retries = 0, version = version + 1, updated_at = $14, updated_by = $15
+			WHERE org_id = $1 AND id = $2 AND version = $3`,
+			sc.OrgID, sc.ID, version, sc.Name, sc.TargetID, sc.Frequency, sc.Weekday, sc.Day, sc.At, threats, sc.Lang, sc.Enabled,
+			sc.NextRunAt, sc.UpdatedAt, sc.UpdatedBy)
+		if err != nil {
+			return dbErr("расписание", err)
+		}
+		if tag.RowsAffected() == 0 {
+			var one int
+			err := tx.QueryRow(ctx, `SELECT 1 FROM redteam_schedules WHERE org_id = $1 AND id = $2`, sc.OrgID, sc.ID).Scan(&one)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return ErrNotFound
+			}
+			if err != nil {
+				return dbErr("расписание", err)
+			}
+			return ErrVersionConflict
+		}
+		return nil
+	}, rec)
+}
+
+// DeleteSchedule удаляет расписание.
+func (s *PGStore) DeleteSchedule(ctx context.Context, orgID, id string, rec audit.Entry) error {
+	return s.inTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `DELETE FROM redteam_schedules WHERE org_id = $1 AND id = $2`, orgID, id)
+		if err != nil {
+			return dbErr("расписание", err)
+		}
+		if tag.RowsAffected() == 0 {
+			return ErrNotFound
+		}
+		return nil
+	}, rec)
+}
+
+// DueSchedules — включённые расписания со сроком не позже now.
+func (s *PGStore) DueSchedules(ctx context.Context, orgID string, now time.Time, limit int) ([]Schedule, error) {
+	ctx, cancel := pgCtx(ctx)
+	defer cancel()
+	rows, err := s.db.Query(ctx, `SELECT `+scheduleCols+` FROM redteam_schedules WHERE org_id = $1 AND enabled AND next_run_at <= $2
+		ORDER BY next_run_at, id LIMIT $3`, orgID, now, limit)
+	if err != nil {
+		return nil, dbErr("расписания со сроком", err)
+	}
+	defer rows.Close()
+	var out []Schedule
+	for rows.Next() {
+		sc, err := scanSchedule(rows)
+		if err != nil {
+			return nil, dbErr("расписания со сроком", err)
+		}
+		out = append(out, sc)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, dbErr("расписания со сроком", err)
+	}
+	return out, nil
+}
+
+// ClaimSchedule занимает срок расписания.
+func (s *PGStore) ClaimSchedule(ctx context.Context, orgID, id string, expected, next time.Time) (bool, error) {
+	ctx, cancel := pgCtx(ctx)
+	defer cancel()
+	tag, err := s.db.Query(ctx, `UPDATE redteam_schedules SET next_run_at = $4 WHERE org_id = $1 AND id = $2 AND enabled AND next_run_at = $3
+		RETURNING 1`, orgID, id, expected, next)
+	if err != nil {
+		return false, dbErr("срок расписания", err)
+	}
+	defer tag.Close()
+	claimed := tag.Next()
+	if err := tag.Err(); err != nil {
+		return false, dbErr("срок расписания", err)
+	}
+	return claimed, nil
+}
+
+// FinishSchedule записывает итог попытки запуска по расписанию.
+func (s *PGStore) FinishSchedule(ctx context.Context, orgID, id string, p ScheduleProgress, rec *audit.Entry) error {
+	var recs []audit.Entry
+	if rec != nil {
+		recs = append(recs, *rec)
+	}
+	return s.inTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		var runID any
+		if p.LastRunID != "" {
+			runID = p.LastRunID
+		}
+		tag, err := tx.Exec(ctx, `UPDATE redteam_schedules SET next_run_at = $3, last_run_at = COALESCE($4, last_run_at),
+			last_run_id = COALESCE($5::uuid, last_run_id), last_status = $6, retries = $7 WHERE org_id = $1 AND id = $2`,
+			orgID, id, p.NextRunAt, p.LastRunAt, runID, p.LastStatus, p.Retries)
+		if err != nil {
+			return dbErr("итог расписания", err)
+		}
+		if tag.RowsAffected() == 0 {
+			return ErrNotFound
+		}
+		return nil
+	}, recs...)
+}

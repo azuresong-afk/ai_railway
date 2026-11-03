@@ -73,8 +73,10 @@ type Options struct {
 	GatewayCA  []byte
 	// Judges — оценщик; nil — без judge.llm.
 	Judges JudgeClients
-	Clock  func() time.Time
-	Logger *slog.Logger
+	// Location — часовой пояс установки для расписаний; nil — UTC.
+	Location func(ctx context.Context) (*time.Location, error)
+	Clock    func() time.Time
+	Logger   *slog.Logger
 	// KeyWait и KeyPoll — ожидание ключа запуска на шлюзе; 0 — по умолчанию.
 	KeyWait, KeyPoll time.Duration
 	// Lookup — разрешение имён (тесты); nil — системное.
@@ -193,10 +195,14 @@ func (s *Service) Start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	s.wg.Add(1)
+	s.wg.Add(2)
 	go func() {
 		defer s.wg.Done()
 		s.purgeLoop(ctx)
+	}()
+	go func() {
+		defer s.wg.Done()
+		s.scheduleLoop(ctx)
 	}()
 	return nil
 }
@@ -384,7 +390,22 @@ func (s *Service) DeleteTarget(ctx context.Context, by By, id string) error {
 	if err != nil {
 		return err
 	}
-	if err := s.o.Store.DeleteTarget(ctx, s.o.OrgID, id, by.entry(ActionTargetDeleted, objectTarget, id, targetAudit(t))); err != nil {
+	// Расписания цели удаляются вместе с ней; их ID — в записи аудита.
+	details := targetAudit(t)
+	scs, err := s.o.Store.Schedules(ctx, s.o.OrgID)
+	if err != nil {
+		return err
+	}
+	var gone []string
+	for _, sc := range scs {
+		if sc.TargetID == id {
+			gone = append(gone, sc.ID)
+		}
+	}
+	if len(gone) > 0 {
+		details["schedules_deleted"] = gone
+	}
+	if err := s.o.Store.DeleteTarget(ctx, s.o.OrgID, id, by.entry(ActionTargetDeleted, objectTarget, id, details)); err != nil {
 		return err
 	}
 	s.mu.Lock()
