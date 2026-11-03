@@ -63,6 +63,9 @@ func TestRAGAccessDenied(t *testing.T) {
 		{owner, "PUT", col + "/manifest", body}, {owner, "POST", col + "/exclusions", `{"document_id":"a"}`}, {owner, "DELETE", ex, ""},
 		{auditor, "PUT", col + "/manifest", body}, {auditor, "POST", col + "/exclusions", `{"document_id":"a"}`}, {auditor, "DELETE", ex, ""},
 		{analyst, "PUT", col + "/manifest", body}, {analyst, "POST", col + "/exclusions", `{"document_id":"a"}`}, {analyst, "DELETE", ex, ""},
+		// Ревью 5.r2, 5Н14: администратор системы (rag.manage) исключение не
+		// снимает — это право безопасности rag.unexclude.
+		{e.mustLogin(t, "sysadm"), "DELETE", ex, ""},
 	} {
 		mustProblem(t, e.call(c.s, c.method, c.path, c.body, c.method != "GET"), http.StatusForbidden, CodeForbidden)
 	}
@@ -71,15 +74,19 @@ func TestRAGAccessDenied(t *testing.T) {
 			t.Fatalf("чтение: %d %s", w.Code, w.Body)
 		}
 	}
-	// Снятие исключения токеном с rag.manage — 403 с записью access.denied
-	// (только сессия консоли: это ослабление защиты).
+	// Снятие исключения токеном — 403 с записью access.denied: право
+	// безопасности rag.unexclude токенам не выдаётся, маршрут — только для
+	// сессии консоли.
 	sys := e.mustLogin(t, "sysadm")
 	tok := session{bearer: e.issueToken(t, sys, auth.PermRAGManage).Token}
 	_, before := lastDenied(t, e.mem)
 	mustProblem(t, e.call(tok, "DELETE", ex, "", false), http.StatusForbidden, CodeForbidden)
 	rec, after := lastDenied(t, e.mem)
-	if after != before+1 || rec.Actor.Type != audit.ActorAPIToken || rec.Details.(map[string]any)["reason"] != DenyReasonSessionOnly {
+	if after != before+1 || rec.Actor.Type != audit.ActorAPIToken {
 		t.Fatalf("отказ токену не записан: %+v", rec)
+	}
+	if p, ok := auth.LookupPermission(auth.PermRAGUnexclude); !ok || !p.Security {
+		t.Fatalf("rag.unexclude — не право безопасности: %+v", p)
 	}
 	// Без подключённых манифестов — 503.
 	e2 := newAppsEnv(t)
@@ -154,14 +161,16 @@ func TestRAGManifestViaAPI(t *testing.T) {
 	mustProblem(t, e.call(idx, "PUT", col+"/manifest", `{"documents":[],"content":"x"}`, false), http.StatusBadRequest, CodeInvalidRequest)
 	mustProblem(t, e.call(idx, "PUT", "/api/v1/rag/collections/-x/manifest", ragDocs(), false), http.StatusNotFound, CodeNotFound)
 
-	// Снятие исключения в сессии консоли — ослабление с записью аудита.
-	if w := e.call(sys, "DELETE", col+"/exclusions/"+exv.ID, "", true); w.Code != http.StatusNoContent {
+	// Снятие исключения администратором безопасности в сессии консоли —
+	// ослабление с записью аудита.
+	sec := e.mustLogin(t, "admin")
+	if w := e.call(sec, "DELETE", col+"/exclusions/"+exv.ID, "", true); w.Code != http.StatusNoContent {
 		t.Fatalf("снятие: %d %s", w.Code, w.Body)
 	}
 	r := mem.Records[len(mem.Records)-1]
 	if r.Action != "rag.exclusion_removed" || r.Details.(map[string]any)["weakening"] != true {
 		t.Fatalf("аудит снятия: %+v", r)
 	}
-	mustProblem(t, e.call(sys, "DELETE", col+"/exclusions/"+exv.ID, "", true), http.StatusNotFound, CodeNotFound)
-	mustProblem(t, e.call(sys, "DELETE", col+"/exclusions/not-a-uuid", "", true), http.StatusNotFound, CodeNotFound)
+	mustProblem(t, e.call(sec, "DELETE", col+"/exclusions/"+exv.ID, "", true), http.StatusNotFound, CodeNotFound)
+	mustProblem(t, e.call(sec, "DELETE", col+"/exclusions/not-a-uuid", "", true), http.StatusNotFound, CodeNotFound)
 }
