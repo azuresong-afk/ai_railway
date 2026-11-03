@@ -35,6 +35,8 @@ type Policy struct {
 	exceptions []ExceptionSpec
 	// tools — политика вызовов инструментов (toolcall.go).
 	tools toolPolicy
+	// judge — оценщик judge.llm (judge.go); nil — раздела нет.
+	judge *JudgeConfig
 }
 
 type rule struct {
@@ -47,6 +49,9 @@ type rule struct {
 	action     Action
 	severity   Severity
 	message    string
+	// judge — критерий правила judge.llm; находку оценщика сопоставляет
+	// только правило с её ID (Finding.Rule).
+	judge *JudgeRule
 }
 
 // Compile проверяет спецификацию и связывает её с детекторами: каждый
@@ -100,8 +105,10 @@ func Compile(s *Spec, c Catalog) (*Policy, error) {
 			id: r.ID, detector: r.Detector, directions: dirs,
 			categories: slices.Clone(r.Categories), sources: slices.Clone(r.Sources),
 			threshold: r.threshold(), action: r.Action, severity: r.Severity, message: r.Message,
+			judge: compileJudgeRule(r),
 		})
 	}
+	p.judge = compileJudge(s.Judge)
 	for i, e := range s.Exceptions {
 		if _, ok := c.Get(e.Detector); !ok {
 			errs = append(errs, fmt.Errorf("политика %s: exceptions[%d] (%s): детектор %q не зарегистрирован", s.ID, i, e.ID, e.Detector))
@@ -426,6 +433,7 @@ func (p *Policy) match(i int, h Hit, req Request) (Match, bool) {
 	for j := range p.rules {
 		r := &p.rules[j]
 		if r.detector != f.Detector || !slices.Contains(r.directions, req.Direction) || f.Score < r.threshold ||
+			r.judge != nil && f.Rule != r.id ||
 			len(r.sources) > 0 && !slices.Contains(r.sources, h.Source) ||
 			len(r.categories) > 0 && !slices.Contains(r.categories, f.Category) {
 			continue

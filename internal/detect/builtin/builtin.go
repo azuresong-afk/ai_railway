@@ -8,6 +8,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/detect/canary"
 	"github.com/azuresong-afk/ai_railway/internal/detect/exfil"
 	"github.com/azuresong-afk/ai_railway/internal/detect/injection"
+	"github.com/azuresong-afk/ai_railway/internal/detect/judge"
 	"github.com/azuresong-afk/ai_railway/internal/detect/lists"
 	"github.com/azuresong-afk/ai_railway/internal/detect/pii"
 	"github.com/azuresong-afk/ai_railway/internal/detect/secretscan"
@@ -24,9 +25,10 @@ func All() []detect.Detector {
 }
 
 // Catalog — детекторы, которые может назвать политика: All, ML-детекторы
-// (ml.go: без aisec-ml — заглушки «недоступен») и детекторы уровня запроса
+// (ml.go: без aisec-ml — заглушки «недоступен»), детекторы уровня запроса
 // и сессии (internal/detect/session: session.risk, prompt.integrity,
-// history.integrity). Корпуса, метрики качества и эталоны самотеста — у
+// history.integrity) и запись judge.llm (оценщика вызывает шлюз,
+// ADR-0030). Корпуса, метрики качества и эталоны самотеста — у
 // детекторов All; у ML-детекторов — в части 2 задачи 4.19 (Р4).
 func Catalog() []detect.Detector { return CatalogFor(false) }
 
@@ -37,5 +39,5 @@ func CatalogFor(mlInstalled bool) []detect.Detector {
 	if mlInstalled {
 		ml = MLInstalled()
 	}
-	return append(append(All(), ml...), session.All()...)
+	return append(append(append(All(), ml...), session.All()...), judge.New())
 }

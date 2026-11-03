@@ -192,6 +192,53 @@ type PolicyRuleJSON struct {
 	Action     string   `json:"action"`
 	Severity   string   `json:"severity"`
 	Message    string   `json:"message,omitempty"`
+	// Judge — критерий правила judge.llm (ADR-0030).
+	Judge *PolicyJudgeRuleJSON `json:"judge,omitempty"`
+}
+
+// PolicyJudgeRuleJSON — подраздел judge правила: поля как в YAML.
+type PolicyJudgeRuleJSON struct {
+	Kind      string `json:"kind"`
+	Criterion string `json:"criterion"`
+	Mode      string `json:"mode,omitempty"`
+	TimeoutMS int    `json:"timeout_ms,omitempty"`
+	OnFailure string `json:"on_failure,omitempty"`
+}
+
+// PolicyJudgeJSON — раздел judge политики: поля как в YAML.
+type PolicyJudgeJSON struct {
+	Provider          string `json:"provider"`
+	Model             string `json:"model"`
+	MaxCallsPerMinute int    `json:"max_calls_per_minute,omitempty"`
+	MaxTokensPerHour  int    `json:"max_tokens_per_hour,omitempty"`
+}
+
+func (j *PolicyJudgeRuleJSON) spec() *policy.JudgeRuleSpec {
+	if j == nil {
+		return nil
+	}
+	return &policy.JudgeRuleSpec{Kind: j.Kind, Criterion: j.Criterion, Mode: policy.JudgeMode(j.Mode), TimeoutMS: j.TimeoutMS, OnFailure: j.OnFailure}
+}
+
+func judgeRuleJSON(j *policy.JudgeRuleSpec) *PolicyJudgeRuleJSON {
+	if j == nil {
+		return nil
+	}
+	return &PolicyJudgeRuleJSON{Kind: j.Kind, Criterion: j.Criterion, Mode: string(j.Mode), TimeoutMS: j.TimeoutMS, OnFailure: j.OnFailure}
+}
+
+func (j *PolicyJudgeJSON) spec() *policy.JudgeSpec {
+	if j == nil {
+		return nil
+	}
+	return &policy.JudgeSpec{Provider: j.Provider, Model: j.Model, MaxCallsPerMinute: j.MaxCallsPerMinute, MaxTokensPerHour: j.MaxTokensPerHour}
+}
+
+func judgeJSON(j *policy.JudgeSpec) *PolicyJudgeJSON {
+	if j == nil {
+		return nil
+	}
+	return &PolicyJudgeJSON{Provider: j.Provider, Model: j.Model, MaxCallsPerMinute: j.MaxCallsPerMinute, MaxTokensPerHour: j.MaxTokensPerHour}
 }
 
 // PolicySpecJSON — содержимое политики в API. ID и номер версии задаёт сервер.
@@ -214,6 +261,8 @@ type PolicySpecJSON struct {
 	// сохранении: поле не передано — раздел текущей версии сохраняется, у
 	// новой политики — блокировать неодобренное и не разрешённое правилом.
 	Tools *PolicyToolsJSON `json:"tools,omitempty"`
+	// Judge — оценщик judge.llm (ADR-0030); нужен правилам judge.llm.
+	Judge *PolicyJudgeJSON `json:"judge,omitempty"`
 }
 
 // PolicyExceptionJSON — исключение политики в API: поля как в YAML.
@@ -270,8 +319,9 @@ func (s PolicySpecJSON) spec(id string) (*policy.Spec, error) {
 		out.Rules = append(out.Rules, policy.RuleSpec{ID: r.ID, Detector: r.Detector,
 			Directions: convert[string, detect.Direction](r.Directions), Categories: convert[string, string](r.Categories),
 			Sources: convert[string, detect.Source](r.Sources), Threshold: r.Threshold, Action: policy.Action(r.Action),
-			Severity: policy.Severity(r.Severity), Message: r.Message})
+			Severity: policy.Severity(r.Severity), Message: r.Message, Judge: r.Judge.spec()})
 	}
+	out.Judge = s.Judge.spec()
 	if s.Exceptions != nil {
 		out.Exceptions = make([]policy.ExceptionSpec, 0, len(*s.Exceptions))
 		for _, e := range *s.Exceptions {
@@ -289,7 +339,8 @@ func (s PolicySpecJSON) spec(id string) (*policy.Spec, error) {
 func ruleJSON(r policy.RuleSpec) PolicyRuleJSON {
 	return PolicyRuleJSON{ID: r.ID, Detector: r.Detector, Directions: convert[detect.Direction, string](r.Directions),
 		Categories: convert[string, string](r.Categories), Sources: convert[detect.Source, string](r.Sources),
-		Threshold: r.Threshold, Action: string(r.Action), Severity: string(r.Severity), Message: r.Message}
+		Threshold: r.Threshold, Action: string(r.Action), Severity: string(r.Severity), Message: r.Message,
+		Judge: judgeRuleJSON(r.Judge)}
 }
 
 func specJSON(s *policy.Spec) PolicySpecJSON {
@@ -305,6 +356,7 @@ func specJSON(s *policy.Spec) PolicySpecJSON {
 	}
 	out.Exceptions = &ex
 	out.Tools = toolsJSON(s.Tools)
+	out.Judge = judgeJSON(s.Judge)
 	return out
 }
 

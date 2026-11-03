@@ -9318,6 +9318,33 @@ components:
         action: { type: string, enum: [allow, log, redact, pseudonymize, block] }
         severity: { type: string, enum: [info, low, medium, high, critical] }
         message: { type: string, maxLength: 300 }
+        judge: { $ref: '#/components/schemas/PolicyJudgeRule' }
+    PolicyJudgeRule:
+      type: object
+      required: [kind, criterion]
+      additionalProperties: false
+      description: >-
+        Критерий правила judge.llm на естественном языке (ADR-0030, раздел 2; задача 5.28): только у правила с
+        `detector: judge.llm` и обязателен у него. `categories` и `sources` у такого правила не задаются; действия —
+        allow, log, block (block — только при mode sync).
+      properties:
+        kind: { type: string, enum: [content, business], description: 'content — недопустимый контент (DM-18), business — бизнес-правило (DM-19)' }
+        criterion: { type: string, minLength: 10, maxLength: 1000, description: Правило для оценщика без управляющих символов }
+        mode: { type: string, enum: [async, sync], description: 'Пусто — async: оценка после ответа приложению' }
+        timeout_ms: { type: integer, minimum: 500, maximum: 30000, description: 'Только sync; не задан — 5000' }
+        on_failure: { type: string, enum: [allow, block], description: 'Только sync; не задан — allow («не проверено»)' }
+    PolicyJudge:
+      type: object
+      required: [provider, model]
+      additionalProperties: false
+      description: >-
+        Оценщик judge.llm политики (ADR-0030): провайдер с признаком «у заказчика» (`on_premise`), модель и бюджет.
+        Нужен, если в политике есть правила judge.llm; не больше 16 таких правил.
+      properties:
+        provider: { type: string, pattern: '^[a-z0-9][a-z0-9-]{0,62}$', description: slug провайдера }
+        model: { type: string, minLength: 1, maxLength: 128 }
+        max_calls_per_minute: { type: integer, minimum: 0, maximum: 6000, description: '0 — 60' }
+        max_tokens_per_hour: { type: integer, minimum: 0, maximum: 100000000, description: '0 — 200000; иначе не меньше 1000' }
     PolicySpec:
       type: object
       required: [name, mode, rules]
@@ -9344,6 +9371,7 @@ components:
           description: 'Исключения (задача 3.22). При сохранении: поле не передано — исключения текущей версии сохраняются; пустой список — удаляются. Автора и created_at новых и изменённых ставит сервер'
           items: { $ref: '#/components/schemas/PolicyException' }
         tools: { $ref: '#/components/schemas/PolicyTools' }
+        judge: { $ref: '#/components/schemas/PolicyJudge' }
     PolicyTools:
       type: object
       required: [unapproved, default]
@@ -9609,7 +9637,7 @@ components:
             type: object
             required: [field, before, after]
             properties:
-              field: { type: string, enum: [name, mode, non_text, response_check, media_check, media_check_timeout_ms, block_message] }
+              field: { type: string, enum: [name, mode, non_text, response_check, media_check, media_check_timeout_ms, block_message, judge] }
               before: { type: string }
               after: { type: string }
         rules_added: { type: array, items: { $ref: '#/components/schemas/PolicyRule' } }
@@ -9635,7 +9663,7 @@ components:
               kind:
                 type: string
                 enum: [mode_monitor, non_text_weakened, response_check_weakened, media_check_weakened, rule_removed, action_weakened,
-                  threshold_raised, scope_narrowed, detector_changed, exception_added, exception_extended, exception_changed,
+                  threshold_raised, scope_narrowed, detector_changed, judge_weakened, exception_added, exception_extended, exception_changed,
                   tools_unapproved_weakened, tool_rule_added, tool_action_weakened, tool_scope_widened, tool_scope_narrowed,
                   tool_args_relaxed, tool_rate_raised, approval_timeout_raised, tool_rule_removed]
               rule: { type: string }

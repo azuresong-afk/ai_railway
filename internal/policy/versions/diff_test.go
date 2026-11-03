@@ -117,3 +117,40 @@ func FuzzDiff(f *testing.F) {
 		}
 	})
 }
+
+// Ослабления оценки judge.llm (ADR-0030): критерий, sync → async,
+// on_failure block → allow, срок короче, другой оценщик, бюджет меньше.
+func TestCompareJudgeWeakening(t *testing.T) {
+	base := func() *policy.Spec {
+		return &policy.Spec{Name: "P", Mode: policy.Enforce,
+			Judge: &policy.JudgeSpec{Provider: "local-llm", Model: "qwen", MaxCallsPerMinute: 100},
+			Rules: []policy.RuleSpec{{ID: "refund", Detector: policy.JudgeDetector, Action: policy.Block, Severity: policy.High,
+				Judge: &policy.JudgeRuleSpec{Kind: "business", Criterion: "Ассистент не обещает скидок.", Mode: policy.JudgeSync,
+					TimeoutMS: 3000, OnFailure: policy.JudgeFailBlock}}}}
+	}
+	j := func(s *policy.Spec) *policy.JudgeRuleSpec { return s.Rules[0].Judge }
+	cases := map[string]struct {
+		edit func(s *policy.Spec)
+		want []string
+	}{
+		"критерий":         {func(s *policy.Spec) { j(s).Criterion = "Ассистент вежлив." }, []string{versions.WeakJudge + ":refund"}},
+		"sync → async":     {func(s *policy.Spec) { j(s).Mode, j(s).TimeoutMS, j(s).OnFailure = "", 0, "" }, []string{versions.WeakJudge + ":refund"}},
+		"on_failure allow": {func(s *policy.Spec) { j(s).OnFailure = policy.JudgeFailAllow }, []string{versions.WeakJudge + ":refund"}},
+		"срок короче":      {func(s *policy.Spec) { j(s).TimeoutMS = 1000 }, []string{versions.WeakJudge + ":refund"}},
+		"другая модель":    {func(s *policy.Spec) { s.Judge.Model = "llama" }, []string{versions.WeakJudge + ":"}},
+		"бюджет меньше":    {func(s *policy.Spec) { s.Judge.MaxCallsPerMinute = 10 }, []string{versions.WeakJudge + ":"}},
+		"срок длиннее":     {func(s *policy.Spec) { j(s).TimeoutMS = 10000 }, nil},
+		"бюджет больше":    {func(s *policy.Spec) { s.Judge.MaxTokensPerHour = 500000 }, nil},
+	}
+	for name, c := range cases {
+		b := base()
+		c.edit(b)
+		d := versions.Compare(base(), b)
+		if got := kinds(d); !slices.Equal(got, c.want) {
+			t.Errorf("%s: ослабления %v, ожидалось %v", name, got, c.want)
+		}
+		if d.Empty() {
+			t.Errorf("%s: изменение не найдено", name)
+		}
+	}
+}
