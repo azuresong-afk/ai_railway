@@ -105,7 +105,7 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		cfg.Logger = slog.New(slog.DiscardHandler)
 	}
 	hello, err := wire.MarshalBody(wire.HelloOK{Protocol: wire.ProtocolVersion, Formats: Decodable(),
-		Checks: []wire.Check{wire.CheckDecode}, MaxBytes: cfg.Limits.MaxBytes, MaxPixels: cfg.Limits.MaxPixels})
+		Checks: Checks(), MaxBytes: cfg.Limits.MaxBytes, MaxPixels: cfg.Limits.MaxPixels})
 	if err != nil {
 		return nil, err
 	}

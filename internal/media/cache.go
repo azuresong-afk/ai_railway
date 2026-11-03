@@ -47,9 +47,10 @@ func (c *Cache) Get(key []byte) (wire.Result, bool) {
 	return res, true
 }
 
-// Put запоминает итог.
+// Put запоминает итог. Итог с текстом не запоминается: в кэше нет
+// содержимого изображений (ТЗ 5.17, ADR-0032, раздел 7).
 func (c *Cache) Put(key []byte, res wire.Result) {
-	if c.limit < 1 {
+	if c.limit < 1 || len(res.Texts) > 0 {
 		return
 	}
 	res.Checks = slices.Clone(res.Checks)

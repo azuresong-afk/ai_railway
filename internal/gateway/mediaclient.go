@@ -37,11 +37,27 @@ type MediaAnalyzer interface {
 
 // MediaReply — итог анализа: результат протокола и извлечённые тексты.
 type MediaReply struct {
+	// Result — итог без текстов (Result.Texts пуст): текст — только в Texts.
 	Result wire.Result
-	// Texts — фрагменты текста с изображения. Протокол передаёт их с задачи
-	// 5.42 (OCR); до неё список пуст, и изображение без ocr в Checks
-	// проверенным не считается.
+	// Texts — фрагменты текста с изображения: метаданные и QR (задача 5.43),
+	// OCR (5.42). Они проверяются детекторами, даже если изображение без
+	// ocr в Checks проверенным не считается.
 	Texts []MediaText
+}
+
+// newMediaReply — итог протокола в итог для шлюза: тексты с источником и
+// рамкой (wire.Result.Validate уже сверил их с проверками и размерами).
+func newMediaReply(res *wire.Result) *MediaReply {
+	r := &MediaReply{Result: *res}
+	r.Result.Texts = nil
+	for _, t := range res.Texts {
+		mt := MediaText{Text: t.Text, Origin: string(t.Source)}
+		if t.Box != nil {
+			mt.Box = &events.Box{X: t.Box.X, Y: t.Box.Y, W: t.Box.W, H: t.Box.H}
+		}
+		r.Texts = append(r.Texts, mt)
+	}
+	return r
 }
 
 // MediaText — фрагмент текста на изображении.
@@ -209,7 +225,7 @@ func (c *MediaClient) Analyze(ctx context.Context, img []byte) (*MediaReply, err
 		}
 		if err == nil {
 			c.ok()
-			return &MediaReply{Result: *res}, nil
+			return newMediaReply(res), nil
 		}
 		var me *MediaError
 		if errors.As(err, &me) {

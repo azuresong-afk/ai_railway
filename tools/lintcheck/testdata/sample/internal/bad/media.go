@@ -7,11 +7,12 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/media"       // want:depguard
 	"github.com/azuresong-afk/ai_railway/internal/media/inner" // want:depguard
 	"github.com/azuresong-afk/ai_railway/internal/media/wire"  // clean:depguard
+	"github.com/makiuchi-d/gozxing"                            // want:depguard
 	"golang.org/x/image/webp"                                  // want:depguard
 )
 
 // UseMedia — анализатор и декодеры изображений вне aisec-media запрещены (ADR-0032), протокол кадров — нет.
 func UseMedia() []string {
 	_, _ = jpeg.Decode, png.Decode
-	return append(media.Formats(), inner.Name, wire.Magic, webp.Name)
+	return append(media.Formats(), inner.Name, wire.Magic, webp.Name, gozxing.Name)
 }
