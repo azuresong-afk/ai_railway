@@ -293,7 +293,7 @@ func (x *execution) scenario(ctx context.Context, sc Scenario) (Result, bool) {
 		if err := x.limit.wait(ctx); err != nil {
 			return Result{}, false
 		}
-		history = append(history, message{Role: "user", Content: st.Prompt})
+		history = append(history, message{Role: "user", Content: st.Text()})
 		rep := x.send(ctx, history)
 		if ctx.Err() != nil && rep.errCode != "" {
 			return Result{}, false

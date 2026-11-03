@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode"
 
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/internal/integrity"
@@ -65,5 +66,28 @@ func TestServicedbInspect(t *testing.T) {
 		if code := run(tc.args, &out, &errOut, now); code != 1 || !strings.Contains(out.String()+errOut.String(), tc.want) {
 			t.Errorf("%s: код %d, вывод %q %q", name, code, out.String(), errOut.String())
 		}
+	}
+}
+
+// Покрывает: DM-05
+// База сценариев с записью \u{…} (дополнение 2 к ADR-0031): inspect принимает
+// её и не выводит символов форматирования — показывается запись, а не
+// раскрытые невидимые символы.
+func TestServicedbInspectScenariosEscapes(t *testing.T) {
+	p, err := aisecCrypto.New(aisecCrypto.ProfileStandard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, testKey, err := integrity.EmbeddedVerifier(p); err != nil || !testKey {
+		t.Skip("тестовая база подписана ключом репозитория: её принимает только сборка без aisec_release")
+	}
+	var out, errOut bytes.Buffer
+	code := run([]string{"servicedb", "inspect", "../../testdata/redteam/scenarios-library-test.aisecdb"}, &out, &errOut,
+		time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC))
+	if code != 0 || !strings.Contains(out.String(), "Вид: redteam_scenarios") || !strings.Contains(out.String(), "записей: 75") {
+		t.Fatalf("база сценариев: %d %s %s", code, out.String(), errOut.String())
+	}
+	if strings.ContainsFunc(out.String()+errOut.String(), func(r rune) bool { return unicode.Is(unicode.Cf, r) }) {
+		t.Fatalf("в выводе inspect символ форматирования: %q", out.String())
 	}
 }
