@@ -125,7 +125,7 @@ func nullTime(t time.Time) *time.Time {
 // --- Провайдеры ---
 
 const providerCols = `id::text, org_id::text, slug, name, type, base_url, ca_pem, auth_url, scope, folder_id,
-	connect_timeout_s, header_timeout_s, response_timeout_s, stream_idle_timeout_s, external,
+	connect_timeout_s, header_timeout_s, response_timeout_s, stream_idle_timeout_s, external, on_premise,
 	credential, credential_key_id::text, credential_alg, credential_set_at, created_at, created_by, updated_at, updated_by`
 
 func scanProvider(row pgx.Row) (Provider, error) {
@@ -134,7 +134,7 @@ func scanProvider(row pgx.Row) (Provider, error) {
 	var cred []byte
 	var setAt *time.Time
 	if err := row.Scan(&p.ID, &p.OrgID, &p.Slug, &p.Name, &p.Type, &p.BaseURL, &p.CAPEM, &authURL, &scope, &folder,
-		&p.ConnectTimeout, &p.HeaderTimeout, &p.ResponseTimeout, &p.StreamIdleTimeout, &p.External,
+		&p.ConnectTimeout, &p.HeaderTimeout, &p.ResponseTimeout, &p.StreamIdleTimeout, &p.External, &p.OnPremise,
 		&cred, &keyID, &alg, &setAt, &p.CreatedAt, &p.CreatedBy, &p.UpdatedAt, &p.UpdatedBy); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return Provider{}, ErrNotFound
@@ -162,11 +162,11 @@ func (s *PGStore) CreateProvider(ctx context.Context, p Provider, rec audit.Entr
 	return s.inTx(ctx, func(tx pgx.Tx) error {
 		cred, keyID, alg, setAt := credCols(p)
 		_, err := tx.Exec(ctx, `INSERT INTO providers (id, org_id, slug, name, type, base_url, ca_pem, auth_url, scope, folder_id,
-			connect_timeout_s, header_timeout_s, response_timeout_s, stream_idle_timeout_s, external,
+			connect_timeout_s, header_timeout_s, response_timeout_s, stream_idle_timeout_s, external, on_premise,
 			credential, credential_key_id, credential_alg, credential_set_at, created_at, created_by, updated_at, updated_by)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)`,
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)`,
 			p.ID, p.OrgID, p.Slug, p.Name, p.Type, p.BaseURL, p.CAPEM, nullStr(p.AuthURL), nullStr(p.Scope), nullStr(p.FolderID),
-			p.ConnectTimeout, p.HeaderTimeout, p.ResponseTimeout, p.StreamIdleTimeout, p.External,
+			p.ConnectTimeout, p.HeaderTimeout, p.ResponseTimeout, p.StreamIdleTimeout, p.External, p.OnPremise,
 			cred, keyID, alg, setAt, p.CreatedAt, p.CreatedBy, p.UpdatedAt, p.UpdatedBy)
 		if err != nil {
 			return pgErr(err)
@@ -191,11 +191,11 @@ func (s *PGStore) UpdateProvider(ctx context.Context, orgID, id string, fn func(
 		if _, err := tx.Exec(ctx, `UPDATE providers SET name = $3, type = $4, base_url = $5, ca_pem = $6, auth_url = $7,
 			scope = $8, folder_id = $9, connect_timeout_s = $10, header_timeout_s = $11, response_timeout_s = $12,
 			stream_idle_timeout_s = $13, external = $14, credential = $15, credential_key_id = $16, credential_alg = $17,
-			credential_set_at = $18, updated_at = $19, updated_by = $20
+			credential_set_at = $18, updated_at = $19, updated_by = $20, on_premise = $21
 			WHERE org_id = $1 AND id = $2`,
 			orgID, id, p.Name, p.Type, p.BaseURL, p.CAPEM, nullStr(p.AuthURL), nullStr(p.Scope), nullStr(p.FolderID),
 			p.ConnectTimeout, p.HeaderTimeout, p.ResponseTimeout, p.StreamIdleTimeout, p.External,
-			cred, keyID, alg, setAt, p.UpdatedAt, p.UpdatedBy); err != nil {
+			cred, keyID, alg, setAt, p.UpdatedAt, p.UpdatedBy, p.OnPremise); err != nil {
 			return pgErr(err)
 		}
 		out = p

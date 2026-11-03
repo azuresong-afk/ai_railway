@@ -2085,6 +2085,46 @@ paths:
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ProblemInternal' }
         '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/providers/{id}/on-premise:
+    put:
+      summary: Изменить признак «размещён у заказчика»
+      description: |
+        Право `providers.external` (признак `security`: только администратор безопасности; задача 5.28,
+        ADR-0030). Только провайдер с этим признаком может быть оценщиком `judge.llm` (раздел `judge`
+        политики). Установка — ослабление защиты (DM-40): текст запросов и ответов начнёт уходить на адрес
+        провайдера, поэтому нужен текущий пароль (`password`) или код TOTP (`code`), ровно одно из двух, иначе
+        400; неверное значение — 403 `reauthentication_failed`. Условия установки: тип `openai`, признак
+        «внешний» снят, узел `base_url` — не `localhost`, литерал адреса — в частной сети (10.0.0.0/8,
+        172.16.0.0/12, 192.168.0.0/16, fc00::/7) и не loopback, link-local или служба метаданных; иначе 400.
+        Имя узла шлюз проверяет при каждом соединении с оценщиком. Признак сбрасывается при смене адресата
+        провайдера и при установке «внешний». Только в сессии консоли: запрос по токену API — 403 и
+        `access.denied` с причиной `session_only`. Причина обязательна. Пишет `provider.on_premise_changed`
+        с `weakening: true` при установке; без изменения — 200 без записи.
+      x-permission: providers.external
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ProviderID'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProviderOnPremise' }
+      responses:
+        '200':
+          description: Признак изменён
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Provider' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
   /api/v1/model-prices:
     get:
       summary: Цены моделей
@@ -8115,7 +8155,7 @@ components:
             slug: { type: string, pattern: '^[a-z0-9][a-z0-9-]{0,62}$' }
     Provider:
       type: object
-      required: [id, slug, name, type, base_url, ca_pem, timeouts, external, credential_set, created_at, updated_at]
+      required: [id, slug, name, type, base_url, ca_pem, timeouts, external, on_premise, credential_set, created_at, updated_at]
       properties:
         id: { type: string, format: uuid }
         slug: { type: string }
@@ -8128,6 +8168,7 @@ components:
         folder_id: { type: string }
         timeouts: { $ref: '#/components/schemas/ProviderTimeouts' }
         external: { type: boolean, description: Провайдер вне контура заказчика (ТЗ 5.4) }
+        on_premise: { type: boolean, description: 'Провайдер размещён у заказчика: может быть оценщиком judge.llm (ADR-0030)' }
         credential_set: { type: boolean, description: Учётные данные заданы; само значение не возвращается }
         credential_set_at: { type: string, format: date-time }
         created_at: { type: string, format: date-time }
@@ -8437,6 +8478,15 @@ components:
         reason: { type: string, minLength: 1, maxLength: 500 }
         password: { type: string, maxLength: 1024, format: password, description: 'Текущий пароль при снятии признака (ровно одно из password и code)' }
         code: { type: string, maxLength: 64, description: 'Код из приложения-аутентификатора при снятии признака' }
+    ProviderOnPremise:
+      type: object
+      required: [on_premise, reason]
+      additionalProperties: false
+      properties:
+        on_premise: { type: boolean }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+        password: { type: string, maxLength: 1024, format: password, description: 'Текущий пароль при установке признака (ровно одно из password и code)' }
+        code: { type: string, maxLength: 64, description: 'Код из приложения-аутентификатора при установке признака' }
     AppQuotas:
       type: object
       additionalProperties: false

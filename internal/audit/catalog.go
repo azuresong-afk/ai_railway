@@ -69,6 +69,7 @@ var catalog = []Event{
 	{"provider.delete", "Удаление провайдера", true},
 	{"provider.credentials_set", "Замена учётных данных провайдера", true},
 	{"provider.external_changed", "Изменение признака «внешний» у провайдера", true},
+	{"provider.on_premise_changed", "Изменение признака «размещён у заказчика» у провайдера (оценщик judge.llm)", true},
 	{"application.create", "Создание приложения", true},
 	{"application.update", "Изменение приложения", true},
 	{"application.protection_changed", "Изменение политики, режима или режима хранения приложения", true},

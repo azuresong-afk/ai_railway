@@ -233,7 +233,7 @@ var permissionCatalog = []Permission{
 	{Name: PermAppKeysManage, Title: "Выпуск, ротация и отзыв ключей приложений", Group: "Приложения", Ownable: true},
 	{Name: PermProvidersRead, Title: "Просмотр провайдеров (без учётных данных)", Group: "Провайдеры"},
 	{Name: PermProvidersManage, Title: "Создание, изменение и удаление провайдеров, учётные данные", Group: "Провайдеры"},
-	{Name: PermProvidersExternal, Title: "Снятие и установка признака «внешний» у провайдера", Group: "Провайдеры", Security: true},
+	{Name: PermProvidersExternal, Title: "Признаки «внешний» и «размещён у заказчика» у провайдера", Group: "Провайдеры", Security: true},
 	{Name: PermPoliciesRead, Title: "Просмотр политик, их версий и выгрузка в YAML", Group: "Политики"},
 	{Name: PermPoliciesManage, Title: "Создание, изменение, откат и загрузка политик", Group: "Политики", Security: true},
 	{Name: PermPoliciesTest, Title: "Проверка текста в песочнице политик", Group: "Политики"},
