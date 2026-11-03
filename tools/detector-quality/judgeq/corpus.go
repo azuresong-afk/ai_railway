@@ -246,7 +246,7 @@ func Load(dir string) (*Corpus, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = rf.Close() }()
+	defer func() { _ = rf.Close() }() //nolint:gosec // G104: закрытие файла, открытого на чтение
 	rules, err := ParseRules(rf)
 	if err != nil {
 		return nil, err
@@ -255,7 +255,7 @@ func Load(dir string) (*Corpus, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = sf.Close() }()
+	defer func() { _ = sf.Close() }() //nolint:gosec // G104: закрытие файла, открытого на чтение
 	samples, err := ParseSamples(sf, rules)
 	if err != nil {
 		return nil, err
