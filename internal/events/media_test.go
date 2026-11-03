@@ -140,3 +140,31 @@ func TestFindingSourceFilter(t *testing.T) {
 		t.Fatalf("not: %v", err)
 	}
 }
+
+// test (задача 5.34): события запросов тестирования устойчивости отбираются
+// и скрываются фильтром.
+func TestTestFlagFilter(t *testing.T) {
+	f, err := ParseFilter(`test = true`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !f.Match(&Record{Details: &Details{Test: true}}) || f.Match(&Record{Details: &Details{}}) || f.Match(&Record{}) {
+		t.Fatal("Match test = true")
+	}
+	g, err := ParseFilter(`test = false`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g.Match(&Record{Details: &Details{Test: true}}) || !g.Match(&Record{}) {
+		t.Fatal("Match test = false")
+	}
+	var b strings.Builder
+	a := &sqlArgs{}
+	f.appendSQL(&b, a)
+	if b.String() != ` AND COALESCE((e.details->>'test')::boolean, false) = $1` || a.args[0] != true {
+		t.Fatalf("SQL %q, параметры %v", b.String(), a.args)
+	}
+	if _, err := ParseFilter(`test != true`); err == nil {
+		t.Error("test != true: принят")
+	}
+}

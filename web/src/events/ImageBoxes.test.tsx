@@ -113,6 +113,12 @@ describe("карточка события с изображением", () => {
     expect(screen.getAllByRole("img")).toHaveLength(1);
   });
 
+  it("запрос тестирования устойчивости помечен", async () => {
+    current = imageEvent("full", { test: true });
+    renderCard(false);
+    expect(await screen.findByText(/Это запрос тестирования устойчивости/)).toBeInTheDocument();
+  });
+
   it("у события без изображений раздела нет", async () => {
     current = imageEvent("full", { media: undefined, findings: [] });
     renderCard(true);
@@ -126,5 +132,11 @@ describe("фильтр по источнику находки", () => {
     const chips = [{ field: "finding_source", negate: false, values: ["image"] }];
     expect(buildFilter(chips)).toBe('finding_source = "image"');
     expect(parseFilter('finding_source = "image"')).toEqual(chips);
+  });
+
+  it("запросы тестирования устойчивости отбираются логическим условием", () => {
+    const chips = [{ field: "test", negate: false, values: ["false"] }];
+    expect(buildFilter(chips)).toBe("test = false");
+    expect(parseFilter("test = false")).toEqual(chips);
   });
 });

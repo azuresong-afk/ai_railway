@@ -2837,6 +2837,7 @@ export interface paths {
          *     type, app, env, user, provider, model, source, policy_mode, action, rule, severity,
          *     storage, gateway, threat, detector, exception (находки, пропущенные по исключению с этим ID),
          *     finding_source (источник текста находки: user, rag, tool, tool_args, output, image),
+         *     test (запросы тестирования устойчивости: `test = true` — только они, `test = false` — без них),
          *     mark (`false_positive`, `confirmed` или `none` — без отметки), stream, non_text_unchecked,
          *     has_content, ml_unavailable (ML-детекторы не дали результата), media_unavailable (изображение не проверено из-за сбоя анализатора aisec-media, DM-50), judge_unchecked (оценка judge.llm не получена), session (псевдоним сессии запроса чата или агента), agent, mcp_server, tool
          *     (события агентов); операторы

@@ -128,6 +128,10 @@ var filterFields = map[string]fieldDef{
 	// анализатора aisec-media — признак решения в details.
 	"media_unavailable": {column: "details", kind: kindBool, valid: oneOf("true", "false"),
 		expr: "COALESCE((e.details->'decision'->>'media_unavailable')::boolean, false)"},
+	// Задача 5.34 этапа 5: запросы исполнителя тестирования устойчивости
+	// (ключ запуска, ADR-0031) — признак события в details.
+	"test": {column: "details", kind: kindBool, valid: oneOf("true", "false"),
+		expr: "COALESCE((e.details->>'test')::boolean, false)"},
 	// Задача 3.22: exception — находки, пропущенные по исключению с этим ID;
 	// mark — отметка аналитика (false_positive, confirmed, none — нет отметки).
 	"exception": {column: "details", kind: kindFinding, valid: exceptionRe.MatchString, key: "exception"},
@@ -663,6 +667,8 @@ func (r *Record) filterValues(field string) []string {
 		return []string{strconv.FormatBool(r.Details != nil && r.Details.Decision != nil && r.Details.Decision.JudgeUnchecked)}
 	case "media_unavailable":
 		return []string{strconv.FormatBool(r.Details != nil && r.Details.Decision != nil && r.Details.Decision.MediaUnavailable)}
+	case "test":
+		return []string{strconv.FormatBool(r.Details != nil && r.Details.Test)}
 	}
 	return nil
 }

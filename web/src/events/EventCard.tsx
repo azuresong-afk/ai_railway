@@ -49,6 +49,7 @@ interface Details {
   failMode: string;
   trace: TraceStep[];
   failures: { detector: string; location: string; reason: string }[];
+  test: boolean;
   findings: FindingRow[];
   media: MediaRow[];
   latency: [string, number][];
@@ -86,6 +87,7 @@ export function readDetails(raw: unknown): Details {
       const r = rec(f);
       return { detector: str(r.detector), location: str(r.location), reason: str(r.reason) };
     }),
+    test: d.test === true,
     findings: arr(d.findings).map((f) => {
       const r = rec(f);
       const b = rec(r.box);
@@ -499,6 +501,7 @@ function Body({ ev, canReadContent, rights }: { ev: Event; canReadContent: boole
           Хронология сессии
         </a>
       )}
+      {d.test && <Banner kind="info">Это запрос тестирования устойчивости: продукт сам атаковал приложение. Оповещения и инциденты по нему не создаются.</Banner>}
       {ev.non_text_unchecked && (
         <Banner kind="warning">В запросе есть нетекстовые части (изображения или аудио), они не проверялись.</Banner>
       )}
