@@ -163,7 +163,10 @@ func TestJudgeSpecValidation(t *testing.T) {
 		}
 	}
 	// Раздел judge без правил допустим: оценщик не вызывается.
-	s, _ := Parse(strings.NewReader(judgeYAML))
+	s, err := Parse(strings.NewReader(judgeYAML))
+	if err != nil {
+		t.Fatal(err)
+	}
 	s.Rules = nil
 	if p, err := Compile(s, judgeCatalog(t)); err != nil || len(p.JudgeRules(detect.Output)) != 0 {
 		t.Fatalf("раздел без правил: %v", err)

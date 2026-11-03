@@ -49,7 +49,11 @@ func newMockJudge(t *testing.T, markers map[string]string) *mockJudge {
 
 func (m *mockJudge) handle(w http.ResponseWriter, r *http.Request) {
 	m.calls.Add(1)
-	body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		http.Error(w, "read error", http.StatusBadRequest)
+		return
+	}
 	var req struct {
 		Messages []struct {
 			Role    string `json:"role"`
@@ -97,7 +101,9 @@ func (m *mockJudge) handle(w http.ResponseWriter, r *http.Request) {
 		"usage": map[string]any{"prompt_tokens": 120, "completion_tokens": 30, "total_tokens": 150},
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(resp)
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		http.Error(w, "encode error", http.StatusInternalServerError)
+	}
 }
 
 func (m *mockJudge) client(t *testing.T) Client {
