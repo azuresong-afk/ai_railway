@@ -180,7 +180,7 @@
 | GET | `/api/v1/rag/collections` | `rag.read` | да | да | да | да | — | да |
 | GET | `/api/v1/rag/collections/{slug}` | `rag.read` | да | да | да | да | — | да |
 | POST | `/api/v1/rag/collections/{slug}/exclusions` | `rag.manage` | да | да | — | — | — | да |
-| DELETE | `/api/v1/rag/collections/{slug}/exclusions/{id}` | `rag.manage` | да | да | — | — | — | да |
+| DELETE | `/api/v1/rag/collections/{slug}/exclusions/{id}` | `rag.unexclude` | да | — | — | — | — | — |
 | GET | `/api/v1/rag/collections/{slug}/manifest` | `rag.read` | да | да | да | да | — | да |
 | PUT | `/api/v1/rag/collections/{slug}/manifest` | `rag.manage` | да | да | — | — | — | да |
 | GET | `/api/v1/report-channels` | `reports.schedules.manage` | да | да | — | — | — | да |

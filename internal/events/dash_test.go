@@ -487,3 +487,49 @@ func ageDashMarks(t *testing.T, e *pgEnv) {
 		t.Fatal(err)
 	}
 }
+
+// Отказ model_not_allowed несёт модель из запроса клиента: в агрегаты она не
+// попадает (ревью 5.r2, 5Н17) — реестр ИИ пополняется из dash_req_hour, и
+// выдуманные имена заполнили бы его до предела.
+func TestPGDashSkipsModelOfNotAllowed(t *testing.T) {
+	e := setupPG(t)
+	ctx := pgCtx(t)
+	if _, err := e.st.EnsurePartitions(ctx); err != nil {
+		t.Fatal(err)
+	}
+	ds, st := dashStoreFor(t, e)
+	if err := ds.Init(ctx); err != nil {
+		t.Fatal(err)
+	}
+	at := time.Now().UTC().Truncate(time.Hour).Add(-time.Hour)
+	ok := dashEvent{at: at, n: 1, typ: events.TypeGatewayRequest, app: "a", provider: "mock", model: "m1", action: "allow", mode: "enforce"}.build()
+	fake := dashEvent{at: at, n: 2, typ: events.TypeGatewayRequest, app: "a", provider: "mock", model: "made-up-model", action: "block", mode: "enforce"}.build()
+	fake.Decision.Rule = "model_not_allowed"
+	if _, err := st.Insert(ctx, events.Ingest{GatewayID: testGateway, ReceivedAt: time.Now(), Events: []events.Event{ok, fake}}); err != nil {
+		t.Fatal(err)
+	}
+	check := func(stage string) {
+		t.Helper()
+		var models []string
+		rows, err := e.owner.Query(ctx, `SELECT model FROM dash_req_hour ORDER BY model`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for rows.Next() {
+			var m string
+			if err := rows.Scan(&m); err != nil {
+				t.Fatal(err)
+			}
+			models = append(models, m)
+		}
+		rows.Close()
+		if !slices.Equal(models, []string{"", "m1"}) {
+			t.Fatalf("%s: модели в агрегате %q", stage, models)
+		}
+	}
+	check("хук")
+	if err := ds.Recompute(ctx, at, at.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	check("пересчёт")
+}

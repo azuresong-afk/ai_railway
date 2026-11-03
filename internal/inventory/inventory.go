@@ -107,6 +107,9 @@ var (
 	ErrNoProvider = errors.New("провайдер не найден")
 	// errUnchanged — изменение ничего не меняет: без записи аудита.
 	errUnchanged = errors.New("без изменений")
+	// ErrReferenceSessionOnly — изменение эталона весов или адаптера по
+	// токену API: только из консоли (ревью 5.r2, 5Н18).
+	ErrReferenceSessionOnly = errors.New("эталон весов меняется только из консоли")
 )
 
 // InputError — неверные данные запроса; текст показывается пользователю.
@@ -531,9 +534,11 @@ func (s *Service) UpdateModel(ctx context.Context, by By, id string, p ModelPatc
 			changed = append(changed, "kind")
 		}
 		before := len(m.Files)
+		var refChanged []string
 		if p.Files != nil {
 			nf := p.files()
 			if !sameFiles(m.Files, nf) {
+				refChanged = referenceChanged(m.Files, nf)
 				m.Files = nf
 				changed = append(changed, "files")
 			}
@@ -541,15 +546,55 @@ func (s *Service) UpdateModel(ctx context.Context, by By, id string, p ModelPatc
 		if len(changed) == 0 {
 			return audit.Entry{}, errUnchanged
 		}
+		// Смена или удаление эталона весов и адаптера ослабляет сверку
+		// хешей (DM-29): подогнать эталон под подменённые веса можно только
+		// из консоли, запись — ослабление защиты (DM-40). Новые файлы
+		// токен добавляет по-прежнему (ревью 5.r2, 5Н18).
+		if len(refChanged) > 0 && by.Actor.Type == audit.ActorAPIToken {
+			return audit.Entry{}, ErrReferenceSessionOnly
+		}
 		m.FileCount = len(m.Files)
 		m.UpdatedAt, m.UpdatedBy = s.now(), by.ref()
-		return by.entry("inventory.model_updated", m.ID, map[string]any{"provider": m.Provider, "name": m.Name, "changed": changed,
-			"files_before": before, "files": len(m.Files)}), nil
+		details := map[string]any{"provider": m.Provider, "name": m.Name, "changed": changed,
+			"files_before": before, "files": len(m.Files)}
+		if len(refChanged) > 0 {
+			details["reference_changed"] = refChanged
+			details["weakening"] = true
+			details["weakening_reasons"] = []string{"model_reference_changed"}
+		}
+		return by.entry("inventory.model_updated", m.ID, details), nil
 	})
 	if errors.Is(err, errUnchanged) {
 		m, _, err = s.Model(ctx, id)
 	}
 	return m, err
+}
+
+// maxRefChangedInAudit — путей изменённого эталона в записи аудита.
+const maxRefChangedInAudit = 20
+
+// referenceChanged — пути файлов весов и адаптеров с эталоном в old, которые
+// в next удалены, сменили хеш, размер или роль (без хешей — только пути, до
+// maxRefChangedInAudit).
+func referenceChanged(old, next []File) []string {
+	idx := make(map[string]File, len(next))
+	for _, f := range next {
+		idx[f.Path] = f
+	}
+	var out []string
+	for _, f := range old {
+		if !guarded(f.Role) || len(f.Hash) == 0 {
+			continue
+		}
+		n, ok := idx[f.Path]
+		if ok && n.Role == f.Role && n.Size == f.Size && n.HashAlg == f.HashAlg && string(n.Hash) == string(f.Hash) {
+			continue
+		}
+		if len(out) < maxRefChangedInAudit {
+			out = append(out, f.Path)
+		}
+	}
+	return out
 }
 
 func sameFiles(a, b []File) bool {

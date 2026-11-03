@@ -72,6 +72,12 @@ type Snapshot struct {
 	// дополнение): ручные — целиком, из трафика — только с правками.
 	// Раздел необязательный, формат остаётся версии 2.
 	InventoryModels []InventoryModel `json:"inventory_models,omitempty"`
+	// RAGExclusions — исключения документов коллекций RAG администратором
+	// (ревью 5.r2 этапа 5, 5Н15; ADR-0017, дополнение): решение по
+	// безопасности, без него исключённые документы молча вернулись бы в
+	// индекс. Манифесты не входят: их пришлёт индексатор. Раздел
+	// необязательный, формат остаётся версии 2.
+	RAGExclusions []RAGExclusion `json:"rag_exclusions,omitempty"`
 }
 
 // Settings — настройки организации и установки. nil — строки нет, действуют
@@ -665,6 +671,7 @@ func (s *Snapshot) Counts() map[string]any {
 		"mcp_servers": len(s.MCPServers), "agents": len(s.Agents), "agent_tools": len(s.AgentTools),
 		"shadow_ai_exclusions": len(s.ShadowAIExclusions), "licenses": len(s.Licenses),
 		"compliance_marks": len(s.ComplianceMarks), "service_dbs": len(s.ServiceDBs), "inventory_models": len(s.InventoryModels),
+		"rag_exclusions": len(s.RAGExclusions),
 	}
 }
 

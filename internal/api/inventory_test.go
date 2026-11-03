@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/azuresong-afk/ai_railway/internal/audit"
+	"github.com/azuresong-afk/ai_railway/internal/auth"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/internal/cyclonedx"
 	"github.com/azuresong-afk/ai_railway/internal/inventory"
@@ -226,5 +228,56 @@ func TestInventoryAIBOMViaAPI(t *testing.T) {
 	det, _ := rec.Details.(map[string]any)
 	if rec.Action != "data.export" || det["kind"] != inventory.ExportKindAIBOM || det["components"] != 3 || rec.Actor.Name != "sysadm" {
 		t.Errorf("запись data.export: %+v", rec)
+	}
+}
+
+// Смена или удаление эталона весов и адаптера (ревью 5.r2, 5Н18): по токену
+// — 403 с access.denied, из консоли — запись с признаком ослабления (DM-40);
+// новые файлы токен добавляет.
+func TestInventoryReferenceChangeSessionOnly(t *testing.T) {
+	e, mem := newInventoryEnv(t)
+	sys := e.mustLogin(t, "sysadm")
+	file := func(path, role, hash string) string {
+		return fmt.Sprintf(`{"path":%q,"size":4096,"role":%q,"sha256":%q}`, path, role, hash)
+	}
+	const other = "60303ae22b998861bce3b28f33eec1be758a213c86c93c076dbe9f558c11c752"
+	weights, tok := file("model.safetensors", "weights", invHash), file("tokenizer.json", "tokenizer", invHash)
+	w := e.call(sys, "POST", "/api/v1/inventory/models", `{"kind":"customer","name":"llama-ft","files":[`+weights+`,`+tok+`]}`, true)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("создание: %d %s", w.Code, w.Body)
+	}
+	path := "/api/v1/inventory/models/" + decode[InventoryModelCard](t, w.Body.Bytes()).ID
+	bearer := session{bearer: e.issueToken(t, sys, auth.PermInventoryManage, auth.PermInventoryRead).Token}
+	// Токен: новый адаптер и другой хеш токенизатора — можно.
+	added := `{"files":[` + weights + `,` + file("tokenizer.json", "tokenizer", other) + `,` + file("lora/adapter.safetensors", "adapter", invHash) + `]}`
+	if w := e.call(bearer, "PATCH", path, added, false); w.Code != http.StatusOK {
+		t.Fatalf("новый файл токеном: %d %s", w.Code, w.Body)
+	}
+	if d, _ := mem.Records[len(mem.Records)-1].Details.(map[string]any); d["weakening"] != nil {
+		t.Fatalf("добавление — не ослабление: %+v", d)
+	}
+	// Токен: смена хеша весов, удаление адаптера, смена роли — отказ.
+	for name, body := range map[string]string{
+		"хеш весов":         `{"files":[` + file("model.safetensors", "weights", other) + `,` + file("lora/adapter.safetensors", "adapter", invHash) + `]}`,
+		"удаление адаптера": `{"files":[` + weights + `]}`,
+		"смена роли":        `{"files":[` + file("model.safetensors", "other", invHash) + `,` + file("lora/adapter.safetensors", "adapter", invHash) + `]}`,
+	} {
+		_, before := lastDenied(t, e.mem)
+		mustProblem(t, e.call(bearer, "PATCH", path, body, false), http.StatusForbidden, CodeForbidden)
+		rec, after := lastDenied(t, e.mem)
+		if after != before+1 || rec.Actor.Type != audit.ActorAPIToken || rec.Details.(map[string]any)["reason"] != DenyReasonSessionOnly {
+			t.Fatalf("%s: отказ токену не записан: %+v", name, rec)
+		}
+	}
+	// Консоль: смена хеша весов — ослабление с путём, без хешей в аудите.
+	w = e.call(sys, "PATCH", path, `{"files":[`+file("model.safetensors", "weights", other)+`,`+file("lora/adapter.safetensors", "adapter", invHash)+`]}`, true)
+	if w.Code != http.StatusOK {
+		t.Fatalf("смена эталона из консоли: %d %s", w.Code, w.Body)
+	}
+	r := mem.Records[len(mem.Records)-1]
+	d, _ := r.Details.(map[string]any)
+	if r.Action != "inventory.model_updated" || d["weakening"] != true || fmt.Sprint(d["weakening_reasons"]) != "[model_reference_changed]" ||
+		fmt.Sprint(d["reference_changed"]) != "[model.safetensors]" || strings.Contains(fmt.Sprint(d), other) {
+		t.Fatalf("аудит смены эталона: %+v", r)
 	}
 }

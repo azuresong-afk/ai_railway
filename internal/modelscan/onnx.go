@@ -2,6 +2,7 @@ package modelscan
 
 import (
 	"bufio"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -495,29 +496,87 @@ func badLocation(loc string) string {
 	return ""
 }
 
-// isONNX — начало ModelProto: поле 1 (ir_version) varint от 1 до 100 и за
-// ним поле модели с допустимым типом.
-func isONNX(head []byte) bool {
+// onnxModelFields — поля ModelProto и их тип (onnx/onnx.proto).
+var onnxModelFields = map[uint64]uint64{
+	1: wireVarint, 2: wireLen, 3: wireLen, 4: wireLen, 5: wireVarint, 6: wireLen,
+	modelGraph: wireLen, modelOpset: wireLen, 14: wireLen, modelTraining: wireLen, modelFunctions: wireLen, 26: wireLen,
+}
+
+// isONNX — начало ModelProto. protobuf допускает любой порядок полей, и
+// onnxruntime загрузит модель, где граф записан первым (ревью 5.r2, 5Н12),
+// поэтому первым может быть любое поле модели с верным типом. Поля в начале
+// файла должны идти цепочкой без ошибок до конца просмотра (или файла), а
+// длина поля — помещаться в файл; ir_version — от 1 до 100. Файл, который
+// просмотрен целиком, должен содержать граф (поле 7). Текст, который
+// случайно начинается байтом ключа, не проходит: длина поля в печатном байте
+// — до 127, и цепочка до конца просмотра в 4 КиБ из таких полей невероятна.
+func isONNX(head []byte, size int64) bool {
+	if irFirst(head) {
+		return true
+	}
+	pos, fields, graph := 0, 0, false
+	for pos < len(head) {
+		k, n := binary.Uvarint(head[pos:])
+		if n == 0 {
+			break // ключ обрезан концом просмотра
+		}
+		if n < 0 {
+			return false
+		}
+		pos += n
+		num, wt := k>>3, k&7
+		want, ok := onnxModelFields[num]
+		if !ok || want != wt {
+			return false
+		}
+		v, n := binary.Uvarint(head[pos:])
+		if n < 0 {
+			return false
+		}
+		fields++
+		if num == modelGraph {
+			graph = true
+		}
+		if n == 0 {
+			break // значение обрезано концом просмотра
+		}
+		pos += n
+		switch {
+		case num == 1 && (v == 0 || v > 100):
+			return false
+		case wt == wireLen:
+			if v > uint64(size) || uint64(pos) > uint64(size)-v { //nolint:gosec // G115: размер файла и pos неотрицательны
+				return false
+			}
+			if v > uint64(len(head)-pos) { //nolint:gosec // G115: pos ≤ len(head)
+				pos = len(head) // поле дальше просмотра
+			} else {
+				pos += int(v) //nolint:gosec // G115: v не больше длины буфера
+			}
+		}
+	}
+	if int64(len(head)) >= size {
+		return graph // файл просмотрен целиком
+	}
+	return fields > 0
+}
+
+// irFirst — поле 1 (ir_version) от 1 до 100 первым и за ним поле модели с
+// допустимым типом: обычный порядок полей, как пишет onnx.save.
+func irFirst(head []byte) bool {
 	if len(head) < 3 || head[0] != 0x08 {
 		return false
 	}
-	p := &pbReader{r: bufio.NewReader(strings.NewReader(string(head[1:])))}
-	ir, err := p.varint()
-	if err != nil || ir == 0 || ir > 100 {
+	ir, n := binary.Uvarint(head[1:])
+	if n <= 0 || ir == 0 || ir > 100 {
 		return false
 	}
-	k, err := p.varint()
-	if err != nil {
+	k, m := binary.Uvarint(head[1+n:])
+	if m <= 0 {
 		return false
 	}
-	num, wt := k>>3, k&7
-	switch num {
-	case 2, 3, 4, 6, 7, 8, 14, 20, 25:
-		return wt == wireLen
-	case 5:
-		return wt == wireVarint
-	}
-	return false
+	want, ok := onnxModelFields[k>>3]
+	return ok && k>>3 != 1 && want == k&7
 }
 
 // scanONNX разбирает модель ONNX.

@@ -96,6 +96,7 @@ func Read(ctx context.Context, tx pgx.Tx, box SecretOpener, keys *Keys, orgID st
 		{"отметки соответствия", readComplianceMarks},
 		{"служебные базы", readServiceDBs},
 		{"реестр ИИ", readInventoryModels},
+		{"исключения документов RAG", readRAGExclusions},
 	}...)
 	for _, st := range steps {
 		if err := st.fn(ctx, tx, s); err != nil {
@@ -594,6 +595,18 @@ func Conflicts(ctx context.Context, q Querier, s *Snapshot) error {
 			trafficIDs, trafficPairs = append(trafficIDs, m.ID), append(trafficPairs, m.Provider+"/"+m.Name)
 		}
 	}
+	// Исключения RAG: совпадение — ID исключения или ID коллекции у
+	// коллекции установки с другим slug; коллекция с тем же slug —
+	// не совпадение, исключения добавляются в неё.
+	var exclIDs, colIDs, colSlugs []string
+	seenCol := map[string]bool{}
+	for _, e := range s.RAGExclusions {
+		exclIDs = append(exclIDs, e.ID)
+		if !seenCol[e.CollectionID] {
+			seenCol[e.CollectionID] = true
+			colIDs, colSlugs = append(colIDs, e.CollectionID), append(colSlugs, e.Collection)
+		}
+	}
 	rows, err := q.Query(ctx, `
 		SELECT 'пользователь ' || login FROM users WHERE id = ANY($1::uuid[]) OR (org_id = $14 AND login = ANY($2))
 		UNION ALL SELECT 'роль ' || id FROM roles WHERE org_id = $14 AND id = ANY($3)
@@ -613,10 +626,13 @@ func Conflicts(ctx context.Context, q Querier, s *Snapshot) error {
 		UNION ALL SELECT 'модель реестра ' || provider || '/' || name FROM inventory_models
 			WHERE id = ANY($26::uuid[]) OR (org_id = $14 AND provider || '/' || name = ANY($27))
 			OR (id = ANY($28::uuid[]) AND NOT provider || '/' || name = ANY($29))
+		UNION ALL SELECT 'исключение документа RAG ' || doc_id FROM rag_exclusions WHERE id = ANY($30::uuid[])
+		UNION ALL SELECT 'коллекция RAG ' || c.slug FROM rag_collections c WHERE c.id = ANY($31::uuid[])
+			AND (c.org_id <> $14 OR (c.id, c.slug) NOT IN (SELECT * FROM unnest($31::uuid[], $32::text[])))
 		LIMIT $15`,
 		userIDs, logins, roleIDs, tokenIDs, tokenPrefixes, provIDs, provSlugs, appIDs, appSlugs, keyIDs, keyPrefixes,
 		polIDs, polSlugs, s.OrgID, maxConflicts, chIDs, chNames, ruleIDs, schIDs, schNames, priceIDs, srvIDs, srvSlugs,
-		agentIDs, toolIDs, manualIDs, manualPairs, trafficIDs, trafficPairs)
+		agentIDs, toolIDs, manualIDs, manualPairs, trafficIDs, trafficPairs, exclIDs, colIDs, colSlugs)
 	if err != nil {
 		return err
 	}
@@ -773,6 +789,10 @@ type RestoreResult struct {
 	// Inventory — строки отчёта о моделях реестра ИИ из трафика: правки
 	// перенесены на модель установки или пропущены (у неё свои правки).
 	Inventory []string
+	// RAG — строки отчёта об исключениях документов RAG по коллекциям:
+	// сколько перенесено, сколько уже было в установке, создана ли
+	// коллекция без манифеста (версия 0).
+	RAG []string
 }
 
 // agentsSchemaVersion — миграция, добавившая привязку ключей к агентам
@@ -843,6 +863,7 @@ func Restore(ctx context.Context, tx pgx.Tx, p *Prepared, opts RestoreOptions) (
 			return err
 		}},
 		{"реестр ИИ", func() (err error) { res.Inventory, err = writeInventoryModels(ctx, tx, s); return err }},
+		{"исключения документов RAG", func() (err error) { res.RAG, err = writeRAGExclusions(ctx, tx, s, opts.Now); return err }},
 	}
 	for _, st := range steps {
 		if err := st.fn(); err != nil {

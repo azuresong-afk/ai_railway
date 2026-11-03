@@ -469,7 +469,7 @@ func (h *ChatHandler) admitSize(w http.ResponseWriter, r *http.Request, rec *rec
 	if h.cfg.Quotas == nil {
 		return true
 	}
-	qr := QuotaRequest{App: rec.app.ID, User: user, InputBytes: size, Tokens: tokens}
+	qr := QuotaRequest{App: rec.app.ID, User: user, InputBytes: size, Tokens: tokens, Requests: rec.quotaRequests}
 	if id, ok := IdentityFrom(r.Context()); ok {
 		qr.Key = id.KeyPrefix
 	}

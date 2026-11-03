@@ -116,7 +116,9 @@ type Collection struct {
 	ID    string
 	OrgID string
 	Slug  string
-	// Version — номер текущей версии манифеста (с 1).
+	// Version — номер текущей версии манифеста (с 1); 0 — коллекция
+	// восстановлена из резервной копии с исключениями, манифест ещё не
+	// загружен (ревью 5.r2, 5Н15, миграция 0073).
 	Version   int
 	Documents int
 	Size      int64
@@ -345,7 +347,9 @@ func alertIDs(d Diff) (map[string][]string, bool) {
 // LoadManifest загружает новую версию манифеста коллекции slug (коллекция
 // создаётся первой загрузкой). Пишет rag.manifest_loaded, а при разнице с
 // предыдущей версией — rag.document_changed (DM-30) той же транзакцией.
-// Первая версия разницы не даёт: сравнивать не с чем.
+// Первая версия разницы не даёт: сравнивать не с чем. Коллекция версии 0
+// (восстановлена из копии) получает версию 1, как при создании, и сохраняет
+// исключения.
 func (s *Service) LoadManifest(ctx context.Context, by By, slug string, docs []Document) (LoadResult, error) {
 	if !ValidSlug(slug) {
 		return LoadResult{}, invalid(errors.New("slug — ID коллекции: строчные латинские буквы, цифры и «-», до 63 символов"))
@@ -359,12 +363,15 @@ func (s *Service) LoadManifest(ctx context.Context, by By, slug string, docs []D
 	blocked, err := s.store.LoadManifest(ctx, s.orgID, slug, docs, func(cur *Collection, curDocs []Document) (Collection, []audit.Entry, error) {
 		next := Collection{ID: id, OrgID: s.orgID, Slug: slug, Version: 1, LoadedAt: now, LoadedBy: by.ref(), CreatedAt: now,
 			Diff: Diff{AddedIDs: []string{}, ChangedIDs: []string{}, RemovedIDs: []string{}}}
+		first := cur == nil || cur.Version == 0
 		if cur != nil {
 			next.ID, next.CreatedAt, next.Version = cur.ID, cur.CreatedAt, cur.Version+1
+			next.ExclusionCount = cur.ExclusionCount
+		}
+		if !first {
 			prev := cur.LoadedAt
 			next.PrevLoadedAt = &prev
 			next.Diff = Compare(curDocs, docs)
-			next.ExclusionCount = cur.ExclusionCount
 		}
 		next.Documents = len(docs)
 		for _, d := range docs {
@@ -378,7 +385,7 @@ func (s *Service) LoadManifest(ctx context.Context, by By, slug string, docs []D
 			"collection": slug, "version": next.Version, "documents": next.Documents, "size": next.Size, "excluded": next.Excluded,
 			"created": cur == nil, "added": next.Diff.Added, "changed": next.Diff.Changed, "removed": next.Diff.Removed,
 		})}
-		if cur != nil && !next.Diff.Empty() {
+		if !first && !next.Diff.Empty() {
 			ids, truncated := alertIDs(next.Diff)
 			recs = append(recs, by.entry("rag.document_changed", next, map[string]any{
 				"collection": slug, "version": next.Version, "prev_version": cur.Version,

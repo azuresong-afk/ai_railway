@@ -350,6 +350,22 @@ const (
 	inventoryTraffic = "traffic"
 )
 
+// RAGExclusion — исключение документа коллекции RAG администратором
+// (миграция 0071, ADR-0029, п. 5; ревью 5.r2 этапа 5, 5Н15). Коллекция — по
+// slug: при восстановлении исключение добавляется в коллекцию установки с
+// тем же slug, а если её нет — коллекция создаётся с ID копии без манифеста
+// (версия 0, миграция 0073), и исключения действуют до первой загрузки.
+// Поля проверяет internal/rag (CheckExclusion) до записи.
+type RAGExclusion struct {
+	ID           string    `json:"id"`
+	CollectionID string    `json:"collection_id"`
+	Collection   string    `json:"collection"`
+	DocumentID   string    `json:"document_id"`
+	Reason       string    `json:"reason"`
+	CreatedAt    time.Time `json:"created_at"`
+	CreatedBy    string    `json:"created_by"`
+}
+
 // ComplianceMark — ручная отметка соответствия требованию.
 type ComplianceMark struct {
 	RequirementID string     `json:"requirement_id"`
@@ -389,6 +405,11 @@ const (
 	// их не превышают.
 	maxInventoryModels = 5000
 	maxInventoryFiles  = 256
+	// maxRAGCollections и maxRAGExclusionsPerCollection — пределы
+	// коллекций RAG (rag.MaxCollections, rag.MaxExclusions).
+	maxRAGCollections             = 100
+	maxRAGExclusionsPerCollection = 1000
+	maxRAGExclusions              = maxRAGCollections * maxRAGExclusionsPerCollection
 )
 
 // Виды секретов разделов версии 2 (входят в AAD шифротекста копии).
@@ -405,7 +426,7 @@ const (
 func (s *Snapshot) hasV2() bool {
 	if len(s.Channels)+len(s.AlertRules)+len(s.ReportSchedules)+len(s.ModelPrices)+len(s.Instructions)+
 		len(s.MCPServers)+len(s.Agents)+len(s.AgentTools)+len(s.ShadowAIExclusions)+len(s.Licenses)+len(s.ComplianceMarks)+
-		len(s.ServiceDBs)+len(s.InventoryModels) > 0 ||
+		len(s.ServiceDBs)+len(s.InventoryModels)+len(s.RAGExclusions) > 0 ||
 		s.GatewayTLS != nil || s.OIDC != nil || s.LDAP != nil || s.LicenseClock != nil {
 		return true
 	}
@@ -441,7 +462,7 @@ func (s *Snapshot) validateV2() error {
 		len(s.ModelPrices) > maxPrices, len(s.Instructions) > maxInstructions, len(s.MCPServers) > maxMCPServers,
 		len(s.Agents) > maxAgents, len(s.AgentTools) > maxTools, len(s.ShadowAIExclusions) > maxExclusions,
 		len(s.Licenses) > maxLicenses, len(s.ComplianceMarks) > maxMarks, len(s.ServiceDBs) > maxServiceDBs,
-		len(s.InventoryModels) > maxInventoryModels:
+		len(s.InventoryModels) > maxInventoryModels, len(s.RAGExclusions) > maxRAGExclusions:
 		return errors.New("объектов больше предела")
 	}
 	channels, cnames := ids{}, ids{}
@@ -627,6 +648,9 @@ func (s *Snapshot) validateV2() error {
 			}
 		}
 	}
+	if err := s.validateRAGExclusions(); err != nil {
+		return err
+	}
 	marks := ids{}
 	for _, m := range s.ComplianceMarks {
 		if err := marks.add("отметка соответствия", m.RequirementID); err != nil {
@@ -649,6 +673,44 @@ func (s *Snapshot) validateV2() error {
 				}
 			}
 		}
+	}
+	return nil
+}
+
+// validateRAGExclusions — ID, повторы и пределы исключений RAG: ID
+// исключения и пара «коллекция, документ» без повторов, у коллекции один
+// ID, коллекций и исключений в коллекции — не больше пределов RAG.
+func (s *Snapshot) validateRAGExclusions() error {
+	excl, docs := ids{}, ids{}
+	slugByID, idBySlug, perCollection := map[string]string{}, map[string]string{}, map[string]int{}
+	for _, e := range s.RAGExclusions {
+		if err := checkUUID("исключение RAG", e.ID); err != nil {
+			return err
+		}
+		if err := checkUUID("коллекция RAG", e.CollectionID); err != nil {
+			return err
+		}
+		if err := excl.add("исключение RAG", e.ID); err != nil {
+			return err
+		}
+		// slug коллекции без «|», поэтому пара однозначна.
+		if err := docs.add("исключение RAG документа", e.Collection+"|"+e.DocumentID); err != nil {
+			return err
+		}
+		if slug, ok := slugByID[e.CollectionID]; ok && slug != e.Collection {
+			return fmt.Errorf("коллекция RAG %s: два slug", e.CollectionID)
+		}
+		if id, ok := idBySlug[e.Collection]; ok && id != e.CollectionID {
+			return fmt.Errorf("коллекция RAG %s: два ID", truncate(e.Collection))
+		}
+		slugByID[e.CollectionID], idBySlug[e.Collection] = e.Collection, e.CollectionID
+		perCollection[e.Collection]++
+		if perCollection[e.Collection] > maxRAGExclusionsPerCollection {
+			return fmt.Errorf("коллекция RAG %s: исключений больше %d", truncate(e.Collection), maxRAGExclusionsPerCollection)
+		}
+	}
+	if len(perCollection) > maxRAGCollections {
+		return fmt.Errorf("коллекций RAG больше %d", maxRAGCollections)
 	}
 	return nil
 }

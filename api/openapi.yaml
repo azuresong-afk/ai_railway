@@ -109,8 +109,9 @@ paths:
         (например, косвенная инъекция), `reason: check_unavailable` — текст не
         удалось проверить при `fail_closed` (повторите позже). В режиме monitor
         документы не исключаются, `action` показывает решение как в enforce.
-        Квоты приложения: пакет — один запрос для частоты, предел размера
-        входа — к каждому тексту; отказ квоты — 429 на весь пакет. Модель не
+        Квоты приложения: частота — по числу документов пакета (пакет больше
+        `requests_per_minute` не пройдёт никогда), предел размера входа — к
+        каждому тексту; отказ квоты — 429 на весь пакет до проверки. Модель не
         вызывается. Ответ на ошибку разбора не содержит значений из запроса.
       requestBody:
         required: true
@@ -5955,7 +5956,10 @@ paths:
         Право `inventory.manage`. Меняются вид, версия, название, описание, ответственный; `files` заменяет список
         файлов целиком. Провайдер и имя не меняются: по ним модель связана с трафиком. Модель без провайдера не может
         стать моделью провайдера (400). Изменение без отличий ничего не пишет. Пишет `inventory.model_updated`
-        (изменённые поля, число файлов до и после).
+        (изменённые поля, число файлов до и после). Смена хеша, размера или роли либо удаление файла весов или
+        адаптера с эталоном — ослабление сверки хешей (DM-29): только из сессии консоли (токен API — 403 с записью
+        `access.denied`, новые файлы токен добавляет), запись с `weakening: true`, `weakening_reasons:
+        [model_reference_changed]` и путями изменённых файлов (`reference_changed`, без хешей).
       x-permission: inventory.manage
       security: [{ sessionCookie: [] }, { bearerToken: [] }]
       parameters:
@@ -6214,10 +6218,10 @@ paths:
     delete:
       summary: Снять исключение документа
       description: |
-        Право `rag.manage`, только сессия консоли: снятие исключения — ослабление защиты (документ снова попадёт
-        в индекс), токен API получает 403 с записью `access.denied`. Пишет `rag.exclusion_removed` с признаком
-        ослабления (DM-40).
-      x-permission: rag.manage
+        Право безопасности `rag.unexclude` (администратор безопасности; администратор системы с `rag.manage` получает
+        403), только сессия консоли: снятие исключения — ослабление защиты (документ снова попадёт в индекс), токен
+        API получает 403 с записью `access.denied`. Пишет `rag.exclusion_removed` с признаком ослабления (DM-40).
+      x-permission: rag.unexclude
       security: [{ sessionCookie: [] }]
       parameters:
         - $ref: '#/components/parameters/RAGCollectionSlug'
@@ -7159,7 +7163,7 @@ components:
       required: [slug, version, documents, size, excluded, exclusions, loaded_at, loaded_by, diff, created_at]
       properties:
         slug: { type: string }
-        version: { type: integer, minimum: 1, description: Номер текущей версии манифеста }
+        version: { type: integer, minimum: 0, description: "Номер текущей версии манифеста; 0 — коллекция восстановлена из резервной копии с исключениями администратора, манифест ещё не загружен" }
         documents: { type: integer }
         size: { type: integer, format: int64, description: Сумма размеров документов, байт }
         excluded: { type: integer, description: Документов, исключённых проверкой до индексации (отметка индексатора) }
