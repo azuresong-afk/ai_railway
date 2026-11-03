@@ -310,13 +310,21 @@ func (s *PGStore) SaveResult(ctx context.Context, orgID string, res Result) erro
 		}
 		return b
 	}
+	// Выдержка — только шифротекст с ID ключа и алгоритмом (5В3 ревью 5.r3).
+	var (
+		ex           []byte
+		exKey, exAlg any
+	)
+	if res.Example != nil {
+		ex, exKey, exAlg = res.Example.Data, res.Example.KeyID, res.Example.Alg
+	}
 	var ok bool
 	err := s.db.QueryRow(ctx, `INSERT INTO redteam_results (run_id, scenario_id, lang, threat, category, verdict, step, matched,
-			findings, judge, event_ids, http_status, latency_ms, error_code, example, created_at)
-		SELECT r.id, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, clock_timestamp()
+			findings, judge, event_ids, http_status, latency_ms, error_code, example, example_key_id, example_alg, created_at)
+		SELECT r.id, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, clock_timestamp()
 		FROM redteam_runs r WHERE r.id = $1 AND r.org_id = $2
 		RETURNING true`, res.RunID, orgID, res.ScenarioID, res.Lang, res.Threat, res.Category, res.Verdict, res.Step, enc(res.Matched),
-		enc(res.Findings), res.Judge, enc(res.EventIDs), res.HTTPStatus, res.LatencyMS, res.ErrorCode, res.Example).Scan(&ok)
+		enc(res.Findings), res.Judge, enc(res.EventIDs), res.HTTPStatus, res.LatencyMS, res.ErrorCode, ex, exKey, exAlg).Scan(&ok)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrNotFound
 	}
@@ -373,7 +381,7 @@ func (s *PGStore) Results(ctx context.Context, orgID, runID string) ([]Result, e
 	ctx, cancel := pgCtx(ctx)
 	defer cancel()
 	rows, err := s.db.Query(ctx, `SELECT s.run_id::text, s.scenario_id, s.lang, s.threat, s.category, s.verdict, s.step, s.matched,
-			s.findings, s.judge, s.event_ids, s.http_status, s.latency_ms, s.error_code, s.example
+			s.findings, s.judge, s.event_ids, s.http_status, s.latency_ms, s.error_code, s.example, s.example_key_id::text, s.example_alg
 		FROM redteam_results s JOIN redteam_runs r ON r.id = s.run_id
 		WHERE r.org_id = $1 AND s.run_id = $2 ORDER BY s.scenario_id COLLATE "C"`, orgID, runID)
 	if err != nil {
@@ -383,10 +391,14 @@ func (s *PGStore) Results(ctx context.Context, orgID, runID string) ([]Result, e
 	out := []Result{}
 	for rows.Next() {
 		var res Result
-		var matched, findings, eventIDs []byte
+		var matched, findings, eventIDs, ex []byte
+		var exKey, exAlg *string
 		if err := rows.Scan(&res.RunID, &res.ScenarioID, &res.Lang, &res.Threat, &res.Category, &res.Verdict, &res.Step, &matched,
-			&findings, &res.Judge, &eventIDs, &res.HTTPStatus, &res.LatencyMS, &res.ErrorCode, &res.Example); err != nil {
+			&findings, &res.Judge, &eventIDs, &res.HTTPStatus, &res.LatencyMS, &res.ErrorCode, &ex, &exKey, &exAlg); err != nil {
 			return nil, dbErr("итоги", err)
+		}
+		if ex != nil && exKey != nil && exAlg != nil {
+			res.Example = &Sealed{Data: ex, KeyID: *exKey, Alg: *exAlg}
 		}
 		for _, p := range []struct {
 			b   []byte

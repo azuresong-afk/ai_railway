@@ -18,6 +18,7 @@ import (
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/internal/detect/judge"
 	"github.com/azuresong-afk/ai_railway/internal/ids"
+	"github.com/azuresong-afk/ai_railway/internal/keyring"
 	"github.com/azuresong-afk/ai_railway/internal/policy/bundle"
 	"github.com/azuresong-afk/ai_railway/internal/servicedb"
 )
@@ -64,8 +65,11 @@ type Options struct {
 	Store      Store
 	ServiceDBs servicedb.Store
 	Provider   aisecCrypto.Provider
-	OrgID      string
-	Apps       Apps
+	// Box — ключ данных: выдержки ответов режима masked хранятся только
+	// запечатанными (5В3 ревью 5.r3).
+	Box   *keyring.Box
+	OrgID string
+	Apps  Apps
 	// GatewayURL и GatewayCA — адрес шлюза для целей gateway (флаги
 	// -redteam-gateway-url и -redteam-gateway-ca); пусто — цели gateway
 	// не запускаются.
@@ -124,8 +128,8 @@ type Service struct {
 
 // New проверяет зависимости.
 func New(o Options) (*Service, error) {
-	if o.Store == nil || o.ServiceDBs == nil || o.Provider == nil || o.Apps == nil {
-		return nil, errors.New("тестирование устойчивости: нет хранилища, служебных баз, приложений или криптопрофиля")
+	if o.Store == nil || o.ServiceDBs == nil || o.Provider == nil || o.Apps == nil || o.Box == nil {
+		return nil, errors.New("тестирование устойчивости: нет хранилища, служебных баз, приложений, криптопрофиля или ключа данных")
 	}
 	if o.OrgID == "" {
 		o.OrgID = audit.DefaultOrgID

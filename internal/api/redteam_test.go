@@ -13,6 +13,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/audit"
 	"github.com/azuresong-afk/ai_railway/internal/auth"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
+	"github.com/azuresong-afk/ai_railway/internal/keyring"
 	"github.com/azuresong-afk/ai_railway/internal/redteam"
 	"github.com/azuresong-afk/ai_railway/internal/servicedb"
 )
@@ -38,7 +39,19 @@ func newRedTeamEnv(t *testing.T) (*appsEnv, *redteam.Service, *redteam.Memory) {
 		lookup := func(context.Context, string, string) ([]netip.Addr, error) {
 			return nil, errors.New("нет DNS в тесте")
 		}
-		svc, err = redteam.New(redteam.Options{Store: mem, ServiceDBs: servicedb.NewMemory(), Provider: p, Apps: o.Apps,
+		r, err := p.Random()
+		if err != nil {
+			t.Fatal(err)
+		}
+		key, err := aisecCrypto.RandomBytes(r, aisecCrypto.AEADKeySize)
+		if err != nil {
+			t.Fatal(err)
+		}
+		box, err := keyring.NewStaticKey(p, "01900000-0000-7000-8000-0000000000d1", key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		svc, err = redteam.New(redteam.Options{Store: mem, ServiceDBs: servicedb.NewMemory(), Provider: p, Box: box, Apps: o.Apps,
 			Logger: o.Logger, Lookup: lookup})
 		if err != nil {
 			t.Fatal(err)
