@@ -13,3 +13,12 @@
 .idea/
 .vscode/
 *.swp
+# Бинарники «go build ./cmd/...» в корне репозитория (ревью 5.r2, 5Н20)
+/aisec-gateway
+/aisec-server
+/aisec-cli
+/aisec-media
+/aisec-ml
+/aisec-manifest-sign
+/mock-llm
+/mock-mcp
