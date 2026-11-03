@@ -129,14 +129,22 @@ func (m *s5Media) thaw() {
 	}
 }
 
+// s5MediaBinary — aisec-media другой сборки (с OCR, make e2e-ocr); пусто —
+// сборка из каталога -bin.
+var s5MediaBinary string
+
 // s5StartMedia запускает aisec-media на новом сокете; args — флаги сверх
 // обязательных. Бинарник копируется в каталог стенда: в build/bin nobody
 // может не дойти.
 func s5StartMedia(t *testing.T, base string, args ...string) *s5Media {
 	t.Helper()
 	bin := filepath.Join(base, "aisec-media")
-	s2Copy(t, filepath.Join(*binDir, "aisec-media"), bin, 0o755) //nolint:gosec // G302: исполняемая копия для nobody
-	if err := os.Chmod(bin, 0o755); err != nil {                 //nolint:gosec // G302: то же
+	src := s5MediaBinary
+	if src == "" {
+		src = filepath.Join(*binDir, "aisec-media")
+	}
+	s2Copy(t, src, bin, 0o755)                   //nolint:gosec // G302: исполняемая копия для nobody
+	if err := os.Chmod(bin, 0o755); err != nil { //nolint:gosec // G302: то же
 		t.Fatal(err)
 	}
 	// Каталог стенда целиком — nobody (от root): бинарник, ключи и состояние шлюза.

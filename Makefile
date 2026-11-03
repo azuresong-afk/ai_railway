@@ -7,7 +7,7 @@ SHELL := /bin/bash
 
 # Текущий этап (ТЗ, раздел 14): строки матрицы 5.16 с этапом не выше этого
 # обязаны быть покрыты тестами.
-STAGE := 4
+STAGE := 5
 
 # Скрытые загрузки запрещены (ТЗ, 8.7): зависимости — только из vendor/,
 # прокси модулей выключен, toolchain должен быть уже установлен. Переменные
@@ -934,6 +934,26 @@ e2e: manifest ## Сквозные тесты: шлюз и mock-llm по TLS (э�
 # пользователей хоста; не от root — через sudo -n.
 PILOT_E2E := $(BUILD)/pilot-e2e
 PILOT_E2E_SUDO := $(if $(filter 0,$(shell id -u)),,sudo -n)
+
+# S12 со снимком экрана без QR-кода (задача 5.49; DM-45, DM-46; ADR-0033):
+# aisec-media с OCR (тег aisec_onnx, cgo), библиотека ONNX Runtime
+# (AISEC_ORT_LIB=…/libonnxruntime.so.$(ORT_VERSION), make ort-build) и модели
+# (make media-models). В make e2e и CI этой цели нет: там библиотеки нет, S12
+# проверяется на QR-коде (TestE2EStage5_S12_…). Бинарник собирается во
+# временный каталог build/e2e-ocr, поставочный выпуск не затрагивается.
+E2E_OCR_DIR := $(BUILD)/e2e-ocr
+
+.PHONY: e2e-ocr
+e2e-ocr: manifest ## S12 с OCR: aisec-media с ONNX Runtime читает ПДн на снимке экрана (AISEC_ORT_LIB=…, модели в build/media-models)
+	@test -f '$(AISEC_ORT_LIB)' || { echo "e2e-ocr: задайте AISEC_ORT_LIB=…/libonnxruntime.so.$(ORT_VERSION) (make ort-build)"; exit 1; }
+	$(MAKE) --no-print-directory media-models-check
+	mkdir -p $(E2E_OCR_DIR)
+	hash=$$(sha256sum '$(AISEC_ORT_LIB)' | cut -d' ' -f1) && \
+	CGO_ENABLED=1 go build -trimpath -tags '$(BUILD_TAGS) aisec_onnx' -ldflags "$(LDFLAGS) -X main.ortLibHash=$$hash" \
+		-o $(E2E_OCR_DIR)/aisec-media ./cmd/aisec-media
+	CGO_ENABLED=1 AISEC_E2E_MEDIA_BIN='$(abspath $(E2E_OCR_DIR))/aisec-media' AISEC_ORT_LIB='$(abspath $(AISEC_ORT_LIB))' \
+		AISEC_MEDIA_MODELS_DIR='$(abspath $(MEDIA_MODELS_DIR))' \
+		go test -tags 'e2e aisec_onnx' -count=1 -timeout $(E2E_TIMEOUT) -run '^TestE2EStage5_OCR' -v ./test/e2e/ -bin $(abspath $(BUILD))/bin
 
 .PHONY: e2e-pilot-bin
 e2e-pilot-bin: ## Сборка e2e пилота: тестовый бинарник, ловушка сети netwatch и mock-llm (статические)
