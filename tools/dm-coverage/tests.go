@@ -138,7 +138,7 @@ const optionalTag = "aisec_onnx"
 
 // optionalOnly — файл собирается только с тегом optionalTag: без него
 // условие ложно, с ним — истинно; остальные теги — как в окружении сборки
-// (ОС, архитектура, unix, gc, cgo, версии Go). Условие !aisec_onnx или
+// (ОС, архитектура, unix, gc, версии Go; cgo — всегда). Условие !aisec_onnx или
 // aisec_onnx || linux маркеры необязательными не делает (5Н23 ревью 5.r3).
 func optionalOnly(expr constraint.Expr) bool {
 	env := func(onnx bool) func(string) bool {
@@ -151,7 +151,9 @@ func optionalOnly(expr constraint.Expr) bool {
 			case "unix":
 				return build.Default.GOOS != "windows" && build.Default.GOOS != "plan9"
 			case "cgo":
-				return build.Default.CgoEnabled
+				// Тесты с ONNX Runtime идут только с cgo: окружение, где они
+				// запускаются, — с cgo, даже если dm-coverage собран без него.
+				return true
 			}
 			return slices.Contains(build.Default.ReleaseTags, tag)
 		}
