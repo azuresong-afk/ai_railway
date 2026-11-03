@@ -11,7 +11,9 @@ import (
 	"go/token"
 	"io/fs"
 	"regexp"
+	"slices"
 	"strings"
+	"unicode"
 
 	"github.com/azuresong-afk/ai_railway/tools/internal/repofs"
 )
@@ -123,7 +125,15 @@ func ParseJUnit(data []byte) ([]Result, error) {
 type Coverage struct {
 	ID   string
 	Part string // "" — основная часть строки
+	// Optional — тест в файле под тегом optionalTag: он идёт только там,
+	// где есть внешняя библиотека (ONNX Runtime, docs/cert/build-env.md), и в
+	// make dm-coverage не запускается. Если такой тест не запускался, это не
+	// ошибка разметки; если запускался — учитывается как обычный.
+	Optional bool
 }
+
+// optionalTag — сборочный тег тестов с внешней библиотекой.
+const optionalTag = "aisec_onnx"
 
 // coversRe разбирает маркер в комментарии теста:
 // «Покрывает: DM-38 (оповещение), DM-40».
@@ -170,6 +180,19 @@ func CollectMarkers(fsys fs.FS) (map[string][]Coverage, []string, error) {
 		if err != nil {
 			return fmt.Errorf("разбор %s: %w", p, err)
 		}
+		optional := false
+		for _, cg := range f.Comments {
+			if cg.Pos() > f.Package {
+				break
+			}
+			for _, c := range cg.List {
+				if strings.HasPrefix(c.Text, "//go:build ") && slices.Contains(strings.FieldsFunc(c.Text[len("//go:build "):], func(r rune) bool {
+					return !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '_'
+				}), optionalTag) {
+					optional = true
+				}
+			}
+		}
 		for _, decl := range f.Decls {
 			fn, ok := decl.(*ast.FuncDecl)
 			if !ok || fn.Doc == nil || fn.Recv != nil || !strings.HasPrefix(fn.Name.Name, "Test") {
@@ -178,6 +201,9 @@ func CollectMarkers(fsys fs.FS) (map[string][]Coverage, []string, error) {
 			covs, bad := ParseCovers(fn.Doc.Text())
 			for _, b := range bad {
 				problems = append(problems, fmt.Sprintf("%s: %s: %s", p, fn.Name.Name, b))
+			}
+			for i := range covs {
+				covs[i].Optional = optional
 			}
 			if len(covs) > 0 {
 				out[fn.Name.Name] = append(out[fn.Name.Name], covs...)

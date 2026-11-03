@@ -114,15 +114,17 @@ linters:
             - pkg: "github.com/go-asn1-ber/asn1-ber"
               desc: "разбор BER — только в internal/auth/ldap (ADR-0025, 2.7)"
         onnx-binding:
-          # Обвязка ONNX Runtime (cgo) — только в изолированном процессе
-          # aisec-ml (ADR-0024): шлюз и сервер остаются без cgo.
+          # Обвязка ONNX Runtime (cgo) — только в изолированных процессах
+          # aisec-ml (ADR-0024) и aisec-media (OCR, ADR-0033): шлюз и сервер
+          # остаются без cgo.
           list-mode: lax
           files:
             - "$all"
             - "!**/cmd/aisec-ml/**"
+            - "!**/cmd/aisec-media/**"
           deny:
             - pkg: "github.com/yalue/onnxruntime_go"
-              desc: "ONNX Runtime — только в cmd/aisec-ml (ADR-0024)"
+              desc: "ONNX Runtime — только в cmd/aisec-ml и cmd/aisec-media (ADR-0024, ADR-0033)"
         media-analyzer:
           # Анализатор изображений (ADR-0032, раздел 10): разбор, декодирование,
           # очередь и кэш — только в процессе aisec-media; шлюзу доступен лишь

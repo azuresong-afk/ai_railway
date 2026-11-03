@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -66,8 +67,36 @@ func main() {
 type deps struct {
 	provider aisecCrypto.Provider
 	logger   *slog.Logger
+	// ocrEngine — исполнитель OCR вместо ONNX Runtime (для тестов).
+	ocrEngine media.OCREngine
 	// ready вызывается, когда сокет готов (для тестов).
 	ready func(*media.Server)
+}
+
+// startOCR поднимает исполнитель OCR (сборка с тегом aisec_onnx) и
+// проверяет его на эталонном изображении. nil — сборка без OCR. Ошибка
+// останавливает запуск: сборка с OCR без моделей или библиотеки не
+// работает молча без OCR (ADR-0033).
+func startOCR(ctx context.Context, cfg *config, d deps) (*media.OCR, error) {
+	engine := d.ocrEngine
+	if engine == nil {
+		e, err := newOCREngine(cfg, d.provider)
+		if err != nil {
+			return nil, fmt.Errorf("OCR: %w", err)
+		}
+		if e == nil {
+			return nil, nil //nolint:nilnil // сборка без OCR
+		}
+		engine = e
+	}
+	ocr, err := media.NewOCR(engine)
+	if err != nil {
+		return nil, err
+	}
+	if err := ocrSelftest(ctx, media.Analyzer{Limits: cfg.Limits, OCR: ocr}); err != nil {
+		return nil, err
+	}
+	return ocr, nil
 }
 
 // run обслуживает сокет до отмены ctx.
@@ -79,7 +108,11 @@ func run(ctx context.Context, cfg *config, d deps) error {
 	if err != nil {
 		return err
 	}
-	srv, err := media.NewServer(media.ServerConfig{Limits: cfg.Limits, Hasher: h, MaxConns: cfg.MaxConns, Workers: cfg.Workers,
+	ocr, err := startOCR(ctx, cfg, d)
+	if err != nil {
+		return err
+	}
+	srv, err := media.NewServer(media.ServerConfig{Limits: cfg.Limits, OCR: ocr, Hasher: h, MaxConns: cfg.MaxConns, Workers: cfg.Workers,
 		Queue: cfg.Queue, CacheEntries: cfg.CacheEntries, RunTimeout: cfg.RunTimeout, MaxRunTimeout: cfg.MaxRunTimeout, Logger: d.logger})
 	if err != nil {
 		return err
@@ -90,7 +123,7 @@ func run(ctx context.Context, cfg *config, d deps) error {
 	}
 	l := newPeerListener(sock, cfg.PeerUID, cfg.PeerGID, d.logger)
 	d.logger.Info("aisec-media готов", "socket", cfg.Socket, "formats", media.Decodable(), "max_bytes", cfg.Limits.MaxBytes,
-		"max_pixels", cfg.Limits.MaxPixels, "workers", cfg.Workers, "queue", cfg.Queue, "peer_uid", cfg.PeerUID, "peer_gid", cfg.PeerGID)
+		"max_pixels", cfg.Limits.MaxPixels, "ocr", ocr != nil, "workers", cfg.Workers, "queue", cfg.Queue, "peer_uid", cfg.PeerUID, "peer_gid", cfg.PeerGID)
 	if d.ready != nil {
 		d.ready(srv)
 	}

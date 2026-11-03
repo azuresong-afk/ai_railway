@@ -56,7 +56,7 @@ func corpusSamples(t *testing.T) []corpusSample {
 	return out
 }
 
-func readTestFile(t *testing.T, path string) []byte {
+func readTestFile(t testing.TB, path string) []byte {
 	t.Helper()
 	b, err := os.ReadFile(path) //nolint:gosec // G304: файл корпуса в репозитории
 	if err != nil {

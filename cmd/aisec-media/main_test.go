@@ -61,11 +61,15 @@ func startRun(t *testing.T, cfg *config) *media.Server {
 	ctx, cancel := context.WithCancel(context.Background())
 	ready := make(chan *media.Server, 1)
 	done := make(chan error, 1)
-	go func() {
-		done <- run(ctx, cfg, deps{provider: p, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), ready: func(s *media.Server) { ready <- s }})
-	}()
+	d := testDeps(p)
+	d.ready = func(s *media.Server) { ready <- s }
+	go func() { done <- run(ctx, cfg, d) }()
+	stopped := false
 	t.Cleanup(func() {
 		cancel()
+		if stopped {
+			return
+		}
 		if err := <-done; err != nil {
 			t.Error(err)
 		}
@@ -74,11 +78,23 @@ func startRun(t *testing.T, cfg *config) *media.Server {
 	case s := <-ready:
 		return s
 	case err := <-done:
+		stopped = true
 		t.Fatal(err)
 	case <-time.After(5 * time.Second):
 		t.Fatal("сокет не готов")
 	}
 	return nil
+}
+
+// testDeps — зависимости run для тестов. В сборке с тегом aisec_onnx без
+// библиотеки ORT запуск законно отказывает, поэтому сокет проверяется с
+// исполнителем-заглушкой (сама загрузка ORT — executor_onnx_test.go).
+func testDeps(p aisecCrypto.Provider) deps {
+	d := deps{provider: p, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	if ocrBuilt {
+		d.ocrEngine = selftestEngine{text: ocrSelftestText}
+	}
+	return d
 }
 
 func exchange(t *testing.T, c net.Conn, h wire.Header, body []byte) (wire.Header, []byte) {
@@ -128,7 +144,7 @@ func TestRunRejectsOpenSocketDir(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = run(context.Background(), cfg, deps{provider: p, logger: slog.New(slog.DiscardHandler)})
+	err = run(context.Background(), cfg, testDeps(p))
 	if err == nil || !strings.Contains(err.Error(), "у остальных не должно быть доступа") {
 		t.Fatal(err)
 	}
@@ -142,7 +158,7 @@ func TestLoadConfig(t *testing.T) {
 	}
 	if cfg.Workers != 2 || cfg.PeerUID != 991 || cfg.PeerGID != 992 || cfg.Limits.MaxPixels != 1000 ||
 		cfg.Limits.MaxBytes != media.DefaultMaxBytes || cfg.Socket != DefaultSocket || cfg.CacheEntries != -1 ||
-		cfg.Queue != media.DefaultQueue || cfg.RunTimeout != media.DefaultRunTimeout {
+		cfg.Queue != media.DefaultQueue || cfg.RunTimeout != media.DefaultRunTimeout || cfg.Models != DefaultModels || cfg.ORTLib != DefaultORTLib {
 		t.Fatalf("%+v", cfg)
 	}
 }
@@ -164,6 +180,8 @@ func TestLoadConfigRejects(t *testing.T) {
 		"предел срока < срока":   append([]string{"-run-timeout=5s", "-max-run-timeout=1s"}, base...),
 		"реакция":                append([]string{"-integrity-action=ignore"}, base...),
 		"интервал":               append([]string{"-integrity-interval=1s"}, base...),
+		"модели относительно":    append([]string{"-models=models"}, base...),
+		"библиотека с ..":        append([]string{"-ort-lib=/opt/../lib/x.so"}, base...),
 		"лишний аргумент":        append(append([]string{}, base...), "x"),
 	}
 	for name, args := range cases {

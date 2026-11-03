@@ -15,8 +15,10 @@ import (
 // уже принятому декодером файлу, с пределами: распаковка zTXt и iTXt — не
 // больше maxInflateChunk на чанк и maxInflateTotal на файл, объём текста —
 // пределы протокола (textSet). Повреждённый блок разбирается до первой
-// ошибки: собранный текст остаётся. Не читаются: IPTC (APP13), расширенный
-// XMP в нескольких APP1, комментарии GIF, метаданные WebP и TIFF.
+// ошибки: собранный текст остаётся. TIFF (задача 5.42) — текстовые теги
+// IFD0 и Exif IFD тем же разбором EXIF (файл TIFF и есть блок EXIF), WebP —
+// чанки EXIF и «XMP ». Не читаются: IPTC (APP13), расширенный XMP в
+// нескольких APP1, комментарии GIF.
 
 // Пределы распаковки сжатых текстовых чанков PNG.
 const (
@@ -41,6 +43,34 @@ func readMetadata(data []byte, f wire.Format, ts *textSet) {
 		pngMetadata(data, add)
 	case wire.FormatJPEG:
 		jpegMetadata(data, add)
+	case wire.FormatTIFF:
+		exifInto(data, add)
+	case wire.FormatWebP:
+		webpMetadata(data, add)
+	}
+}
+
+// webpMetadata — обход чанков RIFF по длинам (с выравниванием до чётного):
+// EXIF (блок TIFF, у некоторых программ — с префиксом «Exif\0\0») и «XMP ».
+func webpMetadata(data []byte, add func(string) bool) {
+	for i := 12; i+8 <= len(data); {
+		typ := string(data[i : i+4])
+		n := binary.LittleEndian.Uint32(data[i+4 : i+8])
+		if uint64(n) > uint64(len(data)-i-8) { //nolint:gosec // G115: i+8 <= len(data) по условию цикла
+			return
+		}
+		body := data[i+8 : i+8+int(n)]
+		i += 8 + int(n) + int(n&1)
+		ok := true
+		switch typ {
+		case "EXIF":
+			ok = exifInto(bytes.TrimPrefix(body, exifPrefix), add)
+		case "XMP ":
+			ok = xmpInto(body, add)
+		}
+		if !ok {
+			return
+		}
 	}
 }
 

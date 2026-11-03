@@ -317,7 +317,12 @@ func parseWebP(data []byte) (Info, error) {
 		}
 		w := int64(c[4]) | int64(c[5])<<8 | int64(c[6])<<16
 		h := int64(c[7]) | int64(c[8])<<8 | int64(c[9])<<16
-		return single(wire.FormatWebP, w+1, h+1)
+		info, err := single(wire.FormatWebP, w+1, h+1)
+		// Анимацию (флаг A) x/image/webp не декодирует (задача 5.42).
+		if err == nil && c[0]&0x02 != 0 {
+			return info, ErrUnsupportedVariant
+		}
+		return info, err
 	}
 	return fail, ErrMalformed
 }

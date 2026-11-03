@@ -45,7 +45,9 @@ FROM scratch AS release
 COPY --from=go /src/build/release/ /
 
 # Выпуск aisec-media для лаборатории (lab-install.sh --media, задача 5.38):
-# свой каталог и манифест, как make media-release-dir; консоль не нужна.
+# свой каталог и манифест, как make media-release-dir MEDIA_OCR=0; консоль
+# не нужна. Без OCR (ADR-0033): сборка ONNX Runtime в лаборатории не
+# повторяется, изображения у шлюза — «не проверено».
 FROM ${GO_IMAGE} AS media-go
 ARG VERSION
 ARG SOURCE_DATE
@@ -54,7 +56,7 @@ WORKDIR /src
 ENV GOTOOLCHAIN=local HOME=/tmp GOCACHE=/tmp/go-cache
 COPY . .
 RUN --network=none test -n "$VERSION" && test -n "$SOURCE_DATE" && test -n "$SOURCE_EPOCH" \
- && make media-release-dir VERSION="$VERSION" SOURCE_DATE="$SOURCE_DATE" SOURCE_EPOCH="$SOURCE_EPOCH"
+ && make media-release-dir MEDIA_OCR=0 VERSION="$VERSION" SOURCE_DATE="$SOURCE_DATE" SOURCE_EPOCH="$SOURCE_EPOCH"
 
 FROM scratch AS media-release
 COPY --from=media-go /src/build/release-media/ /

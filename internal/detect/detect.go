@@ -34,6 +34,10 @@ const (
 	// не модели.
 	SourceToolArgs Source = "tool_args"
 	SourceOutput   Source = "output"
+	// SourceImage — текст изображения из aisec-media (OCR, метаданные, QR;
+	// задачи 5.39, 5.42, 5.43). Смешение алфавитов в нём — шум
+	// распознавания, а не подмена (ADR-0033, п. 3).
+	SourceImage Source = "image"
 )
 
 // Text — проверяемый текст.
