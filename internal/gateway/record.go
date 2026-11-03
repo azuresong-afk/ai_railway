@@ -246,7 +246,7 @@ func (h *ChatHandler) enqueue(rec *record) {
 func (h *ChatHandler) finishMedia(rec *record, res mediaResult) {
 	rec.ev.Media = res.checks()
 	if d := rec.ev.Decision; d != nil {
-		d.MediaUnchecked = res.unchecked()
+		d.MediaUnchecked, d.MediaUnavailable = res.unchecked(), res.analyzerFailed()
 	}
 	if res.mode != policy.MediaCheckAsync || rec.in == nil {
 		return

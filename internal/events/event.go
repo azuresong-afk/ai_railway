@@ -103,6 +103,11 @@ type Decision struct {
 	// aisec-media (недоступен, перегружен, срок, отказ по пределам, OCR ещё
 	// нет): к нему применён non_text. Подробности — Event.Media.
 	MediaUnchecked bool `json:"media_unchecked,omitempty"`
+	// MediaUnavailable — изображение не проверено из-за сбоя анализатора
+	// (недоступен, очередь заполнена, срок истёк, сбой анализа), а не из-за
+	// свойства изображения: признак перегрузки или отказа aisec-media
+	// (DM-50, задача 5.44); по нему — правило frequency.media_unavailable.
+	MediaUnavailable bool `json:"media_unavailable,omitempty"`
 }
 
 // Причины сбоя детектора.
