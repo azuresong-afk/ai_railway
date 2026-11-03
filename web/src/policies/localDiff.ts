@@ -1,4 +1,5 @@
 import type { PolicyDiff, PolicyRule, PolicySpec } from "./api";
+import { ruleWeakened, sectionText, sectionWeakened } from "./judge";
 
 type Reason = PolicyDiff["weakening_reasons"][number];
 
@@ -10,7 +11,7 @@ const sorted = (r: PolicyRule): [string, unknown][] => Object.entries(r).sort(([
 
 // Сравнение двух содержимых политики в браузере (Н46): правила, режим и общие поля. Признак ослабления — предварительная
 // оценка консоли по тем же причинам, что у сервера; окончательное решение за сервером, он потребует пароль или код.
-// Исключения и раздел tools здесь не сравниваются: их меняют не в этом редакторе.
+// Исключения и раздел tools здесь не сравниваются: их меняют не в этом редакторе. Раздел judge и подраздел judge правил — сравниваются.
 export function localDiff(before: PolicySpec, after: PolicySpec): PolicyDiff {
   const fields: PolicyDiff["fields"] = [];
   const text = (s: PolicySpec) =>
@@ -22,6 +23,7 @@ export function localDiff(before: PolicySpec, after: PolicySpec): PolicyDiff {
       ["media_check", s.media_check ?? ""],
       ["media_check_timeout_ms", s.media_check_timeout_ms?.toString() ?? ""],
       ["block_message", s.block_message ?? ""],
+      ["judge", sectionText(s.judge)],
     ]);
   const bt = text(before);
   const at = text(after);
@@ -36,6 +38,7 @@ export function localDiff(before: PolicySpec, after: PolicySpec): PolicyDiff {
   const rules_changed: PolicyDiff["rules_changed"] = [];
   const reasons: Reason[] = [];
   if (before.mode === "enforce" && after.mode === "monitor") reasons.push({ kind: "mode_monitor" });
+  if (sectionWeakened(before.judge, after.judge)) reasons.push({ kind: "judge_weakened" });
   for (const r of rules_removed) reasons.push({ kind: "rule_removed", rule: r.id });
   for (const a of after.rules) {
     const b = byId.get(a.id);
@@ -47,6 +50,7 @@ export function localDiff(before: PolicySpec, after: PolicySpec): PolicyDiff {
     if (strength[a.action] < strength[b.action]) reasons.push({ kind: "action_weakened", rule: a.id });
     if (a.threshold !== undefined && b.threshold !== undefined && a.threshold > b.threshold) reasons.push({ kind: "threshold_raised", rule: a.id });
     if (a.detector !== b.detector) reasons.push({ kind: "detector_changed", rule: a.id });
+    if (ruleWeakened(b.judge, a.judge)) reasons.push({ kind: "judge_weakened", rule: a.id });
   }
   const order = (s: PolicySpec) => s.rules.filter((r) => byId.has(r.id) && afterIds.has(r.id)).map((r) => r.id).join("\u0000");
   const beforeOrder = before.rules.filter((r) => afterIds.has(r.id)).map((r) => r.id).join("\u0000");
