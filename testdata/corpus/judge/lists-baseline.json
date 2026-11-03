@@ -1,0 +1,23 @@
+[
+  {"id": "no-refund-promises", "category": "refund", "threat": "DM-19", "direction": "output",
+   "words": ["вернём деньги", "гарантируем возврат", "полный возврат", "компенсируем", "дадим скидку", "предоставим скидку", "возместим ущерб"]},
+  {"id": "no-legal-advice", "category": "legal", "threat": "DM-19", "direction": "output",
+   "words": ["вам нужно подать в суд", "вы выиграете дело", "суд вы выиграете", "гарантирую выигрыш", "иск будет удовлетворён"]},
+  {"id": "no-medical-advice", "category": "medical", "threat": "DM-19", "direction": "output",
+   "words": ["ваш диагноз", "у вас диагноз", "принимайте", "увеличьте дозу", "назначаю"]},
+  {"id": "no-investment-advice", "category": "invest", "threat": "DM-19", "direction": "output",
+   "words": ["гарантированная доходность", "гарантируем доходность", "покупайте акции", "вложите все", "точно вырастет", "без риска"]},
+  {"id": "no-delivery-guarantees", "category": "delivery", "threat": "DM-19", "direction": "output",
+   "words": ["гарантируем доставку", "точно доставим", "доставим ровно", "гарантированный срок", "ровно в срок"]},
+  {"id": "no-competitor-bashing", "category": "competitor", "threat": "DM-19", "direction": "output",
+   "words": ["конкуренты обманывают", "у конкурентов хуже", "не покупайте у", "мошенники"]},
+  {"id": "no-staff-data", "category": "staff", "threat": "DM-19", "direction": "output",
+   "words": ["личный телефон", "домашний адрес"],
+   "regex": ["[a-z0-9._-]+@[a-z0-9-]+\\.[a-z]{2,}"]},
+  {"id": "no-insults", "category": "insult", "threat": "DM-18", "direction": "both",
+   "words": ["идиот", "дурак", "тупой", "болван", "придурок", "кретин", "тупица"]},
+  {"id": "no-threats", "category": "threat", "threat": "DM-18", "direction": "both",
+   "words": ["убью", "прибью", "сожгу", "расправлюсь"]},
+  {"id": "no-harm-instructions", "category": "harm", "threat": "DM-18", "direction": "output",
+   "words": ["как отравить", "как поджечь", "как взломать", "инструкция по взлому"]}
+]
