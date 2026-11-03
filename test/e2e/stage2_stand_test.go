@@ -106,9 +106,19 @@ func (p *s2Proc) stop() {
 // завершился раньше, возвращается его код и журнал.
 func s2Start(t *testing.T, bin string, env []string, args ...string) (*s2Proc, string) {
 	t.Helper()
+	return s2StartWith(t, nil, bin, env, args...)
+}
+
+// s2StartWith — s2Start с правкой команды перед запуском (пользователь
+// процесса, задача 5.49): mod может быть nil.
+func s2StartWith(t *testing.T, mod func(*exec.Cmd), bin string, env []string, args ...string) (*s2Proc, string) {
+	t.Helper()
 	// Без отмены по контексту: процесс живёт до stop() — сигнал прерывания, затем Kill.
 	cmd := exec.CommandContext(context.Background(), bin, args...) //nolint:gosec // G204: тест запускает собственные бинарники из каталога сборки
 	cmd.Env = append(os.Environ(), env...)
+	if mod != nil {
+		mod(cmd)
+	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		t.Fatal(err)
