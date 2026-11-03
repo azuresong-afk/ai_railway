@@ -385,6 +385,9 @@ func backupRestore(args []string, dsn string, stdout, stderr io.Writer, now time
 			say(stdout, "  - %s\n", line)
 		}
 	}
+	for _, line := range res.RedTeam {
+		say(stdout, "Тестирование устойчивости: %s.\n", line)
+	}
 	say(stdout, "Дальше: зарегистрируйте шлюзы заново (aisec-cli gateway token): ключи шлюзов и УЦ не восстанавливаются. "+
 		"Пользователи входят заново со своими паролями и вторым фактором.\n")
 	say(stdout, "Обязательно: копия возвращает состояние на %s. По архиву журнала аудита за время после неё "+
@@ -508,6 +511,9 @@ func restoreTx(ctx context.Context, db *store.DB, l *audit.Log, prepared *backup
 			items = append(items, line)
 		}
 		details["rag_report"] = items
+	}
+	if len(res.RedTeam) > 0 {
+		details["redteam_report"] = res.RedTeam[0]
 	}
 	if replaceSettings {
 		details["settings"] = snap.SettingsDetails()

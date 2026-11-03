@@ -3,6 +3,7 @@ package backup
 import (
 	"cmp"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -1129,4 +1130,95 @@ func writeRAGExclusions(ctx context.Context, tx pgx.Tx, s *Snapshot, now time.Ti
 		lines = append(lines, line)
 	}
 	return lines, nil
+}
+
+// readRedTeam — цели и расписания тестирования устойчивости (G3 этапа 5).
+// Значения секретного заголовка в БД нет; запуски и итоги не входят.
+func readRedTeam(ctx context.Context, tx pgx.Tx, s *Snapshot) error {
+	rows, err := tx.Query(ctx, `SELECT id::text, name, kind, app_id::text, model, url, request_template, response_path,
+		headers::text, auth_header, ca_pem, authorization_note, storage, judge_provider, judge_model, limits::text,
+		created_at, created_by, updated_at, updated_by FROM redteam_targets WHERE org_id = $1 ORDER BY created_at, id`, s.OrgID)
+	if err != nil {
+		return err
+	}
+	s.RedTeamTargets, err = pgx.CollectRows(rows, func(r pgx.CollectableRow) (RedTeamTarget, error) {
+		var t RedTeamTarget
+		var headers, limits string
+		err := r.Scan(&t.ID, &t.Name, &t.Kind, &t.AppID, &t.Model, &t.URL, &t.RequestTemplate, &t.ResponsePath, &headers,
+			&t.AuthHeader, &t.CAPEM, &t.AuthorizationNote, &t.Storage, &t.JudgeProvider, &t.JudgeModel, &limits,
+			&t.CreatedAt, &t.CreatedBy, &t.UpdatedAt, &t.UpdatedBy)
+		t.Headers, t.Limits = json.RawMessage(headers), json.RawMessage(limits)
+		return t, err
+	})
+	if err != nil {
+		return err
+	}
+	rows, err = tx.Query(ctx, `SELECT id::text, name, target_id::text, frequency, weekday, day, at_time, threats::text, lang,
+		enabled, next_run_at, last_run_at, version, created_at, created_by, updated_at, updated_by
+		FROM redteam_schedules WHERE org_id = $1 ORDER BY created_at, id`, s.OrgID)
+	if err != nil {
+		return err
+	}
+	s.RedTeamSchedules, err = pgx.CollectRows(rows, func(r pgx.CollectableRow) (RedTeamSchedule, error) {
+		var x RedTeamSchedule
+		var threats string
+		if err := r.Scan(&x.ID, &x.Name, &x.TargetID, &x.Frequency, &x.Weekday, &x.Day, &x.At, &threats, &x.Lang, &x.Enabled,
+			&x.NextRunAt, &x.LastRunAt, &x.Version, &x.CreatedAt, &x.CreatedBy, &x.UpdatedAt, &x.UpdatedBy); err != nil {
+			return x, err
+		}
+		return x, json.Unmarshal([]byte(threats), &x.Threats)
+	})
+	return err
+}
+
+// writeRedTeam записывает цели и расписания тестирования устойчивости
+// (G3 этапа 5). Совпадения ID проверил Conflicts, поля — redteam.
+// CheckStoredTarget и CheckStoredSchedule до восстановления. Пределы —
+// как у API (100 целей, 20 расписаний) с той же блокировкой организации,
+// что у internal/redteam. Итог и запуск последней попытки расписания не
+// переносятся. Возвращает строку отчёта.
+func writeRedTeam(ctx context.Context, tx pgx.Tx, s *Snapshot) ([]string, error) {
+	if len(s.RedTeamTargets) == 0 && len(s.RedTeamSchedules) == 0 {
+		return nil, nil
+	}
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('aisec.redteam:' || $1, 0))`, s.OrgID); err != nil {
+		return nil, err
+	}
+	var targets, schedules int
+	if err := tx.QueryRow(ctx, `SELECT (SELECT count(*) FROM redteam_targets WHERE org_id = $1),
+		(SELECT count(*) FROM redteam_schedules WHERE org_id = $1)`, s.OrgID).Scan(&targets, &schedules); err != nil {
+		return nil, err
+	}
+	if targets+len(s.RedTeamTargets) > maxRedTeamTargets {
+		return nil, fmt.Errorf("целей тестирования устойчивости станет больше %d", maxRedTeamTargets)
+	}
+	if schedules+len(s.RedTeamSchedules) > maxRedTeamSchedules {
+		return nil, fmt.Errorf("расписаний тестирования устойчивости станет больше %d", maxRedTeamSchedules)
+	}
+	for _, t := range s.RedTeamTargets {
+		if _, err := tx.Exec(ctx, `INSERT INTO redteam_targets (id, org_id, name, kind, app_id, model, url, request_template,
+			response_path, headers, auth_header, ca_pem, authorization_note, storage, judge_provider, judge_model, limits,
+			created_at, created_by, updated_at, updated_by)
+			VALUES ($1, $2, $3, $4, $5::uuid, $6, $7, $8, $9, $10::jsonb, $11, $12, $13, $14, $15, $16, $17::jsonb, $18, $19, $20, $21)`,
+			t.ID, s.OrgID, t.Name, t.Kind, t.AppID, t.Model, t.URL, t.RequestTemplate, t.ResponsePath, string(t.Headers),
+			t.AuthHeader, t.CAPEM, t.AuthorizationNote, t.Storage, t.JudgeProvider, t.JudgeModel, string(t.Limits),
+			t.CreatedAt, t.CreatedBy, t.UpdatedAt, t.UpdatedBy); err != nil {
+			return nil, fmt.Errorf("цель «%s»: %w", truncate(t.Name), err)
+		}
+	}
+	for _, x := range s.RedTeamSchedules {
+		threats, err := json.Marshal(nonNil(x.Threats))
+		if err != nil {
+			return nil, err
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO redteam_schedules (id, org_id, name, target_id, frequency, weekday, day, at_time,
+			threats, lang, enabled, next_run_at, last_run_at, last_status, retries, version, created_at, created_by, updated_at, updated_by)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12, $13, '', 0, $14, $15, $16, $17, $18)`,
+			x.ID, s.OrgID, x.Name, x.TargetID, x.Frequency, x.Weekday, x.Day, x.At, string(threats), x.Lang, x.Enabled,
+			x.NextRunAt, x.LastRunAt, x.Version, x.CreatedAt, x.CreatedBy, x.UpdatedAt, x.UpdatedBy); err != nil {
+			return nil, fmt.Errorf("расписание «%s»: %w", truncate(x.Name), err)
+		}
+	}
+	return []string{fmt.Sprintf("целей перенесено %d, расписаний %d; значения секретных заголовков "+
+		"в копию не входят — их вводят при запуске", len(s.RedTeamTargets), len(s.RedTeamSchedules))}, nil
 }

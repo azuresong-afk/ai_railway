@@ -78,6 +78,13 @@ type Snapshot struct {
 	// индекс. Манифесты не входят: их пришлёт индексатор. Раздел
 	// необязательный, формат остаётся версии 2.
 	RAGExclusions []RAGExclusion `json:"rag_exclusions,omitempty"`
+	// RedTeamTargets и RedTeamSchedules — цели и расписания тестирования
+	// устойчивости (ADR-0031; поток G3 этапа 5, ADR-0017, дополнение).
+	// Значение секретного заголовка цели в продукте не хранится и в копию
+	// не входит; запуски и итоги — тоже. Разделы необязательные, формат
+	// остаётся версии 2.
+	RedTeamTargets   []RedTeamTarget   `json:"redteam_targets,omitempty"`
+	RedTeamSchedules []RedTeamSchedule `json:"redteam_schedules,omitempty"`
 }
 
 // Settings — настройки организации и установки. nil — строки нет, действуют
@@ -234,26 +241,30 @@ type APIToken struct {
 
 // Provider — провайдер LLM; Credential — шифротекст ключа секретов копии.
 type Provider struct {
-	ID                 string     `json:"id"`
-	Slug               string     `json:"slug"`
-	Name               string     `json:"name"`
-	Type               string     `json:"type"`
-	BaseURL            string     `json:"base_url"`
-	CAPEM              string     `json:"ca_pem"`
-	AuthURL            *string    `json:"auth_url"`
-	Scope              *string    `json:"scope"`
-	FolderID           *string    `json:"folder_id"`
-	ConnectTimeoutS    int        `json:"connect_timeout_s"`
-	HeaderTimeoutS     int        `json:"header_timeout_s"`
-	ResponseTimeoutS   int        `json:"response_timeout_s"`
-	StreamIdleTimeoutS int        `json:"stream_idle_timeout_s"`
-	External           bool       `json:"external"`
-	Credential         []byte     `json:"credential"`
-	CredentialSetAt    *time.Time `json:"credential_set_at"`
-	CreatedAt          time.Time  `json:"created_at"`
-	CreatedBy          string     `json:"created_by"`
-	UpdatedAt          time.Time  `json:"updated_at"`
-	UpdatedBy          string     `json:"updated_by"`
+	ID                 string  `json:"id"`
+	Slug               string  `json:"slug"`
+	Name               string  `json:"name"`
+	Type               string  `json:"type"`
+	BaseURL            string  `json:"base_url"`
+	CAPEM              string  `json:"ca_pem"`
+	AuthURL            *string `json:"auth_url"`
+	Scope              *string `json:"scope"`
+	FolderID           *string `json:"folder_id"`
+	ConnectTimeoutS    int     `json:"connect_timeout_s"`
+	HeaderTimeoutS     int     `json:"header_timeout_s"`
+	ResponseTimeoutS   int     `json:"response_timeout_s"`
+	StreamIdleTimeoutS int     `json:"stream_idle_timeout_s"`
+	External           bool    `json:"external"`
+	// OnPremise — провайдер «размещён у заказчика» (миграция 0074, ADR-0030):
+	// только он может быть оценщиком judge.llm. Необязательное поле: в
+	// копии без него — false.
+	OnPremise       bool       `json:"on_premise,omitempty"`
+	Credential      []byte     `json:"credential"`
+	CredentialSetAt *time.Time `json:"credential_set_at"`
+	CreatedAt       time.Time  `json:"created_at"`
+	CreatedBy       string     `json:"created_by"`
+	UpdatedAt       time.Time  `json:"updated_at"`
+	UpdatedBy       string     `json:"updated_by"`
 }
 
 // Application — приложение с ключами.
@@ -671,7 +682,8 @@ func (s *Snapshot) Counts() map[string]any {
 		"mcp_servers": len(s.MCPServers), "agents": len(s.Agents), "agent_tools": len(s.AgentTools),
 		"shadow_ai_exclusions": len(s.ShadowAIExclusions), "licenses": len(s.Licenses),
 		"compliance_marks": len(s.ComplianceMarks), "service_dbs": len(s.ServiceDBs), "inventory_models": len(s.InventoryModels),
-		"rag_exclusions": len(s.RAGExclusions),
+		"rag_exclusions": len(s.RAGExclusions), "redteam_targets": len(s.RedTeamTargets),
+		"redteam_schedules": len(s.RedTeamSchedules),
 	}
 }
 

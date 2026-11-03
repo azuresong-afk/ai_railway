@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,6 +28,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/policy"
 	"github.com/azuresong-afk/ai_railway/internal/policy/versions"
 	"github.com/azuresong-afk/ai_railway/internal/rag"
+	"github.com/azuresong-afk/ai_railway/internal/redteam"
 	"github.com/azuresong-afk/ai_railway/internal/servicedb"
 	"github.com/azuresong-afk/ai_railway/internal/servicedb/kinds"
 )
@@ -221,6 +223,16 @@ func checkSnapshot(p aisecCrypto.Provider, arch *backup.Archive, keepTokens, set
 			add("исключение документа RAG "+e.ID, err)
 		}
 	}
+	// Признак «у заказчика» провайдера — правилами API (ADR-0030).
+	for _, pr := range s.Providers {
+		if pr.OnPremise {
+			if err := apps.CheckStoredOnPremise(apps.Provider{Type: pr.Type, BaseURL: pr.BaseURL, External: pr.External}); err != nil {
+				add("провайдер "+pr.Slug, err)
+			}
+		}
+	}
+	// Цели и расписания тестирования устойчивости — функциями API (G3 этапа 5).
+	bad = append(bad, checkRedTeam(tlsp, s)...)
 	// Ошибки CheckApplications уже называют приложение.
 	if len(bad) == 0 {
 		if err := gateway.CheckApplications(gw, specs); err != nil {
@@ -404,4 +416,86 @@ func unjoin(err error) []error {
 		return j.Unwrap()
 	}
 	return []error{err}
+}
+
+// snapshotRefs — приложения и провайдеры копии для проверки целей
+// тестирования устойчивости (redteam.TargetRefs).
+type snapshotRefs struct {
+	apps  map[string]apps.Application
+	provs []apps.Provider
+}
+
+func (r snapshotRefs) Application(_ context.Context, id, _ string) (apps.Application, error) {
+	a, ok := r.apps[id]
+	if !ok {
+		return apps.Application{}, apps.ErrNotFound
+	}
+	return a, nil
+}
+
+func (r snapshotRefs) Providers(context.Context) ([]apps.Provider, error) { return r.provs, nil }
+
+// checkRedTeam проверяет цели и расписания тестирования устойчивости
+// копии теми же функциями, что API (redteam.CheckStoredTarget,
+// CheckStoredSchedule): приложение и модель цели gateway, оценщик «у
+// заказчика» и корневой сертификат — по объектам копии. Цель, которую
+// восстановление пропустит (нет приложения в копии), не проверяется.
+func checkRedTeam(tlsp aisecCrypto.TLSProvider, s *backup.Snapshot) []string {
+	if len(s.RedTeamTargets) == 0 {
+		return nil
+	}
+	refs := snapshotRefs{apps: map[string]apps.Application{}}
+	for _, a := range s.Applications {
+		var aliases map[string]string
+		if len(a.Aliases) > 0 && strictJSON(a.Aliases, &aliases) != nil {
+			continue
+		}
+		x := apps.Application{ID: a.ID, Slug: a.Slug, Models: a.Models, Aliases: aliases}
+		if a.ArchivedAt != nil {
+			x.ArchivedAt = *a.ArchivedAt
+		}
+		refs.apps[a.ID] = x
+	}
+	for _, p := range s.Providers {
+		refs.provs = append(refs.provs, apps.Provider{ID: p.ID, Slug: p.Slug, Type: p.Type, OnPremise: p.OnPremise})
+	}
+	var bad []string
+	headers := map[string]string{}
+	for _, t := range s.RedTeamTargets {
+		what := "цель тестирования устойчивости «" + t.Name + "»"
+		if t.AppID != nil {
+			if _, ok := refs.apps[*t.AppID]; !ok {
+				continue
+			}
+		}
+		rt := redteam.Target{Name: t.Name, Kind: t.Kind, Model: t.Model, URL: t.URL, RequestTemplate: t.RequestTemplate,
+			ResponsePath: t.ResponsePath, AuthHeader: t.AuthHeader, CAPEM: t.CAPEM, AuthorizationNote: t.AuthorizationNote,
+			Storage: t.Storage, JudgeProvider: t.JudgeProvider, JudgeModel: t.JudgeModel}
+		if t.AppID != nil {
+			rt.AppID = *t.AppID
+		}
+		err := strictJSON(t.Headers, &rt.Headers)
+		if err == nil {
+			err = strictJSON(t.Limits, &rt.Limits)
+		}
+		if err == nil {
+			err = redteam.CheckStoredTarget(context.Background(), tlsp, refs, rt)
+		}
+		if err != nil {
+			bad = append(bad, what+": "+shortReason(err))
+			continue
+		}
+		headers[t.ID] = t.AuthHeader
+	}
+	for _, x := range s.RedTeamSchedules {
+		auth, ok := headers[x.TargetID]
+		if !ok {
+			continue // цель пропущена или отклонена выше
+		}
+		if err := redteam.CheckStoredSchedule(redteam.Schedule{Name: x.Name, TargetID: x.TargetID, Frequency: x.Frequency,
+			Weekday: x.Weekday, Day: x.Day, At: x.At, Threats: x.Threats, Lang: x.Lang, Enabled: x.Enabled}, auth); err != nil {
+			bad = append(bad, "расписание тестирования устойчивости «"+x.Name+"»: "+shortReason(err))
+		}
+	}
+	return bad
 }

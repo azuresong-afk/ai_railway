@@ -284,8 +284,22 @@ func (s *Service) Target(ctx context.Context, id string) (Target, error) {
 // checkTarget — проверки цели против продукта: приложение и модель цели
 // gateway, корневой сертификат, провайдер оценщика.
 func (s *Service) checkTarget(ctx context.Context, t Target) error {
+	return checkTargetRefs(ctx, s.tp, s.o.Apps, t)
+}
+
+// TargetRefs — то, на что ссылается цель: приложение (цель gateway) и
+// провайдеры-оценщики. Apps ему соответствует; копия конфигурации передаёт
+// объекты из копии.
+type TargetRefs interface {
+	Application(ctx context.Context, id, ownerID string) (apps.Application, error)
+	Providers(ctx context.Context) ([]apps.Provider, error)
+}
+
+// checkTargetRefs — проверки цели, которым нужны другие объекты: модель
+// приложения, корневой сертификат по криптопрофилю, оценщик «у заказчика».
+func checkTargetRefs(ctx context.Context, tp aisecCrypto.TLSProvider, refs TargetRefs, t Target) error {
 	if t.Kind == KindGateway {
-		a, err := s.o.Apps.Application(ctx, t.AppID, "")
+		a, err := refs.Application(ctx, t.AppID, "")
 		if errors.Is(err, apps.ErrNotFound) || err == nil && a.Archived() {
 			return invalidf("app_id — приложение не найдено или в архиве")
 		}
@@ -297,15 +311,15 @@ func (s *Service) checkTarget(ctx context.Context, t Target) error {
 		}
 	}
 	if t.CAPEM != "" {
-		if s.tp == nil {
+		if tp == nil {
 			return invalidf("ca_pem — TLS недоступен в криптопрофиле")
 		}
-		if _, err := s.tp.ClientConfig([]byte(t.CAPEM)); err != nil {
+		if _, err := tp.ClientConfig([]byte(t.CAPEM)); err != nil {
 			return invalidf("ca_pem — не найден корневой сертификат в PEM")
 		}
 	}
 	if t.JudgeProvider != "" {
-		provs, err := s.o.Apps.Providers(ctx)
+		provs, err := refs.Providers(ctx)
 		if err != nil {
 			return err
 		}
