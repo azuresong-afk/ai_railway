@@ -177,6 +177,7 @@
 | `FuzzParseTemplateBase` | `internal/inventory` | Содержимое базы эталонов шаблонов чата (`aisec-chat-templates-v1`): без паники; принятая база — версия от 1, семейства и эталоны в пределах, хеш каждого текста совпадает с указанным | 5.21 |
 | `FuzzParseScenarios` | `internal/redteam` | Содержимое базы сценариев атак (`aisec-redteam-scenarios-v1`, ADR-0031, раздел 5): без паники; принятая база — версия от 1, от 1 до 5000 сценариев без повторов ID, от 1 до 8 шагов у каждого | 5.32 |
 | `FuzzTargetInput` | `internal/redteam` | Цель тестирования устойчивости из тела API (`POST`/`PUT /api/v1/redteam/targets`): без паники; у принятой цели `endpoint` шаблон тела подставляется | 5.32 |
+| `FuzzScheduleInput` | `internal/redteam` | Расписание запусков из тела API (`POST`/`PUT /api/v1/redteam/schedules`): без паники; у принятого расписания ближайший срок вычисляется и лежит в будущем | 5.33 |
 | `FuzzExtractPath` | `internal/redteam` | Ответ цели `endpoint` (недоверенный JSON до 1 МиБ) и путь к тексту ответа: без паники | 5.32 |
 | `FuzzParse` | `internal/cyclonedx` | Документ CycloneDX JSON с пределом размера (общий кодировщик SBOM и AI-BOM, задача 5.18): без паники | 5.18 |
 

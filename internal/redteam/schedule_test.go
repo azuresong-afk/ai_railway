@@ -3,6 +3,7 @@ package redteam
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"slices"
 	"strings"
@@ -400,4 +401,27 @@ func TestServiceReportExamplesOnlyMasked(t *testing.T) {
 	if _, err := e.s.Report(context.Background(), "01900000-0000-7000-8000-0000000000ee", false); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("нет запуска: %v", err)
 	}
+}
+
+// FuzzScheduleInput: расписание из недоверенного тела API — проверка не
+// падает; у принятого расписания срок вычисляется и лежит в будущем.
+func FuzzScheduleInput(f *testing.F) {
+	f.Add([]byte(`{"name":"Ночной","target_id":"01900000-0000-7000-8000-0000000000c9","frequency":"daily","at":"03:00","threats":["DM-01"]}`))
+	f.Add([]byte(`{"name":"a","target_id":"x","frequency":"weekly","weekday":7,"at":"23:59","lang":"en"}`))
+	f.Add([]byte(`{"frequency":"monthly","day":28,"at":"00:00","enabled":false,"version":3}`))
+	f.Fuzz(func(t *testing.T, data []byte) {
+		var in ScheduleInput
+		if json.Unmarshal(data, &in) != nil {
+			return
+		}
+		sc, err := in.Schedule()
+		if err != nil {
+			return
+		}
+		now := time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)
+		next, err := sc.timing().Next(now, time.UTC)
+		if err != nil || !next.After(now) {
+			t.Fatalf("принятое расписание без срока: %+v %v %v", sc, next, err)
+		}
+	})
 }
