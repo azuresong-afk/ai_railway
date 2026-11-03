@@ -217,6 +217,16 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 			return err
 		}
 	}
+	// Изображения через aisec-media (задача 5.39): сокет проверяется при
+	// каждом подключении, недоступность — «не проверено», не отказ запуска.
+	if cfg.MediaSocket != "" {
+		mc, err := gateway.NewMediaClient(gateway.MediaClientConfig{Socket: cfg.MediaSocket, Logger: logger})
+		if err != nil {
+			return err
+		}
+		defer mc.Close()
+		hb.media = mc
+	}
 	// Проверка JWT пользователей приложений (задача 4.21); в профиле без
 	// неё (gost до этапа 6) JWT отклоняются.
 	if j, err := p.JWT(); err == nil {
@@ -332,6 +342,9 @@ type handlerBuilder struct {
 	// ml — клиент aisec-ml (-ml-socket, ADR-0024): пул соединений
 	// переживает смену пакета; nil — ML-детекторы «недоступны».
 	ml *gateway.MLClient
+	// media — клиент aisec-media (-media-socket, ADR-0032, задача 5.39): пул
+	// переживает смену пакета; nil — изображения не анализируются.
+	media gateway.MediaAnalyzer
 	// mcpSessions — сессии MCP-прокси 2025-11-25 (задача 4.11): переживают
 	// смену пакета; mcpObserver — описания инструментов на сервер, nil —
 	// без сервера.
@@ -395,7 +408,7 @@ func (hb *handlerBuilder) build(apps []config.Application, provs map[string]prov
 	handlerCfg := gateway.ChatConfig{
 		Router: router, MaxBodyBytes: hb.cfg.MaxBodyBytes, Logger: hb.logger,
 		Events: hb.events, IDs: authCfg.IDs, Quotas: hb.quotas, Budget: hb.budget, UserMAC: hb.userMAC,
-		Sessions: hb.sessions, Hasher: hb.hasher, ToolRate: hb.toolRate,
+		Sessions: hb.sessions, Hasher: hb.hasher, ToolRate: hb.toolRate, Media: hb.media,
 	}
 	chatHandler, err := gateway.NewChatHandler(handlerCfg)
 	if err != nil {
@@ -409,6 +422,11 @@ func (hb *handlerBuilder) build(apps []config.Application, provs map[string]prov
 	if err != nil {
 		return nil, err
 	}
+	// Проверка документов RAG до индексации (задача 5.25).
+	checkBatchHandler, err := gateway.NewCheckBatchHandler(handlerCfg)
+	if err != nil {
+		return nil, err
+	}
 	// MCP-прокси (задача 4.11) — только при MCP-серверах в пакете.
 	var mcpHandler http.Handler
 	if len(mcpServers) > 0 {
@@ -418,7 +436,7 @@ func (hb *handlerBuilder) build(apps []config.Application, provs map[string]prov
 		}
 	}
 	h, err := gateway.New(gateway.Options{Logger: hb.logger, Chat: chatHandler, Embeddings: embeddingsHandler,
-		Check: checkHandler, MCP: mcpHandler, Router: router, Auth: &authCfg})
+		Check: checkHandler, CheckBatch: checkBatchHandler, MCP: mcpHandler, Router: router, Auth: &authCfg})
 	if err != nil {
 		return nil, err
 	}

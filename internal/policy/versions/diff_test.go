@@ -25,7 +25,7 @@ func th(v float64) *float64 { return &v }
 func TestCompareWeakening(t *testing.T) {
 	base := func() *policy.Spec {
 		return &policy.Spec{Name: "P", Mode: policy.Enforce, NonText: policy.NonTextBlock, ResponseCheck: policy.ResponseBuffered,
-			Rules: []policy.RuleSpec{ruleInjection, rulePII}}
+			MediaCheck: policy.MediaCheckSync, Rules: []policy.RuleSpec{ruleInjection, rulePII}}
 	}
 	cases := map[string]struct {
 		edit func(s *policy.Spec)
@@ -34,6 +34,10 @@ func TestCompareWeakening(t *testing.T) {
 		"режим monitor":          {func(s *policy.Spec) { s.Mode = policy.Monitor }, []string{versions.WeakModeMonitor + ":"}},
 		"non_text":               {func(s *policy.Spec) { s.NonText = policy.NonTextAllowInline }, []string{versions.WeakNonText + ":"}},
 		"проверка ответа":        {func(s *policy.Spec) { s.ResponseCheck = policy.ResponseMonitor }, []string{versions.WeakResponseCheck + ":"}},
+		"media_check async":      {func(s *policy.Spec) { s.MediaCheck = policy.MediaCheckAsync }, []string{versions.WeakMediaCheck + ":"}},
+		"media_check выключена":  {func(s *policy.Spec) { s.MediaCheck = "" }, []string{versions.WeakMediaCheck + ":"}},
+		"срок sync короче":       {func(s *policy.Spec) { s.MediaTimeoutMS = 500 }, []string{versions.WeakMediaCheck + ":"}},
+		"срок sync длиннее":      {func(s *policy.Spec) { s.MediaTimeoutMS = 5000 }, nil},
 		"удалено правило block":  {func(s *policy.Spec) { s.Rules = s.Rules[1:] }, []string{versions.WeakRuleRemoved + ":injection"}},
 		"block → log":            {func(s *policy.Spec) { s.Rules[0].Action = policy.Log }, []string{versions.WeakActionWeakened + ":injection"}},
 		"порог выше":             {func(s *policy.Spec) { s.Rules[1].Threshold = th(0.9) }, []string{versions.WeakThresholdRaised + ":pii"}},

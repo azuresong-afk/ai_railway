@@ -24,6 +24,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/notify"
 	"github.com/azuresong-afk/ai_railway/internal/policy/versions"
 	"github.com/azuresong-afk/ai_railway/internal/quotalease"
+	"github.com/azuresong-afk/ai_railway/internal/rag"
 	"github.com/azuresong-afk/ai_railway/internal/reports"
 	"github.com/azuresong-afk/ai_railway/internal/shadowai"
 )
@@ -77,6 +78,8 @@ type Options struct {
 	ShadowAI *shadowai.Service
 	// Inventory — реестр ИИ (задача 5.17); nil — его эндпоинты отвечают 503.
 	Inventory *inventory.Service
+	// RAG — манифесты коллекций RAG (задача 5.24); nil — их эндпоинты отвечают 503.
+	RAG *rag.Service
 	// Compliance — модуль соответствия (задача 4.24); nil — его эндпоинты отвечают 503.
 	Compliance *compliance.Service
 	// ServiceDBs — состояние служебных баз (задача 5.15); nil — 503.
@@ -158,6 +161,8 @@ type Deps struct {
 	ShadowAI *shadowai.Service
 	// Inventory — nil, если реестр ИИ не подключён: его эндпоинты отвечают 503.
 	Inventory *inventory.Service
+	// RAG — nil, если манифесты RAG не подключены: их эндпоинты отвечают 503.
+	RAG *rag.Service
 	// Compliance — nil, если модуль соответствия не подключён: его эндпоинты отвечают 503.
 	Compliance *compliance.Service
 	// ServiceDBs — состояние служебных баз (*servicedb.Registry); nil — 503.
@@ -223,7 +228,7 @@ func New(o Options) (http.Handler, *Router, error) {
 	rt.mux.HandleFunc("/", rt.notFound)
 	deps := Deps{Logger: o.Logger, Version: o.Version, Ready: o.Ready, Auth: o.Auth, Gateways: o.Gateways, Integrity: o.Integrity,
 		Status: o.Status, Events: o.Events, Audit: o.Audit, Apps: o.Apps, Policies: o.Policies,
-		AuditLog: o.AuditLog, AuditVerifier: o.AuditVerifier, Alerts: o.Alerts, Notify: o.Notify, Agents: o.Agents, Approvals: o.Approvals, ShadowAI: o.ShadowAI, Inventory: o.Inventory, Compliance: o.Compliance, ServiceDBs: o.ServiceDBs,
+		AuditLog: o.AuditLog, AuditVerifier: o.AuditVerifier, Alerts: o.Alerts, Notify: o.Notify, Agents: o.Agents, Approvals: o.Approvals, ShadowAI: o.ShadowAI, Inventory: o.Inventory, RAG: o.RAG, Compliance: o.Compliance, ServiceDBs: o.ServiceDBs,
 		License: o.License, Quotas: o.Quotas, Incidents: o.Incidents,
 		Dashboards: o.Dashboards, Reports: o.Reports, DashCache: newDashCache(), DashStreams: NewExportGate(dashStreamsPerSubject, dashStreamsTotal),
 		Reauthorize: o.Authorizer.Authorize, Stopping: o.Stopping,

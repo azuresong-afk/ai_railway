@@ -84,7 +84,24 @@ type Content struct {
 	// шлюз берёт у сервера аренду квот и жёстких бюджетов; пусто — local,
 	// счётчики в памяти шлюза (байты пакета прежние).
 	QuotaMode string `json:"quota_mode,omitempty"`
+	// BlockedModels — модели, запрещённые по отчёту сканера (задача 5.22
+	// этапа 5, DM-27–DM-29, ADR-0029, дополнение 1): шлюз убирает их из
+	// моделей и псевдонимов приложений своего провайдера, и запрос к ним
+	// получает отказ model_not_allowed. Пустой раздел не выводится: без
+	// запретов байты пакета прежние, и шлюз прежнего выпуска его принимает;
+	// с запретом прежний шлюз отвергнет пакет (неизвестное поле) — шлюзы
+	// обновляются раньше сервера, как в F1c.
+	BlockedModels []BlockedModel `json:"blocked_models,omitempty"`
 }
+
+// BlockedModel — запрещённая модель провайдера пакета.
+type BlockedModel struct {
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+}
+
+// MaxBlockedModels — запрещённых моделей в пакете (предел моделей реестра).
+const MaxBlockedModels = 5000
 
 // QuotaLeased — значение QuotaMode режима аренды.
 const QuotaLeased = "leased"
@@ -237,6 +254,20 @@ func (c *Content) Validate() error {
 			add("%s: ca_pem — от 1 байта до %d байт", at, MaxCAPEM)
 		}
 	}
+	if len(c.BlockedModels) > MaxBlockedModels {
+		add("blocked_models: больше %d моделей", MaxBlockedModels)
+	}
+	blocked := map[BlockedModel]bool{}
+	for i, b := range c.BlockedModels {
+		at := fmt.Sprintf("blocked_models[%d]", i)
+		if !providers[b.Provider] {
+			add("%s: провайдер не описан в пакете", at)
+		}
+		if !config.ValidModel(b.Model) || blocked[b] {
+			add("%s: неверное или повторное имя модели", at)
+		}
+		blocked[b] = true
+	}
 	policies := map[string]bool{}
 	for i, p := range c.Policies {
 		at := fmt.Sprintf("policies[%d] (%s)", i, short(p.ID))
@@ -384,15 +415,48 @@ func (c *Content) GatewayProviders() []config.Provider {
 }
 
 // GatewayApplications — приложения в виде файла шлюза этапа 1 без ключей:
-// ключи с точным сроком даёт KeyRecords.
+// ключи с точным сроком даёт KeyRecords. Запрещённые модели (BlockedModels)
+// убираются из моделей и псевдонимов приложений их провайдера: запрос к ним
+// шлюз отклоняет как к неразрешённой модели (model_not_allowed), GET
+// /v1/models их не показывает.
 func (c *Content) GatewayApplications() []config.Application {
+	blocked := map[BlockedModel]bool{}
+	for _, b := range c.BlockedModels {
+		blocked[b] = true
+	}
 	out := make([]config.Application, 0, len(c.Applications))
 	for _, a := range c.Applications {
-		out = append(out, config.Application{ID: a.ID, Env: a.Env, Provider: a.Provider, Models: a.Models,
-			Aliases: a.Aliases, Policy: a.Policy, PolicyMode: a.PolicyMode, FailMode: a.FailMode, Storage: a.Storage,
+		models, aliases := a.Models, a.Aliases
+		if len(blocked) > 0 {
+			models, aliases = allowedModels(a, blocked)
+		}
+		out = append(out, config.Application{ID: a.ID, Env: a.Env, Provider: a.Provider, Models: models,
+			Aliases: aliases, Policy: a.Policy, PolicyMode: a.PolicyMode, FailMode: a.FailMode, Storage: a.Storage,
 			UserFrom: a.UserFrom, Quotas: config.Quotas(a.Quotas), Lists: a.listSpecs(), ExfilAllowDomains: a.ExfilAllowDomains})
 	}
 	return out
+}
+
+// allowedModels — модели и псевдонимы приложения без запрещённых моделей
+// его провайдера.
+func allowedModels(a Application, blocked map[BlockedModel]bool) ([]string, map[string]string) {
+	models := make([]string, 0, len(a.Models))
+	for _, m := range a.Models {
+		if !blocked[BlockedModel{Provider: a.Provider, Model: m}] {
+			models = append(models, m)
+		}
+	}
+	var aliases map[string]string
+	for al, m := range a.Aliases {
+		if blocked[BlockedModel{Provider: a.Provider, Model: m}] {
+			continue
+		}
+		if aliases == nil {
+			aliases = map[string]string{}
+		}
+		aliases[al] = m
+	}
+	return models, aliases
 }
 
 // Specs — политики организации; содержимое уже проверено Validate.

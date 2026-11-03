@@ -24,6 +24,9 @@ type Options struct {
 	Embeddings http.Handler
 	// Check обслуживает POST /guard/v1/check; nil — маршрут не подключён.
 	Check http.Handler
+	// CheckBatch обслуживает CheckBatchRoute (проверка документов RAG до
+	// индексации, задача 5.25); nil — маршрут не подключён.
+	CheckBatch http.Handler
 	// MCP обслуживает MCPRoute (MCP-прокси, задача 4.11); nil — маршрут
 	// не подключён.
 	MCP http.Handler
@@ -52,6 +55,9 @@ func New(opts Options) (*Gateway, error) {
 	}
 	if opts.Check != nil {
 		routes["POST /guard/v1/check"] = opts.Check
+	}
+	if opts.CheckBatch != nil {
+		routes[CheckBatchRoute] = opts.CheckBatch
 	}
 	if opts.MCP != nil {
 		routes[MCPRoute] = opts.MCP
@@ -86,7 +92,7 @@ func NewUnavailable(logger *slog.Logger) *Gateway {
 		WriteError(w, http.StatusServiceUnavailable, "шлюз ещё не получил конфигурацию от сервера управления, повторите позже",
 			"service_unavailable", "config_unavailable")
 	}
-	for _, p := range []string{"GET /readyz", "POST /v1/chat/completions", "POST /v1/embeddings", "POST /guard/v1/check", "GET /v1/models", MCPRoute} {
+	for _, p := range []string{"GET /readyz", "POST /v1/chat/completions", "POST /v1/embeddings", "POST /guard/v1/check", CheckBatchRoute, "GET /v1/models", MCPRoute} {
 		g.mux.HandleFunc(p, unavailable)
 	}
 	return g

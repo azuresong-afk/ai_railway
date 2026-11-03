@@ -67,6 +67,10 @@ type ChatConfig struct {
 	// ToolRate — счётчики лимитов политики вызовов (общие с MCP-прокси);
 	// nil — лимиты не считаются.
 	ToolRate policy.RateCounter
+	// Media — анализатор изображений aisec-media (задача 5.39, ADR-0032);
+	// nil — не настроен: при media_check async и sync изображения «не
+	// проверено» (unavailable), в sync — по режиму приложения при отказе.
+	Media MediaAnalyzer
 }
 
 // Заголовки шлюза (ТЗ, 5.1 и 4.3).
@@ -227,6 +231,20 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !h.admit(w, r, rec, req, user, texts) {
 		return
 	}
+	// Изображения (задача 5.39) — после квот: отклонённый запрос анализатор
+	// не нагружает. В sync запрос ждёт итога, тексты изображений проверяются
+	// вместе с остальными; в async анализ идёт в фоне (emit).
+	var mres mediaResult
+	rec.media = h.startMedia(r.Context(), app.Policy.MediaCheck, app.Policy.MediaTimeout, chatImages(req))
+	if rec.media != nil && rec.media.mode == policy.MediaCheckSync {
+		waitStart := h.cfg.Now()
+		mres = rec.media.wait()
+		rec.ev.LatencyMS["media_check"] = h.cfg.Now().Sub(waitStart).Milliseconds()
+		for _, t := range mres.texts() {
+			texts = append(texts, t)
+			refs = append(refs, textRef{tool: -1})
+		}
+	}
 	// Словарь псевдонимов живёт только в памяти на время запроса (ТЗ, 5.1).
 	// Псевдонимы, которые уже есть в тексте запроса, не выдаются.
 	plain := make([]string, 0, len(texts))
@@ -240,9 +258,9 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	rec.jsonMode = jsonResponseFormat(req.ResponseFormat)
 	checkStart := h.cfg.Now()
 	in, err := app.inspect(r.Context(), inspectRequest{
-		Endpoint: policy.EndpointChat, External: app.Provider.External(), Texts: texts, Media: policyMedia(req.Media()), User: user,
+		Endpoint: policy.EndpointChat, External: app.Provider.External(), Texts: texts, Media: chatPolicyMedia(req.Media(), mres), User: user,
 		Mask: app.Storage == events.StorageMasked, Timeout: h.cfg.DetectorTimeout, Vault: rec.vault,
-		Extra: app.promptFinding(req), Session: sess,
+		Extra: app.promptFinding(req), Session: sess, Failures: mres.failures(),
 	})
 	rec.ev.LatencyMS["input_check"] = h.cfg.Now().Sub(checkStart).Milliseconds()
 	switch {

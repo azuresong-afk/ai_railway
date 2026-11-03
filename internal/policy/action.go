@@ -1,5 +1,11 @@
 package policy
 
+import (
+	"time"
+
+	"github.com/azuresong-afk/ai_railway/internal/detect"
+)
+
 // Action — действие правила (ТЗ, 5.3).
 type Action string
 
@@ -84,6 +90,41 @@ const (
 	// NonTextBlock — блокировать запрос с нетекстовыми частями.
 	NonTextBlock NonText = "block"
 )
+
+// MediaCheck — проверка изображений запроса анализатором aisec-media (ТЗ,
+// 5.3 и 5.17; ADR-0032, раздел 8).
+type MediaCheck string
+
+// Значения media_check.
+const (
+	// MediaCheckOff — изображения не анализируются, только non_text (как до
+	// этапа 5; значение по умолчанию).
+	MediaCheckOff MediaCheck = "off"
+	// MediaCheckAsync — запрос уходит провайдеру сразу, изображения
+	// проверяются в фоне: находки попадают в событие после отправки. Решение
+	// по запросу принимается без итога анализа, изображения для non_text —
+	// непроверенные.
+	MediaCheckAsync MediaCheck = "async"
+	// MediaCheckSync — запрос ждёт итога анализа до отправки провайдеру не
+	// дольше media_check_timeout_ms; недоступность анализатора — по режиму
+	// приложения при отказе (ТЗ, 4.4).
+	MediaCheckSync MediaCheck = "sync"
+)
+
+// Срок анализа изображений в режиме sync (media_check_timeout_ms).
+const (
+	DefaultMediaTimeout = 2 * time.Second // цель p95 ТЗ 5.17 для 2 Мпикс с OCR
+	MinMediaTimeoutMS   = 100
+	// MaxMediaTimeoutMS — предел срока анализатора (-max-run-timeout по
+	// умолчанию, ADR-0032, раздел 5).
+	MaxMediaTimeoutMS = 10_000
+)
+
+// SourceImage — источник текста, извлечённого из изображения запроса
+// (aisec-media, ТЗ 5.17, п. 5). Находку с этим источником нельзя
+// замаскировать в самом изображении: защита данных redact и pseudonymize
+// по ней выполняется блокировкой (решение Р9 этапа 5: закрашивания нет).
+const SourceImage detect.Source = "image"
 
 // ResponseCheck — проверка ответа при потоковой передаче (ТЗ, 5.1).
 // Выполняется в задаче 1.23; здесь — только параметр политики.

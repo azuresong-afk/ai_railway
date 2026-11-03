@@ -50,6 +50,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/policy/bundle/build"
 	"github.com/azuresong-afk/ai_railway/internal/policy/versions"
 	"github.com/azuresong-afk/ai_railway/internal/quotalease"
+	"github.com/azuresong-afk/ai_railway/internal/rag"
 	"github.com/azuresong-afk/ai_railway/internal/reports"
 	"github.com/azuresong-afk/ai_railway/internal/servicedb"
 	"github.com/azuresong-afk/ai_railway/internal/shadowai"
@@ -654,8 +655,7 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	}
 	go shadowSvc.RunRetention(ctx, shadowai.RetentionInterval)
 	shadowRef.Store(shadowSvc)
-	serviceDBs := servicedb.NewRegistry(shadowSvc.DB(), complianceSvc.DB())
-	serviceDBRef.Store(serviceDBs)
+	serviceDBRef.Store(servicedb.NewRegistry(shadowSvc.DB(), complianceSvc.DB()))
 	// Приём журналов прокси по syslog (задача 4.23): выключен по умолчанию;
 	// при остановке сервера накопленные сводки записываются.
 	// Выход из run по любой ошибке после запуска тоже ждёт последней
@@ -690,12 +690,26 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	// База эталонов шаблонов чата (5.21) — служебная база по ADR-0028.
 	inventorySvc, err := inventory.New(inventory.Options{Store: inventoryStore, Provider: p, OrgID: audit.DefaultOrgID,
-		Logger: logger.With("component", "inventory")})
+		Logger: logger.With("component", "inventory"), ServiceDBs: serviceDBStore})
 	if err != nil {
 		return err
 	}
 	go inventorySvc.Run(ctx, inventory.SyncInterval)
+	// Состояние служебных баз — с эталонами шаблонов чата реестра ИИ.
+	serviceDBs := servicedb.NewRegistry(shadowSvc.DB(), complianceSvc.DB(), inventorySvc.TemplatesDB())
+	serviceDBRef.Store(serviceDBs)
+
+	// Манифесты коллекций RAG (ТЗ 5.12, DM-30; задача 5.24, ADR-0029, п. 5).
+	ragStore, err := rag.NewPGStore(db.Pool(), auditLog)
+	if err != nil {
+		return err
+	}
+	ragSvc, err := rag.New(rag.Options{Store: ragStore, Provider: p, OrgID: audit.DefaultOrgID})
+	if err != nil {
+		return err
+	}
 
 	// Консоль отдаётся, только если она собрана (make web-build перед go build); иначе сервер — чистый API.
 	var console http.Handler
@@ -723,6 +737,7 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		Approvals:  approvalsSvc,
 		ShadowAI:   shadowSvc,
 		Inventory:  inventorySvc,
+		RAG:        ragSvc,
 		Compliance: complianceSvc,
 		ServiceDBs: serviceDBs,
 		License:    licSvc,

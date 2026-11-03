@@ -15,6 +15,7 @@ import { Sandbox } from "./Sandbox";
 const modeText = { monitor: "Мониторинг", enforce: "Защита" } as const;
 const nonTextText = { allow_unchecked: "Пропускать без проверки", allow_inline: "Пропускать, проверяя текст рядом", block: "Блокировать" } as const;
 const responseText = { buffered: "С буферизацией", incremental: "Поточная", monitor: "Только наблюдение" } as const;
+const mediaText = { off: "Выключена", async: "Без ожидания", sync: "С ожиданием" } as const;
 
 // Экран «Политики» (ТЗ 6.3, п. 6): версии, сравнение, откат, импорт и экспорт YAML, песочница.
 // Кнопки показываются по правам из сессии, решение всегда за сервером.
@@ -148,6 +149,11 @@ function PolicyDetail({ summary, me, onSelect, onImport }: { summary: PolicySumm
                 <dd>{spec.non_text ? nonTextText[spec.non_text] : "—"}</dd>
                 <dt className="text-muted">Проверка ответа</dt>
                 <dd>{spec.response_check ? responseText[spec.response_check] : "—"}</dd>
+                <dt className="text-muted">Проверка изображений</dt>
+                <dd>
+                  {mediaText[spec.media_check ?? "off"]}
+                  {spec.media_check === "sync" && `, до ${spec.media_check_timeout_ms ?? 2000} мс`}
+                </dd>
                 {spec.block_message && (
                   <>
                     <dt className="text-muted">Сообщение при блокировке</dt>

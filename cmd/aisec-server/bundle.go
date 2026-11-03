@@ -19,6 +19,7 @@ import (
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/internal/gwregistry"
 	"github.com/azuresong-afk/ai_railway/internal/integrity"
+	"github.com/azuresong-afk/ai_railway/internal/inventory"
 	"github.com/azuresong-afk/ai_railway/internal/keyring"
 	"github.com/azuresong-afk/ai_railway/internal/policy/bundle"
 	"github.com/azuresong-afk/ai_railway/internal/policy/bundle/build"
@@ -242,6 +243,23 @@ func newBundleRoutes(cfg *serverConfig, p aisecCrypto.Provider, db *store.DB, au
 	if err != nil {
 		return nil, nil, err
 	}
+	// Запрещённые модели реестра ИИ (задача 5.22): исключаются из моделей
+	// приложений на шлюзах.
+	invStore, err := inventory.NewPGStore(db.Pool(), auditLog)
+	if err != nil {
+		return nil, nil, err
+	}
+	blocked := func(ctx context.Context) ([]bundle.BlockedModel, error) {
+		list, err := invStore.Blocked(ctx, audit.DefaultOrgID)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]bundle.BlockedModel, 0, len(list))
+		for _, b := range list {
+			out = append(out, bundle.BlockedModel{Provider: b.Provider, Model: b.Name})
+		}
+		return out, nil
+	}
 	// Пакет собирается заново только при смене счётчика изменений
 	// конфигурации (Н26, задача 3.34).
 	svc, err := build.New(build.Options{Apps: appsSvc, Policies: policiesSvc, Agents: agentsSvc, Store: st, Audit: auditLog,
@@ -250,7 +268,9 @@ func newBundleRoutes(cfg *serverConfig, p aisecCrypto.Provider, db *store.DB, au
 		// Ключи IdP для проверки JWT пользователей на шлюзах (задача 4.21).
 		IdPKeys: idpKeys,
 		// Режим квот (задача 4.29): leased — шлюзы берут аренду у сервера.
-		QuotaMode: quotaMode})
+		QuotaMode: quotaMode,
+		// Запрещённые модели (задача 5.22): смена состояния растит счётчик.
+		BlockedModels: blocked})
 	if err != nil {
 		return nil, nil, err
 	}

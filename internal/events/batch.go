@@ -189,6 +189,8 @@ type Details struct {
 	Session *Session `json:"session,omitempty"`
 	// Agent — событие агента (задача 4.11).
 	Agent *Agent `json:"agent,omitempty"`
+	// Media — проверка изображений запроса (задача 5.39).
+	Media []MediaCheck `json:"media,omitempty"`
 	// ContentTruncated — содержимое full обрезано сервером под предел
 	// шифротекста (FitContent); ставит только сервер при записи.
 	ContentTruncated bool `json:"content_truncated,omitempty"`
@@ -215,7 +217,7 @@ func (e *Event) Details() Details {
 	return Details{
 		Decision: e.Decision, Findings: e.Findings, LatencyMS: e.LatencyMS, Tokens: e.Tokens,
 		Response: e.Response, Pseudonyms: e.Pseudonyms, AuthFailure: e.AuthFailure, Session: e.Session.stored(),
-		Agent: e.Agent,
+		Agent: e.Agent, Media: e.Media,
 	}
 }
 
@@ -225,7 +227,7 @@ func withinLimits(e *Event) bool {
 			return false
 		}
 	}
-	if len(e.Findings) > maxFindings || len(e.Threats) > maxThreats || len(e.LatencyMS) > maxLatencies {
+	if len(e.Findings) > maxFindings || len(e.Threats) > maxThreats || len(e.LatencyMS) > maxLatencies || len(e.Media) > MaxMedia {
 		return false
 	}
 	for k, v := range e.LatencyMS {

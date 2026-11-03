@@ -23,6 +23,12 @@ func TestCheckStoredModel(t *testing.T) {
 	if err := CheckStoredModel(traffic); err != nil {
 		t.Fatal(err)
 	}
+	// Запрещённая модель (5.22) восстанавливается из копии запрещённой.
+	blocked := good()
+	blocked.Status = StatusBlocked
+	if err := CheckStoredModel(blocked); err != nil {
+		t.Fatal(err)
+	}
 	for name, tc := range map[string]struct {
 		mut  func(*StoredModel)
 		want string

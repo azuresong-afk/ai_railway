@@ -92,6 +92,46 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
+  /guard/v1/check/batch:
+    post:
+      summary: Проверка документов RAG до индексации (пакет Check API)
+      description: >
+        Индексатор заказчика проверяет тексты документов коллекции до
+        индексации (ТЗ 5.12, 5.16 DM-07 «RAG — 5»; ADR-0029, п. 5): до 100
+        документов за вызов, каждый текст — до предела тела запроса шлюза,
+        всё тело — до большего из предела тела запроса и 8 МиБ. Каждый текст
+        проверяется конвейером как Check API с `source: rag` и получает своё
+        событие check (содержимое — только по режиму хранения приложения);
+        ID событий — в `results[].event_id`, заголовка `X-AISec-Event-Id` нет.
+        Решение по документу: `allow` — индексировать (если политика изменила
+        текст, например замаскировала ПДн, — индексировать `text`), `exclude` —
+        не индексировать: `reason: policy` — политика заблокировала бы текст
+        (например, косвенная инъекция), `reason: check_unavailable` — текст не
+        удалось проверить при `fail_closed` (повторите позже). В режиме monitor
+        документы не исключаются, `action` показывает решение как в enforce.
+        Квоты приложения: пакет — один запрос для частоты, предел размера
+        входа — к каждому тексту; отказ квоты — 429 на весь пакет. Модель не
+        вызывается. Ответ на ошибку разбора не содержит значений из запроса.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CheckBatchRequest' }
+      responses:
+        '200':
+          description: Решения по документам в порядке запроса
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CheckBatchResponse' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/AppNotConfigured' }
+        '408': { $ref: '#/components/responses/InvalidRequest' }
+        '413': { $ref: '#/components/responses/InvalidRequest' }
+        '415': { $ref: '#/components/responses/InvalidRequest' }
+        '429': { $ref: '#/components/responses/QuotaExceeded' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/CheckUnavailable' }
   /healthz:
     get:
       summary: Живость процесса (шлюз и сервер управления)
@@ -5865,6 +5905,7 @@ paths:
         '401': { $ref: '#/components/responses/ProblemUnauthorized' }
         '403': { $ref: '#/components/responses/ProblemForbidden' }
         '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '409': { $ref: '#/components/responses/ProblemConflict' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ProblemInternal' }
         '503': { $ref: '#/components/responses/Unavailable' }
@@ -5903,9 +5944,10 @@ paths:
     delete:
       summary: Удалить модель из реестра
       description: |
-        Право `inventory.manage`. Модель удаляется вместе с файлами; записи использования остаются. Модель из трафика
-        появится снова, если её продолжают вызывать (ADR-0029, п. 2): чтобы её не использовали, уберите её из
-        разрешённых моделей приложения. Пишет `inventory.model_deleted`.
+        Право `inventory.manage`. Модель удаляется вместе с файлами и отчётами сканера; записи использования остаются.
+        Модель из трафика появится снова, если её продолжают вызывать (ADR-0029, п. 2): чтобы её не использовали,
+        уберите её из разрешённых моделей приложения. Запрещённую модель (`blocked`) удалить нельзя — 409: удаление
+        обошло бы снятие запрета. Пишет `inventory.model_deleted`.
       x-permission: inventory.manage
       security: [{ sessionCookie: [] }, { bearerToken: [] }]
       parameters:
@@ -5970,6 +6012,377 @@ paths:
               schema: { type: object, description: Документ по схеме CycloneDX 1.6 (bom-1.6.schema.json) }
         '401': { $ref: '#/components/responses/ProblemUnauthorized' }
         '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '422': { $ref: '#/components/responses/ProblemUnprocessable' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/rag/collections:
+    get:
+      summary: Коллекции RAG
+      description: |
+        Право `rag.read` (администраторы, аналитик, аудитор). Коллекции с текущей версией манифеста, числом
+        документов, разницей с предыдущей версией и числом исключений, а также пределы манифеста (ADR-0029, п. 5).
+        Содержимого документов у сервера нет: только ID, SHA-256 и размер, которые прислал индексатор.
+      x-permission: rag.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      responses:
+        '200':
+          description: Коллекции по ID
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RAGCollectionList' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/rag/collections/{slug}:
+    get:
+      summary: Карточка коллекции RAG
+      description: |
+        Право `rag.read`. Текущая версия манифеста, разница с предыдущей (число новых, изменённых и пропавших
+        документов и до 100 ID каждого вида) и исключения документов администратором.
+      x-permission: rag.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/RAGCollectionSlug'
+      responses:
+        '200':
+          description: Карточка коллекции
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RAGCollectionCard' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/rag/collections/{slug}/manifest:
+    get:
+      summary: Документы текущей версии манифеста
+      description: |
+        Право `rag.read`. Документы текущей версии по возрастанию ID (сравнение байтов), страницами до 1000:
+        следующая страница — с `after` из `next_after`. `excluded` — отметка индексатора (проверка до индексации
+        вернула «исключить»), `blocked` — документ исключён администратором: индексатор его не индексирует.
+        Между запросами страниц индексатор может загрузить новую версию — сверяйте `version` страниц.
+      x-permission: rag.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/RAGCollectionSlug'
+        - name: after
+          in: query
+          description: ID документа, после которого начинается страница
+          schema: { type: string, maxLength: 512 }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 1000, default: 200 }
+      responses:
+        '200':
+          description: Страница документов
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RAGDocumentPage' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    put:
+      summary: Загрузить манифест коллекции
+      description: |
+        Право `rag.manage` (доступно токену API — манифест отправляет индексатор). Новая версия манифеста — полный
+        список документов коллекции `{id, sha256, size, excluded?}` (DM-30, ADR-0029, п. 5): до 100 000 документов,
+        тело до 16 МиБ, строгий JSON; ID документа — 1–512 байт UTF-8 без управляющих символов и символов
+        форматирования, без пробелов в начале и в конце, без повторов; `sha256` — 64 шестнадцатеричных символа в
+        нижнем регистре — хеш текста, который индексатор индексирует; `size` — от 0 до 2^50. Коллекция создаётся
+        первой загрузкой (201; не больше 100 коллекций — иначе 422). Сервер хранит текущую и предыдущую версии и
+        разницу между ними (документ изменён, если отличаются хеш или размер; `excluded` изменением не считается).
+        Пишет `rag.manifest_loaded`; если в новой версии есть документы вне прошлой версии, изменённые или
+        пропавшие — ещё `rag.document_changed` (число и до 20 ID документов, без хешей и содержимого), по которой
+        встроенное правило `rag.document_changed` поднимает оповещение. В ответе — `blocked`: ID документов
+        манифеста, исключённых администратором.
+      x-permission: rag.manage
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/RAGCollectionSlug'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RAGManifest' }
+      responses:
+        '200':
+          description: Новая версия загружена
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RAGManifestResult' }
+        '201':
+          description: Коллекция создана, загружена первая версия
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RAGManifestResult' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '422': { $ref: '#/components/responses/ProblemUnprocessable' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/rag/collections/{slug}/exclusions:
+    post:
+      summary: Исключить документ из индекса
+      description: |
+        Право `rag.manage`. Администратор исключает документ коллекции по ID (документа может ещё не быть в
+        манифесте); индексатор получает исключённые документы в ответе на загрузку манифеста (`blocked`) и в
+        страницах документов. Причина — до 500 символов. Не больше 1000 исключений в коллекции (422); повтор — 409.
+        Пишет `rag.document_excluded`.
+      x-permission: rag.manage
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/RAGCollectionSlug'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NewRAGExclusion' }
+      responses:
+        '201':
+          description: Документ исключён
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RAGExclusion' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '409': { $ref: '#/components/responses/ProblemConflict' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '422': { $ref: '#/components/responses/ProblemUnprocessable' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/rag/collections/{slug}/exclusions/{id}:
+    delete:
+      summary: Снять исключение документа
+      description: |
+        Право `rag.manage`, только сессия консоли: снятие исключения — ослабление защиты (документ снова попадёт
+        в индекс), токен API получает 403 с записью `access.denied`. Пишет `rag.exclusion_removed` с признаком
+        ослабления (DM-40).
+      x-permission: rag.manage
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/RAGCollectionSlug'
+        - $ref: '#/components/parameters/RAGExclusionID'
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '204': { description: Исключение снято }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/inventory/models/{id}/reference:
+    get:
+      summary: Эталонные хеши файлов модели
+      description: |
+        Право `models.report` (токен узла с моделями; задача 5.22, ADR-0029, п. 4). Все файлы модели из реестра:
+        путь, размер, роль и SHA-256 — эталон для `aisec-cli models verify`, который сверяет их с файлами на узле и
+        присылает отчёт. Права читать реестр не даёт: только эталон модели по её ID.
+      x-permission: models.report
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/InventoryModelID'
+      responses:
+        '200':
+          description: Эталонные хеши
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InventoryReference' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/inventory/models/{id}/scan-reports:
+    get:
+      summary: Отчёты сканера модели
+      description: |
+        Право `inventory.read`. До 20 последних отчётов `aisec-cli models scan` и `models verify` (новые первыми):
+        итог, сверка хешей с реестром и расхождения, итог проверки шаблонов чата (текст — только у шаблонов вне
+        эталона), файлы с находками (до 100). Хеши файлов без находок в ответ не входят.
+      x-permission: inventory.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/InventoryModelID'
+        - $ref: '#/components/parameters/Background'
+      responses:
+        '200':
+          description: Отчёты
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ScanReportList' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    post:
+      summary: Отчёт сканера моделей
+      description: |
+        Право `models.report` (токен узла с моделями; задачи 5.21 и 5.22, ADR-0029, п. 4 и дополнение 1). Отчёт
+        `aisec-cli models scan` (форматы, находки, шаблоны чата, SHA-256 файлов) или `models verify` (только хеши):
+        JSON до 4 МиБ, до 10 000 файлов, до 100 находок на файл, строгий разбор. Весов в отчёте нет. Сервер:
+        сверяет файлы весов и адаптеров с эталонными хешами реестра (изменённый, пропавший или лишний файл —
+        `models.hash_mismatch`, DM-29); проверяет шаблоны чата детекторами инъекций и сверяет с базой эталонов
+        семейства модели (DM-28); при находке с весом `block`, инъекции в шаблоне или расхождении хешей переводит
+        модель в состояние `blocked` (`models.blocked`) — она исключается из пакета шлюзов, приложения получают
+        отказ `model_not_allowed`. Пишет `models.scan_reported`. Хранится 20 последних отчётов модели.
+      x-permission: models.report
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/InventoryModelID'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ScanReportInput' }
+      responses:
+        '201':
+          description: Отчёт принят; итог и состояние модели после него
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ScanReportResult' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/inventory/models/{id}/unblock:
+    post:
+      summary: Снять запрет модели
+      description: |
+        Право `inventory.unblock` (функция безопасности: администратор безопасности; задача 5.22). Снимает
+        состояние `blocked`, выставленное по отчёту сканера: модель возвращается в пакет шлюзов. Нужен текущий
+        пароль или код TOTP (`password` или `code`); без них — 403. Только в сессии консоли: запрос по токену API —
+        403 и `access.denied` с причиной `session_only`. Модель не запрещена — 409. Пишет `models.unblocked` с
+        признаком ослабления защиты (DM-40, оповещение `security.weakening`).
+      x-permission: inventory.unblock
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/InventoryModelID'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Reauth' }
+      responses:
+        '200':
+          description: Запрет снят
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InventoryModelCard' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '409': { $ref: '#/components/responses/ProblemConflict' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/inventory/chat-templates:
+    get:
+      summary: База эталонов шаблонов чата
+      description: |
+        Право `inventory.read`. Служебная база эталонов шаблонов чата (вид `chat_template_baselines`, ADR-0028;
+        задача 5.21): сохранённые текущая и предыдущая версии, какая действует, семейства действующей версии с
+        подстроками имени модели и вариантами. Тексты и хеши шаблонов не выдаются. Базы нет — шаблоны чата
+        проверяются только детекторами, итог «эталона нет».
+      x-permission: inventory.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      responses:
+        '200':
+          description: База эталонов
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ChatTemplates' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    put:
+      summary: Загрузить базу эталонов шаблонов чата
+      description: |
+        Право `models.templates.load`. Тело — подписанный файл базы (`.aisecdb`, до 4 МиБ,
+        `Content-Type: application/octet-stream`); проверяются заверение рабочего ключа, подпись, вид
+        `chat_template_baselines`, дата в сроке заверения и содержимое (строгий JSON, пределы, хеш текста шаблона,
+        текст — только при лицензии, разрешающей распространение). Неверный файл — 422, версия не больше текущей
+        сохранённой — 409. Прежняя текущая становится предыдущей. Пишет `service_db.loaded` или `service_db.rejected`.
+      x-permission: models.templates.load
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: { type: string, format: binary, maxLength: 4194304 }
+      responses:
+        '200':
+          description: База загружена
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ChatTemplates' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '409': { $ref: '#/components/responses/ProblemConflict' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '422': { $ref: '#/components/responses/ProblemUnprocessable' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/inventory/chat-templates/rollback:
+    post:
+      summary: Вернуть предыдущую версию базы эталонов шаблонов чата
+      description: |
+        Право `models.templates.load`. Возвращает хранимую предыдущую версию после повторной проверки (ADR-0028,
+        п. 4). Предыдущей нет — 409, она не прошла проверку — 422. Пишет `service_db.rolled_back`. Только в сессии
+        консоли: запрос по токену API — 403 и `access.denied` с причиной `session_only`.
+      x-permission: models.templates.load
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '200':
+          description: Предыдущая версия стала текущей
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ChatTemplates' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '409': { $ref: '#/components/responses/ProblemConflict' }
         '422': { $ref: '#/components/responses/ProblemUnprocessable' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ProblemInternal' }
@@ -6259,6 +6672,18 @@ components:
         признаком `security` и на токены токену недоступны. Операции, доступные токену,
         перечисляют `bearerToken` в `security`. Каждый запрос пишет `api_token.used`.
   parameters:
+    RAGCollectionSlug:
+      name: slug
+      in: path
+      required: true
+      description: ID коллекции RAG
+      schema: { type: string, pattern: '^[a-z0-9][a-z0-9-]{0,62}$' }
+    RAGExclusionID:
+      name: id
+      in: path
+      required: true
+      description: ID исключения документа
+      schema: { type: string, format: uuid }
     InventoryModelID:
       name: id
       in: path
@@ -6678,6 +7103,166 @@ components:
             run_at: { type: string, format: date-time }
             limit_reached: { type: boolean, description: В последнем запуске не всё поместилось в пределы }
             skipped: { type: integer, description: Пропущено в последнем запуске из-за пределов }
+    RAGDiff:
+      type: object
+      required: [added, changed, removed, added_ids, changed_ids, removed_ids]
+      description: Разница версии манифеста с предыдущей; у первой версии — нули
+      properties:
+        added: { type: integer }
+        changed: { type: integer }
+        removed: { type: integer }
+        added_ids: { type: array, maxItems: 100, items: { type: string }, description: До 100 ID по возрастанию }
+        changed_ids: { type: array, maxItems: 100, items: { type: string } }
+        removed_ids: { type: array, maxItems: 100, items: { type: string } }
+    RAGCollection:
+      type: object
+      required: [slug, version, documents, size, excluded, exclusions, loaded_at, loaded_by, diff, created_at]
+      properties:
+        slug: { type: string }
+        version: { type: integer, minimum: 1, description: Номер текущей версии манифеста }
+        documents: { type: integer }
+        size: { type: integer, format: int64, description: Сумма размеров документов, байт }
+        excluded: { type: integer, description: Документов, исключённых проверкой до индексации (отметка индексатора) }
+        exclusions: { type: integer, description: Исключений администратора }
+        loaded_at: { type: string, format: date-time }
+        loaded_by: { type: string, description: Субъект загрузки (тип и ID) }
+        prev_loaded_at: { type: string, format: date-time, description: Время предыдущей версии }
+        diff: { $ref: '#/components/schemas/RAGDiff' }
+        created_at: { type: string, format: date-time }
+    RAGExclusion:
+      type: object
+      required: [id, document_id, reason, created_at, created_by]
+      properties:
+        id: { type: string, format: uuid }
+        document_id: { type: string }
+        reason: { type: string }
+        created_at: { type: string, format: date-time }
+        created_by: { type: string }
+    RAGCollectionCard:
+      allOf:
+        - $ref: '#/components/schemas/RAGCollection'
+        - type: object
+          required: [exclusion_list]
+          properties:
+            exclusion_list: { type: array, maxItems: 1000, items: { $ref: '#/components/schemas/RAGExclusion' } }
+    RAGCollectionList:
+      type: object
+      required: [items, limits]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/RAGCollection' } }
+        limits:
+          type: object
+          required: [collections, documents, body_bytes, document_id_bytes, exclusions, diff_sample_ids]
+          properties:
+            collections: { type: integer }
+            documents: { type: integer }
+            body_bytes: { type: integer }
+            document_id_bytes: { type: integer }
+            exclusions: { type: integer }
+            diff_sample_ids: { type: integer }
+    RAGDocument:
+      type: object
+      required: [id, sha256, size, excluded, blocked]
+      properties:
+        id: { type: string }
+        sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        size: { type: integer, format: int64 }
+        excluded: { type: boolean, description: Отметка индексатора — исключён проверкой до индексации }
+        blocked: { type: boolean, description: Исключён администратором }
+    RAGDocumentPage:
+      type: object
+      required: [version, items]
+      properties:
+        version: { type: integer }
+        items: { type: array, items: { $ref: '#/components/schemas/RAGDocument' } }
+        next_after: { type: string, description: ID для параметра after следующей страницы }
+    RAGManifest:
+      type: object
+      additionalProperties: false
+      required: [documents]
+      properties:
+        documents:
+          type: array
+          maxItems: 100000
+          items:
+            type: object
+            additionalProperties: false
+            required: [id, sha256, size]
+            properties:
+              id: { type: string, minLength: 1, maxLength: 512, description: ID документа у индексатора (до 512 байт UTF-8) }
+              sha256: { type: string, pattern: '^[0-9a-f]{64}$', description: SHA-256 текста, который индексируется }
+              size: { type: integer, format: int64, minimum: 0, maximum: 1125899906842624 }
+              excluded: { type: boolean, description: Индексатор не индексирует документ — проверка до индексации вернула exclude }
+    RAGManifestResult:
+      allOf:
+        - $ref: '#/components/schemas/RAGCollection'
+        - type: object
+          required: [created, blocked]
+          properties:
+            created: { type: boolean }
+            blocked: { type: array, items: { type: string }, description: ID документов манифеста, исключённых администратором }
+    NewRAGExclusion:
+      type: object
+      additionalProperties: false
+      required: [document_id]
+      properties:
+        document_id: { type: string, minLength: 1, maxLength: 512 }
+        reason: { type: string, maxLength: 500 }
+    CheckBatchRequest:
+      type: object
+      additionalProperties: false
+      required: [source, stage, documents]
+      properties:
+        source: { type: string, enum: [rag] }
+        stage: { type: string, enum: [pre_index] }
+        user: { type: string, maxLength: 256, description: Идентификатор пользователя или сервисной учётной записи индексатора (как у Check API). }
+        documents:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            type: object
+            additionalProperties: false
+            required: [id, text]
+            properties:
+              id: { type: string, minLength: 1, maxLength: 512, description: 'ID документа у индексатора (правила ID манифеста коллекции: UTF-8 без управляющих символов и символов форматирования, без пробелов по краям), без повторов в пакете.' }
+              text: { type: string, minLength: 1, description: Текст документа или его части; не длиннее предела тела запроса шлюза (иначе 413 document_too_large). }
+    CheckBatchResponse:
+      type: object
+      required: [stage, excluded, results]
+      properties:
+        stage: { type: string, enum: [pre_index] }
+        unchecked: { type: boolean, description: 'У политики нет правил для входа: детекторы не запускались, allow не означает «проверено».' }
+        excluded: { type: integer, description: Число документов с decision=exclude. }
+        results:
+          type: array
+          items:
+            type: object
+            required: [id, event_id, decision, action, findings]
+            properties:
+              id: { type: string }
+              event_id: { type: string, description: Идентификатор события check документа. }
+              decision: { type: string, enum: [allow, exclude] }
+              action: { type: string, description: Решение политики как в режиме enforce (в monitor может отличаться от decision). }
+              reason: { type: string, enum: [policy, check_unavailable], description: Причина exclude. }
+              incomplete: { type: boolean, description: Часть детекторов не дала результата. }
+              ml_unavailable: { type: boolean, description: ML-детектор политики не дал результата (ADR-0024). }
+              findings:
+                type: array
+                description: Находки детекторов политики, без найденных значений.
+                items:
+                  type: object
+                  required: [detector, category, score, start, end, location]
+                  properties:
+                    detector: { type: string }
+                    category: { type: string }
+                    score: { type: number }
+                    start: { type: integer }
+                    end: { type: integer }
+                    location: { type: string }
+                    threat: { type: string, description: ID строки матрицы обнаружения (DM-NN). }
+              findings_truncated: { type: boolean }
+              text: { type: string, description: 'Текст после действий политики, если она его изменила (индексировать нужно его); нет у exclude.' }
     InventoryFile:
       type: object
       required: [path, size, role, sha256]
@@ -6700,7 +7285,7 @@ components:
         description: { type: string }
         owner: { type: string }
         origin: { type: string, enum: [traffic, manual] }
-        status: { type: string, enum: [active] }
+        status: { type: string, enum: [active, blocked], description: 'blocked — запрет использования по отчёту сканера (задача 5.22): модель исключена из пакета шлюзов' }
         first_seen: { type: string, format: date-time, description: Первый час в трафике }
         last_seen: { type: string, format: date-time, description: Последний час в трафике }
         file_count: { type: integer }
@@ -6714,6 +7299,164 @@ components:
           properties:
             files: { type: array, items: { $ref: '#/components/schemas/InventoryFile' } }
             usage: { type: array, items: { $ref: '#/components/schemas/InventoryUsage' } }
+    InventoryReference:
+      type: object
+      description: Эталонные хеши файлов модели для aisec-cli models verify (задача 5.22)
+      required: [model_id, status, hash_alg, files]
+      properties:
+        model_id: { type: string, format: uuid }
+        status: { type: string, enum: [active, blocked] }
+        hash_alg: { type: string, enum: [SHA-256] }
+        files:
+          type: array
+          items:
+            type: object
+            required: [path, size, role, sha256]
+            properties:
+              path: { type: string }
+              size: { type: integer, format: int64 }
+              role: { type: string, enum: [weights, adapter, tokenizer, config, other] }
+              sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+    ScanFinding:
+      type: object
+      additionalProperties: false
+      required: [code, severity]
+      properties:
+        code: { type: string, pattern: '^[a-z][a-z0-9_]{0,31}$', description: 'Код находки сканера: pickle, malformed, limit_exceeded, external_data, unknown_format, not_scanned, onnx_domain, external_data_missing' }
+        severity: { type: string, enum: [block, warn] }
+        detail: { type: string, maxLength: 1024 }
+    ScanTemplateInput:
+      type: object
+      additionalProperties: false
+      required: [source, text]
+      properties:
+        source: { type: string, pattern: '^[a-z][a-z0-9_.]{0,63}$', description: 'Откуда шаблон: gguf, tokenizer_config, chat_template_json, chat_template_jinja' }
+        name: { type: string, maxLength: 128, description: 'Имя именованного шаблона (tool_use и т. п.)' }
+        text: { type: string, minLength: 1, maxLength: 65536 }
+    ScanFileInput:
+      type: object
+      additionalProperties: false
+      required: [path, size]
+      properties:
+        path: { type: string, maxLength: 512, description: 'Путь относительно каталога модели через «/»' }
+        size: { type: integer, format: int64, minimum: 0, maximum: 1125899906842624 }
+        symlink: { type: boolean }
+        format: { type: string, pattern: '^[a-z][a-z0-9_]{0,31}$', description: 'Формат по сигнатуре (только в отчёте scan)' }
+        tensors: { type: integer, minimum: 0, maximum: 1048576 }
+        sha256: { type: string, pattern: '^[0-9a-f]{64}$', description: 'Хеш содержимого; нет — файл не прочитан' }
+        findings: { type: array, maxItems: 100, items: { $ref: '#/components/schemas/ScanFinding' } }
+        findings_truncated: { type: boolean }
+        chat_templates: { type: array, maxItems: 32, items: { $ref: '#/components/schemas/ScanTemplateInput' } }
+    ScanReportInput:
+      type: object
+      additionalProperties: false
+      description: Отчёт aisec-cli models scan или verify (до 4 МиБ; в отчёте verify — только пути, размеры и хеши)
+      required: [kind, host, scanner_version, files]
+      properties:
+        kind: { type: string, enum: [scan, verify] }
+        host: { type: string, pattern: '^[A-Za-z0-9][A-Za-z0-9._-]{0,252}$' }
+        scanner_version: { type: string, pattern: '^[A-Za-z0-9][A-Za-z0-9.+_-]{0,63}$' }
+        files: { type: array, maxItems: 10000, items: { $ref: '#/components/schemas/ScanFileInput' } }
+        findings: { type: array, maxItems: 100, items: { $ref: '#/components/schemas/ScanFinding' } }
+        truncated: { type: boolean, description: 'В каталоге больше файлов, чем проверяет сканер' }
+    ScanHashMismatch:
+      type: object
+      required: [path, problem, expected_size, actual_size]
+      properties:
+        path: { type: string }
+        role: { type: string, enum: [weights, adapter] }
+        problem: { type: string, enum: [changed, missing, extra, not_hashed] }
+        expected_sha256: { type: string }
+        actual_sha256: { type: string }
+        expected_size: { type: integer, format: int64, description: '-1 — неизвестен (лишний файл)' }
+        actual_size: { type: integer, format: int64, description: '-1 — неизвестен (файла нет)' }
+    ScanTemplateCheck:
+      type: object
+      required: [file, source, sha256, result, base_version]
+      properties:
+        file: { type: string }
+        source: { type: string }
+        name: { type: string }
+        sha256: { type: string, description: 'SHA-256 нормализованного шаблона' }
+        result: { type: string, enum: [baseline, unknown, changed, injection] }
+        family: { type: string }
+        variant: { type: string }
+        base_version: { type: integer, format: int64, description: 'Версия базы эталонов; 0 — базы нет' }
+        findings:
+          type: array
+          items:
+            type: object
+            required: [detector, category, score]
+            properties:
+              detector: { type: string }
+              category: { type: string }
+              rule: { type: string }
+              score: { type: number }
+        text: { type: string, description: 'Текст шаблона вне эталона (до 128 КиБ на отчёт)' }
+    ScanFileFindings:
+      type: object
+      required: [path, size, findings]
+      properties:
+        path: { type: string }
+        size: { type: integer, format: int64 }
+        format: { type: string }
+        sha256: { type: string }
+        findings: { type: array, items: { $ref: '#/components/schemas/ScanFinding' } }
+    ScanReport:
+      type: object
+      required: [id, model_id, kind, host, scanner_version, received_at, received_by, verdict, hashes, templates, files, findings,
+        truncated, blocked, block_reasons, report_findings, finding_files, mismatches, mismatch_total, chat_templates]
+      properties:
+        id: { type: string, format: uuid }
+        model_id: { type: string, format: uuid }
+        kind: { type: string, enum: [scan, verify] }
+        host: { type: string }
+        scanner_version: { type: string }
+        received_at: { type: string, format: date-time }
+        received_by: { type: string, description: 'Кто прислал: token:ID или user:ID' }
+        verdict: { type: string, enum: [ok, warn, block] }
+        hashes: { type: string, enum: [match, mismatch, no_reference] }
+        templates: { type: string, enum: [none, baseline, unknown, changed, injection] }
+        files: { type: integer }
+        findings: { type: integer }
+        truncated: { type: boolean }
+        blocked: { type: boolean, description: 'Этот отчёт перевёл модель в состояние blocked' }
+        block_reasons: { type: array, items: { type: string, enum: [scan, chat_template, hash_mismatch] } }
+        report_findings: { type: array, items: { $ref: '#/components/schemas/ScanFinding' } }
+        finding_files: { type: array, maxItems: 100, items: { $ref: '#/components/schemas/ScanFileFindings' } }
+        mismatches: { type: array, maxItems: 100, items: { $ref: '#/components/schemas/ScanHashMismatch' } }
+        mismatch_total: { type: integer }
+        chat_templates: { type: array, items: { $ref: '#/components/schemas/ScanTemplateCheck' } }
+    ScanReportResult:
+      allOf:
+        - $ref: '#/components/schemas/ScanReport'
+        - type: object
+          required: [model_status]
+          properties:
+            model_status: { type: string, enum: [active, blocked] }
+    ScanReportList:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, maxItems: 20, items: { $ref: '#/components/schemas/ScanReport' } }
+    ChatTemplates:
+      type: object
+      description: База эталонов шаблонов чата (служебная база, ADR-0028; задача 5.21)
+      required: [active, families]
+      properties:
+        active: { type: string, enum: [current, previous, none] }
+        current: { $ref: '#/components/schemas/ServiceDBVersion' }
+        previous: { $ref: '#/components/schemas/ServiceDBVersion' }
+        families:
+          type: array
+          items:
+            type: object
+            required: [id, title, match, variants]
+            properties:
+              id: { type: string }
+              title: { type: string }
+              match: { type: array, items: { type: string } }
+              variants: { type: array, items: { type: string } }
     InventoryModelPage:
       type: object
       required: [items]
@@ -8306,6 +9049,11 @@ components:
           properties:
             content_truncated: { type: boolean, description: 'Содержимое full обрезано сервером под предел хранения 256 КиБ (В10 ревью 2.r3a)' }
             agent: { $ref: '#/components/schemas/EventAgent' }
+            media:
+              type: array
+              maxItems: 64
+              description: 'Проверка изображений запроса (задача 5.39); находки в тексте изображений — с source: image и полем box.'
+              items: { $ref: '#/components/schemas/MediaCheck' }
     EventAgent:
       description: >
         События агентов agent_tool_call и agent_mcp (задача 4.11, ADR-0023, раздел 7): служебные имена,
@@ -8515,7 +9263,7 @@ components:
         detector: { type: string, description: ID детектора, например pii.ru }
         directions: { type: array, items: { type: string, enum: [input, output] } }
         categories: { type: array, maxItems: 32, items: { type: string } }
-        sources: { type: array, items: { type: string, enum: [user, rag, tool, tool_args, output] } }
+        sources: { type: array, items: { type: string, enum: [user, rag, tool, tool_args, output, image] } }
         threshold: { type: number, exclusiveMinimum: 0, maximum: 1 }
         action: { type: string, enum: [allow, log, redact, pseudonymize, block] }
         severity: { type: string, enum: [info, low, medium, high, critical] }
@@ -8530,6 +9278,14 @@ components:
         mode: { type: string, enum: [monitor, enforce] }
         non_text: { type: string, enum: [allow_unchecked, allow_inline, block], description: 'Пусто при сохранении — allow_inline (решение 1.19)' }
         response_check: { type: string, enum: [buffered, incremental, monitor], description: 'Пусто при сохранении — incremental' }
+        media_check:
+          type: string
+          enum: ['off', async, sync]
+          description: >-
+            Проверка изображений запроса анализатором aisec-media (ADR-0032, раздел 8; задача 5.39). Пусто — off (только
+            non_text). async — запрос уходит провайдеру сразу, находки попадают в событие после отправки; sync — запрос
+            ждёт итога не дольше media_check_timeout_ms, недоступность анализатора — по режиму приложения при отказе.
+        media_check_timeout_ms: { type: integer, minimum: 100, maximum: 10000, description: 'Срок анализа в режиме sync; не задан — 2000' }
         block_message: { type: string, maxLength: 300 }
         rules: { type: array, maxItems: 256, items: { $ref: '#/components/schemas/PolicyRule' } }
         exceptions:
@@ -8599,7 +9355,7 @@ components:
         fragment: { type: string, pattern: '^[0-9a-f]{32}$', description: Хеш фрагмента (HMAC на ключе шлюза) из находки события }
         app: { type: string, pattern: '^[a-z0-9][a-z0-9-]{0,62}$' }
         user: { type: string, pattern: '^[0-9a-f]{32}$', description: Псевдоним пользователя из события }
-        source: { type: string, enum: [user, rag, tool, tool_args, output] }
+        source: { type: string, enum: [user, rag, tool, tool_args, output, image] }
         reason: { type: string, minLength: 1, maxLength: 500 }
         author: { type: string, readOnly: true }
         created_at: { type: string, format: date-time, readOnly: true }
@@ -8629,7 +9385,7 @@ components:
         fragment: { type: string, pattern: '^[0-9a-f]{32}$' }
         app: { type: string, pattern: '^[a-z0-9][a-z0-9-]{0,62}$' }
         user: { type: string, pattern: '^[0-9a-f]{32}$' }
-        source: { type: string, enum: [user, rag, tool, tool_args, output] }
+        source: { type: string, enum: [user, rag, tool, tool_args, output, image] }
         reason: { type: string, maxLength: 500 }
         expires_in_days: { type: integer, minimum: 1, maximum: 365 }
         expires_at: { type: string, format: date-time }
@@ -8803,7 +9559,7 @@ components:
             type: object
             required: [field, before, after]
             properties:
-              field: { type: string, enum: [name, mode, non_text, response_check, block_message] }
+              field: { type: string, enum: [name, mode, non_text, response_check, media_check, media_check_timeout_ms, block_message] }
               before: { type: string }
               after: { type: string }
         rules_added: { type: array, items: { $ref: '#/components/schemas/PolicyRule' } }
@@ -8828,7 +9584,7 @@ components:
             properties:
               kind:
                 type: string
-                enum: [mode_monitor, non_text_weakened, response_check_weakened, rule_removed, action_weakened,
+                enum: [mode_monitor, non_text_weakened, response_check_weakened, media_check_weakened, rule_removed, action_weakened,
                   threshold_raised, scope_narrowed, detector_changed, exception_added, exception_extended, exception_changed,
                   tools_unapproved_weakened, tool_rule_added, tool_action_weakened, tool_scope_widened, tool_scope_narrowed,
                   tool_args_relaxed, tool_rate_raised, approval_timeout_raised, tool_rule_removed]
@@ -9017,7 +9773,7 @@ components:
       properties:
         filter: { type: string, maxLength: 2048, description: Фильтр событий (язык — в описании GET /api/v1/events) }
         min_severity: { $ref: '#/components/schemas/AlertSeverity' }
-        field: { type: string, enum: [model, provider, user, app, tool, shadow_ai_service], description: 'Поле правила «новое»; tool — только у встроенного agents.tool_new, shadow_ai_service — у shadow_ai.new_service' }
+        field: { type: string, enum: [model, provider, user, app, tool, shadow_ai_service, rag_collection], description: 'Поле правила «новое»; tool — только у встроенного agents.tool_new, shadow_ai_service — у shadow_ai.new_service, rag_collection — у rag.document_changed' }
         count: { type: integer, minimum: 2, maximum: 100000, description: 'Порог «частоты»: событий в окне по ключу группировки' }
         window_minutes: { type: integer, minimum: 1, maximum: 1440, description: Окно «частоты», минут }
         metric:
@@ -9247,7 +10003,7 @@ components:
       type: object
       required: [kind, title, active]
       properties:
-        kind: { type: string, pattern: '^[a-z0-9_]{1,64}$', description: 'Вид базы (shadow_ai_catalog, compliance_requirements)' }
+        kind: { type: string, pattern: '^[a-z0-9_]{1,64}$', description: 'Вид базы (shadow_ai_catalog, compliance_requirements, chat_template_baselines)' }
         title: { type: string }
         active: { type: string, enum: [current, previous, none], description: 'Какая сохранённая версия действует' }
         current: { $ref: '#/components/schemas/ServiceDBVersion' }
@@ -10006,7 +10762,7 @@ components:
       type: object
       additionalProperties: false
       required: [direction]
-      description: Ровно одно из `text` и `messages`.
+      description: Не больше одного из `text` и `messages`; без них нужен `images`.
       properties:
         direction:
           type: string
@@ -10018,7 +10774,7 @@ components:
           description: >
             Для input — user, rag или tool; для output — output. Без указания:
             для input сообщения с ролью tool — tool, остальные — user; для output — output.
-            Источники image и audio появятся с этапа 5.
+            Изображения передаются полем `images` (источник находок — image); audio пока не принимается (`unsupported`).
         text: { type: string, minLength: 1 }
         messages:
           type: array
@@ -10031,10 +10787,52 @@ components:
             properties:
               role: { type: string, enum: [system, developer, user, assistant, tool] }
               content: { type: string, minLength: 1 }
+        images:
+          type: array
+          minItems: 1
+          maxItems: 16
+          description: >
+            Изображения для проверки (ТЗ 5.17, задача 5.39), только при direction: input.
+            Элемент — `data:<тип>;base64,<данные>` (данные не длиннее `quotas.max_media_bytes`, иначе 413
+            `media_too_large`) или ссылка `https://` до 2048 байт. Ссылку шлюз не загружает (ЗИ.2):
+            изображение «не проверено», решает `non_text` политики. Изображения анализирует aisec-media по
+            `media_check` политики; `async` в Check API выполняется как `sync`.
+          items: { type: string, minLength: 1 }
         user:
           type: string
           maxLength: 256
           description: "Идентификатор пользователя, если приложение берёт его из поля (`user_from: field`)."
+    MediaCheck:
+      description: >
+        Итог проверки одного изображения анализатором aisec-media (ADR-0032, раздел 8; задача 5.39).
+        Без содержимого изображения и извлечённого текста.
+      type: object
+      required: [location, mode, checked]
+      properties:
+        location: { type: string, description: 'messages[i].content[j] в чате, images[i] в Check API' }
+        mode: { type: string, enum: ['off', async, sync], description: media_check политики }
+        checked: { type: boolean, description: 'Текст изображения извлечён и проверен детекторами; non_text к нему не применялся.' }
+        reason:
+          type: string
+          enum: ['off', url, limit, too_large, too_many_pixels, too_many_frames, too_many_scans, malformed, unsupported,
+            no_ocr, unavailable, overloaded, timeout, error]
+          description: Почему изображение не проверено; у проверенного нет.
+        format: { type: string, enum: [png, jpeg, gif, webp, bmp, tiff] }
+        width: { type: integer, format: int64 }
+        height: { type: integer, format: int64 }
+        frames: { type: integer, format: int64 }
+        cached: { type: boolean }
+        texts: { type: integer, description: Сколько фрагментов текста извлечено }
+        latency_ms: { type: integer, format: int64 }
+    ImageBox:
+      description: Рамка находки на изображении в пикселях исходного растра (ТЗ 5.17, п. 5).
+      type: object
+      required: [x, y, w, h]
+      properties:
+        x: { type: integer, format: int64, minimum: 0 }
+        y: { type: integer, format: int64, minimum: 0 }
+        w: { type: integer, format: int64, minimum: 1 }
+        h: { type: integer, format: int64, minimum: 1 }
     CheckResponse:
       type: object
       required: [id, decision, action, blocked, findings]
@@ -10064,8 +10862,14 @@ components:
               score: { type: number }
               start: { type: integer, description: 'Байтовое смещение в UTF-8 начала находки в исходном тексте фрагмента (из запроса, а не в преобразованном text или messages).' }
               end: { type: integer }
-              location: { type: string, description: 'text или messages[i].content' }
+              location: { type: string, description: 'text, messages[i].content или images[i] (start и end — в тексте, извлечённом из изображения)' }
               threat: { type: string, description: ID строки матрицы обнаружения (DM-NN). }
+              box: { $ref: '#/components/schemas/ImageBox' }
+        media:
+          type: array
+          description: Итог проверки каждого изображения из `images`.
+          items: { $ref: '#/components/schemas/MediaCheck' }
+        media_unchecked: { type: boolean, description: 'Есть непроверенные изображения (ссылка, отказ анализатора, нет OCR); как с ними поступить, решает non_text политики.' }
         findings_truncated: { type: boolean, description: Находок больше 1024, показаны первые. }
         text: { type: string, description: 'Текст после действий политики; изменён только при decision=redact; в monitor маскирование входа применяется, если провайдер приложения внешний (ТЗ 5.3), остальные действия — нет. Не использовать без проверки blocked. Нет при блокировке.' }
         messages:

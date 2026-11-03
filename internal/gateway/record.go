@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"net/http"
 	"slices"
 	"strings"
@@ -75,6 +76,10 @@ type record struct {
 	withheld        int
 	// sess — сессия запроса чата (задача 4.13); nil — без сессии.
 	sess *reqSession
+	// media — проверка изображений запроса (задача 5.39); nil — изображений
+	// нет или до проверки не дошло. В режиме async событие отправляется по
+	// готовности итога (emit).
+	media *mediaRun
 }
 
 // issue запоминает хеши ответов, выданных приложению (history.integrity,
@@ -209,8 +214,55 @@ func (h *ChatHandler) emit(rec *record) {
 	if degraded && rec.ev.Decision != nil {
 		rec.ev.Decision.QuotaDegraded = true
 	}
+	if run := rec.media; run != nil && !run.ready() {
+		// async: итог анализа изображений приходит после ответа приложению;
+		// событие уходит по его готовности, не позже срока анализа и запаса
+		// (ADR-0032, раздел 8).
+		go func() {
+			h.finishMedia(rec, run.wait())
+			h.enqueue(rec)
+		}()
+		return
+	}
+	if rec.media != nil {
+		h.finishMedia(rec, rec.media.result())
+	}
+	h.enqueue(rec)
+}
+
+func (h *ChatHandler) enqueue(rec *record) {
 	if err := h.cfg.Events.Enqueue(rec.ev); err != nil {
 		h.logger.Error("событие не принято", "type", rec.ev.Type, "event_id", rec.ev.ID, "error", err)
+	}
+}
+
+// finishMedia переносит в событие итог проверки изображений. В режиме async
+// тексты изображений проверяются детекторами здесь, после отправки запроса:
+// находки и категории угроз попадают в событие (и оповещения), решение по
+// запросу уже принято и не меняется.
+func (h *ChatHandler) finishMedia(rec *record, res mediaResult) {
+	rec.ev.Media = res.checks()
+	if d := rec.ev.Decision; d != nil {
+		d.MediaUnchecked = res.unchecked()
+	}
+	if res.mode != policy.MediaCheckAsync || rec.in == nil {
+		return
+	}
+	texts := res.texts()
+	if len(texts) == 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), MaxDetectorTimeout)
+	defer cancel()
+	in, err := rec.app.inspect(ctx, inspectRequest{Endpoint: policy.EndpointChat, External: rec.app.Provider.External(),
+		Texts: texts, Mode: policy.Monitor, DetectOnly: true, Timeout: h.cfg.DetectorTimeout})
+	if err != nil {
+		h.logger.Error("тексты изображений не проверены", "app", rec.app.ID, "event_id", rec.ev.ID, "error", err)
+		return
+	}
+	rec.addThreats(rec.findings(in, texts))
+	if in.MLUnavailable && rec.ev.Decision != nil {
+		rec.ev.Decision.MLUnavailable = true
 	}
 }
 
@@ -434,6 +486,10 @@ func (rec *record) findings(in *inspection, texts []inspectText) map[string]bool
 		}
 		if i < len(in.Fragments) {
 			ef.Fragment = in.Fragments[i]
+		}
+		if f.Text >= 0 && texts[f.Text].Box != nil {
+			b := *texts[f.Text].Box
+			ef.Box = &b
 		}
 		rec.ev.Findings = append(rec.ev.Findings, ef)
 	}

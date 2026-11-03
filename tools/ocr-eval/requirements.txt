@@ -1,0 +1,20 @@
+# Пакеты Python для эксперимента OCR (задача 5.40, ADR-0033). Только
+# инструмент разработки: в поставку и образы не входят, в
+# docs/cert/components.yaml не вносятся. Решение владельца — 02.11.2026
+# (карточка «Разрешить поставить кандидатов OCR в контейнер для эксперимента
+# 5.40?», ответ «Да, все три группы»).
+# Ставит make ocr-venv: pip --require-hashes --no-deps --only-binary=:all:,
+# хеши — с PyPI, колёса Linux x86-64 для CPython 3.13 и универсальные.
+onnxruntime==1.31.0 \
+    --hash=sha256:37fd78cee5160c7a43a1730ccb3682ffd880af9c9e80385d625c0c2f8b125809
+flatbuffers==25.12.19 \
+    --hash=sha256:7634f50c427838bb021c2d66a3d1168e9d199b0607e6329399f04846d42e20b4
+protobuf==7.36.2 \
+    --hash=sha256:89f23aa53c24553a2416fd4fd1ec06f74fa42b14b546d8883128813f775bbfd2 \
+    --hash=sha256:bdb3a345d48db958e6ce1f18e508beb0cc981d64f24088427549c866cd039f1e
+pyclipper==1.4.0 \
+    --hash=sha256:14c8bdb5a72004b721c4e6f448d2c2262d74a7f0c9e3076aeff41e564a92389f
+numpy==2.5.3 \
+    --hash=sha256:a5fa86b80fd24bcd1aff83ad23be44ea323de3f787be8f8b15d4a65621e25321
+packaging==26.3 \
+    --hash=sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c

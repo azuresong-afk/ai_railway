@@ -19,6 +19,8 @@ export function localDiff(before: PolicySpec, after: PolicySpec): PolicyDiff {
       ["mode", s.mode],
       ["non_text", s.non_text ?? ""],
       ["response_check", s.response_check ?? ""],
+      ["media_check", s.media_check ?? ""],
+      ["media_check_timeout_ms", s.media_check_timeout_ms?.toString() ?? ""],
       ["block_message", s.block_message ?? ""],
     ]);
   const bt = text(before);
