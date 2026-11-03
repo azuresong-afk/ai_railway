@@ -287,30 +287,21 @@ func TestFindingsAreReachable(t *testing.T) {
 	}
 }
 
-// Невидимые и форматирующие символы (теги Unicode, нулевая ширина, управление направлением) в исходнике записаны
-// экранами \uXXXX: сырые символы не видны при чтении и ревью.
-func TestInvisibleCharactersAreEscaped(t *testing.T) {
-	_, raw := load(t)
+// Невидимые и форматирующие символы в базе версии 1 не допускаются: разборщик 5.32 (redteam.ParseScenarios)
+// отвергает категорию Cf. Сценарии скрытого Unicode вернутся после расширения формата (см. README).
+func TestNoFormatCharacters(t *testing.T) {
+	db, raw := load(t)
 	for i, r := range string(raw) {
 		if unicode.Is(unicode.Cf, r) || (r >= 0xE0000 && r <= 0xE007F) || (unicode.IsControl(r) && r != '\n') {
-			t.Fatalf("смещение %d: сырой невидимый символ U+%04X: запишите его экраном \\uXXXX", i, r)
+			t.Fatalf("смещение %d: сырой невидимый символ U+%04X", i, r)
 		}
 	}
-	// Сценарии скрытого Unicode действительно содержат такие символы после разбора.
-	db, _ := load(t)
-	hidden := 0
 	for _, s := range db.Scenarios {
-		if s.Threat != "DM-05" {
-			continue
-		}
 		for _, st := range s.Steps {
 			if strings.ContainsFunc(st.Prompt, func(r rune) bool { return unicode.Is(unicode.Cf, r) }) {
-				hidden++
+				t.Errorf("%s: в шаге символ форматирования, разборщик базы его отвергнет", s.ID)
 			}
 		}
-	}
-	if hidden < 3 {
-		t.Errorf("сценариев DM-05 со скрытыми символами после разбора: %d, нужно не меньше 3 (теги, нулевая ширина, bidi)", hidden)
 	}
 }
 

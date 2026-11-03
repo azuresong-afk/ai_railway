@@ -62,7 +62,7 @@ func (e *EmbeddingsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	user := eu.ID
 	requested := req.Model
 	model, allowed := app.Resolve(requested)
-	rec, ok := h.newEventRecord(w, app, events.TypeGatewayRequest, model, false, user, start)
+	rec, ok := h.newEventRecord(w, r, app, events.TypeGatewayRequest, model, false, user, start)
 	if !ok {
 		return
 	}

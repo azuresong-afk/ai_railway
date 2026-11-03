@@ -51,6 +51,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/policy/versions"
 	"github.com/azuresong-afk/ai_railway/internal/quotalease"
 	"github.com/azuresong-afk/ai_railway/internal/rag"
+	"github.com/azuresong-afk/ai_railway/internal/redteam"
 	"github.com/azuresong-afk/ai_railway/internal/reports"
 	"github.com/azuresong-afk/ai_railway/internal/servicedb"
 	"github.com/azuresong-afk/ai_railway/internal/shadowai"
@@ -697,8 +698,34 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		return err
 	}
 	go inventorySvc.Run(ctx, inventory.SyncInterval)
-	// Состояние служебных баз — с эталонами шаблонов чата реестра ИИ.
-	serviceDBs := servicedb.NewRegistry(shadowSvc.DB(), complianceSvc.DB(), inventorySvc.TemplatesDB())
+	// Тестирование устойчивости (ТЗ 5.13; задача 5.32, ADR-0031): исполнитель
+	// атак на сервере; база сценариев — служебная база по ADR-0028; цели
+	// gateway — через шлюз -redteam-gateway-url с ключом запуска в пакете.
+	redteamStore, err := redteam.NewPGStore(db.Pool(), auditLog)
+	if err != nil {
+		return err
+	}
+	var redteamCA []byte
+	if cfg.RedTeamGatewayCA != "" {
+		if redteamCA, err = aisecCrypto.ReadPEMFile(cfg.RedTeamGatewayCA); err != nil {
+			return fmt.Errorf("корневой сертификат шлюза для тестирования устойчивости: %w", err)
+		}
+	}
+	redteamLogger := logger.With("component", "redteam")
+	redteamSvc, err := redteam.New(redteam.Options{Store: redteamStore, ServiceDBs: serviceDBStore, Provider: p, OrgID: audit.DefaultOrgID,
+		Apps: appsSvc, GatewayURL: cfg.RedTeamGatewayURL, GatewayCA: redteamCA,
+		Judges: redteam.NewJudgeClients(appsSvc, tp, redteamLogger), Logger: redteamLogger})
+	if err != nil {
+		return err
+	}
+	if err := redteamSvc.Start(ctx); err != nil {
+		return err
+	}
+	// Запуски отменяются вместе с ctx; остановка ждёт записи их итогов.
+	defer redteamSvc.Wait()
+	// Состояние служебных баз — с эталонами шаблонов чата реестра ИИ и
+	// базой сценариев тестирования устойчивости.
+	serviceDBs := servicedb.NewRegistry(shadowSvc.DB(), complianceSvc.DB(), inventorySvc.TemplatesDB(), redteamSvc.DB())
 	serviceDBRef.Store(serviceDBs)
 
 	// Манифесты коллекций RAG (ТЗ 5.12, DM-30; задача 5.24, ADR-0029, п. 5).
@@ -738,6 +765,7 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		ShadowAI:   shadowSvc,
 		Inventory:  inventorySvc,
 		RAG:        ragSvc,
+		RedTeam:    redteamSvc,
 		Compliance: complianceSvc,
 		ServiceDBs: serviceDBs,
 		License:    licSvc,
@@ -769,7 +797,7 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		// Пакеты конфигурации (задача 2.13): без ключа подписи внутренний
 		// порт не открывается — шлюзы не получили бы конфигурацию.
 		bundleRoutes, bsvc, err := newBundleRoutes(cfg, p, db, auditLog, appsSvc, policiesSvc, agentsSvc, gateways, trust, authSvc.IdPKeys,
-			quotaSvc.Mode, logger)
+			quotaSvc.Mode, redteamSvc.TestKeys, logger)
 		if err != nil {
 			return err
 		}

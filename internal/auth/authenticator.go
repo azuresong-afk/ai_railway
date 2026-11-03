@@ -33,6 +33,8 @@ type KeyRecord struct {
 	Revoked bool
 	// AllowedCIDRs — разрешённые адреса клиента; пусто — любые.
 	AllowedCIDRs []netip.Prefix
+	// Test — ключ запуска тестирования устойчивости (ADR-0031, раздел 2).
+	Test bool
 }
 
 // Identity — результат успешной аутентификации.
@@ -40,6 +42,9 @@ type Identity struct {
 	AppID     string
 	Env       string
 	KeyPrefix string
+	// Test — запрос исполнителя тестирования устойчивости: событие
+	// помечается test (ADR-0031, раздел 2).
+	Test bool
 }
 
 // Failure — подробности отказа для события auth_failure. Сам ключ не
@@ -122,7 +127,7 @@ func (a *Authenticator) Authenticate(key string, remote netip.Addr, now time.Tim
 	case !addressAllowed(rec.AllowedCIDRs, remote):
 		f.Reason = ReasonAddress
 	default:
-		return &Identity{AppID: rec.AppID, Env: rec.Env, KeyPrefix: prefix}, nil
+		return &Identity{AppID: rec.AppID, Env: rec.Env, KeyPrefix: prefix, Test: rec.Test}, nil
 	}
 	return nil, f
 }

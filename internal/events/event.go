@@ -216,6 +216,10 @@ type Event struct {
 	Media []MediaCheck `json:"media,omitempty"`
 	// Judge — оценки judge.llm запроса (задача 5.28, judge.go).
 	Judge []JudgeCheck `json:"judge,omitempty"`
+	// Test — запрос исполнителя тестирования устойчивости с ключом запуска
+	// (задача 5.32, ADR-0031, раздел 2): оповещения и инциденты по такому
+	// событию не поднимаются.
+	Test bool `json:"test,omitempty"`
 }
 
 var threatRe = regexp.MustCompile(`^DM-\d{2}$`)

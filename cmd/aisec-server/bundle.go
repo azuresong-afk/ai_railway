@@ -223,6 +223,7 @@ func loadServerCA(cfg *serverConfig, p aisecCrypto.Provider, t *serverTrust) (*s
 func newBundleRoutes(cfg *serverConfig, p aisecCrypto.Provider, db *store.DB, auditLog *audit.Log,
 	appsSvc *apps.Service, policiesSvc *versions.Service, agentsSvc *agents.Service, gateways *gwregistry.Service, trust *serverTrust,
 	idpKeys func(ctx context.Context) (string, *aisecCrypto.JWKS, error), quotaMode func(ctx context.Context) (string, error),
+	testKeys func(ctx context.Context, now time.Time) (map[string][]bundle.Key, error),
 	logger *slog.Logger) ([]api.Route, *build.Service, error) {
 	signer, err := loadBundleSigner(p, cfg.KeysDir, trust)
 	if err != nil {
@@ -270,7 +271,10 @@ func newBundleRoutes(cfg *serverConfig, p aisecCrypto.Provider, db *store.DB, au
 		// Режим квот (задача 4.29): leased — шлюзы берут аренду у сервера.
 		QuotaMode: quotaMode,
 		// Запрещённые модели (задача 5.22): смена состояния растит счётчик.
-		BlockedModels: blocked})
+		BlockedModels: blocked,
+		// Ключи запусков тестирования устойчивости (задача 5.32, ADR-0031):
+		// начало и конец запуска растят счётчик (миграция 0075).
+		TestKeys: testKeys})
 	if err != nil {
 		return nil, nil, err
 	}
