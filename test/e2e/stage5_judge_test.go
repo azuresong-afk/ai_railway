@@ -200,10 +200,6 @@ func TestE2EStage5_JudgeLLMOnPremise(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("обычный запрос: %d %s", code, body)
 	}
-	if j.callCount() == 0 {
-
-	}
-
 	// DM-19: ассистент (mock-llm повторяет запрос в ответе) обещает возврат
 	// денег — ответ блокируется до выдачи приложению, в событии находка
 	// judge.llm и строка матрицы.

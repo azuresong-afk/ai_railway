@@ -62,7 +62,9 @@ func s5Chown(t *testing.T, dir string) {
 		if err != nil {
 			return err
 		}
-		return os.Lchown(p, s5Nobody, s5Nobody)
+		// G122: каталог — собственный временный каталог теста, посторонних записей
+		// в нём нет; Lchown не следует по символьным ссылкам.
+		return os.Lchown(p, s5Nobody, s5Nobody) //nolint:gosec // G122: свой временный каталог теста, Lchown без перехода по ссылкам
 	})
 	if err != nil {
 		t.Fatal(err)
