@@ -338,6 +338,16 @@ func TestONNXBoundaries(t *testing.T) {
 	if fr := scanBytes(t, "m.onnx", long, Limits{}); !fr.HasFinding(CodeLimitExceeded) {
 		t.Errorf("длинный домен: %+v", fr.Findings)
 	}
+	// Длина или ключ поля — varint, который выходит за конец вложенного
+	// сообщения (opset_import длиной 4 и 1): отказ, а не паника (вход fuzz).
+	for name, data := range map[string][]byte{
+		"длина за границей": []byte("B\x04\n\x9a\x97\x97\x97\x97\x97\x95\x90\xb1\x01"),
+		"ключ за границей":  []byte("B\x01\x88\x01\x05"),
+	} {
+		if fr := scanBytes(t, "m.onnx", data, Limits{}); !fr.HasFinding(CodeMalformed) || !fr.Blocked() {
+			t.Errorf("%s: %+v", name, fr)
+		}
+	}
 	group := append(append(pbVarint(1, 9), pbStr(2, "x")...), pbKey(7, 3)...)
 	group = append(group, 0, 0)
 	if fr := scanBytes(t, "m.onnx", group, Limits{}); fr.Format != FormatONNX || !fr.HasFinding(CodeMalformed) {
