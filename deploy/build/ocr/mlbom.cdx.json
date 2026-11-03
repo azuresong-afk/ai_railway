@@ -1,0 +1,88 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.6",
+  "serialNumber": "urn:uuid:5c3f0b7e-4a2d-4f6e-9b1a-0c33aa7e0533",
+  "version": 1,
+  "metadata": {
+    "component": {
+      "type": "application",
+      "bom-ref": "aisec-media-ocr",
+      "name": "aisec-media: модели OCR",
+      "description": "Модели OCR анализатора изображений aisec-media (ADR-0033, задача 5.41): каталог models/ выпуска build/release-media"
+    }
+  },
+  "components": [
+    {
+      "type": "machine-learning-model",
+      "bom-ref": "ocr-det",
+      "name": "PP-OCRv6_det_small",
+      "version": "rapidocr-3.10.0",
+      "description": "Детектор строк текста PaddleOCR PP-OCRv6 small в ONNX (конвертация RapidOCR)",
+      "supplier": {"name": "RapidAI (RapidOCR)"},
+      "licenses": [{"license": {"id": "Apache-2.0"}}],
+      "hashes": [{"alg": "SHA-256", "content": "090f04abcd9d9a7498bc4ebf677e4cb9bdce1fe4197ddb7e529f1ef44e1ff94f"}],
+      "externalReferences": [
+        {"type": "distribution", "url": "https://files.pythonhosted.org/packages/59/07/203065283bba0c5e9c10af3602dc25ab3e59ee54dc2d1d22c8faeabf5ed8/rapidocr-3.10.0-py3-none-any.whl", "comment": "файл rapidocr/models/PP-OCRv6_det_small.onnx колеса rapidocr 3.10.0"}
+      ],
+      "pedigree": {
+        "ancestors": [
+          {
+            "type": "machine-learning-model",
+            "name": "PaddleOCR PP-OCRv6 det small",
+            "supplier": {"name": "Baidu (PaddlePaddle)"},
+            "licenses": [{"license": {"id": "Apache-2.0"}}],
+            "externalReferences": [{"type": "vcs", "url": "https://github.com/PaddlePaddle/PaddleOCR"}]
+          }
+        ]
+      },
+      "modelCard": {
+        "modelParameters": {
+          "task": "text-detection",
+          "architectureFamily": "DBNet",
+          "inputs": [{"format": "image: NCHW float32 [1, 3, H, W], H и W кратны 32"}],
+          "outputs": [{"format": "карта вероятностей текста [1, 1, H, W]"}]
+        },
+        "considerations": {
+          "useCases": ["Поиск строк текста на изображениях запросов в aisec-media (DM-45, DM-46); выбор — эксперимент 5.40, ADR-0033"]
+        }
+      }
+    },
+    {
+      "type": "machine-learning-model",
+      "bom-ref": "ocr-rec",
+      "name": "cyrillic_PP-OCRv5_rec_mobile",
+      "version": "rapidocr-3.10.0",
+      "description": "Распознавание строк PaddleOCR PP-OCRv5 mobile для кириллицы и латиницы в ONNX (конвертация RapidOCR); таблица символов — в метаданных модели (character)",
+      "supplier": {"name": "RapidAI (RapidOCR)"},
+      "licenses": [{"license": {"id": "Apache-2.0"}}],
+      "hashes": [{"alg": "SHA-256", "content": "90f761b4bfcce0c8c561c0cb5c887b0971d3ec01c32164bdf7374a35b0982711"}],
+      "externalReferences": [
+        {"type": "distribution", "url": "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.10.0/onnx/PP-OCRv5/rec/cyrillic_PP-OCRv5_rec_mobile.onnx", "comment": "официальный источник набора RapidOCR v3.10.0"},
+        {"type": "distribution", "url": "https://media.githubusercontent.com/media/Vicomtech/dardcollect/HEAD/dardcollect/models/cyrillic_PP-OCRv5_rec_mobile.onnx", "comment": "зеркало; файл принимается только при совпадении SHA-256"}
+      ],
+      "pedigree": {
+        "ancestors": [
+          {
+            "type": "machine-learning-model",
+            "name": "PaddleOCR PP-OCRv5 cyrillic rec mobile",
+            "supplier": {"name": "Baidu (PaddlePaddle)"},
+            "licenses": [{"license": {"id": "Apache-2.0"}}],
+            "externalReferences": [{"type": "vcs", "url": "https://github.com/PaddlePaddle/PaddleOCR"}]
+          }
+        ]
+      },
+      "modelCard": {
+        "modelParameters": {
+          "task": "text-recognition",
+          "architectureFamily": "SVTR (CTC)",
+          "inputs": [{"format": "image: NCHW float32 [1, 3, 48, W]"}],
+          "outputs": [{"format": "вероятности классов CTC [1, T, C]"}]
+        },
+        "considerations": {
+          "useCases": ["Распознавание русского и английского текста строк в aisec-media (DM-45, DM-46); CER на корпусе 5.40 — 4,3 % RU, 0,1 % EN"]
+        }
+      }
+    }
+  ],
+  "dependencies": [{"ref": "aisec-media-ocr", "dependsOn": ["ocr-det", "ocr-rec"]}]
+}

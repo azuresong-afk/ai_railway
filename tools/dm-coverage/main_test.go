@@ -125,7 +125,7 @@ func TestParseJUnit(t *testing.T) {
 
 func TestParseCovers(t *testing.T) {
 	covs, bad := ParseCovers("Проверяет что-то.\nПокрывает: DM-38 (оповещение), DM-40.\nПокрывает: DM-1\n")
-	if len(covs) != 2 || covs[0] != (Coverage{"DM-38", "оповещение"}) || covs[1] != (Coverage{"DM-40", ""}) {
+	if len(covs) != 2 || covs[0] != (Coverage{ID: "DM-38", Part: "оповещение"}) || covs[1] != (Coverage{ID: "DM-40"}) {
 		t.Fatalf("покрытие: %+v", covs)
 	}
 	if len(bad) != 1 || !strings.Contains(bad[0], "DM-1") {
@@ -138,12 +138,19 @@ func TestCollectMarkers(t *testing.T) {
 		"a/a_test.go":        {Data: []byte("package a\n\n// TestAlert проверяет оповещение.\n// Покрывает: DM-38 (оповещение)\nfunc TestAlert(t *testing.T) {}\n\n// Покрывает: DM-2\nfunc TestBad(t *testing.T) {}\n\n// Покрывает: DM-40\nfunc helper() {}\n")},
 		"a/a.go":             {Data: []byte("package a\n// Покрывает: DM-01\nfunc TestNotTest() {}\n")},
 		"vendor/v/v_test.go": {Data: []byte("package v\n// Покрывает: DM-01\nfunc TestV() {}\n")},
+		"b/b_test.go":        {Data: []byte("//go:build aisec_onnx && cgo\n\npackage b\n\n// Покрывает: DM-45\nfunc TestORT(t *testing.T) {}\n")},
+		"c/c_test.go":        {Data: []byte("//go:build e2e\n\npackage c\n\n// Покрывает: DM-01\nfunc TestE2E(t *testing.T) {}\n")},
 	}
 	m, problems, err := CollectMarkers(fsys)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(m) != 1 || len(m["TestAlert"]) != 1 || m["TestAlert"][0] != (Coverage{"DM-38", "оповещение"}) {
+	if m["TestORT"][0] != (Coverage{ID: "DM-45", Optional: true}) || m["TestE2E"][0] != (Coverage{ID: "DM-01"}) {
+		t.Fatalf("необязательные маркеры: %+v", m)
+	}
+	delete(m, "TestORT")
+	delete(m, "TestE2E")
+	if len(m) != 1 || len(m["TestAlert"]) != 1 || m["TestAlert"][0] != (Coverage{ID: "DM-38", Part: "оповещение"}) {
 		t.Fatalf("маркеры: %+v", m)
 	}
 	if len(problems) != 1 || !strings.Contains(problems[0], "TestBad") {
@@ -164,8 +171,10 @@ func TestCompute(t *testing.T) {
 		{"TestDM40_Early", true},
 	}
 	markers := map[string][]Coverage{
-		"TestAlert":  {{"DM-38", "оповещение"}, {"DM-38", "нет такой"}},
-		"TestNotRun": {{"DM-02", ""}},
+		"TestAlert":  {{"DM-38", "оповещение", false}, {"DM-38", "нет такой", false}},
+		"TestNotRun": {{"DM-02", "", false}},
+		// Тест под тегом aisec_onnx, который не запускался, — не ошибка.
+		"TestORTNotRun": {{"DM-45", "", true}},
 	}
 	rep := Compute(rows, 1, results, markers)
 	status := map[string]string{}
@@ -191,6 +200,9 @@ func TestCompute(t *testing.T) {
 		if !strings.Contains(joined, s) {
 			t.Errorf("нет проблемы %q в %q", s, rep.Problems)
 		}
+	}
+	if strings.Contains(joined, "TestORTNotRun") {
+		t.Errorf("необязательный тест, который не запускался, — проблема: %q", rep.Problems)
 	}
 	md := rep.Markdown()
 	if !strings.Contains(md, "| DM-01 | Прямая инъекция | основная | 1 | `TestDM01_Direct` | покрыто |") {

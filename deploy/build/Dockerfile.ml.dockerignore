@@ -1,5 +1,6 @@
 # Контекст сборки Dockerfile.ml — только то, что нужно сборке ONNX Runtime и
-# выпуска aisec-ml.
+# выпусков aisec-ml и aisec-media с OCR (модели OCR — отдельным контекстом
+# media-models).
 *
 !Makefile
 !go.mod
@@ -10,5 +11,6 @@
 !tools/
 !deploy/build/onnxruntime/
 !deploy/build/ml-libs.sh
+!deploy/build/ocr/
 !build/ort-mirror/
 !testdata/integrity/manifest-test.signkey

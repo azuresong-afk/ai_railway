@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -90,8 +91,8 @@ func Compute(rows []Row, stage int, results []Result, markers map[string][]Cover
 			hits[key{c.ID, c.Part}] = append(hits[key{c.ID, c.Part}], hit{fn, res.Passed})
 		}
 	}
-	for fn := range markers {
-		if !markerUsed[fn] {
+	for fn, covs := range markers {
+		if !markerUsed[fn] && !slices.ContainsFunc(covs, func(c Coverage) bool { return c.Optional }) {
 			problems = append(problems, fmt.Sprintf("тест %s размечен маркером «Покрывает:», но не запускался", fn))
 		}
 	}

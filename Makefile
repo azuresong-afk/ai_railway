@@ -203,7 +203,7 @@ build: ## Сборка бинарников в build/bin
 lint: lint-version ## Линтеры, в том числе depguard (.golangci.yml); с cgo, чтобы проверялись все файлы
 	CGO_ENABLED=1 $(BIN)/golangci-lint run ./...
 	# Исполнитель ONNX Runtime в aisec-ml собирается только с тегом aisec_onnx (ADR-0024).
-	CGO_ENABLED=1 $(BIN)/golangci-lint run --build-tags e2e,aisec_onnx ./cmd/aisec-ml/...
+	CGO_ENABLED=1 $(BIN)/golangci-lint run --build-tags e2e,aisec_onnx ./cmd/aisec-ml/... ./cmd/aisec-media/...
 
 # Исполнитель ONNX Runtime в aisec-ml (тег aisec_onnx, ADR-0024): проверка
 # хеша библиотеки и отказ загрузить чужую — без самой библиотеки. С
@@ -220,7 +220,7 @@ sast: lint-version ## Статический анализ (gosec) в SARIF и с
 	# Поставочная сборка aisec-ml — с тегом aisec_onnx (исполнитель ONNX
 	# Runtime, ADR-0024): отдельный прогон и SARIF (4В39 ревью 4.r4).
 	CGO_ENABLED=1 $(BIN)/golangci-lint run --enable-only gosec --build-tags e2e,aisec_onnx --issues-exit-code 0 \
-		--output.sarif.path $(BUILD)/sast/gosec-ml.sarif --output.text.path stderr --show-stats=false ./cmd/aisec-ml/...
+		--output.sarif.path $(BUILD)/sast/gosec-ml.sarif --output.text.path stderr --show-stats=false ./cmd/aisec-ml/... ./cmd/aisec-media/...
 	go run ./tools/sast-triage -root . -sarif build/sast/gosec.sarif,build/sast/gosec-ml.sarif \
 		-triage docs/cert/sast-triage/triage.yaml -suppressed build/sast/suppressed.md
 
@@ -258,7 +258,7 @@ GOVULNDB ?= https://vuln.go.dev
 vuln: $(BIN)/govulncheck ## Уязвимости зависимостей (govulncheck, база GOVULNDB)
 	$(BIN)/govulncheck -db '$(GOVULNDB)' ./...
 	# onnxruntime_go импортирует только исполнитель с тегом aisec_onnx (4В39).
-	CGO_ENABLED=1 $(BIN)/govulncheck -db '$(GOVULNDB)' -tags aisec_onnx ./cmd/aisec-ml/...
+	CGO_ENABLED=1 $(BIN)/govulncheck -db '$(GOVULNDB)' -tags aisec_onnx ./cmd/aisec-ml/... ./cmd/aisec-media/...
 
 $(BIN)/govulncheck:
 	@echo "Нет $@: выполните make tools (или используйте сборочный образ)"; exit 1
@@ -460,6 +460,8 @@ ifeq ($(filter 1,$(MEDIA)),1)
 	@! grep -q 'тестовым ключом' $(BUILD)/release-media-verify.out || { echo "images: выпуск aisec-media подписан тестовым ключом"; exit 1; }
 	@v=$$(sed -n 's/^  "version": "\([^"]*\)",$$/\1/p' $(MEDIA_RELEASE_DIR)/aisec-manifest.json); \
 		test "$$v" = '$(VERSION)' || { echo "images: версия выпуска aisec-media $$v не совпадает с VERSION=$(VERSION)"; exit 1; }
+	@test -f $(MEDIA_RELEASE_DIR)/lib/libonnxruntime.so.$(ORT_VERSION) || { echo "images: выпуск aisec-media без OCR (MEDIA_OCR=0) — не для поставки (ADR-0033)"; exit 1; }
+	$(MAKE) --no-print-directory ort-verify ORT_LIB_DIR=$(MEDIA_RELEASE_DIR)/lib
 endif
 	$(MAKE) --no-print-directory release-fingerprint
 	$(MAKE) images-build
@@ -532,48 +534,117 @@ ifeq ($(filter 1,$(MEDIA)),1)
 endif
 
 # Анализатор изображений aisec-media (ADR-0032, задача 5.38): свой каталог
-# выпуска и манифест, как у aisec-ml, — после ADR-0033 в него добавятся
-# движок OCR (lib/) и модели (models/), а основной выпуск останется без них.
-# Пока бинарник статический (CGO_ENABLED=0) и совпадает с bin/aisec-media
-# основного выпуска.
+# выпуска и манифест. С OCR (ADR-0033, задача 5.41; по умолчанию) — как
+# aisec-ml: бинарник с cgo и тегом aisec_onnx, ONNX Runtime с загрузчиком и
+# системными библиотеками в lib/, модели OCR и их ML-BOM в models/; основной
+# выпуск остаётся без них. MEDIA_OCR=0 — статический бинарник без OCR
+# (лаборатория, отладка): изображения у шлюза «не проверено», в поставку
+# такой выпуск не идёт (make images MEDIA=1 его не принимает).
 #
-#   make media-release-dir    каталог выпуска build/release-media
+#   make media-models         модели OCR по deploy/build/ocr/models.json (сеть, SHA-256)
+#   make media-release-dir    каталог выпуска build/release-media (Dockerfile.ml без сети)
 #   make images MEDIA=1       образы поставки вместе с aisec-media
 #
 # С RELEASE=1 манифест подписывается так же, как основной: make release-sign
 # RELEASE_DIR=build/release-media на машине без сети.
 MEDIA ?=
+MEDIA_OCR ?= 1
 MEDIA_RELEASE_DIR := $(BUILD)/release-media
+MEDIA_MODELS_DIR ?= $(BUILD)/media-models
+MEDIA_MODELS_LOCK := deploy/build/ocr/models.json
+MEDIA_MODELS_SUM  := deploy/build/ocr/models.sha256
+MEDIA_MLBOM       := deploy/build/ocr/mlbom.cdx.json
 PILOT_MEDIA_COMPOSE := deploy/compose/pilot/compose.media.yaml
 
+# Шаг с сетью: модель сохраняется, только если SHA-256 совпал (как make
+# ocr-models в 5.40).
+.PHONY: media-models
+media-models: ## Модели OCR aisec-media в build/media-models по deploy/build/ocr/models.json со сверкой SHA-256 (сеть)
+	python3 -I tools/ocr-eval/fetch.py -list $(MEDIA_MODELS_LOCK) -out $(MEDIA_MODELS_DIR)
+	$(MAKE) --no-print-directory media-models-check
+
+# Шаг без сети: в каталоге моделей — ровно файлы models.sha256 с этими хешами.
+.PHONY: media-models-check
+media-models-check: ## Каталог моделей OCR MEDIA_MODELS_DIR сверяется с deploy/build/ocr/models.sha256 (без сети)
+	@test -d $(MEDIA_MODELS_DIR) || { echo "media-models-check: нет $(MEDIA_MODELS_DIR) — сначала make media-models"; exit 1; }
+	cd $(MEDIA_MODELS_DIR) && sha256sum --check --strict $(CURDIR)/$(MEDIA_MODELS_SUM)
+	@want=$$(cut -d' ' -f3 $(MEDIA_MODELS_SUM) | sort | tr '\n' ' '); got=$$(ls -A $(MEDIA_MODELS_DIR) | sort | tr '\n' ' '); \
+		test "$$got" = "$$want" || { echo "media-models-check: в $(MEDIA_MODELS_DIR) файлы «$$got», ожидаются «$$want»"; exit 1; }
+
 .PHONY: media-release-dir
-media-release-dir: ## Каталог выпуска aisec-media build/release-media: бинарник и свой манифест (с RELEASE=1 — без подписи)
+media-release-dir: ## Каталог выпуска aisec-media build/release-media: с OCR — в Dockerfile.ml без сети, MEDIA_OCR=0 — статический (с RELEASE=1 — без подписи)
 ifeq ($(filter 1,$(RELEASE)),1)
 	$(release-tree-check)
 endif
+ifeq ($(MEDIA_OCR),0)
 	rm -rf $(MEDIA_RELEASE_DIR)
 	mkdir -p $(MEDIA_RELEASE_DIR)/bin
 	CGO_ENABLED=0 go build -trimpath -tags '$(BUILD_TAGS)' -ldflags '$(LDFLAGS)' -o $(MEDIA_RELEASE_DIR)/bin/ ./cmd/aisec-media
 	go run ./tools/manifest build -out $(MEDIA_RELEASE_DIR)/aisec-manifest.json \
 		$(if $(filter 1,$(RELEASE)),-unsigned,-test-key $(MANIFEST_TEST_KEY)) \
 		-version '$(VERSION)' -created '$(SOURCE_DATE)' -bin $(MEDIA_RELEASE_DIR)/bin -cmds aisec-media
+else
+	@test -d $(ORT_MIRROR) || { echo "media-release-dir: нет $(ORT_MIRROR) — сначала make ort-fetch"; exit 1; }
+	$(MAKE) --no-print-directory media-models-check
+	rm -rf $(MEDIA_RELEASE_DIR)
+	docker build --pull=false -f deploy/build/Dockerfile.ml --target media-release \
+		--build-arg VERSION='$(VERSION)' --build-arg SOURCE_DATE='$(SOURCE_DATE)' --build-arg SOURCE_EPOCH='$(SOURCE_EPOCH)' \
+		--build-arg MANIFEST_MODE=$(MANIFEST_MODE) --build-arg RELEASE='$(RELEASE)' --build-arg ORT_JOBS='$(ORT_JOBS)' \
+		--build-context media-models=$(MEDIA_MODELS_DIR) -o type=local,dest=$(MEDIA_RELEASE_DIR) .
+	$(MAKE) --no-print-directory ort-verify ORT_LIB_DIR=$(MEDIA_RELEASE_DIR)/lib
+endif
 ifneq ($(filter 1,$(RELEASE)),1)
 	go run ./cmd/aisec-cli verify -release $(MEDIA_RELEASE_DIR) -allow-older
 endif
+
+# Сборка выпуска aisec-media с OCR внутри Dockerfile.ml (стадия media) или
+# на машине с готовой библиотекой (ORT_LIB_DIR=build/ort/lib): бинарник с
+# cgo, загрузчиком и RPATH /opt/aisec/lib и хешем библиотеки ORT; модели —
+# только после сверки с models.sha256, рядом — ML-BOM; библиотеки из того же
+# образа и манифест с видами library и model (их сверяет самопроверка
+# aisec-media).
+.PHONY: media-release-assemble
+media-release-assemble:
+	@test '$(MANIFEST_MODE)' != unsigned || test '$(RELEASE)' = 1 || { echo "media-release-assemble: MANIFEST_MODE=unsigned — только с RELEASE=1"; exit 1; }
+	@test '$(MANIFEST_MODE)' = unsigned || test '$(RELEASE)' != 1 || { echo "media-release-assemble: RELEASE=1 — только MANIFEST_MODE=unsigned"; exit 1; }
+	@test -f $(ORT_LIB_DIR)/libonnxruntime.so.$(ORT_VERSION) || { echo "media-release-assemble: нет $(ORT_LIB_DIR)/libonnxruntime.so.$(ORT_VERSION)"; exit 1; }
+	$(MAKE) --no-print-directory media-models-check
+	rm -rf $(MEDIA_RELEASE_DIR)
+	mkdir -p $(MEDIA_RELEASE_DIR)/bin $(MEDIA_RELEASE_DIR)/lib $(MEDIA_RELEASE_DIR)/models
+	for f in $$(cut -d' ' -f3 $(MEDIA_MODELS_SUM)); do install -m 0644 $(MEDIA_MODELS_DIR)/$$f $(MEDIA_RELEASE_DIR)/models/ || exit 1; done
+	install -m 0644 $(MEDIA_MLBOM) $(MEDIA_RELEASE_DIR)/models/mlbom.cdx.json
+	install -m 0644 $(ORT_LIB_DIR)/libonnxruntime.so.$(ORT_VERSION) $(MEDIA_RELEASE_DIR)/lib/
+	hash=$$(sha256sum $(MEDIA_RELEASE_DIR)/lib/libonnxruntime.so.$(ORT_VERSION) | cut -d' ' -f1) && \
+	CGO_ENABLED=1 go build -trimpath -tags '$(BUILD_TAGS) aisec_onnx' \
+		-ldflags "$(LDFLAGS) -X main.ortLibHash=$$hash -linkmode=external -extldflags '-Wl,--dynamic-linker=$(ML_LIB_PATH)/ld-linux-x86-64.so.2 -Wl,--disable-new-dtags -Wl,-rpath,$(ML_LIB_PATH)'" \
+		-o $(MEDIA_RELEASE_DIR)/bin/aisec-media ./cmd/aisec-media
+	bash deploy/build/ml-libs.sh $(MEDIA_RELEASE_DIR) aisec-media
+	go run ./tools/manifest build -out $(MEDIA_RELEASE_DIR)/aisec-manifest.json \
+		$(if $(filter unsigned,$(MANIFEST_MODE)),-unsigned,-test-key $(MANIFEST_TEST_KEY)) \
+		-version '$(VERSION)' -created '$(SOURCE_DATE)' -bin $(MEDIA_RELEASE_DIR)/bin -cmds aisec-media \
+		-lib $(MEDIA_RELEASE_DIR)/lib -models $(MEDIA_RELEASE_DIR)/models
+
+# Тесты OCR на корпусе (DM-45, DM-46) и самопроверка с настоящими моделями:
+# тег aisec_onnx, библиотека ORT (make ort-build) и каталог моделей (make
+# media-models). Без AISEC_ORT_LIB тесты пропускаются (docs/cert/build-env.md).
+.PHONY: media-ocr-test
+media-ocr-test: ## Тесты OCR aisec-media на корпусе с ONNX Runtime (тег aisec_onnx; AISEC_ORT_LIB=…, модели в build/media-models)
+	CGO_ENABLED=1 AISEC_MEDIA_MODELS_DIR=$(abspath $(MEDIA_MODELS_DIR)) go test -count=1 -tags aisec_onnx -run 'OCR|ORT|DM4[56]' -v ./cmd/aisec-media/
 
 .PHONY: image-media
 image-media: $(BIN)/sbom-utility ## Образ aisec-media из build/release-media (без сети и без RUN), SBOM
 	@test -s $(MEDIA_RELEASE_DIR)/aisec-manifest.json || { echo "image-media: нет $(MEDIA_RELEASE_DIR) — make media-release-dir"; exit 1; }
 	mkdir -p $(IMAGES_DIR)
 	docker build --pull=false --network=none --provenance=false --sbom=false \
-		-f deploy/build/Dockerfile.release --target aisec-media \
+		-f deploy/build/Dockerfile.release --target $(if $(wildcard $(MEDIA_RELEASE_DIR)/lib/*),aisec-media-ocr,aisec-media) \
 		--build-arg VERSION='$(VERSION)' --build-arg BUILD_KIND=$(IMAGE_KIND) \
 		--build-arg SOURCE_DATE_EPOCH=$(SOURCE_EPOCH) \
 		-t $(IMAGE_REPO)/aisec-media:$(IMAGE_TAG) $(MEDIA_RELEASE_DIR)
 	docker save -o $(IMAGES_DIR)/aisec-media.tar $(IMAGE_REPO)/aisec-media:$(IMAGE_TAG)
-	go run ./tools/sbom -registry docs/cert/components.yaml -gosum go.sum \
+	go run ./tools/sbom -registry docs/cert/components.yaml -gosum go.sum $(if $(wildcard $(MEDIA_RELEASE_DIR)/lib/*),-native) \
 		-out $(IMAGES_DIR)/aisec-media.cdx.json -version '$(VERSION)' -timestamp '$(SOURCE_DATE)' -image $(IMAGE_REPO)/aisec-media:$(IMAGE_TAG) \
-		-file $(MEDIA_RELEASE_DIR)/aisec-manifest.json -file $(MEDIA_RELEASE_DIR)/aisec-manifest.json.sig $(MEDIA_RELEASE_DIR)/bin/aisec-media
+		-file $(MEDIA_RELEASE_DIR)/aisec-manifest.json -file $(MEDIA_RELEASE_DIR)/aisec-manifest.json.sig \
+		$(addprefix -file ,$(sort $(wildcard $(MEDIA_RELEASE_DIR)/lib/* $(MEDIA_RELEASE_DIR)/models/*))) $(MEDIA_RELEASE_DIR)/bin/aisec-media
 	$(BIN)/sbom-utility validate --quiet --input-file $(IMAGES_DIR)/aisec-media.cdx.json
 	go run ./tools/sbom -check $(IMAGES_DIR)/aisec-media.cdx.json
 

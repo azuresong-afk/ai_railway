@@ -38,6 +38,11 @@ type imageRule struct {
 	// Dynamic — бинарник с cgo (aisec-ml): загрузчик и все разделяемые
 	// библиотеки — только из /opt/aisec/lib образа, не из системы.
 	Dynamic bool
+	// DynamicIfInterp — статический бинарник или бинарник с cgo по выбору
+	// сборки (aisec-media: без OCR — статический, с OCR — с ONNX Runtime,
+	// ADR-0033): бинарник с загрузчиком проверяется как Dynamic, без него —
+	// как статический.
+	DynamicIfInterp bool
 }
 
 // productCmds — бинарники поставки (PRODUCT_CMDS в Makefile).
@@ -51,9 +56,10 @@ var imageRules = map[string]imageRule{
 	// aisec-ml — свой выпуск (build/release-ml): бинарник с ONNX Runtime,
 	// библиотеки и пакет моделей; портов нет, сети нет (ADR-0024).
 	"aisec-ml": {Bins: []string{"aisec-ml"}, Trees: []string{"lib", "models"}, Dynamic: true},
-	// aisec-media — свой выпуск (build/release-media, ADR-0032): статический
-	// бинарник; портов нет, сети нет. Движок OCR и модели — по ADR-0033.
-	"aisec-media": {Bins: []string{"aisec-media"}},
+	// aisec-media — свой выпуск (build/release-media, ADR-0032): без OCR —
+	// статический бинарник, с OCR (ADR-0033) — как aisec-ml: ONNX Runtime и
+	// библиотеки в lib/, модели в models/; портов нет, сети нет.
+	"aisec-media": {Bins: []string{"aisec-media"}, Trees: []string{"lib", "models"}, DynamicIfInterp: true},
 }
 
 const (
@@ -528,6 +534,7 @@ func checkFiles(img *image, rule imageRule) []string {
 			add("/%s: нет в образе", n)
 		}
 	}
+	dynamic := rule.Dynamic
 	for _, b := range rule.Bins {
 		f, ok := img.Files[binDir+"/"+b]
 		if !ok || f.Type != tar.TypeReg {
@@ -536,8 +543,11 @@ func checkFiles(img *image, rule imageRule) []string {
 		if f.Mode&0o111 == 0 {
 			add("/%s/%s: не исполняемый", binDir, b)
 		}
+		if rule.DynamicIfInterp && hasInterp(f.Data) {
+			dynamic = true
+		}
 		check := checkStatic
-		if rule.Dynamic {
+		if dynamic {
 			check = func(data []byte) error { return checkDynamic(data, img.Files, true) }
 		}
 		if err := check(f.Data); err != nil {
@@ -545,7 +555,15 @@ func checkFiles(img *image, rule imageRule) []string {
 		}
 	}
 	// Библиотеки образа тоже берут зависимости только из /opt/aisec/lib.
-	if rule.Dynamic {
+	// У статического бинарника библиотек быть не должно.
+	if !dynamic {
+		for _, n := range names {
+			if strings.HasPrefix(n, libDir+"/") && img.Files[n].Type == tar.TypeReg {
+				add("/%s: библиотека в образе со статическим бинарником", n)
+			}
+		}
+	}
+	if dynamic {
 		for _, n := range names {
 			f := img.Files[n]
 			if !strings.HasPrefix(n, libDir+"/") || f.Type != tar.TypeReg || !bytes.HasPrefix(f.Data, []byte("\x7fELF")) {
@@ -558,6 +576,20 @@ func checkFiles(img *image, rule imageRule) []string {
 	}
 	sort.Strings(problems)
 	return problems
+}
+
+// hasInterp — у файла ELF есть загрузчик (PT_INTERP): бинарник с cgo.
+func hasInterp(data []byte) bool {
+	f, err := elf.NewFile(bytes.NewReader(data))
+	if err != nil {
+		return false
+	}
+	for _, p := range f.Progs {
+		if p.Type == elf.PT_INTERP {
+			return true
+		}
+	}
+	return false
 }
 
 // checkDynamic: загрузчик (у исполняемого файла он обязателен) и все
