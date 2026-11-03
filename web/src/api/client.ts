@@ -40,7 +40,7 @@ export function setUnauthorizedHandler(fn: (() => void) | undefined) {
 }
 
 export async function request<T>(
-  method: "GET" | "POST" | "PUT" | "DELETE",
+  method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
   path: string,
   body?: unknown,
   signal?: AbortSignal,
@@ -96,6 +96,13 @@ export async function upload<T>(method: "POST" | "PUT", path: string, file: Blob
   const resp = await fetch(path, { method, headers, credentials: "same-origin", cache: "no-store", body: file });
   if (!resp.ok) throw await problemError(resp, path);
   return (await resp.json()) as T;
+}
+
+// Выгрузка файла GET-запросом (AI-BOM): сервер отдаёт готовый файл, консоль сохраняет его без разбора.
+export async function download(path: string, accept: string): Promise<Blob> {
+  const resp = await fetch(path, { method: "GET", headers: { Accept: accept }, credentials: "same-origin", cache: "no-store" });
+  if (!resp.ok) throw await problemError(resp, path);
+  return resp.blob();
 }
 
 export const api = {
