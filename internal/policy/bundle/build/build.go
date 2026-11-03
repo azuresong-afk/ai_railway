@@ -978,7 +978,8 @@ func (s *Service) CheckPolicy(ctx context.Context, spec *policy.Spec) error {
 func provider(p apps.Provider) bundle.Provider {
 	bp := bundle.Provider{ID: p.Slug, Type: p.Type, BaseURL: p.BaseURL, CAPEM: p.CAPEM, AuthURL: p.AuthURL,
 		Scope: p.Scope, FolderID: p.FolderID, ConnectTimeout: p.ConnectTimeout, HeaderTimeout: p.HeaderTimeout,
-		ResponseTimeout: p.ResponseTimeout, StreamIdleTimeout: p.StreamIdleTimeout, External: p.External}
+		ResponseTimeout: p.ResponseTimeout, StreamIdleTimeout: p.StreamIdleTimeout, External: p.External,
+		OnPremise: p.OnPremise}
 	if p.Credential != nil {
 		t := p.Credential.SetAt.UTC()
 		bp.CredentialSetAt = &t

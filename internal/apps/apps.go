@@ -133,6 +133,9 @@ type Provider struct {
 	ResponseTimeout   int
 	StreamIdleTimeout int
 	External          bool
+	// OnPremise — провайдер размещён у заказчика: только такой может быть
+	// оценщиком judge.llm (ADR-0030, раздел 1). Несовместим с External.
+	OnPremise bool
 	// Credential — nil, если учётные данные не заданы.
 	Credential *Sealed
 	CreatedAt  time.Time

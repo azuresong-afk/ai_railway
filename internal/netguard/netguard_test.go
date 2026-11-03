@@ -46,3 +46,35 @@ func TestCheckHost(t *testing.T) {
 		t.Errorf("разрешённая сеть: %v", err)
 	}
 }
+
+// Адрес оценщика judge.llm — только частная сеть (ADR-0030, раздел 1).
+func TestPrivate(t *testing.T) {
+	for _, ip := range []string{"10.1.2.3", "172.16.0.10", "172.31.255.254", "192.168.1.5", "fc00::5", "fd12:3456::1",
+		"::ffff:10.0.0.7"} {
+		if !Private(netip.MustParseAddr(ip)) {
+			t.Errorf("%s не считается частным", ip)
+		}
+	}
+	for _, ip := range []string{"203.0.113.7", "8.8.8.8", "172.32.0.1", "100.64.0.1", "100.100.100.200", "127.0.0.1", "::1",
+		"169.254.169.254", "fd00:ec2::254", "fe80::1", "64:ff9b::a01:203", "2001:db8::1", "0.0.0.0"} {
+		if Private(netip.MustParseAddr(ip)) {
+			t.Errorf("%s считается частным", ip)
+		}
+	}
+}
+
+func TestCheckPrivateHost(t *testing.T) {
+	for _, h := range []string{"llm.corp.internal", "10.0.0.5", "[fd00::5]", "192.168.10.2"} {
+		if err := CheckPrivateHost(h); err != nil {
+			t.Errorf("%s: %v", h, err)
+		}
+	}
+	for _, h := range []string{"", "localhost", "a.localhost.", "127.0.0.1", "203.0.113.7", "[::1]", "169.254.169.254", "[fd00:ec2::254]"} {
+		if err := CheckPrivateHost(h); err == nil {
+			t.Errorf("%s принят", h)
+		}
+	}
+	if !errors.Is(CheckPrivateHost("8.8.8.8"), ErrNotPrivateHost) {
+		t.Fatal("внешний адрес — не ErrNotPrivateHost")
+	}
+}

@@ -60,6 +60,10 @@ type Spec struct {
 	// Tools — политика вызовов инструментов агентами (ADR-0023, tools.go);
 	// nil — умолчания совместимости (CompatTools).
 	Tools *ToolsSpec `yaml:"tools,omitempty"`
+	// Judge — оценщик judge.llm (ADR-0030, judge.go); nil — правил judge.llm
+	// нет. Шлюз прежнего выпуска политику с разделом отвергнет: шлюзы
+	// обновляются раньше сервера.
+	Judge *JudgeSpec `yaml:"judge,omitempty"`
 }
 
 // RuleSpec — правило: детектор, направления, условия, порог, действие,
@@ -82,6 +86,8 @@ type RuleSpec struct {
 	// Message — сообщение о блокировке по этому правилу; пусто — сообщение
 	// политики.
 	Message string `yaml:"message,omitempty"`
+	// Judge — критерий и режим правила judge.llm (judge.go); только у него.
+	Judge *JudgeRuleSpec `yaml:"judge,omitempty"`
 }
 
 var (
@@ -147,6 +153,7 @@ func (s *Spec) Validate() error {
 		seen[r.ID] = true
 	}
 	s.validateExceptions(add)
+	s.validateJudge(add)
 	if s.Tools != nil {
 		for _, err := range s.Tools.validate() {
 			add("%v", err)
@@ -193,6 +200,7 @@ func (r *RuleSpec) validate() []error {
 	if r.Message != "" && checkText(r.Message, MaxMessageLen) != nil {
 		add("message — до %d символов без управляющих символов", MaxMessageLen)
 	}
+	r.validateJudgeRule(add)
 	return errs
 }
 

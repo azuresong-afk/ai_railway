@@ -890,3 +890,93 @@ func TestProviderRetarget(t *testing.T) {
 	}
 	checkRecords(t, e, "synthetic-credential")
 }
+
+// ADR-0030, раздел 1: признак «у заказчика» — оценщик judge.llm; установка —
+// ослабление (DM-40) с повторной проверкой, только тип openai, не внешний,
+// адрес не вне частной сети; смена адресата и «внешний» его сбрасывают.
+func TestProviderOnPremise(t *testing.T) {
+	e := newEnv(t, false)
+	ctx := context.Background()
+	noConfirm := apps.By{Actor: e.by.Actor, Policy: true}
+	in := e.providerInput("judge")
+	in.BaseURL = "https://10.20.0.5/v1"
+	p, err := e.svc.CreateProvider(ctx, e.by, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = e.svc.SetOnPremise(ctx, e.by, p.ID, true, "")
+	inputErr(t, err, "reason")
+	_, err = e.svc.SetOnPremise(ctx, e.by, p.ID, true, "оценщик в ЦОД")
+	inputErr(t, err, "on_premise")
+	if _, err := e.svc.SetExternal(ctx, e.by, p.ID, false, "свой контур"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.svc.SetOnPremise(ctx, noConfirm, p.ID, true, "оценщик в ЦОД"); !errors.Is(err, apps.ErrConfirmRequired) {
+		t.Fatalf("установка без повторной проверки: %v", err)
+	}
+	got, err := e.svc.SetOnPremise(ctx, e.by, p.ID, true, "оценщик в ЦОД")
+	if err != nil || !got.OnPremise {
+		t.Fatalf("установка: %+v %v", got, err)
+	}
+	d := e.last(t, "provider.on_premise_changed").Details.(map[string]any)
+	if d["weakening"] != true || d["after"] != true || d["reason"] != "оценщик в ЦОД" {
+		t.Fatalf("подробности: %v", d)
+	}
+	// Без изменения записи нет; снятие — без повторной проверки.
+	if _, err := e.svc.SetOnPremise(ctx, e.by, p.ID, true, "повтор"); err != nil || e.count("provider.on_premise_changed") != 1 {
+		t.Fatalf("повтор: %v", err)
+	}
+	if got, err := e.svc.SetOnPremise(ctx, noConfirm, p.ID, false, "больше не нужен"); err != nil || got.OnPremise {
+		t.Fatalf("снятие: %+v %v", got, err)
+	}
+	if d := e.last(t, "provider.on_premise_changed").Details.(map[string]any); d["weakening"] != false {
+		t.Fatalf("снятие — не ослабление: %v", d)
+	}
+	// «Внешний» сбрасывает признак.
+	if _, err := e.svc.SetOnPremise(ctx, e.by, p.ID, true, "снова"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := e.svc.SetExternal(ctx, e.by, p.ID, true, "облако"); err != nil || got.OnPremise {
+		t.Fatalf("«внешний» не сбросил признак: %+v %v", got, err)
+	}
+	if d := e.last(t, "provider.external_changed").Details.(map[string]any); d["on_premise_reset"] != true {
+		t.Fatalf("подробности: %v", d)
+	}
+	// Смена адресата сбрасывает признак.
+	if _, err := e.svc.SetExternal(ctx, e.by, p.ID, false, "свой контур"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.svc.SetOnPremise(ctx, e.by, p.ID, true, "снова"); err != nil {
+		t.Fatal(err)
+	}
+	in.Slug, in.BaseURL = "", "https://192.168.7.7/v1"
+	if got, err := e.svc.UpdateProvider(ctx, e.by, p.ID, in); err != nil || got.OnPremise || !got.External {
+		t.Fatalf("смена адресата не сбросила признак: %+v %v", got, err)
+	}
+	// Адрес вне частной сети, loopback, метаданные — отказ.
+	for i, u := range []string{"https://203.0.113.7/v1", "https://127.0.0.1/v1", "https://169.254.169.254/v1", "https://localhost/v1"} {
+		pin := e.providerInput(fmt.Sprintf("pub-%d", i))
+		pin.BaseURL = u
+		pp, err := e.svc.CreateProvider(ctx, e.by, pin)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := e.svc.SetExternal(ctx, e.by, pp.ID, false, "свой контур"); err != nil {
+			t.Fatal(err)
+		}
+		_, err = e.svc.SetOnPremise(ctx, e.by, pp.ID, true, "оценщик")
+		inputErr(t, err, "on_premise")
+	}
+	// GigaChat не бывает «у заказчика».
+	g := e.providerInput("giga")
+	g.Type, g.Scope = "gigachat", "GIGACHAT_API_CORP"
+	gp, err := e.svc.CreateProvider(ctx, e.by, g)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.svc.SetExternal(ctx, e.by, gp.ID, false, "свой контур"); err != nil {
+		t.Fatal(err)
+	}
+	_, err = e.svc.SetOnPremise(ctx, e.by, gp.ID, true, "оценщик")
+	inputErr(t, err, "on_premise")
+}

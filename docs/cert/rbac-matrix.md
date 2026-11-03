@@ -174,6 +174,7 @@
 | DELETE | `/api/v1/providers/{id}` | `providers.manage` | да | да | — | — | — | да |
 | PUT | `/api/v1/providers/{id}/credentials` | `providers.manage` | да | да | — | — | — | да |
 | PUT | `/api/v1/providers/{id}/external` | `providers.external` | да | — | — | — | — | — |
+| PUT | `/api/v1/providers/{id}/on-premise` | `providers.external` | да | — | — | — | — | — |
 | GET | `/api/v1/quota-settings` | `budgets.read` | да | да | да | да | — | да |
 | PUT | `/api/v1/quota-settings` | `quota_mode.manage` | да | да | — | — | — | да |
 | GET | `/api/v1/rag/collections` | `rag.read` | да | да | да | да | — | да |

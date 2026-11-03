@@ -13,6 +13,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/detect"
 	"github.com/azuresong-afk/ai_railway/internal/detect/builtin"
 	"github.com/azuresong-afk/ai_railway/internal/detect/exfil"
+	"github.com/azuresong-afk/ai_railway/internal/detect/judge"
 	"github.com/azuresong-afk/ai_railway/internal/detect/lists"
 	"github.com/azuresong-afk/ai_railway/internal/events"
 	"github.com/azuresong-afk/ai_railway/internal/policy"
@@ -52,6 +53,14 @@ type App struct {
 	// userToken — проверка JWT пользователя и группы моделей
 	// (Router.SetUserTokens, usertoken.go); nil — пользователь по user_from.
 	userToken *userTokenCheck
+	// judge — оценщик judge.llm политики (Router.SetJudges, judge.go); nil —
+	// раздела judge нет или оценщики не заданы: правила judge.llm дают «не
+	// проверено». judgeShared — очереди оценщиков шлюза; judgeProvider и
+	// judgeModel — оценщик для учёта расхода.
+	judge         *judge.Engine
+	judgeShared   *judge.Shared
+	judgeProvider string
+	judgeModel    string
 }
 
 // now — время для сроков исключений.

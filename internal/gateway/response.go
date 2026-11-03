@@ -179,11 +179,13 @@ func streamResponseMode(app *App) policy.ResponseCheck {
 // outputCheck — проверка текстов ответа по политике приложения.
 // Окна потока проверяются без детекторов маскирования для хранения
 // (forEvent = false): содержимое события берётся из итоговой проверки.
-func (h *ChatHandler) outputCheck(ctx context.Context, app *App, user string, texts []inspectText, mode policy.Mode, detectOnly, forEvent bool) (*inspection, error) {
+// extra — находки judge.llm sync (checkFull).
+func (h *ChatHandler) outputCheck(ctx context.Context, app *App, user string, texts []inspectText, mode policy.Mode, detectOnly, forEvent bool,
+	extra ...locatedFinding) (*inspection, error) {
 	return app.inspect(ctx, inspectRequest{
 		Endpoint: policy.EndpointChat, Direction: detect.Output, Mode: mode, External: app.Provider.External(), Texts: texts, User: user,
 		Mask: forEvent && app.Storage == events.StorageMasked, Timeout: h.cfg.DetectorTimeout, DetectOnly: detectOnly,
-		Window: detectOnly && !forEvent,
+		Window: detectOnly && !forEvent, Extra: extra,
 	})
 }
 
@@ -193,8 +195,10 @@ func (h *ChatHandler) outputCheck(ctx context.Context, app *App, user string, te
 func (h *ChatHandler) checkFull(w http.ResponseWriter, r *http.Request, app *App, rec *record, resp *chat.Response) bool {
 	rec.respMode = events.ResponseBuffered
 	texts, refs := responseTexts(resp)
+	// judge.llm sync — до решения по ответу (ответ без потока и buffered).
+	extra, judgeFailed, judgeBlock := h.judgeSync(r.Context(), rec, detect.Output, judgeOutputText(texts))
 	start := h.cfg.Now()
-	in, err := h.outputCheck(r.Context(), app, rec.ev.User, texts, "", false, true)
+	in, err := h.outputCheck(r.Context(), app, rec.ev.User, texts, "", false, true, extra...)
 	rec.ev.LatencyMS["output_check"] = h.cfg.Now().Sub(start).Milliseconds()
 	switch {
 	case err != nil && r.Context().Err() != nil:
@@ -207,6 +211,7 @@ func (h *ChatHandler) checkFull(w http.ResponseWriter, r *http.Request, app *App
 		WriteError(w, http.StatusInternalServerError, "внутренняя ошибка шлюза", "server_error", "internal_error")
 		return false
 	}
+	judgeFailBlock(in, detect.Output, judgeFailed, judgeBlock)
 	rec.resp, rec.respTexts = in, texts
 	if len(in.Failures) > 0 {
 		h.logger.Warn("сбой детекторов при проверке ответа", "app", app.ID, "event_id", rec.ev.ID,

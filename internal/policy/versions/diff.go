@@ -2,6 +2,7 @@ package versions
 
 import (
 	"encoding/json"
+	"fmt"
 	"slices"
 	"strconv"
 
@@ -38,6 +39,10 @@ const (
 	WeakThresholdRaised = "threshold_raised"        // порог выше
 	WeakScopeNarrowed   = "scope_narrowed"          // меньше направлений, источников или категорий
 	WeakDetectorChanged = "detector_changed"        // у правила с защитой сменился детектор
+	// WeakJudge — оценка judge.llm слабее (ADR-0030): критерий изменён,
+	// sync → async, on_failure block → allow, срок sync короче; у раздела
+	// judge — другой провайдер или модель, бюджет меньше.
+	WeakJudge = "judge_weakened"
 	// Исключения (решение Р8 этапа 3): новое, продлённое или с изменённым
 	// условием исключение ослабляет защиту (ТЗ 5.16, DM-40).
 	WeakExceptionAdded    = "exception_added"
@@ -129,6 +134,12 @@ func Compare(a, b *policy.Spec) Diff {
 		field("media_check_timeout_ms", strconv.Itoa(a.MediaTimeoutMS), strconv.Itoa(b.MediaTimeoutMS))
 	}
 	field("block_message", a.BlockMessage, b.BlockMessage)
+	if ja, jb := judgeText(a.Judge), judgeText(b.Judge); ja != jb {
+		field("judge", ja, jb)
+		if judgeSectionWeakened(a.Judge, b.Judge) {
+			d.Weakening = append(d.Weakening, Weakening{Kind: WeakJudge})
+		}
+	}
 	if a.Mode == policy.Enforce && b.Mode == policy.Monitor {
 		d.Weakening = append(d.Weakening, Weakening{Kind: WeakModeMonitor})
 	}
@@ -267,7 +278,60 @@ func ruleFields(a, b policy.RuleSpec) []string {
 	add("action", a.Action != b.Action)
 	add("severity", a.Severity != b.Severity)
 	add("message", a.Message != b.Message)
+	add("judge", judgeRuleText(a.Judge) != judgeRuleText(b.Judge))
 	return fs
+}
+
+// judgeText — раздел judge политики одной строкой для сравнения и сводки.
+func judgeText(j *policy.JudgeSpec) string {
+	if j == nil {
+		return ""
+	}
+	return fmt.Sprintf("%s/%s calls=%d tokens=%d", j.Provider, j.Model, j.MaxCallsPerMinute, j.MaxTokensPerHour)
+}
+
+// judgeRuleText — подраздел judge правила одной строкой для сравнения.
+func judgeRuleText(j *policy.JudgeRuleSpec) string {
+	if j == nil {
+		return ""
+	}
+	return fmt.Sprintf("%s|%s|%d|%s|%s", j.Kind, j.Mode, j.TimeoutMS, j.OnFailure, j.Criterion)
+}
+
+// judgeSectionWeakened — раздел judge ослаблен: оценщик сменился (другой
+// провайдер или модель — другие оценки) или бюджет меньше.
+func judgeSectionWeakened(a, b *policy.JudgeSpec) bool {
+	if a == nil {
+		return false
+	}
+	if b == nil {
+		return true
+	}
+	limit := func(v, def int) int {
+		if v == 0 {
+			return def
+		}
+		return v
+	}
+	return a.Provider != b.Provider || a.Model != b.Model ||
+		limit(b.MaxCallsPerMinute, policy.DefaultJudgeCalls) < limit(a.MaxCallsPerMinute, policy.DefaultJudgeCalls) ||
+		limit(b.MaxTokensPerHour, policy.DefaultJudgeTokens) < limit(a.MaxTokensPerHour, policy.DefaultJudgeTokens)
+}
+
+// judgeRuleWeakened — оценка правила judge.llm слабее.
+func judgeRuleWeakened(a, b *policy.JudgeRuleSpec) bool {
+	if a == nil || b == nil {
+		return a != nil
+	}
+	sync := func(j *policy.JudgeRuleSpec) bool { return j.Mode == policy.JudgeSync }
+	timeout := func(j *policy.JudgeRuleSpec) int {
+		if j.TimeoutMS == 0 {
+			return int(policy.DefaultJudgeTimeout.Milliseconds())
+		}
+		return j.TimeoutMS
+	}
+	return a.Criterion != b.Criterion || a.Kind != b.Kind || sync(a) && !sync(b) ||
+		sync(a) && sync(b) && (timeout(b) < timeout(a) || a.OnFailure == policy.JudgeFailBlock && b.OnFailure != policy.JudgeFailBlock)
 }
 
 // narrowed — область правила b уже области a. Пустой список — «все».
@@ -296,6 +360,9 @@ func ruleWeakening(a, b policy.RuleSpec) []Weakening {
 	}
 	if a.Detector != b.Detector && protective(a.Action) {
 		w(WeakDetectorChanged)
+	}
+	if judgeRuleWeakened(a.Judge, b.Judge) {
+		w(WeakJudge)
 	}
 	return out
 }

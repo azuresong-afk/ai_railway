@@ -50,7 +50,8 @@ func canonical(filter string) string {
 // признаком «инцидент» задачи 3.16 (incidentRules); правила агентов этапа 4
 // и правило лицензии задачи 4.26 (licenseRules), правило ml_unavailable
 // задачи 4.19 (mlRules), правило манифеста RAG задачи 5.24 (ragRules),
-// правило media_unavailable задачи 5.44 (mediaRules).
+// правило media_unavailable задачи 5.44 (mediaRules),
+// правила judge.llm задачи 5.28 (judgeRules).
 func builtinRules() []Rule {
 	none := Recipients{Roles: []string{}, Users: []string{}}
 	return append([]Rule{
@@ -89,7 +90,7 @@ func builtinRules() []Rule {
 		{BuiltinKey: BuiltinRecipientsChanged, Kind: KindSecurity, Name: "Изменены получатели оповещений",
 			Description: "Изменение получателей правила оповещения (ТЗ 5.6). Изменения одного пользователя за 10 минут — одно оповещение.",
 			Enabled:     true, Severity: "high", GroupBy: []string{"actor"}, GroupMinutes: 10, Recipients: none},
-	}, slices.Concat(periodicRules(), securityRules(), incidentRules(), agentRules(), approvalRules(), agentCallRules(), licenseRules(), shadowAIRules(), mlRules(), modelRules(), ragRules(), mediaRules())...)
+	}, slices.Concat(periodicRules(), securityRules(), incidentRules(), agentRules(), approvalRules(), agentCallRules(), licenseRules(), shadowAIRules(), mlRules(), modelRules(), ragRules(), mediaRules(), judgeRules())...)
 }
 
 // periodicRules — встроенные правила «частота», «аномалия» и «бюджет»

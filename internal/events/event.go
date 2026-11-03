@@ -103,6 +103,10 @@ type Decision struct {
 	// aisec-media (недоступен, перегружен, срок, отказ по пределам, OCR ещё
 	// нет): к нему применён non_text. Подробности — Event.Media.
 	MediaUnchecked bool `json:"media_unchecked,omitempty"`
+	// JudgeUnchecked — оценка judge.llm не получена (оценщик недоступен,
+	// срок, перегрузка, бюджет, инъекция, ответ не по формату): решение
+	// принято без неё. Подробности — Event.Judge (ADR-0030, раздел 7).
+	JudgeUnchecked bool `json:"judge_unchecked,omitempty"`
 	// MediaUnavailable — изображение не проверено из-за сбоя анализатора
 	// (недоступен, очередь заполнена, срок истёк, сбой анализа), а не из-за
 	// свойства изображения: признак перегрузки или отказа aisec-media
@@ -210,6 +214,8 @@ type Event struct {
 	Agent *Agent `json:"agent,omitempty"`
 	// Media — проверка изображений запроса aisec-media (задача 5.39).
 	Media []MediaCheck `json:"media,omitempty"`
+	// Judge — оценки judge.llm запроса (задача 5.28, judge.go).
+	Judge []JudgeCheck `json:"judge,omitempty"`
 }
 
 var threatRe = regexp.MustCompile(`^DM-\d{2}$`)
@@ -324,5 +330,6 @@ func (e *Event) Validate() error {
 		}
 	}
 	errs = append(errs, e.validateMedia()...)
+	errs = append(errs, e.validateJudge()...)
 	return errors.Join(errs...)
 }
