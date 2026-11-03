@@ -715,7 +715,15 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	redteamLogger := logger.With("component", "redteam")
 	redteamSvc, err := redteam.New(redteam.Options{Store: redteamStore, ServiceDBs: serviceDBStore, Provider: p, OrgID: audit.DefaultOrgID,
 		Apps: appsSvc, GatewayURL: cfg.RedTeamGatewayURL, GatewayCA: redteamCA,
-		Judges: redteam.NewJudgeClients(appsSvc, tp, redteamLogger), Logger: redteamLogger})
+		Judges: redteam.NewJudgeClients(appsSvc, tp, redteamLogger), Logger: redteamLogger,
+		// Расписания запусков — по времени часового пояса установки.
+		Location: func(ctx context.Context) (*time.Location, error) {
+			tz, err := timezone(ctx)
+			if err != nil {
+				return nil, err
+			}
+			return time.LoadLocation(tz)
+		}})
 	if err != nil {
 		return err
 	}

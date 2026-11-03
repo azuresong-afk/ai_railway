@@ -1,6 +1,8 @@
 package api
 
 import (
+	"bytes"
+	"context"
 	"errors"
 	"io"
 	"log/slog"
@@ -8,8 +10,11 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/azuresong-afk/ai_railway/internal/audit"
 	"github.com/azuresong-afk/ai_railway/internal/auth"
+	"github.com/azuresong-afk/ai_railway/internal/events"
 	"github.com/azuresong-afk/ai_railway/internal/redteam"
+	"github.com/azuresong-afk/ai_railway/internal/reports"
 )
 
 // Тестирование устойчивости (ТЗ 5.13; задача 5.32 этапа 5, ADR-0031).
@@ -29,6 +34,8 @@ const (
 	redteamRunMaxBody = 96 << 10
 	// redteamScenariosMaxBody — подписанный файл базы (aisecCrypto.MaxServiceDBSize).
 	redteamScenariosMaxBody = 4 << 20
+	// redteamScheduleMaxBody — расписание: название и до 64 строк матрицы.
+	redteamScheduleMaxBody = 16 << 10
 	// redteamTimeout — предел обработки запроса (проверка подписи базы,
 	// чтение итогов запуска).
 	redteamTimeout = 30 * time.Second
@@ -55,6 +62,16 @@ func redteamRoutes(d Deps) []Route {
 		{Method: http.MethodGet, Path: "/api/v1/redteam/runs/{id}", Permission: auth.PermRedteamRead, Handler: needRedTeam(d, d.getRedTeamRun)},
 		{Method: http.MethodPost, Path: "/api/v1/redteam/runs/{id}/cancel", Permission: auth.PermRedteamRun, MaxBody: smallMaxBody,
 			Handler: needRedTeam(d, d.cancelRedTeamRun)},
+		{Method: http.MethodGet, Path: "/api/v1/redteam/runs/{id}/report", Permission: auth.PermRedteamExport,
+			Handler: needRedTeam(d, d.getRedTeamReport)},
+		{Method: http.MethodGet, Path: "/api/v1/redteam/schedules", Permission: auth.PermRedteamRead, Handler: needRedTeam(d, d.listRedTeamSchedules)},
+		{Method: http.MethodPost, Path: "/api/v1/redteam/schedules", Permission: auth.PermRedteamSchedulesManage, SessionOnly: true,
+			MaxBody: redteamScheduleMaxBody, Handler: needRedTeam(d, d.createRedTeamSchedule)},
+		{Method: http.MethodGet, Path: "/api/v1/redteam/schedules/{id}", Permission: auth.PermRedteamRead, Handler: needRedTeam(d, d.getRedTeamSchedule)},
+		{Method: http.MethodPut, Path: "/api/v1/redteam/schedules/{id}", Permission: auth.PermRedteamSchedulesManage, SessionOnly: true,
+			MaxBody: redteamScheduleMaxBody, Handler: needRedTeam(d, d.updateRedTeamSchedule)},
+		{Method: http.MethodDelete, Path: "/api/v1/redteam/schedules/{id}", Permission: auth.PermRedteamSchedulesManage, SessionOnly: true,
+			Handler: needRedTeam(d, d.deleteRedTeamSchedule)},
 	}
 }
 
@@ -108,6 +125,11 @@ func redteamProblem(logger *slog.Logger, err error, notFound string) *Problem {
 	case errors.Is(err, redteam.ErrGatewayNotConfigured):
 		return NewProblem(http.StatusUnprocessableEntity, CodeUnprocessable,
 			"Адрес шлюза для тестирования не задан: запустите сервер с флагом -redteam-gateway-url.")
+	case errors.Is(err, redteam.ErrTooManySchedules):
+		return NewProblem(http.StatusUnprocessableEntity, CodeUnprocessable,
+			"Расписаний уже "+strconv.Itoa(redteam.MaxSchedules)+": удалите ненужные.")
+	case errors.Is(err, redteam.ErrVersionConflict):
+		return NewProblem(http.StatusConflict, CodeConflict, "Расписание изменено другим пользователем: обновите страницу.")
 	case errors.Is(err, redteam.ErrTooManyTargets):
 		return NewProblem(http.StatusUnprocessableEntity, CodeUnprocessable,
 			"Целей уже "+strconv.Itoa(redteam.MaxTargets)+": удалите ненужные.")
@@ -474,4 +496,242 @@ func (d Deps) cancelRedTeamRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusAccepted)
+}
+
+// RedTeamScheduleView — расписание запусков.
+type RedTeamScheduleView struct {
+	ID             string     `json:"id"`
+	Name           string     `json:"name"`
+	TargetID       string     `json:"target_id"`
+	Frequency      string     `json:"frequency"`
+	Weekday        int        `json:"weekday,omitempty"`
+	Day            int        `json:"day,omitempty"`
+	At             string     `json:"at"`
+	Threats        []string   `json:"threats"`
+	Lang           string     `json:"lang,omitempty"`
+	Enabled        bool       `json:"enabled"`
+	NextRunAt      time.Time  `json:"next_run_at"`
+	LastRunAt      *time.Time `json:"last_run_at,omitempty"`
+	LastRunID      string     `json:"last_run_id,omitempty"`
+	LastStatus     string     `json:"last_status,omitempty"`
+	LastStatusText string     `json:"last_status_text,omitempty"`
+	Retries        int        `json:"retries"`
+	Version        int        `json:"version"`
+	CreatedAt      time.Time  `json:"created_at"`
+	CreatedBy      string     `json:"created_by"`
+	UpdatedAt      time.Time  `json:"updated_at"`
+	UpdatedBy      string     `json:"updated_by"`
+}
+
+func redteamScheduleView(s redteam.Schedule) RedTeamScheduleView {
+	v := RedTeamScheduleView{ID: s.ID, Name: s.Name, TargetID: s.TargetID, Frequency: s.Frequency, Weekday: s.Weekday, Day: s.Day, At: s.At,
+		Threats: s.Threats, Lang: s.Lang, Enabled: s.Enabled, NextRunAt: s.NextRunAt, LastRunAt: s.LastRunAt, LastRunID: s.LastRunID,
+		LastStatus: s.LastStatus, Retries: s.Retries, Version: s.Version, CreatedAt: s.CreatedAt, CreatedBy: s.CreatedBy,
+		UpdatedAt: s.UpdatedAt, UpdatedBy: s.UpdatedBy}
+	if s.LastStatus != "" {
+		v.LastStatusText = redteam.ScheduleStatusText(s.LastStatus)
+	}
+	if v.Threats == nil {
+		v.Threats = []string{}
+	}
+	return v
+}
+
+// RedTeamScheduleList — расписания по названию.
+type RedTeamScheduleList struct {
+	Items []RedTeamScheduleView `json:"items"`
+}
+
+const redteamScheduleNotFound = "Расписание не найдено."
+
+func (d Deps) listRedTeamSchedules(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := contextTimeout(r, redteamTimeout)
+	defer cancel()
+	list, err := d.RedTeam.Schedules(ctx)
+	if err != nil {
+		WriteProblem(w, redteamProblem(d.Logger, err, redteamScheduleNotFound))
+		return
+	}
+	out := RedTeamScheduleList{Items: make([]RedTeamScheduleView, 0, len(list))}
+	for _, s := range list {
+		out.Items = append(out.Items, redteamScheduleView(s))
+	}
+	WriteJSON(w, http.StatusOK, out)
+}
+
+func (d Deps) getRedTeamSchedule(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := contextTimeout(r, redteamTimeout)
+	defer cancel()
+	s, err := d.RedTeam.Schedule(ctx, r.PathValue("id"))
+	if err != nil {
+		WriteProblem(w, redteamProblem(d.Logger, err, redteamScheduleNotFound))
+		return
+	}
+	WriteJSON(w, http.StatusOK, redteamScheduleView(s))
+}
+
+func (d Deps) createRedTeamSchedule(w http.ResponseWriter, r *http.Request) {
+	var in redteam.ScheduleInput
+	if p := DecodeJSON(w, r, &in, redteamScheduleMaxBody); p != nil {
+		WriteProblem(w, p)
+		return
+	}
+	by, ok := d.redteamBy(r, reauthFields{}, "")
+	if !ok {
+		WriteProblem(w, errForbidden())
+		return
+	}
+	ctx, cancel := contextTimeout(r, redteamTimeout)
+	defer cancel()
+	s, err := d.RedTeam.CreateSchedule(ctx, by, in)
+	if err != nil {
+		WriteProblem(w, redteamProblem(d.Logger, err, redteamScheduleNotFound))
+		return
+	}
+	WriteJSON(w, http.StatusCreated, redteamScheduleView(s))
+}
+
+func (d Deps) updateRedTeamSchedule(w http.ResponseWriter, r *http.Request) {
+	var in redteam.ScheduleInput
+	if p := DecodeJSON(w, r, &in, redteamScheduleMaxBody); p != nil {
+		WriteProblem(w, p)
+		return
+	}
+	by, ok := d.redteamBy(r, reauthFields{}, "")
+	if !ok {
+		WriteProblem(w, errForbidden())
+		return
+	}
+	ctx, cancel := contextTimeout(r, redteamTimeout)
+	defer cancel()
+	s, err := d.RedTeam.UpdateSchedule(ctx, by, r.PathValue("id"), in)
+	if err != nil {
+		WriteProblem(w, redteamProblem(d.Logger, err, redteamScheduleNotFound))
+		return
+	}
+	WriteJSON(w, http.StatusOK, redteamScheduleView(s))
+}
+
+func (d Deps) deleteRedTeamSchedule(w http.ResponseWriter, r *http.Request) {
+	by, ok := d.redteamBy(r, reauthFields{}, "")
+	if !ok {
+		WriteProblem(w, errForbidden())
+		return
+	}
+	ctx, cancel := contextTimeout(r, redteamTimeout)
+	defer cancel()
+	if err := d.RedTeam.DeleteSchedule(ctx, by, r.PathValue("id")); err != nil {
+		WriteProblem(w, redteamProblem(d.Logger, err, redteamScheduleNotFound))
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// getRedTeamReport выдаёт отчёт по запуску (html, csv, xlsx) и пишет
+// data.export до выдачи данных. Выдержки ответов целей (режим masked) —
+// только по examples=true и с правом events.content.read; без права — 403,
+// а не отчёт без выдержек: человек просил содержимое. Промптов атак в
+// отчёте нет.
+func (d Deps) getRedTeamReport(w http.ResponseWriter, r *http.Request) {
+	p, ok := PrincipalFrom(r.Context())
+	if !ok || p.Caller == nil {
+		WriteProblem(w, errForbidden())
+		return
+	}
+	q := r.URL.Query()
+	for k := range q {
+		switch k {
+		case "format", "delimiter", "examples":
+		default:
+			WriteProblem(w, Invalid("Параметры отчёта заданы неверно.", FieldError{Field: k, Detail: "неизвестный параметр"}))
+			return
+		}
+	}
+	one := func(k string) (string, bool) {
+		vs := q[k]
+		if len(vs) > 1 || len(vs) == 1 && len(vs[0]) > 32 {
+			return "", false
+		}
+		if len(vs) == 0 {
+			return "", true
+		}
+		return vs[0], true
+	}
+	format, ok1 := one("format")
+	ds, ok2 := one("delimiter")
+	ex, ok3 := one("examples")
+	if format == "" {
+		format = reports.FormatHTML
+	}
+	delim, okd := events.ParseDelimiter(ds)
+	switch {
+	case !ok1 || !ok2 || !ok3 || !reports.ValidFormat(format):
+		WriteProblem(w, Invalid("Параметры отчёта заданы неверно.", FieldError{Field: "format", Detail: "format — html, csv или xlsx"}))
+		return
+	case !okd || ds != "" && format != reports.FormatCSV:
+		WriteProblem(w, Invalid("Параметры отчёта заданы неверно.", FieldError{Field: "delimiter", Detail: "delimiter — semicolon или comma, только для csv"}))
+		return
+	case ex != "" && ex != "true" && ex != "false":
+		WriteProblem(w, Invalid("Параметры отчёта заданы неверно.", FieldError{Field: "examples", Detail: "examples — true или false"}))
+		return
+	}
+	examples := ex == "true"
+	if examples && !p.Grants.Allows(auth.PermEventsContentRead) {
+		WriteProblem(w, errForbidden())
+		return
+	}
+	subject := exportSubject(p)
+	if d.Exports != nil {
+		if !d.Exports.Acquire(subject) {
+			w.Header().Set("Retry-After", exportRetryAfter)
+			WriteProblem(w, NewProblem(http.StatusTooManyRequests, CodeRateLimited,
+				"Выгрузка уже выполняется: дождитесь её окончания и повторите."))
+			return
+		}
+		defer d.Exports.Release(subject)
+	}
+	ctx, cancel := contextTimeout(r, reportBuildTimeout)
+	defer cancel()
+	id := r.PathValue("id")
+	doc, err := d.RedTeam.Report(ctx, id, examples)
+	if err != nil {
+		WriteProblem(w, redteamProblem(d.Logger, err, redteamRunNotFound))
+		return
+	}
+	var buf bytes.Buffer
+	if err := reports.Render(&buf, doc, format, delim); err != nil {
+		if errors.Is(err, reports.ErrTooLarge) {
+			WriteProblem(w, NewProblem(http.StatusUnprocessableEntity, CodeUnprocessable, "Отчёт не помещается в формат: сузьте запуск."))
+			return
+		}
+		d.Logger.Error("тестирование устойчивости: отчёт не построен", "error", err)
+		WriteProblem(w, errInternal())
+		return
+	}
+	actx, acancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
+	defer acancel()
+	details := map[string]any{"report": redteam.KindReport, "run_id": id, "format": format, "delimiter": delimName(delim, format),
+		"rows": doc.Rows(), "examples": examples}
+	if err := d.Audit.Record(actx, audit.Entry{Actor: eventsActor(p), SourceIP: clientAddr(r), Action: "data.export",
+		Object: audit.Object{Type: "report", ID: redteam.KindReport}, Result: audit.ResultSuccess, Details: details}); err != nil {
+		d.Logger.Error("выгрузка отчёта не записана в журнал аудита: выгрузка отменена", "class", "redteam", "error", err)
+		WriteProblem(w, NewProblem(http.StatusServiceUnavailable, CodeUnavailable,
+			"Не удалось записать выгрузку в журнал аудита: выгрузка отменена. Повторите позже."))
+		return
+	}
+	h := w.Header()
+	h.Set("Content-Type", reports.ContentType(format))
+	h.Set("Cache-Control", "no-store")
+	h.Set("X-Export-Rows", strconv.Itoa(doc.Rows()))
+	name := "aisec-redteam-" + id + "." + format
+	if format == reports.FormatHTML {
+		h.Set("Content-Security-Policy", reportHTMLCSP)
+		h.Del("X-Frame-Options")
+		h.Set("Content-Disposition", `inline; filename="`+name+`"`)
+	} else {
+		h.Set("Content-Disposition", `attachment; filename="`+name+`"`)
+	}
+	h.Set("Content-Length", strconv.Itoa(buf.Len()))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(buf.Bytes()) //nolint:gosec // G104: клиент мог закрыть соединение, запись data.export уже сделана
 }

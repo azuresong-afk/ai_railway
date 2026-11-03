@@ -229,3 +229,171 @@ func TestRedTeamTargetsRunsAPI(t *testing.T) {
 		t.Fatalf("запуск удалённой цели: %v", err)
 	}
 }
+
+// rtFinishedRun — цель endpoint без секретного заголовка, база сценариев и
+// завершённый запуск (сценарии завершаются ошибкой: DNS в тесте недоступен).
+func rtFinishedRun(t *testing.T, e *appsEnv, admin, sys session) (RedTeamTargetView, RedTeamRunView) {
+	t.Helper()
+	body := strings.Replace(rtEndpointBody(`,"password":"`+tPhrase+`","storage":"masked"`), `"auth_header":"X-Api-Key",`, "", 1)
+	w := e.call(admin, "POST", "/api/v1/redteam/targets", body, true)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("создание цели: %d %s", w.Code, w.Body)
+	}
+	tg := decode[RedTeamTargetView](t, w.Body.Bytes())
+	data, err := os.ReadFile("../../testdata/redteam/scenarios-test.aisecdb")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w := e.callFile(sys, "PUT", "/api/v1/redteam/scenarios", "application/octet-stream", data); w.Code != http.StatusOK {
+		t.Fatalf("загрузка базы: %d %s", w.Code, w.Body)
+	}
+	w = e.call(admin, "POST", "/api/v1/redteam/runs", `{"target_id":"`+tg.ID+`","scenarios":["RT-DM01-001","RT-DM08-001"]}`, true)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("запуск: %d %s", w.Code, w.Body)
+	}
+	run := decode[RedTeamRunView](t, w.Body.Bytes())
+	for deadline := time.Now().Add(10 * time.Second); ; {
+		w = e.call(admin, "GET", "/api/v1/redteam/runs/"+run.ID, "", false)
+		if st := decode[RedTeamRunCard](t, w.Body.Bytes()).Status; st != redteam.RunRunning && st != redteam.RunQueued {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("запуск не завершился: %s", w.Body)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return tg, run
+}
+
+// Расписания (задача 5.33): отказ в доступе без права безопасности, цель с
+// секретным заголовком отклоняется, создание, чужая версия, удаление;
+// токену расписания недоступны (право безопасности, только сессия).
+func TestRedTeamSchedulesAPI(t *testing.T) {
+	e, _, mem := newRedTeamEnv(t)
+	admin := e.mustLogin(t, "admin")
+	sys := e.mustLogin(t, "sysadm")
+	owner := e.mustLogin(t, "owner")
+	auditor := e.mustLogin(t, "auditor")
+	analyst := e.mustLogin(t, "analyst")
+	const sched = "/api/v1/redteam/schedules/01900000-0000-7000-8000-0000000000fd"
+	body := `{"name":"Ночной прогон","target_id":"01900000-0000-7000-8000-0000000000ff","frequency":"daily","at":"03:00"}`
+	for _, s := range []session{owner, auditor, analyst, sys} {
+		mustProblem(t, e.call(s, "POST", "/api/v1/redteam/schedules", body, true), http.StatusForbidden, CodeForbidden)
+		mustProblem(t, e.call(s, "PUT", sched, body, true), http.StatusForbidden, CodeForbidden)
+		mustProblem(t, e.call(s, "DELETE", sched, "", true), http.StatusForbidden, CodeForbidden)
+	}
+	mustProblem(t, e.call(owner, "GET", "/api/v1/redteam/schedules", "", false), http.StatusForbidden, CodeForbidden)
+	for _, s := range []session{auditor, analyst, sys} {
+		if w := e.call(s, "GET", "/api/v1/redteam/schedules", "", false); w.Code != http.StatusOK {
+			t.Fatalf("чтение расписаний: %d %s", w.Code, w.Body)
+		}
+	}
+	if p, ok := auth.LookupPermission(auth.PermRedteamSchedulesManage); !ok || !p.Security || auth.TokenGrantable(p.Name) {
+		t.Fatalf("redteam.schedules.manage — не право безопасности: %+v", p)
+	}
+	mustProblem(t, e.call(session{}, "POST", "/api/v1/redteam/schedules", body, false), http.StatusUnauthorized, CodeUnauthorized)
+
+	// Цель с секретным заголовком по расписанию не запускается.
+	w := e.call(admin, "POST", "/api/v1/redteam/targets", rtEndpointBody(`,"password":"`+tPhrase+`"`), true)
+	secretTarget := decode[RedTeamTargetView](t, w.Body.Bytes())
+	mustProblem(t, e.call(admin, "POST", "/api/v1/redteam/schedules", strings.Replace(body, "01900000-0000-7000-8000-0000000000ff", secretTarget.ID, 1), true),
+		http.StatusBadRequest, CodeInvalidRequest)
+	mustProblem(t, e.call(admin, "POST", "/api/v1/redteam/schedules", body, true), http.StatusBadRequest, CodeInvalidRequest)
+
+	tg, _ := rtFinishedRun(t, e, admin, sys)
+	good := strings.Replace(body, "01900000-0000-7000-8000-0000000000ff", tg.ID, 1)
+	mustProblem(t, e.call(admin, "POST", "/api/v1/redteam/schedules", strings.Replace(good, `"daily"`, `"hourly"`, 1), true), http.StatusBadRequest, CodeInvalidRequest)
+	w = e.call(admin, "POST", "/api/v1/redteam/schedules", good, true)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("создание расписания: %d %s", w.Code, w.Body)
+	}
+	sc := decode[RedTeamScheduleView](t, w.Body.Bytes())
+	if sc.Version != 1 || !sc.Enabled || sc.NextRunAt.IsZero() || sc.Threats == nil {
+		t.Fatalf("расписание: %+v", sc)
+	}
+	put := strings.Replace(good, `"at":"03:00"`, `"at":"04:15","version":1`, 1)
+	if w := e.call(admin, "PUT", "/api/v1/redteam/schedules/"+sc.ID, put, true); w.Code != http.StatusOK {
+		t.Fatalf("изменение: %d %s", w.Code, w.Body)
+	}
+	mustProblem(t, e.call(admin, "PUT", "/api/v1/redteam/schedules/"+sc.ID, put, true), http.StatusConflict, CodeConflict)
+	list := decode[RedTeamScheduleList](t, e.call(auditor, "GET", "/api/v1/redteam/schedules", "", false).Body.Bytes())
+	if len(list.Items) != 1 || list.Items[0].At != "04:15" || list.Items[0].Version != 2 {
+		t.Fatalf("список: %+v", list)
+	}
+	mustProblem(t, e.call(admin, "GET", "/api/v1/redteam/schedules/bad", "", false), http.StatusNotFound, CodeNotFound)
+	if w := e.call(admin, "DELETE", "/api/v1/redteam/schedules/"+sc.ID, "", true); w.Code != http.StatusNoContent {
+		t.Fatalf("удаление: %d %s", w.Code, w.Body)
+	}
+	seen := map[string]bool{}
+	for _, a := range mem.Audit() {
+		seen[a.Action] = true
+		if s := mustJSON(t, a); strings.Contains(s, tPhrase) {
+			t.Fatalf("пароль в аудите: %s", s)
+		}
+	}
+	for _, a := range []string{redteam.ActionScheduleCreated, redteam.ActionScheduleUpdated, redteam.ActionScheduleDeleted} {
+		if !seen[a] {
+			t.Errorf("нет записи %s", a)
+		}
+	}
+}
+
+// Отчёт о запуске (задача 5.33): право redteam.export, форматы, запись
+// data.export до выдачи, выдержки — только по examples=true и с правом на
+// содержимое событий (токену не выдаётся), промптов атак в отчёте нет.
+func TestRedTeamReportAPI(t *testing.T) {
+	e, _, _ := newRedTeamEnv(t)
+	admin := e.mustLogin(t, "admin")
+	sys := e.mustLogin(t, "sysadm")
+	analyst := e.mustLogin(t, "analyst")
+	auditor := e.mustLogin(t, "auditor")
+	owner := e.mustLogin(t, "owner")
+	_, run := rtFinishedRun(t, e, admin, sys)
+	path := "/api/v1/redteam/runs/" + run.ID + "/report"
+
+	for _, s := range []session{owner, analyst, auditor, sys} {
+		mustProblem(t, e.call(s, "GET", path, "", false), http.StatusForbidden, CodeForbidden)
+	}
+	mustProblem(t, e.call(session{}, "GET", path, "", false), http.StatusUnauthorized, CodeUnauthorized)
+	for _, q := range []string{"?format=pdf", "?delimiter=comma", "?format=csv&delimiter=tab", "?examples=1", "?x=1", "?format=csv&format=html"} {
+		mustProblem(t, e.call(admin, "GET", path+q, "", false), http.StatusBadRequest, CodeInvalidRequest)
+	}
+	mustProblem(t, e.call(admin, "GET", "/api/v1/redteam/runs/01900000-0000-7000-8000-0000000000fe/report", "", false), http.StatusNotFound, CodeNotFound)
+
+	exports := func() int { return len(e.rec.find("data.export")) }
+	before := exports()
+	for _, f := range []string{"html", "csv", "xlsx"} {
+		w := e.call(admin, "GET", path+"?format="+f, "", false)
+		if w.Code != http.StatusOK || w.Header().Get("Cache-Control") != "no-store" || w.Header().Get("X-Export-Rows") == "" {
+			t.Fatalf("отчёт %s: %d %s", f, w.Code, w.Body)
+		}
+		// Промптов атак и маркера из базы в отчёте нет.
+		if strings.Contains(w.Body.String(), "ПРОБОЙ-7731") || strings.Contains(w.Body.String(), "Забудь все предыдущие") {
+			t.Fatalf("промпт атаки в отчёте %s", f)
+		}
+	}
+	if exports() != before+3 {
+		t.Fatalf("записей data.export: %d, ожидалось %d", exports()-before, 3)
+	}
+	// Токен с redteam.export получает отчёт без выдержек; с examples=true — 403.
+	tok := session{bearer: e.issueToken(t, admin, auth.PermRedteamExport).Token}
+	if w := e.call(tok, "GET", path+"?format=csv", "", false); w.Code != http.StatusOK {
+		t.Fatalf("отчёт токеном: %d %s", w.Code, w.Body)
+	}
+	n := exports()
+	mustProblem(t, e.call(tok, "GET", path+"?examples=true", "", false), http.StatusForbidden, CodeForbidden)
+	if exports() != n {
+		t.Fatal("отказ в выдержках записан как выгрузка")
+	}
+	// Администратор безопасности — с выдержками; в аудите виден признак.
+	if w := e.call(admin, "GET", path+"?examples=true&format=csv", "", false); w.Code != http.StatusOK {
+		t.Fatalf("отчёт с выдержками: %d %s", w.Code, w.Body)
+	}
+	all := e.rec.find("data.export")
+	last := all[len(all)-1]
+	canon := e.rec.canon[len(e.rec.canon)-1]
+	if last.Object.Type != "report" || last.Object.ID != redteam.KindReport || !strings.Contains(canon, `"examples":true`) ||
+		!strings.Contains(canon, `"run_id":"`+run.ID+`"`) {
+		t.Fatalf("запись выгрузки: %+v %s", last, canon)
+	}
+}

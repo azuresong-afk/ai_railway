@@ -37,6 +37,23 @@ type Store interface {
 	Interrupt(ctx context.Context, orgID string, now time.Time, rec func(Run) audit.Entry) (int, error)
 	// Purge удаляет итоги старше results и завершённые запуски старше runs.
 	Purge(ctx context.Context, orgID string, results, runs time.Time) error
+
+	// Расписания запусков (задача 5.33).
+	Schedules(ctx context.Context, orgID string) ([]Schedule, error)
+	Schedule(ctx context.Context, orgID, id string) (Schedule, error)
+	// CreateSchedule — ErrTooManySchedules сверх MaxSchedules.
+	CreateSchedule(ctx context.Context, sc Schedule, rec audit.Entry) error
+	// UpdateSchedule заменяет расписание, если версия в хранилище равна
+	// version (иначе ErrVersionConflict); счётчик повторов обнуляется.
+	UpdateSchedule(ctx context.Context, sc Schedule, version int, rec audit.Entry) error
+	DeleteSchedule(ctx context.Context, orgID, id string, rec audit.Entry) error
+	// DueSchedules — включённые расписания со сроком не позже now, старые первыми.
+	DueSchedules(ctx context.Context, orgID string, now time.Time, limit int) ([]Schedule, error)
+	// ClaimSchedule занимает срок: next_run_at меняется с expected на next;
+	// false — срок уже занят или расписание изменено.
+	ClaimSchedule(ctx context.Context, orgID, id string, expected, next time.Time) (bool, error)
+	// FinishSchedule записывает итог попытки и (если rec не nil) запись аудита.
+	FinishSchedule(ctx context.Context, orgID, id string, p ScheduleProgress, rec *audit.Entry) error
 }
 
 // Memory — Store в памяти для тестов без PostgreSQL; записи аудита копятся
@@ -47,11 +64,12 @@ type Memory struct {
 	targets map[string]Target
 	runs    map[string]Run
 	results map[string][]Result
+	scheds  map[string]Schedule
 }
 
 // NewMemory создаёт пустое хранилище.
 func NewMemory() *Memory {
-	return &Memory{targets: map[string]Target{}, runs: map[string]Run{}, results: map[string][]Result{}}
+	return &Memory{targets: map[string]Target{}, runs: map[string]Run{}, results: map[string][]Result{}, scheds: map[string]Schedule{}}
 }
 
 // Audit — копия записей аудита.
@@ -144,6 +162,11 @@ func (m *Memory) DeleteTarget(_ context.Context, orgID, id string, rec audit.Ent
 		return ErrNotFound
 	}
 	delete(m.targets, id)
+	for k, sc := range m.scheds {
+		if sc.TargetID == id {
+			delete(m.scheds, k)
+		}
+	}
 	for k, r := range m.runs {
 		if r.TargetID == id {
 			r.TargetID = ""
@@ -279,6 +302,150 @@ func (m *Memory) Purge(_ context.Context, orgID string, results, runs time.Time)
 		if r.StartedAt.Before(results) {
 			delete(m.results, id)
 		}
+	}
+	return nil
+}
+
+func cloneSchedule(sc Schedule) Schedule {
+	sc.Threats = slices.Clone(sc.Threats)
+	if sc.Threats == nil {
+		sc.Threats = []string{}
+	}
+	if sc.LastRunAt != nil {
+		t := *sc.LastRunAt
+		sc.LastRunAt = &t
+	}
+	return sc
+}
+
+// Schedules — расписания по названию.
+func (m *Memory) Schedules(_ context.Context, orgID string) ([]Schedule, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := []Schedule{}
+	for _, sc := range m.scheds {
+		if sc.OrgID == orgID {
+			out = append(out, cloneSchedule(sc))
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].Name < out[j].Name || out[i].Name == out[j].Name && out[i].ID < out[j].ID
+	})
+	return out, nil
+}
+
+// Schedule — расписание по ID.
+func (m *Memory) Schedule(_ context.Context, orgID, id string) (Schedule, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	sc, ok := m.scheds[id]
+	if !ok || sc.OrgID != orgID {
+		return Schedule{}, ErrNotFound
+	}
+	return cloneSchedule(sc), nil
+}
+
+// CreateSchedule добавляет расписание.
+func (m *Memory) CreateSchedule(_ context.Context, sc Schedule, rec audit.Entry) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n := 0
+	for _, x := range m.scheds {
+		if x.OrgID == sc.OrgID {
+			n++
+		}
+	}
+	if n >= MaxSchedules {
+		return ErrTooManySchedules
+	}
+	if t, ok := m.targets[sc.TargetID]; !ok || t.OrgID != sc.OrgID {
+		return ErrNotFound
+	}
+	m.scheds[sc.ID] = cloneSchedule(sc)
+	m.Records = append(m.Records, rec)
+	return nil
+}
+
+// UpdateSchedule заменяет расписание.
+func (m *Memory) UpdateSchedule(_ context.Context, sc Schedule, version int, rec audit.Entry) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	x, ok := m.scheds[sc.ID]
+	if !ok || x.OrgID != sc.OrgID {
+		return ErrNotFound
+	}
+	if x.Version != version {
+		return ErrVersionConflict
+	}
+	sc.Retries = 0
+	m.scheds[sc.ID] = cloneSchedule(sc)
+	m.Records = append(m.Records, rec)
+	return nil
+}
+
+// DeleteSchedule удаляет расписание.
+func (m *Memory) DeleteSchedule(_ context.Context, orgID, id string, rec audit.Entry) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if x, ok := m.scheds[id]; !ok || x.OrgID != orgID {
+		return ErrNotFound
+	}
+	delete(m.scheds, id)
+	m.Records = append(m.Records, rec)
+	return nil
+}
+
+// DueSchedules — расписания со сроком.
+func (m *Memory) DueSchedules(_ context.Context, orgID string, now time.Time, limit int) ([]Schedule, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []Schedule
+	for _, sc := range m.scheds {
+		if sc.OrgID == orgID && sc.Enabled && !sc.NextRunAt.After(now) {
+			out = append(out, cloneSchedule(sc))
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].NextRunAt.Before(out[j].NextRunAt) || out[i].NextRunAt.Equal(out[j].NextRunAt) && out[i].ID < out[j].ID
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+// ClaimSchedule занимает срок.
+func (m *Memory) ClaimSchedule(_ context.Context, orgID, id string, expected, next time.Time) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	sc, ok := m.scheds[id]
+	if !ok || sc.OrgID != orgID || !sc.NextRunAt.Equal(expected) {
+		return false, nil
+	}
+	sc.NextRunAt = next
+	m.scheds[id] = sc
+	return true, nil
+}
+
+// FinishSchedule записывает итог попытки.
+func (m *Memory) FinishSchedule(_ context.Context, orgID, id string, p ScheduleProgress, rec *audit.Entry) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	sc, ok := m.scheds[id]
+	if !ok || sc.OrgID != orgID {
+		return ErrNotFound
+	}
+	sc.NextRunAt, sc.LastStatus, sc.Retries = p.NextRunAt, p.LastStatus, p.Retries
+	if p.LastRunAt != nil {
+		t := *p.LastRunAt
+		sc.LastRunAt = &t
+	}
+	if p.LastRunID != "" {
+		sc.LastRunID = p.LastRunID
+	}
+	m.scheds[id] = sc
+	if rec != nil {
+		m.Records = append(m.Records, *rec)
 	}
 	return nil
 }

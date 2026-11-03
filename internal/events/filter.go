@@ -128,10 +128,18 @@ var filterFields = map[string]fieldDef{
 	// анализатора aisec-media — признак решения в details.
 	"media_unavailable": {column: "details", kind: kindBool, valid: oneOf("true", "false"),
 		expr: "COALESCE((e.details->'decision'->>'media_unavailable')::boolean, false)"},
+	// Задача 5.34 этапа 5: запросы исполнителя тестирования устойчивости
+	// (ключ запуска, ADR-0031) — признак события в details.
+	"test": {column: "details", kind: kindBool, valid: oneOf("true", "false"),
+		expr: "COALESCE((e.details->>'test')::boolean, false)"},
 	// Задача 3.22: exception — находки, пропущенные по исключению с этим ID;
 	// mark — отметка аналитика (false_positive, confirmed, none — нет отметки).
 	"exception": {column: "details", kind: kindFinding, valid: exceptionRe.MatchString, key: "exception"},
-	"mark":      {column: "id", kind: kindMark, valid: oneOf(MarkFalsePositive, MarkConfirmed, MarkNone)},
+	// Задача 5.46 этапа 5: источник текста находки (user, rag, tool, tool_args,
+	// output, image) — например, все события с находками в тексте изображений.
+	"finding_source": {column: "details", kind: kindFinding, key: "source",
+		valid: oneOf("user", "rag", "tool", "tool_args", "output", SourceImage)},
+	"mark": {column: "id", kind: kindMark, valid: oneOf(MarkFalsePositive, MarkConfirmed, MarkNone)},
 	// Задача 4.13 этапа 4: события одной сессии (псевдоним из карточки события).
 	"session": {column: "details", kind: kindSession, valid: sessionIDRe.MatchString},
 	// Задача 4.11 этапа 4: события агентов по агенту, MCP-серверу и
@@ -615,6 +623,16 @@ func (r *Record) filterValues(field string) []string {
 			}
 		}
 		return out
+	case "finding_source":
+		var out []string
+		if r.Details != nil {
+			for _, fd := range r.Details.Findings {
+				if fd.Source != "" {
+					out = append(out, fd.Source)
+				}
+			}
+		}
+		return out
 	case "session":
 		if r.Details != nil && r.Details.Session != nil {
 			return one(r.Details.Session.ID)
@@ -649,6 +667,8 @@ func (r *Record) filterValues(field string) []string {
 		return []string{strconv.FormatBool(r.Details != nil && r.Details.Decision != nil && r.Details.Decision.JudgeUnchecked)}
 	case "media_unavailable":
 		return []string{strconv.FormatBool(r.Details != nil && r.Details.Decision != nil && r.Details.Decision.MediaUnavailable)}
+	case "test":
+		return []string{strconv.FormatBool(r.Details != nil && r.Details.Test)}
 	}
 	return nil
 }
