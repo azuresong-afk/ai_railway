@@ -10,6 +10,7 @@ import (
 	"image/jpeg"
 	"image/png"
 	"runtime"
+	"slices"
 	"testing"
 
 	"github.com/azuresong-afk/ai_railway/internal/media/wire"
@@ -280,7 +281,7 @@ func TestAnalyzeDecodes(t *testing.T) {
 		"GIF":  encodeGIF(t, 2, 40, 30),
 	} {
 		r, err := Analyze(data, testLimits)
-		if err != nil || r.Status != wire.StatusOK || r.Width != 40 || r.Height != 30 || len(r.Checks) != 1 || r.Checks[0] != wire.CheckDecode {
+		if err != nil || r.Status != wire.StatusOK || r.Width != 40 || r.Height != 30 || !slices.Equal(r.Checks, []wire.Check{wire.CheckDecode, wire.CheckMetadata, wire.CheckQR}) || len(r.Texts) != 0 {
 			t.Errorf("%s: %+v %v", name, r, err)
 		}
 		if err := r.Validate(); err != nil {

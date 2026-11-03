@@ -451,3 +451,55 @@ func TestApplyReplyReasons(t *testing.T) {
 		t.Fatal("MediaError не раскрывает причину")
 	}
 }
+
+// metaReply — анализатор без OCR (задача 5.43): текст метаданных и QR.
+func metaReply(meta, code string) func(context.Context, []byte) (*MediaReply, error) {
+	return func(context.Context, []byte) (*MediaReply, error) {
+		return &MediaReply{Result: wire.Result{Status: wire.StatusOK, Format: wire.FormatJPEG, Width: 640, Height: 480, Frames: 1,
+			Checks: []wire.Check{wire.CheckDecode, wire.CheckMetadata, wire.CheckQR}},
+			Texts: []MediaText{{Text: meta, Origin: "metadata"}, {Text: code, Origin: "qr", Box: &events.Box{X: 100, Y: 100, W: 120, H: 120}}}}, nil
+	}
+}
+
+// Покрывает: DM-47
+// Текст метаданных и QR проверяется детекторами и без OCR: инструкция в
+// EXIF блокирует запрос, находка — строка DM-47, у QR — с рамкой.
+// Изображение без OCR остаётся «не проверено» (no_ocr) для non_text.
+func TestMediaMetadataAndQRTextWithoutOCR(t *testing.T) {
+	up, rec := newUpstream(t, nil)
+	m := &stubMedia{fn: metaReply("SynthCam", injectionText)}
+	g, log := mediaGateway(t, up.URL, m, policy.MediaCheckSync, policy.NonTextAllowUnchecked, "fail_closed")
+	resp := postChat(t, g, imageChat(t, dataURL(pngBytes)), nil)
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("%d %s", resp.Code, resp.Body.String())
+	}
+	if _, _, _, calls := rec.get(); calls != 0 {
+		t.Fatal("инструкция в QR ушла провайдеру")
+	}
+	e := waitEvent(t, log, resp.Header().Get(HeaderEventID))
+	if !slices.Contains(e.Threats, "DM-47") || slices.Contains(e.Threats, "DM-45") {
+		t.Fatalf("угрозы %v", e.Threats)
+	}
+	var img *events.Finding
+	for i := range e.Findings {
+		if e.Findings[i].Source == "image" {
+			img = &e.Findings[i]
+		}
+	}
+	if img == nil || img.Threat != "DM-47" || img.Box == nil || img.Box.X != 100 || img.Location != "messages[0].content[1]" {
+		t.Fatalf("находка: %+v", e.Findings)
+	}
+	if len(e.Media) != 1 || e.Media[0].Checked || e.Media[0].Reason != events.MediaReasonNoOCR || e.Media[0].Texts != 2 {
+		t.Fatalf("media: %+v", e.Media)
+	}
+	// Чистые метаданные: запрос проходит, изображение по-прежнему не
+	// проверено — при non_text: block его блокирует non_text.
+	g, _ = mediaGateway(t, up.URL, &stubMedia{fn: metaReply("SynthCam", "https://menu.example.test/")}, policy.MediaCheckSync, policy.NonTextAllowUnchecked, "fail_closed")
+	if resp := postChat(t, g, imageChat(t, dataURL(pngBytes)), nil); resp.Code != http.StatusOK {
+		t.Fatalf("чистые метаданные: %d %s", resp.Code, resp.Body.String())
+	}
+	g, _ = mediaGateway(t, up.URL, &stubMedia{fn: metaReply("SynthCam", "https://menu.example.test/")}, policy.MediaCheckSync, policy.NonTextBlock, "fail_closed")
+	if resp := postChat(t, g, imageChat(t, dataURL(pngBytes)), nil); resp.Code != http.StatusBadRequest {
+		t.Fatalf("non_text: block без OCR: %d", resp.Code)
+	}
+}

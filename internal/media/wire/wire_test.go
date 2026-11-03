@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"strings"
 	"testing"
 )
 
@@ -176,6 +177,8 @@ func FuzzClientReadFrame(f *testing.F) {
 	f.Add(frame(TypeResult, 1, []byte(`{"status":"ok","format":"png","width":10,"height":20,"frames":1,"checks":["decode"]}`)))
 	f.Add(frame(TypeHelloOK, 1, []byte(`{"protocol":1,"formats":["png"],"checks":["decode"],"max_bytes":1,"max_pixels":1}`)))
 	f.Add(frame(TypeError, 1, []byte(`{"code":"timeout"}`)))
+	f.Add(frame(TypeResult, 1, []byte(`{"status":"ok","format":"png","width":10,"height":20,"frames":1,"checks":["decode","metadata","qr"],`+
+		`"texts":[{"text":"meta","source":"metadata"},{"text":"qr","source":"qr","box":{"x":1,"y":2,"w":3,"h":4}}]}`)))
 	f.Fuzz(func(t *testing.T, data []byte) {
 		h, b, err := ReadFrame(bytes.NewReader(data), ClientSide)
 		if err != nil {
@@ -198,4 +201,63 @@ func FuzzClientReadFrame(f *testing.F) {
 			t.Fatalf("клиент принял тип %d", h.Type)
 		}
 	})
+}
+
+func TestResultTexts(t *testing.T) {
+	ok := func() Result {
+		return Result{Status: StatusOK, Format: FormatPNG, Width: 100, Height: 50, Frames: 1,
+			Checks: []Check{CheckDecode, CheckMetadata, CheckQR},
+			Texts:  []Text{{Text: "описание", Source: SourceMetadata}, {Text: "код", Source: SourceQR, Box: &Box{X: 90, Y: 40, W: 10, H: 10}}}}
+	}
+	if r := ok(); r.Validate() != nil {
+		t.Fatal("верный итог отвергнут")
+	}
+	body, err := MarshalBody(ok())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r, err := ParseResult(body); err != nil || len(r.Texts) != 2 || r.Texts[1].Box.W != 10 {
+		t.Fatalf("разбор %+v %v", r, err)
+	}
+	long := strings.Repeat("я", MaxTextBytes/2+1)
+	cases := map[string]func(*Result){
+		"источник без проверки": func(r *Result) { r.Checks = []Check{CheckDecode, CheckQR} },
+		"ocr без проверки":      func(r *Result) { r.Texts[0].Source = SourceOCRContrast },
+		"неизвестный источник":  func(r *Result) { r.Texts[0].Source = "exif" },
+		"пустой текст":          func(r *Result) { r.Texts[0].Text = "" },
+		"управляющий символ":    func(r *Result) { r.Texts[0].Text = "a\x1bb" },
+		"C1":                    func(r *Result) { r.Texts[0].Text = "a\u0085b" },
+		"не UTF-8":              func(r *Result) { r.Texts[0].Text = "a\xffb" },
+		"длинный текст":         func(r *Result) { r.Texts[0].Text = long },
+		"рамка за правым краем": func(r *Result) { r.Texts[1].Box.W = 11 },
+		"рамка за низом":        func(r *Result) { r.Texts[1].Box.Y = 41 },
+		"пустая рамка":          func(r *Result) { r.Texts[1].Box.H = 0 },
+		"отрицательная рамка":   func(r *Result) { r.Texts[1].Box.X = -1 },
+		"переполнение рамки":    func(r *Result) { r.Texts[1].Box.X, r.Texts[1].Box.W = 1<<62, 1<<62 },
+		"текст у rejected": func(r *Result) {
+			r.Status, r.Reason, r.Checks = StatusRejected, ReasonMalformed, []Check{}
+		},
+		"слишком много": func(r *Result) {
+			r.Texts = nil
+			for range MaxTexts + 1 {
+				r.Texts = append(r.Texts, Text{Text: "x", Source: SourceQR})
+			}
+		},
+		"объём": func(r *Result) {
+			r.Texts = nil
+			for range MaxTextsBytes/MaxTextBytes + 1 {
+				r.Texts = append(r.Texts, Text{Text: strings.Repeat("x", MaxTextBytes), Source: SourceMetadata})
+			}
+		},
+	}
+	for name, mut := range cases {
+		r := ok()
+		mut(&r)
+		if r.Validate() == nil {
+			t.Errorf("%s: принят", name)
+		}
+	}
+	if !ValidText("строка\tс\nпереводом") {
+		t.Error("табуляция и перевод строки отвергнуты")
+	}
 }

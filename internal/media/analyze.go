@@ -8,6 +8,7 @@ import (
 	"image/gif"
 	"image/jpeg"
 	"image/png"
+	"slices"
 
 	"github.com/azuresong-afk/ai_railway/internal/media/wire"
 )
@@ -65,15 +66,29 @@ func Analyze(data []byte, l Limits) (wire.Result, error) {
 	if !canDecode(info) {
 		return unsupported(info), nil
 	}
-	if err := decode(data, info); err != nil {
+	frames, err := decode(data, info)
+	if err != nil {
 		if errors.Is(err, errDecoderPanic) {
 			return wire.Result{}, err
 		}
 		return rejected(info, wire.ReasonMalformed), nil
 	}
+	// Текст — только у принятого декодером файла: метаданные, затем QR
+	// (задача 5.43). Порядок задаёт, что останется при пределе протокола.
+	var ts textSet
+	readMetadata(data, info.Format, &ts)
+	if err := readQR(frames, &ts); err != nil {
+		return wire.Result{}, err
+	}
 	return wire.Result{Status: wire.StatusOK, Format: info.Format, Width: info.Width, Height: info.Height,
-		Frames: info.Frames, Checks: []wire.Check{wire.CheckDecode}}, nil
+		Frames: info.Frames, Checks: slices.Clone(checksDone), Texts: ts.texts}, nil
 }
+
+// checksDone — проверки принятого изображения; ocr — с задачи 5.42.
+var checksDone = []wire.Check{wire.CheckDecode, wire.CheckMetadata, wire.CheckQR}
+
+// Checks — проверки анализатора (для hello_ok).
+func Checks() []wire.Check { return slices.Clone(checksDone) }
 
 // headerFailure — итог, если заголовок не разобран: формат не распознан
 // или разновидность не поддерживается — unsupported, иначе — malformed.
@@ -126,8 +141,9 @@ func unsupported(info Info) wire.Result {
 // decode декодирует растр стандартной библиотекой. Перед декодером размеры
 // сверяются с DecodeConfig того же пакета: расхождение своего разбора и
 // разбора декодера обошло бы предел. После — границы растра обязаны
-// совпасть с заголовком. Паника декодера — errDecoderPanic.
-func decode(data []byte, info Info) (err error) {
+// совпасть с заголовком. Итог — кадры (у GIF — все, у остальных — один).
+// Паника декодера — errDecoderPanic.
+func decode(data []byte, info Info) (frames []image.Image, err error) {
 	defer func() {
 		if p := recover(); p != nil {
 			err = errDecoderPanic
@@ -142,51 +158,54 @@ func decode(data []byte, info Info) (err error) {
 	case wire.FormatGIF:
 		cfg, err = gif.DecodeConfig(bytes.NewReader(data))
 	default:
-		return errors.New("aisec-media: нет декодера")
+		return nil, errors.New("aisec-media: нет декодера")
 	}
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if int64(cfg.Width) != info.Width || int64(cfg.Height) != info.Height {
-		return errors.New("aisec-media: размеры декодера не совпали с заголовком")
+		return nil, errors.New("aisec-media: размеры декодера не совпали с заголовком")
 	}
 	return decodeRaster(data, info)
 }
 
-// decodeRaster — декодирование после проверки размеров. Растр в каркасе
-// не используется; с задачи 5.42 его получает OCR (ADR-0032, раздел 9).
-func decodeRaster(data []byte, info Info) error {
+// decodeRaster — декодирование после проверки размеров. Растр получают
+// QR (5.43) и OCR (5.42, ADR-0032, раздел 9).
+func decodeRaster(data []byte, info Info) ([]image.Image, error) {
 	bounds := image.Rect(0, 0, int(info.Width), int(info.Height))
+	var img image.Image
+	var err error
 	switch info.Format {
 	case wire.FormatPNG:
-		img, err := png.Decode(bytes.NewReader(data))
-		if err != nil {
-			return err
-		}
-		return sameBounds(img.Bounds(), bounds)
+		img, err = png.Decode(bytes.NewReader(data))
 	case wire.FormatJPEG:
-		img, err := jpeg.Decode(bytes.NewReader(data))
-		if err != nil {
-			return err
-		}
-		return sameBounds(img.Bounds(), bounds)
+		img, err = jpeg.Decode(bytes.NewReader(data))
 	default:
 		// GIF: все кадры — инструкция может быть не на первом. Число кадров
 		// и их размеры уже сверены своим разбором.
-		g, err := gif.DecodeAll(bytes.NewReader(data))
-		if err != nil {
-			return err
+		g, gerr := gif.DecodeAll(bytes.NewReader(data))
+		if gerr != nil {
+			return nil, gerr
 		}
 		if int64(len(g.Image)) != info.Frames {
-			return errors.New("aisec-media: число кадров GIF не совпало с заголовком")
+			return nil, errors.New("aisec-media: число кадров GIF не совпало с заголовком")
 		}
+		frames := make([]image.Image, 0, len(g.Image))
 		for _, f := range g.Image {
 			if !f.Bounds().In(bounds) {
-				return errors.New("aisec-media: кадр GIF за пределами экрана")
+				return nil, errors.New("aisec-media: кадр GIF за пределами экрана")
 			}
+			frames = append(frames, f)
 		}
-		return nil
+		return frames, nil
 	}
+	if err != nil {
+		return nil, err
+	}
+	if err := sameBounds(img.Bounds(), bounds); err != nil {
+		return nil, err
+	}
+	return []image.Image{img}, nil
 }
 
 func sameBounds(got, want image.Rectangle) error {
