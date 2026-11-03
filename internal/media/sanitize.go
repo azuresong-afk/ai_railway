@@ -60,6 +60,12 @@ func Sanitize(ctx context.Context, data []byte, l Limits, maxSide int) (out []by
 	if reason := l.exceeded(info); reason != "" {
 		return nil, "", fmt.Errorf("%w: %s", ErrSanitizeRejected, reason)
 	}
+	// firstFrame рисует кадр GIF на холст размером с логический экран, а
+	// Pixels у GIF — сумма по кадрам: экран 65535×65535 с кадром 4×4
+	// проходил предел и требовал 17 ГБ. Экран проверяется до декодирования.
+	if info.Width*info.Height > l.MaxPixels {
+		return nil, "", fmt.Errorf("%w: %s", ErrSanitizeRejected, wire.ReasonTooManyPixels)
+	}
 	if !canDecode(info) {
 		return nil, "", fmt.Errorf("%w: нет декодера", ErrSanitizeRejected)
 	}

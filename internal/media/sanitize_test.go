@@ -219,6 +219,26 @@ func TestSanitizeRejects(t *testing.T) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
+	// GIF: логический экран сверх предела пикселей при кадре 4×4 — отказ до
+	// декодирования (холст firstFrame — размером с экран); экран ровно на
+	// пределе — очищается (вход fuzz: экран 65408×65535 требовал 17 ГБ).
+	screenGIF := func(w, h int) []byte {
+		pal := color.Palette{color.Black, color.White}
+		g := &gif.GIF{Image: []*image.Paletted{image.NewPaletted(image.Rect(0, 0, 4, 4), pal)}, Delay: []int{1},
+			Config: image.Config{Width: w, Height: h, ColorModel: pal}}
+		var b bytes.Buffer
+		if err := gif.EncodeAll(&b, g); err != nil {
+			t.Fatal(err)
+		}
+		return b.Bytes()
+	}
+	gifLimits := Limits{MaxBytes: MinMaxBytes, MaxPixels: 256 * 256}
+	if _, _, err := Sanitize(ctx, screenGIF(257, 256), gifLimits, DefaultSanitizeMaxSide); !errors.Is(err, ErrSanitizeRejected) {
+		t.Errorf("экран GIF сверх предела: %v", err)
+	}
+	if _, _, err := Sanitize(ctx, screenGIF(256, 256), gifLimits, DefaultSanitizeMaxSide); err != nil {
+		t.Errorf("экран GIF на пределе: %v", err)
+	}
 	if _, _, err := Sanitize(ctx, jpg, testLimits, MinSanitizeMaxSide-1); err == nil || errors.Is(err, ErrSanitizeRejected) {
 		t.Errorf("сторона меньше предела: %v", err)
 	}
