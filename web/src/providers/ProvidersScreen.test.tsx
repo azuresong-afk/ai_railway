@@ -17,7 +17,7 @@ const me = (permissions: string[], mfa = false): Me =>
 const PEM = "-----BEGIN CERTIFICATE-----\nAAA\n-----END CERTIFICATE-----";
 const provider = (o: Partial<Provider> = {}): Provider => ({
   id: "p-1", slug: "main", name: "Основной", type: "openai", base_url: `https://llm.corp.example/v1`, ca_pem: PEM, timeouts: {},
-  external: false, credential_set: true, credential_set_at: "2026-10-01T10:00:00Z", created_at: "2026-10-01T10:00:00Z", updated_at: "2026-10-01T10:00:00Z", ...o,
+  external: false, on_premise: false, credential_set: true, credential_set_at: "2026-10-01T10:00:00Z", created_at: "2026-10-01T10:00:00Z", updated_at: "2026-10-01T10:00:00Z", ...o,
 });
 const ASCII_KEY = "sk-test-0123456789";
 

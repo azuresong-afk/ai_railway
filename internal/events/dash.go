@@ -63,7 +63,10 @@ const (
 // dashEv — события в нужной области с ценой модели и числами из details.
 // unit — корзина времени: 'hour' для записи, параметр для чтения. Число
 // токенов и задержка ограничены сверху: чужое значение не должно
-// переполнить bigint и сорвать приём пакета.
+// переполнить bigint и сорвать приём пакета. У отказа model_not_allowed
+// модель — строка клиента: в агрегаты она не идёт (ревью 5.r2, 5Н17), иначе
+// выдуманные имена заполнили бы реестр ИИ, который пополняется из
+// dash_req_hour, до предела MaxModels.
 func dashEv(scope, unit string) string {
 	num := func(path string, max string) string {
 		return "COALESCE(LEAST(GREATEST((" + path + ")::numeric, 0), " + max + "), 0)"
@@ -76,7 +79,8 @@ func dashEv(scope, unit string) string {
 	fmt.Fprintf(&lat, " ELSE %d END", DashLatencyOverflow)
 	return `ev0 AS (
 	SELECT e.id, e.org_id, date_trunc(` + unit + `, e.ts, 'UTC') AS bucket,
-		COALESCE(e.app, '') AS app, COALESCE(e.provider, '') AS provider, COALESCE(e.model, '') AS model,
+		COALESCE(e.app, '') AS app, COALESCE(e.provider, '') AS provider,
+		CASE WHEN e.rule = 'model_not_allowed' THEN '' ELSE COALESCE(e.model, '') END AS model,
 		COALESCE(e.action, '') AS action, COALESCE(e.policy_mode, '') AS mode, COALESCE(e.user_alias, '') AS user_alias,
 		e.non_text_unchecked, e.details,
 		jsonb_array_length(CASE WHEN jsonb_typeof(e.details->'findings') = 'array' THEN e.details->'findings' ELSE '[]'::jsonb END) > 0 AS has_f,

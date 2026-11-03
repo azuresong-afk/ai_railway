@@ -87,6 +87,10 @@ type pickleWalk struct {
 	globals []string
 	// short — данные кончились посреди опкода (поток длиннее просмотра).
 	short bool
+	// need — сколько байт от начала нужно, чтобы дочитать обрезанный
+	// опкод с аргументом известной длины (0 — длина не известна: строка
+	// до \n или конец буфера на границе опкода).
+	need uint64
 	// broken — просмотр остановился на байте не по формату (pickleInfo).
 	broken bool
 }
@@ -117,7 +121,7 @@ func walkPickle(buf []byte) (pickleWalk, error) {
 		case argNone:
 		case argFixed:
 			if len(buf)-pos < info.n {
-				w.short = true
+				w.short, w.need = true, uint64(pos+info.n) //nolint:gosec // G115: pos ≤ len(buf)
 				return w, nil
 			}
 			arg = buf[pos : pos+info.n]
@@ -139,7 +143,7 @@ func walkPickle(buf []byte) (pickleWalk, error) {
 			}
 			pos += width
 			if n > uint64(len(buf)-pos) { //nolint:gosec // G115: pos ≤ len(buf)
-				w.short = true
+				w.short, w.need = true, satAdd(uint64(pos), n) //nolint:gosec // G115: pos ≤ len(buf)
 				return w, nil
 			}
 			m := int(n) //nolint:gosec // G115: n не больше длины буфера
@@ -190,14 +194,24 @@ func walkPickle(buf []byte) (pickleWalk, error) {
 	return w, nil
 }
 
+// satAdd — сумма без переполнения (насыщение на максимуме).
+func satAdd(a, b uint64) uint64 {
+	if a > ^uint64(0)-b {
+		return ^uint64(0)
+	}
+	return a + b
+}
+
 // checkLineArg проверяет строковые аргументы протокола 0. Числа проверяются
-// мягко (печатные символы ASCII): Python принимает пробелы, «+» и «_» в
-// записи числа, и строгая проверка позволила бы спрятать поток от сканера.
+// мягко (печатные символы ASCII и пробельные \t\v\f\r): Python принимает
+// пробелы, «+» и «_» в записи числа, и строгая проверка позволила бы спрятать
+// поток от сканера. Длина числа не ограничивается (ревью 5.r2, 5В2): Python
+// принимает до 4300 цифр, а пробелы вокруг числа — без предела.
 func checkLineArg(kind argKind, line, second []byte) error {
 	s := strings.TrimSuffix(string(line), "\r")
 	switch kind {
 	case argInt, argLongLine, argFloat:
-		if s == "" || len(s) > 128 || !printableASCII(s) {
+		if strings.TrimSpace(s) == "" || !printableASCII(s) {
 			return fmt.Errorf("не число")
 		}
 	case argQuoted:
@@ -212,9 +226,11 @@ func checkLineArg(kind argKind, line, second []byte) error {
 	return nil
 }
 
+// printableASCII — печатные символы ASCII и пробельные символы, которые
+// Python пропускает вокруг числа (\t, \v, \f, \r).
 func printableASCII(s string) bool {
 	for _, c := range []byte(s) {
-		if c < 0x20 || c > 0x7e {
+		if (c < 0x20 || c > 0x7e) && (c < '\t' || c > '\r' || c == '\n') {
 			return false
 		}
 	}
@@ -256,6 +272,32 @@ func looksLikePickle(buf []byte) bool {
 	}
 	return w.ops >= minPickleOps
 }
+
+// continuesPickle — начало buf потока длиной total байт (total < 0 — длина
+// не известна, поток длиннее buf) — pickle протокола 0 или 1 (ревью 5.r2,
+// 5В2): опкоды подряд до STOP, не меньше minPickleOps опкодов или поток, который
+// начинается допустимым опкодом и не кончается в пределах buf, хотя файл
+// длиннее и обрезанный аргумент помещается в файл. Длинный первый аргумент
+// (строка, число, BINUNICODE больше buf) иначе прятал бы поток от сканера.
+func continuesPickle(buf []byte, total int64) bool {
+	w, err := walkPickle(buf)
+	switch {
+	case err != nil || len(buf) == 0:
+		return false
+	case w.stopped:
+		return w.ops >= 2
+	case w.ops >= minPickleOps:
+		return true
+	}
+	if total < 0 {
+		return true
+	}
+	return int64(len(buf)) < total && w.need <= uint64(total)
+}
+
+// probeLen — сколько байт начала потока длиной size читать для
+// continuesPickle.
+func probeLen(size int64) int64 { return min(size, pickleProbe) }
 
 // pickleInfo — итог просмотра для пояснения находки: поток, который
 // просмотр не прошёл целиком, остаётся находкой, отмечается признак.

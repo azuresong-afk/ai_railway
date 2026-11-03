@@ -10,6 +10,7 @@ const fieldText: Record<PolicyDiff["fields"][number]["field"], string> = {
   media_check: "Проверка изображений",
   media_check_timeout_ms: "Срок проверки изображений, мс",
   block_message: "Сообщение при блокировке",
+  judge: "Модель-оценщик",
 };
 
 const ruleLine = (r: PolicyRule) => `${r.id}: ${r.detector}, ${actionText[r.action]}, серьёзность ${r.severity}`;

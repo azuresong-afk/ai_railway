@@ -96,7 +96,7 @@
 
 ## Проверки этапа 5
 
-Привязка проверок этапа 5 к строкам матрицы, OWASP и MITRE ATLAS; колонки — как в таблице этапа 4.
+Привязка проверок этапа 5 к строкам матрицы, OWASP и MITRE ATLAS; колонки — как в таблице этапа 4. `frequency.judge_unchecked`, как и `frequency.ml_unavailable`, сообщает, что проверка оценщиком не выполнялась (отказ, перегрузка, исчерпан бюджет), поэтому отнесено к отказу в обслуживании (LLM10, Б2). У `judge.llm` и `threshold.judge_violation` нет кода OWASP и техники ATLAS: как и у строк DM-18 и DM-19, это контроль содержимого по правилам заказчика, а не атака на модель.
 
 | Проверка | Вид | Строки | OWASP | Рабочая группа | БДУ | MITRE ATLAS |
 |---|---|---|---|---|---|---|
@@ -108,3 +108,6 @@
 | Манифест коллекции RAG (`internal/rag`, `PUT /api/v1/rag/collections/{slug}/manifest`): сравнение версии с предыдущей по ID, SHA-256 и размеру документов; исключение документа администратором | сервер управления | DM-30 | LLM04, LLM08 | Б4 | не заполнено | AML.T0070 (RAG Poisoning), AML.T0059 (Erode Dataset Integrity) |
 | `rag.document_changed` | правило оповещения | DM-30 | LLM04, LLM08 | Б4 | не заполнено | AML.T0070 |
 | Проверка документов RAG до индексации (`POST /guard/v1/check/batch`, `stage: pre_index`): детекторы входа политики приложения с источником `rag`, решение `exclude` по документу | шлюз | DM-07 (RAG) | LLM01, LLM08 | Б1 | не заполнено | AML.T0051.001 (LLM Prompt Injection: Indirect), AML.T0070 (RAG Poisoning) |
+| `judge.llm` — модель-оценщик в контуре заказчика по правилам политики на естественном языке (`kind: content` — DM-18, `kind: business` — DM-19) | детектор уровня запроса (шлюз) | DM-18 (LLM), DM-19 (LLM) | — | Б1 | не заполнено | — |
+| `threshold.judge_violation` | правило оповещения | DM-18, DM-19 | — | Б1 | не заполнено | — |
+| `frequency.judge_unchecked` | правило оповещения | DM-18, DM-19 | LLM10 | Б2 | не заполнено | AML.T0029 (Denial of AI Service) |

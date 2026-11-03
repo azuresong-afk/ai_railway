@@ -28,6 +28,9 @@ type record struct {
 	// оценивается по размеру: inTokens — оценка входа, outBytes — размер
 	// ответа провайдера до действий политики (nil — ответа нет).
 	res *Reservation
+	// quotaRequests — сколько запросов учитывают квоты частоты (пакет RAG —
+	// число документов); 0 — один.
+	quotaRequests int
 	// budget — резерв жёсткого бюджета в аренде у сервера (режим leased).
 	budget   *leaseHold
 	sent     bool
@@ -80,6 +83,11 @@ type record struct {
 	// нет или до проверки не дошло. В режиме async событие отправляется по
 	// готовности итога (emit).
 	media *mediaRun
+	// judge — оценки judge.llm запроса (задача 5.28, judge.go); judgeAsync
+	// — асинхронные оценки входа: выполняются после ответа приложению
+	// (emit), как media_check async.
+	judge      []events.JudgeCheck
+	judgeAsync []judgeTask
 }
 
 // issue запоминает хеши ответов, выданных приложению (history.integrity,
@@ -214,12 +222,19 @@ func (h *ChatHandler) emit(rec *record) {
 	if degraded && rec.ev.Decision != nil {
 		rec.ev.Decision.QuotaDegraded = true
 	}
-	if run := rec.media; run != nil && !run.ready() {
-		// async: итог анализа изображений приходит после ответа приложению;
-		// событие уходит по его готовности, не позже срока анализа и запаса
-		// (ADR-0032, раздел 8).
+	// Асинхронные оценки judge.llm (ADR-0030, раздел 3) — после ответа
+	// приложению, как анализ изображений в async.
+	tasks := rec.judgeAsyncTasks()
+	judgeWait := len(tasks) > 0 && rec.app.judge != nil
+	if run := rec.media; (run != nil && !run.ready()) || judgeWait {
+		// async: итог анализа изображений и оценки приходит после ответа
+		// приложению; событие уходит по его готовности, не позже срока
+		// анализа (оценки) и запаса (ADR-0032, раздел 8).
 		go func() {
-			h.finishMedia(rec, run.wait())
+			if run != nil {
+				h.finishMedia(rec, run.wait())
+			}
+			h.finishJudge(rec, tasks)
 			h.enqueue(rec)
 		}()
 		return
@@ -227,6 +242,7 @@ func (h *ChatHandler) emit(rec *record) {
 	if rec.media != nil {
 		h.finishMedia(rec, rec.media.result())
 	}
+	h.finishJudge(rec, tasks)
 	h.enqueue(rec)
 }
 

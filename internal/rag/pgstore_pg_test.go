@@ -292,3 +292,47 @@ func TestPGRAGExclusions(t *testing.T) {
 		t.Fatalf("признак ослабления: %d", n)
 	}
 }
+
+// Коллекция версии 0 — восстановлена из резервной копии с исключениями без
+// манифеста (ревью 5.r2, 5Н15, миграция 0073): исключения действуют до
+// первой загрузки, первая загрузка даёт версию 1 без разницы и
+// rag.document_changed.
+func TestPGRAGRestoredCollection(t *testing.T) {
+	e := setupPG(t)
+	ctx := pgTestCtx(t)
+	const colID = "01900000-0000-7000-8000-00000000f010"
+	if _, err := e.owner.Exec(ctx, `INSERT INTO rag_collections (id, org_id, slug, version, documents, size, excluded, loaded_at, loaded_by,
+		diff, created_at) VALUES ($1, $2, 'kb', 0, 0, 0, 0, now(), 'backup_restore', '{}', now())`, colID, audit.DefaultOrgID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.owner.Exec(ctx, `INSERT INTO rag_exclusions (id, collection_id, doc_id, reason, created_at, created_by)
+		VALUES ('01900000-0000-7000-8000-00000000f011', $1, 'kb/doc-00002.md', 'инъекция', now(), 'user:admin')`, colID); err != nil {
+		t.Fatal(err)
+	}
+	c, err := e.svc.Collection(ctx, "kb")
+	if err != nil || c.Version != 0 || c.ExclusionCount != 1 {
+		t.Fatalf("коллекция версии 0: %+v %v", c, err)
+	}
+	if page, err := e.svc.Documents(ctx, "kb", "", 10); err != nil || len(page) != 0 {
+		t.Fatalf("документы версии 0: %+v %v", page, err)
+	}
+	by := By{Actor: audit.Actor{Type: audit.ActorAPIToken, ID: "01900000-0000-7000-8000-00000000d001", Name: "indexer"}}
+	res, err := e.svc.LoadManifest(ctx, by, "kb", docs(t, 3, nil))
+	if err != nil || res.Created || res.Collection.Version != 1 || res.Collection.PrevLoadedAt != nil || !res.Collection.Diff.Empty() ||
+		len(res.Blocked) != 1 || res.Blocked[0] != "kb/doc-00002.md" {
+		t.Fatalf("первая загрузка: %+v %v", res, err)
+	}
+	if n := e.audits(t, "rag.document_changed"); n != 0 {
+		t.Fatalf("rag.document_changed после версии 0: %d", n)
+	}
+	// Версия 0 без документов; предыдущая версия — только у версий от 2.
+	for _, sql := range []string{
+		`UPDATE rag_collections SET version = 0, documents = 3, prev_loaded_at = NULL`,
+		`UPDATE rag_collections SET version = 0, documents = 0, prev_loaded_at = now()`,
+		`UPDATE rag_collections SET version = -1`,
+	} {
+		if _, err := e.owner.Exec(ctx, sql); err == nil {
+			t.Fatalf("ограничение не сработало: %s", sql)
+		}
+	}
+}

@@ -379,6 +379,12 @@ func backupRestore(args []string, dsn string, stdout, stderr io.Writer, now time
 			say(stdout, "  - %s\n", line)
 		}
 	}
+	if len(res.RAG) > 0 {
+		say(stdout, "Исключения документов RAG:\n")
+		for _, line := range res.RAG {
+			say(stdout, "  - %s\n", line)
+		}
+	}
 	say(stdout, "Дальше: зарегистрируйте шлюзы заново (aisec-cli gateway token): ключи шлюзов и УЦ не восстанавливаются. "+
 		"Пользователи входят заново со своими паролями и вторым фактором.\n")
 	say(stdout, "Обязательно: копия возвращает состояние на %s. По архиву журнала аудита за время после неё "+
@@ -496,6 +502,13 @@ func restoreTx(ctx context.Context, db *store.DB, l *audit.Log, prepared *backup
 		}
 		details["inventory_report"] = items
 	}
+	if len(res.RAG) > 0 {
+		items := make([]any, 0, min(len(res.RAG), maxInvalidListed))
+		for _, line := range res.RAG[:min(len(res.RAG), maxInvalidListed)] {
+			items = append(items, line)
+		}
+		details["rag_report"] = items
+	}
 	if replaceSettings {
 		details["settings"] = snap.SettingsDetails()
 	}
@@ -598,10 +611,10 @@ func sayCounts(w io.Writer, c map[string]any) {
 		c["users"], c["roles"], c["api_tokens"], c["providers"], c["applications"], c["app_keys"], c["policies"], c["policy_versions"])
 	say(w, "  каналов %v, правил оповещений %v (+ встроенных %v), расписаний отчётов %v, цен моделей %v, бюджетов %v, "+
 		"инструкций %v, MCP-серверов %v, агентов %v, инструментов %v, эталонов промптов %v, доступов по группам %v, "+
-		"исключений теневого ИИ %v, лицензий %v, отметок соответствия %v, моделей реестра ИИ %v; сертификат шлюза %s, OIDC %s, LDAP %s\n",
+		"исключений теневого ИИ %v, лицензий %v, отметок соответствия %v, моделей реестра ИИ %v, исключений RAG %v; сертификат шлюза %s, OIDC %s, LDAP %s\n",
 		c["notify_channels"], c["alert_rules"], c["alert_rules_builtin"], c["report_schedules"], c["model_prices"], c["app_budgets"],
 		c["incident_instructions"], c["mcp_servers"], c["agents"], c["agent_tools"], c["prompt_baselines"], c["app_user_access"],
-		c["shadow_ai_exclusions"], c["licenses"], c["compliance_marks"], c["inventory_models"], yesNo(c["gateway_tls"]), yesNo(c["oidc"]),
+		c["shadow_ai_exclusions"], c["licenses"], c["compliance_marks"], c["inventory_models"], c["rag_exclusions"], yesNo(c["gateway_tls"]), yesNo(c["oidc"]),
 		yesNo(c["ldap"]))
 }
 

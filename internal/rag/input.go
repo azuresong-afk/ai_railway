@@ -154,20 +154,41 @@ func ParseExclusion(data []byte) (ExclusionInput, error) {
 	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
 		return ExclusionInput{}, invalid(errors.New("после JSON-значения есть лишние данные"))
 	}
+	if errs := checkExclusion(in.DocumentID, in.Reason); len(errs) > 0 {
+		return ExclusionInput{}, invalid(errs...)
+	}
+	return in, nil
+}
+
+func checkExclusion(docID, reason string) []error {
 	var errs []error
-	if err := CheckDocumentID(in.DocumentID); err != nil {
+	if err := CheckDocumentID(docID); err != nil {
 		errs = append(errs, fmt.Errorf("document_id — %w", err))
 	}
 	switch {
-	case !utf8.ValidString(in.Reason) || utf8.RuneCountInString(in.Reason) > MaxReason:
+	case !utf8.ValidString(reason) || utf8.RuneCountInString(reason) > MaxReason:
 		errs = append(errs, fmt.Errorf("reason — строка UTF-8 не длиннее %d символов", MaxReason))
-	case strings.ContainsFunc(in.Reason, func(r rune) bool {
+	case strings.ContainsFunc(reason, func(r rune) bool {
 		return r != '\n' && (unicode.IsControl(r) || unicode.Is(unicode.Cf, r))
 	}):
 		errs = append(errs, errors.New("reason — без управляющих символов и символов форматирования"))
 	}
-	if len(errs) > 0 {
-		return ExclusionInput{}, invalid(errs...)
+	return errs
+}
+
+// CheckExclusion проверяет исключение документа из резервной копии
+// конфигурации до записи (ревью 5.r2, 5Н15): ID коллекции, ID документа и
+// причина — по правилам API, автор — 1–128 символов.
+func CheckExclusion(slug, docID, reason, createdBy string) error {
+	errs := checkExclusion(docID, reason)
+	if !ValidSlug(slug) {
+		errs = append(errs, errors.New("slug — ID коллекции: строчные латинские буквы, цифры и «-», до 63 символов"))
 	}
-	return in, nil
+	if n := utf8.RuneCountInString(createdBy); n < 1 || n > 128 || !utf8.ValidString(createdBy) {
+		errs = append(errs, errors.New("created_by — от 1 до 128 символов"))
+	}
+	if len(errs) > 0 {
+		return invalid(errs...)
+	}
+	return nil
 }

@@ -9,6 +9,7 @@ import (
 
 	"github.com/azuresong-afk/ai_railway/internal/audit"
 	"github.com/azuresong-afk/ai_railway/internal/config"
+	"github.com/azuresong-afk/ai_railway/internal/netguard"
 )
 
 // ProviderInput — создание и изменение провайдера. Признак «внешний» и
@@ -107,7 +108,7 @@ func (in ProviderInput) apply(p *Provider) {
 func providerDetails(p Provider) map[string]any {
 	return map[string]any{
 		"slug": p.Slug, "name": p.Name, "type": p.Type, "base_url": p.BaseURL, "auth_url": p.AuthURL,
-		"scope": p.Scope, "folder_id": p.FolderID, "ca_pem_bytes": len(p.CAPEM), "external": p.External,
+		"scope": p.Scope, "folder_id": p.FolderID, "ca_pem_bytes": len(p.CAPEM), "external": p.External, "on_premise": p.OnPremise,
 		"connect_timeout": p.ConnectTimeout, "header_timeout": p.HeaderTimeout,
 		"response_timeout": p.ResponseTimeout, "stream_idle_timeout": p.StreamIdleTimeout,
 	}
@@ -167,7 +168,9 @@ func (s *Service) UpdateProvider(ctx context.Context, by By, id string, in Provi
 		if retargeted(old, *p) {
 			d["credential_reset"] = p.Credential != nil
 			d["external_reset"] = !p.External
-			p.Credential, p.External = nil, true
+			// Признак «у заказчика» относится к прежнему адресу (ADR-0030).
+			d["on_premise_reset"] = p.OnPremise
+			p.Credential, p.External, p.OnPremise = nil, true, false
 			d["after"] = providerDetails(*p)
 		}
 		p.UpdatedAt, p.UpdatedBy = s.now(), by.ref()
@@ -289,14 +292,80 @@ func (s *Service) SetExternal(ctx context.Context, by By, id string, external bo
 			}
 		}
 		p.External = external
+		// Внешний провайдер не бывает «у заказчика» (ADR-0030, раздел 1).
+		onPremiseReset := external && p.OnPremise
+		if onPremiseReset {
+			p.OnPremise = false
+		}
 		p.UpdatedAt, p.UpdatedBy = s.now(), by.ref()
 		return by.entry("provider.external_changed", "provider", id, map[string]any{
-			"slug": p.Slug, "before": !external, "after": external, "reason": reason, "weakening": !external}), nil
+			"slug": p.Slug, "before": !external, "after": external, "reason": reason, "weakening": !external,
+			"on_premise_reset": onPremiseReset}), nil
 	})
 	if errors.Is(err, errUnchanged) {
 		return s.store.Provider(ctx, s.orgID, id)
 	}
 	return p, err
+}
+
+// SetOnPremise ставит или снимает признак «размещён у заказчика» (ADR-0030,
+// раздел 1): только такой провайдер может быть оценщиком judge.llm.
+// Установка — ослабление защиты (DM-40): текст запросов и ответов начнёт
+// уходить на адрес провайдера, поэтому нужна повторная проверка. Условия
+// установки: тип openai, признак «внешний» снят, узел base_url — не
+// localhost, литерал адреса — в частной сети (имя проверяет шлюз при каждом
+// соединении). Право на маршрут — только у администратора безопасности.
+func (s *Service) SetOnPremise(ctx context.Context, by By, id string, onPremise bool, reason string) (Provider, error) {
+	reason = strings.TrimSpace(reason)
+	if err := textLen("reason", reason, 1, maxReason); err != nil {
+		return Provider{}, invalid(err)
+	}
+	if err := noControl("reason", reason); err != nil {
+		return Provider{}, invalid(err)
+	}
+	p, err := s.store.UpdateProvider(ctx, s.orgID, id, func(p *Provider) (audit.Entry, error) {
+		if p.OnPremise == onPremise {
+			return audit.Entry{}, errUnchanged
+		}
+		if onPremise {
+			if err := onPremiseAllowed(*p); err != nil {
+				return audit.Entry{}, err
+			}
+			if err := by.confirm(ctx); err != nil {
+				return audit.Entry{}, err
+			}
+		}
+		p.OnPremise = onPremise
+		p.UpdatedAt, p.UpdatedBy = s.now(), by.ref()
+		return by.entry("provider.on_premise_changed", "provider", id, map[string]any{
+			"slug": p.Slug, "before": !onPremise, "after": onPremise, "reason": reason, "weakening": onPremise,
+			"base_url": p.BaseURL}), nil
+	})
+	if errors.Is(err, errUnchanged) {
+		return s.store.Provider(ctx, s.orgID, id)
+	}
+	return p, err
+}
+
+// onPremiseAllowed — провайдера можно пометить «у заказчика».
+func onPremiseAllowed(p Provider) error {
+	var errs []error
+	if p.Type != config.ProviderOpenAI {
+		errs = append(errs, errors.New("on_premise — только для OpenAI-совместимого провайдера (тип openai)"))
+	}
+	if p.External {
+		errs = append(errs, errors.New("on_premise — сначала снимите признак «внешний»"))
+	}
+	if u, err := url.Parse(p.BaseURL); err != nil {
+		errs = append(errs, errors.New("on_premise — адрес провайдера не разобран"))
+	} else if err := netguard.CheckPrivateHost(u.Hostname()); err != nil {
+		errs = append(errs, errors.New("on_premise — адрес провайдера должен быть в частной сети заказчика (10/8, 172.16/12, "+
+			"192.168/16, fc00::/7), не localhost, не loopback и не служба метаданных"))
+	}
+	if len(errs) > 0 {
+		return invalid(errs...)
+	}
+	return nil
 }
 
 // errUnchanged — fn отказалась от изменения: хранилище откатывает

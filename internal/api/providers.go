@@ -37,6 +37,10 @@ func providerRoutes(d Deps) []Route {
 			MaxBody: credentialMaxBody, Handler: needApps(d, d.setProviderCredential)},
 		{Method: http.MethodPut, Path: "/api/v1/providers/{id}/external", Permission: auth.PermProvidersExternal,
 			MaxBody: smallMaxBody, Handler: needApps(d, d.setProviderExternal)},
+		// Признак «у заказчика» — оценщик judge.llm (ADR-0030): ослабление
+		// защиты, только из консоли.
+		{Method: http.MethodPut, Path: "/api/v1/providers/{id}/on-premise", Permission: auth.PermProvidersExternal,
+			SessionOnly: true, MaxBody: smallMaxBody, Handler: needApps(d, d.setProviderOnPremise)},
 	}
 }
 
@@ -156,6 +160,7 @@ type ProviderView struct {
 	FolderID        string           `json:"folder_id,omitempty"`
 	Timeouts        ProviderTimeouts `json:"timeouts"`
 	External        bool             `json:"external"`
+	OnPremise       bool             `json:"on_premise"`
 	CredentialSet   bool             `json:"credential_set"`
 	CredentialSetAt *time.Time       `json:"credential_set_at,omitempty"`
 	CreatedAt       time.Time        `json:"created_at"`
@@ -166,7 +171,7 @@ func providerView(p apps.Provider) ProviderView {
 	v := ProviderView{ID: p.ID, Slug: p.Slug, Name: p.Name, Type: p.Type, BaseURL: p.BaseURL, CAPEM: p.CAPEM,
 		AuthURL: p.AuthURL, Scope: p.Scope, FolderID: p.FolderID,
 		Timeouts: ProviderTimeouts{Connect: p.ConnectTimeout, Header: p.HeaderTimeout, Response: p.ResponseTimeout, StreamIdle: p.StreamIdleTimeout},
-		External: p.External, CreatedAt: p.CreatedAt.UTC(), UpdatedAt: p.UpdatedAt.UTC()}
+		External: p.External, OnPremise: p.OnPremise, CreatedAt: p.CreatedAt.UTC(), UpdatedAt: p.UpdatedAt.UTC()}
 	if p.Credential != nil {
 		v.CredentialSet = true
 		v.CredentialSetAt = optTime(p.Credential.SetAt)
@@ -341,6 +346,41 @@ func (d Deps) setProviderExternal(w http.ResponseWriter, r *http.Request) {
 	}
 	by = d.withConfirm(r, by, req.reauthFields, "provider.external_changed")
 	p, err := d.Apps.SetExternal(r.Context(), by, id, *req.External, req.Reason)
+	if err != nil {
+		WriteProblem(w, appsProblem(d.Logger, err, providerNotFound))
+		return
+	}
+	WriteJSON(w, http.StatusOK, providerView(p))
+}
+
+type onPremiseRequest struct {
+	OnPremise *bool  `json:"on_premise"`
+	Reason    string `json:"reason"`
+	reauthFields
+}
+
+// setProviderOnPremise — признак «размещён у заказчика» (ADR-0030, раздел 1).
+func (d Deps) setProviderOnPremise(w http.ResponseWriter, r *http.Request) {
+	by, ok := actorOf(r)
+	if !ok {
+		WriteProblem(w, errForbidden())
+		return
+	}
+	id, ok := pathID(w, r, providerNotFound)
+	if !ok {
+		return
+	}
+	var req onPremiseRequest
+	if p := DecodeJSON(w, r, &req, smallMaxBody); p != nil {
+		WriteProblem(w, p)
+		return
+	}
+	if req.OnPremise == nil {
+		WriteProblem(w, Invalid("Проверьте введённые данные.", FieldError{"on_premise", "Укажите true или false."}))
+		return
+	}
+	by = d.withConfirm(r, by, req.reauthFields, "provider.on_premise_changed")
+	p, err := d.Apps.SetOnPremise(r.Context(), by, id, *req.OnPremise, req.Reason)
 	if err != nil {
 		WriteProblem(w, appsProblem(d.Logger, err, providerNotFound))
 		return

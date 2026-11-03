@@ -120,6 +120,8 @@ type gwOpts struct {
 	leases *LeaseClient
 	// media — анализатор изображений (задача 5.39 этапа 5).
 	media MediaAnalyzer
+	// judges — оценщики judge.llm (задача 5.28 этапа 5).
+	judges *Judges
 }
 
 // newGateway — шлюз с OpenAI-совместимым провайдером на upstream и одним
@@ -167,6 +169,11 @@ func newGateway(t testing.TB, upstream string, mod func(*gwOpts)) http.Handler {
 	}
 	rt.SetAgents(o.agents)
 	rt.SetApprover(o.approver)
+	if o.judges != nil {
+		if err := rt.SetJudges(*o.judges); err != nil {
+			t.Fatal(err)
+		}
+	}
 	ta := newTestAuth(t, o.limiter)
 	lim := NewLimiter(apps)
 	if o.leases != nil {

@@ -14,6 +14,7 @@ import (
 	"github.com/azuresong-afk/ai_railway/internal/auth"
 	"github.com/azuresong-afk/ai_railway/internal/config"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
+	"github.com/azuresong-afk/ai_railway/internal/detect/judge"
 	"github.com/azuresong-afk/ai_railway/internal/events"
 	"github.com/azuresong-afk/ai_railway/internal/gateway"
 	"github.com/azuresong-afk/ai_railway/internal/ids"
@@ -128,5 +129,26 @@ func TestBuildFromBundleRejects(t *testing.T) {
 	bd.Content.Providers[0].CAPEM = "-----BEGIN CERTIFICATE-----\nMA==\n-----END CERTIFICATE-----\n"
 	if _, err := buildFromBundle(bd, b.tp, b.rnd, b.hb, b.hb.logger); err == nil {
 		t.Fatal("провайдер с неверным корнем собран")
+	}
+}
+
+// Провайдер с признаком «у заказчика» получает отдельного клиента-оценщика
+// judge.llm (задача 5.28); оценщик — только OpenAI-совместимый провайдер
+// внутри контура.
+func TestBuildFromBundleJudgeProvider(t *testing.T) {
+	b := newBundleBuild(t)
+	b.hb.random, b.hb.judgeShared = b.rnd, judge.NewShared()
+	c := b.fx.Content(t)
+	c.Providers[0].External, c.Providers[0].OnPremise = false, true
+	if _, err := buildFromBundle(b.open(t, c), b.tp, b.rnd, b.hb, b.hb.logger); err != nil {
+		t.Fatal(err)
+	}
+	for name, pc := range map[string]config.Provider{
+		"внешний":  {ID: "p", Type: config.ProviderOpenAI, BaseURL: "https://10.0.0.5/v1"},
+		"GigaChat": {ID: "p", Type: config.ProviderGigaChat, BaseURL: "https://10.0.0.5/v1", External: new(false)},
+	} {
+		if _, err := newJudgeClient(pc, []byte(b.ca), "", b.tp, b.hb.logger); err == nil {
+			t.Errorf("%s: клиент-оценщик создан", name)
+		}
 	}
 }

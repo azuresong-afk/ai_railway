@@ -174,10 +174,13 @@ const (
 	PermInventoryUnblock = "inventory.unblock"
 	// Манифест коллекций RAG (задача 5.24, ADR-0029, п. 6): чтение
 	// коллекций, манифестов и исключений; загрузка манифеста (токену
-	// индексатора) и исключение документов. Не функция безопасности:
-	// снятие исключения — только из консоли (SessionOnly).
+	// индексатора) и исключение документов.
 	PermRAGRead   = "rag.read"
 	PermRAGManage = "rag.manage"
+	// Снятие исключения документа RAG — ослабление защиты (DM-40): право
+	// безопасности, только из консоли (ревью 5.r2, 5Н14; как
+	// inventory.unblock — разделение обязанностей, УПД.2).
+	PermRAGUnexclude = "rag.unexclude"
 )
 
 // Permission — разрешение из каталога.
@@ -233,7 +236,7 @@ var permissionCatalog = []Permission{
 	{Name: PermAppKeysManage, Title: "Выпуск, ротация и отзыв ключей приложений", Group: "Приложения", Ownable: true},
 	{Name: PermProvidersRead, Title: "Просмотр провайдеров (без учётных данных)", Group: "Провайдеры"},
 	{Name: PermProvidersManage, Title: "Создание, изменение и удаление провайдеров, учётные данные", Group: "Провайдеры"},
-	{Name: PermProvidersExternal, Title: "Снятие и установка признака «внешний» у провайдера", Group: "Провайдеры", Security: true},
+	{Name: PermProvidersExternal, Title: "Признаки «внешний» и «размещён у заказчика» у провайдера", Group: "Провайдеры", Security: true},
 	{Name: PermPoliciesRead, Title: "Просмотр политик, их версий и выгрузка в YAML", Group: "Политики"},
 	{Name: PermPoliciesManage, Title: "Создание, изменение, откат и загрузка политик", Group: "Политики", Security: true},
 	{Name: PermPoliciesTest, Title: "Проверка текста в песочнице политик", Group: "Политики"},
@@ -289,7 +292,8 @@ var permissionCatalog = []Permission{
 	{Name: PermModelsTemplatesLoad, Title: "Загрузка подписанной базы эталонов шаблонов чата и возврат её предыдущей версии", Group: "Реестр ИИ"},
 	{Name: PermInventoryUnblock, Title: "Снятие запрета использования модели, выставленного по отчёту сканера", Group: "Реестр ИИ", Security: true},
 	{Name: PermRAGRead, Title: "Просмотр коллекций RAG: версии манифеста, документы с хешами, изменения и исключения", Group: "Реестр ИИ"},
-	{Name: PermRAGManage, Title: "Загрузка манифеста коллекции RAG (индексатор), исключение документов и снятие исключений (из консоли)", Group: "Реестр ИИ"},
+	{Name: PermRAGManage, Title: "Загрузка манифеста коллекции RAG (индексатор) и исключение документов", Group: "Реестр ИИ"},
+	{Name: PermRAGUnexclude, Title: "Снятие исключения документа коллекции RAG (документ снова попадёт в индекс)", Group: "Реестр ИИ", Security: true},
 }
 
 // auditorExtra — разрешения аудитора сверх чтения: они ничего не меняют,

@@ -156,3 +156,24 @@ func FuzzParseExclusion(f *testing.F) {
 		}
 	})
 }
+
+// Проверка исключения из резервной копии (ревью 5.r2, 5Н15) — те же правила,
+// что у API.
+func TestCheckExclusion(t *testing.T) {
+	if err := CheckExclusion("kb-hr", "hr/a.md", "инъекция\nв тексте", "user:admin"); err != nil {
+		t.Fatalf("верное исключение: %v", err)
+	}
+	for name, c := range map[string][4]string{
+		"slug":          {"Bad_Slug", "a", "", "u"},
+		"ID документа":  {"kb", " a", "", "u"},
+		"ID с Cf":       {"kb", "a\u202eb", "", "u"},
+		"причина":       {"kb", "a", strings.Repeat("я", MaxReason+1), "u"},
+		"причина с ESC": {"kb", "a", "x\x1b", "u"},
+		"без автора":    {"kb", "a", "", ""},
+		"длинный автор": {"kb", "a", "", strings.Repeat("u", 129)},
+	} {
+		if err := CheckExclusion(c[0], c[1], c[2], c[3]); err == nil {
+			t.Errorf("%s: принято", name)
+		}
+	}
+}
