@@ -125,12 +125,22 @@ func (s *Scanner) scanZip(r io.ReaderAt, size int64, fr *FileReport) {
 		if base == "data.pkl" && strings.Contains(f.Name, "/") {
 			torch = true
 		}
+		lower := strings.ToLower(base)
+		// Имя проверяется до Open (ревью 5.r2, 5Н10): запись .pkl, которую
+		// не открыть (шифрование, bzip2 или LZMA), — всё равно pickle.
+		namedPickle := strings.HasSuffix(lower, ".pkl")
 		rc, err := f.Open()
 		if err != nil {
 			unread++
+			if strings.HasSuffix(lower, ".npy") {
+				npy++
+			}
+			if namedPickle {
+				pickles = appendPickle(pickles, f.Name, &pickleWalkInfo, nil)
+			}
 			continue
 		}
-		if strings.HasSuffix(strings.ToLower(base), ".npy") {
+		if strings.HasSuffix(lower, ".npy") {
 			npy++
 			s.scanNumpy(rc, int64(min(f.UncompressedSize64, 1<<62)), fr, f.Name) //nolint:gosec // G115: размер ограничен 2^62
 			closeEntry(rc)
@@ -138,21 +148,26 @@ func (s *Scanner) scanZip(r io.ReaderAt, size int64, fr *FileReport) {
 		}
 		head := make([]byte, zipPeek)
 		n, err := io.ReadFull(rc, head)
+		head = head[:n]
+		if err == nil && !namedPickle && (n < 2 || head[0] != opProto) {
+			// Поток без сигнатуры, который не кончился в начале записи,
+			// дочитывается до pickleProbe (ревью 5.r2, 5В2).
+			if w, werr := walkPickle(head); werr == nil && w.short {
+				more := make([]byte, pickleProbe-zipPeek)
+				m, merr := io.ReadFull(rc, more)
+				head = append(head, more[:m]...)
+				n += m
+				err = merr
+			}
+		}
 		closeEntry(rc)
 		if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
 			// Ошибка распаковки: прочитанное начало всё равно проверяется.
 			unread++
 		}
-		head = head[:n]
-		isPickle := strings.HasSuffix(strings.ToLower(base), ".pkl") ||
-			n >= 2 && head[0] == opProto && head[1] <= 5 || looksLikePickle(head)
-		if isPickle {
-			if len(pickles) == 0 {
-				pickleWalkInfo = pickleInfo(head)
-			}
-			if len(pickles) < maxZipNames {
-				pickles = append(pickles, clean(f.Name))
-			}
+		total := int64(min(f.UncompressedSize64, 1<<62)) //nolint:gosec // G115: размер ограничен 2^62
+		if namedPickle || n >= 2 && head[0] == opProto && head[1] <= 5 || continuesPickle(head, total) {
+			pickles = appendPickle(pickles, f.Name, &pickleWalkInfo, head)
 		}
 	}
 	switch {
@@ -171,8 +186,22 @@ func (s *Scanner) scanZip(r io.ReaderAt, size int64, fr *FileReport) {
 		fr.add(CodePickle, SeverityBlock, "архив PyTorch (ZIP с data.pkl): запись не прочитана; pickle — запрет без исключений (DM-27)")
 	}
 	if unread > 0 {
-		fr.add(CodeNotScanned, SeverityWarn, "ZIP: записей не прочитано (шифрование или неизвестное сжатие): %d", unread)
+		// Запись не проверена целиком — запрет, как limit_exceeded (ревью
+		// 5.r2, 5Н10): под неизвестным сжатием может быть pickle.
+		fr.add(CodeNotScanned, SeverityBlock, "ZIP: записей не прочитано (шифрование или неизвестное сжатие): %d", unread)
 	}
+}
+
+// appendPickle добавляет имя записи с pickle (до maxZipNames); итог просмотра
+// первой записи — в info.
+func appendPickle(names []string, name string, info *pickleWalk, head []byte) []string {
+	if len(names) == 0 && head != nil {
+		*info = pickleInfo(head)
+	}
+	if len(names) < maxZipNames {
+		names = append(names, clean(name))
+	}
+	return names
 }
 
 // scanCompressed — сжатый поток (joblib, .pkl.gz и т. п.): начало
@@ -185,7 +214,10 @@ func scanCompressed(head []byte, fr *FileReport) {
 		fr.add(CodeUnknownFormat, SeverityWarn, "сжатый поток %s: содержимое не проверено", name)
 		return
 	}
-	if len(plain) >= 2 && plain[0] == opProto && plain[1] <= 5 || looksLikePickle(plain) {
+	// Длина распакованного потока не известна (распаковывается только
+	// начало): поток pickle, который не кончился в начале, — тоже pickle
+	// (ревью 5.r2, 5В2).
+	if len(plain) >= 2 && plain[0] == opProto && plain[1] <= 5 || continuesPickle(plain, -1) {
 		fr.add(CodePickle, SeverityBlock, "%s", pickleDetail("поток pickle, сжатый "+name+" (joblib или .pkl."+name+")", pickleInfo(plain)))
 		return
 	}

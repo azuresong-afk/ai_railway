@@ -357,6 +357,27 @@ func TestTokenizerConfig(t *testing.T) {
 	}
 }
 
+// Шаблон и конфигурация разбираются по имени при любом начале файла (ревью
+// 5.r2, 5Н11): шаблон с управляющими символами загрузит transformers.
+func TestChatTemplateAnyContent(t *testing.T) {
+	for _, tpl := range []string{"\x0b" + testTemplate, "\x1b[0m" + testTemplate, "BZh1" + testTemplate} {
+		fr := scanBytes(t, nameChatTemplateJinja, []byte(tpl), Limits{})
+		if fr.Format != FormatChatTemplate || len(fr.ChatTemplates) != 1 || fr.ChatTemplates[0].Text != tpl || len(fr.Findings) != 0 {
+			t.Errorf("%q: %+v", tpl[:4], fr)
+		}
+	}
+	if fr := scanBytes(t, nameChatTemplateJinja, []byte("\xff\xfe{{ x }}"), Limits{}); !fr.HasFinding(CodeMalformed) || !fr.Blocked() {
+		t.Errorf("шаблон не UTF-8: %+v", fr)
+	}
+	for _, name := range []string{nameTokenizerConfig, nameChatTemplateJSON} {
+		for _, data := range []string{"\x1b{}", "BZh1", "\x00\x01\x02"} {
+			if fr := scanBytes(t, name, []byte(data), Limits{}); fr.Format != FormatTokenizerConfig || !fr.HasFinding(CodeMalformed) || !fr.Blocked() {
+				t.Errorf("%s %q: %+v", name, data, fr)
+			}
+		}
+	}
+}
+
 func FuzzGGUF(f *testing.F) {
 	f.Add(goodGGUF())
 	f.Add(ggufBytes(2, []ggufKV{{"a", ggufArray, ggufStrArray("x", "y")}}, nil, 1, 0))

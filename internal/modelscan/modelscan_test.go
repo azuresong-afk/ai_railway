@@ -187,7 +187,7 @@ func TestEmptyAndUnknown(t *testing.T) {
 	if fr := scanBytes(t, "model.safetensors", nil, Limits{}); fr.Format != FormatEmpty || len(fr.Findings) != 0 {
 		t.Errorf("пустой файл: %+v", fr)
 	}
-	fr := scanBytes(t, "model.bin", []byte{0x00, 0x01, 0x02, 0xff, 0xfe, 0x10}, Limits{})
+	fr := scanBytes(t, "model.dat", []byte{0x00, 0x01, 0x02, 0xff, 0xfe, 0x10}, Limits{})
 	if fr.Format != FormatUnknown || !fr.HasFinding(CodeUnknownFormat) || fr.Blocked() {
 		t.Errorf("неизвестный формат — оповещение без запрета: %+v", fr)
 	}
@@ -225,6 +225,34 @@ func TestZipBoundaries(t *testing.T) {
 	hidden := zipBytes(t, map[string][]byte{"weights/blob": pickleProto4}, "weights/blob")
 	if fr := scanBytes(t, "x.zip", hidden, Limits{}); !fr.HasFinding(CodePickle) {
 		t.Errorf("pickle в записи: %+v", fr.Findings)
+	}
+}
+
+// Запись ZIP, которую archive/zip не открывает (bzip2, LZMA, шифрование),
+// — запрет, а имя .pkl проверяется до Open (ревью 5.r2, 5Н10).
+func TestZipUnreadableEntry(t *testing.T) {
+	raw := func(name string, method uint16) []byte {
+		var buf bytes.Buffer
+		zw := zip.NewWriter(&buf)
+		w, err := zw.CreateRaw(&zip.FileHeader{Name: name, Method: method, CompressedSize64: 4, UncompressedSize64: 4})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write([]byte("BZh9")); err != nil {
+			t.Fatal(err)
+		}
+		if err := zw.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return buf.Bytes()
+	}
+	fr := scanBytes(t, "model.zip", raw("model.pkl", 14), Limits{})
+	if !fr.HasFinding(CodePickle) || !fr.HasFinding(CodeNotScanned) || !fr.Blocked() {
+		t.Errorf(".pkl под LZMA: %+v", fr.Findings)
+	}
+	fr = scanBytes(t, "arr.npz", raw("x.npy", 12), Limits{})
+	if !fr.HasFinding(CodeNotScanned) || !fr.Blocked() {
+		t.Errorf(".npy под bzip2: %+v", fr.Findings)
 	}
 }
 
@@ -303,7 +331,8 @@ func TestCleanDetail(t *testing.T) {
 }
 
 func FuzzWalkPickle(f *testing.F) {
-	for _, s := range [][]byte{pickleProto0, pickleProto2, pickleProto4, []byte("(."), []byte("# text")} {
+	for _, s := range [][]byte{pickleProto0, pickleProto2, pickleProto4, []byte("(."), []byte("# text"),
+		pickleLongString, pickleLongInt, pickleLongUnicode} {
 		f.Add(s)
 	}
 	f.Fuzz(func(t *testing.T, data []byte) {
@@ -312,6 +341,8 @@ func FuzzWalkPickle(f *testing.F) {
 			t.Fatal("ни одного опкода без ошибки")
 		}
 		_ = looksLikePickle(data)
+		_ = continuesPickle(data, int64(len(data)))
+		_ = continuesPickle(data, -1)
 	})
 }
 
@@ -354,6 +385,8 @@ func FuzzSafetensorsHeader(f *testing.F) {
 
 func FuzzScanReader(f *testing.F) {
 	f.Add(pickleProto0)
+	f.Add(pickleLongString)
+	f.Add(pickleLongUnicode)
 	f.Add(safetensorsBytes(`{"w":{"dtype":"U8","shape":[1],"data_offsets":[0,1]}}`, []byte{1}))
 	f.Add([]byte("\x1f\x8b\x08\x00"))
 	f.Add([]byte("\x93NUMPY\x01\x00\x04\x00{} "))
@@ -364,4 +397,86 @@ func FuzzScanReader(f *testing.F) {
 			t.Fatalf("находок %d", len(fr.Findings))
 		}
 	})
+}
+
+// Потоки протокола 0 и 1 с длинным первым аргументом (ревью 5.r2, 5В2):
+// в первых 4 КиБ поток не кончается, и без дочитывания он считался текстом.
+var (
+	pickleLongString  = []byte("S'" + strings.Repeat("a", 5000) + "'\n0cos\nsystem\n(S'id'\ntR.")
+	pickleLongInt     = []byte("I" + strings.Repeat("0", 200) + "\n0cos\nsystem\n(S'id'\ntR.")
+	pickleLongUnicode = append(append([]byte("X"), binary.LittleEndian.AppendUint32(nil, 5000)...),
+		[]byte(strings.Repeat("a", 5000)+"0cos\nsystem\n(S'id'\ntR.")...)
+	// pickleBeyondProbe — первый аргумент длиннее всего просмотра (64 КиБ).
+	pickleBeyondProbe = []byte("S'" + strings.Repeat("a", 70000) + "'\n0cos\nsystem\n(S'id'\ntR.")
+)
+
+// Покрывает: DM-27
+func TestDM27_PickleLongFirstArgument(t *testing.T) {
+	cases := []struct {
+		name string
+		data []byte
+	}{
+		{"строка длиннее 4 КиБ", pickleLongString},
+		{"число из 200 цифр", pickleLongInt},
+		{"BINUNICODE длиннее 4 КиБ", pickleLongUnicode},
+		{"аргумент длиннее просмотра", pickleBeyondProbe},
+		{"число с пробелами вокруг", []byte("I" + strings.Repeat(" ", 6000) + "0\x0b\n0cos\nsystem\n(S'id'\ntR.")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Имя без расширения весов: поток находится по содержимому.
+			for _, name := range []string{"pytorch_model.bin", "blob.dat"} {
+				fr := scanBytes(t, name, tc.data, Limits{})
+				if fr.Format != FormatPickle || !fr.HasFinding(CodePickle) || !fr.Blocked() {
+					t.Fatalf("%s: нет запрета pickle: %+v", name, fr)
+				}
+			}
+			z := zipBytes(t, map[string][]byte{"weights/blob": tc.data}, "weights/blob")
+			if fr := scanBytes(t, "x.zip", z, Limits{}); !fr.HasFinding(CodePickle) {
+				t.Errorf("в записи ZIP: %+v", fr.Findings)
+			}
+			if fr := scanBytes(t, "model.joblib", gzipBytes(t, tc.data), Limits{}); !fr.HasFinding(CodePickle) {
+				t.Errorf("сжатый gzip: %+v", fr.Findings)
+			}
+		})
+	}
+}
+
+// Обрезанный поток (файл кончается посреди аргумента) и аргумент длиннее
+// файла — не pickle: Python такой поток не загрузит.
+func TestPickleProbeNegative(t *testing.T) {
+	cut := []byte("S'" + strings.Repeat("a", 5000))
+	if fr := scanBytes(t, "notes.txt", cut, Limits{}); fr.Format != FormatText || len(fr.Findings) != 0 {
+		t.Errorf("обрезанная строка: %+v", fr)
+	}
+	beyond := append(append([]byte("X"), binary.LittleEndian.AppendUint32(nil, 1<<20)...), make([]byte, 5000)...)
+	if fr := scanBytes(t, "blob.dat", beyond, Limits{}); fr.Format != FormatUnknown || fr.Blocked() {
+		t.Errorf("длина за концом файла: %+v", fr)
+	}
+	text := []byte(strings.Repeat("# Модель\n\nОписание весов и лицензии.\n", 400))
+	if fr := scanBytes(t, "README.md", text, Limits{}); fr.Format != FormatText || len(fr.Findings) != 0 {
+		t.Errorf("длинный текст: %+v", fr)
+	}
+}
+
+// Файл с расширением весов, формат которого не распознан или который
+// выглядит текстом, запрещается (ревью 5.r2, 5В2); внешние данные ONNX с
+// расширением .bin — оповещение, как прочие неизвестные файлы.
+func TestWeightExtensionUnknown(t *testing.T) {
+	for _, name := range []string{"model.bin", "w.PT", "x.pth", "m.ckpt", "a.pkl", "a.pickle", "m.joblib", "a.npy", "a.npz"} {
+		if fr := scanBytes(t, name, []byte{0x00, 0x01, 0x02, 0xff}, Limits{}); !fr.HasFinding(CodeUnknownFormat) || !fr.Blocked() {
+			t.Errorf("%s неизвестного формата: %+v", name, fr)
+		}
+	}
+	if fr := scanBytes(t, "pytorch_model.bin", []byte("just text\n"), Limits{}); fr.Format != FormatText || !fr.Blocked() {
+		t.Errorf(".bin — текст: %+v", fr)
+	}
+	model := onnxModelBytes([][]byte{onnxExternalTensor(graphInitializer, [2]string{"location", "weights.bin"})})
+	dir := writeFiles(t, map[string][]byte{"model.onnx": model, "weights.bin": make([]byte, 16), "other.bin": make([]byte, 16)})
+	if fr := scanDirFile(t, dir, "weights.bin"); !fr.HasFinding(CodeUnknownFormat) || fr.Blocked() {
+		t.Errorf("внешние данные ONNX: %+v", fr)
+	}
+	if fr := scanDirFile(t, dir, "other.bin"); !fr.Blocked() {
+		t.Errorf(".bin без ссылки ONNX: %+v", fr)
+	}
 }

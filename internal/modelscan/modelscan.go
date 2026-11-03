@@ -305,18 +305,24 @@ func (s *Scanner) ScanReader(r io.ReaderAt, size int64, name string) FileReport 
 		return fr
 	}
 	fr.Format = detect(head, size)
-	// Имя отличает конфигурацию токенизатора от прочего JSON; содержимое
-	// другого формата (pickle и т. п.) проверяется по своему формату.
-	textual := fr.Format == FormatJSON || fr.Format == FormatText || fr.Format == FormatUnknown && isJSON(head)
-	switch {
-	case (name == nameTokenizerConfig || name == nameChatTemplateJSON) && textual:
-		fr.Format = FormatTokenizerConfig
-		s.scanTokenizerConfig(r, size, name, &fr)
-		return fr
-	case name == nameChatTemplateJinja && textual:
-		fr.Format = FormatChatTemplate
-		s.scanTokenizerConfig(r, size, name, &fr)
-		return fr
+	if (fr.Format == FormatText || fr.Format == FormatUnknown) && size > int64(len(head)) && s.probePickle(r, size, head) {
+		fr.Format = FormatPickle
+	}
+	// Конфигурация токенизатора и шаблон чата разбираются всегда, кроме
+	// pickle по сигнатуре (ревью 5.r2, 5Н11): transformers загрузит шаблон с
+	// управляющими символами, и шаблон должен уйти на сервер (DM-28). Не
+	// UTF-8 или не JSON — malformed с запретом (scanTokenizerConfig).
+	if fr.Format != FormatPickle {
+		switch name {
+		case nameTokenizerConfig, nameChatTemplateJSON:
+			fr.Format = FormatTokenizerConfig
+			s.scanTokenizerConfig(r, size, name, &fr)
+			return fr
+		case nameChatTemplateJinja:
+			fr.Format = FormatChatTemplate
+			s.scanTokenizerConfig(r, size, name, &fr)
+			return fr
+		}
 	}
 	switch fr.Format {
 	case FormatZip:
@@ -334,9 +340,50 @@ func (s *Scanner) ScanReader(r io.ReaderAt, size int64, name string) FileReport 
 	case FormatCompressed:
 		scanCompressed(head, &fr)
 	case FormatUnknown:
-		fr.add(CodeUnknownFormat, SeverityWarn, "формат не распознан%s", unknownHint(head))
+		if weightName(name) {
+			fr.add(CodeUnknownFormat, SeverityBlock, "файл с расширением весов: формат не распознан%s", unknownHint(head))
+		} else {
+			fr.add(CodeUnknownFormat, SeverityWarn, "формат не распознан%s", unknownHint(head))
+		}
+	case FormatText:
+		if weightName(name) {
+			fr.add(CodeUnknownFormat, SeverityBlock, "файл с расширением весов — текст: формат весов не распознан")
+		}
 	}
 	return fr
+}
+
+// weightExts — расширения файлов весов, которые загружаются через pickle
+// (torch.load, joblib, numpy с allow_pickle). Такой файл, формат которого не
+// распознан или который выглядит текстом, запрещается (ревью 5.r2, 5В2):
+// поток pickle без сигнатуры иначе прошёл бы как текст.
+var weightExts = []string{".bin", ".pt", ".pth", ".ckpt", ".pkl", ".pickle", ".joblib", ".npy", ".npz"}
+
+// weightName — имя файла с расширением весов из weightExts.
+func weightName(name string) bool {
+	n := strings.ToLower(name)
+	for _, ext := range weightExts {
+		if strings.HasSuffix(n, ext) {
+			return true
+		}
+	}
+	return false
+}
+
+// probePickle — поток без сигнатуры, который в первых headSize байтах не
+// кончился, дочитывается до pickleProbe и проверяется continuesPickle
+// (ревью 5.r2, 5В2).
+func (s *Scanner) probePickle(r io.ReaderAt, size int64, head []byte) bool {
+	if w, err := walkPickle(head); err != nil || !w.short {
+		return false
+	}
+	buf := make([]byte, probeLen(size))
+	n, err := r.ReadAt(buf, 0)
+	if err != nil && !errors.Is(err, io.EOF) && n < len(head) {
+		n = len(head)
+		copy(buf, head)
+	}
+	return continuesPickle(buf[:n], size)
 }
 
 // ScanPath проверяет файл или каталог модели. Символьные ссылки на файлы
@@ -372,6 +419,8 @@ func (s *Scanner) walk(root string, scan bool) (*Report, error) {
 		return rep, nil
 	}
 	fsys := os.DirFS(root)
+	// externalData — файлы внешних данных ONNX из каталога (relaxExternalData).
+	externalData := map[string]bool{}
 	walkErr := fs.WalkDir(fsys, ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -402,6 +451,9 @@ func (s *Scanner) walk(root string, scan bool) (*Report, error) {
 		if err != nil {
 			return err
 		}
+		for _, ext := range fr.external {
+			externalData[path.Join(path.Dir(p), ext.location)] = true
+		}
 		s.checkExternal(root, path.Dir(p), &fr)
 		rep.Files = append(rep.Files, fr)
 		return nil
@@ -409,6 +461,7 @@ func (s *Scanner) walk(root string, scan bool) (*Report, error) {
 	if walkErr != nil {
 		return nil, walkErr
 	}
+	relaxExternalData(rep, externalData)
 	if rep.Truncated {
 		rep.Findings = append(rep.Findings, Finding{
 			Code: CodeLimitExceeded, Severity: SeverityBlock,
@@ -416,6 +469,25 @@ func (s *Scanner) walk(root string, scan bool) (*Report, error) {
 		})
 	}
 	return rep, nil
+}
+
+// relaxExternalData — файл внешних данных ONNX (сырые тензоры, часто с
+// расширением .bin) не распознаётся по формату. Запрет по расширению весов
+// (weightName) для него снижается до оповещения, как у прочих файлов
+// неизвестного формата: содержимое сверено как не pickle (probePickle), а
+// ссылки на него проверяет checkExternal.
+func relaxExternalData(rep *Report, externalData map[string]bool) {
+	for i := range rep.Files {
+		fr := &rep.Files[i]
+		if !externalData[fr.Path] || fr.Format != FormatUnknown && fr.Format != FormatText {
+			continue
+		}
+		for j := range fr.Findings {
+			if fr.Findings[j].Code == CodeUnknownFormat && fr.Findings[j].Severity == SeverityBlock {
+				fr.Findings[j] = Finding{Code: CodeUnknownFormat, Severity: SeverityWarn, Detail: "внешние данные ONNX: формат не проверяется"}
+			}
+		}
+	}
 }
 
 // isRegularTarget — символьная ссылка ведёт на обычный файл.
