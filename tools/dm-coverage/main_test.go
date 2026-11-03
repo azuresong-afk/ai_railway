@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -140,6 +141,9 @@ func TestCollectMarkers(t *testing.T) {
 		"vendor/v/v_test.go": {Data: []byte("package v\n// Покрывает: DM-01\nfunc TestV() {}\n")},
 		"b/b_test.go":        {Data: []byte("//go:build aisec_onnx && cgo\n\npackage b\n\n// Покрывает: DM-45\nfunc TestORT(t *testing.T) {}\n")},
 		"c/c_test.go":        {Data: []byte("//go:build e2e\n\npackage c\n\n// Покрывает: DM-01\nfunc TestE2E(t *testing.T) {}\n")},
+		// Собирается без тега aisec_onnx — маркеры обязательные (5Н23 ревью 5.r3).
+		"d/d_test.go": {Data: []byte("//go:build !aisec_onnx\n\npackage d\n\n// Покрывает: DM-46\nfunc TestNoORT(t *testing.T) {}\n")},
+		"e/e_test.go": {Data: []byte("//go:build aisec_onnx || " + runtime.GOOS + "\n\npackage e\n\n// Покрывает: DM-46\nfunc TestEither(t *testing.T) {}\n")},
 	}
 	m, problems, err := CollectMarkers(fsys)
 	if err != nil {
@@ -147,6 +151,12 @@ func TestCollectMarkers(t *testing.T) {
 	}
 	if m["TestORT"][0] != (Coverage{ID: "DM-45", Optional: true}) || m["TestE2E"][0] != (Coverage{ID: "DM-01"}) {
 		t.Fatalf("необязательные маркеры: %+v", m)
+	}
+	for _, name := range []string{"TestNoORT", "TestEither"} {
+		if m[name][0] != (Coverage{ID: "DM-46"}) {
+			t.Fatalf("%s: маркер необязательный: %+v", name, m[name])
+		}
+		delete(m, name)
 	}
 	delete(m, "TestORT")
 	delete(m, "TestE2E")

@@ -7,13 +7,14 @@ import (
 	"encoding/xml"
 	"fmt"
 	"go/ast"
+	"go/build"
+	"go/build/constraint"
 	"go/parser"
 	"go/token"
 	"io/fs"
 	"regexp"
 	"slices"
 	"strings"
-	"unicode"
 
 	"github.com/azuresong-afk/ai_railway/tools/internal/repofs"
 )
@@ -135,6 +136,29 @@ type Coverage struct {
 // optionalTag — сборочный тег тестов с внешней библиотекой.
 const optionalTag = "aisec_onnx"
 
+// optionalOnly — файл собирается только с тегом optionalTag: без него
+// условие ложно, с ним — истинно; остальные теги — как в окружении сборки
+// (ОС, архитектура, unix, gc, cgo, версии Go). Условие !aisec_onnx или
+// aisec_onnx || linux маркеры необязательными не делает (5Н23 ревью 5.r3).
+func optionalOnly(expr constraint.Expr) bool {
+	env := func(onnx bool) func(string) bool {
+		return func(tag string) bool {
+			switch tag {
+			case optionalTag:
+				return onnx
+			case build.Default.GOOS, build.Default.GOARCH, "gc":
+				return true
+			case "unix":
+				return build.Default.GOOS != "windows" && build.Default.GOOS != "plan9"
+			case "cgo":
+				return build.Default.CgoEnabled
+			}
+			return slices.Contains(build.Default.ReleaseTags, tag)
+		}
+	}
+	return !expr.Eval(env(false)) && expr.Eval(env(true))
+}
+
 // coversRe разбирает маркер в комментарии теста:
 // «Покрывает: DM-38 (оповещение), DM-40».
 var (
@@ -186,10 +210,12 @@ func CollectMarkers(fsys fs.FS) (map[string][]Coverage, []string, error) {
 				break
 			}
 			for _, c := range cg.List {
-				if strings.HasPrefix(c.Text, "//go:build ") && slices.Contains(strings.FieldsFunc(c.Text[len("//go:build "):], func(r rune) bool {
-					return !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '_'
-				}), optionalTag) {
-					optional = true
+				if constraint.IsGoBuild(c.Text) {
+					expr, err := constraint.Parse(c.Text)
+					if err != nil {
+						return fmt.Errorf("%s: строка //go:build: %w", p, err)
+					}
+					optional = optionalOnly(expr)
 				}
 			}
 		}
