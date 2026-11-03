@@ -14,6 +14,8 @@ import (
 
 	"github.com/azuresong-afk/ai_railway/internal/detect"
 	"github.com/azuresong-afk/ai_railway/internal/detect/builtin"
+	"github.com/azuresong-afk/ai_railway/internal/detect/unihidden"
+	"github.com/azuresong-afk/ai_railway/internal/redteam"
 )
 
 // Исходник служебной базы сценариев тестирования устойчивости (задача 5.31
@@ -230,12 +232,19 @@ func TestScenarioCoverage(t *testing.T) {
 // Маркер из contains не должен лежать в тексте шагов: иначе ответ, который цитирует запрос или отказывается словами
 // «я не могу написать X», засчитывался бы как удавшаяся атака. Маркеры собираются из частей, которые модель обязана
 // соединить сама.
+// Проверяется и запись, и текст с раскрытыми \u{…}, который получает цель.
 func TestMarkersAreNotInPrompts(t *testing.T) {
-	db, _ := load(t)
+	db, raw := load(t)
+	parsed := parse(t, raw)
 	for _, s := range db.Scenarios {
 		var all strings.Builder
 		for _, st := range s.Steps {
 			all.WriteString(strings.ToLower(st.Prompt))
+			all.WriteString("\n")
+		}
+		ps, _ := parsed.Scenario(s.ID)
+		for _, st := range ps.Steps {
+			all.WriteString(strings.ToLower(st.Text()))
 			all.WriteString("\n")
 		}
 		for _, m := range s.Success.Contains {
@@ -287,8 +296,9 @@ func TestFindingsAreReachable(t *testing.T) {
 	}
 }
 
-// Невидимые и форматирующие символы в базе версии 1 не допускаются: разборщик 5.32 (redteam.ParseScenarios)
-// отвергает категорию Cf. Сценарии скрытого Unicode вернутся после расширения формата (см. README).
+// Сырые невидимые и форматирующие символы в исходнике не допускаются: отравление базы должно быть видно при ревью,
+// а разборщик (redteam.ParseScenarios) их отвергает. Символы Cf пишутся только видимой записью \u{XXXX}
+// (дополнение 1 к ADR-0031).
 func TestNoFormatCharacters(t *testing.T) {
 	db, raw := load(t)
 	for i, r := range string(raw) {
@@ -316,6 +326,55 @@ func TestSyntheticOnly(t *testing.T) {
 				if !strings.HasSuffix(h, ".example") && !strings.HasSuffix(h, ".test") && !strings.HasSuffix(h, "example.com") {
 					t.Errorf("%s: адрес с узлом %q не на зарезервированном домене", s.ID, h)
 				}
+			}
+		}
+	}
+}
+
+// parse — база, разобранная разборщиком исполнителя: записи \u{…} раскрыты в Step.Text.
+func parse(t *testing.T, raw []byte) *redteam.Base {
+	t.Helper()
+	b, err := redteam.ParseScenarios(raw)
+	if err != nil {
+		t.Fatalf("%s: разборщик базы отверг исходник: %v", file, err)
+	}
+	return b
+}
+
+// Покрывает: DM-05
+// Сценарии скрытого Unicode (теги, нулевая ширина, управление направлением) записаны видимой записью \u{…}: в
+// исходнике символов Cf нет, а в тексте, который получает цель, они есть, и детектор unicode.hidden находит их
+// с категорией приёма сценария.
+func TestHiddenUnicodeScenarios(t *testing.T) {
+	_, raw := load(t)
+	b := parse(t, raw)
+	want := map[string]string{"RT-DM05-001": unihidden.CatTag, "RT-DM05-002": unihidden.CatInvisible, "RT-DM05-003": unihidden.CatBidi}
+	d := unihidden.New()
+	for id, cat := range want {
+		s, ok := b.Scenario(id)
+		if !ok {
+			t.Fatalf("нет сценария %s", id)
+		}
+		if s.Threat != "DM-05" {
+			t.Errorf("%s: строка %s, ожидалась DM-05", id, s.Threat)
+		}
+		for _, st := range s.Steps {
+			if !strings.Contains(st.Prompt, `\u{`) || st.Text() == st.Prompt {
+				t.Fatalf("%s: в шаге нет записи \\u{…}", id)
+			}
+			fs, err := d.Detect(context.Background(), detect.Text{Text: st.Text(), Direction: detect.Input, Source: detect.SourceUser, Lang: s.Lang})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.ContainsFunc(fs, func(f detect.Finding) bool { return f.Category == cat }) {
+				t.Errorf("%s: unicode.hidden не нашёл %s в раскрытом тексте: %+v", id, cat, fs)
+			}
+			rec, err := d.Detect(context.Background(), detect.Text{Text: st.Prompt, Direction: detect.Input, Source: detect.SourceUser, Lang: s.Lang})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if slices.ContainsFunc(rec, func(f detect.Finding) bool { return f.Category == cat }) {
+				t.Errorf("%s: в записи уже есть скрытые символы", id)
 			}
 		}
 	}

@@ -42,6 +42,9 @@ const (
 	MaxFindingPref = 8
 	MinJudge       = 10
 	MaxJudge       = 1000
+	// MaxEscapes — записей \u{…} в одном шаге: хватает на инструкцию
+	// тегами Unicode (символ на запись), но не на длинный скрытый текст.
+	MaxEscapes = 512
 )
 
 // Языки сценариев.
@@ -62,8 +65,24 @@ var (
 )
 
 // Step — шаг сценария: текст реплики пользователя.
+//
+// Prompt — запись из исходника базы: символы форматирования (Cf) в ней
+// только видимой записью \u{XXXX} (дополнение 1 к ADR-0031). Её же
+// показывают inspect, API и отчёты. Цели отправляется Text — запись с
+// раскрытыми символами.
 type Step struct {
 	Prompt string `json:"prompt"`
+
+	text string
+}
+
+// Text — текст шага для цели: запись Prompt с раскрытыми \u{…}. У шага, не
+// прошедшего ParseScenarios, — Prompt без изменений.
+func (s Step) Text() string {
+	if s.text == "" {
+		return s.Prompt
+	}
+	return s.text
 }
 
 // Success — условия успеха атаки: выполнено хотя бы одно.
@@ -172,6 +191,98 @@ func plainText(s string, multiline bool) bool {
 	}) < 0
 }
 
+// Ошибки видимой записи \u{…}.
+var (
+	errEscapeSyntax    = errors.New("запись \\u{…} — от 1 до 6 шестнадцатеричных цифр в фигурных скобках")
+	errEscapeSurrogate = errors.New("запись \\u{…} — суррогатная кодовая точка")
+	errEscapeNotCf     = errors.New("запись \\u{…} — только символы форматирования Unicode (категория Cf)")
+	errEscapeTooMany   = fmt.Errorf("записей \\u{…} — не больше %d в шаге", MaxEscapes)
+)
+
+// expandEscapes раскрывает видимую запись символов форматирования в тексте
+// шага (дополнение 1 к ADR-0031): \u{XXXX} — от 1 до 6 шестнадцатеричных
+// цифр, только кодовые точки категории Cf (нулевая ширина, управление
+// направлением, теги U+E0001, U+E0020–U+E007F). Нечётное число обратных
+// косых черт перед «u{» — запись, чётное — буквальный текст: каждая пара
+// «\\» перед «u{» даёт одну «\», поэтому «\\u{200B}» — это буквально
+// «\u{200B}». Обратная косая черта не перед «u{» не меняется. Запись не
+// короче раскрытого символа (5 байт и больше против 4 байт UTF-8), поэтому
+// текст после раскрытия не длиннее записи.
+func expandEscapes(s string) (string, error) {
+	if !strings.Contains(s, `u{`) {
+		return s, nil
+	}
+	var out strings.Builder
+	out.Grow(len(s))
+	n := 0
+	for i := 0; i < len(s); {
+		if s[i] != '\\' {
+			out.WriteByte(s[i])
+			i++
+			continue
+		}
+		j := i
+		for j < len(s) && s[j] == '\\' {
+			j++
+		}
+		run := j - i
+		if !strings.HasPrefix(s[j:], `u{`) {
+			out.WriteString(s[i:j])
+			i = j
+			continue
+		}
+		out.WriteString(strings.Repeat(`\`, run/2))
+		if run%2 == 0 {
+			// «\\u{» — буквальный текст «\u{»: скобка дальше не разбирается.
+			out.WriteString(`u{`)
+			i = j + 2
+			continue
+		}
+		r, size, err := parseEscape(s[j+2:])
+		if err != nil {
+			return "", err
+		}
+		if n++; n > MaxEscapes {
+			return "", errEscapeTooMany
+		}
+		out.WriteRune(r)
+		i = j + 2 + size
+	}
+	return out.String(), nil
+}
+
+// parseEscape разбирает «XXXX}» после «\u{»: кодовую точку и длину записи
+// вместе с закрывающей скобкой.
+func parseEscape(s string) (rune, int, error) {
+	end := strings.IndexByte(s, '}')
+	if end < 1 || end > 6 {
+		return 0, 0, errEscapeSyntax
+	}
+	var r rune
+	for k := 0; k < end; k++ {
+		c := s[k]
+		var d byte
+		switch {
+		case c >= '0' && c <= '9':
+			d = c - '0'
+		case c >= 'a' && c <= 'f':
+			d = c - 'a' + 10
+		case c >= 'A' && c <= 'F':
+			d = c - 'A' + 10
+		default:
+			return 0, 0, errEscapeSyntax
+		}
+		r = r<<4 | rune(d)
+	}
+	switch {
+	case r >= 0xD800 && r <= 0xDFFF:
+		return 0, 0, errEscapeSurrogate
+	case r > unicode.MaxRune || !unicode.Is(unicode.Cf, r):
+		return 0, 0, errEscapeNotCf
+	}
+	return r, end + 1, nil
+}
+
 func httpsURL(s string) bool {
 	if len(s) > MaxSource {
 		return false
@@ -228,8 +339,15 @@ func ParseScenarios(data []byte) (*Base, error) {
 		}
 		for j, st := range s.Steps {
 			if st.Prompt == "" || len(st.Prompt) > MaxPrompt || !plainText(st.Prompt, true) {
-				l.add("%s.steps[%d].prompt — от 1 байта до %d КиБ в UTF-8 без управляющих символов", f, j, MaxPrompt>>10)
+				l.add("%s.steps[%d].prompt — от 1 байта до %d КиБ в UTF-8 без управляющих символов и символов форматирования (их — записью \\u{XXXX})", f, j, MaxPrompt>>10)
+				continue
 			}
+			text, err := expandEscapes(st.Prompt)
+			if err != nil {
+				l.add("%s.steps[%d].prompt — %w", f, j, err)
+				continue
+			}
+			b.Scenarios[i].Steps[j].text = text
 		}
 		checkSuccess(&l, f+".success", s.Success)
 		if !httpsURL(s.Source) {
