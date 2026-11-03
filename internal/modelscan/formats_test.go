@@ -119,6 +119,9 @@ func TestGGUFBoundaries(t *testing.T) {
 		{"строка сверх предела", goodGGUF(), Limits{MaxGGUFString: 3}, CodeLimitExceeded},
 		{"массив сверх предела", goodGGUF(), Limits{MaxGGUFArray: 2}, CodeLimitExceeded},
 		{"шаблон сверх предела", goodGGUF(), Limits{MaxChatTemplate: 16}, CodeLimitExceeded},
+		// Ревью 5.r2, 5Н13: общий предел байт ключей и имён тензоров.
+		{"ключи сверх общего предела", ggufBytes(3, []ggufKV{{"general.a", ggufUint32, ggufU32(1)}, {"general.b", ggufUint32, ggufU32(2)}}, nil, 1, 0), Limits{MaxGGUFNameBytes: 12}, CodeLimitExceeded},
+		{"имена тензоров сверх общего предела", ggufBytes(3, []ggufKV{{"general.a", ggufUint32, ggufU32(1)}}, []ggufTensorDef{{"tensor.w", []uint64{4}, 0, 0}}, 32, 32), Limits{MaxGGUFNameBytes: 12}, CodeLimitExceeded},
 		{"шаблон не строка", ggufBytes(3, []ggufKV{{"tokenizer.chat_template", ggufUint32, ggufU32(1)}}, nil, 1, 0), Limits{}, CodeMalformed},
 		{"смещение за концом", ggufBytes(3, nil, []ggufTensorDef{{"w", []uint64{4}, 0, 64}}, 32, 16), Limits{}, CodeMalformed},
 		{"данные за концом", ggufBytes(3, nil, tensor, 32, 8), Limits{}, CodeMalformed},

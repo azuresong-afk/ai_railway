@@ -191,6 +191,9 @@ type Limits struct {
 	MaxGGUFString uint64
 	// MaxGGUFArray — элементов массива метаданных GGUF.
 	MaxGGUFArray uint64
+	// MaxGGUFNameBytes — ключей метаданных и имён тензоров GGUF вместе,
+	// байт (64 МиБ): они хранятся в памяти для поиска повторов.
+	MaxGGUFNameBytes uint64
 	// MaxChatTemplate — шаблон чата, байт (64 КиБ).
 	MaxChatTemplate int
 	// MaxONNXDepth — вложенность сообщений protobuf ONNX.
@@ -213,6 +216,7 @@ func DefaultLimits() Limits {
 		MaxGGUFMetadata:      1 << 16,
 		MaxGGUFString:        1 << 20,
 		MaxGGUFArray:         1 << 22,
+		MaxGGUFNameBytes:     64 << 20,
 		MaxChatTemplate:      64 << 10,
 		MaxONNXDepth:         32,
 		MaxONNXItems:         1 << 20,
@@ -248,6 +252,9 @@ func (l Limits) withDefaults() Limits {
 	}
 	if l.MaxGGUFArray == 0 {
 		l.MaxGGUFArray = d.MaxGGUFArray
+	}
+	if l.MaxGGUFNameBytes == 0 {
+		l.MaxGGUFNameBytes = d.MaxGGUFNameBytes
 	}
 	if l.MaxChatTemplate <= 0 {
 		l.MaxChatTemplate = d.MaxChatTemplate
