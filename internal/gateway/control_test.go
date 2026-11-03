@@ -671,3 +671,53 @@ func TestHeartbeatRetriesWithoutOptionalFieldsOn400(t *testing.T) {
 		t.Fatalf("после повтора — отсрочка, а не интервал сервера: %v", waits)
 	}
 }
+
+// Задача 5.44 этапа 5 (DM-50): heartbeat несёт состояние клиента
+// aisec-media, но только после ответа сервера с media.
+func TestHeartbeatMedia(t *testing.T) {
+	var bodies []map[string]any
+	media := true
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var b map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&b) //nolint:gosec // G104: тело проверяет тест
+		bodies = append(bodies, b)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"server_time": time.Now(), "interval_seconds": 60, "media": media}) //nolint:gosec // G104: ответ тестового сервера
+	}))
+	defer srv.Close()
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 11, 3, 10, 0, 0, 0, time.UTC)
+	report := func() *gateway.MediaReport {
+		return gateway.NewMediaReport(gateway.MediaStats{Inflight: 1, MaxInflight: 16, Down: true, Analyzed: 5, Overloaded: 2, Timeout: 1,
+			Selftest: &gateway.MediaSelftest{Result: gateway.MediaSelftestOK, CheckedAt: at}})
+	}
+	run := func() {
+		n := 0
+		gateway.RunHeartbeat(context.Background(), gateway.HeartbeatConfig{
+			Client: srv.Client(), Server: u, Version: "1", Logger: quiet(), Media: report,
+			Sleep: func(context.Context, time.Duration) bool { n++; return n < 2 },
+		})
+	}
+	run()
+	media = false
+	run()
+	if len(bodies) != 4 {
+		t.Fatalf("heartbeat: %v", bodies)
+	}
+	if _, ok := bodies[0]["media"]; ok {
+		t.Fatalf("первый heartbeat с media: %v", bodies[0])
+	}
+	got, _ := bodies[1]["media"].(map[string]any)
+	un, _ := got["unchecked"].(map[string]any)
+	st, _ := got["selftest"].(map[string]any)
+	if got["inflight"] != 1.0 || got["max_inflight"] != 16.0 || got["down"] != true || got["analyzed"] != 5.0 ||
+		un["overloaded"] != 2.0 || un["timeout"] != 1.0 || un["unavailable"] != 0.0 || st["result"] != "ok" || st["checked_at"] != "2026-11-03T10:00:00Z" {
+		t.Fatalf("media: %v", bodies[1])
+	}
+	if _, ok := bodies[3]["media"]; ok {
+		t.Fatalf("сервер без media: %v", bodies[3])
+	}
+}

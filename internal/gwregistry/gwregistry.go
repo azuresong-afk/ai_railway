@@ -369,6 +369,9 @@ type Service struct {
 	lastReissue, lastMismatch map[string]time.Time
 	// limits — последние счётчики в памяти каждого шлюза (задача 5.9).
 	limits map[string]LimitsMark
+	// media — последнее состояние клиента aisec-media каждого шлюза
+	// (задача 5.44 этапа 5).
+	media map[string]MediaMark
 
 	// malformed — запросы регистрации с токеном неверного формата: они идут
 	// в технический журнал, а не в аудит (Н17 ревью 2.r3a, как В9).
@@ -396,7 +399,7 @@ func New(o Options) (*Service, error) {
 		orgID: o.OrgID, clock: o.Clock, validity: o.CertValidity, minHB: o.HeartbeatMinInterval, logger: o.Logger,
 		lastHB: map[string]time.Time{}, lastDeny: map[string]time.Time{},
 		lastReissue: map[string]time.Time{}, lastMismatch: map[string]time.Time{}, anchorRoot: o.AnchorRoot,
-		limits: map[string]LimitsMark{},
+		limits: map[string]LimitsMark{}, media: map[string]MediaMark{},
 	}
 	if s.anchorRoot == "" && s.ca != nil {
 		s.anchorRoot = RootID(h, s.ca.CertDER())
@@ -727,6 +730,9 @@ type HeartbeatInput struct {
 	// Limits — заполнение и вытеснения счётчиков в памяти шлюза (задача 5.9
 	// этапа 5); nil — шлюз прежней версии или сервер не сообщил limits.
 	Limits *Limits
+	// Media — состояние клиента aisec-media шлюза (задача 5.44 этапа 5); nil
+	// — шлюз без aisec-media, прежней версии или сервер не сообщил media.
+	Media *MediaStats
 }
 
 // Пределы итогов проверок в heartbeat.
@@ -806,6 +812,9 @@ func (in HeartbeatInput) Validate() error {
 	if err := in.Limits.validate(); err != nil {
 		return err
 	}
+	if err := in.Media.validate(); err != nil {
+		return err
+	}
 	if in.Version == "" || len(in.Version) > maxVersion {
 		return fmt.Errorf("%w: version — от 1 до %d символов", ErrInvalidRequest, maxVersion)
 	}
@@ -851,6 +860,9 @@ func (s *Service) Heartbeat(ctx context.Context, gatewayID string, in HeartbeatI
 	if in.StartedAt.After(now.Add(maxReportFuture)) {
 		return HeartbeatResult{}, fmt.Errorf("%w: started_at в будущем", ErrInvalidRequest)
 	}
+	if in.Media != nil && in.Media.Selftest != nil && in.Media.Selftest.At.After(now.Add(maxReportFuture)) {
+		return HeartbeatResult{}, fmt.Errorf("%w: время самотеста aisec-media в будущем", ErrInvalidRequest)
+	}
 	// PostgreSQL хранит микросекунды: шлюз присылает то же время в каждом
 	// heartbeat, сравнение идёт после того же округления.
 	in.StartedAt = in.StartedAt.Truncate(time.Microsecond)
@@ -892,6 +904,7 @@ func (s *Service) Heartbeat(ctx context.Context, gatewayID string, in HeartbeatI
 		return HeartbeatResult{}, err
 	}
 	s.observeLimits(gatewayID, in, now)
+	s.observeMedia(gatewayID, in, now)
 	out := HeartbeatResult{At: now, Reissue: s.needReissue(ch.CertCA, ch.CertNotAfter, now),
 		Budget: s.syncBudget(ctx, gatewayID, in)}
 	if !ch.VerifyDone {

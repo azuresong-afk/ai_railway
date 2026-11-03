@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/azuresong-afk/ai_railway/internal/config"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
@@ -44,5 +45,31 @@ func TestMLSelftestRerunsWithClient(t *testing.T) {
 	}
 	if rec.Msg != "самотестирование пройдено" || rec.Detectors != len(builtin.MLSpecs()) || rec.MLUnavailable == 0 {
 		t.Fatalf("итог повторного прогона: %+v", rec)
+	}
+}
+
+// Задача 5.44: самотест aisec-media при недоступном анализаторе — «не
+// проверено», не провал и не остановка запуска при реакции stop; итог —
+// в состоянии клиента для heartbeat.
+func TestMediaSelftestUncheckedDoesNotStop(t *testing.T) {
+	c, err := gateway.NewMediaClient(gateway.MediaClientConfig{Socket: filepath.Join(t.TempDir(), "media.sock")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := mediaSelftest(ctx, "stop", c, slog.New(slog.DiscardHandler), time.Hour); err != nil {
+		t.Fatalf("недоступный aisec-media остановил запуск: %v", err)
+	}
+	st := c.Stats().Selftest
+	if st == nil || st.Result != gateway.MediaSelftestUnchecked || st.Failed != 0 || st.CheckedAt.IsZero() {
+		t.Fatalf("итог самотеста: %+v", st)
+	}
+	if r := mediaReport(c)(); r.Selftest == nil || r.Selftest.Result != "unchecked" {
+		t.Fatalf("отчёт heartbeat: %+v", r)
+	}
+	if mediaReport(nil) != nil {
+		t.Fatal("шлюз без aisec-media передаёт media")
 	}
 }

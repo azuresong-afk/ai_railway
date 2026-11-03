@@ -135,6 +135,11 @@ type MediaClient struct {
 	nextID   atomic.Uint32
 	maxBytes atomic.Int64
 
+	// Счётчики с запуска шлюза для heartbeat (задача 5.44, DM-50): итоги
+	// анализа и сбои по причинам. Только числа.
+	analyzed, unavailable, overloaded, timedOutN, failed atomic.Uint64
+	selftest                                             atomic.Pointer[MediaSelftest]
+
 	mu        sync.Mutex
 	idle      []*mediaConn
 	downUntil time.Time
@@ -190,8 +195,86 @@ func (c *MediaClient) Close() {
 
 // Analyze отправляет изображение анализатору. Срок — срок ctx (его же
 // получает анализатор в заголовке analyze); без срока ctx — срок
-// анализатора по умолчанию.
+// анализатора по умолчанию. Итог учитывается в счётчиках heartbeat.
 func (c *MediaClient) Analyze(ctx context.Context, img []byte) (*MediaReply, error) {
+	r, err := c.analyze(ctx, img)
+	c.count(err)
+	return r, err
+}
+
+// count учитывает итог анализа: ответ анализатора (в том числе отказ по
+// свойствам изображения) — analyzed, сбой — по причине.
+func (c *MediaClient) count(err error) {
+	var me *MediaError
+	if err == nil || !errors.As(err, &me) || !me.Failure() {
+		c.analyzed.Add(1)
+		return
+	}
+	switch me.Reason {
+	case events.MediaReasonUnavailable:
+		c.unavailable.Add(1)
+	case events.MediaReasonOverloaded:
+		c.overloaded.Add(1)
+	case events.MediaReasonTimeout:
+		c.timedOutN.Add(1)
+	default:
+		c.failed.Add(1)
+	}
+}
+
+// MediaSelftest — итог самотеста aisec-media на эталонных изображениях
+// (задача 5.44): Result — ok, failed или unchecked (анализатор недоступен
+// или без нужной проверки — не провал).
+type MediaSelftest struct {
+	Result    string
+	CheckedAt time.Time
+	Failed    int
+}
+
+// Итоги самотеста aisec-media.
+const (
+	MediaSelftestOK        = "ok"
+	MediaSelftestFailed    = "failed"
+	MediaSelftestUnchecked = "unchecked"
+)
+
+// SetSelftest запоминает итог самотеста aisec-media для heartbeat.
+func (c *MediaClient) SetSelftest(st MediaSelftest) { c.selftest.Store(&st) }
+
+// MediaStats — состояние клиента aisec-media для heartbeat (задача 5.44,
+// DM-50): очередь шлюза, отсрочка после сбоя, итоги с запуска и последний
+// самотест. Без содержимого и путей.
+type MediaStats struct {
+	Inflight    int
+	MaxInflight int
+	// Down — последний вызов закончился сбоем анализатора, успешного после
+	// него не было (в отсрочке изображения сразу «не проверено»).
+	Down bool
+	// Analyzed — ответов анализатора (итог или отказ по свойствам изображения).
+	Analyzed uint64
+	// Unavailable, Overloaded, Timeout, Error — «не проверено» из-за сбоя
+	// анализатора по причинам (events.MediaReason*).
+	Unavailable, Overloaded, Timeout, Error uint64
+	// Selftest — последний самотест; nil — ещё не выполнялся.
+	Selftest *MediaSelftest
+}
+
+// Stats — счётчики клиента на этот момент.
+func (c *MediaClient) Stats() MediaStats {
+	c.mu.Lock()
+	down := c.down
+	c.mu.Unlock()
+	st := MediaStats{Inflight: len(c.sem), MaxInflight: cap(c.sem), Down: down,
+		Analyzed: c.analyzed.Load(), Unavailable: c.unavailable.Load(), Overloaded: c.overloaded.Load(),
+		Timeout: c.timedOutN.Load(), Error: c.failed.Load()}
+	if p := c.selftest.Load(); p != nil {
+		cp := *p
+		st.Selftest = &cp
+	}
+	return st
+}
+
+func (c *MediaClient) analyze(ctx context.Context, img []byte) (*MediaReply, error) {
 	if int64(len(img)) > c.MaxBytes() {
 		return nil, mediaErr(events.MediaReasonTooLarge, nil)
 	}

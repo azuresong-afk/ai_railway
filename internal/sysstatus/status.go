@@ -96,6 +96,40 @@ type GatewayStatus struct {
 	// последнего heartbeat (задача 5.9 этапа 5); nil — шлюз прежней версии
 	// или heartbeat после перезапуска сервера ещё не пришёл.
 	Limits *GatewayLimits `json:"limits"`
+	// Media — состояние клиента aisec-media шлюза из последнего heartbeat
+	// (задача 5.44 этапа 5, DM-50); nil — шлюз без aisec-media, прежней
+	// версии или heartbeat после перезапуска сервера ещё не пришёл.
+	Media *GatewayMedia `json:"media"`
+}
+
+// GatewayMedia — очередь шлюза к aisec-media, отсрочка после сбоя, итоги с
+// запуска шлюза и последний самотест на эталонных изображениях.
+type GatewayMedia struct {
+	ReportedAt  time.Time  `json:"reported_at"`
+	StartedAt   *time.Time `json:"started_at"`
+	Inflight    int64      `json:"inflight"`
+	MaxInflight int64      `json:"max_inflight"`
+	Down        bool       `json:"down"`
+	Analyzed    int64      `json:"analyzed"`
+	// Unchecked — «не проверено» из-за сбоя анализатора по причинам.
+	Unchecked GatewayMediaUnchecked `json:"unchecked"`
+	// Selftest — nil, если самотест ещё не выполнялся.
+	Selftest *GatewayMediaSelftest `json:"selftest"`
+}
+
+// GatewayMediaUnchecked — сбои анализатора по причинам с запуска шлюза.
+type GatewayMediaUnchecked struct {
+	Unavailable int64 `json:"unavailable"`
+	Overloaded  int64 `json:"overloaded"`
+	Timeout     int64 `json:"timeout"`
+	Error       int64 `json:"error"`
+}
+
+// GatewayMediaSelftest — итог самотеста aisec-media: ok, failed, unchecked.
+type GatewayMediaSelftest struct {
+	Result    string    `json:"result"`
+	CheckedAt time.Time `json:"checked_at"`
+	Failed    int       `json:"failed"`
 }
 
 // GatewayLimits — счётчики лимитов вызовов инструментов и сессий
@@ -308,6 +342,18 @@ const (
 	// или база не используется. Код — семейство и вид базы.
 	ConditionServiceDBPrevious = "service_db_previous"
 	ConditionServiceDBUnused   = "service_db_unused"
+	// ConditionMediaOverloaded — DM-50 (задача 5.44 этапа 5): за последние
+	// DroppedWindow изображения шлюза получали «не проверено» из-за
+	// перегрузки или срока aisec-media (overloaded, timeout).
+	ConditionMediaOverloaded = "gateway_media_overloaded"
+	// ConditionMediaUnavailable — DM-50: aisec-media шлюза недоступен —
+	// последний вызов закончился сбоем, или за DroppedWindow были отказы
+	// unavailable и error.
+	ConditionMediaUnavailable = "gateway_media_unavailable"
+	// ConditionMediaSelftest — ОЦЛ.5: последний самотест aisec-media на
+	// эталонных изображениях не пройден (недоступный анализатор — не
+	// провал, а «не проверено»).
+	ConditionMediaSelftest = "gateway_media_selftest"
 )
 
 // QuotaHealth — режим квот и шлюзы на автономной доле (quotalease.Health).
@@ -383,7 +429,8 @@ const (
 
 // gatewayFamilies — семейства условий с кодом «семейство:ID шлюза».
 var gatewayFamilies = []string{ConditionBundleLag, ConditionEventsDropped, ConditionOffline, ConditionCertExpiry,
-	ConditionReportsStale, ConditionGatewayClock, ConditionGatewayTLS, ConditionQuotaAutonomous, ConditionGatewayLimits}
+	ConditionReportsStale, ConditionGatewayClock, ConditionGatewayTLS, ConditionQuotaAutonomous, ConditionGatewayLimits,
+	ConditionMediaOverloaded, ConditionMediaUnavailable, ConditionMediaSelftest}
 
 // serviceDBFamilies — семейства условий с кодом «семейство:вид базы»;
 // компонент — service_db:<вид>.

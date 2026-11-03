@@ -227,7 +227,12 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 			return err
 		}
 		defer mc.Close()
-		hb.media = mc
+		hb.media, hb.mediaClient = mc, mc
+		// Самотест на эталонных изображениях (задача 5.44): при запуске и
+		// периодически, итог — в heartbeat.
+		if err := mediaSelftest(ctx, integrity.Action(cfg.SelftestAction), mc, logger, mediaSelftestInterval); err != nil {
+			return err
+		}
 	}
 	// Проверка JWT пользователей приложений (задача 4.21); в профиле без
 	// неё (gost до этапа 6) JWT отклоняются.
@@ -303,7 +308,8 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 			return err
 		}
 		hbDone := startHeartbeat(hbCtx, cfg, control.client, logger, reports, bundles.ETag, verify, started, reissue.Reissue, hb.budget, hb.clock, appTLS.Current,
-			hb.approvals.Pending, hb.leases.Autonomous, func() *gateway.LimitsReport { return gateway.NewLimitsReport(hb.toolRate, hb.sessions) })
+			hb.approvals.Pending, hb.leases.Autonomous, func() *gateway.LimitsReport { return gateway.NewLimitsReport(hb.toolRate, hb.sessions) },
+			mediaReport(hb.mediaClient))
 		defer func() {
 			hbCancel()
 			<-hbDone
@@ -347,6 +353,9 @@ type handlerBuilder struct {
 	// media — клиент aisec-media (-media-socket, ADR-0032, задача 5.39): пул
 	// переживает смену пакета; nil — изображения не анализируются.
 	media gateway.MediaAnalyzer
+	// mediaClient — тот же клиент для heartbeat и самотеста; nil — без
+	// aisec-media.
+	mediaClient *gateway.MediaClient
 	// mcpSessions — сессии MCP-прокси 2025-11-25 (задача 4.11): переживают
 	// смену пакета; mcpObserver — описания инструментов на сервер, nil —
 	// без сервера.
@@ -675,7 +684,7 @@ const gwReissueWarn = 30 * 24 * time.Hour
 func startHeartbeat(ctx context.Context, cfg *config.Gateway, client *http.Client, logger *slog.Logger, reports *gateway.Reports, etag func() string,
 	verify func(context.Context), started time.Time, reissue func(context.Context) error, budget *gateway.Budget,
 	clock *gateway.ServerClock, tlsFingerprint func() string, pendingApprovals func() []string, quotaAutonomous func() bool,
-	limits func() *gateway.LimitsReport) <-chan struct{} {
+	limits func() *gateway.LimitsReport, media func() *gateway.MediaReport) <-chan struct{} {
 	v := version
 	if !gateway.ValidVersion(v) {
 		v = "unknown"
@@ -686,7 +695,7 @@ func startHeartbeat(ctx context.Context, cfg *config.Gateway, client *http.Clien
 		gateway.RunHeartbeat(ctx, gateway.HeartbeatConfig{
 			Client: client, Server: cfg.Server, Version: v, Logger: logger, Reports: reports, BundleETag: etag, Verify: verify,
 			StartedAt: started, Reissue: reissue, Budget: budget, ServerTime: clock, TLSFingerprint: tlsFingerprint,
-			PendingApprovals: pendingApprovals, QuotaAutonomous: quotaAutonomous, Limits: limits,
+			PendingApprovals: pendingApprovals, QuotaAutonomous: quotaAutonomous, Limits: limits, Media: media,
 		})
 	}()
 	return done

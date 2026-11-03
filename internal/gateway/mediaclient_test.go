@@ -383,3 +383,49 @@ func TestNewMediaClientRelativeSocket(t *testing.T) {
 		t.Fatal("относительный путь принят")
 	}
 }
+
+// Задача 5.44 (DM-50): счётчики клиента для heartbeat — ответы анализатора
+// и сбои по причинам, очередь шлюза, отсрочка после сбоя и самотест.
+func TestMediaClientStats(t *testing.T) {
+	var mode atomic.Int32
+	f := &fakeMedia{hello: defaultHello(), analyze: func(h wire.Header, b []byte) (wire.FrameType, any) {
+		switch mode.Load() {
+		case 1:
+			return wire.TypeError, wire.ErrorMsg{Code: wire.ErrOverloaded}
+		case 2:
+			return wire.TypeError, wire.ErrorMsg{Code: wire.ErrInternal}
+		case 3:
+			return wire.TypeResult, wire.Result{Status: wire.StatusRejected, Reason: wire.ReasonMalformed, Checks: []wire.Check{}}
+		}
+		return okResult(h, b)
+	}}
+	c := newMediaClient(t, f.start(t), nil)
+	if st := c.Stats(); st.MaxInflight != 4 || st.Inflight != 0 || st.Down || st.Analyzed != 0 || st.Selftest != nil {
+		t.Fatalf("начало: %+v", st)
+	}
+	analyze := func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_, _ = c.Analyze(ctx, pngBytes) //nolint:gosec // G104: итог учитывают счётчики
+	}
+	for _, m := range []int32{0, 3, 1, 1, 2} {
+		mode.Store(m)
+		analyze()
+	}
+	st := c.Stats()
+	if st.Analyzed != 2 || st.Overloaded != 2 || st.Error != 1 || st.Unavailable != 0 || st.Timeout != 0 || st.Down {
+		t.Fatalf("после ответов: %+v", st)
+	}
+	// Анализатора нет — unavailable и отсрочка; самотест в отчёте.
+	c = newMediaClient(t, filepath.Join(t.TempDir(), "none.sock"), nil)
+	analyze()
+	c.SetSelftest(MediaSelftest{Result: MediaSelftestUnchecked, CheckedAt: time.Unix(10, 0)})
+	st = c.Stats()
+	if st.Unavailable != 1 || !st.Down || st.Analyzed != 0 || st.Selftest == nil || st.Selftest.Result != MediaSelftestUnchecked {
+		t.Fatalf("после пропажи сокета: %+v", st)
+	}
+	r := NewMediaReport(st)
+	if r.Unchecked.Unavailable != 1 || r.Unchecked.Overloaded != 0 || !r.Down || r.Selftest.Result != "unchecked" || !r.Selftest.CheckedAt.Equal(time.Unix(10, 0)) {
+		t.Fatalf("отчёт: %+v", r)
+	}
+}
