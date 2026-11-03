@@ -15,6 +15,8 @@ import (
 
 	"github.com/azuresong-afk/ai_railway/internal/audit"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
+	"github.com/azuresong-afk/ai_railway/internal/keyring"
+	"github.com/azuresong-afk/ai_railway/internal/keyring/keyringtest"
 	"github.com/azuresong-afk/ai_railway/internal/store"
 	"github.com/azuresong-afk/ai_railway/migrations"
 )
@@ -91,6 +93,10 @@ func (t poolTx) Applied(ctx context.Context) ([]store.Applied, error) {
 type pgEnv struct {
 	owner *pgxpool.Pool
 	st    *PGStore
+	// box — ключ данных установки (keyringtest), dir — каталог мастер-ключа.
+	box *keyring.Box
+	dir string
+	p   aisecCrypto.Provider
 }
 
 func setupPG(t *testing.T) *pgEnv {
@@ -135,7 +141,12 @@ func setupPG(t *testing.T) *pgEnv {
 	if _, err := owner.Exec(ctx, "GRANT USAGE ON SCHEMA "+pgx.Identifier{schema}.Sanitize()+" TO aisec_app"); err != nil {
 		t.Fatal(err)
 	}
+	dir, _ := keyringtest.Install(t, ctx, owner, p, audit.DefaultOrgID)
 	app := newPool(t, dsn, schema, "aisec_app")
+	box, err := keyring.Load(ctx, app, p, dir, audit.DefaultOrgID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	l, err := audit.New(app, p)
 	if err != nil {
 		t.Fatal(err)
@@ -144,7 +155,7 @@ func setupPG(t *testing.T) *pgEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &pgEnv{owner: owner, st: st}
+	return &pgEnv{owner: owner, st: st, box: box, dir: dir, p: p}
 }
 
 func (e *pgEnv) count(t *testing.T, sql string, args ...any) int {
@@ -171,7 +182,7 @@ func (e *pgEnv) revision(t *testing.T) int {
 // оставляет запуск с её именем.
 func TestPGRedTeamEndpointRun(t *testing.T) {
 	pg := setupPG(t)
-	e := newEnv(t, func(o *Options) { o.Store = pg.st })
+	e := newEnv(t, func(o *Options) { o.Store, o.Box = pg.st, pg.box })
 	tg := e.target(func(in *TargetInput) { in.AuthHeader = "X-Api-Key" })
 	const secret = "pg-auth-value-31c2" //nolint:gosec // G101: синтетическое значение заголовка для проверки, что оно не сохраняется
 	run, err := e.s.StartRun(context.Background(), admin, StartInput{TargetID: tg.ID, AuthValue: secret,
@@ -303,7 +314,7 @@ func TestPGRedTeamKeysInterruptPurge(t *testing.T) {
 func TestPGRedTeamSchedules(t *testing.T) {
 	pg := setupPG(t)
 	clk := &testClock{t: time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)}
-	e := newEnv(t, func(o *Options) { o.Store = pg.st; o.Clock = clk.Now })
+	e := newEnv(t, func(o *Options) { o.Store, o.Box = pg.st, pg.box; o.Clock = clk.Now })
 	tg := e.target(nil)
 	ctx := context.Background()
 	sc, err := e.s.CreateSchedule(ctx, admin, daily(tg.ID))
@@ -348,5 +359,84 @@ func TestPGRedTeamSchedules(t *testing.T) {
 	}
 	if n := pg.count(t, "SELECT count(*) FROM redteam_runs WHERE id = $1", got.LastRunID); n != 1 {
 		t.Fatal("запуск пропал вместе с целью")
+	}
+}
+
+// Выдержка ответа режима masked хранится только запечатанной ключом данных
+// (5В3 ревью 5.r3): в redteam_results нет её открытого текста, шифротекст
+// другой строки не распечатывается (AAD — запуск и сценарий), ротация
+// ключа данных выдержку перешифровывает, и прежняя версия удаляется.
+func TestPGRedTeamExampleSealed(t *testing.T) {
+	pg := setupPG(t)
+	ctx := pgTestCtx(t)
+	e := newEnv(t, func(o *Options) { o.Store, o.Box = pg.st, pg.box })
+	tg := e.target(nil)
+	run, err := e.s.StartRun(context.Background(), admin, StartInput{TargetID: tg.ID, Scenarios: []string{"RT-DM01-001", "RT-DM06-001"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r, _ := e.wait(run.ID); r.Counts[VerdictSucceeded] != 2 {
+		t.Fatalf("запуск: %+v", r)
+	}
+	ex, err := e.s.Examples(ctx, run.ID)
+	if err != nil || len(ex) != 2 || ex["RT-DM01-001"] == "" {
+		t.Fatalf("выдержки: %q %v", ex, err)
+	}
+	if n := pg.count(t, `SELECT count(*) FROM redteam_results WHERE run_id = $1 AND example IS NOT NULL
+		AND example_key_id IS NOT NULL AND example_alg <> ''`, run.ID); n != 2 {
+		t.Fatalf("запечатанных выдержек: %d", n)
+	}
+	// Открытого текста выдержки (её начала) нет ни в одном столбце.
+	for id, text := range ex {
+		probe := []rune(text)
+		if len(probe) > 24 {
+			probe = probe[:24]
+		}
+		if n := pg.count(t, `SELECT count(*) FROM redteam_results WHERE row_to_json(redteam_results)::text LIKE '%' || $1 || '%'
+			OR position(convert_to($1, 'UTF8') IN example) > 0`, string(probe)); n != 0 {
+			t.Fatalf("открытый текст выдержки %s в БД", id)
+		}
+	}
+	// Подмена: шифротекст DM-06 в строке DM-01 не распечатывается.
+	if _, err := pg.owner.Exec(ctx, `UPDATE redteam_results d SET example = s.example, example_key_id = s.example_key_id
+		FROM redteam_results s WHERE d.run_id = $1 AND s.run_id = $1 AND d.scenario_id = 'RT-DM01-001' AND s.scenario_id = 'RT-DM06-001'`,
+		run.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.s.Examples(ctx, run.ID); err == nil {
+		t.Fatal("шифротекст чужой строки распечатан")
+	}
+	if _, err := pg.owner.Exec(ctx, `DELETE FROM redteam_results WHERE run_id = $1 AND scenario_id = 'RT-DM01-001'`, run.ID); err != nil {
+		t.Fatal(err)
+	}
+	// Ротация ключа данных: выдержка перешифрована, прежняя версия удалена.
+	ownerLog, err := audit.New(pg.owner, pg.p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actor := audit.Actor{Type: audit.ActorCLI, ID: "uid:0", Name: "root"}
+	if _, err := keyring.RotateData(ctx, pg.owner, ownerLog, pg.p, pg.dir, audit.DefaultOrgID, actor, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	full, err := keyring.Load(ctx, pg.owner, pg.p, pg.dir, audit.DefaultOrgID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err := keyring.Rewrap(ctx, pg.owner, full, keyring.RewrapOptions{ContentPurpose: "event-content"})
+	if err != nil || n.RedTeam != 1 {
+		t.Fatalf("перешифрование: %+v %v", n, err)
+	}
+	if res, err := keyring.DestroyRetired(ctx, pg.owner, ownerLog, audit.DefaultOrgID, actor); err != nil || len(res.Destroyed) != 1 {
+		t.Fatalf("вывод прежней версии: %+v %v", res, err)
+	}
+	if err := pg.box.Refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := e.s.Examples(ctx, run.ID); err != nil || got["RT-DM06-001"] != ex["RT-DM06-001"] {
+		t.Fatalf("выдержка после ротации: %q %v", got, err)
+	}
+	// Ограничение таблицы: шифротекст без ключа отвергает сама БД.
+	if _, err := pg.owner.Exec(ctx, `UPDATE redteam_results SET example_key_id = NULL WHERE run_id = $1`, run.ID); err == nil {
+		t.Fatal("выдержка без ID ключа принята")
 	}
 }

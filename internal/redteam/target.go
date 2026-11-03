@@ -2,13 +2,17 @@ package redteam
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
+	"github.com/azuresong-afk/ai_railway/internal/detect"
+	"github.com/azuresong-afk/ai_railway/internal/detect/secretscan"
 	"github.com/azuresong-afk/ai_railway/internal/netguard"
 )
 
@@ -39,6 +43,38 @@ var (
 // меняют путь запроса (в нижнем регистре); Proxy-* — по префиксу.
 var forbiddenHeaders = map[string]bool{"host": true, "content-length": true, "transfer-encoding": true, "connection": true,
 	"cookie": true, "content-type": true, "upgrade": true, "te": true, "trailer": true, "keep-alive": true, "expect": true}
+
+// credentialHeaders — заголовки с секретом (в нижнем регистре); *-token —
+// по суффиксу. Постоянные заголовки цели хранятся открыто и видны с
+// redteam.read, поэтому секрет задаётся только полем auth_header, а
+// значение — при запуске (5Н21 ревью 5.r3).
+var credentialHeaders = map[string]bool{"authorization": true, "x-api-key": true, "api-key": true, "x-auth-token": true,
+	"apikey": true, "x-access-token": true}
+
+func credentialHeader(lower string) bool {
+	return credentialHeaders[lower] || strings.HasSuffix(lower, "-token")
+}
+
+// secretCheckTimeout — срок проверки полей цели детектором secrets.
+const secretCheckTimeout = 2 * time.Second
+
+// hasSecret — детектор secrets находит в text секрет с оценкой от 0,5
+// (заглушки из документации ниже порога). Сбой проверки — отказ: поле
+// не сохраняется непроверенным.
+func hasSecret(text string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), secretCheckTimeout)
+	defer cancel()
+	fs, err := secretscan.New().Detect(ctx, detect.Text{Text: text, Direction: detect.Input, Source: detect.SourceUser})
+	if err != nil {
+		return true
+	}
+	for _, f := range fs {
+		if f.Score >= 0.5 {
+			return true
+		}
+	}
+	return false
+}
 
 // TargetInput — поля цели, которые задаёт администратор безопасности.
 type TargetInput struct {
@@ -231,6 +267,11 @@ func (t *Target) checkTemplate(l *errList) {
 	if !templateHas(v, PlaceholderPrompt) && !templateHas(v, PlaceholderHistory) {
 		l.add("request_template — строковое значение %q или %q", PlaceholderPrompt, PlaceholderHistory)
 	}
+	// Шаблон хранится открыто и виден с redteam.read: ключ в поле JSON —
+	// отказ без значения в тексте ошибки (5Н21 ревью 5.r3).
+	if hasSecret(t.RequestTemplate) {
+		l.add("request_template — похоже, в шаблоне секрет (ключ, токен, пароль); секрет задаётся заголовком auth_header и вводится при запуске")
+	}
 }
 
 func (t *Target) checkHeaders(l *errList) {
@@ -249,12 +290,17 @@ func (t *Target) checkHeaders(l *errList) {
 			l.add("headers[%d].name — имя заголовка по RFC 9110", i)
 		case forbidden(n) || n == auth:
 			l.add("headers[%d].name — заголовок %s задаёт исполнитель", i, h.Name)
+		case credentialHeader(n):
+			l.add("headers[%d].name — заголовок %s несёт секрет: укажите его в auth_header, значение вводится при запуске", i, h.Name)
 		case seen[n]:
 			l.add("headers[%d].name — повторяется", i)
 		}
 		seen[n] = true
-		if len(h.Value) > MaxHeaderValue || !plainText(h.Value, false) {
+		switch {
+		case len(h.Value) > MaxHeaderValue || !plainText(h.Value, false):
 			l.add("headers[%d].value — до %d байт без управляющих символов", i, MaxHeaderValue)
+		case hasSecret(h.Name + ": " + h.Value):
+			l.add("headers[%d].value — похоже, в значении секрет; секрет задаётся заголовком auth_header и вводится при запуске", i)
 		}
 	}
 }

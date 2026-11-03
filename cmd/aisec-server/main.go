@@ -713,7 +713,7 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		}
 	}
 	redteamLogger := logger.With("component", "redteam")
-	redteamSvc, err := redteam.New(redteam.Options{Store: redteamStore, ServiceDBs: serviceDBStore, Provider: p, OrgID: audit.DefaultOrgID,
+	redteamSvc, err := redteam.New(redteam.Options{Store: redteamStore, ServiceDBs: serviceDBStore, Provider: p, Box: box, OrgID: audit.DefaultOrgID,
 		Apps: appsSvc, GatewayURL: cfg.RedTeamGatewayURL, GatewayCA: redteamCA,
 		Judges: redteam.NewJudgeClients(appsSvc, tp, redteamLogger), Logger: redteamLogger,
 		// Расписания запусков — по времени часового пояса установки.

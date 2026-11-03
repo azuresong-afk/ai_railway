@@ -15,6 +15,8 @@ import (
 // XLSX — как у остальных отчётов). Промптов атак в нём нет никогда. Выдержки
 // ответов (цель endpoint, режим masked, только удавшиеся атаки) — только по
 // явному запросу и с правом events.content.read: право проверяет API.
+// Выдержки хранятся запечатанными (5В3 ревью 5.r3) и распечатываются только
+// здесь и только при withExamples у цели в режиме masked.
 
 // KindReport — вид отчёта в записи аудита data.export.
 const KindReport = "redteam"
@@ -45,15 +47,22 @@ func (s *Service) Report(ctx context.Context, runID string, withExamples bool) (
 			storage = t.Storage
 		}
 	}
-	return BuildReport(run, res, ReportOptions{Titles: titles, Examples: withExamples && storage == StorageMasked, Loc: loc}), nil
+	o := ReportOptions{Titles: titles, Loc: loc}
+	if withExamples && storage == StorageMasked {
+		if o.Examples, err = s.openExamples(ctx, res); err != nil {
+			return reports.Doc{}, err
+		}
+	}
+	return BuildReport(run, res, o), nil
 }
 
 // ReportOptions — параметры построения отчёта.
 type ReportOptions struct {
 	// Titles — названия сценариев по ID (может быть пусто).
 	Titles map[string]string
-	// Examples — выдержки ответов в таблице удавшихся атак.
-	Examples bool
+	// Examples — открытые выдержки ответов по ID сценария для таблицы
+	// удавшихся атак; nil — выдержки не включены.
+	Examples map[string]string
 	// Loc — часовой пояс для времени; nil — UTC.
 	Loc *time.Location
 }
@@ -208,7 +217,7 @@ func BuildReport(run Run, res []Result, o ReportOptions) reports.Doc {
 		d.Meta = append(d.Meta, [2]string{"Завершён", stamp(*run.FinishedAt, o.Loc)})
 	}
 	examples := "не включены"
-	if o.Examples {
+	if o.Examples != nil {
 		examples = "включены (ответ цели, ПДн и секреты заменены категорией)"
 	}
 	d.Meta = append(d.Meta, [2]string{"Выдержки ответов", examples})
@@ -234,7 +243,7 @@ func BuildReport(run Run, res []Result, o ReportOptions) reports.Doc {
 	d.Sections = append(d.Sections, cov)
 
 	hdr := []string{"Сценарий", "Название", "Язык", "Строка", "Категория", "Шаг", "Сработавшие условия", "Находки", "События шлюза"}
-	if o.Examples {
+	if o.Examples != nil {
 		hdr = append(hdr, "Выдержка ответа")
 	}
 	win := reports.Section{Title: "Атаки, которые удались", Header: hdr,
@@ -246,8 +255,8 @@ func BuildReport(run Run, res []Result, o ReportOptions) reports.Doc {
 		row := []reports.Cell{reports.T(r.ScenarioID), reports.T(o.Titles[r.ScenarioID]), reports.T(r.Lang), reports.T(r.Threat),
 			reports.T(r.Category), reports.N(int64(r.Step)), reports.T(strings.Join(r.Matched, ", ")), reports.T(findingList(r.Findings)),
 			reports.T(strings.Join(r.EventIDs, ", "))}
-		if o.Examples {
-			row = append(row, reports.T(r.Example))
+		if o.Examples != nil {
+			row = append(row, reports.T(o.Examples[r.ScenarioID]))
 		}
 		win.Rows = append(win.Rows, row)
 	}

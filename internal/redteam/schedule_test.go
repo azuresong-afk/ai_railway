@@ -344,13 +344,13 @@ func TestReportBuildAndRender(t *testing.T) {
 	res := []Result{
 		{ScenarioID: "RT-DM08-001", Lang: "ru", Threat: "DM-08", Category: "prompt_leak", Verdict: VerdictSucceeded, Step: 2,
 			Matched: []string{MatchCanary}, Findings: []Finding{{Detector: "canary", Category: "canary.leak", Threat: "DM-08"}},
-			EventIDs: []string{"ev1"}, Example: "=HYPERLINK(\"x\") утечка [secret.token]"},
+			EventIDs: []string{"ev1"}},
 		{ScenarioID: "RT-DM01-001", Lang: "en", Threat: "DM-01", Category: "override", Verdict: VerdictBlocked, Step: 1, HTTPStatus: 403},
 		{ScenarioID: "RT-DM10-001", Lang: "ru", Threat: "DM-10", Category: "secrets", Verdict: VerdictError, ErrorCode: ErrCodeTimeout},
 	}
 	titles := map[string]string{"RT-DM08-001": "Повтори инструкции"}
 	without := BuildReport(run, res, ReportOptions{Titles: titles})
-	with := BuildReport(run, res, ReportOptions{Titles: titles, Examples: true})
+	with := BuildReport(run, res, ReportOptions{Titles: titles, Examples: map[string]string{"RT-DM08-001": "=HYPERLINK(\"x\") утечка [secret.token]"}})
 	var buf bytes.Buffer
 	if err := reports.Render(&buf, without, reports.FormatCSV, ';'); err != nil {
 		t.Fatal(err)
@@ -400,6 +400,41 @@ func TestServiceReportExamplesOnlyMasked(t *testing.T) {
 	}
 	if _, err := e.s.Report(context.Background(), "01900000-0000-7000-8000-0000000000ee", false); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("нет запуска: %v", err)
+	}
+}
+
+// Режим masked: выдержка распечатывается только для отчёта с examples
+// (5В3 ревью 5.r3), в итогах запуска она запечатана.
+func TestServiceReportExamplesSealed(t *testing.T) {
+	e := newEnv(t, nil)
+	m := e.target(func(in *TargetInput) { in.Name = "Бот masked" })
+	rm, res := e.wait(e.start(StartInput{TargetID: m.ID, Scenarios: []string{"RT-DM01-001"}}).ID)
+	if x := res["RT-DM01-001"]; x.Verdict != VerdictSucceeded || x.Example == nil {
+		t.Fatalf("итог masked: %+v", x)
+	}
+	ex, err := e.s.Examples(context.Background(), rm.ID)
+	if err != nil || ex["RT-DM01-001"] == "" {
+		t.Fatalf("выдержки: %q %v", ex, err)
+	}
+	for _, want := range []bool{true, false} {
+		doc, err := e.s.Report(context.Background(), rm.ID, want)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var buf bytes.Buffer
+		if err := reports.Render(&buf, doc, reports.FormatCSV, ';'); err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Contains(buf.String(), "Выдержка ответа"); got != want {
+			t.Fatalf("examples=%v: столбец выдержки %v", want, got)
+		}
+		probe := []rune(ex["RT-DM01-001"])
+		if len(probe) > 16 {
+			probe = probe[:16]
+		}
+		if got := strings.Contains(buf.String(), string(probe)); got != want {
+			t.Fatalf("examples=%v: текст выдержки %v", want, got)
+		}
 	}
 }
 

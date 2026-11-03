@@ -321,7 +321,7 @@ func (x *execution) scenario(ctx context.Context, sc Scenario) (Result, bool) {
 		if e.succeeded() {
 			res.Verdict, res.Matched = VerdictSucceeded, e.matched
 			if x.target.Kind == KindEndpoint && x.target.Storage == StorageMasked {
-				res.Example = maskedExample(rep.text, e.findings)
+				res.Example = x.sealExample(ctx, sc.ID, maskedExample(rep.text, e.findings))
 			}
 			break
 		}

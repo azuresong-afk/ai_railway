@@ -347,6 +347,11 @@ func (s *Service) SetOnPremise(ctx context.Context, by By, id string, onPremise 
 	return p, err
 }
 
+// CheckStoredOnPremise — признак «у заказчика» у провайдера из резервной
+// копии конфигурации допустим по тем же правилам, что при установке
+// через API (G3 этапа 5, ADR-0017, дополнение).
+func CheckStoredOnPremise(p Provider) error { return onPremiseAllowed(p) }
+
 // onPremiseAllowed — провайдера можно пометить «у заказчика».
 func onPremiseAllowed(p Provider) error {
 	var errs []error

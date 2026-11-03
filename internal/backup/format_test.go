@@ -191,6 +191,19 @@ func addSections(t testing.TB, s *Snapshot, keys *Keys) {
 		{ID: "0192a000-0000-7000-8000-000000000a02", CollectionID: "0192a000-0000-7000-8000-000000000a00", Collection: "kb-hr",
 			DocumentID: "doc-2", Reason: "устарел", CreatedAt: testTime, CreatedBy: "x"},
 	}
+	rtApp := s.Applications[0].ID
+	s.RedTeamTargets = []RedTeamTarget{
+		{ID: "0192a000-0000-7000-8000-000000000e01", Name: "Бот поддержки", Kind: "endpoint", URL: "http://bot.example.test:8080/",
+			RequestTemplate: `{"q":"{{prompt}}"}`, ResponsePath: "a", Headers: json.RawMessage(`[]`), AuthorizationNote: "Договор № 17",
+			Storage: "masked", Limits: json.RawMessage(`{}`), CreatedAt: testTime, CreatedBy: "x", UpdatedAt: testTime, UpdatedBy: "x"},
+		{ID: "0192a000-0000-7000-8000-000000000e02", Name: "Через шлюз", Kind: "gateway", AppID: &rtApp, Model: "gpt-x",
+			Headers: json.RawMessage(`[]`), Limits: json.RawMessage(`{}`), CreatedAt: testTime, CreatedBy: "x", UpdatedAt: testTime, UpdatedBy: "x"},
+	}
+	s.RedTeamSchedules = []RedTeamSchedule{
+		{ID: "0192a000-0000-7000-8000-000000000e11", Name: "Ночной", TargetID: "0192a000-0000-7000-8000-000000000e02",
+			Frequency: "daily", At: "03:00", Threats: []string{"DM-01"}, Enabled: true, NextRunAt: testTime, Version: 1,
+			CreatedAt: testTime, CreatedBy: "x", UpdatedAt: testTime, UpdatedBy: "x"},
+	}
 }
 
 func sealSample(t *testing.T, p crypto.Provider) ([]byte, *Snapshot) {
@@ -374,6 +387,7 @@ func TestOpenVersion1(t *testing.T) {
 	v1.MCPServers, v1.Agents, v1.AgentTools, v1.ShadowAIExclusions, v1.Licenses, v1.ComplianceMarks = nil, nil, nil, nil, nil, nil
 	v1.GatewayTLS, v1.OIDC, v1.LDAP, v1.LicenseClock, v1.ServiceDBs, v1.InventoryModels = nil, nil, nil, nil, nil, nil
 	v1.RAGExclusions = nil
+	v1.RedTeamTargets, v1.RedTeamSchedules = nil, nil
 	v1.Settings.Install = nil
 	v1.Users = slices.Clone(s.Users)
 	for i := range v1.Users {
@@ -542,6 +556,17 @@ func TestValidateReferences(t *testing.T) {
 		"два ID у коллекции":        func(s *Snapshot) { s.RAGExclusions[1].CollectionID = "0192a000-0000-7000-8000-000000000b00" },
 		"исключений больше предела": func(s *Snapshot) { s.RAGExclusions = ragExclusions(1, maxRAGExclusionsPerCollection+1) },
 		"коллекций больше предела":  func(s *Snapshot) { s.RAGExclusions = ragExclusions(maxRAGCollections+1, 1) },
+		// Тестирование устойчивости (G3 этапа 5).
+		"ID цели":              func(s *Snapshot) { s.RedTeamTargets[0].ID = "x" },
+		"повтор цели":          func(s *Snapshot) { s.RedTeamTargets[1].ID = s.RedTeamTargets[0].ID },
+		"приложение цели":      func(s *Snapshot) { x := "app"; s.RedTeamTargets[1].AppID = &x },
+		"цель расписания":      func(s *Snapshot) { s.RedTeamSchedules[0].TargetID = "0192a000-0000-7000-8000-00000000ffff" },
+		"повтор расписания":    func(s *Snapshot) { s.RedTeamSchedules = append(s.RedTeamSchedules, s.RedTeamSchedules[0]) },
+		"версия расписания":    func(s *Snapshot) { s.RedTeamSchedules[0].Version = 0 },
+		"целей больше предела": func(s *Snapshot) { s.RedTeamTargets = make([]RedTeamTarget, maxRedTeamTargets+1) },
+		"расписаний больше предела": func(s *Snapshot) {
+			s.RedTeamSchedules = make([]RedTeamSchedule, maxRedTeamSchedules+1)
+		},
 	} {
 		s := sampleSnapshot(t, p, w.Keys())
 		mutate(s)
@@ -603,6 +628,15 @@ func TestResolveSkipsDanglingReferences(t *testing.T) {
 	}
 	if len(s.ReportSchedules) != 1 || len(s.OIDC.GroupRoles) != 2 || s.LDAP == nil {
 		t.Fatal("исходный снимок изменён")
+	}
+
+	// Цель gateway без приложения в копии пропускается вместе со своим
+	// расписанием (G3 этапа 5).
+	s = sampleSnapshot(t, p, w.Keys())
+	*s.RedTeamTargets[1].AppID = missing
+	r, lines = s.resolve()
+	if len(r.RedTeamTargets) != 1 || len(r.RedTeamSchedules) != 0 || len(lines) != 2 {
+		t.Fatalf("тестирование устойчивости: %+v, %v", r.RedTeamTargets, lines)
 	}
 
 	// Исключение по пользователю — псевдоним ключа HMAC: без ключа в копии
