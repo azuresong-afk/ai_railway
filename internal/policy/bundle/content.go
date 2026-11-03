@@ -192,6 +192,11 @@ type Key struct {
 	// Agent — ID агента, к которому привязан ключ (задача 4.8): заголовок
 	// X-AISec-Agent с другим агентом — отказ agent_mismatch.
 	Agent string `json:"agent,omitempty"`
+	// Test — ключ запуска тестирования устойчивости (задача 5.32,
+	// ADR-0031, раздел 2): события запросов с ним шлюз помечает test, и
+	// сервер не поднимает по ним оповещения и инциденты. Выпускает только
+	// сервер, срок — до конца запуска.
+	Test bool `json:"test,omitempty"`
 }
 
 // Policy — текущая версия политики организации: каноничный YAML (ADR-0016).
@@ -505,7 +510,7 @@ func (c *Content) KeyRecords() ([]auth.KeyRecord, error) {
 	var out []auth.KeyRecord
 	for _, a := range all {
 		for _, k := range a.keys {
-			rec := auth.KeyRecord{AppID: a.id, Env: a.env, Prefix: k.Prefix, SHA256: k.SHA256, Expires: k.ExpiresAt, Revoked: k.Revoked}
+			rec := auth.KeyRecord{AppID: a.id, Env: a.env, Prefix: k.Prefix, SHA256: k.SHA256, Expires: k.ExpiresAt, Revoked: k.Revoked, Test: k.Test}
 			for _, s := range k.AllowedCIDRs {
 				p, err := netip.ParsePrefix(s)
 				if err != nil {

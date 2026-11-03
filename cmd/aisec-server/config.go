@@ -80,6 +80,12 @@ type serverConfig struct {
 	// шаблоны политик получают правила injection.ml и toxicity.ml (действие
 	// «журнал»). Сам сервер к aisec-ml не подключается.
 	MLTemplates bool
+	// RedTeamGatewayURL и RedTeamGatewayCA — адрес шлюза, через который
+	// исполнитель тестирования устойчивости отправляет атаки на цели
+	// gateway, и корневой сертификат для https (ADR-0031, раздел 2). Пусто
+	// — цели gateway не запускаются.
+	RedTeamGatewayURL string
+	RedTeamGatewayCA  string
 	// DatabaseURL содержит пароль, поэтому берётся только из окружения, не из
 	// аргументов командной строки (их видно в списке процессов).
 	DatabaseURL string
@@ -137,6 +143,8 @@ func loadConfig(args []string, getenv func(string) string, errOut io.Writer) (*s
 	syslogConns := fs.String("shadow-ai-syslog-max-connections", strconv.Itoa(shadowai.DefaultSyslogMaxConns), "предел соединений syslog всего (AISEC_SERVER_SHADOW_AI_SYSLOG_MAX_CONNECTIONS)")
 	syslogPerIP := fs.String("shadow-ai-syslog-max-connections-per-address", strconv.Itoa(shadowai.DefaultSyslogMaxConnsPerIP), "предел соединений syslog с одного адреса (AISEC_SERVER_SHADOW_AI_SYSLOG_MAX_CONNECTIONS_PER_ADDRESS)")
 	mlTemplates := fs.String("ml-templates", "false", "в установке есть aisec-ml: шаблоны политик с правилами ML-детекторов, true или false (AISEC_SERVER_ML_TEMPLATES)")
+	redteamURL := fs.String("redteam-gateway-url", "", "адрес шлюза для тестирования устойчивости целей gateway, https://узел:порт; пусто — цели gateway не запускаются (AISEC_SERVER_REDTEAM_GATEWAY_URL)")
+	redteamCA := fs.String("redteam-gateway-ca", "", "корневой сертификат шлюза для -redteam-gateway-url с https, PEM (AISEC_SERVER_REDTEAM_GATEWAY_CA)")
 	syslogRate := fs.String("shadow-ai-syslog-lines-per-second", strconv.Itoa(shadowai.DefaultSyslogLinesPerSecond), "предел строк syslog в секунду на все соединения (AISEC_SERVER_SHADOW_AI_SYSLOG_LINES_PER_SECOND)")
 	if err := fs.Parse(args); err != nil {
 		return nil, err
@@ -155,7 +163,8 @@ func loadConfig(args []string, getenv func(string) string, errOut io.Writer) (*s
 		"shadow-ai-syslog-tls-cert": syslogCert, "shadow-ai-syslog-tls-key": syslogKey, "shadow-ai-syslog-client-ca": syslogCA,
 		"shadow-ai-syslog-insecure": syslogInsecure, "shadow-ai-syslog-allowed-networks": syslogNets,
 		"shadow-ai-syslog-max-connections": syslogConns, "shadow-ai-syslog-max-connections-per-address": syslogPerIP,
-		"shadow-ai-syslog-lines-per-second": syslogRate, "ml-templates": mlTemplates} {
+		"shadow-ai-syslog-lines-per-second": syslogRate, "ml-templates": mlTemplates,
+		"redteam-gateway-url": redteamURL, "redteam-gateway-ca": redteamCA} {
 		if set[name] {
 			continue
 		}
@@ -165,7 +174,8 @@ func loadConfig(args []string, getenv func(string) string, errOut io.Writer) (*s
 	}
 	cfg := &serverConfig{Listen: *listen, TLSCertFile: *cert, TLSKeyFile: *key, AuditSigningPub: *auditPub, KeysDir: *keysDir,
 		Manifest: *manifest, CACert: *caCert, CAKey: *caKey, InternalListen: *internalListen,
-		InternalTLSCertFile: *internalCert, InternalTLSKeyFile: *internalKey, UserHMACKey: *userKey, DatabaseURL: getenv("AISEC_DATABASE_URL")}
+		InternalTLSCertFile: *internalCert, InternalTLSKeyFile: *internalKey, UserHMACKey: *userKey, DatabaseURL: getenv("AISEC_DATABASE_URL"),
+		RedTeamGatewayURL: *redteamURL, RedTeamGatewayCA: *redteamCA}
 	var errs []error
 	var err error
 	switch *mlTemplates {
@@ -222,6 +232,9 @@ func loadConfig(args []string, getenv func(string) string, errOut io.Writer) (*s
 		cert: *syslogCert, key: *syslogKey, ca: *syslogCA, insecure: *syslogInsecure, nets: *syslogNets, conns: *syslogConns,
 		perIP: *syslogPerIP, rate: *syslogRate}); err != nil {
 		errs = append(errs, err)
+	}
+	if cfg.RedTeamGatewayCA != "" && cfg.RedTeamGatewayURL == "" {
+		errs = append(errs, errors.New("redteam-gateway-ca: задаётся вместе с redteam-gateway-url"))
 	}
 	if cfg.DatabaseURL == "" {
 		errs = append(errs, errors.New("AISEC_DATABASE_URL: обязательная переменная (postgres://пользователь@хост:порт/база)"))

@@ -173,7 +173,7 @@ func (m *MCPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		q.ev.Server = ""
 	}
 	q.accepted = acceptsSSE(r.Header)
-	rec, ok := h.newEventRecord(w, app, events.TypeAgentMCP, "", false, "", start)
+	rec, ok := h.newEventRecord(w, r, app, events.TypeAgentMCP, "", false, "", start)
 	if !ok {
 		return
 	}

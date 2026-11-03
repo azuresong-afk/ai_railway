@@ -11850,6 +11850,564 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/redteam/targets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Цели тестирования устойчивости
+         * @description Право `redteam.read` (администраторы, аналитик, аудитор). Цели без секретов: у цели `endpoint` есть имя
+         *     секретного заголовка (`auth_header`), его значения в продукте нет — оно передаётся только в запросе запуска
+         *     (ADR-0031, раздел 3). `gateway_configured` — задан ли адрес шлюза для целей `gateway` (флаг сервера
+         *     `-redteam-gateway-url`).
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Цели */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["RedTeamTargetList"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        /**
+         * Создать цель тестирования устойчивости
+         * @description Право безопасности `redteam.targets.manage` (администратор безопасности), только сессия консоли: цель — адрес,
+         *     на который продукт отправит атаки. Вид `gateway` — приложение продукта и модель (атаки идут через шлюз с
+         *     ключом запуска, события помечаются `test`). Вид `endpoint` — точный адрес заказчика (схема, узел, явный порт,
+         *     путь; адреса loopback, link-local и метаданных облака запрещены, проверка — при каждом соединении, без
+         *     перенаправлений и прокси), шаблон тела JSON с `{{prompt}}` или `{{messages}}`, путь к ответу, до 8
+         *     заголовков без секретов, корневой сертификат (обязателен для `https`), основание для тестирования
+         *     (`authorization_note`, 10–500 символов) и режим хранения выдержек (`none` или `masked`). Создание цели
+         *     `endpoint` — с повторной проверкой паролем или кодом (`password` или `code`). Пишет `redteam.target_created`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["RedTeamTargetInput"];
+                };
+            };
+            responses: {
+                /** @description Цель создана */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["RedTeamTarget"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/redteam/targets/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Цель тестирования устойчивости
+         * @description Право `redteam.read`. Цель без секретов.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description ID цели тестирования устойчивости */
+                    id: components["parameters"]["RedTeamTargetID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Цель */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["RedTeamTarget"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        /**
+         * Изменить цель тестирования устойчивости
+         * @description Право безопасности `redteam.targets.manage`, только сессия консоли. Тело — цель целиком; вид не меняется.
+         *     Смена адреса цели `endpoint` (адрес, корневой сертификат, основание) — с повторной проверкой паролем или кодом.
+         *     Пишет `redteam.target_updated` с параметрами до и после (без секретов).
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID цели тестирования устойчивости */
+                    id: components["parameters"]["RedTeamTargetID"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["RedTeamTargetInput"];
+                };
+            };
+            responses: {
+                /** @description Цель изменена */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["RedTeamTarget"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        post?: never;
+        /**
+         * Удалить цель тестирования устойчивости
+         * @description Право безопасности `redteam.targets.manage`, только сессия консоли. Идущий запуск цели отменяется; запуски и
+         *     их итоги остаются (имя и вид цели в них сохранены). Пишет `redteam.target_deleted`.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID цели тестирования устойчивости */
+                    id: components["parameters"]["RedTeamTargetID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Цель удалена */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/redteam/scenarios": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * База сценариев атак
+         * @description Право `redteam.read`. Состояние служебной базы `redteam_scenarios` (ADR-0028) и сведения о сценариях
+         *     действующей версии: ID, язык, строка матрицы обнаружения, категория, название, число шагов, источник и
+         *     лицензия. Тексты шагов и условия успеха не выдаются.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description База сценариев */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["RedTeamScenarios"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        /**
+         * Загрузить базу сценариев атак
+         * @description Право `redteam.scenarios.load` (администратор системы, администратор безопасности). Тело — подписанный файл
+         *     базы вида `redteam_scenarios` (`.aisecdb`, до 4 МиБ, `Content-Type: application/octet-stream`). Проверяются
+         *     заверение рабочего ключа, подпись, вид, дата и строгий разбор JSON формата `aisec-redteam-scenarios-v1`
+         *     (до 5000 сценариев, до 8 шагов; в одном запуске — до 1000). Неверный файл — 422, версия не больше текущей — 409. Пишет
+         *     `service_db.loaded` или `service_db.rejected` без содержимого файла.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/octet-stream": string;
+                };
+            };
+            responses: {
+                /** @description База загружена */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["RedTeamScenarios"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/redteam/scenarios/rollback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Вернуть предыдущую версию базы сценариев
+         * @description Право `redteam.scenarios.load`, только сессия консоли. Предыдущая загруженная версия проверяется заново и
+         *     становится текущей (ADR-0028, п. 4). Предыдущей нет — 409, она не прошла проверку — 422. Пишет
+         *     `service_db.rolled_back`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Предыдущая версия стала текущей */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["RedTeamScenarios"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                409: components["responses"]["ProblemConflict"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/redteam/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Запуски тестирования устойчивости
+         * @description Право `redteam.read`. Запуски, новые первыми (до 200; `limit` — меньше), с итогами по вердиктам. Результаты
+         *     сценариев хранятся 90 дней, запуски — 12 месяцев (ADR-0031, раздел 8).
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description Только запуски цели */
+                    target_id?: string;
+                    limit?: number;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Запуски */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["RedTeamRunList"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        /**
+         * Запустить тестирование устойчивости
+         * @description Право `redteam.run` (администратор безопасности; доступно токену API — запуск из CI заказчика). Запуск идёт в
+         *     фоне, ответ — 202 с запуском в статусе `running`. Сценарии — из действующей базы, по фильтру (`scenarios`,
+         *     `threats`, `lang`); пусто — все. Цель `gateway`: продукт выпускает ключ запуска приложения, ждёт его доставки
+         *     шлюзам (до 90 с) и отправляет атаки через шлюз; события помечаются `test`, оповещений и инцидентов не
+         *     создают. Цель `endpoint`: `auth_value` — значение секретного заголовка цели, только в памяти исполнителя до
+         *     конца запуска, не хранится и не пишется в журналы. У цели уже идёт запуск или идут 2 запуска — 409. Пишет
+         *     `redteam.run_started`, по окончании — `redteam.run_finished`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["RedTeamStartRun"];
+                };
+            };
+            responses: {
+                /** @description Запуск начат */
+                202: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["RedTeamRun"];
+                    };
+                };
+                400: components["responses"]["ProblemInvalid"];
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                409: components["responses"]["ProblemConflict"];
+                413: components["responses"]["ProblemTooLarge"];
+                415: components["responses"]["ProblemUnsupportedMedia"];
+                422: components["responses"]["ProblemUnprocessable"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/redteam/runs/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Запуск тестирования устойчивости
+         * @description Право `redteam.read`. Запуск и итоги сценариев: вердикт, шаг, сработавшие условия успеха, находки детекторов
+         *     (без позиций и текста), итог оценщика, ID событий шлюза (цель `gateway`), код HTTP, задержка, код ошибки.
+         *     Промптов и ответов нет; выдержка ответа цели `endpoint` в режиме `masked` здесь не выдаётся — её показывает
+         *     отчёт о тестировании (задача 5.33) с правом `events.content.read` (ADR-0031, раздел 7).
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description ID запуска тестирования устойчивости */
+                    id: components["parameters"]["RedTeamRunID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Запуск с итогами */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["RedTeamRunCard"];
+                    };
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/redteam/runs/{id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Отменить запуск тестирования устойчивости
+         * @description Право `redteam.run`. Отмена идущего запуска: невыполненные сценарии получают вердикт `skipped`, запуск —
+         *     статус `cancelled`. Запуск уже завершён — 409. Пишет `redteam.run_cancelled`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Значение cookie `__Host-aisec_csrf` (двойная отправка, решение Р6); без него изменяющий запрос сессии — 403 */
+                    "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                };
+                path: {
+                    /** @description ID запуска тестирования устойчивости */
+                    id: components["parameters"]["RedTeamRunID"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Отмена принята */
+                202: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                401: components["responses"]["ProblemUnauthorized"];
+                403: components["responses"]["ProblemForbidden"];
+                404: components["responses"]["ProblemNotFound"];
+                409: components["responses"]["ProblemConflict"];
+                429: components["responses"]["RateLimited"];
+                500: components["responses"]["ProblemInternal"];
+                503: components["responses"]["Unavailable"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/license": {
         parameters: {
             query?: never;
@@ -15113,7 +15671,7 @@ export interface components {
             reason?: "signature" | "purpose" | "kind" | "expired" | "date" | "revoked" | "content" | "format";
         };
         ServiceDBState: {
-            /** @description Вид базы (shadow_ai_catalog, compliance_requirements, chat_template_baselines) */
+            /** @description Вид базы (shadow_ai_catalog, compliance_requirements, chat_template_baselines, redteam_scenarios) */
             kind: string;
             title: string;
             /**
@@ -15123,6 +15681,187 @@ export interface components {
             active: "current" | "previous" | "none";
             current?: components["schemas"]["ServiceDBVersion"];
             previous?: components["schemas"]["ServiceDBVersion"];
+        };
+        RedTeamLimits: {
+            /** @description Запросов к цели в минуту (по умолчанию 30) */
+            rate_per_minute: number;
+            /** @description Одновременных запросов (по умолчанию 2) */
+            concurrency: number;
+            /** @description Таймаут запроса, с (по умолчанию 30) */
+            request_timeout_sec: number;
+            /** @description Срок запуска, мин (по умолчанию 30) */
+            run_timeout_min: number;
+        };
+        RedTeamHeader: {
+            name: string;
+            value: string;
+        };
+        RedTeamTargetInput: {
+            name: string;
+            /** @enum {string} */
+            kind: "gateway" | "endpoint";
+            /**
+             * Format: uuid
+             * @description Цель gateway: приложение продукта
+             */
+            app_id?: string;
+            /** @description Цель gateway: модель из разрешённых приложению */
+            model?: string;
+            /** @description Цель endpoint: схема, узел, явный порт и путь */
+            url?: string;
+            /** @description Цель endpoint: JSON с подстановкой "{{prompt}}" или "{{messages}}" */
+            request_template?: string;
+            /** @description Цель endpoint: путь к тексту ответа через точку (choices.0.message.content) */
+            response_path?: string;
+            /** @description Постоянные заголовки без секретов */
+            headers?: components["schemas"]["RedTeamHeader"][];
+            /** @description Имя секретного заголовка; значение — только в запросе запуска (auth_value) */
+            auth_header?: string;
+            /** @description Корневой сертификат цели https (PEM) */
+            ca_pem?: string;
+            /** @description Основание для тестирования адреса (договор, письмо) */
+            authorization_note?: string;
+            /**
+             * @description Выдержки ответов: none — не хранить, masked — до 1 КиБ с маскированием
+             * @enum {string}
+             */
+            storage?: "none" | "masked";
+            /** @description Провайдер оценщика judge.llm с признаком on_premise */
+            judge_provider?: string;
+            judge_model?: string;
+            limits?: components["schemas"]["RedTeamLimits"];
+            /** @description Текущий пароль — повторная проверка (цель endpoint: создание и смена адреса) */
+            password?: string;
+            /** @description Код второго фактора — повторная проверка */
+            code?: string;
+        };
+        RedTeamTarget: {
+            /** Format: uuid */
+            id: string;
+            name: string;
+            /** @enum {string} */
+            kind: "gateway" | "endpoint";
+            /** Format: uuid */
+            app_id?: string;
+            model?: string;
+            url?: string;
+            request_template?: string;
+            response_path?: string;
+            headers: components["schemas"]["RedTeamHeader"][];
+            auth_header?: string;
+            ca_pem?: string;
+            authorization_note?: string;
+            /** @enum {string} */
+            storage?: "none" | "masked";
+            judge_provider?: string;
+            judge_model?: string;
+            limits: components["schemas"]["RedTeamLimits"];
+            /** Format: date-time */
+            created_at: string;
+            created_by: string;
+            /** Format: date-time */
+            updated_at: string;
+            updated_by: string;
+        };
+        RedTeamTargetList: {
+            items: components["schemas"]["RedTeamTarget"][];
+            /** @description Задан адрес шлюза для целей gateway */
+            gateway_configured: boolean;
+        };
+        RedTeamScenarioInfo: {
+            id: string;
+            /** @enum {string} */
+            lang: "ru" | "en";
+            /** @description Строка матрицы обнаружения (ТЗ 5.16) */
+            threat: string;
+            category: string;
+            title: string;
+            steps: number;
+            /** @description Условие успеха проверяет оценщик judge.llm */
+            judge: boolean;
+            source: string;
+            license: string;
+        };
+        RedTeamScenarios: {
+            state: components["schemas"]["ServiceDBState"];
+            scenarios: components["schemas"]["RedTeamScenarioInfo"][];
+        };
+        RedTeamStartRun: {
+            /** Format: uuid */
+            target_id: string;
+            /** @description ID сценариев; пусто — все */
+            scenarios?: string[];
+            /** @description Строки матрицы; пусто — все */
+            threats?: string[];
+            /** @enum {string} */
+            lang?: "ru" | "en";
+            /** @description Значение секретного заголовка цели endpoint: только в памяти до конца запуска */
+            auth_value?: string;
+        };
+        RedTeamRun: {
+            /** Format: uuid */
+            id: string;
+            /**
+             * Format: uuid
+             * @description Нет — цель удалена
+             */
+            target_id?: string;
+            target_name: string;
+            /** @enum {string} */
+            target_kind: "gateway" | "endpoint";
+            /** Format: uuid */
+            app_id?: string;
+            /** @enum {string} */
+            status: "queued" | "running" | "done" | "failed" | "cancelled";
+            /** @description Причина failed или cancelled: interrupted, deadline, key_not_delivered, no_scenarios, internal */
+            reason?: string;
+            scenarios: number;
+            /** @description Число сценариев по вердиктам */
+            counts: {
+                [key: string]: number;
+            };
+            /**
+             * Format: int64
+             * @description Версия базы сценариев
+             */
+            db_version: number;
+            /** Format: date-time */
+            started_at: string;
+            started_by: string;
+            /** Format: date-time */
+            finished_at?: string;
+            /** Format: date-time */
+            deadline: string;
+        };
+        RedTeamFinding: {
+            detector: string;
+            category: string;
+            threat: string;
+        };
+        RedTeamResult: {
+            scenario_id: string;
+            /** @enum {string} */
+            lang: "ru" | "en";
+            threat: string;
+            category: string;
+            /** @enum {string} */
+            verdict: "succeeded" | "blocked" | "defended" | "unchecked" | "error" | "skipped";
+            step: number;
+            matched: ("canary" | "contains" | "findings" | "judge")[];
+            findings: components["schemas"]["RedTeamFinding"][];
+            judge?: string;
+            event_ids: string[];
+            http_status?: number;
+            /** Format: int64 */
+            latency_ms: number;
+            /** @enum {string} */
+            error_code?: "blocked_address" | "dial" | "timeout" | "redirect" | "http_status" | "too_large" | "bad_response" | "request";
+        };
+        RedTeamRunCard: components["schemas"]["RedTeamRun"] & {
+            results: components["schemas"]["RedTeamResult"][];
+        };
+        RedTeamRunList: {
+            items: components["schemas"]["RedTeamRun"][];
         };
         ServiceDBList: {
             items: components["schemas"]["ServiceDBState"][];
@@ -16378,6 +17117,10 @@ export interface components {
     parameters: {
         /** @description ID коллекции RAG */
         RAGCollectionSlug: string;
+        /** @description ID цели тестирования устойчивости */
+        RedTeamTargetID: string;
+        /** @description ID запуска тестирования устойчивости */
+        RedTeamRunID: string;
         /** @description ID исключения документа */
         RAGExclusionID: string;
         /** @description ID модели в реестре ИИ */
