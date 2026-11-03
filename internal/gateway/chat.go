@@ -256,11 +256,15 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	rec.vault = pseudonym.NewVault(pseudonym.Limits{}, plain...)
 	defer rec.vault.Clear()
 	rec.jsonMode = jsonResponseFormat(req.ResponseFormat)
+	// judge.llm sync (задача 5.28): находки оценщика участвуют в решении
+	// наравне с остальными.
+	judgeText := judgeInputText(req)
+	judgeExtra, judgeFailed, judgeBlock := h.judgeSync(r.Context(), rec, detect.Input, judgeText)
 	checkStart := h.cfg.Now()
 	in, err := app.inspect(r.Context(), inspectRequest{
 		Endpoint: policy.EndpointChat, External: app.Provider.External(), Texts: texts, Media: chatPolicyMedia(req.Media(), mres), User: user,
 		Mask: app.Storage == events.StorageMasked, Timeout: h.cfg.DetectorTimeout, Vault: rec.vault,
-		Extra: app.promptFinding(req), Session: sess, Failures: mres.failures(),
+		Extra: append(app.promptFinding(req), judgeExtra...), Session: sess, Failures: mres.failures(),
 	})
 	rec.ev.LatencyMS["input_check"] = h.cfg.Now().Sub(checkStart).Milliseconds()
 	switch {
@@ -278,7 +282,11 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusInternalServerError, "внутренняя ошибка шлюза", "server_error", "internal_error")
 		return
 	}
+	judgeFailBlock(in, detect.Input, judgeFailed, judgeBlock)
 	rec.in, rec.texts = in, texts
+	if rules := app.judgeRules(detect.Input, false); len(rules) > 0 && !in.Blocked() {
+		rec.judgeAsync = append(rec.judgeAsync, judgeTask{dir: detect.Input, text: judgeText, rules: rules})
+	}
 	if len(in.Failures) > 0 {
 		h.logger.Warn("сбой детекторов при проверке запроса", "app", app.ID, "event_id", rec.ev.ID,
 			"failures", len(in.Failures), "fail_open", app.FailOpen)
