@@ -31,9 +31,9 @@ func fakeMedia(mod func(img []byte, r *MediaReply) error) MediaAnalyze {
 	}
 }
 
-// Покрывает: DM-50 (часть) — самотест aisec-media проходит на исправном
-// анализаторе и отличает недоступный анализатор («не проверено») от
-// неверного итога (провал).
+// Покрывает: DM-50
+// Самотест aisec-media проходит на исправном анализаторе и отличает
+// недоступный анализатор («не проверено») от неверного итога (провал).
 func TestDM50_MediaSelftest(t *testing.T) {
 	ctx := context.Background()
 	res := RunMedia(ctx, MediaConfig{Analyze: fakeMedia(nil), Detectors: builtin.All(), Now: fixedNow})
