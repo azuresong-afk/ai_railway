@@ -38,6 +38,17 @@ func (g *group) get(key string, values map[string]string) *Trigger {
 	return t
 }
 
+// withoutTest — события без тестовых: по запросам исполнителя тестирования
+// устойчивости с ключом запуска (events.Event.Test) оповещения и инциденты
+// не поднимаются и счётчики «частоты» не растут (задача 5.32, ADR-0031,
+// раздел 2). Срез без тестовых событий возвращается как есть.
+func withoutTest(evs []*events.Event) []*events.Event {
+	if !slices.ContainsFunc(evs, func(e *events.Event) bool { return e != nil && e.Test }) {
+		return evs
+	}
+	return slices.DeleteFunc(slices.Clone(evs), func(e *events.Event) bool { return e != nil && e.Test })
+}
+
 // process проверяет принятые события правилами «порог» и «новое» и
 // учитывает срабатывания. Правило, условие которого не разбирается
 // (например, после изменения языка фильтров), пропускается с вызовом

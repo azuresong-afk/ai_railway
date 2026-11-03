@@ -112,12 +112,14 @@ func (rec *record) issue(resp *chat.Response) {
 
 // newRecord заводит событие и сообщает его ID приложению заголовком
 // X-AISec-Event-Id. Без ID события запрос не обрабатывается.
-func (h *ChatHandler) newRecord(w http.ResponseWriter, app *App, req *chat.Request, user string, start time.Time) (*record, bool) {
-	return h.newEventRecord(w, app, events.TypeGatewayRequest, req.Model, req.Stream, user, start)
+func (h *ChatHandler) newRecord(w http.ResponseWriter, r *http.Request, app *App, req *chat.Request, user string, start time.Time) (*record, bool) {
+	return h.newEventRecord(w, r, app, events.TypeGatewayRequest, req.Model, req.Stream, user, start)
 }
 
 // newEventRecord заводит событие заданного типа: gateway_request, check.
-func (h *ChatHandler) newEventRecord(w http.ResponseWriter, app *App, typ, model string, stream bool, user string, start time.Time) (*record, bool) {
+// Запрос с ключом запуска тестирования устойчивости помечается test
+// (ADR-0031, раздел 2).
+func (h *ChatHandler) newEventRecord(w http.ResponseWriter, r *http.Request, app *App, typ, model string, stream bool, user string, start time.Time) (*record, bool) {
 	u, err := h.cfg.IDs.New()
 	if err != nil {
 		h.logger.Error("идентификатор события", "error", err)
@@ -129,6 +131,9 @@ func (h *ChatHandler) newEventRecord(w http.ResponseWriter, app *App, typ, model
 		Provider: app.Provider.ID(), Model: model, PolicyMode: string(effectiveMode(app)), Stream: stream,
 		Storage: app.Storage, LatencyMS: map[string]int64{},
 	}}
+	if id, ok := IdentityFrom(r.Context()); ok && id.Test {
+		rec.ev.Test = true
+	}
 	w.Header().Set(HeaderEventID, rec.ev.ID)
 	return rec, true
 }

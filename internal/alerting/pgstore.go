@@ -94,6 +94,7 @@ func (s *PGStore) OnIngest(ctx context.Context, tx pgx.Tx, gatewayID string, acc
 	skipped := func(err error) {
 		s.logger.Error("оповещения: правило пропущено", "error", err)
 	}
+	accepted = withoutTest(accepted)
 	if err := process(ctx, ops, gatewayID, accepted, skipped); err != nil {
 		return err
 	}

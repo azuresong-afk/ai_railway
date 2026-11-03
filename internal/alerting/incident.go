@@ -105,6 +105,7 @@ func (s *PGStore) WithIncidents(o IncidentOpener) events.IngestHook {
 func (h incidentHook) OnIngest(ctx context.Context, tx pgx.Tx, gatewayID string, accepted []*events.Event) error {
 	// Те же шаги, что в PGStore.OnIngest (меняются вместе с ним), но через
 	// linkOps: срабатывания правил с признаком «инцидент» запоминаются.
+	accepted = withoutTest(accepted)
 	ops := &linkOps{txOps: pgOps{s: h.s, tx: tx}}
 	skipped := func(err error) {
 		h.s.logger.Error("оповещения: правило пропущено", "error", err)
@@ -274,6 +275,7 @@ func (m *Memory) IngestWithIncidents(ctx context.Context, gatewayID string, evs 
 		return err
 	}
 	// Те же шаги, что в Memory.Ingest.
+	evs = withoutTest(evs)
 	ops := &linkOps{txOps: memOps{m}}
 	err := process(ctx, ops, gatewayID, evs, nil)
 	if err == nil {
