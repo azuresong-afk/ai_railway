@@ -71,7 +71,7 @@ func TestComposeMediaRejects(t *testing.T) {
 		"tmpfs exec":                {"noexec,", "exec,", "exec запрещён"},
 		"tmpfs без размера":         {"size=16m,", "", "size"},
 		"второй tmpfs":              {"      - \"/tmp:", "      - \"/run/x:size=1m,noexec,nosuid,nodev\"\n      - \"/tmp:", "ровно один"},
-		"без cpus":                  {"    cpus: ${AISEC_MEDIA_CPUS:-2}\n", "", "cpus"},
+		"без cpus":                  {"    cpus: ${AISEC_MEDIA_CPUS:-4}\n", "", "cpus"},
 		"без memswap_limit":         {"    memswap_limit: ${AISEC_MEDIA_MEM_LIMIT:-1g}\n", "", "memswap_limit"},
 		"своп больше памяти":        {"    memswap_limit: ${AISEC_MEDIA_MEM_LIMIT:-1g}\n", "    memswap_limit: -1\n", "memswap_limit"},
 		"без mem_limit":             {"    mem_limit: ${AISEC_MEDIA_MEM_LIMIT:-1g}\n", "", "mem_limit"},
