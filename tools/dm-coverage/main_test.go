@@ -2,7 +2,9 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -87,7 +89,7 @@ func TestParseGoTestJSON(t *testing.T) {
 {"Action":"skip","Test":"TestZ"}
 {"Action":"pass","Package":"p"}
 `)
-	got, err := ParseGoTestJSON(data)
+	got, _, err := ParseGoTestJSON(data)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,8 +102,70 @@ func TestParseGoTestJSON(t *testing.T) {
 			t.Fatalf("%d: %+v, ожидалось %+v", i, got[i], want[i])
 		}
 	}
-	if _, err := ParseGoTestJSON([]byte("{не json\n")); err == nil {
+	if _, _, err := ParseGoTestJSON([]byte("{не json\n")); err == nil {
 		t.Fatal("ожидалась ошибка")
+	}
+}
+
+// Упавший тест, пакет или сборка — проблема отчёта, даже если тест не
+// покрывает строк матрицы (замечание G2 этапа 5: при упавших e2e отчёт
+// говорил «0 проблем»). Пропуск падением не считается.
+func TestParseGoTestJSONFailures(t *testing.T) {
+	data := []byte(`{"Action":"pass","Package":"a","Test":"TestOK"}
+{"Action":"fail","Package":"a","Test":"TestParent/sub"}
+{"Action":"fail","Package":"a","Test":"TestParent"}
+{"Action":"fail","Package":"a","Test":"TestFlat"}
+{"Action":"fail","Package":"a"}
+{"Action":"skip","Package":"b","Test":"TestSkipped"}
+{"Action":"pass","Package":"b"}
+{"Action":"fail","Package":"c"}
+{"ImportPath":"d.test","Action":"build-fail"}
+{"Action":"fail","Package":"d"}
+`)
+	_, got, err := ParseGoTestJSON(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"сборка d.test не прошла",
+		"тест TestParent/sub (a) не прошёл",
+		"тест TestFlat (a) не прошёл",
+		"пакет c не прошёл (сборка, паника вне теста, таймаут или TestMain)",
+		"пакет d не прошёл (сборка, паника вне теста, таймаут или TestMain)",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("падения:\n%q\nожидалось\n%q", got, want)
+	}
+	if _, got, _ := ParseGoTestJSON([]byte(`{"Action":"pass","Package":"a","Test":"TestOK"}
+{"Action":"skip","Package":"a","Test":"TestS"}
+{"Action":"pass","Package":"a"}
+`)); len(got) != 0 {
+		t.Fatalf("без падений: %q", got)
+	}
+}
+
+// run: упавший e2e-тест без маркера покрытия делает отчёт неуспешным и
+// попадает в его проблемы.
+func TestRunFailsOnFailedTest(t *testing.T) {
+	dir := t.TempDir()
+	spec := filepath.Join(dir, "spec.md")
+	if err := os.WriteFile(spec, []byte(specSample), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	report := filepath.Join(dir, "e2e.json")
+	if err := os.WriteFile(report, []byte(`{"Action":"fail","Package":"e2e","Test":"TestE2EStage5_Something"}
+{"Action":"fail","Package":"e2e"}
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(dir, "r")
+	err := run(spec, 0, []string{report}, nil, dir, out)
+	if err == nil || !strings.Contains(err.Error(), "e2e.json: тест TestE2EStage5_Something (e2e) не прошёл") {
+		t.Fatalf("ошибка: %v", err)
+	}
+	md, rerr := os.ReadFile(out + ".md")
+	if rerr != nil || !strings.Contains(string(md), "TestE2EStage5_Something") {
+		t.Fatalf("отчёт без падения: %v\n%s", rerr, md)
 	}
 }
 
@@ -252,7 +316,7 @@ func FuzzParseMatrix(f *testing.F) {
 func FuzzParseGoTestJSON(f *testing.F) {
 	f.Add([]byte("{\"Action\":\"pass\",\"Test\":\"TestDM01\"}\n"))
 	f.Fuzz(func(t *testing.T, data []byte) {
-		res, err := ParseGoTestJSON(data)
+		res, _, err := ParseGoTestJSON(data)
 		if err != nil {
 			return
 		}
