@@ -310,3 +310,29 @@ func TestPGAlertJob(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// 5В5 ревью 5.r4 этапа 5 (дефект 5.49-1): живая база принимает состояние
+// каждого условия, которое хранит сервер, в том числе этапов 4 и 5
+// (теневой ИИ, лимиты шлюза, служебные базы, анализатор изображений).
+func TestPGTransitionAllStoredConditions(t *testing.T) {
+	e, ctx := setupPG(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	codes := sysstatus.StoredConditionSamples(sampleGatewayID, dbKindNames())
+	for _, code := range codes {
+		rec := func(active bool) audit.Entry {
+			return audit.Entry{Actor: audit.Actor{Type: audit.ActorSystem, ID: "system-status"}, Action: "system.alert",
+				Object: audit.Object{Type: "system", ID: code}, Result: audit.ResultFailure,
+				Details: map[string]any{"state": map[bool]string{true: "raised", false: "cleared"}[active]}}
+		}
+		if ch, err := e.store.Transition(ctx, code, true, now, rec); err != nil || !ch {
+			t.Fatalf("%s: changed=%v err=%v", code, ch, err)
+		}
+	}
+	states, err := e.store.AlertStates(ctx)
+	if err != nil || len(states) != len(codes) {
+		t.Fatalf("сохранено %d из %d: %v", len(states), len(codes), err)
+	}
+	if n := len(e.alerts(t, ctx)); n != len(codes) {
+		t.Fatalf("записей system.alert %d, ждали %d", n, len(codes))
+	}
+}
