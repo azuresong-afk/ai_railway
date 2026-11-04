@@ -12,6 +12,7 @@ import (
 
 	"github.com/azuresong-afk/ai_railway/internal/audit"
 	"github.com/azuresong-afk/ai_railway/internal/auth"
+	"github.com/azuresong-afk/ai_railway/internal/auth/authtest"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/internal/keyring"
 	"github.com/azuresong-afk/ai_railway/internal/redteam"
@@ -394,9 +395,40 @@ func TestRedTeamReportAPI(t *testing.T) {
 		t.Fatalf("отчёт токеном: %d %s", w.Code, w.Body)
 	}
 	n := exports()
+	denied := func() int { _, n := lastDenied(t, e.mem); return n }
+	nd := denied()
 	mustProblem(t, e.call(tok, "GET", path+"?examples=true", "", false), http.StatusForbidden, CodeForbidden)
 	if exports() != n {
 		t.Fatal("отказ в выдержках записан как выгрузка")
+	}
+	// 5Н27 ревью 5.r4: отказ в выдержках — запись access.denied.
+	if denied() != nd+1 {
+		t.Fatalf("отказ в выдержках токену без записи access.denied: %d", denied()-nd)
+	}
+	// Своя роль с redteam.export и events.content.read только на свои
+	// объекты: выдержек нет (у цели нет владельца-приложения), причина — scope.
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	rec := audit.Entry{Actor: audit.Actor{Type: audit.ActorCLI, ID: "test"}, Action: "role.create", Result: audit.ResultSuccess}
+	if err := e.mem.CreateRole(context.Background(), audit.DefaultOrgID, "", auth.RoleDef{ID: "rt_own", DisplayName: "rt_own",
+		Grants:    auth.Grants{auth.PermRedteamExport: auth.ScopeAll, auth.PermRedteamRead: auth.ScopeAll, auth.PermEventsContentRead: auth.ScopeOwn},
+		CreatedAt: now, UpdatedAt: now, CreatedBy: "test"}, func(auth.Actor) (audit.Entry, error) { return rec, nil }); err != nil {
+		t.Fatal(err)
+	}
+	e.mem.AddUser(auth.User{ID: "01900000-0000-7000-8000-0000000000e7", OrgID: audit.DefaultOrgID, Login: "rtown", DisplayName: "rtown",
+		Role: "rt_own", Status: auth.StatusActive, PasswordHash: authtest.HashOf(tPhrase), PasswordChangedAt: now, CreatedAt: now, CreatedBy: "test"})
+	own := e.mustLogin(t, "rtown")
+	if w := e.call(own, "GET", path+"?format=csv", "", false); w.Code != http.StatusOK {
+		t.Fatalf("своя роль без выдержек: %d %s", w.Code, w.Body)
+	}
+	nd, n = denied(), exports()
+	mustProblem(t, e.call(own, "GET", path+"?examples=true", "", false), http.StatusForbidden, CodeForbidden)
+	if exports() != n || denied() != nd+1 {
+		t.Fatalf("область own: выгрузок %d, отказов %d", exports()-n, denied()-nd)
+	}
+	lastDeny, _ := lastDenied(t, e.mem)
+	if d, _ := lastDeny.Details.(map[string]any); lastDeny.Result != audit.ResultDenied || d["reason"] != DenyReasonScope ||
+		d["permission"] != auth.PermEventsContentRead || d["path"] != "/api/v1/redteam/runs/{id}/report" {
+		t.Fatalf("запись отказа: %+v", lastDeny)
 	}
 	// Администратор безопасности — с выдержками; в аудите виден признак.
 	if w := e.call(admin, "GET", path+"?examples=true&format=csv", "", false); w.Code != http.StatusOK {
