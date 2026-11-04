@@ -201,7 +201,13 @@ func (a Analyzer) Analyze(ctx context.Context, data []byte) (wire.Result, error)
 			return wire.Result{}, err
 		}
 	}
-	return wire.Result{Status: wire.StatusOK, Format: info.Format, Width: info.Width, Height: info.Height,
+	// Размеры — в ориентации показа (5Н28): рамки текстов — в ней же.
+	w, h := info.Width, info.Height
+	if info.Format != wire.FormatGIF {
+		b := frames[0].Bounds()
+		w, h = int64(b.Dx()), int64(b.Dy())
+	}
+	return wire.Result{Status: wire.StatusOK, Format: info.Format, Width: w, Height: h,
 		Frames: info.Frames, Checks: a.Checks(), Texts: ts.texts}, nil
 }
 
@@ -271,8 +277,10 @@ func unsupported(info Info) wire.Result {
 // сверяются с DecodeConfig того же пакета: расхождение своего разбора и
 // разбора декодера обошло бы предел. Затем по модели цвета декодера
 // оценивается память пути (rasterCost): больше budget — errRasterBudget.
-// После — границы растра обязаны совпасть с заголовком. Итог — кадры (у
-// GIF — все, у остальных — один). Паника декодера — errDecoderPanic.
+// После — границы растра обязаны совпасть с заголовком, а кадр
+// поворачивается по ориентации EXIF (5Н28). Итог — кадры (у GIF — все, у
+// остальных — один, в ориентации показа). Паника декодера —
+// errDecoderPanic.
 func decode(data []byte, info Info, budget int64) (frames []image.Image, err error) {
 	defer func() {
 		if p := recover(); p != nil {
@@ -302,10 +310,16 @@ func decode(data []byte, info Info, budget int64) (frames []image.Image, err err
 	if int64(cfg.Width) != info.Width || int64(cfg.Height) != info.Height {
 		return nil, errors.New("aisec-media: размеры декодера не совпали с заголовком")
 	}
-	if rasterCost(info, cfg.ColorModel, false) > budget {
+	o := orientation(data, info.Format)
+	if rasterCost(info, cfg.ColorModel, o > 1) > budget {
 		return nil, errRasterBudget
 	}
-	return decodeRaster(data, info)
+	frames, err = decodeRaster(data, info)
+	if err != nil || o == 1 || len(frames) != 1 {
+		return frames, err
+	}
+	frames[0] = orientImage(frames[0], o)
+	return frames, nil
 }
 
 // decodeRaster — декодирование после проверки размеров. Растр получают

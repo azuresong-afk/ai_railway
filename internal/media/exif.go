@@ -167,6 +167,50 @@ func exifText(tag, typ uint16, v []byte, bo binary.ByteOrder) string {
 	return ""
 }
 
+// orientationTag — Orientation в IFD0 (SHORT, 1–8).
+const orientationTag = 0x0112
+
+// exifOrientation — значение Orientation из IFD0 блока TIFF (без префикса
+// «Exif\0\0»): 1–8; 1 — тега нет, блок не разобран или значение вне
+// диапазона. Читается только IFD0, теми же проверками границ, что и текст.
+func exifOrientation(t []byte) int {
+	if len(t) < 8 {
+		return 1
+	}
+	var bo binary.ByteOrder
+	switch {
+	case bytes.HasPrefix(t, []byte("II*\x00")):
+		bo = binary.LittleEndian
+	case bytes.HasPrefix(t, []byte("MM\x00*")):
+		bo = binary.BigEndian
+	default:
+		return 1
+	}
+	off := uint64(bo.Uint32(t[4:8]))
+	if off < 8 || off+2 > uint64(len(t)) {
+		return 1
+	}
+	n := uint64(bo.Uint16(t[off : off+2]))
+	start := off + 2
+	if n > maxIFDEntries || start+12*n > uint64(len(t)) {
+		return 1
+	}
+	for k := range n {
+		e := t[start+12*k : start+12*k+12]
+		if bo.Uint16(e[0:2]) != orientationTag {
+			continue
+		}
+		if bo.Uint16(e[2:4]) != 3 || bo.Uint32(e[4:8]) != 1 {
+			return 1
+		}
+		if v := int(bo.Uint16(e[8:10])); v >= 1 && v <= 8 {
+			return v
+		}
+		return 1
+	}
+	return 1
+}
+
 // cString — строка до первого NUL: UTF-8 или ISO-8859-1.
 func cString(b []byte) string {
 	if i := bytes.IndexByte(b, 0); i >= 0 {

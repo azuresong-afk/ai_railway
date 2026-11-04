@@ -50,9 +50,9 @@ func readMetadata(data []byte, f wire.Format, ts *textSet) {
 	}
 }
 
-// webpMetadata — обход чанков RIFF по длинам (с выравниванием до чётного):
-// EXIF (блок TIFF, у некоторых программ — с префиксом «Exif\0\0») и «XMP ».
-func webpMetadata(data []byte, add func(string) bool) {
+// webpChunks — обход чанков RIFF по длинам (с выравниванием до чётного);
+// fn возвращает false — обход остановлен.
+func webpChunks(data []byte, fn func(typ string, body []byte) bool) {
 	for i := 12; i+8 <= len(data); {
 		typ := string(data[i : i+4])
 		n := binary.LittleEndian.Uint32(data[i+4 : i+8])
@@ -61,22 +61,29 @@ func webpMetadata(data []byte, add func(string) bool) {
 		}
 		body := data[i+8 : i+8+int(n)]
 		i += 8 + int(n) + int(n&1)
-		ok := true
-		switch typ {
-		case "EXIF":
-			ok = exifInto(bytes.TrimPrefix(body, exifPrefix), add)
-		case "XMP ":
-			ok = xmpInto(body, add)
-		}
-		if !ok {
+		if !fn(typ, body) {
 			return
 		}
 	}
 }
 
-// pngMetadata — обход чанков PNG по длинам до IEND.
-func pngMetadata(data []byte, add func(string) bool) {
-	budget := maxInflateTotal
+// webpMetadata — чанки EXIF (блок TIFF, у некоторых программ — с
+// префиксом «Exif\0\0») и «XMP ».
+func webpMetadata(data []byte, add func(string) bool) {
+	webpChunks(data, func(typ string, body []byte) bool {
+		switch typ {
+		case "EXIF":
+			return exifInto(bytes.TrimPrefix(body, exifPrefix), add)
+		case "XMP ":
+			return xmpInto(body, add)
+		}
+		return true
+	})
+}
+
+// pngChunks — обход чанков PNG по длинам до IEND; fn возвращает false —
+// обход остановлен.
+func pngChunks(data []byte, fn func(typ string, body []byte) bool) {
 	for i := len(pngSignature); i+12 <= len(data); {
 		n := binary.BigEndian.Uint32(data[i : i+4])
 		typ := string(data[i+4 : i+8])
@@ -85,25 +92,28 @@ func pngMetadata(data []byte, add func(string) bool) {
 		}
 		body := data[i+8 : i+8+int(n)]
 		i += 12 + int(n)
-		var ok bool
-		switch typ {
-		case "IEND":
-			return
-		case "tEXt":
-			ok = pngText(body, add)
-		case "zTXt":
-			ok = pngZText(body, &budget, add)
-		case "iTXt":
-			ok = pngIText(body, &budget, add)
-		case "eXIf":
-			ok = exifInto(body, add)
-		default:
-			continue
-		}
-		if !ok {
+		if typ == "IEND" || !fn(typ, body) {
 			return
 		}
 	}
+}
+
+// pngMetadata — текстовые чанки и eXIf.
+func pngMetadata(data []byte, add func(string) bool) {
+	budget := maxInflateTotal
+	pngChunks(data, func(typ string, body []byte) bool {
+		switch typ {
+		case "tEXt":
+			return pngText(body, add)
+		case "zTXt":
+			return pngZText(body, &budget, add)
+		case "iTXt":
+			return pngIText(body, &budget, add)
+		case "eXIf":
+			return exifInto(body, add)
+		}
+		return true
+	})
 }
 
 // pngText — tEXt: ключевое слово, NUL, текст. По спецификации —
@@ -182,9 +192,10 @@ func inflate(b []byte, budget *int) ([]byte, bool) {
 	return out, true
 }
 
-// jpegMetadata — обход сегментов JPEG по длинам, как parseJPEG: APP1 с
-// EXIF или XMP и COM; энтропийные данные сканов пропускаются.
-func jpegMetadata(data []byte, add func(string) bool) {
+// jpegSegments — обход сегментов JPEG по длинам, как parseJPEG;
+// энтропийные данные сканов пропускаются. fn получает маркер и тело
+// сегмента; false — обход остановлен.
+func jpegSegments(data []byte, fn func(m byte, seg []byte) bool) {
 	for i := 2; i < len(data); {
 		if data[i] != 0xFF {
 			return
@@ -212,21 +223,69 @@ func jpegMetadata(data []byte, add func(string) bool) {
 		}
 		seg := data[i+2 : i+n]
 		i += n
-		ok := true
-		switch {
-		case m == 0xE1 && bytes.HasPrefix(seg, exifPrefix):
-			ok = exifInto(seg[len(exifPrefix):], add)
-		case m == 0xE1 && bytes.HasPrefix(seg, xmpPrefix):
-			ok = xmpInto(seg[len(xmpPrefix):], add)
-		case m == 0xFE:
-			ok = add(utf8OrLatin1(seg))
-		case m == 0xDA:
+		if m == 0xDA {
 			i = skipEntropy(data, i)
 		}
-		if !ok {
+		if !fn(m, seg) {
 			return
 		}
 	}
+}
+
+// jpegMetadata — APP1 с EXIF или XMP и COM.
+func jpegMetadata(data []byte, add func(string) bool) {
+	jpegSegments(data, func(m byte, seg []byte) bool {
+		switch {
+		case m == 0xE1 && bytes.HasPrefix(seg, exifPrefix):
+			return exifInto(seg[len(exifPrefix):], add)
+		case m == 0xE1 && bytes.HasPrefix(seg, xmpPrefix):
+			return xmpInto(seg[len(xmpPrefix):], add)
+		case m == 0xFE:
+			return add(utf8OrLatin1(seg))
+		}
+		return true
+	})
+}
+
+// orientation — ориентация из тега 0x0112 первого блока EXIF файла (5Н28
+// ревью 5.r4): JPEG — APP1 до первого скана, PNG — eXIf, WebP — чанк
+// EXIF, TIFF — IFD0 самого файла. 1 — тега нет, блок не разобран или
+// значение вне 1–8; у GIF и BMP EXIF нет.
+func orientation(data []byte, f wire.Format) int {
+	o := 1
+	first := func(b []byte) bool {
+		o = exifOrientation(b)
+		return false
+	}
+	switch f {
+	case wire.FormatTIFF:
+		return exifOrientation(data)
+	case wire.FormatJPEG:
+		jpegSegments(data, func(m byte, seg []byte) bool {
+			switch {
+			case m == 0xDA:
+				return false
+			case m == 0xE1 && bytes.HasPrefix(seg, exifPrefix):
+				return first(seg[len(exifPrefix):])
+			}
+			return true
+		})
+	case wire.FormatPNG:
+		pngChunks(data, func(typ string, body []byte) bool {
+			if typ == "eXIf" {
+				return first(body)
+			}
+			return typ != "IDAT"
+		})
+	case wire.FormatWebP:
+		webpChunks(data, func(typ string, body []byte) bool {
+			if typ == "EXIF" {
+				return first(bytes.TrimPrefix(body, exifPrefix))
+			}
+			return true
+		})
+	}
+	return o
 }
 
 // exifInto и xmpInto — разбор блока; false — набор текстов заполнен.

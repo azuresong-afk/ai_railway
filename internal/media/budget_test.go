@@ -175,6 +175,10 @@ func TestRasterCostCoversPeakHeap(t *testing.T) {
 		"JPEG":             enc(func(b *bytes.Buffer) error { return jpeg.Encode(b, rgba, &jpeg.Options{Quality: 50}) }),
 		"GIF":              enc(func(b *bytes.Buffer) error { return gif.EncodeAll(b, g) }),
 	}
+	// JPEG с Orientation 6: кадр поворачивается копией RGBA (5Н28).
+	jp := cases["JPEG"]
+	app1 := jpegSegment(0xE1, append(append([]byte(nil), exifPrefix...), orientEXIF(binary.LittleEndian, 6)...))
+	cases["JPEG, ориентация 6"] = append(append(append([]byte(nil), jp[:2]...), app1...), jp[2:]...)
 	// Девять мелких строк — проход ×2 по всему кадру (x2MaxBands).
 	var lines []fakeLine
 	for i := range 9 {
@@ -195,7 +199,7 @@ func TestRasterCostCoversPeakHeap(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cost := uint64(rasterCost(info, cfg.ColorModel, false)) //nolint:gosec // G115: оценка положительна
+		cost := uint64(rasterCost(info, cfg.ColorModel, orientation(data, info.Format) > 1)) //nolint:gosec // G115: оценка положительна
 		an := peakHeap(func() {
 			if r, err := (Analyzer{Limits: l, OCR: ocr}).Analyze(context.Background(), data); err != nil || r.Status != wire.StatusOK {
 				t.Fatalf("%s: %+v %v", name, r, err)

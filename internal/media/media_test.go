@@ -599,5 +599,8 @@ func FuzzWebPMetadata(f *testing.F) {
 		if len(ts.texts) > wire.MaxTexts || ts.total > wire.MaxTextsBytes {
 			t.Fatalf("предел текстов: %d, %d", len(ts.texts), ts.total)
 		}
+		if o := orientation(data, wire.FormatWebP); o < 1 || o > 8 {
+			t.Fatalf("ориентация %d", o)
+		}
 	})
 }

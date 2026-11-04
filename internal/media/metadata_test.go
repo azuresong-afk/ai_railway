@@ -447,6 +447,9 @@ func FuzzPNGMetadata(f *testing.F) {
 		var ts textSet
 		readMetadata(data, wire.FormatPNG, &ts)
 		fuzzTexts(t, &ts)
+		if o := orientation(data, wire.FormatPNG); o < 1 || o > 8 {
+			t.Fatalf("ориентация %d", o)
+		}
 	})
 }
 
@@ -458,6 +461,9 @@ func FuzzJPEGMetadata(f *testing.F) {
 		var ts textSet
 		readMetadata(data, wire.FormatJPEG, &ts)
 		fuzzTexts(t, &ts)
+		if o := orientation(data, wire.FormatJPEG); o < 1 || o > 8 {
+			t.Fatalf("ориентация %d", o)
+		}
 	})
 }
 
@@ -465,10 +471,14 @@ func FuzzParseEXIF(f *testing.F) {
 	f.Add(exifBlock(binary.LittleEndian, []exifEntry{{0x010E, 2, ascii("описание")}, {0x9C9C, 1, ucs2Bytes("XP", binary.LittleEndian)}},
 		[]exifEntry{{userComment, 7, append([]byte("UNICODE\x00"), ucs2Bytes("комментарий", binary.LittleEndian)...)}}))
 	f.Add(exifBlock(binary.BigEndian, []exifEntry{{0x8298, 2, ascii("(c)")}}, []exifEntry{}))
+	f.Add(exifBlock(binary.LittleEndian, []exifEntry{{orientationTag, 3, []byte{6, 0}}}, nil))
 	f.Fuzz(func(t *testing.T, data []byte) {
 		var ts textSet
 		_ = parseEXIF(data, func(s string) bool { return ts.add(wire.SourceMetadata, s, nil) }) //nolint:gosec // G104: проверяются пределы
 		fuzzTexts(t, &ts)
+		if o := exifOrientation(data); o < 1 || o > 8 {
+			t.Fatalf("ориентация %d", o)
+		}
 	})
 }
 
