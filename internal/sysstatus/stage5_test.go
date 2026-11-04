@@ -209,3 +209,100 @@ func TestStatusServiceDBInvalid(t *testing.T) {
 		t.Fatalf("сбой источника: %v", st.Unavailable)
 	}
 }
+
+// DM-50, задача 5.44 этапа 5: состояние aisec-media шлюза выводится по
+// шлюзу; рост отказов overloaded и timeout за окно поднимает
+// gateway_media_overloaded, сбой последнего вызова или рост unavailable и
+// error — gateway_media_unavailable, провал самотеста —
+// gateway_media_selftest; шлюз без aisec-media — нет данных и условий.
+func TestDM50_GatewayMediaConditions(t *testing.T) {
+	e := newEnv()
+	started := t0.Add(-time.Hour)
+	media := map[string]gwregistry.MediaMark{}
+	mark := func(busy, down int64, isDown bool, selftest string) gwregistry.MediaMark {
+		m := gwregistry.MediaMark{At: e.clock, StartedAt: started, MediaStats: gwregistry.MediaStats{
+			MaxInflight: 16, Analyzed: 10, Overloaded: busy, Timeout: 0, Unavailable: down, Down: isDown}}
+		if selftest != "" {
+			failed := 0
+			if selftest == gwregistry.MediaSelftestFailed {
+				failed = 1
+			}
+			m.Selftest = &gwregistry.MediaSelftest{Result: selftest, At: e.clock, Failed: failed}
+		}
+		return m
+	}
+	o := e.opts()
+	o.GatewayMedia = func() map[string]gwregistry.MediaMark { return media }
+	s, err := sysstatus.New(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	e.gws.list = []gwregistry.Gateway{
+		{ID: "g1", Name: "a", Status: gwregistry.StatusActive, LastSeenAt: t0, StartedAt: started},
+		{ID: "g2", Name: "b", Status: gwregistry.StatusActive, LastSeenAt: t0, StartedAt: started},
+	}
+	media["g1"] = mark(3, 0, false, gwregistry.MediaSelftestOK)
+	if err := s.Evaluate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	st := s.Status(ctx)
+	if g := st.Gateways[0].Media; g == nil || g.Unchecked.Overloaded != 3 || g.MaxInflight != 16 || g.Selftest == nil || g.Selftest.Result != "ok" {
+		t.Fatalf("раздел шлюза: %+v", g)
+	}
+	if st.Gateways[1].Media != nil {
+		t.Fatalf("шлюз без aisec-media: %+v", st.Gateways[1].Media)
+	}
+	// Первое наблюдение — точка отсчёта, условий нет.
+	for _, c := range []string{sysstatus.ConditionMediaOverloaded, sysstatus.ConditionMediaUnavailable, sysstatus.ConditionMediaSelftest} {
+		if n := notif(st, c); n.Active {
+			t.Fatalf("первое наблюдение %s: %+v", c, n)
+		}
+	}
+	if n := notif(st, sysstatus.ConditionMediaOverloaded); n.Requirement != "ЗИ.7" {
+		t.Fatalf("требование: %+v", n)
+	}
+	// Перегрузка выросла — gateway_media_overloaded у g1.
+	e.clock = t0.Add(time.Minute)
+	media["g1"] = mark(5, 0, false, gwregistry.MediaSelftestOK)
+	if err := s.Evaluate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := raisedStates(e); got["gateway_media_overloaded:g1"] != "raised" || got["gateway_media_unavailable:g1"] == "raised" {
+		t.Fatalf("перегрузка: %v", got)
+	}
+	// Анализатор пропал, самотест не проверен — недоступен, но не провал.
+	e.clock = t0.Add(2 * time.Minute)
+	media["g1"] = mark(5, 1, true, gwregistry.MediaSelftestUnchecked)
+	if err := s.Evaluate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got := raisedStates(e)
+	if got["gateway_media_unavailable:g1"] != "raised" || got["gateway_media_selftest:g1"] == "raised" {
+		t.Fatalf("недоступен: %v", got)
+	}
+	if n := notif(s.Status(ctx), sysstatus.ConditionMediaUnavailable); !n.Active || !slices.Equal(n.Components, []string{"gateway:g1"}) {
+		t.Fatalf("уведомление: %+v", n)
+	}
+	// Самотест провален.
+	e.clock = t0.Add(3 * time.Minute)
+	media["g1"] = mark(5, 1, true, gwregistry.MediaSelftestFailed)
+	if err := s.Evaluate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := raisedStates(e); got["gateway_media_selftest:g1"] != "raised" {
+		t.Fatalf("провал самотеста: %v", got)
+	}
+	// Анализатор вернулся, самотест пройден, окно прошло — всё снято.
+	e.clock = e.clock.Add(sysstatus.DroppedWindow + time.Minute)
+	media["g1"] = mark(5, 1, false, gwregistry.MediaSelftestOK)
+	if err := s.Evaluate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got = raisedStates(e)
+	for _, c := range []string{"gateway_media_overloaded:g1", "gateway_media_unavailable:g1", "gateway_media_selftest:g1"} {
+		if got[c] != "cleared" {
+			t.Fatalf("после восстановления %s: %v", c, got)
+		}
+	}
+}

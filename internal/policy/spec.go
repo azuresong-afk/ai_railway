@@ -52,6 +52,10 @@ type Spec struct {
 	// 0 — DefaultMediaTimeout.
 	MediaCheck     MediaCheck `yaml:"media_check,omitempty"`
 	MediaTimeoutMS int        `yaml:"media_check_timeout_ms,omitempty"`
+	// MediaSanitize — очистка изображений перед отправкой провайдеру
+	// (задача 5.45): удаление метаданных, перекодирование и уменьшение в
+	// aisec-media. По умолчанию выключена: меняет содержимое запроса.
+	MediaSanitize bool `yaml:"media_sanitize,omitempty"`
 	// BlockMessage — сообщение о блокировке; пусто — DefaultBlockMessage.
 	BlockMessage string     `yaml:"block_message,omitempty"`
 	Rules        []RuleSpec `yaml:"rules"`

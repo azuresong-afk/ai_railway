@@ -33,6 +33,7 @@ const (
 	WeakModeMonitor     = "mode_monitor"            // enforce → monitor
 	WeakNonText         = "non_text_weakened"       // block → allow_*, allow_inline → allow_unchecked
 	WeakMediaCheck      = "media_check_weakened"    // sync → async → off, срок sync короче
+	WeakMediaSanitize   = "media_sanitize_weakened" // очистка изображений выключена (задача 5.45)
 	WeakResponseCheck   = "response_check_weakened" // buffered → incremental → monitor
 	WeakRuleRemoved     = "rule_removed"            // удалено правило с block, redact или pseudonymize
 	WeakActionWeakened  = "action_weakened"         // действие ниже по таблице приоритетов
@@ -133,6 +134,7 @@ func Compare(a, b *policy.Spec) Diff {
 	if a.MediaTimeoutMS != b.MediaTimeoutMS {
 		field("media_check_timeout_ms", strconv.Itoa(a.MediaTimeoutMS), strconv.Itoa(b.MediaTimeoutMS))
 	}
+	field("media_sanitize", strconv.FormatBool(a.MediaSanitize), strconv.FormatBool(b.MediaSanitize))
 	field("block_message", a.BlockMessage, b.BlockMessage)
 	if ja, jb := judgeText(a.Judge), judgeText(b.Judge); ja != jb {
 		field("judge", ja, jb)
@@ -154,6 +156,11 @@ func Compare(a, b *policy.Spec) Diff {
 	if mediaRank[b.MediaCheck] < mediaRank[a.MediaCheck] ||
 		a.MediaCheck == policy.MediaCheckSync && b.MediaCheck == policy.MediaCheckSync && mediaTimeout(b) < mediaTimeout(a) {
 		d.Weakening = append(d.Weakening, Weakening{Kind: WeakMediaCheck})
+	}
+	// Выключение очистки — ослабление: провайдер снова получает метаданные
+	// и исходные байты изображений (DM-40).
+	if a.MediaSanitize && !b.MediaSanitize {
+		d.Weakening = append(d.Weakening, Weakening{Kind: WeakMediaSanitize})
 	}
 
 	after := make(map[string]policy.RuleSpec, len(b.Rules))

@@ -480,6 +480,7 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 	}
 	if gateways != nil {
 		extras.GatewayLimits = gateways.GatewayLimits
+		extras.GatewayMedia = gateways.GatewayMedia
 	}
 	// Лицензия (ТЗ 5.15, задачи 4.26–4.27, ADR-0026): подпись сохранённой
 	// лицензии проверяется заново при запуске и раз в минуту, отметка часов
@@ -712,9 +713,17 @@ func run(ctx context.Context, cfg *serverConfig, logger *slog.Logger) error {
 		}
 	}
 	redteamLogger := logger.With("component", "redteam")
-	redteamSvc, err := redteam.New(redteam.Options{Store: redteamStore, ServiceDBs: serviceDBStore, Provider: p, OrgID: audit.DefaultOrgID,
+	redteamSvc, err := redteam.New(redteam.Options{Store: redteamStore, ServiceDBs: serviceDBStore, Provider: p, Box: box, OrgID: audit.DefaultOrgID,
 		Apps: appsSvc, GatewayURL: cfg.RedTeamGatewayURL, GatewayCA: redteamCA,
-		Judges: redteam.NewJudgeClients(appsSvc, tp, redteamLogger), Logger: redteamLogger})
+		Judges: redteam.NewJudgeClients(appsSvc, tp, redteamLogger), Logger: redteamLogger,
+		// Расписания запусков — по времени часового пояса установки.
+		Location: func(ctx context.Context) (*time.Location, error) {
+			tz, err := timezone(ctx)
+			if err != nil {
+				return nil, err
+			}
+			return time.LoadLocation(tz)
+		}})
 	if err != nil {
 		return err
 	}
@@ -860,6 +869,7 @@ func budgetUsage(svc *apps.Service) alerting.BudgetSource {
 // statusExtras — источники условий «Состояния системы» задачи 5.9 этапа 5.
 type statusExtras struct {
 	GatewayLimits   func() map[string]gwregistry.LimitsMark
+	GatewayMedia    func() map[string]gwregistry.MediaMark
 	ShadowAIStorage func(ctx context.Context) (int64, int64, error)
 	ServiceDBs      func(ctx context.Context) ([]servicedb.State, error)
 }
@@ -906,7 +916,7 @@ func newStatus(ctx context.Context, cfg *serverConfig, db *store.DB, auditLog *a
 		Integrity: integritySvc.Store, Store: pg,
 		Timezone: timezone, StorageLimit: cfg.AuditStorageLimit, WarnPercent: cfg.AuditStorageWarnPercent,
 		Logger: logger, Bundle: bundle, CANotAfter: caNotAfter, CustomerCert: customerCert, License: lic, Quota: quota,
-		ShadowAISyslog: shadowSyslog, GatewayLimits: extras.GatewayLimits, ShadowAIStorage: extras.ShadowAIStorage,
+		ShadowAISyslog: shadowSyslog, GatewayLimits: extras.GatewayLimits, ShadowAIStorage: extras.ShadowAIStorage, GatewayMedia: extras.GatewayMedia,
 		ServiceDBs: extras.ServiceDBs,
 	})
 	if err != nil {

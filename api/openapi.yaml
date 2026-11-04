@@ -1546,6 +1546,8 @@ paths:
         `app = "crm-bot" and severity in ("high", "critical") and stream = true`; поля:
         type, app, env, user, provider, model, source, policy_mode, action, rule, severity,
         storage, gateway, threat, detector, exception (находки, пропущенные по исключению с этим ID),
+        finding_source (источник текста находки: user, rag, tool, tool_args, output, image),
+        test (запросы тестирования устойчивости: `test = true` — только они, `test = false` — без них),
         mark (`false_positive`, `confirmed` или `none` — без отметки), stream, non_text_unchecked,
         has_content, ml_unavailable (ML-детекторы не дали результата), media_unavailable (изображение не проверено из-за сбоя анализатора aisec-media, DM-50), judge_unchecked (оценка judge.llm не получена), session (псевдоним сессии запроса чата или агента), agent, mcp_server, tool
         (события агентов); операторы
@@ -6900,7 +6902,7 @@ paths:
         Право `redteam.read`. Запуск и итоги сценариев: вердикт, шаг, сработавшие условия успеха, находки детекторов
         (без позиций и текста), итог оценщика, ID событий шлюза (цель `gateway`), код HTTP, задержка, код ошибки.
         Промптов и ответов нет; выдержка ответа цели `endpoint` в режиме `masked` здесь не выдаётся — её показывает
-        отчёт о тестировании (задача 5.33) с правом `events.content.read` (ADR-0031, раздел 7).
+        отчёт о запуске (`/runs/{id}/report`, задача 5.33) с правом `events.content.read` (ADR-0031, раздел 7).
       x-permission: redteam.read
       security: [{ sessionCookie: [] }, { bearerToken: [] }]
       parameters:
@@ -6934,6 +6936,177 @@ paths:
         '403': { $ref: '#/components/responses/ProblemForbidden' }
         '404': { $ref: '#/components/responses/ProblemNotFound' }
         '409': { $ref: '#/components/responses/ProblemConflict' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/redteam/runs/{id}/report:
+    get:
+      summary: Отчёт о запуске тестирования устойчивости
+      description: |
+        Право `redteam.export` (администратор безопасности; доступно токену API — отчёт для CI). Отчёт строится в
+        общей модели отчётов (`internal/reports`): итоги по вердиктам, покрытие строк матрицы обнаружения, атаки,
+        которые удались, и все сценарии. `format`: `html` (по умолчанию), `csv` (UTF-8 с BOM, защита от формул,
+        `delimiter`), `xlsx`. Промптов атак в отчёте нет. `examples=true` добавляет выдержки ответов цели `endpoint`
+        в режиме `masked` для удавшихся атак (ПДн и секреты заменены категорией, до 1 КиБ) и требует права
+        `events.content.read` (только человек в сессии; токену его выдать нельзя) — без права 403; у цели в режиме
+        `none` и у цели `gateway` выдержек нет (пример цели `gateway` — событие шлюза по `event_ids`). Каждая
+        выгрузка пишет `data.export` (вид `redteam`, признак `examples`) до выдачи данных; без записи отчёт не
+        выдаётся (503). Одновременно — одна выгрузка на пользователя, сверх предела 429.
+      x-permission: redteam.export
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/RedTeamRunID'
+        - name: format
+          in: query
+          required: false
+          schema: { type: string, enum: [html, csv, xlsx], default: html }
+        - name: delimiter
+          in: query
+          required: false
+          description: Разделитель полей CSV; только с `format=csv`, по умолчанию `semicolon` («;»)
+          schema: { type: string, enum: [semicolon, comma], default: semicolon }
+        - name: examples
+          in: query
+          required: false
+          description: Включить выдержки ответов (нужно право `events.content.read`)
+          schema: { type: boolean, default: false }
+      responses:
+        '200':
+          description: Отчёт; `X-Export-Rows` — число строк данных
+          headers:
+            X-Export-Rows: { schema: { type: integer } }
+          content:
+            text/html: { schema: { type: string } }
+            text/csv: { schema: { type: string } }
+            application/vnd.openxmlformats-officedocument.spreadsheetml.sheet: { schema: { type: string, format: binary } }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '422': { $ref: '#/components/responses/ProblemUnprocessable' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/redteam/schedules:
+    get:
+      summary: Расписания запусков тестирования устойчивости
+      description: Право `redteam.read`. Расписания по названию (не больше 20) с ближайшим сроком и итогом последней попытки.
+      x-permission: redteam.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      responses:
+        '200':
+          description: Расписания
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RedTeamScheduleList' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    post:
+      summary: Создать расписание запусков тестирования устойчивости
+      description: |
+        Право безопасности `redteam.schedules.manage` (администратор безопасности), только сессия консоли: по
+        расписанию продукт сам отправляет атаки на цель. Периодичность: `daily`, `weekly` (с `weekday`, 1 —
+        понедельник … 7), `monthly` (с `day`, 1–28); чаще раза в сутки не бывает; время `at` — ЧЧ:ММ в часовом поясе
+        установки. `threats` и `lang` — отбор сценариев (как в запуске), пусто — все. Цель с секретным заголовком
+        (`auth_header`) по расписанию не запускается — 400: значение заголовка в продукте не хранится, такую цель
+        запускает CI. Не больше 20 расписаний (422). Пишет `redteam.schedule_created`. Запуск по расписанию —
+        от имени расписания (`redteam.run_started`); срок, опоздавший больше чем на час (сервер был выключен),
+        пропускается, занятая цель — повтор каждые 5 минут до часа; несостоявшийся запуск пишет
+        `redteam.schedule_skipped`.
+      x-permission: redteam.schedules.manage
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RedTeamScheduleInput' }
+      responses:
+        '201':
+          description: Расписание создано
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RedTeamSchedule' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '422': { $ref: '#/components/responses/ProblemUnprocessable' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/redteam/schedules/{id}:
+    get:
+      summary: Расписание запусков тестирования устойчивости
+      description: Право `redteam.read`.
+      x-permission: redteam.read
+      security: [{ sessionCookie: [] }, { bearerToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/RedTeamScheduleID'
+      responses:
+        '200':
+          description: Расписание
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RedTeamSchedule' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    put:
+      summary: Изменить расписание запусков тестирования устойчивости
+      description: |
+        Право безопасности `redteam.schedules.manage`, только сессия консоли. Тело — расписание целиком с `version`,
+        которую видел администратор (чужая — 409); ближайший срок пересчитывается от текущего момента. Пишет
+        `redteam.schedule_updated` с параметрами до и после.
+      x-permission: redteam.schedules.manage
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/RedTeamScheduleID'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RedTeamScheduleInput' }
+      responses:
+        '200':
+          description: Расписание изменено
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RedTeamSchedule' }
+        '400': { $ref: '#/components/responses/ProblemInvalid' }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
+        '409': { $ref: '#/components/responses/ProblemConflict' }
+        '413': { $ref: '#/components/responses/ProblemTooLarge' }
+        '415': { $ref: '#/components/responses/ProblemUnsupportedMedia' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ProblemInternal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    delete:
+      summary: Удалить расписание запусков тестирования устойчивости
+      description: |
+        Право безопасности `redteam.schedules.manage`, только сессия консоли. Уже начатый запуск продолжается.
+        Пишет `redteam.schedule_deleted`.
+      x-permission: redteam.schedules.manage
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/RedTeamScheduleID'
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '204': { description: Расписание удалено }
+        '401': { $ref: '#/components/responses/ProblemUnauthorized' }
+        '403': { $ref: '#/components/responses/ProblemForbidden' }
+        '404': { $ref: '#/components/responses/ProblemNotFound' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ProblemInternal' }
         '503': { $ref: '#/components/responses/Unavailable' }
@@ -7037,6 +7210,12 @@ components:
       in: path
       required: true
       description: ID запуска тестирования устойчивости
+      schema: { type: string, format: uuid }
+    RedTeamScheduleID:
+      name: id
+      in: path
+      required: true
+      description: ID расписания запусков тестирования устойчивости
       schema: { type: string, format: uuid }
     RAGExclusionID:
       name: id
@@ -7990,13 +8169,14 @@ components:
                 enum: [account_lockout, access_denied, audit_chain, audit_storage, integrity, time_sync, config_bundle, config_bundle_lag, test_build,
                   gateway_offline, events_dropped, reports_stale, cert_expiry, gateway_clock, gateway_tls, ca_expiry, customer_cert_expiry, alert_job_stale,
                   license_expiry, license_grace, license_restricted, license_invalid, license_clock, quota_approximate, quota_autonomous,
-                  gateway_limits, shadow_ai_storage, shadow_ai_full, service_db_previous, service_db_unused]
-                description: 'gateway_clock (ВРМ.1) — часы шлюза на связи в последнем heartbeat расходятся с часами сервера больше чем на минуту, 3Н40 ревью 3.r3. gateway_tls (ЗИ.4) — шлюз на текущем пакете конфигурации дольше 10 минут после его сборки отвечает приложениям не тем сертификатом, что загружен в консоли (по часам шлюза он ещё не действует или истёк; без сертификата заказчика — не своим), 3Н43 ревью 3.r3. alert_job_stale (РСБ.7, DM-44) — фоновая задача правил «частота», «аномалия» и «бюджет» не отмечала проход дольше 5 минут при работающем сервере, 3В17 ревью 3.r2. ca_expiry (ИАФ.10) — действующему корню внутреннего УЦ осталось 60 суток и меньше, нужна ротация `aisec-cli keys rotate-ca`; system.alert пишется за 60 суток (ca_expiry) и за 7 суток (ca_expiry:critical), 3В5 ревью 3.r1. customer_cert_expiry (ЗИ.4) — сертификату заказчика для адреса шлюза осталось 30 суток и меньше; system.alert пишется за 30 суток (customer_cert_expiry) и за 7 суток (customer_cert_expiry:critical), задача 3.27. quota_approximate (ЗИ.6) — режим квот local, а действующих шлюзов на связи больше одного: квоты приложений и жёсткие бюджеты соблюдаются приблизительно, задача 4.29. quota_autonomous (ЗИ.6, по компонентам gateway:<ID>) — шлюз в режиме leased сообщил в heartbeat, что сервер недоступен и он работает на автономной доле квот, задача 4.29. gateway_limits (РСБ.7, по компонентам gateway:<ID>) — шлюз за последние 15 минут вытеснял счётчики лимитов вызовов инструментов или сессии session.risk из-за общего предела (вытеснения по доле приложения не входят), задача 5.9 этапа 5. shadow_ai_storage (РСБ.7) — сводки теневого ИИ заняли 90 % предела и больше; shadow_ai_full (РСБ.7) — предел достигнут, импорт и приём по syslog отклоняются (507), 4Н25. service_db_previous и service_db_unused (ОЦЛ.5, по компонентам service_db:<вид>) — текущая сохранённая версия служебной базы не прошла повторную проверку подписи: работает предыдущая версия или загруженная база не используется (у базы требований действует встроенная база выпуска, в записи system.alert — fallback: builtin; ADR-0028, 5Н9 ревью 5.r1)'
+                  gateway_limits, shadow_ai_storage, shadow_ai_full, service_db_previous, service_db_unused,
+                  gateway_media_overloaded, gateway_media_unavailable, gateway_media_selftest]
+                description: 'gateway_clock (ВРМ.1) — часы шлюза на связи в последнем heartbeat расходятся с часами сервера больше чем на минуту, 3Н40 ревью 3.r3. gateway_tls (ЗИ.4) — шлюз на текущем пакете конфигурации дольше 10 минут после его сборки отвечает приложениям не тем сертификатом, что загружен в консоли (по часам шлюза он ещё не действует или истёк; без сертификата заказчика — не своим), 3Н43 ревью 3.r3. alert_job_stale (РСБ.7, DM-44) — фоновая задача правил «частота», «аномалия» и «бюджет» не отмечала проход дольше 5 минут при работающем сервере, 3В17 ревью 3.r2. ca_expiry (ИАФ.10) — действующему корню внутреннего УЦ осталось 60 суток и меньше, нужна ротация `aisec-cli keys rotate-ca`; system.alert пишется за 60 суток (ca_expiry) и за 7 суток (ca_expiry:critical), 3В5 ревью 3.r1. customer_cert_expiry (ЗИ.4) — сертификату заказчика для адреса шлюза осталось 30 суток и меньше; system.alert пишется за 30 суток (customer_cert_expiry) и за 7 суток (customer_cert_expiry:critical), задача 3.27. quota_approximate (ЗИ.6) — режим квот local, а действующих шлюзов на связи больше одного: квоты приложений и жёсткие бюджеты соблюдаются приблизительно, задача 4.29. quota_autonomous (ЗИ.6, по компонентам gateway:<ID>) — шлюз в режиме leased сообщил в heartbeat, что сервер недоступен и он работает на автономной доле квот, задача 4.29. gateway_limits (РСБ.7, по компонентам gateway:<ID>) — шлюз за последние 15 минут вытеснял счётчики лимитов вызовов инструментов или сессии session.risk из-за общего предела (вытеснения по доле приложения не входят), задача 5.9 этапа 5. shadow_ai_storage (РСБ.7) — сводки теневого ИИ заняли 90 % предела и больше; shadow_ai_full (РСБ.7) — предел достигнут, импорт и приём по syslog отклоняются (507), 4Н25. service_db_previous и service_db_unused (ОЦЛ.5, по компонентам service_db:<вид>) — текущая сохранённая версия служебной базы не прошла повторную проверку подписи: работает предыдущая версия или загруженная база не используется (у базы требований действует встроенная база выпуска, в записи system.alert — fallback: builtin; ADR-0028, 5Н9 ревью 5.r1). gateway_media_overloaded (ЗИ.7, DM-50, по компонентам gateway:<ID>) — за последние 15 минут изображения шлюза получали «не проверено» из-за перегрузки или срока aisec-media; gateway_media_unavailable (ЗИ.7, DM-50) — последний вызов aisec-media закончился сбоем или за 15 минут были отказы unavailable и error; gateway_media_selftest (ОЦЛ.5) — последний самотест aisec-media на эталонных изображениях не пройден (недоступный анализатор — не провал), задача 5.44 этапа 5'
               requirement: { type: string, enum: [ИАФ.4, ИАФ.10, УПД.6, РСБ.4, РСБ.5, РСБ.7, ОЦЛ.1, ОЦЛ.3, ОЦЛ.5, ВРМ.1, ЗИ.2, ЗИ.4, ЗИ.6] }
               components:
                 type: array
                 items: { type: string }
-                description: 'Компоненты с активным условием (integrity — server или gateway:<ID>, config_bundle_lag, gateway_offline, events_dropped, reports_stale, cert_expiry, gateway_limits — gateway:<ID>; service_db_previous, service_db_unused — service_db:<вид>); каждое ведётся отдельно и пишется в system.alert (В18 ревью 2.r3b), а возникшее условие порождает оповещение системного правила (задача 3.11 этапа 3, DM-42–DM-44). test_build (ОЦЛ.1) — компоненты, собранные с тестовым ключом манифеста (Н34 ревью 2.r4); integrity шлюза поднимает и откат выпуска, и чужой ключ проверки пакетов (В19, В20 ревью 2.r4). DM-44: gateway_offline — шлюз не на связи дольше трёх периодов heartbeat, events_dropped — счётчик отброшенных событий вырос за 15 минут, cert_expiry — сертификат истекает меньше чем через 14 суток, reports_stale — итог целостности старше двух часов или не приходит (Н29)'
+                description: 'Компоненты с активным условием (integrity — server или gateway:<ID>, config_bundle_lag, gateway_offline, events_dropped, reports_stale, cert_expiry, gateway_limits, gateway_media_overloaded, gateway_media_unavailable, gateway_media_selftest — gateway:<ID>; service_db_previous, service_db_unused — service_db:<вид>); каждое ведётся отдельно и пишется в system.alert (В18 ревью 2.r3b), а возникшее условие порождает оповещение системного правила (задача 3.11 этапа 3, DM-42–DM-44). test_build (ОЦЛ.1) — компоненты, собранные с тестовым ключом манифеста (Н34 ревью 2.r4); integrity шлюза поднимает и откат выпуска, и чужой ключ проверки пакетов (В19, В20 ревью 2.r4). DM-44: gateway_offline — шлюз не на связи дольше трёх периодов heartbeat, events_dropped — счётчик отброшенных событий вырос за 15 минут, cert_expiry — сертификат истекает меньше чем через 14 суток, reports_stale — итог целостности старше двух часов или не приходит (Н29)'
               title: { type: string }
               active: { type: boolean }
               since: { type: [string, 'null'], format: date-time, description: 'Когда условие возникло; у ИАФ.4 и УПД.6 не задаётся' }
@@ -8030,7 +8210,7 @@ components:
         failed: { type: integer, minimum: 0, description: 'Число нарушений, включая не вошедшие в список' }
     StatusGateway:
       type: object
-      required: [id, name, state, last_seen_at, version, bundle_etag, cert_not_after, selftest, integrity, events, limits]
+      required: [id, name, state, last_seen_at, version, bundle_etag, cert_not_after, selftest, integrity, events, limits, media]
       additionalProperties: false
       properties:
         id: { type: string }
@@ -8092,6 +8272,41 @@ components:
                         max_app_sessions: { type: integer, minimum: 1, description: 'Доля одного приложения (по умолчанию четверть предела)' }
                         evictions: { type: integer, minimum: 0, description: 'Вытеснено из-за общего предела' }
                         app_evictions: { type: integer, minimum: 0, description: 'Вытеснено из-за доли приложения: сессия того же приложения' }
+        media:
+          description: 'Состояние клиента aisec-media шлюза из последнего heartbeat (задача 5.44 этапа 5, DM-50): очередь шлюза к анализатору, отсрочка после сбоя, итоги с запуска шлюза и последний самотест на эталонных изображениях. null — шлюз без aisec-media, прежней версии или heartbeat после перезапуска сервера ещё не пришёл'
+          oneOf:
+            - type: 'null'
+            - type: object
+              required: [reported_at, started_at, inflight, max_inflight, down, analyzed, unchecked, selftest]
+              additionalProperties: false
+              properties:
+                reported_at: { type: string, format: date-time }
+                started_at: { type: [string, 'null'], format: date-time, description: Запуск процесса шлюза }
+                inflight: { type: integer, minimum: 0, description: 'Анализов шлюза к aisec-media сейчас' }
+                max_inflight: { type: integer, minimum: 1, description: 'Предел одновременных анализов шлюза; сверх — overloaded' }
+                down: { type: boolean, description: 'Последний вызов закончился сбоем анализатора, успешного после него не было' }
+                analyzed: { type: integer, minimum: 0, description: 'Ответов анализатора с запуска шлюза' }
+                unchecked:
+                  type: object
+                  description: 'Изображения «не проверено» из-за сбоя анализатора по причинам с запуска шлюза'
+                  required: [unavailable, overloaded, timeout, error]
+                  additionalProperties: false
+                  properties:
+                    unavailable: { type: integer, minimum: 0 }
+                    overloaded: { type: integer, minimum: 0 }
+                    timeout: { type: integer, minimum: 0 }
+                    error: { type: integer, minimum: 0 }
+                selftest:
+                  description: 'Последний самотест на двух эталонных изображениях (при запуске и каждые 10 минут); unchecked — анализатор недоступен, не провал; null — ещё не выполнялся'
+                  oneOf:
+                    - type: 'null'
+                    - type: object
+                      required: [result, checked_at, failed]
+                      additionalProperties: false
+                      properties:
+                        result: { type: string, enum: [ok, failed, unchecked] }
+                        checked_at: { type: string, format: date-time }
+                        failed: { type: integer, minimum: 0 }
     IntegrityList:
       type: object
       required: [items]
@@ -9706,6 +9921,14 @@ components:
             non_text). async — запрос уходит провайдеру сразу, находки попадают в событие после отправки; sync — запрос
             ждёт итога не дольше media_check_timeout_ms, недоступность анализатора — по режиму приложения при отказе.
         media_check_timeout_ms: { type: integer, minimum: 100, maximum: 10000, description: 'Срок анализа в режиме sync; не задан — 2000' }
+        media_sanitize:
+          type: boolean
+          description: >-
+            Очистка изображений перед отправкой провайдеру (задача 5.45, ТЗ 5.17): aisec-media удаляет метаданные,
+            перекодирует (JPEG — в JPEG, остальное — в PNG, у GIF — первый кадр) и уменьшает до -sanitize-max-side.
+            Не задано — выключена. Изображение, которое очистить нельзя (ссылка https://, сбой или перегрузка
+            анализатора, неизвестный формат, отказ по пределам), провайдеру не уходит: запрос отклоняется. Выключение —
+            ослабление (media_sanitize_weakened, DM-40).
         block_message: { type: string, maxLength: 300 }
         rules: { type: array, maxItems: 256, items: { $ref: '#/components/schemas/PolicyRule' } }
         exceptions:
@@ -9980,7 +10203,7 @@ components:
             type: object
             required: [field, before, after]
             properties:
-              field: { type: string, enum: [name, mode, non_text, response_check, media_check, media_check_timeout_ms, block_message, judge] }
+              field: { type: string, enum: [name, mode, non_text, response_check, media_check, media_check_timeout_ms, media_sanitize, block_message, judge] }
               before: { type: string }
               after: { type: string }
         rules_added: { type: array, items: { $ref: '#/components/schemas/PolicyRule' } }
@@ -10005,7 +10228,7 @@ components:
             properties:
               kind:
                 type: string
-                enum: [mode_monitor, non_text_weakened, response_check_weakened, media_check_weakened, rule_removed, action_weakened,
+                enum: [mode_monitor, non_text_weakened, response_check_weakened, media_check_weakened, media_sanitize_weakened, rule_removed, action_weakened,
                   threshold_raised, scope_narrowed, detector_changed, judge_weakened, exception_added, exception_extended, exception_changed,
                   tools_unapproved_weakened, tool_rule_added, tool_action_weakened, tool_scope_widened, tool_scope_narrowed,
                   tool_args_relaxed, tool_rate_raised, approval_timeout_raised, tool_rule_removed]
@@ -10573,6 +10796,51 @@ components:
           required: [results]
           properties:
             results: { type: array, items: { $ref: '#/components/schemas/RedTeamResult' } }
+    RedTeamScheduleInput:
+      type: object
+      required: [name, target_id, frequency, at]
+      additionalProperties: false
+      properties:
+        name: { type: string, minLength: 1, maxLength: 100 }
+        target_id: { type: string, format: uuid }
+        frequency: { type: string, enum: [daily, weekly, monthly] }
+        weekday: { type: integer, minimum: 1, maximum: 7, description: 'Только weekly: 1 — понедельник … 7 — воскресенье' }
+        day: { type: integer, minimum: 1, maximum: 28, description: 'Только monthly' }
+        at: { type: string, pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$', description: 'Время в часовом поясе установки' }
+        threats: { type: array, maxItems: 64, items: { type: string, pattern: '^DM-[0-9]{2}$' }, description: 'Строки матрицы; пусто — все' }
+        lang: { type: string, enum: [ru, en] }
+        enabled: { type: boolean, default: true }
+        version: { type: integer, minimum: 1, description: 'Для изменения: версия, которую видел администратор' }
+    RedTeamSchedule:
+      type: object
+      required: [id, name, target_id, frequency, at, threats, enabled, next_run_at, retries, version, created_at, created_by, updated_at, updated_by]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        target_id: { type: string, format: uuid }
+        frequency: { type: string, enum: [daily, weekly, monthly] }
+        weekday: { type: integer }
+        day: { type: integer }
+        at: { type: string }
+        threats: { type: array, items: { type: string } }
+        lang: { type: string, enum: [ru, en] }
+        enabled: { type: boolean }
+        next_run_at: { type: string, format: date-time }
+        last_run_at: { type: string, format: date-time, description: 'Плановое время последней попытки' }
+        last_run_id: { type: string, format: uuid }
+        last_status: { type: string, enum: [started, busy, missed, no_scenarios, gateway_not_configured, needs_secret, target_invalid, error] }
+        last_status_text: { type: string }
+        retries: { type: integer }
+        version: { type: integer }
+        created_at: { type: string, format: date-time }
+        created_by: { type: string }
+        updated_at: { type: string, format: date-time }
+        updated_by: { type: string }
+    RedTeamScheduleList:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/RedTeamSchedule' } }
     RedTeamRunList:
       type: object
       required: [items]
@@ -11394,6 +11662,11 @@ components:
         cached: { type: boolean }
         texts: { type: integer, description: Сколько фрагментов текста извлечено }
         latency_ms: { type: integer, format: int64 }
+        sanitized:
+          type: boolean
+          description: >
+            Провайдеру ушло очищенное изображение (media_sanitize, задача 5.45): без метаданных,
+            перекодированное и уменьшенное анализатором aisec-media.
     ImageBox:
       description: Рамка находки на изображении в пикселях исходного растра (ТЗ 5.17, п. 5).
       type: object

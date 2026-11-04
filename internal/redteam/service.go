@@ -18,6 +18,7 @@ import (
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/internal/detect/judge"
 	"github.com/azuresong-afk/ai_railway/internal/ids"
+	"github.com/azuresong-afk/ai_railway/internal/keyring"
 	"github.com/azuresong-afk/ai_railway/internal/policy/bundle"
 	"github.com/azuresong-afk/ai_railway/internal/servicedb"
 )
@@ -64,8 +65,11 @@ type Options struct {
 	Store      Store
 	ServiceDBs servicedb.Store
 	Provider   aisecCrypto.Provider
-	OrgID      string
-	Apps       Apps
+	// Box — ключ данных: выдержки ответов режима masked хранятся только
+	// запечатанными (5В3 ревью 5.r3).
+	Box   *keyring.Box
+	OrgID string
+	Apps  Apps
 	// GatewayURL и GatewayCA — адрес шлюза для целей gateway (флаги
 	// -redteam-gateway-url и -redteam-gateway-ca); пусто — цели gateway
 	// не запускаются.
@@ -73,8 +77,10 @@ type Options struct {
 	GatewayCA  []byte
 	// Judges — оценщик; nil — без judge.llm.
 	Judges JudgeClients
-	Clock  func() time.Time
-	Logger *slog.Logger
+	// Location — часовой пояс установки для расписаний; nil — UTC.
+	Location func(ctx context.Context) (*time.Location, error)
+	Clock    func() time.Time
+	Logger   *slog.Logger
 	// KeyWait и KeyPoll — ожидание ключа запуска на шлюзе; 0 — по умолчанию.
 	KeyWait, KeyPoll time.Duration
 	// Lookup — разрешение имён (тесты); nil — системное.
@@ -122,8 +128,8 @@ type Service struct {
 
 // New проверяет зависимости.
 func New(o Options) (*Service, error) {
-	if o.Store == nil || o.ServiceDBs == nil || o.Provider == nil || o.Apps == nil {
-		return nil, errors.New("тестирование устойчивости: нет хранилища, служебных баз, приложений или криптопрофиля")
+	if o.Store == nil || o.ServiceDBs == nil || o.Provider == nil || o.Apps == nil || o.Box == nil {
+		return nil, errors.New("тестирование устойчивости: нет хранилища, служебных баз, приложений, криптопрофиля или ключа данных")
 	}
 	if o.OrgID == "" {
 		o.OrgID = audit.DefaultOrgID
@@ -193,10 +199,14 @@ func (s *Service) Start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	s.wg.Add(1)
+	s.wg.Add(2)
 	go func() {
 		defer s.wg.Done()
 		s.purgeLoop(ctx)
+	}()
+	go func() {
+		defer s.wg.Done()
+		s.scheduleLoop(ctx)
 	}()
 	return nil
 }
@@ -274,8 +284,22 @@ func (s *Service) Target(ctx context.Context, id string) (Target, error) {
 // checkTarget — проверки цели против продукта: приложение и модель цели
 // gateway, корневой сертификат, провайдер оценщика.
 func (s *Service) checkTarget(ctx context.Context, t Target) error {
+	return checkTargetRefs(ctx, s.tp, s.o.Apps, t)
+}
+
+// TargetRefs — то, на что ссылается цель: приложение (цель gateway) и
+// провайдеры-оценщики. Apps ему соответствует; копия конфигурации передаёт
+// объекты из копии.
+type TargetRefs interface {
+	Application(ctx context.Context, id, ownerID string) (apps.Application, error)
+	Providers(ctx context.Context) ([]apps.Provider, error)
+}
+
+// checkTargetRefs — проверки цели, которым нужны другие объекты: модель
+// приложения, корневой сертификат по криптопрофилю, оценщик «у заказчика».
+func checkTargetRefs(ctx context.Context, tp aisecCrypto.TLSProvider, refs TargetRefs, t Target) error {
 	if t.Kind == KindGateway {
-		a, err := s.o.Apps.Application(ctx, t.AppID, "")
+		a, err := refs.Application(ctx, t.AppID, "")
 		if errors.Is(err, apps.ErrNotFound) || err == nil && a.Archived() {
 			return invalidf("app_id — приложение не найдено или в архиве")
 		}
@@ -287,15 +311,15 @@ func (s *Service) checkTarget(ctx context.Context, t Target) error {
 		}
 	}
 	if t.CAPEM != "" {
-		if s.tp == nil {
+		if tp == nil {
 			return invalidf("ca_pem — TLS недоступен в криптопрофиле")
 		}
-		if _, err := s.tp.ClientConfig([]byte(t.CAPEM)); err != nil {
+		if _, err := tp.ClientConfig([]byte(t.CAPEM)); err != nil {
 			return invalidf("ca_pem — не найден корневой сертификат в PEM")
 		}
 	}
 	if t.JudgeProvider != "" {
-		provs, err := s.o.Apps.Providers(ctx)
+		provs, err := refs.Providers(ctx)
 		if err != nil {
 			return err
 		}
@@ -308,10 +332,12 @@ func (s *Service) checkTarget(ctx context.Context, t Target) error {
 }
 
 // addressChanged — у цели endpoint меняется то, куда и с чем продукт
-// отправит атаки: адрес, заголовки, корневой сертификат.
+// отправит атаки (адрес, заголовки, корневой сертификат), или продукт
+// начинает хранить выдержки ответов (storage → masked, 5Н22 ревью 5.r3).
 func addressChanged(before, after Target) bool {
 	return before.Kind != after.Kind || before.URL != after.URL || before.AuthHeader != after.AuthHeader ||
-		before.CAPEM != after.CAPEM || !slices.Equal(before.Headers, after.Headers)
+		before.CAPEM != after.CAPEM || !slices.Equal(before.Headers, after.Headers) ||
+		before.Storage != StorageMasked && after.Storage == StorageMasked
 }
 
 func confirm(ctx context.Context, by By) error {
@@ -384,7 +410,22 @@ func (s *Service) DeleteTarget(ctx context.Context, by By, id string) error {
 	if err != nil {
 		return err
 	}
-	if err := s.o.Store.DeleteTarget(ctx, s.o.OrgID, id, by.entry(ActionTargetDeleted, objectTarget, id, targetAudit(t))); err != nil {
+	// Расписания цели удаляются вместе с ней; их ID — в записи аудита.
+	details := targetAudit(t)
+	scs, err := s.o.Store.Schedules(ctx, s.o.OrgID)
+	if err != nil {
+		return err
+	}
+	var gone []string
+	for _, sc := range scs {
+		if sc.TargetID == id {
+			gone = append(gone, sc.ID)
+		}
+	}
+	if len(gone) > 0 {
+		details["schedules_deleted"] = gone
+	}
+	if err := s.o.Store.DeleteTarget(ctx, s.o.OrgID, id, by.entry(ActionTargetDeleted, objectTarget, id, details)); err != nil {
 		return err
 	}
 	s.mu.Lock()

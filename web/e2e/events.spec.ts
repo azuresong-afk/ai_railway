@@ -151,6 +151,43 @@ test("события: карточка, содержимое по причине
   done();
 });
 
+// S12 (ТЗ 1.4, задача 5.49): запрос с изображением, на котором найдены ПДн, заблокирован, а в карточке события видно, где именно.
+// Форма ответа снята с настоящего события из e2e (TestE2EStage5_S12_ScreenshotWithPII).
+test("события: S12 — карточка показывает рамки находок на изображении", async ({ page }) => {
+  const done = watch(page);
+  await mockApi(page, { me: meOf("active", perms) });
+  const box = { x: 109, y: 221, w: 180, h: 180 };
+  const location = "messages[0].content[1]";
+  const base = { ...event(0), id: eid(1), action: "block", rule: "pii-input", severity: "medium", threats: ["DM-47"] };
+  await page.route("**/api/v1/events**", async (route) => {
+    const url = new URL(route.request().url());
+    const json = (body: unknown) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+    if (url.pathname === "/api/v1/events") return json({ items: [base] });
+    if (url.pathname === "/api/v1/events/filters") return json({ items: [] });
+    return json({
+      ...base,
+      details: {
+        decision: { action: "block", applied: ["block"], rule: "pii-input", severity: "medium", trace: [{ rule: "pii-input", detector: "pii.ru", matched: true, action: "block" }] },
+        findings: [
+          { detector: "pii.ru", category: "pii.phone", score: 0.95, start: 24, end: 40, location, threat: "DM-47", rule: "phone", source: "image", box },
+          { detector: "pii.ru", category: "pii.email", score: 0.9, start: 53, end: 75, location, threat: "DM-47", rule: "email", source: "image", box },
+        ],
+        media: [{ location, mode: "sync", checked: true, format: "png", width: 1000, height: 470, frames: 1, texts: 1, latency_ms: 11 }],
+      },
+    });
+  });
+  await page.goto("/#/events");
+  await page.getByRole("button", { name: /^Открыть событие/ }).first().click();
+  const card = page.getByRole("complementary", { name: "Карточка события" });
+  await expect(card.getByRole("heading", { name: "Изображения и рамки находок" })).toBeVisible();
+  await expect(card.getByRole("img", { name: `Рамки находок на изображении ${location}: 2` })).toBeVisible();
+  const list = card.getByRole("list", { name: `Находки на изображении ${location}` });
+  await expect(list).toContainText("pii.phone");
+  await expect(list).toContainText("область 180 × 180 в точке 109, 221");
+  await expect(card).toContainText("Формат PNG, 1000 × 470 пикселей");
+  done();
+});
+
 test("события: без прав на содержимое и выгрузку кнопок нет", async ({ page }) => {
   const done = watch(page);
   await mockApi(page, { me: meOf("active", ["session", "events.read"]) });

@@ -133,6 +133,10 @@ type Options struct {
 	// ServiceDBs — состояние служебных баз (servicedb.Registry.States,
 	// ADR-0028); nil — условий service_db_* нет.
 	ServiceDBs func(ctx context.Context) ([]servicedb.State, error)
+	// GatewayMedia — последнее состояние клиентов aisec-media шлюзов из
+	// heartbeat (gwregistry.Service.GatewayMedia, задача 5.44 этапа 5); nil —
+	// условий gateway_media_* нет.
+	GatewayMedia func() map[string]gwregistry.MediaMark
 }
 
 // CustomerCert — сведения о сертификате заказчика для адреса шлюза.
@@ -153,6 +157,9 @@ type Service struct {
 	dropped map[string]droppedMark
 	// evicted — то же для вытеснений счётчиков в памяти шлюза (задача 5.9).
 	evicted map[string]droppedMark
+	// mediaBusy, mediaDown — то же для сбоев aisec-media шлюза (задача 5.44):
+	// overloaded и timeout; unavailable и error.
+	mediaBusy, mediaDown map[string]droppedMark
 }
 
 type droppedMark struct {
@@ -180,6 +187,19 @@ func (s *Service) observeEvicted(id string, startedAt time.Time, n uint64, now t
 		s.evicted = map[string]droppedMark{}
 	}
 	return grew(s.evicted, id, startedAt, n, now)
+}
+
+// observeMedia — росли ли за DroppedWindow сбои aisec-media шлюза:
+// перегрузка и срок (busy), недоступность и ошибка (down).
+func (s *Service) observeMedia(id string, m gwregistry.MediaMark, now time.Time) (busy, down bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.mediaBusy == nil {
+		s.mediaBusy, s.mediaDown = map[string]droppedMark{}, map[string]droppedMark{}
+	}
+	busy = grew(s.mediaBusy, id, m.StartedAt, uint64(m.Overloaded)+uint64(m.Timeout), now) //nolint:gosec // G115: счётчики 0–2^62 (gwregistry.MediaStats.validate)
+	down = grew(s.mediaDown, id, m.StartedAt, uint64(m.Unavailable)+uint64(m.Error), now)  //nolint:gosec // G115: то же
+	return busy, down
 }
 
 // grew обновляет точку отсчёта счётчика n процесса шлюза, запущенного в
@@ -328,6 +348,10 @@ func (s *Service) collect(ctx context.Context) collected {
 	if s.o.GatewayLimits != nil {
 		limits = s.o.GatewayLimits()
 	}
+	var media map[string]gwregistry.MediaMark
+	if s.o.GatewayMedia != nil {
+		media = s.o.GatewayMedia()
+	}
 	if s.o.Store != nil {
 		sctx, cancel := s.dbCtx(ctx)
 		var err error
@@ -359,10 +383,16 @@ func (s *Service) collect(ctx context.Context) collected {
 			if m, ok := limits[g.ID]; ok {
 				gs.Limits = gatewayLimits(m)
 			}
+			if m, ok := media[g.ID]; ok {
+				gs.Media = gatewayMedia(m)
+			}
 			if g.Status == gwregistry.StatusActive {
 				s.blinding(&c, g, &gs, stats, now)
 				if m, ok := limits[g.ID]; ok && s.o.GatewayLimits != nil {
 					s.gatewayLimits(&c, g, m, now)
+				}
+				if m, ok := media[g.ID]; ok {
+					s.gatewayMedia(&c, g, m, now)
 				}
 				if gs.State == GatewayOnline {
 					active = append(active, g)
@@ -540,6 +570,46 @@ func (s *Service) gatewayLimits(c *collected, g gwregistry.Gateway, m gwregistry
 	c.conditions[code] = s.observeEvicted(g.ID, m.StartedAt, uint64(tool)+uint64(sess), now) //nolint:gosec // G115: счётчики 0–2^62 (gwregistry.Limits.validate)
 	c.details[code] = map[string]any{"component": componentGateway + g.ID, "gateway_name": g.Name,
 		"tool_rate_evictions": tool, "session_evictions": sess}
+}
+
+// gatewayMedia — состояние клиента aisec-media шлюза для ответа.
+func gatewayMedia(m gwregistry.MediaMark) *GatewayMedia {
+	out := &GatewayMedia{ReportedAt: m.At.UTC(), StartedAt: timePtr(m.StartedAt), Inflight: m.Inflight, MaxInflight: m.MaxInflight,
+		Down: m.Down, Analyzed: m.Analyzed,
+		Unchecked: GatewayMediaUnchecked{Unavailable: m.Unavailable, Overloaded: m.Overloaded, Timeout: m.Timeout, Error: m.Error}}
+	if t := m.Selftest; t != nil {
+		out.Selftest = &GatewayMediaSelftest{Result: t.Result, CheckedAt: t.At.UTC(), Failed: t.Failed}
+	}
+	return out
+}
+
+// gatewayMedia — условия aisec-media действующего шлюза (задача 5.44,
+// DM-50): gateway_media_overloaded — за DroppedWindow росли отказы
+// overloaded и timeout; gateway_media_unavailable — последний вызов
+// закончился сбоем или росли отказы unavailable и error;
+// gateway_media_selftest — последний самотест не пройден. Шлюз без
+// aisec-media поле не присылает — условий нет.
+func (s *Service) gatewayMedia(c *collected, g gwregistry.Gateway, m gwregistry.MediaMark, now time.Time) {
+	busy, down := s.observeMedia(g.ID, m, now)
+	detail := func(extra map[string]any) map[string]any {
+		d := map[string]any{"component": componentGateway + g.ID, "gateway_name": g.Name}
+		maps.Copy(d, extra)
+		return d
+	}
+	code := ConditionMediaOverloaded + ":" + g.ID
+	c.conditions[code] = busy
+	c.details[code] = detail(map[string]any{"overloaded": m.Overloaded, "timeout": m.Timeout, "inflight": m.Inflight, "max_inflight": m.MaxInflight})
+	code = ConditionMediaUnavailable + ":" + g.ID
+	c.conditions[code] = m.Down || down
+	c.details[code] = detail(map[string]any{"down": m.Down, "unavailable": m.Unavailable, "error": m.Error})
+	code = ConditionMediaSelftest + ":" + g.ID
+	failed := m.Selftest != nil && m.Selftest.Result == gwregistry.MediaSelftestFailed
+	c.conditions[code] = failed
+	if failed {
+		c.details[code] = detail(map[string]any{"failed": m.Selftest.Failed, "checked_at": m.Selftest.At.UTC()})
+	} else {
+		c.details[code] = detail(nil)
+	}
 }
 
 // shadowAIStorage — заполнение хранилища сводок теневого ИИ и условия
@@ -850,6 +920,9 @@ var conditionInfo = []struct{ code, requirement, title string }{
 	{ConditionShadowAIFull, "РСБ.7", "Хранилище сводок теневого ИИ заполнено: импорт журналов и приём по syslog отклоняются"},
 	{ConditionServiceDBPrevious, "ОЦЛ.5", "Сохранённая служебная база не прошла проверку подписи: работает предыдущая версия"},
 	{ConditionServiceDBUnused, "ОЦЛ.5", "Сохранённая служебная база не прошла проверку подписи: загруженная база не используется (для базы требований действует встроенная база выпуска)"},
+	{ConditionMediaOverloaded, "ЗИ.7", "Анализатор изображений шлюза перегружен: изображения уходят с отметкой «не проверено» (очередь заполнена или срок истёк)"},
+	{ConditionMediaUnavailable, "ЗИ.7", "Анализатор изображений шлюза недоступен: изображения уходят с отметкой «не проверено»"},
+	{ConditionMediaSelftest, "ОЦЛ.5", "Самотест анализатора изображений шлюза на эталонных изображениях не пройден"},
 }
 
 // family — условие раздела 7, к которому относится код (integrity:server —
@@ -923,7 +996,7 @@ func (s *Service) Status(ctx context.Context) Status {
 			n.Count, n.Active = denied, denied != nil && *denied > 0
 		case ConditionIntegrity, ConditionBundleLag, ConditionOffline, ConditionEventsDropped, ConditionReportsStale,
 			ConditionCertExpiry, ConditionGatewayClock, ConditionGatewayTLS, ConditionQuotaAutonomous, ConditionGatewayLimits,
-			ConditionServiceDBPrevious, ConditionServiceDBUnused:
+			ConditionServiceDBPrevious, ConditionServiceDBUnused, ConditionMediaOverloaded, ConditionMediaUnavailable, ConditionMediaSelftest:
 			// Одна строка на все компоненты; «с» — самое раннее из активных.
 			for _, code := range sortedCodes(c.conditions) {
 				if family(code) != ci.code || !c.conditions[code] {
@@ -1069,7 +1142,7 @@ func (s *Service) skip(c collected, fam string) bool {
 		return missing("license")
 	case ConditionQuotaApprox, ConditionQuotaAutonomous:
 		return missing("gateways", "quota")
-	case ConditionGatewayLimits:
+	case ConditionGatewayLimits, ConditionMediaOverloaded, ConditionMediaUnavailable, ConditionMediaSelftest:
 		return missing("gateways")
 	case ConditionShadowAIStorage, ConditionShadowAIFull:
 		return missing("shadow_ai_storage")

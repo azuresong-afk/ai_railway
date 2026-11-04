@@ -167,12 +167,14 @@ type RewrapCounts struct {
 	LDAP int64 `json:"ldap"`
 	// Approvals — аргументы вызовов в очереди подтверждений (задача 4.10 этапа 4).
 	Approvals int64 `json:"approvals"`
+	// RedTeam — выдержки ответов тестирования устойчивости (5В3 ревью 5.r3 этапа 5).
+	RedTeam int64 `json:"redteam_examples"`
 }
 
 // Total — всего строк.
 func (c RewrapCounts) Total() int64 {
 	return c.MFA + c.Providers + c.Content + c.Channels + c.GatewayTLS + c.OIDC + c.Prompts + c.MCPServers + c.LDAP +
-		c.Approvals
+		c.Approvals + c.RedTeam
 }
 
 // RewrapOptions — параметры перешифрования.
@@ -208,13 +210,15 @@ const (
 	mcpTable, mcpColumn             = "mcp_servers", "credential"
 	ldapTable, ldapColumn           = "ldap_settings", "bind_password"
 	approvalTable, approvalColumn   = "approval_requests", "args"
+	redteamTable, redteamColumn     = "redteam_results", "example"
 )
 
 // Rewrap перешифровывает действующей версией box все строки прежних версий:
 // секреты TOTP, учётные данные провайдеров, содержимое событий full,
 // секреты каналов уведомлений, ключ сертификата заказчика, секрет
-// клиента IdP, тексты эталонов системного промпта и учётные данные
-// MCP-серверов.
+// клиента IdP, тексты эталонов системного промпта, учётные данные
+// MCP-серверов, аргументы подтверждений и выдержки ответов тестирования
+// устойчивости.
 // Каждая пачка — своя транзакция; строка обновляется, только если её ключ
 // не сменился (сервер мог заменить её параллельно). Прерванное
 // перешифрование продолжается повторным вызовом. box — из Load под
@@ -260,6 +264,9 @@ func Rewrap(ctx context.Context, db Owner, box *Box, o RewrapOptions) (RewrapCou
 		}},
 		{&total.Approvals, func(ctx context.Context, tx pgx.Tx, active string) (int, error) {
 			return rewrapApprovals(ctx, tx, box, active, o.Batch)
+		}},
+		{&total.RedTeam, func(ctx context.Context, tx pgx.Tx, active string) (int, error) {
+			return rewrapRedTeam(ctx, tx, box, active, o.Batch)
 		}},
 	}
 	for _, st := range steps {
@@ -503,6 +510,35 @@ func rewrapApprovals(ctx context.Context, tx pgx.Tx, box *Box, active string, ba
 	return len(rows), nil
 }
 
+// rewrapRedTeam — пачка выдержек ответов тестирования устойчивости
+// (internal/redteam, 5В3 ревью 5.r3): AAD redteam_results|example|<запуск>/<сценарий>.
+func rewrapRedTeam(ctx context.Context, tx pgx.Tx, box *Box, active string, batch int) (int, error) {
+	type row struct {
+		run, scenario, keyID string
+		sealed               []byte
+	}
+	rows, err := collect(ctx, tx, `SELECT run_id::text, scenario_id, example_key_id::text, example FROM redteam_results
+		WHERE example_key_id <> $1 ORDER BY run_id, scenario_id LIMIT $2 FOR UPDATE`, []any{active, batch},
+		func(r pgx.Rows) (row, error) {
+			var x row
+			return x, r.Scan(&x.run, &x.scenario, &x.keyID, &x.sealed)
+		})
+	if err != nil {
+		return 0, fmt.Errorf("перешифрование выдержек тестирования устойчивости: %w", err)
+	}
+	for _, x := range rows {
+		keyID, sealed, err := reseal(ctx, box, active, x.keyID, x.sealed, redteamTable, redteamColumn, x.run+"/"+x.scenario)
+		if err != nil {
+			return 0, fmt.Errorf("перешифрование выдержки %s/%s: %w", x.run, x.scenario, err)
+		}
+		if _, err := tx.Exec(ctx, `UPDATE redteam_results SET example = $1, example_key_id = $2
+			WHERE run_id = $3 AND scenario_id = $4 AND example_key_id = $5`, sealed, keyID, x.run, x.scenario, x.keyID); err != nil {
+			return 0, fmt.Errorf("перешифрование выдержки %s/%s: %w", x.run, x.scenario, err)
+		}
+	}
+	return len(rows), nil
+}
+
 // rewrapContent — пачка содержимого событий full: производный ключ тех же
 // суток от новой версии (ADR-0007, п. 8).
 func rewrapContent(ctx context.Context, tx pgx.Tx, box *Box, active, purpose string, batch int) (int, error) {
@@ -660,7 +696,8 @@ func Status(ctx context.Context, db Owner, orgID string) ([]VersionStatus, error
 		(SELECT count(*) FROM prompt_baselines WHERE text_key_id = k.id),
 		(SELECT count(*) FROM mcp_servers WHERE credential_key_id = k.id),
 		(SELECT count(*) FROM ldap_settings WHERE bind_password_key_id = k.id),
-		(SELECT count(*) FROM approval_requests WHERE args_key_id = k.id)
+		(SELECT count(*) FROM approval_requests WHERE args_key_id = k.id),
+		(SELECT count(*) FROM redteam_results WHERE example_key_id = k.id)
 		FROM data_keys k WHERE k.org_id = $1 ORDER BY k.version`, orgID)
 	if err != nil {
 		return nil, fmt.Errorf("ключ данных: состояние: %w", err)
@@ -671,7 +708,7 @@ func Status(ctx context.Context, db Owner, orgID string) ([]VersionStatus, error
 		var v VersionStatus
 		if err := rows.Scan(&v.ID, &v.Version, &v.MasterVersion, &v.Sealed, &v.CreatedAt, &v.RetiredAt,
 			&v.Rows.MFA, &v.Rows.Providers, &v.Rows.Content, &v.Rows.Channels, &v.Rows.GatewayTLS, &v.Rows.OIDC, &v.Rows.Prompts,
-			&v.Rows.MCPServers, &v.Rows.LDAP, &v.Rows.Approvals); err != nil {
+			&v.Rows.MCPServers, &v.Rows.LDAP, &v.Rows.Approvals, &v.Rows.RedTeam); err != nil {
 			return nil, err
 		}
 		out = append(out, v)
@@ -711,9 +748,10 @@ func DestroyRetired(ctx context.Context, db Owner, rec Recorder, orgID string, a
 				(SELECT count(*) FROM prompt_baselines WHERE text_key_id = $1),
 				(SELECT count(*) FROM mcp_servers WHERE credential_key_id = $1),
 				(SELECT count(*) FROM ldap_settings WHERE bind_password_key_id = $1),
-				(SELECT count(*) FROM approval_requests WHERE args_key_id = $1)`, v.ID).
+				(SELECT count(*) FROM approval_requests WHERE args_key_id = $1),
+				(SELECT count(*) FROM redteam_results WHERE example_key_id = $1)`, v.ID).
 				Scan(&left.MFA, &left.Providers, &left.Content, &left.Channels, &left.GatewayTLS, &left.OIDC, &left.Prompts,
-					&left.MCPServers, &left.LDAP, &left.Approvals); err != nil {
+					&left.MCPServers, &left.LDAP, &left.Approvals, &left.RedTeam); err != nil {
 				return err
 			}
 			if left.Total() > 0 {

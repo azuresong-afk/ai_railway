@@ -186,10 +186,12 @@ const (
 	// (адрес, на который продукт отправит атаки), только из консоли;
 	// запуск и отмена — без признака безопасности (запуск из CI токеном,
 	// 5.33); загрузка подписанной базы сценариев.
-	PermRedteamRead          = "redteam.read"
-	PermRedteamTargetsManage = "redteam.targets.manage"
-	PermRedteamRun           = "redteam.run"
-	PermRedteamScenariosLoad = "redteam.scenarios.load"
+	PermRedteamRead            = "redteam.read"
+	PermRedteamTargetsManage   = "redteam.targets.manage"
+	PermRedteamRun             = "redteam.run"
+	PermRedteamScenariosLoad   = "redteam.scenarios.load"
+	PermRedteamSchedulesManage = "redteam.schedules.manage"
+	PermRedteamExport          = "redteam.export"
 )
 
 // Permission — разрешение из каталога.
@@ -308,6 +310,10 @@ var permissionCatalog = []Permission{
 		Group: "Тестирование устойчивости", Security: true},
 	{Name: PermRedteamRun, Title: "Запуск и отмена тестирования устойчивости", Group: "Тестирование устойчивости"},
 	{Name: PermRedteamScenariosLoad, Title: "Загрузка подписанной базы сценариев атак и возврат её предыдущей версии", Group: "Тестирование устойчивости"},
+	{Name: PermRedteamSchedulesManage, Title: "Создание, изменение и удаление расписаний запусков тестирования устойчивости (когда продукт сам отправляет атаки)",
+		Group: "Тестирование устойчивости", Security: true},
+	{Name: PermRedteamExport, Title: "Выгрузка отчёта тестирования устойчивости (HTML, CSV, XLSX); выдержки ответов — дополнительно с правом на содержимое событий",
+		Group: "Тестирование устойчивости"},
 }
 
 // auditorExtra — разрешения аудитора сверх чтения: они ничего не меняют,

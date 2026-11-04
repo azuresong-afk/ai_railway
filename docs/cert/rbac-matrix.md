@@ -187,9 +187,15 @@
 | POST | `/api/v1/redteam/runs` | `redteam.run` | да | — | — | — | — | да |
 | GET | `/api/v1/redteam/runs/{id}` | `redteam.read` | да | да | да | да | — | да |
 | POST | `/api/v1/redteam/runs/{id}/cancel` | `redteam.run` | да | — | — | — | — | да |
+| GET | `/api/v1/redteam/runs/{id}/report` | `redteam.export` | да | — | — | — | — | да |
 | GET | `/api/v1/redteam/scenarios` | `redteam.read` | да | да | да | да | — | да |
 | PUT | `/api/v1/redteam/scenarios` | `redteam.scenarios.load` | да | да | — | — | — | да |
 | POST | `/api/v1/redteam/scenarios/rollback` | `redteam.scenarios.load` | да | да | — | — | — | да |
+| GET | `/api/v1/redteam/schedules` | `redteam.read` | да | да | да | да | — | да |
+| POST | `/api/v1/redteam/schedules` | `redteam.schedules.manage` | да | — | — | — | — | — |
+| GET | `/api/v1/redteam/schedules/{id}` | `redteam.read` | да | да | да | да | — | да |
+| PUT | `/api/v1/redteam/schedules/{id}` | `redteam.schedules.manage` | да | — | — | — | — | — |
+| DELETE | `/api/v1/redteam/schedules/{id}` | `redteam.schedules.manage` | да | — | — | — | — | — |
 | GET | `/api/v1/redteam/targets` | `redteam.read` | да | да | да | да | — | да |
 | POST | `/api/v1/redteam/targets` | `redteam.targets.manage` | да | — | — | — | — | — |
 | GET | `/api/v1/redteam/targets/{id}` | `redteam.read` | да | да | да | да | — | да |

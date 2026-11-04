@@ -53,6 +53,38 @@ func TestTargetInputDefaultsAndRejects(t *testing.T) {
 	}
 }
 
+// Секрет в постоянных заголовках или в шаблоне тела — отказ (5Н21 ревью
+// 5.r3): они хранятся открыто и видны с redteam.read. Текст ошибки не
+// содержит значения; обычные заголовки и шаблон принимаются.
+func TestTargetRejectsSecrets(t *testing.T) {
+	// Синтетические значения собираются при выполнении.
+	jwt := "Bearer " + "eyJhbGciOiJIUzI1NiJ9" + ".eyJzdWIiOiIxMjMifQ" + ".c2lnbmF0dXJlLXRlc3QtdmFsdWU"
+	key := "Zq8vT3mK1pW9" + "xR4nL7bH2cF6dJ0sY5gA"
+	for _, name := range []string{"Authorization", "x-api-key", "Api-Key", "X-Auth-Token", "X-Session-Token"} {
+		_, err := endpointInput(func(in *TargetInput) { in.Headers = []Header{{Name: name, Value: "v"}} }).Target()
+		if !isInput(err) || !strings.Contains(err.Error(), "auth_header") {
+			t.Errorf("заголовок %s: %v", name, err)
+		}
+	}
+	cases := map[string]func(*TargetInput){
+		"header-value": func(in *TargetInput) { in.Headers = []Header{{Name: "X-Custom", Value: jwt}} },
+		"template-key": func(in *TargetInput) { in.RequestTemplate = `{"q":"{{prompt}}","api_key":"` + key + `"}` },
+	}
+	for name, mod := range cases {
+		_, err := endpointInput(mod).Target()
+		if !isInput(err) || strings.Contains(err.Error(), key) || strings.Contains(err.Error(), "eyJ") {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	if _, err := endpointInput(func(in *TargetInput) {
+		in.Headers = []Header{{Name: "X-Tenant", Value: "crm-prod-01"}}
+		in.RequestTemplate = `{"model":"gpt-4o-mini","messages":"{{messages}}","temperature":0}`
+		in.AuthHeader = "Authorization"
+	}).Target(); err != nil {
+		t.Fatalf("обычная цель: %v", err)
+	}
+}
+
 func TestRenderTemplateAndExtract(t *testing.T) {
 	hist := []message{{Role: "user", Content: "привет"}, {Role: "assistant", Content: "здравствуйте"}, {Role: "user", Content: `"кавычки" <b>`}}
 	body, err := renderTemplate(`{"input": {"text": "{{prompt}}", "n": 1.50}, "h": "{{messages}}", "keep": "{{other}}"}`, hist[2].Content, hist)

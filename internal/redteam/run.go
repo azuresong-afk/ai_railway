@@ -293,7 +293,7 @@ func (x *execution) scenario(ctx context.Context, sc Scenario) (Result, bool) {
 		if err := x.limit.wait(ctx); err != nil {
 			return Result{}, false
 		}
-		history = append(history, message{Role: "user", Content: st.Prompt})
+		history = append(history, message{Role: "user", Content: st.Text()})
 		rep := x.send(ctx, history)
 		if ctx.Err() != nil && rep.errCode != "" {
 			return Result{}, false
@@ -321,7 +321,7 @@ func (x *execution) scenario(ctx context.Context, sc Scenario) (Result, bool) {
 		if e.succeeded() {
 			res.Verdict, res.Matched = VerdictSucceeded, e.matched
 			if x.target.Kind == KindEndpoint && x.target.Storage == StorageMasked {
-				res.Example = maskedExample(rep.text, e.findings)
+				res.Example = x.sealExample(ctx, sc.ID, maskedExample(rep.text, e.findings))
 			}
 			break
 		}

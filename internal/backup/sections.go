@@ -366,6 +366,58 @@ type RAGExclusion struct {
 	CreatedBy    string    `json:"created_by"`
 }
 
+// RedTeamTarget — цель тестирования устойчивости (миграция 0075,
+// ADR-0031). Значение секретного заголовка не хранится: в копии только
+// его имя (auth_header). Headers и Limits — как в БД (jsonb); поля
+// проверяет internal/redteam (CheckStoredTarget) до записи.
+type RedTeamTarget struct {
+	ID                string          `json:"id"`
+	Name              string          `json:"name"`
+	Kind              string          `json:"kind"`
+	AppID             *string         `json:"app_id"`
+	Model             string          `json:"model"`
+	URL               string          `json:"url"`
+	RequestTemplate   string          `json:"request_template"`
+	ResponsePath      string          `json:"response_path"`
+	Headers           json.RawMessage `json:"headers"`
+	AuthHeader        string          `json:"auth_header"`
+	CAPEM             string          `json:"ca_pem"`
+	AuthorizationNote string          `json:"authorization_note"`
+	Storage           string          `json:"storage"`
+	JudgeProvider     string          `json:"judge_provider"`
+	JudgeModel        string          `json:"judge_model"`
+	Limits            json.RawMessage `json:"limits"`
+	CreatedAt         time.Time       `json:"created_at"`
+	CreatedBy         string          `json:"created_by"`
+	UpdatedAt         time.Time       `json:"updated_at"`
+	UpdatedBy         string          `json:"updated_by"`
+}
+
+// RedTeamSchedule — расписание запусков тестирования устойчивости
+// (миграция 0076, задача 5.33). Итог и запуск последней попытки не
+// переносятся: запусков в копии нет. Срок — как в копии: пропущенный
+// дольше часа срок расписание отмечает пропуском и не начинает атаки
+// в непредусмотренное время (redteam.MissedGrace).
+type RedTeamSchedule struct {
+	ID        string     `json:"id"`
+	Name      string     `json:"name"`
+	TargetID  string     `json:"target_id"`
+	Frequency string     `json:"frequency"`
+	Weekday   int        `json:"weekday"`
+	Day       int        `json:"day"`
+	At        string     `json:"at"`
+	Threats   []string   `json:"threats"`
+	Lang      string     `json:"lang"`
+	Enabled   bool       `json:"enabled"`
+	NextRunAt time.Time  `json:"next_run_at"`
+	LastRunAt *time.Time `json:"last_run_at"`
+	Version   int        `json:"version"`
+	CreatedAt time.Time  `json:"created_at"`
+	CreatedBy string     `json:"created_by"`
+	UpdatedAt time.Time  `json:"updated_at"`
+	UpdatedBy string     `json:"updated_by"`
+}
+
 // ComplianceMark — ручная отметка соответствия требованию.
 type ComplianceMark struct {
 	RequirementID string     `json:"requirement_id"`
@@ -410,6 +462,10 @@ const (
 	maxRAGCollections             = 100
 	maxRAGExclusionsPerCollection = 1000
 	maxRAGExclusions              = maxRAGCollections * maxRAGExclusionsPerCollection
+	// maxRedTeamTargets и maxRedTeamSchedules — пределы тестирования
+	// устойчивости (redteam.MaxTargets, redteam.MaxSchedules).
+	maxRedTeamTargets   = 100
+	maxRedTeamSchedules = 20
 )
 
 // Виды секретов разделов версии 2 (входят в AAD шифротекста копии).
@@ -426,7 +482,7 @@ const (
 func (s *Snapshot) hasV2() bool {
 	if len(s.Channels)+len(s.AlertRules)+len(s.ReportSchedules)+len(s.ModelPrices)+len(s.Instructions)+
 		len(s.MCPServers)+len(s.Agents)+len(s.AgentTools)+len(s.ShadowAIExclusions)+len(s.Licenses)+len(s.ComplianceMarks)+
-		len(s.ServiceDBs)+len(s.InventoryModels)+len(s.RAGExclusions) > 0 ||
+		len(s.ServiceDBs)+len(s.InventoryModels)+len(s.RAGExclusions)+len(s.RedTeamTargets)+len(s.RedTeamSchedules) > 0 ||
 		s.GatewayTLS != nil || s.OIDC != nil || s.LDAP != nil || s.LicenseClock != nil {
 		return true
 	}
@@ -462,7 +518,8 @@ func (s *Snapshot) validateV2() error {
 		len(s.ModelPrices) > maxPrices, len(s.Instructions) > maxInstructions, len(s.MCPServers) > maxMCPServers,
 		len(s.Agents) > maxAgents, len(s.AgentTools) > maxTools, len(s.ShadowAIExclusions) > maxExclusions,
 		len(s.Licenses) > maxLicenses, len(s.ComplianceMarks) > maxMarks, len(s.ServiceDBs) > maxServiceDBs,
-		len(s.InventoryModels) > maxInventoryModels, len(s.RAGExclusions) > maxRAGExclusions:
+		len(s.InventoryModels) > maxInventoryModels, len(s.RAGExclusions) > maxRAGExclusions,
+		len(s.RedTeamTargets) > maxRedTeamTargets, len(s.RedTeamSchedules) > maxRedTeamSchedules:
 		return errors.New("объектов больше предела")
 	}
 	channels, cnames := ids{}, ids{}
@@ -651,6 +708,9 @@ func (s *Snapshot) validateV2() error {
 	if err := s.validateRAGExclusions(); err != nil {
 		return err
 	}
+	if err := s.validateRedTeam(); err != nil {
+		return err
+	}
 	marks := ids{}
 	for _, m := range s.ComplianceMarks {
 		if err := marks.add("отметка соответствия", m.RequirementID); err != nil {
@@ -711,6 +771,44 @@ func (s *Snapshot) validateRAGExclusions() error {
 	}
 	if len(perCollection) > maxRAGCollections {
 		return fmt.Errorf("коллекций RAG больше %d", maxRAGCollections)
+	}
+	return nil
+}
+
+// validateRedTeam — ID и повторы целей и расписаний тестирования
+// устойчивости; расписание ссылается на цель копии.
+func (s *Snapshot) validateRedTeam() error {
+	targets := ids{}
+	for _, t := range s.RedTeamTargets {
+		if err := checkUUID("цель тестирования устойчивости", t.ID); err != nil {
+			return err
+		}
+		if err := targets.add("цель тестирования устойчивости", t.ID); err != nil {
+			return err
+		}
+		if t.AppID != nil {
+			if err := checkUUID("приложение цели тестирования устойчивости", *t.AppID); err != nil {
+				return err
+			}
+		}
+	}
+	schedules := ids{}
+	for _, x := range s.RedTeamSchedules {
+		if err := checkUUID("расписание тестирования устойчивости", x.ID); err != nil {
+			return err
+		}
+		if err := schedules.add("расписание тестирования устойчивости", x.ID); err != nil {
+			return err
+		}
+		if err := checkUUID("цель расписания тестирования устойчивости", x.TargetID); err != nil {
+			return err
+		}
+		if _, ok := targets[x.TargetID]; !ok {
+			return fmt.Errorf("расписание тестирования устойчивости %s: цели %s нет в копии", x.ID, x.TargetID)
+		}
+		if x.Version < 1 {
+			return fmt.Errorf("расписание тестирования устойчивости %s: версия меньше 1", x.ID)
+		}
 	}
 	return nil
 }
@@ -860,6 +958,27 @@ func (s *Snapshot) resolve() (*Snapshot, []string) {
 			continue
 		}
 		r.ShadowAIExclusions = append(r.ShadowAIExclusions, e)
+	}
+	// Цель gateway ссылается на приложение; расписание — на цель.
+	r.RedTeamTargets = nil
+	targets := ids{}
+	for _, t := range s.RedTeamTargets {
+		if t.AppID != nil {
+			if _, ok := apps[*t.AppID]; !ok {
+				skip("цель тестирования устойчивости «%s»: приложения %s нет в копии", truncate(t.Name), *t.AppID)
+				continue
+			}
+		}
+		targets[t.ID] = struct{}{}
+		r.RedTeamTargets = append(r.RedTeamTargets, t)
+	}
+	r.RedTeamSchedules = nil
+	for _, x := range s.RedTeamSchedules {
+		if _, ok := targets[x.TargetID]; !ok {
+			skip("расписание тестирования устойчивости «%s»: цель %s не восстанавливается", truncate(x.Name), x.TargetID)
+			continue
+		}
+		r.RedTeamSchedules = append(r.RedTeamSchedules, x)
 	}
 	if o := s.OIDC; o != nil {
 		if _, ok := users[o.UpdatedBy]; !ok {

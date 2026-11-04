@@ -307,7 +307,7 @@ func TestE2EStage2_BinaryTampered(t *testing.T) {
 		}
 		if out, code := s2RunDir(t, "../..", "go", nil, "run", "./tools/manifest", "build", "-out", bad.manifest(),
 			"-test-key", "testdata/integrity/manifest-test.signkey", "-version", "e2e", "-created", "2026-01-01T00:00:00Z",
-			"-bin", bad.bin, "-cmds", "aisec-gateway aisec-server aisec-cli aisec-media", "-static", dist, "-migrations", "migrations"); code != 0 {
+			"-bin", bad.bin, "-cmds", "aisec-gateway aisec-server aisec-cli", "-static", dist, "-migrations", "migrations"); code != 0 {
 			t.Fatalf("сборка манифеста: код %d\n%s", code, out)
 		}
 		if _, ok := s.startServer(bad, "-integrity-action", "stop"); ok {

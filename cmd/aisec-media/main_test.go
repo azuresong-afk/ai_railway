@@ -151,14 +151,16 @@ func TestRunRejectsOpenSocketDir(t *testing.T) {
 }
 
 func TestLoadConfig(t *testing.T) {
-	env := map[string]string{"AISEC_MEDIA_WORKERS": "3", "AISEC_MEDIA_PEER_GID": "992", "AISEC_MEDIA_MAX_PIXELS": "1000"}
+	env := map[string]string{"AISEC_MEDIA_WORKERS": "3", "AISEC_MEDIA_PEER_GID": "992", "AISEC_MEDIA_MAX_PIXELS": "1000",
+		"AISEC_MEDIA_SANITIZE_MAX_SIDE": "1024"}
 	cfg, err := loadConfig([]string{"-workers=2", "-peer-uid=991", "-cache-entries=0"}, func(k string) string { return env[k] }, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if cfg.Workers != 2 || cfg.PeerUID != 991 || cfg.PeerGID != 992 || cfg.Limits.MaxPixels != 1000 ||
 		cfg.Limits.MaxBytes != media.DefaultMaxBytes || cfg.Socket != DefaultSocket || cfg.CacheEntries != -1 ||
-		cfg.Queue != media.DefaultQueue || cfg.RunTimeout != media.DefaultRunTimeout || cfg.Models != DefaultModels || cfg.ORTLib != DefaultORTLib {
+		cfg.Queue != media.DefaultQueue || cfg.RunTimeout != media.DefaultRunTimeout || cfg.Models != DefaultModels || cfg.ORTLib != DefaultORTLib ||
+		cfg.SanitizeMaxSide != 1024 {
 		t.Fatalf("%+v", cfg)
 	}
 }
@@ -176,6 +178,8 @@ func TestLoadConfigRejects(t *testing.T) {
 		"max-pixels сверх":       append([]string{"-max-pixels=100000001"}, base...),
 		"workers 0":              append([]string{"-workers=0"}, base...),
 		"queue отрицательная":    append([]string{"-queue=-1"}, base...),
+		"сторона очистки мала":   append([]string{"-sanitize-max-side=255"}, base...),
+		"сторона очистки сверх":  append([]string{"-sanitize-max-side=8193"}, base...),
 		"срок мал":               append([]string{"-run-timeout=10ms"}, base...),
 		"предел срока < срока":   append([]string{"-run-timeout=5s", "-max-run-timeout=1s"}, base...),
 		"реакция":                append([]string{"-integrity-action=ignore"}, base...),

@@ -35,7 +35,7 @@ func TestSystemStatus(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Server.Version != "1.2.3" || got.Time.Sync != sysstatus.SyncSynchronized || len(got.Notifications) != 30 {
+	if got.Server.Version != "1.2.3" || got.Time.Sync != sysstatus.SyncSynchronized || len(got.Notifications) != 33 {
 		t.Fatalf("%+v", got)
 	}
 	// Пустые списки — массивы, не null: клиент консоли не проверяет на null.
@@ -143,5 +143,48 @@ func TestHeartbeatLimits(t *testing.T) {
 	m, ok := svc.GatewayLimits()[gw.ID]
 	if !ok || m.ToolRate == nil || m.ToolRate.Evictions != 5 || m.Sessions == nil || m.Sessions.AppEvictions != 4 {
 		t.Fatalf("счётчики: %+v %v", m, ok)
+	}
+}
+
+// Задача 5.44 этапа 5 (DM-50): heartbeat с состоянием клиента aisec-media —
+// ответ сообщает media, состояние доходит до реестра, неверное — 400.
+func TestHeartbeatMedia(t *testing.T) {
+	svc, gw := newGatewayEnv(t)
+	h, _, err := NewInternal(InternalOptions{Logger: quiet(), Hasher: testHasher(t), Gateways: svc, Authorizer: asGateway(gw.ID),
+		RateLimit: RateConfig{Rules: []RateRule{{Prefix: "/", Max: 0}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	post := func(body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/internal/v1/heartbeat", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+		return w
+	}
+	const un = `"unchecked":{"unavailable":0,"overloaded":2,"timeout":1,"error":0}`
+	for _, bad := range []string{
+		`{"version":"1","media":{"inflight":17,"max_inflight":16,"down":false,"analyzed":0,` + un + `}}`,
+		`{"version":"1","media":{"inflight":0,"max_inflight":16,"down":false,"analyzed":0,` + un + `,"extra":1}}`,
+		`{"version":"1","media":{"inflight":0,"max_inflight":16,"down":false,"analyzed":-1,` + un + `}}`,
+		`{"version":"1","media":{"inflight":0,"max_inflight":16,"down":false,"analyzed":0,` + un + `,"selftest":{"result":"maybe","checked_at":"2026-11-03T10:00:00Z","failed":0}}}`,
+	} {
+		mustProblem(t, post(bad), http.StatusBadRequest, CodeInvalidRequest)
+	}
+	w := post(`{"version":"1"}`)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"media":true`) {
+		t.Fatalf("%d %s", w.Code, w.Body.String())
+	}
+	if len(svc.GatewayMedia()) != 0 {
+		t.Fatal("шлюз без aisec-media: данные появились")
+	}
+	w = post(`{"version":"1","media":{"inflight":1,"max_inflight":16,"down":true,"analyzed":7,` + un +
+		`,"selftest":{"result":"failed","checked_at":"2020-01-01T00:00:00Z","failed":2}}}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("%d %s", w.Code, w.Body.String())
+	}
+	m, ok := svc.GatewayMedia()[gw.ID]
+	if !ok || !m.Down || m.Analyzed != 7 || m.Overloaded != 2 || m.Timeout != 1 || m.Selftest == nil || m.Selftest.Failed != 2 {
+		t.Fatalf("состояние: %+v %v", m, ok)
 	}
 }

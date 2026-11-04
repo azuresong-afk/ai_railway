@@ -113,3 +113,58 @@ func TestMediaUnavailableFlag(t *testing.T) {
 		}
 	}
 }
+
+// finding_source (задача 5.46): события с находками в тексте изображений.
+func TestFindingSourceFilter(t *testing.T) {
+	f, err := ParseFilter(`finding_source = "image"`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	img := &Record{Details: &Details{Findings: []Finding{{Detector: "pii.ru", Source: SourceImage}}}}
+	usr := &Record{Details: &Details{Findings: []Finding{{Detector: "pii.ru", Source: "user"}}}}
+	if !f.Match(img) || f.Match(usr) || f.Match(&Record{}) {
+		t.Fatal("Match finding_source")
+	}
+	var b strings.Builder
+	a := &sqlArgs{}
+	f.appendSQL(&b, a)
+	if !strings.Contains(b.String(), "f->>'source' = ANY($1::text[])") {
+		t.Fatalf("SQL %q", b.String())
+	}
+	for _, bad := range []string{`finding_source = "screen"`, `finding_source = "IMAGE"`} {
+		if _, err := ParseFilter(bad); err == nil {
+			t.Errorf("%s: принят", bad)
+		}
+	}
+	if g, err := ParseFilter(`finding_source != "image"`); err != nil || g.Match(img) || !g.Match(usr) {
+		t.Fatalf("not: %v", err)
+	}
+}
+
+// test (задача 5.34): события запросов тестирования устойчивости отбираются
+// и скрываются фильтром.
+func TestTestFlagFilter(t *testing.T) {
+	f, err := ParseFilter(`test = true`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !f.Match(&Record{Details: &Details{Test: true}}) || f.Match(&Record{Details: &Details{}}) || f.Match(&Record{}) {
+		t.Fatal("Match test = true")
+	}
+	g, err := ParseFilter(`test = false`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g.Match(&Record{Details: &Details{Test: true}}) || !g.Match(&Record{}) {
+		t.Fatal("Match test = false")
+	}
+	var b strings.Builder
+	a := &sqlArgs{}
+	f.appendSQL(&b, a)
+	if b.String() != ` AND COALESCE((e.details->>'test')::boolean, false) = $1` || a.args[0] != true {
+		t.Fatalf("SQL %q, параметры %v", b.String(), a.args)
+	}
+	if _, err := ParseFilter(`test != true`); err == nil {
+		t.Error("test != true: принят")
+	}
+}

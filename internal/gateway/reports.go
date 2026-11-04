@@ -146,6 +146,49 @@ type heartbeatBody struct {
 	// Limits — заполнение и вытеснения счётчиков в памяти (задача 5.9
 	// этапа 5): только серверу, который сообщил limits.
 	Limits *LimitsReport `json:"limits,omitempty"`
+	// Media — состояние клиента aisec-media (задача 5.44 этапа 5): только
+	// серверу, который сообщил media.
+	Media *MediaReport `json:"media,omitempty"`
+}
+
+// MediaReport — состояние клиента aisec-media шлюза для сервера (задача
+// 5.44, DM-50): очередь шлюза, отсрочка, итоги с запуска и последний
+// самотест. Только числа и отметки: ни путей, ни содержимого.
+type MediaReport struct {
+	Inflight    int    `json:"inflight"`
+	MaxInflight int    `json:"max_inflight"`
+	Down        bool   `json:"down"`
+	Analyzed    uint64 `json:"analyzed"`
+	// Unchecked — «не проверено» из-за сбоя анализатора по причинам.
+	Unchecked MediaUnchecked `json:"unchecked"`
+	// Selftest — последний самотест на эталонных изображениях; nil — ещё не
+	// выполнялся.
+	Selftest *MediaSelftestReport `json:"selftest,omitempty"`
+}
+
+// MediaUnchecked — сбои анализатора по причинам (events.MediaReason*).
+type MediaUnchecked struct {
+	Unavailable uint64 `json:"unavailable"`
+	Overloaded  uint64 `json:"overloaded"`
+	Timeout     uint64 `json:"timeout"`
+	Error       uint64 `json:"error"`
+}
+
+// MediaSelftestReport — итог самотеста aisec-media: ok, failed, unchecked.
+type MediaSelftestReport struct {
+	Result    string    `json:"result"`
+	CheckedAt time.Time `json:"checked_at"`
+	Failed    int       `json:"failed"`
+}
+
+// NewMediaReport — отчёт из счётчиков клиента.
+func NewMediaReport(st MediaStats) *MediaReport {
+	out := &MediaReport{Inflight: st.Inflight, MaxInflight: st.MaxInflight, Down: st.Down, Analyzed: st.Analyzed,
+		Unchecked: MediaUnchecked{Unavailable: st.Unavailable, Overloaded: st.Overloaded, Timeout: st.Timeout, Error: st.Error}}
+	if t := st.Selftest; t != nil {
+		out.Selftest = &MediaSelftestReport{Result: t.Result, CheckedAt: t.CheckedAt.UTC(), Failed: t.Failed}
+	}
+	return out
 }
 
 // LimitsReport — заполнение и вытеснения счётчиков в памяти шлюза с его

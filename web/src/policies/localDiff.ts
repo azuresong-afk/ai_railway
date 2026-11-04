@@ -22,6 +22,7 @@ export function localDiff(before: PolicySpec, after: PolicySpec): PolicyDiff {
       ["response_check", s.response_check ?? ""],
       ["media_check", s.media_check ?? ""],
       ["media_check_timeout_ms", s.media_check_timeout_ms?.toString() ?? ""],
+      ["media_sanitize", (s.media_sanitize ?? false).toString()],
       ["block_message", s.block_message ?? ""],
       ["judge", sectionText(s.judge)],
     ]);

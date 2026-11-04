@@ -246,6 +246,9 @@ type HeartbeatConfig struct {
 	// Limits — заполнение и вытеснения счётчиков в памяти шлюза (задача 5.9
 	// этапа 5): только серверу, который сообщил limits; nil — не передаются.
 	Limits func() *LimitsReport
+	// Media — состояние клиента aisec-media (задача 5.44, DM-50): только
+	// серверу, который сообщил media; nil — шлюз без -media-socket.
+	Media  func() *MediaReport
 	Logger *slog.Logger
 	Clock  func() time.Time
 	// Sleep ждёт d или отмены ctx (тесты подменяют его).
@@ -283,8 +286,10 @@ func RunHeartbeat(ctx context.Context, c HeartbeatConfig) {
 	quotaLeases := false
 	// limits — сервер принимает поле limits (задача 5.9 этапа 5).
 	limits := false
+	// media — сервер принимает поле media (задача 5.44 этапа 5).
+	media := false
 	for {
-		wait, ok := c.beat(ctx, u, &interval, &backoff, &clockTLS, &approvals, &quotaLeases, &limits)
+		wait, ok := c.beat(ctx, u, &interval, &backoff, &clockTLS, &approvals, &quotaLeases, &limits, &media)
 		if !ok {
 			return
 		}
@@ -318,7 +323,7 @@ func (c HeartbeatConfig) stopping(ctx context.Context, u string) {
 }
 
 // beat отправляет один heartbeat и возвращает паузу до следующего.
-func (c HeartbeatConfig) beat(ctx context.Context, u string, interval, backoff *time.Duration, clockTLS, approvals, quotaLeases, limits *bool) (time.Duration, bool) {
+func (c HeartbeatConfig) beat(ctx context.Context, u string, interval, backoff *time.Duration, clockTLS, approvals, quotaLeases, limits, media *bool) (time.Duration, bool) {
 	if ctx.Err() != nil {
 		return 0, false
 	}
@@ -343,6 +348,8 @@ func (c HeartbeatConfig) beat(ctx context.Context, u string, interval, backoff *
 		QuotaLeases bool `json:"quota_leases"`
 		// Limits — сервер принимает limits (задача 5.9 этапа 5).
 		Limits bool `json:"limits"`
+		// Media — сервер принимает media (задача 5.44 этапа 5).
+		Media bool `json:"media"`
 	}
 	sent := c.Clock()
 	body := heartbeatBody{Version: c.Version, BundleETag: etag}
@@ -368,6 +375,9 @@ func (c HeartbeatConfig) beat(ctx context.Context, u string, interval, backoff *
 	if *limits && c.Limits != nil {
 		body.Limits = c.Limits()
 	}
+	if *media && c.Media != nil {
+		body.Media = c.Media()
+	}
 	body.Selftest, body.Integrity, body.BundleKeys, body.VerifyRequest = c.Reports.snapshot()
 	if c.Budget != nil && body.StartedAt != nil {
 		body.Budget = c.Budget.report()
@@ -383,10 +393,10 @@ func (c HeartbeatConfig) beat(ctx context.Context, u string, interval, backoff *
 		// возможностей сбрасываются, heartbeat сразу повторяется без
 		// необязательных полей, а следующий успешный ответ включает их
 		// заново (5Н4 ревью 5.r1 этапа 5).
-		if errors.As(err, &ce) && ce.Status == http.StatusBadRequest && (*clockTLS || *approvals || *quotaLeases || *limits) {
+		if errors.As(err, &ce) && ce.Status == http.StatusBadRequest && (*clockTLS || *approvals || *quotaLeases || *limits || *media) {
 			c.Logger.Warn("сервер управления отклонил heartbeat с необязательными полями: повтор без них", "status", ce.Status)
-			*clockTLS, *approvals, *quotaLeases, *limits = false, false, false, false
-			return c.beat(ctx, u, interval, backoff, clockTLS, approvals, quotaLeases, limits)
+			*clockTLS, *approvals, *quotaLeases, *limits, *media = false, false, false, false, false
+			return c.beat(ctx, u, interval, backoff, clockTLS, approvals, quotaLeases, limits, media)
 		}
 		*backoff = min(max(2**backoff, minHeartbeatInterval), heartbeatBackoffMax)
 		wait := *backoff
@@ -404,7 +414,7 @@ func (c HeartbeatConfig) beat(ctx context.Context, u string, interval, backoff *
 		return wait, true
 	}
 	*backoff = 0
-	*clockTLS, *approvals, *quotaLeases, *limits = resp.ClockTLS, resp.Approvals, resp.QuotaLeases, resp.Limits
+	*clockTLS, *approvals, *quotaLeases, *limits, *media = resp.ClockTLS, resp.Approvals, resp.QuotaLeases, resp.Limits, resp.Media
 	if c.Budget != nil {
 		c.Budget.apply(body.Budget, resp.Budget)
 	}

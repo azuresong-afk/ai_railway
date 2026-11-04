@@ -103,6 +103,7 @@ const ApprovalsScreen = lazy(() => import("../approvals/ApprovalsScreen").then((
 const ComplianceScreen = lazy(() => import("../compliance/ComplianceScreen").then((m) => ({ default: m.ComplianceScreen })));
 const ShadowAIScreen = lazy(() => import("../shadowai/ShadowAIScreen").then((m) => ({ default: m.ShadowAIScreen })));
 const InventoryScreen = lazy(() => import("../inventory/InventoryScreen").then((m) => ({ default: m.InventoryScreen })));
+const RedteamScreen = lazy(() => import("../redteam/RedteamScreen").then((m) => ({ default: m.RedteamScreen })));
 const RagScreen = lazy(() => import("../rag/RagScreen").then((m) => ({ default: m.RagScreen })));
 const PoliciesScreen = lazy(() => import("../policies/PoliciesScreen").then((m) => ({ default: m.PoliciesScreen })));
 
@@ -286,6 +287,7 @@ function Frame({ me, onLogout }: { me: Me; onLogout: () => void }) {
               <Route path="/session/:id" element={<GuardedRoute me={me} perm="events.read" title="хронология сессии"><SessionScreen me={me} /></GuardedRoute>} />
               <Route path="/shadow-ai" element={<GuardedRoute me={me} perm="shadow_ai.read" title="теневой ИИ"><ShadowAIScreen me={me} /></GuardedRoute>} />
               <Route path="/inventory" element={<GuardedRoute me={me} perm="inventory.read" title="реестр ИИ"><InventoryScreen me={me} /></GuardedRoute>} />
+              <Route path="/redteam" element={<GuardedRoute me={me} perm="redteam.read" title="тестирование устойчивости"><RedteamScreen me={me} /></GuardedRoute>} />
               <Route path="/rag" element={<GuardedRoute me={me} perm="rag.read" title="коллекции RAG"><RagScreen me={me} /></GuardedRoute>} />
               <Route path="/compliance" element={<GuardedRoute me={me} perm="compliance.read" title="соответствие"><ComplianceScreen me={me} /></GuardedRoute>} />
               <Route path="/policies" element={<GuardedRoute me={me} perm="policies.read" title="политики"><PoliciesScreen me={me} /></GuardedRoute>} />

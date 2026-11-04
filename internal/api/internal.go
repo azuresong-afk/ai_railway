@@ -218,6 +218,49 @@ type HeartbeatRequest struct {
 	// Limits — заполнение и вытеснения счётчиков в памяти шлюза (задача 5.9
 	// этапа 5); шлюз присылает поле только после ответа с limits.
 	Limits *HeartbeatLimits `json:"limits,omitempty"`
+	// Media — состояние клиента aisec-media шлюза (задача 5.44 этапа 5,
+	// DM-50); шлюз присылает поле только после ответа с media.
+	Media *HeartbeatMedia `json:"media,omitempty"`
+}
+
+// HeartbeatMedia — очередь шлюза к aisec-media, отсрочка после сбоя,
+// итоги с запуска шлюза и последний самотест: только числа и отметки.
+type HeartbeatMedia struct {
+	Inflight    int64                   `json:"inflight"`
+	MaxInflight int64                   `json:"max_inflight"`
+	Down        bool                    `json:"down"`
+	Analyzed    int64                   `json:"analyzed"`
+	Unchecked   HeartbeatMediaUnchecked `json:"unchecked"`
+	Selftest    *HeartbeatMediaSelftest `json:"selftest,omitempty"`
+}
+
+// HeartbeatMediaUnchecked — «не проверено» из-за сбоя анализатора по
+// причинам.
+type HeartbeatMediaUnchecked struct {
+	Unavailable int64 `json:"unavailable"`
+	Overloaded  int64 `json:"overloaded"`
+	Timeout     int64 `json:"timeout"`
+	Error       int64 `json:"error"`
+}
+
+// HeartbeatMediaSelftest — итог самотеста aisec-media на эталонных
+// изображениях: ok, failed или unchecked.
+type HeartbeatMediaSelftest struct {
+	Result    string    `json:"result"`
+	CheckedAt time.Time `json:"checked_at"`
+	Failed    int       `json:"failed"`
+}
+
+func (m *HeartbeatMedia) stats() *gwregistry.MediaStats {
+	if m == nil {
+		return nil
+	}
+	out := &gwregistry.MediaStats{Inflight: m.Inflight, MaxInflight: m.MaxInflight, Down: m.Down, Analyzed: m.Analyzed,
+		Unavailable: m.Unchecked.Unavailable, Overloaded: m.Unchecked.Overloaded, Timeout: m.Unchecked.Timeout, Error: m.Unchecked.Error}
+	if t := m.Selftest; t != nil {
+		out.Selftest = &gwregistry.MediaSelftest{Result: t.Result, At: t.CheckedAt.UTC(), Failed: t.Failed}
+	}
+	return out
 }
 
 // HeartbeatLimits — счётчики лимитов вызовов инструментов и сессий
@@ -349,6 +392,8 @@ type HeartbeatResponse struct {
 	QuotaLeases bool `json:"quota_leases,omitempty"`
 	// Limits — сервер принимает поле limits (задача 5.9 этапа 5).
 	Limits bool `json:"limits,omitempty"`
+	// Media — сервер принимает поле media (задача 5.44 этапа 5).
+	Media bool `json:"media,omitempty"`
 }
 
 // HeartbeatBudgetState — расход остальных процессов: приложение → 1e-7 ₽.
@@ -368,7 +413,7 @@ func heartbeat(g *gwregistry.Service, a *approvals.Service, q QuotaObserver, log
 		in := gwregistry.HeartbeatInput{
 			Version: req.Version, BundleETag: req.BundleETag, Selftest: req.Selftest.report(), Integrity: req.Integrity.report(),
 			BundleKeys: req.BundleKeys, Stopping: req.Stopping, Budget: req.Budget.report(), TLSFingerprint: req.TLSFingerprint,
-			Limits: req.Limits.limits(),
+			Limits: req.Limits.limits(), Media: req.Media.stats(),
 		}
 		if req.Time != nil {
 			in.Time = *req.Time
@@ -380,7 +425,7 @@ func heartbeat(g *gwregistry.Service, a *approvals.Service, q QuotaObserver, log
 			in.StartedAt = req.StartedAt.UTC()
 		}
 		if err := in.Validate(); err != nil || !validPending(req.ApprovalsPending) {
-			WriteProblem(w, Invalid("Неверные поля heartbeat: version — 1–64 символа латиницы, цифр и «.+_-», bundle_etag — до 128 печатных символов ASCII, selftest и integrity — результат, время проверки и число провалов 0–1000, манифест — версия и время вместе, bundle_keys — до 2 идентификаторов ключей, stopping и budget — только вместе с started_at, budget — 1–2 месяца ГГГГ-ММ по возрастанию, до 2 000 приложений, счётчики 0–2^62, tls_fingerprint — пусто или 64 строчные шестнадцатеричные цифры, approvals_pending — до 256 разных UUID, limits — tool_rate или sessions со счётчиками 0–2^62, заполнение не больше предела."))
+			WriteProblem(w, Invalid("Неверные поля heartbeat: version — 1–64 символа латиницы, цифр и «.+_-», bundle_etag — до 128 печатных символов ASCII, selftest и integrity — результат, время проверки и число провалов 0–1000, манифест — версия и время вместе, bundle_keys — до 2 идентификаторов ключей, stopping и budget — только вместе с started_at, budget — 1–2 месяца ГГГГ-ММ по возрастанию, до 2 000 приложений, счётчики 0–2^62, tls_fingerprint — пусто или 64 строчные шестнадцатеричные цифры, approvals_pending — до 256 разных UUID, limits — tool_rate или sessions со счётчиками 0–2^62, заполнение не больше предела, media — inflight не больше max_inflight (1–65536), счётчики 0–2^62, selftest — ok, failed или unchecked со временем проверки, провалы 0–1000 только у failed."))
 			return
 		}
 		ctx, cancel := contextTimeout(r, 5*time.Second)
@@ -404,7 +449,7 @@ func heartbeat(g *gwregistry.Service, a *approvals.Service, q QuotaObserver, log
 			return
 		}
 		resp := HeartbeatResponse{ServerTime: res.At.UTC(), ClockTLS: true, IntervalSeconds: int(gwregistry.DefaultHeartbeatInterval / time.Second),
-			Reissue: res.Reissue, Approvals: a != nil, QuotaLeases: q != nil, Limits: true}
+			Reissue: res.Reissue, Approvals: a != nil, QuotaLeases: q != nil, Limits: true, Media: true}
 		if q != nil && req.QuotaAutonomous != nil {
 			if err := q.Observe(ctx, p.ID, *req.QuotaAutonomous); err != nil {
 				// heartbeat не отклоняется: условие обновится со следующим.
