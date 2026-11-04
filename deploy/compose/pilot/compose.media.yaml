@@ -70,6 +70,6 @@ services:
     mem_limit: ${AISEC_MEDIA_MEM_LIMIT:-1g}
     # Своп не даёт обойти лимит памяти.
     memswap_limit: ${AISEC_MEDIA_MEM_LIMIT:-1g}
-    cpus: ${AISEC_MEDIA_CPUS:-2}
+    cpus: ${AISEC_MEDIA_CPUS:-4}
     pids_limit: 64
     stop_grace_period: 10s

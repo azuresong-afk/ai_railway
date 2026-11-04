@@ -79,7 +79,7 @@ sudo ./lab-install.sh --host aisec.corp.example.ru --host 10.20.30.40 --tls-dir 
 
 ## 1. Что нужно
 
-**ВМ.** Linux x86-64, 4 vCPU, 8 ГБ памяти, 40 ГБ диска (без учёта событий и копий). Время синхронизировано по [инструкции](../install/time-sync.md): без этого не работают коды TOTP, сроки ключей и сертификатов.
+**ВМ.** Linux x86-64, 4 vCPU (с анализатором изображений — 8 vCPU: контейнеру `aisec-media` для распознавания текста в срок нужно до 4), 8 ГБ памяти, 40 ГБ диска (без учёта событий и копий). Время синхронизировано по [инструкции](../install/time-sync.md): без этого не работают коды TOTP, сроки ключей и сертификатов.
 
 **Программы на ВМ.** Docker Engine 24 или новее (от root, rootless не поддерживается), Docker Compose 2.20 или новее. Проверка:
 ```
@@ -227,7 +227,7 @@ PostgreSQL и `aisec-cli` подключены только к внутренн�
 
 8. Анализатор изображений (необязательно; [ADR-0032](../adr/0032-aisec-media.md)). Изображения из запросов разбирает отдельный процесс `aisec-media` в контейнере без сети, с корнем только для чтения, лимитами памяти, процессора и числа процессов и своим профилем системных вызовов (seccomp). Шлюз начнёт передавать ему изображения в следующей версии; сейчас анализатор можно включить заранее.
    - `./prepare-host.sh` уже создал пользователя `aisec-media` и каталог `/srv/aisec/media/run` и записал `AISEC_MEDIA_UID` в `.env`.
-   - В `.env`: `COMPOSE_FILE=compose.yaml:compose.media.yaml` (с ML-детекторами — `compose.yaml:compose.ml.yaml:compose.media.yaml`) и `media` в `COMPOSE_PROFILES`, например `COMPOSE_PROFILES=db,media`. Необязательно: `AISEC_MEDIA_WORKERS` (одновременных анализов, по умолчанию 2), `AISEC_MEDIA_MEM_LIMIT` (по умолчанию `1g`; около 250 МиБ на каждый анализ), `AISEC_MEDIA_CPUS` (по умолчанию 2).
+   - В `.env`: `COMPOSE_FILE=compose.yaml:compose.media.yaml` (с ML-детекторами — `compose.yaml:compose.ml.yaml:compose.media.yaml`) и `media` в `COMPOSE_PROFILES`, например `COMPOSE_PROFILES=db,media`. Необязательно: `AISEC_MEDIA_WORKERS` (одновременных анализов, по умолчанию 2), `AISEC_MEDIA_MEM_LIMIT` (по умолчанию `1g`; около 250 МиБ на каждый анализ), `AISEC_MEDIA_CPUS` (по умолчанию 4).
    - `docker compose up -d`. Проверка: `docker compose ps aisec-media` — `running`; в `docker compose logs aisec-media` нет ошибок целостности.
    - Отключение: убрать `compose.media.yaml` из `COMPOSE_FILE` и `media` из `COMPOSE_PROFILES`, затем `docker compose up -d --remove-orphans`.
 
