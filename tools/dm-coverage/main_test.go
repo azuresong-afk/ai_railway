@@ -136,11 +136,11 @@ func TestParseGoTestJSONFailures(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Fatalf("падения:\n%q\nожидалось\n%q", got, want)
 	}
-	if _, got, _ := ParseGoTestJSON([]byte(`{"Action":"pass","Package":"a","Test":"TestOK"}
+	if _, got, err := ParseGoTestJSON([]byte(`{"Action":"pass","Package":"a","Test":"TestOK"}
 {"Action":"skip","Package":"a","Test":"TestS"}
 {"Action":"pass","Package":"a"}
-`)); len(got) != 0 {
-		t.Fatalf("без падений: %q", got)
+`)); err != nil || len(got) != 0 {
+		t.Fatalf("без падений: %q %v", got, err)
 	}
 }
 
@@ -163,7 +163,7 @@ func TestRunFailsOnFailedTest(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "e2e.json: тест TestE2EStage5_Something (e2e) не прошёл") {
 		t.Fatalf("ошибка: %v", err)
 	}
-	md, rerr := os.ReadFile(out + ".md")
+	md, rerr := os.ReadFile(out + ".md") //nolint:gosec // G304: путь — от t.TempDir(), внешнего ввода в тесте нет
 	if rerr != nil || !strings.Contains(string(md), "TestE2EStage5_Something") {
 		t.Fatalf("отчёт без падения: %v\n%s", rerr, md)
 	}
