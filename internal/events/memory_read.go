@@ -305,7 +305,7 @@ func (m *Memory) DeleteFilter(_ context.Context, userID, id string) error {
 }
 
 // Aggregates — см. StatsReader: агрегаты считаются на лету по тем же правилам,
-// что задание PGStore.Aggregate.
+// что задание PGStore.Aggregate (тестовые события не входят).
 func (m *Memory) Aggregates(_ context.Context, q StatsQuery) ([]Aggregate, error) {
 	if err := q.Validate(); err != nil {
 		return nil, err
@@ -323,7 +323,7 @@ func (m *Memory) Aggregates(_ context.Context, q StatsQuery) ([]Aggregate, error
 	for _, s := range m.events {
 		r := record(&s)
 		b := r.TS.Truncate(unit)
-		if b.Before(q.From) || !b.Before(q.To) || (q.App != "" && r.App != q.App) {
+		if b.Before(q.From) || !b.Before(q.To) || (q.App != "" && r.App != q.App) || (r.Details != nil && r.Details.Test) {
 			continue
 		}
 		k := statsKey(b, &r)

@@ -312,6 +312,60 @@ func TestPGEventsAggregates(t *testing.T) {
 	}
 }
 
+// События запусков тестирования устойчивости (Test) в агрегаты не входят:
+// по ним считают правила «аномалия», и учения не сдвигают базовую линию
+// (5Н31 ревью 5.r4 этапа 5, ADR-0031). Сами события остаются в списке.
+func TestPGEventsAggregatesSkipTest(t *testing.T) {
+	e := setupPG(t)
+	ctx := pgCtx(t)
+	seed(t, e, 2)
+	drill := make([]events.Event, 0, 3)
+	for range 3 {
+		ev := e.event(t, events.StorageNone, nil)
+		ev.App, ev.Test = "crm", true
+		ev.Tokens = &events.Tokens{Prompt: 1000, Completion: 1000}
+		ev.Findings = []events.Finding{{Detector: "redteam.marker", Category: "jailbreak", Threat: "DM-02"}}
+		ev.Threats = []string{"DM-02"}
+		drill = append(drill, ev)
+		time.Sleep(2 * time.Millisecond)
+	}
+	if _, err := e.st.Insert(ctx, events.Ingest{GatewayID: testGateway, ReceivedAt: time.Now(), Events: drill}); err != nil {
+		t.Fatal(err)
+	}
+	bypassImmutable(t, e, "UPDATE events SET received_at = received_at - interval '5 minutes'")
+	for i := 0; ; i++ {
+		res, err := e.st.Aggregate(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if time.Since(res.Upto) < 2*time.Minute {
+			break
+		}
+		if i == 64 {
+			t.Fatal("задание не догнало текущее время")
+		}
+	}
+	now := time.Now().UTC()
+	for _, iv := range []string{events.IntervalMinute, events.IntervalHour} {
+		rows, err := e.st.Aggregates(ctx, events.StatsQuery{Interval: iv, From: now.Add(-3 * time.Hour), To: now.Add(time.Hour)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var n, tokens, dm02 int64
+		for _, a := range rows {
+			n += a.Events
+			tokens += a.TokensPrompt + a.TokensCompletion
+			dm02 += a.Threats["DM-02"]
+		}
+		if n != 2 || tokens != 26 || dm02 != 0 {
+			t.Fatalf("%s: тестовые события в агрегатах: событий %d, токенов %d, DM-02 %d", iv, n, tokens, dm02)
+		}
+	}
+	if got, err := e.st.List(ctx, lastHour()); err != nil || len(got) != 5 {
+		t.Fatalf("список без тестовых событий: %d %v", len(got), err)
+	}
+}
+
 // Чтение событий консолью идёт через свой пул (В11 ревью 2.r3a): когда все
 // его соединения заняты (медленные выгрузки), приём событий шлюзов идёт
 // через основной пул, а чтение ждёт до срока своего контекста.
