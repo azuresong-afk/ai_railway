@@ -1,6 +1,7 @@
 package redteam
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"encoding/json"
@@ -25,6 +26,7 @@ import (
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 	"github.com/azuresong-afk/ai_railway/internal/detect/canary"
 	"github.com/azuresong-afk/ai_railway/internal/detect/judge"
+	"github.com/azuresong-afk/ai_railway/internal/keyring"
 	"github.com/azuresong-afk/ai_railway/internal/mockllm"
 	"github.com/azuresong-afk/ai_railway/internal/servicedb"
 )
@@ -76,10 +78,22 @@ func newEnv(t *testing.T, mod func(*Options)) *env {
 		t.Fatal(err)
 	}
 	e := &env{t: t, p: p, mem: NewMemory(), ips: []netip.Addr{netip.MustParseAddr("10.0.0.5")}}
+	rnd, err := p.Random()
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := aisecCrypto.RandomBytes(rnd, aisecCrypto.AEADKeySize)
+	if err != nil {
+		t.Fatal(err)
+	}
+	box, err := keyring.NewStaticKey(p, "01900000-0000-7000-8000-0000000000d1", key)
+	if err != nil {
+		t.Fatal(err)
+	}
 	e.llm = mockllm.New(quiet())
 	e.mock = httptest.NewServer(e.llm.Handler())
 	t.Cleanup(e.mock.Close)
-	o := Options{Store: e.mem, ServiceDBs: servicedb.NewMemory(), Provider: p, Apps: fakeApps{}, Logger: quiet(),
+	o := Options{Store: e.mem, ServiceDBs: servicedb.NewMemory(), Provider: p, Box: box, Apps: fakeApps{}, Logger: quiet(),
 		KeyWait: 2 * time.Second, KeyPoll: 20 * time.Millisecond, Lookup: e.lookup}
 	if mod != nil {
 		mod(&o)
@@ -245,7 +259,7 @@ func TestRunEndpointMockLLM(t *testing.T) {
 		t.Fatalf("итог запуска: %+v", done)
 	}
 	if x := res["RT-DM01-001"]; x.Verdict != VerdictSucceeded || !slices.Equal(x.Matched, []string{MatchContains}) || x.Step != 1 ||
-		x.HTTPStatus != 200 || x.Example == "" {
+		x.HTTPStatus != 200 || x.Example == nil {
 		t.Fatalf("DM-01: %+v", x)
 	}
 	if x := res["RT-DM06-001"]; x.Verdict != VerdictSucceeded || x.Step != 2 {
@@ -260,7 +274,7 @@ func TestRunEndpointMockLLM(t *testing.T) {
 		t.Fatalf("DM-19 без оценщика: %+v", x)
 	}
 	for _, x := range res {
-		if x.Verdict != VerdictSucceeded && x.Example != "" {
+		if x.Verdict != VerdictSucceeded && x.Example != nil {
 			t.Fatalf("выдержка не у succeeded: %+v", x)
 		}
 	}
@@ -296,8 +310,14 @@ func TestRunFindingsMasked(t *testing.T) {
 		!slices.Contains(x.Findings, Finding{Detector: "secrets", Category: "secret.connection_string", Threat: "DM-10"}) {
 		t.Fatalf("DM-10: %+v", x)
 	}
-	if !strings.Contains(x.Example, "[secret.connection_string]") || strings.Contains(x.Example, "Q3a19q5o0m07") {
-		t.Fatalf("выдержка: %q", x.Example)
+	// Выдержка хранится запечатанной (5В3 ревью 5.r3): в хранилище — ни
+	// открытого текста, ни секрета; распечатка — только Service.Examples.
+	if x.Example == nil || bytes.Contains(x.Example.Data, []byte("Вот:")) || bytes.Contains(x.Example.Data, []byte("Q3a19q5o0m07")) {
+		t.Fatalf("выдержка в хранилище: %+v", x.Example)
+	}
+	ex, err := e.s.Examples(context.Background(), x.RunID)
+	if err != nil || !strings.Contains(ex["RT-DM10-001"], "[secret.connection_string]") || strings.Contains(ex["RT-DM10-001"], "Q3a19q5o0m07") {
+		t.Fatalf("выдержка: %q %v", ex, err)
 	}
 }
 
@@ -307,7 +327,7 @@ func TestExampleMaskedAndNone(t *testing.T) {
 	e := newEnv(t, nil)
 	tg := e.target(func(in *TargetInput) { in.Storage = StorageNone })
 	done, res := e.wait(e.start(StartInput{TargetID: tg.ID, Scenarios: []string{"RT-DM01-001", "RT-DM10-001"}}).ID)
-	if done.Counts[VerdictSucceeded] != 1 || res["RT-DM01-001"].Example != "" {
+	if done.Counts[VerdictSucceeded] != 1 || res["RT-DM01-001"].Example != nil {
 		t.Fatalf("режим none: %+v %+v", done, res)
 	}
 	// Без канарейки в ответе секрета нет: условие findings не выполнено.
@@ -638,7 +658,7 @@ func TestRunGatewayTarget(t *testing.T) {
 	if x := res["RT-DM01-001"]; x.Verdict != VerdictBlocked || len(x.EventIDs) != 1 || x.HTTPStatus != http.StatusBadRequest {
 		t.Fatalf("блокировка шлюзом: %+v", x)
 	}
-	if x := res["RT-DM10-001"]; x.Verdict != VerdictDefended || len(x.EventIDs) != 1 || x.Example != "" {
+	if x := res["RT-DM10-001"]; x.Verdict != VerdictDefended || len(x.EventIDs) != 1 || x.Example != nil {
 		t.Fatalf("защищено: %+v", x)
 	}
 	if keys, err := e.s.TestKeys(context.Background(), time.Now()); err != nil || len(keys) != 0 {
@@ -678,8 +698,8 @@ func TestGatewayTargetChecks(t *testing.T) {
 	}
 }
 
-// Цель endpoint: добавление и смена адреса — с повторной проверкой; смена
-// имени — без неё; без проверки (токен) — отказ; вид не меняется.
+// Цель endpoint: добавление, смена адреса и включение выдержек — с
+// повторной проверкой; смена имени — без неё; без проверки (токен) — отказ; вид не меняется.
 func TestTargetConfirm(t *testing.T) {
 	e := newEnv(t, nil)
 	noConfirm := By{Actor: admin.Actor}
@@ -698,6 +718,19 @@ func TestTargetConfirm(t *testing.T) {
 		in.URL = "http://other.example.test:8080/"
 	})); !errors.Is(err, ErrConfirmRequired) {
 		t.Fatalf("смена адреса без проверки: %v", err)
+	}
+	// Включение хранения выдержек (none → masked) — с повторной проверкой,
+	// отключение (masked → none) — без неё (5Н22 ревью 5.r3).
+	none := endpointInput(func(in *TargetInput) { in.Name, in.Storage = "Новое имя", StorageNone })
+	if _, err := e.s.UpdateTarget(context.Background(), noConfirm, tg.ID, none); err != nil {
+		t.Fatalf("отключение выдержек: %v", err)
+	}
+	masked := endpointInput(func(in *TargetInput) { in.Name = "Новое имя" })
+	if _, err := e.s.UpdateTarget(context.Background(), noConfirm, tg.ID, masked); !errors.Is(err, ErrConfirmRequired) {
+		t.Fatalf("включение выдержек без проверки: %v", err)
+	}
+	if got, err := e.s.UpdateTarget(context.Background(), admin, tg.ID, masked); err != nil || got.Storage != StorageMasked {
+		t.Fatalf("включение выдержек с проверкой: %+v %v", got, err)
 	}
 	if _, err := e.s.UpdateTarget(context.Background(), admin, tg.ID, TargetInput{Name: "x", Kind: KindGateway, AppID: testAppID, Model: "m"}); !isInput(err) {
 		t.Fatalf("смена вида: %v", err)

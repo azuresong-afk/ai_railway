@@ -18,6 +18,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -256,6 +257,12 @@ type s2GatewayEnv struct {
 	proxyAddr  string
 	proxy      *bundleProxy
 	bundleFile string
+	// extraArgs, listen и mod — дополнения запуска (задача 5.49): флаги
+	// шлюза сверх обязательных (-media-socket), адрес данных (пусто —
+	// свободный порт loopback) и правка команды (пользователь процесса).
+	extraArgs []string
+	listen    string
+	mod       func(*exec.Cmd)
 }
 
 // newS2GatewayEnv заводит шлюз в реестре сервера, регистрирует его и
@@ -338,11 +345,15 @@ type gwProc struct {
 // между запусками.
 func (e *s2GatewayEnv) start(t *testing.T) *gwProc {
 	t.Helper()
-	p, addr := s2Start(t, e.s.in.path("aisec-gateway"), nil,
-		"-listen", "127.0.0.1:0", "-tls-cert", e.s.tls.cert, "-tls-key", e.s.tls.key,
-		"-server", "https://"+e.proxyAddr, "-server-ca", e.s.tls.ca,
+	listen := e.listen
+	if listen == "" {
+		listen = "127.0.0.1:0"
+	}
+	args := append([]string{"-listen", listen, "-tls-cert", e.s.tls.cert, "-tls-key", e.s.tls.key,
+		"-server", "https://" + e.proxyAddr, "-server-ca", e.s.tls.ca,
 		"-client-cert", filepath.Join(e.regDir, regCertName), "-client-key", filepath.Join(e.regDir, regKeyName),
-		"-bundle-pub", filepath.Join(e.s.keysDir, "bundle-signing.pub"), "-state-dir", e.stateDir)
+		"-bundle-pub", filepath.Join(e.s.keysDir, "bundle-signing.pub"), "-state-dir", e.stateDir}, e.extraArgs...)
+	p, addr := s2StartWith(t, e.mod, e.s.in.path("aisec-gateway"), nil, args...)
 	if addr == "" {
 		t.Fatalf("шлюз не запустился (код %d):\n%s", p.exitCode(time.Second), p.log())
 	}

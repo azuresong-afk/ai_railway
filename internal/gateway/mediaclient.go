@@ -135,6 +135,13 @@ type MediaClient struct {
 	nextID   atomic.Uint32
 	maxBytes atomic.Int64
 
+	// Счётчики с запуска шлюза для heartbeat (задача 5.44, DM-50): итоги
+	// анализа и сбои по причинам. Только числа.
+	analyzed, unavailable, overloaded, timedOutN, failed atomic.Uint64
+	selftest                                             atomic.Pointer[MediaSelftest]
+	// canSanitize — анализатор объявил очистку в последнем hello_ok (5.45).
+	canSanitize atomic.Bool
+
 	mu        sync.Mutex
 	idle      []*mediaConn
 	downUntil time.Time
@@ -190,34 +197,167 @@ func (c *MediaClient) Close() {
 
 // Analyze отправляет изображение анализатору. Срок — срок ctx (его же
 // получает анализатор в заголовке analyze); без срока ctx — срок
-// анализатора по умолчанию.
+// анализатора по умолчанию. Итог учитывается в счётчиках heartbeat.
 func (c *MediaClient) Analyze(ctx context.Context, img []byte) (*MediaReply, error) {
+	r, err := c.analyze(ctx, img)
+	c.count(err)
+	return r, err
+}
+
+// count учитывает итог анализа: ответ анализатора (в том числе отказ по
+// свойствам изображения) — analyzed, сбой — по причине.
+func (c *MediaClient) count(err error) {
+	var me *MediaError
+	if err == nil || !errors.As(err, &me) || !me.Failure() {
+		c.analyzed.Add(1)
+		return
+	}
+	switch me.Reason {
+	case events.MediaReasonUnavailable:
+		c.unavailable.Add(1)
+	case events.MediaReasonOverloaded:
+		c.overloaded.Add(1)
+	case events.MediaReasonTimeout:
+		c.timedOutN.Add(1)
+	default:
+		c.failed.Add(1)
+	}
+}
+
+// MediaSelftest — итог самотеста aisec-media на эталонных изображениях
+// (задача 5.44): Result — ok, failed или unchecked (анализатор недоступен
+// или без нужной проверки — не провал).
+type MediaSelftest struct {
+	Result    string
+	CheckedAt time.Time
+	Failed    int
+}
+
+// Итоги самотеста aisec-media.
+const (
+	MediaSelftestOK        = "ok"
+	MediaSelftestFailed    = "failed"
+	MediaSelftestUnchecked = "unchecked"
+)
+
+// SetSelftest запоминает итог самотеста aisec-media для heartbeat.
+func (c *MediaClient) SetSelftest(st MediaSelftest) { c.selftest.Store(&st) }
+
+// MediaStats — состояние клиента aisec-media для heartbeat (задача 5.44,
+// DM-50): очередь шлюза, отсрочка после сбоя, итоги с запуска и последний
+// самотест. Без содержимого и путей.
+type MediaStats struct {
+	Inflight    int
+	MaxInflight int
+	// Down — последний вызов закончился сбоем анализатора, успешного после
+	// него не было (в отсрочке изображения сразу «не проверено»).
+	Down bool
+	// Analyzed — ответов анализатора (итог или отказ по свойствам изображения).
+	Analyzed uint64
+	// Unavailable, Overloaded, Timeout, Error — «не проверено» из-за сбоя
+	// анализатора по причинам (events.MediaReason*).
+	Unavailable, Overloaded, Timeout, Error uint64
+	// Selftest — последний самотест; nil — ещё не выполнялся.
+	Selftest *MediaSelftest
+}
+
+// Stats — счётчики клиента на этот момент.
+func (c *MediaClient) Stats() MediaStats {
+	c.mu.Lock()
+	down := c.down
+	c.mu.Unlock()
+	st := MediaStats{Inflight: len(c.sem), MaxInflight: cap(c.sem), Down: down,
+		Analyzed: c.analyzed.Load(), Unavailable: c.unavailable.Load(), Overloaded: c.overloaded.Load(),
+		Timeout: c.timedOutN.Load(), Error: c.failed.Load()}
+	if p := c.selftest.Load(); p != nil {
+		cp := *p
+		st.Selftest = &cp
+	}
+	return st
+}
+
+func (c *MediaClient) analyze(ctx context.Context, img []byte) (*MediaReply, error) {
+	r, err := c.call(ctx, wire.TypeAnalyze, img)
+	if err != nil {
+		return nil, err
+	}
+	return newMediaReply(r.res), nil
+}
+
+// mediaReasonRejected — изображение нельзя очистить (ответ rejected на
+// sanitize): свойство изображения, а не сбой анализатора.
+const mediaReasonRejected = "rejected"
+
+// MediaSanitizer — очистка изображения перед отправкой провайдеру
+// (media_sanitize, задача 5.45). Её умеет MediaClient; заглушки анализатора
+// в тестах — по необходимости.
+type MediaSanitizer interface {
+	// Sanitize возвращает очищенные байты и их формат (PNG или JPEG). Ошибка
+	// — *MediaError: сбой анализатора (Failure) или изображение нельзя
+	// очистить (rejected, too_large, url).
+	Sanitize(ctx context.Context, img []byte) ([]byte, wire.Format, error)
+}
+
+// Sanitize отправляет изображение на очистку (кадр sanitize). Анализатор
+// без операции (прежней версии) — unavailable: очистить нечем. Ответ
+// проверяется: только PNG или JPEG по сигнатуре и не больше max_bytes.
+func (c *MediaClient) Sanitize(ctx context.Context, img []byte) ([]byte, wire.Format, error) {
+	r, err := c.call(ctx, wire.TypeSanitize, img)
+	if err != nil {
+		// Сбои очистки учитываются в счётчиках «не проверено» вместе со
+		// сбоями анализа: условия «Состояния системы» видят и их.
+		var me *MediaError
+		if errors.As(err, &me) && me.Failure() {
+			c.count(err)
+		}
+		return nil, "", err
+	}
+	return r.img, r.format, nil
+}
+
+// callResult — итог вызова: result у analyze, байты и формат у sanitize.
+type callResult struct {
+	res    *wire.Result
+	img    []byte
+	format wire.Format
+}
+
+// errNoSanitize — анализатор не объявил sanitize в hello_ok.
+var errNoSanitize = errors.New("анализатор не умеет очистку (sanitize): обновите aisec-media")
+
+// call — один запрос typ (analyze или sanitize) с пулом, отсрочкой и
+// одной повторной попыткой на новом соединении.
+func (c *MediaClient) call(ctx context.Context, typ wire.FrameType, img []byte) (callResult, error) {
 	if int64(len(img)) > c.MaxBytes() {
-		return nil, mediaErr(events.MediaReasonTooLarge, nil)
+		return callResult{}, mediaErr(events.MediaReasonTooLarge, nil)
 	}
 	if c.isDown() {
-		return nil, mediaErr(events.MediaReasonUnavailable, errors.New("отсрочка после сбоя"))
+		return callResult{}, mediaErr(events.MediaReasonUnavailable, errors.New("отсрочка после сбоя"))
 	}
 	select {
 	case c.sem <- struct{}{}:
 		defer func() { <-c.sem }()
 	default:
-		return nil, mediaErr(events.MediaReasonOverloaded, errors.New("предел одновременных анализов шлюза"))
+		return callResult{}, mediaErr(events.MediaReasonOverloaded, errors.New("предел одновременных анализов шлюза"))
 	}
 	if ctx.Err() != nil {
-		return nil, mediaErr(events.MediaReasonTimeout, ctx.Err())
+		return callResult{}, mediaErr(events.MediaReasonTimeout, ctx.Err())
 	}
 	for attempt := 0; ; attempt++ {
 		mc, reused, err := c.conn(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
 				c.timedOut(err)
-				return nil, mediaErr(events.MediaReasonTimeout, err)
+				return callResult{}, mediaErr(events.MediaReasonTimeout, err)
 			}
 			c.fail(err)
-			return nil, mediaErr(events.MediaReasonUnavailable, err)
+			return callResult{}, mediaErr(events.MediaReasonUnavailable, err)
 		}
-		res, keep, err := c.roundTrip(ctx, mc, img)
+		if typ == wire.TypeSanitize && !c.canSanitize.Load() {
+			c.put(mc)
+			return callResult{}, mediaErr(events.MediaReasonUnavailable, errNoSanitize)
+		}
+		res, keep, err := c.roundTrip(ctx, mc, typ, img)
 		if keep {
 			c.put(mc)
 		} else {
@@ -225,7 +365,7 @@ func (c *MediaClient) Analyze(ctx context.Context, img []byte) (*MediaReply, err
 		}
 		if err == nil {
 			c.ok()
-			return newMediaReply(res), nil
+			return res, nil
 		}
 		var me *MediaError
 		if errors.As(err, &me) {
@@ -234,7 +374,7 @@ func (c *MediaClient) Analyze(ctx context.Context, img []byte) (*MediaReply, err
 			if me.Reason == events.MediaReasonTimeout {
 				c.timedOut(err)
 			}
-			return nil, err
+			return callResult{}, err
 		}
 		timeout := ctx.Err() != nil || errors.Is(err, os.ErrDeadlineExceeded)
 		if !timeout && reused && attempt == 0 && !errors.Is(err, wire.ErrProtocol) && !errors.Is(err, wire.ErrBadBody) {
@@ -244,15 +384,15 @@ func (c *MediaClient) Analyze(ctx context.Context, img []byte) (*MediaReply, err
 		}
 		if timeout {
 			c.timedOut(err)
-			return nil, mediaErr(events.MediaReasonTimeout, err)
+			return callResult{}, mediaErr(events.MediaReasonTimeout, err)
 		}
 		c.fail(err)
-		return nil, mediaErr(events.MediaReasonUnavailable, err)
+		return callResult{}, mediaErr(events.MediaReasonUnavailable, err)
 	}
 }
 
-// roundTrip — один запрос analyze. keep — соединение можно вернуть в пул.
-func (c *MediaClient) roundTrip(ctx context.Context, mc *mediaConn, img []byte) (_ *wire.Result, keep bool, _ error) {
+// roundTrip — один запрос typ. keep — соединение можно вернуть в пул.
+func (c *MediaClient) roundTrip(ctx context.Context, mc *mediaConn, typ wire.FrameType, img []byte) (_ callResult, keep bool, _ error) {
 	id := c.nextID.Add(1)
 	stop := bindDeadline(ctx, mc.c)
 	defer func() {
@@ -260,43 +400,53 @@ func (c *MediaClient) roundTrip(ctx context.Context, mc *mediaConn, img []byte) 
 			keep = false
 		}
 	}()
-	if err := wire.WriteFrame(mc.c, wire.Header{Type: wire.TypeAnalyze, ID: id, Timeout: msUntil(ctx)}, img); err != nil {
-		return nil, false, err
+	if err := wire.WriteFrame(mc.c, wire.Header{Type: typ, ID: id, Timeout: msUntil(ctx)}, img); err != nil {
+		return callResult{}, false, err
 	}
 	h, b, err := wire.ReadFrame(mc.c, wire.ClientSide)
 	if err != nil {
-		return nil, false, err
+		return callResult{}, false, err
 	}
 	if h.ID != id {
-		return nil, false, fmt.Errorf("%w: номер ответа", wire.ErrProtocol)
+		return callResult{}, false, fmt.Errorf("%w: номер ответа", wire.ErrProtocol)
 	}
-	switch h.Type {
-	case wire.TypeResult:
+	switch {
+	case h.Type == wire.TypeResult && typ == wire.TypeAnalyze:
 		r, err := wire.ParseResult(b)
 		if err != nil {
-			return nil, false, err
+			return callResult{}, false, err
 		}
-		return r, true, nil
-	case wire.TypeError:
+		return callResult{res: r}, true, nil
+	case h.Type == wire.TypeSanitized && typ == wire.TypeSanitize:
+		f, err := wire.SanitizedFormat(b)
+		if err != nil || int64(len(b)) > c.MaxBytes() {
+			return callResult{}, false, fmt.Errorf("%w: очищенное изображение не PNG или JPEG либо больше max_bytes", wire.ErrBadBody)
+		}
+		return callResult{img: b, format: f}, true, nil
+	case h.Type == wire.TypeError:
 		code, err := wire.ParseError(b)
 		if err != nil {
-			return nil, false, err
+			return callResult{}, false, err
 		}
 		switch code {
 		case wire.ErrOverloaded:
-			return nil, true, mediaErr(events.MediaReasonOverloaded, nil)
+			return callResult{}, true, mediaErr(events.MediaReasonOverloaded, nil)
 		case wire.ErrTimeout:
-			return nil, true, mediaErr(events.MediaReasonTimeout, nil)
+			return callResult{}, true, mediaErr(events.MediaReasonTimeout, nil)
 		case wire.ErrInternal:
-			return nil, true, mediaErr(events.MediaReasonError, nil)
+			return callResult{}, true, mediaErr(events.MediaReasonError, nil)
 		case wire.ErrTooLarge:
 			// Анализатор закрывает соединение без чтения тела.
-			return nil, false, mediaErr(events.MediaReasonTooLarge, nil)
+			return callResult{}, false, mediaErr(events.MediaReasonTooLarge, nil)
+		case wire.ErrRejected:
+			if typ == wire.TypeSanitize {
+				return callResult{}, true, mediaErr(mediaReasonRejected, nil)
+			}
 		}
-		// bad_request — нарушение протокола одной из сторон.
-		return nil, false, fmt.Errorf("%w: aisec-media ответил %s", wire.ErrProtocol, code)
+		// bad_request и rejected не на sanitize — нарушение протокола.
+		return callResult{}, false, fmt.Errorf("%w: aisec-media ответил %s", wire.ErrProtocol, code)
 	}
-	return nil, false, fmt.Errorf("%w: тип ответа %d", wire.ErrProtocol, h.Type)
+	return callResult{}, false, fmt.Errorf("%w: тип ответа %d", wire.ErrProtocol, h.Type)
 }
 
 // conn — свободное соединение или новое: проверка сокета, подключение,
@@ -367,6 +517,7 @@ func (c *MediaClient) hello(ctx context.Context, conn net.Conn) (err error) {
 		return fmt.Errorf("%w: анализатор без форматов или без разбора растра", wire.ErrProtocol)
 	}
 	c.maxBytes.Store(hello.MaxBytes)
+	c.canSanitize.Store(hello.Sanitize)
 	return nil
 }
 

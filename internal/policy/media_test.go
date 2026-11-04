@@ -41,8 +41,11 @@ func TestMediaCheckCompileDefaults(t *testing.T) {
 	if p.MediaCheck != MediaCheckOff || p.MediaTimeout != DefaultMediaTimeout {
 		t.Fatalf("умолчания: %q %v", p.MediaCheck, p.MediaTimeout)
 	}
-	p = compile(t, &Spec{ID: "p", Name: "П", Version: 1, Mode: Enforce, MediaCheck: MediaCheckSync, MediaTimeoutMS: 750})
-	if p.MediaCheck != MediaCheckSync || p.MediaTimeout != 750*time.Millisecond {
+	if p.MediaSanitize {
+		t.Fatal("очистка изображений включена по умолчанию")
+	}
+	p = compile(t, &Spec{ID: "p", Name: "П", Version: 1, Mode: Enforce, MediaCheck: MediaCheckSync, MediaTimeoutMS: 750, MediaSanitize: true})
+	if p.MediaCheck != MediaCheckSync || p.MediaTimeout != 750*time.Millisecond || !p.MediaSanitize {
 		t.Fatalf("заданные значения: %q %v", p.MediaCheck, p.MediaTimeout)
 	}
 }

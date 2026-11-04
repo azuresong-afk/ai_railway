@@ -87,6 +87,11 @@ const usage = `aisec-cli — служебные операции AISec.
   rag check -gateway URL -ca ФАЙЛ -key-file ФАЙЛ [-out ФАЙЛ] [-user ИМЯ] [-max-text 1048576] [-timeout 60s] ФАЙЛ…
                                 проверить тексты документов RAG до индексации на шлюзе (ключ приложения, пакеты
                                 до 100 документов): allow — индексировать, exclude — нет; 3 — есть exclude
+  redteam run -server URL -ca ФАЙЛ -token-file ФАЙЛ -target ID [-threshold 0] [-scenarios ID,…] [-threats DM-NN,…]
+              [-lang ru|en] [-auth-value-file ФАЙЛ] [-out ФАЙЛ] [-wait 125m] [-poll 5s] [-timeout 30s]
+                                запустить тестирование устойчивости цели на сервере (токен с правами redteam.run и
+                                redteam.read), дождаться итогов и напечатать их без промптов и ответов; -threshold —
+                                допустимая доля удавшихся атак, %; 3 — доля выше порога; прерывание отменяет запуск
   version                       версия
 `
 
@@ -249,6 +254,18 @@ func run(args []string, stdout, stderr io.Writer, now time.Time) int {
 			}
 			say(stderr, "aisec-cli rag: %v\n", err)
 			if errors.Is(err, errRAGExcluded) {
+				return 3
+			}
+			return 1
+		}
+		return 0
+	case "redteam":
+		if err := redteamCmd(args[1:], stdout, stderr); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return 0
+			}
+			say(stderr, "aisec-cli redteam: %v\n", err)
+			if errors.Is(err, errRedteamThreshold) {
 				return 3
 			}
 			return 1

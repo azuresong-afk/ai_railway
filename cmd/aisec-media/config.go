@@ -42,6 +42,9 @@ type config struct {
 	// предел срока, который назначает шлюз.
 	RunTimeout    time.Duration
 	MaxRunTimeout time.Duration
+	// SanitizeMaxSide — большая сторона изображения после очистки
+	// (media_sanitize, задача 5.45).
+	SanitizeMaxSide int
 	// Manifest — манифест целостности выпуска; пусто — над каталогом bin/
 	// бинарника (integrity.DefaultManifestPath).
 	Manifest          string
@@ -73,6 +76,7 @@ func loadConfig(args []string, getenv func(string) string, errOut io.Writer) (*c
 	cache := fs.String("cache-entries", strconv.Itoa(media.DefaultCacheEntries), "предел записей кэша итогов; 0 — кэш выключен (AISEC_MEDIA_CACHE_ENTRIES)")
 	runTimeout := fs.String("run-timeout", media.DefaultRunTimeout.String(), "срок анализа, если шлюз не передал свой (AISEC_MEDIA_RUN_TIMEOUT)")
 	maxRunTimeout := fs.String("max-run-timeout", media.DefaultMaxRunTimeout.String(), "предел срока анализа, назначенного шлюзом (AISEC_MEDIA_MAX_RUN_TIMEOUT)")
+	sanitizeSide := fs.String("sanitize-max-side", strconv.Itoa(media.DefaultSanitizeMaxSide), "большая сторона изображения после очистки (media_sanitize), пикселей (AISEC_MEDIA_SANITIZE_MAX_SIDE)")
 	manifest := fs.String("manifest", "", "манифест целостности; по умолчанию ../aisec-manifest.json от каталога бинарника (AISEC_MEDIA_MANIFEST)")
 	// stop по умолчанию: остановка aisec-media не останавливает трафик —
 	// шлюз ставит отметку «не проверено» (ADR-0032, раздел 8).
@@ -93,7 +97,7 @@ func loadConfig(args []string, getenv func(string) string, errOut io.Writer) (*c
 	for name, dst := range map[string]*string{
 		"socket": socket, "max-bytes": maxBytes, "max-pixels": maxPixels, "max-conns": maxConns, "workers": workers,
 		"queue": queue, "cache-entries": cache, "run-timeout": runTimeout, "max-run-timeout": maxRunTimeout,
-		"manifest": manifest, "integrity-action": action, "integrity-interval": interval,
+		"sanitize-max-side": sanitizeSide, "manifest": manifest, "integrity-action": action, "integrity-interval": interval,
 		"peer-uid": peerUID, "peer-gid": peerGID, "models": models, "ort-lib": ortLib,
 	} {
 		if !set[name] {
@@ -147,6 +151,9 @@ func loadConfig(args []string, getenv func(string) string, errOut io.Writer) (*c
 	}
 	if cfg.MaxRunTimeout, err = time.ParseDuration(*maxRunTimeout); err != nil || cfg.MaxRunTimeout < cfg.RunTimeout || cfg.MaxRunTimeout > maxRunTimeoutHard {
 		errs = append(errs, errors.New("max-run-timeout: длительность не меньше run-timeout и не больше 1m"))
+	}
+	if cfg.SanitizeMaxSide, err = strconv.Atoi(*sanitizeSide); err != nil || cfg.SanitizeMaxSide < media.MinSanitizeMaxSide || cfg.SanitizeMaxSide > media.MaxSanitizeMaxSide {
+		errs = append(errs, fmt.Errorf("sanitize-max-side: число от %d до %d", media.MinSanitizeMaxSide, media.MaxSanitizeMaxSide))
 	}
 	if cfg.IntegrityInterval, err = time.ParseDuration(*interval); err != nil || cfg.IntegrityInterval < integrity.MinInterval {
 		errs = append(errs, fmt.Errorf("integrity-interval: длительность не меньше %s", integrity.MinInterval))

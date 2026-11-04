@@ -45,8 +45,9 @@ type imageRule struct {
 	DynamicIfInterp bool
 }
 
-// productCmds — бинарники поставки (PRODUCT_CMDS в Makefile).
-var productCmds = []string{"aisec-cli", "aisec-gateway", "aisec-media", "aisec-server"}
+// productCmds — бинарники основного выпуска (PRODUCT_CMDS в Makefile);
+// aisec-media — свой выпуск (задача 5.47).
+var productCmds = []string{"aisec-cli", "aisec-gateway", "aisec-server"}
 
 var imageRules = map[string]imageRule{
 	"aisec-server":  {Bins: []string{"aisec-server"}, Ports: []string{"8444/tcp", "8445/tcp"}},

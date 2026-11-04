@@ -25,7 +25,7 @@ func th(v float64) *float64 { return &v }
 func TestCompareWeakening(t *testing.T) {
 	base := func() *policy.Spec {
 		return &policy.Spec{Name: "P", Mode: policy.Enforce, NonText: policy.NonTextBlock, ResponseCheck: policy.ResponseBuffered,
-			MediaCheck: policy.MediaCheckSync, Rules: []policy.RuleSpec{ruleInjection, rulePII}}
+			MediaCheck: policy.MediaCheckSync, MediaSanitize: true, Rules: []policy.RuleSpec{ruleInjection, rulePII}}
 	}
 	cases := map[string]struct {
 		edit func(s *policy.Spec)
@@ -38,6 +38,7 @@ func TestCompareWeakening(t *testing.T) {
 		"media_check выключена":  {func(s *policy.Spec) { s.MediaCheck = "" }, []string{versions.WeakMediaCheck + ":"}},
 		"срок sync короче":       {func(s *policy.Spec) { s.MediaTimeoutMS = 500 }, []string{versions.WeakMediaCheck + ":"}},
 		"срок sync длиннее":      {func(s *policy.Spec) { s.MediaTimeoutMS = 5000 }, nil},
+		"очистка выключена":      {func(s *policy.Spec) { s.MediaSanitize = false }, []string{versions.WeakMediaSanitize + ":"}},
 		"удалено правило block":  {func(s *policy.Spec) { s.Rules = s.Rules[1:] }, []string{versions.WeakRuleRemoved + ":injection"}},
 		"block → log":            {func(s *policy.Spec) { s.Rules[0].Action = policy.Log }, []string{versions.WeakActionWeakened + ":injection"}},
 		"порог выше":             {func(s *policy.Spec) { s.Rules[1].Threshold = th(0.9) }, []string{versions.WeakThresholdRaised + ":pii"}},
@@ -63,6 +64,12 @@ func TestCompareWeakening(t *testing.T) {
 		if d.Empty() {
 			t.Errorf("%s: изменение не найдено", name)
 		}
+	}
+	// Включение очистки изображений (задача 5.45) — усиление.
+	a0, b0 := base(), base()
+	a0.MediaSanitize = false
+	if d := versions.Compare(a0, b0); d.Weakened() || d.Empty() {
+		t.Fatalf("включение media_sanitize: %+v", d)
 	}
 	// Удаление правила log не ослабляет защиту.
 	a := base()

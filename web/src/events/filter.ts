@@ -34,6 +34,18 @@ export const fields: FieldInfo[] = [
   { id: "model", title: "Модель" },
   { id: "source", title: "Источник текста" },
   {
+    id: "finding_source",
+    title: "Источник находки",
+    options: [
+      { value: "user", title: "текст пользователя" },
+      { value: "rag", title: "документы RAG" },
+      { value: "tool", title: "результат инструмента" },
+      { value: "tool_args", title: "аргументы инструмента" },
+      { value: "output", title: "ответ модели" },
+      { value: "image", title: "изображение" },
+    ],
+  },
+  {
     id: "policy_mode",
     title: "Режим политики",
     options: [
@@ -85,6 +97,7 @@ export const fields: FieldInfo[] = [
   { id: "has_content", title: "Есть содержимое", bool: true, options: yesNo },
   { id: "ml_unavailable", title: "ML-проверка недоступна", bool: true, options: yesNo },
   { id: "judge_unchecked", title: "Оценщик не проверил", bool: true, options: yesNo },
+  { id: "test", title: "Тест устойчивости", bool: true, options: yesNo },
   { id: "media_unavailable", title: "Анализатор изображений недоступен", bool: true, options: yesNo },
 ];
 

@@ -225,6 +225,16 @@ type Result struct {
 	HTTPStatus int
 	LatencyMS  int64
 	ErrorCode  string
-	// Example — выдержка ответа (только endpoint, masked, succeeded).
-	Example string
+	// Example — выдержка ответа (только endpoint, masked, succeeded),
+	// запечатанная ключом данных (5В3 ревью 5.r3); открытый текст — только
+	// Service.Examples.
+	Example *Sealed
+}
+
+// Sealed — шифротекст ключа данных (internal/keyring) с ID версии ключа и
+// алгоритмом. AAD — место хранения: redteam_results|example|<запуск>/<сценарий>.
+type Sealed struct {
+	Data  []byte
+	KeyID string
+	Alg   string
 }

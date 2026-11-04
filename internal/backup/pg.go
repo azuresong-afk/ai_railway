@@ -97,6 +97,7 @@ func Read(ctx context.Context, tx pgx.Tx, box SecretOpener, keys *Keys, orgID st
 		{"служебные базы", readServiceDBs},
 		{"реестр ИИ", readInventoryModels},
 		{"исключения документов RAG", readRAGExclusions},
+		{"тестирование устойчивости", readRedTeam},
 	}...)
 	for _, st := range steps {
 		if err := st.fn(ctx, tx, s); err != nil {
@@ -319,7 +320,7 @@ func readAPITokens(ctx context.Context, tx pgx.Tx, s *Snapshot) error {
 
 func readProviders(ctx context.Context, tx pgx.Tx, s *Snapshot, box SecretOpener, keys *Keys) error {
 	rows, err := tx.Query(ctx, `SELECT id::text, slug, name, type, base_url, ca_pem, auth_url, scope, folder_id,
-		connect_timeout_s, header_timeout_s, response_timeout_s, stream_idle_timeout_s, external, credential,
+		connect_timeout_s, header_timeout_s, response_timeout_s, stream_idle_timeout_s, external, on_premise, credential,
 		credential_key_id::text, credential_set_at, created_at, created_by, updated_at, updated_by
 		FROM providers WHERE org_id = $1 ORDER BY created_at, id`, s.OrgID)
 	if err != nil {
@@ -330,7 +331,7 @@ func readProviders(ctx context.Context, tx pgx.Tx, s *Snapshot, box SecretOpener
 		var sealed []byte
 		var keyID *string
 		if err := r.Scan(&p.ID, &p.Slug, &p.Name, &p.Type, &p.BaseURL, &p.CAPEM, &p.AuthURL, &p.Scope, &p.FolderID,
-			&p.ConnectTimeoutS, &p.HeaderTimeoutS, &p.ResponseTimeoutS, &p.StreamIdleTimeoutS, &p.External, &sealed,
+			&p.ConnectTimeoutS, &p.HeaderTimeoutS, &p.ResponseTimeoutS, &p.StreamIdleTimeoutS, &p.External, &p.OnPremise, &sealed,
 			&keyID, &p.CredentialSetAt, &p.CreatedAt, &p.CreatedBy, &p.UpdatedAt, &p.UpdatedBy); err != nil {
 			return err
 		}
@@ -607,6 +608,15 @@ func Conflicts(ctx context.Context, q Querier, s *Snapshot) error {
 			colIDs, colSlugs = append(colIDs, e.CollectionID), append(colSlugs, e.Collection)
 		}
 	}
+	// Цели и расписания тестирования устойчивости — по ID (названия не
+	// уникальны).
+	var rtTargetIDs, rtScheduleIDs []string
+	for _, t := range s.RedTeamTargets {
+		rtTargetIDs = append(rtTargetIDs, t.ID)
+	}
+	for _, x := range s.RedTeamSchedules {
+		rtScheduleIDs = append(rtScheduleIDs, x.ID)
+	}
 	rows, err := q.Query(ctx, `
 		SELECT 'пользователь ' || login FROM users WHERE id = ANY($1::uuid[]) OR (org_id = $14 AND login = ANY($2))
 		UNION ALL SELECT 'роль ' || id FROM roles WHERE org_id = $14 AND id = ANY($3)
@@ -629,10 +639,12 @@ func Conflicts(ctx context.Context, q Querier, s *Snapshot) error {
 		UNION ALL SELECT 'исключение документа RAG ' || doc_id FROM rag_exclusions WHERE id = ANY($30::uuid[])
 		UNION ALL SELECT 'коллекция RAG ' || c.slug FROM rag_collections c WHERE c.id = ANY($31::uuid[])
 			AND (c.org_id <> $14 OR (c.id, c.slug) NOT IN (SELECT * FROM unnest($31::uuid[], $32::text[])))
+		UNION ALL SELECT 'цель тестирования устойчивости ' || name FROM redteam_targets WHERE id = ANY($33::uuid[])
+		UNION ALL SELECT 'расписание тестирования устойчивости ' || name FROM redteam_schedules WHERE id = ANY($34::uuid[])
 		LIMIT $15`,
 		userIDs, logins, roleIDs, tokenIDs, tokenPrefixes, provIDs, provSlugs, appIDs, appSlugs, keyIDs, keyPrefixes,
 		polIDs, polSlugs, s.OrgID, maxConflicts, chIDs, chNames, ruleIDs, schIDs, schNames, priceIDs, srvIDs, srvSlugs,
-		agentIDs, toolIDs, manualIDs, manualPairs, trafficIDs, trafficPairs, exclIDs, colIDs, colSlugs)
+		agentIDs, toolIDs, manualIDs, manualPairs, trafficIDs, trafficPairs, exclIDs, colIDs, colSlugs, rtTargetIDs, rtScheduleIDs)
 	if err != nil {
 		return err
 	}
@@ -793,6 +805,9 @@ type RestoreResult struct {
 	// сколько перенесено, сколько уже было в установке, создана ли
 	// коллекция без манифеста (версия 0).
 	RAG []string
+	// RedTeam — строка отчёта о целях и расписаниях тестирования
+	// устойчивости (G3 этапа 5).
+	RedTeam []string
 }
 
 // agentsSchemaVersion — миграция, добавившая привязку ключей к агентам
@@ -864,6 +879,7 @@ func Restore(ctx context.Context, tx pgx.Tx, p *Prepared, opts RestoreOptions) (
 		}},
 		{"реестр ИИ", func() (err error) { res.Inventory, err = writeInventoryModels(ctx, tx, s); return err }},
 		{"исключения документов RAG", func() (err error) { res.RAG, err = writeRAGExclusions(ctx, tx, s, opts.Now); return err }},
+		{"тестирование устойчивости", func() (err error) { res.RedTeam, err = writeRedTeam(ctx, tx, s); return err }},
 	}
 	for _, st := range steps {
 		if err := st.fn(); err != nil {
@@ -1027,11 +1043,11 @@ func writeProviders(ctx context.Context, tx pgx.Tx, p *Prepared) error {
 		}
 		if _, err := tx.Exec(ctx, `INSERT INTO providers (id, org_id, slug, name, type, base_url, ca_pem, auth_url, scope,
 			folder_id, connect_timeout_s, header_timeout_s, response_timeout_s, stream_idle_timeout_s, external,
-			credential, credential_key_id, credential_alg, credential_set_at, created_at, created_by, updated_at, updated_by)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17::uuid, $18, $19, $20, $21, $22, $23)`,
+			credential, credential_key_id, credential_alg, credential_set_at, created_at, created_by, updated_at, updated_by, on_premise)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17::uuid, $18, $19, $20, $21, $22, $23, $24)`,
 			pr.ID, s.OrgID, pr.Slug, pr.Name, pr.Type, pr.BaseURL, pr.CAPEM, pr.AuthURL, pr.Scope, pr.FolderID,
 			pr.ConnectTimeoutS, pr.HeaderTimeoutS, pr.ResponseTimeoutS, pr.StreamIdleTimeoutS, pr.External,
-			cred, keyID, alg, pr.CredentialSetAt, pr.CreatedAt, pr.CreatedBy, pr.UpdatedAt, pr.UpdatedBy); err != nil {
+			cred, keyID, alg, pr.CredentialSetAt, pr.CreatedAt, pr.CreatedBy, pr.UpdatedAt, pr.UpdatedBy, pr.OnPremise); err != nil {
 			return fmt.Errorf("%s: %w", pr.Slug, err)
 		}
 	}
