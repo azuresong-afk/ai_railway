@@ -160,8 +160,45 @@ func TestLoadConfig(t *testing.T) {
 	if cfg.Workers != 2 || cfg.PeerUID != 991 || cfg.PeerGID != 992 || cfg.Limits.MaxPixels != 1000 ||
 		cfg.Limits.MaxBytes != media.DefaultMaxBytes || cfg.Socket != DefaultSocket || cfg.CacheEntries != -1 ||
 		cfg.Queue != media.DefaultQueue || cfg.RunTimeout != media.DefaultRunTimeout || cfg.Models != DefaultModels || cfg.ORTLib != DefaultORTLib ||
-		cfg.SanitizeMaxSide != 1024 {
+		cfg.SanitizeMaxSide != 1024 || cfg.Limits.MaxRasterBytes != media.DefaultMaxRasterBytes || cfg.MemLimit != 0 || cfg.goMemoryLimit() != 0 {
 		t.Fatalf("%+v", cfg)
+	}
+}
+
+// 5В4 ревью 5.r4: память контейнера и предел растров. Умолчания compose
+// (mem_limit 1g, два исполнителя, 320 МиБ) укладываются; предел кучи Go —
+// mem_limit без запаса под ONNX Runtime; больше исполнителей при той же
+// памяти — отказ запуска с подсказкой.
+func TestLoadConfigMemLimit(t *testing.T) {
+	none := func(string) string { return "" }
+	cfg, err := loadConfig([]string{"-peer-uid=991", "-peer-gid=992", "-workers=2", "-mem-limit=1g"}, none, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MemLimit != 1<<30 || cfg.goMemoryLimit() != 1<<30-memReserve || cfg.Limits.MaxRasterBytes != 320<<20 {
+		t.Fatalf("%+v", cfg)
+	}
+	env := map[string]string{"AISEC_MEDIA_MEM_LIMIT": "2048M", "AISEC_MEDIA_MAX_RASTER_MIB": "400"}
+	cfg, err = loadConfig([]string{"-peer-uid=991", "-peer-gid=992", "-workers=4"}, func(k string) string { return env[k] }, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MemLimit != 2<<30 || cfg.Limits.MaxRasterBytes != 400<<20 {
+		t.Fatalf("%+v", cfg)
+	}
+	_, err = loadConfig([]string{"-peer-uid=991", "-peer-gid=992", "-workers=3", "-mem-limit=1g"}, none, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "AISEC_MEDIA_MEM_LIMIT") {
+		t.Fatalf("три исполнителя в 1 ГиБ: %v", err)
+	}
+	for v, want := range map[string]int64{"1073741824": 1 << 30, "1024m": 1 << 30, "1G": 1 << 30, "524288k": 512 << 20, "300000000b": 300000000} {
+		if got, err := parseSize(v); err != nil || got != want {
+			t.Errorf("%s: %d %v", v, got, err)
+		}
+	}
+	for _, v := range []string{"", "1.5g", "-1g", "1t", "g", "99999999999g", "1 g"} {
+		if _, err := parseSize(v); err == nil {
+			t.Errorf("%q принято", v)
+		}
 	}
 }
 
@@ -187,6 +224,11 @@ func TestLoadConfigRejects(t *testing.T) {
 		"модели относительно":    append([]string{"-models=models"}, base...),
 		"библиотека с ..":        append([]string{"-ort-lib=/opt/../lib/x.so"}, base...),
 		"лишний аргумент":        append(append([]string{}, base...), "x"),
+		"растр мал":              append([]string{"-max-raster-mib=95"}, base...),
+		"растр сверх":            append([]string{"-max-raster-mib=8193"}, base...),
+		"память мала":            append([]string{"-mem-limit=255m"}, base...),
+		"память не число":        append([]string{"-mem-limit=1.5g"}, base...),
+		"память на исполнители":  append([]string{"-mem-limit=512m"}, base...),
 	}
 	for name, args := range cases {
 		if _, err := loadConfig(args, func(string) string { return "" }, io.Discard); err == nil {

@@ -69,10 +69,13 @@ func Sanitize(ctx context.Context, data []byte, l Limits, maxSide int) (out []by
 	if !canDecode(info) {
 		return nil, "", fmt.Errorf("%w: нет декодера", ErrSanitizeRejected)
 	}
-	frames, err := decode(data, info)
+	frames, err := decode(data, info, l.rasterBudget())
 	if err != nil {
-		if errors.Is(err, errDecoderPanic) {
+		switch {
+		case errors.Is(err, errDecoderPanic):
 			return nil, "", err
+		case errors.Is(err, errRasterBudget):
+			return nil, "", fmt.Errorf("%w: %s", ErrSanitizeRejected, wire.ReasonTooManyPixels)
 		}
 		return nil, "", fmt.Errorf("%w: не декодировано", ErrSanitizeRejected)
 	}

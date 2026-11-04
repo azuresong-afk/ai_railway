@@ -352,7 +352,7 @@ func (a Analyzer) PassTexts(ctx context.Context, data []byte) (normal, contrast 
 	if reason := a.Limits.exceeded(info); reason != "" || !canDecode(info) {
 		return "", "", fmt.Errorf("aisec-media: изображение не принято (%s)", reason)
 	}
-	frames, err := decode(data, info)
+	frames, err := decode(data, info, a.Limits.rasterBudget())
 	if err != nil {
 		return "", "", err
 	}

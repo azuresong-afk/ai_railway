@@ -61,10 +61,14 @@ services:
       # SO_PEERCRED; без них aisec-media не запускается.
       - "-peer-uid=${AISEC_GW_UID:?запустите prepare-host.sh}"
       - "-peer-gid=${AISEC_GW_GID:?запустите prepare-host.sh}"
-      # Память растёт с числом исполнителей: до 250 МиБ на каждого при
-      # пределе 25 Мпикс (ADR-0032, раздел 5). Больше исполнителей —
-      # больше AISEC_MEDIA_MEM_LIMIT.
+      # Память растёт с числом исполнителей: до 320 МиБ растров на каждого
+      # (-max-raster-mib; изображение с большей оценкой по заголовку —
+      # отказ too_many_pixels) плюс 256 МиБ на ONNX Runtime и прочее
+      # (ADR-0032, раздел 5). -mem-limit равен mem_limit: по нему ставится
+      # предел кучи Go, а запуск с workers, которые не укладываются,
+      # отказывает. Больше исполнителей — больше AISEC_MEDIA_MEM_LIMIT.
       - "-workers=${AISEC_MEDIA_WORKERS:-2}"
+      - "-mem-limit=${AISEC_MEDIA_MEM_LIMIT:-1g}"
     volumes:
       - ${AISEC_DATA_DIR:?задайте AISEC_DATA_DIR}/media/run:/run/aisec-media
     mem_limit: ${AISEC_MEDIA_MEM_LIMIT:-1g}
