@@ -28,6 +28,13 @@ const (
 	maxConnsLimit     = 256
 	maxCacheEntries   = 1 << 20
 	maxRunTimeoutHard = time.Minute // срок в кадре — до 65 с (uint16, мс)
+	// memReserve — память aisec-media вне растров анализов (5В4 ревью 5.r4,
+	// ADR-0032, раздел 5): ONNX Runtime и модели OCR (вне кучи Go), среда
+	// выполнения, кэш итогов, буферы соединений. -mem-limit должен вмещать
+	// workers × max-raster-mib плюс этот запас.
+	memReserve = 256 << 20
+	// minMemLimit — наименьший -mem-limit.
+	minMemLimit = 256 << 20
 )
 
 // config — параметры запуска aisec-media.
@@ -56,6 +63,44 @@ type config struct {
 	// PeerUID и PeerGID — UID и GID шлюза: соединение принимается, только
 	// если SO_PEERCRED собеседника совпадает с обоими (ADR-0032, раздел 2).
 	PeerUID, PeerGID uint32
+	// MemLimit — память контейнера (mem_limit), байт; 0 — не задана. Задана —
+	// предел кучи Go MemLimit − memReserve и проверка при запуске, что
+	// исполнители с пределом растров в неё укладываются (5В4 ревью 5.r4).
+	MemLimit int64
+}
+
+// goMemoryLimit — мягкий предел памяти среды Go (debug.SetMemoryLimit):
+// сборщик мусора работает чаще, не давая мусору вывести процесс за
+// mem_limit; 0 — предел не задаётся.
+func (c *config) goMemoryLimit() int64 {
+	if c.MemLimit == 0 {
+		return 0
+	}
+	return c.MemLimit - memReserve
+}
+
+// parseSize разбирает размер памяти, как в mem_limit compose: целое число
+// байт с необязательной единицей b, k, m или g (регистр не важен).
+func parseSize(v string) (int64, error) {
+	v = strings.ToLower(strings.TrimSpace(v))
+	mul := int64(1)
+	if v != "" {
+		switch v[len(v)-1] {
+		case 'b':
+			v = v[:len(v)-1]
+		case 'k':
+			mul, v = 1<<10, v[:len(v)-1]
+		case 'm':
+			mul, v = 1<<20, v[:len(v)-1]
+		case 'g':
+			mul, v = 1<<30, v[:len(v)-1]
+		}
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil || n < 0 || n > (1<<44)/mul {
+		return 0, errors.New("целое число байт с единицей b, k, m или g, например 1g")
+	}
+	return n * mul, nil
 }
 
 func envName(flagName string) string {
@@ -71,7 +116,9 @@ func loadConfig(args []string, getenv func(string) string, errOut io.Writer) (*c
 	maxBytes := fs.String("max-bytes", strconv.Itoa(media.DefaultMaxBytes), "предел размера изображения, байт; больше — отказ без чтения (AISEC_MEDIA_MAX_BYTES)")
 	maxPixels := fs.String("max-pixels", strconv.Itoa(media.DefaultMaxPixels), "предел пикселей по заголовку до декодирования; у GIF — сумма кадров (AISEC_MEDIA_MAX_PIXELS)")
 	maxConns := fs.String("max-conns", strconv.Itoa(media.DefaultMaxConns), "предел соединений (AISEC_MEDIA_MAX_CONNS)")
-	workers := fs.String("workers", strconv.Itoa(media.DefaultWorkers), "одновременных анализов; память — до 250 МиБ на исполнитель (AISEC_MEDIA_WORKERS)")
+	workers := fs.String("workers", strconv.Itoa(media.DefaultWorkers), "одновременных анализов; память — до max-raster-mib на исполнитель (AISEC_MEDIA_WORKERS)")
+	maxRaster := fs.String("max-raster-mib", strconv.Itoa(media.DefaultMaxRasterBytes>>20), "предел оценки памяти растров одного анализа по заголовку, МиБ; больше — too_many_pixels до декодирования (AISEC_MEDIA_MAX_RASTER_MIB)")
+	memLimit := fs.String("mem-limit", "", "память контейнера (как mem_limit: 1g); задана — предел кучи и проверка workers × max-raster-mib + 256 МиБ при запуске (AISEC_MEDIA_MEM_LIMIT)")
 	queue := fs.String("queue", strconv.Itoa(media.DefaultQueue), "запросов в очереди сверх workers, дальше — overloaded (AISEC_MEDIA_QUEUE)")
 	cache := fs.String("cache-entries", strconv.Itoa(media.DefaultCacheEntries), "предел записей кэша итогов; 0 — кэш выключен (AISEC_MEDIA_CACHE_ENTRIES)")
 	runTimeout := fs.String("run-timeout", media.DefaultRunTimeout.String(), "срок анализа, если шлюз не передал свой (AISEC_MEDIA_RUN_TIMEOUT)")
@@ -99,6 +146,7 @@ func loadConfig(args []string, getenv func(string) string, errOut io.Writer) (*c
 		"queue": queue, "cache-entries": cache, "run-timeout": runTimeout, "max-run-timeout": maxRunTimeout,
 		"sanitize-max-side": sanitizeSide, "manifest": manifest, "integrity-action": action, "integrity-interval": interval,
 		"peer-uid": peerUID, "peer-gid": peerGID, "models": models, "ort-lib": ortLib,
+		"max-raster-mib": maxRaster, "mem-limit": memLimit,
 	} {
 		if !set[name] {
 			if v := getenv(envName(name)); v != "" {
@@ -137,6 +185,22 @@ func loadConfig(args []string, getenv func(string) string, errOut io.Writer) (*c
 	}
 	if cfg.Workers, err = strconv.Atoi(*workers); err != nil || cfg.Workers < 1 || cfg.Workers > maxWorkers {
 		errs = append(errs, fmt.Errorf("workers: число от 1 до %d", maxWorkers))
+	}
+	if mib, err := strconv.ParseInt(*maxRaster, 10, 64); err != nil || mib < media.MinMaxRasterBytes>>20 || mib > media.MaxMaxRasterBytes>>20 {
+		errs = append(errs, fmt.Errorf("max-raster-mib: число от %d до %d", media.MinMaxRasterBytes>>20, media.MaxMaxRasterBytes>>20))
+	} else {
+		cfg.Limits.MaxRasterBytes = mib << 20
+	}
+	if *memLimit != "" {
+		if cfg.MemLimit, err = parseSize(*memLimit); err != nil || cfg.MemLimit < minMemLimit {
+			errs = append(errs, fmt.Errorf("mem-limit: не меньше %d МиБ; %s", minMemLimit>>20, "целое число байт с единицей b, k, m или g, например 1g"))
+		} else if cfg.Workers > 0 && cfg.Limits.MaxRasterBytes > 0 &&
+			int64(cfg.Workers)*cfg.Limits.MaxRasterBytes+memReserve > cfg.MemLimit {
+			// Иначе два тяжёлых изображения выводят контейнер за mem_limit
+			// и ядро завершает анализатор вместе со всеми анализами (OOM).
+			errs = append(errs, fmt.Errorf("mem-limit %d МиБ меньше workers × max-raster-mib + %d МиБ (%d × %d + %d): увеличьте AISEC_MEDIA_MEM_LIMIT или уменьшите -workers",
+				cfg.MemLimit>>20, memReserve>>20, cfg.Workers, cfg.Limits.MaxRasterBytes>>20, memReserve>>20))
+		}
 	}
 	if cfg.Queue, err = strconv.Atoi(*queue); err != nil || cfg.Queue < 0 || cfg.Queue > maxQueue {
 		errs = append(errs, fmt.Errorf("queue: число от 0 до %d", maxQueue))

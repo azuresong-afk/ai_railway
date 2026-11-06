@@ -66,10 +66,18 @@ func checkMedia(s composeService, at func(string, ...any)) {
 	if s.PidsLimit > mediaMaxPids {
 		at("pids_limit %d — не больше %d", s.PidsLimit, mediaMaxPids)
 	}
-	var socket, peerUID, peerGID bool
+	var socket, peerUID, peerGID, memLimit bool
 	for _, a := range s.Command {
-		flagName, _, _ := strings.Cut(strings.TrimLeft(a, "-"), "=")
+		flagName, value, _ := strings.Cut(strings.TrimLeft(a, "-"), "=")
 		switch {
+		case flagName == "mem-limit":
+			// Предел кучи и проверка исполнителей при запуске aisec-media
+			// считаются от -mem-limit (5В4 ревью 5.r4): он обязан совпадать с
+			// mem_limit контейнера, иначе проверка ничего не гарантирует.
+			memLimit = value == s.MemLimit && value != ""
+			if !memLimit {
+				at("аргумент %q: -mem-limit должен совпадать с mem_limit (%q)", a, s.MemLimit)
+			}
 		case a == "-socket="+mediaSocketValue:
 			socket = true
 		case mediaPeerUIDRe.MatchString(a):
@@ -81,6 +89,9 @@ func checkMedia(s composeService, at func(string, ...any)) {
 		case flagName == "socket" || flagName == "peer-uid" || flagName == "peer-gid":
 			at("аргумент %q: сокет и собеседник — только -socket=%s, -peer-uid=${AISEC_GW_UID:?…}, -peer-gid=${AISEC_GW_GID:?…}", a, mediaSocketValue)
 		}
+	}
+	if !memLimit && !slices.ContainsFunc(s.Command, func(a string) bool { return strings.HasPrefix(strings.TrimLeft(a, "-"), "mem-limit") }) {
+		at("нужен -mem-limit=%s, равный mem_limit: иначе исполнители aisec-media не сверяются с памятью контейнера", s.MemLimit)
 	}
 	if !socket || !peerUID || !peerGID {
 		at("нужны -socket=%s, -peer-uid=${AISEC_GW_UID:?…} и -peer-gid=${AISEC_GW_GID:?…}: соединения — только от шлюза", mediaSocketValue)

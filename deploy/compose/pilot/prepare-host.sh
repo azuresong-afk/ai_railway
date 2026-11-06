@@ -26,6 +26,22 @@ fi
 # В .env нет секретов: его читает docker compose от имени администратора.
 chmod 0644 .env
 
+# check_media_cpus — AISEC_MEDIA_CPUS из .env (по умолчанию 4, как в
+# compose.media.yaml) не больше числа процессоров хоста: иначе Docker не
+# создаёт контейнер aisec-media («Range of CPUs is from 0.01 to N.00»), и
+# установка падает на нём с ошибкой демона (5Н29 ревью 5.r4).
+check_media_cpus() {
+	cpus=$(sed -n 's/^AISEC_MEDIA_CPUS=//p' .env 2>/dev/null | tail -n 1)
+	cpus=${cpus:-4}
+	ncpu=$(nproc)
+	awk -v c="$cpus" -v n="$ncpu" 'BEGIN { exit !(c ~ /^[0-9]+(\.[0-9]+)?$/ && c + 0 > 0 && c + 0 <= n + 0) }' ||
+		die "AISEC_MEDIA_CPUS=$cpus, а процессоров у хоста $ncpu: Docker не создаст контейнер aisec-media. Задайте в .env AISEC_MEDIA_CPUS не больше $ncpu (например, AISEC_MEDIA_CPUS=$ncpu); с меньшим числом процессоров мелкий текст на скриншотах может не распознаться за срок 2 с (install-pilot.md, п. 8)"
+}
+# Анализатор изображений включён в .env — проверка до создания пользователей.
+case ":$(sed -n 's/^COMPOSE_FILE=//p' .env | tail -n 1):,$(sed -n 's/^COMPOSE_PROFILES=//p' .env | tail -n 1)," in
+*:compose.media.yaml:* | *,media,*) check_media_cpus ;;
+esac
+
 data_dir=$(sed -n 's/^AISEC_DATA_DIR=//p' .env | tail -n 1)
 [ -n "$data_dir" ] || data_dir=/srv/aisec
 case "$data_dir" in

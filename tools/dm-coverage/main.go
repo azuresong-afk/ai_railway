@@ -6,7 +6,9 @@
 // быть покрыты прошедшим тестом; имя теста содержит ID строки
 // (TestDM07_IndirectInjectionRAG) или тест размечен маркером. Утилита
 // падает, если покрытия нет, тест не проходит, ID в тесте не существует или
-// матрица размечена с ошибками.
+// матрица размечена с ошибками. Любой упавший тест, пакет или сборка во
+// входных отчётах `go test -json` — тоже проблема отчёта, даже без связи с
+// матрицей: отчёт с «0 проблем» означает, что все тесты прошли.
 package main
 
 import (
@@ -68,16 +70,20 @@ func run(specPath string, stage int, goTests, junits []string, root, out string)
 		return err
 	}
 	var results []Result
+	var failures []string
 	for _, p := range goTests {
 		data, err := readLimited(p, maxReport)
 		if err != nil {
 			return err
 		}
-		r, err := ParseGoTestJSON(data)
+		r, fails, err := ParseGoTestJSON(data)
 		if err != nil {
 			return fmt.Errorf("%s: %w", p, err)
 		}
 		results = append(results, r...)
+		for _, f := range fails {
+			failures = append(failures, filepath.Base(p)+": "+f)
+		}
 	}
 	for _, p := range junits {
 		data, err := readLimited(p, maxReport)
@@ -95,7 +101,7 @@ func run(specPath string, stage int, goTests, junits []string, root, out string)
 		return err
 	}
 	rep := Compute(rows, stage, results, markers)
-	rep.Problems = append(markerProblems, rep.Problems...)
+	rep.Problems = append(append(markerProblems, failures...), rep.Problems...)
 
 	if err := os.MkdirAll(filepath.Dir(out), 0o750); err != nil {
 		return err

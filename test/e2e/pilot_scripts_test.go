@@ -377,3 +377,56 @@ func TestE2EPilotScripts_VerifyReleaseNoPull(t *testing.T) {
 		t.Fatalf("с образом: код %d, docker run: %q\n%s", code, runs, out)
 	}
 }
+
+// 5Н29 ревью 5.r4 этапа 5: Docker не создаёт контейнер, у которого cpus
+// больше числа процессоров хоста. lab-install.sh --media (до сборки) и
+// prepare-host.sh с включённым анализатором (до создания пользователей)
+// сравнивают AISEC_MEDIA_CPUS (по умолчанию 4) с nproc и отказывают с
+// подсказкой. nproc подменяется заглушкой, docker — тоже.
+func TestE2EPilotScripts_MediaCPUs(t *testing.T) {
+	s := newScriptInstall(t)
+	pilot := filepath.Join("..", "..", "deploy", "compose", "pilot")
+	for _, f := range []string{"lab-install.sh", "prepare-host.sh"} {
+		s2Copy(t, filepath.Join(pilot, f), filepath.Join(s.dir, f), 0o755)
+	}
+	for _, f := range []string{"compose.media.yaml", ".env.example"} {
+		s2Copy(t, filepath.Join(pilot, f), filepath.Join(s.dir, f), 0o644)
+	}
+	if err := os.MkdirAll(filepath.Join(s.dir, "seccomp"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	s2Copy(t, filepath.Join(pilot, "seccomp", "aisec-media.json"), filepath.Join(s.dir, "seccomp", "aisec-media.json"), 0o644)
+	s2Copy(t, writeTemp(t, "#!/bin/sh\necho 2\n"), filepath.Join(s.root, "bin", "nproc"), 0o755)
+	const refused = "AISEC_MEDIA_CPUS=4, а процессоров у хоста 2"
+
+	// lab-install.sh --media: умолчание 4 на хосте с 2 процессорами — отказ.
+	out, code := s.run(nil, "lab-install.sh", "--host", "lab.example.test", "--media")
+	if code == 0 || !strings.Contains(out, refused) || !strings.Contains(out, "AISEC_MEDIA_CPUS=2") {
+		t.Fatalf("lab-install.sh --media на 2 процессорах: код %d\n%s", code, out)
+	}
+	// Значение в .env не больше nproc — проверка пройдена (дальше скрипт
+	// упирается в заглушку docker, это не предмет теста).
+	mustWrite(t, filepath.Join(s.dir, ".env"), []byte(s.env(pilotConsoleHost)+"AISEC_MEDIA_CPUS=1.5\n"))
+	if out, _ := s.run(nil, "lab-install.sh", "--host", "lab.example.test", "--media"); strings.Contains(out, "процессоров у хоста") {
+		t.Fatalf("AISEC_MEDIA_CPUS=1.5 на 2 процессорах отвергнуто:\n%s", out)
+	}
+	for _, bad := range []string{"0", "abc", "2.01"} {
+		mustWrite(t, filepath.Join(s.dir, ".env"), []byte(s.env(pilotConsoleHost)+"AISEC_MEDIA_CPUS="+bad+"\n"))
+		if out, code := s.run(nil, "lab-install.sh", "--host", "lab.example.test", "--media"); code == 0 || !strings.Contains(out, "процессоров у хоста") {
+			t.Fatalf("AISEC_MEDIA_CPUS=%s принято: код %d\n%s", bad, code, out)
+		}
+	}
+
+	// prepare-host.sh: анализатор в COMPOSE_PROFILES — отказ до создания
+	// пользователей; без анализатора проверки нет (не запускаем дальше:
+	// скрипт создаёт пользователей хоста — это делает e2e пилота).
+	mustWrite(t, filepath.Join(s.dir, ".env"), []byte(strings.Replace(s.env(pilotConsoleHost), "COMPOSE_PROFILES=db", "COMPOSE_PROFILES=db,media", 1)))
+	out, code = s.run(nil, "prepare-host.sh")
+	if code == 0 || !strings.Contains(out, refused) || strings.Contains(out, "Создан пароль") {
+		t.Fatalf("prepare-host.sh с media на 2 процессорах: код %d\n%s", code, out)
+	}
+	mustWrite(t, filepath.Join(s.dir, ".env"), []byte(s.env(pilotConsoleHost)+"COMPOSE_FILE=compose.yaml:compose.media.yaml\n"))
+	if out, code := s.run(nil, "prepare-host.sh"); code == 0 || !strings.Contains(out, refused) {
+		t.Fatalf("prepare-host.sh с compose.media.yaml на 2 процессорах: код %d\n%s", code, out)
+	}
+}

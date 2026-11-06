@@ -150,6 +150,10 @@ func (s *PGStore) Aggregates(ctx context.Context, q StatsQuery) ([]Aggregate, er
 // Пересчёт минут: события «грязных» минут из events (диапазон по ts —
 // отсечение секций и индекс events_org_ts), группировка по измерениям,
 // угрозы — отдельной группировкой по unnest(threats). Строка заменяется.
+// События запусков тестирования устойчивости (details.test) в агрегаты не
+// входят: по агрегатам считают правила «аномалия», и учения не должны
+// сдвигать их базовую линию (ADR-0031, раздел 2; 5Н31 ревью 5.r4 этапа 5).
+// Сами события по-прежнему видны в списке с фильтром test:true.
 const aggregateMinutes = `WITH d AS (SELECT DISTINCT unnest($2::timestamptz[]) AS b),
 base AS (
 	SELECT d.b, COALESCE(e.app, '') AS app, e.type, COALESCE(e.action, '') AS action,
@@ -158,6 +162,7 @@ base AS (
 		COALESCE((e.details->'tokens'->>'prompt')::bigint, 0) AS tp,
 		COALESCE((e.details->'tokens'->>'completion')::bigint, 0) AS tc
 	FROM d JOIN events e ON e.org_id = $1 AND e.ts >= d.b AND e.ts < d.b + interval '1 minute'
+	WHERE NOT COALESCE((e.details->>'test')::boolean, false)
 ),
 main AS (
 	SELECT b, app, type, action, severity, count(*) AS events,

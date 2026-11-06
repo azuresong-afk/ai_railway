@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"syscall" //nolint:depguard // ADR-0004: только syscall.SIGTERM для корректного завершения; прочее syscall.* запрещает forbidigo
 
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
@@ -38,6 +39,11 @@ func main() {
 	if os.Getuid() == 0 {
 		logger.Error("aisec-media не запускается от root: нужен отдельный непривилегированный пользователь aisec-media")
 		os.Exit(2)
+	}
+	// Предел кучи под mem_limit контейнера (5В4 ревью 5.r4): без него
+	// сборщик мусора при GOGC=100 допускает кучу вдвое больше живой.
+	if lim := cfg.goMemoryLimit(); lim > 0 {
+		debug.SetMemoryLimit(lim)
 	}
 	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -124,7 +130,7 @@ func run(ctx context.Context, cfg *config, d deps) error {
 	}
 	l := newPeerListener(sock, cfg.PeerUID, cfg.PeerGID, d.logger)
 	d.logger.Info("aisec-media готов", "socket", cfg.Socket, "formats", media.Decodable(), "max_bytes", cfg.Limits.MaxBytes,
-		"max_pixels", cfg.Limits.MaxPixels, "ocr", ocr != nil, "workers", cfg.Workers, "queue", cfg.Queue, "peer_uid", cfg.PeerUID, "peer_gid", cfg.PeerGID)
+		"max_pixels", cfg.Limits.MaxPixels, "max_raster_bytes", cfg.Limits.MaxRasterBytes, "mem_limit", cfg.MemLimit, "ocr", ocr != nil, "workers", cfg.Workers, "queue", cfg.Queue, "peer_uid", cfg.PeerUID, "peer_gid", cfg.PeerGID)
 	if d.ready != nil {
 		d.ready(srv)
 	}

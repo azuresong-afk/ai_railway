@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
@@ -41,17 +42,28 @@ func IDsInName(name string) []string {
 }
 
 type testEvent struct {
-	Action string
-	Test   string
+	Action     string
+	Package    string
+	ImportPath string // у build-output и build-fail (go 1.24+)
+	Test       string
 }
 
 // ParseGoTestJSON разбирает вывод `go test -json`. Учитываются итоговые
 // события pass и fail; skip считается непройденным тестом.
-func ParseGoTestJSON(data []byte) ([]Result, error) {
+//
+// failures — упавшие тесты, пакеты и сборки в порядке появления: отчёт
+// dm-coverage считает каждое падение проблемой, даже если тест не покрывает
+// ни одной строки матрицы (иначе упавший e2e давал «0 проблем»; G2 этапа 5).
+// Из упавших тестов называются самые глубокие: родитель упавшего подтеста
+// падает вместе с ним. Пакет называется отдельно, только если в нём не упал
+// ни один тест (паника вне теста, таймаут, сбой TestMain).
+func ParseGoTestJSON(data []byte) (results []Result, failures []string, err error) {
 	if len(data) > maxReport {
-		return nil, fmt.Errorf("отчёт тестов больше %d байт", maxReport)
+		return nil, nil, fmt.Errorf("отчёт тестов больше %d байт", maxReport)
 	}
-	var out []Result
+	type failed struct{ pkg, test string }
+	var tests []failed
+	var pkgs, builds []string
 	sc := bufio.NewScanner(bytes.NewReader(data))
 	sc.Buffer(make([]byte, 0, 64*1024), 16<<20)
 	for n := 1; sc.Scan(); n++ {
@@ -61,19 +73,49 @@ func ParseGoTestJSON(data []byte) ([]Result, error) {
 		}
 		var ev testEvent
 		if err := json.Unmarshal(line, &ev); err != nil {
-			return nil, fmt.Errorf("строка %d отчёта тестов: %w", n, err)
+			return nil, nil, fmt.Errorf("строка %d отчёта тестов: %w", n, err)
 		}
-		if ev.Test == "" {
-			continue
-		}
-		switch ev.Action {
-		case "pass":
-			out = append(out, Result{Name: ev.Test, Passed: true})
-		case "fail", "skip":
-			out = append(out, Result{Name: ev.Test, Passed: false})
+		switch {
+		case ev.Action == "build-fail":
+			builds = append(builds, cmp.Or(ev.ImportPath, ev.Package))
+		case ev.Test == "":
+			if ev.Action == "fail" {
+				pkgs = append(pkgs, ev.Package)
+			}
+		case ev.Action == "pass":
+			results = append(results, Result{Name: ev.Test, Passed: true})
+		case ev.Action == "fail":
+			results = append(results, Result{Name: ev.Test, Passed: false})
+			tests = append(tests, failed{ev.Package, ev.Test})
+		case ev.Action == "skip":
+			results = append(results, Result{Name: ev.Test, Passed: false})
 		}
 	}
-	return out, sc.Err()
+	if err := sc.Err(); err != nil {
+		return nil, nil, err
+	}
+	for _, b := range builds {
+		failures = append(failures, fmt.Sprintf("сборка %s не прошла", cmp.Or(b, "(без имени)")))
+	}
+	withTests := map[string]bool{}
+	for i, f := range tests {
+		withTests[f.pkg] = true
+		if slices.ContainsFunc(tests, func(o failed) bool {
+			return o.pkg == f.pkg && strings.HasPrefix(o.test, f.test+"/")
+		}) {
+			continue
+		}
+		if slices.ContainsFunc(tests[:i], func(o failed) bool { return o == f }) {
+			continue
+		}
+		failures = append(failures, fmt.Sprintf("тест %s (%s) не прошёл", f.test, cmp.Or(f.pkg, "без пакета")))
+	}
+	for _, p := range pkgs {
+		if !withTests[p] {
+			failures = append(failures, fmt.Sprintf("пакет %s не прошёл (сборка, паника вне теста, таймаут или TestMain)", cmp.Or(p, "(без имени)")))
+		}
+	}
+	return results, failures, nil
 }
 
 type junitSuites struct {

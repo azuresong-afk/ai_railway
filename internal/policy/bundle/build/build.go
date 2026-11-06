@@ -554,6 +554,9 @@ func (s *Service) collect(ctx context.Context, now time.Time) (*bundle.Content, 
 		after = &apps.Cursor{CreatedAt: last.CreatedAt, ID: last.ID}
 	}
 	s.checks = checks
+	if err := addJudgeProviders(c, provs, usedProv); err != nil {
+		return nil, nil, nil, err
+	}
 	if err := s.addBudgets(ctx, c, byID, usedProv, appSlugs); err != nil {
 		return nil, nil, nil, err
 	}
@@ -840,6 +843,35 @@ func (s *Service) policyOf(ctx context.Context, cache map[string]*bundle.Policy,
 	}
 	cache[id] = p
 	return p, nil
+}
+
+// addJudgeProviders добавляет в пакет провайдеров оценщика judge.llm из
+// раздела judge политик пакета (ADR-0030): оценщик заводится строго по
+// руководству и ни одному приложению не нужен как провайдер, а шлюз строит
+// клиента оценщика только по провайдерам пакета (5Н30 ревью 5.r4, дефект
+// 5.49-2). Только провайдер с признаком «размещён у заказчика»: другой
+// шлюз оценщиком не использует, и его учётные данные в пакет не идут.
+func addJudgeProviders(c *bundle.Content, provs []apps.Provider, used map[string]bool) error {
+	bySlug := map[string]apps.Provider{}
+	for _, p := range provs {
+		bySlug[p.Slug] = p
+	}
+	for _, pol := range c.Policies {
+		spec, err := policy.Parse(strings.NewReader(pol.YAML))
+		if err != nil {
+			return fmt.Errorf("пакеты: политика %s: %w", pol.ID, err)
+		}
+		if spec.Judge == nil {
+			continue
+		}
+		p, ok := bySlug[spec.Judge.Provider]
+		if !ok || !p.OnPremise || used[p.ID] {
+			continue
+		}
+		used[p.ID] = true
+		c.Providers = append(c.Providers, provider(p))
+	}
+	return nil
 }
 
 // checkApp проверяет одно приложение с его провайдером и политикой так же,

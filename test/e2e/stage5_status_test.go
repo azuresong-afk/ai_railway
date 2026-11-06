@@ -10,17 +10,14 @@ import (
 	"time"
 )
 
-// Дефект, найденный при 5.49 (stage-5.md, «Открытые вопросы»): ограничение
-// system_alert_state_condition_check, последний раз обновлённое миграцией
-// 0064, не знает условий shadow_ai_storage и shadow_ai_full (этап 4),
-// gateway_limits, service_db_previous и service_db_unused (5.9),
-// gateway_media_overloaded, gateway_media_unavailable и gateway_media_selftest
-// (5.44). Запись состояния уведомления по ним отклоняется базой, сервер пишет
-// «уведомления состояния системы не обновлены», и оповещение «Состояния
-// системы» о них не живёт между проверками. Тест воспроизводит дефект и
-// пропущен до исправления (новая миграция с полным списком условий).
+// 5В5 ревью 5.r4 этапа 5 (дефект 5.49-1, найден при 5.49): ограничение
+// system_alert_state_condition_check не знало условий этапов 4 и 5
+// (shadow_ai_*, gateway_limits, service_db_*, gateway_media_*), и сервер
+// писал «уведомления состояния системы не обновлены». Исправлено миграцией
+// 0078; сверку кода с ограничением ведёт TestStoredConditionsMatchCheck
+// (internal/sysstatus). Тест проверяет, что первый обход на живом стенде
+// записывает состояния без отказа базы.
 func TestE2EStage5_SystemAlertStateConditions(t *testing.T) {
-	t.Skip("дефект 5.49-1 (stage-5.md, «Открытые вопросы»): CHECK system_alert_state не знает условий этапов 4 и 5")
 	st := s3NewStack(t, s3Opts{})
 	// Первый обход состояния системы идёт сразу после запуска сервера.
 	time.Sleep(10 * time.Second)

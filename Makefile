@@ -124,7 +124,9 @@ E2E_TIMEOUT ?= 40m
 .PHONY: dm-coverage
 dm-coverage: build ## Покрытие матрицы обнаружения 5.16 тестами (строки с этапом не выше STAGE)
 	@mkdir -p $(BUILD)
-	@# Падения тестов ловит make test; здесь нужен полный отчёт, поэтому код возврата не важен.
+	@# Код возврата go test здесь не прерывает цель, чтобы отчёт собрался целиком;
+	@# каждый упавший тест, пакет или сборку из JSON dm-coverage сам считает проблемой
+	@# и завершается с ошибкой (замечание G2 этапа 5).
 	go test -count=1 -json ./... > $(BUILD)/dm-tests.json || true
 	go test -tags e2e -count=1 -timeout $(E2E_TIMEOUT) -json ./test/e2e/ -bin $(BUILD)/bin > $(BUILD)/dm-e2e.json || true
 	go run ./tools/dm-coverage -spec docs/SPEC.md -stage $(STAGE) \

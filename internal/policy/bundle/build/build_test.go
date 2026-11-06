@@ -80,7 +80,7 @@ func newEnv(t *testing.T) *env {
 			Confirm: func(context.Context) error { return nil }},
 		polBy: versions.By{Actor: audit.Actor{Type: audit.ActorUser, ID: owner, Name: "admin"},
 			Confirm: func(context.Context) error { return nil }}}
-	reg, err := detect.NewRegistry(builtin.All()...)
+	reg, err := detect.NewRegistry(builtin.Catalog()...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -856,5 +856,74 @@ func TestDM26_BuildPromptBaselinesSection(t *testing.T) {
 	}
 	if c, _ := content(); len(c.PromptBaselines) != 0 {
 		t.Fatalf("режим off в пакете: %+v", c.PromptBaselines)
+	}
+}
+
+// 5Н30 ревью 5.r4 этапа 5 (дефект 5.49-2): провайдер оценщика judge.llm,
+// названный в разделе judge политики, попадает в пакет вместе с учётными
+// данными, хотя ни одно приложение не использует его как провайдера.
+// Провайдер без признака «размещён у заказчика» — нет: шлюз его оценщиком
+// не сделает, а учётные данные лишний раз не выдаются.
+func TestBuildIncludesJudgeProvider(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	ca, err := aisecCrypto.NewCA("AISec test judge CA", time.Hour, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	jp, err := e.apps.CreateProvider(ctx, e.appsBy, apps.ProviderInput{Slug: "judge-local", Name: "Оценщик", Type: "openai",
+		BaseURL: "https://10.20.30.40/v1", CAPEM: string(ca.CertPEM())})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const judgeCred = "sk-synthetic-judge-credential-02" //nolint:gosec // G101: синтетические учётные данные для теста
+	if _, err := e.apps.SetCredential(ctx, e.appsBy, jp.ID, []byte(judgeCred)); err != nil {
+		t.Fatal(err)
+	}
+	spec, _ := policy.Template(policy.TemplateBase)
+	spec.ID, spec.Name = "corp", "Корпоративная"
+	spec.Judge = &policy.JudgeSpec{Provider: "judge-local", Model: "judge-e2e"}
+	spec.Rules = append(spec.Rules, policy.RuleSpec{ID: "no-refund", Detector: "judge.llm", Directions: []detect.Direction{detect.Output},
+		Action: policy.Block, Severity: policy.High, Judge: &policy.JudgeRuleSpec{Kind: "business", Criterion: "Ассистент не обещает возврат денег.", Mode: policy.JudgeSync}})
+	if _, err := e.policies.Update(ctx, e.polBy, "corp", 1, spec, versions.SourceAPI, "", versions.ConsoleDefaults); err != nil {
+		t.Fatal(err)
+	}
+	deliver := func() *bundle.Bundle {
+		t.Helper()
+		d, err := e.svc.Deliver(ctx, build.Gateway{ID: bundletest.GatewayID}, e.fx.Recipient.PublicKey(), "", -1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := e.fx.Opener(t).Open(d.Body, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	ids := func(b *bundle.Bundle) []string {
+		var out []string
+		for _, p := range b.Content.Providers {
+			out = append(out, p.ID)
+		}
+		return out
+	}
+	// Провайдер «внешний» и без on_premise — в пакет не идёт.
+	if b := deliver(); slices.Contains(ids(b), "judge-local") || b.Secrets["judge-local"] != "" {
+		t.Fatalf("провайдер без on_premise в пакете: %v", ids(b))
+	}
+	if _, err := e.apps.SetExternal(ctx, e.appsBy, jp.ID, false, "оценщик в контуре"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.apps.SetOnPremise(ctx, e.appsBy, jp.ID, true, "оценщик в контуре"); err != nil {
+		t.Fatal(err)
+	}
+	b := deliver()
+	if !slices.Equal(ids(b), []string{"judge-local", "llm"}) || b.Secrets["judge-local"] != judgeCred {
+		t.Fatalf("провайдер оценщика: %v, секрет есть: %v", ids(b), b.Secrets["judge-local"] != "")
+	}
+	for _, p := range b.Content.Providers {
+		if p.ID == "judge-local" && (!p.OnPremise || p.External) {
+			t.Fatalf("признаки провайдера оценщика: %+v", p)
+		}
 	}
 }

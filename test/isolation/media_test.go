@@ -450,23 +450,23 @@ func imageDir(t *testing.T) string {
 	return dir
 }
 
-// bombPNG — PNG w×h RGBA из нулей: сжат до сотен КиБ, а декодированный
-// растр занимает 4·w·h байт. Собирается без кодировщиков изображений (их
-// нет вне internal/media).
-func bombPNG(t *testing.T, w, h int) []byte {
+// bombPNG — PNG w×h RGBA глубины depth (8 или 16 бит) из нулей: сжат до
+// сотен КиБ, а декодированный растр занимает 4·w·h или 8·w·h байт.
+// Собирается без кодировщиков изображений (их нет вне internal/media).
+func bombPNG(t *testing.T, w, h, depth int) []byte {
 	t.Helper()
 	var b bytes.Buffer
 	b.WriteString("\x89PNG\r\n\x1a\n")
 	ihdr := binary.BigEndian.AppendUint32(nil, uint32(w)) //nolint:gosec // G115: размеры теста положительны и малы
 	ihdr = binary.BigEndian.AppendUint32(ihdr, uint32(h)) //nolint:gosec // G115: то же
-	ihdr = append(ihdr, 8, 6, 0, 0, 0)                    // 8 бит, RGBA, без чересстрочности
+	ihdr = append(ihdr, byte(depth), 6, 0, 0, 0)          //nolint:gosec // G115: глубина 8 или 16; RGBA, без чересстрочности
 	chunk(&b, "IHDR", ihdr)
 	var z bytes.Buffer
 	zw, err := zlib.NewWriterLevel(&z, zlib.BestSpeed)
 	if err != nil {
 		t.Fatal(err)
 	}
-	row := make([]byte, 1+4*w) // фильтр None и нули
+	row := make([]byte, 1+4*w*depth/8) // фильтр None и нули
 	for range h {
 		if _, err := zw.Write(row); err != nil {
 			t.Fatal(err)
@@ -558,12 +558,13 @@ func TestMediaMemoryLimit(t *testing.T) {
 	imgs := imageDir(t)
 	png := writeImage(t, imgs, "v.png", selftest.MediaVectorPNG("Инструкция по настройке принтера"))
 	// 10 000×10 000 RGBA: растр 400 МБ — больше предела памяти. Предел
-	// пикселей поднят до наибольшего (100 млн), чтобы бомба дошла до
-	// декодера: так проверяется предел памяти, а не проверка заголовка
-	// (её проверяют тесты internal/media).
-	bomb := writeImage(t, imgs, "bomb.png", bombPNG(t, 10000, 10000))
+	// пикселей поднят до наибольшего (100 млн), а предел памяти растров —
+	// до 8 ГиБ, чтобы бомба дошла до декодера: так проверяется предел
+	// памяти, а не проверки заголовка (их проверяют тесты internal/media и
+	// TestMediaDefaultsFitMemory).
+	bomb := writeImage(t, imgs, "bomb.png", bombPNG(t, 10000, 10000, 8))
 	p := startMedia(t, dir, mediaOpts{wrap: []string{prlimit, "--data=" + strconv.Itoa(memLimit), "--"},
-		args: []string{"-max-pixels", "100000000"}})
+		args: []string{"-max-pixels", "100000000", "-max-raster-mib", "8192"}})
 	c := startClient(t, dir)
 	if r := c.do(t, "analyze", 5*time.Second, png); !r.OK {
 		t.Fatalf("обычное изображение под пределом памяти: %+v\n%s", r, p.log)
@@ -585,6 +586,60 @@ func TestMediaMemoryLimit(t *testing.T) {
 		if r := c.do(t, "analyze", 5*time.Second, png); !r.OK {
 			t.Fatalf("после бомбы: %+v", r)
 		}
+	}
+}
+
+// Умолчания compose (два исполнителя, mem_limit 1 ГиБ) против изображений
+// в пределах по умолчанию (5В4 ревью 5.r4 этапа 5): два PNG 5000×5000 с
+// глубиной 16 бит одновременно (файл ~200 КБ, растр 200 МБ, с OCR — около
+// 350 МиБ на каждый) получают отказ too_many_pixels по бюджету растров до
+// декодирования, а два PNG RGBA 8 бит того же размера одновременно
+// анализируются и очищаются под RLIMIT_DATA 1 ГиБ. Анализатор жив, клиенты
+// шлюза получают итог. cgroup memory.max контейнера — ручная проверка 6.
+func TestMediaDefaultsFitMemory(t *testing.T) {
+	build(t)
+	prlimit, err := exec.LookPath("prlimit")
+	if err != nil {
+		t.Skip("нет prlimit (util-linux)")
+	}
+	dir := socketDir(t)
+	imgs := imageDir(t)
+	deep := writeImage(t, imgs, "deep.png", bombPNG(t, 5000, 5000, 16))
+	flat := writeImage(t, imgs, "flat.png", bombPNG(t, 5000, 5000, 8))
+	p := startMedia(t, dir, mediaOpts{wrap: []string{prlimit, "--data=" + strconv.Itoa(1<<30), "--"},
+		args: []string{"-workers", "2", "-mem-limit", "1g"}})
+	a, b := startClient(t, dir), startClient(t, dir)
+	pair := func(op, img string) (reply, reply) {
+		a.send(t, op, 10*time.Second, img)
+		b.send(t, op, 10*time.Second, img)
+		return a.result(t), b.result(t)
+	}
+	r1, r2 := pair("analyze", deep)
+	for _, r := range []reply{r1, r2} {
+		if r.OK || !strings.Contains(r.Error, "too_many_pixels") {
+			t.Fatalf("PNG 16 бит 25 Мпикс: %+v\n%s", r, p.log)
+		}
+	}
+	r1, r2 = pair("sanitize", deep)
+	for _, r := range []reply{r1, r2} {
+		if r.OK || r.Reason != "rejected" {
+			t.Fatalf("очистка PNG 16 бит 25 Мпикс: %+v\n%s", r, p.log)
+		}
+	}
+	r1, r2 = pair("analyze", flat)
+	for _, r := range []reply{r1, r2} {
+		if !r.OK {
+			t.Fatalf("PNG RGBA 25 Мпикс: %+v\n%s", r, p.log)
+		}
+	}
+	r1, r2 = pair("sanitize", flat)
+	for _, r := range []reply{r1, r2} {
+		if !r.OK || r.Format != "png" {
+			t.Fatalf("очистка PNG RGBA 25 Мпикс: %+v\n%s", r, p.log)
+		}
+	}
+	if p.exited(0) {
+		t.Fatalf("aisec-media завершился: %v\n%s", p.err, p.log)
 	}
 }
 

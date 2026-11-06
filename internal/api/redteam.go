@@ -676,7 +676,21 @@ func (d Deps) getRedTeamReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	examples := ex == "true"
-	if examples && !p.Grants.Allows(auth.PermEventsContentRead) {
+	// Выдержки — ответы целей: только с полной областью events.content.read,
+	// как содержимое событий (у цели endpoint нет владельца-приложения, по
+	// которому отбирала бы область own). Отказ пишется в журнал аудита, как
+	// у маршрутизатора (5Н27 ревью 5.r4).
+	if examples && !p.Grants.Full(auth.PermEventsContentRead) {
+		if p.Caller != nil && d.Auth != nil {
+			reason := DenyReasonPermission
+			if p.Grants.Allows(auth.PermEventsContentRead) {
+				reason = DenyReasonScope
+			}
+			if aerr := d.Auth.AccessDenied(r.Context(), *p.Caller, r.Method, "/api/v1/redteam/runs/{id}/report",
+				auth.PermEventsContentRead, reason); aerr != nil {
+				d.Logger.Error("отказ в доступе не записан в журнал аудита", "error", aerr)
+			}
+		}
 		WriteProblem(w, errForbidden())
 		return
 	}

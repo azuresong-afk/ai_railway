@@ -468,13 +468,16 @@ func TestAnalyzeHeaderMismatch(t *testing.T) {
 }
 
 func TestLimitsValidate(t *testing.T) {
-	for _, l := range []Limits{{MinMaxBytes - 1, 1}, {wire.MaxContent + 1, 1}, {MinMaxBytes, 0}, {MinMaxBytes, wire.MaxPixelsLimit + 1}} {
+	for _, l := range []Limits{{MinMaxBytes - 1, 1, 0}, {wire.MaxContent + 1, 1, 0}, {MinMaxBytes, 0, 0}, {MinMaxBytes, wire.MaxPixelsLimit + 1, 0},
+		{MinMaxBytes, 1, MinMaxRasterBytes - 1}, {MinMaxBytes, 1, MaxMaxRasterBytes + 1}, {MinMaxBytes, 1, -1}} {
 		if l.Validate() == nil {
 			t.Errorf("принято %+v", l)
 		}
 	}
-	if err := (Limits{MinMaxBytes, 1}).Validate(); err != nil {
-		t.Fatal(err)
+	for _, l := range []Limits{{MinMaxBytes, 1, 0}, {MinMaxBytes, 1, MinMaxRasterBytes}, {MinMaxBytes, 1, MaxMaxRasterBytes}} {
+		if err := l.Validate(); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
@@ -595,6 +598,9 @@ func FuzzWebPMetadata(f *testing.F) {
 		readMetadata(data, wire.FormatWebP, &ts)
 		if len(ts.texts) > wire.MaxTexts || ts.total > wire.MaxTextsBytes {
 			t.Fatalf("предел текстов: %d, %d", len(ts.texts), ts.total)
+		}
+		if o := orientation(data, wire.FormatWebP); o < 1 || o > 8 {
+			t.Fatalf("ориентация %d", o)
 		}
 	})
 }

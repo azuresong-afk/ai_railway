@@ -15,7 +15,8 @@ import (
 
 // Очистка изображения перед отправкой провайдеру (media_sanitize, ТЗ 5.17,
 // ADR-0032, дополнение 5.45). Изображение проверяется теми же пределами,
-// что и при анализе, декодируется, уменьшается до SanitizeMaxSide по
+// что и при анализе, декодируется, поворачивается по ориентации EXIF (тег
+// перекодирование снимает, 5Н28), уменьшается до SanitizeMaxSide по
 // большей стороне и кодируется заново: JPEG — в JPEG, остальные форматы —
 // в PNG. Кодировщики стандартной библиотеки не пишут метаданных, поэтому в
 // итоге нет EXIF, XMP, текстовых чанков, комментариев, профилей и миниатюр;
@@ -69,10 +70,13 @@ func Sanitize(ctx context.Context, data []byte, l Limits, maxSide int) (out []by
 	if !canDecode(info) {
 		return nil, "", fmt.Errorf("%w: нет декодера", ErrSanitizeRejected)
 	}
-	frames, err := decode(data, info)
+	frames, err := decode(data, info, l.rasterBudget())
 	if err != nil {
-		if errors.Is(err, errDecoderPanic) {
+		switch {
+		case errors.Is(err, errDecoderPanic):
 			return nil, "", err
+		case errors.Is(err, errRasterBudget):
+			return nil, "", fmt.Errorf("%w: %s", ErrSanitizeRejected, wire.ReasonTooManyPixels)
 		}
 		return nil, "", fmt.Errorf("%w: не декодировано", ErrSanitizeRejected)
 	}
@@ -104,10 +108,11 @@ func Sanitize(ctx context.Context, data []byte, l Limits, maxSide int) (out []by
 }
 
 // firstFrame — кадр в границах экрана с началом в (0, 0): у GIF первый
-// кадр может занимать часть экрана, остальное — прозрачное.
+// кадр может занимать часть экрана, остальное — прозрачное. Остальные
+// форматы — как есть (кадр уже повёрнут по ориентации EXIF, 5Н28).
 func firstFrame(f image.Image, info Info) image.Image {
 	screen := image.Rect(0, 0, int(info.Width), int(info.Height))
-	if f.Bounds() == screen {
+	if info.Format != wire.FormatGIF || f.Bounds() == screen {
 		return f
 	}
 	dst := image.NewNRGBA(screen)

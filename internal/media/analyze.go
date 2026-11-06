@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"image/color"
 	"image/gif"
 	"image/jpeg"
 	"image/png"
@@ -24,16 +25,28 @@ const (
 	DefaultMaxPixels = 25_000_000
 	// MinMaxBytes — наименьший допустимый -max-bytes.
 	MinMaxBytes = 1 << 20
+	// DefaultMaxRasterBytes — предел памяти растров одного анализа (5В4
+	// ревью 5.r4, ADR-0032, раздел 5): при умолчаниях укладывается RGBA
+	// 25 Мпикс с OCR и очисткой (оценка 302 МиБ), а два исполнителя и
+	// запас под ONNX Runtime — в mem_limit 1 ГиБ.
+	DefaultMaxRasterBytes = 320 << 20
+	// MinMaxRasterBytes и MaxMaxRasterBytes — допустимый -max-raster-mib.
+	MinMaxRasterBytes = 96 << 20
+	MaxMaxRasterBytes = 8 << 30
 )
 
 // Limits — пределы, проверяемые по заголовку до декодирования.
 type Limits struct {
 	MaxBytes  int64
 	MaxPixels int64
+	// MaxRasterBytes — предел оценки памяти растров одного анализа по
+	// заголовку (rasterCost); 0 — DefaultMaxRasterBytes.
+	MaxRasterBytes int64
 }
 
 // Validate проверяет пределы: размер файла — от 1 МиБ до предела протокола,
-// пиксели — от 1 до 100 Мпикс.
+// пиксели — от 1 до 100 Мпикс, память растров — 0 (умолчание) или от
+// 96 МиБ до 8 ГиБ.
 func (l Limits) Validate() error {
 	if l.MaxBytes < MinMaxBytes || l.MaxBytes > wire.MaxContent {
 		return fmt.Errorf("aisec-media: предел размера — от %d до %d байт", MinMaxBytes, wire.MaxContent)
@@ -41,8 +54,78 @@ func (l Limits) Validate() error {
 	if l.MaxPixels < 1 || l.MaxPixels > wire.MaxPixelsLimit {
 		return fmt.Errorf("aisec-media: предел пикселей — от 1 до %d", wire.MaxPixelsLimit)
 	}
+	if l.MaxRasterBytes != 0 && (l.MaxRasterBytes < MinMaxRasterBytes || l.MaxRasterBytes > MaxMaxRasterBytes) {
+		return fmt.Errorf("aisec-media: предел памяти растров — от %d до %d байт", MinMaxRasterBytes, MaxMaxRasterBytes)
+	}
 	return nil
 }
+
+// rasterBudget — действующий предел памяти растров.
+func (l Limits) rasterBudget() int64 {
+	if l.MaxRasterBytes == 0 {
+		return DefaultMaxRasterBytes
+	}
+	return l.MaxRasterBytes
+}
+
+// Оценка памяти анализа по заголовку (5В4 ревью 5.r4). Предел пикселей
+// один для всех форматов, а память растра — нет: PNG и TIFF с глубиной
+// 16 бит декодируются в 8 байт на пиксель, а не в 4. Поэтому до
+// декодирования, по модели цвета из DecodeConfig того же декодера,
+// оценивается вся память пути: декодированные кадры, копии кадра на белом
+// фоне и в сером для OCR, растр QR, копия RGBA при уменьшении в очистке,
+// холст первого кадра GIF, поворот по ориентации EXIF, плюс входы
+// детектора OCR. Коэффициенты проверены замером наибольшей кучи
+// (TestRasterCostCoversPeakHeap): оценка — верхняя граница.
+const (
+	// rasterWorkPerPixel — байт на пиксель кадра сверх декодированного:
+	// RGBA для OCR (4), серый для «контраста» (1), QR (до 1,3; к OCR уже
+	// освобождён). Очистка (RGBA для уменьшения, 4) — не больше этого.
+	rasterWorkPerPixel = 6
+	// rasterCanvasPerPixel — холст первого кадра GIF (NRGBA) и кадр после
+	// поворота по ориентации EXIF (RGBA).
+	rasterCanvasPerPixel = 4
+	// rasterFixed — не зависящее от размера: входы и карты детектора OCR
+	// на проходе ×2 (до 1920×1920), вход распознавания, буферы декодера.
+	rasterFixed = 64 << 20
+)
+
+// bytesPerPixel — байт на пиксель растра, который вернёт декодер с этой
+// моделью цвета; неизвестная модель — 8 (наибольшее у декодеров Go).
+func bytesPerPixel(m color.Model) int64 {
+	if _, ok := m.(color.Palette); ok {
+		return 1
+	}
+	switch m {
+	case color.GrayModel, color.AlphaModel:
+		return 1
+	case color.Gray16Model, color.Alpha16Model:
+		return 2
+	case color.YCbCrModel:
+		return 3 // 4:4:4 — наибольшее
+	case color.RGBAModel, color.NRGBAModel, color.CMYKModel, color.NYCbCrAModel:
+		return 4
+	}
+	return 8
+}
+
+// rasterCost — оценка памяти анализа или очистки изображения, байт.
+// rotated — кадр будет повёрнут по ориентации EXIF (копия RGBA).
+func rasterCost(info Info, m color.Model, rotated bool) int64 {
+	frame := info.Width * info.Height
+	cost := info.Pixels*bytesPerPixel(m) + frame*rasterWorkPerPixel + rasterFixed
+	if info.Format == wire.FormatGIF {
+		cost += frame * rasterCanvasPerPixel
+	}
+	if rotated {
+		cost += frame * rasterCanvasPerPixel
+	}
+	return cost
+}
+
+// errRasterBudget — оценка памяти растров больше предела: итог —
+// rejected too_many_pixels, декодер не вызывается.
+var errRasterBudget = errors.New("aisec-media: оценка памяти растров больше предела")
 
 // decodable — форматы с декодером: PNG, JPEG, GIF — стандартная
 // библиотека; WebP, BMP и TIFF — golang.org/x/image v0.47.0 (согласие
@@ -92,13 +175,15 @@ func (a Analyzer) Analyze(ctx context.Context, data []byte) (wire.Result, error)
 	if !canDecode(info) {
 		return unsupported(info), nil
 	}
-	frames, err := decode(data, info)
+	frames, err := decode(data, info, l.rasterBudget())
 	if err != nil {
 		switch {
 		case errors.Is(err, errDecoderPanic):
 			return wire.Result{}, err
 		case errors.Is(err, errDecoderUnsupported):
 			return unsupported(info), nil
+		case errors.Is(err, errRasterBudget):
+			return rejected(info, wire.ReasonTooManyPixels), nil
 		}
 		return rejected(info, wire.ReasonMalformed), nil
 	}
@@ -116,7 +201,13 @@ func (a Analyzer) Analyze(ctx context.Context, data []byte) (wire.Result, error)
 			return wire.Result{}, err
 		}
 	}
-	return wire.Result{Status: wire.StatusOK, Format: info.Format, Width: info.Width, Height: info.Height,
+	// Размеры — в ориентации показа (5Н28): рамки текстов — в ней же.
+	w, h := info.Width, info.Height
+	if info.Format != wire.FormatGIF {
+		b := frames[0].Bounds()
+		w, h = int64(b.Dx()), int64(b.Dy())
+	}
+	return wire.Result{Status: wire.StatusOK, Format: info.Format, Width: w, Height: h,
 		Frames: info.Frames, Checks: a.Checks(), Texts: ts.texts}, nil
 }
 
@@ -184,10 +275,13 @@ func unsupported(info Info) wire.Result {
 
 // decode декодирует растр стандартной библиотекой. Перед декодером размеры
 // сверяются с DecodeConfig того же пакета: расхождение своего разбора и
-// разбора декодера обошло бы предел. После — границы растра обязаны
-// совпасть с заголовком. Итог — кадры (у GIF — все, у остальных — один).
-// Паника декодера — errDecoderPanic.
-func decode(data []byte, info Info) (frames []image.Image, err error) {
+// разбора декодера обошло бы предел. Затем по модели цвета декодера
+// оценивается память пути (rasterCost): больше budget — errRasterBudget.
+// После — границы растра обязаны совпасть с заголовком, а кадр
+// поворачивается по ориентации EXIF (5Н28). Итог — кадры (у GIF — все, у
+// остальных — один, в ориентации показа). Паника декодера —
+// errDecoderPanic.
+func decode(data []byte, info Info, budget int64) (frames []image.Image, err error) {
 	defer func() {
 		if p := recover(); p != nil {
 			err = errDecoderPanic
@@ -216,7 +310,16 @@ func decode(data []byte, info Info) (frames []image.Image, err error) {
 	if int64(cfg.Width) != info.Width || int64(cfg.Height) != info.Height {
 		return nil, errors.New("aisec-media: размеры декодера не совпали с заголовком")
 	}
-	return decodeRaster(data, info)
+	o := orientation(data, info.Format)
+	if rasterCost(info, cfg.ColorModel, o > 1) > budget {
+		return nil, errRasterBudget
+	}
+	frames, err = decodeRaster(data, info)
+	if err != nil || o == 1 || len(frames) != 1 {
+		return frames, err
+	}
+	frames[0] = orientImage(frames[0], o)
+	return frames, nil
 }
 
 // decodeRaster — декодирование после проверки размеров. Растр получают
