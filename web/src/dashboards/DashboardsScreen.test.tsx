@@ -19,7 +19,7 @@ const me = (permissions: string[]): Me =>
     permissions,
   }) as Me;
 
-const period = { name: "24h", from: "2026-10-21T10:00:00Z", to: "2026-10-22T10:00:00Z", unit: "hour", timezone: "Europe/Moscow", aggregates_ready: true };
+const period = { name: "24h", from: "2026-10-21T10:00:00Z", to: "2026-10-22T10:00:00Z", unit: "hour", timezone: "Europe/Moscow", aggregates_ready: true, test: false };
 const totals = { requests: 1200, with_findings: 300, non_text_unchecked: 4, blocked: 20, would_block: 5, masked: 70, tokens_prompt: 5000, tokens_completion: 7000, cost: "12.5000000", unpriced_requests: 3 };
 const overview = {
   period,
@@ -127,6 +127,20 @@ describe("экран «Обзор»", () => {
     expect(streams[0]!.url).toContain("period=7d");
     fireEvent.click(screen.getByRole("checkbox", { name: "Обновлять в реальном времени" }));
     await waitFor(() => expect(streams[0]!.closed).toBe(true));
+  });
+
+  it("учения (6.11): по умолчанию без них, «Только учения» запрашивает их и ведёт к тем же событиям", async () => {
+    renderScreen(["dashboards.read", "events.read"]);
+    await screen.findByText("1 200");
+    expect(calls.filter((u) => u.startsWith("/api/v1/dashboards/overview")).every((u) => !u.includes("test="))).toBe(true);
+    const appLink = screen.getByRole("link", { name: "support-bot" });
+    const filterOf = (a: Element) => new URLSearchParams((a.getAttribute("href") ?? "").split("?")[1]).get("f") ?? "";
+    expect(filterOf(appLink)).toContain("test = false");
+    overviewBody = { ...overview, period: { ...period, test: true } };
+    fireEvent.click(screen.getByRole("checkbox", { name: "Только учения" }));
+    await waitFor(() => expect(calls.some((u) => u.includes("overview?period=24h&test=true"))).toBe(true));
+    expect(await screen.findByText(/Показаны только учения/)).toBeTruthy();
+    expect(filterOf(screen.getByRole("link", { name: "support-bot" }))).toContain("test = true");
   });
 
   it("произвольный период: начало позже конца не отправляется", async () => {

@@ -209,6 +209,14 @@ func (e *pgEnv) aggregate(t *testing.T, bucket time.Time, app, provider, model s
 		VALUES ($1, $2, $3, $4, $5, 'allow', 'monitor', 3, 0, 0, 10, 20, 0, 3)`, audit.DefaultOrgID, bucket, app, provider, model)
 }
 
+// drillAggregate — строка агрегата учений (запуск тестирования устойчивости).
+func (e *pgEnv) drillAggregate(t *testing.T, bucket time.Time, app, provider, model string) {
+	t.Helper()
+	mustExec(t, e.owner, `INSERT INTO dash_req_hour (org_id, bucket, app, provider, model, action, mode, test, requests, with_findings,
+			non_text_unchecked, tokens_prompt, tokens_completion, cost, unpriced_requests)
+		VALUES ($1, $2, $3, $4, $5, 'block', 'enforce', true, 50, 50, 0, 1000, 1000, 0, 50)`, audit.DefaultOrgID, bucket, app, provider, model)
+}
+
 func customerInput(t *testing.T, name string, files ...string) ModelInput {
 	t.Helper()
 	fs := make([]string, len(files))
@@ -403,6 +411,32 @@ func TestPGInventoryDiscoverAndOverview(t *testing.T) {
 	}
 	if o.Models != 3 || o.Usage != 5 || o.Sync.SyncedUpto == nil || !o.Sync.SyncedUpto.Equal(now.Truncate(time.Hour)) || o.Sync.LimitReached {
 		t.Fatalf("сводка: %+v", o)
+	}
+}
+
+// Учения (задача 6.11): строки агрегатов запусков тестирования устойчивости
+// записей реестра не создают и сроки «впервые/последний раз» не сдвигают.
+func TestPGInventoryDiscoverSkipsTestEvents(t *testing.T) {
+	e := setupPG(t)
+	ctx := pgTestCtx(t)
+	hour := e.clock.t.Truncate(time.Hour)
+	e.drillAggregate(t, hour.Add(-2*time.Hour), "billing", "gigachat", "redteam-target")
+	e.drillAggregate(t, hour.Add(-3*time.Hour), "billing", "gigachat", "GigaChat-Pro")
+	e.aggregate(t, hour.Add(-time.Hour), "billing", "gigachat", "GigaChat-Pro")
+	e.drillAggregate(t, hour, "drill-app", "gigachat", "GigaChat-Pro")
+	res, err := e.svc.Discover(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Models != 1 || res.Links != 1 || len(res.Names) != 1 || res.Names[0] != "gigachat/GigaChat-Pro" {
+		t.Fatalf("учения в пополнении: %+v", res)
+	}
+	all, err := e.svc.Models(ctx, Filter{Origin: OriginTraffic})
+	if err != nil || len(all) != 1 || !all[0].FirstSeen.Equal(hour.Add(-time.Hour)) || !all[0].LastSeen.Equal(hour.Add(-time.Hour)) {
+		t.Fatalf("сроки модели сдвинуты учениями: %+v, %v", all, err)
+	}
+	if us, err := e.svc.Usage(ctx, UsageFilter{App: "drill-app"}); err != nil || len(us) != 0 {
+		t.Fatalf("использование приложения учений: %+v, %v", us, err)
 	}
 }
 

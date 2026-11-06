@@ -3208,7 +3208,8 @@ export interface paths {
          * Агрегаты событий по минутам или часам
          * @description Право `events.read` (ТЗ 5.5, 5.8). Агрегаты считает фоновое задание раз в минуту:
          *     данные последней минуты могут ещё не войти. `minute` — период до суток, `hour` — до
-         *     31 суток; не больше 10 000 строк (иначе 422).
+         *     31 суток; не больше 10 000 строк (иначе 422). События запусков тестирования
+         *     устойчивости (`test: true`) в агрегаты не входят (ADR-0031, дополнение 5).
          */
         get: {
             parameters: {
@@ -6047,6 +6048,8 @@ export interface paths {
                     to?: components["parameters"]["DashTo"];
                     /** @description «Лента решений»: all — все решения, actions — только с действием (по умолчанию) */
                     feed?: components["parameters"]["DashFeed"];
+                    /** @description Учения (задача 6.11): true — только запросы запусков тестирования устойчивости (`details.test`), false — рабочий трафик без них (по умолчанию). Относится ко всем показателям и «Ленте решений»; исполнение бюджетов считает фактический расход независимо от признака (ADR-0031, дополнение 5) */
+                    test?: components["parameters"]["DashTest"];
                 };
                 header?: never;
                 path?: never;
@@ -6106,6 +6109,8 @@ export interface paths {
                     to?: components["parameters"]["DashTo"];
                     /** @description «Лента решений»: all — все решения, actions — только с действием (по умолчанию) */
                     feed?: components["parameters"]["DashFeed"];
+                    /** @description Учения (задача 6.11): true — только запросы запусков тестирования устойчивости (`details.test`), false — рабочий трафик без них (по умолчанию). Относится ко всем показателям и «Ленте решений»; исполнение бюджетов считает фактический расход независимо от признака (ADR-0031, дополнение 5) */
+                    test?: components["parameters"]["DashTest"];
                 };
                 header?: never;
                 path?: never;
@@ -6164,6 +6169,8 @@ export interface paths {
                     to?: components["parameters"]["DashTo"];
                     /** @description «Лента решений»: all — все решения, actions — только с действием (по умолчанию) */
                     feed?: components["parameters"]["DashFeed"];
+                    /** @description Учения (задача 6.11): true — только запросы запусков тестирования устойчивости (`details.test`), false — рабочий трафик без них (по умолчанию). Относится ко всем показателям и «Ленте решений»; исполнение бюджетов считает фактический расход независимо от признака (ADR-0031, дополнение 5) */
+                    test?: components["parameters"]["DashTest"];
                 };
                 header?: never;
                 path?: never;
@@ -6225,6 +6232,8 @@ export interface paths {
                     to?: components["parameters"]["DashTo"];
                     /** @description «Лента решений»: all — все решения, actions — только с действием (по умолчанию) */
                     feed?: components["parameters"]["DashFeed"];
+                    /** @description Учения (задача 6.11): true — только запросы запусков тестирования устойчивости (`details.test`), false — рабочий трафик без них (по умолчанию). Относится ко всем показателям и «Ленте решений»; исполнение бюджетов считает фактический расход независимо от признака (ADR-0031, дополнение 5) */
+                    test?: components["parameters"]["DashTest"];
                 };
                 header?: never;
                 path?: never;
@@ -6283,6 +6292,8 @@ export interface paths {
                     to?: components["parameters"]["DashTo"];
                     /** @description «Лента решений»: all — все решения, actions — только с действием (по умолчанию) */
                     feed?: components["parameters"]["DashFeed"];
+                    /** @description Учения (задача 6.11): true — только запросы запусков тестирования устойчивости (`details.test`), false — рабочий трафик без них (по умолчанию). Относится ко всем показателям и «Ленте решений»; исполнение бюджетов считает фактический расход независимо от признака (ADR-0031, дополнение 5) */
+                    test?: components["parameters"]["DashTest"];
                 };
                 header?: never;
                 path: {
@@ -6348,6 +6359,8 @@ export interface paths {
                     to?: components["parameters"]["DashTo"];
                     /** @description «Лента решений»: all — все решения, actions — только с действием (по умолчанию) */
                     feed?: components["parameters"]["DashFeed"];
+                    /** @description Учения (задача 6.11): true — только запросы запусков тестирования устойчивости (`details.test`), false — рабочий трафик без них (по умолчанию). Относится ко всем показателям и «Ленте решений»; исполнение бюджетов считает фактический расход независимо от признака (ADR-0031, дополнение 5) */
+                    test?: components["parameters"]["DashTest"];
                 };
                 header?: never;
                 path?: never;
@@ -12424,7 +12437,8 @@ export interface paths {
          *     которые удались, и все сценарии. `format`: `html` (по умолчанию), `csv` (UTF-8 с BOM, защита от формул,
          *     `delimiter`), `xlsx`. Промптов атак в отчёте нет. `examples=true` добавляет выдержки ответов цели `endpoint`
          *     в режиме `masked` для удавшихся атак (ПДн и секреты заменены категорией, до 1 КиБ) и требует права
-         *     `events.content.read` (только человек в сессии; токену его выдать нельзя) — без права 403; у цели в режиме
+         *     `events.content.read` с полной областью (только человек в сессии; токену его выдать нельзя; область `own`
+         *     не подходит — у цели нет владельца-приложения) — иначе 403 с записью `access.denied`; у цели в режиме
          *     `none` и у цели `gateway` выдержек нет (пример цели `gateway` — событие шлюза по `event_ids`). Каждая
          *     выгрузка пишет `data.export` (вид `redteam`, признак `examples`) до выдачи данных; без записи отчёт не
          *     выдаётся (503). Одновременно — одна выгрузка на пользователя, сверх предела 429.
@@ -12435,7 +12449,7 @@ export interface paths {
                     format?: "html" | "csv" | "xlsx";
                     /** @description Разделитель полей CSV; только с `format=csv`, по умолчанию `semicolon` («;») */
                     delimiter?: "semicolon" | "comma";
-                    /** @description Включить выдержки ответов (нужно право `events.content.read`) */
+                    /** @description Включить выдержки ответов (нужно право `events.content.read` на все объекты) */
                     examples?: boolean;
                 };
                 header?: never;
@@ -14049,6 +14063,8 @@ export interface components {
             timezone: string;
             /** @description Досчёт прошлых периодов закончен: цифры полные */
             aggregates_ready: boolean;
+            /** @description Цифры только по учениям (запускам тестирования устойчивости); false — рабочий трафик без них */
+            test: boolean;
         };
         DashTotals: {
             /** Format: int64 */
@@ -17593,6 +17609,8 @@ export interface components {
         DashTo: string;
         /** @description «Лента решений»: all — все решения, actions — только с действием (по умолчанию) */
         DashFeed: "all" | "actions";
+        /** @description Учения (задача 6.11): true — только запросы запусков тестирования устойчивости (`details.test`), false — рабочий трафик без них (по умолчанию). Относится ко всем показателям и «Ленте решений»; исполнение бюджетов считает фактический расход независимо от признака (ADR-0031, дополнение 5) */
+        DashTest: "true" | "false";
         /** @description Фильтр событий (язык — в описании GET /api/v1/events), до 2048 байт */
         EventFilter: string;
         /** @description Ключ повторяемости создающего запроса, 1–64 символа `[A-Za-z0-9._-]` */

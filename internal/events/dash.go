@@ -82,7 +82,7 @@ func dashEv(scope, unit string) string {
 		COALESCE(e.app, '') AS app, COALESCE(e.provider, '') AS provider,
 		CASE WHEN e.rule = 'model_not_allowed' THEN '' ELSE COALESCE(e.model, '') END AS model,
 		COALESCE(e.action, '') AS action, COALESCE(e.policy_mode, '') AS mode, COALESCE(e.user_alias, '') AS user_alias,
-		e.non_text_unchecked, e.details,
+		e.non_text_unchecked, e.details, ` + dashTestExpr + ` AS test,
 		jsonb_array_length(CASE WHEN jsonb_typeof(e.details->'findings') = 'array' THEN e.details->'findings' ELSE '[]'::jsonb END) > 0 AS has_f,
 		` + num("e.details->'tokens'->>'prompt'", "1e12") + `::bigint AS tp,
 		` + num("e.details->'tokens'->>'completion'", "1e12") + `::bigint AS tc,
@@ -103,24 +103,29 @@ ev AS (
 )`
 }
 
+// dashTestExpr — признак события запуска тестирования устойчивости
+// (учения, ADR-0031): такие события лежат в агрегатах отдельными строками
+// (test = true), дашборды по умолчанию их не показывают (задача 6.11).
+const dashTestExpr = "COALESCE((e.details->>'test')::boolean, false)"
+
 // Запросы выборки по группам таблиц: колонки совпадают с таблицами dash_*,
 // поэтому чтение из events и из агрегатов использует одни и те же запросы.
 const (
-	dashReqSel = `SELECT org_id, bucket, app, provider, model, action, mode, count(*) AS requests,
+	dashReqSel = `SELECT org_id, bucket, app, provider, model, action, mode, test, count(*) AS requests,
 		count(*) FILTER (WHERE has_f) AS with_findings, count(*) FILTER (WHERE non_text_unchecked) AS non_text_unchecked,
 		LEAST(sum(tp), ` + dashMax + `)::bigint AS tokens_prompt, LEAST(sum(tc), ` + dashMax + `)::bigint AS tokens_completion,
 		LEAST(sum(cost), ` + dashMax + `)::bigint AS cost, count(*) FILTER (WHERE unpriced) AS unpriced_requests
-		FROM ev GROUP BY org_id, bucket, app, provider, model, action, mode`
+		FROM ev GROUP BY org_id, bucket, app, provider, model, action, mode, test`
 	dashFindSel = `SELECT ev.org_id, ev.bucket, ev.app, COALESCE(f->>'detector', '') AS detector,
-		COALESCE(f->>'category', '') AS category, COALESCE(f->>'threat', '') AS threat, ev.action, count(*) AS findings
+		COALESCE(f->>'category', '') AS category, COALESCE(f->>'threat', '') AS threat, ev.action, ev.test, count(*) AS findings
 		FROM ev CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(ev.details->'findings') = 'array'
 			THEN ev.details->'findings' ELSE '[]'::jsonb END) AS f
-		GROUP BY ev.org_id, ev.bucket, ev.app, detector, category, threat, ev.action`
-	dashUserSel = `SELECT org_id, bucket, app, user_alias, count(*) AS requests,
+		GROUP BY ev.org_id, ev.bucket, ev.app, detector, category, threat, ev.action, ev.test`
+	dashUserSel = `SELECT org_id, bucket, app, user_alias, test, count(*) AS requests,
 		LEAST(sum(tp), ` + dashMax + `)::bigint AS tokens_prompt, LEAST(sum(tc), ` + dashMax + `)::bigint AS tokens_completion,
 		LEAST(sum(cost), ` + dashMax + `)::bigint AS cost
-		FROM ev WHERE user_alias <> '' GROUP BY org_id, bucket, app, user_alias`
-	dashLatSel = `SELECT org_id, bucket, app, le, count(*) AS n FROM ev WHERE le IS NOT NULL GROUP BY org_id, bucket, app, le`
+		FROM ev WHERE user_alias <> '' GROUP BY org_id, bucket, app, user_alias, test`
+	dashLatSel = `SELECT org_id, bucket, app, le, test, count(*) AS n FROM ev WHERE le IS NOT NULL GROUP BY org_id, bucket, app, le, test`
 )
 
 // dashAdd — сложение счётчиков при конфликте ключа (прирост хука).
@@ -150,15 +155,15 @@ func dashWrites(additive bool) []string {
 		return q
 	}
 	return []string{
-		ins("dash_req_hour", "org_id, bucket, app, provider, model, action, mode",
+		ins("dash_req_hour", "org_id, bucket, app, provider, model, action, mode, test",
 			"requests, with_findings, non_text_unchecked, tokens_prompt, tokens_completion, cost, unpriced_requests", dashReqSel,
 			[]string{"requests", "with_findings", "non_text_unchecked", "unpriced_requests"},
 			[]string{"tokens_prompt", "tokens_completion", "cost"}),
-		ins("dash_find_hour", "org_id, bucket, app, detector, category, threat, action", "findings", dashFindSel,
+		ins("dash_find_hour", "org_id, bucket, app, detector, category, threat, action, test", "findings", dashFindSel,
 			[]string{"findings"}, nil),
-		ins("dash_user_hour", "org_id, bucket, app, user_alias", "requests, tokens_prompt, tokens_completion, cost", dashUserSel,
+		ins("dash_user_hour", "org_id, bucket, app, user_alias, test", "requests, tokens_prompt, tokens_completion, cost", dashUserSel,
 			[]string{"requests"}, []string{"tokens_prompt", "tokens_completion", "cost"}),
-		ins("dash_latency_hour", "org_id, bucket, app, le", "n", dashLatSel, []string{"n"}, nil),
+		ins("dash_latency_hour", "org_id, bucket, app, le, test", "n", dashLatSel, []string{"n"}, nil),
 	}
 }
 

@@ -3400,6 +3400,7 @@ paths:
         - $ref: '#/components/parameters/DashFrom'
         - $ref: '#/components/parameters/DashTo'
         - $ref: '#/components/parameters/DashFeed'
+        - $ref: '#/components/parameters/DashTest'
       responses:
         '200':
           description: Снимок дашборда
@@ -3429,6 +3430,7 @@ paths:
         - $ref: '#/components/parameters/DashFrom'
         - $ref: '#/components/parameters/DashTo'
         - $ref: '#/components/parameters/DashFeed'
+        - $ref: '#/components/parameters/DashTest'
       responses:
         '200':
           description: Снимок дашборда
@@ -3457,6 +3459,7 @@ paths:
         - $ref: '#/components/parameters/DashFrom'
         - $ref: '#/components/parameters/DashTo'
         - $ref: '#/components/parameters/DashFeed'
+        - $ref: '#/components/parameters/DashTest'
       responses:
         '200':
           description: Снимок дашборда
@@ -3488,6 +3491,7 @@ paths:
         - $ref: '#/components/parameters/DashFrom'
         - $ref: '#/components/parameters/DashTo'
         - $ref: '#/components/parameters/DashFeed'
+        - $ref: '#/components/parameters/DashTest'
       responses:
         '200':
           description: Снимок дашборда
@@ -3517,6 +3521,7 @@ paths:
         - $ref: '#/components/parameters/DashFrom'
         - $ref: '#/components/parameters/DashTo'
         - $ref: '#/components/parameters/DashFeed'
+        - $ref: '#/components/parameters/DashTest'
       responses:
         '200':
           description: Снимок дашборда
@@ -3554,6 +3559,7 @@ paths:
         - $ref: '#/components/parameters/DashFrom'
         - $ref: '#/components/parameters/DashTo'
         - $ref: '#/components/parameters/DashFeed'
+        - $ref: '#/components/parameters/DashTest'
       responses:
         '200':
           description: Поток событий SSE
@@ -7463,6 +7469,11 @@ components:
       in: query
       description: '«Лента решений»: all — все решения, actions — только с действием (по умолчанию)'
       schema: { type: string, enum: [all, actions] }
+    DashTest:
+      name: test
+      in: query
+      description: 'Учения (задача 6.11): true — только запросы запусков тестирования устойчивости (`details.test`), false — рабочий трафик без них (по умолчанию). Относится ко всем показателям и «Ленте решений»; исполнение бюджетов считает фактический расход независимо от признака (ADR-0031, дополнение 5)'
+      schema: { type: string, enum: ['true', 'false'] }
     EventFilter:
       name: filter
       in: query
@@ -8814,7 +8825,7 @@ components:
         exhausted: { type: boolean, description: 'Расход достиг бюджета (≥ 100 %)' }
     DashPeriodInfo:
       type: object
-      required: [name, from, to, unit, timezone, aggregates_ready]
+      required: [name, from, to, unit, timezone, aggregates_ready, test]
       properties:
         name: { type: string, description: 'Именованный период или custom' }
         from: { type: string, format: date-time, description: 'Начало; для часовых данных округлено до часа вниз' }
@@ -8822,6 +8833,7 @@ components:
         unit: { type: string, enum: [minute, hour, day], description: 'Шаг рядов' }
         timezone: { type: string, description: 'Часовой пояс установки' }
         aggregates_ready: { type: boolean, description: 'Досчёт прошлых периодов закончен: цифры полные' }
+        test: { type: boolean, description: 'Цифры только по учениям (запускам тестирования устойчивости); false — рабочий трафик без них' }
     DashTotals:
       type: object
       required: [requests, with_findings, non_text_unchecked, blocked, would_block, masked, tokens_prompt, tokens_completion, cost, unpriced_requests]

@@ -49,11 +49,13 @@ export const actionTitle = new Map<string, string>([
 export const weekdays = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"];
 
 // Ссылка на экран «События» с фильтром: период экрана событий ближайший из доступных.
-export function eventsUrl(period: string, conds: Record<string, string>, raw = ""): string {
+export function eventsUrl(period: string, conds: Record<string, string>, raw = "", test = false): string {
   const r = period === "30d" || period === "7d" || period === "24h" ? period : "1h";
   const f = [
     ...Object.entries(conds).map(([k, v]) => `${k} = "${v.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`),
     ...(raw ? [raw] : []),
+    // Переход с дашборда — к тем же событиям: учения или рабочий трафик без них (задача 6.11).
+    test ? "test = true" : "test = false",
   ].join(" and ");
   const q = new URLSearchParams({ r });
   if (f) q.set("f", f);
