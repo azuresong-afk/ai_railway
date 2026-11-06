@@ -103,12 +103,15 @@ func (f *fakeDash) UsageSeries(_ context.Context, q events.DashQuery) ([]events.
 	return []events.DashUsagePoint{{Bucket: q.From, Requests: 7, Tokens: 100, Cost: 1_234_000}}, nil
 }
 
-func (f *fakeDash) Feed(_ context.Context, _ time.Time, app string, all bool, _ int) ([]events.DashFeedItem, error) {
+func (f *fakeDash) Feed(_ context.Context, _ time.Time, app string, all, test bool, _ int) ([]events.DashFeedItem, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.apps = append(f.apps, "feed:"+app)
 	if all {
 		f.apps = append(f.apps, "feed-all")
+	}
+	if test {
+		f.apps = append(f.apps, "feed-test")
 	}
 	return []events.DashFeedItem{{ID: "01900000-0000-7000-8000-000000000001", Time: time.Now().UTC(), App: app, Action: "block", Threats: []string{"DM-01"}}}, nil
 }
@@ -228,6 +231,63 @@ func TestDashboardPeriods(t *testing.T) {
 	if !strings.Contains(got, "feed-all") {
 		t.Fatalf("лента не получила feed=all: %s", got)
 	}
+}
+
+// Фильтр «учения» (задача 6.11): по умолчанию дашборды читают трафик без
+// событий тестирования устойчивости, test=true — только их; признак
+// доходит до всех чтений и ленты, входит в ключ снимка и в ответ.
+func TestDashboardTestFilter(t *testing.T) {
+	e := newAppsEnv(t)
+	an := e.mustLogin(t, "analyst")
+	read := func(q string) OverviewView {
+		t.Helper()
+		w := e.call(an, "GET", "/api/v1/dashboards/overview"+q, "", false)
+		var v OverviewView
+		if w.Code != http.StatusOK {
+			t.Fatalf("%q: %d %s", q, w.Code, w.Body)
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &v); err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	if v := read("?period=24h&feed=all"); v.Period.Test || e.dash.lastQuery().Test {
+		t.Fatalf("по умолчанию учения не показываются: %+v %+v", v.Period, e.dash.lastQuery())
+	}
+	if v := read("?period=24h&feed=all&test=false"); v.Period.Test || e.dash.lastQuery().Test {
+		t.Fatalf("test=false: %+v", v.Period)
+	}
+	e.dash.mu.Lock()
+	e.dash.apps, e.dash.reads = nil, 0
+	e.dash.mu.Unlock()
+	// Снимок без учений лежит в кэше: test=true считается заново.
+	if v := read("?period=24h&feed=all&test=true"); !v.Period.Test || !e.dash.lastQuery().Test {
+		t.Fatalf("test=true: %+v %+v", v.Period, e.dash.lastQuery())
+	}
+	e.dash.mu.Lock()
+	got, reads := strings.Join(e.dash.apps, ","), e.dash.reads
+	e.dash.mu.Unlock()
+	if reads == 0 || !strings.Contains(got, "feed-test") {
+		t.Fatalf("учения не дошли до чтения и ленты: %d %s", reads, got)
+	}
+	w := e.call(an, "GET", "/api/v1/dashboards/consumption?period=7d&test=true", "", false)
+	if w.Code != http.StatusOK || !e.dash.lastQuery().Test {
+		t.Fatalf("потребление, учения (и прогноз): %d %+v", w.Code, e.dash.lastQuery())
+	}
+	for _, q := range []string{"?test=1", "?test=yes", "?test=true&test=false", "?test="} {
+		if q == "?test=" {
+			// Пустое значение — как отсутствие параметра.
+			if v := read(q); v.Period.Test {
+				t.Fatal("пустой test включил учения")
+			}
+			continue
+		}
+		mustProblem(t, e.call(an, "GET", "/api/v1/dashboards/overview"+q, "", false), 400, CodeInvalidRequest)
+	}
+	// Поток принимает тот же параметр; без права — отказ, как у дашбордов.
+	mustProblem(t, e.call(an, "GET", "/api/v1/dashboards/stream?dashboard=overview&test=maybe", "", false), 400, CodeInvalidRequest)
+	keymgr := e.mustLogin(t, "keymgr")
+	mustProblem(t, e.call(keymgr, "GET", "/api/v1/dashboards/overview?test=true", "", false), 403, CodeForbidden)
 }
 
 // Прогноз до конца месяца: линейный по прошедшей части; меньше суток — без прогноза.

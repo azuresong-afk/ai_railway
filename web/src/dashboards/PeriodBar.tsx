@@ -16,19 +16,24 @@ const liveText = new Map<LiveState, string>([
   ["lost", "Связь потеряна: поток отклонён или оборван. Данные обновятся при смене периода или перезагрузке экрана."],
 ]);
 
-// Панель периода дашбордов (ТЗ 5.8): именованные периоды, произвольный интервал и режим реального времени.
+// Панель периода дашбордов (ТЗ 5.8): именованные периоды, произвольный интервал, режим реального времени
+// и фильтр «учения» — только запросы запусков тестирования устойчивости (задача 6.11).
 export function PeriodBar({
   period,
   onPeriod,
   live,
   onLive,
   liveState,
+  test,
+  onTest,
 }: {
   period: Period;
   onPeriod: (p: Period) => void;
   live: boolean;
   onLive: (v: boolean) => void;
   liveState: LiveState;
+  test: boolean;
+  onTest: (v: boolean) => void;
 }) {
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
@@ -74,6 +79,7 @@ export function PeriodBar({
           </>
         )}
         <Check checked={live} onCheckedChange={onLive} label="Обновлять в реальном времени" />
+        <Check checked={test} onCheckedChange={onTest} label="Только учения" />
       </div>
       {live && liveText.get(liveState) && <Banner kind={liveState === "lost" ? "warning" : "info"}>{liveText.get(liveState)!}</Banner>}
     </div>

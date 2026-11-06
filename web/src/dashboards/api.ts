@@ -31,7 +31,7 @@ export const periodTitles: [Period["name"], string][] = [
   ["custom", "Произвольный"],
 ];
 
-export function periodParams(p: Period, feedAll = false): URLSearchParams {
+export function periodParams(p: Period, feedAll = false, test = false): URLSearchParams {
   const q = new URLSearchParams();
   if (p.name === "custom") {
     if (p.from) q.set("from", p.from);
@@ -40,6 +40,8 @@ export function periodParams(p: Period, feedAll = false): URLSearchParams {
     q.set("period", p.name);
   }
   if (feedAll) q.set("feed", "all");
+  // Учения (задача 6.11): только события запусков тестирования устойчивости; без признака — рабочий трафик без них.
+  if (test) q.set("test", "true");
   return q;
 }
 
@@ -54,9 +56,9 @@ export type LiveState = "off" | "connecting" | "on" | "lost";
 
 // Дашборд: обычный запрос и, в режиме реального времени, поток SSE (ТЗ 5.8), который подменяет данные запроса.
 // Поток закрывается при выходе с экрана; при обрыве консоль показывает «связь потеряна» и обновляется по запросу.
-export function useDashboard<T>(name: DashName, appId: string | undefined, period: Period, opts: { live: boolean; feedAll?: boolean }) {
+export function useDashboard<T>(name: DashName, appId: string | undefined, period: Period, opts: { live: boolean; feedAll?: boolean; test?: boolean }) {
   const qc = useQueryClient();
-  const q = periodParams(period, opts.feedAll);
+  const q = periodParams(period, opts.feedAll, opts.test);
   const key = ["dash", name, appId ?? "", q.toString()];
   const enabled = name !== "app" || Boolean(appId);
   const query = useQuery({ queryKey: key, queryFn: ({ signal }) => request<T>("GET", path(name, appId, q), undefined, signal), enabled, staleTime: 5_000 });

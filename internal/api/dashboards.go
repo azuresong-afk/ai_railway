@@ -95,7 +95,7 @@ type DashboardReader interface {
 	Heatmap(ctx context.Context, q events.DashQuery) ([]events.DashCell, error)
 	RequestsBy(ctx context.Context, q events.DashQuery, dim string, limit int) ([]events.DashRequestRow, error)
 	UsageSeries(ctx context.Context, q events.DashQuery) ([]events.DashUsagePoint, error)
-	Feed(ctx context.Context, to time.Time, app string, all bool, limit int) ([]events.DashFeedItem, error)
+	Feed(ctx context.Context, to time.Time, app string, all, test bool, limit int) ([]events.DashFeedItem, error)
 	Ready(ctx context.Context) (bool, error)
 }
 
@@ -133,6 +133,9 @@ type dashPeriod struct {
 	Timezone string `json:"timezone"`
 	// AggregatesReady — досчёт прошлых периодов закончен: цифры полные.
 	AggregatesReady bool `json:"aggregates_ready"`
+	// Test — цифры только по учениям (запускам тестирования устойчивости);
+	// false — рабочий трафик без учений.
+	Test bool `json:"test"`
 }
 
 type dashHolder struct {
@@ -283,16 +286,19 @@ type dashParams struct {
 	// rolling — конец периода «сейчас»: каждый снимок считается от текущего момента.
 	rolling bool
 	feedAll bool
+	// test — фильтр «учения»: только события запусков тестирования
+	// устойчивости; по умолчанию дашборды показывают трафик без них (6.11).
+	test bool
 }
 
-var dashKeys = map[string]bool{"period": true, "from": true, "to": true, "feed": true}
+var dashKeys = map[string]bool{"period": true, "from": true, "to": true, "feed": true, "test": true}
 
-// parseDashParams разбирает period или from/to (RFC 3339) и feed.
+// parseDashParams разбирает period или from/to (RFC 3339), feed и test.
 func parseDashParams(q url.Values, now time.Time, extra ...string) (dashParams, *Problem) {
 	var out dashParams
 	for k, vs := range q {
 		if !dashKeys[k] && !slices.Contains(extra, k) {
-			return out, Invalid("Неизвестный параметр запроса.", FieldError{k, "Допустимы period, from, to, feed."})
+			return out, Invalid("Неизвестный параметр запроса.", FieldError{k, "Допустимы period, from, to, feed, test."})
 		}
 		if len(vs) != 1 {
 			return out, Invalid("Параметры заданы неверно.", FieldError{k, "Параметр указывается один раз."})
@@ -341,10 +347,13 @@ func parseDashParams(q url.Values, now time.Time, extra ...string) (dashParams, 
 	if f := q.Get("feed"); f != "" && f != "all" && f != "actions" {
 		bad = append(bad, FieldError{"feed", "Одно из значений: all, actions."})
 	}
+	if t := q.Get("test"); t != "" && t != "true" && t != "false" {
+		bad = append(bad, FieldError{"test", "Одно из значений: true, false."})
+	}
 	if len(bad) > 0 {
 		return out, Invalid("Период задан неверно.", bad...)
 	}
-	return dashParams{name: name, from: from, to: to, rolling: rolling, feedAll: q.Get("feed") == "all"}, nil
+	return dashParams{name: name, from: from, to: to, rolling: rolling, feedAll: q.Get("feed") == "all", test: q.Get("test") == "true"}, nil
 }
 
 // dashScope проверяет права на уровне объектов и возвращает приложение
@@ -528,7 +537,7 @@ func (d Deps) dashSnapshot(ctx context.Context, name string, p dashParams, app D
 			period = fmt.Sprintf("custom-%d-%d", p.from.Unix()/60, p.to.Unix()/60)
 		}
 	}
-	key := fmt.Sprintf("%s|%s|%s|%v|%v|%v", name, app.Slug, period, p.feedAll, withBudgets, withFeed)
+	key := fmt.Sprintf("%s|%s|%s|%v|%v|%v|%v", name, app.Slug, period, p.feedAll, withBudgets, withFeed, p.test)
 	now := time.Now()
 	c := d.DashCache
 	if c == nil {
@@ -576,7 +585,7 @@ func (d Deps) dashCompute(ctx context.Context, name string, p dashParams, app Da
 	if _, err := time.LoadLocation(cfg.Timezone); err != nil {
 		return dashEntry{}, fmt.Errorf("часовой пояс установки: %w", err)
 	}
-	q := events.DashQuery{From: p.from, To: p.to, App: app.Slug, TZ: cfg.Timezone}
+	q := events.DashQuery{From: p.from, To: p.to, App: app.Slug, TZ: cfg.Timezone, Test: p.test}
 	// Скользящий период считается от текущего момента каждого снимка.
 	if p.rolling {
 		q.To = now.UTC()
@@ -590,7 +599,7 @@ func (d Deps) dashCompute(ctx context.Context, name string, p dashParams, app Da
 	}
 	norm := q.Normalize()
 	meta := dashPeriod{Name: p.name, From: norm.From, To: norm.To, Unit: norm.Unit(),
-		Timezone: cfg.Timezone, AggregatesReady: ready}
+		Timezone: cfg.Timezone, AggregatesReady: ready, Test: p.test}
 	var view dashView
 	switch name {
 	case "overview":
@@ -654,7 +663,7 @@ func (d Deps) buildOverview(ctx context.Context, q events.DashQuery, withFeed, f
 		return nil, err
 	}
 	if v.FeedHidden = !withFeed; withFeed {
-		if v.Feed, err = d.Dashboards.Feed(ctx, q.To, "", feedAll, 30); err != nil {
+		if v.Feed, err = d.Dashboards.Feed(ctx, q.To, "", feedAll, q.Test, 30); err != nil {
 			return nil, err
 		}
 	}
@@ -764,7 +773,7 @@ func (d Deps) buildApp(ctx context.Context, q events.DashQuery, app DashAppRef, 
 		return nil, err
 	}
 	if v.FeedHidden = !withFeed; withFeed {
-		if v.Feed, err = d.Dashboards.Feed(ctx, q.To, app.Slug, feedAll, 30); err != nil {
+		if v.Feed, err = d.Dashboards.Feed(ctx, q.To, app.Slug, feedAll, q.Test, 30); err != nil {
 			return nil, err
 		}
 	}
@@ -831,7 +840,7 @@ func (d Deps) buildConsumption(ctx context.Context, q events.DashQuery, withBudg
 		now = time.Now().In(loc)
 	}
 	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, loc)
-	mq := events.DashQuery{From: monthStart.UTC(), To: now.UTC(), App: q.App, TZ: q.TZ}
+	mq := events.DashQuery{From: monthStart.UTC(), To: now.UTC(), App: q.App, TZ: q.TZ, Test: q.Test}
 	var spent int64
 	if mq.From.Before(mq.To) {
 		mt, err := d.Dashboards.Totals(ctx, mq)

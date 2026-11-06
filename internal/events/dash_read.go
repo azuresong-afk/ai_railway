@@ -47,6 +47,18 @@ type DashQuery struct {
 	App string
 	// TZ — часовой пояс установки: границы суток и дни недели.
 	TZ string
+	// Test — только события запусков тестирования устойчивости (фильтр
+	// «учения»); false — только рабочий трафик без учений (задача 6.11).
+	Test bool
+}
+
+// testCond — отбор строк по признаку учений: значение задаёт код, а не
+// клиент, поэтому подставляется в текст запроса.
+func (q DashQuery) testCond(col string) string {
+	if q.Test {
+		return col
+	}
+	return "NOT " + col
 }
 
 // Raw — период читается из events.
@@ -89,11 +101,12 @@ func (q DashQuery) validate() error {
 // events, $5 приложение (пусто — все).
 func (q DashQuery) ctes() string {
 	if q.Raw() {
-		return "WITH " + dashEv(dashScopeRange+" AND ($5::text = '' OR e.app = $5)", "$4::text") +
+		return "WITH " + dashEv(dashScopeRange+" AND ($5::text = '' OR e.app = $5) AND "+q.testCond(dashTestExpr), "$4::text") +
 			", req AS (" + dashReqSel + "), fnd AS (" + dashFindSel + "), usr AS (" + dashUserSel + "), lat AS (" + dashLatSel + ") "
 	}
 	t := func(name string) string {
-		return "SELECT * FROM " + name + " WHERE org_id = $1 AND bucket >= $2 AND bucket < $3 AND $4::text <> '' AND ($5::text = '' OR app = $5)"
+		return "SELECT * FROM " + name + " WHERE org_id = $1 AND bucket >= $2 AND bucket < $3 AND $4::text <> '' AND ($5::text = '' OR app = $5) AND " +
+			q.testCond("test")
 	}
 	return "WITH req AS (" + t("dash_req_hour") + "), fnd AS (" + t("dash_find_hour") + "), usr AS (" + t("dash_user_hour") +
 		"), lat AS (" + t("dash_latency_hour") + ") "
@@ -416,16 +429,17 @@ type DashFeedItem struct {
 }
 
 // Feed — последние решения до момента to (не старше суток), новые первыми.
-// all=false оставляет только решения с действием (не allow и не log).
-func (d *DashStore) Feed(ctx context.Context, to time.Time, app string, all bool, limit int) ([]DashFeedItem, error) {
+// all=false оставляет только решения с действием (не allow и не log);
+// test — только события учений, иначе только рабочий трафик (задача 6.11).
+func (d *DashStore) Feed(ctx context.Context, to time.Time, app string, all, test bool, limit int) ([]DashFeedItem, error) {
 	limit = min(max(limit, 1), DashFeedMax)
 	ctx, cancel := pgCtx(ctx)
 	defer cancel()
 	rows, err := d.rdb.Query(ctx, `SELECT id::text, ts, COALESCE(app, ''), COALESCE(model, ''), COALESCE(action, ''),
 		COALESCE(policy_mode, ''), COALESCE(severity, ''), COALESCE(rule, ''), threats FROM events
 		WHERE org_id = $1 AND ts >= $2 AND ts < $3 AND type IN ('gateway_request', 'check') AND ($4::text = '' OR app = $4)
-			AND ($5::boolean OR action NOT IN ('allow', 'log'))
-		ORDER BY ts DESC, id DESC LIMIT $6`, d.orgID, to.UTC().Add(-24*time.Hour), to.UTC(), app, all, limit)
+			AND ($5::boolean OR action NOT IN ('allow', 'log')) AND COALESCE((details->>'test')::boolean, false) = $7
+		ORDER BY ts DESC, id DESC LIMIT $6`, d.orgID, to.UTC().Add(-24*time.Hour), to.UTC(), app, all, limit, test)
 	if err != nil {
 		return nil, dbError("лента решений", err)
 	}

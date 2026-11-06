@@ -437,9 +437,11 @@ func (s *PGStore) Usage(ctx context.Context, orgID string, f UsageFilter) ([]Usa
 
 // seenSQL — тройки из почасовых агрегатов дашбордов (миграция 0037) за
 // окно: только SELECT, без содержимого. Строки Check API без провайдера и
-// модели и значения, которые не поместятся в реестр, пропускаются.
+// модели и значения, которые не поместятся в реестр, пропускаются. Строки
+// учений (запусков тестирования устойчивости, test) записей не создают:
+// цель тестирования — не использование ИИ сотрудниками (задача 6.11).
 const seenSQL = `SELECT app, provider, model, min(bucket), max(bucket) FROM dash_req_hour
-	WHERE org_id = $1 AND ($2::timestamptz IS NULL OR bucket >= $2)
+	WHERE org_id = $1 AND ($2::timestamptz IS NULL OR bucket >= $2) AND NOT test
 		AND provider ~ '^[a-z0-9][a-z0-9-]{0,62}$' AND char_length(app) BETWEEN 1 AND 256 AND char_length(model) BETWEEN 1 AND 256
 	GROUP BY 1, 2, 3 ORDER BY 4, 1, 2, 3 LIMIT $3`
 

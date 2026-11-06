@@ -25,7 +25,7 @@ const status = (o: Record<string, unknown> = {}) => ({
   spent: "850.00", priced_tokens: 1, unpriced_tokens: 0, requests: 5, unpriced_requests: 0, percent: 85, exhausted: false, ...o,
 });
 const consumption = {
-  period: { name: "30d", from: "2026-09-22T00:00:00Z", to: "2026-10-22T00:00:00Z", unit: "day", timezone: "Europe/Moscow", aggregates_ready: true },
+  period: { name: "30d", from: "2026-09-22T00:00:00Z", to: "2026-10-22T00:00:00Z", unit: "day", timezone: "Europe/Moscow", aggregates_ready: true, test: false },
   totals: { requests: 50, with_findings: 2, non_text_unchecked: 0, blocked: 0, would_block: 0, masked: 0, tokens_prompt: 1000, tokens_completion: 2000, cost: "7.0000000", unpriced_requests: 4 },
   series: [{ bucket: "2026-10-21T00:00:00Z", requests: 50, tokens: 3000, cost: "7.0000000" }],
   by_app: [row("bot")],

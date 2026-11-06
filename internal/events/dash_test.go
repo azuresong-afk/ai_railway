@@ -5,6 +5,8 @@ import (
 	"io"
 	"log/slog"
 	"math"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -68,12 +70,13 @@ type dashEvent struct {
 	tokens   [2]int
 	findings []events.Finding
 	latency  map[string]int64
+	test     bool
 }
 
 func (d dashEvent) build() events.Event {
 	ev := events.Event{ID: uuidAt(d.at, d.n), Time: d.at, Type: d.typ, App: d.app, Provider: d.provider, Model: d.model, User: d.user,
 		PolicyMode: d.mode, Storage: events.StorageNone, Findings: d.findings, LatencyMS: d.latency,
-		Decision: &events.Decision{Action: d.action, Applied: []string{d.action}, Severity: "high"}}
+		Decision: &events.Decision{Action: d.action, Applied: []string{d.action}, Severity: "high"}, Test: d.test}
 	if d.tokens != [2]int{} {
 		ev.Tokens = &events.Tokens{Prompt: d.tokens[0], Completion: d.tokens[1]}
 	}
@@ -237,11 +240,11 @@ func TestPGDashboardAggregates(t *testing.T) {
 	if got, err := ds.Totals(ctx, hourly); err != nil || got.Requests != 2 || got.Cost != 0 {
 		t.Fatalf("итоги приложения: %+v %v", got, err)
 	}
-	feed, err := ds.Feed(ctx, day.Add(24*time.Hour), "", false, 10)
+	feed, err := ds.Feed(ctx, day.Add(24*time.Hour), "", false, false, 10)
 	if err != nil || len(feed) != 3 || feed[0].Action != "block" || feed[0].PolicyMode != "monitor" || feed[2].Action != "block" {
 		t.Fatalf("лента решений: %+v %v", feed, err)
 	}
-	if feed, err := ds.Feed(ctx, day.Add(24*time.Hour), "", true, 10); err != nil || len(feed) != 5 {
+	if feed, err := ds.Feed(ctx, day.Add(24*time.Hour), "", true, false, 10); err != nil || len(feed) != 5 {
 		t.Fatalf("лента, все решения: %d %v", len(feed), err)
 	}
 
@@ -313,6 +316,134 @@ func TestPGDashboardAggregates(t *testing.T) {
 	stepAll()
 	if got := dashDump(t, e); got != full {
 		t.Fatalf("досчёт с нуля отличается:\n--- было\n%s\n--- стало\n%s", full, got)
+	}
+}
+
+// Учения (задача 6.11, остаток 5Н31): события запусков тестирования
+// устойчивости лежат в агрегатах дашбордов отдельными строками. Чтение по
+// умолчанию — без них (часовые таблицы, events и лента), фильтр Test —
+// только они; прирост хука равен пересчёту и с признаком; пометка часов
+// миграцией 0079 досчитывает строки, посчитанные до признака.
+func TestPGDashboardSkipsTestEvents(t *testing.T) {
+	e := setupPG(t)
+	ctx := pgCtx(t)
+	if _, err := e.st.EnsurePartitions(ctx); err != nil {
+		t.Fatal(err)
+	}
+	ds, st := dashStoreFor(t, e)
+	if err := ds.Init(ctx); err != nil {
+		t.Fatal(err)
+	}
+	day := time.Now().UTC().Truncate(24*time.Hour).AddDate(0, 0, -1)
+	at := func(h, m int) time.Time { return day.Add(time.Duration(h)*time.Hour + time.Duration(m)*time.Minute) }
+	work := []dashEvent{
+		{at: at(10, 5), n: 1, typ: events.TypeGatewayRequest, app: "crm", provider: "mock", model: "m1", user: "u1", action: "allow", mode: "enforce",
+			tokens: [2]int{10, 5}, latency: map[string]int64{"total": 20}},
+		{at: at(10, 6), n: 2, typ: events.TypeGatewayRequest, app: "crm", provider: "mock", model: "m1", user: "u1", action: "block", mode: "enforce",
+			findings: []events.Finding{finding("pii.snils", "pii", "DM-31")}, latency: map[string]int64{"total": 20}},
+	}
+	var drill []dashEvent
+	for i := range 4 {
+		drill = append(drill, dashEvent{at: at(10, 10+i), n: 10 + i, typ: events.TypeGatewayRequest, app: "crm", provider: "mock", model: "m-drill",
+			user: "redteam", action: "block", mode: "enforce", tokens: [2]int{1000, 1000}, latency: map[string]int64{"total": 4000},
+			findings: []events.Finding{finding("injection.override", "injection", "DM-01")}, test: true})
+	}
+	var batch []events.Event
+	for _, d := range append(append([]dashEvent{}, work...), drill...) {
+		batch = append(batch, d.build())
+	}
+	if _, err := st.Insert(ctx, events.Ingest{GatewayID: testGateway, ReceivedAt: time.Now(), Events: batch}); err != nil {
+		t.Fatal(err)
+	}
+	hookDump := dashDump(t, e)
+	if err := ds.Recompute(ctx, day, day.Add(24*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if got := dashDump(t, e); got != hookDump {
+		t.Fatalf("прирост хука и пересчёт различаются:\n--- хук\n%s\n--- пересчёт\n%s", hookDump, got)
+	}
+	tz := "Europe/Moscow"
+	for _, q := range []events.DashQuery{
+		{From: day, To: day.Add(24 * time.Hour), TZ: tz}, // часовые таблицы
+		{From: at(10, 0), To: at(11, 0), TZ: tz},         // прямо из events
+		{From: day, To: day.Add(24 * time.Hour), TZ: tz, App: "crm"},
+	} {
+		src := "часы"
+		if q.Raw() {
+			src = "events"
+		}
+		got, err := ds.Totals(ctx, q)
+		if err != nil || got.Requests != 2 || got.Blocked != 1 || got.TokensPrompt != 10 {
+			t.Fatalf("%s: учения в итогах по умолчанию: %+v %v", src, got, err)
+		}
+		top, err := ds.TopFindings(ctx, q, events.DimThreat, "", 10)
+		if err != nil || len(top) != 1 || top[0].Key != "DM-31" {
+			t.Fatalf("%s: учения в находках: %+v %v", src, top, err)
+		}
+		if lat, err := ds.Latency(ctx, q); err != nil || lat.Total != 2 || lat.P95 != 25 {
+			t.Fatalf("%s: учения в задержке: %+v %v", src, lat, err)
+		}
+		users, err := ds.RequestsBy(ctx, q, events.DimUser, 10)
+		if err != nil || len(users) != 1 || users[0].Key != "u1" {
+			t.Fatalf("%s: учения в пользователях: %+v %v", src, users, err)
+		}
+		models, err := ds.RequestsBy(ctx, q, events.DimModel, 10)
+		if err != nil || len(models) != 1 || models[0].Key != "m1" {
+			t.Fatalf("%s: учения в моделях: %+v %v", src, models, err)
+		}
+		q.Test = true
+		got, err = ds.Totals(ctx, q)
+		if err != nil || got.Requests != 4 || got.Blocked != 4 || got.TokensPrompt != 4000 {
+			t.Fatalf("%s: фильтр «учения»: %+v %v", src, got, err)
+		}
+		top, err = ds.TopFindings(ctx, q, events.DimThreat, "", 10)
+		if err != nil || len(top) != 1 || top[0] != (events.DashTop{Key: "DM-01", Value: 4}) {
+			t.Fatalf("%s: находки учений: %+v %v", src, top, err)
+		}
+		if lat, err := ds.Latency(ctx, q); err != nil || lat.Total != 4 || lat.P95 != 5000 {
+			t.Fatalf("%s: задержка учений: %+v %v", src, lat, err)
+		}
+	}
+	to := day.Add(24 * time.Hour)
+	if feed, err := ds.Feed(ctx, to, "", true, false, 10); err != nil || len(feed) != 2 {
+		t.Fatalf("лента без учений: %d %v", len(feed), err)
+	}
+	if feed, err := ds.Feed(ctx, to, "", true, true, 10); err != nil || len(feed) != 4 || feed[0].Model != "m-drill" {
+		t.Fatalf("лента учений: %+v %v", feed, err)
+	}
+	var drillRows int
+	if err := e.owner.QueryRow(ctx, "SELECT count(*) FROM dash_req_hour WHERE test AND model = 'm-drill'").Scan(&drillRows); err != nil || drillRows != 1 {
+		t.Fatalf("строка учений в dash_req_hour: %d %v", drillRows, err)
+	}
+
+	// Строки до миграции 0079 смешивали учения с трафиком (test = false):
+	// пометка часов с учениями, как в миграции, и досчёт их разделяют.
+	if _, err := e.owner.Exec(ctx, "UPDATE dash_req_hour SET test = false WHERE test AND NOT EXISTS (SELECT 1 FROM dash_req_hour x WHERE NOT x.test AND x.model = dash_req_hour.model)"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := ds.Totals(ctx, events.DashQuery{From: day, To: to, TZ: tz}); err != nil || got.Requests != 6 {
+		t.Fatalf("подготовка смешанных строк: %+v %v", got, err)
+	}
+	mig, err := os.ReadFile(filepath.Join("..", "..", "migrations", "0079_dash_test_events.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, mark, ok := strings.Cut(string(mig), "INSERT INTO dash_dirty_hours")
+	if !ok {
+		t.Fatal("в миграции 0079 нет пометки часов к досчёту")
+	}
+	if _, err := e.owner.Exec(ctx, "INSERT INTO dash_dirty_hours"+mark); err != nil {
+		t.Fatal(err)
+	}
+	for range 8 {
+		if done, err := ds.BackfillStep(ctx); err != nil {
+			t.Fatal(err)
+		} else if done {
+			break
+		}
+	}
+	if got := dashDump(t, e); got != hookDump {
+		t.Fatalf("досчёт помеченных часов:\n--- ждали\n%s\n--- стало\n%s", hookDump, got)
 	}
 }
 

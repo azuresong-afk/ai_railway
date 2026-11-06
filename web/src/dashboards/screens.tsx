@@ -31,6 +31,9 @@ export function Stat({ title, value, hint }: { title: string; value: string; hin
 export function PeriodNote({ period }: { period: DashPeriodInfo }) {
   return (
     <>
+      {period.test && (
+        <Banner kind="info">Показаны только учения — запросы запусков тестирования устойчивости. Рабочий трафик на этих панелях скрыт.</Banner>
+      )}
       {!period.aggregates_ready && (
         <Banner kind="info">Идёт досчёт показателей за прошлые периоды: цифры за давние сроки могут быть неполными.</Banner>
       )}
@@ -45,12 +48,16 @@ export function PeriodNote({ period }: { period: DashPeriodInfo }) {
 export function useScreen<T>(name: Parameters<typeof useDashboard>[0], appId?: string) {
   const [period, setPeriod] = useState<Period>({ name: "24h" });
   const [live, setLive] = useState(false);
-  const q = useDashboard<T>(name, appId, period, { live });
-  return { period, setPeriod, live, setLive, q };
+  // Учения (задача 6.11): по умолчанию панели без запусков тестирования устойчивости.
+  const [test, setTest] = useState(false);
+  const q = useDashboard<T>(name, appId, period, { live, test });
+  return { period, setPeriod, live, setLive, test, setTest, q };
 }
 
 export function Bar({ s }: { s: ReturnType<typeof useScreen> }) {
-  return <PeriodBar period={s.period} onPeriod={s.setPeriod} live={s.live} onLive={s.setLive} liveState={s.q.live} />;
+  return (
+    <PeriodBar period={s.period} onPeriod={s.setPeriod} live={s.live} onLive={s.setLive} liveState={s.q.live} test={s.test} onTest={s.setTest} />
+  );
 }
 
 // «Лента решений» (ТЗ 6.4): метаданные без содержимого; карточка события открывается по ссылке.
@@ -173,7 +180,7 @@ export function OverviewScreen({ me }: { me: Me }) {
               empty={d.decisions.length === 0}
               onPick={(p) => {
                 const key = [...decisionFilter.keys()].find((k) => p.seriesName === (k === "allowed" ? "Пропущено" : k === "masked" ? "Замаскировано" : k === "blocked" ? "Заблокировано" : "Заблокировало бы"));
-                if (key) nav(eventsUrl(s.period.name, {}, decisionFilter.get(key)!));
+                if (key) nav(eventsUrl(s.period.name, {}, decisionFilter.get(key)!, s.test));
               }}
             />
             <ChartCard
@@ -183,7 +190,7 @@ export function OverviewScreen({ me }: { me: Me }) {
               head={["Детектор", "Срабатываний"]}
               rows={d.top_detectors.map((x) => [x.key, x.value])}
               empty={d.top_detectors.length === 0}
-              onPick={(p) => p.name && nav(eventsUrl(s.period.name, { detector: p.name }))}
+              onPick={(p) => p.name && nav(eventsUrl(s.period.name, { detector: p.name }, "", s.test))}
             />
           </div>
           <Panel className="flex flex-col gap-2">
@@ -205,7 +212,7 @@ export function OverviewScreen({ me }: { me: Me }) {
                   {d.apps.map((a) => (
                     <tr key={a.key}>
                       <Td>
-                        <Link className="text-accent underline" to={eventsUrl(s.period.name, { app: a.key })}>
+                        <Link className="text-accent underline" to={eventsUrl(s.period.name, { app: a.key }, "", s.test)}>
                           {a.key || "не указано"}
                         </Link>
                       </Td>
@@ -259,7 +266,7 @@ export function ThreatsScreen() {
               head={linesRows(d.by_threat, d.period)[0]}
               rows={linesRows(d.by_threat, d.period)[1]}
               empty={d.by_threat.length === 0}
-              onPick={(p) => p.seriesName && nav(eventsUrl(s.period.name, { threat: p.seriesName }))}
+              onPick={(p) => p.seriesName && nav(eventsUrl(s.period.name, { threat: p.seriesName }, "", s.test))}
             />
             <ChartCard
               title="Категории находок"
@@ -276,7 +283,7 @@ export function ThreatsScreen() {
               head={linesRows(d.by_detector, d.period)[0]}
               rows={linesRows(d.by_detector, d.period)[1]}
               empty={d.by_detector.length === 0}
-              onPick={(p) => p.seriesName && nav(eventsUrl(s.period.name, { detector: p.seriesName }))}
+              onPick={(p) => p.seriesName && nav(eventsUrl(s.period.name, { detector: p.seriesName }, "", s.test))}
             />
             <ChartCard
               title="Тепловая карта: день недели и час"
@@ -296,7 +303,7 @@ export function ThreatsScreen() {
               head={["Угроза", "Срабатываний"]}
               rows={d.top_threats.map((x) => [x.key, x.value])}
               empty={d.top_threats.length === 0}
-              onPick={(p) => p.name && nav(eventsUrl(s.period.name, { threat: p.name }))}
+              onPick={(p) => p.name && nav(eventsUrl(s.period.name, { threat: p.name }, "", s.test))}
             />
             <ChartCard
               title="Топ категорий"
@@ -313,7 +320,7 @@ export function ThreatsScreen() {
               head={["Детектор", "Срабатываний"]}
               rows={d.top_detectors.map((x) => [x.key, x.value])}
               empty={d.top_detectors.length === 0}
-              onPick={(p) => p.name && nav(eventsUrl(s.period.name, { detector: p.name }))}
+              onPick={(p) => p.name && nav(eventsUrl(s.period.name, { detector: p.name }, "", s.test))}
             />
           </div>
         </>
@@ -438,7 +445,7 @@ export function AppScreen() {
                   head={["Детектор", "Срабатываний"]}
                   rows={d.top_detectors.map((x) => [x.key, x.value])}
                   empty={d.top_detectors.length === 0}
-                  onPick={(p) => p.name && nav(eventsUrl(s.period.name, { app: d.application.slug, detector: p.name }))}
+                  onPick={(p) => p.name && nav(eventsUrl(s.period.name, { app: d.application.slug, detector: p.name }, "", s.test))}
                 />
               </div>
               <Panel className="flex flex-col gap-2">
