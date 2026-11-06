@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -629,9 +630,11 @@ func (d Deps) deleteRedTeamSchedule(w http.ResponseWriter, r *http.Request) {
 
 // getRedTeamReport выдаёт отчёт по запуску (html, csv, xlsx) и пишет
 // data.export до выдачи данных. Выдержки ответов целей (режим masked) —
-// только по examples=true и с правом events.content.read; без права — 403,
-// а не отчёт без выдержек: человек просил содержимое. Промптов атак в
-// отчёте нет.
+// только по examples=true, с правом events.content.read и с причиной
+// доступа reason (УПД.7; те же пределы, что у содержимого события, задача
+// 6.12, ADR-0031, дополнение 7); без права — 403, а не отчёт без выдержек:
+// человек просил содержимое. Причина пишется в запись data.export.
+// Промптов атак в отчёте нет.
 func (d Deps) getRedTeamReport(w http.ResponseWriter, r *http.Request) {
 	p, ok := PrincipalFrom(r.Context())
 	if !ok || p.Caller == nil {
@@ -641,7 +644,7 @@ func (d Deps) getRedTeamReport(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	for k := range q {
 		switch k {
-		case "format", "delimiter", "examples":
+		case "format", "delimiter", "examples", "reason":
 		default:
 			WriteProblem(w, Invalid("Параметры отчёта заданы неверно.", FieldError{Field: k, Detail: "неизвестный параметр"}))
 			return
@@ -676,6 +679,20 @@ func (d Deps) getRedTeamReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	examples := ex == "true"
+	// Причина — до MaxContentReason символов (не байтов), поэтому не через
+	// one(): предел байтов — по четыре на символ UTF-8.
+	var reason string
+	if vs := q["reason"]; len(vs) > 0 {
+		var okr bool
+		if len(vs) == 1 && len(vs[0]) <= 4*MaxContentReason {
+			reason, okr = cleanReason(vs[0])
+		}
+		if !okr {
+			WriteProblem(w, Invalid("Укажите причину доступа к выдержкам.", FieldError{"reason",
+				fmt.Sprintf("От %d до %d символов, без управляющих символов.", MinContentReason, MaxContentReason)}))
+			return
+		}
+	}
 	// Выдержки — ответы целей: только с полной областью events.content.read,
 	// как содержимое событий (у цели endpoint нет владельца-приложения, по
 	// которому отбирала бы область own). Отказ пишется в журнал аудита, как
@@ -692,6 +709,13 @@ func (d Deps) getRedTeamReport(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		WriteProblem(w, errForbidden())
+		return
+	}
+	// Причина доступа (УПД.7) — после проверки права: субъект без права
+	// получает 403 с записью access.denied, а не подсказку о причине.
+	if examples && reason == "" {
+		WriteProblem(w, Invalid("Укажите причину доступа к выдержкам.", FieldError{"reason",
+			fmt.Sprintf("Для отчёта с выдержками нужна причина: от %d до %d символов.", MinContentReason, MaxContentReason)}))
 		return
 	}
 	subject := exportSubject(p)
@@ -726,6 +750,9 @@ func (d Deps) getRedTeamReport(w http.ResponseWriter, r *http.Request) {
 	defer acancel()
 	details := map[string]any{"report": redteam.KindReport, "run_id": id, "format": format, "delimiter": delimName(delim, format),
 		"rows": doc.Rows(), "examples": examples}
+	if reason != "" {
+		details["reason"] = reason
+	}
 	if err := d.Audit.Record(actx, audit.Entry{Actor: eventsActor(p), SourceIP: clientAddr(r), Action: "data.export",
 		Object: audit.Object{Type: "report", ID: redteam.KindReport}, Result: audit.ResultSuccess, Details: details}); err != nil {
 		d.Logger.Error("выгрузка отчёта не записана в журнал аудита: выгрузка отменена", "class", "redteam", "error", err)

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -430,15 +431,42 @@ func TestRedTeamReportAPI(t *testing.T) {
 		d["permission"] != auth.PermEventsContentRead || d["path"] != "/api/v1/redteam/runs/{id}/report" {
 		t.Fatalf("запись отказа: %+v", lastDeny)
 	}
-	// Администратор безопасности — с выдержками; в аудите виден признак.
-	if w := e.call(admin, "GET", path+"?examples=true&format=csv", "", false); w.Code != http.StatusOK {
+	// Причина с токеном без права — по-прежнему 403, а не 400.
+	mustProblem(t, e.call(tok, "GET", path+"?examples=true&reason="+url.QueryEscape("разбор запуска"), "", false), http.StatusForbidden, CodeForbidden)
+	// Задача 6.12 (УПД.7): выдержки — только с причиной, пределы как у
+	// содержимого события; без причины и с неверной — 400 без выгрузки.
+	n = exports()
+	long := strings.Repeat("я", MaxContentReason+1)
+	for _, q := range []string{"?examples=true", "?examples=true&reason=", "?examples=true&reason=ab", "?examples=true&reason=%20%20ab%20",
+		"?examples=true&reason=" + url.QueryEscape(long), "?examples=true&reason=a%00bc", "?examples=true&reason=abc&reason=def",
+		"?reason=%07%07%07", "?examples=true&reason=%ff%fe%fd"} {
+		mustProblem(t, e.call(admin, "GET", path+q, "", false), http.StatusBadRequest, CodeInvalidRequest)
+	}
+	if exports() != n {
+		t.Fatal("отказ без причины записан как выгрузка")
+	}
+	// Администратор безопасности — с выдержками и причиной; в аудите видны
+	// признак и причина (обрезанная по краям), предел — 500 символов.
+	reason := "  разбор инцидента 1234  "
+	if w := e.call(admin, "GET", path+"?examples=true&format=csv&reason="+url.QueryEscape(reason), "", false); w.Code != http.StatusOK {
 		t.Fatalf("отчёт с выдержками: %d %s", w.Code, w.Body)
 	}
 	all := e.rec.find("data.export")
 	last := all[len(all)-1]
 	canon := e.rec.canon[len(e.rec.canon)-1]
 	if last.Object.Type != "report" || last.Object.ID != redteam.KindReport || !strings.Contains(canon, `"examples":true`) ||
-		!strings.Contains(canon, `"run_id":"`+run.ID+`"`) {
+		!strings.Contains(canon, `"run_id":"`+run.ID+`"`) || !strings.Contains(canon, `"reason":"разбор инцидента 1234"`) {
 		t.Fatalf("запись выгрузки: %+v %s", last, canon)
+	}
+	if w := e.call(admin, "GET", path+"?examples=true&format=csv&reason="+url.QueryEscape(strings.Repeat("я", MaxContentReason)), "", false); w.Code != http.StatusOK {
+		t.Fatalf("причина в 500 символов: %d %s", w.Code, w.Body)
+	}
+	// Без выдержек причина необязательна; если указана — тоже в аудите.
+	if w := e.call(admin, "GET", path+"?format=csv&reason="+url.QueryEscape("сверка итогов"), "", false); w.Code != http.StatusOK ||
+		!strings.Contains(e.rec.canon[len(e.rec.canon)-1], `"reason":"сверка итогов"`) {
+		t.Fatalf("причина без выдержек: %d %s", w.Code, w.Body)
+	}
+	if w := e.call(admin, "GET", path+"?format=csv", "", false); w.Code != http.StatusOK || strings.Contains(e.rec.canon[len(e.rec.canon)-1], `"reason"`) {
+		t.Fatalf("отчёт без причины: %d", w.Code)
 	}
 }

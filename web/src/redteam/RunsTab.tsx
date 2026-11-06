@@ -306,21 +306,87 @@ function RunView({ id, canRun, canExport, canReadContent, onBack }: { id: string
   );
 }
 
+// Причина доступа к выдержкам (УПД.7, задача 6.12): как при открытии содержимого события — от 3 до 500 символов.
+function ReportReasonDialog({
+  onClose,
+  onSubmit,
+  pending,
+  error,
+}: {
+  onClose: () => void;
+  onSubmit: (reason: string) => void;
+  pending: boolean;
+  error: unknown;
+}) {
+  const [reason, setReason] = useState("");
+  const [touched, setTouched] = useState(false);
+  const trimmed = reason.trim();
+  const len = [...trimmed].length;
+  const invalid = len < 3 || len > 500;
+  const local = touched && invalid ? "Опишите причину: от 3 до 500 символов." : undefined;
+  return (
+    <FormDialog
+      open
+      onOpenChange={(v) => !v && onClose()}
+      title="Отчёт с выдержками ответов"
+      description="Выгрузка запишется в журнал аудита вместе с вашей причиной."
+    >
+      <form
+        className="flex flex-col gap-3"
+        onSubmit={(e) => {
+          e.preventDefault();
+          setTouched(true);
+          if (!invalid) onSubmit(trimmed);
+        }}
+      >
+        <Field label="Причина доступа к выдержкам" hint="Например: разбор запуска по заявке 1234." {...(local ? { error: local } : {})}>
+          {({ id, describedBy, invalid: inv }) => (
+            <Input
+              id={id}
+              value={reason}
+              maxLength={500}
+              autoComplete="off"
+              aria-invalid={inv}
+              {...(describedBy ? { "aria-describedby": describedBy } : {})}
+              onChange={(e) => setReason(e.target.value)}
+            />
+          )}
+        </Field>
+        <ErrorBanner error={error} />
+        <div className="flex justify-end gap-2">
+          <Button onClick={onClose}>Отменить</Button>
+          <Button type="submit" variant="primary" disabled={pending}>
+            Выгрузить отчёт
+          </Button>
+        </div>
+      </form>
+    </FormDialog>
+  );
+}
+
 // Кнопки отчёта. Отчёт собирает сервер и сам пишет выгрузку в журнал аудита; консоль только сохраняет файл.
+// С выдержками консоль сначала спрашивает причину доступа; причина живёт только в открытом окне.
 function ReportButtons({ runId, canExamples }: { runId: string; canExamples: boolean }) {
   const [examples, setExamples] = useState(false);
+  const [asking, setAsking] = useState<ReportFormat | null>(null);
   const save = useMutation({
-    mutationFn: async (format: ReportFormat) => {
-      const blob = await redteamApi.report(runId, format, examples);
+    mutationFn: async ({ format, reason }: { format: ReportFormat; reason: string }) => {
+      const blob = await redteamApi.report(runId, format, examples, reason);
       saveBlob(blob, `redteam-${runId.slice(0, 8)}.${format}`);
     },
+    onSuccess: () => setAsking(null),
   });
+  const pick = (format: ReportFormat) => {
+    save.reset();
+    if (examples) setAsking(format);
+    else save.mutate({ format, reason: "" });
+  };
   return (
     <div className="flex flex-col gap-2">
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-sm font-medium">Отчёт:</span>
         {(["html", "csv", "xlsx"] as const).map((f) => (
-          <Button key={f} disabled={save.isPending} onClick={() => save.mutate(f)}>
+          <Button key={f} disabled={save.isPending} onClick={() => pick(f)}>
             {f.toUpperCase()}
           </Button>
         ))}
@@ -328,10 +394,23 @@ function ReportButtons({ runId, canExamples }: { runId: string; canExamples: boo
       {canExamples && (
         <div>
           <Check label="Добавить выдержки ответов цели (только у целей с хранением «замаскировано»)" checked={examples} onCheckedChange={setExamples} />
-          <p className="text-xs text-muted">Выдержка — до 1 КиБ ответа, ПДн и секреты заменены категорией. Выгрузка запишется в журнал аудита.</p>
+          <p className="text-xs text-muted">
+            Выдержка — до 1 КиБ ответа, ПДн и секреты заменены категорией. Консоль спросит причину доступа; выгрузка запишется в журнал аудита вместе с ней.
+          </p>
         </div>
       )}
-      <ErrorBanner error={save.error} />
+      {asking && (
+        <ReportReasonDialog
+          onClose={() => {
+            setAsking(null);
+            save.reset();
+          }}
+          onSubmit={(reason) => save.mutate({ format: asking, reason })}
+          pending={save.isPending}
+          error={save.error}
+        />
+      )}
+      {!asking && <ErrorBanner error={save.error} />}
     </div>
   );
 }

@@ -6958,8 +6958,10 @@ paths:
         `events.content.read` с полной областью (только человек в сессии; токену его выдать нельзя; область `own`
         не подходит — у цели нет владельца-приложения) — иначе 403 с записью `access.denied`; у цели в режиме
         `none` и у цели `gateway` выдержек нет (пример цели `gateway` — событие шлюза по `event_ids`). Каждая
-        выгрузка пишет `data.export` (вид `redteam`, признак `examples`) до выдачи данных; без записи отчёт не
-        выдаётся (503). Одновременно — одна выгрузка на пользователя, сверх предела 429.
+        выгрузка пишет `data.export` (вид `redteam`, признак `examples`, причина `reason`) до выдачи данных; без
+        записи отчёт не выдаётся (503). С `examples=true` обязательна причина доступа `reason` (УПД.7, задача 6.12;
+        пределы — как у `POST /api/v1/events/{id}/content`): без неё — 400 (после проверки права). Одновременно —
+        одна выгрузка на пользователя, сверх предела 429.
       x-permission: redteam.export
       security: [{ sessionCookie: [] }, { bearerToken: [] }]
       parameters:
@@ -6976,8 +6978,13 @@ paths:
         - name: examples
           in: query
           required: false
-          description: Включить выдержки ответов (нужно право `events.content.read` на все объекты)
+          description: Включить выдержки ответов (нужно право `events.content.read` на все объекты и причина `reason`)
           schema: { type: boolean, default: false }
+        - name: reason
+          in: query
+          required: false
+          description: Причина доступа к выдержкам (УПД.7) — обязательна с `examples=true`; от 3 до 500 символов без управляющих, пробелы по краям отбрасываются. Пишется в запись `data.export`; без выдержек необязательна
+          schema: { type: string, minLength: 3, maxLength: 500 }
       responses:
         '200':
           description: Отчёт; `X-Export-Rows` — число строк данных
