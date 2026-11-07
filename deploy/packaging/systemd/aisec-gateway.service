@@ -1,0 +1,84 @@
+# Шлюз AISec между приложениями и LLM (ADR-0034, ЗИ.5).
+#
+# Пакет aisec. Включение: systemctl enable --now aisec-gateway — после
+# регистрации шлюза (aisec-gateway-register) и якоря пакетов
+# (aisec-prepare-host --bundle-anchor); руководство администратора,
+# «Установка без Docker».
+#
+# Адрес сервера и прочие несекретные настройки — /etc/aisec/aisec-gateway.env
+# (AISEC_GATEWAY_*). Секреты и сертификаты — LoadCredential= из
+# /etc/aisec/credentials (0700 root). Сертификат и ключ шлюза от внутреннего
+# УЦ и состояние — в /var/lib/aisec-gateway/reg и state (0700 aisec-gw);
+# родительский каталог принадлежит root, поэтому шлюз не может подменить их
+# символьной ссылкой (как gateway/ в compose).
+#
+# Анализаторы aisec-ml и aisec-media подключают свои пакеты дополнениями
+# aisec-gateway.service.d/50-*.conf. PrivateUsers= не включается: иначе UID
+# шлюза в SO_PEERCRED у анализаторов виден как 65534 и соединение отвергается.
+[Unit]
+Description=AISec: шлюз между приложениями и LLM
+After=network-online.target aisec-server.service
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=aisec-gw
+Group=aisec-gw
+EnvironmentFile=/etc/aisec/aisec-gateway.env
+LoadCredential=gateway-tls-cert:/etc/aisec/credentials/gateway.crt
+LoadCredential=gateway-tls-key:/etc/aisec/credentials/gateway.key
+LoadCredential=console-ca:/etc/aisec/credentials/console-ca.crt
+LoadCredential=gateway-bundle-anchor:/etc/aisec/credentials/gateway-bundle-anchor.pub
+ExecStart=/opt/aisec/bin/aisec-gateway \
+	-tls-cert=%d/gateway-tls-cert \
+	-tls-key=%d/gateway-tls-key \
+	-server-ca=%d/console-ca \
+	-client-cert=/var/lib/aisec-gateway/reg/gateway.crt \
+	-client-key=/var/lib/aisec-gateway/reg/gateway.key \
+	-bundle-pub=%d/gateway-bundle-anchor \
+	-state-dir=/var/lib/aisec-gateway/state
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=30s
+UMask=0077
+
+# Пользователь и привилегии.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictSUIDSGID=yes
+# Файловая система: запись — только reg/ и state/.
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+DevicePolicy=closed
+StateDirectory=aisec-gateway/reg aisec-gateway/state
+StateDirectoryMode=0700
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+KeyringMode=private
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+RemoveIPC=yes
+# Сеть: приложения, сервер управления, провайдеры LLM; Unix — сокеты
+# анализаторов.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM
+MemoryMax=1G
+MemorySwapMax=0
+TasksMax=256
+
+[Install]
+WantedBy=multi-user.target
