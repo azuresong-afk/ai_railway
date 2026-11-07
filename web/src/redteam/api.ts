@@ -39,8 +39,13 @@ export const redteamApi = {
   start: (b: StartRun) => request<Run>("POST", "/api/v1/redteam/runs", b),
   cancel: (rid: string) => request<void>("POST", `/api/v1/redteam/runs/${id(rid)}/cancel`),
   // Отчёт приходит файлом: консоль только сохраняет его; сервер сам пишет выгрузку в журнал аудита.
-  report: (rid: string, format: ReportFormat, examples: boolean) =>
-    download(`/api/v1/redteam/runs/${id(rid)}/report?format=${format}${examples ? "&examples=true" : ""}`, reportAccept.get(format) ?? "application/octet-stream"),
+  // С выдержками нужна причина доступа (УПД.7, задача 6.12): сервер пишет её в запись data.export.
+  report: (rid: string, format: ReportFormat, examples: boolean, reason = "") => {
+    const q = new URLSearchParams({ format });
+    if (examples) q.set("examples", "true");
+    if (reason) q.set("reason", reason);
+    return download(`/api/v1/redteam/runs/${id(rid)}/report?${q}`, reportAccept.get(format) ?? "application/octet-stream");
+  },
   schedules: (signal?: AbortSignal) => request<{ items: Schedule[] }>("GET", "/api/v1/redteam/schedules", undefined, signal),
   createSchedule: (b: ScheduleInput) => request<Schedule>("POST", "/api/v1/redteam/schedules", b),
   updateSchedule: (sid: string, b: ScheduleInput) => request<Schedule>("PUT", `/api/v1/redteam/schedules/${id(sid)}`, b),

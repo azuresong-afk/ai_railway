@@ -158,8 +158,19 @@ describe("экран «Тестирование устойчивости»: за
     fireEvent.click(await screen.findByRole("button", { name: "CSV" }));
     await waitFor(() => expect(calls.some((c) => c.url === `/api/v1/redteam/runs/${run1}/report?format=csv`)).toBe(true));
     fireEvent.click(screen.getByRole("checkbox", { name: /выдержки ответов/i }));
+    // С выдержками консоль сначала спрашивает причину доступа (УПД.7, задача 6.12): без неё запроса нет.
+    const before = calls.length;
     fireEvent.click(screen.getByRole("button", { name: "XLSX" }));
-    await waitFor(() => expect(calls.some((c) => c.url === `/api/v1/redteam/runs/${run1}/report?format=xlsx&examples=true`)).toBe(true));
+    const reason = await screen.findByLabelText("Причина доступа к выдержкам");
+    fireEvent.change(reason, { target: { value: "  я" } });
+    fireEvent.click(screen.getByRole("button", { name: "Выгрузить отчёт" }));
+    expect(await screen.findByText("Опишите причину: от 3 до 500 символов.")).toBeInTheDocument();
+    expect(calls.slice(before).some((c) => c.url.includes("/report"))).toBe(false);
+    fireEvent.change(reason, { target: { value: " разбор заявки 1234 " } });
+    fireEvent.click(screen.getByRole("button", { name: "Выгрузить отчёт" }));
+    const want = `/api/v1/redteam/runs/${run1}/report?${new URLSearchParams({ format: "xlsx", examples: "true", reason: "разбор заявки 1234" })}`;
+    await waitFor(() => expect(calls.some((c) => c.url === want)).toBe(true));
+    await waitFor(() => expect(screen.queryByLabelText("Причина доступа к выдержкам")).toBeNull());
   });
 
   it("без права на содержимое отметки «выдержки» нет", async () => {
