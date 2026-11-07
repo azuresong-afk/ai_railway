@@ -27,12 +27,45 @@ const ev = {
   },
 };
 
+// Событие full с сохранённым изображением и рамкой находки (задача 6.13, ADR-0039).
+const imageEv = {
+  ...ev,
+  storage: "full",
+  details: {
+    decision: { action: "block", applied: ["block"], rule: "pii-block", severity: "high", trace: [] },
+    findings: [
+      {
+        detector: "pii.passport",
+        category: "pii",
+        score: 0.9,
+        location: "messages[0].content[1]",
+        source: "image",
+        threat: "DM-01",
+        box: { x: 4, y: 4, w: 20, h: 10 },
+      },
+    ],
+    media: [{ location: "messages[0].content[1]", mode: "sync", checked: true, format: "png", width: 64, height: 32, stored: true }],
+  },
+};
+
+const defaultContent = { event_id: ev.id, storage: "masked", request: "<img src=x onerror=alert(1)> **жирный**", response: "ответ" };
+const imageContent = {
+  event_id: ev.id,
+  storage: "full",
+  request: "Что на картинке?",
+  images: [{ location: "messages[0].content[1]", format: "png", data: "iVBORw0KGgo=" }],
+};
+
 const calls: { url: string; body: unknown }[] = [];
 let contentStatus = 200;
+let eventBody: unknown = ev;
+let contentBody: unknown = defaultContent;
 
 beforeEach(() => {
   calls.length = 0;
   contentStatus = 200;
+  eventBody = ev;
+  contentBody = defaultContent;
   vi.stubGlobal(
     "fetch",
     vi.fn((url: string, init: RequestInit) => {
@@ -41,11 +74,9 @@ beforeEach(() => {
         if (contentStatus !== 200) {
           return Promise.resolve(new Response(JSON.stringify({ code: "forbidden", detail: "x" }), { status: contentStatus }));
         }
-        return Promise.resolve(
-          new Response(JSON.stringify({ event_id: ev.id, storage: "masked", request: "<img src=x onerror=alert(1)> **жирный**", response: "ответ" })),
-        );
+        return Promise.resolve(new Response(JSON.stringify(contentBody)));
       }
-      return Promise.resolve(new Response(JSON.stringify(ev)));
+      return Promise.resolve(new Response(JSON.stringify(eventBody)));
     }),
   );
 });
@@ -99,6 +130,46 @@ describe("карточка события", () => {
     await waitFor(() => expect(screen.getByRole("alert", { name: "" })).toBeInTheDocument());
     expect(screen.getByText(/Нет права смотреть содержимое/)).toBeInTheDocument();
     expect(screen.queryByText("ответ")).toBeNull();
+  });
+});
+
+describe("изображение запроса", () => {
+  const svgImage = () => document.querySelector("svg image");
+
+  it("после ввода причины показано сохранённое изображение с рамками", async () => {
+    eventBody = imageEv;
+    contentBody = imageContent;
+    renderCard(true);
+    expect(await screen.findByText(/Изображение сохранено/)).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: /Рамки находок на изображении messages\[0\]\.content\[1\], рамок: 1/ })).toBeInTheDocument();
+    expect(svgImage()).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Показать содержимое" }));
+    fireEvent.change(await screen.findByLabelText("Причина просмотра"), { target: { value: "разбор инцидента 8" } });
+    fireEvent.click(screen.getAllByRole("button", { name: "Показать содержимое" }).at(-1)!);
+    expect(await screen.findByRole("img", { name: /^Изображение messages\[0\]\.content\[1\], рамок: 1/ })).toBeInTheDocument();
+    expect(svgImage()?.getAttribute("href")).toBe("data:image/png;base64,iVBORw0KGgo=");
+    expect(screen.getByText(/Просмотр записан в журнал аудита/)).toBeInTheDocument();
+    expect(calls.find((c) => c.url.endsWith("/content"))?.body).toEqual({ reason: "разбор инцидента 8" });
+  });
+
+  it("без права на содержимое — только рамки на пустом поле", async () => {
+    eventBody = imageEv;
+    renderCard(false);
+    expect(await screen.findByText(/просмотр изображения доступен администратору безопасности/)).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: /Рамки находок на изображении/ })).toHaveTextContent("64 × 32 пикселей");
+    expect(svgImage()).toBeNull();
+    expect(calls.some((c) => c.url.endsWith("/content"))).toBe(false);
+  });
+
+  it("не сохранённое изображение объяснено причиной", async () => {
+    eventBody = {
+      ...imageEv,
+      details: { ...imageEv.details, media: [{ ...imageEv.details.media[0], stored: false, store_skipped: "too_large" }] },
+    };
+    renderCard(true);
+    expect(await screen.findByText(/Не сохранено: больше 3 МБ/)).toBeInTheDocument();
+    expect(screen.getByText(/Само изображение не сохранялось/)).toBeInTheDocument();
   });
 });
 

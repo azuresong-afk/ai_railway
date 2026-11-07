@@ -287,6 +287,18 @@ type ContentResponse struct {
 	Storage  string `json:"storage"`
 	Request  string `json:"request,omitempty"`
 	Response string `json:"response,omitempty"`
+	// Images — изображения запроса (задача 6.13, ADR-0039). Маршрут не
+	// Scoped: субъекта с events.content.read только в части приложений
+	// маршрутизатор не пускает (403), выдача — только в полной области.
+	Images []ContentImageView `json:"images,omitempty"`
+}
+
+// ContentImageView — изображение запроса в ответе (данные — base64).
+type ContentImageView struct {
+	Location  string `json:"location"`
+	Format    string `json:"format"`
+	Sanitized bool   `json:"sanitized,omitempty"`
+	Data      []byte `json:"data"`
 }
 
 // cleanReason — причина доступа к содержимому: 3–500 символов без
@@ -344,10 +356,27 @@ func (d Deps) eventContent(w http.ResponseWriter, r *http.Request) {
 		WriteProblem(w, d.eventsProblem(err, "содержимое события не прочитано"))
 		return
 	}
+	// Изображения — только в полной области права (ADR-0039, раздел 4):
+	// маршрут не Scoped, и проверка здесь — на случай его изменения.
+	var images []events.ContentImage
+	if found && p.Grants.Full(auth.PermEventsContentRead) {
+		if images, err = d.Events.Images(ctx, id); err != nil {
+			WriteProblem(w, d.eventsProblem(err, "изображения события не прочитаны"))
+			return
+		}
+	}
+	defer func() {
+		for _, img := range images {
+			clear(img.Data)
+		}
+	}()
+	details := map[string]any{"reason": reason, "storage": content.Storage}
+	if len(images) > 0 {
+		details["images"] = len(images)
+	}
 	entry := audit.Entry{
 		Actor: eventsActor(p), SourceIP: clientAddr(r), Action: "events.content_read",
-		Object: audit.Object{Type: "event", ID: id}, Result: audit.ResultSuccess,
-		Details: map[string]any{"reason": reason, "storage": content.Storage},
+		Object: audit.Object{Type: "event", ID: id}, Result: audit.ResultSuccess, Details: details,
 	}
 	if !found {
 		entry.Result = audit.ResultFailure
@@ -366,9 +395,13 @@ func (d Deps) eventContent(w http.ResponseWriter, r *http.Request) {
 			"Содержимое этого события не сохранялось или удалено по сроку хранения."))
 		return
 	}
-	WriteJSON(w, http.StatusOK, ContentResponse{
+	resp := ContentResponse{
 		EventID: id, Storage: content.Storage, Request: content.Content.Request, Response: content.Content.Response,
-	})
+	}
+	for _, img := range images {
+		resp.Images = append(resp.Images, ContentImageView{Location: img.Location, Format: img.Format, Sanitized: img.Sanitized, Data: img.Data})
+	}
+	WriteJSON(w, http.StatusOK, resp)
 }
 
 type exportRequest struct {

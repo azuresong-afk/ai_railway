@@ -32,8 +32,11 @@ type Policy struct {
 	// MediaSanitize — изображения уходят провайдеру только очищенными
 	// aisec-media (задача 5.45); сбой очистки — изображение не уходит.
 	MediaSanitize bool
-	BlockMessage  string
-	rules         []rule
+	// MediaStore — изображения запроса сохраняются в содержимом события
+	// full (задача 6.13, ADR-0039).
+	MediaStore   bool
+	BlockMessage string
+	rules        []rule
 	// exceptions — исключения версии (exception.go), в порядке спецификации.
 	exceptions []ExceptionSpec
 	// tools — политика вызовов инструментов (toolcall.go).
@@ -68,7 +71,7 @@ func Compile(s *Spec, c Catalog) (*Policy, error) {
 		ID: s.ID, Name: s.Name, Version: s.Version, Mode: s.Mode,
 		NonText: s.NonText, ResponseCheck: s.ResponseCheck, BlockMessage: s.BlockMessage,
 		MediaCheck: s.MediaCheck, MediaTimeout: time.Duration(s.MediaTimeoutMS) * time.Millisecond,
-		MediaSanitize: s.MediaSanitize,
+		MediaSanitize: s.MediaSanitize, MediaStore: s.MediaStore,
 	}
 	if p.MediaCheck == "" {
 		p.MediaCheck = MediaCheckOff

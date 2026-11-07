@@ -93,6 +93,10 @@ type record struct {
 	// заблокирован правилом media_sanitize.
 	sanitized    []string
 	sanitizeFail *sanitizeFailure
+	// sanitizedURLs — data:-адреса очищенных изображений по местам, только
+	// если изображения сохраняются в событии (media_store, задача 6.13);
+	// nil — очистки не было.
+	sanitizedURLs map[string]string
 }
 
 // issue запоминает хеши ответов, выданных приложению (history.integrity,
@@ -236,13 +240,18 @@ func (h *ChatHandler) emit(rec *record) {
 	// приложению, как анализ изображений в async.
 	tasks := rec.judgeAsyncTasks()
 	judgeWait := len(tasks) > 0 && rec.app.judge != nil
-	if run := rec.media; (run != nil && !run.ready()) || judgeWait {
+	// Очистка изображений только для хранения (ADR-0039, раздел 2) — тоже
+	// после ответа приложению.
+	storeWait := rec.storeNeedsSanitize()
+	if run := rec.media; (run != nil && !run.ready()) || judgeWait || storeWait {
 		// async: итог анализа изображений и оценки приходит после ответа
 		// приложению; событие уходит по его готовности, не позже срока
 		// анализа (оценки) и запаса (ADR-0032, раздел 8).
 		go func() {
 			if run != nil {
-				h.finishMedia(rec, run.wait())
+				res := run.wait()
+				h.finishMedia(rec, res)
+				h.storeImages(rec, res)
 			}
 			h.finishJudge(rec, tasks)
 			h.enqueue(rec)
@@ -250,7 +259,9 @@ func (h *ChatHandler) emit(rec *record) {
 		return
 	}
 	if rec.media != nil {
-		h.finishMedia(rec, rec.media.result())
+		res := rec.media.result()
+		h.finishMedia(rec, res)
+		h.storeImages(rec, res)
 	}
 	h.finishJudge(rec, tasks)
 	h.enqueue(rec)

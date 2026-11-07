@@ -78,6 +78,11 @@ type MediaCheck struct {
 	// Sanitized — провайдеру ушло очищенное изображение (media_sanitize,
 	// задача 5.45): без метаданных, перекодированное и уменьшенное.
 	Sanitized bool `json:"sanitized,omitempty"`
+	// Stored — изображение сохранено в содержимом события (media_store,
+	// задача 6.13); StoreSkipped — почему не сохранено, хотя должно было
+	// (StoreSkip*). Самих байтов здесь нет.
+	Stored       bool   `json:"stored,omitempty"`
+	StoreSkipped string `json:"store_skipped,omitempty"`
 }
 
 // Box — рамка находки на изображении в пикселях исходного растра (ТЗ 5.17,

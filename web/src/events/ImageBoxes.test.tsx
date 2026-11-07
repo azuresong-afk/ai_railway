@@ -88,10 +88,10 @@ describe("карточка события с изображением", () => {
     current = imageEvent("full");
     const { container } = renderCard(false);
     expect(await screen.findByRole("heading", { name: "Изображения и рамки находок" })).toBeInTheDocument();
-    const svg = screen.getByRole("img", { name: "Рамки находок на изображении messages[0].content[1]: 2" });
+    const svg = screen.getByRole("img", { name: "Рамки находок на изображении messages[0].content[1], рамок: 2" });
     expect(svg.querySelectorAll("title")).toHaveLength(2);
     expect(container.querySelector("image")).toBeNull();
-    expect(screen.getByText("Показаны рамки и находки без самого изображения.")).toBeInTheDocument();
+    expect(screen.getByText(/Само изображение не сохранялось/)).toBeInTheDocument();
     const list = screen.getByRole("list", { name: "Находки на изображении messages[0].content[1]" });
     expect(list).toHaveTextContent("1. pii.ru, pii.card, DM-46, область 300 × 40 в точке 40, 60");
     expect(list).toHaveTextContent("2. secrets, secret.token");
@@ -100,10 +100,10 @@ describe("карточка события с изображением", () => {
     expect(screen.getByText(/Формат PNG, 640 × 480 пикселей/)).toBeInTheDocument();
   });
 
-  it("с правом на содержимое при режиме «полностью» честно сказано, что изображение сервер не хранит", async () => {
+  it("с правом на содержимое честно сказано, что изображение не сохранялось", async () => {
     current = imageEvent("full");
     renderCard(true);
-    expect(await screen.findByText(/Само изображение сервер не сохраняет/)).toBeInTheDocument();
+    expect(await screen.findByText(/Само изображение не сохранялось/)).toBeInTheDocument();
   });
 
   it("непроверенное изображение объясняется причиной и без рисунка", async () => {

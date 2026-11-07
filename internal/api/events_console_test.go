@@ -691,3 +691,68 @@ func TestEventsExportConcurrencyLimit(t *testing.T) {
 		t.Fatalf("записей data.export: %d", n)
 	}
 }
+
+// Изображения запроса (задача 6.13, ADR-0039): только с events.content.read
+// в полной области, с причиной и записью числа изображений в аудит; при
+// праве в части приложений — только их число; без права — 403.
+func TestEventContentImages(t *testing.T) {
+	env := newConsoleEnv(t)
+	img := []byte("\x89PNG\r\n\x1a\nсинтетический скриншот")
+	ts := time.Now().UTC().Add(-30 * time.Second)
+	ev := events.Event{
+		ID: liveEventID(ts, 50), Time: ts, Type: events.TypeGatewayRequest, App: "support-bot", Env: "prod",
+		PolicyMode: events.ModeEnforce, Storage: events.StorageFull,
+		Decision: &events.Decision{Action: "block", Applied: []string{"block"}},
+		Media:    []events.MediaCheck{{Location: "messages[0].content[1]", Mode: events.MediaModeSync, Checked: true, Format: "png", Width: 64, Height: 32, Stored: true}},
+		Content:  &events.Content{Request: promptMarker, Images: []events.ContentImage{{Location: "messages[0].content[1]", Format: "png", Data: img}}},
+	}
+	if _, err := env.mem.Insert(context.Background(), events.Ingest{GatewayID: testGatewayID, ReceivedAt: time.Now(), Events: []events.Event{ev}}); err != nil {
+		t.Fatal(err)
+	}
+	path := "/api/v1/events/" + ev.ID + "/content"
+	body := `{"reason":"Разбор инцидента INC-7"}`
+
+	// Без права — 403, ни содержимого, ни записи о доступе.
+	w := do(env.handler(t, auth.PermEventsRead), "POST", path, body, jsonCT()...)
+	mustProblem(t, w, 403, CodeForbidden)
+	if strings.Contains(w.Body.String(), "data") || len(env.audit.find("events.content_read")) != 0 {
+		t.Fatal("изображение без права")
+	}
+
+	w = do(env.handler(t, auth.PermEventsContentRead), "POST", path, body, jsonCT()...)
+	var resp ContentResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil || w.Code != 200 {
+		t.Fatalf("%d %s %v", w.Code, w.Body, err)
+	}
+	if len(resp.Images) != 1 || string(resp.Images[0].Data) != string(img) || resp.Images[0].Format != "png" ||
+		resp.Images[0].Location != "messages[0].content[1]" || resp.Request != promptMarker {
+		t.Fatalf("ответ: %+v", resp)
+	}
+	got := env.audit.find("events.content_read")
+	if d, _ := got[len(got)-1].Details.(map[string]any); len(got) != 1 || d["images"] != 1 {
+		t.Fatalf("запись о доступе: %+v", got)
+	}
+	env.audit.mu.Lock()
+	if last := env.audit.canon[len(env.audit.canon)-1]; strings.Contains(last, "синтетический") {
+		env.audit.mu.Unlock()
+		t.Fatal("байты изображения в аудите")
+	}
+	env.audit.mu.Unlock()
+
+	// Право только в части приложений — маршрутизатор не пускает (полная
+	// область), записи о доступе нет.
+	h := env.handlerWithAuthz(t, env.mem, scopeAuthz{perm: auth.PermEventsContentRead, scope: auth.ScopeOwn}, nil)
+	w = do(h, "POST", path, body, jsonCT()...)
+	mustProblem(t, w, 403, CodeForbidden)
+	if strings.Contains(w.Body.String(), `"data"`) || len(env.audit.find("events.content_read")) != 1 {
+		t.Fatalf("ответ в части приложений: %s", w.Body)
+	}
+
+	// Журнал аудита недоступен — изображение не выдаётся.
+	env.audit.fail(errors.New("журнал недоступен"))
+	w = do(env.handler(t, auth.PermEventsContentRead), "POST", path, body, jsonCT()...)
+	mustProblem(t, w, 503, CodeUnavailable)
+	if strings.Contains(w.Body.String(), `"data"`) {
+		t.Fatal("изображение без записи в аудит")
+	}
+}

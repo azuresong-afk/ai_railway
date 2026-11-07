@@ -411,6 +411,14 @@ func (s *Service) Create(ctx context.Context, by By, spec *policy.Spec, source, 
 	if err != nil {
 		return Doc{}, err
 	}
+	// Новая политика с хранением изображений — то же ослабление, что и
+	// включение в версии (ADR-0039, раздел 1): иначе его обходило бы
+	// создание копии политики.
+	if spec.MediaStore {
+		if err := by.confirm(ctx); err != nil {
+			return Doc{}, err
+		}
+	}
 	n, err := s.store.CountPolicies(ctx, s.orgID)
 	if err != nil {
 		return Doc{}, err
@@ -433,6 +441,9 @@ func (s *Service) Create(ctx context.Context, by By, spec *policy.Spec, source, 
 	details := map[string]any{"slug": p.Slug, "version": 1, "source": source, "mode": p.Mode,
 		"non_text": string(spec.NonText), "rules": len(spec.Rules), "exceptions": len(spec.Exceptions),
 		"spec_hash": hex.EncodeToString(v.Hash)}
+	if spec.MediaStore {
+		details["weakening"], details["weakening_reasons"] = true, []map[string]string{{"kind": WeakMediaStore}}
+	}
 	if err := s.store.CreatePolicy(ctx, p, v, by.entry(action, p.ID, details)); err != nil {
 		return Doc{}, err
 	}

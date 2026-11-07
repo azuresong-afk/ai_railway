@@ -90,6 +90,7 @@ export const weakeningText: Record<NonNullable<PolicyDiff["weakening_reasons"][n
   non_text_weakened: "ослаблена проверка нетекстовых данных",
   media_check_weakened: "ослаблена проверка изображений",
   media_sanitize_weakened: "выключена очистка изображений",
+  media_store_enabled: "включено хранение изображений запросов",
   response_check_weakened: "ослаблена проверка ответа модели",
   rule_removed: "правило удалено",
   action_weakened: "действие правила смягчено",

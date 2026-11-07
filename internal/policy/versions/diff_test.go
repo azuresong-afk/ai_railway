@@ -39,6 +39,7 @@ func TestCompareWeakening(t *testing.T) {
 		"срок sync короче":       {func(s *policy.Spec) { s.MediaTimeoutMS = 500 }, []string{versions.WeakMediaCheck + ":"}},
 		"срок sync длиннее":      {func(s *policy.Spec) { s.MediaTimeoutMS = 5000 }, nil},
 		"очистка выключена":      {func(s *policy.Spec) { s.MediaSanitize = false }, []string{versions.WeakMediaSanitize + ":"}},
+		"хранение изображений":   {func(s *policy.Spec) { s.MediaStore = true }, []string{versions.WeakMediaStore + ":"}},
 		"удалено правило block":  {func(s *policy.Spec) { s.Rules = s.Rules[1:] }, []string{versions.WeakRuleRemoved + ":injection"}},
 		"block → log":            {func(s *policy.Spec) { s.Rules[0].Action = policy.Log }, []string{versions.WeakActionWeakened + ":injection"}},
 		"порог выше":             {func(s *policy.Spec) { s.Rules[1].Threshold = th(0.9) }, []string{versions.WeakThresholdRaised + ":pii"}},
@@ -70,6 +71,12 @@ func TestCompareWeakening(t *testing.T) {
 	a0.MediaSanitize = false
 	if d := versions.Compare(a0, b0); d.Weakened() || d.Empty() {
 		t.Fatalf("включение media_sanitize: %+v", d)
+	}
+	// Выключение хранения изображений (задача 6.13) — не ослабление.
+	a1, b1 := base(), base()
+	a1.MediaStore = true
+	if d := versions.Compare(a1, b1); d.Weakened() || len(d.Fields) != 1 || d.Fields[0].Field != "media_store" {
+		t.Fatalf("выключение media_store: %+v", d)
 	}
 	// Удаление правила log не ослабляет защиту.
 	a := base()

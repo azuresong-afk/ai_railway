@@ -372,3 +372,40 @@ func TestWeaker(t *testing.T) {
 		t.Errorf("неизвестная новая политика: %v", err)
 	}
 }
+
+// Хранение изображений запроса (задача 6.13, ADR-0039): включение в версии
+// и создание политики с ним — только после повторной проверки, с отметкой
+// ослабления в аудите; выключение — без проверки.
+func TestMediaStoreNeedsConfirm(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	s := spec("p", policy.Enforce, ruleInjection)
+	s.MediaStore = true
+	if _, err := e.svc.Create(ctx, e.by, s, versions.SourceAPI, "", versions.ConsoleDefaults); !errors.Is(err, versions.ErrConfirmRequired) {
+		t.Fatalf("создание с media_store без проверки: %v", err)
+	}
+	s = spec("p", policy.Enforce, ruleInjection)
+	s.MediaStore = true
+	if _, err := e.svc.Create(ctx, e.confirmed(), s, versions.SourceAPI, "", versions.ConsoleDefaults); err != nil {
+		t.Fatalf("создание с проверкой: %v", err)
+	}
+	if _, err := e.svc.Create(ctx, e.by, spec("q", policy.Enforce, ruleInjection), versions.SourceAPI, "", versions.ConsoleDefaults); err != nil {
+		t.Fatalf("создание без media_store: %v", err)
+	}
+	on := spec("q", policy.Enforce, ruleInjection)
+	on.MediaStore = true
+	if _, err := e.svc.Update(ctx, e.by, "q", 1, on, versions.SourceAPI, "", versions.ConsoleDefaults); !errors.Is(err, versions.ErrConfirmRequired) {
+		t.Fatalf("включение без проверки: %v", err)
+	}
+	on = spec("q", policy.Enforce, ruleInjection)
+	on.MediaStore = true
+	if _, err := e.svc.Update(ctx, e.confirmed(), "q", 1, on, versions.SourceAPI, "", versions.ConsoleDefaults); err != nil {
+		t.Fatalf("включение с проверкой: %v", err)
+	}
+	if _, err := e.svc.Update(ctx, e.by, "q", 2, spec("q", policy.Enforce, ruleInjection), versions.SourceAPI, "", versions.ConsoleDefaults); err != nil {
+		t.Fatalf("выключение: %v", err)
+	}
+	if d, err := e.svc.Get(ctx, "q", 2); err != nil || !d.Spec.MediaStore {
+		t.Fatalf("версия 2: %+v %v", d.Spec, err)
+	}
+}

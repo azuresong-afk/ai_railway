@@ -34,6 +34,7 @@ const (
 	WeakNonText         = "non_text_weakened"       // block → allow_*, allow_inline → allow_unchecked
 	WeakMediaCheck      = "media_check_weakened"    // sync → async → off, срок sync короче
 	WeakMediaSanitize   = "media_sanitize_weakened" // очистка изображений выключена (задача 5.45)
+	WeakMediaStore      = "media_store_enabled"     // включено хранение изображений (задача 6.13)
 	WeakResponseCheck   = "response_check_weakened" // buffered → incremental → monitor
 	WeakRuleRemoved     = "rule_removed"            // удалено правило с block, redact или pseudonymize
 	WeakActionWeakened  = "action_weakened"         // действие ниже по таблице приоритетов
@@ -135,6 +136,7 @@ func Compare(a, b *policy.Spec) Diff {
 		field("media_check_timeout_ms", strconv.Itoa(a.MediaTimeoutMS), strconv.Itoa(b.MediaTimeoutMS))
 	}
 	field("media_sanitize", strconv.FormatBool(a.MediaSanitize), strconv.FormatBool(b.MediaSanitize))
+	field("media_store", strconv.FormatBool(a.MediaStore), strconv.FormatBool(b.MediaStore))
 	field("block_message", a.BlockMessage, b.BlockMessage)
 	if ja, jb := judgeText(a.Judge), judgeText(b.Judge); ja != jb {
 		field("judge", ja, jb)
@@ -161,6 +163,11 @@ func Compare(a, b *policy.Spec) Diff {
 	// и исходные байты изображений (DM-40).
 	if a.MediaSanitize && !b.MediaSanitize {
 		d.Weakening = append(d.Weakening, Weakening{Kind: WeakMediaSanitize})
+	}
+	// Включение хранения изображений — ослабление: в БД попадают сами
+	// изображения запросов, часто с ПДн (ADR-0039, раздел 1).
+	if !a.MediaStore && b.MediaStore {
+		d.Weakening = append(d.Weakening, Weakening{Kind: WeakMediaStore})
 	}
 
 	after := make(map[string]policy.RuleSpec, len(b.Rules))

@@ -114,6 +114,10 @@ type Reader interface {
 	// Content — содержимое события (проверку права и аудит делает
 	// вызывающий); ErrNotFound — содержимого нет.
 	Content(ctx context.Context, id string) (StoredContent, error)
+	// Images — изображения запроса события (задача 6.13), расшифрованные,
+	// по порядку; нет — пустой список. Право в полной области и аудит
+	// проверяет вызывающий.
+	Images(ctx context.Context, id string) ([]ContentImage, error)
 	// Count — число событий выборки, но не больше limit+1.
 	Count(ctx context.Context, q Query, limit int) (int, error)
 	// Each передаёт fn события выборки по одному.

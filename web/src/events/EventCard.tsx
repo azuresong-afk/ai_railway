@@ -30,6 +30,7 @@ interface FindingRow {
   box: { x: number; y: number; w: number; h: number } | null;
 }
 // Итог проверки одного изображения запроса (details.media, задача 5.39): без содержимого и текста.
+// stored и storeSkipped — сохранено ли само изображение (media_store, задача 6.13) и почему нет.
 interface MediaRow {
   location: string;
   checked: boolean;
@@ -38,6 +39,8 @@ interface MediaRow {
   width: number | null;
   height: number | null;
   texts: number | null;
+  stored: boolean;
+  storeSkipped: string;
 }
 interface Details {
   action: string;
@@ -112,6 +115,8 @@ export function readDetails(raw: unknown): Details {
         width: numOrNull(r.width),
         height: numOrNull(r.height),
         texts: numOrNull(r.texts),
+        stored: r.stored === true,
+        storeSkipped: str(r.store_skipped),
       };
     }),
     latency: Object.entries(rec(d.latency_ms)).flatMap(([k, v]) => (typeof v === "number" ? [[k, v] as [string, number]] : [])),
@@ -252,24 +257,41 @@ const mediaReason = new Map([
   ["error", "ошибка анализатора"],
 ]);
 
-// Изображения запроса и рамки находок на них (ТЗ 5.17, задача 5.46). Рамки и находки видны всем, кто читает события;
-// само изображение — только с правом на содержимое и по режиму хранения «полностью» (ТЗ 5.5). Сейчас сервер изображение не сохраняет:
-// рамки рисуются на пустом поле размеров исходного растра, а `src` подставится, когда содержимое начнёт его отдавать.
-function Images({ d, canReadContent, storage }: { d: Details; canReadContent: boolean; storage: string }) {
+// Почему изображение не сохранено, хотя хранение включено (details.media[].store_skipped, ADR-0039).
+const storeSkipReason = new Map([
+  ["url", "передано ссылкой"],
+  ["not_parsed", "анализатор не разобрал файл"],
+  ["too_large", "больше 3 МБ"],
+  ["event_limit", "превышен предел изображений в событии"],
+  ["queue_full", "очередь шлюза была переполнена"],
+  ["not_sanitized", "не удалось очистить"],
+]);
+
+// Пояснение над изображениями: что показано и что нужно, чтобы увидеть само изображение.
+function imagesHint(d: Details, canReadContent: boolean, shown: number): string {
+  const stored = d.media.filter((m) => m.stored).length;
+  if (shown > 0) return "Показаны сохранённые изображения запроса с рамками находок. Просмотр записан в журнал аудита.";
+  if (stored === 0) return "Само изображение не сохранялось: рамки показаны на пустом поле размеров исходного изображения.";
+  if (!canReadContent) return "Показаны рамки и находки без самого изображения: просмотр изображения доступен администратору безопасности.";
+  return "Изображение сохранено. Чтобы увидеть его, нажмите «Показать содержимое» и укажите причину.";
+}
+
+// Изображения запроса и рамки находок на них (ТЗ 5.17, задачи 5.46 и 6.13). Рамки и находки видны всем, кто читает события;
+// само изображение — только с правом на содержимое, после ввода причины, и только если оно сохранено (режим «полностью» и
+// хранение изображений в политике, ADR-0039). Изображение приходит в ответе на запрос содержимого и живёт в состоянии карточки.
+function Images({ d, canReadContent, images }: { d: Details; canReadContent: boolean; images: NonNullable<EventContent["images"]> }) {
   const imageFindings = d.findings.filter((f) => f.source === "image");
   if (d.media.length === 0 && imageFindings.length === 0) return null;
   // Номер находки сквозной по событию: совпадает с номером на рисунке и в списке под ним.
   const numbered = imageFindings.map((f, i) => ({ ...f, n: i + 1 }));
+  const srcOf = new Map(images.map((img) => [img.location, `data:image/${img.format};base64,${img.data}`]));
+  const shown = d.media.filter((m) => srcOf.has(m.location)).length;
   return (
     <section aria-labelledby="images" className="flex flex-col gap-3">
       <h3 id="images" className="text-md font-semibold">
         Изображения и рамки находок
       </h3>
-      <p className="text-sm text-muted">
-        {canReadContent && storage === "full"
-          ? "Само изображение сервер не сохраняет, поэтому рамки показаны на пустом поле размеров исходного изображения."
-          : "Показаны рамки и находки без самого изображения."}
-      </p>
+      <p className="text-sm text-muted">{imagesHint(d, canReadContent, shown)}</p>
       {d.media.map((m) => {
         const here = numbered.filter((f) => f.location === m.location);
         const marks: BoxMark[] = here.flatMap((f) =>
@@ -283,9 +305,16 @@ function Images({ d, canReadContent, storage }: { d: Details; canReadContent: bo
                 ? `Проверено${m.texts !== null ? `, фрагментов текста: ${m.texts}` : ""}. Находок: ${here.length}.`
                 : `Не проверено: ${mediaReason.get(m.reason) ?? m.reason}.`}
               {m.format && m.width !== null && m.height !== null ? ` Формат ${m.format.toUpperCase()}, ${m.width} × ${m.height} пикселей.` : ""}
+              {m.storeSkipped ? ` Не сохранено: ${storeSkipReason.get(m.storeSkipped) ?? m.storeSkipped}.` : ""}
             </p>
             {m.width !== null && m.height !== null && m.width > 0 && m.height > 0 && (
-              <ImageBoxes width={m.width} height={m.height} marks={marks} label={`Рамки находок на изображении ${m.location}: ${marks.length}`} />
+              <ImageBoxes
+                width={m.width}
+                height={m.height}
+                marks={marks}
+                src={srcOf.get(m.location)}
+                label={`${srcOf.has(m.location) ? "Изображение" : "Рамки находок на изображении"} ${m.location}, рамок: ${marks.length}`}
+              />
             )}
             {here.length > 0 && (
               <ol className="flex flex-col gap-0.5 text-sm" aria-label={`Находки на изображении ${m.location}`}>
@@ -380,10 +409,18 @@ function ReasonDialog({
   );
 }
 
-function ContentBlock({ ev, canRead }: { ev: Event; canRead: boolean }) {
+function ContentBlock({
+  ev,
+  canRead,
+  content,
+  setContent,
+}: {
+  ev: Event;
+  canRead: boolean;
+  content: EventContent | null;
+  setContent: (c: EventContent | null) => void;
+}) {
   const [open, setOpen] = useState(false);
-  // Содержимое живёт только в состоянии этого блока: закрытие карточки или смена события его сбрасывает.
-  const [content, setContent] = useState<EventContent | null>(null);
   const read = useMutation({
     mutationFn: (reason: string) => eventsApi.content(ev.id, reason),
     onSuccess: (c) => {
@@ -474,6 +511,8 @@ export function EventCard({ id, canReadContent, onClose, rights = {} }: { id: st
 
 function Body({ ev, canReadContent, rights }: { ev: Event; canReadContent: boolean; rights: CardRights }) {
   const d = readDetails(ev.details);
+  // Содержимое (текст и изображения) живёт только в состоянии карточки события: закрытие карточки или смена события его сбрасывает.
+  const [content, setContent] = useState<EventContent | null>(null);
   return (
     <>
       <Panel>
@@ -507,9 +546,9 @@ function Body({ ev, canReadContent, rights }: { ev: Event; canReadContent: boole
       )}
       <Why ev={ev} d={d} />
       <Findings d={d} threats={ev.threats} />
-      <Images d={d} canReadContent={canReadContent} storage={ev.storage} />
+      <Images d={d} canReadContent={canReadContent} images={content?.images ?? []} />
       <MarkPanel ev={ev} canMark={rights.canMark === true} canException={rights.canException === true} mfa={rights.mfa === true} />
-      <ContentBlock ev={ev} canRead={canReadContent} />
+      <ContentBlock ev={ev} canRead={canReadContent} content={content} setContent={setContent} />
       {(d.latency.length > 0 || d.tokens) && (
         <section aria-labelledby="perf" className="flex flex-col gap-2">
           <h3 id="perf" className="text-md font-semibold">

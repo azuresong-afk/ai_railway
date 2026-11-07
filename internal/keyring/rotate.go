@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -169,12 +170,15 @@ type RewrapCounts struct {
 	Approvals int64 `json:"approvals"`
 	// RedTeam — выдержки ответов тестирования устойчивости (5В3 ревью 5.r3 этапа 5).
 	RedTeam int64 `json:"redteam_examples"`
+	// Media — изображения запросов в содержимом событий full (задача 6.13,
+	// ADR-0039).
+	Media int64 `json:"event_media"`
 }
 
 // Total — всего строк.
 func (c RewrapCounts) Total() int64 {
 	return c.MFA + c.Providers + c.Content + c.Channels + c.GatewayTLS + c.OIDC + c.Prompts + c.MCPServers + c.LDAP +
-		c.Approvals + c.RedTeam
+		c.Approvals + c.RedTeam + c.Media
 }
 
 // RewrapOptions — параметры перешифрования.
@@ -194,6 +198,10 @@ type RewrapOptions struct {
 // DefaultRewrapBatch — строк в пачке перешифрования.
 const DefaultRewrapBatch = 500
 
+// mediaRewrapBatch — строк event_media в пачке: изображение до 3 МиБ, в
+// памяти пачки — не больше 24 МиБ открытого текста (ADR-0039, раздел 3).
+const mediaRewrapBatch = 8
+
 // Места хранения шифротекстов ключа данных: те же AAD, что у internal/auth
 // (TOTP), internal/apps (учётные данные провайдеров и ключ сертификата
 // заказчика), internal/events (содержимое full), internal/notify
@@ -203,6 +211,7 @@ const (
 	mfaTable, mfaColumn             = "user_mfa", "secret"
 	providersTable, providersColumn = "providers", "credential"
 	contentTable, contentColumn     = "event_content", "sealed"
+	mediaTable, mediaColumn         = "event_media", "sealed"
 	channelsTable, channelsColumn   = "notify_channels", "secret"
 	gwTLSTable, gwTLSColumn         = "gateway_tls", "key"
 	oidcTable, oidcColumn           = "oidc_settings", "client_secret"
@@ -267,6 +276,9 @@ func Rewrap(ctx context.Context, db Owner, box *Box, o RewrapOptions) (RewrapCou
 		}},
 		{&total.RedTeam, func(ctx context.Context, tx pgx.Tx, active string) (int, error) {
 			return rewrapRedTeam(ctx, tx, box, active, o.Batch)
+		}},
+		{&total.Media, func(ctx context.Context, tx pgx.Tx, active string) (int, error) {
+			return rewrapMedia(ctx, tx, box, active, o.ContentPurpose, min(o.Batch, mediaRewrapBatch))
 		}},
 	}
 	for _, st := range steps {
@@ -577,6 +589,46 @@ func rewrapContent(ctx context.Context, tx pgx.Tx, box *Box, active, purpose str
 	return len(rows), nil
 }
 
+// rewrapMedia — пачка изображений событий full (event_media, задача 6.13):
+// производный ключ тех же суток от новой версии, AAD — <ID события>/<номер>.
+func rewrapMedia(ctx context.Context, tx pgx.Tx, box *Box, active, purpose string, batch int) (int, error) {
+	type row struct {
+		id, keyID, alg string
+		idx            int
+		ts, day        time.Time
+		sealed         []byte
+	}
+	rows, err := collect(ctx, tx, `SELECT event_id::text, ts, idx, key_id::text, key_day, alg, sealed FROM event_media
+		WHERE key_id <> $1 ORDER BY ts, event_id, idx LIMIT $2 FOR UPDATE`, []any{active, batch},
+		func(r pgx.Rows) (row, error) {
+			var x row
+			return x, r.Scan(&x.id, &x.ts, &x.idx, &x.keyID, &x.day, &x.alg, &x.sealed)
+		})
+	if err != nil {
+		return 0, fmt.Errorf("перешифрование изображений событий: %w", err)
+	}
+	for _, x := range rows {
+		aad := x.id + "/" + strconv.Itoa(x.idx)
+		plain, err := box.OpenDerivedContext(ctx, x.keyID, purpose, x.day, x.sealed, mediaTable, mediaColumn, aad)
+		if err != nil {
+			return 0, fmt.Errorf("перешифрование изображения события %s: %w", x.id, err)
+		}
+		keyID, alg, sealed, err := box.SealDerived(ctx, purpose, x.day, plain, mediaTable, mediaColumn, aad)
+		clear(plain)
+		if err != nil {
+			return 0, fmt.Errorf("перешифрование изображения события %s: %w", x.id, err)
+		}
+		if keyID != active || alg != x.alg {
+			return 0, errors.New("перешифрование: версия или алгоритм ключа сменились — запустите заново")
+		}
+		if _, err := tx.Exec(ctx, `UPDATE event_media SET key_id = $1, sealed = $2 WHERE event_id = $3 AND ts = $4 AND idx = $5 AND key_id = $6`,
+			keyID, sealed, x.id, x.ts, x.idx, x.keyID); err != nil {
+			return 0, fmt.Errorf("перешифрование изображения события %s: %w", x.id, err)
+		}
+	}
+	return len(rows), nil
+}
+
 // reseal расшифровывает прежней версией и шифрует действующей; открытый
 // текст затирается.
 func reseal(ctx context.Context, box *Box, active, keyID string, sealed []byte, table, column, id string) (string, []byte, error) {
@@ -697,7 +749,8 @@ func Status(ctx context.Context, db Owner, orgID string) ([]VersionStatus, error
 		(SELECT count(*) FROM mcp_servers WHERE credential_key_id = k.id),
 		(SELECT count(*) FROM ldap_settings WHERE bind_password_key_id = k.id),
 		(SELECT count(*) FROM approval_requests WHERE args_key_id = k.id),
-		(SELECT count(*) FROM redteam_results WHERE example_key_id = k.id)
+		(SELECT count(*) FROM redteam_results WHERE example_key_id = k.id),
+		(SELECT count(*) FROM event_media WHERE key_id = k.id)
 		FROM data_keys k WHERE k.org_id = $1 ORDER BY k.version`, orgID)
 	if err != nil {
 		return nil, fmt.Errorf("ключ данных: состояние: %w", err)
@@ -708,7 +761,7 @@ func Status(ctx context.Context, db Owner, orgID string) ([]VersionStatus, error
 		var v VersionStatus
 		if err := rows.Scan(&v.ID, &v.Version, &v.MasterVersion, &v.Sealed, &v.CreatedAt, &v.RetiredAt,
 			&v.Rows.MFA, &v.Rows.Providers, &v.Rows.Content, &v.Rows.Channels, &v.Rows.GatewayTLS, &v.Rows.OIDC, &v.Rows.Prompts,
-			&v.Rows.MCPServers, &v.Rows.LDAP, &v.Rows.Approvals, &v.Rows.RedTeam); err != nil {
+			&v.Rows.MCPServers, &v.Rows.LDAP, &v.Rows.Approvals, &v.Rows.RedTeam, &v.Rows.Media); err != nil {
 			return nil, err
 		}
 		out = append(out, v)
@@ -749,9 +802,10 @@ func DestroyRetired(ctx context.Context, db Owner, rec Recorder, orgID string, a
 				(SELECT count(*) FROM mcp_servers WHERE credential_key_id = $1),
 				(SELECT count(*) FROM ldap_settings WHERE bind_password_key_id = $1),
 				(SELECT count(*) FROM approval_requests WHERE args_key_id = $1),
-				(SELECT count(*) FROM redteam_results WHERE example_key_id = $1)`, v.ID).
+				(SELECT count(*) FROM redteam_results WHERE example_key_id = $1),
+				(SELECT count(*) FROM event_media WHERE key_id = $1)`, v.ID).
 				Scan(&left.MFA, &left.Providers, &left.Content, &left.Channels, &left.GatewayTLS, &left.OIDC, &left.Prompts,
-					&left.MCPServers, &left.LDAP, &left.Approvals, &left.RedTeam); err != nil {
+					&left.MCPServers, &left.LDAP, &left.Approvals, &left.RedTeam, &left.Media); err != nil {
 				return err
 			}
 			if left.Total() > 0 {

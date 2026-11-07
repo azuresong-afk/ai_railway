@@ -1606,7 +1606,10 @@ paths:
         Каждое обращение пишет `events.content_read` с ID события и причиной до ответа; если
         запись в журнал аудита не удалась — 503, содержимое не выдаётся. Содержимое `full`
         расшифровывается на сервере. Нет сохранённого содержимого (режим `none` или удалено
-        по сроку) — 404, обращение тоже пишется в аудит.
+        по сроку) — 404, обращение тоже пишется в аудит. Сохранённые изображения запроса
+        (`media_store`, задача 6.13, ADR-0039) выдаются в `images`; право — только в полной
+        области (маршрут не отбирает объекты, право в части приложений — 403). Число выданных
+        изображений — в записи аудита (`images`).
       x-permission: events.content.read
       security: [{ sessionCookie: [] }]
       parameters:
@@ -9801,6 +9804,21 @@ components:
         storage: { type: string, enum: [masked, full] }
         request: { type: string }
         response: { type: string }
+        images:
+          type: array
+          maxItems: 16
+          description: >-
+            Изображения запроса (задача 6.13, ADR-0039): только в режиме full при media_store политики. Рамки находок — в details.findings[].box, в пикселях
+            details.media[].width × height.
+          items: { $ref: '#/components/schemas/EventContentImage' }
+    EventContentImage:
+      type: object
+      required: [location, format, data]
+      properties:
+        location: { type: string, description: 'Место изображения в запросе, как в details.media[].location' }
+        format: { type: string, enum: [png, jpeg, gif, webp, bmp, tiff] }
+        sanitized: { type: boolean, description: 'Сохранено очищенным (media_sanitize)' }
+        data: { type: string, contentEncoding: base64, description: 'Байты изображения, base64; консоль показывает их как data:-адрес' }
     EventExportRequest:
       type: object
       required: [format]
@@ -9950,6 +9968,13 @@ components:
             Не задано — выключена. Изображение, которое очистить нельзя (ссылка https://, сбой или перегрузка
             анализатора, неизвестный формат, отказ по пределам), провайдеру не уходит: запрос отклоняется. Выключение —
             ослабление (media_sanitize_weakened, DM-40).
+        media_store:
+          type: boolean
+          description: >-
+            Хранение изображений запроса в содержимом события (задача 6.13, ADR-0039): действует только у приложения с
+            режимом хранения full; сохраняются изображения, разобранные aisec-media (при media_sanitize — очищенные),
+            до 3 МиБ на изображение и 4 МиБ на событие, срок — как у содержимого. Не задано — выключено. Включение и
+            создание политики с ним — ослабление (media_store_enabled, DM-40), только с подтверждением.
         block_message: { type: string, maxLength: 300 }
         rules: { type: array, maxItems: 256, items: { $ref: '#/components/schemas/PolicyRule' } }
         exceptions:
@@ -10224,7 +10249,7 @@ components:
             type: object
             required: [field, before, after]
             properties:
-              field: { type: string, enum: [name, mode, non_text, response_check, media_check, media_check_timeout_ms, media_sanitize, block_message, judge] }
+              field: { type: string, enum: [name, mode, non_text, response_check, media_check, media_check_timeout_ms, media_sanitize, media_store, block_message, judge] }
               before: { type: string }
               after: { type: string }
         rules_added: { type: array, items: { $ref: '#/components/schemas/PolicyRule' } }
@@ -10249,7 +10274,7 @@ components:
             properties:
               kind:
                 type: string
-                enum: [mode_monitor, non_text_weakened, response_check_weakened, media_check_weakened, media_sanitize_weakened, rule_removed, action_weakened,
+                enum: [mode_monitor, non_text_weakened, response_check_weakened, media_check_weakened, media_sanitize_weakened, media_store_enabled, rule_removed, action_weakened,
                   threshold_raised, scope_narrowed, detector_changed, judge_weakened, exception_added, exception_extended, exception_changed,
                   tools_unapproved_weakened, tool_rule_added, tool_action_weakened, tool_scope_widened, tool_scope_narrowed,
                   tool_args_relaxed, tool_rate_raised, approval_timeout_raised, tool_rule_removed]
@@ -11688,6 +11713,16 @@ components:
           description: >
             Провайдеру ушло очищенное изображение (media_sanitize, задача 5.45): без метаданных,
             перекодированное и уменьшенное анализатором aisec-media.
+        stored:
+          type: boolean
+          description: Только в событии. Изображение сохранено в содержимом события (media_store, задача 6.13).
+        store_skipped:
+          type: string
+          enum: [url, not_parsed, too_large, event_limit, queue_full, not_sanitized]
+          description: >-
+            Только в событии. Почему изображение не сохранено, хотя media_store включено (ADR-0039, раздел 2): ссылка,
+            формат не разобран анализатором, больше 3 МиБ, предел 4 МиБ или 16 изображений на событие, очередь шлюза,
+            не удалось очистить.
     ImageBox:
       description: Рамка находки на изображении в пикселях исходного растра (ТЗ 5.17, п. 5).
       type: object
