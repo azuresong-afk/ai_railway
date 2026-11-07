@@ -221,6 +221,36 @@ type HeartbeatRequest struct {
 	// Media — состояние клиента aisec-media шлюза (задача 5.44 этапа 5,
 	// DM-50); шлюз присылает поле только после ответа с media.
 	Media *HeartbeatMedia `json:"media,omitempty"`
+	// EventBuffer — буфер событий шлюза на диске (задача 6.31, ADR-0037);
+	// шлюз присылает поле только после ответа с event_buffer.
+	EventBuffer *HeartbeatEventBuffer `json:"event_buffer,omitempty"`
+}
+
+// HeartbeatEventBuffer — заполнение буфера событий шлюза на диске и
+// счётчики с запуска шлюза: только числа и отметки времени.
+type HeartbeatEventBuffer struct {
+	Bytes          int64      `json:"bytes"`
+	MaxBytes       int64      `json:"max_bytes"`
+	Records        int64      `json:"records"`
+	OldestAt       *time.Time `json:"oldest_at,omitempty"`
+	Spilled        int64      `json:"spilled"`
+	Replayed       int64      `json:"replayed"`
+	DroppedLimit   int64      `json:"dropped_limit"`
+	DroppedExpired int64      `json:"dropped_expired"`
+	Corrupt        int64      `json:"corrupt"`
+	WriteErrors    int64      `json:"write_errors"`
+}
+
+func (b *HeartbeatEventBuffer) stats() *gwregistry.EventBufferStats {
+	if b == nil {
+		return nil
+	}
+	out := &gwregistry.EventBufferStats{Bytes: b.Bytes, MaxBytes: b.MaxBytes, Records: b.Records, Spilled: b.Spilled, Replayed: b.Replayed,
+		DroppedLimit: b.DroppedLimit, DroppedExpired: b.DroppedExpired, Corrupt: b.Corrupt, WriteErrors: b.WriteErrors}
+	if b.OldestAt != nil {
+		out.OldestAt = b.OldestAt.UTC()
+	}
+	return out
 }
 
 // HeartbeatMedia — очередь шлюза к aisec-media, отсрочка после сбоя,
@@ -394,6 +424,8 @@ type HeartbeatResponse struct {
 	Limits bool `json:"limits,omitempty"`
 	// Media — сервер принимает поле media (задача 5.44 этапа 5).
 	Media bool `json:"media,omitempty"`
+	// EventBuffer — сервер принимает поле event_buffer (задача 6.31).
+	EventBuffer bool `json:"event_buffer,omitempty"`
 }
 
 // HeartbeatBudgetState — расход остальных процессов: приложение → 1e-7 ₽.
@@ -413,7 +445,7 @@ func heartbeat(g *gwregistry.Service, a *approvals.Service, q QuotaObserver, log
 		in := gwregistry.HeartbeatInput{
 			Version: req.Version, BundleETag: req.BundleETag, Selftest: req.Selftest.report(), Integrity: req.Integrity.report(),
 			BundleKeys: req.BundleKeys, Stopping: req.Stopping, Budget: req.Budget.report(), TLSFingerprint: req.TLSFingerprint,
-			Limits: req.Limits.limits(), Media: req.Media.stats(),
+			Limits: req.Limits.limits(), Media: req.Media.stats(), EventBuffer: req.EventBuffer.stats(),
 		}
 		if req.Time != nil {
 			in.Time = *req.Time
@@ -425,7 +457,7 @@ func heartbeat(g *gwregistry.Service, a *approvals.Service, q QuotaObserver, log
 			in.StartedAt = req.StartedAt.UTC()
 		}
 		if err := in.Validate(); err != nil || !validPending(req.ApprovalsPending) {
-			WriteProblem(w, Invalid("Неверные поля heartbeat: version — 1–64 символа латиницы, цифр и «.+_-», bundle_etag — до 128 печатных символов ASCII, selftest и integrity — результат, время проверки и число провалов 0–1000, манифест — версия и время вместе, bundle_keys — до 2 идентификаторов ключей, stopping и budget — только вместе с started_at, budget — 1–2 месяца ГГГГ-ММ по возрастанию, до 2 000 приложений, счётчики 0–2^62, tls_fingerprint — пусто или 64 строчные шестнадцатеричные цифры, approvals_pending — до 256 разных UUID, limits — tool_rate или sessions со счётчиками 0–2^62, заполнение не больше предела, media — inflight не больше max_inflight (1–65536), счётчики 0–2^62, selftest — ok, failed или unchecked со временем проверки, провалы 0–1000 только у failed."))
+			WriteProblem(w, Invalid("Неверные поля heartbeat: version — 1–64 символа латиницы, цифр и «.+_-», bundle_etag — до 128 печатных символов ASCII, selftest и integrity — результат, время проверки и число провалов 0–1000, манифест — версия и время вместе, bundle_keys — до 2 идентификаторов ключей, stopping и budget — только вместе с started_at, budget — 1–2 месяца ГГГГ-ММ по возрастанию, до 2 000 приложений, счётчики 0–2^62, tls_fingerprint — пусто или 64 строчные шестнадцатеричные цифры, approvals_pending — до 256 разных UUID, limits — tool_rate или sessions со счётчиками 0–2^62, заполнение не больше предела, media — inflight не больше max_inflight (1–65536), счётчики 0–2^62, selftest — ok, failed или unchecked со временем проверки, провалы 0–1000 только у failed, event_buffer — счётчики 0–2^62, bytes не больше удвоенного max_bytes (64 МиБ — 1 ПиБ), records без oldest_at только при нуле."))
 			return
 		}
 		ctx, cancel := contextTimeout(r, 5*time.Second)
@@ -449,7 +481,7 @@ func heartbeat(g *gwregistry.Service, a *approvals.Service, q QuotaObserver, log
 			return
 		}
 		resp := HeartbeatResponse{ServerTime: res.At.UTC(), ClockTLS: true, IntervalSeconds: int(gwregistry.DefaultHeartbeatInterval / time.Second),
-			Reissue: res.Reissue, Approvals: a != nil, QuotaLeases: q != nil, Limits: true, Media: true}
+			Reissue: res.Reissue, Approvals: a != nil, QuotaLeases: q != nil, Limits: true, Media: true, EventBuffer: true}
 		if q != nil && req.QuotaAutonomous != nil {
 			if err := q.Observe(ctx, p.ID, *req.QuotaAutonomous); err != nil {
 				// heartbeat не отклоняется: условие обновится со следующим.

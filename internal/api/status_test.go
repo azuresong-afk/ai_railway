@@ -35,7 +35,7 @@ func TestSystemStatus(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Server.Version != "1.2.3" || got.Time.Sync != sysstatus.SyncSynchronized || len(got.Notifications) != 33 {
+	if got.Server.Version != "1.2.3" || got.Time.Sync != sysstatus.SyncSynchronized || len(got.Notifications) != 34 {
 		t.Fatalf("%+v", got)
 	}
 	// Пустые списки — массивы, не null: клиент консоли не проверяет на null.
@@ -185,6 +185,48 @@ func TestHeartbeatMedia(t *testing.T) {
 	}
 	m, ok := svc.GatewayMedia()[gw.ID]
 	if !ok || !m.Down || m.Analyzed != 7 || m.Overloaded != 2 || m.Timeout != 1 || m.Selftest == nil || m.Selftest.Failed != 2 {
+		t.Fatalf("состояние: %+v %v", m, ok)
+	}
+}
+
+// Задача 6.31 (ADR-0037): heartbeat с состоянием буфера событий на диске —
+// ответ сообщает event_buffer, состояние доходит до реестра, неверное — 400.
+func TestHeartbeatEventBuffer(t *testing.T) {
+	svc, gw := newGatewayEnv(t)
+	h, _, err := NewInternal(InternalOptions{Logger: quiet(), Hasher: testHasher(t), Gateways: svc, Authorizer: asGateway(gw.ID),
+		RateLimit: RateConfig{Rules: []RateRule{{Prefix: "/", Max: 0}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	post := func(body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/internal/v1/heartbeat", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+		return w
+	}
+	const counters = `"spilled":9,"replayed":4,"dropped_limit":0,"dropped_expired":0,"corrupt":1,"write_errors":0`
+	for _, bad := range []string{
+		`{"version":"1","event_buffer":{"bytes":1,"max_bytes":1024,"records":0,` + counters + `}}`,
+		`{"version":"1","event_buffer":{"bytes":1,"max_bytes":1073741824,"records":0,` + counters + `,"extra":1}}`,
+		`{"version":"1","event_buffer":{"bytes":1,"max_bytes":1073741824,"records":-1,` + counters + `}}`,
+		`{"version":"1","event_buffer":{"bytes":1,"max_bytes":1073741824,"records":0,"oldest_at":"2026-11-06T10:00:00Z",` + counters + `}}`,
+	} {
+		mustProblem(t, post(bad), http.StatusBadRequest, CodeInvalidRequest)
+	}
+	w := post(`{"version":"1"}`)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"event_buffer":true`) {
+		t.Fatalf("%d %s", w.Code, w.Body.String())
+	}
+	if len(svc.GatewayEventBuffer()) != 0 {
+		t.Fatal("шлюз без буфера: данные появились")
+	}
+	w = post(`{"version":"1","event_buffer":{"bytes":4096,"max_bytes":1073741824,"records":5,"oldest_at":"2020-01-01T00:00:00Z",` + counters + `}}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("%d %s", w.Code, w.Body.String())
+	}
+	m, ok := svc.GatewayEventBuffer()[gw.ID]
+	if !ok || m.Records != 5 || m.Corrupt != 1 || m.Spilled != 9 || m.OldestAt.IsZero() {
 		t.Fatalf("состояние: %+v %v", m, ok)
 	}
 }

@@ -149,6 +149,38 @@ type heartbeatBody struct {
 	// Media — состояние клиента aisec-media (задача 5.44 этапа 5): только
 	// серверу, который сообщил media.
 	Media *MediaReport `json:"media,omitempty"`
+	// EventBuffer — буфер событий на диске (задача 6.31, ADR-0037): только
+	// серверу, который сообщил event_buffer.
+	EventBuffer *EventBufferReport `json:"event_buffer,omitempty"`
+}
+
+// EventBufferReport — буфер событий шлюза на диске для сервера (ADR-0037,
+// раздел 8): заполнение, самая старая непосланная запись и счётчики с
+// запуска процесса. Только числа и отметки времени.
+type EventBufferReport struct {
+	Bytes    int64 `json:"bytes"`
+	MaxBytes int64 `json:"max_bytes"`
+	Records  int64 `json:"records"`
+	// OldestAt — время первой записи самого старого сегмента с
+	// непосланными событиями; nil — буфер пуст.
+	OldestAt       *time.Time `json:"oldest_at,omitempty"`
+	Spilled        uint64     `json:"spilled"`
+	Replayed       uint64     `json:"replayed"`
+	DroppedLimit   uint64     `json:"dropped_limit"`
+	DroppedExpired uint64     `json:"dropped_expired"`
+	Corrupt        uint64     `json:"corrupt"`
+	WriteErrors    uint64     `json:"write_errors"`
+}
+
+// NewEventBufferReport — отчёт из состояния буфера.
+func NewEventBufferReport(st EventBufferStats) *EventBufferReport {
+	out := &EventBufferReport{Bytes: st.Bytes, MaxBytes: st.MaxBytes, Records: st.Records, Spilled: st.Spilled, Replayed: st.Replayed,
+		DroppedLimit: st.DroppedLimit, DroppedExpired: st.DroppedExpired, Corrupt: st.Corrupt, WriteErrors: st.WriteErrors}
+	if !st.OldestAt.IsZero() && st.Records > 0 {
+		t := st.OldestAt.UTC()
+		out.OldestAt = &t
+	}
+	return out
 }
 
 // MediaReport — состояние клиента aisec-media шлюза для сервера (задача

@@ -372,6 +372,9 @@ type Service struct {
 	// media — последнее состояние клиента aisec-media каждого шлюза
 	// (задача 5.44 этапа 5).
 	media map[string]MediaMark
+	// eventBuffer — последнее состояние буфера событий на диске каждого
+	// шлюза (задача 6.31).
+	eventBuffer map[string]EventBufferMark
 
 	// malformed — запросы регистрации с токеном неверного формата: они идут
 	// в технический журнал, а не в аудит (Н17 ревью 2.r3a, как В9).
@@ -399,7 +402,7 @@ func New(o Options) (*Service, error) {
 		orgID: o.OrgID, clock: o.Clock, validity: o.CertValidity, minHB: o.HeartbeatMinInterval, logger: o.Logger,
 		lastHB: map[string]time.Time{}, lastDeny: map[string]time.Time{},
 		lastReissue: map[string]time.Time{}, lastMismatch: map[string]time.Time{}, anchorRoot: o.AnchorRoot,
-		limits: map[string]LimitsMark{}, media: map[string]MediaMark{},
+		limits: map[string]LimitsMark{}, media: map[string]MediaMark{}, eventBuffer: map[string]EventBufferMark{},
 	}
 	if s.anchorRoot == "" && s.ca != nil {
 		s.anchorRoot = RootID(h, s.ca.CertDER())
@@ -733,6 +736,10 @@ type HeartbeatInput struct {
 	// Media — состояние клиента aisec-media шлюза (задача 5.44 этапа 5); nil
 	// — шлюз без aisec-media, прежней версии или сервер не сообщил media.
 	Media *MediaStats
+	// EventBuffer — буфер событий шлюза на диске (задача 6.31, ADR-0037);
+	// nil — буфер выключен, шлюз прежней версии или сервер не сообщил
+	// event_buffer.
+	EventBuffer *EventBufferStats
 }
 
 // Пределы итогов проверок в heartbeat.
@@ -815,6 +822,9 @@ func (in HeartbeatInput) Validate() error {
 	if err := in.Media.validate(); err != nil {
 		return err
 	}
+	if err := in.EventBuffer.validate(); err != nil {
+		return err
+	}
 	if in.Version == "" || len(in.Version) > maxVersion {
 		return fmt.Errorf("%w: version — от 1 до %d символов", ErrInvalidRequest, maxVersion)
 	}
@@ -859,6 +869,9 @@ func (s *Service) Heartbeat(ctx context.Context, gatewayID string, in HeartbeatI
 	}
 	if in.StartedAt.After(now.Add(maxReportFuture)) {
 		return HeartbeatResult{}, fmt.Errorf("%w: started_at в будущем", ErrInvalidRequest)
+	}
+	if in.EventBuffer != nil && in.EventBuffer.OldestAt.After(now.Add(maxReportFuture)) {
+		return HeartbeatResult{}, fmt.Errorf("%w: oldest_at буфера событий в будущем", ErrInvalidRequest)
 	}
 	if in.Media != nil && in.Media.Selftest != nil && in.Media.Selftest.At.After(now.Add(maxReportFuture)) {
 		return HeartbeatResult{}, fmt.Errorf("%w: время самотеста aisec-media в будущем", ErrInvalidRequest)
@@ -905,6 +918,7 @@ func (s *Service) Heartbeat(ctx context.Context, gatewayID string, in HeartbeatI
 	}
 	s.observeLimits(gatewayID, in, now)
 	s.observeMedia(gatewayID, in, now)
+	s.observeEventBuffer(gatewayID, in, now)
 	out := HeartbeatResult{At: now, Reissue: s.needReissue(ch.CertCA, ch.CertNotAfter, now),
 		Budget: s.syncBudget(ctx, gatewayID, in)}
 	if !ch.VerifyDone {

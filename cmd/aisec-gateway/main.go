@@ -183,7 +183,7 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 	if err != nil {
 		return err
 	}
-	authBase, queue, closeEvents, err := newAuth(p, file, cfg, control.httpClient(), logger)
+	authBase, queue, evBuffer, closeEvents, err := newAuth(p, file, cfg, control.httpClient(), state, logger)
 	if err != nil {
 		return err
 	}
@@ -191,6 +191,10 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 	defer func() {
 		cctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
+		if evBuffer != nil {
+			// Остаток очереди — на диск, не ждать сервер (ADR-0037, раздел 2).
+			evBuffer.Drain()
+		}
 		err = errors.Join(err, queue.Close(cctx), closeEvents())
 		if n := queue.Dropped(); n > 0 {
 			logger.Warn("события отброшены: очередь переполнена или сервер недоступен при остановке", "count", n)
@@ -309,7 +313,7 @@ func run(ctx context.Context, cfg *config.Gateway, logger *slog.Logger) (err err
 		}
 		hbDone := startHeartbeat(hbCtx, cfg, control.client, logger, reports, bundles.ETag, verify, started, reissue.Reissue, hb.budget, hb.clock, appTLS.Current,
 			hb.approvals.Pending, hb.leases.Autonomous, func() *gateway.LimitsReport { return gateway.NewLimitsReport(hb.toolRate, hb.sessions) },
-			mediaReport(hb.mediaClient))
+			mediaReport(hb.mediaClient), eventBufferReport(evBuffer))
 		defer func() {
 			hbCancel()
 			<-hbDone
@@ -684,7 +688,7 @@ const gwReissueWarn = 30 * 24 * time.Hour
 func startHeartbeat(ctx context.Context, cfg *config.Gateway, client *http.Client, logger *slog.Logger, reports *gateway.Reports, etag func() string,
 	verify func(context.Context), started time.Time, reissue func(context.Context) error, budget *gateway.Budget,
 	clock *gateway.ServerClock, tlsFingerprint func() string, pendingApprovals func() []string, quotaAutonomous func() bool,
-	limits func() *gateway.LimitsReport, media func() *gateway.MediaReport) <-chan struct{} {
+	limits func() *gateway.LimitsReport, media func() *gateway.MediaReport, eventBuffer func() *gateway.EventBufferReport) <-chan struct{} {
 	v := version
 	if !gateway.ValidVersion(v) {
 		v = "unknown"
@@ -696,6 +700,7 @@ func startHeartbeat(ctx context.Context, cfg *config.Gateway, client *http.Clien
 			Client: client, Server: cfg.Server, Version: v, Logger: logger, Reports: reports, BundleETag: etag, Verify: verify,
 			StartedAt: started, Reissue: reissue, Budget: budget, ServerTime: clock, TLSFingerprint: tlsFingerprint,
 			PendingApprovals: pendingApprovals, QuotaAutonomous: quotaAutonomous, Limits: limits, Media: media,
+			EventBuffer: eventBuffer,
 		})
 	}()
 	return done
@@ -723,33 +728,58 @@ func newUserMAC(p aisecCrypto.Provider, key []byte, file *config.GatewayFile) (a
 
 // newAuth собирает общую часть аутентификации приложений (счётчик неудач,
 // события) и очередь событий: с сервером управления (control) — отправитель
-// на сервер по mTLS, без него — файл JSONL. Проверку ключей (Authenticator)
-// добавляет сборка обработчика.
+// на сервер по mTLS с буфером на диске в каталоге состояния (ADR-0037,
+// если не выключен -event-buffer-max-mib 0), без него — файл JSONL.
+// Проверку ключей (Authenticator) добавляет сборка обработчика.
 func newAuth(p aisecCrypto.Provider, file *config.GatewayFile, cfg *config.Gateway, control *http.Client,
-	logger *slog.Logger) (*gateway.AuthConfig, *events.Queue, func() error, error) {
+	state *gateway.BundleState, logger *slog.Logger) (*gateway.AuthConfig, *events.Queue, *gateway.EventBuffer, func() error, error) {
 	rnd, err := p.Random()
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	var queue *events.Queue
+	var buffer *gateway.EventBuffer
 	var closeSink func() error
 	if control != nil {
 		sink, err := gateway.NewServerSink(gateway.ServerSinkConfig{Client: control, Server: cfg.Server, Logger: logger})
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, nil, nil, nil, err
 		}
-		queue = events.NewQueue(sink, events.QueueConfig{Logger: logger, SendTimeout: gateway.SinkSendTimeout})
-		sink.CountDropped(queue.Dropped)
+		var out events.Sink = sink
+		if cfg.EventBufferMaxBytes > 0 {
+			buffer, err = gateway.OpenEventBuffer(gateway.EventBufferConfig{State: state, Provider: p, Sink: sink,
+				MaxBytes: cfg.EventBufferMaxBytes, MaxAge: cfg.EventBufferMaxAge, Logger: logger})
+			if err != nil {
+				return nil, nil, nil, nil, err
+			}
+			out = buffer
+			buffer.Start()
+		} else {
+			logger.Warn("буфер событий на диске выключен (-event-buffer-max-mib 0): при недоступности сервера события копятся только в памяти")
+		}
+		queue = events.NewQueue(out, events.QueueConfig{Logger: logger, SendTimeout: gateway.SinkSendTimeout})
+		// Отброшенное буфером (предел, срок, повреждения) — в том же
+		// счётчике, что и переполнение очереди (DM-44).
+		sink.CountDropped(func() uint64 {
+			n := queue.Dropped()
+			if buffer != nil {
+				n += buffer.Dropped()
+			}
+			return n
+		})
 		closeSink = func() error {
 			if n := sink.Rejected(); n > 0 {
 				logger.Warn("сервер управления отклонил события", "count", n)
+			}
+			if buffer != nil {
+				return buffer.Close()
 			}
 			return nil
 		}
 	} else {
 		sink, err := events.NewFileSink(file.Gateway.EventsFile)
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("файл событий: %w", err)
+			return nil, nil, nil, nil, fmt.Errorf("файл событий: %w", err)
 		}
 		queue = events.NewQueue(sink, events.QueueConfig{Logger: logger})
 		closeSink = sink.Close
@@ -757,7 +787,16 @@ func newAuth(p aisecCrypto.Provider, file *config.GatewayFile, cfg *config.Gatew
 	return &gateway.AuthConfig{
 		Limiter: auth.NewFailureLimiter(auth.LimiterConfig{}),
 		Events:  queue, IDs: ids.NewGenerator(rnd), Logger: logger,
-	}, queue, closeSink, nil
+	}, queue, buffer, closeSink, nil
+}
+
+// eventBufferReport — состояние буфера событий для heartbeat; nil — буфер
+// выключен.
+func eventBufferReport(b *gateway.EventBuffer) func() *gateway.EventBufferReport {
+	if b == nil {
+		return nil
+	}
+	return func() *gateway.EventBufferReport { return gateway.NewEventBufferReport(b.Stats()) }
 }
 
 // newProviders создаёт провайдеров из файла конфигурации. Ключи провайдеров

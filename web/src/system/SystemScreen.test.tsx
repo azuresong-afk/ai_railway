@@ -24,6 +24,10 @@ const status = {
         tool_rate: { keys: 100000, max_keys: 100000, evictions: 17 },
         sessions: { sessions: 30, max_sessions: 100000, max_app_sessions: 25000, evictions: 0, app_evictions: 4 },
       },
+      event_buffer: {
+        reported_at: "2026-10-21T12:00:00Z", started_at: "2026-10-21T10:00:00Z", bytes: 900 * 1048576, max_bytes: 1073741824, used_percent: 87, warn_percent: 80,
+        records: 1500, oldest_at: "2026-10-21T11:00:00Z", spilled: 2000, replayed: 500, dropped_limit: 7, dropped_expired: 0, corrupt: 2, write_errors: 0,
+      },
     },
   ],
   shadow_ai_storage: { aggregates: 5000000, max_aggregates: 5000000, used_percent: 100, warn_percent: 90 },
@@ -94,6 +98,13 @@ describe("состояние системы", () => {
     expect(screen.getByText(/по доле приложения 4/)).toBeInTheDocument();
     expect(screen.getAllByText("нет данных").length).toBeGreaterThan(0);
     expect(screen.getByRole("progressbar", { name: "Заполнение хранилища сводок теневого ИИ" })).toHaveAttribute("aria-valuenow", "100");
+  });
+
+  it("задача 6.31: буфер событий шлюза на диске — заполнение и потери", async () => {
+    renderScreen(["system.read"]);
+    expect(await screen.findByText(/900 МиБ из 1 ГиБ \(87 %\), событий 1.500/)).toBeInTheDocument();
+    expect(screen.getByText(/записано 2.000, дослано 500/)).toBeInTheDocument();
+    expect(screen.getByText(/отброшено 7 \(по пределу 7, по сроку 0\), повреждено 2, ошибок записи 0/)).toBeInTheDocument();
   });
 
   it("без права integrity.verify кнопки проверки нет", async () => {

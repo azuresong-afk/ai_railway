@@ -266,3 +266,45 @@ func FuzzParseServerURL(f *testing.F) {
 		}
 	})
 }
+
+// Буфер событий на диске (ADR-0037, задача 6.31): по умолчанию включён с
+// сервером (1 ГиБ, 72 часа), 0 выключает; пределы; без сервера флаги
+// запрещены, буфера нет — поведение как без -state-dir.
+func TestLoadGatewayEventBuffer(t *testing.T) {
+	srv := []string{"-tls-cert", "c.pem", "-tls-key", "k.pem", "-server", "https://s:8445", "-server-ca", "ca", "-client-cert", "c",
+		"-client-key", "k", "-bundle-pub", "b.pub", "-state-dir", "st"}
+	with := func(extra ...string) []string { return append(append([]string{}, srv...), extra...) }
+	cfg, err := LoadGateway(srv, env(nil), io.Discard)
+	if err != nil || cfg.EventBufferMaxBytes != DefaultEventBufferMiB<<20 || cfg.EventBufferMaxAge != DefaultEventBufferMaxAge {
+		t.Fatalf("по умолчанию: %+v %v", cfg, err)
+	}
+	cfg, err = LoadGateway(with("-event-buffer-max-mib", "0"), env(nil), io.Discard)
+	if err != nil || cfg.EventBufferMaxBytes != 0 {
+		t.Fatalf("выключен: %+v %v", cfg, err)
+	}
+	cfg, err = LoadGateway(srv, env(map[string]string{"AISEC_GATEWAY_EVENT_BUFFER_MAX_MIB": "64", "AISEC_GATEWAY_EVENT_BUFFER_MAX_AGE": "1h"}), io.Discard)
+	if err != nil || cfg.EventBufferMaxBytes != 64<<20 || cfg.EventBufferMaxAge != time.Hour {
+		t.Fatalf("из окружения: %+v %v", cfg, err)
+	}
+	for _, args := range [][]string{
+		{"-event-buffer-max-mib", "63"}, {"-event-buffer-max-mib", "1048577"}, {"-event-buffer-max-mib", "-1"}, {"-event-buffer-max-mib", "1G"},
+		{"-event-buffer-max-age", "59m"}, {"-event-buffer-max-age", "168h"}, {"-event-buffer-max-age", "неделя"},
+	} {
+		if _, err := LoadGateway(with(args...), env(nil), io.Discard); err == nil {
+			t.Errorf("%v принят", args)
+		}
+	}
+	cfg, err = LoadGateway(required, env(nil), io.Discard)
+	if err != nil || cfg.EventBufferMaxBytes != 0 {
+		t.Fatalf("без сервера: %+v %v", cfg, err)
+	}
+	for _, args := range [][]string{append(append([]string{}, required...), "-event-buffer-max-mib", "64"),
+		append(append([]string{}, required...), "-event-buffer-max-age", "24h")} {
+		if _, err := LoadGateway(args, env(nil), io.Discard); err == nil || !strings.Contains(err.Error(), "только вместе с server") {
+			t.Errorf("%v без сервера: %v", args, err)
+		}
+	}
+	if _, err := LoadGateway(required, env(map[string]string{"AISEC_GATEWAY_EVENT_BUFFER_MAX_MIB": "64"}), io.Discard); err == nil {
+		t.Error("переменная окружения буфера без сервера принята")
+	}
+}

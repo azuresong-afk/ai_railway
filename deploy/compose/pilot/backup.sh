@@ -10,7 +10,8 @@
 # /tmp допускается бит sticky). Скрипт создаёт в нём подкаталог
 # aisec-ГГГГММДДTччммссZ (права 0700):
 #   files.tar  — ключи установки (keys/), сертификаты и пароли (secrets/),
-#                сертификат и состояние шлюза (gateway/reg, gateway/state);
+#                сертификат и состояние шлюза (gateway/reg, gateway/state)
+#                без буфера событий gateway/state/event-buffer (ADR-0037);
 #   env        — копия .env (секретов в нём нет);
 #   db.dump    — копия БД aisec (pg_dump, формат custom) из сервиса postgres;
 #   SHA256SUMS — контрольные суммы файлов.
@@ -103,11 +104,13 @@ fi
 # 1. Файлы. tar хранит имена владельцев: на новом хосте они совпадут с
 # пользователями, которых создаст prepare-host.sh, даже при других UID.
 # Код 1 — файл изменился во время чтения (шлюз записал новый пакет):
-# архив снимается заново, до трёх попыток.
+# архив снимается заново, до трёх попыток. Буфер событий шлюза не копируется:
+# в нём события (в режиме full — с содержимым) вместе с ключом буфера, а
+# files.tar хранится отдельно от db.dump; события на сервере — в db.dump.
 try=1
 while :; do
 	rc=0
-	tar -C "$data_dir" -cf "$dst/files.tar" keys secrets gateway/reg gateway/state || rc=$?
+	tar -C "$data_dir" --exclude=gateway/state/event-buffer -cf "$dst/files.tar" keys secrets gateway/reg gateway/state || rc=$?
 	[ "$rc" -ne 0 ] || break
 	[ "$rc" -eq 1 ] && [ "$try" -lt 3 ] || die "не удалось архивировать файлы установки (tar, код $rc)"
 	try=$((try + 1))

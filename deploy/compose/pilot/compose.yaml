@@ -114,7 +114,8 @@ services:
     secrets: [gateway-tls-cert, gateway-tls-key, console-ca, gateway-bundle-anchor]
     volumes:
       # reg/ — сертификат и ключ шлюза (aisec-gateway register), state/ —
-      # ключ секретов пакета и последний пакет; оба каталога 0700. Каталог
+      # ключ секретов пакета, последний пакет и буфер событий на диске
+      # (event-buffer/, до -event-buffer-max-mib, ADR-0037); оба каталога 0700. Каталог
       # gateway/ над ними принадлежит root и не монтируется: шлюз не может
       # подменить reg/ или state/ символьной ссылкой.
       - ${AISEC_DATA_DIR:?задайте AISEC_DATA_DIR}/gateway/reg:/var/lib/aisec-gateway/reg
