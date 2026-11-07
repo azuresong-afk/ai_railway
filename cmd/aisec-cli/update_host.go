@@ -345,7 +345,7 @@ func envKeyOK(k string) bool {
 
 // readSmallFile — обычный файл не больше limit.
 func readSmallFile(name string, limit int64) ([]byte, error) {
-	info, err := os.Lstat(name)
+	info, err := os.Lstat(name) //nolint:gosec // G703: путь — каталог установки, заданный root
 	if err != nil {
 		return nil, err
 	}

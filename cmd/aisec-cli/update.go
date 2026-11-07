@@ -58,6 +58,8 @@ type updater struct {
 	stopFlag *atomic.Bool
 	// free — свободное место; в тестах — подмена.
 	free func(dir string) (int64, error)
+	// custom — раскладка не по умолчанию (docker compose, задача 6.21).
+	custom installLayout
 }
 
 func (u *updater) freeSpace(dir string) (int64, error) {
@@ -69,7 +71,13 @@ func (u *updater) freeSpace(dir string) (int64, error) {
 
 func (u *updater) say(format string, a ...any) { say(u.out, format+"\n", a...) }
 
-func (u *updater) layout(component string) layout {
+// layout — раскладка установки компонента: каталоги версий на хосте с
+// systemd или образы docker (u.custom, ADR-0036, раздел 7). Единственное
+// место, где установки различаются: порядок шагов общий.
+func (u *updater) layout(component string) installLayout {
+	if u.custom != nil {
+		return u.custom
+	}
 	return layout{Root: u.roots[component], OwnerUID: u.owner}
 }
 
@@ -121,7 +129,7 @@ func (u *updater) check(ctx context.Context, dir string, allowOlder bool) (*plan
 	}
 	pl := &plan{rel: rel, component: rel.Component, allowOlder: allowOlder}
 	l := u.layout(rel.Component)
-	if l.Root == "" {
+	if l.spaceDir() == "" {
 		return nil, errors.New("корень компонента не задан")
 	}
 	if owned, err := u.host.PackageOwned(ctx); err != nil {
@@ -165,14 +173,19 @@ func (u *updater) check(ctx context.Context, dir string, allowOlder bool) (*plan
 			return nil, rejected(fmt.Errorf("выпуск %s новее основного выпуска %s: сначала обновите aisec (шлюз раньше анализаторов)", rel.Manifest.Version, main.Manifest.Version))
 		}
 	}
-	free, err := u.freeSpace(l.optDir())
-	if err != nil {
+	if err := l.prepare(ctx, u.p, rel, pl.cur); err != nil {
 		return nil, err
 	}
-	if free < rel.Bytes+spaceMargin {
-		return nil, fmt.Errorf("мало места в %s: нужно %d МиБ, свободно %d МиБ", l.optDir(), (rel.Bytes+spaceMargin)>>20, free>>20)
+	for _, need := range l.needSpace(rel) {
+		free, err := u.freeSpace(need.Dir)
+		if err != nil {
+			return nil, err
+		}
+		if free < need.Bytes {
+			return nil, fmt.Errorf("мало места в %s: нужно %d МиБ, свободно %d МиБ", need.Dir, need.Bytes>>20, free>>20)
+		}
 	}
-	for _, unit := range unitsOf(rel.Component) {
+	for _, unit := range l.units(rel) {
 		st, err := u.host.State(ctx, unit)
 		if err != nil {
 			return nil, err
@@ -364,7 +377,7 @@ func (u *updater) forward(ctx context.Context, st *updateState, pl *plan) error 
 	if err := u.advance(st, stepAdopted); err != nil {
 		return err
 	}
-	u.say("Копирование выпуска в %s со сверкой хешей…", l.release(st.ToID))
+	u.say("%s", l.stageText(st.ToID))
 	if err := l.stage(ctx, u.p, pl.rel); err != nil {
 		return fmt.Errorf("копирование выпуска: %w", err)
 	}
@@ -406,7 +419,7 @@ func (u *updater) forward(ctx context.Context, st *updateState, pl *plan) error 
 // newCLI — aisec-cli нового выпуска по пути каталога версии (не через
 // ссылку): его хеш сверен при копировании.
 func (u *updater) newCLI(st *updateState) string {
-	return filepath.Join(u.layout(st.Component).release(st.ToID), "bin", "aisec-cli")
+	return u.layout(st.Component).cliPath(st.ToID)
 }
 
 // startUnits запускает службы в порядке «шлюз → сервер» (анализаторы —
@@ -580,7 +593,7 @@ func (u *updater) cleanup(st *updateState, rolledBack bool) {
 		err = l.prune(st.ToID, st.FromID)
 	}
 	if err != nil {
-		u.say("Не удалось удалить старые каталоги версий: %v", err)
+		u.say("Не удалось удалить прежние выпуски: %v", err)
 	}
 	entries, err := os.ReadDir(u.state.dir)
 	if err != nil {
@@ -737,6 +750,9 @@ type updateFlags struct {
 	healthCA      string
 	settle        time.Duration
 	healthTimeout time.Duration
+	// composeDir — каталог установки docker compose (compose.yaml и .env);
+	// задаёт update.sh, на хосте с systemd не используется.
+	composeDir string
 }
 
 // updateCmd — разбор подкоманды и сборка updater для хоста с systemd.
@@ -748,6 +764,7 @@ func updateCmd(args []string, stdout, stderr io.Writer) error {
 	fl := flag.NewFlagSet("update "+sub, flag.ContinueOnError)
 	fl.SetOutput(stderr)
 	var f updateFlags
+	fl.StringVar(&f.composeDir, "compose-dir", "", "каталог установки docker compose (только через update.sh)")
 	if sub == "check" || sub == "apply" {
 		fl.BoolVar(&f.allowOlder, "allow-older", false, "принять выпуск, собранный раньше установленного (намеренный откат)")
 		fl.StringVar(&f.healthURL, "health-url", "", "адрес /readyz сервера; по умолчанию https://AISEC_SERVER_LISTEN/readyz из /etc/aisec/aisec-server.env")
@@ -774,13 +791,29 @@ func updateCmd(args []string, stdout, stderr io.Writer) error {
 	default:
 		return errors.New("ожидается один каталог выпуска: aisec-cli update " + sub + " КАТАЛОГ")
 	}
-	if os.Getenv(updateEnvMarker) != "systemd" {
-		return errors.New("aisec-cli update работает на установке без Docker через /usr/sbin/aisec-cli (ADR-0036); для compose — задача 6.21")
+	var u *updater
+	var closeFn func()
+	switch os.Getenv(updateEnvMarker) {
+	case "systemd":
+		if f.composeDir != "" {
+			return errors.New("-compose-dir — только для установки docker compose (update.sh)")
+		}
+	case updateHostCompose:
+		if f.composeDir == "" {
+			return errors.New("для установки docker compose укажите каталог установки: запускайте update.sh рядом с compose.yaml")
+		}
+	default:
+		return errors.New("aisec-cli update работает через /usr/sbin/aisec-cli (установка без Docker) или через update.sh (docker compose), ADR-0036")
 	}
 	if os.Geteuid() != 0 {
 		return errors.New("обновление устанавливает только администратор системы: запустите от root (sudo aisec-cli update …)")
 	}
-	u, closeFn, err := newSystemdUpdater(f, stdout)
+	var err error
+	if f.composeDir != "" {
+		u, closeFn, err = newComposeUpdater(f, f.composeDir, stdout)
+	} else {
+		u, closeFn, err = newSystemdUpdater(f, stdout)
+	}
 	if err != nil {
 		return err
 	}

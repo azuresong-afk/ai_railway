@@ -78,7 +78,7 @@ func countFiles(t *testing.T, dir string) int {
 	return len(entries)
 }
 
-func standardProvider(t *testing.T) aisecCrypto.Provider {
+func standardProvider(t testing.TB) aisecCrypto.Provider {
 	t.Helper()
 	p, err := aisecCrypto.New(aisecCrypto.ProfileStandard)
 	if err != nil {

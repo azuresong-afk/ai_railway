@@ -318,14 +318,14 @@ func updSyncDir(dir string) error {
 // ссылка, владелец ownerUID, нет записи группе и остальным; права не шире
 // mode.
 func ensureOwnedDir(dir string, mode os.FileMode, ownerUID int) error {
-	if err := os.Mkdir(dir, mode); err != nil && !errors.Is(err, fs.ErrExist) {
+	if err := os.Mkdir(dir, mode); err != nil && !errors.Is(err, fs.ErrExist) { //nolint:gosec // G703: каталог обновления — свой, root 0700
 		return err
 	}
 	return checkOwnedDir(dir, mode, ownerUID)
 }
 
 func checkOwnedDir(dir string, mode os.FileMode, ownerUID int) error {
-	info, err := os.Lstat(dir)
+	info, err := os.Lstat(dir) //nolint:gosec // G703: каталог обновления — свой, root 0700
 	if err != nil {
 		return err
 	}

@@ -40,7 +40,7 @@ func mainSpec(version string, created time.Time, migrations string) relSpec {
 
 // writeRelease — каталог выпуска с манифестом, подписанным тестовым ключом
 // репозитория (его принимает сборка без aisec_release).
-func writeRelease(t *testing.T, dir string, s relSpec) {
+func writeRelease(t testing.TB, dir string, s relSpec) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Join(dir, "bin"), 0o755); err != nil { //nolint:gosec // G301: раскладка выпуска как в установке
 		t.Fatal(err)
@@ -617,7 +617,7 @@ func TestUpdateResumeAfterCrash(t *testing.T) {
 	})
 	t.Run("обрыв посреди перехода на каталоги версий", func(t *testing.T) {
 		e := newUpdEnv(t)
-		l := e.u.layout(componentMain)
+		l := e.u.layout(componentMain).(layout)
 		e.host.onStop = func() {}
 		crashAdopt := func() {
 			// Каталог уже переименован, ссылки ещё нет.

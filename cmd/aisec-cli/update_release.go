@@ -62,6 +62,9 @@ type releaseInfo struct {
 	Component  string
 	TestSigned bool
 	Bytes      int64
+	// Compose — образы выпуска для установки в docker compose (прописывает
+	// composeLayout.prepare); у выпусков для systemd — nil.
+	Compose *composeRelease
 }
 
 // versionRe — символы версии, допустимые в имени каталога версии.
@@ -104,6 +107,18 @@ func readManifestPair(p aisecCrypto.Provider, dir string) (*releaseInfo, error) 
 	if err != nil {
 		return nil, err
 	}
+	rel, err := parseSignedManifest(p, data, sig)
+	if err != nil {
+		return nil, err
+	}
+	rel.Dir = dir
+	return rel, nil
+}
+
+// parseSignedManifest проверяет подпись манифеста ключом, встроенным в этот
+// aisec-cli, и разбирает его. Байты берёт у вызывающего: образы compose
+// отдают манифест из архива, а не из каталога.
+func parseSignedManifest(p aisecCrypto.Provider, data, sig []byte) (*releaseInfo, error) {
 	v, testKey, err := integrity.EmbeddedVerifier(p)
 	if err != nil {
 		return nil, err
@@ -123,7 +138,7 @@ func readManifestPair(p aisecCrypto.Provider, dir string) (*releaseInfo, error) 
 		return nil, errors.New("манифест другого криптопрофиля")
 	}
 	sum := hex.EncodeToString(sha256Of(p, data))
-	return &releaseInfo{Dir: dir, Manifest: m, Data: data, Sig: sig, SHA256: sum, ID: releaseID(m.Version, sum), TestSigned: testKey}, nil
+	return &releaseInfo{Manifest: m, Data: data, Sig: sig, SHA256: sum, ID: releaseID(m.Version, sum), TestSigned: testKey}, nil
 }
 
 // sha256Of — хеш профиля (SHA-256 в standard): им же считается ID каталога.
@@ -358,6 +373,73 @@ func mkdirAllIn(root *os.Root, dir string) error {
 	return nil
 }
 
+// installLayout — всё, чем установки отличаются при обновлении (ADR-0036,
+// раздел 7): где лежит установленный выпуск и как новый попадает в
+// установку и убирается из неё. Порядок шагов, журнал и откат — общие
+// (update.go). Реализации: layout (каталоги версий, systemd) и composeLayout
+// (образы docker, update_compose.go).
+type installLayout interface {
+	// checkDirs — каталоги установки принадлежат root и закрыты на запись.
+	checkDirs() error
+	// installed — идентификатор установленного выпуска; isDir — установка
+	// ещё без раскладки версий (adopt).
+	installed() (id string, isDir bool, err error)
+	// installedRelease — подписанный манифест установленного выпуска.
+	installedRelease(p aisecCrypto.Provider) (*releaseInfo, error)
+	// spaceDir — каталог для проверки свободного места; пусто — раскладка
+	// не задана.
+	spaceDir() string
+	// needSpace — сколько места нужно под выпуск и где.
+	needSpace(rel *releaseInfo) []spaceNeed
+	// units — службы, которые обновление останавливает и запускает.
+	units(rel *releaseInfo) []string
+	// prepare — проверки выпуска, зависящие от установки (только чтение):
+	// образы compose, состав установки. Отказ выпуска — через rejected.
+	prepare(ctx context.Context, p aisecCrypto.Provider, rel, cur *releaseInfo) error
+	// stageText — сообщение перед копированием выпуска в установку.
+	stageText(id string) string
+	// stage — выпуск в установке рядом с прежним (ещё не переключён).
+	stage(ctx context.Context, p aisecCrypto.Provider, rel *releaseInfo) error
+	// adopt — переход на раскладку версий (только каталоги).
+	adopt(id string) error
+	// switchTo — установленным становится выпуск id; атомарно.
+	switchTo(id string) error
+	// drop — убрать выпуск id и его недописанную копию (после отката).
+	drop(id string) error
+	// prune — убрать выпуски, кроме keep.
+	prune(keep ...string) error
+	// cliPath — aisec-cli выпуска id для миграций и проверки целостности.
+	cliPath(id string) string
+	// link — путь установленного выпуска (анализаторы).
+	link() string
+}
+
+// spaceNeed — место, нужное для обновления в каталоге.
+type spaceNeed struct {
+	Dir   string
+	Bytes int64
+}
+
+func (l layout) spaceDir() string { return l.Root }
+
+func (l layout) needSpace(rel *releaseInfo) []spaceNeed {
+	return []spaceNeed{{Dir: l.optDir(), Bytes: rel.Bytes + spaceMargin}}
+}
+
+func (l layout) units(rel *releaseInfo) []string { return unitsOf(rel.Component) }
+
+func (l layout) prepare(context.Context, aisecCrypto.Provider, *releaseInfo, *releaseInfo) error {
+	return nil
+}
+
+func (l layout) stageText(id string) string {
+	return fmt.Sprintf("Копирование выпуска в %s со сверкой хешей…", l.release(id))
+}
+
+func (l layout) cliPath(id string) string {
+	return filepath.Join(l.release(id), "bin", "aisec-cli")
+}
+
 // layout — раскладка компонента: <корень>/opt/aisec — ссылка на
 // aisec-releases/<ID> (ADR-0036, раздел 3).
 type layout struct {
@@ -466,13 +548,13 @@ func (l layout) adopt(id string) error {
 	if err := ensureOwnedDir(l.releases(), 0o755, l.OwnerUID); err != nil {
 		return err
 	}
-	info, err := os.Lstat(l.link())
+	info, err := os.Lstat(l.link()) //nolint:gosec // G703: путь собирает раскладка из каталога установки и ID выпуска, проверенного releaseIDRe
 	switch {
 	case err == nil && info.IsDir():
-		if _, err := os.Lstat(l.release(id)); err == nil {
+		if _, err := os.Lstat(l.release(id)); err == nil { //nolint:gosec // G703: путь собирает раскладка из каталога установки и ID выпуска, проверенного releaseIDRe
 			return fmt.Errorf("%s уже существует: переход на раскладку версий не выполнен", l.release(id))
 		}
-		if err := os.Rename(l.link(), l.release(id)); err != nil {
+		if err := os.Rename(l.link(), l.release(id)); err != nil { //nolint:gosec // G703: путь собирает раскладка из каталога установки и ID выпуска, проверенного releaseIDRe
 			return err
 		}
 		if err := updSyncDir(l.optDir()); err != nil {
@@ -490,21 +572,21 @@ func (l layout) switchTo(id string) error {
 	if !releaseIDRe.MatchString(id) {
 		return errors.New("неверный каталог версии")
 	}
-	info, err := os.Lstat(l.release(id))
+	info, err := os.Lstat(l.release(id)) //nolint:gosec // G703: путь собирает раскладка из каталога установки и ID выпуска, проверенного releaseIDRe
 	if err != nil || !info.IsDir() {
 		return fmt.Errorf("каталога версии %s нет", id)
 	}
-	if cur, err := os.Lstat(l.link()); err == nil && cur.IsDir() {
+	if cur, err := os.Lstat(l.link()); err == nil && cur.IsDir() { //nolint:gosec // G703: путь собирает раскладка из каталога установки и ID выпуска, проверенного releaseIDRe
 		return fmt.Errorf("%s — каталог, а не ссылка: переключение невозможно", l.link())
 	}
 	tmp := filepath.Join(l.optDir(), ".aisec-link-"+id)
-	if err := os.Remove(tmp); err != nil && !errors.Is(err, fs.ErrNotExist) {
+	if err := os.Remove(tmp); err != nil && !errors.Is(err, fs.ErrNotExist) { //nolint:gosec // G703: путь собирает раскладка из каталога установки и ID выпуска, проверенного releaseIDRe
 		return err
 	}
 	if err := os.Symlink(releasesDir+"/"+id, tmp); err != nil {
 		return err
 	}
-	if err := os.Rename(tmp, l.link()); err != nil {
+	if err := os.Rename(tmp, l.link()); err != nil { //nolint:gosec // G703: путь собирает раскладка из каталога установки и ID выпуска, проверенного releaseIDRe
 		return err
 	}
 	return updSyncDir(l.optDir())
@@ -521,7 +603,7 @@ func (l layout) drop(id string) error {
 			return err
 		}
 	}
-	if _, err := os.Lstat(l.releases()); errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Lstat(l.releases()); errors.Is(err, os.ErrNotExist) { //nolint:gosec // G703: путь собирает раскладка из каталога установки и ID выпуска, проверенного releaseIDRe
 		return nil
 	}
 	return updSyncDir(l.releases())
@@ -543,7 +625,7 @@ func (l layout) prune(keep ...string) error {
 		if !releaseIDRe.MatchString(e.Name()) && !strings.HasPrefix(e.Name(), stagingPref) {
 			continue // чужое имя не трогаем
 		}
-		if err := os.RemoveAll(filepath.Join(l.releases(), e.Name())); err != nil {
+		if err := os.RemoveAll(filepath.Join(l.releases(), e.Name())); err != nil { //nolint:gosec // G703: путь собирает раскладка из каталога установки и ID выпуска, проверенного releaseIDRe
 			return err
 		}
 	}

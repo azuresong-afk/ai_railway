@@ -61,6 +61,10 @@ const usage = `aisec-cli — служебные операции AISec.
                                 остановка служб, каталог версии, миграции, запуск, проверка здоровья; при сбое — откат;
                                 без каталога — довести или откатить прерванное; 3 — выпуск отвергнут, 4 — откачено
   update status                 состояние незавершённого обновления
+                                установка docker compose обновляется тем же update через update.sh (рядом с compose.yaml):
+                                образы с носителя проверяются до docker load, шаги и откат те же
+  update-db info|header|audit   служебная команда обновления docker compose (внутри контейнера aisec-cli,
+                                AISEC_DATABASE_URL): миграции и размер БД, заголовок восстановления, запись аудита
   backup create -keys КАТАЛОГ -out ФАЙЛ (-user-hmac-key ФАЙЛ | -no-user-hmac-key) [-passphrase-file ФАЙЛ]
                                 резервная копия конфигурации в зашифрованный файл (AISEC_DATABASE_URL)
   backup restore -keys КАТАЛОГ -in ФАЙЛ [-user-hmac-key-out ФАЙЛ] [-passphrase-file ФАЙЛ] [-allow-nonempty]
@@ -203,6 +207,12 @@ func run(args []string, stdout, stderr io.Writer, now time.Time) int {
 				return 4
 			}
 			say(stderr, "aisec-cli update: %v\n", err)
+			return 1
+		}
+		return 0
+	case "update-db":
+		if err := updateDBCmd(args[1:], os.Getenv("AISEC_DATABASE_URL"), os.Stdin, stdout); err != nil {
+			say(stderr, "aisec-cli update-db: %v\n", err)
 			return 1
 		}
 		return 0

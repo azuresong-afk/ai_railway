@@ -78,7 +78,11 @@ services:
       AISEC_SERVER_INTEGRITY_ACTION: ${AISEC_INTEGRITY_ACTION:-alert}
     command:
       - "-listen=0.0.0.0:8444"
-      - "-internal-listen=0.0.0.0:8445"
+      # Внутренний адрес для шлюзов. aisec-cli update на время обновления
+      # задаёт 127.0.0.1:0 (приём событий закрыт, шлюзы пишут в буфер на
+      # диске): строка AISEC_SERVER_INTERNAL_LISTEN в .env действует на любой
+      # запуск сервера; вручную её не задавайте.
+      - "-internal-listen=${AISEC_SERVER_INTERNAL_LISTEN:-0.0.0.0:8445}"
       - "-tls-cert=/run/secrets/console-tls-cert"
       - "-tls-key=/run/secrets/console-tls-key"
       - "-keys-dir=/etc/aisec/keys"
