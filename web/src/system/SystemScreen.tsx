@@ -152,6 +152,31 @@ function Limits({ l }: { l: Gateway["limits"] }) {
   );
 }
 
+// Буфер событий шлюза на диске (задача 6.31, ADR-0037): заполнение,
+// непосланные события и потери с запуска шлюза.
+function EventBuffer({ b }: { b: Gateway["event_buffer"] }) {
+  if (!b) return <span className="text-muted">нет данных</span>;
+  const lost = b.dropped_limit + b.dropped_expired;
+  return (
+    <div className="flex flex-col gap-0.5 text-sm">
+      <Tag ok={b.used_percent < b.warn_percent}>
+        {formatBytes(b.bytes)} из {formatBytes(b.max_bytes)} ({b.used_percent} %), событий {formatNumber(b.records)}
+      </Tag>
+      {b.oldest_at && <span className="text-xs text-muted">самое старое {when(b.oldest_at)}</span>}
+      <span>
+        записано {formatNumber(b.spilled)}, дослано {formatNumber(b.replayed)}
+      </span>
+      {lost + b.corrupt + b.write_errors > 0 && (
+        <Tag ok={false}>
+          отброшено {formatNumber(lost)} (по пределу {formatNumber(b.dropped_limit)}, по сроку {formatNumber(b.dropped_expired)}), повреждено{" "}
+          {formatNumber(b.corrupt)}, ошибок записи {formatNumber(b.write_errors)}
+        </Tag>
+      )}
+      <span className="text-xs text-muted">с запуска шлюза {when(b.started_at)}</span>
+    </div>
+  );
+}
+
 function Body({ s }: { s: SystemStatus }) {
   const gone = new Set<string>(s.unavailable);
   const active = s.notifications.filter((n) => n.active);
@@ -246,6 +271,7 @@ function Body({ s }: { s: SystemStatus }) {
                 <Th>Самотест</Th>
                 <Th>Целостность</Th>
                 <Th>Счётчики в памяти</Th>
+                <Th>Буфер событий на диске</Th>
               </tr>
             </thead>
             <tbody>
@@ -266,6 +292,9 @@ function Body({ s }: { s: SystemStatus }) {
                   </Td>
                   <Td>
                     <Limits l={g.limits} />
+                  </Td>
+                  <Td>
+                    <EventBuffer b={g.event_buffer} />
                   </Td>
                 </tr>
               ))}

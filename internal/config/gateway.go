@@ -67,6 +67,11 @@ type Gateway struct {
 	// задача 5.39); пусто — изображения не анализируются: «не проверено»,
 	// решает non_text политики.
 	MediaSocket string
+	// EventBufferMaxBytes — предел буфера событий на диске в каталоге
+	// состояния (ADR-0037, задача 6.31); 0 — буфер выключен. Только с Server.
+	EventBufferMaxBytes int64
+	// EventBufferMaxAge — срок хранения записи буфера событий.
+	EventBufferMaxAge time.Duration
 }
 
 // MaxBundlePubFiles — ключей проверки пакетов одновременно (как
@@ -94,6 +99,15 @@ const (
 	// gateway.DefaultMLTimePerWindow (сверка — в тесте шлюза).
 	DefaultMLTimeout       = 80 * time.Millisecond
 	DefaultMLTimePerWindow = 10 * time.Millisecond
+	// Буфер событий на диске (ADR-0037): значения совпадают с
+	// gateway.DefaultEventBufferMaxBytes, MinEventBufferMaxBytes,
+	// DefaultEventBufferMaxAge и пределами срока (сверка — в тесте шлюза).
+	DefaultEventBufferMiB    = 1024
+	MinEventBufferMiB        = 64
+	MaxEventBufferMiB        = 1 << 20
+	DefaultEventBufferMaxAge = 72 * time.Hour
+	MinEventBufferMaxAge     = time.Hour
+	MaxEventBufferMaxAge     = 167 * time.Hour
 )
 
 // LoadGateway разбирает аргументы командной строки и окружение. getenv
@@ -124,6 +138,8 @@ func LoadGateway(args []string, getenv func(string) string, errOut io.Writer) (*
 	mlTimeout := fs.String("ml-timeout", DefaultMLTimeout.String(), "срок вызова aisec-ml на текст в одно окно модели (AISEC_GATEWAY_ML_TIMEOUT)")
 	mlPerWindow := fs.String("ml-timeout-per-window", DefaultMLTimePerWindow.String(), "добавка к сроку вызова aisec-ml за каждое следующее окно длинного текста (AISEC_GATEWAY_ML_TIMEOUT_PER_WINDOW)")
 	mediaSocket := fs.String("media-socket", "", "Unix-сокет aisec-media для проверки изображений, например /run/aisec-media/aisec-media.sock; пусто — без анализа изображений (AISEC_GATEWAY_MEDIA_SOCKET)")
+	bufMiB := fs.String("event-buffer-max-mib", strconv.Itoa(DefaultEventBufferMiB), "предел буфера событий на диске в каталоге состояния, МиБ: 64–1048576, 0 — выключен; только с server (AISEC_GATEWAY_EVENT_BUFFER_MAX_MIB)")
+	bufAge := fs.String("event-buffer-max-age", DefaultEventBufferMaxAge.String(), "срок хранения событий в буфере на диске: от 1h до 167h — сервер принимает события не старше 7 суток (AISEC_GATEWAY_EVENT_BUFFER_MAX_AGE)")
 	if err := fs.Parse(args); err != nil {
 		return nil, err
 	}
@@ -138,12 +154,14 @@ func LoadGateway(args []string, getenv func(string) string, errOut io.Writer) (*
 		"server": server, "server-ca": serverCA, "client-cert": clientCert, "client-key": clientKey,
 		"bundle-pub": bundlePub, "state-dir": stateDir, "user-hmac-key": userKey, "ml-socket": mlSocket,
 		"ml-timeout": mlTimeout, "ml-timeout-per-window": mlPerWindow, "media-socket": mediaSocket,
+		"event-buffer-max-mib": bufMiB, "event-buffer-max-age": bufAge,
 	} {
 		if set[name] {
 			continue // флаг важнее окружения
 		}
 		if v := getenv(envName(name)); v != "" {
 			*dst = v
+			set[name] = true
 		}
 	}
 
@@ -178,6 +196,14 @@ func LoadGateway(args []string, getenv func(string) string, errOut io.Writer) (*
 	}
 	if cfg.MLTimePerWindow, err = time.ParseDuration(*mlPerWindow); err != nil || cfg.MLTimePerWindow < 0 || cfg.MLTimePerWindow > time.Second {
 		errs = append(errs, errors.New("ml-timeout-per-window: длительность от 0 до 1s"))
+	}
+	if mib, err := strconv.ParseInt(*bufMiB, 10, 64); err != nil || (mib != 0 && (mib < MinEventBufferMiB || mib > MaxEventBufferMiB)) {
+		errs = append(errs, fmt.Errorf("event-buffer-max-mib: 0 или число от %d до %d", MinEventBufferMiB, MaxEventBufferMiB))
+	} else {
+		cfg.EventBufferMaxBytes = mib << 20
+	}
+	if cfg.EventBufferMaxAge, err = time.ParseDuration(*bufAge); err != nil || cfg.EventBufferMaxAge < MinEventBufferMaxAge || cfg.EventBufferMaxAge > MaxEventBufferMaxAge {
+		errs = append(errs, fmt.Errorf("event-buffer-max-age: длительность от %s до %s", MinEventBufferMaxAge, MaxEventBufferMaxAge))
 	}
 	if _, _, err := net.SplitHostPort(cfg.Listen); err != nil {
 		errs = append(errs, errors.New("listen: ожидается адрес:порт"))
@@ -219,6 +245,13 @@ func LoadGateway(args []string, getenv func(string) string, errOut io.Writer) (*
 				errs = append(errs, fmt.Errorf("%s: только вместе с server; без сервера — файл конфигурации", name))
 			}
 		}
+		// Без сервера буфера нет: события пишутся в файл (ADR-0037, раздел 1).
+		for _, name := range []string{"event-buffer-max-mib", "event-buffer-max-age"} {
+			if set[name] {
+				errs = append(errs, fmt.Errorf("%s: только вместе с server; без сервера события пишутся в файл", name))
+			}
+		}
+		cfg.EventBufferMaxBytes = 0
 	}
 	if err := errors.Join(errs...); err != nil {
 		return nil, fmt.Errorf("конфигурация шлюза: %w", err)

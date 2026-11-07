@@ -121,3 +121,54 @@ func TestHeartbeatMedia(t *testing.T) {
 		t.Fatal("heartbeat без media не снял данные")
 	}
 }
+
+// Задача 6.31 (ADR-0037): состояние буфера событий шлюза на диске из
+// heartbeat — проверка полей, хранение последнего, heartbeat без поля
+// снимает данные.
+func TestHeartbeatEventBuffer(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	reg, _ := e.register(t, e.token(t, "gw-1", false))
+	id := reg.Gateway.ID
+	b := func(mod func(*gwregistry.EventBufferStats)) *gwregistry.EventBufferStats {
+		s := &gwregistry.EventBufferStats{Bytes: 4096, MaxBytes: 1 << 30, Records: 5, OldestAt: e.clock.now().Add(-time.Hour).UTC(),
+			Spilled: 9, Replayed: 4, Corrupt: 1}
+		if mod != nil {
+			mod(s)
+		}
+		return s
+	}
+	for name, s := range map[string]*gwregistry.EventBufferStats{
+		"предел меньше 64 МиБ":      b(func(s *gwregistry.EventBufferStats) { s.MaxBytes = 1 << 20 }),
+		"предел больше 1 ПиБ":       b(func(s *gwregistry.EventBufferStats) { s.MaxBytes = 1<<50 + 1 }),
+		"занято больше предела":     b(func(s *gwregistry.EventBufferStats) { s.Bytes = 2<<30 + 1 }),
+		"отрицательный счётчик":     b(func(s *gwregistry.EventBufferStats) { s.Corrupt = -1 }),
+		"счётчик больше 2^62":       b(func(s *gwregistry.EventBufferStats) { s.WriteErrors = 1<<62 + 1 }),
+		"oldest_at у пустого":       b(func(s *gwregistry.EventBufferStats) { s.Records = 0 }),
+		"oldest_at в будущем":       b(func(s *gwregistry.EventBufferStats) { s.OldestAt = e.clock.now().Add(time.Hour) }),
+		"отрицательный размер":      b(func(s *gwregistry.EventBufferStats) { s.Bytes = -1 }),
+		"отрицательные непосланные": b(func(s *gwregistry.EventBufferStats) { s.Records, s.OldestAt = -1, time.Time{} }),
+	} {
+		if _, err := e.svc.Heartbeat(ctx, id, gwregistry.HeartbeatInput{Version: "1", EventBuffer: s}, testIP); !errors.Is(err, gwregistry.ErrInvalidRequest) {
+			t.Errorf("%s: %v", name, err)
+		}
+		e.clock.add(gwregistry.DefaultHeartbeatMinInterval)
+	}
+	if len(e.svc.GatewayEventBuffer()) != 0 {
+		t.Fatal("неверное состояние сохранено")
+	}
+	if _, err := e.svc.Heartbeat(ctx, id, gwregistry.HeartbeatInput{Version: "1", EventBuffer: b(nil)}, testIP); err != nil {
+		t.Fatalf("допустимое состояние: %v", err)
+	}
+	got, ok := e.svc.GatewayEventBuffer()[id]
+	if !ok || got.Records != 5 || got.Corrupt != 1 || got.MaxBytes != 1<<30 || !got.At.Equal(e.clock.now().UTC()) {
+		t.Fatalf("сохранено: %+v %v", got, ok)
+	}
+	e.clock.add(gwregistry.DefaultHeartbeatMinInterval)
+	if _, err := e.svc.Heartbeat(ctx, id, gwregistry.HeartbeatInput{Version: "1"}, testIP); err != nil {
+		t.Fatalf("heartbeat без event_buffer: %v", err)
+	}
+	if _, ok := e.svc.GatewayEventBuffer()[id]; ok {
+		t.Fatal("heartbeat без event_buffer не снял данные")
+	}
+}

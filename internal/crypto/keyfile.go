@@ -35,6 +35,10 @@ const (
 	// KeyKindBundleEncryption — закрытый ключ получателя шлюза: им шлюз
 	// расшифровывает секреты провайдеров в пакете конфигурации (Р7).
 	KeyKindBundleEncryption = "AISEC BUNDLE ENCRYPTION KEY"
+	// KeyKindEventBuffer — ключ AEAD буфера событий шлюза на диске
+	// (ADR-0037, раздел 5): свой у каждого процесса шлюза, хранится в
+	// каталоге состояния, пока на него ссылается сегмент буфера.
+	KeyKindEventBuffer = "AISEC EVENT BUFFER KEY"
 )
 
 // maxKeyFile ограничивает размер файла ключа: ключ — десятки байт.
@@ -52,6 +56,7 @@ var keyFileSize = map[string]int{
 	KeyKindManifestSigning:       SigningSeedSize,
 	KeyKindManifestSigningPublic: PublicKeySize,
 	KeyKindBundleEncryption:      RecipientKeySize,
+	KeyKindEventBuffer:           AEADKeySize,
 	KeyKindVendorSubkey:          SigningSeedSize,
 	KeyKindVendorSubkeyPublic:    PublicKeySize,
 }

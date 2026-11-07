@@ -137,6 +137,10 @@ type Options struct {
 	// heartbeat (gwregistry.Service.GatewayMedia, задача 5.44 этапа 5); nil —
 	// условий gateway_media_* нет.
 	GatewayMedia func() map[string]gwregistry.MediaMark
+	// GatewayEventBuffer — последнее состояние буферов событий шлюзов на
+	// диске из heartbeat (gwregistry.Service.GatewayEventBuffer, задача
+	// 6.31); nil — условия gateway_event_buffer нет.
+	GatewayEventBuffer func() map[string]gwregistry.EventBufferMark
 }
 
 // CustomerCert — сведения о сертификате заказчика для адреса шлюза.
@@ -160,6 +164,9 @@ type Service struct {
 	// mediaBusy, mediaDown — то же для сбоев aisec-media шлюза (задача 5.44):
 	// overloaded и timeout; unavailable и error.
 	mediaBusy, mediaDown map[string]droppedMark
+	// bufferFaults — то же для повреждённых записей и ошибок записи буфера
+	// событий шлюза на диске (задача 6.31).
+	bufferFaults map[string]droppedMark
 }
 
 type droppedMark struct {
@@ -200,6 +207,17 @@ func (s *Service) observeMedia(id string, m gwregistry.MediaMark, now time.Time)
 	busy = grew(s.mediaBusy, id, m.StartedAt, uint64(m.Overloaded)+uint64(m.Timeout), now) //nolint:gosec // G115: счётчики 0–2^62 (gwregistry.MediaStats.validate)
 	down = grew(s.mediaDown, id, m.StartedAt, uint64(m.Unavailable)+uint64(m.Error), now)  //nolint:gosec // G115: то же
 	return busy, down
+}
+
+// observeBufferFaults — росли ли за DroppedWindow повреждённые записи и
+// ошибки записи буфера событий шлюза.
+func (s *Service) observeBufferFaults(id string, m gwregistry.EventBufferMark, now time.Time) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.bufferFaults == nil {
+		s.bufferFaults = map[string]droppedMark{}
+	}
+	return grew(s.bufferFaults, id, m.StartedAt, uint64(m.Corrupt)+uint64(m.WriteErrors), now) //nolint:gosec // G115: счётчики 0–2^62 (gwregistry.EventBufferStats.validate)
 }
 
 // grew обновляет точку отсчёта счётчика n процесса шлюза, запущенного в
@@ -352,6 +370,10 @@ func (s *Service) collect(ctx context.Context) collected {
 	if s.o.GatewayMedia != nil {
 		media = s.o.GatewayMedia()
 	}
+	var buffers map[string]gwregistry.EventBufferMark
+	if s.o.GatewayEventBuffer != nil {
+		buffers = s.o.GatewayEventBuffer()
+	}
 	if s.o.Store != nil {
 		sctx, cancel := s.dbCtx(ctx)
 		var err error
@@ -386,6 +408,9 @@ func (s *Service) collect(ctx context.Context) collected {
 			if m, ok := media[g.ID]; ok {
 				gs.Media = gatewayMedia(m)
 			}
+			if m, ok := buffers[g.ID]; ok {
+				gs.EventBuffer = gatewayEventBuffer(m)
+			}
 			if g.Status == gwregistry.StatusActive {
 				s.blinding(&c, g, &gs, stats, now)
 				if m, ok := limits[g.ID]; ok && s.o.GatewayLimits != nil {
@@ -393,6 +418,9 @@ func (s *Service) collect(ctx context.Context) collected {
 				}
 				if m, ok := media[g.ID]; ok {
 					s.gatewayMedia(&c, g, m, now)
+				}
+				if m, ok := buffers[g.ID]; ok {
+					s.gatewayEventBuffer(&c, g, m, now)
 				}
 				if gs.State == GatewayOnline {
 					active = append(active, g)
@@ -610,6 +638,27 @@ func (s *Service) gatewayMedia(c *collected, g gwregistry.Gateway, m gwregistry.
 	} else {
 		c.details[code] = detail(nil)
 	}
+}
+
+// gatewayEventBuffer — буфер событий шлюза на диске для ответа.
+func gatewayEventBuffer(m gwregistry.EventBufferMark) *GatewayEventBuffer {
+	return &GatewayEventBuffer{ReportedAt: m.At.UTC(), StartedAt: timePtr(m.StartedAt), Bytes: m.Bytes, MaxBytes: m.MaxBytes,
+		UsedPercent: min(percent(m.Bytes, m.MaxBytes), 100), WarnPercent: EventBufferWarnPercent, Records: m.Records,
+		OldestAt: timePtr(m.OldestAt), Spilled: m.Spilled, Replayed: m.Replayed, DroppedLimit: m.DroppedLimit,
+		DroppedExpired: m.DroppedExpired, Corrupt: m.Corrupt, WriteErrors: m.WriteErrors}
+}
+
+// gatewayEventBuffer — условие gateway_event_buffer действующего шлюза
+// (задача 6.31, ADR-0037): буфер заполнен на EventBufferWarnPercent и
+// больше или за DroppedWindow росли повреждённые записи и ошибки записи.
+// Шлюз с выключенным буфером поле не присылает — условия нет.
+func (s *Service) gatewayEventBuffer(c *collected, g gwregistry.Gateway, m gwregistry.EventBufferMark, now time.Time) {
+	faults := s.observeBufferFaults(g.ID, m, now)
+	used := min(percent(m.Bytes, m.MaxBytes), 100)
+	code := ConditionEventBuffer + ":" + g.ID
+	c.conditions[code] = used >= EventBufferWarnPercent || faults
+	c.details[code] = map[string]any{"component": componentGateway + g.ID, "gateway_name": g.Name, "used_percent": used,
+		"records": m.Records, "corrupt": m.Corrupt, "write_errors": m.WriteErrors}
 }
 
 // shadowAIStorage — заполнение хранилища сводок теневого ИИ и условия
@@ -923,6 +972,7 @@ var conditionInfo = []struct{ code, requirement, title string }{
 	{ConditionMediaOverloaded, "ЗИ.7", "Анализатор изображений шлюза перегружен: изображения уходят с отметкой «не проверено» (очередь заполнена или срок истёк)"},
 	{ConditionMediaUnavailable, "ЗИ.7", "Анализатор изображений шлюза недоступен: изображения уходят с отметкой «не проверено»"},
 	{ConditionMediaSelftest, "ОЦЛ.5", "Самотест анализатора изображений шлюза на эталонных изображениях не пройден"},
+	{ConditionEventBuffer, "РСБ.7", "Буфер событий шлюза на диске заполнен на 80 % и больше или в нём повреждены записи: при заполнении старые события будут отброшены"},
 }
 
 // family — условие раздела 7, к которому относится код (integrity:server —
@@ -996,7 +1046,8 @@ func (s *Service) Status(ctx context.Context) Status {
 			n.Count, n.Active = denied, denied != nil && *denied > 0
 		case ConditionIntegrity, ConditionBundleLag, ConditionOffline, ConditionEventsDropped, ConditionReportsStale,
 			ConditionCertExpiry, ConditionGatewayClock, ConditionGatewayTLS, ConditionQuotaAutonomous, ConditionGatewayLimits,
-			ConditionServiceDBPrevious, ConditionServiceDBUnused, ConditionMediaOverloaded, ConditionMediaUnavailable, ConditionMediaSelftest:
+			ConditionServiceDBPrevious, ConditionServiceDBUnused, ConditionMediaOverloaded, ConditionMediaUnavailable, ConditionMediaSelftest,
+			ConditionEventBuffer:
 			// Одна строка на все компоненты; «с» — самое раннее из активных.
 			for _, code := range sortedCodes(c.conditions) {
 				if family(code) != ci.code || !c.conditions[code] {
@@ -1142,7 +1193,7 @@ func (s *Service) skip(c collected, fam string) bool {
 		return missing("license")
 	case ConditionQuotaApprox, ConditionQuotaAutonomous:
 		return missing("gateways", "quota")
-	case ConditionGatewayLimits, ConditionMediaOverloaded, ConditionMediaUnavailable, ConditionMediaSelftest:
+	case ConditionGatewayLimits, ConditionMediaOverloaded, ConditionMediaUnavailable, ConditionMediaSelftest, ConditionEventBuffer:
 		return missing("gateways")
 	case ConditionShadowAIStorage, ConditionShadowAIFull:
 		return missing("shadow_ai_storage")

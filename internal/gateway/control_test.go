@@ -721,3 +721,55 @@ func TestHeartbeatMedia(t *testing.T) {
 		t.Fatalf("сервер без media: %v", bodies[3])
 	}
 }
+
+// Задача 6.31 (ADR-0037): heartbeat несёт состояние буфера событий на
+// диске, но только после ответа сервера с event_buffer.
+func TestHeartbeatEventBuffer(t *testing.T) {
+	var bodies []map[string]any
+	accept := true
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var b map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&b) //nolint:gosec // G104: тело проверяет тест
+		bodies = append(bodies, b)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"server_time": time.Now(), "interval_seconds": 60, "event_buffer": accept}) //nolint:gosec // G104: ответ тестового сервера
+	}))
+	defer srv.Close()
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 11, 6, 10, 0, 0, 0, time.UTC)
+	report := func() *gateway.EventBufferReport {
+		return gateway.NewEventBufferReport(gateway.EventBufferStats{Bytes: 4096, MaxBytes: 1 << 30, Records: 12, OldestAt: at,
+			Spilled: 20, Replayed: 8, DroppedLimit: 1, DroppedExpired: 2, Corrupt: 3, WriteErrors: 4})
+	}
+	run := func() {
+		n := 0
+		gateway.RunHeartbeat(context.Background(), gateway.HeartbeatConfig{
+			Client: srv.Client(), Server: u, Version: "1", Logger: quiet(), EventBuffer: report,
+			Sleep: func(context.Context, time.Duration) bool { n++; return n < 2 },
+		})
+	}
+	run()
+	accept = false
+	run()
+	if len(bodies) != 4 {
+		t.Fatalf("heartbeat: %v", bodies)
+	}
+	if _, ok := bodies[0]["event_buffer"]; ok {
+		t.Fatalf("первый heartbeat с event_buffer: %v", bodies[0])
+	}
+	got, _ := bodies[1]["event_buffer"].(map[string]any)
+	if got["bytes"] != 4096.0 || got["max_bytes"] != float64(1<<30) || got["records"] != 12.0 || got["oldest_at"] != "2026-11-06T10:00:00Z" ||
+		got["spilled"] != 20.0 || got["replayed"] != 8.0 || got["dropped_limit"] != 1.0 || got["dropped_expired"] != 2.0 ||
+		got["corrupt"] != 3.0 || got["write_errors"] != 4.0 {
+		t.Fatalf("event_buffer: %v", bodies[1])
+	}
+	if _, ok := bodies[3]["event_buffer"]; ok {
+		t.Fatalf("сервер без event_buffer: %v", bodies[3])
+	}
+	if r := gateway.NewEventBufferReport(gateway.EventBufferStats{MaxBytes: 1 << 30, OldestAt: at}); r.OldestAt != nil {
+		t.Fatal("пустой буфер с oldest_at")
+	}
+}

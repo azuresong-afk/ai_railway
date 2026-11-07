@@ -100,7 +100,35 @@ type GatewayStatus struct {
 	// (задача 5.44 этапа 5, DM-50); nil — шлюз без aisec-media, прежней
 	// версии или heartbeat после перезапуска сервера ещё не пришёл.
 	Media *GatewayMedia `json:"media"`
+	// EventBuffer — буфер событий шлюза на диске из последнего heartbeat
+	// (задача 6.31, ADR-0037); nil — буфер выключен, шлюз прежней версии
+	// или heartbeat после перезапуска сервера ещё не пришёл.
+	EventBuffer *GatewayEventBuffer `json:"event_buffer"`
 }
+
+// GatewayEventBuffer — заполнение буфера событий шлюза на диске и
+// счётчики с запуска шлюза.
+type GatewayEventBuffer struct {
+	ReportedAt  time.Time  `json:"reported_at"`
+	StartedAt   *time.Time `json:"started_at"`
+	Bytes       int64      `json:"bytes"`
+	MaxBytes    int64      `json:"max_bytes"`
+	UsedPercent int        `json:"used_percent"`
+	WarnPercent int        `json:"warn_percent"`
+	Records     int64      `json:"records"`
+	// OldestAt — nil, если непосланных событий нет.
+	OldestAt       *time.Time `json:"oldest_at"`
+	Spilled        int64      `json:"spilled"`
+	Replayed       int64      `json:"replayed"`
+	DroppedLimit   int64      `json:"dropped_limit"`
+	DroppedExpired int64      `json:"dropped_expired"`
+	Corrupt        int64      `json:"corrupt"`
+	WriteErrors    int64      `json:"write_errors"`
+}
+
+// EventBufferWarnPercent — с какого заполнения буфера событий шлюза на
+// диске поднимается условие gateway_event_buffer (ADR-0037, раздел 8).
+const EventBufferWarnPercent = 80
 
 // GatewayMedia — очередь шлюза к aisec-media, отсрочка после сбоя, итоги с
 // запуска шлюза и последний самотест на эталонных изображениях.
@@ -354,6 +382,12 @@ const (
 	// эталонных изображениях не пройден (недоступный анализатор — не
 	// провал, а «не проверено»).
 	ConditionMediaSelftest = "gateway_media_selftest"
+	// ConditionEventBuffer — РСБ.7, DM-44 (задача 6.31, ADR-0037): буфер
+	// событий шлюза на диске заполнен на EventBufferWarnPercent и больше
+	// (дальше старые события будут отброшены) или за DroppedWindow росли
+	// повреждённые записи и ошибки записи на диск. Код — семейство и ID
+	// шлюза. Отброшенное буфером — в прежнем условии events_dropped.
+	ConditionEventBuffer = "gateway_event_buffer"
 )
 
 // QuotaHealth — режим квот и шлюзы на автономной доле (quotalease.Health).
@@ -430,7 +464,7 @@ const (
 // gatewayFamilies — семейства условий с кодом «семейство:ID шлюза».
 var gatewayFamilies = []string{ConditionBundleLag, ConditionEventsDropped, ConditionOffline, ConditionCertExpiry,
 	ConditionReportsStale, ConditionGatewayClock, ConditionGatewayTLS, ConditionQuotaAutonomous, ConditionGatewayLimits,
-	ConditionMediaOverloaded, ConditionMediaUnavailable, ConditionMediaSelftest}
+	ConditionMediaOverloaded, ConditionMediaUnavailable, ConditionMediaSelftest, ConditionEventBuffer}
 
 // serviceDBFamilies — семейства условий с кодом «семейство:вид базы»;
 // компонент — service_db:<вид>.

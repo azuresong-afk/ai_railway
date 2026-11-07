@@ -742,6 +742,32 @@ components:
                 result: { type: string, enum: [ok, failed, unchecked] }
                 checked_at: { type: string, format: date-time }
                 failed: { type: integer, minimum: 0, maximum: 1000 }
+        event_buffer:
+          type: object
+          required: [bytes, max_bytes, records, spilled, replayed, dropped_limit, dropped_expired, corrupt, write_errors]
+          additionalProperties: false
+          description: |
+            Буфер событий шлюза на диске (задача 6.31, ADR-0037): заполнение,
+            самая старая непосланная запись и счётчики с запуска шлюза. Только
+            числа и отметки времени, без содержимого, ID событий и путей. Шлюз
+            с выключенным буфером (`-event-buffer-max-mib 0`) поле не
+            присылает; с ним — только после ответа с `event_buffer: true`.
+            Сервер держит последние значения в памяти; заполнение от 80 % или
+            рост `corrupt` и `write_errors` за 15 минут — условие
+            `gateway_event_buffer`. Отброшенное буфером (`dropped_limit`,
+            `dropped_expired`, `corrupt`) входит и в `stats.dropped` пакета
+            событий — условие `events_dropped`. Нарушение пределов — 400.
+          properties:
+            bytes: { type: integer, minimum: 0, maximum: 2251799813685248, description: Байт в сегментах на диске; не больше удвоенного max_bytes. }
+            max_bytes: { type: integer, minimum: 67108864, maximum: 1125899906842624, description: Предел буфера (-event-buffer-max-mib). }
+            records: { type: integer, minimum: 0, maximum: 4611686018427387904, description: Непосланные события. }
+            oldest_at: { type: string, format: date-time, description: 'Время первой записи самого старого сегмента с непосланными событиями; только при records больше 0, не в будущем.' }
+            spilled: { type: integer, minimum: 0, maximum: 4611686018427387904, description: Записано на диск с запуска шлюза. }
+            replayed: { type: integer, minimum: 0, maximum: 4611686018427387904, description: Дослано с диска на сервер. }
+            dropped_limit: { type: integer, minimum: 0, maximum: 4611686018427387904, description: Отброшено сверх предела размера (старые сегменты). }
+            dropped_expired: { type: integer, minimum: 0, maximum: 4611686018427387904, description: Отброшено сверх срока хранения (-event-buffer-max-age). }
+            corrupt: { type: integer, minimum: 0, maximum: 4611686018427387904, description: Пропущено повреждённых записей (CRC, расшифрование, чужой ключ, оборванный хвост). }
+            write_errors: { type: integer, minimum: 0, maximum: 4611686018427387904, description: Неудачных записей на диск; события остались в очереди в памяти. }
     QuotaLeaseRequest:
       type: object
       required: [apps]
@@ -895,6 +921,11 @@ components:
           type: boolean
           description: |
             Сервер принимает поле `media` (задача 5.44 этапа 5): шлюз
+            присылает его только после такого ответа.
+        event_buffer:
+          type: boolean
+          description: |
+            Сервер принимает поле `event_buffer` (задача 6.31): шлюз
             присылает его только после такого ответа.
         reissue:
           type: boolean
