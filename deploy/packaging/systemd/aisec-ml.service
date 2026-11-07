@@ -1,0 +1,78 @@
+# ML-детекторы AISec (ADR-0024, ADR-0034; как compose.ml.yaml).
+#
+# Пакет aisec-ml. Свой корень /opt/aisec-ml (RootDirectory=): служба видит то
+# же дерево, что образ на scratch (/opt/aisec/bin, lib, models и манифест
+# выпуска aisec-ml), и не видит файлов хоста. Загрузчик и RPATH бинарника
+# (/opt/aisec/lib) указывают на библиотеки своего выпуска, самопроверка
+# целостности сверяет именно их. Пути моделей, ONNX Runtime и манифеста здесь
+# не задаются.
+#
+# Без сети вовсе; соединения по сокету — только от шлюза: UID и GID
+# собеседника (SO_PEERCRED) — из /etc/aisec/peers.env, его пишет postinst
+# пакета aisec. Каталог сокета /run/aisec-ml — 0750, владелец aisec-ml,
+# группа aisec-gw.
+[Unit]
+Description=AISec: ML-детекторы (aisec-ml)
+Before=aisec-gateway.service
+
+[Service]
+Type=exec
+User=aisec-ml
+Group=aisec-gw
+EnvironmentFile=/etc/aisec/peers.env
+ExecStart=/opt/aisec/bin/aisec-ml \
+	-socket=/run/aisec-ml/aisec-ml.sock \
+	-peer-uid=${AISEC_GW_UID} \
+	-peer-gid=${AISEC_GW_GID}
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=10s
+UMask=0077
+
+# Свой корень и каталог сокета.
+RootDirectory=/opt/aisec-ml
+MountAPIVFS=yes
+RuntimeDirectory=aisec-ml
+RuntimeDirectoryMode=0750
+BindPaths=/run/aisec-ml
+TemporaryFileSystem=/tmp:size=16m,mode=1777,noexec,nosuid,nodev
+
+# Пользователь и привилегии.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictSUIDSGID=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateDevices=yes
+DevicePolicy=closed
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+KeyringMode=private
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+RemoveIPC=yes
+# Без сети (network_mode: none): только Unix-сокет шлюза.
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+IPAddressDeny=any
+# Как профиль Docker по умолчанию в compose.ml.yaml: набор служб без
+# привилегированных вызовов; @resources нужен потокам ONNX Runtime.
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+SystemCallErrorNumber=EPERM
+# Как mem_limit и pids_limit в compose.ml.yaml.
+MemoryMax=2G
+MemorySwapMax=0
+TasksMax=256
+
+[Install]
+WantedBy=multi-user.target

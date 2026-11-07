@@ -3,13 +3,17 @@
 //
 //	imagecheck image -kind release|test [-release build/release] build/images/aisec-*.tar
 //	imagecheck compose deploy/compose/pilot/compose.yaml [compose.ml.yaml compose.media.yaml …]
+//	imagecheck units deploy/packaging/systemd deploy/compose/pilot/seccomp/aisec-media.json
 //
 // image — архивы docker save: пользователь не root, нет оболочки, пакетного
 // менеджера и лишних файлов, только свои порты, бинарники статические и
 // побайтно совпадают с подписанным каталогом выпуска. compose — правила
 // запуска: только чтение, без capabilities и повышения привилегий, отдельные
 // пользователи, порты только свои и по умолчанию на 127.0.0.1, секреты
-// файлами, образы закреплены.
+// файлами, образы закреплены. units — юниты systemd установки без Docker
+// (ADR-0034): свой пользователь, без привилегий и записи мимо своих каталогов,
+// у aisec-ml и aisec-media — свой корень и без сети, у aisec-media — список
+// системных вызовов профиля seccomp пилота.
 package main
 
 import (
@@ -39,15 +43,17 @@ var errFailed = errors.New("проверка не пройдена")
 
 func run(args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("ожидается команда: image или compose")
+		return errors.New("ожидается команда: image, compose или units")
 	}
 	switch args[0] {
 	case "image":
 		return runImage(args[1:], stdout, stderr)
 	case "compose":
 		return runCompose(args[1:], stdout, stderr)
+	case "units":
+		return runUnits(args[1:], stdout, stderr)
 	}
-	return fmt.Errorf("неизвестная команда %q: ожидается image или compose", args[0])
+	return fmt.Errorf("неизвестная команда %q: ожидается image, compose или units", args[0])
 }
 
 func report(w io.Writer, what string, problems []string) error {
