@@ -251,6 +251,8 @@ var catalog = []Event{
 	{"system.alert", "Условие уведомления возникло или снято", true},
 	// Обновления, резервное копирование, выгрузки (РСБ.2).
 	{"update.install", "Обновление компонента", true},
+	{"update.started", "Начало обновления с носителя (aisec-cli update apply)", true},
+	{"update.rollback", "Откат обновления при сбое (aisec-cli update apply)", true},
 	{"backup.create", "Резервное копирование", true},
 	{"backup.restore", "Восстановление из резервной копии", true},
 	{"system.restored", "Завершение восстановления полной копии: сессии консоли и токены API отозваны, токены регистрации шлюзов и первичной настройки погашены (aisec-cli restore-finish)", true},

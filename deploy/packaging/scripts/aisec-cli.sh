@@ -15,6 +15,14 @@
 # aisec-cli — один пользователь aisec, и взломанный сервер, пока aisec-cli
 # работает, может прочитать его учётные данные через /proc. Аргументы
 # передаются aisec-cli как есть, без разбора.
+#
+# Исключение — подкоманда update (ADR-0036): обновление останавливает
+# службы и пишет в /opt, поэтому aisec-cli работает от root без временной
+# службы, с чистым окружением; строку подключения и файл паролей владельца
+# схемы он берёт сам из /etc/aisec/aisec-cli.env и
+# /etc/aisec/credentials/db-owner.pgpass. Запускается установленный
+# aisec-cli: подпись нового выпуска проверяет ключ, которому доверяет
+# установка.
 set -eu
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
@@ -23,6 +31,10 @@ export PATH
 	echo "aisec-cli: запустите от root (sudo aisec-cli …)" >&2
 	exit 1
 }
+
+if [ "${1-}" = update ]; then
+	exec env -i PATH="$PATH" LANG=C.UTF-8 AISEC_UPDATE_HOST=systemd /opt/aisec/bin/aisec-cli "$@"
+fi
 
 # Имя службы известно заранее, поэтому известен и каталог учётных данных.
 unit=aisec-cli-$$

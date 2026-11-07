@@ -53,6 +53,14 @@ const usage = `aisec-cli — служебные операции AISec.
                                 проверить новый выпуск до обновления (ОБН.1): подпись — ключом этой версии,
                                 все файлы каталога; себя не сверяет, в журнал не пишет; выпуск старше
                                 установленного — только с -allow-older; 3 — выпуск не прошёл
+  update check КАТАЛОГ [-allow-older] [-health-url URL] [-health-ca ФАЙЛ]
+                                проверить выпуск для обновления без изменений (ОБН.1): подпись ключом этой версии,
+                                файлы, пределы, место, схема БД, проверка здоровья; 3 — выпуск отвергнут
+  update apply КАТАЛОГ [-allow-older] [-health-url URL] [-health-ca ФАЙЛ] [-settle 30s] [-health-timeout 2m]
+                                обновить установку без Docker с носителя (только root, ОБН.1–ОБН.3): копия БД,
+                                остановка служб, каталог версии, миграции, запуск, проверка здоровья; при сбое — откат;
+                                без каталога — довести или откатить прерванное; 3 — выпуск отвергнут, 4 — откачено
+  update status                 состояние незавершённого обновления
   backup create -keys КАТАЛОГ -out ФАЙЛ (-user-hmac-key ФАЙЛ | -no-user-hmac-key) [-passphrase-file ФАЙЛ]
                                 резервная копия конфигурации в зашифрованный файл (AISEC_DATABASE_URL)
   backup restore -keys КАТАЛОГ -in ФАЙЛ [-user-hmac-key-out ФАЙЛ] [-passphrase-file ФАЙЛ] [-allow-nonempty]
@@ -179,6 +187,22 @@ func run(args []string, stdout, stderr io.Writer, now time.Time) int {
 			if errors.Is(err, errIntegrityViolated) || errors.Is(err, errReleaseRejected) {
 				return 3
 			}
+			return 1
+		}
+		return 0
+	case "update":
+		if err := updateCmd(args[1:], stdout, stderr); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return 0
+			}
+			if errors.Is(err, errReleaseRejected) {
+				return 3
+			}
+			if errors.Is(err, errUpdateRolledBack) {
+				say(stderr, "aisec-cli update: %v\n", err)
+				return 4
+			}
+			say(stderr, "aisec-cli update: %v\n", err)
 			return 1
 		}
 		return 0
