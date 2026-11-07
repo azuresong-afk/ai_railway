@@ -59,6 +59,9 @@
 
 Инструменты разработки ставятся `make tools` в `bin/` по версиям из переменных в начале `Makefile`.
 
+## Установка без Docker: юниты и сценарии (ADR-0034, задача 6.16)
+Юниты systemd и сценарии пакетов лежат в `deploy/packaging` и ничего не собирают. `make packaging-check` — отдельная цель вне `make check` (CI не меняется): `tools/imagecheck units` (ограничения юнитов и совпадение списка системных вызовов `aisec-media` с `deploy/compose/pilot/seccomp/aisec-media.json`), `systemd-analyze verify` и `security --offline` во временном корне с заглушками бинарников (без `systemd-analyze` шаг пропускается с сообщением), `shellcheck` сценариев, если он есть, иначе `sh -n` и `dash -n`. Новых инструментов цель не требует: `systemd-analyze` и `dash` — из ОС машины разработчика, `shellcheck` не ставится. Сверка юнитов и профиля идёт и в `make test`. Сборка пакетов deb и rpm (`make packages`, `dpkg-deb` и `rpmbuild` в сборочном образе без сети) — задача 6.15, после согласия владельца.
+
 ## CI
 GitHub Actions — тонкая обёртка над `make` (ADR-0002):
 - `.github/workflows/check.yml` — на каждый pull request и push в `main`: `make check-docker`, выгрузка отчётов (SARIF, SBOM, покрытие матрицы) как артефактов на 90 дней. Права токена — только `contents: read`, учётные данные git после получения кода не сохраняются (`persist-credentials: false`).

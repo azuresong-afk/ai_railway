@@ -109,7 +109,27 @@
 
 **Записать:** таблица «Итоги», строка 6: версия Docker и ядра; вывод шагов 3 и 4 — приложением; расхождения — в «Открытые вопросы» `docs/plans/stage-5.md` с пометкой «ручная проверка 6».
 
-## 7. Буфер событий шлюза на диске
+## 7. Установка без Docker: юниты systemd на целевых ОС
+
+Задача 6.16 этапа 6 ([ADR-0034](../adr/0034-pakety-i-yunity-systemd.md); ЗИ.5, ЗИ.7). В облаке нет systemd как PID 1 и нет ВМ. Автоматически проверено: правила юнитов и совпадение списка системных вызовов `aisec-media` с `seccomp/aisec-media.json` — `tools/imagecheck units` (в `make test`); `systemd-analyze verify` и `security --offline` (systemd 255) — `make packaging-check`; сценарии `postinst`, `prerm`, `postrm`, `prepare-host` — `sh -n`, `dash -n` и прогон от root в контейнере (пользователи, каталоги, `peers.env`, отказ по символьной ссылке, роли в PostgreSQL 16). Здесь — запуск служб на Astra Linux SE 1.8, РЕД ОС 8 и Альт 11. Пакетов ещё нет (задача 6.15): файлы раскладываются вручную по таблице `deploy/packaging/README.md`. Полный e2e установки из пакетов — задача 6.17.
+
+**Нужно:** по ВМ на каждую ОС, root, каталоги выпуска `build/release`, `build/release-ml`, `build/release-media` (`make release-dir`, `ml-release-dir`, `media-release-dir` с тестовым ключом), PostgreSQL из репозитория ОС, сертификаты (`aisec-cli tls init`), 40–60 минут на ОС.
+
+**Шаги.**
+1. Раскладка: файлы по таблице `deploy/packaging/README.md`; `sh deploy/packaging/scripts/postinst.sh aisec install`, затем `… aisec-ml install`, `… aisec-media install`; `systemctl daemon-reload`. Ожидается: пользователи `aisec`, `aisec-gw`, `aisec-ml`, `aisec-media`; права каталогов — как в ADR-0034, раздел 2; `/etc/aisec/peers.env` с UID и GID `aisec-gw`. Версия systemd: `systemctl --version | head -1`.
+2. Подготовка и первый запуск: `aisec-prepare-host --create-roles`; сертификаты в `/etc/aisec/credentials`; `aisec-cli migrate`, `aisec-cli init -dir /var/lib/aisec/keys`, `aisec-prepare-host --bundle-anchor`; `systemctl enable --now aisec-server`. Ожидается `active (running)`, консоль открывается. Если сервер не запустился с ошибкой «файл ключа доступен группе или остальным (права 440)», systemd выдал учётные данные через ACL (ADR-0034, раздел 5): запишите `stat -c '%a %U' /run/credentials/aisec-server.service/*` и `getfacl` этих файлов.
+3. Учётные данные: `ls -l /run/credentials/aisec-server.service/` — файлы 0400, владелец `aisec` (или root с ACL — см. шаг 2); от `aisec-gw` (`runuser -u aisec-gw -- cat /run/credentials/aisec-server.service/console-tls-key`) — отказ. Остаточный риск ADR-0034, раздел 5: во время `sudo aisec-cli migrate` во втором терминале `nsenter -t $(systemctl show -p MainPID --value aisec-server) -m -U --preserve-credentials -S $(id -u aisec) ls -l /run/credentials/` (или `runuser -u aisec -- ls /run/credentials/aisec-cli-*.service/`) — запишите, виден ли файл `db-owner-pgpass` от пользователя `aisec`.
+4. Шлюз: `aisec-cli gateway token -name gw-1 -ttl 1h`, `aisec-gateway-register https://<имя консоли>:8444`, `AISEC_GATEWAY_SERVER` в `/etc/aisec/aisec-gateway.env`, `systemctl enable --now aisec-gateway`. Ожидается `/readyz` — `{"status":"ok"}`; `ls -ld /var/lib/aisec-gateway /var/lib/aisec-gateway/*` — `root 0755` и `aisec-gw 0700`.
+5. Анализаторы: `systemctl enable --now aisec-media aisec-ml`, `systemctl restart aisec-gateway`. Ожидается: оба `active`; `systemctl show aisec-gateway -p Environment` содержит пути сокетов; `ls -ld /run/aisec-media` — `drwxr-x--- aisec-media aisec-gw`; от `aisec` подключиться к сокету нельзя. В журнале `journalctl -u aisec-media` нет ошибок целостности и `pthread_create`/`EPERM`, ONNX Runtime загружен и создал потоки (OCR работает: изображение со строкой текста в чате даёт итог, а не `no_ocr`). Это проверка того, что `clone3` получает `ENOSYS` от `RestrictNamespaces=` (ADR-0034, раздел 6): `strace` недоступен под фильтром, поэтому критерий — работающий OCR и `grep Threads /proc/$pid/status` больше 1.
+6. Изоляция `aisec-media`: `pid=$(systemctl show -p MainPID --value aisec-media)`; `grep -E '^(Seccomp|NoNewPrivs|CapEff|Uid|Gid):' /proc/$pid/status` — `Seccomp: 2`, `NoNewPrivs: 1`, `CapEff: 0000000000000000`; `nsenter -t $pid -n ip -o link` — только `lo`; `ls /proc/$pid/root/` — только `opt`, `proc`, `sys`, `dev`, `run`, `tmp`; `grep ' /tmp ' /proc/$pid/mounts` — `noexec,nosuid,nodev`; `systemctl show aisec-media -p MemoryMax -p MemorySwapMax -p CPUQuotaPerSecUSec -p TasksMax` — `1073741824`, `0`, `4s`, `64`. Те же поля у `aisec-ml` (память 2 ГиБ, без квоты процессора).
+7. Пределы: `systemctl edit aisec-media` с `MemoryMax=16M` и `Environment=AISEC_MEDIA_MEM_LIMIT=16m`, перезапуск — служба не запускается (исполнители не укладываются) или завершается по OOM, шлюз работает, изображения — «не проверено». Верните прежнее (`systemctl revert aisec-media`). `kill -9 $pid` — служба перезапускается, шлюз не перезапускался.
+8. Обновление и удаление: `sh deploy/packaging/scripts/prerm.sh aisec upgrade` — службы пакета остановлены; `… postinst.sh aisec upgrade` — не запущены, выведен порядок запуска. `… prerm.sh aisec-media remove`, удаление файлов пакета, `… postrm.sh aisec-media remove` — служба выключена, `aisec-gateway` работает без анализатора после перезапуска. Данные в `/var/lib/aisec*` и `/etc/aisec/credentials` на месте.
+9. Особенности ОС: Astra Linux SE — запуск в режиме замкнутой программной среды (если включён: нужна ли подпись ELF `bsign`), мандатный контроль целостности; РЕД ОС и Альт — есть ли `useradd`, `runuser`, `nologin` по путям сценариев, нет ли отказов SELinux (`ausearch -m avc`).
+
+**Ожидается:** все службы запускаются от своих пользователей без привилегий; `aisec-media` и `aisec-ml` без сети и без файлов хоста; пределы памяти и процессов соблюдаются; учётные данные видит только своя служба; обновление не запускает службы само.
+
+**Записать:** таблица «Итоги», строка 7 — по строке на ОС: версия ОС и systemd, итог шагов 2–6 (вывод шагов 3 и 6 — приложением); расхождения — в «Открытые вопросы» `docs/plans/stage-6.md` с пометкой «ручная проверка 7».
+## 8. Буфер событий шлюза на диске
 
 Задача 6.31 этапа 6 ([ADR-0037](../adr/0037-bufer-sobytiy-na-diske.md), ТЗ 4.4). Автотесты (`internal/gateway/eventbuffer_test.go`) проверяют запись на диск при недоступном сервере, досылку по порядку, перезапуск посреди досылки, предел, срок, повреждения и права файлов — на поддельном сервере и временном каталоге. Здесь — то же на compose пилота: настоящий сервер, перезапуск контейнера шлюза, том хоста и «Состояние системы».
 
@@ -127,7 +147,7 @@
 
 **Ожидается:** при недоступном сервере и перезапуске шлюза события не теряются и не дублируются; каталог и файлы `0700`/`0600`; заполнение и повреждения видны в «Состоянии системы» и оповещениях; в полной копии буфера нет.
 
-**Записать:** таблица «Итоги», строка 7: версия выпуска, число отправленных и дошедших событий в шагах 2–4; расхождения — в «Открытые вопросы» `docs/plans/stage-6.md` с пометкой «ручная проверка 7».
+**Записать:** таблица «Итоги», строка 8: версия выпуска, число отправленных и дошедших событий в шагах 2–4; расхождения — в «Открытые вопросы» `docs/plans/stage-6.md` с пометкой «ручная проверка 8».
 
 ## Итоги
 
@@ -141,4 +161,5 @@
 | 4 | CSV и XLSX в Excel (русская локаль) | | | | |
 | 5 | Печать отчёта в PDF | | | | |
 | 6 | Изоляция aisec-media на живом контейнере | | | | |
-| 7 | Буфер событий шлюза на диске (compose пилота) | | | | |
+| 7 | Установка без Docker: юниты systemd (Astra, РЕД ОС, Альт) | | | | |
+| 8 | Буфер событий шлюза на диске (compose пилота) | | | | |

@@ -1,0 +1,111 @@
+# Анализатор изображений AISec (ADR-0032, ADR-0034; как compose.media.yaml).
+#
+# Пакет aisec-media. Изоляция ЗИ.7 без Docker: свой пользователь, без сети
+# вовсе, свой корень только для чтения (RootDirectory=/opt/aisec-media — то
+# же дерево, что образ на scratch), /tmp — небольшой tmpfs без исполнения,
+# пределы памяти, процессора и числа процессов, без привилегий и со списком
+# разрешённых системных вызовов — тем же, что seccomp/aisec-media.json
+# пилота. Список сверяет тест tools/imagecheck (TestMediaUnitMatchesSeccomp):
+# убрать или добавить вызов молча нельзя.
+#
+# Соответствие профилю Docker: правило clone с маской флагов пространств
+# имён — RestrictNamespaces=yes; socket только AF_UNIX —
+# RestrictAddressFamilies=AF_UNIX; clone3 → ENOSYS (потоки glibc и ONNX
+# Runtime переходят на clone) — тоже RestrictNamespaces=yes: systemd
+# отвечает на clone3 кодом ENOSYS, потому что не может проверить его флаги.
+# Поэтому clone3 есть в списке ниже: «~clone3:ENOSYS» в режиме списка
+# разрешённых только убрал бы его, и последний фильтр (этот) ответил бы
+# EPERM — glibc тогда не создаёт потоки. Отказ остальным — EPERM, как
+# defaultAction. systemd всегда разрешает группу @default (время, сон,
+# getpid и подобные) — разница перечислена в тесте.
+#
+# Бюджет растров (5В4): -mem-limit равен MemoryMax=, по нему ставится предел
+# кучи Go, а запуск с исполнителями, которые не укладываются (до
+# -max-raster-mib на каждого плюс 256 МиБ), отказывает. Менять память —
+# одним дополнением (systemctl edit aisec-media) с MemoryMax= и
+# Environment=AISEC_MEDIA_MEM_LIMIT= вместе.
+[Unit]
+Description=AISec: анализатор изображений (aisec-media)
+Before=aisec-gateway.service
+
+[Service]
+Type=exec
+User=aisec-media
+Group=aisec-gw
+Environment=AISEC_MEDIA_WORKERS=2
+Environment=AISEC_MEDIA_MEM_LIMIT=1g
+EnvironmentFile=/etc/aisec/peers.env
+ExecStart=/opt/aisec/bin/aisec-media \
+	-socket=/run/aisec-media/aisec-media.sock \
+	-peer-uid=${AISEC_GW_UID} \
+	-peer-gid=${AISEC_GW_GID} \
+	-workers=${AISEC_MEDIA_WORKERS} \
+	-mem-limit=${AISEC_MEDIA_MEM_LIMIT}
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=10s
+UMask=0077
+
+# Свой корень, каталог сокета и временный каталог в памяти.
+RootDirectory=/opt/aisec-media
+MountAPIVFS=yes
+RuntimeDirectory=aisec-media
+RuntimeDirectoryMode=0750
+BindPaths=/run/aisec-media
+TemporaryFileSystem=/tmp:size=16m,mode=1777,noexec,nosuid,nodev
+
+# Пользователь и привилегии.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictSUIDSGID=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateDevices=yes
+DevicePolicy=closed
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+KeyringMode=private
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+RemoveIPC=yes
+# Без сети (network_mode: none).
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+IPAddressDeny=any
+
+# Системные вызовы — список seccomp/aisec-media.json (начало).
+SystemCallArchitectures=native
+SystemCallFilter=accept4 access arch_prctl bind brk clock_gettime
+SystemCallFilter=clock_nanosleep close epoll_create1 epoll_ctl epoll_pwait
+SystemCallFilter=epoll_wait eventfd2 execve exit exit_group fchmodat fcntl
+SystemCallFilter=fstat futex getdents64 getegid geteuid getgid getpeername
+SystemCallFilter=getpid getrandom getsockname getsockopt gettid getuid listen
+SystemCallFilter=lseek madvise mmap mprotect munmap nanosleep newfstatat
+SystemCallFilter=openat pipe2 prctl pread64 prlimit64 read readlinkat
+SystemCallFilter=restart_syscall rseq rt_sigaction rt_sigprocmask
+SystemCallFilter=rt_sigreturn rt_sigtimedwait sched_getaffinity
+SystemCallFilter=sched_setaffinity sched_yield set_robust_list
+SystemCallFilter=set_tid_address setsockopt shutdown sigaltstack tgkill tkill
+SystemCallFilter=uname unlinkat write writev
+# clone — флаги пространств имён запрещает RestrictNamespaces=yes, clone3
+# он же отклоняет с ENOSYS; socket — только AF_UNIX (RestrictAddressFamilies=).
+SystemCallFilter=clone clone3 socket
+SystemCallErrorNumber=EPERM
+# Системные вызовы — конец списка.
+
+# Пределы — как mem_limit, memswap_limit, cpus и pids_limit compose.media.yaml.
+MemoryMax=1G
+MemorySwapMax=0
+CPUQuota=400%
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target

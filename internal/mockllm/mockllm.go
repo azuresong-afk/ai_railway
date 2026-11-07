@@ -19,6 +19,11 @@
 //     этот адрес, в параметре которой уходит начало запроса пользователя;
 //   - ToolName и ToolArgs — вместо текста модель «вызывает инструмент»;
 //   - RecordLast — последний запрос доступен для e2e по GET /mock/last-request.
+//
+// Кроме OpenAI-совместимого формата мок отвечает в форматах GigaChat
+// (/api/v2/oauth, /api/v1/files, /api/v1/chat/completions — с изображениями
+// во вложениях) и YandexGPT (/foundationModels/v1/completion; изображения —
+// OpenAI-совместимым методом с моделью gpt://<каталог>/<модель>): vendors.go.
 package mockllm
 
 import (
@@ -99,6 +104,8 @@ type LastRequest struct {
 	Stream           bool   `json:"stream,omitempty"`
 	HasAuthorization bool   `json:"has_authorization"` // сам ключ не записывается
 	Body             string `json:"body,omitempty"`
+	// Images — изображения запроса (режимы GigaChat и YandexGPT, задача 6.10).
+	Images []LastImage `json:"images,omitempty"`
 }
 
 // Server — обработчик mock-llm.
@@ -111,6 +118,10 @@ type Server struct {
 	// ChunkDelay — пауза между частями в сценарии stream-slow.
 	ChunkDelay time.Duration
 	seq        atomic.Uint64
+	// gcTokens и gcFiles — выданные токены и хранилище файлов режима
+	// GigaChat (vendors.go), под mu.
+	gcTokens map[string]bool
+	gcFiles  map[string]gcFile
 }
 
 // New создаёт обработчик.
@@ -138,6 +149,7 @@ func (s *Server) Handler() http.Handler {
 	})
 	mux.HandleFunc("GET /v1/models", s.models)
 	mux.HandleFunc("POST /v1/chat/completions", s.chat)
+	s.vendorRoutes(mux)
 	if s.opts.RecordLast {
 		mux.HandleFunc("GET "+LastRequestPath, s.lastRequest)
 		mux.HandleFunc("DELETE "+LastRequestPath, s.resetLast)
@@ -258,6 +270,14 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error(), "invalid_request_error", "invalid_request")
 		return
 	}
+	// Режим YandexGPT с изображениями: модель gpt://каталог/модель.
+	imgs, ok := ycVision(w, r, body, req.Model)
+	if !ok {
+		return
+	}
+	if m := ycModelURIRe.FindStringSubmatch(req.Model); m != nil {
+		req.Model = m[2]
+	}
 	sc, ok := scenarioOf(r, req)
 	if !ok {
 		writeError(w, http.StatusBadRequest, "неизвестный сценарий mock-llm", "invalid_request_error", "unknown_scenario")
@@ -265,6 +285,9 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.opts.RecordLast {
 		s.record(r, sc, req, body)
+		s.mu.Lock()
+		s.last.Images = imgs
+		s.mu.Unlock()
 	}
 	// Содержимое сообщений в лог не пишется — только метаданные.
 	s.logger.Info("запрос", "scenario", sc, "stream", req.Stream, "messages", len(req.Messages))
@@ -287,7 +310,7 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 
 	answer := FixedAnswer
 	if sc != ScenarioFixed {
-		answer = lastUserText(req.Messages)
+		answer = lastUserText(req.Messages) + imagesNote(imgs)
 	}
 	answer = s.decorate(answer, lastUserText(req.Messages))
 	id := fmt.Sprintf("chatcmpl-mock-%d", s.seq.Add(1))

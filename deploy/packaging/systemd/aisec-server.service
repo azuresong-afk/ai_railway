@@ -1,0 +1,83 @@
+# Сервер управления AISec: API и веб-консоль (ADR-0034, ЗИ.5).
+#
+# Пакет aisec. Включение: systemctl enable --now aisec-server — после
+# aisec-prepare-host, ролей в СУБД, aisec-cli migrate и aisec-cli init
+# (руководство администратора, «Установка без Docker»).
+#
+# Несекретные настройки — /etc/aisec/aisec-server.env (переменные
+# AISEC_SERVER_*, AISEC_DATABASE_URL без пароля). Секреты — только через
+# LoadCredential= из /etc/aisec/credentials (0700 root): служба видит копии
+# в своём каталоге учётных данных (%d), исходные файлы ей недоступны.
+# Каталог ключей /var/lib/aisec/keys пишет aisec-cli; сервер его только
+# читает (ProtectSystem=strict).
+#
+# Ослабление ограничений дополнением (systemctl edit) — действие root вне
+# модели угроз продукта; итог показывает systemd-analyze security.
+[Unit]
+Description=AISec: сервер управления и веб-консоль
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=aisec
+Group=aisec
+EnvironmentFile=/etc/aisec/aisec-server.env
+Environment=PGPASSFILE=%d/db-server-pgpass
+LoadCredential=console-tls-cert:/etc/aisec/credentials/console.crt
+LoadCredential=console-tls-key:/etc/aisec/credentials/console.key
+LoadCredential=db-server-pgpass:/etc/aisec/credentials/db-server.pgpass
+ExecStart=/opt/aisec/bin/aisec-server \
+	-tls-cert=%d/console-tls-cert \
+	-tls-key=%d/console-tls-key \
+	-keys-dir=/var/lib/aisec/keys \
+	-audit-signing-pub=/var/lib/aisec/keys/audit-signing.pub \
+	-ca-cert=/var/lib/aisec/keys/ca.crt \
+	-ca-key=/var/lib/aisec/keys/ca.key
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=30s
+UMask=0077
+
+# Пользователь и привилегии.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictSUIDSGID=yes
+# Файловая система: всё только для чтения, своей записи у сервера нет.
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+DevicePolicy=closed
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+KeyringMode=private
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+RemoveIPC=yes
+# Сеть: консоль, внутренний порт шлюзов, СУБД, SMTP, syslog и webhook из
+# настроек администратора. Исходящие соединения ограничивает код (ЗИ.2) и
+# межсетевой экран хоста.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# Системные вызовы: набор служб systemd без привилегированных и управления
+# ресурсами; отказ — EPERM, как defaultAction профиля Docker.
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM
+# Пределы — как mem_limit и pids_limit в compose.yaml.
+MemoryMax=1G
+MemorySwapMax=0
+TasksMax=256
+
+[Install]
+WantedBy=multi-user.target

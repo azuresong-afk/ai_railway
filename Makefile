@@ -541,6 +541,14 @@ ifeq ($(filter 1,$(MEDIA)),1)
 	go run ./tools/imagecheck image -release $(MEDIA_RELEASE_DIR) -kind $(IMAGE_KIND) $(IMAGES_DIR)/aisec-media.tar
 endif
 
+# Установка без Docker (ADR-0034, задача 6.16): юниты systemd и сценарии
+# пакетов в deploy/packaging. Вне make check: нужен systemd-analyze (без него
+# verify и security пропускаются с сообщением); сверка юнитов и профиля
+# seccomp aisec-media идёт и в make test (tools/imagecheck).
+.PHONY: packaging-check
+packaging-check: ## Юниты systemd и сценарии установки без Docker: imagecheck units, systemd-analyze verify и security, sh -n
+	sh deploy/packaging/check.sh
+
 # Анализатор изображений aisec-media (ADR-0032, задача 5.38): свой каталог
 # выпуска и манифест. С OCR (ADR-0033, задача 5.41; по умолчанию) — как
 # aisec-ml: бинарник с cgo и тегом aisec_onnx, ONNX Runtime с загрузчиком и
