@@ -63,7 +63,7 @@ func pgUpdateEnv(t *testing.T, schema, extraSQL string) (*updEnv, *installation)
 			t.Fatal(err)
 		}
 		for _, d := range []string{oldDir, newDir} {
-			if err := os.WriteFile(filepath.Join(d, f.Name()), data, 0o600); err != nil {
+			if err := os.WriteFile(filepath.Join(d, f.Name()), data, 0o600); err != nil { //nolint:gosec // G703: имена из каталога миграций репозитория
 				t.Fatal(err)
 			}
 		}

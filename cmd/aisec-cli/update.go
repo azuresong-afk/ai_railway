@@ -2,13 +2,16 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -235,21 +238,60 @@ func (u *updater) apply(ctx context.Context, pl *plan) error {
 		return err
 	}
 	u.say("Обновление %s: %s → %s. Службы: %s. Миграций к применению: %d.", pl.component, pl.cur.Manifest.Version, pl.rel.Manifest.Version, joinUnits(pl.units), pl.pending)
-	if st.DB {
-		if err := u.db.Audit(ctx, u.entry("update.started", audit.ResultSuccess, st, map[string]any{"migrations_pending": pl.pending})); err != nil {
+	if err := u.record(ctx, u.entry("update.started", audit.ResultSuccess, st, map[string]any{"migrations_pending": pl.pending})); err != nil {
+		if st.DB {
 			_ = u.state.remove() //nolint:gosec // G104: ничего не изменено
 			return fmt.Errorf("запись update.started в журнал аудита: %w", err)
 		}
+		u.say("Запись update.started не удалась: %v", err)
 	}
 	if err := u.forward(ctx, st, pl); err != nil {
-		u.say("Сбой: %v", err)
-		u.say("Откат на %s.", st.FromVersion)
-		if rbErr := u.rollback(ctx, st, err); rbErr != nil {
-			return fmt.Errorf("откат не завершён: %w; повторите aisec-cli update apply — он продолжит откат", rbErr)
+		return u.fail(ctx, st, err)
+	}
+	return u.conclude(ctx, st)
+}
+
+// fail — сбой шага до итога: откат (раздел 4 ADR-0036).
+func (u *updater) fail(ctx context.Context, st *updateState, cause error) error {
+	u.say("Сбой: %v", cause)
+	u.say("Откат на %s.", st.FromVersion)
+	if err := u.rollback(ctx, st, cause); err != nil {
+		return fmt.Errorf("откат не завершён: %w; повторите aisec-cli update apply — он продолжит откат", err)
+	}
+	return errUpdateRolledBack
+}
+
+// conclude — после проверки здоровья: открыть приём (сбой — откат: сервер
+// нового выпуска не работает), затем итог. Сбой записи итога не
+// откатывает работающий выпуск: повторный запуск его допишет.
+func (u *updater) conclude(ctx context.Context, st *updateState) error {
+	if !stepAfter(st.Step, stepOpened) {
+		if err := u.open(ctx, st); err != nil {
+			return u.fail(ctx, st, err)
 		}
-		return errUpdateRolledBack
+	}
+	if err := u.complete(ctx, st); err != nil {
+		return fmt.Errorf("новый выпуск работает, но итог обновления не записан: %w; повторите aisec-cli update apply — он завершит обновление", err)
 	}
 	return nil
+}
+
+// record — запись в журнал аудита, если БД доступна; иначе (узел без
+// строки подключения) — в journald.
+func (u *updater) record(ctx context.Context, e audit.Entry) error {
+	if u.db != nil {
+		return u.db.Audit(ctx, e)
+	}
+	return u.host.Journal(ctx, journalText(e))
+}
+
+// journalText — запись для journald: код, итог и подробности без секретов.
+func journalText(e audit.Entry) string {
+	d, err := json.Marshal(e.Details)
+	if err != nil {
+		d = []byte("{}")
+	}
+	return fmt.Sprintf("%s %s release=%s %s", e.Action, e.Result, e.Object.ID, d)
 }
 
 // newState — журнал нового обновления на шаге «проверка».
@@ -279,6 +321,29 @@ func (u *updater) advance(st *updateState, step string) error {
 func (u *updater) forward(ctx context.Context, st *updateState, pl *plan) error {
 	l := u.layout(st.Component)
 	if st.DB {
+		// Приём закрывается до остановки: сервер, запущенный кем угодно
+		// (перезагрузка, systemd) до итога или отката, не примет событий,
+		// которые стёр бы откат с восстановлением копии.
+		st.Gated = true
+		if err := u.state.save(st); err != nil {
+			return err
+		}
+		if err := u.host.Gate(ctx, true); err != nil {
+			return fmt.Errorf("закрытие приёма событий: %w", err)
+		}
+	}
+	for _, unit := range st.Units {
+		u.say("Остановка %s…", unit)
+		if err := u.host.Stop(ctx, unit); err != nil {
+			return fmt.Errorf("остановка %s: %w", unit, err)
+		}
+	}
+	if err := u.advance(st, stepStopped); err != nil {
+		return err
+	}
+	if st.DB {
+		// Копия — после остановки шлюза и сервера: после неё в БД ничего
+		// не пишется до проверки здоровья нового выпуска.
 		u.say("Резервная копия БД…")
 		dir := u.state.dumpDir(st.ID)
 		if err := ensureOwnedDir(dir, 0o700, u.owner); err != nil {
@@ -289,15 +354,6 @@ func (u *updater) forward(ctx context.Context, st *updateState, pl *plan) error 
 		}
 	}
 	if err := u.advance(st, stepBackedUp); err != nil {
-		return err
-	}
-	for _, unit := range st.Units {
-		u.say("Остановка %s…", unit)
-		if err := u.host.Stop(ctx, unit); err != nil {
-			return fmt.Errorf("остановка %s: %w", unit, err)
-		}
-	}
-	if err := u.advance(st, stepStopped); err != nil {
 		return err
 	}
 	if st.Adopt {
@@ -334,7 +390,7 @@ func (u *updater) forward(ctx context.Context, st *updateState, pl *plan) error 
 	if err := u.advance(st, stepMigrated); err != nil {
 		return err
 	}
-	if err := u.startUnits(ctx, st, true); err != nil {
+	if err := u.startUnits(ctx, st); err != nil {
 		return err
 	}
 	if err := u.advance(st, stepStarted); err != nil {
@@ -344,10 +400,7 @@ func (u *updater) forward(ctx context.Context, st *updateState, pl *plan) error 
 	if err := u.health(ctx, st, false); err != nil {
 		return fmt.Errorf("проверка здоровья: %w", err)
 	}
-	if err := u.advance(st, stepHealthy); err != nil {
-		return err
-	}
-	return u.finish(ctx, st)
+	return u.advance(st, stepHealthy)
 }
 
 // newCLI — aisec-cli нового выпуска по пути каталога версии (не через
@@ -357,20 +410,11 @@ func (u *updater) newCLI(st *updateState) string {
 }
 
 // startUnits запускает службы в порядке «шлюз → сервер» (анализаторы —
-// свои); gate — сервер с закрытым приёмом событий.
-func (u *updater) startUnits(ctx context.Context, st *updateState, gate bool) error {
+// свои); приём событий сервером закрыт с шага остановки.
+func (u *updater) startUnits(ctx context.Context, st *updateState) error {
 	for _, unit := range []string{unitGateway, unitServer, unitML, unitMedia} {
 		if !contains(st.Units, unit) {
 			continue
-		}
-		if unit == unitServer && gate && st.DB {
-			if err := u.host.Gate(ctx, true); err != nil {
-				return fmt.Errorf("закрытие приёма событий: %w", err)
-			}
-			st.Gated = true
-			if err := u.state.save(st); err != nil {
-				return err
-			}
 		}
 		u.say("Запуск %s…", unit)
 		if err := u.host.Start(ctx, unit); err != nil {
@@ -477,38 +521,45 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 	}
 }
 
-// finish — шаги 10–11: открыть приём, перезапустить сервер и проверить
-// снова, итог в журнал аудита, уборка.
-func (u *updater) finish(ctx context.Context, st *updateState) error {
+// open — шаг 10: открыть приём, перезапустить сервер и проверить снова.
+func (u *updater) open(ctx context.Context, st *updateState) error {
 	if st.Gated {
 		if err := u.host.Gate(ctx, false); err != nil {
 			return fmt.Errorf("открытие приёма событий: %w", err)
 		}
-		u.say("Приём событий открыт, перезапуск aisec-server…")
-		if err := u.host.Restart(ctx, unitServer); err != nil {
-			return fmt.Errorf("перезапуск aisec-server: %w", err)
+		if contains(st.Units, unitServer) {
+			u.say("Приём событий открыт, перезапуск aisec-server…")
+			if err := u.host.Restart(ctx, unitServer); err != nil {
+				return fmt.Errorf("перезапуск aisec-server: %w", err)
+			}
 		}
 		st.Gated = false
 		if err := u.state.save(st); err != nil {
 			return err
 		}
-		if err := u.health(ctx, st, true); err != nil {
-			return fmt.Errorf("проверка после открытия приёма: %w", err)
+		if contains(st.Units, unitServer) {
+			if err := u.health(ctx, st, true); err != nil {
+				return fmt.Errorf("проверка после открытия приёма: %w", err)
+			}
 		}
 	}
-	if err := u.advance(st, stepOpened); err != nil {
-		return err
-	}
+	return u.advance(st, stepOpened)
+}
+
+// complete — шаг 11: итог в журнал аудита, уборка, удаление журнала шагов.
+func (u *updater) complete(ctx context.Context, st *updateState) error {
+	details := map[string]any{}
 	if st.DB {
 		applied, err := u.db.Applied(ctx)
 		if err != nil {
 			return err
 		}
-		if err := u.db.Audit(ctx, u.entry("update.install", audit.ResultSuccess, st, map[string]any{"migrations_applied": len(applied) - st.AppliedBefore})); err != nil {
-			return fmt.Errorf("запись update.install: %w", err)
-		}
+		details["migrations_applied"] = len(applied) - st.AppliedBefore
 	}
-	u.cleanup(st, st.ToID, st.FromID)
+	if err := u.record(ctx, u.entry("update.install", audit.ResultSuccess, st, details)); err != nil {
+		return fmt.Errorf("запись update.install: %w", err)
+	}
+	u.cleanup(st, false)
 	if err := u.state.remove(); err != nil {
 		return err
 	}
@@ -516,10 +567,19 @@ func (u *updater) finish(ctx context.Context, st *updateState) error {
 	return nil
 }
 
-// cleanup — уборка после итога: выпуски кроме keep, копии БД кроме
-// последней. Ошибка уборки не меняет итога, только сообщается.
-func (u *updater) cleanup(st *updateState, keep ...string) {
-	if err := u.layout(st.Component).prune(keep...); err != nil {
+// cleanup — уборка после итога: после обновления — выпуски кроме нового и
+// предыдущего, после отката — только каталог несостоявшегося выпуска;
+// копии БД кроме последней. Ошибка уборки не меняет итога, только
+// сообщается.
+func (u *updater) cleanup(st *updateState, rolledBack bool) {
+	l := u.layout(st.Component)
+	var err error
+	if rolledBack {
+		err = l.drop(st.ToID)
+	} else {
+		err = l.prune(st.ToID, st.FromID)
+	}
+	if err != nil {
 		u.say("Не удалось удалить старые каталоги версий: %v", err)
 	}
 	entries, err := os.ReadDir(u.state.dir)
@@ -540,14 +600,16 @@ func (u *updater) cleanup(st *updateState, keep ...string) {
 func (u *updater) rollback(ctx context.Context, st *updateState, cause error) error {
 	ctx = context.WithoutCancel(ctx)
 	l := u.layout(st.Component)
-	if stepAfter(st.Step, stepBackedUp) {
-		for _, unit := range reversed(st.Units) {
-			if err := u.host.Stop(ctx, unit); err != nil {
-				return fmt.Errorf("остановка %s: %w", unit, err)
-			}
+	// Службы могли быть остановлены частично или запущены новым выпуском:
+	// остановить все (повтор безопасен).
+	for _, unit := range reversed(st.Units) {
+		if err := u.host.Stop(ctx, unit); err != nil {
+			return fmt.Errorf("остановка %s: %w", unit, err)
 		}
 	}
-	if st.Gated {
+	// Дополнение могло остаться, даже если сбой случился внутри Gate:
+	// удаление повторяемо.
+	if st.DB || st.Gated {
 		if err := u.host.Gate(ctx, false); err != nil {
 			return fmt.Errorf("открытие приёма событий: %w", err)
 		}
@@ -600,16 +662,17 @@ func (u *updater) rollback(ctx context.Context, st *updateState, cause error) er
 	if healthErr != nil {
 		u.say("Прежний выпуск после отката: %v", healthErr)
 	}
-	if st.DB {
-		details := map[string]any{"failed_after": st.Step, "reason": shortReason(cause), "db_restored": restored}
-		if restored {
-			details["events_window"] = "приём событий был закрыт до проверки здоровья"
-		}
-		if err := u.db.Audit(ctx, u.entry("update.rollback", audit.ResultFailure, st, details)); err != nil {
-			u.say("Запись update.rollback в журнал аудита не удалась: %v", err)
-		}
+	details := map[string]any{"failed_after": st.Step, "reason": shortReason(cause), "db_restored": restored}
+	if restored && stepAfter(st.Step, stepHealthy) {
+		details["events_window"] = "события, принятые сервером после открытия приёма и до отката, потеряны"
+		u.say("Внимание: события, принятые после открытия приёма и до отката, не сохранились — сверьте журналы шлюзов.")
+	} else if restored {
+		details["events_window"] = "приём событий был закрыт до проверки здоровья"
 	}
-	u.cleanup(st, st.FromID)
+	if err := u.record(ctx, u.entry("update.rollback", audit.ResultFailure, st, details)); err != nil {
+		u.say("Запись update.rollback не удалась: %v", err)
+	}
+	u.cleanup(st, true)
 	if err := u.state.remove(); err != nil {
 		return err
 	}
@@ -634,7 +697,7 @@ func reversed(s []string) []string {
 func (u *updater) recover(ctx context.Context, st *updateState) error {
 	if stepAfter(st.Step, stepHealthy) {
 		u.say("Незавершённое обновление %s → %s прошло проверку здоровья: завершение.", st.FromVersion, st.ToVersion)
-		return u.finish(ctx, st)
+		return u.conclude(ctx, st)
 	}
 	u.say("Незавершённое обновление %s → %s (последний шаг — %s): откат.", st.FromVersion, st.ToVersion, st.Step)
 	if err := u.rollback(ctx, st, errUpdateInterrupted); err != nil {
@@ -651,6 +714,21 @@ func (u *updater) entry(action string, result audit.Result, st *updateState, ext
 	return audit.Entry{OrgID: audit.DefaultOrgID, Actor: cliActor(), Action: action,
 		Object: audit.Object{Type: "release", ID: st.ToID}, Result: result, Details: d}
 }
+
+// dsnHasPassword — пароль в строке подключения (URL или «ключ=значение»).
+func dsnHasPassword(dsn string) bool {
+	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
+		u, err := url.Parse(dsn)
+		if err != nil {
+			return true // не разобрать — не рисковать
+		}
+		_, set := u.User.Password()
+		return set || u.Query().Has("password")
+	}
+	return dsnPasswordRe.MatchString(dsn)
+}
+
+var dsnPasswordRe = regexp.MustCompile(`(?i)(^|\s)password\s*=`)
 
 // updateFlags — флаги apply и check.
 type updateFlags struct {
@@ -754,14 +832,14 @@ func (u *updater) run(sub, dir string, allowOlder bool) error {
 	}
 	pl, err := u.check(ctx, dir, allowOlder)
 	if err != nil {
-		if errors.Is(err, errReleaseRejected) && u.db != nil {
-			_ = u.db.Audit(ctx, audit.Entry{OrgID: audit.DefaultOrgID, Actor: cliActor(), Action: "update.install", //nolint:gosec // G104: отказ выпуска важнее записи
+		if errors.Is(err, errReleaseRejected) {
+			_ = u.record(ctx, audit.Entry{OrgID: audit.DefaultOrgID, Actor: cliActor(), Action: "update.install", //nolint:gosec // G104: отказ выпуска важнее записи
 				Object: audit.Object{Type: "release", ID: "rejected"}, Result: audit.ResultFailure, Details: map[string]any{"reason": shortReason(err)}})
 		}
 		return u.reportCheck(err)
 	}
 	stop := make(chan os.Signal, 2)
-	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP) //nolint:forbidigo // ADR-0036, раздел 5: обрыв сеанса (SIGHUP) — откат после текущего шага, а не гибель посреди шага
 	defer signal.Stop(stop)
 	var stopped atomic.Bool
 	u.stopFlag = &stopped
@@ -813,16 +891,21 @@ func newSystemdUpdater(f updateFlags, out io.Writer) (*updater, func(), error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	healthURL := f.healthURL
-	if healthURL == "" {
-		if healthURL, err = healthURLFromEnv(serverEnv); err != nil {
+	rawHealth := f.healthURL
+	if rawHealth == "" {
+		if rawHealth, err = healthURLFromEnv(serverEnv); err != nil {
 			return nil, nil, err
 		}
 	}
-	if err := checkHealthURL(healthURL); err != nil {
+	healthURL, err := healthURL(rawHealth)
+	if err != nil {
 		return nil, nil, err
 	}
 	dsn := cliEnv["AISEC_DATABASE_URL"]
+	if dsnHasPassword(dsn) {
+		// pg_dump и psql получают строку в аргументах, видимых в /proc.
+		return nil, nil, errors.New("AISEC_DATABASE_URL в /etc/aisec/aisec-cli.env содержит пароль: уберите его, пароль владельца схемы читается из PGPASSFILE (ADR-0034)")
+	}
 	env := []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin", "LANG=C.UTF-8", "PGCONNECT_TIMEOUT=10"}
 	if dsn != "" {
 		env = append(env, "AISEC_DATABASE_URL="+dsn)

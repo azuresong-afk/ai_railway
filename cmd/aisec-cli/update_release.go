@@ -162,18 +162,18 @@ func checkSourceDir(dir string) error {
 	if !filepath.IsAbs(dir) {
 		return errors.New("каталог выпуска — абсолютный путь")
 	}
-	info, err := os.Lstat(dir)
+	info, err := os.Lstat(dir) //nolint:gosec // G703: каталог выпуска указал root в аргументе команды
 	if err != nil {
 		return fmt.Errorf("каталог выпуска: %w", err)
 	}
 	if !info.IsDir() {
 		return errors.New("каталог выпуска — не каталог (ссылка или файл)")
 	}
-	var st syscall.Statfs_t
-	if err := syscall.Statfs(dir, &st); err != nil {
+	var st syscall.Statfs_t                          //nolint:forbidigo // ADR-0036, раздел 2: тип файловой системы источника (ОБН.3)
+	if err := syscall.Statfs(dir, &st); err != nil { //nolint:forbidigo // ADR-0036, раздел 2: тип файловой системы источника (ОБН.3)
 		return fmt.Errorf("каталог выпуска: %w", err)
 	}
-	if name, ok := networkFS[st.Type]; ok {
+	if name, ok := networkFS[st.Type]; ok { //nolint:forbidigo // ADR-0036, раздел 2: поле результата statfs
 		return fmt.Errorf("каталог выпуска на сетевой файловой системе (%s): скопируйте выпуск на носитель или локальный диск (ОБН.3)", name)
 	}
 	return nil
@@ -181,11 +181,11 @@ func checkSourceDir(dir string) error {
 
 // freeBytes — свободное место для root в каталоге.
 func freeBytes(dir string) (int64, error) {
-	var st syscall.Statfs_t
-	if err := syscall.Statfs(dir, &st); err != nil {
+	var st syscall.Statfs_t                          //nolint:forbidigo // ADR-0036, раздел 2: свободное место до действий
+	if err := syscall.Statfs(dir, &st); err != nil { //nolint:forbidigo // ADR-0036, раздел 2: свободное место до действий
 		return 0, err
 	}
-	free := st.Bavail * uint64(st.Bsize) //nolint:gosec // G115: размер блока положителен
+	free := st.Bavail * uint64(st.Bsize) //nolint:forbidigo,gosec // ADR-0036, раздел 2: поля результата statfs; G115: размер блока положителен
 	if free > 1<<62 {
 		free = 1 << 62
 	}
@@ -414,20 +414,20 @@ func (l layout) stage(ctx context.Context, p aisecCrypto.Provider, rel *releaseI
 	if err := ensureOwnedDir(l.releases(), 0o755, l.OwnerUID); err != nil {
 		return err
 	}
-	if err := os.Chmod(l.releases(), 0o755); err != nil {
+	if err := os.Chmod(l.releases(), 0o755); err != nil { //nolint:gosec // G302: каталог выпусков root 0755 — службы читают свои программы (ADR-0036, раздел 3)
 		return err
 	}
 	tmp := filepath.Join(l.releases(), stagingPref+rel.ID)
 	final := l.release(rel.ID)
 	for _, d := range []string{tmp, final} {
-		if err := os.RemoveAll(d); err != nil {
+		if err := os.RemoveAll(d); err != nil { //nolint:gosec // G703: ID выпуска проверен releaseIDRe, каталог — свой
 			return err
 		}
 	}
-	if err := os.Mkdir(tmp, 0o755); err != nil {
+	if err := os.Mkdir(tmp, 0o755); err != nil { //nolint:gosec // G301: каталог версии root 0755 — службы читают свои программы (ADR-0036, раздел 3)
 		return err
 	}
-	if err := os.Chmod(tmp, 0o755); err != nil {
+	if err := os.Chmod(tmp, 0o755); err != nil { //nolint:gosec // G302: каталог версии root 0755 — права не зависят от umask
 		return err
 	}
 	if err := copyRelease(ctx, p, rel, tmp); err != nil {
@@ -436,7 +436,7 @@ func (l layout) stage(ctx context.Context, p aisecCrypto.Provider, rel *releaseI
 	if err := updSyncDir(tmp); err != nil {
 		return err
 	}
-	if err := os.Rename(tmp, final); err != nil {
+	if err := os.Rename(tmp, final); err != nil { //nolint:gosec // G703: ID выпуска проверен releaseIDRe, каталог — свой
 		return err
 	}
 	if err := updSyncDir(l.releases()); err != nil {
@@ -511,6 +511,22 @@ func (l layout) switchTo(id string) error {
 }
 
 // prune удаляет каталоги версий, кроме keep, и незавершённые копии.
+// drop удаляет каталог выпуска id и его недописанную копию (после отката).
+func (l layout) drop(id string) error {
+	if !releaseIDRe.MatchString(id) {
+		return errors.New("неверный ID выпуска")
+	}
+	for _, name := range []string{id, stagingPref + id} {
+		if err := os.RemoveAll(filepath.Join(l.releases(), name)); err != nil { //nolint:gosec // G703: ID выпуска проверен releaseIDRe, каталог — свой
+			return err
+		}
+	}
+	if _, err := os.Lstat(l.releases()); errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return updSyncDir(l.releases())
+}
+
 func (l layout) prune(keep ...string) error {
 	entries, err := os.ReadDir(l.releases())
 	if err != nil {

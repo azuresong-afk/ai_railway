@@ -41,7 +41,7 @@ func TestUpdateGatewayBufferAcrossServerDowntime(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(events.BatchResult{}) //nolint:gosec // G104: тестовый сервер
 	})
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +68,7 @@ func TestUpdateGatewayBufferAcrossServerDowntime(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
-	if err := os.Chmod(dir, 0o700); err != nil {
+	if err := os.Chmod(dir, 0o700); err != nil { //nolint:gosec // G302: каталог теста, 0700 как у каталога состояния шлюза
 		t.Fatal(err)
 	}
 	p := standardProvider(t)
@@ -123,7 +123,7 @@ func TestUpdateGatewayBufferAcrossServerDowntime(t *testing.T) {
 	send(10)
 	gated.Close()
 	// Шаг 10: приём открыт — сервер снова на своём порту, буфер досылается.
-	ln2, err := net.Listen("tcp", addr)
+	ln2, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", addr)
 	if err != nil {
 		t.Skipf("порт %s занят другим процессом: %v", addr, err)
 	}

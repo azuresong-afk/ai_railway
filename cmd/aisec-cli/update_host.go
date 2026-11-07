@@ -9,15 +9,16 @@ import (
 	"io"
 	"io/fs"
 	"net"
-	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
+	"github.com/azuresong-afk/ai_railway/internal/cliclient"
 	aisecCrypto "github.com/azuresong-afk/ai_railway/internal/crypto"
 )
 
@@ -48,6 +49,8 @@ type updateHost interface {
 	// RunCLI запускает aisec-cli нового выпуска (миграции, проверка
 	// целостности) и возвращает его вывод для администратора.
 	RunCLI(ctx context.Context, exe string, args ...string) (string, error)
+	// Journal — запись итога в journald там, где нет журнала аудита в БД.
+	Journal(ctx context.Context, msg string) error
 	// Ready — /readyz сервера отвечает 200.
 	Ready(ctx context.Context) error
 }
@@ -55,17 +58,19 @@ type updateHost interface {
 // Пути на хосте с установкой без Docker (ADR-0034).
 const (
 	systemctlPath   = "/usr/bin/systemctl"
+	systemdCatPath  = "/usr/bin/systemd-cat"
 	dpkgListPath    = "/var/lib/dpkg/info/aisec.list"
 	rpmPath         = "/usr/bin/rpm"
-	gateDropInDir   = "/run/systemd/system/aisec-server.service.d"
-	gateDropInFile  = "90-aisec-update.conf"
-	gateEnvDir      = "/run/aisec-update"
-	gateEnvFile     = "server.env"
+	gateDropInDir   = "/etc/systemd/system/aisec-server.service.d"
+	gateDropInFile  = "zz-aisec-update.conf"
+	gateEnvDir      = "/etc/aisec"
+	gateEnvFile     = "aisec-update-gate.env"
 	serverEnvPath   = "/etc/aisec/aisec-server.env"
 	cliEnvPath      = "/etc/aisec/aisec-cli.env"
-	ownerPGPassPath = "/etc/aisec/credentials/db-owner.pgpass"
+	ownerPGPassPath = "/etc/aisec/credentials/db-owner.pgpass" //nolint:gosec // G101: путь к файлу паролей, не секрет
 	healthCAPath    = "/etc/aisec/credentials/console-ca.crt"
 	cmdTimeout      = 2 * time.Minute
+	migrateTimeout  = 6 * time.Hour // миграции на большой БД (индексы по событиям)
 	maxCmdOutput    = 64 << 10
 	maxEnvFile      = 64 << 10
 )
@@ -116,13 +121,15 @@ func (h *systemdHost) Restart(ctx context.Context, unit string) error {
 	return err
 }
 
-// Gate: EnvironmentFile= дополнения читается после файла юнита и
-// переопределяет AISEC_SERVER_INTERNAL_LISTEN; каталог /run очищается при
-// перезагрузке, поэтому забытое дополнение не переживёт её.
+// Gate: EnvironmentFile= дополнения читается после файла юнита и других
+// дополнений (имя zz-… — последнее по порядку) и переопределяет
+// AISEC_SERVER_INTERNAL_LISTEN. Дополнение лежит в /etc, а не в /run:
+// после перезагрузки посреди обновления сервер тоже стартует с закрытым
+// приёмом; удаляет его итог или откат (журнал шагов).
 func (h *systemdHost) Gate(ctx context.Context, on bool) error {
 	if on {
 		for _, d := range []string{gateDropInDir, gateEnvDir} {
-			if err := os.MkdirAll(d, 0o755); err != nil {
+			if err := os.MkdirAll(d, 0o755); err != nil { //nolint:gosec // G301: /etc/aisec и каталог дополнения юнита читает systemd, root 0755
 				return err
 			}
 			if err := checkOwnedDir(d, 0o755, 0); err != nil {
@@ -146,12 +153,19 @@ func (h *systemdHost) Gate(ctx context.Context, on bool) error {
 	return err
 }
 
+func (h *systemdHost) Journal(ctx context.Context, msg string) error {
+	_, err := runCmd(ctx, []string{"PATH=/usr/bin:/bin", "LANG=C.UTF-8"}, strings.NewReader(msg+"\n"), systemdCatPath, "--identifier=aisec-cli-update", "--priority=notice")
+	return err
+}
+
 func (h *systemdHost) PackageOwned(ctx context.Context) (bool, error) {
 	if _, err := os.Lstat(dpkgListPath); err == nil {
 		return true, nil
 	}
-	if _, err := os.Lstat(rpmPath); err != nil {
-		return false, nil
+	if _, err := os.Lstat(rpmPath); errors.Is(err, os.ErrNotExist) {
+		return false, nil // нет rpm — не пакетная установка
+	} else if err != nil {
+		return false, err
 	}
 	_, err := runCmd(ctx, []string{"PATH=/usr/bin:/bin", "LANG=C"}, nil, rpmPath, "-q", "--quiet", "aisec")
 	var ee *exec.ExitError
@@ -162,44 +176,17 @@ func (h *systemdHost) PackageOwned(ctx context.Context) (bool, error) {
 }
 
 func (h *systemdHost) RunCLI(ctx context.Context, exe string, args ...string) (string, error) {
+	if len(args) > 0 && args[0] == "migrate" {
+		ctx, cancel := context.WithTimeout(ctx, migrateTimeout)
+		defer cancel()
+		return runCmdTimeout(ctx, 0, h.env, nil, exe, args...)
+	}
 	return runCmd(ctx, h.env, nil, exe, args...)
 }
 
 // Ready — GET /readyz сервера по TLS с доверием только корню healthCA.
 func (h *systemdHost) Ready(ctx context.Context) error {
-	return readyz(ctx, h.p, h.healthURL, h.healthCA)
-}
-
-func readyz(ctx context.Context, p aisecCrypto.Provider, rawURL, caFile string) error {
-	ca, err := readSmallFile(caFile, 1<<20)
-	if err != nil {
-		return fmt.Errorf("корень проверки здоровья %s: %w", caFile, err)
-	}
-	tp, err := p.TLS()
-	if err != nil {
-		return err
-	}
-	cfg, err := tp.ClientConfig(ca)
-	if err != nil {
-		return err
-	}
-	tr := &http.Transport{TLSClientConfig: cfg, Proxy: nil, DisableKeepAlives: true, ResponseHeaderTimeout: 10 * time.Second}
-	defer tr.CloseIdleConnections()
-	c := &http.Client{Transport: tr, Timeout: 15 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
-	if err != nil {
-		return err
-	}
-	resp, err := c.Do(req)
-	if err != nil {
-		return fmt.Errorf("сервер не ответил на %s: %w", rawURL, err)
-	}
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096)) //nolint:gosec // G104: тело не нужно
-	_ = resp.Body.Close()                                       //nolint:gosec // G104: ответ прочитан
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("сервер не готов: %s ответил %d", rawURL, resp.StatusCode)
-	}
-	return nil
+	return cliclient.Ready(ctx, h.p, h.healthURL, h.healthCA)
 }
 
 // healthURLFromEnv — https://<AISEC_SERVER_LISTEN>/readyz; адрес «все
@@ -222,21 +209,41 @@ func healthURLFromEnv(env map[string]string) (string, error) {
 	return (&url.URL{Scheme: "https", Host: net.JoinHostPort(host, port), Path: "/readyz"}).String(), nil
 }
 
-// checkHealthURL — адрес проверки здоровья: только https без учётных данных.
-func checkHealthURL(raw string) error {
+// healthURL — адрес проверки здоровья: только https без учётных данных;
+// без пути — дополняется /readyz.
+func healthURL(raw string) (string, error) {
 	u, err := url.Parse(raw)
-	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
-		return errors.New("health-url: ожидается https://узел:порт/readyz без учётных данных")
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return "", errors.New("health-url: ожидается https://узел:порт без учётных данных")
 	}
-	return nil
+	switch u.Path {
+	case "", "/":
+		u.Path = "/readyz"
+	case "/readyz":
+	default:
+		return "", errors.New("health-url: путь — только /readyz")
+	}
+	return u.String(), nil
 }
 
 // runCmd запускает программу с заданным окружением и пределом времени;
 // вывод (stdout и stderr вместе) — не больше maxCmdOutput.
 func runCmd(ctx context.Context, env []string, stdin io.Reader, name string, args ...string) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, cmdTimeout)
-	defer cancel()
+	return runCmdTimeout(ctx, cmdTimeout, env, stdin, name, args...)
+}
+
+// runCmdTimeout — runCmd со своим пределом (0 — только предел ctx).
+// Дочерний процесс — в своей группе: Ctrl+C и обрыв сеанса, которые
+// терминал шлёт всей группе, не убивают pg_dump, psql и миграции посреди
+// шага (ADR-0036, раздел 5).
+func runCmdTimeout(ctx context.Context, timeout time.Duration, env []string, stdin io.Reader, name string, args ...string) (string, error) {
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
 	cmd := exec.CommandContext(ctx, name, args...) //nolint:gosec // G204: программа — константа или проверенный по манифесту aisec-cli
+	cmd.SysProcAttr = ownGroup()
 	cmd.Env = env
 	cmd.Stdin = stdin
 	var out limitedBuffer
@@ -252,6 +259,11 @@ func runCmd(ctx context.Context, env []string, stdin io.Reader, name string, arg
 		return text, fmt.Errorf("%s: %w", filepath.Base(name), err)
 	}
 	return text, nil
+}
+
+// ownGroup — дочерний процесс в своей группе процессов.
+func ownGroup() *syscall.SysProcAttr { //nolint:forbidigo // ADR-0036, раздел 6: тип атрибутов процесса
+	return &syscall.SysProcAttr{Setpgid: true} //nolint:forbidigo // ADR-0036, раздел 6: своя группа процессов
 }
 
 func lastLine(s string) string {

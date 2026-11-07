@@ -207,11 +207,11 @@ func (st *stateStore) open() error {
 	if err := ensureOwnedDir(st.dir, 0o700, st.ownerUID); err != nil {
 		return err
 	}
-	f, err := os.OpenFile(filepath.Join(st.dir, updateLockFile), os.O_RDWR|os.O_CREATE|syscall.O_NOFOLLOW, 0o600) //nolint:gosec // G304: фиксированное имя в каталоге root 0700
+	f, err := os.OpenFile(filepath.Join(st.dir, updateLockFile), os.O_RDWR|os.O_CREATE|syscall.O_NOFOLLOW, 0o600) //nolint:forbidigo,gosec // ADR-0036, раздел 6: без перехода по ссылке; G304: фиксированное имя в каталоге root 0700
 	if err != nil {
 		return fmt.Errorf("блокировка обновления: %w", err)
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil { //nolint:gosec // G115: дескриптор файла помещается в int
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil { //nolint:forbidigo,gosec // ADR-0036, раздел 5: блокировка снимается ядром при гибели процесса; G115: дескриптор файла помещается в int
 		_ = f.Close() //nolint:gosec // G104: файл не использовался
 		return errors.New("другое обновление уже выполняется (блокировка занята)")
 	}
@@ -280,7 +280,7 @@ func updWriteAtomic(dir, name string, data []byte, mode os.FileMode) error {
 	if err := os.Remove(tmp); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, mode) //nolint:gosec // G304: имя — константа в своём каталоге
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, mode) //nolint:forbidigo,gosec // ADR-0036, раздел 6: без перехода по ссылке; G304: имя — константа в своём каталоге
 	if err != nil {
 		return err
 	}
@@ -335,7 +335,7 @@ func checkOwnedDir(dir string, mode os.FileMode, ownerUID int) error {
 	if info.Mode().Perm()&^mode != 0 || info.Mode().Perm()&0o022 != 0 {
 		return fmt.Errorf("%s: права %#o шире допустимых %#o", dir, info.Mode().Perm(), mode)
 	}
-	if st, ok := info.Sys().(*syscall.Stat_t); ok && int(st.Uid) != ownerUID {
+	if st, ok := info.Sys().(*syscall.Stat_t); ok && int(st.Uid) != ownerUID { //nolint:forbidigo // ADR-0036, раздел 6: владелец из результата Lstat, не системный вызов
 		return fmt.Errorf("%s: владелец — не root", dir)
 	}
 	return nil

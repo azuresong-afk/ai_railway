@@ -42,7 +42,7 @@ func mainSpec(version string, created time.Time, migrations string) relSpec {
 // репозитория (его принимает сборка без aisec_release).
 func writeRelease(t *testing.T, dir string, s relSpec) {
 	t.Helper()
-	if err := os.MkdirAll(filepath.Join(dir, "bin"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(dir, "bin"), 0o755); err != nil { //nolint:gosec // G301: раскладка выпуска как в установке
 		t.Fatal(err)
 	}
 	for _, b := range s.bins {
@@ -113,6 +113,7 @@ type fakeHost struct {
 	migrateTo []store.Applied
 	onStop    func()
 	onVerify  func()
+	journal   []string
 	migrate   func(ctx context.Context) error
 	// readyFail и unstable — постоянные сбои после запуска нового выпуска:
 	// проверка здоровья прежнего при откате тоже их видит и только сообщает.
@@ -181,6 +182,9 @@ func (h *fakeHost) Gate(_ context.Context, on bool) error {
 	key := "gate:off"
 	if on {
 		key = "gate:on"
+		// Файлы дополнения записываются до daemon-reload: сбой Gate(on)
+		// оставляет приём закрытым.
+		h.gated = true
 	}
 	if err := h.take(key); err != nil {
 		return err
@@ -190,6 +194,11 @@ func (h *fakeHost) Gate(_ context.Context, on bool) error {
 }
 
 func (h *fakeHost) PackageOwned(context.Context) (bool, error) { return h.packaged, nil }
+
+func (h *fakeHost) Journal(_ context.Context, msg string) error {
+	h.journal = append(h.journal, msg)
+	return nil
+}
 
 func (h *fakeHost) RunCLI(ctx context.Context, exe string, args ...string) (string, error) {
 	h.calls = append(h.calls, "cli:"+strings.Join(args, " "))
@@ -260,6 +269,9 @@ func (d *fakeDB) Restore(_ context.Context, file string) error {
 }
 
 func (d *fakeDB) Audit(_ context.Context, e audit.Entry) error {
+	if err := d.take("audit:" + e.Action); err != nil {
+		return err
+	}
 	d.audits = append(d.audits, e.Action)
 	return nil
 }
@@ -288,20 +300,20 @@ func newUpdEnv(t *testing.T) *updEnv {
 	t.Helper()
 	base := t.TempDir()
 	root := filepath.Join(base, "host")
-	if err := os.MkdirAll(filepath.Join(root, "opt"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "opt"), 0o755); err != nil { //nolint:gosec // G301: раскладка /opt как в установке
 		t.Fatal(err)
 	}
-	if err := os.Chmod(filepath.Join(root, "opt"), 0o755); err != nil {
+	if err := os.Chmod(filepath.Join(root, "opt"), 0o755); err != nil { //nolint:gosec // G302: раскладка /opt как в установке
 		t.Fatal(err)
 	}
 	m3 := migrationsDir(t, 3)
 	m2 := t.TempDir()
 	for _, n := range []string{"0001_m1.sql", "0002_m2.sql"} {
-		data, err := os.ReadFile(filepath.Join(m3, n))
+		data, err := os.ReadFile(filepath.Join(m3, n)) //nolint:gosec // G304: временный каталог теста
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(m2, n), data, 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(m2, n), data, 0o600); err != nil { //nolint:gosec // G703: временный каталог теста
 			t.Fatal(err)
 		}
 	}
@@ -365,7 +377,7 @@ func TestUpdateApplyOK(t *testing.T) {
 	if err != nil || info.Mode().Perm() != 0o755 {
 		t.Fatalf("права бинарника: %v %v", info, err)
 	}
-	want := []string{"ready", "stop:aisec-gateway", "stop:aisec-server", "cli:migrate", "start:aisec-gateway", "gate:true",
+	want := []string{"ready", "gate:true", "stop:aisec-gateway", "stop:aisec-server", "cli:migrate", "start:aisec-gateway",
 		"start:aisec-server", "ready", "cli:verify", "gate:false", "restart:aisec-server", "ready"}
 	if got := strings.Join(e.host.calls, ","); got != strings.Join(want, ",") {
 		t.Fatalf("порядок действий:\n%s\nожидалось\n%s", got, strings.Join(want, ","))
@@ -376,7 +388,7 @@ func TestUpdateApplyOK(t *testing.T) {
 	if len(e.db.applied) != 3 || e.host.gated {
 		t.Fatal("миграции не применены или приём не открыт")
 	}
-	if st, _ := e.u.state.load(); st != nil {
+	if st, _ := e.u.state.load(); st != nil { //nolint:gosec // G104: журнал проверяется на отсутствие
 		t.Fatal("журнал не удалён")
 	}
 	if _, err := os.Stat(filepath.Join(e.u.state.dir, "")); err != nil {
@@ -412,7 +424,7 @@ func TestUpdateRollbackOnEachStep(t *testing.T) {
 		}, false},
 		{"сбой миграции посреди транзакции", func(e *updEnv) { e.host.fail["migrate"] = boom }, false},
 		{"запуск шлюза", func(e *updEnv) { e.host.fail["start:aisec-gateway"] = boom }, true},
-		{"закрытие приёма", func(e *updEnv) { e.host.fail["gate:on"] = boom }, true},
+		{"закрытие приёма", func(e *updEnv) { e.host.fail["gate:on"] = boom }, false},
 		{"запуск сервера", func(e *updEnv) { e.host.fail["start:aisec-server"] = boom }, true},
 		{"сервер не готов", func(e *updEnv) { e.host.readyFail = boom }, true},
 		{"служба перезапускалась", func(e *updEnv) { e.host.unstable = map[string]bool{unitGateway: true} }, true},
@@ -447,6 +459,30 @@ func TestUpdateRollbackOnEachStep(t *testing.T) {
 			}
 			assertRolledBack(t, e, c.wantRestore)
 		})
+	}
+}
+
+// Сбой записи итога после открытия приёма не откатывает работающий
+// выпуск: журнал остаётся, повторный запуск дописывает итог.
+func TestUpdateCompleteFailureKeepsRelease(t *testing.T) {
+	e := newUpdEnv(t)
+	e.db.fail = map[string]error{"audit:update.install": errors.New("БД недоступна")}
+	err := e.apply(t)
+	if err == nil || errors.Is(err, errUpdateRolledBack) || !strings.Contains(err.Error(), "завершит обновление") {
+		t.Fatalf("%v\n%s", err, e.out)
+	}
+	if got := e.link(t); got != "aisec-releases/"+e.toID || e.db.restores != 0 || e.host.gated {
+		t.Fatalf("ссылка %s, восстановлений %d", got, e.db.restores)
+	}
+	e.host.calls = nil
+	if err := e.u.run("apply", "", false); err != nil {
+		t.Fatalf("%v\n%s", err, e.out)
+	}
+	if got := strings.Join(e.db.audits, ","); got != "update.started,update.install" || len(e.host.calls) != 0 {
+		t.Fatalf("аудит %s, действия %v", got, e.host.calls)
+	}
+	if st, _ := e.u.state.load(); st != nil { //nolint:gosec // G104: журнал проверяется на отсутствие
+		t.Fatal("журнал не удалён")
 	}
 }
 
@@ -540,7 +576,9 @@ func TestUpdateResumeAfterCrash(t *testing.T) {
 		if err := e.u.state.save(st); err != nil {
 			t.Fatal(err)
 		}
-		if err := e.u.forward(context.Background(), st, pl); !errors.Is(err, errCrash) {
+		// Обрыв — сбой шага или гибель процесса сразу после проверки
+		// здоровья (forward завершился, итога нет).
+		if err := e.u.forward(context.Background(), st, pl); err != nil && !errors.Is(err, errCrash) {
 			t.Fatalf("ожидался обрыв: %v", err)
 		}
 	}
@@ -563,8 +601,10 @@ func TestUpdateResumeAfterCrash(t *testing.T) {
 	})
 	t.Run("после проверки здоровья — завершение", func(t *testing.T) {
 		e := newUpdEnv(t)
-		e.host.fail["gate:off"] = errCrash
 		crash(t, e)
+		if err := e.u.run("status", "", false); err != nil || !strings.Contains(e.out.String(), "выполнит: завершение") {
+			t.Fatalf("status: %v %s", err, e.out)
+		}
 		if err := e.u.run("apply", "", false); err != nil {
 			t.Fatalf("%v\n%s", err, e.out)
 		}
@@ -581,7 +621,7 @@ func TestUpdateResumeAfterCrash(t *testing.T) {
 		e.host.onStop = func() {}
 		crashAdopt := func() {
 			// Каталог уже переименован, ссылки ещё нет.
-			if err := os.MkdirAll(l.releases(), 0o755); err != nil {
+			if err := os.MkdirAll(l.releases(), 0o755); err != nil { //nolint:gosec // G301: раскладка выпуска как в установке
 				t.Fatal(err)
 			}
 			if err := os.Rename(l.link(), l.release(e.fromID)); err != nil {
@@ -717,10 +757,10 @@ func TestUpdateAllowOlder(t *testing.T) {
 func TestUpdateMediaComponent(t *testing.T) {
 	e := newUpdEnv(t)
 	mroot := e.u.roots[componentMedia]
-	if err := os.MkdirAll(filepath.Join(mroot, "opt"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(mroot, "opt"), 0o755); err != nil { //nolint:gosec // G301: раскладка /opt как в установке
 		t.Fatal(err)
 	}
-	if err := os.Chmod(filepath.Join(mroot, "opt"), 0o755); err != nil {
+	if err := os.Chmod(filepath.Join(mroot, "opt"), 0o755); err != nil { //nolint:gosec // G302: раскладка /opt как в установке
 		t.Fatal(err)
 	}
 	media := func(v string, at time.Time) relSpec {
@@ -745,8 +785,8 @@ func TestUpdateMediaComponent(t *testing.T) {
 	if got := strings.Join(e.host.calls, ","); got != "stop:aisec-media,start:aisec-media" {
 		t.Fatalf("действия: %s", got)
 	}
-	if len(e.db.audits) != 0 {
-		t.Fatal("анализатор пишет в БД")
+	if got := strings.Join(e.db.audits, ","); got != "update.started,update.install" || e.db.restores != 0 || len(e.db.dumped) != 0 {
+		t.Fatalf("анализатор: аудит %s, копий %d", got, len(e.db.dumped))
 	}
 	target, err := os.Readlink(filepath.Join(mroot, "opt", "aisec"))
 	if err != nil || !strings.HasPrefix(target, "aisec-releases/1.0-") {
@@ -765,6 +805,11 @@ func TestUpdateGatewayOnlyNode(t *testing.T) {
 	}
 	if got := strings.Join(e.host.calls, ","); got != "stop:aisec-gateway,start:aisec-gateway,cli:verify" {
 		t.Fatalf("действия: %s", got)
+	}
+	// Без БД итог — в journald.
+	if len(e.host.journal) != 2 || !strings.HasPrefix(e.host.journal[0], "update.started success") ||
+		!strings.HasPrefix(e.host.journal[1], "update.install success release="+e.toID) {
+		t.Fatalf("journald: %q", e.host.journal)
 	}
 }
 
@@ -847,13 +892,16 @@ func TestParseEnvFile(t *testing.T) {
 	if err != nil || u != "https://127.0.0.1:8444/readyz" {
 		t.Fatalf("%s %v", u, err)
 	}
-	if u, _ := healthURLFromEnv(map[string]string{"AISEC_SERVER_LISTEN": "[::]:9443"}); u != "https://[::1]:9443/readyz" {
+	if u, _ := healthURLFromEnv(map[string]string{"AISEC_SERVER_LISTEN": "[::]:9443"}); u != "https://[::1]:9443/readyz" { //nolint:gosec // G104: проверяется только адрес
 		t.Fatal(u)
 	}
-	for _, bad := range []string{"http://127.0.0.1/readyz", "https://u:p@h/readyz", "https:///x"} {
-		if checkHealthURL(bad) == nil {
+	for _, bad := range []string{"http://127.0.0.1/readyz", "https://u:p@h/readyz", "https:///x", "https://h:1/other", "https://h:1/readyz?a=1"} {
+		if _, err := healthURL(bad); err == nil {
 			t.Fatalf("принят %s", bad)
 		}
+	}
+	if u, err := healthURL("https://console.example:8444"); err != nil || u != "https://console.example:8444/readyz" {
+		t.Fatalf("%s %v", u, err)
 	}
 }
 
@@ -864,8 +912,18 @@ func TestFilterTOC(t *testing.T) {
 		!strings.Contains(got, "TABLE public t") {
 		t.Fatal(got)
 	}
-	if roleIdent(`"Ро""ль"`) != `"Ро""ль"` || roleIdent("aisec_owner") != `"aisec_owner"` {
-		t.Fatal(roleIdent(`"Ро""ль"`))
+}
+
+func TestDSNHasPassword(t *testing.T) {
+	for _, dsn := range []string{"postgres://u:p@h/db", "postgresql://u:@h/db", "host=h password=p dbname=db", "host=h  PASSWORD  = p"} {
+		if !dsnHasPassword(dsn) {
+			t.Fatalf("не найден пароль в %q", dsn)
+		}
+	}
+	for _, dsn := range []string{"postgres://aisec_owner@127.0.0.1:5432/aisec?sslmode=verify-full", "host=h user=u dbname=db passfile=/x", ""} {
+		if dsnHasPassword(dsn) {
+			t.Fatalf("ложный пароль в %q", dsn)
+		}
 	}
 }
 

@@ -119,8 +119,10 @@ func (d *pgUpdateDB) Dump(ctx context.Context, file string) error {
 	}
 	ctx, cancel := context.WithTimeout(ctx, dumpTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, d.tools.PGDump, "--no-password", "--format=custom", "--schema="+d.schema, //nolint:gosec // G204: программа — константа, схема из каталога СУБД
-		"--dbname="+d.toolDSN)
+	// Имя схемы в кавычках — буквально, не шаблон pg_dump.
+	cmd := exec.CommandContext(ctx, d.tools.PGDump, "--no-password", "--format=custom", "--strict-names", //nolint:gosec // G204: программа — константа, схема из каталога СУБД
+		`--schema="`+strings.ReplaceAll(d.schema, `"`, `""`)+`"`, "--dbname="+d.toolDSN)
+	cmd.SysProcAttr = ownGroup()
 	cmd.Env = d.env
 	cmd.Stdout = f
 	var errOut limitedBuffer
@@ -163,12 +165,24 @@ func (d *pgUpdateDB) Restore(ctx context.Context, file string) error {
 		return err
 	}
 	listFile := file + ".list"
-	if err := os.WriteFile(listFile, []byte(filterTOC(list, d.schema)), 0o600); err != nil {
+	if err := os.Remove(listFile); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	lf, err := os.OpenFile(listFile, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) //nolint:gosec // G304: путь в каталоге обновления root 0700
+	if err != nil {
 		return err
 	}
 	defer os.Remove(listFile) //nolint:errcheck // временный список
+	if _, err := lf.WriteString(filterTOC(list, d.schema)); err != nil {
+		_ = lf.Close() //nolint:gosec // G104: ошибка записи важнее
+		return err
+	}
+	if err := lf.Close(); err != nil {
+		return err
+	}
 
 	restore := exec.CommandContext(ctx, d.tools.PGRestore, "--use-list="+listFile, "--file=-", file) //nolint:gosec // G204: программа — константа, пути — каталог обновления
+	restore.SysProcAttr = ownGroup()
 	restore.Env = d.env
 	restore.Dir = "/"
 	var restoreErr limitedBuffer
@@ -179,6 +193,7 @@ func (d *pgUpdateDB) Restore(ctx context.Context, file string) error {
 	}
 	psql := exec.CommandContext(ctx, d.tools.PSQL, "--no-password", "--no-psqlrc", "--quiet", "--single-transaction", //nolint:gosec // G204: программа — константа
 		"--set=ON_ERROR_STOP=1", "--dbname="+d.toolDSN)
+	psql.SysProcAttr = ownGroup()
 	psql.Env = d.env
 	psql.Dir = "/"
 	psql.Stdin = io.MultiReader(strings.NewReader(header), script)
@@ -206,21 +221,23 @@ func (d *pgUpdateDB) Restore(ctx context.Context, file string) error {
 // владельцем и правами из каталога СУБД.
 func (d *pgUpdateDB) schemaHeader(ctx context.Context) (string, error) {
 	var owner string
-	if err := d.db.Pool().QueryRow(ctx, "SELECT nspowner::regrole::text FROM pg_namespace WHERE nspname = $1", d.schema).Scan(&owner); err != nil {
+	if err := d.db.Pool().QueryRow(ctx, "SELECT r.rolname FROM pg_namespace n JOIN pg_roles r ON r.oid = n.nspowner WHERE n.nspname = $1", d.schema).Scan(&owner); err != nil {
 		return "", fmt.Errorf("владелец схемы: %w", err)
 	}
-	rows, err := d.db.Pool().Query(ctx, `SELECT CASE WHEN a.grantee = 0 THEN '' ELSE a.grantee::regrole::text END, a.privilege_type
-		FROM pg_namespace n, aclexplode(n.nspacl) a WHERE n.nspname = $1 AND a.grantee <> n.nspowner ORDER BY 1, 2`, d.schema)
+	rows, err := d.db.Pool().Query(ctx, `SELECT COALESCE(r.rolname, ''), a.privilege_type, a.is_grantable
+		FROM pg_namespace n CROSS JOIN LATERAL aclexplode(n.nspacl) a LEFT JOIN pg_roles r ON r.oid = a.grantee
+		WHERE n.nspname = $1 AND a.grantee <> n.nspowner ORDER BY 1, 2`, d.schema)
 	if err != nil {
 		return "", fmt.Errorf("права схемы: %w", err)
 	}
 	defer rows.Close()
 	s := pgx.Identifier{d.schema}.Sanitize()
 	var b strings.Builder
-	fmt.Fprintf(&b, "DROP SCHEMA %s CASCADE;\nCREATE SCHEMA %s;\nALTER SCHEMA %s OWNER TO %s;\n", s, s, s, roleIdent(owner))
+	fmt.Fprintf(&b, "DROP SCHEMA %s CASCADE;\nCREATE SCHEMA %s;\nALTER SCHEMA %s OWNER TO %s;\n", s, s, s, pgx.Identifier{owner}.Sanitize())
 	for rows.Next() {
 		var grantee, priv string
-		if err := rows.Scan(&grantee, &priv); err != nil {
+		var grantable bool
+		if err := rows.Scan(&grantee, &priv, &grantable); err != nil {
 			return "", err
 		}
 		if priv != "USAGE" && priv != "CREATE" {
@@ -228,20 +245,15 @@ func (d *pgUpdateDB) schemaHeader(ctx context.Context) (string, error) {
 		}
 		to := "PUBLIC"
 		if grantee != "" {
-			to = roleIdent(grantee)
+			to = pgx.Identifier{grantee}.Sanitize()
 		}
-		fmt.Fprintf(&b, "GRANT %s ON SCHEMA %s TO %s;\n", priv, s, to)
+		opt := ""
+		if grantable {
+			opt = " WITH GRANT OPTION"
+		}
+		fmt.Fprintf(&b, "GRANT %s ON SCHEMA %s TO %s%s;\n", priv, s, to, opt)
 	}
 	return b.String(), rows.Err()
-}
-
-// roleIdent — имя роли из regrole::text (уже в кавычках, если нужно)
-// снова в безопасный идентификатор.
-func roleIdent(r string) string {
-	if len(r) >= 2 && r[0] == '"' && r[len(r)-1] == '"' {
-		r = strings.ReplaceAll(r[1:len(r)-1], `""`, `"`)
-	}
-	return pgx.Identifier{r}.Sanitize()
 }
 
 // filterTOC убирает из списка pg_restore запись о самой схеме: её создаёт
