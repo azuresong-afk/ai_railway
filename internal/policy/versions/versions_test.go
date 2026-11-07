@@ -408,4 +408,14 @@ func TestMediaStoreNeedsConfirm(t *testing.T) {
 	if d, err := e.svc.Get(ctx, "q", 2); err != nil || !d.Spec.MediaStore {
 		t.Fatalf("версия 2: %+v %v", d.Spec, err)
 	}
+	// Загрузка новой политики с media_store: предпросмотр показывает
+	// ослабление, загрузка без подтверждения отклоняется.
+	y := "id: img\nname: Изображения\nversion: 1\nmode: enforce\nmedia_check: sync\nmedia_store: true\nrules:\n  - id: injection\n    detector: injection.heuristic\n    directions: [input]\n    action: block\n    severity: high\n"
+	pv, err := e.svc.PreviewImport(ctx, e.by, strings.NewReader(y), 0)
+	if err != nil || !pv.Created || len(pv.Diff.Weakening) != 1 || pv.Diff.Weakening[0].Kind != versions.WeakMediaStore {
+		t.Fatalf("предпросмотр: %+v %v", pv.Diff.Weakening, err)
+	}
+	if _, _, err := e.svc.Import(ctx, e.by, strings.NewReader(y), 0, ""); !errors.Is(err, versions.ErrConfirmRequired) {
+		t.Fatalf("загрузка без проверки: %v", err)
+	}
 }

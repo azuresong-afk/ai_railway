@@ -57,12 +57,8 @@ func (h *ChatHandler) storeImages(rec *record, res mediaResult) {
 	if !rec.app.storesImages() || len(rec.ev.Media) == 0 {
 		return
 	}
-	var sctx context.Context
-	if rec.app.Policy.MediaSanitize && rec.sanitizedURLs == nil {
-		ctx, cancel := context.WithTimeout(context.Background(), rec.app.Policy.MediaTimeout)
-		defer cancel()
-		sctx = ctx
-	}
+	// Очистка для хранения нужна, если очистки у запроса не было.
+	sanitize := rec.app.Policy.MediaSanitize && rec.sanitizedURLs == nil
 	var imgs []events.ContentImage
 	total := 0
 	for i := range rec.ev.Media {
@@ -81,7 +77,7 @@ func (h *ChatHandler) storeImages(rec *record, res mediaResult) {
 			m.StoreSkipped = events.StoreSkipEventLimit
 			continue
 		}
-		si, skip := h.imageForStore(sctx, rec, o, m.Format)
+		si, skip := h.imageForStore(sanitize, rec, o, m.Format)
 		switch {
 		case skip != "":
 			m.StoreSkipped = skip
@@ -105,9 +101,9 @@ func (h *ChatHandler) storeImages(rec *record, res mediaResult) {
 }
 
 // imageForStore — байты одного изображения для события или причина, по
-// которой его нет. sctx — срок очистки для хранения (nil — очистка не
-// нужна или уже была).
-func (h *ChatHandler) imageForStore(sctx context.Context, rec *record, o mediaOutcome, format string) (storedImage, string) {
+// которой его нет. sanitize — нужна очистка для хранения (у запроса её не
+// было).
+func (h *ChatHandler) imageForStore(sanitize bool, rec *record, o mediaOutcome, format string) (storedImage, string) {
 	if !rec.app.Policy.MediaSanitize {
 		b, err := decodeImage(o.img.Data, events.MaxStoredImageBytes)
 		switch {
@@ -121,12 +117,17 @@ func (h *ChatHandler) imageForStore(sctx context.Context, rec *record, o mediaOu
 	if u, ok := rec.sanitizedURLs[o.img.Location]; ok {
 		return sanitizedFromURL(u)
 	}
-	if sctx == nil {
+	if !sanitize {
 		// Очистка была, но этого изображения среди очищенных нет: хранить
 		// неочищенное нельзя.
 		return storedImage{}, events.StoreSkipNotSanitized
 	}
-	return h.sanitizeForStore(sctx, o.img)
+	// Срок — на каждое изображение: очистка для хранения идёт в фоне по
+	// одному, и при общем сроке последние изображения упирались бы в него,
+	// а таймауты сдвигали бы клиент анализатора в отсрочку для живых запросов.
+	ctx, cancel := context.WithTimeout(context.Background(), rec.app.Policy.MediaTimeout)
+	defer cancel()
+	return h.sanitizeForStore(ctx, o.img)
 }
 
 // sanitizedFromURL — байты очищенного изображения из data:-адреса,

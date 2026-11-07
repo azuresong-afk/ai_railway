@@ -636,6 +636,11 @@ func (s *Service) PreviewImport(ctx context.Context, by By, r io.Reader, base in
 		}
 		d := Compare(&policy.Spec{}, spec)
 		d.To, d.Weakening = 1, nil
+		if spec.MediaStore {
+			// Новая политика с хранением изображений создаётся только с
+			// подтверждением (Create, ADR-0039): предпросмотр это показывает.
+			d.Weakening = []Weakening{{Kind: WeakMediaStore}}
+		}
 		return ImportPreview{Slug: slug, Created: true, Diff: d}, nil
 	case err != nil:
 		return ImportPreview{}, err
