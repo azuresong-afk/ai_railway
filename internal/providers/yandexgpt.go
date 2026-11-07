@@ -43,6 +43,9 @@ type YandexGPT struct {
 	base
 	yc       YandexGPTConfig
 	endpoint string
+	// vision — OpenAI-совместимый метод того же узла для запросов с
+	// изображениями (yandexgpt_images.go); пусто — адрес не определён.
+	vision string
 }
 
 var folderRe = regexp.MustCompile(`^[a-z0-9]{1,50}$`)
@@ -59,7 +62,7 @@ func NewYandexGPT(cfg YandexGPTConfig) (*YandexGPT, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &YandexGPT{base: b, yc: cfg, endpoint: endpoint(cfg.BaseURL, "/completion")}, nil
+	return &YandexGPT{base: b, yc: cfg, endpoint: endpoint(cfg.BaseURL, "/completion"), vision: visionURL(cfg.BaseURL)}, nil
 }
 
 func (p *YandexGPT) randomID(prefix string) (string, error) {
@@ -119,25 +122,34 @@ type ycRequest struct {
 
 func ycUnsupported(what string) error { return unsupportedBy("yandexgpt", what) }
 
-// toYandexGPT переводит запрос из формата OpenAI в формат Foundation Models.
-func toYandexGPT(req *chat.Request, folder string, stream bool) ([]byte, error) {
+// ycCheck — параметры запроса без аналога у YandexGPT: отказ одинаков для
+// метода completion и для запросов с изображениями (задача 6.10).
+func ycCheck(req *chat.Request) error {
 	switch {
 	case len(req.Stop) > 0:
-		return nil, ycUnsupported("параметр stop")
+		return ycUnsupported("параметр stop")
 	case len(req.ResponseFormat) > 0:
-		return nil, ycUnsupported("параметр response_format")
+		return ycUnsupported("параметр response_format")
 	case req.Seed != nil:
-		return nil, ycUnsupported("параметр seed")
+		return ycUnsupported("параметр seed")
 	case len(req.LogitBias) > 0:
-		return nil, ycUnsupported("параметр logit_bias")
+		return ycUnsupported("параметр logit_bias")
 	case req.TopP != nil && *req.TopP != 1:
-		return nil, ycUnsupported("параметр top_p")
+		return ycUnsupported("параметр top_p")
 	case req.PresencePenalty != nil && *req.PresencePenalty != 0, req.FrequencyPenalty != nil && *req.FrequencyPenalty != 0:
-		return nil, ycUnsupported("штраф за повторы (presence_penalty, frequency_penalty)")
+		return ycUnsupported("штраф за повторы (presence_penalty, frequency_penalty)")
 	case req.ReasoningEffort != "":
-		return nil, ycUnsupported("параметр reasoning_effort")
+		return ycUnsupported("параметр reasoning_effort")
 	case req.Temperature != nil && *req.Temperature > 1:
-		return nil, ycUnsupported("temperature больше 1")
+		return ycUnsupported("temperature больше 1")
+	}
+	return nil
+}
+
+// toYandexGPT переводит запрос из формата OpenAI в формат Foundation Models.
+func toYandexGPT(req *chat.Request, folder string, stream bool) ([]byte, error) {
+	if err := ycCheck(req); err != nil {
+		return nil, err
 	}
 	out := ycRequest{ModelURI: "gpt://" + folder + "/" + req.Model, Messages: []ycMessage{}}
 	out.CompletionOptions.Stream = stream
@@ -336,6 +348,9 @@ func (p *YandexGPT) postFolder(ctx, clientCtx context.Context, body []byte, stre
 
 // Chat — ответ целиком.
 func (p *YandexGPT) Chat(ctx context.Context, req *chat.Request) (*chat.Response, Meta, error) {
+	if hasImages(req) {
+		return p.chatImages(ctx, req)
+	}
 	rctx, cancel := context.WithTimeout(ctx, p.cfg.ResponseTimeout)
 	defer cancel()
 	resp, meta, err := p.send(rctx, ctx, req, false)
@@ -383,6 +398,9 @@ func (p *YandexGPT) fromYandexGPT(raw []byte, model string) (*chat.Response, err
 // Stream — потоковый ответ. В каждой части YandexGPT присылает весь текст,
 // накопленный к этому моменту; приложению уходит приращение.
 func (p *YandexGPT) Stream(ctx context.Context, req *chat.Request) (Stream, Meta, error) {
+	if hasImages(req) {
+		return p.streamImages(ctx, req)
+	}
 	rctx, cancel := context.WithTimeout(ctx, p.cfg.ResponseTimeout)
 	resp, meta, err := p.send(rctx, ctx, req, true)
 	if err != nil {

@@ -63,6 +63,7 @@
 | `FuzzGigaChatChunk` | `internal/providers` | Перевод части потока GigaChat: без паники, только вариант 0 | 1.8 |
 | `FuzzToYandexGPT` | `internal/providers` | Перевод принятого шлюзом запроса в формат YandexGPT: всегда валидный JSON или ошибка 400 для приложения | 1.9 |
 | `FuzzYandexGPTStreamDelta` | `internal/providers` | Приращения потока YandexGPT из накопленного текста: склейка приращений всегда равна накопленному тексту | 1.9 |
+| `FuzzDataURLBytes` | `internal/providers` | Байты изображения из data:-адреса для GigaChat и YandexGPT: предел размера до раскодирования, без паники, итог не длиннее предела | 6.10 |
 | `FuzzParse` | `internal/detect/corpus` | Разбор корпуса детектора (JSONL со строгой схемой): принятые примеры проходят проверку схемы | 1.10 |
 | `FuzzParseTable` | `tools/detector-quality` | Таблица детекторов в `docs/detectors.md`: метрики только 0–1 | 1.10 |
 | `FuzzOnRuneBoundary` | `internal/detect` | Проверка границы символа UTF-8 для позиций находок совпадает с эталоном (обход строки по символам), в том числе на невалидном UTF-8 | 1.12 (ревью) |
