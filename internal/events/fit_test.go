@@ -19,7 +19,7 @@ func TestMarshalContentNoHTMLEscape(t *testing.T) {
 		t.Fatalf("длина %d: HTML экранирован", len(b))
 	}
 	var back Content
-	if err := json.Unmarshal(b, &back); err != nil || back != c {
+	if err := json.Unmarshal(b, &back); err != nil || !sameText(back, c) {
 		t.Fatalf("обратное чтение: %v", err)
 	}
 	// Прежняя запись с экранированием читается так же.
@@ -27,10 +27,10 @@ func TestMarshalContentNoHTMLEscape(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := json.Unmarshal(old, &back); err != nil || back != c {
+	if err := json.Unmarshal(old, &back); err != nil || !sameText(back, c) {
 		t.Fatalf("прежняя запись: %v", err)
 	}
-	if fit, cut := FitContent(c, MaxSealedPlain); cut || fit != c {
+	if fit, cut := FitContent(c, MaxSealedPlain); cut || !sameText(fit, c) {
 		t.Fatal("«<» обрезано, хотя помещается")
 	}
 }
@@ -103,3 +103,6 @@ func FuzzFitContent(f *testing.F) {
 		checkFit(t, in, got, limit)
 	})
 }
+
+// sameText — у содержимого тот же текст запроса и ответа.
+func sameText(a, b Content) bool { return a.Request == b.Request && a.Response == b.Response }

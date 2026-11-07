@@ -23,6 +23,7 @@ export function localDiff(before: PolicySpec, after: PolicySpec): PolicyDiff {
       ["media_check", s.media_check ?? ""],
       ["media_check_timeout_ms", s.media_check_timeout_ms?.toString() ?? ""],
       ["media_sanitize", (s.media_sanitize ?? false).toString()],
+      ["media_store", (s.media_store ?? false).toString()],
       ["block_message", s.block_message ?? ""],
       ["judge", sectionText(s.judge)],
     ]);
@@ -40,6 +41,7 @@ export function localDiff(before: PolicySpec, after: PolicySpec): PolicyDiff {
   const reasons: Reason[] = [];
   if (before.mode === "enforce" && after.mode === "monitor") reasons.push({ kind: "mode_monitor" });
   if (sectionWeakened(before.judge, after.judge)) reasons.push({ kind: "judge_weakened" });
+  if (!(before.media_store ?? false) && (after.media_store ?? false)) reasons.push({ kind: "media_store_enabled" });
   for (const r of rules_removed) reasons.push({ kind: "rule_removed", rule: r.id });
   for (const a of after.rules) {
     const b = byId.get(a.id);

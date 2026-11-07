@@ -138,6 +138,10 @@ type Tokens struct {
 type Content struct {
 	Request  string `json:"request,omitempty"`
 	Response string `json:"response,omitempty"`
+	// Images — изображения запроса: только в full при media_store политики
+	// (задача 6.13, ADR-0039, content_media.go). Сервер хранит их отдельно
+	// от текста (event_media).
+	Images []ContentImage `json:"images,omitempty"`
 }
 
 // Режимы проверки ответа модели (ТЗ, 5.1).
@@ -334,6 +338,7 @@ func (e *Event) Validate() error {
 		}
 	}
 	errs = append(errs, e.validateMedia()...)
+	errs = append(errs, e.validateImages()...)
 	errs = append(errs, e.validateJudge()...)
 	return errors.Join(errs...)
 }

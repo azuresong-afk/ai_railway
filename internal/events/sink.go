@@ -41,9 +41,13 @@ type Queue struct {
 	retryMax    time.Duration
 	dropped     atomic.Uint64
 	failed      atomic.Uint64
-	wg          sync.WaitGroup
-	closeOnce   sync.Once
-	closed      atomic.Bool
+	// imageBytes — байты изображений содержимого в очереди и в пакете на
+	// отправке; maxImageBytes — предел (задача 6.13, ADR-0039).
+	imageBytes    atomic.Int64
+	maxImageBytes int64
+	wg            sync.WaitGroup
+	closeOnce     sync.Once
+	closed        atomic.Bool
 	// closeCtx задаётся в Close до закрытия done и ограничивает досылку.
 	closeCtx context.Context
 }
@@ -60,7 +64,12 @@ type QueueConfig struct {
 	// растёт вдвое от RetryMin (1 с) до RetryMax (30 с).
 	RetryMin time.Duration
 	RetryMax time.Duration
-	Logger   *slog.Logger
+	// MaxImageBytes — изображений содержимого (Content.Images) в очереди
+	// сразу, байты; по умолчанию DefaultQueueImageBytes. Сверх предела
+	// событие ставится в очередь без изображений (store_skipped: queue_full):
+	// 10 000 событий по 4 МиБ не должны занимать память шлюза.
+	MaxImageBytes int64
+	Logger        *slog.Logger
 }
 
 // NewQueue запускает фоновую отправку.
@@ -86,10 +95,13 @@ func NewQueue(sink Sink, cfg QueueConfig) *Queue {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
+	if cfg.MaxImageBytes <= 0 {
+		cfg.MaxImageBytes = DefaultQueueImageBytes
+	}
 	q := &Queue{
 		ch: make(chan Event, cfg.Capacity), done: make(chan struct{}), sink: sink, logger: cfg.Logger,
 		batchSize: cfg.BatchSize, flushEach: cfg.FlushEach, sendTimeout: cfg.SendTimeout,
-		retryMin: cfg.RetryMin, retryMax: cfg.RetryMax,
+		retryMin: cfg.RetryMin, retryMax: cfg.RetryMax, maxImageBytes: cfg.MaxImageBytes,
 	}
 	q.wg.Add(1)
 	go q.loop()
@@ -106,13 +118,35 @@ func (q *Queue) Enqueue(e Event) error {
 		q.dropped.Add(1)
 		return errors.New("очередь событий закрыта")
 	}
+	n := int64(e.ImageBytes())
+	if n > 0 && q.imageBytes.Add(n) > q.maxImageBytes {
+		q.imageBytes.Add(-n)
+		e.DropImages(StoreSkipQueueFull)
+		n = 0
+	}
 	select {
 	case q.ch <- e:
 		return nil
 	default:
+		q.imageBytes.Add(-n)
 		q.dropped.Add(1)
 		return nil
 	}
+}
+
+// release возвращает предел изображений пакета, который больше не
+// хранится в очереди, и затирает ссылки на события пакета: иначе
+// изображения жили бы в массиве среза до перезаписи.
+func (q *Queue) release(batch []Event) []Event {
+	var n int64
+	for i := range batch {
+		n += int64(batch[i].ImageBytes())
+	}
+	if n > 0 {
+		q.imageBytes.Add(-n)
+	}
+	clear(batch)
+	return batch[:0]
 }
 
 // Dropped — число отброшенных событий: очередь переполнена или при остановке
@@ -168,7 +202,7 @@ func (q *Queue) flush(batch []Event, backoff time.Duration) ([]Event, time.Durat
 	cancel()
 	switch {
 	case err == nil:
-		return batch[:0], 0
+		return q.release(batch), 0
 	case errors.Is(err, ErrRetryLater):
 		next := min(max(2*backoff, q.retryMin), q.retryMax)
 		q.logger.Warn("события не отправлены, повтор позже", "count", len(batch), "retry_in", next.String(), "error", err)
@@ -176,7 +210,7 @@ func (q *Queue) flush(batch []Event, backoff time.Duration) ([]Event, time.Durat
 	default:
 		q.failed.Add(uint64(len(batch)))
 		q.logger.Error("получатель отказался принять события", "count", len(batch), "error", err)
-		return batch[:0], 0
+		return q.release(batch), 0
 	}
 }
 
@@ -209,7 +243,7 @@ func (q *Queue) shutdown(batch []Event) {
 			q.failed.Add(uint64(len(batch)))
 			q.logger.Error("получатель отказался принять события", "count", len(batch), "error", err)
 		}
-		batch = batch[:0]
+		batch = q.release(batch)
 	}
 }
 

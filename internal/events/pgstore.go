@@ -334,6 +334,20 @@ func (s *PGStore) insertBatch(ctx context.Context, tx pgx.Tx, in Ingest, rows []
 			return nil, dbError("запись содержимого", err)
 		}
 	}
+	mb := &pgx.Batch{}
+	for i, r := range rows {
+		if !inserted[i] {
+			continue
+		}
+		if err := s.queueMedia(ctx, mb, r); err != nil {
+			return nil, err
+		}
+	}
+	if mb.Len() > 0 {
+		if err := execBatch(ctx, tx, mb, nil); err != nil {
+			return nil, dbError("запись изображений", err)
+		}
+	}
 	return inserted, nil
 }
 
@@ -375,6 +389,15 @@ func (s *PGStore) insertOne(ctx context.Context, tx pgx.Tx, in Ingest, r eventRo
 		}
 		if _, err := sp.Exec(ctx, insertContent, args...); err != nil {
 			return false, dbError("запись содержимого", err)
+		}
+		mb := &pgx.Batch{}
+		if err := s.queueMedia(ctx, mb, r); err != nil {
+			return false, err
+		}
+		if mb.Len() > 0 {
+			if err := execBatch(ctx, sp, mb, nil); err != nil {
+				return false, dbError("запись изображений", err)
+			}
 		}
 		return true, nil
 	}()
@@ -560,7 +583,9 @@ func newEventRow(e *Event) (eventRow, error) {
 	}
 	r := eventRow{ev: e, ts: ts}
 	if e.Storage == StorageFull && e.Content != nil {
-		c, truncated := FitContent(*e.Content, MaxSealedPlain)
+		// Изображения — не в открытом тексте event_content: у них своя
+		// таблица event_media (ADR-0039, раздел 3).
+		c, truncated := FitContent(e.Content.textOnly(), MaxSealedPlain)
 		if r.plain, err = MarshalContent(c); err != nil {
 			return eventRow{}, err
 		}

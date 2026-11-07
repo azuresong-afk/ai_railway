@@ -156,6 +156,8 @@ function PolicyDetail({ summary, me, onSelect, onImport }: { summary: PolicySumm
                 </dd>
                 <dt className="text-muted">Очистка изображений</dt>
                 <dd>{spec.media_sanitize ? "Включена" : "Выключена"}</dd>
+                <dt className="text-muted">Хранение изображений</dt>
+                <dd>{spec.media_store ? "Включено (только при режиме хранения «полностью»)" : "Выключено"}</dd>
                 {spec.block_message && (
                   <>
                     <dt className="text-muted">Сообщение при блокировке</dt>

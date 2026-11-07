@@ -56,6 +56,10 @@ type Spec struct {
 	// (задача 5.45): удаление метаданных, перекодирование и уменьшение в
 	// aisec-media. По умолчанию выключена: меняет содержимое запроса.
 	MediaSanitize bool `yaml:"media_sanitize,omitempty"`
+	// MediaStore — хранить изображения запроса в содержимом события
+	// (задача 6.13, ADR-0039): только у приложения с режимом хранения full.
+	// По умолчанию выключено; включение — ослабление (DM-40).
+	MediaStore bool `yaml:"media_store,omitempty"`
 	// BlockMessage — сообщение о блокировке; пусто — DefaultBlockMessage.
 	BlockMessage string     `yaml:"block_message,omitempty"`
 	Rules        []RuleSpec `yaml:"rules"`

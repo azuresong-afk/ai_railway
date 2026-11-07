@@ -336,6 +336,7 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		rec.sanitized = locs
+		rec.keepSanitized(req)
 	}
 	rec.sent = true
 	providerStart := h.cfg.Now()

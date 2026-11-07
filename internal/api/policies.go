@@ -252,9 +252,12 @@ type PolicySpecJSON struct {
 	MediaCheck     string `json:"media_check,omitempty"`
 	MediaTimeoutMS int    `json:"media_check_timeout_ms,omitempty"`
 	// MediaSanitize — очистка изображений перед провайдером (задача 5.45).
-	MediaSanitize bool             `json:"media_sanitize,omitempty"`
-	BlockMessage  string           `json:"block_message,omitempty"`
-	Rules         []PolicyRuleJSON `json:"rules"`
+	MediaSanitize bool `json:"media_sanitize,omitempty"`
+	// MediaStore — хранение изображений запроса в режиме full (задача
+	// 6.13, ADR-0039); включение — ослабление (DM-40).
+	MediaStore   bool             `json:"media_store,omitempty"`
+	BlockMessage string           `json:"block_message,omitempty"`
+	Rules        []PolicyRuleJSON `json:"rules"`
 	// Exceptions — исключения (задача 3.22). При сохранении: поле не
 	// передано — исключения текущей версии сохраняются; пустой список —
 	// удаляются. Автора и created_at ставит сервер.
@@ -316,7 +319,8 @@ func convert[T, U ~string](in []T) []U {
 func (s PolicySpecJSON) spec(id string) (*policy.Spec, error) {
 	out := &policy.Spec{ID: id, Name: s.Name, Mode: policy.Mode(s.Mode), NonText: policy.NonText(s.NonText),
 		ResponseCheck: policy.ResponseCheck(s.ResponseCheck), BlockMessage: s.BlockMessage,
-		MediaCheck: policy.MediaCheck(s.MediaCheck), MediaTimeoutMS: s.MediaTimeoutMS, MediaSanitize: s.MediaSanitize}
+		MediaCheck: policy.MediaCheck(s.MediaCheck), MediaTimeoutMS: s.MediaTimeoutMS, MediaSanitize: s.MediaSanitize,
+		MediaStore: s.MediaStore}
 	for _, r := range s.Rules {
 		out.Rules = append(out.Rules, policy.RuleSpec{ID: r.ID, Detector: r.Detector,
 			Directions: convert[string, detect.Direction](r.Directions), Categories: convert[string, string](r.Categories),
@@ -348,7 +352,7 @@ func ruleJSON(r policy.RuleSpec) PolicyRuleJSON {
 func specJSON(s *policy.Spec) PolicySpecJSON {
 	out := PolicySpecJSON{Name: s.Name, Mode: string(s.Mode), NonText: string(s.NonText), ResponseCheck: string(s.ResponseCheck),
 		MediaCheck: string(s.MediaCheck), MediaTimeoutMS: s.MediaTimeoutMS, MediaSanitize: s.MediaSanitize,
-		BlockMessage: s.BlockMessage, Rules: make([]PolicyRuleJSON, 0, len(s.Rules))}
+		MediaStore: s.MediaStore, BlockMessage: s.BlockMessage, Rules: make([]PolicyRuleJSON, 0, len(s.Rules))}
 	for _, r := range s.Rules {
 		out.Rules = append(out.Rules, ruleJSON(r))
 	}

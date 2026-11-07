@@ -195,7 +195,7 @@ func TestPGEventsInsertContent(t *testing.T) {
 	e := setupPG(t)
 	ctx := pgCtx(t)
 	n, err := e.st.EnsurePartitions(ctx)
-	if err != nil || n != 2*(events.PartitionsBack+events.PartitionsAhead+1) {
+	if err != nil || n != 3*(events.PartitionsBack+events.PartitionsAhead+1) {
 		t.Fatalf("секции: %d %v", n, err)
 	}
 	if n, err := e.st.EnsurePartitions(ctx); err != nil || n != 0 {
@@ -455,7 +455,7 @@ func TestPGEventsRetention(t *testing.T) {
 	day := func(d int) time.Time { return today.AddDate(0, 0, d) }
 	// Старые секции создаёт владелец (как будто события копились давно).
 	for _, d := range []int{-400, -100, -40} {
-		for _, parent := range []string{"events", "event_content"} {
+		for _, parent := range []string{"events", "event_content", "event_media"} {
 			name := fmt.Sprintf("%s_p%s", parent, day(d).Format("20060102"))
 			if _, err := e.owner.Exec(ctx, fmt.Sprintf("CREATE TABLE %s PARTITION OF %s FOR VALUES FROM ('%s') TO ('%s')",
 				name, parent, day(d).Format(time.RFC3339), day(d+1).Format(time.RFC3339))); err != nil {
@@ -492,6 +492,7 @@ func TestPGEventsRetention(t *testing.T) {
 	// По умолчанию: метаданные 365 суток, содержимое 90.
 	want := []string{
 		"event_content_p" + day(-400).Format("20060102"), "event_content_p" + day(-100).Format("20060102"),
+		"event_media_p" + day(-400).Format("20060102"), "event_media_p" + day(-100).Format("20060102"),
 		"events_p" + day(-400).Format("20060102"),
 	}
 	if !slices.Equal(dropped, want) {
@@ -516,13 +517,14 @@ func TestPGEventsRetention(t *testing.T) {
 		t.Fatal(err)
 	}
 	want = []string{
-		"event_content_p" + day(-40).Format("20060102"), "events_p" + day(-100).Format("20060102"), "events_p" + day(-40).Format("20060102"),
+		"event_content_p" + day(-40).Format("20060102"), "event_media_p" + day(-40).Format("20060102"),
+		"events_p" + day(-100).Format("20060102"), "events_p" + day(-40).Format("20060102"),
 	}
 	if !slices.Equal(dropped, want) {
 		t.Fatalf("удалены %v, ожидались %v", dropped, want)
 	}
 	// Секции окна приёма (7 суток назад) на месте при минимальных сроках.
-	for _, parent := range []string{"events", "event_content"} {
+	for _, parent := range []string{"events", "event_content", "event_media"} {
 		var ok bool
 		name := parent + "_p" + day(-events.PartitionsBack).Format("20060102")
 		if err := e.owner.QueryRow(ctx, "SELECT to_regclass($1) IS NOT NULL", name).Scan(&ok); err != nil || !ok {

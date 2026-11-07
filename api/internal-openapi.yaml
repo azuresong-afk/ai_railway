@@ -1043,6 +1043,23 @@ components:
           properties:
             request: { type: string }
             response: { type: string }
+            images:
+              type: array
+              maxItems: 16
+              description: |
+                Изображения запроса (задача 6.13, ADR-0039): только при `storage: full`
+                и `media_store` политики, только места из `media[]` с разобранным
+                форматом; до 3 МиБ на изображение и 4 МиБ на событие. Сервер шифрует
+                каждое ключом данных и хранит в `event_media` со сроком содержимого.
+              items:
+                type: object
+                additionalProperties: false
+                required: [location, format, data]
+                properties:
+                  location: { type: string, maxLength: 256 }
+                  format: { type: string, enum: [png, jpeg, gif, webp, bmp, tiff] }
+                  sanitized: { type: boolean, description: 'Очищено aisec-media (media_sanitize)' }
+                  data: { type: string, contentEncoding: base64, description: 'Байты изображения, base64' }
         response: { type: object }
         pseudonyms: { type: object }
         auth_failure: { type: object }

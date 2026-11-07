@@ -2956,7 +2956,10 @@ export interface paths {
          *     Каждое обращение пишет `events.content_read` с ID события и причиной до ответа; если
          *     запись в журнал аудита не удалась — 503, содержимое не выдаётся. Содержимое `full`
          *     расшифровывается на сервере. Нет сохранённого содержимого (режим `none` или удалено
-         *     по сроку) — 404, обращение тоже пишется в аудит.
+         *     по сроку) — 404, обращение тоже пишется в аудит. Сохранённые изображения запроса
+         *     (`media_store`, задача 6.13, ADR-0039) выдаются в `images`; право — только в полной
+         *     области (маршрут не отбирает объекты, право в части приложений — 403). Число выданных
+         *     изображений — в записи аудита (`images`).
          */
         post: {
             parameters: {
@@ -15139,6 +15142,18 @@ export interface components {
             storage: "masked" | "full";
             request?: string;
             response?: string;
+            /** @description Изображения запроса (задача 6.13, ADR-0039): только в режиме full при media_store политики. Рамки находок — в details.findings[].box, в пикселях details.media[].width × height. */
+            images?: components["schemas"]["EventContentImage"][];
+        };
+        EventContentImage: {
+            /** @description Место изображения в запросе, как в details.media[].location */
+            location: string;
+            /** @enum {string} */
+            format: "png" | "jpeg" | "gif" | "webp" | "bmp" | "tiff";
+            /** @description Сохранено очищенным (media_sanitize) */
+            sanitized?: boolean;
+            /** @description Байты изображения, base64; консоль показывает их как data:-адрес */
+            data: string;
         };
         EventExportRequest: {
             /** @enum {string} */
@@ -15287,6 +15302,8 @@ export interface components {
             media_check_timeout_ms?: number;
             /** @description Очистка изображений перед отправкой провайдеру (задача 5.45, ТЗ 5.17): aisec-media удаляет метаданные, перекодирует (JPEG — в JPEG, остальное — в PNG, у GIF — первый кадр) и уменьшает до -sanitize-max-side. Не задано — выключена. Изображение, которое очистить нельзя (ссылка https://, сбой или перегрузка анализатора, неизвестный формат, отказ по пределам), провайдеру не уходит: запрос отклоняется. Выключение — ослабление (media_sanitize_weakened, DM-40). */
             media_sanitize?: boolean;
+            /** @description Хранение изображений запроса в содержимом события (задача 6.13, ADR-0039): действует только у приложения с режимом хранения full; сохраняются изображения, разобранные aisec-media (при media_sanitize — очищенные), до 3 МиБ на изображение и 4 МиБ на событие, срок — как у содержимого. Не задано — выключено. Включение и создание политики с ним — ослабление (media_store_enabled, DM-40), только с подтверждением. */
+            media_store?: boolean;
             block_message?: string;
             rules: components["schemas"]["PolicyRule"][];
             /** @description Исключения (задача 3.22). При сохранении: поле не передано — исключения текущей версии сохраняются; пустой список — удаляются. Автора и created_at новых и изменённых ставит сервер */
@@ -15564,7 +15581,7 @@ export interface components {
             to: number;
             fields: {
                 /** @enum {string} */
-                field: "name" | "mode" | "non_text" | "response_check" | "media_check" | "media_check_timeout_ms" | "media_sanitize" | "block_message" | "judge";
+                field: "name" | "mode" | "non_text" | "response_check" | "media_check" | "media_check_timeout_ms" | "media_sanitize" | "media_store" | "block_message" | "judge";
                 before: string;
                 after: string;
             }[];
@@ -15581,7 +15598,7 @@ export interface components {
             weakening: boolean;
             weakening_reasons: {
                 /** @enum {string} */
-                kind: "mode_monitor" | "non_text_weakened" | "response_check_weakened" | "media_check_weakened" | "media_sanitize_weakened" | "rule_removed" | "action_weakened" | "threshold_raised" | "scope_narrowed" | "detector_changed" | "judge_weakened" | "exception_added" | "exception_extended" | "exception_changed" | "tools_unapproved_weakened" | "tool_rule_added" | "tool_action_weakened" | "tool_scope_widened" | "tool_scope_narrowed" | "tool_args_relaxed" | "tool_rate_raised" | "approval_timeout_raised" | "tool_rule_removed";
+                kind: "mode_monitor" | "non_text_weakened" | "response_check_weakened" | "media_check_weakened" | "media_sanitize_weakened" | "media_store_enabled" | "rule_removed" | "action_weakened" | "threshold_raised" | "scope_narrowed" | "detector_changed" | "judge_weakened" | "exception_added" | "exception_extended" | "exception_changed" | "tools_unapproved_weakened" | "tool_rule_added" | "tool_action_weakened" | "tool_scope_widened" | "tool_scope_narrowed" | "tool_args_relaxed" | "tool_rate_raised" | "approval_timeout_raised" | "tool_rule_removed";
                 rule?: string;
                 exception?: string;
                 /** @description ID правила раздела tools */
@@ -17295,6 +17312,13 @@ export interface components {
             latency_ms?: number;
             /** @description Провайдеру ушло очищенное изображение (media_sanitize, задача 5.45): без метаданных, перекодированное и уменьшенное анализатором aisec-media. */
             sanitized?: boolean;
+            /** @description Только в событии. Изображение сохранено в содержимом события (media_store, задача 6.13). */
+            stored?: boolean;
+            /**
+             * @description Только в событии. Почему изображение не сохранено, хотя media_store включено (ADR-0039, раздел 2): ссылка, формат не разобран анализатором, больше 3 МиБ, предел 4 МиБ или 16 изображений на событие, очередь шлюза, не удалось очистить.
+             * @enum {string}
+             */
+            store_skipped?: "url" | "not_parsed" | "too_large" | "event_limit" | "queue_full" | "not_sanitized";
         };
         /** @description Рамка находки на изображении в пикселях исходного растра (ТЗ 5.17, п. 5). */
         ImageBox: {

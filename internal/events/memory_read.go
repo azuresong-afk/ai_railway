@@ -201,7 +201,26 @@ func (m *Memory) Content(_ context.Context, id string) (StoredContent, error) {
 	if !ok || s.Event.Content == nil {
 		return StoredContent{}, ErrNotFound
 	}
-	return StoredContent{Storage: s.Event.Storage, Content: *s.Event.Content}, nil
+	return StoredContent{Storage: s.Event.Storage, Content: s.Event.Content.textOnly()}, nil
+}
+
+// Images — см. Reader. Возвращает копии байтов.
+func (m *Memory) Images(_ context.Context, id string) ([]ContentImage, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.ReadErr != nil {
+		return nil, m.ReadErr
+	}
+	s, ok := m.events[id]
+	if !ok || s.Event.Content == nil {
+		return nil, nil
+	}
+	out := make([]ContentImage, len(s.Event.Content.Images))
+	for i, img := range s.Event.Content.Images {
+		img.Data = slices.Clone(img.Data)
+		out[i] = img
+	}
+	return out, nil
 }
 
 // MemoryAudit — куда Memory пишет записи аудита об изменении сроков (тесты).

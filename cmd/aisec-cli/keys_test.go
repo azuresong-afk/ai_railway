@@ -80,6 +80,15 @@ func keysInstallation(t *testing.T, schema string) (*installation, *keysEnv, []s
 			VALUES ($1, $2, $3, 'full', $4, ($2 AT TIME ZONE 'UTC')::date, $5, $6)`, id, ts, audit.DefaultOrgID, keyID, alg, sealed)
 		ids = append(ids, id)
 	}
+	// Изображение запроса последнего события (задача 6.13): перешифровывается
+	// отдельной пачкой event_media.
+	mkeyID, malg, msealed, err := in.box.SealDerived(ctx, events.ContentKeyPurpose, now, mediaPlain, "event_media", "sealed", events.MediaAAD(ids[2], 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	in.exec(t, `INSERT INTO event_media (event_id, ts, idx, org_id, location, format, key_id, key_day, alg, sealed)
+		VALUES ($1, $2, 0, $3, 'messages[0].content[1]', 'png', $4, ($2 AT TIME ZONE 'UTC')::date, $5, $6)`,
+		ids[2], now, audit.DefaultOrgID, mkeyID, malg, msealed)
 	env, err := openKeysEnv(ctx, in.dsn)
 	if err != nil {
 		t.Fatal(err)
@@ -87,6 +96,9 @@ func keysInstallation(t *testing.T, schema string) (*installation, *keysEnv, []s
 	t.Cleanup(env.Close)
 	return in, env, ids
 }
+
+// mediaPlain — «изображение» события: для перешифрования важны только байты.
+var mediaPlain = []byte("\x89PNG\r\n\x1a\nсинтетическое изображение")
 
 func contentPlain(i int) []byte {
 	return []byte(`{"request":"синтетический запрос ` + string(rune('0'+i)) + `","response":"ответ"}`) //nolint:gosec // i — номер записи теста (0–9)
@@ -144,6 +156,16 @@ func checkSecrets(t *testing.T, in *installation, box *keyring.Box, ids []string
 		if err != nil || !bytes.Equal(plain, contentPlain(i)) || (want != "" && key != want) {
 			t.Fatalf("содержимое %s: ключ %s, %v", id, key, err)
 		}
+	}
+	var day time.Time
+	var sealed []byte
+	if err := in.db.Pool().QueryRow(ctx, `SELECT key_id::text, key_day, sealed FROM event_media WHERE event_id = $1 AND idx = 0`, ids[2]).
+		Scan(&key, &day, &sealed); err != nil {
+		t.Fatal(err)
+	}
+	plain, err := box.OpenDerived(key, events.ContentKeyPurpose, day, sealed, "event_media", "sealed", events.MediaAAD(ids[2], 0))
+	if err != nil || !bytes.Equal(plain, mediaPlain) || (want != "" && key != want) {
+		t.Fatalf("изображение %s: ключ %s, %v", ids[2], key, err)
 	}
 }
 
@@ -289,6 +311,9 @@ func TestKeysRewrapGuardsOnRealDB(t *testing.T) {
 		"UPDATE user_mfa SET secret = secret || '\\x00'::bytea WHERE user_id = '" + tUser + "'",
 		"UPDATE event_content SET sealed = sealed || '\\x00'::bytea WHERE event_id = '" + ids[0] + "'",
 		"DELETE FROM event_content WHERE event_id = '" + ids[0] + "'",
+		"UPDATE event_media SET sealed = sealed || '\\x00'::bytea WHERE event_id = '" + ids[2] + "'",
+		"UPDATE event_media SET location = 'images[0]' WHERE event_id = '" + ids[2] + "'",
+		"DELETE FROM event_media WHERE event_id = '" + ids[2] + "'",
 		"UPDATE data_keys SET wrapped = wrapped || '\\x00'::bytea WHERE id = '" + old + "'",
 		"UPDATE data_keys SET master_version = 2 WHERE id = '" + old + "'",
 	} {
