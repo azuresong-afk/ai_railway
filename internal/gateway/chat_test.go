@@ -122,6 +122,43 @@ type gwOpts struct {
 	media MediaAnalyzer
 	// judges — оценщики judge.llm (задача 5.28 этапа 5).
 	judges *Judges
+	// vendor — провайдер "up" в формате GigaChat или YandexGPT вместо
+	// OpenAI-совместимого (upstream — mock-llm; задача 6.10 этапа 6).
+	vendor string
+}
+
+// upstreamProvider — провайдер "up" тестового шлюза: OpenAI-совместимый либо,
+// при o.vendor, GigaChat или YandexGPT на узле upstream (mock-llm).
+func upstreamProvider(t testing.TB, upstream string, o *gwOpts) providers.Provider {
+	t.Helper()
+	parse := func(s string) *url.URL {
+		u, err := url.Parse(upstream + s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return u
+	}
+	bc := providers.BaseConfig{ID: "up", External: !o.internal, Transport: o.transport, Logger: o.logger, StreamIdleTimeout: o.streamIdle}
+	var (
+		p   providers.Provider
+		err error
+	)
+	switch o.vendor {
+	case "":
+		p, err = providers.NewOpenAI(providers.OpenAIConfig{BaseConfig: bc, BaseURL: parse("/v1"), Key: o.key})
+	case "gigachat":
+		p, err = providers.NewGigaChat(providers.GigaChatConfig{BaseConfig: bc, BaseURL: parse("/api/v1"), AuthURL: parse("/api/v2/oauth"),
+			AuthKey: "Zml4dHVyZS1jbGllbnQtaWQ6Zml4dHVyZS1zZWNyZXQ=", Scope: "GIGACHAT_API_CORP", Random: testRandom(t)})
+	case "yandexgpt":
+		p, err = providers.NewYandexGPT(providers.YandexGPTConfig{BaseConfig: bc, BaseURL: parse("/foundationModels/v1"), //nolint:gosec // G101: выдуманный ключ для mock-llm
+			APIKey: "AQVN-fixture-api-key-0000", FolderID: "b1gfolder", Random: testRandom(t)})
+	default:
+		t.Fatalf("провайдер %q", o.vendor)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
 }
 
 // newGateway — шлюз с OpenAI-совместимым провайдером на upstream и одним
@@ -134,15 +171,7 @@ func newGateway(t testing.TB, upstream string, mod func(*gwOpts)) http.Handler {
 	if mod != nil {
 		mod(&o)
 	}
-	u, err := url.Parse(upstream + "/v1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	p, err := providers.NewOpenAI(providers.OpenAIConfig{BaseConfig: providers.BaseConfig{ID: "up", External: !o.internal, Transport: o.transport, Logger: o.logger,
-		StreamIdleTimeout: o.streamIdle}, BaseURL: u, Key: o.key})
-	if err != nil {
-		t.Fatal(err)
-	}
+	p := upstreamProvider(t, upstream, &o)
 	app := config.Application{ID: "app", Env: "test", Provider: "up", Models: []string{"m", "mock-echo", "mock-stream-slow"},
 		Aliases: map[string]string{"default": "m"}, Quotas: o.quotas}
 	if o.app != nil {

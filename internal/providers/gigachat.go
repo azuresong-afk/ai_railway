@@ -55,6 +55,8 @@ type GigaChat struct {
 	gc       GigaChatConfig
 	endpoint string
 	authURL  string
+	// filesURL — хранилище файлов: загрузка изображений (задача 6.10).
+	filesURL string
 
 	mu      sync.Mutex
 	token   string
@@ -80,7 +82,8 @@ func NewGigaChat(cfg GigaChatConfig) (*GigaChat, error) {
 	if cfg.AuthURL != nil {
 		authURL = endpoint(cfg.AuthURL, "")
 	}
-	p := &GigaChat{base: b, gc: cfg, endpoint: endpoint(cfg.BaseURL, "/chat/completions"), authURL: authURL}
+	p := &GigaChat{base: b, gc: cfg, endpoint: endpoint(cfg.BaseURL, "/chat/completions"), authURL: authURL,
+		filesURL: endpoint(cfg.BaseURL, "/files")}
 	p.dynSecrets = func() []string {
 		p.mu.Lock()
 		defer p.mu.Unlock()
@@ -170,12 +173,19 @@ func (p *GigaChat) randomID(prefix string) (string, error) {
 }
 
 // send отправляет запрос; на 401 токен обновляется и запрос повторяется
-// один раз (токен мог истечь раньше срока).
-func (p *GigaChat) send(ctx, clientCtx context.Context, req *chat.Request, stream bool) (*http.Response, Meta, error) {
-	body, err := toGigaChat(req, stream)
+// один раз (токен мог истечь раньше срока). Изображения сначала
+// загружаются в хранилище GigaChat (gigachat_images.go); files — их ID,
+// вызывающий удаляет их после ответа (cleanupFiles), в том числе при ошибке.
+func (p *GigaChat) send(ctx, clientCtx context.Context, req *chat.Request, stream bool) (resp *http.Response, meta Meta, files []string, err error) {
+	body, files, err := p.prepare(ctx, clientCtx, req, stream)
 	if err != nil {
-		return nil, Meta{}, err
+		return nil, Meta{}, files, err
 	}
+	resp, meta, err = p.sendBody(ctx, clientCtx, body, stream)
+	return resp, meta, files, err
+}
+
+func (p *GigaChat) sendBody(ctx, clientCtx context.Context, body []byte, stream bool) (*http.Response, Meta, error) {
 	for attempt := 0; ; attempt++ {
 		tok, err := p.accessToken(ctx, clientCtx, attempt > 0)
 		if err != nil {
@@ -193,7 +203,8 @@ func (p *GigaChat) send(ctx, clientCtx context.Context, req *chat.Request, strea
 func (p *GigaChat) Chat(ctx context.Context, req *chat.Request) (*chat.Response, Meta, error) {
 	rctx, cancel := context.WithTimeout(ctx, p.cfg.ResponseTimeout)
 	defer cancel()
-	resp, meta, err := p.send(rctx, ctx, req, false)
+	resp, meta, files, err := p.send(rctx, ctx, req, false)
+	defer p.cleanupFiles(ctx, files)
 	if err != nil {
 		return nil, meta, err
 	}
@@ -212,31 +223,36 @@ func (p *GigaChat) Chat(ctx context.Context, req *chat.Request) (*chat.Response,
 // Stream — потоковый ответ.
 func (p *GigaChat) Stream(ctx context.Context, req *chat.Request) (Stream, Meta, error) {
 	rctx, cancel := context.WithTimeout(ctx, p.cfg.ResponseTimeout)
-	resp, meta, err := p.send(rctx, ctx, req, true)
+	resp, meta, files, err := p.send(rctx, ctx, req, true)
 	if err != nil {
 		cancel()
+		p.cleanupFiles(ctx, files)
+		return nil, meta, err
+	}
+	fail := func(err error) (Stream, Meta, error) {
+		cancel()
+		if cerr := resp.Body.Close(); cerr != nil {
+			p.logger.Warn("закрытие ответа провайдера", "error", ErrorClass(cerr))
+		}
+		p.cleanupFiles(ctx, files)
 		return nil, meta, err
 	}
 	id, err := p.randomID("chatcmpl-")
 	if err != nil {
-		cancel()
-		if cerr := resp.Body.Close(); cerr != nil {
-			p.logger.Warn("закрытие ответа провайдера", "error", ErrorClass(cerr))
-		}
-		return nil, meta, err
+		return fail(err)
 	}
 	callID, err := p.randomID("call_")
 	if err != nil {
-		cancel()
-		if cerr := resp.Body.Close(); cerr != nil {
-			p.logger.Warn("закрытие ответа провайдера", "error", ErrorClass(cerr))
-		}
-		return nil, meta, err
+		return fail(err)
 	}
 	st, err := p.openStream(ctx, cancel, resp, func(data string) (*chat.Chunk, error) {
 		return gigaChatChunk(data, id, callID)
 	})
-	return st, meta, err
+	if err != nil {
+		p.cleanupFiles(ctx, files)
+		return st, meta, err
+	}
+	return p.withCleanup(ctx, st, files), meta, nil
 }
 
 // Формат GigaChat API.
@@ -250,6 +266,9 @@ type gcMessage struct {
 	Content      string          `json:"content"`
 	Name         string          `json:"name,omitempty"`
 	FunctionCall *gcFunctionCall `json:"function_call,omitempty"`
+	// Attachments — ID файлов, загруженных в хранилище GigaChat (POST
+	// /files): изображение сообщения пользователя (задача 6.10).
+	Attachments []string `json:"attachments,omitempty"`
 }
 
 type gcFunction struct {
@@ -307,8 +326,16 @@ func textOf(m chat.Message, provider string) (string, error) {
 	return strings.Join(parts, "\n"), nil
 }
 
-// toGigaChat переводит запрос из формата OpenAI в формат GigaChat.
+// toGigaChat переводит запрос из формата OpenAI в формат GigaChat; части
+// image_url не поддерживаются (их переводит toGigaChatWith).
 func toGigaChat(req *chat.Request, stream bool) ([]byte, error) {
+	return toGigaChatWith(req, stream, nil)
+}
+
+// toGigaChatWith переводит запрос в формат GigaChat; attach — ID
+// загруженных файлов изображений по номеру сообщения (nil — изображений
+// нет, часть image_url — отказ).
+func toGigaChatWith(req *chat.Request, stream bool, attach map[int][]string) ([]byte, error) {
 	switch {
 	case len(req.Stop) > 0:
 		return nil, unsupported("параметр stop")
@@ -359,11 +386,17 @@ func toGigaChat(req *chat.Request, stream bool) ([]byte, error) {
 	}
 	names := map[string]string{} // id вызова → имя функции
 	for i, m := range req.Messages {
-		text, err := textOf(m, "gigachat")
+		var text string
+		var err error
+		if attach != nil {
+			text, err = textOnly(m, "gigachat")
+		} else {
+			text, err = textOf(m, "gigachat")
+		}
 		if err != nil {
 			return nil, err
 		}
-		gm := gcMessage{Role: m.Role, Content: text}
+		gm := gcMessage{Role: m.Role, Content: text, Attachments: attach[i]}
 		switch m.Role {
 		case "developer":
 			gm.Role = "system"
